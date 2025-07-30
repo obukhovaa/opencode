@@ -66,11 +66,23 @@ func (i *detailCmp) updateContent() {
 	content.WriteString(lipgloss.NewStyle().Bold(true).Render(header))
 	content.WriteString("\n\n")
 
-	// Message with styling
+	// Message with styling and proper wrapping
 	messageStyle := lipgloss.NewStyle().Bold(true).Foreground(t.Text())
 	content.WriteString(messageStyle.Render("Message:"))
 	content.WriteString("\n")
-	content.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(i.currentLog.Message))
+	
+	// Calculate available width for message content (accounting for padding)
+	availableWidth := i.width - 4 // 2 chars padding on each side
+	if availableWidth < 1 {
+		availableWidth = 1
+	}
+	
+	// Wrap the message text to fit the available width
+	wrappedMessage := lipgloss.NewStyle().
+		Width(availableWidth).
+		Padding(0, 2).
+		Render(i.currentLog.Message)
+	content.WriteString(wrappedMessage)
 	content.WriteString("\n\n")
 
 	// Attributes section
@@ -88,7 +100,12 @@ func (i *detailCmp) updateContent() {
 				keyStyle.Render(attr.Key),
 				valueStyle.Render(attr.Value),
 			)
-			content.WriteString(lipgloss.NewStyle().Padding(0, 2).Render(attrLine))
+			// Wrap attribute lines as well
+			wrappedAttr := lipgloss.NewStyle().
+				Width(availableWidth).
+				Padding(0, 2).
+				Render(attrLine)
+			content.WriteString(wrappedAttr)
 			content.WriteString("\n")
 		}
 	}
