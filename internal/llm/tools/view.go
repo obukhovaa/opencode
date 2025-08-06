@@ -163,9 +163,8 @@ func (v *viewTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 
 	// Check if it's an image file
 	isImage, imageType := isImageFile(filePath)
-	// TODO: handle images
 	if isImage {
-		return NewTextErrorResponse(fmt.Sprintf("This is an image file of type: %s\nUse a different tool to process images", imageType)), nil
+		return NewTextErrorResponse(fmt.Sprintf("This is an image file of type: %s\nUse a view_image tool to process images", imageType)), nil
 	}
 
 	// Read the file content

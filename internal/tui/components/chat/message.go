@@ -236,6 +236,8 @@ func toolName(name string) string {
 		return "Sourcegraph"
 	case tools.ViewToolName:
 		return "View"
+	case tools.ViewImageToolName:
+		return "View Image"
 	case tools.WriteToolName:
 		return "Write"
 	case tools.PatchToolName:
@@ -264,6 +266,8 @@ func getToolAction(name string) string {
 		return "Searching code..."
 	case tools.ViewToolName:
 		return "Reading file..."
+	case tools.ViewImageToolName:
+		return "Loading image..."
 	case tools.WriteToolName:
 		return "Preparing write..."
 	case tools.PatchToolName:
@@ -418,6 +422,11 @@ func renderToolParams(paramWidth int, toolCall message.ToolCall) string {
 			toolParams = append(toolParams, "offset", fmt.Sprintf("%d", params.Offset))
 		}
 		return renderParams(paramWidth, toolParams...)
+	case tools.ViewImageToolName:
+		var params tools.ViewImageParams
+		json.Unmarshal([]byte(toolCall.Input), &params)
+		filePath := removeWorkingDirPrefix(params.FilePath)
+		return renderParams(paramWidth, filePath)
 	case tools.WriteToolName:
 		var params tools.WriteParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
@@ -507,6 +516,15 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 			toMarkdown(resultContent, true, width),
 			t.Background(),
 		)
+	case tools.ViewImageToolName:
+		metadata := tools.ViewImageResponseMetadata{}
+		json.Unmarshal([]byte(response.Metadata), &metadata)
+		// For image tools, we show a simple message indicating the image was loaded
+		// The actual base64 content is not displayed in the UI as it would be too long
+		imageInfo := fmt.Sprintf("📷 Image loaded: %s (%s)", 
+			filepath.Base(metadata.FilePath), 
+			metadata.MimeType)
+		return baseStyle.Width(width).Foreground(t.TextMuted()).Render(imageInfo)
 	case tools.WriteToolName:
 		params := tools.WriteParams{}
 		json.Unmarshal([]byte(toolCall.Input), &params)
