@@ -41,6 +41,13 @@ func NewTextResponse(content string) ToolResponse {
 	}
 }
 
+func NewImageResponse(content string) ToolResponse {
+	return ToolResponse{
+		Type:    ToolResponseTypeImage,
+		Content: content,
+	}
+}
+
 func WithResponseMetadata(response ToolResponse, metadata any) ToolResponse {
 	if metadata != nil {
 		metadataBytes, err := json.Marshal(metadata)

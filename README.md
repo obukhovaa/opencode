@@ -408,6 +408,7 @@ OpenCode's AI assistant has access to various tools to help with coding tasks:
 | `grep`        | Search file contents        | `pattern` (required), `path` (optional), `include` (optional), `literal_text` (optional) |
 | `ls`          | List directory contents     | `path` (optional), `ignore` (optional array of patterns)                                 |
 | `view`        | View file contents          | `file_path` (required), `offset` (optional), `limit` (optional)                          |
+| `view_image`  | View image files as base64  | `file_path` (required)                                                                   |
 | `write`       | Write to files              | `file_path` (required), `content` (required)                                             |
 | `edit`        | Edit files                  | Various parameters for file editing                                                      |
 | `patch`       | Apply patches to files      | `file_path` (required), `diff` (required)                                                |
