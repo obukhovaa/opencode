@@ -20,14 +20,14 @@ type ViewImageParams struct {
 type viewImageTool struct{}
 
 type ViewImageResponseMetadata struct {
-	FilePath string `json:"file_path"`
 	MimeType string `json:"mime_type"`
+	FilePath string `json:"file_path"`
 }
 
 const (
 	ViewImageToolName    = "view_image"
 	MaxImageSize         = 5 * 1024 * 1024 // 5MB
-	viewImageDescription = `Image viewing tool that reads and displays image files as base64 encoded content for analysis.
+	viewImageDescription = `Read an image file as base64 encoded data and MIME type.
 
 WHEN TO USE THIS TOOL:
 - Use when you need to analyze or examine image files
@@ -36,17 +36,13 @@ WHEN TO USE THIS TOOL:
 
 HOW TO USE:
 - Provide the path to the image file you want to view
-- The tool will return the image as base64 encoded content
+- The tool will return the image as base64 encoded content and MIME type
 
-FEATURES:
-- Supports common image formats: PNG, JPEG, GIF, WebP, BMP
-- Validates file format and size before processing
-- Returns base64 encoded content with proper mime type metadata
+SUPPORTED FILE FORMATS:
+- PNG, JPEG, GIF, WebP, BMP
 
 LIMITATIONS:
 - Maximum file size is 5MB
-- Only supports specific image formats
-- Binary content is returned as base64
 
 TIPS:
 - Use with Glob tool to first find image files you want to view
@@ -138,8 +134,8 @@ func (v *viewImageTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	return WithResponseMetadata(
 		NewImageResponse(base64Content),
 		ViewImageResponseMetadata{
-			FilePath: filePath,
 			MimeType: mimeType,
+			FilePath: filePath,
 		},
 	), nil
 }
