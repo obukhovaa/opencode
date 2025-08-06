@@ -48,5 +48,6 @@ func TaskAgentTools(lspClients map[string]*lsp.Client) []tools.BaseTool {
 		tools.NewLsTool(),
 		tools.NewSourcegraphTool(),
 		tools.NewViewTool(lspClients),
+		tools.NewViewImageTool(),
 	}
 }
