@@ -91,12 +91,24 @@ type ToolCall struct {
 
 func (ToolCall) isPart() {}
 
+type ToolResultType string
+
+const (
+	ToolResultTypeText  ToolResultType = "text"
+	ToolResultTypeImage ToolResultType = "image"
+)
+
 type ToolResult struct {
-	ToolCallID string `json:"tool_call_id"`
-	Name       string `json:"name"`
-	Content    string `json:"content"`
-	Metadata   string `json:"metadata"`
-	IsError    bool   `json:"is_error"`
+	Type       ToolResultType `json:"type"`
+	ToolCallID string         `json:"tool_call_id"`
+	Name       string         `json:"name"`
+	Content    string         `json:"content"`
+	Metadata   string         `json:"metadata"`
+	IsError    bool           `json:"is_error"`
+}
+
+func (r ToolResult) IsImageToolResponse() bool {
+	return r.Type == ToolResultTypeImage
 }
 
 func (ToolResult) isPart() {}

@@ -24,6 +24,12 @@ type ViewImageResponseMetadata struct {
 	FilePath string `json:"file_path"`
 }
 
+type imageContent struct {
+	Type     string `json:"type"`
+	Data     string `json:"data"`
+	MimeType string `json:"mimeType"`
+}
+
 const (
 	ViewImageToolName    = "view_image"
 	MaxImageSize         = 5 * 1024 * 1024 // 5MB
@@ -130,9 +136,18 @@ func (v *viewImageTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 
 	// Convert to base64
 	base64Content := base64.StdEncoding.EncodeToString(fileContent)
+	imgContent := imageContent{
+		Type:     "image",
+		Data:     base64Content,
+		MimeType: mimeType,
+	}
+	content, err := json.Marshal(imgContent)
+	if err != nil {
+		return ToolResponse{}, fmt.Errorf("error marshaling image content: %w", err)
+	}
 
 	return WithResponseMetadata(
-		NewImageResponse(base64Content),
+		NewImageResponse(string(content)),
 		ViewImageResponseMetadata{
 			MimeType: mimeType,
 			FilePath: filePath,

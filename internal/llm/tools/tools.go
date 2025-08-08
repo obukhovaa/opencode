@@ -10,6 +10,7 @@ type ToolInfo struct {
 	Description string
 	Parameters  map[string]any
 	Required    []string
+	// TODO: Consider to add Output parameters: https://modelcontextprotocol.io/specification/2025-06-18/server/tools#output-schema
 }
 
 type toolResponseType string

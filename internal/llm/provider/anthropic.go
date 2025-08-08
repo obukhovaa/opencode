@@ -13,6 +13,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/bedrock"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	sdkoption "github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	toolsPkg "github.com/opencode-ai/opencode/internal/llm/tools"
@@ -142,7 +143,21 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 		case message.Tool:
 			results := make([]anthropic.ContentBlockParamUnion, len(msg.ToolResults()))
 			for i, toolResult := range msg.ToolResults() {
-				results[i] = anthropic.NewToolResultBlock(toolResult.ToolCallID, toolResult.Content, toolResult.IsError)
+				if toolResult.IsImageToolResponse() {
+					imageBlock, err := a.newToolResultImageBlock(toolResult)
+					if err != nil {
+						// Fallback to text if image parsing fails
+						results[i] = anthropic.NewToolResultBlock(
+							toolResult.ToolCallID,
+							toolResult.Content,
+							toolResult.IsError,
+						)
+					} else {
+						results[i] = *imageBlock
+					}
+				} else {
+					results[i] = anthropic.NewToolResultBlock(toolResult.ToolCallID, toolResult.Content, toolResult.IsError)
+				}
 			}
 			anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(results...))
 		}
@@ -511,4 +526,28 @@ func WithVertexAI(projectID, localtion string) AnthropicOption {
 		options.useBedrock = false
 		options.vertexOptions = vertexOptions{projectID: projectID, location: localtion}
 	}
+}
+
+// parses image tool response and creates an Anthropic image content block
+func (a *anthropicClient) newToolResultImageBlock(toolResult message.ToolResult) (*anthropic.ContentBlockParamUnion, error) {
+	// HACK: replace with proper fields passing
+	var imageData struct {
+		Type     string `json:"type"`
+		Data     string `json:"data"`
+		MimeType string `json:"mimeType"`
+	}
+
+	if err := json.Unmarshal([]byte(toolResult.Content), &imageData); err != nil {
+		return nil, err
+	}
+	imageBlock := anthropic.NewImageBlockBase64(imageData.MimeType, imageData.Data)
+
+	toolBlock := anthropic.ToolResultBlockParam{
+		ToolUseID: toolResult.ToolCallID,
+		Content: []anthropic.ToolResultBlockParamContentUnion{
+			{OfImage: imageBlock.OfImage},
+		},
+		IsError: param.NewOpt(toolResult.IsError),
+	}
+	return &anthropic.ContentBlockParamUnion{OfToolResult: &toolBlock}, nil
 }

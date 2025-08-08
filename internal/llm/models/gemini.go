@@ -35,6 +35,7 @@ var GeminiModels = map[ModelID]Model{
 		CostPer1MOut:        10,
 		ContextWindow:       1048576,
 		DefaultMaxTokens:    65536,
+		CanReason:           true,
 		SupportsAttachments: true,
 	},
 

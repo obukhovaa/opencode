@@ -5,7 +5,7 @@ const (
 
 	// Models
 	VertexAIGemini25Flash ModelID = "vertexai.gemini-2.5-flash"
-	VertexAIGemini25      ModelID = "vertexai.gemini-2.5"
+	VertexAIGemini25      ModelID = "vertexai.gemini-2.5-pro"
 	VertexAISonnet4       ModelID = "vertexai.claude-sonnet-4"
 	VertexAIOpus4         ModelID = "vertexai.claude-opus-4"
 	VertexAIOpus41        ModelID = "vertexai.claude-opus-4-1"
@@ -36,6 +36,7 @@ var VertexAIGeminiModels = map[ModelID]Model{
 		CostPer1MOutCached:  GeminiModels[Gemini25].CostPer1MOutCached,
 		ContextWindow:       GeminiModels[Gemini25].ContextWindow,
 		DefaultMaxTokens:    GeminiModels[Gemini25].DefaultMaxTokens,
+		CanReason:           GeminiModels[Gemini25].CanReason,
 		SupportsAttachments: true,
 	},
 }

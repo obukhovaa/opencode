@@ -198,6 +198,7 @@ var OpenRouterModels = map[ModelID]Model{
 		CostPer1MOutCached: GeminiModels[Gemini25].CostPer1MOutCached,
 		ContextWindow:      GeminiModels[Gemini25].ContextWindow,
 		DefaultMaxTokens:   GeminiModels[Gemini25].DefaultMaxTokens,
+		CanReason:          GeminiModels[Gemini25].CanReason,
 	},
 	OpenRouterClaude35Sonnet: {
 		ID:                 OpenRouterClaude35Sonnet,

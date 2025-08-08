@@ -351,7 +351,9 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			model := a.app.CoderAgent.Model()
 			contextWindow := model.ContextWindow
 			tokens := a.selectedSession.CompletionTokens + a.selectedSession.PromptTokens
+			logging.Info("auto-compaction status", "contextLength", contextWindow, "tokens", tokens)
 			if (tokens >= int64(float64(contextWindow)*0.95)) && config.Get().AutoCompact {
+				logging.Info("auto-compaction triggered...")
 				return a, util.CmdHandler(startCompactSessionMsg{})
 			}
 		}
@@ -967,20 +969,20 @@ func (a appModel) View() string {
 func New(app *app.App) tea.Model {
 	startPage := page.ChatPage
 	model := &appModel{
-		currentPage:   startPage,
-		loadedPages:   make(map[page.PageID]bool),
-		status:        core.NewStatusCmp(app.LSPClients),
-		help:          dialog.NewHelpCmp(),
-		quit:          dialog.NewQuitCmp(),
+		currentPage:         startPage,
+		loadedPages:         make(map[page.PageID]bool),
+		status:              core.NewStatusCmp(app.LSPClients),
+		help:                dialog.NewHelpCmp(),
+		quit:                dialog.NewQuitCmp(),
 		sessionDialog:       dialog.NewSessionDialogCmp(),
 		deleteSessionDialog: dialog.NewSessionDialogCmp(),
 		commandDialog:       dialog.NewCommandDialogCmp(),
-		modelDialog:   dialog.NewModelDialogCmp(),
-		permissions:   dialog.NewPermissionDialogCmp(),
-		initDialog:    dialog.NewInitDialogCmp(),
-		themeDialog:   dialog.NewThemeDialogCmp(),
-		app:           app,
-		commands:      []dialog.Command{},
+		modelDialog:         dialog.NewModelDialogCmp(),
+		permissions:         dialog.NewPermissionDialogCmp(),
+		initDialog:          dialog.NewInitDialogCmp(),
+		themeDialog:         dialog.NewThemeDialogCmp(),
+		app:                 app,
+		commands:            []dialog.Command{},
 		pages: map[page.PageID]tea.Model{
 			page.ChatPage: page.NewChatPage(app),
 			page.LogsPage: page.NewLogsPage(),

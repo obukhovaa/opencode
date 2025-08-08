@@ -465,6 +465,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				}
 			}
 			toolResults[i] = message.ToolResult{
+				Type:       message.ToolResultType(toolResult.Type),
 				ToolCallID: toolCall.ID,
 				Content:    toolResult.Content,
 				Metadata:   toolResult.Metadata,
