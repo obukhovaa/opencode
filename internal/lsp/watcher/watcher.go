@@ -247,6 +247,11 @@ func (w *WorkspaceWatcher) openHighPriorityFiles(ctx context.Context, serverName
 			"**/build.gradle",
 			"**/src/main/java/**/*.java",
 		}
+	case "lua-language-server":
+		patterns = []string{
+			"**/init.lua",
+			"**/.editorconfig",
+		}
 	default:
 		// For unknown servers, use common configuration files
 		patterns = []string{
@@ -915,6 +920,8 @@ func (w *WorkspaceWatcher) openMatchingFile(ctx context.Context, path string) {
 				shouldOpen = ext == ".c" || ext == ".cpp" || ext == ".h" || ext == ".hpp"
 			case "java", "jdtls":
 				shouldOpen = ext == ".java"
+			case "lua-language-server":
+				shouldOpen = ext == ".lua"
 			default:
 				// For unknown servers, be conservative
 				shouldOpen = false

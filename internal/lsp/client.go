@@ -96,10 +96,10 @@ func NewClient(ctx context.Context, command string, args ...string) (*Client, er
 	go func() {
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
-			fmt.Fprintf(os.Stderr, "LSP Server: %s\n", scanner.Text())
+			logging.Debug("LSP Server stderr", "message", scanner.Text())
 		}
 		if err := scanner.Err(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading stderr: %v\n", err)
+			logging.Error("Error reading LSP stderr", err)
 		}
 	}()
 
@@ -349,6 +349,7 @@ const (
 	ServerTypeTypeScript
 	ServerTypeRust
 	ServerTypePython
+	ServerTypeLua
 	ServerTypeGeneric
 )
 
@@ -369,6 +370,8 @@ func (c *Client) detectServerType() ServerType {
 		return ServerTypeRust
 	case strings.Contains(cmdPath, "pyright") || strings.Contains(cmdPath, "pylsp") || strings.Contains(cmdPath, "python"):
 		return ServerTypePython
+	case strings.Contains(cmdPath, "lua"):
+		return ServerTypeLua
 	default:
 		return ServerTypeGeneric
 	}
@@ -428,6 +431,9 @@ func (c *Client) pingServerByType(ctx context.Context, serverType ServerType) er
 		return c.pingWithWorkspaceSymbol(ctx)
 	case ServerTypeRust:
 		// For Rust, workspace/symbol works well
+		return c.pingWithWorkspaceSymbol(ctx)
+	case ServerTypeLua:
+		// For Lua, workspace/symbol works well
 		return c.pingWithWorkspaceSymbol(ctx)
 	default:
 		// Default ping method
