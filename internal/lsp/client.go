@@ -591,8 +591,35 @@ type OpenFileInfo struct {
 	URI     protocol.DocumentUri
 }
 
-func (c *Client) OpenFile(ctx context.Context, filepath string) error {
-	uri := fmt.Sprintf("file://%s", filepath)
+// shouldOpenFile checks if this language server should handle the given file
+func (c *Client) shouldOpenFile(filePath string) bool {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	serverType := c.detectServerType()
+	
+	switch serverType {
+	case ServerTypeTypeScript:
+		return ext == ".ts" || ext == ".js" || ext == ".tsx" || ext == ".jsx"
+	case ServerTypeGo:
+		return ext == ".go"
+	case ServerTypeRust:
+		return ext == ".rs"
+	case ServerTypePython:
+		return ext == ".py"
+	case ServerTypeLua:
+		return ext == ".lua"
+	default:
+		// For unknown/generic servers, be conservative and don't open files
+		return false
+	}
+}
+
+func (c *Client) OpenFile(ctx context.Context, filePath string) error {
+	// Check if this language server should handle this file type
+	if !c.shouldOpenFile(filePath) {
+		return nil // Silently skip files that this server shouldn't handle
+	}
+
+	uri := fmt.Sprintf("file://%s", filePath)
 
 	c.openFilesMu.Lock()
 	if _, exists := c.openFiles[uri]; exists {
@@ -602,7 +629,7 @@ func (c *Client) OpenFile(ctx context.Context, filepath string) error {
 	c.openFilesMu.Unlock()
 
 	// Skip files that do not exist or cannot be read
-	content, err := os.ReadFile(filepath)
+	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("error reading file: %w", err)
 	}

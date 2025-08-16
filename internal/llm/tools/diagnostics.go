@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -88,10 +89,39 @@ func (b *diagnosticsTool) Run(ctx context.Context, call ToolCall) (ToolResponse,
 }
 
 func notifyLspOpenFile(ctx context.Context, filePath string, lsps map[string]*lsp.Client) {
-	for _, client := range lsps {
-		err := client.OpenFile(ctx, filePath)
-		if err != nil {
-			continue
+	ext := strings.ToLower(filepath.Ext(filePath))
+	
+	for serverName, client := range lsps {
+		// Only send files to appropriate language servers
+		shouldOpen := false
+		
+		switch serverName {
+		case "typescript", "typescript-language-server", "tsserver", "vtsls", "ts_ls":
+			shouldOpen = ext == ".ts" || ext == ".js" || ext == ".tsx" || ext == ".jsx"
+		case "gopls":
+			shouldOpen = ext == ".go"
+		case "rust-analyzer":
+			shouldOpen = ext == ".rs"
+		case "python", "pyright", "pylsp":
+			shouldOpen = ext == ".py"
+		case "clangd":
+			shouldOpen = ext == ".c" || ext == ".cpp" || ext == ".h" || ext == ".hpp"
+		case "java", "jdtls":
+			shouldOpen = ext == ".java"
+		case "lua-language-server", "lua_ls":
+			shouldOpen = ext == ".lua"
+		case "bashls", "bash-language-server":
+			shouldOpen = ext == ".sh" || ext == ".bash" || ext == ".zsh"
+		default:
+			// For unknown servers, be conservative
+			shouldOpen = false
+		}
+		
+		if shouldOpen {
+			err := client.OpenFile(ctx, filePath)
+			if err != nil {
+				continue
+			}
 		}
 	}
 }

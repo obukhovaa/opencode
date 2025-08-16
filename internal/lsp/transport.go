@@ -92,6 +92,16 @@ func ReadMessage(r *bufio.Reader) (*Message, error) {
 // handleMessages reads and dispatches messages in a loop
 func (c *Client) handleMessages() {
 	cnf := config.Get()
+	defer func() {
+		// Clean up any pending handlers when message loop exits
+		c.handlersMu.Lock()
+		for id, ch := range c.handlers {
+			close(ch)
+			delete(c.handlers, id)
+		}
+		c.handlersMu.Unlock()
+	}()
+	
 	for {
 		msg, err := ReadMessage(c.stdout)
 		if err != nil {
@@ -222,29 +232,36 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 	}
 
 	// Wait for response
-	resp := <-ch
-
-	if cnf.DebugLSP {
-		logging.Debug("Received response", "id", id)
-	}
-
-	if resp.Error != nil {
-		return fmt.Errorf("request failed: %s (code: %d)", resp.Error.Message, resp.Error.Code)
-	}
-
-	if result != nil {
-		// If result is a json.RawMessage, just copy the raw bytes
-		if rawMsg, ok := result.(*json.RawMessage); ok {
-			*rawMsg = resp.Result
-			return nil
+	select {
+	case resp, ok := <-ch:
+		if !ok {
+			return fmt.Errorf("LSP client connection closed while waiting for response")
 		}
-		// Otherwise unmarshal into the provided type
-		if err := json.Unmarshal(resp.Result, result); err != nil {
-			return fmt.Errorf("failed to unmarshal result: %w", err)
+		
+		if cnf.DebugLSP {
+			logging.Debug("Received response", "id", id)
 		}
-	}
 
-	return nil
+		if resp.Error != nil {
+			return fmt.Errorf("request failed: %s (code: %d)", resp.Error.Message, resp.Error.Code)
+		}
+
+		if result != nil {
+			// If result is a json.RawMessage, just copy the raw bytes
+			if rawMsg, ok := result.(*json.RawMessage); ok {
+				*rawMsg = resp.Result
+				return nil
+			}
+			// Otherwise unmarshal into the provided type
+			if err := json.Unmarshal(resp.Result, result); err != nil {
+				return fmt.Errorf("failed to unmarshal result: %w", err)
+			}
+		}
+
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("request cancelled: %w", ctx.Err())
+	}
 }
 
 // Notify sends a notification (a request without an ID that doesn't expect a response)

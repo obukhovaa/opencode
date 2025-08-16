@@ -711,6 +711,8 @@ func getServerNameFromContext(ctx context.Context) string {
 			return "clangd"
 		} else if strings.Contains(path, "jdtls") || strings.Contains(path, "java") {
 			return "java"
+		} else if strings.Contains(path, "lua") {
+			return "lua-language-server"
 		}
 
 		// Return the base name as fallback
@@ -984,6 +986,8 @@ func isHighPriorityFile(path string, serverName string) bool {
 		return fileName == "pom.xml" ||
 			fileName == "build.gradle" ||
 			ext == ".java" // Java servers often need to see source files
+	case "lua-language-server", "lua_ls":
+		return fileName == "init.lua"
 	}
 
 	// For unknown servers, prioritize common configuration files
