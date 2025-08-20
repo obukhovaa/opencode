@@ -333,7 +333,6 @@ func (c *copilotClient) send(ctx context.Context, messages []message.Message, to
 			ctx,
 			params,
 		)
-
 		// If there is an error we are going to see if we can retry the call
 		if err != nil {
 			retry, after, retryErr := c.shouldRetry(attempts, err)
@@ -644,6 +643,10 @@ func (c *copilotClient) usage(completion openai.ChatCompletion) TokenUsage {
 	}
 }
 
+func (a *copilotClient) countTokens(ctx context.Context, messages []message.Message) (int64, error) {
+	return 0, fmt.Errorf("countTokens is unsupported by copilot client: %w", errors.ErrUnsupported)
+}
+
 func WithCopilotReasoningEffort(effort string) CopilotOption {
 	return func(options *copilotOptions) {
 		defaultReasoningEffort := "medium"
@@ -668,4 +671,3 @@ func WithCopilotBearerToken(bearerToken string) CopilotOption {
 		options.bearerToken = bearerToken
 	}
 }
-

@@ -57,6 +57,9 @@ type Provider interface {
 	StreamResponse(ctx context.Context, messages []message.Message, tools []tools.BaseTool) <-chan ProviderEvent
 
 	Model() models.Model
+
+	// Dynamically resolve max_tokens parameter to ensure it doesn't hit limit prematurely
+	CountTokens(ctx context.Context, messages []message.Message) int64
 }
 
 type providerClientOptions struct {
@@ -90,6 +93,8 @@ type ProviderClientOption func(*providerClientOptions)
 type ProviderClient interface {
 	send(ctx context.Context, messages []message.Message, tools []tools.BaseTool) (*ProviderResponse, error)
 	stream(ctx context.Context, messages []message.Message, tools []tools.BaseTool) <-chan ProviderEvent
+	// TODO: implement instead of estimation
+	countTokens(ctx context.Context, messages []message.Message) (int64, error)
 }
 
 type baseProvider[C ProviderClient] struct {
@@ -202,6 +207,28 @@ func (p *baseProvider[C]) Model() models.Model {
 func (p *baseProvider[C]) StreamResponse(ctx context.Context, messages []message.Message, tools []tools.BaseTool) <-chan ProviderEvent {
 	messages = p.cleanMessages(messages)
 	return p.client.stream(ctx, messages, tools)
+}
+
+func (p *baseProvider[C]) CountTokens(ctx context.Context, messages []message.Message) int64 {
+	maxTokens := p.options.maxTokens
+	model := p.options.model
+
+	estimatedTokens, err := p.client.countTokens(ctx, messages)
+	// Fallback to local estimation
+	if err != nil {
+		estimatedTokens = message.EstimateTokens(messages)
+	}
+
+	// Safeguard
+	if estimatedTokens >= model.ContextWindow {
+		return 0
+	}
+
+	newMaxTokens := maxTokens
+	for estimatedTokens+newMaxTokens >= model.ContextWindow {
+		newMaxTokens = newMaxTokens / 2
+	}
+	return newMaxTokens
 }
 
 func WithBaseURL(baseURL string) ProviderClientOption {

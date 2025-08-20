@@ -474,6 +474,10 @@ func (g *geminiClient) usage(resp *genai.GenerateContentResponse) TokenUsage {
 	}
 }
 
+func (a *geminiClient) countTokens(ctx context.Context, messages []message.Message) (int64, error) {
+	return 0, fmt.Errorf("countTokens is unsupported by copilot client: %w", errors.ErrUnsupported)
+}
+
 func WithGeminiDisableCache() GeminiOption {
 	return func(options *geminiOptions) {
 		options.disableCache = true

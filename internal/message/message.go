@@ -279,3 +279,20 @@ func unmarshallParts(data []byte) ([]ContentPart, error) {
 
 	return parts, nil
 }
+
+// Roughly estimate tokens count from message history
+func EstimateTokens(messages []Message) int64 {
+	// This is a rough estimation: ~4 characters per token for most models
+	totalChars := 0
+	for _, msg := range messages {
+		for _, part := range msg.Parts {
+			if textPart, ok := part.(TextContent); ok {
+				totalChars += len(textPart.Text)
+			}
+			// For tool calls and other content types, add some overhead
+			totalChars += 100 // rough estimate for metadata
+		}
+	}
+	// Convert characters to estimated tokens (rough approximation)
+	return int64(totalChars / 4)
+}

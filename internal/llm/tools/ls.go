@@ -28,7 +28,9 @@ type LSResponseMetadata struct {
 	Truncated     bool `json:"truncated"`
 }
 
-type lsTool struct{}
+type lsTool struct {
+	cfg config.Configurator
+}
 
 const (
 	LSToolName    = "ls"
@@ -63,8 +65,8 @@ TIPS:
 - Combine with other tools for more effective exploration`
 )
 
-func NewLsTool() BaseTool {
-	return &lsTool{}
+func NewLsTool(cfg config.Configurator) BaseTool {
+	return &lsTool{cfg}
 }
 
 func (l *lsTool) Info() ToolInfo {
@@ -96,11 +98,11 @@ func (l *lsTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
 
 	searchPath := params.Path
 	if searchPath == "" {
-		searchPath = config.WorkingDirectory()
+		searchPath = l.cfg.WorkingDirectory()
 	}
 
 	if !filepath.IsAbs(searchPath) {
-		searchPath = filepath.Join(config.WorkingDirectory(), searchPath)
+		searchPath = filepath.Join(l.cfg.WorkingDirectory(), searchPath)
 	}
 
 	if _, err := os.Stat(searchPath); os.IsNotExist(err) {

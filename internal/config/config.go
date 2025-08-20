@@ -121,6 +121,11 @@ var defaultContextPaths = []string{
 	"OPENCODE.local.md",
 }
 
+// for testability, TODO: extend with other methods when needed
+type Configurator interface {
+	WorkingDirectory() string
+}
+
 // Global configuration instance
 var cfg *Config
 
@@ -876,6 +881,10 @@ func WorkingDirectory() string {
 		panic("config not loaded")
 	}
 	return cfg.WorkingDir
+}
+
+func (c *Config) WorkingDirectory() string {
+	return WorkingDirectory()
 }
 
 func UpdateAgentModel(agentName AgentName, modelID models.ModelID) error {

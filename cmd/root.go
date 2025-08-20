@@ -105,13 +105,18 @@ to assist developers in writing, debugging, and understanding code directly from
 		// Defer shutdown here so it runs for both interactive and non-interactive modes
 		defer app.Shutdown()
 
-		// Initialize MCP tools early for both modes
+		// Initialize MCP tools for both modes
 		initMCPTools(ctx, app)
 
 		// Non-interactive mode
 		if prompt != "" {
 			// Run non-interactive flow using the App method
-			return app.RunNonInteractive(ctx, prompt, outputFormat, quiet)
+			err := app.RunNonInteractive(ctx, prompt, outputFormat, quiet)
+
+			// Immediately force cleanup and exit for non-interactive mode
+			app.ForceShutdown()
+			cancel()
+			return err
 		}
 
 		// Interactive mode

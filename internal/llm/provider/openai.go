@@ -390,6 +390,10 @@ func (o *openaiClient) usage(completion openai.ChatCompletion) TokenUsage {
 	}
 }
 
+func (a *openaiClient) countTokens(ctx context.Context, messages []message.Message) (int64, error) {
+	return 0, fmt.Errorf("countTokens is unsupported by openai client: %w", errors.ErrUnsupported)
+}
+
 func WithOpenAIDisableCache() OpenAIOption {
 	return func(options *openaiOptions) {
 		options.disableCache = true

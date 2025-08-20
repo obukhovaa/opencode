@@ -276,7 +276,8 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 
 		// Check if auto-compaction should be triggered before each model call
 		// This is crucial for long tool use loops that can exceed context limits
-		if cfg.AutoCompact && compactionAttempts < maxCompactionAttempts && a.shouldTriggerAutoCompactionFromHistory(msgHistory) {
+		model := a.provider.Model()
+		if cfg.AutoCompact && compactionAttempts < maxCompactionAttempts && shouldTriggerAutoCompactionFromHistory(msgHistory, &model) {
 			compactionAttempts++
 			logging.Info("Auto-compaction triggered during tool use loop", "session_id", sessionID, "history_length", len(msgHistory), "attempt", compactionAttempts)
 
@@ -302,7 +303,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 
 				// NOTE: Check if compaction actually reduced the context size
 				// If it's still above threshold, we need to break the loop to prevent infinite compaction
-				if a.shouldTriggerAutoCompactionFromHistory(msgHistory) {
+				if shouldTriggerAutoCompactionFromHistory(msgHistory, &model) {
 					logging.Warn("Auto-compaction did not sufficiently reduce context size, proceeding anyway to prevent infinite loop",
 						"session_id", sessionID, "history_length", len(msgHistory), "attempt", compactionAttempts)
 					// Don't continue - proceed with the current msgHistory to avoid infinite loop
@@ -614,48 +615,17 @@ func (a *agent) filterMessagesFromSummary(msgs []message.Message, summaryMessage
 	return msgs
 }
 
-func (a *agent) shouldTriggerAutoCompaction(session session.Session) bool {
-	model := a.provider.Model()
-	contextWindow := model.ContextWindow
-
-	// If context window is not defined, we can't determine if compaction is needed
-	if contextWindow <= 0 {
-		return false
-	}
-
-	totalTokens := session.CompletionTokens + session.PromptTokens
-	threshold := int64(float64(contextWindow) * 0.95) // 95% threshold
-
-	return totalTokens >= threshold
-}
-
 // shouldTriggerAutoCompactionFromHistory estimates token usage from message history
 // and determines if auto-compaction should be triggered. This is used during tool use loops
 // where we don't have real-time token counts from the session.
-func (a *agent) shouldTriggerAutoCompactionFromHistory(msgHistory []message.Message) bool {
-	model := a.provider.Model()
+// Threshold is 90% of total context for a given model.
+func shouldTriggerAutoCompactionFromHistory(msgHistory []message.Message, model *models.Model) bool {
 	contextWindow := model.ContextWindow
-
-	// If context window is not defined, we can't determine if compaction is needed
 	if contextWindow <= 0 {
 		return false
 	}
 
-	// Estimate tokens from message history
-	// This is a rough estimation: ~4 characters per token for most models
-	totalChars := 0
-	for _, msg := range msgHistory {
-		for _, part := range msg.Parts {
-			if textPart, ok := part.(message.TextContent); ok {
-				totalChars += len(textPart.Text)
-			}
-			// For tool calls and other content types, add some overhead
-			totalChars += 100 // rough estimate for metadata
-		}
-	}
-
-	// Convert characters to estimated tokens (rough approximation)
-	estimatedTokens := int64(totalChars / 4)
+	estimatedTokens := message.EstimateTokens(msgHistory)
 	threshold := int64(float64(contextWindow) * 0.90) // Use 90% for history-based estimation to be more conservative
 
 	logging.Debug("Token estimation for auto-compaction",

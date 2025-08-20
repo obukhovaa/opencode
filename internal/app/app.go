@@ -6,6 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -182,5 +186,64 @@ func (app *App) Shutdown() {
 			logging.Error("Failed to shutdown LSP client", "name", name, "error", err)
 		}
 		cancel()
+	}
+}
+
+// ForceShutdown performs an aggressive shutdown for non-interactive mode
+func (app *App) ForceShutdown() {
+	logging.Info("Starting force shutdown")
+
+	// Cancel all watcher goroutines immediately
+	app.cancelFuncsMutex.Lock()
+	for _, cancel := range app.watcherCancelFuncs {
+		cancel()
+	}
+	app.cancelFuncsMutex.Unlock()
+
+	// Don't wait for watchers in force shutdown - kill LSP clients directly
+	app.clientsMutex.RLock()
+	clients := make(map[string]*lsp.Client, len(app.LSPClients))
+	maps.Copy(clients, app.LSPClients)
+	app.clientsMutex.RUnlock()
+
+	for name, client := range clients {
+		// Use a very short timeout for force shutdown
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		if err := client.Shutdown(shutdownCtx); err != nil {
+			logging.Debug("Failed to gracefully shutdown LSP client, forcing close", "name", name, "error", err)
+			// Force close if graceful shutdown fails
+			client.Close()
+		}
+		cancel()
+	}
+
+	// Force kill any remaining child processes
+	app.forceKillAllChildProcesses()
+
+	logging.Info("Force shutdown completed")
+}
+
+// forceKillAllChildProcesses kills all child processes of the current process
+func (app *App) forceKillAllChildProcesses() {
+	currentPID := os.Getpid()
+
+	// Find all child processes using pgrep
+	cmd := exec.Command("pgrep", "-P", strconv.Itoa(currentPID))
+	output, err := cmd.Output()
+	if err != nil {
+		// No child processes found or pgrep failed
+		return
+	}
+
+	// Parse PIDs and kill them
+	pidStrings := strings.Fields(string(output))
+	for _, pidStr := range pidStrings {
+		if pid, err := strconv.Atoi(pidStr); err == nil {
+			process, err := os.FindProcess(pid)
+			if err == nil {
+				logging.Debug("Force killing child process", "pid", pid)
+				process.Kill()
+			}
+		}
 	}
 }

@@ -9,71 +9,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/provider"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
-	"github.com/opencode-ai/opencode/internal/session"
 )
-
-func TestShouldTriggerAutoCompaction(t *testing.T) {
-	tests := []struct {
-		name             string
-		contextWindow    int64
-		promptTokens     int64
-		completionTokens int64
-		expected         bool
-	}{
-		{
-			name:             "Below threshold",
-			contextWindow:    100000,
-			promptTokens:     40000,
-			completionTokens: 40000,
-			expected:         false,
-		},
-		{
-			name:             "At threshold",
-			contextWindow:    100000,
-			promptTokens:     47500,
-			completionTokens: 47500,
-			expected:         true,
-		},
-		{
-			name:             "Above threshold",
-			contextWindow:    100000,
-			promptTokens:     50000,
-			completionTokens: 50000,
-			expected:         true,
-		},
-		{
-			name:             "No context window",
-			contextWindow:    0,
-			promptTokens:     50000,
-			completionTokens: 50000,
-			expected:         false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Create a minimal agent with just the model info we need
-			a := &agent{}
-
-			// Mock the provider's Model() method by setting up the agent's provider field
-			a.provider = &testProvider{
-				model: models.Model{
-					ContextWindow: tt.contextWindow,
-				},
-			}
-
-			session := session.Session{
-				PromptTokens:     tt.promptTokens,
-				CompletionTokens: tt.completionTokens,
-			}
-
-			result := a.shouldTriggerAutoCompaction(session)
-			if result != tt.expected {
-				t.Errorf("shouldTriggerAutoCompaction() = %v, want %v", result, tt.expected)
-			}
-		})
-	}
-}
 
 func TestShouldTriggerAutoCompactionFromHistory(t *testing.T) {
 	tests := []struct {
@@ -113,13 +49,12 @@ func TestShouldTriggerAutoCompactionFromHistory(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a := &agent{}
-			a.provider = &testProvider{
-				model: models.Model{
-					ContextWindow: tt.contextWindow,
-				},
+			model := models.Model{
+				ContextWindow: tt.contextWindow,
 			}
+			a.provider = &testProvider{model}
 
-			result := a.shouldTriggerAutoCompactionFromHistory(tt.messages)
+			result := shouldTriggerAutoCompactionFromHistory(tt.messages, &model)
 			if result != tt.expected {
 				t.Errorf("shouldTriggerAutoCompactionFromHistory() = %v, want %v", result, tt.expected)
 			}
@@ -151,15 +86,14 @@ func TestAutoCompactionAttemptLimit(t *testing.T) {
 		{Parts: []message.ContentPart{message.TextContent{Text: longMessage}}},
 	}
 
-	a := &agent{}
-	a.provider = &testProvider{
-		model: models.Model{
-			ContextWindow: 1000, // Small context window to trigger compaction
-		},
+	model := models.Model{
+		ContextWindow: 1000, // Small context window to trigger compaction
 	}
+	a := &agent{}
+	a.provider = &testProvider{model}
 
 	// Test that shouldTriggerAutoCompactionFromHistory returns true for this history
-	shouldTrigger := a.shouldTriggerAutoCompactionFromHistory(msgHistory)
+	shouldTrigger := shouldTriggerAutoCompactionFromHistory(msgHistory, &model)
 	if !shouldTrigger {
 		t.Error("expected shouldTriggerAutoCompactionFromHistory to return true for large message history")
 	}
@@ -298,3 +232,6 @@ func (tp *testProvider) StreamResponse(ctx context.Context, messages []message.M
 	return nil
 }
 
+func (tp *testProvider) CountTokens(ctx context.Context, messages []message.Message) int64 {
+	return message.EstimateTokens(messages)
+}

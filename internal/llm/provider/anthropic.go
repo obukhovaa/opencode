@@ -551,3 +551,9 @@ func (a *anthropicClient) newToolResultImageBlock(toolResult message.ToolResult)
 	}
 	return &anthropic.ContentBlockParamUnion{OfToolResult: &toolBlock}, nil
 }
+
+func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Message) (int64, error) {
+	// TODO: implement
+	// a.client.Messages.CountTokens()
+	return 0, fmt.Errorf("countTokens is unsupported by anthropic client: %w", errors.ErrUnsupported)
+}

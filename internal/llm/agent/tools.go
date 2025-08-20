@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 
+	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/lsp"
@@ -30,7 +31,7 @@ func CoderAgentTools(
 			tools.NewFetchTool(permissions),
 			tools.NewGlobTool(),
 			tools.NewGrepTool(),
-			tools.NewLsTool(),
+			tools.NewLsTool(config.Get()),
 			tools.NewSourcegraphTool(),
 			tools.NewViewTool(lspClients),
 			tools.NewViewImageTool(),
@@ -45,7 +46,7 @@ func TaskAgentTools(lspClients map[string]*lsp.Client) []tools.BaseTool {
 	return []tools.BaseTool{
 		tools.NewGlobTool(),
 		tools.NewGrepTool(),
-		tools.NewLsTool(),
+		tools.NewLsTool(config.Get()),
 		tools.NewSourcegraphTool(),
 		tools.NewViewTool(lspClients),
 		tools.NewViewImageTool(),
