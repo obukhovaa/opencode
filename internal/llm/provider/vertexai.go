@@ -95,8 +95,9 @@ func vertexMiddleware(region, projectID string) sdkoption.Middleware {
 			if !gjson.GetBytes(body, "anthropic_version").Exists() {
 				body, _ = sjson.SetBytes(body, "anthropic_version", vertex.DefaultVersion)
 			}
+
+			// logging.Debug("vertext_ai middleware request path and method", "path", r.URL.Path, "method", r.Method)
 			if strings.HasSuffix(r.URL.Path, "/v1/messages") && r.Method == http.MethodPost {
-				logging.Debug("vertext_ai message path", "path", r.URL.Path)
 				if projectID == "" {
 					return nil, fmt.Errorf("no projectId was given and it could not be resolved from credentials")
 				}
@@ -114,13 +115,13 @@ func vertexMiddleware(region, projectID string) sdkoption.Middleware {
 				r.URL.Path = strings.ReplaceAll(r.URL.Path, "/v1/messages", newPath)
 			}
 
-			if strings.HasSuffix(r.URL.Path, "/v1/messages/count_tokensg") && r.Method == http.MethodPost {
+			if strings.HasSuffix(r.URL.Path, "/v1/messages/count_tokens") && r.Method == http.MethodPost {
 				if projectID == "" {
 					return nil, fmt.Errorf("no projectId was given and it could not be resolved from credentials")
 				}
 
 				newPath := fmt.Sprintf("/v1/projects/%s/locations/%s/publishers/anthropic/models/count-tokens:rawPredict", projectID, region)
-				r.URL.Path = strings.ReplaceAll(r.URL.Path, "/v1/messages/count_tokensg", newPath)
+				r.URL.Path = strings.ReplaceAll(r.URL.Path, "/v1/messages/count_tokens", newPath)
 			}
 
 			reader := bytes.NewReader(body)

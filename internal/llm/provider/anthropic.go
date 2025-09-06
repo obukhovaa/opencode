@@ -224,6 +224,8 @@ func (a *anthropicClient) preparedMessages(messages []anthropic.MessageParam, to
 		}
 	}
 
+	// logging.Debug("Anthropic settings to use", "max_tokens", a.providerOptions.maxTokens)
+
 	return anthropic.MessageNewParams{
 		Model:       anthropic.Model(a.providerOptions.model.APIModel),
 		MaxTokens:   a.providerOptions.maxTokens,
@@ -552,8 +554,43 @@ func (a *anthropicClient) newToolResultImageBlock(toolResult message.ToolResult)
 	return &anthropic.ContentBlockParamUnion{OfToolResult: &toolBlock}, nil
 }
 
-func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Message) (int64, error) {
-	// TODO: implement
-	// a.client.Messages.CountTokens()
-	return 0, fmt.Errorf("countTokens is unsupported by anthropic client: %w", errors.ErrUnsupported)
+func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) (int64, error) {
+	anthropicMessages := a.convertMessages(messages)
+	anthropicTools := a.convertTools(tools)
+	countTools := make([]anthropic.MessageCountTokensToolUnionParam, len(anthropicTools))
+	for i, t := range anthropicTools {
+		countTools[i] = anthropic.MessageCountTokensToolUnionParam{OfTool: t.OfTool}
+	}
+
+	params := anthropic.MessageCountTokensParams{
+		Model:    anthropic.Model(a.providerOptions.model.APIModel),
+		Messages: anthropicMessages,
+		Tools:    countTools,
+	}
+
+	// Add system message if present
+	if a.providerOptions.systemMessage != "" {
+		params.System = anthropic.MessageCountTokensParamsSystemUnion{
+			OfTextBlockArray: []anthropic.TextBlockParam{
+				{
+					Text: a.providerOptions.systemMessage,
+				},
+			},
+		}
+	}
+
+	response, err := a.client.Messages.CountTokens(ctx, params)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count tokens: %w", err)
+	}
+
+	return response.InputTokens, nil
+}
+
+func (a *anthropicClient) setMaxTokens(maxTokens int64) {
+	a.providerOptions.maxTokens = maxTokens
+}
+
+func (a *anthropicClient) maxTokens() int64 {
+	return a.providerOptions.maxTokens
 }

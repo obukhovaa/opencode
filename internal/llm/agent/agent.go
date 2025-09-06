@@ -34,6 +34,10 @@ const (
 	AgentEventTypeSummarize AgentEventType = "summarize"
 )
 
+const (
+	AutoCompactionThreshold = 0.95
+)
+
 type AgentEvent struct {
 	Type    AgentEventType
 	Message message.Message
@@ -262,10 +266,13 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	}
 	// Append the new user message to the conversation history.
 	msgHistory := append(msgs, userMsg)
-	compactionAttempts := 0    // Track compaction attempts to prevent infinite loops
-	maxCompactionAttempts := 2 // Allow at most 2 compaction attempts per request
+	var agentMessage message.Message
+	var toolResults *message.Message
+	cycles := 0
+	preserveTail := false
 
 	for {
+		cycles += 1
 		// Check for cancellation before each iteration
 		select {
 		case <-ctx.Done():
@@ -274,16 +281,24 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 			// Continue processing
 		}
 
+		etaTokens, shouldTriggerAutoCompaction := a.provider.CountTokens(ctx, AutoCompactionThreshold, msgHistory, a.tools)
 		// Check if auto-compaction should be triggered before each model call
 		// This is crucial for long tool use loops that can exceed context limits
-		model := a.provider.Model()
-		if cfg.AutoCompact && compactionAttempts < maxCompactionAttempts && shouldTriggerAutoCompactionFromHistory(msgHistory, &model) {
-			compactionAttempts++
-			logging.Info("Auto-compaction triggered during tool use loop", "session_id", sessionID, "history_length", len(msgHistory), "attempt", compactionAttempts)
+		// NOTE: since tool may provide output exceeding context limit when combined with existing history,
+		// we have to do summary, which would "lossy compress" it, providing less context to the following LLM call,
+		// but alternative is to fail with context limit, so we do it anyway.
+		if cfg.AutoCompact && cycles != 1 && shouldTriggerAutoCompaction {
+			logging.Info(
+				"Auto-compaction triggered during tool use loop",
+				"session_id", sessionID,
+				"history_length", len(msgHistory),
+				"token_count", etaTokens,
+				"cycle", cycles,
+			)
 
 			// Perform synchronous compaction to shrink context
 			if err := a.performSynchronousCompaction(ctx, sessionID); err != nil {
-				logging.Warn("Failed to perform auto-compaction during tool use", "error", err, "attempt", compactionAttempts)
+				logging.Warn("Failed to perform auto-compaction during tool use", "error", err)
 				// Continue anyway - better to risk context overflow than stop completely
 			} else {
 				// After successful compaction, reload messages and rebuild msgHistory
@@ -297,25 +312,39 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 					return a.err(fmt.Errorf("failed to get session after compaction: %w", err))
 				}
 				msgs = a.filterMessagesFromSummary(msgs, session.SummaryMessageID)
-
-				msgHistory = append(msgs, userMsg)
-				logging.Info("Context compacted, continuing with reduced history", "session_id", sessionID, "new_history_length", len(msgHistory), "attempt", compactionAttempts)
-
-				// NOTE: Check if compaction actually reduced the context size
-				// If it's still above threshold, we need to break the loop to prevent infinite compaction
-				if shouldTriggerAutoCompactionFromHistory(msgHistory, &model) {
-					logging.Warn("Auto-compaction did not sufficiently reduce context size, proceeding anyway to prevent infinite loop",
-						"session_id", sessionID, "history_length", len(msgHistory), "attempt", compactionAttempts)
-					// Don't continue - proceed with the current msgHistory to avoid infinite loop
+				// Preserve original problem and result from the last tool iteration to ensure no dead-loop
+				if preserveTail {
+					preserveTail = false
+					msgHistory = append(msgs, agentMessage, *toolResults)
 				} else {
-					// After compaction, continue to the next iteration to re-check context size
-					// This prevents sending an oversized request immediately after compaction
-					continue
+					msgHistory = append(msgs, userMsg)
+				}
+
+				etaTokens, shouldTriggerAutoCompaction = a.provider.CountTokens(ctx, AutoCompactionThreshold, msgHistory, a.tools)
+				if shouldTriggerAutoCompaction {
+					logging.Warn(
+						"Context compacted, but still exceed context threshold",
+						"session_id", sessionID,
+						"history_length", len(msgHistory),
+						"token_count", etaTokens,
+						"cycle", cycles,
+					)
+				} else {
+					logging.Info(
+						"Context compacted, continuing with reduced history",
+						"session_id", sessionID,
+						"history_length", len(msgHistory),
+						"token_count", etaTokens,
+						"cycle", cycles,
+					)
 				}
 			}
 		}
 
-		agentMessage, toolResults, err := a.streamAndHandleEvents(ctx, sessionID, msgHistory)
+		// Ensure we don't run into API limitation (max_token to be generated + current tokens count)
+		a.provider.AdjustMaxTokens(etaTokens)
+
+		agentMessage, toolResults, err = a.streamAndHandleEvents(ctx, sessionID, msgHistory)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				agentMessage.AddFinish(message.FinishReasonCanceled)
@@ -327,16 +356,12 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		if cfg.Debug {
 			seqId := (len(msgHistory) + 1) / 2
 			toolResultFilepath := logging.WriteToolResultsJson(sessionID, seqId, toolResults)
-			logging.Info("Result", "message", agentMessage.FinishReason(), "toolResults", "{}", "filepath", toolResultFilepath)
+			logging.Info("Result", "message", agentMessage.FinishReason(), "toolResults", "{}", "filepath", toolResultFilepath, "cycle", cycles)
 		} else {
-			logging.Info("Result", "message", agentMessage.FinishReason(), "toolResults", toolResults)
+			logging.Info("Result", "message", agentMessage.FinishReason(), "toolResults", toolResults, "cycle", cycles)
 		}
 		if agentMessage.FinishReason() == message.FinishReasonToolUse {
-			if toolResults != nil {
-				// We have tool results, continue with the tool response
-				msgHistory = append(msgHistory, agentMessage, *toolResults)
-				continue
-			} else {
+			if toolResults == nil {
 				// Tool results are nil (tool execution failed or returned empty)
 				// Create an empty tool results message to allow the LLM to provide a final response
 				logging.Warn("Tool results are nil, creating empty tool results message to allow final response", "session_id", sessionID)
@@ -353,9 +378,11 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 						Done:    true,
 					}
 				}
-				msgHistory = append(msgHistory, agentMessage, emptyToolMsg)
-				continue
+				toolResults = &emptyToolMsg
 			}
+			msgHistory = append(msgHistory, agentMessage, *toolResults)
+			preserveTail = true
+			continue
 		}
 		return AgentEvent{
 			Type:    AgentEventTypeResponse,
@@ -562,6 +589,8 @@ func (a *agent) TrackUsage(ctx context.Context, sessionID string, model models.M
 	sess.CompletionTokens = usage.OutputTokens + usage.CacheReadTokens
 	sess.PromptTokens = usage.InputTokens + usage.CacheCreationTokens
 
+	logging.Info("Track usage", "token_out", sess.CompletionTokens, "token_in", sess.PromptTokens, "cost", cost)
+
 	_, err = a.sessions.Save(ctx, sess)
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
@@ -615,28 +644,6 @@ func (a *agent) filterMessagesFromSummary(msgs []message.Message, summaryMessage
 	return msgs
 }
 
-// shouldTriggerAutoCompactionFromHistory estimates token usage from message history
-// and determines if auto-compaction should be triggered. This is used during tool use loops
-// where we don't have real-time token counts from the session.
-// Threshold is 90% of total context for a given model.
-func shouldTriggerAutoCompactionFromHistory(msgHistory []message.Message, model *models.Model) bool {
-	contextWindow := model.ContextWindow
-	if contextWindow <= 0 {
-		return false
-	}
-
-	estimatedTokens := message.EstimateTokens(msgHistory)
-	threshold := int64(float64(contextWindow) * 0.90) // Use 90% for history-based estimation to be more conservative
-
-	logging.Debug("Token estimation for auto-compaction",
-		"estimated_tokens", estimatedTokens,
-		"threshold", threshold,
-		"context_window", contextWindow,
-		"message_count", len(msgHistory))
-
-	return estimatedTokens >= threshold
-}
-
 // performSynchronousCompaction performs summarization synchronously and waits for completion
 // This is used for auto-compaction in non-interactive mode to shrink context before continuing
 func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID string) error {
@@ -645,15 +652,14 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 	}
 
 	// Note: We don't check IsSessionBusy here because this is called from within
-	// an active request processing loop, so the session is already marked as busy
-
-	logging.Info("Starting synchronous compaction", "session_id", sessionID)
-
 	// Get all messages from the session
 	msgs, err := a.messages.List(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to list messages: %w", err)
 	}
+
+	// an active request processing loop, so the session is already marked as busy
+	logging.Info("Starting synchronous compaction", "session_id", sessionID, "message_count", len(msgs))
 
 	if len(msgs) == 0 {
 		return fmt.Errorf("no messages to summarize")
@@ -663,7 +669,7 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 	summarizeCtx := context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
 
 	// Add a system message to guide the summarization
-	summarizePrompt := "Provide a detailed but concise summary of our conversation above. Focus on information that would be helpful for continuing the conversation, including what we did, what we're doing, which files we're working on, and what we're going to do next."
+	summarizePrompt := "Provide a detailed but concise summary of our conversation above. Focus on information that would be helpful for continuing the conversation, including what we did, what we're doing, which files we're working on, and what we're going to do next. If you find information related to a specific tool call at the end of conversation, then try to preserve it as much as possible so agent can figure out what parameters have been passed and what response has been given by the tool."
 
 	// Create a new message with the summarize prompt
 	promptMsg := message.Message{
@@ -707,6 +713,16 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 
 	// Update the session with the summary message ID
 	oldSession.SummaryMessageID = msg.ID
+	oldSession.CompletionTokens = response.Usage.OutputTokens
+	oldSession.PromptTokens = 0
+	model := a.summarizeProvider.Model()
+	usage := response.Usage
+	cost := model.CostPer1MInCached/1e6*float64(usage.CacheCreationTokens) +
+		model.CostPer1MOutCached/1e6*float64(usage.CacheReadTokens) +
+		model.CostPer1MIn/1e6*float64(usage.InputTokens) +
+		model.CostPer1MOut/1e6*float64(usage.OutputTokens)
+	oldSession.Cost += cost
+
 	_, err = a.sessions.Save(summarizeCtx, oldSession)
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)

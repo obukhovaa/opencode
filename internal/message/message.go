@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 )
 
@@ -281,8 +282,8 @@ func unmarshallParts(data []byte) ([]ContentPart, error) {
 }
 
 // Roughly estimate tokens count from message history
-func EstimateTokens(messages []Message) int64 {
-	// This is a rough estimation: ~4 characters per token for most models
+// This is a rough estimation: ~4 characters per token for most models
+func EstimateTokens(messages []Message, tools []tools.BaseTool) int64 {
 	totalChars := 0
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
@@ -293,6 +294,18 @@ func EstimateTokens(messages []Message) int64 {
 			totalChars += 100 // rough estimate for metadata
 		}
 	}
-	// Convert characters to estimated tokens (rough approximation)
+	for _, t := range tools {
+		info := t.Info()
+		totalChars += len(info.Name)
+		totalChars += len(info.Description)
+		for n, p := range info.Parameters {
+			totalChars += len(n)
+			if jsonBytes, err := json.Marshal(p); err == nil {
+				totalChars += len(jsonBytes)
+			} else {
+				totalChars += 10 // fallback estimate if marshal fails
+			}
+		}
+	}
 	return int64(totalChars / 4)
 }

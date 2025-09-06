@@ -15,6 +15,7 @@ import (
 	"github.com/openai/openai-go/shared"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	toolsPkg "github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -643,8 +644,16 @@ func (c *copilotClient) usage(completion openai.ChatCompletion) TokenUsage {
 	}
 }
 
-func (a *copilotClient) countTokens(ctx context.Context, messages []message.Message) (int64, error) {
+func (a *copilotClient) countTokens(ctx context.Context, messages []message.Message, tools []tools.BaseTool) (int64, error) {
 	return 0, fmt.Errorf("countTokens is unsupported by copilot client: %w", errors.ErrUnsupported)
+}
+
+func (a *copilotClient) setMaxTokens(maxTokens int64) {
+	a.providerOptions.maxTokens = maxTokens
+}
+
+func (a *copilotClient) maxTokens() int64 {
+	return a.providerOptions.maxTokens
 }
 
 func WithCopilotReasoningEffort(effort string) CopilotOption {

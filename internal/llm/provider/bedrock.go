@@ -99,6 +99,14 @@ func (b *bedrockClient) stream(ctx context.Context, messages []message.Message, 
 	return b.childProvider.stream(ctx, messages, tools)
 }
 
-func (a *bedrockClient) countTokens(ctx context.Context, messages []message.Message) (int64, error) {
+func (a *bedrockClient) countTokens(ctx context.Context, messages []message.Message, tools []tools.BaseTool) (int64, error) {
 	return 0, fmt.Errorf("countTokens is unsupported by bedrock client: %w", errors.ErrUnsupported)
+}
+
+func (a *bedrockClient) setMaxTokens(maxTokens int64) {
+	a.providerOptions.maxTokens = maxTokens
+}
+
+func (a *bedrockClient) maxTokens() int64 {
+	return a.providerOptions.maxTokens
 }

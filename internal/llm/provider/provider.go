@@ -8,6 +8,8 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
+	toolsPkg "github.com/opencode-ai/opencode/internal/llm/tools"
+	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
 )
 
@@ -51,6 +53,7 @@ type ProviderEvent struct {
 	ToolCall *message.ToolCall
 	Error    error
 }
+
 type Provider interface {
 	SendMessages(ctx context.Context, messages []message.Message, tools []tools.BaseTool) (*ProviderResponse, error)
 
@@ -58,8 +61,13 @@ type Provider interface {
 
 	Model() models.Model
 
-	// Dynamically resolve max_tokens parameter to ensure it doesn't hit limit prematurely
-	CountTokens(ctx context.Context, messages []message.Message) int64
+	// Counts tokens for provided messages using underlying client OR fallback to default estimation strategy,
+	// returns tokens count and whether a threshold has been hit based on the model context size,
+	// threhold can be used to track an approaching limit to trigger compaction or other activities
+	CountTokens(ctx context.Context, threshold float64, messages []message.Message, tools []toolsPkg.BaseTool) (tokens int64, hit bool)
+
+	// Calculates and sets new max_tokens if needed to be used by underlying client
+	AdjustMaxTokens(estimatedTokens int64) int64
 }
 
 type providerClientOptions struct {
@@ -93,8 +101,9 @@ type ProviderClientOption func(*providerClientOptions)
 type ProviderClient interface {
 	send(ctx context.Context, messages []message.Message, tools []tools.BaseTool) (*ProviderResponse, error)
 	stream(ctx context.Context, messages []message.Message, tools []tools.BaseTool) <-chan ProviderEvent
-	// TODO: implement instead of estimation
-	countTokens(ctx context.Context, messages []message.Message) (int64, error)
+	countTokens(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) (int64, error)
+	maxTokens() int64
+	setMaxTokens(maxTokens int64)
 }
 
 type baseProvider[C ProviderClient] struct {
@@ -209,25 +218,70 @@ func (p *baseProvider[C]) StreamResponse(ctx context.Context, messages []message
 	return p.client.stream(ctx, messages, tools)
 }
 
-func (p *baseProvider[C]) CountTokens(ctx context.Context, messages []message.Message) int64 {
-	maxTokens := p.options.maxTokens
-	model := p.options.model
-
-	estimatedTokens, err := p.client.countTokens(ctx, messages)
+func (p *baseProvider[C]) CountTokens(ctx context.Context, threshold float64, messages []message.Message, tools []toolsPkg.BaseTool) (int64, bool) {
+	estimatedTokens, err := p.client.countTokens(ctx, messages, tools)
 	// Fallback to local estimation
 	if err != nil {
-		estimatedTokens = message.EstimateTokens(messages)
+		logging.Warn("Provider doesn't support countTokens endpoint, using local strategy for max_tokens", "model", p.options.model.Name, "cause", err.Error())
+		estimatedTokens = message.EstimateTokens(messages, tools)
 	}
+	contextWindow := p.Model().ContextWindow
+	if contextWindow <= 0 {
+		return estimatedTokens, false
+	}
+	thresholdAbs := int64(float64(contextWindow) * threshold)
+	hitThreshold := estimatedTokens >= thresholdAbs
+	logging.Debug("Token estimation for auto-compaction",
+		"estimated_tokens", estimatedTokens,
+		"threshold", thresholdAbs,
+		"context_window", contextWindow,
+		"auto-compaction required", hitThreshold,
+	)
+	return estimatedTokens, hitThreshold
+}
 
+func (p *baseProvider[C]) AdjustMaxTokens(estimatedTokens int64) int64 {
+	maxTokens := p.client.maxTokens()
+	model := p.options.model
 	// Safeguard
 	if estimatedTokens >= model.ContextWindow {
+		logging.Warn(
+			"Estimated token count higher than context window, use existing max_tokens",
+			"model",
+			model.Name,
+			"context",
+			model.ContextWindow,
+			"max_tokens",
+			maxTokens,
+			"estimated",
+			estimatedTokens,
+		)
 		return 0
 	}
 
 	newMaxTokens := maxTokens
 	for estimatedTokens+newMaxTokens >= model.ContextWindow {
 		newMaxTokens = newMaxTokens / 2
+		p.client.setMaxTokens(newMaxTokens)
+		if float64(newMaxTokens) < float64(model.ContextWindow)*0.05 {
+			logging.Warn(
+				"New max_tokens is below 5% of total context, can't shrink further, proceeding",
+				"model",
+				model.Name,
+				"context",
+				model.ContextWindow,
+				"new_max_tokens",
+				newMaxTokens,
+				"estimated",
+				estimatedTokens,
+			)
+			break
+		}
 	}
+	if maxTokens != newMaxTokens {
+		logging.Info("max_tokens value has changed", "model", model.Name, "old", maxTokens, "new", newMaxTokens)
+	}
+
 	return newMaxTokens
 }
 

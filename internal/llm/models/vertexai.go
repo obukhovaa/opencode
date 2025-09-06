@@ -46,7 +46,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		ID:                  VertexAISonnet4,
 		Name:                "VertexAI: Claude Sonnet 4",
 		Provider:            ProviderVertexAI,
-		APIModel:            "claude-sonnet-4",
+		APIModel:            "claude-sonnet-4@20250514",
 		CostPer1MIn:         AnthropicModels[Claude4Sonnet].CostPer1MIn,
 		CostPer1MInCached:   AnthropicModels[Claude4Sonnet].CostPer1MInCached,
 		CostPer1MOut:        AnthropicModels[Claude4Sonnet].CostPer1MOut,
