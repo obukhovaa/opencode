@@ -1,15 +1,8 @@
 > [!NOTE]  
-> This is the original OpenCode repository, now continuing at [Charm](https://github.com/charmbracelet) with its original creator, [Kujtim Hoxha](https://github.com/kujtimiihoxha).  
-> Development is continuing under a new name as we prepare for a public relaunch.  
-> Follow [@charmcli](https://x.com/charmcli) or join our [Discord](https://charm.sh/chat) for updates.
+> Fork of now archived https://github.com/opencode-ai/opencode
+> The focus is changed towards headless experience oriented towards autonomous agents.
 
 # ⌬ OpenCode
-
-<p align="center"><img src="https://github.com/user-attachments/assets/9ae61ef6-70e5-4876-bc45-5bcb4e52c714" width="800"></p>
-
-> **⚠️ Early Development Notice:** This project is in early development and is not yet ready for production use. Features may change, break, or be incomplete. Use at your own risk.
-
-A powerful terminal-based AI assistant for developers, providing intelligent coding assistance directly in your terminal.
 
 ## Overview
 
@@ -23,6 +16,7 @@ OpenCode is a Go-based CLI application that brings AI assistance to your termina
 ## Features
 
 - **Interactive TUI**: Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) for a smooth terminal experience
+- **Non-interactive mode**: Could be running in headless mode to build autonomous agents 
 - **Multiple AI Providers**: Support for OpenAI, Anthropic Claude, Google Gemini, AWS Bedrock, Groq, Azure OpenAI, and OpenRouter
 - **Session Management**: Save and manage multiple conversation sessions
 - **Tool Integration**: AI can execute commands, search files, and modify code
