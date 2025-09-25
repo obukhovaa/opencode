@@ -98,6 +98,11 @@ func vertexMiddleware(region, projectID string) sdkoption.Middleware {
 
 			// logging.Debug("vertext_ai middleware request path and method", "path", r.URL.Path, "method", r.Method)
 			if strings.HasSuffix(r.URL.Path, "/v1/messages") && r.Method == http.MethodPost {
+				betas := r.Header.Values("anthropic-beta")
+				if len(betas) > 0 {
+					body, _ = sjson.SetBytes(body, "anthropic_beta", betas)
+					logging.Debug("vertext_ai middleware request, using beta header", "anthropic-beta", betas)
+				}
 				if projectID == "" {
 					return nil, fmt.Errorf("no projectId was given and it could not be resolved from credentials")
 				}

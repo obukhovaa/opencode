@@ -4,14 +4,15 @@ const (
 	ProviderAnthropic ModelProvider = "anthropic"
 
 	// Models
-	Claude35Sonnet ModelID = "claude-3.5-sonnet"
-	Claude3Haiku   ModelID = "claude-3-haiku"
-	Claude37Sonnet ModelID = "claude-3.7-sonnet"
-	Claude35Haiku  ModelID = "claude-3.5-haiku"
-	Claude3Opus    ModelID = "claude-3-opus"
-	Claude4Opus    ModelID = "claude-4-opus"
-	Claude41Opus   ModelID = "claude-4.1-opus"
-	Claude4Sonnet  ModelID = "claude-4-sonnet"
+	Claude35Sonnet  ModelID = "claude-3.5-sonnet"
+	Claude3Haiku    ModelID = "claude-3-haiku"
+	Claude37Sonnet  ModelID = "claude-3.7-sonnet"
+	Claude35Haiku   ModelID = "claude-3.5-haiku"
+	Claude3Opus     ModelID = "claude-3-opus"
+	Claude4Opus     ModelID = "claude-4-opus"
+	Claude41Opus    ModelID = "claude-4.1-opus"
+	Claude4Sonnet   ModelID = "claude-4-sonnet"
+	Claude4Sonnet1M ModelID = "claude-4-sonnet[1m]"
 )
 
 // https://docs.anthropic.com/en/docs/about-claude/models/all-models
@@ -92,6 +93,20 @@ var AnthropicModels = map[ModelID]Model{
 		CostPer1MOutCached:  0.30,
 		CostPer1MOut:        15.0,
 		ContextWindow:       200000,
+		DefaultMaxTokens:    64000,
+		CanReason:           true,
+		SupportsAttachments: true,
+	},
+	Claude4Sonnet1M: {
+		ID:                  Claude4Sonnet1M,
+		Name:                "Claude 4 Sonnet [1M]",
+		Provider:            ProviderAnthropic,
+		APIModel:            "claude-sonnet-4-20250514",
+		CostPer1MIn:         3.0,
+		CostPer1MInCached:   3.75,
+		CostPer1MOutCached:  0.30,
+		CostPer1MOut:        15.0,
+		ContextWindow:       1000000,
 		DefaultMaxTokens:    64000,
 		CanReason:           true,
 		SupportsAttachments: true,
