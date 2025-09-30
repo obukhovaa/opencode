@@ -48,31 +48,6 @@ var ProviderPopularity = map[ModelProvider]int{
 }
 
 var SupportedModels = map[ModelID]Model{
-	//
-	// // GEMINI
-	// GEMINI25: {
-	// 	ID:                 GEMINI25,
-	// 	Name:               "Gemini 2.5 Pro",
-	// 	Provider:           ProviderGemini,
-	// 	APIModel:           "gemini-2.5-pro-exp-03-25",
-	// 	CostPer1MIn:        0,
-	// 	CostPer1MInCached:  0,
-	// 	CostPer1MOutCached: 0,
-	// 	CostPer1MOut:       0,
-	// },
-	//
-	// GRMINI20Flash: {
-	// 	ID:                 GRMINI20Flash,
-	// 	Name:               "Gemini 2.0 Flash",
-	// 	Provider:           ProviderGemini,
-	// 	APIModel:           "gemini-2.0-flash",
-	// 	CostPer1MIn:        0.1,
-	// 	CostPer1MInCached:  0,
-	// 	CostPer1MOutCached: 0.025,
-	// 	CostPer1MOut:       0.4,
-	// },
-	//
-	// // Bedrock
 	BedrockClaude37Sonnet: {
 		ID:                 BedrockClaude37Sonnet,
 		Name:               "Bedrock: Claude 3.7 Sonnet",
