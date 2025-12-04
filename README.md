@@ -208,6 +208,8 @@ OpenCode supports a variety of AI models from different providers:
 
 - Claude 4 Sonnet
 - Claude 4 Opus
+- Claude 4.5 Sonnet
+- Claude 4.5 Opus
 - Claude 3.5 Sonnet
 - Claude 3.5 Haiku
 - Claude 3.7 Sonnet
