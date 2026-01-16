@@ -247,7 +247,9 @@
         "OpenCode.md",
         "OpenCode.local.md",
         "OPENCODE.md",
-        "OPENCODE.local.md"
+        "OPENCODE.local.md",
+        "AGENTS.local.md",
+        "AGENTS.md"
       ],
       "description": "Context paths for the application",
       "items": {

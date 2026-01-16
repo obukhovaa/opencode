@@ -119,6 +119,8 @@ var defaultContextPaths = []string{
 	"OpenCode.local.md",
 	"OPENCODE.md",
 	"OPENCODE.local.md",
+	"AGENTS.local.md",
+	"AGENTS.md",
 }
 
 // for testability, TODO: extend with other methods when needed
