@@ -104,7 +104,7 @@ func (g *globTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 
 	files, truncated, err := globFiles(params.Pattern, searchPath, 100)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error finding files: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("error finding files: %w", err)
 	}
 
 	var output string

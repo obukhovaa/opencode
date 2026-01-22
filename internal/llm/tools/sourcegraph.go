@@ -203,7 +203,7 @@ func (t *sourcegraphTool) Run(ctx context.Context, call ToolCall) (ToolResponse,
 
 	graphqlQueryBytes, err := json.Marshal(request)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to marshal GraphQL request: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to marshal GraphQL request: %w", err)
 	}
 	graphqlQuery := string(graphqlQueryBytes)
 
@@ -214,7 +214,7 @@ func (t *sourcegraphTool) Run(ctx context.Context, call ToolCall) (ToolResponse,
 		bytes.NewBuffer([]byte(graphqlQuery)),
 	)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to create request: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -222,7 +222,7 @@ func (t *sourcegraphTool) Run(ctx context.Context, call ToolCall) (ToolResponse,
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to fetch URL: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to fetch URL: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -236,12 +236,12 @@ func (t *sourcegraphTool) Run(ctx context.Context, call ToolCall) (ToolResponse,
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to read response body: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	var result map[string]any
 	if err = json.Unmarshal(body, &result); err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to unmarshal response: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
 	formattedResults, err := formatSourcegraphResults(result, params.ContextWindow)

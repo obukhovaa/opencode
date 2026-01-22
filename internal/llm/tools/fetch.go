@@ -118,7 +118,7 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 	sessionID, messageID := GetContextValues(ctx)
 	if sessionID == "" || messageID == "" {
-		return ToolResponse{}, fmt.Errorf("session ID and message ID are required for creating a new file")
+		return NewEmptyResponse(), fmt.Errorf("session ID and message ID are required for creating a new file")
 	}
 
 	p := t.permissions.Request(
@@ -133,7 +133,7 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	)
 
 	if !p {
-		return ToolResponse{}, permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.ErrorPermissionDenied
 	}
 
 	client := t.client
@@ -149,14 +149,14 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 	req, err := http.NewRequestWithContext(ctx, "GET", params.URL, nil)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to create request: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("User-Agent", "opencode/1.0")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to fetch URL: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to fetch URL: %w", err)
 	}
 	defer resp.Body.Close()
 

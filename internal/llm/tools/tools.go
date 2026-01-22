@@ -16,40 +16,70 @@ type ToolInfo struct {
 type toolResponseType string
 
 type (
-	sessionIDContextKey string
-	messageIDContextKey string
+	sessionIDContextKey   string
+	messageIDContextKey   string
+	isTaskAgentContextKey string
 )
 
 const (
 	ToolResponseTypeText  toolResponseType = "text"
 	ToolResponseTypeImage toolResponseType = "image"
 
-	SessionIDContextKey sessionIDContextKey = "session_id"
-	MessageIDContextKey messageIDContextKey = "message_id"
+	SessionIDContextKey   sessionIDContextKey   = "session_id"
+	MessageIDContextKey   messageIDContextKey   = "message_id"
+	IsTaskAgentContextKey isTaskAgentContextKey = "is_task_agent"
+
+	// MaxToolResponseTokens is the maximum number of tokens allowed in a tool response
+	// to prevent context overflow. ~1200KB of text content.
+	MaxToolResponseTokens = 300_000
 )
 
-type ToolResponse struct {
+type toolResponse struct {
 	Type     toolResponseType `json:"type"`
 	Content  string           `json:"content"`
 	Metadata string           `json:"metadata,omitempty"`
 	IsError  bool             `json:"is_error"`
 }
 
-func NewTextResponse(content string) ToolResponse {
-	return ToolResponse{
+// ToolResponse is the public interface for tool responses
+type ToolResponse = toolResponse
+
+// validateAndTruncate validates the tool response size and truncates if necessary
+func validateAndTruncate(response toolResponse) toolResponse {
+	// Rough estimation: ~4 characters per token
+	estimatedTokens := len(response.Content) / 4
+
+	if estimatedTokens > MaxToolResponseTokens {
+		maxChars := MaxToolResponseTokens * 4
+		truncated := response.Content[:maxChars]
+		response.Content = truncated + "\n\n[Output truncated due to size limit. Consider using more specific search parameters or viewing smaller sections.]"
+	}
+
+	return response
+}
+
+func NewTextResponse(content string) toolResponse {
+	return validateAndTruncate(toolResponse{
 		Type:    ToolResponseTypeText,
 		Content: content,
-	}
+	})
 }
 
-func NewImageResponse(content string) ToolResponse {
-	return ToolResponse{
+func NewImageResponse(content string) toolResponse {
+	return validateAndTruncate(toolResponse{
 		Type:    ToolResponseTypeImage,
 		Content: content,
+	})
+}
+
+func NewEmptyResponse() toolResponse {
+	return toolResponse{
+		Type:    ToolResponseTypeText,
+		Content: "",
 	}
 }
 
-func WithResponseMetadata(response ToolResponse, metadata any) ToolResponse {
+func WithResponseMetadata(response toolResponse, metadata any) toolResponse {
 	if metadata != nil {
 		metadataBytes, err := json.Marshal(metadata)
 		if err != nil {
@@ -60,12 +90,12 @@ func WithResponseMetadata(response ToolResponse, metadata any) ToolResponse {
 	return response
 }
 
-func NewTextErrorResponse(content string) ToolResponse {
-	return ToolResponse{
+func NewTextErrorResponse(content string) toolResponse {
+	return validateAndTruncate(toolResponse{
 		Type:    ToolResponseTypeText,
 		Content: content,
 		IsError: true,
-	}
+	})
 }
 
 type ToolCall struct {
@@ -89,4 +119,16 @@ func GetContextValues(ctx context.Context) (string, string) {
 		return sessionID.(string), ""
 	}
 	return sessionID.(string), messageID.(string)
+}
+
+// IsTaskAgent returns true if the context indicates this is a task agent
+func IsTaskAgent(ctx context.Context) bool {
+	isTaskAgent := ctx.Value(IsTaskAgentContextKey)
+	if isTaskAgent == nil {
+		return false
+	}
+	if val, ok := isTaskAgent.(bool); ok {
+		return val
+	}
+	return false
 }

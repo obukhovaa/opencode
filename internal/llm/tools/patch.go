@@ -114,7 +114,7 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 			if os.IsNotExist(err) {
 				return NewTextErrorResponse(fmt.Sprintf("file not found: %s", absPath)), nil
 			}
-			return ToolResponse{}, fmt.Errorf("failed to access file: %w", err)
+			return NewEmptyResponse(), fmt.Errorf("failed to access file: %w", err)
 		}
 
 		if fileInfo.IsDir() {
@@ -144,7 +144,7 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 		if err == nil {
 			return NewTextErrorResponse(fmt.Sprintf("file already exists and cannot be added: %s", absPath)), nil
 		} else if !os.IsNotExist(err) {
-			return ToolResponse{}, fmt.Errorf("failed to check file: %w", err)
+			return NewEmptyResponse(), fmt.Errorf("failed to check file: %w", err)
 		}
 	}
 
@@ -159,7 +159,7 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 		content, err := os.ReadFile(absPath)
 		if err != nil {
-			return ToolResponse{}, fmt.Errorf("failed to read file %s: %w", absPath, err)
+			return NewEmptyResponse(), fmt.Errorf("failed to read file %s: %w", absPath, err)
 		}
 		currentFiles[filePath] = string(content)
 	}
@@ -183,7 +183,7 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	// Get session ID and message ID
 	sessionID, messageID := GetContextValues(ctx)
 	if sessionID == "" || messageID == "" {
-		return ToolResponse{}, fmt.Errorf("session ID and message ID are required for creating a patch")
+		return NewEmptyResponse(), fmt.Errorf("session ID and message ID are required for creating a patch")
 	}
 
 	// Request permission for all changes
@@ -206,7 +206,7 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 				},
 			)
 			if !p {
-				return ToolResponse{}, permission.ErrorPermissionDenied
+				return NewEmptyResponse(), permission.ErrorPermissionDenied
 			}
 		case diff.ActionUpdate:
 			currentContent := ""
@@ -233,7 +233,7 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 				},
 			)
 			if !p {
-				return ToolResponse{}, permission.ErrorPermissionDenied
+				return NewEmptyResponse(), permission.ErrorPermissionDenied
 			}
 		case diff.ActionDelete:
 			dir := filepath.Dir(path)
@@ -252,7 +252,7 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 				},
 			)
 			if !p {
-				return ToolResponse{}, permission.ErrorPermissionDenied
+				return NewEmptyResponse(), permission.ErrorPermissionDenied
 			}
 		}
 	}

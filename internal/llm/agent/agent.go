@@ -402,6 +402,12 @@ func (a *agent) createUserMessage(ctx context.Context, sessionID, content string
 }
 
 func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msgHistory []message.Message) (message.Message, *message.Message, error) {
+	// Check if this is a task session (has a parent session)
+	session, err := a.sessions.Get(ctx, sessionID)
+	if err == nil && session.ParentSessionID != "" {
+		ctx = context.WithValue(ctx, tools.IsTaskAgentContextKey, true)
+	}
+
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
 	eventChan := a.provider.StreamResponse(ctx, msgHistory, a.tools)
 

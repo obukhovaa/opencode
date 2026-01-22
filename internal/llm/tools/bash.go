@@ -264,7 +264,7 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 
 	sessionID, messageID := GetContextValues(ctx)
 	if sessionID == "" || messageID == "" {
-		return ToolResponse{}, fmt.Errorf("session ID and message ID are required for creating a new file")
+		return NewEmptyResponse(), fmt.Errorf("session ID and message ID are required for creating a new file")
 	}
 	if !isSafeReadOnly {
 		p := b.permissions.Request(
@@ -280,17 +280,17 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 			},
 		)
 		if !p {
-			return ToolResponse{}, permission.ErrorPermissionDenied
+			return NewEmptyResponse(), permission.ErrorPermissionDenied
 		}
 	}
 	startTime := time.Now()
 	shell := shell.GetPersistentShell(config.WorkingDirectory())
 	if shell == nil {
-		return ToolResponse{}, fmt.Errorf("failed to create shell instance")
+		return NewEmptyResponse(), fmt.Errorf("failed to create shell instance")
 	}
 	stdout, stderr, exitCode, interrupted, err := shell.Exec(ctx, params.Command, params.Timeout)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error executing command: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("error executing command: %w", err)
 	}
 
 	stdout = truncateOutput(stdout)

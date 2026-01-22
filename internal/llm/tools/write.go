@@ -134,12 +134,12 @@ func (w *writeTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 			return NewTextErrorResponse(fmt.Sprintf("File %s already contains the exact content. No changes made.", filePath)), nil
 		}
 	} else if !os.IsNotExist(err) {
-		return ToolResponse{}, fmt.Errorf("error checking file: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("error checking file: %w", err)
 	}
 
 	dir := filepath.Dir(filePath)
 	if err = os.MkdirAll(dir, 0o755); err != nil {
-		return ToolResponse{}, fmt.Errorf("error creating directory: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("error creating directory: %w", err)
 	}
 
 	oldContent := ""
@@ -152,7 +152,7 @@ func (w *writeTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 	sessionID, messageID := GetContextValues(ctx)
 	if sessionID == "" || messageID == "" {
-		return ToolResponse{}, fmt.Errorf("session_id and message_id are required")
+		return NewEmptyResponse(), fmt.Errorf("session_id and message_id are required")
 	}
 
 	diff, additions, removals := diff.GenerateDiff(
@@ -180,12 +180,12 @@ func (w *writeTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 		},
 	)
 	if !p {
-		return ToolResponse{}, permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.ErrorPermissionDenied
 	}
 
 	err = os.WriteFile(filePath, []byte(params.Content), 0o644)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error writing file: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("error writing file: %w", err)
 	}
 
 	// Check if file exists in history
@@ -194,7 +194,7 @@ func (w *writeTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 		_, err = w.files.Create(ctx, sessionID, filePath, oldContent)
 		if err != nil {
 			// Log error but don't fail the operation
-			return ToolResponse{}, fmt.Errorf("error creating file history: %w", err)
+			return NewEmptyResponse(), fmt.Errorf("error creating file history: %w", err)
 		}
 	}
 	if file.Content != oldContent {

@@ -111,7 +111,7 @@ func (l *lsTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
 
 	files, truncated, err := listDirectory(searchPath, params.Ignore, MaxLSFiles)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error listing directory: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("error listing directory: %w", err)
 	}
 
 	tree := createFileTree(files)

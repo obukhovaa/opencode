@@ -142,7 +142,7 @@ func (v *viewTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 
 			return NewTextErrorResponse(fmt.Sprintf("File not found: %s", filePath)), nil
 		}
-		return ToolResponse{}, fmt.Errorf("error accessing file: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("error accessing file: %w", err)
 	}
 
 	// Check if it's a directory
@@ -161,6 +161,17 @@ func (v *viewTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		params.Limit = DefaultReadLimit
 	}
 
+	// Use smaller limit for task agents to reduce context usage
+	maxLimit := DefaultReadLimit
+	if IsTaskAgent(ctx) {
+		maxLimit = DefaultReadLimit / 2 // 1000 lines for task agents
+	}
+
+	// Cap the limit to the maximum allowed
+	if params.Limit > maxLimit {
+		params.Limit = maxLimit
+	}
+
 	// Check if it's an image file
 	isImage, imageType := isImageFile(filePath)
 	if isImage {
@@ -170,7 +181,7 @@ func (v *viewTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 	// Read the file content
 	content, lineCount, err := readTextFile(filePath, params.Offset, params.Limit)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error reading file: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("error reading file: %w", err)
 	}
 
 	notifyLspOpenFile(ctx, filePath, v.lspClients)

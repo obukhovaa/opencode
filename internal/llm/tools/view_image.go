@@ -106,7 +106,7 @@ func (v *viewImageTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 		if os.IsNotExist(err) {
 			return NewTextErrorResponse(fmt.Sprintf("File not found: %s", filePath)), nil
 		}
-		return ToolResponse{}, fmt.Errorf("error accessing file: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("error accessing file: %w", err)
 	}
 
 	// Check if it's a directory
@@ -131,7 +131,7 @@ func (v *viewImageTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	// Read file content
 	fileContent, err := os.ReadFile(filePath)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error reading image file: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("error reading image file: %w", err)
 	}
 
 	// Convert to base64
@@ -143,7 +143,7 @@ func (v *viewImageTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	}
 	content, err := json.Marshal(imgContent)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error marshaling image content: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("error marshaling image content: %w", err)
 	}
 
 	return WithResponseMetadata(

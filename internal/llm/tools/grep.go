@@ -142,9 +142,15 @@ func (g *grepTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		searchPath = config.WorkingDirectory()
 	}
 
-	matches, truncated, err := searchFiles(searchPattern, searchPath, params.Include, 100)
+	// Use smaller limit for task agents to reduce context usage
+	limit := 100
+	if IsTaskAgent(ctx) {
+		limit = 50
+	}
+
+	matches, truncated, err := searchFiles(searchPattern, searchPath, params.Include, limit)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("error searching files: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("error searching files: %w", err)
 	}
 
 	var output string

@@ -178,17 +178,17 @@ func (e *editTool) createNewFile(ctx context.Context, filePath, content string) 
 		}
 		return NewTextErrorResponse(fmt.Sprintf("file already exists: %s", filePath)), nil
 	} else if !os.IsNotExist(err) {
-		return ToolResponse{}, fmt.Errorf("failed to access file: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to access file: %w", err)
 	}
 
 	dir := filepath.Dir(filePath)
 	if err = os.MkdirAll(dir, 0o755); err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to create parent directories: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to create parent directories: %w", err)
 	}
 
 	sessionID, messageID := GetContextValues(ctx)
 	if sessionID == "" || messageID == "" {
-		return ToolResponse{}, fmt.Errorf("session ID and message ID are required for creating a new file")
+		return NewEmptyResponse(), fmt.Errorf("session ID and message ID are required for creating a new file")
 	}
 
 	diff, additions, removals := diff.GenerateDiff(
@@ -215,19 +215,19 @@ func (e *editTool) createNewFile(ctx context.Context, filePath, content string) 
 		},
 	)
 	if !p {
-		return ToolResponse{}, permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.ErrorPermissionDenied
 	}
 
 	err = os.WriteFile(filePath, []byte(content), 0o644)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to write file: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to write file: %w", err)
 	}
 
 	// File can't be in the history so we create a new file history
 	_, err = e.files.Create(ctx, sessionID, filePath, "")
 	if err != nil {
 		// Log error but don't fail the operation
-		return ToolResponse{}, fmt.Errorf("error creating file history: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("error creating file history: %w", err)
 	}
 
 	// Add the new content to the file history
@@ -256,7 +256,7 @@ func (e *editTool) deleteContent(ctx context.Context, filePath, oldString string
 		if os.IsNotExist(err) {
 			return NewTextErrorResponse(fmt.Sprintf("file not found: %s", filePath)), nil
 		}
-		return ToolResponse{}, fmt.Errorf("failed to access file: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to access file: %w", err)
 	}
 
 	if fileInfo.IsDir() {
@@ -278,7 +278,7 @@ func (e *editTool) deleteContent(ctx context.Context, filePath, oldString string
 
 	content, err := os.ReadFile(filePath)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to read file: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to read file: %w", err)
 	}
 
 	oldContent := string(content)
@@ -298,7 +298,7 @@ func (e *editTool) deleteContent(ctx context.Context, filePath, oldString string
 	sessionID, messageID := GetContextValues(ctx)
 
 	if sessionID == "" || messageID == "" {
-		return ToolResponse{}, fmt.Errorf("session ID and message ID are required for creating a new file")
+		return NewEmptyResponse(), fmt.Errorf("session ID and message ID are required for creating a new file")
 	}
 
 	diff, additions, removals := diff.GenerateDiff(
@@ -326,12 +326,12 @@ func (e *editTool) deleteContent(ctx context.Context, filePath, oldString string
 		},
 	)
 	if !p {
-		return ToolResponse{}, permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.ErrorPermissionDenied
 	}
 
 	err = os.WriteFile(filePath, []byte(newContent), 0o644)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to write file: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to write file: %w", err)
 	}
 
 	// Check if file exists in history
@@ -340,7 +340,7 @@ func (e *editTool) deleteContent(ctx context.Context, filePath, oldString string
 		_, err = e.files.Create(ctx, sessionID, filePath, oldContent)
 		if err != nil {
 			// Log error but don't fail the operation
-			return ToolResponse{}, fmt.Errorf("error creating file history: %w", err)
+			return NewEmptyResponse(), fmt.Errorf("error creating file history: %w", err)
 		}
 	}
 	if file.Content != oldContent {
@@ -375,7 +375,7 @@ func (e *editTool) replaceContent(ctx context.Context, filePath, oldString, newS
 		if os.IsNotExist(err) {
 			return NewTextErrorResponse(fmt.Sprintf("file not found: %s", filePath)), nil
 		}
-		return ToolResponse{}, fmt.Errorf("failed to access file: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to access file: %w", err)
 	}
 
 	if fileInfo.IsDir() {
@@ -397,7 +397,7 @@ func (e *editTool) replaceContent(ctx context.Context, filePath, oldString, newS
 
 	content, err := os.ReadFile(filePath)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to read file: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to read file: %w", err)
 	}
 
 	oldContent := string(content)
@@ -420,7 +420,7 @@ func (e *editTool) replaceContent(ctx context.Context, filePath, oldString, newS
 	sessionID, messageID := GetContextValues(ctx)
 
 	if sessionID == "" || messageID == "" {
-		return ToolResponse{}, fmt.Errorf("session ID and message ID are required for creating a new file")
+		return NewEmptyResponse(), fmt.Errorf("session ID and message ID are required for creating a new file")
 	}
 	diff, additions, removals := diff.GenerateDiff(
 		oldContent,
@@ -446,12 +446,12 @@ func (e *editTool) replaceContent(ctx context.Context, filePath, oldString, newS
 		},
 	)
 	if !p {
-		return ToolResponse{}, permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.ErrorPermissionDenied
 	}
 
 	err = os.WriteFile(filePath, []byte(newContent), 0o644)
 	if err != nil {
-		return ToolResponse{}, fmt.Errorf("failed to write file: %w", err)
+		return NewEmptyResponse(), fmt.Errorf("failed to write file: %w", err)
 	}
 
 	// Check if file exists in history
@@ -460,7 +460,7 @@ func (e *editTool) replaceContent(ctx context.Context, filePath, oldString, newS
 		_, err = e.files.Create(ctx, sessionID, filePath, oldContent)
 		if err != nil {
 			// Log error but don't fail the operation
-			return ToolResponse{}, fmt.Errorf("error creating file history: %w", err)
+			return NewEmptyResponse(), fmt.Errorf("error creating file history: %w", err)
 		}
 	}
 	if file.Content != oldContent {
