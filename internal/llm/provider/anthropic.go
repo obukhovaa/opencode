@@ -278,15 +278,15 @@ func (a *anthropicClient) send(ctx context.Context, messages []message.Message, 
 			return nil, retryErr
 		}
 
-		content := ""
+		var sb strings.Builder
 		for _, block := range anthropicResponse.Content {
 			if text, ok := block.AsAny().(anthropic.TextBlock); ok {
-				content += text.Text
+				sb.WriteString(text.Text)
 			}
 		}
 
 		return &ProviderResponse{
-			Content:   content,
+			Content:   sb.String(),
 			ToolCalls: a.toolCalls(*anthropicResponse),
 			Usage:     a.usage(*anthropicResponse),
 		}, nil
@@ -384,17 +384,17 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 					}
 
 				case anthropic.MessageStopEvent:
-					content := ""
+					var sb strings.Builder
 					for _, block := range accumulatedMessage.Content {
 						if text, ok := block.AsAny().(anthropic.TextBlock); ok {
-							content += text.Text
+							sb.WriteString(text.Text)
 						}
 					}
 
 					eventChan <- ProviderEvent{
 						Type: EventComplete,
 						Response: &ProviderResponse{
-							Content:      content,
+							Content:      sb.String(),
 							ToolCalls:    a.toolCalls(accumulatedMessage),
 							Usage:        a.usage(accumulatedMessage),
 							FinishReason: a.finishReason(string(accumulatedMessage.StopReason)),

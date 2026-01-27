@@ -19,8 +19,8 @@ func TestValidateAndTruncate(t *testing.T) {
 
 	t.Run("large response truncated", func(t *testing.T) {
 		// Create content larger than MaxToolResponseTokens
-		// 1M chars = ~250k tokens, which exceeds 200k limit
-		largeContent := strings.Repeat("A", 1_000_000)
+		// 1.5M chars = ~375k tokens, which exceeds 300k limit
+		largeContent := strings.Repeat("A", 1_500_000)
 		response := NewTextResponse(largeContent)
 
 		expectedMaxChars := MaxToolResponseTokens * 4

@@ -110,7 +110,7 @@ func (g *geminiClient) convertMessages(messages []message.Message) []*genai.Cont
 
 		case message.Tool:
 			for _, result := range msg.ToolResults() {
-				response := map[string]interface{}{"result": result.Content}
+				response := map[string]any{"result": result.Content}
 				parsed, err := parseJsonToMap(result.Content)
 				if err == nil {
 					response = parsed
@@ -137,7 +137,7 @@ func (g *geminiClient) convertMessages(messages []message.Message) []*genai.Cont
 							},
 						},
 					},
-					Role: "function",
+					Role: "user",
 				})
 			}
 		}
@@ -298,7 +298,15 @@ func (g *geminiClient) stream(ctx context.Context, messages []message.Message, t
 	if len(tools) > 0 {
 		config.Tools = g.convertTools(tools)
 	}
-	chat, _ := g.client.Chats.Create(ctx, g.providerOptions.model.APIModel, config, history)
+	chat, err := g.client.Chats.Create(ctx, g.providerOptions.model.APIModel, config, history)
+	if err != nil {
+		eventChan := make(chan ProviderEvent)
+		go func() {
+			eventChan <- ProviderEvent{Type: EventError, Error: fmt.Errorf("failed to create chat: %w", err)}
+			close(eventChan)
+		}()
+		return eventChan
+	}
 
 	attempts := 0
 	eventChan := make(chan ProviderEvent)
