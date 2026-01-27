@@ -87,12 +87,17 @@ func (g *geminiClient) convertMessages(messages []message.Message) []*genai.Cont
 			if len(msg.ToolCalls()) > 0 {
 				for _, call := range msg.ToolCalls() {
 					args, _ := parseJsonToMap(call.Input)
-					assistantParts = append(assistantParts, &genai.Part{
+					part := &genai.Part{
 						FunctionCall: &genai.FunctionCall{
 							Name: call.Name,
 							Args: args,
 						},
-					})
+					}
+					// Preserve thought signature if present
+					if call.ThoughtSignature != "" {
+						part.ThoughtSignature = []byte(call.ThoughtSignature)
+					}
+					assistantParts = append(assistantParts, part)
 				}
 			}
 
@@ -240,13 +245,18 @@ func (g *geminiClient) send(ctx context.Context, messages []message.Message, too
 				case part.FunctionCall != nil:
 					id := "call_" + uuid.New().String()
 					args, _ := json.Marshal(part.FunctionCall.Args)
-					toolCalls = append(toolCalls, message.ToolCall{
+					toolCall := message.ToolCall{
 						ID:       id,
 						Name:     part.FunctionCall.Name,
 						Input:    string(args),
 						Type:     "function",
 						Finished: true,
-					})
+					}
+					// Capture thought signature if present
+					if len(part.ThoughtSignature) > 0 {
+						toolCall.ThoughtSignature = string(part.ThoughtSignature)
+					}
+					toolCalls = append(toolCalls, toolCall)
 				}
 			}
 		}
@@ -361,6 +371,10 @@ func (g *geminiClient) stream(ctx context.Context, messages []message.Message, t
 								Input:    string(args),
 								Type:     "function",
 								Finished: true,
+							}
+							// Capture thought signature if present
+							if len(part.ThoughtSignature) > 0 {
+								newCall.ThoughtSignature = string(part.ThoughtSignature)
 							}
 
 							isNew := true

@@ -82,11 +82,12 @@ func (bc BinaryContent) String(provider models.ModelProvider) string {
 func (BinaryContent) isPart() {}
 
 type ToolCall struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Input    string `json:"input"`
-	Type     string `json:"type"`
-	Finished bool   `json:"finished"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Input            string `json:"input"`
+	Type             string `json:"type"`
+	Finished         bool   `json:"finished"`
+	ThoughtSignature string `json:"thought_signature,omitempty"`
 }
 
 func (ToolCall) isPart() {}
@@ -253,11 +254,12 @@ func (m *Message) FinishToolCall(toolCallID string) {
 		if c, ok := part.(ToolCall); ok {
 			if c.ID == toolCallID {
 				m.Parts[i] = ToolCall{
-					ID:       c.ID,
-					Name:     c.Name,
-					Input:    c.Input,
-					Type:     c.Type,
-					Finished: true,
+					ID:               c.ID,
+					Name:             c.Name,
+					Input:            c.Input,
+					Type:             c.Type,
+					Finished:         true,
+					ThoughtSignature: c.ThoughtSignature,
 				}
 				return
 			}
@@ -270,11 +272,12 @@ func (m *Message) AppendToolCallInput(toolCallID string, inputDelta string) {
 		if c, ok := part.(ToolCall); ok {
 			if c.ID == toolCallID {
 				m.Parts[i] = ToolCall{
-					ID:       c.ID,
-					Name:     c.Name,
-					Input:    c.Input + inputDelta,
-					Type:     c.Type,
-					Finished: c.Finished,
+					ID:               c.ID,
+					Name:             c.Name,
+					Input:            c.Input + inputDelta,
+					Type:             c.Type,
+					Finished:         c.Finished,
+					ThoughtSignature: c.ThoughtSignature,
 				}
 				return
 			}
