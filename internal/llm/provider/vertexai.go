@@ -74,7 +74,7 @@ func newVertexAIClient(opts providerClientOptions) VertexAIClient {
 		return nil
 	}
 
-	logging.Info("Using Gemini client with VertexAI provider", "model", opts.model.ID)
+	logging.Info("Using Gemini client with VertexAI provider", "model", opts.model.ID, "config", client.ClientConfig())
 	return &geminiClient{
 		providerOptions: opts,
 		options:         geminiOpts,
