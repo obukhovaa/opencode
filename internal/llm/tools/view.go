@@ -161,15 +161,9 @@ func (v *viewTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		params.Limit = DefaultReadLimit
 	}
 
-	// Use smaller limit for task agents to reduce context usage
-	maxLimit := DefaultReadLimit
-	if IsTaskAgent(ctx) {
-		maxLimit = DefaultReadLimit / 2 // 1000 lines for task agents
-	}
-
 	// Cap the limit to the maximum allowed
-	if params.Limit > maxLimit {
-		params.Limit = maxLimit
+	if params.Limit > DefaultReadLimit {
+		params.Limit = DefaultReadLimit
 	}
 
 	// Check if it's an image file
