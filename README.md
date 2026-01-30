@@ -96,8 +96,9 @@ You can configure OpenCode using environment variables:
 | `OPENAI_API_KEY`           | For OpenAI models                                                                |
 | `GEMINI_API_KEY`           | For Google Gemini models                                                         |
 | `GITHUB_TOKEN`             | For Github Copilot models (see [Using Github Copilot](#using-github-copilot))    |
-| `VERTEXAI_PROJECT`         | For Google Cloud VertexAI (Gemini)                                               |
-| `VERTEXAI_LOCATION`        | For Google Cloud VertexAI (Gemini)                                               |
+| `VERTEXAI_PROJECT`         | For Google Cloud VertexAI (Gemini, Anthropic)                                    |
+| `VERTEXAI_LOCATION`        | For Google Cloud VertexAI (Gemini, Anthropic)                                    |
+| `VERTEXAI_LOCATION_COUNT`  | For Google Cloud VertexAI (Anthropic only), counting endpoint                    |
 | `GROQ_API_KEY`             | For Groq models                                                                  |
 | `AWS_ACCESS_KEY_ID`        | For AWS Bedrock (Claude)                                                         |
 | `AWS_SECRET_ACCESS_KEY`    | For AWS Bedrock (Claude)                                                         |

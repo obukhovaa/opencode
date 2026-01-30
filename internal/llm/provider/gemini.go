@@ -497,7 +497,19 @@ func (g *geminiClient) usage(resp *genai.GenerateContentResponse) TokenUsage {
 }
 
 func (a *geminiClient) countTokens(ctx context.Context, messages []message.Message, tools []tools.BaseTool) (int64, error) {
-	return 0, fmt.Errorf("countTokens is unsupported by gemini client: %w", errors.ErrUnsupported)
+	cfg := genai.CountTokensConfig{
+		Tools: a.convertTools(tools),
+		SystemInstruction: &genai.Content{
+			Parts: []*genai.Part{
+				{Text: a.providerOptions.systemMessage},
+			},
+		},
+	}
+	response, err := a.client.Models.CountTokens(ctx, a.providerOptions.model.APIModel, a.convertMessages(messages), &cfg)
+	if err != nil {
+		return 0, fmt.Errorf("countTokens has failed by gemini client: %w", err)
+	}
+	return int64(response.TotalTokens), nil
 }
 
 func (a *geminiClient) setMaxTokens(maxTokens int64) {

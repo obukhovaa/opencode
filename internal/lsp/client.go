@@ -96,7 +96,7 @@ func NewClient(ctx context.Context, command string, args ...string) (*Client, er
 	go func() {
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
-			logging.Debug("LSP Server stderr", "message", scanner.Text())
+			logging.Debug("LSP Server stderr", "cmd", command, "message", scanner.Text())
 		}
 		if err := scanner.Err(); err != nil {
 			logging.Error("Error reading LSP stderr", err)
@@ -595,7 +595,7 @@ type OpenFileInfo struct {
 func (c *Client) shouldOpenFile(filePath string) bool {
 	ext := strings.ToLower(filepath.Ext(filePath))
 	serverType := c.detectServerType()
-	
+
 	switch serverType {
 	case ServerTypeTypeScript:
 		return ext == ".ts" || ext == ".js" || ext == ".tsx" || ext == ".jsx"

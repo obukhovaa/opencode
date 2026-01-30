@@ -53,6 +53,7 @@ func newAnthropicClient(opts providerClientOptions) AnthropicClient {
 	if anthropicOpts.useVertex {
 		middleware := vertexMiddleware(
 			anthropicOpts.vertexOptions.location,
+			anthropicOpts.vertexOptions.locationForCounting,
 			anthropicOpts.vertexOptions.projectID,
 		)
 		anthropicClientOptions = append(
@@ -522,11 +523,11 @@ func WithAnthropicShouldThinkFn(fn func(string) bool) AnthropicOption {
 	}
 }
 
-func WithVertexAI(projectID, localtion string) AnthropicOption {
+func WithVertexAI(projectID, localtion string, localForCounting string) AnthropicOption {
 	return func(options *anthropicOptions) {
 		options.useVertex = true
 		options.useBedrock = false
-		options.vertexOptions = vertexOptions{projectID: projectID, location: localtion}
+		options.vertexOptions = vertexOptions{projectID: projectID, location: localtion, locationForCounting: localForCounting}
 	}
 }
 

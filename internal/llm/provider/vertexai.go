@@ -23,16 +23,28 @@ import (
 type VertexAIClient ProviderClient
 
 type vertexOptions struct {
-	projectID string
-	location  string
+	projectID           string
+	location            string
+	locationForCounting string
 }
 
 func newVertexAIClient(opts providerClientOptions) VertexAIClient {
 	for k := range models.VertexAIAnthropicModels {
 		if k == opts.model.ID {
 			logging.Info("Using Anthropic client with VertexAI provider", "model", k)
+			location := os.Getenv("VERTEXAI_LOCATION")
+			locationForCounting := os.Getenv("VERTEXAI_LOCATION_COUNT")
+			if len(locationForCounting) == 0 {
+				// NOTE: there's no counting endpoint on global for anthropic models
+				if location == "global" {
+					locationForCounting = "us-east5"
+				} else {
+					locationForCounting = location
+				}
+			}
+			projectID := os.Getenv("VERTEXAI_PROJECT")
 			opts.anthropicOptions = []AnthropicOption{
-				WithVertexAI(os.Getenv("VERTEXAI_PROJECT"), os.Getenv("VERTEXAI_LOCATION")),
+				WithVertexAI(projectID, location, locationForCounting),
 			}
 			return newAnthropicClient(opts)
 		}
@@ -83,7 +95,7 @@ func newVertexAIClient(opts providerClientOptions) VertexAIClient {
 }
 
 // NOTE: copied from (here)[github.com/anthropics/anthropic-sdk-go/vertex] to make LiteLLM passthrough work
-func vertexMiddleware(region, projectID string) sdkoption.Middleware {
+func vertexMiddleware(region, regionForCounting, projectID string) sdkoption.Middleware {
 	return func(r *http.Request, next sdkoption.MiddlewareNext) (*http.Response, error) {
 		if r.Body != nil {
 			body, err := io.ReadAll(r.Body)
@@ -96,38 +108,48 @@ func vertexMiddleware(region, projectID string) sdkoption.Middleware {
 				body, _ = sjson.SetBytes(body, "anthropic_version", vertex.DefaultVersion)
 			}
 
-			// logging.Debug("vertext_ai middleware request path and method", "path", r.URL.Path, "method", r.Method)
+			model := gjson.GetBytes(body, "model").String()
+			stream := gjson.GetBytes(body, "stream").Bool()
+			betas := r.Header.Values("anthropic-beta")
+			newPath := ""
+
 			if strings.HasSuffix(r.URL.Path, "/v1/messages") && r.Method == http.MethodPost {
-				betas := r.Header.Values("anthropic-beta")
 				if len(betas) > 0 {
 					body, _ = sjson.SetBytes(body, "anthropic_beta", betas)
-					logging.Debug("vertext_ai middleware request, using beta header", "anthropic-beta", betas)
 				}
 				if projectID == "" {
 					return nil, fmt.Errorf("no projectId was given and it could not be resolved from credentials")
 				}
 
-				model := gjson.GetBytes(body, "model").String()
-				stream := gjson.GetBytes(body, "stream").Bool()
-
+				// HACK: vertex expect no model in body here
 				body, _ = sjson.DeleteBytes(body, "model")
 
 				specifier := "rawPredict"
 				if stream {
 					specifier = "streamRawPredict"
 				}
-				newPath := fmt.Sprintf("/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:%s", projectID, region, model, specifier)
+				newPath = fmt.Sprintf("/v1/projects/%s/locations/%s/publishers/anthropic/models/%s:%s", projectID, region, model, specifier)
 				r.URL.Path = strings.ReplaceAll(r.URL.Path, "/v1/messages", newPath)
 			}
 
 			if strings.HasSuffix(r.URL.Path, "/v1/messages/count_tokens") && r.Method == http.MethodPost {
+				if len(betas) > 0 {
+					body, _ = sjson.SetBytes(body, "anthropic_beta", betas)
+				}
 				if projectID == "" {
 					return nil, fmt.Errorf("no projectId was given and it could not be resolved from credentials")
 				}
 
-				newPath := fmt.Sprintf("/v1/projects/%s/locations/%s/publishers/anthropic/models/count-tokens:rawPredict", projectID, region)
+				// HACK: vertex expect no beta in header
+				r.Header.Del("anthropic-beta")
+
+				newPath = fmt.Sprintf("/v1/projects/%s/locations/%s/publishers/anthropic/models/count-tokens:rawPredict", projectID, regionForCounting)
 				r.URL.Path = strings.ReplaceAll(r.URL.Path, "/v1/messages/count_tokens", newPath)
 			}
+
+			logging.Debug("vertext_ai middleware request, using beta header", "anthropic-beta", betas,
+				"model", model, "stream", stream, "path", r.URL.Path, "new_path", newPath, "method", r.Method,
+			)
 
 			reader := bytes.NewReader(body)
 			r.Body = io.NopCloser(reader)
