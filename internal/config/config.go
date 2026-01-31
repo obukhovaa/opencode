@@ -81,20 +81,49 @@ type ShellConfig struct {
 	Args []string `json:"args,omitempty"`
 }
 
+// ProviderType defines the type of session storage provider.
+type ProviderType string
+
+// Supported provider types
+const (
+	ProviderSQLite ProviderType = "sqlite"
+	ProviderMySQL  ProviderType = "mysql"
+)
+
+// MySQLConfig defines MySQL-specific configuration.
+type MySQLConfig struct {
+	DSN                string `json:"dsn,omitempty"`
+	Host               string `json:"host,omitempty"`
+	Port               int    `json:"port,omitempty"`
+	Database           string `json:"database,omitempty"`
+	Username           string `json:"username,omitempty"`
+	Password           string `json:"password,omitempty"`
+	MaxConnections     int    `json:"maxConnections,omitempty"`
+	MaxIdleConnections int    `json:"maxIdleConnections,omitempty"`
+	ConnectionTimeout  int    `json:"connectionTimeout,omitempty"`
+}
+
+// SessionProviderConfig defines configuration for session storage.
+type SessionProviderConfig struct {
+	Type  ProviderType `json:"type,omitempty"`
+	MySQL MySQLConfig  `json:"mysql,omitempty"`
+}
+
 // Config is the main configuration structure for the application.
 type Config struct {
-	Data         Data                              `json:"data"`
-	WorkingDir   string                            `json:"wd,omitempty"`
-	MCPServers   map[string]MCPServer              `json:"mcpServers,omitempty"`
-	Providers    map[models.ModelProvider]Provider `json:"providers,omitempty"`
-	LSP          map[string]LSPConfig              `json:"lsp,omitempty"`
-	Agents       map[AgentName]Agent               `json:"agents,omitempty"`
-	Debug        bool                              `json:"debug,omitempty"`
-	DebugLSP     bool                              `json:"debugLSP,omitempty"`
-	ContextPaths []string                          `json:"contextPaths,omitempty"`
-	TUI          TUIConfig                         `json:"tui"`
-	Shell        ShellConfig                       `json:"shell,omitempty"`
-	AutoCompact  bool                              `json:"autoCompact,omitempty"`
+	Data            Data                              `json:"data"`
+	WorkingDir      string                            `json:"wd,omitempty"`
+	MCPServers      map[string]MCPServer              `json:"mcpServers,omitempty"`
+	Providers       map[models.ModelProvider]Provider `json:"providers,omitempty"`
+	LSP             map[string]LSPConfig              `json:"lsp,omitempty"`
+	Agents          map[AgentName]Agent               `json:"agents,omitempty"`
+	Debug           bool                              `json:"debug,omitempty"`
+	DebugLSP        bool                              `json:"debugLSP,omitempty"`
+	ContextPaths    []string                          `json:"contextPaths,omitempty"`
+	TUI             TUIConfig                         `json:"tui"`
+	Shell           ShellConfig                       `json:"shell,omitempty"`
+	AutoCompact     bool                              `json:"autoCompact,omitempty"`
+	SessionProvider SessionProviderConfig             `json:"sessionProvider,omitempty"`
 }
 
 // Application constants
@@ -248,6 +277,21 @@ func setDefaults(debug bool) {
 	}
 	viper.SetDefault("shell.path", shellPath)
 	viper.SetDefault("shell.args", []string{"-l"})
+
+	// Session provider defaults
+	viper.SetDefault("sessionProvider.type", "sqlite")
+	viper.SetDefault("sessionProvider.mysql.port", 3306)
+	viper.SetDefault("sessionProvider.mysql.maxConnections", 10)
+	viper.SetDefault("sessionProvider.mysql.maxIdleConnections", 5)
+	viper.SetDefault("sessionProvider.mysql.connectionTimeout", 30)
+
+	// Environment variable overrides for session provider
+	if providerType := os.Getenv("OPENCODE_SESSION_PROVIDER_TYPE"); providerType != "" {
+		viper.Set("sessionProvider.type", providerType)
+	}
+	if mysqlDSN := os.Getenv("OPENCODE_MYSQL_DSN"); mysqlDSN != "" {
+		viper.Set("sessionProvider.mysql.dsn", mysqlDSN)
+	}
 
 	if debug {
 		viper.SetDefault("debug", true)
@@ -546,6 +590,11 @@ func Validate() error {
 		return fmt.Errorf("config not loaded")
 	}
 
+	// Validate session provider configuration
+	if err := validateSessionProvider(); err != nil {
+		return fmt.Errorf("session provider validation failed: %w", err)
+	}
+
 	// Validate agent models
 	for name, agent := range cfg.Agents {
 		if err := validateAgent(cfg, name, agent); err != nil {
@@ -569,6 +618,62 @@ func Validate() error {
 			logging.Warn("LSP configuration has no command, marking as disabled", "language", language)
 			lspConfig.Disabled = true
 			cfg.LSP[language] = lspConfig
+		}
+	}
+
+	return nil
+}
+
+// validateSessionProvider validates the session provider configuration.
+func validateSessionProvider() error {
+	providerType := cfg.SessionProvider.Type
+	if providerType == "" {
+		providerType = ProviderSQLite
+		cfg.SessionProvider.Type = providerType
+	}
+
+	// Validate provider type
+	if providerType != ProviderSQLite && providerType != ProviderMySQL {
+		return fmt.Errorf("invalid session provider type: %s (must be 'sqlite' or 'mysql')", providerType)
+	}
+
+	// Validate MySQL configuration if MySQL is selected
+	if providerType == ProviderMySQL {
+		mysql := cfg.SessionProvider.MySQL
+
+		// If DSN is provided, it takes precedence over individual fields
+		if mysql.DSN == "" {
+			// Validate individual connection fields
+			if mysql.Host == "" {
+				return fmt.Errorf("MySQL host is required when using MySQL session provider (or provide DSN)")
+			}
+			if mysql.Database == "" {
+				return fmt.Errorf("MySQL database is required when using MySQL session provider (or provide DSN)")
+			}
+			if mysql.Username == "" {
+				return fmt.Errorf("MySQL username is required when using MySQL session provider (or provide DSN)")
+			}
+			if mysql.Password == "" {
+				return fmt.Errorf("MySQL password is required when using MySQL session provider (or provide DSN)")
+			}
+			if mysql.Port <= 0 {
+				mysql.Port = 3306
+				cfg.SessionProvider.MySQL = mysql
+			}
+		}
+
+		// Apply defaults for connection pool settings
+		if mysql.MaxConnections <= 0 {
+			mysql.MaxConnections = 10
+			cfg.SessionProvider.MySQL = mysql
+		}
+		if mysql.MaxIdleConnections <= 0 {
+			mysql.MaxIdleConnections = 5
+			cfg.SessionProvider.MySQL = mysql
+		}
+		if mysql.ConnectionTimeout <= 0 {
+			mysql.ConnectionTimeout = 30
+			cfg.SessionProvider.MySQL = mysql
 		}
 	}
 
