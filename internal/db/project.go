@@ -48,11 +48,11 @@ func getProjectIDFromGit(workingDir string) (string, error) {
 //   - git@github.com:opencode-ai/opencode.git → github.com/opencode-ai/opencode
 //   - https://gitlab.com/myteam/myproject → gitlab.com/myteam/myproject
 func normalizeGitURL(url string) string {
+	// Remove trailing slashes first
+	url = strings.TrimRight(url, "/")
+
 	// Remove .git suffix
 	url = strings.TrimSuffix(url, ".git")
-
-	// Remove trailing slashes
-	url = strings.TrimRight(url, "/")
 
 	// Handle SSH URLs (git@github.com:user/repo)
 	if strings.HasPrefix(url, "git@") {

@@ -86,28 +86,143 @@ You can enable or disable this feature in your configuration file:
 }
 ```
 
+### Session Storage Providers
+
+OpenCode supports multiple database backends for session storage, allowing you to choose between local SQLite (default) or remote MySQL database.
+
+#### SQLite (Default)
+
+SQLite provides zero-configuration, file-based storage ideal for individual developers:
+
+```json
+{
+  "sessionProvider": {
+    "type": "sqlite"
+  }
+}
+```
+
+Sessions are stored in the `data.directory` location (default: `~/.opencode/`).
+
+#### MySQL (Team Collaboration)
+
+MySQL enables centralized session storage for teams sharing session history across multiple machines:
+
+**Using Environment Variable (Simplest):**
+
+```bash
+export OPENCODE_SESSION_PROVIDER_TYPE=mysql
+export OPENCODE_MYSQL_DSN="user:password@tcp(localhost:3306)/opencode?parseTime=true"
+```
+
+**Using Configuration File:**
+
+```json
+{
+  "sessionProvider": {
+    "type": "mysql",
+    "mysql": {
+      "dsn": "user:password@tcp(localhost:3306)/opencode?parseTime=true"
+    }
+  }
+}
+```
+
+Alternatively, you can specify individual connection parameters instead of DSN:
+
+```json
+{
+  "sessionProvider": {
+    "type": "mysql",
+    "mysql": {
+      "host": "localhost",
+      "port": 3306,
+      "database": "opencode",
+      "username": "opencode_user",
+      "password": "secure_password"
+    }
+  }
+}
+```
+
+Optional connection pool settings (with defaults shown):
+
+```json
+{
+  "sessionProvider": {
+    "type": "mysql",
+    "mysql": {
+      "dsn": "...",
+      "maxConnections": 10,
+      "maxIdleConnections": 5,
+      "connectionTimeout": 30
+    }
+  }
+}
+```
+
+#### Project Scoping
+
+Sessions are automatically scoped by **project** to ensure isolation:
+
+- **Git Repository**: Uses the Git remote origin URL as project ID
+  - Example: `https://github.com/opencode-ai/opencode.git` → `github.com/opencode-ai/opencode`
+- **Directory Name**: Falls back to the base directory name if not a Git repository
+  - Example: `/Users/john/projects/my-app` → `my-app`
+
+This ensures that:
+- Teams working on the same Git repository share sessions (when using MySQL)
+- Different projects remain isolated even in shared databases
+- You only see sessions relevant to your current project
+
+#### MySQL Setup Guide
+
+1. **Create Database:**
+   ```sql
+   CREATE DATABASE opencode CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+   CREATE USER 'opencode_user'@'%' IDENTIFIED BY 'secure_password';
+   GRANT ALL PRIVILEGES ON opencode.* TO 'opencode_user'@'%';
+   FLUSH PRIVILEGES;
+   ```
+
+2. **Configure OpenCode:**
+   Set environment variables or update your `~/.opencode.json` configuration file.
+
+3. **Run OpenCode:**
+   Migrations will run automatically on first connection.
+
+#### Troubleshooting
+
+**Connection Errors:**
+- Verify MySQL is running: `mysql -h localhost -u opencode_user -p`
+- Check firewall rules allow connections to MySQL port
+- Ensure credentials are correct in configuration
+
+**Migration Errors:**
+- Check MySQL user has sufficient privileges (CREATE, ALTER, INDEX)
+- Verify database exists and is accessible
+- Check logs for detailed error messages
+
 ### Environment Variables
 
 You can configure OpenCode using environment variables:
 
-| Environment Variable       | Purpose                                                                          |
-| -------------------------- | -------------------------------------------------------------------------------- |
-| `ANTHROPIC_API_KEY`        | For Claude models                                                                |
-| `OPENAI_API_KEY`           | For OpenAI models                                                                |
-| `GEMINI_API_KEY`           | For Google Gemini models                                                         |
-| `GITHUB_TOKEN`             | For Github Copilot models (see [Using Github Copilot](#using-github-copilot))    |
-| `VERTEXAI_PROJECT`         | For Google Cloud VertexAI (Gemini, Anthropic)                                    |
-| `VERTEXAI_LOCATION`        | For Google Cloud VertexAI (Gemini, Anthropic)                                    |
-| `VERTEXAI_LOCATION_COUNT`  | For Google Cloud VertexAI (Anthropic only), counting endpoint                    |
-| `GROQ_API_KEY`             | For Groq models                                                                  |
-| `AWS_ACCESS_KEY_ID`        | For AWS Bedrock (Claude)                                                         |
-| `AWS_SECRET_ACCESS_KEY`    | For AWS Bedrock (Claude)                                                         |
-| `AWS_REGION`               | For AWS Bedrock (Claude)                                                         |
-| `AZURE_OPENAI_ENDPOINT`    | For Azure OpenAI models                                                          |
-| `AZURE_OPENAI_API_KEY`     | For Azure OpenAI models (optional when using Entra ID)                           |
-| `AZURE_OPENAI_API_VERSION` | For Azure OpenAI models                                                          |
-| `LOCAL_ENDPOINT`           | For self-hosted models                                                           |
-| `SHELL`                    | Default shell to use (if not specified in config)                                |
+| Environment Variable              | Purpose                                                                          |
+| --------------------------------- | -------------------------------------------------------------------------------- |
+| `ANTHROPIC_API_KEY`               | For Claude models                                                                |
+| `OPENAI_API_KEY`                  | For OpenAI models                                                                |
+| `GEMINI_API_KEY`                  | For Google Gemini models                                                         |
+| `VERTEXAI_PROJECT`                | For Google Cloud VertexAI (Gemini, Anthropic)                                    |
+| `VERTEXAI_LOCATION`               | For Google Cloud VertexAI (Gemini, Anthropic)                                    |
+| `VERTEXAI_LOCATION_COUNT`         | For Google Cloud VertexAI (Anthropic) to use for token count endpoint            |
+| `AWS_ACCESS_KEY_ID`               | For AWS Bedrock (Claude)                                                         |
+| `AWS_SECRET_ACCESS_KEY`           | For AWS Bedrock (Claude)                                                         |
+| `AWS_REGION`                      | For AWS Bedrock (Claude)                                                         |
+| `LOCAL_ENDPOINT`                  | For self-hosted models                                                           |
+| `SHELL`                           | Default shell to use (if not specified in config)                                |
+| `OPENCODE_SESSION_PROVIDER_TYPE`  | Session storage provider: `sqlite` (default) or `mysql`                          |
+| `OPENCODE_MYSQL_DSN`              | MySQL connection string (e.g., `user:pass@tcp(host:port)/dbname`)                |
+| -------------------------------------------------------------------------------------------------------------------- |
 
 ### Shell Configuration
 
@@ -196,76 +311,37 @@ OpenCode supports a variety of AI models from different providers:
 
 ### OpenAI
 
-- GPT-4.1 family (gpt-4.1, gpt-4.1-mini, gpt-4.1-nano)
-- GPT-4.5 Preview
+- GPT-5
 - GPT-4o family (gpt-4o, gpt-4o-mini)
 - O1 family (o1, o1-pro, o1-mini)
-- O3 family (o3, o3-mini)
+- O3 Mini
 - O4 Mini
 
 ### Anthropic
 
-- Claude 4 Sonnet
-- Claude 4 Opus
-- Claude 4.5 Sonnet
-- Claude 4.5 Opus
+- Claude 4.5 Sonnet (200K and 1M context)
 - Claude 3.5 Sonnet
 - Claude 3.5 Haiku
-- Claude 3.7 Sonnet
-- Claude 3 Haiku
-- Claude 3 Opus
 
-### GitHub Copilot
+### Google Gemini
 
-- GPT-3.5 Turbo
-- GPT-4
-- GPT-4o
-- GPT-4o Mini
-- GPT-4.1
-- Claude 3.5 Sonnet
-- Claude 3.7 Sonnet
-- Claude 3.7 Sonnet Thinking
-- Claude Sonnet 4
-- O1
-- O3 Mini
-- O4 Mini
-- Gemini 2.0 Flash
-- Gemini 2.5 Pro
-
-### Google
-
-- Gemini 2.5
-- Gemini 2.5 Flash
-- Gemini 2.0 Flash
-- Gemini 2.0 Flash Lite
+- Gemini 3.0 Pro
+- Gemini 3.0 Flash
+- Gemini 2.0 Flash Thinking
 
 ### AWS Bedrock
 
-- Claude 3.7 Sonnet
-
-### Groq
-
-- Llama 4 Maverick (17b-128e-instruct)
-- Llama 4 Scout (17b-16e-instruct)
-- QWEN QWQ-32b
-- Deepseek R1 distill Llama 70b
-- Llama 3.3 70b Versatile
-
-### Azure OpenAI
-
-- GPT-4.1 family (gpt-4.1, gpt-4.1-mini, gpt-4.1-nano)
-- GPT-4.5 Preview
-- GPT-4o family (gpt-4o, gpt-4o-mini)
-- O1 family (o1, o1-mini)
-- O3 family (o3, o3-mini)
-- O4 Mini
+- Claude 4.5 Sonnet
 
 ### Google Cloud VertexAI
 
-- Gemini 2.5
-- Gemini 2.5 Flash
-- Anthropic Sonnet 4
-- Anthropic Opus 4
+- Gemini 3.0 Pro
+- Gemini 3.0 Flash
+- Claude 4.5 Sonnet (200K and 1M context)
+
+### Local/Self-Hosted
+
+- Any OpenAI-compatible API endpoint
 
 ## Usage
 
