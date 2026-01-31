@@ -17,6 +17,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.8.0
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/go-logfmt/logfmt v0.6.0
+	github.com/go-sql-driver/mysql v1.9.3
 	github.com/google/uuid v1.6.0
 	github.com/lrstanley/bubblezone v0.0.0-20250315020633-c249a3fe1231
 	github.com/mark3labs/mcp-go v0.17.0
@@ -35,6 +36,7 @@ require (
 
 require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.6 // indirect
+	filippo.io/edwards25519 v1.1.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.54.0 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
 	golang.org/x/time v0.8.0 // indirect
