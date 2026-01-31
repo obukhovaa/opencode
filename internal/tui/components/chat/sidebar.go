@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/diff"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/pubsub"
@@ -94,6 +95,10 @@ func (m *sidebarCmp) View() string {
 				lipgloss.Top,
 				header(m.width),
 				" ",
+				m.projectSection(),
+				" ",
+				m.providerSection(),
+				" ",
 				m.sessionSection(),
 				" ",
 				lspsConfigured(m.width),
@@ -101,6 +106,59 @@ func (m *sidebarCmp) View() string {
 				m.modifiedFiles(),
 			),
 		)
+}
+
+func (m *sidebarCmp) projectSection() string {
+	t := theme.CurrentTheme()
+	baseStyle := styles.BaseStyle()
+	cfg := config.Get()
+
+	// Get project ID
+	projectID := db.GetProjectID(cfg.WorkingDir)
+
+	projectKey := baseStyle.
+		Foreground(t.Primary()).
+		Bold(true).
+		Render("Project")
+
+	projectValue := baseStyle.
+		Foreground(t.Text()).
+		Width(m.width - lipgloss.Width(projectKey)).
+		Render(fmt.Sprintf(": %s", projectID))
+
+	return lipgloss.JoinHorizontal(
+		lipgloss.Left,
+		projectKey,
+		projectValue,
+	)
+}
+
+func (m *sidebarCmp) providerSection() string {
+	t := theme.CurrentTheme()
+	baseStyle := styles.BaseStyle()
+	cfg := config.Get()
+
+	// Get provider type
+	providerType := "local"
+	if cfg.SessionProvider.Type == config.ProviderMySQL {
+		providerType = "remote"
+	}
+
+	providerKey := baseStyle.
+		Foreground(t.Primary()).
+		Bold(true).
+		Render("Provider")
+
+	providerValue := baseStyle.
+		Foreground(t.Text()).
+		Width(m.width - lipgloss.Width(providerKey)).
+		Render(fmt.Sprintf(": %s", providerType))
+
+	return lipgloss.JoinHorizontal(
+		lipgloss.Left,
+		providerKey,
+		providerValue,
+	)
 }
 
 func (m *sidebarCmp) sessionSection() string {

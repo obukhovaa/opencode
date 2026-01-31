@@ -5,12 +5,14 @@ import (
 	"database/sql"
 
 	"github.com/google/uuid"
+	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 )
 
 type Session struct {
 	ID               string
+	ProjectID        string
 	ParentSessionID  string
 	Title            string
 	MessageCount     int64
@@ -35,13 +37,15 @@ type Service interface {
 
 type service struct {
 	*pubsub.Broker[Session]
-	q db.Querier
+	q         db.Querier
+	projectID string
 }
 
 func (s *service) Create(ctx context.Context, title string) (Session, error) {
 	dbSession, err := s.q.CreateSession(ctx, db.CreateSessionParams{
-		ID:    uuid.New().String(),
-		Title: title,
+		ID:        uuid.New().String(),
+		ProjectID: sql.NullString{String: s.projectID, Valid: true},
+		Title:     title,
 	})
 	if err != nil {
 		return Session{}, err
@@ -54,6 +58,7 @@ func (s *service) Create(ctx context.Context, title string) (Session, error) {
 func (s *service) CreateTaskSession(ctx context.Context, toolCallID, parentSessionID, title string) (Session, error) {
 	dbSession, err := s.q.CreateSession(ctx, db.CreateSessionParams{
 		ID:              toolCallID,
+		ProjectID:       sql.NullString{String: s.projectID, Valid: true},
 		ParentSessionID: sql.NullString{String: parentSessionID, Valid: true},
 		Title:           title,
 	})
@@ -68,6 +73,7 @@ func (s *service) CreateTaskSession(ctx context.Context, toolCallID, parentSessi
 func (s *service) CreateTitleSession(ctx context.Context, parentSessionID string) (Session, error) {
 	dbSession, err := s.q.CreateSession(ctx, db.CreateSessionParams{
 		ID:              "title-" + parentSessionID,
+		ProjectID:       sql.NullString{String: s.projectID, Valid: true},
 		ParentSessionID: sql.NullString{String: parentSessionID, Valid: true},
 		Title:           "Generate a title",
 	})
@@ -121,7 +127,7 @@ func (s *service) Save(ctx context.Context, session Session) (Session, error) {
 }
 
 func (s *service) List(ctx context.Context) ([]Session, error) {
-	dbSessions, err := s.q.ListSessions(ctx)
+	dbSessions, err := s.q.ListSessions(ctx, sql.NullString{String: s.projectID, Valid: true})
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +141,7 @@ func (s *service) List(ctx context.Context) ([]Session, error) {
 func (s service) fromDBItem(item db.Session) Session {
 	return Session{
 		ID:               item.ID,
+		ProjectID:        item.ProjectID.String,
 		ParentSessionID:  item.ParentSessionID.String,
 		Title:            item.Title,
 		MessageCount:     item.MessageCount,
@@ -148,9 +155,12 @@ func (s service) fromDBItem(item db.Session) Session {
 }
 
 func NewService(q db.Querier) Service {
+	cfg := config.Get()
+	projectID := db.GetProjectID(cfg.WorkingDir)
 	broker := pubsub.NewBroker[Session]()
 	return &service{
 		broker,
 		q,
+		projectID,
 	}
 }
