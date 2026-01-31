@@ -142,29 +142,27 @@ This is useful if you want to use a different shell than your default system she
       "apiKey": "your-api-key",
       "disabled": false
     },
-    "copilot": {
-      "disabled": false
-    },
-    "groq": {
+    "gemini": {
       "apiKey": "your-api-key",
       "disabled": false
     },
-    "openrouter": {
-      "apiKey": "your-api-key",
+    "vertexai": {
+      "project": "your-project-id",
+      "location": "us-central1",
       "disabled": false
     }
   },
   "agents": {
     "coder": {
-      "model": "claude-3.7-sonnet",
+      "model": "claude-4-5-sonnet[1m]",
       "maxTokens": 5000
     },
     "task": {
-      "model": "claude-3.7-sonnet",
+      "model": "claude-4-5-sonnet[1m]",
       "maxTokens": 5000
     },
     "title": {
-      "model": "claude-3.7-sonnet",
+      "model": "claude-4-5-sonnet[1m]",
       "maxTokens": 80
     }
   },
@@ -600,25 +598,6 @@ The AI assistant can access LSP features through the `diagnostics` tool, allowin
 - Suggest fixes based on diagnostics
 
 While the LSP client implementation supports the full LSP protocol (including completions, hover, definition, etc.), currently only diagnostics are exposed to the AI assistant.
-
-## Using Github Copilot
-
-_Copilot support is currently experimental._
-
-### Requirements
-- [Copilot chat in the IDE](https://github.com/settings/copilot) enabled in GitHub settings
-- One of:
-  - VSCode Github Copilot chat extension
-  - Github `gh` CLI
-  - Neovim Github Copilot plugin (`copilot.vim` or `copilot.lua`)
-  - Github token with copilot permissions
-
-If using one of the above plugins or cli tools, make sure you use the authenticate
-the tool with your github account. This should create a github token at one of the following locations:
-- ~/.config/github-copilot/[hosts,apps].json
-- $XDG_CONFIG_HOME/github-copilot/[hosts,apps].json
-
-If using an explicit github token, you may either set the $GITHUB_TOKEN environment variable or add it to the opencode.json config file at `providers.copilot.apiKey`.
 
 ## Using a self-hosted model provider
 

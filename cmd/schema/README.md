@@ -47,16 +47,16 @@ Here's an example configuration that conforms to the schema:
   },
   "agents": {
     "coder": {
-      "model": "claude-3.7-sonnet",
-      "maxTokens": 5000,
+      "model": "claude-4-5-sonnet[1m]",
+      "maxTokens": 64000,
       "reasoningEffort": "medium"
     },
     "task": {
-      "model": "claude-3.7-sonnet",
-      "maxTokens": 5000
+      "model": "claude-4-5-sonnet[1m]",
+      "maxTokens": 64000,
     },
     "title": {
-      "model": "claude-3.7-sonnet",
+      "model": "claude-4-5-sonnet[1m]",
       "maxTokens": 80
     }
   }

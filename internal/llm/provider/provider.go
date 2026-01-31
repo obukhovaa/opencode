@@ -82,7 +82,6 @@ type providerClientOptions struct {
 	openaiOptions    []OpenAIOption
 	geminiOptions    []GeminiOption
 	bedrockOptions   []BedrockOption
-	copilotOptions   []CopilotOption
 }
 
 func (opts *providerClientOptions) asHeader() *http.Header {
@@ -117,10 +116,10 @@ func NewProvider(providerName models.ModelProvider, opts ...ProviderClientOption
 		o(&clientOptions)
 	}
 	switch providerName {
-	case models.ProviderCopilot:
-		return &baseProvider[CopilotClient]{
+	case models.ProviderVertexAI:
+		return &baseProvider[VertexAIClient]{
 			options: clientOptions,
-			client:  newCopilotClient(clientOptions),
+			client:  newVertexAIClient(clientOptions),
 		}, nil
 	case models.ProviderAnthropic:
 		return &baseProvider[AnthropicClient]{
@@ -141,42 +140,6 @@ func NewProvider(providerName models.ModelProvider, opts ...ProviderClientOption
 		return &baseProvider[BedrockClient]{
 			options: clientOptions,
 			client:  newBedrockClient(clientOptions),
-		}, nil
-	case models.ProviderGROQ:
-		if clientOptions.baseURL == "" {
-			clientOptions.baseURL = "https://api.groq.com/openai/v1"
-		}
-		return &baseProvider[OpenAIClient]{
-			options: clientOptions,
-			client:  newOpenAIClient(clientOptions),
-		}, nil
-	case models.ProviderAzure:
-		return &baseProvider[AzureClient]{
-			options: clientOptions,
-			client:  newAzureClient(clientOptions),
-		}, nil
-	case models.ProviderVertexAI:
-		return &baseProvider[VertexAIClient]{
-			options: clientOptions,
-			client:  newVertexAIClient(clientOptions),
-		}, nil
-	case models.ProviderOpenRouter:
-		if clientOptions.baseURL == "" {
-			clientOptions.baseURL = "https://openrouter.ai/api/v1"
-		}
-		clientOptions.headers["HTTP-Referer"] = "opencode.ai"
-		clientOptions.headers["X-Title"] = "OpenCode"
-		return &baseProvider[OpenAIClient]{
-			options: clientOptions,
-			client:  newOpenAIClient(clientOptions),
-		}, nil
-	case models.ProviderXAI:
-		if clientOptions.baseURL == "" {
-			clientOptions.baseURL = "https://api.x.ai/v1"
-		}
-		return &baseProvider[OpenAIClient]{
-			options: clientOptions,
-			client:  newOpenAIClient(clientOptions),
 		}, nil
 	case models.ProviderLocal:
 		if clientOptions.baseURL == "" {
@@ -342,11 +305,5 @@ func WithGeminiOptions(geminiOptions ...GeminiOption) ProviderClientOption {
 func WithBedrockOptions(bedrockOptions ...BedrockOption) ProviderClientOption {
 	return func(options *providerClientOptions) {
 		options.bedrockOptions = bedrockOptions
-	}
-}
-
-func WithCopilotOptions(copilotOptions ...CopilotOption) ProviderClientOption {
-	return func(options *providerClientOptions) {
-		options.copilotOptions = copilotOptions
 	}
 }

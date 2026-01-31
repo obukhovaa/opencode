@@ -1,7 +1,5 @@
 package models
 
-import "maps"
-
 type (
 	ModelID       string
 	ModelProvider string
@@ -22,52 +20,31 @@ type Model struct {
 	SupportsAttachments bool          `json:"supports_attachments"`
 }
 
-// Model IDs
-const ( // GEMINI
-	// Bedrock
-	BedrockClaude37Sonnet ModelID = "bedrock.claude-3.7-sonnet"
-)
-
 const (
 	ProviderBedrock ModelProvider = "bedrock"
 	// ForTests
-	ProviderMock ModelProvider = "__mock"
+	ProviderMock          ModelProvider = "__mock"
+	BedrockClaude45Sonnet ModelID       = "bedrock.claude-4.5-sonnet"
 )
 
 // Providers in order of popularity
 var ProviderPopularity = map[ModelProvider]int{
-	ProviderCopilot:    1,
-	ProviderAnthropic:  2,
-	ProviderOpenAI:     3,
-	ProviderGemini:     4,
-	ProviderGROQ:       5,
-	ProviderOpenRouter: 6,
-	ProviderBedrock:    7,
-	ProviderAzure:      8,
-	ProviderVertexAI:   9,
+	ProviderVertexAI:  1,
+	ProviderAnthropic: 2,
+	ProviderOpenAI:    3,
+	ProviderGemini:    4,
+	ProviderBedrock:   5,
 }
 
 var SupportedModels = map[ModelID]Model{
-	BedrockClaude37Sonnet: {
-		ID:                 BedrockClaude37Sonnet,
-		Name:               "Bedrock: Claude 3.7 Sonnet",
+	BedrockClaude45Sonnet: {
+		ID:                 BedrockClaude45Sonnet,
+		Name:               "Bedrock: Claude 4.5 Sonnet",
 		Provider:           ProviderBedrock,
-		APIModel:           "anthropic.claude-3-7-sonnet-20250219-v1:0",
+		APIModel:           "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
 		CostPer1MIn:        3.0,
 		CostPer1MInCached:  3.75,
 		CostPer1MOutCached: 0.30,
 		CostPer1MOut:       15.0,
 	},
-}
-
-func init() {
-	maps.Copy(SupportedModels, AnthropicModels)
-	maps.Copy(SupportedModels, OpenAIModels)
-	maps.Copy(SupportedModels, GeminiModels)
-	maps.Copy(SupportedModels, GroqModels)
-	maps.Copy(SupportedModels, AzureModels)
-	maps.Copy(SupportedModels, OpenRouterModels)
-	maps.Copy(SupportedModels, XAIModels)
-	maps.Copy(SupportedModels, VertexAIGeminiModels)
-	maps.Copy(SupportedModels, CopilotModels)
 }

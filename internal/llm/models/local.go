@@ -195,7 +195,7 @@ func convertLocalModel(model localModel, source *Model) Model {
 	}
 }
 
-var modelInfoRegex = regexp.MustCompile(`(?i)^([a-z0-9]+)(?:[-_]?([rv]?\d[\.\d]*))?(?:[-_]?([a-z]+))?.*`)
+var modelInfoRegex = regexp.MustCompile(`(?i)^([a-z0-9]+)(?:[-_.]?([rv]?\d[\.\d]*))?(?:[-_.]?([a-z]+))?.*`)
 
 func friendlyModelName(modelID string) string {
 	mainID := modelID
