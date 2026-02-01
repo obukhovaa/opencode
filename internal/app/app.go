@@ -44,10 +44,22 @@ type App struct {
 }
 
 func New(ctx context.Context, conn *sql.DB) (*App, error) {
-	q := db.New(conn)
+	q := db.NewQuerier(conn)
 	sessions := session.NewService(q)
 	messages := message.NewService(q)
-	files := history.NewService(q, conn)
+	
+	// Type assert to *db.Queries or *db.MySQLQuerier (both have embedded *db.Queries)
+	var queries *db.Queries
+	switch v := q.(type) {
+	case *db.Queries:
+		queries = v
+	case *db.MySQLQuerier:
+		queries = v.Queries
+	default:
+		return nil, fmt.Errorf("unexpected querier type: %T", q)
+	}
+	
+	files := history.NewService(queries, conn)
 
 	app := &App{
 		Sessions:    sessions,

@@ -46,11 +46,11 @@ type service struct {
 	q  *db.Queries
 }
 
-func NewService(q *db.Queries, db *sql.DB) Service {
+func NewService(q *db.Queries, database *sql.DB) Service {
 	return &service{
 		Broker: pubsub.NewBroker[File](),
 		q:      q,
-		db:     db,
+		db:     database,
 	}
 }
 
