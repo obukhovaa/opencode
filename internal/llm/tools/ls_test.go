@@ -476,4 +476,3 @@ func TestListDirectory(t *testing.T) {
 		assert.True(t, containsDir)
 	})
 }
-

@@ -138,10 +138,34 @@ func (m *sidebarCmp) providerSection() string {
 	baseStyle := styles.BaseStyle()
 	cfg := config.Get()
 
-	// Get provider type
-	providerType := "local"
+	// Get provider type and details
+	providerInfo := "local"
 	if cfg.SessionProvider.Type == config.ProviderMySQL {
-		providerType = "remote"
+		// Show MySQL host if available
+		if cfg.SessionProvider.MySQL.Host != "" {
+			providerInfo = fmt.Sprintf("remote (%s)", cfg.SessionProvider.MySQL.Host)
+		} else if cfg.SessionProvider.MySQL.DSN != "" {
+			// Extract host from DSN if possible
+			// DSN format: user:pass@tcp(host:port)/db
+			dsn := cfg.SessionProvider.MySQL.DSN
+			if idx := strings.Index(dsn, "@tcp("); idx != -1 {
+				hostPart := dsn[idx+5:]
+				if endIdx := strings.Index(hostPart, ")"); endIdx != -1 {
+					host := hostPart[:endIdx]
+					// Remove port if present
+					if colonIdx := strings.Index(host, ":"); colonIdx != -1 {
+						host = host[:colonIdx]
+					}
+					providerInfo = fmt.Sprintf("remote (%s)", host)
+				} else {
+					providerInfo = "remote"
+				}
+			} else {
+				providerInfo = "remote"
+			}
+		} else {
+			providerInfo = "remote"
+		}
 	}
 
 	providerKey := baseStyle.
@@ -152,7 +176,7 @@ func (m *sidebarCmp) providerSection() string {
 	providerValue := baseStyle.
 		Foreground(t.Text()).
 		Width(m.width - lipgloss.Width(providerKey)).
-		Render(fmt.Sprintf(": %s", providerType))
+		Render(fmt.Sprintf(": %s", providerInfo))
 
 	return lipgloss.JoinHorizontal(
 		lipgloss.Left,

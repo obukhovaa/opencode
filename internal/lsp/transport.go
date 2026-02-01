@@ -101,7 +101,7 @@ func (c *Client) handleMessages() {
 		}
 		c.handlersMu.Unlock()
 	}()
-	
+
 	for {
 		msg, err := ReadMessage(c.stdout)
 		if err != nil {
@@ -237,7 +237,7 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 		if !ok {
 			return fmt.Errorf("LSP client connection closed while waiting for response")
 		}
-		
+
 		if cnf.DebugLSP {
 			logging.Debug("Received response", "id", id)
 		}

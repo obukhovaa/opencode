@@ -195,4 +195,3 @@ func NewThemeDialogCmp() ThemeDialog {
 		currentTheme: "",
 	}
 }
-

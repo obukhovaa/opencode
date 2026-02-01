@@ -521,8 +521,8 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 		json.Unmarshal([]byte(response.Metadata), &metadata)
 		// For image tools, we show a simple message indicating the image was loaded
 		// The actual base64 content is not displayed in the UI as it would be too long
-		imageInfo := fmt.Sprintf("📷 Image loaded: %s (%s)", 
-			filepath.Base(metadata.FilePath), 
+		imageInfo := fmt.Sprintf("📷 Image loaded: %s (%s)",
+			filepath.Base(metadata.FilePath),
 			metadata.MimeType)
 		return baseStyle.Width(width).Foreground(t.TextMuted()).Render(imageInfo)
 	case tools.WriteToolName:

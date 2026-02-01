@@ -162,4 +162,3 @@ func getSupportedFormats() string {
 	}
 	return strings.Join(formats, ", ")
 }
-

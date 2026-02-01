@@ -87,4 +87,3 @@ func TestAnthropicCountTokensEmptyMessages(t *testing.T) {
 		t.Errorf("Expected 0 converted messages, got %d", len(anthropicMessages))
 	}
 }
-

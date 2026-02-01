@@ -177,6 +177,24 @@ This ensures that:
 
 #### MySQL Setup Guide
 
+**Option 1: Using Docker Compose (Recommended for Testing)**
+
+A `docker-compose.yml` file is provided for quick MySQL setup:
+
+```bash
+# Start MySQL container
+docker-compose up -d
+
+# Configure OpenCode to use MySQL
+export OPENCODE_SESSION_PROVIDER_TYPE=mysql
+export OPENCODE_MYSQL_DSN="opencode_user:secure_password@tcp(localhost:3306)/opencode?parseTime=true"
+
+# Run OpenCode (migrations run automatically)
+opencode
+```
+
+**Option 2: Manual MySQL Setup**
+
 1. **Create Database:**
    ```sql
    CREATE DATABASE opencode CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

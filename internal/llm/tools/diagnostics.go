@@ -90,11 +90,11 @@ func (b *diagnosticsTool) Run(ctx context.Context, call ToolCall) (ToolResponse,
 
 func notifyLspOpenFile(ctx context.Context, filePath string, lsps map[string]*lsp.Client) {
 	ext := strings.ToLower(filepath.Ext(filePath))
-	
+
 	for serverName, client := range lsps {
 		// Only send files to appropriate language servers
 		shouldOpen := false
-		
+
 		switch serverName {
 		case "typescript", "typescript-language-server", "tsserver", "vtsls", "ts_ls":
 			shouldOpen = ext == ".ts" || ext == ".js" || ext == ".tsx" || ext == ".jsx"
@@ -116,7 +116,7 @@ func notifyLspOpenFile(ctx context.Context, filePath string, lsps map[string]*ls
 			// For unknown servers, be conservative
 			shouldOpen = false
 		}
-		
+
 		if shouldOpen {
 			err := client.OpenFile(ctx, filePath)
 			if err != nil {

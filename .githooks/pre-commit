@@ -1,0 +1,12 @@
+#!/bin/sh
+# pre-commit hook: run Go tests
+echo "Running Go tests..."
+if ! go vet ./...; then
+    echo "Go lint failed. Aborting commit."
+    exit 1
+fi
+if ! go test -short ./...; then
+    echo "Go tests failed. Aborting commit."
+    exit 1
+fi
+exit 0

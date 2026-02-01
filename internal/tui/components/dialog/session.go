@@ -108,7 +108,7 @@ func (s *sessionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (s *sessionDialogCmp) View() string {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
-	
+
 	if len(s.sessions) == 0 {
 		return baseStyle.Padding(1, 2).
 			Border(lipgloss.RoundedBorder()).

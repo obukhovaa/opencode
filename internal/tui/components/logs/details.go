@@ -70,13 +70,13 @@ func (i *detailCmp) updateContent() {
 	messageStyle := lipgloss.NewStyle().Bold(true).Foreground(t.Text())
 	content.WriteString(messageStyle.Render("Message:"))
 	content.WriteString("\n")
-	
+
 	// Calculate available width for message content (accounting for padding)
 	availableWidth := i.width - 4 // 2 chars padding on each side
 	if availableWidth < 1 {
 		availableWidth = 1
 	}
-	
+
 	// Wrap the message text to fit the available width
 	wrappedMessage := lipgloss.NewStyle().
 		Width(availableWidth).
@@ -116,7 +116,7 @@ func (i *detailCmp) updateContent() {
 func getLevelStyle(level string) lipgloss.Style {
 	style := lipgloss.NewStyle().Bold(true)
 	t := theme.CurrentTheme()
-	
+
 	switch strings.ToLower(level) {
 	case "info":
 		return style.Foreground(t.Info())
