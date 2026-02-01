@@ -23,16 +23,17 @@ CREATE TABLE IF NOT EXISTS files (
     id VARCHAR(255) PRIMARY KEY,
     session_id VARCHAR(255) NOT NULL,
     path VARCHAR(1024) NOT NULL,
+    path_hash VARCHAR(64) GENERATED ALWAYS AS (SHA2(CONCAT(path, ':', session_id, ':', version), 256)) STORED,
     content LONGTEXT NOT NULL,
     version VARCHAR(255) NOT NULL,
     created_at BIGINT NOT NULL,
     updated_at BIGINT NOT NULL,
     FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE,
-    UNIQUE(path(512), session_id, version)
+    UNIQUE(path_hash)
 );
 
 CREATE INDEX idx_files_session_id ON files (session_id);
-CREATE INDEX idx_files_path ON files (path(512));
+CREATE INDEX idx_files_path ON files (path(255));
 
 CREATE TRIGGER update_files_updated_at
 BEFORE UPDATE ON files

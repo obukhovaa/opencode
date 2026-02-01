@@ -7,8 +7,11 @@ COVER_DATA_DIR ?= $(TMP_DIR)/test/cov/data
 COVER_REPORT_DIR ?= $(TMP_DIR)/test/cov
 COVER_REPORT_NAME ?= test-report.html
 MYSQL_HOST := 0.0.0.0
+SESSION_PROVIDER ?= mysql
 GO_TEST_FLAGS ?= -race -coverprofile=$(COVER_DATA_DIR)/coverage.out
 VERSION := $(shell git tag | sort -V | tail -1)
+GOOSE_DIR = ./internal/db/migrations/$(SESSION_PROVIDER)
+GOOSE_DSN = "$(MYSQL_USER):$(MYSQL_PASSWORD)@tcp($(MYSQL_HOST):3306)/$(MYSQL_DATABASE)?parseTime=true"
 
 # Define all phony targets
 .PHONY: init init-hooks clean generate build \
@@ -85,6 +88,9 @@ lint:
 
 mysql-cli:
 	@mysql --host=$(MYSQL_HOST) --port=3306 --user=$(MYSQL_USER) --password=$(MYSQL_PASSWORD) --database=$(MYSQL_DATABASE)
+
+goose-%:
+	@goose -dir $(GOOSE_DIR) $(SESSION_PROVIDER) $(GOOSE_DSN) $*
 
 # Release targets
 version:
