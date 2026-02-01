@@ -4,23 +4,47 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/opencode-ai/opencode/internal/logging"
+)
+
+var (
+	projectIDCache   = make(map[string]string)
+	projectIDCacheMu sync.RWMutex
 )
 
 // GetProjectID determines the project ID for the given working directory.
 // It first attempts to use the Git repository origin URL, falling back to
 // the directory name if Git is not available or configured.
+// Results are cached per working directory.
 func GetProjectID(workingDir string) string {
-	// Try Git first
-	if projectID, err := getProjectIDFromGit(workingDir); err == nil && projectID != "" {
-		logging.Debug("Using Git-based project ID", "project_id", projectID, "working_dir", workingDir)
-		return projectID
+	// Check cache first
+	projectIDCacheMu.RLock()
+	if cached, ok := projectIDCache[workingDir]; ok {
+		projectIDCacheMu.RUnlock()
+		return cached
+	}
+	projectIDCacheMu.RUnlock()
+
+	// Compute project ID
+	projectIDCacheMu.Lock()
+	defer projectIDCacheMu.Unlock()
+
+	if cached, ok := projectIDCache[workingDir]; ok {
+		return cached
 	}
 
-	// Fallback to directory name
-	projectID := getProjectIDFromDirectory(workingDir)
-	logging.Debug("Using directory-based project ID", "project_id", projectID, "working_dir", workingDir)
+	var projectID string
+	if id, err := getProjectIDFromGit(workingDir); err == nil && id != "" {
+		logging.Debug("Using Git-based project ID", "project_id", id, "working_dir", workingDir)
+		projectID = id
+	} else {
+		projectID = getProjectIDFromDirectory(workingDir)
+		logging.Debug("Using directory-based project ID", "project_id", projectID, "working_dir", workingDir)
+	}
+
+	projectIDCache[workingDir] = projectID
 	return projectID
 }
 
