@@ -34,8 +34,14 @@ func Connect() (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to set dialect: %w", err)
 	}
 
+	// Determine migration directory based on provider type
+	migrationDir := "migrations/sqlite"
+	if provider.Type() == config.ProviderMySQL {
+		migrationDir = "migrations/mysql"
+	}
+
 	// Run migrations
-	if err := goose.Up(db, "migrations"); err != nil {
+	if err := goose.Up(db, migrationDir); err != nil {
 		logging.Error("Failed to apply migrations", "error", err)
 		db.Close()
 		return nil, fmt.Errorf("failed to apply migrations: %w", err)

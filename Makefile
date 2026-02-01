@@ -6,6 +6,7 @@ TMP_DIR := tmp
 COVER_DATA_DIR ?= $(TMP_DIR)/test/cov/data
 COVER_REPORT_DIR ?= $(TMP_DIR)/test/cov
 COVER_REPORT_NAME ?= test-report.html
+MYSQL_HOST := 0.0.0.0
 GO_TEST_FLAGS ?= -race -coverprofile=$(COVER_DATA_DIR)/coverage.out
 VERSION := $(shell git tag | sort -V | tail -1)
 
@@ -82,6 +83,9 @@ test-debug:
 lint:
 	go fmt ./...
 	go vet ./...
+
+mysql-cli:
+	@mysql --host=$(MYSQL_HOST) --port=3306 --user=$(MYSQL_USER) --password=$(MYSQL_PASSWORD) --database=$(MYSQL_DATABASE)
 
 # Release targets
 version:
