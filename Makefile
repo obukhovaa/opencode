@@ -14,8 +14,7 @@ VERSION := $(shell git tag | sort -V | tail -1)
 .PHONY: init init-hooks clean generate build \
         init-test-bin build-test-bin coverage-report-bin coverage-report \
         test-bin test-it test test-it-debug test-debug init-test lint \
-        dev-build dev-migration dev dev-stop build-docker run-docker release version \
-	lambda-build tools-build migrate-mysql run-smoke-tests
+        dev-build  dev dev-stop build-docker run-docker release version
 
 # Main targets
 init: clean init-hooks
@@ -42,7 +41,7 @@ dev-build: generate
 dev: generate 
 	@set -a; . .env; set +a; \
 	REGISTRY_URL=docker.io docker compose up -d; \
-	docker compose logs -f --since 0s server
+	docker compose logs -f --since 0s mysql
 	@echo "Logging..."
 
 dev-stop:
