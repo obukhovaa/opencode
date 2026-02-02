@@ -56,7 +56,7 @@ init-test-bin:
 	mkdir -p $(COVER_DATA_DIR)
 
 build-test-bin:
-	BUILDARGS="-cover" PLATFORM_BIN_NAME=opencode $(MAKE) build
+	BUILDARGS="-cover" $(MAKE) build
 	$(MAKE) init-test-bin
 
 coverage-report-bin:
@@ -91,6 +91,9 @@ mysql-cli:
 
 goose-%:
 	@goose -dir $(GOOSE_DIR) $(SESSION_PROVIDER) $(GOOSE_DSN) $*
+
+spec-%:
+	@touch "./spec/$$(date +"%Y%m%dT%H%M%S")-$*.md"
 
 # Release targets
 version:
