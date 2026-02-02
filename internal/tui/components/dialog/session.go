@@ -25,6 +25,7 @@ type SessionDialog interface {
 	layout.Bindings
 	SetSessions(sessions []session.Session)
 	SetSelectedSession(sessionID string)
+	SetTitle(title string)
 }
 
 type sessionDialogCmp struct {
@@ -33,6 +34,7 @@ type sessionDialogCmp struct {
 	width             int
 	height            int
 	selectedSessionID string
+	title             string
 }
 
 type sessionKeyMap struct {
@@ -162,12 +164,17 @@ func (s *sessionDialogCmp) View() string {
 		sessionItems = append(sessionItems, itemStyle.Padding(0, 1).Render(sess.Title))
 	}
 
+	dialogTitle := s.title
+	if dialogTitle == "" {
+		dialogTitle = "Switch Session"
+	}
+
 	title := baseStyle.
 		Foreground(t.Primary()).
 		Bold(true).
 		Width(maxWidth).
 		Padding(0, 1).
-		Render("Switch Session")
+		Render(dialogTitle)
 
 	content := lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -218,6 +225,10 @@ func (s *sessionDialogCmp) SetSelectedSession(sessionID string) {
 			}
 		}
 	}
+}
+
+func (s *sessionDialogCmp) SetTitle(title string) {
+	s.title = title
 }
 
 // NewSessionDialogCmp creates a new session switching dialog

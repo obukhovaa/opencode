@@ -557,6 +557,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(sessions) == 0 {
 					return a, util.ReportWarn("No sessions available")
 				}
+				a.deleteSessionDialog.SetTitle("Prune Session")
 				a.deleteSessionDialog.SetSessions(sessions)
 				a.showDeleteSessionDialog = true
 			}
