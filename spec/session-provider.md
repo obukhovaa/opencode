@@ -81,11 +81,6 @@ Add new `SessionProvider` configuration section to `internal/config/config.go`:
 Support environment variable overrides for sensitive data:
 
 - `OPENCODE_SESSION_PROVIDER_TYPE`: Provider type (sqlite/mysql)
-- `OPENCODE_MYSQL_HOST`: MySQL host
-- `OPENCODE_MYSQL_PORT`: MySQL port
-- `OPENCODE_MYSQL_DATABASE`: MySQL database name
-- `OPENCODE_MYSQL_USERNAME`: MySQL username
-- `OPENCODE_MYSQL_PASSWORD`: MySQL password
 - `OPENCODE_MYSQL_DSN`: Complete MySQL DSN (overrides individual settings)
 
 ### Default Behavior

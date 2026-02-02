@@ -520,6 +520,7 @@ cat > create-skill.sh << 'EOF'
 #!/bin/bash
 SKILL_NAME=$1
 SKILL_DESC=$2
+SKILL_TAGS=$3
 
 mkdir -p .opencode/skills/$SKILL_NAME
 cat > .opencode/skills/$SKILL_NAME/SKILL.md << SKILL
@@ -527,6 +528,8 @@ cat > .opencode/skills/$SKILL_NAME/SKILL.md << SKILL
 name: $SKILL_NAME
 description: $SKILL_DESC
 license: MIT
+metadata:
+  tags: $SKILL_TAGS
 ---
 
 ## What I do
@@ -546,7 +549,7 @@ echo "Created skill: $SKILL_NAME"
 EOF
 
 chmod +x create-skill.sh
-./create-skill.sh my-skill "My skill description"
+./create-skill.sh my-skill "My skill description" "#tag1,#tag2"
 ```
 
 ## Examples
