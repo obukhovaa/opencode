@@ -1,0 +1,689 @@
+# Skills Feature
+
+## Overview
+
+This feature enables OpenCode agents to dynamically discover and load reusable instruction sets called "skills" from the project or global configuration directories. Skills are markdown files with YAML frontmatter that provide specialized knowledge and step-by-step guidance for specific tasks. Agents can see available skills and load them on-demand via a dedicated `skill` tool.
+
+## Motivation
+
+- **Reusable Knowledge**: Define common workflows, best practices, and domain-specific instructions once and reuse across sessions
+- **On-Demand Loading**: Skills are loaded only when needed, reducing context window usage
+- **Discoverability**: Agents can see available skills and choose appropriate ones based on task descriptions
+- **Flexibility**: Support both project-specific and global skills
+- **Compatibility**: Support both OpenCode-native and Claude-compatible skill locations
+- **Permission Control**: Fine-grained control over which skills agents can access
+
+## Architecture
+
+### Skill Definition
+
+Skills are markdown files named `SKILL.md` with YAML frontmatter containing metadata and markdown content containing instructions.
+
+**File Structure:**
+```
+SKILL.md
+├── YAML Frontmatter (metadata)
+└── Markdown Content (instructions)
+```
+
+**Required Frontmatter Fields:**
+- `name`: Skill identifier (1-64 chars, lowercase alphanumeric with hyphens)
+- `description`: Brief description (1-1024 chars) for agent to choose correctly
+
+**Optional Frontmatter Fields:**
+- `license`: License information (e.g., "MIT")
+- `compatibility`: Compatibility marker (e.g., "opencode")
+- `metadata`: String-to-string map for additional metadata
+
+**Naming Rules:**
+- Must match regex: `^[a-z0-9]+(-[a-z0-9]+)*$`
+- 1-64 characters
+- Lowercase alphanumeric with single hyphen separators
+- Cannot start or end with `-`
+- Cannot contain consecutive `--`
+- Must match the directory name containing `SKILL.md`
+
+### Discovery Locations
+
+Skills are discovered from multiple locations in priority order:
+
+**Project-Level (OpenCode-native):**
+- `.opencode/skills/<name>/SKILL.md`
+- `.opencode/skill/<name>/SKILL.md`
+
+**Project-Level (Claude-compatible):**
+- `.claude/skills/<name>/SKILL.md`
+
+**Global (OpenCode-native):**
+- `~/.config/opencode/skills/<name>/SKILL.md`
+- `~/.config/opencode/skill/<name>/SKILL.md`
+
+**Global (Claude-compatible):**
+- `~/.claude/skills/<name>/SKILL.md`
+
+**Custom Paths (from config):**
+- Paths specified in `opencode.json` under `skills.paths`
+
+**Discovery Algorithm:**
+1. Walk up from current working directory to git worktree root
+2. Scan `.opencode/{skill,skills}/**/SKILL.md` in each directory
+3. Scan `.claude/skills/**/SKILL.md` in each directory (unless disabled)
+4. Scan global `~/.config/opencode/{skill,skills}/**/SKILL.md`
+5. Scan global `~/.claude/skills/**/SKILL.md` (unless disabled)
+6. Scan custom paths from config
+
+### Skill Tool
+
+The `skill` tool is a native tool that:
+1. Lists available skills in its description (filtered by permissions)
+2. Loads skill content when invoked by the agent
+3. Requests permission before loading (if configured)
+4. Returns skill content with base directory information
+
+**Tool Description Format:**
+```
+Load a skill to get detailed instructions for a specific task.
+Skills provide specialized knowledge and step-by-step guidance.
+Use this when a task matches an available skill's description.
+Only the skills listed here are available:
+<available_skills>
+  <skill>
+    <name>git-release</name>
+    <description>Create consistent releases and changelogs</description>
+  </skill>
+  <skill>
+    <name>pr-review</name>
+    <description>Review pull requests with consistent criteria</description>
+  </skill>
+</available_skills>
+```
+
+**Tool Parameters:**
+- `name` (required): The skill identifier from available_skills
+
+**Tool Output:**
+```
+## Skill: git-release
+
+**Base directory**: /path/to/.opencode/skills/git-release
+
+[Skill markdown content here]
+```
+
+### Permission System
+
+Skills support pattern-based permissions similar to other tools:
+
+**Permission Actions:**
+- `allow`: Skill loads immediately without prompting
+- `deny`: Skill is hidden from agent and access is rejected
+- `ask`: User is prompted for approval before loading
+
+**Permission Patterns:**
+- Support wildcards: `internal-*` matches `internal-docs`, `internal-tools`, etc.
+- Exact matches: `pr-review` matches only `pr-review`
+- Global wildcard: `*` matches all skills
+
+**Configuration:**
+
+**Global permissions** (in `opencode.json`):
+```json
+{
+  "permission": {
+    "skill": {
+      "*": "allow",
+      "internal-*": "deny",
+      "experimental-*": "ask"
+    }
+  }
+}
+```
+
+**Per-agent permissions for built-in agents** (in `opencode.json`):
+```json
+{
+  "agents": {
+    "coder": {
+      "permission": {
+        "skill": {
+          "internal-*": "allow"
+        }
+      }
+    }
+  }
+}
+```
+
+**Built-in Agents:**
+- `coder`: Main coding agent
+- `summarizer`: Session summarization agent
+- `task`: Task planning agent
+- `title`: Session title generation agent
+
+**Note:** Custom agents are planned for a future release. The permission system is designed to support them seamlessly when available.
+
+### Disabling Skills
+
+Skills can be completely disabled for specific built-in agents:
+
+**In `opencode.json`:**
+```json
+{
+  "agents": {
+    "coder": {
+      "tools": {
+        "skill": false
+      }
+    }
+  }
+}
+```
+
+When disabled, the `<available_skills>` section is omitted from the tool description.
+
+## Implementation Plan
+
+### Phase 1: Core Skill Package
+
+**File:** `internal/skill/skill.go`
+
+**Components:**
+1. **Skill Info Structure**
+   ```go
+   type Info struct {
+       Name        string
+       Description string
+       Location    string
+       Content     string
+   }
+   ```
+
+2. **Validation Functions**
+   - `validateName(name string) error`: Validate skill name against regex
+   - `validateDescription(desc string) error`: Validate description length
+   - `validateFrontmatter(data map[string]interface{}) error`: Validate required fields
+
+3. **Discovery Functions**
+   - `discoverProjectSkills(workingDir, worktreeRoot string) ([]Info, error)`: Scan project-level skills
+   - `discoverGlobalSkills() ([]Info, error)`: Scan global skills
+   - `discoverCustomPaths(paths []string) ([]Info, error)`: Scan custom paths from config
+   - `parseSkillFile(path string) (*Info, error)`: Parse SKILL.md file
+
+4. **State Management**
+   - `state() map[string]Info`: Cached skill registry (similar to TypeScript implementation)
+   - `Get(name string) (*Info, error)`: Get skill by name
+   - `All() ([]Info, error)`: Get all available skills
+
+5. **Error Types**
+   - `SkillInvalidError`: Invalid skill file or frontmatter
+   - `SkillNameMismatchError`: Skill name doesn't match directory name
+   - `SkillNotFoundError`: Requested skill not found
+
+**Dependencies:**
+- `internal/config`: For reading config and custom paths
+- `internal/fileutil`: For file system operations
+- YAML parser: For frontmatter parsing (use existing or add `gopkg.in/yaml.v3`)
+- Markdown parser: For splitting frontmatter and content
+
+**Key Implementation Details:**
+- Use glob patterns for file discovery: `{skill,skills}/**/SKILL.md`
+- Walk up directory tree from working dir to git worktree root
+- Cache discovered skills in memory (invalidate on config reload)
+- Handle duplicate skill names (warn and use first found)
+- Support disabling Claude skills via flag/config
+
+### Phase 2: Skill Tool Implementation
+
+**File:** `internal/llm/tools/skill.go`
+
+**Components:**
+1. **Tool Definition**
+   ```go
+   func SkillTool() Tool {
+       return Tool{
+           Name:        "skill",
+           Description: buildDescription(),
+           Parameters:  buildParameters(),
+           Execute:     executeSkill,
+       }
+   }
+   ```
+
+2. **Description Builder**
+   - `buildDescription(ctx *Context) string`: Build dynamic description with available skills
+   - Filter skills by agent permissions
+   - Format as XML with `<available_skills>` section
+   - Include examples in parameter hint
+
+3. **Parameter Schema**
+   ```go
+   type SkillParams struct {
+       Name string `json:"name" jsonschema:"required,description=The skill identifier from available_skills"`
+   }
+   ```
+
+4. **Execute Function**
+   - Load skill by name
+   - Check permissions (call `ctx.Ask()` if needed)
+   - Format output with skill name, base directory, and content
+   - Return structured result
+
+**Integration Points:**
+- Register tool in `internal/llm/tools/tools.go`
+- Add to default tool list
+- Support tool enable/disable via agent config
+
+### Phase 3: Permission Integration
+
+**File:** `internal/permission/permission.go` (extend existing)
+
+**Components:**
+1. **Skill Permission Type**
+   - Add `skill` to permission types
+   - Support pattern matching with wildcards
+
+2. **Permission Evaluation**
+   - `EvaluateSkillPermission(skillName string, agentName config.AgentName) PermissionAction`
+   - Check global permissions
+   - Check agent-specific permissions (from config.Agents map)
+   - Return `allow`, `deny`, or `ask`
+
+3. **Permission Request**
+   - Integrate with existing permission dialog
+   - Show skill name and description in prompt
+   - Store user decision for session
+
+**Configuration Schema:**
+- Extend `opencode.json` schema with `permission.skill`
+- Extend `Agent` struct in config with `Permission` and `Tools` fields
+- Validate permission patterns
+
+**Agent Configuration Structure:**
+```go
+type Agent struct {
+    Model           models.ModelID            `json:"model"`
+    MaxTokens       int64                     `json:"maxTokens"`
+    ReasoningEffort string                    `json:"reasoningEffort"`
+    Permission      map[string]map[string]string `json:"permission"` // NEW: e.g., {"skill": {"internal-*": "allow"}}
+    Tools           map[string]bool           `json:"tools"`       // NEW: e.g., {"skill": false}
+}
+```
+
+### Phase 4: Configuration Updates
+
+**File:** `internal/config/config.go`
+
+**Components:**
+1. **Skills Configuration**
+   ```go
+   type SkillsConfig struct {
+       Paths []string `json:"paths"` // Custom skill paths
+   }
+   ```
+
+2. **Global Permission Configuration**
+   ```go
+   type PermissionConfig struct {
+       Skill map[string]string `json:"skill"` // skill name pattern -> action
+   }
+   ```
+
+3. **Agent Configuration Updates**
+   ```go
+   type Agent struct {
+       Model           models.ModelID               `json:"model"`
+       MaxTokens       int64                        `json:"maxTokens"`
+       ReasoningEffort string                       `json:"reasoningEffort"`
+       Permission      map[string]map[string]string `json:"permission,omitempty"` // NEW: {"skill": {"pattern": "action"}}
+       Tools           map[string]bool              `json:"tools,omitempty"`      // NEW: {"skill": false}
+   }
+   ```
+
+4. **Main Config Updates**
+   ```go
+   type Config struct {
+       // ... existing fields
+       Skills     SkillsConfig  `json:"skills,omitempty"`     // NEW
+       Permission PermissionConfig `json:"permission,omitempty"` // NEW
+   }
+   ```
+
+**Schema Updates:**
+- Update `opencode-schema.json` with new fields
+- Add validation for skill paths
+- Add validation for permission patterns
+- Document that `agents` map uses `AgentName` keys: "coder", "summarizer", "task", "title"
+
+### Phase 5: Testing
+
+**Files:**
+- `internal/skill/skill_test.go`
+- `internal/llm/tools/skill_test.go`
+- `internal/permission/permission_test.go`
+
+**Test Coverage:**
+1. **Skill Discovery Tests**
+   - Test project-level discovery
+   - Test global discovery
+   - Test custom path discovery
+   - Test duplicate name handling
+   - Test invalid skill files
+   - Test name validation
+   - Test description validation
+
+2. **Skill Tool Tests**
+   - Test tool description generation
+   - Test skill loading
+   - Test permission filtering
+   - Test error handling
+   - Test tool disable
+
+3. **Permission Tests**
+   - Test pattern matching
+   - Test wildcard patterns
+   - Test permission evaluation
+   - Test agent-specific overrides
+
+4. **Integration Tests**
+   - Test end-to-end skill loading
+   - Test with real agent context
+   - Test permission prompts
+
+### Phase 6: Documentation
+
+**Files:**
+- `README.md` (update with skills section)
+- `docs/skills.md` (new detailed guide)
+
+**Documentation Sections:**
+1. **Quick Start**
+   - Creating your first skill
+   - Skill file structure
+   - Example skill
+
+2. **Skill Discovery**
+   - Discovery locations
+   - Priority order
+   - Custom paths
+
+3. **Skill Format**
+   - Frontmatter fields
+   - Naming rules
+   - Content guidelines
+
+4. **Permissions**
+   - Permission actions
+   - Pattern matching
+   - Configuration examples
+
+5. **Best Practices**
+   - When to create a skill
+   - Skill organization
+   - Naming conventions
+   - Description writing
+
+6. **Troubleshooting**
+   - Skill not showing up
+   - Permission issues
+   - Validation errors
+
+## Example Skill
+
+**Location:** `.opencode/skills/git-release/SKILL.md`
+
+```markdown
+---
+name: git-release
+description: Create consistent releases and changelogs
+license: MIT
+compatibility: opencode
+metadata:
+  audience: maintainers
+  workflow: github
+---
+
+## What I do
+
+- Draft release notes from merged PRs
+- Propose a version bump
+- Provide a copy-pasteable `gh release create` command
+
+## When to use me
+
+Use this when you are preparing a tagged release.
+Ask clarifying questions if the target versioning scheme is unclear.
+
+## Steps
+
+1. Review recent commits since last tag
+2. Categorize changes (features, fixes, breaking)
+3. Suggest semantic version bump
+4. Generate changelog in Keep a Changelog format
+5. Provide GitHub CLI command for release creation
+```
+
+## Configuration Examples
+
+### Basic Configuration
+
+**File:** `opencode.json`
+
+```json
+{
+  "skills": {
+    "paths": [
+      "~/my-skills",
+      "./project-skills"
+    ]
+  },
+  "permission": {
+    "skill": {
+      "*": "allow"
+    }
+  }
+}
+```
+
+### Advanced Permissions
+
+**File:** `opencode.json`
+
+```json
+{
+  "permission": {
+    "skill": {
+      "*": "ask",
+      "git-*": "allow",
+      "internal-*": "deny"
+    }
+  },
+  "agents": {
+    "coder": {
+      "permission": {
+        "skill": {
+          "internal-*": "allow"
+        }
+      }
+    },
+    "task": {
+      "permission": {
+        "skill": {
+          "experimental-*": "deny"
+        }
+      }
+    }
+  }
+}
+```
+
+### Disable Skills for Agent
+
+**File:** `opencode.json`
+
+```json
+{
+  "agents": {
+    "summarizer": {
+      "tools": {
+        "skill": false
+      }
+    },
+    "title": {
+      "tools": {
+        "skill": false
+      }
+    }
+  }
+}
+```
+
+## Error Handling
+
+### Skill Loading Errors
+
+1. **Invalid Frontmatter**
+   - Log error with file path
+   - Skip skill and continue discovery
+   - Publish error event to session
+
+2. **Name Mismatch**
+   - Log warning with expected vs actual name
+   - Skip skill and continue discovery
+
+3. **Duplicate Names**
+   - Log warning with both locations
+   - Use first discovered skill
+   - Continue discovery
+
+4. **Skill Not Found**
+   - Return clear error message
+   - List available skills
+   - Suggest similar names (fuzzy match)
+
+### Permission Errors
+
+1. **Denied Access**
+   - Return error to agent
+   - Do not reveal skill content
+   - Log access attempt
+
+2. **User Rejection**
+   - Return error to agent
+   - Store decision for session
+   - Allow retry in new session
+
+## Performance Considerations
+
+1. **Caching**
+   - Cache discovered skills in memory
+   - Invalidate cache on config reload
+   - Lazy load skill content (only when requested)
+
+2. **Discovery Optimization**
+   - Limit directory traversal depth
+   - Skip hidden directories (except `.opencode`, `.claude`)
+   - Use efficient glob patterns
+
+3. **Context Window**
+   - Skills loaded on-demand (not in initial context)
+   - Only loaded skills consume context
+   - Skill descriptions are brief (max 1024 chars)
+
+## Security Considerations
+
+1. **Path Traversal**
+   - Validate custom paths are within allowed directories
+   - Prevent `..` in skill paths
+   - Sanitize file paths before reading
+
+2. **Content Validation**
+   - Validate frontmatter structure
+   - Limit skill content size (e.g., 100KB max)
+   - Sanitize skill content before returning to agent
+
+3. **Permission Enforcement**
+   - Always check permissions before loading
+   - Respect deny rules strictly
+   - Log permission violations
+
+## Migration Path
+
+### For Existing Users
+
+No migration needed - skills are an opt-in feature.
+
+### For Claude Users
+
+Claude-compatible skill locations are automatically discovered:
+- `.claude/skills/<name>/SKILL.md` (project)
+- `~/.claude/skills/<name>/SKILL.md` (global)
+
+Users can disable Claude skill discovery via config flag if needed.
+
+## Future Enhancements
+
+- **Custom Agents**: Support for user-defined agents with custom prompts (see separate spec)
+  - Skills feature is designed to integrate seamlessly with custom agents
+  - Custom agents will support per-agent skill permissions and tool configuration
+  - Agent frontmatter will allow skill permission overrides
+- **Skill Parameters**: Allow skills to accept parameters for customization
+- **Skill Dependencies**: Allow skills to reference other skills
+- **Skill Versioning**: Support multiple versions of the same skill
+- **Skill Marketplace**: Share skills with community
+- **Skill Templates**: Provide templates for common skill types
+- **Skill Analytics**: Track skill usage and effectiveness
+
+## Custom Agents Integration (Future)
+
+When custom agents are implemented, the skills feature will support them through:
+
+1. **Agent Discovery**: Custom agents loaded from `.opencode/agents/` and `~/.config/opencode/agents/`
+2. **Agent Frontmatter**: YAML frontmatter in agent definition files
+   ```yaml
+   ---
+   name: code-reviewer
+   description: Reviews code for quality and security
+   tools:
+     skill: true
+   permission:
+     skill:
+       "security-*": "allow"
+       "experimental-*": "deny"
+   ---
+   ```
+3. **Permission Evaluation**: Skill tool will check custom agent permissions
+4. **Tool Filtering**: Skills will respect custom agent tool configuration
+
+**Design Considerations:**
+- Skills feature uses `config.AgentName` type for agent identification
+- Permission system supports both built-in and custom agent names
+- Tool registration system is extensible for custom agents
+- No changes to skills feature required when custom agents are added
+
+## Success Criteria
+
+- [ ] Skills can be discovered from all specified locations
+- [ ] Skill frontmatter is validated correctly
+- [ ] Skill names are validated against regex
+- [ ] Duplicate skill names are handled gracefully
+- [ ] Skill tool lists available skills in description
+- [ ] Skill tool loads skill content on request
+- [ ] Permissions filter available skills correctly
+- [ ] Permission prompts work for `ask` action
+- [ ] Denied skills are hidden from agents
+- [ ] Skills can be disabled per agent
+- [ ] Custom skill paths work correctly
+- [ ] Claude-compatible locations are discovered
+- [ ] Error handling is robust and informative
+- [ ] Documentation is complete and clear
+- [ ] Tests cover all major functionality
+
+## Non-Goals
+
+- Skill execution (skills are instructions, not executable code)
+- Skill versioning (in this phase)
+- Skill parameters (in this phase)
+- Skill dependencies (in this phase)
+- Skill marketplace (in this phase)
+- Real-time skill updates
+- Skill analytics

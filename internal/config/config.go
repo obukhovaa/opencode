@@ -44,9 +44,11 @@ const (
 
 // Agent defines configuration for different LLM models and their token limits.
 type Agent struct {
-	Model           models.ModelID `json:"model"`
-	MaxTokens       int64          `json:"maxTokens"`
-	ReasoningEffort string         `json:"reasoningEffort"` // For openai models low,medium,heigh
+	Model           models.ModelID               `json:"model"`
+	MaxTokens       int64                        `json:"maxTokens"`
+	ReasoningEffort string                       `json:"reasoningEffort"` // For openai models low,medium,high
+	Permission      map[string]map[string]string `json:"permission,omitempty"` // e.g., {"skill": {"internal-*": "allow"}}
+	Tools           map[string]bool              `json:"tools,omitempty"`      // e.g., {"skill": false}
 }
 
 // Provider defines configuration for an LLM provider.
@@ -109,6 +111,16 @@ type SessionProviderConfig struct {
 	MySQL MySQLConfig  `json:"mysql,omitempty"`
 }
 
+// SkillsConfig defines configuration for skills.
+type SkillsConfig struct {
+	Paths []string `json:"paths,omitempty"` // Custom skill paths
+}
+
+// PermissionConfig defines permission configuration.
+type PermissionConfig struct {
+	Skill map[string]string `json:"skill,omitempty"` // skill name pattern -> action (allow/deny/ask)
+}
+
 // Config is the main configuration structure for the application.
 type Config struct {
 	Data            Data                              `json:"data"`
@@ -124,6 +136,8 @@ type Config struct {
 	Shell           ShellConfig                       `json:"shell,omitempty"`
 	AutoCompact     bool                              `json:"autoCompact,omitempty"`
 	SessionProvider SessionProviderConfig             `json:"sessionProvider,omitempty"`
+	Skills          *SkillsConfig                     `json:"skills,omitempty"`
+	Permission      *PermissionConfig                 `json:"permission,omitempty"`
 }
 
 // Application constants
