@@ -20,6 +20,7 @@ OpenCode is a Go-based CLI application that brings AI assistance to your termina
 - **Multiple AI Providers**: Support for OpenAI, Anthropic Claude, Google Gemini, AWS Bedrock, Groq, Azure OpenAI, and OpenRouter
 - **Session Management**: Save and manage multiple conversation sessions
 - **Tool Integration**: AI can execute commands, search files, and modify code
+- **Agent Skills**: Define reusable instructions that agents can discover and load on-demand
 - **Vim-like Editor**: Integrated editor with text input capabilities
 - **Persistent Storage**: SQLite database for storing conversations and sessions
 - **LSP Integration**: Language Server Protocol support for code intelligence
@@ -221,6 +222,169 @@ opencode
 - Verify database exists and is accessible
 - Check logs for detailed error messages
 
+### Agent Skills
+
+OpenCode supports reusable instruction sets called "skills" that agents can discover and load on-demand. Skills provide specialized knowledge and step-by-step guidance for specific tasks.
+
+#### Creating a Skill
+
+Create a folder with your skill name and add a `SKILL.md` file:
+
+```bash
+mkdir -p .opencode/skills/git-release
+```
+
+Create `.opencode/skills/git-release/SKILL.md`:
+
+```markdown
+---
+name: git-release
+description: Create consistent releases and changelogs
+license: MIT
+---
+
+## What I do
+
+- Draft release notes from merged PRs
+- Propose a version bump
+- Provide a copy-pasteable `gh release create` command
+
+## When to use me
+
+Use this when you are preparing a tagged release.
+Ask clarifying questions if the target versioning scheme is unclear.
+```
+
+#### Skill Discovery Locations
+
+Skills are discovered from multiple locations:
+
+**Project-level:**
+- `.opencode/skills/<name>/SKILL.md`
+- `.opencode/skill/<name>/SKILL.md`
+- `.claude/skills/<name>/SKILL.md` (Claude-compatible)
+
+**Global:**
+- `~/.config/opencode/skills/<name>/SKILL.md`
+- `~/.config/opencode/skill/<name>/SKILL.md`
+- `~/.claude/skills/<name>/SKILL.md` (Claude-compatible)
+
+**Custom paths:**
+```json
+{
+  "skills": {
+    "paths": [
+      "~/my-skills",
+      "./project-skills"
+    ]
+  }
+}
+```
+
+#### Skill Naming Rules
+
+Skill names must:
+- Be 1-64 characters
+- Use lowercase alphanumeric with single hyphens
+- Match pattern: `^[a-z0-9]+(-[a-z0-9]+)*$`
+- Match the directory name containing `SKILL.md`
+
+Examples: `git-release`, `docker-build`, `pr-review`
+
+#### Skill Permissions
+
+Control which skills agents can access using pattern-based permissions:
+
+```json
+{
+  "permission": {
+    "skill": {
+      "*": "allow",
+      "internal-*": "deny",
+      "experimental-*": "ask"
+    }
+  }
+}
+```
+
+**Permission actions:**
+- `allow`: Skill loads immediately
+- `deny`: Skill hidden from agent, access rejected
+- `ask`: User prompted for approval (default)
+
+**Patterns support wildcards:**
+- `internal-*` matches `internal-docs`, `internal-tools`, etc.
+- `*-test` matches `unit-test`, `integration-test`, etc.
+- `*` matches all skills
+
+#### Agent-Specific Permissions
+
+Override permissions for specific agents:
+
+```json
+{
+  "permission": {
+    "skill": {
+      "internal-*": "deny"
+    }
+  },
+  "agents": {
+    "coder": {
+      "model": "claude-3-5-sonnet-20241022",
+      "permission": {
+        "skill": {
+          "internal-*": "allow"
+        }
+      }
+    },
+    "summarizer": {
+      "model": "claude-3-5-haiku-20241022",
+      "tools": {
+        "skill": false
+      }
+    }
+  }
+}
+```
+
+**Built-in agents:**
+- `coder`: Main coding agent
+- `task`: Task planning agent
+- `summarizer`: Session summarization agent
+- `title`: Session title generation agent
+
+#### How Agents Use Skills
+
+Agents see available skills in the `skill` tool description:
+
+```xml
+<available_skills>
+  <skill>
+    <name>git-release</name>
+    <description>Create consistent releases and changelogs</description>
+  </skill>
+</available_skills>
+```
+
+When an agent needs specialized guidance, it loads the skill:
+
+```
+Agent: I'll load the git-release skill to help with this.
+[Calls skill tool with {"name": "git-release"}]
+[Receives full skill instructions]
+Agent: Based on the git-release skill, I'll...
+```
+
+#### Disabling Claude Skills
+
+To disable automatic discovery of `.claude/skills/`:
+
+```bash
+export OPENCODE_DISABLE_CLAUDE_SKILLS=true
+```
+
+For more details on creating and managing skills, see the [Skills Guide](docs/skills.md).
+
 ### Environment Variables
 
 You can configure OpenCode using environment variables:
@@ -240,6 +404,7 @@ You can configure OpenCode using environment variables:
 | `SHELL`                           | Default shell to use (if not specified in config)                                |
 | `OPENCODE_SESSION_PROVIDER_TYPE`  | Session storage provider: `sqlite` (default) or `mysql`                          |
 | `OPENCODE_MYSQL_DSN`              | MySQL connection string (e.g., `user:pass@tcp(host:port)/dbname`)                |
+| `OPENCODE_DISABLE_CLAUDE_SKILLS`  | Set to `true` to disable `.claude/skills/` discovery                             |
 | -------------------------------------------------------------------------------------------------------------------- |
 
 ### Shell Configuration
