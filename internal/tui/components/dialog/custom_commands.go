@@ -82,7 +82,7 @@ func loadCommandsFromDir(commandsDir string, prefix string) ([]Command, error) {
 	// Check if the commands directory exists
 	if _, err := os.Stat(commandsDir); os.IsNotExist(err) {
 		// Create the commands directory if it doesn't exist
-		if err := os.MkdirAll(commandsDir, 0755); err != nil {
+		if err := os.MkdirAll(commandsDir, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to create commands directory %s: %w", commandsDir, err)
 		}
 		// Return empty list since we just created the directory
@@ -136,42 +136,13 @@ func loadCommandsFromDir(commandsDir string, prefix string) ([]Command, error) {
 			Description: fmt.Sprintf("Custom command from %s", relPath),
 			Handler: func(cmd Command) tea.Cmd {
 				commandContent := string(content)
-
-				// Check for named arguments
-				matches := namedArgPattern.FindAllStringSubmatch(commandContent, -1)
-				if len(matches) > 0 {
-					// Extract unique argument names
-					argNames := make([]string, 0)
-					argMap := make(map[string]bool)
-
-					for _, match := range matches {
-						argName := match[1] // Group 1 is the name without $
-						if !argMap[argName] {
-							argMap[argName] = true
-							argNames = append(argNames, argName)
-						}
-					}
-
-					// Show multi-arguments dialog for all named arguments
-					return util.CmdHandler(ShowMultiArgumentsDialogMsg{
-						CommandID: cmd.ID,
-						Content:   commandContent,
-						ArgNames:  argNames,
-					})
-				}
-
-				// No arguments needed, run command directly
-				return util.CmdHandler(CommandRunCustomMsg{
-					Content: commandContent,
-					Args:    nil, // No arguments
-				})
+				return ParameterizedCommandHandler(commandContent, &cmd)
 			},
 		}
 
 		commands = append(commands, command)
 		return nil
 	})
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to load custom commands from %s: %w", commandsDir, err)
 	}
@@ -183,4 +154,31 @@ func loadCommandsFromDir(commandsDir string, prefix string) ([]Command, error) {
 type CommandRunCustomMsg struct {
 	Content string
 	Args    map[string]string // Map of argument names to values
+}
+
+func ParameterizedCommandHandler(commandContent string, cmd *Command) tea.Cmd {
+	matches := namedArgPattern.FindAllStringSubmatch(commandContent, -1)
+	if len(matches) > 0 {
+		argNames := make([]string, 0)
+		argMap := make(map[string]bool)
+
+		for _, match := range matches {
+			argName := match[1] // Group 1 is the name without $
+			if !argMap[argName] {
+				argMap[argName] = true
+				argNames = append(argNames, argName)
+			}
+		}
+
+		return util.CmdHandler(ShowMultiArgumentsDialogMsg{
+			CommandID: cmd.ID,
+			Content:   commandContent,
+			ArgNames:  argNames,
+		})
+	}
+
+	return util.CmdHandler(CommandRunCustomMsg{
+		Content: commandContent,
+		Args:    nil,
+	})
 }

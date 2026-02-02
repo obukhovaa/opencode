@@ -995,16 +995,32 @@ func New(app *app.App) tea.Model {
 		Title:       "Initialize Project",
 		Description: "Create/Update the OpenCode.md memory file",
 		Handler: func(cmd dialog.Command) tea.Cmd {
-			prompt := `Please analyze this codebase and create a OpenCode.md file containing:
-1. Build/lint/test commands - especially for running a single test
-2. Code style guidelines including imports, formatting, types, naming conventions, error handling, etc.
-
-The file you create will be given to agentic coding agents (such as yourself) that operate in this repository. Make it about 20 lines long.
-If there's already a opencode.md, improve it.
-If there are Cursor rules (in .cursor/rules/ or .cursorrules) or Copilot rules (in .github/copilot-instructions.md), make sure to include them.`
+			prompt, err := dialog.CommandPrompts.ReadFile("commands/init.md")
+			if err != nil {
+				logging.Error("Failed to load init command", "error", err)
+				prompt = []byte{}
+			}
 			return tea.Batch(
 				util.CmdHandler(chat.SendMsg{
-					Text: prompt,
+					Text: string(prompt),
+				}),
+			)
+		},
+	})
+
+	model.RegisterCommand(dialog.Command{
+		ID:          "review",
+		Title:       "Review code",
+		Description: "Review a given work using provided commit hash or branch)",
+		Handler: func(cmd dialog.Command) tea.Cmd {
+			prompt, err := dialog.CommandPrompts.ReadFile("commands/review.md")
+			if err != nil {
+				logging.Error("Failed to load review command", "error", err)
+				prompt = []byte{}
+			}
+			return tea.Batch(
+				util.CmdHandler(chat.SendMsg{
+					Text: string(prompt),
 				}),
 			)
 		},

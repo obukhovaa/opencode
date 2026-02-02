@@ -95,6 +95,8 @@ func generateSchema() map[string]any {
 			"OpenCode.local.md",
 			"OPENCODE.md",
 			"OPENCODE.local.md",
+			"AGENTS.md",
+			"AGENTS.local.md",
 		},
 	}
 
@@ -309,6 +311,93 @@ func generateSchema() map[string]any {
 				},
 			},
 			"required": []string{"command"},
+		},
+	}
+
+	// Add shell configuration
+	schema["properties"].(map[string]any)["shell"] = map[string]any{
+		"type":        "object",
+		"description": "Shell configuration for the bash tool",
+		"properties": map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "Path to the shell executable",
+			},
+			"args": map[string]any{
+				"type":        "array",
+				"description": "Arguments to pass to the shell",
+				"items": map[string]any{
+					"type": "string",
+				},
+				"default": []string{"-l"},
+			},
+		},
+	}
+
+	// Add autoCompact flag
+	schema["properties"].(map[string]any)["autoCompact"] = map[string]any{
+		"type":        "boolean",
+		"description": "Enable automatic compaction of session history",
+		"default":     true,
+	}
+
+	// Add session provider configuration
+	schema["properties"].(map[string]any)["sessionProvider"] = map[string]any{
+		"type":        "object",
+		"description": "Session storage provider configuration",
+		"properties": map[string]any{
+			"type": map[string]any{
+				"type":        "string",
+				"description": "Type of session storage provider",
+				"enum":        []string{"sqlite", "mysql"},
+				"default":     "sqlite",
+			},
+			"mysql": map[string]any{
+				"type":        "object",
+				"description": "MySQL-specific configuration",
+				"properties": map[string]any{
+					"dsn": map[string]any{
+						"type":        "string",
+						"description": "MySQL Data Source Name (DSN) connection string",
+					},
+					"host": map[string]any{
+						"type":        "string",
+						"description": "MySQL server host",
+					},
+					"port": map[string]any{
+						"type":        "integer",
+						"description": "MySQL server port",
+						"default":     3306,
+					},
+					"database": map[string]any{
+						"type":        "string",
+						"description": "MySQL database name",
+					},
+					"username": map[string]any{
+						"type":        "string",
+						"description": "MySQL username",
+					},
+					"password": map[string]any{
+						"type":        "string",
+						"description": "MySQL password",
+					},
+					"maxConnections": map[string]any{
+						"type":        "integer",
+						"description": "Maximum number of open connections",
+						"default":     10,
+					},
+					"maxIdleConnections": map[string]any{
+						"type":        "integer",
+						"description": "Maximum number of idle connections",
+						"default":     5,
+					},
+					"connectionTimeout": map[string]any{
+						"type":        "integer",
+						"description": "Connection timeout in seconds",
+						"default":     30,
+					},
+				},
+			},
 		},
 	}
 

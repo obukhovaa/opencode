@@ -1,6 +1,8 @@
 package dialog
 
 import (
+	"embed"
+
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -10,6 +12,9 @@ import (
 	"github.com/opencode-ai/opencode/internal/tui/theme"
 	"github.com/opencode-ai/opencode/internal/tui/util"
 )
+
+//go:embed commands/*.md
+var CommandPrompts embed.FS
 
 // Command represents a command that can be executed
 type Command struct {
