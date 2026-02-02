@@ -37,7 +37,7 @@ func (p *MySQLProvider) Connect() (*sql.DB, error) {
 	// Configure connection pool
 	db.SetMaxOpenConns(p.config.MaxConnections)
 	db.SetMaxIdleConns(p.config.MaxIdleConnections)
-	db.SetConnMaxLifetime(time.Duration(p.config.ConnectionTimeout) * time.Second)
+	db.SetConnMaxLifetime(5 * time.Minute) // Recycle connections every 5 minutes to prevent stale connections
 
 	// Verify connection with timeout
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(p.config.ConnectionTimeout)*time.Second)
