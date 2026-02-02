@@ -287,3 +287,175 @@ func findSubstring(s, substr string) bool {
 	}
 	return false
 }
+
+func TestDiscoverProjectSkills(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create nested directory structure
+	subDir := filepath.Join(tmpDir, "src", "pkg")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create .git directory to mark as worktree root
+	gitDir := filepath.Join(tmpDir, ".git")
+	if err := os.MkdirAll(gitDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create skill in root .opencode/skills/
+	rootSkillDir := filepath.Join(tmpDir, ".opencode", "skills", "root-skill")
+	if err := os.MkdirAll(rootSkillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	rootSkillContent := `---
+name: root-skill
+description: Skill at root level
+---
+Root content`
+	if err := os.WriteFile(filepath.Join(rootSkillDir, "SKILL.md"), []byte(rootSkillContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create skill in subdirectory .opencode/skills/
+	subSkillDir := filepath.Join(subDir, ".opencode", "skills", "sub-skill")
+	if err := os.MkdirAll(subSkillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	subSkillContent := `---
+name: sub-skill
+description: Skill in subdirectory
+---
+Sub content`
+	if err := os.WriteFile(filepath.Join(subSkillDir, "SKILL.md"), []byte(subSkillContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Discover from subdirectory - should find both
+	worktreeRoot := getWorktreeRoot(subDir)
+	skills := discoverProjectSkills(subDir, worktreeRoot)
+
+	if len(skills) != 2 {
+		t.Errorf("Expected 2 skills, got %d", len(skills))
+	}
+
+	// Verify both skills were found
+	foundRoot := false
+	foundSub := false
+	for _, s := range skills {
+		if s.Name == "root-skill" {
+			foundRoot = true
+		}
+		if s.Name == "sub-skill" {
+			foundSub = true
+		}
+	}
+
+	if !foundRoot {
+		t.Errorf("root-skill not found")
+	}
+	if !foundSub {
+		t.Errorf("sub-skill not found")
+	}
+}
+
+func TestDiscoverCustomPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create custom skill directory
+	customDir := filepath.Join(tmpDir, "my-skills", "custom-skill")
+	if err := os.MkdirAll(customDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	customContent := `---
+name: custom-skill
+description: Custom skill from custom path
+---
+Custom content`
+	if err := os.WriteFile(filepath.Join(customDir, "SKILL.md"), []byte(customContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test absolute path
+	paths := []string{filepath.Join(tmpDir, "my-skills")}
+	skills := discoverCustomPaths(paths, tmpDir)
+
+	if len(skills) != 1 {
+		t.Errorf("Expected 1 skill, got %d", len(skills))
+	}
+
+	if len(skills) > 0 && skills[0].Name != "custom-skill" {
+		t.Errorf("Expected custom-skill, got %s", skills[0].Name)
+	}
+
+	// Test relative path
+	relPaths := []string{"my-skills"}
+	relSkills := discoverCustomPaths(relPaths, tmpDir)
+
+	if len(relSkills) != 1 {
+		t.Errorf("Expected 1 skill from relative path, got %d", len(relSkills))
+	}
+}
+
+func TestInvalidSkillFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	tests := []struct {
+		name        string
+		dirName     string
+		content     string
+		shouldError bool
+	}{
+		{
+			name:    "missing name",
+			dirName: "missing-name",
+			content: `---
+description: Missing name field
+---
+Content`,
+			shouldError: true,
+		},
+		{
+			name:    "missing description",
+			dirName: "missing-desc",
+			content: `---
+name: missing-desc
+---
+Content`,
+			shouldError: true,
+		},
+		{
+			name:    "invalid name format",
+			dirName: "invalid-name",
+			content: `---
+name: Invalid_Name
+description: Has underscore
+---
+Content`,
+			shouldError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			skillDir := filepath.Join(tmpDir, tt.dirName)
+			if err := os.MkdirAll(skillDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+
+			skillPath := filepath.Join(skillDir, "SKILL.md")
+			if err := os.WriteFile(skillPath, []byte(tt.content), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := parseSkillFile(skillPath)
+			if tt.shouldError && err == nil {
+				t.Errorf("Expected error for %s, got nil", tt.name)
+			}
+			if !tt.shouldError && err != nil {
+				t.Errorf("Expected no error for %s, got %v", tt.name, err)
+			}
+		})
+	}
+}

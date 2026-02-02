@@ -65,8 +65,9 @@ type agent struct {
 	sessions session.Service
 	messages message.Service
 
-	tools    []tools.BaseTool
-	provider provider.Provider
+	agentName config.AgentName
+	tools     []tools.BaseTool
+	provider  provider.Provider
 
 	titleProvider     provider.Provider
 	summarizeProvider provider.Provider
@@ -102,6 +103,7 @@ func NewAgent(
 
 	agent := &agent{
 		Broker:            pubsub.NewBroker[AgentEvent](),
+		agentName:         agentName,
 		provider:          agentProvider,
 		messages:          messages,
 		sessions:          sessions,
@@ -409,6 +411,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	}
 
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
+	ctx = context.WithValue(ctx, tools.AgentNameContextKey, a.agentName)
 	eventChan := a.provider.StreamResponse(ctx, msgHistory, a.tools)
 
 	assistantMsg, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{

@@ -73,7 +73,8 @@ func (s *skillTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 	// Check permissions
 	sessionID, _ := GetContextValues(ctx)
-	if !s.checkPermission(sessionID, params.Name, skillInfo.Description) {
+	agentName := GetAgentName(ctx)
+	if !s.checkPermission(ctx, sessionID, agentName, params.Name, skillInfo.Description) {
 		return NewTextErrorResponse(fmt.Sprintf("Permission denied for skill %q", params.Name)), nil
 	}
 
@@ -94,12 +95,12 @@ func (s *skillTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 }
 
 // checkPermission checks if the skill can be loaded based on permissions.
-func (s *skillTool) checkPermission(sessionID, skillName, description string) bool {
+func (s *skillTool) checkPermission(ctx context.Context, sessionID string, agentName config.AgentName, skillName, description string) bool {
 	// Check global and agent-specific permissions
 	cfg := config.Get()
 
 	// Get permission action for this skill
-	action := evaluateSkillPermission(skillName, cfg)
+	action := evaluateSkillPermission(skillName, agentName, cfg)
 
 	switch action {
 	case "allow":
@@ -129,18 +130,36 @@ func (s *skillTool) checkPermission(sessionID, skillName, description string) bo
 	}
 }
 
-// evaluateSkillPermission evaluates permission for a skill based on config.
-func evaluateSkillPermission(skillName string, cfg *config.Config) string {
-	// Check global permissions first
+// evaluateSkillPermission evaluates permission for a skill based on config and agent.
+func evaluateSkillPermission(skillName string, agentName config.AgentName, cfg *config.Config) string {
+	// Check agent-specific permissions first (higher priority)
+	if agentName != "" && cfg.Agents != nil {
+		if agentCfg, ok := cfg.Agents[agentName]; ok {
+			// Check if skill tool is disabled for this agent
+			if agentCfg.Tools != nil {
+				if enabled, ok := agentCfg.Tools["skill"]; ok && !enabled {
+					return "deny"
+				}
+			}
+			
+			// Check agent-specific skill permissions
+			if agentCfg.Permission != nil {
+				if skillPerms, ok := agentCfg.Permission["skill"]; ok {
+					if action := matchPermissionPattern(skillName, skillPerms); action != "" {
+						return action
+					}
+				}
+			}
+		}
+	}
+	
+	// Check global permissions
 	if cfg.Permission != nil && cfg.Permission.Skill != nil {
 		if action := matchPermissionPattern(skillName, cfg.Permission.Skill); action != "" {
 			return action
 		}
 	}
-
-	// TODO: Check agent-specific permissions when we have agent context
-	// For now, we'll implement this in Phase 3
-
+	
 	// Default to "ask" if no permission configured
 	return "ask"
 }
@@ -200,7 +219,7 @@ func matchWildcard(pattern, str string) bool {
 func buildSkillDescription() string {
 	skills := skill.All()
 
-	// Filter skills by permissions (for now, show all - will add agent filtering in Phase 3)
+	// Filter skills by global permissions (agent-specific filtering happens at runtime)
 	accessibleSkills := filterSkillsByPermission(skills)
 
 	if len(accessibleSkills) == 0 {
@@ -248,7 +267,8 @@ func buildSkillParameterDescription() string {
 	return "The skill identifier from available_skills"
 }
 
-// filterSkillsByPermission filters skills based on permissions.
+// filterSkillsByPermission filters skills based on global permissions.
+// Note: Agent-specific filtering happens at runtime when the tool is executed.
 func filterSkillsByPermission(skills []skill.Info) []skill.Info {
 	cfg := config.Get()
 
@@ -259,8 +279,9 @@ func filterSkillsByPermission(skills []skill.Info) []skill.Info {
 
 	filtered := make([]skill.Info, 0, len(skills))
 	for _, s := range skills {
-		action := evaluateSkillPermission(s.Name, cfg)
-		// Only hide skills that are explicitly denied
+		// Use empty agent name to check only global permissions
+		action := evaluateSkillPermission(s.Name, "", cfg)
+		// Only hide skills that are explicitly denied globally
 		if action != "deny" {
 			filtered = append(filtered, s)
 		}

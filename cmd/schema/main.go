@@ -242,6 +242,27 @@ func generateSchema() map[string]any {
 					"description": "Reasoning effort for models that support it (OpenAI, Anthropic)",
 					"enum":        []string{"low", "medium", "high"},
 				},
+				"permission": map[string]any{
+					"type":        "object",
+					"description": "Agent-specific permission overrides",
+					"additionalProperties": map[string]any{
+						"type":        "object",
+						"description": "Permission patterns for a resource type (e.g., skill)",
+						"additionalProperties": map[string]any{
+							"type":        "string",
+							"description": "Permission action (allow, deny, ask)",
+							"enum":        []string{"allow", "deny", "ask"},
+						},
+					},
+				},
+				"tools": map[string]any{
+					"type":        "object",
+					"description": "Tool enable/disable configuration",
+					"additionalProperties": map[string]any{
+						"type":        "boolean",
+						"description": "Whether the tool is enabled for this agent",
+					},
+				},
 			},
 			"required": []string{"model"},
 		},
@@ -396,6 +417,38 @@ func generateSchema() map[string]any {
 						"description": "Connection timeout in seconds",
 						"default":     30,
 					},
+				},
+			},
+		},
+	}
+
+	// Add skills configuration
+	schema["properties"].(map[string]any)["skills"] = map[string]any{
+		"type":        "object",
+		"description": "Skills configuration",
+		"properties": map[string]any{
+			"paths": map[string]any{
+				"type":        "array",
+				"description": "Custom paths to search for skills (supports ~ for home directory and relative paths)",
+				"items": map[string]any{
+					"type": "string",
+				},
+			},
+		},
+	}
+
+	// Add permission configuration
+	schema["properties"].(map[string]any)["permission"] = map[string]any{
+		"type":        "object",
+		"description": "Global permission configuration",
+		"properties": map[string]any{
+			"skill": map[string]any{
+				"type":        "object",
+				"description": "Skill permission patterns (supports wildcards like 'internal-*')",
+				"additionalProperties": map[string]any{
+					"type":        "string",
+					"description": "Permission action",
+					"enum":        []string{"allow", "deny", "ask"},
 				},
 			},
 		},

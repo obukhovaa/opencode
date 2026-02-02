@@ -73,6 +73,118 @@ func TestMatchPermissionPattern(t *testing.T) {
 	}
 }
 
+func TestEvaluateSkillPermission(t *testing.T) {
+	tests := []struct {
+		name       string
+		skillName  string
+		agentName  config.AgentName
+		cfg        *config.Config
+		want       string
+	}{
+		{
+			name:      "global allow",
+			skillName: "git-release",
+			agentName: config.AgentCoder,
+			cfg: &config.Config{
+				Permission: &config.PermissionConfig{
+					Skill: map[string]string{
+						"*": "allow",
+					},
+				},
+			},
+			want: "allow",
+		},
+		{
+			name:      "global deny",
+			skillName: "internal-docs",
+			agentName: config.AgentCoder,
+			cfg: &config.Config{
+				Permission: &config.PermissionConfig{
+					Skill: map[string]string{
+						"internal-*": "deny",
+					},
+				},
+			},
+			want: "deny",
+		},
+		{
+			name:      "agent-specific override global",
+			skillName: "internal-docs",
+			agentName: config.AgentCoder,
+			cfg: &config.Config{
+				Permission: &config.PermissionConfig{
+					Skill: map[string]string{
+						"internal-*": "deny",
+					},
+				},
+				Agents: map[config.AgentName]config.Agent{
+					config.AgentCoder: {
+						Permission: map[string]map[string]string{
+							"skill": {
+								"internal-*": "allow",
+							},
+						},
+					},
+				},
+			},
+			want: "allow",
+		},
+		{
+			name:      "tool disabled for agent",
+			skillName: "any-skill",
+			agentName: config.AgentSummarizer,
+			cfg: &config.Config{
+				Permission: &config.PermissionConfig{
+					Skill: map[string]string{
+						"*": "allow",
+					},
+				},
+				Agents: map[config.AgentName]config.Agent{
+					config.AgentSummarizer: {
+						Tools: map[string]bool{
+							"skill": false,
+						},
+					},
+				},
+			},
+			want: "deny",
+		},
+		{
+			name:      "no config defaults to ask",
+			skillName: "any-skill",
+			agentName: config.AgentCoder,
+			cfg:       &config.Config{},
+			want:      "ask",
+		},
+		{
+			name:      "agent-specific exact match",
+			skillName: "special-skill",
+			agentName: config.AgentTask,
+			cfg: &config.Config{
+				Agents: map[config.AgentName]config.Agent{
+					config.AgentTask: {
+						Permission: map[string]map[string]string{
+							"skill": {
+								"special-skill": "allow",
+							},
+						},
+					},
+				},
+			},
+			want: "allow",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := evaluateSkillPermission(tt.skillName, tt.agentName, tt.cfg)
+			if got != tt.want {
+				t.Errorf("evaluateSkillPermission(%q, %q) = %q, want %q", tt.skillName, tt.agentName, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSkillToolIntegration(t *testing.T) {
 	// Create temporary directory for test skills
 	tmpDir := t.TempDir()
@@ -129,7 +241,7 @@ license: MIT
 	// Create mock permission service
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-	
+
 	mockPerms := mock_permission.NewMockService(ctrl)
 	mockPerms.EXPECT().Request(gomock.Any()).Return(true).AnyTimes()
 
@@ -196,9 +308,70 @@ license: MIT
 	}
 }
 
-
 func TestBuildSkillDescription(t *testing.T) {
 	t.Skip("Skipping integration test - requires proper config initialization")
+}
+
+func TestSkillToolWithAgentPermissions(t *testing.T) {
+	// Test agent-specific permission override
+	cfg := &config.Config{
+		Permission: &config.PermissionConfig{
+			Skill: map[string]string{
+				"*": "deny",
+			},
+		},
+		Agents: map[config.AgentName]config.Agent{
+			config.AgentCoder: {
+				Permission: map[string]map[string]string{
+					"skill": {
+						"test-skill": "allow",
+					},
+				},
+			},
+		},
+	}
+
+	// Coder agent should allow (override)
+	action := evaluateSkillPermission("test-skill", config.AgentCoder, cfg)
+	if action != "allow" {
+		t.Errorf("Expected allow for coder agent, got %s", action)
+	}
+
+	// Task agent should deny (global)
+	action2 := evaluateSkillPermission("test-skill", config.AgentTask, cfg)
+	if action2 != "deny" {
+		t.Errorf("Expected deny for task agent, got %s", action2)
+	}
+}
+
+func TestSkillToolDisabledForAgent(t *testing.T) {
+	// Test tool disabled for specific agent
+	cfg := &config.Config{
+		Permission: &config.PermissionConfig{
+			Skill: map[string]string{
+				"*": "allow",
+			},
+		},
+		Agents: map[config.AgentName]config.Agent{
+			config.AgentSummarizer: {
+				Tools: map[string]bool{
+					"skill": false,
+				},
+			},
+		},
+	}
+
+	// Summarizer agent should deny (tool disabled)
+	action := evaluateSkillPermission("any-skill", config.AgentSummarizer, cfg)
+	if action != "deny" {
+		t.Errorf("Expected deny when tool is disabled, got %s", action)
+	}
+
+	// Coder agent should allow (tool not disabled)
+	action2 := evaluateSkillPermission("any-skill", config.AgentCoder, cfg)
+	if action2 != "allow" {
+		t.Errorf("Expected allow for coder agent, got %s", action2)
+	}
 }
 
 func contains(s, substr string) bool {

@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/opencode-ai/opencode/internal/config"
 )
 
 type ToolInfo struct {
@@ -19,6 +21,7 @@ type (
 	sessionIDContextKey   string
 	messageIDContextKey   string
 	isTaskAgentContextKey string
+	agentNameContextKey   string
 )
 
 const (
@@ -28,6 +31,7 @@ const (
 	SessionIDContextKey   sessionIDContextKey   = "session_id"
 	MessageIDContextKey   messageIDContextKey   = "message_id"
 	IsTaskAgentContextKey isTaskAgentContextKey = "is_task_agent"
+	AgentNameContextKey   agentNameContextKey   = "agent_name"
 
 	// MaxToolResponseTokens is the maximum number of tokens allowed in a tool response
 	// to prevent context overflow. ~1200KB of text content.
@@ -131,4 +135,16 @@ func IsTaskAgent(ctx context.Context) bool {
 		return val
 	}
 	return false
+}
+
+// GetAgentName returns the agent name from context, or empty string if not set
+func GetAgentName(ctx context.Context) config.AgentName {
+	agentName := ctx.Value(AgentNameContextKey)
+	if agentName == nil {
+		return ""
+	}
+	if val, ok := agentName.(config.AgentName); ok {
+		return val
+	}
+	return ""
 }
