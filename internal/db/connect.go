@@ -75,10 +75,10 @@ func backfillProjectID(db *sql.DB, cfg *config.Config) error {
 
 	logging.Info("Backfilling project_id for existing sessions", "count", count)
 
-	// Determine project ID based on data directory location
-	// For existing sessions, we use the data directory as the working directory
+	// Determine project ID based on working directory
+	// For existing sessions, we use the current working directory
 	// since we don't know which project they were created in
-	projectID := GetProjectID(cfg.Data.Directory)
+	projectID := GetProjectID(cfg.WorkingDir)
 
 	// Update all sessions without project_id
 	result, err := db.Exec("UPDATE sessions SET project_id = ? WHERE project_id IS NULL OR project_id = ''", projectID)

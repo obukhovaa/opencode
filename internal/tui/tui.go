@@ -998,7 +998,7 @@ func New(app *app.App) tea.Model {
 			prompt, err := dialog.CommandPrompts.ReadFile("commands/init.md")
 			if err != nil {
 				logging.Error("Failed to load init command", "error", err)
-				prompt = []byte{}
+				return util.ReportError(err)
 			}
 			return tea.Batch(
 				util.CmdHandler(chat.SendMsg{
@@ -1016,13 +1016,9 @@ func New(app *app.App) tea.Model {
 			prompt, err := dialog.CommandPrompts.ReadFile("commands/review.md")
 			if err != nil {
 				logging.Error("Failed to load review command", "error", err)
-				prompt = []byte{}
+				return util.ReportError(err)
 			}
-			return tea.Batch(
-				util.CmdHandler(chat.SendMsg{
-					Text: string(prompt),
-				}),
-			)
+			return dialog.ParameterizedCommandHandler(string(prompt), &cmd)
 		},
 	})
 
