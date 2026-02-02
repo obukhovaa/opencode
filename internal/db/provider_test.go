@@ -56,7 +56,7 @@ func TestMySQLProvider_BuildDSN(t *testing.T) {
 				Username: "testuser",
 				Password: "testpass",
 			},
-			expected: "testuser:testpass@tcp(localhost:3306)/opencode?parseTime=true&multiStatements=true",
+			expected: "testuser:testpass@tcp(localhost:3306)/opencode?parseTime=true",
 		},
 		{
 			name: "Custom port",
@@ -67,7 +67,7 @@ func TestMySQLProvider_BuildDSN(t *testing.T) {
 				Username: "admin",
 				Password: "secret",
 			},
-			expected: "admin:secret@tcp(db.example.com:3307)/mydb?parseTime=true&multiStatements=true",
+			expected: "admin:secret@tcp(db.example.com:3307)/mydb?parseTime=true",
 		},
 	}
 

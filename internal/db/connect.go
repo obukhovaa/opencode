@@ -63,7 +63,7 @@ func Connect() (*sql.DB, error) {
 func backfillProjectID(db *sql.DB, cfg *config.Config) error {
 	// Check if there are any sessions without project_id
 	var count int
-	err := db.QueryRow("SELECT COUNT(*) FROM sessions WHERE project_id IS NULL OR project_id = ''").Scan(&count)
+	err := db.QueryRow("SELECT COUNT(*) FROM sessions WHERE project_id IS NULL").Scan(&count)
 	if err != nil {
 		return fmt.Errorf("failed to count sessions without project_id: %w", err)
 	}
@@ -81,7 +81,7 @@ func backfillProjectID(db *sql.DB, cfg *config.Config) error {
 	projectID := GetProjectID(cfg.WorkingDir)
 
 	// Update all sessions without project_id
-	result, err := db.Exec("UPDATE sessions SET project_id = ? WHERE project_id IS NULL OR project_id = ''", projectID)
+	result, err := db.Exec("UPDATE sessions SET project_id = ? WHERE project_id IS NULL", projectID)
 	if err != nil {
 		return fmt.Errorf("failed to update sessions with project_id: %w", err)
 	}

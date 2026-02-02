@@ -629,7 +629,6 @@ func validateSessionProvider() error {
 	providerType := cfg.SessionProvider.Type
 	if providerType == "" {
 		providerType = ProviderSQLite
-		cfg.SessionProvider.Type = providerType
 	}
 
 	// Validate provider type
@@ -656,24 +655,6 @@ func validateSessionProvider() error {
 			if mysql.Password == "" {
 				return fmt.Errorf("MySQL password is required when using MySQL session provider (or provide DSN)")
 			}
-			if mysql.Port <= 0 {
-				mysql.Port = 3306
-				cfg.SessionProvider.MySQL = mysql
-			}
-		}
-
-		// Apply defaults for connection pool settings
-		if mysql.MaxConnections <= 0 {
-			mysql.MaxConnections = 10
-			cfg.SessionProvider.MySQL = mysql
-		}
-		if mysql.MaxIdleConnections <= 0 {
-			mysql.MaxIdleConnections = 5
-			cfg.SessionProvider.MySQL = mysql
-		}
-		if mysql.ConnectionTimeout <= 0 {
-			mysql.ConnectionTimeout = 30
-			cfg.SessionProvider.MySQL = mysql
 		}
 	}
 

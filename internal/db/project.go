@@ -1,18 +1,17 @@
 package db
 
 import (
+	"context"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/opencode-ai/opencode/internal/logging"
 )
 
-var (
-	projectIDCache   = make(map[string]string)
-	projectIDCacheMu sync.RWMutex
-)
+var projectIDCache sync.Map // map[string]string
 
 // GetProjectID determines the project ID for the given working directory.
 // It first attempts to use the Git repository origin URL, falling back to
@@ -20,21 +19,11 @@ var (
 // Results are cached per working directory.
 func GetProjectID(workingDir string) string {
 	// Check cache first
-	projectIDCacheMu.RLock()
-	if cached, ok := projectIDCache[workingDir]; ok {
-		projectIDCacheMu.RUnlock()
-		return cached
+	if cached, ok := projectIDCache.Load(workingDir); ok {
+		return cached.(string)
 	}
-	projectIDCacheMu.RUnlock()
 
 	// Compute project ID
-	projectIDCacheMu.Lock()
-	defer projectIDCacheMu.Unlock()
-
-	if cached, ok := projectIDCache[workingDir]; ok {
-		return cached
-	}
-
 	var projectID string
 	if id, err := getProjectIDFromGit(workingDir); err == nil && id != "" {
 		logging.Debug("Using Git-based project ID", "project_id", id, "working_dir", workingDir)
@@ -44,13 +33,18 @@ func GetProjectID(workingDir string) string {
 		logging.Debug("Using directory-based project ID", "project_id", projectID, "working_dir", workingDir)
 	}
 
-	projectIDCache[workingDir] = projectID
-	return projectID
+	// Store in cache (LoadOrStore handles race condition)
+	actual, _ := projectIDCache.LoadOrStore(workingDir, projectID)
+	return actual.(string)
 }
 
 // getProjectIDFromGit attempts to get the project ID from Git remote origin URL.
 func getProjectIDFromGit(workingDir string) (string, error) {
-	cmd := exec.Command("git", "config", "--get", "remote.origin.url")
+	// Add timeout to prevent hanging on slow Git operations
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "config", "--get", "remote.origin.url")
 	cmd.Dir = workingDir
 
 	output, err := cmd.Output()

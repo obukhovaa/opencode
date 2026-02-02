@@ -65,7 +65,7 @@ func (p *MySQLProvider) buildDSN() string {
 
 	// Build DSN from individual fields
 	// Format: username:password@tcp(host:port)/database?parseTime=true
-	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&multiStatements=true",
+	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true",
 		p.config.Username,
 		p.config.Password,
 		p.config.Host,
