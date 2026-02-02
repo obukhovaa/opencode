@@ -47,7 +47,7 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 	q := db.NewQuerier(conn)
 	sessions := session.NewService(q)
 	messages := message.NewService(q)
-	
+
 	// Type assert to *db.Queries or *db.MySQLQuerier (both have embedded *db.Queries)
 	var queries *db.Queries
 	switch v := q.(type) {
@@ -58,7 +58,7 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 	default:
 		return nil, fmt.Errorf("unexpected querier type: %T", q)
 	}
-	
+
 	files := history.NewService(queries, conn)
 
 	app := &App{
@@ -113,7 +113,7 @@ func (app *App) initTheme() {
 }
 
 // RunNonInteractive handles the execution flow when a prompt is provided via CLI flag.
-func (a *App) RunNonInteractive(ctx context.Context, prompt string, outputFormat string, quiet bool) error {
+func (app *App) RunNonInteractive(ctx context.Context, prompt string, outputFormat string, quiet bool) error {
 	logging.Info("Running in non-interactive mode")
 
 	// Start spinner if not in quiet mode
@@ -135,16 +135,16 @@ func (a *App) RunNonInteractive(ctx context.Context, prompt string, outputFormat
 	}
 	title := titlePrefix + titleSuffix
 
-	sess, err := a.Sessions.Create(ctx, title)
+	sess, err := app.Sessions.Create(ctx, title)
 	if err != nil {
 		return fmt.Errorf("failed to create session for non-interactive mode: %w", err)
 	}
 	logging.Info("Created session for non-interactive run", "session_id", sess.ID)
 
 	// Automatically approve all permission requests for this non-interactive session
-	a.Permissions.AutoApproveSession(sess.ID)
+	app.Permissions.AutoApproveSession(sess.ID)
 
-	done, err := a.CoderAgent.Run(ctx, sess.ID, prompt)
+	done, err := app.CoderAgent.Run(ctx, sess.ID, prompt)
 	if err != nil {
 		return fmt.Errorf("failed to start agent processing stream: %w", err)
 	}
@@ -248,8 +248,8 @@ func (app *App) forceKillAllChildProcesses() {
 	}
 
 	// Parse PIDs and kill them
-	pidStrings := strings.Fields(string(output))
-	for _, pidStr := range pidStrings {
+	pidStrings := strings.FieldsSeq(string(output))
+	for pidStr := range pidStrings {
 		if pid, err := strconv.Atoi(pidStr); err == nil {
 			process, err := os.FindProcess(pid)
 			if err == nil {

@@ -34,13 +34,13 @@ var (
 
 // Info represents a skill with its metadata and content.
 type Info struct {
-	Name        string            `yaml:"name"`
-	Description string            `yaml:"description"`
-	License     string            `yaml:"license,omitempty"`
-	Compatibility string          `yaml:"compatibility,omitempty"`
-	Metadata    map[string]string `yaml:"metadata,omitempty"`
-	Location    string            `yaml:"-"` // File path, not in frontmatter
-	Content     string            `yaml:"-"` // Markdown content, not in frontmatter
+	Name          string            `yaml:"name"`
+	Description   string            `yaml:"description"`
+	License       string            `yaml:"license,omitempty"`
+	Compatibility string            `yaml:"compatibility,omitempty"`
+	Metadata      map[string]string `yaml:"metadata,omitempty"`
+	Location      string            `yaml:"-"` // File path, not in frontmatter
+	Content       string            `yaml:"-"` // Markdown content, not in frontmatter
 }
 
 // Error types
@@ -115,7 +115,16 @@ func discoverSkills() map[string]Info {
 	skills := make(map[string]Info)
 
 	cfg := config.Get()
+	if cfg == nil {
+		logging.Warn("Config not initialized, skipping skill discovery")
+		return skills
+	}
+	
 	workingDir := cfg.WorkingDir
+	if workingDir == "" {
+		logging.Warn("Working directory not set, skipping skill discovery")
+		return skills
+	}
 
 	// Get git worktree root
 	worktreeRoot := getWorktreeRoot(workingDir)

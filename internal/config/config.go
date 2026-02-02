@@ -46,7 +46,7 @@ const (
 type Agent struct {
 	Model           models.ModelID               `json:"model"`
 	MaxTokens       int64                        `json:"maxTokens"`
-	ReasoningEffort string                       `json:"reasoningEffort"` // For openai models low,medium,high
+	ReasoningEffort string                       `json:"reasoningEffort"`      // For openai models low,medium,high
 	Permission      map[string]map[string]string `json:"permission,omitempty"` // e.g., {"skill": {"internal-*": "allow"}}
 	Tools           map[string]bool              `json:"tools,omitempty"`      // e.g., {"skill": false}
 }

@@ -32,22 +32,24 @@ func CoderAgentTools(
 			tools.NewGlobTool(),
 			tools.NewGrepTool(),
 			tools.NewLsTool(config.Get()),
+			tools.NewSkillTool(permissions),
 			tools.NewSourcegraphTool(),
 			tools.NewViewTool(lspClients),
 			tools.NewViewImageTool(),
 			tools.NewPatchTool(lspClients, permissions, history),
 			tools.NewWriteTool(lspClients, permissions, history),
-			NewAgentTool(sessions, messages, lspClients),
+			NewAgentTool(sessions, messages, lspClients, permissions),
 		}, otherTools...,
 	)
 }
 
-func TaskAgentTools(lspClients map[string]*lsp.Client) []tools.BaseTool {
+func TaskAgentTools(lspClients map[string]*lsp.Client, permissions permission.Service) []tools.BaseTool {
 	return []tools.BaseTool{
 		tools.NewGlobTool(),
 		tools.NewGrepTool(),
 		tools.NewLsTool(config.Get()),
 		tools.NewSourcegraphTool(),
+		tools.NewSkillTool(permissions),
 		tools.NewViewTool(lspClients),
 		tools.NewViewImageTool(),
 	}
