@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+
 	// "path/filepath"
 	"encoding/json"
 	"runtime"
@@ -22,23 +23,25 @@ func getCaller() string {
 	}
 	return caller
 }
+
 func Info(msg string, args ...any) {
 	source := getCaller()
 	slog.Info(msg, append([]any{"source", source}, args...)...)
 }
 
 func Debug(msg string, args ...any) {
-	// slog.Debug(msg, args...)
 	source := getCaller()
 	slog.Debug(msg, append([]any{"source", source}, args...)...)
 }
 
 func Warn(msg string, args ...any) {
-	slog.Warn(msg, args...)
+	source := getCaller()
+	slog.Warn(msg, append([]any{"source", source}, args...)...)
 }
 
 func Error(msg string, args ...any) {
-	slog.Error(msg, args...)
+	source := getCaller()
+	slog.Error(msg, append([]any{"source", source}, args...)...)
 }
 
 func InfoPersist(msg string, args ...any) {
@@ -122,7 +125,7 @@ func AppendToSessionLogFile(sessionId string, filename string, content string) s
 
 	filePath := fmt.Sprintf("%s/%s", sessionPath, filename)
 
-	f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		Error("Failed to open session log file", "filepath", filePath, "error", err)
 		return ""

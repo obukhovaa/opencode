@@ -20,7 +20,7 @@ require (
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/google/uuid v1.6.0
 	github.com/lrstanley/bubblezone v0.0.0-20250315020633-c249a3fe1231
-	github.com/mark3labs/mcp-go v0.17.0
+	github.com/mark3labs/mcp-go v0.43.2
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6
 	github.com/muesli/reflow v0.3.0
 	github.com/muesli/termenv v0.16.0
@@ -37,6 +37,11 @@ require (
 require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.6 // indirect
 	filippo.io/edwards25519 v1.1.0 // indirect
+	github.com/bahlo/generic-list-go v0.2.0 // indirect
+	github.com/buger/jsonparser v1.1.1 // indirect
+	github.com/invopop/jsonschema v0.13.0 // indirect
+	github.com/mailru/easyjson v0.7.7 // indirect
+	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.54.0 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
 	golang.org/x/time v0.8.0 // indirect
@@ -129,5 +134,5 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250324211829-b45e905df463 // indirect
 	google.golang.org/grpc v1.71.0 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
+	gopkg.in/yaml.v3 v3.0.1
 )

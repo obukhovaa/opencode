@@ -12,6 +12,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/version"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -122,6 +123,18 @@ func (b *mcpTool) Run(ctx context.Context, params tools.ToolCall) (tools.ToolRes
 		if err != nil {
 			return tools.NewTextErrorResponse(err.Error()), nil
 		}
+		if err := c.Start(ctx); err != nil {
+			return tools.NewTextErrorResponse(fmt.Sprintf("failed to start SSE transport: %s", err)), nil
+		}
+		return runTool(ctx, c, b.tool.Name, params.Input)
+	case config.MCPHttp:
+		c, err := client.NewStreamableHttpClient(
+			b.mcpConfig.URL,
+			transport.WithHTTPHeaders(b.mcpConfig.Headers),
+		)
+		if err != nil {
+			return tools.NewTextErrorResponse(err.Error()), nil
+		}
 		return runTool(ctx, c, b.tool.Name, params.Input)
 	}
 
@@ -140,7 +153,7 @@ func NewMcpTool(name string, tool mcp.Tool, permissions permission.Service, mcpC
 var mcpTools []tools.BaseTool
 
 func getTools(ctx context.Context, name string, m config.MCPServer, permissions permission.Service, c MCPClient) []tools.BaseTool {
-	var stdioTools []tools.BaseTool
+	var toolsToAdd []tools.BaseTool
 	initRequest := mcp.InitializeRequest{}
 	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 	initRequest.Params.ClientInfo = mcp.Implementation{
@@ -151,19 +164,19 @@ func getTools(ctx context.Context, name string, m config.MCPServer, permissions 
 	_, err := c.Initialize(ctx, initRequest)
 	if err != nil {
 		logging.Error("error initializing mcp client", "error", err)
-		return stdioTools
+		return toolsToAdd
 	}
 	toolsRequest := mcp.ListToolsRequest{}
 	tools, err := c.ListTools(ctx, toolsRequest)
 	if err != nil {
 		logging.Error("error listing tools", "error", err)
-		return stdioTools
+		return toolsToAdd
 	}
 	for _, t := range tools.Tools {
-		stdioTools = append(stdioTools, NewMcpTool(name, t, permissions, m))
+		toolsToAdd = append(toolsToAdd, NewMcpTool(name, t, permissions, m))
 	}
 	defer c.Close()
-	return stdioTools
+	return toolsToAdd
 }
 
 func GetMcpTools(ctx context.Context, permissions permission.Service) []tools.BaseTool {
@@ -188,6 +201,20 @@ func GetMcpTools(ctx context.Context, permissions permission.Service) []tools.Ba
 			c, err := client.NewSSEMCPClient(
 				m.URL,
 				client.WithHeaders(m.Headers),
+			)
+			if err != nil {
+				logging.Error("error creating mcp client", "error", err)
+				continue
+			}
+			if err := c.Start(ctx); err != nil {
+				logging.Error("error starting SSE transport", "error", err)
+				continue
+			}
+			mcpTools = append(mcpTools, getTools(ctx, name, m, permissions, c)...)
+		case config.MCPHttp:
+			c, err := client.NewStreamableHttpClient(
+				m.URL,
+				transport.WithHTTPHeaders(m.Headers),
 			)
 			if err != nil {
 				logging.Error("error creating mcp client", "error", err)

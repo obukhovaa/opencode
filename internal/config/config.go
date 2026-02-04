@@ -21,6 +21,7 @@ type MCPType string
 const (
 	MCPStdio MCPType = "stdio"
 	MCPSse   MCPType = "sse"
+	MCPHttp  MCPType = "http"
 )
 
 // MCPServer defines the configuration for a Model Control Protocol server.
