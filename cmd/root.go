@@ -82,14 +82,27 @@ to assist developers in writing, debugging, and understanding code directly from
 			}
 			cwd = c
 		}
+
+		var spinner *format.Spinner
+		if !quiet {
+			spinner = format.NewSpinner("Starting...")
+			spinner.Start()
+		}
+
 		_, err := config.Load(cwd, debug)
 		if err != nil {
+			if spinner != nil {
+				spinner.Stop()
+			}
 			return err
 		}
 
 		// Connect DB, this will also run migrations
 		conn, err := db.Connect()
 		if err != nil {
+			if spinner != nil {
+				spinner.Stop()
+			}
 			return err
 		}
 
@@ -99,6 +112,9 @@ to assist developers in writing, debugging, and understanding code directly from
 
 		app, err := app.New(ctx, conn)
 		if err != nil {
+			if spinner != nil {
+				spinner.Stop()
+			}
 			logging.Error("Failed to create app: %v", err)
 			return err
 		}
@@ -107,6 +123,11 @@ to assist developers in writing, debugging, and understanding code directly from
 
 		// Initialize MCP tools for both modes
 		initMCPTools(ctx, app)
+
+		// Stop spinner after initialization is complete
+		if spinner != nil {
+			spinner.Stop()
+		}
 
 		// Non-interactive mode
 		if prompt != "" {
