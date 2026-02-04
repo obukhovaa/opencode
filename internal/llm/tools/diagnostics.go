@@ -108,6 +108,8 @@ func notifyLspOpenFile(ctx context.Context, filePath string, lsps map[string]*ls
 			shouldOpen = ext == ".c" || ext == ".cpp" || ext == ".h" || ext == ".hpp"
 		case "java", "jdtls":
 			shouldOpen = ext == ".java"
+		case "kotlin_lsp":
+			shouldOpen = ext == ".kt" || ext == ".kts"
 		case "lua-language-server", "lua_ls":
 			shouldOpen = ext == ".lua"
 		case "bashls", "bash-language-server":

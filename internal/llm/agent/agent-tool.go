@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
@@ -29,9 +30,13 @@ type AgentParams struct {
 }
 
 func (b *agentTool) Info() tools.ToolInfo {
+	toolNames := []string{}
+	for _, tool := range TaskAgentTools(b.lspClients, b.permissions) {
+		toolNames = append(toolNames, tool.Info().Name)
+	}
 	return tools.ToolInfo{
 		Name:        AgentToolName,
-		Description: "Launch a new agent that has access to the following tools: glob, grep, ls, view, view_image. When you are searching for a keyword or file and are not confident that you will find the right match on the first try OR you need to inspect and analyze images, use the agent tool to perform the search and inspection for you. For example:\n\n- If you are searching for a keyword like \"config\" or \"logger\", or for questions like \"which file does X?\", the agent tool is strongly recommended\n- If you to inspect and describe an image in order to match with html/css/js in a codebase or figure out what's depicted there then agent tool is strongly recommended\n- If you want to read a specific file path, use the view or glob tool instead of the agent tool, to find the match more quickly\n- If you are searching for a specific class definition like \"class Foo\", use the glob tool instead, to find the match more quickly\n\nUsage notes:\n1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses\n2. When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.\n3. Each agent invocation is stateless. You will not be able to send additional messages to the agent, nor will the agent be able to communicate with you outside of its final report. Therefore, your prompt should contain a highly detailed task description for the agent to perform autonomously and you should specify exactly what information the agent should return back to you in its final and only message to you.\n4. The agent's outputs should generally be trusted\n5. IMPORTANT: The agent can not use bash, replace, edit, so can not modify files. If you want to use these tools, use them directly instead of going through the agent.",
+		Description: "Launch a new agent that has access to the following tools: " + strings.Join(toolNames, ", ") + ". When you are searching for a keyword or file and are not confident that you will find the right match on the first try OR you need to inspect and analyze images, use the agent tool to perform the search and inspection for you. For example:\n\n- If you are searching for a keyword like \"config\" or \"logger\", or for questions like \"which file does X?\", the agent tool is strongly recommended\n- If you to inspect and describe an image in order to match with html/css/js in a codebase or figure out what's depicted there then agent tool is strongly recommended\n- If you want to read a specific file path, use the view or glob tool instead of the agent tool, to find the match more quickly\n- If you are searching for a specific class definition like \"class Foo\", use the glob tool instead, to find the match more quickly\n\nUsage notes:\n1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses\n2. When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.\n3. Each agent invocation is stateless. You will not be able to send additional messages to the agent, nor will the agent be able to communicate with you outside of its final report. Therefore, your prompt should contain a highly detailed task description for the agent to perform autonomously and you should specify exactly what information the agent should return back to you in its final and only message to you.\n4. The agent's outputs should generally be trusted\n5. IMPORTANT: The agent can not use bash, replace, edit, so can not modify files. If you want to use these tools, use them directly instead of going through the agent.",
 		Parameters: map[string]any{
 			"prompt": map[string]any{
 				"type":        "string",
