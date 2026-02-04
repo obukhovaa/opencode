@@ -29,7 +29,6 @@ func header(width int) string {
 	return lipgloss.JoinVertical(
 		lipgloss.Top,
 		logo(width),
-		repo(width),
 		"",
 		cwd(width),
 	)
@@ -117,16 +116,6 @@ func logo(width int) string {
 				versionText,
 			),
 		)
-}
-
-func repo(width int) string {
-	repo := "https://github.com/opencode-ai/opencode"
-	t := theme.CurrentTheme()
-
-	return styles.BaseStyle().
-		Foreground(t.TextMuted()).
-		Width(width).
-		Render(repo)
 }
 
 func cwd(width int) string {
