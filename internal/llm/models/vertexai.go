@@ -8,6 +8,7 @@ const (
 	VertexAIGemini30Pro   ModelID = "vertexai.gemini-3.0-pro"
 	VertexAISonnet45M     ModelID = "vertexai.claude-sonnet-4-5-m"
 	VertexAIOpus45        ModelID = "vertexai.claude-opus-4-5"
+	VertexAIOpus46        ModelID = "vertexai.claude-opus-4-6"
 )
 
 var VertexAIGeminiModels = map[ModelID]Model{
@@ -69,5 +70,19 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		DefaultMaxTokens:    AnthropicModels[Claude45Opus].DefaultMaxTokens,
 		SupportsAttachments: AnthropicModels[Claude45Opus].SupportsAttachments,
 		CanReason:           AnthropicModels[Claude45Opus].CanReason,
+	},
+	VertexAIOpus46: {
+		ID:                  VertexAIOpus46,
+		Name:                "VertexAI: Claude Opus 4.6",
+		Provider:            ProviderVertexAI,
+		APIModel:            "claude-opus-4-6@default",
+		CostPer1MIn:         AnthropicModels[Claude46Opus].CostPer1MIn,
+		CostPer1MInCached:   AnthropicModels[Claude46Opus].CostPer1MInCached,
+		CostPer1MOut:        AnthropicModels[Claude46Opus].CostPer1MOut,
+		CostPer1MOutCached:  AnthropicModels[Claude46Opus].CostPer1MOutCached,
+		ContextWindow:       AnthropicModels[Claude46Opus].ContextWindow,
+		DefaultMaxTokens:    AnthropicModels[Claude46Opus].DefaultMaxTokens,
+		SupportsAttachments: AnthropicModels[Claude46Opus].SupportsAttachments,
+		CanReason:           AnthropicModels[Claude46Opus].CanReason,
 	},
 }

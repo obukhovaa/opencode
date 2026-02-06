@@ -17,7 +17,7 @@ OpenCode is a Go-based CLI application that brings AI assistance to your termina
 
 - **Interactive TUI**: Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) for a smooth terminal experience
 - **Non-interactive mode**: Could be running in headless mode to build autonomous agents 
-- **Multiple AI Providers**: Support for OpenAI, Anthropic Claude, Google Gemini, AWS Bedrock, Groq, Azure OpenAI, and OpenRouter
+- **Multiple AI Providers**: Support for OpenAI, Anthropic Claude, Google Gemini and AWS Bedrock 
 - **Session Management**: Save and manage multiple conversation sessions
 - **Tool Integration**: AI can execute commands, search files, and modify code
 - **Agent Skills**: Define reusable instructions that agents can discover and load on-demand
