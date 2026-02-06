@@ -12,6 +12,7 @@ GO_TEST_FLAGS ?= -race -coverprofile=$(COVER_DATA_DIR)/coverage.out
 VERSION := $(shell git tag | sort -V | tail -1)
 GOOSE_DIR = ./internal/db/migrations/$(SESSION_PROVIDER)
 GOOSE_DSN = "$(MYSQL_USER):$(MYSQL_PASSWORD)@tcp($(MYSQL_HOST):3306)/$(MYSQL_DATABASE)?parseTime=true"
+SCOPE ?= minor
 
 # Define all phony targets
 .PHONY: init init-hooks clean generate build \
@@ -100,5 +101,5 @@ version:
 	@echo $(VERSION)
 
 release:
-	@./scripts/release $(SCOPE)
+	@./scripts/release --$(SCOPE)
 

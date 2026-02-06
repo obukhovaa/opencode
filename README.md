@@ -376,6 +376,13 @@ cd opencode
 make build
 ```
 
+### Release
+```bash
+make release SCOPE=patch
+# or
+make release SCOPE=minor
+```
+
 ## Acknowledgments
 
 - [@isaacphi](https://github.com/isaacphi) — [mcp-language-server](https://github.com/isaacphi/mcp-language-server), foundation for the LSP client
