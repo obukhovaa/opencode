@@ -75,11 +75,11 @@ func TestMatchPermissionPattern(t *testing.T) {
 
 func TestEvaluateSkillPermission(t *testing.T) {
 	tests := []struct {
-		name       string
-		skillName  string
-		agentName  config.AgentName
-		cfg        *config.Config
-		want       string
+		name      string
+		skillName string
+		agentName config.AgentName
+		cfg       *config.Config
+		want      string
 	}{
 		{
 			name:      "global allow",

@@ -583,6 +583,28 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 				cfg.Agents[name] = updatedAgent
 			}
 		}
+	} else if model.CanReason && model.SupportsAdaptiveThinking {
+		if agent.ReasoningEffort != "" {
+			effort := strings.ToLower(agent.ReasoningEffort)
+			if effort == "max" && !model.SupportsMaximumThinking {
+				logging.Warn("model doesn't support 'max' reasoning effort, falling back to 'high'",
+					"agent", name,
+					"model", agent.Model)
+
+				updatedAgent := cfg.Agents[name]
+				updatedAgent.ReasoningEffort = "high"
+				cfg.Agents[name] = updatedAgent
+			} else if effort != "low" && effort != "medium" && effort != "high" && effort != "max" {
+				logging.Warn("invalid reasoning effort for adaptive thinking model, setting to high",
+					"agent", name,
+					"model", agent.Model,
+					"reasoning_effort", agent.ReasoningEffort)
+
+				updatedAgent := cfg.Agents[name]
+				updatedAgent.ReasoningEffort = "high"
+				cfg.Agents[name] = updatedAgent
+			}
+		}
 	} else if !model.CanReason && agent.ReasoningEffort != "" {
 		// Model doesn't support reasoning but reasoning effort is set
 		logging.Warn("model doesn't support reasoning but reasoning effort is set, ignoring",

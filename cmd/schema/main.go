@@ -239,8 +239,8 @@ func generateSchema() map[string]any {
 				},
 				"reasoningEffort": map[string]any{
 					"type":        "string",
-					"description": "Reasoning effort for models that support it (OpenAI, Anthropic)",
-					"enum":        []string{"low", "medium", "high"},
+					"description": "Reasoning effort for models that support it (OpenAI, Anthropic). 'max' is only available for models with maximum thinking support.",
+					"enum":        []string{"low", "medium", "high", "max"},
 				},
 				"permission": map[string]any{
 					"type":        "object",

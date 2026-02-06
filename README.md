@@ -453,11 +453,28 @@ This is useful if you want to use a different shell than your default system she
   "agents": {
     "coder": {
       "model": "claude-4-5-sonnet[1m]",
-      "maxTokens": 5000
+      "maxTokens": 5000,
+      "reasoningEffort": "high",
+      "permission": {
+        "skill": {
+          "internal-*": "allow",
+          "experimental-*": "deny"
+        }
+      },
+      "tools": {
+        "skill": true
+      }
     },
     "task": {
       "model": "claude-4-5-sonnet[1m]",
       "maxTokens": 5000
+    },
+    "summarizer": {
+      "model": "claude-4-5-sonnet[1m]",
+      "maxTokens": 5000,
+      "tools": {
+        "skill": false
+      }
     },
     "title": {
       "model": "claude-4-5-sonnet[1m]",
@@ -482,11 +499,36 @@ This is useful if you want to use a different shell than your default system she
       "command": "gopls"
     }
   },
+  "sessionProvider": {
+    "type": "sqlite"
+  },
+  "skills": {
+    "paths": ["~/my-skills"]
+  },
+  "permission": {
+    "skill": {
+      "*": "ask",
+      "internal-*": "deny"
+    }
+  },
   "debug": false,
   "debugLSP": false,
   "autoCompact": true
 }
 ```
+
+**Agent fields:**
+- `model`: Model ID to use for this agent
+- `maxTokens`: Maximum tokens for responses
+- `reasoningEffort`: Controls thinking depth for models that support it. Values: `low`, `medium`, `high` (default), `max` (only for models with maximum thinking support, e.g. Claude Opus 4.6)
+- `permission`: Agent-specific permission overrides (e.g., for skills)
+- `tools`: Enable/disable specific tools for this agent
+
+**Built-in agents:**
+- `coder`: Main coding agent (uses all tools)
+- `task`: Task planning agent (read-only tools)
+- `summarizer`: Session summarization agent
+- `title`: Session title generation agent
 
 ## Supported AI Models
 

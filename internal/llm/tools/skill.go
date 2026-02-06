@@ -141,7 +141,7 @@ func evaluateSkillPermission(skillName string, agentName config.AgentName, cfg *
 					return "deny"
 				}
 			}
-			
+
 			// Check agent-specific skill permissions
 			if agentCfg.Permission != nil {
 				if skillPerms, ok := agentCfg.Permission["skill"]; ok {
@@ -152,14 +152,14 @@ func evaluateSkillPermission(skillName string, agentName config.AgentName, cfg *
 			}
 		}
 	}
-	
+
 	// Check global permissions
 	if cfg.Permission != nil && cfg.Permission.Skill != nil {
 		if action := matchPermissionPattern(skillName, cfg.Permission.Skill); action != "" {
 			return action
 		}
 	}
-	
+
 	// Default to "ask" if no permission configured
 	return "ask"
 }

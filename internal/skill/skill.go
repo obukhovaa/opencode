@@ -119,7 +119,7 @@ func discoverSkills() map[string]Info {
 		logging.Warn("Config not initialized, skipping skill discovery")
 		return skills
 	}
-	
+
 	workingDir := cfg.WorkingDir
 	if workingDir == "" {
 		logging.Warn("Working directory not set, skipping skill discovery")

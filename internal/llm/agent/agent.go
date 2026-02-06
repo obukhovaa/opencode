@@ -955,12 +955,16 @@ func createAgentProvider(agentName config.AgentName) (provider.Provider, error) 
 				provider.WithReasoningEffort(agentConfig.ReasoningEffort),
 			),
 		)
-	} else if model.Provider == models.ProviderAnthropic && model.CanReason && agentName == config.AgentCoder {
+	} else if (model.Provider == models.ProviderAnthropic || model.Provider == models.ProviderVertexAI || model.Provider == models.ProviderBedrock) && model.CanReason && agentName == config.AgentCoder {
+		anthropicOpts := []provider.AnthropicOption{
+			provider.WithAnthropicShouldThinkFn(provider.DefaultShouldThinkFn),
+		}
+		if model.SupportsAdaptiveThinking {
+			anthropicOpts = append(anthropicOpts, provider.WithAnthropicReasoningEffort(agentConfig.ReasoningEffort))
+		}
 		opts = append(
 			opts,
-			provider.WithAnthropicOptions(
-				provider.WithAnthropicShouldThinkFn(provider.DefaultShouldThinkFn),
-			),
+			provider.WithAnthropicOptions(anthropicOpts...),
 		)
 	}
 	agentProvider, err := provider.NewProvider(

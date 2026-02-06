@@ -22,11 +22,12 @@ import (
 )
 
 type anthropicOptions struct {
-	useBedrock    bool
-	useVertex     bool
-	vertexOptions vertexOptions
-	disableCache  bool
-	shouldThink   func(userMessage string) bool
+	useBedrock      bool
+	useVertex       bool
+	vertexOptions   vertexOptions
+	disableCache    bool
+	shouldThink     func(userMessage string) bool
+	reasoningEffort string
 }
 
 type AnthropicOption func(*anthropicOptions)
@@ -209,6 +210,7 @@ func (a *anthropicClient) finishReason(reason string) message.FinishReason {
 
 func (a *anthropicClient) preparedMessages(messages []anthropic.MessageParam, tools []anthropic.ToolUnionParam) anthropic.MessageNewParams {
 	var thinkingParam anthropic.ThinkingConfigParamUnion
+	var outputConfig anthropic.OutputConfigParam
 	lastMessage := messages[len(messages)-1]
 	isUser := lastMessage.Role == anthropic.MessageParamRoleUser
 	messageContent := ""
@@ -219,21 +221,31 @@ func (a *anthropicClient) preparedMessages(messages []anthropic.MessageParam, to
 				messageContent = m.OfText.Text
 			}
 		}
-		if messageContent != "" && a.options.shouldThink != nil && a.options.shouldThink(messageContent) {
+		if a.providerOptions.model.SupportsAdaptiveThinking {
+			adaptiveParam := anthropic.NewThinkingConfigAdaptiveParam()
+			thinkingParam = anthropic.ThinkingConfigParamUnion{OfAdaptive: &adaptiveParam}
+			temperature = anthropic.Float(1)
+			effort := a.options.reasoningEffort
+			if effort == "" {
+				effort = "high"
+			}
+			outputConfig = anthropic.OutputConfigParam{
+				Effort: anthropic.OutputConfigEffort(effort),
+			}
+		} else if messageContent != "" && a.options.shouldThink != nil && a.options.shouldThink(messageContent) {
 			thinkingParam = anthropic.ThinkingConfigParamOfEnabled(int64(float64(a.providerOptions.maxTokens) * 0.8))
 			temperature = anthropic.Float(1)
 		}
 	}
 
-	// logging.Debug("Anthropic settings to use", "max_tokens", a.providerOptions.maxTokens)
-
 	return anthropic.MessageNewParams{
-		Model:       anthropic.Model(a.providerOptions.model.APIModel),
-		MaxTokens:   a.providerOptions.maxTokens,
-		Temperature: temperature,
-		Messages:    messages,
-		Tools:       tools,
-		Thinking:    thinkingParam,
+		Model:        anthropic.Model(a.providerOptions.model.APIModel),
+		MaxTokens:    a.providerOptions.maxTokens,
+		Temperature:  temperature,
+		Messages:     messages,
+		Tools:        tools,
+		Thinking:     thinkingParam,
+		OutputConfig: outputConfig,
 		System: []anthropic.TextBlockParam{
 			{
 				Text: a.providerOptions.systemMessage,
@@ -520,6 +532,12 @@ func DefaultShouldThinkFn(s string) bool {
 func WithAnthropicShouldThinkFn(fn func(string) bool) AnthropicOption {
 	return func(options *anthropicOptions) {
 		options.shouldThink = fn
+	}
+}
+
+func WithAnthropicReasoningEffort(effort string) AnthropicOption {
+	return func(options *anthropicOptions) {
+		options.reasoningEffort = effort
 	}
 }
 

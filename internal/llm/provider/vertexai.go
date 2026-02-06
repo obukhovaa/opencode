@@ -43,9 +43,9 @@ func newVertexAIClient(opts providerClientOptions) VertexAIClient {
 				}
 			}
 			projectID := os.Getenv("VERTEXAI_PROJECT")
-			opts.anthropicOptions = []AnthropicOption{
+			opts.anthropicOptions = append(opts.anthropicOptions,
 				WithVertexAI(projectID, location, locationForCounting),
-			}
+			)
 			return newAnthropicClient(opts)
 		}
 	}
@@ -148,7 +148,7 @@ func vertexMiddleware(region, regionForCounting, projectID string) sdkoption.Mid
 			}
 
 			logging.Debug("vertext_ai middleware request, using beta header", "anthropic-beta", betas,
-				"model", model, "stream", stream, "path", r.URL.Path, "new_path", newPath, "method", r.Method,
+				"model", model, "stream", stream, "path", r.URL.Path, "new_path", newPath, "method", r.Method, "body", string(body),
 			)
 
 			reader := bytes.NewReader(body)
