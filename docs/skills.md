@@ -797,7 +797,7 @@ Failed to parse skill file path=/path/to/SKILL.md error=...
 
 ## See Also
 
-- [Configuration Guide](../README.md#configuration)
-- [Custom Commands](../README.md#custom-commands)
-- [MCP Servers](../README.md#mcp-model-context-protocol)
-- [Permissions](../README.md#agent-skills)
+- [Configuration](../README.md#configuration)
+- [Custom Commands](custom-commands.md)
+- [Session Providers](session-providers.md)
+- [MCP Servers](../README.md#mcp-servers)
