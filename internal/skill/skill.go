@@ -179,6 +179,10 @@ func discoverProjectSkills(workingDir, worktreeRoot string) []Info {
 		opencodeSkills := scanDirectory(filepath.Join(current, ".opencode"), "{skill,skills}/**/SKILL.md")
 		skills = append(skills, opencodeSkills...)
 
+		// Scan .agents/skills/**/SKILL.md
+		agentsSkills := scanDirectory(filepath.Join(current, ".agents"), "skills/**/SKILL.md")
+		skills = append(skills, agentsSkills...)
+
 		// Scan .claude/skills/**/SKILL.md (unless disabled)
 		if !isClaudeSkillsDisabled() {
 			claudeSkills := scanDirectory(filepath.Join(current, ".claude"), "skills/**/SKILL.md")
@@ -209,6 +213,11 @@ func discoverGlobalSkills() []Info {
 	configDir := filepath.Join(homeDir, ".config", "opencode")
 	opencodeSkills := scanDirectory(configDir, "{skill,skills}/**/SKILL.md")
 	skills = append(skills, opencodeSkills...)
+
+	// Scan ~/.agents/skills/**/SKILL.md
+	agentsDir := filepath.Join(homeDir, ".agents")
+	agentsSkills := scanDirectory(agentsDir, "skills/**/SKILL.md")
+	skills = append(skills, agentsSkills...)
 
 	// Scan ~/.claude/skills/**/SKILL.md (unless disabled)
 	if !isClaudeSkillsDisabled() {

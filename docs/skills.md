@@ -124,6 +124,7 @@ Skills specific to your project:
 ```
 .opencode/skills/<name>/SKILL.md
 .opencode/skill/<name>/SKILL.md
+.agents/skills/<name>/SKILL.md
 .claude/skills/<name>/SKILL.md
 ```
 
@@ -136,6 +137,7 @@ Skills available across all projects:
 ```
 ~/.config/opencode/skills/<name>/SKILL.md
 ~/.config/opencode/skill/<name>/SKILL.md
+~/.agents/skills/<name>/SKILL.md
 ~/.claude/skills/<name>/SKILL.md
 ```
 

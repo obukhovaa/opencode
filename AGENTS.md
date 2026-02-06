@@ -43,7 +43,7 @@ Agents can be configured in `.opencode.json`:
 {
   "agents": {
     "coder": {
-      "model": "vertexai.claude-sonnet-4-5[1m]",
+      "model": "vertexai.claude-sonnet-4-5-m",
       "maxTokens": 64000,
       "reasoningEffort": "medium",
       "permission": {
@@ -86,7 +86,7 @@ Skills are reusable instruction sets that agents can load on-demand. See [Skills
 
 **Key concepts:**
 - Skills are markdown files with YAML frontmatter
-- Discovered from `.opencode/skills/`, `~/.config/opencode/skills/`, and custom paths
+- Discovered from `.opencode/skills/`, `.agents/skills/`, `~/.config/opencode/skills/`, `~/.agents/skills/`, and custom paths
 - Permissions control which skills agents can access
 - Agent-specific permissions override global permissions
 
