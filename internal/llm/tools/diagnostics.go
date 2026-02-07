@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -14,116 +13,11 @@ import (
 	"github.com/opencode-ai/opencode/internal/lsp/protocol"
 )
 
-type DiagnosticsParams struct {
-	FilePath string `json:"file_path"`
-}
-type diagnosticsTool struct {
-	lspClients map[string]*lsp.Client
-}
-
-const (
-	DiagnosticsToolName    = "diagnostics"
-	diagnosticsDescription = `Get diagnostics for a file and/or project.
-WHEN TO USE THIS TOOL:
-- Use when you need to check for errors or warnings in your code
-- Helpful for debugging and ensuring code quality
-- Good for getting a quick overview of issues in a file or project
-HOW TO USE:
-- Provide a path to a file to get diagnostics for that file
-- Leave the path empty to get diagnostics for the entire project
-- Results are displayed in a structured format with severity levels
-FEATURES:
-- Displays errors, warnings, and hints
-- Groups diagnostics by severity
-- Provides detailed information about each diagnostic
-LIMITATIONS:
-- Results are limited to the diagnostics provided by the LSP clients
-- May not cover all possible issues in the code
-- Does not provide suggestions for fixing issues
-TIPS:
-- Use in conjunction with other tools for a comprehensive code review
-- Combine with the LSP client for real-time diagnostics
-`
-)
-
-func NewDiagnosticsTool(lspClients map[string]*lsp.Client) BaseTool {
-	return &diagnosticsTool{
-		lspClients,
-	}
-}
-
-func (b *diagnosticsTool) Info() ToolInfo {
-	return ToolInfo{
-		Name:        DiagnosticsToolName,
-		Description: diagnosticsDescription,
-		Parameters: map[string]any{
-			"file_path": map[string]any{
-				"type":        "string",
-				"description": "The path to the file to get diagnostics for (leave w empty for project diagnostics)",
-			},
-		},
-		Required: []string{},
-	}
-}
-
-func (b *diagnosticsTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
-	var params DiagnosticsParams
-	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
-		return NewTextErrorResponse(fmt.Sprintf("error parsing parameters: %s", err)), nil
-	}
-
-	lsps := b.lspClients
-
-	if len(lsps) == 0 {
-		return NewTextErrorResponse("no LSP clients available"), nil
-	}
-
-	if params.FilePath != "" {
-		notifyLspOpenFile(ctx, params.FilePath, lsps)
-		waitForLspDiagnostics(ctx, params.FilePath, lsps)
-	}
-
-	output := getDiagnostics(params.FilePath, lsps)
-
-	return NewTextResponse(output), nil
-}
-
 func notifyLspOpenFile(ctx context.Context, filePath string, lsps map[string]*lsp.Client) {
-	ext := strings.ToLower(filepath.Ext(filePath))
-
-	for serverName, client := range lsps {
-		// Only send files to appropriate language servers
-		shouldOpen := false
-
-		switch serverName {
-		case "typescript", "typescript-language-server", "tsserver", "vtsls", "ts_ls":
-			shouldOpen = ext == ".ts" || ext == ".js" || ext == ".tsx" || ext == ".jsx"
-		case "gopls":
-			shouldOpen = ext == ".go"
-		case "rust-analyzer":
-			shouldOpen = ext == ".rs"
-		case "python", "pyright", "pylsp":
-			shouldOpen = ext == ".py"
-		case "clangd":
-			shouldOpen = ext == ".c" || ext == ".cpp" || ext == ".h" || ext == ".hpp"
-		case "java", "jdtls":
-			shouldOpen = ext == ".java"
-		case "kotlin_lsp":
-			shouldOpen = ext == ".kt" || ext == ".kts"
-		case "lua-language-server", "lua_ls":
-			shouldOpen = ext == ".lua"
-		case "bashls", "bash-language-server":
-			shouldOpen = ext == ".sh" || ext == ".bash" || ext == ".zsh"
-		default:
-			// For unknown servers, be conservative
-			shouldOpen = false
-		}
-
-		if shouldOpen {
-			err := client.OpenFile(ctx, filePath)
-			if err != nil {
-				continue
-			}
+	for _, client := range lsps {
+		err := client.OpenFile(ctx, filePath)
+		if err != nil {
+			continue
 		}
 	}
 }
@@ -186,6 +80,9 @@ func hasDiagnosticsChanged(current, original map[protocol.DocumentUri][]protocol
 	return false
 }
 
+// getDiagnostics collects and formats diagnostics from all LSP clients.
+// Used by file-mutating tools (edit, write, patch) and view to provide
+// inline feedback to the LLM after each operation.
 func getDiagnostics(filePath string, lsps map[string]*lsp.Client) string {
 	fileDiagnostics := []string{}
 	projectDiagnostics := []string{}

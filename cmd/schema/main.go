@@ -305,14 +305,14 @@ func generateSchema() map[string]any {
 	// Add LSP configuration
 	schema["properties"].(map[string]any)["lsp"] = map[string]any{
 		"type":        "object",
-		"description": "Language Server Protocol configurations",
+		"description": "Language Server Protocol configurations. Built-in servers are auto-detected; use this to override, disable, or add custom servers.",
 		"additionalProperties": map[string]any{
 			"type":        "object",
-			"description": "LSP configuration for a language",
+			"description": "LSP configuration for a language server",
 			"properties": map[string]any{
 				"disabled": map[string]any{
 					"type":        "boolean",
-					"description": "Whether the LSP is disabled",
+					"description": "Whether the LSP server is disabled",
 					"default":     false,
 				},
 				"command": map[string]any{
@@ -326,13 +326,33 @@ func generateSchema() map[string]any {
 						"type": "string",
 					},
 				},
-				"options": map[string]any{
+				"extensions": map[string]any{
+					"type":        "array",
+					"description": "File extensions this LSP server should handle (e.g., [\".go\", \".mod\"])",
+					"items": map[string]any{
+						"type": "string",
+					},
+				},
+				"env": map[string]any{
 					"type":        "object",
-					"description": "Additional options for the LSP server",
+					"description": "Environment variables to set when starting the LSP server",
+					"additionalProperties": map[string]any{
+						"type": "string",
+					},
+				},
+				"initialization": map[string]any{
+					"type":        "object",
+					"description": "Initialization options sent to the LSP server during the initialize request. Options vary by server.",
 				},
 			},
-			"required": []string{"command"},
 		},
+	}
+
+	// Add disableLSPDownload flag
+	schema["properties"].(map[string]any)["disableLSPDownload"] = map[string]any{
+		"type":        "boolean",
+		"description": "Disable automatic downloading and installation of LSP servers. Can also be set via OPENCODE_DISABLE_LSP_DOWNLOAD environment variable.",
+		"default":     false,
 	}
 
 	// Add shell configuration

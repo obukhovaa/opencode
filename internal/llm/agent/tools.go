@@ -31,7 +31,7 @@ func CoderAgentTools(
 		ctx := context.Background()
 		otherTools := GetMcpTools(ctx, permissions)
 		if len(lspClients) > 0 {
-			otherTools = append(otherTools, tools.NewDiagnosticsTool(lspClients))
+			otherTools = append(otherTools, tools.NewLspTool(lspClients))
 		}
 		coderTools = append(
 			[]tools.BaseTool{

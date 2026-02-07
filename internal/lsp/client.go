@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp/protocol"
+	"github.com/opencode-ai/opencode/internal/version"
 )
 
 type Client struct {
@@ -48,14 +50,20 @@ type Client struct {
 	openFiles   map[string]*OpenFileInfo
 	openFilesMu sync.RWMutex
 
+	// Extensions this server handles (e.g., [".go", ".mod"])
+	extensions []string
+
 	// Server state
 	serverState atomic.Value
 }
 
-func NewClient(ctx context.Context, command string, args ...string) (*Client, error) {
+func NewClient(ctx context.Context, command string, env map[string]string, args ...string) (*Client, error) {
 	cmd := exec.CommandContext(ctx, command, args...)
-	// Copy env
+	// Copy env and add server-specific env vars
 	cmd.Env = os.Environ()
+	for k, v := range env {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -126,7 +134,13 @@ func (c *Client) RegisterServerRequestHandler(method string, handler ServerReque
 	c.serverRequestHandlers[method] = handler
 }
 
-func (c *Client) InitializeLSPClient(ctx context.Context, workspaceDir string) (*protocol.InitializeResult, error) {
+func (c *Client) InitializeLSPClient(ctx context.Context, workspaceDir string, initOptions ...map[string]any) (*protocol.InitializeResult, error) {
+	// Merge initialization options
+	var initOpts map[string]any
+	if len(initOptions) > 0 && initOptions[0] != nil {
+		initOpts = initOptions[0]
+	}
+
 	initParams := &protocol.InitializeParams{
 		WorkspaceFoldersInitializeParams: protocol.WorkspaceFoldersInitializeParams{
 			WorkspaceFolders: []protocol.WorkspaceFolder{
@@ -140,8 +154,8 @@ func (c *Client) InitializeLSPClient(ctx context.Context, workspaceDir string) (
 		XInitializeParams: protocol.XInitializeParams{
 			ProcessID: int32(os.Getpid()),
 			ClientInfo: &protocol.ClientInfo{
-				Name:    "mcp-language-server",
-				Version: "0.1.0",
+				Name:    "opencode",
+				Version: version.Version,
 			},
 			RootPath: workspaceDir,
 			RootURI:  protocol.DocumentUri("file://" + workspaceDir),
@@ -190,17 +204,7 @@ func (c *Client) InitializeLSPClient(ctx context.Context, workspaceDir string) (
 				},
 				Window: protocol.WindowClientCapabilities{},
 			},
-			InitializationOptions: map[string]any{
-				"codelenses": map[string]bool{
-					"generate":           true,
-					"regenerate_cgo":     true,
-					"test":               true,
-					"tidy":               true,
-					"upgrade_dependency": true,
-					"vendor":             true,
-					"vulncheck":          false,
-				},
-			},
+			InitializationOptions: initOpts,
 		},
 	}
 
@@ -591,26 +595,23 @@ type OpenFileInfo struct {
 	URI     protocol.DocumentUri
 }
 
+// SetExtensions configures which file extensions this server handles
+func (c *Client) SetExtensions(exts []string) {
+	c.extensions = exts
+}
+
+// GetExtensions returns the file extensions this server handles
+func (c *Client) GetExtensions() []string {
+	return c.extensions
+}
+
 // shouldOpenFile checks if this language server should handle the given file
 func (c *Client) shouldOpenFile(filePath string) bool {
-	ext := strings.ToLower(filepath.Ext(filePath))
-	serverType := c.detectServerType()
-
-	switch serverType {
-	case ServerTypeTypeScript:
-		return ext == ".ts" || ext == ".js" || ext == ".tsx" || ext == ".jsx"
-	case ServerTypeGo:
-		return ext == ".go"
-	case ServerTypeRust:
-		return ext == ".rs"
-	case ServerTypePython:
-		return ext == ".py"
-	case ServerTypeLua:
-		return ext == ".lua"
-	default:
-		// For unknown/generic servers, be conservative and don't open files
+	if len(c.extensions) == 0 {
 		return false
 	}
+	ext := strings.ToLower(filepath.Ext(filePath))
+	return slices.Contains(c.extensions, ext)
 }
 
 func (c *Client) OpenFile(ctx context.Context, filePath string) error {
@@ -769,9 +770,18 @@ func (c *Client) GetFileDiagnostics(uri protocol.DocumentUri) []protocol.Diagnos
 	return c.diagnostics[uri]
 }
 
-// GetDiagnostics returns all diagnostics for all files
+// GetDiagnostics returns a copy of all diagnostics for all files
 func (c *Client) GetDiagnostics() map[protocol.DocumentUri][]protocol.Diagnostic {
-	return c.diagnostics
+	c.diagnosticsMu.RLock()
+	defer c.diagnosticsMu.RUnlock()
+
+	result := make(map[protocol.DocumentUri][]protocol.Diagnostic, len(c.diagnostics))
+	for uri, diags := range c.diagnostics {
+		d := make([]protocol.Diagnostic, len(diags))
+		copy(d, diags)
+		result[uri] = d
+	}
+	return result
 }
 
 // OpenFileOnDemand opens a file only if it's not already open

@@ -67,10 +67,12 @@ type Data struct {
 
 // LSPConfig defines configuration for Language Server Protocol integration.
 type LSPConfig struct {
-	Disabled bool     `json:"enabled"`
-	Command  string   `json:"command"`
-	Args     []string `json:"args"`
-	Options  any      `json:"options"`
+	Disabled       bool              `json:"disabled"`
+	Command        string            `json:"command"`
+	Args           []string          `json:"args"`
+	Extensions     []string          `json:"extensions,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	Initialization any               `json:"initialization,omitempty"`
 }
 
 // TUIConfig defines the configuration for the Terminal User Interface.
@@ -124,21 +126,22 @@ type PermissionConfig struct {
 
 // Config is the main configuration structure for the application.
 type Config struct {
-	Data            Data                              `json:"data"`
-	WorkingDir      string                            `json:"wd,omitempty"`
-	MCPServers      map[string]MCPServer              `json:"mcpServers,omitempty"`
-	Providers       map[models.ModelProvider]Provider `json:"providers,omitempty"`
-	LSP             map[string]LSPConfig              `json:"lsp,omitempty"`
-	Agents          map[AgentName]Agent               `json:"agents,omitempty"`
-	Debug           bool                              `json:"debug,omitempty"`
-	DebugLSP        bool                              `json:"debugLSP,omitempty"`
-	ContextPaths    []string                          `json:"contextPaths,omitempty"`
-	TUI             TUIConfig                         `json:"tui"`
-	Shell           ShellConfig                       `json:"shell,omitempty"`
-	AutoCompact     bool                              `json:"autoCompact,omitempty"`
-	SessionProvider SessionProviderConfig             `json:"sessionProvider,omitempty"`
-	Skills          *SkillsConfig                     `json:"skills,omitempty"`
-	Permission      *PermissionConfig                 `json:"permission,omitempty"`
+	Data               Data                              `json:"data"`
+	WorkingDir         string                            `json:"wd,omitempty"`
+	MCPServers         map[string]MCPServer              `json:"mcpServers,omitempty"`
+	Providers          map[models.ModelProvider]Provider `json:"providers,omitempty"`
+	LSP                map[string]LSPConfig              `json:"lsp,omitempty"`
+	Agents             map[AgentName]Agent               `json:"agents,omitempty"`
+	Debug              bool                              `json:"debug,omitempty"`
+	DebugLSP           bool                              `json:"debugLSP,omitempty"`
+	ContextPaths       []string                          `json:"contextPaths,omitempty"`
+	TUI                TUIConfig                         `json:"tui"`
+	Shell              ShellConfig                       `json:"shell,omitempty"`
+	AutoCompact        bool                              `json:"autoCompact,omitempty"`
+	DisableLSPDownload bool                              `json:"disableLSPDownload,omitempty"`
+	SessionProvider    SessionProviderConfig             `json:"sessionProvider,omitempty"`
+	Skills             *SkillsConfig                     `json:"skills,omitempty"`
+	Permission         *PermissionConfig                 `json:"permission,omitempty"`
 }
 
 // Application constants
@@ -290,6 +293,11 @@ func setDefaults(debug bool) {
 	viper.SetDefault("contextPaths", defaultContextPaths)
 	viper.SetDefault("tui.theme", "opencode")
 	viper.SetDefault("autoCompact", true)
+
+	// LSP download control
+	if v := os.Getenv("OPENCODE_DISABLE_LSP_DOWNLOAD"); v == "true" || v == "1" {
+		viper.Set("disableLSPDownload", true)
+	}
 
 	// Set default shell from environment or fallback to /bin/bash
 	shellPath := os.Getenv("SHELL")
@@ -657,7 +665,7 @@ func Validate() error {
 
 	// Validate LSP configurations
 	for language, lspConfig := range cfg.LSP {
-		if lspConfig.Command == "" && !lspConfig.Disabled {
+		if lspConfig.Command == "" && !lspConfig.Disabled && len(lspConfig.Extensions) == 0 {
 			logging.Warn("LSP configuration has no command, marking as disabled", "language", language)
 			lspConfig.Disabled = true
 			cfg.LSP[language] = lspConfig

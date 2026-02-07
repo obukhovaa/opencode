@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -629,6 +631,12 @@ func renderToolMessage(
 	if response != nil {
 		responseContent = renderToolResponse(toolCall, *response, width-2)
 		responseContent = strings.TrimSuffix(responseContent, "\n")
+
+		// Extract and render diagnostics summary from response content
+		diagSummary := renderDiagnosticsSummary(response.Content, width-2)
+		if diagSummary != "" {
+			responseContent = responseContent + "\n" + diagSummary
+		}
 	} else {
 		responseContent = baseStyle.
 			Italic(true).
@@ -690,6 +698,49 @@ func renderToolMessage(
 		content:     content,
 	}
 	return toolMsg
+}
+
+var diagSummaryRegex = regexp.MustCompile(`<diagnostic_summary>\s*Current file: (\d+) errors, (\d+) warnings\s*Project: (\d+) errors, (\d+) warnings\s*</diagnostic_summary>`)
+
+// renderDiagnosticsSummary extracts the diagnostic summary from tool output
+// and renders it as a subtle one-line indicator with error/warning icons.
+func renderDiagnosticsSummary(content string, width int) string {
+	matches := diagSummaryRegex.FindStringSubmatch(content)
+	if matches == nil {
+		return ""
+	}
+
+	fileErrors, _ := strconv.Atoi(matches[1])
+	fileWarnings, _ := strconv.Atoi(matches[2])
+	projectErrors, _ := strconv.Atoi(matches[3])
+	projectWarnings, _ := strconv.Atoi(matches[4])
+
+	totalErrors := fileErrors + projectErrors
+	totalWarnings := fileWarnings + projectWarnings
+
+	if totalErrors == 0 && totalWarnings == 0 {
+		return ""
+	}
+
+	t := theme.CurrentTheme()
+	baseStyle := styles.BaseStyle()
+
+	var parts []string
+	if totalErrors > 0 {
+		errText := baseStyle.
+			Foreground(t.Error()).
+			Render(fmt.Sprintf("%s %d", styles.ErrorIcon, totalErrors))
+		parts = append(parts, errText)
+	}
+	if totalWarnings > 0 {
+		warnText := baseStyle.
+			Foreground(t.Warning()).
+			Render(fmt.Sprintf("%s %d", styles.WarningIcon, totalWarnings))
+		parts = append(parts, warnText)
+	}
+
+	summary := strings.Join(parts, baseStyle.Foreground(t.TextMuted()).Render("  "))
+	return baseStyle.Width(width).Render(summary)
 }
 
 // Helper function to format the time difference between two Unix timestamps

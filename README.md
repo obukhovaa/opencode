@@ -11,12 +11,12 @@ OpenCode is a CLI tool that brings AI assistance to your terminal. It provides b
 - **Interactive TUI** built with [Bubble Tea](https://github.com/charmbracelet/bubbletea)
 - **Non-interactive mode** for headless automation and autonomous agents
 - **Multiple AI providers**: OpenAI, Anthropic, Google Gemini, AWS Bedrock, VertexAI, and self-hosted
-- **Tool integration**: file operations, shell commands, code search, LSP diagnostics
+- **Tool integration**: file operations, shell commands, code search, LSP code intelligence
 - **MCP support**: extend capabilities via Model Context Protocol servers
 - **Agent skills**: reusable instruction sets loaded on-demand ([guide](docs/skills.md))
 - **Custom commands**: predefined prompts with named arguments ([guide](docs/custom-commands.md))
 - **Session management** with SQLite or MySQL storage ([guide](docs/session-providers.md))
-- **LSP integration** for code intelligence and diagnostics
+- **LSP integration** with auto-install for 30+ language servers ([guide](docs/lsp.md))
 - **File change tracking** during sessions
 
 ## Installation
@@ -132,7 +132,9 @@ OpenCode looks for `.opencode.json` in:
     }
   },
   "lsp": {
-    "go": { "command": "gopls" }
+    "gopls": {
+      "initialization": { "codelenses": { "test": true } }
+    }
   },
   "sessionProvider": { "type": "sqlite" },
   "skills": { "paths": ["~/my-skills"] },
@@ -213,19 +215,27 @@ Override the default shell (falls back to `$SHELL` or `/bin/bash`):
 
 ### LSP
 
+OpenCode auto-detects and starts LSP servers for your project's languages. Over 30 servers are built-in with auto-install support. See the [full LSP guide](docs/lsp.md) for details.
+
 ```json
 {
   "lsp": {
-    "go": { "command": "gopls" },
-    "typescript": {
-      "command": "typescript-language-server",
-      "args": ["--stdio"]
+    "gopls": {
+      "env": { "GOFLAGS": "-mod=vendor" },
+      "initialization": { "codelenses": { "test": true } }
+    },
+    "typescript": { "disabled": true },
+    "my-lsp": {
+      "command": "my-lsp-server",
+      "args": ["--stdio"],
+      "extensions": [".custom"]
     }
-  }
+  },
+  "disableLSPDownload": false
 }
 ```
 
-The AI assistant accesses LSP diagnostics via the `diagnostics` tool.
+Disable auto-download of LSP binaries via config (`"disableLSPDownload": true`) or env var (`OPENCODE_DISABLE_LSP_DOWNLOAD=true`).
 
 ### Self-Hosted Models
 
@@ -281,6 +291,7 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | `OPENCODE_SESSION_PROVIDER_TYPE` | `sqlite` (default) or `mysql` |
 | `OPENCODE_MYSQL_DSN` | MySQL connection string |
 | `OPENCODE_DISABLE_CLAUDE_SKILLS` | Disable `.claude/skills/` discovery |
+| `OPENCODE_DISABLE_LSP_DOWNLOAD` | Disable auto-install of LSP servers |
 
 ## Supported Models
 
@@ -306,8 +317,9 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | `view_image` | View image files as base64 |
 | `write` | Write to files |
 | `edit` | Edit files |
+| `multiedit` | Multiple edits in one file |
 | `patch` | Apply patches to files |
-| `diagnostics` | Get LSP diagnostics |
+| `lsp` | Code intelligence (go-to-definition, references, hover, etc.) |
 
 ### System & Search
 
@@ -361,6 +373,7 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | Skills | [docs/skills.md](docs/skills.md) |
 | Custom Commands | [docs/custom-commands.md](docs/custom-commands.md) |
 | Session Providers | [docs/session-providers.md](docs/session-providers.md) |
+| LSP Servers | [docs/lsp.md](docs/lsp.md) |
 
 ## Development
 
