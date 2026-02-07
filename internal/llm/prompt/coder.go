@@ -15,6 +15,8 @@ import (
 
 func CoderPrompt(provider models.ModelProvider) string {
 	basePrompt := baseAnthropicCoderPrompt
+
+	// TODO: use different prompt iif non interactive: e.g. https://github.com/anomalyco/opencode/blob/fedf9feba8c82c874e250d2fcc108b008fcf5212/packages/opencode/src/session/prompt/beast.txt#L1
 	switch provider {
 	case models.ProviderOpenAI:
 		basePrompt = baseOpenAICoderPrompt
@@ -71,6 +73,7 @@ You MUST adhere to the following criteria when executing the task:
 - Remember the user does not see the full output of tools
 `
 
+// TODO: update, e.g. https://github.com/anomalyco/opencode/blob/fedf9feba8c82c874e250d2fcc108b008fcf5212/packages/opencode/src/session/prompt/anthropic.txt#L24 ; reference newly added tools for planning and todos
 const baseAnthropicCoderPrompt = `You are OpenCode Agent, an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
 
 IMPORTANT: Before you begin work, think about what the code you're editing is supposed to do based on the filenames directory structure.

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"embed"
 	"errors"
 	"fmt"
 	"strings"
@@ -24,6 +25,9 @@ import (
 var (
 	ErrRequestCancelled = errors.New("request cancelled by user")
 	ErrSessionBusy      = errors.New("session is currently processing another request")
+
+	//go:embed prompts/*.md
+	AgentPrompts embed.FS
 )
 
 type AgentEventType string
@@ -356,8 +360,8 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 			return a.err(fmt.Errorf("failed to process events: %w", err))
 		}
 		if cfg.Debug {
-			seqId := (len(msgHistory) + 1) / 2
-			toolResultFilepath := logging.WriteToolResultsJson(sessionID, seqId, toolResults)
+			seqID := (len(msgHistory) + 1) / 2
+			toolResultFilepath := logging.WriteToolResultsJson(sessionID, seqID, toolResults)
 			logging.Info("Result", "message", agentMessage.FinishReason(), "toolResults", "{}", "filepath", toolResultFilepath, "cycle", cycles)
 		} else {
 			logging.Info("Result", "message", agentMessage.FinishReason(), "toolResults", toolResults, "cycle", cycles)
@@ -677,13 +681,15 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 	// Add session context
 	summarizeCtx := context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
 
-	// Add a system message to guide the summarization
-	summarizePrompt := "Provide a detailed but concise summary of our conversation above. Focus on information that would be helpful for continuing the conversation, including what we did, what we're doing, which files we're working on, and what we're going to do next. If you find information related to a specific tool call at the end of conversation, then try to preserve it as much as possible so agent can figure out what parameters have been passed and what response has been given by the tool."
+	summarizePrompt, err := AgentPrompts.ReadFile("prompts/compaction.md")
+	if err != nil {
+		return fmt.Errorf("failed to load summary prompt: %w", err)
+	}
 
 	// Create a new message with the summarize prompt
 	promptMsg := message.Message{
 		Role:  message.User,
-		Parts: []message.ContentPart{message.TextContent{Text: summarizePrompt}},
+		Parts: []message.ContentPart{message.TextContent{Text: string(summarizePrompt)}},
 	}
 
 	// Append the prompt to the messages
@@ -795,13 +801,21 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 		}
 		a.Publish(pubsub.CreatedEvent, event)
 
-		// Add a system message to guide the summarization
-		summarizePrompt := "Provide a detailed but concise summary of our conversation above. Focus on information that would be helpful for continuing the conversation, including what we did, what we're doing, which files we're working on, and what we're going to do next."
+		summarizePrompt, err := AgentPrompts.ReadFile("prompts/compaction.md")
+		if err != nil {
+			event = AgentEvent{
+				Type:  AgentEventTypeError,
+				Error: fmt.Errorf("failed to load summary prompt: %w", err),
+				Done:  true,
+			}
+			a.Publish(pubsub.CreatedEvent, event)
+			return
+		}
 
 		// Create a new message with the summarize prompt
 		promptMsg := message.Message{
 			Role:  message.User,
-			Parts: []message.ContentPart{message.TextContent{Text: summarizePrompt}},
+			Parts: []message.ContentPart{message.TextContent{Text: string(summarizePrompt)}},
 		}
 
 		// Append the prompt to the messages
