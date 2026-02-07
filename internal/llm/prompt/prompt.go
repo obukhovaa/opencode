@@ -78,38 +78,20 @@ func processContextPaths(workDir string, paths []string) string {
 						return err
 					}
 					if !d.IsDir() {
-						// Check if we've already processed this file (case-insensitive)
-						processedMutex.Lock()
-						lowerPath := strings.ToLower(path)
-						if !processedFiles[lowerPath] {
-							processedFiles[lowerPath] = true
-							processedMutex.Unlock()
-
+						if tryMarkProcessed(path, processedFiles, &processedMutex) {
 							if result := processFile(path); result != "" {
 								resultCh <- result
 							}
-						} else {
-							processedMutex.Unlock()
 						}
 					}
 					return nil
 				})
 			} else {
 				fullPath := filepath.Join(workDir, p)
-
-				// Check if we've already processed this file (case-insensitive)
-				processedMutex.Lock()
-				lowerPath := strings.ToLower(fullPath)
-				if !processedFiles[lowerPath] {
-					processedFiles[lowerPath] = true
-					processedMutex.Unlock()
-
-					result := processFile(fullPath)
-					if result != "" {
+				if tryMarkProcessed(fullPath, processedFiles, &processedMutex) {
+					if result := processFile(fullPath); result != "" {
 						resultCh <- result
 					}
-				} else {
-					processedMutex.Unlock()
 				}
 			}
 		}(path)
@@ -126,6 +108,25 @@ func processContextPaths(workDir string, paths []string) string {
 	}
 
 	return strings.Join(results, "\n")
+}
+
+// tryMarkProcessed resolves symlinks to obtain the canonical path and uses it
+// as the dedup key. This ensures that symlinks and different relative paths
+// pointing to the same file are only processed once.
+func tryMarkProcessed(path string, processed map[string]bool, mu *sync.Mutex) bool {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		resolved = path
+	}
+	key := strings.ToLower(resolved)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if processed[key] {
+		return false
+	}
+	processed[key] = true
+	return true
 }
 
 func processFile(filePath string) string {
