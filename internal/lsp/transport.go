@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -11,6 +12,23 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/logging"
 )
+
+// RPCError represents a JSON-RPC error response from an LSP server.
+type RPCError struct {
+	Code    int
+	Message string
+}
+
+func (e *RPCError) Error() string {
+	return fmt.Sprintf("request failed: %s (code: %d)", e.Message, e.Code)
+}
+
+// IsMethodNotFound returns true if the error is a JSON-RPC MethodNotFound (-32601) error,
+// which indicates the server is running but doesn't support the requested method.
+func IsMethodNotFound(err error) bool {
+	var rpcErr *RPCError
+	return errors.As(err, &rpcErr) && rpcErr.Code == -32601
+}
 
 // Write writes an LSP message to the given writer
 func WriteMessage(w io.Writer, msg *Message) error {
@@ -243,7 +261,7 @@ func (c *Client) Call(ctx context.Context, method string, params any, result any
 		}
 
 		if resp.Error != nil {
-			return fmt.Errorf("request failed: %s (code: %d)", resp.Error.Message, resp.Error.Code)
+			return &RPCError{Code: resp.Error.Code, Message: resp.Error.Message}
 		}
 
 		if result != nil {

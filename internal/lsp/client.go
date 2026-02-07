@@ -333,8 +333,6 @@ func (c *Client) WaitForServerReady(ctx context.Context) error {
 					logging.Debug("LSP server is ready")
 				}
 				return nil
-			} else {
-				logging.Debug("LSP server not ready yet", "error", err, "serverType", serverType)
 			}
 
 			if cnf.DebugLSP {
@@ -576,12 +574,18 @@ func shouldSkipDir(path string) bool {
 	return skipDirs[dirName]
 }
 
-// pingWithWorkspaceSymbol tries a workspace/symbol request
+// pingWithWorkspaceSymbol tries a workspace/symbol request.
+// A MethodNotFound (-32601) response means the server is running but doesn't
+// support this method — we treat that as "ready".
 func (c *Client) pingWithWorkspaceSymbol(ctx context.Context) error {
 	var result []protocol.SymbolInformation
-	return c.Call(ctx, "workspace/symbol", protocol.WorkspaceSymbolParams{
+	err := c.Call(ctx, "workspace/symbol", protocol.WorkspaceSymbolParams{
 		Query: "",
 	}, &result)
+	if err != nil && IsMethodNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 // pingWithServerCapabilities tries to get server capabilities

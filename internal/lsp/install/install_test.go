@@ -8,23 +8,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestResolveServers_BuiltinServers(t *testing.T) {
+func TestResolveServers_EmptyConfig(t *testing.T) {
 	cfg := &config.Config{
 		LSP: make(map[string]config.LSPConfig),
 	}
 
 	servers := ResolveServers(cfg)
 
-	// Should have all built-in servers
-	assert.Greater(t, len(servers), 20)
+	// No servers configured, so nothing should be returned
+	assert.Empty(t, servers)
+}
 
-	// Check a few known servers
+func TestResolveServers_ConfiguredBuiltin(t *testing.T) {
+	cfg := &config.Config{
+		LSP: map[string]config.LSPConfig{
+			"gopls":      {},
+			"typescript": {},
+		},
+	}
+
+	servers := ResolveServers(cfg)
+
+	assert.Len(t, servers, 2)
+
 	gopls, ok := servers["gopls"]
 	require.True(t, ok)
 	assert.Equal(t, []string{".go"}, gopls.Extensions)
 	assert.Equal(t, []string{"gopls"}, gopls.Command)
 	assert.Equal(t, StrategyGoInstall, gopls.Strategy)
-	assert.False(t, gopls.Disabled)
 
 	ts, ok := servers["typescript"]
 	require.True(t, ok)
@@ -32,11 +43,6 @@ func TestResolveServers_BuiltinServers(t *testing.T) {
 	assert.Contains(t, ts.Extensions, ".tsx")
 	assert.Contains(t, ts.Extensions, ".js")
 	assert.Equal(t, StrategyNpm, ts.Strategy)
-
-	rust, ok := servers["rust-analyzer"]
-	require.True(t, ok)
-	assert.Equal(t, []string{".rs"}, rust.Extensions)
-	assert.Equal(t, StrategyNone, rust.Strategy)
 }
 
 func TestResolveServers_UserDisablesBuiltin(t *testing.T) {
@@ -48,8 +54,8 @@ func TestResolveServers_UserDisablesBuiltin(t *testing.T) {
 
 	servers := ResolveServers(cfg)
 
-	gopls := servers["gopls"]
-	assert.True(t, gopls.Disabled)
+	_, ok := servers["gopls"]
+	assert.False(t, ok)
 }
 
 func TestResolveServers_UserOverridesCommand(t *testing.T) {
@@ -63,6 +69,7 @@ func TestResolveServers_UserOverridesCommand(t *testing.T) {
 	}
 
 	servers := ResolveServers(cfg)
+	assert.Len(t, servers, 1)
 
 	gopls := servers["gopls"]
 	assert.Equal(t, []string{"/custom/gopls", "--debug"}, gopls.Command)
@@ -79,6 +86,7 @@ func TestResolveServers_UserOverridesExtensions(t *testing.T) {
 	}
 
 	servers := ResolveServers(cfg)
+	assert.Len(t, servers, 1)
 
 	gopls := servers["gopls"]
 	assert.Equal(t, []string{".go", ".mod"}, gopls.Extensions)
@@ -94,6 +102,7 @@ func TestResolveServers_UserAddsEnv(t *testing.T) {
 	}
 
 	servers := ResolveServers(cfg)
+	assert.Len(t, servers, 1)
 
 	gopls := servers["gopls"]
 	assert.Equal(t, map[string]string{"GOFLAGS": "-mod=vendor"}, gopls.Env)
@@ -110,6 +119,7 @@ func TestResolveServers_UserAddsInitialization(t *testing.T) {
 	}
 
 	servers := ResolveServers(cfg)
+	assert.Len(t, servers, 1)
 
 	gopls := servers["gopls"]
 	assert.Equal(t, init, gopls.Initialization)
@@ -128,6 +138,7 @@ func TestResolveServers_CustomServer(t *testing.T) {
 	}
 
 	servers := ResolveServers(cfg)
+	assert.Len(t, servers, 1)
 
 	custom, ok := servers["my-lsp"]
 	require.True(t, ok)
@@ -135,7 +146,6 @@ func TestResolveServers_CustomServer(t *testing.T) {
 	assert.Equal(t, []string{".custom"}, custom.Extensions)
 	assert.Equal(t, map[string]string{"DEBUG": "1"}, custom.Env)
 	assert.Equal(t, StrategyNone, custom.Strategy) // custom servers can't auto-install
-	assert.False(t, custom.Disabled)
 }
 
 func TestResolveServers_DisabledCustomServer(t *testing.T) {
@@ -156,7 +166,9 @@ func TestResolveServers_DisabledCustomServer(t *testing.T) {
 
 func TestResolveServers_GoplsDefaultInit(t *testing.T) {
 	cfg := &config.Config{
-		LSP: make(map[string]config.LSPConfig),
+		LSP: map[string]config.LSPConfig{
+			"gopls": {},
+		},
 	}
 
 	servers := ResolveServers(cfg)

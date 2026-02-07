@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/lsp/install"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/session"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
@@ -36,6 +37,8 @@ func header(width int) string {
 
 func lspsConfigured(width int) string {
 	cfg := config.Get()
+	servers := install.ResolveServers(cfg)
+
 	title := "LSP Configuration"
 	title = ansi.Truncate(title, width, "…")
 
@@ -50,19 +53,22 @@ func lspsConfigured(width int) string {
 
 	// Get LSP names and sort them for consistent ordering
 	var lspNames []string
-	for name := range cfg.LSP {
+	for name := range servers {
 		lspNames = append(lspNames, name)
 	}
 	sort.Strings(lspNames)
 
 	var lspViews []string
 	for _, name := range lspNames {
-		lsp := cfg.LSP[name]
+		server := servers[name]
 		lspName := baseStyle.
 			Foreground(t.Text()).
 			Render(fmt.Sprintf("• %s", name))
 
-		cmd := lsp.Command
+		cmd := ""
+		if len(server.Command) > 0 {
+			cmd = server.Command[0]
+		}
 		cmd = ansi.Truncate(cmd, width-lipgloss.Width(lspName)-3, "…")
 
 		lspPath := baseStyle.

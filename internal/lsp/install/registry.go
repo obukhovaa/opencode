@@ -188,9 +188,9 @@ var BuiltinServers = []ServerDefinition{
 
 	// Kotlin
 	{
-		ID:         "kotlin-ls",
+		ID:         "kotlin-lsp",
 		Extensions: []string{".kt", ".kts"},
-		Command:    []string{"kotlin-language-server"},
+		Command:    []string{"kotlin-lsp", "kotlin-language-server"},
 	},
 
 	// Clojure

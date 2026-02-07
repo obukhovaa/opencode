@@ -2,6 +2,9 @@ package app
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/config"
@@ -18,20 +21,65 @@ func (app *App) initLSPClients(ctx context.Context) {
 	servers := install.ResolveServers(cfg)
 
 	for name, server := range servers {
-		if server.Disabled {
-			logging.Debug("LSP server disabled, skipping", "name", name)
-			continue
-		}
-
 		go app.startLSPServer(ctx, name, server)
 	}
 
 	logging.Info("LSP clients initialization started in background")
 }
 
+// hasMatchingFiles checks whether the working directory contains any files
+// with extensions handled by the given server. It does a shallow walk
+// (max 3 levels deep) to keep startup fast.
+func hasMatchingFiles(rootDir string, extensions []string) bool {
+	if len(extensions) == 0 {
+		return true // no extensions specified, assume relevant
+	}
+
+	extSet := make(map[string]struct{}, len(extensions))
+	for _, ext := range extensions {
+		extSet[ext] = struct{}{}
+	}
+
+	found := false
+	_ = filepath.WalkDir(rootDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return filepath.SkipDir
+		}
+
+		if d.IsDir() {
+			// Skip hidden dirs and common non-source dirs
+			name := d.Name()
+			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "dist" || name == "build" || name == "target" {
+				return filepath.SkipDir
+			}
+			// Limit depth to 3 levels
+			rel, _ := filepath.Rel(rootDir, path)
+			if strings.Count(rel, string(filepath.Separator)) >= 3 {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		ext := filepath.Ext(path)
+		if _, ok := extSet[ext]; ok {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+
+	return found
+}
+
 // startLSPServer resolves the binary (auto-installing if needed), then creates and starts the LSP client
 func (app *App) startLSPServer(ctx context.Context, name string, server install.ResolvedServer) {
 	cfg := config.Get()
+
+	// Skip servers whose file extensions aren't present in the project
+	if !hasMatchingFiles(config.WorkingDirectory(), server.Extensions) {
+		logging.Debug("No matching files found, skipping LSP server", "name", name, "extensions", server.Extensions)
+		return
+	}
 
 	// Resolve the command — check PATH, bin dir, or auto-install
 	command, args, err := install.ResolveCommand(ctx, server, cfg.DisableLSPDownload)

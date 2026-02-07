@@ -32,67 +32,69 @@ type ResolvedServer struct {
 	Command        []string
 	Env            map[string]string
 	Initialization any
-	Disabled       bool
 	Strategy       InstallStrategy
 	InstallPackage string
 	InstallRepo    string
 }
 
-// ResolveServers merges the built-in registry with user config overrides.
+// builtinByID returns a lookup map from server ID to its built-in definition.
+func builtinByID() map[string]ServerDefinition {
+	m := make(map[string]ServerDefinition, len(BuiltinServers))
+	for _, def := range BuiltinServers {
+		m[def.ID] = def
+	}
+	return m
+}
+
+// ResolveServers returns only LSP servers explicitly configured by the user.
+// If a configured server matches a built-in, its defaults are merged.
+// Disabled servers are excluded from the result.
 func ResolveServers(cfg *config.Config) map[string]ResolvedServer {
 	result := make(map[string]ResolvedServer)
+	builtins := builtinByID()
 
-	// Start with built-in servers
-	for _, def := range BuiltinServers {
-		var initOpts any
-		if def.DefaultInit != nil {
-			initOpts = def.DefaultInit
-		}
-		result[def.ID] = ResolvedServer{
-			ID:             def.ID,
-			Extensions:     def.Extensions,
-			Command:        def.Command,
-			Strategy:       def.Strategy,
-			InstallPackage: def.InstallPackage,
-			InstallRepo:    def.InstallRepo,
-			Initialization: initOpts,
-		}
-	}
-
-	// Apply user config overrides
 	for name, lspCfg := range cfg.LSP {
-		existing, exists := result[name]
-
 		if lspCfg.Disabled {
-			if exists {
-				existing.Disabled = true
-				result[name] = existing
-			}
 			continue
 		}
 
-		if !exists {
-			// Custom server from config
-			existing = ResolvedServer{
+		var server ResolvedServer
+
+		if def, ok := builtins[name]; ok {
+			var initOpts any
+			if def.DefaultInit != nil {
+				initOpts = def.DefaultInit
+			}
+			server = ResolvedServer{
+				ID:             def.ID,
+				Extensions:     def.Extensions,
+				Command:        def.Command,
+				Strategy:       def.Strategy,
+				InstallPackage: def.InstallPackage,
+				InstallRepo:    def.InstallRepo,
+				Initialization: initOpts,
+			}
+		} else {
+			server = ResolvedServer{
 				ID:       name,
 				Strategy: StrategyNone,
 			}
 		}
 
 		if lspCfg.Command != "" {
-			existing.Command = append([]string{lspCfg.Command}, lspCfg.Args...)
+			server.Command = append([]string{lspCfg.Command}, lspCfg.Args...)
 		}
 		if len(lspCfg.Extensions) > 0 {
-			existing.Extensions = lspCfg.Extensions
+			server.Extensions = lspCfg.Extensions
 		}
 		if len(lspCfg.Env) > 0 {
-			existing.Env = lspCfg.Env
+			server.Env = lspCfg.Env
 		}
 		if lspCfg.Initialization != nil {
-			existing.Initialization = lspCfg.Initialization
+			server.Initialization = lspCfg.Initialization
 		}
 
-		result[name] = existing
+		result[name] = server
 	}
 
 	return result
