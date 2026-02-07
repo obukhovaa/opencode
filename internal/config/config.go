@@ -174,6 +174,12 @@ type Configurator interface {
 // Global configuration instance
 var cfg *Config
 
+// Reset clears the global configuration, allowing Load to be called again.
+// This is intended for use in tests only.
+func Reset() {
+	cfg = nil
+}
+
 // Load initializes the configuration from environment variables and config files.
 // If debug is true, debug mode is enabled and log level is set to debug.
 // It returns an error if configuration loading fails.

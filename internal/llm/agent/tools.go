@@ -37,6 +37,7 @@ func CoderAgentTools(
 			[]tools.BaseTool{
 				tools.NewBashTool(permissions),
 				tools.NewEditTool(lspClients, permissions, history),
+				tools.NewMultiEditTool(lspClients, permissions, history),
 				tools.NewFetchTool(permissions),
 				tools.NewGlobTool(),
 				tools.NewGrepTool(),

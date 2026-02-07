@@ -224,6 +224,8 @@ func toolName(name string) string {
 		return "Bash"
 	case tools.EditToolName:
 		return "Edit"
+	case tools.MultiEditToolName:
+		return "MultiEdit"
 	case tools.FetchToolName:
 		return "Fetch"
 	case tools.GlobToolName:
@@ -254,6 +256,8 @@ func getToolAction(name string) string {
 		return "Building command..."
 	case tools.EditToolName:
 		return "Preparing edit..."
+	case tools.MultiEditToolName:
+		return "Preparing edits..."
 	case tools.FetchToolName:
 		return "Writing fetch..."
 	case tools.GlobToolName:
@@ -367,6 +371,11 @@ func renderToolParams(paramWidth int, toolCall message.ToolCall) string {
 		json.Unmarshal([]byte(toolCall.Input), &params)
 		filePath := removeWorkingDirPrefix(params.FilePath)
 		return renderParams(paramWidth, filePath)
+	case tools.MultiEditToolName:
+		var params tools.MultiEditParams
+		json.Unmarshal([]byte(toolCall.Input), &params)
+		filePath := removeWorkingDirPrefix(params.FilePath)
+		return renderParams(paramWidth, filePath, "edits", fmt.Sprintf("%d", len(params.Edits)))
 	case tools.FetchToolName:
 		var params tools.FetchParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
@@ -488,6 +497,12 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 		)
 	case tools.EditToolName:
 		metadata := tools.EditResponseMetadata{}
+		json.Unmarshal([]byte(response.Metadata), &metadata)
+		truncDiff := truncateHeight(metadata.Diff, maxResultHeight)
+		formattedDiff, _ := diff.FormatDiff(truncDiff, diff.WithTotalWidth(width))
+		return formattedDiff
+	case tools.MultiEditToolName:
+		metadata := tools.MultiEditResponseMetadata{}
 		json.Unmarshal([]byte(response.Metadata), &metadata)
 		truncDiff := truncateHeight(metadata.Diff, maxResultHeight)
 		formattedDiff, _ := diff.FormatDiff(truncDiff, diff.WithTotalWidth(width))

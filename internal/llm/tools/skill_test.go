@@ -214,7 +214,9 @@ license: MIT
 
 	// Set up config
 	oldCfg := config.Get()
+	config.Reset()
 	defer func() {
+		config.Reset()
 		// Restore old config if it existed
 		if oldCfg != nil {
 			config.Load(oldCfg.WorkingDir, oldCfg.Debug)
