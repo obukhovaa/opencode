@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,18 +14,23 @@ import (
 )
 
 type BashParams struct {
-	Command string `json:"command"`
-	Timeout int    `json:"timeout"`
+	Command     string `json:"command"`
+	Timeout     int    `json:"timeout"`
+	Workdir     string `json:"workdir"`
+	Description string `json:"description"`
 }
 
 type BashPermissionsParams struct {
 	Command string `json:"command"`
 	Timeout int    `json:"timeout"`
+	Workdir string `json:"workdir"`
 }
 
 type BashResponseMetadata struct {
-	StartTime int64 `json:"start_time"`
-	EndTime   int64 `json:"end_time"`
+	StartTime   int64  `json:"start_time"`
+	EndTime     int64  `json:"end_time"`
+	Description string `json:"description,omitempty"`
+	ExitCode    int    `json:"exit_code"`
 }
 type bashTool struct {
 	permissions permission.Service
@@ -33,16 +39,11 @@ type bashTool struct {
 const (
 	BashToolName = "bash"
 
-	DefaultTimeout  = 1 * 60 * 1000  // 1 minutes in milliseconds
-	MaxTimeout      = 10 * 60 * 1000 // 10 minutes in milliseconds
-	MaxOutputLength = 30000
+	DefaultTimeout = 2 * 60 * 1000  // 2 minutes in milliseconds
+	MaxTimeout     = 10 * 60 * 1000 // 10 minutes in milliseconds
+	MaxOutputBytes = 50 * 1024      // 50KB
+	MaxOutputLines = 2000
 )
-
-var bannedCommands = []string{
-	"alias", "curl", "curlie", "wget", "axel", "aria2c",
-	"nc", "telnet", "lynx", "w3m", "links", "httpie", "xh",
-	"http-prompt", "chrome", "firefox", "safari",
-}
 
 var safeReadOnlyCommands = []string{
 	"ls", "echo", "pwd", "date", "cal", "uptime", "whoami", "id", "groups", "env", "printenv", "set", "unset", "which", "type", "whereis",
@@ -55,153 +56,127 @@ var safeReadOnlyCommands = []string{
 }
 
 func bashDescription() string {
-	bannedCommandsStr := strings.Join(bannedCommands, ", ")
-	return fmt.Sprintf(`Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures.
+	r := strings.NewReplacer(
+		"${directory}", config.WorkingDirectory(),
+		"${maxBytes}", strconv.Itoa(MaxOutputBytes),
+		"${maxLines}", strconv.Itoa(MaxOutputLines),
+	)
+	return r.Replace(bashDescriptionTemplate)
+}
+
+const bashDescriptionTemplate = `Executes a given bash command in a persistent shell session with optional timeout, ensuring proper handling and security measures.
+
+All commands run in ${directory} by default. Use the ` + "`workdir`" + ` parameter if you need to run a command in a different directory. AVOID using ` + "`cd <directory> && <command>`" + ` patterns - use ` + "`workdir`" + ` instead.
+
+IMPORTANT: This tool is for terminal operations like git, npm, docker, etc. DO NOT use it for file operations (reading, writing, editing, searching, finding files) - use the specialized tools for this instead.
 
 Before executing the command, please follow these steps:
 
 1. Directory Verification:
- - If the command will create new directories or files, first use the LS tool to verify the parent directory exists and is the correct location
- - For example, before running "mkdir foo/bar", first use LS to check that "foo" exists and is the intended parent directory
+   - If the command will create new directories or files, first use ` + "`ls`" + ` to verify the parent directory exists and is the correct location
+   - For example, before running "mkdir foo/bar", first use ` + "`ls foo`" + ` to check that "foo" exists and is the intended parent directory
 
-2. Security Check:
- - For security and to limit the threat of a prompt injection attack, some commands are limited or banned. If you use a disallowed command, you will receive an error message explaining the restriction. Explain the error to the User.
- - Verify that the command is not one of the banned commands: %s.
-
-3. Command Execution:
- - After ensuring proper quoting, execute the command.
- - Capture the output of the command.
-
-4. Output Processing:
- - If the output exceeds %d characters, output will be truncated before being returned to you.
- - Prepare the output for display to the user.
-
-5. Return Result:
- - Provide the processed output of the command.
- - If any errors occurred during execution, include those in the output.
+2. Command Execution:
+   - Always quote file paths that contain spaces with double quotes (e.g., rm "path with spaces/file.txt")
+   - Examples of proper quoting:
+     - mkdir "/Users/name/My Documents" (correct)
+     - mkdir /Users/name/My Documents (incorrect - will fail)
+     - python "/path/with spaces/script.py" (correct)
+     - python /path/with spaces/script.py (incorrect - will fail)
+   - After ensuring proper quoting, execute the command.
+   - Capture the output of the command.
 
 Usage notes:
-- The command argument is required.
-- You can specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). If not specified, commands will timeout after 30 minutes.
-- VERY IMPORTANT: You MUST avoid using search commands like 'find' and 'grep'. Instead use Grep, Glob, or Agent tools to search. You MUST avoid read tools like 'cat', 'head', 'tail', and 'ls', and use FileRead and LS tools to read files.
-- When issuing multiple commands, use the ';' or '&&' operator to separate them. DO NOT use newlines (newlines are ok in quoted strings).
-- IMPORTANT: All commands share the same shell session. Shell state (environment variables, virtual environments, current directory, etc.) persist between commands. For example, if you set an environment variable as part of a command, the environment variable will persist for subsequent commands.
-- Try to maintain your current working directory throughout the session by using absolute paths and avoiding usage of 'cd'. You may use 'cd' if the User explicitly requests it.
-<good-example>
-pytest /foo/bar/tests
-</good-example>
-<bad-example>
-cd /foo/bar && pytest tests
-</bad-example>
+  - The command argument is required.
+  - You can specify an optional timeout in milliseconds. If not specified, commands will time out after 120000ms (2 minutes).
+  - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
+  - If the output exceeds ${maxLines} lines or ${maxBytes} bytes, it will be truncated. You can use Read with offset/limit to read specific sections or Grep to search the full content. Because of this, you do NOT need to use ` + "`head`" + `, ` + "`tail`" + `, or other truncation commands to limit output - just run the command directly.
+
+  - Avoid using Bash with the ` + "`find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo`" + ` commands, unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
+    - File search: Use Glob (NOT find or ls)
+    - Content search: Use Grep (NOT grep or rg)
+    - Read files: Use Read (NOT cat/head/tail)
+    - Edit files: Use Edit (NOT sed/awk)
+    - Write files: Use Write (NOT echo >/cat <<EOF)
+    - Communication: Output text directly (NOT echo/printf)
+  - When issuing multiple commands:
+    - If the commands are independent and can run in parallel, make multiple Bash tool calls in a single message. For example, if you need to run "git status" and "git diff", send a single message with two Bash tool calls in parallel.
+    - If the commands depend on each other and must run sequentially, use a single Bash call with '&&' to chain them together (e.g., ` + "`git add . && git commit -m \"message\" && git push`" + `). For instance, if one operation must complete before another starts (like mkdir before cp, Write before Bash for git operations, or git add before git commit), run these operations sequentially instead.
+    - Use ';' only when you need to run commands sequentially but don't care if earlier commands fail
+    - DO NOT use newlines to separate commands (newlines are ok in quoted strings)
+  - AVOID using ` + "`cd <directory> && <command>`" + `. Use the ` + "`workdir`" + ` parameter to change directories instead.
+    <good-example>
+    Use workdir="/foo/bar" with command: pytest tests
+    </good-example>
+    <bad-example>
+    cd /foo/bar && pytest tests
+    </bad-example>
 
 # Committing changes with git
 
-When the user asks you to create a new git commit, follow these steps carefully:
+Only create commits when requested by the user. If unclear, ask first. When the user asks you to create a new git commit, follow these steps carefully:
 
-1. Start with a single message that contains exactly three tool_use blocks that do the following (it is VERY IMPORTANT that you send these tool_use blocks in a single message, otherwise it will feel slow to the user!):
- - Run a git status command to see all untracked files.
- - Run a git diff command to see both staged and unstaged changes that will be committed.
- - Run a git log command to see recent commit messages, so that you can follow this repository's commit message style.
+Git Safety Protocol:
+- NEVER update the git config
+- NEVER run destructive/irreversible git commands (like push --force, hard reset, etc) unless the user explicitly requests them
+- NEVER skip hooks (--no-verify, --no-gpg-sign, etc) unless the user explicitly requests it
+- NEVER run force push to main/master, warn the user if they request it
+- Avoid git commit --amend. ONLY use --amend when ALL conditions are met:
+  (1) User explicitly requested amend, OR commit SUCCEEDED but pre-commit hook auto-modified files that need including
+  (2) HEAD commit was created by you in this conversation (verify: git log -1 --format='%an %ae')
+  (3) Commit has NOT been pushed to remote (verify: git status shows "Your branch is ahead")
+- CRITICAL: If commit FAILED or was REJECTED by hook, NEVER amend - fix the issue and create a NEW commit
+- CRITICAL: If you already pushed to remote, NEVER amend unless user explicitly requests it (requires force push)
+- NEVER commit changes unless the user explicitly asks you to. It is VERY IMPORTANT to only commit when explicitly asked, otherwise the user will feel that you are being too proactive.
 
-2. Use the git context at the start of this conversation to determine which files are relevant to your commit. Add relevant untracked files to the staging area. Do not commit files that were already modified at the start of this conversation, if they are not relevant to your commit.
-
-3. Analyze all staged changes (both previously staged and newly added) and draft a commit message. Wrap your analysis process in <commit_analysis> tags:
-
-<commit_analysis>
-- List the files that have been changed or added
-- Summarize the nature of the changes (eg. new feature, enhancement to an existing feature, bug fix, refactoring, test, docs, etc.)
-- Brainstorm the purpose or motivation behind these changes
-- Do not use tools to explore code, beyond what is available in the git context
-- Assess the impact of these changes on the overall project
-- Check for any sensitive information that shouldn't be committed
-- Draft a concise (1-2 sentences) commit message that focuses on the "why" rather than the "what"
-- Ensure your language is clear, concise, and to the point
-- Ensure the message accurately reflects the changes and their purpose (i.e. "add" means a wholly new feature, "update" means an enhancement to an existing feature, "fix" means a bug fix, etc.)
-- Ensure the message is not generic (avoid words like "Update" or "Fix" without context)
-- Review the draft message to ensure it accurately reflects the changes and their purpose
-</commit_analysis>
-
-4. Create the commit with a message ending with:
-🤖 Generated with opencode
-Co-Authored-By: opencode <noreply@opencode.ai>
-
-- In order to ensure good formatting, ALWAYS pass the commit message via a HEREDOC, a la this example:
-<example>
-git commit -m "$(cat <<'EOF'
- Commit message here.
-
- 🤖 Generated with opencode
- Co-Authored-By: opencode <noreply@opencode.ai>
- EOF
- )"
-</example>
-
-5. If the commit fails due to pre-commit hook changes, retry the commit ONCE to include these automated changes. If it fails again, it usually means a pre-commit hook is preventing the commit. If the commit succeeds but you notice that files were modified by the pre-commit hook, you MUST amend your commit to include them.
-
-6. Finally, run git status to make sure the commit succeeded.
+1. You can call multiple tools in a single response. When multiple independent pieces of information are requested and all commands are likely to succeed, run multiple tool calls in parallel for optimal performance. run the following bash commands in parallel, each using the Bash tool:
+  - Run a git status command to see all untracked files.
+  - Run a git diff command to see both staged and unstaged changes that will be committed.
+  - Run a git log command to see recent commit messages, so that you can follow this repository's commit message style.
+2. Analyze all staged changes (both previously staged and newly added) and draft a commit message:
+  - Summarize the nature of the changes (eg. new feature, enhancement to an existing feature, bug fix, refactoring, test, docs, etc.). Ensure the message accurately reflects the changes and their purpose (i.e. "add" means a wholly new feature, "update" means an enhancement to an existing feature, "fix" means a bug fix, etc.).
+  - Do not commit files that likely contain secrets (.env, credentials.json, etc.). Warn the user if they specifically request to commit those files
+  - Draft a concise (1-2 sentences) commit message that focuses on the "why" rather than the "what"
+  - Ensure it accurately reflects the changes and their purpose
+3. You can call multiple tools in a single response. When multiple independent pieces of information are requested and all commands are likely to succeed, run multiple tool calls in parallel for optimal performance. run the following commands:
+   - Add relevant untracked files to the staging area.
+   - Create the commit with a message
+   - Run git status after the commit completes to verify success.
+   Note: git status depends on the commit completing, so run it sequentially after the commit.
+4. If the commit fails due to pre-commit hook, fix the issue and create a NEW commit (see amend rules above)
 
 Important notes:
-- When possible, combine the "git add" and "git commit" commands into a single "git commit -am" command, to speed things up
-- However, be careful not to stage files (e.g. with 'git add .') for commits that aren't part of the change, they may have untracked files they want to keep around, but not commit.
-- NEVER update the git config
-- DO NOT push to the remote repository
+- NEVER run additional commands to read or explore code, besides git bash commands
+- DO NOT push to the remote repository unless the user explicitly asks you to do so
 - IMPORTANT: Never use git commands with the -i flag (like git rebase -i or git add -i) since they require interactive input which is not supported.
 - If there are no changes to commit (i.e., no untracked files and no modifications), do not create an empty commit
-- Ensure your commit message is meaningful and concise. It should explain the purpose of the changes, not just describe them.
-- Return an empty response - the user will see the git output directly
 
 # Creating pull requests
 Use the gh command via the Bash tool for ALL GitHub-related tasks including working with issues, pull requests, checks, and releases. If given a Github URL use the gh command to get the information needed.
 
 IMPORTANT: When the user asks you to create a pull request, follow these steps carefully:
 
-1. Understand the current state of the branch. Remember to send a single message that contains multiple tool_use blocks (it is VERY IMPORTANT that you do this in a single message, otherwise it will feel slow to the user!):
- - Run a git status command to see all untracked files.
- - Run a git diff command to see both staged and unstaged changes that will be committed.
- - Check if the current branch tracks a remote branch and is up to date with the remote, so you know if you need to push to the remote
- - Run a git log command and 'git diff main...HEAD' to understand the full commit history for the current branch (from the time it diverged from the 'main' branch.)
-
-2. Create new branch if needed
-
-3. Commit changes if needed
-
-4. Push to remote with -u flag if needed
-
-5. Analyze all changes that will be included in the pull request, making sure to look at all relevant commits (not just the latest commit, but all commits that will be included in the pull request!), and draft a pull request summary. Wrap your analysis process in <pr_analysis> tags:
-
-<pr_analysis>
-- List the commits since diverging from the main branch
-- Summarize the nature of the changes (eg. new feature, enhancement to an existing feature, bug fix, refactoring, test, docs, etc.)
-- Brainstorm the purpose or motivation behind these changes
-- Assess the impact of these changes on the overall project
-- Do not use tools to explore code, beyond what is available in the git context
-- Check for any sensitive information that shouldn't be committed
-- Draft a concise (1-2 bullet points) pull request summary that focuses on the "why" rather than the "what"
-- Ensure the summary accurately reflects all changes since diverging from the main branch
-- Ensure your language is clear, concise, and to the point
-- Ensure the summary accurately reflects the changes and their purpose (ie. "add" means a wholly new feature, "update" means an enhancement to an existing feature, "fix" means a bug fix, etc.)
-- Ensure the summary is not generic (avoid words like "Update" or "Fix" without context)
-- Review the draft summary to ensure it accurately reflects the changes and their purpose
-</pr_analysis>
-
-6. Create PR using gh pr create with the format below. Use a HEREDOC to pass the body to ensure correct formatting.
+1. You can call multiple tools in a single response. When multiple independent pieces of information are requested and all commands are likely to succeed, run multiple tool calls in parallel for optimal performance. run the following bash commands in parallel using the Bash tool, in order to understand the current state of the branch since it diverged from the main branch:
+   - Run a git status command to see all untracked files
+   - Run a git diff command to see both staged and unstaged changes that will be committed
+   - Check if the current branch tracks a remote branch and is up to date with the remote, so you know if you need to push to the remote
+   - Run a git log command and ` + "`git diff [base-branch]...HEAD`" + ` to understand the full commit history for the current branch (from the time it diverged from the base branch)
+2. Analyze all changes that will be included in the pull request, making sure to look at all relevant commits (NOT just the latest commit, but ALL commits that will be included in the pull request!!!), and draft a pull request summary
+3. You can call multiple tools in a single response. When multiple independent pieces of information are requested and all commands are likely to succeed, run multiple tool calls in parallel for optimal performance. run the following commands in parallel:
+   - Create new branch if needed
+   - Push to remote with -u flag if needed
+   - Create PR using gh pr create with the format below. Use a HEREDOC to pass the body to ensure correct formatting.
 <example>
 gh pr create --title "the pr title" --body "$(cat <<'EOF'
 ## Summary
 <1-3 bullet points>
-
-## Test plan
-[Checklist of TODOs for testing the pull request...]
-
-🤖 Generated with opencode
-EOF
-)"
 </example>
 
 Important:
-- Return an empty response - the user will see the gh output directly
-- Never update git config`, bannedCommandsStr, MaxOutputLength)
-}
+- Return the PR URL when you're done, so the user can see it
+
+# Other common operations
+- View comments on a Github PR: gh api repos/foo/bar/pulls/123/comments`
 
 func NewBashTool(permission permission.Service) BaseTool {
 	return &bashTool{
@@ -222,8 +197,16 @@ func (b *bashTool) Info() ToolInfo {
 				"type":        "number",
 				"description": "Optional timeout in milliseconds (max 600000)",
 			},
+			"workdir": map[string]any{
+				"type":        "string",
+				"description": fmt.Sprintf("The working directory to run the command in. Defaults to %s. Use this instead of 'cd' commands.", config.WorkingDirectory()),
+			},
+			"description": map[string]any{
+				"type":        "string",
+				"description": "Clear, concise description of what this command does in 5-10 words. Examples:\nInput: ls\nOutput: Lists files in current directory\n\nInput: git status\nOutput: Shows working tree status\n\nInput: npm install\nOutput: Installs package dependencies\n\nInput: mkdir foo\nOutput: Creates directory 'foo'",
+			},
 		},
-		Required: []string{"command"},
+		Required: []string{"command", "description"},
 	}
 }
 
@@ -243,11 +226,9 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		return NewTextErrorResponse("missing command"), nil
 	}
 
-	baseCmd := strings.Fields(params.Command)[0]
-	for _, banned := range bannedCommands {
-		if strings.EqualFold(baseCmd, banned) {
-			return NewTextErrorResponse(fmt.Sprintf("command '%s' is not allowed", baseCmd)), nil
-		}
+	workdir := params.Workdir
+	if workdir == "" {
+		workdir = config.WorkingDirectory()
 	}
 
 	isSafeReadOnly := false
@@ -270,12 +251,13 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		p := b.permissions.Request(
 			permission.CreatePermissionRequest{
 				SessionID:   sessionID,
-				Path:        config.WorkingDirectory(),
+				Path:        workdir,
 				ToolName:    BashToolName,
 				Action:      "execute",
 				Description: fmt.Sprintf("Execute command: %s", params.Command),
 				Params: BashPermissionsParams{
 					Command: params.Command,
+					Workdir: workdir,
 				},
 			},
 		)
@@ -284,11 +266,11 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		}
 	}
 	startTime := time.Now()
-	shell := shell.GetPersistentShell(config.WorkingDirectory())
-	if shell == nil {
+	sh := shell.GetPersistentShell(workdir)
+	if sh == nil {
 		return NewEmptyResponse(), fmt.Errorf("failed to create shell instance")
 	}
-	stdout, stderr, exitCode, interrupted, err := shell.Exec(ctx, params.Command, params.Timeout)
+	stdout, stderr, exitCode, interrupted, err := sh.Exec(ctx, params.Command, params.Timeout)
 	if err != nil {
 		return NewEmptyResponse(), fmt.Errorf("error executing command: %w", err)
 	}
@@ -320,8 +302,10 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 	}
 
 	metadata := BashResponseMetadata{
-		StartTime: startTime.UnixMilli(),
-		EndTime:   time.Now().UnixMilli(),
+		StartTime:   startTime.UnixMilli(),
+		EndTime:     time.Now().UnixMilli(),
+		Description: params.Description,
+		ExitCode:    exitCode,
 	}
 	if stdout == "" {
 		return WithResponseMetadata(NewTextResponse("no output"), metadata), nil
@@ -330,15 +314,18 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 }
 
 func truncateOutput(content string) string {
-	if len(content) <= MaxOutputLength {
+	lines := strings.Split(content, "\n")
+	totalBytes := len(content)
+
+	if totalBytes <= MaxOutputBytes && len(lines) <= MaxOutputLines {
 		return content
 	}
 
-	halfLength := MaxOutputLength / 2
-	start := content[:halfLength]
-	end := content[len(content)-halfLength:]
+	halfBytes := MaxOutputBytes / 2
+	start := content[:halfBytes]
+	end := content[len(content)-halfBytes:]
 
-	truncatedLinesCount := countLines(content[halfLength : len(content)-halfLength])
+	truncatedLinesCount := countLines(content[halfBytes : len(content)-halfBytes])
 	return fmt.Sprintf("%s\n\n... [%d lines truncated] ...\n\n%s", start, truncatedLinesCount, end)
 }
 

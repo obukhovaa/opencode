@@ -3,6 +3,7 @@
 ## Build/Test Commands
 - **Build**: `./scripts/snapshot` (uses goreleaser)
 - **Test**: `go test ./...` (all packages) or `go test ./internal/llm/agent` (single package)
+- **Final check**: run `make test` when work is done to run final checks, including all tests and fromatters
 - **Generate schema**: `go run cmd/schema/main.go > opencode-schema.json`
 - **Generate mocks**: `go generate ./...` (generates mocks for interfaces)
 - **Database migrations**: Uses sqlc for SQL code generation from `internal/db/sql/`

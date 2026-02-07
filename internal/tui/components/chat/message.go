@@ -348,6 +348,19 @@ func renderToolParams(paramWidth int, toolCall message.ToolCall) string {
 		var params tools.BashParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
 		command := strings.ReplaceAll(params.Command, "\n", " ")
+		if params.Description != "" {
+			desc := params.Description
+			if len(desc) > 80 {
+				desc = desc[:77] + "..."
+			}
+			t := theme.CurrentTheme()
+			descLine := styles.BaseStyle().
+				Foreground(t.TextMuted()).
+				Italic(true).
+				Render(desc)
+			cmdLine := renderParams(paramWidth, command)
+			return descLine + "\n" + cmdLine
+		}
 		return renderParams(paramWidth, command)
 	case tools.EditToolName:
 		var params tools.EditParams
