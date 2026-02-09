@@ -47,6 +47,25 @@ func CoderAgentTools(
 	return coderTools
 }
 
+func HivemindAgentTools(
+	sessions session.Service,
+	messages message.Service,
+	lspClients map[string]*lsp.Client,
+	permissions permission.Service,
+	reg agentregistry.Registry,
+) []tools.BaseTool {
+	return []tools.BaseTool{
+		tools.NewGlobTool(),
+		tools.NewGrepTool(),
+		tools.NewLsTool(config.Get()),
+		tools.NewViewTool(lspClients),
+		tools.NewViewImageTool(),
+		tools.NewFetchTool(permissions),
+		tools.NewSkillTool(permissions),
+		NewAgentTool(sessions, messages, lspClients, permissions, nil, reg),
+	}
+}
+
 func TaskAgentTools(lspClients map[string]*lsp.Client, permissions permission.Service) []tools.BaseTool {
 	return []tools.BaseTool{
 		tools.NewGlobTool(),
@@ -94,24 +113,4 @@ func WorkhorseAgentTools(
 		workhorse = append(workhorse, tools.NewLspTool(lspClients))
 	}
 	return workhorse
-}
-
-func HivemindAgentTools(
-	sessions session.Service,
-	messages message.Service,
-	lspClients map[string]*lsp.Client,
-	permissions permission.Service,
-	reg agentregistry.Registry,
-) []tools.BaseTool {
-	return []tools.BaseTool{
-		tools.NewGlobTool(),
-		tools.NewGrepTool(),
-		tools.NewLsTool(config.Get()),
-		tools.NewViewTool(lspClients),
-		tools.NewViewImageTool(),
-		tools.NewSourcegraphTool(),
-		tools.NewFetchTool(permissions),
-		tools.NewSkillTool(permissions),
-		NewAgentTool(sessions, messages, lspClients, permissions, nil, reg),
-	}
 }

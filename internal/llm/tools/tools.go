@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"maps"
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/permission"
@@ -171,9 +172,7 @@ func evaluateToolPermission(ctx context.Context, toolName, input string) permiss
 		if cfg.Permission.Skill != nil {
 			globalPerms["skill"] = cfg.Permission.Skill
 		}
-		for k, v := range cfg.Permission.Rules {
-			globalPerms[k] = v
-		}
+		maps.Copy(globalPerms, cfg.Permission.Rules)
 	}
 
 	return permission.EvaluateToolPermission(toolName, input, agentPerms, globalPerms)
