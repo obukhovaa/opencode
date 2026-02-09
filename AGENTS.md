@@ -70,10 +70,17 @@ Agents can be configured in `.opencode.json`:
 
 **Agent fields:**
 - `model`: Model ID to use for this agent
-- `maxTokens`: Maximum tokens for responses
-- `reasoningEffort`: For models that support it (low/medium/high)
-- `permission`: Agent-specific permission overrides (e.g., for skills)
-- `tools`: Enable/disable specific tools for this agent
+- `maxTokens`: Maximum response tokens
+- `reasoningEffort`: For models that support it (`low`/`medium`/`high`)
+- `mode`: `agent` (primary, switchable via tab) or `subagent` (invoked via task tool)
+- `name`: Display name for the agent
+- `description`: Short description of agent's purpose
+- `prompt`: Custom system prompt (overrides builtin prompt)
+- `color`: Badge color for subagent indication in TUI (e.g., `primary`, `secondary`, `warning`, `error`, `info`, `success`)
+- `hidden`: If true, agent is not shown in TUI switcher or subagent lists
+- `native`: Whether this is a built-in agent (set automatically, not user-configurable)
+- `permission`: Agent-specific permission overrides (supports granular glob patterns per tool)
+- `tools`: Enable/disable specific tools (e.g., `{"skill": false, "bash": false}`)
 
 **Built-in agents:**
 - `coder`: Main coding agent, mode=agent (uses all tools)
@@ -82,6 +89,40 @@ Agents can be configured in `.opencode.json`:
 - `workhorse`: Autonomous coding subagent (all tools, invoked by coder/hivemind)
 - `summarizer`: Session summarization subagent
 - `descriptor`: Session title generation subagent
+
+### Custom Agents via Markdown
+
+Agents can also be defined as markdown files with YAML frontmatter (same format as skills). The registry discovers agents from these locations, in merge priority order (lowest to highest):
+
+1. `~/.config/opencode/agents/*.md` (global)
+2. `~/.agents/types/*.md` (global)
+3. `.opencode/agents/*.md` (project)
+4. `.agents/types/*.md` (project)
+5. `.opencode.json` `agents` config (project — highest priority)
+
+The file basename (without `.md`) becomes the agent ID. Example:
+
+`.opencode/agents/reviewer.md`:
+```markdown
+---
+name: Code Reviewer
+description: Reviews code for quality, security, and best practices
+mode: subagent
+color: info
+permission:
+  bash:
+    "*": deny
+  edit:
+    "*": deny
+tools:
+  bash: false
+  write: false
+---
+
+You are a code review specialist. When given code to review...
+```
+
+Fields set in higher-priority sources override lower-priority ones. For native agents, markdown files can override `name`, `description`, `prompt`, `color`, `permission`, and `tools` while preserving built-in defaults.
 
 ### Skills System
 
@@ -107,12 +148,42 @@ Skills are reusable instruction sets that agents can load on-demand. See [Skills
 
 Permissions use pattern matching with priority:
 
-1. **Agent tool disable**: `agents.coder.tools.skill = false` → deny
-2. **Agent-specific**: `agents.coder.permission.skill.internal-* = allow`
-3. **Global**: `permission.skill.internal-* = deny`
+1. **Agent tool disable**: `agents.coder.tools.bash = false` → deny
+2. **Agent-specific**: `agents.coder.permission.bash.{"git *": "allow"}` 
+3. **Global**: `permission.rules.bash = "ask"` or `permission.skill.internal-* = deny`
 4. **Default**: ask
 
 **Actions:**
 - `allow`: Execute immediately
 - `deny`: Block access
 - `ask`: Prompt user (default)
+
+**Granular permissions** support both simple strings and glob-pattern objects per tool:
+
+```json
+{
+  "permission": {
+    "skill": { "*": "ask", "internal-*": "allow" },
+    "rules": {
+      "bash": { "*": "ask", "git *": "allow", "rm -rf *": "deny" },
+      "edit": { "*": "allow", "*.env": "deny" },
+      "read": { "*": "allow" },
+      "task": { "*": "allow", "explorer": "allow" }
+    }
+  }
+}
+```
+
+**Supported permission keys:**
+
+| Key | Granular Pattern | Example |
+|-----|-----------------|---------|
+| `skill` | Skill name glob | `{"internal-*": "allow", "*": "ask"}` |
+| `bash` | Command glob | `{"*": "ask", "git *": "allow"}` |
+| `edit` | File path glob | `{"*": "deny", "src/**/*.go": "allow"}` |
+| `read` | File path glob | `{"*": "allow", "*.env": "deny"}` |
+| `task` | Subagent name glob | `{"*": "allow", "explorer": "allow"}` |
+
+### TUI Agent Switching
+
+Press `tab` to cycle through primary agents (mode=`agent`, hidden=false) in the TUI. The active agent is shown in the status bar. Agent switching applies to the next new session.

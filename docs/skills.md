@@ -261,6 +261,8 @@ When multiple patterns match, the most specific wins:
 - `internal-docs` → deny (specific wildcard)
 - `docker-build` → ask (global wildcard)
 
+
+> **Note:** The permission system is generic and supports granular patterns for all tools, not just skills. See the [Configuration guide](../README.md#agents) for details on `bash`, `edit`, `read`, and `task` permissions.
 ### Agent-Specific Permissions
 
 Override global permissions for specific agents:
@@ -274,7 +276,7 @@ Override global permissions for specific agents:
   },
   "agents": {
     "coder": {
-      "model": "claude-3-5-sonnet-20241022",
+      "model": "claude-4-5-sonnet[1m]",
       "permission": {
         "skill": {
           "internal-*": "allow"
@@ -291,19 +293,35 @@ Override global permissions for specific agents:
 
 ### Disabling Skills for Agents
 
+Agent permissions can also control other tools with granular patterns:
+
+```json
+{
+  "agents": {
+    "coder": {
+      "permission": {
+        "skill": { "internal-*": "allow" },
+        "bash": { "*": "ask", "git *": "allow" },
+        "edit": { "*.env": "deny", "*": "allow" }
+      }
+    }
+  }
+}
+```
+
 Completely disable the skill tool for specific agents:
 
 ```json
 {
   "agents": {
     "summarizer": {
-      "model": "claude-3-5-haiku-20241022",
+      "model": "gemini-3.0-flash",
       "tools": {
         "skill": false
       }
     },
     "descriptor": {
-      "model": "claude-3-5-haiku-20241022",
+      "model": "gemini-3.0-flash",
       "tools": {
         "skill": false
       }
