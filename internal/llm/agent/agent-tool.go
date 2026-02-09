@@ -54,7 +54,7 @@ func (b *agentTool) Info() tools.ToolInfo {
 	}
 
 	if len(agentDescs) == 0 {
-		for _, tool := range TaskAgentTools(b.lspClients, b.permissions) {
+		for _, tool := range ExplorerAgentTools(b.lspClients, b.permissions) {
 			agentDescs = append(agentDescs, tool.Info().Name)
 		}
 	}
@@ -211,7 +211,7 @@ func (b *agentTool) resolveToolsForSubagent(subagentType string) []tools.BaseToo
 				}
 			}
 			if !hasWriteTools {
-				return TaskAgentTools(b.lspClients, b.permissions)
+				return ExplorerAgentTools(b.lspClients, b.permissions)
 			}
 		}
 	}
@@ -220,7 +220,7 @@ func (b *agentTool) resolveToolsForSubagent(subagentType string) []tools.BaseToo
 	case config.AgentWorkhorse:
 		return WorkhorseAgentTools(b.lspClients, b.permissions, b.sessions, b.messages, b.history)
 	case config.AgentExplorer:
-		return TaskAgentTools(b.lspClients, b.permissions)
+		return ExplorerAgentTools(b.lspClients, b.permissions)
 	default:
 		if b.registry != nil {
 			info, ok := b.registry.Get(subagentType)
@@ -228,14 +228,14 @@ func (b *agentTool) resolveToolsForSubagent(subagentType string) []tools.BaseToo
 				if info.Tools != nil {
 					for _, tool := range []string{"write", "edit", "bash", "patch"} {
 						if enabled, exists := info.Tools[tool]; exists && !enabled {
-							return TaskAgentTools(b.lspClients, b.permissions)
+							return ExplorerAgentTools(b.lspClients, b.permissions)
 						}
 					}
 				}
 				return WorkhorseAgentTools(b.lspClients, b.permissions, b.sessions, b.messages, b.history)
 			}
 		}
-		return TaskAgentTools(b.lspClients, b.permissions)
+		return ExplorerAgentTools(b.lspClients, b.permissions)
 	}
 }
 

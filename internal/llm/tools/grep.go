@@ -74,7 +74,7 @@ LIMITATIONS:
 
 TIPS:
 - For faster, more targeted searches, first use Glob to find relevant files, then use Grep
-- When doing iterative exploration that may require multiple rounds of searching, consider using the Agent tool instead
+- When doing iterative exploration that may require multiple rounds of searching, consider using the Task tool instead
 - Always check if results are truncated and refine your search pattern if needed
 - Use literal_text=true when searching for exact text containing special characters like dots, parentheses, etc.`
 )

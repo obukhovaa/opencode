@@ -158,8 +158,10 @@ func loadLocalModels(models []localModel) {
 		if i == 0 || m.State == "loaded" {
 			viper.SetDefault("agents.coder.model", model.ID)
 			viper.SetDefault("agents.summarizer.model", model.ID)
-			viper.SetDefault("agents.task.model", model.ID)
-			viper.SetDefault("agents.title.model", model.ID)
+			viper.SetDefault("agents.explorer.model", model.ID)
+			viper.SetDefault("agents.descriptor.model", model.ID)
+			viper.SetDefault("agents.workhorse.model", model.ID)
+			viper.SetDefault("agents.hivemind.model", model.ID)
 		}
 	}
 }

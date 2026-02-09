@@ -30,9 +30,9 @@ func GetAgentPrompt(agentName config.AgentName, provider models.ModelProvider) s
 	case config.AgentCoder:
 		basePrompt = CoderPrompt(provider)
 	case config.AgentDescriptor:
-		basePrompt = TitlePrompt(provider)
+		basePrompt = DescriptorPrompt(provider)
 	case config.AgentExplorer:
-		basePrompt = TaskPrompt(provider)
+		basePrompt = ExplorerPrompt(provider)
 	case config.AgentSummarizer:
 		basePrompt = SummarizerPrompt(provider)
 	case config.AgentWorkhorse:
@@ -44,9 +44,7 @@ func GetAgentPrompt(agentName config.AgentName, provider models.ModelProvider) s
 	}
 
 	if agentName == config.AgentCoder || agentName == config.AgentExplorer || agentName == config.AgentWorkhorse || agentName == config.AgentHivemind {
-		// Add context from project-specific instruction files if they exist
 		contextContent := getContextFromPaths()
-		logging.Debug("Context content", "Context", contextContent)
 		if contextContent != "" {
 			return fmt.Sprintf("%s\n\n# Project-Specific Context\n Make sure to follow the instructions in the context below\n%s", basePrompt, contextContent)
 		}
@@ -66,8 +64,8 @@ func getContextFromPaths() string {
 			workDir      = cfg.WorkingDir
 			contextPaths = cfg.ContextPaths
 		)
-
 		contextContent = processContextPaths(workDir, contextPaths)
+		logging.Debug("Context content", "context", contextContent)
 	})
 
 	return contextContent

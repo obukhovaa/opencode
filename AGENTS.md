@@ -78,10 +78,10 @@ Agents can be configured in `.opencode.json`:
 **Built-in agents:**
 - `coder`: Main coding agent, mode=agent (uses all tools)
 - `hivemind`: Supervisory agent, mode=agent (coordinates subagents via task tool)
-- `explorer`: Codebase exploration subagent (read-only tools, formerly `task`)
+- `explorer`: Codebase exploration subagent (read-only tools)
 - `workhorse`: Autonomous coding subagent (all tools, invoked by coder/hivemind)
 - `summarizer`: Session summarization subagent
-- `descriptor`: Session title generation subagent (formerly `title`)
+- `descriptor`: Session title generation subagent
 
 ### Skills System
 

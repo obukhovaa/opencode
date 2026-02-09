@@ -22,6 +22,7 @@ func CoderAgentTools(
 	reg agentregistry.Registry,
 ) []tools.BaseTool {
 	ctx := context.Background()
+	// TODO: allow to disable mcp per agent and then load them for other agents too
 	otherTools := GetMcpTools(ctx, permissions)
 	if len(lspClients) > 0 {
 		otherTools = append(otherTools, tools.NewLspTool(lspClients))
@@ -66,7 +67,7 @@ func HivemindAgentTools(
 	}
 }
 
-func TaskAgentTools(lspClients map[string]*lsp.Client, permissions permission.Service) []tools.BaseTool {
+func ExplorerAgentTools(lspClients map[string]*lsp.Client, permissions permission.Service) []tools.BaseTool {
 	return []tools.BaseTool{
 		tools.NewGlobTool(),
 		tools.NewGrepTool(),

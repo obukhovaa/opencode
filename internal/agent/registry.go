@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -73,6 +74,7 @@ func newRegistry() Registry {
 
 	globalPerms := buildGlobalPerms(cfg)
 
+	logging.Debug("Agent registry loaded", "agents", agents, "global", globalPerms)
 	return &registry{
 		agents:      agents,
 		globalPerms: globalPerms,
@@ -266,9 +268,7 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 			if existing.Tools == nil {
 				existing.Tools = make(map[string]bool)
 			}
-			for k, v := range agentCfg.Tools {
-				existing.Tools[k] = v
-			}
+			maps.Copy(existing.Tools, agentCfg.Tools)
 		}
 
 		agents[name] = existing
@@ -318,9 +318,7 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 		if existing.Tools == nil {
 			existing.Tools = make(map[string]bool)
 		}
-		for k, v := range md.Tools {
-			existing.Tools[k] = v
-		}
+		maps.Copy(existing.Tools, md.Tools)
 	}
 	if md.Hidden {
 		existing.Hidden = true
@@ -334,9 +332,7 @@ func buildGlobalPerms(cfg *config.Config) map[string]any {
 		if cfg.Permission.Skill != nil {
 			perms["skill"] = cfg.Permission.Skill
 		}
-		for k, v := range cfg.Permission.Rules {
-			perms[k] = v
-		}
+		maps.Copy(perms, cfg.Permission.Rules)
 	}
 	return perms
 }
