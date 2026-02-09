@@ -90,15 +90,14 @@ func NewAgent(
 		return nil, err
 	}
 	var titleProvider provider.Provider
-	// Only generate titles for the coder agent
-	if agentName == config.AgentCoder {
-		titleProvider, err = createAgentProvider(config.AgentTitle)
+	if agentName == config.AgentCoder || agentName == config.AgentHivemind {
+		titleProvider, err = createAgentProvider(config.AgentDescriptor)
 		if err != nil {
 			return nil, err
 		}
 	}
 	var summarizeProvider provider.Provider
-	if agentName == config.AgentCoder {
+	if agentName == config.AgentCoder || agentName == config.AgentHivemind {
 		summarizeProvider, err = createAgentProvider(config.AgentSummarizer)
 		if err != nil {
 			return nil, err
@@ -969,7 +968,7 @@ func createAgentProvider(agentName config.AgentName) (provider.Provider, error) 
 				provider.WithReasoningEffort(agentConfig.ReasoningEffort),
 			),
 		)
-	} else if (model.Provider == models.ProviderAnthropic || model.Provider == models.ProviderVertexAI || model.Provider == models.ProviderBedrock) && model.CanReason && agentName == config.AgentCoder {
+	} else if (model.Provider == models.ProviderAnthropic || model.Provider == models.ProviderVertexAI || model.Provider == models.ProviderBedrock) && model.CanReason && (agentName == config.AgentCoder || agentName == config.AgentWorkhorse || agentName == config.AgentHivemind) {
 		anthropicOpts := []provider.AnthropicOption{
 			provider.WithAnthropicShouldThinkFn(provider.DefaultShouldThinkFn),
 		}

@@ -150,12 +150,16 @@ OpenCode looks for `.opencode.json` in:
 
 Each built-in agent can be customized:
 
-| Agent | Purpose |
-|-------|---------|
-| `coder` | Main coding agent (all tools) |
-| `task` | Task planning (read-only tools) |
-| `summarizer` | Session summarization |
-| `title` | Session title generation |
+| Agent | Mode | Purpose |
+|-------|------|---------|
+| `coder` | agent | Main coding agent (all tools) |
+| `hivemind` | agent | Supervisory agent for coordinating subagents |
+| `explorer` | subagent | Fast codebase exploration (read-only tools) |
+| `workhorse` | subagent | Autonomous coding subagent (all tools) |
+| `summarizer` | subagent | Session summarization |
+| `descriptor` | subagent | Session title generation |
+
+> **Note:** `task` and `title` are deprecated aliases for `explorer` and `descriptor`.
 
 **Agent fields:**
 
@@ -164,8 +168,12 @@ Each built-in agent can be customized:
 | `model` | Model ID to use |
 | `maxTokens` | Maximum response tokens |
 | `reasoningEffort` | `low`, `medium`, `high` (default), `max` |
-| `permission` | Agent-specific permission overrides |
+| `mode` | `agent` (primary, switchable via tab) or `subagent` (invoked via task tool) |
+| `name` | Display name for the agent |
+| `description` | Short description of agent's purpose |
+| `permission` | Agent-specific permission overrides (supports granular glob patterns) |
 | `tools` | Enable/disable specific tools (e.g., `{"skill": false}`) |
+| `color` | Badge color for subagent indication in TUI |
 
 ### Auto Compact
 

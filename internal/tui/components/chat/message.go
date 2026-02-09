@@ -346,10 +346,17 @@ func renderToolParams(paramWidth int, toolCall message.ToolCall) string {
 	params := ""
 	switch toolCall.Name {
 	case agent.AgentToolName:
-		var params agent.AgentParams
+		var params agent.TaskParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
 		prompt := strings.ReplaceAll(params.Prompt, "\n", " ")
-		return renderParams(paramWidth, prompt)
+		toolParams := []string{prompt}
+		if params.SubagentType != "" {
+			toolParams = append(toolParams, "agent", params.SubagentType)
+		}
+		if params.TaskID != "" {
+			toolParams = append(toolParams, "resumed", "true")
+		}
+		return renderParams(paramWidth, toolParams...)
 	case tools.BashToolName:
 		var params tools.BashParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
@@ -607,6 +614,18 @@ func renderToolMessage(
 	toolNameText := baseStyle.Foreground(t.TextMuted()).
 		Render(fmt.Sprintf("%s: ", toolName(toolCall.Name)))
 
+	// Show subagent badge for task tool calls
+	if toolCall.Name == agent.AgentToolName {
+		var taskParams agent.TaskParams
+		json.Unmarshal([]byte(toolCall.Input), &taskParams)
+		agentType := taskParams.SubagentType
+		if agentType == "" {
+			agentType = "explorer"
+		}
+		badge := subagentBadge(agentType, taskParams.TaskID != "")
+		toolNameText = badge + " "
+	}
+
 	if !toolCall.Finished {
 		// Get a brief description of what the tool is doing
 		toolAction := getToolAction(toolCall.Name)
@@ -698,6 +717,36 @@ func renderToolMessage(
 		content:     content,
 	}
 	return toolMsg
+}
+
+func subagentBadge(agentType string, isResumed bool) string {
+	t := theme.CurrentTheme()
+
+	icon := "●"
+	var color lipgloss.TerminalColor
+	name := agentType
+
+	switch agentType {
+	case "explorer":
+		color = t.Info()
+		name = "Explorer Agent"
+	case "workhorse":
+		color = t.Warning()
+		name = "Workhorse Agent"
+	default:
+		color = t.Secondary()
+	}
+
+	status := "new task"
+	if isResumed {
+		status = "resumed"
+	}
+
+	badge := styles.BaseStyle().
+		Foreground(color).
+		Render(fmt.Sprintf("%s %s (%s):", icon, name, status))
+
+	return badge
 }
 
 var diagSummaryRegex = regexp.MustCompile(`<diagnostic_summary>\s*Current file: (\d+) errors, (\d+) warnings\s*Project: (\d+) errors, (\d+) warnings\s*</diagnostic_summary>`)

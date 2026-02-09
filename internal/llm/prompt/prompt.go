@@ -17,17 +17,21 @@ func GetAgentPrompt(agentName config.AgentName, provider models.ModelProvider) s
 	switch agentName {
 	case config.AgentCoder:
 		basePrompt = CoderPrompt(provider)
-	case config.AgentTitle:
+	case config.AgentDescriptor:
 		basePrompt = TitlePrompt(provider)
-	case config.AgentTask:
+	case config.AgentExplorer:
 		basePrompt = TaskPrompt(provider)
 	case config.AgentSummarizer:
 		basePrompt = SummarizerPrompt(provider)
+	case config.AgentWorkhorse:
+		basePrompt = WorkhorsePrompt(provider)
+	case config.AgentHivemind:
+		basePrompt = HivemindPrompt(provider)
 	default:
 		basePrompt = "You are a helpful assistant"
 	}
 
-	if agentName == config.AgentCoder || agentName == config.AgentTask {
+	if agentName == config.AgentCoder || agentName == config.AgentExplorer || agentName == config.AgentWorkhorse || agentName == config.AgentHivemind {
 		// Add context from project-specific instruction files if they exist
 		contextContent := getContextFromPaths()
 		logging.Debug("Context content", "Context", contextContent)

@@ -277,10 +277,30 @@ func (m statusCmp) model() string {
 	}
 	model := models.SupportedModels[coder.Model]
 
+	agentLabel := ""
+	for name, agentCfg := range cfg.Agents {
+		if agentCfg.Mode == config.AgentModeAgent && !agentCfg.Hidden {
+			_ = name
+		}
+	}
+	// Show agent name if multiple primary agents exist
+	primaryCount := 0
+	for _, agentCfg := range cfg.Agents {
+		if agentCfg.Mode == config.AgentModeAgent && !agentCfg.Hidden {
+			primaryCount++
+		}
+	}
+	if primaryCount > 1 {
+		agentLabel = " ▶ " + coder.Name
+		if agentLabel == " ▶ " {
+			agentLabel = " ▶ Coder"
+		}
+	}
+
 	return styles.Padded().
 		Background(t.Secondary()).
 		Foreground(t.Background()).
-		Render(model.Name)
+		Render(model.Name + agentLabel)
 }
 
 func NewStatusCmp(lspClients map[string]*lsp.Client) StatusCmp {

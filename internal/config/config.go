@@ -34,22 +34,43 @@ type MCPServer struct {
 	Headers map[string]string `json:"headers"`
 }
 
-type AgentName string
+type AgentName = string
+
+type AgentMode string
+
+const (
+	AgentModeAgent    AgentMode = "agent"
+	AgentModeSubagent AgentMode = "subagent"
+)
 
 const (
 	AgentCoder      AgentName = "coder"
 	AgentSummarizer AgentName = "summarizer"
-	AgentTask       AgentName = "task"
-	AgentTitle      AgentName = "title"
+	AgentExplorer   AgentName = "explorer"
+	AgentDescriptor AgentName = "descriptor"
+	AgentWorkhorse  AgentName = "workhorse"
+	AgentHivemind   AgentName = "hivemind"
+
+	// Deprecated: use AgentExplorer instead
+	AgentTask AgentName = "explorer"
+	// Deprecated: use AgentDescriptor instead
+	AgentTitle AgentName = "descriptor"
 )
 
 // Agent defines configuration for different LLM models and their token limits.
 type Agent struct {
-	Model           models.ModelID               `json:"model"`
-	MaxTokens       int64                        `json:"maxTokens"`
-	ReasoningEffort string                       `json:"reasoningEffort"`      // For openai models low,medium,high
-	Permission      map[string]map[string]string `json:"permission,omitempty"` // e.g., {"skill": {"internal-*": "allow"}}
-	Tools           map[string]bool              `json:"tools,omitempty"`      // e.g., {"skill": false}
+	Model           models.ModelID  `json:"model"`
+	MaxTokens       int64           `json:"maxTokens"`
+	ReasoningEffort string          `json:"reasoningEffort"`      // For openai models low,medium,high
+	Permission      map[string]any  `json:"permission,omitempty"` // tool name -> "allow" | {"pattern": "action"}
+	Tools           map[string]bool `json:"tools,omitempty"`      // e.g., {"skill": false}
+	Mode            AgentMode       `json:"mode,omitempty"`       // "agent" or "subagent"
+	Name            string          `json:"name,omitempty"`
+	Native          bool            `json:"native,omitempty"`
+	Description     string          `json:"description,omitempty"`
+	Prompt          string          `json:"prompt,omitempty"`
+	Color           string          `json:"color,omitempty"`
+	Hidden          bool            `json:"hidden,omitempty"`
 }
 
 // Provider defines configuration for an LLM provider.
@@ -120,8 +141,11 @@ type SkillsConfig struct {
 }
 
 // PermissionConfig defines permission configuration.
+// Each tool key maps to either a simple string ("allow"/"deny"/"ask")
+// or an object with glob pattern keys (e.g., {"*": "ask", "git *": "allow"}).
 type PermissionConfig struct {
-	Skill map[string]string `json:"skill,omitempty"` // skill name pattern -> action (allow/deny/ask)
+	Skill map[string]string `json:"skill,omitempty"` // Deprecated: use Rules instead
+	Rules map[string]any    `json:"rules,omitempty"` // tool name -> "allow" | {"pattern": "action"}
 }
 
 // Config is the main configuration structure for the application.
@@ -268,10 +292,13 @@ func Load(workingDir string, debug bool) (*Config, error) {
 		cfg.Agents = make(map[AgentName]Agent)
 	}
 
-	// Override the max tokens for title agent
-	cfg.Agents[AgentTitle] = Agent{
-		Model:     cfg.Agents[AgentTitle].Model,
-		MaxTokens: 80,
+	// Backward compatibility: migrate old agent names
+	migrateOldAgentNames()
+
+	// Override the max tokens for descriptor agent
+	if desc, ok := cfg.Agents[AgentDescriptor]; ok {
+		desc.MaxTokens = 80
+		cfg.Agents[AgentDescriptor] = desc
 	}
 	return cfg, nil
 }
@@ -363,8 +390,10 @@ func setProviderDefaults() {
 	if key := viper.GetString("providers.anthropic.apiKey"); strings.TrimSpace(key) != "" {
 		viper.SetDefault("agents.coder.model", models.Claude45Sonnet1M)
 		viper.SetDefault("agents.summarizer.model", models.Claude45Sonnet1M)
-		viper.SetDefault("agents.task.model", models.Claude45Sonnet1M)
-		viper.SetDefault("agents.title.model", models.Claude45Sonnet1M)
+		viper.SetDefault("agents.explorer.model", models.Claude45Sonnet1M)
+		viper.SetDefault("agents.descriptor.model", models.Claude45Sonnet1M)
+		viper.SetDefault("agents.workhorse.model", models.Claude45Sonnet1M)
+		viper.SetDefault("agents.hivemind.model", models.Claude45Sonnet1M)
 		return
 	}
 
@@ -372,8 +401,10 @@ func setProviderDefaults() {
 	if key := viper.GetString("providers.openai.apiKey"); strings.TrimSpace(key) != "" {
 		viper.SetDefault("agents.coder.model", models.GPT5)
 		viper.SetDefault("agents.summarizer.model", models.GPT5)
-		viper.SetDefault("agents.task.model", models.O4Mini)
-		viper.SetDefault("agents.title.model", models.O4Mini)
+		viper.SetDefault("agents.explorer.model", models.O4Mini)
+		viper.SetDefault("agents.descriptor.model", models.O4Mini)
+		viper.SetDefault("agents.workhorse.model", models.GPT5)
+		viper.SetDefault("agents.hivemind.model", models.GPT5)
 		return
 	}
 
@@ -381,8 +412,10 @@ func setProviderDefaults() {
 	if key := viper.GetString("providers.gemini.apiKey"); strings.TrimSpace(key) != "" {
 		viper.SetDefault("agents.coder.model", models.Gemini30Pro)
 		viper.SetDefault("agents.summarizer.model", models.Gemini30Pro)
-		viper.SetDefault("agents.task.model", models.Gemini30Flash)
-		viper.SetDefault("agents.title.model", models.Gemini30Flash)
+		viper.SetDefault("agents.explorer.model", models.Gemini30Flash)
+		viper.SetDefault("agents.descriptor.model", models.Gemini30Flash)
+		viper.SetDefault("agents.workhorse.model", models.Gemini30Pro)
+		viper.SetDefault("agents.hivemind.model", models.Gemini30Pro)
 		return
 	}
 
@@ -390,8 +423,10 @@ func setProviderDefaults() {
 	if hasAWSCredentials() {
 		viper.SetDefault("agents.coder.model", models.BedrockClaude45Sonnet)
 		viper.SetDefault("agents.summarizer.model", models.BedrockClaude45Sonnet)
-		viper.SetDefault("agents.task.model", models.BedrockClaude45Sonnet)
-		viper.SetDefault("agents.title.model", models.BedrockClaude45Sonnet)
+		viper.SetDefault("agents.explorer.model", models.BedrockClaude45Sonnet)
+		viper.SetDefault("agents.descriptor.model", models.BedrockClaude45Sonnet)
+		viper.SetDefault("agents.workhorse.model", models.BedrockClaude45Sonnet)
+		viper.SetDefault("agents.hivemind.model", models.BedrockClaude45Sonnet)
 		return
 	}
 
@@ -399,8 +434,10 @@ func setProviderDefaults() {
 	if hasVertexAICredentials() {
 		viper.SetDefault("agents.coder.model", models.VertexAIGemini30Pro)
 		viper.SetDefault("agents.summarizer.model", models.VertexAIGemini30Pro)
-		viper.SetDefault("agents.task.model", models.VertexAIGemini30Flash)
-		viper.SetDefault("agents.title.model", models.VertexAIGemini30Flash)
+		viper.SetDefault("agents.explorer.model", models.VertexAIGemini30Flash)
+		viper.SetDefault("agents.descriptor.model", models.VertexAIGemini30Flash)
+		viper.SetDefault("agents.workhorse.model", models.VertexAIGemini30Pro)
+		viper.SetDefault("agents.hivemind.model", models.VertexAIGemini30Pro)
 		return
 	}
 }
@@ -442,6 +479,29 @@ func hasVertexAICredentials() bool {
 		return true
 	}
 	return false
+}
+
+// migrateOldAgentNames migrates deprecated agent names to new names.
+func migrateOldAgentNames() {
+	if cfg.Agents == nil {
+		return
+	}
+	// Migrate "task" -> "explorer"
+	if agent, ok := cfg.Agents["task"]; ok {
+		if _, exists := cfg.Agents[AgentExplorer]; !exists {
+			cfg.Agents[AgentExplorer] = agent
+		}
+		delete(cfg.Agents, "task")
+		logging.Warn("agent name 'task' is deprecated, use 'explorer' instead")
+	}
+	// Migrate "title" -> "descriptor"
+	if agent, ok := cfg.Agents["title"]; ok {
+		if _, exists := cfg.Agents[AgentDescriptor]; !exists {
+			cfg.Agents[AgentDescriptor] = agent
+		}
+		delete(cfg.Agents, "title")
+		logging.Warn("agent name 'title' is deprecated, use 'descriptor' instead")
+	}
 }
 
 // readConfig handles the result of reading a configuration file.
@@ -737,12 +797,12 @@ func getProviderAPIKey(provider models.ModelProvider) string {
 func setDefaultModelForAgent(agent AgentName) bool {
 	if hasVertexAICredentials() {
 		switch agent {
-		case AgentTitle:
+		case AgentDescriptor:
 			cfg.Agents[agent] = Agent{
 				Model:     models.VertexAISonnet45M,
 				MaxTokens: 80,
 			}
-		case AgentTask:
+		case AgentExplorer:
 			cfg.Agents[agent] = Agent{
 				Model:     models.VertexAIGemini30Pro,
 				MaxTokens: models.VertexAIAnthropicModels[models.VertexAIGemini30Pro].DefaultMaxTokens,
@@ -758,7 +818,7 @@ func setDefaultModelForAgent(agent AgentName) bool {
 
 	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
 		maxTokens := models.AnthropicModels[models.Claude45Sonnet1M].DefaultMaxTokens
-		if agent == AgentTitle {
+		if agent == AgentDescriptor {
 			maxTokens = 80
 		}
 		cfg.Agents[agent] = Agent{
@@ -774,10 +834,10 @@ func setDefaultModelForAgent(agent AgentName) bool {
 		reasoningEffort := ""
 
 		switch agent {
-		case AgentTitle:
+		case AgentDescriptor:
 			model = models.GPT5
 			maxTokens = 80
-		case AgentTask:
+		case AgentExplorer:
 			model = models.O4Mini
 		default:
 			model = models.GPT5
@@ -798,7 +858,7 @@ func setDefaultModelForAgent(agent AgentName) bool {
 
 	if apiKey := os.Getenv("GEMINI_API_KEY"); apiKey != "" {
 		switch agent {
-		case AgentTitle:
+		case AgentDescriptor:
 			cfg.Agents[agent] = Agent{
 				Model:     models.Gemini30Flash,
 				MaxTokens: 80,
@@ -814,7 +874,7 @@ func setDefaultModelForAgent(agent AgentName) bool {
 
 	if hasAWSCredentials() {
 		maxTokens := int64(5000)
-		if agent == AgentTitle {
+		if agent == AgentDescriptor {
 			maxTokens = 80
 		}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
@@ -150,7 +151,10 @@ func NewMcpTool(name string, tool mcp.Tool, permissions permission.Service, mcpC
 	}
 }
 
-var mcpTools []tools.BaseTool
+var (
+	mcpToolsOnce = new(sync.Once)
+	mcpTools     []tools.BaseTool
+)
 
 func getTools(ctx context.Context, name string, m config.MCPServer, permissions permission.Service, c MCPClient) []tools.BaseTool {
 	var toolsToAdd []tools.BaseTool
@@ -180,49 +184,47 @@ func getTools(ctx context.Context, name string, m config.MCPServer, permissions 
 }
 
 func GetMcpTools(ctx context.Context, permissions permission.Service) []tools.BaseTool {
-	if len(mcpTools) > 0 {
-		return mcpTools
-	}
-	for name, m := range config.Get().MCPServers {
-		switch m.Type {
-		case config.MCPStdio:
-			c, err := client.NewStdioMCPClient(
-				m.Command,
-				m.Env,
-				m.Args...,
-			)
-			if err != nil {
-				logging.Error("error creating mcp client", "error", err)
-				continue
-			}
+	mcpToolsOnce.Do(func() {
+		for name, m := range config.Get().MCPServers {
+			switch m.Type {
+			case config.MCPStdio:
+				c, err := client.NewStdioMCPClient(
+					m.Command,
+					m.Env,
+					m.Args...,
+				)
+				if err != nil {
+					logging.Error("error creating mcp client", "error", err)
+					continue
+				}
 
-			mcpTools = append(mcpTools, getTools(ctx, name, m, permissions, c)...)
-		case config.MCPSse:
-			c, err := client.NewSSEMCPClient(
-				m.URL,
-				client.WithHeaders(m.Headers),
-			)
-			if err != nil {
-				logging.Error("error creating mcp client", "error", err)
-				continue
+				mcpTools = append(mcpTools, getTools(ctx, name, m, permissions, c)...)
+			case config.MCPSse:
+				c, err := client.NewSSEMCPClient(
+					m.URL,
+					client.WithHeaders(m.Headers),
+				)
+				if err != nil {
+					logging.Error("error creating mcp client", "error", err)
+					continue
+				}
+				if err := c.Start(ctx); err != nil {
+					logging.Error("error starting SSE transport", "error", err)
+					continue
+				}
+				mcpTools = append(mcpTools, getTools(ctx, name, m, permissions, c)...)
+			case config.MCPHttp:
+				c, err := client.NewStreamableHttpClient(
+					m.URL,
+					transport.WithHTTPHeaders(m.Headers),
+				)
+				if err != nil {
+					logging.Error("error creating mcp client", "error", err)
+					continue
+				}
+				mcpTools = append(mcpTools, getTools(ctx, name, m, permissions, c)...)
 			}
-			if err := c.Start(ctx); err != nil {
-				logging.Error("error starting SSE transport", "error", err)
-				continue
-			}
-			mcpTools = append(mcpTools, getTools(ctx, name, m, permissions, c)...)
-		case config.MCPHttp:
-			c, err := client.NewStreamableHttpClient(
-				m.URL,
-				transport.WithHTTPHeaders(m.Headers),
-			)
-			if err != nil {
-				logging.Error("error creating mcp client", "error", err)
-				continue
-			}
-			mcpTools = append(mcpTools, getTools(ctx, name, m, permissions, c)...)
 		}
-	}
-
+	})
 	return mcpTools
 }

@@ -34,6 +34,10 @@ type App struct {
 
 	CoderAgent agent.Service
 
+	PrimaryAgents    map[config.AgentName]agent.Service
+	PrimaryAgentKeys []config.AgentName
+	ActiveAgentIdx   int
+
 	LSPClients map[string]*lsp.Client
 
 	clientsMutex sync.RWMutex
@@ -41,6 +45,31 @@ type App struct {
 	watcherCancelFuncs []context.CancelFunc
 	cancelFuncsMutex   sync.Mutex
 	watcherWG          sync.WaitGroup
+}
+
+func (a *App) ActiveAgent() agent.Service {
+	if len(a.PrimaryAgentKeys) == 0 {
+		return a.CoderAgent
+	}
+	name := a.PrimaryAgentKeys[a.ActiveAgentIdx]
+	return a.PrimaryAgents[name]
+}
+
+func (a *App) ActiveAgentName() config.AgentName {
+	if len(a.PrimaryAgentKeys) == 0 {
+		return config.AgentCoder
+	}
+	return a.PrimaryAgentKeys[a.ActiveAgentIdx]
+}
+
+func (a *App) SwitchAgent() config.AgentName {
+	if len(a.PrimaryAgentKeys) <= 1 {
+		return a.ActiveAgentName()
+	}
+	a.ActiveAgentIdx = (a.ActiveAgentIdx + 1) % len(a.PrimaryAgentKeys)
+	name := a.PrimaryAgentKeys[a.ActiveAgentIdx]
+	a.CoderAgent = a.PrimaryAgents[name]
+	return name
 }
 
 func New(ctx context.Context, conn *sql.DB) (*App, error) {
@@ -62,11 +91,12 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 	files := history.NewService(queries, conn)
 
 	app := &App{
-		Sessions:    sessions,
-		Messages:    messages,
-		History:     files,
-		Permissions: permission.NewPermissionService(),
-		LSPClients:  make(map[string]*lsp.Client),
+		Sessions:      sessions,
+		Messages:      messages,
+		History:       files,
+		Permissions:   permission.NewPermissionService(),
+		LSPClients:    make(map[string]*lsp.Client),
+		PrimaryAgents: make(map[config.AgentName]agent.Service),
 	}
 
 	// Initialize theme based on configuration
@@ -91,6 +121,25 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 	if err != nil {
 		logging.Error("Failed to create coder agent", err)
 		return nil, err
+	}
+	app.PrimaryAgents[config.AgentCoder] = app.CoderAgent
+	app.PrimaryAgentKeys = append(app.PrimaryAgentKeys, config.AgentCoder)
+
+	// Try to create hivemind agent
+	cfg := config.Get()
+	if _, ok := cfg.Agents[config.AgentHivemind]; ok {
+		hivemindAgent, hivemindErr := agent.NewAgent(
+			config.AgentHivemind,
+			app.Sessions,
+			app.Messages,
+			agent.HivemindAgentTools(app.Sessions, app.Messages, app.LSPClients, app.Permissions),
+		)
+		if hivemindErr != nil {
+			logging.Warn("Failed to create hivemind agent, skipping", "error", hivemindErr)
+		} else {
+			app.PrimaryAgents[config.AgentHivemind] = hivemindAgent
+			app.PrimaryAgentKeys = append(app.PrimaryAgentKeys, config.AgentHivemind)
+		}
 	}
 
 	return app, nil

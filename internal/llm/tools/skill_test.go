@@ -119,8 +119,8 @@ func TestEvaluateSkillPermission(t *testing.T) {
 				},
 				Agents: map[config.AgentName]config.Agent{
 					config.AgentCoder: {
-						Permission: map[string]map[string]string{
-							"skill": {
+						Permission: map[string]any{
+							"skill": map[string]any{
 								"internal-*": "allow",
 							},
 						},
@@ -163,8 +163,8 @@ func TestEvaluateSkillPermission(t *testing.T) {
 			cfg: &config.Config{
 				Agents: map[config.AgentName]config.Agent{
 					config.AgentTask: {
-						Permission: map[string]map[string]string{
-							"skill": {
+						Permission: map[string]any{
+							"skill": map[string]any{
 								"special-skill": "allow",
 							},
 						},
@@ -324,8 +324,8 @@ func TestSkillToolWithAgentPermissions(t *testing.T) {
 		},
 		Agents: map[config.AgentName]config.Agent{
 			config.AgentCoder: {
-				Permission: map[string]map[string]string{
-					"skill": {
+				Permission: map[string]any{
+					"skill": map[string]any{
 						"test-skill": "allow",
 					},
 				},

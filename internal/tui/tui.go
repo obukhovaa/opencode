@@ -34,6 +34,7 @@ type keyMap struct {
 	Models        key.Binding
 	SwitchTheme   key.Binding
 	PruneSession  key.Binding
+	SwitchAgent   key.Binding
 }
 
 type startCompactSessionMsg struct{}
@@ -83,6 +84,10 @@ var keys = keyMap{
 	PruneSession: key.NewBinding(
 		key.WithKeys("ctrl+p"),
 		key.WithHelp("ctrl+p", "delete session"),
+	),
+	SwitchAgent: key.NewBinding(
+		key.WithKeys("tab"),
+		key.WithHelp("tab", "switch agent"),
 	),
 }
 
@@ -560,6 +565,14 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.deleteSessionDialog.SetTitle("Prune Session")
 				a.deleteSessionDialog.SetSessions(sessions)
 				a.showDeleteSessionDialog = true
+			}
+			return a, nil
+		case key.Matches(msg, keys.SwitchAgent):
+			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions &&
+				!a.showSessionDialog && !a.showCommandDialog && !a.showModelDialog &&
+				!a.showFilepicker && !a.app.CoderAgent.IsBusy() {
+				agentName := a.app.SwitchAgent()
+				return a, util.ReportInfo(fmt.Sprintf("Switched to %s", agentName))
 			}
 			return a, nil
 		case key.Matches(msg, returnKey) || key.Matches(msg):
