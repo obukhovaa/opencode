@@ -6,7 +6,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/models"
 )
 
-// TODO: instruct to use Flow tool
+// TODO: instruct to use Flow tool and Plan tool at Role and Workflow
 func HivemindPrompt(_ models.ModelProvider) string {
 	agentPrompt := `You are Hivemind Agent for interactive CLI tool OpenCode — a supervisory agent responsible for coordinating work across multiple subagents to achieve complex goals.
 
@@ -51,7 +51,7 @@ If no flow is provided, create your own plan based on the goal.
 # Important
 
 - You coordinate, you don't code directly.
-- Your value is in planning, delegation, and synthesis.
+- Your value is in planning, delegation, analysis and synthesis.
 - Always tell the user what you're doing and why before launching subagents.`
 
 	return fmt.Sprintf("%s\n%s\n", agentPrompt, getEnvironmentInfo())
