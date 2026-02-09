@@ -34,7 +34,7 @@ type App struct {
 	Permissions permission.Service
 	Registry    agentregistry.Registry
 
-	CoderAgent agent.Service
+	activeAgent agent.Service
 
 	PrimaryAgents    map[config.AgentName]agent.Service
 	PrimaryAgentKeys []config.AgentName
@@ -51,7 +51,7 @@ type App struct {
 
 func (a *App) ActiveAgent() agent.Service {
 	if len(a.PrimaryAgentKeys) == 0 {
-		return a.CoderAgent
+		return a.activeAgent
 	}
 	name := a.PrimaryAgentKeys[a.ActiveAgentIdx]
 	return a.PrimaryAgents[name]
@@ -70,7 +70,7 @@ func (a *App) SwitchAgent() config.AgentName {
 	}
 	a.ActiveAgentIdx = (a.ActiveAgentIdx + 1) % len(a.PrimaryAgentKeys)
 	name := a.PrimaryAgentKeys[a.ActiveAgentIdx]
-	a.CoderAgent = a.PrimaryAgents[name]
+	a.activeAgent = a.PrimaryAgents[name]
 	return name
 }
 
@@ -111,7 +111,7 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 	go app.initLSPClients(ctx)
 
 	var err error
-	app.CoderAgent, err = agent.NewAgent(
+	app.activeAgent, err = agent.NewAgent(
 		config.AgentCoder,
 		app.Sessions,
 		app.Messages,
@@ -128,7 +128,7 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 		logging.Error("Failed to create coder agent", err)
 		return nil, err
 	}
-	app.PrimaryAgents[config.AgentCoder] = app.CoderAgent
+	app.PrimaryAgents[config.AgentCoder] = app.activeAgent
 	app.PrimaryAgentKeys = append(app.PrimaryAgentKeys, config.AgentCoder)
 
 	// Try to create hivemind agent

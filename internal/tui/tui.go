@@ -336,7 +336,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Start the summarization process
 		return a, func() tea.Msg {
 			ctx := context.Background()
-			a.app.CoderAgent.Summarize(ctx, a.selectedSession.ID)
+			a.app.ActiveAgent().Summarize(ctx, a.selectedSession.ID)
 			return nil
 		}
 
@@ -353,7 +353,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.isCompacting = false
 			return a, util.ReportInfo("Session summarization complete")
 		} else if payload.Done && payload.Type == agent.AgentEventTypeResponse && a.selectedSession.ID != "" {
-			model := a.app.CoderAgent.Model()
+			model := a.app.ActiveAgent().Model()
 			contextWindow := model.ContextWindow
 			tokens := a.selectedSession.CompletionTokens + a.selectedSession.PromptTokens
 			logging.Info("auto-compaction status", "contextLength", contextWindow, "tokens", tokens)
@@ -381,12 +381,15 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dialog.ModelSelectedMsg:
 		a.showModelDialog = false
 
-		model, err := a.app.CoderAgent.Update(config.AgentCoder, msg.Model.ID)
+		model, err := a.app.ActiveAgent().Update(a.app.ActiveAgentName(), msg.Model.ID)
 		if err != nil {
 			return a, util.ReportError(err)
 		}
 
-		return a, util.ReportInfo(fmt.Sprintf("Model changed to %s", model.Name))
+		return a, tea.Batch(
+			util.CmdHandler(core.ActiveAgentChangedMsg{Name: a.app.ActiveAgentName()}),
+			util.ReportInfo(fmt.Sprintf("Model changed to %s", model.Name)),
+		)
 
 	case dialog.ShowInitDialogMsg:
 		a.showInitDialog = msg.Show
@@ -570,9 +573,12 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, keys.SwitchAgent):
 			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions &&
 				!a.showSessionDialog && !a.showCommandDialog && !a.showModelDialog &&
-				!a.showFilepicker && !a.app.CoderAgent.IsBusy() {
+				!a.showFilepicker && !a.app.ActiveAgent().IsBusy() {
 				agentName := a.app.SwitchAgent()
-				return a, util.ReportInfo(fmt.Sprintf("Switched to %s", agentName))
+				return a, tea.Batch(
+					util.CmdHandler(core.ActiveAgentChangedMsg{Name: agentName}),
+					util.ReportInfo(fmt.Sprintf("Switched to %s", agentName)),
+				)
 			}
 			return a, nil
 		case key.Matches(msg, returnKey) || key.Matches(msg):
@@ -615,7 +621,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.showHelp = !a.showHelp
 			return a, nil
 		case key.Matches(msg, helpEsc):
-			if a.app.CoderAgent.IsBusy() {
+			if a.app.ActiveAgent().IsBusy() {
 				if a.showQuit {
 					return a, nil
 				}
@@ -745,7 +751,7 @@ func (a *appModel) findCommand(id string) (dialog.Command, bool) {
 }
 
 func (a *appModel) moveToPage(pageID page.PageID) tea.Cmd {
-	if a.app.CoderAgent.IsBusy() {
+	if a.app.ActiveAgent().IsBusy() {
 		// For now we don't move to any page if the agent is busy
 		return util.ReportWarn("Agent is busy, please wait...")
 	}
@@ -842,7 +848,7 @@ func (a appModel) View() string {
 		if a.currentPage == page.LogsPage {
 			bindings = append(bindings, logsKeyReturnKey)
 		}
-		if !a.app.CoderAgent.IsBusy() {
+		if !a.app.ActiveAgent().IsBusy() {
 			bindings = append(bindings, helpEsc)
 		}
 		a.help.SetBindings(bindings)
