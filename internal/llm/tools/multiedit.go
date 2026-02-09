@@ -220,21 +220,29 @@ func (m *multiEditTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	if strings.HasPrefix(params.FilePath, rootDir) {
 		permissionPath = rootDir
 	}
-	p := m.permissions.Request(
-		permission.CreatePermissionRequest{
-			SessionID:   sessionID,
-			Path:        permissionPath,
-			ToolName:    MultiEditToolName,
-			Action:      "write",
-			Description: fmt.Sprintf("Apply %d edits to file %s", len(params.Edits), params.FilePath),
-			Params: EditPermissionsParams{
-				FilePath: params.FilePath,
-				Diff:     combinedDiff,
-			},
-		},
-	)
-	if !p {
+	action := evaluateToolPermission(ctx, MultiEditToolName, params.FilePath)
+	switch action {
+	case permission.ActionAllow:
+		// Allowed by config
+	case permission.ActionDeny:
 		return NewEmptyResponse(), permission.ErrorPermissionDenied
+	default:
+		p := m.permissions.Request(
+			permission.CreatePermissionRequest{
+				SessionID:   sessionID,
+				Path:        permissionPath,
+				ToolName:    MultiEditToolName,
+				Action:      "write",
+				Description: fmt.Sprintf("Apply %d edits to file %s", len(params.Edits), params.FilePath),
+				Params: EditPermissionsParams{
+					FilePath: params.FilePath,
+					Diff:     combinedDiff,
+				},
+			},
+		)
+		if !p {
+			return NewEmptyResponse(), permission.ErrorPermissionDenied
+		}
 	}
 
 	err = os.WriteFile(params.FilePath, []byte(currentContent), 0o644)

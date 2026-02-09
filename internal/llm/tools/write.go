@@ -166,21 +166,29 @@ func (w *writeTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	if strings.HasPrefix(filePath, rootDir) {
 		permissionPath = rootDir
 	}
-	p := w.permissions.Request(
-		permission.CreatePermissionRequest{
-			SessionID:   sessionID,
-			Path:        permissionPath,
-			ToolName:    WriteToolName,
-			Action:      "write",
-			Description: fmt.Sprintf("Create file %s", filePath),
-			Params: WritePermissionsParams{
-				FilePath: filePath,
-				Diff:     diff,
-			},
-		},
-	)
-	if !p {
+	action := evaluateToolPermission(ctx, WriteToolName, filePath)
+	switch action {
+	case permission.ActionAllow:
+		// Allowed by config
+	case permission.ActionDeny:
 		return NewEmptyResponse(), permission.ErrorPermissionDenied
+	default:
+		p := w.permissions.Request(
+			permission.CreatePermissionRequest{
+				SessionID:   sessionID,
+				Path:        permissionPath,
+				ToolName:    WriteToolName,
+				Action:      "write",
+				Description: fmt.Sprintf("Create file %s", filePath),
+				Params: WritePermissionsParams{
+					FilePath: filePath,
+					Diff:     diff,
+				},
+			},
+		)
+		if !p {
+			return NewEmptyResponse(), permission.ErrorPermissionDenied
+		}
 	}
 
 	err = os.WriteFile(filePath, []byte(params.Content), 0o644)

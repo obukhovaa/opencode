@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/prompt"
@@ -55,6 +56,7 @@ type AgentEvent struct {
 
 type Service interface {
 	pubsub.Suscriber[AgentEvent]
+	AgentName() config.AgentName
 	Model() models.Model
 	Run(ctx context.Context, sessionID string, content string, attachments ...message.Attachment) (<-chan AgentEvent, error)
 	Cancel(sessionID string)
@@ -117,6 +119,10 @@ func NewAgent(
 	}
 
 	return agent, nil
+}
+
+func (a *agent) AgentName() config.AgentName {
+	return a.agentName
 }
 
 func (a *agent) Model() models.Model {
@@ -929,7 +935,28 @@ func createAgentProvider(agentName config.AgentName) (provider.Provider, error) 
 	cfg := config.Get()
 	agentConfig, ok := cfg.Agents[agentName]
 	if !ok {
-		return nil, fmt.Errorf("agent %s not found", agentName)
+		// Try registry for custom (markdown-defined) agents
+		reg := agentregistry.GetRegistry()
+		if info, found := reg.Get(agentName); found && info.Model != "" {
+			agentConfig = config.Agent{
+				Model:           models.ModelID(info.Model),
+				MaxTokens:       info.MaxTokens,
+				ReasoningEffort: info.ReasoningEffort,
+			}
+		} else if found {
+			// Inherit coder's model if no model specified
+			coderCfg, coderOk := cfg.Agents[config.AgentCoder]
+			if !coderOk {
+				return nil, fmt.Errorf("agent %s has no model and coder agent not configured", agentName)
+			}
+			agentConfig = config.Agent{
+				Model:           coderCfg.Model,
+				MaxTokens:       coderCfg.MaxTokens,
+				ReasoningEffort: coderCfg.ReasoningEffort,
+			}
+		} else {
+			return nil, fmt.Errorf("agent %s not found", agentName)
+		}
 	}
 	model, ok := models.SupportedModels[agentConfig.Model]
 	if !ok {

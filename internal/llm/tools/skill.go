@@ -131,66 +131,33 @@ func (s *skillTool) checkPermission(ctx context.Context, sessionID string, agent
 }
 
 // evaluateSkillPermission evaluates permission for a skill based on config and agent.
+// Delegates to the generic permission.EvaluateToolPermission.
 func evaluateSkillPermission(skillName string, agentName config.AgentName, cfg *config.Config) string {
-	// Check agent-specific permissions first (higher priority)
+	var agentPerms map[string]any
 	if agentName != "" && cfg.Agents != nil {
 		if agentCfg, ok := cfg.Agents[agentName]; ok {
-			// Check if skill tool is disabled for this agent
-			if agentCfg.Tools != nil {
-				if enabled, ok := agentCfg.Tools["skill"]; ok && !enabled {
-					return "deny"
-				}
+			if !permission.IsToolEnabled("skill", agentCfg.Tools) {
+				return "deny"
 			}
-
-			// Check agent-specific skill permissions
-			if agentCfg.Permission != nil {
-				if skillPerms, ok := agentCfg.Permission["skill"]; ok {
-					if action := matchPermissionFromAny(skillName, skillPerms); action != "" {
-						return action
-					}
-				}
-			}
+			agentPerms = agentCfg.Permission
 		}
 	}
 
-	// Check global permissions
-	if cfg.Permission != nil && cfg.Permission.Skill != nil {
-		if action := matchPermissionPattern(skillName, cfg.Permission.Skill); action != "" {
-			return action
+	globalPerms := make(map[string]any)
+	if cfg.Permission != nil {
+		if cfg.Permission.Skill != nil {
+			globalPerms["skill"] = cfg.Permission.Skill
 		}
-	}
-	if cfg.Permission != nil && cfg.Permission.Rules != nil {
-		if skillPerms, ok := cfg.Permission.Rules["skill"]; ok {
-			if action := matchPermissionFromAny(skillName, skillPerms); action != "" {
-				return action
-			}
+		for k, v := range cfg.Permission.Rules {
+			globalPerms[k] = v
 		}
 	}
 
-	// Default to "ask" if no permission configured
-	return "ask"
-}
-
-// matchPermissionFromAny handles both simple string ("allow") and map (glob patterns) permission values.
-func matchPermissionFromAny(input string, value any) string {
-	switch v := value.(type) {
-	case string:
-		action := strings.ToLower(v)
-		if action == "allow" || action == "deny" || action == "ask" {
-			return action
-		}
-	case map[string]any:
-		patterns := make(map[string]string, len(v))
-		for pattern, action := range v {
-			if s, ok := action.(string); ok {
-				patterns[pattern] = s
-			}
-		}
-		return matchPermissionPattern(input, patterns)
-	case map[string]string:
-		return matchPermissionPattern(input, v)
+	action := permission.EvaluateToolPermission("skill", skillName, agentPerms, globalPerms)
+	if action == "" {
+		return "ask"
 	}
-	return ""
+	return string(action)
 }
 
 // matchPermissionPattern matches a skill name against permission patterns.

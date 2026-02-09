@@ -191,21 +191,30 @@ func (e *editTool) createNewFile(ctx context.Context, filePath, content string) 
 	if strings.HasPrefix(filePath, rootDir) {
 		permissionPath = rootDir
 	}
-	p := e.permissions.Request(
-		permission.CreatePermissionRequest{
-			SessionID:   sessionID,
-			Path:        permissionPath,
-			ToolName:    EditToolName,
-			Action:      "write",
-			Description: fmt.Sprintf("Create file %s", filePath),
-			Params: EditPermissionsParams{
-				FilePath: filePath,
-				Diff:     diff,
-			},
-		},
-	)
-	if !p {
+
+	action := evaluateToolPermission(ctx, EditToolName, filePath)
+	switch action {
+	case permission.ActionAllow:
+		// Allowed by config
+	case permission.ActionDeny:
 		return NewEmptyResponse(), permission.ErrorPermissionDenied
+	default:
+		p := e.permissions.Request(
+			permission.CreatePermissionRequest{
+				SessionID:   sessionID,
+				Path:        permissionPath,
+				ToolName:    EditToolName,
+				Action:      "write",
+				Description: fmt.Sprintf("Create file %s", filePath),
+				Params: EditPermissionsParams{
+					FilePath: filePath,
+					Diff:     diff,
+				},
+			},
+		)
+		if !p {
+			return NewEmptyResponse(), permission.ErrorPermissionDenied
+		}
 	}
 
 	err = os.WriteFile(filePath, []byte(content), 0o644)
@@ -306,21 +315,29 @@ func (e *editTool) deleteContent(ctx context.Context, filePath, oldString string
 	if strings.HasPrefix(filePath, rootDir) {
 		permissionPath = rootDir
 	}
-	p := e.permissions.Request(
-		permission.CreatePermissionRequest{
-			SessionID:   sessionID,
-			Path:        permissionPath,
-			ToolName:    EditToolName,
-			Action:      "write",
-			Description: fmt.Sprintf("Delete content from file %s", filePath),
-			Params: EditPermissionsParams{
-				FilePath: filePath,
-				Diff:     diff,
-			},
-		},
-	)
-	if !p {
+	action := evaluateToolPermission(ctx, EditToolName, filePath)
+	switch action {
+	case permission.ActionAllow:
+		// Allowed by config
+	case permission.ActionDeny:
 		return NewEmptyResponse(), permission.ErrorPermissionDenied
+	default:
+		p := e.permissions.Request(
+			permission.CreatePermissionRequest{
+				SessionID:   sessionID,
+				Path:        permissionPath,
+				ToolName:    EditToolName,
+				Action:      "write",
+				Description: fmt.Sprintf("Delete content from file %s", filePath),
+				Params: EditPermissionsParams{
+					FilePath: filePath,
+					Diff:     diff,
+				},
+			},
+		)
+		if !p {
+			return NewEmptyResponse(), permission.ErrorPermissionDenied
+		}
 	}
 
 	err = os.WriteFile(filePath, []byte(newContent), 0o644)
@@ -430,21 +447,29 @@ func (e *editTool) replaceContent(ctx context.Context, filePath, oldString, newS
 	if strings.HasPrefix(filePath, rootDir) {
 		permissionPath = rootDir
 	}
-	p := e.permissions.Request(
-		permission.CreatePermissionRequest{
-			SessionID:   sessionID,
-			Path:        permissionPath,
-			ToolName:    EditToolName,
-			Action:      "write",
-			Description: fmt.Sprintf("Replace content in file %s", filePath),
-			Params: EditPermissionsParams{
-				FilePath: filePath,
-				Diff:     diff,
-			},
-		},
-	)
-	if !p {
+	action := evaluateToolPermission(ctx, EditToolName, filePath)
+	switch action {
+	case permission.ActionAllow:
+		// Allowed by config
+	case permission.ActionDeny:
 		return NewEmptyResponse(), permission.ErrorPermissionDenied
+	default:
+		p := e.permissions.Request(
+			permission.CreatePermissionRequest{
+				SessionID:   sessionID,
+				Path:        permissionPath,
+				ToolName:    EditToolName,
+				Action:      "write",
+				Description: fmt.Sprintf("Replace content in file %s", filePath),
+				Params: EditPermissionsParams{
+					FilePath: filePath,
+					Diff:     diff,
+				},
+			},
+		)
+		if !p {
+			return NewEmptyResponse(), permission.ErrorPermissionDenied
+		}
 	}
 
 	err = os.WriteFile(filePath, []byte(newContent), 0o644)

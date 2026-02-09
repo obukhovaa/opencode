@@ -73,7 +73,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case dialog.CommandRunCustomMsg:
 		// Check if the agent is busy before executing custom commands
-		if p.app.CoderAgent.IsBusy() {
+		if p.app.ActiveAgent().IsBusy() {
 			return p, util.ReportWarn("Agent is busy, please wait before executing a command...")
 		}
 
@@ -115,7 +115,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if p.session.ID != "" {
 				// Cancel the current session's generation process
 				// This allows users to interrupt long-running operations
-				p.app.CoderAgent.Cancel(p.session.ID)
+				p.app.ActiveAgent().Cancel(p.session.ID)
 				return p, nil
 			}
 		}
@@ -168,7 +168,7 @@ func (p *chatPage) sendMessage(text string, attachments []message.Attachment) te
 		cmds = append(cmds, util.CmdHandler(chat.SessionSelectedMsg(session)))
 	}
 
-	_, err := p.app.CoderAgent.Run(context.Background(), p.session.ID, text, attachments...)
+	_, err := p.app.ActiveAgent().Run(context.Background(), p.session.ID, text, attachments...)
 	if err != nil {
 		return util.ReportError(err)
 	}

@@ -242,16 +242,50 @@ func generateSchema() map[string]any {
 					"description": "Reasoning effort for models that support it (OpenAI, Anthropic). 'max' is only available for models with maximum thinking support.",
 					"enum":        []string{"low", "medium", "high", "max"},
 				},
+				"mode": map[string]any{
+					"type":        "string",
+					"description": "Agent mode: 'agent' for primary agents, 'subagent' for agents invoked by task tool",
+					"enum":        []string{"agent", "subagent"},
+				},
+				"name": map[string]any{
+					"type":        "string",
+					"description": "Display name for the agent",
+				},
+				"description": map[string]any{
+					"type":        "string",
+					"description": "Description of the agent's purpose",
+				},
+				"prompt": map[string]any{
+					"type":        "string",
+					"description": "Custom system prompt for the agent",
+				},
+				"color": map[string]any{
+					"type":        "string",
+					"description": "Badge color for subagent display (e.g., 'blue', 'orange', 'primary', 'warning')",
+				},
+				"hidden": map[string]any{
+					"type":        "boolean",
+					"description": "Whether the agent is hidden from TUI agent switching",
+					"default":     false,
+				},
 				"permission": map[string]any{
 					"type":        "object",
-					"description": "Agent-specific permission overrides",
+					"description": "Agent-specific permission overrides. Keys are tool names (e.g., 'bash', 'edit', 'skill'), values are either a simple action string or an object with glob-pattern keys",
 					"additionalProperties": map[string]any{
-						"type":        "object",
-						"description": "Permission patterns for a resource type (e.g., skill)",
-						"additionalProperties": map[string]any{
-							"type":        "string",
-							"description": "Permission action (allow, deny, ask)",
-							"enum":        []string{"allow", "deny", "ask"},
+						"anyOf": []map[string]any{
+							{
+								"type":        "string",
+								"description": "Simple permission action",
+								"enum":        []string{"allow", "deny", "ask"},
+							},
+							{
+								"type":        "object",
+								"description": "Granular permission patterns (glob-pattern keys to action values)",
+								"additionalProperties": map[string]any{
+									"type": "string",
+									"enum": []string{"allow", "deny", "ask"},
+								},
+							},
 						},
 					},
 				},
@@ -279,8 +313,11 @@ func generateSchema() map[string]any {
 	agentProperties := map[string]any{}
 	knownAgents := []string{
 		string(config.AgentCoder),
-		string(config.AgentTask),
-		string(config.AgentTitle),
+		string(config.AgentExplorer),
+		string(config.AgentDescriptor),
+		string(config.AgentSummarizer),
+		string(config.AgentWorkhorse),
+		string(config.AgentHivemind),
 	}
 
 	for _, agentName := range knownAgents {
@@ -460,7 +497,7 @@ func generateSchema() map[string]any {
 	// Add permission configuration
 	schema["properties"].(map[string]any)["permission"] = map[string]any{
 		"type":        "object",
-		"description": "Global permission configuration",
+		"description": "Global permission configuration. Keys are tool names (e.g., 'bash', 'edit', 'skill'). Values are either a simple action string or an object with glob-pattern keys.",
 		"properties": map[string]any{
 			"skill": map[string]any{
 				"type":        "object",
@@ -469,6 +506,23 @@ func generateSchema() map[string]any {
 					"type":        "string",
 					"description": "Permission action",
 					"enum":        []string{"allow", "deny", "ask"},
+				},
+			},
+		},
+		"additionalProperties": map[string]any{
+			"anyOf": []map[string]any{
+				{
+					"type":        "string",
+					"description": "Simple permission action for all uses of this tool",
+					"enum":        []string{"allow", "deny", "ask"},
+				},
+				{
+					"type":        "object",
+					"description": "Granular permission patterns (glob-pattern keys to action values)",
+					"additionalProperties": map[string]any{
+						"type": "string",
+						"enum": []string{"allow", "deny", "ask"},
+					},
 				},
 			},
 		},

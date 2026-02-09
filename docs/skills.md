@@ -302,7 +302,7 @@ Completely disable the skill tool for specific agents:
         "skill": false
       }
     },
-    "title": {
+    "descriptor": {
       "model": "claude-3-5-haiku-20241022",
       "tools": {
         "skill": false

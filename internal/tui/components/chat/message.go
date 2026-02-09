@@ -12,6 +12,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/diff"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
@@ -726,15 +727,38 @@ func subagentBadge(agentType string, isResumed bool) string {
 	var color lipgloss.TerminalColor
 	name := agentType
 
-	switch agentType {
-	case "explorer":
-		color = t.Info()
-		name = "Explorer Agent"
-	case "workhorse":
-		color = t.Warning()
-		name = "Workhorse Agent"
-	default:
-		color = t.Secondary()
+	reg := agentregistry.GetRegistry()
+	if info, ok := reg.Get(agentType); ok {
+		if info.Name != "" {
+			name = info.Name
+		}
+		switch info.Color {
+		case "primary":
+			color = t.Primary()
+		case "secondary":
+			color = t.Secondary()
+		case "warning":
+			color = t.Warning()
+		case "error":
+			color = t.Error()
+		case "info":
+			color = t.Info()
+		case "success":
+			color = t.Success()
+		default:
+			color = nil
+		}
+	}
+
+	if color == nil {
+		switch agentType {
+		case "explorer":
+			color = t.Info()
+		case "workhorse":
+			color = t.Warning()
+		default:
+			color = t.Secondary()
+		}
 	}
 
 	status := "new task"

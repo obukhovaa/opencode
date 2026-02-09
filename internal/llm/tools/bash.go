@@ -248,21 +248,31 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		return NewEmptyResponse(), fmt.Errorf("session ID and message ID are required for creating a new file")
 	}
 	if !isSafeReadOnly {
-		p := b.permissions.Request(
-			permission.CreatePermissionRequest{
-				SessionID:   sessionID,
-				Path:        workdir,
-				ToolName:    BashToolName,
-				Action:      "execute",
-				Description: fmt.Sprintf("Execute command: %s", params.Command),
-				Params: BashPermissionsParams{
-					Command: params.Command,
-					Workdir: workdir,
-				},
-			},
-		)
-		if !p {
+		// Evaluate config-based permissions before interactive ask
+		action := evaluateToolPermission(ctx, BashToolName, params.Command)
+		switch action {
+		case permission.ActionAllow:
+			// Allowed by config, skip interactive permission
+		case permission.ActionDeny:
 			return NewEmptyResponse(), permission.ErrorPermissionDenied
+		default:
+			// "ask" or unset: fall through to interactive permission
+			p := b.permissions.Request(
+				permission.CreatePermissionRequest{
+					SessionID:   sessionID,
+					Path:        workdir,
+					ToolName:    BashToolName,
+					Action:      "execute",
+					Description: fmt.Sprintf("Execute command: %s", params.Command),
+					Params: BashPermissionsParams{
+						Command: params.Command,
+						Workdir: workdir,
+					},
+				},
+			)
+			if !p {
+				return NewEmptyResponse(), permission.ErrorPermissionDenied
+			}
 		}
 	}
 	startTime := time.Now()

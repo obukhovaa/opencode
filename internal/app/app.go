@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/format"
@@ -31,6 +32,7 @@ type App struct {
 	Messages    message.Service
 	History     history.Service
 	Permissions permission.Service
+	Registry    agentregistry.Registry
 
 	CoderAgent agent.Service
 
@@ -90,11 +92,14 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 
 	files := history.NewService(queries, conn)
 
+	reg := agentregistry.GetRegistry()
+
 	app := &App{
 		Sessions:      sessions,
 		Messages:      messages,
 		History:       files,
 		Permissions:   permission.NewPermissionService(),
+		Registry:      reg,
 		LSPClients:    make(map[string]*lsp.Client),
 		PrimaryAgents: make(map[config.AgentName]agent.Service),
 	}
@@ -116,6 +121,7 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 			app.Messages,
 			app.History,
 			app.LSPClients,
+			reg,
 		),
 	)
 	if err != nil {
@@ -132,7 +138,7 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 			config.AgentHivemind,
 			app.Sessions,
 			app.Messages,
-			agent.HivemindAgentTools(app.Sessions, app.Messages, app.LSPClients, app.Permissions),
+			agent.HivemindAgentTools(app.Sessions, app.Messages, app.LSPClients, app.Permissions, reg),
 		)
 		if hivemindErr != nil {
 			logging.Warn("Failed to create hivemind agent, skipping", "error", hivemindErr)
@@ -193,7 +199,7 @@ func (app *App) RunNonInteractive(ctx context.Context, prompt string, outputForm
 	// Automatically approve all permission requests for this non-interactive session
 	app.Permissions.AutoApproveSession(sess.ID)
 
-	done, err := app.CoderAgent.Run(ctx, sess.ID, prompt)
+	done, err := app.ActiveAgent().Run(ctx, sess.ID, prompt)
 	if err != nil {
 		return fmt.Errorf("failed to start agent processing stream: %w", err)
 	}

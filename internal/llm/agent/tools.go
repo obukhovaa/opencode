@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
@@ -18,6 +19,7 @@ func CoderAgentTools(
 	messages message.Service,
 	history history.Service,
 	lspClients map[string]*lsp.Client,
+	reg agentregistry.Registry,
 ) []tools.BaseTool {
 	ctx := context.Background()
 	otherTools := GetMcpTools(ctx, permissions)
@@ -39,7 +41,7 @@ func CoderAgentTools(
 			tools.NewViewImageTool(),
 			tools.NewPatchTool(lspClients, permissions, history),
 			tools.NewWriteTool(lspClients, permissions, history),
-			NewAgentTool(sessions, messages, lspClients, permissions),
+			NewAgentTool(sessions, messages, lspClients, permissions, history, reg),
 		}, otherTools...,
 	)
 	return coderTools
@@ -99,6 +101,7 @@ func HivemindAgentTools(
 	messages message.Service,
 	lspClients map[string]*lsp.Client,
 	permissions permission.Service,
+	reg agentregistry.Registry,
 ) []tools.BaseTool {
 	return []tools.BaseTool{
 		tools.NewGlobTool(),
@@ -109,6 +112,6 @@ func HivemindAgentTools(
 		tools.NewSourcegraphTool(),
 		tools.NewFetchTool(permissions),
 		tools.NewSkillTool(permissions),
-		NewAgentTool(sessions, messages, lspClients, permissions),
+		NewAgentTool(sessions, messages, lspClients, permissions, nil, reg),
 	}
 }

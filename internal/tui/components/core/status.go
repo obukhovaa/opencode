@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/lsp"
@@ -277,24 +278,21 @@ func (m statusCmp) model() string {
 	}
 	model := models.SupportedModels[coder.Model]
 
+	reg := agentregistry.GetRegistry()
+	primaryAgents := reg.ListByMode(config.AgentModeAgent)
+
 	agentLabel := ""
-	for name, agentCfg := range cfg.Agents {
-		if agentCfg.Mode == config.AgentModeAgent && !agentCfg.Hidden {
-			_ = name
+	if len(primaryAgents) > 1 {
+		name := coder.Name
+		if name == "" {
+			if info, found := reg.Get(config.AgentCoder); found {
+				name = info.Name
+			}
 		}
-	}
-	// Show agent name if multiple primary agents exist
-	primaryCount := 0
-	for _, agentCfg := range cfg.Agents {
-		if agentCfg.Mode == config.AgentModeAgent && !agentCfg.Hidden {
-			primaryCount++
+		if name == "" {
+			name = "Coder"
 		}
-	}
-	if primaryCount > 1 {
-		agentLabel = " ▶ " + coder.Name
-		if agentLabel == " ▶ " {
-			agentLabel = " ▶ Coder"
-		}
+		agentLabel = " ▶ " + name
 	}
 
 	return styles.Padded().

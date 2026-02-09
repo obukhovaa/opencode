@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/permission"
 )
 
 type ToolInfo struct {
@@ -147,4 +148,33 @@ func GetAgentName(ctx context.Context) config.AgentName {
 		return val
 	}
 	return ""
+}
+
+// evaluateToolPermission evaluates config-based permissions for a tool+input.
+// Returns the resolved action (allow/deny/ask) based on agent-specific and global rules.
+func evaluateToolPermission(ctx context.Context, toolName, input string) permission.Action {
+	cfg := config.Get()
+	agentName := GetAgentName(ctx)
+
+	var agentPerms map[string]any
+	if agentName != "" && cfg.Agents != nil {
+		if agentCfg, ok := cfg.Agents[agentName]; ok {
+			if !permission.IsToolEnabled(toolName, agentCfg.Tools) {
+				return permission.ActionDeny
+			}
+			agentPerms = agentCfg.Permission
+		}
+	}
+
+	globalPerms := make(map[string]any)
+	if cfg.Permission != nil {
+		if cfg.Permission.Skill != nil {
+			globalPerms["skill"] = cfg.Permission.Skill
+		}
+		for k, v := range cfg.Permission.Rules {
+			globalPerms[k] = v
+		}
+	}
+
+	return permission.EvaluateToolPermission(toolName, input, agentPerms, globalPerms)
 }

@@ -7,12 +7,24 @@ import (
 	"strings"
 	"sync"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/logging"
 )
 
 func GetAgentPrompt(agentName config.AgentName, provider models.ModelProvider) string {
+	// Check registry for custom agent prompt first
+	reg := agentregistry.GetRegistry()
+	if info, ok := reg.Get(agentName); ok && info.Prompt != "" {
+		basePrompt := info.Prompt
+		contextContent := getContextFromPaths()
+		if contextContent != "" {
+			return fmt.Sprintf("%s\n\n# Project-Specific Context\n Make sure to follow the instructions in the context below\n%s", basePrompt, contextContent)
+		}
+		return basePrompt
+	}
+
 	basePrompt := ""
 	switch agentName {
 	case config.AgentCoder:
