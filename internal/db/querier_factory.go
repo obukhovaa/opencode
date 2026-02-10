@@ -8,19 +8,19 @@ import (
 )
 
 // NewQuerier creates a new Querier based on the configured provider type
-func NewQuerier(db *sql.DB) Querier {
+func NewQuerier(db *sql.DB) QuerierWithTx {
 	cfg := config.Get()
 
 	provider, err := NewProvider(cfg)
 	if err != nil {
 		// Fallback to SQLite if provider creation fails
 		logging.Error("Failed to create database provider, falling back to SQLite", "error", err)
-		return New(db)
+		return &queriesWrapper{Queries: New(db)}
 	}
 
 	if provider.Type() == config.ProviderMySQL {
-		return NewMySQLQuerier(db)
+		return &mysqlQuerierWrapper{MySQLQuerier: NewMySQLQuerier(db)}
 	}
 
-	return New(db)
+	return &queriesWrapper{Queries: New(db)}
 }

@@ -82,25 +82,23 @@ type agent struct {
 }
 
 func NewAgent(
-	agentName config.AgentName,
+	agentInfo *agentregistry.AgentInfo,
 	sessions session.Service,
 	messages message.Service,
 	agentTools []tools.BaseTool,
 ) (Service, error) {
-	agentProvider, err := createAgentProvider(agentName)
+	agentProvider, err := createAgentProvider(agentInfo.ID)
 	if err != nil {
 		return nil, err
 	}
-	var titleProvider provider.Provider
-	if agentName == config.AgentCoder || agentName == config.AgentHivemind {
-		titleProvider, err = createAgentProvider(config.AgentDescriptor)
+
+	var titleProvider, summarizeProvider provider.Provider
+	if agentInfo.Mode == config.AgentModeAgent {
+		summarizeProvider, err = createAgentProvider(config.AgentSummarizer)
 		if err != nil {
 			return nil, err
 		}
-	}
-	var summarizeProvider provider.Provider
-	if agentName == config.AgentCoder || agentName == config.AgentHivemind {
-		summarizeProvider, err = createAgentProvider(config.AgentSummarizer)
+		titleProvider, err = createAgentProvider(config.AgentDescriptor)
 		if err != nil {
 			return nil, err
 		}
@@ -108,7 +106,7 @@ func NewAgent(
 
 	agent := &agent{
 		Broker:            pubsub.NewBroker[AgentEvent](),
-		agentName:         agentName,
+		agentName:         agentInfo.ID,
 		provider:          agentProvider,
 		messages:          messages,
 		sessions:          sessions,
@@ -995,7 +993,7 @@ func createAgentProvider(agentName config.AgentName) (provider.Provider, error) 
 				provider.WithReasoningEffort(agentConfig.ReasoningEffort),
 			),
 		)
-	} else if (model.Provider == models.ProviderAnthropic || model.Provider == models.ProviderVertexAI || model.Provider == models.ProviderBedrock) && model.CanReason && (agentName == config.AgentCoder || agentName == config.AgentWorkhorse || agentName == config.AgentHivemind) {
+	} else if (model.Provider == models.ProviderAnthropic || model.Provider == models.ProviderVertexAI || model.Provider == models.ProviderBedrock) && model.CanReason {
 		anthropicOpts := []provider.AnthropicOption{
 			provider.WithAnthropicShouldThinkFn(provider.DefaultShouldThinkFn),
 		}

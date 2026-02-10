@@ -42,6 +42,7 @@ func CoderAgentTools(
 			tools.NewViewImageTool(),
 			tools.NewPatchTool(lspClients, permissions, history),
 			tools.NewWriteTool(lspClients, permissions, history),
+			tools.NewDeleteTool(permissions, history),
 			NewAgentTool(sessions, messages, lspClients, permissions, history, reg),
 		}, otherTools...,
 	)
@@ -95,6 +96,7 @@ func WorkhorseAgentTools(
 			tools.NewMultiEditTool(lspClients, permissions, history),
 			tools.NewPatchTool(lspClients, permissions, history),
 			tools.NewWriteTool(lspClients, permissions, history),
+			tools.NewDeleteTool(permissions, history),
 		}
 	} else {
 		workhorse = []tools.BaseTool{

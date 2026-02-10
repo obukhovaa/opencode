@@ -51,7 +51,7 @@ The patch text must follow this format:
 *** End Patch
 
 Before using this tool:
-1. Use the FileRead tool to understand the files' contents and context
+1. Use the View tool to understand the files' content and context
 2. Verify all file paths are correct (use the LS tool)
 
 CRITICAL REQUIREMENTS FOR USING THIS TOOL:

@@ -247,6 +247,8 @@ func toolName(name string) string {
 		return "Write"
 	case tools.PatchToolName:
 		return "Patch"
+	case tools.DeleteToolName:
+		return "Delete"
 	}
 	return name
 }
@@ -279,6 +281,8 @@ func getToolAction(name string) string {
 		return "Preparing write..."
 	case tools.PatchToolName:
 		return "Preparing patch..."
+	case tools.DeleteToolName:
+		return "Deleting..."
 	}
 	return "Working..."
 }
@@ -464,6 +468,11 @@ func renderToolParams(paramWidth int, toolCall message.ToolCall) string {
 		json.Unmarshal([]byte(toolCall.Input), &params)
 		filePath := removeWorkingDirPrefix(params.FilePath)
 		return renderParams(paramWidth, filePath)
+	case tools.DeleteToolName:
+		var params tools.DeleteParams
+		json.Unmarshal([]byte(toolCall.Input), &params)
+		filePath := removeWorkingDirPrefix(params.Path)
+		return renderParams(paramWidth, filePath)
 	default:
 		input := strings.ReplaceAll(toolCall.Input, "\n", " ")
 		params = renderParams(paramWidth, input)
@@ -579,6 +588,12 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 			toMarkdown(resultContent, true, width),
 			t.Background(),
 		)
+	case tools.DeleteToolName:
+		metadata := tools.DeleteResponseMetadata{}
+		json.Unmarshal([]byte(response.Metadata), &metadata)
+		truncDiff := truncateHeight(metadata.Diff, maxResultHeight)
+		formattedDiff, _ := diff.FormatDiff(truncDiff, diff.WithTotalWidth(width))
+		return formattedDiff
 	default:
 		resultContent = fmt.Sprintf("```text\n%s\n```", resultContent)
 		return styles.ForceReplaceBackgroundWithLipgloss(

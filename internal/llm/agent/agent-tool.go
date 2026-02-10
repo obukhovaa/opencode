@@ -31,6 +31,8 @@ const (
 	AgentToolName = TaskToolName
 )
 
+var writeTools = []string{"write", "edit", "bash", "patch", "multiedit", "delete"}
+
 type TaskParams struct {
 	Prompt       string `json:"prompt"`
 	SubagentType string `json:"subagent_type,omitempty"`
@@ -118,20 +120,18 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 	}
 
 	// Validate the subagent exists in the registry
-	if b.registry != nil {
-		if _, ok := b.registry.Get(subagentType); !ok {
-			available := b.registry.ListByMode(config.AgentModeSubagent)
-			names := make([]string, 0, len(available))
-			for _, a := range available {
-				names = append(names, a.ID)
-			}
-			return tools.NewTextErrorResponse(fmt.Sprintf("unknown subagent type %q. Available: %s", subagentType, strings.Join(names, ", "))), nil
+	subagentInfo, ok := b.registry.Get(subagentType)
+	if !ok || subagentInfo.Mode != config.AgentModeSubagent {
+		available := b.registry.ListByMode(config.AgentModeSubagent)
+		names := make([]string, 0, len(available))
+		for _, a := range available {
+			names = append(names, a.ID)
 		}
+		return tools.NewTextErrorResponse(fmt.Sprintf("unknown subagent type %q. Available: %s", subagentType, strings.Join(names, ", "))), nil
 	}
 
-	agentTools := b.resolveToolsForSubagent(subagentType)
-
-	a, err := NewAgent(subagentType, b.sessions, b.messages, agentTools)
+	agentTools := b.resolveToolsForSubagent(&subagentInfo)
+	a, err := NewAgent(&subagentInfo, b.sessions, b.messages, agentTools)
 	if err != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error creating agent: %s", err)
 	}
@@ -200,43 +200,21 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 	return tools.WithResponseMetadata(tools.NewTextResponse(response.Content().String()), metadata), nil
 }
 
-func (b *agentTool) resolveToolsForSubagent(subagentType string) []tools.BaseTool {
-	if b.registry != nil {
-		info, ok := b.registry.Get(subagentType)
-		if ok && info.Tools != nil {
-			hasWriteTools := true
-			for _, tool := range []string{"write", "edit", "bash", "patch", "multiedit"} {
-				if enabled, exists := info.Tools[tool]; exists && !enabled {
-					hasWriteTools = false
-					break
-				}
-			}
-			if !hasWriteTools {
-				return ExplorerAgentTools(b.lspClients, b.permissions)
-			}
-		}
-	}
-
-	switch subagentType {
+func (b *agentTool) resolveToolsForSubagent(info *agentregistry.AgentInfo) []tools.BaseTool {
+	switch info.ID {
 	case config.AgentWorkhorse:
 		return WorkhorseAgentTools(b.lspClients, b.permissions, b.sessions, b.messages, b.history)
 	case config.AgentExplorer:
 		return ExplorerAgentTools(b.lspClients, b.permissions)
 	default:
-		if b.registry != nil {
-			info, ok := b.registry.Get(subagentType)
-			if ok && info.Mode == config.AgentModeSubagent {
-				if info.Tools != nil {
-					for _, tool := range []string{"write", "edit", "bash", "patch"} {
-						if enabled, exists := info.Tools[tool]; exists && !enabled {
-							return ExplorerAgentTools(b.lspClients, b.permissions)
-						}
-					}
+		if info.Tools != nil {
+			for _, tool := range writeTools {
+				if enabled, exists := info.Tools[tool]; exists && !enabled {
+					return ExplorerAgentTools(b.lspClients, b.permissions)
 				}
-				return WorkhorseAgentTools(b.lspClients, b.permissions, b.sessions, b.messages, b.history)
 			}
 		}
-		return ExplorerAgentTools(b.lspClients, b.permissions)
+		return WorkhorseAgentTools(b.lspClients, b.permissions, b.sessions, b.messages, b.history)
 	}
 }
 

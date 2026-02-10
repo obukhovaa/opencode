@@ -50,11 +50,6 @@ const (
 	AgentDescriptor AgentName = "descriptor"
 	AgentWorkhorse  AgentName = "workhorse"
 	AgentHivemind   AgentName = "hivemind"
-
-	// Deprecated: use AgentExplorer instead
-	AgentTask AgentName = "explorer"
-	// Deprecated: use AgentDescriptor instead
-	AgentTitle AgentName = "descriptor"
 )
 
 // Agent defines configuration for different LLM models and their token limits.

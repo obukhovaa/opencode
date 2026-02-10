@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
@@ -47,10 +48,10 @@ type Service interface {
 type service struct {
 	*pubsub.Broker[File]
 	db *sql.DB
-	q  *db.Queries
+	q  db.QuerierWithTx
 }
 
-func NewService(q *db.Queries, database *sql.DB) Service {
+func NewService(q db.QuerierWithTx, database *sql.DB) Service {
 	return &service{
 		Broker: pubsub.NewBroker[File](),
 		q:      q,
@@ -72,7 +73,7 @@ func (s *service) CreateVersion(ctx context.Context, sessionID, path, content st
 		return s.Create(ctx, sessionID, path, content)
 	}
 
-	latestFile := files[0]
+	latestFile := findMaxVersion(files)
 	latestVersion := latestFile.Version
 
 	var nextVersion string
@@ -98,6 +99,7 @@ func (s *service) createWithVersion(ctx context.Context, sessionID, path, conten
 	var err error
 
 	for attempt := range maxRetries {
+		logging.Debug("Trying to create a file history", "path", path, "sessionID", sessionID, "version", version)
 		tx, txErr := s.db.Begin()
 		if txErr != nil {
 			return File{}, fmt.Errorf("failed to begin transaction: %w", txErr)
@@ -114,6 +116,7 @@ func (s *service) createWithVersion(ctx context.Context, sessionID, path, conten
 		})
 		if txErr != nil {
 			tx.Rollback()
+			logging.Error("Failed to create a file history", "path", path, "sessionID", sessionID, "version", version, "cause", txErr.Error())
 
 			if strings.Contains(txErr.Error(), "UNIQUE constraint failed") {
 				if attempt < maxRetries-1 {
@@ -132,14 +135,17 @@ func (s *service) createWithVersion(ctx context.Context, sessionID, path, conten
 		}
 
 		if txErr = tx.Commit(); txErr != nil {
+			logging.Error("Failed to commit a file history", "path", path, "sessionID", sessionID, "version", version, "cause", txErr.Error())
 			return File{}, fmt.Errorf("failed to commit transaction: %w", txErr)
 		}
 
 		file = s.fromDBItem(dbFile)
 		s.Publish(pubsub.CreatedEvent, file)
+		logging.Debug("File history created", "path", file.Path, "sessionID", sessionID, "version", file.Version)
 		return file, nil
 	}
 
+	logging.Warn("File history creation retries exceed", "path", file.Path, "sessionID", sessionID, "version", file.Version)
 	return file, err
 }
 
@@ -181,13 +187,17 @@ func (s *service) ListBySession(ctx context.Context, sessionID string) ([]File, 
 }
 
 func (s *service) ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error) {
-	dbFiles, err := s.q.ListLatestSessionFiles(ctx, sessionID)
+	dbFiles, err := s.q.ListFilesBySession(ctx, sessionID)
 	if err != nil {
 		logging.Error("Failed to select latest session files from db", "sessionID", sessionID, "cause", err.Error())
 		return nil, err
 	}
-	files := make([]File, len(dbFiles))
-	for i, dbFile := range dbFiles {
+	if len(dbFiles) == 0 {
+		return nil, nil
+	}
+	latest := latestByPath(dbFiles)
+	files := make([]File, len(latest))
+	for i, dbFile := range latest {
 		logging.Debug("File selected from db (latest version)", "path", dbFile.Path, "sessionID", sessionID, "fileID", dbFile.ID, "fileVersion", dbFile.Version)
 		files[i] = s.fromDBItem(dbFile)
 	}
@@ -209,13 +219,17 @@ func (s *service) ListBySessionTree(ctx context.Context, rootSessionID string) (
 }
 
 func (s *service) ListLatestSessionTreeFiles(ctx context.Context, rootSessionID string) ([]File, error) {
-	dbFiles, err := s.q.ListLatestSessionTreeFiles(ctx, sql.NullString{String: rootSessionID, Valid: true})
+	dbFiles, err := s.q.ListFilesBySessionTree(ctx, sql.NullString{String: rootSessionID, Valid: true})
 	if err != nil {
 		logging.Error("Failed to select root session latest version files from db", "rootSessionID", rootSessionID, "cause", err.Error())
 		return nil, err
 	}
-	files := make([]File, len(dbFiles))
-	for i, dbFile := range dbFiles {
+	if len(dbFiles) == 0 {
+		return nil, nil
+	}
+	latest := latestByPath(dbFiles)
+	files := make([]File, len(latest))
+	for i, dbFile := range latest {
 		logging.Debug("File selected from db (latest version by root)", "path", dbFile.Path, "rootSessionID", rootSessionID, "fileID", dbFile.ID, "fileVersion", dbFile.Version)
 		files[i] = s.fromDBItem(dbFile)
 	}
@@ -273,4 +287,61 @@ func (s *service) fromDBItem(item db.File) File {
 		CreatedAt: item.CreatedAt,
 		UpdatedAt: item.UpdatedAt,
 	}
+}
+
+// parseVersionNum extracts the numeric part from a version string.
+// Returns -1 for "initial", the number N for "vN", or -2 if unparseable.
+func parseVersionNum(version string) int {
+	if version == InitialVersion {
+		return -1
+	}
+	if strings.HasPrefix(version, "v") {
+		n, err := strconv.Atoi(version[1:])
+		if err != nil {
+			return -2
+		}
+		return n
+	}
+	return -2
+}
+
+// findMaxVersion scans a slice of db.File and returns the one with the highest
+// parsed version number. Falls back to the first element if no parseable versions exist.
+func findMaxVersion(files []db.File) db.File {
+	best := files[0]
+	bestNum := parseVersionNum(best.Version)
+	for _, f := range files[1:] {
+		n := parseVersionNum(f.Version)
+		if n > bestNum {
+			best = f
+			bestNum = n
+		}
+	}
+	return best
+}
+
+// latestByPath groups files by path and returns only the file with the
+// highest version number for each path.
+func latestByPath(files []db.File) []db.File {
+	type entry struct {
+		file db.File
+		num  int
+	}
+	best := make(map[string]entry)
+	var paths []string
+	for _, f := range files {
+		n := parseVersionNum(f.Version)
+		e, exists := best[f.Path]
+		if !exists {
+			paths = append(paths, f.Path)
+			best[f.Path] = entry{file: f, num: n}
+		} else if n > e.num {
+			best[f.Path] = entry{file: f, num: n}
+		}
+	}
+	result := make([]db.File, 0, len(best))
+	for _, p := range paths {
+		result = append(result, best[p].file)
+	}
+	return result
 }

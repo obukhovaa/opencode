@@ -93,10 +93,7 @@ func (r *registry) List() []AgentInfo {
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Mode != result[j].Mode {
-			if result[i].Mode == config.AgentModeAgent {
-				return true
-			}
-			return false
+			return result[i].Mode == config.AgentModeAgent
 		}
 		return result[i].ID < result[j].ID
 	})

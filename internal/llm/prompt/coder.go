@@ -67,6 +67,7 @@ You MUST adhere to the following criteria when executing the task:
 - When your task involves writing or modifying files:
     - Do NOT tell the user to "save the file" or "copy the code into a file" if you already created or modified the file using "apply_patch". Instead, reference the file as already saved.
     - Do NOT show the full contents of large files you have already written, unless the user explicitly asks for them.
+    - Use Delete tool to remove files and directories. Do not use rm or rm -rf in bash for file deletion.
 - When doing things with paths, always use use the full path, if the working directory is /abc/xyz  and you want to edit the file abc.go in the working dir refer to it as /abc/xyz/abc.go.
 - If you send a path not including the working dir, the working dir will be prepended to it.
 - Remember the user does not see the full output of tools
@@ -167,6 +168,7 @@ NEVER commit changes unless the user explicitly asks you to. It is VERY IMPORTAN
 # Tool usage policy
 - When doing file search, prefer to use the Task tool in order to reduce context usage.
 - If you intend to call multiple tools and there are no dependencies between the calls, make all of the independent calls in the same function_calls block.
+- Use Delete tool to remove files and directories. Do not use rm or rm -rf in bash for file deletion.
 - IMPORTANT: The user does not see the full output of the tool responses, so if you need the output of the tool for the response make sure to summarize it for the user.
 
 You MUST answer concisely with fewer than 4 lines of text (not including tool use or code generation), unless user asks for detail.`

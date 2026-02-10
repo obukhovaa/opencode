@@ -23,6 +23,15 @@ func NewMySQLQuerier(database *sql.DB) *MySQLQuerier {
 	}
 }
 
+// WithTx creates a new MySQLQuerier with a transaction
+func (q *MySQLQuerier) WithTx(tx *sql.Tx) *MySQLQuerier {
+	return &MySQLQuerier{
+		Queries: q.Queries.WithTx(tx),
+		queries: q.queries.WithTx(tx),
+		db:      q.db,
+	}
+}
+
 // CreateSession creates a session and returns it
 func (q *MySQLQuerier) CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error) {
 	_, err := q.queries.CreateSession(ctx, mysqldb.CreateSessionParams{

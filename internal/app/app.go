@@ -78,20 +78,7 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 	q := db.NewQuerier(conn)
 	sessions := session.NewService(q)
 	messages := message.NewService(q)
-
-	// Type assert to *db.Queries or *db.MySQLQuerier (both have embedded *db.Queries)
-	var queries *db.Queries
-	switch v := q.(type) {
-	case *db.Queries:
-		queries = v
-	case *db.MySQLQuerier:
-		queries = v.Queries
-	default:
-		return nil, fmt.Errorf("unexpected querier type: %T", q)
-	}
-
-	files := history.NewService(queries, conn)
-
+	files := history.NewService(q, conn)
 	reg := agentregistry.GetRegistry()
 
 	app := &App{
@@ -111,8 +98,12 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 	go app.initLSPClients(ctx)
 
 	var err error
+	agentInfo, ok := reg.Get(config.AgentCoder)
+	if !ok {
+		return nil, errors.New("failed to load coder agent from registry")
+	}
 	app.activeAgent, err = agent.NewAgent(
-		config.AgentCoder,
+		&agentInfo,
 		app.Sessions,
 		app.Messages,
 		agent.CoderAgentTools(
@@ -132,21 +123,28 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 	app.PrimaryAgentKeys = append(app.PrimaryAgentKeys, config.AgentCoder)
 
 	// Try to create hivemind agent
-	cfg := config.Get()
-	if _, ok := cfg.Agents[config.AgentHivemind]; ok {
-		hivemindAgent, hivemindErr := agent.NewAgent(
-			config.AgentHivemind,
+	agentInfo, ok = reg.Get(config.AgentHivemind)
+	if !ok {
+		return nil, errors.New("failed to load hivemind agent from registry")
+	}
+	hivemindAgent, err := agent.NewAgent(
+		&agentInfo,
+		app.Sessions,
+		app.Messages,
+		agent.HivemindAgentTools(
 			app.Sessions,
 			app.Messages,
-			agent.HivemindAgentTools(app.Sessions, app.Messages, app.LSPClients, app.Permissions, reg),
-		)
-		if hivemindErr != nil {
-			logging.Warn("Failed to create hivemind agent, skipping", "error", hivemindErr)
-		} else {
-			app.PrimaryAgents[config.AgentHivemind] = hivemindAgent
-			app.PrimaryAgentKeys = append(app.PrimaryAgentKeys, config.AgentHivemind)
-		}
+			app.LSPClients,
+			app.Permissions,
+			reg,
+		),
+	)
+	if err != nil {
+		logging.Error("Failed to create hivemind agent, skipping", "error", err)
+		return nil, err
 	}
+	app.PrimaryAgents[config.AgentHivemind] = hivemindAgent
+	app.PrimaryAgentKeys = append(app.PrimaryAgentKeys, config.AgentHivemind)
 
 	return app, nil
 }

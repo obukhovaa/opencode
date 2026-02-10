@@ -159,10 +159,10 @@ func TestEvaluateSkillPermission(t *testing.T) {
 		{
 			name:      "agent-specific exact match",
 			skillName: "special-skill",
-			agentName: config.AgentTask,
+			agentName: config.AgentExplorer,
 			cfg: &config.Config{
 				Agents: map[config.AgentName]config.Agent{
-					config.AgentTask: {
+					config.AgentExplorer: {
 						Permission: map[string]any{
 							"skill": map[string]any{
 								"special-skill": "allow",
@@ -191,7 +191,7 @@ func TestSkillToolIntegration(t *testing.T) {
 
 	// Create a test skill
 	skillDir := filepath.Join(tmpDir, ".opencode", "skills", "test-skill")
-	if err := os.MkdirAll(skillDir, 0755); err != nil {
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -208,7 +208,7 @@ license: MIT
 `
 
 	skillPath := filepath.Join(skillDir, "SKILL.md")
-	if err := os.WriteFile(skillPath, []byte(skillContent), 0644); err != nil {
+	if err := os.WriteFile(skillPath, []byte(skillContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -340,7 +340,7 @@ func TestSkillToolWithAgentPermissions(t *testing.T) {
 	}
 
 	// Task agent should deny (global)
-	action2 := evaluateSkillPermission("test-skill", config.AgentTask, cfg)
+	action2 := evaluateSkillPermission("test-skill", config.AgentExplorer, cfg)
 	if action2 != "deny" {
 		t.Errorf("Expected deny for task agent, got %s", action2)
 	}
