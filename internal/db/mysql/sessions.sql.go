@@ -15,6 +15,7 @@ INSERT INTO sessions (
     id,
     project_id,
     parent_session_id,
+    root_session_id,
     title,
     message_count,
     prompt_tokens,
@@ -24,6 +25,7 @@ INSERT INTO sessions (
     updated_at,
     created_at
 ) VALUES (
+    ?,
     ?,
     ?,
     ?,
@@ -42,6 +44,7 @@ type CreateSessionParams struct {
 	ID               string         `json:"id"`
 	ProjectID        sql.NullString `json:"project_id"`
 	ParentSessionID  sql.NullString `json:"parent_session_id"`
+	RootSessionID    sql.NullString `json:"root_session_id"`
 	Title            string         `json:"title"`
 	MessageCount     int64          `json:"message_count"`
 	PromptTokens     int64          `json:"prompt_tokens"`
@@ -54,6 +57,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (s
 		arg.ID,
 		arg.ProjectID,
 		arg.ParentSessionID,
+		arg.RootSessionID,
 		arg.Title,
 		arg.MessageCount,
 		arg.PromptTokens,
@@ -73,7 +77,7 @@ func (q *Queries) DeleteSession(ctx context.Context, id string) error {
 }
 
 const getSessionByID = `-- name: GetSessionByID :one
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, project_id
+SELECT id, parent_session_id, root_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, project_id
 FROM sessions
 WHERE id = ? LIMIT 1
 `
@@ -84,6 +88,7 @@ func (q *Queries) GetSessionByID(ctx context.Context, id string) (Session, error
 	err := row.Scan(
 		&i.ID,
 		&i.ParentSessionID,
+		&i.RootSessionID,
 		&i.Title,
 		&i.MessageCount,
 		&i.PromptTokens,
@@ -97,8 +102,51 @@ func (q *Queries) GetSessionByID(ctx context.Context, id string) (Session, error
 	return i, err
 }
 
+const listChildSessions = `-- name: ListChildSessions :many
+SELECT id, parent_session_id, root_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, project_id
+FROM sessions
+WHERE root_session_id = ?
+ORDER BY created_at ASC
+`
+
+func (q *Queries) ListChildSessions(ctx context.Context, rootSessionID sql.NullString) ([]Session, error) {
+	rows, err := q.db.QueryContext(ctx, listChildSessions, rootSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Session{}
+	for rows.Next() {
+		var i Session
+		if err := rows.Scan(
+			&i.ID,
+			&i.ParentSessionID,
+			&i.RootSessionID,
+			&i.Title,
+			&i.MessageCount,
+			&i.PromptTokens,
+			&i.CompletionTokens,
+			&i.Cost,
+			&i.UpdatedAt,
+			&i.CreatedAt,
+			&i.SummaryMessageID,
+			&i.ProjectID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSessions = `-- name: ListSessions :many
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, project_id
+SELECT id, parent_session_id, root_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, project_id
 FROM sessions
 WHERE parent_session_id is NULL AND project_id = ?
 ORDER BY created_at DESC
@@ -116,6 +164,7 @@ func (q *Queries) ListSessions(ctx context.Context, projectID sql.NullString) ([
 		if err := rows.Scan(
 			&i.ID,
 			&i.ParentSessionID,
+			&i.RootSessionID,
 			&i.Title,
 			&i.MessageCount,
 			&i.PromptTokens,

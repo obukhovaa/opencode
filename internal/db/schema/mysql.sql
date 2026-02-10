@@ -1,6 +1,7 @@
 CREATE TABLE IF NOT EXISTS sessions (
   id VARCHAR(255) PRIMARY KEY,
   parent_session_id VARCHAR(255),
+  root_session_id VARCHAR(255),
   title VARCHAR(512) NOT NULL,
   message_count BIGINT NOT NULL DEFAULT 0,
   prompt_tokens BIGINT NOT NULL DEFAULT 0,
@@ -11,7 +12,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   summary_message_id VARCHAR(255),
   project_id VARCHAR(512),
   KEY idx_sessions_project_id (project_id(255)),
-  KEY idx_sessions_project_created (project_id(255), created_at DESC)
+  KEY idx_sessions_project_created (project_id(255), created_at DESC),
+  KEY idx_sessions_root_session_id (root_session_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS files (

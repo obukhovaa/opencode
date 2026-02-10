@@ -32,6 +32,7 @@ type Message struct {
 type Session struct {
 	ID               string         `json:"id"`
 	ParentSessionID  sql.NullString `json:"parent_session_id"`
+	RootSessionID    sql.NullString `json:"root_session_id"`
 	Title            string         `json:"title"`
 	MessageCount     int64          `json:"message_count"`
 	PromptTokens     int64          `json:"prompt_tokens"`

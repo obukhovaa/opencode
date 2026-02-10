@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"database/sql"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -14,6 +15,7 @@ type Session struct {
 	ID               string
 	ProjectID        string
 	ParentSessionID  string
+	RootSessionID    string
 	Title            string
 	MessageCount     int64
 	PromptTokens     int64
@@ -31,6 +33,7 @@ type Service interface {
 	CreateTaskSession(ctx context.Context, toolCallID, parentSessionID, title string) (Session, error)
 	Get(ctx context.Context, id string) (Session, error)
 	List(ctx context.Context) ([]Session, error)
+	ListChildren(ctx context.Context, rootSessionID string) ([]Session, error)
 	Save(ctx context.Context, session Session) (Session, error)
 	Delete(ctx context.Context, id string) error
 }
@@ -42,10 +45,12 @@ type service struct {
 }
 
 func (s *service) Create(ctx context.Context, title string) (Session, error) {
+	id := uuid.New().String()
 	dbSession, err := s.q.CreateSession(ctx, db.CreateSessionParams{
-		ID:        uuid.New().String(),
-		ProjectID: sql.NullString{String: s.projectID, Valid: true},
-		Title:     title,
+		ID:            id,
+		ProjectID:     sql.NullString{String: s.projectID, Valid: true},
+		RootSessionID: sql.NullString{String: id, Valid: true},
+		Title:         title,
 	})
 	if err != nil {
 		return Session{}, err
@@ -56,10 +61,21 @@ func (s *service) Create(ctx context.Context, title string) (Session, error) {
 }
 
 func (s *service) CreateTaskSession(ctx context.Context, toolCallID, parentSessionID, title string) (Session, error) {
+	parent, err := s.q.GetSessionByID(ctx, parentSessionID)
+	if err != nil {
+		return Session{}, fmt.Errorf("failed to get parent session: %w", err)
+	}
+
+	rootSessionID := parent.RootSessionID.String
+	if !parent.RootSessionID.Valid || rootSessionID == "" {
+		rootSessionID = parentSessionID
+	}
+
 	dbSession, err := s.q.CreateSession(ctx, db.CreateSessionParams{
 		ID:              toolCallID,
 		ProjectID:       sql.NullString{String: s.projectID, Valid: true},
 		ParentSessionID: sql.NullString{String: parentSessionID, Valid: true},
+		RootSessionID:   sql.NullString{String: rootSessionID, Valid: true},
 		Title:           title,
 	})
 	if err != nil {
@@ -71,10 +87,21 @@ func (s *service) CreateTaskSession(ctx context.Context, toolCallID, parentSessi
 }
 
 func (s *service) CreateTitleSession(ctx context.Context, parentSessionID string) (Session, error) {
+	parent, err := s.q.GetSessionByID(ctx, parentSessionID)
+	if err != nil {
+		return Session{}, fmt.Errorf("failed to get parent session: %w", err)
+	}
+
+	rootSessionID := parent.RootSessionID.String
+	if !parent.RootSessionID.Valid || rootSessionID == "" {
+		rootSessionID = parentSessionID
+	}
+
 	dbSession, err := s.q.CreateSession(ctx, db.CreateSessionParams{
 		ID:              "title-" + parentSessionID,
 		ProjectID:       sql.NullString{String: s.projectID, Valid: true},
 		ParentSessionID: sql.NullString{String: parentSessionID, Valid: true},
+		RootSessionID:   sql.NullString{String: rootSessionID, Valid: true},
 		Title:           "Generate a title",
 	})
 	if err != nil {
@@ -138,11 +165,24 @@ func (s *service) List(ctx context.Context) ([]Session, error) {
 	return sessions, nil
 }
 
+func (s *service) ListChildren(ctx context.Context, rootSessionID string) ([]Session, error) {
+	dbSessions, err := s.q.ListChildSessions(ctx, sql.NullString{String: rootSessionID, Valid: true})
+	if err != nil {
+		return nil, err
+	}
+	sessions := make([]Session, len(dbSessions))
+	for i, dbSession := range dbSessions {
+		sessions[i] = s.fromDBItem(dbSession)
+	}
+	return sessions, nil
+}
+
 func (s service) fromDBItem(item db.Session) Session {
 	return Session{
 		ID:               item.ID,
 		ProjectID:        item.ProjectID.String,
 		ParentSessionID:  item.ParentSessionID.String,
+		RootSessionID:    item.RootSessionID.String,
 		Title:            item.Title,
 		MessageCount:     item.MessageCount,
 		PromptTokens:     item.PromptTokens,

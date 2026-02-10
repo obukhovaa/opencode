@@ -146,6 +146,7 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		}
 	}
 	if !isResumed {
+		// BUG: it seems auto approve status is not applied to child sessions which could cause non interactive mode to fail to use this tool
 		taskSession, err = b.sessions.CreateTaskSession(ctx, call.ID, sessionID, fmt.Sprintf("%s task", subagentType))
 		if err != nil {
 			return tools.ToolResponse{}, fmt.Errorf("error creating session: %s", err)

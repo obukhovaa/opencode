@@ -76,6 +76,7 @@ func ExplorerAgentTools(lspClients map[string]*lsp.Client, permissions permissio
 		tools.NewSkillTool(permissions),
 		tools.NewViewTool(lspClients),
 		tools.NewViewImageTool(),
+		tools.NewFetchTool(permissions),
 	}
 }
 

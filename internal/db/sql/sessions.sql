@@ -3,6 +3,7 @@ INSERT INTO sessions (
     id,
     project_id,
     parent_session_id,
+    root_session_id,
     title,
     message_count,
     prompt_tokens,
@@ -12,6 +13,7 @@ INSERT INTO sessions (
     updated_at,
     created_at
 ) VALUES (
+    ?,
     ?,
     ?,
     ?,
@@ -51,3 +53,9 @@ RETURNING *;
 -- name: DeleteSession :exec
 DELETE FROM sessions
 WHERE id = ?;
+
+-- name: ListChildSessions :many
+SELECT *
+FROM sessions
+WHERE root_session_id = ?
+ORDER BY created_at ASC;

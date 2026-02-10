@@ -57,15 +57,29 @@ WHERE session_id = ?;
 SELECT f.*
 FROM files f
 INNER JOIN (
-    SELECT path, MAX(created_at) as max_created_at
+    SELECT session_id, path, MAX(created_at) as max_created_at
     FROM files
-    GROUP BY path
-) latest ON f.path = latest.path AND f.created_at = latest.max_created_at
-WHERE f.session_id = ?
+    WHERE files.session_id = ?
+    GROUP BY session_id, path
+) latest ON f.session_id = latest.session_id AND f.path = latest.path AND f.created_at = latest.max_created_at
 ORDER BY f.path;
 
--- name: ListNewFiles :many
-SELECT *
-FROM files
-WHERE is_new = 1
-ORDER BY created_at DESC;
+-- name: ListFilesBySessionTree :many
+SELECT f.*
+FROM files f
+INNER JOIN sessions s ON f.session_id = s.id
+WHERE s.root_session_id = ?
+ORDER BY f.created_at ASC;
+
+-- name: ListLatestSessionTreeFiles :many
+SELECT f.*
+FROM files f
+INNER JOIN sessions s ON f.session_id = s.id
+INNER JOIN (
+    SELECT si.root_session_id, fi.path, MAX(fi.created_at) as max_created_at
+    FROM files fi
+    INNER JOIN sessions si ON fi.session_id = si.id
+    WHERE si.root_session_id = ?
+    GROUP BY si.root_session_id, fi.path
+) latest ON s.root_session_id = latest.root_session_id AND f.path = latest.path AND f.created_at = latest.max_created_at
+ORDER BY f.path;

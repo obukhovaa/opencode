@@ -187,15 +187,54 @@ func (q *Queries) ListFilesBySession(ctx context.Context, sessionID string) ([]F
 	return items, nil
 }
 
+const listFilesBySessionTree = `-- name: ListFilesBySessionTree :many
+SELECT f.id, f.session_id, f.path, f.version, f.content, f.created_at, f.updated_at
+FROM files f
+INNER JOIN sessions s ON f.session_id = s.id
+WHERE s.root_session_id = ?
+ORDER BY f.created_at ASC
+`
+
+func (q *Queries) ListFilesBySessionTree(ctx context.Context, rootSessionID sql.NullString) ([]File, error) {
+	rows, err := q.db.QueryContext(ctx, listFilesBySessionTree, rootSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []File{}
+	for rows.Next() {
+		var i File
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Path,
+			&i.Version,
+			&i.Content,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLatestSessionFiles = `-- name: ListLatestSessionFiles :many
 SELECT f.id, f.session_id, f.path, f.version, f.content, f.created_at, f.updated_at
 FROM files f
 INNER JOIN (
-    SELECT path, MAX(created_at) as max_created_at
+    SELECT session_id, path, MAX(created_at) as max_created_at
     FROM files
-    GROUP BY path
-) latest ON f.path = latest.path AND f.created_at = latest.max_created_at
-WHERE f.session_id = ?
+    WHERE files.session_id = ?
+    GROUP BY session_id, path
+) latest ON f.session_id = latest.session_id AND f.path = latest.path AND f.created_at = latest.max_created_at
 ORDER BY f.path
 `
 
@@ -230,15 +269,22 @@ func (q *Queries) ListLatestSessionFiles(ctx context.Context, sessionID string) 
 	return items, nil
 }
 
-const listNewFiles = `-- name: ListNewFiles :many
-SELECT id, session_id, path, version, content, created_at, updated_at
-FROM files
-WHERE is_new = 1
-ORDER BY created_at DESC
+const listLatestSessionTreeFiles = `-- name: ListLatestSessionTreeFiles :many
+SELECT f.id, f.session_id, f.path, f.version, f.content, f.created_at, f.updated_at
+FROM files f
+INNER JOIN sessions s ON f.session_id = s.id
+INNER JOIN (
+    SELECT si.root_session_id, fi.path, MAX(fi.created_at) as max_created_at
+    FROM files fi
+    INNER JOIN sessions si ON fi.session_id = si.id
+    WHERE si.root_session_id = ?
+    GROUP BY si.root_session_id, fi.path
+) latest ON s.root_session_id = latest.root_session_id AND f.path = latest.path AND f.created_at = latest.max_created_at
+ORDER BY f.path
 `
 
-func (q *Queries) ListNewFiles(ctx context.Context) ([]File, error) {
-	rows, err := q.db.QueryContext(ctx, listNewFiles)
+func (q *Queries) ListLatestSessionTreeFiles(ctx context.Context, rootSessionID sql.NullString) ([]File, error) {
+	rows, err := q.db.QueryContext(ctx, listLatestSessionTreeFiles, rootSessionID)
 	if err != nil {
 		return nil, err
 	}

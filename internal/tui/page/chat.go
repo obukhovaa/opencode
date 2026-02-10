@@ -142,7 +142,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (p *chatPage) setSidebar() tea.Cmd {
 	sidebarContainer := layout.NewContainer(
-		chat.NewSidebarCmp(p.session, p.app.History),
+		chat.NewSidebarCmp(p.session, p.app.Sessions, p.app.History),
 		layout.WithPadding(1, 1, 1, 1),
 	)
 	return tea.Batch(p.layout.SetRightPanel(sidebarContainer), sidebarContainer.Init())

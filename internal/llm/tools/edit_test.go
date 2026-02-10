@@ -56,6 +56,14 @@ func (s *stubHistoryService) ListLatestSessionFiles(context.Context, string) ([]
 	return nil, nil
 }
 
+func (s *stubHistoryService) ListBySessionTree(context.Context, string) ([]history.File, error) {
+	return nil, nil
+}
+
+func (s *stubHistoryService) ListLatestSessionTreeFiles(context.Context, string) ([]history.File, error) {
+	return nil, nil
+}
+
 func (s *stubHistoryService) Update(_ context.Context, f history.File) (history.File, error) {
 	return f, nil
 }

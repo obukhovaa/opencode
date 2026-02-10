@@ -41,4 +41,5 @@ type Session struct {
 	CreatedAt        int64          `json:"created_at"`
 	SummaryMessageID sql.NullString `json:"summary_message_id"`
 	ProjectID        sql.NullString `json:"project_id"`
+	RootSessionID    sql.NullString `json:"root_session_id"`
 }

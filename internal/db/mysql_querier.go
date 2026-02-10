@@ -9,15 +9,15 @@ import (
 
 // MySQLQuerier wraps the MySQL-generated queries and implements the Querier interface
 type MySQLQuerier struct {
-	*Queries // Embed to get WithTx and other methods
-	queries  *mysqldb.Queries
-	db       *sql.DB
+	*Queries
+	queries *mysqldb.Queries
+	db      *sql.DB
 }
 
 // NewMySQLQuerier creates a new MySQL querier wrapper
 func NewMySQLQuerier(database *sql.DB) *MySQLQuerier {
 	return &MySQLQuerier{
-		Queries: New(database), // Create embedded Queries for WithTx support
+		Queries: New(database),
 		queries: mysqldb.New(database),
 		db:      database,
 	}
@@ -29,6 +29,7 @@ func (q *MySQLQuerier) CreateSession(ctx context.Context, arg CreateSessionParam
 		ID:               arg.ID,
 		ProjectID:        arg.ProjectID,
 		ParentSessionID:  arg.ParentSessionID,
+		RootSessionID:    arg.RootSessionID,
 		Title:            arg.Title,
 		MessageCount:     arg.MessageCount,
 		PromptTokens:     arg.PromptTokens,
@@ -39,7 +40,6 @@ func (q *MySQLQuerier) CreateSession(ctx context.Context, arg CreateSessionParam
 		return Session{}, err
 	}
 
-	// Fetch the created session
 	mysqlSession, err := q.queries.GetSessionByID(ctx, arg.ID)
 	if err != nil {
 		return Session{}, err
@@ -48,6 +48,7 @@ func (q *MySQLQuerier) CreateSession(ctx context.Context, arg CreateSessionParam
 	return Session{
 		ID:               mysqlSession.ID,
 		ParentSessionID:  mysqlSession.ParentSessionID,
+		RootSessionID:    mysqlSession.RootSessionID,
 		Title:            mysqlSession.Title,
 		MessageCount:     mysqlSession.MessageCount,
 		PromptTokens:     mysqlSession.PromptTokens,
@@ -70,6 +71,7 @@ func (q *MySQLQuerier) GetSessionByID(ctx context.Context, id string) (Session, 
 	return Session{
 		ID:               mysqlSession.ID,
 		ParentSessionID:  mysqlSession.ParentSessionID,
+		RootSessionID:    mysqlSession.RootSessionID,
 		Title:            mysqlSession.Title,
 		MessageCount:     mysqlSession.MessageCount,
 		PromptTokens:     mysqlSession.PromptTokens,
@@ -94,6 +96,34 @@ func (q *MySQLQuerier) ListSessions(ctx context.Context, projectID sql.NullStrin
 		sessions[i] = Session{
 			ID:               s.ID,
 			ParentSessionID:  s.ParentSessionID,
+			RootSessionID:    s.RootSessionID,
+			Title:            s.Title,
+			MessageCount:     s.MessageCount,
+			PromptTokens:     s.PromptTokens,
+			CompletionTokens: s.CompletionTokens,
+			Cost:             s.Cost,
+			UpdatedAt:        s.UpdatedAt,
+			CreatedAt:        s.CreatedAt,
+			SummaryMessageID: s.SummaryMessageID,
+			ProjectID:        s.ProjectID,
+		}
+	}
+	return sessions, nil
+}
+
+// ListChildSessions lists child sessions by root session ID
+func (q *MySQLQuerier) ListChildSessions(ctx context.Context, rootSessionID sql.NullString) ([]Session, error) {
+	mysqlSessions, err := q.queries.ListChildSessions(ctx, rootSessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	sessions := make([]Session, len(mysqlSessions))
+	for i, s := range mysqlSessions {
+		sessions[i] = Session{
+			ID:               s.ID,
+			ParentSessionID:  s.ParentSessionID,
+			RootSessionID:    s.RootSessionID,
 			Title:            s.Title,
 			MessageCount:     s.MessageCount,
 			PromptTokens:     s.PromptTokens,
@@ -122,7 +152,6 @@ func (q *MySQLQuerier) UpdateSession(ctx context.Context, arg UpdateSessionParam
 		return Session{}, err
 	}
 
-	// Fetch the updated session
 	return q.GetSessionByID(ctx, arg.ID)
 }
 
@@ -144,7 +173,6 @@ func (q *MySQLQuerier) CreateMessage(ctx context.Context, arg CreateMessageParam
 		return Message{}, err
 	}
 
-	// Fetch the created message
 	mysqlMessage, err := q.queries.GetMessage(ctx, arg.ID)
 	if err != nil {
 		return Message{}, err
@@ -236,7 +264,6 @@ func (q *MySQLQuerier) CreateFile(ctx context.Context, arg CreateFileParams) (Fi
 		return File{}, err
 	}
 
-	// Fetch the created file
 	mysqlFile, err := q.queries.GetFile(ctx, arg.ID)
 	if err != nil {
 		return File{}, err
@@ -336,6 +363,28 @@ func (q *MySQLQuerier) ListFilesByPath(ctx context.Context, path string) ([]File
 	return files, nil
 }
 
+// ListFilesBySessionTree lists files by session tree
+func (q *MySQLQuerier) ListFilesBySessionTree(ctx context.Context, rootSessionID sql.NullString) ([]File, error) {
+	mysqlFiles, err := q.queries.ListFilesBySessionTree(ctx, rootSessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	files := make([]File, len(mysqlFiles))
+	for i, f := range mysqlFiles {
+		files[i] = File{
+			ID:        f.ID,
+			SessionID: f.SessionID,
+			Path:      f.Path,
+			Content:   f.Content,
+			Version:   f.Version,
+			CreatedAt: f.CreatedAt,
+			UpdatedAt: f.UpdatedAt,
+		}
+	}
+	return files, nil
+}
+
 // UpdateFile updates a file and returns it
 func (q *MySQLQuerier) UpdateFile(ctx context.Context, arg UpdateFileParams) (File, error) {
 	_, err := q.queries.UpdateFile(ctx, mysqldb.UpdateFileParams{
@@ -347,7 +396,6 @@ func (q *MySQLQuerier) UpdateFile(ctx context.Context, arg UpdateFileParams) (Fi
 		return File{}, err
 	}
 
-	// Fetch the updated file
 	return q.GetFile(ctx, arg.ID)
 }
 
@@ -383,9 +431,9 @@ func (q *MySQLQuerier) ListLatestSessionFiles(ctx context.Context, sessionID str
 	return files, nil
 }
 
-// ListNewFiles lists new files
-func (q *MySQLQuerier) ListNewFiles(ctx context.Context) ([]File, error) {
-	mysqlFiles, err := q.queries.ListNewFiles(ctx)
+// ListLatestSessionTreeFiles lists the latest files for a session tree
+func (q *MySQLQuerier) ListLatestSessionTreeFiles(ctx context.Context, rootSessionID sql.NullString) ([]File, error) {
+	mysqlFiles, err := q.queries.ListLatestSessionTreeFiles(ctx, rootSessionID)
 	if err != nil {
 		return nil, err
 	}

@@ -3,6 +3,7 @@ package history
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/opencode-ai/opencode/internal/db"
+	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 )
 
@@ -35,6 +37,8 @@ type Service interface {
 	GetByPathAndSession(ctx context.Context, path, sessionID string) (File, error)
 	ListBySession(ctx context.Context, sessionID string) ([]File, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)
+	ListBySessionTree(ctx context.Context, rootSessionID string) ([]File, error)
+	ListLatestSessionTreeFiles(ctx context.Context, rootSessionID string) ([]File, error)
 	Update(ctx context.Context, file File) (File, error)
 	Delete(ctx context.Context, id string) error
 	DeleteSessionFiles(ctx context.Context, sessionID string) error
@@ -59,35 +63,29 @@ func (s *service) Create(ctx context.Context, sessionID, path, content string) (
 }
 
 func (s *service) CreateVersion(ctx context.Context, sessionID, path, content string) (File, error) {
-	// Get the latest version for this path
 	files, err := s.q.ListFilesByPath(ctx, path)
 	if err != nil {
 		return File{}, err
 	}
 
 	if len(files) == 0 {
-		// No previous versions, create initial
 		return s.Create(ctx, sessionID, path, content)
 	}
 
-	// Get the latest version
-	latestFile := files[0] // Files are ordered by created_at DESC
+	latestFile := files[0]
 	latestVersion := latestFile.Version
 
-	// Generate the next version
 	var nextVersion string
 	if latestVersion == InitialVersion {
 		nextVersion = "v1"
 	} else if strings.HasPrefix(latestVersion, "v") {
 		versionNum, err := strconv.Atoi(latestVersion[1:])
 		if err != nil {
-			// If we can't parse the version, just use a timestamp-based version
 			nextVersion = fmt.Sprintf("v%d", latestFile.CreatedAt)
 		} else {
 			nextVersion = fmt.Sprintf("v%d", versionNum+1)
 		}
 	} else {
-		// If the version format is unexpected, use a timestamp-based version
 		nextVersion = fmt.Sprintf("v%d", latestFile.CreatedAt)
 	}
 
@@ -95,23 +93,18 @@ func (s *service) CreateVersion(ctx context.Context, sessionID, path, content st
 }
 
 func (s *service) createWithVersion(ctx context.Context, sessionID, path, content, version string) (File, error) {
-	// Maximum number of retries for transaction conflicts
 	const maxRetries = 3
 	var file File
 	var err error
 
-	// Retry loop for transaction conflicts
 	for attempt := range maxRetries {
-		// Start a transaction
 		tx, txErr := s.db.Begin()
 		if txErr != nil {
 			return File{}, fmt.Errorf("failed to begin transaction: %w", txErr)
 		}
 
-		// Create a new queries instance with the transaction
 		qtx := s.q.WithTx(tx)
 
-		// Try to create the file within the transaction
 		dbFile, txErr := qtx.CreateFile(ctx, db.CreateFileParams{
 			ID:        uuid.New().String(),
 			SessionID: sessionID,
@@ -120,13 +113,10 @@ func (s *service) createWithVersion(ctx context.Context, sessionID, path, conten
 			Version:   version,
 		})
 		if txErr != nil {
-			// Rollback the transaction
 			tx.Rollback()
 
-			// Check if this is a uniqueness constraint violation
 			if strings.Contains(txErr.Error(), "UNIQUE constraint failed") {
 				if attempt < maxRetries-1 {
-					// If we have retries left, generate a new version and try again
 					if strings.HasPrefix(version, "v") {
 						versionNum, parseErr := strconv.Atoi(version[1:])
 						if parseErr == nil {
@@ -134,7 +124,6 @@ func (s *service) createWithVersion(ctx context.Context, sessionID, path, conten
 							continue
 						}
 					}
-					// If we can't parse the version, use a timestamp-based version
 					version = fmt.Sprintf("v%d", time.Now().Unix())
 					continue
 				}
@@ -142,7 +131,6 @@ func (s *service) createWithVersion(ctx context.Context, sessionID, path, conten
 			return File{}, txErr
 		}
 
-		// Commit the transaction
 		if txErr = tx.Commit(); txErr != nil {
 			return File{}, fmt.Errorf("failed to commit transaction: %w", txErr)
 		}
@@ -169,8 +157,14 @@ func (s *service) GetByPathAndSession(ctx context.Context, path, sessionID strin
 		SessionID: sessionID,
 	})
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			logging.Debug("File not found in db", "path", path, "sessionID", sessionID)
+		} else {
+			logging.Error("Failed to select file from db", "path", path, "sessionID", sessionID, "cause", err.Error())
+		}
 		return File{}, err
 	}
+	logging.Debug("File selected from db", "path", path, "sessionID", sessionID, "fileID", dbFile.ID, "fileVersion", dbFile.Version)
 	return s.fromDBItem(dbFile), nil
 }
 
@@ -189,10 +183,40 @@ func (s *service) ListBySession(ctx context.Context, sessionID string) ([]File, 
 func (s *service) ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error) {
 	dbFiles, err := s.q.ListLatestSessionFiles(ctx, sessionID)
 	if err != nil {
+		logging.Error("Failed to select latest session files from db", "sessionID", sessionID, "cause", err.Error())
 		return nil, err
 	}
 	files := make([]File, len(dbFiles))
 	for i, dbFile := range dbFiles {
+		logging.Debug("File selected from db (latest version)", "path", dbFile.Path, "sessionID", sessionID, "fileID", dbFile.ID, "fileVersion", dbFile.Version)
+		files[i] = s.fromDBItem(dbFile)
+	}
+	return files, nil
+}
+
+func (s *service) ListBySessionTree(ctx context.Context, rootSessionID string) ([]File, error) {
+	dbFiles, err := s.q.ListFilesBySessionTree(ctx, sql.NullString{String: rootSessionID, Valid: true})
+	if err != nil {
+		logging.Error("Failed to select all root session files from db", "rootSessionID", rootSessionID, "cause", err.Error())
+		return nil, err
+	}
+	files := make([]File, len(dbFiles))
+	for i, dbFile := range dbFiles {
+		logging.Debug("File selected from db (all by root)", "path", dbFile.Path, "rootSessionID", rootSessionID, "fileID", dbFile.ID, "fileVersion", dbFile.Version)
+		files[i] = s.fromDBItem(dbFile)
+	}
+	return files, nil
+}
+
+func (s *service) ListLatestSessionTreeFiles(ctx context.Context, rootSessionID string) ([]File, error) {
+	dbFiles, err := s.q.ListLatestSessionTreeFiles(ctx, sql.NullString{String: rootSessionID, Valid: true})
+	if err != nil {
+		logging.Error("Failed to select root session latest version files from db", "rootSessionID", rootSessionID, "cause", err.Error())
+		return nil, err
+	}
+	files := make([]File, len(dbFiles))
+	for i, dbFile := range dbFiles {
+		logging.Debug("File selected from db (latest version by root)", "path", dbFile.Path, "rootSessionID", rootSessionID, "fileID", dbFile.ID, "fileVersion", dbFile.Version)
 		files[i] = s.fromDBItem(dbFile)
 	}
 	return files, nil
