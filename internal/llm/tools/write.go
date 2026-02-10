@@ -44,7 +44,7 @@ const (
 	writeDescription = `File writing tool that creates or updates files in the filesystem, allowing you to save or modify text content.
 
 WHEN TO USE THIS TOOL:
-- Use when you need to create a new file
+- Use when you need to create a new file or temporary file
 - Helpful for updating existing files with modified content
 - Perfect for saving generated code, configurations, or text data
 

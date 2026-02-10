@@ -136,6 +136,7 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 			app.Messages,
 			app.LSPClients,
 			app.Permissions,
+			app.History,
 			reg,
 		),
 	)

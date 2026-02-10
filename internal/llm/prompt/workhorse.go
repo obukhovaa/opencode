@@ -43,7 +43,7 @@ If the current working directory contains a file called AGENTS.md or CLAUDE.md, 
 - Use View Image when you know the specific image file path you need to view
 - Use Fetch when you have a web link to lookup, fallback to curl in bash only if Fetch failed
 - Use Delete to remove files and directories, do not use rm or rm -rf in bash for file deletion
-- Use Write to create new files and overwriting existing, do not use cat or touch in bash
+- Use Write to create new files and overwriting existing, do not use cat, touch or redirect operators in bash
 - Use Edit to performs exact string replacements in files, prioritise it over sed in bash
 - Use Patch to make coordinated changes across multiple files at once
 - Use Bash in any other case when listed tools is not enough to complete your task`

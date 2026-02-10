@@ -634,11 +634,7 @@ func renderToolMessage(
 	if toolCall.Name == agent.AgentToolName {
 		var taskParams agent.TaskParams
 		json.Unmarshal([]byte(toolCall.Input), &taskParams)
-		agentType := taskParams.SubagentType
-		if agentType == "" {
-			agentType = "explorer"
-		}
-		badge := subagentBadge(agentType, taskParams.TaskID != "")
+		badge := subagentBadge(taskParams.SubagentType, taskParams.TaskID != "")
 		toolNameText = badge + " "
 	}
 

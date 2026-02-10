@@ -35,7 +35,7 @@ var writeTools = []string{"write", "edit", "bash", "patch", "multiedit", "delete
 
 type TaskParams struct {
 	Prompt       string `json:"prompt"`
-	SubagentType string `json:"subagent_type,omitempty"`
+	SubagentType string `json:"subagent_type"`
 	TaskID       string `json:"task_id,omitempty"`
 }
 
@@ -89,14 +89,14 @@ func (b *agentTool) Info() tools.ToolInfo {
 			},
 			"subagent_type": map[string]any{
 				"type":        "string",
-				"description": "The type of subagent to use (e.g., 'explorer', 'workhorse'). Defaults to 'explorer' if not specified.",
+				"description": "The type of subagent to use (e.g., 'explorer', 'workhorse')",
 			},
 			"task_id": map[string]any{
 				"type":        "string",
 				"description": "Optional. Provide a task_id from a previous invocation to resume that subagent session with its prior context.",
 			},
 		},
-		Required: []string{"prompt"},
+		Required: []string{"prompt", "subagent_type"},
 	}
 }
 
@@ -108,18 +108,17 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 	if params.Prompt == "" {
 		return tools.NewTextErrorResponse("prompt is required"), nil
 	}
+	if params.SubagentType == "" {
+		return tools.NewTextErrorResponse("subagent_type is required"), nil
+	}
 
 	sessionID, messageID := tools.GetContextValues(ctx)
 	if sessionID == "" || messageID == "" {
 		return tools.ToolResponse{}, fmt.Errorf("session_id and message_id are required")
 	}
 
-	subagentType := config.AgentExplorer
-	if params.SubagentType != "" {
-		subagentType = params.SubagentType
-	}
-
 	// Validate the subagent exists in the registry
+	subagentType := params.SubagentType
 	subagentInfo, ok := b.registry.Get(subagentType)
 	if !ok || subagentInfo.Mode != config.AgentModeSubagent {
 		available := b.registry.ListByMode(config.AgentModeSubagent)
