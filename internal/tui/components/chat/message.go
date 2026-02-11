@@ -221,7 +221,7 @@ func findToolResponse(toolCallID string, futureMessages []message.Message) *mess
 
 func toolName(name string) string {
 	switch name {
-	case agent.AgentToolName:
+	case agent.TaskToolName:
 		return "Task"
 	case tools.BashToolName:
 		return "Bash"
@@ -255,7 +255,7 @@ func toolName(name string) string {
 
 func getToolAction(name string) string {
 	switch name {
-	case agent.AgentToolName:
+	case agent.TaskToolName:
 		return "Preparing prompt..."
 	case tools.BashToolName:
 		return "Building command..."
@@ -350,7 +350,7 @@ func removeWorkingDirPrefix(path string) string {
 func renderToolParams(paramWidth int, toolCall message.ToolCall) string {
 	params := ""
 	switch toolCall.Name {
-	case agent.AgentToolName:
+	case agent.TaskToolName:
 		var params agent.TaskParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
 		prompt := strings.ReplaceAll(params.Prompt, "\n", " ")
@@ -503,9 +503,9 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 
 	resultContent := truncateHeight(response.Content, maxResultHeight)
 	switch toolCall.Name {
-	case agent.AgentToolName:
+	case agent.TaskToolName:
 		return styles.ForceReplaceBackgroundWithLipgloss(
-			toMarkdown(resultContent, false, width),
+			toMarkdown(response.Content, false, width),
 			t.Background(),
 		)
 	case tools.BashToolName:
@@ -631,7 +631,7 @@ func renderToolMessage(
 		Render(fmt.Sprintf("%s: ", toolName(toolCall.Name)))
 
 	// Show subagent badge for task tool calls
-	if toolCall.Name == agent.AgentToolName {
+	if toolCall.Name == agent.TaskToolName {
 		var taskParams agent.TaskParams
 		json.Unmarshal([]byte(toolCall.Input), &taskParams)
 		badge := subagentBadge(taskParams.SubagentType, taskParams.TaskID != "")
@@ -695,7 +695,7 @@ func renderToolMessage(
 		parts = append(parts, lipgloss.JoinHorizontal(lipgloss.Left, prefix, toolNameText, formattedParams))
 	}
 
-	if toolCall.Name == agent.AgentToolName {
+	if toolCall.Name == agent.TaskToolName {
 		taskMessages, _ := messagesService.List(context.Background(), toolCall.ID)
 		toolCalls := []message.ToolCall{}
 		for _, v := range taskMessages {

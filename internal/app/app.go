@@ -97,55 +97,37 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 	// Initialize LSP clients in the background
 	go app.initLSPClients(ctx)
 
-	var err error
-	agentInfo, ok := reg.Get(config.AgentCoder)
-	if !ok {
-		return nil, errors.New("failed to load coder agent from registry")
+	// Create all primary agents from registry
+	primaryAgents := reg.ListByMode(config.AgentModeAgent)
+	if len(primaryAgents) == 0 {
+		return nil, errors.New("no primary agents found in registry")
 	}
-	app.activeAgent, err = agent.NewAgent(
-		&agentInfo,
-		app.Sessions,
-		app.Messages,
-		agent.CoderAgentTools(
-			app.Permissions,
-			app.Sessions,
-			app.Messages,
-			app.History,
-			app.LSPClients,
-			reg,
-		),
-	)
-	if err != nil {
-		logging.Error("Failed to create coder agent", err)
-		return nil, err
-	}
-	app.PrimaryAgents[config.AgentCoder] = app.activeAgent
-	app.PrimaryAgentKeys = append(app.PrimaryAgentKeys, config.AgentCoder)
 
-	// Try to create hivemind agent
-	agentInfo, ok = reg.Get(config.AgentHivemind)
-	if !ok {
-		return nil, errors.New("failed to load hivemind agent from registry")
-	}
-	hivemindAgent, err := agent.NewAgent(
-		&agentInfo,
-		app.Sessions,
-		app.Messages,
-		agent.HivemindAgentTools(
+	for _, agentInfo := range primaryAgents {
+		agentInfoCopy := agentInfo
+		primaryAgent, err := agent.NewAgent(
+			&agentInfoCopy,
 			app.Sessions,
 			app.Messages,
-			app.LSPClients,
 			app.Permissions,
 			app.History,
-			reg,
-		),
-	)
-	if err != nil {
-		logging.Error("Failed to create hivemind agent, skipping", "error", err)
-		return nil, err
+			app.LSPClients,
+			app.Registry,
+		)
+		if err != nil {
+			logging.Error("Failed to create agent", "agent", agentInfo.ID, "error", err)
+			continue
+		}
+		app.PrimaryAgents[agentInfo.ID] = primaryAgent
+		app.PrimaryAgentKeys = append(app.PrimaryAgentKeys, agentInfo.ID)
+		if app.activeAgent == nil {
+			app.activeAgent = primaryAgent
+		}
 	}
-	app.PrimaryAgents[config.AgentHivemind] = hivemindAgent
-	app.PrimaryAgentKeys = append(app.PrimaryAgentKeys, config.AgentHivemind)
+
+	if app.activeAgent == nil {
+		return nil, errors.New("failed to create any primary agents")
+	}
 
 	return app, nil
 }

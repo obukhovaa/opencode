@@ -126,6 +126,51 @@ func TestRegistryBuiltins(t *testing.T) {
 			t.Errorf("builtin agent %q should be native", id)
 		}
 	}
+
+	// Verify tool restrictions on specific agents
+	hivemind := agents[config.AgentHivemind]
+	if hivemind.Tools == nil {
+		t.Error("hivemind should have Tools restrictions")
+	} else {
+		for _, tool := range []string{"bash", "edit", "multiedit", "write", "delete", "patch", "lsp"} {
+			if enabled, exists := hivemind.Tools[tool]; !exists || enabled {
+				t.Errorf("hivemind Tools[%q] should be false", tool)
+			}
+		}
+	}
+
+	explorer := agents[config.AgentExplorer]
+	if explorer.Tools == nil {
+		t.Error("explorer should have Tools restrictions")
+	} else {
+		for _, tool := range []string{"bash", "edit", "multiedit", "write", "delete", "patch", "lsp"} {
+			if enabled, exists := explorer.Tools[tool]; !exists || enabled {
+				t.Errorf("explorer Tools[%q] should be false", tool)
+			}
+		}
+	}
+
+	summarizer := agents[config.AgentSummarizer]
+	if summarizer.Tools == nil {
+		t.Error("summarizer should have Tools restrictions")
+	} else if enabled, exists := summarizer.Tools["*"]; !exists || enabled {
+		t.Error("summarizer Tools[*] should be false")
+	}
+
+	descriptor := agents[config.AgentDescriptor]
+	if descriptor.Tools == nil {
+		t.Error("descriptor should have Tools restrictions")
+	} else if enabled, exists := descriptor.Tools["*"]; !exists || enabled {
+		t.Error("descriptor Tools[*] should be false")
+	}
+
+	// Coder and workhorse should have nil Tools (all enabled)
+	if agents[config.AgentCoder].Tools != nil {
+		t.Error("coder should have nil Tools (all enabled)")
+	}
+	if agents[config.AgentWorkhorse].Tools != nil {
+		t.Error("workhorse should have nil Tools (all enabled)")
+	}
 }
 
 func TestRegistryEvaluatePermission(t *testing.T) {

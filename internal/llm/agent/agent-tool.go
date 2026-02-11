@@ -27,11 +27,7 @@ type agentTool struct {
 
 const (
 	TaskToolName = "task"
-	// Deprecated: use TaskToolName instead
-	AgentToolName = TaskToolName
 )
-
-var writeTools = []string{"write", "edit", "bash", "patch", "multiedit", "delete"}
 
 type TaskParams struct {
 	Prompt       string `json:"prompt"`
@@ -120,8 +116,7 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		return tools.NewTextErrorResponse(fmt.Sprintf("unknown subagent type %q. Available: %s", subagentType, strings.Join(names, ", "))), nil
 	}
 
-	agentTools := b.resolveToolsForSubagent(&subagentInfo)
-	a, err := NewAgent(&subagentInfo, b.sessions, b.messages, agentTools)
+	a, err := NewAgent(&subagentInfo, b.sessions, b.messages, b.permissions, b.history, b.lspClients, b.registry)
 	if err != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error creating agent: %s", err)
 	}
@@ -190,24 +185,6 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 	}
 
 	return tools.WithResponseMetadata(tools.NewTextResponse(response.Content().String()), metadata), nil
-}
-
-func (b *agentTool) resolveToolsForSubagent(info *agentregistry.AgentInfo) []tools.BaseTool {
-	switch info.ID {
-	case config.AgentWorkhorse:
-		return WorkhorseAgentTools(b.lspClients, b.permissions, b.sessions, b.messages, b.history, b.registry)
-	case config.AgentExplorer:
-		return ExplorerAgentTools(b.lspClients, b.permissions, b.registry)
-	default:
-		if info.Tools != nil {
-			for _, tool := range writeTools {
-				if enabled, exists := info.Tools[tool]; exists && !enabled {
-					return ExplorerAgentTools(b.lspClients, b.permissions, b.registry)
-				}
-			}
-		}
-		return WorkhorseAgentTools(b.lspClients, b.permissions, b.sessions, b.messages, b.history, b.registry)
-	}
 }
 
 func NewAgentTool(

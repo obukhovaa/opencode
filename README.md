@@ -360,6 +360,7 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | `multiedit` | Multiple edits in one file |
 | `patch` | Apply patches to files |
 | `lsp` | Code intelligence (go-to-definition, references, hover, etc.) |
+| `delete` | Delete file or directory |
 
 ### System & Search
 

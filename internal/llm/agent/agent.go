@@ -11,11 +11,13 @@ import (
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/prompt"
 	"github.com/opencode-ai/opencode/internal/llm/provider"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/pubsub"
@@ -85,8 +87,13 @@ func NewAgent(
 	agentInfo *agentregistry.AgentInfo,
 	sessions session.Service,
 	messages message.Service,
-	agentTools []tools.BaseTool,
+	permissions permission.Service,
+	historyService history.Service,
+	lspClients map[string]*lsp.Client,
+	reg agentregistry.Registry,
 ) (Service, error) {
+	agentTools := NewToolSet(agentInfo, reg, permissions, historyService, lspClients, sessions, messages)
+
 	agentProvider, err := createAgentProvider(agentInfo.ID)
 	if err != nil {
 		return nil, err
