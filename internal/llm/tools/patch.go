@@ -195,79 +195,75 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 		if fileAction == permission.ActionDeny {
 			return NewEmptyResponse(), permission.ErrorPermissionDenied
 		}
-		needsInteractive := fileAction != permission.ActionAllow
+		if fileAction == permission.ActionAllow {
+			continue
+		}
 
 		switch change.Type {
 		case diff.ActionAdd:
-			if needsInteractive {
-				dir := filepath.Dir(path)
-				patchDiff, _, _ := diff.GenerateDiff("", *change.NewContent, path)
-				p := p.permissions.Request(
-					permission.CreatePermissionRequest{
-						SessionID:   sessionID,
-						Path:        dir,
-						ToolName:    PatchToolName,
-						Action:      "create",
-						Description: fmt.Sprintf("Create file %s", path),
-						Params: EditPermissionsParams{
-							FilePath: path,
-							Diff:     patchDiff,
-						},
+			dir := filepath.Dir(path)
+			patchDiff, _, _ := diff.GenerateDiff("", *change.NewContent, path)
+			p := p.permissions.Request(
+				permission.CreatePermissionRequest{
+					SessionID:   sessionID,
+					Path:        dir,
+					ToolName:    PatchToolName,
+					Action:      "create",
+					Description: fmt.Sprintf("Create file %s", path),
+					Params: EditPermissionsParams{
+						FilePath: path,
+						Diff:     patchDiff,
 					},
-				)
-				if !p {
-					return NewEmptyResponse(), permission.ErrorPermissionDenied
-				}
+				},
+			)
+			if !p {
+				return NewEmptyResponse(), permission.ErrorPermissionDenied
 			}
 		case diff.ActionUpdate:
-			if needsInteractive {
-				currentContent := ""
-				if change.OldContent != nil {
-					currentContent = *change.OldContent
-				}
-				newContent := ""
-				if change.NewContent != nil {
-					newContent = *change.NewContent
-				}
-				patchDiff, _, _ := diff.GenerateDiff(currentContent, newContent, path)
-				dir := filepath.Dir(path)
-				p := p.permissions.Request(
-					permission.CreatePermissionRequest{
-						SessionID:   sessionID,
-						Path:        dir,
-						ToolName:    PatchToolName,
-						Action:      "update",
-						Description: fmt.Sprintf("Update file %s", path),
-						Params: EditPermissionsParams{
-							FilePath: path,
-							Diff:     patchDiff,
-						},
+			currentContent := ""
+			if change.OldContent != nil {
+				currentContent = *change.OldContent
+			}
+			newContent := ""
+			if change.NewContent != nil {
+				newContent = *change.NewContent
+			}
+			patchDiff, _, _ := diff.GenerateDiff(currentContent, newContent, path)
+			dir := filepath.Dir(path)
+			p := p.permissions.Request(
+				permission.CreatePermissionRequest{
+					SessionID:   sessionID,
+					Path:        dir,
+					ToolName:    PatchToolName,
+					Action:      "update",
+					Description: fmt.Sprintf("Update file %s", path),
+					Params: EditPermissionsParams{
+						FilePath: path,
+						Diff:     patchDiff,
 					},
-				)
-				if !p {
-					return NewEmptyResponse(), permission.ErrorPermissionDenied
-				}
+				},
+			)
+			if !p {
+				return NewEmptyResponse(), permission.ErrorPermissionDenied
 			}
 		case diff.ActionDelete:
-			if needsInteractive {
-				dir := filepath.Dir(path)
-				patchDiff, _, _ := diff.GenerateDiff(*change.OldContent, "", path)
-				p := p.permissions.Request(
-					permission.CreatePermissionRequest{
-						SessionID:   sessionID,
-						Path:        dir,
-						ToolName:    PatchToolName,
-						Action:      "delete",
-						Description: fmt.Sprintf("Delete file %s", path),
-						Params: EditPermissionsParams{
-							FilePath: path,
-							Diff:     patchDiff,
-						},
+			dir := filepath.Dir(path)
+			patchDiff, _, _ := diff.GenerateDiff(*change.OldContent, "", path)
+			p := p.permissions.Request(
+				permission.CreatePermissionRequest{
+					SessionID:   sessionID,
+					Path:        dir,
+					ToolName:    PatchToolName,
+					Action:      "delete",
+					Description: fmt.Sprintf("Delete file %s", path),
+					Params: EditPermissionsParams{
+						FilePath: path,
+						Diff:     patchDiff,
 					},
-				)
-				if !p {
-					return NewEmptyResponse(), permission.ErrorPermissionDenied
-				}
+				},
+			)
+			if !p {
+				return NewEmptyResponse(), permission.ErrorPermissionDenied
 			}
 		}
 	}

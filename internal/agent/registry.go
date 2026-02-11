@@ -37,6 +37,7 @@ type Registry interface {
 	Get(id string) (AgentInfo, bool)
 	List() []AgentInfo
 	ListByMode(mode config.AgentMode) []AgentInfo
+	// Resolves agent specific permission action for a given tool
 	EvaluatePermission(agentID, toolName, input string) permission.Action
 	IsToolEnabled(agentID, toolName string) bool
 	GlobalPermissions() map[string]any

@@ -10,13 +10,6 @@ const (
 	ActionAsk   Action = "ask"
 )
 
-type Rule struct {
-	Pattern string
-	Action  Action
-}
-
-type Ruleset = []Rule
-
 func EvaluateToolPermission(toolName, input string, agentPerms, globalPerms map[string]any) Action {
 	if agentPerms != nil {
 		if v, ok := agentPerms[toolName]; ok {

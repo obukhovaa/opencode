@@ -23,7 +23,7 @@ func CoderAgentTools(
 ) []tools.BaseTool {
 	ctx := context.Background()
 	// TODO: allow to disable mcp per agent and then load them for other agents too
-	otherTools := GetMcpTools(ctx, permissions)
+	otherTools := GetMcpTools(ctx, permissions, reg)
 	if len(lspClients) > 0 {
 		otherTools = append(otherTools, tools.NewLspTool(lspClients))
 	}

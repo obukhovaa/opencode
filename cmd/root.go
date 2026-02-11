@@ -222,12 +222,10 @@ func initMCPTools(ctx context.Context, app *app.App) {
 	go func() {
 		defer logging.RecoverPanic("MCP-goroutine", nil)
 
-		// Create a context with timeout for the initial MCP tools fetch
 		ctxWithTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 
-		// Set this up once with proper error handling
-		agent.GetMcpTools(ctxWithTimeout, app.Permissions)
+		agent.GetMcpTools(ctxWithTimeout, app.Permissions, app.Registry)
 		logging.Info("MCP message handling goroutine exiting")
 	}()
 }

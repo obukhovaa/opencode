@@ -194,6 +194,7 @@ Example `.opencode/agents/reviewer.md`:
 name: Code Reviewer
 description: Reviews code for quality and best practices
 mode: subagent
+model: vertexai.claude-opus-4-6
 color: info
 tools:
   bash: false
@@ -204,8 +205,6 @@ You are a code review specialist...
 ```
 
 The file basename (without `.md`) becomes the agent ID. Custom agents default to `subagent` mode.
-
-> **Note:** `task` and `title` are deprecated aliases for `explorer` and `descriptor`.
 
 
 ### Auto Compact

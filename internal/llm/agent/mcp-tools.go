@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -22,6 +23,7 @@ type mcpTool struct {
 	tool        mcp.Tool
 	mcpConfig   config.MCPServer
 	permissions permission.Service
+	reg         agentregistry.Registry
 }
 
 type MCPClient interface {
@@ -90,19 +92,27 @@ func (b *mcpTool) Run(ctx context.Context, params tools.ToolCall) (tools.ToolRes
 	if sessionID == "" || messageID == "" {
 		return tools.ToolResponse{}, fmt.Errorf("session ID and message ID are required for creating a new file")
 	}
-	permissionDescription := fmt.Sprintf("execute %s with the following parameters: %s", b.Info().Name, params.Input)
-	p := b.permissions.Request(
-		permission.CreatePermissionRequest{
-			SessionID:   sessionID,
-			Path:        config.WorkingDirectory(),
-			ToolName:    b.Info().Name,
-			Action:      "execute",
-			Description: permissionDescription,
-			Params:      params.Input,
-		},
-	)
-	if !p {
-		return tools.NewTextErrorResponse("permission denied"), nil
+
+	action := b.reg.EvaluatePermission(string(tools.GetAgentName(ctx)), b.Info().Name, params.Input)
+	switch action {
+	case permission.ActionAllow:
+	case permission.ActionDeny:
+		return tools.NewEmptyResponse(), permission.ErrorPermissionDenied
+	default:
+		permissionDescription := fmt.Sprintf("execute %s with the following parameters: %s", b.Info().Name, params.Input)
+		p := b.permissions.Request(
+			permission.CreatePermissionRequest{
+				SessionID:   sessionID,
+				Path:        config.WorkingDirectory(),
+				ToolName:    b.Info().Name,
+				Action:      "execute",
+				Description: permissionDescription,
+				Params:      params.Input,
+			},
+		)
+		if !p {
+			return tools.NewEmptyResponse(), permission.ErrorPermissionDenied
+		}
 	}
 
 	switch b.mcpConfig.Type {
@@ -142,12 +152,19 @@ func (b *mcpTool) Run(ctx context.Context, params tools.ToolCall) (tools.ToolRes
 	return tools.NewTextErrorResponse("invalid mcp type"), nil
 }
 
-func NewMcpTool(name string, tool mcp.Tool, permissions permission.Service, mcpConfig config.MCPServer) tools.BaseTool {
+func NewMcpTool(
+	name string,
+	tool mcp.Tool,
+	permissions permission.Service,
+	mcpConfig config.MCPServer,
+	reg agentregistry.Registry,
+) tools.BaseTool {
 	return &mcpTool{
 		mcpName:     name,
 		tool:        tool,
 		mcpConfig:   mcpConfig,
 		permissions: permissions,
+		reg:         reg,
 	}
 }
 
@@ -156,7 +173,7 @@ var (
 	mcpTools     []tools.BaseTool
 )
 
-func getTools(ctx context.Context, name string, m config.MCPServer, permissions permission.Service, c MCPClient) []tools.BaseTool {
+func getTools(ctx context.Context, name string, m config.MCPServer, permissions permission.Service, c MCPClient, reg agentregistry.Registry) []tools.BaseTool {
 	var toolsToAdd []tools.BaseTool
 	initRequest := mcp.InitializeRequest{}
 	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
@@ -177,13 +194,13 @@ func getTools(ctx context.Context, name string, m config.MCPServer, permissions 
 		return toolsToAdd
 	}
 	for _, t := range tools.Tools {
-		toolsToAdd = append(toolsToAdd, NewMcpTool(name, t, permissions, m))
+		toolsToAdd = append(toolsToAdd, NewMcpTool(name, t, permissions, m, reg))
 	}
 	defer c.Close()
 	return toolsToAdd
 }
 
-func GetMcpTools(ctx context.Context, permissions permission.Service) []tools.BaseTool {
+func GetMcpTools(ctx context.Context, permissions permission.Service, reg agentregistry.Registry) []tools.BaseTool {
 	mcpToolsOnce.Do(func() {
 		for name, m := range config.Get().MCPServers {
 			switch m.Type {
@@ -198,7 +215,7 @@ func GetMcpTools(ctx context.Context, permissions permission.Service) []tools.Ba
 					continue
 				}
 
-				mcpTools = append(mcpTools, getTools(ctx, name, m, permissions, c)...)
+				mcpTools = append(mcpTools, getTools(ctx, name, m, permissions, c, reg)...)
 			case config.MCPSse:
 				c, err := client.NewSSEMCPClient(
 					m.URL,
@@ -212,7 +229,7 @@ func GetMcpTools(ctx context.Context, permissions permission.Service) []tools.Ba
 					logging.Error("error starting SSE transport", "error", err)
 					continue
 				}
-				mcpTools = append(mcpTools, getTools(ctx, name, m, permissions, c)...)
+				mcpTools = append(mcpTools, getTools(ctx, name, m, permissions, c, reg)...)
 			case config.MCPHttp:
 				c, err := client.NewStreamableHttpClient(
 					m.URL,
@@ -222,7 +239,7 @@ func GetMcpTools(ctx context.Context, permissions permission.Service) []tools.Ba
 					logging.Error("error creating mcp client", "error", err)
 					continue
 				}
-				mcpTools = append(mcpTools, getTools(ctx, name, m, permissions, c)...)
+				mcpTools = append(mcpTools, getTools(ctx, name, m, permissions, c, reg)...)
 			}
 		}
 	})

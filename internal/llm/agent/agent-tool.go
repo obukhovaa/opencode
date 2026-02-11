@@ -146,6 +146,7 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		}
 	}
 
+	// TODO: apparently there's no parallelism happening when agent wants to run multiple subagents at once
 	done, err := a.Run(ctx, taskSession.ID, params.Prompt)
 	if err != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error generating agent: %s", err)
