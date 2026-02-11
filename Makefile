@@ -33,6 +33,7 @@ init-hooks:
 
 generate:
 	@mkdir -p $(TMP_DIR) $(TMP_DIR)/mysql_data
+	go generate ./...
 
 # Build targets
 build: generate

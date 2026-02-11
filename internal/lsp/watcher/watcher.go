@@ -753,6 +753,7 @@ var (
 		".vscode":      true,
 		".cache":       true,
 		"coverage":     true,
+		".gradle":      true, // JVM build system
 		"target":       true, // Rust build output
 		"vendor":       true, // Go vendor directory
 	}

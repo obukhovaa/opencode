@@ -3,7 +3,6 @@ package permission
 import (
 	"errors"
 	"path/filepath"
-	"slices"
 	"sync"
 
 	"github.com/google/uuid"
@@ -39,6 +38,7 @@ type Service interface {
 	Deny(permission PermissionRequest)
 	Request(opts CreatePermissionRequest) bool
 	AutoApproveSession(sessionID string)
+	IsAutoApproveSession(sessionID string) bool
 }
 
 type permissionService struct {
@@ -46,7 +46,7 @@ type permissionService struct {
 
 	sessionPermissions  []PermissionRequest
 	pendingRequests     sync.Map
-	autoApproveSessions []string
+	autoApproveSessions sync.Map
 }
 
 func (s *permissionService) GrantPersistant(permission PermissionRequest) {
@@ -72,7 +72,7 @@ func (s *permissionService) Deny(permission PermissionRequest) {
 }
 
 func (s *permissionService) Request(opts CreatePermissionRequest) bool {
-	if slices.Contains(s.autoApproveSessions, opts.SessionID) {
+	if s.IsAutoApproveSession(opts.SessionID) {
 		return true
 	}
 	dir := filepath.Dir(opts.Path)
@@ -108,7 +108,12 @@ func (s *permissionService) Request(opts CreatePermissionRequest) bool {
 }
 
 func (s *permissionService) AutoApproveSession(sessionID string) {
-	s.autoApproveSessions = append(s.autoApproveSessions, sessionID)
+	s.autoApproveSessions.Store(sessionID, true)
+}
+
+func (s *permissionService) IsAutoApproveSession(sessionID string) bool {
+	_, ok := s.autoApproveSessions.Load(sessionID)
+	return ok
 }
 
 func NewPermissionService() Service {

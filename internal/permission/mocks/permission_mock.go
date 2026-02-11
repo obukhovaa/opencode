@@ -90,6 +90,20 @@ func (mr *MockServiceMockRecorder) GrantPersistant(arg0 any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GrantPersistant", reflect.TypeOf((*MockService)(nil).GrantPersistant), arg0)
 }
 
+// IsAutoApproveSession mocks base method.
+func (m *MockService) IsAutoApproveSession(sessionID string) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IsAutoApproveSession", sessionID)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// IsAutoApproveSession indicates an expected call of IsAutoApproveSession.
+func (mr *MockServiceMockRecorder) IsAutoApproveSession(sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsAutoApproveSession", reflect.TypeOf((*MockService)(nil).IsAutoApproveSession), sessionID)
+}
+
 // Request mocks base method.
 func (m *MockService) Request(opts permission.CreatePermissionRequest) bool {
 	m.ctrl.T.Helper()
