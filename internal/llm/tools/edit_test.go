@@ -8,8 +8,10 @@ import (
 	"path/filepath"
 	"testing"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/history"
+	"github.com/opencode-ai/opencode/internal/permission"
 	mock_permission "github.com/opencode-ai/opencode/internal/permission/mocks"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/stretchr/testify/assert"
@@ -20,6 +22,32 @@ import (
 func init() {
 	wd, _ := os.Getwd()
 	config.Load(wd, false)
+}
+
+type stubRegistry struct{}
+
+func (s *stubRegistry) Get(id string) (agentregistry.AgentInfo, bool) {
+	return agentregistry.AgentInfo{}, false
+}
+
+func (s *stubRegistry) List() []agentregistry.AgentInfo {
+	return nil
+}
+
+func (s *stubRegistry) ListByMode(mode config.AgentMode) []agentregistry.AgentInfo {
+	return nil
+}
+
+func (s *stubRegistry) EvaluatePermission(agentID, toolName, input string) permission.Action {
+	return permission.ActionAllow
+}
+
+func (s *stubRegistry) IsToolEnabled(agentID, toolName string) bool {
+	return true
+}
+
+func (s *stubRegistry) GlobalPermissions() map[string]any {
+	return nil
 }
 
 type stubHistoryService struct {
@@ -80,7 +108,7 @@ func setupEditTest(t *testing.T) (context.Context, string, BaseTool) {
 	mockPerms.EXPECT().Request(gomock.Any()).Return(true).AnyTimes()
 
 	files := &stubHistoryService{}
-	tool := NewEditTool(nil, mockPerms, files)
+	tool := NewEditTool(nil, mockPerms, files, &stubRegistry{})
 
 	tmpFile, err := os.CreateTemp("", "edit_test_*.txt")
 	require.NoError(t, err)
@@ -117,7 +145,7 @@ func TestEditTool_Info(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockPerms := mock_permission.NewMockService(ctrl)
-	tool := NewEditTool(nil, mockPerms, &stubHistoryService{})
+	tool := NewEditTool(nil, mockPerms, &stubHistoryService{}, &stubRegistry{})
 	info := tool.Info()
 
 	assert.Equal(t, EditToolName, info.Name)
@@ -229,7 +257,7 @@ func setupMultiEditTest(t *testing.T) (context.Context, string, BaseTool) {
 	mockPerms.EXPECT().Request(gomock.Any()).Return(true).AnyTimes()
 
 	files := &stubHistoryService{}
-	tool := NewMultiEditTool(nil, mockPerms, files)
+	tool := NewMultiEditTool(nil, mockPerms, files, &stubRegistry{})
 
 	tmpFile, err := os.CreateTemp("", "multiedit_test_*.txt")
 	require.NoError(t, err)
@@ -260,7 +288,7 @@ func TestMultiEditTool_Info(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockPerms := mock_permission.NewMockService(ctrl)
-	tool := NewMultiEditTool(nil, mockPerms, &stubHistoryService{})
+	tool := NewMultiEditTool(nil, mockPerms, &stubHistoryService{}, &stubRegistry{})
 	info := tool.Info()
 
 	assert.Equal(t, MultiEditToolName, info.Name)

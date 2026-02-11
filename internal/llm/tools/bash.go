@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/tools/shell"
 	"github.com/opencode-ai/opencode/internal/permission"
@@ -34,6 +35,7 @@ type BashResponseMetadata struct {
 }
 type bashTool struct {
 	permissions permission.Service
+	registry    agentregistry.Registry
 }
 
 const (
@@ -178,9 +180,10 @@ Important:
 # Other common operations
 - View comments on a Github PR: gh api repos/foo/bar/pulls/123/comments`
 
-func NewBashTool(permission permission.Service) BaseTool {
+func NewBashTool(permission permission.Service, reg agentregistry.Registry) BaseTool {
 	return &bashTool{
 		permissions: permission,
+		registry:    reg,
 	}
 }
 
@@ -249,7 +252,7 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 	}
 	if !isSafeReadOnly {
 		// Evaluate config-based permissions before interactive ask
-		action := evaluateToolPermission(ctx, BashToolName, params.Command)
+		action := b.registry.EvaluatePermission(string(GetAgentName(ctx)), BashToolName, params.Command)
 		switch action {
 		case permission.ActionAllow:
 			// Allowed by config, skip interactive permission

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/diff"
 	"github.com/opencode-ai/opencode/internal/history"
@@ -39,6 +40,7 @@ type editTool struct {
 	lspClients  map[string]*lsp.Client
 	permissions permission.Service
 	files       history.Service
+	registry    agentregistry.Registry
 }
 
 const (
@@ -75,11 +77,12 @@ When making edits:
 When making multiple edits to the same file, prefer the MultiEdit tool over multiple calls to this tool.`
 )
 
-func NewEditTool(lspClients map[string]*lsp.Client, permissions permission.Service, files history.Service) BaseTool {
+func NewEditTool(lspClients map[string]*lsp.Client, permissions permission.Service, files history.Service, reg agentregistry.Registry) BaseTool {
 	return &editTool{
 		lspClients:  lspClients,
 		permissions: permissions,
 		files:       files,
+		registry:    reg,
 	}
 }
 
@@ -192,7 +195,7 @@ func (e *editTool) createNewFile(ctx context.Context, filePath, content string) 
 		permissionPath = rootDir
 	}
 
-	action := evaluateToolPermission(ctx, EditToolName, filePath)
+	action := e.registry.EvaluatePermission(string(GetAgentName(ctx)), EditToolName, filePath)
 	switch action {
 	case permission.ActionAllow:
 		// Allowed by config
@@ -315,7 +318,7 @@ func (e *editTool) deleteContent(ctx context.Context, filePath, oldString string
 	if strings.HasPrefix(filePath, rootDir) {
 		permissionPath = rootDir
 	}
-	action := evaluateToolPermission(ctx, EditToolName, filePath)
+	action := e.registry.EvaluatePermission(string(GetAgentName(ctx)), EditToolName, filePath)
 	switch action {
 	case permission.ActionAllow:
 		// Allowed by config
@@ -447,7 +450,7 @@ func (e *editTool) replaceContent(ctx context.Context, filePath, oldString, newS
 	if strings.HasPrefix(filePath, rootDir) {
 		permissionPath = rootDir
 	}
-	action := evaluateToolPermission(ctx, EditToolName, filePath)
+	action := e.registry.EvaluatePermission(string(GetAgentName(ctx)), EditToolName, filePath)
 	switch action {
 	case permission.ActionAllow:
 		// Allowed by config

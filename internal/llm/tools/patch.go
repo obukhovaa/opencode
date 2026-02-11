@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/diff"
 	"github.com/opencode-ai/opencode/internal/history"
@@ -30,6 +31,7 @@ type patchTool struct {
 	lspClients  map[string]*lsp.Client
 	permissions permission.Service
 	files       history.Service
+	registry    agentregistry.Registry
 }
 
 const (
@@ -64,11 +66,12 @@ CRITICAL REQUIREMENTS FOR USING THIS TOOL:
 The tool will apply all changes in a single atomic operation.`
 )
 
-func NewPatchTool(lspClients map[string]*lsp.Client, permissions permission.Service, files history.Service) BaseTool {
+func NewPatchTool(lspClients map[string]*lsp.Client, permissions permission.Service, files history.Service, reg agentregistry.Registry) BaseTool {
 	return &patchTool{
 		lspClients:  lspClients,
 		permissions: permissions,
 		files:       files,
+		registry:    reg,
 	}
 }
 
@@ -188,7 +191,7 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 	// Request permission for all changes
 	for path, change := range commit.Changes {
-		fileAction := evaluateToolPermission(ctx, PatchToolName, path)
+		fileAction := p.registry.EvaluatePermission(string(GetAgentName(ctx)), PatchToolName, path)
 		if fileAction == permission.ActionDeny {
 			return NewEmptyResponse(), permission.ErrorPermissionDenied
 		}

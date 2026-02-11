@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/diff"
 	"github.com/opencode-ai/opencode/internal/history"
@@ -31,6 +32,7 @@ type writeTool struct {
 	lspClients  map[string]*lsp.Client
 	permissions permission.Service
 	files       history.Service
+	registry    agentregistry.Registry
 }
 
 type WriteResponseMetadata struct {
@@ -71,11 +73,12 @@ TIPS:
 - Always include descriptive comments when making changes to existing code`
 )
 
-func NewWriteTool(lspClients map[string]*lsp.Client, permissions permission.Service, files history.Service) BaseTool {
+func NewWriteTool(lspClients map[string]*lsp.Client, permissions permission.Service, files history.Service, reg agentregistry.Registry) BaseTool {
 	return &writeTool{
 		lspClients:  lspClients,
 		permissions: permissions,
 		files:       files,
+		registry:    reg,
 	}
 }
 
@@ -166,7 +169,7 @@ func (w *writeTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	if strings.HasPrefix(filePath, rootDir) {
 		permissionPath = rootDir
 	}
-	action := evaluateToolPermission(ctx, WriteToolName, filePath)
+	action := w.registry.EvaluatePermission(string(GetAgentName(ctx)), WriteToolName, filePath)
 	switch action {
 	case permission.ActionAllow:
 		// Allowed by config

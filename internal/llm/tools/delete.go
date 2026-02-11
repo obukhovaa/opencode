@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/diff"
 	"github.com/opencode-ai/opencode/internal/history"
@@ -33,6 +34,7 @@ type DeleteResponseMetadata struct {
 type deleteTool struct {
 	permissions permission.Service
 	files       history.Service
+	registry    agentregistry.Registry
 }
 
 const (
@@ -67,10 +69,11 @@ TIPS:
 - For large directory deletions (>500 files), use bash rm -rf or delete subdirectories individually`
 )
 
-func NewDeleteTool(permissions permission.Service, files history.Service) BaseTool {
+func NewDeleteTool(permissions permission.Service, files history.Service, reg agentregistry.Registry) BaseTool {
 	return &deleteTool{
 		permissions: permissions,
 		files:       files,
+		registry:    reg,
 	}
 }
 
@@ -129,7 +132,7 @@ func (d *deleteTool) Run(ctx context.Context, call ToolCall) (ToolResponse, erro
 
 		diffStr, _, removals := diff.GenerateDiff(string(content), "", absPath)
 
-		action := evaluateToolPermission(ctx, DeleteToolName, absPath)
+		action := d.registry.EvaluatePermission(string(GetAgentName(ctx)), DeleteToolName, absPath)
 		switch action {
 		case permission.ActionAllow:
 		case permission.ActionDeny:
@@ -231,7 +234,7 @@ func (d *deleteTool) Run(ctx context.Context, call ToolCall) (ToolResponse, erro
 		return NewTextErrorResponse("directory contains more than 500 files. Use bash rm -rf for large directory deletions, or delete subdirectories individually"), nil
 	}
 
-	action := evaluateToolPermission(ctx, DeleteToolName, absPath)
+	action := d.registry.EvaluatePermission(string(GetAgentName(ctx)), DeleteToolName, absPath)
 	switch action {
 	case permission.ActionAllow:
 	case permission.ActionDeny:

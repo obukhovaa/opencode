@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/diff"
 	"github.com/opencode-ai/opencode/internal/history"
@@ -38,6 +39,7 @@ type multiEditTool struct {
 	lspClients  map[string]*lsp.Client
 	permissions permission.Service
 	files       history.Service
+	registry    agentregistry.Registry
 }
 
 const (
@@ -79,11 +81,12 @@ When making edits:
 - Use replace_all for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.`
 )
 
-func NewMultiEditTool(lspClients map[string]*lsp.Client, permissions permission.Service, files history.Service) BaseTool {
+func NewMultiEditTool(lspClients map[string]*lsp.Client, permissions permission.Service, files history.Service, reg agentregistry.Registry) BaseTool {
 	return &multiEditTool{
 		lspClients:  lspClients,
 		permissions: permissions,
 		files:       files,
+		registry:    reg,
 	}
 }
 
@@ -220,7 +223,7 @@ func (m *multiEditTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	if strings.HasPrefix(params.FilePath, rootDir) {
 		permissionPath = rootDir
 	}
-	action := evaluateToolPermission(ctx, MultiEditToolName, params.FilePath)
+	action := m.registry.EvaluatePermission(string(GetAgentName(ctx)), MultiEditToolName, params.FilePath)
 	switch action {
 	case permission.ActionAllow:
 		// Allowed by config

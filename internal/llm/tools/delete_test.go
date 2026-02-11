@@ -23,7 +23,7 @@ func setupDeleteTest(t *testing.T) (context.Context, BaseTool, *gomock.Controlle
 	mockPerms.EXPECT().Request(gomock.Any()).Return(true).AnyTimes()
 
 	files := &stubHistoryService{}
-	tool := NewDeleteTool(mockPerms, files)
+	tool := NewDeleteTool(mockPerms, files, &stubRegistry{})
 
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
 	ctx = context.WithValue(ctx, MessageIDContextKey, "test-message")
@@ -69,7 +69,7 @@ func TestDeleteTool_Info(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockPerms := mock_permission.NewMockService(ctrl)
-	tool := NewDeleteTool(mockPerms, &stubHistoryService{})
+	tool := NewDeleteTool(mockPerms, &stubHistoryService{}, &stubRegistry{})
 	info := tool.Info()
 
 	assert.Equal(t, DeleteToolName, info.Name)

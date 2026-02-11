@@ -29,20 +29,20 @@ func CoderAgentTools(
 	}
 	coderTools := append(
 		[]tools.BaseTool{
-			tools.NewEditTool(lspClients, permissions, history),
-			tools.NewMultiEditTool(lspClients, permissions, history),
+			tools.NewEditTool(lspClients, permissions, history, reg),
+			tools.NewMultiEditTool(lspClients, permissions, history, reg),
 			tools.NewFetchTool(permissions),
 			tools.NewGlobTool(),
 			tools.NewGrepTool(),
 			tools.NewLsTool(config.Get()),
-			tools.NewSkillTool(permissions),
+			tools.NewSkillTool(permissions, reg),
 			tools.NewSourcegraphTool(),
 			tools.NewViewTool(lspClients),
 			tools.NewViewImageTool(),
-			tools.NewPatchTool(lspClients, permissions, history),
-			tools.NewWriteTool(lspClients, permissions, history),
-			tools.NewDeleteTool(permissions, history),
-			tools.NewBashTool(permissions),
+			tools.NewPatchTool(lspClients, permissions, history, reg),
+			tools.NewWriteTool(lspClients, permissions, history, reg),
+			tools.NewDeleteTool(permissions, history, reg),
+			tools.NewBashTool(permissions, reg),
 			NewAgentTool(sessions, messages, lspClients, permissions, history, reg),
 		}, otherTools...,
 	)
@@ -64,18 +64,18 @@ func HivemindAgentTools(
 		tools.NewViewTool(lspClients),
 		tools.NewViewImageTool(),
 		tools.NewFetchTool(permissions),
-		tools.NewSkillTool(permissions),
+		tools.NewSkillTool(permissions, reg),
 		NewAgentTool(sessions, messages, lspClients, permissions, history, reg),
 	}
 }
 
-func ExplorerAgentTools(lspClients map[string]*lsp.Client, permissions permission.Service) []tools.BaseTool {
+func ExplorerAgentTools(lspClients map[string]*lsp.Client, permissions permission.Service, reg agentregistry.Registry) []tools.BaseTool {
 	return []tools.BaseTool{
 		tools.NewGlobTool(),
 		tools.NewGrepTool(),
 		tools.NewLsTool(config.Get()),
 		tools.NewSourcegraphTool(),
-		tools.NewSkillTool(permissions),
+		tools.NewSkillTool(permissions, reg),
 		tools.NewViewTool(lspClients),
 		tools.NewViewImageTool(),
 		tools.NewFetchTool(permissions),
@@ -88,23 +88,24 @@ func WorkhorseAgentTools(
 	sessions session.Service,
 	messages message.Service,
 	history history.Service,
+	reg agentregistry.Registry,
 ) []tools.BaseTool {
 	var workhorse []tools.BaseTool
 	workhorse = []tools.BaseTool{
-		tools.NewEditTool(lspClients, permissions, history),
-		tools.NewMultiEditTool(lspClients, permissions, history),
+		tools.NewEditTool(lspClients, permissions, history, reg),
+		tools.NewMultiEditTool(lspClients, permissions, history, reg),
 		tools.NewFetchTool(permissions),
 		tools.NewGlobTool(),
 		tools.NewGrepTool(),
 		tools.NewLsTool(config.Get()),
-		tools.NewSkillTool(permissions),
+		tools.NewSkillTool(permissions, reg),
 		tools.NewSourcegraphTool(),
 		tools.NewViewTool(lspClients),
 		tools.NewViewImageTool(),
-		tools.NewPatchTool(lspClients, permissions, history),
-		tools.NewWriteTool(lspClients, permissions, history),
-		tools.NewDeleteTool(permissions, history),
-		tools.NewBashTool(permissions),
+		tools.NewPatchTool(lspClients, permissions, history, reg),
+		tools.NewWriteTool(lspClients, permissions, history, reg),
+		tools.NewDeleteTool(permissions, history, reg),
+		tools.NewBashTool(permissions, reg),
 	}
 	if len(lspClients) > 0 {
 		workhorse = append(workhorse, tools.NewLspTool(lspClients))

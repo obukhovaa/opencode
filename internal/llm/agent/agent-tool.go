@@ -45,24 +45,15 @@ type AgentParams = TaskParams
 func (b *agentTool) Info() tools.ToolInfo {
 	var agentDescs []string
 
-	if b.registry != nil {
-		for _, a := range b.registry.ListByMode(config.AgentModeSubagent) {
-			desc := a.Description
-			if desc == "" {
-				desc = "No description available"
-			}
-			agentDescs = append(agentDescs, fmt.Sprintf("- %s: %s", a.ID, desc))
+	for _, a := range b.registry.ListByMode(config.AgentModeSubagent) {
+		desc := a.Description
+		if desc == "" {
+			desc = "No description available"
 		}
-	}
-
-	if len(agentDescs) == 0 {
-		for _, tool := range ExplorerAgentTools(b.lspClients, b.permissions) {
-			agentDescs = append(agentDescs, tool.Info().Name)
-		}
+		agentDescs = append(agentDescs, fmt.Sprintf("- %s: %s", a.ID, desc))
 	}
 
 	availableAgents := strings.Join(agentDescs, "\n")
-
 	description := "Launch a new agent to handle complex, multistep tasks autonomously.\n\n" +
 		"Available subagent types:\n" + availableAgents + "\n\n" +
 		"When to use the Task tool:\n" +
@@ -183,10 +174,8 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 	}
 
 	agentName := subagentType
-	if b.registry != nil {
-		if info, ok := b.registry.Get(subagentType); ok && info.Name != "" {
-			agentName = info.Name
-		}
+	if subagentInfo.Name != "" {
+		agentName = subagentInfo.Name
 	}
 
 	metadata := map[string]string{
@@ -202,18 +191,18 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 func (b *agentTool) resolveToolsForSubagent(info *agentregistry.AgentInfo) []tools.BaseTool {
 	switch info.ID {
 	case config.AgentWorkhorse:
-		return WorkhorseAgentTools(b.lspClients, b.permissions, b.sessions, b.messages, b.history)
+		return WorkhorseAgentTools(b.lspClients, b.permissions, b.sessions, b.messages, b.history, b.registry)
 	case config.AgentExplorer:
-		return ExplorerAgentTools(b.lspClients, b.permissions)
+		return ExplorerAgentTools(b.lspClients, b.permissions, b.registry)
 	default:
 		if info.Tools != nil {
 			for _, tool := range writeTools {
 				if enabled, exists := info.Tools[tool]; exists && !enabled {
-					return ExplorerAgentTools(b.lspClients, b.permissions)
+					return ExplorerAgentTools(b.lspClients, b.permissions, b.registry)
 				}
 			}
 		}
-		return WorkhorseAgentTools(b.lspClients, b.permissions, b.sessions, b.messages, b.history)
+		return WorkhorseAgentTools(b.lspClients, b.permissions, b.sessions, b.messages, b.history, b.registry)
 	}
 }
 
