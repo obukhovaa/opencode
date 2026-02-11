@@ -167,8 +167,48 @@ func (p *baseProvider[C]) cleanMessages(messages []message.Message) (cleaned []m
 	return
 }
 
+func (p *baseProvider[C]) sanitizeToolPairs(messages []message.Message) []message.Message {
+	var result []message.Message
+	for i := range messages {
+		msg := messages[i]
+		result = append(result, msg)
+
+		if msg.Role != message.Assistant || len(msg.ToolCalls()) == 0 {
+			continue
+		}
+
+		toolCalls := msg.ToolCalls()
+		hasMatchingToolResult := false
+		if i+1 < len(messages) && messages[i+1].Role == message.Tool {
+			hasMatchingToolResult = true
+		}
+
+		if !hasMatchingToolResult {
+			logging.Warn("Synthesizing missing tool results for orphaned tool_use blocks",
+				"message_id", msg.ID,
+				"tool_call_count", len(toolCalls),
+			)
+			parts := make([]message.ContentPart, len(toolCalls))
+			for j, tc := range toolCalls {
+				parts[j] = message.ToolResult{
+					ToolCallID: tc.ID,
+					Content:    "Tool execution was interrupted",
+					IsError:    true,
+				}
+			}
+			result = append(result, message.Message{
+				Role:      message.Tool,
+				SessionID: msg.SessionID,
+				Parts:     parts,
+			})
+		}
+	}
+	return result
+}
+
 func (p *baseProvider[C]) SendMessages(ctx context.Context, messages []message.Message, tools []tools.BaseTool) (*ProviderResponse, error) {
 	messages = p.cleanMessages(messages)
+	messages = p.sanitizeToolPairs(messages)
 	return p.client.send(ctx, messages, tools)
 }
 
@@ -178,6 +218,7 @@ func (p *baseProvider[C]) Model() models.Model {
 
 func (p *baseProvider[C]) StreamResponse(ctx context.Context, messages []message.Message, tools []tools.BaseTool) <-chan ProviderEvent {
 	messages = p.cleanMessages(messages)
+	messages = p.sanitizeToolPairs(messages)
 	return p.client.stream(ctx, messages, tools)
 }
 

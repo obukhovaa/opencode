@@ -129,16 +129,22 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 
 			for _, toolCall := range msg.ToolCalls() {
 				var inputMap map[string]any
-				err := json.Unmarshal([]byte(toolCall.Input), &inputMap)
-				if err != nil {
-					continue
+				if err := json.Unmarshal([]byte(toolCall.Input), &inputMap); err != nil {
+					logging.Warn("Failed to unmarshal tool call input, using empty input",
+						"tool_call_id", toolCall.ID,
+						"tool_name", toolCall.Name,
+						"error", err,
+					)
+					inputMap = map[string]any{}
 				}
 				blocks = append(blocks, anthropic.NewToolUseBlock(toolCall.ID, inputMap, toolCall.Name))
 			}
 
 			if len(blocks) == 0 {
-				logging.Warn("There is a message without content, investigate, this should not happen")
-				continue
+				logging.Warn("Assistant message has no content or tool calls, adding empty text block",
+					"message_index", i,
+				)
+				blocks = append(blocks, anthropic.NewTextBlock(""))
 			}
 			anthropicMessages = append(anthropicMessages, anthropic.NewAssistantMessage(blocks...))
 

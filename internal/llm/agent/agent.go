@@ -443,11 +443,13 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	for event := range eventChan {
 		if processErr := a.processEvent(ctx, sessionID, &assistantMsg, event); processErr != nil {
 			a.finishMessage(ctx, &assistantMsg, message.FinishReasonCanceled)
-			return assistantMsg, nil, processErr
+			toolMsg := a.createErrorToolResults(assistantMsg)
+			return assistantMsg, toolMsg, processErr
 		}
 		if ctx.Err() != nil {
 			a.finishMessage(context.Background(), &assistantMsg, message.FinishReasonCanceled)
-			return assistantMsg, nil, ctx.Err()
+			toolMsg := a.createErrorToolResults(assistantMsg)
+			return assistantMsg, toolMsg, ctx.Err()
 		}
 	}
 
@@ -539,6 +541,33 @@ out:
 func (a *agent) finishMessage(ctx context.Context, msg *message.Message, finishReson message.FinishReason) {
 	msg.AddFinish(finishReson)
 	_ = a.messages.Update(ctx, *msg)
+}
+
+// createErrorToolResults creates a tool results message with error results for all tool calls
+// in the given assistant message. This ensures that every tool_use block in the DB
+// has a corresponding tool_result, preventing API errors when the session is resumed.
+func (a *agent) createErrorToolResults(assistantMsg message.Message) *message.Message {
+	toolCalls := assistantMsg.ToolCalls()
+	if len(toolCalls) == 0 {
+		return nil
+	}
+	parts := make([]message.ContentPart, len(toolCalls))
+	for i, tc := range toolCalls {
+		parts[i] = message.ToolResult{
+			ToolCallID: tc.ID,
+			Content:    "Tool execution was interrupted",
+			IsError:    true,
+		}
+	}
+	msg, err := a.messages.Create(context.Background(), assistantMsg.SessionID, message.CreateMessageParams{
+		Role:  message.Tool,
+		Parts: parts,
+	})
+	if err != nil {
+		logging.Warn("Failed to create error tool results message", "error", err)
+		return nil
+	}
+	return &msg
 }
 
 func (a *agent) processEvent(ctx context.Context, sessionID string, assistantMsg *message.Message, event provider.ProviderEvent) error {
@@ -635,8 +664,9 @@ func (a *agent) Update(agentName config.AgentName, modelID models.ModelID) (mode
 
 // shouldTriggerAutoCompaction checks if the session should trigger auto-compaction
 // based on token usage approaching the context window limit
-// filterMessagesFromSummary filters messages to start from the summary message if one exists
-// This reduces context size by excluding messages before the summary
+// filterMessagesFromSummary filters messages to start from the summary message if one exists.
+// This reduces context size by excluding messages before the summary.
+// It ensures that tool_use/tool_result pairs are not split by the filter boundary.
 func (a *agent) filterMessagesFromSummary(msgs []message.Message, summaryMessageID string) []message.Message {
 	if summaryMessageID == "" {
 		return msgs
@@ -650,14 +680,30 @@ func (a *agent) filterMessagesFromSummary(msgs []message.Message, summaryMessage
 		}
 	}
 
-	if summaryMsgIndex != -1 {
-		filteredMsgs := msgs[summaryMsgIndex:]
-		// Convert the summary message role to User so it can be used in conversation
-		filteredMsgs[0].Role = message.User
-		return filteredMsgs
+	if summaryMsgIndex == -1 {
+		return msgs
 	}
 
-	return msgs
+	filteredMsgs := msgs[summaryMsgIndex:]
+	// Convert the summary message role to User so it can be used in conversation
+	filteredMsgs[0].Role = message.User
+
+	// Ensure the filtered messages don't start with orphaned tool results
+	// (Tool messages whose corresponding Assistant message was before the summary).
+	// Skip any Tool messages that immediately follow the summary message.
+	result := filteredMsgs[:1] // Always keep the summary message
+	skippingOrphanedTools := true
+	for _, msg := range filteredMsgs[1:] {
+		if skippingOrphanedTools {
+			if msg.Role == message.Tool {
+				logging.Warn("Skipping orphaned tool result message after summary filter", "message_id", msg.ID)
+				continue
+			}
+			skippingOrphanedTools = false
+		}
+		result = append(result, msg)
+	}
+	return result
 }
 
 // performSynchronousCompaction performs summarization synchronously and waits for completion

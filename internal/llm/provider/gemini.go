@@ -61,7 +61,7 @@ func newGeminiClient(opts providerClientOptions) GeminiClient {
 
 func (g *geminiClient) convertMessages(messages []message.Message) []*genai.Content {
 	var history []*genai.Content
-	for _, msg := range messages {
+	for i, msg := range messages {
 		switch msg.Role {
 		case message.User:
 			var parts []*genai.Part
@@ -86,7 +86,15 @@ func (g *geminiClient) convertMessages(messages []message.Message) []*genai.Cont
 
 			if len(msg.ToolCalls()) > 0 {
 				for _, call := range msg.ToolCalls() {
-					args, _ := parseJsonToMap(call.Input)
+					args, err := parseJsonToMap(call.Input)
+					if err != nil {
+						logging.Warn("Failed to parse tool call input, using empty args",
+							"tool_call_id", call.ID,
+							"tool_name", call.Name,
+							"error", err,
+						)
+						args = map[string]any{}
+					}
 					part := &genai.Part{
 						FunctionCall: &genai.FunctionCall{
 							Name: call.Name,
@@ -101,12 +109,16 @@ func (g *geminiClient) convertMessages(messages []message.Message) []*genai.Cont
 				}
 			}
 
-			if len(assistantParts) > 0 {
-				history = append(history, &genai.Content{
-					Role:  "model",
-					Parts: assistantParts,
-				})
+			if len(assistantParts) == 0 {
+				logging.Warn("Assistant message has no content or tool calls, adding empty text part",
+					"message_index", i,
+				)
+				assistantParts = append(assistantParts, &genai.Part{Text: ""})
 			}
+			history = append(history, &genai.Content{
+				Role:  "model",
+				Parts: assistantParts,
+			})
 
 		case message.Tool:
 			for _, result := range msg.ToolResults() {
