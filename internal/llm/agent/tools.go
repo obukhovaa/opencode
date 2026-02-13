@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"strings"
+	"time"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -42,6 +43,7 @@ var (
 // NewToolSet dynamically builds the tool slice for an agent based on its
 // registry info. Only tools that pass registry.IsToolEnabled are included.
 func NewToolSet(
+	ctx context.Context,
 	info *agentregistry.AgentInfo,
 	reg agentregistry.Registry,
 	permissions permission.Service,
@@ -98,10 +100,9 @@ func NewToolSet(
 		}
 	}
 
-	//  BUG: initLSPClients running async and LSPClients is not channel nor thread safe, so it is empty, hence no
-	//  ┃ lsp tool for primary agents  created. We need to solve for that, options: block at start until lsp are started OR make map sync map
-	//  ┃ and pass it around to ensure tools will be able to read lsp client which created and added after tool is created.
-	//	  kind of the same for MCP, but they currently do block startup, which is not nice
+	//  BUG:| initLSPClients running async and LSPClients is not channel nor thread safe, so it is empty, hence no
+	//   	| lsp tool for primary agents created. A proper lazy load should be implemented to not block startup until
+	//		| it is absolutely necessery, the same approach should be adopted for MCP tools.
 	if len(lspClients) > 0 && reg.IsToolEnabled(agentID, tools.LspToolName) {
 		result = append(result, tools.NewLspTool(lspClients))
 	}
@@ -127,8 +128,9 @@ func NewToolSet(
 	}
 
 	// MCP tools — shared instances, filter per agent
-	ctx := context.Background()
-	mcpTools := GetMcpTools(ctx, permissions, reg)
+	ctxWithTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	mcpTools := GetMcpTools(ctxWithTimeout, permissions, reg)
 	for _, mt := range mcpTools {
 		if reg.IsToolEnabled(agentID, mt.Info().Name) {
 			result = append(result, mt)

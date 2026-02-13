@@ -121,7 +121,7 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		return tools.NewTextErrorResponse(fmt.Sprintf("unknown subagent type %q. Available: %s", subagentType, strings.Join(names, ", "))), nil
 	}
 
-	a, err := NewAgent(&subagentInfo, b.sessions, b.messages, b.permissions, b.history, b.lspClients, b.registry)
+	a, err := NewAgent(ctx, &subagentInfo, b.sessions, b.messages, b.permissions, b.history, b.lspClients, b.registry)
 	if err != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error creating agent: %s", err)
 	}

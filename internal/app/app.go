@@ -106,6 +106,7 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 	for _, agentInfo := range primaryAgents {
 		agentInfoCopy := agentInfo
 		primaryAgent, err := agent.NewAgent(
+			ctx,
 			&agentInfoCopy,
 			app.Sessions,
 			app.Messages,

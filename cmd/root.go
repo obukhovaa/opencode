@@ -13,7 +13,6 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/format"
-	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/tui"
@@ -121,9 +120,6 @@ to assist developers in writing, debugging, and understanding code directly from
 		// Defer shutdown here so it runs for both interactive and non-interactive modes
 		defer app.Shutdown()
 
-		// Initialize MCP tools for both modes
-		initMCPTools(ctx, app)
-
 		// Stop spinner after initialization is complete
 		if spinner != nil {
 			spinner.Stop()
@@ -132,12 +128,11 @@ to assist developers in writing, debugging, and understanding code directly from
 		// Non-interactive mode
 		if prompt != "" {
 			// Run non-interactive flow using the App method
-			err := app.RunNonInteractive(ctx, prompt, outputFormat, quiet)
+			_err := app.RunNonInteractive(ctx, prompt, outputFormat, quiet)
 
 			// Immediately force cleanup and exit for non-interactive mode
 			app.ForceShutdown()
-			cancel()
-			return err
+			return _err
 		}
 
 		// Interactive mode
@@ -216,18 +211,6 @@ func attemptTUIRecovery(program *tea.Program) {
 	// We could try to restart the TUI or gracefully exit
 	// For now, we'll just quit the program to avoid further issues
 	program.Quit()
-}
-
-func initMCPTools(ctx context.Context, app *app.App) {
-	go func() {
-		defer logging.RecoverPanic("MCP-goroutine", nil)
-
-		ctxWithTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
-		defer cancel()
-
-		agent.GetMcpTools(ctxWithTimeout, app.Permissions, app.Registry)
-		logging.Info("MCP message handling goroutine exiting")
-	}()
 }
 
 func setupSubscriber[T any](
@@ -318,6 +301,8 @@ func init() {
 	rootCmd.Flags().BoolP("debug", "d", false, "Debug")
 	rootCmd.Flags().StringP("cwd", "c", "", "Current working directory")
 	rootCmd.Flags().StringP("prompt", "p", "", "Prompt to run in non-interactive mode")
+	// TODO: add flag to run with specific agent id
+	// TODO: add flag to run with specific session id
 
 	// Add format flag with validation logic
 	rootCmd.Flags().StringP("output-format", "f", format.Text.String(),

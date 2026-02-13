@@ -37,7 +37,6 @@ type TokenUsage struct {
 	CacheReadTokens     int64
 }
 
-// TODO: consider to add accumulaed ThinkingBlock (e.g. anthropic.ThinkingBlock) and use it on TUI.
 type ProviderResponse struct {
 	Content      string
 	ToolCalls    []message.ToolCall

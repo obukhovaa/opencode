@@ -84,6 +84,7 @@ type agent struct {
 }
 
 func NewAgent(
+	ctx context.Context,
 	agentInfo *agentregistry.AgentInfo,
 	sessions session.Service,
 	messages message.Service,
@@ -92,7 +93,7 @@ func NewAgent(
 	lspClients map[string]*lsp.Client,
 	reg agentregistry.Registry,
 ) (Service, error) {
-	agentTools := NewToolSet(agentInfo, reg, permissions, historyService, lspClients, sessions, messages)
+	agentTools := NewToolSet(ctx, agentInfo, reg, permissions, historyService, lspClients, sessions, messages)
 
 	agentProvider, err := createAgentProvider(agentInfo.ID)
 	if err != nil {
@@ -383,7 +384,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		if cfg.Debug {
 			seqID := (len(msgHistory) + 1) / 2
 			toolResultFilepath := logging.WriteToolResultsJson(sessionID, seqID, toolResults)
-			logging.Info("Provider stream completed", "reason", agentMessage.FinishReason(), "toolResults", toolResults, "filepath", toolResultFilepath, "cycle", cycles)
+			logging.Info("Provider stream completed", "reason", agentMessage.FinishReason(), "filepath", toolResultFilepath, "cycle", cycles)
 		} else {
 			logging.Info("Provider stream completed", "reason", agentMessage.FinishReason(), "cycle", cycles)
 		}

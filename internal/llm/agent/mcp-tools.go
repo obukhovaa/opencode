@@ -202,6 +202,8 @@ func getTools(ctx context.Context, name string, m config.MCPServer, permissions 
 
 func GetMcpTools(ctx context.Context, permissions permission.Service, reg agentregistry.Registry) []tools.BaseTool {
 	mcpToolsOnce.Do(func() {
+		defer logging.RecoverPanic("MCP-goroutine", nil)
+
 		for name, m := range config.Get().MCPServers {
 			switch m.Type {
 			case config.MCPStdio:
@@ -242,6 +244,7 @@ func GetMcpTools(ctx context.Context, permissions permission.Service, reg agentr
 				mcpTools = append(mcpTools, getTools(ctx, name, m, permissions, c, reg)...)
 			}
 		}
+		logging.Info("MCP tools loaded", "count", len(mcpTools))
 	})
 	return mcpTools
 }
