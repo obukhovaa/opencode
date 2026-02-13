@@ -167,7 +167,7 @@ func registerBuiltins(agents map[string]AgentInfo, cfg *config.Config) {
 		{
 			ID:          config.AgentExplorer,
 			Name:        "Explorer Agent",
-			Description: "Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns, search code for keywords, or answer questions about the codebase. When calling this agent, specify the desired thoroughness level: \"quick\" for basic searches, \"medium\" for moderate exploration, or \"very thorough\" for comprehensive analysis.",
+			Description: "Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns, search code for keywords, or answer questions about the codebase. Do not use it to run bash commands. When calling this agent, specify the desired thoroughness level: \"quick\" for basic searches, \"medium\" for moderate exploration, or \"very thorough\" for comprehensive analysis.",
 			Mode:        config.AgentModeSubagent,
 			Native:      true,
 			Tools: map[string]bool{
@@ -183,7 +183,7 @@ func registerBuiltins(agents map[string]AgentInfo, cfg *config.Config) {
 		{
 			ID:          config.AgentWorkhorse,
 			Name:        "Workhorse Agent",
-			Description: "Autonomous coding subagent that receives a task and works until completion. Has full tool access like the coder agent. Use this for tasks that require writing or modifying code.",
+			Description: "Autonomous coding subagent that receives a task and works until completion. Has full tool access like the coder agent, including bash commands. Use this for tasks that require writing or modifying code.",
 			Mode:        config.AgentModeSubagent,
 			Native:      true,
 			Tools: map[string]bool{

@@ -8,7 +8,7 @@ import (
 
 // TODO: Instruct to use output tool once done to satisfy requested response schema
 func ExplorerPrompt(_ models.ModelProvider) string {
-	agentPrompt := `You are Explorer Agent for OpenCode — an autonomous file and information search agent. You excel at thoroughly navigating and exploring codebases, documentation, web links. You have access to read-only tools, no edit, write or bash available.
+	agentPrompt := `You are Explorer Agent for OpenCode — an autonomous file and information search agent. You excel at thoroughly navigating and exploring codebases, documentation, web links. You have access to read-only tools: no edit, no write, no bash.
 
 Your strengths:
 - Rapidly finding files using glob patterns
