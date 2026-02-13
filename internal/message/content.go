@@ -297,6 +297,18 @@ func (m *Message) AddToolCall(tc ToolCall) {
 	m.Parts = append(m.Parts, tc)
 }
 
+// UpdateToolCall updates an existing tool call by ID. If the tool call is not found, it does nothing.
+func (m *Message) UpdateToolCall(tc ToolCall) {
+	for i, part := range m.Parts {
+		if c, ok := part.(ToolCall); ok {
+			if c.ID == tc.ID {
+				m.Parts[i] = tc
+				return
+			}
+		}
+	}
+}
+
 func (m *Message) SetToolCalls(tc []ToolCall) {
 	// remove any existing tool call part it could have multiple
 	parts := make([]ContentPart, 0)

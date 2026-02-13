@@ -25,7 +25,7 @@ permission:
 You are in code review mode. Focus on quality.
 `
 	path := filepath.Join(dir, "reviewer.md")
-	os.WriteFile(path, []byte(md), 0644)
+	os.WriteFile(path, []byte(md), 0o644)
 
 	agent, err := parseAgentMarkdown(path)
 	if err != nil {
@@ -73,9 +73,9 @@ color: "#FF0000"
 
 Prompt for agent two.
 `
-	os.WriteFile(filepath.Join(dir, "agent-one.md"), []byte(md1), 0644)
-	os.WriteFile(filepath.Join(dir, "agent-two.md"), []byte(md2), 0644)
-	os.WriteFile(filepath.Join(dir, "not-an-agent.txt"), []byte("ignore"), 0644)
+	os.WriteFile(filepath.Join(dir, "agent-one.md"), []byte(md1), 0o644)
+	os.WriteFile(filepath.Join(dir, "agent-two.md"), []byte(md2), 0o644)
+	os.WriteFile(filepath.Join(dir, "not-an-agent.txt"), []byte("ignore"), 0o644)
 
 	agents := scanAgentDirectory(dir)
 	if len(agents) != 2 {
@@ -143,7 +143,7 @@ func TestRegistryBuiltins(t *testing.T) {
 	if explorer.Tools == nil {
 		t.Error("explorer should have Tools restrictions")
 	} else {
-		for _, tool := range []string{"bash", "edit", "multiedit", "write", "delete", "patch", "lsp"} {
+		for _, tool := range []string{"bash", "edit", "multiedit", "write", "delete", "patch", "task"} {
 			if enabled, exists := explorer.Tools[tool]; !exists || enabled {
 				t.Errorf("explorer Tools[%q] should be false", tool)
 			}
@@ -168,8 +168,14 @@ func TestRegistryBuiltins(t *testing.T) {
 	if agents[config.AgentCoder].Tools != nil {
 		t.Error("coder should have nil Tools (all enabled)")
 	}
-	if agents[config.AgentWorkhorse].Tools != nil {
-		t.Error("workhorse should have nil Tools (all enabled)")
+	if agents[config.AgentWorkhorse].Tools == nil {
+		t.Error("workhorse should have Tools restrictions")
+	} else {
+		for _, tool := range []string{"task"} {
+			if enabled, exists := agents[config.AgentWorkhorse].Tools[tool]; !exists || enabled {
+				t.Errorf("explorer Tools[%q] should be false", tool)
+			}
+		}
 	}
 }
 

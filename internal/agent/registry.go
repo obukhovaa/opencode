@@ -177,7 +177,7 @@ func registerBuiltins(agents map[string]AgentInfo, cfg *config.Config) {
 				"write":     false,
 				"delete":    false,
 				"patch":     false,
-				"lsp":       false,
+				"task":      false,
 			},
 		},
 		{
@@ -186,6 +186,9 @@ func registerBuiltins(agents map[string]AgentInfo, cfg *config.Config) {
 			Description: "Autonomous coding subagent that receives a task and works until completion. Has full tool access like the coder agent. Use this for tasks that require writing or modifying code.",
 			Mode:        config.AgentModeSubagent,
 			Native:      true,
+			Tools: map[string]bool{
+				"task": false,
+			},
 		},
 		{
 			ID:          config.AgentSummarizer,

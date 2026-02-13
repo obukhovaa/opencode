@@ -148,7 +148,7 @@ func vertexMiddleware(region, regionForCounting, projectID string) sdkoption.Mid
 			}
 
 			logging.Debug("vertext_ai middleware request, using beta header", "anthropic-beta", betas,
-				"model", model, "stream", stream, "path", r.URL.Path, "new_path", newPath, "method", r.Method, "body", string(body),
+				"model", model, "stream", stream, "path", r.URL.Path, "new_path", newPath, "method", r.Method,
 			)
 
 			reader := bytes.NewReader(body)

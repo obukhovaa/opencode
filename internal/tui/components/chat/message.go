@@ -18,6 +18,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
+	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
@@ -168,6 +169,7 @@ func renderAssistantMessage(
 			)
 		}
 	}
+	contentRendered := false
 	if content != "" || (finished && finishData.Reason == message.FinishReasonEndTurn) {
 		if content == "" {
 			content = "*Finished without output*"
@@ -177,6 +179,13 @@ func renderAssistantMessage(
 		}
 
 		content = renderMessage(content, false, true, width, info...)
+		contentRendered = true
+	} else if thinking && thinkingContent != "" {
+		logging.Debug("Thinking content rendered", "size", len(thinkingContent))
+		content = renderMessage(thinkingContent, false, msg.ID == focusedUIMessageId, width)
+		contentRendered = true
+	}
+	if contentRendered {
 		messages = append(messages, uiMessage{
 			ID:          msg.ID,
 			messageType: assistantMessageType,
@@ -186,9 +195,6 @@ func renderAssistantMessage(
 		})
 		position += messages[0].height
 		position++ // for the space
-	} else if thinking && thinkingContent != "" {
-		// Render the thinking content
-		content = renderMessage(thinkingContent, false, msg.ID == focusedUIMessageId, width)
 	}
 
 	for i, toolCall := range msg.ToolCalls() {
@@ -634,8 +640,8 @@ func renderToolMessage(
 	if toolCall.Name == agent.TaskToolName {
 		var taskParams agent.TaskParams
 		json.Unmarshal([]byte(toolCall.Input), &taskParams)
-		badge := subagentBadge(taskParams.SubagentType, taskParams.TaskID != "")
-		toolNameText = badge + " "
+		badge := subagentBadge(taskParams.SubagentType, taskParams.TaskTitle, taskParams.TaskID != "")
+		toolNameText = badge
 	}
 
 	if !toolCall.Finished {
@@ -645,7 +651,7 @@ func renderToolMessage(
 		progressText := baseStyle.
 			Width(width - 2 - lipgloss.Width(toolNameText)).
 			Foreground(t.TextMuted()).
-			Render(fmt.Sprintf("%s", toolAction))
+			Render(fmt.Sprintf(" %s", toolAction))
 
 		content := style.Render(lipgloss.JoinHorizontal(lipgloss.Left, toolNameText, progressText))
 		toolMsg := uiMessage{
@@ -731,7 +737,7 @@ func renderToolMessage(
 	return toolMsg
 }
 
-func subagentBadge(agentType string, isResumed bool) string {
+func subagentBadge(agentType string, title string, isResumed bool) string {
 	t := theme.CurrentTheme()
 
 	icon := "●"
@@ -779,9 +785,22 @@ func subagentBadge(agentType string, isResumed bool) string {
 
 	badge := styles.BaseStyle().
 		Foreground(color).
-		Render(fmt.Sprintf("%s %s (%s):", icon, name, status))
+		Render(fmt.Sprintf("%s %s ", icon, name))
 
-	return badge
+	var taskTitle string
+	if title != "" {
+		taskTitle = styles.BaseStyle().
+			Foreground(t.TextEmphasized()).
+			Blink(true).
+			Render(fmt.Sprintf("(%s > %s): ", status, title))
+	} else {
+		taskTitle = styles.BaseStyle().
+			Foreground(t.TextEmphasized()).
+			Blink(true).
+			Render(fmt.Sprintf("(%s):", status))
+	}
+
+	return fmt.Sprintf("%s%s", badge, taskTitle)
 }
 
 var diagSummaryRegex = regexp.MustCompile(`<diagnostic_summary>\s*Current file: (\d+) errors, (\d+) warnings\s*Project: (\d+) errors, (\d+) warnings\s*</diagnostic_summary>`)

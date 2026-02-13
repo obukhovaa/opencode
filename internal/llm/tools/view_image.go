@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/opencode-ai/opencode/internal/config"
-	"github.com/opencode-ai/opencode/internal/logging"
 )
 
 type ViewImageParams struct {
@@ -85,7 +84,6 @@ func (v *viewImageTool) Info() ToolInfo {
 
 func (v *viewImageTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
 	var params ViewImageParams
-	logging.Debug("view_image tool params", "params", call.Input)
 	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
 		return NewTextErrorResponse(fmt.Sprintf("error parsing parameters: %s", err)), nil
 	}

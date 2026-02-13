@@ -132,7 +132,7 @@ func (d *deleteTool) Run(ctx context.Context, call ToolCall) (ToolResponse, erro
 
 		diffStr, _, removals := diff.GenerateDiff(string(content), "", absPath)
 
-		action := d.registry.EvaluatePermission(string(GetAgentName(ctx)), DeleteToolName, absPath)
+		action := d.registry.EvaluatePermission(string(GetAgentID(ctx)), DeleteToolName, absPath)
 		switch action {
 		case permission.ActionAllow:
 		case permission.ActionDeny:
@@ -229,12 +229,11 @@ func (d *deleteTool) Run(ctx context.Context, call ToolCall) (ToolResponse, erro
 
 		return nil
 	})
-
 	if err != nil {
 		return NewTextErrorResponse("directory contains more than 500 files. Use bash rm -rf for large directory deletions, or delete subdirectories individually"), nil
 	}
 
-	action := d.registry.EvaluatePermission(string(GetAgentName(ctx)), DeleteToolName, absPath)
+	action := d.registry.EvaluatePermission(string(GetAgentID(ctx)), DeleteToolName, absPath)
 	switch action {
 	case permission.ActionAllow:
 	case permission.ActionDeny:

@@ -17,6 +17,16 @@ import (
 	"github.com/opencode-ai/opencode/internal/lsp/protocol"
 )
 
+type (
+	serverNameContextKey       string
+	workspaceWatcherContextKey string
+)
+
+const (
+	ServerNameContextKey       serverNameContextKey       = "server_name"
+	WorkspaceWatcherContextKey workspaceWatcherContextKey = "workspace_watcher"
+)
+
 // WorkspaceWatcher manages LSP file watching
 type WorkspaceWatcher struct {
 	client        *lsp.Client
@@ -314,12 +324,12 @@ func (w *WorkspaceWatcher) WatchWorkspace(ctx context.Context, workspacePath str
 	w.workspacePath = workspacePath
 
 	// Store the watcher in the context for later use
-	ctx = context.WithValue(ctx, "workspaceWatcher", w)
+	ctx = context.WithValue(ctx, WorkspaceWatcherContextKey, w)
 
 	// If the server name isn't already in the context, try to detect it
-	if _, ok := ctx.Value("serverName").(string); !ok {
+	if _, ok := ctx.Value(ServerNameContextKey).(string); !ok {
 		serverName := getServerNameFromContext(ctx)
-		ctx = context.WithValue(ctx, "serverName", serverName)
+		ctx = context.WithValue(ctx, ServerNameContextKey, serverName)
 	}
 
 	serverName := getServerNameFromContext(ctx)
@@ -511,9 +521,7 @@ func matchesGlob(pattern, path string) bool {
 // matchesSimpleGlob handles glob patterns with ** wildcards
 func matchesSimpleGlob(pattern, path string) bool {
 	// Handle special case for **/*.ext pattern (common in LSP)
-	if strings.HasPrefix(pattern, "**/") {
-		rest := strings.TrimPrefix(pattern, "**/")
-
+	if rest, ok := strings.CutPrefix(pattern, "**/"); ok {
 		// If the rest is a simple file extension pattern like *.go
 		if strings.HasPrefix(rest, "*.") {
 			ext := strings.TrimPrefix(rest, "*")
@@ -688,14 +696,17 @@ func (w *WorkspaceWatcher) notifyFileEvent(ctx context.Context, uri string, chan
 
 // getServerNameFromContext extracts the server name from the context
 // This is a best-effort function that tries to identify which LSP server we're dealing with
-func getServerNameFromContext(ctx context.Context) string {
+func getServerNameFromContext(ctx context.Context) (serverName string) {
+	defer func() {
+	}()
+
 	// First check if the server name is directly stored in the context
-	if serverName, ok := ctx.Value("serverName").(string); ok && serverName != "" {
+	if serverName, ok := ctx.Value(ServerNameContextKey).(string); ok && serverName != "" {
 		return strings.ToLower(serverName)
 	}
 
 	// Otherwise, try to extract server name from the client command path
-	if w, ok := ctx.Value("workspaceWatcher").(*WorkspaceWatcher); ok && w != nil && w.client != nil && w.client.Cmd != nil {
+	if w, ok := ctx.Value(WorkspaceWatcherContextKey).(*WorkspaceWatcher); ok && w != nil && w.client != nil && w.client.Cmd != nil {
 		path := strings.ToLower(w.client.Cmd.Path)
 
 		// Extract server name from path
@@ -713,6 +724,8 @@ func getServerNameFromContext(ctx context.Context) string {
 			return "java"
 		} else if strings.Contains(path, "lua") {
 			return "lua-language-server"
+		} else if strings.Contains(path, "kotlin") {
+			return "kotlin-lsp"
 		}
 
 		// Return the base name as fallback

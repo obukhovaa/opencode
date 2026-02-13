@@ -251,7 +251,7 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		return NewEmptyResponse(), fmt.Errorf("session ID and message ID are required for creating a new file")
 	}
 	if !isSafeReadOnly {
-		action := b.registry.EvaluatePermission(string(GetAgentName(ctx)), BashToolName, params.Command)
+		action := b.registry.EvaluatePermission(string(GetAgentID(ctx)), BashToolName, params.Command)
 		switch action {
 		case permission.ActionAllow:
 			// Allowed by config, skip interactive permission

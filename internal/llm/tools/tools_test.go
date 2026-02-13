@@ -54,15 +54,15 @@ func TestValidateAndTruncate(t *testing.T) {
 		}
 	})
 
-	t.Run("image response truncated", func(t *testing.T) {
+	t.Run("image response truncated not truncated (will be corrupted)", func(t *testing.T) {
 		largeContent := strings.Repeat("base64data", 200_000)
 		response := NewImageResponse(largeContent)
 
 		if response.Type != ToolResponseTypeImage {
 			t.Errorf("expected image type, got %v", response.Type)
 		}
-		if !strings.Contains(response.Content, "[Output truncated") {
-			t.Error("large image response should be truncated")
+		if strings.Contains(response.Content, "[Output truncated") {
+			t.Error("large image response should not be truncated")
 		}
 	})
 

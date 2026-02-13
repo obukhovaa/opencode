@@ -37,6 +37,7 @@ type TokenUsage struct {
 	CacheReadTokens     int64
 }
 
+// TODO: consider to add accumulaed ThinkingBlock (e.g. anthropic.ThinkingBlock) and use it on TUI.
 type ProviderResponse struct {
 	Content      string
 	ToolCalls    []message.ToolCall
@@ -158,8 +159,16 @@ func NewProvider(providerName models.ModelProvider, opts ...ProviderClientOption
 
 func (p *baseProvider[C]) cleanMessages(messages []message.Message) (cleaned []message.Message) {
 	for _, msg := range messages {
-		// The message has no content
+		// The message has no content parts at all
 		if len(msg.Parts) == 0 {
+			continue
+		}
+		// Skip assistant messages that have no text content and no tool calls
+		// (e.g., canceled messages that only contain a Finish part)
+		if msg.Role == message.Assistant && msg.Content().String() == "" && len(msg.ToolCalls()) == 0 {
+			logging.Warn("Skipping assistant message with no content or tool calls (likely canceled)",
+				"message_id", msg.ID,
+			)
 			continue
 		}
 		cleaned = append(cleaned, msg)
@@ -167,41 +176,122 @@ func (p *baseProvider[C]) cleanMessages(messages []message.Message) (cleaned []m
 	return
 }
 
+// sanitizeToolPairs ensures that tool_use/tool_result message pairs are consistent.
+// It handles two cases:
+// 1. An Assistant message with tool calls not followed by a Tool message → synthesize error tool results
+// 2. A Tool message with tool_result IDs that don't match the preceding Assistant's tool_use IDs → fix the IDs
 func (p *baseProvider[C]) sanitizeToolPairs(messages []message.Message) []message.Message {
 	var result []message.Message
-	for i := range messages {
+	for i := 0; i < len(messages); i++ {
 		msg := messages[i]
-		result = append(result, msg)
 
-		if msg.Role != message.Assistant || len(msg.ToolCalls()) == 0 {
+		if msg.Role == message.Assistant && len(msg.ToolCalls()) > 0 {
+			result = append(result, msg)
+			toolCalls := msg.ToolCalls()
+
+			// Check if the next message is a Tool message
+			if i+1 < len(messages) && messages[i+1].Role == message.Tool {
+				i++
+				toolMsg := messages[i]
+				toolResults := toolMsg.ToolResults()
+
+				// Build a set of valid tool_use IDs from the assistant message
+				validIDs := make(map[string]bool, len(toolCalls))
+				for _, tc := range toolCalls {
+					validIDs[tc.ID] = true
+				}
+
+				// Check if all tool_result IDs are valid
+				allValid := true
+				for _, tr := range toolResults {
+					if !validIDs[tr.ToolCallID] {
+						allValid = false
+						break
+					}
+				}
+
+				if allValid {
+					result = append(result, toolMsg)
+				} else {
+					// Fix the tool_result IDs by matching positionally
+					logging.Warn("Fixing mismatched tool_result IDs",
+						"message_id", toolMsg.ID,
+						"tool_call_count", len(toolCalls),
+						"tool_result_count", len(toolResults),
+					)
+					fixedParts := make([]message.ContentPart, 0, len(toolMsg.Parts))
+					for _, part := range toolMsg.Parts {
+						if tr, ok := part.(message.ToolResult); ok {
+							if !validIDs[tr.ToolCallID] {
+								// Try to match by position
+								resultIdx := -1
+								for j, origTR := range toolResults {
+									if origTR.ToolCallID == tr.ToolCallID {
+										resultIdx = j
+										break
+									}
+								}
+								if resultIdx >= 0 && resultIdx < len(toolCalls) {
+									tr.ToolCallID = toolCalls[resultIdx].ID
+								} else {
+									logging.Warn("Dropping unmatched tool result (more results than tool calls)",
+										"tool_call_id", tr.ToolCallID,
+										"message_id", toolMsg.ID,
+									)
+									continue
+								}
+							}
+							fixedParts = append(fixedParts, tr)
+						} else {
+							fixedParts = append(fixedParts, part)
+						}
+					}
+					toolMsg.Parts = fixedParts
+					result = append(result, toolMsg)
+				}
+			} else {
+				// No following Tool message — synthesize one
+				logging.Warn("Synthesizing missing tool results for orphaned tool_use blocks",
+					"message_id", msg.ID,
+					"tool_call_count", len(toolCalls),
+				)
+				parts := make([]message.ContentPart, len(toolCalls))
+				for j, tc := range toolCalls {
+					parts[j] = message.ToolResult{
+						ToolCallID: tc.ID,
+						Name:       tc.Name,
+						Content:    "Tool execution was interrupted",
+						IsError:    true,
+					}
+				}
+				result = append(result, message.Message{
+					Role:      message.Tool,
+					SessionID: msg.SessionID,
+					Parts:     parts,
+				})
+			}
 			continue
 		}
 
-		toolCalls := msg.ToolCalls()
-		hasMatchingToolResult := false
-		if i+1 < len(messages) && messages[i+1].Role == message.Tool {
-			hasMatchingToolResult = true
-		}
-
-		if !hasMatchingToolResult {
-			logging.Warn("Synthesizing missing tool results for orphaned tool_use blocks",
-				"message_id", msg.ID,
-				"tool_call_count", len(toolCalls),
-			)
-			parts := make([]message.ContentPart, len(toolCalls))
-			for j, tc := range toolCalls {
-				parts[j] = message.ToolResult{
-					ToolCallID: tc.ID,
-					Content:    "Tool execution was interrupted",
-					IsError:    true,
+		// Skip orphaned Tool messages (no preceding Assistant with tool calls)
+		if msg.Role == message.Tool && len(msg.ToolResults()) > 0 {
+			// Check if previous message in result is an Assistant with tool calls
+			hasMatchingAssistant := false
+			if len(result) > 0 {
+				prev := result[len(result)-1]
+				if prev.Role == message.Assistant && len(prev.ToolCalls()) > 0 {
+					hasMatchingAssistant = true
 				}
 			}
-			result = append(result, message.Message{
-				Role:      message.Tool,
-				SessionID: msg.SessionID,
-				Parts:     parts,
-			})
+			if !hasMatchingAssistant {
+				logging.Warn("Skipping orphaned tool result message without preceding assistant tool_use",
+					"message_id", msg.ID,
+				)
+				continue
+			}
 		}
+
+		result = append(result, msg)
 	}
 	return result
 }

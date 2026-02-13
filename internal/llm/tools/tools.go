@@ -21,7 +21,7 @@ type (
 	sessionIDContextKey   string
 	messageIDContextKey   string
 	isTaskAgentContextKey string
-	agentNameContextKey   string
+	agentIDContextKey     string
 )
 
 const (
@@ -31,7 +31,7 @@ const (
 	SessionIDContextKey   sessionIDContextKey   = "session_id"
 	MessageIDContextKey   messageIDContextKey   = "message_id"
 	IsTaskAgentContextKey isTaskAgentContextKey = "is_task_agent"
-	AgentNameContextKey   agentNameContextKey   = "agent_name"
+	AgentIDContextKey     agentIDContextKey     = "agent_id"
 
 	// MaxToolResponseTokens is the maximum number of tokens allowed in a tool response
 	// to prevent context overflow. ~1200KB of text content.
@@ -70,10 +70,10 @@ func NewTextResponse(content string) toolResponse {
 }
 
 func NewImageResponse(content string) toolResponse {
-	return validateAndTruncate(toolResponse{
+	return toolResponse{
 		Type:    ToolResponseTypeImage,
 		Content: content,
-	})
+	}
 }
 
 func NewEmptyResponse() toolResponse {
@@ -137,9 +137,9 @@ func IsTaskAgent(ctx context.Context) bool {
 	return false
 }
 
-// GetAgentName returns the agent name from context, or empty string if not set
-func GetAgentName(ctx context.Context) config.AgentName {
-	agentName := ctx.Value(AgentNameContextKey)
+// GetAgentID returns the agent name from context, or empty string if not set
+func GetAgentID(ctx context.Context) config.AgentName {
+	agentName := ctx.Value(AgentIDContextKey)
 	if agentName == nil {
 		return ""
 	}

@@ -110,10 +110,10 @@ func (g *geminiClient) convertMessages(messages []message.Message) []*genai.Cont
 			}
 
 			if len(assistantParts) == 0 {
-				logging.Warn("Assistant message has no content or tool calls, adding empty text part",
+				logging.Warn("Unexpected: assistant message with no content parts reached provider conversion",
 					"message_index", i,
 				)
-				assistantParts = append(assistantParts, &genai.Part{Text: ""})
+				continue
 			}
 			history = append(history, &genai.Content{
 				Role:  "model",

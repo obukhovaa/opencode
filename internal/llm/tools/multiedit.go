@@ -223,7 +223,7 @@ func (m *multiEditTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	if strings.HasPrefix(params.FilePath, rootDir) {
 		permissionPath = rootDir
 	}
-	action := m.registry.EvaluatePermission(string(GetAgentName(ctx)), MultiEditToolName, params.FilePath)
+	action := m.registry.EvaluatePermission(string(GetAgentID(ctx)), MultiEditToolName, params.FilePath)
 	switch action {
 	case permission.ActionAllow:
 		// Allowed by config

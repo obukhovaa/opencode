@@ -49,28 +49,28 @@ type App struct {
 	watcherWG          sync.WaitGroup
 }
 
-func (a *App) ActiveAgent() agent.Service {
-	if len(a.PrimaryAgentKeys) == 0 {
-		return a.activeAgent
+func (app *App) ActiveAgent() agent.Service {
+	if len(app.PrimaryAgentKeys) == 0 {
+		return app.activeAgent
 	}
-	name := a.PrimaryAgentKeys[a.ActiveAgentIdx]
-	return a.PrimaryAgents[name]
+	name := app.PrimaryAgentKeys[app.ActiveAgentIdx]
+	return app.PrimaryAgents[name]
 }
 
-func (a *App) ActiveAgentName() config.AgentName {
-	if len(a.PrimaryAgentKeys) == 0 {
+func (app *App) ActiveAgentName() config.AgentName {
+	if len(app.PrimaryAgentKeys) == 0 {
 		return config.AgentCoder
 	}
-	return a.PrimaryAgentKeys[a.ActiveAgentIdx]
+	return app.PrimaryAgentKeys[app.ActiveAgentIdx]
 }
 
-func (a *App) SwitchAgent() config.AgentName {
-	if len(a.PrimaryAgentKeys) <= 1 {
-		return a.ActiveAgentName()
+func (app *App) SwitchAgent() config.AgentName {
+	if len(app.PrimaryAgentKeys) <= 1 {
+		return app.ActiveAgentName()
 	}
-	a.ActiveAgentIdx = (a.ActiveAgentIdx + 1) % len(a.PrimaryAgentKeys)
-	name := a.PrimaryAgentKeys[a.ActiveAgentIdx]
-	a.activeAgent = a.PrimaryAgents[name]
+	app.ActiveAgentIdx = (app.ActiveAgentIdx + 1) % len(app.PrimaryAgentKeys)
+	name := app.PrimaryAgentKeys[app.ActiveAgentIdx]
+	app.activeAgent = app.PrimaryAgents[name]
 	return name
 }
 
@@ -188,7 +188,7 @@ func (app *App) RunNonInteractive(ctx context.Context, prompt string, outputForm
 	result := <-done
 	if result.Error != nil {
 		if errors.Is(result.Error, context.Canceled) || errors.Is(result.Error, agent.ErrRequestCancelled) {
-			logging.Info("Agent processing cancelled", "session_id", sess.ID)
+			logging.Warn("Agent processing cancelled", "session_id", sess.ID)
 			return nil
 		}
 		return fmt.Errorf("agent processing failed: %w", result.Error)

@@ -14,6 +14,10 @@ import (
 	"github.com/opencode-ai/opencode/internal/lsp/watcher"
 )
 
+type serverNameContextKey string
+
+const ServerNameContextKey serverNameContextKey = "server_name"
+
 func (app *App) initLSPClients(ctx context.Context) {
 	cfg := config.Get()
 
@@ -132,7 +136,7 @@ func (app *App) createAndStartLSPClient(ctx context.Context, name string, server
 	logging.Info("LSP client initialized", "name", name)
 
 	watchCtx, cancelFunc := context.WithCancel(ctx)
-	watchCtx = context.WithValue(watchCtx, "serverName", name)
+	watchCtx = context.WithValue(watchCtx, ServerNameContextKey, name)
 
 	workspaceWatcher := watcher.NewWorkspaceWatcher(lspClient)
 

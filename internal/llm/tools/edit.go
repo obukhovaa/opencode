@@ -77,7 +77,12 @@ When making edits:
 When making multiple edits to the same file, prefer the MultiEdit tool over multiple calls to this tool.`
 )
 
-func NewEditTool(lspClients map[string]*lsp.Client, permissions permission.Service, files history.Service, reg agentregistry.Registry) BaseTool {
+func NewEditTool(
+	lspClients map[string]*lsp.Client,
+	permissions permission.Service,
+	files history.Service,
+	reg agentregistry.Registry,
+) BaseTool {
 	return &editTool{
 		lspClients:  lspClients,
 		permissions: permissions,
@@ -195,7 +200,7 @@ func (e *editTool) createNewFile(ctx context.Context, filePath, content string) 
 		permissionPath = rootDir
 	}
 
-	action := e.registry.EvaluatePermission(string(GetAgentName(ctx)), EditToolName, filePath)
+	action := e.registry.EvaluatePermission(string(GetAgentID(ctx)), EditToolName, filePath)
 	switch action {
 	case permission.ActionAllow:
 		// Allowed by config
@@ -318,7 +323,7 @@ func (e *editTool) deleteContent(ctx context.Context, filePath, oldString string
 	if strings.HasPrefix(filePath, rootDir) {
 		permissionPath = rootDir
 	}
-	action := e.registry.EvaluatePermission(string(GetAgentName(ctx)), EditToolName, filePath)
+	action := e.registry.EvaluatePermission(string(GetAgentID(ctx)), EditToolName, filePath)
 	switch action {
 	case permission.ActionAllow:
 		// Allowed by config
@@ -450,7 +455,7 @@ func (e *editTool) replaceContent(ctx context.Context, filePath, oldString, newS
 	if strings.HasPrefix(filePath, rootDir) {
 		permissionPath = rootDir
 	}
-	action := e.registry.EvaluatePermission(string(GetAgentName(ctx)), EditToolName, filePath)
+	action := e.registry.EvaluatePermission(string(GetAgentID(ctx)), EditToolName, filePath)
 	switch action {
 	case permission.ActionAllow:
 		// Allowed by config

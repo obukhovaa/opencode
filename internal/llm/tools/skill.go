@@ -75,7 +75,7 @@ func (s *skillTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 	// Check permissions
 	sessionID, _ := GetContextValues(ctx)
-	agentName := GetAgentName(ctx)
+	agentName := GetAgentID(ctx)
 	if !s.checkPermission(sessionID, string(agentName), params.Name, skillInfo.Description) {
 		return NewTextErrorResponse(fmt.Sprintf("Permission denied for skill %q", params.Name)), nil
 	}

@@ -98,6 +98,10 @@ func NewToolSet(
 		}
 	}
 
+	//  BUG: initLSPClients running async and LSPClients is not channel nor thread safe, so it is empty, hence no
+	//  ┃ lsp tool for primary agents  created. We need to solve for that, options: block at start until lsp are started OR make map sync map
+	//  ┃ and pass it around to ensure tools will be able to read lsp client which created and added after tool is created.
+	//	  kind of the same for MCP, but they currently do block startup, which is not nice
 	if len(lspClients) > 0 && reg.IsToolEnabled(agentID, tools.LspToolName) {
 		result = append(result, tools.NewLspTool(lspClients))
 	}

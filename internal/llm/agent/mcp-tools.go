@@ -93,7 +93,7 @@ func (b *mcpTool) Run(ctx context.Context, params tools.ToolCall) (tools.ToolRes
 		return tools.ToolResponse{}, fmt.Errorf("session ID and message ID are required for creating a new file")
 	}
 
-	action := b.reg.EvaluatePermission(string(tools.GetAgentName(ctx)), b.Info().Name, params.Input)
+	action := b.reg.EvaluatePermission(string(tools.GetAgentID(ctx)), b.Info().Name, params.Input)
 	switch action {
 	case permission.ActionAllow:
 	case permission.ActionDeny:

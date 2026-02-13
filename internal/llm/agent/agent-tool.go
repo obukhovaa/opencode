@@ -33,6 +33,7 @@ type TaskParams struct {
 	Prompt       string `json:"prompt"`
 	SubagentType string `json:"subagent_type"`
 	TaskID       string `json:"task_id,omitempty"`
+	TaskTitle    string `json:"task_title,omitempty"`
 }
 
 // Deprecated: use TaskParams instead
@@ -82,8 +83,12 @@ func (b *agentTool) Info() tools.ToolInfo {
 				"type":        "string",
 				"description": "Optional. Provide a task_id from a previous invocation to resume that subagent session with its prior context.",
 			},
+			"task_title": map[string]any{
+				"type":        "string",
+				"description": "A short (up to 80 char long) title describing the task to perform",
+			},
 		},
-		Required: []string{"prompt", "subagent_type"},
+		Required: []string{"prompt", "subagent_type", "task_title"},
 	}
 }
 
@@ -131,7 +136,7 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		}
 	}
 	if !isResumed {
-		taskSession, err = b.sessions.CreateTaskSession(ctx, call.ID, sessionID, fmt.Sprintf("%s task", subagentType))
+		taskSession, err = b.sessions.CreateTaskSession(ctx, call.ID, sessionID, fmt.Sprintf("%s task: %s", subagentType, params.TaskTitle))
 		// Ensure subagents inherit auto approve behaviour for the non-interactive mode
 		if b.permissions.IsAutoApproveSession(sessionID) {
 			b.permissions.AutoApproveSession(taskSession.ID)
@@ -141,14 +146,13 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		}
 	}
 
-	// TODO: apparently there's no parallelism happening when agent wants to run multiple subagents at once
 	done, err := a.Run(ctx, taskSession.ID, params.Prompt)
 	if err != nil {
-		return tools.ToolResponse{}, fmt.Errorf("error generating agent: %s", err)
+		return tools.ToolResponse{}, fmt.Errorf("error while running task agent: %s", err)
 	}
 	result := <-done
 	if result.Error != nil {
-		return tools.ToolResponse{}, fmt.Errorf("error generating agent: %s", result.Error)
+		return tools.ToolResponse{}, fmt.Errorf("error while running task agent: %s", result.Error)
 	}
 
 	response := result.Message
