@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
@@ -10,6 +11,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp"
+	"github.com/opencode-ai/opencode/internal/lsp/install"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/session"
@@ -139,10 +141,8 @@ func NewToolSet(
 		defer logging.RecoverPanic("LSP-goroutine", nil)
 		defer wg.Done()
 		wg.Add(1)
-		//  BUG:| initLSPClients running async and LSPClients is not channel nor thread safe, so it is empty, hence no
-		//   	| lsp tool for primary agents created. A proper lazy load should be implemented to not block startup until
-		//		| it is absolutely necessery, the same approach should be adopted for MCP tools.
-		if len(lspClients) > 0 && reg.IsToolEnabled(agentID, tools.LspToolName) {
+		cfg := config.Get()
+		if len(install.ResolveServers(cfg)) > 0 && reg.IsToolEnabled(agentID, tools.LSPToolName) {
 			result <- tools.NewLspTool(lspClients)
 		}
 	}()
@@ -153,4 +153,18 @@ func NewToolSet(
 	}()
 
 	return result
+}
+
+func (a *agent) resolveTools() []tools.BaseTool {
+	a.toolsOnce.Do(func() {
+		toolSet := make([]tools.BaseTool, 0, 20)
+		toolNames := make([]string, 0, 20)
+		for t := range a.toolsCh {
+			toolSet = append(toolSet, t)
+			toolNames = append(toolNames, t.Info().Name)
+		}
+		a.tools = toolSet
+		logging.Info("Resolved tool set", "agent", a.AgentID(), "tools", strings.Join(toolNames, ", "))
+	})
+	return a.tools
 }

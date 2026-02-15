@@ -73,9 +73,11 @@ type agent struct {
 	sessions session.Service
 	messages message.Service
 
-	agentID  config.AgentName
-	tools    <-chan tools.BaseTool
-	provider provider.Provider
+	agentID   config.AgentName
+	toolsCh   <-chan tools.BaseTool
+	toolsOnce sync.Once
+	tools     []tools.BaseTool
+	provider  provider.Provider
 
 	titleProvider     provider.Provider
 	summarizeProvider provider.Provider
@@ -119,7 +121,7 @@ func NewAgent(
 		provider:          agentProvider,
 		messages:          messages,
 		sessions:          sessions,
-		tools:             agentTools,
+		toolsCh:           agentTools,
 		titleProvider:     titleProvider,
 		summarizeProvider: summarizeProvider,
 		activeRequests:    sync.Map{},
@@ -300,13 +302,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	preserveTail := false
 
 	// Susped to get lazy tools
-	toolSet := make([]tools.BaseTool, 0, 20)
-	toolNames := make([]string, 0, 20)
-	for t := range a.tools {
-		toolSet = append(toolSet, t)
-		toolNames = append(toolNames, t.Info().Name)
-	}
-	logging.Info("Resolved tool set", "agent", a.AgentID(), "tools", strings.Join(toolNames, ", "))
+	toolSet := a.resolveTools()
 
 	for {
 		cycles += 1

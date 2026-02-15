@@ -13,7 +13,7 @@ func TestLspTool_Info(t *testing.T) {
 	tool := NewLspTool(nil)
 	info := tool.Info()
 
-	assert.Equal(t, LspToolName, info.Name)
+	assert.Equal(t, LSPToolName, info.Name)
 	assert.NotEmpty(t, info.Description)
 	assert.Contains(t, info.Parameters, "operation")
 	assert.Contains(t, info.Parameters, "filePath")

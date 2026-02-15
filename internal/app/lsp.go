@@ -20,14 +20,9 @@ const ServerNameContextKey serverNameContextKey = "server_name"
 
 func (app *App) initLSPClients(ctx context.Context) {
 	cfg := config.Get()
-
-	// Resolve which servers to start: merge built-in registry with user config
-	servers := install.ResolveServers(cfg)
-
-	for name, server := range servers {
+	for name, server := range install.ResolveServers(cfg) {
 		go app.startLSPServer(ctx, name, server)
 	}
-
 	logging.Info("LSP clients initialization started in background")
 }
 
@@ -99,7 +94,6 @@ func (app *App) startLSPServer(ctx context.Context, name string, server install.
 func (app *App) createAndStartLSPClient(ctx context.Context, name string, server install.ResolvedServer, command string, args ...string) {
 	logging.Info("Creating LSP client", "name", name, "command", command, "args", args)
 
-	// Build environment for the server
 	lspClient, err := lsp.NewClient(ctx, command, server.Env, args...)
 	if err != nil {
 		logging.Error("Failed to create LSP client for", name, err)
@@ -132,8 +126,6 @@ func (app *App) createAndStartLSPClient(ctx context.Context, name string, server
 		logging.Info("LSP server is ready", "name", name)
 		lspClient.SetServerState(lsp.StateReady)
 	}
-
-	logging.Info("LSP client initialized", "name", name)
 
 	watchCtx, cancelFunc := context.WithCancel(ctx)
 	watchCtx = context.WithValue(watchCtx, ServerNameContextKey, name)

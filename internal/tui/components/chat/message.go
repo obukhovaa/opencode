@@ -255,6 +255,8 @@ func toolName(name string) string {
 		return "Patch"
 	case tools.DeleteToolName:
 		return "Delete"
+	case tools.LSPToolName:
+		return "Code Intelligence"
 	}
 	return name
 }
@@ -289,6 +291,8 @@ func getToolAction(name string) string {
 		return "Preparing patch..."
 	case tools.DeleteToolName:
 		return "Deleting..."
+	case tools.LSPToolName:
+		return "Doing code intelligence..."
 	}
 	return "Working..."
 }
@@ -450,6 +454,10 @@ func renderToolParams(paramWidth int, toolCall message.ToolCall) string {
 		var params tools.SourcegraphParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
 		return renderParams(paramWidth, params.Query)
+	case tools.LSPToolName:
+		var params tools.LSParams
+		json.Unmarshal([]byte(toolCall.Input), &params)
+		return renderParams(paramWidth, params.Path, fmt.Sprintf("ignore: %s", strings.Join(params.Ignore, ", ")))
 	case tools.ViewToolName:
 		var params tools.ViewParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
@@ -555,6 +563,10 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 		return baseStyle.Width(width).Foreground(t.TextMuted()).Render(resultContent)
 	case tools.SourcegraphToolName:
 		return baseStyle.Width(width).Foreground(t.TextMuted()).Render(resultContent)
+	case tools.LSPToolName:
+		metadata := tools.LSPToolMetadata{}
+		json.Unmarshal([]byte(response.Metadata), &metadata)
+		return baseStyle.Width(width).Foreground(t.TextMuted()).Render(metadata.Title)
 	case tools.ViewToolName:
 		metadata := tools.ViewResponseMetadata{}
 		json.Unmarshal([]byte(response.Metadata), &metadata)

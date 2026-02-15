@@ -95,11 +95,11 @@ func (r *mcpRegistry) StartClient(ctx context.Context, name string) (c *client.C
 		)
 	}
 	if err != nil {
-		logging.Error("error creating mcp client", "server", name, "cause", err)
+		logging.Error("Error creating MCP client", "server", name, "cause", err)
 		return nil, err
 	}
 	if err = c.Start(startCtx); err != nil {
-		logging.Error("error starting mcp client", "server", m.Command, "cause", err)
+		logging.Error("Error starting MCP client", "server", m.Command, "cause", err)
 		return nil, err
 	}
 	return c, nil
@@ -171,10 +171,10 @@ func (r *mcpRegistry) getTools(ctx context.Context, name string, m config.MCPSer
 			// happens-before: entry.data and entry.err are
 			// visible directly
 			if entry.expired() && entry.del.CompareAndSwap(false, true) {
-				logging.Debug("mcp client cache expired", "server", name, "ts", entry.ts)
+				logging.Debug("MCP client cache expired", "server", name, "ts", entry.ts)
 				r.mcpTools.Delete(name)
 			} else {
-				logging.Debug("mcp client cache is used", "server", name, "ts", entry.ts)
+				logging.Debug("MCP client cache is used", "server", name, "ts", entry.ts)
 			}
 		}
 	} else {
@@ -184,7 +184,7 @@ func (r *mcpRegistry) getTools(ctx context.Context, name string, m config.MCPSer
 		var c *client.Client
 		c, entry.err = r.StartClient(ctx, name)
 		if entry.err != nil {
-			logging.Error("error starting mcp client", "server", name, "cause", entry.err.Error())
+			logging.Error("Error starting mcp client", "server", name, "cause", entry.err.Error())
 			r.mcpTools.Delete(name)
 			return toolsToAdd
 		}
@@ -199,19 +199,19 @@ func (r *mcpRegistry) getTools(ctx context.Context, name string, m config.MCPSer
 
 		_, entry.err = c.Initialize(ctx, initRequest)
 		if entry.err != nil {
-			logging.Error("error initializing mcp client", "server", name, "cause", entry.err.Error())
+			logging.Error("Error initializing mcp client", "server", name, "cause", entry.err.Error())
 			r.mcpTools.Delete(name)
 			return toolsToAdd
 		}
 		toolsRequest := mcp.ListToolsRequest{}
 		entry.data, entry.err = c.ListTools(ctx, toolsRequest)
 		if entry.err != nil {
-			logging.Error("error listing mcp tools", "server", name, "cause", entry.err.Error())
+			logging.Error("Error listing mcp tools", "server", name, "cause", entry.err.Error())
 			r.mcpTools.Delete(name)
 			return toolsToAdd
 		}
 		entry.ts = time.Now().UnixMilli()
-		logging.Debug("mcp client cache is updated", "server", name, "ts", entry.ts)
+		logging.Debug("MCP client cache is updated", "server", name, "ts", entry.ts)
 	}
 
 	if entry.err != nil {
