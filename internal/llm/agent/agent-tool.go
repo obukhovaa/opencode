@@ -23,6 +23,7 @@ type agentTool struct {
 	permissions permission.Service
 	history     history.Service
 	registry    agentregistry.Registry
+	mcpRegistry MCPRegistry
 }
 
 const (
@@ -121,7 +122,7 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		return tools.NewTextErrorResponse(fmt.Sprintf("unknown subagent type %q. Available: %s", subagentType, strings.Join(names, ", "))), nil
 	}
 
-	a, err := NewAgent(ctx, &subagentInfo, b.sessions, b.messages, b.permissions, b.history, b.lspClients, b.registry)
+	a, err := NewAgent(ctx, &subagentInfo, b.sessions, b.messages, b.permissions, b.history, b.lspClients, b.registry, b.mcpRegistry)
 	if err != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error creating agent: %s", err)
 	}
@@ -198,6 +199,7 @@ func NewAgentTool(
 	permissions permission.Service,
 	history history.Service,
 	reg agentregistry.Registry,
+	mcpReg MCPRegistry,
 ) tools.BaseTool {
 	return &agentTool{
 		sessions:    sessions,
@@ -206,5 +208,6 @@ func NewAgentTool(
 		permissions: permissions,
 		history:     history,
 		registry:    reg,
+		mcpRegistry: mcpReg,
 	}
 }

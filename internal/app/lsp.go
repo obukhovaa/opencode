@@ -140,22 +140,22 @@ func (app *App) createAndStartLSPClient(ctx context.Context, name string, server
 
 	workspaceWatcher := watcher.NewWorkspaceWatcher(lspClient)
 
-	app.cancelFuncsMutex.Lock()
-	app.watcherCancelFuncs = append(app.watcherCancelFuncs, cancelFunc)
-	app.cancelFuncsMutex.Unlock()
+	app.lspCancelFuncsMutex.Lock()
+	app.lspWatcherCancelFuncs = append(app.lspWatcherCancelFuncs, cancelFunc)
+	app.lspCancelFuncsMutex.Unlock()
 
-	app.watcherWG.Add(1)
+	app.lspWatcherWG.Add(1)
 
-	app.clientsMutex.Lock()
+	app.lspClientsMutex.Lock()
 	app.LSPClients[name] = lspClient
-	app.clientsMutex.Unlock()
+	app.lspClientsMutex.Unlock()
 
 	go app.runWorkspaceWatcher(watchCtx, name, workspaceWatcher)
 }
 
 // runWorkspaceWatcher executes the workspace watcher for an LSP client
 func (app *App) runWorkspaceWatcher(ctx context.Context, name string, workspaceWatcher *watcher.WorkspaceWatcher) {
-	defer app.watcherWG.Done()
+	defer app.lspWatcherWG.Done()
 	defer logging.RecoverPanic("LSP-"+name, func() {
 		app.restartLSPClient(ctx, name)
 	})
@@ -174,12 +174,12 @@ func (app *App) restartLSPClient(ctx context.Context, name string) {
 		return
 	}
 
-	app.clientsMutex.Lock()
+	app.lspClientsMutex.Lock()
 	oldClient, exists := app.LSPClients[name]
 	if exists {
 		delete(app.LSPClients, name)
 	}
-	app.clientsMutex.Unlock()
+	app.lspClientsMutex.Unlock()
 
 	if exists && oldClient != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

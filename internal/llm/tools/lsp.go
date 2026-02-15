@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/opencode-ai/opencode/internal/config"
@@ -160,11 +161,8 @@ func findClientsForFile(filePath string, clients map[string]*lsp.Client) []*lsp.
 	var matched []*lsp.Client
 
 	for _, client := range clients {
-		for _, e := range client.GetExtensions() {
-			if e == ext {
-				matched = append(matched, client)
-				break
-			}
+		if slices.Contains(client.GetExtensions(), ext) {
+			matched = append(matched, client)
 		}
 	}
 	return matched

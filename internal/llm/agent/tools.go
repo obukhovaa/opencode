@@ -2,8 +2,7 @@ package agent
 
 import (
 	"context"
-	"strings"
-	"time"
+	"sync"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -51,9 +50,10 @@ func NewToolSet(
 	lspClients map[string]*lsp.Client,
 	sessions session.Service,
 	messages message.Service,
-) []tools.BaseTool {
+	mcpRegistry MCPRegistry,
+) <-chan tools.BaseTool {
 	agentID := info.ID
-	var result []tools.BaseTool
+	result := make(chan tools.BaseTool, 100)
 
 	createTool := func(name string) tools.BaseTool {
 		switch name {
@@ -86,7 +86,7 @@ func NewToolSet(
 		case tools.BashToolName:
 			return tools.NewBashTool(permissions, reg)
 		case TaskToolName:
-			return NewAgentTool(sessions, messages, lspClients, permissions, historyService, reg)
+			return NewAgentTool(sessions, messages, lspClients, permissions, historyService, reg, mcpRegistry)
 		default:
 			return nil
 		}
@@ -95,22 +95,15 @@ func NewToolSet(
 	for _, name := range viewerToolNames {
 		if reg.IsToolEnabled(agentID, name) {
 			if t := createTool(name); t != nil {
-				result = append(result, t)
+				result <- t
 			}
 		}
-	}
-
-	//  BUG:| initLSPClients running async and LSPClients is not channel nor thread safe, so it is empty, hence no
-	//   	| lsp tool for primary agents created. A proper lazy load should be implemented to not block startup until
-	//		| it is absolutely necessery, the same approach should be adopted for MCP tools.
-	if len(lspClients) > 0 && reg.IsToolEnabled(agentID, tools.LspToolName) {
-		result = append(result, tools.NewLspTool(lspClients))
 	}
 
 	for _, name := range editorToolNames {
 		if reg.IsToolEnabled(agentID, name) {
 			if t := createTool(name); t != nil {
-				result = append(result, t)
+				result <- t
 			}
 		}
 	}
@@ -119,7 +112,7 @@ func NewToolSet(
 		if reg.IsToolEnabled(agentID, name) {
 			if info.Mode == config.AgentModeAgent {
 				if t := createTool(name); t != nil {
-					result = append(result, t)
+					result <- t
 				}
 			} else {
 				logging.Warn("Subagent can't have manager tools enabled, tool will be ignored", "agent", agentID, "tool", name)
@@ -127,21 +120,37 @@ func NewToolSet(
 		}
 	}
 
-	// MCP tools — shared instances, filter per agent
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	mcpTools := GetMcpTools(ctxWithTimeout, permissions, reg)
-	for _, mt := range mcpTools {
-		if reg.IsToolEnabled(agentID, mt.Info().Name) {
-			result = append(result, mt)
-		}
-	}
+	wg := sync.WaitGroup{}
 
-	names := make([]string, len(result))
-	for i, t := range result {
-		names[i] = t.Info().Name
-	}
-	logging.Info("Resolved tool set", "agent", agentID, "tools", strings.Join(names, ", "))
+	// MCP tools — shared instances, filter per agent
+	go func() {
+		defer logging.RecoverPanic("MCP-goroutine", nil)
+		defer wg.Done()
+		wg.Add(1)
+		for mt := range mcpRegistry.LoadTools(ctx, nil) {
+			if reg.IsToolEnabled(agentID, mt.Info().Name) {
+				result <- mt
+			}
+		}
+	}()
+
+	// LSP tools – can be properly initialised only after servers up and running
+	go func() {
+		defer logging.RecoverPanic("LSP-goroutine", nil)
+		defer wg.Done()
+		wg.Add(1)
+		//  BUG:| initLSPClients running async and LSPClients is not channel nor thread safe, so it is empty, hence no
+		//   	| lsp tool for primary agents created. A proper lazy load should be implemented to not block startup until
+		//		| it is absolutely necessery, the same approach should be adopted for MCP tools.
+		if len(lspClients) > 0 && reg.IsToolEnabled(agentID, tools.LspToolName) {
+			result <- tools.NewLspTool(lspClients)
+		}
+	}()
+
+	go func() {
+		wg.Wait()
+		close(result)
+	}()
 
 	return result
 }

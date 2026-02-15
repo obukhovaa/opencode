@@ -74,7 +74,7 @@ type agent struct {
 	messages message.Service
 
 	agentID  config.AgentName
-	tools    []tools.BaseTool
+	tools    <-chan tools.BaseTool
 	provider provider.Provider
 
 	titleProvider     provider.Provider
@@ -92,8 +92,9 @@ func NewAgent(
 	historyService history.Service,
 	lspClients map[string]*lsp.Client,
 	reg agentregistry.Registry,
+	mcpReg MCPRegistry,
 ) (Service, error) {
-	agentTools := NewToolSet(ctx, agentInfo, reg, permissions, historyService, lspClients, sessions, messages)
+	agentTools := NewToolSet(ctx, agentInfo, reg, permissions, historyService, lspClients, sessions, messages, mcpReg)
 
 	agentProvider, err := createAgentProvider(agentInfo.ID)
 	if err != nil {
@@ -298,6 +299,15 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	cycles := 0
 	preserveTail := false
 
+	// Susped to get lazy tools
+	toolSet := make([]tools.BaseTool, 0, 20)
+	toolNames := make([]string, 0, 20)
+	for t := range a.tools {
+		toolSet = append(toolSet, t)
+		toolNames = append(toolNames, t.Info().Name)
+	}
+	logging.Info("Resolved tool set", "agent", a.AgentID(), "tools", strings.Join(toolNames, ", "))
+
 	for {
 		cycles += 1
 		// Check for cancellation before each iteration
@@ -308,7 +318,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 			// Continue processing
 		}
 
-		etaTokens, shouldTriggerAutoCompaction := a.provider.CountTokens(ctx, AutoCompactionThreshold, msgHistory, a.tools)
+		etaTokens, shouldTriggerAutoCompaction := a.provider.CountTokens(ctx, AutoCompactionThreshold, msgHistory, toolSet)
 		// Check if auto-compaction should be triggered before each model call
 		// This is crucial for long tool use loops that can exceed context limits
 		// NOTE: since tool may provide output exceeding context limit when combined with existing history,
@@ -347,7 +357,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 					msgHistory = append(msgs, userMsg)
 				}
 
-				etaTokens, shouldTriggerAutoCompaction = a.provider.CountTokens(ctx, AutoCompactionThreshold, msgHistory, a.tools)
+				etaTokens, shouldTriggerAutoCompaction = a.provider.CountTokens(ctx, AutoCompactionThreshold, msgHistory, toolSet)
 				if shouldTriggerAutoCompaction {
 					logging.Warn(
 						"Context compacted, but still exceed context threshold",
@@ -371,7 +381,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		// Ensure we don't run into API limitation (max_token to be generated + current tokens count)
 		a.provider.AdjustMaxTokens(etaTokens)
 
-		agentMessage, toolResults, err = a.streamAndHandleEvents(ctx, sessionID, msgHistory)
+		agentMessage, toolResults, err = a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet)
 		if err != nil {
 			a.createErrorToolResults(agentMessage)
 			if errors.Is(err, context.Canceled) {
@@ -429,7 +439,7 @@ func (a *agent) createUserMessage(ctx context.Context, sessionID, content string
 	})
 }
 
-func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msgHistory []message.Message) (message.Message, *message.Message, error) {
+func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msgHistory []message.Message, toolSet []tools.BaseTool) (message.Message, *message.Message, error) {
 	// Check if this is a task session (has a parent session)
 	session, err := a.sessions.Get(ctx, sessionID)
 	if err == nil && session.ParentSessionID != "" {
@@ -437,8 +447,8 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	}
 
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
-	ctx = context.WithValue(ctx, tools.AgentIDContextKey, a.agentID)
-	eventChan := a.provider.StreamResponse(ctx, msgHistory, a.tools)
+	ctx = context.WithValue(ctx, tools.AgentIDContextKey, a.AgentID())
+	eventChan := a.provider.StreamResponse(ctx, msgHistory, toolSet)
 
 	assistantMsg, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
 		Role:  message.Assistant,
@@ -481,7 +491,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		default:
 			// Continue processing
 			var tool tools.BaseTool
-			for _, availableTool := range a.tools {
+			for _, availableTool := range toolSet {
 				if availableTool.Info().Name == toolCall.Name {
 					tool = availableTool
 					break

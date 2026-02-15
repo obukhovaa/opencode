@@ -33,6 +33,7 @@ type App struct {
 	History     history.Service
 	Permissions permission.Service
 	Registry    agentregistry.Registry
+	MCPRegistry agent.MCPRegistry
 
 	activeAgent agent.Service
 
@@ -40,13 +41,11 @@ type App struct {
 	PrimaryAgentKeys []config.AgentName
 	ActiveAgentIdx   int
 
-	LSPClients map[string]*lsp.Client
-
-	clientsMutex sync.RWMutex
-
-	watcherCancelFuncs []context.CancelFunc
-	cancelFuncsMutex   sync.Mutex
-	watcherWG          sync.WaitGroup
+	LSPClients            map[string]*lsp.Client
+	lspClientsMutex       sync.RWMutex
+	lspWatcherCancelFuncs []context.CancelFunc
+	lspCancelFuncsMutex   sync.Mutex
+	lspWatcherWG          sync.WaitGroup
 }
 
 func (app *App) ActiveAgent() agent.Service {
@@ -80,15 +79,17 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 	messages := message.NewService(q)
 	files := history.NewService(q, conn)
 	reg := agentregistry.GetRegistry()
+	perm := permission.NewPermissionService()
 
 	app := &App{
 		Sessions:      sessions,
 		Messages:      messages,
 		History:       files,
-		Permissions:   permission.NewPermissionService(),
+		Permissions:   perm,
 		Registry:      reg,
 		LSPClients:    make(map[string]*lsp.Client),
 		PrimaryAgents: make(map[config.AgentName]agent.Service),
+		MCPRegistry:   agent.NewMCPRegistry(perm, reg),
 	}
 
 	// Initialize theme based on configuration
@@ -114,6 +115,7 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 			app.History,
 			app.LSPClients,
 			app.Registry,
+			app.MCPRegistry,
 		)
 		if err != nil {
 			logging.Error("Failed to create agent", "agent", agentInfo.ID, "error", err)
@@ -216,18 +218,18 @@ func (app *App) RunNonInteractive(ctx context.Context, prompt string, outputForm
 // Shutdown performs a clean shutdown of the application
 func (app *App) Shutdown() {
 	// Cancel all watcher goroutines
-	app.cancelFuncsMutex.Lock()
-	for _, cancel := range app.watcherCancelFuncs {
+	app.lspCancelFuncsMutex.Lock()
+	for _, cancel := range app.lspWatcherCancelFuncs {
 		cancel()
 	}
-	app.cancelFuncsMutex.Unlock()
-	app.watcherWG.Wait()
+	app.lspCancelFuncsMutex.Unlock()
+	app.lspWatcherWG.Wait()
 
 	// Perform additional cleanup for LSP clients
-	app.clientsMutex.RLock()
+	app.lspClientsMutex.RLock()
 	clients := make(map[string]*lsp.Client, len(app.LSPClients))
 	maps.Copy(clients, app.LSPClients)
-	app.clientsMutex.RUnlock()
+	app.lspClientsMutex.RUnlock()
 
 	for name, client := range clients {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -243,17 +245,17 @@ func (app *App) ForceShutdown() {
 	logging.Info("Starting force shutdown")
 
 	// Cancel all watcher goroutines immediately
-	app.cancelFuncsMutex.Lock()
-	for _, cancel := range app.watcherCancelFuncs {
+	app.lspCancelFuncsMutex.Lock()
+	for _, cancel := range app.lspWatcherCancelFuncs {
 		cancel()
 	}
-	app.cancelFuncsMutex.Unlock()
+	app.lspCancelFuncsMutex.Unlock()
 
 	// Don't wait for watchers in force shutdown - kill LSP clients directly
-	app.clientsMutex.RLock()
+	app.lspClientsMutex.RLock()
 	clients := make(map[string]*lsp.Client, len(app.LSPClients))
 	maps.Copy(clients, app.LSPClients)
-	app.clientsMutex.RUnlock()
+	app.lspClientsMutex.RUnlock()
 
 	for name, client := range clients {
 		// Use a very short timeout for force shutdown
