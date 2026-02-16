@@ -183,7 +183,7 @@ func registerBuiltins(agents map[string]AgentInfo, cfg *config.Config) {
 		{
 			ID:          config.AgentWorkhorse,
 			Name:        "Workhorse Agent",
-			Description: "Autonomous coding subagent that receives a task and works until completion. Has full tool access like the coder agent, including bash commands. Use this for tasks that require writing or modifying code.",
+			Description: "Autonomous coding agent that receives a task and works until completion. Has full tool access like the coder agent, including bash commands. Use this for tasks that require writing or modifying code.",
 			Mode:        config.AgentModeSubagent,
 			Native:      true,
 			Tools: map[string]bool{

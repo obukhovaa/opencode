@@ -39,7 +39,7 @@ func lspsConfigured(width int) string {
 	cfg := config.Get()
 	servers := install.ResolveServers(cfg)
 
-	title := "LSP Configuration"
+	title := "LSP"
 	title = ansi.Truncate(title, width, "…")
 
 	t := theme.CurrentTheme()

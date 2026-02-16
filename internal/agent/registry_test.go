@@ -225,7 +225,7 @@ func TestMergeMarkdownIntoExisting(t *testing.T) {
 
 	md := AgentInfo{
 		Description: "Override description",
-		Color:       "#00FF00",
+		Color:       "secondary",
 		Prompt:      "Custom prompt",
 	}
 
@@ -234,7 +234,7 @@ func TestMergeMarkdownIntoExisting(t *testing.T) {
 	if existing.Description != "Override description" {
 		t.Errorf("Description not merged, got %q", existing.Description)
 	}
-	if existing.Color != "#00FF00" {
+	if existing.Color != "secondary" {
 		t.Errorf("Color not merged, got %q", existing.Color)
 	}
 	if existing.Prompt != "Custom prompt" {

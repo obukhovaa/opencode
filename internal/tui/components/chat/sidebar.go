@@ -178,15 +178,28 @@ func (m *sidebarCmp) sessionSection() string {
 		Bold(true).
 		Render("Session")
 
+	provider := baseStyle.
+		Foreground(t.TextMuted()).
+		Render(fmt.Sprintf(" [%s]", providerInfo))
+
 	sessionValue := baseStyle.
 		Foreground(t.Text()).
+		Render(fmt.Sprintf(": %s", m.session.Title))
+
+	sessionView := baseStyle.
 		Width(m.width - lipgloss.Width(sessionKey)).
-		Render(fmt.Sprintf(": %s [%s]", m.session.Title, providerInfo))
+		Render(
+			lipgloss.JoinHorizontal(
+				lipgloss.Left,
+				sessionValue,
+				provider,
+			),
+		)
 
 	return lipgloss.JoinHorizontal(
 		lipgloss.Left,
 		sessionKey,
-		sessionValue,
+		sessionView,
 	)
 }
 
