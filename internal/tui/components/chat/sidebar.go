@@ -110,8 +110,6 @@ func (m *sidebarCmp) View() string {
 				" ",
 				m.projectSection(),
 				" ",
-				m.providerSection(),
-				" ",
 				m.sessionSection(),
 				" ",
 				lspsConfigured(m.width),
@@ -145,7 +143,7 @@ func (m *sidebarCmp) projectSection() string {
 	)
 }
 
-func (m *sidebarCmp) providerSection() string {
+func (m *sidebarCmp) sessionSection() string {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
 	cfg := config.Get()
@@ -175,27 +173,6 @@ func (m *sidebarCmp) providerSection() string {
 		}
 	}
 
-	providerKey := baseStyle.
-		Foreground(t.Primary()).
-		Bold(true).
-		Render("Provider")
-
-	providerValue := baseStyle.
-		Foreground(t.Text()).
-		Width(m.width - lipgloss.Width(providerKey)).
-		Render(fmt.Sprintf(": %s", providerInfo))
-
-	return lipgloss.JoinHorizontal(
-		lipgloss.Left,
-		providerKey,
-		providerValue,
-	)
-}
-
-func (m *sidebarCmp) sessionSection() string {
-	t := theme.CurrentTheme()
-	baseStyle := styles.BaseStyle()
-
 	sessionKey := baseStyle.
 		Foreground(t.Primary()).
 		Bold(true).
@@ -204,7 +181,7 @@ func (m *sidebarCmp) sessionSection() string {
 	sessionValue := baseStyle.
 		Foreground(t.Text()).
 		Width(m.width - lipgloss.Width(sessionKey)).
-		Render(fmt.Sprintf(": %s", m.session.Title))
+		Render(fmt.Sprintf(": %s [%s]", m.session.Title, providerInfo))
 
 	return lipgloss.JoinHorizontal(
 		lipgloss.Left,

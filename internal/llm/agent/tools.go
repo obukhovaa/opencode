@@ -125,10 +125,10 @@ func NewToolSet(
 	wg := sync.WaitGroup{}
 
 	// MCP tools — shared instances, filter per agent
+	wg.Add(1)
 	go func() {
 		defer logging.RecoverPanic("MCP-goroutine", nil)
 		defer wg.Done()
-		wg.Add(1)
 		for mt := range mcpRegistry.LoadTools(ctx, nil) {
 			if reg.IsToolEnabled(agentID, mt.Info().Name) {
 				result <- mt
@@ -137,10 +137,10 @@ func NewToolSet(
 	}()
 
 	// LSP tools – can be properly initialised only after servers up and running
+	wg.Add(1)
 	go func() {
 		defer logging.RecoverPanic("LSP-goroutine", nil)
 		defer wg.Done()
-		wg.Add(1)
 		cfg := config.Get()
 		if len(install.ResolveServers(cfg)) > 0 && reg.IsToolEnabled(agentID, tools.LSPToolName) {
 			result <- tools.NewLspTool(lspClients)
