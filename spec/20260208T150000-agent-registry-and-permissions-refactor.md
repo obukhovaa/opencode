@@ -403,15 +403,15 @@ Each subagent has a unique color badge.
 
 ## Success Criteria
 
-- [ ] `AgentRegistry` interface is implemented with full test coverage for discovery and merge
-- [ ] Permission evaluation works for all tools with both simple and granular rules
-- [ ] All six native agents (coder, summarizer, explorer, descriptor, workhorse, hivemind) are registered and functional
-- [ ] Task tool accepts `subagent_type` and `task_id`, correctly spawns the right subagent
-- [ ] TUI `tab` key cycles through primary agents; status bar shows active agent name
-- [ ] TUI shows colored subagent badges during task invocations with new/resumed indication
-- [ ] Old config using `task`/`title` agent names still works with deprecation warnings
-- [ ] `make test` passes
-- [ ] README and schema are updated
+- [x] `AgentRegistry` interface is implemented with full test coverage for discovery and merge
+- [x] Permission evaluation works for all tools with both simple and granular rules
+- [x] All six native agents (coder, summarizer, explorer, descriptor, workhorse, hivemind) are registered and functional
+- [x] Task tool accepts `subagent_type` and `task_id`, correctly spawns the right subagent
+- [x] TUI `tab` key cycles through primary agents; status bar shows active agent name
+- [x] TUI shows colored subagent badges during task invocations with new/resumed indication
+- [x] Old config using `task`/`title` agent names still works with deprecation warnings
+- [x] `make test` passes
+- [x] README and schema are updated
 
 ## References
 

@@ -42,6 +42,7 @@ type App struct {
 	ActiveAgentIdx   int
 
 	LSPClients            map[string]*lsp.Client
+	LSPClientsCh          chan *lsp.Client
 	lspClientsMutex       sync.RWMutex
 	lspWatcherCancelFuncs []context.CancelFunc
 	lspCancelFuncsMutex   sync.Mutex
@@ -88,6 +89,7 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 		Permissions:   perm,
 		Registry:      reg,
 		LSPClients:    make(map[string]*lsp.Client),
+		LSPClientsCh:  make(chan *lsp.Client, 50),
 		PrimaryAgents: make(map[config.AgentName]agent.Service),
 		MCPRegistry:   agent.NewMCPRegistry(perm, reg),
 	}

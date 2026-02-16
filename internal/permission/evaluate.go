@@ -1,6 +1,10 @@
 package permission
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/opencode-ai/opencode/internal/logging"
+)
 
 type Action string
 
@@ -54,6 +58,7 @@ func IsToolEnabled(toolName string, toolsConfig map[string]bool) bool {
 		return enabled
 	}
 	for pattern, enabled := range toolsConfig {
+		logging.Debug("checking tool", "tool", toolName, "conf", toolsConfig)
 		if MatchWildcard(pattern, toolName) {
 			return enabled
 		}

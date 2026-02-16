@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/config"
@@ -20,9 +22,23 @@ const ServerNameContextKey serverNameContextKey = "server_name"
 
 func (app *App) initLSPClients(ctx context.Context) {
 	cfg := config.Get()
+	wg := sync.WaitGroup{}
 	for name, server := range install.ResolveServers(cfg) {
-		go app.startLSPServer(ctx, name, server)
+		wg.Add(1)
+		go func() {
+			lspName := "LSP-" + name
+			defer logging.RecoverPanic(lspName, func() {
+				logging.ErrorPersist(fmt.Sprintf("Panic while starting %s", lspName))
+			})
+			defer wg.Done()
+			app.startLSPServer(ctx, name, server)
+		}()
 	}
+	go func() {
+		wg.Wait()
+		logging.Info("LSP clients initialization completed")
+		close(app.LSPClientsCh)
+	}()
 	logging.Info("LSP clients initialization started in background")
 }
 
@@ -140,6 +156,7 @@ func (app *App) createAndStartLSPClient(ctx context.Context, name string, server
 
 	app.lspClientsMutex.Lock()
 	app.LSPClients[name] = lspClient
+	app.LSPClientsCh <- lspClient
 	app.lspClientsMutex.Unlock()
 
 	go app.runWorkspaceWatcher(watchCtx, name, workspaceWatcher)
