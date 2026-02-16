@@ -1045,7 +1045,12 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-func createAgentProvider(agentName config.AgentName) (provider.Provider, error) {
+func createAgentProvider(agentName config.AgentName) (agentProvider provider.Provider, err error) {
+	defer func() {
+		if err == nil {
+			logging.Info("Agent provider created", "agent", agentName, "model", agentProvider.Model())
+		}
+	}()
 	cfg := config.Get()
 	agentConfig, ok := cfg.Agents[agentName]
 	if !ok {
@@ -1121,7 +1126,7 @@ func createAgentProvider(agentName config.AgentName) (provider.Provider, error) 
 			provider.WithAnthropicOptions(anthropicOpts...),
 		)
 	}
-	agentProvider, err := provider.NewProvider(
+	agentProvider, err = provider.NewProvider(
 		model.Provider,
 		opts...,
 	)

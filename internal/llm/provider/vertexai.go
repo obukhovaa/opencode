@@ -31,7 +31,6 @@ type vertexOptions struct {
 func newVertexAIClient(opts providerClientOptions) VertexAIClient {
 	for k := range models.VertexAIAnthropicModels {
 		if k == opts.model.ID {
-			logging.Info("Using Anthropic client with VertexAI provider", "model", opts.model)
 			location := os.Getenv("VERTEXAI_LOCATION")
 			locationForCounting := os.Getenv("VERTEXAI_LOCATION_COUNT")
 			if len(locationForCounting) == 0 {
@@ -86,7 +85,6 @@ func newVertexAIClient(opts providerClientOptions) VertexAIClient {
 		return nil
 	}
 
-	logging.Info("Using Gemini client with VertexAI provider", "model", opts.model, "config", client.ClientConfig())
 	return &geminiClient{
 		providerOptions: opts,
 		options:         geminiOpts,

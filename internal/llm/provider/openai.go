@@ -55,7 +55,6 @@ func newOpenAIClient(opts providerClientOptions) OpenAIClient {
 	}
 
 	client := openai.NewClient(openaiClientOptions...)
-	logging.Info("Using OpenAI client", "model", opts.model)
 	return &openaiClient{
 		providerOptions: opts,
 		options:         openaiOpts,

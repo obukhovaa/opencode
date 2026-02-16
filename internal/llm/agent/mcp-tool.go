@@ -136,7 +136,7 @@ func (r *mcpRegistry) LoadTools(ctx context.Context, filter *MCPRegistryFiler) <
 }
 
 const (
-	ttl = 30 * time.Second
+	ttl = 30 * time.Minute
 )
 
 type toolsCacheEntry struct {
