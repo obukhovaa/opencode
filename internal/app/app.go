@@ -41,6 +41,9 @@ type App struct {
 	PrimaryAgentKeys []config.AgentName
 	ActiveAgentIdx   int
 
+	InitialSession   *session.Session
+	InitialSessionID string
+
 	LSPClients            map[string]*lsp.Client
 	LSPClientsCh          chan *lsp.Client
 	lspClientsMutex       sync.RWMutex
@@ -72,6 +75,17 @@ func (app *App) SwitchAgent() config.AgentName {
 	name := app.PrimaryAgentKeys[app.ActiveAgentIdx]
 	app.activeAgent = app.PrimaryAgents[name]
 	return name
+}
+
+func (app *App) SetActiveAgent(agentID config.AgentName) error {
+	for i, key := range app.PrimaryAgentKeys {
+		if key == agentID {
+			app.ActiveAgentIdx = i
+			app.activeAgent = app.PrimaryAgents[key]
+			return nil
+		}
+	}
+	return fmt.Errorf("agent %q not found among primary agents", agentID)
 }
 
 func New(ctx context.Context, conn *sql.DB) (*App, error) {
@@ -176,18 +190,32 @@ func (app *App) RunNonInteractive(ctx context.Context, prompt string, outputForm
 	}
 	title := titlePrefix + titleSuffix
 
-	sess, err := app.Sessions.Create(ctx, title)
-	if err != nil {
-		return fmt.Errorf("failed to create session for non-interactive mode: %w", err)
+	var sess session.Session
+	if app.InitialSession != nil {
+		sess = *app.InitialSession
+		logging.Info("Resuming existing session for non-interactive run", "session_id", sess.ID)
+	} else if app.InitialSessionID != "" {
+		var createErr error
+		sess, createErr = app.Sessions.CreateWithID(ctx, app.InitialSessionID, title)
+		if createErr != nil {
+			return fmt.Errorf("failed to create session for non-interactive mode: %w", createErr)
+		}
+		logging.Info("Created session with provided ID for non-interactive run", "session_id", sess.ID)
+	} else {
+		var createErr error
+		sess, createErr = app.Sessions.Create(ctx, title)
+		if createErr != nil {
+			return fmt.Errorf("failed to create session for non-interactive mode: %w", createErr)
+		}
+		logging.Info("Created session for non-interactive run", "session_id", sess.ID)
 	}
-	logging.Info("Created session for non-interactive run", "session_id", sess.ID)
 
 	// Automatically approve all permission requests for this non-interactive session
 	app.Permissions.AutoApproveSession(sess.ID)
 
 	done, err := app.ActiveAgent().Run(ctx, sess.ID, prompt)
 	if err != nil {
-		return fmt.Errorf("failed to start agent processing stream: %w", err)
+		return fmt.Errorf("failed to start agent processing stream for session %s: %w", sess.ID, err)
 	}
 
 	result := <-done
@@ -196,7 +224,7 @@ func (app *App) RunNonInteractive(ctx context.Context, prompt string, outputForm
 			logging.Warn("Agent processing cancelled", "session_id", sess.ID)
 			return nil
 		}
-		return fmt.Errorf("agent processing failed: %w", result.Error)
+		return fmt.Errorf("agent processing failed for session %s: %w", sess.ID, result.Error)
 	}
 
 	// Stop spinner before printing output

@@ -55,6 +55,10 @@ func (p *chatPage) Init() tea.Cmd {
 		p.layout.Init(),
 		p.completionDialog.Init(),
 	}
+	if p.session.ID != "" {
+		cmds = append(cmds, p.setSidebar())
+		cmds = append(cmds, util.CmdHandler(chat.SessionSelectedMsg(p.session)))
+	}
 	return tea.Batch(cmds...)
 }
 
@@ -155,17 +159,24 @@ func (p *chatPage) clearSidebar() tea.Cmd {
 func (p *chatPage) sendMessage(text string, attachments []message.Attachment) tea.Cmd {
 	var cmds []tea.Cmd
 	if p.session.ID == "" {
-		session, err := p.app.Sessions.Create(context.Background(), "New Session")
+		var sess session.Session
+		var err error
+		if p.app.InitialSessionID != "" {
+			sess, err = p.app.Sessions.CreateWithID(context.Background(), p.app.InitialSessionID, "New Session")
+			p.app.InitialSessionID = ""
+		} else {
+			sess, err = p.app.Sessions.Create(context.Background(), "New Session")
+		}
 		if err != nil {
 			return util.ReportError(err)
 		}
 
-		p.session = session
+		p.session = sess
 		cmd := p.setSidebar()
 		if cmd != nil {
 			cmds = append(cmds, cmd)
 		}
-		cmds = append(cmds, util.CmdHandler(chat.SessionSelectedMsg(session)))
+		cmds = append(cmds, util.CmdHandler(chat.SessionSelectedMsg(sess)))
 	}
 
 	_, err := p.app.ActiveAgent().Run(context.Background(), p.session.ID, text, attachments...)
@@ -224,10 +235,17 @@ func NewChatPage(app *app.App) tea.Model {
 		chat.NewEditorCmp(app),
 		layout.WithBorder(true, false, false, false),
 	)
+
+	var sess session.Session
+	if app.InitialSession != nil {
+		sess = *app.InitialSession
+	}
+
 	return &chatPage{
 		app:              app,
 		editor:           editorContainer,
 		messages:         messagesContainer,
+		session:          sess,
 		completionDialog: completionDialog,
 		layout: layout.NewSplitPane(
 			layout.WithLeftPanel(messagesContainer),

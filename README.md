@@ -54,6 +54,8 @@ go install github.com/obukhovaa/opencode@latest
 opencode                        # Start TUI
 opencode -d                     # Debug mode
 opencode -c /path/to/project    # Set working directory
+opencode -a hivemind            # Start with a specific agent
+opencode -s <session-id>        # Resume a specific session
 ```
 
 ### Non-Interactive Mode
@@ -74,6 +76,8 @@ All permissions are auto-approved in non-interactive mode.
 | `--debug` | `-d` | Enable debug mode |
 | `--cwd` | `-c` | Set working directory |
 | `--prompt` | `-p` | Non-interactive single prompt |
+| `--agent` | `-a` | Agent ID to use (e.g. `coder`, `hivemind`) |
+| `--session` | `-s` | Session ID to resume or create |
 | `--output-format` | `-f` | Output format: `text` (default), `json` |
 | `--quiet` | `-q` | Hide spinner in non-interactive mode |
 
