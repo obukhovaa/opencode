@@ -55,7 +55,8 @@ opencode                        # Start TUI
 opencode -d                     # Debug mode
 opencode -c /path/to/project    # Set working directory
 opencode -a hivemind            # Start with a specific agent
-opencode -s <session-id>        # Resume a specific session
+opencode -s <session-id>        # Resume or create a session
+opencode -s <session-id> -D     # Delete session and start fresh
 ```
 
 ### Non-Interactive Mode
@@ -78,6 +79,7 @@ All permissions are auto-approved in non-interactive mode.
 | `--prompt` | `-p` | Non-interactive single prompt |
 | `--agent` | `-a` | Agent ID to use (e.g. `coder`, `hivemind`) |
 | `--session` | `-s` | Session ID to resume or create |
+| `--delete` | `-D` | Delete the session specified by `--session` before starting |
 | `--output-format` | `-f` | Output format: `text` (default), `json` |
 | `--quiet` | `-q` | Hide spinner in non-interactive mode |
 

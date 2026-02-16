@@ -45,6 +45,9 @@ to assist developers in writing, debugging, and understanding code directly from
   # Resume a specific session
   opencode -s <session-id>
 
+  # Delete a session and start fresh with the same ID
+  opencode -s <session-id> -D
+
   # Run a single non-interactive prompt
   opencode -p "Explain the use of context in Go"
 
@@ -70,6 +73,11 @@ to assist developers in writing, debugging, and understanding code directly from
 		quiet, _ := cmd.Flags().GetBool("quiet")
 		agentID, _ := cmd.Flags().GetString("agent")
 		sessionID, _ := cmd.Flags().GetString("session")
+		deleteSession, _ := cmd.Flags().GetBool("delete")
+
+		if deleteSession && sessionID == "" {
+			return fmt.Errorf("--delete requires --session/-s to be specified")
+		}
 
 		// Validate format option
 		if !format.IsValid(outputFormat) {
@@ -141,6 +149,14 @@ to assist developers in writing, debugging, and understanding code directly from
 			sess, _err := app.Sessions.Get(ctx, sessionID)
 			if _err != nil {
 				logging.Info("Session not found, will create with provided ID", "session_id", sessionID)
+			} else if deleteSession {
+				if delErr := app.Sessions.Delete(ctx, sessionID); delErr != nil {
+					if spinner != nil {
+						spinner.Stop()
+					}
+					return fmt.Errorf("failed to delete session %q: %w", sessionID, delErr)
+				}
+				logging.Info("Deleted existing session, will recreate with same ID", "session_id", sessionID)
 			} else {
 				app.InitialSession = &sess
 			}
@@ -326,6 +342,7 @@ func init() {
 	rootCmd.Flags().StringP("prompt", "p", "", "Prompt to run in non-interactive mode")
 	rootCmd.Flags().StringP("agent", "a", "", "Agent ID to use (e.g. coder, hivemind)")
 	rootCmd.Flags().StringP("session", "s", "", "Session ID to resume or create")
+	rootCmd.Flags().BoolP("delete", "D", false, "Delete the session specified by --session/-s before starting")
 
 	// Add format flag with validation logic
 	rootCmd.Flags().StringP("output-format", "f", format.Text.String(),

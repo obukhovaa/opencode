@@ -75,7 +75,25 @@ func newRegistry() Registry {
 
 	globalPerms := buildGlobalPerms(cfg)
 
-	logging.Debug("Agent registry loaded", "agents", agents, "global", globalPerms)
+	for _, a := range agents {
+		path := "default"
+		if a.Location != "" {
+			path = a.Location
+		}
+		var tools any
+		if len(a.Tools) == 0 {
+			tools = "default"
+		} else {
+			tools = a.Tools
+		}
+		var permissions any
+		if len(a.Permission) == 0 {
+			permissions = "default"
+		} else {
+			permissions = a.Permission
+		}
+		logging.Info("Agent discovered", "agentID", a.ID, "mode", a.Mode, "model", a.Model, "path", path, "tools", tools, "permissions", permissions)
+	}
 	return &registry{
 		agents:      agents,
 		globalPerms: globalPerms,
@@ -308,12 +326,8 @@ func mergePermissions(base, overlay map[string]any) map[string]any {
 		return base
 	}
 	merged := make(map[string]any, len(base))
-	for k, v := range base {
-		merged[k] = v
-	}
-	for k, v := range overlay {
-		merged[k] = v
-	}
+	maps.Copy(merged, base)
+	maps.Copy(merged, overlay)
 	return merged
 }
 
