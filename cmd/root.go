@@ -79,8 +79,9 @@ to assist developers in writing, debugging, and understanding code directly from
 			return fmt.Errorf("--delete requires --session/-s to be specified")
 		}
 
-		// Validate format option
-		if !format.IsValid(outputFormat) {
+		// Parse format option (may include schema)
+		parsedOutputFormat, cliSchema, fmtErr := format.ParseWithSchema(outputFormat)
+		if fmtErr != nil {
 			return fmt.Errorf("invalid format option: %s\n%s", outputFormat, format.GetHelpText())
 		}
 
@@ -124,7 +125,7 @@ to assist developers in writing, debugging, and understanding code directly from
 		// Create main context for the application
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		app, err := app.New(ctx, conn)
+		app, err := app.New(ctx, conn, cliSchema)
 		if err != nil {
 			if spinner != nil {
 				spinner.Stop()
@@ -169,7 +170,7 @@ to assist developers in writing, debugging, and understanding code directly from
 
 		// Non-interactive mode
 		if prompt != "" {
-			_err := app.RunNonInteractive(ctx, prompt, outputFormat, quiet)
+			_err := app.RunNonInteractive(ctx, prompt, parsedOutputFormat, quiet)
 			app.ForceShutdown()
 			return _err
 		}
@@ -346,7 +347,7 @@ func init() {
 
 	// Add format flag with validation logic
 	rootCmd.Flags().StringP("output-format", "f", format.Text.String(),
-		"Output format for non-interactive mode (text, json)")
+		"Output format for non-interactive mode (text, json, json_schema='{...}')")
 
 	// Add quiet flag to hide spinner in non-interactive mode
 	rootCmd.Flags().BoolP("quiet", "q", false, "Hide spinner in non-interactive mode")

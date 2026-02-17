@@ -257,6 +257,8 @@ func toolName(name string) string {
 		return "Delete"
 	case tools.LSPToolName:
 		return "Code Intelligence"
+	case tools.StructOutputToolName:
+		return "Structured Output"
 	}
 	return name
 }
@@ -293,6 +295,8 @@ func getToolAction(name string) string {
 		return "Deleting..."
 	case tools.LSPToolName:
 		return "Doing code intelligence..."
+	case tools.StructOutputToolName:
+		return "Formatting output..."
 	}
 	return "Working..."
 }
@@ -612,6 +616,12 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 		truncDiff := truncateHeight(metadata.Diff, maxResultHeight)
 		formattedDiff, _ := diff.FormatDiff(truncDiff, diff.WithTotalWidth(width))
 		return formattedDiff
+	case tools.StructOutputToolName:
+		resultContent = fmt.Sprintf("```json\n%s\n```", resultContent)
+		return styles.ForceReplaceBackgroundWithLipgloss(
+			toMarkdown(resultContent, true, width),
+			t.Background(),
+		)
 	default:
 		resultContent = fmt.Sprintf("```text\n%s\n```", resultContent)
 		return styles.ForceReplaceBackgroundWithLipgloss(

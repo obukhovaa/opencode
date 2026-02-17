@@ -13,34 +13,39 @@ import (
 	"github.com/opencode-ai/opencode/internal/logging"
 )
 
+const structuredOutputPrompt = `
+IMPORTANT: The user has requested structured output. You MUST use the struct_output tool to provide your final response. Do NOT respond with plain text - you MUST call the struct_output tool with your answer formatted according to the schema.`
+
 func GetAgentPrompt(agentName config.AgentName, provider models.ModelProvider) string {
-	// Check registry for custom agent prompt first
 	reg := agentregistry.GetRegistry()
+
+	var basePrompt string
 	if info, ok := reg.Get(agentName); ok && info.Prompt != "" {
-		basePrompt := info.Prompt
-		contextContent := getContextFromPaths()
-		if contextContent != "" {
-			return fmt.Sprintf("%s\n\n# Project-Specific Context\n Make sure to follow the instructions in the context below\n%s", basePrompt, contextContent)
+		basePrompt = info.Prompt
+	} else {
+		switch agentName {
+		case config.AgentCoder:
+			basePrompt = CoderPrompt(provider)
+		case config.AgentDescriptor:
+			basePrompt = DescriptorPrompt(provider)
+		case config.AgentExplorer:
+			basePrompt = ExplorerPrompt(provider)
+		case config.AgentSummarizer:
+			basePrompt = SummarizerPrompt(provider)
+		case config.AgentWorkhorse:
+			basePrompt = WorkhorsePrompt(provider)
+		case config.AgentHivemind:
+			basePrompt = HivemindPrompt(provider)
+		default:
+			basePrompt = "You are a helpful assistant"
 		}
-		return basePrompt
 	}
 
-	basePrompt := ""
-	switch agentName {
-	case config.AgentCoder:
-		basePrompt = CoderPrompt(provider)
-	case config.AgentDescriptor:
-		basePrompt = DescriptorPrompt(provider)
-	case config.AgentExplorer:
-		basePrompt = ExplorerPrompt(provider)
-	case config.AgentSummarizer:
-		basePrompt = SummarizerPrompt(provider)
-	case config.AgentWorkhorse:
-		basePrompt = WorkhorsePrompt(provider)
-	case config.AgentHivemind:
-		basePrompt = HivemindPrompt(provider)
-	default:
-		basePrompt = "You are a helpful assistant"
+	// Append structured output instruction if the agent has the tool enabled
+	if info, ok := reg.Get(agentName); ok {
+		if info.Output != nil && info.Output.Schema != nil && reg.IsToolEnabled(agentName, "struct_output") {
+			basePrompt += structuredOutputPrompt
+		}
 	}
 
 	contextContent := getContextFromPaths()

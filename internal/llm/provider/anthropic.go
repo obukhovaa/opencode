@@ -241,6 +241,7 @@ func (a *anthropicClient) preparedMessages(messages []anthropic.MessageParam, to
 		}
 	}
 
+	// TODO: Consider adding ToolChoice in case of agent having output schema set, however it limits tool calls
 	return anthropic.MessageNewParams{
 		Model:        anthropic.Model(a.providerOptions.model.APIModel),
 		MaxTokens:    a.providerOptions.maxTokens,

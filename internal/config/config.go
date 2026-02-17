@@ -52,6 +52,11 @@ const (
 	AgentHivemind   AgentName = "hivemind"
 )
 
+// AgentOutput defines structured output configuration for an agent.
+type AgentOutput struct {
+	Schema map[string]any `json:"schema,omitempty"`
+}
+
 // Agent defines configuration for different LLM models and their token limits.
 type Agent struct {
 	Model           models.ModelID  `json:"model"`
@@ -66,6 +71,7 @@ type Agent struct {
 	Prompt          string          `json:"prompt,omitempty"`
 	Color           string          `json:"color,omitempty"`
 	Hidden          bool            `json:"hidden,omitempty"`
+	Output          *AgentOutput    `json:"output,omitempty"`
 }
 
 // Provider defines configuration for an LLM provider.

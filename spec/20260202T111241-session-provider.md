@@ -1,5 +1,9 @@
 # Session Provider Feature
 
+**Date**: 2026-02-04
+**Status**: Implemented
+**Author**: AI-assisted
+
 ## Overview
 
 This feature enables OpenCode to support multiple database backends for session storage, allowing users to choose between local SQLite (default) or remote MySQL database. This provides flexibility for different deployment scenarios, from single-user local development to multi-user team environments with centralized session storage.

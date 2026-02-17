@@ -19,6 +19,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/format"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -43,6 +44,8 @@ type App struct {
 
 	InitialSession   *session.Session
 	InitialSessionID string
+
+	cliOutputSchema map[string]any
 
 	LSPClients            map[string]*lsp.Client
 	LSPClientsCh          chan *lsp.Client
@@ -88,7 +91,7 @@ func (app *App) SetActiveAgent(agentID config.AgentName) error {
 	return fmt.Errorf("agent %q not found among primary agents", agentID)
 }
 
-func New(ctx context.Context, conn *sql.DB) (*App, error) {
+func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any) (*App, error) {
 	q := db.NewQuerier(conn)
 	sessions := session.NewService(q)
 	messages := message.NewService(q)
@@ -122,6 +125,9 @@ func New(ctx context.Context, conn *sql.DB) (*App, error) {
 
 	for _, agentInfo := range primaryAgents {
 		agentInfoCopy := agentInfo
+		if cliSchema != nil {
+			agentInfoCopy.Output = &agentregistry.Output{Schema: cliSchema}
+		}
 		primaryAgent, err := agent.NewAgent(
 			ctx,
 			&agentInfoCopy,
@@ -168,7 +174,7 @@ func (app *App) initTheme() {
 }
 
 // RunNonInteractive handles the execution flow when a prompt is provided via CLI flag.
-func (app *App) RunNonInteractive(ctx context.Context, prompt string, outputFormat string, quiet bool) error {
+func (app *App) RunNonInteractive(ctx context.Context, prompt string, outputFormat format.OutputFormat, quiet bool) error {
 	logging.Info("Running in non-interactive mode")
 
 	// Start spinner if not in quiet mode
@@ -234,7 +240,15 @@ func (app *App) RunNonInteractive(ctx context.Context, prompt string, outputForm
 
 	// Get the text content from the response
 	content := "No content available"
-	if result.Message.Content().String() != "" {
+
+	// For json_schema format, try to extract the struct_output tool result
+	if outputFormat == format.JSONSchema {
+		if structOutput := extractStructOutput(ctx, app.Messages, sess.ID); structOutput != "" {
+			content = structOutput
+		} else {
+			content = "{\"empty\":true}"
+		}
+	} else if result.Message.Content().String() != "" {
 		content = result.Message.Content().String()
 	}
 
@@ -243,6 +257,24 @@ func (app *App) RunNonInteractive(ctx context.Context, prompt string, outputForm
 	logging.Info("Non-interactive run completed", "session_id", sess.ID)
 
 	return nil
+}
+
+// extractStructOutput searches session messages for a struct_output tool result
+// and returns its content, or empty string if not found.
+func extractStructOutput(ctx context.Context, msgs message.Service, sessionID string) string {
+	allMsgs, err := msgs.List(ctx, sessionID)
+	if err != nil {
+		return ""
+	}
+	// Search from newest to oldest for the last struct_output result
+	for i := len(allMsgs) - 1; i >= 0; i-- {
+		for _, tr := range allMsgs[i].ToolResults() {
+			if tr.Name == tools.StructOutputToolName && !tr.IsError {
+				return tr.Content
+			}
+		}
+	}
+	return ""
 }
 
 // Shutdown performs a clean shutdown of the application

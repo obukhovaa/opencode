@@ -16,6 +16,10 @@ import (
 	"github.com/opencode-ai/opencode/internal/permission"
 )
 
+type Output struct {
+	Schema map[string]any `json:"schema,omitempty" yaml:"schema,omitempty"`
+}
+
 type AgentInfo struct {
 	ID              string           `yaml:"-"`
 	Name            string           `yaml:"name,omitempty"`
@@ -30,6 +34,7 @@ type AgentInfo struct {
 	Prompt          string           `yaml:"-"`
 	Permission      map[string]any   `yaml:"permission,omitempty"`
 	Tools           map[string]bool  `yaml:"tools,omitempty"`
+	Output          *Output          `yaml:"output,omitempty"`
 	Location        string           `yaml:"-"`
 }
 
@@ -313,6 +318,12 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 			}
 			maps.Copy(existing.Tools, agentCfg.Tools)
 		}
+		if agentCfg.Output != nil && agentCfg.Output.Schema != nil {
+			if existing.Output == nil {
+				existing.Output = &Output{}
+			}
+			existing.Output.Schema = agentCfg.Output.Schema
+		}
 
 		agents[name] = existing
 	}
@@ -358,6 +369,12 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 			existing.Tools = make(map[string]bool)
 		}
 		maps.Copy(existing.Tools, md.Tools)
+	}
+	if md.Output != nil && md.Output.Schema != nil {
+		if existing.Output == nil {
+			existing.Output = &Output{}
+		}
+		existing.Output.Schema = md.Output.Schema
 	}
 	if md.Hidden {
 		existing.Hidden = true

@@ -182,7 +182,7 @@ TUI: Rendered as ```json code block (like bash tool output).
 
 ### Phase 1: Core Types and Validation
 
-- [ ] **1.1** Add `Output` struct to `AgentInfo` in `internal/agent/registry.go`:
+- [x] **1.1** Add `Output` struct to `AgentInfo` in `internal/agent/registry.go`:
   ```go
   type Output struct {
       Schema map[string]any `json:"schema,omitempty" yaml:"schema,omitempty"`
@@ -194,7 +194,7 @@ TUI: Rendered as ```json code block (like bash tool output).
   }
   ```
 
-- [ ] **1.2** Add `JSON_SCHEMA` output format to `internal/format/format.go`:
+- [x] **1.2** Add `JSON_SCHEMA` output format to `internal/format/format.go`:
   ```go
   const (
       Text       OutputFormat = "text"
@@ -204,11 +204,11 @@ TUI: Rendered as ```json code block (like bash tool output).
   ```
   Add `ValidateJSONSchema(schema map[string]any) error` function that checks the schema has a valid `type` field at minimum. Update `Parse` to handle `json_schema` (it won't be a simple string — needs special handling since the value contains the schema). Add `ParseWithSchema(s string) (OutputFormat, map[string]any, error)` that extracts both format and schema when `json_schema='{...}'` is provided. Update `FormatOutput` to handle `JSONSchema` format by returning content as-is (plain JSON, no wrapper).
 
-- [ ] **1.3** Update `SupportedFormats` and `GetHelpText` to include `json_schema`.
+- [x] **1.3** Update `SupportedFormats` and `GetHelpText` to include `json_schema`.
 
 ### Phase 2: Agent Registry Integration
 
-- [ ] **2.1** Update `mergeMarkdownIntoExisting` in `registry.go` to merge `Output` field from YAML frontmatter:
+- [x] **2.1** Update `mergeMarkdownIntoExisting` in `registry.go` to merge `Output` field from YAML frontmatter:
   ```go
   if from.Output != nil && from.Output.Schema != nil {
       if into.Output == nil {
@@ -218,7 +218,7 @@ TUI: Rendered as ```json code block (like bash tool output).
   }
   ```
 
-- [ ] **2.2** Update `applyConfigOverrides` to merge `Output` from config `Agent` struct. Add `Output` field to `config.Agent`:
+- [x] **2.2** Update `applyConfigOverrides` to merge `Output` from config `Agent` struct. Add `Output` field to `config.Agent`:
   ```go
   // config.go
   type Agent struct {
@@ -227,11 +227,11 @@ TUI: Rendered as ```json code block (like bash tool output).
   }
   ```
 
-- [ ] **2.3** Add `Output` to the `config.Agent` struct in `internal/config/config.go` and ensure JSON (de)serialization works. The `Output` type should be defined in the agent package and referenced from config, or a parallel type defined in config and mapped during registry loading.
+- [x] **2.3** Add `Output` to the `config.Agent` struct in `internal/config/config.go` and ensure JSON (de)serialization works. The `Output` type should be defined in the agent package and referenced from config, or a parallel type defined in config and mapped during registry loading.
 
 ### Phase 3: CLI Flag Extension
 
-- [ ] **3.1** Extend `--output-format` flag in `cmd/root.go` to accept `json_schema='{...}'`:
+- [x] **3.1** Extend `--output-format` flag in `cmd/root.go` to accept `json_schema='{...}'`:
   ```go
   outputFormat, _ := cmd.Flags().GetString("output-format")
   
@@ -243,7 +243,7 @@ TUI: Rendered as ```json code block (like bash tool output).
   ```
   Pass `schema` to `app.RunNonInteractive` (add parameter) or store on `App` struct.
 
-- [ ] **3.2** In `internal/app/app.go`, when creating primary agents (around line 125), if a schema was provided via CLI flag, set it on each `agentInfoCopy`:
+- [x] **3.2** In `internal/app/app.go`, when creating primary agents (around line 125), if a schema was provided via CLI flag, set it on each `agentInfoCopy`:
   ```go
   for _, agentInfo := range primaryAgents {
       agentInfoCopy := agentInfo
@@ -255,13 +255,13 @@ TUI: Rendered as ```json code block (like bash tool output).
   ```
   This overrides any schema set in config/markdown for primary agents. Subagents are not affected.
 
-- [ ] **3.3** Update `FormatOutput` in `RunNonInteractive` to handle `json_schema` format — output the raw structured content directly without wrapping.
+- [x] **3.3** Update `FormatOutput` in `RunNonInteractive` to handle `json_schema` format — output the raw structured content directly without wrapping.
 
-- [ ] **3.4** Update README documentation for the `--output-format` flag to include `json_schema`.
+- [x] **3.4** Update README documentation for the `--output-format` flag to include `json_schema`.
 
 ### Phase 4: StructOutput Tool
 
-- [ ] **4.1** Create `internal/llm/tools/struct_output.go`:
+- [x] **4.1** Create `internal/llm/tools/struct_output.go`:
   ```go
   const StructOutputToolName = "struct_output"
   
@@ -286,7 +286,7 @@ TUI: Rendered as ```json code block (like bash tool output).
   }
   ```
 
-- [ ] **4.2** Implement `Info()` — returns `ToolInfo` with dynamic `Parameters` built from schema:
+- [x] **4.2** Implement `Info()` — returns `ToolInfo` with dynamic `Parameters` built from schema:
   ```go
   func (s *structOutputTool) Info() ToolInfo {
       return ToolInfo{
@@ -298,7 +298,7 @@ TUI: Rendered as ```json code block (like bash tool output).
   }
   ```
 
-- [ ] **4.3** Implement `Run()` — validates input against schema, returns plain JSON text:
+- [x] **4.3** Implement `Run()` — validates input against schema, returns plain JSON text:
   ```go
   func (s *structOutputTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
       var result map[string]any
@@ -314,16 +314,16 @@ TUI: Rendered as ```json code block (like bash tool output).
   }
   ```
 
-- [ ] **4.4** Implement `StructOutputParams()` method to expose the dynamic parameters externally:
+- [x] **4.4** Implement `StructOutputParams()` method to expose the dynamic parameters externally:
   ```go
   func (s *structOutputTool) StructOutputParams() map[string]any {
       return s.structParams
   }
   ```
 
-- [ ] **4.5** Add `buildParamsFromSchema` helper — converts a JSON schema `properties` into the `map[string]any` format used by `ToolInfo.Parameters`. If the schema is an object type with `properties`, extract those directly. Otherwise, wrap the entire schema as a single `output` parameter.
+- [x] **4.5** Add `buildParamsFromSchema` helper — converts a JSON schema `properties` into the `map[string]any` format used by `ToolInfo.Parameters`. If the schema is an object type with `properties`, extract those directly. Otherwise, wrap the entire schema as a single `output` parameter.
 
-- [ ] **4.6** Update TUI rendering in `internal/tui/components/chat/message.go` — add a case for `StructOutputToolName`:
+- [x] **4.6** Update TUI rendering in `internal/tui/components/chat/message.go` — add a case for `StructOutputToolName`:
   ```go
   case tools.StructOutputToolName:
       resultContent = fmt.Sprintf("```json\n%s\n```", resultContent)
@@ -335,7 +335,7 @@ TUI: Rendered as ```json code block (like bash tool output).
 
 ### Phase 5: Tool Injection
 
-- [ ] **5.1** In `internal/llm/agent/tools.go` `NewToolSet`, after building the standard toolset, check if `info.Output` is set and schema is valid:
+- [x] **5.1** In `internal/llm/agent/tools.go` `NewToolSet`, after building the standard toolset, check if `info.Output` is set and schema is valid:
   ```go
   // After all other tools are loaded, before closing channel
   if info.Output != nil && info.Output.Schema != nil {
@@ -346,11 +346,11 @@ TUI: Rendered as ```json code block (like bash tool output).
   }
   ```
 
-- [ ] **5.2** Add `StructOutputToolName` to the tool name constants in `tools.go`.
+- [x] **5.2** Add `StructOutputToolName` to the tool name constants in `tools.go`.
 
 ### Phase 6: System Prompt Injection
 
-- [ ] **6.1** In `internal/llm/prompt/prompt.go` `GetAgentPrompt`, after building the base prompt, check if the agent has the `struct_output` tool enabled and inject the instruction:
+- [x] **6.1** In `internal/llm/prompt/prompt.go` `GetAgentPrompt`, after building the base prompt, check if the agent has the `struct_output` tool enabled and inject the instruction:
   ```go
   const structuredOutputPrompt = `
   IMPORTANT: The user has requested structured output. You MUST use the StructOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructOutput tool with your answer formatted according to the schema.`
@@ -359,9 +359,9 @@ TUI: Rendered as ```json code block (like bash tool output).
 
 ### Phase 7: Documentation
 
-- [ ] **7.1** Update `README.md` tools table to include `struct_output` tool.
+- [x] **7.1** Update `README.md` tools table to include `struct_output` tool.
 
-- [ ] **7.2** Create `docs/structured-output.md` with:
+- [x] **7.2** Create `docs/structured-output.md` with:
   - Overview of the feature
   - Defining schema via CLI flag (`-f json_schema='{...}'`)
   - Defining schema per-agent in `.opencode.json`
@@ -436,17 +436,17 @@ TUI: Rendered as ```json code block (like bash tool output).
 
 ## Success Criteria
 
-- [ ] `AgentInfo` has optional `Output.Schema` field, configurable via config JSON, YAML frontmatter, and CLI flag
-- [ ] `format.go` supports `json_schema` output format with schema validation
-- [ ] CLI flag `-f json_schema='{...}'` is parsed, validated, and passed to primary agents
-- [ ] `struct_output` tool is dynamically injected when `Output.Schema` is set and tool is enabled
-- [ ] Tool validates input as JSON and returns it as plain text
-- [ ] System prompt includes structured output instruction when tool is active
-- [ ] TUI renders struct_output results as JSON code blocks
-- [ ] Tool can be disabled via `tools: {"struct_output": false}` even when schema is set
-- [ ] CLI flag schema does not affect subagents
-- [ ] README and docs are updated
-- [ ] Existing tests pass, new tests cover tool creation, validation, and injection logic
+- [x] `AgentInfo` has optional `Output.Schema` field, configurable via config JSON, YAML frontmatter, and CLI flag
+- [x] `format.go` supports `json_schema` output format with schema validation
+- [x] CLI flag `-f json_schema='{...}'` is parsed, validated, and passed to primary agents
+- [x] `struct_output` tool is dynamically injected when `Output.Schema` is set and tool is enabled
+- [x] Tool validates input as JSON and returns it as plain text
+- [x] System prompt includes structured output instruction when tool is active
+- [x] TUI renders struct_output results as JSON code blocks
+- [x] Tool can be disabled via `tools: {"struct_output": false}` even when schema is set
+- [x] CLI flag schema does not affect subagents
+- [x] README and docs are updated
+- [x] Existing tests pass, new tests cover tool creation, validation, and injection logic
 
 ## References
 

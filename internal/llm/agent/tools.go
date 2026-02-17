@@ -122,6 +122,14 @@ func NewToolSet(
 		}
 	}
 
+	// Inject struct_output tool if the agent has an output schema configured
+	if info.Output != nil && info.Output.Schema != nil {
+		if reg.IsToolEnabled(agentID, tools.StructOutputToolName) {
+			result <- tools.NewStructOutputTool(info.Output.Schema)
+			logging.Info("Using structured output", "agent", info.ID, "schema", info.Output.Schema)
+		}
+	}
+
 	wg := sync.WaitGroup{}
 
 	// MCP tools — shared instances, filter per agent

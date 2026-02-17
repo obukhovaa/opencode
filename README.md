@@ -377,6 +377,7 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | `sourcegraph` | Search public repositories |
 | `task` | Run sub-tasks with a subagent (supports `subagent_type` and `task_id` for resumption) |
 | `skill` | Load agent skills on-demand |
+| `struct_output` | Emit structured JSON conforming to a user-supplied schema |
 
 ## Keyboard Shortcuts
 
@@ -422,6 +423,7 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | Custom Commands | [docs/custom-commands.md](docs/custom-commands.md) |
 | Session Providers | [docs/session-providers.md](docs/session-providers.md) |
 | LSP Servers | [docs/lsp.md](docs/lsp.md) |
+| Structured Output | [docs/structured-output.md](docs/structured-output.md) |
 
 ## Development
 
