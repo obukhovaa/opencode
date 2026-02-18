@@ -19,7 +19,6 @@ import (
 	"github.com/opencode-ai/opencode/internal/format"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
-	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -243,10 +242,11 @@ func (app *App) RunNonInteractive(ctx context.Context, prompt string, outputForm
 
 	// For json_schema format, try to extract the struct_output tool result
 	if outputFormat == format.JSONSchema {
-		if structOutput := extractStructOutput(ctx, app.Messages, sess.ID); structOutput != "" {
-			content = structOutput
+		if result.StructOutput != nil {
+			content = result.StructOutput.Content
 		} else {
-			content = "{\"empty\":true}"
+			logging.Error("Failed to get structured output response for a provided schema", "error", content)
+			content = `{"error": "no structured output result foind"}`
 		}
 	} else if result.Message.Content().String() != "" {
 		content = result.Message.Content().String()
@@ -255,26 +255,7 @@ func (app *App) RunNonInteractive(ctx context.Context, prompt string, outputForm
 	fmt.Println(format.FormatOutput(content, outputFormat))
 
 	logging.Info("Non-interactive run completed", "session_id", sess.ID)
-
 	return nil
-}
-
-// extractStructOutput searches session messages for a struct_output tool result
-// and returns its content, or empty string if not found.
-func extractStructOutput(ctx context.Context, msgs message.Service, sessionID string) string {
-	allMsgs, err := msgs.List(ctx, sessionID)
-	if err != nil {
-		return ""
-	}
-	// Search from newest to oldest for the last struct_output result
-	for i := len(allMsgs) - 1; i >= 0; i-- {
-		for _, tr := range allMsgs[i].ToolResults() {
-			if tr.Name == tools.StructOutputToolName && !tr.IsError {
-				return tr.Content
-			}
-		}
-	}
-	return ""
 }
 
 // Shutdown performs a clean shutdown of the application

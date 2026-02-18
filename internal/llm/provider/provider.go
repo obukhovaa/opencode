@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -315,7 +316,9 @@ func (p *baseProvider[C]) CountTokens(ctx context.Context, threshold float64, me
 	estimatedTokens, err := p.client.countTokens(ctx, messages, tools)
 	// Fallback to local estimation
 	if err != nil {
-		logging.Warn("Provider doesn't support countTokens endpoint, using local strategy for max_tokens", "model", p.options.model.Name, "cause", err.Error())
+		if !errors.Is(err, context.Canceled) {
+			logging.Warn("Provider doesn't support countTokens endpoint, using local strategy for max_tokens", "model", p.options.model.Name, "cause", err.Error())
+		}
 		estimatedTokens = message.EstimateTokens(messages, tools)
 	}
 	contextWindow := p.Model().ContextWindow

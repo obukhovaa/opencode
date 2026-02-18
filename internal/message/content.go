@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 )
 
 type MessageRole string
@@ -180,13 +181,30 @@ func (m *Message) ToolCalls() []ToolCall {
 }
 
 func (m *Message) ToolResults() []ToolResult {
+	return m.ToolResultsByToolName("")
+}
+
+func (m *Message) ToolResultsByToolName(name string) []ToolResult {
 	toolResults := make([]ToolResult, 0)
 	for _, part := range m.Parts {
-		if c, ok := part.(ToolResult); ok {
+		if c, ok := part.(ToolResult); ok && (name == "" || c.Name == name) {
 			toolResults = append(toolResults, c)
 		}
 	}
 	return toolResults
+}
+
+// StructOutput searches session message parts for a struct_output tool result
+// ok is indicating error result (which could also mean no result)
+func (m *Message) StructOutput() (result *ToolResult, ok bool) {
+	for _, tr := range m.ToolResultsByToolName(tools.StructOutputToolName) {
+		if !tr.IsError {
+			return &tr, true
+		} else {
+			result = &tr
+		}
+	}
+	return result, false
 }
 
 func (m *Message) IsFinished() bool {

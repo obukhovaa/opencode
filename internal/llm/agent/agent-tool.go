@@ -10,6 +10,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
+	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
@@ -35,6 +36,14 @@ type TaskParams struct {
 	SubagentType string `json:"subagent_type"`
 	TaskID       string `json:"task_id,omitempty"`
 	TaskTitle    string `json:"task_title,omitempty"`
+}
+
+type TaskResponseMetadata struct {
+	TaskID         string `json:"task_id"`
+	SubagentType   string `json:"subagent_type"`
+	SubagentName   string `json:"subagent_name"`
+	IsResumed      bool   `json:"is_resumed"`
+	IsStructOutput bool   `json:"is_struct_output"`
 }
 
 // Deprecated: use TaskParams instead
@@ -160,6 +169,12 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 	if response.Role != message.Assistant {
 		return tools.NewTextErrorResponse("no response"), nil
 	}
+	responseContent := result.Message.Content().String()
+	isStructOutput := result.StructOutput != nil && result.StructOutput.Content != ""
+	if isStructOutput {
+		responseContent = result.StructOutput.Content
+	}
+	logging.Debug("Task completed", "subagent", subagentType, "structured", isStructOutput, "error", result.Error)
 
 	updatedSession, err := b.sessions.Get(ctx, taskSession.ID)
 	if err != nil {
@@ -182,14 +197,15 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		agentName = subagentInfo.Name
 	}
 
-	metadata := map[string]string{
-		"task_id":       taskSession.ID,
-		"subagent_type": subagentType,
-		"subagent_name": agentName,
-		"is_resumed":    fmt.Sprintf("%v", isResumed),
-	}
-
-	return tools.WithResponseMetadata(tools.NewTextResponse(response.Content().String()), metadata), nil
+	return tools.WithResponseMetadata(
+		tools.NewTextResponse(responseContent),
+		TaskResponseMetadata{
+			taskSession.ID,
+			subagentType,
+			agentName,
+			isResumed,
+			isStructOutput,
+		}), nil
 }
 
 func NewAgentTool(

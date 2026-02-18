@@ -18,12 +18,21 @@ When a JSON schema is provided, OpenCode:
 Use the `-f` / `--output-format` flag with `json_schema=`:
 
 ```bash
-# Analyze a repo and get structured output
+# Inline JSON schema
 opencode -p "Analyze this repo" -f json_schema='{"type":"object","properties":{"summary":{"type":"string"},"issues":{"type":"array","items":{"type":"object","properties":{"file":{"type":"string"},"description":{"type":"string"}}}}}}'
 
-# Simpler example
-opencode -p "Rate this code" -f json_schema='{"type":"object","properties":{"score":{"type":"number"},"feedback":{"type":"string"}},"required":["score","feedback"]}'
+# Load schema from a file
+opencode -p "Rate this code" -f json_schema=./schema.json
+
+# Use $ref to point to a file
+opencode -p "Rate this code" -f json_schema='{"$ref":"./schema.json"}'
 ```
+
+The schema value after `json_schema=` is resolved in this order:
+
+1. **Inline JSON** — if it parses as valid JSON, use it directly
+2. **`$ref` redirect** — if the parsed JSON has a root-level `"$ref"` key with a file path string, load the entire schema from that file (other fields in the original JSON are ignored)
+3. **File path** — if it doesn't parse as JSON, treat it as a file path and read the schema from that file
 
 The schema must be valid JSON with at least a `type` field.
 
@@ -108,6 +117,8 @@ The `--output-format` flag supports three formats:
 |--------|-------------|
 | `text` | Plain text output (default) |
 | `json` | Wraps response in `{"response": "..."}` |
-| `json_schema='{...}'` | Validates output against the provided JSON schema |
+| `json_schema='{...}'` | Inline JSON schema |
+| `json_schema=/path/to/file.json` | Load schema from file |
+| `json_schema='{"$ref":"/path/to/file.json"}'` | Load schema via `$ref` |
 
 In non-interactive mode with `json_schema`, the output is the raw structured JSON from the `struct_output` tool call — no wrapper object is added.

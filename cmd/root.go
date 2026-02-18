@@ -347,7 +347,7 @@ func init() {
 
 	// Add format flag with validation logic
 	rootCmd.Flags().StringP("output-format", "f", format.Text.String(),
-		"Output format for non-interactive mode (text, json, json_schema='{...}')")
+		"Output format for non-interactive mode (text, json, json_schema='{...}' or json_schema=/path/to/schema.json)")
 
 	// Add quiet flag to hide spinner in non-interactive mode
 	rootCmd.Flags().BoolP("quiet", "q", false, "Hide spinner in non-interactive mode")

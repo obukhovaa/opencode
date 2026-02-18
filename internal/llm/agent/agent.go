@@ -50,6 +50,9 @@ type AgentEvent struct {
 	Message message.Message
 	Error   error
 
+	// When has structured output
+	StructOutput *message.ToolResult
+
 	// When summarizing
 	SessionID string
 	Progress  string
@@ -289,6 +292,11 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	if session.SummaryMessageID != "" {
 		msgs = a.filterMessagesFromSummary(msgs, session.SummaryMessageID)
 	}
+	if session.ParentSessionID != "" {
+		ctx = context.WithValue(ctx, tools.IsTaskAgentContextKey, true)
+	}
+	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
+	ctx = context.WithValue(ctx, tools.AgentIDContextKey, a.AgentID())
 
 	userMsg, err := a.createUserMessage(ctx, sessionID, content, attachmentParts)
 	if err != nil {
@@ -298,6 +306,8 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	msgHistory := append(msgs, userMsg)
 	var agentMessage message.Message
 	var toolResults *message.Message
+	var structOutput *message.ToolResult
+	structOutputIsErr := true
 	cycles := 0
 	preserveTail := false
 
@@ -413,15 +423,23 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 					}
 				}
 				toolResults = &emptyToolMsg
+			} else {
+				if structOutput == nil || structOutputIsErr {
+					if s, ok := toolResults.StructOutput(); ok || structOutput == nil {
+						structOutput = s
+					}
+				}
 			}
+
 			msgHistory = append(msgHistory, agentMessage, *toolResults)
 			preserveTail = true
 			continue
 		}
 		return AgentEvent{
-			Type:    AgentEventTypeResponse,
-			Message: agentMessage,
-			Done:    true,
+			Type:         AgentEventTypeResponse,
+			Message:      agentMessage,
+			StructOutput: structOutput,
+			Done:         true,
 		}
 	}
 }
@@ -436,14 +454,6 @@ func (a *agent) createUserMessage(ctx context.Context, sessionID, content string
 }
 
 func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msgHistory []message.Message, toolSet []tools.BaseTool) (message.Message, *message.Message, error) {
-	// Check if this is a task session (has a parent session)
-	session, err := a.sessions.Get(ctx, sessionID)
-	if err == nil && session.ParentSessionID != "" {
-		ctx = context.WithValue(ctx, tools.IsTaskAgentContextKey, true)
-	}
-
-	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
-	ctx = context.WithValue(ctx, tools.AgentIDContextKey, a.AgentID())
 	eventChan := a.provider.StreamResponse(ctx, msgHistory, toolSet)
 
 	assistantMsg, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{

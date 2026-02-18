@@ -2,11 +2,13 @@ package agent
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"sync"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/format"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -36,6 +38,7 @@ var (
 		tools.PatchToolName,
 		tools.BashToolName,
 	}
+	// TODO: add todo tool
 	managerToolNames = []string{
 		TaskToolName,
 	}
@@ -125,8 +128,19 @@ func NewToolSet(
 	// Inject struct_output tool if the agent has an output schema configured
 	if info.Output != nil && info.Output.Schema != nil {
 		if reg.IsToolEnabled(agentID, tools.StructOutputToolName) {
-			result <- tools.NewStructOutputTool(info.Output.Schema)
-			logging.Info("Using structured output", "agent", info.ID, "schema", info.Output.Schema)
+			schema := info.Output.Schema
+			// Resolve $ref if present, using agent's markdown location for relative paths
+			baseDir := ""
+			if info.Location != "" {
+				baseDir = filepath.Dir(info.Location)
+			}
+			resolved, err := format.ResolveSchemaRef(schema, baseDir)
+			if err != nil {
+				logging.Error("Failed to resolve output schema $ref", "agent", agentID, "error", err)
+			} else {
+				logging.Info("Using structured output", "agent", agentID, "schema", resolved)
+				result <- tools.NewStructOutputTool(resolved)
+			}
 		}
 	}
 

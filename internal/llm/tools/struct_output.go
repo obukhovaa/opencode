@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 )
 
 const (
@@ -64,9 +65,7 @@ func buildParamsFromSchema(schema map[string]any) (map[string]any, []string) {
 	if schemaType == "object" {
 		if props, ok := schema["properties"].(map[string]any); ok {
 			params := make(map[string]any, len(props))
-			for k, v := range props {
-				params[k] = v
-			}
+			maps.Copy(params, props)
 			var required []string
 			if req, ok := schema["required"].([]any); ok {
 				for _, r := range req {
