@@ -27,6 +27,7 @@ type AgentInfo struct {
 	Mode            config.AgentMode `yaml:"mode,omitempty"`
 	Native          bool             `yaml:"native,omitempty"`
 	Hidden          bool             `yaml:"hidden,omitempty"`
+	Disabled        bool             `yaml:"disabled,omitempty"`
 	Color           string           `yaml:"color,omitempty"`
 	Model           string           `yaml:"model,omitempty"`
 	MaxTokens       int64            `yaml:"maxTokens,omitempty"`
@@ -77,6 +78,7 @@ func newRegistry() Registry {
 	registerBuiltins(agents, cfg)
 	discoverMarkdownAgents(agents, cfg)
 	applyConfigOverrides(agents, cfg)
+	removeDisabledAgents(agents)
 
 	globalPerms := buildGlobalPerms(cfg)
 
@@ -309,6 +311,9 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 		if agentCfg.Hidden {
 			existing.Hidden = true
 		}
+		if agentCfg.Disabled {
+			existing.Disabled = true
+		}
 		if agentCfg.Permission != nil {
 			existing.Permission = mergePermissions(existing.Permission, agentCfg.Permission)
 		}
@@ -379,7 +384,19 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 	if md.Hidden {
 		existing.Hidden = true
 	}
+	if md.Disabled {
+		existing.Disabled = true
+	}
 	existing.Location = md.Location
+}
+
+func removeDisabledAgents(agents map[string]AgentInfo) {
+	for id, a := range agents {
+		if a.Disabled {
+			logging.Info("Agent disabled, removing from registry", "agentID", id)
+			delete(agents, id)
+		}
+	}
 }
 
 func buildGlobalPerms(cfg *config.Config) map[string]any {

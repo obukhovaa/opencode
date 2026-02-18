@@ -71,6 +71,7 @@ type Agent struct {
 	Prompt          string          `json:"prompt,omitempty"`
 	Color           string          `json:"color,omitempty"`
 	Hidden          bool            `json:"hidden,omitempty"`
+	Disabled        bool            `json:"disabled,omitempty"`
 	Output          *AgentOutput    `json:"output,omitempty"`
 }
 

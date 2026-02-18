@@ -292,6 +292,73 @@ func TestConfigOverrides(t *testing.T) {
 	}
 }
 
+func TestDisabledAgentRemovedFromRegistry(t *testing.T) {
+	agents := map[string]AgentInfo{
+		"enabled-agent": {
+			ID:   "enabled-agent",
+			Name: "Enabled",
+			Mode: config.AgentModeSubagent,
+		},
+		"disabled-agent": {
+			ID:       "disabled-agent",
+			Name:     "Disabled",
+			Mode:     config.AgentModeSubagent,
+			Disabled: true,
+		},
+	}
+
+	removeDisabledAgents(agents)
+
+	if _, ok := agents["enabled-agent"]; !ok {
+		t.Error("enabled-agent should still be in registry")
+	}
+	if _, ok := agents["disabled-agent"]; ok {
+		t.Error("disabled-agent should be removed from registry")
+	}
+}
+
+func TestDisabledViaConfigOverride(t *testing.T) {
+	agents := map[string]AgentInfo{
+		"coder": {
+			ID:   "coder",
+			Name: "Coder Agent",
+			Mode: config.AgentModeAgent,
+		},
+	}
+
+	cfg := &config.Config{
+		Agents: map[config.AgentName]config.Agent{
+			"coder": {
+				Disabled: true,
+			},
+		},
+	}
+
+	applyConfigOverrides(agents, cfg)
+
+	if !agents["coder"].Disabled {
+		t.Error("coder should be marked as disabled after config override")
+	}
+}
+
+func TestDisabledViaMarkdownMerge(t *testing.T) {
+	existing := AgentInfo{
+		ID:   "myagent",
+		Name: "My Agent",
+		Mode: config.AgentModeSubagent,
+	}
+
+	md := AgentInfo{
+		Disabled: true,
+	}
+
+	mergeMarkdownIntoExisting(&existing, &md)
+
+	if !existing.Disabled {
+		t.Error("agent should be marked as disabled after markdown merge")
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr))
 }

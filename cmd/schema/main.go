@@ -268,6 +268,11 @@ func generateSchema() map[string]any {
 					"description": "Whether the agent is hidden from TUI agent switching",
 					"default":     false,
 				},
+				"disabled": map[string]any{
+					"type":        "boolean",
+					"description": "Whether the agent is disabled and excluded from the registry entirely",
+					"default":     false,
+				},
 				"permission": map[string]any{
 					"type":        "object",
 					"description": "Agent-specific permission overrides. Keys are tool names (e.g., 'bash', 'edit', 'skill'), values are either a simple action string or an object with glob-pattern keys",
