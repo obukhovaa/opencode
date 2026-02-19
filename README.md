@@ -344,10 +344,10 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | Provider | Models |
 |----------|--------|
 | **OpenAI** | GPT-5, O3 Mini, O4 Mini |
-| **Anthropic** | Claude 4.5 Sonnet (1M), Claude 4.6 Opus (1M) |
+| **Anthropic** | Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M) |
 | **Google Gemini** | Gemini 3.0 Pro, Gemini 3.0 Flash |
 | **AWS Bedrock** | Claude 4.5 Sonnet |
-| **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude 4.5 Sonnet (1M), Claude 4.6 Opus (1M) |
+| **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M) |
 | **Local** | Any OpenAI-compatible API |
 
 ## Tools

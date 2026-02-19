@@ -9,6 +9,7 @@ const (
 	VertexAISonnet45M     ModelID = "vertexai.claude-sonnet-4-5-m"
 	VertexAIOpus45        ModelID = "vertexai.claude-opus-4-5"
 	VertexAIOpus46        ModelID = "vertexai.claude-opus-4-6"
+	VertexAISonnet46      ModelID = "vertexai.claude-sonnet-4-6"
 )
 
 var VertexAIGeminiModels = map[ModelID]Model{
@@ -86,5 +87,19 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		CanReason:                AnthropicModels[Claude46Opus].CanReason,
 		SupportsAdaptiveThinking: AnthropicModels[Claude46Opus].SupportsAdaptiveThinking,
 		SupportsMaximumThinking:  AnthropicModels[Claude46Opus].SupportsMaximumThinking,
+	},
+	VertexAISonnet46: {
+		ID:                  VertexAISonnet46,
+		Name:                "VertexAI: Claude Sonnet 4.6",
+		Provider:            ProviderVertexAI,
+		APIModel:            "claude-sonnet-4-6",
+		CostPer1MIn:         AnthropicModels[Claude46Sonnet].CostPer1MIn,
+		CostPer1MInCached:   AnthropicModels[Claude46Sonnet].CostPer1MInCached,
+		CostPer1MOut:        AnthropicModels[Claude46Sonnet].CostPer1MOut,
+		CostPer1MOutCached:  AnthropicModels[Claude46Sonnet].CostPer1MOutCached,
+		ContextWindow:       AnthropicModels[Claude46Sonnet].ContextWindow,
+		DefaultMaxTokens:    AnthropicModels[Claude46Sonnet].DefaultMaxTokens,
+		SupportsAttachments: AnthropicModels[Claude46Sonnet].SupportsAttachments,
+		CanReason:           AnthropicModels[Claude46Sonnet].CanReason,
 	},
 }
