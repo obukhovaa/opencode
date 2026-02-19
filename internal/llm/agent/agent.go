@@ -722,7 +722,15 @@ func (a *agent) TrackUsage(ctx context.Context, sessionID string, model models.M
 	sess.CompletionTokens = usage.OutputTokens + usage.CacheReadTokens
 	sess.PromptTokens = usage.InputTokens + usage.CacheCreationTokens
 
-	logging.Info("Track usage", "token_out", sess.CompletionTokens, "token_in", sess.PromptTokens, "cost", cost)
+	logging.Info("Track usage",
+		"token_out_total", sess.CompletionTokens,
+		"token_in_total", sess.PromptTokens,
+		"token_in", usage.InputTokens,
+		"token_out", usage.OutputTokens,
+		"cache_created", usage.CacheCreationTokens,
+		"cache_read", usage.CacheReadTokens,
+		"cost", cost,
+	)
 
 	_, err = a.sessions.Save(ctx, sess)
 	if err != nil {

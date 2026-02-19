@@ -972,11 +972,9 @@ func UpdateAgentModel(agentName AgentName, modelID models.ModelID) error {
 		maxTokens = model.DefaultMaxTokens
 	}
 
-	newAgentCfg := Agent{
-		Model:           modelID,
-		MaxTokens:       maxTokens,
-		ReasoningEffort: existingAgentCfg.ReasoningEffort,
-	}
+	newAgentCfg := existingAgentCfg
+	newAgentCfg.Model = modelID
+	newAgentCfg.MaxTokens = maxTokens
 	cfg.Agents[agentName] = newAgentCfg
 
 	if err := validateAgent(cfg, agentName, newAgentCfg); err != nil {
