@@ -48,6 +48,6 @@ Organize commands in subdirectories:
 
 | Command | Description |
 |---------|-------------|
-| Initialize Project | Creates or updates the `OpenCode.md` memory file |
+| Initialize Project | Creates or updates the `AGENTS.md` memory file |
 | Compact Session | Manually triggers session summarization |
 | Review Code | Reviews code using a provided commit hash or branch |

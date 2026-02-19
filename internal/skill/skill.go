@@ -34,13 +34,13 @@ var (
 
 // Info represents a skill with its metadata and content.
 type Info struct {
-	Name          string            `yaml:"name"`
-	Description   string            `yaml:"description"`
-	License       string            `yaml:"license,omitempty"`
-	Compatibility string            `yaml:"compatibility,omitempty"`
-	Metadata      map[string]string `yaml:"metadata,omitempty"`
-	Location      string            `yaml:"-"` // File path, not in frontmatter
-	Content       string            `yaml:"-"` // Markdown content, not in frontmatter
+	Name          string         `yaml:"name"`
+	Description   string         `yaml:"description"`
+	License       string         `yaml:"license,omitempty"`
+	Compatibility string         `yaml:"compatibility,omitempty"`
+	Metadata      map[string]any `yaml:"metadata,omitempty"`
+	Location      string         `yaml:"-"` // File path, not in frontmatter
+	Content       string         `yaml:"-"` // Markdown content, not in frontmatter
 }
 
 // Error types

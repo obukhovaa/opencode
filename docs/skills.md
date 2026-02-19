@@ -778,7 +778,7 @@ Failed to parse skill file path=/path/to/SKILL.md error=...
 
 ### What's the difference between skills and context files?
 
-| Feature          | Skills                          | Context Files (OpenCode.md)        |
+| Feature          | Skills                          | Context Files (AGENTS.md)        |
 |------------------|---------------------------------|------------------------------------|
 | **When loaded**  | On-demand by agent              | Always included in context         |
 | **Purpose**      | Specialized workflows           | General project information        |

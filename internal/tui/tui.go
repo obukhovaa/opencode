@@ -1013,7 +1013,7 @@ func New(app *app.App) tea.Model {
 	model.RegisterCommand(dialog.Command{
 		ID:          "init",
 		Title:       "Initialize Project",
-		Description: "Create/Update the OpenCode.md memory file",
+		Description: "Create/Update the AGENTS.md memory file",
 		Handler: func(cmd dialog.Command) tea.Cmd {
 			prompt, err := dialog.CommandPrompts.ReadFile("commands/init.md")
 			if err != nil {

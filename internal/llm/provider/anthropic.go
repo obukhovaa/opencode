@@ -184,9 +184,7 @@ func (a *anthropicClient) convertTools(tools []toolsPkg.BaseTool) []anthropic.To
 		}
 
 		if i == len(tools)-1 && !a.options.disableCache {
-			toolParam.CacheControl = anthropic.CacheControlEphemeralParam{
-				Type: "ephemeral",
-			}
+			toolParam.CacheControl = anthropic.NewCacheControlEphemeralParam()
 		}
 
 		anthropicTools[i] = anthropic.ToolUnionParam{OfTool: &toolParam}

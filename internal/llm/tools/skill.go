@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -13,7 +14,8 @@ import (
 )
 
 const (
-	SkillToolName = "skill"
+	SkillToolName        = "skill"
+	skillFileSampleLimit = 10
 )
 
 type SkillParams struct {
@@ -57,7 +59,6 @@ func (s *skillTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 		return NewTextErrorResponse("skill name is required"), nil
 	}
 
-	// Get the skill
 	skillInfo, err := skill.Get(params.Name)
 	if err != nil {
 		available := skill.All()
@@ -73,27 +74,87 @@ func (s *skillTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 		return NewTextErrorResponse(fmt.Sprintf("Skill %q not found. Available skills: %s", params.Name, strings.Join(availableNames, ", "))), nil
 	}
 
-	// Check permissions
 	sessionID, _ := GetContextValues(ctx)
 	agentName := GetAgentID(ctx)
 	if !s.checkPermission(sessionID, string(agentName), params.Name, skillInfo.Description) {
 		return NewTextErrorResponse(fmt.Sprintf("Permission denied for skill %q", params.Name)), nil
 	}
 
-	// Format output
 	baseDir := filepath.Dir(skillInfo.Location)
-	output := fmt.Sprintf("## Skill: %s\n\n**Base directory**: %s\n\n%s",
-		skillInfo.Name,
-		baseDir,
-		skillInfo.Content,
-	)
+	files := sampleSkillFiles(baseDir, skillFileSampleLimit)
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "<skill_content name=%q>\n", skillInfo.Name)
+	fmt.Fprintf(&sb, "# Skill: %s\n\n", skillInfo.Name)
+	sb.WriteString(strings.TrimSpace(skillInfo.Content))
+	sb.WriteString("\n\n")
+	fmt.Fprintf(&sb, "Base directory for this skill: %s\n", baseDir)
+	sb.WriteString("Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.\n")
+	sb.WriteString("Note: file list is sampled.\n\n")
+	sb.WriteString("<skill_files>\n")
+	for _, f := range files {
+		fmt.Fprintf(&sb, "<file>%s</file>\n", f)
+	}
+	sb.WriteString("</skill_files>\n")
+	sb.WriteString("</skill_content>")
 
 	metadata := map[string]string{
 		"name": skillInfo.Name,
 		"dir":  baseDir,
 	}
+	return WithResponseMetadata(NewTextResponse(sb.String()), metadata), nil
+}
 
-	return WithResponseMetadata(NewTextResponse(output), metadata), nil
+// sampleSkillFiles lists up to limit files in the skill directory, excluding SKILL.md.
+func sampleSkillFiles(dir string, limit int) []string {
+	var files []string
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return files
+	}
+
+	for _, entry := range entries {
+		if len(files) >= limit {
+			break
+		}
+		if entry.IsDir() {
+			subFiles := collectFiles(filepath.Join(dir, entry.Name()), limit-len(files))
+			files = append(files, subFiles...)
+		} else {
+			if entry.Name() == "SKILL.md" {
+				continue
+			}
+			files = append(files, filepath.Join(dir, entry.Name()))
+		}
+	}
+
+	return files
+}
+
+// collectFiles recursively collects files from a directory up to the limit.
+func collectFiles(dir string, limit int) []string {
+	var files []string
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return files
+	}
+
+	for _, entry := range entries {
+		if len(files) >= limit {
+			break
+		}
+		fullPath := filepath.Join(dir, entry.Name())
+		if entry.IsDir() {
+			subFiles := collectFiles(fullPath, limit-len(files))
+			files = append(files, subFiles...)
+		} else {
+			files = append(files, fullPath)
+		}
+	}
+
+	return files
 }
 
 // checkPermission checks if the skill can be loaded based on permissions.
@@ -133,20 +194,24 @@ func (s *skillTool) buildSkillDescription() string {
 	accessibleSkills := s.filterSkillsByPermission(skills)
 
 	if len(accessibleSkills) == 0 {
-		return "Load a skill to get detailed instructions for a specific task. No skills are currently available."
+		return "Load a specialized skill that provides domain-specific instructions and workflows. No skills are currently available."
 	}
 
 	var sb strings.Builder
-	sb.WriteString("Load a skill to get detailed instructions for a specific task. ")
-	sb.WriteString("Skills provide specialized knowledge and step-by-step guidance. ")
-	sb.WriteString("Use this when a task matches an available skill's description. ")
-	sb.WriteString("Only the skills listed here are available:\n")
+	sb.WriteString("Load a specialized skill that provides domain-specific instructions and workflows.\n\n")
+	sb.WriteString("When you recognize that a task matches one of the available skills listed below, use this tool to load the full skill instructions.\n\n")
+	sb.WriteString("The skill will inject detailed instructions, workflows, and access to bundled resources (scripts, references, templates) into the conversation context.\n\n")
+	sb.WriteString("Tool output includes a `<skill_content name=\"...\">` block with the loaded content.\n\n")
+	sb.WriteString("The following skills provide specialized sets of instructions for particular tasks.\n")
+	sb.WriteString("Invoke this tool to load a skill when a task matches one of the available skills listed below:\n\n")
 	sb.WriteString("<available_skills>\n")
 
-	for _, s := range accessibleSkills {
+	for _, sk := range accessibleSkills {
+		baseDir := filepath.Dir(sk.Location)
 		fmt.Fprintf(&sb, "  <skill>\n")
-		fmt.Fprintf(&sb, "    <name>%s</name>\n", s.Name)
-		fmt.Fprintf(&sb, "    <description>%s</description>\n", s.Description)
+		fmt.Fprintf(&sb, "    <name>%s</name>\n", sk.Name)
+		fmt.Fprintf(&sb, "    <description>%s</description>\n", sk.Description)
+		fmt.Fprintf(&sb, "    <location>%s</location>\n", baseDir)
 		fmt.Fprintf(&sb, "  </skill>\n")
 	}
 
@@ -160,7 +225,7 @@ func (s *skillTool) buildSkillParameterDescription() string {
 	accessibleSkills := s.filterSkillsByPermission(skills)
 
 	if len(accessibleSkills) == 0 {
-		return "The skill identifier from available_skills"
+		return "The name of the skill from available_skills"
 	}
 
 	examples := make([]string, 0, 3)
@@ -169,8 +234,8 @@ func (s *skillTool) buildSkillParameterDescription() string {
 	}
 
 	if len(examples) > 0 {
-		return fmt.Sprintf("The skill identifier from available_skills (e.g., %s, ...)", strings.Join(examples, ", "))
+		return fmt.Sprintf("The name of the skill from available_skills (e.g., %s, ...)", strings.Join(examples, ", "))
 	}
 
-	return "The skill identifier from available_skills"
+	return "The name of the skill from available_skills"
 }
