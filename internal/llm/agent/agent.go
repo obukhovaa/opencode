@@ -57,6 +57,9 @@ type AgentEvent struct {
 	SessionID string
 	Progress  string
 	Done      bool
+
+	// FlowStepID is set when event originates from a Flow step
+	FlowStepID string
 }
 
 type Service interface {

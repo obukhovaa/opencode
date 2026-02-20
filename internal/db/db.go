@@ -27,6 +27,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.createFileStmt, err = db.PrepareContext(ctx, createFile); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateFile: %w", err)
 	}
+	if q.createFlowStateStmt, err = db.PrepareContext(ctx, createFlowState); err != nil {
+		return nil, fmt.Errorf("error preparing query CreateFlowState: %w", err)
+	}
 	if q.createMessageStmt, err = db.PrepareContext(ctx, createMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateMessage: %w", err)
 	}
@@ -35,6 +38,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.deleteFileStmt, err = db.PrepareContext(ctx, deleteFile); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteFile: %w", err)
+	}
+	if q.deleteFlowStatesByRootSessionStmt, err = db.PrepareContext(ctx, deleteFlowStatesByRootSession); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteFlowStatesByRootSession: %w", err)
 	}
 	if q.deleteMessageStmt, err = db.PrepareContext(ctx, deleteMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteMessage: %w", err)
@@ -54,6 +60,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getFileByPathAndSessionStmt, err = db.PrepareContext(ctx, getFileByPathAndSession); err != nil {
 		return nil, fmt.Errorf("error preparing query GetFileByPathAndSession: %w", err)
 	}
+	if q.getFlowStateStmt, err = db.PrepareContext(ctx, getFlowState); err != nil {
+		return nil, fmt.Errorf("error preparing query GetFlowState: %w", err)
+	}
 	if q.getMessageStmt, err = db.PrepareContext(ctx, getMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query GetMessage: %w", err)
 	}
@@ -72,6 +81,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listFilesBySessionTreeStmt, err = db.PrepareContext(ctx, listFilesBySessionTree); err != nil {
 		return nil, fmt.Errorf("error preparing query ListFilesBySessionTree: %w", err)
 	}
+	if q.listFlowStatesByFlowIDStmt, err = db.PrepareContext(ctx, listFlowStatesByFlowID); err != nil {
+		return nil, fmt.Errorf("error preparing query ListFlowStatesByFlowID: %w", err)
+	}
+	if q.listFlowStatesByRootSessionStmt, err = db.PrepareContext(ctx, listFlowStatesByRootSession); err != nil {
+		return nil, fmt.Errorf("error preparing query ListFlowStatesByRootSession: %w", err)
+	}
 	if q.listLatestSessionFilesStmt, err = db.PrepareContext(ctx, listLatestSessionFiles); err != nil {
 		return nil, fmt.Errorf("error preparing query ListLatestSessionFiles: %w", err)
 	}
@@ -86,6 +101,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.updateFileStmt, err = db.PrepareContext(ctx, updateFile); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateFile: %w", err)
+	}
+	if q.updateFlowStateStmt, err = db.PrepareContext(ctx, updateFlowState); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateFlowState: %w", err)
 	}
 	if q.updateMessageStmt, err = db.PrepareContext(ctx, updateMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateMessage: %w", err)
@@ -103,6 +121,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing createFileStmt: %w", cerr)
 		}
 	}
+	if q.createFlowStateStmt != nil {
+		if cerr := q.createFlowStateStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing createFlowStateStmt: %w", cerr)
+		}
+	}
 	if q.createMessageStmt != nil {
 		if cerr := q.createMessageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing createMessageStmt: %w", cerr)
@@ -116,6 +139,11 @@ func (q *Queries) Close() error {
 	if q.deleteFileStmt != nil {
 		if cerr := q.deleteFileStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteFileStmt: %w", cerr)
+		}
+	}
+	if q.deleteFlowStatesByRootSessionStmt != nil {
+		if cerr := q.deleteFlowStatesByRootSessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteFlowStatesByRootSessionStmt: %w", cerr)
 		}
 	}
 	if q.deleteMessageStmt != nil {
@@ -148,6 +176,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getFileByPathAndSessionStmt: %w", cerr)
 		}
 	}
+	if q.getFlowStateStmt != nil {
+		if cerr := q.getFlowStateStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getFlowStateStmt: %w", cerr)
+		}
+	}
 	if q.getMessageStmt != nil {
 		if cerr := q.getMessageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getMessageStmt: %w", cerr)
@@ -178,6 +211,16 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listFilesBySessionTreeStmt: %w", cerr)
 		}
 	}
+	if q.listFlowStatesByFlowIDStmt != nil {
+		if cerr := q.listFlowStatesByFlowIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listFlowStatesByFlowIDStmt: %w", cerr)
+		}
+	}
+	if q.listFlowStatesByRootSessionStmt != nil {
+		if cerr := q.listFlowStatesByRootSessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listFlowStatesByRootSessionStmt: %w", cerr)
+		}
+	}
 	if q.listLatestSessionFilesStmt != nil {
 		if cerr := q.listLatestSessionFilesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listLatestSessionFilesStmt: %w", cerr)
@@ -201,6 +244,11 @@ func (q *Queries) Close() error {
 	if q.updateFileStmt != nil {
 		if cerr := q.updateFileStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing updateFileStmt: %w", cerr)
+		}
+	}
+	if q.updateFlowStateStmt != nil {
+		if cerr := q.updateFlowStateStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateFlowStateStmt: %w", cerr)
 		}
 	}
 	if q.updateMessageStmt != nil {
@@ -250,59 +298,71 @@ func (q *Queries) queryRow(ctx context.Context, stmt *sql.Stmt, query string, ar
 }
 
 type Queries struct {
-	db                             DBTX
-	tx                             *sql.Tx
-	createFileStmt                 *sql.Stmt
-	createMessageStmt              *sql.Stmt
-	createSessionStmt              *sql.Stmt
-	deleteFileStmt                 *sql.Stmt
-	deleteMessageStmt              *sql.Stmt
-	deleteSessionStmt              *sql.Stmt
-	deleteSessionFilesStmt         *sql.Stmt
-	deleteSessionMessagesStmt      *sql.Stmt
-	getFileStmt                    *sql.Stmt
-	getFileByPathAndSessionStmt    *sql.Stmt
-	getMessageStmt                 *sql.Stmt
-	getSessionByIDStmt             *sql.Stmt
-	listChildSessionsStmt          *sql.Stmt
-	listFilesByPathStmt            *sql.Stmt
-	listFilesBySessionStmt         *sql.Stmt
-	listFilesBySessionTreeStmt     *sql.Stmt
-	listLatestSessionFilesStmt     *sql.Stmt
-	listLatestSessionTreeFilesStmt *sql.Stmt
-	listMessagesBySessionStmt      *sql.Stmt
-	listSessionsStmt               *sql.Stmt
-	updateFileStmt                 *sql.Stmt
-	updateMessageStmt              *sql.Stmt
-	updateSessionStmt              *sql.Stmt
+	db                                DBTX
+	tx                                *sql.Tx
+	createFileStmt                    *sql.Stmt
+	createFlowStateStmt               *sql.Stmt
+	createMessageStmt                 *sql.Stmt
+	createSessionStmt                 *sql.Stmt
+	deleteFileStmt                    *sql.Stmt
+	deleteFlowStatesByRootSessionStmt *sql.Stmt
+	deleteMessageStmt                 *sql.Stmt
+	deleteSessionStmt                 *sql.Stmt
+	deleteSessionFilesStmt            *sql.Stmt
+	deleteSessionMessagesStmt         *sql.Stmt
+	getFileStmt                       *sql.Stmt
+	getFileByPathAndSessionStmt       *sql.Stmt
+	getFlowStateStmt                  *sql.Stmt
+	getMessageStmt                    *sql.Stmt
+	getSessionByIDStmt                *sql.Stmt
+	listChildSessionsStmt             *sql.Stmt
+	listFilesByPathStmt               *sql.Stmt
+	listFilesBySessionStmt            *sql.Stmt
+	listFilesBySessionTreeStmt        *sql.Stmt
+	listFlowStatesByFlowIDStmt        *sql.Stmt
+	listFlowStatesByRootSessionStmt   *sql.Stmt
+	listLatestSessionFilesStmt        *sql.Stmt
+	listLatestSessionTreeFilesStmt    *sql.Stmt
+	listMessagesBySessionStmt         *sql.Stmt
+	listSessionsStmt                  *sql.Stmt
+	updateFileStmt                    *sql.Stmt
+	updateFlowStateStmt               *sql.Stmt
+	updateMessageStmt                 *sql.Stmt
+	updateSessionStmt                 *sql.Stmt
 }
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 	return &Queries{
-		db:                             tx,
-		tx:                             tx,
-		createFileStmt:                 q.createFileStmt,
-		createMessageStmt:              q.createMessageStmt,
-		createSessionStmt:              q.createSessionStmt,
-		deleteFileStmt:                 q.deleteFileStmt,
-		deleteMessageStmt:              q.deleteMessageStmt,
-		deleteSessionStmt:              q.deleteSessionStmt,
-		deleteSessionFilesStmt:         q.deleteSessionFilesStmt,
-		deleteSessionMessagesStmt:      q.deleteSessionMessagesStmt,
-		getFileStmt:                    q.getFileStmt,
-		getFileByPathAndSessionStmt:    q.getFileByPathAndSessionStmt,
-		getMessageStmt:                 q.getMessageStmt,
-		getSessionByIDStmt:             q.getSessionByIDStmt,
-		listChildSessionsStmt:          q.listChildSessionsStmt,
-		listFilesByPathStmt:            q.listFilesByPathStmt,
-		listFilesBySessionStmt:         q.listFilesBySessionStmt,
-		listFilesBySessionTreeStmt:     q.listFilesBySessionTreeStmt,
-		listLatestSessionFilesStmt:     q.listLatestSessionFilesStmt,
-		listLatestSessionTreeFilesStmt: q.listLatestSessionTreeFilesStmt,
-		listMessagesBySessionStmt:      q.listMessagesBySessionStmt,
-		listSessionsStmt:               q.listSessionsStmt,
-		updateFileStmt:                 q.updateFileStmt,
-		updateMessageStmt:              q.updateMessageStmt,
-		updateSessionStmt:              q.updateSessionStmt,
+		db:                                tx,
+		tx:                                tx,
+		createFileStmt:                    q.createFileStmt,
+		createFlowStateStmt:               q.createFlowStateStmt,
+		createMessageStmt:                 q.createMessageStmt,
+		createSessionStmt:                 q.createSessionStmt,
+		deleteFileStmt:                    q.deleteFileStmt,
+		deleteFlowStatesByRootSessionStmt: q.deleteFlowStatesByRootSessionStmt,
+		deleteMessageStmt:                 q.deleteMessageStmt,
+		deleteSessionStmt:                 q.deleteSessionStmt,
+		deleteSessionFilesStmt:            q.deleteSessionFilesStmt,
+		deleteSessionMessagesStmt:         q.deleteSessionMessagesStmt,
+		getFileStmt:                       q.getFileStmt,
+		getFileByPathAndSessionStmt:       q.getFileByPathAndSessionStmt,
+		getFlowStateStmt:                  q.getFlowStateStmt,
+		getMessageStmt:                    q.getMessageStmt,
+		getSessionByIDStmt:                q.getSessionByIDStmt,
+		listChildSessionsStmt:             q.listChildSessionsStmt,
+		listFilesByPathStmt:               q.listFilesByPathStmt,
+		listFilesBySessionStmt:            q.listFilesBySessionStmt,
+		listFilesBySessionTreeStmt:        q.listFilesBySessionTreeStmt,
+		listFlowStatesByFlowIDStmt:        q.listFlowStatesByFlowIDStmt,
+		listFlowStatesByRootSessionStmt:   q.listFlowStatesByRootSessionStmt,
+		listLatestSessionFilesStmt:        q.listLatestSessionFilesStmt,
+		listLatestSessionTreeFilesStmt:    q.listLatestSessionTreeFilesStmt,
+		listMessagesBySessionStmt:         q.listMessagesBySessionStmt,
+		listSessionsStmt:                  q.listSessionsStmt,
+		updateFileStmt:                    q.updateFileStmt,
+		updateFlowStateStmt:               q.updateFlowStateStmt,
+		updateMessageStmt:                 q.updateMessageStmt,
+		updateSessionStmt:                 q.updateSessionStmt,
 	}
 }

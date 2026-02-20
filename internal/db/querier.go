@@ -11,26 +11,32 @@ import (
 
 type Querier interface {
 	CreateFile(ctx context.Context, arg CreateFileParams) (File, error)
+	CreateFlowState(ctx context.Context, arg CreateFlowStateParams) (FlowState, error)
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	DeleteFile(ctx context.Context, id string) error
+	DeleteFlowStatesByRootSession(ctx context.Context, rootSessionID string) error
 	DeleteMessage(ctx context.Context, id string) error
 	DeleteSession(ctx context.Context, id string) error
 	DeleteSessionFiles(ctx context.Context, sessionID string) error
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
 	GetFile(ctx context.Context, id string) (File, error)
 	GetFileByPathAndSession(ctx context.Context, arg GetFileByPathAndSessionParams) (File, error)
+	GetFlowState(ctx context.Context, sessionID string) (FlowState, error)
 	GetMessage(ctx context.Context, id string) (Message, error)
 	GetSessionByID(ctx context.Context, id string) (Session, error)
 	ListChildSessions(ctx context.Context, rootSessionID sql.NullString) ([]Session, error)
 	ListFilesByPath(ctx context.Context, path string) ([]File, error)
 	ListFilesBySession(ctx context.Context, sessionID string) ([]File, error)
 	ListFilesBySessionTree(ctx context.Context, rootSessionID sql.NullString) ([]File, error)
+	ListFlowStatesByFlowID(ctx context.Context, flowID string) ([]FlowState, error)
+	ListFlowStatesByRootSession(ctx context.Context, rootSessionID string) ([]FlowState, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)
 	ListLatestSessionTreeFiles(ctx context.Context, rootSessionID sql.NullString) ([]File, error)
 	ListMessagesBySession(ctx context.Context, sessionID string) ([]Message, error)
 	ListSessions(ctx context.Context, projectID sql.NullString) ([]Session, error)
 	UpdateFile(ctx context.Context, arg UpdateFileParams) (File, error)
+	UpdateFlowState(ctx context.Context, arg UpdateFlowStateParams) (FlowState, error)
 	UpdateMessage(ctx context.Context, arg UpdateMessageParams) error
 	UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error)
 }

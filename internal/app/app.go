@@ -16,7 +16,7 @@ import (
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
-	"github.com/opencode-ai/opencode/internal/format"
+	"github.com/opencode-ai/opencode/internal/flow"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -34,6 +34,7 @@ type App struct {
 	Permissions permission.Service
 	Registry    agentregistry.Registry
 	MCPRegistry agent.MCPRegistry
+	Flows       flow.Service
 
 	activeAgent agent.Service
 
@@ -153,6 +154,9 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any) (*App, err
 		return nil, errors.New("failed to create any primary agents")
 	}
 
+	agentProv := newAgentProvider(ctx, app)
+	app.Flows = flow.NewService(sessions, q, perm, agentProv)
+
 	return app, nil
 }
 
@@ -170,92 +174,6 @@ func (app *App) initTheme() {
 	} else {
 		logging.Debug("Set theme from config", "theme", cfg.TUI.Theme)
 	}
-}
-
-// RunNonInteractive handles the execution flow when a prompt is provided via CLI flag.
-func (app *App) RunNonInteractive(ctx context.Context, prompt string, outputFormat format.OutputFormat, quiet bool) error {
-	logging.Info("Running in non-interactive mode")
-
-	// Start spinner if not in quiet mode
-	var spinner *format.Spinner
-	if !quiet {
-		spinner = format.NewSpinner("Thinking...")
-		spinner.Start()
-		defer spinner.Stop()
-	}
-
-	const maxPromptLengthForTitle = 100
-	titlePrefix := "Non-interactive: "
-	var titleSuffix string
-
-	if len(prompt) > maxPromptLengthForTitle {
-		titleSuffix = prompt[:maxPromptLengthForTitle] + "..."
-	} else {
-		titleSuffix = prompt
-	}
-	title := titlePrefix + titleSuffix
-
-	var sess session.Session
-	if app.InitialSession != nil {
-		sess = *app.InitialSession
-		logging.Info("Resuming existing session for non-interactive run", "session_id", sess.ID)
-	} else if app.InitialSessionID != "" {
-		var createErr error
-		sess, createErr = app.Sessions.CreateWithID(ctx, app.InitialSessionID, title)
-		if createErr != nil {
-			return fmt.Errorf("failed to create session for non-interactive mode: %w", createErr)
-		}
-		logging.Info("Created session with provided ID for non-interactive run", "session_id", sess.ID)
-	} else {
-		var createErr error
-		sess, createErr = app.Sessions.Create(ctx, title)
-		if createErr != nil {
-			return fmt.Errorf("failed to create session for non-interactive mode: %w", createErr)
-		}
-		logging.Info("Created session for non-interactive run", "session_id", sess.ID)
-	}
-
-	// Automatically approve all permission requests for this non-interactive session
-	app.Permissions.AutoApproveSession(sess.ID)
-
-	done, err := app.ActiveAgent().Run(ctx, sess.ID, prompt)
-	if err != nil {
-		return fmt.Errorf("failed to start agent processing stream for session %s: %w", sess.ID, err)
-	}
-
-	result := <-done
-	if result.Error != nil {
-		if errors.Is(result.Error, context.Canceled) || errors.Is(result.Error, agent.ErrRequestCancelled) {
-			logging.Warn("Agent processing cancelled", "session_id", sess.ID)
-			return nil
-		}
-		return fmt.Errorf("agent processing failed for session %s: %w", sess.ID, result.Error)
-	}
-
-	// Stop spinner before printing output
-	if !quiet && spinner != nil {
-		spinner.Stop()
-	}
-
-	// Get the text content from the response
-	content := "No content available"
-
-	// For json_schema format, try to extract the struct_output tool result
-	if outputFormat == format.JSONSchema {
-		if result.StructOutput != nil {
-			content = result.StructOutput.Content
-		} else {
-			logging.Error("Failed to get structured output response for a provided schema", "error", content)
-			content = `{"error": "no structured output result foind"}`
-		}
-	} else if result.Message.Content().String() != "" {
-		content = result.Message.Content().String()
-	}
-
-	fmt.Println(format.FormatOutput(content, outputFormat))
-
-	logging.Info("Non-interactive run completed", "session_id", sess.ID)
-	return nil
 }
 
 // Shutdown performs a clean shutdown of the application

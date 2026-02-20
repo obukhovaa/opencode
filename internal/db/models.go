@@ -18,6 +18,19 @@ type File struct {
 	UpdatedAt int64  `json:"updated_at"`
 }
 
+type FlowState struct {
+	SessionID      string         `json:"session_id"`
+	RootSessionID  string         `json:"root_session_id"`
+	FlowID         string         `json:"flow_id"`
+	StepID         string         `json:"step_id"`
+	Status         string         `json:"status"`
+	Args           sql.NullString `json:"args"`
+	Output         sql.NullString `json:"output"`
+	IsStructOutput bool           `json:"is_struct_output"`
+	CreatedAt      int64          `json:"created_at"`
+	UpdatedAt      int64          `json:"updated_at"`
+}
+
 type Message struct {
 	ID         string         `json:"id"`
 	SessionID  string         `json:"session_id"`

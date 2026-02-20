@@ -461,3 +461,110 @@ func (q *MySQLQuerier) ListLatestSessionTreeFiles(ctx context.Context, rootSessi
 	}
 	return files, nil
 }
+
+// CreateFlowState creates a flow state and returns it
+func (q *MySQLQuerier) CreateFlowState(ctx context.Context, arg CreateFlowStateParams) (FlowState, error) {
+	_, err := q.queries.CreateFlowState(ctx, mysqldb.CreateFlowStateParams{
+		SessionID:      arg.SessionID,
+		RootSessionID:  arg.RootSessionID,
+		FlowID:         arg.FlowID,
+		StepID:         arg.StepID,
+		Status:         arg.Status,
+		Args:           arg.Args,
+		Output:         arg.Output,
+		IsStructOutput: arg.IsStructOutput,
+	})
+	if err != nil {
+		return FlowState{}, err
+	}
+	return q.GetFlowState(ctx, arg.SessionID)
+}
+
+// GetFlowState gets a flow state by session ID
+func (q *MySQLQuerier) GetFlowState(ctx context.Context, sessionID string) (FlowState, error) {
+	fs, err := q.queries.GetFlowState(ctx, sessionID)
+	if err != nil {
+		return FlowState{}, err
+	}
+	return FlowState{
+		SessionID:      fs.SessionID,
+		RootSessionID:  fs.RootSessionID,
+		FlowID:         fs.FlowID,
+		StepID:         fs.StepID,
+		Status:         fs.Status,
+		Args:           fs.Args,
+		Output:         fs.Output,
+		IsStructOutput: fs.IsStructOutput,
+		CreatedAt:      fs.CreatedAt,
+		UpdatedAt:      fs.UpdatedAt,
+	}, nil
+}
+
+// ListFlowStatesByRootSession lists flow states by root session ID
+func (q *MySQLQuerier) ListFlowStatesByRootSession(ctx context.Context, rootSessionID string) ([]FlowState, error) {
+	mysqlStates, err := q.queries.ListFlowStatesByRootSession(ctx, rootSessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	states := make([]FlowState, len(mysqlStates))
+	for i, fs := range mysqlStates {
+		states[i] = FlowState{
+			SessionID:      fs.SessionID,
+			RootSessionID:  fs.RootSessionID,
+			FlowID:         fs.FlowID,
+			StepID:         fs.StepID,
+			Status:         fs.Status,
+			Args:           fs.Args,
+			Output:         fs.Output,
+			IsStructOutput: fs.IsStructOutput,
+			CreatedAt:      fs.CreatedAt,
+			UpdatedAt:      fs.UpdatedAt,
+		}
+	}
+	return states, nil
+}
+
+// ListFlowStatesByFlowID lists flow states by flow ID
+func (q *MySQLQuerier) ListFlowStatesByFlowID(ctx context.Context, flowID string) ([]FlowState, error) {
+	mysqlStates, err := q.queries.ListFlowStatesByFlowID(ctx, flowID)
+	if err != nil {
+		return nil, err
+	}
+
+	states := make([]FlowState, len(mysqlStates))
+	for i, fs := range mysqlStates {
+		states[i] = FlowState{
+			SessionID:      fs.SessionID,
+			RootSessionID:  fs.RootSessionID,
+			FlowID:         fs.FlowID,
+			StepID:         fs.StepID,
+			Status:         fs.Status,
+			Args:           fs.Args,
+			Output:         fs.Output,
+			IsStructOutput: fs.IsStructOutput,
+			CreatedAt:      fs.CreatedAt,
+			UpdatedAt:      fs.UpdatedAt,
+		}
+	}
+	return states, nil
+}
+
+// UpdateFlowState updates a flow state and returns it
+func (q *MySQLQuerier) UpdateFlowState(ctx context.Context, arg UpdateFlowStateParams) (FlowState, error) {
+	_, err := q.queries.UpdateFlowState(ctx, mysqldb.UpdateFlowStateParams{
+		Status:         arg.Status,
+		Output:         arg.Output,
+		IsStructOutput: arg.IsStructOutput,
+		SessionID:      arg.SessionID,
+	})
+	if err != nil {
+		return FlowState{}, err
+	}
+	return q.GetFlowState(ctx, arg.SessionID)
+}
+
+// DeleteFlowStatesByRootSession deletes all flow states for a root session
+func (q *MySQLQuerier) DeleteFlowStatesByRootSession(ctx context.Context, rootSessionID string) error {
+	return q.queries.DeleteFlowStatesByRootSession(ctx, rootSessionID)
+}
