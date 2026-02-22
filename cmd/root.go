@@ -174,9 +174,6 @@ to assist developers in writing, debugging, and understanding code directly from
 
 		// Non-interactive flow mode
 		if flowID != "" {
-			if prompt == "" {
-				return fmt.Errorf("--flow requires --prompt/-p to be specified")
-			}
 			_err := runFlowNonInteractive(ctx, app, flowID, prompt, sessionID, deleteSession, flowArgs, argsFile, quiet)
 			app.ForceShutdown()
 			return _err

@@ -106,8 +106,9 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 		defer spinner.Stop()
 	}
 
-	args := map[string]any{
-		"prompt": prompt,
+	args := map[string]any{}
+	if prompt != "" {
+		args["prompt"] = prompt
 	}
 
 	for _, pair := range argPairs {

@@ -351,14 +351,14 @@ func (m *messagesCmp) working() string {
 		t := theme.CurrentTheme()
 		baseStyle := styles.BaseStyle()
 
-		task := "Thinking..."
+		task := "Thinking"
 		lastMessage := m.messages[len(m.messages)-1]
 		if hasToolsWithoutResponse(m.messages) {
-			task = "Waiting for tool response..."
+			task = "Waiting for tool"
 		} else if hasUnfinishedToolCalls(m.messages) {
-			task = "Building tool call..."
+			task = "Building tool call"
 		} else if !lastMessage.IsFinished() {
-			task = "Generating..."
+			task = "Generating"
 		}
 		if task != "" {
 			text += baseStyle.
@@ -470,7 +470,7 @@ func (m *messagesCmp) BindingKeys() []key.Binding {
 
 func NewMessagesCmp(app *app.App) tea.Model {
 	s := spinner.New()
-	s.Spinner = spinner.Pulse
+	s.Spinner = spinner.Points
 	vp := viewport.New(0, 0)
 	attachmets := viewport.New(0, 0)
 	vp.KeyMap.PageUp = messageKeys.PageUp
