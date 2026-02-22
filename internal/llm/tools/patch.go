@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
@@ -39,31 +40,44 @@ const (
 	patchDescription = `Applies a patch to multiple files in one operation. This tool is useful for making coordinated changes across multiple files.
 
 The patch text must follow this format:
+
+` + "```" + `
 *** Begin Patch
-*** Update File: /path/to/file
-@@ Context line (unique within the file)
- Line to keep
--Line to remove
-+Line to add
- Line to keep
-*** Add File: /path/to/new/file
-+Content of the new file
-+More content
-*** Delete File: /path/to/file/to/delete
+[ one or more file sections ]
 *** End Patch
+` + "```" + `
+
+Each section starts with one of three headers:
+
+*** Add File: <path> - create a new file. Every following line must be a + line (the initial contents).
+*** Delete File: <path> - remove an existing file. Nothing follows.
+*** Update File: <path> - patch an existing file in place, optionally followed by *** Move to: <new_path> to rename.
+
+Example patch:
+
+` + "```" + `
+*** Begin Patch
+*** Add File: hello.txt
++Hello world
+*** Update File: src/app.py
+*** Move to: src/main.py
+@@ def greet():
+-print("Hi")
++print("Hello, world!")
+*** Delete File: obsolete.txt
+*** End Patch
+` + "```" + `
 
 Before using this tool:
 1. Use the View tool to understand the files' content and context
 2. Verify all file paths are correct (use the LS tool)
 
-CRITICAL REQUIREMENTS FOR USING THIS TOOL:
-
-1. UNIQUENESS: Context lines MUST uniquely identify the specific sections you want to change
-2. PRECISION: All whitespace, indentation, and surrounding code must match exactly
-3. VALIDATION: Ensure edits result in idiomatic, correct code
-4. PATHS: Always use absolute file paths (starting with /)
-
-The tool will apply all changes in a single atomic operation.`
+Important:
+- You must include a header with your intended action (Add/Delete/Update)
+- You must prefix new lines with ` + "`+`" + ` even when creating a new file
+- Context lines (@@) must uniquely identify the section you want to change
+- All whitespace, indentation, and surrounding code must match exactly
+- Always use absolute file paths (starting with /)`
 )
 
 func NewPatchTool(lspService lsp.LspService, permissions permission.Service, files history.Service, reg agentregistry.Registry) BaseTool {
@@ -97,6 +111,12 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 	if params.PatchText == "" {
 		return NewTextErrorResponse("patch_text is required"), nil
+	}
+
+	normalized := strings.ReplaceAll(strings.ReplaceAll(params.PatchText, "\r\n", "\n"), "\r", "\n")
+	normalized = strings.TrimSpace(normalized)
+	if normalized == "*** Begin Patch\n*** End Patch" || normalized == "*** Begin Patch\r\n*** End Patch" {
+		return NewTextErrorResponse("patch rejected: empty patch"), nil
 	}
 
 	// Identify all files needed for the patch and verify they've been read
@@ -190,81 +210,53 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	}
 
 	// Request permission for all changes
-	for path, change := range commit.Changes {
-		fileAction := p.registry.EvaluatePermission(string(GetAgentID(ctx)), PatchToolName, path)
+	var combinedDiff string
+	needsPermission := false
+	for filePath, change := range commit.Changes {
+		fileAction := p.registry.EvaluatePermission(string(GetAgentID(ctx)), PatchToolName, filePath)
 		if fileAction == permission.ActionDeny {
 			return NewEmptyResponse(), permission.ErrorPermissionDenied
 		}
 		if fileAction == permission.ActionAllow {
 			continue
 		}
+		needsPermission = true
 
-		switch change.Type {
-		case diff.ActionAdd:
-			dir := filepath.Dir(path)
-			patchDiff, _, _ := diff.GenerateDiff("", *change.NewContent, path)
-			p := p.permissions.Request(
-				permission.CreatePermissionRequest{
-					SessionID:   sessionID,
-					Path:        dir,
-					ToolName:    PatchToolName,
-					Action:      "create",
-					Description: fmt.Sprintf("Create file %s", path),
-					Params: EditPermissionsParams{
-						FilePath: path,
-						Diff:     patchDiff,
-					},
+		oldContent := ""
+		if change.OldContent != nil {
+			oldContent = *change.OldContent
+		}
+		newContent := ""
+		if change.NewContent != nil {
+			newContent = *change.NewContent
+		}
+		fileDiff, _, _ := diff.GenerateDiff(oldContent, newContent, filePath)
+		combinedDiff += fileDiff + "\n"
+	}
+
+	if needsPermission {
+		filePaths := make([]string, 0, len(commit.Changes))
+		for filePath := range commit.Changes {
+			filePaths = append(filePaths, filePath)
+		}
+		rootDir := config.WorkingDirectory()
+		permissionPath := rootDir
+
+		allowed := p.permissions.Request(
+			permission.CreatePermissionRequest{
+				SessionID:   sessionID,
+				Path:        permissionPath,
+				ToolName:    PatchToolName,
+				Action:      "write",
+				Description: fmt.Sprintf("Apply patch to %d files: %s", len(filePaths), strings.Join(filePaths, ", ")),
+				Params: EditPermissionsParams{
+					FilePath: strings.Join(filePaths, ", "),
+					Diff:     combinedDiff,
 				},
-			)
-			if !p {
-				return NewEmptyResponse(), permission.ErrorPermissionDenied
-			}
-		case diff.ActionUpdate:
-			currentContent := ""
-			if change.OldContent != nil {
-				currentContent = *change.OldContent
-			}
-			newContent := ""
-			if change.NewContent != nil {
-				newContent = *change.NewContent
-			}
-			patchDiff, _, _ := diff.GenerateDiff(currentContent, newContent, path)
-			dir := filepath.Dir(path)
-			p := p.permissions.Request(
-				permission.CreatePermissionRequest{
-					SessionID:   sessionID,
-					Path:        dir,
-					ToolName:    PatchToolName,
-					Action:      "update",
-					Description: fmt.Sprintf("Update file %s", path),
-					Params: EditPermissionsParams{
-						FilePath: path,
-						Diff:     patchDiff,
-					},
-				},
-			)
-			if !p {
-				return NewEmptyResponse(), permission.ErrorPermissionDenied
-			}
-		case diff.ActionDelete:
-			dir := filepath.Dir(path)
-			patchDiff, _, _ := diff.GenerateDiff(*change.OldContent, "", path)
-			p := p.permissions.Request(
-				permission.CreatePermissionRequest{
-					SessionID:   sessionID,
-					Path:        dir,
-					ToolName:    PatchToolName,
-					Action:      "delete",
-					Description: fmt.Sprintf("Delete file %s", path),
-					Params: EditPermissionsParams{
-						FilePath: path,
-						Diff:     patchDiff,
-					},
-				},
-			)
-			if !p {
-				return NewEmptyResponse(), permission.ErrorPermissionDenied
-			}
+			},
+		)
+		if !allowed {
+			return NewEmptyResponse(), permission.ErrorPermissionDenied
 		}
 	}
 

@@ -18,11 +18,6 @@ type SourcegraphParams struct {
 	Timeout       int    `json:"timeout,omitempty"`
 }
 
-type SourcegraphResponseMetadata struct {
-	NumberOfMatches int  `json:"number_of_matches"`
-	Truncated       bool `json:"truncated"`
-}
-
 type sourcegraphTool struct {
 	client *http.Client
 }
@@ -205,13 +200,12 @@ func (t *sourcegraphTool) Run(ctx context.Context, call ToolCall) (ToolResponse,
 	if err != nil {
 		return NewEmptyResponse(), fmt.Errorf("failed to marshal GraphQL request: %w", err)
 	}
-	graphqlQuery := string(graphqlQueryBytes)
 
 	req, err := http.NewRequestWithContext(
 		ctx,
 		"POST",
 		"https://sourcegraph.com/.api/graphql",
-		bytes.NewBuffer([]byte(graphqlQuery)),
+		bytes.NewBuffer(graphqlQueryBytes),
 	)
 	if err != nil {
 		return NewEmptyResponse(), fmt.Errorf("failed to create request: %w", err)
@@ -227,8 +221,8 @@ func (t *sourcegraphTool) Run(ctx context.Context, call ToolCall) (ToolResponse,
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		if len(body) > 0 {
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr == nil && len(body) > 0 {
 			return NewTextErrorResponse(fmt.Sprintf("Request failed with status code: %d, response: %s", resp.StatusCode, string(body))), nil
 		}
 
@@ -244,7 +238,7 @@ func (t *sourcegraphTool) Run(ctx context.Context, call ToolCall) (ToolResponse,
 		return NewEmptyResponse(), fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
-	formattedResults, err := formatSourcegraphResults(result, params.ContextWindow)
+	formattedResults, err := formatSourcegraphResults(result, params.Count, params.ContextWindow)
 	if err != nil {
 		return NewTextErrorResponse("Failed to format results: " + err.Error()), nil
 	}
@@ -252,7 +246,7 @@ func (t *sourcegraphTool) Run(ctx context.Context, call ToolCall) (ToolResponse,
 	return NewTextResponse(formattedResults), nil
 }
 
-func formatSourcegraphResults(result map[string]any, contextWindow int) (string, error) {
+func formatSourcegraphResults(result map[string]any, maxResults int, contextWindow int) (string, error) {
 	var buffer strings.Builder
 
 	if errors, ok := result["errors"].([]any); ok && len(errors) > 0 {
@@ -301,7 +295,6 @@ func formatSourcegraphResults(result map[string]any, contextWindow int) (string,
 		return buffer.String(), nil
 	}
 
-	maxResults := 10
 	if len(results) > maxResults {
 		results = results[:maxResults]
 	}
@@ -359,14 +352,12 @@ func formatSourcegraphResults(result map[string]any, contextWindow int) (string,
 						}
 					}
 
-					buffer.WriteString(fmt.Sprintf("%d|  %s\n", int(lineNumber), preview))
+					buffer.WriteString(fmt.Sprintf("%d| %s\n", int(lineNumber), preview))
 
 					endLine := int(lineNumber) + contextWindow
 
 					for j := int(lineNumber); j < endLine && j < len(lines); j++ {
-						if j < len(lines) {
-							buffer.WriteString(fmt.Sprintf("%d| %s\n", j+1, lines[j]))
-						}
+						buffer.WriteString(fmt.Sprintf("%d| %s\n", j+1, lines[j]))
 					}
 
 					buffer.WriteString("```\n\n")

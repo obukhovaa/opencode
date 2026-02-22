@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 type ActionType string
@@ -303,40 +304,61 @@ func (p *Parser) parseAddFile() (PatchAction, error) {
 	}, nil
 }
 
-// Refactored to use a matcher function for each comparison type
+func normalizeUnicode(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\u2018' || r == '\u2019' || r == '\u201A' || r == '\u201B':
+			b.WriteByte('\'')
+		case r == '\u201C' || r == '\u201D' || r == '\u201E' || r == '\u201F':
+			b.WriteByte('"')
+		case r >= '\u2010' && r <= '\u2015':
+			b.WriteByte('-')
+		case r == '\u2026':
+			b.WriteString("...")
+		case r == '\u00A0':
+			b.WriteByte(' ')
+		case unicode.Is(unicode.Mn, r):
+			// skip combining marks
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func findContextCore(lines []string, context []string, start int) (int, int) {
 	if len(context) == 0 {
 		return start, 0
 	}
 
-	// Try exact match
-	if idx, fuzz := tryFindMatch(lines, context, start, func(a, b string) bool {
-		return a == b
-	}); idx >= 0 {
-		return idx, fuzz
+	type matchPass struct {
+		compare func(string, string) bool
+		fuzz    int
 	}
 
-	// Try trimming right whitespace
-	if idx, fuzz := tryFindMatch(lines, context, start, func(a, b string) bool {
-		return strings.TrimRight(a, " \t") == strings.TrimRight(b, " \t")
-	}); idx >= 0 {
-		return idx, fuzz
+	passes := []matchPass{
+		{func(a, b string) bool { return a == b }, 0},
+		{func(a, b string) bool { return strings.TrimRight(a, " \t") == strings.TrimRight(b, " \t") }, 1},
+		{func(a, b string) bool { return strings.TrimSpace(a) == strings.TrimSpace(b) }, 100},
+		{func(a, b string) bool {
+			return normalizeUnicode(strings.TrimSpace(a)) == normalizeUnicode(strings.TrimSpace(b))
+		}, 1000},
 	}
 
-	// Try trimming all whitespace
-	if idx, fuzz := tryFindMatch(lines, context, start, func(a, b string) bool {
-		return strings.TrimSpace(a) == strings.TrimSpace(b)
-	}); idx >= 0 {
-		return idx, fuzz
+	for _, pass := range passes {
+		if idx := tryFindMatch(lines, context, start, pass.compare); idx >= 0 {
+			return idx, pass.fuzz
+		}
 	}
 
 	return -1, 0
 }
 
-// Helper function to DRY up the match logic
 func tryFindMatch(lines []string, context []string, start int,
 	compareFunc func(string, string) bool,
-) (int, int) {
+) int {
 	for i := start; i < len(lines); i++ {
 		if i+len(context) <= len(lines) {
 			match := true
@@ -347,18 +369,11 @@ func tryFindMatch(lines []string, context []string, start int,
 				}
 			}
 			if match {
-				// Return fuzz level: 0 for exact, 1 for trimRight, 100 for trimSpace
-				var fuzz int
-				if compareFunc("a ", "a") && !compareFunc("a", "b") {
-					fuzz = 1
-				} else if compareFunc("a  ", "a") {
-					fuzz = 100
-				}
-				return i, fuzz
+				return i
 			}
 		}
 	}
-	return -1, 0
+	return -1
 }
 
 func findContext(lines []string, context []string, start int, eof bool) (int, int) {

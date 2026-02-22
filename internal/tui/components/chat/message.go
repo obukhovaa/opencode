@@ -170,8 +170,8 @@ func renderAssistantMessage(
 		}
 	}
 	contentRendered := false
-	if content != "" || (finished && finishData.Reason == message.FinishReasonEndTurn) {
-		if content == "" {
+	if strings.TrimSpace(content) != "" || (finished && finishData.Reason == message.FinishReasonEndTurn) {
+		if strings.TrimSpace(content) == "" {
 			content = "*Finished without output*"
 		}
 		if isSummary {

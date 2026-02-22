@@ -661,7 +661,7 @@ func (w *WorkspaceWatcher) handleFileEvent(ctx context.Context, uri string, chan
 	} else if changeType == protocol.FileChangeType(protocol.Changed) && w.client.IsFileOpen(filePath) {
 		err := w.client.NotifyChange(ctx, filePath)
 		if err != nil {
-			logging.Error("Error notifying change", "error", err)
+			logging.Error("Error notifying change", "error", err, "uri", uri, "cmd", w.client.Cmd.Path)
 		}
 		return
 	}

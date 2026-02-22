@@ -263,8 +263,13 @@ func (m *statusCmp) projectDiagnostics() string {
 			Render(fmt.Sprintf("%s %d", styles.InfoIcon, len(infoDiagnostics)))
 		diagnostics = append(diagnostics, infoStr)
 	}
-
-	return strings.Join(diagnostics, " ")
+	return strings.Join(
+		diagnostics,
+		lipgloss.NewStyle().
+			Background(t.BackgroundDarker()).
+			Foreground(t.Text()).
+			Render(" "),
+	)
 }
 
 func (m statusCmp) availableFooterMsgWidth(diagnostics, tokenInfo string) int {
