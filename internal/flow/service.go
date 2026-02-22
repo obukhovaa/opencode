@@ -40,11 +40,7 @@ type FlowState struct {
 	UpdatedAt      int64
 }
 
-// AgentProvider resolves agent services by ID on demand.
-// Implementations should handle lazy creation and caching.
-type AgentProvider interface {
-	Get(agentID string) (agentpkg.Service, error)
-}
+// AgentProvider interface removed — use agentpkg.AgentFactory directly.
 
 type Service interface {
 	pubsub.Suscriber[FlowState]
@@ -56,14 +52,14 @@ type service struct {
 	sessions    session.Service
 	querier     db.QuerierWithTx
 	permissions permission.Service
-	agents      AgentProvider
+	agents      agentpkg.AgentFactory
 }
 
 func NewService(
 	sessions session.Service,
 	querier db.QuerierWithTx,
 	permissions permission.Service,
-	agents AgentProvider,
+	agents agentpkg.AgentFactory,
 ) Service {
 	return &service{
 		Broker:      pubsub.NewBroker[FlowState](),
@@ -186,9 +182,13 @@ func (s *service) runStep(
 		agentID = "coder"
 	}
 
-	agentSvc, err := s.agents.Get(agentID)
+	var outputSchema map[string]any
+	if step.Output != nil {
+		outputSchema = step.Output.Schema
+	}
+	agentSvc, err := s.agents.NewAgent(ctx, agentID, outputSchema, step.ID)
 	if err != nil {
-		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, fmt.Errorf("agent %q not found", agentID), agentEvents, flowStates, nextSteps, f, sessionPrefix, startedSteps)
+		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, err, agentEvents, flowStates, nextSteps, f, sessionPrefix, startedSteps)
 		return
 	}
 

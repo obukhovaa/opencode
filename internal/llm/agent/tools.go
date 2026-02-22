@@ -56,6 +56,7 @@ func NewToolSet(
 	sessions session.Service,
 	messages message.Service,
 	mcpRegistry MCPRegistry,
+	factory AgentFactory,
 ) <-chan tools.BaseTool {
 	agentID := info.ID
 	result := make(chan tools.BaseTool, 100)
@@ -91,7 +92,7 @@ func NewToolSet(
 		case tools.BashToolName:
 			return tools.NewBashTool(permissions, reg)
 		case TaskToolName:
-			return NewAgentTool(sessions, messages, lspClients, permissions, historyService, reg, mcpRegistry)
+			return NewAgentTool(sessions, permissions, reg, factory)
 		default:
 			return nil
 		}

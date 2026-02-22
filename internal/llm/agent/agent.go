@@ -91,7 +91,7 @@ type agent struct {
 	activeRequests sync.Map
 }
 
-func NewAgent(
+func newAgent(
 	ctx context.Context,
 	agentInfo *agentregistry.AgentInfo,
 	sessions session.Service,
@@ -101,8 +101,10 @@ func NewAgent(
 	lspClients map[string]*lsp.Client,
 	reg agentregistry.Registry,
 	mcpReg MCPRegistry,
+	factory AgentFactory,
 ) (Service, error) {
-	agentTools := NewToolSet(ctx, agentInfo, reg, permissions, historyService, lspClients, sessions, messages, mcpReg)
+	// BUG: there could be a race with lspClients map, since it may have stale value, consider to improve, make it lazy and block on first usage attempt
+	agentTools := NewToolSet(ctx, agentInfo, reg, permissions, historyService, lspClients, sessions, messages, mcpReg, factory)
 
 	agentProvider, err := createAgentProvider(agentInfo.ID)
 	if err != nil {

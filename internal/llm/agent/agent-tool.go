@@ -8,10 +8,8 @@ import (
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
-	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
-	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/session"
@@ -19,12 +17,9 @@ import (
 
 type agentTool struct {
 	sessions    session.Service
-	messages    message.Service
-	lspClients  map[string]*lsp.Client
 	permissions permission.Service
-	history     history.Service
 	registry    agentregistry.Registry
-	mcpRegistry MCPRegistry
+	factory     AgentFactory
 }
 
 const (
@@ -131,7 +126,7 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		return tools.NewTextErrorResponse(fmt.Sprintf("unknown subagent type %q. Available: %s", subagentType, strings.Join(names, ", "))), nil
 	}
 
-	a, err := NewAgent(ctx, &subagentInfo, b.sessions, b.messages, b.permissions, b.history, b.lspClients, b.registry, b.mcpRegistry)
+	a, err := b.factory.NewAgent(ctx, subagentType, nil, "")
 	if err != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error creating agent: %s", err)
 	}
@@ -210,20 +205,14 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 
 func NewAgentTool(
 	sessions session.Service,
-	messages message.Service,
-	lspClients map[string]*lsp.Client,
 	permissions permission.Service,
-	history history.Service,
 	reg agentregistry.Registry,
-	mcpReg MCPRegistry,
+	factory AgentFactory,
 ) tools.BaseTool {
 	return &agentTool{
 		sessions:    sessions,
-		messages:    messages,
-		lspClients:  lspClients,
 		permissions: permissions,
-		history:     history,
 		registry:    reg,
-		mcpRegistry: mcpReg,
+		factory:     factory,
 	}
 }

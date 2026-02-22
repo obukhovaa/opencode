@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -28,13 +27,14 @@ import (
 )
 
 type App struct {
-	Sessions    session.Service
-	Messages    message.Service
-	History     history.Service
-	Permissions permission.Service
-	Registry    agentregistry.Registry
-	MCPRegistry agent.MCPRegistry
-	Flows       flow.Service
+	Sessions     session.Service
+	Messages     message.Service
+	History      history.Service
+	Permissions  permission.Service
+	Registry     agentregistry.Registry
+	MCPRegistry  agent.MCPRegistry
+	Flows        flow.Service
+	AgentFactory agent.AgentFactory
 
 	activeAgent agent.Service
 
@@ -98,6 +98,10 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any) (*App, err
 	files := history.NewService(q, conn)
 	reg := agentregistry.GetRegistry()
 	perm := permission.NewPermissionService()
+	lspClients := make(map[string]*lsp.Client)
+	mcpRegistry := agent.NewMCPRegistry(perm, reg)
+	factory := agent.NewAgentFactory(sessions, messages, perm, files, lspClients, reg, mcpRegistry)
+	flows := flow.NewService(sessions, q, perm, factory)
 
 	app := &App{
 		Sessions:      sessions,
@@ -105,58 +109,27 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any) (*App, err
 		History:       files,
 		Permissions:   perm,
 		Registry:      reg,
-		LSPClients:    make(map[string]*lsp.Client),
+		LSPClients:    lspClients,
 		LSPClientsCh:  make(chan *lsp.Client, 50),
 		PrimaryAgents: make(map[config.AgentName]agent.Service),
-		MCPRegistry:   agent.NewMCPRegistry(perm, reg),
+		MCPRegistry:   mcpRegistry,
+		AgentFactory:  factory,
+		Flows:         flows,
 	}
 
-	// Initialize theme based on configuration
 	app.initTheme()
-
-	// Initialize LSP clients in the background
 	go app.initLSPClients(ctx)
-
-	// Create all primary agents from registry
-	primaryAgents := reg.ListByMode(config.AgentModeAgent)
-	if len(primaryAgents) == 0 {
-		return nil, errors.New("no primary agents found in registry")
+	primaryAgents, err := factory.InitPrimaryAgents(ctx, cliSchema)
+	if err != nil {
+		return nil, err
 	}
-
-	for _, agentInfo := range primaryAgents {
-		agentInfoCopy := agentInfo
-		if cliSchema != nil {
-			agentInfoCopy.Output = &agentregistry.Output{Schema: cliSchema}
-		}
-		primaryAgent, err := agent.NewAgent(
-			ctx,
-			&agentInfoCopy,
-			app.Sessions,
-			app.Messages,
-			app.Permissions,
-			app.History,
-			app.LSPClients,
-			app.Registry,
-			app.MCPRegistry,
-		)
-		if err != nil {
-			logging.Error("Failed to create agent", "agent", agentInfo.ID, "error", err)
-			continue
-		}
-		app.PrimaryAgents[agentInfo.ID] = primaryAgent
-		app.PrimaryAgentKeys = append(app.PrimaryAgentKeys, agentInfo.ID)
+	for _, primaryAgent := range primaryAgents {
+		app.PrimaryAgents[primaryAgent.AgentID()] = primaryAgent
+		app.PrimaryAgentKeys = append(app.PrimaryAgentKeys, primaryAgent.AgentID())
 		if app.activeAgent == nil {
 			app.activeAgent = primaryAgent
 		}
 	}
-
-	if app.activeAgent == nil {
-		return nil, errors.New("failed to create any primary agents")
-	}
-
-	agentProv := newAgentProvider(ctx, app)
-	app.Flows = flow.NewService(sessions, q, perm, agentProv)
-
 	return app, nil
 }
 

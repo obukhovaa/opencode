@@ -42,7 +42,7 @@ If no flow is provided, create your own plan based on the goal.
 
 # Guidelines
 
-- Be concise, direct, and to the point in your communication with the user. Your responses can use Github-flavored markdown for formatting, and will be rendered in a monospace font using the CommonMark specification inside command line interface.
+- Be concise, direct, and to the point in your communication with the user. Your responses can use Github-flavored markdown for formatting, and will be rendered in a monospace font using the CommonMark specification inside command line interface. Avoid using tables in markdown since they consume too much space on TUI.
 - Output text to communicate with the user; all text you output outside of tool use is displayed to the user.
 - When delegating, provide detailed, self-contained prompts to subagents — they have no context about the conversation.
 - Track which tasks are in progress and which are complete.

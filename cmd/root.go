@@ -317,6 +317,7 @@ func setupSubscriptions(app *app.App, parentCtx context.Context) (chan tea.Msg, 
 	setupSubscriber(ctx, &wg, "sessions", app.Sessions.Subscribe, ch)
 	setupSubscriber(ctx, &wg, "messages", app.Messages.Subscribe, ch)
 	setupSubscriber(ctx, &wg, "permissions", app.Permissions.Subscribe, ch)
+	// BUG: what happens when active agent changed via tab; does it handle this subscription properly
 	setupSubscriber(ctx, &wg, "coderAgent", app.ActiveAgent().Subscribe, ch)
 
 	cleanupFunc := func() {
