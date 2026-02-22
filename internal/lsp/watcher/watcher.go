@@ -120,10 +120,10 @@ func (w *WorkspaceWatcher) AddRegistrations(ctx context.Context, id string, watc
 			maxFilesToOpen := 50 // Default conservative limit
 
 			switch serverName {
-			case "typescript", "typescript-language-server", "tsserver", "vtsls":
+			case "typescript", "typescript-language-server", "tsserver", "vtsls", "gopls":
 				// TypeScript servers benefit from seeing more files
 				maxFilesToOpen = 100
-			case "java", "jdtls":
+			case "java", "jdtls", "kotlin":
 				// Java servers need to see many files for project model
 				maxFilesToOpen = 200
 			}
@@ -745,6 +745,8 @@ func shouldPreloadFiles(serverName string) bool {
 		return true
 	case "java", "jdtls":
 		// Java servers often need to see source files to build the project model
+		return true
+	case "gopls":
 		return true
 	default:
 		// For most servers, we'll use lazy loading by default

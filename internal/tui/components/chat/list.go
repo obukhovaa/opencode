@@ -74,19 +74,16 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case dialog.ThemeChangedMsg:
 		m.rerender()
-		return m, nil
 	case SessionSelectedMsg:
 		if msg.ID != m.session.ID {
 			cmd := m.SetSession(msg)
-			return m, cmd
+			cmds = append(cmds, cmd)
 		}
-		return m, nil
 	case SessionClearedMsg:
 		m.session = session.Session{}
 		m.messages = make([]message.Message, 0)
 		m.currentMsgID = ""
 		m.rendering = false
-		return m, nil
 
 	case tea.KeyMsg:
 		if key.Matches(msg, messageKeys.PageUp) || key.Matches(msg, messageKeys.PageDown) ||
