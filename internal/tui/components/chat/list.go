@@ -3,7 +3,6 @@ package chat
 import (
 	"context"
 	"fmt"
-	"math"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -167,18 +166,6 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *messagesCmp) IsAgentWorking() bool {
 	return m.app.ActiveAgent().IsSessionBusy(m.session.ID)
-}
-
-func formatTimeDifference(unixTime1, unixTime2 int64) string {
-	diffSeconds := float64(math.Abs(float64(unixTime2 - unixTime1)))
-
-	if diffSeconds < 60 {
-		return fmt.Sprintf("%.1fs", diffSeconds)
-	}
-
-	minutes := int(diffSeconds / 60)
-	seconds := int(diffSeconds) % 60
-	return fmt.Sprintf("%dm%ds", minutes, seconds)
 }
 
 func (m *messagesCmp) renderView() {

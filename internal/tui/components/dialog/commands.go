@@ -173,7 +173,7 @@ func (c *commandDialogCmp) SetCommands(commands []Command) {
 
 // NewCommandDialogCmp creates a new command selection dialog
 func NewCommandDialogCmp() CommandDialog {
-	listView := utilComponents.NewSimpleList[Command](
+	listView := utilComponents.NewSimpleList(
 		[]Command{},
 		10,
 		"No commands available",

@@ -38,11 +38,6 @@ type EditorKeyMaps struct {
 	OpenEditor key.Binding
 }
 
-type bluredEditorKeyMaps struct {
-	Send       key.Binding
-	Focus      key.Binding
-	OpenEditor key.Binding
-}
 type DeleteAttachmentKeyMaps struct {
 	AttachmentDeleteMode key.Binding
 	Escape               key.Binding

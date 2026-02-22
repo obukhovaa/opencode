@@ -272,14 +272,6 @@ func (m *statusCmp) projectDiagnostics() string {
 	)
 }
 
-func (m statusCmp) availableFooterMsgWidth(diagnostics, tokenInfo string) int {
-	tokensWidth := 0
-	if m.session.ID != "" {
-		tokensWidth = lipgloss.Width(tokenInfo) + 2
-	}
-	return max(0, m.width-lipgloss.Width(helpWidget)-lipgloss.Width(m.model())-lipgloss.Width(diagnostics)-tokensWidth)
-}
-
 func (m statusCmp) model() string {
 	t := theme.CurrentTheme()
 

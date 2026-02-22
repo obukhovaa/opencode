@@ -332,18 +332,9 @@ func (p *permissionDialogCmp) renderFetchContent() string {
 	baseStyle := styles.BaseStyle()
 
 	if pr, ok := p.permission.Params.(tools.FetchPermissionsParams); ok {
-		content := fmt.Sprintf("```bash\n%s\n```", pr.URL)
-
-		// Use the cache for markdown rendering
-		renderedContent := p.GetOrSetMarkdown(p.permission.ID, func() (string, error) {
-			r := styles.GetMarkdownRenderer(p.width - 10)
-			s, err := r.Render(content)
-			return styles.ForceReplaceBackgroundWithLipgloss(s, t.Background()), err
-		})
-
 		finalContent := baseStyle.
-			Width(p.contentViewPort.Width).
-			Render(renderedContent)
+			Foreground(t.Text()).
+			Render(pr.URL)
 		p.contentViewPort.SetContent(finalContent)
 		return p.styleViewport()
 	}
