@@ -1,0 +1,91 @@
+name: Tool Optimisation Review
+description: Reads all tool descriptions, compares with reference implementation, and suggests optimisations
+flow:
+  steps:
+    - id: read-tools
+      agent: explorer
+      prompt: |
+        Read every Go file in internal/llm/tools/ (bash.go, delete.go, edit.go, fetch.go, file.go, glob.go, grep.go, ls.go, lsp.go, multiedit.go, patch.go, skill.go, sourcegraph.go, struct_output.go, tools.go, view.go, view_image.go, write.go).
+        For each tool, extract:
+        - The tool name (the constant or string used to register it)
+        - A short description of what it does
+        - Key implementation details: parameters, validation, output formatting, error handling, any notable patterns
+
+        Return the result as structured output.
+      output:
+        schema:
+          type: object
+          properties:
+            tools:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  description:
+                    type: string
+                  details:
+                    type: string
+                required: [name, description, details]
+          required: [tools]
+
+    - id: compare-and-suggest
+      agent: explorer
+      prompt: |
+        You have a summary of our Go tool implementations:
+
+        ${args.tools}
+
+        Now fetch and read the reference TypeScript implementations from the anomalyco/opencode repo at commit a41c81dcd25194f5b14b390377a326341247cc40.
+        For each tool that has a counterpart, fetch both the .ts and .txt files from:
+        https://raw.githubusercontent.com/anomalyco/opencode/a41c81dcd25194f5b14b390377a326341247cc40/packages/opencode/src/tool/<name>.ts
+        https://raw.githubusercontent.com/anomalyco/opencode/a41c81dcd25194f5b14b390377a326341247cc40/packages/opencode/src/tool/<name>.txt
+
+        The reference tools to check (fetch each pair):
+        - bash (no .ts, just bash.txt if it exists)
+        - edit (edit.ts, edit.txt)
+        - glob (glob.ts, glob.txt)
+        - grep (grep.ts, grep.txt)
+        - ls (ls.ts, ls.txt)
+        - lsp (lsp.ts, lsp.txt)
+        - multiedit (multiedit.ts)
+        - write (write.ts, write.txt)
+        - read (read.txt — corresponds to our view.go)
+        - webfetch (webfetch.ts, webfetch.txt — corresponds to our fetch.go)
+        - codesearch (codesearch.ts, codesearch.txt — corresponds to our sourcegraph.go)
+        - skill (skill.ts)
+        - batch (batch.ts, batch.txt — we may not have this)
+        - todo (todo.ts, todoread.txt — we may not have this)
+        - apply_patch (apply_patch.txt — corresponds to our patch.go)
+        - task (task.ts — corresponds to our agent-tool.go)
+        - websearch (websearch.ts, websearch.txt — we may not have this)
+        - plan (plan.ts, plan-enter.txt, plan-exit.txt — we may not have this)
+        - question (question.ts, question.txt — we may not have this)
+
+        Compare each reference implementation with our Go implementation. Look for:
+        1. Missing features or parameters the reference has that we lack
+        2. Better error handling patterns
+        3. Better output formatting or truncation strategies
+        4. Better validation or safety checks
+        5. Tools that exist in reference but not in our codebase (potential new tools)
+        6. Better tool descriptions or documentation patterns
+
+        Return the result as structured output with suggestions per tool.
+      output:
+        schema:
+          type: object
+          properties:
+            suggestions:
+              type: array
+              items:
+                type: object
+                properties:
+                  tool_name:
+                    type: string
+                  suggestions:
+                    type: array
+                    items:
+                      type: string
+                required: [tool_name, suggestions]
+          required: [suggestions]
