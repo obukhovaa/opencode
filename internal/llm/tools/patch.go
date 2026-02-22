@@ -28,7 +28,7 @@ type PatchResponseMetadata struct {
 }
 
 type patchTool struct {
-	lspClients  map[string]*lsp.Client
+	lsp         lsp.LspService
 	permissions permission.Service
 	files       history.Service
 	registry    agentregistry.Registry
@@ -66,9 +66,9 @@ CRITICAL REQUIREMENTS FOR USING THIS TOOL:
 The tool will apply all changes in a single atomic operation.`
 )
 
-func NewPatchTool(lspClients map[string]*lsp.Client, permissions permission.Service, files history.Service, reg agentregistry.Registry) BaseTool {
+func NewPatchTool(lspService lsp.LspService, permissions permission.Service, files history.Service, reg agentregistry.Registry) BaseTool {
 	return &patchTool{
-		lspClients:  lspClients,
+		lsp:         lspService,
 		permissions: permissions,
 		files:       files,
 		registry:    reg,
@@ -358,7 +358,7 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 	// Run LSP diagnostics on all changed files
 	for _, filePath := range changedFiles {
-		waitForLspDiagnostics(ctx, filePath, p.lspClients)
+		p.lsp.WaitForDiagnostics(ctx, filePath)
 	}
 
 	result := fmt.Sprintf("Patch applied successfully. %d files changed, %d additions, %d removals",
@@ -366,7 +366,7 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 	diagnosticsText := ""
 	for _, filePath := range changedFiles {
-		diagnosticsText += getDiagnostics(filePath, p.lspClients)
+		diagnosticsText += p.lsp.FormatDiagnostics(filePath)
 	}
 
 	if diagnosticsText != "" {

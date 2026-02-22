@@ -1,77 +1,15 @@
-package tools
+package lsp
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
-	"maps"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/opencode-ai/opencode/internal/logging"
-	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/lsp/protocol"
 )
 
-func notifyLspOpenFile(ctx context.Context, filePath string, lsps map[string]*lsp.Client) {
-	for _, client := range lsps {
-		err := client.OpenFile(ctx, filePath)
-		if err != nil {
-			continue
-		}
-	}
-}
-
-func waitForLspDiagnostics(ctx context.Context, filePath string, lsps map[string]*lsp.Client) {
-	if len(lsps) == 0 {
-		return
-	}
-
-	diagChan := make(chan struct{}, 1)
-
-	for _, client := range lsps {
-		originalDiags := make(map[protocol.DocumentUri][]protocol.Diagnostic)
-		maps.Copy(originalDiags, client.GetDiagnostics())
-
-		handler := func(params json.RawMessage) {
-			lsp.HandleDiagnostics(client, params)
-			var diagParams protocol.PublishDiagnosticsParams
-			if err := json.Unmarshal(params, &diagParams); err != nil {
-				return
-			}
-
-			if diagParams.URI.Path() == filePath || hasDiagnosticsChanged(client.GetDiagnostics(), originalDiags) {
-				select {
-				case diagChan <- struct{}{}:
-				default:
-				}
-			}
-		}
-
-		client.RegisterNotificationHandler("textDocument/publishDiagnostics", handler)
-
-		if client.IsFileOpen(filePath) {
-			err := client.NotifyChange(ctx, filePath)
-			if err != nil {
-				continue
-			}
-		} else {
-			err := client.OpenFile(ctx, filePath)
-			if err != nil {
-				continue
-			}
-		}
-	}
-
-	select {
-	case <-diagChan:
-	case <-time.After(5 * time.Second):
-	case <-ctx.Done():
-	}
-}
-
-func hasDiagnosticsChanged(current, original map[protocol.DocumentUri][]protocol.Diagnostic) bool {
+func HasDiagnosticsChanged(current, original map[protocol.DocumentUri][]protocol.Diagnostic) bool {
 	for uri, diags := range current {
 		origDiags, exists := original[uri]
 		if !exists || len(diags) != len(origDiags) {
@@ -81,10 +19,7 @@ func hasDiagnosticsChanged(current, original map[protocol.DocumentUri][]protocol
 	return false
 }
 
-// getDiagnostics collects and formats diagnostics from all LSP clients.
-// Used by file-mutating tools (edit, write, patch) and view to provide
-// inline feedback to the LLM after each operation.
-func getDiagnostics(filePath string, lsps map[string]*lsp.Client) string {
+func FormatDiagnostics(filePath string, clients map[string]*Client) string {
 	fileDiagnostics := []string{}
 	projectDiagnostics := []string{}
 
@@ -138,7 +73,7 @@ func getDiagnostics(filePath string, lsps map[string]*lsp.Client) string {
 			diagnostic.Message)
 	}
 
-	for lspName, client := range lsps {
+	for lspName, client := range clients {
 		diagnostics := client.GetDiagnostics()
 		if len(diagnostics) > 0 {
 			for location, diags := range diagnostics {
@@ -161,9 +96,9 @@ func getDiagnostics(filePath string, lsps map[string]*lsp.Client) string {
 		iIsError := strings.HasPrefix(fileDiagnostics[i], "Error")
 		jIsError := strings.HasPrefix(fileDiagnostics[j], "Error")
 		if iIsError != jIsError {
-			return iIsError // Errors come first
+			return iIsError
 		}
-		return fileDiagnostics[i] < fileDiagnostics[j] // Then alphabetically
+		return fileDiagnostics[i] < fileDiagnostics[j]
 	})
 
 	sort.Slice(projectDiagnostics, func(i, j int) bool {
@@ -200,10 +135,10 @@ func getDiagnostics(filePath string, lsps map[string]*lsp.Client) string {
 	}
 
 	if len(fileDiagnostics) > 0 || len(projectDiagnostics) > 0 {
-		fileErrors := countSeverity(fileDiagnostics, "Error")
-		fileWarnings := countSeverity(fileDiagnostics, "Warn")
-		projectErrors := countSeverity(projectDiagnostics, "Error")
-		projectWarnings := countSeverity(projectDiagnostics, "Warn")
+		fileErrors := CountSeverity(fileDiagnostics, "Error")
+		fileWarnings := CountSeverity(fileDiagnostics, "Warn")
+		projectErrors := CountSeverity(projectDiagnostics, "Error")
+		projectWarnings := CountSeverity(projectDiagnostics, "Warn")
 
 		output += "\n<diagnostic_summary>\n"
 		output += fmt.Sprintf("Current file: %d errors, %d warnings\n", fileErrors, fileWarnings)
@@ -216,7 +151,7 @@ func getDiagnostics(filePath string, lsps map[string]*lsp.Client) string {
 	return output
 }
 
-func countSeverity(diagnostics []string, severity string) int {
+func CountSeverity(diagnostics []string, severity string) int {
 	count := 0
 	for _, diag := range diagnostics {
 		if strings.HasPrefix(diag, severity) {

@@ -4,13 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"maps"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -35,6 +32,7 @@ type App struct {
 	MCPRegistry  agent.MCPRegistry
 	Flows        flow.Service
 	AgentFactory agent.AgentFactory
+	LspService   lsp.LspService
 
 	activeAgent agent.Service
 
@@ -46,13 +44,6 @@ type App struct {
 	InitialSessionID string
 
 	cliOutputSchema map[string]any
-
-	LSPClients            map[string]*lsp.Client
-	LSPClientsCh          chan *lsp.Client
-	lspClientsMutex       sync.RWMutex
-	lspWatcherCancelFuncs []context.CancelFunc
-	lspCancelFuncsMutex   sync.Mutex
-	lspWatcherWG          sync.WaitGroup
 }
 
 func (app *App) ActiveAgent() agent.Service {
@@ -98,9 +89,9 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any) (*App, err
 	files := history.NewService(q, conn)
 	reg := agentregistry.GetRegistry()
 	perm := permission.NewPermissionService()
-	lspClients := make(map[string]*lsp.Client)
+	lspSvc := NewLspService()
 	mcpRegistry := agent.NewMCPRegistry(perm, reg)
-	factory := agent.NewAgentFactory(sessions, messages, perm, files, lspClients, reg, mcpRegistry)
+	factory := agent.NewAgentFactory(sessions, messages, perm, files, lspSvc, reg, mcpRegistry)
 	flows := flow.NewService(sessions, q, perm, factory)
 
 	app := &App{
@@ -109,8 +100,7 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any) (*App, err
 		History:       files,
 		Permissions:   perm,
 		Registry:      reg,
-		LSPClients:    lspClients,
-		LSPClientsCh:  make(chan *lsp.Client, 50),
+		LspService:    lspSvc,
 		PrimaryAgents: make(map[config.AgentName]agent.Service),
 		MCPRegistry:   mcpRegistry,
 		AgentFactory:  factory,
@@ -118,7 +108,9 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any) (*App, err
 	}
 
 	app.initTheme()
-	go app.initLSPClients(ctx)
+	// start lsp in background
+	go lspSvc.Init(ctx)
+
 	primaryAgents, err := factory.InitPrimaryAgents(ctx, cliSchema)
 	if err != nil {
 		return nil, err
@@ -137,10 +129,9 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any) (*App, err
 func (app *App) initTheme() {
 	cfg := config.Get()
 	if cfg == nil || cfg.TUI.Theme == "" {
-		return // Use default theme
+		return
 	}
 
-	// Try to set the theme from config
 	err := theme.SetTheme(cfg.TUI.Theme)
 	if err != nil {
 		logging.Warn("Failed to set theme from config, using default theme", "theme", cfg.TUI.Theme, "error", err)
@@ -151,60 +142,14 @@ func (app *App) initTheme() {
 
 // Shutdown performs a clean shutdown of the application
 func (app *App) Shutdown() {
-	// Cancel all watcher goroutines
-	app.lspCancelFuncsMutex.Lock()
-	for _, cancel := range app.lspWatcherCancelFuncs {
-		cancel()
-	}
-	app.lspCancelFuncsMutex.Unlock()
-	app.lspWatcherWG.Wait()
-
-	// Perform additional cleanup for LSP clients
-	app.lspClientsMutex.RLock()
-	clients := make(map[string]*lsp.Client, len(app.LSPClients))
-	maps.Copy(clients, app.LSPClients)
-	app.lspClientsMutex.RUnlock()
-
-	for name, client := range clients {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := client.Shutdown(shutdownCtx); err != nil {
-			logging.Error("Failed to shutdown LSP client", "name", name, "error", err)
-		}
-		cancel()
-	}
+	app.LspService.Shutdown(context.Background())
 }
 
 // ForceShutdown performs an aggressive shutdown for non-interactive mode
 func (app *App) ForceShutdown() {
 	logging.Info("Starting force shutdown")
-
-	// Cancel all watcher goroutines immediately
-	app.lspCancelFuncsMutex.Lock()
-	for _, cancel := range app.lspWatcherCancelFuncs {
-		cancel()
-	}
-	app.lspCancelFuncsMutex.Unlock()
-
-	// Don't wait for watchers in force shutdown - kill LSP clients directly
-	app.lspClientsMutex.RLock()
-	clients := make(map[string]*lsp.Client, len(app.LSPClients))
-	maps.Copy(clients, app.LSPClients)
-	app.lspClientsMutex.RUnlock()
-
-	for name, client := range clients {
-		// Use a very short timeout for force shutdown
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-		if err := client.Shutdown(shutdownCtx); err != nil {
-			logging.Debug("Failed to gracefully shutdown LSP client, forcing close", "name", name, "error", err)
-			// Force close if graceful shutdown fails
-			client.Close()
-		}
-		cancel()
-	}
-
-	// Force kill any remaining child processes
+	app.LspService.ForceShutdown()
 	app.forceKillAllChildProcesses()
-
 	logging.Info("Force shutdown completed")
 }
 
@@ -212,15 +157,12 @@ func (app *App) ForceShutdown() {
 func (app *App) forceKillAllChildProcesses() {
 	currentPID := os.Getpid()
 
-	// Find all child processes using pgrep
 	cmd := exec.Command("pgrep", "-P", strconv.Itoa(currentPID))
 	output, err := cmd.Output()
 	if err != nil {
-		// No child processes found or pgrep failed
 		return
 	}
 
-	// Parse PIDs and kill them
 	pidStrings := strings.FieldsSeq(string(output))
 	for pidStr := range pidStrings {
 		if pid, err := strconv.Atoi(pidStr); err == nil {

@@ -29,7 +29,7 @@ type agentFactory struct {
 	messages    message.Service
 	permissions permission.Service
 	history     history.Service
-	lspClients  map[string]*lsp.Client
+	lspService  lsp.LspService
 	registry    agentregistry.Registry
 	mcpRegistry MCPRegistry
 
@@ -42,7 +42,7 @@ func NewAgentFactory(
 	messages message.Service,
 	permissions permission.Service,
 	history history.Service,
-	lspClients map[string]*lsp.Client,
+	lspService lsp.LspService,
 	registry agentregistry.Registry,
 	mcpRegistry MCPRegistry,
 ) AgentFactory {
@@ -51,7 +51,7 @@ func NewAgentFactory(
 		messages:    messages,
 		permissions: permissions,
 		history:     history,
-		lspClients:  lspClients,
+		lspService:  lspService,
 		registry:    registry,
 		mcpRegistry: mcpRegistry,
 		stepCache:   make(map[string]Service),
@@ -59,7 +59,6 @@ func NewAgentFactory(
 }
 
 func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string) (Service, error) {
-	// Step can't change in runtime, so safe to cache
 	if stepID != "" {
 		f.mu.Lock()
 		if svc, ok := f.stepCache[stepID]; ok {
@@ -82,7 +81,7 @@ func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchem
 		infoCopy.Output = &agentregistry.Output{Schema: outputSchema}
 	}
 
-	svc, err := newAgent(ctx, &infoCopy, f.sessions, f.messages, f.permissions, f.history, f.lspClients, f.registry, f.mcpRegistry, f)
+	svc, err := newAgent(ctx, &infoCopy, f.sessions, f.messages, f.permissions, f.history, f.lspService, f.registry, f.mcpRegistry, f)
 	if err != nil {
 		return nil, fmt.Errorf("creating agent %q: %w", agentID, err)
 	}

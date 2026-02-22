@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"testing"
@@ -10,7 +11,7 @@ import (
 )
 
 func TestLspTool_Info(t *testing.T) {
-	tool := NewLspTool(nil)
+	tool := NewLspTool(&noopLspService{})
 	info := tool.Info()
 
 	assert.Equal(t, LSPToolName, info.Name)
@@ -23,7 +24,7 @@ func TestLspTool_Info(t *testing.T) {
 }
 
 func TestLspTool_InvalidOperation(t *testing.T) {
-	tool := NewLspTool(nil)
+	tool := NewLspTool(&noopLspService{})
 
 	input, _ := json.Marshal(LspParams{
 		Operation: "invalidOp",
@@ -39,7 +40,7 @@ func TestLspTool_InvalidOperation(t *testing.T) {
 }
 
 func TestLspTool_FileNotFound(t *testing.T) {
-	tool := NewLspTool(nil)
+	tool := NewLspTool(&noopLspService{})
 
 	input, _ := json.Marshal(LspParams{
 		Operation: "goToDefinition",
@@ -55,9 +56,9 @@ func TestLspTool_FileNotFound(t *testing.T) {
 }
 
 func TestLspTool_NoClients(t *testing.T) {
-	tool := NewLspTool(map[string]*lsp.Client{})
+	svc := &noopLspService{}
+	tool := NewLspTool(svc)
 
-	// Create a temp file so it passes the file-exists check
 	tmpFile := t.TempDir() + "/test.go"
 	if err := writeTestFile(tmpFile, "package main"); err != nil {
 		t.Fatal(err)
@@ -77,7 +78,7 @@ func TestLspTool_NoClients(t *testing.T) {
 }
 
 func TestLspTool_BadJSON(t *testing.T) {
-	tool := NewLspTool(nil)
+	tool := NewLspTool(&noopLspService{})
 
 	resp, err := tool.Run(t.Context(), ToolCall{Input: "not json"})
 	assert.NoError(t, err)
@@ -102,16 +103,6 @@ func TestLspTool_ValidOperations(t *testing.T) {
 		assert.True(t, validOperations[op], "operation %q should be valid", op)
 	}
 	assert.Len(t, validOperations, len(expected))
-}
-
-func TestFindClientsForFile(t *testing.T) {
-	// No clients → empty result
-	result := findClientsForFile("/tmp/test.go", map[string]*lsp.Client{})
-	assert.Empty(t, result)
-
-	// nil clients → empty result
-	result = findClientsForFile("/tmp/test.go", nil)
-	assert.Empty(t, result)
 }
 
 func TestFormatLspResult(t *testing.T) {
@@ -152,3 +143,16 @@ func TestFormatLspResult(t *testing.T) {
 func writeTestFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o644)
 }
+
+// noopLspService is a minimal LspService for testing
+type noopLspService struct{}
+
+func (s *noopLspService) Init(_ context.Context)                         {}
+func (s *noopLspService) Shutdown(_ context.Context)                     {}
+func (s *noopLspService) ForceShutdown()                                 {}
+func (s *noopLspService) Clients() map[string]*lsp.Client                { return nil }
+func (s *noopLspService) ClientsCh() <-chan *lsp.Client                  { return nil }
+func (s *noopLspService) ClientsForFile(_ string) []*lsp.Client          { return nil }
+func (s *noopLspService) NotifyOpenFile(_ context.Context, _ string)     {}
+func (s *noopLspService) WaitForDiagnostics(_ context.Context, _ string) {}
+func (s *noopLspService) FormatDiagnostics(_ string) string              { return "" }

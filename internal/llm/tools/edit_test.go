@@ -108,7 +108,7 @@ func setupEditTest(t *testing.T) (context.Context, string, BaseTool) {
 	mockPerms.EXPECT().Request(gomock.Any()).Return(true).AnyTimes()
 
 	files := &stubHistoryService{}
-	tool := NewEditTool(nil, mockPerms, files, &stubRegistry{})
+	tool := NewEditTool(&noopLspService{}, mockPerms, files, &stubRegistry{})
 
 	tmpFile, err := os.CreateTemp("", "edit_test_*.txt")
 	require.NoError(t, err)
@@ -145,7 +145,7 @@ func TestEditTool_Info(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockPerms := mock_permission.NewMockService(ctrl)
-	tool := NewEditTool(nil, mockPerms, &stubHistoryService{}, &stubRegistry{})
+	tool := NewEditTool(&noopLspService{}, mockPerms, &stubHistoryService{}, &stubRegistry{})
 	info := tool.Info()
 
 	assert.Equal(t, EditToolName, info.Name)
@@ -257,7 +257,7 @@ func setupMultiEditTest(t *testing.T) (context.Context, string, BaseTool) {
 	mockPerms.EXPECT().Request(gomock.Any()).Return(true).AnyTimes()
 
 	files := &stubHistoryService{}
-	tool := NewMultiEditTool(nil, mockPerms, files, &stubRegistry{})
+	tool := NewMultiEditTool(&noopLspService{}, mockPerms, files, &stubRegistry{})
 
 	tmpFile, err := os.CreateTemp("", "multiedit_test_*.txt")
 	require.NoError(t, err)
@@ -288,7 +288,7 @@ func TestMultiEditTool_Info(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockPerms := mock_permission.NewMockService(ctrl)
-	tool := NewMultiEditTool(nil, mockPerms, &stubHistoryService{}, &stubRegistry{})
+	tool := NewMultiEditTool(&noopLspService{}, mockPerms, &stubHistoryService{}, &stubRegistry{})
 	info := tool.Info()
 
 	assert.Equal(t, MultiEditToolName, info.Name)

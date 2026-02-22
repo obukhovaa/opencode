@@ -2,9 +2,12 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/lsp/install"
+	"github.com/opencode-ai/opencode/internal/lsp/protocol"
 	"github.com/opencode-ai/opencode/internal/lsp/watcher"
 )
 
@@ -20,7 +24,24 @@ type serverNameContextKey string
 
 const ServerNameContextKey serverNameContextKey = "server_name"
 
-func (app *App) initLSPClients(ctx context.Context) {
+type lspService struct {
+	clients   map[string]*lsp.Client
+	clientsCh chan *lsp.Client
+	mu        sync.RWMutex
+
+	watcherCancelFuncs []context.CancelFunc
+	cancelMu           sync.Mutex
+	watcherWG          sync.WaitGroup
+}
+
+func NewLspService() lsp.LspService {
+	return &lspService{
+		clients:   make(map[string]*lsp.Client),
+		clientsCh: make(chan *lsp.Client, 50),
+	}
+}
+
+func (s *lspService) Init(ctx context.Context) {
 	cfg := config.Get()
 	wg := sync.WaitGroup{}
 	for name, server := range install.ResolveServers(cfg) {
@@ -31,15 +52,138 @@ func (app *App) initLSPClients(ctx context.Context) {
 				logging.ErrorPersist(fmt.Sprintf("Panic while starting %s", lspName))
 			})
 			defer wg.Done()
-			app.startLSPServer(ctx, name, server)
+			s.startLSPServer(ctx, name, server)
 		}()
 	}
 	go func() {
 		wg.Wait()
 		logging.Info("LSP clients initialization completed")
-		close(app.LSPClientsCh)
+		close(s.clientsCh)
 	}()
 	logging.Info("LSP clients initialization started in background")
+}
+
+func (s *lspService) Shutdown(ctx context.Context) {
+	s.cancelMu.Lock()
+	for _, cancel := range s.watcherCancelFuncs {
+		cancel()
+	}
+	s.cancelMu.Unlock()
+	s.watcherWG.Wait()
+
+	s.mu.RLock()
+	clients := make(map[string]*lsp.Client, len(s.clients))
+	maps.Copy(clients, s.clients)
+	s.mu.RUnlock()
+
+	for name, client := range clients {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := client.Shutdown(shutdownCtx); err != nil {
+			logging.Error("Failed to shutdown LSP client", "name", name, "error", err)
+		}
+		cancel()
+	}
+}
+
+func (s *lspService) ForceShutdown() {
+	s.cancelMu.Lock()
+	for _, cancel := range s.watcherCancelFuncs {
+		cancel()
+	}
+	s.cancelMu.Unlock()
+
+	s.mu.RLock()
+	clients := make(map[string]*lsp.Client, len(s.clients))
+	maps.Copy(clients, s.clients)
+	s.mu.RUnlock()
+
+	for name, client := range clients {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		if err := client.Shutdown(shutdownCtx); err != nil {
+			logging.Debug("Failed to gracefully shutdown LSP client, forcing close", "name", name, "error", err)
+			client.Close()
+		}
+		cancel()
+	}
+}
+
+func (s *lspService) Clients() map[string]*lsp.Client {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	snapshot := make(map[string]*lsp.Client, len(s.clients))
+	maps.Copy(snapshot, s.clients)
+	return snapshot
+}
+
+func (s *lspService) ClientsCh() <-chan *lsp.Client {
+	return s.clientsCh
+}
+
+func (s *lspService) ClientsForFile(filePath string) []*lsp.Client {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ext := strings.ToLower(filepath.Ext(filePath))
+	var matched []*lsp.Client
+	for _, client := range s.clients {
+		if slices.Contains(client.GetExtensions(), ext) {
+			matched = append(matched, client)
+		}
+	}
+	return matched
+}
+
+func (s *lspService) NotifyOpenFile(ctx context.Context, filePath string) {
+	for _, client := range s.Clients() {
+		_ = client.OpenFile(ctx, filePath)
+	}
+}
+
+func (s *lspService) WaitForDiagnostics(ctx context.Context, filePath string) {
+	clients := s.Clients()
+	if len(clients) == 0 {
+		return
+	}
+
+	diagChan := make(chan struct{}, 1)
+
+	for _, client := range clients {
+		originalDiags := make(map[protocol.DocumentUri][]protocol.Diagnostic)
+		maps.Copy(originalDiags, client.GetDiagnostics())
+
+		handler := func(params json.RawMessage) {
+			lsp.HandleDiagnostics(client, params)
+			var diagParams protocol.PublishDiagnosticsParams
+			if err := json.Unmarshal(params, &diagParams); err != nil {
+				return
+			}
+
+			if diagParams.URI.Path() == filePath || lsp.HasDiagnosticsChanged(client.GetDiagnostics(), originalDiags) {
+				select {
+				case diagChan <- struct{}{}:
+				default:
+				}
+			}
+		}
+
+		client.RegisterNotificationHandler("textDocument/publishDiagnostics", handler)
+
+		if client.IsFileOpen(filePath) {
+			_ = client.NotifyChange(ctx, filePath)
+		} else {
+			_ = client.OpenFile(ctx, filePath)
+		}
+	}
+
+	select {
+	case <-diagChan:
+	case <-time.After(5 * time.Second):
+	case <-ctx.Done():
+	}
+}
+
+func (s *lspService) FormatDiagnostics(filePath string) string {
+	clients := s.Clients()
+	return lsp.FormatDiagnostics(filePath, clients)
 }
 
 // hasMatchingFiles checks whether the working directory contains any files
@@ -47,7 +191,7 @@ func (app *App) initLSPClients(ctx context.Context) {
 // (max 3 levels deep) to keep startup fast.
 func hasMatchingFiles(rootDir string, extensions []string) bool {
 	if len(extensions) == 0 {
-		return true // no extensions specified, assume relevant
+		return true
 	}
 
 	extSet := make(map[string]struct{}, len(extensions))
@@ -62,12 +206,10 @@ func hasMatchingFiles(rootDir string, extensions []string) bool {
 		}
 
 		if d.IsDir() {
-			// Skip hidden dirs and common non-source dirs
 			name := d.Name()
 			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" || name == "dist" || name == "build" || name == "target" {
 				return filepath.SkipDir
 			}
-			// Limit depth to 3 levels
 			rel, _ := filepath.Rel(rootDir, path)
 			if strings.Count(rel, string(filepath.Separator)) >= 3 {
 				return filepath.SkipDir
@@ -86,28 +228,24 @@ func hasMatchingFiles(rootDir string, extensions []string) bool {
 	return found
 }
 
-// startLSPServer resolves the binary (auto-installing if needed), then creates and starts the LSP client
-func (app *App) startLSPServer(ctx context.Context, name string, server install.ResolvedServer) {
+func (s *lspService) startLSPServer(ctx context.Context, name string, server install.ResolvedServer) {
 	cfg := config.Get()
 
-	// Skip servers whose file extensions aren't present in the project
 	if !hasMatchingFiles(config.WorkingDirectory(), server.Extensions) {
 		logging.Debug("No matching files found, skipping LSP server", "name", name, "extensions", server.Extensions)
 		return
 	}
 
-	// Resolve the command — check PATH, bin dir, or auto-install
 	command, args, err := install.ResolveCommand(ctx, server, cfg.DisableLSPDownload)
 	if err != nil {
 		logging.Debug("LSP server not available, skipping", "name", name, "reason", err)
 		return
 	}
 
-	app.createAndStartLSPClient(ctx, name, server, command, args...)
+	s.createAndStartLSPClient(ctx, name, server, command, args...)
 }
 
-// createAndStartLSPClient creates a new LSP client, initializes it, and starts its workspace watcher
-func (app *App) createAndStartLSPClient(ctx context.Context, name string, server install.ResolvedServer, command string, args ...string) {
+func (s *lspService) createAndStartLSPClient(ctx context.Context, name string, server install.ResolvedServer, command string, args ...string) {
 	logging.Info("Creating LSP client", "name", name, "command", command, "args", args)
 
 	lspClient, err := lsp.NewClient(ctx, command, server.Env, args...)
@@ -116,13 +254,11 @@ func (app *App) createAndStartLSPClient(ctx context.Context, name string, server
 		return
 	}
 
-	// Store extensions on the client for routing
 	lspClient.SetExtensions(server.Extensions)
 
 	initCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	// Pass server-specific initialization options
 	var initOpts map[string]any
 	if m, ok := server.Initialization.(map[string]any); ok {
 		initOpts = m
@@ -148,33 +284,31 @@ func (app *App) createAndStartLSPClient(ctx context.Context, name string, server
 
 	workspaceWatcher := watcher.NewWorkspaceWatcher(lspClient)
 
-	app.lspCancelFuncsMutex.Lock()
-	app.lspWatcherCancelFuncs = append(app.lspWatcherCancelFuncs, cancelFunc)
-	app.lspCancelFuncsMutex.Unlock()
+	s.cancelMu.Lock()
+	s.watcherCancelFuncs = append(s.watcherCancelFuncs, cancelFunc)
+	s.cancelMu.Unlock()
 
-	app.lspWatcherWG.Add(1)
+	s.watcherWG.Add(1)
 
-	app.lspClientsMutex.Lock()
-	app.LSPClients[name] = lspClient
-	app.LSPClientsCh <- lspClient
-	app.lspClientsMutex.Unlock()
+	s.mu.Lock()
+	s.clients[name] = lspClient
+	s.clientsCh <- lspClient
+	s.mu.Unlock()
 
-	go app.runWorkspaceWatcher(watchCtx, name, workspaceWatcher)
+	go s.runWorkspaceWatcher(watchCtx, name, workspaceWatcher)
 }
 
-// runWorkspaceWatcher executes the workspace watcher for an LSP client
-func (app *App) runWorkspaceWatcher(ctx context.Context, name string, workspaceWatcher *watcher.WorkspaceWatcher) {
-	defer app.lspWatcherWG.Done()
+func (s *lspService) runWorkspaceWatcher(ctx context.Context, name string, workspaceWatcher *watcher.WorkspaceWatcher) {
+	defer s.watcherWG.Done()
 	defer logging.RecoverPanic("LSP-"+name, func() {
-		app.restartLSPClient(ctx, name)
+		s.restartLSPClient(ctx, name)
 	})
 
 	workspaceWatcher.WatchWorkspace(ctx, config.WorkingDirectory())
 	logging.Info("Workspace watcher stopped", "client", name)
 }
 
-// restartLSPClient attempts to restart a crashed or failed LSP client
-func (app *App) restartLSPClient(ctx context.Context, name string) {
+func (s *lspService) restartLSPClient(ctx context.Context, name string) {
 	cfg := config.Get()
 	servers := install.ResolveServers(cfg)
 	server, exists := servers[name]
@@ -183,12 +317,12 @@ func (app *App) restartLSPClient(ctx context.Context, name string) {
 		return
 	}
 
-	app.lspClientsMutex.Lock()
-	oldClient, exists := app.LSPClients[name]
+	s.mu.Lock()
+	oldClient, exists := s.clients[name]
 	if exists {
-		delete(app.LSPClients, name)
+		delete(s.clients, name)
 	}
-	app.lspClientsMutex.Unlock()
+	s.mu.Unlock()
 
 	if exists && oldClient != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -196,6 +330,6 @@ func (app *App) restartLSPClient(ctx context.Context, name string) {
 		cancel()
 	}
 
-	app.startLSPServer(ctx, name, server)
+	s.startLSPServer(ctx, name, server)
 	logging.Info("Successfully restarted LSP client", "client", name)
 }

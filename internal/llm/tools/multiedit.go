@@ -36,7 +36,7 @@ type MultiEditResponseMetadata struct {
 }
 
 type multiEditTool struct {
-	lspClients  map[string]*lsp.Client
+	lsp         lsp.LspService
 	permissions permission.Service
 	files       history.Service
 	registry    agentregistry.Registry
@@ -81,9 +81,9 @@ When making edits:
 - Use replace_all for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.`
 )
 
-func NewMultiEditTool(lspClients map[string]*lsp.Client, permissions permission.Service, files history.Service, reg agentregistry.Registry) BaseTool {
+func NewMultiEditTool(lspService lsp.LspService, permissions permission.Service, files history.Service, reg agentregistry.Registry) BaseTool {
 	return &multiEditTool{
-		lspClients:  lspClients,
+		lsp:         lspService,
 		permissions: permissions,
 		files:       files,
 		registry:    reg,
@@ -283,9 +283,9 @@ func (m *multiEditTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 		},
 	)
 
-	waitForLspDiagnostics(ctx, params.FilePath, m.lspClients)
+	m.lsp.WaitForDiagnostics(ctx, params.FilePath)
 	text := fmt.Sprintf("<result>\n%s\n</result>\n", response.Content)
-	text += getDiagnostics(params.FilePath, m.lspClients)
+	text += m.lsp.FormatDiagnostics(params.FilePath)
 	response.Content = text
 	return response, nil
 }

@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
-	"strings"
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/lsp"
@@ -26,7 +24,7 @@ type LSPToolMetadata struct {
 }
 
 type lspTool struct {
-	lspClients map[string]*lsp.Client
+	lsp lsp.LspService
 }
 
 const (
@@ -65,8 +63,8 @@ var validOperations = map[string]bool{
 	"outgoingCalls":        true,
 }
 
-func NewLspTool(lspClients map[string]*lsp.Client) BaseTool {
-	return &lspTool{lspClients}
+func NewLspTool(lspService lsp.LspService) BaseTool {
+	return &lspTool{lspService}
 }
 
 func (t *lspTool) Info() ToolInfo {
@@ -116,7 +114,7 @@ func (t *lspTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) 
 	}
 
 	// Find LSP clients that handle this file type
-	clients := findClientsForFile(file, t.lspClients)
+	clients := t.lsp.ClientsForFile(file)
 	if len(clients) == 0 {
 		return NewTextErrorResponse("no LSP server available for this file type"), nil
 	}
@@ -158,18 +156,6 @@ func (t *lspTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) 
 		return NewTextErrorResponse(fmt.Sprintf("LSP operation failed: %s", lastErr)), nil
 	}
 	return NewTextResponse("No results found"), nil
-}
-
-func findClientsForFile(filePath string, clients map[string]*lsp.Client) []*lsp.Client {
-	ext := strings.ToLower(filepath.Ext(filePath))
-	var matched []*lsp.Client
-
-	for _, client := range clients {
-		if slices.Contains(client.GetExtensions(), ext) {
-			matched = append(matched, client)
-		}
-	}
-	return matched
 }
 
 func executeLspOperation(ctx context.Context, client *lsp.Client, operation string, uri protocol.DocumentUri, pos protocol.TextDocumentPositionParams) (any, error) {

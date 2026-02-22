@@ -32,7 +32,7 @@ type statusCmp struct {
 	info            util.InfoMsg
 	width           int
 	messageTTL      time.Duration
-	lspClients      map[string]*lsp.Client
+	lspService      lsp.LspService
 	session         session.Session
 	activeAgentName config.AgentName
 }
@@ -193,7 +193,7 @@ func (m *statusCmp) projectDiagnostics() string {
 
 	// Check if any LSP server is still initializing
 	initializing := false
-	for _, client := range m.lspClients {
+	for _, client := range m.lspService.Clients() {
 		if client.GetServerState() == lsp.StateStarting {
 			initializing = true
 			break
@@ -212,7 +212,7 @@ func (m *statusCmp) projectDiagnostics() string {
 	warnDiagnostics := []protocol.Diagnostic{}
 	hintDiagnostics := []protocol.Diagnostic{}
 	infoDiagnostics := []protocol.Diagnostic{}
-	for _, client := range m.lspClients {
+	for _, client := range m.lspService.Clients() {
 		for _, d := range client.GetDiagnostics() {
 			for _, diag := range d {
 				switch diag.Severity {
@@ -310,12 +310,12 @@ func (m statusCmp) model() string {
 		Render(model.Name + agentLabel)
 }
 
-func NewStatusCmp(lspClients map[string]*lsp.Client) StatusCmp {
+func NewStatusCmp(lspService lsp.LspService) StatusCmp {
 	helpWidget = getHelpWidget()
 
 	return &statusCmp{
 		messageTTL:      10 * time.Second,
-		lspClients:      lspClients,
+		lspService:      lspService,
 		activeAgentName: config.AgentCoder,
 	}
 }

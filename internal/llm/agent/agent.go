@@ -98,13 +98,12 @@ func newAgent(
 	messages message.Service,
 	permissions permission.Service,
 	historyService history.Service,
-	lspClients map[string]*lsp.Client,
+	lspService lsp.LspService,
 	reg agentregistry.Registry,
 	mcpReg MCPRegistry,
 	factory AgentFactory,
 ) (Service, error) {
-	// BUG: there could be a race with lspClients map, since it may have stale value, consider to improve, make it lazy and block on first usage attempt
-	agentTools := NewToolSet(ctx, agentInfo, reg, permissions, historyService, lspClients, sessions, messages, mcpReg, factory)
+	agentTools := NewToolSet(ctx, agentInfo, reg, permissions, historyService, lspService, sessions, messages, mcpReg, factory)
 
 	agentProvider, err := createAgentProvider(agentInfo.ID)
 	if err != nil {

@@ -172,7 +172,7 @@ to assist developers in writing, debugging, and understanding code directly from
 			spinner.Stop()
 		}
 
-		// Flow execution mode
+		// Non-interactive flow mode
 		if flowID != "" {
 			if prompt == "" {
 				return fmt.Errorf("--flow requires --prompt/-p to be specified")
