@@ -303,12 +303,16 @@ func getToolAction(name string) string {
 
 // renders params, params[0] (params[1]=params[2] ....)
 func renderParams(paramsWidth int, params ...string) string {
-	if len(params) == 0 {
+	if len(params) == 0 || paramsWidth <= 0 {
 		return ""
 	}
 	mainParam := params[0]
 	if len(mainParam) > paramsWidth {
-		mainParam = mainParam[:paramsWidth-3] + "..."
+		if paramsWidth <= 3 {
+			mainParam = mainParam[:paramsWidth]
+		} else {
+			mainParam = mainParam[:paramsWidth-3] + "..."
+		}
 	}
 
 	if len(params) == 1 {
@@ -677,8 +681,12 @@ func renderToolMessage(
 		// Get a brief description of what the tool is doing
 		toolAction := getToolAction(toolCall.Name)
 
+		progressWidth := width - 2 - lipgloss.Width(toolNameText)
+		if progressWidth < 0 {
+			progressWidth = 0
+		}
 		progressText := baseStyle.
-			Width(width - 2 - lipgloss.Width(toolNameText)).
+			Width(progressWidth).
 			Foreground(t.TextMuted()).
 			Render(fmt.Sprintf(" %s", toolAction))
 
@@ -692,7 +700,11 @@ func renderToolMessage(
 		return toolMsg
 	}
 
-	params := renderToolParams(width-2-lipgloss.Width(toolNameText), toolCall)
+	paramWidth := width - 2 - lipgloss.Width(toolNameText)
+	if paramWidth < 0 {
+		paramWidth = 0
+	}
+	params := renderToolParams(paramWidth, toolCall)
 	responseContent := ""
 	if response != nil {
 		responseContent = renderToolResponse(toolCall, *response, width-2)

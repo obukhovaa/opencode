@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 	"sync"
@@ -126,9 +127,7 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 		if err := json.Unmarshal(data, &fileArgs); err != nil {
 			return fmt.Errorf("parsing args file: %w", err)
 		}
-		for k, v := range fileArgs {
-			args[k] = v
-		}
+		maps.Copy(args, fileArgs)
 	}
 
 	agentEvents, flowStates, err := a.Flows.Run(ctx, sessionID, flowID, args, fresh)
