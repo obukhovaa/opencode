@@ -244,6 +244,21 @@ func (p *permissionDialogCmp) renderHeader() string {
 			),
 			baseStyle.Render(strings.Repeat(" ", p.width)),
 		)
+	case tools.MultiEditToolName:
+		params := p.permission.Params.(tools.MultiEditPermissionsParams)
+		fileKey := baseStyle.Foreground(t.TextMuted()).Bold(true).Render("File")
+		filePath := baseStyle.
+			Foreground(t.Text()).
+			Width(p.width - lipgloss.Width(fileKey)).
+			Render(fmt.Sprintf(": %s", params.FilePath))
+		headerParts = append(headerParts,
+			lipgloss.JoinHorizontal(
+				lipgloss.Left,
+				fileKey,
+				filePath,
+			),
+			baseStyle.Render(strings.Repeat(" ", p.width)),
+		)
 
 	case tools.WriteToolName:
 		params := p.permission.Params.(tools.WritePermissionsParams)
@@ -297,6 +312,41 @@ func (p *permissionDialogCmp) renderEditContent() string {
 		})
 
 		p.contentViewPort.SetContent(diff)
+		return p.styleViewport()
+	}
+	return ""
+}
+
+func (p *permissionDialogCmp) renderMultiEditContent() string {
+	if pr, ok := p.permission.Params.(tools.MultiEditPermissionsParams); ok {
+		t := theme.CurrentTheme()
+		baseStyle := styles.BaseStyle()
+
+		content := p.GetOrSetDiff(p.permission.ID, func() (string, error) {
+			var sections []string
+			for i, edit := range pr.Edits {
+				sectionHeader := baseStyle.
+					Bold(true).
+					Foreground(t.Primary()).
+					Width(p.contentViewPort.Width).
+					Render(fmt.Sprintf("Change %d/%d · Line %d", i+1, len(pr.Edits), edit.LineNumber))
+
+				separator := baseStyle.
+					Foreground(t.BorderDim()).
+					Width(p.contentViewPort.Width).
+					Render(strings.Repeat("─", p.contentViewPort.Width))
+
+				formatted, err := diff.FormatDiff(edit.Diff, diff.WithTotalWidth(p.contentViewPort.Width))
+				if err != nil {
+					formatted = fmt.Sprintf("Error formatting diff: %v", err)
+				}
+
+				sections = append(sections, separator, sectionHeader, "", formatted)
+			}
+			return strings.Join(sections, "\n"), nil
+		})
+
+		p.contentViewPort.SetContent(content)
 		return p.styleViewport()
 	}
 	return ""
@@ -444,6 +494,8 @@ func (p *permissionDialogCmp) render() string {
 		contentFinal = p.renderBashContent()
 	case tools.EditToolName:
 		contentFinal = p.renderEditContent()
+	case tools.MultiEditToolName:
+		contentFinal = p.renderMultiEditContent()
 	case tools.PatchToolName:
 		contentFinal = p.renderPatchContent()
 	case tools.WriteToolName:
@@ -492,7 +544,7 @@ func (p *permissionDialogCmp) SetSize() tea.Cmd {
 	case tools.BashToolName:
 		p.width = int(float64(p.windowSize.Width) * 0.4)
 		p.height = int(float64(p.windowSize.Height) * 0.3)
-	case tools.EditToolName:
+	case tools.EditToolName, tools.MultiEditToolName:
 		p.width = int(float64(p.windowSize.Width) * 0.8)
 		p.height = int(float64(p.windowSize.Height) * 0.8)
 	case tools.WriteToolName:
