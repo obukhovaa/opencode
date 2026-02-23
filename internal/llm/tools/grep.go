@@ -171,7 +171,7 @@ func (g *grepTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		}
 
 		if truncated {
-			output += "\n(Results are truncated. Consider using a more specific path or pattern.)"
+			output += fmt.Sprintf("\n(Results truncated: showing %d matches. Consider using a more specific path or pattern.)", len(matches))
 		}
 	}
 
@@ -197,7 +197,8 @@ func searchFiles(pattern, rootPath, include string, limit int) ([]grepMatch, boo
 		return matches[i].modTime.After(matches[j].modTime)
 	})
 
-	truncated := len(matches) > limit
+	totalMatches := len(matches)
+	truncated := totalMatches > limit
 	if truncated {
 		matches = matches[:limit]
 	}
@@ -211,8 +212,7 @@ func searchWithRipgrep(pattern, path, include string) ([]grepMatch, error) {
 		return nil, fmt.Errorf("ripgrep not found: %w", err)
 	}
 
-	// Use -n to show line numbers and include the matched line
-	args := []string{"-H", "-n", pattern}
+	args := []string{"-H", "-n", "--no-messages", "--field-match-separator=\x00", pattern}
 	if include != "" {
 		args = append(args, "--glob", include)
 	}
@@ -221,10 +221,19 @@ func searchWithRipgrep(pattern, path, include string) ([]grepMatch, error) {
 	cmd := exec.Command("rg", args...)
 	output, err := cmd.Output()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return []grepMatch{}, nil
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			switch exitErr.ExitCode() {
+			case 1:
+				return []grepMatch{}, nil
+			case 2:
+				// Partial results (e.g. broken symlinks, permission denied)
+				// Continue processing whatever output we got
+			default:
+				return nil, err
+			}
+		} else {
+			return nil, err
 		}
-		return nil, err
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
@@ -235,8 +244,8 @@ func searchWithRipgrep(pattern, path, include string) ([]grepMatch, error) {
 			continue
 		}
 
-		// Parse ripgrep output format: file:line:content
-		parts := strings.SplitN(line, ":", 3)
+		// Parse ripgrep output format: file\x00line\x00content
+		parts := strings.SplitN(line, "\x00", 3)
 		if len(parts) < 3 {
 			continue
 		}

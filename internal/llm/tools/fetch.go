@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -158,6 +159,15 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 	req.Header.Set("User-Agent", "opencode/1.0")
 
+	switch format {
+	case "text":
+		req.Header.Set("Accept", "text/plain;q=1.0, text/html;q=0.5")
+	case "markdown":
+		req.Header.Set("Accept", "text/markdown;q=1.0, text/html;q=0.7")
+	case "html":
+		req.Header.Set("Accept", "text/html;q=1.0")
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return NewEmptyResponse(), fmt.Errorf("failed to fetch URL: %w", err)
@@ -169,6 +179,12 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	}
 
 	maxSize := int64(5 * 1024 * 1024) // 5MB
+	if cl := resp.Header.Get("Content-Length"); cl != "" {
+		if size, err := strconv.ParseInt(cl, 10, 64); err == nil && size > maxSize {
+			return NewTextErrorResponse(fmt.Sprintf("Response too large: %d bytes (max %d bytes)", size, maxSize)), nil
+		}
+	}
+
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSize))
 	if err != nil {
 		return NewTextErrorResponse("Failed to read response body: " + err.Error()), nil

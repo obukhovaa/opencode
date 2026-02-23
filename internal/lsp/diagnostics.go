@@ -80,6 +80,9 @@ func FormatDiagnostics(filePath string, clients map[string]*Client) string {
 				isCurrentFile := location.Path() == filePath
 
 				for _, diag := range diags {
+					if diag.Severity != protocol.SeverityError && diag.Severity != protocol.SeverityWarning {
+						continue
+					}
 					formattedDiag := formatDiagnostic(location.Path(), diag, lspName)
 
 					if isCurrentFile {
@@ -114,9 +117,9 @@ func FormatDiagnostics(filePath string, clients map[string]*Client) string {
 
 	if len(fileDiagnostics) > 0 {
 		output += "\n<file_diagnostics>\n"
-		if len(fileDiagnostics) > 10 {
-			output += strings.Join(fileDiagnostics[:10], "\n")
-			output += fmt.Sprintf("\n... and %d more diagnostics", len(fileDiagnostics)-10)
+		if len(fileDiagnostics) > 20 {
+			output += strings.Join(fileDiagnostics[:20], "\n")
+			output += fmt.Sprintf("\n... and %d more diagnostics", len(fileDiagnostics)-20)
 		} else {
 			output += strings.Join(fileDiagnostics, "\n")
 		}
@@ -125,9 +128,9 @@ func FormatDiagnostics(filePath string, clients map[string]*Client) string {
 
 	if len(projectDiagnostics) > 0 {
 		output += "\n<project_diagnostics>\n"
-		if len(projectDiagnostics) > 10 {
-			output += strings.Join(projectDiagnostics[:10], "\n")
-			output += fmt.Sprintf("\n... and %d more diagnostics", len(projectDiagnostics)-10)
+		if len(projectDiagnostics) > 20 {
+			output += strings.Join(projectDiagnostics[:20], "\n")
+			output += fmt.Sprintf("\n... and %d more diagnostics", len(projectDiagnostics)-20)
 		} else {
 			output += strings.Join(projectDiagnostics, "\n")
 		}

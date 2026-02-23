@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -103,6 +104,17 @@ func (g *globTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		searchPath = config.WorkingDirectory()
 	}
 
+	info, err := os.Stat(searchPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return NewTextErrorResponse(fmt.Sprintf("path does not exist: %s", searchPath)), nil
+		}
+		return NewEmptyResponse(), fmt.Errorf("error accessing path: %w", err)
+	}
+	if !info.IsDir() {
+		return NewTextErrorResponse(fmt.Sprintf("path is a file, not a directory: %s. Provide a directory path instead.", searchPath)), nil
+	}
+
 	files, truncated, err := globFiles(params.Pattern, searchPath, 100)
 	if err != nil {
 		return NewEmptyResponse(), fmt.Errorf("error finding files: %w", err)
@@ -166,7 +178,12 @@ func runRipgrep(cmd *exec.Cmd, searchRoot string, limit int) ([]string, error) {
 	}
 
 	sort.SliceStable(matches, func(i, j int) bool {
-		return len(matches[i]) < len(matches[j])
+		iInfo, iErr := os.Stat(matches[i])
+		jInfo, jErr := os.Stat(matches[j])
+		if iErr != nil || jErr != nil {
+			return len(matches[i]) < len(matches[j])
+		}
+		return iInfo.ModTime().After(jInfo.ModTime())
 	})
 
 	if limit > 0 && len(matches) > limit {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/opencode-ai/opencode/internal/config"
@@ -188,6 +189,18 @@ func shouldSkip(path string, ignorePatterns []string) bool {
 		".idea",
 		".vscode",
 		".DS_Store",
+		".zig-cache",
+		"zig-out",
+		".coverage",
+		"coverage",
+		"logs",
+		".venv",
+		"venv",
+		"env",
+		"tmp",
+		"temp",
+		".cache",
+		"cache",
 		"*.pyc",
 		"*.pyo",
 		"*.pyd",
@@ -312,6 +325,14 @@ func printNode(builder *strings.Builder, node *TreeNode, level int) {
 	fmt.Fprintf(builder, "%s- %s\n", indent, nodeName)
 
 	if node.Type == "directory" && len(node.Children) > 0 {
+		sort.SliceStable(node.Children, func(i, j int) bool {
+			iIsDir := node.Children[i].Type == "directory"
+			jIsDir := node.Children[j].Type == "directory"
+			if iIsDir != jIsDir {
+				return iIsDir
+			}
+			return node.Children[i].Name < node.Children[j].Name
+		})
 		for _, child := range node.Children {
 			printNode(builder, child, level+1)
 		}

@@ -871,3 +871,60 @@ func GenerateDiff(beforeContent, afterContent, fileName string) (string, int, in
 
 	return unified, additions, removals
 }
+
+// TrimDiff strips the longest common whitespace prefix from all content lines
+// in a unified diff, making diffs more readable when code is deeply indented.
+func TrimDiff(diffText string) string {
+	if diffText == "" {
+		return diffText
+	}
+
+	lines := strings.Split(diffText, "\n")
+
+	// Find the minimum leading whitespace across all content lines
+	minIndent := -1
+	for _, line := range lines {
+		if len(line) == 0 {
+			continue
+		}
+		// Only consider content lines (prefixed with +, -, or space)
+		if line[0] != '+' && line[0] != '-' && line[0] != ' ' {
+			continue
+		}
+		// Skip file headers
+		if strings.HasPrefix(line, "---") || strings.HasPrefix(line, "+++") {
+			continue
+		}
+		content := line[1:] // Remove the diff prefix
+		if len(content) == 0 {
+			continue
+		}
+		trimmed := strings.TrimLeft(content, " \t")
+		indent := len(content) - len(trimmed)
+		if trimmed == "" {
+			continue // Skip whitespace-only lines
+		}
+		if minIndent < 0 || indent < minIndent {
+			minIndent = indent
+		}
+	}
+
+	if minIndent <= 0 {
+		return diffText
+	}
+
+	var result []string
+	for _, line := range lines {
+		if len(line) > 0 && (line[0] == '+' || line[0] == '-' || line[0] == ' ') &&
+			!strings.HasPrefix(line, "---") && !strings.HasPrefix(line, "+++") {
+			prefix := line[:1]
+			content := line[1:]
+			if len(content) >= minIndent {
+				line = prefix + content[minIndent:]
+			}
+		}
+		result = append(result, line)
+	}
+
+	return strings.Join(result, "\n")
+}

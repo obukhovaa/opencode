@@ -80,64 +80,64 @@ Low-risk changes to tool descriptions that guide the LLM toward better tool usag
 
 Medium-effort changes that fix incorrect behavior or improve reliability.
 
-- [ ] **2.1 glob: Fix sort order** — Current code sorts results by path length, but the description and LLM-facing prompt say "sorted by modification time (newest first)." Fix `globFiles()` to sort by `os.Stat().ModTime()` descending. Cache stat results to avoid double-stat when truncating.
+- [x] **2.1 glob: Fix sort order** — Current code sorts results by path length, but the description and LLM-facing prompt say "sorted by modification time (newest first)." Fix `globFiles()` to sort by `os.Stat().ModTime()` descending. Cache stat results to avoid double-stat when truncating.
   - File: `internal/llm/tools/glob.go`
   - Current: `sort.Slice(files, func(i, j int) { return len(files[i]) < len(files[j]) })`
   - Target: Sort by `ModTime` descending, fall back to path length if stat fails.
 
-- [ ] **2.2 glob: Validate path is a directory** — Currently the `path` parameter is not validated as a directory before searching. Add an `os.Stat` + `IsDir()` check and return a clear error if the path is a file.
+- [x] **2.2 glob: Validate path is a directory** — Currently the `path` parameter is not validated as a directory before searching. Add an `os.Stat` + `IsDir()` check and return a clear error if the path is a file.
   - File: `internal/llm/tools/glob.go`
 
-- [ ] **2.3 grep: Use field-match-separator** — Replace colon-based output parsing with `--field-match-separator=|` flag for ripgrep. This avoids misparse when file paths or matched content contain colons (e.g., `C:\Users\...` on Windows, `http://...` in code).
+- [x] **2.3 grep: Use field-match-separator** — Replace colon-based output parsing with `--field-match-separator=|` flag for ripgrep. This avoids misparse when file paths or matched content contain colons (e.g., `C:\Users\...` on Windows, `http://...` in code).
   - File: `internal/llm/tools/grep.go`
   - Current: `strings.SplitN(line, ":", 3)`
   - Target: `rg --field-match-separator='|'` + `strings.SplitN(line, "|", 3)`
 
-- [ ] **2.4 grep: Handle broken symlinks gracefully** — Add `--no-messages` flag to ripgrep invocation to suppress error output for broken symlinks and permission-denied files. If exit code is 2 (partial results), still return results with a note: "(Some paths were inaccessible and skipped)".
+- [x] **2.4 grep: Handle broken symlinks gracefully** — Add `--no-messages` flag to ripgrep invocation to suppress error output for broken symlinks and permission-denied files. If exit code is 2 (partial results), still return results with a note: "(Some paths were inaccessible and skipped)".
   - File: `internal/llm/tools/grep.go`
 
-- [ ] **2.5 grep: Informative truncation message** — Change truncation message from generic text to include match counts: "(Results truncated: showing N of M matches. Consider using a more specific path or pattern.)"
+- [x] **2.5 grep: Informative truncation message** — Change truncation message from generic text to include match counts: "(Results truncated: showing N of M matches. Consider using a more specific path or pattern.)"
   - File: `internal/llm/tools/grep.go`
 
-- [ ] **2.6 edit: Normalize line endings** — Normalize CRLF to LF before performing string matching and diff generation. Apply to both the file content and the `old_string`/`new_string` parameters. This prevents spurious diff noise on Windows-edited files.
+- [x] **2.6 edit: Normalize line endings** — Normalize CRLF to LF before performing string matching and diff generation. Apply to both the file content and the `old_string`/`new_string` parameters. This prevents spurious diff noise on Windows-edited files.
   - File: `internal/llm/tools/edit.go`
   - Add: `content = strings.ReplaceAll(content, "\r\n", "\n")` before matching.
 
-- [ ] **2.7 edit: Actionable multiple-match error** — Current error says "old_string appears multiple times in the file." Improve to: "old_string appears N times in the file. Please provide more surrounding context lines in old_string to make the match unique, or use replace_all=true to replace all occurrences."
+- [x] **2.7 edit: Actionable multiple-match error** — Current error says "old_string appears multiple times in the file." Improve to: "old_string appears N times in the file. Please provide more surrounding context lines in old_string to make the match unique, or use replace_all=true to replace all occurrences."
   - File: `internal/llm/tools/edit.go`
 
-- [ ] **2.8 LSP diagnostics: Filter and cap** — Across `edit`, `multiedit`, `write`, and `patch`, filter LSP diagnostics to errors only (severity 1) and cap at 20 diagnostics per file. Currently all severities are returned without limit.
+- [x] **2.8 LSP diagnostics: Filter and cap** — Across `edit`, `multiedit`, `write`, and `patch`, filter LSP diagnostics to errors only (severity 1) and cap at 20 diagnostics per file. Currently all severities are returned without limit.
   - File: `internal/llm/tools/edit.go`, `multiedit.go`, `write.go`, `patch.go`
   - Also requires changes in: `internal/lsp/diagnostics.go` (add severity filter + cap parameters to `FormatDiagnostics`)
 
-- [ ] **2.9 edit/write: Trim common leading indentation from diffs** — Implement a `trimDiff()` helper that strips the longest common whitespace prefix from all lines in a unified diff, making diffs more readable in tool responses. Apply to `edit`, `multiedit`, `write`, and `patch` tools.
+- [x] **2.9 edit/write: Trim common leading indentation from diffs** — Implement a `trimDiff()` helper that strips the longest common whitespace prefix from all lines in a unified diff, making diffs more readable in tool responses. Apply to `edit`, `multiedit`, `write`, and `patch` tools.
   - New shared helper in: `internal/llm/tools/file.go` or `internal/diff/diff.go`
 
-- [ ] **2.10 ls: Extend ignore patterns** — Add missing common directories to the auto-ignore list: `.zig-cache/`, `zig-out`, `.coverage`, `coverage/`, `logs/`, `.venv/`, `venv/`, `env/`, `tmp/`, `temp/`, `.cache/`, `cache/`.
+- [x] **2.10 ls: Extend ignore patterns** — Add missing common directories to the auto-ignore list: `.zig-cache/`, `zig-out`, `.coverage`, `coverage/`, `logs/`, `.venv/`, `venv/`, `env/`, `tmp/`, `temp/`, `.cache/`, `cache/`.
   - File: `internal/llm/tools/ls.go`
 
-- [ ] **2.11 ls: Sort directories before files, alphabetical** — Current implementation uses `filepath.Walk` order which is lexicographic but doesn't separate directories from files. Modify `buildTree` or the rendering to show subdirectories before files within each level, both sorted alphabetically.
+- [x] **2.11 ls: Sort directories before files, alphabetical** — Current implementation uses `filepath.Walk` order which is lexicographic but doesn't separate directories from files. Modify `buildTree` or the rendering to show subdirectories before files within each level, both sorted alphabetically.
   - File: `internal/llm/tools/ls.go`
 
-- [ ] **2.12 lsp: Validate file existence before checking clients** — Current code checks for LSP clients first, then opens the file. Reverse the order: check file exists first (via `os.Stat`), then check for LSP clients. This produces clearer error messages when the file simply doesn't exist.
+- [x] **2.12 lsp: Validate file existence before checking clients** — Current code checks for LSP clients first, then opens the file. Reverse the order: check file exists first (via `os.Stat`), then check for LSP clients. This produces clearer error messages when the file simply doesn't exist.
   - File: `internal/llm/tools/lsp.go`
 
-- [ ] **2.13 fetch: Send Accept headers** — Set format-appropriate `Accept` headers on the HTTP request:
+- [x] **2.13 fetch: Send Accept headers** — Set format-appropriate `Accept` headers on the HTTP request:
   - `text`: `Accept: text/plain;q=1.0, text/html;q=0.5`
   - `markdown`: `Accept: text/markdown;q=1.0, text/html;q=0.7`
   - `html`: `Accept: text/html;q=1.0`
   - File: `internal/llm/tools/fetch.go`
 
-- [ ] **2.14 fetch: Pre-check Content-Length** — Before reading the response body, check the `Content-Length` header. If it exceeds 5MB, return an error immediately instead of downloading and then discarding.
+- [x] **2.14 fetch: Pre-check Content-Length** — Before reading the response body, check the `Content-Length` header. If it exceeds 5MB, return an error immediately instead of downloading and then discarding.
   - File: `internal/llm/tools/fetch.go`
 
-- [ ] **2.15 view: Binary file detection by content** — In addition to extension-based image detection, sample the first 4096 bytes and check for null bytes or >30% non-printable characters. If binary, return a clear error: "File appears to be binary. Use the appropriate tool for this file type."
+- [x] **2.15 view: Binary file detection by content** — In addition to extension-based image detection, sample the first 4096 bytes and check for null bytes or >30% non-printable characters. If binary, return a clear error: "File appears to be binary. Use the appropriate tool for this file type."
   - File: `internal/llm/tools/view.go`
 
-- [ ] **2.16 view: Improve continuation output** — Change the footer message format from `"(File has more lines. Use 'offset' parameter to read beyond line N)"` to `"(Showing lines X-Y of Z total. Use offset=N to continue reading.)"` where X, Y, Z are actual line numbers.
+- [x] **2.16 view: Improve continuation output** — Change the footer message format from `"(File has more lines. Use 'offset' parameter to read beyond line N)"` to `"(Showing lines X-Y of Z total. Use offset=N to continue reading.)"` where X, Y, Z are actual line numbers.
   - File: `internal/llm/tools/view.go`
 
-- [ ] **2.17 skill: Use ripgrep for file enumeration** — Replace `os.ReadDir`-based directory walk in `sampleSkillFiles` with ripgrep (`rg --files --hidden`) to pick up hidden files that the current walk misses.
+- [x] **2.17 skill: Use ripgrep for file enumeration** — Replace `os.ReadDir`-based directory walk in `sampleSkillFiles` with ripgrep (`rg --files --hidden`) to pick up hidden files that the current walk misses.
   - File: `internal/llm/tools/skill.go`
 
 ### Phase 3: Significant Features (Deferred)
@@ -186,11 +186,11 @@ High-effort changes that require careful design. Each should get its own focused
 ## Success Criteria
 
 - [x] All Phase 1 description changes are applied and verified by running `go build ./...`
-- [ ] `glob` sort order matches its description (mod time, not path length) — verified by test
-- [ ] `grep` correctly parses lines containing colons (new test case)
-- [ ] LSP diagnostics are filtered to errors only with a cap of 20 per file — verified by test
-- [ ] `edit` returns actionable error messages on multiple matches — verified by test
-- [ ] All existing tests pass: `make test`
+- [x] `glob` sort order matches its description (mod time, not path length) — verified by test
+- [x] `grep` correctly parses lines containing colons (new test case)
+- [x] LSP diagnostics are filtered to errors only with a cap of 20 per file — verified by test
+- [x] `edit` returns actionable error messages on multiple matches — verified by test
+- [x] All existing tests pass: `make test`
 
 ## References
 

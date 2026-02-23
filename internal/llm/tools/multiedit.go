@@ -185,7 +185,7 @@ func (m *multiEditTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 		return NewEmptyResponse(), fmt.Errorf("failed to read file: %w", err)
 	}
 
-	oldContent := string(content)
+	oldContent := strings.ReplaceAll(string(content), "\r\n", "\n")
 	currentContent := oldContent
 	perEditDiffs := make([]MultiEditPermissionEdit, 0, len(params.Edits))
 
@@ -198,7 +198,10 @@ func (m *multiEditTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 			return NewTextErrorResponse(fmt.Sprintf("edit %d: old_string and new_string must be different", i+1)), nil
 		}
 
-		index := strings.Index(currentContent, edit.OldString)
+		normalizedOldString := strings.ReplaceAll(edit.OldString, "\r\n", "\n")
+		normalizedNewString := strings.ReplaceAll(edit.NewString, "\r\n", "\n")
+
+		index := strings.Index(currentContent, normalizedOldString)
 		if index == -1 {
 			return NewTextErrorResponse(fmt.Sprintf("edit %d: old_string not found in file. Make sure it matches exactly, including whitespace and line breaks", i+1)), nil
 		}
@@ -207,13 +210,14 @@ func (m *multiEditTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 		beforeEdit := currentContent
 
 		if edit.ReplaceAll {
-			currentContent = strings.ReplaceAll(currentContent, edit.OldString, edit.NewString)
+			currentContent = strings.ReplaceAll(currentContent, normalizedOldString, normalizedNewString)
 		} else {
-			lastIndex := strings.LastIndex(currentContent, edit.OldString)
+			lastIndex := strings.LastIndex(currentContent, normalizedOldString)
 			if index != lastIndex {
-				return NewTextErrorResponse(fmt.Sprintf("edit %d: old_string appears multiple times in the file. Please provide more context to ensure a unique match, or use replace_all to change every instance", i+1)), nil
+				count := strings.Count(currentContent, normalizedOldString)
+				return NewTextErrorResponse(fmt.Sprintf("edit %d: old_string appears %d times in the file. Please provide more surrounding context lines in old_string to make the match unique, or use replace_all=true to replace all occurrences", i+1, count)), nil
 			}
-			currentContent = currentContent[:index] + edit.NewString + currentContent[index+len(edit.OldString):]
+			currentContent = currentContent[:index] + normalizedNewString + currentContent[index+len(normalizedOldString):]
 		}
 
 		editDiff, _, _ := diff.GenerateDiff(beforeEdit, currentContent, params.FilePath)

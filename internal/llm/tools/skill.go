@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -107,6 +108,10 @@ func (s *skillTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 // sampleSkillFiles lists up to limit files in the skill directory, excluding SKILL.md.
 func sampleSkillFiles(dir string, limit int) []string {
+	if files, err := sampleSkillFilesWithRipgrep(dir, limit); err == nil {
+		return files
+	}
+
 	var files []string
 
 	entries, err := os.ReadDir(dir)
@@ -130,6 +135,35 @@ func sampleSkillFiles(dir string, limit int) []string {
 	}
 
 	return files
+}
+
+func sampleSkillFilesWithRipgrep(dir string, limit int) ([]string, error) {
+	rgPath, err := exec.LookPath("rg")
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := exec.Command(rgPath, "--files", "--hidden", dir)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if line == "" {
+			continue
+		}
+		if filepath.Base(line) == "SKILL.md" {
+			continue
+		}
+		files = append(files, line)
+		if len(files) >= limit {
+			break
+		}
+	}
+
+	return files, nil
 }
 
 // collectFiles recursively collects files from a directory up to the limit.

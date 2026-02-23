@@ -288,22 +288,24 @@ func (e *editTool) deleteContent(ctx context.Context, filePath, oldString string
 		return NewEmptyResponse(), fmt.Errorf("failed to read file: %w", err)
 	}
 
-	oldContent := string(content)
+	oldContent := strings.ReplaceAll(string(content), "\r\n", "\n")
+	normalizedOldString := strings.ReplaceAll(oldString, "\r\n", "\n")
 
-	index := strings.Index(oldContent, oldString)
+	index := strings.Index(oldContent, normalizedOldString)
 	if index == -1 {
 		return NewTextErrorResponse("old_string not found in file. Make sure it matches exactly, including whitespace and line breaks"), nil
 	}
 
 	var newContent string
 	if replaceAll {
-		newContent = strings.ReplaceAll(oldContent, oldString, "")
+		newContent = strings.ReplaceAll(oldContent, normalizedOldString, "")
 	} else {
-		lastIndex := strings.LastIndex(oldContent, oldString)
+		lastIndex := strings.LastIndex(oldContent, normalizedOldString)
 		if index != lastIndex {
-			return NewTextErrorResponse("old_string appears multiple times in the file. Please provide more context to ensure a unique match, or use replace_all to change every instance"), nil
+			count := strings.Count(oldContent, normalizedOldString)
+			return NewTextErrorResponse(fmt.Sprintf("old_string appears %d times in the file. Please provide more surrounding context lines in old_string to make the match unique, or use replace_all=true to replace all occurrences", count)), nil
 		}
-		newContent = oldContent[:index] + oldContent[index+len(oldString):]
+		newContent = oldContent[:index] + oldContent[index+len(normalizedOldString):]
 	}
 
 	sessionID, messageID := GetContextValues(ctx)
@@ -419,22 +421,25 @@ func (e *editTool) replaceContent(ctx context.Context, filePath, oldString, newS
 		return NewEmptyResponse(), fmt.Errorf("failed to read file: %w", err)
 	}
 
-	oldContent := string(content)
+	oldContent := strings.ReplaceAll(string(content), "\r\n", "\n")
+	normalizedOldString := strings.ReplaceAll(oldString, "\r\n", "\n")
+	normalizedNewString := strings.ReplaceAll(newString, "\r\n", "\n")
 
-	index := strings.Index(oldContent, oldString)
+	index := strings.Index(oldContent, normalizedOldString)
 	if index == -1 {
 		return NewTextErrorResponse("old_string not found in file. Make sure it matches exactly, including whitespace and line breaks"), nil
 	}
 
 	var newContent string
 	if replaceAll {
-		newContent = strings.ReplaceAll(oldContent, oldString, newString)
+		newContent = strings.ReplaceAll(oldContent, normalizedOldString, normalizedNewString)
 	} else {
-		lastIndex := strings.LastIndex(oldContent, oldString)
+		lastIndex := strings.LastIndex(oldContent, normalizedOldString)
 		if index != lastIndex {
-			return NewTextErrorResponse("old_string appears multiple times in the file. Please provide more context to ensure a unique match, or use replace_all to change every instance"), nil
+			count := strings.Count(oldContent, normalizedOldString)
+			return NewTextErrorResponse(fmt.Sprintf("old_string appears %d times in the file. Please provide more surrounding context lines in old_string to make the match unique, or use replace_all=true to replace all occurrences", count)), nil
 		}
-		newContent = oldContent[:index] + newString + oldContent[index+len(oldString):]
+		newContent = oldContent[:index] + normalizedNewString + oldContent[index+len(normalizedOldString):]
 	}
 
 	if oldContent == newContent {

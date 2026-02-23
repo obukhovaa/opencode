@@ -182,7 +182,7 @@ func TestEditTool_Replace(t *testing.T) {
 			NewString: "baz",
 		})
 		assert.True(t, resp.IsError)
-		assert.Contains(t, resp.Content, "multiple times")
+		assert.Contains(t, resp.Content, "2 times")
 		assert.Contains(t, resp.Content, "replace_all")
 	})
 
@@ -417,6 +417,6 @@ func TestMultiEditTool_MultipleMatchesWithoutReplaceAll(t *testing.T) {
 		},
 	})
 	assert.True(t, resp.IsError)
-	assert.Contains(t, resp.Content, "multiple times")
+	assert.Contains(t, resp.Content, "2 times")
 	assert.Contains(t, resp.Content, "replace_all")
 }
