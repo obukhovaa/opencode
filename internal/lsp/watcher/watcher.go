@@ -675,7 +675,7 @@ func (w *WorkspaceWatcher) handleFileEvent(ctx context.Context, uri string, chan
 
 	// Notify LSP server about the file event using didChangeWatchedFiles
 	if err := w.notifyFileEvent(ctx, uri, changeType); err != nil {
-		logging.Error("Error notifying LSP server about file event", "error", err)
+		logging.Error("Error notifying LSP server about file event", "error", err, "uri", uri, "cmd", w.client.Cmd.Path)
 	}
 }
 
@@ -704,7 +704,6 @@ func (w *WorkspaceWatcher) notifyFileEvent(ctx context.Context, uri string, chan
 // getServerNameFromContext extracts the server name from the context
 // This is a best-effort function that tries to identify which LSP server we're dealing with
 func getServerNameFromContext(ctx context.Context) (serverName string) {
-
 	// First check if the server name is directly stored in the context
 	if serverName, ok := ctx.Value(ServerNameContextKey).(string); ok && serverName != "" {
 		return strings.ToLower(serverName)

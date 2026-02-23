@@ -51,7 +51,9 @@ Each section starts with one of three headers:
 
 *** Add File: <path> - create a new file. Every following line must be a + line (the initial contents).
 *** Delete File: <path> - remove an existing file. Nothing follows.
-*** Update File: <path> - patch an existing file in place, optionally followed by *** Move to: <new_path> to rename.
+*** Update File: <path> - patch an existing file in place, optionally followed by *** Move to: <new_path> to rename/move the file.
+
+Context lines (@@) are matched with a fuzz tolerance of up to 3 lines — if the context drifts by more than 3 lines from the expected position, the patch is rejected.
 
 Example patch:
 
@@ -65,6 +67,15 @@ Example patch:
 -print("Hi")
 +print("Hello, world!")
 *** Delete File: obsolete.txt
+*** End Patch
+` + "```" + `
+
+To rename or move a file, use ` + "`*** Move to: <new_path>`" + ` immediately after the ` + "`*** Update File:`" + ` header:
+
+` + "```" + `
+*** Begin Patch
+*** Update File: old/path.py
+*** Move to: new/path.py
 *** End Patch
 ` + "```" + `
 

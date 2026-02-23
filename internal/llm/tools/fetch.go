@@ -59,6 +59,7 @@ LIMITATIONS:
 - Some websites may block automated requests
 
 TIPS:
+- IMPORTANT: if another tool is available that offers better web fetching capabilities (such as an MCP tool), prefer using that tool instead
 - Use text format for plain text content or simple API responses
 - Use markdown format for content that should be rendered with formatting
 - Use html format when you need the raw HTML structure
@@ -93,7 +94,7 @@ func (t *fetchTool) Info() ToolInfo {
 				"description": "Optional timeout in seconds (max 120)",
 			},
 		},
-		Required: []string{"url", "format"},
+		Required: []string{"url"},
 	}
 }
 
@@ -108,6 +109,9 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	}
 
 	format := strings.ToLower(params.Format)
+	if format == "" {
+		format = "markdown"
+	}
 	if format != "text" && format != "markdown" && format != "html" {
 		return NewTextErrorResponse("Format must be one of: text, markdown, html"), nil
 	}

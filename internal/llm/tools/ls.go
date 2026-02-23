@@ -60,6 +60,7 @@ LIMITATIONS:
 - Cannot recursively list all directories in a large project
 
 TIPS:
+- You should generally prefer the Glob and Grep tools if you know which directories or file patterns to search for
 - Use Glob tool for finding files by name patterns instead of browsing
 - Use Grep tool for searching file contents
 - Combine with other tools for more effective exploration`

@@ -50,7 +50,8 @@ LIMITATIONS:
 TIPS:
 - For the most useful results, combine with the Grep tool: first find files with Glob, then search their contents with Grep
 - When doing iterative exploration that may require multiple rounds of searching, consider using the Task tool instead
-- Always check if results are truncated and refine your search pattern if needed`
+- Always check if results are truncated and refine your search pattern if needed
+- You have the capability to call multiple tools in a single response. It is always better to speculatively perform multiple searches as a batch`
 )
 
 type GlobParams struct {

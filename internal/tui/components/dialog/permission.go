@@ -334,6 +334,7 @@ func (p *permissionDialogCmp) renderFetchContent() string {
 	if pr, ok := p.permission.Params.(tools.FetchPermissionsParams); ok {
 		finalContent := baseStyle.
 			Foreground(t.Text()).
+			Width(p.contentViewPort.Width).
 			Render(pr.URL)
 		p.contentViewPort.SetContent(finalContent)
 		return p.styleViewport()
@@ -366,12 +367,56 @@ func (p *permissionDialogCmp) renderDefaultContent() string {
 	return p.styleViewport()
 }
 
+func (p *permissionDialogCmp) renderScrollbar() string {
+	t := theme.CurrentTheme()
+	height := p.contentViewPort.Height
+	totalLines := p.contentViewPort.TotalLineCount()
+
+	if totalLines <= height || height <= 0 {
+		return ""
+	}
+
+	thumbSize := max(1, height*height/totalLines)
+	scrollableLines := totalLines - height
+	trackSpace := height - thumbSize
+
+	var thumbPos int
+	if scrollableLines > 0 && trackSpace > 0 {
+		thumbPos = p.contentViewPort.YOffset * trackSpace / scrollableLines
+	}
+
+	thumbStyle := lipgloss.NewStyle().
+		Foreground(t.TextMuted()).
+		Background(t.Background())
+	trackStyle := lipgloss.NewStyle().
+		Foreground(t.BorderDim()).
+		Background(t.Background())
+
+	lines := make([]string, height)
+	for i := range height {
+		if i >= thumbPos && i < thumbPos+thumbSize {
+			lines[i] = thumbStyle.Render("▐")
+		} else {
+			lines[i] = trackStyle.Render("│")
+		}
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
 func (p *permissionDialogCmp) styleViewport() string {
 	t := theme.CurrentTheme()
 	contentStyle := lipgloss.NewStyle().
 		Background(t.Background())
 
-	return contentStyle.Render(p.contentViewPort.View())
+	view := p.contentViewPort.View()
+
+	scrollbar := p.renderScrollbar()
+	if scrollbar != "" {
+		view = lipgloss.JoinHorizontal(lipgloss.Top, view, scrollbar)
+	}
+
+	return contentStyle.Render(view)
 }
 
 func (p *permissionDialogCmp) render() string {
@@ -390,7 +435,7 @@ func (p *permissionDialogCmp) render() string {
 
 	// Calculate content height dynamically based on window size
 	p.contentViewPort.Height = p.height - lipgloss.Height(headerContent) - lipgloss.Height(buttons) - 2 - lipgloss.Height(title)
-	p.contentViewPort.Width = p.width - 4
+	p.contentViewPort.Width = p.width - 5
 
 	// Render content based on tool type
 	var contentFinal string

@@ -95,6 +95,9 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 		return nil, nil, fmt.Errorf("checking existing flow states: %w", err)
 	}
 
+	agentEvents := make(chan agentpkg.AgentEvent, 100)
+	flowStates := make(chan *FlowState, 100)
+
 	hasRunning := false
 	for _, es := range existingStates {
 		if es.Status == string(FlowStatusRunning) {
@@ -102,10 +105,6 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 			break
 		}
 	}
-
-	agentEvents := make(chan agentpkg.AgentEvent, 100)
-	flowStates := make(chan *FlowState, 100)
-
 	if hasRunning {
 		go func() {
 			defer close(agentEvents)
@@ -132,23 +131,63 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 	}
 
 	nextSteps := make(chan stepWork, len(f.Spec.Steps))
-	nextSteps <- stepWork{step: f.Spec.Steps[0], args: copyArgs(args)}
-
 	var wg sync.WaitGroup
 	startedSteps := &sync.Map{}
+
+	var initialWork []stepWork
+	if len(existingStates) > 0 && !fresh {
+		stateMap := make(map[string]*FlowState, len(existingStates))
+		for _, es := range existingStates {
+			state := dbFlowStateToFlowState(es)
+			stateMap[state.StepID] = state
+		}
+		visited := make(map[string]bool)
+		logging.Info("Resuming flow from previous state", "flow", flowID, "existing_steps", len(existingStates))
+		initialWork = s.collectResumableSteps(f, f.Spec.Steps[0], copyArgs(args), nil, stateMap, visited, startedSteps, flowStates)
+	} else {
+		initialWork = []stepWork{{step: f.Spec.Steps[0], args: copyArgs(args)}}
+	}
+
+	for _, w := range initialWork {
+		stepSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, flowID, w.step.ID)
+		argsJSON, _ := json.Marshal(w.args)
+		if _, getErr := s.querier.GetFlowState(ctx, stepSessionID); getErr == nil {
+			s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+				Status:         string(FlowStatusRunning),
+				Output:         sql.NullString{},
+				IsStructOutput: false,
+				SessionID:      stepSessionID,
+			})
+		} else {
+			s.querier.CreateFlowState(ctx, db.CreateFlowStateParams{
+				SessionID:      stepSessionID,
+				RootSessionID:  rootSessionID,
+				FlowID:         f.ID,
+				StepID:         w.step.ID,
+				Status:         string(FlowStatusRunning),
+				Args:           sql.NullString{String: string(argsJSON), Valid: true},
+				IsStructOutput: false,
+			})
+		}
+	}
+
+	for _, w := range initialWork {
+		wg.Add(1)
+		nextSteps <- w
+	}
 
 	go func() {
 		for work := range nextSteps {
 			stepSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, flowID, work.step.ID)
 			if _, loaded := startedSteps.LoadOrStore(work.step.ID, true); loaded {
 				logging.Debug("Step already started, skipping (diamond convergence)", "step", work.step.ID)
+				wg.Done() // balance the Add from sender
 				continue
 			}
 
-			wg.Add(1)
 			go func(w stepWork, sessID string) {
 				defer wg.Done()
-				s.runStep(ctx, f, w.step, sessID, rootSessionID, sessionPrefix, w.args, w.prevStep, agentEvents, flowStates, nextSteps, startedSteps)
+				s.runStep(ctx, f, w.step, sessID, rootSessionID, sessionPrefix, w.args, w.prevStep, &wg, agentEvents, flowStates, nextSteps, startedSteps)
 			}(work, stepSessionID)
 		}
 	}()
@@ -172,6 +211,7 @@ func (s *service) runStep(
 	sessionPrefix string,
 	args map[string]any,
 	prevState *FlowState,
+	wg *sync.WaitGroup,
 	agentEvents chan<- agentpkg.AgentEvent,
 	flowStates chan<- *FlowState,
 	nextSteps chan<- stepWork,
@@ -188,13 +228,13 @@ func (s *service) runStep(
 	}
 	agentSvc, err := s.agents.NewAgent(ctx, agentID, outputSchema, step.ID)
 	if err != nil {
-		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, err, agentEvents, flowStates, nextSteps, f, sessionPrefix, startedSteps)
+		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, err, wg, agentEvents, flowStates, nextSteps, f, sessionPrefix, startedSteps)
 		return
 	}
 
 	sess, err := s.resolveSession(ctx, step, sessionID, rootSessionID, prevState)
 	if err != nil {
-		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, fmt.Errorf("resolving session: %w", err), agentEvents, flowStates, nextSteps, f, sessionPrefix, startedSteps)
+		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, fmt.Errorf("resolving session: %w", err), wg, agentEvents, flowStates, nextSteps, f, sessionPrefix, startedSteps)
 		return
 	}
 
@@ -206,17 +246,26 @@ func (s *service) runStep(
 	}
 
 	argsJSON, _ := json.Marshal(args)
-	_, err = s.querier.CreateFlowState(ctx, db.CreateFlowStateParams{
-		SessionID:      sessionID,
-		RootSessionID:  rootSessionID,
-		FlowID:         f.ID,
-		StepID:         step.ID,
-		Status:         string(FlowStatusRunning),
-		Args:           sql.NullString{String: string(argsJSON), Valid: true},
-		IsStructOutput: false,
-	})
+	if _, getErr := s.querier.GetFlowState(ctx, sessionID); getErr == nil {
+		_, err = s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+			Status:         string(FlowStatusRunning),
+			Output:         sql.NullString{},
+			IsStructOutput: false,
+			SessionID:      sessionID,
+		})
+	} else {
+		_, err = s.querier.CreateFlowState(ctx, db.CreateFlowStateParams{
+			SessionID:      sessionID,
+			RootSessionID:  rootSessionID,
+			FlowID:         f.ID,
+			StepID:         step.ID,
+			Status:         string(FlowStatusRunning),
+			Args:           sql.NullString{String: string(argsJSON), Valid: true},
+			IsStructOutput: false,
+		})
+	}
 	if err != nil {
-		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, fmt.Errorf("persisting flow state: %w", err), agentEvents, flowStates, nextSteps, f, sessionPrefix, startedSteps)
+		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, fmt.Errorf("persisting flow state: %w", err), wg, agentEvents, flowStates, nextSteps, f, sessionPrefix, startedSteps)
 		return
 	}
 
@@ -295,6 +344,7 @@ doneRetry:
 		if step.Fallback != nil && step.Fallback.To != "" {
 			fallbackStep := findStep(f.Spec.Steps, step.Fallback.To)
 			if fallbackStep != nil {
+				wg.Add(1)
 				nextSteps <- stepWork{step: *fallbackStep, args: copyArgs(args), prevStep: failedState}
 			}
 		}
@@ -340,16 +390,24 @@ doneRetry:
 	result.FlowStepID = step.ID
 	agentEvents <- result
 
-	for _, rule := range step.Rules {
-		match, err := evaluatePredicate(rule.If, args)
-		if err != nil {
-			logging.Warn("Failed to evaluate rule predicate", "step", step.ID, "predicate", rule.If, "error", err)
-			continue
+	if len(step.Rules) == 0 {
+		if next := nextSequentialStep(f.Spec.Steps, step.ID); next != nil {
+			wg.Add(1)
+			nextSteps <- stepWork{step: *next, args: copyArgs(args), prevStep: completedState}
 		}
-		if match {
-			nextStep := findStep(f.Spec.Steps, rule.Then)
-			if nextStep != nil {
-				nextSteps <- stepWork{step: *nextStep, args: copyArgs(args), prevStep: completedState}
+	} else {
+		for _, rule := range step.Rules {
+			match, err := evaluatePredicate(rule.If, args)
+			if err != nil {
+				logging.Warn("Failed to evaluate rule predicate", "step", step.ID, "predicate", rule.If, "error", err)
+				continue
+			}
+			if match {
+				nextStep := findStep(f.Spec.Steps, rule.Then)
+				if nextStep != nil {
+					wg.Add(1)
+					nextSteps <- stepWork{step: *nextStep, args: copyArgs(args), prevStep: completedState}
+				}
 			}
 		}
 	}
@@ -363,6 +421,7 @@ func (s *service) handleStepError(
 	flowID string,
 	args map[string]any,
 	err error,
+	wg *sync.WaitGroup,
 	agentEvents chan<- agentpkg.AgentEvent,
 	flowStates chan<- *FlowState,
 	nextSteps chan<- stepWork,
@@ -393,9 +452,73 @@ func (s *service) handleStepError(
 	if step.Fallback != nil && step.Fallback.To != "" {
 		fallbackStep := findStep(f.Spec.Steps, step.Fallback.To)
 		if fallbackStep != nil {
+			wg.Add(1)
 			nextSteps <- stepWork{step: *fallbackStep, args: copyArgs(args), prevStep: failedState}
 		}
 	}
+}
+
+func (s *service) collectResumableSteps(
+	f *Flow,
+	step Step,
+	args map[string]any,
+	prevState *FlowState,
+	stateMap map[string]*FlowState,
+	visited map[string]bool,
+	startedSteps *sync.Map,
+	flowStates chan<- *FlowState,
+) []stepWork {
+	if visited[step.ID] {
+		return nil
+	}
+	visited[step.ID] = true
+
+	existing := stateMap[step.ID]
+
+	if existing == nil || existing.Status != FlowStatusCompleted {
+		if existing != nil {
+			logging.Info("Resuming non-completed step", "step", step.ID, "status", existing.Status)
+		} else {
+			logging.Info("Running step not yet attempted", "step", step.ID)
+		}
+		return []stepWork{{step: step, args: copyArgs(args), prevStep: prevState}}
+	}
+
+	logging.Debug("Skipping completed step during resume", "step", step.ID)
+	startedSteps.Store(step.ID, true)
+	flowStates <- existing
+	s.Publish(pubsub.UpdatedEvent, *existing)
+
+	if existing.IsStructOutput && existing.Output != "" {
+		var structData map[string]any
+		if err := json.Unmarshal([]byte(existing.Output), &structData); err == nil {
+			for k, v := range structData {
+				args[k] = v
+			}
+		}
+	}
+
+	var result []stepWork
+	if len(step.Rules) == 0 {
+		if next := nextSequentialStep(f.Spec.Steps, step.ID); next != nil {
+			result = append(result, s.collectResumableSteps(f, *next, copyArgs(args), existing, stateMap, visited, startedSteps, flowStates)...)
+		}
+	} else {
+		for _, rule := range step.Rules {
+			match, err := evaluatePredicate(rule.If, args)
+			if err != nil {
+				logging.Warn("Failed to evaluate rule predicate during resume", "step", step.ID, "predicate", rule.If, "error", err)
+				continue
+			}
+			if match {
+				nextStep := findStep(f.Spec.Steps, rule.Then)
+				if nextStep != nil {
+					result = append(result, s.collectResumableSteps(f, *nextStep, copyArgs(args), existing, stateMap, visited, startedSteps, flowStates)...)
+				}
+			}
+		}
+	}
+	return result
 }
 
 func (s *service) resolveSession(ctx context.Context, step Step, sessionID string, rootSessionID string, prevState *FlowState) (session.Session, error) {
@@ -465,6 +588,15 @@ func evaluatePredicate(predicate string, args map[string]any) (bool, error) {
 	default:
 		return false, fmt.Errorf("unknown operator %q", op)
 	}
+}
+
+func nextSequentialStep(steps []Step, currentID string) *Step {
+	for i := range steps {
+		if steps[i].ID == currentID && i+1 < len(steps) {
+			return &steps[i+1]
+		}
+	}
+	return nil
 }
 
 func findStep(steps []Step, id string) *Step {

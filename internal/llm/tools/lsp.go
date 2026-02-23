@@ -47,7 +47,7 @@ All operations require:
 - line: The line number (1-based, as shown in editors)
 - character: The character offset (1-based, as shown in editors)
 
-Note: LSP servers must be running for the file type. If no server is available, an error will be returned.
+Note: LSP servers must be configured for the file type. If no server is available, an error will be returned.
 `
 )
 

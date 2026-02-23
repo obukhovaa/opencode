@@ -137,16 +137,13 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 	}
 
 	type stepResult struct {
-		StepID         string `json:"step_id"`
 		SessionID      string `json:"session_id"`
 		Status         string `json:"status"`
 		Output         string `json:"output,omitempty"`
 		IsStructOutput bool   `json:"is_struct_output,omitempty"`
 	}
 
-	var completed []stepResult
-	var failed []stepResult
-	var running []stepResult
+	steps := map[string]stepResult{}
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -157,26 +154,31 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 	}()
 
 	for state := range flowStates {
-		sr := stepResult{
-			StepID:         state.StepID,
+		steps[state.StepID] = stepResult{
 			SessionID:      state.SessionID,
 			Status:         string(state.Status),
 			Output:         state.Output,
 			IsStructOutput: state.IsStructOutput,
-		}
-		switch state.Status {
-		case flow.FlowStatusCompleted:
-			completed = append(completed, sr)
-		case flow.FlowStatusFailed:
-			failed = append(failed, sr)
-		case flow.FlowStatusRunning:
-			running = append(running, sr)
 		}
 	}
 	wg.Wait()
 
 	if spinner != nil {
 		spinner.Stop()
+	}
+
+	completed := map[string]stepResult{}
+	failed := map[string]stepResult{}
+	running := map[string]stepResult{}
+	for id, sr := range steps {
+		switch sr.Status {
+		case string(flow.FlowStatusCompleted):
+			completed[id] = sr
+		case string(flow.FlowStatusFailed):
+			failed[id] = sr
+		case string(flow.FlowStatusRunning):
+			running[id] = sr
+		}
 	}
 
 	result := map[string]any{
