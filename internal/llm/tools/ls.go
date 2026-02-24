@@ -3,13 +3,16 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/logging"
 )
 
 type LSParams struct {
@@ -51,6 +54,7 @@ HOW TO USE:
 FEATURES:
 - Displays a hierarchical view of files and directories
 - Automatically skips hidden files/directories (starting with '.')
+- Automatically respects .gitignore rules when ripgrep is available
 - Skips common system directories like __pycache__
 - Can filter out files matching specific patterns
 
@@ -59,6 +63,7 @@ LIMITATIONS:
 - Very large directories will be truncated
 - Does not show file sizes or permissions
 - Cannot recursively list all directories in a large project
+- Falls back to built-in walker if ripgrep is not installed (no .gitignore support in fallback mode)
 
 TIPS:
 - You should generally prefer the Glob and Grep tools if you know which directories or file patterns to search for
@@ -111,7 +116,7 @@ func (l *lsTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
 		return NewTextErrorResponse(fmt.Sprintf("path does not exist: %s", searchPath)), nil
 	}
 
-	files, truncated, err := listDirectory(searchPath, params.Ignore, MaxLSFiles)
+	files, truncated, err := listDirectory(ctx, searchPath, params.Ignore, MaxLSFiles)
 	if err != nil {
 		return NewEmptyResponse(), fmt.Errorf("error listing directory: %w", err)
 	}
@@ -132,7 +137,73 @@ func (l *lsTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
 	), nil
 }
 
-func listDirectory(initialPath string, ignorePatterns []string, limit int) ([]string, bool, error) {
+var errRipgrepNotFound = errors.New("ripgrep not found")
+
+func listDirectory(ctx context.Context, initialPath string, ignorePatterns []string, limit int) ([]string, bool, error) {
+	files, truncated, err := listDirectoryWithRipgrep(ctx, initialPath, ignorePatterns, limit)
+	if err == nil {
+		return files, truncated, nil
+	}
+	if errors.Is(err, errRipgrepNotFound) {
+		logging.Debug("ls: ripgrep not installed, falling back to filepath.Walk")
+	} else {
+		logging.Debug("ls: ripgrep failed, falling back to filepath.Walk", "error", err)
+	}
+	return listDirectoryWithWalk(initialPath, ignorePatterns, limit)
+}
+
+func listDirectoryWithRipgrep(ctx context.Context, initialPath string, ignorePatterns []string, limit int) ([]string, bool, error) {
+	rgPath, err := exec.LookPath("rg")
+	if err != nil {
+		return nil, false, errRipgrepNotFound
+	}
+
+	args := []string{"--files"}
+	for _, pattern := range ignorePatterns {
+		args = append(args, "--glob", "!"+pattern)
+	}
+	args = append(args, initialPath)
+
+	cmd := exec.CommandContext(ctx, rgPath, args...)
+	output, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			switch exitErr.ExitCode() {
+			case 1:
+				// No matches — empty directory or all files ignored
+				return []string{}, false, nil
+			case 2:
+				// Partial error (e.g. broken symlinks); continue with whatever output we got
+				logging.Debug("ls: ripgrep exited with code 2, processing partial output")
+			default:
+				return nil, false, fmt.Errorf("ripgrep failed: %w", err)
+			}
+		} else {
+			return nil, false, fmt.Errorf("ripgrep exec error: %w", err)
+		}
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var results []string
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		results = append(results, line)
+	}
+
+	sort.Strings(results)
+
+	truncated := false
+	if len(results) > limit {
+		results = results[:limit]
+		truncated = true
+	}
+
+	return results, truncated, nil
+}
+
+func listDirectoryWithWalk(initialPath string, ignorePatterns []string, limit int) ([]string, bool, error) {
 	var results []string
 	truncated := false
 

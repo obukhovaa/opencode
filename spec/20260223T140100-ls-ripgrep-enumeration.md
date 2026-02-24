@@ -1,7 +1,7 @@
 # LS Tool — Use Ripgrep for File Enumeration
 
 **Date**: 2026-02-23
-**Status**: Draft
+**Status**: Implemented
 **Author**: AI-assisted
 
 ## Overview
@@ -58,7 +58,7 @@ When `rg` is available, `listDirectory` delegates to `rg --files` which natively
 
 ### Phase 1: Core rg Integration
 
-- [ ] **1.1 Add `listDirectoryWithRipgrep`** — New function in `internal/llm/tools/ls.go` that:
+- [x] **1.1 Add `listDirectoryWithRipgrep`** — New function in `internal/llm/tools/ls.go` that:
   1. Calls `exec.LookPath("rg")` and returns `("", false, ErrRipgrepNotFound)` if missing.
   2. Builds args: `rg --files [--glob='!pattern' ...] <path>` where `--glob` flags come from `ignorePatterns`.
   3. Runs via `exec.CommandContext(ctx, rgPath, args...)`.
@@ -66,23 +66,23 @@ When `rg` is available, `listDirectory` delegates to `rg --files` which natively
   5. Appends each file path to results; stops at `limit` and sets `truncated = true`.
   6. Returns `([]string, bool, error)` — same signature as `listDirectory`.
 
-- [ ] **1.2 Update `listDirectory` to try rg first** — Wrap the existing `filepath.Walk` implementation. Attempt `listDirectoryWithRipgrep`; on success return its results. On `ErrRipgrepNotFound` or any exec error, fall through to the existing Walk path. Log the fallback at debug level.
+- [x] **1.2 Update `listDirectory` to try rg first** — Wrap the existing `filepath.Walk` implementation. Attempt `listDirectoryWithRipgrep`; on success return its results. On `ErrRipgrepNotFound` or any exec error, fall through to the existing Walk path. Log the fallback at debug level.
 
-- [ ] **1.3 Infer directories from rg output** — `rg --files` emits only file paths. `createFileTree` infers directory nodes from intermediate path segments, so no change is needed there. However, the current Walk path appends a trailing separator to directory paths (`path + string(filepath.Separator)`) to signal directory type. The rg path must not do this — `createFileTree` uses the trailing separator as the directory signal, so file paths from rg must be passed as-is (no trailing separator).
+- [x] **1.3 Infer directories from rg output** — `rg --files` emits only file paths. `createFileTree` infers directory nodes from intermediate path segments, so no change is needed there. However, the current Walk path appends a trailing separator to directory paths (`path + string(filepath.Separator)`) to signal directory type. The rg path must not do this — `createFileTree` uses the trailing separator as the directory signal, so file paths from rg must be passed as-is (no trailing separator).
 
-- [ ] **1.4 Update `lsDescription`** — Add `.gitignore` awareness to the FEATURES section: `"- Automatically respects .gitignore rules when ripgrep is available"`. Update LIMITATIONS to note: `"- Falls back to built-in walker if ripgrep is not installed (no .gitignore support in fallback mode)"`.
+- [x] **1.4 Update `lsDescription`** — Add `.gitignore` awareness to the FEATURES section: `"- Automatically respects .gitignore rules when ripgrep is available"`. Update LIMITATIONS to note: `"- Falls back to built-in walker if ripgrep is not installed (no .gitignore support in fallback mode)"`.
 
 ### Phase 2: Cleanup and Tests
 
-- [ ] **2.1 Move `commonIgnored` into fallback only** — Guard the `commonIgnored` slice inside the `filepath.Walk` callback so it is not evaluated when rg is used. No behavioral change for the fallback path.
+- [x] **2.1 Move `commonIgnored` into fallback only** — Guard the `commonIgnored` slice inside the `filepath.Walk` callback so it is not evaluated when rg is used. No behavioral change for the fallback path.
 
-- [ ] **2.2 Add tests for `listDirectoryWithRipgrep`** — In `internal/llm/tools/ls_test.go`:
+- [x] **2.2 Add tests for `listDirectoryWithRipgrep`** — In `internal/llm/tools/ls_test.go`:
   - Test that files listed in `.gitignore` are excluded from rg results.
   - Test that user-supplied `ignore` patterns are passed as `--glob='!pattern'` and take effect.
   - Test truncation at `MaxLSFiles`.
   - Test fallback: mock `exec.LookPath` failure and verify Walk is used instead.
 
-- [ ] **2.3 Verify `createFileTree` compatibility** — Confirm that a flat list of absolute file paths (no trailing separators) from rg produces the same tree structure as the Walk-based path. Add a table-driven test comparing both outputs on a fixture directory.
+- [x] **2.3 Verify `createFileTree` compatibility** — Confirm that a flat list of absolute file paths (no trailing separators) from rg produces the same tree structure as the Walk-based path. Add a table-driven test comparing both outputs on a fixture directory.
 
 ## Edge Cases
 
@@ -118,12 +118,12 @@ When `rg` is available, `listDirectory` delegates to `rg --files` which natively
 
 ## Success Criteria
 
-- [ ] Files listed in `.gitignore` do not appear in `ls` output when rg is available.
-- [ ] User-supplied `ignore` patterns are applied correctly via `--glob` flags.
-- [ ] The tool falls back to `filepath.Walk` without error when rg is not installed.
-- [ ] Tree structure output is identical between rg and Walk paths for the same directory (verified by test).
-- [ ] All existing `ls` tests pass: `go test ./internal/llm/tools/...`
-- [ ] `make test` passes.
+- [x] Files listed in `.gitignore` do not appear in `ls` output when rg is available.
+- [x] User-supplied `ignore` patterns are applied correctly via `--glob` flags.
+- [x] The tool falls back to `filepath.Walk` without error when rg is not installed.
+- [x] Tree structure output is identical between rg and Walk paths for the same directory (verified by test).
+- [x] All existing `ls` tests pass: `go test ./internal/llm/tools/...`
+- [x] `make test` passes.
 
 ## References
 
