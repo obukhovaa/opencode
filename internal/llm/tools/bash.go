@@ -28,10 +28,11 @@ type BashPermissionsParams struct {
 }
 
 type BashResponseMetadata struct {
-	StartTime   int64  `json:"start_time"`
-	EndTime     int64  `json:"end_time"`
-	Description string `json:"description,omitempty"`
-	ExitCode    int    `json:"exit_code"`
+	StartTime    int64  `json:"start_time"`
+	EndTime      int64  `json:"end_time"`
+	Description  string `json:"description,omitempty"`
+	ExitCode     int    `json:"exit_code"`
+	TempFilePath string `json:"temp_file_path,omitempty"`
 }
 type bashTool struct {
 	permissions permission.Service
@@ -92,7 +93,7 @@ Usage notes:
   - The command argument is required.
   - You can specify an optional timeout in milliseconds. If not specified, commands will time out after 120000ms (2 minutes).
   - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
-  - If the output exceeds ${maxLines} lines or ${maxBytes} bytes, it will be truncated. You can use Read with offset/limit to read specific sections or Grep to search the full content. Because of this, you do NOT need to use ` + "`head`" + `, ` + "`tail`" + `, or other truncation commands to limit output - just run the command directly.
+  - If the output exceeds ${maxLines} lines or ${maxBytes} bytes, the full output is saved to a temp file and a truncated preview (first/last 500 lines) is shown. Use the View tool with offset/limit to read specific sections of the saved file, or Grep to search the full content. Because of this, you do NOT need to use ` + "`head`" + `, ` + "`tail`" + `, or other truncation commands to limit output - just run the command directly.
 
   - Avoid using Bash with the ` + "`find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo`" + ` commands, unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
     - File search: Use Glob (NOT find or ls)
@@ -287,10 +288,10 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		return NewEmptyResponse(), fmt.Errorf("error executing command: %w", err)
 	}
 
-	stdout = truncateOutput(stdout)
-	stderr = truncateOutput(stderr)
+	stdoutResult := persistAndTruncate(stdout, "stdout", BashToolName)
+	stderrResult := persistAndTruncate(stderr, "stderr", BashToolName)
 
-	errorMessage := stderr
+	errorMessage := stderrResult.content
 	if interrupted {
 		if errorMessage != "" {
 			errorMessage += "\n"
@@ -303,47 +304,58 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		errorMessage += fmt.Sprintf("Exit code %d", exitCode)
 	}
 
-	hasBothOutputs := stdout != "" && stderr != ""
+	output := stdoutResult.content
+	hasBothOutputs := output != "" && errorMessage != ""
 
 	if hasBothOutputs {
-		stdout += "\n"
+		output += "\n"
 	}
 
 	if errorMessage != "" {
-		stdout += "\n" + errorMessage
+		output += "\n" + errorMessage
+	}
+
+	tempPath := stdoutResult.filePath
+	if tempPath == "" {
+		tempPath = stderrResult.filePath
 	}
 
 	metadata := BashResponseMetadata{
-		StartTime:   startTime.UnixMilli(),
-		EndTime:     time.Now().UnixMilli(),
-		Description: params.Description,
-		ExitCode:    exitCode,
+		StartTime:    startTime.UnixMilli(),
+		EndTime:      time.Now().UnixMilli(),
+		Description:  params.Description,
+		ExitCode:     exitCode,
+		TempFilePath: tempPath,
 	}
-	if stdout == "" {
+	if output == "" {
 		return WithResponseMetadata(NewTextResponse("no output"), metadata), nil
 	}
-	return WithResponseMetadata(NewTextResponse(stdout), metadata), nil
+	return WithResponseMetadata(NewTextResponse(output), metadata), nil
 }
 
-func truncateOutput(content string) string {
+type persistResult struct {
+	content  string
+	filePath string
+}
+
+func persistAndTruncate(content, label, tool string) persistResult {
+	if content == "" {
+		return persistResult{}
+	}
+
 	lines := strings.Split(content, "\n")
 	totalBytes := len(content)
 
 	if totalBytes <= MaxOutputBytes && len(lines) <= MaxOutputLines {
-		return content
+		return persistResult{content: content}
 	}
 
-	halfBytes := MaxOutputBytes / 2
-	start := content[:halfBytes]
-	end := content[len(content)-halfBytes:]
+	filePath := persistToTempFile(content, fmt.Sprintf("%s-%s", tool, label))
+	preview, totalLines := buildPreview(content, TruncatedHeadLines, TruncatedTailLines)
+	header := buildTruncationHeader(label, totalLines, filePath, totalBytes)
 
-	truncatedLinesCount := countLines(content[halfBytes : len(content)-halfBytes])
-	return fmt.Sprintf("%s\n\n... [%d lines truncated] ...\n\n%s", start, truncatedLinesCount, end)
-}
-
-func countLines(s string) int {
-	if s == "" {
-		return 0
+	return persistResult{
+		content:  header + preview,
+		filePath: filePath,
 	}
-	return len(strings.Split(s, "\n"))
 }

@@ -40,29 +40,24 @@ type commandResult struct {
 }
 
 var (
-	shellInstance     *PersistentShell
-	shellInstanceOnce sync.Once
+	shellInstances   = make(map[string]*PersistentShell)
+	shellInstancesMu sync.Mutex
 )
 
 func GetPersistentShell(workingDir string) *PersistentShell {
-	shellInstanceOnce.Do(func() {
-		shellInstance = newPersistentShell(workingDir)
-	})
+	shellInstancesMu.Lock()
+	defer shellInstancesMu.Unlock()
 
-	if shellInstance == nil {
-		shellInstance = newPersistentShell(workingDir)
-		if shellInstance == nil {
-			return nil
-		}
-	} else if !shellInstance.isAlive {
-		newShell := newPersistentShell(shellInstance.cwd)
-		if newShell == nil {
-			return nil
-		}
-		shellInstance = newShell
+	if sh, ok := shellInstances[workingDir]; ok && sh != nil && sh.isAlive {
+		return sh
 	}
 
-	return shellInstance
+	sh := newPersistentShell(workingDir)
+	if sh == nil {
+		return nil
+	}
+	shellInstances[workingDir] = sh
+	return sh
 }
 
 func newPersistentShell(cwd string) *PersistentShell {

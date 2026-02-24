@@ -1,7 +1,7 @@
 # Bash Tool Full Output Persistence
 
 **Date**: 2026-02-23
-**Status**: Draft
+**Status**: Implemented
 **Author**: AI-assisted
 
 ## Overview
@@ -12,56 +12,20 @@ When a bash command produces output exceeding the 50KB / 2000-line truncation li
 
 ### Current State
 
-`truncateOutput` in `internal/llm/tools/bash.go` slices the raw string at byte boundaries:
+`truncateOutput` in `internal/llm/tools/bash.go` sliced the raw string at byte boundaries, which had two problems:
 
-```go
-const (
-    MaxOutputBytes = 50 * 1024  // 50KB
-    MaxOutputLines = 2000
-)
+1. **Permanent data loss**: The middle section was gone. The agent could not recover it.
+2. **Broken byte slicing**: `content[:halfBytes]` cut at a byte offset with no regard for line boundaries or UTF-8 character boundaries.
 
-func truncateOutput(content string) string {
-    lines := strings.Split(content, "\n")
-    totalBytes := len(content)
-
-    if totalBytes <= MaxOutputBytes && len(lines) <= MaxOutputLines {
-        return content
-    }
-
-    halfBytes := MaxOutputBytes / 2
-    start := content[:halfBytes]
-    end := content[len(content)-halfBytes:]
-
-    truncatedLinesCount := countLines(content[halfBytes : len(content)-halfBytes])
-    return fmt.Sprintf("%s\n\n... [%d lines truncated] ...\n\n%s", start, truncatedLinesCount, end)
-}
-```
-
-This has two problems:
-
-1. **Permanent data loss**: The middle section is gone. The agent cannot recover it — it can only re-run the command.
-2. **Broken byte slicing**: `content[:halfBytes]` cuts at a byte offset with no regard for line boundaries or UTF-8 character boundaries. The first and last lines of each half are likely garbled.
-
-The global safety net in `tools.go` has the same issue:
-
-```go
-func validateAndTruncate(response toolResponse) toolResponse {
-    if estimatedTokens > MaxToolResponseTokens {
-        maxChars := MaxToolResponseTokens * 4
-        truncated := response.Content[:maxChars]
-        response.Content = truncated + "\n\n[Output truncated due to size limit...]"
-    }
-    return response
-}
-```
+The global safety net `validateAndTruncate` in `tools.go` had the same mid-character slicing issue.
 
 ### Desired State
 
-When output exceeds limits, the full content is written to a session-scoped temp file. The truncated response includes the file path and total line count so the agent can use `view` with `offset`/`limit` to read any section:
+When output exceeds limits, the full content is written to a process-scoped temp file. The truncated response includes the file path and total line count so the agent can use `view` with `offset`/`limit` to read any section:
 
 ```
 <stdout truncated: 8,432 lines total>
-Full output saved to: /tmp/opencode-<sessionID>/bash-<timestamp>.txt
+Full output saved to: /tmp/opencode-<pid>/bash-stdout-<timestamp>.txt
 Use the view tool with offset/limit to read specific sections.
 
 --- First 500 lines ---
@@ -77,14 +41,15 @@ Truncation boundaries are always line-aligned. The `view` tool already supports 
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Temp file location | `/tmp/opencode-<sessionID>/` | Session-scoped directory enables bulk cleanup; avoids collisions across concurrent sessions |
-| Cleanup strategy | Delete directory at process exit via `os.MkdirTemp` + deferred cleanup registered at session start | Simple, reliable; OS also cleans `/tmp` on reboot as a backstop |
-| Max persisted size | 100MB per file, enforced by capping shell output read | Prevents runaway commands from filling disk; agent can still paginate the first 100MB |
+| Temp file location | `/tmp/opencode-<pid>/` | Process-scoped directory enables bulk cleanup; avoids collisions across concurrent processes |
+| Cleanup strategy | `CleanupTempDir()` called from `app.Shutdown()` and `app.ForceShutdown()` | Simple, reliable; OS also cleans `/tmp` on reboot as a backstop |
+| Max persisted size | 100MB per file, enforced when writing | Prevents runaway commands from filling disk; agent can still paginate the first 100MB |
 | Line-aligned truncation | Split on `\n`, take first/last N lines | Fixes the current mid-line/mid-UTF-8 slicing bug; lines are the natural unit for `view` pagination |
-| Stderr persistence | Yes, same as stdout | Stderr can also be large (e.g., compiler errors); consistent behavior is simpler |
+| Stderr persistence | Yes, separate from stdout | Stderr can also be large; separate files preserve the distinction. Named `bash-stderr-<ts>.txt` |
 | Response format | Inline summary with file path + head/tail preview | Agent sees enough context to decide whether to paginate; file path is immediately actionable |
-| Interaction with `validateAndTruncate` | No change needed | The truncated response (head + tail preview) is well under `MaxToolResponseTokens`; the temp file is the escape hatch for the full content |
-| Temp file naming | `bash-<unixNano>.txt` within session dir | Unique per invocation; timestamp aids debugging |
+| `validateAndTruncate` fix | Line-aligned truncation via `truncateToMaxChars` | Uses `strings.LastIndex` to find the nearest `\n` before the cut point, preventing mid-line/mid-UTF-8 cuts. The bash tool's own truncation happens first (with temp file persistence), so the global safety net rarely triggers for bash output — but it now handles all tool responses safely |
+| Temp file naming | `bash-<label>-<unixNano>.txt` within process dir | Unique per invocation; label distinguishes stdout/stderr; timestamp aids debugging |
+| `BashResponseMetadata` | Added `TempFilePath` field | Low cost, high utility for TUI or other consumers |
 
 ## Architecture
 
@@ -93,158 +58,102 @@ bash.Run()
     │
     ├── sh.Exec() → stdout (string), stderr (string)
     │
-    ├── persistOutput(sessionID, stdout) → (truncatedStdout, tempFilePath)
+    ├── persistAndTruncate(stdout, "stdout") → persistResult{content, filePath}
     │       │
     │       ├── if len <= limits: return as-is, no file written
     │       │
     │       └── else:
-    │               ├── ensureSessionTempDir(sessionID) → /tmp/opencode-<sessionID>/
-    │               ├── write full content to bash-<ts>.txt (capped at MaxPersistBytes)
-    │               └── return line-aligned head+tail preview + file path
+    │               ├── persistToTempFile() → writes to /tmp/opencode-<pid>/bash-stdout-<ts>.txt
+    │               ├── buildPreview() → line-aligned head+tail preview
+    │               ├── buildTruncationHeader() → header with file path
+    │               └── return header + preview, filePath
     │
-    ├── persistOutput(sessionID, stderr) → (truncatedStderr, tempFilePath)
+    ├── persistAndTruncate(stderr, "stderr") → persistResult{content, filePath}
     │
-    └── build response string with preview + "Full output saved to: <path>"
+    └── build response string with preview + temp file path in metadata
 ```
 
-Session temp directory lifecycle:
+Process temp directory lifecycle:
 
 ```
-Session created
-    └── RegisterSessionTempDir(sessionID)
-            └── os.MkdirAll(/tmp/opencode-<sessionID>/, 0700)
-            └── runtime.SetFinalizer / process exit hook → os.RemoveAll(dir)
+First bash command that exceeds limits
+    └── ensureTempDir()
+            └── os.MkdirAll(/tmp/opencode-<pid>/, 0700)
+            └── path stored in package-level var (sync.Mutex protected)
 
-Session ends / process exits
-    └── CleanupSessionTempDir(sessionID) → os.RemoveAll(/tmp/opencode-<sessionID>/)
+App shutdown (normal or forced)
+    └── CleanupTempDir() → os.RemoveAll(/tmp/opencode-<pid>/)
 ```
 
-## Implementation Plan
+## Implementation
 
-### Phase 1: Line-Aligned Truncation (no temp files)
+### Files Changed
 
-Fix the existing bug independently of the persistence feature. Low risk, immediately improves output quality.
+- **`internal/llm/tools/tempdir.go`** (new): Contains `ensureTempDir`, `persistToTempFile`, `CleanupTempDir`, `buildPreview`, `buildTruncationHeader`, `truncateToMaxChars` and constants (`MaxPersistBytes`, `TruncatedHeadLines`, `TruncatedTailLines`).
 
-- [ ] **1.1** Replace byte-slice truncation in `truncateOutput` with line-based truncation:
-  - Split on `\n`
-  - Take first `MaxOutputLines/2` lines and last `MaxOutputLines/2` lines
-  - Respect `MaxOutputBytes` as a secondary cap: if the line-aligned head+tail still exceeds 50KB, trim lines from the inner boundary until it fits
-  - File: `internal/llm/tools/bash.go`
+- **`internal/llm/tools/bash.go`**:
+  - Replaced `truncateOutput` and `countLines` with `persistAndTruncate` which returns a `persistResult{content, filePath}`.
+  - Updated `Run()` to use `persistAndTruncate` for both stdout and stderr, and populate `TempFilePath` in metadata.
+  - Added `TempFilePath string` to `BashResponseMetadata`.
+  - Updated `bashDescriptionTemplate` to describe the new behavior.
 
-- [ ] **1.2** Add a test for `truncateOutput` covering: output under limits (no-op), output over line limit, output over byte limit, multi-byte UTF-8 content (verify no garbled characters in output)
-  - File: `internal/llm/tools/bash_test.go` (create if absent)
+- **`internal/llm/tools/tools.go`**: Updated `validateAndTruncate` to use `truncateToMaxChars` for line-aligned truncation instead of raw byte slicing.
 
-### Phase 2: Session Temp Directory Management
+- **`internal/app/app.go`**: Added `tools.CleanupTempDir()` calls in both `Shutdown()` and `ForceShutdown()`.
 
-- [ ] **2.1** Add `ensureSessionTempDir(sessionID string) (string, error)` in a new file `internal/llm/tools/tempdir.go`:
-  - Creates `/tmp/opencode-<sessionID>/` with `os.MkdirAll(..., 0700)`
-  - Registers cleanup via `sync.Once` + channel-based exit hook (or `os/signal` handler)
-  - Returns the directory path
+- **`internal/llm/tools/bash_test.go`** (new): Tests for `buildPreview`, `persistAndTruncate`, `truncateToMaxChars`, and `CleanupTempDir`.
 
-- [ ] **2.2** Add `CleanupSessionTempDir(sessionID string)` that calls `os.RemoveAll` on the session directory. Wire this into session teardown in `internal/app/app.go` or wherever sessions are closed.
+### What Was Not Changed
 
-- [ ] **2.3** Add constants:
-  ```go
-  const (
-      MaxPersistBytes = 100 * 1024 * 1024  // 100MB
-      TruncatedHeadLines = 500
-      TruncatedTailLines = 500
-  )
-  ```
-
-### Phase 3: Output Persistence
-
-- [ ] **3.1** Add `persistOutput(sessionID, content string) (preview string, filePath string, err error)`:
-  - If `len(content) <= MaxOutputBytes && lineCount <= MaxOutputLines`: return content unchanged, empty filePath
-  - Otherwise: write full content (capped at `MaxPersistBytes`) to `<sessionTempDir>/bash-<time.Now().UnixNano()>.txt`
-  - Return line-aligned head+tail preview and the file path
-
-- [ ] **3.2** Update `bash.Run()` to call `persistOutput` instead of `truncateOutput` for both stdout and stderr. Build the response string to include the temp file path when set:
-  ```
-  <stdout truncated: N lines total>
-  Full output saved to: /tmp/opencode-<sessionID>/bash-<ts>.txt
-  Use the view tool with offset/limit to read specific sections.
-
-  --- First 500 lines ---
-  ...
-
-  --- Last 500 lines ---
-  ...
-  ```
-
-- [ ] **3.3** Update `bashDescriptionTemplate` to reflect the new behavior: replace the current truncation warning with a note that full output is saved to a temp file and can be paginated with `view`.
-
-- [ ] **3.4** Add integration test: run a command that generates >2000 lines, verify the response contains a valid file path, verify the file exists and contains the full output, verify `view` can read it with offset.
+- **`view` tool**: No changes needed. It already supports `offset`/`limit` pagination and handles files up to 250KB per read window.
+- **Session-scoped directories**: Simplified to process-scoped (`/tmp/opencode-<pid>/`) since cleanup at shutdown is sufficient and avoids needing to wire into per-session lifecycle.
 
 ## Edge Cases
 
 ### Command generates > 100MB of output
 
-1. Shell writes unbounded output to stdout buffer
-2. `persistOutput` writes the first `MaxPersistBytes` (100MB) to the temp file, then stops
-3. Response notes: `"Full output saved to: <path> (truncated at 100MB)"`
-4. Agent can paginate the 100MB file; anything beyond is lost
+1. `persistToTempFile` writes the first `MaxPersistBytes` (100MB) to the temp file, then stops
+2. Response notes: `"Full output saved to: <path> (truncated at 100MB)"`
+3. Agent can paginate the 100MB file; anything beyond is lost
 
-### Session temp directory creation fails (disk full, permissions)
+### Temp directory creation fails (disk full, permissions)
 
-1. `ensureSessionTempDir` returns an error
-2. `persistOutput` falls back to the line-aligned head+tail preview without a file path
-3. Response omits the "Full output saved to" line; truncation message is still present
-4. No error is surfaced to the agent — degraded gracefully
+1. `persistToTempFile` returns empty string
+2. `buildTruncationHeader` omits the "Full output saved to" line
+3. Preview is still shown — degraded gracefully
 
-### Two concurrent bash calls in the same session
+### Two concurrent bash calls
 
-1. Both call `ensureSessionTempDir` — idempotent via `os.MkdirAll`
-2. Each writes to a unique `bash-<unixNano>.txt` — no collision
-3. Both files are cleaned up when the session ends
+1. Both call `ensureTempDir` — idempotent via `sync.Mutex` + `os.MkdirAll`
+2. Each writes to a unique `bash-<label>-<unixNano>.txt` — no collision
 
 ### Process killed (SIGKILL, crash)
 
 1. Deferred cleanup does not run
-2. `/tmp/opencode-<sessionID>/` remains on disk
+2. `/tmp/opencode-<pid>/` remains on disk
 3. OS cleans `/tmp` on next reboot (standard behavior)
-4. No correctness issue — stale files are inert
 
-### `view` tool's 250KB per-read limit vs large temp files
+### `validateAndTruncate` global safety net
 
-1. Agent calls `view` on a 10MB temp file
-2. `view` returns the first 2000 lines with a continuation hint
-3. Agent uses `offset` to paginate — this is the intended workflow
-4. No changes needed to `view`
-
-## Open Questions
-
-1. **Where to wire `CleanupSessionTempDir`?**
-   - The session lifecycle is managed in `internal/app/app.go` and `internal/session/session.go`. The cleanest hook is wherever a session's context is cancelled.
-   - **Recommendation**: Register cleanup in `app.go` when the session goroutine exits. If no clean hook exists, use a `sync.Map` of session dirs and clean up on process exit via `os/signal`.
-
-2. **Should the temp file path appear in `BashResponseMetadata`?**
-   - Currently `BashResponseMetadata` carries `StartTime`, `EndTime`, `Description`, `ExitCode`. Adding `TempFilePath` would let the TUI or other consumers surface it without parsing the text response.
-   - **Recommendation**: Yes, add `TempFilePath string \`json:"temp_file_path,omitempty"\`` to `BashResponseMetadata`. Low cost, high utility.
-
-3. **Should stderr get its own temp file or be merged with stdout?**
-   - Separate files preserve the distinction between stdout and stderr. Merged is simpler for the agent to paginate.
-   - **Recommendation**: Separate files. The current code already handles them independently; keep that separation. Name them `bash-<ts>-stdout.txt` and `bash-<ts>-stderr.txt`.
-
-4. **Head/tail line counts (500 + 500 = 1000 lines in response)**
-   - 1000 lines at ~80 chars/line ≈ 80KB, well under `MaxToolResponseTokens`. But it's more than the current 50KB limit.
-   - **Recommendation**: Start with 500+500. If token usage becomes a concern, make `TruncatedHeadLines`/`TruncatedTailLines` configurable constants.
+1. For bash tool output, `persistAndTruncate` runs first — the preview (header + 500+500 lines) is well under `MaxToolResponseTokens`
+2. For other tools that produce very large output, `validateAndTruncate` now cuts at the nearest line boundary before the character limit
+3. No temp file is written by `validateAndTruncate` — it is a fallback for non-bash tools
 
 ## Success Criteria
 
-- [ ] `truncateOutput` never cuts mid-line or mid-UTF-8 character — verified by test with multi-byte content
-- [ ] Commands producing >2000 lines write a temp file; response includes the path
-- [ ] Agent can use `view` with `offset` on the temp file to read any section
-- [ ] Temp files are removed when the session ends (verified by test or manual inspection)
-- [ ] Commands producing output under limits behave identically to today (no temp file written)
-- [ ] `go test ./internal/llm/tools/...` passes
-- [ ] `make test` passes
+- [x] `persistAndTruncate` never cuts mid-line or mid-UTF-8 character — verified by test with multi-byte content
+- [x] `validateAndTruncate` never cuts mid-line — uses `truncateToMaxChars` with line-boundary search
+- [x] Commands producing >2000 lines write a temp file; response includes the path
+- [x] Agent can use `view` with `offset` on the temp file to read any section
+- [x] Temp files are removed at app shutdown (verified by `TestCleanupTempDir`)
+- [x] Commands producing output under limits behave identically to before (no temp file written)
+- [x] `go test ./internal/llm/tools/...` passes
+- [x] `make test` passes
 
 ## References
 
-- `internal/llm/tools/bash.go` — `truncateOutput`, `MaxOutputBytes`, `MaxOutputLines`, `bash.Run()`
-- `internal/llm/tools/tools.go` — `validateAndTruncate`, `MaxToolResponseTokens`, `BashResponseMetadata`
+- `internal/llm/tools/bash.go` — `persistAndTruncate`, `MaxOutputBytes`, `MaxOutputLines`, `bash.Run()`
+- `internal/llm/tools/tempdir.go` — `ensureTempDir`, `persistToTempFile`, `CleanupTempDir`, `buildPreview`, `truncateToMaxChars`
+- `internal/llm/tools/tools.go` — `validateAndTruncate`, `MaxToolResponseTokens`
 - `internal/llm/tools/view.go` — `MaxReadSize` (250KB), `DefaultReadLimit` (2000 lines), pagination via `offset`/`limit`
-- `internal/llm/tools/file.go` — Pattern for package-level shared state (`fileRecords`)
-- `internal/app/app.go` — Session lifecycle, candidate location for cleanup hook
-- `spec/20260223T133437-tools-imrovements.md` — Parent spec; this feature is item 3.1
+- `internal/app/app.go` — Shutdown hooks for temp directory cleanup

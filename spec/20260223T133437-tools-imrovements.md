@@ -144,26 +144,31 @@ Medium-effort changes that fix incorrect behavior or improve reliability.
 
 High-effort changes that require careful design. Each should get its own focused spec before implementation.
 
-- [ ] **3.1 bash: Full output persistence** — When output exceeds truncation limits, write the full output to a temp file and return the path in the response so the agent can paginate through it with the `view` tool. Current behavior permanently discards the middle section.
+- [x] **3.1 bash: Full output persistence** — When output exceeds truncation limits, write the full output to a temp file and return the path in the response so the agent can paginate through it with the `view` tool. Current behavior permanently discards the middle section.
   - File: `internal/llm/tools/bash.go`
   - Design considerations: temp file cleanup strategy, disk space limits, session-scoped temp directory.
+  - Spec: [[./20260223T140000-bash-output-persistence.md]]
 
 - [ ] **3.2 ls: Use ripgrep for file enumeration** — Replace `filepath.Walk` with ripgrep-based file enumeration (`rg --files`) to automatically respect `.gitignore` rules. The current walker ignores `.gitignore` entirely, listing files that are irrelevant to the project.
   - File: `internal/llm/tools/ls.go`
   - Design considerations: fallback when rg is not installed, performance impact, handling of directories-only mode.
+  - Spec: [[./20260223T140100-ls-ripgrep-enumeration.md]]
 
 - [ ] **3.3 edit: Fuzzy matching pipeline** — Implement a multi-strategy matching pipeline for `old_string` lookup when exact match fails. At minimum: whitespace-normalized matching, indentation-flexible matching, and trimmed-boundary matching. The reference uses 9 strategies with Levenshtein distance scoring.
   - Files: `internal/llm/tools/edit.go`, new file `internal/llm/tools/edit_match.go`
   - Design considerations: false positive risk (matching wrong code section), performance on large files, strategy ordering, confidence thresholds.
   - **Recommendation**: Start with 3-4 strategies (exact → whitespace-normalized → indentation-flexible → trimmed-boundary) and measure edit failure rates before adding more.
+  - Spec: [[./20260223T140200-edit-fuzzy-matching.md]]
 
 - [ ] **3.4 fetch: Cloudflare challenge detection** — Detect Cloudflare bot challenges (HTTP 403 + `cf-mitigated: challenge` header) and retry with a simpler `User-Agent`. This handles a common failure mode when fetching documentation sites.
   - File: `internal/llm/tools/fetch.go`
   - Design considerations: retry limit, alternative user-agents, detection of other WAF providers.
+  - Spec: [[./20260223T140300-fetch-cloudflare-detection.md]]
 
 - [ ] **3.5 write: Cross-file LSP diagnostics** — After writing a file, collect LSP diagnostics not just for the written file but for up to 5 other project files. This catches import errors and type mismatches introduced by the write.
   - Files: `internal/llm/tools/write.go`, `internal/lsp/diagnostics.go`
   - Design considerations: which files to check (imports, recently viewed), timeout for cross-file diagnostics, output format.
+  - Spec: [[./20260223T140400-write-cross-file-diagnostics.md]]
 
 ## Open Questions
 

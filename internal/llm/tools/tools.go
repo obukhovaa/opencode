@@ -48,14 +48,15 @@ type toolResponse struct {
 // ToolResponse is the public interface for tool responses
 type ToolResponse = toolResponse
 
-// validateAndTruncate validates the tool response size and truncates if necessary
+// validateAndTruncate validates the tool response size and truncates if necessary.
+// Truncation is line-aligned to avoid cutting mid-line or mid-UTF-8 character.
 func validateAndTruncate(response toolResponse) toolResponse {
 	// Rough estimation: ~4 characters per token
 	estimatedTokens := len(response.Content) / 4
 
 	if estimatedTokens > MaxToolResponseTokens {
 		maxChars := MaxToolResponseTokens * 4
-		truncated := response.Content[:maxChars]
+		truncated := truncateToMaxChars(response.Content, maxChars)
 		response.Content = truncated + "\n\n[Output truncated due to size limit. Consider using more specific search parameters or viewing smaller sections.]"
 	}
 

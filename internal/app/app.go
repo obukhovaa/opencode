@@ -15,6 +15,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/flow"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -142,12 +143,14 @@ func (app *App) initTheme() {
 
 // Shutdown performs a clean shutdown of the application
 func (app *App) Shutdown() {
+	tools.CleanupTempDir()
 	app.LspService.Shutdown(context.Background())
 }
 
 // ForceShutdown performs an aggressive shutdown for non-interactive mode
 func (app *App) ForceShutdown() {
 	logging.Info("Starting force shutdown")
+	tools.CleanupTempDir()
 	app.LspService.ForceShutdown()
 	app.forceKillAllChildProcesses()
 	logging.Info("Force shutdown completed")
