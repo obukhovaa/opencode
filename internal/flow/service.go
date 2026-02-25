@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -552,7 +553,7 @@ func substituteArgs(template string, args map[string]any) string {
 	return template
 }
 
-var predicateRegex = regexp.MustCompile(`^\$\{args\.([^}]+)\}\s*(==|!=|=~)\s*(.+)$`)
+var predicateRegex = regexp.MustCompile(`^(?:(sizeof)\s+)?\$\{args\.([^}]+)\}\s*(==|!=|=~)\s*(.+)$`)
 
 func evaluatePredicate(predicate string, args map[string]any) (bool, error) {
 	matches := predicateRegex.FindStringSubmatch(strings.TrimSpace(predicate))
@@ -560,15 +561,20 @@ func evaluatePredicate(predicate string, args map[string]any) (bool, error) {
 		return false, fmt.Errorf("%w: %q", ErrInvalidPredicate, predicate)
 	}
 
-	key := matches[1]
-	op := matches[2]
-	expected := strings.TrimSpace(matches[3])
+	prefix := matches[1]
+	key := matches[2]
+	op := matches[3]
+	expected := strings.TrimSpace(matches[4])
 
 	actual, ok := args[key]
 	if !ok {
 		return false, nil
 	}
 	actualStr := fmt.Sprintf("%v", actual)
+
+	if prefix == "sizeof" {
+		actualStr = resolveSizeof(actual)
+	}
 
 	switch op {
 	case "==":
@@ -587,6 +593,17 @@ func evaluatePredicate(predicate string, args map[string]any) (bool, error) {
 		return re.MatchString(actualStr), nil
 	default:
 		return false, fmt.Errorf("unknown operator %q", op)
+	}
+}
+
+func resolveSizeof(value any) string {
+	switch v := value.(type) {
+	case []any:
+		return strconv.Itoa(len(v))
+	case map[string]any:
+		return strconv.Itoa(len(v))
+	default:
+		return strconv.Itoa(len(fmt.Sprintf("%v", v)))
 	}
 }
 

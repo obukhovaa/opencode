@@ -32,6 +32,15 @@ func TestEvaluatePredicate(t *testing.T) {
 
 		{"numeric value", `${args.count} == 5`, map[string]any{"count": 5}, true, false},
 		{"with whitespace", `${args.status} == done`, map[string]any{"status": "done"}, true, false},
+
+		{"sizeof empty array", `sizeof ${args.items} == 0`, map[string]any{"items": []any{}}, true, false},
+		{"sizeof array", `sizeof ${args.items} == 3`, map[string]any{"items": []any{"a", "b", "c"}}, true, false},
+		{"sizeof array not equal", `sizeof ${args.items} != 0`, map[string]any{"items": []any{"a"}}, true, false},
+		{"sizeof empty map", `sizeof ${args.data} == 0`, map[string]any{"data": map[string]any{}}, true, false},
+		{"sizeof map", `sizeof ${args.data} == 2`, map[string]any{"data": map[string]any{"k1": "v1", "k2": "v2"}}, true, false},
+		{"sizeof string", `sizeof ${args.name} == 5`, map[string]any{"name": "hello"}, true, false},
+		{"sizeof missing key", `sizeof ${args.missing} == 0`, map[string]any{}, false, false},
+		{"sizeof regex", `sizeof ${args.items} =~ /^[0-9]+$/`, map[string]any{"items": []any{"a", "b"}}, true, false},
 	}
 
 	for _, tt := range tests {
