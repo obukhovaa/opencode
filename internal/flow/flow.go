@@ -56,8 +56,9 @@ type StepOutput struct {
 
 // Rule defines a conditional routing rule evaluated after step completion.
 type Rule struct {
-	If   string `yaml:"if"`
-	Then string `yaml:"then"`
+	If       string `yaml:"if"`
+	Then     string `yaml:"then"`
+	Postpone bool   `yaml:"postpone,omitempty"`
 }
 
 // Fallback defines retry and error-routing behavior for a step.

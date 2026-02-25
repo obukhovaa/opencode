@@ -170,6 +170,7 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 	completed := map[string]stepResult{}
 	failed := map[string]stepResult{}
 	running := map[string]stepResult{}
+	postponed := map[string]stepResult{}
 	for id, sr := range steps {
 		switch sr.Status {
 		case string(flow.FlowStatusCompleted):
@@ -178,14 +179,17 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 			failed[id] = sr
 		case string(flow.FlowStatusRunning):
 			running[id] = sr
+		case string(flow.FlowStatusPostponed):
+			postponed[id] = sr
 		}
 	}
 
 	result := map[string]any{
-		"flow_id":         flowID,
-		"completed_steps": completed,
-		"failed_steps":    failed,
-		"running_steps":   running,
+		"flow_id":          flowID,
+		"completed_steps":  completed,
+		"failed_steps":     failed,
+		"running_steps":    running,
+		"postponed_steps":  postponed,
 	}
 
 	output, err := json.MarshalIndent(result, "", "  ")

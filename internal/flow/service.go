@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,6 +27,7 @@ const (
 	FlowStatusRunning   FlowStatus = "running"
 	FlowStatusCompleted FlowStatus = "completed"
 	FlowStatusFailed    FlowStatus = "failed"
+	FlowStatusPostponed FlowStatus = "postponed"
 )
 
 type FlowState struct {
@@ -75,6 +77,7 @@ type stepWork struct {
 	step     Step
 	args     map[string]any
 	prevStep *FlowState
+	postpone bool
 }
 
 func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, args map[string]any, fresh bool) (<-chan agentpkg.AgentEvent, <-chan *FlowState, error) {
@@ -180,7 +183,7 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 	go func() {
 		for work := range nextSteps {
 			stepSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, flowID, work.step.ID)
-			if _, loaded := startedSteps.LoadOrStore(work.step.ID, true); loaded {
+			if _, loaded := startedSteps.LoadOrStore(work.step.ID, true); loaded && !work.postpone {
 				logging.Debug("Step already started, skipping (diamond convergence)", "step", work.step.ID)
 				wg.Done() // balance the Add from sender
 				continue
@@ -188,7 +191,7 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 
 			go func(w stepWork, sessID string) {
 				defer wg.Done()
-				s.runStep(ctx, f, w.step, sessID, rootSessionID, sessionPrefix, w.args, w.prevStep, &wg, agentEvents, flowStates, nextSteps, startedSteps)
+				s.runStep(ctx, f, w.step, sessID, rootSessionID, sessionPrefix, w.args, w.prevStep, &wg, agentEvents, flowStates, nextSteps, startedSteps, work.postpone)
 			}(work, stepSessionID)
 		}
 	}()
@@ -217,6 +220,7 @@ func (s *service) runStep(
 	flowStates chan<- *FlowState,
 	nextSteps chan<- stepWork,
 	startedSteps *sync.Map,
+	postpone bool,
 ) {
 	agentID := step.Agent
 	if agentID == "" {
@@ -246,10 +250,15 @@ func (s *service) runStep(
 		prompt = fmt.Sprintf("Previous step (%s) output:\n%s\n\n%s", prevState.StepID, prevState.Output, prompt)
 	}
 
+	status := FlowStatusRunning
+	if prevState != nil && postpone {
+		status = FlowStatusPostponed
+	}
+
 	argsJSON, _ := json.Marshal(args)
 	if _, getErr := s.querier.GetFlowState(ctx, sessionID); getErr == nil {
 		_, err = s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
-			Status:         string(FlowStatusRunning),
+			Status:         string(status),
 			Output:         sql.NullString{},
 			IsStructOutput: false,
 			SessionID:      sessionID,
@@ -260,7 +269,7 @@ func (s *service) runStep(
 			RootSessionID:  rootSessionID,
 			FlowID:         f.ID,
 			StepID:         step.ID,
-			Status:         string(FlowStatusRunning),
+			Status:         string(status),
 			Args:           sql.NullString{String: string(argsJSON), Valid: true},
 			IsStructOutput: false,
 		})
@@ -275,11 +284,16 @@ func (s *service) runStep(
 		RootSessionID: rootSessionID,
 		FlowID:        f.ID,
 		StepID:        step.ID,
-		Status:        FlowStatusRunning,
+		Status:        status,
 		Args:          args,
 	}
 	flowStates <- runningState
 	s.Publish(pubsub.UpdatedEvent, *runningState)
+
+	if status == FlowStatusPostponed {
+		logging.Info("Step postponed for next execution", "step", step.ID)
+		return
+	}
 
 	var result agentpkg.AgentEvent
 	maxAttempts := 1
@@ -360,9 +374,7 @@ doneRetry:
 
 		var structData map[string]any
 		if err := json.Unmarshal([]byte(output), &structData); err == nil {
-			for k, v := range structData {
-				args[k] = v
-			}
+			maps.Copy(args, structData)
 		}
 	} else {
 		output = result.Message.Content().Text
@@ -407,7 +419,7 @@ doneRetry:
 				nextStep := findStep(f.Spec.Steps, rule.Then)
 				if nextStep != nil {
 					wg.Add(1)
-					nextSteps <- stepWork{step: *nextStep, args: copyArgs(args), prevStep: completedState}
+					nextSteps <- stepWork{step: *nextStep, args: copyArgs(args), prevStep: completedState, postpone: rule.Postpone}
 				}
 			}
 		}
@@ -476,13 +488,18 @@ func (s *service) collectResumableSteps(
 
 	existing := stateMap[step.ID]
 
-	if existing == nil || existing.Status != FlowStatusCompleted {
+	if existing == nil || (existing.Status != FlowStatusCompleted && existing.Status != FlowStatusPostponed) {
 		if existing != nil {
 			logging.Info("Resuming non-completed step", "step", step.ID, "status", existing.Status)
 		} else {
 			logging.Info("Running step not yet attempted", "step", step.ID)
 		}
 		return []stepWork{{step: step, args: copyArgs(args), prevStep: prevState}}
+	}
+
+	if existing.Status == FlowStatusPostponed {
+		logging.Info("Resuming postponed step", "step", step.ID)
+		return []stepWork{{step: step, args: copyArgs(args), prevStep: existing}}
 	}
 
 	logging.Debug("Skipping completed step during resume", "step", step.ID)
@@ -493,9 +510,7 @@ func (s *service) collectResumableSteps(
 	if existing.IsStructOutput && existing.Output != "" {
 		var structData map[string]any
 		if err := json.Unmarshal([]byte(existing.Output), &structData); err == nil {
-			for k, v := range structData {
-				args[k] = v
-			}
+			maps.Copy(args, structData)
 		}
 	}
 
@@ -536,6 +551,7 @@ func (s *service) resolveSession(ctx context.Context, step Step, sessionID strin
 	return sess, nil
 }
 
+// TODO: consider adding default value support ${args.name:-default}
 func substituteArgs(template string, args map[string]any) string {
 	if strings.Contains(template, "${args}") {
 		argsJSON, err := json.MarshalIndent(args, "", "  ")
@@ -627,9 +643,7 @@ func findStep(steps []Step, id string) *Step {
 
 func copyArgs(args map[string]any) map[string]any {
 	result := make(map[string]any, len(args))
-	for k, v := range args {
-		result[k] = v
-	}
+	maps.Copy(result, args)
 	return result
 }
 

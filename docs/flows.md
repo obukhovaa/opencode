@@ -104,6 +104,14 @@ Supported operators:
 
 When multiple rules match, the corresponding steps execute in parallel.
 
+#### Rule fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `if` | string | Yes | Predicate expression to evaluate |
+| `then` | string | Yes | Step ID to route to when predicate matches |
+| `postpone` | bool | No | If true, store the target step as postponed instead of running it immediately |
+
 ### Fallback
 
 ```yaml
@@ -192,7 +200,8 @@ Flow execution produces a JSON envelope:
     }
   ],
   "failed_steps": [],
-  "running_steps": []
+  "running_steps": [],
+  "postponed_steps": []
 }
 ```
 
@@ -333,6 +342,41 @@ When `session.fork: true` is set on a step, the step's session is created by cop
 ### Running state guard
 
 If a flow invocation finds steps in `running` status from a previous interrupted run, it returns the existing states without invoking any agents. Use `-D` to force a fresh start.
+
+### Postponed steps
+
+A rule can set `postpone: true` to defer a step's execution until the next flow invocation. When a postponed rule matches, the target step is stored with status `postponed` instead of being run immediately. On the next invocation (with the same session prefix), the postponed step is picked up and executed normally.
+
+This is useful when a step discovers a blocker that requires external action (e.g., user input, approval, external service). The step can output the blocker information, and a rule with `postpone: true` routes back to a check step. On re-invocation the check step re-evaluates and either proceeds or postpones again.
+
+```yaml
+steps:
+  - id: check
+    agent: explorer
+    prompt: |
+      Check if blockers are resolved: ${args.blockers}
+      Do work which could create blockers...
+    output:
+      schema:
+        type: object
+        properties:
+          blockers:
+            type: array
+            items:
+              type: string
+        required: [blockers]
+    rules:
+      - if: sizeof ${args.blockers} != 0
+        then: check
+        postpone: true
+      - if: sizeof ${args.blockers} == 0
+        then: implement
+
+  - id: implement
+    prompt: |
+      Implement the changes now that all blockers are resolved.
+      ${args.prompt}
+```
 
 ## See Also
 
