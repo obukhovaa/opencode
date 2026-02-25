@@ -66,6 +66,7 @@ opencode -s <session-id> -D     # Delete session and start fresh
 opencode -p "Explain context in Go"           # Single prompt
 opencode -p "Explain context in Go" -f json   # JSON output
 opencode -p "Explain context in Go" -q        # Quiet (no spinner)
+opencode -p "Refactor this module" -t 5m      # With 5-minute timeout
 ```
 
 All permissions are auto-approved in non-interactive mode.
@@ -83,6 +84,7 @@ All permissions are auto-approved in non-interactive mode.
 | `--delete` | `-D` | Delete the session specified by `--session` before starting |
 | `--output-format` | `-f` | Output format: `text` (default), `json` |
 | `--quiet` | `-q` | Hide spinner in non-interactive mode |
+| `--timeout` | `-t` | Timeout for non-interactive mode (e.g. `10s`, `30m`, `1h`) |
 
 ## Configuration
 

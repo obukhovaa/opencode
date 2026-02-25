@@ -53,6 +53,9 @@ to assist developers in writing, debugging, and understanding code directly from
 
   # Run a single non-interactive prompt with JSON output format
   opencode -p "Explain the use of context in Go" -f json
+
+  # Run a non-interactive prompt with a 5-minute timeout
+  opencode -p "Refactor this module" --timeout 5m
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// If the help flag is set, show the help message
@@ -77,6 +80,7 @@ to assist developers in writing, debugging, and understanding code directly from
 		flowID, _ := cmd.Flags().GetString("flow")
 		flowArgs, _ := cmd.Flags().GetStringArray("arg")
 		argsFile, _ := cmd.Flags().GetString("args-file")
+		timeoutStr, _ := cmd.Flags().GetString("timeout")
 
 		if deleteSession && sessionID == "" {
 			return fmt.Errorf("--delete requires --session/-s to be specified")
@@ -174,14 +178,34 @@ to assist developers in writing, debugging, and understanding code directly from
 
 		// Non-interactive flow mode
 		if flowID != "" {
-			_err := runFlowNonInteractive(ctx, app, flowID, prompt, sessionID, deleteSession, flowArgs, argsFile, quiet)
+			nonInteractiveCtx := ctx
+			var timeoutCancel context.CancelFunc
+			if timeoutStr != "" {
+				timeoutDuration, parseErr := time.ParseDuration(timeoutStr)
+				if parseErr != nil {
+					return fmt.Errorf("invalid --timeout value %q: %w (use formats like 10s, 30m, 1h)", timeoutStr, parseErr)
+				}
+				nonInteractiveCtx, timeoutCancel = context.WithTimeout(ctx, timeoutDuration)
+				defer timeoutCancel()
+			}
+			_err := runFlowNonInteractive(nonInteractiveCtx, app, flowID, prompt, sessionID, deleteSession, flowArgs, argsFile, quiet)
 			app.ForceShutdown()
 			return _err
 		}
 
 		// Non-interactive mode
 		if prompt != "" {
-			_err := runNonInteractive(ctx, app, prompt, parsedOutputFormat, quiet)
+			nonInteractiveCtx := ctx
+			var timeoutCancel context.CancelFunc
+			if timeoutStr != "" {
+				timeoutDuration, parseErr := time.ParseDuration(timeoutStr)
+				if parseErr != nil {
+					return fmt.Errorf("invalid --timeout value %q: %w (use formats like 10s, 30m, 1h)", timeoutStr, parseErr)
+				}
+				nonInteractiveCtx, timeoutCancel = context.WithTimeout(ctx, timeoutDuration)
+				defer timeoutCancel()
+			}
+			_err := runNonInteractive(nonInteractiveCtx, app, prompt, parsedOutputFormat, quiet)
 			app.ForceShutdown()
 			return _err
 		}
@@ -369,6 +393,9 @@ func init() {
 	rootCmd.Flags().StringP("flow", "F", "", "Flow ID to execute (non-interactive only)")
 	rootCmd.Flags().StringArrayP("arg", "A", nil, "Flow argument as key=value (repeatable, used with --flow)")
 	rootCmd.Flags().String("args-file", "", "JSON file with flow arguments (used with --flow)")
+
+	// Add timeout flag for non-interactive mode
+	rootCmd.Flags().StringP("timeout", "t", "", "Timeout for non-interactive mode (e.g. 10s, 30m, 1h)")
 
 	// Register custom validation for the format flag
 	rootCmd.RegisterFlagCompletionFunc("output-format", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
