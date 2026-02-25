@@ -30,6 +30,7 @@ type Service interface {
 	pubsub.Suscriber[Session]
 	Create(ctx context.Context, title string) (Session, error)
 	CreateWithID(ctx context.Context, id, title string) (Session, error)
+	CreateFlowSession(ctx context.Context, id, rootSessionID, title string) (Session, error)
 	CreateTitleSession(ctx context.Context, parentSessionID string) (Session, error)
 	CreateTaskSession(ctx context.Context, toolCallID, parentSessionID, title string) (Session, error)
 	Get(ctx context.Context, id string) (Session, error)
@@ -52,6 +53,21 @@ func (s *service) Create(ctx context.Context, title string) (Session, error) {
 
 func (s *service) CreateWithID(ctx context.Context, id, title string) (Session, error) {
 	return s.createWithID(ctx, id, title)
+}
+
+func (s *service) CreateFlowSession(ctx context.Context, id, rootSessionID, title string) (Session, error) {
+	dbSession, err := s.q.CreateSession(ctx, db.CreateSessionParams{
+		ID:            id,
+		ProjectID:     sql.NullString{String: s.projectID, Valid: true},
+		RootSessionID: sql.NullString{String: rootSessionID, Valid: true},
+		Title:         title,
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	session := s.fromDBItem(dbSession)
+	s.Publish(pubsub.CreatedEvent, session)
+	return session, nil
 }
 
 func (s *service) createWithID(ctx context.Context, id, title string) (Session, error) {

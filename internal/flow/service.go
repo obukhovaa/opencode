@@ -544,7 +544,7 @@ func (s *service) resolveSession(ctx context.Context, step Step, sessionID strin
 	}
 
 	title := fmt.Sprintf("Flow step: %s", step.ID)
-	sess, err := s.sessions.CreateWithID(ctx, sessionID, title)
+	sess, err := s.sessions.CreateFlowSession(ctx, sessionID, rootSessionID, title)
 	if err != nil {
 		return session.Session{}, fmt.Errorf("creating session: %w", err)
 	}

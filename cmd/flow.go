@@ -11,7 +11,6 @@ import (
 	"sync"
 
 	"github.com/opencode-ai/opencode/internal/app"
-	"github.com/opencode-ai/opencode/internal/flow"
 	"github.com/opencode-ai/opencode/internal/format"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -137,13 +136,17 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 	}
 
 	type stepResult struct {
+		StepID         string `json:"step_id"`
 		SessionID      string `json:"session_id"`
 		Status         string `json:"status"`
 		Output         string `json:"output,omitempty"`
 		IsStructOutput bool   `json:"is_struct_output,omitempty"`
+		FinishedAt     int64  `json:"finished_at,omitempty"`
 	}
 
-	steps := map[string]stepResult{}
+	var orderedSteps []stepResult
+	stepIndex := map[string]int{}
+	var rootSessionID string
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -154,11 +157,22 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 	}()
 
 	for state := range flowStates {
-		steps[state.StepID] = stepResult{
+		if rootSessionID == "" {
+			rootSessionID = state.RootSessionID
+		}
+		sr := stepResult{
+			StepID:         state.StepID,
 			SessionID:      state.SessionID,
 			Status:         string(state.Status),
 			Output:         state.Output,
 			IsStructOutput: state.IsStructOutput,
+			FinishedAt:     state.UpdatedAt,
+		}
+		if idx, exists := stepIndex[state.StepID]; exists {
+			orderedSteps[idx] = sr
+		} else {
+			stepIndex[state.StepID] = len(orderedSteps)
+			orderedSteps = append(orderedSteps, sr)
 		}
 	}
 	wg.Wait()
@@ -167,29 +181,37 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 		spinner.Stop()
 	}
 
-	completed := map[string]stepResult{}
-	failed := map[string]stepResult{}
-	running := map[string]stepResult{}
-	postponed := map[string]stepResult{}
-	for id, sr := range steps {
-		switch sr.Status {
-		case string(flow.FlowStatusCompleted):
-			completed[id] = sr
-		case string(flow.FlowStatusFailed):
-			failed[id] = sr
-		case string(flow.FlowStatusRunning):
-			running[id] = sr
-		case string(flow.FlowStatusPostponed):
-			postponed[id] = sr
+	var totalInputTokens int64
+	var totalOutputTokens int64
+	var totalCost float64
+	if rootSessionID != "" {
+		stepSessionIDs := make(map[string]bool, len(orderedSteps))
+		for _, sr := range orderedSteps {
+			stepSessionIDs[sr.SessionID] = true
+		}
+		children, listErr := a.Sessions.ListChildren(ctx, rootSessionID)
+		if listErr != nil {
+			logging.Warn("Failed to list child sessions for metrics", "root_session_id", rootSessionID, "error", listErr)
+		} else {
+			for _, sess := range children {
+				if !stepSessionIDs[sess.ID] {
+					continue
+				}
+				totalInputTokens += sess.PromptTokens
+				totalOutputTokens += sess.CompletionTokens
+				totalCost += sess.Cost
+			}
 		}
 	}
 
 	result := map[string]any{
-		"flow_id":          flowID,
-		"completed_steps":  completed,
-		"failed_steps":     failed,
-		"running_steps":    running,
-		"postponed_steps":  postponed,
+		"flow_id": flowID,
+		"steps":   orderedSteps,
+		"metrics": map[string]any{
+			"input_tokens":  totalInputTokens,
+			"output_tokens": totalOutputTokens,
+			"cost":          totalCost,
+		},
 	}
 
 	output, err := json.MarshalIndent(result, "", "  ")

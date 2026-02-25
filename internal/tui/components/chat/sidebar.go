@@ -103,6 +103,7 @@ func (m *sidebarCmp) View() string {
 		PaddingLeft(4).
 		PaddingRight(2).
 		Height(m.height - 1).
+		MaxHeight(m.height).
 		Render(
 			lipgloss.JoinVertical(
 				lipgloss.Top,
