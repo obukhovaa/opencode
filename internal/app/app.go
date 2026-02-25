@@ -93,7 +93,7 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any) (*App, err
 	lspSvc := NewLspService()
 	mcpRegistry := agent.NewMCPRegistry(perm, reg)
 	factory := agent.NewAgentFactory(sessions, messages, perm, files, lspSvc, reg, mcpRegistry)
-	flows := flow.NewService(sessions, q, perm, factory)
+	flows := flow.NewService(sessions, messages, q, perm, factory)
 
 	app := &App{
 		Sessions:      sessions,

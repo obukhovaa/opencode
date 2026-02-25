@@ -24,8 +24,8 @@ var (
 	kebabCaseRegex = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 	flowCache     map[string]Flow
-	flowCacheLock sync.RWMutex
-	flowCacheOnce sync.Once
+	flowCacheLock sync.Mutex
+	flowCacheInit bool
 )
 
 // flowFile represents the raw YAML structure of a flow file.
@@ -61,15 +61,16 @@ func Invalidate() {
 	flowCacheLock.Lock()
 	defer flowCacheLock.Unlock()
 	flowCache = nil
-	flowCacheOnce = sync.Once{}
+	flowCacheInit = false
 }
 
 func state() map[string]Flow {
-	flowCacheOnce.Do(func() {
+	flowCacheLock.Lock()
+	defer flowCacheLock.Unlock()
+	if !flowCacheInit {
 		flowCache = discoverFlows()
-	})
-	flowCacheLock.RLock()
-	defer flowCacheLock.RUnlock()
+		flowCacheInit = true
+	}
 	return flowCache
 }
 

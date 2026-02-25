@@ -16,6 +16,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/db"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/session"
@@ -53,6 +54,7 @@ type Service interface {
 type service struct {
 	*pubsub.Broker[FlowState]
 	sessions    session.Service
+	messages    message.Service
 	querier     db.QuerierWithTx
 	permissions permission.Service
 	agents      agentpkg.AgentFactory
@@ -60,6 +62,7 @@ type service struct {
 
 func NewService(
 	sessions session.Service,
+	messages message.Service,
 	querier db.QuerierWithTx,
 	permissions permission.Service,
 	agents agentpkg.AgentFactory,
@@ -67,6 +70,7 @@ func NewService(
 	return &service{
 		Broker:      pubsub.NewBroker[FlowState](),
 		sessions:    sessions,
+		messages:    messages,
 		querier:     querier,
 		permissions: permissions,
 		agents:      agents,
@@ -156,14 +160,16 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 		stepSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, flowID, w.step.ID)
 		argsJSON, _ := json.Marshal(w.args)
 		if _, getErr := s.querier.GetFlowState(ctx, stepSessionID); getErr == nil {
-			s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+			if _, err := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
 				Status:         string(FlowStatusRunning),
 				Output:         sql.NullString{},
 				IsStructOutput: false,
 				SessionID:      stepSessionID,
-			})
+			}); err != nil {
+				logging.Warn("Failed to update initial flow state", "session_id", stepSessionID, "error", err)
+			}
 		} else {
-			s.querier.CreateFlowState(ctx, db.CreateFlowStateParams{
+			if _, err := s.querier.CreateFlowState(ctx, db.CreateFlowStateParams{
 				SessionID:      stepSessionID,
 				RootSessionID:  rootSessionID,
 				FlowID:         f.ID,
@@ -171,7 +177,9 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 				Status:         string(FlowStatusRunning),
 				Args:           sql.NullString{String: string(argsJSON), Valid: true},
 				IsStructOutput: false,
-			})
+			}); err != nil {
+				logging.Warn("Failed to create initial flow state", "session_id", stepSessionID, "error", err)
+			}
 		}
 	}
 
@@ -191,7 +199,7 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 
 			go func(w stepWork, sessID string) {
 				defer wg.Done()
-				s.runStep(ctx, f, w.step, sessID, rootSessionID, sessionPrefix, w.args, w.prevStep, &wg, agentEvents, flowStates, nextSteps, startedSteps, work.postpone)
+				s.runStep(ctx, f, w.step, sessID, rootSessionID, w.args, w.prevStep, &wg, agentEvents, flowStates, nextSteps, work.postpone)
 			}(work, stepSessionID)
 		}
 	}()
@@ -212,14 +220,12 @@ func (s *service) runStep(
 	step Step,
 	sessionID string,
 	rootSessionID string,
-	sessionPrefix string,
 	args map[string]any,
 	prevState *FlowState,
 	wg *sync.WaitGroup,
 	agentEvents chan<- agentpkg.AgentEvent,
 	flowStates chan<- *FlowState,
 	nextSteps chan<- stepWork,
-	startedSteps *sync.Map,
 	postpone bool,
 ) {
 	agentID := step.Agent
@@ -233,13 +239,13 @@ func (s *service) runStep(
 	}
 	agentSvc, err := s.agents.NewAgent(ctx, agentID, outputSchema, step.ID)
 	if err != nil {
-		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, err, wg, agentEvents, flowStates, nextSteps, f, sessionPrefix, startedSteps)
+		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, err, wg, agentEvents, flowStates, nextSteps, f)
 		return
 	}
 
 	sess, err := s.resolveSession(ctx, step, sessionID, rootSessionID, prevState)
 	if err != nil {
-		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, fmt.Errorf("resolving session: %w", err), wg, agentEvents, flowStates, nextSteps, f, sessionPrefix, startedSteps)
+		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, fmt.Errorf("resolving session: %w", err), wg, agentEvents, flowStates, nextSteps, f)
 		return
 	}
 
@@ -275,7 +281,7 @@ func (s *service) runStep(
 		})
 	}
 	if err != nil {
-		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, fmt.Errorf("persisting flow state: %w", err), wg, agentEvents, flowStates, nextSteps, f, sessionPrefix, startedSteps)
+		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, fmt.Errorf("persisting flow state: %w", err), wg, agentEvents, flowStates, nextSteps, f)
 		return
 	}
 
@@ -337,12 +343,14 @@ func (s *service) runStep(
 doneRetry:
 
 	if lastErr != nil {
-		s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+		if _, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
 			Status:         string(FlowStatusFailed),
 			Output:         sql.NullString{String: lastErr.Error(), Valid: true},
 			IsStructOutput: false,
 			SessionID:      sessionID,
-		})
+		}); updateErr != nil {
+			logging.Warn("Failed to persist step failure state", "session_id", sessionID, "error", updateErr)
+		}
 
 		failedState := &FlowState{
 			SessionID:     sessionID,
@@ -380,12 +388,14 @@ doneRetry:
 		output = result.Message.Content().Text
 	}
 
-	s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+	if _, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
 		Status:         string(FlowStatusCompleted),
 		Output:         sql.NullString{String: output, Valid: output != ""},
 		IsStructOutput: isStructOutput,
 		SessionID:      sessionID,
-	})
+	}); updateErr != nil {
+		logging.Warn("Failed to persist step completion state", "session_id", sessionID, "error", updateErr)
+	}
 
 	completedState := &FlowState{
 		SessionID:      sessionID,
@@ -439,10 +449,17 @@ func (s *service) handleStepError(
 	flowStates chan<- *FlowState,
 	nextSteps chan<- stepWork,
 	f *Flow,
-	sessionPrefix string,
-	startedSteps *sync.Map,
 ) {
 	logging.Error("Flow step failed", "step", step.ID, "error", err)
+
+	if _, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+		Status:         string(FlowStatusFailed),
+		Output:         sql.NullString{String: err.Error(), Valid: true},
+		IsStructOutput: false,
+		SessionID:      sessionID,
+	}); updateErr != nil {
+		logging.Warn("Failed to persist step error state", "session_id", sessionID, "error", updateErr)
+	}
 
 	failedState := &FlowState{
 		SessionID:     sessionID,
@@ -548,7 +565,32 @@ func (s *service) resolveSession(ctx context.Context, step Step, sessionID strin
 	if err != nil {
 		return session.Session{}, fmt.Errorf("creating session: %w", err)
 	}
+
+	if step.Session.Fork && prevState != nil && prevState.SessionID != "" {
+		if copyErr := s.copySessionMessages(ctx, prevState.SessionID, sess.ID); copyErr != nil {
+			logging.Warn("Failed to fork session messages", "from", prevState.SessionID, "to", sess.ID, "error", copyErr)
+		}
+	}
+
 	return sess, nil
+}
+
+func (s *service) copySessionMessages(ctx context.Context, fromSessionID, toSessionID string) error {
+	msgs, err := s.messages.List(ctx, fromSessionID)
+	if err != nil {
+		return fmt.Errorf("listing messages from %s: %w", fromSessionID, err)
+	}
+	for _, msg := range msgs {
+		_, err := s.messages.Create(ctx, toSessionID, message.CreateMessageParams{
+			Role:  msg.Role,
+			Parts: msg.Parts,
+			Model: msg.Model,
+		})
+		if err != nil {
+			return fmt.Errorf("copying message to %s: %w", toSessionID, err)
+		}
+	}
+	return nil
 }
 
 // TODO: consider adding default value support ${args.name:-default}
@@ -642,8 +684,14 @@ func findStep(steps []Step, id string) *Step {
 }
 
 func copyArgs(args map[string]any) map[string]any {
-	result := make(map[string]any, len(args))
-	maps.Copy(result, args)
+	data, err := json.Marshal(args)
+	if err != nil {
+		result := make(map[string]any, len(args))
+		maps.Copy(result, args)
+		return result
+	}
+	var result map[string]any
+	json.Unmarshal(data, &result)
 	return result
 }
 
