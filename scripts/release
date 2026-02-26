@@ -3,10 +3,20 @@
 # Parse command line arguments
 minor=false
 while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --minor) minor=true; shift 1;;
-    *) echo "Unknown parameter: $1"; exit 1;;
-  esac
+    case "$1" in
+    --minor)
+        minor=true
+        shift 1
+        ;;
+    --patch)
+        minor=false
+        shift 1
+        ;;
+    *)
+        echo "Unknown parameter: $1"
+        exit 1
+        ;;
+    esac
 done
 
 git fetch --force --tags
@@ -23,7 +33,7 @@ fi
 echo "Latest tag: $latest_tag"
 
 # Split the tag into major, minor, and patch numbers
-IFS='.' read -ra VERSION <<< "$latest_tag"
+IFS='.' read -ra VERSION <<<"$latest_tag"
 
 if [ "$minor" = true ]; then
     # Increment the minor version and reset patch to 0
