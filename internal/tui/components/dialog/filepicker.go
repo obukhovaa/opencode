@@ -164,6 +164,9 @@ func (f *filepickerCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				isPathDir = fileInfo.IsDir()
 			} else {
+				if len(f.dirs) == 0 {
+					return f, cmd
+				}
 				path = filepath.Join(f.cwdDetails.directory, "/", f.dirs[f.cursor].Name())
 				isPathDir = f.dirs[f.cursor].IsDir()
 			}
@@ -188,7 +191,7 @@ func (f *filepickerCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				f.cwd.Blur()
 			}
 		case key.Matches(msg, filePickerKeyMap.Forward):
-			if !f.cwd.Focused() {
+			if !f.cwd.Focused() && len(f.dirs) > 0 {
 				if f.dirs[f.cursor].IsDir() {
 					path := filepath.Join(f.cwdDetails.directory, "/", f.dirs[f.cursor].Name())
 					newWorkingDir := DirNode{parent: f.cwdDetails, directory: path}
@@ -384,8 +387,12 @@ func NewFilepickerCmp(app *app.App) FilepickerCmp {
 }
 
 func (f *filepickerCmp) getCurrentFileBelowCursor() {
-	if len(f.dirs) == 0 || f.cursor < 0 || f.cursor >= len(f.dirs) {
-		logging.Error(fmt.Sprintf("Invalid cursor position. Dirs length: %d, Cursor: %d", len(f.dirs), f.cursor))
+	if len(f.dirs) == 0 {
+		f.viewport.SetContent("No files to preview")
+		return
+	}
+	if f.cursor < 0 || f.cursor >= len(f.dirs) {
+		f.cursor = 0
 		f.viewport.SetContent("Preview unavailable")
 		return
 	}

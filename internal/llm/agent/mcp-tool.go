@@ -184,7 +184,7 @@ func (r *mcpRegistry) getTools(ctx context.Context, name string, m config.MCPSer
 		var c *client.Client
 		c, entry.err = r.StartClient(ctx, name)
 		if entry.err != nil {
-			logging.Error("Error starting mcp client", "server", name, "cause", entry.err.Error())
+			logging.Error("Error starting MCP client", "server", name, "cause", entry.err.Error())
 			r.mcpTools.Delete(name)
 			return toolsToAdd
 		}
@@ -199,14 +199,14 @@ func (r *mcpRegistry) getTools(ctx context.Context, name string, m config.MCPSer
 
 		_, entry.err = c.Initialize(ctx, initRequest)
 		if entry.err != nil {
-			logging.Error("Error initializing mcp client", "server", name, "cause", entry.err.Error())
+			logging.Error("Error initializing MCP client", "server", name, "cause", entry.err.Error())
 			r.mcpTools.Delete(name)
 			return toolsToAdd
 		}
 		toolsRequest := mcp.ListToolsRequest{}
 		entry.data, entry.err = c.ListTools(ctx, toolsRequest)
 		if entry.err != nil {
-			logging.Error("Error listing mcp tools", "server", name, "cause", entry.err.Error())
+			logging.Error("Error listing MCP tools", "server", name, "cause", entry.err.Error())
 			r.mcpTools.Delete(name)
 			return toolsToAdd
 		}
