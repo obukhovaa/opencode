@@ -24,6 +24,7 @@ SCOPE ?= minor
 init: clean init-hooks
 
 clean:
+	@rm -rf dist 
 	docker compose down -v
 
 init-hooks:
@@ -33,12 +34,18 @@ init-hooks:
 
 generate:
 	@mkdir -p $(TMP_DIR) $(TMP_DIR)/mysql_data
-	go generate ./...
+	@go run cmd/schema/main.go > opencode-schema.json
+	@go generate ./...
 
 # Build targets
 build: generate
 	$(MAKE) version
 	go build $(BUILDARGS) $(PKGARGS) -o ./$(TMP_DIR)/opencode-$(VERSION) ./main.go
+
+# Build lean image with opencode
+docker-build:
+	@echo "Building Docker image..."
+	docker build -f build/agent.dockerfile -t opencode:latest .
 
 dev-build: generate
 	REGISTRY_URL=docker.io docker compose up -d --build

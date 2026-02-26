@@ -153,7 +153,7 @@ opencode -F my-flow -s my-prefix -D -p "restart"
 | `--flow` | `-F` | Flow ID to execute |
 | `--arg` | `-A` | Flow argument as `key=value` (repeatable) |
 | `--args-file` | | JSON file with flow arguments |
-| `--prompt` | `-p` | Initial prompt (required with `--flow`) |
+| `--prompt` | `-p` | Initial prompt (optional with `--flow`, added to args) |
 | `--session` | `-s` | Session prefix for deterministic naming |
 | `--delete` | `-D` | Delete previous state and start fresh |
 

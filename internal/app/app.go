@@ -72,6 +72,16 @@ func (app *App) SwitchAgent() config.AgentName {
 	return name
 }
 
+func (app *App) SwitchAgentReverse() config.AgentName {
+	if len(app.PrimaryAgentKeys) <= 1 {
+		return app.ActiveAgentName()
+	}
+	app.ActiveAgentIdx = (app.ActiveAgentIdx - 1 + len(app.PrimaryAgentKeys)) % len(app.PrimaryAgentKeys)
+	name := app.PrimaryAgentKeys[app.ActiveAgentIdx]
+	app.activeAgent = app.PrimaryAgents[name]
+	return name
+}
+
 func (app *App) SetActiveAgent(agentID config.AgentName) error {
 	for i, key := range app.PrimaryAgentKeys {
 		if key == agentID {

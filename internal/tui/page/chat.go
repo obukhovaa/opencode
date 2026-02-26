@@ -129,9 +129,8 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.completionDialog = context.(dialog.CompletionDialog)
 		cmds = append(cmds, contextCmd)
 
-		// Doesn't forward event if enter key is pressed
 		if keyMsg, ok := msg.(tea.KeyMsg); ok {
-			if keyMsg.String() == "enter" {
+			if keyMsg.String() == "enter" || keyMsg.String() == "tab" || keyMsg.String() == "shift+tab" {
 				return p, tea.Batch(cmds...)
 			}
 		}
@@ -214,6 +213,10 @@ func (p *chatPage) View() string {
 	}
 
 	return layoutView
+}
+
+func (p *chatPage) HasActiveOverlay() bool {
+	return p.showCompletionDialog
 }
 
 func (p *chatPage) BindingKeys() []key.Binding {

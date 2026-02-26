@@ -79,17 +79,33 @@ func (m statusCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 var helpWidget = ""
+var agentHintWidget = ""
 
 // getHelpWidget returns the help widget with current theme colors
 func getHelpWidget() string {
 	t := theme.CurrentTheme()
-	helpText := "ctrl+? help"
+	helpText := "ctrl+h help"
 
 	return styles.Padded().
 		Background(t.TextMuted()).
 		Foreground(t.BackgroundDarker()).
 		Bold(true).
 		Render(helpText)
+}
+
+func getAgentHintWidget() string {
+	reg := agentregistry.GetRegistry()
+	primaryAgents := reg.ListByMode(config.AgentModeAgent)
+	if len(primaryAgents) <= 1 {
+		return ""
+	}
+
+	t := theme.CurrentTheme()
+	return styles.Padded().
+		Background(t.TextMuted()).
+		Foreground(t.BackgroundDarker()).
+		Bold(true).
+		Render("tab agents")
 }
 
 func formatTokensAndCost(tokens, contextWindow int64, cost float64) string {
@@ -130,8 +146,9 @@ func (m statusCmp) View() string {
 	agentCfg := config.Get().Agents[agentName]
 	model := models.SupportedModels[agentCfg.Model]
 
-	// Initialize the help widget
 	status := getHelpWidget()
+	agentHint := getAgentHintWidget()
+	status += agentHint
 
 	tokenInfoWidth := 0
 	if m.session.ID != "" {
@@ -152,7 +169,7 @@ func (m statusCmp) View() string {
 		Background(t.BackgroundDarker()).
 		Render(m.projectDiagnostics())
 
-	availableWidht := max(0, m.width-lipgloss.Width(helpWidget)-lipgloss.Width(m.model())-lipgloss.Width(diagnostics)-tokenInfoWidth)
+	availableWidht := max(0, m.width-lipgloss.Width(helpWidget)-lipgloss.Width(agentHintWidget)-lipgloss.Width(m.model())-lipgloss.Width(diagnostics)-tokenInfoWidth)
 
 	if m.info.Msg != "" {
 		infoStyle := styles.Padded().
@@ -309,6 +326,7 @@ func (m statusCmp) model() string {
 
 func NewStatusCmp(lspService lsp.LspService) StatusCmp {
 	helpWidget = getHelpWidget()
+	agentHintWidget = getAgentHintWidget()
 
 	return &statusCmp{
 		messageTTL:      10 * time.Second,

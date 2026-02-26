@@ -20,6 +20,8 @@ type SimpleList[T SimpleListItem] interface {
 	GetSelectedItem() (item T, idx int)
 	SetItems(items []T)
 	GetItems() []T
+	CycleNext()
+	CyclePrevious()
 }
 
 type simpleListCmp[T SimpleListItem] struct {
@@ -107,6 +109,20 @@ func (c *simpleListCmp[T]) GetItems() []T {
 
 func (c *simpleListCmp[T]) SetMaxWidth(width int) {
 	c.maxWidth = width
+}
+
+func (c *simpleListCmp[T]) CycleNext() {
+	if len(c.items) == 0 {
+		return
+	}
+	c.selectedIdx = (c.selectedIdx + 1) % len(c.items)
+}
+
+func (c *simpleListCmp[T]) CyclePrevious() {
+	if len(c.items) == 0 {
+		return
+	}
+	c.selectedIdx = (c.selectedIdx - 1 + len(c.items)) % len(c.items)
 }
 
 func (c *simpleListCmp[T]) View() string {

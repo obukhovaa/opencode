@@ -25,16 +25,17 @@ import (
 )
 
 type keyMap struct {
-	Logs          key.Binding
-	Quit          key.Binding
-	Help          key.Binding
-	SwitchSession key.Binding
-	Commands      key.Binding
-	Filepicker    key.Binding
-	Models        key.Binding
-	SwitchTheme   key.Binding
-	PruneSession  key.Binding
-	SwitchAgent   key.Binding
+	Logs            key.Binding
+	Quit            key.Binding
+	Help            key.Binding
+	SwitchSession   key.Binding
+	Commands        key.Binding
+	Filepicker      key.Binding
+	Models          key.Binding
+	SwitchTheme     key.Binding
+	PruneSession    key.Binding
+	SwitchAgent     key.Binding
+	SwitchAgentBack key.Binding
 }
 
 type startCompactSessionMsg struct{}
@@ -55,7 +56,7 @@ var keys = keyMap{
 	),
 	Help: key.NewBinding(
 		key.WithKeys("ctrl+_", "ctrl+h"),
-		key.WithHelp("ctrl+?", "toggle help"),
+		key.WithHelp("ctrl+h", "toggle help"),
 	),
 
 	SwitchSession: key.NewBinding(
@@ -88,6 +89,10 @@ var keys = keyMap{
 	SwitchAgent: key.NewBinding(
 		key.WithKeys("tab"),
 		key.WithHelp("tab", "switch agent"),
+	),
+	SwitchAgentBack: key.NewBinding(
+		key.WithKeys("shift+tab"),
+		key.WithHelp("shift+tab", "switch agent back"),
 	),
 }
 
@@ -572,15 +577,30 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		case key.Matches(msg, keys.SwitchAgent):
 			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions &&
-				!a.showSessionDialog && !a.showCommandDialog && !a.showModelDialog &&
-				!a.showFilepicker && !a.app.ActiveAgent().IsBusy() {
+				!a.showSessionDialog && !a.showDeleteSessionDialog && !a.showCommandDialog &&
+				!a.showModelDialog && !a.showFilepicker && !a.showThemeDialog &&
+				!a.showHelp && !a.showInitDialog && !a.showMultiArgumentsDialog &&
+				!a.isCompacting && !a.app.ActiveAgent().IsBusy() &&
+				!a.pageHasActiveOverlay() {
 				agentName := a.app.SwitchAgent()
 				return a, tea.Batch(
 					util.CmdHandler(core.ActiveAgentChangedMsg{Name: agentName}),
 					util.ReportInfo(fmt.Sprintf("Switched to %s", agentName)),
 				)
 			}
-			return a, nil
+		case key.Matches(msg, keys.SwitchAgentBack):
+			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions &&
+				!a.showSessionDialog && !a.showDeleteSessionDialog && !a.showCommandDialog &&
+				!a.showModelDialog && !a.showFilepicker && !a.showThemeDialog &&
+				!a.showHelp && !a.showInitDialog && !a.showMultiArgumentsDialog &&
+				!a.isCompacting && !a.app.ActiveAgent().IsBusy() &&
+				!a.pageHasActiveOverlay() {
+				agentName := a.app.SwitchAgentReverse()
+				return a, tea.Batch(
+					util.CmdHandler(core.ActiveAgentChangedMsg{Name: agentName}),
+					util.ReportInfo(fmt.Sprintf("Switched to %s", agentName)),
+				)
+			}
 		case key.Matches(msg, returnKey) || key.Matches(msg):
 			if msg.String() == quitKey {
 				if a.currentPage == page.LogsPage {
@@ -734,6 +754,16 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	a.pages[a.currentPage], cmd = a.pages[a.currentPage].Update(msg)
 	cmds = append(cmds, cmd)
 	return a, tea.Batch(cmds...)
+}
+
+func (a *appModel) pageHasActiveOverlay() bool {
+	type overlayChecker interface {
+		HasActiveOverlay() bool
+	}
+	if p, ok := a.pages[a.currentPage].(overlayChecker); ok {
+		return p.HasActiveOverlay()
+	}
+	return false
 }
 
 // RegisterCommand adds a command to the command dialog

@@ -13,12 +13,14 @@ CREATE TABLE flow_states (
 );
 CREATE INDEX idx_flow_states_root_session ON flow_states(root_session_id);
 CREATE INDEX idx_flow_states_flow_id ON flow_states(flow_id);
+-- +goose StatementBegin
 CREATE TRIGGER IF NOT EXISTS update_flow_states_updated_at
 AFTER UPDATE ON flow_states
 BEGIN
 UPDATE flow_states SET updated_at = strftime('%s', 'now')
 WHERE session_id = new.session_id;
 END;
+-- +goose StatementEnd
 
 -- +goose Down
 DROP TABLE IF EXISTS flow_states;

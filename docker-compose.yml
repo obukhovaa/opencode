@@ -19,5 +19,20 @@ services:
       timeout: 5s
       retries: 5
 
+  opencode:
+    image: opencode:latest
+    container_name: opencode-agent
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      OPENCODE_SESSION_PROVIDER_TYPE: mysql
+      OPENCODE_MYSQL_DSN: "opencode_user:secure_password@tcp(opencode-mysql:3306)/opencode?parseTime=true"
+    volumes:
+      - ~/.opencode.json:/workspace/.opencode.json
+      - ./workspace:/workspace/project
+    env_file:
+      - .env
+
 volumes:
   mysql_data:

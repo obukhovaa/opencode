@@ -10,11 +10,13 @@ OpenCode is a CLI tool that brings AI assistance to your terminal. It provides b
 
 - **Interactive TUI** built with [Bubble Tea](https://github.com/charmbracelet/bubbletea)
 - **Non-interactive mode** for headless automation and autonomous agents
-- **Multiple AI providers**: OpenAI, Anthropic, Google Gemini, AWS Bedrock, VertexAI, and self-hosted
+- **Flows**: deterministic multi-step agent workflows defined in YAML ([guide](docs/flows.md))
+- **Subagents**: highly customizable agents calling another agents to do work [[#Agents]]
+- **Multiple AI providers**: Anthropic, OpenAI, Google Gemini, AWS Bedrock, VertexAI, and self-hosted
 - **Tool integration**: file operations, shell commands, code search, LSP code intelligence
+- **Structured output**: enforce final agent's output with json schema, perfect for automated pipelines
 - **MCP support**: extend capabilities via Model Context Protocol servers
 - **Agent skills**: reusable instruction sets loaded on-demand ([guide](docs/skills.md))
-- **Flows**: deterministic multi-step agent workflows defined in YAML ([guide](docs/flows.md))
 - **Custom commands**: predefined prompts with named arguments ([guide](docs/custom-commands.md))
 - **Session management** with SQLite or MySQL storage ([guide](docs/session-providers.md))
 - **LSP integration** with auto-install for 30+ language servers ([guide](docs/lsp.md))
@@ -25,22 +27,16 @@ OpenCode is a CLI tool that brings AI assistance to your terminal. It provides b
 ### Install Script
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/refs/heads/main/install | bash
+curl -fsSL https://raw.githubusercontent.com/obukhovaa/opencode/refs/heads/main/install | bash
 
 # Specific version
-curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/refs/heads/main/install | VERSION=0.1.0 bash
+curl -fsSL https://raw.githubusercontent.com/obukhovaa/opencode/refs/heads/main/install | VERSION=0.3.0 bash
 ```
 
 ### Homebrew
 
 ```bash
-brew install opencode-ai/tap/opencode
-```
-
-### AUR (Arch Linux)
-
-```bash
-yay -S opencode-ai-bin
+brew install obukhovaa/tap/opencode
 ```
 
 ### Go
@@ -69,6 +65,13 @@ opencode -p "Explain context in Go" -q        # Quiet (no spinner)
 opencode -p "Refactor this module" -t 5m      # With 5-minute timeout
 ```
 
+### Non-Interactive Flow Mode
+
+```bash
+opencode -p "Explain context in Go" -F review-code -A hash=93706ee  # Run review-uncommited flow with args
+opencode -p "Explain context in Go" -F ralph-does -s wiggum         # Run flow with the pinned session data
+```
+
 All permissions are auto-approved in non-interactive mode.
 
 ### Command-Line Flags
@@ -85,6 +88,9 @@ All permissions are auto-approved in non-interactive mode.
 | `--output-format` | `-f` | Output format: `text` (default), `json` |
 | `--quiet` | `-q` | Hide spinner in non-interactive mode |
 | `--timeout` | `-t` | Timeout for non-interactive mode (e.g. `10s`, `30m`, `1h`) |
+| `--flow` | `-F` | Flow ID to execute, [more info](docs/flows.md) |
+| `--arg` | `-A` | Flow argument as `key=value` (repeatable) |
+| `--args-file` | | JSON file with flow arguments |
 
 ## Configuration
 
@@ -389,7 +395,7 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | Shortcut | Action |
 |----------|--------|
 | `Ctrl+C` | Quit |
-| `Ctrl+?` / `?` | Toggle help |
+| `Ctrl+H`  | Toggle help |
 | `Ctrl+L` | View logs |
 | `Ctrl+A` | Switch session |
 | `Ctrl+N` | New session |
@@ -443,6 +449,57 @@ cd opencode
 make build
 ```
 
+### Docker
+
+Build and run OpenCode in a container:
+
+```bash
+# Build the Docker image (cross-compiles a Linux binary automatically)
+make docker-build
+```
+
+All CLI arguments are passed through directly:
+
+```bash
+# Non-interactive prompt
+docker run opencode:latest -p "Explain context in Go" -f json -q
+
+# Run a flow
+docker run opencode:latest -F my-flow -A key1=value1 -A key2=value2
+
+# With timeout
+docker run opencode:latest -p "Refactor this module" -t 5m -q
+```
+
+Mount your configuration and workspace as volumes:
+
+```bash
+docker run -ti --rm \
+  -e LOCAL_ENDPOINT_API_KEY="${LOCAL_ENDPOINT_API_KEY}" \
+  -e LOCAL_ENDPOINT="${LOCAL_ENDPOINT}" \
+  -e VERTEXAI_PROJECT="${VERTEXAI_PROJECT}" \
+  -e VERTEXAI_LOCATION="${VERTEXAI_LOCATION:-global}" \
+  -e VERTEXAI_LOCATION_COUNT="${VERTEXAI_LOCATION_COUNT:-us-east5}" \
+  -v ~/.opencode.json:/workspace/.opencode.json \
+  -v $(pwd):/workspace \
+  --network opencode_default \
+  opencode:latest  # you can pass args here, e.g. -p "Analyze this codebase"
+
+```
+
+To run non interactivly (you can pass [[#Command-Line Flags]])
+
+```bash
+docker run --rm \
+  -v ~/.opencode.json:/workspace/.opencode.json \
+  -v $(pwd):/workspace \
+  --network opencode_default \
+  opencode:latest -p "Analyze this codebase" -q
+
+```
+
+The container uses `/workspace` as its working directory. Mount `.opencode.json` there to provide configuration — it is not baked into the image.
+
 ### Release
 ```bash
 make release SCOPE=patch
@@ -454,6 +511,7 @@ make release SCOPE=minor
 
 - [@isaacphi](https://github.com/isaacphi) — [mcp-language-server](https://github.com/isaacphi/mcp-language-server), foundation for the LSP client
 - [@adamdottv](https://github.com/adamdottv) — Design direction and UI/UX architecture
+- [@kujtimiihoxha](https://github.com/kujtimiihoxha) – Original OpenCode implementation
 
 ## License
 

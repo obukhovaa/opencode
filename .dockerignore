@@ -1,0 +1,7 @@
+.git
+tmp
+dist
+.env
+*.exe
+*.test
+*.out

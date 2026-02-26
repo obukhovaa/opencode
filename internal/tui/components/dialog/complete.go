@@ -92,13 +92,21 @@ type completionDialogCmp struct {
 }
 
 type completionDialogKeyMap struct {
-	Complete key.Binding
-	Cancel   key.Binding
+	Complete  key.Binding
+	Cycle     key.Binding
+	CycleBack key.Binding
+	Cancel    key.Binding
 }
 
 var completionDialogKeys = completionDialogKeyMap{
 	Complete: key.NewBinding(
-		key.WithKeys("tab", "enter"),
+		key.WithKeys("enter"),
+	),
+	Cycle: key.NewBinding(
+		key.WithKeys("tab"),
+	),
+	CycleBack: key.NewBinding(
+		key.WithKeys("shift+tab"),
 	),
 	Cancel: key.NewBinding(
 		key.WithKeys(" ", "esc", "backspace"),
@@ -139,7 +147,7 @@ func (c *completionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if c.pseudoSearchTextArea.Focused() {
 
-			if !key.Matches(msg, completionDialogKeys.Complete) {
+			if !key.Matches(msg, completionDialogKeys.Complete) && !key.Matches(msg, completionDialogKeys.Cycle) && !key.Matches(msg, completionDialogKeys.CycleBack) {
 
 				var cmd tea.Cmd
 				c.pseudoSearchTextArea, cmd = c.pseudoSearchTextArea.Update(msg)
@@ -178,6 +186,12 @@ func (c *completionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmd := c.complete(item)
 
 				return c, cmd
+			case key.Matches(msg, completionDialogKeys.Cycle):
+				c.listView.CycleNext()
+				return c, nil
+			case key.Matches(msg, completionDialogKeys.CycleBack):
+				c.listView.CyclePrevious()
+				return c, nil
 			case key.Matches(msg, completionDialogKeys.Cancel):
 				// Only close on backspace when there are no characters left
 				if msg.String() != "backspace" || len(c.pseudoSearchTextArea.Value()) <= 0 {
