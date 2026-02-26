@@ -1,8 +1,6 @@
 package prompt
 
 import (
-	"fmt"
-
 	"github.com/opencode-ai/opencode/internal/llm/models"
 )
 
@@ -34,5 +32,5 @@ Your strengths:
 - Return file paths as absolute paths in your final response, do not use relative paths
 - When relevant, share file names, code snippets and links relevant to the query`
 
-	return fmt.Sprintf("%s\n%s\n", agentPrompt, getEnvironmentInfo())
+	return agentPrompt
 }

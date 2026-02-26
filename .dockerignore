@@ -2,6 +2,7 @@
 tmp
 dist
 .env
+.opencode
 *.exe
 *.test
 *.out

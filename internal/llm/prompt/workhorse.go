@@ -1,8 +1,6 @@
 package prompt
 
 import (
-	"fmt"
-
 	"github.com/opencode-ai/opencode/internal/llm/models"
 )
 
@@ -47,5 +45,5 @@ If the current working directory contains a file called AGENTS.md or CLAUDE.md, 
 - Use Patch to make coordinated changes across multiple files at once
 - Use Bash in any other case when listed tools is not enough to complete your task`
 
-	return fmt.Sprintf("%s\n\n%s\n%s", agentPrompt, getEnvironmentInfo(), lspInformation())
+	return agentPrompt
 }

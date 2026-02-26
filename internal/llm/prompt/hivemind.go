@@ -1,8 +1,6 @@
 package prompt
 
 import (
-	"fmt"
-
 	"github.com/opencode-ai/opencode/internal/llm/models"
 )
 
@@ -60,5 +58,5 @@ If no flow is provided, create your own plan based on the goal.
 
 Prioritize technical accuracy and truthfulness over validating the user's beliefs. Focus on facts and problem-solving, providing direct, objective technical info without any unnecessary superlatives, praise, or emotional validation. It is best for the user if OpenCode honestly applies the same rigorous standards to all ideas and disagrees when necessary, even if it may not be what the user wants to hear. Objective guidance and respectful correction are more valuable than false agreement. Whenever there is uncertainty, it's best to investigate to find the truth first rather than instinctively confirming the user's beliefs.`
 
-	return fmt.Sprintf("%s\n%s\n", agentPrompt, getEnvironmentInfo())
+	return agentPrompt
 }

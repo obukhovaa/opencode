@@ -1,20 +1,68 @@
 package prompt
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/lsp/install"
 )
 
 const structuredOutputPrompt = `
 IMPORTANT: The user has requested structured output. You MUST use the struct_output tool to provide your final response. Do NOT respond with plain text - you MUST call the struct_output tool with your answer formatted according to the schema.`
+
+func getEnvironmentInfo() string {
+	cwd := config.WorkingDirectory()
+	isGit := isGitRepo(cwd)
+	platform := runtime.GOOS
+	date := time.Now().Format("1/2/2006")
+	ls := tools.NewLsTool(config.Get())
+	r, _ := ls.Run(context.Background(), tools.ToolCall{
+		Input: `{"path":"."}`,
+	})
+	return fmt.Sprintf(`Here is useful information about the environment you are running in:
+<env>
+Working directory: %s
+Is directory a git repo: %s
+Platform: %s
+Today's date: %s
+</env>
+<project>
+%s
+</project>
+		`, cwd, boolToYesNo(isGit), platform, date, r.Content)
+}
+
+func isGitRepo(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
+}
+
+func lspInformation() string {
+	return `# LSP Information
+Tools that support it will also include useful diagnostics such as linting and typechecking.
+- These diagnostics will be automatically enabled when you run the tool, and will be displayed in the output at the bottom within the <file_diagnostics></file_diagnostics> and <project_diagnostics></project_diagnostics> tags.
+- Take necessary actions to fix the issues.
+- You should ignore diagnostics of files that you did not change or are not related or caused by your changes unless the user explicitly asks you to fix them.
+`
+}
+
+func boolToYesNo(b bool) string {
+	if b {
+		return "Yes"
+	}
+	return "No"
+}
 
 func GetAgentPrompt(agentName config.AgentName, provider models.ModelProvider) string {
 	reg := agentregistry.GetRegistry()
@@ -46,6 +94,19 @@ func GetAgentPrompt(agentName config.AgentName, provider models.ModelProvider) s
 		if info.Output != nil && info.Output.Schema != nil && reg.IsToolEnabled(agentName, "struct_output") {
 			basePrompt += structuredOutputPrompt
 		}
+	}
+
+	// Add environment info for primary agents
+	if info, ok := reg.Get(agentName); ok {
+		if info.Mode == config.AgentModeAgent {
+			basePrompt += "\n\n" + getEnvironmentInfo()
+		}
+	}
+
+	// Add LSP information if LSP servers are available and the agent has the LSP tool enabled
+	cfg := config.Get()
+	if len(install.ResolveServers(cfg)) > 0 && reg.IsToolEnabled(agentName, tools.LSPToolName) {
+		basePrompt += "\n" + lspInformation()
 	}
 
 	contextContent := getContextFromPaths()
