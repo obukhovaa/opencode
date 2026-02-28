@@ -133,6 +133,43 @@ func containsSubstring(s, substr string) bool {
 	return false
 }
 
+func TestResolveSessionPrefix(t *testing.T) {
+	tests := []struct {
+		name       string
+		specPrefix string
+		args       map[string]any
+		want       string
+		wantErr    bool
+	}{
+		{"empty prefix uses timestamp", "", map[string]any{}, "", false},
+		{"literal constant", "my_static_id", map[string]any{}, "my_static_id", false},
+		{"args variable", "${args.jira_issue_id}", map[string]any{"jira_issue_id": "PROJ-123"}, "PROJ-123", false},
+		{"args variable numeric", "${args.build_num}", map[string]any{"build_num": 42}, "42", false},
+		{"args variable missing", "${args.missing_key}", map[string]any{}, "", true},
+		{"args variable missing with other args", "${args.missing}", map[string]any{"other": "val"}, "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveSessionPrefix(tt.specPrefix, tt.args)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("resolveSessionPrefix() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr {
+				return
+			}
+			if tt.specPrefix == "" {
+				if got == "" {
+					t.Error("resolveSessionPrefix() returned empty string for timestamp fallback")
+				}
+			} else if got != tt.want {
+				t.Errorf("resolveSessionPrefix() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCopyArgs(t *testing.T) {
 	original := map[string]any{"a": 1, "b": "two"}
 	copied := copyArgs(original)
@@ -170,4 +207,66 @@ func TestFindStep(t *testing.T) {
 			t.Error("expected nil for nonexistent step")
 		}
 	})
+}
+
+func TestValidateArgs(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":    map[string]any{"type": "string"},
+			"count":   map[string]any{"type": "integer"},
+			"enabled": map[string]any{"type": "boolean"},
+			"score":   map[string]any{"type": "number"},
+			"tags":    map[string]any{"type": "array"},
+			"meta":    map[string]any{"type": "object"},
+		},
+		"required": []any{"name"},
+	}
+
+	tests := []struct {
+		name    string
+		args    map[string]any
+		schema  map[string]any
+		wantErr bool
+	}{
+		{"nil schema passes", map[string]any{"anything": true}, nil, false},
+		{"empty schema passes", map[string]any{"anything": true}, map[string]any{}, false},
+		{"valid args", map[string]any{"name": "test", "count": 5}, schema, false},
+		{"missing required", map[string]any{"count": 5}, schema, true},
+		{"wrong type string", map[string]any{"name": 123}, schema, true},
+		{"wrong type integer", map[string]any{"name": "ok", "count": "abc"}, schema, true},
+		{"float as integer", map[string]any{"name": "ok", "count": 3.5}, schema, true},
+		{"int-like float ok", map[string]any{"name": "ok", "count": float64(3)}, schema, false},
+		{"wrong type boolean", map[string]any{"name": "ok", "enabled": "yes"}, schema, true},
+		{"wrong type number", map[string]any{"name": "ok", "score": "high"}, schema, true},
+		{"wrong type array", map[string]any{"name": "ok", "tags": "a,b"}, schema, true},
+		{"wrong type object", map[string]any{"name": "ok", "meta": "flat"}, schema, true},
+		{"valid all types", map[string]any{
+			"name": "x", "count": 1, "enabled": true,
+			"score": 3.14, "tags": []any{"a"}, "meta": map[string]any{"k": "v"},
+		}, schema, false},
+		{"prompt always allowed", map[string]any{"name": "ok", "prompt": 12345}, schema, false},
+		{"unknown key with additionalProperties default", map[string]any{"name": "ok", "extra": "val"}, schema, false},
+		{"unknown key with additionalProperties false", map[string]any{"name": "ok", "extra": "val"}, map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{"name": map[string]any{"type": "string"}},
+			"required":             []any{"name"},
+			"additionalProperties": false,
+		}, true},
+		{"prompt bypasses additionalProperties false", map[string]any{"name": "ok", "prompt": "hello"}, map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{"name": map[string]any{"type": "string"}},
+			"required":             []any{"name"},
+			"additionalProperties": false,
+		}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateArgs(tt.args, tt.schema)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateArgs() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
 }

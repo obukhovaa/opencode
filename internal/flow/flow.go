@@ -27,10 +27,16 @@ type Flow struct {
 	Location    string
 }
 
+// FlowSession controls session behavior at the flow level.
+type FlowSession struct {
+	Prefix string `yaml:"prefix,omitempty"`
+}
+
 // FlowSpec contains the flow's args schema and step definitions.
 type FlowSpec struct {
-	Args  map[string]any `yaml:"args,omitempty"`
-	Steps []Step         `yaml:"steps"`
+	Args    map[string]any `yaml:"args,omitempty"`
+	Session FlowSession    `yaml:"session,omitempty"`
+	Steps   []Step         `yaml:"steps"`
 }
 
 // Step defines a single step in the flow graph.

@@ -70,6 +70,7 @@ The flow ID is derived from the filename without its extension. For example, `re
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `flow.args` | object | No | JSON Schema for expected arguments |
+| `flow.session` | object | No | Session configuration (see [Session Management](#session-management)) |
 | `flow.steps` | array | Yes | Ordered list of step definitions |
 
 ### Step fields
@@ -177,11 +178,42 @@ Each step creates a session with a deterministic ID:
 
 This enables:
 
-- **Resumption**: Re-running with the same `-s` prefix reuses existing sessions
+- **Resumption**: Re-running with the same prefix reuses existing sessions
 - **Fresh start**: Adding `-D` deletes all previous sessions and state
 - **Inspection**: Session IDs are predictable and can be queried
 
-When no `-s` prefix is provided, a Unix timestamp is used, making each invocation independent.
+### Session prefix resolution
+
+The session prefix is chosen using the following priority (highest first):
+
+1. **CLI flag** `--session` / `-s` — always wins when provided
+2. **Flow spec** `flow.session.prefix` — used when no CLI flag is given
+3. **Fallback** — a Unix timestamp, making each invocation independent
+
+The `flow.session.prefix` field accepts either a literal string or an `${args.*}` reference:
+
+```yaml
+# Literal constant
+flow:
+  session:
+    prefix: my_static_id
+  steps: [...]
+
+# Value from flow args
+flow:
+  session:
+    prefix: ${args.jira_issue_id}
+  steps: [...]
+```
+
+When `prefix` references an arg variable (e.g. `${args.jira_issue_id}`), the variable must exist in the provided args or the flow will return an error.
+
+A `--session` flag on the CLI always overrides the spec value:
+
+```bash
+# Uses "override" as prefix, ignoring whatever flow.session.prefix says
+opencode -F my-flow -s override -p "do the thing"
+```
 
 ## Output
 

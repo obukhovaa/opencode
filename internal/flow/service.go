@@ -93,8 +93,16 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 		return nil, nil, fmt.Errorf("%w: %s", ErrFlowDisabled, flowID)
 	}
 
+	if errArgs := validateArgs(args, f.Spec.Args); errArgs != nil {
+		return nil, nil, fmt.Errorf("invalid flow args: %w", errArgs)
+	}
+
 	if sessionPrefix == "" {
-		sessionPrefix = fmt.Sprintf("%d", time.Now().Unix())
+		var prefixErr error
+		sessionPrefix, prefixErr = resolveSessionPrefix(f.Spec.Session.Prefix, args)
+		if prefixErr != nil {
+			return nil, nil, fmt.Errorf("resolving session prefix: %w", prefixErr)
+		}
 	}
 	rootSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, flowID, f.Spec.Steps[0].ID)
 
@@ -593,6 +601,28 @@ func (s *service) copySessionMessages(ctx context.Context, fromSessionID, toSess
 	return nil
 }
 
+var argsVarRegex = regexp.MustCompile(`^\$\{args\.([^}]+)\}$`)
+
+// resolveSessionPrefix determines the session prefix from the flow spec, CLI flag, or timestamp.
+// If the spec prefix references an arg variable (e.g. ${args.foo}), the variable must exist in args.
+func resolveSessionPrefix(specPrefix string, args map[string]any) (string, error) {
+	if specPrefix == "" {
+		return fmt.Sprintf("%d", time.Now().Unix()), nil
+	}
+
+	matches := argsVarRegex.FindStringSubmatch(specPrefix)
+	if matches != nil {
+		key := matches[1]
+		val, ok := args[key]
+		if !ok {
+			return "", fmt.Errorf("session prefix references undefined arg %q", key)
+		}
+		return fmt.Sprintf("%v", val), nil
+	}
+
+	return specPrefix, nil
+}
+
 // TODO: consider adding default value support ${args.name:-default}
 func substituteArgs(template string, args map[string]any) string {
 	if strings.Contains(template, "${args}") {
@@ -693,6 +723,108 @@ func copyArgs(args map[string]any) map[string]any {
 	var result map[string]any
 	json.Unmarshal(data, &result)
 	return result
+}
+
+// validateArgs validates the provided args against the flow's args JSON Schema.
+// The "prompt" key is always allowed regardless of the schema definition.
+func validateArgs(args map[string]any, schema map[string]any) error {
+	if len(schema) == 0 {
+		return nil
+	}
+
+	properties, _ := schema["properties"].(map[string]any)
+	requiredList, _ := schema["required"].([]any)
+
+	// Check required fields
+	for _, r := range requiredList {
+		key, ok := r.(string)
+		if !ok {
+			continue
+		}
+		if _, exists := args[key]; !exists {
+			return fmt.Errorf("missing required argument %q", key)
+		}
+	}
+
+	// Type-check provided args against schema properties
+	if properties == nil {
+		return nil
+	}
+
+	additionalProperties := true
+	if ap, ok := schema["additionalProperties"]; ok {
+		if b, isBool := ap.(bool); isBool {
+			additionalProperties = b
+		}
+	}
+
+	for key, val := range args {
+		if key == "prompt" {
+			continue
+		}
+		propSchema, defined := properties[key]
+		if !defined {
+			if !additionalProperties {
+				return fmt.Errorf("unexpected argument %q", key)
+			}
+			continue
+		}
+		propMap, ok := propSchema.(map[string]any)
+		if !ok {
+			continue
+		}
+		expectedType, _ := propMap["type"].(string)
+		if expectedType == "" {
+			continue
+		}
+		if err := checkType(key, val, expectedType); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func checkType(key string, val any, expectedType string) error {
+	switch expectedType {
+	case "string":
+		if _, ok := val.(string); !ok {
+			return fmt.Errorf("argument %q must be a string, got %T", key, val)
+		}
+	case "number":
+		switch val.(type) {
+		case float64, float32, int, int64, json.Number:
+		default:
+			return fmt.Errorf("argument %q must be a number, got %T", key, val)
+		}
+	case "integer":
+		switch v := val.(type) {
+		case int, int64:
+		case float64:
+			if v != float64(int64(v)) {
+				return fmt.Errorf("argument %q must be an integer, got float", key)
+			}
+		case json.Number:
+			if _, err := v.Int64(); err != nil {
+				return fmt.Errorf("argument %q must be an integer, got %s", key, v)
+			}
+		default:
+			return fmt.Errorf("argument %q must be an integer, got %T", key, val)
+		}
+	case "boolean":
+		if _, ok := val.(bool); !ok {
+			return fmt.Errorf("argument %q must be a boolean, got %T", key, val)
+		}
+	case "array":
+		if _, ok := val.([]any); !ok {
+			return fmt.Errorf("argument %q must be an array, got %T", key, val)
+		}
+	case "object":
+		if _, ok := val.(map[string]any); !ok {
+			return fmt.Errorf("argument %q must be an object, got %T", key, val)
+		}
+	}
+	return nil
 }
 
 func dbFlowStateToFlowState(fs db.FlowState) *FlowState {
