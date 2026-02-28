@@ -39,6 +39,7 @@ type keyMap struct {
 }
 
 type startCompactSessionMsg struct{}
+type sessionDeletedMsg struct{ id string }
 
 const (
 	quitKey = "q"
@@ -421,6 +422,17 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case sessionDeletedMsg:
+		cmds := []tea.Cmd{util.ReportInfo("Session deleted")}
+		if a.selectedSession.ID == msg.id {
+			a.selectedSession = session.Session{}
+			a.sessionDialog.SetSelectedSession("")
+			if a.currentPage == page.ChatPage {
+				cmds = append(cmds, util.CmdHandler(chat.SessionClearedMsg{}))
+			}
+		}
+		return a, tea.Batch(cmds...)
+
 	case chat.SessionSelectedMsg:
 		a.selectedSession = msg
 		a.sessionDialog.SetSelectedSession(msg.ID)
@@ -433,12 +445,13 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// if we're in "delete" mode, delete instead of switch
 		if a.showDeleteSessionDialog {
 			a.showDeleteSessionDialog = false
+			deletedID := msg.Session.ID
 			return a, func() tea.Msg {
 				ctx := context.Background()
-				if err := a.app.Sessions.Delete(ctx, msg.Session.ID); err != nil {
+				if err := a.app.Sessions.Delete(ctx, deletedID); err != nil {
 					return util.InfoMsg{Type: util.InfoTypeError, Msg: "Delete failed: " + err.Error()}
 				}
-				return util.InfoMsg{Type: util.InfoTypeInfo, Msg: "Session deleted"}
+				return sessionDeletedMsg{id: deletedID}
 			}
 		}
 		// otherwise fall through to normal "switch session"

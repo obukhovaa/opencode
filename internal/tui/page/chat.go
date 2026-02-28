@@ -96,6 +96,9 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd != nil {
 			return p, cmd
 		}
+	case chat.SessionClearedMsg:
+		p.session = session.Session{}
+		cmds = append(cmds, p.clearSidebar())
 	case chat.SessionSelectedMsg:
 		if p.session.ID == "" {
 			cmd := p.setSidebar()
