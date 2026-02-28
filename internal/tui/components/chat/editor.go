@@ -143,7 +143,11 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dialog.CompletionSelectedMsg:
 		existingValue := m.textarea.Value()
 		modifiedValue := strings.Replace(existingValue, msg.SearchString, msg.CompletionValue, 1)
-
+		m.textarea.SetValue(modifiedValue)
+		return m, nil
+	case dialog.CompletionRemoveTextMsg:
+		existingValue := m.textarea.Value()
+		modifiedValue := strings.Replace(existingValue, msg.SearchString, "", 1)
 		m.textarea.SetValue(modifiedValue)
 		return m, nil
 	case SessionClearedMsg:

@@ -38,8 +38,10 @@ type keyMap struct {
 	SwitchAgentBack key.Binding
 }
 
-type startCompactSessionMsg struct{}
-type sessionDeletedMsg struct{ id string }
+type (
+	startCompactSessionMsg struct{}
+	sessionDeletedMsg      struct{ id string }
+)
 
 const (
 	quitKey = "q"
@@ -1031,6 +1033,10 @@ func (a appModel) View() string {
 
 func New(app *app.App) tea.Model {
 	startPage := page.ChatPage
+
+	// Build commands list before creating pages so chatPage can use it for slash completions
+	commands := buildCommands()
+
 	model := &appModel{
 		currentPage:         startPage,
 		loadedPages:         make(map[page.PageID]bool),
@@ -1045,65 +1051,84 @@ func New(app *app.App) tea.Model {
 		initDialog:          dialog.NewInitDialogCmp(),
 		themeDialog:         dialog.NewThemeDialogCmp(),
 		app:                 app,
-		commands:            []dialog.Command{},
+		commands:            commands,
 		pages: map[page.PageID]tea.Model{
-			page.ChatPage: page.NewChatPage(app),
+			page.ChatPage: page.NewChatPage(app, commands),
 			page.LogsPage: page.NewLogsPage(),
 		},
 		filepicker: dialog.NewFilepickerCmp(app),
 	}
 
-	model.RegisterCommand(dialog.Command{
-		ID:          "init",
-		Title:       "Initialize Project",
-		Description: "Create/Update the AGENTS.md memory file",
-		Handler: func(cmd dialog.Command) tea.Cmd {
-			prompt, err := dialog.CommandPrompts.ReadFile("commands/init.md")
-			if err != nil {
-				logging.Error("Failed to load init command", "error", err)
-				return util.ReportError(err)
-			}
-			return tea.Batch(
-				util.CmdHandler(chat.SendMsg{
-					Text: string(prompt),
-				}),
-			)
-		},
-	})
+	return model
+}
 
-	model.RegisterCommand(dialog.Command{
-		ID:          "review",
-		Title:       "Review code",
-		Description: "Review a given work using provided commit hash or branch)",
-		Handler: func(cmd dialog.Command) tea.Cmd {
-			prompt, err := dialog.CommandPrompts.ReadFile("commands/review.md")
-			if err != nil {
-				logging.Error("Failed to load review command", "error", err)
-				return util.ReportError(err)
-			}
-			return dialog.ParameterizedCommandHandler(string(prompt), &cmd)
+func buildCommands() []dialog.Command {
+	commands := []dialog.Command{
+		{
+			ID:          "init",
+			Title:       "Initialize Project",
+			Description: "Create/Update the AGENTS.md memory file",
+			Handler: func(cmd dialog.Command) tea.Cmd {
+				prompt, err := dialog.CommandPrompts.ReadFile("commands/init.md")
+				if err != nil {
+					logging.Error("Failed to load init command", "error", err)
+					return util.ReportError(err)
+				}
+				return tea.Batch(
+					util.CmdHandler(chat.SendMsg{
+						Text: string(prompt),
+					}),
+				)
+			},
 		},
-	})
+		{
+			ID:          "review",
+			Title:       "Review code",
+			Description: "Review a given work using provided commit hash or branch)",
+			Handler: func(cmd dialog.Command) tea.Cmd {
+				prompt, err := dialog.CommandPrompts.ReadFile("commands/review.md")
+				if err != nil {
+					logging.Error("Failed to load review command", "error", err)
+					return util.ReportError(err)
+				}
+				return dialog.ParameterizedCommandHandler(string(prompt), &cmd)
+			},
+		},
+		{
+			ID:          "compact",
+			Title:       "Compact Session",
+			Description: "Summarize the current session and create a new one with the summary",
+			Handler: func(cmd dialog.Command) tea.Cmd {
+				return func() tea.Msg {
+					return startCompactSessionMsg{}
+				}
+			},
+		},
+		{
+			ID:          "commit",
+			Title:       "Commit and Push",
+			Description: "Commit changes to git using conventional commits and push",
+			Handler: func(cmd dialog.Command) tea.Cmd {
+				prompt, err := dialog.CommandPrompts.ReadFile("commands/commit.md")
+				if err != nil {
+					logging.Error("Failed to load init command", "error", err)
+					return util.ReportError(err)
+				}
+				return tea.Batch(
+					util.CmdHandler(chat.SendMsg{
+						Text: string(prompt),
+					}),
+				)
+			},
+		},
+	}
 
-	model.RegisterCommand(dialog.Command{
-		ID:          "compact",
-		Title:       "Compact Session",
-		Description: "Summarize the current session and create a new one with the summary",
-		Handler: func(cmd dialog.Command) tea.Cmd {
-			return func() tea.Msg {
-				return startCompactSessionMsg{}
-			}
-		},
-	})
-	// Load custom commands
 	customCommands, err := dialog.LoadCustomCommands()
 	if err != nil {
 		logging.Warn("Failed to load custom commands", "error", err)
 	} else {
-		for _, cmd := range customCommands {
-			model.RegisterCommand(cmd)
-		}
+		commands = append(commands, customCommands...)
 	}
 
-	return model
+	return commands
 }

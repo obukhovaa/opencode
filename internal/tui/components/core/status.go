@@ -78,8 +78,10 @@ func (m statusCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-var helpWidget = ""
-var agentHintWidget = ""
+var (
+	helpWidget      = ""
+	agentHintWidget = ""
+)
 
 // getHelpWidget returns the help widget with current theme colors
 func getHelpWidget() string {

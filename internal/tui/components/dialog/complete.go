@@ -66,6 +66,7 @@ type CompletionProvider interface {
 }
 
 type CompletionSelectedMsg struct {
+	ProviderID      string
 	SearchString    string
 	CompletionValue string
 }
@@ -74,7 +75,15 @@ type CompletionDialogCompleteItemMsg struct {
 	Value string
 }
 
-type CompletionDialogCloseMsg struct{}
+type CompletionDialogCloseMsg struct {
+	ProviderID string
+}
+
+// CompletionRemoveTextMsg tells the editor to remove a search string from its value.
+// Used by command completions to strip the /query text without re-dispatching CompletionSelectedMsg.
+type CompletionRemoveTextMsg struct {
+	SearchString string
+}
 
 type CompletionDialog interface {
 	tea.Model
@@ -126,6 +135,7 @@ func (c *completionDialogCmp) complete(item CompletionItemI) tea.Cmd {
 
 	return tea.Batch(
 		util.CmdHandler(CompletionSelectedMsg{
+			ProviderID:      c.completionProvider.GetId(),
 			SearchString:    value,
 			CompletionValue: item.GetValue(),
 		}),
@@ -138,7 +148,7 @@ func (c *completionDialogCmp) close() tea.Cmd {
 	c.pseudoSearchTextArea.Reset()
 	c.pseudoSearchTextArea.Blur()
 
-	return util.CmdHandler(CompletionDialogCloseMsg{})
+	return util.CmdHandler(CompletionDialogCloseMsg{ProviderID: c.completionProvider.GetId()})
 }
 
 func (c *completionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

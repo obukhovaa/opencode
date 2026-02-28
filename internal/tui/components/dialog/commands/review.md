@@ -81,9 +81,8 @@ Use best judgement when processing input.
 
 Use these to inform your review:
 
-- **Explore agent** - Find how existing code handles similar problems. Check patterns, conventions, and prior art before claiming something doesn't fit.
-- **Exa Code Context** - Verify correct usage of libraries/APIs before flagging something as wrong.
-- **Exa Web Search** - Research best practices if you're unsure about a pattern.
+- **Explorer agent** - Find how existing code handles similar problems. Check patterns, conventions, and prior art before claiming something doesn't fit.
+- **Sourcegraph** - Verify correct usage of libraries/APIs before flagging something as wrong.
 
 If you're uncertain about something and can't verify it with these tools, say "I'm not sure about X" rather than flagging it as a definite issue.
 

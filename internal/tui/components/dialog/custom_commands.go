@@ -9,7 +9,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/tui/util"
+	"gopkg.in/yaml.v3"
 )
 
 // Command prefix constants
@@ -21,7 +23,47 @@ const (
 // namedArgPattern is a regex pattern to find named arguments in the format $NAME
 var namedArgPattern = regexp.MustCompile(`\$([A-Z][A-Z0-9_]*)`)
 
-// LoadCustomCommands loads custom commands from both XDG_CONFIG_HOME and project data directory
+// commandFrontmatter represents the YAML frontmatter of a custom command
+type commandFrontmatter struct {
+	Title       string `yaml:"title"`
+	Description string `yaml:"description"`
+}
+
+// parseCommandMarkdown parses a markdown file with optional YAML frontmatter.
+// Returns the frontmatter fields and the body content after the closing ---.
+func parseCommandMarkdown(raw []byte) (commandFrontmatter, string) {
+	content := string(raw)
+
+	if !strings.HasPrefix(content, "---\n") {
+		return commandFrontmatter{}, content
+	}
+
+	rest := content[4:]
+	end := strings.Index(rest, "\n---\n")
+	if end == -1 {
+		// Check for --- at end of file with no trailing newline
+		if strings.HasSuffix(rest, "\n---") {
+			end = len(rest) - 3
+		} else {
+			return commandFrontmatter{}, content
+		}
+	}
+
+	var fm commandFrontmatter
+	if err := yaml.Unmarshal([]byte(rest[:end]), &fm); err != nil {
+		logging.Warn("Failed to parse command frontmatter", "error", err)
+		return commandFrontmatter{}, content
+	}
+
+	body := ""
+	if end+4 < len(rest) {
+		body = strings.TrimLeft(rest[end+4:], "\n")
+	}
+
+	return fm, body
+}
+
+// LoadCustomCommands loads custom commands from all discovery locations
 func LoadCustomCommands() ([]Command, error) {
 	cfg := config.Get()
 	if cfg == nil {
@@ -30,48 +72,47 @@ func LoadCustomCommands() ([]Command, error) {
 
 	var commands []Command
 
-	// Load user commands from XDG_CONFIG_HOME/opencode/commands
+	home, homeErr := os.UserHomeDir()
 	xdgConfigHome := os.Getenv("XDG_CONFIG_HOME")
-	if xdgConfigHome == "" {
-		// Default to ~/.config if XDG_CONFIG_HOME is not set
-		home, err := os.UserHomeDir()
-		if err == nil {
-			xdgConfigHome = filepath.Join(home, ".config")
-		}
+	if xdgConfigHome == "" && homeErr == nil {
+		xdgConfigHome = filepath.Join(home, ".config")
 	}
 
+	// User commands (global), lowest priority first
+	userDirs := []string{}
 	if xdgConfigHome != "" {
-		userCommandsDir := filepath.Join(xdgConfigHome, "opencode", "commands")
-		userCommands, err := loadCommandsFromDir(userCommandsDir, UserCommandPrefix)
+		userDirs = append(userDirs, filepath.Join(xdgConfigHome, "opencode", "commands"))
+	}
+	if homeErr == nil {
+		userDirs = append(userDirs,
+			filepath.Join(home, ".opencode", "commands"),
+			filepath.Join(home, ".agents", "commands"),
+		)
+	}
+
+	for _, dir := range userDirs {
+		cmds, err := loadCommandsFromDir(dir, UserCommandPrefix)
 		if err != nil {
-			// Log error but continue - we'll still try to load other commands
-			fmt.Printf("Warning: failed to load user commands from XDG_CONFIG_HOME: %v\n", err)
+			logging.Warn("Failed to load user commands", "dir", dir, "error", err)
 		} else {
-			commands = append(commands, userCommands...)
+			commands = append(commands, cmds...)
 		}
 	}
 
-	// Load commands from $HOME/.opencode/commands
-	home, err := os.UserHomeDir()
-	if err == nil {
-		homeCommandsDir := filepath.Join(home, ".opencode", "commands")
-		homeCommands, err := loadCommandsFromDir(homeCommandsDir, UserCommandPrefix)
-		if err != nil {
-			// Log error but continue - we'll still try to load other commands
-			fmt.Printf("Warning: failed to load home commands: %v\n", err)
-		} else {
-			commands = append(commands, homeCommands...)
-		}
+	// Project commands
+	workingDir := cfg.WorkingDir
+	projectDirs := []string{
+		filepath.Join(workingDir, ".opencode", "commands"),
+		filepath.Join(workingDir, ".agents", "commands"),
 	}
 
-	// Load project commands from data directory
-	projectCommandsDir := filepath.Join(cfg.Data.Directory, "commands")
-	projectCommands, err := loadCommandsFromDir(projectCommandsDir, ProjectCommandPrefix)
-	if err != nil {
-		// Log error but return what we have so far
-		fmt.Printf("Warning: failed to load project commands: %v\n", err)
-	} else {
-		commands = append(commands, projectCommands...)
+	for _, dir := range projectDirs {
+		cmds, err := loadCommandsFromDir(dir, ProjectCommandPrefix)
+		if err != nil {
+			logging.Warn("Failed to load project commands", "dir", dir, "error", err)
+		} else {
+			commands = append(commands, cmds...)
+		}
 	}
 
 	return commands, nil
@@ -79,63 +120,62 @@ func LoadCustomCommands() ([]Command, error) {
 
 // loadCommandsFromDir loads commands from a specific directory with the given prefix
 func loadCommandsFromDir(commandsDir string, prefix string) ([]Command, error) {
-	// Check if the commands directory exists
 	if _, err := os.Stat(commandsDir); os.IsNotExist(err) {
-		// Create the commands directory if it doesn't exist
-		if err := os.MkdirAll(commandsDir, 0o755); err != nil {
-			return nil, fmt.Errorf("failed to create commands directory %s: %w", commandsDir, err)
-		}
-		// Return empty list since we just created the directory
-		return []Command{}, nil
+		return nil, nil
 	}
 
 	var commands []Command
 
-	// Walk through the commands directory and load all .md files
 	err := filepath.Walk(commandsDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		// Skip directories
 		if info.IsDir() {
 			return nil
 		}
 
-		// Only process markdown files
 		if !strings.HasSuffix(strings.ToLower(info.Name()), ".md") {
 			return nil
 		}
 
-		// Read the file content
-		content, err := os.ReadFile(path)
+		raw, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("failed to read command file %s: %w", path, err)
 		}
 
-		// Get the command ID from the file name without the .md extension
+		fm, body := parseCommandMarkdown(raw)
+
 		commandID := strings.TrimSuffix(info.Name(), filepath.Ext(info.Name()))
 
-		// Get relative path from commands directory
 		relPath, err := filepath.Rel(commandsDir, path)
 		if err != nil {
 			return fmt.Errorf("failed to get relative path for %s: %w", path, err)
 		}
 
-		// Create the command ID from the relative path
-		// Replace directory separators with colons
 		commandIDPath := strings.ReplaceAll(filepath.Dir(relPath), string(filepath.Separator), ":")
 		if commandIDPath != "." {
 			commandID = commandIDPath + ":" + commandID
 		}
 
-		// Create a command
+		fullID := prefix + commandID
+
+		title := fm.Title
+		if title == "" {
+			title = fullID
+		}
+
+		description := fm.Description
+		if description == "" {
+			description = fmt.Sprintf("Custom command from %s", relPath)
+		}
+
+		commandContent := body
 		command := Command{
-			ID:          prefix + commandID,
-			Title:       prefix + commandID,
-			Description: fmt.Sprintf("Custom command from %s", relPath),
+			ID:          fullID,
+			Title:       title,
+			Description: description,
 			Handler: func(cmd Command) tea.Cmd {
-				commandContent := string(content)
 				return ParameterizedCommandHandler(commandContent, &cmd)
 			},
 		}

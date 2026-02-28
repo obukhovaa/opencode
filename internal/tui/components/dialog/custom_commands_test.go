@@ -104,3 +104,78 @@ func TestRegexPattern(t *testing.T) {
 		}
 	}
 }
+
+func TestParseCommandMarkdown(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantTitle string
+		wantDesc  string
+		wantBody  string
+	}{
+		{
+			name:      "no frontmatter",
+			input:     "Just a plain command body",
+			wantTitle: "",
+			wantDesc:  "",
+			wantBody:  "Just a plain command body",
+		},
+		{
+			name:      "with frontmatter",
+			input:     "---\ntitle: My Command\ndescription: Does cool stuff\n---\nThe body content",
+			wantTitle: "My Command",
+			wantDesc:  "Does cool stuff",
+			wantBody:  "The body content",
+		},
+		{
+			name:      "frontmatter title only",
+			input:     "---\ntitle: Title Only\n---\nBody here",
+			wantTitle: "Title Only",
+			wantDesc:  "",
+			wantBody:  "Body here",
+		},
+		{
+			name:      "frontmatter description only",
+			input:     "---\ndescription: A description\n---\nBody here",
+			wantTitle: "",
+			wantDesc:  "A description",
+			wantBody:  "Body here",
+		},
+		{
+			name:      "empty body after frontmatter",
+			input:     "---\ntitle: No Body\n---\n",
+			wantTitle: "No Body",
+			wantDesc:  "",
+			wantBody:  "",
+		},
+		{
+			name:      "incomplete frontmatter treated as body",
+			input:     "---\ntitle: Broken\nno closing delimiter",
+			wantTitle: "",
+			wantDesc:  "",
+			wantBody:  "---\ntitle: Broken\nno closing delimiter",
+		},
+		{
+			name:      "body with newlines after frontmatter",
+			input:     "---\ntitle: Test\n---\n\n\nBody after blank lines",
+			wantTitle: "Test",
+			wantDesc:  "",
+			wantBody:  "Body after blank lines",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fm, body := parseCommandMarkdown([]byte(tt.input))
+			if fm.Title != tt.wantTitle {
+				t.Errorf("title = %q, want %q", fm.Title, tt.wantTitle)
+			}
+			if fm.Description != tt.wantDesc {
+				t.Errorf("description = %q, want %q", fm.Description, tt.wantDesc)
+			}
+			if body != tt.wantBody {
+				t.Errorf("body = %q, want %q", body, tt.wantBody)
+			}
+		})
+	}
+}
