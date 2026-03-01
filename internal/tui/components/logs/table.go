@@ -130,6 +130,10 @@ func NewLogsTable() TableComponent {
 	tableModel := table.New(
 		table.WithColumns(columns),
 	)
+	tableModel.KeyMap.PageUp.SetEnabled(false)
+	tableModel.KeyMap.PageDown.SetEnabled(false)
+	tableModel.KeyMap.HalfPageUp.SetEnabled(false)
+	tableModel.KeyMap.HalfPageDown.SetEnabled(false)
 	tableModel.Focus()
 	return &tableCmp{
 		table: tableModel,

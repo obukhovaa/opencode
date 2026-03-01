@@ -45,7 +45,9 @@ func (i *detailCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	return i, nil
+	var cmd tea.Cmd
+	i.viewport, cmd = i.viewport.Update(msg)
+	return i, cmd
 }
 
 func (i *detailCmp) updateContent() {

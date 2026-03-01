@@ -618,7 +618,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, returnKey) || key.Matches(msg):
 			if msg.String() == quitKey {
-				if a.currentPage == page.LogsPage {
+				if a.currentPage == page.LogsPage || a.currentPage == page.AgentsPage {
 					return a, a.moveToPage(page.ChatPage)
 				}
 			} else if !a.filepicker.IsCWDFocused() {
@@ -643,7 +643,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.filepicker.ToggleFilepicker(a.showFilepicker)
 					return a, nil
 				}
-				if a.currentPage == page.LogsPage {
+				if a.currentPage == page.LogsPage || a.currentPage == page.AgentsPage {
 					return a, a.moveToPage(page.ChatPage)
 				}
 			}
@@ -1053,8 +1053,9 @@ func New(app *app.App) tea.Model {
 		app:                 app,
 		commands:            commands,
 		pages: map[page.PageID]tea.Model{
-			page.ChatPage: page.NewChatPage(app, commands),
-			page.LogsPage: page.NewLogsPage(),
+			page.ChatPage:   page.NewChatPage(app, commands),
+			page.LogsPage:   page.NewLogsPage(),
+			page.AgentsPage: page.NewAgentsPage(app.Registry),
 		},
 		filepicker: dialog.NewFilepickerCmp(app),
 	}
@@ -1064,6 +1065,14 @@ func New(app *app.App) tea.Model {
 
 func buildCommands() []dialog.Command {
 	commands := []dialog.Command{
+		{
+			ID:          "agents",
+			Title:       "List Agents",
+			Description: "List all available agents and their configuration",
+			Handler: func(cmd dialog.Command) tea.Cmd {
+				return util.CmdHandler(page.PageChangeMsg{ID: page.AgentsPage})
+			},
+		},
 		{
 			ID:          "init",
 			Title:       "Initialize Project",

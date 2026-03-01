@@ -82,13 +82,13 @@ Agents can be configured in `.opencode.json`:
 - `permission`: Agent-specific permission overrides (supports granular glob patterns per tool)
 - `tools`: Enable/disable specific tools (e.g., `{"skill": false, "bash": false}`)
 
-**Built-in agents:**
-- `coder`: Main coding agent, mode=agent (uses all tools)
-- `hivemind`: Supervisory agent, mode=agent (coordinates subagents via task tool)
+Here's the list of **built-in agents** available by default:
+- `coder`: Main coding agent, can spawn subagents (all tools)
+- `hivemind`: Supervisory agent, can spawn subagents (coordinates subagents to solve complex problems, read-only tools)
 - `explorer`: Codebase exploration subagent (read-only tools)
-- `workhorse`: Autonomous coding subagent (all tools, invoked by coder/hivemind)
-- `summarizer`: Session summarization subagent
-- `descriptor`: Session title generation subagent
+- `workhorse`: Autonomous coding subagent (all tools)
+- `summarizer`: Summarization subagent (no tools)
+- `descriptor`: Short description generation subagent (no tools)
 
 ### Custom Agents via Markdown
 

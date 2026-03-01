@@ -76,6 +76,7 @@ Organize commands in subdirectories — the path becomes part of the command ID 
 
 | Command | Slash | Description |
 |---------|-------|-------------|
+| List Agents | `/agents` | List all available agents and their configuration |
 | Initialize Project | `/init` | Creates or updates the `AGENTS.md` memory file |
 | Compact Session | `/compact` | Manually triggers session summarization |
 | Review Code | `/review` | Reviews code using a provided commit hash or branch |
