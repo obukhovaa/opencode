@@ -250,17 +250,22 @@ to assist developers in writing, debugging, and understanding code directly from
 
 		// Cleanup function for when the program exits
 		cleanup := func() {
-			// Shutdown the app
-			app.Shutdown()
-
-			// Cancel subscriptions first
+			// Cancel TUI message handler and subscriptions immediately
+			tuiCancel()
 			cancelSubs()
 
-			// Then cancel TUI message handler
-			tuiCancel()
-
-			// Wait for TUI message handler to finish
-			tuiWg.Wait()
+			// Shutdown the app (LSP servers etc.) concurrently with waiting for TUI handler
+			var cleanupWg sync.WaitGroup
+			cleanupWg.Add(2)
+			go func() {
+				defer cleanupWg.Done()
+				app.Shutdown()
+			}()
+			go func() {
+				defer cleanupWg.Done()
+				tuiWg.Wait()
+			}()
+			cleanupWg.Wait()
 
 			logging.Info("All goroutines cleaned up")
 		}

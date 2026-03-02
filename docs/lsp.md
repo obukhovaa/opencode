@@ -29,7 +29,7 @@ Built-in servers are auto-detected based on file extensions in your project. If 
 | haskell-language-server | `.hs` `.lhs` | — | Pre-installed |
 | gleam | `.gleam` | — | `gleam` on PATH |
 | sourcekit-lsp | `.swift` | — | Xcode / Swift |
-| kotlin-language-server | `.kt` `.kts` | — | Pre-installed |
+| kotlin-lsp | `.kt` `.kts` | — | Pre-installed |
 | clojure-lsp | `.clj` `.cljs` `.cljc` `.edn` | — | Pre-installed |
 | elixir-ls | `.ex` `.exs` | — | `elixir` on PATH |
 | jdtls | `.java` | — | Java SDK 21+ |

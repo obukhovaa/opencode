@@ -158,7 +158,7 @@ Servers to support, grouped by install strategy:
 | haskell-language-server | `.hs`, `.lhs` | `haskell-language-server-wrapper` |
 | gleam | `.gleam` | `gleam lsp` |
 | sourcekit-lsp | `.swift` | `sourcekit-lsp` |
-| kotlin-language-server | `.kt`, `.kts` | `kotlin-language-server` |
+| kotlin-lsp | `.kt`, `.kts` | `kotlin-lsp` |
 | clojure-lsp | `.clj`, `.cljs`, `.cljc`, `.edn` | `clojure-lsp` |
 | elixir-ls | `.ex`, `.exs` | `elixir-ls` |
 | jdtls | `.java` | `jdtls` |

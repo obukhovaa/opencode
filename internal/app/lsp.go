@@ -76,13 +76,21 @@ func (s *lspService) Shutdown(ctx context.Context) {
 	maps.Copy(clients, s.clients)
 	s.mu.RUnlock()
 
+	var wg sync.WaitGroup
 	for name, client := range clients {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := client.Shutdown(shutdownCtx); err != nil {
-			logging.Error("Failed to shutdown LSP client", "name", name, "error", err)
-		}
-		cancel()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := client.Shutdown(shutdownCtx); err != nil {
+				logging.Error("Failed to shutdown LSP client", "name", name, "error", err)
+			}
+			_ = client.Exit(shutdownCtx)
+			client.Close()
+		}()
 	}
+	wg.Wait()
 }
 
 func (s *lspService) ForceShutdown() {

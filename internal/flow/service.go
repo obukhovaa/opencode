@@ -268,7 +268,8 @@ func (s *service) runStep(
 	s.permissions.AutoApproveSession(sess.ID)
 
 	prompt := substituteArgs(step.Prompt, args)
-	if prevState != nil && prevState.Output != "" {
+	// NOTE: Structured output referenced via template variables if needed
+	if prevState != nil && prevState.Output != "" && !prevState.IsStructOutput {
 		prompt = fmt.Sprintf("Previous step (%s) output:\n%s\n\n%s", prevState.StepID, prevState.Output, prompt)
 	}
 
