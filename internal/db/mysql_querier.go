@@ -554,6 +554,7 @@ func (q *MySQLQuerier) ListFlowStatesByFlowID(ctx context.Context, flowID string
 func (q *MySQLQuerier) UpdateFlowState(ctx context.Context, arg UpdateFlowStateParams) (FlowState, error) {
 	_, err := q.queries.UpdateFlowState(ctx, mysqldb.UpdateFlowStateParams{
 		Status:         arg.Status,
+		Args:           arg.Args,
 		Output:         arg.Output,
 		IsStructOutput: arg.IsStructOutput,
 		SessionID:      arg.SessionID,

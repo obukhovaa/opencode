@@ -1,6 +1,7 @@
 package flow
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -167,11 +168,18 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 	for _, w := range initialWork {
 		stepSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, flowID, w.step.ID)
 		argsJSON, _ := json.Marshal(w.args)
-		if _, getErr := s.querier.GetFlowState(ctx, stepSessionID); getErr == nil {
+		if existingFS, getErr := s.querier.GetFlowState(ctx, stepSessionID); getErr == nil {
+			output := sql.NullString{}
+			isStructOutput := false
+			if existingFS.Status == string(FlowStatusPostponed) {
+				output = existingFS.Output
+				isStructOutput = existingFS.IsStructOutput
+			}
 			if _, err := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
 				Status:         string(FlowStatusRunning),
-				Output:         sql.NullString{},
-				IsStructOutput: false,
+				Args:           sql.NullString{String: string(argsJSON), Valid: true},
+				Output:         output,
+				IsStructOutput: isStructOutput,
 				SessionID:      stepSessionID,
 			}); err != nil {
 				logging.Warn("Failed to update initial flow state", "session_id", stepSessionID, "error", err)
@@ -270,15 +278,28 @@ func (s *service) runStep(
 	}
 
 	argsJSON, _ := json.Marshal(args)
-	if _, getErr := s.querier.GetFlowState(ctx, sessionID); getErr == nil {
-		_, err = s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+	existingFS, getErr := s.querier.GetFlowState(ctx, sessionID)
+	var updatedAt int64
+	if getErr == nil {
+		output := sql.NullString{}
+		isStructOutput := false
+		if status == FlowStatusPostponed {
+			output = existingFS.Output
+			isStructOutput = existingFS.IsStructOutput
+		}
+		if state, stateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
 			Status:         string(status),
-			Output:         sql.NullString{},
-			IsStructOutput: false,
+			Args:           sql.NullString{String: string(argsJSON), Valid: true},
+			Output:         output,
+			IsStructOutput: isStructOutput,
 			SessionID:      sessionID,
-		})
+		}); stateErr == nil {
+			updatedAt = state.UpdatedAt
+		} else {
+			err = stateErr
+		}
 	} else {
-		_, err = s.querier.CreateFlowState(ctx, db.CreateFlowStateParams{
+		if state, stateErr := s.querier.CreateFlowState(ctx, db.CreateFlowStateParams{
 			SessionID:      sessionID,
 			RootSessionID:  rootSessionID,
 			FlowID:         f.ID,
@@ -286,7 +307,11 @@ func (s *service) runStep(
 			Status:         string(status),
 			Args:           sql.NullString{String: string(argsJSON), Valid: true},
 			IsStructOutput: false,
-		})
+		}); stateErr == nil {
+			updatedAt = state.CreatedAt
+		} else {
+			err = stateErr
+		}
 	}
 	if err != nil {
 		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, fmt.Errorf("persisting flow state: %w", err), wg, agentEvents, flowStates, nextSteps, f)
@@ -300,6 +325,11 @@ func (s *service) runStep(
 		StepID:        step.ID,
 		Status:        status,
 		Args:          args,
+		UpdatedAt:     updatedAt,
+	}
+	if status == FlowStatusPostponed && getErr == nil {
+		runningState.Output = existingFS.Output.String
+		runningState.IsStructOutput = existingFS.IsStructOutput
 	}
 	flowStates <- runningState
 	s.Publish(pubsub.UpdatedEvent, *runningState)
@@ -351,13 +381,17 @@ func (s *service) runStep(
 doneRetry:
 
 	if lastErr != nil {
-		if _, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+		if state, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
 			Status:         string(FlowStatusFailed),
+			Args:           sql.NullString{String: string(argsJSON), Valid: true},
 			Output:         sql.NullString{String: lastErr.Error(), Valid: true},
 			IsStructOutput: false,
 			SessionID:      sessionID,
 		}); updateErr != nil {
 			logging.Warn("Failed to persist step failure state", "session_id", sessionID, "error", updateErr)
+			updatedAt = time.Now().Unix()
+		} else {
+			updatedAt = state.UpdatedAt
 		}
 
 		failedState := &FlowState{
@@ -368,6 +402,7 @@ doneRetry:
 			Status:        FlowStatusFailed,
 			Args:          args,
 			Output:        lastErr.Error(),
+			UpdatedAt:     updatedAt,
 		}
 		flowStates <- failedState
 		s.Publish(pubsub.UpdatedEvent, *failedState)
@@ -387,7 +422,11 @@ doneRetry:
 	if result.StructOutput != nil {
 		output = result.StructOutput.Content
 		isStructOutput = true
-
+		// Minify
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, []byte(output)); err == nil {
+			output = buf.String()
+		}
 		var structData map[string]any
 		if err := json.Unmarshal([]byte(output), &structData); err == nil {
 			maps.Copy(args, structData)
@@ -396,13 +435,17 @@ doneRetry:
 		output = result.Message.Content().Text
 	}
 
-	if _, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+	if state, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
 		Status:         string(FlowStatusCompleted),
+		Args:           sql.NullString{String: string(argsJSON), Valid: true},
 		Output:         sql.NullString{String: output, Valid: output != ""},
 		IsStructOutput: isStructOutput,
 		SessionID:      sessionID,
 	}); updateErr != nil {
 		logging.Warn("Failed to persist step completion state", "session_id", sessionID, "error", updateErr)
+		updatedAt = time.Now().Unix()
+	} else {
+		updatedAt = state.UpdatedAt
 	}
 
 	completedState := &FlowState{
@@ -414,6 +457,7 @@ doneRetry:
 		Args:           args,
 		Output:         output,
 		IsStructOutput: isStructOutput,
+		UpdatedAt:      updatedAt,
 	}
 	flowStates <- completedState
 	s.Publish(pubsub.UpdatedEvent, *completedState)
@@ -460,13 +504,19 @@ func (s *service) handleStepError(
 ) {
 	logging.Error("Flow step failed", "step", step.ID, "error", err)
 
-	if _, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+	argsJSON, _ := json.Marshal(args)
+	var updatedAt int64
+	if state, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
 		Status:         string(FlowStatusFailed),
+		Args:           sql.NullString{String: string(argsJSON), Valid: true},
 		Output:         sql.NullString{String: err.Error(), Valid: true},
 		IsStructOutput: false,
 		SessionID:      sessionID,
 	}); updateErr != nil {
 		logging.Warn("Failed to persist step error state", "session_id", sessionID, "error", updateErr)
+		updatedAt = time.Now().Unix()
+	} else {
+		updatedAt = state.UpdatedAt
 	}
 
 	failedState := &FlowState{
@@ -477,6 +527,7 @@ func (s *service) handleStepError(
 		Status:        FlowStatusFailed,
 		Args:          args,
 		Output:        err.Error(),
+		UpdatedAt:     updatedAt,
 	}
 	flowStates <- failedState
 	s.Publish(pubsub.UpdatedEvent, *failedState)
@@ -519,12 +570,16 @@ func (s *service) collectResumableSteps(
 		} else {
 			logging.Info("Running step not yet attempted", "step", step.ID)
 		}
-		return []stepWork{{step: step, args: copyArgs(args), prevStep: prevState}}
+		stepArgs := args
+		if existing != nil {
+			stepArgs = existing.Args
+		}
+		return []stepWork{{step: step, args: copyArgs(stepArgs), prevStep: prevState}}
 	}
 
 	if existing.Status == FlowStatusPostponed {
 		logging.Info("Resuming postponed step", "step", step.ID)
-		return []stepWork{{step: step, args: copyArgs(args), prevStep: existing}}
+		return []stepWork{{step: step, args: copyArgs(existing.Args), prevStep: existing}}
 	}
 
 	logging.Debug("Skipping completed step during resume", "step", step.ID)

@@ -35,6 +35,7 @@ SELECT * FROM flow_states WHERE flow_id = ? ORDER BY created_at ASC;
 -- name: UpdateFlowState :execresult
 UPDATE flow_states
 SET status = ?,
+    args = ?,
     output = ?,
     is_struct_output = ?
 WHERE session_id = ?;

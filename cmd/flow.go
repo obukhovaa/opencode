@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/format"
@@ -100,7 +101,11 @@ func runNonInteractive(ctx context.Context, a *app.App, prompt string, outputFor
 func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sessionID string, fresh bool, argPairs []string, argsFile string, quiet bool) error {
 	var spinner *format.Spinner
 	if !quiet {
-		spinner = format.NewSpinner("Running flow...")
+		title := fmt.Sprintf("Running %s flow...", flowID)
+		if fresh {
+			title = fmt.Sprintf("Running %s flow from scratch...", flowID)
+		}
+		spinner = format.NewSpinner(title)
 		spinner.Start()
 		defer spinner.Stop()
 	}
@@ -135,13 +140,16 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 		return fmt.Errorf("flow execution failed: %w", err)
 	}
 
+	startedAt := time.Now()
 	type stepResult struct {
-		StepID         string `json:"step_id"`
-		SessionID      string `json:"session_id"`
-		Status         string `json:"status"`
-		Output         string `json:"output,omitempty"`
-		IsStructOutput bool   `json:"is_struct_output,omitempty"`
-		FinishedAt     int64  `json:"finished_at,omitempty"`
+		StepID         string  `json:"step_id"`
+		SessionID      string  `json:"session_id"`
+		Status         string  `json:"status"`
+		Output         any     `json:"output,omitempty"`
+		IsStructOutput bool    `json:"is_struct_output,omitempty"`
+		FinishedAt     int64   `json:"finished_at,omitempty"`
+		ContextSize    int64   `json:"context_size,omitempty"`
+		Cost           float64 `json:"cost,omitempty"`
 	}
 
 	var orderedSteps []stepResult
@@ -160,11 +168,22 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 		if rootSessionID == "" {
 			rootSessionID = state.RootSessionID
 		}
+		var output any
+		if state.IsStructOutput && state.Output != "" {
+			var parsed map[string]any
+			if jsonErr := json.Unmarshal([]byte(state.Output), &parsed); jsonErr == nil {
+				output = parsed
+			} else {
+				output = state.Output
+			}
+		} else if state.Output != "" {
+			output = state.Output
+		}
 		sr := stepResult{
 			StepID:         state.StepID,
 			SessionID:      state.SessionID,
 			Status:         string(state.Status),
-			Output:         state.Output,
+			Output:         output,
 			IsStructOutput: state.IsStructOutput,
 			FinishedAt:     state.UpdatedAt,
 		}
@@ -176,30 +195,30 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 		}
 	}
 	wg.Wait()
+	finishedAt := time.Now()
 
 	if spinner != nil {
 		spinner.Stop()
 	}
 
-	var totalInputTokens int64
-	var totalOutputTokens int64
 	var totalCost float64
 	if rootSessionID != "" {
-		stepSessionIDs := make(map[string]bool, len(orderedSteps))
-		for _, sr := range orderedSteps {
-			stepSessionIDs[sr.SessionID] = true
+		stepsBySessionID := make(map[string]*stepResult, len(orderedSteps))
+		for i := range orderedSteps {
+			stepsBySessionID[orderedSteps[i].SessionID] = &orderedSteps[i]
 		}
 		children, listErr := a.Sessions.ListChildren(ctx, rootSessionID)
 		if listErr != nil {
 			logging.Warn("Failed to list child sessions for metrics", "root_session_id", rootSessionID, "error", listErr)
 		} else {
 			for _, sess := range children {
-				if !stepSessionIDs[sess.ID] {
+				if step, ok := stepsBySessionID[sess.ID]; !ok {
 					continue
+				} else {
+					step.ContextSize = sess.PromptTokens + sess.CompletionTokens
+					step.Cost = sess.Cost
+					totalCost += sess.Cost
 				}
-				totalInputTokens += sess.PromptTokens
-				totalOutputTokens += sess.CompletionTokens
-				totalCost += sess.Cost
 			}
 		}
 	}
@@ -208,9 +227,8 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 		"flow_id": flowID,
 		"steps":   orderedSteps,
 		"metrics": map[string]any{
-			"input_tokens":  totalInputTokens,
-			"output_tokens": totalOutputTokens,
-			"cost":          totalCost,
+			"cost":  totalCost,
+			"gauge": finishedAt.Sub(startedAt).Milliseconds(),
 		},
 	}
 

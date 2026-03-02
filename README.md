@@ -336,7 +336,7 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | `GEMINI_API_KEY` | Google Gemini models |
 | `VERTEXAI_PROJECT` | Google Cloud VertexAI |
 | `VERTEXAI_LOCATION` | Google Cloud VertexAI |
-| `VERTEXAI_LOCATION_COUNT` | VertexAI token count endpoint |
+| `VERTEXAI_LOCATION_COUNT` | VertexAI token count endpoint (global doesn't support) |
 | `AWS_ACCESS_KEY_ID` | AWS Bedrock |
 | `AWS_SECRET_ACCESS_KEY` | AWS Bedrock |
 | `AWS_REGION` | AWS Bedrock |

@@ -184,6 +184,7 @@ func (q *Queries) ListFlowStatesByRootSession(ctx context.Context, rootSessionID
 const updateFlowState = `-- name: UpdateFlowState :one
 UPDATE flow_states
 SET status = ?,
+    args = ?,
     output = ?,
     is_struct_output = ?,
     updated_at = strftime('%s', 'now')
@@ -193,6 +194,7 @@ RETURNING session_id, root_session_id, flow_id, step_id, status, args, output, i
 
 type UpdateFlowStateParams struct {
 	Status         string         `json:"status"`
+	Args           sql.NullString `json:"args"`
 	Output         sql.NullString `json:"output"`
 	IsStructOutput bool           `json:"is_struct_output"`
 	SessionID      string         `json:"session_id"`
@@ -201,6 +203,7 @@ type UpdateFlowStateParams struct {
 func (q *Queries) UpdateFlowState(ctx context.Context, arg UpdateFlowStateParams) (FlowState, error) {
 	row := q.queryRow(ctx, q.updateFlowStateStmt, updateFlowState,
 		arg.Status,
+		arg.Args,
 		arg.Output,
 		arg.IsStructOutput,
 		arg.SessionID,

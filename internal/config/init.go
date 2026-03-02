@@ -49,6 +49,11 @@ func MarkProjectInitialized() error {
 	// Create the flag file path
 	flagFilePath := filepath.Join(cfg.Data.Directory, InitFlagFilename)
 
+	// Ensure the directory exists
+	if err := os.MkdirAll(filepath.Dir(flagFilePath), 0o755); err != nil {
+		return fmt.Errorf("failed to create directory for init flag file: %w", err)
+	}
+
 	// Create an empty file to mark the project as initialized
 	file, err := os.Create(flagFilePath)
 	if err != nil {
