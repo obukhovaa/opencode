@@ -83,7 +83,7 @@ to assist developers in writing, debugging, and understanding code directly from
 		timeoutStr, _ := cmd.Flags().GetString("timeout")
 
 		if deleteSession && sessionID == "" && flowID == "" {
-			return fmt.Errorf("--delete requires --session/-s to be specified")
+			return fmt.Errorf("--delete requires --session/-s or --flow/-F to be specified")
 		}
 
 		// Parse format option (may include schema)
