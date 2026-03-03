@@ -82,7 +82,7 @@ to assist developers in writing, debugging, and understanding code directly from
 		argsFile, _ := cmd.Flags().GetString("args-file")
 		timeoutStr, _ := cmd.Flags().GetString("timeout")
 
-		if deleteSession && sessionID == "" {
+		if deleteSession && sessionID == "" && flowID == "" {
 			return fmt.Errorf("--delete requires --session/-s to be specified")
 		}
 
