@@ -177,9 +177,12 @@ func (p *baseProvider[C]) cleanMessages(messages []message.Message) (cleaned []m
 }
 
 // sanitizeToolPairs ensures that tool_use/tool_result message pairs are consistent.
-// It handles two cases:
+// With seq-based ordering, messages are guaranteed to be in correct order.
+// This function handles crash recovery and proxy ID rewrite:
 // 1. An Assistant message with tool calls not followed by a Tool message → synthesize error tool results
-// 2. A Tool message with tool_result IDs that don't match the preceding Assistant's tool_use IDs → fix the IDs
+// 2. Incomplete tool results (some tool_use IDs missing) → synthesize missing ones
+// 3. Mismatched tool_result IDs (proxy rewrite) → fix by positional match
+// 4. Orphaned tool result messages → skip
 func (p *baseProvider[C]) sanitizeToolPairs(messages []message.Message) []message.Message {
 	var result []message.Message
 	for i := 0; i < len(messages); i++ {
@@ -189,19 +192,16 @@ func (p *baseProvider[C]) sanitizeToolPairs(messages []message.Message) []messag
 			result = append(result, msg)
 			toolCalls := msg.ToolCalls()
 
-			// Check if the next message is a Tool message
 			if i+1 < len(messages) && messages[i+1].Role == message.Tool {
 				i++
 				toolMsg := messages[i]
 				toolResults := toolMsg.ToolResults()
 
-				// Build a set of valid tool_use IDs from the assistant message
 				validIDs := make(map[string]bool, len(toolCalls))
 				for _, tc := range toolCalls {
 					validIDs[tc.ID] = true
 				}
 
-				// Check if all tool_result IDs are valid AND all tool_use IDs have results
 				resultIDs := make(map[string]bool, len(toolResults))
 				allValid := true
 				for _, tr := range toolResults {
@@ -212,7 +212,6 @@ func (p *baseProvider[C]) sanitizeToolPairs(messages []message.Message) []messag
 					resultIDs[tr.ToolCallID] = true
 				}
 
-				// Check completeness: every tool_use must have a tool_result
 				allComplete := allValid
 				if allValid {
 					for _, tc := range toolCalls {
@@ -226,14 +225,12 @@ func (p *baseProvider[C]) sanitizeToolPairs(messages []message.Message) []messag
 				if allComplete {
 					result = append(result, toolMsg)
 				} else if allValid {
-					// All existing results are valid but some tool_uses are missing results
-					// Synthesize error results for the missing ones and merge
 					logging.Warn("Synthesizing missing tool results for incomplete tool_result set",
 						"message_id", toolMsg.ID,
 						"tool_call_count", len(toolCalls),
 						"tool_result_count", len(toolResults),
 					)
-					fixedParts := make([]message.ContentPart, 0, len(toolMsg.Parts))
+					fixedParts := make([]message.ContentPart, 0, len(toolMsg.Parts)+len(toolCalls))
 					fixedParts = append(fixedParts, toolMsg.Parts...)
 					for _, tc := range toolCalls {
 						if !resultIDs[tc.ID] {
@@ -248,7 +245,6 @@ func (p *baseProvider[C]) sanitizeToolPairs(messages []message.Message) []messag
 					toolMsg.Parts = fixedParts
 					result = append(result, toolMsg)
 				} else {
-					// Fix the tool_result IDs by matching positionally
 					logging.Warn("Fixing mismatched tool_result IDs",
 						"message_id", toolMsg.ID,
 						"tool_call_count", len(toolCalls),
@@ -258,7 +254,6 @@ func (p *baseProvider[C]) sanitizeToolPairs(messages []message.Message) []messag
 					for _, part := range toolMsg.Parts {
 						if tr, ok := part.(message.ToolResult); ok {
 							if !validIDs[tr.ToolCallID] {
-								// Try to match by position
 								resultIdx := -1
 								for j, origTR := range toolResults {
 									if origTR.ToolCallID == tr.ToolCallID {
@@ -269,7 +264,7 @@ func (p *baseProvider[C]) sanitizeToolPairs(messages []message.Message) []messag
 								if resultIdx >= 0 && resultIdx < len(toolCalls) {
 									tr.ToolCallID = toolCalls[resultIdx].ID
 								} else {
-									logging.Warn("Dropping unmatched tool result (more results than tool calls)",
+									logging.Warn("Dropping unmatched tool result",
 										"tool_call_id", tr.ToolCallID,
 										"message_id", toolMsg.ID,
 									)
@@ -285,7 +280,6 @@ func (p *baseProvider[C]) sanitizeToolPairs(messages []message.Message) []messag
 					result = append(result, toolMsg)
 				}
 			} else {
-				// No following Tool message — synthesize one
 				logging.Warn("Synthesizing missing tool results for orphaned tool_use blocks",
 					"message_id", msg.ID,
 					"tool_call_count", len(toolCalls),
@@ -308,9 +302,7 @@ func (p *baseProvider[C]) sanitizeToolPairs(messages []message.Message) []messag
 			continue
 		}
 
-		// Skip orphaned Tool messages (no preceding Assistant with tool calls)
 		if msg.Role == message.Tool && len(msg.ToolResults()) > 0 {
-			// Check if previous message in result is an Assistant with tool calls
 			hasMatchingAssistant := false
 			if len(result) > 0 {
 				prev := result[len(result)-1]

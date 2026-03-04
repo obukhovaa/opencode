@@ -96,7 +96,7 @@ func (app *App) SetActiveAgent(agentID config.AgentName) error {
 func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any) (*App, error) {
 	q := db.NewQuerier(conn)
 	sessions := session.NewService(q)
-	messages := message.NewService(q)
+	messages := message.NewService(q, conn)
 	files := history.NewService(q, conn)
 	reg := agentregistry.GetRegistry()
 	perm := permission.NewPermissionService()

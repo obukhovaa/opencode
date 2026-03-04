@@ -63,6 +63,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getFlowStateStmt, err = db.PrepareContext(ctx, getFlowState); err != nil {
 		return nil, fmt.Errorf("error preparing query GetFlowState: %w", err)
 	}
+	if q.getMaxSeqBySessionStmt, err = db.PrepareContext(ctx, getMaxSeqBySession); err != nil {
+		return nil, fmt.Errorf("error preparing query GetMaxSeqBySession: %w", err)
+	}
 	if q.getMessageStmt, err = db.PrepareContext(ctx, getMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query GetMessage: %w", err)
 	}
@@ -179,6 +182,11 @@ func (q *Queries) Close() error {
 	if q.getFlowStateStmt != nil {
 		if cerr := q.getFlowStateStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getFlowStateStmt: %w", cerr)
+		}
+	}
+	if q.getMaxSeqBySessionStmt != nil {
+		if cerr := q.getMaxSeqBySessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getMaxSeqBySessionStmt: %w", cerr)
 		}
 	}
 	if q.getMessageStmt != nil {
@@ -313,6 +321,7 @@ type Queries struct {
 	getFileStmt                       *sql.Stmt
 	getFileByPathAndSessionStmt       *sql.Stmt
 	getFlowStateStmt                  *sql.Stmt
+	getMaxSeqBySessionStmt            *sql.Stmt
 	getMessageStmt                    *sql.Stmt
 	getSessionByIDStmt                *sql.Stmt
 	listChildSessionsStmt             *sql.Stmt
@@ -348,6 +357,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getFileStmt:                       q.getFileStmt,
 		getFileByPathAndSessionStmt:       q.getFileByPathAndSessionStmt,
 		getFlowStateStmt:                  q.getFlowStateStmt,
+		getMaxSeqBySessionStmt:            q.getMaxSeqBySessionStmt,
 		getMessageStmt:                    q.getMessageStmt,
 		getSessionByIDStmt:                q.getSessionByIDStmt,
 		listChildSessionsStmt:             q.listChildSessionsStmt,

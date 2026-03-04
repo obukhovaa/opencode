@@ -7,7 +7,7 @@ WHERE id = ? LIMIT 1;
 SELECT *
 FROM messages
 WHERE session_id = ?
-ORDER BY created_at ASC;
+ORDER BY seq ASC, created_at ASC;
 
 -- name: CreateMessage :one
 INSERT INTO messages (
@@ -16,12 +16,18 @@ INSERT INTO messages (
     role,
     parts,
     model,
+    seq,
     created_at,
     updated_at
 ) VALUES (
-    ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now')
+    ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now')
 )
 RETURNING *;
+
+-- name: GetMaxSeqBySession :one
+SELECT CAST(COALESCE(MAX(seq), 0) AS INTEGER) AS max_seq
+FROM messages
+WHERE session_id = ?;
 
 -- name: UpdateMessage :exec
 UPDATE messages

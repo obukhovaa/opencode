@@ -36,10 +36,12 @@ CREATE TABLE IF NOT EXISTS messages (
   role VARCHAR(50) NOT NULL,
   parts LONGTEXT NOT NULL,
   model VARCHAR(255),
+  seq BIGINT,
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
   finished_at BIGINT,
   KEY idx_messages_session_id (session_id),
+
   CONSTRAINT fk_messages_session_id FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
 

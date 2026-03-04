@@ -23,6 +23,7 @@ type Querier interface {
 	GetFile(ctx context.Context, id string) (File, error)
 	GetFileByPathAndSession(ctx context.Context, arg GetFileByPathAndSessionParams) (File, error)
 	GetFlowState(ctx context.Context, sessionID string) (FlowState, error)
+	GetMaxSeqBySession(ctx context.Context, sessionID string) (int64, error)
 	GetMessage(ctx context.Context, id string) (Message, error)
 	GetSessionByID(ctx context.Context, id string) (Session, error)
 	ListChildSessions(ctx context.Context, rootSessionID sql.NullString) ([]Session, error)

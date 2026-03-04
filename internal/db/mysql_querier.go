@@ -177,6 +177,7 @@ func (q *MySQLQuerier) CreateMessage(ctx context.Context, arg CreateMessageParam
 		Role:      arg.Role,
 		Parts:     arg.Parts,
 		Model:     arg.Model,
+		Seq:       arg.Seq,
 	})
 	if err != nil {
 		return Message{}, err
@@ -187,16 +188,7 @@ func (q *MySQLQuerier) CreateMessage(ctx context.Context, arg CreateMessageParam
 		return Message{}, err
 	}
 
-	return Message{
-		ID:         mysqlMessage.ID,
-		SessionID:  mysqlMessage.SessionID,
-		Role:       mysqlMessage.Role,
-		Parts:      mysqlMessage.Parts,
-		Model:      mysqlMessage.Model,
-		CreatedAt:  mysqlMessage.CreatedAt,
-		UpdatedAt:  mysqlMessage.UpdatedAt,
-		FinishedAt: mysqlMessage.FinishedAt,
-	}, nil
+	return mysqlMessageToMessage(mysqlMessage), nil
 }
 
 // GetMessage gets a message by ID
@@ -206,16 +198,7 @@ func (q *MySQLQuerier) GetMessage(ctx context.Context, id string) (Message, erro
 		return Message{}, err
 	}
 
-	return Message{
-		ID:         mysqlMessage.ID,
-		SessionID:  mysqlMessage.SessionID,
-		Role:       mysqlMessage.Role,
-		Parts:      mysqlMessage.Parts,
-		Model:      mysqlMessage.Model,
-		CreatedAt:  mysqlMessage.CreatedAt,
-		UpdatedAt:  mysqlMessage.UpdatedAt,
-		FinishedAt: mysqlMessage.FinishedAt,
-	}, nil
+	return mysqlMessageToMessage(mysqlMessage), nil
 }
 
 // ListMessagesBySession lists messages by session
@@ -227,18 +210,23 @@ func (q *MySQLQuerier) ListMessagesBySession(ctx context.Context, sessionID stri
 
 	messages := make([]Message, len(mysqlMessages))
 	for i, m := range mysqlMessages {
-		messages[i] = Message{
-			ID:         m.ID,
-			SessionID:  m.SessionID,
-			Role:       m.Role,
-			Parts:      m.Parts,
-			Model:      m.Model,
-			CreatedAt:  m.CreatedAt,
-			UpdatedAt:  m.UpdatedAt,
-			FinishedAt: m.FinishedAt,
-		}
+		messages[i] = mysqlMessageToMessage(m)
 	}
 	return messages, nil
+}
+
+func mysqlMessageToMessage(m mysqldb.Message) Message {
+	return Message{
+		ID:         m.ID,
+		SessionID:  m.SessionID,
+		Role:       m.Role,
+		Parts:      m.Parts,
+		Model:      m.Model,
+		Seq:        m.Seq,
+		CreatedAt:  m.CreatedAt,
+		UpdatedAt:  m.UpdatedAt,
+		FinishedAt: m.FinishedAt,
+	}
 }
 
 // UpdateMessage updates a message
@@ -258,6 +246,11 @@ func (q *MySQLQuerier) DeleteMessage(ctx context.Context, id string) error {
 // DeleteSessionMessages deletes all messages for a session
 func (q *MySQLQuerier) DeleteSessionMessages(ctx context.Context, sessionID string) error {
 	return q.queries.DeleteSessionMessages(ctx, sessionID)
+}
+
+// GetMaxSeqBySession returns the maximum seq value for a session
+func (q *MySQLQuerier) GetMaxSeqBySession(ctx context.Context, sessionID string) (int64, error) {
+	return q.queries.GetMaxSeqBySession(ctx, sessionID)
 }
 
 // CreateFile creates a file and returns it

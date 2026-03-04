@@ -15,7 +15,6 @@ func TestSanitizeToolPairs(t *testing.T) {
 		name           string
 		messages       []message.Message
 		wantMsgCount   int
-		wantToolCount  func([]message.Message) int
 		wantToolResult func([]message.Message, *testing.T)
 	}{
 		{
@@ -42,6 +41,13 @@ func TestSanitizeToolPairs(t *testing.T) {
 				},
 			},
 			wantMsgCount: 3,
+			wantToolResult: func(msgs []message.Message, t *testing.T) {
+				toolMsg := msgs[2]
+				results := toolMsg.ToolResults()
+				if len(results) != 1 || results[0].ToolCallID != "tc-1" {
+					t.Error("valid pair should pass through unchanged")
+				}
+			},
 		},
 		{
 			name: "orphaned tool_use with no following tool message gets synthetic results",
@@ -161,6 +167,7 @@ func TestSanitizeToolPairs(t *testing.T) {
 					},
 				},
 			},
+			// 3 messages: user, assistant, tool (Finish part + 2 synthesized results merged in)
 			wantMsgCount: 3,
 			wantToolResult: func(msgs []message.Message, t *testing.T) {
 				toolMsg := msgs[2]
@@ -264,14 +271,12 @@ func TestSanitizeToolPairs(t *testing.T) {
 			},
 			wantMsgCount: 5,
 			wantToolResult: func(msgs []message.Message, t *testing.T) {
-				// First pair should be unchanged
 				firstToolMsg := msgs[2]
 				firstResults := firstToolMsg.ToolResults()
 				if len(firstResults) != 1 || firstResults[0].ToolCallID != "tc-1" {
 					t.Error("first tool pair should be unchanged")
 				}
 
-				// Second pair should have synthesized result for tc-3
 				secondToolMsg := msgs[4]
 				secondResults := secondToolMsg.ToolResults()
 				if len(secondResults) != 2 {
@@ -303,7 +308,7 @@ func TestSanitizeToolPairs(t *testing.T) {
 			if len(result) != tt.wantMsgCount {
 				t.Errorf("expected %d messages, got %d", tt.wantMsgCount, len(result))
 				for i, m := range result {
-					t.Logf("  msg[%d]: role=%s parts=%d toolCalls=%d toolResults=%d", i, m.Role, len(m.Parts), len(m.ToolCalls()), len(m.ToolResults()))
+					t.Logf("  msg[%d]: id=%s role=%s parts=%d toolCalls=%d toolResults=%d", i, m.ID, m.Role, len(m.Parts), len(m.ToolCalls()), len(m.ToolResults()))
 				}
 			}
 			if tt.wantToolResult != nil {

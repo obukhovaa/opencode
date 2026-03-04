@@ -649,6 +649,7 @@ func (s *service) copySessionMessages(ctx context.Context, fromSessionID, toSess
 			Role:  msg.Role,
 			Parts: msg.Parts,
 			Model: msg.Model,
+			Seq:   msg.Seq,
 		})
 		if err != nil {
 			return fmt.Errorf("copying message to %s: %w", toSessionID, err)

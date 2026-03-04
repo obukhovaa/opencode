@@ -18,6 +18,7 @@ type CreateMessageParams struct {
 	Role  MessageRole
 	Parts []ContentPart
 	Model models.ModelID
+	Seq   int64
 }
 
 type Service interface {
@@ -32,13 +33,15 @@ type Service interface {
 
 type service struct {
 	*pubsub.Broker[Message]
-	q db.Querier
+	db *sql.DB
+	q  db.QuerierWithTx
 }
 
-func NewService(q db.Querier) Service {
+func NewService(q db.QuerierWithTx, database *sql.DB) Service {
 	return &service{
 		Broker: pubsub.NewBroker[Message](),
 		q:      q,
+		db:     database,
 	}
 }
 
@@ -65,15 +68,54 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 	if err != nil {
 		return Message{}, err
 	}
-	dbMessage, err := s.q.CreateMessage(ctx, db.CreateMessageParams{
+	seq := params.Seq
+	if seq != 0 {
+		dbMessage, err := s.q.CreateMessage(ctx, db.CreateMessageParams{
+			ID:        uuid.New().String(),
+			SessionID: sessionID,
+			Role:      string(params.Role),
+			Parts:     string(partsJSON),
+			Model:     sql.NullString{String: string(params.Model), Valid: true},
+			Seq:       sql.NullInt64{Int64: seq, Valid: true},
+		})
+		if err != nil {
+			return Message{}, err
+		}
+		message, err := s.fromDBItem(dbMessage)
+		if err != nil {
+			return Message{}, err
+		}
+		s.Publish(pubsub.CreatedEvent, message)
+		return message, nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Message{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	qtx := s.q.WithTx(tx)
+
+	seq, err = s.nextSeqTx(ctx, qtx, sessionID)
+	if err != nil {
+		return Message{}, err
+	}
+
+	dbMessage, err := qtx.CreateMessage(ctx, db.CreateMessageParams{
 		ID:        uuid.New().String(),
 		SessionID: sessionID,
 		Role:      string(params.Role),
 		Parts:     string(partsJSON),
 		Model:     sql.NullString{String: string(params.Model), Valid: true},
+		Seq:       sql.NullInt64{Int64: seq, Valid: true},
 	})
 	if err != nil {
 		return Message{}, err
+	}
+
+	if err = tx.Commit(); err != nil {
+		return Message{}, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 	message, err := s.fromDBItem(dbMessage)
 	if err != nil {
@@ -81,6 +123,14 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 	}
 	s.Publish(pubsub.CreatedEvent, message)
 	return message, nil
+}
+
+func (s *service) nextSeqTx(ctx context.Context, qtx db.Querier, sessionID string) (int64, error) {
+	maxSeq, err := qtx.GetMaxSeqBySession(ctx, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	return maxSeq + 1, nil
 }
 
 func (s *service) DeleteSessionMessages(ctx context.Context, sessionID string) error {
@@ -156,6 +206,7 @@ func (s *service) fromDBItem(item db.Message) (Message, error) {
 		Role:      MessageRole(item.Role),
 		Parts:     parts,
 		Model:     models.ModelID(item.Model.String),
+		Seq:       item.Seq.Int64,
 		CreatedAt: item.CreatedAt,
 		UpdatedAt: item.UpdatedAt,
 	}, nil
