@@ -43,10 +43,10 @@ Agents can search the web using a dedicated tool. Providers are configured per-p
   "webSearch": {
     "providers": {
       "ddg": {
-        "baseUrl": "https://litellm.piano.io/v1/search/ddg"
+        "baseUrl": "https://litellm.proxy.io/v1/search/ddg"
       },
       "brave": {
-        "baseUrl": "https://litellm.piano.io/v1/search/brave",
+        "baseUrl": "https://litellm.proxy.io/v1/search/brave",
         "description": "Brave — privacy-focused web search with independent index"
       }
     }
