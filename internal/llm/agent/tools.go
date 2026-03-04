@@ -29,6 +29,7 @@ var (
 		tools.FetchToolName,
 		tools.SkillToolName,
 		tools.SourcegraphToolName,
+		tools.WebSearchToolName,
 	}
 	editorToolNames = []string{
 		tools.WriteToolName,
@@ -79,6 +80,8 @@ func NewToolSet(
 			return tools.NewSkillTool(permissions, reg)
 		case tools.SourcegraphToolName:
 			return tools.NewSourcegraphTool()
+		case tools.WebSearchToolName:
+			return tools.NewWebSearchTool(tools.NewSearchProviderRegistry(config.Get()), permissions)
 		case tools.WriteToolName:
 			return tools.NewWriteTool(lspService, permissions, historyService, reg)
 		case tools.EditToolName:

@@ -374,16 +374,16 @@ A concrete `searchProviderRegistry` struct reads from `config.Config.WebSearch.P
 
 ### Phase 1: Config and Registry
 
-- [ ] **1.1** Add `WebSearchConfig` and `SearchProvider` structs to `internal/config/config.go`
-- [ ] **1.2** Add `WebSearch WebSearchConfig` field to `Config` struct
-- [ ] **1.3** Implement API key resolution with fallback chain: per-provider `apiKey` (with `env:VAR_NAME` expansion) → `LOCAL_ENDPOINT_API_KEY` env var → empty string
-- [ ] **1.4** Update schema generator `cmd/schema/main.go` to include `webSearch` section:
+- [x] **1.1** Add `WebSearchConfig` and `SearchProvider` structs to `internal/config/config.go`
+- [x] **1.2** Add `WebSearch WebSearchConfig` field to `Config` struct
+- [x] **1.3** Implement API key resolution with fallback chain: per-provider `apiKey` (with `env:VAR_NAME` expansion) → `LOCAL_ENDPOINT_API_KEY` env var → empty string
+- [x] **1.4** Update schema generator `cmd/schema/main.go` to include `webSearch` section:
   - `providers`: object with additionalProperties, each having `baseUrl` (required string), `apiKey` (optional string), `description` (optional string)
-- [ ] **1.5** Regenerate `opencode-schema.json`
+- [x] **1.5** Regenerate `opencode-schema.json`
 
 ### Phase 2: Tool Implementation
 
-- [ ] **2.1** Create `internal/llm/tools/websearch.go`:
+- [x] **2.1** Create `internal/llm/tools/websearch.go`:
   - Define `WebSearchToolName = "websearch"` constant
   - Define `SearchProviderRegistry` interface and supporting types (`SearchProviderInfo`, `ResolvedProvider`)
   - Implement concrete `searchProviderRegistry` struct reading from config
@@ -392,56 +392,49 @@ A concrete `searchProviderRegistry` struct reads from `config.Config.WebSearch.P
   - Implement `NewWebSearchTool(registry SearchProviderRegistry, permissions permission.Service) BaseTool` constructor
   - Implement `Info()` with dynamic description listing available providers with their descriptions
   - Implement `Run()` with provider resolution, permission check, HTTP POST, response parsing, markdown formatting
-- [ ] **2.2** Handle both `snippet` and `content` response fields (normalize to one)
-- [ ] **2.3** Handle optional `date` field in results
-- [ ] **2.4** Enforce response size via `validateAndTruncate()` (existing helper)
-- [ ] **2.5** Set timeout (default 30s) and respect context cancellation
-- [ ] **2.6** Return clear error messages: provider not found (list available), HTTP errors, empty results, missing API key
+- [x] **2.2** Handle both `snippet` and `content` response fields (normalize to one)
+- [x] **2.3** Handle optional `date` field in results
+- [x] **2.4** Enforce response size via `validateAndTruncate()` (existing helper)
+- [x] **2.5** Set timeout (default 30s) and respect context cancellation
+- [x] **2.6** Return clear error messages: provider not found (list available), HTTP errors, empty results, missing API key
 
 ### Phase 3: Tool Registration and Wiring
 
-- [ ] **3.1** Add `tools.WebSearchToolName` to `viewerToolNames` in `internal/llm/agent/tools.go`
-- [ ] **3.2** Add `case tools.WebSearchToolName:` branch in `createTool()` switch in `tools.go`
-- [ ] **3.3** Construct `SearchProviderRegistry` from config in the tool creation path — follow the `mcpRegistry` injection pattern: pass registry as a parameter to `NewToolSet()`, then into `createTool()`
-- [ ] **3.4** Wire through `agentFactory` → `NewAgent()` → `NewToolSet()` → `createTool()`
+- [x] **3.1** Add `tools.WebSearchToolName` to `viewerToolNames` in `internal/llm/agent/tools.go`
+- [x] **3.2** Add `case tools.WebSearchToolName:` branch in `createTool()` switch in `tools.go`
+- [x] **3.3** Construct `SearchProviderRegistry` from config in the tool creation path (created inline in `createTool()` from `config.Get()`)
+- [x] **3.4** Wire through `agentFactory` → `NewAgent()` → `NewToolSet()` → `createTool()` (no factory changes needed — registry created from global config)
 
 ### Phase 4: TUI Integration
 
-- [ ] **4.1** Update `toolName()` in `internal/tui/components/chat/message.go` — add `case tools.WebSearchToolName: return "Web Search"`
-- [ ] **4.2** Update `getToolAction()` — add `case tools.WebSearchToolName: return "Searching the web..."`
-- [ ] **4.3** Update `renderToolParams()` — display query, provider, and max_results
-- [ ] **4.4** Update `renderToolResponse()` — render search results (can reuse markdown rendering similar to fetch)
-- [ ] **4.5** Update `internal/tui/components/dialog/permission.go` — add case for websearch permission display (show query as the permission pattern, similar to how fetch shows URL)
+- [x] **4.1** Update `toolName()` in `internal/tui/components/chat/message.go` — add `case tools.WebSearchToolName: return "Web Search"`
+- [x] **4.2** Update `getToolAction()` — add `case tools.WebSearchToolName: return "Searching the web..."`
+- [x] **4.3** Update `renderToolParams()` — display query, provider, and max_results
+- [x] **4.4** Update `renderToolResponse()` — render search results as markdown
+- [x] **4.5** Update `internal/tui/components/dialog/permission.go` — add case for websearch permission display (show query as the permission pattern, similar to how fetch shows URL)
 
 ### Phase 5: Permission Integration
 
-- [ ] **5.1** The tool uses `permissions.Request()` with a `PermissionRequest` containing `Tool: "websearch"` and the query as pattern — same approach as fetch tool
-- [ ] **5.2** Support granular permissions in `permission.rules.websearch`:
-  ```json
-  {
-    "permission": {
-      "rules": {
-        "websearch": { "*": "ask", "documentation *": "allow" }
-      }
-    }
-  }
-  ```
-- [ ] **5.3** Support per-agent tool enable/disable: `agents.explorer.tools.websearch = false`
+- [x] **5.1** The tool uses `permissions.Request()` with a `PermissionRequest` containing `Tool: "websearch"` and the query as pattern — same approach as fetch tool
+- [x] **5.2** Support granular permissions in `permission.rules.websearch` (works via existing permission framework)
+- [x] **5.3** Support per-agent tool enable/disable: `agents.explorer.tools.websearch = false` (works via existing `IsToolEnabled` check)
 
 ### Phase 6: Testing
 
-- [ ] **6.1** Unit tests for `websearchTool.Info()` — description generation with various provider configs, default descriptions, custom descriptions
-- [ ] **6.2** Unit tests for `Run()` — mock HTTP responses, test response parsing, `snippet` vs `content` normalization, error cases
-- [ ] **6.3** Unit tests for `searchProviderRegistry` — provider lookup, missing provider error with available list, empty config
-- [ ] **6.4** Unit tests for API key resolution — per-provider literal, `env:VAR_NAME`, `LOCAL_ENDPOINT_API_KEY` fallback, no key at all
-- [ ] **6.5** Unit tests for default provider descriptions — known names get defaults, unknown names get `"{name} web search"` fallback
-- [ ] **6.6** Test permission flow — mock permission service, verify request contains query
+- [x] **6.1** Unit tests for `websearchTool.Info()` — description generation with various provider configs, default descriptions, custom descriptions
+- [x] **6.2** Unit tests for `Run()` — mock HTTP responses, test response parsing, `snippet` vs `content` normalization, error cases
+- [x] **6.3** Unit tests for `searchProviderRegistry` — provider lookup, missing provider error with available list, empty config
+- [x] **6.4** Unit tests for API key resolution — per-provider literal, `env:VAR_NAME`, `LOCAL_ENDPOINT_API_KEY` fallback, no key at all
+- [x] **6.5** Unit tests for default provider descriptions — known names get defaults, unknown names get `"{name} web search"` fallback
+- [x] **6.6** Test permission flow — mock permission service, verify request contains query
 
 ### Phase 7: Documentation
 
 - [ ] **7.1** Create `docs/web-search.md` with setup guide, provider configuration examples, API key resolution, permission configuration
 - [ ] **7.2** Update `AGENTS.md` / `CLAUDE.md` with websearch tool reference
 - [ ] **7.3** Update `README.md` if there is a tools section
+
+> **Note**: Phase 7 (Documentation) is left for a follow-up, as it's non-code and can be done independently.
 
 ## Edge Cases
 

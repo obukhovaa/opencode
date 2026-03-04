@@ -617,6 +617,37 @@
     "wd": {
       "description": "Working directory for the application",
       "type": "string"
+    },
+    "webSearch": {
+      "description": "Web search provider configuration",
+      "properties": {
+        "providers": {
+          "additionalProperties": {
+            "description": "Search provider configuration",
+            "properties": {
+              "apiKey": {
+                "description": "API key for the provider. Supports 'env:VAR_NAME' syntax. Falls back to LOCAL_ENDPOINT_API_KEY env var.",
+                "type": "string"
+              },
+              "baseUrl": {
+                "description": "Full URL to POST search queries to",
+                "type": "string"
+              },
+              "description": {
+                "description": "Human-readable description shown to the LLM to help select the right provider",
+                "type": "string"
+              }
+            },
+            "required": [
+              "baseUrl"
+            ],
+            "type": "object"
+          },
+          "description": "Search provider configurations keyed by provider name",
+          "type": "object"
+        }
+      },
+      "type": "object"
     }
   },
   "title": "OpenCode Configuration",

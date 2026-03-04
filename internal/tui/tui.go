@@ -1093,7 +1093,7 @@ func buildCommands() []dialog.Command {
 		{
 			ID:          "review",
 			Title:       "Review code",
-			Description: "Review a given work using provided commit hash or branch)",
+			Description: "Review a given work using provided commit hash or branch",
 			Handler: func(cmd dialog.Command) tea.Cmd {
 				prompt, err := dialog.CommandPrompts.ReadFile("commands/review.md")
 				if err != nil {

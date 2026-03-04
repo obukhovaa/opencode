@@ -277,6 +277,8 @@ func (p *permissionDialogCmp) renderHeader() string {
 		)
 	case tools.FetchToolName:
 		headerParts = append(headerParts, baseStyle.Foreground(t.TextMuted()).Width(p.width).Bold(true).Render("URL"))
+	case tools.WebSearchToolName:
+		headerParts = append(headerParts, baseStyle.Foreground(t.TextMuted()).Width(p.width).Bold(true).Render("Query"))
 	}
 
 	return lipgloss.NewStyle().Background(t.Background()).Render(lipgloss.JoinVertical(lipgloss.Left, headerParts...))
@@ -386,6 +388,25 @@ func (p *permissionDialogCmp) renderFetchContent() string {
 			Foreground(t.Text()).
 			Width(p.contentViewPort.Width).
 			Render(pr.URL)
+		p.contentViewPort.SetContent(finalContent)
+		return p.styleViewport()
+	}
+	return ""
+}
+
+func (p *permissionDialogCmp) renderWebSearchContent() string {
+	t := theme.CurrentTheme()
+	baseStyle := styles.BaseStyle()
+
+	if pr, ok := p.permission.Params.(tools.WebSearchPermissionsParams); ok {
+		content := pr.Query
+		if pr.Provider != "" {
+			content = fmt.Sprintf("%s\n\nProvider: %s", pr.Query, pr.Provider)
+		}
+		finalContent := baseStyle.
+			Foreground(t.Text()).
+			Width(p.contentViewPort.Width).
+			Render(content)
 		p.contentViewPort.SetContent(finalContent)
 		return p.styleViewport()
 	}
@@ -502,6 +523,8 @@ func (p *permissionDialogCmp) render() string {
 		contentFinal = p.renderWriteContent()
 	case tools.FetchToolName:
 		contentFinal = p.renderFetchContent()
+	case tools.WebSearchToolName:
+		contentFinal = p.renderWebSearchContent()
 	default:
 		contentFinal = p.renderDefaultContent()
 	}
@@ -550,7 +573,7 @@ func (p *permissionDialogCmp) SetSize() tea.Cmd {
 	case tools.WriteToolName:
 		p.width = int(float64(p.windowSize.Width) * 0.8)
 		p.height = int(float64(p.windowSize.Height) * 0.8)
-	case tools.FetchToolName:
+	case tools.FetchToolName, tools.WebSearchToolName:
 		p.width = int(float64(p.windowSize.Width) * 0.4)
 		p.height = int(float64(p.windowSize.Height) * 0.3)
 	default:

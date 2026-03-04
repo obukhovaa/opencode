@@ -142,6 +142,18 @@ type SkillsConfig struct {
 	Paths []string `json:"paths,omitempty"` // Custom skill paths
 }
 
+// WebSearchProvider defines configuration for a single web search provider.
+type WebSearchProvider struct {
+	BaseURL     string `json:"baseUrl"`               // Full URL to POST search queries to (required)
+	APIKey      string `json:"apiKey,omitempty"`      // Per-provider API key or "env:VAR_NAME"; falls back to LOCAL_ENDPOINT_API_KEY
+	Description string `json:"description,omitempty"` // Human-readable description shown to LLM; defaults generated in code
+}
+
+// WebSearchConfig defines configuration for web search providers.
+type WebSearchConfig struct {
+	Providers map[string]WebSearchProvider `json:"providers"`
+}
+
 // PermissionConfig defines permission configuration.
 // Each tool key maps to either a simple string ("allow"/"deny"/"ask")
 // or an object with glob pattern keys (e.g., {"*": "ask", "git *": "allow"}).
@@ -168,6 +180,7 @@ type Config struct {
 	SessionProvider    SessionProviderConfig             `json:"sessionProvider,omitempty"`
 	Skills             *SkillsConfig                     `json:"skills,omitempty"`
 	Permission         *PermissionConfig                 `json:"permission,omitempty"`
+	WebSearch          *WebSearchConfig                  `json:"webSearch,omitempty"`
 }
 
 // Application constants

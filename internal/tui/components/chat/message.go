@@ -259,6 +259,8 @@ func toolName(name string) string {
 		return "Code Intelligence"
 	case tools.StructOutputToolName:
 		return "Structured Output"
+	case tools.WebSearchToolName:
+		return "Web Search"
 	}
 	return name
 }
@@ -297,6 +299,8 @@ func getToolAction(name string) string {
 		return "Doing code intelligence..."
 	case tools.StructOutputToolName:
 		return "Formatting output..."
+	case tools.WebSearchToolName:
+		return "Searching the web..."
 	}
 	return "Working..."
 }
@@ -462,6 +466,17 @@ func renderToolParams(paramWidth int, toolCall message.ToolCall) string {
 		var params tools.SourcegraphParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
 		return renderParams(paramWidth, params.Query)
+	case tools.WebSearchToolName:
+		var params tools.WebSearchParams
+		json.Unmarshal([]byte(toolCall.Input), &params)
+		toolParams := []string{params.Query}
+		if params.Provider != "" {
+			toolParams = append(toolParams, "provider", params.Provider)
+		}
+		if params.MaxResults > 0 {
+			toolParams = append(toolParams, "max_results", fmt.Sprintf("%d", params.MaxResults))
+		}
+		return renderParams(paramWidth, toolParams...)
 	case tools.LSPToolName:
 		var params tools.LSParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
@@ -578,6 +593,11 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 		return baseStyle.Width(width).Foreground(t.TextMuted()).Render(resultContent)
 	case tools.SourcegraphToolName:
 		return baseStyle.Width(width).Foreground(t.TextMuted()).Render(resultContent)
+	case tools.WebSearchToolName:
+		return styles.ForceReplaceBackgroundWithLipgloss(
+			toMarkdown(resultContent, false, width),
+			t.Background(),
+		)
 	case tools.LSPToolName:
 		metadata := tools.LSPToolMetadata{}
 		json.Unmarshal([]byte(response.Metadata), &metadata)

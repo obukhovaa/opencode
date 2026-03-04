@@ -510,6 +510,37 @@ func generateSchema() map[string]any {
 		},
 	}
 
+	// Add web search configuration
+	schema["properties"].(map[string]any)["webSearch"] = map[string]any{
+		"type":        "object",
+		"description": "Web search provider configuration",
+		"properties": map[string]any{
+			"providers": map[string]any{
+				"type":        "object",
+				"description": "Search provider configurations keyed by provider name",
+				"additionalProperties": map[string]any{
+					"type":        "object",
+					"description": "Search provider configuration",
+					"properties": map[string]any{
+						"baseUrl": map[string]any{
+							"type":        "string",
+							"description": "Full URL to POST search queries to",
+						},
+						"apiKey": map[string]any{
+							"type":        "string",
+							"description": "API key for the provider. Supports 'env:VAR_NAME' syntax. Falls back to LOCAL_ENDPOINT_API_KEY env var.",
+						},
+						"description": map[string]any{
+							"type":        "string",
+							"description": "Human-readable description shown to the LLM to help select the right provider",
+						},
+					},
+					"required": []string{"baseUrl"},
+				},
+			},
+		},
+	}
+
 	// Add permission configuration
 	schema["properties"].(map[string]any)["permission"] = map[string]any{
 		"type":        "object",
