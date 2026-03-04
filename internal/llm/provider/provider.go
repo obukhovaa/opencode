@@ -201,16 +201,51 @@ func (p *baseProvider[C]) sanitizeToolPairs(messages []message.Message) []messag
 					validIDs[tc.ID] = true
 				}
 
-				// Check if all tool_result IDs are valid
+				// Check if all tool_result IDs are valid AND all tool_use IDs have results
+				resultIDs := make(map[string]bool, len(toolResults))
 				allValid := true
 				for _, tr := range toolResults {
 					if !validIDs[tr.ToolCallID] {
 						allValid = false
 						break
 					}
+					resultIDs[tr.ToolCallID] = true
 				}
 
+				// Check completeness: every tool_use must have a tool_result
+				allComplete := allValid
 				if allValid {
+					for _, tc := range toolCalls {
+						if !resultIDs[tc.ID] {
+							allComplete = false
+							break
+						}
+					}
+				}
+
+				if allComplete {
+					result = append(result, toolMsg)
+				} else if allValid {
+					// All existing results are valid but some tool_uses are missing results
+					// Synthesize error results for the missing ones and merge
+					logging.Warn("Synthesizing missing tool results for incomplete tool_result set",
+						"message_id", toolMsg.ID,
+						"tool_call_count", len(toolCalls),
+						"tool_result_count", len(toolResults),
+					)
+					fixedParts := make([]message.ContentPart, 0, len(toolMsg.Parts))
+					fixedParts = append(fixedParts, toolMsg.Parts...)
+					for _, tc := range toolCalls {
+						if !resultIDs[tc.ID] {
+							fixedParts = append(fixedParts, message.ToolResult{
+								ToolCallID: tc.ID,
+								Name:       tc.Name,
+								Content:    "Tool execution was interrupted",
+								IsError:    true,
+							})
+						}
+					}
+					toolMsg.Parts = fixedParts
 					result = append(result, toolMsg)
 				} else {
 					// Fix the tool_result IDs by matching positionally
