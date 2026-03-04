@@ -29,6 +29,8 @@ flow:
                     type: string
                 required: [name, description, details]
           required: [tools]
+      rules:
+        - then: compare-and-suggest
 
     - id: compare-and-suggest
       agent: explorer

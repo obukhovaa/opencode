@@ -209,6 +209,119 @@ func TestFindStep(t *testing.T) {
 	})
 }
 
+func TestResolveNextSteps(t *testing.T) {
+	allSteps := []Step{
+		{ID: "step-a", Prompt: "a"},
+		{ID: "step-b", Prompt: "b"},
+		{ID: "step-c", Prompt: "c"},
+		{ID: "step-d", Prompt: "d"},
+	}
+
+	tests := []struct {
+		name         string
+		rules        []Rule
+		args         map[string]any
+		wantStepIDs  []string
+		wantPostpone []bool
+	}{
+		{
+			name:        "no rules — terminal step",
+			rules:       nil,
+			args:        map[string]any{"status": "done"},
+			wantStepIDs: nil,
+		},
+		{
+			name:        "empty rules — terminal step",
+			rules:       []Rule{},
+			args:        map[string]any{"status": "done"},
+			wantStepIDs: nil,
+		},
+		{
+			name:        "unconditional rule — always advances",
+			rules:       []Rule{{Then: "step-b"}},
+			args:        map[string]any{},
+			wantStepIDs: []string{"step-b"},
+		},
+		{
+			name:        "conditional rule matches",
+			rules:       []Rule{{If: "${args.status} == done", Then: "step-b"}},
+			args:        map[string]any{"status": "done"},
+			wantStepIDs: []string{"step-b"},
+		},
+		{
+			name:        "conditional rule does not match — terminal",
+			rules:       []Rule{{If: "${args.status} == done", Then: "step-b"}},
+			args:        map[string]any{"status": "pending"},
+			wantStepIDs: nil,
+		},
+		{
+			name: "multiple rules — parallel fork",
+			rules: []Rule{
+				{If: "${args.status} == done", Then: "step-b"},
+				{If: "${args.status} == done", Then: "step-c"},
+			},
+			args:        map[string]any{"status": "done"},
+			wantStepIDs: []string{"step-b", "step-c"},
+		},
+		{
+			name: "mixed conditional and unconditional",
+			rules: []Rule{
+				{If: "${args.status} == done", Then: "step-b"},
+				{Then: "step-c"},
+			},
+			args:        map[string]any{"status": "pending"},
+			wantStepIDs: []string{"step-c"},
+		},
+		{
+			name: "all rules match including unconditional",
+			rules: []Rule{
+				{If: "${args.status} == done", Then: "step-b"},
+				{Then: "step-c"},
+			},
+			args:        map[string]any{"status": "done"},
+			wantStepIDs: []string{"step-b", "step-c"},
+		},
+		{
+			name:        "rule references nonexistent step — skipped",
+			rules:       []Rule{{Then: "nonexistent"}},
+			args:        map[string]any{},
+			wantStepIDs: nil,
+		},
+		{
+			name:         "unconditional with postpone",
+			rules:        []Rule{{Then: "step-b", Postpone: true}},
+			args:         map[string]any{},
+			wantStepIDs:  []string{"step-b"},
+			wantPostpone: []bool{true},
+		},
+		{
+			name:        "invalid predicate — skipped gracefully",
+			rules:       []Rule{{If: "bad predicate", Then: "step-b"}},
+			args:        map[string]any{},
+			wantStepIDs: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveNextSteps(tt.rules, allSteps, tt.args)
+
+			if len(got) != len(tt.wantStepIDs) {
+				t.Fatalf("resolveNextSteps() returned %d steps, want %d", len(got), len(tt.wantStepIDs))
+			}
+
+			for i, rs := range got {
+				if rs.step.ID != tt.wantStepIDs[i] {
+					t.Errorf("step[%d].ID = %q, want %q", i, rs.step.ID, tt.wantStepIDs[i])
+				}
+				if tt.wantPostpone != nil && rs.postpone != tt.wantPostpone[i] {
+					t.Errorf("step[%d].postpone = %v, want %v", i, rs.postpone, tt.wantPostpone[i])
+				}
+			}
+		})
+	}
+}
+
 func TestValidateArgs(t *testing.T) {
 	schema := map[string]any{
 		"type": "object",

@@ -466,26 +466,9 @@ doneRetry:
 	result.FlowStepID = step.ID
 	agentEvents <- result
 
-	if len(step.Rules) == 0 {
-		if next := nextSequentialStep(f.Spec.Steps, step.ID); next != nil {
-			wg.Add(1)
-			nextSteps <- stepWork{step: *next, args: copyArgs(args), prevStep: completedState}
-		}
-	} else {
-		for _, rule := range step.Rules {
-			match, err := evaluatePredicate(rule.If, args)
-			if err != nil {
-				logging.Warn("Failed to evaluate rule predicate", "step", step.ID, "predicate", rule.If, "error", err)
-				continue
-			}
-			if match {
-				nextStep := findStep(f.Spec.Steps, rule.Then)
-				if nextStep != nil {
-					wg.Add(1)
-					nextSteps <- stepWork{step: *nextStep, args: copyArgs(args), prevStep: completedState, postpone: rule.Postpone}
-				}
-			}
-		}
+	for _, rs := range resolveNextSteps(step.Rules, f.Spec.Steps, args) {
+		wg.Add(1)
+		nextSteps <- stepWork{step: rs.step, args: copyArgs(args), prevStep: completedState, postpone: rs.postpone}
 	}
 }
 
@@ -596,24 +579,8 @@ func (s *service) collectResumableSteps(
 	}
 
 	var result []stepWork
-	if len(step.Rules) == 0 {
-		if next := nextSequentialStep(f.Spec.Steps, step.ID); next != nil {
-			result = append(result, s.collectResumableSteps(f, *next, copyArgs(args), existing, stateMap, visited, startedSteps, flowStates)...)
-		}
-	} else {
-		for _, rule := range step.Rules {
-			match, err := evaluatePredicate(rule.If, args)
-			if err != nil {
-				logging.Warn("Failed to evaluate rule predicate during resume", "step", step.ID, "predicate", rule.If, "error", err)
-				continue
-			}
-			if match {
-				nextStep := findStep(f.Spec.Steps, rule.Then)
-				if nextStep != nil {
-					result = append(result, s.collectResumableSteps(f, *nextStep, copyArgs(args), existing, stateMap, visited, startedSteps, flowStates)...)
-				}
-			}
-		}
+	for _, rs := range resolveNextSteps(step.Rules, f.Spec.Steps, args) {
+		result = append(result, s.collectResumableSteps(f, rs.step, copyArgs(args), existing, stateMap, visited, startedSteps, flowStates)...)
 	}
 	return result
 }
@@ -752,13 +719,32 @@ func resolveSizeof(value any) string {
 	}
 }
 
-func nextSequentialStep(steps []Step, currentID string) *Step {
-	for i := range steps {
-		if steps[i].ID == currentID && i+1 < len(steps) {
-			return &steps[i+1]
+type resolvedStep struct {
+	step     Step
+	postpone bool
+}
+
+func resolveNextSteps(rules []Rule, allSteps []Step, args map[string]any) []resolvedStep {
+	var result []resolvedStep
+	for _, rule := range rules {
+		if rule.If == "" {
+			if next := findStep(allSteps, rule.Then); next != nil {
+				result = append(result, resolvedStep{step: *next, postpone: rule.Postpone})
+			}
+			continue
+		}
+		match, err := evaluatePredicate(rule.If, args)
+		if err != nil {
+			logging.Warn("Failed to evaluate rule predicate", "predicate", rule.If, "error", err)
+			continue
+		}
+		if match {
+			if next := findStep(allSteps, rule.Then); next != nil {
+				result = append(result, resolvedStep{step: *next, postpone: rule.Postpone})
+			}
 		}
 	}
-	return nil
+	return result
 }
 
 func findStep(steps []Step, id string) *Step {

@@ -95,6 +95,15 @@ rules:
     then: skip
 ```
 
+A rule with no `if` field is an **unconditional transition** — it always matches and advances to the named step:
+
+```yaml
+rules:
+  - then: next-step    # unconditional — always advances
+```
+
+**Steps without rules are terminal.** When a step has no `rules` array, the branch stops there. If you want linear flow progression, declare it explicitly with an unconditional rule.
+
 Supported operators:
 
 | Operator | Description |
@@ -109,7 +118,7 @@ When multiple rules match, the corresponding steps execute in parallel.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `if` | string | Yes | Predicate expression to evaluate |
+| `if` | string | No | Predicate expression to evaluate. Omit for an unconditional transition. |
 | `then` | string | Yes | Step ID to route to when predicate matches |
 | `postpone` | bool | No | If true, store the target step as postponed instead of running it immediately |
 
@@ -358,6 +367,15 @@ flow:
 ```
 
 ## Behaviour Notes
+
+### Terminal steps
+
+A step with no `rules` is terminal — the branch stops when it completes. To advance to the next step unconditionally, add a rule with only a `then` field:
+
+```yaml
+rules:
+  - then: next-step
+```
 
 ### Parallel execution
 
