@@ -212,7 +212,8 @@ func registerBuiltins(agents map[string]AgentInfo, cfg *config.Config) {
 			Mode:        config.AgentModeSubagent,
 			Native:      true,
 			Tools: map[string]bool{
-				"task": false,
+				"task":      false,
+				"websearch": false,
 			},
 		},
 		{

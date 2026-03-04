@@ -29,7 +29,6 @@ var (
 		tools.FetchToolName,
 		tools.SkillToolName,
 		tools.SourcegraphToolName,
-		tools.WebSearchToolName,
 	}
 	editorToolNames = []string{
 		tools.WriteToolName,
@@ -104,6 +103,16 @@ func NewToolSet(
 	for _, name := range viewerToolNames {
 		if reg.IsToolEnabled(agentID, name) {
 			if t := createTool(name); t != nil {
+				result <- t
+			}
+		}
+	}
+
+	// Only add websearch tool if providers are configured
+	cfg := config.Get()
+	if cfg != nil && cfg.WebSearch != nil && len(cfg.WebSearch.Providers) > 0 {
+		if reg.IsToolEnabled(agentID, tools.WebSearchToolName) {
+			if t := createTool(tools.WebSearchToolName); t != nil {
 				result <- t
 			}
 		}

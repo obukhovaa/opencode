@@ -160,6 +160,15 @@ OpenCode looks for `.opencode.json` in:
       "edit": { "*": "allow" }
     }
   },
+  "webSearch": {
+    "providers": {
+      "tavily": {
+        "baseUrl": "https://api.tavily.com/search",
+        "apiKey": "env:TAVILY_API_KEY",
+        "description": "Web search via Tavily"
+      }
+    }
+  },
   "autoCompact": true,
   "debug": false
 }
@@ -383,6 +392,7 @@ export LOCAL_ENDPOINT_API_KEY=secret
 |------|-------------|
 | `bash` | Execute shell commands |
 | `fetch` | Fetch data from URLs |
+| `websearch` | Search internet via configured WebSearch providers |
 | `sourcegraph` | Search public repositories |
 | `task` | Run sub-tasks with a subagent (supports `subagent_type` and `task_id` for resumption) |
 | `skill` | Load agent skills on-demand |

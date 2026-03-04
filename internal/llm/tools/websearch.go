@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"sort"
@@ -67,9 +68,7 @@ var defaultProviderDescriptions = map[string]string{
 func NewSearchProviderRegistry(cfg *config.Config) SearchProviderRegistry {
 	providers := make(map[string]config.WebSearchProvider)
 	if cfg != nil && cfg.WebSearch != nil && cfg.WebSearch.Providers != nil {
-		for k, v := range cfg.WebSearch.Providers {
-			providers[k] = v
-		}
+		maps.Copy(providers, cfg.WebSearch.Providers)
 	}
 	return &searchProviderRegistry{providers: providers}
 }
@@ -105,8 +104,8 @@ func (r *searchProviderRegistry) GetProvider(name string) (*ResolvedProvider, er
 
 func resolveAPIKey(p config.WebSearchProvider) string {
 	if p.APIKey != "" {
-		if strings.HasPrefix(p.APIKey, "env:") {
-			envVar := strings.TrimPrefix(p.APIKey, "env:")
+		if after, ok := strings.CutPrefix(p.APIKey, "env:"); ok {
+			envVar := after
 			if val := os.Getenv(envVar); val != "" {
 				return val
 			}
@@ -179,17 +178,13 @@ Use this tool when you need:
 - Verification of facts or current state of projects
 
 `)
-	sb.WriteString(fmt.Sprintf("The current year is %d. When searching for recent information,\ninclude the year in your query to get up-to-date results.\n", year))
+	fmt.Fprintf(&sb, "The current year is %d. When searching for recent information,\ninclude the year in your query to get up-to-date results.\n", year)
 
-	if len(providers) == 0 {
-		sb.WriteString("\nNo search providers configured. Add providers to webSearch.providers in .opencode.json.")
-	} else {
-		sb.WriteString("\nAvailable search providers (use the provider parameter to select one):\n<available_providers>\n")
-		for _, p := range providers {
-			sb.WriteString(fmt.Sprintf("  <provider>\n    <name>%s</name>\n    <description>%s</description>\n  </provider>\n", p.Name, p.Description))
-		}
-		sb.WriteString("</available_providers>")
+	sb.WriteString("\nAvailable search providers (use the provider parameter to select one):\n<available_providers>\n")
+	for _, p := range providers {
+		fmt.Fprintf(&sb, "  <provider>\n    <name>%s</name>\n    <description>%s</description>\n  </provider>\n", p.Name, p.Description)
 	}
+	sb.WriteString("</available_providers>")
 
 	return sb.String()
 }
@@ -217,11 +212,6 @@ func (t *websearchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	}
 	if params.Provider == "" {
 		return NewTextErrorResponse("Provider parameter is required"), nil
-	}
-
-	providers := t.registry.Providers()
-	if len(providers) == 0 {
-		return NewTextErrorResponse("No search providers available. Configure providers in .opencode.json under webSearch.providers."), nil
 	}
 
 	provider, err := t.registry.GetProvider(params.Provider)
@@ -314,13 +304,13 @@ func formatResults(results []searchResult) string {
 		if snippet == "" {
 			snippet = r.Content
 		}
-		sb.WriteString(fmt.Sprintf("%d. **%s**\n", i+1, r.Title))
-		sb.WriteString(fmt.Sprintf("   %s\n", r.URL))
+		fmt.Fprintf(&sb, "%d. **%s**\n", i+1, r.Title)
+		fmt.Fprintf(&sb, "   %s\n", r.URL)
 		if snippet != "" {
-			sb.WriteString(fmt.Sprintf("   %s\n", snippet))
+			fmt.Fprintf(&sb, "   %s\n", snippet)
 		}
 		if r.Date != "" {
-			sb.WriteString(fmt.Sprintf("   _Date: %s_\n", r.Date))
+			fmt.Fprintf(&sb, "   _Date: %s_\n", r.Date)
 		}
 		sb.WriteString("\n")
 	}
