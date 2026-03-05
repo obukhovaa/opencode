@@ -70,7 +70,7 @@ TIPS:
 - ALWAYS prefer editing existing files in the codebase over writing entirely new content
 - NEVER proactively create documentation files (*.md) or README files unless explicitly requested
 - Only use emojis if the user explicitly requests it
-- Use the View tool first to examine existing files before modifying them
+- Use the Read tool first to examine existing files before modifying them
 - Use the LS tool to verify the correct location when creating new files
 - Combine with Glob and Grep tools to find and modify multiple files
 - Always include descriptive comments when making changes to existing code`

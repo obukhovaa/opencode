@@ -168,7 +168,7 @@ func (m *multiEditTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	}
 
 	if getLastReadTime(params.FilePath).IsZero() {
-		return NewTextErrorResponse("you must read the file before editing it. Use the View tool first"), nil
+		return NewTextErrorResponse("you must read the file before editing it. Use the Read tool first"), nil
 	}
 
 	modTime := fileInfo.ModTime()

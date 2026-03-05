@@ -64,7 +64,7 @@ LIMITATIONS:
 
 TIPS:
 - Prefer this over 'rm' in bash for proper file tracking
-- Use the View tool first to verify you're deleting the correct file
+- Use the Read tool first to verify you're deleting the correct file
 - Use the LS tool to verify directory contents before deleting
 - For large directory deletions (>500 files), use bash rm -rf or delete subdirectories individually`
 )

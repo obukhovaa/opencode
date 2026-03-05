@@ -377,7 +377,7 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | `glob` | Find files by pattern |
 | `grep` | Search file contents |
 | `ls` | List directory contents |
-| `view` | View file contents |
+| `read` | Read file contents |
 | `view_image` | View image files as base64 |
 | `write` | Write to files |
 | `edit` | Edit files |
@@ -391,7 +391,7 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | Tool | Description |
 |------|-------------|
 | `bash` | Execute shell commands |
-| `fetch` | Fetch data from URLs |
+| `webfetch` | Fetch data from URLs |
 | `websearch` | Search internet via configured WebSearch providers |
 | `sourcegraph` | Search public repositories |
 | `task` | Run sub-tasks with a subagent (supports `subagent_type` and `task_id` for resumption) |

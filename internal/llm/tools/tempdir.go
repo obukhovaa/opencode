@@ -95,7 +95,7 @@ func buildTruncationHeader(label string, totalLines int, filePath string, origin
 		} else {
 			fmt.Fprintf(&sb, "Full output saved to: %s\n", filePath)
 		}
-		sb.WriteString("Use the view tool with offset/limit to read specific sections.\n")
+		sb.WriteString("Use the read tool with offset/limit to read specific sections.\n")
 	}
 	sb.WriteString("\n")
 	return sb.String()

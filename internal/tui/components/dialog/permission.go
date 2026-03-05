@@ -275,7 +275,7 @@ func (p *permissionDialogCmp) renderHeader() string {
 			),
 			baseStyle.Render(strings.Repeat(" ", p.width)),
 		)
-	case tools.FetchToolName:
+	case tools.WebFetchToolName:
 		headerParts = append(headerParts, baseStyle.Foreground(t.TextMuted()).Width(p.width).Bold(true).Render("URL"))
 	case tools.WebSearchToolName:
 		headerParts = append(headerParts, baseStyle.Foreground(t.TextMuted()).Width(p.width).Bold(true).Render("Query"))
@@ -525,7 +525,7 @@ func (p *permissionDialogCmp) render() string {
 		contentFinal = p.renderPatchContent()
 	case tools.WriteToolName:
 		contentFinal = p.renderWriteContent()
-	case tools.FetchToolName:
+	case tools.WebFetchToolName:
 		contentFinal = p.renderFetchContent()
 	case tools.WebSearchToolName:
 		contentFinal = p.renderWebSearchContent()
@@ -577,7 +577,7 @@ func (p *permissionDialogCmp) SetSize() tea.Cmd {
 	case tools.WriteToolName:
 		p.width = int(float64(p.windowSize.Width) * 0.8)
 		p.height = int(float64(p.windowSize.Height) * 0.8)
-	case tools.FetchToolName, tools.WebSearchToolName:
+	case tools.WebFetchToolName, tools.WebSearchToolName:
 		p.width = max(40, int(float64(p.windowSize.Width)*0.4))
 		p.height = max(15, int(float64(p.windowSize.Height)*0.4))
 	default:

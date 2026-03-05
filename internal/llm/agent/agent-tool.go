@@ -63,7 +63,7 @@ func (b *agentTool) Info() tools.ToolInfo {
 		"- When you are searching for a keyword or file and are not confident that you will find the right match on the first try.\n" +
 		"- When you need to inspect and analyze images, use the agent tool to perform the search and inspection for you.\n\n" +
 		"When NOT to use the Task tool:\n" +
-		"- If you want to read a specific file path, use the view or glob tool instead of the Task tool, to find the match more quickly\n" +
+		"- If you want to read a specific file path, use the read or glob tool instead of the Task tool, to find the match more quickly\n" +
 		"- If you are searching for a specific class definition like \"class Foo\", use the glob tool instead, to find the match more quickly\n\n" +
 		"Usage notes:\n" +
 		"1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses\n" +

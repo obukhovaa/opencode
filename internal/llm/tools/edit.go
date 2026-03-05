@@ -49,7 +49,7 @@ const (
 
 Before using this tool:
 
-1. Use the View tool to understand the file's contents and context
+1. Use the Read tool to understand the file's contents and context
 
 2. Verify the directory path is correct (only applicable when creating new files):
    - Use the LS tool to verify the parent directory exists and is the correct location
@@ -271,7 +271,7 @@ func (e *editTool) deleteContent(ctx context.Context, filePath, oldString string
 	}
 
 	if getLastReadTime(filePath).IsZero() {
-		return NewTextErrorResponse("you must read the file before editing it. Use the View tool first"), nil
+		return NewTextErrorResponse("you must read the file before editing it. Use the Read tool first"), nil
 	}
 
 	modTime := fileInfo.ModTime()
@@ -404,7 +404,7 @@ func (e *editTool) replaceContent(ctx context.Context, filePath, oldString, newS
 	}
 
 	if getLastReadTime(filePath).IsZero() {
-		return NewTextErrorResponse("you must read the file before editing it. Use the View tool first"), nil
+		return NewTextErrorResponse("you must read the file before editing it. Use the Read tool first"), nil
 	}
 
 	modTime := fileInfo.ModTime()

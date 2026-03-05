@@ -30,7 +30,7 @@ type ViewResponseMetadata struct {
 }
 
 const (
-	ViewToolName     = "view"
+	ReadToolName     = "read"
 	MaxReadSize      = 250 * 1024
 	DefaultReadLimit = 2000
 	MaxLineLength    = 2000
@@ -61,8 +61,8 @@ LIMITATIONS:
 - Images can be identified but not displayed
 
 TIPS:
-- Use with Glob tool to first find files you want to view
-- For code exploration, first use Grep to find relevant files, then View to examine them
+- Use with Glob tool to first find files you want to read
+- For code exploration, first use Grep to find relevant files, then Read to examine them
 - When viewing large files, use the offset parameter to read specific sections
 - Avoid tiny repeated slices (e.g. 30-line chunks). If you need more context, read a larger window in a single call`
 )
@@ -75,7 +75,7 @@ func NewViewTool(lspService lsp.LspService) BaseTool {
 
 func (v *viewTool) Info() ToolInfo {
 	return ToolInfo{
-		Name:        ViewToolName,
+		Name:        ReadToolName,
 		Description: viewDescription,
 		Parameters: map[string]any{
 			"file_path": map[string]any{

@@ -24,9 +24,9 @@ var (
 		tools.LSToolName,
 		tools.GlobToolName,
 		tools.GrepToolName,
-		tools.ViewToolName,
+		tools.ReadToolName,
 		tools.ViewImageToolName,
-		tools.FetchToolName,
+		tools.WebFetchToolName,
 		tools.SkillToolName,
 		tools.SourcegraphToolName,
 	}
@@ -69,11 +69,11 @@ func NewToolSet(
 			return tools.NewGlobTool()
 		case tools.GrepToolName:
 			return tools.NewGrepTool()
-		case tools.ViewToolName:
+		case tools.ReadToolName:
 			return tools.NewViewTool(lspService)
 		case tools.ViewImageToolName:
 			return tools.NewViewImageTool()
-		case tools.FetchToolName:
+		case tools.WebFetchToolName:
 			return tools.NewFetchTool(permissions)
 		case tools.SkillToolName:
 			return tools.NewSkillTool(permissions, reg)

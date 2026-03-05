@@ -102,7 +102,7 @@ func TestSanitizeToolPairs(t *testing.T) {
 					Role: message.Assistant,
 					Parts: []message.ContentPart{
 						message.ToolCall{ID: "tc-1", Name: "bash", Input: "{}", Finished: true},
-						message.ToolCall{ID: "tc-2", Name: "view", Input: "{}", Finished: true},
+						message.ToolCall{ID: "tc-2", Name: "read", Input: "{}", Finished: true},
 						message.ToolCall{ID: "tc-3", Name: "grep", Input: "{}", Finished: true},
 					},
 				},
@@ -157,7 +157,7 @@ func TestSanitizeToolPairs(t *testing.T) {
 					Role: message.Assistant,
 					Parts: []message.ContentPart{
 						message.ToolCall{ID: "tc-1", Name: "bash", Input: "{}", Finished: true},
-						message.ToolCall{ID: "tc-2", Name: "view", Input: "{}", Finished: true},
+						message.ToolCall{ID: "tc-2", Name: "read", Input: "{}", Finished: true},
 					},
 				},
 				{
@@ -258,14 +258,14 @@ func TestSanitizeToolPairs(t *testing.T) {
 				{
 					Role: message.Assistant,
 					Parts: []message.ContentPart{
-						message.ToolCall{ID: "tc-2", Name: "view", Input: "{}", Finished: true},
+						message.ToolCall{ID: "tc-2", Name: "read", Input: "{}", Finished: true},
 						message.ToolCall{ID: "tc-3", Name: "grep", Input: "{}", Finished: true},
 					},
 				},
 				{
 					Role: message.Tool,
 					Parts: []message.ContentPart{
-						message.ToolResult{ToolCallID: "tc-2", Name: "view", Content: "file contents"},
+						message.ToolResult{ToolCallID: "tc-2", Name: "read", Content: "file contents"},
 					},
 				},
 			},

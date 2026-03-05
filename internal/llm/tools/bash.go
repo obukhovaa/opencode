@@ -93,12 +93,12 @@ Usage notes:
   - The command argument is required.
   - You can specify an optional timeout in milliseconds. If not specified, commands will time out after 120000ms (2 minutes).
   - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
-  - If the output exceeds ${maxLines} lines or ${maxBytes} bytes, the full output is saved to a temp file and a truncated preview (first/last 500 lines) is shown. Use the View tool with offset/limit to read specific sections of the saved file, or Grep to search the full content. Because of this, you do NOT need to use ` + "`head`" + `, ` + "`tail`" + `, or other truncation commands to limit output - just run the command directly.
+  - If the output exceeds ${maxLines} lines or ${maxBytes} bytes, the full output is saved to a temp file and a truncated preview (first/last 500 lines) is shown. Use the Read tool with offset/limit to read specific sections of the saved file, or Grep to search the full content. Because of this, you do NOT need to use ` + "`head`" + `, ` + "`tail`" + `, or other truncation commands to limit output - just run the command directly.
 
   - Avoid using Bash with the ` + "`find`, `grep`, `cat`, `head`, `tail`, `sed`, `awk`, or `echo`" + ` commands, unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
     - File search: Use Glob (NOT find or ls)
     - Content search: Use Grep (NOT grep or rg)
-    - Read files: Use View (NOT cat/head/tail)
+    - Read files: Use Read (NOT cat/head/tail)
     - Edit files: Use Edit (NOT sed/awk)
     - Write files: Use Write (NOT echo >/cat <<EOF)
     - Communication: Output text directly (NOT echo/printf)

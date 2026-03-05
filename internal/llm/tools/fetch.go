@@ -34,7 +34,7 @@ type fetchTool struct {
 }
 
 const (
-	FetchToolName        = "fetch"
+	WebFetchToolName     = "webfetch"
 	fetchToolDescription = `Fetches content from a URL and returns it in the specified format.
 
 WHEN TO USE THIS TOOL:
@@ -78,7 +78,7 @@ func NewFetchTool(permissions permission.Service) BaseTool {
 
 func (t *fetchTool) Info() ToolInfo {
 	return ToolInfo{
-		Name:        FetchToolName,
+		Name:        WebFetchToolName,
 		Description: fetchToolDescription,
 		Parameters: map[string]any{
 			"url": map[string]any{
@@ -130,8 +130,8 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 		permission.CreatePermissionRequest{
 			SessionID:   sessionID,
 			Path:        config.WorkingDirectory(),
-			ToolName:    FetchToolName,
-			Action:      "fetch",
+			ToolName:    WebFetchToolName,
+			Action:      "webfetch",
 			Description: fmt.Sprintf("Fetch content from URL: %s", params.URL),
 			Params:      FetchPermissionsParams(params),
 		},

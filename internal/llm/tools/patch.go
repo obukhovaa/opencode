@@ -80,7 +80,7 @@ To rename or move a file, use ` + "`*** Move to: <new_path>`" + ` immediately af
 ` + "```" + `
 
 Before using this tool:
-1. Use the View tool to understand the files' content and context
+1. Use the Read tool to understand the files' content and context
 2. Verify all file paths are correct (use the LS tool)
 
 Important:

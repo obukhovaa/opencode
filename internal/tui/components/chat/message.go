@@ -235,8 +235,8 @@ func toolName(name string) string {
 		return "Edit"
 	case tools.MultiEditToolName:
 		return "MultiEdit"
-	case tools.FetchToolName:
-		return "Fetch"
+	case tools.WebFetchToolName:
+		return "Web Fetch"
 	case tools.GlobToolName:
 		return "Glob"
 	case tools.GrepToolName:
@@ -245,8 +245,8 @@ func toolName(name string) string {
 		return "List"
 	case tools.SourcegraphToolName:
 		return "Sourcegraph"
-	case tools.ViewToolName:
-		return "View"
+	case tools.ReadToolName:
+		return "Read"
 	case tools.ViewImageToolName:
 		return "View Image"
 	case tools.WriteToolName:
@@ -275,8 +275,8 @@ func getToolAction(name string) string {
 		return "Preparing edit..."
 	case tools.MultiEditToolName:
 		return "Preparing edits..."
-	case tools.FetchToolName:
-		return "Writing fetch..."
+	case tools.WebFetchToolName:
+		return "Fetching URL..."
 	case tools.GlobToolName:
 		return "Finding files..."
 	case tools.GrepToolName:
@@ -285,7 +285,7 @@ func getToolAction(name string) string {
 		return "Listing directory..."
 	case tools.SourcegraphToolName:
 		return "Searching code..."
-	case tools.ViewToolName:
+	case tools.ReadToolName:
 		return "Reading file..."
 	case tools.ViewImageToolName:
 		return "Loading image..."
@@ -412,7 +412,7 @@ func renderToolParams(paramWidth int, toolCall message.ToolCall) string {
 		json.Unmarshal([]byte(toolCall.Input), &params)
 		filePath := removeWorkingDirPrefix(params.FilePath)
 		return renderParams(paramWidth, filePath, "edits", fmt.Sprintf("%d", len(params.Edits)))
-	case tools.FetchToolName:
+	case tools.WebFetchToolName:
 		var params tools.FetchParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
 		url := params.URL
@@ -481,7 +481,7 @@ func renderToolParams(paramWidth int, toolCall message.ToolCall) string {
 		var params tools.LSParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
 		return renderParams(paramWidth, params.Path, fmt.Sprintf("ignore: %s", strings.Join(params.Ignore, ", ")))
-	case tools.ViewToolName:
+	case tools.ReadToolName:
 		var params tools.ViewParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
 		filePath := removeWorkingDirPrefix(params.FilePath)
@@ -570,7 +570,7 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 		truncDiff := truncateHeight(metadata.Diff, maxResultHeight)
 		formattedDiff, _ := diff.FormatDiff(truncDiff, diff.WithTotalWidth(width))
 		return formattedDiff
-	case tools.FetchToolName:
+	case tools.WebFetchToolName:
 		var params tools.FetchParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
 		mdFormat := "markdown"
@@ -602,7 +602,7 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 		metadata := tools.LSPToolMetadata{}
 		json.Unmarshal([]byte(response.Metadata), &metadata)
 		return baseStyle.Width(width).Foreground(t.TextMuted()).Render(metadata.Title)
-	case tools.ViewToolName:
+	case tools.ReadToolName:
 		metadata := tools.ViewResponseMetadata{}
 		json.Unmarshal([]byte(response.Metadata), &metadata)
 		ext := filepath.Ext(metadata.FilePath)

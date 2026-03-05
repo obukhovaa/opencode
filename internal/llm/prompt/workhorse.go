@@ -36,9 +36,9 @@ If the current working directory contains a file called AGENTS.md or CLAUDE.md, 
 
 - Use Glob for broad file pattern matching, do not use find in bash
 - Use Grep for searching file contents with regex, do not use grep in bash
-- Use View when you know the specific file path you need to read, do not use cat in bash
+- Use Read when you know the specific file path you need to read, do not use cat in bash
 - Use View Image when you know the specific image file path you need to view
-- Use Fetch when you have a web link to lookup, fallback to curl in bash only if Fetch failed
+- Use Web Fetch when you have a web link to lookup, fallback to curl in bash only if Web Fetch failed
 - Use Delete to remove files and directories, do not use rm or rm -rf in bash for file deletion
 - Use Write to create new files and overwriting existing, do not use cat, touch or redirect operators in bash
 - Use Edit to performs exact string replacements in files, prioritise it over sed in bash
