@@ -34,7 +34,7 @@ const (
 	MaxReadSize      = 250 * 1024
 	DefaultReadLimit = 2000
 	MaxLineLength    = 2000
-	viewDescription  = `File viewing tool that reads and displays the contents of files with line numbers, allowing you to examine code, logs, or text data.
+	viewDescription  = `File reading tool that reads and displays the contents of files with line numbers, allowing you to examine code, logs, or text data.
 
 WHEN TO USE THIS TOOL:
 - Use when you need to read the contents of a specific file

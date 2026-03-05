@@ -6,13 +6,13 @@
 
 ## Overview
 
-When the fetch tool requests a Cloudflare-protected URL, it receives an HTTP 403 with a bot-challenge page instead of the actual content. This spec adds detection of Cloudflare (and similar WAF) challenges and a single retry with a browser-like User-Agent to recover from the most common failure mode.
+When the webfetch tool requests a Cloudflare-protected URL, it receives an HTTP 403 with a bot-challenge page instead of the actual content. This spec adds detection of Cloudflare (and similar WAF) challenges and a single retry with a browser-like User-Agent to recover from the most common failure mode.
 
 ## Motivation
 
 ### Current State
 
-`internal/llm/tools/fetch.go` sends every request with a minimal User-Agent and treats any non-200 response as a hard failure:
+`internal/llm/tools/webfetch.go` sends every request with a minimal User-Agent and treats any non-200 response as a hard failure:
 
 ```go
 req.Header.Set("User-Agent", "opencode/1.0")
@@ -88,7 +88,7 @@ Cloudflare's JavaScript challenge is bypassed by a browser UA in many cases beca
 ## Architecture
 
 ```
-fetchTool.Run()
+webFetchTool.Run()
     │
     ├── build request (existing logic)
     │       └── User-Agent: "opencode/1.0"
@@ -121,21 +121,21 @@ return resp.StatusCode == http.StatusForbidden &&
 
 ### Phase 1: Detection and Retry
 
-- [ ] **1.1** Add `isWAFChallenge(resp *http.Response) bool` function in `internal/llm/tools/fetch.go`. Check `resp.StatusCode == 403` and `resp.Header.Get("cf-mitigated") == "challenge"`.
+- [ ] **1.1** Add `isWAFChallenge(resp *http.Response) bool` function in `internal/llm/tools/webfetch.go`. Check `resp.StatusCode == 403` and `resp.Header.Get("cf-mitigated") == "challenge"`.
 
 - [ ] **1.2** Add the browser User-Agent constant:
   ```go
   const browserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
   ```
 
-- [ ] **1.3** In `fetchTool.Run()`, after the initial `client.Do(req)` call, add the WAF challenge branch before the existing non-200 error return:
+- [ ] **1.3** In `webFetchTool.Run()`, after the initial `client.Do(req)` call, add the WAF challenge branch before the existing non-200 error return:
   - If `isWAFChallenge(resp)`: close the initial response body, build a new request with `browserUserAgent`, execute it, and proceed with the retry response.
   - If retry succeeds (200): fall through to the existing body-processing logic.
   - If retry fails: return `NewTextErrorResponse` with a message that includes the WAF context and the retry status code.
 
-- [ ] **1.4** Update `fetchToolDescription` to remove the limitation note `"Some websites may block automated requests"` and replace with `"Automatically retries with a browser User-Agent when Cloudflare bot protection is detected."`.
+- [ ] **1.4** Update `webFetchToolDescription` to remove the limitation note `"Some websites may block automated requests"` and replace with `"Automatically retries with a browser User-Agent when Cloudflare bot protection is detected."`.
 
-- [ ] **1.5** Add unit tests in `internal/llm/tools/fetch_test.go` (create if absent):
+- [ ] **1.5** Add unit tests in `internal/llm/tools/webfetch_test.go` (create if absent):
   - Test `isWAFChallenge` with: 403 + `cf-mitigated: challenge` (true), 403 without header (false), 200 + header (false).
   - Test retry flow using an `httptest.Server` that returns 403 + `cf-mitigated: challenge` on the first request and 200 on the second.
   - Test double-failure path: server always returns 403 + challenge header; verify error message contains WAF context.
@@ -207,6 +207,6 @@ return resp.StatusCode == http.StatusForbidden &&
 
 ## References
 
-- `internal/llm/tools/fetch.go` — primary implementation file; `fetchTool.Run()`, `NewFetchTool()`, `fetchToolDescription`
+- `internal/llm/tools/webfetch.go` — primary implementation file; `fetchTool.Run()`, `NewFetchTool()`, `fetchToolDescription`
 - `internal/llm/tools/tools.go` — `NewTextErrorResponse`, `NewEmptyResponse`, shared response types
 - `spec/20260223T133437-tools-imrovements.md` — parent spec; this feature is item 3.4
