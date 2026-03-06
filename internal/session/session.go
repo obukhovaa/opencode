@@ -219,9 +219,14 @@ func (s service) fromDBItem(item db.Session) Session {
 	}
 }
 
-func NewService(q db.Querier) Service {
-	cfg := config.Get()
-	projectID := db.GetProjectID(cfg.WorkingDir)
+func NewService(q db.Querier, explicitProjectID string) Service {
+	var projectID string
+	if explicitProjectID != "" {
+		projectID = explicitProjectID
+	} else {
+		cfg := config.Get()
+		projectID = db.GetProjectID(cfg.WorkingDir)
+	}
 	broker := pubsub.NewBroker[Session]()
 	return &service{
 		broker,

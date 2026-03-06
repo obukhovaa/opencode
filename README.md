@@ -91,6 +91,7 @@ All permissions are auto-approved in non-interactive mode.
 | `--flow` | `-F` | Flow ID to execute, [more info](docs/flows.md) |
 | `--arg` | `-A` | Flow argument as `key=value` (repeatable) |
 | `--args-file` | | JSON file with flow arguments |
+| `--project-id` | `-P` | Custom project ID to group sessions (overrides detected Git/basename) |
 
 ## Configuration
 

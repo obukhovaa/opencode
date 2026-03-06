@@ -93,9 +93,9 @@ func (app *App) SetActiveAgent(agentID config.AgentName) error {
 	return fmt.Errorf("agent %q not found among primary agents", agentID)
 }
 
-func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any) (*App, error) {
+func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID string) (*App, error) {
 	q := db.NewQuerier(conn)
-	sessions := session.NewService(q)
+	sessions := session.NewService(q, projectID)
 	messages := message.NewService(q, conn)
 	files := history.NewService(q, conn)
 	reg := agentregistry.GetRegistry()

@@ -56,6 +56,9 @@ to assist developers in writing, debugging, and understanding code directly from
 
   # Run a non-interactive prompt with a 5-minute timeout
   opencode -p "Refactor this module" --timeout 5m
+
+  # Run with a custom project ID to tag sessions
+  opencode -P my-project-id
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// If the help flag is set, show the help message
@@ -81,6 +84,7 @@ to assist developers in writing, debugging, and understanding code directly from
 		flowArgs, _ := cmd.Flags().GetStringArray("arg")
 		argsFile, _ := cmd.Flags().GetString("args-file")
 		timeoutStr, _ := cmd.Flags().GetString("timeout")
+		projectID, _ := cmd.Flags().GetString("project-id")
 
 		if deleteSession && sessionID == "" && flowID == "" {
 			return fmt.Errorf("--delete requires --session/-s or --flow/-F to be specified")
@@ -132,7 +136,7 @@ to assist developers in writing, debugging, and understanding code directly from
 		// Create main context for the application
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		app, err := app.New(ctx, conn, cliSchema)
+		app, err := app.New(ctx, conn, cliSchema, projectID)
 		if err != nil {
 			if spinner != nil {
 				spinner.Stop()
@@ -401,6 +405,9 @@ func init() {
 
 	// Add timeout flag for non-interactive mode
 	rootCmd.Flags().StringP("timeout", "t", "", "Timeout for non-interactive mode (e.g. 10s, 30m, 1h)")
+
+	// Add project ID flag
+	rootCmd.Flags().StringP("project-id", "P", "", "Custom project ID (overrides auto-detected Git/directory-based ID)")
 
 	// Register custom validation for the format flag
 	rootCmd.RegisterFlagCompletionFunc("output-format", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
