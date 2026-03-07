@@ -318,6 +318,9 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// Susped to get lazy tools
 	toolSet := a.resolveTools()
 
+	effectiveMaxTurns := resolveMaxTurns(a.agentID)
+	tracker := newCallTracker()
+
 	for {
 		cycles += 1
 		// Check for cancellation before each iteration
@@ -391,7 +394,60 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		// Ensure we don't run into API limitation (max_token to be generated + current tokens count)
 		a.provider.AdjustMaxTokens(etaTokens)
 
-		agentMessage, toolResults, err = a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet)
+		// Check max turns — give the model one final turn to wrap up
+		if cycles > effectiveMaxTurns {
+			logging.Warn("Max turns reached, requesting final response", "turns", cycles-1, "max", effectiveMaxTurns, "session_id", sessionID)
+			maxTurnsPrompt, promptErr := AgentPrompts.ReadFile("prompts/max_turns.md")
+			if promptErr != nil {
+				logging.Warn("Failed to load max_turns prompt", "error", promptErr)
+				return AgentEvent{
+					Type:         AgentEventTypeResponse,
+					Message:      agentMessage,
+					StructOutput: structOutput,
+					Done:         true,
+				}
+			}
+			wrapUpMsg, wrapUpErr := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
+				Role:  message.User,
+				Parts: []message.ContentPart{message.TextContent{Text: string(maxTurnsPrompt)}},
+			})
+			if wrapUpErr != nil {
+				logging.Warn("Failed to create wrap-up message", "error", wrapUpErr)
+				return AgentEvent{
+					Type:         AgentEventTypeResponse,
+					Message:      agentMessage,
+					StructOutput: structOutput,
+					Done:         true,
+				}
+			}
+			msgHistory = append(msgHistory, wrapUpMsg)
+			// Pass full toolSet to preserve the cache prefix, but discard any tool calls the model makes
+			finalMsg, _, finalErr := a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
+			if finalErr != nil {
+				logging.Warn("Failed to get final response after max turns", "error", finalErr)
+				return AgentEvent{
+					Type:         AgentEventTypeResponse,
+					Message:      agentMessage,
+					StructOutput: structOutput,
+					Done:         true,
+				}
+			}
+			// If the model ignored the instruction and made tool calls, discard them —
+			// we only want the text content as the final response
+			if finalMsg.FinishReason() == message.FinishReasonToolUse {
+				logging.Warn("Model made tool calls after max turns wrap-up, discarding them", "session_id", sessionID)
+				a.createErrorToolResults(finalMsg)
+				a.finishMessage(ctx, &finalMsg, message.FinishReasonEndTurn)
+			}
+			return AgentEvent{
+				Type:         AgentEventTypeResponse,
+				Message:      finalMsg,
+				StructOutput: structOutput,
+				Done:         true,
+			}
+		}
+
+		agentMessage, toolResults, err = a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
 		if err != nil {
 			a.createErrorToolResults(agentMessage)
 			if errors.Is(err, context.Canceled) {
@@ -457,7 +513,7 @@ func (a *agent) createUserMessage(ctx context.Context, sessionID, content string
 	})
 }
 
-func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msgHistory []message.Message, toolSet []tools.BaseTool) (message.Message, *message.Message, error) {
+func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msgHistory []message.Message, toolSet []tools.BaseTool, tracker *callTracker) (message.Message, *message.Message, error) {
 	eventChan := a.provider.StreamResponse(ctx, msgHistory, toolSet)
 
 	assistantMsg, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
@@ -513,6 +569,23 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 					ToolCallID: toolCall.ID,
 					Name:       toolCall.Name,
 					Content:    fmt.Sprintf("Tool not found: %s", toolCall.Name),
+					IsError:    true,
+				}
+				continue
+			}
+
+			// Loop detection: check if this exact tool call has been repeated
+			if tracker.Track(toolCall.Name, toolCall.Input) {
+				streak := tracker.streakCount[toolCall.Name]
+				logging.Warn("Tool call loop detected",
+					"tool", toolCall.Name,
+					"streak", streak,
+					"session_id", sessionID,
+				)
+				toolResults[i] = message.ToolResult{
+					ToolCallID: toolCall.ID,
+					Name:       toolCall.Name,
+					Content:    loopDetectedMessage(toolCall.Name, streak),
 					IsError:    true,
 				}
 				continue

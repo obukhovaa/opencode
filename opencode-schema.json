@@ -27,6 +27,11 @@
           "minimum": 1,
           "type": "integer"
         },
+        "maxTurns": {
+          "description": "Maximum number of tool-use turns per request for this agent. Default is 100.",
+          "minimum": 1,
+          "type": "integer"
+        },
         "mode": {
           "description": "Agent mode: 'agent' for primary agents, 'subagent' for agents invoked by task tool",
           "enum": [
@@ -145,6 +150,11 @@
           },
           "maxTokens": {
             "description": "Maximum tokens for the agent",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "maxTurns": {
+            "description": "Maximum number of tool-use turns per request for this agent. Default is 100.",
             "minimum": 1,
             "type": "integer"
           },
@@ -361,6 +371,11 @@
       },
       "description": "Language Server Protocol configurations. Built-in servers are auto-detected; use this to override, disable, or add custom servers.",
       "type": "object"
+    },
+    "maxTurns": {
+      "description": "Global maximum number of agent tool-use turns per request. When set, overrides per-agent maxTurns. Also settable via --max-turns CLI flag.",
+      "minimum": 1,
+      "type": "integer"
     },
     "mcpServers": {
       "additionalProperties": {

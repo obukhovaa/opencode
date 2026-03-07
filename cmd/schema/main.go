@@ -295,6 +295,11 @@ func generateSchema() map[string]any {
 						},
 					},
 				},
+				"maxTurns": map[string]any{
+					"type":        "integer",
+					"description": "Maximum number of tool-use turns per request for this agent. Default is 100.",
+					"minimum":     1,
+				},
 				"tools": map[string]any{
 					"type":        "object",
 					"description": "Tool enable/disable configuration",
@@ -539,6 +544,13 @@ func generateSchema() map[string]any {
 				},
 			},
 		},
+	}
+
+	// Add maxTurns at the top level (CLI override)
+	schema["properties"].(map[string]any)["maxTurns"] = map[string]any{
+		"type":        "integer",
+		"description": "Global maximum number of agent tool-use turns per request. When set, overrides per-agent maxTurns. Also settable via --max-turns CLI flag.",
+		"minimum":     1,
 	}
 
 	// Add permission configuration

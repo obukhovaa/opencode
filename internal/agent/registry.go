@@ -31,6 +31,7 @@ type AgentInfo struct {
 	Color           string           `yaml:"color,omitempty"`
 	Model           string           `yaml:"model,omitempty"`
 	MaxTokens       int64            `yaml:"maxTokens,omitempty"`
+	MaxTurns        int              `yaml:"maxTurns,omitempty"`
 	ReasoningEffort string           `yaml:"reasoningEffort,omitempty"`
 	Prompt          string           `yaml:"-"`
 	Permission      map[string]any   `yaml:"permission,omitempty"`
@@ -291,6 +292,9 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 		if agentCfg.MaxTokens > 0 {
 			existing.MaxTokens = agentCfg.MaxTokens
 		}
+		if agentCfg.MaxTurns > 0 {
+			existing.MaxTurns = agentCfg.MaxTurns
+		}
 		if agentCfg.ReasoningEffort != "" {
 			existing.ReasoningEffort = agentCfg.ReasoningEffort
 		}
@@ -363,6 +367,9 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 	}
 	if md.Model != "" {
 		existing.Model = md.Model
+	}
+	if md.MaxTurns > 0 {
+		existing.MaxTurns = md.MaxTurns
 	}
 	if md.Prompt != "" {
 		existing.Prompt = md.Prompt

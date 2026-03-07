@@ -134,7 +134,7 @@ func formatTokensAndCost(tokens, contextWindow int64, cost float64) string {
 	formattedCost := fmt.Sprintf("$%.2f", cost)
 
 	if contextWindow <= 0 {
-		return fmt.Sprintf("Context: %s, Cost: %s", formattedTokens, formattedCost)
+		return fmt.Sprintf("ctx: %s, cst: %s", formattedTokens, formattedCost)
 	}
 	percentage := (float64(tokens) / float64(contextWindow)) * 100
 	if percentage > 80 {
@@ -142,7 +142,7 @@ func formatTokensAndCost(tokens, contextWindow int64, cost float64) string {
 		formattedTokens = fmt.Sprintf("%s(%d%%)", styles.WarningIcon, int(percentage))
 	}
 
-	return fmt.Sprintf("Context: %s, Cost: %s", formattedTokens, formattedCost)
+	return fmt.Sprintf("ctx: %s, cst: %s", formattedTokens, formattedCost)
 }
 
 func (m statusCmp) resolveModel() models.Model {

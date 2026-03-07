@@ -88,6 +88,9 @@ func LoadCustomCommands() ([]Command, error) {
 			filepath.Join(home, ".opencode", "commands"),
 			filepath.Join(home, ".agents", "commands"),
 		)
+		if !isClaudeCommandsDisabled() {
+			userDirs = append(userDirs, filepath.Join(home, ".claude", "commands"))
+		}
 	}
 
 	for _, dir := range userDirs {
@@ -99,23 +102,53 @@ func LoadCustomCommands() ([]Command, error) {
 		}
 	}
 
-	// Project commands
+	// Project commands (walk up from working dir to worktree root)
 	workingDir := cfg.WorkingDir
-	projectDirs := []string{
-		filepath.Join(workingDir, ".opencode", "commands"),
-		filepath.Join(workingDir, ".agents", "commands"),
-	}
-
-	for _, dir := range projectDirs {
-		cmds, err := loadCommandsFromDir(dir, ProjectCommandPrefix)
-		if err != nil {
-			logging.Warn("Failed to load project commands", "dir", dir, "error", err)
-		} else {
-			commands = append(commands, cmds...)
+	worktreeRoot := getWorktreeRoot(workingDir)
+	current := workingDir
+	for {
+		projectDirs := []string{
+			filepath.Join(current, ".opencode", "commands"),
+			filepath.Join(current, ".agents", "commands"),
 		}
+		if !isClaudeCommandsDisabled() {
+			projectDirs = append(projectDirs, filepath.Join(current, ".claude", "commands"))
+		}
+		for _, dir := range projectDirs {
+			cmds, err := loadCommandsFromDir(dir, ProjectCommandPrefix)
+			if err != nil {
+				logging.Warn("Failed to load project commands", "dir", dir, "error", err)
+			} else {
+				commands = append(commands, cmds...)
+			}
+		}
+
+		if current == worktreeRoot || current == filepath.Dir(current) {
+			break
+		}
+		current = filepath.Dir(current)
 	}
 
 	return commands, nil
+}
+
+func isClaudeCommandsDisabled() bool {
+	return os.Getenv("OPENCODE_DISABLE_CLAUDE_SKILLS") == "true"
+}
+
+func getWorktreeRoot(workingDir string) string {
+	current := workingDir
+	for {
+		gitDir := filepath.Join(current, ".git")
+		if _, err := os.Stat(gitDir); err == nil {
+			return current
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return workingDir
+		}
+		current = parent
+	}
 }
 
 // loadCommandsFromDir loads commands from a specific directory with the given prefix

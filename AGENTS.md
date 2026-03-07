@@ -71,6 +71,7 @@ Agents can be configured in `.opencode.json`:
 **Agent fields:**
 - `model`: Model ID to use for this agent
 - `maxTokens`: Maximum response tokens
+- `maxTurns`: Maximum number of tool-use turns per request (default 100). Also configurable via `--max-turns` CLI flag (overrides per-agent config) or top-level `maxTurns` in `.opencode.json`.
 - `reasoningEffort`: For models that support it (`low`/`medium`/`high`)
 - `mode`: `agent` (primary, switchable via tab) or `subagent` (invoked via task tool)
 - `name`: Display name for the agent

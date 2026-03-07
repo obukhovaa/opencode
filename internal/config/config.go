@@ -61,6 +61,7 @@ type AgentOutput struct {
 type Agent struct {
 	Model           models.ModelID  `json:"model"`
 	MaxTokens       int64           `json:"maxTokens"`
+	MaxTurns        int             `json:"maxTurns,omitempty"`
 	ReasoningEffort string          `json:"reasoningEffort"`      // For openai models low,medium,high
 	Permission      map[string]any  `json:"permission,omitempty"` // tool name -> "allow" | {"pattern": "action"}
 	Tools           map[string]bool `json:"tools,omitempty"`      // e.g., {"skill": false}
@@ -181,6 +182,7 @@ type Config struct {
 	Skills             *SkillsConfig                     `json:"skills,omitempty"`
 	Permission         *PermissionConfig                 `json:"permission,omitempty"`
 	WebSearch          *WebSearchConfig                  `json:"webSearch,omitempty"`
+	MaxTurns           int                               `json:"maxTurns,omitempty"`
 }
 
 // Application constants
@@ -614,6 +616,16 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 		} else {
 			return fmt.Errorf("no valid provider available for agent %s", name)
 		}
+	}
+
+	// Validate maxTurns
+	if agent.MaxTurns < 0 {
+		logging.Warn("invalid maxTurns, resetting to default",
+			"agent", name,
+			"maxTurns", agent.MaxTurns)
+		updatedAgent := cfg.Agents[name]
+		updatedAgent.MaxTurns = 0
+		cfg.Agents[name] = updatedAgent
 	}
 
 	// Validate max tokens

@@ -85,6 +85,7 @@ to assist developers in writing, debugging, and understanding code directly from
 		argsFile, _ := cmd.Flags().GetString("args-file")
 		timeoutStr, _ := cmd.Flags().GetString("timeout")
 		projectID, _ := cmd.Flags().GetString("project-id")
+		maxTurns, _ := cmd.Flags().GetInt("max-turns")
 
 		if deleteSession && sessionID == "" && flowID == "" {
 			return fmt.Errorf("--delete requires --session/-s or --flow/-F to be specified")
@@ -122,6 +123,16 @@ to assist developers in writing, debugging, and understanding code directly from
 				spinner.Stop()
 			}
 			return err
+		}
+
+		if maxTurns < 0 {
+			if spinner != nil {
+				spinner.Stop()
+			}
+			return fmt.Errorf("--max-turns must be a positive integer")
+		}
+		if maxTurns > 0 {
+			config.Get().MaxTurns = maxTurns
 		}
 
 		// Connect DB, this will also run migrations
@@ -408,6 +419,9 @@ func init() {
 
 	// Add project ID flag
 	rootCmd.Flags().StringP("project-id", "P", "", "Custom project ID (overrides auto-detected Git/directory-based ID)")
+
+	// Add max-turns flag
+	rootCmd.Flags().Int("max-turns", 0, "Maximum number of agent tool-use turns per request (default 100)")
 
 	// Register custom validation for the format flag
 	rootCmd.RegisterFlagCompletionFunc("output-format", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

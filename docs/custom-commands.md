@@ -13,11 +13,15 @@ Commands are discovered from the following directories, in order:
 - `$XDG_CONFIG_HOME/opencode/commands/` (defaults to `~/.config/opencode/commands/`)
 - `$HOME/.opencode/commands/`
 - `$HOME/.agents/commands/`
+- `$HOME/.claude/commands/`
 
 **Project commands** (prefix `project:`):
 
-- `<PROJECT_DIR>/.opencode/commands/`
-- `<PROJECT_DIR>/.agents/commands/`
+- `.opencode/commands/`
+- `.agents/commands/`
+- `.claude/commands/`
+
+Project commands are discovered by walking up from the current working directory to the Git worktree root, checking each directory along the way.
 
 Each `.md` file becomes a command. The filename (without extension) becomes the command ID.
 
