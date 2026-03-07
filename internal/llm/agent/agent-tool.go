@@ -151,6 +151,7 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		}
 	}
 
+	// TODO: agent inside does run in a new gorouitne allowing parallelism HOWEVER, right below we block on result channel anyway
 	done, err := a.Run(ctx, taskSession.ID, params.Prompt)
 	if err != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error while running task agent: %s", err)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/logging"
 )
 
 type PersistentShell struct {
@@ -97,6 +98,7 @@ func newPersistentShell(cwd string) *PersistentShell {
 
 	err = cmd.Start()
 	if err != nil {
+		logging.Error(fmt.Sprintf("Can't start shell: %s", err.Error()))
 		return nil
 	}
 
@@ -122,7 +124,7 @@ func newPersistentShell(cwd string) *PersistentShell {
 	go func() {
 		err := cmd.Wait()
 		if err != nil {
-			// Log the error if needed
+			logging.Error(fmt.Sprintf("Can't complete shell command: %s", err.Error()))
 		}
 		shell.isAlive = false
 		close(shell.commandQueue)
