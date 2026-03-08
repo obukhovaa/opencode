@@ -3,8 +3,11 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"slices"
+	"strings"
 
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/diff"
 )
 
 type ToolInfo struct {
@@ -112,6 +115,80 @@ type ToolCall struct {
 type BaseTool interface {
 	Info() ToolInfo
 	Run(ctx context.Context, params ToolCall) (ToolResponse, error)
+	AllowParallelism(call ToolCall, allCalls []ToolCall) bool
+}
+
+var mutatingToolNames = map[string]bool{
+	EditToolName:      true,
+	WriteToolName:     true,
+	MultiEditToolName: true,
+	DeleteToolName:    true,
+	PatchToolName:     true,
+}
+
+func IsMutatingTool(name string) bool {
+	return mutatingToolNames[name]
+}
+
+func ExtractPathsFromCall(call ToolCall) []string {
+	switch call.Name {
+	case PatchToolName:
+		var params struct {
+			PatchText string `json:"patch_text"`
+		}
+		if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
+			return nil
+		}
+		paths := diff.IdentifyFilesNeeded(params.PatchText)
+		paths = append(paths, diff.IdentifyFilesAdded(params.PatchText)...)
+		return paths
+	default:
+		var common struct {
+			FilePath string `json:"file_path"`
+			Path     string `json:"path"`
+		}
+		if err := json.Unmarshal([]byte(call.Input), &common); err != nil {
+			return nil
+		}
+		var paths []string
+		if common.FilePath != "" {
+			paths = append(paths, common.FilePath)
+		}
+		if common.Path != "" {
+			paths = append(paths, common.Path)
+		}
+		return paths
+	}
+}
+
+func hasFileConflict(call ToolCall, myPaths []string, allCalls []ToolCall) bool {
+	for _, other := range allCalls {
+		if other.ID == call.ID {
+			continue
+		}
+		if !IsMutatingTool(other.Name) {
+			continue
+		}
+		otherPaths := ExtractPathsFromCall(other)
+		for _, mp := range myPaths {
+			if slices.Contains(otherPaths, mp) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func IsSafeReadOnlyCommand(command string) bool {
+	cmdLower := strings.ToLower(command)
+	for _, safe := range safeReadOnlyCommands {
+		if strings.HasPrefix(cmdLower, strings.ToLower(safe)) {
+			if len(cmdLower) == len(safe) || cmdLower[len(safe)] == ' ' || cmdLower[len(safe)] == '-' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func GetContextValues(ctx context.Context) (string, string) {

@@ -179,7 +179,7 @@ func (w *writeTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	case permission.ActionDeny:
 		return NewEmptyResponse(), permission.ErrorPermissionDenied
 	default:
-		p := w.permissions.Request(
+		p := w.permissions.Request(ctx,
 			permission.CreatePermissionRequest{
 				SessionID:   sessionID,
 				Path:        permissionPath,
@@ -238,4 +238,12 @@ func (w *writeTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 			Removals:  removals,
 		},
 	), nil
+}
+
+func (w *writeTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	var params WriteParams
+	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
+		return false
+	}
+	return !hasFileConflict(call, []string{params.FilePath}, allCalls)
 }

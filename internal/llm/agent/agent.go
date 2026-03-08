@@ -79,11 +79,12 @@ type agent struct {
 	sessions session.Service
 	messages message.Service
 
-	agentID   config.AgentName
-	toolsCh   <-chan tools.BaseTool
-	toolsOnce sync.Once
-	tools     []tools.BaseTool
-	provider  provider.Provider
+	agentID          config.AgentName
+	toolsCh          <-chan tools.BaseTool
+	toolsOnce        sync.Once
+	tools            []tools.BaseTool
+	provider         provider.Provider
+	allowParallelism bool
 
 	titleProvider     provider.Provider
 	summarizeProvider provider.Provider
@@ -132,6 +133,7 @@ func newAgent(
 		titleProvider:     titleProvider,
 		summarizeProvider: summarizeProvider,
 		activeRequests:    sync.Map{},
+		allowParallelism:  agentInfo.AllowsParallelToolUse(),
 	}
 
 	return agent, nil
@@ -540,119 +542,292 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	// Process tool calls
 	toolResults := make([]message.ToolResult, len(assistantMsg.ToolCalls()))
 	toolCalls := assistantMsg.ToolCalls()
+
+	// Phase 1: Pre-processing (synchronous) — resolve tools, loop detection, classify parallelism
+	type toolEntry struct {
+		index    int
+		tool     tools.BaseTool
+		toolCall message.ToolCall
+		parallel bool
+	}
+	var parallelGroup []toolEntry
+	var sequentialGroup []toolEntry
+
+	allToolCalls := make([]tools.ToolCall, len(toolCalls))
+	for i, tc := range toolCalls {
+		allToolCalls[i] = tools.ToolCall{ID: tc.ID, Name: tc.Name, Input: tc.Input}
+	}
+
 	for i, toolCall := range toolCalls {
-		select {
-		case <-ctx.Done():
-			a.finishMessage(context.Background(), &assistantMsg, message.FinishReasonCanceled)
-			// Make all future tool calls cancelled
-			for j := i; j < len(toolCalls); j++ {
-				toolResults[j] = message.ToolResult{
-					ToolCallID: toolCalls[j].ID,
-					Name:       toolCalls[j].Name,
+		var tool tools.BaseTool
+		for _, availableTool := range toolSet {
+			if availableTool.Info().Name == toolCall.Name {
+				tool = availableTool
+				break
+			}
+		}
+		if tool == nil {
+			toolResults[i] = message.ToolResult{
+				ToolCallID: toolCall.ID,
+				Name:       toolCall.Name,
+				Content:    fmt.Sprintf("Tool not found: %s", toolCall.Name),
+				IsError:    true,
+			}
+			continue
+		}
+
+		if tracker.Track(toolCall.Name, toolCall.Input) {
+			streak := tracker.streakCount[toolCall.Name]
+			logging.Warn("Tool call loop detected",
+				"tool", toolCall.Name,
+				"streak", streak,
+				"session_id", sessionID,
+			)
+			toolResults[i] = message.ToolResult{
+				ToolCallID: toolCall.ID,
+				Name:       toolCall.Name,
+				Content:    loopDetectedMessage(toolCall.Name, streak),
+				IsError:    true,
+			}
+			continue
+		}
+
+		entry := toolEntry{index: i, tool: tool, toolCall: toolCall}
+		if a.allowParallelism && tool.AllowParallelism(allToolCalls[i], allToolCalls) {
+			entry.parallel = true
+			parallelGroup = append(parallelGroup, entry)
+		} else {
+			sequentialGroup = append(sequentialGroup, entry)
+		}
+	}
+
+	logging.Debug("Tool execution groups",
+		"parallel", len(parallelGroup),
+		"sequential", len(sequentialGroup),
+		"session_id", sessionID,
+	)
+
+	// Phase 2: Execute parallel group concurrently
+	permissionDenied := false
+	if len(parallelGroup) > 0 {
+		permCtx, permCancel := context.WithCancel(ctx)
+		var wg sync.WaitGroup
+		for _, entry := range parallelGroup {
+			wg.Add(1)
+			go func(e toolEntry) {
+				defer wg.Done()
+				now := time.Now()
+
+				type runResult struct {
+					resp tools.ToolResponse
+					err  error
+				}
+				// safety net to ensure no hang if tool's implementation doesn't handle ctx cancelation properly
+				ch := make(chan runResult, 1)
+				go func() {
+					r, errTool := e.tool.Run(permCtx, tools.ToolCall{
+						ID:    e.toolCall.ID,
+						Name:  e.toolCall.Name,
+						Input: e.toolCall.Input,
+					})
+					ch <- runResult{r, errTool}
+				}()
+				var toolResult tools.ToolResponse
+				var toolErr error
+				select {
+				case <-permCtx.Done():
+					return
+				case res := <-ch:
+					toolResult, toolErr = res.resp, res.err
+				}
+
+				gauge := time.Since(now).Milliseconds()
+				if toolErr != nil {
+					if errors.Is(toolErr, permission.ErrorPermissionDenied) {
+						logging.Warn("Tool call denied", "tool", e.toolCall.Name,
+							"ID", e.toolCall.ID,
+							"input", e.toolCall.Input,
+							"gauge", gauge,
+						)
+						toolResults[e.index] = message.ToolResult{
+							ToolCallID: e.toolCall.ID,
+							Name:       e.toolCall.Name,
+							Content:    "Permission denied",
+							IsError:    true,
+						}
+						permCancel()
+						return
+					}
+					logging.Error("Tool call failed", "tool", e.toolCall.Name,
+						"ID", e.toolCall.ID,
+						"input", e.toolCall.Input,
+						"error", toolErr.Error(),
+						"gauge", gauge,
+					)
+					toolResults[e.index] = message.ToolResult{
+						ToolCallID: e.toolCall.ID,
+						Name:       e.toolCall.Name,
+						Content:    fmt.Sprintf("Tool returned error: %s", toolErr.Error()),
+						IsError:    true,
+					}
+					return
+				}
+				logging.Debug("Tool call completed", "tool", e.toolCall.Name,
+					"ID", e.toolCall.ID,
+					"input", e.toolCall.Input,
+					"successful", !toolResult.IsError,
+					"gauge", gauge,
+				)
+				toolResults[e.index] = message.ToolResult{
+					Type:       message.ToolResultType(toolResult.Type),
+					Name:       e.toolCall.Name,
+					ToolCallID: e.toolCall.ID,
+					Content:    toolResult.Content,
+					Metadata:   toolResult.Metadata,
+					IsError:    toolResult.IsError,
+				}
+			}(entry)
+		}
+		wg.Wait()
+		permCancel()
+
+		// Check if any parallel tool returned permission denied
+		for _, entry := range parallelGroup {
+			r := &toolResults[entry.index]
+			if r.IsError && r.Content == "Permission denied" {
+				permissionDenied = true
+				break
+			}
+		}
+	}
+
+	// Check for user cancellation after parallel group
+	if ctx.Err() != nil {
+		a.finishMessage(context.Background(), &assistantMsg, message.FinishReasonCanceled)
+		for i, tc := range toolCalls {
+			if toolResults[i].ToolCallID == "" {
+				toolResults[i] = message.ToolResult{
+					ToolCallID: tc.ID,
+					Name:       tc.Name,
 					Content:    "Tool execution canceled by user",
 					IsError:    true,
 				}
 			}
-			goto out
-		default:
-			// Continue processing
-			var tool tools.BaseTool
-			for _, availableTool := range toolSet {
-				if availableTool.Info().Name == toolCall.Name {
-					tool = availableTool
-					break
-				}
+		}
+		goto out
+	}
+
+	// If permission denied in parallel group, skip sequential and fill remaining
+	if permissionDenied {
+		for _, entry := range sequentialGroup {
+			toolResults[entry.index] = message.ToolResult{
+				ToolCallID: entry.toolCall.ID,
+				Name:       entry.toolCall.Name,
+				Content:    "Tool execution canceled by user",
+				IsError:    true,
 			}
-			// Tool not found
-			if tool == nil {
-				toolResults[i] = message.ToolResult{
-					ToolCallID: toolCall.ID,
-					Name:       toolCall.Name,
-					Content:    fmt.Sprintf("Tool not found: %s", toolCall.Name),
+		}
+		// Fill any unset parallel results (cancelled mid-flight)
+		for _, entry := range parallelGroup {
+			if toolResults[entry.index].ToolCallID == "" {
+				toolResults[entry.index] = message.ToolResult{
+					ToolCallID: entry.toolCall.ID,
+					Name:       entry.toolCall.Name,
+					Content:    "Tool execution canceled by user",
 					IsError:    true,
 				}
-				continue
 			}
+		}
+		a.finishMessage(ctx, &assistantMsg, message.FinishReasonPermissionDenied)
+		goto out
+	}
 
-			// Loop detection: check if this exact tool call has been repeated
-			if tracker.Track(toolCall.Name, toolCall.Input) {
-				streak := tracker.streakCount[toolCall.Name]
-				logging.Warn("Tool call loop detected",
-					"tool", toolCall.Name,
-					"streak", streak,
-					"session_id", sessionID,
-				)
-				toolResults[i] = message.ToolResult{
-					ToolCallID: toolCall.ID,
-					Name:       toolCall.Name,
-					Content:    loopDetectedMessage(toolCall.Name, streak),
-					IsError:    true,
-				}
-				continue
+	// Phase 3: Execute sequential group
+	for _, entry := range sequentialGroup {
+		select {
+		case <-ctx.Done():
+			a.finishMessage(context.Background(), &assistantMsg, message.FinishReasonCanceled)
+			toolResults[entry.index] = message.ToolResult{
+				ToolCallID: entry.toolCall.ID,
+				Name:       entry.toolCall.Name,
+				Content:    "Tool execution canceled by user",
+				IsError:    true,
 			}
-
-			now := time.Now()
-
-			// TODO: add parallelism so tool calls can run concurrently (at least for Task tool)
-			toolResult, toolErr := tool.Run(ctx, tools.ToolCall{
-				ID:    toolCall.ID,
-				Name:  toolCall.Name,
-				Input: toolCall.Input,
-			})
-			gauge := time.Since(now).Milliseconds()
-			if toolErr != nil {
-				if errors.Is(toolErr, permission.ErrorPermissionDenied) {
-					logging.Warn("Tool call denied", "tool", toolCall.Name,
-						"ID", toolCall.ID,
-						"input", toolCall.Input,
-						"gauge", gauge,
-					)
-					toolResults[i] = message.ToolResult{
-						ToolCallID: toolCall.ID,
-						Name:       toolCall.Name,
-						Content:    "Permission denied",
+			// Fill remaining sequential entries
+			for _, remaining := range sequentialGroup {
+				if toolResults[remaining.index].ToolCallID == "" {
+					toolResults[remaining.index] = message.ToolResult{
+						ToolCallID: remaining.toolCall.ID,
+						Name:       remaining.toolCall.Name,
+						Content:    "Tool execution canceled by user",
 						IsError:    true,
 					}
-					for j := i + 1; j < len(toolCalls); j++ {
-						toolResults[j] = message.ToolResult{
-							ToolCallID: toolCalls[j].ID,
-							Name:       toolCalls[j].Name,
+				}
+			}
+			goto out
+		default:
+		}
+
+		now := time.Now()
+		toolResult, toolErr := entry.tool.Run(ctx, tools.ToolCall{
+			ID:    entry.toolCall.ID,
+			Name:  entry.toolCall.Name,
+			Input: entry.toolCall.Input,
+		})
+		gauge := time.Since(now).Milliseconds()
+		if toolErr != nil {
+			if errors.Is(toolErr, permission.ErrorPermissionDenied) {
+				logging.Warn("Tool call denied", "tool", entry.toolCall.Name,
+					"ID", entry.toolCall.ID,
+					"input", entry.toolCall.Input,
+					"gauge", gauge,
+				)
+				toolResults[entry.index] = message.ToolResult{
+					ToolCallID: entry.toolCall.ID,
+					Name:       entry.toolCall.Name,
+					Content:    "Permission denied",
+					IsError:    true,
+				}
+				for _, remaining := range sequentialGroup {
+					if toolResults[remaining.index].ToolCallID == "" {
+						toolResults[remaining.index] = message.ToolResult{
+							ToolCallID: remaining.toolCall.ID,
+							Name:       remaining.toolCall.Name,
 							Content:    "Tool execution canceled by user",
 							IsError:    true,
 						}
 					}
-					a.finishMessage(ctx, &assistantMsg, message.FinishReasonPermissionDenied)
-					break
-				} else {
-					logging.Error("Tool call failed", "tool", toolCall.Name,
-						"ID", toolCall.ID,
-						"input", toolCall.Input,
-						"error", toolErr.Error(),
-						"gauge", gauge,
-					)
-					toolResults[i] = message.ToolResult{
-						ToolCallID: toolCall.ID,
-						Name:       toolCall.Name,
-						Content:    fmt.Sprintf("Tool returned error: %s", toolErr.Error()),
-						IsError:    true,
-					}
-					continue
 				}
+				a.finishMessage(ctx, &assistantMsg, message.FinishReasonPermissionDenied)
+				break
 			}
-			logging.Debug("Tool call completed", "tool", toolCall.Name,
-				"ID", toolCall.ID,
-				"input", toolCall.Input,
-				"successful", !toolResult.IsError,
+			logging.Error("Tool call failed", "tool", entry.toolCall.Name,
+				"ID", entry.toolCall.ID,
+				"input", entry.toolCall.Input,
+				"error", toolErr.Error(),
 				"gauge", gauge,
 			)
-			toolResults[i] = message.ToolResult{
-				Type:       message.ToolResultType(toolResult.Type),
-				Name:       toolCall.Name,
-				ToolCallID: toolCall.ID,
-				Content:    toolResult.Content,
-				Metadata:   toolResult.Metadata,
-				IsError:    toolResult.IsError,
+			toolResults[entry.index] = message.ToolResult{
+				ToolCallID: entry.toolCall.ID,
+				Name:       entry.toolCall.Name,
+				Content:    fmt.Sprintf("Tool returned error: %s", toolErr.Error()),
+				IsError:    true,
 			}
+			continue
+		}
+		logging.Debug("Tool call completed", "tool", entry.toolCall.Name,
+			"ID", entry.toolCall.ID,
+			"input", entry.toolCall.Input,
+			"successful", !toolResult.IsError,
+			"gauge", gauge,
+		)
+		toolResults[entry.index] = message.ToolResult{
+			Type:       message.ToolResultType(toolResult.Type),
+			Name:       entry.toolCall.Name,
+			ToolCallID: entry.toolCall.ID,
+			Content:    toolResult.Content,
+			Metadata:   toolResult.Metadata,
+			IsError:    toolResult.IsError,
 		}
 	}
 out:

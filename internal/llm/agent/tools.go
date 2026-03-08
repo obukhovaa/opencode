@@ -70,17 +70,17 @@ func NewToolSet(
 		case tools.GrepToolName:
 			return tools.NewGrepTool()
 		case tools.ReadToolName:
-			return tools.NewViewTool(lspService)
+			return tools.NewReadTool(lspService)
 		case tools.ViewImageToolName:
 			return tools.NewViewImageTool()
 		case tools.WebFetchToolName:
-			return tools.NewFetchTool(permissions)
+			return tools.NewFetchTool(reg, permissions)
 		case tools.SkillToolName:
 			return tools.NewSkillTool(permissions, reg)
 		case tools.SourcegraphToolName:
 			return tools.NewSourcegraphTool()
 		case tools.WebSearchToolName:
-			return tools.NewWebSearchTool(tools.NewSearchProviderRegistry(config.Get()), permissions)
+			return tools.NewWebSearchTool(reg, tools.NewSearchProviderRegistry(config.Get()), permissions)
 		case tools.WriteToolName:
 			return tools.NewWriteTool(lspService, permissions, historyService, reg)
 		case tools.EditToolName:

@@ -21,6 +21,9 @@ import (
 const structuredOutputPrompt = `
 IMPORTANT: The user has requested structured output. You MUST use the struct_output tool to provide your final response. Do NOT respond with plain text - you MUST call the struct_output tool with your answer formatted according to the schema.`
 
+const parallelToolUsePrompt = `
+You have the capability to call multiple tools in a single response. When multiple independent pieces of information are requested and all commands are likely to succeed, run multiple tool calls in parallel for optimal performance. For example, if you need to read 3 files, call read 3 times in parallel rather than sequentially.`
+
 func getEnvironmentInfo() string {
 	cwd := config.WorkingDirectory()
 	isGit := isGitRepo(cwd)
@@ -91,8 +94,15 @@ func GetAgentPrompt(agentName config.AgentName, provider models.ModelProvider) s
 
 	// Append structured output instruction if the agent has the tool enabled
 	if info, ok := reg.Get(agentName); ok {
-		if info.Output != nil && info.Output.Schema != nil && reg.IsToolEnabled(agentName, "struct_output") {
+		if info.Output != nil && info.Output.Schema != nil && reg.IsToolEnabled(agentName, tools.StructOutputToolName) {
 			basePrompt += structuredOutputPrompt
+		}
+	}
+
+	// Append parallel tool use encouragement for agents with tools
+	if info, ok := reg.Get(agentName); ok {
+		if reg.HasTools(agentName) && info.AllowsParallelToolUse() {
+			basePrompt += parallelToolUsePrompt
 		}
 	}
 

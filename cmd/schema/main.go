@@ -308,6 +308,11 @@ func generateSchema() map[string]any {
 						"description": "Whether the tool is enabled for this agent",
 					},
 				},
+				"parallelToolUse": map[string]any{
+					"type":        "boolean",
+					"description": "Whether to enable parallel tool execution for this agent. When true (default), independent tool calls run concurrently. Set to false to force sequential execution.",
+					"default":     true,
+				},
 			},
 			"required": []string{"model"},
 		},

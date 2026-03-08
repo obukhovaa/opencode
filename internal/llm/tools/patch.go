@@ -253,7 +253,7 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 		rootDir := config.WorkingDirectory()
 		permissionPath := rootDir
 
-		allowed := p.permissions.Request(
+		allowed := p.permissions.Request(ctx,
 			permission.CreatePermissionRequest{
 				SessionID:   sessionID,
 				Path:        permissionPath,
@@ -383,4 +383,14 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 			Additions:    totalAdditions,
 			Removals:     totalRemovals,
 		}), nil
+}
+
+func (p *patchTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	var params PatchParams
+	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
+		return false
+	}
+	affectedPaths := diff.IdentifyFilesNeeded(params.PatchText)
+	affectedPaths = append(affectedPaths, diff.IdentifyFilesAdded(params.PatchText)...)
+	return !hasFileConflict(call, affectedPaths, allCalls)
 }

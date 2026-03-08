@@ -270,7 +270,7 @@ func (b *mcpTool) Run(ctx context.Context, params tools.ToolCall) (tools.ToolRes
 		return tools.NewEmptyResponse(), permission.ErrorPermissionDenied
 	default:
 		permissionDescription := fmt.Sprintf("execute %s with the following parameters: %s", b.Info().Name, params.Input)
-		p := b.permissions.Request(
+		p := b.permissions.Request(ctx,
 			permission.CreatePermissionRequest{
 				SessionID:   sessionID,
 				Path:        config.WorkingDirectory(),
@@ -328,4 +328,8 @@ func runTool(ctx context.Context, c MCPClient, toolName string, input string) (t
 	}
 
 	return tools.NewTextResponse(output), nil
+}
+
+func (b *mcpTool) AllowParallelism(call tools.ToolCall, allCalls []tools.ToolCall) bool {
+	return true
 }

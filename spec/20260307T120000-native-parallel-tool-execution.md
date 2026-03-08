@@ -1,7 +1,7 @@
 # Native Parallel Tool Execution
 
 **Date**: 2026-03-07
-**Status**: Draft
+**Status**: In Progress
 **Author**: AI-assisted
 
 ## Overview
@@ -328,65 +328,65 @@ This matches Anthropic's recommended prompting from their docs.
 
 ### Phase 1: `AllowParallelism` Interface & Implementations
 
-- [ ] **1.1** Extend `BaseTool` interface in `internal/llm/tools/tools.go` with `AllowParallelism(call ToolCall, allCalls []ToolCall) bool`. Add shared helpers: `IsMutatingTool(name string) bool` (returns true for edit/write/multiedit/delete/patch) and `ExtractPathsFromCall(call ToolCall) []string` (tries `file_path` and `path` JSON keys).
+- [x] **1.1** Extend `BaseTool` interface in `internal/llm/tools/tools.go` with `AllowParallelism(call ToolCall, allCalls []ToolCall) bool`. Add shared helpers: `IsMutatingTool(name string) bool` (returns true for edit/write/multiedit/delete/patch) and `ExtractPathsFromCall(call ToolCall) []string` (tries `file_path` and `path` JSON keys).
 
-- [ ] **1.2** Implement `AllowParallelism` for all read-only tools (`read`, `glob`, `grep`, `ls`, `view_image`, `webfetch`, `websearch`, `sourcegraph`, `skill`): always return `true`.
+- [x] **1.2** Implement `AllowParallelism` for all read-only tools (`read`, `glob`, `grep`, `ls`, `view_image`, `webfetch`, `websearch`, `sourcegraph`, `skill`): always return `true`.
 
-- [ ] **1.3** Implement `AllowParallelism` for `task` tool in `agent-tool.go`: always return `true`.
+- [x] **1.3** Implement `AllowParallelism` for `task` tool in `agent-tool.go`: always return `true`.
 
-- [ ] **1.4** Implement `AllowParallelism` for file-mutating tools (`edit`, `write`, `multiedit`, `delete`, `patch`): parse own params, extract own target path(s), scan `allCalls` for other mutating tools with overlapping paths using `ExtractPathsFromCall`. For `patch`: use `diff.IdentifyFilesNeeded` + `diff.IdentifyFilesAdded` to extract affected paths from `patch_text`.
+- [x] **1.4** Implement `AllowParallelism` for file-mutating tools (`edit`, `write`, `multiedit`, `delete`, `patch`): parse own params, extract own target path(s), scan `allCalls` for other mutating tools with overlapping paths using `ExtractPathsFromCall`. For `patch`: use `diff.IdentifyFilesNeeded` + `diff.IdentifyFilesAdded` to extract affected paths from `patch_text`.
 
-- [ ] **1.5** Implement `AllowParallelism` for `bash`: parse `BashParams.Command`, check against `safeReadOnlyCommands` using existing `isSafeReadOnlyCommand` logic (prefix match with boundary check). Return `true` for safe commands, `false` otherwise.
+- [x] **1.5** Implement `AllowParallelism` for `bash`: parse `BashParams.Command`, check against `safeReadOnlyCommands` using existing `isSafeReadOnlyCommand` logic (prefix match with boundary check). Return `true` for safe commands, `false` otherwise.
 
-- [ ] **1.6** Implement `AllowParallelism` for `struct_output`: always return `false`.
+- [x] **1.6** Implement `AllowParallelism` for `struct_output`: always return `false`.
 
-- [ ] **1.7** Implement `AllowParallelism` for MCP tools (in `mcp-tool.go`): default return `true`.
+- [x] **1.7** Implement `AllowParallelism` for MCP tools (in `mcp-tool.go`): default return `true`.
 
-- [ ] **1.8** Add `buildExecutionGroups(toolCalls []message.ToolCall, toolResults []message.ToolResult, toolSet []tools.BaseTool, tracker *callTracker) (parallel []int, sequential []int)` in `agent.go` that: looks up tools, runs loop detection, calls `AllowParallelism`, and partitions indices into two groups.
+- [x] **1.8** Add `buildExecutionGroups(toolCalls []message.ToolCall, toolResults []message.ToolResult, toolSet []tools.BaseTool, tracker *callTracker) (parallel []int, sequential []int)` in `agent.go` that: looks up tools, runs loop detection, calls `AllowParallelism`, and partitions indices into two groups.
 
 ### Phase 2: Parallel Execution Engine
 
-- [ ] **2.1** Refactor the tool execution section of `streamAndHandleEvents` (`agent.go:540-656`). Replace the sequential `for i, toolCall := range toolCalls` loop with:
+- [x] **2.1** Refactor the tool execution section of `streamAndHandleEvents` (`agent.go:540-656`). Replace the sequential `for i, toolCall := range toolCalls` loop with:
   1. Call `buildExecutionGroups` to partition
   2. Execute parallel group with `sync.WaitGroup` + goroutines
   3. Execute sequential group with existing logic
   4. Preserve the `goto out` / permission-denied / cancellation semantics
 
-- [ ] **2.2** Implement permission-denied propagation: create a derived context (`permCtx`) for the parallel group. Any goroutine that gets `permission.ErrorPermissionDenied` calls `permCancel()`. After `wg.Wait()`, scan parallel results for permission denied — if found, skip sequential group and fill remaining with "canceled".
+- [x] **2.2** Implement permission-denied propagation: create a derived context (`permCtx`) for the parallel group. Any goroutine that gets `permission.ErrorPermissionDenied` calls `permCancel()`. After `wg.Wait()`, scan parallel results for permission denied — if found, skip sequential group and fill remaining with "canceled".
 
-- [ ] **2.3** Ensure `toolResults[i]` writes are race-free. Each goroutine writes to its own pre-allocated index — no mutex needed since indices don't overlap. The `toolResults` slice is pre-allocated at line 541: `toolResults := make([]message.ToolResult, len(toolCalls))`.
+- [x] **2.3** Ensure `toolResults[i]` writes are race-free. Each goroutine writes to its own pre-allocated index — no mutex needed since indices don't overlap. The `toolResults` slice is pre-allocated at line 541: `toolResults := make([]message.ToolResult, len(toolCalls))`.
 
 ### Phase 3: TUI Updates
 
-- [ ] **3.1** Add `countToolsWithoutResponse` helper to `list.go` (variant of `hasToolsWithoutResponse` that returns count instead of bool).
+- [x] **3.1** Add `countToolsWithoutResponse` helper to `list.go` (variant of `hasToolsWithoutResponse` that returns count instead of bool).
 
-- [ ] **3.2** Update `working()` in `list.go` to show `"Running N tools"` when multiple tools are pending.
+- [x] **3.2** Update `working()` in `list.go` to show `"Running N tools"` when multiple tools are pending.
 
 ### Phase 4: System Prompt
 
-- [ ] **4.1** Add parallel tool use encouragement to `internal/llm/prompt/coder.go`, `hivemind.go`, and `workhorse.go` system prompts.
+- [x] **4.1** Add parallel tool use encouragement to `internal/llm/prompt/coder.go`, `hivemind.go`, and `workhorse.go` and `explorer.go` system prompts.
 
 ### Phase 5: Tests
 
-- [ ] **5.1** Unit test `AllowParallelism` for each tool type: read-only tools always true; struct_output always false; bash true for safe commands (`git status`, `go test`), false for unsafe (`rm`, `curl`); edit/write true when no file conflict, false when same file; delete uses `path` key correctly; patch extracts paths from patch text.
+- [x] **5.1** Unit test `AllowParallelism` for each tool type: read-only tools always true; struct_output always false; bash true for safe commands (`git status`, `go test`), false for unsafe (`rm`, `curl`); edit/write true when no file conflict, false when same file; delete uses `path` key correctly; patch extracts paths from patch text.
 
-- [ ] **5.2** Unit test `ExtractPathsFromCall`: verify extraction from edit (`file_path`), delete (`path`), write (`file_path`), unknown tool (empty). Verify `IsMutatingTool` returns correct classification.
+- [x] **5.2** Unit test `ExtractPathsFromCall`: verify extraction from edit (`file_path`), delete (`path`), write (`file_path`), unknown tool (empty). Verify `IsMutatingTool` returns correct classification.
 
-- [ ] **5.3** Unit test `buildExecutionGroups`: verify partitioning logic — read-only tools go to parallel, same-file edits go to sequential, different-file edits go to parallel, safe bash goes to parallel, unsafe bash goes to sequential, struct_output always sequential, not-found tools get error results.
+- [x] **5.3** Unit test `buildExecutionGroups`: verify partitioning logic — read-only tools go to parallel, same-file edits go to sequential, different-file edits go to parallel, safe bash goes to parallel, unsafe bash goes to sequential, struct_output always sequential, not-found tools get error results.
 
-- [ ] **5.4** Integration test: mock 3 read-only tools that each sleep 100ms. Verify total execution time is ~100ms (parallel) not ~300ms (sequential).
+- [x] **5.4** Integration test: mock 3 read-only tools that each sleep 100ms. Verify total execution time is ~100ms (parallel) not ~300ms (sequential).
 
-- [ ] **5.5** Integration test: mock 2 edit tools targeting the same file. Verify they execute sequentially (total time ~200ms).
+- [x] **5.5** Integration test: mock 2 edit tools targeting the same file. Verify they execute sequentially (total time ~200ms).
 
-- [ ] **5.6** Integration test: permission denied in parallel group cancels remaining tools.
+- [x] **5.6** Integration test: permission denied in parallel group cancels remaining tools.
 
-- [ ] **5.7** Verify existing agent tests pass unchanged (the external behavior — tool results in message history — is identical).
+- [x] **5.7** Verify existing agent tests pass unchanged (the external behavior — tool results in message history — is identical).
 
 ### Phase 6: Observability (optional follow-up)
 
-- [ ] **6.1** Add logging: `logging.Info("Executing tools", "parallel", len(parallelGroup), "sequential", len(sequentialGroup), "session_id", sessionID)`
+- [x] **6.1** Add logging: `logging.Info("Executing tools", "parallel", len(parallelGroup), "sequential", len(sequentialGroup), "session_id", sessionID)`
 
-- [ ] **6.2** Log per-tool execution time in parallel group for performance monitoring.
+- [x] **6.2** Log per-tool execution time in parallel group for performance monitoring.
 
 ## Edge Cases
 

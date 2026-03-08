@@ -66,6 +66,11 @@
           "description": "Display name for the agent",
           "type": "string"
         },
+        "parallelToolUse": {
+          "default": true,
+          "description": "Whether to enable parallel tool execution for this agent. When true (default), independent tool calls run concurrently. Set to false to force sequential execution.",
+          "type": "boolean"
+        },
         "permission": {
           "additionalProperties": {
             "anyOf": [
@@ -191,6 +196,11 @@
           "name": {
             "description": "Display name for the agent",
             "type": "string"
+          },
+          "parallelToolUse": {
+            "default": true,
+            "description": "Whether to enable parallel tool execution for this agent. When true (default), independent tool calls run concurrently. Set to false to force sequential execution.",
+            "type": "boolean"
           },
           "permission": {
             "additionalProperties": {

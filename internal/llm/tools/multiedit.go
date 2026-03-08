@@ -254,7 +254,7 @@ func (m *multiEditTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	case permission.ActionDeny:
 		return NewEmptyResponse(), permission.ErrorPermissionDenied
 	default:
-		p := m.permissions.Request(
+		p := m.permissions.Request(ctx,
 			permission.CreatePermissionRequest{
 				SessionID:   sessionID,
 				Path:        permissionPath,
@@ -312,4 +312,12 @@ func (m *multiEditTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	text += m.lsp.FormatDiagnostics(params.FilePath)
 	response.Content = text
 	return response, nil
+}
+
+func (m *multiEditTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	var params MultiEditParams
+	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
+		return false
+	}
+	return !hasFileConflict(call, []string{params.FilePath}, allCalls)
 }

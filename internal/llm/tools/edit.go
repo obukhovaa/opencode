@@ -168,6 +168,14 @@ func (e *editTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 	return response, nil
 }
 
+func (e *editTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	var params EditParams
+	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
+		return false
+	}
+	return !hasFileConflict(call, []string{params.FilePath}, allCalls)
+}
+
 func (e *editTool) createNewFile(ctx context.Context, filePath, content string) (ToolResponse, error) {
 	fileInfo, err := os.Stat(filePath)
 	if err == nil {
@@ -207,7 +215,7 @@ func (e *editTool) createNewFile(ctx context.Context, filePath, content string) 
 	case permission.ActionDeny:
 		return NewEmptyResponse(), permission.ErrorPermissionDenied
 	default:
-		p := e.permissions.Request(
+		p := e.permissions.Request(ctx,
 			permission.CreatePermissionRequest{
 				SessionID:   sessionID,
 				Path:        permissionPath,
@@ -332,7 +340,7 @@ func (e *editTool) deleteContent(ctx context.Context, filePath, oldString string
 	case permission.ActionDeny:
 		return NewEmptyResponse(), permission.ErrorPermissionDenied
 	default:
-		p := e.permissions.Request(
+		p := e.permissions.Request(ctx,
 			permission.CreatePermissionRequest{
 				SessionID:   sessionID,
 				Path:        permissionPath,
@@ -467,7 +475,7 @@ func (e *editTool) replaceContent(ctx context.Context, filePath, oldString, newS
 	case permission.ActionDeny:
 		return NewEmptyResponse(), permission.ErrorPermissionDenied
 	default:
-		p := e.permissions.Request(
+		p := e.permissions.Request(ctx,
 			permission.CreatePermissionRequest{
 				SessionID:   sessionID,
 				Path:        permissionPath,

@@ -153,6 +153,10 @@ func (v *viewImageTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	), nil
 }
 
+func (v *viewImageTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	return true
+}
+
 func getSupportedFormats() string {
 	var formats []string
 	for ext := range supportedImageTypes {

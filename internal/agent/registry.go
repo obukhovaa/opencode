@@ -38,6 +38,7 @@ type AgentInfo struct {
 	Tools           map[string]bool  `yaml:"tools,omitempty"`
 	Output          *Output          `yaml:"output,omitempty"`
 	Location        string           `yaml:"-"`
+	ParallelToolUse *bool            `yaml:"parallelToolUse,omitempty"`
 }
 
 type Registry interface {
@@ -47,6 +48,7 @@ type Registry interface {
 	// Resolves agent specific permission action for a given tool
 	EvaluatePermission(agentID, toolName, input string) permission.Action
 	IsToolEnabled(agentID, toolName string) bool
+	HasTools(agentID string) bool
 	GlobalPermissions() map[string]any
 }
 
@@ -161,8 +163,26 @@ func (r *registry) IsToolEnabled(agentID, toolName string) bool {
 	return permission.IsToolEnabled(toolName, a.Tools)
 }
 
+func (r *registry) HasTools(agentID string) bool {
+	a, ok := r.agents[agentID]
+	if !ok {
+		return true
+	}
+	if v, exists := a.Tools["*"]; exists && !v {
+		return false
+	}
+	return true
+}
+
 func (r *registry) GlobalPermissions() map[string]any {
 	return r.globalPerms
+}
+
+func (info *AgentInfo) AllowsParallelToolUse() bool {
+	if info.ParallelToolUse == nil {
+		return true
+	}
+	return *info.ParallelToolUse
 }
 
 func registerBuiltins(agents map[string]AgentInfo, cfg *config.Config) {
@@ -334,6 +354,9 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 			}
 			existing.Output.Schema = agentCfg.Output.Schema
 		}
+		if agentCfg.ParallelToolUse != nil {
+			existing.ParallelToolUse = agentCfg.ParallelToolUse
+		}
 
 		agents[name] = existing
 	}
@@ -394,6 +417,9 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 	}
 	if md.Disabled {
 		existing.Disabled = true
+	}
+	if md.ParallelToolUse != nil {
+		existing.ParallelToolUse = md.ParallelToolUse
 	}
 	existing.Location = md.Location
 }

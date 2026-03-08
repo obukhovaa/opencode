@@ -20,7 +20,7 @@ func setupDeleteTest(t *testing.T) (context.Context, BaseTool, *gomock.Controlle
 	ctrl := gomock.NewController(t)
 
 	mockPerms := mock_permission.NewMockService(ctrl)
-	mockPerms.EXPECT().Request(gomock.Any()).Return(true).AnyTimes()
+	mockPerms.EXPECT().Request(gomock.Any(), gomock.Any()).Return(true).AnyTimes()
 
 	files := &stubHistoryService{}
 	tool := NewDeleteTool(mockPerms, files, &stubRegistry{})

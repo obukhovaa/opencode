@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/permission"
 )
@@ -128,16 +129,18 @@ func defaultDescription(name string) string {
 }
 
 type websearchTool struct {
-	registry    SearchProviderRegistry
-	permissions permission.Service
-	client      *http.Client
+	agentRegistry agentregistry.Registry
+	registry      SearchProviderRegistry
+	permissions   permission.Service
+	client        *http.Client
 }
 
-func NewWebSearchTool(registry SearchProviderRegistry, permissions permission.Service) BaseTool {
+func NewWebSearchTool(agents agentregistry.Registry, registry SearchProviderRegistry, permissions permission.Service) BaseTool {
 	return &websearchTool{
-		registry:    registry,
-		permissions: permissions,
-		client:      &http.Client{Timeout: searchTimeout},
+		agentRegistry: agents,
+		registry:      registry,
+		permissions:   permissions,
+		client:        &http.Client{Timeout: searchTimeout},
 	}
 }
 
@@ -232,18 +235,25 @@ func (t *websearchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 		return NewEmptyResponse(), fmt.Errorf("session ID and message ID are required")
 	}
 
-	p := t.permissions.Request(
-		permission.CreatePermissionRequest{
-			SessionID:   sessionID,
-			Path:        config.WorkingDirectory(),
-			ToolName:    WebSearchToolName,
-			Action:      "websearch",
-			Description: fmt.Sprintf("Web search query: %s", params.Query),
-			Params:      WebSearchPermissionsParams{Query: params.Query, Provider: params.Provider},
-		},
-	)
-	if !p {
+	action := t.agentRegistry.EvaluatePermission(string(GetAgentID(ctx)), WebSearchToolName, params.Query)
+	switch action {
+	case permission.ActionAllow:
+		// Allowed by config, skip interactive permission
+	case permission.ActionDeny:
 		return NewEmptyResponse(), permission.ErrorPermissionDenied
+	default:
+		if !t.permissions.Request(ctx,
+			permission.CreatePermissionRequest{
+				SessionID:   sessionID,
+				Path:        config.WorkingDirectory(),
+				ToolName:    WebSearchToolName,
+				Action:      "websearch",
+				Description: fmt.Sprintf("Web search query: %s", params.Query),
+				Params:      WebSearchPermissionsParams{Query: params.Query, Provider: params.Provider},
+			},
+		) {
+			return NewEmptyResponse(), permission.ErrorPermissionDenied
+		}
 	}
 
 	reqBody, _ := json.Marshal(map[string]any{
@@ -294,6 +304,10 @@ func (t *websearchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	}
 
 	return NewTextResponse(formatResults(searchResp.Results)), nil
+}
+
+func (t *websearchTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	return true
 }
 
 func formatResults(results []searchResult) string {

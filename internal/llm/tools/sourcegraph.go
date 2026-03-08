@@ -246,6 +246,10 @@ func (t *sourcegraphTool) Run(ctx context.Context, call ToolCall) (ToolResponse,
 	return NewTextResponse(formattedResults), nil
 }
 
+func (t *sourcegraphTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	return true
+}
+
 func formatSourcegraphResults(result map[string]any, maxResults int, contextWindow int) (string, error) {
 	var buffer strings.Builder
 

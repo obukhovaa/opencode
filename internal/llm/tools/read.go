@@ -67,7 +67,7 @@ TIPS:
 - Avoid tiny repeated slices (e.g. 30-line chunks). If you need more context, read a larger window in a single call`
 )
 
-func NewViewTool(lspService lsp.LspService) BaseTool {
+func NewReadTool(lspService lsp.LspService) BaseTool {
 	return &viewTool{
 		lsp: lspService,
 	}
@@ -205,6 +205,10 @@ func (v *viewTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 			Content:  content,
 		},
 	), nil
+}
+
+func (v *viewTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	return true
 }
 
 func addLineNumbers(content string, startLine int) string {

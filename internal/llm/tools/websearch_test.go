@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	mock_agent "github.com/opencode-ai/opencode/internal/agent/mocks"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/permission"
 	permMocks "github.com/opencode-ai/opencode/internal/permission/mocks"
@@ -197,7 +198,9 @@ func TestWebSearchTool_Info(t *testing.T) {
 			},
 		}
 		reg := NewSearchProviderRegistry(cfg)
-		tool := NewWebSearchTool(reg, nil)
+		ctrl := gomock.NewController(t)
+		mockAgents := mock_agent.NewMockRegistry(ctrl)
+		tool := NewWebSearchTool(mockAgents, reg, nil)
 		info := tool.Info()
 
 		if info.Name != WebSearchToolName {
@@ -211,7 +214,9 @@ func TestWebSearchTool_Info(t *testing.T) {
 	t.Run("no providers", func(t *testing.T) {
 		cfg := &config.Config{}
 		reg := NewSearchProviderRegistry(cfg)
-		tool := NewWebSearchTool(reg, nil)
+		ctrl := gomock.NewController(t)
+		mockAgents := mock_agent.NewMockRegistry(ctrl)
+		tool := NewWebSearchTool(mockAgents, reg, nil)
 		info := tool.Info()
 
 		if info.Name != WebSearchToolName {
@@ -247,7 +252,7 @@ func TestWebSearchTool_Run(t *testing.T) {
 
 	ctrl := gomock.NewController(t)
 	mockPerms := permMocks.NewMockService(ctrl)
-	mockPerms.EXPECT().Request(gomock.Any()).Return(true)
+	mockPerms.EXPECT().Request(gomock.Any(), gomock.Any()).Return(true)
 
 	cfg := &config.Config{
 		WebSearch: &config.WebSearchConfig{
@@ -257,7 +262,9 @@ func TestWebSearchTool_Run(t *testing.T) {
 		},
 	}
 	reg := NewSearchProviderRegistry(cfg)
-	tool := NewWebSearchTool(reg, mockPerms)
+	mockAgents := mock_agent.NewMockRegistry(ctrl)
+	mockAgents.EXPECT().EvaluatePermission(gomock.Any(), gomock.Any(), gomock.Any()).Return(permission.ActionAsk)
+	tool := NewWebSearchTool(mockAgents, reg, mockPerms)
 
 	input, _ := json.Marshal(WebSearchParams{Query: "test query", Provider: "test"})
 	resp, err := tool.Run(newTestCtx(), ToolCall{ID: "1", Name: WebSearchToolName, Input: string(input)})
@@ -279,7 +286,8 @@ func TestWebSearchTool_Run_NoProviders(t *testing.T) {
 
 	cfg := &config.Config{}
 	reg := NewSearchProviderRegistry(cfg)
-	tool := NewWebSearchTool(reg, mockPerms)
+	mockAgents := mock_agent.NewMockRegistry(ctrl)
+	tool := NewWebSearchTool(mockAgents, reg, mockPerms)
 
 	input, _ := json.Marshal(WebSearchParams{Query: "test", Provider: "ddg"})
 	resp, err := tool.Run(newTestCtx(), ToolCall{ID: "1", Name: WebSearchToolName, Input: string(input)})
@@ -304,7 +312,8 @@ func TestWebSearchTool_Run_InvalidProvider(t *testing.T) {
 		},
 	}
 	reg := NewSearchProviderRegistry(cfg)
-	tool := NewWebSearchTool(reg, mockPerms)
+	mockAgents := mock_agent.NewMockRegistry(ctrl)
+	tool := NewWebSearchTool(mockAgents, reg, mockPerms)
 
 	input, _ := json.Marshal(WebSearchParams{Query: "test", Provider: "nonexistent"})
 	resp, err := tool.Run(newTestCtx(), ToolCall{ID: "1", Name: WebSearchToolName, Input: string(input)})
@@ -320,7 +329,7 @@ func TestWebSearchTool_Run_InvalidProvider(t *testing.T) {
 func TestWebSearchTool_Run_PermissionDenied(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mockPerms := permMocks.NewMockService(ctrl)
-	mockPerms.EXPECT().Request(gomock.Any()).Return(false)
+	mockPerms.EXPECT().Request(gomock.Any(), gomock.Any()).Return(false)
 
 	cfg := &config.Config{
 		WebSearch: &config.WebSearchConfig{
@@ -330,7 +339,9 @@ func TestWebSearchTool_Run_PermissionDenied(t *testing.T) {
 		},
 	}
 	reg := NewSearchProviderRegistry(cfg)
-	tool := NewWebSearchTool(reg, mockPerms)
+	mockAgents := mock_agent.NewMockRegistry(ctrl)
+	mockAgents.EXPECT().EvaluatePermission(gomock.Any(), gomock.Any(), gomock.Any()).Return(permission.ActionAsk)
+	tool := NewWebSearchTool(mockAgents, reg, mockPerms)
 
 	input, _ := json.Marshal(WebSearchParams{Query: "test", Provider: "ddg"})
 	_, err := tool.Run(newTestCtx(), ToolCall{ID: "1", Name: WebSearchToolName, Input: string(input)})
@@ -349,7 +360,7 @@ func TestWebSearchTool_Run_HTTPError(t *testing.T) {
 
 	ctrl := gomock.NewController(t)
 	mockPerms := permMocks.NewMockService(ctrl)
-	mockPerms.EXPECT().Request(gomock.Any()).Return(true)
+	mockPerms.EXPECT().Request(gomock.Any(), gomock.Any()).Return(true)
 
 	cfg := &config.Config{
 		WebSearch: &config.WebSearchConfig{
@@ -359,7 +370,9 @@ func TestWebSearchTool_Run_HTTPError(t *testing.T) {
 		},
 	}
 	reg := NewSearchProviderRegistry(cfg)
-	tool := NewWebSearchTool(reg, mockPerms)
+	mockAgents := mock_agent.NewMockRegistry(ctrl)
+	mockAgents.EXPECT().EvaluatePermission(gomock.Any(), gomock.Any(), gomock.Any()).Return(permission.ActionAsk)
+	tool := NewWebSearchTool(mockAgents, reg, mockPerms)
 
 	input, _ := json.Marshal(WebSearchParams{Query: "test", Provider: "test"})
 	resp, err := tool.Run(newTestCtx(), ToolCall{ID: "1", Name: WebSearchToolName, Input: string(input)})
@@ -380,7 +393,7 @@ func TestWebSearchTool_Run_EmptyResults(t *testing.T) {
 
 	ctrl := gomock.NewController(t)
 	mockPerms := permMocks.NewMockService(ctrl)
-	mockPerms.EXPECT().Request(gomock.Any()).Return(true)
+	mockPerms.EXPECT().Request(gomock.Any(), gomock.Any()).Return(true)
 
 	cfg := &config.Config{
 		WebSearch: &config.WebSearchConfig{
@@ -390,7 +403,9 @@ func TestWebSearchTool_Run_EmptyResults(t *testing.T) {
 		},
 	}
 	reg := NewSearchProviderRegistry(cfg)
-	tool := NewWebSearchTool(reg, mockPerms)
+	mockAgents := mock_agent.NewMockRegistry(ctrl)
+	mockAgents.EXPECT().EvaluatePermission(gomock.Any(), gomock.Any(), gomock.Any()).Return(permission.ActionAsk)
+	tool := NewWebSearchTool(mockAgents, reg, mockPerms)
 
 	input, _ := json.Marshal(WebSearchParams{Query: "obscure query", Provider: "test"})
 	resp, err := tool.Run(newTestCtx(), ToolCall{ID: "1", Name: WebSearchToolName, Input: string(input)})

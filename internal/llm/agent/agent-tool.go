@@ -204,6 +204,10 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		}), nil
 }
 
+func (a *agentTool) AllowParallelism(call tools.ToolCall, allCalls []tools.ToolCall) bool {
+	return true
+}
+
 func NewAgentTool(
 	sessions session.Service,
 	permissions permission.Service,

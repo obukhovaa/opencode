@@ -46,6 +46,10 @@ func (s *stubRegistry) IsToolEnabled(agentID, toolName string) bool {
 	return true
 }
 
+func (s *stubRegistry) HasTools(agentID string) bool {
+	return true
+}
+
 func (s *stubRegistry) GlobalPermissions() map[string]any {
 	return nil
 }
@@ -105,7 +109,7 @@ func setupEditTest(t *testing.T) (context.Context, string, BaseTool) {
 	ctrl := gomock.NewController(t)
 
 	mockPerms := mock_permission.NewMockService(ctrl)
-	mockPerms.EXPECT().Request(gomock.Any()).Return(true).AnyTimes()
+	mockPerms.EXPECT().Request(gomock.Any(), gomock.Any()).Return(true).AnyTimes()
 
 	files := &stubHistoryService{}
 	tool := NewEditTool(&noopLspService{}, mockPerms, files, &stubRegistry{})
@@ -254,7 +258,7 @@ func setupMultiEditTest(t *testing.T) (context.Context, string, BaseTool) {
 	ctrl := gomock.NewController(t)
 
 	mockPerms := mock_permission.NewMockService(ctrl)
-	mockPerms.EXPECT().Request(gomock.Any()).Return(true).AnyTimes()
+	mockPerms.EXPECT().Request(gomock.Any(), gomock.Any()).Return(true).AnyTimes()
 
 	files := &stubHistoryService{}
 	tool := NewMultiEditTool(&noopLspService{}, mockPerms, files, &stubRegistry{})

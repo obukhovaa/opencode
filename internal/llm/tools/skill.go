@@ -77,7 +77,7 @@ func (s *skillTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 	sessionID, _ := GetContextValues(ctx)
 	agentName := GetAgentID(ctx)
-	if !s.checkPermission(sessionID, string(agentName), params.Name, skillInfo.Description) {
+	if !s.checkPermission(ctx, sessionID, string(agentName), params.Name, skillInfo.Description) {
 		return NewTextErrorResponse(fmt.Sprintf("Permission denied for skill %q", params.Name)), nil
 	}
 
@@ -104,6 +104,10 @@ func (s *skillTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 		"dir":  baseDir,
 	}
 	return WithResponseMetadata(NewTextResponse(sb.String()), metadata), nil
+}
+
+func (s *skillTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	return true
 }
 
 // sampleSkillFiles lists up to limit files in the skill directory, excluding SKILL.md.
@@ -192,7 +196,7 @@ func collectFiles(dir string, limit int) []string {
 }
 
 // checkPermission checks if the skill can be loaded based on permissions.
-func (s *skillTool) checkPermission(sessionID string, agentName string, skillName, description string) bool {
+func (s *skillTool) checkPermission(ctx context.Context, sessionID string, agentName string, skillName, description string) bool {
 	action := s.registry.EvaluatePermission(agentName, SkillToolName, skillName)
 
 	switch action {
@@ -201,7 +205,7 @@ func (s *skillTool) checkPermission(sessionID string, agentName string, skillNam
 	case permission.ActionDeny:
 		return false
 	default:
-		return s.permissions.Request(permission.CreatePermissionRequest{
+		return s.permissions.Request(ctx, permission.CreatePermissionRequest{
 			SessionID:   sessionID,
 			ToolName:    SkillToolName,
 			Description: fmt.Sprintf("Load skill: %s - %s", skillName, description),

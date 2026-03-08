@@ -41,6 +41,20 @@ func (m *MockBaseTool) EXPECT() *MockBaseToolMockRecorder {
 	return m.recorder
 }
 
+// AllowParallelism mocks base method.
+func (m *MockBaseTool) AllowParallelism(call tools.ToolCall, allCalls []tools.ToolCall) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AllowParallelism", call, allCalls)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// AllowParallelism indicates an expected call of AllowParallelism.
+func (mr *MockBaseToolMockRecorder) AllowParallelism(call, allCalls any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AllowParallelism", reflect.TypeOf((*MockBaseTool)(nil).AllowParallelism), call, allCalls)
+}
+
 // Info mocks base method.
 func (m *MockBaseTool) Info() tools.ToolInfo {
 	m.ctrl.T.Helper()

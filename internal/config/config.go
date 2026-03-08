@@ -73,6 +73,7 @@ type Agent struct {
 	Color           string          `json:"color,omitempty"`
 	Hidden          bool            `json:"hidden,omitempty"`
 	Disabled        bool            `json:"disabled,omitempty"`
+	ParallelToolUse *bool           `json:"parallelToolUse,omitempty"`
 	Output          *AgentOutput    `json:"output,omitempty"`
 }
 

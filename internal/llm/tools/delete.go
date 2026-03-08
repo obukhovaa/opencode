@@ -138,7 +138,7 @@ func (d *deleteTool) Run(ctx context.Context, call ToolCall) (ToolResponse, erro
 		case permission.ActionDeny:
 			return NewEmptyResponse(), permission.ErrorPermissionDenied
 		default:
-			p := d.permissions.Request(
+			p := d.permissions.Request(ctx,
 				permission.CreatePermissionRequest{
 					SessionID:   sessionID,
 					Path:        filepath.Dir(absPath),
@@ -239,7 +239,7 @@ func (d *deleteTool) Run(ctx context.Context, call ToolCall) (ToolResponse, erro
 	case permission.ActionDeny:
 		return NewEmptyResponse(), permission.ErrorPermissionDenied
 	default:
-		p := d.permissions.Request(
+		p := d.permissions.Request(ctx,
 			permission.CreatePermissionRequest{
 				SessionID:   sessionID,
 				Path:        filepath.Dir(absPath),
@@ -293,4 +293,12 @@ func (d *deleteTool) Run(ctx context.Context, call ToolCall) (ToolResponse, erro
 			FilesDeleted: len(files),
 		},
 	), nil
+}
+
+func (d *deleteTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	var params DeleteParams
+	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
+		return false
+	}
+	return !hasFileConflict(call, []string{params.Path}, allCalls)
 }

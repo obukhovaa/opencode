@@ -105,17 +105,17 @@ func (mr *MockServiceMockRecorder) IsAutoApproveSession(sessionID any) *gomock.C
 }
 
 // Request mocks base method.
-func (m *MockService) Request(opts permission.CreatePermissionRequest) bool {
+func (m *MockService) Request(ctx context.Context, opts permission.CreatePermissionRequest) bool {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Request", opts)
+	ret := m.ctrl.Call(m, "Request", ctx, opts)
 	ret0, _ := ret[0].(bool)
 	return ret0
 }
 
 // Request indicates an expected call of Request.
-func (mr *MockServiceMockRecorder) Request(opts any) *gomock.Call {
+func (mr *MockServiceMockRecorder) Request(ctx, opts any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Request", reflect.TypeOf((*MockService)(nil).Request), opts)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Request", reflect.TypeOf((*MockService)(nil).Request), ctx, opts)
 }
 
 // Subscribe mocks base method.

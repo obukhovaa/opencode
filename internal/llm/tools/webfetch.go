@@ -12,6 +12,7 @@ import (
 
 	md "github.com/JohannesKaufmann/html-to-markdown"
 	"github.com/PuerkitoBio/goquery"
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/permission"
 )
@@ -29,8 +30,9 @@ type FetchPermissionsParams struct {
 }
 
 type fetchTool struct {
-	client      *http.Client
-	permissions permission.Service
+	agentRegistry agentregistry.Registry
+	client        *http.Client
+	permissions   permission.Service
 }
 
 const (
@@ -67,8 +69,9 @@ TIPS:
 - Set appropriate timeouts for potentially slow websites`
 )
 
-func NewFetchTool(permissions permission.Service) BaseTool {
+func NewFetchTool(agents agentregistry.Registry, permissions permission.Service) BaseTool {
 	return &fetchTool{
+		agentRegistry: agents,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -126,19 +129,25 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 		return NewEmptyResponse(), fmt.Errorf("session ID and message ID are required for creating a new file")
 	}
 
-	p := t.permissions.Request(
-		permission.CreatePermissionRequest{
-			SessionID:   sessionID,
-			Path:        config.WorkingDirectory(),
-			ToolName:    WebFetchToolName,
-			Action:      "webfetch",
-			Description: fmt.Sprintf("Fetch content from URL: %s", params.URL),
-			Params:      FetchPermissionsParams(params),
-		},
-	)
-
-	if !p {
+	action := t.agentRegistry.EvaluatePermission(string(GetAgentID(ctx)), WebFetchToolName, params.URL)
+	switch action {
+	case permission.ActionAllow:
+		// Allowed by config, skip interactive permission
+	case permission.ActionDeny:
 		return NewEmptyResponse(), permission.ErrorPermissionDenied
+	default:
+		if !t.permissions.Request(ctx,
+			permission.CreatePermissionRequest{
+				SessionID:   sessionID,
+				Path:        config.WorkingDirectory(),
+				ToolName:    WebFetchToolName,
+				Action:      "webfetch",
+				Description: fmt.Sprintf("Fetch content from URL: %s", params.URL),
+				Params:      FetchPermissionsParams(params),
+			},
+		) {
+			return NewEmptyResponse(), permission.ErrorPermissionDenied
+		}
 	}
 
 	client := t.client
@@ -221,6 +230,10 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	default:
 		return NewTextResponse(content), nil
 	}
+}
+
+func (t *fetchTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	return true
 }
 
 func extractTextFromHTML(html string) (string, error) {

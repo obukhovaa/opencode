@@ -139,6 +139,10 @@ func (g *globTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 	), nil
 }
 
+func (g *globTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	return true
+}
+
 func globFiles(pattern, searchPath string, limit int) ([]string, bool, error) {
 	cmdRg := fileutil.GetRgCmd(pattern)
 	if cmdRg != nil {

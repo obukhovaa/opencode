@@ -293,7 +293,7 @@ func (m *messagesCmp) View() string {
 		)
 }
 
-func hasToolsWithoutResponse(messages []message.Message) bool {
+func countToolsWithoutResponse(messages []message.Message) int {
 	toolCalls := make([]message.ToolCall, 0)
 	toolResults := make([]message.ToolResult, 0)
 	for _, m := range messages {
@@ -301,6 +301,7 @@ func hasToolsWithoutResponse(messages []message.Message) bool {
 		toolResults = append(toolResults, m.ToolResults()...)
 	}
 
+	count := 0
 	for _, v := range toolCalls {
 		found := false
 		for _, r := range toolResults {
@@ -310,10 +311,10 @@ func hasToolsWithoutResponse(messages []message.Message) bool {
 			}
 		}
 		if !found && v.Finished {
-			return true
+			count++
 		}
 	}
-	return false
+	return count
 }
 
 func hasUnfinishedToolCalls(messages []message.Message) bool {
@@ -337,7 +338,9 @@ func (m *messagesCmp) working() string {
 
 		task := "Thinking"
 		lastMessage := m.messages[len(m.messages)-1]
-		if hasToolsWithoutResponse(m.messages) {
+		if pendingCount := countToolsWithoutResponse(m.messages); pendingCount > 1 {
+			task = fmt.Sprintf("Running %d tools", pendingCount)
+		} else if pendingCount == 1 {
 			task = "Waiting for tool"
 		} else if hasUnfinishedToolCalls(m.messages) {
 			task = "Building tool call"

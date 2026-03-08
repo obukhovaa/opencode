@@ -158,6 +158,10 @@ func (t *lspTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) 
 	return NewTextResponse("No results found"), nil
 }
 
+func (t *lspTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	return true
+}
+
 func executeLspOperation(ctx context.Context, client *lsp.Client, operation string, uri protocol.DocumentUri, pos protocol.TextDocumentPositionParams) (any, error) {
 	switch operation {
 	case "goToDefinition":

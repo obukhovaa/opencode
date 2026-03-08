@@ -235,17 +235,7 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		workdir = config.WorkingDirectory()
 	}
 
-	isSafeReadOnly := false
-	cmdLower := strings.ToLower(params.Command)
-
-	for _, safe := range safeReadOnlyCommands {
-		if strings.HasPrefix(cmdLower, strings.ToLower(safe)) {
-			if len(cmdLower) == len(safe) || cmdLower[len(safe)] == ' ' || cmdLower[len(safe)] == '-' {
-				isSafeReadOnly = true
-				break
-			}
-		}
-	}
+	isSafeReadOnly := IsSafeReadOnlyCommand(params.Command)
 
 	sessionID, messageID := GetContextValues(ctx)
 	if sessionID == "" || messageID == "" {
@@ -260,7 +250,7 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 			return NewEmptyResponse(), permission.ErrorPermissionDenied
 		default:
 			// "ask" or unset: fall through to interactive permission
-			p := b.permissions.Request(
+			p := b.permissions.Request(ctx,
 				permission.CreatePermissionRequest{
 					SessionID:   sessionID,
 					Path:        workdir,
@@ -331,6 +321,14 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		return WithResponseMetadata(NewTextResponse("no output"), metadata), nil
 	}
 	return WithResponseMetadata(NewTextResponse(output), metadata), nil
+}
+
+func (b *bashTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	var params BashParams
+	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
+		return false
+	}
+	return IsSafeReadOnlyCommand(params.Command)
 }
 
 type persistResult struct {

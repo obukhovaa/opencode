@@ -84,6 +84,10 @@ func NewGrepTool() BaseTool {
 	return &grepTool{}
 }
 
+func (g *grepTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	return true
+}
+
 func (g *grepTool) Info() ToolInfo {
 	return ToolInfo{
 		Name:        GrepToolName,

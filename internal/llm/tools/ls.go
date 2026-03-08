@@ -137,6 +137,10 @@ func (l *lsTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
 	), nil
 }
 
+func (l *lsTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
+	return true
+}
+
 var errRipgrepNotFound = errors.New("ripgrep not found")
 
 func listDirectory(ctx context.Context, initialPath string, ignorePatterns []string, limit int) ([]string, bool, error) {
