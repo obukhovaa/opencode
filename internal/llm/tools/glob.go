@@ -143,6 +143,8 @@ func (g *globTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
 	return true
 }
 
+func (g *globTool) IsBaseline() bool { return true }
+
 func globFiles(pattern, searchPath string, limit int) ([]string, bool, error) {
 	cmdRg := fileutil.GetRgCmd(pattern)
 	if cmdRg != nil {

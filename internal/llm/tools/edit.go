@@ -176,6 +176,8 @@ func (e *editTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
 	return !hasFileConflict(call, []string{params.FilePath}, allCalls)
 }
 
+func (e *editTool) IsBaseline() bool { return true }
+
 func (e *editTool) createNewFile(ctx context.Context, filePath, content string) (ToolResponse, error) {
 	fileInfo, err := os.Stat(filePath)
 	if err == nil {

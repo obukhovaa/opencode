@@ -310,6 +310,8 @@ func (t *websearchTool) AllowParallelism(call ToolCall, allCalls []ToolCall) boo
 	return true
 }
 
+func (t *websearchTool) IsBaseline() bool { return true }
+
 func formatResults(results []searchResult) string {
 	var sb strings.Builder
 	sb.WriteString("## Search Results\n\n")

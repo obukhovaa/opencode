@@ -208,6 +208,8 @@ func (a *agentTool) AllowParallelism(call tools.ToolCall, allCalls []tools.ToolC
 	return true
 }
 
+func (b *agentTool) IsBaseline() bool { return true }
+
 func NewAgentTool(
 	sessions session.Service,
 	permissions permission.Service,

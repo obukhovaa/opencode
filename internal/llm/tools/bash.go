@@ -331,6 +331,8 @@ func (b *bashTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
 	return IsSafeReadOnlyCommand(params.Command)
 }
 
+func (b *bashTool) IsBaseline() bool { return true }
+
 type persistResult struct {
 	content  string
 	filePath string

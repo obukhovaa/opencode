@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -145,10 +146,15 @@ func getContextFromPaths() string {
 	return contextContent
 }
 
+type contextEntry struct {
+	path    string
+	content string
+}
+
 func processContextPaths(workDir string, paths []string) string {
 	var (
 		wg       sync.WaitGroup
-		resultCh = make(chan string)
+		resultCh = make(chan contextEntry)
 	)
 
 	// Track processed files to avoid duplicates
@@ -167,8 +173,8 @@ func processContextPaths(workDir string, paths []string) string {
 					}
 					if !d.IsDir() {
 						if tryMarkProcessed(path, processedFiles, &processedMutex) {
-							if result := processFile(path); result != "" {
-								resultCh <- result
+							if content := processFile(path); content != "" {
+								resultCh <- contextEntry{path: path, content: content}
 							}
 						}
 					}
@@ -177,8 +183,8 @@ func processContextPaths(workDir string, paths []string) string {
 			} else {
 				fullPath := filepath.Join(workDir, p)
 				if tryMarkProcessed(fullPath, processedFiles, &processedMutex) {
-					if result := processFile(fullPath); result != "" {
-						resultCh <- result
+					if content := processFile(fullPath); content != "" {
+						resultCh <- contextEntry{path: fullPath, content: content}
 					}
 				}
 			}
@@ -190,12 +196,20 @@ func processContextPaths(workDir string, paths []string) string {
 		close(resultCh)
 	}()
 
-	results := make([]string, 0)
-	for result := range resultCh {
-		results = append(results, result)
+	entries := make([]contextEntry, 0)
+	for entry := range resultCh {
+		entries = append(entries, entry)
 	}
 
-	return strings.Join(results, "\n")
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].path < entries[j].path
+	})
+
+	contents := make([]string, 0, len(entries))
+	for _, e := range entries {
+		contents = append(contents, e.content)
+	}
+	return strings.Join(contents, "\n")
 }
 
 // tryMarkProcessed resolves symlinks to obtain the canonical path and uses it

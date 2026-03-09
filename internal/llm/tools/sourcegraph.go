@@ -250,6 +250,8 @@ func (t *sourcegraphTool) AllowParallelism(call ToolCall, allCalls []ToolCall) b
 	return true
 }
 
+func (t *sourcegraphTool) IsBaseline() bool { return true }
+
 func formatSourcegraphResults(result map[string]any, maxResults int, contextWindow int) (string, error) {
 	var buffer strings.Builder
 

@@ -69,6 +69,20 @@ func (mr *MockBaseToolMockRecorder) Info() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Info", reflect.TypeOf((*MockBaseTool)(nil).Info))
 }
 
+// IsBaseline mocks base method.
+func (m *MockBaseTool) IsBaseline() bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IsBaseline")
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// IsBaseline indicates an expected call of IsBaseline.
+func (mr *MockBaseToolMockRecorder) IsBaseline() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsBaseline", reflect.TypeOf((*MockBaseTool)(nil).IsBaseline))
+}
+
 // Run mocks base method.
 func (m *MockBaseTool) Run(ctx context.Context, params tools.ToolCall) (tools.ToolResponse, error) {
 	m.ctrl.T.Helper()

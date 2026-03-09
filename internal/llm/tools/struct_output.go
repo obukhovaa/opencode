@@ -61,6 +61,8 @@ func (s *structOutputTool) AllowParallelism(call ToolCall, allCalls []ToolCall) 
 	return false
 }
 
+func (s *structOutputTool) IsBaseline() bool { return true }
+
 // buildParamsFromSchema converts a JSON schema into the ToolInfo.Parameters format.
 // If the schema is an object type with properties, those properties are used directly.
 // Otherwise, the entire schema is wrapped as a single "output" parameter.

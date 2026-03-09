@@ -333,3 +333,5 @@ func runTool(ctx context.Context, c MCPClient, toolName string, input string) (t
 func (b *mcpTool) AllowParallelism(call tools.ToolCall, allCalls []tools.ToolCall) bool {
 	return true
 }
+
+func (b *mcpTool) IsBaseline() bool { return false }

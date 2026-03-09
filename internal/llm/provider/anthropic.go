@@ -172,6 +172,17 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 func (a *anthropicClient) convertTools(tools []toolsPkg.BaseTool) []anthropic.ToolUnionParam {
 	anthropicTools := make([]anthropic.ToolUnionParam, len(tools))
 
+	// Find the last baseline tool index for cache breakpoint placement.
+	// When external (MCP) tools follow the baseline block, we place a
+	// breakpoint at the boundary so the stable prefix is cached independently.
+	lastBaselineIdx := -1
+	for i, tool := range tools {
+		if tool.IsBaseline() {
+			lastBaselineIdx = i
+		}
+	}
+	hasExternalTools := lastBaselineIdx >= 0 && lastBaselineIdx < len(tools)-1
+
 	for i, tool := range tools {
 		info := tool.Info()
 		toolParam := anthropic.ToolParam{
@@ -183,8 +194,15 @@ func (a *anthropicClient) convertTools(tools []toolsPkg.BaseTool) []anthropic.To
 			},
 		}
 
-		if i == len(tools)-1 && !a.options.disableCache {
-			toolParam.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		if !a.options.disableCache {
+			// Breakpoint after the baseline block when external tools follow
+			if hasExternalTools && i == lastBaselineIdx {
+				toolParam.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			}
+			// Always place a breakpoint on the very last tool
+			if i == len(tools)-1 {
+				toolParam.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			}
 		}
 
 		anthropicTools[i] = anthropic.ToolUnionParam{OfTool: &toolParam}

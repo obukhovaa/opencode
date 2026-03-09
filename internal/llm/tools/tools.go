@@ -116,6 +116,10 @@ type BaseTool interface {
 	Info() ToolInfo
 	Run(ctx context.Context, params ToolCall) (ToolResponse, error)
 	AllowParallelism(call ToolCall, allCalls []ToolCall) bool
+	// IsBaseline reports whether this tool is a built-in tool. External tools
+	// (e.g. MCP server tools) return false and are placed after baseline tools
+	// in the tool list for cache prefix stability.
+	IsBaseline() bool
 }
 
 var mutatingToolNames = map[string]bool{

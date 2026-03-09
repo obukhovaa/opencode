@@ -321,3 +321,5 @@ func (m *multiEditTool) AllowParallelism(call ToolCall, allCalls []ToolCall) boo
 	}
 	return !hasFileConflict(call, []string{params.FilePath}, allCalls)
 }
+
+func (m *multiEditTool) IsBaseline() bool { return true }

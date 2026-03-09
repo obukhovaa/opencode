@@ -394,3 +394,5 @@ func (p *patchTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
 	affectedPaths = append(affectedPaths, diff.IdentifyFilesAdded(params.PatchText)...)
 	return !hasFileConflict(call, affectedPaths, allCalls)
 }
+
+func (p *patchTool) IsBaseline() bool { return true }

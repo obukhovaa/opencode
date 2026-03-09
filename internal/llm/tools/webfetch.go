@@ -236,6 +236,8 @@ func (t *fetchTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
 	return true
 }
 
+func (t *fetchTool) IsBaseline() bool { return true }
+
 func extractTextFromHTML(html string) (string, error) {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {

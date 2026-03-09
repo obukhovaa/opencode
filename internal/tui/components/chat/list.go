@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/opencode-ai/opencode/internal/app"
+	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/session"
@@ -293,7 +294,16 @@ func (m *messagesCmp) View() string {
 		)
 }
 
-func countToolsWithoutResponse(messages []message.Message) int {
+type pendingToolCounts struct {
+	tools     int
+	subagents int
+}
+
+func (p pendingToolCounts) total() int {
+	return p.tools + p.subagents
+}
+
+func countToolsWithoutResponse(messages []message.Message) pendingToolCounts {
 	toolCalls := make([]message.ToolCall, 0)
 	toolResults := make([]message.ToolResult, 0)
 	for _, m := range messages {
@@ -301,7 +311,7 @@ func countToolsWithoutResponse(messages []message.Message) int {
 		toolResults = append(toolResults, m.ToolResults()...)
 	}
 
-	count := 0
+	var counts pendingToolCounts
 	for _, v := range toolCalls {
 		found := false
 		for _, r := range toolResults {
@@ -311,10 +321,25 @@ func countToolsWithoutResponse(messages []message.Message) int {
 			}
 		}
 		if !found && v.Finished {
-			count++
+			if v.Name == agent.TaskToolName {
+				counts.subagents++
+			} else {
+				counts.tools++
+			}
 		}
 	}
-	return count
+	return counts
+}
+
+func pendingTaskDescription(p pendingToolCounts) string {
+	switch {
+	case p.tools == 0:
+		return fmt.Sprintf("Running %d subagents", p.subagents)
+	case p.subagents == 0:
+		return fmt.Sprintf("Running %d tools", p.tools)
+	default:
+		return fmt.Sprintf("Running %d tools and %d subagents", p.tools, p.subagents)
+	}
 }
 
 func hasUnfinishedToolCalls(messages []message.Message) bool {
@@ -338,10 +363,14 @@ func (m *messagesCmp) working() string {
 
 		task := "Thinking"
 		lastMessage := m.messages[len(m.messages)-1]
-		if pendingCount := countToolsWithoutResponse(m.messages); pendingCount > 1 {
-			task = fmt.Sprintf("Running %d tools", pendingCount)
-		} else if pendingCount == 1 {
-			task = "Waiting for tool"
+		if pending := countToolsWithoutResponse(m.messages); pending.total() > 1 {
+			task = pendingTaskDescription(pending)
+		} else if pending.total() == 1 {
+			if pending.subagents == 1 {
+				task = "Running subagent"
+			} else {
+				task = "Waiting for tool"
+			}
 		} else if hasUnfinishedToolCalls(m.messages) {
 			task = "Building tool call"
 		} else if !lastMessage.IsFinished() {

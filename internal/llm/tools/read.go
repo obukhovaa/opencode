@@ -211,6 +211,8 @@ func (v *viewTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
 	return true
 }
 
+func (v *viewTool) IsBaseline() bool { return true }
+
 func addLineNumbers(content string, startLine int) string {
 	if content == "" {
 		return ""

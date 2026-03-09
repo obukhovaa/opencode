@@ -88,6 +88,8 @@ func (g *grepTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
 	return true
 }
 
+func (g *grepTool) IsBaseline() bool { return true }
+
 func (g *grepTool) Info() ToolInfo {
 	return ToolInfo{
 		Name:        GrepToolName,

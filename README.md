@@ -194,11 +194,14 @@ Each built-in agent can be customized:
 |-------|-------------|
 | `model` | Model ID to use |
 | `maxTokens` | Maximum response tokens |
+| `maxTurns` | Maximum tool calls before agent stops |
 | `reasoningEffort` | `low`, `medium`, `high` (default), `max` |
 | `mode` | `agent` (primary, switchable via tab) or `subagent` (invoked via task tool) |
 | `name` | Display name for the agent |
 | `description` | Short description of agent's purpose |
 | `permission` | Agent-specific permission overrides (supports granular glob patterns) |
+| `tools` | Enable/disable specific tools (e.g., `{"skill": false}`) |
+| `parallelToolUse` | Enable/disable parallel tool invocation if tool allows it |
 | `tools` | Enable/disable specific tools (e.g., `{"skill": false}`) |
 | `color` | Badge color for subagent indication in TUI |
 
@@ -357,6 +360,7 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | `OPENCODE_MYSQL_DSN` | MySQL connection string |
 | `OPENCODE_DISABLE_CLAUDE_SKILLS` | Disable `.claude/skills/` discovery |
 | `OPENCODE_DISABLE_LSP_DOWNLOAD` | Disable auto-install of LSP servers |
+| `OPENCODE_MAX_REPEAT_CALLS` | How many consequent tool calls with the same params allowed (default 3) |
 
 ## Supported Models
 

@@ -247,3 +247,5 @@ func (w *writeTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
 	}
 	return !hasFileConflict(call, []string{params.FilePath}, allCalls)
 }
+
+func (w *writeTool) IsBaseline() bool { return true }

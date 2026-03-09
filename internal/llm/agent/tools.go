@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -195,10 +196,31 @@ func (a *agent) resolveTools() []tools.BaseTool {
 		toolNames := make([]string, 0, 20)
 		for t := range a.toolsCh {
 			toolSet = append(toolSet, t)
+		}
+		toolSet = OrderTools(toolSet)
+		for _, t := range toolSet {
 			toolNames = append(toolNames, t.Info().Name)
 		}
 		a.tools = toolSet
 		logging.Info("Resolved tool set", "agent", a.AgentID(), "tools", strings.Join(toolNames, ", "))
 	})
 	return a.tools
+}
+
+// OrderTools partitions tools into baseline (preserving original order) followed
+// by external/MCP tools (sorted by name). This guarantees a deterministic tool
+// list for stable LLM cache prefixes.
+func OrderTools(toolSet []tools.BaseTool) []tools.BaseTool {
+	var baseline, external []tools.BaseTool
+	for _, t := range toolSet {
+		if t.IsBaseline() {
+			baseline = append(baseline, t)
+		} else {
+			external = append(external, t)
+		}
+	}
+	sort.Slice(external, func(i, j int) bool {
+		return external[i].Info().Name < external[j].Info().Name
+	})
+	return append(baseline, external...)
 }

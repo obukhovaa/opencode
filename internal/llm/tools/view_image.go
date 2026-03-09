@@ -157,6 +157,8 @@ func (v *viewImageTool) AllowParallelism(call ToolCall, allCalls []ToolCall) boo
 	return true
 }
 
+func (v *viewImageTool) IsBaseline() bool { return true }
+
 func getSupportedFormats() string {
 	var formats []string
 	for ext := range supportedImageTypes {

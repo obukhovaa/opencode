@@ -110,6 +110,8 @@ func (s *skillTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
 	return true
 }
 
+func (s *skillTool) IsBaseline() bool { return true }
+
 // sampleSkillFiles lists up to limit files in the skill directory, excluding SKILL.md.
 func sampleSkillFiles(dir string, limit int) []string {
 	if files, err := sampleSkillFilesWithRipgrep(dir, limit); err == nil {

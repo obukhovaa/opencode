@@ -302,3 +302,5 @@ func (d *deleteTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
 	}
 	return !hasFileConflict(call, []string{params.Path}, allCalls)
 }
+
+func (d *deleteTool) IsBaseline() bool { return true }

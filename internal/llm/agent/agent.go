@@ -622,7 +622,6 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 					resp tools.ToolResponse
 					err  error
 				}
-				// safety net to ensure no hang if tool's implementation doesn't handle ctx cancelation properly
 				ch := make(chan runResult, 1)
 				go func() {
 					r, errTool := e.tool.Run(permCtx, tools.ToolCall{

@@ -30,6 +30,8 @@ func (f *fakeTool) AllowParallelism(_ tools.ToolCall, _ []tools.ToolCall) bool {
 	return f.parallel
 }
 
+func (f *fakeTool) IsBaseline() bool { return true }
+
 func buildToolCalls(names ...string) []message.ToolCall {
 	tcs := make([]message.ToolCall, len(names))
 	for i, n := range names {
