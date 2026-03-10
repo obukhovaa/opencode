@@ -271,6 +271,63 @@ func TestLoadCommandsFromDir(t *testing.T) {
 	}
 }
 
+func TestAddScopeHints(t *testing.T) {
+	tests := []struct {
+		name     string
+		commands []Command
+		want     map[string]string // ID -> expected Title
+	}{
+		{
+			name: "no duplicates, no hints",
+			commands: []Command{
+				{ID: "user:deploy", Title: "Deploy"},
+				{ID: "project:lint", Title: "Lint"},
+			},
+			want: map[string]string{
+				"user:deploy":  "Deploy",
+				"project:lint": "Lint",
+			},
+		},
+		{
+			name: "duplicate base name gets hints",
+			commands: []Command{
+				{ID: "user:deploy", Title: "Deploy"},
+				{ID: "project:deploy", Title: "Deploy"},
+			},
+			want: map[string]string{
+				"user:deploy":    "Deploy (user)",
+				"project:deploy": "Deploy (project)",
+			},
+		},
+		{
+			name: "mixed duplicates and unique",
+			commands: []Command{
+				{ID: "user:deploy", Title: "Deploy"},
+				{ID: "project:deploy", Title: "Deploy"},
+				{ID: "project:lint", Title: "Lint"},
+			},
+			want: map[string]string{
+				"user:deploy":    "Deploy (user)",
+				"project:deploy": "Deploy (project)",
+				"project:lint":   "Lint",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			addScopeHints(tt.commands)
+			for _, cmd := range tt.commands {
+				if expected, ok := tt.want[cmd.ID]; ok {
+					if cmd.Title != expected {
+						t.Errorf("command %q: title = %q, want %q", cmd.ID, cmd.Title, expected)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestLoadCommandsFromNonexistentDir(t *testing.T) {
 	cmds, err := loadCommandsFromDir("/nonexistent/path", ProjectCommandPrefix)
 	if err != nil {

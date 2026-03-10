@@ -329,6 +329,22 @@ func (p *baseProvider[C]) SendMessages(ctx context.Context, messages []message.M
 	return p.client.send(ctx, messages, tools)
 }
 
+// StreamToResponse consumes a StreamResponse channel and collects the result
+// into a single ProviderResponse. Use this instead of SendMessages when the
+// request payload is large and providers may reject non-streaming calls
+// (e.g. Anthropic rejects non-streaming requests that could take >10 minutes).
+func StreamToResponse(events <-chan ProviderEvent) (*ProviderResponse, error) {
+	for event := range events {
+		switch event.Type {
+		case EventError:
+			return nil, event.Error
+		case EventComplete:
+			return event.Response, nil
+		}
+	}
+	return nil, fmt.Errorf("stream ended without a complete event")
+}
+
 func (p *baseProvider[C]) Model() models.Model {
 	return p.options.model
 }

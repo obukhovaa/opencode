@@ -129,7 +129,42 @@ func LoadCustomCommands() ([]Command, error) {
 		current = filepath.Dir(current)
 	}
 
+	addScopeHints(commands)
+
 	return commands, nil
+}
+
+// addScopeHints adds a scope hint (project/user) to command titles when
+// the same base name exists in both scopes.
+func addScopeHints(commands []Command) {
+	// Count how many times each base name (without prefix) appears
+	baseCounts := make(map[string]int)
+	for _, cmd := range commands {
+		baseCounts[baseCommandName(cmd.ID)]++
+	}
+
+	for i := range commands {
+		base := baseCommandName(commands[i].ID)
+		if baseCounts[base] <= 1 {
+			continue
+		}
+		scope := "user"
+		if strings.HasPrefix(commands[i].ID, ProjectCommandPrefix) {
+			scope = "project"
+		}
+		commands[i].Title = commands[i].Title + " (" + scope + ")"
+	}
+}
+
+// baseCommandName strips the user:/project: prefix from a command ID.
+func baseCommandName(id string) string {
+	if after, ok := strings.CutPrefix(id, UserCommandPrefix); ok {
+		return after
+	}
+	if after, ok := strings.CutPrefix(id, ProjectCommandPrefix); ok {
+		return after
+	}
+	return id
 }
 
 func isClaudeCommandsDisabled() bool {

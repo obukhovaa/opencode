@@ -1084,11 +1084,12 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 	}
 
 	msgsWithPrompt := append(msgs, promptMsg)
-	response, err := a.summarizeProvider.SendMessages(
+	events := a.summarizeProvider.StreamResponse(
 		summarizeCtx,
 		msgsWithPrompt,
 		make([]tools.BaseTool, 0),
 	)
+	response, err := provider.StreamToResponse(events)
 	if err != nil {
 		return fmt.Errorf("failed to summarize: %w", err)
 	}
@@ -1216,12 +1217,14 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 
 		a.Publish(pubsub.CreatedEvent, event)
 
-		// Send the messages to the summarize provider
-		response, err := a.summarizeProvider.SendMessages(
+		// Send the messages to the summarize provider via streaming
+		// to avoid Anthropic's non-streaming timeout restriction
+		events := a.summarizeProvider.StreamResponse(
 			summarizeCtx,
 			msgsWithPrompt,
 			make([]tools.BaseTool, 0),
 		)
+		response, err := provider.StreamToResponse(events)
 		if err != nil {
 			event = AgentEvent{
 				Type:  AgentEventTypeError,
