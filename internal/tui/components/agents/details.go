@@ -5,10 +5,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
@@ -127,9 +127,9 @@ func (d *detailCmp) updateContent() {
 	d.viewport.SetContent(content.String())
 }
 
-func (d *detailCmp) View() string {
+func (d *detailCmp) View() tea.View {
 	t := theme.CurrentTheme()
-	return styles.ForceReplaceBackgroundWithLipgloss(d.viewport.View(), t.Background())
+	return tea.NewView(styles.ForceReplaceBackgroundWithLipgloss(d.viewport.View(), t.Background()))
 }
 
 func (d *detailCmp) GetSize() (int, int) {
@@ -139,8 +139,8 @@ func (d *detailCmp) GetSize() (int, int) {
 func (d *detailCmp) SetSize(width int, height int) tea.Cmd {
 	d.width = width
 	d.height = height
-	d.viewport.Width = width
-	d.viewport.Height = height
+	d.viewport.SetWidth(width)
+	d.viewport.SetHeight(height)
 	d.updateContent()
 	return nil
 }
@@ -151,6 +151,6 @@ func (d *detailCmp) BindingKeys() []key.Binding {
 
 func NewAgentsDetails() DetailComponent {
 	return &detailCmp{
-		viewport: viewport.New(0, 0),
+		viewport: viewport.New(),
 	}
 }

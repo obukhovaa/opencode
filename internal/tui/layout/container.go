@@ -1,9 +1,9 @@
 package layout
 
 import (
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
 )
 
@@ -41,7 +41,7 @@ func (c *container) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return c, cmd
 }
 
-func (c *container) View() string {
+func (c *container) View() tea.View {
 	t := theme.CurrentTheme()
 	style := lipgloss.NewStyle()
 	width := c.width
@@ -49,21 +49,11 @@ func (c *container) View() string {
 
 	style = style.Background(t.Background())
 
-	// Apply border if any side is enabled
+	// Apply border if any side is enabled.
+	// In lipgloss v2, Width/Height include borders and padding, so we do NOT
+	// subtract border dimensions here — the container's assigned width/height
+	// already represent the total rendered size.
 	if c.borderTop || c.borderRight || c.borderBottom || c.borderLeft {
-		// Adjust width and height for borders
-		if c.borderTop {
-			height--
-		}
-		if c.borderBottom {
-			height--
-		}
-		if c.borderLeft {
-			width--
-		}
-		if c.borderRight {
-			width--
-		}
 		style = style.Border(c.borderStyle, c.borderTop, c.borderRight, c.borderBottom, c.borderLeft)
 		style = style.BorderBackground(t.Background()).BorderForeground(t.BorderNormal())
 	}
@@ -75,7 +65,7 @@ func (c *container) View() string {
 		PaddingBottom(c.paddingBottom).
 		PaddingLeft(c.paddingLeft)
 
-	return style.Render(c.content.View())
+	return tea.NewView(style.Render(c.content.View().Content))
 }
 
 func (c *container) SetSize(width, height int) tea.Cmd {

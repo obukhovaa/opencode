@@ -3,11 +3,8 @@ package layout
 import (
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	chAnsi "github.com/charmbracelet/x/ansi"
-	"github.com/muesli/ansi"
-	"github.com/muesli/reflow/truncate"
-	"github.com/muesli/termenv"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
 	"github.com/opencode-ai/opencode/internal/tui/util"
@@ -23,7 +20,7 @@ func getLines(s string) (lines []string, widest int) {
 	lines = strings.Split(s, "\n")
 
 	for _, l := range lines {
-		w := ansi.PrintableRuneWidth(l)
+		w := lipgloss.Width(l)
 		if widest < w {
 			widest = w
 		}
@@ -91,8 +88,8 @@ func PlaceOverlay(
 
 		pos := 0
 		if x > 0 {
-			left := truncate.String(bgLine, uint(x))
-			pos = ansi.PrintableRuneWidth(left)
+			left := chAnsi.Truncate(bgLine, x, "")
+			pos = lipgloss.Width(left)
 			b.WriteString(left)
 			if pos < x {
 				b.WriteString(ws.render(x - pos))
@@ -102,11 +99,11 @@ func PlaceOverlay(
 
 		fgLine := fgLines[i-y]
 		b.WriteString(fgLine)
-		pos += ansi.PrintableRuneWidth(fgLine)
+		pos += lipgloss.Width(fgLine)
 
 		right := cutLeft(bgLine, pos)
-		bgWidth := ansi.PrintableRuneWidth(bgLine)
-		rightWidth := ansi.PrintableRuneWidth(right)
+		bgWidth := lipgloss.Width(bgLine)
+		rightWidth := lipgloss.Width(right)
 		if rightWidth <= bgWidth-pos {
 			b.WriteString(ws.render(bgWidth - rightWidth - pos))
 		}
@@ -131,7 +128,6 @@ func max(a, b int) int {
 }
 
 type whitespace struct {
-	style termenv.Style
 	chars string
 }
 
@@ -152,17 +148,17 @@ func (w whitespace) render(width int) string {
 		if j >= len(r) {
 			j = 0
 		}
-		i += ansi.PrintableRuneWidth(string(r[j]))
+		i += lipgloss.Width(string(r[j]))
 	}
 
 	// Fill any extra gaps white spaces. This might be necessary if any runes
 	// are more than one cell wide, which could leave a one-rune gap.
-	short := width - ansi.PrintableRuneWidth(b.String())
+	short := width - lipgloss.Width(b.String())
 	if short > 0 {
 		b.WriteString(strings.Repeat(" ", short))
 	}
 
-	return w.style.Styled(b.String())
+	return b.String()
 }
 
 // WhitespaceOption sets a styling rule for rendering whitespace.

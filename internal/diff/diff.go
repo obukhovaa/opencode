@@ -3,17 +3,18 @@ package diff
 import (
 	"bytes"
 	"fmt"
+	"image/color"
 	"io"
 	"regexp"
 	"strconv"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/aymanbagabas/go-udiff"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
@@ -323,7 +324,7 @@ func pairLines(lines []DiffLine) []linePair {
 // -------------------------------------------------------------------------
 
 // SyntaxHighlight applies syntax highlighting to text based on file extension
-func SyntaxHighlight(w io.Writer, source, fileName, formatter string, bg lipgloss.TerminalColor) error {
+func SyntaxHighlight(w io.Writer, source, fileName, formatter string, bg color.Color) error {
 	t := theme.CurrentTheme()
 
 	// Determine the language lexer to use
@@ -427,84 +428,84 @@ func SyntaxHighlight(w io.Writer, source, fileName, formatter string, bg lipglos
 	<entry type="TextWhitespace" style="%s"/>
 </style>
 `,
-		getColor(t.Background()), // Background
-		getColor(t.Text()),       // Text
-		getColor(t.Text()),       // Other
-		getColor(t.Error()),      // Error
+		colorToHex(t.Background()), // Background
+		colorToHex(t.Text()),       // Text
+		colorToHex(t.Text()),       // Other
+		colorToHex(t.Error()),      // Error
 
-		getColor(t.SyntaxKeyword()), // Keyword
-		getColor(t.SyntaxKeyword()), // KeywordConstant
-		getColor(t.SyntaxKeyword()), // KeywordDeclaration
-		getColor(t.SyntaxKeyword()), // KeywordNamespace
-		getColor(t.SyntaxKeyword()), // KeywordPseudo
-		getColor(t.SyntaxKeyword()), // KeywordReserved
-		getColor(t.SyntaxType()),    // KeywordType
+		colorToHex(t.SyntaxKeyword()), // Keyword
+		colorToHex(t.SyntaxKeyword()), // KeywordConstant
+		colorToHex(t.SyntaxKeyword()), // KeywordDeclaration
+		colorToHex(t.SyntaxKeyword()), // KeywordNamespace
+		colorToHex(t.SyntaxKeyword()), // KeywordPseudo
+		colorToHex(t.SyntaxKeyword()), // KeywordReserved
+		colorToHex(t.SyntaxType()),    // KeywordType
 
-		getColor(t.Text()),           // Name
-		getColor(t.SyntaxVariable()), // NameAttribute
-		getColor(t.SyntaxType()),     // NameBuiltin
-		getColor(t.SyntaxVariable()), // NameBuiltinPseudo
-		getColor(t.SyntaxType()),     // NameClass
-		getColor(t.SyntaxVariable()), // NameConstant
-		getColor(t.SyntaxFunction()), // NameDecorator
-		getColor(t.SyntaxVariable()), // NameEntity
-		getColor(t.SyntaxType()),     // NameException
-		getColor(t.SyntaxFunction()), // NameFunction
-		getColor(t.Text()),           // NameLabel
-		getColor(t.SyntaxType()),     // NameNamespace
-		getColor(t.SyntaxVariable()), // NameOther
-		getColor(t.SyntaxKeyword()),  // NameTag
-		getColor(t.SyntaxVariable()), // NameVariable
-		getColor(t.SyntaxVariable()), // NameVariableClass
-		getColor(t.SyntaxVariable()), // NameVariableGlobal
-		getColor(t.SyntaxVariable()), // NameVariableInstance
+		colorToHex(t.Text()),           // Name
+		colorToHex(t.SyntaxVariable()), // NameAttribute
+		colorToHex(t.SyntaxType()),     // NameBuiltin
+		colorToHex(t.SyntaxVariable()), // NameBuiltinPseudo
+		colorToHex(t.SyntaxType()),     // NameClass
+		colorToHex(t.SyntaxVariable()), // NameConstant
+		colorToHex(t.SyntaxFunction()), // NameDecorator
+		colorToHex(t.SyntaxVariable()), // NameEntity
+		colorToHex(t.SyntaxType()),     // NameException
+		colorToHex(t.SyntaxFunction()), // NameFunction
+		colorToHex(t.Text()),           // NameLabel
+		colorToHex(t.SyntaxType()),     // NameNamespace
+		colorToHex(t.SyntaxVariable()), // NameOther
+		colorToHex(t.SyntaxKeyword()),  // NameTag
+		colorToHex(t.SyntaxVariable()), // NameVariable
+		colorToHex(t.SyntaxVariable()), // NameVariableClass
+		colorToHex(t.SyntaxVariable()), // NameVariableGlobal
+		colorToHex(t.SyntaxVariable()), // NameVariableInstance
 
-		getColor(t.SyntaxString()), // Literal
-		getColor(t.SyntaxString()), // LiteralDate
-		getColor(t.SyntaxString()), // LiteralString
-		getColor(t.SyntaxString()), // LiteralStringBacktick
-		getColor(t.SyntaxString()), // LiteralStringChar
-		getColor(t.SyntaxString()), // LiteralStringDoc
-		getColor(t.SyntaxString()), // LiteralStringDouble
-		getColor(t.SyntaxString()), // LiteralStringEscape
-		getColor(t.SyntaxString()), // LiteralStringHeredoc
-		getColor(t.SyntaxString()), // LiteralStringInterpol
-		getColor(t.SyntaxString()), // LiteralStringOther
-		getColor(t.SyntaxString()), // LiteralStringRegex
-		getColor(t.SyntaxString()), // LiteralStringSingle
-		getColor(t.SyntaxString()), // LiteralStringSymbol
+		colorToHex(t.SyntaxString()), // Literal
+		colorToHex(t.SyntaxString()), // LiteralDate
+		colorToHex(t.SyntaxString()), // LiteralString
+		colorToHex(t.SyntaxString()), // LiteralStringBacktick
+		colorToHex(t.SyntaxString()), // LiteralStringChar
+		colorToHex(t.SyntaxString()), // LiteralStringDoc
+		colorToHex(t.SyntaxString()), // LiteralStringDouble
+		colorToHex(t.SyntaxString()), // LiteralStringEscape
+		colorToHex(t.SyntaxString()), // LiteralStringHeredoc
+		colorToHex(t.SyntaxString()), // LiteralStringInterpol
+		colorToHex(t.SyntaxString()), // LiteralStringOther
+		colorToHex(t.SyntaxString()), // LiteralStringRegex
+		colorToHex(t.SyntaxString()), // LiteralStringSingle
+		colorToHex(t.SyntaxString()), // LiteralStringSymbol
 
-		getColor(t.SyntaxNumber()), // LiteralNumber
-		getColor(t.SyntaxNumber()), // LiteralNumberBin
-		getColor(t.SyntaxNumber()), // LiteralNumberFloat
-		getColor(t.SyntaxNumber()), // LiteralNumberHex
-		getColor(t.SyntaxNumber()), // LiteralNumberInteger
-		getColor(t.SyntaxNumber()), // LiteralNumberIntegerLong
-		getColor(t.SyntaxNumber()), // LiteralNumberOct
+		colorToHex(t.SyntaxNumber()), // LiteralNumber
+		colorToHex(t.SyntaxNumber()), // LiteralNumberBin
+		colorToHex(t.SyntaxNumber()), // LiteralNumberFloat
+		colorToHex(t.SyntaxNumber()), // LiteralNumberHex
+		colorToHex(t.SyntaxNumber()), // LiteralNumberInteger
+		colorToHex(t.SyntaxNumber()), // LiteralNumberIntegerLong
+		colorToHex(t.SyntaxNumber()), // LiteralNumberOct
 
-		getColor(t.SyntaxOperator()),    // Operator
-		getColor(t.SyntaxKeyword()),     // OperatorWord
-		getColor(t.SyntaxPunctuation()), // Punctuation
+		colorToHex(t.SyntaxOperator()),    // Operator
+		colorToHex(t.SyntaxKeyword()),     // OperatorWord
+		colorToHex(t.SyntaxPunctuation()), // Punctuation
 
-		getColor(t.SyntaxComment()), // Comment
-		getColor(t.SyntaxComment()), // CommentHashbang
-		getColor(t.SyntaxComment()), // CommentMultiline
-		getColor(t.SyntaxComment()), // CommentSingle
-		getColor(t.SyntaxComment()), // CommentSpecial
-		getColor(t.SyntaxKeyword()), // CommentPreproc
+		colorToHex(t.SyntaxComment()), // Comment
+		colorToHex(t.SyntaxComment()), // CommentHashbang
+		colorToHex(t.SyntaxComment()), // CommentMultiline
+		colorToHex(t.SyntaxComment()), // CommentSingle
+		colorToHex(t.SyntaxComment()), // CommentSpecial
+		colorToHex(t.SyntaxKeyword()), // CommentPreproc
 
-		getColor(t.Text()),      // Generic
-		getColor(t.Error()),     // GenericDeleted
-		getColor(t.Text()),      // GenericEmph
-		getColor(t.Error()),     // GenericError
-		getColor(t.Text()),      // GenericHeading
-		getColor(t.Success()),   // GenericInserted
-		getColor(t.TextMuted()), // GenericOutput
-		getColor(t.Text()),      // GenericPrompt
-		getColor(t.Text()),      // GenericStrong
-		getColor(t.Text()),      // GenericSubheading
-		getColor(t.Error()),     // GenericTraceback
-		getColor(t.Text()),      // TextWhitespace
+		colorToHex(t.Text()),      // Generic
+		colorToHex(t.Error()),     // GenericDeleted
+		colorToHex(t.Text()),      // GenericEmph
+		colorToHex(t.Error()),     // GenericError
+		colorToHex(t.Text()),      // GenericHeading
+		colorToHex(t.Success()),   // GenericInserted
+		colorToHex(t.TextMuted()), // GenericOutput
+		colorToHex(t.Text()),      // GenericPrompt
+		colorToHex(t.Text()),      // GenericStrong
+		colorToHex(t.Text()),      // GenericSubheading
+		colorToHex(t.Error()),     // GenericTraceback
+		colorToHex(t.Text()),      // TextWhitespace
 	)
 
 	r := strings.NewReader(syntaxThemeXml)
@@ -532,15 +533,13 @@ func SyntaxHighlight(w io.Writer, source, fileName, formatter string, bg lipglos
 }
 
 // getColor returns the appropriate hex color string based on terminal background
-func getColor(adaptiveColor lipgloss.AdaptiveColor) string {
-	if lipgloss.HasDarkBackground() {
-		return adaptiveColor.Dark
-	}
-	return adaptiveColor.Light
+func colorToHex(c color.Color) string {
+	r, g, b, _ := c.RGBA()
+	return fmt.Sprintf("#%02x%02x%02x", uint8(r>>8), uint8(g>>8), uint8(b>>8))
 }
 
 // highlightLine applies syntax highlighting to a single line
-func highlightLine(fileName string, line string, bg lipgloss.TerminalColor) string {
+func highlightLine(fileName string, line string, bg color.Color) string {
 	var buf bytes.Buffer
 	err := SyntaxHighlight(&buf, line, fileName, "terminal16m", bg)
 	if err != nil {
@@ -563,8 +562,8 @@ func createStyles(t theme.Theme) (removedLineStyle, addedLineStyle, contextLineS
 // Rendering Functions
 // -------------------------------------------------------------------------
 
-func lipglossToHex(color lipgloss.Color) string {
-	r, g, b, a := color.RGBA()
+func lipglossToHex(c color.Color) string {
+	r, g, b, a := c.RGBA()
 
 	// Scale uint32 values (0-65535) to uint8 (0-255).
 	r8 := uint8(r >> 8)
@@ -576,7 +575,7 @@ func lipglossToHex(color lipgloss.Color) string {
 }
 
 // applyHighlighting applies intra-line highlighting to a piece of text
-func applyHighlighting(content string, segments []Segment, segmentType LineType, highlightBg lipgloss.AdaptiveColor) string {
+func applyHighlighting(content string, segments []Segment, segmentType LineType, highlightBg color.Color) string {
 	// Find all ANSI sequences in the content
 	ansiRegex := regexp.MustCompile(`\x1b(?:[@-Z\\-_]|\[[0-9?]*(?:;[0-9?]*)*[@-~])`)
 	ansiMatches := ansiRegex.FindAllStringIndex(content, -1)
@@ -615,8 +614,8 @@ func applyHighlighting(content string, segments []Segment, segmentType LineType,
 	currentPos := 0
 
 	// Get the appropriate color based on terminal background
-	bgColor := lipgloss.Color(getColor(highlightBg))
-	fgColor := lipgloss.Color(getColor(theme.CurrentTheme().Background()))
+	bgColor := highlightBg
+	fgColor := theme.CurrentTheme().Background()
 
 	for i := 0; i < len(content); {
 		// Check if we're at an ANSI sequence

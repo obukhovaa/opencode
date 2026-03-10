@@ -1,9 +1,9 @@
 package page
 
 import (
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/tui/components/agents"
@@ -45,12 +45,12 @@ func (p *agentsPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, tea.Batch(cmds...)
 }
 
-func (p *agentsPage) View() string {
+func (p *agentsPage) View() tea.View {
 	style := styles.BaseStyle().Width(p.width).Height(p.height)
-	return style.Render(lipgloss.JoinVertical(lipgloss.Top,
-		p.table.View(),
-		p.details.View(),
-	))
+	return tea.NewView(style.Render(lipgloss.JoinVertical(lipgloss.Top,
+		p.table.View().Content,
+		p.details.View().Content,
+	)))
 }
 
 func (p *agentsPage) BindingKeys() []key.Binding {

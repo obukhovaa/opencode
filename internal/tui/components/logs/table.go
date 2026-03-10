@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"slices"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/table"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/table"
+	tea "charm.land/bubbletea/v2"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
@@ -61,12 +61,12 @@ func (i *tableCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return i, tea.Batch(cmds...)
 }
 
-func (i *tableCmp) View() string {
+func (i *tableCmp) View() tea.View {
 	t := theme.CurrentTheme()
 	defaultStyles := table.DefaultStyles()
 	defaultStyles.Selected = defaultStyles.Selected.Foreground(t.Primary())
 	i.table.SetStyles(defaultStyles)
-	return styles.ForceReplaceBackgroundWithLipgloss(i.table.View(), t.Background())
+	return tea.NewView(styles.ForceReplaceBackgroundWithLipgloss(i.table.View(), t.Background()))
 }
 
 func (i *tableCmp) GetSize() (int, int) {

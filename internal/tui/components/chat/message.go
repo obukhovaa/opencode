@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -52,10 +53,11 @@ func renderMessage(msg string, isUser bool, isFocused bool, width int, info ...s
 	t := theme.CurrentTheme()
 
 	style := styles.BaseStyle().
-		Width(width - 1).
+		Width(width).
 		BorderLeft(true).
-		Foreground(t.TextMuted()).
+		Foreground(t.Text()).
 		BorderForeground(t.Primary()).
+		BorderBackground(t.Background()).
 		BorderStyle(lipgloss.ThickBorder())
 
 	if isUser {
@@ -64,7 +66,7 @@ func renderMessage(msg string, isUser bool, isFocused bool, width int, info ...s
 
 	// Apply markdown formatting and handle background color
 	parts := []string{
-		styles.ForceReplaceBackgroundWithLipgloss(toMarkdown(msg, isFocused, width), t.Background()),
+		styles.ForceReplaceBackgroundWithLipgloss(toMarkdown(msg, isFocused, width-1), t.Background()),
 	}
 
 	// Remove newline at the end
@@ -679,11 +681,12 @@ func renderToolMessage(
 	baseStyle := styles.BaseStyle()
 
 	style := baseStyle.
-		Width(width - 1).
+		Width(width).
 		BorderLeft(true).
 		BorderStyle(lipgloss.ThickBorder()).
 		PaddingLeft(1).
-		BorderForeground(t.TextMuted())
+		BorderForeground(t.TextMuted()).
+		BorderBackground(t.Background())
 
 	response := findToolResponse(toolCall.ID, allMessages)
 	toolNameText := baseStyle.Foreground(t.TextMuted()).
@@ -802,7 +805,7 @@ func subagentBadge(agentType string, title string, isResumed bool) string {
 	t := theme.CurrentTheme()
 
 	icon := "●"
-	var color lipgloss.TerminalColor
+	var color color.Color
 	name := agentType
 
 	reg := agentregistry.GetRegistry()

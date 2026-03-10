@@ -3,9 +3,9 @@ package dialog
 import (
 	"embed"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	utilComponents "github.com/opencode-ai/opencode/internal/tui/components/util"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
@@ -95,7 +95,7 @@ func (c *commandDialogCmp) Init() tea.Cmd {
 func (c *commandDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, commandKeys.Enter):
 			selectedItem, idx := c.listView.GetSelectedItem()
@@ -119,7 +119,7 @@ func (c *commandDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return c, tea.Batch(cmds...)
 }
 
-func (c *commandDialogCmp) View() string {
+func (c *commandDialogCmp) View() tea.View {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
 
@@ -151,16 +151,16 @@ func (c *commandDialogCmp) View() string {
 		lipgloss.Left,
 		title,
 		baseStyle.Width(maxWidth).Render(""),
-		baseStyle.Width(maxWidth).Render(c.listView.View()),
+		baseStyle.Width(maxWidth).Render(c.listView.View().Content),
 		baseStyle.Width(maxWidth).Render(""),
 	)
 
-	return baseStyle.Padding(1, 2).
+	return tea.NewView(baseStyle.Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderBackground(t.Background()).
 		BorderForeground(t.TextMuted()).
-		Width(lipgloss.Width(content) + 4).
-		Render(content)
+		Width(lipgloss.Width(content) + 6).
+		Render(content))
 }
 
 func (c *commandDialogCmp) BindingKeys() []key.Binding {

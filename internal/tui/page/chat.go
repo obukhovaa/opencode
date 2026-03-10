@@ -4,9 +4,9 @@ import (
 	"context"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/completions"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -138,7 +138,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		p.session = msg
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, keyMap.ShowCompletionDialog):
 			p.showCompletionDialog = true
@@ -164,7 +164,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.commandCompletionDialog = context.(dialog.CompletionDialog)
 		cmds = append(cmds, contextCmd)
 
-		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
 			if keyMsg.String() == "enter" || keyMsg.String() == "tab" || keyMsg.String() == "shift+tab" {
 				return p, tea.Batch(cmds...)
 			}
@@ -177,7 +177,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.completionDialog = context.(dialog.CompletionDialog)
 		cmds = append(cmds, contextCmd)
 
-		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
 			if keyMsg.String() == "enter" || keyMsg.String() == "tab" || keyMsg.String() == "shift+tab" {
 				return p, tea.Batch(cmds...)
 			}
@@ -241,8 +241,8 @@ func (p *chatPage) GetSize() (int, int) {
 	return p.layout.GetSize()
 }
 
-func (p *chatPage) View() string {
-	layoutView := p.layout.View()
+func (p *chatPage) View() tea.View {
+	layoutView := p.layout.View().Content
 
 	activeDialog := p.activeCompletionDialog()
 	if activeDialog != nil {
@@ -250,7 +250,7 @@ func (p *chatPage) View() string {
 		editorWidth, editorHeight := p.editor.GetSize()
 
 		activeDialog.SetWidth(editorWidth)
-		overlay := activeDialog.View()
+		overlay := activeDialog.View().Content
 
 		layoutView = layout.PlaceOverlay(
 			0,
@@ -261,7 +261,7 @@ func (p *chatPage) View() string {
 		)
 	}
 
-	return layoutView
+	return tea.NewView(layoutView)
 }
 
 func (p *chatPage) activeCompletionDialog() dialog.CompletionDialog {

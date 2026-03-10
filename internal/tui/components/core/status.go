@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
@@ -161,7 +161,7 @@ func (m statusCmp) resolveModel() models.Model {
 	return models.Model{}
 }
 
-func (m statusCmp) View() string {
+func (m statusCmp) View() tea.View {
 	t := theme.CurrentTheme()
 	model := m.resolveModel()
 	modelWidget := m.renderModelWidget(model)
@@ -223,7 +223,7 @@ func (m statusCmp) View() string {
 
 	status += diagnostics
 	status += modelWidget
-	return status
+	return tea.NewView(status)
 }
 
 func (m *statusCmp) projectDiagnostics() string {

@@ -1,9 +1,9 @@
 package utilComponents
 
 import (
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
@@ -67,7 +67,7 @@ func (c *simpleListCmp[T]) Init() tea.Cmd {
 
 func (c *simpleListCmp[T]) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, simpleListKeys.Up) || (c.useAlphaNumericKeys && key.Matches(msg, simpleListKeys.UpAlpha)):
 			if c.selectedIdx > 0 {
@@ -125,7 +125,7 @@ func (c *simpleListCmp[T]) CyclePrevious() {
 	c.selectedIdx = (c.selectedIdx - 1 + len(c.items)) % len(c.items)
 }
 
-func (c *simpleListCmp[T]) View() string {
+func (c *simpleListCmp[T]) View() tea.View {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
 
@@ -135,11 +135,11 @@ func (c *simpleListCmp[T]) View() string {
 	startIdx := 0
 
 	if len(items) <= 0 {
-		return baseStyle.
+		return tea.NewView(baseStyle.
 			Background(t.Background()).
 			Padding(0, 1).
 			Width(maxWidth).
-			Render(c.fallbackMsg)
+			Render(c.fallbackMsg))
 	}
 
 	if len(items) > maxVisibleItems {
@@ -161,7 +161,7 @@ func (c *simpleListCmp[T]) View() string {
 		listItems = append(listItems, title)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, listItems...)
+	return tea.NewView(lipgloss.JoinVertical(lipgloss.Left, listItems...))
 }
 
 func NewSimpleList[T SimpleListItem](items []T, maxVisibleItems int, fallbackMsg string, useAlphaNumericKeys bool) SimpleList[T] {

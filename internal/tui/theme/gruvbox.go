@@ -1,9 +1,5 @@
 package theme
 
-import (
-	"github.com/charmbracelet/lipgloss"
-)
-
 // Gruvbox color palette constants
 const (
 	// Dark theme colors
@@ -74,221 +70,221 @@ func NewGruvboxTheme() *GruvboxTheme {
 	theme := &GruvboxTheme{}
 
 	// Base colors
-	theme.PrimaryColor = lipgloss.AdaptiveColor{
+	theme.PrimaryColor = ThemeColor{
 		Dark:  gruvboxDarkBlueBright,
 		Light: gruvboxLightBlueBright,
 	}
-	theme.SecondaryColor = lipgloss.AdaptiveColor{
+	theme.SecondaryColor = ThemeColor{
 		Dark:  gruvboxDarkPurpleBright,
 		Light: gruvboxLightPurpleBright,
 	}
-	theme.AccentColor = lipgloss.AdaptiveColor{
+	theme.AccentColor = ThemeColor{
 		Dark:  gruvboxDarkOrangeBright,
 		Light: gruvboxLightOrangeBright,
 	}
 
 	// Status colors
-	theme.ErrorColor = lipgloss.AdaptiveColor{
+	theme.ErrorColor = ThemeColor{
 		Dark:  gruvboxDarkRedBright,
 		Light: gruvboxLightRedBright,
 	}
-	theme.WarningColor = lipgloss.AdaptiveColor{
+	theme.WarningColor = ThemeColor{
 		Dark:  gruvboxDarkYellowBright,
 		Light: gruvboxLightYellowBright,
 	}
-	theme.SuccessColor = lipgloss.AdaptiveColor{
+	theme.SuccessColor = ThemeColor{
 		Dark:  gruvboxDarkGreenBright,
 		Light: gruvboxLightGreenBright,
 	}
-	theme.InfoColor = lipgloss.AdaptiveColor{
+	theme.InfoColor = ThemeColor{
 		Dark:  gruvboxDarkBlueBright,
 		Light: gruvboxLightBlueBright,
 	}
 
 	// Text colors
-	theme.TextColor = lipgloss.AdaptiveColor{
+	theme.TextColor = ThemeColor{
 		Dark:  gruvboxDarkFg1,
 		Light: gruvboxLightFg1,
 	}
-	theme.TextMutedColor = lipgloss.AdaptiveColor{
+	theme.TextMutedColor = ThemeColor{
 		Dark:  gruvboxDarkFg4,
 		Light: gruvboxLightFg4,
 	}
-	theme.TextEmphasizedColor = lipgloss.AdaptiveColor{
+	theme.TextEmphasizedColor = ThemeColor{
 		Dark:  gruvboxDarkYellowBright,
 		Light: gruvboxLightYellowBright,
 	}
 
 	// Background colors
-	theme.BackgroundColor = lipgloss.AdaptiveColor{
+	theme.BackgroundColor = ThemeColor{
 		Dark:  gruvboxDarkBg0,
 		Light: gruvboxLightBg0,
 	}
-	theme.BackgroundSecondaryColor = lipgloss.AdaptiveColor{
+	theme.BackgroundSecondaryColor = ThemeColor{
 		Dark:  gruvboxDarkBg1,
 		Light: gruvboxLightBg1,
 	}
-	theme.BackgroundDarkerColor = lipgloss.AdaptiveColor{
+	theme.BackgroundDarkerColor = ThemeColor{
 		Dark:  gruvboxDarkBg0Soft,
 		Light: gruvboxLightBg0Soft,
 	}
 
 	// Border colors
-	theme.BorderNormalColor = lipgloss.AdaptiveColor{
+	theme.BorderNormalColor = ThemeColor{
 		Dark:  gruvboxDarkBg2,
 		Light: gruvboxLightBg2,
 	}
-	theme.BorderFocusedColor = lipgloss.AdaptiveColor{
+	theme.BorderFocusedColor = ThemeColor{
 		Dark:  gruvboxDarkBlueBright,
 		Light: gruvboxLightBlueBright,
 	}
-	theme.BorderDimColor = lipgloss.AdaptiveColor{
+	theme.BorderDimColor = ThemeColor{
 		Dark:  gruvboxDarkBg1,
 		Light: gruvboxLightBg1,
 	}
 
 	// Diff view colors
-	theme.DiffAddedColor = lipgloss.AdaptiveColor{
+	theme.DiffAddedColor = ThemeColor{
 		Dark:  gruvboxDarkGreenBright,
 		Light: gruvboxLightGreenBright,
 	}
-	theme.DiffRemovedColor = lipgloss.AdaptiveColor{
+	theme.DiffRemovedColor = ThemeColor{
 		Dark:  gruvboxDarkRedBright,
 		Light: gruvboxLightRedBright,
 	}
-	theme.DiffContextColor = lipgloss.AdaptiveColor{
+	theme.DiffContextColor = ThemeColor{
 		Dark:  gruvboxDarkFg4,
 		Light: gruvboxLightFg4,
 	}
-	theme.DiffHunkHeaderColor = lipgloss.AdaptiveColor{
+	theme.DiffHunkHeaderColor = ThemeColor{
 		Dark:  gruvboxDarkFg3,
 		Light: gruvboxLightFg3,
 	}
-	theme.DiffHighlightAddedColor = lipgloss.AdaptiveColor{
+	theme.DiffHighlightAddedColor = ThemeColor{
 		Dark:  gruvboxDarkGreenBright,
 		Light: gruvboxLightGreenBright,
 	}
-	theme.DiffHighlightRemovedColor = lipgloss.AdaptiveColor{
+	theme.DiffHighlightRemovedColor = ThemeColor{
 		Dark:  gruvboxDarkRedBright,
 		Light: gruvboxLightRedBright,
 	}
-	theme.DiffAddedBgColor = lipgloss.AdaptiveColor{
+	theme.DiffAddedBgColor = ThemeColor{
 		Dark:  "#3C4C3C", // Darker green background
 		Light: "#E8F5E9", // Light green background
 	}
-	theme.DiffRemovedBgColor = lipgloss.AdaptiveColor{
+	theme.DiffRemovedBgColor = ThemeColor{
 		Dark:  "#4C3C3C", // Darker red background
 		Light: "#FFEBEE", // Light red background
 	}
-	theme.DiffContextBgColor = lipgloss.AdaptiveColor{
+	theme.DiffContextBgColor = ThemeColor{
 		Dark:  gruvboxDarkBg0,
 		Light: gruvboxLightBg0,
 	}
-	theme.DiffLineNumberColor = lipgloss.AdaptiveColor{
+	theme.DiffLineNumberColor = ThemeColor{
 		Dark:  gruvboxDarkFg4,
 		Light: gruvboxLightFg4,
 	}
-	theme.DiffAddedLineNumberBgColor = lipgloss.AdaptiveColor{
+	theme.DiffAddedLineNumberBgColor = ThemeColor{
 		Dark:  "#32432F", // Slightly darker green
 		Light: "#C8E6C9", // Light green
 	}
-	theme.DiffRemovedLineNumberBgColor = lipgloss.AdaptiveColor{
+	theme.DiffRemovedLineNumberBgColor = ThemeColor{
 		Dark:  "#43322F", // Slightly darker red
 		Light: "#FFCDD2", // Light red
 	}
 
 	// Markdown colors
-	theme.MarkdownTextColor = lipgloss.AdaptiveColor{
+	theme.MarkdownTextColor = ThemeColor{
 		Dark:  gruvboxDarkFg1,
 		Light: gruvboxLightFg1,
 	}
-	theme.MarkdownHeadingColor = lipgloss.AdaptiveColor{
+	theme.MarkdownHeadingColor = ThemeColor{
 		Dark:  gruvboxDarkYellowBright,
 		Light: gruvboxLightYellowBright,
 	}
-	theme.MarkdownLinkColor = lipgloss.AdaptiveColor{
+	theme.MarkdownLinkColor = ThemeColor{
 		Dark:  gruvboxDarkBlueBright,
 		Light: gruvboxLightBlueBright,
 	}
-	theme.MarkdownLinkTextColor = lipgloss.AdaptiveColor{
+	theme.MarkdownLinkTextColor = ThemeColor{
 		Dark:  gruvboxDarkAquaBright,
 		Light: gruvboxLightAquaBright,
 	}
-	theme.MarkdownCodeColor = lipgloss.AdaptiveColor{
+	theme.MarkdownCodeColor = ThemeColor{
 		Dark:  gruvboxDarkGreenBright,
 		Light: gruvboxLightGreenBright,
 	}
-	theme.MarkdownBlockQuoteColor = lipgloss.AdaptiveColor{
+	theme.MarkdownBlockQuoteColor = ThemeColor{
 		Dark:  gruvboxDarkAquaBright,
 		Light: gruvboxLightAquaBright,
 	}
-	theme.MarkdownEmphColor = lipgloss.AdaptiveColor{
+	theme.MarkdownEmphColor = ThemeColor{
 		Dark:  gruvboxDarkYellowBright,
 		Light: gruvboxLightYellowBright,
 	}
-	theme.MarkdownStrongColor = lipgloss.AdaptiveColor{
+	theme.MarkdownStrongColor = ThemeColor{
 		Dark:  gruvboxDarkOrangeBright,
 		Light: gruvboxLightOrangeBright,
 	}
-	theme.MarkdownHorizontalRuleColor = lipgloss.AdaptiveColor{
+	theme.MarkdownHorizontalRuleColor = ThemeColor{
 		Dark:  gruvboxDarkBg3,
 		Light: gruvboxLightBg3,
 	}
-	theme.MarkdownListItemColor = lipgloss.AdaptiveColor{
+	theme.MarkdownListItemColor = ThemeColor{
 		Dark:  gruvboxDarkBlueBright,
 		Light: gruvboxLightBlueBright,
 	}
-	theme.MarkdownListEnumerationColor = lipgloss.AdaptiveColor{
+	theme.MarkdownListEnumerationColor = ThemeColor{
 		Dark:  gruvboxDarkBlueBright,
 		Light: gruvboxLightBlueBright,
 	}
-	theme.MarkdownImageColor = lipgloss.AdaptiveColor{
+	theme.MarkdownImageColor = ThemeColor{
 		Dark:  gruvboxDarkPurpleBright,
 		Light: gruvboxLightPurpleBright,
 	}
-	theme.MarkdownImageTextColor = lipgloss.AdaptiveColor{
+	theme.MarkdownImageTextColor = ThemeColor{
 		Dark:  gruvboxDarkAquaBright,
 		Light: gruvboxLightAquaBright,
 	}
-	theme.MarkdownCodeBlockColor = lipgloss.AdaptiveColor{
+	theme.MarkdownCodeBlockColor = ThemeColor{
 		Dark:  gruvboxDarkFg1,
 		Light: gruvboxLightFg1,
 	}
 
 	// Syntax highlighting colors
-	theme.SyntaxCommentColor = lipgloss.AdaptiveColor{
+	theme.SyntaxCommentColor = ThemeColor{
 		Dark:  gruvboxDarkGray,
 		Light: gruvboxLightGray,
 	}
-	theme.SyntaxKeywordColor = lipgloss.AdaptiveColor{
+	theme.SyntaxKeywordColor = ThemeColor{
 		Dark:  gruvboxDarkRedBright,
 		Light: gruvboxLightRedBright,
 	}
-	theme.SyntaxFunctionColor = lipgloss.AdaptiveColor{
+	theme.SyntaxFunctionColor = ThemeColor{
 		Dark:  gruvboxDarkGreenBright,
 		Light: gruvboxLightGreenBright,
 	}
-	theme.SyntaxVariableColor = lipgloss.AdaptiveColor{
+	theme.SyntaxVariableColor = ThemeColor{
 		Dark:  gruvboxDarkBlueBright,
 		Light: gruvboxLightBlueBright,
 	}
-	theme.SyntaxStringColor = lipgloss.AdaptiveColor{
+	theme.SyntaxStringColor = ThemeColor{
 		Dark:  gruvboxDarkYellowBright,
 		Light: gruvboxLightYellowBright,
 	}
-	theme.SyntaxNumberColor = lipgloss.AdaptiveColor{
+	theme.SyntaxNumberColor = ThemeColor{
 		Dark:  gruvboxDarkPurpleBright,
 		Light: gruvboxLightPurpleBright,
 	}
-	theme.SyntaxTypeColor = lipgloss.AdaptiveColor{
+	theme.SyntaxTypeColor = ThemeColor{
 		Dark:  gruvboxDarkYellow,
 		Light: gruvboxLightYellow,
 	}
-	theme.SyntaxOperatorColor = lipgloss.AdaptiveColor{
+	theme.SyntaxOperatorColor = ThemeColor{
 		Dark:  gruvboxDarkAquaBright,
 		Light: gruvboxLightAquaBright,
 	}
-	theme.SyntaxPunctuationColor = lipgloss.AdaptiveColor{
+	theme.SyntaxPunctuationColor = ThemeColor{
 		Dark:  gruvboxDarkFg1,
 		Light: gruvboxLightFg1,
 	}

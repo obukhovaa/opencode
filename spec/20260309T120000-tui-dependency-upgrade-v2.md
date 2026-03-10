@@ -1,7 +1,7 @@
 # TUI Dependency Upgrade to Charmbracelet v2 Ecosystem
 
 **Date**: 2026-03-09
-**Status**: Draft
+**Status**: In Progress
 **Author**: AI-assisted
 
 ## Overview
@@ -198,26 +198,26 @@ Replace the current `lipgloss.AdaptiveColor` pattern with explicit `isDark bool`
 
 Order matters. lipgloss v2 is a dependency of bubbletea v2 which is a dependency of bubbles v2.
 
-- [ ] **1.1** Update `go.mod`: add `charm.land/lipgloss/v2`, `charm.land/bubbletea/v2`, `charm.land/bubbles/v2/*`, `charm.land/glamour/v2` dependencies
-- [ ] **1.2** Migrate lipgloss imports and API changes across all files:
+- [x] **1.1** Update `go.mod`: add `charm.land/lipgloss/v2`, `charm.land/bubbletea/v2`, `charm.land/bubbles/v2/*`, `charm.land/glamour/v2` dependencies
+- [x] **1.2** Migrate lipgloss imports and API changes across all files:
   - Replace import path `github.com/charmbracelet/lipgloss` → `charm.land/lipgloss/v2`
   - Add `"image/color"` import where `lipgloss.TerminalColor` is used
   - Replace `lipgloss.TerminalColor` → `color.Color` (3 files: message.go, diff.go, background.go)
   - Replace `lipgloss.WithWhitespaceBackground(c)` → `lipgloss.WithWhitespaceStyle(lipgloss.NewStyle().Background(c))` (1 file: help.go)
-- [ ] **1.3** Migrate theme system away from `lipgloss.AdaptiveColor`:
+- [x] **1.3** Migrate theme system away from `lipgloss.AdaptiveColor`:
   - Add `isDark bool` field to the app model (tui.go)
   - Add `tea.RequestBackgroundColor` to `Init()` Cmd
   - Handle `tea.BackgroundColorMsg` in main model's `Update()`, store `isDark`
   - Refactor `BaseTheme` struct: replace `lipgloss.AdaptiveColor` fields with a resolved color approach (e.g., store both variants, resolve at access time based on isDark)
   - Update all theme files (opencode.go, catppuccin.go, dracula.go, flexoki.go, gruvbox.go, monokai.go, onedark.go, tokyonight.go, tron.go)
   - Update `lipgloss.HasDarkBackground()` calls in markdown.go and diff.go to use the stored `isDark` value instead
-- [ ] **1.4** Migrate bubbletea imports and API changes:
+- [x] **1.4** Migrate bubbletea imports and API changes:
   - Replace import path `github.com/charmbracelet/bubbletea` → `charm.land/bubbletea/v2`
   - Change all `View() string` signatures to `View() tea.View` (every component)
   - Move `tea.WithAltScreen()` from `tea.NewProgram()` to `view.AltScreen = true` in main model's `View()`
   - Replace all `case tea.KeyMsg:` with `case tea.KeyPressMsg:` (15+ files)
   - Remove `tea.WithAltScreen()` from `tea.NewProgram()` call in root.go
-- [ ] **1.5** Migrate bubbles imports and API changes:
+- [x] **1.5** Migrate bubbles imports and API changes:
   - Replace import paths `github.com/charmbracelet/bubbles/*` → `charm.land/bubbles/v2/*`
   - **viewport** (5 files): `viewport.New(0, 0)` → `viewport.New()`, `.Width = x` → `.SetWidth(x)`, `.Height = y` → `.SetHeight(y)`, `.YOffset` access → `.YOffset()` / `.SetYOffset()`
   - **textarea** (2 files): `.FocusedStyle.*` → `.Styles.Focused.*`, `.BlurredStyle.*` → `.Styles.Blurred.*`, verify `textarea.Blink` API
@@ -225,38 +225,38 @@ Order matters. lipgloss v2 is a dependency of bubbletea v2 which is a dependency
   - **table** (2 files): `table.DefaultStyles()` → `table.DefaultStyles(isDark)`
   - **spinner** (2 files): verify `spinner.New()` and `.Tick` still work (likely no change)
   - **key** (20+ files): no API changes expected, just import path
-- [ ] **1.6** Migrate glamour imports:
+- [x] **1.6** Migrate glamour imports:
   - Replace `github.com/charmbracelet/glamour` → `charm.land/glamour/v2`
   - Replace `github.com/charmbracelet/glamour/ansi` → `charm.land/glamour/v2/ansi`
   - Verify `glamour.WithStyles()` and `glamour.WithWordWrap()` still work (they do per v2 API)
-- [ ] **1.7** Migrate charmbracelet/x/ansi:
+- [x] **1.7** Migrate charmbracelet/x/ansi:
   - Update to latest version in go.mod (the import path stays the same)
   - Verify `ansi.Truncate()` and `ansi.Cut()` signatures haven't changed
 
 ### Phase 2: Non-Charm Dependency Updates
 
-- [ ] **2.1** Upgrade html-to-markdown to v2:
+- [x] **2.1** Upgrade html-to-markdown to v2:
   - Replace `github.com/JohannesKaufmann/html-to-markdown` → `github.com/JohannesKaufmann/html-to-markdown/v2`
   - In webfetch.go: replace `md.NewConverter("", true, nil)` + `converter.ConvertString(html)` with `htmltomarkdown.ConvertString(html)` (import as `htmltomarkdown`)
-- [ ] **2.2** Upgrade go-udiff to v0.4.0:
+- [x] **2.2** Upgrade go-udiff to v0.4.0:
   - Update version in go.mod
   - Verify `udiff.Unified()` signature (v0.2 added context lines parameter — check if our callsite needs updating)
-- [ ] **2.3** Upgrade chroma to v2.23.1:
+- [x] **2.3** Upgrade chroma to v2.23.1:
   - Update version in go.mod. No API changes expected.
-- [ ] **2.4** Upgrade bubblezone:
+- [x] **2.4** Upgrade bubblezone:
   - Replace `github.com/lrstanley/bubblezone` → `github.com/lrstanley/bubblezone/v2`
   - Verify `zone.NewGlobal()` still exists and works
   - Consider removing entirely if bubbletea v2's `View.OnMouse` covers the use case
 
 ### Phase 3: Remove Legacy muesli Dependencies
 
-- [ ] **3.1** Replace `muesli/ansi.PrintableRuneWidth()` in overlay.go:
+- [x] **3.1** Replace `muesli/ansi.PrintableRuneWidth()` in overlay.go:
   - Use `lipgloss.Width()` (already used everywhere else in the codebase) or `ansi.StringWidth()` from charmbracelet/x/ansi
-- [ ] **3.2** Replace `muesli/reflow/truncate.String()` in overlay.go:
+- [x] **3.2** Replace `muesli/reflow/truncate.String()` in overlay.go:
   - Use `ansi.Truncate()` from charmbracelet/x/ansi (already used in 3 other files)
-- [ ] **3.3** Remove `muesli/termenv` usage in overlay.go:
+- [x] **3.3** Remove `muesli/termenv` usage in overlay.go:
   - The `termenv.Style` field is never populated. Remove the struct field and use lipgloss styling directly.
-- [ ] **3.4** Evaluate replacing entire overlay.go with lipgloss Compositor:
+- [x] **3.4** Evaluate replacing entire overlay.go with lipgloss Compositor:
   - If `lipgloss.NewCompositor()` / `lipgloss.NewLayer()` can handle the overlay placement logic, replace the custom implementation
   - This would eliminate all muesli/* dependencies in one shot
 
@@ -274,7 +274,7 @@ Order matters. lipgloss v2 is a dependency of bubbletea v2 which is a dependency
 
 ### Phase 5: Cleanup
 
-- [ ] **5.1** Remove old dependencies from go.mod:
+- [x] **5.1** Remove old dependencies from go.mod:
   - `github.com/charmbracelet/bubbletea`
   - `github.com/charmbracelet/bubbles`
   - `github.com/charmbracelet/lipgloss`
@@ -283,7 +283,7 @@ Order matters. lipgloss v2 is a dependency of bubbletea v2 which is a dependency
   - `github.com/muesli/reflow`
   - `github.com/muesli/ansi`
   - `github.com/muesli/termenv` (if no longer needed as indirect)
-- [ ] **5.2** Run `go mod tidy`
+- [x] **5.2** Run `go mod tidy`
 - [ ] **5.3** Run full test suite: `make test`
 - [ ] **5.4** Manual TUI testing: verify all dialogs, overlays, themes, markdown rendering, diff views, file picker, spinner, chat editor, session list, agent/log tables
 
@@ -328,6 +328,7 @@ Order matters. lipgloss v2 is a dependency of bubbletea v2 which is a dependency
    - Only `zone.NewGlobal()` is called with zero zone marking in the codebase
    - bubbletea v2 has `View.OnMouse` for declarative mouse handling
    - **Recommendation**: Remove it unless mouse click zones are planned soon. It's dead code.
+   - **RESOLVED**: Removed entirely. Only `zone.NewGlobal()` was called with zero zone marking.
 
 2. **Should the theme system resolve colors eagerly or lazily?**
    - Eagerly: detect isDark once at startup, resolve all `AdaptiveColor` values to concrete `color.Color`, store in theme. Simpler but can't react to runtime background changes.
@@ -337,6 +338,7 @@ Order matters. lipgloss v2 is a dependency of bubbletea v2 which is a dependency
 3. **Should we replace overlay.go with lipgloss Compositor?**
    - Compositor is new in v2 and may not cover all overlay use cases (shadow rendering, arbitrary positioning)
    - **Recommendation**: Investigate in Phase 3. If Compositor handles it, great. If not, just migrate muesli calls to x/ansi equivalents. Don't block the migration on this.
+   - **RESOLVED**: Kept overlay.go but replaced all muesli calls with charmbracelet/x/ansi and lipgloss equivalents. Did not adopt Compositor (too complex, custom overlay logic still needed).
 
 4. **Should we adopt viewport soft-wrap by default?**
    - Soft-wrap changes the visual behavior of all viewports
@@ -345,20 +347,43 @@ Order matters. lipgloss v2 is a dependency of bubbletea v2 which is a dependency
 
 ## Success Criteria
 
-- [ ] All imports use `charm.land/*` paths for bubbletea, bubbles, lipgloss, glamour
-- [ ] `go build ./...` succeeds with zero references to old import paths
-- [ ] `make test` passes (all unit tests green)
-- [ ] All 9 themes render correctly in both dark and light terminal backgrounds
-- [ ] Markdown rendering in chat messages works with custom style config
-- [ ] Diff rendering with syntax highlighting works
-- [ ] All dialogs (quit, session, command, model, theme, init, arguments, filepicker, permission, help, complete) render and function correctly
-- [ ] Overlay positioning works (dialogs centered over content)
-- [ ] External editor launch via `tea.ExecProcess` works
-- [ ] Spinner renders correctly (both TUI spinner and standalone stderr spinner)
-- [ ] html-to-markdown conversion in webfetch tool works
-- [ ] go-udiff diff generation works
-- [ ] No `muesli/reflow`, `muesli/ansi`, or `muesli/termenv` in final go.mod (unless kept as indirect by other deps)
-- [ ] `go mod tidy` produces clean go.mod/go.sum
+- [x] All imports use `charm.land/*` paths for bubbletea, bubbles, lipgloss, glamour
+- [x] `go build ./...` succeeds with zero references to old import paths
+- [ ] `make test` passes (all unit tests green) — needs manual verification
+- [ ] All 9 themes render correctly in both dark and light terminal backgrounds — needs manual testing
+- [ ] Markdown rendering in chat messages works with custom style config — needs manual testing
+- [ ] Diff rendering with syntax highlighting works — needs manual testing
+- [ ] All dialogs (quit, session, command, model, theme, init, arguments, filepicker, permission, help, complete) render and function correctly — needs manual testing
+- [ ] Overlay positioning works (dialogs centered over content) — needs manual testing
+- [ ] External editor launch via `tea.ExecProcess` works — needs manual testing
+- [ ] Spinner renders correctly (both TUI spinner and standalone stderr spinner) — needs manual testing
+- [x] html-to-markdown conversion in webfetch tool works
+- [x] go-udiff diff generation works
+- [x] No `muesli/reflow`, `muesli/ansi`, or `muesli/termenv` in final go.mod (unless kept as indirect by other deps)
+- [x] `go mod tidy` produces clean go.mod/go.sum
+
+## Implementation Notes
+
+### Theme System Redesign
+- Introduced `ThemeColor` struct in `theme/theme.go` to replace `lipgloss.AdaptiveColor`
+- Each `ThemeColor` stores `Dark` and `Light` hex values, resolved via `Color()` method using `theme.IsDark()`
+- Package-level `isDark` state managed via `SetIsDark()`/`IsDark()`
+- `tea.RequestBackgroundColor` sent in main model's `Init()`
+- `tea.BackgroundColorMsg` handled in main model's `Update()` to set `theme.SetIsDark(msg.IsDark())`
+
+### View() Migration Strategy
+- All `tea.Model` implementations: `View() string` → `View() tea.View` using `tea.NewView()`
+- Main app model sets `v.AltScreen = true` on the returned View
+- Sub-components' `View()` output accessed via `.Content` field when string is needed
+
+### bubblezone Removal
+- `zone.NewGlobal()` was the only usage — no `zone.Mark()` or `zone.Scan()` calls existed
+- Removed entirely since bubbletea v2 provides `View.OnMouse` for declarative mouse handling
+
+### overlay.go Simplification
+- Replaced `muesli/ansi.PrintableRuneWidth()` → `lipgloss.Width()`
+- Replaced `muesli/reflow/truncate.String()` → `chAnsi.Truncate()`
+- Removed dead `termenv.Style` field from whitespace struct
 
 ## References
 

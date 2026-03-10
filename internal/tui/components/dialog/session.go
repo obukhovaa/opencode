@@ -1,9 +1,9 @@
 package dialog
 
 import (
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/opencode-ai/opencode/internal/session"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
@@ -79,7 +79,7 @@ func (s *sessionDialogCmp) Init() tea.Cmd {
 
 func (s *sessionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, sessionKeys.Up) || key.Matches(msg, sessionKeys.K):
 			if s.selectedIdx > 0 {
@@ -107,17 +107,17 @@ func (s *sessionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return s, nil
 }
 
-func (s *sessionDialogCmp) View() string {
+func (s *sessionDialogCmp) View() tea.View {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
 
 	if len(s.sessions) == 0 {
-		return baseStyle.Padding(1, 2).
+		return tea.NewView(baseStyle.Padding(1, 2).
 			Border(lipgloss.RoundedBorder()).
 			BorderBackground(t.Background()).
 			BorderForeground(t.TextMuted()).
 			Width(40).
-			Render("No sessions available")
+			Render("No sessions available"))
 	}
 
 	// Calculate max width needed for session titles
@@ -184,12 +184,12 @@ func (s *sessionDialogCmp) View() string {
 		baseStyle.Width(maxWidth).Render(""),
 	)
 
-	return baseStyle.Padding(1, 2).
+	return tea.NewView(baseStyle.Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderBackground(t.Background()).
 		BorderForeground(t.TextMuted()).
-		Width(lipgloss.Width(content) + 4).
-		Render(content)
+		Width(lipgloss.Width(content) + 6).
+		Render(content))
 }
 
 func (s *sessionDialogCmp) BindingKeys() []key.Binding {

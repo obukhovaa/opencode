@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -85,7 +85,7 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentMsgID = ""
 		m.rendering = false
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if key.Matches(msg, messageKeys.PageUp) || key.Matches(msg, messageKeys.PageDown) ||
 			key.Matches(msg, messageKeys.HalfPageUp) || key.Matches(msg, messageKeys.HalfPageDown) {
 			u, cmd := m.viewport.Update(msg)
@@ -247,11 +247,11 @@ func (m *messagesCmp) renderView() {
 	)
 }
 
-func (m *messagesCmp) View() string {
+func (m *messagesCmp) View() tea.View {
 	baseStyle := styles.BaseStyle()
 
 	if m.rendering {
-		return baseStyle.
+		return tea.NewView(baseStyle.
 			Width(m.width).
 			Render(
 				lipgloss.JoinVertical(
@@ -260,7 +260,7 @@ func (m *messagesCmp) View() string {
 					m.working(),
 					m.help(),
 				),
-			)
+			))
 	}
 	if len(m.messages) == 0 {
 		content := baseStyle.
@@ -270,7 +270,7 @@ func (m *messagesCmp) View() string {
 				m.initialScreen(),
 			)
 
-		return baseStyle.
+		return tea.NewView(baseStyle.
 			Width(m.width).
 			Render(
 				lipgloss.JoinVertical(
@@ -279,10 +279,10 @@ func (m *messagesCmp) View() string {
 					"",
 					m.help(),
 				),
-			)
+			))
 	}
 
-	return baseStyle.
+	return tea.NewView(baseStyle.
 		Width(m.width).
 		Render(
 			lipgloss.JoinVertical(
@@ -291,7 +291,7 @@ func (m *messagesCmp) View() string {
 				m.working(),
 				m.help(),
 			),
-		)
+		))
 }
 
 type pendingToolCounts struct {
@@ -445,10 +445,10 @@ func (m *messagesCmp) SetSize(width, height int) tea.Cmd {
 	}
 	m.width = width
 	m.height = height
-	m.viewport.Width = width
-	m.viewport.Height = height - 2
-	m.attachments.Width = width + 40
-	m.attachments.Height = 3
+	m.viewport.SetWidth(width)
+	m.viewport.SetHeight(height - 2)
+	m.attachments.SetWidth(width + 40)
+	m.attachments.SetHeight(3)
 	m.rerender()
 	return nil
 }
@@ -490,8 +490,8 @@ func (m *messagesCmp) BindingKeys() []key.Binding {
 func NewMessagesCmp(app *app.App) tea.Model {
 	s := spinner.New()
 	s.Spinner = spinner.Points
-	vp := viewport.New(0, 0)
-	attachmets := viewport.New(0, 0)
+	vp := viewport.New()
+	attachmets := viewport.New()
 	vp.KeyMap.PageUp = messageKeys.PageUp
 	vp.KeyMap.PageDown = messageKeys.PageDown
 	vp.KeyMap.HalfPageUp = messageKeys.HalfPageUp

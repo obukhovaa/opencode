@@ -93,14 +93,11 @@ func newAnthropicClient(opts providerClientOptions) AnthropicClient {
 
 func (a *anthropicClient) convertMessages(messages []message.Message) (anthropicMessages []anthropic.MessageParam) {
 	for i, msg := range messages {
-		cache := false
-		if i > len(messages)-3 {
-			cache = true
-		}
+		cache := !a.options.disableCache && i > len(messages)-3
 		switch msg.Role {
 		case message.User:
 			content := anthropic.NewTextBlock(msg.Content().String())
-			if cache && !a.options.disableCache {
+			if cache {
 				content.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
 			}
 			var contentBlocks []anthropic.ContentBlockParamUnion
@@ -116,9 +113,6 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 			blocks := []anthropic.ContentBlockParamUnion{}
 			if msg.Content().String() != "" {
 				content := anthropic.NewTextBlock(msg.Content().String())
-				if cache && !a.options.disableCache {
-					content.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
-				}
 				blocks = append(blocks, content)
 			}
 
@@ -142,6 +136,15 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 				)
 				continue
 			}
+
+			if cache {
+				lastBlock := &blocks[len(blocks)-1]
+				if lastBlock.OfText != nil {
+					lastBlock.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
+				} else if lastBlock.OfToolUse != nil {
+					lastBlock.OfToolUse.CacheControl = anthropic.NewCacheControlEphemeralParam()
+				}
+			}
 			anthropicMessages = append(anthropicMessages, anthropic.NewAssistantMessage(blocks...))
 
 		case message.Tool:
@@ -163,6 +166,12 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 					results[i] = anthropic.NewToolResultBlock(toolResult.ToolCallID, toolResult.Content, toolResult.IsError)
 				}
 			}
+			if cache && len(results) > 0 {
+				lastResult := &results[len(results)-1]
+				if lastResult.OfToolResult != nil {
+					lastResult.OfToolResult.CacheControl = anthropic.NewCacheControlEphemeralParam()
+				}
+			}
 			anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(results...))
 		}
 	}
@@ -171,17 +180,6 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 
 func (a *anthropicClient) convertTools(tools []toolsPkg.BaseTool) []anthropic.ToolUnionParam {
 	anthropicTools := make([]anthropic.ToolUnionParam, len(tools))
-
-	// Find the last baseline tool index for cache breakpoint placement.
-	// When external (MCP) tools follow the baseline block, we place a
-	// breakpoint at the boundary so the stable prefix is cached independently.
-	lastBaselineIdx := -1
-	for i, tool := range tools {
-		if tool.IsBaseline() {
-			lastBaselineIdx = i
-		}
-	}
-	hasExternalTools := lastBaselineIdx >= 0 && lastBaselineIdx < len(tools)-1
 
 	for i, tool := range tools {
 		info := tool.Info()
@@ -194,21 +192,25 @@ func (a *anthropicClient) convertTools(tools []toolsPkg.BaseTool) []anthropic.To
 			},
 		}
 
-		if !a.options.disableCache {
-			// Breakpoint after the baseline block when external tools follow
-			if hasExternalTools && i == lastBaselineIdx {
-				toolParam.CacheControl = anthropic.NewCacheControlEphemeralParam()
-			}
-			// Always place a breakpoint on the very last tool
-			if i == len(tools)-1 {
-				toolParam.CacheControl = anthropic.NewCacheControlEphemeralParam()
-			}
+		// Single cache breakpoint on the last tool definition. The
+		// deterministic ordering from OrderTools() ensures a stable prefix.
+		if i == len(tools)-1 && !a.options.disableCache {
+			toolParam.CacheControl = anthropic.NewCacheControlEphemeralParam()
 		}
 
 		anthropicTools[i] = anthropic.ToolUnionParam{OfTool: &toolParam}
 	}
 
 	return anthropicTools
+}
+
+// cacheControlParam returns an ephemeral cache control parameter unless caching
+// is disabled, in which case it returns the zero value (no cache marker).
+func cacheControlParam(disabled bool) anthropic.CacheControlEphemeralParam {
+	if disabled {
+		return anthropic.CacheControlEphemeralParam{}
+	}
+	return anthropic.NewCacheControlEphemeralParam()
 }
 
 func (a *anthropicClient) finishReason(reason string) message.FinishReason {
@@ -269,7 +271,7 @@ func (a *anthropicClient) preparedMessages(messages []anthropic.MessageParam, to
 		System: []anthropic.TextBlockParam{
 			{
 				Text:         a.providerOptions.systemMessage,
-				CacheControl: anthropic.NewCacheControlEphemeralParam(),
+				CacheControl: cacheControlParam(a.options.disableCache),
 			},
 		},
 	}

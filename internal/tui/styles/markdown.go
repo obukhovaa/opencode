@@ -1,9 +1,11 @@
 package styles
 
 import (
-	"github.com/charmbracelet/glamour"
-	"github.com/charmbracelet/glamour/ansi"
-	"github.com/charmbracelet/lipgloss"
+	"fmt"
+	"image/color"
+
+	"charm.land/glamour/v2"
+	"charm.land/glamour/v2/ansi"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
 )
 
@@ -24,7 +26,7 @@ func GetMarkdownRenderer(width int) *glamour.TermRenderer {
 }
 
 // creates an ansi.StyleConfig for markdown rendering
-// using adaptive colors from the provided theme.
+// using colors from the provided theme.
 func generateMarkdownStyleConfig() ansi.StyleConfig {
 	t := theme.CurrentTheme()
 
@@ -33,13 +35,14 @@ func generateMarkdownStyleConfig() ansi.StyleConfig {
 			StylePrimitive: ansi.StylePrimitive{
 				BlockPrefix: "",
 				BlockSuffix: "",
-				Color:       stringPtr(adaptiveColorToString(t.MarkdownText())),
+				Color:       stringPtr(colorToString(t.MarkdownText())),
+				Bold:        boolPtr(false),
 			},
 			Margin: uintPtr(defaultMargin),
 		},
 		BlockQuote: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
-				Color:  stringPtr(adaptiveColorToString(t.MarkdownBlockQuote())),
+				Color:  stringPtr(colorToString(t.MarkdownBlockQuote())),
 				Italic: boolPtr(true),
 				Prefix: "┃ ",
 			},
@@ -51,82 +54,82 @@ func generateMarkdownStyleConfig() ansi.StyleConfig {
 			StyleBlock: ansi.StyleBlock{
 				IndentToken: stringPtr(BaseStyle().Render(" ")),
 				StylePrimitive: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.MarkdownText())),
+					Color: stringPtr(colorToString(t.MarkdownText())),
 				},
 			},
 		},
 		Heading: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
 				BlockSuffix: "\n",
-				Color:       stringPtr(adaptiveColorToString(t.MarkdownHeading())),
+				Color:       stringPtr(colorToString(t.MarkdownHeading())),
 				Bold:        boolPtr(true),
 			},
 		},
 		H1: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
 				Prefix: "# ",
-				Color:  stringPtr(adaptiveColorToString(t.MarkdownHeading())),
+				Color:  stringPtr(colorToString(t.MarkdownHeading())),
 				Bold:   boolPtr(true),
 			},
 		},
 		H2: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
 				Prefix: "## ",
-				Color:  stringPtr(adaptiveColorToString(t.MarkdownHeading())),
+				Color:  stringPtr(colorToString(t.MarkdownHeading())),
 				Bold:   boolPtr(true),
 			},
 		},
 		H3: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
 				Prefix: "### ",
-				Color:  stringPtr(adaptiveColorToString(t.MarkdownHeading())),
+				Color:  stringPtr(colorToString(t.MarkdownHeading())),
 				Bold:   boolPtr(true),
 			},
 		},
 		H4: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
 				Prefix: "#### ",
-				Color:  stringPtr(adaptiveColorToString(t.MarkdownHeading())),
+				Color:  stringPtr(colorToString(t.MarkdownHeading())),
 				Bold:   boolPtr(true),
 			},
 		},
 		H5: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
 				Prefix: "##### ",
-				Color:  stringPtr(adaptiveColorToString(t.MarkdownHeading())),
+				Color:  stringPtr(colorToString(t.MarkdownHeading())),
 				Bold:   boolPtr(true),
 			},
 		},
 		H6: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
 				Prefix: "###### ",
-				Color:  stringPtr(adaptiveColorToString(t.MarkdownHeading())),
+				Color:  stringPtr(colorToString(t.MarkdownHeading())),
 				Bold:   boolPtr(true),
 			},
 		},
 		Strikethrough: ansi.StylePrimitive{
 			CrossedOut: boolPtr(true),
-			Color:      stringPtr(adaptiveColorToString(t.TextMuted())),
+			Color:      stringPtr(colorToString(t.TextMuted())),
 		},
 		Emph: ansi.StylePrimitive{
-			Color:  stringPtr(adaptiveColorToString(t.MarkdownEmph())),
+			Color:  stringPtr(colorToString(t.MarkdownEmph())),
 			Italic: boolPtr(true),
 		},
 		Strong: ansi.StylePrimitive{
 			Bold:  boolPtr(true),
-			Color: stringPtr(adaptiveColorToString(t.MarkdownStrong())),
+			Color: stringPtr(colorToString(t.MarkdownStrong())),
 		},
 		HorizontalRule: ansi.StylePrimitive{
-			Color:  stringPtr(adaptiveColorToString(t.MarkdownHorizontalRule())),
+			Color:  stringPtr(colorToString(t.MarkdownHorizontalRule())),
 			Format: "\n─────────────────────────────────────────\n",
 		},
 		Item: ansi.StylePrimitive{
 			BlockPrefix: "• ",
-			Color:       stringPtr(adaptiveColorToString(t.MarkdownListItem())),
+			Color:       stringPtr(colorToString(t.MarkdownListItem())),
 		},
 		Enumeration: ansi.StylePrimitive{
 			BlockPrefix: ". ",
-			Color:       stringPtr(adaptiveColorToString(t.MarkdownListEnumeration())),
+			Color:       stringPtr(colorToString(t.MarkdownListEnumeration())),
 		},
 		Task: ansi.StyleTask{
 			StylePrimitive: ansi.StylePrimitive{},
@@ -134,25 +137,25 @@ func generateMarkdownStyleConfig() ansi.StyleConfig {
 			Unticked:       "[ ] ",
 		},
 		Link: ansi.StylePrimitive{
-			Color:     stringPtr(adaptiveColorToString(t.MarkdownLink())),
+			Color:     stringPtr(colorToString(t.MarkdownLink())),
 			Underline: boolPtr(true),
 		},
 		LinkText: ansi.StylePrimitive{
-			Color: stringPtr(adaptiveColorToString(t.MarkdownLinkText())),
+			Color: stringPtr(colorToString(t.MarkdownLinkText())),
 			Bold:  boolPtr(true),
 		},
 		Image: ansi.StylePrimitive{
-			Color:     stringPtr(adaptiveColorToString(t.MarkdownImage())),
+			Color:     stringPtr(colorToString(t.MarkdownImage())),
 			Underline: boolPtr(true),
 			Format:    "🖼 {{.text}}",
 		},
 		ImageText: ansi.StylePrimitive{
-			Color:  stringPtr(adaptiveColorToString(t.MarkdownImageText())),
+			Color:  stringPtr(colorToString(t.MarkdownImageText())),
 			Format: "{{.text}}",
 		},
 		Code: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
-				Color:  stringPtr(adaptiveColorToString(t.MarkdownCode())),
+				Color:  stringPtr(colorToString(t.MarkdownCode())),
 				Prefix: "",
 				Suffix: "",
 			},
@@ -161,90 +164,90 @@ func generateMarkdownStyleConfig() ansi.StyleConfig {
 			StyleBlock: ansi.StyleBlock{
 				StylePrimitive: ansi.StylePrimitive{
 					Prefix: " ",
-					Color:  stringPtr(adaptiveColorToString(t.MarkdownCodeBlock())),
+					Color:  stringPtr(colorToString(t.MarkdownCodeBlock())),
 				},
 				Margin: uintPtr(defaultMargin),
 			},
 			Chroma: &ansi.Chroma{
 				Text: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.MarkdownText())),
+					Color: stringPtr(colorToString(t.MarkdownText())),
 				},
 				Error: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.Error())),
+					Color: stringPtr(colorToString(t.Error())),
 				},
 				Comment: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxComment())),
+					Color: stringPtr(colorToString(t.SyntaxComment())),
 				},
 				CommentPreproc: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxKeyword())),
+					Color: stringPtr(colorToString(t.SyntaxKeyword())),
 				},
 				Keyword: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxKeyword())),
+					Color: stringPtr(colorToString(t.SyntaxKeyword())),
 				},
 				KeywordReserved: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxKeyword())),
+					Color: stringPtr(colorToString(t.SyntaxKeyword())),
 				},
 				KeywordNamespace: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxKeyword())),
+					Color: stringPtr(colorToString(t.SyntaxKeyword())),
 				},
 				KeywordType: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxType())),
+					Color: stringPtr(colorToString(t.SyntaxType())),
 				},
 				Operator: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxOperator())),
+					Color: stringPtr(colorToString(t.SyntaxOperator())),
 				},
 				Punctuation: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxPunctuation())),
+					Color: stringPtr(colorToString(t.SyntaxPunctuation())),
 				},
 				Name: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxVariable())),
+					Color: stringPtr(colorToString(t.SyntaxVariable())),
 				},
 				NameBuiltin: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxVariable())),
+					Color: stringPtr(colorToString(t.SyntaxVariable())),
 				},
 				NameTag: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxKeyword())),
+					Color: stringPtr(colorToString(t.SyntaxKeyword())),
 				},
 				NameAttribute: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxFunction())),
+					Color: stringPtr(colorToString(t.SyntaxFunction())),
 				},
 				NameClass: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxType())),
+					Color: stringPtr(colorToString(t.SyntaxType())),
 				},
 				NameConstant: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxVariable())),
+					Color: stringPtr(colorToString(t.SyntaxVariable())),
 				},
 				NameDecorator: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxFunction())),
+					Color: stringPtr(colorToString(t.SyntaxFunction())),
 				},
 				NameFunction: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxFunction())),
+					Color: stringPtr(colorToString(t.SyntaxFunction())),
 				},
 				LiteralNumber: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxNumber())),
+					Color: stringPtr(colorToString(t.SyntaxNumber())),
 				},
 				LiteralString: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxString())),
+					Color: stringPtr(colorToString(t.SyntaxString())),
 				},
 				LiteralStringEscape: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.SyntaxKeyword())),
+					Color: stringPtr(colorToString(t.SyntaxKeyword())),
 				},
 				GenericDeleted: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.DiffRemoved())),
+					Color: stringPtr(colorToString(t.DiffRemoved())),
 				},
 				GenericEmph: ansi.StylePrimitive{
-					Color:  stringPtr(adaptiveColorToString(t.MarkdownEmph())),
+					Color:  stringPtr(colorToString(t.MarkdownEmph())),
 					Italic: boolPtr(true),
 				},
 				GenericInserted: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.DiffAdded())),
+					Color: stringPtr(colorToString(t.DiffAdded())),
 				},
 				GenericStrong: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.MarkdownStrong())),
+					Color: stringPtr(colorToString(t.MarkdownStrong())),
 					Bold:  boolPtr(true),
 				},
 				GenericSubheading: ansi.StylePrimitive{
-					Color: stringPtr(adaptiveColorToString(t.MarkdownHeading())),
+					Color: stringPtr(colorToString(t.MarkdownHeading())),
 				},
 			},
 		},
@@ -261,24 +264,23 @@ func generateMarkdownStyleConfig() ansi.StyleConfig {
 		},
 		DefinitionDescription: ansi.StylePrimitive{
 			BlockPrefix: "\n ❯ ",
-			Color:       stringPtr(adaptiveColorToString(t.MarkdownLinkText())),
+			Color:       stringPtr(colorToString(t.MarkdownLinkText())),
 		},
 		Text: ansi.StylePrimitive{
-			Color: stringPtr(adaptiveColorToString(t.MarkdownText())),
+			Color: stringPtr(colorToString(t.MarkdownText())),
+			Bold:  boolPtr(false),
 		},
 		Paragraph: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
-				Color: stringPtr(adaptiveColorToString(t.MarkdownText())),
+				Color: stringPtr(colorToString(t.MarkdownText())),
+				Bold:  boolPtr(false),
 			},
 		},
 	}
 }
 
-// adaptiveColorToString converts a lipgloss.AdaptiveColor to the appropriate
-// hex color string based on the current terminal background
-func adaptiveColorToString(color lipgloss.AdaptiveColor) string {
-	if lipgloss.HasDarkBackground() {
-		return color.Dark
-	}
-	return color.Light
+// colorToString converts a color.Color to a hex color string.
+func colorToString(c color.Color) string {
+	r, g, b, _ := c.RGBA()
+	return fmt.Sprintf("#%02x%02x%02x", uint8(r>>8), uint8(g>>8), uint8(b>>8))
 }

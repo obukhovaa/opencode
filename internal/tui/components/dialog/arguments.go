@@ -1,11 +1,11 @@
 package dialog
 
 import (
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"fmt"
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/opencode-ai/opencode/internal/tui/styles"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
@@ -70,20 +70,26 @@ func NewMultiArgumentsDialogCmp(commandID, content string, argNames []string) Mu
 	for i, name := range argNames {
 		ti := textinput.New()
 		ti.Placeholder = fmt.Sprintf("Enter value for %s...", name)
-		ti.Width = 40
+		ti.SetWidth(40)
 		ti.Prompt = ""
-		ti.PlaceholderStyle = ti.PlaceholderStyle.Background(t.Background())
-		ti.PromptStyle = ti.PromptStyle.Background(t.Background())
-		ti.TextStyle = ti.TextStyle.Background(t.Background())
+
+		s := ti.Styles()
+		s.Focused.Placeholder = s.Focused.Placeholder.Background(t.Background())
+		s.Blurred.Placeholder = s.Blurred.Placeholder.Background(t.Background())
+		s.Focused.Prompt = s.Focused.Prompt.Background(t.Background())
+		s.Blurred.Prompt = s.Blurred.Prompt.Background(t.Background())
+		s.Focused.Text = s.Focused.Text.Background(t.Background())
+		s.Blurred.Text = s.Blurred.Text.Background(t.Background())
 
 		// Only focus the first input initially
 		if i == 0 {
 			ti.Focus()
-			ti.PromptStyle = ti.PromptStyle.Foreground(t.Primary())
-			ti.TextStyle = ti.TextStyle.Foreground(t.Primary())
+			s.Focused.Prompt = s.Focused.Prompt.Foreground(t.Primary())
+			s.Focused.Text = s.Focused.Text.Foreground(t.Primary())
 		} else {
 			ti.Blur()
 		}
+		ti.SetStyles(s)
 
 		inputs[i] = ti
 	}
@@ -118,7 +124,7 @@ func (m MultiArgumentsDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	t := theme.CurrentTheme()
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("esc"))):
 			return m, util.CmdHandler(CloseMultiArgumentsDialogMsg{
@@ -145,22 +151,28 @@ func (m MultiArgumentsDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.inputs[m.focusIndex].Blur()
 			m.focusIndex++
 			m.inputs[m.focusIndex].Focus()
-			m.inputs[m.focusIndex].PromptStyle = m.inputs[m.focusIndex].PromptStyle.Foreground(t.Primary())
-			m.inputs[m.focusIndex].TextStyle = m.inputs[m.focusIndex].TextStyle.Foreground(t.Primary())
+			s := m.inputs[m.focusIndex].Styles()
+			s.Focused.Prompt = s.Focused.Prompt.Foreground(t.Primary())
+			s.Focused.Text = s.Focused.Text.Foreground(t.Primary())
+			m.inputs[m.focusIndex].SetStyles(s)
 		case key.Matches(msg, key.NewBinding(key.WithKeys("tab"))):
 			// Move to the next input
 			m.inputs[m.focusIndex].Blur()
 			m.focusIndex = (m.focusIndex + 1) % len(m.inputs)
 			m.inputs[m.focusIndex].Focus()
-			m.inputs[m.focusIndex].PromptStyle = m.inputs[m.focusIndex].PromptStyle.Foreground(t.Primary())
-			m.inputs[m.focusIndex].TextStyle = m.inputs[m.focusIndex].TextStyle.Foreground(t.Primary())
+			s := m.inputs[m.focusIndex].Styles()
+			s.Focused.Prompt = s.Focused.Prompt.Foreground(t.Primary())
+			s.Focused.Text = s.Focused.Text.Foreground(t.Primary())
+			m.inputs[m.focusIndex].SetStyles(s)
 		case key.Matches(msg, key.NewBinding(key.WithKeys("shift+tab"))):
 			// Move to the previous input
 			m.inputs[m.focusIndex].Blur()
 			m.focusIndex = (m.focusIndex - 1 + len(m.inputs)) % len(m.inputs)
 			m.inputs[m.focusIndex].Focus()
-			m.inputs[m.focusIndex].PromptStyle = m.inputs[m.focusIndex].PromptStyle.Foreground(t.Primary())
-			m.inputs[m.focusIndex].TextStyle = m.inputs[m.focusIndex].TextStyle.Foreground(t.Primary())
+			s := m.inputs[m.focusIndex].Styles()
+			s.Focused.Prompt = s.Focused.Prompt.Foreground(t.Primary())
+			s.Focused.Text = s.Focused.Text.Foreground(t.Primary())
+			m.inputs[m.focusIndex].SetStyles(s)
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -176,7 +188,7 @@ func (m MultiArgumentsDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View implements tea.Model.
-func (m MultiArgumentsDialogCmp) View() string {
+func (m MultiArgumentsDialogCmp) View() tea.View {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
 
@@ -236,13 +248,13 @@ func (m MultiArgumentsDialogCmp) View() string {
 		elements...,
 	)
 
-	return baseStyle.Padding(1, 2).
+	return tea.NewView(baseStyle.Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderBackground(t.Background()).
 		BorderForeground(t.TextMuted()).
 		Background(t.Background()).
-		Width(lipgloss.Width(content) + 4).
-		Render(content)
+		Width(lipgloss.Width(content) + 6).
+		Render(content))
 }
 
 // SetSize sets the size of the component.

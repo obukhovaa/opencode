@@ -1,9 +1,5 @@
 package theme
 
-import (
-	"github.com/charmbracelet/lipgloss"
-)
-
 // Flexoki color palette constants
 const (
 	// Base colors
@@ -54,221 +50,221 @@ func NewFlexokiTheme() *FlexokiTheme {
 	theme := &FlexokiTheme{}
 
 	// Base colors
-	theme.PrimaryColor = lipgloss.AdaptiveColor{
+	theme.PrimaryColor = ThemeColor{
 		Dark:  flexokiBlue400,
 		Light: flexokiBlue600,
 	}
-	theme.SecondaryColor = lipgloss.AdaptiveColor{
+	theme.SecondaryColor = ThemeColor{
 		Dark:  flexokiPurple400,
 		Light: flexokiPurple600,
 	}
-	theme.AccentColor = lipgloss.AdaptiveColor{
+	theme.AccentColor = ThemeColor{
 		Dark:  flexokiOrange400,
 		Light: flexokiOrange600,
 	}
 
 	// Status colors
-	theme.ErrorColor = lipgloss.AdaptiveColor{
+	theme.ErrorColor = ThemeColor{
 		Dark:  flexokiRed400,
 		Light: flexokiRed600,
 	}
-	theme.WarningColor = lipgloss.AdaptiveColor{
+	theme.WarningColor = ThemeColor{
 		Dark:  flexokiYellow400,
 		Light: flexokiYellow600,
 	}
-	theme.SuccessColor = lipgloss.AdaptiveColor{
+	theme.SuccessColor = ThemeColor{
 		Dark:  flexokiGreen400,
 		Light: flexokiGreen600,
 	}
-	theme.InfoColor = lipgloss.AdaptiveColor{
+	theme.InfoColor = ThemeColor{
 		Dark:  flexokiCyan400,
 		Light: flexokiCyan600,
 	}
 
 	// Text colors
-	theme.TextColor = lipgloss.AdaptiveColor{
+	theme.TextColor = ThemeColor{
 		Dark:  flexokiBase300,
 		Light: flexokiBase600,
 	}
-	theme.TextMutedColor = lipgloss.AdaptiveColor{
+	theme.TextMutedColor = ThemeColor{
 		Dark:  flexokiBase700,
 		Light: flexokiBase500,
 	}
-	theme.TextEmphasizedColor = lipgloss.AdaptiveColor{
+	theme.TextEmphasizedColor = ThemeColor{
 		Dark:  flexokiYellow400,
 		Light: flexokiYellow600,
 	}
 
 	// Background colors
-	theme.BackgroundColor = lipgloss.AdaptiveColor{
+	theme.BackgroundColor = ThemeColor{
 		Dark:  flexokiBlack,
 		Light: flexokiPaper,
 	}
-	theme.BackgroundSecondaryColor = lipgloss.AdaptiveColor{
+	theme.BackgroundSecondaryColor = ThemeColor{
 		Dark:  flexokiBase950,
 		Light: flexokiBase50,
 	}
-	theme.BackgroundDarkerColor = lipgloss.AdaptiveColor{
+	theme.BackgroundDarkerColor = ThemeColor{
 		Dark:  flexokiBase900,
 		Light: flexokiBase100,
 	}
 
 	// Border colors
-	theme.BorderNormalColor = lipgloss.AdaptiveColor{
+	theme.BorderNormalColor = ThemeColor{
 		Dark:  flexokiBase900,
 		Light: flexokiBase100,
 	}
-	theme.BorderFocusedColor = lipgloss.AdaptiveColor{
+	theme.BorderFocusedColor = ThemeColor{
 		Dark:  flexokiBlue400,
 		Light: flexokiBlue600,
 	}
-	theme.BorderDimColor = lipgloss.AdaptiveColor{
+	theme.BorderDimColor = ThemeColor{
 		Dark:  flexokiBase850,
 		Light: flexokiBase150,
 	}
 
 	// Diff view colors
-	theme.DiffAddedColor = lipgloss.AdaptiveColor{
+	theme.DiffAddedColor = ThemeColor{
 		Dark:  flexokiGreen400,
 		Light: flexokiGreen600,
 	}
-	theme.DiffRemovedColor = lipgloss.AdaptiveColor{
+	theme.DiffRemovedColor = ThemeColor{
 		Dark:  flexokiRed400,
 		Light: flexokiRed600,
 	}
-	theme.DiffContextColor = lipgloss.AdaptiveColor{
+	theme.DiffContextColor = ThemeColor{
 		Dark:  flexokiBase700,
 		Light: flexokiBase500,
 	}
-	theme.DiffHunkHeaderColor = lipgloss.AdaptiveColor{
+	theme.DiffHunkHeaderColor = ThemeColor{
 		Dark:  flexokiBase700,
 		Light: flexokiBase500,
 	}
-	theme.DiffHighlightAddedColor = lipgloss.AdaptiveColor{
+	theme.DiffHighlightAddedColor = ThemeColor{
 		Dark:  flexokiGreen400,
 		Light: flexokiGreen600,
 	}
-	theme.DiffHighlightRemovedColor = lipgloss.AdaptiveColor{
+	theme.DiffHighlightRemovedColor = ThemeColor{
 		Dark:  flexokiRed400,
 		Light: flexokiRed600,
 	}
-	theme.DiffAddedBgColor = lipgloss.AdaptiveColor{
+	theme.DiffAddedBgColor = ThemeColor{
 		Dark:  "#1D2419", // Darker green background
 		Light: "#EFF2E2", // Light green background
 	}
-	theme.DiffRemovedBgColor = lipgloss.AdaptiveColor{
+	theme.DiffRemovedBgColor = ThemeColor{
 		Dark:  "#241919", // Darker red background
 		Light: "#F2E2E2", // Light red background
 	}
-	theme.DiffContextBgColor = lipgloss.AdaptiveColor{
+	theme.DiffContextBgColor = ThemeColor{
 		Dark:  flexokiBlack,
 		Light: flexokiPaper,
 	}
-	theme.DiffLineNumberColor = lipgloss.AdaptiveColor{
+	theme.DiffLineNumberColor = ThemeColor{
 		Dark:  flexokiBase700,
 		Light: flexokiBase500,
 	}
-	theme.DiffAddedLineNumberBgColor = lipgloss.AdaptiveColor{
+	theme.DiffAddedLineNumberBgColor = ThemeColor{
 		Dark:  "#1A2017", // Slightly darker green
 		Light: "#E5EBD9", // Light green
 	}
-	theme.DiffRemovedLineNumberBgColor = lipgloss.AdaptiveColor{
+	theme.DiffRemovedLineNumberBgColor = ThemeColor{
 		Dark:  "#201717", // Slightly darker red
 		Light: "#EBD9D9", // Light red
 	}
 
 	// Markdown colors
-	theme.MarkdownTextColor = lipgloss.AdaptiveColor{
+	theme.MarkdownTextColor = ThemeColor{
 		Dark:  flexokiBase300,
 		Light: flexokiBase600,
 	}
-	theme.MarkdownHeadingColor = lipgloss.AdaptiveColor{
+	theme.MarkdownHeadingColor = ThemeColor{
 		Dark:  flexokiYellow400,
 		Light: flexokiYellow600,
 	}
-	theme.MarkdownLinkColor = lipgloss.AdaptiveColor{
+	theme.MarkdownLinkColor = ThemeColor{
 		Dark:  flexokiCyan400,
 		Light: flexokiCyan600,
 	}
-	theme.MarkdownLinkTextColor = lipgloss.AdaptiveColor{
+	theme.MarkdownLinkTextColor = ThemeColor{
 		Dark:  flexokiMagenta400,
 		Light: flexokiMagenta600,
 	}
-	theme.MarkdownCodeColor = lipgloss.AdaptiveColor{
+	theme.MarkdownCodeColor = ThemeColor{
 		Dark:  flexokiGreen400,
 		Light: flexokiGreen600,
 	}
-	theme.MarkdownBlockQuoteColor = lipgloss.AdaptiveColor{
+	theme.MarkdownBlockQuoteColor = ThemeColor{
 		Dark:  flexokiCyan400,
 		Light: flexokiCyan600,
 	}
-	theme.MarkdownEmphColor = lipgloss.AdaptiveColor{
+	theme.MarkdownEmphColor = ThemeColor{
 		Dark:  flexokiYellow400,
 		Light: flexokiYellow600,
 	}
-	theme.MarkdownStrongColor = lipgloss.AdaptiveColor{
+	theme.MarkdownStrongColor = ThemeColor{
 		Dark:  flexokiOrange400,
 		Light: flexokiOrange600,
 	}
-	theme.MarkdownHorizontalRuleColor = lipgloss.AdaptiveColor{
+	theme.MarkdownHorizontalRuleColor = ThemeColor{
 		Dark:  flexokiBase800,
 		Light: flexokiBase200,
 	}
-	theme.MarkdownListItemColor = lipgloss.AdaptiveColor{
+	theme.MarkdownListItemColor = ThemeColor{
 		Dark:  flexokiBlue400,
 		Light: flexokiBlue600,
 	}
-	theme.MarkdownListEnumerationColor = lipgloss.AdaptiveColor{
+	theme.MarkdownListEnumerationColor = ThemeColor{
 		Dark:  flexokiBlue400,
 		Light: flexokiBlue600,
 	}
-	theme.MarkdownImageColor = lipgloss.AdaptiveColor{
+	theme.MarkdownImageColor = ThemeColor{
 		Dark:  flexokiPurple400,
 		Light: flexokiPurple600,
 	}
-	theme.MarkdownImageTextColor = lipgloss.AdaptiveColor{
+	theme.MarkdownImageTextColor = ThemeColor{
 		Dark:  flexokiMagenta400,
 		Light: flexokiMagenta600,
 	}
-	theme.MarkdownCodeBlockColor = lipgloss.AdaptiveColor{
+	theme.MarkdownCodeBlockColor = ThemeColor{
 		Dark:  flexokiBase300,
 		Light: flexokiBase600,
 	}
 
 	// Syntax highlighting colors (based on Flexoki's mappings)
-	theme.SyntaxCommentColor = lipgloss.AdaptiveColor{
+	theme.SyntaxCommentColor = ThemeColor{
 		Dark:  flexokiBase700, // tx-3
 		Light: flexokiBase300, // tx-3
 	}
-	theme.SyntaxKeywordColor = lipgloss.AdaptiveColor{
+	theme.SyntaxKeywordColor = ThemeColor{
 		Dark:  flexokiGreen400, // gr
 		Light: flexokiGreen600, // gr
 	}
-	theme.SyntaxFunctionColor = lipgloss.AdaptiveColor{
+	theme.SyntaxFunctionColor = ThemeColor{
 		Dark:  flexokiOrange400, // or
 		Light: flexokiOrange600, // or
 	}
-	theme.SyntaxVariableColor = lipgloss.AdaptiveColor{
+	theme.SyntaxVariableColor = ThemeColor{
 		Dark:  flexokiBlue400, // bl
 		Light: flexokiBlue600, // bl
 	}
-	theme.SyntaxStringColor = lipgloss.AdaptiveColor{
+	theme.SyntaxStringColor = ThemeColor{
 		Dark:  flexokiCyan400, // cy
 		Light: flexokiCyan600, // cy
 	}
-	theme.SyntaxNumberColor = lipgloss.AdaptiveColor{
+	theme.SyntaxNumberColor = ThemeColor{
 		Dark:  flexokiPurple400, // pu
 		Light: flexokiPurple600, // pu
 	}
-	theme.SyntaxTypeColor = lipgloss.AdaptiveColor{
+	theme.SyntaxTypeColor = ThemeColor{
 		Dark:  flexokiYellow400, // ye
 		Light: flexokiYellow600, // ye
 	}
-	theme.SyntaxOperatorColor = lipgloss.AdaptiveColor{
+	theme.SyntaxOperatorColor = ThemeColor{
 		Dark:  flexokiBase500, // tx-2
 		Light: flexokiBase500, // tx-2
 	}
-	theme.SyntaxPunctuationColor = lipgloss.AdaptiveColor{
+	theme.SyntaxPunctuationColor = ThemeColor{
 		Dark:  flexokiBase500, // tx-2
 		Light: flexokiBase500, // tx-2
 	}

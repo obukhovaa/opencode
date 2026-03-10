@@ -1,10 +1,10 @@
 package dialog
 
 import (
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/opencode-ai/opencode/internal/logging"
 	utilComponents "github.com/opencode-ai/opencode/internal/tui/components/util"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
@@ -154,7 +154,7 @@ func (c *completionDialogCmp) close() tea.Cmd {
 func (c *completionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if c.pseudoSearchTextArea.Focused() {
 
 			if !key.Matches(msg, completionDialogKeys.Complete) && !key.Matches(msg, completionDialogKeys.Cycle) && !key.Matches(msg, completionDialogKeys.CycleBack) {
@@ -228,7 +228,7 @@ func (c *completionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return c, tea.Batch(cmds...)
 }
 
-func (c *completionDialogCmp) View() string {
+func (c *completionDialogCmp) View() tea.View {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
 
@@ -245,7 +245,7 @@ func (c *completionDialogCmp) View() string {
 
 	c.listView.SetMaxWidth(maxWidth)
 
-	return baseStyle.Padding(0, 0).
+	return tea.NewView(baseStyle.Padding(0, 0).
 		Border(lipgloss.NormalBorder()).
 		BorderBottom(false).
 		BorderRight(false).
@@ -253,7 +253,7 @@ func (c *completionDialogCmp) View() string {
 		BorderBackground(t.Background()).
 		BorderForeground(t.TextMuted()).
 		Width(c.width).
-		Render(c.listView.View())
+		Render(c.listView.View().Content))
 }
 
 func (c *completionDialogCmp) SetWidth(width int) {

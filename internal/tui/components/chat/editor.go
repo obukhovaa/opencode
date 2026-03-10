@@ -8,10 +8,10 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -164,7 +164,7 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		m.attachments = append(m.attachments, msg.Attachment)
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if key.Matches(msg, DeleteKeyMaps.AttachmentDeleteMode) {
 			m.deleteMode = true
 			return m, nil
@@ -174,8 +174,8 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.attachments = nil
 			return m, nil
 		}
-		if m.deleteMode && len(msg.Runes) > 0 && unicode.IsDigit(msg.Runes[0]) {
-			num := int(msg.Runes[0] - '0')
+		if m.deleteMode && len(msg.Text) > 0 && unicode.IsDigit(rune(msg.Text[0])) {
+			num := int(rune(msg.Text[0]) - '0')
 			m.deleteMode = false
 			if num < 10 && len(m.attachments) > num {
 				if num == 0 {
@@ -218,7 +218,7 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m *editorCmp) View() string {
+func (m *editorCmp) View() tea.View {
 	t := theme.CurrentTheme()
 
 	// Style the prompt with theme colors
@@ -228,14 +228,14 @@ func (m *editorCmp) View() string {
 		Foreground(t.Primary())
 
 	if len(m.attachments) == 0 {
-		return lipgloss.JoinHorizontal(lipgloss.Top, style.Render(">"), m.textarea.View())
+		return tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top, style.Render(">"), m.textarea.View()))
 	}
 	m.textarea.SetHeight(m.height - 1)
-	return lipgloss.JoinVertical(lipgloss.Top,
+	return tea.NewView(lipgloss.JoinVertical(lipgloss.Top,
 		m.attachmentsContent(),
 		lipgloss.JoinHorizontal(lipgloss.Top, style.Render(">"),
 			m.textarea.View()),
-	)
+	))
 }
 
 func (m *editorCmp) SetSize(width, height int) tea.Cmd {
@@ -288,14 +288,16 @@ func CreateTextArea(existing *textarea.Model) textarea.Model {
 	textMutedColor := t.TextMuted()
 
 	ta := textarea.New()
-	ta.BlurredStyle.Base = styles.BaseStyle().Background(bgColor).Foreground(textColor)
-	ta.BlurredStyle.CursorLine = styles.BaseStyle().Background(bgColor)
-	ta.BlurredStyle.Placeholder = styles.BaseStyle().Background(bgColor).Foreground(textMutedColor)
-	ta.BlurredStyle.Text = styles.BaseStyle().Background(bgColor).Foreground(textColor)
-	ta.FocusedStyle.Base = styles.BaseStyle().Background(bgColor).Foreground(textColor)
-	ta.FocusedStyle.CursorLine = styles.BaseStyle().Background(bgColor)
-	ta.FocusedStyle.Placeholder = styles.BaseStyle().Background(bgColor).Foreground(textMutedColor)
-	ta.FocusedStyle.Text = styles.BaseStyle().Background(bgColor).Foreground(textColor)
+	s := ta.Styles()
+	s.Blurred.Base = styles.BaseStyle().Background(bgColor).Foreground(textColor)
+	s.Blurred.CursorLine = styles.BaseStyle().Background(bgColor)
+	s.Blurred.Placeholder = styles.BaseStyle().Background(bgColor).Foreground(textMutedColor)
+	s.Blurred.Text = styles.BaseStyle().Background(bgColor).Foreground(textColor)
+	s.Focused.Base = styles.BaseStyle().Background(bgColor).Foreground(textColor)
+	s.Focused.CursorLine = styles.BaseStyle().Background(bgColor)
+	s.Focused.Placeholder = styles.BaseStyle().Background(bgColor).Foreground(textMutedColor)
+	s.Focused.Text = styles.BaseStyle().Background(bgColor).Foreground(textColor)
+	ta.SetStyles(s)
 
 	ta.Prompt = " "
 	ta.ShowLineNumbers = false

@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
@@ -199,6 +199,7 @@ func (a appModel) Init() tea.Cmd {
 		}
 		return dialog.ShowInitDialogMsg{Show: shouldShow}
 	})
+	cmds = append(cmds, tea.RequestBackgroundColor)
 
 	return tea.Batch(cmds...)
 }
@@ -207,6 +208,9 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
+	case tea.BackgroundColorMsg:
+		theme.SetIsDark(msg.IsDark())
+		return a, nil
 	case tea.WindowSizeMsg:
 		msg.Height -= 1 // Make space for the status bar
 		a.width, a.height = msg.Width, msg.Height
@@ -499,7 +503,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		// If multi-arguments dialog is open, let it handle the key press first
 		if a.showMultiArgumentsDialog {
 			args, cmd := a.multiArgumentsDialog.Update(msg)
@@ -680,7 +684,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.filepicker = f.(dialog.FilepickerCmp)
 		cmds = append(cmds, filepickerCmd)
 		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyMsg); ok {
+		if _, ok := msg.(tea.KeyPressMsg); ok {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -690,7 +694,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.quit = q.(dialog.QuitDialog)
 		cmds = append(cmds, quitCmd)
 		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyMsg); ok {
+		if _, ok := msg.(tea.KeyPressMsg); ok {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -699,7 +703,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.permissions = d.(dialog.PermissionDialogCmp)
 		cmds = append(cmds, permissionsCmd)
 		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyMsg); ok {
+		if _, ok := msg.(tea.KeyPressMsg); ok {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -709,7 +713,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.sessionDialog = d.(dialog.SessionDialog)
 		cmds = append(cmds, sessionCmd)
 		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyMsg); ok {
+		if _, ok := msg.(tea.KeyPressMsg); ok {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -718,8 +722,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, cmd := a.deleteSessionDialog.Update(msg)
 		a.deleteSessionDialog = d.(dialog.SessionDialog)
 		cmds = append(cmds, cmd)
-		// block other tea.KeyMsgs
-		if _, ok := msg.(tea.KeyMsg); ok {
+		// block other tea.KeyPressMsgs
+		if _, ok := msg.(tea.KeyPressMsg); ok {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -729,7 +733,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.commandDialog = d.(dialog.CommandDialog)
 		cmds = append(cmds, commandCmd)
 		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyMsg); ok {
+		if _, ok := msg.(tea.KeyPressMsg); ok {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -739,7 +743,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.modelDialog = d.(dialog.ModelDialog)
 		cmds = append(cmds, modelCmd)
 		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyMsg); ok {
+		if _, ok := msg.(tea.KeyPressMsg); ok {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -749,7 +753,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.initDialog = d.(dialog.InitDialogCmp)
 		cmds = append(cmds, initCmd)
 		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyMsg); ok {
+		if _, ok := msg.(tea.KeyPressMsg); ok {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -759,7 +763,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.themeDialog = d.(dialog.ThemeDialog)
 		cmds = append(cmds, themeCmd)
 		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyMsg); ok {
+		if _, ok := msg.(tea.KeyPressMsg); ok {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -817,17 +821,17 @@ func (a *appModel) moveToPage(pageID page.PageID) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func (a appModel) View() string {
+func (a appModel) View() tea.View {
 	components := []string{
-		a.pages[a.currentPage].View(),
+		a.pages[a.currentPage].View().Content,
 	}
 
-	components = append(components, a.status.View())
+	components = append(components, a.status.View().Content)
 
 	appView := lipgloss.JoinVertical(lipgloss.Top, components...)
 
 	if a.showPermissions {
-		overlay := a.permissions.View()
+		overlay := a.permissions.View().Content
 		row := lipgloss.Height(appView) / 2
 		row -= lipgloss.Height(overlay) / 2
 		col := lipgloss.Width(appView) / 2
@@ -842,7 +846,7 @@ func (a appModel) View() string {
 	}
 
 	if a.showFilepicker {
-		overlay := a.filepicker.View()
+		overlay := a.filepicker.View().Content
 		row := lipgloss.Height(appView) / 2
 		row -= lipgloss.Height(overlay) / 2
 		col := lipgloss.Width(appView) / 2
@@ -882,6 +886,21 @@ func (a appModel) View() string {
 		)
 	}
 
+	if a.showQuit {
+		overlay := a.quit.View().Content
+		row := lipgloss.Height(appView) / 2
+		row -= lipgloss.Height(overlay) / 2
+		col := lipgloss.Width(appView) / 2
+		col -= lipgloss.Width(overlay) / 2
+		appView = layout.PlaceOverlay(
+			col,
+			row,
+			overlay,
+			appView,
+			true,
+		)
+	}
+
 	if a.showHelp {
 		bindings := layout.KeyMapToSlice(keys)
 		if p, ok := a.pages[a.currentPage].(layout.Bindings); ok {
@@ -898,22 +917,7 @@ func (a appModel) View() string {
 		}
 		a.help.SetBindings(bindings)
 
-		overlay := a.help.View()
-		row := lipgloss.Height(appView) / 2
-		row -= lipgloss.Height(overlay) / 2
-		col := lipgloss.Width(appView) / 2
-		col -= lipgloss.Width(overlay) / 2
-		appView = layout.PlaceOverlay(
-			col,
-			row,
-			overlay,
-			appView,
-			true,
-		)
-	}
-
-	if a.showQuit {
-		overlay := a.quit.View()
+		overlay := a.help.View().Content
 		row := lipgloss.Height(appView) / 2
 		row -= lipgloss.Height(overlay) / 2
 		col := lipgloss.Width(appView) / 2
@@ -928,7 +932,7 @@ func (a appModel) View() string {
 	}
 
 	if a.showSessionDialog {
-		overlay := a.sessionDialog.View()
+		overlay := a.sessionDialog.View().Content
 		row := lipgloss.Height(appView) / 2
 		row -= lipgloss.Height(overlay) / 2
 		col := lipgloss.Width(appView) / 2
@@ -943,7 +947,7 @@ func (a appModel) View() string {
 	}
 
 	if a.showDeleteSessionDialog {
-		overlay := a.deleteSessionDialog.View()
+		overlay := a.deleteSessionDialog.View().Content
 		row := lipgloss.Height(appView) / 2
 		row -= lipgloss.Height(overlay) / 2
 		col := lipgloss.Width(appView) / 2
@@ -958,7 +962,7 @@ func (a appModel) View() string {
 	}
 
 	if a.showModelDialog {
-		overlay := a.modelDialog.View()
+		overlay := a.modelDialog.View().Content
 		row := lipgloss.Height(appView) / 2
 		row -= lipgloss.Height(overlay) / 2
 		col := lipgloss.Width(appView) / 2
@@ -973,7 +977,7 @@ func (a appModel) View() string {
 	}
 
 	if a.showCommandDialog {
-		overlay := a.commandDialog.View()
+		overlay := a.commandDialog.View().Content
 		row := lipgloss.Height(appView) / 2
 		row -= lipgloss.Height(overlay) / 2
 		col := lipgloss.Width(appView) / 2
@@ -988,7 +992,7 @@ func (a appModel) View() string {
 	}
 
 	if a.showInitDialog {
-		overlay := a.initDialog.View()
+		overlay := a.initDialog.View().Content
 		appView = layout.PlaceOverlay(
 			a.width/2-lipgloss.Width(overlay)/2,
 			a.height/2-lipgloss.Height(overlay)/2,
@@ -999,7 +1003,7 @@ func (a appModel) View() string {
 	}
 
 	if a.showThemeDialog {
-		overlay := a.themeDialog.View()
+		overlay := a.themeDialog.View().Content
 		row := lipgloss.Height(appView) / 2
 		row -= lipgloss.Height(overlay) / 2
 		col := lipgloss.Width(appView) / 2
@@ -1014,7 +1018,7 @@ func (a appModel) View() string {
 	}
 
 	if a.showMultiArgumentsDialog {
-		overlay := a.multiArgumentsDialog.View()
+		overlay := a.multiArgumentsDialog.View().Content
 		row := lipgloss.Height(appView) / 2
 		row -= lipgloss.Height(overlay) / 2
 		col := lipgloss.Width(appView) / 2
@@ -1028,7 +1032,9 @@ func (a appModel) View() string {
 		)
 	}
 
-	return appView
+	v := tea.NewView(appView)
+	v.AltScreen = true
+	return v
 }
 
 func New(app *app.App) tea.Model {

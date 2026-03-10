@@ -7,8 +7,7 @@ import (
 	"sync"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	zone "github.com/lrstanley/bubblezone"
+	tea "charm.land/bubbletea/v2"
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
@@ -227,10 +226,8 @@ to assist developers in writing, debugging, and understanding code directly from
 
 		// Interactive mode
 		// Set up the TUI
-		zone.NewGlobal()
 		program := tea.NewProgram(
 			tui.New(app),
-			tea.WithAltScreen(),
 		)
 
 		// Setup the subscriptions, this will send services events to the TUI

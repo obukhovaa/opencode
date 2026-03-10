@@ -5,9 +5,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/table"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/table"
+	tea "charm.land/bubbletea/v2"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -75,12 +75,12 @@ func (t *tableCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return t, tea.Batch(cmds...)
 }
 
-func (t *tableCmp) View() string {
+func (t *tableCmp) View() tea.View {
 	th := theme.CurrentTheme()
 	defaultStyles := table.DefaultStyles()
 	defaultStyles.Selected = defaultStyles.Selected.Foreground(th.Primary())
 	t.table.SetStyles(defaultStyles)
-	return styles.ForceReplaceBackgroundWithLipgloss(t.table.View(), th.Background())
+	return tea.NewView(styles.ForceReplaceBackgroundWithLipgloss(t.table.View(), th.Background()))
 }
 
 func (t *tableCmp) GetSize() (int, int) {

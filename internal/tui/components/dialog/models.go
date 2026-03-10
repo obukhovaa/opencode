@@ -5,9 +5,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
@@ -111,7 +111,7 @@ func (m *modelDialogCmp) Init() tea.Cmd {
 
 func (m *modelDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, modelKeys.Up) || key.Matches(msg, modelKeys.K):
 			m.moveSelectionUp()
@@ -185,7 +185,7 @@ func (m *modelDialogCmp) switchProvider(offset int) {
 	m.setupModelsForProvider(m.provider)
 }
 
-func (m *modelDialogCmp) View() string {
+func (m *modelDialogCmp) View() tea.View {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
 
@@ -220,12 +220,12 @@ func (m *modelDialogCmp) View() string {
 		scrollIndicator,
 	)
 
-	return baseStyle.Padding(1, 2).
+	return tea.NewView(baseStyle.Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderBackground(t.Background()).
 		BorderForeground(t.TextMuted()).
-		Width(lipgloss.Width(content) + 4).
-		Render(content)
+		Width(lipgloss.Width(content) + 6).
+		Render(content))
 }
 
 func (m *modelDialogCmp) getScrollIndicators(maxWidth int) string {
