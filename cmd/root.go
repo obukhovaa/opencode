@@ -231,12 +231,12 @@ to assist developers in writing, debugging, and understanding code directly from
 		)
 
 		// Setup the subscriptions, this will send services events to the TUI
-		ch, cancelSubs := setupSubscriptions(app, ctx)
+		ch, permCh, cancelSubs := setupSubscriptions(app, ctx)
 
 		// Create a context for the TUI message handler
 		tuiCtx, tuiCancel := context.WithCancel(ctx)
 		var tuiWg sync.WaitGroup
-		tuiWg.Add(1)
+		tuiWg.Add(2)
 
 		// Set up message handling for the TUI
 		go func() {
@@ -253,6 +253,28 @@ to assist developers in writing, debugging, and understanding code directly from
 				case msg, ok := <-ch:
 					if !ok {
 						logging.Info("TUI message channel closed")
+						return
+					}
+					program.Send(msg)
+				}
+			}
+		}()
+
+		// Dedicated handler for permission events — must never be dropped
+		go func() {
+			defer tuiWg.Done()
+			defer logging.RecoverPanic("TUI-permission-handler", func() {
+				attemptTUIRecovery(program)
+			})
+
+			for {
+				select {
+				case <-tuiCtx.Done():
+					logging.Info("TUI permission handler shutting down")
+					return
+				case msg, ok := <-permCh:
+					if !ok {
+						logging.Info("TUI permission channel closed")
 						return
 					}
 					program.Send(msg)
@@ -345,8 +367,49 @@ func setupSubscriber[T any](
 	}()
 }
 
-func setupSubscriptions(app *app.App, parentCtx context.Context) (chan tea.Msg, func()) {
+// setupBlockingSubscriber sets up a subscriber that blocks until the event is
+// delivered. Used for critical events like permissions that must never be dropped.
+func setupBlockingSubscriber[T any](
+	ctx context.Context,
+	wg *sync.WaitGroup,
+	name string,
+	subscriber func(context.Context) <-chan pubsub.Event[T],
+	outputCh chan<- tea.Msg,
+) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer logging.RecoverPanic(fmt.Sprintf("subscription-%s", name), nil)
+
+		subCh := subscriber(ctx)
+
+		for {
+			select {
+			case event, ok := <-subCh:
+				if !ok {
+					logging.Info("subscription channel closed", "name", name)
+					return
+				}
+
+				var msg tea.Msg = event
+
+				select {
+				case outputCh <- msg:
+				case <-ctx.Done():
+					logging.Info("subscription cancelled", "name", name)
+					return
+				}
+			case <-ctx.Done():
+				logging.Info("subscription cancelled", "name", name)
+				return
+			}
+		}
+	}()
+}
+
+func setupSubscriptions(app *app.App, parentCtx context.Context) (chan tea.Msg, chan tea.Msg, func()) {
 	ch := make(chan tea.Msg, 100)
+	permCh := make(chan tea.Msg, 10)
 
 	wg := sync.WaitGroup{}
 	ctx, cancel := context.WithCancel(parentCtx) // Inherit from parent context
@@ -354,7 +417,7 @@ func setupSubscriptions(app *app.App, parentCtx context.Context) (chan tea.Msg, 
 	setupSubscriber(ctx, &wg, "logging", logging.Subscribe, ch)
 	setupSubscriber(ctx, &wg, "sessions", app.Sessions.Subscribe, ch)
 	setupSubscriber(ctx, &wg, "messages", app.Messages.Subscribe, ch)
-	setupSubscriber(ctx, &wg, "permissions", app.Permissions.Subscribe, ch)
+	setupBlockingSubscriber(ctx, &wg, "permissions", app.Permissions.Subscribe, permCh)
 	for name, primaryAgent := range app.PrimaryAgents {
 		setupSubscriber(ctx, &wg, fmt.Sprintf("agent-%s", name), primaryAgent.Subscribe, ch)
 	}
@@ -373,13 +436,15 @@ func setupSubscriptions(app *app.App, parentCtx context.Context) (chan tea.Msg, 
 		select {
 		case <-waitCh:
 			logging.Info("All subscription goroutines completed successfully")
-			close(ch) // Only close after all writers are confirmed done
+			close(ch)
+			close(permCh)
 		case <-time.After(5 * time.Second):
 			logging.Warn("Timed out waiting for some subscription goroutines to complete")
 			close(ch)
+			close(permCh)
 		}
 	}
-	return ch, cleanupFunc
+	return ch, permCh, cleanupFunc
 }
 
 func Execute() {

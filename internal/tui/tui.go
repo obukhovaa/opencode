@@ -822,8 +822,12 @@ func (a *appModel) moveToPage(pageID page.PageID) tea.Cmd {
 }
 
 func (a appModel) View() tea.View {
+	pageContent := lipgloss.NewStyle().
+		MaxHeight(a.height).
+		Render(a.pages[a.currentPage].View().Content)
+
 	components := []string{
-		a.pages[a.currentPage].View().Content,
+		pageContent,
 	}
 
 	components = append(components, a.status.View().Content)

@@ -60,6 +60,7 @@ func (c *container) View() tea.View {
 	style = style.
 		Width(width).
 		Height(height).
+		MaxHeight(height).
 		PaddingTop(c.paddingTop).
 		PaddingRight(c.paddingRight).
 		PaddingBottom(c.paddingBottom).

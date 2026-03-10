@@ -133,6 +133,11 @@ func (s *splitPaneLayout) SetSize(width, height int) tea.Cmd {
 	if s.bottomPanel != nil {
 		topHeight = int(float64(height) * s.verticalRatio)
 		bottomHeight = height - topHeight
+		const minBottomHeight = 4
+		if bottomHeight < minBottomHeight {
+			bottomHeight = min(minBottomHeight, height)
+			topHeight = max(0, height-bottomHeight)
+		}
 	} else {
 		topHeight = height
 		bottomHeight = 0
