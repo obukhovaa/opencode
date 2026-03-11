@@ -115,6 +115,19 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 	agentEvents := make(chan agentpkg.AgentEvent, 100)
 	flowStates := make(chan *FlowState, 100)
 
+	if fresh {
+		if err := s.querier.DeleteFlowStatesByRootSession(ctx, rootSessionID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			logging.Warn("Failed to delete existing flow states", "error", err)
+		}
+		for _, step := range f.Spec.Steps {
+			stepSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, flowID, step.ID)
+			if err := s.sessions.Delete(ctx, stepSessionID); err != nil {
+				logging.Debug("Could not delete session during fresh start", "session_id", stepSessionID, "error", err)
+			}
+		}
+		existingStates = nil
+	}
+
 	hasRunning := false
 	for _, es := range existingStates {
 		if es.Status == string(FlowStatusRunning) {
@@ -133,18 +146,6 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 			}
 		}()
 		return agentEvents, flowStates, nil
-	}
-
-	if fresh {
-		if err := s.querier.DeleteFlowStatesByRootSession(ctx, rootSessionID); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			logging.Warn("Failed to delete existing flow states", "error", err)
-		}
-		for _, step := range f.Spec.Steps {
-			stepSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, flowID, step.ID)
-			if err := s.sessions.Delete(ctx, stepSessionID); err != nil {
-				logging.Debug("Could not delete session during fresh start", "session_id", stepSessionID, "error", err)
-			}
-		}
 	}
 
 	nextSteps := make(chan stepWork, len(f.Spec.Steps))
