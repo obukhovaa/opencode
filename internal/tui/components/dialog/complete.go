@@ -211,6 +211,10 @@ func (c *completionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			return c, tea.Batch(cmds...)
 		} else {
+			// Close on ESC even when unfocused
+			if key.Matches(msg, completionDialogKeys.Cancel) && msg.String() != "backspace" {
+				return c, c.close()
+			}
 			items, err := c.completionProvider.GetChildEntries("")
 			if err != nil {
 				logging.Error("Failed to get child entries", err)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/openai/openai-go"
@@ -86,7 +87,7 @@ func (o *openaiClient) convertMessages(messages []message.Message) (openaiMessag
 				Role: "assistant",
 			}
 
-			if msg.Content().String() != "" {
+			if strings.TrimSpace(msg.Content().String()) != "" {
 				assistantMsg.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
 					OfString: openai.String(msg.Content().String()),
 				}

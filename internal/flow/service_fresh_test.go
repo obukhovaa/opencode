@@ -133,13 +133,15 @@ func (a *stubAgent) Run(_ context.Context, _ string, _ string, _ ...message.Atta
 	return ch, nil
 }
 
-func (a *stubAgent) AgentID() config.AgentName                                         { return "coder" }
-func (a *stubAgent) Model() models.Model                                               { return models.Model{} }
-func (a *stubAgent) Cancel(_ string)                                                    {}
-func (a *stubAgent) IsSessionBusy(_ string) bool                                        { return false }
-func (a *stubAgent) IsBusy() bool                                                       { return false }
-func (a *stubAgent) Update(_ config.AgentName, _ models.ModelID) (models.Model, error) { return models.Model{}, nil }
-func (a *stubAgent) Summarize(_ context.Context, _ string) error                        { return nil }
+func (a *stubAgent) AgentID() config.AgentName   { return "coder" }
+func (a *stubAgent) Model() models.Model         { return models.Model{} }
+func (a *stubAgent) Cancel(_ string)             {}
+func (a *stubAgent) IsSessionBusy(_ string) bool { return false }
+func (a *stubAgent) IsBusy() bool                { return false }
+func (a *stubAgent) Update(_ config.AgentName, _ models.ModelID) (models.Model, error) {
+	return models.Model{}, nil
+}
+func (a *stubAgent) Summarize(_ context.Context, _ string) error { return nil }
 
 // stubAgentFactory returns the stubAgent.
 type stubAgentFactory struct{}

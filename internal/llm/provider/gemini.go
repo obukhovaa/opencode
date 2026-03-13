@@ -80,7 +80,7 @@ func (g *geminiClient) convertMessages(messages []message.Message) []*genai.Cont
 		case message.Assistant:
 			var assistantParts []*genai.Part
 
-			if msg.Content().String() != "" {
+			if strings.TrimSpace(msg.Content().String()) != "" {
 				assistantParts = append(assistantParts, &genai.Part{Text: msg.Content().String()})
 			}
 

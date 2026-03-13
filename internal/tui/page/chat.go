@@ -138,23 +138,35 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		p.session = msg
+	case tea.PasteMsg:
+		// Paste events go directly to the editor, skip dialog triggers
+		u, cmd := p.layout.Update(msg)
+		p.layout = u.(layout.SplitPaneLayout)
+		return p, cmd
 	case tea.KeyPressMsg:
 		switch {
+		case key.Matches(msg, keyMap.Cancel):
+			// When a dialog is open, let ESC flow to dialog routing below
+			if !p.showCompletionDialog && !p.showCommandCompletionDialog {
+				if p.session.ID != "" {
+					p.app.ActiveAgent().Cancel(p.session.ID)
+					return p, nil
+				}
+			}
 		case key.Matches(msg, keyMap.ShowCompletionDialog):
-			p.showCompletionDialog = true
+			if !p.showCommandCompletionDialog {
+				p.showCompletionDialog = true
+			}
 		case key.Matches(msg, keyMap.ShowCommandCompletionDialog):
-			p.showCommandCompletionDialog = true
+			if !p.showCompletionDialog {
+				p.showCommandCompletionDialog = true
+			}
 		case key.Matches(msg, keyMap.NewSession):
 			p.session = session.Session{}
 			return p, tea.Batch(
 				p.clearSidebar(),
 				util.CmdHandler(chat.SessionClearedMsg{}),
 			)
-		case key.Matches(msg, keyMap.Cancel):
-			if p.session.ID != "" {
-				p.app.ActiveAgent().Cancel(p.session.ID)
-				return p, nil
-			}
 		}
 	}
 

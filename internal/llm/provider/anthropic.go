@@ -111,7 +111,7 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 
 		case message.Assistant:
 			blocks := []anthropic.ContentBlockParamUnion{}
-			if msg.Content().String() != "" {
+			if strings.TrimSpace(msg.Content().String()) != "" {
 				content := anthropic.NewTextBlock(msg.Content().String())
 				blocks = append(blocks, content)
 			}
