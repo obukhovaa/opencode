@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"image/color"
@@ -123,8 +122,8 @@ func renderUserMessage(msg message.Message, isFocused bool, width int, position 
 func renderAssistantMessage(
 	msg message.Message,
 	msgIndex int,
-	allMessages []message.Message, // we need this to get tool results and the user message
-	messagesService message.Service, // We need this to get the task tool messages
+	allMessages []message.Message,
+	taskMessages map[string][]message.Message,
 	focusedUIMessageId string,
 	isSummary bool,
 	width int,
@@ -203,7 +202,7 @@ func renderAssistantMessage(
 		toolCallContent := renderToolMessage(
 			toolCall,
 			allMessages,
-			messagesService,
+			taskMessages,
 			focusedUIMessageId,
 			false,
 			width,
@@ -667,7 +666,7 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 func renderToolMessage(
 	toolCall message.ToolCall,
 	allMessages []message.Message,
-	messagesService message.Service,
+	taskMessages map[string][]message.Message,
 	focusedUIMessageId string,
 	nested bool,
 	width int,
@@ -766,14 +765,15 @@ func renderToolMessage(
 	}
 
 	if toolCall.Name == agent.TaskToolName {
-		taskMessages, _ := messagesService.List(context.Background(), toolCall.ID)
-		toolCalls := []message.ToolCall{}
-		for _, v := range taskMessages {
-			toolCalls = append(toolCalls, v.ToolCalls()...)
-		}
-		for _, call := range toolCalls {
-			rendered := renderToolMessage(call, []message.Message{}, messagesService, focusedUIMessageId, true, width, 0)
-			parts = append(parts, rendered.content)
+		if msgs, ok := taskMessages[toolCall.ID]; ok {
+			toolCalls := []message.ToolCall{}
+			for _, v := range msgs {
+				toolCalls = append(toolCalls, v.ToolCalls()...)
+			}
+			for _, call := range toolCalls {
+				rendered := renderToolMessage(call, []message.Message{}, taskMessages, focusedUIMessageId, true, width, 0)
+				parts = append(parts, rendered.content)
+			}
 		}
 	}
 	if responseContent != "" && !nested {
@@ -910,14 +910,19 @@ func renderDiagnosticsSummary(content string, width int) string {
 	return baseStyle.Width(width).Render(summary)
 }
 
-// Helper function to format the time difference between two Unix timestamps
+// Helper function to format the time difference between two Unix timestamps (seconds)
 func formatTimestampDiff(start, end int64) string {
-	diffSeconds := float64(end-start) / 1000.0 // Convert to seconds
+	diffSeconds := end - start
 	if diffSeconds < 1 {
-		return fmt.Sprintf("%dms", int(diffSeconds*1000))
+		return "<1s"
 	}
 	if diffSeconds < 60 {
-		return fmt.Sprintf("%.1fs", diffSeconds)
+		return fmt.Sprintf("%ds", diffSeconds)
 	}
-	return fmt.Sprintf("%.1fm", diffSeconds/60)
+	minutes := diffSeconds / 60
+	seconds := diffSeconds % 60
+	if seconds == 0 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	return fmt.Sprintf("%dm%ds", minutes, seconds)
 }

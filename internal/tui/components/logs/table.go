@@ -3,12 +3,14 @@ package logs
 import (
 	"encoding/json"
 	"slices"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
+	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
@@ -22,21 +24,43 @@ type TableComponent interface {
 }
 
 type tableCmp struct {
-	table table.Model
+	table      table.Model
+	viewDirty  bool
+	cachedView string
 }
 
 type selectedLogMsg logging.LogMessage
 
+// LogsPageActivatedMsg is sent when the logs page becomes active,
+// triggering a full refresh to catch any dropped pubsub events.
+type LogsPageActivatedMsg struct{}
+
 func (i *tableCmp) Init() tea.Cmd {
 	i.setRows()
+	i.updateStyles()
+	i.viewDirty = true
 	return nil
+}
+
+func (i *tableCmp) updateStyles() {
+	t := theme.CurrentTheme()
+	defaultStyles := table.DefaultStyles()
+	defaultStyles.Selected = defaultStyles.Selected.Foreground(t.Primary())
+	i.table.SetStyles(defaultStyles)
 }
 
 func (i *tableCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
-	switch msg.(type) {
-	case pubsub.Event[logging.LogMessage]:
+	switch msg := msg.(type) {
+	case dialog.ThemeChangedMsg:
+		i.updateStyles()
+		i.viewDirty = true
+	case LogsPageActivatedMsg:
 		i.setRows()
+		i.viewDirty = true
+	case pubsub.Event[logging.LogMessage]:
+		i.appendRow(msg.Payload)
+		i.viewDirty = true
 		return i, nil
 	}
 	prevSelectedRow := i.table.SelectedRow()
@@ -58,15 +82,17 @@ func (i *tableCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	i.viewDirty = true
 	return i, tea.Batch(cmds...)
 }
 
 func (i *tableCmp) View() tea.View {
-	t := theme.CurrentTheme()
-	defaultStyles := table.DefaultStyles()
-	defaultStyles.Selected = defaultStyles.Selected.Foreground(t.Primary())
-	i.table.SetStyles(defaultStyles)
-	return tea.NewView(styles.ForceReplaceBackgroundWithLipgloss(i.table.View(), t.Background()))
+	if i.viewDirty {
+		t := theme.CurrentTheme()
+		i.cachedView = styles.ForceReplaceBackgroundWithLipgloss(i.table.View(), t.Background())
+		i.viewDirty = false
+	}
+	return tea.NewView(i.cachedView)
 }
 
 func (i *tableCmp) GetSize() (int, int) {
@@ -82,6 +108,7 @@ func (i *tableCmp) SetSize(width int, height int) tea.Cmd {
 		columns[i] = col
 	}
 	i.table.SetColumns(columns)
+	i.viewDirty = true
 	return nil
 }
 
@@ -89,9 +116,37 @@ func (i *tableCmp) BindingKeys() []key.Binding {
 	return layout.KeyMapToSlice(i.table.KeyMap)
 }
 
-func (i *tableCmp) setRows() {
-	rows := []table.Row{}
+func logToRow(log logging.LogMessage) table.Row {
+	bm, _ := json.Marshal(log.Attributes)
+	return table.Row{
+		log.ID,
+		log.Time.Format("15:04:05"),
+		log.Level,
+		log.Message,
+		string(bm),
+	}
+}
 
+func (i *tableCmp) appendRow(log logging.LogMessage) {
+	newRow := logToRow(log)
+	rows := i.table.Rows()
+	pos, _ := slices.BinarySearchFunc(rows, log, func(row table.Row, target logging.LogMessage) int {
+		// Rows are sorted newest-first (descending). Parse the row time string
+		// for comparison, but also compare by ID for same-second entries.
+		rowTime, _ := time.Parse("15:04:05", row[1])
+		if rowTime.After(target.Time.Truncate(time.Second)) {
+			return -1
+		}
+		if rowTime.Before(target.Time.Truncate(time.Second)) {
+			return 1
+		}
+		return 0
+	})
+	rows = slices.Insert(rows, pos, newRow)
+	i.table.SetRows(rows)
+}
+
+func (i *tableCmp) setRows() {
 	logs := logging.List()
 	slices.SortFunc(logs, func(a, b logging.LogMessage) int {
 		if a.Time.Before(b.Time) {
@@ -103,17 +158,9 @@ func (i *tableCmp) setRows() {
 		return 0
 	})
 
+	rows := make([]table.Row, 0, len(logs))
 	for _, log := range logs {
-		bm, _ := json.Marshal(log.Attributes)
-
-		row := table.Row{
-			log.ID,
-			log.Time.Format("15:04:05"),
-			log.Level,
-			log.Message,
-			string(bm),
-		}
-		rows = append(rows, row)
+		rows = append(rows, logToRow(log))
 	}
 	i.table.SetRows(rows)
 }

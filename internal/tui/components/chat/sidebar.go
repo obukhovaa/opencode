@@ -30,6 +30,8 @@ type sidebarCmp struct {
 	}
 	childSessionIDs map[string]bool
 	filesCh         <-chan pubsub.Event[history.File]
+	initialVersions map[string]history.File
+	subCancel       context.CancelFunc
 }
 
 func (m *sidebarCmp) waitForFileEvent() tea.Cmd {
@@ -47,13 +49,15 @@ func (m *sidebarCmp) waitForFileEvent() tea.Cmd {
 
 func (m *sidebarCmp) Init() tea.Cmd {
 	if m.history != nil {
-		ctx := context.Background()
+		ctx, cancel := context.WithCancel(context.Background())
+		m.subCancel = cancel
 		m.filesCh = m.history.Subscribe(ctx)
 
 		m.modFiles = make(map[string]struct {
 			additions int
 			removals  int
 		})
+		m.initialVersions = make(map[string]history.File)
 
 		m.loadModifiedFiles(ctx)
 
@@ -67,8 +71,15 @@ func (m *sidebarCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case SessionSelectedMsg:
 		if msg.ID != m.session.ID {
 			m.session = msg
-			ctx := context.Background()
+			m.initialVersions = make(map[string]history.File)
+			if m.subCancel != nil {
+				m.subCancel()
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			m.subCancel = cancel
+			m.filesCh = m.history.Subscribe(ctx)
 			m.loadModifiedFiles(ctx)
+			return m, m.waitForFileEvent()
 		}
 	case pubsub.Event[session.Session]:
 		if msg.Type == pubsub.UpdatedEvent {
@@ -87,6 +98,9 @@ func (m *sidebarCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case pubsub.Event[history.File]:
 		if m.isInSessionTree(msg.Payload.SessionID) {
+			if msg.Payload.Version == history.InitialVersion {
+				m.initialVersions[msg.Payload.Path] = msg.Payload
+			}
 			ctx := context.Background()
 			m.processFileChanges(ctx, msg.Payload)
 		}
@@ -446,6 +460,10 @@ func (m *sidebarCmp) processFileChanges(ctx context.Context, file history.File) 
 }
 
 func (m *sidebarCmp) findInitialVersion(ctx context.Context, path string) (history.File, error) {
+	if v, ok := m.initialVersions[path]; ok {
+		return v, nil
+	}
+
 	rootSessionID := m.session.RootSessionID
 	if rootSessionID == "" {
 		rootSessionID = m.session.ID
@@ -460,9 +478,13 @@ func (m *sidebarCmp) findInitialVersion(ctx context.Context, path string) (histo
 	}
 
 	for _, v := range fileVersions {
-		if v.Path == path && v.Version == history.InitialVersion {
-			return v, nil
+		if v.Version == history.InitialVersion {
+			m.initialVersions[v.Path] = v
 		}
+	}
+
+	if v, ok := m.initialVersions[path]; ok {
+		return v, nil
 	}
 
 	return history.File{}, fmt.Errorf("initial version not found")

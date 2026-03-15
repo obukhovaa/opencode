@@ -35,7 +35,18 @@ func header(width int) string {
 	)
 }
 
+var cachedLspsConfigured struct {
+	content string
+	width   int
+	themeID string
+}
+
 func lspsConfigured(width int) string {
+	themeID := theme.CurrentThemeName()
+	if cachedLspsConfigured.width == width && cachedLspsConfigured.themeID == themeID && cachedLspsConfigured.content != "" {
+		return cachedLspsConfigured.content
+	}
+
 	cfg := config.Get()
 	servers := install.ResolveServers(cfg)
 
@@ -88,7 +99,7 @@ func lspsConfigured(width int) string {
 		)
 	}
 
-	return baseStyle.
+	result := baseStyle.
 		Width(width).
 		Render(
 			lipgloss.JoinVertical(
@@ -100,6 +111,10 @@ func lspsConfigured(width int) string {
 				),
 			),
 		)
+	cachedLspsConfigured.content = result
+	cachedLspsConfigured.width = width
+	cachedLspsConfigured.themeID = themeID
+	return result
 }
 
 func logo(width int) string {

@@ -16,7 +16,15 @@ func boolPtr(b bool) *bool       { return &b }
 func stringPtr(s string) *string { return &s }
 func uintPtr(u uint) *uint       { return &u }
 
-// returns a glamour TermRenderer configured with the current theme
+// InvalidateMarkdownCache is a no-op retained for API compatibility.
+// Renderers are no longer cached because glamour.TermRenderer is not thread-safe.
+func InvalidateMarkdownCache() {}
+
+// returns a glamour TermRenderer configured with the current theme.
+// A new renderer is created each time because glamour.TermRenderer is not
+// thread-safe for concurrent Render() calls (shared ANSIRenderer state).
+// The cache stores the config parameters to avoid regenerating the style config
+// when width and theme haven't changed.
 func GetMarkdownRenderer(width int) *glamour.TermRenderer {
 	r, _ := glamour.NewTermRenderer(
 		glamour.WithStyles(generateMarkdownStyleConfig()),

@@ -9,16 +9,25 @@ import (
 
 var (
 	ImageBakcground = "#212121"
+
+	cachedBaseStyle  lipgloss.Style
+	baseStyleThemeID string
 )
 
 // Style generation functions that use the current theme
 
 // BaseStyle returns the base style with background and foreground colors
 func BaseStyle() lipgloss.Style {
+	themeID := theme.CurrentThemeName()
+	if themeID == baseStyleThemeID {
+		return cachedBaseStyle
+	}
 	t := theme.CurrentTheme()
-	return lipgloss.NewStyle().
+	cachedBaseStyle = lipgloss.NewStyle().
 		Background(t.Background()).
 		Foreground(t.Text())
+	baseStyleThemeID = themeID
+	return cachedBaseStyle
 }
 
 // Regular returns a basic unstyled lipgloss.Style

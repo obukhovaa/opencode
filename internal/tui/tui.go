@@ -18,8 +18,10 @@ import (
 	"github.com/opencode-ai/opencode/internal/tui/components/chat"
 	"github.com/opencode-ai/opencode/internal/tui/components/core"
 	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
+	"github.com/opencode-ai/opencode/internal/tui/components/logs"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
 	"github.com/opencode-ai/opencode/internal/tui/page"
+	"github.com/opencode-ai/opencode/internal/tui/styles"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
 	"github.com/opencode-ai/opencode/internal/tui/util"
 )
@@ -382,7 +384,10 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case dialog.ThemeChangedMsg:
+		styles.InvalidateMarkdownCache()
 		a.pages[a.currentPage], cmd = a.pages[a.currentPage].Update(msg)
+		s, _ := a.status.Update(msg)
+		a.status = s.(core.StatusCmp)
 		a.showThemeDialog = false
 		return a, tea.Batch(cmd, util.ReportInfo("Theme changed to: "+msg.ThemeName))
 
@@ -673,10 +678,6 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 	default:
-		f, filepickerCmd := a.filepicker.Update(msg)
-		a.filepicker = f.(dialog.FilepickerCmp)
-		cmds = append(cmds, filepickerCmd)
-
 	}
 
 	if a.showFilepicker {
@@ -817,6 +818,9 @@ func (a *appModel) moveToPage(pageID page.PageID) tea.Cmd {
 		cmd := sizable.SetSize(a.width, a.height)
 		cmds = append(cmds, cmd)
 	}
+	if pageID == page.LogsPage {
+		cmds = append(cmds, util.CmdHandler(logs.LogsPageActivatedMsg{}))
+	}
 
 	return tea.Batch(cmds...)
 }
@@ -834,35 +838,21 @@ func (a appModel) View() tea.View {
 
 	appView := lipgloss.JoinVertical(lipgloss.Top, components...)
 
+	appViewHeight := lipgloss.Height(appView)
+	appViewWidth := lipgloss.Width(appView)
+
+	centerOverlay := func(overlay string) {
+		row := appViewHeight/2 - lipgloss.Height(overlay)/2
+		col := appViewWidth/2 - lipgloss.Width(overlay)/2
+		appView = layout.PlaceOverlay(col, row, overlay, appView, true)
+	}
+
 	if a.showPermissions {
-		overlay := a.permissions.View().Content
-		row := lipgloss.Height(appView) / 2
-		row -= lipgloss.Height(overlay) / 2
-		col := lipgloss.Width(appView) / 2
-		col -= lipgloss.Width(overlay) / 2
-		appView = layout.PlaceOverlay(
-			col,
-			row,
-			overlay,
-			appView,
-			true,
-		)
+		centerOverlay(a.permissions.View().Content)
 	}
 
 	if a.showFilepicker {
-		overlay := a.filepicker.View().Content
-		row := lipgloss.Height(appView) / 2
-		row -= lipgloss.Height(overlay) / 2
-		col := lipgloss.Width(appView) / 2
-		col -= lipgloss.Width(overlay) / 2
-		appView = layout.PlaceOverlay(
-			col,
-			row,
-			overlay,
-			appView,
-			true,
-		)
-
+		centerOverlay(a.filepicker.View().Content)
 	}
 
 	// Show compacting status overlay
@@ -876,33 +866,11 @@ func (a appModel) View() tea.View {
 			Background(t.Background()).
 			Foreground(t.Text())
 
-		overlay := style.Render("Summarizing\n" + a.compactingMessage)
-		row := lipgloss.Height(appView) / 2
-		row -= lipgloss.Height(overlay) / 2
-		col := lipgloss.Width(appView) / 2
-		col -= lipgloss.Width(overlay) / 2
-		appView = layout.PlaceOverlay(
-			col,
-			row,
-			overlay,
-			appView,
-			true,
-		)
+		centerOverlay(style.Render("Summarizing\n" + a.compactingMessage))
 	}
 
 	if a.showQuit {
-		overlay := a.quit.View().Content
-		row := lipgloss.Height(appView) / 2
-		row -= lipgloss.Height(overlay) / 2
-		col := lipgloss.Width(appView) / 2
-		col -= lipgloss.Width(overlay) / 2
-		appView = layout.PlaceOverlay(
-			col,
-			row,
-			overlay,
-			appView,
-			true,
-		)
+		centerOverlay(a.quit.View().Content)
 	}
 
 	if a.showHelp {
@@ -921,85 +889,30 @@ func (a appModel) View() tea.View {
 		}
 		a.help.SetBindings(bindings)
 
-		overlay := a.help.View().Content
-		row := lipgloss.Height(appView) / 2
-		row -= lipgloss.Height(overlay) / 2
-		col := lipgloss.Width(appView) / 2
-		col -= lipgloss.Width(overlay) / 2
-		appView = layout.PlaceOverlay(
-			col,
-			row,
-			overlay,
-			appView,
-			true,
-		)
+		centerOverlay(a.help.View().Content)
 	}
 
 	if a.showSessionDialog {
-		overlay := a.sessionDialog.View().Content
-		row := lipgloss.Height(appView) / 2
-		row -= lipgloss.Height(overlay) / 2
-		col := lipgloss.Width(appView) / 2
-		col -= lipgloss.Width(overlay) / 2
-		appView = layout.PlaceOverlay(
-			col,
-			row,
-			overlay,
-			appView,
-			true,
-		)
+		centerOverlay(a.sessionDialog.View().Content)
 	}
 
 	if a.showDeleteSessionDialog {
-		overlay := a.deleteSessionDialog.View().Content
-		row := lipgloss.Height(appView) / 2
-		row -= lipgloss.Height(overlay) / 2
-		col := lipgloss.Width(appView) / 2
-		col -= lipgloss.Width(overlay) / 2
-		appView = layout.PlaceOverlay(
-			col,
-			row,
-			overlay,
-			appView,
-			true,
-		)
+		centerOverlay(a.deleteSessionDialog.View().Content)
 	}
 
 	if a.showModelDialog {
-		overlay := a.modelDialog.View().Content
-		row := lipgloss.Height(appView) / 2
-		row -= lipgloss.Height(overlay) / 2
-		col := lipgloss.Width(appView) / 2
-		col -= lipgloss.Width(overlay) / 2
-		appView = layout.PlaceOverlay(
-			col,
-			row,
-			overlay,
-			appView,
-			true,
-		)
+		centerOverlay(a.modelDialog.View().Content)
 	}
 
 	if a.showCommandDialog {
-		overlay := a.commandDialog.View().Content
-		row := lipgloss.Height(appView) / 2
-		row -= lipgloss.Height(overlay) / 2
-		col := lipgloss.Width(appView) / 2
-		col -= lipgloss.Width(overlay) / 2
-		appView = layout.PlaceOverlay(
-			col,
-			row,
-			overlay,
-			appView,
-			true,
-		)
+		centerOverlay(a.commandDialog.View().Content)
 	}
 
 	if a.showInitDialog {
 		overlay := a.initDialog.View().Content
 		appView = layout.PlaceOverlay(
-			a.width/2-lipgloss.Width(overlay)/2,
-			a.height/2-lipgloss.Height(overlay)/2,
+			appViewWidth/2-lipgloss.Width(overlay)/2,
+			appViewHeight/2-lipgloss.Height(overlay)/2,
 			overlay,
 			appView,
 			true,
@@ -1007,33 +920,11 @@ func (a appModel) View() tea.View {
 	}
 
 	if a.showThemeDialog {
-		overlay := a.themeDialog.View().Content
-		row := lipgloss.Height(appView) / 2
-		row -= lipgloss.Height(overlay) / 2
-		col := lipgloss.Width(appView) / 2
-		col -= lipgloss.Width(overlay) / 2
-		appView = layout.PlaceOverlay(
-			col,
-			row,
-			overlay,
-			appView,
-			true,
-		)
+		centerOverlay(a.themeDialog.View().Content)
 	}
 
 	if a.showMultiArgumentsDialog {
-		overlay := a.multiArgumentsDialog.View().Content
-		row := lipgloss.Height(appView) / 2
-		row -= lipgloss.Height(overlay) / 2
-		col := lipgloss.Width(appView) / 2
-		col -= lipgloss.Width(overlay) / 2
-		appView = layout.PlaceOverlay(
-			col,
-			row,
-			overlay,
-			appView,
-			true,
-		)
+		centerOverlay(a.multiArgumentsDialog.View().Content)
 	}
 
 	v := tea.NewView(appView)

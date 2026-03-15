@@ -15,6 +15,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/session"
 	"github.com/opencode-ai/opencode/internal/tui/components/chat"
+	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
 	"github.com/opencode-ai/opencode/internal/tui/util"
@@ -29,40 +30,47 @@ type ActiveAgentChangedMsg struct {
 }
 
 type statusCmp struct {
-	info            util.InfoMsg
-	width           int
-	messageTTL      time.Duration
-	lspService      lsp.LspService
-	session         session.Session
-	activeAgentName config.AgentName
+	info                util.InfoMsg
+	width               int
+	messageTTL          time.Duration
+	lspService          lsp.LspService
+	session             session.Session
+	activeAgentName     config.AgentName
+	cachedDiagnostics   string
+	diagnosticsDirty    bool
+	cachedResolvedModel models.Model
+	cachedModelAgent    config.AgentName
 }
 
 // clearMessageCmd is a command that clears status messages after a timeout
-func (m statusCmp) clearMessageCmd(ttl time.Duration) tea.Cmd {
+func (m *statusCmp) clearMessageCmd(ttl time.Duration) tea.Cmd {
 	return tea.Tick(ttl, func(time.Time) tea.Msg {
 		return util.ClearStatusMsg{}
 	})
 }
 
-func (m statusCmp) Init() tea.Cmd {
+func (m *statusCmp) Init() tea.Cmd {
 	return nil
 }
 
-func (m statusCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *statusCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-		return m, nil
+		m.diagnosticsDirty = true
 	case chat.SessionSelectedMsg:
 		m.session = msg
+		m.diagnosticsDirty = true
 	case chat.SessionClearedMsg:
 		m.session = session.Session{}
+		m.diagnosticsDirty = true
 	case pubsub.Event[session.Session]:
 		if msg.Type == pubsub.UpdatedEvent {
 			if m.session.ID == msg.Payload.ID {
 				m.session = msg.Payload
 			}
 		}
+		m.diagnosticsDirty = true
 	case util.InfoMsg:
 		m.info = msg
 		ttl := msg.TTL
@@ -74,6 +82,16 @@ func (m statusCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.info = util.InfoMsg{}
 	case ActiveAgentChangedMsg:
 		m.activeAgentName = msg.Name
+		m.cachedModelAgent = ""
+		agentHintWidget = getAgentHintWidget()
+	case dialog.ThemeChangedMsg:
+		m.diagnosticsDirty = true
+		helpWidget = getHelpWidget()
+		agentHintWidget = getAgentHintWidget()
+	}
+	if m.diagnosticsDirty {
+		m.cachedDiagnostics = m.computeDiagnostics()
+		m.diagnosticsDirty = false
 	}
 	return m, nil
 }
@@ -145,30 +163,37 @@ func formatTokensAndCost(tokens, contextWindow int64, cost float64) string {
 	return fmt.Sprintf("ctx: %s, cst: %s", formattedTokens, formattedCost)
 }
 
-func (m statusCmp) resolveModel() models.Model {
+func (m *statusCmp) resolveModel() models.Model {
+	if m.cachedModelAgent == m.activeAgentName {
+		return m.cachedResolvedModel
+	}
 	agentName := m.activeAgentName
+	var resolved models.Model
 	if agentCfg, ok := config.Get().Agents[agentName]; ok {
 		if model, ok := models.SupportedModels[agentCfg.Model]; ok {
-			return model
+			resolved = model
 		}
 	}
-	reg := agentregistry.GetRegistry()
-	if info, ok := reg.Get(agentName); ok && info.Model != "" {
-		if model, ok := models.SupportedModels[models.ModelID(info.Model)]; ok {
-			return model
+	if resolved.Name == "" {
+		reg := agentregistry.GetRegistry()
+		if info, ok := reg.Get(agentName); ok && info.Model != "" {
+			if model, ok := models.SupportedModels[models.ModelID(info.Model)]; ok {
+				resolved = model
+			}
 		}
 	}
-	return models.Model{}
+	m.cachedModelAgent = m.activeAgentName
+	m.cachedResolvedModel = resolved
+	return resolved
 }
 
-func (m statusCmp) View() tea.View {
+func (m *statusCmp) View() tea.View {
 	t := theme.CurrentTheme()
 	model := m.resolveModel()
 	modelWidget := m.renderModelWidget(model)
 
-	status := getHelpWidget()
-	agentHint := getAgentHintWidget()
-	status += agentHint
+	status := helpWidget
+	status += agentHintWidget
 
 	tokenInfoWidth := 0
 	if m.session.ID != "" {
@@ -227,6 +252,10 @@ func (m statusCmp) View() tea.View {
 }
 
 func (m *statusCmp) projectDiagnostics() string {
+	return m.cachedDiagnostics
+}
+
+func (m *statusCmp) computeDiagnostics() string {
 	t := theme.CurrentTheme()
 
 	// Check if any LSP server is still initializing
@@ -310,7 +339,7 @@ func (m *statusCmp) projectDiagnostics() string {
 	)
 }
 
-func (m statusCmp) renderModelWidget(model models.Model) string {
+func (m *statusCmp) renderModelWidget(model models.Model) string {
 	t := theme.CurrentTheme()
 
 	reg := agentregistry.GetRegistry()
@@ -345,8 +374,9 @@ func NewStatusCmp(lspService lsp.LspService) StatusCmp {
 	agentHintWidget = getAgentHintWidget()
 
 	return &statusCmp{
-		messageTTL:      10 * time.Second,
-		lspService:      lspService,
-		activeAgentName: config.AgentCoder,
+		messageTTL:       10 * time.Second,
+		lspService:       lspService,
+		activeAgentName:  config.AgentCoder,
+		diagnosticsDirty: true,
 	}
 }

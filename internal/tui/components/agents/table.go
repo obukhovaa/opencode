@@ -11,6 +11,7 @@ import (
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
@@ -24,9 +25,11 @@ type TableComponent interface {
 }
 
 type tableCmp struct {
-	table    table.Model
-	agents   []agentregistry.AgentInfo
-	registry agentregistry.Registry
+	table      table.Model
+	agents     []agentregistry.AgentInfo
+	registry   agentregistry.Registry
+	viewDirty  bool
+	cachedView string
 }
 
 type selectedAgentMsg agentregistry.AgentInfo
@@ -34,6 +37,8 @@ type selectedAgentMsg agentregistry.AgentInfo
 func (t *tableCmp) Init() tea.Cmd {
 	t.loadAgents()
 	t.setRows()
+	t.updateStyles()
+	t.viewDirty = true
 	if len(t.agents) > 0 {
 		return util.CmdHandler(selectedAgentMsg(t.agents[0]))
 	}
@@ -57,8 +62,20 @@ func (t *tableCmp) findAgent(id string) (agentregistry.AgentInfo, bool) {
 	return agentregistry.AgentInfo{}, false
 }
 
+func (t *tableCmp) updateStyles() {
+	th := theme.CurrentTheme()
+	defaultStyles := table.DefaultStyles()
+	defaultStyles.Selected = defaultStyles.Selected.Foreground(th.Primary())
+	t.table.SetStyles(defaultStyles)
+}
+
 func (t *tableCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	switch msg.(type) {
+	case dialog.ThemeChangedMsg:
+		t.updateStyles()
+		t.viewDirty = true
+	}
 	prevSelectedRow := t.table.SelectedRow()
 	tbl, cmd := t.table.Update(msg)
 	cmds = append(cmds, cmd)
@@ -72,15 +89,17 @@ func (t *tableCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	t.viewDirty = true
 	return t, tea.Batch(cmds...)
 }
 
 func (t *tableCmp) View() tea.View {
-	th := theme.CurrentTheme()
-	defaultStyles := table.DefaultStyles()
-	defaultStyles.Selected = defaultStyles.Selected.Foreground(th.Primary())
-	t.table.SetStyles(defaultStyles)
-	return tea.NewView(styles.ForceReplaceBackgroundWithLipgloss(t.table.View(), th.Background()))
+	if t.viewDirty {
+		th := theme.CurrentTheme()
+		t.cachedView = styles.ForceReplaceBackgroundWithLipgloss(t.table.View(), th.Background())
+		t.viewDirty = false
+	}
+	return tea.NewView(t.cachedView)
 }
 
 func (t *tableCmp) GetSize() (int, int) {
@@ -107,6 +126,7 @@ func (t *tableCmp) SetSize(width int, height int) tea.Cmd {
 		}
 		t.table.SetColumns(columns)
 	}
+	t.viewDirty = true
 	return nil
 }
 

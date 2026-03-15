@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
+	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
@@ -26,6 +27,8 @@ type detailCmp struct {
 	width, height int
 	current       agentregistry.AgentInfo
 	viewport      viewport.Model
+	viewDirty     bool
+	cachedView    string
 }
 
 func (d *detailCmp) Init() tea.Cmd {
@@ -37,10 +40,18 @@ func (d *detailCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case selectedAgentMsg:
 		d.current = agentregistry.AgentInfo(msg)
 		d.updateContent()
+		d.viewDirty = true
+	case dialog.ThemeChangedMsg:
+		d.updateContent()
+		d.viewDirty = true
 	}
 
+	prev := d.viewport.ScrollPercent()
 	var cmd tea.Cmd
 	d.viewport, cmd = d.viewport.Update(msg)
+	if d.viewport.ScrollPercent() != prev {
+		d.viewDirty = true
+	}
 	return d, cmd
 }
 
@@ -128,8 +139,12 @@ func (d *detailCmp) updateContent() {
 }
 
 func (d *detailCmp) View() tea.View {
-	t := theme.CurrentTheme()
-	return tea.NewView(styles.ForceReplaceBackgroundWithLipgloss(d.viewport.View(), t.Background()))
+	if d.viewDirty {
+		t := theme.CurrentTheme()
+		d.cachedView = styles.ForceReplaceBackgroundWithLipgloss(d.viewport.View(), t.Background())
+		d.viewDirty = false
+	}
+	return tea.NewView(d.cachedView)
 }
 
 func (d *detailCmp) GetSize() (int, int) {
@@ -142,6 +157,7 @@ func (d *detailCmp) SetSize(width int, height int) tea.Cmd {
 	d.viewport.SetWidth(width)
 	d.viewport.SetHeight(height)
 	d.updateContent()
+	d.viewDirty = true
 	return nil
 }
 

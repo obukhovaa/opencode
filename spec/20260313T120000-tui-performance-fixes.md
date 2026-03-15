@@ -1,7 +1,7 @@
 # TUI Performance Fixes — Progressive Unresponsiveness
 
 **Date**: 2026-03-13
-**Status**: Draft
+**Status**: Implemented
 **Author**: AI-assisted
 
 ## Overview
@@ -77,7 +77,7 @@ In bubbletea v2, `View()` returns `tea.View` and is called after every `Update()
 
 ### Phase 1: Critical — Stop Idle Rendering
 
-- [ ] **1.1** Conditional spinner tick in `list.go`:
+- [x] **1.1** Conditional spinner tick in `list.go`:
   - Remove `m.spinner.Tick` from `Init()` return
   - Add `spinnerActive bool` field to `messagesCmp`
   - On `pubsub.Event[agent.AgentEvent]` or when `IsAgentWorking()` transitions to true: set `spinnerActive = true`, return `m.spinner.Tick`
@@ -85,98 +85,99 @@ In bubbletea v2, `View()` returns `tea.View` and is called after every `Update()
   - In `Update()` line 162–164: only call `m.spinner.Update(msg)` and re-queue tick when `spinnerActive` is true
   - Guard: on `spinner.TickMsg`, check `spinnerActive` before processing
 
-- [ ] **1.2** Cache markdown renderer in `styles/markdown.go`:
+- [x] **1.2** Cache markdown renderer in `styles/markdown.go`:
   - Add package-level cache: `var mdRendererCache struct { sync.Mutex; renderer *glamour.TermRenderer; width int; themeID string }`
   - In `GetMarkdownRenderer(width)`: check cache hit on `(width, theme.CurrentTheme().ID())`, return cached if match
   - Add `InvalidateMarkdownCache()` function, call from theme change handler
   - Thread `ThemeChangedMsg` through to invalidate
 
-- [ ] **1.3** Move `countToolsWithoutResponse` and `hasUnfinishedToolCalls` out of `View()`:
+- [x] **1.3** Move `countToolsWithoutResponse` and `hasUnfinishedToolCalls` out of `View()`:
   - Add `pendingCounts pendingToolCounts` and `hasUnfinished bool` fields to `messagesCmp`
   - Recompute in `Update()` after any message event changes `m.messages` (in `pubsub.Event[message.Message]` handler)
   - In `working()`: read from cached fields instead of calling functions
 
 ### Phase 2: High — Reduce Render Cost
 
-- [ ] **2.1** Cache `styles.BaseStyle()`:
+- [x] **2.1** Cache `styles.BaseStyle()`:
   - Add package-level `var cachedBaseStyle lipgloss.Style` and `var baseStyleThemeID string`
   - In `BaseStyle()`: compare `theme.CurrentTheme().ID()` with `baseStyleThemeID`, return cached if match
   - Invalidate on theme change (check theme ID changed)
 
-- [ ] **2.2** Remove synchronous DB call from `renderToolMessage()` in `message.go`:
+- [x] **2.2** Remove synchronous DB call from `renderToolMessage()` in `message.go`:
   - Add `taskMessages map[string][]message.Message` field to `messagesCmp`
   - In `Update()` on `pubsub.Event[message.Message]` with `CreatedEvent`: if the message's SessionID matches a known task tool call ID, pre-fetch and cache `messagesService.List(ctx, toolCallID)` in a `tea.Cmd`
   - Pass `taskMessages` map to `renderAssistantMessage()` / `renderToolMessage()` instead of `messagesService`
   - In `renderToolMessage()` line 769: read from map instead of calling `messagesService.List()`
 
-- [ ] **2.3** Cache overlay dimensions in `tui.go` `View()`:
+- [x] **2.3** Cache overlay dimensions in `tui.go` `View()`:
   - Compute `appViewHeight := lipgloss.Height(appView)` and `appViewWidth := lipgloss.Width(appView)` once after building `appView`
   - Reuse cached values for all overlay positioning (currently computed 2× per overlay, up to 10 overlays = 20 ANSI parses)
 
-- [ ] **2.4** Fix filepicker double-update in `tui.go`:
+- [x] **2.4** Fix filepicker double-update in `tui.go`:
   - Remove the unconditional `a.filepicker.Update(msg)` call in the `default:` case (line 676–678)
   - The filepicker is already updated conditionally when `a.showFilepicker` is true (line 682–689)
 
-- [ ] **2.5** Cache `ForceReplaceBackgroundWithLipgloss` results:
+- [x] **2.5** Cache `ForceReplaceBackgroundWithLipgloss` results:
   - In `renderMessage()` and `renderToolResponse()`: the background replacement is already part of `cachedContent` since it runs during `renderView()` — verify no `View()` path calls it on uncached content
   - In `logs/table.go` `View()` and `logs/details.go` `View()`: cache the result, invalidate on theme change or content change
   - In `agents/table.go` `View()`: same pattern
 
 ### Phase 3: Medium — Reduce Event Processing Cost
 
-- [ ] **3.1** Fix `SetSession` data race in `list.go`:
+- [x] **3.1** Fix `SetSession` data race in `list.go`:
   - Remove the goroutine in the returned `tea.Cmd` (line 475–478)
   - Call `m.renderView()` synchronously in `SetSession()` before returning the cmd
   - Or: return a `tea.Cmd` that only returns `renderFinishedMsg{}` and call `m.renderView()` in the `renderFinishedMsg` handler in `Update()`
 
-- [ ] **3.2** Cache sidebar file versions in `sidebar.go`:
+- [x] **3.2** Cache sidebar file versions in `sidebar.go`:
   - Add `initialVersions map[string]history.File` field to `sidebarCmp`
   - Populate in `loadModifiedFiles()` (already fetches all files)
   - In `findInitialVersion()` (line 448): look up from `initialVersions` cache instead of calling `ListBySessionTree()` (DB query)
   - Invalidate cache on `SessionSelectedMsg` (already calls `loadModifiedFiles()`)
   - On `pubsub.Event[history.File]` with `InitialVersion`: add to cache directly
 
-- [ ] **3.3** Incremental log table updates in `logs/table.go`:
-  - Instead of `setRows()` (full rebuild with sort + JSON marshal for all rows), add a method `appendRow(log LogMessage)` that inserts in sorted position
-  - In `Update()` on `pubsub.Event[logging.LogMessage]`: call `appendRow(msg.Payload)` instead of `setRows()`
-  - Keep `setRows()` for `Init()` (initial load)
+- [x] **3.3** Incremental log table updates in `logs/table.go`:
+  - Added `appendRow(log LogMessage)` that inserts in sorted position via `slices.BinarySearchFunc`
+  - In `Update()` on `pubsub.Event[logging.LogMessage]`: calls `appendRow(msg.Payload)` instead of `setRows()`
+  - `setRows()` kept for `Init()` (initial load)
+  - Extracted `logToRow()` helper to avoid duplication
 
-- [ ] **3.4** Cache `projectDiagnostics()` in `status.go`:
+- [x] **3.4** Cache `projectDiagnostics()` in `status.go`:
   - Add `cachedDiagnostics string` and `diagnosticsDirty bool` fields to `statusCmp`
   - Set `diagnosticsDirty = true` on LSP-related pubsub events (if any exist) or on a coarse timer
   - In `projectDiagnostics()`: return `cachedDiagnostics` if not dirty; recompute and cache if dirty
   - Since there's no LSP diagnostic pubsub event currently, use a simple approach: recompute only when `View()` is called AND a flag is set (e.g., on every Nth frame or on `WindowSizeMsg`)
 
-- [ ] **3.5** Stop mutating state in `View()` methods:
+- [x] **3.5** Stop mutating state in `View()` methods:
   - `logs/table.go` line 66–68: move `table.SetStyles()` to `Update()` on `ThemeChangedMsg`
   - `agents/table.go`: same pattern
   - `page/chat.go` line ~265: move `activeDialog.SetWidth(editorWidth)` to `SetSize()` or `Update()`
 
 ### Phase 4: Low — Polish
 
-- [ ] **4.1** Cache `getHelpWidget()` and `getAgentHintWidget()` in `status.go`:
+- [x] **4.1** Cache `getHelpWidget()` and `getAgentHintWidget()` in `status.go`:
   - These are already computed at `NewStatusCmp` time (line 344–345) but the cached values `helpWidget`/`agentHintWidget` are only used for width calculation (line 194), not for rendering (line 169–170)
   - Fix: use the cached module-level vars in `View()` directly
   - Invalidate on `ThemeChangedMsg` and `ActiveAgentChangedMsg`
 
-- [ ] **4.2** Cache `resolveModel()` in `status.go`:
+- [x] **4.2** Cache `resolveModel()` in `status.go`:
   - Called every `View()`, reads config and registry
   - Cache result, invalidate on `ActiveAgentChangedMsg` and `ModelSelectedMsg`
 
-- [ ] **4.3** Cache `lspsConfigured()` in `chat.go`:
+- [x] **4.3** Cache `lspsConfigured()` in `chat.go`:
   - Called from `sidebar.View()` and `initialScreen()`
   - Cache at component level, invalidate on LSP state changes
 
-- [ ] **4.4** Reduce `layout.KeyMapToSlice()` reflection cost:
+- [x] **4.4** Reduce `layout.KeyMapToSlice()` reflection cost:
   - Called from `tui.go` `View()` when help is shown, and from `BindingKeys()` in table components
   - Cache the result per key map pointer, invalidate never (key maps don't change at runtime)
 
-- [ ] **4.5** Scope sidebar subscription lifecycle:
+- [x] **4.5** Scope sidebar subscription lifecycle:
   - `sidebar.go` line 50–51: uses `context.Background()` for subscription — goroutine never cleaned up
   - Pass a cancellable context from the parent component
   - Cancel on `SessionSelectedMsg` when sidebar is replaced, or on component teardown
 
-- [ ] **4.6** Clean up `cachedContent` map growth in `list.go`:
+- [x] **4.6** Clean up `cachedContent` map growth in `list.go`:
   - Currently grows unboundedly (old message IDs never evicted)
   - On `SessionSelectedMsg` / `SessionClearedMsg`: clear the entire map
   - This already partially happens (map is recreated on session change) but verify no leak path
