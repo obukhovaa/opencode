@@ -1380,11 +1380,15 @@ func createAgentProvider(agentName config.AgentName) (agentProvider provider.Pro
 	}
 
 	if model.Provider == models.ProviderOpenAI || model.Provider == models.ProviderLocal && model.CanReason {
+		openaiOpts := []provider.OpenAIOption{
+			provider.WithReasoningEffort(agentConfig.ReasoningEffort),
+		}
+		if model.UseLegacyMaxTokens {
+			openaiOpts = append(openaiOpts, provider.WithLegacyMaxTokens())
+		}
 		opts = append(
 			opts,
-			provider.WithOpenAIOptions(
-				provider.WithReasoningEffort(agentConfig.ReasoningEffort),
-			),
+			provider.WithOpenAIOptions(openaiOpts...),
 		)
 	} else if (model.Provider == models.ProviderAnthropic || model.Provider == models.ProviderVertexAI || model.Provider == models.ProviderBedrock) && model.CanReason {
 		anthropicOpts := []provider.AnthropicOption{

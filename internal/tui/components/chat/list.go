@@ -205,13 +205,14 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		working := m.IsAgentWorking()
-		if working && !m.spinnerActive {
-			m.spinnerActive = true
-			cmds = append(cmds, m.spinner.Tick)
-		} else if !working && m.spinnerActive {
-			m.spinnerActive = false
-		}
+	}
+
+	working := m.IsAgentWorking()
+	if working && !m.spinnerActive {
+		m.spinnerActive = true
+		cmds = append(cmds, m.spinner.Tick)
+	} else if !working && m.spinnerActive {
+		m.spinnerActive = false
 	}
 
 	if m.spinnerActive {

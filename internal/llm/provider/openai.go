@@ -22,6 +22,7 @@ import (
 type openaiOptions struct {
 	disableCache    bool
 	reasoningEffort string
+	legacyMaxTokens bool
 }
 
 type OpenAIOption func(*openaiOptions)
@@ -177,7 +178,10 @@ func (o *openaiClient) preparedParams(messages []openai.ChatCompletionMessagePar
 			params.ReasoningEffort = shared.ReasoningEffortMedium
 		}
 	} else {
-		params.MaxTokens = openai.Int(o.providerOptions.maxTokens)
+		params.MaxCompletionTokens = openai.Int(o.providerOptions.maxTokens)
+		if o.options.legacyMaxTokens {
+			params.MaxTokens = openai.Int(o.providerOptions.maxTokens)
+		}
 	}
 
 	return params
@@ -406,6 +410,12 @@ func (a *openaiClient) maxTokens() int64 {
 func WithOpenAIDisableCache() OpenAIOption {
 	return func(options *openaiOptions) {
 		options.disableCache = true
+	}
+}
+
+func WithLegacyMaxTokens() OpenAIOption {
+	return func(options *openaiOptions) {
+		options.legacyMaxTokens = true
 	}
 }
 

@@ -20,6 +20,7 @@ type Model struct {
 	SupportsAdaptiveThinking bool          `json:"supports_adaptive_thinking"`
 	SupportsMaximumThinking  bool          `json:"supports_maximum_thinking"`
 	SupportsAttachments      bool          `json:"supports_attachments"`
+	UseLegacyMaxTokens       bool          `json:"use_legacy_max_tokens,omitempty"`
 }
 
 const (
