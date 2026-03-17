@@ -26,6 +26,22 @@ type SessionClearedMsg struct{}
 
 type EditorFocusMsg bool
 
+type ShellExecMsg struct {
+	Command string
+}
+
+type ShellResultMsg struct {
+	Command  string
+	Stdout   string
+	Stderr   string
+	ExitCode int
+	Err      error
+}
+
+type ShellModeChangedMsg struct {
+	ShellMode bool
+}
+
 func header(width int) string {
 	return lipgloss.JoinVertical(
 		lipgloss.Top,

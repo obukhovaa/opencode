@@ -2,6 +2,7 @@ package page
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -9,6 +10,9 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/completions"
+	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/format"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/session"
 	"github.com/opencode-ai/opencode/internal/tui/components/chat"
@@ -30,6 +34,7 @@ type chatPage struct {
 	commandCompletionDialog     dialog.CompletionDialog
 	showCommandCompletionDialog bool
 	commands                    []dialog.Command
+	shellMode                   bool
 }
 
 type ChatKeyMap struct {
@@ -105,6 +110,11 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return p, tea.Batch(cmds...)
 		}
+	case chat.ShellModeChangedMsg:
+		p.shellMode = msg.ShellMode
+		return p, nil
+	case chat.ShellResultMsg:
+		cmds = append(cmds, p.handleShellResult(msg))
 	case chat.SendMsg:
 		cmd := p.sendMessage(msg.Text, msg.Attachments)
 		if cmd != nil {
@@ -122,6 +132,9 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				content = strings.ReplaceAll(content, placeholder, value)
 			}
 		}
+
+		// Expand !`cmd` shell markup after argument substitution
+		content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
 
 		cmd := p.sendMessage(content, nil)
 		if cmd != nil {
@@ -146,6 +159,10 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, keyMap.Cancel):
+			// In shell mode, ESC should exit shell mode (handled by editor)
+			if p.shellMode {
+				break
+			}
 			// When a dialog is open, let ESC flow to dialog routing below
 			if !p.showCompletionDialog && !p.showCommandCompletionDialog {
 				if p.session.ID != "" {
@@ -154,11 +171,11 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case key.Matches(msg, keyMap.ShowCompletionDialog):
-			if !p.showCommandCompletionDialog {
+			if !p.showCommandCompletionDialog && !p.shellMode {
 				p.showCompletionDialog = true
 			}
 		case key.Matches(msg, keyMap.ShowCommandCompletionDialog):
-			if !p.showCompletionDialog {
+			if !p.showCompletionDialog && !p.shellMode {
 				p.showCommandCompletionDialog = true
 			}
 		case key.Matches(msg, keyMap.NewSession):
@@ -215,30 +232,114 @@ func (p *chatPage) clearSidebar() tea.Cmd {
 	return p.layout.ClearRightPanel()
 }
 
-func (p *chatPage) sendMessage(text string, attachments []message.Attachment) tea.Cmd {
+func (p *chatPage) ensureSession() (tea.Cmd, error) {
+	if p.session.ID != "" {
+		return nil, nil
+	}
+	var sess session.Session
+	var err error
+	if p.app.InitialSessionID != "" {
+		sess, err = p.app.Sessions.CreateWithID(context.Background(), p.app.InitialSessionID, "New Session")
+		p.app.InitialSessionID = ""
+	} else {
+		sess, err = p.app.Sessions.Create(context.Background(), "New Session")
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.session = sess
 	var cmds []tea.Cmd
-	if p.session.ID == "" {
-		var sess session.Session
-		var err error
-		if p.app.InitialSessionID != "" {
-			sess, err = p.app.Sessions.CreateWithID(context.Background(), p.app.InitialSessionID, "New Session")
-			p.app.InitialSessionID = ""
-		} else {
-			sess, err = p.app.Sessions.Create(context.Background(), "New Session")
-		}
-		if err != nil {
-			return util.ReportError(err)
-		}
+	cmd := p.setSidebar()
+	if cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	cmds = append(cmds, util.CmdHandler(chat.SessionSelectedMsg(sess)))
+	return tea.Batch(cmds...), nil
+}
 
-		p.session = sess
-		cmd := p.setSidebar()
-		if cmd != nil {
-			cmds = append(cmds, cmd)
-		}
-		cmds = append(cmds, util.CmdHandler(chat.SessionSelectedMsg(sess)))
+func (p *chatPage) handleShellResult(msg chat.ShellResultMsg) tea.Cmd {
+	var cmds []tea.Cmd
+
+	sessionCmd, err := p.ensureSession()
+	if err != nil {
+		return util.ReportError(err)
+	}
+	if sessionCmd != nil {
+		cmds = append(cmds, sessionCmd)
 	}
 
-	_, err := p.app.ActiveAgent().Run(context.Background(), p.session.ID, text, attachments...)
+	ctx := context.Background()
+
+	// Create command echo message
+	cmdText := fmt.Sprintf("$ %s", msg.Command)
+	_, err = p.app.Messages.Create(ctx, p.session.ID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: cmdText}},
+	})
+	if err != nil {
+		return util.ReportError(err)
+	}
+
+	// Build output text
+	var output string
+	if msg.Err != nil {
+		output = fmt.Sprintf("[error: %s]", msg.Err.Error())
+	} else {
+		stdout := msg.Stdout
+		stderr := msg.Stderr
+
+		// Apply truncation like bash tool
+		if len(stdout) > tools.MaxOutputBytes || len(strings.Split(stdout, "\n")) > tools.MaxOutputLines {
+			lines := strings.Split(stdout, "\n")
+			if len(lines) > tools.MaxOutputLines {
+				head := strings.Join(lines[:500], "\n")
+				tail := strings.Join(lines[len(lines)-500:], "\n")
+				stdout = fmt.Sprintf("%s\n\n... (%d lines truncated) ...\n\n%s", head, len(lines)-1000, tail)
+			}
+		}
+
+		output = stdout
+		if stderr != "" {
+			if output != "" {
+				output += "\n"
+			}
+			output += stderr
+		}
+		if msg.ExitCode != 0 {
+			if output != "" {
+				output += "\n"
+			}
+			output += fmt.Sprintf("[exit code: %d]", msg.ExitCode)
+		}
+		if output == "" {
+			output = "(no output)"
+		}
+	}
+
+	// Create output message
+	outputText := fmt.Sprintf("```\n%s\n```", output)
+	_, err = p.app.Messages.Create(ctx, p.session.ID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: outputText}},
+	})
+	if err != nil {
+		return util.ReportError(err)
+	}
+
+	return tea.Batch(cmds...)
+}
+
+func (p *chatPage) sendMessage(text string, attachments []message.Attachment) tea.Cmd {
+	var cmds []tea.Cmd
+	sessionCmd, err := p.ensureSession()
+	if err != nil {
+		return util.ReportError(err)
+	}
+	if sessionCmd != nil {
+		cmds = append(cmds, sessionCmd)
+	}
+
+	_, err = p.app.ActiveAgent().Run(context.Background(), p.session.ID, text, attachments...)
 	if err != nil {
 		return util.ReportError(err)
 	}
@@ -288,6 +389,10 @@ func (p *chatPage) activeCompletionDialog() dialog.CompletionDialog {
 
 func (p *chatPage) HasActiveOverlay() bool {
 	return p.showCompletionDialog || p.showCommandCompletionDialog
+}
+
+func (p *chatPage) IsShellMode() bool {
+	return p.shellMode
 }
 
 func (p *chatPage) BindingKeys() []key.Binding {

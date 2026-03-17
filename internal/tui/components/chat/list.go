@@ -119,6 +119,11 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.viewport.SetContent(msg.viewportContent)
 		m.viewport.GotoBottom()
+		// Messages may have arrived while the async render was in flight;
+		// if so, kick off another render so they become visible immediately.
+		if m.hasCacheMisses() {
+			cmds = append(cmds, m.renderViewAsync())
+		}
 	case pubsub.Event[session.Session]:
 		if msg.Type == pubsub.UpdatedEvent && msg.Payload.ID == m.session.ID {
 			m.session = msg.Payload
@@ -597,7 +602,10 @@ func (m *messagesCmp) help() string {
 			baseStyle.Foreground(t.TextMuted()).Bold(true).Render(" to add a new line,"),
 			baseStyle.Foreground(t.TextMuted()).Bold(true).Render(" type"),
 			baseStyle.Foreground(t.Text()).Bold(true).Render(" /"),
-			baseStyle.Foreground(t.TextMuted()).Bold(true).Render(" to command"),
+			baseStyle.Foreground(t.TextMuted()).Bold(true).Render(" to command,"),
+			baseStyle.Foreground(t.TextMuted()).Bold(true).Render(" type"),
+			baseStyle.Foreground(t.Text()).Bold(true).Render(" !"),
+			baseStyle.Foreground(t.TextMuted()).Bold(true).Render(" for shell"),
 		)
 	}
 	return baseStyle.

@@ -322,7 +322,6 @@ func (f *filepickerCmp) View() tea.View {
 		Render(f.cwd.View())
 
 	viewportstyle := lipgloss.NewStyle().
-		Width(f.viewport.Width()).
 		Background(t.Background()).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(t.TextMuted()).

@@ -18,6 +18,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
+	"github.com/opencode-ai/opencode/internal/llm/tools/shell"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
@@ -85,6 +86,16 @@ func renderMessage(msg string, isUser bool, isFocused bool, width int, info ...s
 }
 
 func renderUserMessage(msg message.Message, isFocused bool, width int, position int) uiMessage {
+	textContent := msg.Content().String()
+
+	// Detect shell mode messages by content prefix
+	if isShellCommandMessage(textContent) {
+		return renderShellCommandMessage(msg, textContent, width, position)
+	}
+	if isShellOutputMessage(textContent) {
+		return renderShellOutputMessage(msg, textContent, width, position)
+	}
+
 	var styledAttachments []string
 	t := theme.CurrentTheme()
 	attachmentStyles := styles.BaseStyle().
@@ -104,9 +115,9 @@ func renderUserMessage(msg message.Message, isFocused bool, width int, position 
 	content := ""
 	if len(styledAttachments) > 0 {
 		attachmentContent := styles.BaseStyle().Width(width).Render(lipgloss.JoinHorizontal(lipgloss.Left, styledAttachments...))
-		content = renderMessage(msg.Content().String(), true, isFocused, width, attachmentContent)
+		content = renderMessage(textContent, true, isFocused, width, attachmentContent)
 	} else {
-		content = renderMessage(msg.Content().String(), true, isFocused, width)
+		content = renderMessage(textContent, true, isFocused, width)
 	}
 	userMsg := uiMessage{
 		ID:          msg.ID,
@@ -116,6 +127,100 @@ func renderUserMessage(msg message.Message, isFocused bool, width int, position 
 		content:     content,
 	}
 	return userMsg
+}
+
+func isShellCommandMessage(text string) bool {
+	return strings.HasPrefix(text, "$ ")
+}
+
+func isShellOutputMessage(text string) bool {
+	return strings.HasPrefix(text, "```\n") && strings.HasSuffix(text, "\n```")
+}
+
+func renderShellCommandMessage(msg message.Message, text string, width int, position int) uiMessage {
+	t := theme.CurrentTheme()
+	baseStyle := styles.BaseStyle()
+
+	style := baseStyle.
+		Width(width).
+		BorderLeft(true).
+		BorderStyle(lipgloss.ThickBorder()).
+		PaddingLeft(1).
+		BorderForeground(t.TextMuted()).
+		BorderBackground(t.Background())
+
+	commandText := strings.TrimPrefix(text, "$ ")
+	shellName := filepath.Base(shell.GetShellPath())
+	label := baseStyle.Foreground(t.TextMuted()).Render(fmt.Sprintf("%s: ", shellName))
+	cmdRendered := baseStyle.
+		Width(width - 2 - lipgloss.Width(label)).
+		Foreground(t.Text()).
+		Render(commandText)
+
+	content := style.Render(lipgloss.JoinHorizontal(lipgloss.Left, label, cmdRendered))
+	return uiMessage{
+		ID:          msg.ID,
+		messageType: userMessageType,
+		position:    position,
+		height:      lipgloss.Height(content),
+		content:     content,
+	}
+}
+
+func renderShellOutputMessage(msg message.Message, text string, width int, position int) uiMessage {
+	t := theme.CurrentTheme()
+	baseStyle := styles.BaseStyle()
+
+	style := baseStyle.
+		Width(width).
+		BorderLeft(true).
+		BorderStyle(lipgloss.ThickBorder()).
+		PaddingLeft(1).
+		BorderForeground(t.TextMuted()).
+		BorderBackground(t.Background())
+
+	// Extract content between ``` fences
+	inner := strings.TrimPrefix(text, "```\n")
+	inner = strings.TrimSuffix(inner, "\n```")
+
+	// Check for exit code and render badge
+	var exitBadge string
+	lines := strings.Split(inner, "\n")
+	lastLine := lines[len(lines)-1]
+	if strings.HasPrefix(lastLine, "[exit code: ") && strings.HasSuffix(lastLine, "]") {
+		exitCodeStr := strings.TrimPrefix(lastLine, "[exit code: ")
+		exitCodeStr = strings.TrimSuffix(exitCodeStr, "]")
+		exitBadge = baseStyle.
+			Width(width - 2).
+			Foreground(t.Error()).
+			Background(t.Background()).
+			Bold(true).
+			Render(fmt.Sprintf("exit %s", exitCodeStr))
+		inner = strings.Join(lines[:len(lines)-1], "\n")
+		inner = strings.TrimRight(inner, "\n")
+	}
+
+	resultContent := truncateHeight(inner, maxResultHeight)
+	resultContent = fmt.Sprintf("```bash\n%s\n```", resultContent)
+	rendered := styles.ForceReplaceBackgroundWithLipgloss(
+		toMarkdown(resultContent, true, width-2),
+		t.Background(),
+	)
+	rendered = strings.TrimSuffix(rendered, "\n")
+
+	parts := []string{rendered}
+	if exitBadge != "" {
+		parts = append(parts, exitBadge)
+	}
+
+	content := style.Render(lipgloss.JoinVertical(lipgloss.Left, parts...))
+	return uiMessage{
+		ID:          msg.ID,
+		messageType: userMessageType,
+		position:    position,
+		height:      lipgloss.Height(content),
+		content:     content,
+	}
 }
 
 // Returns multiple uiMessages because of the tool calls

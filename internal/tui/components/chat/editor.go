@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +14,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/opencode-ai/opencode/internal/app"
+	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
+	"github.com/opencode-ai/opencode/internal/llm/tools/shell"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/session"
@@ -23,14 +27,25 @@ import (
 	"github.com/opencode-ai/opencode/internal/tui/util"
 )
 
+type editorMode string
+
+const (
+	modeNormal editorMode = "normal"
+	modeShell  editorMode = "shell"
+)
+
 type editorCmp struct {
-	width       int
-	height      int
-	app         *app.App
-	session     session.Session
-	textarea    textarea.Model
-	attachments []message.Attachment
-	deleteMode  bool
+	width           int
+	height          int
+	app             *app.App
+	session         session.Session
+	textarea        textarea.Model
+	attachments     []message.Attachment
+	deleteMode      bool
+	mode            editorMode
+	shellHistory    []string
+	shellHistoryIdx int
+	shellExecuting  bool
 }
 
 type EditorKeyMaps struct {
@@ -135,6 +150,81 @@ func (m *editorCmp) send() tea.Cmd {
 	)
 }
 
+func (m *editorCmp) enterShellMode() {
+	m.mode = modeShell
+	m.shellHistoryIdx = len(m.shellHistory)
+	m.textarea.Placeholder = "Enter shell command..."
+}
+
+func (m *editorCmp) exitShellMode() {
+	m.mode = modeNormal
+	m.textarea.Placeholder = ""
+	m.textarea.Reset()
+}
+
+func (m *editorCmp) executeShell() tea.Cmd {
+	command := strings.TrimSpace(m.textarea.Value())
+	if command == "" {
+		return nil
+	}
+
+	m.shellHistory = append(m.shellHistory, command)
+	m.shellHistoryIdx = len(m.shellHistory)
+	m.textarea.Reset()
+	m.shellExecuting = true
+
+	workdir := config.WorkingDirectory()
+
+	return func() tea.Msg {
+		sh := shell.GetPersistentShell(workdir)
+		if sh == nil {
+			return ShellResultMsg{
+				Command:  command,
+				ExitCode: 1,
+				Err:      fmt.Errorf("failed to create shell instance"),
+			}
+		}
+
+		ctx := context.Background()
+		stdout, stderr, exitCode, _, err := sh.Exec(ctx, command, tools.DefaultTimeout)
+
+		return ShellResultMsg{
+			Command:  command,
+			Stdout:   stdout,
+			Stderr:   stderr,
+			ExitCode: exitCode,
+			Err:      err,
+		}
+	}
+}
+
+func (m *editorCmp) shellHistoryUp() {
+	if len(m.shellHistory) == 0 {
+		return
+	}
+	if m.shellHistoryIdx > 0 {
+		m.shellHistoryIdx--
+		m.textarea.SetValue(m.shellHistory[m.shellHistoryIdx])
+	}
+}
+
+func (m *editorCmp) shellHistoryDown() {
+	if len(m.shellHistory) == 0 {
+		return
+	}
+	if m.shellHistoryIdx < len(m.shellHistory)-1 {
+		m.shellHistoryIdx++
+		m.textarea.SetValue(m.shellHistory[m.shellHistoryIdx])
+	} else {
+		m.shellHistoryIdx = len(m.shellHistory)
+		m.textarea.Reset()
+	}
+}
+
+func (m *editorCmp) IsShellMode() bool {
+	return m.mode == modeShell
+}
+
 func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
@@ -152,11 +242,22 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case SessionClearedMsg:
 		m.session = session.Session{}
+		if m.mode == modeShell {
+			m.exitShellMode()
+			return m, util.CmdHandler(ShellModeChangedMsg{ShellMode: false})
+		}
 		return m, nil
 	case SessionSelectedMsg:
 		if msg.ID != m.session.ID {
 			m.session = msg
+			if m.mode == modeShell {
+				m.exitShellMode()
+				return m, util.CmdHandler(ShellModeChangedMsg{ShellMode: false})
+			}
 		}
+		return m, nil
+	case ShellResultMsg:
+		m.shellExecuting = false
 		return m, nil
 	case dialog.AttachmentAddedMsg:
 		if len(m.attachments) >= maxAttachments {
@@ -165,6 +266,10 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.attachments = append(m.attachments, msg.Attachment)
 	case tea.KeyPressMsg:
+		if m.shellExecuting {
+			return m, nil
+		}
+
 		if key.Matches(msg, DeleteKeyMaps.AttachmentDeleteMode) {
 			m.deleteMode = true
 			return m, nil
@@ -190,6 +295,43 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			key.Matches(msg, messageKeys.HalfPageUp) || key.Matches(msg, messageKeys.HalfPageDown) {
 			return m, nil
 		}
+
+		// Shell mode: detect "!" at position 0 on empty input
+		if m.mode == modeNormal && msg.Text == "!" && m.textarea.Value() == "" {
+			m.enterShellMode()
+			return m, util.CmdHandler(ShellModeChangedMsg{ShellMode: true})
+		}
+
+		// Shell mode key handling
+		if m.mode == modeShell {
+			// Escape or Ctrl+C exits shell mode
+			if key.Matches(msg, DeleteKeyMaps.Escape) || msg.String() == "ctrl+c" {
+				m.exitShellMode()
+				return m, util.CmdHandler(ShellModeChangedMsg{ShellMode: false})
+			}
+			// Backspace on empty exits shell mode
+			if msg.String() == "backspace" && m.textarea.Value() == "" {
+				m.exitShellMode()
+				return m, util.CmdHandler(ShellModeChangedMsg{ShellMode: false})
+			}
+			// Up/Down navigate shell history
+			if msg.String() == "up" {
+				m.shellHistoryUp()
+				return m, nil
+			}
+			if msg.String() == "down" {
+				m.shellHistoryDown()
+				return m, nil
+			}
+			// Enter executes shell command
+			if m.textarea.Focused() && key.Matches(msg, editorMaps.Send) {
+				return m, m.executeShell()
+			}
+			// Let other keys pass through to textarea
+			m.textarea, cmd = m.textarea.Update(msg)
+			return m, cmd
+		}
+
 		if key.Matches(msg, editorMaps.OpenEditor) {
 			if m.app.ActiveAgent().IsSessionBusy(m.session.ID) {
 				return m, util.ReportWarn("Agent is working, please wait...")
@@ -221,19 +363,34 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *editorCmp) View() tea.View {
 	t := theme.CurrentTheme()
 
-	// Style the prompt with theme colors
+	promptChar := ">"
+	promptColor := t.Primary()
+	if m.mode == modeShell {
+		promptChar = "$"
+		promptColor = t.Warning()
+	}
+
 	style := lipgloss.NewStyle().
 		Padding(0, 0, 0, 1).
 		Bold(true).
-		Foreground(t.Primary())
+		Foreground(promptColor)
+
+	if m.shellExecuting {
+		spinnerText := lipgloss.NewStyle().
+			Padding(0, 0, 0, 1).
+			Foreground(t.Warning()).
+			Bold(true).
+			Render("$ running...")
+		return tea.NewView(spinnerText)
+	}
 
 	if len(m.attachments) == 0 {
-		return tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top, style.Render(">"), m.textarea.View()))
+		return tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top, style.Render(promptChar), m.textarea.View()))
 	}
 	m.textarea.SetHeight(m.height - 1)
 	return tea.NewView(lipgloss.JoinVertical(lipgloss.Top,
 		m.attachmentsContent(),
-		lipgloss.JoinHorizontal(lipgloss.Top, style.Render(">"),
+		lipgloss.JoinHorizontal(lipgloss.Top, style.Render(promptChar),
 			m.textarea.View()),
 	))
 }
@@ -318,5 +475,6 @@ func NewEditorCmp(app *app.App) tea.Model {
 	return &editorCmp{
 		app:      app,
 		textarea: ta,
+		mode:     modeNormal,
 	}
 }

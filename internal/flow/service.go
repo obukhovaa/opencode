@@ -14,7 +14,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
+	"github.com/opencode-ai/opencode/internal/format"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -269,6 +271,12 @@ func (s *service) runStep(
 	s.permissions.AutoApproveSession(sess.ID)
 
 	prompt := substituteArgs(step.Prompt, args)
+	// Expand !`cmd` shell markup in flow prompts (after args substitution so args can parameterize commands)
+	if strings.Contains(prompt, "!`") {
+		cwd := config.WorkingDirectory()
+		prompt = format.ExpandShellMarkup(ctx, prompt, cwd)
+		logging.Debug("Flow step prompt after shell markup expansion", "step", step.ID, "prompt_length", len(prompt))
+	}
 	// NOTE: Structured output referenced via template variables if needed
 	if prevState != nil && prevState.Output != "" && !prevState.IsStructOutput {
 		prompt = fmt.Sprintf("Previous step (%s) output:\n%s\n\n%s", prevState.StepID, prevState.Output, prompt)

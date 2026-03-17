@@ -1,0 +1,107 @@
+package format
+
+import (
+	"context"
+	"strings"
+	"testing"
+)
+
+func TestExpandShellMarkup(t *testing.T) {
+	ctx := context.Background()
+	cwd := t.TempDir()
+
+	t.Run("no markup returns unchanged", func(t *testing.T) {
+		input := "Hello world, no shell here"
+		result := ExpandShellMarkup(ctx, input, cwd)
+		if result != input {
+			t.Errorf("expected unchanged input, got %q", result)
+		}
+	})
+
+	t.Run("simple echo command", func(t *testing.T) {
+		input := "Output: !`echo hello`"
+		result := ExpandShellMarkup(ctx, input, cwd)
+		if !strings.Contains(result, "hello") {
+			t.Errorf("expected output to contain 'hello', got %q", result)
+		}
+		if strings.Contains(result, "!`") {
+			t.Errorf("expected markup to be replaced, got %q", result)
+		}
+		if !strings.Contains(result, "```") {
+			t.Errorf("expected code fence in output, got %q", result)
+		}
+		if !strings.Contains(result, "$ echo hello") {
+			t.Errorf("expected command echo in output, got %q", result)
+		}
+	})
+
+	t.Run("multiple commands", func(t *testing.T) {
+		input := "A: !`echo aaa` B: !`echo bbb`"
+		result := ExpandShellMarkup(ctx, input, cwd)
+		if !strings.Contains(result, "aaa") {
+			t.Errorf("expected 'aaa', got %q", result)
+		}
+		if !strings.Contains(result, "bbb") {
+			t.Errorf("expected 'bbb', got %q", result)
+		}
+	})
+
+	t.Run("failing command includes exit code", func(t *testing.T) {
+		input := "!`ls /nonexistent_path_xyz_12345`"
+		result := ExpandShellMarkup(ctx, input, cwd)
+		if strings.Contains(result, "!`") {
+			t.Errorf("expected markup to be replaced, got %q", result)
+		}
+		if !strings.Contains(result, "exit code:") {
+			t.Errorf("expected exit code in output, got %q", result)
+		}
+	})
+
+	t.Run("pipes work", func(t *testing.T) {
+		input := "!`echo hello | tr a-z A-Z`"
+		result := ExpandShellMarkup(ctx, input, cwd)
+		if !strings.Contains(result, "HELLO") {
+			t.Errorf("expected 'HELLO', got %q", result)
+		}
+	})
+
+	t.Run("preserves surrounding text", func(t *testing.T) {
+		input := "Before !`echo mid` After"
+		result := ExpandShellMarkup(ctx, input, cwd)
+		if !strings.HasPrefix(result, "Before ") {
+			t.Errorf("expected to start with 'Before ', got %q", result)
+		}
+		if !strings.HasSuffix(result, " After") {
+			t.Errorf("expected to end with ' After', got %q", result)
+		}
+	})
+}
+
+func TestTruncateShellOutput(t *testing.T) {
+	t.Run("short output unchanged", func(t *testing.T) {
+		input := "hello\nworld"
+		result := truncateShellOutput(input)
+		if result != input {
+			t.Errorf("expected unchanged, got %q", result)
+		}
+	})
+
+	t.Run("empty string unchanged", func(t *testing.T) {
+		result := truncateShellOutput("")
+		if result != "" {
+			t.Errorf("expected empty, got %q", result)
+		}
+	})
+
+	t.Run("many lines get truncated", func(t *testing.T) {
+		lines := make([]string, 3000)
+		for i := range lines {
+			lines[i] = "line"
+		}
+		input := strings.Join(lines, "\n")
+		result := truncateShellOutput(input)
+		if !strings.Contains(result, "truncated") {
+			t.Errorf("expected truncation marker, got length %d", len(result))
+		}
+	})
+}

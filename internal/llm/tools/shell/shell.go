@@ -61,24 +61,25 @@ func GetPersistentShell(workingDir string) *PersistentShell {
 	return sh
 }
 
-func newPersistentShell(cwd string) *PersistentShell {
-	// Get shell configuration from config
+// GetShellPath returns the shell path resolved from config, $SHELL, or /bin/bash default.
+func GetShellPath() string {
 	cfg := config.Get()
-
-	// Default to environment variable if config is not set or nil
-	var shellPath string
-	var shellArgs []string
-
-	if cfg != nil {
-		shellPath = cfg.Shell.Path
-		shellArgs = cfg.Shell.Args
+	if cfg != nil && cfg.Shell.Path != "" {
+		return cfg.Shell.Path
 	}
+	if s := os.Getenv("SHELL"); s != "" {
+		return s
+	}
+	return "/bin/bash"
+}
 
-	if shellPath == "" {
-		shellPath = os.Getenv("SHELL")
-		if shellPath == "" {
-			shellPath = "/bin/bash"
-		}
+func newPersistentShell(cwd string) *PersistentShell {
+	shellPath := GetShellPath()
+
+	cfg := config.Get()
+	var shellArgs []string
+	if cfg != nil {
+		shellArgs = cfg.Shell.Args
 	}
 
 	// Default shell args
@@ -203,6 +204,12 @@ echo $EXEC_EXIT_CODE > %s
 
 			case <-time.After(10 * time.Millisecond):
 				if fileExists(statusFile) && fileSize(statusFile) > 0 {
+					done <- true
+					return
+				}
+
+				if !s.isAlive {
+					interrupted = true
 					done <- true
 					return
 				}

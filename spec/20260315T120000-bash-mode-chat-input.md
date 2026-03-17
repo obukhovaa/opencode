@@ -247,49 +247,49 @@ Fix the failing tests.             Fix the failing tests.
 
 ### Phase 1: Editor Bash Mode
 
-- [ ] **1.1** Add `mode string` field to `editorCmp` (`"normal"` / `"shell"`) and `shellHistory []string` / `shellHistoryIdx int`
-- [ ] **1.2** In `Update()`, detect `!` keypress when cursor is at position 0 and input is empty — switch to shell mode, consume the key
-- [ ] **1.3** In `Update()`, handle Escape in shell mode → switch back to normal; handle Backspace on empty input → switch back to normal
-- [ ] **1.4** In `View()`, render `$ ` prompt when in shell mode; apply a different text style (if supported by textarea model)
-- [ ] **1.5** Add new message type `ShellExecMsg{Command string}` for internal use
-- [ ] **1.6** In `Update()`, on Enter in shell mode: capture text, clear editor, return a `tea.Cmd` that executes `shell.GetPersistentShell(cwd).Exec()` and returns a `ShellResultMsg{Command, Stdout, Stderr, ExitCode, Error}`
-- [ ] **1.7** Handle `ShellResultMsg` in the chat component: create user messages (command echo + output) via session service without triggering LLM
-- [ ] **1.8** Suppress `/` slash and `@` file completion popovers when in shell mode
+- [x] **1.1** Add `mode string` field to `editorCmp` (`"normal"` / `"shell"`) and `shellHistory []string` / `shellHistoryIdx int`
+- [x] **1.2** In `Update()`, detect `!` keypress when cursor is at position 0 and input is empty — switch to shell mode, consume the key
+- [x] **1.3** In `Update()`, handle Escape in shell mode → switch back to normal; handle Backspace on empty input → switch back to normal
+- [x] **1.4** In `View()`, render `$ ` prompt when in shell mode; apply a different text style (if supported by textarea model)
+- [x] **1.5** Add new message types `ShellExecMsg`, `ShellResultMsg`, `ShellModeChangedMsg` for internal use
+- [x] **1.6** In `Update()`, on Enter in shell mode: capture text, clear editor, return a `tea.Cmd` that executes `shell.GetPersistentShell(cwd).Exec()` and returns a `ShellResultMsg{Command, Stdout, Stderr, ExitCode, Error}`
+- [x] **1.7** Handle `ShellResultMsg` in the chat page: create user messages (command echo + output) via message service without triggering LLM
+- [x] **1.8** Suppress `/` slash and `@` file completion popovers when in shell mode
 
 ### Phase 2: Shell History
 
-- [ ] **2.1** Maintain a separate in-memory shell command history ring
-- [ ] **2.2** Up/Down arrow keys navigate shell history when in shell mode
+- [x] **2.1** Maintain a separate in-memory shell command history ring
+- [x] **2.2** Up/Down arrow keys navigate shell history when in shell mode
 - [ ] **2.3** Optionally persist shell history across sessions (consider size limits)
 
 ### Phase 3: Shell Markup Expansion (Shared)
 
-- [ ] **3.1** Create a shared `ExpandShellMarkup(ctx context.Context, template string, cwd string) (string, error)` function (e.g., in `internal/shellmarkup/` or `internal/format/`)
-- [ ] **3.2** Parse `` !`...` `` blocks via regex `` !`([^`]+)` ``; support multiline commands within backticks
-- [ ] **3.3** Execute each matched command via `shell.GetPersistentShell(cwd).Exec()` with a reasonable timeout (e.g., 30s default)
-- [ ] **3.4** Replace the `` !`...` `` block with the command's stdout in the expanded template
-- [ ] **3.5** Handle command failures: on non-zero exit include both stdout and stderr; on timeout or error include an error annotation (e.g., `[command failed: exit 1]\n<stderr>`)
-- [ ] **3.6** Apply output truncation per-command (reuse `bash.go` limits) to prevent a single noisy command from bloating the prompt
+- [x] **3.1** Create a shared `ExpandShellMarkup(ctx context.Context, template string, cwd string) string` function in `internal/format/shell_markup.go`
+- [x] **3.2** Parse `` !`...` `` blocks via regex `` !`([^`]+)` ``; support multiline commands within backticks
+- [x] **3.3** Execute each matched command via `shell.GetPersistentShell(cwd).Exec()` with the bash tool's default timeout (2 min)
+- [x] **3.4** Replace the `` !`...` `` block with the command's stdout in the expanded template
+- [x] **3.5** Handle command failures: on non-zero exit include both stdout and stderr; on timeout or error include an error annotation (e.g., `[command error: ...]`)
+- [x] **3.6** Apply output truncation per-command (reuse `bash.go` limits) to prevent a single noisy command from bloating the prompt
 
 ### Phase 4: Command Markup in Custom Commands
 
-- [ ] **4.1** Call `ExpandShellMarkup()` in the custom command pipeline after `$ARG` / `$N` substitution and before `sendMessage()`
-- [ ] **4.2** Insert the call between the `strings.ReplaceAll($NAME → value)` step and `CommandRunCustomMsg` emission in `tui.go` / `chat.go`
-- [ ] **4.3** Verify that existing `` !`git diff` `` usages in `commands/commit.md` work correctly
+- [x] **4.1** Call `ExpandShellMarkup()` in the custom command pipeline after `$ARG` / `$N` substitution and before `sendMessage()`
+- [x] **4.2** Insert the call in the `CommandRunCustomMsg` handler in `page/chat.go` after argument substitution
+- [x] **4.3** Verify that existing `` !`git diff` `` usages in `commands/commit.md` work correctly
 
 ### Phase 5: Command Markup in Flow Prompts
 
-- [ ] **5.1** Call `ExpandShellMarkup()` in `flow/service.go`'s `runStep()` after `substituteArgs()` and before passing the prompt to the agent
-- [ ] **5.2** Expansion happens at step execution time (not at flow parse time) so each step captures fresh output
-- [ ] **5.3** Pass the flow's working directory as `cwd`
-- [ ] **5.4** Log expanded prompts at debug level for flow troubleshooting
-- [ ] **5.5** Handle expansion errors: if a shell command fails in a flow prompt, include the error output in the prompt text rather than failing the entire flow step — let the agent decide how to handle it
+- [x] **5.1** Call `ExpandShellMarkup()` in `flow/service.go`'s `runStep()` after `substituteArgs()` and before passing the prompt to the agent
+- [x] **5.2** Expansion happens at step execution time (not at flow parse time) so each step captures fresh output
+- [x] **5.3** Pass the flow's working directory as `cwd`
+- [x] **5.4** Log expanded prompts at debug level for flow troubleshooting
+- [x] **5.5** Handle expansion errors: if a shell command fails in a flow prompt, include the error output in the prompt text rather than failing the entire flow step — let the agent decide how to handle it
 
 ### Phase 6: Visual Polish
 
-- [ ] **6.1** Add keybindings to the help bar for shell mode (`!` to enter, `Esc` to exit)
-- [ ] **6.2** Style shell output messages differently from normal user messages (e.g., monospace, muted border)
-- [ ] **6.3** Show exit code badge on non-zero exits
+- [x] **6.1** Add keybindings to the help bar for shell mode (`!` to enter, `Esc` to exit)
+- [x] **6.2** Style shell output messages differently from normal user messages (e.g., monospace, muted border)
+- [x] **6.3** Show exit code badge on non-zero exits
 
 ## Edge Cases
 
@@ -386,18 +386,18 @@ Fix the failing tests.             Fix the failing tests.
 
 ## Success Criteria
 
-- [ ] Typing `!` as first character in empty editor activates shell mode with `$` prompt
-- [ ] Commands execute via the persistent shell and output appears as user messages
-- [ ] Output does not trigger LLM submission
-- [ ] Escape and Backspace-on-empty exit shell mode
-- [ ] Normal mode Enter submits to the assistant, which can see prior shell outputs in context
-- [ ] Shell history (up/down) works independently from normal prompt history
-- [ ] Custom command `` !`cmd` `` markup executes and inlines output
-- [ ] Flow step prompt `` !`cmd` `` markup executes at step runtime and inlines fresh output
-- [ ] Flow `${args}` substitution happens before `` !`cmd` `` expansion
-- [ ] Shell markup errors in flows don't crash the step — error text is inlined
-- [ ] Long output is truncated consistently with the bash tool
-- [ ] No regressions in normal editor behavior
+- [x] Typing `!` as first character in empty editor activates shell mode with `$` prompt
+- [x] Commands execute via the persistent shell and output appears as user messages
+- [x] Output does not trigger LLM submission
+- [x] Escape and Backspace-on-empty exit shell mode
+- [x] Normal mode Enter submits to the assistant, which can see prior shell outputs in context
+- [x] Shell history (up/down) works independently from normal prompt history
+- [x] Custom command `` !`cmd` `` markup executes and inlines output
+- [x] Flow step prompt `` !`cmd` `` markup executes at step runtime and inlines fresh output
+- [x] Flow `${args}` substitution happens before `` !`cmd` `` expansion
+- [x] Shell markup errors in flows don't crash the step — error text is inlined
+- [x] Long output is truncated consistently with the bash tool
+- [x] No regressions in normal editor behavior
 
 ## References
 

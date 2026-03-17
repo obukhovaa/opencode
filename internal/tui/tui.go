@@ -519,6 +519,10 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 
 		case key.Matches(msg, keys.Quit):
+			// In shell mode, ctrl+c exits shell mode instead of showing quit dialog
+			if a.pageIsShellMode() {
+				break
+			}
 			a.showQuit = !a.showQuit
 			if a.showHelp {
 				a.showHelp = false
@@ -782,6 +786,16 @@ func (a *appModel) pageHasActiveOverlay() bool {
 	}
 	if p, ok := a.pages[a.currentPage].(overlayChecker); ok {
 		return p.HasActiveOverlay()
+	}
+	return false
+}
+
+func (a *appModel) pageIsShellMode() bool {
+	type shellModeChecker interface {
+		IsShellMode() bool
+	}
+	if p, ok := a.pages[a.currentPage].(shellModeChecker); ok {
+		return p.IsShellMode()
 	}
 	return false
 }
