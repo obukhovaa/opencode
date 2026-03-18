@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 	"github.com/PuerkitoBio/goquery"
@@ -37,12 +38,16 @@ type fetchTool struct {
 
 const (
 	WebFetchToolName     = "webfetch"
-	fetchToolDescription = `Fetches content from a URL and returns it in the specified format.
+	fetchToolDescription = `Fetches text-based content from a URL and returns it in the specified format.
 
 WHEN TO USE THIS TOOL:
-- Use when you need to download content from a URL
+- Use when you need to fetch text-based content from a URL (HTML pages, API responses, documentation)
 - Helpful for retrieving documentation, API responses, or web content
 - Useful for getting external information to assist with tasks
+
+WHEN NOT TO USE THIS TOOL:
+- Do NOT use for binary files (JARs, ZIPs, PDFs, images, executables, etc.) — use the bash tool with curl instead
+- Do NOT use for downloading artifacts, packages, or compiled binaries
 
 HOW TO USE:
 - Provide the URL to fetch content from
@@ -57,6 +62,8 @@ FEATURES:
 
 LIMITATIONS:
 - Maximum response size is 5MB
+- Only supports text-based content (HTML, JSON, plain text, XML, etc.)
+- Binary content (images, archives, executables, PDFs) will be rejected — use bash with curl for those
 - Only supports HTTP and HTTPS protocols
 - Cannot handle authentication or cookies
 - Some websites may block automated requests
@@ -199,6 +206,15 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 		return NewTextErrorResponse("Failed to read response body: " + err.Error()), nil
 	}
 
+	if isBinaryContent(resp.Header.Get("Content-Type"), body) {
+		return NewTextErrorResponse(fmt.Sprintf(
+			"URL returned binary content (Content-Type: %s, %d bytes). "+
+				"The webfetch tool only supports text-based content. "+
+				"Use the bash tool with curl to download binary files instead.",
+			resp.Header.Get("Content-Type"), len(body),
+		)), nil
+	}
+
 	content := string(body)
 	contentType := resp.Header.Get("Content-Type")
 
@@ -256,4 +272,40 @@ func convertHTMLToMarkdown(html string) (string, error) {
 		return "", err
 	}
 	return markdown, nil
+}
+
+var binaryContentTypes = []string{
+	"application/octet-stream",
+	"application/zip",
+	"application/gzip",
+	"application/x-tar",
+	"application/java-archive",
+	"application/x-java-archive",
+	"application/pdf",
+	"application/wasm",
+	"application/x-executable",
+	"application/x-mach-binary",
+	"application/x-sharedlib",
+	"image/",
+	"audio/",
+	"video/",
+	"font/",
+}
+
+func isBinaryContent(contentType string, body []byte) bool {
+	ct := strings.ToLower(contentType)
+	for _, prefix := range binaryContentTypes {
+		if strings.HasPrefix(ct, prefix) || strings.Contains(ct, prefix) {
+			return true
+		}
+	}
+
+	if len(body) > 0 {
+		sampleSize := min(8192, len(body))
+		if !utf8.Valid(body[:sampleSize]) {
+			return true
+		}
+	}
+
+	return false
 }

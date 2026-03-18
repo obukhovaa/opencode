@@ -436,6 +436,22 @@ func (g *geminiClient) stream(ctx context.Context, messages []message.Message, t
 				return
 			}
 
+			// Stream completed but finalResp is nil (truncated or empty response)
+			logging.Warn("Gemini stream closed with nil finalResp (truncated response)")
+			finishReason := message.FinishReasonEndTurn
+			if len(toolCalls) > 0 {
+				finishReason = message.FinishReasonToolUse
+			}
+			eventChan <- ProviderEvent{
+				Type: EventComplete,
+				Response: &ProviderResponse{
+					Content:      currentContent,
+					ToolCalls:    toolCalls,
+					FinishReason: finishReason,
+				},
+			}
+			return
+
 		}
 	}()
 

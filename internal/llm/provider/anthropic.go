@@ -440,6 +440,26 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 
 			err := anthropicStream.Err()
 			if err == nil || errors.Is(err, io.EOF) {
+				// If the stream closed without a MessageStopEvent (truncated response),
+				// we still need to emit EventComplete so the agent loop doesn't hang.
+				if accumulatedMessage.StopReason == "" {
+					logging.Warn("Anthropic stream closed without MessageStopEvent (truncated response)")
+					var sb strings.Builder
+					for _, block := range accumulatedMessage.Content {
+						if text, ok := block.AsAny().(anthropic.TextBlock); ok {
+							sb.WriteString(text.Text)
+						}
+					}
+					eventChan <- ProviderEvent{
+						Type: EventComplete,
+						Response: &ProviderResponse{
+							Content:      sb.String(),
+							ToolCalls:    a.toolCalls(accumulatedMessage),
+							Usage:        a.usage(accumulatedMessage),
+							FinishReason: message.FinishReasonEndTurn,
+						},
+					}
+				}
 				close(eventChan)
 				return
 			}

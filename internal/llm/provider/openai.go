@@ -284,10 +284,15 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 
 			err := openaiStream.Err()
 			if err == nil || errors.Is(err, io.EOF) {
-				// Stream completed successfully
-				finishReason := o.finishReason(string(acc.ChatCompletion.Choices[0].FinishReason))
-				if len(acc.ChatCompletion.Choices[0].Message.ToolCalls) > 0 {
-					toolCalls = append(toolCalls, o.toolCalls(acc.ChatCompletion)...)
+				// Guard against truncated streams where Choices may be empty
+				finishReason := message.FinishReasonEndTurn
+				if len(acc.ChatCompletion.Choices) > 0 {
+					finishReason = o.finishReason(string(acc.ChatCompletion.Choices[0].FinishReason))
+					if len(acc.ChatCompletion.Choices[0].Message.ToolCalls) > 0 {
+						toolCalls = append(toolCalls, o.toolCalls(acc.ChatCompletion)...)
+					}
+				} else {
+					logging.Warn("OpenAI stream closed with empty Choices (truncated response)")
 				}
 				if len(toolCalls) > 0 {
 					finishReason = message.FinishReasonToolUse
