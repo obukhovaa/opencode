@@ -71,6 +71,7 @@ func LoadCustomCommands() ([]Command, error) {
 	}
 
 	var commands []Command
+	seen := make(map[string]bool)
 
 	home, homeErr := os.UserHomeDir()
 	xdgConfigHome := os.Getenv("XDG_CONFIG_HOME")
@@ -98,7 +99,13 @@ func LoadCustomCommands() ([]Command, error) {
 		if err != nil {
 			logging.Warn("Failed to load user commands", "dir", dir, "error", err)
 		} else {
-			commands = append(commands, cmds...)
+			for _, cmd := range cmds {
+				if seen[cmd.ID] {
+					continue
+				}
+				seen[cmd.ID] = true
+				commands = append(commands, cmd)
+			}
 		}
 	}
 
@@ -119,7 +126,13 @@ func LoadCustomCommands() ([]Command, error) {
 			if err != nil {
 				logging.Warn("Failed to load project commands", "dir", dir, "error", err)
 			} else {
-				commands = append(commands, cmds...)
+				for _, cmd := range cmds {
+					if seen[cmd.ID] {
+						continue
+					}
+					seen[cmd.ID] = true
+					commands = append(commands, cmd)
+				}
 			}
 		}
 
