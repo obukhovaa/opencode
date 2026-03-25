@@ -40,6 +40,8 @@ type messagesCmp struct {
 	cachedPending    pendingToolCounts
 	cachedUnfinished bool
 	taskMessages     map[string][]message.Message
+	userScrolledUp   bool
+	newMessageCount  int
 }
 type renderFinishedMsg struct {
 	uiMessages      []uiMessage
@@ -98,6 +100,9 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cachedContent = make(map[string]cacheItem)
 		m.currentMsgID = ""
 		m.rendering = false
+		m.userScrolledUp = false
+		m.newMessageCount = 0
+		cmds = append(cmds, m.emitScrollState())
 
 	case tea.KeyPressMsg:
 		if key.Matches(msg, messageKeys.PageUp) || key.Matches(msg, messageKeys.PageDown) ||
@@ -105,7 +110,13 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			u, cmd := m.viewport.Update(msg)
 			m.viewport = u
 			cmds = append(cmds, cmd)
+			cmds = append(cmds, m.updateScrollState())
 		}
+	case tea.MouseWheelMsg:
+		u, cmd := m.viewport.Update(msg)
+		m.viewport = u
+		cmds = append(cmds, cmd)
+		cmds = append(cmds, m.updateScrollState())
 
 	case renderFinishedMsg:
 		if !m.rendering {
@@ -117,8 +128,14 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for id, item := range msg.cacheUpdates {
 			m.cachedContent[id] = item
 		}
-		m.viewport.SetContent(msg.viewportContent)
-		m.viewport.GotoBottom()
+		if m.userScrolledUp {
+			yOff := m.viewport.YOffset()
+			m.viewport.SetContent(msg.viewportContent)
+			m.viewport.SetYOffset(yOff)
+		} else {
+			m.viewport.SetContent(msg.viewportContent)
+			m.viewport.GotoBottom()
+		}
 		// Messages may have arrived while the async render was in flight;
 		// if so, kick off another render so they become visible immediately.
 		if m.hasCacheMisses() {
@@ -198,15 +215,38 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if needsRerender {
 			m.recomputeToolState()
-			if !m.rendering && m.hasCacheMisses() {
-				cmds = append(cmds, m.renderViewAsync())
-			} else if !m.rendering {
-				m.renderViewSync()
+			if m.userScrolledUp {
+				if !m.rendering && m.hasCacheMisses() {
+					cmds = append(cmds, m.renderViewAsync())
+				} else if !m.rendering {
+					yOff := m.viewport.YOffset()
+					m.renderViewSync()
+					m.viewport.SetYOffset(yOff)
+				}
+			} else {
+				if !m.rendering && m.hasCacheMisses() {
+					cmds = append(cmds, m.renderViewAsync())
+				} else if !m.rendering {
+					m.renderViewSync()
+				}
+				if len(m.messages) > 0 {
+					if (msg.Type == pubsub.CreatedEvent) ||
+						(msg.Type == pubsub.UpdatedEvent && msg.Payload.ID == m.messages[len(m.messages)-1].ID) {
+						m.viewport.GotoBottom()
+					}
+				}
 			}
-			if len(m.messages) > 0 {
-				if (msg.Type == pubsub.CreatedEvent) ||
-					(msg.Type == pubsub.UpdatedEvent && msg.Payload.ID == m.messages[len(m.messages)-1].ID) {
-					m.viewport.GotoBottom()
+			if msg.Type == pubsub.CreatedEvent && msg.Payload.SessionID == m.session.ID {
+				if m.userScrolledUp {
+					if msg.Payload.Role == message.User {
+						m.userScrolledUp = false
+						m.newMessageCount = 0
+						m.viewport.GotoBottom()
+						cmds = append(cmds, m.emitScrollState())
+					} else {
+						m.newMessageCount++
+						cmds = append(cmds, m.emitScrollState())
+					}
 				}
 			}
 		}
@@ -626,6 +666,25 @@ func (m *messagesCmp) initialScreen() string {
 	)
 }
 
+func (m *messagesCmp) updateScrollState() tea.Cmd {
+	wasScrolledUp := m.userScrolledUp
+	m.userScrolledUp = !m.viewport.AtBottom()
+	if wasScrolledUp != m.userScrolledUp {
+		if !m.userScrolledUp {
+			m.newMessageCount = 0
+		}
+		return m.emitScrollState()
+	}
+	return nil
+}
+
+func (m *messagesCmp) emitScrollState() tea.Cmd {
+	return util.CmdHandler(ScrollStateMsg{
+		Locked:      m.userScrolledUp,
+		NewMessages: m.newMessageCount,
+	})
+}
+
 func (m *messagesCmp) rerender() {
 	for _, msg := range m.messages {
 		delete(m.cachedContent, msg.ID)
@@ -678,7 +737,9 @@ func (m *messagesCmp) SetSession(session session.Session) tea.Cmd {
 	m.recomputeToolState()
 	m.renderViewSync()
 	m.viewport.GotoBottom()
-	return nil
+	m.userScrolledUp = false
+	m.newMessageCount = 0
+	return m.emitScrollState()
 }
 
 func (m *messagesCmp) BindingKeys() []key.Binding {

@@ -40,6 +40,8 @@ type statusCmp struct {
 	diagnosticsDirty    bool
 	cachedResolvedModel models.Model
 	cachedModelAgent    config.AgentName
+	scrollLocked        bool
+	newMessageCount     int
 }
 
 // clearMessageCmd is a command that clears status messages after a timeout
@@ -88,6 +90,9 @@ func (m *statusCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diagnosticsDirty = true
 		helpWidget = getHelpWidget()
 		agentHintWidget = getAgentHintWidget()
+	case chat.ScrollStateMsg:
+		m.scrollLocked = msg.Locked
+		m.newMessageCount = msg.NewMessages
 	}
 	if m.diagnosticsDirty {
 		m.cachedDiagnostics = m.computeDiagnostics()
@@ -195,6 +200,27 @@ func (m *statusCmp) View() tea.View {
 	status := helpWidget
 	status += agentHintWidget
 
+	scrollWidget := ""
+	scrollWidgetWidth := 0
+	if m.scrollLocked && m.newMessageCount > 0 {
+		scrollText := fmt.Sprintf("↓ %d new", m.newMessageCount)
+		scrollWidget = styles.Padded().
+			Background(t.Warning()).
+			Foreground(t.Background()).
+			Bold(true).
+			Render(scrollText)
+		scrollWidgetWidth = lipgloss.Width(scrollWidget)
+	} else if m.scrollLocked {
+		scrollText := "↓ scroll locked"
+		scrollWidget = styles.Padded().
+			Background(t.Info()).
+			Foreground(t.Background()).
+			Bold(true).
+			Render(scrollText)
+		scrollWidgetWidth = lipgloss.Width(scrollWidget)
+	}
+	status += scrollWidget
+
 	tokenInfoWidth := 0
 	if m.session.ID != "" {
 		totalTokens := m.session.PromptTokens + m.session.CompletionTokens
@@ -216,7 +242,7 @@ func (m *statusCmp) View() tea.View {
 		Background(t.BackgroundDarker()).
 		Render(m.projectDiagnostics())
 
-	availableWidht := max(0, m.width-lipgloss.Width(helpWidget)-lipgloss.Width(agentHintWidget)-lipgloss.Width(modelWidget)-lipgloss.Width(diagnostics)-tokenInfoWidth)
+	availableWidht := max(0, m.width-lipgloss.Width(helpWidget)-lipgloss.Width(agentHintWidget)-lipgloss.Width(modelWidget)-lipgloss.Width(diagnostics)-tokenInfoWidth-scrollWidgetWidth)
 
 	if m.info.Msg != "" {
 		infoStyle := styles.Padded().

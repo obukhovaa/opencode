@@ -42,6 +42,11 @@ type ShellModeChangedMsg struct {
 	ShellMode bool
 }
 
+type ScrollStateMsg struct {
+	Locked      bool
+	NewMessages int
+}
+
 func header(width int) string {
 	return lipgloss.JoinVertical(
 		lipgloss.Top,
