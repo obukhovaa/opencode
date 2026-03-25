@@ -18,10 +18,12 @@ var CommandPrompts embed.FS
 
 // Command represents a command that can be executed
 type Command struct {
-	ID          string
-	Title       string
-	Description string
-	Handler     func(cmd Command) tea.Cmd
+	ID           string
+	Title        string
+	Description  string
+	Handler      func(cmd Command) tea.Cmd
+	Content      string // Raw prompt content (for non-interactive slash dispatch)
+	ArgumentHint string // Hint text for argument placeholders
 }
 
 func (ci Command) Render(selected bool, width int) string {

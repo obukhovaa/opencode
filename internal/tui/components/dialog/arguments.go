@@ -41,6 +41,7 @@ type ShowMultiArgumentsDialogMsg struct {
 	CommandID string
 	Content   string
 	ArgNames  []string
+	ArgHints  map[string]string // Optional hints for argument placeholders
 }
 
 // CloseMultiArgumentsDialogMsg is a message that is sent when the multi-arguments dialog is closed.
@@ -63,13 +64,17 @@ type MultiArgumentsDialogCmp struct {
 }
 
 // NewMultiArgumentsDialogCmp creates a new MultiArgumentsDialogCmp.
-func NewMultiArgumentsDialogCmp(commandID, content string, argNames []string) MultiArgumentsDialogCmp {
+func NewMultiArgumentsDialogCmp(commandID, content string, argNames []string, argHints map[string]string) MultiArgumentsDialogCmp {
 	t := theme.CurrentTheme()
 	inputs := make([]textinput.Model, len(argNames))
 
 	for i, name := range argNames {
 		ti := textinput.New()
-		ti.Placeholder = fmt.Sprintf("Enter value for %s...", name)
+		if hint, ok := argHints[name]; ok && hint != "" {
+			ti.Placeholder = hint
+		} else {
+			ti.Placeholder = fmt.Sprintf("Enter value for %s...", name)
+		}
 		ti.SetWidth(40)
 		ti.Prompt = ""
 

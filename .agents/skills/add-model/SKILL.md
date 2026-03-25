@@ -1,6 +1,7 @@
 ---
 name: add-model
 description: Add or remove LLM model definitions for providers (Anthropic, OpenAI, Gemini, VertexAI, Bedrock). Use when the user provides a model card URL, documentation link, or plain text description of a new model to register. Also use when asked to remove/deprecate an existing model. Handles model struct definition, provider registration, README update, and schema regeneration.
+user-invocable: true
 ---
 
 # Add/Remove Model Skill

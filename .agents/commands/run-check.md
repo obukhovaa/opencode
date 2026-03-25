@@ -4,3 +4,5 @@ description: Run all checks required to pass quality control (tests, lint and et
 ---
 
 !`ls -lah`
+
+print as it is

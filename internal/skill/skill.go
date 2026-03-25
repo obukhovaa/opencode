@@ -39,9 +39,20 @@ type Info struct {
 	Description   string         `yaml:"description"`
 	License       string         `yaml:"license,omitempty"`
 	Compatibility string         `yaml:"compatibility,omitempty"`
+	UserInvocable *bool          `yaml:"user-invocable,omitempty"`
+	ArgumentHint  string         `yaml:"argument-hint,omitempty"`
 	Metadata      map[string]any `yaml:"metadata,omitempty"`
 	Location      string         `yaml:"-"` // File path, not in frontmatter
 	Content       string         `yaml:"-"` // Markdown content, not in frontmatter
+}
+
+// IsUserInvocable returns whether the skill can be invoked by users via slash commands.
+// Defaults to true when not explicitly set.
+func (i *Info) IsUserInvocable() bool {
+	if i.UserInvocable == nil {
+		return true
+	}
+	return *i.UserInvocable
 }
 
 // Error types

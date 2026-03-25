@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/skill"
 	"github.com/opencode-ai/opencode/internal/tui/util"
 	"gopkg.in/yaml.v3"
 )
@@ -23,10 +24,14 @@ const (
 // namedArgPattern is a regex pattern to find named arguments in the format $NAME
 var namedArgPattern = regexp.MustCompile(`\$([A-Z][A-Z0-9_]*)`)
 
+// hintBracketPattern extracts bracket groups from argument-hint strings
+var hintBracketPattern = regexp.MustCompile(`\[([^\]]+)\]`)
+
 // commandFrontmatter represents the YAML frontmatter of a custom command
 type commandFrontmatter struct {
-	Title       string `yaml:"title"`
-	Description string `yaml:"description"`
+	Title        string `yaml:"title"`
+	Description  string `yaml:"description"`
+	ArgumentHint string `yaml:"argument-hint"`
 }
 
 // parseCommandMarkdown parses a markdown file with optional YAML frontmatter.
@@ -253,9 +258,11 @@ func loadCommandsFromDir(commandsDir string, prefix string) ([]Command, error) {
 
 		commandContent := body
 		command := Command{
-			ID:          fullID,
-			Title:       title,
-			Description: description,
+			ID:           fullID,
+			Title:        title,
+			Description:  description,
+			Content:      commandContent,
+			ArgumentHint: fm.ArgumentHint,
 			Handler: func(cmd Command) tea.Cmd {
 				return ParameterizedCommandHandler(commandContent, &cmd)
 			},
@@ -291,15 +298,86 @@ func ParameterizedCommandHandler(commandContent string, cmd *Command) tea.Cmd {
 			}
 		}
 
+		argHints := ParseArgumentHints(cmd.ArgumentHint, argNames)
+
 		return util.CmdHandler(ShowMultiArgumentsDialogMsg{
 			CommandID: cmd.ID,
 			Content:   commandContent,
 			ArgNames:  argNames,
+			ArgHints:  argHints,
 		})
 	}
 
 	return util.CmdHandler(CommandRunCustomMsg{
 		Content: commandContent,
 		Args:    nil,
+	})
+}
+
+// ParseArgumentHints maps bracket groups from an argument-hint string to placeholder names.
+// Uses name-based matching: [commit-hash] maps to $COMMIT_HASH (hyphen→underscore, uppercase).
+// Falls back to positional matching if name-based fails.
+func ParseArgumentHints(hint string, argNames []string) map[string]string {
+	if hint == "" {
+		return nil
+	}
+
+	matches := hintBracketPattern.FindAllStringSubmatch(hint, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	hints := make(map[string]string)
+
+	// Try name-based matching first
+	for _, match := range matches {
+		hintText := match[1]
+		// Convert hint to placeholder name: lowercase-with-hyphens → UPPERCASE_WITH_UNDERSCORES
+		normalized := strings.ToUpper(strings.ReplaceAll(hintText, "-", "_"))
+		for _, name := range argNames {
+			if name == normalized {
+				hints[name] = hintText
+			}
+		}
+	}
+
+	// If name-based matching didn't match everything, try positional
+	if len(hints) == 0 {
+		for i, match := range matches {
+			if i < len(argNames) {
+				hints[argNames[i]] = match[1]
+			}
+		}
+	}
+
+	return hints
+}
+
+// ParameterizedSkillHandler checks if skill content has $PLACEHOLDER patterns.
+// If yes, returns a tea.Cmd to show the argument dialog. If no, returns nil.
+func ParameterizedSkillHandler(s *skill.Info) tea.Cmd {
+	matches := namedArgPattern.FindAllStringSubmatch(s.Content, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	argNames := make([]string, 0)
+	argMap := make(map[string]bool)
+
+	for _, match := range matches {
+		argName := match[1]
+		if !argMap[argName] {
+			argMap[argName] = true
+			argNames = append(argNames, argName)
+		}
+	}
+
+	argHints := ParseArgumentHints(s.ArgumentHint, argNames)
+
+	return util.CmdHandler(ShowMultiArgumentsDialogMsg{
+		CommandID: "skill:" + s.Name,
+		Content:   s.Content,
+		ArgNames:  argNames,
+		ArgHints:  argHints,
 	})
 }

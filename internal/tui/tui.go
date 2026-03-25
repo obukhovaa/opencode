@@ -482,7 +482,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case dialog.ShowMultiArgumentsDialogMsg:
 		// Show multi-arguments dialog
-		a.multiArgumentsDialog = dialog.NewMultiArgumentsDialogCmp(msg.CommandID, msg.Content, msg.ArgNames)
+		a.multiArgumentsDialog = dialog.NewMultiArgumentsDialogCmp(msg.CommandID, msg.Content, msg.ArgNames, msg.ArgHints)
 		a.showMultiArgumentsDialog = true
 		return a, a.multiArgumentsDialog.Init()
 
@@ -979,6 +979,10 @@ func New(app *app.App) tea.Model {
 }
 
 func buildCommands() []dialog.Command {
+	initContent := readEmbeddedCommand("commands/init.md")
+	reviewContent := readEmbeddedCommand("commands/review.md")
+	commitContent := readEmbeddedCommand("commands/commit.md")
+
 	commands := []dialog.Command{
 		{
 			ID:          "agents",
@@ -992,15 +996,11 @@ func buildCommands() []dialog.Command {
 			ID:          "init",
 			Title:       "Initialize Project",
 			Description: "Create/Update the AGENTS.md memory file",
+			Content:     initContent,
 			Handler: func(cmd dialog.Command) tea.Cmd {
-				prompt, err := dialog.CommandPrompts.ReadFile("commands/init.md")
-				if err != nil {
-					logging.Error("Failed to load init command", "error", err)
-					return util.ReportError(err)
-				}
 				return tea.Batch(
 					util.CmdHandler(chat.SendMsg{
-						Text: string(prompt),
+						Text: initContent,
 					}),
 				)
 			},
@@ -1009,13 +1009,9 @@ func buildCommands() []dialog.Command {
 			ID:          "review",
 			Title:       "Review code",
 			Description: "Review a given work using provided commit hash or branch",
+			Content:     reviewContent,
 			Handler: func(cmd dialog.Command) tea.Cmd {
-				prompt, err := dialog.CommandPrompts.ReadFile("commands/review.md")
-				if err != nil {
-					logging.Error("Failed to load review command", "error", err)
-					return util.ReportError(err)
-				}
-				return dialog.ParameterizedCommandHandler(string(prompt), &cmd)
+				return dialog.ParameterizedCommandHandler(reviewContent, &cmd)
 			},
 		},
 		{
@@ -1032,15 +1028,11 @@ func buildCommands() []dialog.Command {
 			ID:          "commit",
 			Title:       "Commit and Push",
 			Description: "Commit changes to git using conventional commits and push",
+			Content:     commitContent,
 			Handler: func(cmd dialog.Command) tea.Cmd {
-				prompt, err := dialog.CommandPrompts.ReadFile("commands/commit.md")
-				if err != nil {
-					logging.Error("Failed to load init command", "error", err)
-					return util.ReportError(err)
-				}
 				return tea.Batch(
 					util.CmdHandler(chat.SendMsg{
-						Text: string(prompt),
+						Text: commitContent,
 					}),
 				)
 			},
@@ -1055,4 +1047,13 @@ func buildCommands() []dialog.Command {
 	}
 
 	return commands
+}
+
+func readEmbeddedCommand(path string) string {
+	data, err := dialog.CommandPrompts.ReadFile(path)
+	if err != nil {
+		logging.Error("Failed to read embedded command", "path", path, "error", err)
+		return ""
+	}
+	return string(data)
 }

@@ -7,19 +7,32 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/app"
+	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/format"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/session"
+	"github.com/opencode-ai/opencode/internal/skill"
+	"github.com/opencode-ai/opencode/internal/slashcmd"
+	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 )
+
+var namedArgPattern = regexp.MustCompile(`\$([A-Z][A-Z0-9_]*)`)
 
 func runNonInteractive(ctx context.Context, a *app.App, prompt string, outputFormat format.OutputFormat, quiet bool) error {
 	logging.Info("Running in non-interactive mode")
+
+	// Resolve slash commands before sending to agent
+	prompt, err := resolveSlashPrompt(prompt)
+	if err != nil {
+		return err
+	}
 
 	var spinner *format.Spinner
 	if !quiet {
@@ -239,4 +252,66 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 
 	fmt.Println(string(output))
 	return nil
+}
+
+func resolveSlashPrompt(prompt string) (string, error) {
+	parsed := slashcmd.Parse(prompt)
+	if parsed == nil {
+		return prompt, nil
+	}
+
+	commands := buildCLICommands()
+	skills := skill.All()
+
+	action, err := slashcmd.Resolve(parsed, commands, skills, false)
+	if err != nil {
+		return "", err
+	}
+
+	switch action.Type {
+	case slashcmd.ActionCommand:
+		content := action.Command.Content
+		if content == "" {
+			return prompt, nil
+		}
+		content = slashcmd.SubstituteArgs(content, action.Args)
+		// Substitute any remaining named placeholders with empty string
+		content = namedArgPattern.ReplaceAllString(content, "")
+		// Expand !`cmd` shell markup
+		content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
+		return content, nil
+
+	case slashcmd.ActionSkill:
+		return slashcmd.BuildPrompt(action), nil
+
+	default:
+		return prompt, nil
+	}
+}
+
+func buildCLICommands() []dialog.Command {
+	commands := []dialog.Command{
+		{ID: "commit", Title: "Commit and Push", Content: readEmbeddedCommand("commands/commit.md")},
+		{ID: "init", Title: "Initialize Project", Content: readEmbeddedCommand("commands/init.md")},
+		{ID: "review", Title: "Review Code", Content: readEmbeddedCommand("commands/review.md")},
+		{ID: "compact", Title: "Compact Session"},
+		{ID: "agents", Title: "List Agents"},
+	}
+
+	customCommands, err := dialog.LoadCustomCommands()
+	if err != nil {
+		logging.Warn("Failed to load custom commands", "error", err)
+	} else {
+		commands = append(commands, customCommands...)
+	}
+
+	return commands
+}
+
+func readEmbeddedCommand(path string) string {
+	data, err := dialog.CommandPrompts.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }

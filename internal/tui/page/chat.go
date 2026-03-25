@@ -15,6 +15,8 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/session"
+	"github.com/opencode-ai/opencode/internal/skill"
+	"github.com/opencode-ai/opencode/internal/slashcmd"
 	"github.com/opencode-ai/opencode/internal/tui/components/chat"
 	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
@@ -104,6 +106,23 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, util.CmdHandler(dialog.CompletionRemoveTextMsg{
 				SearchString: msg.SearchString,
 			}))
+			// Check if it's a skill selection (value starts with "skill:")
+			if strings.HasPrefix(msg.CompletionValue, "skill:") {
+				skillName := strings.TrimPrefix(msg.CompletionValue, "skill:")
+				if s, err := skill.Get(skillName); err == nil && s.IsUserInvocable() {
+					// Check if skill content has $PLACEHOLDER patterns — show argument dialog
+					argCmd := dialog.ParameterizedSkillHandler(s)
+					if argCmd != nil {
+						cmds = append(cmds, argCmd)
+					} else {
+						cmd := p.sendMessage(s.Content, nil)
+						if cmd != nil {
+							cmds = append(cmds, cmd)
+						}
+					}
+				}
+				return p, tea.Batch(cmds...)
+			}
 			// Execute the selected command
 			if cmd, ok := p.findCommand(msg.CompletionValue); ok {
 				cmds = append(cmds, util.CmdHandler(dialog.CommandSelectedMsg{Command: cmd}))
@@ -116,6 +135,9 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chat.ShellResultMsg:
 		cmds = append(cmds, p.handleShellResult(msg))
 	case chat.SendMsg:
+		if resolved := p.resolveInlineSlash(msg.Text); resolved != nil {
+			return p, resolved
+		}
 		cmd := p.sendMessage(msg.Text, msg.Attachments)
 		if cmd != nil {
 			return p, cmd
@@ -435,5 +457,48 @@ func NewChatPage(app *app.App, commands []dialog.Command) tea.Model {
 			layout.WithLeftPanel(messagesContainer),
 			layout.WithBottomPanel(editorContainer),
 		),
+	}
+}
+
+func (p *chatPage) resolveInlineSlash(text string) tea.Cmd {
+	parsed := slashcmd.Parse(text)
+	if parsed == nil {
+		return nil
+	}
+
+	skills := skill.All()
+	action, err := slashcmd.Resolve(parsed, p.commands, skills, true)
+	if err != nil {
+		return util.ReportWarn(err.Error())
+	}
+
+	switch action.Type {
+	case slashcmd.ActionCommand:
+		cmd := action.Command
+		// Inline args shortcut: only when content has $ARGUMENTS as the sole placeholder
+		if cmd.Content != "" && parsed.Args != "" && slashcmd.HasOnlyArgumentsPlaceholder(cmd.Content) {
+			content := slashcmd.SubstituteArgs(cmd.Content, parsed.Args)
+			content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
+			return util.CmdHandler(dialog.CommandRunCustomMsg{
+				Content: content,
+				Args:    map[string]string{"ARGUMENTS": parsed.Args},
+			})
+		}
+		// No inline args or multiple placeholders — use handler (may show dialog)
+		if cmd.Handler != nil {
+			return cmd.Handler(*cmd)
+		}
+		return nil
+
+	case slashcmd.ActionSkill:
+		s := action.Skill
+		content := s.Content
+		if parsed.Args != "" {
+			content = content + "\n\n" + parsed.Args
+		}
+		return util.CmdHandler(chat.SendMsg{Text: content})
+
+	default:
+		return nil
 	}
 }
