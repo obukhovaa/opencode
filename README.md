@@ -54,6 +54,7 @@ opencode -c /path/to/project    # Set working directory
 opencode -a hivemind            # Start with a specific agent
 opencode -s <session-id>        # Resume or create a session
 opencode -s <session-id> -D     # Delete session and start fresh
+opencode --auto-approve         # Start with auto-approve (skip permission dialogs)
 ```
 
 ### Non-Interactive Mode
@@ -88,6 +89,7 @@ All permissions are auto-approved in non-interactive mode.
 | `--output-format` | `-f` | Output format: `text` (default), `json` |
 | `--quiet` | `-q` | Hide spinner in non-interactive mode |
 | `--timeout` | `-t` | Timeout for non-interactive mode (e.g. `10s`, `30m`, `1h`) |
+| `--auto-approve` | | Start TUI with auto-approve enabled (skip permission dialogs) |
 | `--flow` | `-F` | Flow ID to execute, [more info](docs/flows.md) |
 | `--arg` | `-A` | Flow argument as `key=value` (repeatable) |
 | `--args-file` | | JSON file with flow arguments |
@@ -242,6 +244,16 @@ When enabled (default), automatically summarizes conversations approaching the c
 ```json
 { "autoCompact": true }
 ```
+
+### Auto Approve
+
+Auto-approve mode skips interactive permission dialogs for `ask`-resolved permissions during a session. `deny` rules and disabled tools are still enforced — auto-approve only promotes `ask` decisions to `allow`.
+
+- **Toggle in TUI**: type `/auto-approve` to enable/disable for the current session
+- **CLI flag**: `opencode --auto-approve` starts the TUI with auto-approve on the first session
+- **Scope**: per-session only — new sessions start without auto-approve
+- **Subagents**: child task sessions inherit auto-approve from the parent
+- **Non-interactive mode**: already auto-approves all permissions, flag is ignored
 
 ### Shell
 

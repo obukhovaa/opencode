@@ -43,6 +43,7 @@ type App struct {
 
 	InitialSession   *session.Session
 	InitialSessionID string
+	AutoApprove      bool
 
 	cliOutputSchema map[string]any
 }

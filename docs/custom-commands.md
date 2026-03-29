@@ -85,4 +85,5 @@ Organize commands in subdirectories — the path becomes part of the command ID 
 | Compact Session | `/compact` | Manually triggers session summarization |
 | Review Code | `/review` | Reviews code using a provided commit hash or branch |
 | Commit and Push | `/commit` | Commit changes to git using conventional commits and push |
+| Auto-Approve | `/auto-approve` | Toggle auto-approve mode for the current session (skip permission dialogs) |
 

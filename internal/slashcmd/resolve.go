@@ -34,8 +34,9 @@ type ResolvedAction struct {
 }
 
 var tuiOnlyCommands = map[string]bool{
-	"compact": true,
-	"agents":  true,
+	"compact":      true,
+	"agents":       true,
+	"auto-approve": true,
 }
 
 func Resolve(parsed *ParsedCommand, commands []dialog.Command, skills []skill.Info, interactive bool) (*ResolvedAction, error) {

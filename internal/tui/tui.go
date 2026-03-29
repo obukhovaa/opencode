@@ -42,6 +42,7 @@ type keyMap struct {
 
 type (
 	startCompactSessionMsg struct{}
+	toggleAutoApproveMsg   struct{}
 	sessionDeletedMsg      struct{ id string }
 )
 
@@ -337,6 +338,21 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.showCommandDialog = false
 		return a, nil
 
+	case toggleAutoApproveMsg:
+		if a.selectedSession.ID == "" {
+			return a, util.ReportWarn("No active session")
+		}
+		if a.app.Permissions.IsAutoApproveSession(a.selectedSession.ID) {
+			a.app.Permissions.RemoveAutoApproveSession(a.selectedSession.ID)
+			s, _ := a.status.Update(core.AutoApproveChangedMsg{Active: false})
+			a.status = s.(core.StatusCmp)
+			return a, util.ReportInfo("Auto-approve disabled")
+		}
+		a.app.Permissions.AutoApproveSession(a.selectedSession.ID)
+		s, _ := a.status.Update(core.AutoApproveChangedMsg{Active: true})
+		a.status = s.(core.StatusCmp)
+		return a, util.ReportInfo("Auto-approve enabled")
+
 	case startCompactSessionMsg:
 		// Start compacting the current session
 		a.isCompacting = true
@@ -441,12 +457,21 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.currentPage == page.ChatPage {
 				cmds = append(cmds, util.CmdHandler(chat.SessionClearedMsg{}))
 			}
+			s, _ := a.status.Update(core.AutoApproveChangedMsg{Active: false})
+			a.status = s.(core.StatusCmp)
 		}
 		return a, tea.Batch(cmds...)
 
 	case chat.SessionSelectedMsg:
 		a.selectedSession = msg
 		a.sessionDialog.SetSelectedSession(msg.ID)
+		if a.app.AutoApprove && !a.app.Permissions.IsAutoApproveSession(msg.ID) {
+			a.app.Permissions.AutoApproveSession(msg.ID)
+			a.app.AutoApprove = false
+		}
+		autoApprove := a.app.Permissions.IsAutoApproveSession(msg.ID)
+		s, _ := a.status.Update(core.AutoApproveChangedMsg{Active: autoApprove})
+		a.status = s.(core.StatusCmp)
 
 	case pubsub.Event[session.Session]:
 		if msg.Type == pubsub.UpdatedEvent && msg.Payload.ID == a.selectedSession.ID {
@@ -1035,6 +1060,16 @@ func buildCommands() []dialog.Command {
 						Text: commitContent,
 					}),
 				)
+			},
+		},
+		{
+			ID:          "auto-approve",
+			Title:       "Toggle Auto-Approve",
+			Description: "Toggle auto-approve mode for the current session (skip permission dialogs)",
+			Handler: func(cmd dialog.Command) tea.Cmd {
+				return func() tea.Msg {
+					return toggleAutoApproveMsg{}
+				}
 			},
 		},
 	}

@@ -104,6 +104,18 @@ func (mr *MockServiceMockRecorder) IsAutoApproveSession(sessionID any) *gomock.C
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsAutoApproveSession", reflect.TypeOf((*MockService)(nil).IsAutoApproveSession), sessionID)
 }
 
+// RemoveAutoApproveSession mocks base method.
+func (m *MockService) RemoveAutoApproveSession(sessionID string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "RemoveAutoApproveSession", sessionID)
+}
+
+// RemoveAutoApproveSession indicates an expected call of RemoveAutoApproveSession.
+func (mr *MockServiceMockRecorder) RemoveAutoApproveSession(sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveAutoApproveSession", reflect.TypeOf((*MockService)(nil).RemoveAutoApproveSession), sessionID)
+}
+
 // Request mocks base method.
 func (m *MockService) Request(ctx context.Context, opts permission.CreatePermissionRequest) bool {
 	m.ctrl.T.Helper()

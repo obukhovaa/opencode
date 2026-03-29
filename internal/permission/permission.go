@@ -39,6 +39,7 @@ type Service interface {
 	Deny(permission PermissionRequest)
 	Request(ctx context.Context, opts CreatePermissionRequest) bool
 	AutoApproveSession(sessionID string)
+	RemoveAutoApproveSession(sessionID string)
 	IsAutoApproveSession(sessionID string) bool
 }
 
@@ -118,6 +119,10 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 
 func (s *permissionService) AutoApproveSession(sessionID string) {
 	s.autoApproveSessions.Store(sessionID, true)
+}
+
+func (s *permissionService) RemoveAutoApproveSession(sessionID string) {
+	s.autoApproveSessions.Delete(sessionID)
 }
 
 func (s *permissionService) IsAutoApproveSession(sessionID string) bool {

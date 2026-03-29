@@ -58,6 +58,9 @@ to assist developers in writing, debugging, and understanding code directly from
 
   # Run with a custom project ID to tag sessions
   opencode -P my-project-id
+
+  # Run with auto-approve enabled (skip permission dialogs)
+  opencode --auto-approve
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// If the help flag is set, show the help message
@@ -85,6 +88,7 @@ to assist developers in writing, debugging, and understanding code directly from
 		timeoutStr, _ := cmd.Flags().GetString("timeout")
 		projectID, _ := cmd.Flags().GetString("project-id")
 		maxTurns, _ := cmd.Flags().GetInt("max-turns")
+		autoApprove, _ := cmd.Flags().GetBool("auto-approve")
 
 		if deleteSession && sessionID == "" && flowID == "" {
 			return fmt.Errorf("--delete requires --session/-s or --flow/-F to be specified")
@@ -163,6 +167,14 @@ to assist developers in writing, debugging, and understanding code directly from
 					spinner.Stop()
 				}
 				return fmt.Errorf("invalid agent: %w", _err)
+			}
+		}
+
+		if autoApprove {
+			if prompt != "" || flowID != "" {
+				logging.Debug("--auto-approve ignored in non-interactive mode (already auto-approved)")
+			} else {
+				app.AutoApprove = true
 			}
 		}
 
@@ -484,6 +496,9 @@ func init() {
 
 	// Add max-turns flag
 	rootCmd.Flags().Int("max-turns", 0, "Maximum number of agent tool-use turns per request (default 100)")
+
+	// Add auto-approve flag
+	rootCmd.Flags().Bool("auto-approve", false, "Start with auto-approve enabled (skip permission dialogs for ask rules)")
 
 	// Register custom validation for the format flag
 	rootCmd.RegisterFlagCompletionFunc("output-format", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

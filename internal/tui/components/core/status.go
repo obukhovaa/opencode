@@ -29,6 +29,10 @@ type ActiveAgentChangedMsg struct {
 	Name config.AgentName
 }
 
+type AutoApproveChangedMsg struct {
+	Active bool
+}
+
 type statusCmp struct {
 	info                util.InfoMsg
 	width               int
@@ -42,6 +46,7 @@ type statusCmp struct {
 	cachedModelAgent    config.AgentName
 	scrollLocked        bool
 	newMessageCount     int
+	autoApproveActive   bool
 }
 
 // clearMessageCmd is a command that clears status messages after a timeout
@@ -93,6 +98,8 @@ func (m *statusCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chat.ScrollStateMsg:
 		m.scrollLocked = msg.Locked
 		m.newMessageCount = msg.NewMessages
+	case AutoApproveChangedMsg:
+		m.autoApproveActive = msg.Active
 	}
 	if m.diagnosticsDirty {
 		m.cachedDiagnostics = m.computeDiagnostics()
@@ -200,6 +207,19 @@ func (m *statusCmp) View() tea.View {
 	status := helpWidget
 	status += agentHintWidget
 
+	autoApproveWidget := ""
+	autoApproveWidgetWidth := 0
+	if m.autoApproveActive {
+		autoApproveText := "auto-approve"
+		autoApproveWidget = styles.Padded().
+			Background(t.Warning()).
+			Foreground(t.Background()).
+			Bold(true).
+			Render(autoApproveText)
+		autoApproveWidgetWidth = lipgloss.Width(autoApproveWidget)
+	}
+	status += autoApproveWidget
+
 	scrollWidget := ""
 	scrollWidgetWidth := 0
 	if m.scrollLocked && m.newMessageCount > 0 {
@@ -242,7 +262,7 @@ func (m *statusCmp) View() tea.View {
 		Background(t.BackgroundDarker()).
 		Render(m.projectDiagnostics())
 
-	availableWidht := max(0, m.width-lipgloss.Width(helpWidget)-lipgloss.Width(agentHintWidget)-lipgloss.Width(modelWidget)-lipgloss.Width(diagnostics)-tokenInfoWidth-scrollWidgetWidth)
+	availableWidht := max(0, m.width-lipgloss.Width(helpWidget)-lipgloss.Width(agentHintWidget)-lipgloss.Width(modelWidget)-lipgloss.Width(diagnostics)-tokenInfoWidth-scrollWidgetWidth-autoApproveWidgetWidth)
 
 	if m.info.Msg != "" {
 		infoStyle := styles.Padded().
