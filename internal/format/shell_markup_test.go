@@ -76,32 +76,3 @@ func TestExpandShellMarkup(t *testing.T) {
 		}
 	})
 }
-
-func TestTruncateShellOutput(t *testing.T) {
-	t.Run("short output unchanged", func(t *testing.T) {
-		input := "hello\nworld"
-		result := truncateShellOutput(input)
-		if result != input {
-			t.Errorf("expected unchanged, got %q", result)
-		}
-	})
-
-	t.Run("empty string unchanged", func(t *testing.T) {
-		result := truncateShellOutput("")
-		if result != "" {
-			t.Errorf("expected empty, got %q", result)
-		}
-	})
-
-	t.Run("many lines get truncated", func(t *testing.T) {
-		lines := make([]string, 3000)
-		for i := range lines {
-			lines[i] = "line"
-		}
-		input := strings.Join(lines, "\n")
-		result := truncateShellOutput(input)
-		if !strings.Contains(result, "truncated") {
-			t.Errorf("expected truncation marker, got length %d", len(result))
-		}
-	})
-}

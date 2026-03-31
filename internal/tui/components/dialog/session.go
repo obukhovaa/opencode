@@ -131,7 +131,9 @@ func (s *sessionDialogCmp) View() tea.View {
 	maxWidth = max(30, min(maxWidth, s.width-15)) // Limit width to avoid overflow
 
 	// Limit height to avoid taking up too much screen space
-	maxVisibleSessions := min(10, len(s.sessions))
+	// Account for dialog chrome: 2 padding + 2 border + 1 title + 2 separators = 7 lines
+	maxFromHeight := max(1, s.height-7)
+	maxVisibleSessions := min(10, len(s.sessions), maxFromHeight)
 
 	// Build the session list
 	sessionItems := make([]string, 0, maxVisibleSessions)

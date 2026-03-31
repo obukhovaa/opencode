@@ -490,6 +490,93 @@ python3 -c "import yaml; yaml.safe_load(open('.opencode/skills/my-skill/SKILL.md
 
 ## Advanced Usage
 
+### Variable Substitution
+
+Skills support string substitution for dynamic values in the skill content. Substitution happens both when skills are invoked via slash commands (`/skill-name args`) and when agents load them via the skill tool.
+
+| Variable | Description |
+|----------|-------------|
+| `$ARGUMENTS` | All arguments passed when invoking the skill |
+| `$ARGUMENTS[N]` | Access a specific argument by 0-based index (e.g., `$ARGUMENTS[0]`) |
+| `$N` | Shorthand for `$ARGUMENTS[N]`, single digit only: `$0` through `$9` |
+| `${SKILL_DIR}` / `${CLAUDE_SKILL_DIR}` | Directory containing the skill's SKILL.md file |
+| `${SESSION_ID}` / `${CLAUDE_SESSION_ID}` | Current session ID |
+
+If `$ARGUMENTS` (or any `$N` shorthand) is not present in the content and arguments are provided, they are appended as `ARGUMENTS: <value>`.
+
+**Example — fix a GitHub issue by number:**
+
+```yaml
+---
+name: fix-issue
+description: Fix a GitHub issue
+argument-hint: "<issue-number>"
+---
+
+Fix GitHub issue $ARGUMENTS following our coding standards.
+
+1. Read the issue description
+2. Implement the fix
+3. Write tests
+4. Create a commit
+```
+
+When invoked as `/fix-issue 123`, the content becomes "Fix GitHub issue 123 following our coding standards..."
+
+**Example — positional arguments:**
+
+```yaml
+---
+name: migrate-component
+description: Migrate a component between frameworks
+argument-hint: "<component> <from-framework> <to-framework>"
+---
+
+Migrate the $0 component from $1 to $2.
+Preserve all existing behavior and tests.
+```
+
+Running `/migrate-component SearchBar React Vue` replaces `$0` with `SearchBar`, `$1` with `React`, and `$2` with `Vue`.
+
+### Dynamic Context Injection
+
+The `` !`command` `` syntax runs shell commands before the skill content is sent to the agent. The command output replaces the placeholder, so the agent receives actual data, not the command itself.
+
+```yaml
+---
+name: pr-summary
+description: Summarize changes in a pull request
+---
+
+## Pull request context
+- PR diff: !`gh pr diff`
+- PR comments: !`gh pr view --comments`
+- Changed files: !`gh pr diff --name-only`
+
+## Your task
+Summarize this pull request.
+```
+
+When this skill runs, each `` !`command` `` executes immediately and its output replaces the placeholder. The agent only sees the final result.
+
+**Combining substitution with shell commands:**
+
+Use `${SKILL_DIR}` and `$ARGUMENTS` inside shell commands for powerful dynamic loading:
+
+```yaml
+---
+name: feature-guide
+description: Load implementation guidance for a specific feature
+argument-hint: "<feature-name>"
+---
+
+# Feature: $0
+
+!`cat ${SKILL_DIR}/features/$0.md 2>/dev/null || echo "Feature '$0' not found. Available:" && ls ${SKILL_DIR}/features/ | sed 's/\.md$//'`
+```
+
+This loads a specific feature file from the skill's `features/` directory without polluting the agent's context with other features.
+
 ### Skill Metadata
 
 Use metadata for additional context:
@@ -724,7 +811,7 @@ For deployment after release, see the `deploy-production` skill.
 
 ### Can skills have parameters?
 
-Not in the current version. Skills receive no parameters and provide static instructions. This is planned for a future release.
+Yes! Skills support argument substitution and dynamic context injection. See [Variable Substitution](#variable-substitution) and [Dynamic Context Injection](#dynamic-context-injection) in the Advanced Usage section.
 
 ### How do I share skills with my team?
 

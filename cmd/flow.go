@@ -29,7 +29,7 @@ func runNonInteractive(ctx context.Context, a *app.App, prompt string, outputFor
 	logging.Info("Running in non-interactive mode")
 
 	// Resolve slash commands before sending to agent
-	prompt, err := resolveSlashPrompt(prompt)
+	prompt, err := resolveSlashPrompt(prompt, "")
 	if err != nil {
 		return err
 	}
@@ -254,7 +254,7 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 	return nil
 }
 
-func resolveSlashPrompt(prompt string) (string, error) {
+func resolveSlashPrompt(prompt string, sessionID string) (string, error) {
 	parsed := slashcmd.Parse(prompt)
 	if parsed == nil {
 		return prompt, nil
@@ -282,7 +282,9 @@ func resolveSlashPrompt(prompt string) (string, error) {
 		return content, nil
 
 	case slashcmd.ActionSkill:
-		return slashcmd.BuildPrompt(action), nil
+		content := slashcmd.BuildPrompt(action, sessionID)
+		content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
+		return content, nil
 
 	default:
 		return prompt, nil

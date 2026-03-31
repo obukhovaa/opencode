@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -515,19 +514,11 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Close multi-arguments dialog
 		a.showMultiArgumentsDialog = false
 
-		// If submitted, replace all named arguments and run the command
+		// If submitted, forward raw content and args to the command handler
+		// which performs substitution and shell markup expansion
 		if msg.Submit {
-			content := msg.Content
-
-			// Replace each named argument with its value
-			for name, value := range msg.Args {
-				placeholder := "$" + name
-				content = strings.ReplaceAll(content, placeholder, value)
-			}
-
-			// Execute the command with arguments
 			return a, util.CmdHandler(dialog.CommandRunCustomMsg{
-				Content: content,
+				Content: msg.Content,
 				Args:    msg.Args,
 			})
 		}

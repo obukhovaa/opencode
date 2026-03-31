@@ -131,9 +131,10 @@ func TestResolve(t *testing.T) {
 
 func TestBuildPrompt(t *testing.T) {
 	tests := []struct {
-		name   string
-		action *ResolvedAction
-		want   string
+		name      string
+		action    *ResolvedAction
+		sessionID string
+		want      string
 	}{
 		{
 			name: "skill without args",
@@ -144,13 +145,40 @@ func TestBuildPrompt(t *testing.T) {
 			want: "Do the thing",
 		},
 		{
-			name: "skill with args",
+			name: "skill with args appended when no placeholder",
 			action: &ResolvedAction{
 				Type:  ActionSkill,
 				Skill: &skill.Info{Content: "Do the thing"},
 				Args:  "v2.1.0",
 			},
-			want: "Do the thing\n\nv2.1.0",
+			want: "Do the thing\n\nARGUMENTS: v2.1.0",
+		},
+		{
+			name: "skill with $ARGUMENTS placeholder",
+			action: &ResolvedAction{
+				Type:  ActionSkill,
+				Skill: &skill.Info{Content: "Fix issue $ARGUMENTS"},
+				Args:  "123",
+			},
+			want: "Fix issue 123",
+		},
+		{
+			name: "skill with positional args",
+			action: &ResolvedAction{
+				Type:  ActionSkill,
+				Skill: &skill.Info{Content: "Migrate $0 from $1"},
+				Args:  "SearchBar React",
+			},
+			want: "Migrate SearchBar from React",
+		},
+		{
+			name:      "skill with session ID",
+			sessionID: "sess-abc",
+			action: &ResolvedAction{
+				Type:  ActionSkill,
+				Skill: &skill.Info{Content: "Log to ${SESSION_ID}.log"},
+			},
+			want: "Log to sess-abc.log",
 		},
 		{
 			name:   "not found returns empty",
@@ -161,7 +189,7 @@ func TestBuildPrompt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := BuildPrompt(tt.action)
+			got := BuildPrompt(tt.action, tt.sessionID)
 			if got != tt.want {
 				t.Errorf("BuildPrompt() = %q, want %q", got, tt.want)
 			}

@@ -13,6 +13,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/bedrock"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	toolsPkg "github.com/opencode-ai/opencode/internal/llm/tools"
@@ -48,7 +49,8 @@ func newAnthropicClient(opts providerClientOptions) AnthropicClient {
 
 	anthropicClientOptions := []option.RequestOption{}
 	if anthropicOpts.useBedrock {
-		anthropicClientOptions = append(anthropicClientOptions, bedrock.WithLoadDefaultConfig(context.Background()))
+		cfg := aws.Config{BearerAuthTokenProvider: bedrock.NewStaticBearerTokenProvider(opts.apiKey)}
+		anthropicClientOptions = append(anthropicClientOptions, bedrock.WithConfig(cfg))
 	}
 	if anthropicOpts.useVertex {
 		middleware := vertexMiddleware(

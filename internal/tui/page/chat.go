@@ -3,6 +3,7 @@ package page
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -115,7 +116,13 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if argCmd != nil {
 						cmds = append(cmds, argCmd)
 					} else {
-						cmd := p.sendMessage(s.Content, nil)
+						baseDir := filepath.Dir(s.Location)
+						content := skill.SubstituteContent(s.Content, skill.SubstituteParams{
+							SkillDir:  baseDir,
+							SessionID: p.session.ID,
+						})
+						content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
+						cmd := p.sendMessage(content, nil)
 						if cmd != nil {
 							cmds = append(cmds, cmd)
 						}
@@ -492,10 +499,13 @@ func (p *chatPage) resolveInlineSlash(text string) tea.Cmd {
 
 	case slashcmd.ActionSkill:
 		s := action.Skill
-		content := s.Content
-		if parsed.Args != "" {
-			content = content + "\n\n" + parsed.Args
-		}
+		baseDir := filepath.Dir(s.Location)
+		content := skill.SubstituteContent(s.Content, skill.SubstituteParams{
+			Args:      parsed.Args,
+			SkillDir:  baseDir,
+			SessionID: p.session.ID,
+		})
+		content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
 		return util.CmdHandler(chat.SendMsg{Text: content})
 
 	default:

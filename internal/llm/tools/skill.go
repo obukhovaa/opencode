@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
+	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/llm/tools/shell"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/skill"
 )
@@ -21,6 +23,7 @@ const (
 
 type SkillParams struct {
 	Name string `json:"name"`
+	Args string `json:"args"`
 }
 
 type skillTool struct {
@@ -44,6 +47,10 @@ func (s *skillTool) Info() ToolInfo {
 			"name": map[string]any{
 				"type":        "string",
 				"description": s.buildSkillParameterDescription(),
+			},
+			"args": map[string]any{
+				"type":        "string",
+				"description": "Optional arguments to pass to the skill. Substituted into $ARGUMENTS, $ARGUMENTS[N], $0, $1, etc. in the skill content. Shell markup !`command` in the skill is expanded after substitution.",
 			},
 		},
 		Required: []string{"name"},
@@ -84,10 +91,18 @@ func (s *skillTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	baseDir := filepath.Dir(skillInfo.Location)
 	files := sampleSkillFiles(baseDir, skillFileSampleLimit)
 
+	// Apply argument substitution and shell markup expansion
+	processedContent := skill.SubstituteContent(strings.TrimSpace(skillInfo.Content), skill.SubstituteParams{
+		Args:      params.Args,
+		SkillDir:  baseDir,
+		SessionID: sessionID,
+	})
+	processedContent = shell.ExpandMarkup(ctx, processedContent, config.WorkingDirectory())
+
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "<skill_content name=%q>\n", skillInfo.Name)
 	fmt.Fprintf(&sb, "# Skill: %s\n\n", skillInfo.Name)
-	sb.WriteString(strings.TrimSpace(skillInfo.Content))
+	sb.WriteString(processedContent)
 	sb.WriteString("\n\n")
 	fmt.Fprintf(&sb, "Base directory for this skill: %s\n", baseDir)
 	sb.WriteString("Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.\n")

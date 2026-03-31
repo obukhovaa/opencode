@@ -3,6 +3,7 @@ package slashcmd
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -109,16 +110,17 @@ func baseCommandName(id string) string {
 	return id
 }
 
-func BuildPrompt(action *ResolvedAction) string {
+func BuildPrompt(action *ResolvedAction, sessionID string) string {
 	switch action.Type {
 	case ActionCommand:
 		return "" // Command prompt is built via handler
 	case ActionSkill:
-		content := action.Skill.Content
-		if action.Args != "" {
-			content = content + "\n\n" + action.Args
-		}
-		return content
+		baseDir := filepath.Dir(action.Skill.Location)
+		return skill.SubstituteContent(action.Skill.Content, skill.SubstituteParams{
+			Args:      action.Args,
+			SkillDir:  baseDir,
+			SessionID: sessionID,
+		})
 	default:
 		return ""
 	}

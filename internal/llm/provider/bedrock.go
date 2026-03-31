@@ -4,9 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"strings"
 
+	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
 )
@@ -27,42 +26,19 @@ type BedrockClient ProviderClient
 
 func newBedrockClient(opts providerClientOptions) BedrockClient {
 	bedrockOpts := bedrockOptions{}
-	// Apply bedrock specific options if they are added in the future
 
-	// Get AWS region from environment
-	region := os.Getenv("AWS_REGION")
-	if region == "" {
-		region = os.Getenv("AWS_DEFAULT_REGION")
-	}
-
-	if region == "" {
-		region = "us-east-1" // default region
-	}
-	if len(region) < 2 {
-		return &bedrockClient{
-			providerOptions: opts,
-			options:         bedrockOpts,
-			childProvider:   nil, // Will cause an error when used
-		}
-	}
-
-	// Prefix the model name with region
-	regionPrefix := region[:2]
-	modelName := opts.model.APIModel
-	opts.model.APIModel = fmt.Sprintf("%s.%s", regionPrefix, modelName)
-
-	// Determine which provider to use based on the model
-	if strings.Contains(string(opts.model.APIModel), "anthropic") {
-		// Create Anthropic client with Bedrock configuration
-		anthropicOpts := opts
-		anthropicOpts.anthropicOptions = append(anthropicOpts.anthropicOptions,
-			WithAnthropicBedrock(true),
-			WithAnthropicDisableCache(),
-		)
-		return &bedrockClient{
-			providerOptions: opts,
-			options:         bedrockOpts,
-			childProvider:   newAnthropicClient(anthropicOpts),
+	for k := range models.BedrockAnthropicModels {
+		if k == opts.model.ID {
+			// Create Anthropic client with Bedrock configuration
+			anthropicOpts := opts
+			anthropicOpts.anthropicOptions = append(anthropicOpts.anthropicOptions,
+				WithAnthropicBedrock(true),
+			)
+			return &bedrockClient{
+				providerOptions: opts,
+				options:         bedrockOpts,
+				childProvider:   newAnthropicClient(anthropicOpts),
+			}
 		}
 	}
 

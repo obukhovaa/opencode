@@ -16,7 +16,7 @@ OpenCode is a CLI tool that brings AI assistance to your terminal. It provides b
 - **Tool integration**: file operations, shell commands, code search, LSP code intelligence
 - **Structured output**: enforce final agent's output with json schema, perfect for automated pipelines
 - **MCP support**: extend capabilities via Model Context Protocol servers
-- **Agent skills**: reusable instruction sets loaded on-demand ([guide](docs/skills.md))
+- **Agent skills**: reusable instruction sets with argument substitution and dynamic shell expansion ([guide](docs/skills.md))
 - **Custom commands**: predefined prompts with named arguments ([guide](docs/custom-commands.md))
 - **Session management** with SQLite or MySQL storage ([guide](docs/session-providers.md))
 - **LSP integration** with auto-install for 30+ language servers ([guide](docs/lsp.md))
@@ -412,7 +412,7 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | `websearch` | Search internet via configured WebSearch providers |
 | `sourcegraph` | Search public repositories |
 | `task` | Run sub-tasks with a subagent (supports `subagent_type` and `task_id` for resumption) |
-| `skill` | Load agent skills on-demand |
+| `skill` | Load agent skills on-demand (supports `args` for argument substitution and shell expansion) |
 | `struct_output` | Emit structured JSON conforming to a user-supplied schema |
 
 ## Keyboard Shortcuts

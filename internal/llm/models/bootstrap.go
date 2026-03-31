@@ -8,6 +8,7 @@ func init() {
 	maps.Copy(SupportedModels, GeminiModels)
 	maps.Copy(SupportedModels, VertexAIGeminiModels)
 	maps.Copy(SupportedModels, VertexAIAnthropicModels)
+	maps.Copy(SupportedModels, BedrockAnthropicModels)
 
 	initLocalModels()
 }

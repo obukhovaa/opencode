@@ -24,10 +24,8 @@ type Model struct {
 }
 
 const (
-	ProviderBedrock ModelProvider = "bedrock"
 	// ForTests
-	ProviderMock          ModelProvider = "__mock"
-	BedrockClaude45Sonnet ModelID       = "bedrock.claude-4.5-sonnet"
+	ProviderMock ModelProvider = "__mock"
 )
 
 // Providers in order of popularity
@@ -39,15 +37,4 @@ var ProviderPopularity = map[ModelProvider]int{
 	ProviderBedrock:   5,
 }
 
-var SupportedModels = map[ModelID]Model{
-	BedrockClaude45Sonnet: {
-		ID:                 BedrockClaude45Sonnet,
-		Name:               "Bedrock: Claude 4.5 Sonnet",
-		Provider:           ProviderBedrock,
-		APIModel:           "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
-		CostPer1MIn:        3.0,
-		CostPer1MInCached:  3.75,
-		CostPer1MOutCached: 0.30,
-		CostPer1MOut:       15.0,
-	},
-}
+var SupportedModels = map[ModelID]Model{}

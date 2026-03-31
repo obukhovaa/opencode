@@ -439,12 +439,12 @@ func setProviderDefaults() {
 
 	// AWS Bedrock configuration
 	if hasAWSCredentials() {
-		viper.SetDefault("agents.coder.model", models.BedrockClaude45Sonnet)
-		viper.SetDefault("agents.summarizer.model", models.BedrockClaude45Sonnet)
-		viper.SetDefault("agents.explorer.model", models.BedrockClaude45Sonnet)
-		viper.SetDefault("agents.descriptor.model", models.BedrockClaude45Sonnet)
-		viper.SetDefault("agents.workhorse.model", models.BedrockClaude45Sonnet)
-		viper.SetDefault("agents.hivemind.model", models.BedrockClaude45Sonnet)
+		viper.SetDefault("agents.coder.model", models.BedrockEUSonnet46)
+		viper.SetDefault("agents.summarizer.model", models.BedrockEUSonnet46)
+		viper.SetDefault("agents.explorer.model", models.BedrockEUSonnet46)
+		viper.SetDefault("agents.descriptor.model", models.BedrockEUSonnet46)
+		viper.SetDefault("agents.workhorse.model", models.BedrockEUSonnet46)
+		viper.SetDefault("agents.hivemind.model", models.BedrockEUSonnet46)
 		return
 	}
 
@@ -907,7 +907,7 @@ func setDefaultModelForAgent(agent AgentName) bool {
 		}
 
 		cfg.Agents[agent] = Agent{
-			Model:           models.BedrockClaude45Sonnet,
+			Model:           models.BedrockEUSonnet46,
 			MaxTokens:       maxTokens,
 			ReasoningEffort: "medium", // Claude models support reasoning
 		}
