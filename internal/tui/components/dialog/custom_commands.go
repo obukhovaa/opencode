@@ -278,10 +278,11 @@ func loadCommandsFromDir(commandsDir string, prefix string) ([]Command, error) {
 	return commands, nil
 }
 
-// CommandRunCustomMsg is sent when a custom command is executed
+// CommandRunCustomMsg is sent when a custom command or skill is executed
 type CommandRunCustomMsg struct {
-	Content string
-	Args    map[string]string // Map of argument names to values
+	Content   string
+	Args      map[string]string // Map of argument names to values
+	CommandID string            // Original command/skill ID for dispatch
 }
 
 func ParameterizedCommandHandler(commandContent string, cmd *Command) tea.Cmd {
@@ -353,31 +354,46 @@ func ParseArgumentHints(hint string, argNames []string) map[string]string {
 	return hints
 }
 
-// ParameterizedSkillHandler checks if skill content has $PLACEHOLDER patterns.
-// If yes, returns a tea.Cmd to show the argument dialog. If no, returns nil.
+// ParameterizedSkillHandler checks if skill content has $PLACEHOLDER or positional
+// argument patterns ($0, $ARGUMENTS). If yes, returns a tea.Cmd to show the
+// argument dialog. If no, returns nil.
 func ParameterizedSkillHandler(s *skill.Info) tea.Cmd {
+	// Check for named $UPPERCASE placeholders
 	matches := namedArgPattern.FindAllStringSubmatch(s.Content, -1)
-	if len(matches) == 0 {
-		return nil
-	}
+	if len(matches) > 0 {
+		argNames := make([]string, 0)
+		argMap := make(map[string]bool)
 
-	argNames := make([]string, 0)
-	argMap := make(map[string]bool)
-
-	for _, match := range matches {
-		argName := match[1]
-		if !argMap[argName] {
-			argMap[argName] = true
-			argNames = append(argNames, argName)
+		for _, match := range matches {
+			argName := match[1]
+			if !argMap[argName] {
+				argMap[argName] = true
+				argNames = append(argNames, argName)
+			}
 		}
+
+		argHints := ParseArgumentHints(s.ArgumentHint, argNames)
+
+		return util.CmdHandler(ShowMultiArgumentsDialogMsg{
+			CommandID: "skill:" + s.Name,
+			Content:   s.Content,
+			ArgNames:  argNames,
+			ArgHints:  argHints,
+		})
 	}
 
-	argHints := ParseArgumentHints(s.ArgumentHint, argNames)
+	// Check for positional argument patterns ($0, $ARGUMENTS, $ARGUMENTS[N])
+	if skill.HasArgumentPatterns(s.Content) {
+		argNames := []string{"ARGUMENTS"}
+		argHints := ParseArgumentHints(s.ArgumentHint, argNames)
 
-	return util.CmdHandler(ShowMultiArgumentsDialogMsg{
-		CommandID: "skill:" + s.Name,
-		Content:   s.Content,
-		ArgNames:  argNames,
-		ArgHints:  argHints,
-	})
+		return util.CmdHandler(ShowMultiArgumentsDialogMsg{
+			CommandID: "skill:" + s.Name,
+			Content:   s.Content,
+			ArgNames:  argNames,
+			ArgHints:  argHints,
+		})
+	}
+
+	return nil
 }

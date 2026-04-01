@@ -56,16 +56,16 @@ func ExpandMarkup(ctx context.Context, template string, cwd string) string {
 				parts = append(parts, stdout)
 			}
 			if stderr != "" {
-				parts = append(parts, stderr)
+				parts = append(parts, fmt.Sprintf("[stderr: %s]", stderr))
 			}
 			result := strings.Join(parts, "\n")
 			if result == "" {
 				return fmt.Sprintf("[command failed: exit %d]", exitCode)
 			}
-			return fmt.Sprintf("```\n$ %s\n%s\n[exit code: %d]\n```", command, result, exitCode)
+			return result
 		}
 
-		return fmt.Sprintf("```\n$ %s\n%s\n```", command, stdout)
+		return stdout
 	})
 }
 

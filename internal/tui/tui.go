@@ -234,6 +234,10 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.sessionDialog = session.(dialog.SessionDialog)
 		cmds = append(cmds, sessionCmd)
 
+		deleteSession, deleteSessionCmd := a.deleteSessionDialog.Update(msg)
+		a.deleteSessionDialog = deleteSession.(dialog.SessionDialog)
+		cmds = append(cmds, deleteSessionCmd)
+
 		command, commandCmd := a.commandDialog.Update(msg)
 		a.commandDialog = command.(dialog.CommandDialog)
 		cmds = append(cmds, commandCmd)
@@ -518,8 +522,9 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// which performs substitution and shell markup expansion
 		if msg.Submit {
 			return a, util.CmdHandler(dialog.CommandRunCustomMsg{
-				Content: msg.Content,
-				Args:    msg.Args,
+				Content:   msg.Content,
+				Args:      msg.Args,
+				CommandID: msg.CommandID,
 			})
 		}
 		return a, nil

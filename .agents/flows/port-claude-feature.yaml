@@ -1,0 +1,299 @@
+name: Port Claude Feature
+description: >
+  Discovers features in Claude Code source, compares against tracked features,
+  writes specs using the specification-writting skill, reviews and iterates
+  until all requested features are specced. Use -s flag for resumability with postpone.
+
+flow:
+  args:
+    type: object
+    properties:
+      features:
+        type: array
+        items:
+          type: string
+        description: List of feature descriptions to discover and port from Claude Code
+    required:
+      - features
+
+  session:
+    prefix: "claude-port"
+
+  steps:
+    - id: find-feature
+      agent: explorer
+      prompt: |
+        You are researching Claude Code features to port to OpenCode.
+
+        **Claude Code source:** `/Users/nouwa/Development/open-source-fork/claude-code-source-code`
+        **OpenCode codebase:** `/Users/nouwa/Development/open-source-fork/opencode`
+        **Feature tracking file:** `docs/claude-features.md` (in the OpenCode repo)
+
+        **All context / args:**
+        ${args}
+
+        ## Instructions
+
+        1. Determine which feature to work on next:
+           - If `remaining_features` is present in args and non-empty, use that list
+           - Otherwise, use the original `features` list from args
+           - If both lists are empty, set `feature_found` to `false` with reason "No more features to process"
+
+        2. Read `docs/claude-features.md` in the OpenCode repo (if it exists) to see which features have already been specced. Skip any feature that already appears in the tracking table with status `created` or `revised`.
+
+        3. Take the FIRST unprocessed feature from the list. Search the Claude Code source code thoroughly:
+           - Look through the directory structure, key modules, and source files
+           - Find relevant files, functions, classes, and modules implementing this feature
+           - Understand the architecture, data flow, key components, and edge cases
+           - Read the actual implementation code — don't just rely on file names
+
+        4. Also check the OpenCode codebase to confirm this feature is NOT already implemented there.
+
+        5. If the feature IS found in Claude Code and NOT already in OpenCode:
+           - Set `feature_found` to `true`
+           - Write a thorough `implementation_summary`: architecture, key files with paths, core logic, data structures, dependencies, configuration, edge cases, and how it integrates with the rest of Claude Code
+           - Set `current_feature` to the feature description
+           - Set `remaining_features` to all features EXCEPT the current one (and excluding already-tracked ones)
+
+        6. If the feature is NOT found in Claude Code, or IS already implemented in OpenCode:
+           - Set `feature_found` to `false`
+           - Explain why in `not_found_reason`
+           - Set `current_feature` to the feature that was searched
+           - Set `remaining_features` to the list minus this feature
+      output:
+        schema:
+          type: object
+          properties:
+            feature_found:
+              type: boolean
+              description: Whether a valid unported feature was found in Claude Code
+            current_feature:
+              type: string
+              description: The feature currently being processed
+            implementation_summary:
+              type: string
+              description: Detailed summary of how the feature is implemented in Claude Code
+            remaining_features:
+              type: array
+              items:
+                type: string
+              description: Features still to be processed after the current one
+            not_found_reason:
+              type: string
+              description: Reason the feature was not found, empty if found
+          required:
+            - feature_found
+            - current_feature
+            - remaining_features
+      rules:
+        - if: ${args.feature_found} == true
+          then: write-spec
+        - if: ${args.feature_found} == false
+          then: not-found
+      fallback:
+        retry: 1
+        to: failed
+
+    - id: not-found
+      agent: summarizer
+      prompt: |
+        The feature discovery step could not find a portable feature in Claude Code source.
+
+        Context:
+        ${args}
+
+        Report clearly to the user:
+        - Which feature was searched for (current_feature)
+        - Why it was not found or is not applicable (not_found_reason)
+        - What features remain unprocessed (remaining_features), if any
+        - Suggest next steps (e.g., refine the feature description and re-run)
+
+    - id: write-spec
+      prompt: |
+        Write a technical specification for porting a Claude Code feature to OpenCode.
+
+        **Current feature:** ${args.current_feature}
+        **Implementation details from Claude Code:**
+        ${args.implementation_summary}
+        **Remaining features after this one:** ${args.remaining_features}
+
+        ## Instructions
+
+        1. Load the `specification-writting` skill using the skill tool to get spec writing guidelines.
+
+        2. Look at 2-3 existing specs in the `spec/` directory to understand the format, structure, and level of detail expected. Follow the naming convention: `spec/YYYYMMDDTHHMMSS-<feature-name>.md`
+
+        3. Write the spec covering:
+           - **Motivation**: Why port this feature, what value it adds to OpenCode
+           - **How it works in Claude Code**: Based on the implementation summary
+           - **Proposed design for OpenCode**: Adapted to OpenCode's Go architecture, existing patterns, and codebase conventions
+           - **Key components and interfaces**: What needs to be built
+           - **Implementation plan**: Phased approach with checkboxes
+           - **Edge cases and considerations**
+
+        4. After writing the spec, update `docs/claude-features.md`:
+           - If the file doesn't exist, create it with this header:
+             ```markdown
+             # Claude Code Features — Porting Tracker
+
+             | Feature | Status | Spec File | Date |
+             |---------|--------|-----------|------|
+             ```
+           - Add a new row: `| <feature> | created | <spec-file-path> | <today's date> |`
+
+        5. Return the spec file path and pass through the remaining context.
+      output:
+        schema:
+          type: object
+          properties:
+            spec_file:
+              type: string
+              description: Path to the created spec file
+            current_feature:
+              type: string
+              description: The feature that was specced
+            remaining_features:
+              type: array
+              items:
+                type: string
+              description: Features still to be processed
+          required:
+            - spec_file
+            - current_feature
+            - remaining_features
+      rules:
+        - then: review-spec
+      fallback:
+        retry: 1
+        to: failed
+
+    - id: review-spec
+      prompt: |
+        Review a technical specification for porting a Claude Code feature to OpenCode.
+
+        **Spec file:** ${args.spec_file}
+        **Feature:** ${args.current_feature}
+        **Remaining features:** ${args.remaining_features}
+
+        User input (if resuming from postpone): ${args.prompt}
+
+        ## Instructions
+
+        1. Read the spec file at the path above.
+
+        2. Read 2-3 existing approved specs in `spec/` for comparison on quality and completeness.
+
+        3. Evaluate the spec on these criteria:
+           - **Completeness**: Does it cover motivation, design, implementation plan, edge cases?
+           - **Correctness**: Is the proposed architecture sound for OpenCode's Go codebase?
+           - **Clarity**: Could a developer implement this without ambiguity?
+           - **Feasibility**: Are there unknowns or blockers?
+           - **Consistency**: Does it match the style of existing specs?
+
+        4. Determine review result — pick exactly ONE:
+           - `issues_found` — Concrete fixable issues exist (missing sections, wrong architecture, unclear descriptions). List all issues in review_feedback.
+           - `user_input_needed` — Questions or decisions require user input (ambiguous requirements, architectural trade-offs, scope decisions). List all questions in review_feedback.
+           - `more_features` — Spec is APPROVED and `remaining_features` is non-empty. Confirm approval in review_feedback.
+           - `all_done` — Spec is APPROVED and `remaining_features` is empty. Confirm approval in review_feedback.
+
+        Priority: if there are both fixable issues AND user questions, prefer `issues_found` first — fix what you can before asking the user.
+
+        ## Resuming from postpone
+        If this step was previously postponed for user input, check whether the user has now provided answers. If answers resolve all questions, approve the spec (set result to `more_features` or `all_done`). If answers are insufficient, set result to `user_input_needed` again with refined questions.
+      output:
+        schema:
+          type: object
+          properties:
+            result:
+              type: string
+              enum:
+                - issues_found
+                - user_input_needed
+                - more_features
+                - all_done
+              description: Review outcome determining next action
+            review_feedback:
+              type: string
+              description: Detailed review feedback — issues found, questions for user, or approval confirmation
+            spec_file:
+              type: string
+              description: Path to the reviewed spec file
+            current_feature:
+              type: string
+              description: The feature being reviewed
+            remaining_features:
+              type: array
+              items:
+                type: string
+              description: Features still to be processed
+          required:
+            - result
+            - review_feedback
+            - spec_file
+            - current_feature
+            - remaining_features
+      rules:
+        - if: ${args.result} == issues_found
+          then: fix-spec
+        - if: ${args.result} == user_input_needed
+          then: review-spec
+          postpone: true
+        - if: ${args.result} == more_features
+          then: find-feature
+        - if: ${args.result} == all_done
+          then: done
+      fallback:
+        retry: 1
+        to: failed
+
+    - id: fix-spec
+      session:
+        fork: true
+      agent: workhorse
+      prompt: |
+        Fix issues found during the spec review.
+
+        **Spec file:** ${args.spec_file}
+        **Feature:** ${args.current_feature}
+        **Review feedback with issues to fix:**
+        ${args.review_feedback}
+        **Remaining features:** ${args.remaining_features}
+
+        ## Instructions
+
+        1. Read the spec file at `${args.spec_file}`
+        2. Address ALL issues listed in the review feedback
+        3. Make targeted fixes — do not restructure or change scope unless the review explicitly requires it
+        4. Update `docs/claude-features.md` status for this feature from `created` to `revised`
+        5. After fixing, the spec goes back to review automatically
+      rules:
+        - then: review-spec
+      fallback:
+        retry: 1
+        to: failed
+
+    - id: done
+      agent: summarizer
+      prompt: |
+        All requested features have been specced and approved. Summarize the completed work.
+
+        Context:
+        ${args}
+
+        Include:
+        - List of features specced with their spec file paths
+        - Current tracking status in docs/claude-features.md
+        - Recommendations for implementation order or priority
+
+    - id: failed
+      agent: summarizer
+      prompt: |
+        The port-claude-feature flow encountered an error. Summarize what happened.
+
+        Context:
+        ${args}
+
+        Include:
+        - What step failed and why
+        - What was completed before the failure
+        - How to recover or retry

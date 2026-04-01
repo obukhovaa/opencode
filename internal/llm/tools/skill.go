@@ -259,6 +259,9 @@ func (s *skillTool) buildSkillDescription() string {
 	sb.WriteString("Tool output includes a `<skill_content name=\"...\">` block with the loaded content.\n\n")
 	sb.WriteString("The following skills provide specialized sets of instructions for particular tasks.\n")
 	sb.WriteString("Invoke this tool to load a skill when a task matches one of the available skills listed below:\n\n")
+	sb.WriteString("Important:\n")
+	sb.WriteString("- If you see a <skill_content> tag in the current conversation turn, the skill has ALREADY been loaded - follow the instructions directly instead of calling this tool again\n")
+	sb.WriteString("- Do not invoke a skill that is already loaded in the conversation\n\n")
 	sb.WriteString("<available_skills>\n")
 
 	for _, sk := range accessibleSkills {

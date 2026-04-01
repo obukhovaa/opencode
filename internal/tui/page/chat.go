@@ -122,6 +122,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							SessionID: p.session.ID,
 						})
 						content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
+						content = wrapSkillContent(s.Name, content)
 						cmd := p.sendMessage(content, nil)
 						if cmd != nil {
 							cmds = append(cmds, cmd)
@@ -155,7 +156,32 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		content := msg.Content
-		if msg.Args != nil {
+		if strings.HasPrefix(msg.CommandID, "skill:") {
+			// Skill: use SubstituteContent for proper $0, $ARGUMENTS, ${SKILL_DIR} handling
+			skillName := strings.TrimPrefix(msg.CommandID, "skill:")
+			s, err := skill.Get(skillName)
+			if err != nil {
+				return p, util.ReportError(err)
+			}
+			// Build combined args string from the dialog values
+			args := ""
+			if msg.Args != nil {
+				if v, ok := msg.Args["ARGUMENTS"]; ok {
+					args = v
+				} else {
+					for name, value := range msg.Args {
+						placeholder := "$" + name
+						content = strings.ReplaceAll(content, placeholder, value)
+					}
+				}
+			}
+			baseDir := filepath.Dir(s.Location)
+			content = skill.SubstituteContent(content, skill.SubstituteParams{
+				Args:      args,
+				SkillDir:  baseDir,
+				SessionID: p.session.ID,
+			})
+		} else if msg.Args != nil {
 			for name, value := range msg.Args {
 				placeholder := "$" + name
 				content = strings.ReplaceAll(content, placeholder, value)
@@ -164,6 +190,12 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Expand !`cmd` shell markup after argument substitution
 		content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
+
+		// Wrap skill content so the LLM won't re-invoke the skill tool
+		if strings.HasPrefix(msg.CommandID, "skill:") {
+			skillName := strings.TrimPrefix(msg.CommandID, "skill:")
+			content = wrapSkillContent(skillName, content)
+		}
 
 		cmd := p.sendMessage(content, nil)
 		if cmd != nil {
@@ -431,6 +463,12 @@ func (p *chatPage) BindingKeys() []key.Binding {
 	return bindings
 }
 
+// wrapSkillContent wraps expanded skill content in <skill_content> tags so the
+// LLM recognises it as already-loaded and won't re-invoke the skill tool.
+func wrapSkillContent(name, content string) string {
+	return fmt.Sprintf("<skill_content name=%q>\n%s\n</skill_content>", name, content)
+}
+
 func NewChatPage(app *app.App, commands []dialog.Command) tea.Model {
 	cg := completions.NewFileAndFolderContextGroup()
 	completionDialog := dialog.NewCompletionDialogCmp(cg)
@@ -499,6 +537,12 @@ func (p *chatPage) resolveInlineSlash(text string) tea.Cmd {
 
 	case slashcmd.ActionSkill:
 		s := action.Skill
+		// If no inline args provided, check for named placeholders and show dialog
+		if parsed.Args == "" {
+			if argCmd := dialog.ParameterizedSkillHandler(s); argCmd != nil {
+				return argCmd
+			}
+		}
 		baseDir := filepath.Dir(s.Location)
 		content := skill.SubstituteContent(s.Content, skill.SubstituteParams{
 			Args:      parsed.Args,
@@ -506,6 +550,7 @@ func (p *chatPage) resolveInlineSlash(text string) tea.Cmd {
 			SessionID: p.session.ID,
 		})
 		content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
+		content = wrapSkillContent(s.Name, content)
 		return util.CmdHandler(chat.SendMsg{Text: content})
 
 	default:

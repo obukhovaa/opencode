@@ -22,6 +22,11 @@ var (
 	shorthandArgPattern = regexp.MustCompile(`\$(\d)\b`)
 )
 
+// HasArgumentPatterns reports whether content contains $ARGUMENTS, $ARGUMENTS[N], or $N patterns.
+func HasArgumentPatterns(content string) bool {
+	return strings.Contains(content, "$ARGUMENTS") || shorthandArgPattern.MatchString(content)
+}
+
 // SubstituteContent replaces variables in skill content with actual values.
 // Substitution order:
 //  1. ${SKILL_DIR} / ${CLAUDE_SKILL_DIR}

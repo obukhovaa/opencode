@@ -140,45 +140,45 @@ func TestBuildPrompt(t *testing.T) {
 			name: "skill without args",
 			action: &ResolvedAction{
 				Type:  ActionSkill,
-				Skill: &skill.Info{Content: "Do the thing"},
+				Skill: &skill.Info{Name: "test", Content: "Do the thing"},
 			},
-			want: "Do the thing",
+			want: "<skill_content name=\"test\">\nDo the thing\n</skill_content>",
 		},
 		{
 			name: "skill with args appended when no placeholder",
 			action: &ResolvedAction{
 				Type:  ActionSkill,
-				Skill: &skill.Info{Content: "Do the thing"},
+				Skill: &skill.Info{Name: "test", Content: "Do the thing"},
 				Args:  "v2.1.0",
 			},
-			want: "Do the thing\n\nARGUMENTS: v2.1.0",
+			want: "<skill_content name=\"test\">\nDo the thing\n\nARGUMENTS: v2.1.0\n</skill_content>",
 		},
 		{
 			name: "skill with $ARGUMENTS placeholder",
 			action: &ResolvedAction{
 				Type:  ActionSkill,
-				Skill: &skill.Info{Content: "Fix issue $ARGUMENTS"},
+				Skill: &skill.Info{Name: "test", Content: "Fix issue $ARGUMENTS"},
 				Args:  "123",
 			},
-			want: "Fix issue 123",
+			want: "<skill_content name=\"test\">\nFix issue 123\n</skill_content>",
 		},
 		{
 			name: "skill with positional args",
 			action: &ResolvedAction{
 				Type:  ActionSkill,
-				Skill: &skill.Info{Content: "Migrate $0 from $1"},
+				Skill: &skill.Info{Name: "migrate", Content: "Migrate $0 from $1"},
 				Args:  "SearchBar React",
 			},
-			want: "Migrate SearchBar from React",
+			want: "<skill_content name=\"migrate\">\nMigrate SearchBar from React\n</skill_content>",
 		},
 		{
 			name:      "skill with session ID",
 			sessionID: "sess-abc",
 			action: &ResolvedAction{
 				Type:  ActionSkill,
-				Skill: &skill.Info{Content: "Log to ${SESSION_ID}.log"},
+				Skill: &skill.Info{Name: "logger", Content: "Log to ${SESSION_ID}.log"},
 			},
-			want: "Log to sess-abc.log",
+			want: "<skill_content name=\"logger\">\nLog to sess-abc.log\n</skill_content>",
 		},
 		{
 			name:   "not found returns empty",

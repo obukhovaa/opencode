@@ -116,11 +116,12 @@ func BuildPrompt(action *ResolvedAction, sessionID string) string {
 		return "" // Command prompt is built via handler
 	case ActionSkill:
 		baseDir := filepath.Dir(action.Skill.Location)
-		return skill.SubstituteContent(action.Skill.Content, skill.SubstituteParams{
+		content := skill.SubstituteContent(action.Skill.Content, skill.SubstituteParams{
 			Args:      action.Args,
 			SkillDir:  baseDir,
 			SessionID: sessionID,
 		})
+		return fmt.Sprintf("<skill_content name=%q>\n%s\n</skill_content>", action.Skill.Name, content)
 	default:
 		return ""
 	}

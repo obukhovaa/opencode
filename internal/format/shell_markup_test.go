@@ -27,11 +27,11 @@ func TestExpandShellMarkup(t *testing.T) {
 		if strings.Contains(result, "!`") {
 			t.Errorf("expected markup to be replaced, got %q", result)
 		}
-		if !strings.Contains(result, "```") {
-			t.Errorf("expected code fence in output, got %q", result)
+		if strings.Contains(result, "```") {
+			t.Errorf("expected no code fence in output, got %q", result)
 		}
-		if !strings.Contains(result, "$ echo hello") {
-			t.Errorf("expected command echo in output, got %q", result)
+		if strings.Contains(result, "$ echo hello") {
+			t.Errorf("expected no command echo in output, got %q", result)
 		}
 	})
 
@@ -52,8 +52,8 @@ func TestExpandShellMarkup(t *testing.T) {
 		if strings.Contains(result, "!`") {
 			t.Errorf("expected markup to be replaced, got %q", result)
 		}
-		if !strings.Contains(result, "exit code:") {
-			t.Errorf("expected exit code in output, got %q", result)
+		if !strings.Contains(result, "stderr:") && !strings.Contains(result, "command failed") {
+			t.Errorf("expected error indicator in output, got %q", result)
 		}
 	})
 

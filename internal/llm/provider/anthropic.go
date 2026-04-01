@@ -10,10 +10,8 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/bedrock"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	toolsPkg "github.com/opencode-ai/opencode/internal/llm/tools"
@@ -49,8 +47,11 @@ func newAnthropicClient(opts providerClientOptions) AnthropicClient {
 
 	anthropicClientOptions := []option.RequestOption{}
 	if anthropicOpts.useBedrock {
-		cfg := aws.Config{BearerAuthTokenProvider: bedrock.NewStaticBearerTokenProvider(opts.apiKey)}
-		anthropicClientOptions = append(anthropicClientOptions, bedrock.WithConfig(cfg))
+		middleware := bedrockMiddleware()
+		anthropicClientOptions = append(anthropicClientOptions, option.WithMiddleware(middleware))
+		if opts.baseURL != "" {
+			resolvedBaseURL = opts.baseURL
+		}
 	}
 	if anthropicOpts.useVertex {
 		middleware := vertexMiddleware(
@@ -76,6 +77,9 @@ func newAnthropicClient(opts providerClientOptions) AnthropicClient {
 	}
 	if resolvedBaseURL != "" {
 		anthropicClientOptions = append(anthropicClientOptions, option.WithBaseURL(resolvedBaseURL))
+		if opts.apiKey != "" {
+			anthropicClientOptions = append(anthropicClientOptions, option.WithAuthToken(opts.apiKey))
+		}
 	} else if opts.baseURL != "" {
 		anthropicClientOptions = append(anthropicClientOptions, option.WithBaseURL(opts.baseURL))
 		if opts.apiKey != "" {
