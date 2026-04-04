@@ -1,8 +1,11 @@
 package provider
 
 import (
+	"context"
 	"testing"
 
+	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
 )
 
@@ -349,6 +352,126 @@ func TestCleanMessages(t *testing.T) {
 			result := p.cleanMessages(tt.messages)
 			if len(result) != tt.wantMsgCount {
 				t.Errorf("expected %d messages, got %d", tt.wantMsgCount, len(result))
+			}
+		})
+	}
+}
+
+func TestResolveMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		meta     *config.ProviderMetadata
+		ctx      context.Context
+		setup    func()
+		cleanup  func()
+		wantNil  bool
+		wantKeys []string
+	}{
+		{
+			name:    "nil metadata returns nil",
+			meta:    nil,
+			ctx:     context.Background(),
+			wantNil: true,
+		},
+		{
+			name:    "empty metadata returns nil",
+			meta:    &config.ProviderMetadata{},
+			ctx:     context.Background(),
+			wantNil: true,
+		},
+		{
+			name: "sessionId resolves from context",
+			meta: &config.ProviderMetadata{
+				SessionID: "my_session",
+			},
+			ctx:      context.WithValue(context.Background(), tools.SessionIDContextKey, "sess-123"),
+			wantKeys: []string{"my_session"},
+		},
+		{
+			name: "sessionId missing from context is omitted",
+			meta: &config.ProviderMetadata{
+				SessionID: "my_session",
+			},
+			ctx:     context.Background(),
+			wantNil: true,
+		},
+		{
+			name: "userId resolves from processUserID",
+			meta: &config.ProviderMetadata{
+				UserID: "my_user",
+			},
+			ctx:      context.Background(),
+			wantKeys: []string{"my_user"},
+		},
+		{
+			name: "both keys resolve",
+			meta: &config.ProviderMetadata{
+				SessionID: "sid",
+				UserID:    "uid",
+			},
+			ctx:      context.WithValue(context.Background(), tools.SessionIDContextKey, "sess-456"),
+			wantKeys: []string{"sid", "uid"},
+		},
+		{
+			name: "tags from config resolve",
+			meta: &config.ProviderMetadata{
+				Tags: "labels",
+			},
+			setup: func() {
+				config.Reset()
+				config.Load(".", false)
+				cfg := config.Get()
+				cfg.Telemetry = &config.TelemetryConfig{Tags: []string{"prod", "team-a"}}
+			},
+			cleanup: func() {
+				config.Reset()
+			},
+			ctx:      context.Background(),
+			wantKeys: []string{"labels"},
+		},
+		{
+			name: "tags from context resolve",
+			meta: &config.ProviderMetadata{
+				Tags: "labels",
+			},
+			ctx:      context.WithValue(context.Background(), tools.MetadataTagsContextKey, []string{"dynamic-tag"}),
+			wantKeys: []string{"labels"},
+		},
+		{
+			name: "tags field configured but no tags available returns nil for tags",
+			meta: &config.ProviderMetadata{
+				Tags: "labels",
+			},
+			ctx:     context.Background(),
+			wantNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setup != nil {
+				tt.setup()
+			}
+			if tt.cleanup != nil {
+				defer tt.cleanup()
+			}
+			result := resolveMetadata(tt.ctx, tt.meta)
+			if tt.wantNil {
+				if result != nil {
+					t.Errorf("expected nil, got %v", result)
+				}
+				return
+			}
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+			for _, key := range tt.wantKeys {
+				if _, ok := result[key]; !ok {
+					t.Errorf("expected key %q in result %v", key, result)
+				}
+			}
+			if len(result) != len(tt.wantKeys) {
+				t.Errorf("expected %d keys, got %d: %v", len(tt.wantKeys), len(result), result)
 			}
 		})
 	}

@@ -189,6 +189,7 @@ func (o *openaiClient) preparedParams(messages []openai.ChatCompletionMessagePar
 
 func (o *openaiClient) send(ctx context.Context, messages []message.Message, tools []tools.BaseTool) (response *ProviderResponse, err error) {
 	params := o.preparedParams(o.convertMessages(messages), o.convertTools(tools))
+	o.applyMetadata(ctx, &params)
 	cfg := config.Get()
 	if cfg.Debug {
 		jsonData, _ := json.Marshal(params)
@@ -242,6 +243,7 @@ func (o *openaiClient) send(ctx context.Context, messages []message.Message, too
 
 func (o *openaiClient) stream(ctx context.Context, messages []message.Message, tools []tools.BaseTool) <-chan ProviderEvent {
 	params := o.preparedParams(o.convertMessages(messages), o.convertTools(tools))
+	o.applyMetadata(ctx, &params)
 	params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
 		IncludeUsage: openai.Bool(true),
 	}
@@ -371,6 +373,25 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 	}()
 
 	return eventChan
+}
+
+func (o *openaiClient) applyMetadata(ctx context.Context, params *openai.ChatCompletionNewParams) {
+	resolved := resolveMetadata(ctx, o.providerOptions.metadata)
+	if resolved == nil {
+		return
+	}
+	meta := make(shared.MetadataParam)
+	for k, v := range resolved {
+		switch val := v.(type) {
+		case string:
+			meta[k] = val
+		case []string:
+			meta[k] = strings.Join(val, ",")
+		}
+	}
+	if len(meta) > 0 {
+		params.Metadata = meta
+	}
 }
 
 func (o *openaiClient) shouldRetry(attempts int, err error) (bool, int64, error) {

@@ -17,7 +17,6 @@ Agents can spawn subagent tasks on demand via the task tool:
 ```go
 var managerToolNames = []string{TaskToolName}
 
-// In agent-tool.go
 type TaskParams struct {
     Prompt       string `json:"prompt"`
     SubagentType string `json:"subagent_type"`
@@ -39,11 +38,11 @@ This is strictly reactive — an agent or user must explicitly invoke the task e
 ```
 /loop 5m check if the deployment finished and tell me what happened
 
-> Scheduled cron job `cron_a1b2c3` every 5 minutes using explorer agent.
+> ⏲ Scheduled cron job cron_a1b2c3 — every 5 minutes (explorer).
 > Next run at 14:35.
 ```
 
-Agents can also schedule tasks programmatically via `croncreate`, manage them via `cronlist`/`crondelete`, and results flow back into the parent session's conversation.
+Agents can also schedule tasks programmatically via `croncreate`, manage them via `cronlist`/`crondelete`, and results flow back into the parent session's conversation as synthetic tool messages.
 
 ## Research Findings
 
@@ -53,35 +52,34 @@ Claude Code (v2.1.72+) implements session-scoped cron scheduling with three tool
 
 | Aspect | Claude Code | OpenCode (proposed) |
 |---|---|---|
-| Persistence | Session-only, lost on exit | DB-persisted, survives restart |
-| Execution model | Fires between user turns when idle | Same — waits for agent idle, then invokes task tool |
+| Persistence | Session-only by default, optional durable via `.claude/scheduled_tasks.json` | DB-persisted always, survives restart |
+| Execution model | Enqueues prompt as `UserMessage` (`isMeta: true`) into the main agent loop | Direct task tool invocation + synthetic messages in parent session |
 | Cron format | Standard 5-field cron | Same |
-| Interval shorthand | `/loop 5m` slash command | `/loop 5m` slash command (Go duration syntax) |
-| Jitter | 10% of period, capped at 15min | Not adopted — deterministic timing preferred |
-| Expiry | 3-day auto-expiry | No auto-expiry (explicit delete or session delete) |
-| Task limit | 50 per session | Configurable, default 50 |
-| Subagent isolation | Runs inline in session | Runs via task tool in child session |
-| Context preservation | No task_id reuse | task_id reuse across runs for context continuity |
+| Interval shorthand | `/loop` bundled skill | `/loop` built-in slash command (Go duration syntax) |
+| Jitter | Recurring: up to 10% of period (max 15min). One-shot on `:00`/`:30`: up to 90s early | Not adopted — single-user CLI, no fleet coordination needed |
+| Expiry | 3-day auto-expiry for recurring jobs | No auto-expiry (explicit delete or session delete) |
+| Task limit | 50 per session | Same, configurable |
+| Idle gating | Fires only while REPL is idle, queued at `priority: 'later'` so user input takes precedence | Same — waits for agent idle on active session; fires directly on inactive sessions |
+| No catch-up | If a fire is missed, fires once when idle — no backfill | Same |
+| Context preservation | No context across fires — each is a fresh prompt | `task_id` reuse gives subagent full history of prior runs |
 
-**Key findings from Claude's approach:**
-- `/loop` is a "bundled skill" that parses natural-language intervals and delegates to `CronCreate`
-- One-shot reminders use cron expressions pinned to a specific minute/hour
-- Scheduler checks every second, enqueues at low priority
-- Scheduled prompts fire between turns, never mid-response
-- No catch-up for missed fires — fires once when idle
+**Key implementation details from Claude's source code:**
 
-**What we adopt:**
-- Same three-tool pattern (`croncreate`, `crondelete`, `cronlist`)
-- Same `/loop` slash command UX with interval parsing
-- Same "wait for idle, then fire" execution model
-- Same 5-field cron expression format
+1. **Minute-mark avoidance**: Claude's `CronCreate` prompt instructs the model to avoid `:00` and `:30` minutes for cron expressions when the user's request is approximate ("every morning around 9" → `"57 8 * * *"` not `"0 9 * * *"`). This spreads API load across the fleet. We adopt this as a best practice in our tool prompt — it still helps with LLM API rate limits if multiple OpenCode instances run concurrently.
 
-**What we differ on:**
-- Persistent storage (resume on restart) instead of ephemeral
-- Task tool delegation with `task_id` reuse for context continuity across runs
-- No jitter (unnecessary for single-user CLI)
-- No auto-expiry (user controls lifecycle explicitly)
-- `/crons` TUI page for visual management
+2. **Queue priority**: Claude enqueues cron fires at `priority: 'later'` so user input always takes precedence. Our equivalent: the scheduler skips firing when the active session's agent is busy, and retries on the next tick.
+
+3. **`isMeta: true` pattern**: Claude injects the cron prompt as a user message hidden from the transcript UI but visible to the model. We don't adopt this — our approach uses task tool invocation which runs in an isolated child session, keeping the parent conversation clean. Results are written back as synthetic `tool_call` + `tool_result` messages.
+
+4. **Status badge**: Claude injects a `scheduled_task_fire` system message rendered as a dimmed `⊹ Running scheduled task (Jan 5 9:00am)` line. We adopt a similar pattern: a status bar `InfoMsg` flash with `⏲` icon.
+
+5. **Scheduler lock**: Claude uses an `O_EXCL` lock file so only one session drives the scheduler for durable tasks. We don't need this — our DB-backed approach handles concurrency naturally via row-level state checks.
+
+6. **One-shot auto-cleanup**: Claude removes one-shot tasks from the store after firing. We mark them `status="done"` instead — they remain visible in `/crons` but never fire again.
+
+7. **Cron validation**: Claude validates that the expression parses correctly AND matches at least one calendar date in the next year (`nextCronRunMs()` returns non-null). We adopt both checks.
+
+8. **Human-readable schedule**: Claude's `cronToHuman()` converts cron expressions to human-readable strings (e.g., `"*/5 * * * *"` → `"every 5 minutes"`). The return value from `croncreate` includes this for the agent to relay to the user.
 
 ### Existing Codebase Patterns
 
@@ -101,9 +99,7 @@ for _, name := range managerToolNames {
 
 Cron tools follow this same pattern — added to `managerToolNames`, only available to primary agents (`AgentModeAgent`).
 
-**DB migration pattern** (goose format, dual SQLite/MySQL migrations, sqlc for query generation).
-
-**PubSub for TUI updates** (`pubsub.NewBroker[T]()` embedded in services).
+**Status bar messaging** (`internal/tui/util/util.go`): `InfoMsg{Type, Msg, TTL}` displayed in the status bar with auto-clear. The status component (`core/status.go`) handles `InfoMsg` via `clearMessageCmd` with configurable TTL.
 
 ## Design Decisions
 
@@ -111,17 +107,24 @@ Cron tools follow this same pattern — added to `managerToolNames`, only availa
 |---|---|---|
 | Tool names | `croncreate`, `crondelete`, `cronlist` (lowercase) | Consistent with existing tool naming (`bash`, `edit`, `task`) |
 | Storage | Dedicated `cron_jobs` table with `ON DELETE CASCADE` from sessions | Automatic cleanup on session deletion; survives process restart |
-| Execution | Proxy to task tool `Run()` method | Reuses all subagent machinery (session creation, cost rollup, permissions) |
+| Execution model | Direct task tool `Run()` + synthetic messages in parent session | No LLM cost for parent agent per cron fire; conversation history stays complete for agent context |
 | Context preservation | Reuse `task_id` across runs of same cron | Subagent retains conversation history from prior runs |
+| Inactive session handling | Task tool runs directly; synthetic messages written to DB; status bar notification | No agent loop needed for non-active sessions; user sees results when they return |
+| Active session handling | Same as inactive + live chat update via pubsub | Results appear in chat immediately |
 | Scheduler | In-process goroutine with 1-second tick | Simple, no external dependencies; matches Claude's approach |
-| Agent busy handling | Queue and wait until `IsSessionBusy()` returns false | Prevents conflicts with user-initiated work |
+| Agent busy handling | Skip tick and retry next second when active session agent is busy | User input always takes precedence (equivalent to Claude's `priority: 'later'`) |
 | Permission model | Permission keyed on cron job ID; supports "allow all" (persistent) and "allow once" | First run asks, subsequent runs skip if granted persistently |
 | Default agent access | Only `hivemind` has cron tools enabled | Coder already has many tools; hivemind is the coordinator |
 | `/loop` implementation | Built-in slash command (not a skill) | Needs direct access to cron service; skills can't create cron jobs |
 | `/crons` implementation | TUI page (like agents/logs) | Consistent with existing table-detail pattern |
 | Cron format | Standard 5-field (minute hour dom month dow) | Industry standard, same as Claude Code |
-| One-shot support | `is_recurring` boolean on cron job; one-shot auto-deletes after execution | Clean lifecycle management |
+| One-shot support | `is_recurring` boolean on cron job; one-shot set to `status="done"` after execution | Remains visible in `/crons` for reference but never fires again |
 | Max cron jobs per session | 50 (configurable) | Prevents runaway scheduling; matches Claude's limit |
+| Icon | `⏲` | Simple unicode, visually distinct from other icons in `styles/icons.go` |
+| Cross-session visibility | Cron indicator in session list + status bar flash on fire | Users know which sessions have active crons without opening them |
+| Synthetic message atomicity | Both `tool_call` + `tool_result` written in a single DB transaction with consecutive seq numbers, under a per-session write mutex shared with the agent loop | Prevents interleaving with agent or user messages — a `tool_call` is always immediately followed by its `tool_result` |
+| `/loop` subagent type | `explorer` (hardcoded default) | Most scheduled tasks are read-only monitoring; explorer is safe. Agent-initiated crons via `croncreate` allow explicit subagent selection |
+| `/loop` task title | Prompt truncated to 80 chars | Avoids an LLM call for a cosmetic field; users who want a custom title use the agent's `croncreate` tool directly |
 
 ## Architecture
 
@@ -163,7 +166,7 @@ Cron tools follow this same pattern — added to `managerToolNames`, only availa
 │  ├── scheduler goroutine (1s tick)                          │
 │  ├── pubsub.Broker[CronJob] (TUI events)                   │
 │  ├── DB queries (CRUD)                                      │
-│  └── task tool execution (via agent loop)                   │
+│  └── direct task tool Run() invocation                      │
 └────────────────┬────────────────────────────────────────────┘
                  │
     ┌────────────┼───────────────────┐
@@ -183,58 +186,148 @@ STEP 1: Cron Job Creation
 ─────────────────────────
 Agent calls croncreate (or user types /loop)
   → Validate params (schedule, prompt, subagent_type)
+  → Validate cron expression parses and matches a future date
+  → Enforce max 50 jobs per session
   → Generate cron job ID (8-char random)
-  → Generate task_id (for task tool reuse)
+  → Generate task_id (for task tool session reuse)
   → Compute next_run_at from cron expression
   → Insert into cron_jobs table
   → Publish CreatedEvent for TUI
-  → Return confirmation with job ID and next fire time
+  → Return confirmation with job ID, human-readable schedule, next fire time
 
 STEP 2: Scheduler Tick (every 1 second)
 ────────────────────────────────────────
 Scheduler goroutine wakes up
   → Query all active cron jobs where next_run_at <= now
   → For each due job:
-      → Check if parent session's agent is busy
-      → If busy: skip (will retry next tick)
-      → If idle: enqueue execution
+      IF job's session is the active session:
+        → Check if session agent is busy (IsSessionBusy)
+        → If busy: skip this tick, retry next second
+        → If idle: proceed to execution
+      ELSE (inactive session):
+        → Proceed to execution immediately (no agent to conflict with)
 
-STEP 3: Cron Job Execution
-──────────────────────────
+STEP 3: Cron Job Execution (direct task tool invocation)
+────────────────────────────────────────────────────────
   → Check permission using cron job ID as key
       → If "allow all" was granted before: proceed
-      → If "allow once" or first run: ask permission
+      → If "allow once" or first run: ask permission (for active session only)
+      → For inactive sessions with no prior persistent grant: skip, retry next tick
       → If denied: skip this run, keep job active
-  → Invoke agent loop with prompt that triggers task tool:
-      → task_id = cron_job.task_id (same across runs)
+  → Call task tool's Run() directly (NOT through the main agent loop):
+      → task_id = cron_job.task_id (same across runs → context preserved)
       → prompt = cron_job.prompt
       → subagent_type = cron_job.subagent_type
       → task_title = cron_job.task_title
   → Wait for task completion
+  → Write synthetic messages into parent session (ATOMIC):
+      → Acquire per-session write mutex (shared with agent loop)
+      → In a single DB transaction:
+          → Insert assistant message with tool_call (consecutive seq)
+          → Insert tool result message (consecutive seq + 1)
+      → Release mutex
+      → Publish messages via session pubsub (active session sees them in chat live)
+      → This guarantees no interleaving with agent or user messages
   → Update cron_job: last_run_at, run_count++, last_result, next_run_at
-  → If one-shot (is_recurring=false): set status="done", no next_run_at
-  → Publish UpdatedEvent for TUI
+  → If one-shot (is_recurring=false): set status="done", clear next_run_at
+  → Publish UpdatedEvent for TUI (updates /crons table, session list indicator)
 
-STEP 4: Process Restart Resume
+STEP 4: Status Bar Notification
+────────────────────────────────
+On every cron fire (regardless of active/inactive session):
+  → Emit InfoMsg to status bar:
+      "⏲ <truncated_session_title>: <truncated_task_title>"
+      TTL: 5 seconds, Type: InfoTypeInfo
+  → If the session has an active chat view, synthetic messages
+    appear in the message list via pubsub
+
+STEP 5: Process Restart Resume
 ──────────────────────────────
-On startup, CronService.Init():
+On startup, CronService.Start():
   → Load all cron jobs with status="active" from DB
-  → For each: recompute next_run_at from schedule (if next_run_at is in the past, set to next future occurrence)
+  → For each: recompute next_run_at from schedule
+      → If next_run_at is in the past: set to next future occurrence
+      → No catch-up for missed fires (same as Claude)
   → Start scheduler goroutine
-  → No catch-up for missed fires (same as Claude)
 ```
 
-### Cron Tool Parameters
+### Synthetic Message Format
+
+When a cron job fires, the scheduler writes two messages directly to the parent session's DB (bypassing the LLM):
+
+**Message 1 — Synthetic assistant message with tool_call:**
+
+```json
+{
+  "role": "assistant",
+  "parts": [{
+    "type": "tool_call",
+    "name": "task",
+    "id": "<unique_call_id>",
+    "input": {
+      "prompt": "<cron prompt>",
+      "subagent_type": "<subagent_type>",
+      "task_id": "<cron task_id>",
+      "task_title": "⏲ <task_title>"
+    }
+  }]
+}
+```
+
+**Message 2 — Tool result message:**
+
+```json
+{
+  "role": "tool",
+  "parts": [{
+    "type": "tool_result",
+    "tool_call_id": "<same_call_id>",
+    "content": "<task output text>"
+  }]
+}
+```
+
+These are structurally identical to what the agent would produce if it called the task tool itself. The parent agent sees them as normal conversation history on its next turn — full context without any LLM cost during the cron fire.
+
+**Atomicity requirement**: Both messages MUST be written in a single DB transaction with consecutive sequence numbers, under a per-session write mutex that the agent loop also holds when writing messages. This prevents a race where a cron fires between an agent's `tool_call` and `tool_result` — which would corrupt the message pairing and break the conversation for the LLM.
+
+### Cross-Session Visibility
+
+**Session list (ctrl+s sidebar):**
+
+Sessions with active cron jobs show an indicator next to the title:
+
+```
+  My coding session
+  Deploy monitoring          ⏲ 2
+  Code review tracker        ⏲ 1
+```
+
+The indicator shows `⏲ N` where N is the count of active cron jobs. This is computed by querying `cron_jobs` where `session_id = ? AND status = 'active'` when rendering the session list, or cached via pubsub updates.
+
+**Status bar flash on fire:**
+
+Every cron fire triggers a status bar `InfoMsg`:
+
+```
+⏲ Deploy monitoring: check deploy status
+```
+
+Format: `⏲ <session_title truncated to 20 chars>: <task_title truncated to 30 chars>`
+
+TTL: 5 seconds. This appears regardless of which session is active, giving the user awareness that background crons are running.
+
+### Cron Tool Definitions
 
 **croncreate** — superset of task tool params plus scheduling:
 
 ```go
 type CronCreateParams struct {
-    Prompt       string `json:"prompt"`           // required: task prompt
-    SubagentType string `json:"subagent_type"`    // required: e.g. "explorer"
-    TaskTitle    string `json:"task_title"`        // required: short description
     Schedule     string `json:"schedule"`          // required: 5-field cron expression
-    IsRecurring  bool   `json:"is_recurring"`      // optional: default true
+    Prompt       string `json:"prompt"`            // required: task prompt
+    SubagentType string `json:"subagent_type"`     // required: e.g. "explorer"
+    TaskTitle    string `json:"task_title"`         // required: short description
+    IsRecurring  bool   `json:"is_recurring"`       // optional: default true
 }
 ```
 
@@ -242,11 +335,82 @@ type CronCreateParams struct {
 
 ```go
 type CronDeleteParams struct {
-    ID string `json:"id"` // required: cron job ID
+    ID string `json:"id"` // required: cron job ID returned by croncreate
 }
 ```
 
 **cronlist**: no parameters. Returns all cron jobs for the current session.
+
+### Tool Prompts
+
+These prompts are injected as the tool's `prompt` field, guiding the LLM on correct usage.
+
+**croncreate prompt:**
+
+```
+Schedule a prompt to run at a future time via a subagent. The scheduled task runs
+in an isolated child session using the task tool. Each run reuses the same task_id,
+so the subagent retains full conversation history from prior runs.
+
+Uses standard 5-field cron in the user's local timezone:
+minute hour day-of-month month day-of-week.
+"0 9 * * *" means 9am local — no timezone conversion needed.
+
+## One-shot tasks (is_recurring: false)
+
+For "remind me at X" or "at <time>, do Y" — fire once then mark as done.
+Pin minute/hour/day-of-month/month to specific values:
+  "remind me at 2:30pm today" → schedule: "30 14 <today_dom> <today_month> *", is_recurring: false
+  "tomorrow morning, run the smoke test" → schedule: "57 8 <tomorrow_dom> <tomorrow_month> *", is_recurring: false
+
+## Recurring jobs (is_recurring: true, the default)
+
+For "every N minutes" / "every hour" / "weekdays at 9am":
+  "*/5 * * * *" (every 5 min), "0 * * * *" (hourly), "0 9 * * 1-5" (weekdays at 9am local)
+
+## Avoid the :00 and :30 minute marks when the task allows it
+
+When the user's request is approximate ("every morning", "hourly", "in about an hour"),
+pick a minute that is NOT 0 or 30:
+  "every morning around 9" → "57 8 * * *" or "3 9 * * *" (not "0 9 * * *")
+  "hourly" → "7 * * * *" (not "0 * * * *")
+  "in an hour or so, remind me to..." → pick whatever minute you land on, don't round
+
+Only use minute 0 or 30 when the user names that exact time and clearly means it
+("at 9:00 sharp", "at half past"). This spreads LLM API load when multiple
+OpenCode instances run concurrently.
+
+## Subagent selection
+
+Choose the subagent_type based on what the task needs:
+  - "explorer": read-only tasks (monitoring, checking status, reviewing). Default for most scheduled tasks.
+  - "workhorse": tasks that need to write files, run commands, or make changes.
+
+## Runtime behavior
+
+Jobs fire while the agent is idle — never mid-response. If the agent is busy when
+a task comes due, it waits until the current turn finishes. Results are written as
+synthetic messages into the parent session, so the conversation has full context of
+what happened. The subagent retains history across runs via task_id reuse — it can
+reference what it found in previous executions.
+
+Returns a job ID you can pass to crondelete.
+```
+
+**crondelete prompt:**
+
+```
+Cancel a cron job previously scheduled with croncreate. Removes it from the
+database. The job stops firing immediately. Pass the job ID returned by croncreate.
+```
+
+**cronlist prompt:**
+
+```
+List all cron jobs scheduled via croncreate in the current session. Shows each
+job's ID, cron schedule, human-readable schedule description, prompt, subagent
+type, status (active/done), and run count.
+```
 
 ### Permission Flow
 
@@ -257,19 +421,26 @@ FIRST RUN of cron job "cron_a1b2c3":
         SessionID: parentSessionID,
         ToolName:  "cron",
         Action:    "execute",
+        Description: "⏲ Cron job cron_a1b2c3: check deploy status (*/5 * * * *)",
         Params:    {"cron_id": "cron_a1b2c3", "prompt": "check deploy..."},
     })
   → TUI shows permission dialog:
-      "Cron job cron_a1b2c3 wants to run: check deploy status
-       Schedule: */5 * * * *
+      "⏲ Cron job cron_a1b2c3 wants to run:
+       check deploy status
+       Schedule: */5 * * * * (every 5 minutes)
        [Allow Once] [Allow All] [Deny]"
   → If "Allow All" → GrantPersistant() → future runs skip permission
   → If "Allow Once" → Grant() → next run asks again
   → If "Deny" → skip this run
 
+INACTIVE SESSION (no prior persistent grant):
+  → Cannot show permission dialog (no active UI context for that session)
+  → Skip execution, retry next tick
+  → When user switches to the session, pending crons can fire and ask permission
+
 AUTO-APPROVE INHERITANCE:
   → If parent session has auto-approve enabled,
-    cron task sessions inherit it (same as task tool)
+    cron task sessions inherit it (same as task tool behavior)
 ```
 
 ### `/loop` Slash Command
@@ -297,8 +468,10 @@ The `/loop` command:
 1. Parses interval and prompt from input text
 2. Converts Go duration to nearest cron expression
 3. Calls `CronService.Create()` directly (not via agent)
-4. Uses the session's active agent's default subagent type (explorer by default)
-5. Sets `source: "loop"` to distinguish from agent-initiated crons
+4. Uses `explorer` as default subagent type (hardcoded — safe for monitoring/polling)
+5. Uses prompt truncated to 80 chars as `task_title` (avoids LLM call for cosmetic field)
+6. Sets `source: "loop"` to distinguish from agent-initiated crons
+7. Shows confirmation via `InfoMsg` in status bar
 
 ### `/crons` TUI Page
 
@@ -332,12 +505,12 @@ Key bindings:
 - `enter` — select row, show details in bottom panel
 - `esc` — return to chat
 
-### TUI Rendering of Cron Tool Calls
+### TUI Rendering of Cron Tool Calls in Chat
 
-Cron tool calls in the chat message list render similarly to task tool calls but with a cron indicator:
+Cron-fired synthetic messages in the chat render like task tool calls but with a cron indicator. The `⏲` prefix on `task_title` is the signal — the message renderer detects it and styles accordingly:
 
 ```
-┌─ 🔄 Cron Task (*/5 * * * *) ──────────────────────────────┐
+┌─ ⏲ Task (*/5 * * * *) ────────────────────────────────────┐
 │ cron_a1b2 → explorer: check if the deployment finished     │
 │                                                             │
 │ > Deployment complete. All 5/5 pods running.               │
@@ -345,7 +518,7 @@ Cron tool calls in the chat message list render similarly to task tool calls but
 └─────────────────────────────────────────────────────────────┘
 ```
 
-The visual difference from a regular task call is the cron icon and schedule display in the header.
+The `renderToolParams` function in `message.go` checks for the `⏲` prefix in the task title and renders with distinct styling (dimmed schedule in the header).
 
 ### Agent Access Control
 
@@ -384,7 +557,21 @@ var managerToolNames = []string{
 }
 ```
 
-This ensures the existing `AgentModeAgent` check in `NewToolSet` prevents subagents from accessing cron tools. Additionally, `coder` has them disabled by default — only `hivemind` gets them out of the box. Users can override this in `.opencode.json`.
+This ensures the existing `AgentModeAgent` check in `NewToolSet` prevents subagents from accessing cron tools. Additionally, `coder` has them disabled by default — only `hivemind` gets them out of the box. Users can override this in `.opencode.json`:
+
+```json
+{
+  "agents": {
+    "coder": {
+      "tools": {
+        "croncreate": true,
+        "crondelete": true,
+        "cronlist": true
+      }
+    }
+  }
+}
+```
 
 ### CronService Interface
 
@@ -414,19 +601,30 @@ type Service interface {
     Create(ctx context.Context, params CreateParams) (CronJob, error)
     Delete(ctx context.Context, id string) error
     List(ctx context.Context, sessionID string) ([]CronJob, error)
+    ListActive(ctx context.Context) ([]CronJob, error)
+    CountActive(ctx context.Context, sessionID string) (int, error)
     Get(ctx context.Context, id string) (CronJob, error)
     Start(ctx context.Context) error   // starts scheduler, resumes active jobs
-    Stop()                             // stops scheduler
+    Stop()                             // stops scheduler goroutine
 }
 ```
+
+### Environment Variable
+
+`OPENCODE_DISABLE_CRON=1` disables the cron system entirely. When set:
+- Cron tools are not registered (not added to `managerToolNames`)
+- `/loop` slash command is unavailable
+- `/crons` page shows "Cron scheduling is disabled"
+- `CronService.Start()` is a no-op
+- Any existing active cron jobs in DB remain but do not fire
 
 ## Implementation Plan
 
 ### Phase 1: Database Layer
 
-- [ ] **1.1** Create SQLite migration `internal/db/migrations/sqlite/20260325120000_add_cron_jobs.sql` with `cron_jobs` table, `ON DELETE CASCADE` from sessions, indexes on `session_id` and `status`, `updated_at` trigger
+- [ ] **1.1** Create SQLite migration `internal/db/migrations/sqlite/20260325120000_add_cron_jobs.sql` with `cron_jobs` table, `ON DELETE CASCADE` from sessions, indexes on `session_id` and `status+next_run_at`, `updated_at` trigger
 - [ ] **1.2** Create MySQL migration `internal/db/migrations/mysql/20260325120000_add_cron_jobs.sql` (same schema, MySQL syntax)
-- [ ] **1.3** Create sqlc query files `internal/db/sql/cron_jobs.sql` and `internal/db/sql/mysql/cron_jobs.sql` with CRUD operations: `CreateCronJob`, `GetCronJob`, `ListCronJobsBySession`, `ListActiveCronJobs`, `UpdateCronJob`, `DeleteCronJob`
+- [ ] **1.3** Create sqlc query files `internal/db/sql/cron_jobs.sql` and `internal/db/sql/mysql/cron_jobs.sql` with operations: `CreateCronJob`, `GetCronJob`, `ListCronJobsBySession`, `ListActiveCronJobs`, `ListDueCronJobs` (status=active AND next_run_at <= ?), `CountActiveCronJobsBySession`, `UpdateCronJob`, `DeleteCronJob`
 - [ ] **1.4** Add `CronJob` model to `internal/db/models.go`
 - [ ] **1.5** Run sqlc generation, update `Querier` interface
 - [ ] **1.6** Update `internal/db/schema/mysql.sql` with the new table
@@ -434,49 +632,66 @@ type Service interface {
 ### Phase 2: Cron Service
 
 - [ ] **2.1** Create `internal/cron/service.go` with `Service` interface, `CronJob` struct, and `CreateParams`
-- [ ] **2.2** Implement cron expression parser (use existing Go library like `github.com/robfig/cron/v3` or a lightweight parser — check `go.mod` for existing deps first)
-- [ ] **2.3** Implement scheduler goroutine: 1-second tick, query due jobs, check agent busy state, enqueue execution
-- [ ] **2.4** Implement execution logic: permission check, task tool invocation via agent loop, result capture, job state update
-- [ ] **2.5** Implement `Start()` for resume-on-restart: load active jobs, recompute `next_run_at`
-- [ ] **2.6** Implement Go duration to cron expression conversion for `/loop` interval syntax
-- [ ] **2.7** Add pubsub broker for TUI updates
+- [ ] **2.2** Implement cron expression parser (check `go.mod` for existing deps first; if none, use `github.com/robfig/cron/v3` for parsing only — no scheduler, just `cron.ParseStandard()` for next-run calculation)
+- [ ] **2.3** Implement human-readable cron description (e.g., `"*/5 * * * *"` → `"every 5 minutes"`)
+- [ ] **2.4** Implement scheduler goroutine: 1-second tick, query due jobs via `ListDueCronJobs`, check agent busy state for active session, fire directly for inactive sessions, serialize execution per-session via mutex
+- [ ] **2.4.1** Implement per-session write mutex shared between cron scheduler and agent loop to prevent message interleaving
+- [ ] **2.5** Implement execution logic: permission check → task tool `Run()` invocation → synthetic message writing → job state update
+- [ ] **2.6** Implement synthetic message creation: write `tool_call` + `tool_result` message pair to parent session DB in a single transaction with consecutive seq numbers, under per-session write mutex. Publish via session pubsub after commit
+- [ ] **2.7** Implement `Start()` for resume-on-restart: load active jobs, recompute `next_run_at`
+- [ ] **2.8** Implement Go duration to cron expression conversion for `/loop` interval syntax
+- [ ] **2.9** Add pubsub broker for TUI updates
+- [ ] **2.10** Listen for session `DeletedEvent` to clean up in-memory state for deleted sessions
 
 ### Phase 3: Tools
 
 - [ ] **3.1** Create `internal/llm/tools/cron.go` with `croncreate`, `crondelete`, `cronlist` tool implementations
-- [ ] **3.2** Add cron tool names to `managerToolNames` in `internal/llm/agent/tools.go`
-- [ ] **3.3** Update built-in agent registrations in `internal/agent/registry.go`: disable cron tools for `coder`, keep enabled for `hivemind`, already blocked for subagents by manager tool check
-- [ ] **3.4** Add tool descriptions with clear documentation of parameters and cron expression format
-- [ ] **3.5** Implement permission checking: use cron job ID as permission key, support persistent grant for recurring jobs
+- [ ] **3.2** Add `CronCreateToolName`, `CronDeleteToolName`, `CronListToolName` constants
+- [ ] **3.3** Add cron tool names to `managerToolNames` in `internal/llm/agent/tools.go`
+- [ ] **3.4** Update built-in agent registrations in `internal/agent/registry.go`: disable cron tools for `coder`, keep enabled for `hivemind`
+- [ ] **3.5** Add tool prompts (as defined in this spec) guiding LLM on cron expression construction, subagent selection, and minute-mark avoidance
+- [ ] **3.6** Implement `croncreate` validation: parse cron expression, verify it matches a future date within the next year, enforce max 50 jobs per session
+- [ ] **3.7** Implement permission checking: use cron job ID as permission key, support persistent grant for recurring jobs
+- [ ] **3.8** Add `CronIcon = "⏲"` to `internal/tui/styles/icons.go`
 
 ### Phase 4: Slash Commands & TUI
 
-- [ ] **4.1** Add `/loop` slash command in `internal/tui/tui.go` `buildCommands`: parse interval + prompt, call `CronService.Create()`
+- [ ] **4.1** Add `/loop` slash command in `internal/tui/tui.go` `buildCommands`: parse interval + prompt, call `CronService.Create()`, show confirmation via `InfoMsg`
 - [ ] **4.2** Add `/crons` slash command that navigates to the crons TUI page
 - [ ] **4.3** Create `internal/tui/components/crons/table.go` — cron jobs table with columns: ID, Schedule, Source, Status, Runs, Next Run
 - [ ] **4.4** Create `internal/tui/components/crons/details.go` — detail panel showing full job info + latest output
 - [ ] **4.5** Create `internal/tui/page/crons.go` — page with table + details layout (same as agents/logs pattern)
 - [ ] **4.6** Register crons page in `internal/tui/tui.go`, add keybinding for navigation
 - [ ] **4.7** Add delete keybinding in crons table (`d` key)
+- [ ] **4.8** Add `⏲ N` indicator to session list rendering for sessions with active crons
+- [ ] **4.9** Emit status bar `InfoMsg` on every cron fire: `"⏲ <session>: <task>"` with 5s TTL
 
-### Phase 5: Integration & Chat Rendering
+### Phase 5: Chat Rendering
 
-- [ ] **5.1** Wire `CronService` into `app.App` and initialize on startup (`Start()`), shutdown (`Stop()`)
-- [ ] **5.2** Implement chat message rendering for cron tool calls — show cron icon, schedule, and result (similar to task tool rendering but with cron indicator)
-- [ ] **5.3** Handle agent busy state: scheduler waits for `IsSessionBusy()` to return false before executing cron task
-- [ ] **5.4** Result conflation: cron execution creates messages in the parent session's conversation via the agent loop
+- [ ] **5.1** Update `renderToolParams` in `message.go` to detect `⏲` prefix in task title and render cron-specific header (schedule + cron icon)
+- [ ] **5.2** Add `getToolName` and `getToolAction` entries for cron tools
+- [ ] **5.3** Ensure synthetic messages appear in the active session's chat list via pubsub subscription
 
-### Phase 6: Testing
+### Phase 6: Integration
 
-- [ ] **6.1** Unit tests for cron expression parsing and Go duration conversion
-- [ ] **6.2** Unit tests for cron service CRUD operations
-- [ ] **6.3** Unit tests for scheduler logic (due job detection, busy waiting, one-shot cleanup)
-- [ ] **6.4** Unit tests for tool parameter validation
-- [ ] **6.5** Integration test: create cron → wait for execution → verify task tool was invoked with correct params
+- [ ] **6.1** Wire `CronService` into `app.App`, initialize on startup (`Start()`), shutdown (`Stop()`)
+- [ ] **6.2** Pass `CronService` to tool constructors and slash command handlers
+- [ ] **6.3** Handle `OPENCODE_DISABLE_CRON` environment variable: skip tool registration, service startup, and slash command availability
+- [ ] **6.4** Update `AGENTS.md` with cron-related commands and configuration
+
+### Phase 7: Testing
+
+- [ ] **7.1** Unit tests for cron expression parsing and Go duration conversion
+- [ ] **7.2** Unit tests for human-readable cron description generation
+- [ ] **7.3** Unit tests for cron service CRUD operations
+- [ ] **7.4** Unit tests for scheduler logic (due job detection, busy waiting, one-shot cleanup, per-session serialization)
+- [ ] **7.5** Unit tests for tool parameter validation (invalid cron expression, no-future-match expression, max jobs, etc.)
+- [ ] **7.6** Unit tests for synthetic message creation (correct format, proper tool_call/tool_result pairing)
+- [ ] **7.7** Integration test: create cron → wait for execution → verify task tool was invoked with correct params → verify synthetic messages in parent session
 
 ## Edge Cases
 
-### Agent Busy When Cron Fires
+### Agent Busy When Cron Fires (Active Session)
 
 1. Cron job `cron_a1b2` is due at 14:35
 2. Agent is mid-response on a user request
@@ -485,6 +700,25 @@ type Service interface {
 5. Agent finishes at 14:37, scheduler detects idle state
 6. Cron job fires at 14:37
 7. No catch-up: only one execution, not two
+
+### Cron Fires on Inactive Session
+
+1. User is viewing session A, session B has a cron job due
+2. Scheduler fires the cron job for session B directly (no busy check needed)
+3. Task tool runs in a child session, produces output
+4. Synthetic messages written to session B's DB
+5. Status bar flashes: `⏲ Session B: check deploy status` for 5 seconds
+6. Session list shows `⏲ 1` next to session B
+7. When user switches to session B, they see the synthetic messages in the conversation
+8. On user's next prompt, the parent agent has full context of cron results
+
+### Permission on Inactive Session (No Prior Grant)
+
+1. Cron job fires for inactive session, no persistent permission granted yet
+2. Cannot show permission dialog (no active UI context for that session)
+3. Scheduler skips this execution, job remains active, next_run_at not updated
+4. When user switches to that session and agent becomes idle, the cron fires and permission dialog appears
+5. User can grant "allow all" to enable future background executions
 
 ### Session Deleted While Cron Active
 
@@ -501,24 +735,33 @@ type Service interface {
 3. OpenCode restarts, user opens same session
 4. `CronService.Start()` loads all `status="active"` jobs from DB
 5. For each job: if `next_run_at` is in the past, compute next future occurrence from `schedule`
-6. Scheduler resumes normal operation
+6. No catch-up for missed fires
+7. Scheduler resumes normal operation
 
-### Concurrent Cron Fires
+### Concurrent Cron Fires (Same Session)
 
 1. Two cron jobs due at the same time for the same session
-2. First job starts executing (agent becomes busy)
-3. Second job sees agent busy, waits
-4. First job completes, agent becomes idle
-5. Second job fires on next tick
+2. Per-session mutex in scheduler serializes execution
+3. First job executes, completes, synthetic messages written atomically
+4. Second job executes, completes, synthetic messages written atomically
+5. Both results appear in conversation in deterministic order
+6. For active session: agent busy check applies to each sequentially
+
+### Message Interleaving Race
+
+1. Agent finishes a turn (`activeRequests.Delete`), becomes idle
+2. Cron scheduler detects idle, begins executing cron job
+3. Simultaneously, user sends a new message which triggers agent `Run()`
+4. Without mutex: cron's synthetic `tool_call` gets seq=N, user message gets seq=N+1, cron's `tool_result` gets seq=N+2 — corrupted pairing
+5. With per-session write mutex: cron holds the lock while writing both synthetic messages atomically, user message waits, gets seq=N+2 — clean conversation
 
 ### One-Shot Completion
 
 1. User schedules: "remind me at 3pm to push the release"
 2. Cron expression: `0 15 * * *`, `is_recurring: false`
 3. Job fires at 15:00, task executes
-4. After completion: `status` set to `"done"`, no `next_run_at`
-5. Job remains in DB for visibility but never fires again
-6. `/crons` table shows it as "done"
+4. After completion: `status` set to `"done"`, `next_run_at` cleared
+5. Job remains in DB and `/crons` table for visibility but never fires again
 
 ### Permission Denied
 
@@ -532,8 +775,20 @@ type Service interface {
 
 1. Session already has 50 active cron jobs
 2. Agent calls `croncreate` for a 51st job
-3. Tool returns error: "Maximum of 50 cron jobs per session reached"
-4. Agent can suggest deleting unused jobs
+3. Tool returns error: "Too many scheduled jobs (max 50). Cancel one first."
+4. Same validation in `/loop` slash command
+
+### Invalid Cron Expression
+
+1. Agent calls `croncreate` with `schedule: "invalid"`
+2. Tool validation fails: "Invalid cron expression 'invalid'. Expected 5 fields: M H DoM Mon DoW."
+3. No job created
+
+### Cron Expression Matches No Future Date
+
+1. Agent calls `croncreate` with `schedule: "0 0 31 2 *"` (Feb 31, never happens)
+2. Tool validation: "Cron expression '0 0 31 2 *' does not match any calendar date in the next year."
+3. No job created
 
 ## Open Questions
 
@@ -545,40 +800,47 @@ type Service interface {
    - Claude auto-expires after 3 days to prevent forgotten loops
    - **Recommendation**: Skip for now. Since OpenCode persists cron jobs and shows them in `/crons`, users have visibility. Can add later if needed via a configurable `max_lifetime` field.
 
-3. **How should the cron execution interact with the chat message list?**
-   - Option A: Cron results appear as regular messages in the chat (visible immediately)
-   - Option B: Cron results appear as collapsed/folded entries (less noisy)
-   - **Recommendation**: Option A for now — results should be visible since the user scheduled them. The task tool rendering already handles subagent results well.
-
-4. **Should `/loop` default to `explorer` or use a configurable default subagent?**
+3. **Should `/loop` default to `explorer` or use a configurable default subagent?**
    - **Recommendation**: Default to `explorer` (read-only, safe for automated polling). Allow overriding via syntax like `/loop 5m --agent workhorse check and fix the build`.
 
-5. **Should cron jobs from one session be visible in `/crons` when viewing a different session?**
-   - **Recommendation**: Show only current session's cron jobs. A "show all" toggle could be added later.
+4. **Should cron jobs from one session be visible in `/crons` when viewing a different session?**
+   - **Recommendation**: Show only current session's cron jobs by default. A "show all" toggle could be added later.
 
-6. **Environment variable to disable cron entirely?**
-   - Claude uses `CLAUDE_CODE_DISABLE_CRON=1`
-   - **Recommendation**: Add `OPENCODE_DISABLE_CRON=1` for parity. When set, cron tools are not registered and `/loop` is unavailable.
+5. **Concurrent fire behavior for inactive sessions — parallel or serial?**
+   - The task tool has `AllowParallelism: true`, so concurrent fires on the same inactive session would work. But synthetic message ordering could get confusing.
+   - **Recommendation**: Serialize per-session (use a per-session mutex in the scheduler). This keeps message ordering deterministic. Different sessions can fire in parallel.
 
 ## Success Criteria
 
-- [ ] `croncreate` tool creates a persistent cron job that survives process restart
+- [ ] `croncreate` tool creates a persistent cron job stored in DB
 - [ ] `crondelete` removes a cron job by ID
-- [ ] `cronlist` returns all cron jobs for the current session
-- [ ] Cron jobs execute on schedule via task tool with `task_id` reuse
-- [ ] Deleting a session cascade-deletes its cron jobs
+- [ ] `cronlist` returns all cron jobs for the current session with human-readable schedules
+- [ ] Cron jobs execute on schedule via direct task tool invocation
+- [ ] Synthetic `tool_call` + `tool_result` messages written to parent session on each fire
+- [ ] Active session sees cron results in chat live via pubsub
+- [ ] Inactive session has results stored in DB, visible when user switches to it
+- [ ] `task_id` is reused across runs — subagent retains conversation history
+- [ ] Deleting a session cascade-deletes its cron jobs from DB
+- [ ] Process restart resumes active cron jobs from DB
 - [ ] `/loop 5m <prompt>` creates a recurring cron job from the TUI
 - [ ] `/crons` opens a table page showing all session cron jobs with delete capability
+- [ ] Status bar shows `⏲ <session>: <task>` flash on every cron fire (5s TTL)
+- [ ] Session list shows `⏲ N` indicator for sessions with active crons
 - [ ] Cron tools are only available to primary agents (not subagents)
 - [ ] Only `hivemind` has cron tools enabled by default
 - [ ] Permission is asked on first cron execution; "allow all" skips future prompts
-- [ ] Agent busy state is respected — cron waits for idle before firing
+- [ ] Permission on inactive sessions is deferred until session becomes active
+- [ ] Agent busy state is respected on active session — cron waits for idle before firing
+- [ ] Cron fires per-session are serialized to maintain deterministic message ordering
+- [ ] Synthetic message pairs are written atomically (single transaction, consecutive seq) — no interleaving with agent/user messages
 - [ ] Both SQLite and MySQL providers support the `cron_jobs` table
+- [ ] `OPENCODE_DISABLE_CRON=1` disables the entire cron system
+- [ ] Cron expression validation rejects invalid expressions and expressions with no future match
 - [ ] `make test` passes
 
 ## References
 
-- `internal/llm/agent/agent-tool.go` — Task tool implementation (cron proxies to this)
+- `internal/llm/agent/agent-tool.go` — Task tool implementation (cron invokes `Run()` directly)
 - `internal/llm/agent/tools.go` — `managerToolNames` and `NewToolSet` (cron tools added here)
 - `internal/agent/registry.go` — Built-in agent registration (tool access control)
 - `internal/db/migrations/sqlite/20260220120000_add_flow_states.sql` — Migration pattern to follow
@@ -586,7 +848,15 @@ type Service interface {
 - `internal/session/session.go` — Session service (cascade delete, event publishing)
 - `internal/permission/permission.go` — Permission service (request/grant/deny flow)
 - `internal/tui/page/agents.go` — TUI page pattern (table + details layout)
-- `internal/tui/tui.go` — Slash command registration in `buildCommands`
+- `internal/tui/page/logs.go` — TUI page pattern (pubsub subscription for live updates)
+- `internal/tui/tui.go` — Slash command registration in `buildCommands`, status bar routing
+- `internal/tui/components/core/status.go` — Status bar component (InfoMsg handling, widget rendering)
+- `internal/tui/util/util.go` — `InfoMsg` type for status bar messages
+- `internal/tui/styles/icons.go` — Icon constants (add `CronIcon`)
+- `internal/tui/components/chat/message.go` — Tool call rendering (`renderToolParams`, `getToolName`, `getToolAction`)
 - `internal/tui/components/dialog/commands.go` — Command struct for slash commands
 - `internal/llm/tools/skill.go` — Permission check pattern for tools
-- [Claude Code scheduled tasks docs](https://code.claude.com/docs/en/scheduled-tasks) — Reference implementation
+- Claude Code source: `src/tools/ScheduleCronTool/` — Reference implementation (tool definitions, prompts, UI rendering)
+- Claude Code source: `src/utils/cronScheduler.ts` — Reference scheduler (1s tick, idle gating, jitter, lock)
+- Claude Code source: `src/utils/cronTasks.ts` — Reference task store (jitter calculation, fire tracking)
+- [Claude Code scheduled tasks docs](https://code.claude.com/docs/en/scheduled-tasks) — Public documentation

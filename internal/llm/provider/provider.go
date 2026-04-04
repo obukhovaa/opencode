@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	toolsPkg "github.com/opencode-ai/opencode/internal/llm/tools"
@@ -181,6 +183,7 @@ type providerClientOptions struct {
 	systemMessage string
 	baseURL       string
 	headers       map[string]string
+	metadata      *config.ProviderMetadata
 
 	anthropicOptions []AnthropicOption
 	openaiOptions    []OpenAIOption
@@ -585,4 +588,70 @@ func WithBedrockOptions(bedrockOptions ...BedrockOption) ProviderClientOption {
 	return func(options *providerClientOptions) {
 		options.bedrockOptions = bedrockOptions
 	}
+}
+
+func WithMetadata(metadata *config.ProviderMetadata) ProviderClientOption {
+	return func(options *providerClientOptions) {
+		options.metadata = metadata
+	}
+}
+
+var processUserID = func() string {
+	if id := os.Getenv("OPENCODE_USER_ID"); id != "" {
+		return id
+	}
+	cfg := config.Get()
+	if cfg != nil && cfg.Telemetry != nil && cfg.Telemetry.UserID != "" {
+		return cfg.Telemetry.UserID
+	}
+	return uuid.New().String()
+}
+
+var resolvedUserID string
+var userIDOnce sync.Once
+
+func getUserID() string {
+	userIDOnce.Do(func() {
+		resolvedUserID = processUserID()
+	})
+	return resolvedUserID
+}
+
+func resolveMetadata(ctx context.Context, meta *config.ProviderMetadata) map[string]any {
+	if meta == nil {
+		return nil
+	}
+	resolved := make(map[string]any)
+	if meta.SessionID != "" {
+		if sid, ok := ctx.Value(toolsPkg.SessionIDContextKey).(string); ok && sid != "" {
+			resolved[meta.SessionID] = sid
+		}
+	}
+	if meta.UserID != "" {
+		if uid := getUserID(); uid != "" {
+			resolved[meta.UserID] = uid
+		}
+	}
+	if meta.Tags != "" {
+		tags := resolveTags(ctx)
+		if len(tags) > 0 {
+			resolved[meta.Tags] = tags
+		}
+	}
+	if len(resolved) == 0 {
+		return nil
+	}
+	return resolved
+}
+
+func resolveTags(ctx context.Context) []string {
+	var tags []string
+	cfg := config.Get()
+	if cfg != nil && cfg.Telemetry != nil {
+		tags = append(tags, cfg.Telemetry.Tags...)
+	}
+	if dynamic, ok := ctx.Value(toolsPkg.MetadataTagsContextKey).([]string); ok {
+		tags = append(tags, dynamic...)
+	}
+	return tags
 }

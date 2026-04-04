@@ -285,6 +285,7 @@ func (a *anthropicClient) preparedMessages(messages []anthropic.MessageParam, to
 
 func (a *anthropicClient) send(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) (resposne *ProviderResponse, err error) {
 	preparedMessages := a.preparedMessages(a.convertMessages(messages), a.convertTools(tools))
+	a.applyMetadata(ctx, &preparedMessages)
 	cfg := config.Get()
 	if cfg.Debug {
 		jsonData, _ := json.Marshal(preparedMessages)
@@ -334,6 +335,7 @@ func (a *anthropicClient) send(ctx context.Context, messages []message.Message, 
 
 func (a *anthropicClient) stream(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) <-chan ProviderEvent {
 	preparedMessages := a.preparedMessages(a.convertMessages(messages), a.convertTools(tools))
+	a.applyMetadata(ctx, &preparedMessages)
 	cfg := config.Get()
 
 	var sessionID string
@@ -531,6 +533,28 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 		}
 	}()
 	return eventChan
+}
+
+func (a *anthropicClient) applyMetadata(ctx context.Context, params *anthropic.MessageNewParams) {
+	resolved := resolveMetadata(ctx, a.providerOptions.metadata)
+	if resolved == nil {
+		return
+	}
+	meta := anthropic.MetadataParam{}
+	extraFields := make(map[string]any)
+	for fieldName, value := range resolved {
+		if fieldName == "user_id" {
+			if s, ok := value.(string); ok {
+				meta.UserID = param.NewOpt(s)
+				continue
+			}
+		}
+		extraFields[fieldName] = value
+	}
+	if len(extraFields) > 0 {
+		meta.SetExtraFields(extraFields)
+	}
+	params.Metadata = meta
 }
 
 func (a *anthropicClient) shouldRetry(attempts int, err error) (bool, int64, error) {

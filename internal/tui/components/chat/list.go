@@ -25,24 +25,24 @@ type cacheItem struct {
 	content []uiMessage
 }
 type messagesCmp struct {
-	app              *app.App
-	width, height    int
-	viewport         viewport.Model
-	session          session.Session
-	messages         []message.Message
-	uiMessages       []uiMessage
-	currentMsgID     string
-	cachedContent    map[string]cacheItem
-	spinner          spinner.Model
-	spinnerActive    bool
+	app                 *app.App
+	width, height       int
+	viewport            viewport.Model
+	session             session.Session
+	messages            []message.Message
+	uiMessages          []uiMessage
+	currentMsgID        string
+	cachedContent       map[string]cacheItem
+	spinner             spinner.Model
+	spinnerActive       bool
 	rendering           bool
 	dirtyWhileRendering map[string]struct{}
-	attachments      viewport.Model
-	cachedPending    pendingToolCounts
-	cachedUnfinished bool
-	taskMessages     map[string][]message.Message
-	userScrolledUp   bool
-	newMessageCount  int
+	attachments         viewport.Model
+	cachedPending       pendingToolCounts
+	cachedUnfinished    bool
+	taskMessages        map[string][]message.Message
+	userScrolledUp      bool
+	newMessageCount     int
 }
 type renderFinishedMsg struct {
 	uiMessages      []uiMessage

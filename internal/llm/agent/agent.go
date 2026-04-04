@@ -314,6 +314,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	}
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
 	ctx = context.WithValue(ctx, tools.AgentIDContextKey, a.AgentID())
+	ctx = tools.AddTag(ctx, "agent", a.AgentID())
 
 	userMsg, err := a.createUserMessage(ctx, sessionID, content, attachmentParts)
 	if err != nil {
@@ -1388,6 +1389,9 @@ func createAgentProvider(agentName config.AgentName) (agentProvider provider.Pro
 	}
 	if len(providerCfg.Headers) != 0 {
 		opts = append(opts, provider.WithHeaders(providerCfg.Headers))
+	}
+	if providerCfg.Metadata != nil {
+		opts = append(opts, provider.WithMetadata(providerCfg.Metadata))
 	}
 
 	if model.Provider == models.ProviderOpenAI || model.Provider == models.ProviderLocal && model.CanReason {

@@ -214,6 +214,7 @@ func (g *geminiClient) send(ctx context.Context, messages []message.Message, too
 			Headers: *g.providerOptions.asHeader(),
 		}
 	}
+	g.applyMetadata(ctx, config)
 	if len(tools) > 0 {
 		config.Tools = g.convertTools(tools)
 	}
@@ -307,6 +308,12 @@ func (g *geminiClient) stream(ctx context.Context, messages []message.Message, t
 			Parts: []*genai.Part{{Text: g.providerOptions.systemMessage}},
 		},
 	}
+	if len(g.providerOptions.headers) != 0 {
+		config.HTTPOptions = &genai.HTTPOptions{
+			Headers: *g.providerOptions.asHeader(),
+		}
+	}
+	g.applyMetadata(ctx, config)
 	if len(tools) > 0 {
 		config.Tools = g.convertTools(tools)
 	}
@@ -508,6 +515,21 @@ func (g *geminiClient) stream(ctx context.Context, messages []message.Message, t
 	}()
 
 	return eventChan
+}
+
+func (g *geminiClient) applyMetadata(ctx context.Context, config *genai.GenerateContentConfig) {
+	resolved := resolveMetadata(ctx, g.providerOptions.metadata)
+	if resolved == nil {
+		return
+	}
+	if config.HTTPOptions == nil {
+		config.HTTPOptions = &genai.HTTPOptions{}
+	}
+	if config.HTTPOptions.ExtraBody == nil {
+		config.HTTPOptions.ExtraBody = map[string]any{"metadata": resolved}
+	} else {
+		config.HTTPOptions.ExtraBody["metadata"] = resolved
+	}
 }
 
 func (g *geminiClient) shouldRetry(attempts int, err error) (bool, int64, error) {

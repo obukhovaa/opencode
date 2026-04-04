@@ -2,6 +2,8 @@ package config
 
 import (
 	"testing"
+
+	"github.com/opencode-ai/opencode/internal/llm/models"
 )
 
 func TestValidateSessionProvider(t *testing.T) {
@@ -147,4 +149,146 @@ func containsMiddle(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestValidateProviderMetadata(t *testing.T) {
+	tests := []struct {
+		name        string
+		metadata    *ProviderMetadata
+		expectError bool
+	}{
+		{
+			name:        "nil metadata is valid",
+			metadata:    nil,
+			expectError: false,
+		},
+		{
+			name: "valid metadata with both fields",
+			metadata: &ProviderMetadata{
+				SessionID: "session_id",
+				UserID:    "user_id",
+			},
+			expectError: false,
+		},
+		{
+			name: "valid metadata with sessionId only",
+			metadata: &ProviderMetadata{
+				SessionID: "my_session",
+			},
+			expectError: false,
+		},
+		{
+			name: "valid metadata with userId only",
+			metadata: &ProviderMetadata{
+				UserID: "trace_user",
+			},
+			expectError: false,
+		},
+		{
+			name:        "empty metadata struct is valid",
+			metadata:    &ProviderMetadata{},
+			expectError: false,
+		},
+		{
+			name: "whitespace-only sessionId is invalid",
+			metadata: &ProviderMetadata{
+				SessionID: "   ",
+			},
+			expectError: true,
+		},
+		{
+			name: "whitespace-only userId is invalid",
+			metadata: &ProviderMetadata{
+				UserID: "  ",
+			},
+			expectError: true,
+		},
+		{
+			name: "valid metadata with tags",
+			metadata: &ProviderMetadata{
+				Tags: "labels",
+			},
+			expectError: false,
+		},
+		{
+			name: "whitespace-only tags is invalid",
+			metadata: &ProviderMetadata{
+				Tags: "  ",
+			},
+			expectError: true,
+		},
+		{
+			name: "valid metadata with all fields",
+			metadata: &ProviderMetadata{
+				SessionID: "session_id",
+				UserID:    "user_id",
+				Tags:      "tags",
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateProviderMetadata(models.ProviderAnthropic, tt.metadata)
+			if tt.expectError && err == nil {
+				t.Error("Expected error but got none")
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateTelemetryConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		telemetry   *TelemetryConfig
+		expectError bool
+	}{
+		{
+			name:        "nil telemetry is valid",
+			telemetry:   nil,
+			expectError: false,
+		},
+		{
+			name:        "empty telemetry is valid",
+			telemetry:   &TelemetryConfig{},
+			expectError: false,
+		},
+		{
+			name: "supported default tag is valid",
+			telemetry: &TelemetryConfig{
+				DefaultTags: []string{"agent"},
+			},
+			expectError: false,
+		},
+		{
+			name: "unsupported default tag is invalid",
+			telemetry: &TelemetryConfig{
+				DefaultTags: []string{"unknown"},
+			},
+			expectError: true,
+		},
+		{
+			name: "mix of supported and unsupported is invalid",
+			telemetry: &TelemetryConfig{
+				DefaultTags: []string{"agent", "bad"},
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateTelemetryConfig(tt.telemetry)
+			if tt.expectError && err == nil {
+				t.Error("Expected error but got none")
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+		})
+	}
 }

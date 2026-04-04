@@ -145,8 +145,9 @@ func vertexMiddleware(region, regionForCounting, projectID string) sdkoption.Mid
 				r.URL.Path = strings.ReplaceAll(r.URL.Path, "/v1/messages/count_tokens", newPath)
 			}
 
+			meta := gjson.GetBytes(body, "metadata").String()
 			logging.Debug("vertext_ai middleware request, using beta header", "anthropic-beta", betas,
-				"model", model, "stream", stream, "path", r.URL.Path, "new_path", newPath, "method", r.Method,
+				"model", model, "stream", stream, "path", r.URL.Path, "new_path", newPath, "method", r.Method, "metadata", meta,
 			)
 
 			reader := bytes.NewReader(body)

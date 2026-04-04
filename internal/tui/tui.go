@@ -1058,7 +1058,7 @@ func buildCommands() []dialog.Command {
 			Title:        "Review code",
 			Description:  "Review a given work using provided commit hash or branch",
 			Content:      reviewContent,
-			ArgumentHint: "[commit hash, branch name, or PR URL (leave empty for uncommitted changes)]",
+			ArgumentHint: "[commit, branch, pr, uncommitted]",
 			Handler: func(cmd dialog.Command) tea.Cmd {
 				return dialog.ParameterizedCommandHandler(reviewContent, &cmd)
 			},

@@ -11,6 +11,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
+	"github.com/opencode-ai/opencode/internal/flow"
 	"github.com/opencode-ai/opencode/internal/format"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
@@ -502,8 +503,36 @@ func init() {
 	// Add auto-approve flag
 	rootCmd.Flags().Bool("auto-approve", false, "Start with auto-approve enabled (skip permission dialogs for ask rules)")
 
-	// Register custom validation for the format flag
+	// Register flag completion functions
 	rootCmd.RegisterFlagCompletionFunc("output-format", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return format.SupportedFormats, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	rootCmd.RegisterFlagCompletionFunc("agent", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{
+			config.AgentCoder,
+			config.AgentHivemind,
+			config.AgentExplorer,
+			config.AgentWorkhorse,
+			config.AgentSummarizer,
+			config.AgentDescriptor,
+		}, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	rootCmd.RegisterFlagCompletionFunc("flow", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		flows := flow.All()
+		ids := make([]string, len(flows))
+		for i, f := range flows {
+			ids[i] = f.ID
+		}
+		return ids, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	rootCmd.RegisterFlagCompletionFunc("cwd", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return nil, cobra.ShellCompDirectiveFilterDirs
+	})
+
+	rootCmd.RegisterFlagCompletionFunc("args-file", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"json"}, cobra.ShellCompDirectiveFilterFileExt
 	})
 }

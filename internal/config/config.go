@@ -90,12 +90,29 @@ type Agent struct {
 	Output          *AgentOutput    `json:"output,omitempty"`
 }
 
+// TelemetryConfig defines telemetry configuration for identifying requests.
+type TelemetryConfig struct {
+	UserID      string   `json:"userId,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	DefaultTags []string `json:"defaultTags,omitempty"`
+}
+
+// ProviderMetadata defines metadata key-value pairs attached to every LLM API request.
+// Keys are built-in identifiers (sessionId, userId, tags) that OpenCode resolves at runtime.
+// Values are the field names used in the metadata object sent to the API.
+type ProviderMetadata struct {
+	SessionID string `json:"sessionId,omitempty"`
+	UserID    string `json:"userId,omitempty"`
+	Tags      string `json:"tags,omitempty"`
+}
+
 // Provider defines configuration for an LLM provider.
 type Provider struct {
 	APIKey   string            `json:"apiKey"`
 	Disabled bool              `json:"disabled"`
 	BaseURL  string            `json:"baseURL"`
 	Headers  map[string]string `json:"headers,omitempty"`
+	Metadata *ProviderMetadata `json:"metadata,omitempty"`
 }
 
 // Data defines storage configuration.
@@ -197,6 +214,7 @@ type Config struct {
 	Permission         *PermissionConfig                 `json:"permission,omitempty"`
 	WebSearch          *WebSearchConfig                  `json:"webSearch,omitempty"`
 	MaxTurns           int                               `json:"maxTurns,omitempty"`
+	Telemetry          *TelemetryConfig                  `json:"telemetry,omitempty"`
 }
 
 // Application constants
@@ -762,6 +780,13 @@ func Validate() error {
 			providerCfg.Disabled = true
 			cfg.Providers[provider] = providerCfg
 		}
+		if err := validateProviderMetadata(provider, providerCfg.Metadata); err != nil {
+			return err
+		}
+	}
+
+	if err := validateTelemetryConfig(cfg.Telemetry); err != nil {
+		return err
 	}
 
 	// Validate LSP configurations
@@ -812,6 +837,43 @@ func validateSessionProvider() error {
 
 	return nil
 }
+
+// validateProviderMetadata validates provider metadata configuration.
+func validateProviderMetadata(provider models.ModelProvider, meta *ProviderMetadata) error {
+	if meta == nil {
+		return nil
+	}
+	if meta.SessionID != "" && strings.TrimSpace(meta.SessionID) == "" {
+		return fmt.Errorf("provider %s: metadata sessionId field name must be non-empty", provider)
+	}
+	if meta.UserID != "" && strings.TrimSpace(meta.UserID) == "" {
+		return fmt.Errorf("provider %s: metadata userId field name must be non-empty", provider)
+	}
+	if meta.Tags != "" && strings.TrimSpace(meta.Tags) == "" {
+		return fmt.Errorf("provider %s: metadata tags field name must be non-empty", provider)
+	}
+	return nil
+}
+
+// validateTelemetryConfig validates telemetry configuration.
+func validateTelemetryConfig(telemetry *TelemetryConfig) error {
+	if telemetry == nil {
+		return nil
+	}
+	supported := map[string]bool{}
+	for _, s := range SupportedDefaultTags {
+		supported[s] = true
+	}
+	for _, tag := range telemetry.DefaultTags {
+		if !supported[tag] {
+			return fmt.Errorf("telemetry: unsupported defaultTag %q (supported: %v)", tag, SupportedDefaultTags)
+		}
+	}
+	return nil
+}
+
+// SupportedDefaultTags lists the tag keys that OpenCode supports for dynamic metadata.
+var SupportedDefaultTags = []string{"agent"}
 
 // getProviderAPIKey gets the API key for a provider from environment variables
 func getProviderAPIKey(provider models.ModelProvider) string {

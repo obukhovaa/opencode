@@ -3,11 +3,13 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/diff"
+	"github.com/opencode-ai/opencode/internal/logging"
 )
 
 type ToolInfo struct {
@@ -21,20 +23,22 @@ type ToolInfo struct {
 type toolResponseType string
 
 type (
-	sessionIDContextKey   string
-	messageIDContextKey   string
-	isTaskAgentContextKey string
-	agentIDContextKey     string
+	sessionIDContextKey    string
+	messageIDContextKey    string
+	isTaskAgentContextKey  string
+	agentIDContextKey      string
+	metadataTagsContextKey string
 )
 
 const (
 	ToolResponseTypeText  toolResponseType = "text"
 	ToolResponseTypeImage toolResponseType = "image"
 
-	SessionIDContextKey   sessionIDContextKey   = "session_id"
-	MessageIDContextKey   messageIDContextKey   = "message_id"
-	IsTaskAgentContextKey isTaskAgentContextKey = "is_task_agent"
-	AgentIDContextKey     agentIDContextKey     = "agent_id"
+	SessionIDContextKey    sessionIDContextKey    = "session_id"
+	MessageIDContextKey    messageIDContextKey    = "message_id"
+	IsTaskAgentContextKey  isTaskAgentContextKey  = "is_task_agent"
+	AgentIDContextKey      agentIDContextKey      = "agent_id"
+	MetadataTagsContextKey metadataTagsContextKey = "metadata_tags"
 
 	// MaxToolResponseTokens is the maximum number of tokens allowed in a tool response
 	// to prevent context overflow. ~1200KB of text content.
@@ -229,4 +233,34 @@ func GetAgentID(ctx context.Context) config.AgentName {
 		return val
 	}
 	return ""
+}
+
+func AddTag(ctx context.Context, k, v string) context.Context {
+	if k == "" || v == "" {
+		logging.Warn(fmt.Sprintf("Bad tag provided %s:%s", k, v))
+		return ctx
+	}
+	cfg := config.Get()
+	if cfg != nil && cfg.Telemetry != nil && len(cfg.Telemetry.DefaultTags) > 0 {
+		found := false
+		for _, dt := range cfg.Telemetry.DefaultTags {
+			if dt == k {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ctx
+		}
+	} else {
+		return ctx
+	}
+	tag := fmt.Sprintf("%s:%s", k, v)
+	if existing, ok := ctx.Value(MetadataTagsContextKey).([]string); ok {
+		tags := make([]string, len(existing)+1)
+		copy(tags, existing)
+		tags[len(existing)] = tag
+		return context.WithValue(ctx, MetadataTagsContextKey, tags)
+	}
+	return context.WithValue(ctx, MetadataTagsContextKey, []string{tag})
 }

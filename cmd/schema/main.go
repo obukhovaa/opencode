@@ -205,6 +205,25 @@ func generateSchema() map[string]any {
 						"type": "string",
 					},
 				},
+				"metadata": map[string]any{
+					"type":        "object",
+					"description": "Metadata key-value pairs attached to every LLM API request body. Keys are built-in identifiers (sessionId, userId, tags) that OpenCode resolves at runtime. Values are the field names used in the metadata object sent to the API.",
+					"properties": map[string]any{
+						"sessionId": map[string]any{
+							"type":        "string",
+							"description": "Field name for the session ID in the metadata object. The value is resolved from the current session context.",
+						},
+						"userId": map[string]any{
+							"type":        "string",
+							"description": "Field name for the user ID in the metadata object. The value is read from OPENCODE_USER_ID env var, telemetry.userId config, or auto-generated as UUID at startup.",
+						},
+						"tags": map[string]any{
+							"type":        "string",
+							"description": "Field name for the tags array in the metadata object. Tags are resolved from telemetry.tags config and can be extended dynamically at runtime.",
+						},
+					},
+					"additionalProperties": false,
+				},
 			},
 		},
 	}
@@ -561,6 +580,34 @@ func generateSchema() map[string]any {
 		"type":        "integer",
 		"description": "Global maximum number of agent tool-use turns per request. When set, overrides per-agent maxTurns. Also settable via --max-turns CLI flag.",
 		"minimum":     1,
+	}
+
+	// Add telemetry configuration
+	schema["properties"].(map[string]any)["telemetry"] = map[string]any{
+		"type":        "object",
+		"description": "Telemetry configuration for identifying requests. Values are used by provider metadata resolution.",
+		"properties": map[string]any{
+			"userId": map[string]any{
+				"type":        "string",
+				"description": "User identifier attached to LLM requests. Takes precedence over auto-generated UUID but is overridden by OPENCODE_USER_ID env var.",
+			},
+			"tags": map[string]any{
+				"type":        "array",
+				"description": "Static tags attached to every LLM request when the provider metadata has a tags field configured. Useful for environment labels (e.g., 'prod', 'dev', 'team-a').",
+				"items": map[string]any{
+					"type": "string",
+				},
+			},
+			"defaultTags": map[string]any{
+				"type":        "array",
+				"description": "List of predefined tag keys that OpenCode will automatically add to metadata. Supported keys: 'agent'. When set, only listed tag keys are included in dynamic metadata tags.",
+				"items": map[string]any{
+					"type": "string",
+					"enum": []string{"agent"},
+				},
+			},
+		},
+		"additionalProperties": false,
 	}
 
 	// Add permission configuration
