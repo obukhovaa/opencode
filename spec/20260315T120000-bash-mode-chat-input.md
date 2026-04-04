@@ -1,7 +1,7 @@
 # Bash Mode in Chat Input
 
 **Date**: 2026-03-15
-**Status**: Draft
+**Status**: Implemented
 **Author**: AI-assisted
 
 ## Overview

@@ -35,7 +35,8 @@ type messagesCmp struct {
 	cachedContent    map[string]cacheItem
 	spinner          spinner.Model
 	spinnerActive    bool
-	rendering        bool
+	rendering           bool
+	dirtyWhileRendering map[string]struct{}
 	attachments      viewport.Model
 	cachedPending    pendingToolCounts
 	cachedUnfinished bool
@@ -126,8 +127,11 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rendering = false
 		m.uiMessages = msg.uiMessages
 		for id, item := range msg.cacheUpdates {
-			m.cachedContent[id] = item
+			if _, dirty := m.dirtyWhileRendering[id]; !dirty {
+				m.cachedContent[id] = item
+			}
 		}
+		m.dirtyWhileRendering = nil
 		if m.userScrolledUp {
 			yOff := m.viewport.YOffset()
 			m.viewport.SetContent(msg.viewportContent)
@@ -145,7 +149,7 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Type == pubsub.UpdatedEvent && msg.Payload.ID == m.session.ID {
 			m.session = msg.Payload
 			if m.session.SummaryMessageID == m.currentMsgID {
-				delete(m.cachedContent, m.currentMsgID)
+				m.invalidateCache(m.currentMsgID)
 				if m.rendering {
 					m.rendering = false
 				}
@@ -168,11 +172,11 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !messageExists {
 					if len(m.messages) > 0 {
 						lastMsgID := m.messages[len(m.messages)-1].ID
-						delete(m.cachedContent, lastMsgID)
+						m.invalidateCache(lastMsgID)
 					}
 
 					m.messages = append(m.messages, msg.Payload)
-					delete(m.cachedContent, m.currentMsgID)
+					m.invalidateCache(m.currentMsgID)
 					m.currentMsgID = msg.Payload.ID
 					needsRerender = true
 				}
@@ -182,7 +186,7 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for _, c := range v.ToolCalls() {
 					if c.ID == msg.Payload.SessionID {
 						m.taskMessages[c.ID] = append(m.taskMessages[c.ID], msg.Payload)
-						delete(m.cachedContent, v.ID)
+						m.invalidateCache(v.ID)
 						needsRerender = true
 					}
 				}
@@ -192,7 +196,7 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for i, v := range m.messages {
 					if v.ID == msg.Payload.ID {
 						m.messages[i] = msg.Payload
-						delete(m.cachedContent, msg.Payload.ID)
+						m.invalidateCache(msg.Payload.ID)
 						needsRerender = true
 						break
 					}
@@ -204,7 +208,7 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						for i, tm := range m.taskMessages[c.ID] {
 							if tm.ID == msg.Payload.ID {
 								m.taskMessages[c.ID][i] = msg.Payload
-								delete(m.cachedContent, v.ID)
+								m.invalidateCache(v.ID)
 								needsRerender = true
 								break
 							}
@@ -270,6 +274,16 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *messagesCmp) IsAgentWorking() bool {
 	return m.app.ActiveAgent().IsSessionBusy(m.session.ID)
+}
+
+func (m *messagesCmp) invalidateCache(id string) {
+	delete(m.cachedContent, id)
+	if m.rendering {
+		if m.dirtyWhileRendering == nil {
+			m.dirtyWhileRendering = make(map[string]struct{})
+		}
+		m.dirtyWhileRendering[id] = struct{}{}
+	}
 }
 
 func (m *messagesCmp) hasCacheMisses() bool {
@@ -386,6 +400,7 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 		return nil
 	}
 	m.rendering = true
+	m.dirtyWhileRendering = nil
 
 	msgsCopy := make([]message.Message, len(m.messages))
 	copy(msgsCopy, m.messages)

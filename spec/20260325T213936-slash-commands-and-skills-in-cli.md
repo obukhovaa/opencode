@@ -1,7 +1,7 @@
 # Slash Commands & Skills in Non-Interactive Mode + Skill Slash Invocation
 
 **Date**: 2026-03-25
-**Status**: Draft
+**Status**: Implemented
 **Author**: AI-assisted
 
 ## Overview
