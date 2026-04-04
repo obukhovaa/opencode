@@ -373,6 +373,7 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | `OPENCODE_DISABLE_CLAUDE_SKILLS` | Disable `.claude/skills/` discovery |
 | `OPENCODE_DISABLE_LSP_DOWNLOAD` | Disable auto-install of LSP servers |
 | `OPENCODE_MAX_REPEAT_CALLS` | How many consequent tool calls with the same params allowed (default 3) |
+| `OPENCODE_PROVIDER_STREAM_INACTIVITY_TIMEOUT` | Seconds to wait for next SSE event before treating stream as stalled (default 300) |
 
 ## Supported Models
 

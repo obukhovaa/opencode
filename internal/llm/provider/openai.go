@@ -267,8 +267,26 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 			currentContent := ""
 			toolCalls := make([]message.ToolCall, 0)
 
-			for openaiStream.Next() {
-				chunk := openaiStream.Current()
+			reader := newStreamReader(ctx, func() (openai.ChatCompletionChunk, bool) {
+				if !openaiStream.Next() {
+					return openai.ChatCompletionChunk{}, false
+				}
+				return openaiStream.Current(), true
+			}, func() {
+				openaiStream.Close()
+			})
+
+			var streamErr error
+			for {
+				chunk, ok, recvErr := reader.Recv()
+				if recvErr != nil {
+					streamErr = recvErr
+					break
+				}
+				if !ok {
+					break
+				}
+
 				acc.AddChunk(chunk)
 
 				for _, choice := range chunk.Choices {
@@ -281,8 +299,22 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 					}
 				}
 			}
+			reader.Close()
+
+			if errors.Is(streamErr, ErrStreamStalled) {
+				logging.Warn("OpenAI stream stalled, will retry", "attempt", attempts)
+				if attempts < maxRetries {
+					continue
+				}
+				eventChan <- ProviderEvent{Type: EventError, Error: streamErr}
+				close(eventChan)
+				return
+			}
 
 			err := openaiStream.Err()
+			if streamErr != nil && err == nil {
+				err = streamErr
+			}
 			if err == nil || errors.Is(err, io.EOF) {
 				// Guard against truncated streams where Choices may be empty
 				finishReason := message.FinishReasonEndTurn

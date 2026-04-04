@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/opencode-ai/opencode/internal/lsp"
+	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -156,3 +157,9 @@ func (s *noopLspService) ClientsForFile(_ string) []*lsp.Client          { retur
 func (s *noopLspService) NotifyOpenFile(_ context.Context, _ string)     {}
 func (s *noopLspService) WaitForDiagnostics(_ context.Context, _ string) {}
 func (s *noopLspService) FormatDiagnostics(_ string) string              { return "" }
+
+func (s *noopLspService) Subscribe(ctx context.Context) <-chan pubsub.Event[lsp.LSPServerEvent] {
+	ch := make(chan pubsub.Event[lsp.LSPServerEvent])
+	close(ch)
+	return ch
+}

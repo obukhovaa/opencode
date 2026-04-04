@@ -167,6 +167,11 @@ func generateSchema() map[string]any {
 						"type": "string",
 					},
 				},
+				"disabled": map[string]any{
+					"type":        "boolean",
+					"description": "Whether the MCP server is disabled",
+					"default":     false,
+				},
 			},
 			"required": []string{"command"},
 		},

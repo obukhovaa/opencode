@@ -18,6 +18,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/lsp/install"
 	"github.com/opencode-ai/opencode/internal/lsp/protocol"
 	"github.com/opencode-ai/opencode/internal/lsp/watcher"
+	"github.com/opencode-ai/opencode/internal/pubsub"
 )
 
 type serverNameContextKey string
@@ -32,12 +33,15 @@ type lspService struct {
 	watcherCancelFuncs []context.CancelFunc
 	cancelMu           sync.Mutex
 	watcherWG          sync.WaitGroup
+
+	*pubsub.Broker[lsp.LSPServerEvent]
 }
 
 func NewLspService() lsp.LspService {
 	return &lspService{
 		clients:   make(map[string]*lsp.Client),
 		clientsCh: make(chan *lsp.Client, 50),
+		Broker:    pubsub.NewBroker[lsp.LSPServerEvent](),
 	}
 }
 
@@ -282,9 +286,17 @@ func (s *lspService) createAndStartLSPClient(ctx context.Context, name string, s
 	if err := lspClient.WaitForServerReady(initCtx); err != nil {
 		logging.Error("Server failed to become ready", "name", name, "error", err)
 		lspClient.SetServerState(lsp.StateError)
+		s.Publish(pubsub.CreatedEvent, lsp.LSPServerEvent{
+			Type:       lsp.LSPServerError,
+			ServerName: name,
+		})
 	} else {
 		logging.Info("LSP server is ready", "name", name)
 		lspClient.SetServerState(lsp.StateReady)
+		s.Publish(pubsub.CreatedEvent, lsp.LSPServerEvent{
+			Type:       lsp.LSPServerReady,
+			ServerName: name,
+		})
 	}
 
 	watchCtx, cancelFunc := context.WithCancel(ctx)

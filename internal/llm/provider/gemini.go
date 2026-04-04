@@ -343,11 +343,52 @@ func (g *geminiClient) stream(ctx context.Context, messages []message.Message, t
 			for _, part := range lastMsg.Parts {
 				lastMsgParts = append(lastMsgParts, *part)
 			}
-			for resp, err := range chat.SendMessageStream(ctx, lastMsgParts...) {
-				if err != nil {
-					retry, after, retryErr := g.shouldRetry(attempts, err)
+
+			type streamItem struct {
+				resp *genai.GenerateContentResponse
+				err  error
+			}
+
+			// Use a child context so we can cancel the iterator goroutine on stall.
+			streamCtx, streamCancel := context.WithCancel(ctx)
+			itemCh := make(chan streamItem, 1)
+			go func() {
+				defer close(itemCh)
+				for resp, err := range chat.SendMessageStream(streamCtx, lastMsgParts...) {
+					select {
+					case itemCh <- streamItem{resp: resp, err: err}:
+					case <-streamCtx.Done():
+						return
+					}
+				}
+			}()
+
+			reader := newStreamReader(ctx, func() (streamItem, bool) {
+				item, ok := <-itemCh
+				if !ok {
+					return streamItem{}, false
+				}
+				return item, true
+			}, func() {
+				streamCancel()
+			})
+
+			var streamErr error
+			for {
+				item, ok, recvErr := reader.Recv()
+				if recvErr != nil {
+					streamErr = recvErr
+					break
+				}
+				if !ok {
+					break
+				}
+
+				if item.err != nil {
+					retry, after, retryErr := g.shouldRetry(attempts, item.err)
 					if retryErr != nil {
 						eventChan <- ProviderEvent{Type: EventError, Error: retryErr}
+						reader.Close()
 						return
 					}
 					if retry {
@@ -357,21 +398,22 @@ func (g *geminiClient) stream(ctx context.Context, messages []message.Message, t
 							if ctx.Err() != nil {
 								eventChan <- ProviderEvent{Type: EventError, Error: ctx.Err()}
 							}
-
+							reader.Close()
 							return
 						case <-time.After(time.Duration(after) * time.Millisecond):
-							break
 						}
-					} else {
-						eventChan <- ProviderEvent{Type: EventError, Error: err}
-						return
+						// After backoff, continue reading from the same stream
+						continue
 					}
+					eventChan <- ProviderEvent{Type: EventError, Error: item.err}
+					reader.Close()
+					return
 				}
 
-				finalResp = resp
+				finalResp = item.resp
 
-				if len(resp.Candidates) > 0 && resp.Candidates[0].Content != nil {
-					for _, part := range resp.Candidates[0].Content.Parts {
+				if item.resp != nil && len(item.resp.Candidates) > 0 && item.resp.Candidates[0].Content != nil {
+					for _, part := range item.resp.Candidates[0].Content.Parts {
 						switch {
 						case part.Text != "":
 							delta := string(part.Text)
@@ -411,6 +453,16 @@ func (g *geminiClient) stream(ctx context.Context, messages []message.Message, t
 						}
 					}
 				}
+			}
+			reader.Close()
+
+			if errors.Is(streamErr, ErrStreamStalled) {
+				logging.Warn("Gemini stream stalled, will retry", "attempt", attempts)
+				if attempts < maxRetries {
+					continue
+				}
+				eventChan <- ProviderEvent{Type: EventError, Error: ErrStreamStalled}
+				return
 			}
 
 			eventChan <- ProviderEvent{Type: EventContentStop}

@@ -14,6 +14,7 @@ import (
 	reflect "reflect"
 
 	lsp "github.com/opencode-ai/opencode/internal/lsp"
+	pubsub "github.com/opencode-ai/opencode/internal/pubsub"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -143,6 +144,20 @@ func (m *MockLspService) Shutdown(ctx context.Context) {
 func (mr *MockLspServiceMockRecorder) Shutdown(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Shutdown", reflect.TypeOf((*MockLspService)(nil).Shutdown), ctx)
+}
+
+// Subscribe mocks base method.
+func (m *MockLspService) Subscribe(arg0 context.Context) <-chan pubsub.Event[lsp.LSPServerEvent] {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Subscribe", arg0)
+	ret0, _ := ret[0].(<-chan pubsub.Event[lsp.LSPServerEvent])
+	return ret0
+}
+
+// Subscribe indicates an expected call of Subscribe.
+func (mr *MockLspServiceMockRecorder) Subscribe(arg0 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Subscribe", reflect.TypeOf((*MockLspService)(nil).Subscribe), arg0)
 }
 
 // WaitForDiagnostics mocks base method.

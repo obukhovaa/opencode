@@ -1,6 +1,22 @@
 package lsp
 
-import "context"
+import (
+	"context"
+
+	"github.com/opencode-ai/opencode/internal/pubsub"
+)
+
+type LSPServerEventType string
+
+const (
+	LSPServerReady LSPServerEventType = "ready"
+	LSPServerError LSPServerEventType = "error"
+)
+
+type LSPServerEvent struct {
+	Type       LSPServerEventType
+	ServerName string
+}
 
 type LspService interface {
 	Init(ctx context.Context)
@@ -14,4 +30,6 @@ type LspService interface {
 	NotifyOpenFile(ctx context.Context, filePath string)
 	WaitForDiagnostics(ctx context.Context, filePath string)
 	FormatDiagnostics(filePath string) string
+
+	pubsub.Suscriber[LSPServerEvent]
 }

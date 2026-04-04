@@ -26,12 +26,25 @@ const (
 
 // MCPServer defines the configuration for a Model Control Protocol server.
 type MCPServer struct {
-	Command string            `json:"command"`
-	Env     []string          `json:"env"`
-	Args    []string          `json:"args"`
-	Type    MCPType           `json:"type"`
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers"`
+	Command  string            `json:"command"`
+	Env      []string          `json:"env"`
+	Args     []string          `json:"args"`
+	Type     MCPType           `json:"type"`
+	URL      string            `json:"url"`
+	Headers  map[string]string `json:"headers"`
+	Disabled bool              `json:"disabled,omitempty"`
+}
+
+// ResolveMCPServers returns only the MCP servers that are not disabled.
+func ResolveMCPServers() map[string]MCPServer {
+	cfg := Get()
+	result := make(map[string]MCPServer, len(cfg.MCPServers))
+	for name, server := range cfg.MCPServers {
+		if !server.Disabled {
+			result[name] = server
+		}
+	}
+	return result
 }
 
 type AgentName = string

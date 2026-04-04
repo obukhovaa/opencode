@@ -190,6 +190,19 @@ func NewToolSet(
 	return result
 }
 
+func (a *agent) Tools() []tools.BaseTool {
+	return a.resolveTools()
+}
+
+// ResolvedTools returns the current tool set without blocking.
+// The bool is true once tools have finished loading.
+func (a *agent) ResolvedTools() ([]tools.BaseTool, bool) {
+	if a.toolsResolved.Load() {
+		return a.tools, true
+	}
+	return nil, false
+}
+
 func (a *agent) resolveTools() []tools.BaseTool {
 	a.toolsOnce.Do(func() {
 		toolSet := make([]tools.BaseTool, 0, 20)
@@ -202,6 +215,7 @@ func (a *agent) resolveTools() []tools.BaseTool {
 			toolNames = append(toolNames, t.Info().Name)
 		}
 		a.tools = toolSet
+		a.toolsResolved.Store(true)
 		logging.Info("Resolved tool set", "agent", a.AgentID(), "tools", strings.Join(toolNames, ", "))
 	})
 	return a.tools

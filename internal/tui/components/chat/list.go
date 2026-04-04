@@ -629,7 +629,7 @@ func (m *messagesCmp) help() string {
 			lipgloss.Left,
 			baseStyle.Foreground(t.TextMuted()).Bold(true).Render("press "),
 			baseStyle.Foreground(t.Text()).Bold(true).Render("esc"),
-			baseStyle.Foreground(t.TextMuted()).Bold(true).Render(" to exit cancel"),
+			baseStyle.Foreground(t.TextMuted()).Bold(true).Render(" to cancel"),
 		)
 	} else {
 		text += lipgloss.JoinHorizontal(
@@ -656,12 +656,23 @@ func (m *messagesCmp) help() string {
 func (m *messagesCmp) initialScreen() string {
 	baseStyle := styles.BaseStyle()
 
+	sections := []string{
+		header(m.width),
+		"",
+	}
+
+	if lspSection := lspsConfigured(m.width, m.app); lspSection != "" {
+		sections = append(sections, lspSection)
+	}
+
+	if mcpSection := mcpServersConfigured(m.width, m.app); mcpSection != "" {
+		sections = append(sections, "", mcpSection)
+	}
+
 	return baseStyle.Width(m.width).Render(
 		lipgloss.JoinVertical(
 			lipgloss.Top,
-			header(m.width),
-			"",
-			lspsConfigured(m.width),
+			sections...,
 		),
 	)
 }

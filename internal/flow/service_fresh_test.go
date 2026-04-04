@@ -11,6 +11,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/db"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/pubsub"
@@ -133,11 +134,13 @@ func (a *stubAgent) Run(_ context.Context, _ string, _ string, _ ...message.Atta
 	return ch, nil
 }
 
-func (a *stubAgent) AgentID() config.AgentName   { return "coder" }
-func (a *stubAgent) Model() models.Model         { return models.Model{} }
-func (a *stubAgent) Cancel(_ string)             {}
-func (a *stubAgent) IsSessionBusy(_ string) bool { return false }
-func (a *stubAgent) IsBusy() bool                { return false }
+func (a *stubAgent) AgentID() config.AgentName               { return "coder" }
+func (a *stubAgent) Model() models.Model                     { return models.Model{} }
+func (a *stubAgent) Tools() []tools.BaseTool                 { return nil }
+func (a *stubAgent) ResolvedTools() ([]tools.BaseTool, bool) { return nil, true }
+func (a *stubAgent) Cancel(_ string)                         {}
+func (a *stubAgent) IsSessionBusy(_ string) bool             { return false }
+func (a *stubAgent) IsBusy() bool                            { return false }
 func (a *stubAgent) Update(_ config.AgentName, _ models.ModelID) (models.Model, error) {
 	return models.Model{}, nil
 }

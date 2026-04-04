@@ -106,15 +106,29 @@ func (a *bedrockClient) maxTokens() int64 {
 // matching so it works with proxy base URLs that have a path prefix
 // (e.g. https://proxy.example.com/bedrock/v1/messages).
 //
-// Only the /v1/messages endpoint is transformed. Other endpoints like
-// /v1/messages/count_tokens have no Bedrock equivalent and pass through
-// unchanged for the proxy to handle.
+// The /v1/messages endpoint is transformed to Bedrock invoke format.
+// The /v1/messages/count_tokens endpoint is rewritten to strip any proxy
+// path prefix (e.g. /bedrock/v1/messages/count_tokens → /v1/messages/count_tokens)
+// so it hits the proxy's Anthropic-compatible token counting endpoint.
 func bedrockMiddleware() sdkoption.Middleware {
 	return func(r *http.Request, next sdkoption.MiddlewareNext) (*http.Response, error) {
-		// Only transform the messages endpoint — count_tokens etc. pass through.
-		isMessages := r.Body != nil && r.Method == http.MethodPost &&
-			strings.HasSuffix(r.URL.Path, "/v1/messages")
-		if !isMessages {
+		if r.Body == nil || r.Method != http.MethodPost {
+			return next(r)
+		}
+
+		// Handle count_tokens: strip any proxy path prefix so the request
+		// reaches the proxy's /v1/messages/count_tokens endpoint instead
+		// of the bedrock passthrough which doesn't support it.
+		if strings.HasSuffix(r.URL.Path, "/v1/messages/count_tokens") {
+			r.URL.Path = "/v1/messages/count_tokens"
+			r.URL.RawPath = "/v1/messages/count_tokens"
+			logging.Debug("bedrock middleware count_tokens request",
+				"path", r.URL.Path, "method", r.Method,
+			)
+			return next(r)
+		}
+
+		if !strings.HasSuffix(r.URL.Path, "/v1/messages") {
 			return next(r)
 		}
 
@@ -176,11 +190,6 @@ func bedrockMiddleware() sdkoption.Middleware {
 			logging.Debug("bedrock middleware response",
 				"content_type", ct, "status", res.StatusCode,
 			)
-			// The SDK selects the EventStream binary decoder by exact
-			// Content-Type match. Proxies may strip the header or add
-			// extra parameters. Normalize so the registered decoder is
-			// found for any EventStream-like value, or set it when the
-			// proxy returns an empty Content-Type.
 			ctLower := strings.ToLower(ct)
 			if ct == "" || strings.HasPrefix(ctLower, "application/vnd.amazon.eventstream") {
 				res.Header.Set("Content-Type", "application/vnd.amazon.eventstream")

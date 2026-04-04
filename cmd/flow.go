@@ -293,7 +293,7 @@ func resolveSlashPrompt(prompt string, sessionID string) (string, error) {
 
 func buildCLICommands() []dialog.Command {
 	commands := []dialog.Command{
-		{ID: "commit", Title: "Commit and Push", Content: readEmbeddedCommand("commands/commit.md")},
+		{ID: "commit", Title: "Commit and Push", ArgumentHint: "<commit/branch/uncommitted>", Content: readEmbeddedCommand("commands/commit.md")},
 		{ID: "init", Title: "Initialize Project", Content: readEmbeddedCommand("commands/init.md")},
 		{ID: "review", Title: "Review Code", Content: readEmbeddedCommand("commands/review.md")},
 		{ID: "compact", Title: "Compact Session"},

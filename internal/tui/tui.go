@@ -11,6 +11,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/session"
@@ -122,6 +123,7 @@ type appModel struct {
 	previousPage    page.PageID
 	pages           map[page.PageID]tea.Model
 	loadedPages     map[page.PageID]bool
+	topbar          core.TopBarCmp
 	status          core.StatusCmp
 	app             *app.App
 	selectedSession session.Session
@@ -169,6 +171,8 @@ func (a appModel) Init() tea.Cmd {
 	cmd := a.pages[a.currentPage].Init()
 	a.loadedPages[a.currentPage] = true
 	cmds = append(cmds, cmd)
+	cmd = a.topbar.Init()
+	cmds = append(cmds, cmd)
 	cmd = a.status.Init()
 	cmds = append(cmds, cmd)
 	cmd = a.quit.Init()
@@ -214,9 +218,11 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		theme.SetIsDark(msg.IsDark())
 		return a, nil
 	case tea.WindowSizeMsg:
-		msg.Height -= 1 // Make space for the status bar
+		msg.Height -= 2 // Make space for the top bar and status bar
 		a.width, a.height = msg.Width, msg.Height
 
+		tb, _ := a.topbar.Update(msg)
+		a.topbar = tb.(core.TopBarCmp)
 		s, _ := a.status.Update(msg)
 		a.status = s.(core.StatusCmp)
 		a.pages[a.currentPage], cmd = a.pages[a.currentPage].Update(msg)
@@ -405,6 +411,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dialog.ThemeChangedMsg:
 		styles.InvalidateMarkdownCache()
 		a.pages[a.currentPage], cmd = a.pages[a.currentPage].Update(msg)
+		tb, _ := a.topbar.Update(msg)
+		a.topbar = tb.(core.TopBarCmp)
 		s, _ := a.status.Update(msg)
 		a.status = s.(core.StatusCmp)
 		a.showThemeDialog = false
@@ -424,6 +432,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return a, tea.Batch(
 			util.CmdHandler(core.ActiveAgentChangedMsg{Name: a.app.ActiveAgentName()}),
+			util.CmdHandler(chat.AgentChangedMsg{Name: a.app.ActiveAgentName()}),
 			util.ReportInfo(fmt.Sprintf("Model changed to %s", model.Name)),
 		)
 
@@ -460,6 +469,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.currentPage == page.ChatPage {
 				cmds = append(cmds, util.CmdHandler(chat.SessionClearedMsg{}))
 			}
+			tb, _ := a.topbar.Update(chat.SessionClearedMsg{})
+			a.topbar = tb.(core.TopBarCmp)
 			s, _ := a.status.Update(core.AutoApproveChangedMsg{Active: false})
 			a.status = s.(core.StatusCmp)
 		}
@@ -468,6 +479,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chat.SessionSelectedMsg:
 		a.selectedSession = msg
 		a.sessionDialog.SetSelectedSession(msg.ID)
+		tb, _ := a.topbar.Update(msg)
+		a.topbar = tb.(core.TopBarCmp)
 		if a.app.AutoApprove && !a.app.Permissions.IsAutoApproveSession(msg.ID) {
 			a.app.Permissions.AutoApproveSession(msg.ID)
 			a.app.AutoApprove = false
@@ -480,6 +493,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Type == pubsub.UpdatedEvent && msg.Payload.ID == a.selectedSession.ID {
 			a.selectedSession = msg.Payload
 		}
+		tb, _ := a.topbar.Update(msg)
+		a.topbar = tb.(core.TopBarCmp)
 	case dialog.SessionSelectedMsg:
 		// if we're in "delete" mode, delete instead of switch
 		if a.showDeleteSessionDialog {
@@ -634,6 +649,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				agentName := a.app.SwitchAgent()
 				return a, tea.Batch(
 					util.CmdHandler(core.ActiveAgentChangedMsg{Name: agentName}),
+					util.CmdHandler(chat.AgentChangedMsg{Name: agentName}),
 					util.ReportInfo(fmt.Sprintf("Switched to %s", agentName)),
 				)
 			}
@@ -647,6 +663,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				agentName := a.app.SwitchAgentReverse()
 				return a, tea.Batch(
 					util.CmdHandler(core.ActiveAgentChangedMsg{Name: agentName}),
+					util.CmdHandler(chat.AgentChangedMsg{Name: agentName}),
 					util.ReportInfo(fmt.Sprintf("Switched to %s", agentName)),
 				)
 			}
@@ -794,6 +811,15 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	switch msg.(type) {
+	case pubsub.Event[agent.MCPServerEvent]:
+		chat.InvalidateMcpCache()
+	case pubsub.Event[lsp.LSPServerEvent]:
+		chat.InvalidateLspCache()
+	}
+
+	tb, _ := a.topbar.Update(msg)
+	a.topbar = tb.(core.TopBarCmp)
 	s, _ := a.status.Update(msg)
 	a.status = s.(core.StatusCmp)
 	a.pages[a.currentPage], cmd = a.pages[a.currentPage].Update(msg)
@@ -837,7 +863,6 @@ func (a *appModel) findCommand(id string) (dialog.Command, bool) {
 
 func (a *appModel) moveToPage(pageID page.PageID) tea.Cmd {
 	if a.app.ActiveAgent().IsBusy() {
-		// For now we don't move to any page if the agent is busy
 		return util.ReportWarn("Agent is busy, please wait...")
 	}
 
@@ -866,6 +891,7 @@ func (a appModel) View() tea.View {
 		Render(a.pages[a.currentPage].View().Content)
 
 	components := []string{
+		a.topbar.View().Content,
 		pageContent,
 	}
 
@@ -976,6 +1002,7 @@ func New(app *app.App) tea.Model {
 	model := &appModel{
 		currentPage:         startPage,
 		loadedPages:         make(map[page.PageID]bool),
+		topbar:              core.NewTopBarCmp(),
 		status:              core.NewStatusCmp(app.LspService),
 		help:                dialog.NewHelpCmp(),
 		quit:                dialog.NewQuitCmp(),
@@ -1027,10 +1054,11 @@ func buildCommands() []dialog.Command {
 			},
 		},
 		{
-			ID:          "review",
-			Title:       "Review code",
-			Description: "Review a given work using provided commit hash or branch",
-			Content:     reviewContent,
+			ID:           "review",
+			Title:        "Review code",
+			Description:  "Review a given work using provided commit hash or branch",
+			Content:      reviewContent,
+			ArgumentHint: "[commit hash, branch name, or PR URL (leave empty for uncommitted changes)]",
 			Handler: func(cmd dialog.Command) tea.Cmd {
 				return dialog.ParameterizedCommandHandler(reviewContent, &cmd)
 			},

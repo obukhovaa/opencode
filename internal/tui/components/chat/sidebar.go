@@ -9,12 +9,15 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
+	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/config"
-	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/diff"
 	"github.com/opencode-ai/opencode/internal/history"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/session"
+	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
 )
@@ -24,6 +27,8 @@ type sidebarCmp struct {
 	session       session.Session
 	sessions      session.Service
 	history       history.Service
+	app           *app.App
+	lspEnabled    bool
 	modFiles      map[string]struct {
 		additions int
 		removals  int
@@ -48,6 +53,8 @@ func (m *sidebarCmp) waitForFileEvent() tea.Cmd {
 }
 
 func (m *sidebarCmp) Init() tea.Cmd {
+	var cmds []tea.Cmd
+
 	if m.history != nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		m.subCancel = cancel
@@ -61,9 +68,10 @@ func (m *sidebarCmp) Init() tea.Cmd {
 
 		m.loadModifiedFiles(ctx)
 
-		return m.waitForFileEvent()
+		cmds = append(cmds, m.waitForFileEvent())
 	}
-	return nil
+
+	return tea.Batch(cmds...)
 }
 
 func (m *sidebarCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -105,117 +113,66 @@ func (m *sidebarCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.processFileChanges(ctx, msg.Payload)
 		}
 		return m, m.waitForFileEvent()
+	case AgentChangedMsg:
+		reg := agentregistry.GetRegistry()
+		m.lspEnabled = reg.IsToolEnabled(msg.Name, tools.LSPToolName)
+		InvalidateLspCache()
+		InvalidateMcpCache()
+	case dialog.ThemeChangedMsg:
+		InvalidateMcpCache()
+		InvalidateLspCache()
 	}
 	return m, nil
 }
 
+const (
+	sidebarPadLeft  = 4
+	sidebarPadRight = 2
+)
+
+func (m *sidebarCmp) contentWidth() int {
+	w := m.width - sidebarPadLeft - sidebarPadRight
+	if w < 0 {
+		w = 0
+	}
+	return w
+}
+
 func (m *sidebarCmp) View() tea.View {
 	baseStyle := styles.BaseStyle()
+	cw := m.contentWidth()
+
+	var sections []string
+
+	if m.lspEnabled {
+		sections = append(sections, lspsConfigured(cw, m.app))
+		sections = append(sections, " ")
+	}
+
+	if mcpSection := mcpServersConfigured(cw, m.app); mcpSection != "" {
+		sections = append(sections, mcpSection)
+		sections = append(sections, " ")
+	}
+
+	usedHeight := 0
+	for _, s := range sections {
+		usedHeight += lipgloss.Height(s)
+	}
+	availableHeight := m.height - 1 - usedHeight
+	sections = append(sections, m.modifiedFiles(availableHeight))
 
 	return tea.NewView(baseStyle.
 		Width(m.width).
-		PaddingLeft(4).
-		PaddingRight(2).
+		PaddingLeft(sidebarPadLeft).
+		PaddingRight(sidebarPadRight).
 		Height(m.height - 1).
 		MaxHeight(m.height).
 		Render(
 			lipgloss.JoinVertical(
 				lipgloss.Top,
-				header(m.width),
-				" ",
-				m.projectSection(),
-				" ",
-				m.sessionSection(),
-				" ",
-				lspsConfigured(m.width),
-				" ",
-				m.modifiedFiles(),
+				sections...,
 			),
 		))
-}
-
-func (m *sidebarCmp) projectSection() string {
-	t := theme.CurrentTheme()
-	baseStyle := styles.BaseStyle()
-	cfg := config.Get()
-
-	projectID := db.GetProjectID(cfg.WorkingDir)
-
-	projectKey := baseStyle.
-		Foreground(t.Primary()).
-		Bold(true).
-		Render("Project")
-
-	projectValue := baseStyle.
-		Foreground(t.Text()).
-		Width(m.width - lipgloss.Width(projectKey)).
-		Render(fmt.Sprintf(": %s", projectID))
-
-	return lipgloss.JoinHorizontal(
-		lipgloss.Left,
-		projectKey,
-		projectValue,
-	)
-}
-
-func (m *sidebarCmp) sessionSection() string {
-	t := theme.CurrentTheme()
-	baseStyle := styles.BaseStyle()
-	cfg := config.Get()
-
-	providerInfo := "local"
-	if cfg.SessionProvider.Type == config.ProviderMySQL {
-		if cfg.SessionProvider.MySQL.Host != "" {
-			providerInfo = fmt.Sprintf("remote (%s)", cfg.SessionProvider.MySQL.Host)
-		} else if cfg.SessionProvider.MySQL.DSN != "" {
-			dsn := cfg.SessionProvider.MySQL.DSN
-			if idx := strings.Index(dsn, "@tcp("); idx != -1 {
-				hostPart := dsn[idx+5:]
-				if endIdx := strings.Index(hostPart, ")"); endIdx != -1 {
-					host := hostPart[:endIdx]
-					if colonIdx := strings.Index(host, ":"); colonIdx != -1 {
-						host = host[:colonIdx]
-					}
-					providerInfo = fmt.Sprintf("remote (%s)", host)
-				} else {
-					providerInfo = "remote"
-				}
-			} else {
-				providerInfo = "remote"
-			}
-		} else {
-			providerInfo = "remote"
-		}
-	}
-
-	sessionKey := baseStyle.
-		Foreground(t.Primary()).
-		Bold(true).
-		Render("Session")
-
-	provider := baseStyle.
-		Foreground(t.TextMuted()).
-		Render(fmt.Sprintf(" [%s]", providerInfo))
-
-	sessionValue := baseStyle.
-		Foreground(t.Text()).
-		Render(fmt.Sprintf(": %s", m.session.Title))
-
-	sessionView := baseStyle.
-		Width(m.width - lipgloss.Width(sessionKey)).
-		Render(
-			lipgloss.JoinHorizontal(
-				lipgloss.Left,
-				sessionValue,
-				provider,
-			),
-		)
-
-	return lipgloss.JoinHorizontal(
-		lipgloss.Left,
-		sessionKey,
-		sessionView,
-	)
 }
 
 func (m *sidebarCmp) modifiedFile(filePath string, additions, removals int) string {
@@ -252,8 +209,9 @@ func (m *sidebarCmp) modifiedFile(filePath string, additions, removals int) stri
 
 	filePathStr := baseStyle.Render(filePath)
 
+	cw := m.contentWidth()
 	return baseStyle.
-		Width(m.width).
+		Width(cw).
 		Render(
 			lipgloss.JoinHorizontal(
 				lipgloss.Left,
@@ -263,24 +221,25 @@ func (m *sidebarCmp) modifiedFile(filePath string, additions, removals int) stri
 		)
 }
 
-func (m *sidebarCmp) modifiedFiles() string {
+func (m *sidebarCmp) modifiedFiles(availableHeight int) string {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
 
+	cw := m.contentWidth()
 	modifiedFiles := baseStyle.
-		Width(m.width).
+		Width(cw).
 		Foreground(t.Primary()).
 		Bold(true).
-		Render("Modified Files:")
+		Render("Modified Files")
 
 	if len(m.modFiles) == 0 {
 		message := "No modified files"
-		remainingWidth := m.width - lipgloss.Width(message)
+		remainingWidth := cw - lipgloss.Width(message)
 		if remainingWidth > 0 {
 			message += strings.Repeat(" ", remainingWidth)
 		}
 		return baseStyle.
-			Width(m.width).
+			Width(cw).
 			Render(
 				lipgloss.JoinVertical(
 					lipgloss.Top,
@@ -296,14 +255,36 @@ func (m *sidebarCmp) modifiedFiles() string {
 	}
 	sort.Strings(paths)
 
+	headerHeight := lipgloss.Height(modifiedFiles)
+	remaining := availableHeight - headerHeight
+	if remaining < 1 {
+		remaining = 1
+	}
+
 	var fileViews []string
-	for _, path := range paths {
+	usedLines := 0
+	for i, path := range paths {
 		stats := m.modFiles[path]
-		fileViews = append(fileViews, m.modifiedFile(path, stats.additions, stats.removals))
+		rendered := m.modifiedFile(path, stats.additions, stats.removals)
+		h := lipgloss.Height(rendered)
+
+		left := len(paths) - i
+		moreLineHeight := 1
+		if left > 1 && usedLines+h+moreLineHeight > remaining {
+			moreText := baseStyle.
+				Foreground(t.TextMuted()).
+				Width(cw).
+				Render(fmt.Sprintf("%d more...", left))
+			fileViews = append(fileViews, moreText)
+			break
+		}
+
+		fileViews = append(fileViews, rendered)
+		usedLines += h
 	}
 
 	return baseStyle.
-		Width(m.width).
+		Width(cw).
 		Render(
 			lipgloss.JoinVertical(
 				lipgloss.Top,
@@ -326,11 +307,20 @@ func (m *sidebarCmp) GetSize() (int, int) {
 	return m.width, m.height
 }
 
-func NewSidebarCmp(s session.Session, sessions session.Service, history history.Service) tea.Model {
+func NewSidebarCmp(s session.Session, sessions session.Service, history history.Service, a *app.App) tea.Model {
+	reg := agentregistry.GetRegistry()
+	agentName := ""
+	if a != nil {
+		agentName = a.ActiveAgentName()
+	}
+	lspEnabled := agentName != "" && reg.IsToolEnabled(agentName, tools.LSPToolName)
+
 	return &sidebarCmp{
-		session:  s,
-		sessions: sessions,
-		history:  history,
+		session:    s,
+		sessions:   sessions,
+		history:    history,
+		app:        a,
+		lspEnabled: lspEnabled,
 	}
 }
 

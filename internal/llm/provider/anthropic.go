@@ -362,11 +362,29 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 			accumulatedMessage := anthropic.Message{}
 
 			currentToolCallID := ""
-			for anthropicStream.Next() {
-				event := anthropicStream.Current()
-				err := accumulatedMessage.Accumulate(event)
+
+			reader := newStreamReader(ctx, func() (anthropic.MessageStreamEventUnion, bool) {
+				if !anthropicStream.Next() {
+					return anthropic.MessageStreamEventUnion{}, false
+				}
+				return anthropicStream.Current(), true
+			}, func() {
+				anthropicStream.Close()
+			})
+
+			var streamErr error
+			for {
+				event, ok, err := reader.Recv()
 				if err != nil {
-					logging.Warn("Error accumulating message", "error", err)
+					streamErr = err
+					break
+				}
+				if !ok {
+					break
+				}
+				accErr := accumulatedMessage.Accumulate(event)
+				if accErr != nil {
+					logging.Warn("Error accumulating message", "error", accErr)
 					continue
 				}
 
@@ -443,8 +461,22 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 					}
 				}
 			}
+			reader.Close()
+
+			if errors.Is(streamErr, ErrStreamStalled) {
+				logging.Warn("Anthropic stream stalled, will retry", "attempt", attempts)
+				if attempts < maxRetries {
+					continue
+				}
+				eventChan <- ProviderEvent{Type: EventError, Error: streamErr}
+				close(eventChan)
+				return
+			}
 
 			err := anthropicStream.Err()
+			if streamErr != nil && err == nil {
+				err = streamErr
+			}
 			if err == nil || errors.Is(err, io.EOF) {
 				// If the stream closed without a MessageStopEvent (truncated response),
 				// we still need to emit EventComplete so the agent loop doesn't hang.

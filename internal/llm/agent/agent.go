@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
@@ -66,6 +67,8 @@ type Service interface {
 	pubsub.Suscriber[AgentEvent]
 	AgentID() config.AgentName
 	Model() models.Model
+	Tools() []tools.BaseTool
+	ResolvedTools() ([]tools.BaseTool, bool)
 	Run(ctx context.Context, sessionID string, content string, attachments ...message.Attachment) (<-chan AgentEvent, error)
 	Cancel(sessionID string)
 	IsSessionBusy(sessionID string) bool
@@ -83,6 +86,7 @@ type agent struct {
 	toolsCh          <-chan tools.BaseTool
 	toolsOnce        sync.Once
 	tools            []tools.BaseTool
+	toolsResolved    atomic.Bool
 	provider         provider.Provider
 	allowParallelism bool
 
@@ -135,6 +139,13 @@ func newAgent(
 		activeRequests:    sync.Map{},
 		allowParallelism:  agentInfo.AllowsParallelToolUse(),
 	}
+
+	// Resolve tools in background so they're ready before first Run() call
+	// and so TUI can show MCP status without blocking.
+	go func() {
+		defer logging.RecoverPanic("agent.resolveTools", nil)
+		agent.resolveTools()
+	}()
 
 	return agent, nil
 }

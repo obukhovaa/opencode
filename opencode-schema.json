@@ -408,6 +408,11 @@
             "description": "Command to execute for the MCP server",
             "type": "string"
           },
+          "disabled": {
+            "default": false,
+            "description": "Whether the MCP server is disabled",
+            "type": "boolean"
+          },
           "env": {
             "description": "Environment variables for the MCP server",
             "items": {

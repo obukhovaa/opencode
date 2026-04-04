@@ -14,11 +14,28 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/permission"
+	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/version"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
+)
+
+type (
+	MCPServerEventType string
+
+	MCPServerEvent struct {
+		Type       MCPServerEventType
+		ServerName string
+		ToolCount  int
+		Error      error
+	}
+)
+
+const (
+	MCPServerToolsLoaded MCPServerEventType = "tools_loaded"
+	MCPServerError       MCPServerEventType = "error"
 )
 
 type (
@@ -37,6 +54,7 @@ type (
 		LoadTools(ctx context.Context, filter *MCPRegistryFiler) <-chan tools.BaseTool
 		// StartClient starts a new MCPClient, caller have to properly close when done
 		StartClient(ctx context.Context, name string) (c *client.Client, err error)
+		pubsub.Suscriber[MCPServerEvent]
 	}
 	MCPRegistryFiler struct {
 		ToolNames   []string
@@ -48,6 +66,7 @@ type (
 
 		permissions   permission.Service
 		agentRegistry agentregistry.Registry
+		*pubsub.Broker[MCPServerEvent]
 	}
 
 	mcpTool struct {
@@ -65,11 +84,12 @@ func NewMCPRegistry(permissions permission.Service, agentRegistry agentregistry.
 		mcpTools:      sync.Map{},
 		permissions:   permissions,
 		agentRegistry: agentRegistry,
+		Broker:        pubsub.NewBroker[MCPServerEvent](),
 	}
 }
 
 func (r *mcpRegistry) StartClient(ctx context.Context, name string) (c *client.Client, err error) {
-	m, ok := config.Get().MCPServers[name]
+	m, ok := config.ResolveMCPServers()[name]
 	if !ok {
 		return nil, fmt.Errorf("no mcp found with name %s", name)
 	}
@@ -110,7 +130,7 @@ func (r *mcpRegistry) LoadTools(ctx context.Context, filter *MCPRegistryFiler) <
 
 	go func(ctx context.Context, filter *MCPRegistryFiler) {
 		wg := sync.WaitGroup{}
-		for name, m := range config.Get().MCPServers {
+		for name, m := range config.ResolveMCPServers() {
 			if filter != nil && len(filter.ServerNames) != 0 && !slices.Contains(filter.ServerNames, name) {
 				continue
 			}
@@ -121,12 +141,18 @@ func (r *mcpRegistry) LoadTools(ctx context.Context, filter *MCPRegistryFiler) <
 
 				toolsCtx, cancelTools := context.WithTimeout(ctx, 30*time.Second)
 				defer cancelTools()
-				for _, t := range r.getTools(toolsCtx, name, m) {
+				serverTools := r.getTools(toolsCtx, name, m)
+				for _, t := range serverTools {
 					if filter != nil && len(filter.ToolNames) != 0 && !slices.Contains(filter.ToolNames, t.Info().Name) {
 						continue
 					}
 					toolsCh <- t
 				}
+				r.Publish(pubsub.CreatedEvent, MCPServerEvent{
+					Type:       MCPServerToolsLoaded,
+					ServerName: name,
+					ToolCount:  len(serverTools),
+				})
 			}(ctx, filter)
 		}
 		wg.Wait()

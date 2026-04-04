@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
+	"sync"
+	"time"
 
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
@@ -17,6 +20,106 @@ import (
 type EventType string
 
 const maxRetries = 8
+
+const defaultStreamInactivityTimeout = 5 * time.Minute
+
+var ErrStreamStalled = errors.New("stream stalled: no events received within timeout")
+
+func resolveStreamInactivityTimeout() time.Duration {
+	if envVal := os.Getenv("OPENCODE_PROVIDER_STREAM_INACTIVITY_TIMEOUT"); envVal != "" {
+		if secs, err := strconv.Atoi(envVal); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+		logging.Warn("Invalid OPENCODE_PROVIDER_STREAM_INACTIVITY_TIMEOUT value, using default",
+			"value", envVal, "default", defaultStreamInactivityTimeout)
+	}
+	return defaultStreamInactivityTimeout
+}
+
+var streamInactivityTimeout = resolveStreamInactivityTimeout()
+
+// streamReader wraps a blocking .Next()-style iterator with an inactivity timeout.
+// It spawns a single goroutine that feeds events into a channel. The caller reads
+// via Recv() with a timeout select. Call Close() to release the underlying stream
+// and stop the background goroutine.
+type streamReader[T any] struct {
+	ch      chan T
+	ctx     context.Context
+	cancel  context.CancelFunc
+	timer   *time.Timer
+	release func()
+}
+
+// newStreamReader starts a background goroutine that calls nextFn repeatedly
+// and sends each value to an internal channel. closeFn is called to release
+// the underlying stream resources — it must unblock a currently-blocked nextFn
+// call (e.g. by closing the HTTP response body or cancelling the stream context).
+// closeFn is guaranteed to be called exactly once regardless of how many times
+// Close() is called or whether the goroutine exits naturally.
+func newStreamReader[T any](ctx context.Context, nextFn func() (T, bool), closeFn func()) *streamReader[T] {
+	ctx, cancel := context.WithCancel(ctx)
+	ch := make(chan T, 1)
+	var once sync.Once
+	release := func() { once.Do(closeFn) }
+	go func() {
+		defer release()
+		defer close(ch)
+		for {
+			val, ok := nextFn()
+			if !ok {
+				return
+			}
+			select {
+			case ch <- val:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return &streamReader[T]{
+		ch:      ch,
+		ctx:     ctx,
+		cancel:  cancel,
+		timer:   time.NewTimer(streamInactivityTimeout),
+		release: release,
+	}
+}
+
+// Recv waits for the next value from the stream. Returns the value and true,
+// or the zero value and false if the stream ended, timed out, or was cancelled.
+// On timeout it returns ErrStreamStalled via the error return.
+func (r *streamReader[T]) Recv() (T, bool, error) {
+	select {
+	case val, ok := <-r.ch:
+		if !ok {
+			var zero T
+			return zero, false, nil
+		}
+		if !r.timer.Stop() {
+			select {
+			case <-r.timer.C:
+			default:
+			}
+		}
+		r.timer.Reset(streamInactivityTimeout)
+		return val, true, nil
+	case <-r.timer.C:
+		var zero T
+		return zero, false, ErrStreamStalled
+	case <-r.ctx.Done():
+		var zero T
+		return zero, false, r.ctx.Err()
+	}
+}
+
+// Close releases the underlying stream, unblocking any in-progress nextFn call,
+// cancels the background goroutine, and stops the inactivity timer.
+// Safe to call multiple times.
+func (r *streamReader[T]) Close() {
+	r.timer.Stop()
+	r.release()
+	r.cancel()
+}
 
 const (
 	EventContentStart  EventType = "content_start"

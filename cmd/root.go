@@ -429,6 +429,8 @@ func setupSubscriptions(app *app.App, parentCtx context.Context) (chan tea.Msg, 
 	setupSubscriber(ctx, &wg, "logging", logging.Subscribe, ch)
 	setupSubscriber(ctx, &wg, "sessions", app.Sessions.Subscribe, ch)
 	setupSubscriber(ctx, &wg, "messages", app.Messages.Subscribe, ch)
+	setupSubscriber(ctx, &wg, "mcp", app.MCPRegistry.Subscribe, ch)
+	setupSubscriber(ctx, &wg, "lsp", app.LspService.Subscribe, ch)
 	setupBlockingSubscriber(ctx, &wg, "permissions", app.Permissions.Subscribe, permCh)
 	for name, primaryAgent := range app.PrimaryAgents {
 		setupSubscriber(ctx, &wg, fmt.Sprintf("agent-%s", name), primaryAgent.Subscribe, ch)
