@@ -380,7 +380,7 @@ func (o *openaiClient) applyMetadata(ctx context.Context, params *openai.ChatCom
 	if resolved == nil {
 		return
 	}
-	meta := make(shared.MetadataParam)
+	meta := make(shared.Metadata)
 	for k, v := range resolved {
 		switch val := v.(type) {
 		case string:

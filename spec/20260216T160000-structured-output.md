@@ -1,7 +1,7 @@
 # Structured Output
 
 **Date**: 2026-02-16
-**Status**: Draft
+**Status**: Implemented
 **Author**: AI-assisted
 
 ## Overview

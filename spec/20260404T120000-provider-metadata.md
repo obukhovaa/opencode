@@ -1,7 +1,7 @@
 # Provider Metadata
 
 **Date**: 2026-04-04
-**Status**: Draft
+**Status**: Implemented
 **Author**: AI-assisted
 
 ## Overview

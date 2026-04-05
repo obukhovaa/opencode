@@ -249,7 +249,7 @@ func (a *anthropicClient) preparedMessages(messages []anthropic.MessageParam, to
 			}
 		}
 		if a.providerOptions.model.SupportsAdaptiveThinking {
-			adaptiveParam := anthropic.NewThinkingConfigAdaptiveParam()
+			adaptiveParam := anthropic.ThinkingConfigAdaptiveParam{}
 			thinkingParam = anthropic.ThinkingConfigParamUnion{OfAdaptive: &adaptiveParam}
 			temperature = anthropic.Float(1)
 			effort := a.options.reasoningEffort
