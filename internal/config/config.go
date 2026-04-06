@@ -421,11 +421,11 @@ func setProviderDefaults() {
 	if apiKey := os.Getenv("GEMINI_API_KEY"); apiKey != "" {
 		viper.SetDefault("providers.gemini.apiKey", apiKey)
 	}
-	if apiKey := os.Getenv("VERTEXAI_PROJECT"); apiKey != "" {
-		viper.SetDefault("providers.vertexai.project", apiKey)
+	if project := os.Getenv("VERTEXAI_PROJECT"); project != "" {
+		viper.SetDefault("providers.vertexai.project", project)
 	}
-	if apiKey := os.Getenv("VERTEXAI_LOCATION"); apiKey != "" {
-		viper.SetDefault("providers.vertexai.location", apiKey)
+	if localtion := os.Getenv("VERTEXAI_LOCATION"); localtion != "" {
+		viper.SetDefault("providers.vertexai.location", localtion)
 	}
 
 	// Use this order to set the default models
@@ -470,23 +470,23 @@ func setProviderDefaults() {
 
 	// AWS Bedrock configuration
 	if hasAWSCredentials() {
-		viper.SetDefault("agents.coder.model", models.BedrockEUSonnet46)
+		viper.SetDefault("agents.coder.model", models.BedrockEUOpus46)
 		viper.SetDefault("agents.summarizer.model", models.BedrockEUSonnet46)
 		viper.SetDefault("agents.explorer.model", models.BedrockEUSonnet46)
 		viper.SetDefault("agents.descriptor.model", models.BedrockEUSonnet46)
 		viper.SetDefault("agents.workhorse.model", models.BedrockEUSonnet46)
-		viper.SetDefault("agents.hivemind.model", models.BedrockEUSonnet46)
+		viper.SetDefault("agents.hivemind.model", models.BedrockEUOpus46)
 		return
 	}
 
 	// Google Cloud VertexAI configuration
 	if hasVertexAICredentials() {
-		viper.SetDefault("agents.coder.model", models.VertexAIGemini30Pro)
-		viper.SetDefault("agents.summarizer.model", models.VertexAIGemini30Pro)
-		viper.SetDefault("agents.explorer.model", models.VertexAIGemini30Flash)
-		viper.SetDefault("agents.descriptor.model", models.VertexAIGemini30Flash)
-		viper.SetDefault("agents.workhorse.model", models.VertexAIGemini30Pro)
-		viper.SetDefault("agents.hivemind.model", models.VertexAIGemini30Pro)
+		viper.SetDefault("agents.coder.model", models.VertexAIOpus46)
+		viper.SetDefault("agents.summarizer.model", models.VertexAISonnet46)
+		viper.SetDefault("agents.explorer.model", models.VertexAISonnet46)
+		viper.SetDefault("agents.descriptor.model", models.VertexAISonnet46)
+		viper.SetDefault("agents.workhorse.model", models.VertexAISonnet46)
+		viper.SetDefault("agents.hivemind.model", models.VertexAIOpus46)
 		return
 	}
 }
@@ -902,31 +902,55 @@ func setDefaultModelForAgent(agent AgentName) bool {
 		switch agent {
 		case AgentDescriptor:
 			cfg.Agents[agent] = Agent{
-				Model:     models.VertexAISonnet45M,
+				Model:     models.VertexAISonnet46,
 				MaxTokens: 80,
 			}
-		case AgentExplorer:
+		case AgentExplorer, AgentSummarizer:
 			cfg.Agents[agent] = Agent{
-				Model:     models.VertexAIGemini30Pro,
-				MaxTokens: models.VertexAIAnthropicModels[models.VertexAIGemini30Pro].DefaultMaxTokens,
+				Model:           models.VertexAISonnet46,
+				MaxTokens:       models.VertexAIAnthropicModels[models.VertexAISonnet46].DefaultMaxTokens,
+				ReasoningEffort: "medium",
+			}
+		case AgentWorkhorse:
+			cfg.Agents[agent] = Agent{
+				Model:           models.VertexAISonnet46,
+				MaxTokens:       models.VertexAIAnthropicModels[models.VertexAISonnet46].DefaultMaxTokens,
+				ReasoningEffort: "high",
 			}
 		default:
 			cfg.Agents[agent] = Agent{
-				Model:     models.VertexAISonnet45M,
-				MaxTokens: models.VertexAIAnthropicModels[models.VertexAISonnet45M].DefaultMaxTokens,
+				Model:     models.VertexAIOpus46,
+				MaxTokens: models.VertexAIAnthropicModels[models.VertexAIOpus46].DefaultMaxTokens,
 			}
 		}
 		return true
 	}
 
 	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
-		maxTokens := models.AnthropicModels[models.Claude45Sonnet1M].DefaultMaxTokens
-		if agent == AgentDescriptor {
-			maxTokens = 80
-		}
-		cfg.Agents[agent] = Agent{
-			Model:     models.Claude45Sonnet1M,
-			MaxTokens: maxTokens,
+		switch agent {
+		case AgentDescriptor:
+			cfg.Agents[agent] = Agent{
+				Model:     models.Claude46Sonnet,
+				MaxTokens: 80,
+			}
+		case AgentExplorer, AgentSummarizer:
+			cfg.Agents[agent] = Agent{
+				Model:           models.Claude46Sonnet,
+				MaxTokens:       models.AnthropicModels[models.Claude46Sonnet].DefaultMaxTokens,
+				ReasoningEffort: "medium",
+			}
+		case AgentWorkhorse:
+			cfg.Agents[agent] = Agent{
+				Model:           models.Claude46Sonnet,
+				MaxTokens:       models.AnthropicModels[models.Claude46Sonnet].DefaultMaxTokens,
+				ReasoningEffort: "high",
+			}
+		default:
+			cfg.Agents[agent] = Agent{
+				Model:           models.Claude46Opus,
+				MaxTokens:       models.AnthropicModels[models.Claude46Opus].DefaultMaxTokens,
+				ReasoningEffort: "high",
+			}
 		}
 		return true
 	}
@@ -966,10 +990,16 @@ func setDefaultModelForAgent(agent AgentName) bool {
 				Model:     models.Gemini30Flash,
 				MaxTokens: 80,
 			}
+		case AgentSummarizer:
+			cfg.Agents[agent] = Agent{
+				Model:     models.Gemini30Flash,
+				MaxTokens: models.GeminiModels[models.Gemini30Flash].DefaultMaxTokens,
+			}
 		default:
 			cfg.Agents[agent] = Agent{
-				Model:     models.Gemini30Pro,
-				MaxTokens: models.VertexAIAnthropicModels[models.Gemini30Pro].DefaultMaxTokens,
+				Model:           models.Gemini30Pro,
+				MaxTokens:       models.GeminiModels[models.Gemini30Pro].DefaultMaxTokens,
+				ReasoningEffort: "high",
 			}
 		}
 		return true
@@ -984,7 +1014,7 @@ func setDefaultModelForAgent(agent AgentName) bool {
 		cfg.Agents[agent] = Agent{
 			Model:           models.BedrockEUSonnet46,
 			MaxTokens:       maxTokens,
-			ReasoningEffort: "medium", // Claude models support reasoning
+			ReasoningEffort: "medium",
 		}
 		return true
 	}

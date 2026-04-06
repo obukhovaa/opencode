@@ -137,7 +137,7 @@ YandexCloud supports automatic prompt caching: *"Caching is enabled automaticall
 | Model ID format | `yandexcloud.<name>` (e.g., `yandexcloud.yandexgpt-pro-5`) | Matches existing convention: `bedrock.<name>`, `vertexai.<name>` |
 | APIModel storage | Store only the model path (e.g., `yandexgpt/latest`), NOT the full `gpt://` URI | Folder ID is config, not model metadata. The provider constructs the full `gpt://<folder_id>/<apiModel>` URI at init time. |
 | Folder ID delivery | Embedded in the `model` field of the request body only | Verified in [yandex-ai-studio-sdk](https://github.com/yandex-cloud/yandex-ai-studio-sdk): the SDK puts `gpt://<folder_id>/model` in the JSON body `model` field. No `x-folder-id` header is sent for the OpenAI-compatible endpoint. |
-| Folder ID source | `YANDEXCLOUD_FOLDER_ID` env var, stored in provider config for URI construction | Not a header — used solely to build the `gpt://` model URI at provider init time |
+| Folder ID source | Read `YANDEXCLOUD_FOLDER_ID` env var directly in `NewProvider` switch case | Same pattern as VertexAI which reads `VERTEXAI_PROJECT` directly in `newVertexAIClient`. No provider-specific fields added to the shared `Provider` config struct. |
 | Provider name | `yandexcloud` | Consistent with cloud-provider naming (`vertexai`, `bedrock`) |
 | Auth env var | `YANDEXCLOUD_API_KEY` | Consistent with `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` pattern |
 | `UseLegacyMaxTokens` | `true` | Confirmed: YandexCloud uses `max_tokens`, not `max_completion_tokens`. Verified in SDK source. |
@@ -222,30 +222,30 @@ newOpenAIClient(opts) with:
 ```
 
   - All models: `UseLegacyMaxTokens: true`
-  - Set `DefaultMaxTokens` to 8192 (reasonable default for all models)
+  - Set `DefaultMaxTokens` per model to maximize output capacity:
+    - YandexGPT / Alice AI (32K context): `DefaultMaxTokens: 8192`
+    - DeepSeek V3.2 (131K context): `DefaultMaxTokens: 8192` (DeepSeek v3 standard output limit)
+    - Qwen3 235B (262K context): `DefaultMaxTokens: 32768`
+    - Qwen3.5 35B (262K context): `DefaultMaxTokens: 32768`
+    - gpt-oss-120b (131K context): `DefaultMaxTokens: 8192`
 
 - [ ] **1.2** Register in `internal/llm/models/bootstrap.go`
   - Add `maps.Copy(SupportedModels, YandexCloudModels)` in `init()`
 
 ### Phase 2: Provider routing and config
 
-- [ ] **2.1** Add a `FolderID` field to the `Provider` config struct (or use a dedicated yandexcloud-specific approach)
-  - The folder ID needs to be stored somewhere in config so it can be read at provider init time
-  - Options: add a generic `FolderID` field to `Provider` struct, or handle it as a provider-specific config key
-  - `YANDEXCLOUD_FOLDER_ID` env var maps to this field in `setProviderDefaults()`
-
-- [ ] **2.2** Add yandexcloud case to `NewProvider` switch in `internal/llm/provider/provider.go`
+- [ ] **2.1** Add yandexcloud case to `NewProvider` switch in `internal/llm/provider/provider.go`
   - Set `opts.baseURL` to `https://llm.api.cloud.yandex.net/v1` if not overridden by config
-  - Read folder ID from provider config
+  - Read folder ID directly from `os.Getenv("YANDEXCLOUD_FOLDER_ID")` — same pattern as VertexAI reads `VERTEXAI_PROJECT` in `newVertexAIClient`
   - If folder ID is empty, return error: "YandexCloud provider requires folder_id — set YANDEXCLOUD_FOLDER_ID env var"
   - Construct full APIModel: `opts.model.APIModel = "gpt://" + folderID + "/" + opts.model.APIModel`
   - Add `WithOpenAIOptions(WithLegacyMaxTokens(true))`
   - Return `newBaseProvider(newOpenAIClient(opts), opts)`
 
-- [ ] **2.3** Add env var defaults in `internal/config/config.go` `setProviderDefaults()`
+- [ ] **2.2** Add env var defaults in `internal/config/config.go` `setProviderDefaults()`
   - `YANDEXCLOUD_API_KEY` → `providers.yandexcloud.apiKey`
-  - `YANDEXCLOUD_FOLDER_ID` → `providers.yandexcloud.folderID` (or however the field is stored)
   - Add `getProviderAPIKey` case for `ProviderYandexCloud`
+  - Note: `YANDEXCLOUD_FOLDER_ID` is NOT wired through config — it is read directly in the provider, same as `VERTEXAI_PROJECT`
 
 ### Phase 3: Documentation and schema
 
@@ -278,23 +278,11 @@ newOpenAIClient(opts) with:
 1. `OpenAIClient.countTokens()` returns `errors.ErrUnsupported` — falls back to local estimation
 2. This is acceptable; YandexCloud does not expose a token-counting endpoint via OpenAI-compatible API
 
-## Open Questions
+## Resolved Questions
 
-1. **Should the trailing slash in DeepSeek V3.2 model path (`deepseek-v32/`) be preserved or stripped?**
-   - The official docs show `gpt://<folder_id>/deepseek-v32/` with a trailing slash
-   - This may or may not matter for the API
-   - **Recommendation**: Preserve as documented; test and adjust if needed
-
-2. **Where to store the folder ID in config?**
-   - Option (a): Add a `FolderID string` field to the existing `Provider` struct — simple but adds a Yandex-specific field to a shared struct
-   - Option (b): Store it via the `headers` map as `providers.yandexcloud.headers["x-folder-id"]` and extract from there — hacky, and we now know the header is not sent to the API
-   - Option (c): Handle it entirely via env var at the provider routing layer — read `YANDEXCLOUD_FOLDER_ID` directly in the `NewProvider` switch case, bypassing config struct
-   - **Recommendation**: Option (a) is cleanest — `FolderID` in `Provider` struct. It's a generic enough concept (VertexAI has `VERTEXAI_PROJECT` which is analogous). If adding to the shared struct feels wrong, option (c) works too.
-
-3. **Should we set `DefaultMaxTokens` differently per model?**
-   - Currently proposed as 8192 for all models
-   - Larger-context models (Qwen3 235B with 262K context) might benefit from a higher default
-   - **Recommendation**: Start with 8192 uniformly; adjust based on usage feedback
+1. **Trailing slash in DeepSeek V3.2 model path** → Preserve as documented (`deepseek-v32/`); test and adjust if needed.
+2. **Folder ID storage** → Option (c): read `YANDEXCLOUD_FOLDER_ID` directly via `os.Getenv` in the `NewProvider` switch case, same pattern as VertexAI reads `VERTEXAI_PROJECT` in `newVertexAIClient`. No changes to `Provider` config struct.
+3. **DefaultMaxTokens** → Model-specific values: 8192 for 32K/131K-context models, 32768 for 262K-context Qwen models.
 
 ## Success Criteria
 
