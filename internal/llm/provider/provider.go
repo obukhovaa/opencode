@@ -248,6 +248,20 @@ func NewProvider(providerName models.ModelProvider, opts ...ProviderClientOption
 			options: clientOptions,
 			client:  newBedrockClient(clientOptions),
 		}, nil
+	case models.ProviderYandexCloud:
+		if clientOptions.baseURL == "" {
+			clientOptions.baseURL = "https://llm.api.cloud.yandex.net/v1"
+		}
+		folderID := os.Getenv("YANDEXCLOUD_FOLDER_ID")
+		if folderID == "" {
+			return nil, fmt.Errorf("YandexCloud provider requires folder_id — set YANDEXCLOUD_FOLDER_ID env var")
+		}
+		clientOptions.model.APIModel = "gpt://" + folderID + "/" + clientOptions.model.APIModel
+		logging.Info("YandexCloud provider models resolved", "api_model", clientOptions.model.APIModel)
+		return &baseProvider[OpenAIClient]{
+			options: clientOptions,
+			client:  newOpenAIClient(clientOptions),
+		}, nil
 	case models.ProviderLocal:
 		if clientOptions.baseURL == "" {
 			clientOptions.baseURL = os.Getenv("LOCAL_ENDPOINT")
@@ -607,8 +621,10 @@ var processUserID = func() string {
 	return uuid.New().String()
 }
 
-var resolvedUserID string
-var userIDOnce sync.Once
+var (
+	resolvedUserID string
+	userIDOnce     sync.Once
+)
 
 func getUserID() string {
 	userIDOnce.Do(func() {

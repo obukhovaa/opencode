@@ -427,6 +427,9 @@ func setProviderDefaults() {
 	if localtion := os.Getenv("VERTEXAI_LOCATION"); localtion != "" {
 		viper.SetDefault("providers.vertexai.location", localtion)
 	}
+	if hasYandexCloudCredentials() {
+		viper.SetDefault("providers.yandexcloud.apiKey", os.Getenv("YANDEXCLOUD_API_KEY"))
+	}
 
 	// Use this order to set the default models
 	// 1. Anthropic
@@ -515,6 +518,11 @@ func hasAWSCredentials() bool {
 	}
 
 	return false
+}
+
+// hasYandexCloudCredentials checks if YandexCloud credentials are available in the environment.
+func hasYandexCloudCredentials() bool {
+	return os.Getenv("YANDEXCLOUD_API_KEY") != "" && os.Getenv("YANDEXCLOUD_FOLDER_ID") != ""
 }
 
 // hasVertexAICredentials checks if VertexAI credentials are available in the environment.
@@ -891,6 +899,10 @@ func getProviderAPIKey(provider models.ModelProvider) string {
 	case models.ProviderVertexAI:
 		if hasVertexAICredentials() {
 			return "vertex-ai-credentials-available"
+		}
+	case models.ProviderYandexCloud:
+		if hasYandexCloudCredentials() {
+			return os.Getenv("YANDEXCLOUD_API_KEY")
 		}
 	}
 	return ""

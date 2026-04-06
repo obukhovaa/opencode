@@ -1394,7 +1394,7 @@ func createAgentProvider(agentName config.AgentName) (agentProvider provider.Pro
 		opts = append(opts, provider.WithMetadata(providerCfg.Metadata))
 	}
 
-	if model.Provider == models.ProviderOpenAI || model.Provider == models.ProviderLocal && model.CanReason {
+	if model.Provider == models.ProviderOpenAI || model.Provider == models.ProviderYandexCloud || model.Provider == models.ProviderLocal && model.CanReason {
 		openaiOpts := []provider.OpenAIOption{
 			provider.WithReasoningEffort(agentConfig.ReasoningEffort),
 		}

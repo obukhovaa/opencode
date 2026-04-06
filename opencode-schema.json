@@ -61,7 +61,15 @@
             "vertexai.claude-sonnet-4-5-m",
             "vertexai.claude-sonnet-4-6",
             "vertexai.gemini-3.0-flash",
-            "vertexai.gemini-3.0-pro"
+            "vertexai.gemini-3.0-pro",
+            "yandexcloud.aliceai-llm",
+            "yandexcloud.deepseek-v3.2",
+            "yandexcloud.qwen3-235b",
+            "yandexcloud.qwen3.5-35b",
+            "yandexcloud.yandexgpt-lite-5",
+            "yandexcloud.yandexgpt-pro-5",
+            "yandexcloud.yandexgpt-pro-5.1",
+            "yandexcloud.gpt-oss-120b"
           ],
           "type": "string"
         },
@@ -195,7 +203,15 @@
               "vertexai.claude-sonnet-4-5-m",
               "vertexai.claude-sonnet-4-6",
               "vertexai.gemini-3.0-flash",
-              "vertexai.gemini-3.0-pro"
+              "vertexai.gemini-3.0-pro",
+              "yandexcloud.aliceai-llm",
+              "yandexcloud.deepseek-v3.2",
+              "yandexcloud.qwen3-235b",
+              "yandexcloud.qwen3.5-35b",
+              "yandexcloud.yandexgpt-lite-5",
+              "yandexcloud.yandexgpt-pro-5",
+              "yandexcloud.yandexgpt-pro-5.1",
+              "yandexcloud.gpt-oss-120b"
             ],
             "type": "string"
           },
