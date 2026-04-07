@@ -1,7 +1,7 @@
 # YandexCloud Provider
 
 **Date**: 2026-04-05
-**Status**: Draft
+**Status**: Implemented
 **Author**: AI-assisted
 
 ## Overview
