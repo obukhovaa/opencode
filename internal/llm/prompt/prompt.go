@@ -77,7 +77,7 @@ func GetAgentPrompt(agentName config.AgentName, provider models.ModelProvider) s
 	} else {
 		switch agentName {
 		case config.AgentCoder:
-			basePrompt = CoderPrompt(provider)
+			basePrompt = CoderPrompt()
 		case config.AgentDescriptor:
 			basePrompt = DescriptorPrompt(provider)
 		case config.AgentExplorer:

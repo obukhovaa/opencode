@@ -28,7 +28,7 @@ func TestAnthropicCountTokens(t *testing.T) {
 		Return(tools.ToolInfo{Name: "Mocky", Description: "Do some dirty", Parameters: map[string]any{}, Required: []string{}})
 	tools := []tools.BaseTool{mockTool}
 
-	tokens := EstimateTokens(messages, tools)
+	tokens := EstimateTokens(messages, tools, BytesPerTokenEta)
 	if tokens != 63 {
 		t.Errorf("Expect 12 tokens, actual %d", tokens)
 	}

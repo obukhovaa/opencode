@@ -64,12 +64,12 @@
             "vertexai.gemini-3.0-pro",
             "yandexcloud.aliceai-llm",
             "yandexcloud.deepseek-v3.2",
+            "yandexcloud.gpt-oss-120b",
             "yandexcloud.qwen3-235b",
             "yandexcloud.qwen3.5-35b",
             "yandexcloud.yandexgpt-lite-5",
             "yandexcloud.yandexgpt-pro-5",
-            "yandexcloud.yandexgpt-pro-5.1",
-            "yandexcloud.gpt-oss-120b"
+            "yandexcloud.yandexgpt-pro-5.1"
           ],
           "type": "string"
         },
@@ -206,12 +206,12 @@
               "vertexai.gemini-3.0-pro",
               "yandexcloud.aliceai-llm",
               "yandexcloud.deepseek-v3.2",
+              "yandexcloud.gpt-oss-120b",
               "yandexcloud.qwen3-235b",
               "yandexcloud.qwen3.5-35b",
               "yandexcloud.yandexgpt-lite-5",
               "yandexcloud.yandexgpt-pro-5",
-              "yandexcloud.yandexgpt-pro-5.1",
-              "yandexcloud.gpt-oss-120b"
+              "yandexcloud.yandexgpt-pro-5.1"
             ],
             "type": "string"
           },

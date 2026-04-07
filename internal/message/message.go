@@ -14,6 +14,8 @@ import (
 	"github.com/opencode-ai/opencode/internal/pubsub"
 )
 
+const BytesPerTokenEta = 4
+
 type CreateMessageParams struct {
 	Role  MessageRole
 	Parts []ContentPart
@@ -334,7 +336,7 @@ func unmarshallParts(data []byte) ([]ContentPart, error) {
 
 // Roughly estimate tokens count from message history
 // This is a rough estimation: ~4 characters per token for most models
-func EstimateTokens(messages []Message, tools []tools.BaseTool) int64 {
+func EstimateTokens(messages []Message, tools []tools.BaseTool, bytesPerToken int) int64 {
 	totalChars := 0
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
@@ -358,5 +360,5 @@ func EstimateTokens(messages []Message, tools []tools.BaseTool) int64 {
 			}
 		}
 	}
-	return int64(totalChars / 4)
+	return int64(totalChars / bytesPerToken)
 }

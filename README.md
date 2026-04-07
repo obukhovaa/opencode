@@ -12,7 +12,7 @@ OpenCode is a CLI tool that brings AI assistance to your terminal. It provides b
 - **Non-interactive mode** for headless automation and autonomous agents
 - **Flows**: deterministic multi-step agent workflows defined in YAML ([guide](docs/flows.md))
 - **Subagents**: highly customizable agents calling another agents to do work [[#Agents]]
-- **Multiple AI providers**: Anthropic, OpenAI, Google Gemini, AWS Bedrock, VertexAI, and self-hosted
+- **Multiple AI providers**: Anthropic, OpenAI, Google Gemini, AWS Bedrock, VertexAI, YandexCloud, and self-hosted
 - **Tool integration**: file operations, shell commands, code search, LSP code intelligence
 - **Structured output**: enforce final agent's output with json schema, perfect for automated pipelines
 - **MCP support**: extend capabilities via Model Context Protocol servers
@@ -117,6 +117,9 @@ OpenCode looks for `.opencode.json` in:
     "vertexai": {
       "project": "your-project-id",
       "location": "us-central1"
+    },
+    "yandexcloud": {
+      "apiKey": "..."
     }
   },
   "agents": {
@@ -326,6 +329,17 @@ export LOCAL_ENDPOINT=http://localhost:1235/v1
 export LOCAL_ENDPOINT_API_KEY=secret
 ```
 
+### YandexCloud Configuration
+
+YandexCloud AI Studio provides an OpenAI-compatible API. Set both environment variables:
+
+```bash
+export YANDEXCLOUD_API_KEY="AQVN..."
+export YANDEXCLOUD_FOLDER_ID="b1g..."
+```
+
+The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model_path>`). If not set, the provider will fail with a clear error message.
+
 ```json
 {
   "agents": {
@@ -365,6 +379,8 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | `AWS_ACCESS_KEY_ID` | AWS Bedrock |
 | `AWS_SECRET_ACCESS_KEY` | AWS Bedrock |
 | `AWS_REGION` | AWS Bedrock |
+| `YANDEXCLOUD_API_KEY` | YandexCloud AI Studio API key |
+| `YANDEXCLOUD_FOLDER_ID` | YandexCloud folder ID (required for model URI) |
 | `LOCAL_ENDPOINT` | Self-hosted model endpoint |
 | `LOCAL_ENDPOINT_API_KEY` | Self-hosted model API key |
 | `SHELL` | Default shell |
@@ -384,6 +400,7 @@ export LOCAL_ENDPOINT_API_KEY=secret
 | **Google Gemini** | Gemini 3.0 Pro, Gemini 3.0 Flash |
 | **AWS Bedrock** | Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global) |
 | **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M) |
+| **YandexCloud** | Alice AI LLM, YandexGPT Pro 5.1, YandexGPT Pro 5, YandexGPT Lite 5, DeepSeek V3.2, Qwen3 235B, Qwen3.5 35B, gpt-oss-120b |
 | **Local** | Any OpenAI-compatible API |
 
 ## Tools

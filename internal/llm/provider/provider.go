@@ -482,7 +482,11 @@ func (p *baseProvider[C]) CountTokens(ctx context.Context, threshold float64, me
 		if !errors.Is(err, context.Canceled) {
 			logging.Warn("Provider doesn't support countTokens endpoint, using local strategy for max_tokens", "model", p.options.model.Name, "cause", err.Error())
 		}
-		estimatedTokens = message.EstimateTokens(messages, tools)
+		estimatedTokens = message.EstimateTokens(messages, tools, message.BytesPerTokenEta)
+		// Account for system message tokens not included in EstimateTokens
+		if p.options.systemMessage != "" {
+			estimatedTokens += int64(len(p.options.systemMessage) / message.BytesPerTokenEta)
+		}
 	}
 	contextWindow := p.Model().ContextWindow
 	if contextWindow <= 0 {
