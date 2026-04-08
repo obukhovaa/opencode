@@ -329,16 +329,6 @@ export LOCAL_ENDPOINT=http://localhost:1235/v1
 export LOCAL_ENDPOINT_API_KEY=secret
 ```
 
-### YandexCloud Configuration
-
-YandexCloud AI Studio provides an OpenAI-compatible API. Set both environment variables:
-
-```bash
-export YANDEXCLOUD_API_KEY="AQVN..."
-export YANDEXCLOUD_FOLDER_ID="b1g..."
-```
-
-The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model_path>`). If not set, the provider will fail with a clear error message.
 
 ```json
 {
@@ -349,6 +339,17 @@ The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model
   }
 }
 ```
+
+### YandexCloud Configuration
+
+YandexCloud AI Studio provides an OpenAI-compatible API. Set both environment variables:
+
+```bash
+export YANDEXCLOUD_API_KEY="AQVN..."
+export YANDEXCLOUD_FOLDER_ID="b1g..."
+```
+
+The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model_path>`). If not set, the provider will fail with a clear error message.
 
 **LiteLLM proxy:**
 

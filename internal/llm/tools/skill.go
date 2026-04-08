@@ -101,17 +101,17 @@ func (s *skillTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "<skill_content name=%q>\n", skillInfo.Name)
-	fmt.Fprintf(&sb, "# Skill: %s\n\n", skillInfo.Name)
+	fmt.Fprintf(&sb, "Base directory for this skill: %s\n\n", baseDir)
 	sb.WriteString(processedContent)
-	sb.WriteString("\n\n")
-	fmt.Fprintf(&sb, "Base directory for this skill: %s\n", baseDir)
-	sb.WriteString("Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.\n")
-	sb.WriteString("Note: file list is sampled.\n\n")
-	sb.WriteString("<skill_files>\n")
-	for _, f := range files {
-		fmt.Fprintf(&sb, "<file>%s</file>\n", f)
+	if len(files) > 0 {
+		sb.WriteString("\n\n")
+		sb.WriteString("Bundled files (sampled):\n")
+		sb.WriteString("<skill_files>\n")
+		for _, f := range files {
+			fmt.Fprintf(&sb, "<file>%s</file>\n", f)
+		}
+		sb.WriteString("</skill_files>\n")
 	}
-	sb.WriteString("</skill_files>\n")
 	sb.WriteString("</skill_content>")
 
 	metadata := map[string]string{
