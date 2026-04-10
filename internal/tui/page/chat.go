@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -168,6 +170,8 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Args != nil {
 				if v, ok := msg.Args["ARGUMENTS"]; ok {
 					args = v
+				} else if positional := joinPositionalArgs(msg.Args); positional != "" {
+					args = positional
 				} else {
 					for name, value := range msg.Args {
 						placeholder := "$" + name
@@ -505,24 +509,55 @@ func NewChatPage(app *app.App, commands []dialog.Command) tea.Model {
 	}
 }
 
+// joinPositionalArgs reconstructs a space-separated args string from
+// per-index dialog values (keys "0", "1", "2", ...). Returns "" if
+// the map doesn't contain numeric keys.
+func joinPositionalArgs(args map[string]string) string {
+	indices := make([]int, 0, len(args))
+	values := make(map[int]string, len(args))
+	for key, val := range args {
+		idx, err := strconv.Atoi(key)
+		if err != nil {
+			return ""
+		}
+		indices = append(indices, idx)
+		values[idx] = val
+	}
+	if len(indices) == 0 {
+		return ""
+	}
+	sort.Ints(indices)
+	parts := make([]string, len(indices))
+	for i, idx := range indices {
+		parts[i] = values[idx]
+	}
+	return strings.Join(parts, " ")
+}
+
 func (p *chatPage) resolveInlineSlash(text string) tea.Cmd {
 	parsed := slashcmd.Parse(text)
 	if parsed == nil {
 		return nil
 	}
 
+	// Extract CommandInfo for resolve (Handler-free matching)
+	infos := make([]slashcmd.CommandInfo, len(p.commands))
+	for i, c := range p.commands {
+		infos[i] = c.CommandInfo
+	}
+
 	skills := skill.All()
-	action, err := slashcmd.Resolve(parsed, p.commands, skills, true)
+	action, err := slashcmd.Resolve(parsed, infos, skills, true)
 	if err != nil {
 		return util.ReportWarn(err.Error())
 	}
 
 	switch action.Type {
 	case slashcmd.ActionCommand:
-		cmd := action.Command
+		info := action.Command
 		// Inline args shortcut: only when content has $ARGUMENTS as the sole placeholder
-		if cmd.Content != "" && parsed.Args != "" && slashcmd.HasOnlyArgumentsPlaceholder(cmd.Content) {
-			content := slashcmd.SubstituteArgs(cmd.Content, parsed.Args)
+		if info.Content != "" && parsed.Args != "" && slashcmd.HasOnlyArgumentsPlaceholder(info.Content) {
+			content := slashcmd.SubstituteArgs(info.Content, parsed.Args)
 			content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
 			return util.CmdHandler(dialog.CommandRunCustomMsg{
 				Content: content,
@@ -530,8 +565,8 @@ func (p *chatPage) resolveInlineSlash(text string) tea.Cmd {
 			})
 		}
 		// No inline args or multiple placeholders — use handler (may show dialog)
-		if cmd.Handler != nil {
-			return cmd.Handler(*cmd)
+		if cmd, ok := p.findCommand(info.ID); ok && cmd.Handler != nil {
+			return cmd.Handler(cmd)
 		}
 		return nil
 

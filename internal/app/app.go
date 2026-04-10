@@ -130,9 +130,18 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 	for _, primaryAgent := range primaryAgents {
 		app.PrimaryAgents[primaryAgent.AgentID()] = primaryAgent
 		app.PrimaryAgentKeys = append(app.PrimaryAgentKeys, primaryAgent.AgentID())
-		if app.activeAgent == nil {
-			app.activeAgent = primaryAgent
+	}
+	// Default to coder agent if it exists, otherwise fall back to the first agent
+	if _, ok := app.PrimaryAgents[config.AgentCoder]; ok {
+		for i, key := range app.PrimaryAgentKeys {
+			if key == config.AgentCoder {
+				app.ActiveAgentIdx = i
+				app.activeAgent = app.PrimaryAgents[key]
+				break
+			}
 		}
+	} else if len(primaryAgents) > 0 {
+		app.activeAgent = primaryAgents[0]
 	}
 	return app, nil
 }

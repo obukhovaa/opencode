@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -1067,13 +1068,18 @@ func updateCfgFile(updateCfg func(config *Config)) error {
 
 	updateCfg(userCfg)
 
-	// Write the updated config back to file
-	updatedData, err := json.MarshalIndent(userCfg, "", "  ")
-	if err != nil {
+	// Write the updated config back to file.
+	// Use an encoder with SetEscapeHTML(false) to preserve characters like <, >, &
+	// in MCP server args (e.g., "--with 'fakeredis<2.26'").
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(userCfg); err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(configFile, updatedData, 0o644); err != nil {
+	if err := os.WriteFile(configFile, buf.Bytes(), 0o644); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 

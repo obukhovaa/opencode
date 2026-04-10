@@ -415,14 +415,14 @@ func (m *statusCmp) renderModelWidget(model models.Model) string {
 		Render(model.Name + agentLabel)
 }
 
-func NewStatusCmp(lspService lsp.LspService) StatusCmp {
+func NewStatusCmp(lspService lsp.LspService, activeAgentName config.AgentName) StatusCmp {
 	helpWidget = getHelpWidget()
 	agentHintWidget = getAgentHintWidget()
 
 	return &statusCmp{
 		messageTTL:       10 * time.Second,
 		lspService:       lspService,
-		activeAgentName:  config.AgentCoder,
+		activeAgentName:  activeAgentName,
 		diagnosticsDirty: true,
 	}
 }

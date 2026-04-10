@@ -5,20 +5,16 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/skill"
+	"github.com/opencode-ai/opencode/internal/slashcmd"
 	"github.com/opencode-ai/opencode/internal/tui/util"
 	"gopkg.in/yaml.v3"
-)
-
-// Command prefix constants
-const (
-	UserCommandPrefix    = "user:"
-	ProjectCommandPrefix = "project:"
 )
 
 // namedArgPattern is a regex pattern to find named arguments in the format $NAME
@@ -100,7 +96,7 @@ func LoadCustomCommands() ([]Command, error) {
 	}
 
 	for _, dir := range userDirs {
-		cmds, err := loadCommandsFromDir(dir, UserCommandPrefix)
+		cmds, err := loadCommandsFromDir(dir, slashcmd.UserCommandPrefix)
 		if err != nil {
 			logging.Warn("Failed to load user commands", "dir", dir, "error", err)
 		} else {
@@ -127,7 +123,7 @@ func LoadCustomCommands() ([]Command, error) {
 			projectDirs = append(projectDirs, filepath.Join(current, ".claude", "commands"))
 		}
 		for _, dir := range projectDirs {
-			cmds, err := loadCommandsFromDir(dir, ProjectCommandPrefix)
+			cmds, err := loadCommandsFromDir(dir, slashcmd.ProjectCommandPrefix)
 			if err != nil {
 				logging.Warn("Failed to load project commands", "dir", dir, "error", err)
 			} else {
@@ -158,31 +154,20 @@ func addScopeHints(commands []Command) {
 	// Count how many times each base name (without prefix) appears
 	baseCounts := make(map[string]int)
 	for _, cmd := range commands {
-		baseCounts[baseCommandName(cmd.ID)]++
+		baseCounts[slashcmd.BaseCommandName(cmd.ID)]++
 	}
 
 	for i := range commands {
-		base := baseCommandName(commands[i].ID)
+		base := slashcmd.BaseCommandName(commands[i].ID)
 		if baseCounts[base] <= 1 {
 			continue
 		}
 		scope := "user"
-		if strings.HasPrefix(commands[i].ID, ProjectCommandPrefix) {
+		if strings.HasPrefix(commands[i].ID, slashcmd.ProjectCommandPrefix) {
 			scope = "project"
 		}
 		commands[i].Title = commands[i].Title + " (" + scope + ")"
 	}
-}
-
-// baseCommandName strips the user:/project: prefix from a command ID.
-func baseCommandName(id string) string {
-	if after, ok := strings.CutPrefix(id, UserCommandPrefix); ok {
-		return after
-	}
-	if after, ok := strings.CutPrefix(id, ProjectCommandPrefix); ok {
-		return after
-	}
-	return id
 }
 
 func isClaudeCommandsDisabled() bool {
@@ -258,11 +243,13 @@ func loadCommandsFromDir(commandsDir string, prefix string) ([]Command, error) {
 
 		commandContent := body
 		command := Command{
-			ID:           fullID,
-			Title:        title,
-			Description:  description,
-			Content:      commandContent,
-			ArgumentHint: fm.ArgumentHint,
+			CommandInfo: slashcmd.CommandInfo{
+				ID:           fullID,
+				Title:        title,
+				Description:  description,
+				Content:      commandContent,
+				ArgumentHint: fm.ArgumentHint,
+			},
 			Handler: func(cmd Command) tea.Cmd {
 				return ParameterizedCommandHandler(commandContent, &cmd)
 			},
@@ -384,6 +371,24 @@ func ParameterizedSkillHandler(s *skill.Info) tea.Cmd {
 
 	// Check for positional argument patterns ($0, $ARGUMENTS, $ARGUMENTS[N])
 	if skill.HasArgumentPatterns(s.Content) {
+		// Extract individual positional indices ($0, $1, $ARGUMENTS[0], etc.)
+		indices := skill.ExtractPositionalIndices(s.Content)
+		if len(indices) > 0 {
+			argNames := make([]string, len(indices))
+			for i, idx := range indices {
+				argNames[i] = strconv.Itoa(idx)
+			}
+			argHints := ParseArgumentHints(s.ArgumentHint, argNames)
+
+			return util.CmdHandler(ShowMultiArgumentsDialogMsg{
+				CommandID: "skill:" + s.Name,
+				Content:   s.Content,
+				ArgNames:  argNames,
+				ArgHints:  argHints,
+			})
+		}
+
+		// Fallback: bare $ARGUMENTS only
 		argNames := []string{"ARGUMENTS"}
 		argHints := ParseArgumentHints(s.ArgumentHint, argNames)
 

@@ -54,6 +54,10 @@ type (
 		LoadTools(ctx context.Context, filter *MCPRegistryFiler) <-chan tools.BaseTool
 		// StartClient starts a new MCPClient, caller have to properly close when done
 		StartClient(ctx context.Context, name string) (c *client.Client, err error)
+		// LoadedServers returns the set of MCP server names that have successfully loaded tools.
+		LoadedServers() map[string]bool
+		// ServerTools returns the tool names for a loaded MCP server (without the server prefix).
+		ServerTools(name string) []string
 		pubsub.Suscriber[MCPServerEvent]
 	}
 	MCPRegistryFiler struct {
@@ -123,6 +127,43 @@ func (r *mcpRegistry) StartClient(ctx context.Context, name string) (c *client.C
 		return nil, err
 	}
 	return c, nil
+}
+
+func (r *mcpRegistry) LoadedServers() map[string]bool {
+	result := make(map[string]bool)
+	r.mcpTools.Range(func(key, value any) bool {
+		entry := value.(*toolsCacheEntry)
+		select {
+		case <-entry.done:
+			if entry.err == nil && entry.data != nil && len(entry.data.Tools) > 0 {
+				result[key.(string)] = true
+			}
+		default:
+		}
+		return true
+	})
+	return result
+}
+
+func (r *mcpRegistry) ServerTools(name string) []string {
+	value, ok := r.mcpTools.Load(name)
+	if !ok {
+		return nil
+	}
+	entry := value.(*toolsCacheEntry)
+	select {
+	case <-entry.done:
+		if entry.err != nil || entry.data == nil {
+			return nil
+		}
+		names := make([]string, len(entry.data.Tools))
+		for i, t := range entry.data.Tools {
+			names[i] = t.Name
+		}
+		return names
+	default:
+		return nil
+	}
 }
 
 func (r *mcpRegistry) LoadTools(ctx context.Context, filter *MCPRegistryFiler) <-chan tools.BaseTool {

@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/opencode-ai/opencode/internal/skill"
-	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 )
 
 var namedArgPattern = regexp.MustCompile(`\$([A-Z][A-Z0-9_]*)`)
@@ -28,19 +27,13 @@ var (
 
 type ResolvedAction struct {
 	Type    ActionType
-	Command *dialog.Command
+	Command *CommandInfo
 	Skill   *skill.Info
 	Prompt  string
 	Args    string
 }
 
-var tuiOnlyCommands = map[string]bool{
-	"compact":      true,
-	"agents":       true,
-	"auto-approve": true,
-}
-
-func Resolve(parsed *ParsedCommand, commands []dialog.Command, skills []skill.Info, interactive bool) (*ResolvedAction, error) {
+func Resolve(parsed *ParsedCommand, commands []CommandInfo, skills []skill.Info, interactive bool) (*ResolvedAction, error) {
 	if parsed == nil {
 		return &ResolvedAction{Type: ActionNotFound}, nil
 	}
@@ -52,8 +45,8 @@ func Resolve(parsed *ParsedCommand, commands []dialog.Command, skills []skill.In
 	return resolveCommand(parsed, commands, interactive)
 }
 
-func resolveCommand(parsed *ParsedCommand, commands []dialog.Command, interactive bool) (*ResolvedAction, error) {
-	var matched *dialog.Command
+func resolveCommand(parsed *ParsedCommand, commands []CommandInfo, interactive bool) (*ResolvedAction, error) {
+	var matched *CommandInfo
 
 	for i := range commands {
 		cmd := &commands[i]
@@ -61,7 +54,7 @@ func resolveCommand(parsed *ParsedCommand, commands []dialog.Command, interactiv
 			matched = cmd
 			break
 		}
-		base := baseCommandName(cmd.ID)
+		base := BaseCommandName(cmd.ID)
 		if base == parsed.Name {
 			matched = cmd
 			break
@@ -72,7 +65,7 @@ func resolveCommand(parsed *ParsedCommand, commands []dialog.Command, interactiv
 		return &ResolvedAction{Type: ActionNotFound}, nil
 	}
 
-	if !interactive && tuiOnlyCommands[matched.ID] {
+	if !interactive && matched.TUIOnly {
 		return nil, fmt.Errorf("%w: '%s'", ErrTUIOnly, matched.ID)
 	}
 
@@ -100,20 +93,10 @@ func resolveSkill(parsed *ParsedCommand, skills []skill.Info) (*ResolvedAction, 
 	return &ResolvedAction{Type: ActionNotFound}, nil
 }
 
-func baseCommandName(id string) string {
-	if after, ok := strings.CutPrefix(id, dialog.UserCommandPrefix); ok {
-		return after
-	}
-	if after, ok := strings.CutPrefix(id, dialog.ProjectCommandPrefix); ok {
-		return after
-	}
-	return id
-}
-
 func BuildPrompt(action *ResolvedAction, sessionID string) string {
 	switch action.Type {
 	case ActionCommand:
-		return "" // Command prompt is built via handler
+		return ""
 	case ActionSkill:
 		baseDir := filepath.Dir(action.Skill.Location)
 		content := skill.SubstituteContent(action.Skill.Content, skill.SubstituteParams{

@@ -3,6 +3,7 @@ package skill
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -25,6 +26,30 @@ var (
 // HasArgumentPatterns reports whether content contains $ARGUMENTS, $ARGUMENTS[N], or $N patterns.
 func HasArgumentPatterns(content string) bool {
 	return strings.Contains(content, "$ARGUMENTS") || shorthandArgPattern.MatchString(content)
+}
+
+// ExtractPositionalIndices returns sorted unique positional indices from $N and $ARGUMENTS[N] patterns.
+func ExtractPositionalIndices(content string) []int {
+	seen := make(map[int]bool)
+
+	for _, m := range indexedArgPattern.FindAllStringSubmatch(content, -1) {
+		if idx, err := strconv.Atoi(m[1]); err == nil {
+			seen[idx] = true
+		}
+	}
+
+	for _, m := range shorthandArgPattern.FindAllStringSubmatch(content, -1) {
+		if idx, err := strconv.Atoi(m[1]); err == nil {
+			seen[idx] = true
+		}
+	}
+
+	indices := make([]int, 0, len(seen))
+	for idx := range seen {
+		indices = append(indices, idx)
+	}
+	sort.Ints(indices)
+	return indices
 }
 
 // SubstituteContent replaces variables in skill content with actual values.

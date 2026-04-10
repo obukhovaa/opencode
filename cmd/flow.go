@@ -291,29 +291,17 @@ func resolveSlashPrompt(prompt string, sessionID string) (string, error) {
 	}
 }
 
-func buildCLICommands() []dialog.Command {
-	commands := []dialog.Command{
-		{ID: "commit", Title: "Commit and Push", ArgumentHint: "<commit/branch/uncommitted>", Content: readEmbeddedCommand("commands/commit.md")},
-		{ID: "init", Title: "Initialize Project", Content: readEmbeddedCommand("commands/init.md")},
-		{ID: "review", Title: "Review Code", Content: readEmbeddedCommand("commands/review.md")},
-		{ID: "compact", Title: "Compact Session"},
-		{ID: "agents", Title: "List Agents"},
-	}
+func buildCLICommands() []slashcmd.CommandInfo {
+	commands := slashcmd.BuiltinCommands()
 
 	customCommands, err := dialog.LoadCustomCommands()
 	if err != nil {
 		logging.Warn("Failed to load custom commands", "error", err)
 	} else {
-		commands = append(commands, customCommands...)
+		for _, cmd := range customCommands {
+			commands = append(commands, cmd.CommandInfo)
+		}
 	}
 
 	return commands
-}
-
-func readEmbeddedCommand(path string) string {
-	data, err := dialog.CommandPrompts.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return string(data)
 }

@@ -3,7 +3,6 @@ package chat
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -228,20 +227,22 @@ func cwd(width int) string {
 }
 
 var cachedMcpServers struct {
-	content   string
-	width     int
-	themeID   string
-	agentName string
-	resolved  bool
+	content      string
+	width        int
+	themeID      string
+	agentName    string
+	loadedCount  int
+	toolsResolved bool
 }
 
 func InvalidateMcpCache() {
 	cachedMcpServers = struct {
-		content   string
-		width     int
-		themeID   string
-		agentName string
-		resolved  bool
+		content      string
+		width        int
+		themeID      string
+		agentName    string
+		loadedCount  int
+		toolsResolved bool
 	}{}
 }
 
@@ -254,14 +255,17 @@ func mcpServersConfigured(width int, a *app.App) string {
 	themeID := theme.CurrentThemeName()
 	agentName := ""
 	toolsResolved := false
+	var loadedServers map[string]bool
 	if a != nil {
 		agentName = a.ActiveAgentName()
 		_, toolsResolved = a.ActiveAgent().ResolvedTools()
+		loadedServers = a.MCPRegistry.LoadedServers()
 	}
 
+	loadedCount := len(loadedServers)
 	if cachedMcpServers.width == width && cachedMcpServers.themeID == themeID &&
 		cachedMcpServers.agentName == agentName && cachedMcpServers.content != "" &&
-		cachedMcpServers.resolved == toolsResolved {
+		cachedMcpServers.loadedCount == loadedCount && cachedMcpServers.toolsResolved == toolsResolved {
 		return cachedMcpServers.content
 	}
 
@@ -274,24 +278,6 @@ func mcpServersConfigured(width int, a *app.App) string {
 		Bold(true).
 		Render("MCP")
 
-	// Build set of active MCP server names by checking agent tools
-	activeServers := make(map[string]bool)
-	if toolsResolved && a != nil {
-		resolvedTools, _ := a.ActiveAgent().ResolvedTools()
-		for _, tool := range resolvedTools {
-			toolName := tool.Info().Name
-			bestMatch := ""
-			for name := range mcpServers {
-				if strings.HasPrefix(toolName, name+"_") && len(name) > len(bestMatch) {
-					bestMatch = name
-				}
-			}
-			if bestMatch != "" {
-				activeServers[bestMatch] = true
-			}
-		}
-	}
-
 	// Get sorted server names
 	var serverNames []string
 	for name := range mcpServers {
@@ -299,13 +285,31 @@ func mcpServersConfigured(width int, a *app.App) string {
 	}
 	sort.Strings(serverNames)
 
+	// Build set of servers that are loaded AND enabled for the active agent.
+	// A server is "active" when it has loaded tools and at least one of its
+	// tools is enabled for the current agent.
+	activeServers := make(map[string]bool)
+	if a != nil {
+		agentID := string(agentName)
+		for name := range loadedServers {
+			serverTools := a.MCPRegistry.ServerTools(name)
+			for _, toolName := range serverTools {
+				fullName := name + "_" + toolName
+				if a.Registry.IsToolEnabled(agentID, fullName) {
+					activeServers[name] = true
+					break
+				}
+			}
+		}
+	}
+
 	var serverViews []string
 	for _, name := range serverNames {
 		server := mcpServers[name]
 
 		indicator := "○"
 		indicatorColor := t.TextMuted()
-		if toolsResolved && activeServers[name] {
+		if activeServers[name] {
 			indicator = "●"
 			indicatorColor = t.Success()
 		}
@@ -355,12 +359,11 @@ func mcpServersConfigured(width int, a *app.App) string {
 			),
 		)
 
-	if toolsResolved {
-		cachedMcpServers.content = result
-		cachedMcpServers.width = width
-		cachedMcpServers.themeID = themeID
-		cachedMcpServers.agentName = agentName
-		cachedMcpServers.resolved = toolsResolved
-	}
+	cachedMcpServers.content = result
+	cachedMcpServers.width = width
+	cachedMcpServers.themeID = themeID
+	cachedMcpServers.agentName = agentName
+	cachedMcpServers.loadedCount = loadedCount
+	cachedMcpServers.toolsResolved = toolsResolved
 	return result
 }

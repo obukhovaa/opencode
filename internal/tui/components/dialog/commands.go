@@ -1,11 +1,10 @@
 package dialog
 
 import (
-	"embed"
-
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/opencode-ai/opencode/internal/slashcmd"
 	utilComponents "github.com/opencode-ai/opencode/internal/tui/components/util"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
@@ -13,17 +12,11 @@ import (
 	"github.com/opencode-ai/opencode/internal/tui/util"
 )
 
-//go:embed commands/*.md
-var CommandPrompts embed.FS
-
-// Command represents a command that can be executed
+// Command represents a command that can be executed.
+// It embeds CommandInfo for the data fields and adds a TUI-specific Handler.
 type Command struct {
-	ID           string
-	Title        string
-	Description  string
-	Handler      func(cmd Command) tea.Cmd
-	Content      string // Raw prompt content (for non-interactive slash dispatch)
-	ArgumentHint string // Hint text for argument placeholders
+	slashcmd.CommandInfo
+	Handler func(cmd Command) tea.Cmd
 }
 
 func (ci Command) Render(selected bool, width int) string {

@@ -5,17 +5,16 @@ import (
 	"testing"
 
 	"github.com/opencode-ai/opencode/internal/skill"
-	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 )
 
 func boolPtr(b bool) *bool { return &b }
 
 func TestResolve(t *testing.T) {
-	commands := []dialog.Command{
+	commands := []CommandInfo{
 		{ID: "commit", Title: "Commit"},
 		{ID: "review", Title: "Review Code"},
-		{ID: "compact", Title: "Compact Session"},
-		{ID: "agents", Title: "List Agents"},
+		{ID: "compact", Title: "Compact Session", TUIOnly: true},
+		{ID: "agents", Title: "List Agents", TUIOnly: true},
 		{ID: "user:deploy", Title: "Deploy"},
 		{ID: "project:lint", Title: "Lint"},
 	}

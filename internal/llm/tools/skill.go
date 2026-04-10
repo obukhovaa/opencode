@@ -269,6 +269,9 @@ func (s *skillTool) buildSkillDescription() string {
 		fmt.Fprintf(&sb, "  <skill>\n")
 		fmt.Fprintf(&sb, "    <name>%s</name>\n", sk.Name)
 		fmt.Fprintf(&sb, "    <description>%s</description>\n", sk.Description)
+		if sk.ArgumentHint != "" {
+			fmt.Fprintf(&sb, "    <args>%s</args>\n", sk.ArgumentHint)
+		}
 		fmt.Fprintf(&sb, "    <location>file://%s</location>\n", baseDir)
 		fmt.Fprintf(&sb, "  </skill>\n")
 	}

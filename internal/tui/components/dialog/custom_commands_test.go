@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"testing"
+
+	"github.com/opencode-ai/opencode/internal/slashcmd"
 )
 
 func TestNamedArgPattern(t *testing.T) {
@@ -242,7 +244,7 @@ func TestLoadCommandsFromDir(t *testing.T) {
 	os.WriteFile(filepath.Join(commandsDir, "sub", "nested.md"), []byte("Nested body"), 0o644)
 	os.WriteFile(filepath.Join(commandsDir, "ignore.txt"), []byte("not a command"), 0o644)
 
-	cmds, err := loadCommandsFromDir(commandsDir, ProjectCommandPrefix)
+	cmds, err := loadCommandsFromDir(commandsDir, slashcmd.ProjectCommandPrefix)
 	if err != nil {
 		t.Fatalf("loadCommandsFromDir failed: %v", err)
 	}
@@ -280,8 +282,8 @@ func TestAddScopeHints(t *testing.T) {
 		{
 			name: "no duplicates, no hints",
 			commands: []Command{
-				{ID: "user:deploy", Title: "Deploy"},
-				{ID: "project:lint", Title: "Lint"},
+				{CommandInfo: slashcmd.CommandInfo{ID: "user:deploy", Title: "Deploy"}},
+				{CommandInfo: slashcmd.CommandInfo{ID: "project:lint", Title: "Lint"}},
 			},
 			want: map[string]string{
 				"user:deploy":  "Deploy",
@@ -291,8 +293,8 @@ func TestAddScopeHints(t *testing.T) {
 		{
 			name: "duplicate base name gets hints",
 			commands: []Command{
-				{ID: "user:deploy", Title: "Deploy"},
-				{ID: "project:deploy", Title: "Deploy"},
+				{CommandInfo: slashcmd.CommandInfo{ID: "user:deploy", Title: "Deploy"}},
+				{CommandInfo: slashcmd.CommandInfo{ID: "project:deploy", Title: "Deploy"}},
 			},
 			want: map[string]string{
 				"user:deploy":    "Deploy (user)",
@@ -302,9 +304,9 @@ func TestAddScopeHints(t *testing.T) {
 		{
 			name: "mixed duplicates and unique",
 			commands: []Command{
-				{ID: "user:deploy", Title: "Deploy"},
-				{ID: "project:deploy", Title: "Deploy"},
-				{ID: "project:lint", Title: "Lint"},
+				{CommandInfo: slashcmd.CommandInfo{ID: "user:deploy", Title: "Deploy"}},
+				{CommandInfo: slashcmd.CommandInfo{ID: "project:deploy", Title: "Deploy"}},
+				{CommandInfo: slashcmd.CommandInfo{ID: "project:lint", Title: "Lint"}},
 			},
 			want: map[string]string{
 				"user:deploy":    "Deploy (user)",
@@ -329,7 +331,7 @@ func TestAddScopeHints(t *testing.T) {
 }
 
 func TestLoadCommandsFromNonexistentDir(t *testing.T) {
-	cmds, err := loadCommandsFromDir("/nonexistent/path", ProjectCommandPrefix)
+	cmds, err := loadCommandsFromDir("/nonexistent/path", slashcmd.ProjectCommandPrefix)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}

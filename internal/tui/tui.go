@@ -15,6 +15,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/session"
+	"github.com/opencode-ai/opencode/internal/slashcmd"
 	"github.com/opencode-ai/opencode/internal/tui/components/chat"
 	"github.com/opencode-ai/opencode/internal/tui/components/core"
 	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
@@ -1003,7 +1004,7 @@ func New(app *app.App) tea.Model {
 		currentPage:         startPage,
 		loadedPages:         make(map[page.PageID]bool),
 		topbar:              core.NewTopBarCmp(),
-		status:              core.NewStatusCmp(app.LspService),
+		status:              core.NewStatusCmp(app.LspService, app.ActiveAgentName()),
 		help:                dialog.NewHelpCmp(),
 		quit:                dialog.NewQuitCmp(),
 		sessionDialog:       dialog.NewSessionDialogCmp(),
@@ -1027,75 +1028,37 @@ func New(app *app.App) tea.Model {
 }
 
 func buildCommands() []dialog.Command {
-	initContent := readEmbeddedCommand("commands/init.md")
-	reviewContent := readEmbeddedCommand("commands/review.md")
-	commitContent := readEmbeddedCommand("commands/commit.md")
+	builtins := slashcmd.BuiltinCommands()
+	commands := make([]dialog.Command, 0, len(builtins))
 
-	commands := []dialog.Command{
-		{
-			ID:          "agents",
-			Title:       "List Agents",
-			Description: "List all available agents and their configuration",
-			Handler: func(cmd dialog.Command) tea.Cmd {
-				return util.CmdHandler(page.PageChangeMsg{ID: page.AgentsPage})
-			},
+	// TUI-specific handlers keyed by command ID
+	handlers := map[string]func(dialog.Command) tea.Cmd{
+		"init": func(cmd dialog.Command) tea.Cmd {
+			return util.CmdHandler(chat.SendMsg{Text: cmd.Content})
 		},
-		{
-			ID:          "init",
-			Title:       "Initialize Project",
-			Description: "Create/Update the AGENTS.md memory file",
-			Content:     initContent,
-			Handler: func(cmd dialog.Command) tea.Cmd {
-				return tea.Batch(
-					util.CmdHandler(chat.SendMsg{
-						Text: initContent,
-					}),
-				)
-			},
+		"review": func(cmd dialog.Command) tea.Cmd {
+			return dialog.ParameterizedCommandHandler(cmd.Content, &cmd)
 		},
-		{
-			ID:           "review",
-			Title:        "Review code",
-			Description:  "Review a given work using provided commit hash or branch",
-			Content:      reviewContent,
-			ArgumentHint: "[commit, branch, pr, uncommitted]",
-			Handler: func(cmd dialog.Command) tea.Cmd {
-				return dialog.ParameterizedCommandHandler(reviewContent, &cmd)
-			},
+		"commit": func(cmd dialog.Command) tea.Cmd {
+			return util.CmdHandler(chat.SendMsg{Text: cmd.Content})
 		},
-		{
-			ID:          "compact",
-			Title:       "Compact Session",
-			Description: "Summarize the current session and create a new one with the summary",
-			Handler: func(cmd dialog.Command) tea.Cmd {
-				return func() tea.Msg {
-					return startCompactSessionMsg{}
-				}
-			},
+		"compact": func(_ dialog.Command) tea.Cmd {
+			return func() tea.Msg { return startCompactSessionMsg{} }
 		},
-		{
-			ID:          "commit",
-			Title:       "Commit and Push",
-			Description: "Commit changes to git using conventional commits and push",
-			Content:     commitContent,
-			Handler: func(cmd dialog.Command) tea.Cmd {
-				return tea.Batch(
-					util.CmdHandler(chat.SendMsg{
-						Text: commitContent,
-					}),
-				)
-			},
+		"agents": func(_ dialog.Command) tea.Cmd {
+			return util.CmdHandler(page.PageChangeMsg{ID: page.AgentsPage})
 		},
-		{
-			ID:          "auto-approve",
-			Title:       "Toggle Auto-Approve",
-			Description: "Toggle auto-approve mode for the current session (skip permission dialogs)",
-			Handler: func(cmd dialog.Command) tea.Cmd {
-				return func() tea.Msg {
-					return toggleAutoApproveMsg{}
-				}
-			},
+		"auto-approve": func(_ dialog.Command) tea.Cmd {
+			return func() tea.Msg { return toggleAutoApproveMsg{} }
 		},
+	}
+
+	for _, b := range builtins {
+		cmd := dialog.Command{CommandInfo: b}
+		if h, ok := handlers[b.ID]; ok {
+			cmd.Handler = h
+		}
+		commands = append(commands, cmd)
 	}
 
 	customCommands, err := dialog.LoadCustomCommands()
@@ -1106,13 +1069,4 @@ func buildCommands() []dialog.Command {
 	}
 
 	return commands
-}
-
-func readEmbeddedCommand(path string) string {
-	data, err := dialog.CommandPrompts.ReadFile(path)
-	if err != nil {
-		logging.Error("Failed to read embedded command", "path", path, "error", err)
-		return ""
-	}
-	return string(data)
 }
