@@ -34,6 +34,7 @@ type AgentInfo struct {
 	MaxTurns        int              `yaml:"maxTurns,omitempty"`
 	ReasoningEffort string           `yaml:"reasoningEffort,omitempty"`
 	Prompt          string           `yaml:"-"`
+	Skills          []string         `yaml:"skills,omitempty"`
 	Permission      map[string]any   `yaml:"permission,omitempty"`
 	Tools           map[string]bool  `yaml:"tools,omitempty"`
 	Output          *Output          `yaml:"output,omitempty"`
@@ -102,7 +103,11 @@ func newRegistry() Registry {
 		} else {
 			permissions = a.Permission
 		}
-		logging.Info("Agent discovered", "agentID", a.ID, "mode", a.Mode, "model", a.Model, "path", path, "tools", tools, "permissions", permissions)
+		args := []any{"agentID", a.ID, "mode", a.Mode, "model", a.Model, "path", path, "tools", tools, "permissions", permissions}
+		if len(a.Skills) > 0 {
+			args = append(args, "skills", a.Skills)
+		}
+		logging.Info("Agent discovered", args...)
 	}
 	return &registry{
 		agents:      agents,
@@ -357,6 +362,9 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 		if agentCfg.ParallelToolUse != nil {
 			existing.ParallelToolUse = agentCfg.ParallelToolUse
 		}
+		if agentCfg.Skills != nil {
+			existing.Skills = deduplicateSkills(agentCfg.Skills, name)
+		}
 
 		agents[name] = existing
 	}
@@ -421,7 +429,29 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 	if md.ParallelToolUse != nil {
 		existing.ParallelToolUse = md.ParallelToolUse
 	}
+	if md.Skills != nil {
+		existing.Skills = deduplicateSkills(md.Skills, existing.ID)
+	}
 	existing.Location = md.Location
+}
+
+// deduplicateSkills returns a new slice with duplicate skill names removed,
+// preserving the order of first occurrence. Logs a warning for each duplicate found.
+func deduplicateSkills(skills []string, agentID string) []string {
+	if len(skills) == 0 {
+		return skills
+	}
+	seen := make(map[string]bool, len(skills))
+	result := make([]string, 0, len(skills))
+	for _, name := range skills {
+		if seen[name] {
+			logging.Warn("Duplicate skill in agent definition, ignoring", "agentID", agentID, "skill", name)
+			continue
+		}
+		seen[name] = true
+		result = append(result, name)
+	}
+	return result
 }
 
 func removeDisabledAgents(agents map[string]AgentInfo) {

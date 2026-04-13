@@ -227,21 +227,21 @@ func cwd(width int) string {
 }
 
 var cachedMcpServers struct {
-	content      string
-	width        int
-	themeID      string
-	agentName    string
-	loadedCount  int
+	content       string
+	width         int
+	themeID       string
+	agentName     string
+	loadedCount   int
 	toolsResolved bool
 }
 
 func InvalidateMcpCache() {
 	cachedMcpServers = struct {
-		content      string
-		width        int
-		themeID      string
-		agentName    string
-		loadedCount  int
+		content       string
+		width         int
+		themeID       string
+		agentName     string
+		loadedCount   int
 		toolsResolved bool
 	}{}
 }

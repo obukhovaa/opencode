@@ -337,6 +337,13 @@ func generateSchema() map[string]any {
 					"description": "Whether to enable parallel tool execution for this agent. When true (default), independent tool calls run concurrently. Set to false to force sequential execution.",
 					"default":     true,
 				},
+				"skills": map[string]any{
+					"type":        "array",
+					"description": "List of skill names to preload into the agent's system prompt at startup. Skills are injected as <skill_content> blocks. Only skills not explicitly denied by permissions are injected. Variable substitution and shell markup are not expanded for preloaded skills.",
+					"items": map[string]any{
+						"type": "string",
+					},
+				},
 			},
 			"required": []string{"model"},
 		},

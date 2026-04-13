@@ -359,6 +359,169 @@ func TestDisabledViaMarkdownMerge(t *testing.T) {
 	}
 }
 
+func TestDeduplicateSkills(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []string
+		expected []string
+	}{
+		{
+			name:     "empty",
+			input:    nil,
+			expected: nil,
+		},
+		{
+			name:     "no duplicates",
+			input:    []string{"review", "commit", "deploy"},
+			expected: []string{"review", "commit", "deploy"},
+		},
+		{
+			name:     "with duplicates",
+			input:    []string{"review", "commit", "review", "deploy", "commit"},
+			expected: []string{"review", "commit", "deploy"},
+		},
+		{
+			name:     "all same",
+			input:    []string{"review", "review", "review"},
+			expected: []string{"review"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deduplicateSkills(tt.input, "test-agent")
+			if tt.expected == nil {
+				if got != nil {
+					t.Errorf("deduplicateSkills() = %v, want nil", got)
+				}
+				return
+			}
+			if len(got) != len(tt.expected) {
+				t.Fatalf("deduplicateSkills() len = %d, want %d", len(got), len(tt.expected))
+			}
+			for i := range got {
+				if got[i] != tt.expected[i] {
+					t.Errorf("deduplicateSkills()[%d] = %q, want %q", i, got[i], tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
+func TestParseAgentMarkdownWithSkills(t *testing.T) {
+	dir := t.TempDir()
+	md := `---
+description: Domain expert
+mode: subagent
+skills:
+  - review
+  - domain-knowledge
+---
+
+You are a domain expert.
+`
+	path := filepath.Join(dir, "expert.md")
+	os.WriteFile(path, []byte(md), 0o644)
+
+	agent, err := parseAgentMarkdown(path)
+	if err != nil {
+		t.Fatalf("parseAgentMarkdown() error = %v", err)
+	}
+
+	if len(agent.Skills) != 2 {
+		t.Fatalf("Skills len = %d, want 2", len(agent.Skills))
+	}
+	if agent.Skills[0] != "review" || agent.Skills[1] != "domain-knowledge" {
+		t.Errorf("Skills = %v, want [review, domain-knowledge]", agent.Skills)
+	}
+}
+
+func TestMergeMarkdownSkillsReplace(t *testing.T) {
+	existing := AgentInfo{
+		ID:     "myagent",
+		Skills: []string{"skill-a", "skill-b"},
+	}
+
+	md := AgentInfo{
+		Skills: []string{"skill-c"},
+	}
+
+	mergeMarkdownIntoExisting(&existing, &md)
+
+	if len(existing.Skills) != 1 || existing.Skills[0] != "skill-c" {
+		t.Errorf("Skills should be replaced, got %v", existing.Skills)
+	}
+}
+
+func TestMergeMarkdownSkillsNilPreserves(t *testing.T) {
+	existing := AgentInfo{
+		ID:     "myagent",
+		Skills: []string{"skill-a"},
+	}
+
+	md := AgentInfo{}
+
+	mergeMarkdownIntoExisting(&existing, &md)
+
+	if len(existing.Skills) != 1 || existing.Skills[0] != "skill-a" {
+		t.Errorf("nil Skills in overlay should preserve existing, got %v", existing.Skills)
+	}
+}
+
+func TestConfigOverridesSkills(t *testing.T) {
+	agents := map[string]AgentInfo{
+		"coder": {
+			ID:     "coder",
+			Name:   "Coder Agent",
+			Mode:   config.AgentModeAgent,
+			Skills: []string{"old-skill"},
+		},
+	}
+
+	cfg := &config.Config{
+		Agents: map[config.AgentName]config.Agent{
+			"coder": {
+				Skills: []string{"new-skill-a", "new-skill-b"},
+			},
+		},
+	}
+
+	applyConfigOverrides(agents, cfg)
+
+	coder := agents["coder"]
+	if len(coder.Skills) != 2 {
+		t.Fatalf("Skills len = %d, want 2", len(coder.Skills))
+	}
+	if coder.Skills[0] != "new-skill-a" || coder.Skills[1] != "new-skill-b" {
+		t.Errorf("Skills = %v, want [new-skill-a, new-skill-b]", coder.Skills)
+	}
+}
+
+func TestConfigOverridesSkillsDedup(t *testing.T) {
+	agents := map[string]AgentInfo{
+		"coder": {
+			ID:   "coder",
+			Name: "Coder Agent",
+			Mode: config.AgentModeAgent,
+		},
+	}
+
+	cfg := &config.Config{
+		Agents: map[config.AgentName]config.Agent{
+			"coder": {
+				Skills: []string{"review", "commit", "review"},
+			},
+		},
+	}
+
+	applyConfigOverrides(agents, cfg)
+
+	coder := agents["coder"]
+	if len(coder.Skills) != 2 {
+		t.Fatalf("Skills should be deduped to 2, got %d: %v", len(coder.Skills), coder.Skills)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr))
 }

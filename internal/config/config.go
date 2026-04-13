@@ -89,6 +89,7 @@ type Agent struct {
 	Disabled        bool            `json:"disabled,omitempty"`
 	ParallelToolUse *bool           `json:"parallelToolUse,omitempty"`
 	Output          *AgentOutput    `json:"output,omitempty"`
+	Skills          []string        `json:"skills,omitempty"`
 }
 
 // TelemetryConfig defines telemetry configuration for identifying requests.
@@ -910,31 +911,28 @@ func getProviderAPIKey(provider models.ModelProvider) string {
 }
 
 // setDefaultModelForAgent sets a default model for an agent based on available providers in desired preference order
+// setAgentModelDefaults updates only the model-related fields (Model, MaxTokens,
+// ReasoningEffort) on an existing agent config entry, preserving all other
+// user-configured fields like Skills, Permission, Tools, Color, etc.
+func setAgentModelDefaults(agent AgentName, model models.ModelID, maxTokens int64, reasoningEffort string) {
+	existing := cfg.Agents[agent]
+	existing.Model = model
+	existing.MaxTokens = maxTokens
+	existing.ReasoningEffort = reasoningEffort
+	cfg.Agents[agent] = existing
+}
+
 func setDefaultModelForAgent(agent AgentName) bool {
 	if hasVertexAICredentials() {
 		switch agent {
 		case AgentDescriptor:
-			cfg.Agents[agent] = Agent{
-				Model:     models.VertexAISonnet46,
-				MaxTokens: 80,
-			}
+			setAgentModelDefaults(agent, models.VertexAISonnet46, 80, "")
 		case AgentExplorer, AgentSummarizer:
-			cfg.Agents[agent] = Agent{
-				Model:           models.VertexAISonnet46,
-				MaxTokens:       models.VertexAIAnthropicModels[models.VertexAISonnet46].DefaultMaxTokens,
-				ReasoningEffort: "medium",
-			}
+			setAgentModelDefaults(agent, models.VertexAISonnet46, models.VertexAIAnthropicModels[models.VertexAISonnet46].DefaultMaxTokens, "medium")
 		case AgentWorkhorse:
-			cfg.Agents[agent] = Agent{
-				Model:           models.VertexAISonnet46,
-				MaxTokens:       models.VertexAIAnthropicModels[models.VertexAISonnet46].DefaultMaxTokens,
-				ReasoningEffort: "high",
-			}
+			setAgentModelDefaults(agent, models.VertexAISonnet46, models.VertexAIAnthropicModels[models.VertexAISonnet46].DefaultMaxTokens, "high")
 		default:
-			cfg.Agents[agent] = Agent{
-				Model:     models.VertexAIOpus46,
-				MaxTokens: models.VertexAIAnthropicModels[models.VertexAIOpus46].DefaultMaxTokens,
-			}
+			setAgentModelDefaults(agent, models.VertexAIOpus46, models.VertexAIAnthropicModels[models.VertexAIOpus46].DefaultMaxTokens, "")
 		}
 		return true
 	}
@@ -942,28 +940,13 @@ func setDefaultModelForAgent(agent AgentName) bool {
 	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
 		switch agent {
 		case AgentDescriptor:
-			cfg.Agents[agent] = Agent{
-				Model:     models.Claude46Sonnet,
-				MaxTokens: 80,
-			}
+			setAgentModelDefaults(agent, models.Claude46Sonnet, 80, "")
 		case AgentExplorer, AgentSummarizer:
-			cfg.Agents[agent] = Agent{
-				Model:           models.Claude46Sonnet,
-				MaxTokens:       models.AnthropicModels[models.Claude46Sonnet].DefaultMaxTokens,
-				ReasoningEffort: "medium",
-			}
+			setAgentModelDefaults(agent, models.Claude46Sonnet, models.AnthropicModels[models.Claude46Sonnet].DefaultMaxTokens, "medium")
 		case AgentWorkhorse:
-			cfg.Agents[agent] = Agent{
-				Model:           models.Claude46Sonnet,
-				MaxTokens:       models.AnthropicModels[models.Claude46Sonnet].DefaultMaxTokens,
-				ReasoningEffort: "high",
-			}
+			setAgentModelDefaults(agent, models.Claude46Sonnet, models.AnthropicModels[models.Claude46Sonnet].DefaultMaxTokens, "high")
 		default:
-			cfg.Agents[agent] = Agent{
-				Model:           models.Claude46Opus,
-				MaxTokens:       models.AnthropicModels[models.Claude46Opus].DefaultMaxTokens,
-				ReasoningEffort: "high",
-			}
+			setAgentModelDefaults(agent, models.Claude46Opus, models.AnthropicModels[models.Claude46Opus].DefaultMaxTokens, "high")
 		}
 		return true
 	}
@@ -988,32 +971,18 @@ func setDefaultModelForAgent(agent AgentName) bool {
 			reasoningEffort = "medium"
 		}
 
-		cfg.Agents[agent] = Agent{
-			Model:           model,
-			MaxTokens:       maxTokens,
-			ReasoningEffort: reasoningEffort,
-		}
+		setAgentModelDefaults(agent, model, maxTokens, reasoningEffort)
 		return true
 	}
 
 	if apiKey := os.Getenv("GEMINI_API_KEY"); apiKey != "" {
 		switch agent {
 		case AgentDescriptor:
-			cfg.Agents[agent] = Agent{
-				Model:     models.Gemini30Flash,
-				MaxTokens: 80,
-			}
+			setAgentModelDefaults(agent, models.Gemini30Flash, 80, "")
 		case AgentSummarizer:
-			cfg.Agents[agent] = Agent{
-				Model:     models.Gemini30Flash,
-				MaxTokens: models.GeminiModels[models.Gemini30Flash].DefaultMaxTokens,
-			}
+			setAgentModelDefaults(agent, models.Gemini30Flash, models.GeminiModels[models.Gemini30Flash].DefaultMaxTokens, "")
 		default:
-			cfg.Agents[agent] = Agent{
-				Model:           models.Gemini30Pro,
-				MaxTokens:       models.GeminiModels[models.Gemini30Pro].DefaultMaxTokens,
-				ReasoningEffort: "high",
-			}
+			setAgentModelDefaults(agent, models.Gemini30Pro, models.GeminiModels[models.Gemini30Pro].DefaultMaxTokens, "high")
 		}
 		return true
 	}
@@ -1024,11 +993,7 @@ func setDefaultModelForAgent(agent AgentName) bool {
 			maxTokens = 80
 		}
 
-		cfg.Agents[agent] = Agent{
-			Model:           models.BedrockEUSonnet46,
-			MaxTokens:       maxTokens,
-			ReasoningEffort: "medium",
-		}
+		setAgentModelDefaults(agent, models.BedrockEUSonnet46, maxTokens, "medium")
 		return true
 	}
 

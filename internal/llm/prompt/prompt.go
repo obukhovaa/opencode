@@ -17,6 +17,8 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp/install"
+	"github.com/opencode-ai/opencode/internal/permission"
+	"github.com/opencode-ai/opencode/internal/skill"
 )
 
 const structuredOutputPrompt = `
@@ -107,6 +109,9 @@ func GetAgentPrompt(agentName config.AgentName, provider models.ModelProvider) s
 		}
 	}
 
+	// Inject preloaded skills into prompt
+	basePrompt += appendPreloadedSkills(agentName, reg)
+
 	// Add environment info for primary agents
 	if info, ok := reg.Get(agentName); ok {
 		if info.Mode == config.AgentModeAgent {
@@ -125,6 +130,58 @@ func GetAgentPrompt(agentName config.AgentName, provider models.ModelProvider) s
 		return fmt.Sprintf("%s\n\n# Project-Specific Context\n Make sure to follow the instructions in the context below\n%s", basePrompt, contextContent)
 	}
 	return basePrompt
+}
+
+const preloadedSkillSizeWarningThreshold = 200 * 1024 // 200KB
+
+// appendPreloadedSkills injects skills declared in AgentInfo.Skills into the prompt.
+// Skills are only skipped if explicitly denied. ActionAsk is treated as allow because
+// listing a skill in the agent definition is explicit user intent.
+func appendPreloadedSkills(agentName string, reg agentregistry.Registry) string {
+	info, ok := reg.Get(agentName)
+	if !ok || len(info.Skills) == 0 {
+		return ""
+	}
+
+	// Sort for deterministic output
+	sorted := make([]string, len(info.Skills))
+	copy(sorted, info.Skills)
+	sort.Strings(sorted)
+
+	var sb strings.Builder
+	totalSize := 0
+
+	for _, name := range sorted {
+		// Check skill-specific permission patterns directly, bypassing IsToolEnabled.
+		// Preloaded skills don't use the skill tool, so tools:{"skill": false} (which
+		// disables runtime skill loading) must not block preloaded skill injection.
+		action := permission.EvaluateToolPermission(tools.SkillToolName, name, info.Permission, reg.GlobalPermissions())
+		if action == permission.ActionDeny {
+			logging.Debug("Preloaded skill denied by permission, skipping", "agentID", agentName, "skill", name)
+			continue
+		}
+
+		skillInfo, err := skill.Get(name)
+		if err != nil {
+			logging.Warn("Preloaded skill not found in registry, skipping", "agentID", agentName, "skill", name)
+			continue
+		}
+
+		wrapped := skill.WrapSkillContent(name, skillInfo.Content)
+		totalSize += len(wrapped)
+		sb.WriteString("\n\n")
+		sb.WriteString(wrapped)
+	}
+
+	if totalSize > preloadedSkillSizeWarningThreshold {
+		logging.Warn("Preloaded skills total size exceeds recommended threshold",
+			"agentID", agentName,
+			"totalBytes", totalSize,
+			"threshold", preloadedSkillSizeWarningThreshold,
+		)
+	}
+
+	return sb.String()
 }
 
 var (

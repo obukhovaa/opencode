@@ -577,6 +577,77 @@ argument-hint: "<feature-name>"
 
 This loads a specific feature file from the skill's `features/` directory without polluting the agent's context with other features.
 
+### Preloaded Skills
+
+Instead of relying on agents to discover and load skills at runtime, you can declare skills directly in an agent definition. Preloaded skills are injected into the agent's system prompt at startup — no tool calls, no permission prompts, no wasted turns.
+
+**In `.opencode.json`:**
+
+```json
+{
+  "agents": {
+    "reviewer": {
+      "mode": "subagent",
+      "skills": ["review", "domain-knowledge"]
+    }
+  }
+}
+```
+
+**In markdown agent files (`.opencode/agents/reviewer.md`):**
+
+```yaml
+---
+name: Code Reviewer
+description: Reviews code for quality and best practices
+mode: subagent
+skills:
+  - review
+  - domain-knowledge
+---
+
+You are a code review specialist...
+```
+
+**How it works:**
+
+1. At prompt build time, each skill name is looked up in the skill registry
+2. If found and not explicitly denied, its content is wrapped in `<skill_content>` tags and appended to the system prompt
+3. The agent sees the content as already-loaded and won't re-invoke the skill tool for it
+
+**Permission behavior:**
+
+Listing a skill in the `skills` array is treated as explicit user intent. Only an explicit `deny` permission blocks injection. If no permission rule matches (default `ask`), the skill is still injected. This differs from runtime skill loading where `ask` prompts the user.
+
+Preloaded skills are independent of the skill tool. Setting `tools: {"skill": false}` disables runtime skill discovery and loading, but preloaded skills are still injected. This lets you lock down an agent to only the skills you explicitly declared:
+
+```json
+{
+  "agents": {
+    "reviewer": {
+      "skills": ["review", "domain-knowledge"],
+      "tools": { "skill": false }
+    }
+  }
+}
+```
+
+**Limitations:**
+
+- **No variable substitution**: `$ARGUMENTS`, `${SKILL_DIR}`, and `${SESSION_ID}` are not expanded. These are runtime concepts that don't apply to static preloaded context.
+- **No shell markup expansion**: `` !`command` `` syntax is not executed. Shell commands should only run when a user explicitly invokes the skill via the tool.
+- **No file sampling**: Bundled files from the skill directory are not included. Only the SKILL.md content is injected.
+- **Context consumption**: Each skill can be up to 100KB. A warning is logged if total preloaded skill content exceeds 200KB.
+
+**When to preload vs load on-demand:**
+
+| Use preloaded skills when... | Use on-demand skills when... |
+|------------------------------|------------------------------|
+| The agent always needs this knowledge | The agent may or may not need it |
+| You want zero-turn skill loading | The skill uses `$ARGUMENTS` or `` !`command` `` |
+| The skill provides static domain context | The skill needs interactive permission approval |
+| The agent is a specialized subagent | The skill is large and context is limited |
+
 ### Skill Metadata
 
 Use metadata for additional context:
@@ -867,7 +938,7 @@ Failed to parse skill file path=/path/to/SKILL.md error=...
 
 | Feature          | Skills                          | Context Files (AGENTS.md)        |
 |------------------|---------------------------------|------------------------------------|
-| **When loaded**  | On-demand by agent              | Always included in context         |
+| **When loaded**  | On-demand or preloaded at startup | Always included in context         |
 | **Purpose**      | Specialized workflows           | General project information        |
 | **Discovery**    | Multiple locations, patterns    | Fixed filenames                    |
 | **Permissions**  | Fine-grained control            | No permission system               |

@@ -125,6 +125,13 @@
           ],
           "type": "string"
         },
+        "skills": {
+          "description": "List of skill names to preload into the agent's system prompt at startup. Skills are injected as \u003cskill_content\u003e blocks. Only skills not explicitly denied by permissions are injected. Variable substitution and shell markup are not expanded for preloaded skills.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "tools": {
           "additionalProperties": {
             "description": "Whether the tool is enabled for this agent",
@@ -266,6 +273,13 @@
               "max"
             ],
             "type": "string"
+          },
+          "skills": {
+            "description": "List of skill names to preload into the agent's system prompt at startup. Skills are injected as \u003cskill_content\u003e blocks. Only skills not explicitly denied by permissions are injected. Variable substitution and shell markup are not expanded for preloaded skills.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "tools": {
             "additionalProperties": {

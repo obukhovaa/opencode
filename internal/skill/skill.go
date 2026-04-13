@@ -125,6 +125,12 @@ func Invalidate() {
 	skillCacheOnce = sync.Once{}
 }
 
+// wrapSkillContent wraps expanded skill content in <skill_content> tags so the
+// LLM recognises it as already-loaded and won't re-invoke the skill tool.
+func WrapSkillContent(name, content string) string {
+	return fmt.Sprintf("<skill_content name=%q>\n%s\n</skill_content>", name, content)
+}
+
 // discoverSkills discovers all skills from various locations.
 func discoverSkills() map[string]Info {
 	skills := make(map[string]Info)
