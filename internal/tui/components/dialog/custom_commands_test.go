@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+	"github.com/opencode-ai/opencode/internal/skill"
 	"github.com/opencode-ai/opencode/internal/slashcmd"
 )
 
@@ -325,6 +327,244 @@ func TestAddScopeHints(t *testing.T) {
 						t.Errorf("command %q: title = %q, want %q", cmd.ID, cmd.Title, expected)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestParameterizedSkillHandler(t *testing.T) {
+	// runHandler invokes the returned tea.Cmd (if any) to extract the message.
+	runHandler := func(cmd tea.Cmd) tea.Msg {
+		if cmd == nil {
+			return nil
+		}
+		return cmd()
+	}
+
+	tests := []struct {
+		name         string
+		content      string
+		wantDialog   bool
+		wantArgNames []string
+	}{
+		{
+			name:       "no argument patterns",
+			content:    "This skill has no placeholders at all.",
+			wantDialog: false,
+		},
+		{
+			name:         "bare $ARGUMENTS",
+			content:      "Process $ARGUMENTS carefully.",
+			wantDialog:   true,
+			wantArgNames: []string{"ARGUMENTS"},
+		},
+		{
+			name:         "positional $0 and $1",
+			content:      "Migrate $0 from $1 to v2.",
+			wantDialog:   true,
+			wantArgNames: []string{"0", "1"},
+		},
+		{
+			name:         "indexed $ARGUMENTS[0]",
+			content:      "Fix issue $ARGUMENTS[0].",
+			wantDialog:   true,
+			wantArgNames: []string{"0"},
+		},
+		{
+			name:       "shell variable $HOME is NOT treated as parameter",
+			content:    "Use $HOME/.config as the target directory.",
+			wantDialog: false,
+		},
+		{
+			name:       "shell variables $PATH $USER $LANG ignored",
+			content:    "Check $PATH, then log as $USER with $LANG locale.",
+			wantDialog: false,
+		},
+		{
+			name:       "environment-style variables in shell commands ignored",
+			content:    "Run: export $NODE_ENV=production && echo $GITHUB_TOKEN",
+			wantDialog: false,
+		},
+		{
+			name:         "mix of shell refs and $ARGUMENTS only detects $ARGUMENTS",
+			content:      "Deploy $ARGUMENTS to $HOME/target using $PATH",
+			wantDialog:   true,
+			wantArgNames: []string{"ARGUMENTS"},
+		},
+		{
+			name:       "${SKILL_DIR} and ${SESSION_ID} are not parameters",
+			content:    "Read ${SKILL_DIR}/data.txt in session ${SESSION_ID}",
+			wantDialog: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &skill.Info{
+				Name:    "test-skill",
+				Content: tt.content,
+			}
+			cmd := ParameterizedSkillHandler(s)
+
+			if !tt.wantDialog {
+				if cmd != nil {
+					msg := runHandler(cmd)
+					if dlg, ok := msg.(ShowMultiArgumentsDialogMsg); ok {
+						t.Errorf("expected no dialog, got one with ArgNames=%v", dlg.ArgNames)
+					}
+				}
+				return
+			}
+
+			if cmd == nil {
+				t.Fatal("expected dialog cmd, got nil")
+			}
+			msg := runHandler(cmd)
+			dlg, ok := msg.(ShowMultiArgumentsDialogMsg)
+			if !ok {
+				t.Fatalf("expected ShowMultiArgumentsDialogMsg, got %T", msg)
+			}
+
+			if len(dlg.ArgNames) != len(tt.wantArgNames) {
+				t.Fatalf("ArgNames = %v, want %v", dlg.ArgNames, tt.wantArgNames)
+			}
+			for i, want := range tt.wantArgNames {
+				if dlg.ArgNames[i] != want {
+					t.Errorf("ArgNames[%d] = %q, want %q", i, dlg.ArgNames[i], want)
+				}
+			}
+		})
+	}
+}
+
+func TestParseArgumentHints(t *testing.T) {
+	tests := []struct {
+		name     string
+		hint     string
+		argNames []string
+		want     map[string]string
+	}{
+		{
+			name:     "empty hint",
+			hint:     "",
+			argNames: []string{"ARGUMENTS"},
+			want:     nil,
+		},
+		{
+			name:     "no brackets, single arg uses raw hint",
+			hint:     "text to compress",
+			argNames: []string{"ARGUMENTS"},
+			want:     map[string]string{"ARGUMENTS": "text to compress"},
+		},
+		{
+			name:     "no brackets, multiple args returns nil",
+			hint:     "just a description",
+			argNames: []string{"0", "1"},
+			want:     nil,
+		},
+		{
+			name:     "angle brackets, single arg",
+			hint:     "<text to compress>",
+			argNames: []string{"ARGUMENTS"},
+			want:     map[string]string{"ARGUMENTS": "text to compress"},
+		},
+		{
+			name:     "angle brackets, multiple positional args",
+			hint:     "<component> <from-framework> <to-framework>",
+			argNames: []string{"0", "1", "2"},
+			want:     map[string]string{"0": "component", "1": "from-framework", "2": "to-framework"},
+		},
+		{
+			name:     "square brackets, positional",
+			hint:     "[commit-hash]",
+			argNames: []string{"0"},
+			want:     map[string]string{"0": "commit-hash"},
+		},
+		{
+			name:     "square brackets, name-based match",
+			hint:     "[issue-number]",
+			argNames: []string{"ISSUE_NUMBER"},
+			want:     map[string]string{"ISSUE_NUMBER": "issue-number"},
+		},
+		{
+			name:     "mixed square and angle brackets",
+			hint:     "[name] <value>",
+			argNames: []string{"0", "1"},
+			want:     map[string]string{"0": "name", "1": "value"},
+		},
+		{
+			name:     "whitespace-only hint treated as empty",
+			hint:     "   ",
+			argNames: []string{"ARGUMENTS"},
+			want:     nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParseArgumentHints(tt.hint, tt.argNames)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("got[%q] = %q, want %q", k, got[k], v)
+				}
+			}
+		})
+	}
+}
+
+func TestParameterizedSkillHandlerArgumentHint(t *testing.T) {
+	// Verify argument-hint flows through to dialog ArgHints for the bare $ARGUMENTS case.
+	runHandler := func(cmd tea.Cmd) tea.Msg {
+		if cmd == nil {
+			return nil
+		}
+		return cmd()
+	}
+
+	tests := []struct {
+		name     string
+		content  string
+		hint     string
+		wantHint string // expected placeholder text for the ARGUMENTS arg
+	}{
+		{
+			name:     "plain text hint",
+			content:  "Process $ARGUMENTS carefully.",
+			hint:     "text to compress",
+			wantHint: "text to compress",
+		},
+		{
+			name:     "angle bracket hint",
+			content:  "Process $ARGUMENTS carefully.",
+			hint:     "<text to compress>",
+			wantHint: "text to compress",
+		},
+		{
+			name:     "square bracket hint",
+			content:  "Process $ARGUMENTS carefully.",
+			hint:     "[message]",
+			wantHint: "message",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &skill.Info{
+				Name:         "test-skill",
+				Content:      tt.content,
+				ArgumentHint: tt.hint,
+			}
+			cmd := ParameterizedSkillHandler(s)
+			if cmd == nil {
+				t.Fatal("expected dialog cmd")
+			}
+			dlg := runHandler(cmd).(ShowMultiArgumentsDialogMsg)
+			got := dlg.ArgHints["ARGUMENTS"]
+			if got != tt.wantHint {
+				t.Errorf("ArgHints[ARGUMENTS] = %q, want %q", got, tt.wantHint)
 			}
 		})
 	}

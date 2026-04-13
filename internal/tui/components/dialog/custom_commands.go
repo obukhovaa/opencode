@@ -20,8 +20,9 @@ import (
 // namedArgPattern is a regex pattern to find named arguments in the format $NAME
 var namedArgPattern = regexp.MustCompile(`\$([A-Z][A-Z0-9_]*)`)
 
-// hintBracketPattern extracts bracket groups from argument-hint strings
-var hintBracketPattern = regexp.MustCompile(`\[([^\]]+)\]`)
+// hintBracketPattern extracts bracket groups from argument-hint strings.
+// Supports both [square] and <angle> brackets (Claude Code docs use angle brackets).
+var hintBracketPattern = regexp.MustCompile(`\[([^\]]+)\]|<([^>]+)>`)
 
 // commandFrontmatter represents the YAML frontmatter of a custom command
 type commandFrontmatter struct {
@@ -303,23 +304,44 @@ func ParameterizedCommandHandler(commandContent string, cmd *Command) tea.Cmd {
 }
 
 // ParseArgumentHints maps bracket groups from an argument-hint string to placeholder names.
-// Uses name-based matching: [commit-hash] maps to $COMMIT_HASH (hyphen→underscore, uppercase).
-// Falls back to positional matching if name-based fails.
+// Uses name-based matching: [commit-hash] or <commit-hash> maps to $COMMIT_HASH
+// (hyphen→underscore, uppercase). Falls back to positional matching if name-based fails.
+// If the hint contains no bracket groups and there's only one argument, the raw hint
+// is used as the placeholder for that argument.
 func ParseArgumentHints(hint string, argNames []string) map[string]string {
+	hint = strings.TrimSpace(hint)
 	if hint == "" {
 		return nil
 	}
 
 	matches := hintBracketPattern.FindAllStringSubmatch(hint, -1)
 	if len(matches) == 0 {
+		// No brackets. For single-argument skills (bare $ARGUMENTS), use the
+		// whole hint string as the placeholder directly.
+		if len(argNames) == 1 {
+			return map[string]string{argNames[0]: hint}
+		}
 		return nil
+	}
+
+	// Extract the group text from either capture group (square or angle brackets).
+	extractGroup := func(match []string) string {
+		for i := 1; i < len(match); i++ {
+			if match[i] != "" {
+				return match[i]
+			}
+		}
+		return ""
 	}
 
 	hints := make(map[string]string)
 
 	// Try name-based matching first
 	for _, match := range matches {
-		hintText := match[1]
+		hintText := extractGroup(match)
+		if hintText == "" {
+			continue
+		}
 		// Convert hint to placeholder name: lowercase-with-hyphens → UPPERCASE_WITH_UNDERSCORES
 		normalized := strings.ToUpper(strings.ReplaceAll(hintText, "-", "_"))
 		for _, name := range argNames {
@@ -333,7 +355,7 @@ func ParseArgumentHints(hint string, argNames []string) map[string]string {
 	if len(hints) == 0 {
 		for i, match := range matches {
 			if i < len(argNames) {
-				hints[argNames[i]] = match[1]
+				hints[argNames[i]] = extractGroup(match)
 			}
 		}
 	}
@@ -341,24 +363,27 @@ func ParseArgumentHints(hint string, argNames []string) map[string]string {
 	return hints
 }
 
-// ParameterizedSkillHandler checks if skill content has $PLACEHOLDER or positional
-// argument patterns ($0, $ARGUMENTS). If yes, returns a tea.Cmd to show the
-// argument dialog. If no, returns nil.
+// ParameterizedSkillHandler checks if skill content has documented positional
+// argument patterns ($ARGUMENTS, $ARGUMENTS[N], $N). If yes, returns a tea.Cmd
+// to show the argument dialog. If no, returns nil.
+//
+// Skills do NOT support arbitrary $UPPERCASE named placeholders — only the
+// documented substitutions: $ARGUMENTS, $ARGUMENTS[N], $N, ${SKILL_DIR},
+// ${SESSION_ID}. This prevents shell/env references like $HOME from being
+// incorrectly detected as skill parameters.
+// See: https://code.claude.com/docs/en/skills#available-string-substitutions
 func ParameterizedSkillHandler(s *skill.Info) tea.Cmd {
-	// Check for named $UPPERCASE placeholders
-	matches := namedArgPattern.FindAllStringSubmatch(s.Content, -1)
-	if len(matches) > 0 {
-		argNames := make([]string, 0)
-		argMap := make(map[string]bool)
+	if !skill.HasArgumentPatterns(s.Content) {
+		return nil
+	}
 
-		for _, match := range matches {
-			argName := match[1]
-			if !argMap[argName] {
-				argMap[argName] = true
-				argNames = append(argNames, argName)
-			}
+	// Extract individual positional indices ($0, $1, $ARGUMENTS[0], etc.)
+	indices := skill.ExtractPositionalIndices(s.Content)
+	if len(indices) > 0 {
+		argNames := make([]string, len(indices))
+		for i, idx := range indices {
+			argNames[i] = strconv.Itoa(idx)
 		}
-
 		argHints := ParseArgumentHints(s.ArgumentHint, argNames)
 
 		return util.CmdHandler(ShowMultiArgumentsDialogMsg{
@@ -369,36 +394,14 @@ func ParameterizedSkillHandler(s *skill.Info) tea.Cmd {
 		})
 	}
 
-	// Check for positional argument patterns ($0, $ARGUMENTS, $ARGUMENTS[N])
-	if skill.HasArgumentPatterns(s.Content) {
-		// Extract individual positional indices ($0, $1, $ARGUMENTS[0], etc.)
-		indices := skill.ExtractPositionalIndices(s.Content)
-		if len(indices) > 0 {
-			argNames := make([]string, len(indices))
-			for i, idx := range indices {
-				argNames[i] = strconv.Itoa(idx)
-			}
-			argHints := ParseArgumentHints(s.ArgumentHint, argNames)
+	// Fallback: bare $ARGUMENTS only
+	argNames := []string{"ARGUMENTS"}
+	argHints := ParseArgumentHints(s.ArgumentHint, argNames)
 
-			return util.CmdHandler(ShowMultiArgumentsDialogMsg{
-				CommandID: "skill:" + s.Name,
-				Content:   s.Content,
-				ArgNames:  argNames,
-				ArgHints:  argHints,
-			})
-		}
-
-		// Fallback: bare $ARGUMENTS only
-		argNames := []string{"ARGUMENTS"}
-		argHints := ParseArgumentHints(s.ArgumentHint, argNames)
-
-		return util.CmdHandler(ShowMultiArgumentsDialogMsg{
-			CommandID: "skill:" + s.Name,
-			Content:   s.Content,
-			ArgNames:  argNames,
-			ArgHints:  argHints,
-		})
-	}
-
-	return nil
+	return util.CmdHandler(ShowMultiArgumentsDialogMsg{
+		CommandID: "skill:" + s.Name,
+		Content:   s.Content,
+		ArgNames:  argNames,
+		ArgHints:  argHints,
+	})
 }
