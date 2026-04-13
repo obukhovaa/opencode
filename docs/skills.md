@@ -78,7 +78,9 @@ name: skill-name
 description: Brief description
 license: MIT              # Optional: License information
 compatibility: opencode   # Optional: Compatibility marker
-metadata:                 # Optional: String-to-string map
+argument-hint: "<arg>"    # Optional: Hint shown to agents and in slash command prompts
+user-invocable: true      # Optional: Whether slash command invocation is allowed (default: true)
+metadata:                 # Optional: Arbitrary YAML map (string keys, any values)
   author: team-name
   version: "1.0"
   category: git
@@ -128,7 +130,7 @@ Skills specific to your project:
 .claude/skills/<name>/SKILL.md
 ```
 
-OpenCode walks up from your current directory to the git worktree root, discovering skills along the way.
+OpenCode walks up from your current directory to the git worktree root, discovering skills along the way. Skill directories can be nested arbitrarily deep (the scanner uses `**/SKILL.md` glob patterns).
 
 ### Global Skills
 
@@ -456,6 +458,10 @@ echo "my-skill" | grep -E '^[a-z0-9]+(-[a-z0-9]+)*$'
 opencode --debug
 ```
 
+### Skill Discovery Cache
+
+Skills are discovered and cached once when OpenCode starts. If you add, rename, or remove a skill file while OpenCode is running, you need to restart OpenCode for the changes to take effect.
+
 ### Duplicate Skill Names
 
 If you have multiple skills with the same name, OpenCode uses the first one found:
@@ -492,14 +498,16 @@ python3 -c "import yaml; yaml.safe_load(open('.opencode/skills/my-skill/SKILL.md
 
 ### Variable Substitution
 
-Skills support string substitution for dynamic values in the skill content. Substitution happens both when skills are invoked via slash commands (`/skill-name args`) and when agents load them via the skill tool.
+Skills support string substitution for dynamic values in the skill content. Variable substitution (`$ARGUMENTS`, `$N`, `${SKILL_DIR}`, etc.) happens both when skills are invoked via slash commands (`/skill-name args`) and when agents load them via the skill tool.
+
+> **Note:** Shell markup (`` !`command` ``) is only expanded when the skill is loaded via the agent skill tool, **not** when invoked via slash commands.
 
 | Variable | Description |
 |----------|-------------|
 | `$ARGUMENTS` | All arguments passed when invoking the skill |
 | `$ARGUMENTS[N]` | Access a specific argument by 0-based index (e.g., `$ARGUMENTS[0]`) |
 | `$N` | Shorthand for `$ARGUMENTS[N]`, single digit only: `$0` through `$9` |
-| `${SKILL_DIR}` / `${CLAUDE_SKILL_DIR}` | Directory containing the skill's SKILL.md file |
+| `${SKILL_DIR}` / `${CLAUDE_SKILL_DIR}` | Absolute path to the directory containing the skill's SKILL.md file |
 | `${SESSION_ID}` / `${CLAUDE_SESSION_ID}` | Current session ID |
 
 If `$ARGUMENTS` (or any `$N` shorthand) is not present in the content and arguments are provided, they are appended as `ARGUMENTS: <value>`.
@@ -541,6 +549,10 @@ Running `/migrate-component SearchBar React Vue` replaces `$0` with `SearchBar`,
 ### Dynamic Context Injection
 
 The `` !`command` `` syntax runs shell commands before the skill content is sent to the agent. The command output replaces the placeholder, so the agent receives actual data, not the command itself.
+
+> **Note:** Shell markup is only expanded when a skill is loaded via the agent skill tool. It is **not** expanded when a skill is invoked via slash commands (`/skill-name args`) or preloaded into an agent's system prompt.
+
+**Output limits:** Each command's output is truncated at 50KB or 2,000 lines (first 500 + last 500 lines with an ellipsis). Errors and non-zero exit codes are inlined as `[command error: ...]` or `[stderr: ...]` text rather than failing the skill load.
 
 ```yaml
 ---
@@ -636,7 +648,7 @@ Preloaded skills are independent of the skill tool. Setting `tools: {"skill": fa
 
 - **No variable substitution**: `$ARGUMENTS`, `${SKILL_DIR}`, and `${SESSION_ID}` are not expanded. These are runtime concepts that don't apply to static preloaded context.
 - **No shell markup expansion**: `` !`command` `` syntax is not executed. Shell commands should only run when a user explicitly invokes the skill via the tool.
-- **No file sampling**: Bundled files from the skill directory are not included. Only the SKILL.md content is injected.
+- **No file sampling**: Bundled files from the skill directory are not included. Only the SKILL.md content is injected. (When loaded via the skill tool at runtime, up to 10 bundled files from the skill directory are listed in a `<skill_files>` block.)
 - **Context consumption**: Each skill can be up to 100KB. A warning is logged if total preloaded skill content exceeds 200KB.
 
 **When to preload vs load on-demand:**
@@ -664,7 +676,7 @@ metadata:
 ---
 ```
 
-Metadata is stored but not currently used by the system. It's useful for documentation and future features.
+Metadata is stored but not currently used by the system. It's useful for documentation and future features. The `metadata` field accepts arbitrary YAML values (not just strings), so nested maps and lists are valid.
 
 ### Organizing Skills
 
@@ -883,6 +895,18 @@ For deployment after release, see the `deploy-production` skill.
 ### Can skills have parameters?
 
 Yes! Skills support argument substitution and dynamic context injection. See [Variable Substitution](#variable-substitution) and [Dynamic Context Injection](#dynamic-context-injection) in the Advanced Usage section.
+
+### What is `user-invocable`?
+
+The `user-invocable` frontmatter field controls whether a skill can be invoked via slash commands (e.g., `/my-skill args`). It defaults to `true`. Set it to `false` to make a skill available only to agents via the skill tool, hiding it from the slash command interface:
+
+```yaml
+---
+name: internal-helper
+description: Agent-only helper skill
+user-invocable: false
+---
+```
 
 ### How do I share skills with my team?
 

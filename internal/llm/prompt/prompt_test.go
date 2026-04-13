@@ -386,6 +386,12 @@ func TestAppendPreloadedSkills(t *testing.T) {
 	})
 }
 
+func TestTaskToolNameMatchesAgentConst(t *testing.T) {
+	// taskToolName is duplicated in this package to avoid an import cycle.
+	// This test ensures it stays in sync with agent.TaskToolName.
+	assert.Equal(t, "task", taskToolName, "taskToolName must match agent.TaskToolName")
+}
+
 func createTestFiles(t *testing.T, tmpDir string, testFiles []string) {
 	t.Helper()
 	for _, path := range testFiles {

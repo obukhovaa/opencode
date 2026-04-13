@@ -651,13 +651,29 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 		metadata := agent.TaskResponseMetadata{}
 		json.Unmarshal([]byte(response.Metadata), &metadata)
 		if metadata.IsStructOutput {
-			return baseStyle.Width(width).Foreground(t.TextMuted()).Render("↓")
-		} else {
-			return styles.ForceReplaceBackgroundWithLipgloss(
-				toMarkdown(resultContent, false, width),
-				t.Background(),
-			)
+			taskIDLine := ""
+			if metadata.TaskID != "" {
+				taskIDLine = "\n" + baseStyle.Width(width).Foreground(t.TextMuted()).
+					Render(fmt.Sprintf("task_id: %s (reuse to resume)", metadata.TaskID))
+			}
+			return baseStyle.Width(width).Foreground(t.TextMuted()).Render("↓") + taskIDLine
 		}
+		// Strip the task_id / resume trailers from the content that's shown
+		// to the user — the tags are an LLM-facing hint, not something the
+		// user needs to see inline. We re-surface the task_id via a dedicated
+		// muted footer line.
+		displayContent := taskTrailerRegex.ReplaceAllString(resultContent, "")
+		displayContent = strings.TrimRight(displayContent, "\n")
+		rendered := styles.ForceReplaceBackgroundWithLipgloss(
+			toMarkdown(displayContent, false, width),
+			t.Background(),
+		)
+		if metadata.TaskID != "" {
+			footer := baseStyle.Width(width).Foreground(t.TextMuted()).
+				Render(fmt.Sprintf("task_id: %s (pass back to task tool to resume)", metadata.TaskID))
+			rendered = strings.TrimRight(rendered, "\n") + "\n" + footer
+		}
+		return rendered
 	case tools.BashToolName:
 		resultContent = fmt.Sprintf("```bash\n%s\n```", resultContent)
 		return styles.ForceReplaceBackgroundWithLipgloss(
@@ -973,6 +989,12 @@ func subagentBadge(agentType string, title string, isResumed bool) string {
 }
 
 var diagSummaryRegex = regexp.MustCompile(`<diagnostic_summary>\s*Current file: (\d+) errors, (\d+) warnings\s*Project: (\d+) errors, (\d+) warnings\s*</diagnostic_summary>`)
+
+// taskTrailerRegex matches the task_id / task_resume_hint trailers that the
+// agent-tool appends to Task tool responses for the LLM. The TUI strips these
+// tags from the rendered output and re-surfaces the task_id via a dedicated
+// footer line.
+var taskTrailerRegex = regexp.MustCompile(`(?s)\s*<task_id>[^<]*</task_id>\s*<task_resume_hint>.*?</task_resume_hint>\s*`)
 
 // renderDiagnosticsSummary extracts the diagnostic summary from tool output
 // and renders it as a subtle one-line indicator with error/warning icons.

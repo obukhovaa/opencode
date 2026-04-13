@@ -151,7 +151,17 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		}
 	}
 
-	done, err := a.Run(ctx, taskSession.ID, params.Prompt)
+	prompt := params.Prompt
+	if !isResumed {
+		// Prepend task_id context so the subagent is aware of its own task_id.
+		// Only on first invocation — resumed sessions already have this in history.
+		prompt = fmt.Sprintf(
+			"<task_context>\nYou have been spawned as subagent %q to work on task: %q.\nYour task_id is %q — the caller can pass this task_id back to the task tool to resume this same subagent session with its prior messages and tool outputs preserved.\n</task_context>\n\n%s",
+			subagentType, params.TaskTitle, taskSession.ID, params.Prompt,
+		)
+	}
+
+	done, err := a.Run(ctx, taskSession.ID, prompt)
 	if err != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error while running task agent: %s", err)
 	}
@@ -170,6 +180,18 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		responseContent = result.StructOutput.Content
 	}
 	logging.Debug("Task completed", "subagent", subagentType, "structured", isStructOutput, "error", result.Error)
+
+	// Append a task_id trailer so the main agent can surface it to the user
+	// (Claude Code emits a similar "agentId: ..." block after each subagent
+	// completes). Skip for struct output — appending trailing text would break
+	// JSON parsing downstream; the TaskID stays available via metadata in that
+	// case for the TUI and downstream consumers.
+	if !isStructOutput {
+		responseContent = fmt.Sprintf(
+			"%s\n\n<task_id>%s</task_id>\n<task_resume_hint>To continue this same subagent session later, call the %s tool again with task_id=%q. Mention this task_id (alongside a short description of what was done) in your reply so the user can reference or resume it.</task_resume_hint>",
+			responseContent, taskSession.ID, TaskToolName, taskSession.ID,
+		)
+	}
 
 	updatedSession, err := b.sessions.Get(ctx, taskSession.ID)
 	if err != nil {

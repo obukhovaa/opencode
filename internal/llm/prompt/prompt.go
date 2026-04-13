@@ -27,6 +27,21 @@ IMPORTANT: The user has requested structured output. You MUST use the struct_out
 const parallelToolUsePrompt = `
 You have the capability to call multiple tools in a single response. When multiple independent pieces of information are requested and all commands are likely to succeed, run multiple tool calls in parallel for optimal performance. For example, if you need to read 3 files, call read 3 times in parallel rather than sequentially.`
 
+// taskToolReportingPrompt instructs primary (mode=agent) agents that have the
+// task tool enabled to surface each subagent's task_id to the user so it can
+// be referenced or resumed later. This mirrors how Claude Code's coordinator
+// reports "Agent ID X is still around..." when summarizing subagent work.
+// The task-tool response content includes a <task_id>...</task_id> trailer
+// that this prompt teaches the agent to extract and surface.
+const taskToolReportingPrompt = `
+# Subagent task IDs
+
+Whenever you invoke the task tool, its result includes a ` + "`<task_id>...</task_id>`" + ` trailer. When reporting back to the user, mention the task_id together with a one-line description of what each subagent did so the user can reference or ask to resume it. If you launched multiple subagents in a single turn, list every task_id. Use natural phrasing, for example: "Task abcd1234 (explorer — audited the auth module) is still around if you want to dig deeper." To continue a subagent's session later, pass its task_id back to the task tool along with a new prompt. Do NOT surface a task_id if it was not present in the tool result (e.g., when the subagent produced struct_output).`
+
+// taskToolName matches agent.TaskToolName. Duplicated here to avoid an import
+// cycle between the prompt and llm/agent packages.
+const taskToolName = "task"
+
 func getEnvironmentInfo() string {
 	cwd := config.WorkingDirectory()
 	isGit := isGitRepo(cwd)
@@ -106,6 +121,15 @@ func GetAgentPrompt(agentName config.AgentName, provider models.ModelProvider) s
 	if info, ok := reg.Get(agentName); ok {
 		if reg.HasTools(agentName) && info.AllowsParallelToolUse() {
 			basePrompt += parallelToolUsePrompt
+		}
+	}
+
+	// Append task_id reporting guidance for primary agents that can spawn
+	// subagents via the task tool. Subagents (mode != agent) don't report
+	// task_ids to the user themselves.
+	if info, ok := reg.Get(agentName); ok {
+		if info.Mode == config.AgentModeAgent && reg.IsToolEnabled(agentName, taskToolName) {
+			basePrompt += taskToolReportingPrompt
 		}
 	}
 
