@@ -57,11 +57,13 @@ Claude Code (v2.1.72+) implements session-scoped cron scheduling with three tool
 | Cron format | Standard 5-field cron | Same |
 | Interval shorthand | `/loop` bundled skill | `/loop` built-in slash command (Go duration syntax) |
 | Jitter | Recurring: up to 10% of period (max 15min). One-shot on `:00`/`:30`: up to 90s early | Not adopted — single-user CLI, no fleet coordination needed |
-| Expiry | 3-day auto-expiry for recurring jobs | No auto-expiry (explicit delete or session delete) |
+| Expiry | 7-day auto-expiry for recurring jobs (`DEFAULT_CRON_JITTER_CONFIG.recurringMaxAgeMs`) | No auto-expiry (explicit delete or session delete) |
 | Task limit | 50 per session | Same, configurable |
 | Idle gating | Fires only while REPL is idle, queued at `priority: 'later'` so user input takes precedence | Same — waits for agent idle on active session; fires directly on inactive sessions |
-| No catch-up | If a fire is missed, fires once when idle — no backfill | Same |
+| Missed fires — recurring | No catch-up: reschedule forward from `now` after each fire | Same — anchor next_run_at from `now` after each fire, not from prior `next_run_at` |
+| Missed fires — one-shot | Surfaced at startup with user confirmation (`AskUserQuestion`-style dialog) — user chooses "run now" or "discard" | Same — at `Start()`, load one-shots whose `next_run_at < now` and surface to the user on their next session activation |
 | Context preservation | No context across fires — each is a fresh prompt | `task_id` reuse gives subagent full history of prior runs |
+| Runtime killswitch | GrowthBook flag polled every tick (`isKilled?()` in scheduler) | `OPENCODE_DISABLE_CRON=1` env var polled at each tick — flipping it disables firing mid-session |
 
 **Key implementation details from Claude's source code:**
 
@@ -122,9 +124,16 @@ Cron tools follow this same pattern — added to `managerToolNames`, only availa
 | Max cron jobs per session | 50 (configurable) | Prevents runaway scheduling; matches Claude's limit |
 | Icon | `⏲` | Simple unicode, visually distinct from other icons in `styles/icons.go` |
 | Cross-session visibility | Cron indicator in session list + status bar flash on fire | Users know which sessions have active crons without opening them |
-| Synthetic message atomicity | Both `tool_call` + `tool_result` written in a single DB transaction with consecutive seq numbers, under a per-session write mutex shared with the agent loop | Prevents interleaving with agent or user messages — a `tool_call` is always immediately followed by its `tool_result` |
-| `/loop` subagent type | `explorer` (hardcoded default) | Most scheduled tasks are read-only monitoring; explorer is safe. Agent-initiated crons via `croncreate` allow explicit subagent selection |
+| Synthetic message atomicity | Both `tool_call` + `tool_result` written in a single DB transaction with consecutive seq numbers, under a per-session write mutex shared with the agent loop, **after** the task has finished running | Prevents interleaving with agent or user messages — a `tool_call` is always immediately followed by its `tool_result`. The task tool runs in a child session during the intervening time, writing only to the task session; the parent session sees both messages appear atomically once the task returns |
+| `/loop` subagent type | `explorer` (hardcoded default) | Most scheduled tasks are read-only monitoring; explorer is safe. Agent-initiated crons via `croncreate` allow explicit subagent selection. Slash commands (`/loop 5m /foo`) work by embedding a "execute this skill" instruction in the prompt — the subagent resolves and invokes the skill tool itself |
 | `/loop` task title | Prompt truncated to 80 chars | Avoids an LLM call for a cosmetic field; users who want a custom title use the agent's `croncreate` tool directly |
+| `/loop` fires immediately | On creation, fire once right away, then on schedule thereafter | Matches user mental model ("every 5 min check the deploy" → check NOW and every 5 min) and Claude's `/loop` skill behavior |
+| Next-run anchor after fire | Always `computeNextFire(schedule, time.Now())` — never anchored off prior `next_run_at` | Prevents rapid catch-up firing if scheduler was blocked for multiple windows (same as Claude's "reschedule from now, not from next") |
+| In-flight guard | Job row carries `firing BOOLEAN` column (or in-memory set in scheduler) — set true at fire start, cleared on completion; `ListDueCronJobs` excludes `firing=true` rows | Prevents double-fire during the window between execution start and `next_run_at` update |
+| Missed one-shot at startup | On `Start()`, load one-shots with `next_run_at < now AND status='active'`, publish a `MissedTasks` event; TUI surfaces a confirmation dialog on next session activation | User-pinned one-shots must not be silently dropped. Recurring missed fires still get no catch-up (reschedule forward from now) |
+| Task tool invocation context | Pass sentinel `MessageIDContextKey = "cron:<cron_job_id>:<run_count>"` — task tool validates non-empty but doesn't otherwise consume it | Task tool requires `messageID` in context; a sentinel satisfies validation without needing to pre-insert the synthetic assistant message. This restores the "single DB transaction for both synthetic messages" invariant |
+| Permission key scope | Key: `cron:<cron_job_id>`. Grant persistence: per-cron-job, stored in session permission service. Deleting the cron clears the grant. Restarting OpenCode preserves grants for still-existing jobs via the same session-scoped mechanism used for other persistent grants | Scoping per-cron-job (not per-session) prevents one "allow all" leaking to an unrelated future cron. Prompt content is not part of the key — editing the prompt via a future API would re-use the grant (cron prompts aren't editable today so this is moot) |
+| Cron parser | `github.com/robfig/cron/v3` — `cron.ParseStandard()` only (no scheduler). Handles DST (skips spring-forward gaps) and dom/dow OR semantics (when both are constrained, either match fires — standard vixie-cron semantics) | Battle-tested, zero extra code. Matches Claude's `computeNextCronRun` behavior exactly |
 
 ## Architecture
 
@@ -143,8 +152,10 @@ Cron tools follow this same pattern — added to `managerToolNames`, only availa
 │ ├── is_recurring    BOOLEAN          (false = one-shot)     │
 │ ├── source          TEXT             ("loop" or "agent")    │
 │ ├── status          TEXT             (active/paused/done)   │
+│ ├── firing          BOOLEAN          (in-flight guard)      │
 │ ├── last_run_at     INTEGER nullable (unix timestamp)       │
-│ ├── next_run_at     INTEGER          (unix timestamp)       │
+│ ├── next_run_at     INTEGER nullable (unix ts; NULL when    │
+│ │                                     status=done)          │
 │ ├── run_count       INTEGER          (total executions)     │
 │ ├── last_result     TEXT nullable     (last task output)    │
 │ ├── created_at      INTEGER                                 │
@@ -198,7 +209,11 @@ Agent calls croncreate (or user types /loop)
 STEP 2: Scheduler Tick (every 1 second)
 ────────────────────────────────────────
 Scheduler goroutine wakes up
-  → Query all active cron jobs where next_run_at <= now
+  → If OPENCODE_DISABLE_CRON is set: return (runtime killswitch)
+  → Query: SELECT * FROM cron_jobs
+            WHERE status = 'active'
+              AND firing = false          -- in-flight guard
+              AND next_run_at <= now
   → For each due job:
       IF job's session is the active session:
         → Check if session agent is busy (IsSessionBusy)
@@ -206,31 +221,67 @@ Scheduler goroutine wakes up
         → If idle: proceed to execution
       ELSE (inactive session):
         → Proceed to execution immediately (no agent to conflict with)
+      For serialization within one session: acquire per-session scheduler
+      mutex (in-memory sync.Mutex keyed by session_id) before firing.
+      Different sessions fire in parallel.
 
 STEP 3: Cron Job Execution (direct task tool invocation)
 ────────────────────────────────────────────────────────
-  → Check permission using cron job ID as key
+  → Mark job firing=true (DB update) — prevents the next tick from
+    re-selecting this row while task is running.
+  → Check permission using key "cron:<cron_job_id>":
       → If "allow all" was granted before: proceed
-      → If "allow once" or first run: ask permission (for active session only)
-      → For inactive sessions with no prior persistent grant: skip, retry next tick
-      → If denied: skip this run, keep job active
-  → Call task tool's Run() directly (NOT through the main agent loop):
-      → task_id = cron_job.task_id (same across runs → context preserved)
-      → prompt = cron_job.prompt
-      → subagent_type = cron_job.subagent_type
-      → task_title = cron_job.task_title
-  → Wait for task completion
-  → Write synthetic messages into parent session (ATOMIC):
-      → Acquire per-session write mutex (shared with agent loop)
+      → If "allow once" or first run: ask permission (active session only)
+      → For inactive sessions with no prior persistent grant: skip,
+        clear firing=false, retry when session becomes active
+      → If denied: skip this run, clear firing=false, keep job active
+  → Generate a unique call_id (e.g. "toolu_" + 16 hex chars — matches
+    the format the provider layer produces for real tool calls).
+  → Build ctx with:
+      → SessionIDContextKey  = cron_job.session_id
+      → MessageIDContextKey  = "cron:<cron_job_id>:<run_count>"
+        (sentinel — task tool validates non-empty but doesn't otherwise
+        use it; downstream consumers that care can detect the "cron:"
+        prefix)
+  → Invoke taskTool.Run(ctx, tools.ToolCall{
+        ID:    call_id,
+        Input: {prompt, subagent_type, task_id, task_title},
+    })
+    This creates or resumes the child task session and runs the
+    subagent to completion. Parent session is untouched during this
+    time — no messages appear in the parent until the task returns.
+  → Wait for task completion (seconds to minutes).
+
+  → Write synthetic messages into parent session (ATOMIC, AFTER task returns):
+      → Acquire per-session write mutex (shared with the agent loop —
+        same lock the agent holds when writing its own tool_call/
+        tool_result pair). While we hold it, the agent cannot start
+        a new turn and insert interleaving messages.
       → In a single DB transaction:
-          → Insert assistant message with tool_call (consecutive seq)
-          → Insert tool result message (consecutive seq + 1)
-      → Release mutex
-      → Publish messages via session pubsub (active session sees them in chat live)
-      → This guarantees no interleaving with agent or user messages
-  → Update cron_job: last_run_at, run_count++, last_result, next_run_at
-  → If one-shot (is_recurring=false): set status="done", clear next_run_at
-  → Publish UpdatedEvent for TUI (updates /crons table, session list indicator)
+          → Insert synthetic assistant message with parts[tool_call]
+            (seq=N, tool_call.id=call_id)
+          → Insert tool_result message (seq=N+1,
+            tool_call_id=call_id, content=task output)
+      → Commit transaction, release mutex.
+      → Publish both messages via session pubsub (active session sees
+        them in chat live). Pubsub publication MUST follow the commit
+        so subscribers never observe a half-written pair.
+
+  → Update cron_job row (single UPDATE under the same mutex or a
+    separate transaction — it doesn't affect conversation ordering):
+      → last_run_at = now
+      → run_count   = run_count + 1
+      → last_result = <task output, truncated to reasonable size>
+      → next_run_at = computeNextFire(schedule, time.Now())
+                      — ALWAYS anchor from NOW (not from prior
+                        next_run_at) to avoid rapid catch-up if the
+                        scheduler was blocked for multiple windows.
+      → If one-shot (is_recurring=false):
+          status = "done", next_run_at = NULL
+      → firing = false
+      → error  = NULL (cleared on successful run)
+  → Publish UpdatedEvent for TUI (updates /crons table, session list
+    indicator).
 
 STEP 4: Status Bar Notification
 ────────────────────────────────
@@ -244,11 +295,32 @@ On every cron fire (regardless of active/inactive session):
 STEP 5: Process Restart Resume
 ──────────────────────────────
 On startup, CronService.Start():
-  → Load all cron jobs with status="active" from DB
-  → For each: recompute next_run_at from schedule
-      → If next_run_at is in the past: set to next future occurrence
-      → No catch-up for missed fires (same as Claude)
-  → Start scheduler goroutine
+  → Load all cron jobs with status="active" from DB.
+  → Clear any stale firing=true rows (a prior process crashed
+    mid-execution — the row is no longer in flight).
+  → For each active job, compute next_run_at:
+      → If job IS recurring:
+          → next_run_at := computeNextFire(schedule, time.Now())
+          → No catch-up: missed recurring windows are dropped forward.
+      → If job IS NOT recurring (one-shot):
+          → IF stored next_run_at < now  (missed one-shot):
+              → Collect into a "missed one-shots" list for surfacing.
+              → Leave next_run_at as-is until user decides.
+          → ELSE:
+              → Keep stored next_run_at (future fire still valid).
+  → If missed one-shots collected:
+      → Publish MissedOneShotsEvent carrying the list.
+      → TUI subscribes; on next session activation, it renders a
+        confirmation dialog per job: [Run Now] [Discard] [Keep For Later].
+      → User choice:
+          → "Run Now" → set next_run_at = now, scheduler fires on next tick.
+          → "Discard" → set status="done".
+          → "Keep For Later" → leave untouched; dialog re-appears next startup.
+      → The dialog content wraps the prompt in a code fence so a
+        multi-line imperative prompt is NOT interpreted as immediate
+        instructions (prevents self-inflicted prompt injection, per
+        Claude's `buildMissedTaskNotification`).
+  → Start scheduler goroutine.
 ```
 
 ### Synthetic Message Format
@@ -289,7 +361,11 @@ When a cron job fires, the scheduler writes two messages directly to the parent 
 
 These are structurally identical to what the agent would produce if it called the task tool itself. The parent agent sees them as normal conversation history on its next turn — full context without any LLM cost during the cron fire.
 
-**Atomicity requirement**: Both messages MUST be written in a single DB transaction with consecutive sequence numbers, under a per-session write mutex that the agent loop also holds when writing messages. This prevents a race where a cron fires between an agent's `tool_call` and `tool_result` — which would corrupt the message pairing and break the conversation for the LLM.
+**Atomicity requirement**: Both messages MUST be written in a single DB transaction with consecutive sequence numbers, under a per-session write mutex that the agent loop also holds when writing messages. The task tool runs to completion FIRST (it writes only to the child task session during execution, never to the parent); the synthetic pair is only inserted into the parent AFTER the task returns, which is why a single transaction is actually viable.
+
+This prevents a race where a cron fires between an agent's `tool_call` and `tool_result` — which would corrupt the message pairing and break the conversation for Anthropic-style providers that require `tool_result` to immediately follow the assistant message containing the matching `tool_call`.
+
+**`call_id` uniqueness**: generate a new `call_id` per fire (don't reuse across runs of the same cron). The `task_id` stays stable across fires (passed as input to the task tool, not as the call id) so the subagent session is resumed; the `call_id` is just the message-level identifier pairing the synthetic `tool_call` with its `tool_result`.
 
 ### Cross-Session Visibility
 
@@ -421,6 +497,7 @@ FIRST RUN of cron job "cron_a1b2c3":
         SessionID: parentSessionID,
         ToolName:  "cron",
         Action:    "execute",
+        Path:      "cron:cron_a1b2c3",       // scope key
         Description: "⏲ Cron job cron_a1b2c3: check deploy status (*/5 * * * *)",
         Params:    {"cron_id": "cron_a1b2c3", "prompt": "check deploy..."},
     })
@@ -429,14 +506,28 @@ FIRST RUN of cron job "cron_a1b2c3":
        check deploy status
        Schedule: */5 * * * * (every 5 minutes)
        [Allow Once] [Allow All] [Deny]"
-  → If "Allow All" → GrantPersistant() → future runs skip permission
+  → If "Allow All" → GrantPersistant(path="cron:cron_a1b2c3")
+                  → future runs of THIS cron skip permission; other
+                    crons still ask
   → If "Allow Once" → Grant() → next run asks again
-  → If "Deny" → skip this run
+  → If "Deny" → skip this run; job stays active; next fire asks again
+
+PERMISSION KEY SCOPE (explicit):
+  → Key: "cron:<cron_job_id>" — per-job, NOT per-session and NOT per-prompt.
+  → Deleting the cron job also removes its grant (CronService.Delete
+    calls permissions.RevokePath("cron:<id>")).
+  → OpenCode restart: grants persist via the same mechanism that
+    persists other tool permissions. Only jobs that still exist in
+    the DB can consume them; grants for deleted cron IDs are orphans
+    but harmless (they'll never match again).
+  → A future cron with a different ID asks anew, even if the prompt
+    is identical — the ID is the grant identity.
 
 INACTIVE SESSION (no prior persistent grant):
   → Cannot show permission dialog (no active UI context for that session)
-  → Skip execution, retry next tick
-  → When user switches to the session, pending crons can fire and ask permission
+  → Skip execution, clear firing=false, retry when session becomes active.
+  → When user switches to the session, pending crons can fire and
+    ask permission.
 
 AUTO-APPROVE INHERITANCE:
   → If parent session has auto-approve enabled,
@@ -472,6 +563,25 @@ The `/loop` command:
 5. Uses prompt truncated to 80 chars as `task_title` (avoids LLM call for cosmetic field)
 6. Sets `source: "loop"` to distinguish from agent-initiated crons
 7. Shows confirmation via `InfoMsg` in status bar
+8. **Fires once immediately** by setting `next_run_at = time.Now()` on insert — scheduler picks it up on its next tick. Subsequent runs follow the cron schedule normally. Matches user mental model: `/loop 5m check the deploy` checks now AND every 5 min thereafter.
+
+### Slash commands inside `/loop`
+
+Claude's `/loop 5m /babysit-prs` enqueues the raw `/babysit-prs` command into the main agent loop on each fire. OpenCode diverges — cron runs in subagents for isolation. To support the equivalent ("every 5 min, run this skill"), `/loop` with a prompt starting with `/` wraps it as an explicit instruction to the subagent:
+
+```
+/loop 5m /babysit-prs
+```
+
+is scheduled with:
+
+```
+prompt: "Invoke the skill tool with name=\"babysit-prs\" and no arguments. Report the skill's output verbatim as your final response."
+```
+
+The subagent sees the instruction, calls the `skill` tool, and surfaces the result. This works because subagents also have access to the skill tool. A `/loop 5m /foo arg1 arg2` is parsed as `skill=foo, args="arg1 arg2"` and forwarded the same way.
+
+This gives users the "schedule a slash command" ergonomic while preserving the subagent isolation boundary.
 
 ### `/crons` TUI Page
 
@@ -587,8 +697,9 @@ type CronJob struct {
     IsRecurring   bool
     Source        string  // "loop" or "agent"
     Status        string  // "active", "paused", "done"
-    LastRunAt     int64
-    NextRunAt     int64
+    Firing        bool    // in-flight guard — true while task is executing
+    LastRunAt     int64   // 0 = never run
+    NextRunAt     int64   // 0 = no scheduled fire (status=done)
     RunCount      int64
     LastResult    string
     Error         string
@@ -602,46 +713,81 @@ type Service interface {
     Delete(ctx context.Context, id string) error
     List(ctx context.Context, sessionID string) ([]CronJob, error)
     ListActive(ctx context.Context) ([]CronJob, error)
+    ListDue(ctx context.Context, now int64) ([]CronJob, error) // status=active AND firing=false AND next_run_at<=now
     CountActive(ctx context.Context, sessionID string) (int, error)
     Get(ctx context.Context, id string) (CronJob, error)
-    Start(ctx context.Context) error   // starts scheduler, resumes active jobs
+
+    // One-shot missed fires surfaced at startup. TUI subscribes to
+    // MissedOneShotsEvent and renders per-job confirmation dialogs.
+    ResolveMissedOneShot(ctx context.Context, id string, action MissedAction) error
+    // MissedAction = RunNow | Discard | Keep
+
+    Start(ctx context.Context) error   // starts scheduler; clears stale firing=true rows;
+                                        // recomputes next_run_at for recurring;
+                                        // collects missed one-shots; publishes MissedOneShotsEvent
     Stop()                             // stops scheduler goroutine
 }
 ```
 
 ### Environment Variable
 
-`OPENCODE_DISABLE_CRON=1` disables the cron system entirely. When set:
+`OPENCODE_DISABLE_CRON=1` disables the cron system.
+
+At startup (once, via `os.Getenv`):
 - Cron tools are not registered (not added to `managerToolNames`)
-- `/loop` slash command is unavailable
+- `/loop` slash command shows "Cron scheduling is disabled"
 - `/crons` page shows "Cron scheduling is disabled"
-- `CronService.Start()` is a no-op
-- Any existing active cron jobs in DB remain but do not fire
+
+Runtime (polled at every scheduler tick):
+- If the env var flips to truthy mid-session (e.g. exported in a new shell
+  then the process is signal-reloaded via a hypothetical SIGHUP, or the
+  operator wraps the binary), `check()` bails before firing anything.
+  Existing cron jobs remain in the DB but don't fire.
+- Polling (`os.Getenv` per tick) is cheap and matches Claude's runtime
+  killswitch pattern (`isKilled?()`).
+- Note: Go doesn't hot-reload env vars in the same process by default;
+  the runtime poll is for operators who may arrange reloading via signals
+  or orchestrators. For single-user interactive use, startup-only is
+  functionally equivalent.
+
+Any existing active cron jobs in the DB remain persisted; they resume
+firing when the env var is cleared and the process restarts.
 
 ## Implementation Plan
 
 ### Phase 1: Database Layer
 
-- [ ] **1.1** Create SQLite migration `internal/db/migrations/sqlite/20260325120000_add_cron_jobs.sql` with `cron_jobs` table, `ON DELETE CASCADE` from sessions, indexes on `session_id` and `status+next_run_at`, `updated_at` trigger
+- [ ] **1.1** Create SQLite migration `internal/db/migrations/sqlite/20260325120000_add_cron_jobs.sql` with `cron_jobs` table (including `firing BOOLEAN DEFAULT 0`), `ON DELETE CASCADE` from sessions, indexes on `session_id` and `(status, firing, next_run_at)`, `updated_at` trigger
 - [ ] **1.2** Create MySQL migration `internal/db/migrations/mysql/20260325120000_add_cron_jobs.sql` (same schema, MySQL syntax)
-- [ ] **1.3** Create sqlc query files `internal/db/sql/cron_jobs.sql` and `internal/db/sql/mysql/cron_jobs.sql` with operations: `CreateCronJob`, `GetCronJob`, `ListCronJobsBySession`, `ListActiveCronJobs`, `ListDueCronJobs` (status=active AND next_run_at <= ?), `CountActiveCronJobsBySession`, `UpdateCronJob`, `DeleteCronJob`
+- [ ] **1.3** Create sqlc query files `internal/db/sql/cron_jobs.sql` and `internal/db/sql/mysql/cron_jobs.sql` with operations: `CreateCronJob`, `GetCronJob`, `ListCronJobsBySession`, `ListActiveCronJobs`, `ListDueCronJobs` (status=active AND firing=false AND next_run_at <= ?), `ListMissedOneShots` (status=active AND is_recurring=false AND next_run_at < ?), `CountActiveCronJobsBySession`, `SetCronJobFiring` (set firing flag), `ClearStaleFiring` (set firing=false on startup), `UpdateCronJob`, `DeleteCronJob`
 - [ ] **1.4** Add `CronJob` model to `internal/db/models.go`
 - [ ] **1.5** Run sqlc generation, update `Querier` interface
 - [ ] **1.6** Update `internal/db/schema/mysql.sql` with the new table
 
 ### Phase 2: Cron Service
 
-- [ ] **2.1** Create `internal/cron/service.go` with `Service` interface, `CronJob` struct, and `CreateParams`
-- [ ] **2.2** Implement cron expression parser (check `go.mod` for existing deps first; if none, use `github.com/robfig/cron/v3` for parsing only — no scheduler, just `cron.ParseStandard()` for next-run calculation)
-- [ ] **2.3** Implement human-readable cron description (e.g., `"*/5 * * * *"` → `"every 5 minutes"`)
-- [ ] **2.4** Implement scheduler goroutine: 1-second tick, query due jobs via `ListDueCronJobs`, check agent busy state for active session, fire directly for inactive sessions, serialize execution per-session via mutex
-- [ ] **2.4.1** Implement per-session write mutex shared between cron scheduler and agent loop to prevent message interleaving
-- [ ] **2.5** Implement execution logic: permission check → task tool `Run()` invocation → synthetic message writing → job state update
-- [ ] **2.6** Implement synthetic message creation: write `tool_call` + `tool_result` message pair to parent session DB in a single transaction with consecutive seq numbers, under per-session write mutex. Publish via session pubsub after commit
-- [ ] **2.7** Implement `Start()` for resume-on-restart: load active jobs, recompute `next_run_at`
-- [ ] **2.8** Implement Go duration to cron expression conversion for `/loop` interval syntax
-- [ ] **2.9** Add pubsub broker for TUI updates
-- [ ] **2.10** Listen for session `DeletedEvent` to clean up in-memory state for deleted sessions
+- [ ] **2.1** Create `internal/cron/service.go` with `Service` interface, `CronJob` struct, `CreateParams`, and `MissedAction` enum
+- [ ] **2.2** Add `github.com/robfig/cron/v3` dependency; implement `computeNextFire(schedule, from time.Time) (time.Time, error)` using `cron.ParseStandard()`. Verify dom/dow OR semantics and DST skip-forward behavior match expectations
+- [ ] **2.3** Implement human-readable cron description (e.g., `"*/5 * * * *"` → `"every 5 minutes"`). Port the branch-table approach from Claude's `cronToHuman` — covers common patterns, falls through to raw cron string otherwise
+- [ ] **2.4** Implement validation: parse schedule, verify `computeNextFire(schedule, now)` returns a time within the next 366 days, enforce max 50 jobs per session
+- [ ] **2.5** Implement scheduler goroutine: 1-second tick, runtime poll of `OPENCODE_DISABLE_CRON`, query `ListDueCronJobs`, per-session serialization via `map[sessionID]*sync.Mutex`, check `IsSessionBusy` for active session
+- [ ] **2.5.1** Implement per-session write mutex shared between cron scheduler and agent loop (exposed via session service or agent service) to prevent synthetic `tool_call`/`tool_result` interleaving with agent-authored pairs
+- [ ] **2.6** Implement execution logic:
+  - [ ] **2.6.1** Set `firing=true` on the row (DB UPDATE) before starting work
+  - [ ] **2.6.2** Permission check via `permissions.Request(path="cron:<id>")`; on inactive session + no prior grant, clear firing and return
+  - [ ] **2.6.3** Generate unique call_id; build ctx with sessionID and sentinel messageID `"cron:<cron_job_id>:<run_count>"`
+  - [ ] **2.6.4** Invoke `taskTool.Run(ctx, ToolCall{ID: call_id, Input: ...})` and wait
+  - [ ] **2.6.5** Acquire per-session write mutex; in a single DB transaction, insert synthetic assistant message with `tool_call` part and tool_result message with matching `tool_call_id`; commit and release
+  - [ ] **2.6.6** Publish both messages via session pubsub (AFTER commit)
+  - [ ] **2.6.7** Update cron_job: `last_run_at=now`, `run_count++`, `last_result`, `next_run_at = computeNextFire(schedule, time.Now())`, `firing=false`, `error=NULL`; for one-shot: `status="done"`, `next_run_at=NULL`
+- [ ] **2.7** Implement `Start()` for resume-on-restart:
+  - [ ] **2.7.1** `ClearStaleFiring()` — reset `firing=false` for any row left as firing=true from a prior crash
+  - [ ] **2.7.2** For recurring active jobs: `next_run_at = computeNextFire(schedule, time.Now())` (drop missed recurring windows forward)
+  - [ ] **2.7.3** For one-shot active jobs: `ListMissedOneShots(now)` → publish `MissedOneShotsEvent` for TUI
+  - [ ] **2.7.4** Implement `ResolveMissedOneShot(id, action)` — RunNow sets next_run_at=now; Discard sets status=done; Keep is a no-op
+- [ ] **2.8** Implement Go duration to cron expression conversion for `/loop` interval syntax (table from the `/loop` spec section — Nm, Nh, Nd; round Ns to ceil(N/60)m; warn user when rounding)
+- [ ] **2.9** Add pubsub broker for TUI updates (`CronJob` events + `MissedOneShotsEvent`)
+- [ ] **2.10** Listen for session `DeletedEvent` to clean up in-memory state (per-session mutexes) and call `permissions.RevokePath("cron:<id>")` for each deleted job (though CASCADE DELETE handles the DB side)
 
 ### Phase 3: Tools
 
@@ -656,7 +802,7 @@ type Service interface {
 
 ### Phase 4: Slash Commands & TUI
 
-- [ ] **4.1** Add `/loop` slash command in `internal/tui/tui.go` `buildCommands`: parse interval + prompt, call `CronService.Create()`, show confirmation via `InfoMsg`
+- [ ] **4.1** Add `/loop` slash command in `internal/tui/tui.go` `buildCommands`: parse interval + prompt; if prompt starts with `/`, wrap as explicit skill-invocation instruction for the subagent (see `/loop` spec section); call `CronService.Create()` with `next_run_at = time.Now()` so it fires immediately; show confirmation via `InfoMsg`
 - [ ] **4.2** Add `/crons` slash command that navigates to the crons TUI page
 - [ ] **4.3** Create `internal/tui/components/crons/table.go` — cron jobs table with columns: ID, Schedule, Source, Status, Runs, Next Run
 - [ ] **4.4** Create `internal/tui/components/crons/details.go` — detail panel showing full job info + latest output
@@ -665,6 +811,7 @@ type Service interface {
 - [ ] **4.7** Add delete keybinding in crons table (`d` key)
 - [ ] **4.8** Add `⏲ N` indicator to session list rendering for sessions with active crons
 - [ ] **4.9** Emit status bar `InfoMsg` on every cron fire: `"⏲ <session>: <task>"` with 5s TTL
+- [ ] **4.10** Implement missed-one-shot confirmation dialog: subscribe to `MissedOneShotsEvent`; on next session activation for an affected session, render a dialog per job with `[Run Now] [Discard] [Keep For Later]` actions that call `CronService.ResolveMissedOneShot`. Wrap the prompt body in a code fence in the dialog to prevent self-inflicted prompt injection (same rationale as Claude's `buildMissedTaskNotification`)
 
 ### Phase 5: Chat Rendering
 
@@ -684,10 +831,16 @@ type Service interface {
 - [ ] **7.1** Unit tests for cron expression parsing and Go duration conversion
 - [ ] **7.2** Unit tests for human-readable cron description generation
 - [ ] **7.3** Unit tests for cron service CRUD operations
-- [ ] **7.4** Unit tests for scheduler logic (due job detection, busy waiting, one-shot cleanup, per-session serialization)
+- [ ] **7.4** Unit tests for scheduler logic (due job detection, busy waiting, one-shot cleanup, per-session serialization, in-flight guard prevents double-fire)
 - [ ] **7.5** Unit tests for tool parameter validation (invalid cron expression, no-future-match expression, max jobs, etc.)
-- [ ] **7.6** Unit tests for synthetic message creation (correct format, proper tool_call/tool_result pairing)
-- [ ] **7.7** Integration test: create cron → wait for execution → verify task tool was invoked with correct params → verify synthetic messages in parent session
+- [ ] **7.6** Unit tests for synthetic message creation (correct format, proper tool_call/tool_result pairing, consecutive seq under mutex)
+- [ ] **7.7** Unit test: next_run_at after fire always anchored from `time.Now()`, not from prior next_run_at (simulate blocked scheduler, verify no rapid catch-up)
+- [ ] **7.8** Unit test: startup resume clears stale `firing=true` rows; recurring jobs reschedule from now; one-shot missed jobs collected and `MissedOneShotsEvent` published
+- [ ] **7.9** Unit test: `ResolveMissedOneShot` for each action (RunNow / Discard / Keep)
+- [ ] **7.10** Unit test: `/loop` parsing handles `5m prompt`, `prompt every 5m`, bare `prompt` (default interval), leading slash-command wrapping, and rounds sub-minute durations up
+- [ ] **7.11** Unit test: permission key `cron:<id>` — first run requests, "allow all" grants, subsequent runs skip; deleting the cron revokes the grant
+- [ ] **7.12** Integration test: create cron → wait for execution → verify task tool was invoked with correct params → verify synthetic messages in parent session with matching call_id, consecutive seq, and correct tool_call_id pairing
+- [ ] **7.13** Integration test: fire cron while agent is mid-turn on active session → verify cron waits for agent idle → verify messages don't interleave
 
 ## Edge Cases
 
@@ -731,12 +884,53 @@ type Service interface {
 ### Process Restart
 
 1. OpenCode exits (ctrl+c or crash)
-2. Scheduler goroutine stops, in-memory state lost
+2. Scheduler goroutine stops, in-memory state lost. Rows with `firing=true` are left in that state in the DB (a row was in the middle of firing when we crashed — the synthetic messages may or may not have been written).
 3. OpenCode restarts, user opens same session
-4. `CronService.Start()` loads all `status="active"` jobs from DB
-5. For each job: if `next_run_at` is in the past, compute next future occurrence from `schedule`
-6. No catch-up for missed fires
-7. Scheduler resumes normal operation
+4. `CronService.Start()`:
+   - `ClearStaleFiring()` — sets `firing=false` on every row; the task that was mid-flight is effectively abandoned (no way to recover the subagent state cleanly). The next cron tick re-fires it. Duplicate synthetic messages are possible if the pre-crash process had already committed them but hadn't updated `next_run_at`; the idempotency of `task_id` reuse means the subagent sees a retry in its history, which is acceptable.
+   - For each recurring active job: `next_run_at = computeNextFire(schedule, time.Now())` — no catch-up for missed recurring windows.
+   - For one-shot active jobs with `next_run_at < now`: collect into missed list, publish `MissedOneShotsEvent`. TUI surfaces a per-job confirmation dialog on next session activation; user chooses Run Now / Discard / Keep For Later. Prompt body is rendered inside a code fence to prevent self-inflicted prompt injection.
+5. Scheduler resumes normal operation.
+
+### Missed One-Shot While Process Was Down
+
+1. User creates one-shot: "remind me at 3pm to push the release" → cron `0 15 * * *`, `is_recurring=false`, `next_run_at=<today 15:00>`
+2. OpenCode crashes at 2:45pm, user restarts at 3:30pm
+3. `CronService.Start()` finds this job: `next_run_at=15:00 < now=15:30` AND `is_recurring=false` → adds to missed list.
+4. `MissedOneShotsEvent` published with `[{id: ..., cron: "0 15 * * *", prompt: "remind me...", missed_at: 15:00}]`
+5. TUI renders a dialog on the affected session:
+   ```
+   ⏲ Missed scheduled task:
+   ```
+   remind me at 3pm to push the release
+   ```
+   Original fire: today 15:00 (30 minutes ago)
+   [Run Now]  [Discard]  [Keep For Later]
+   ```
+6. User picks:
+   - "Run Now" → `ResolveMissedOneShot(id, RunNow)` sets `next_run_at=now`; scheduler fires on next tick.
+   - "Discard" → sets `status="done"`; job never fires but stays visible in `/crons`.
+   - "Keep For Later" → no-op; dialog re-appears next startup.
+
+### Scheduler Blocked for Multiple Windows (No Rapid Catch-Up)
+
+1. Cron job `*/5 * * * *` fires normally for hours.
+2. Agent is busy for 47 minutes (long analysis run) on the active session.
+3. During those 47 min, 9 fire windows pass (15:00, 15:05, 15:10, ..., 15:40).
+4. Agent becomes idle at 15:47.
+5. Scheduler's next tick (at 15:47) detects the cron is due (`next_run_at=15:00 <= now`).
+6. Cron fires ONCE at 15:47.
+7. `next_run_at = computeNextFire("*/5 * * * *", 15:47)` = 15:50 — anchored from NOW, not from 15:00.
+8. Next fire at 15:50, not rapid-fire through 15:00→15:40. Matches Claude's `reschedule from now, not from next`.
+
+### Double-Fire Prevention (In-Flight Guard)
+
+1. Scheduler tick at 15:00:00: job `cron_a1b2c3` is due, `firing=false`.
+2. Scheduler marks `firing=true` (DB UPDATE) and starts executing.
+3. Task takes 3 seconds.
+4. Scheduler tick at 15:00:01 while task is still running: `ListDueCronJobs` filters `firing=false` → the row is excluded. No double-fire.
+5. Task completes at 15:00:03. Scheduler writes synthetic messages, updates `next_run_at`, sets `firing=false`.
+6. Subsequent ticks see the job again only when `next_run_at <= now` AND `firing=false`.
 
 ### Concurrent Cron Fires (Same Session)
 
@@ -796,8 +990,8 @@ type Service interface {
    - Currently proposed: only `hivemind` by default, users can enable for `coder` via config
    - **Recommendation**: Start with `hivemind`-only, gather feedback. The coder agent already has many tools, and scheduling is a coordination concern that fits hivemind's role.
 
-2. **Should there be an auto-expiry like Claude's 3-day limit?**
-   - Claude auto-expires after 3 days to prevent forgotten loops
+2. **Should there be an auto-expiry like Claude's 7-day limit?**
+   - Claude auto-expires recurring tasks after 7 days (`DEFAULT_CRON_JITTER_CONFIG.recurringMaxAgeMs`) to prevent forgotten loops and bound session lifetime.
    - **Recommendation**: Skip for now. Since OpenCode persists cron jobs and shows them in `/crons`, users have visibility. Can add later if needed via a configurable `max_lifetime` field.
 
 3. **Should `/loop` default to `explorer` or use a configurable default subagent?**
@@ -809,6 +1003,14 @@ type Service interface {
 5. **Concurrent fire behavior for inactive sessions — parallel or serial?**
    - The task tool has `AllowParallelism: true`, so concurrent fires on the same inactive session would work. But synthetic message ordering could get confusing.
    - **Recommendation**: Serialize per-session (use a per-session mutex in the scheduler). This keeps message ordering deterministic. Different sessions can fire in parallel.
+
+6. **`/loop` with slash-command prompts — subagent + skill tool or execute directly?**
+   - OpenCode runs all cron fires in subagents for isolation. Claude runs them in the main agent, so `/loop 5m /babysit-prs` directly enqueues the slash command.
+   - **Decision**: Subagents always, but when the prompt starts with `/`, wrap it as an explicit instruction to the subagent to invoke the `skill` tool with the parsed skill name and args. Subagents already have skill tool access. This preserves isolation while giving users the "schedule a slash command" ergonomic.
+
+7. **Missed one-shot handling at restart**
+   - **Decision**: Adopt Claude's approach. Surface missed one-shots with a Run Now / Discard / Keep For Later confirmation dialog on next session activation. Wrap the prompt body in a code fence to prevent self-inflicted prompt injection.
+   - Recurring missed windows continue to drop forward with no catch-up (the schedule itself is the safeguard — a `*/5 * * * *` that missed 9 windows still has the 10th window coming).
 
 ## Success Criteria
 
@@ -832,9 +1034,20 @@ type Service interface {
 - [ ] Permission on inactive sessions is deferred until session becomes active
 - [ ] Agent busy state is respected on active session — cron waits for idle before firing
 - [ ] Cron fires per-session are serialized to maintain deterministic message ordering
-- [ ] Synthetic message pairs are written atomically (single transaction, consecutive seq) — no interleaving with agent/user messages
+- [ ] Synthetic message pairs are written atomically (single transaction AFTER task completes, consecutive seq) — no interleaving with agent/user messages
+- [ ] `call_id` is unique per fire; `tool_call_id` in the tool_result message matches the `tool_call.id` in the synthetic assistant message
+- [ ] Task tool is invoked with sentinel `MessageIDContextKey = "cron:<id>:<run_count>"` — validation passes, downstream unaffected
+- [ ] `next_run_at` after each fire is anchored from `time.Now()` — scheduler blocked for multiple windows produces a single fire on resume, not rapid catch-up
+- [ ] `firing=true` in-flight guard prevents double-fire during the task execution window
+- [ ] Startup: `ClearStaleFiring()` resets firing flag on rows left from prior crashes
+- [ ] Startup: missed one-shots (status=active AND is_recurring=false AND next_run_at<now) are surfaced via `MissedOneShotsEvent`; TUI renders Run Now / Discard / Keep For Later dialog with prompt body in a code fence
+- [ ] Startup: recurring jobs reschedule from now; no catch-up for missed recurring windows
+- [ ] `/loop` fires immediately on creation (next_run_at = now), then follows the cron schedule
+- [ ] `/loop` with a slash-command prompt (`/loop 5m /foo bar`) wraps it as an instruction for the subagent to invoke the `skill` tool
+- [ ] Permission key `cron:<id>` is per-job; "allow all" persists only for that cron; deleting the cron revokes the grant
+- [ ] Cron parser is `github.com/robfig/cron/v3` `ParseStandard()`; DST skip-forward and dom/dow OR semantics work correctly
 - [ ] Both SQLite and MySQL providers support the `cron_jobs` table
-- [ ] `OPENCODE_DISABLE_CRON=1` disables the entire cron system
+- [ ] `OPENCODE_DISABLE_CRON=1` disables the cron system at startup; runtime tick also polls the env var for mid-session kill
 - [ ] Cron expression validation rejects invalid expressions and expressions with no future match
 - [ ] `make test` passes
 
