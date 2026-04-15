@@ -117,6 +117,20 @@ func (d *detailCmp) updateContent() {
 		content.WriteString("\n")
 	}
 
+	if len(d.current.Skills) > 0 {
+		content.WriteString(labelStyle.Render("Skills:"))
+		content.WriteString("\n")
+		skills := make([]string, len(d.current.Skills))
+		copy(skills, d.current.Skills)
+		sort.Strings(skills)
+		for _, name := range skills {
+			line := fmt.Sprintf("  %s", valueStyle.Render(name))
+			content.WriteString(line)
+			content.WriteString("\n")
+		}
+		content.WriteString("\n")
+	}
+
 	if len(d.current.Permission) > 0 {
 		content.WriteString(labelStyle.Render("Permissions:"))
 		content.WriteString("\n")
