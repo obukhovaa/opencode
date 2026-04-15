@@ -25,6 +25,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/tui/styles"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
 	"github.com/opencode-ai/opencode/internal/tui/util"
+	"github.com/opencode-ai/opencode/internal/tui/vim"
 )
 
 type editorMode string
@@ -46,6 +47,7 @@ type editorCmp struct {
 	shellHistory    []string
 	shellHistoryIdx int
 	shellExecuting  bool
+	vimHandler      *vim.Handler // nil when vim mode is disabled
 }
 
 type EditorKeyMaps struct {
@@ -126,7 +128,13 @@ func (m *editorCmp) openEditor() tea.Cmd {
 }
 
 func (m *editorCmp) Init() tea.Cmd {
-	return textarea.Blink
+	cmds := []tea.Cmd{textarea.Blink}
+	if m.vimHandler != nil {
+		cmds = append(cmds, util.CmdHandler(VimModeChangedMsg{
+			Mode: string(m.vimHandler.Mode()),
+		}))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m *editorCmp) send() tea.Cmd {
@@ -225,9 +233,32 @@ func (m *editorCmp) IsShellMode() bool {
 	return m.mode == modeShell
 }
 
+func (m *editorCmp) ConsumesCtrlC() bool {
+	if m.vimHandler != nil {
+		return m.vimHandler.ConsumesCtrlC()
+	}
+	return false
+}
+
+func (m *editorCmp) VimMode() string {
+	if m.vimHandler != nil {
+		return string(m.vimHandler.Mode())
+	}
+	return ""
+}
+
 func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
+	case ToggleVimModeMsg:
+		if m.vimHandler != nil {
+			// Disable vim mode
+			m.vimHandler = nil
+			return m, util.CmdHandler(VimModeChangedMsg{Mode: ""})
+		}
+		// Enable vim mode — starts in INSERT
+		m.vimHandler = vim.NewHandler()
+		return m, util.CmdHandler(VimModeChangedMsg{Mode: string(m.vimHandler.Mode())})
 	case dialog.ThemeChangedMsg:
 		m.textarea = CreateTextArea(&m.textarea)
 	case dialog.CompletionSelectedMsg:
@@ -297,9 +328,12 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Shell mode: detect "!" at position 0 on empty input
+		// In vim mode, only trigger shell from INSERT mode
 		if m.mode == modeNormal && msg.Text == "!" && m.textarea.Value() == "" {
-			m.enterShellMode()
-			return m, util.CmdHandler(ShellModeChangedMsg{ShellMode: true})
+			if m.vimHandler == nil || m.vimHandler.Mode() == vim.ModeInsert {
+				m.enterShellMode()
+				return m, util.CmdHandler(ShellModeChangedMsg{ShellMode: true})
+			}
 		}
 
 		// Shell mode key handling
@@ -332,6 +366,20 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// Vim mode key handling
+		if m.vimHandler != nil {
+			handled, vimCmd, modeChanged := m.vimHandler.HandleKey(msg, &m.textarea)
+			if modeChanged {
+				return m, tea.Batch(vimCmd, util.CmdHandler(VimModeChangedMsg{
+					Mode: string(m.vimHandler.Mode()),
+				}))
+			}
+			if handled {
+				return m, vimCmd
+			}
+			// Not handled by vim — fall through to normal handling
+		}
+
 		if key.Matches(msg, editorMaps.OpenEditor) {
 			if m.app.ActiveAgent().IsSessionBusy(m.session.ID) {
 				return m, util.ReportWarn("Agent is working, please wait...")
@@ -342,7 +390,7 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.deleteMode = false
 			return m, nil
 		}
-		// Hanlde Enter key
+		// Handle Enter key
 		if m.textarea.Focused() && key.Matches(msg, editorMaps.Send) {
 			value := m.textarea.Value()
 			if len(value) > 0 && value[len(value)-1] == '\\' {
@@ -368,6 +416,8 @@ func (m *editorCmp) View() tea.View {
 	if m.mode == modeShell {
 		promptChar = "$"
 		promptColor = t.Warning()
+	} else if m.vimHandler != nil && m.vimHandler.Mode() == vim.ModeNormal {
+		promptColor = t.Secondary()
 	}
 
 	style := lipgloss.NewStyle().
@@ -472,9 +522,14 @@ func CreateTextArea(existing *textarea.Model) textarea.Model {
 
 func NewEditorCmp(app *app.App) tea.Model {
 	ta := CreateTextArea(nil)
+	var vimH *vim.Handler
+	if config.Get().TUI.VimMode {
+		vimH = vim.NewHandler()
+	}
 	return &editorCmp{
-		app:      app,
-		textarea: ta,
-		mode:     modeNormal,
+		app:        app,
+		textarea:   ta,
+		mode:       modeNormal,
+		vimHandler: vimH,
 	}
 }

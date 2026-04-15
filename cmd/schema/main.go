@@ -121,6 +121,11 @@ func generateSchema() map[string]any {
 					"tron",
 				},
 			},
+			"vimMode": map[string]any{
+				"type":        "boolean",
+				"description": "Enable vim-style keybindings for the chat text input",
+				"default":     false,
+			},
 		},
 	}
 

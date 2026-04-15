@@ -723,6 +723,11 @@
             "tron"
           ],
           "type": "string"
+        },
+        "vimMode": {
+          "default": false,
+          "description": "Enable vim-style keybindings for the chat text input",
+          "type": "boolean"
         }
       },
       "type": "object"

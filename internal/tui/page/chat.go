@@ -40,6 +40,7 @@ type chatPage struct {
 	showCommandCompletionDialog bool
 	commands                    []dialog.Command
 	shellMode                   bool
+	vimMode                     string // "" when disabled, "INSERT" or "NORMAL" when active
 }
 
 type ChatKeyMap struct {
@@ -142,6 +143,9 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chat.ShellModeChangedMsg:
 		p.shellMode = msg.ShellMode
 		return p, nil
+	case chat.VimModeChangedMsg:
+		p.vimMode = msg.Mode
+		return p, nil
 	case chat.ShellResultMsg:
 		cmds = append(cmds, p.handleShellResult(msg))
 	case chat.SendMsg:
@@ -228,12 +232,17 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if p.shellMode {
 				break
 			}
-			// When a dialog is open, let ESC flow to dialog routing below
-			if !p.showCompletionDialog && !p.showCommandCompletionDialog {
-				if p.session.ID != "" {
-					p.app.ActiveAgent().Cancel(p.session.ID)
-					return p, nil
-				}
+			// When a completion dialog is open, close it first (dialog takes priority over vim)
+			if p.showCompletionDialog || p.showCommandCompletionDialog {
+				break // let ESC flow to dialog routing below
+			}
+			// In vim mode, ESC flows to the editor for vim mode switching
+			if p.isVimMode() {
+				break
+			}
+			if p.session.ID != "" {
+				p.app.ActiveAgent().Cancel(p.session.ID)
+				return p, nil
 			}
 		case key.Matches(msg, keyMap.ShowCompletionDialog):
 			if !p.showCommandCompletionDialog && !p.shellMode {
@@ -458,6 +467,15 @@ func (p *chatPage) HasActiveOverlay() bool {
 
 func (p *chatPage) IsShellMode() bool {
 	return p.shellMode
+}
+
+func (p *chatPage) ConsumesCtrlC() bool {
+	// Vim INSERT mode or pending NORMAL command should consume Ctrl+C
+	return p.vimMode == "INSERT"
+}
+
+func (p *chatPage) isVimMode() bool {
+	return p.vimMode != ""
 }
 
 func (p *chatPage) BindingKeys() []key.Binding {

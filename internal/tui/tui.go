@@ -44,6 +44,7 @@ type keyMap struct {
 type (
 	startCompactSessionMsg struct{}
 	toggleAutoApproveMsg   struct{}
+	toggleVimModeMsg       struct{}
 	sessionDeletedMsg      struct{ id string }
 )
 
@@ -363,6 +364,20 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.status = s.(core.StatusCmp)
 		return a, util.ReportInfo("Auto-approve enabled")
 
+	case toggleVimModeMsg:
+		newVal := !config.Get().TUI.VimMode
+		if err := config.UpdateVimMode(newVal); err != nil {
+			return a, util.ReportError(err)
+		}
+		statusMsg := "Vim mode enabled"
+		if !newVal {
+			statusMsg = "Vim mode disabled"
+		}
+		return a, tea.Batch(
+			util.CmdHandler(chat.ToggleVimModeMsg{}),
+			util.ReportInfo(statusMsg),
+		)
+
 	case startCompactSessionMsg:
 		// Start compacting the current session
 		a.isCompacting = true
@@ -558,6 +573,10 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, keys.Quit):
 			// In shell mode, ctrl+c exits shell mode instead of showing quit dialog
 			if a.pageIsShellMode() {
+				break
+			}
+			// In vim INSERT mode, ctrl+c switches to NORMAL instead of showing quit dialog
+			if a.pageConsumesCtrlC() {
 				break
 			}
 			a.showQuit = !a.showQuit
@@ -848,6 +867,16 @@ func (a *appModel) pageIsShellMode() bool {
 	return false
 }
 
+func (a *appModel) pageConsumesCtrlC() bool {
+	type ctrlCConsumer interface {
+		ConsumesCtrlC() bool
+	}
+	if p, ok := a.pages[a.currentPage].(ctrlCConsumer); ok {
+		return p.ConsumesCtrlC()
+	}
+	return false
+}
+
 // RegisterCommand adds a command to the command dialog
 func (a *appModel) RegisterCommand(cmd dialog.Command) {
 	a.commands = append(a.commands, cmd)
@@ -1050,6 +1079,9 @@ func buildCommands() []dialog.Command {
 		},
 		"auto-approve": func(_ dialog.Command) tea.Cmd {
 			return func() tea.Msg { return toggleAutoApproveMsg{} }
+		},
+		"vim": func(_ dialog.Command) tea.Cmd {
+			return func() tea.Msg { return toggleVimModeMsg{} }
 		},
 	}
 

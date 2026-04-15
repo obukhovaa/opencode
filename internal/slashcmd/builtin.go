@@ -73,6 +73,12 @@ func BuiltinCommands() []CommandInfo {
 			Description: "Toggle auto-approve mode for the current session (skip permission dialogs)",
 			TUIOnly:     true,
 		},
+		{
+			ID:          "vim",
+			Title:       "Toggle Vim Mode",
+			Description: "Toggle vim-style keybindings for the chat input",
+			TUIOnly:     true,
+		},
 	}
 }
 

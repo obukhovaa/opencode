@@ -134,7 +134,8 @@ type LSPConfig struct {
 
 // TUIConfig defines the configuration for the Terminal User Interface.
 type TUIConfig struct {
-	Theme string `json:"theme,omitempty"`
+	Theme   string `json:"theme,omitempty"`
+	VimMode bool   `json:"vimMode,omitempty"`
 }
 
 // ShellConfig defines the configuration for the shell used by the bash tool.
@@ -1117,5 +1118,18 @@ func UpdateTheme(themeName string) error {
 	// Update the file config
 	return updateCfgFile(func(config *Config) {
 		config.TUI.Theme = themeName
+	})
+}
+
+// UpdateVimMode updates the vim mode setting and writes it to the config file.
+func UpdateVimMode(enabled bool) error {
+	if cfg == nil {
+		return fmt.Errorf("config not loaded")
+	}
+
+	cfg.TUI.VimMode = enabled
+
+	return updateCfgFile(func(config *Config) {
+		config.TUI.VimMode = enabled
 	})
 }

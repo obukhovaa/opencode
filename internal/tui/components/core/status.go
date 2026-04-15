@@ -47,6 +47,7 @@ type statusCmp struct {
 	scrollLocked        bool
 	newMessageCount     int
 	autoApproveActive   bool
+	vimMode             string // "" when disabled, "INSERT" or "NORMAL"
 }
 
 // clearMessageCmd is a command that clears status messages after a timeout
@@ -100,6 +101,8 @@ func (m *statusCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.newMessageCount = msg.NewMessages
 	case AutoApproveChangedMsg:
 		m.autoApproveActive = msg.Active
+	case chat.VimModeChangedMsg:
+		m.vimMode = msg.Mode
 	}
 	if m.diagnosticsDirty {
 		m.cachedDiagnostics = m.computeDiagnostics()
@@ -204,7 +207,23 @@ func (m *statusCmp) View() tea.View {
 	model := m.resolveModel()
 	modelWidget := m.renderModelWidget(model)
 
-	status := helpWidget
+	vimWidget := ""
+	vimWidgetWidth := 0
+	if m.vimMode != "" {
+		bgColor := t.Primary()
+		if m.vimMode == "INSERT" {
+			bgColor = t.Secondary()
+		}
+		vimWidget = styles.Padded().
+			Background(bgColor).
+			Foreground(t.Background()).
+			Bold(true).
+			Render(m.vimMode)
+		vimWidgetWidth = lipgloss.Width(vimWidget)
+	}
+
+	status := vimWidget
+	status += helpWidget
 	status += agentHintWidget
 
 	autoApproveWidget := ""
@@ -262,7 +281,7 @@ func (m *statusCmp) View() tea.View {
 		Background(t.BackgroundDarker()).
 		Render(m.projectDiagnostics())
 
-	availableWidht := max(0, m.width-lipgloss.Width(helpWidget)-lipgloss.Width(agentHintWidget)-lipgloss.Width(modelWidget)-lipgloss.Width(diagnostics)-tokenInfoWidth-scrollWidgetWidth-autoApproveWidgetWidth)
+	availableWidht := max(0, m.width-vimWidgetWidth-lipgloss.Width(helpWidget)-lipgloss.Width(agentHintWidget)-lipgloss.Width(modelWidget)-lipgloss.Width(diagnostics)-tokenInfoWidth-scrollWidgetWidth-autoApproveWidgetWidth)
 
 	if m.info.Msg != "" {
 		infoStyle := styles.Padded().

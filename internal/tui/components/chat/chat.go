@@ -53,6 +53,12 @@ type AgentChangedMsg struct {
 	Name config.AgentName
 }
 
+type VimModeChangedMsg struct {
+	Mode string // "INSERT" or "NORMAL"
+}
+
+type ToggleVimModeMsg struct{}
+
 func header(width int) string {
 	return lipgloss.JoinVertical(
 		lipgloss.Top,
