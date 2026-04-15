@@ -571,6 +571,18 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 
 		case key.Matches(msg, keys.Quit):
+			// A dismissible overlay always wins ctrl+c — the modal has visual
+			// focus and the editor (vim/shell) sits beneath it. Ctrl+c mirrors
+			// esc when any modal is open.
+			if a.anyDismissibleDialogOpen() {
+				a.dismissAllDialogs()
+				return a, nil
+			}
+			// On non-chat pages (logs, agents), ctrl+c returns to the chat
+			// page, same as esc. Only show the quit dialog from the chat page.
+			if a.currentPage == page.LogsPage || a.currentPage == page.AgentsPage {
+				return a, a.moveToPage(page.ChatPage)
+			}
 			// In shell mode, ctrl+c exits shell mode instead of showing quit dialog
 			if a.pageIsShellMode() {
 				break
@@ -875,6 +887,38 @@ func (a *appModel) pageConsumesCtrlC() bool {
 		return p.ConsumesCtrlC()
 	}
 	return false
+}
+
+// anyDismissibleDialogOpen reports whether a user-dismissible overlay is
+// currently visible. Excludes the quit dialog (self-closing) and the
+// permissions dialog (must be explicitly decided by the user).
+func (a *appModel) anyDismissibleDialogOpen() bool {
+	return a.showHelp ||
+		a.showSessionDialog ||
+		a.showDeleteSessionDialog ||
+		a.showCommandDialog ||
+		a.showFilepicker ||
+		a.showModelDialog ||
+		a.showMultiArgumentsDialog ||
+		a.showThemeDialog ||
+		a.showInitDialog
+}
+
+// dismissAllDialogs closes every dismissible overlay. Intended for ctrl+c
+// when a modal is visible so it mirrors esc across all dialog types.
+func (a *appModel) dismissAllDialogs() {
+	a.showHelp = false
+	a.showSessionDialog = false
+	a.showDeleteSessionDialog = false
+	a.showCommandDialog = false
+	a.showModelDialog = false
+	a.showMultiArgumentsDialog = false
+	a.showThemeDialog = false
+	a.showInitDialog = false
+	if a.showFilepicker {
+		a.showFilepicker = false
+		a.filepicker.ToggleFilepicker(a.showFilepicker)
+	}
 }
 
 // RegisterCommand adds a command to the command dialog
