@@ -333,6 +333,10 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case page.PageChangeMsg:
 		return a, a.moveToPage(msg.ID)
 
+	case page.ShowQuitDialogMsg:
+		a.showQuit = true
+		return a, nil
+
 	case dialog.CloseQuitMsg:
 		a.showQuit = false
 		return a, nil
@@ -590,6 +594,10 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// In vim INSERT mode, ctrl+c switches to NORMAL instead of showing quit dialog
 			if a.pageConsumesCtrlC() {
 				break
+			}
+			// Cancel running request before showing quit dialog
+			if a.pageCancelAgent() {
+				return a, nil
 			}
 			a.showQuit = !a.showQuit
 			if a.showHelp {
@@ -885,6 +893,16 @@ func (a *appModel) pageConsumesCtrlC() bool {
 	}
 	if p, ok := a.pages[a.currentPage].(ctrlCConsumer); ok {
 		return p.ConsumesCtrlC()
+	}
+	return false
+}
+
+func (a *appModel) pageCancelAgent() bool {
+	type agentCanceller interface {
+		CancelActiveAgent() bool
+	}
+	if p, ok := a.pages[a.currentPage].(agentCanceller); ok {
+		return p.CancelActiveAgent()
 	}
 	return false
 }

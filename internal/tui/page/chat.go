@@ -28,6 +28,10 @@ import (
 
 var ChatPage PageID = "chat"
 
+// ShowQuitDialogMsg is emitted by the chat page when ESC/Ctrl+C is pressed
+// and there is no running request to cancel — signals the app to show the quit dialog.
+type ShowQuitDialogMsg struct{}
+
 type chatPage struct {
 	app                         *app.App
 	editor                      layout.Container
@@ -236,14 +240,17 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if p.showCompletionDialog || p.showCommandCompletionDialog {
 				break // let ESC flow to dialog routing below
 			}
-			// In vim mode, ESC flows to the editor for vim mode switching
-			if p.isVimMode() {
+			// In vim INSERT mode, ESC switches to NORMAL (handled by editor)
+			if p.vimMode == "INSERT" {
 				break
 			}
-			if p.session.ID != "" {
+			// In vim NORMAL mode or no vim: cancel running request if agent is busy
+			if p.session.ID != "" && p.app.ActiveAgent().IsBusy() {
 				p.app.ActiveAgent().Cancel(p.session.ID)
 				return p, nil
 			}
+			// Nothing to cancel — show quit dialog
+			return p, util.CmdHandler(ShowQuitDialogMsg{})
 		case key.Matches(msg, keyMap.ShowCompletionDialog):
 			if !p.showCommandCompletionDialog && !p.shellMode {
 				p.showCompletionDialog = true
@@ -470,12 +477,18 @@ func (p *chatPage) IsShellMode() bool {
 }
 
 func (p *chatPage) ConsumesCtrlC() bool {
-	// Vim INSERT mode or pending NORMAL command should consume Ctrl+C
+	// Vim INSERT mode should consume Ctrl+C to switch to NORMAL
 	return p.vimMode == "INSERT"
 }
 
-func (p *chatPage) isVimMode() bool {
-	return p.vimMode != ""
+// CancelActiveAgent cancels the running agent request if one exists.
+// Returns true if a request was cancelled.
+func (p *chatPage) CancelActiveAgent() bool {
+	if p.session.ID != "" && p.app.ActiveAgent().IsBusy() {
+		p.app.ActiveAgent().Cancel(p.session.ID)
+		return true
+	}
+	return false
 }
 
 func (p *chatPage) BindingKeys() []key.Binding {

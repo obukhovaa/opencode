@@ -70,10 +70,15 @@ func (h *Handler) HandleKey(msg tea.KeyPressMsg, ta *textarea.Model) (handled bo
 		return true, nil, true
 	}
 
-	// Escape in NORMAL mode → cancel pending command
+	// Escape in NORMAL mode → cancel pending command or let it propagate
 	if h.state.Mode == ModeNormal && keyStr == "esc" {
-		h.state.Command = CommandIdle{}
-		return true, nil, false
+		_, isIdle := h.state.Command.(CommandIdle)
+		if !isIdle {
+			h.state.Command = CommandIdle{}
+			return true, nil, false
+		}
+		// Idle NORMAL + ESC → don't handle, let app manage (cancel request / quit)
+		return false, nil, false
 	}
 
 	// Ctrl+C in NORMAL mode
