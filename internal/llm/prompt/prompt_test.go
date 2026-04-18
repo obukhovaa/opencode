@@ -204,6 +204,17 @@ func (r *mockRegistry) EvaluatePermission(agentID, toolName, input string) permi
 	return permission.EvaluateToolPermission(toolName, input, a.Permission, r.globalPerms)
 }
 
+func (r *mockRegistry) EvaluateReadPermission(agentID, toolName, input string) permission.Action {
+	a, ok := r.agents[agentID]
+	if !ok {
+		return permission.ActionAllow
+	}
+	if !permission.IsToolEnabled(toolName, a.Tools) {
+		return permission.ActionDeny
+	}
+	return permission.EvaluateReadToolPermission(toolName, input, a.Permission, r.globalPerms)
+}
+
 func (r *mockRegistry) IsToolEnabled(agentID, toolName string) bool {
 	a, ok := r.agents[agentID]
 	if !ok {

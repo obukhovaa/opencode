@@ -292,6 +292,11 @@ func Load(workingDir string, debug bool) (*Config, error) {
 		return cfg, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
+	// Viper uses "." as a key delimiter, which mangles map keys containing
+	// dots (e.g., "~/.openai/*" becomes nested {"~/": {"openai/*": ...}}).
+	// Re-flatten any nested maps in permission configs back to dot-joined keys.
+	fixPermissionKeys(cfg)
+
 	applyDefaultValues()
 	defaultLevel := slog.LevelInfo
 	if cfg.Debug {
@@ -353,6 +358,57 @@ func Load(workingDir string, debug bool) (*Config, error) {
 		cfg.Agents[AgentDescriptor] = desc
 	}
 	return cfg, nil
+}
+
+// fixPermissionKeys repairs map keys that viper's dot-delimiter mangled.
+// For example, {"~/.openai/*": "deny"} becomes {"~/": {"openai/*": "deny"}}
+// after viper.Unmarshal. This function flattens those nested maps back into
+// dot-joined keys.
+func fixPermissionKeys(cfg *Config) {
+	for name, agent := range cfg.Agents {
+		if agent.Permission != nil {
+			agent.Permission = flattenPermissionMap(agent.Permission)
+			cfg.Agents[name] = agent
+		}
+	}
+	if cfg.Permission != nil && cfg.Permission.Rules != nil {
+		cfg.Permission.Rules = flattenPermissionMap(cfg.Permission.Rules)
+	}
+}
+
+// flattenPermissionMap flattens nested maps created by viper's dot-key splitting.
+// Top-level structure: tool name → value (string or pattern map).
+// Only the inner pattern maps need flattening since tool names (read, bash, etc.)
+// don't contain dots.
+func flattenPermissionMap(perms map[string]any) map[string]any {
+	result := make(map[string]any, len(perms))
+	for toolName, value := range perms {
+		switch v := value.(type) {
+		case map[string]any:
+			result[toolName] = flattenPatternMap(v)
+		default:
+			result[toolName] = value
+		}
+	}
+	return result
+}
+
+// flattenPatternMap flattens a single pattern map. If a value is itself a
+// nested map (from viper splitting on "."), the keys are joined with ".".
+func flattenPatternMap(patterns map[string]any) map[string]any {
+	result := make(map[string]any, len(patterns))
+	for k, v := range patterns {
+		switch inner := v.(type) {
+		case map[string]any:
+			// Viper split a dotted key — rejoin: "~/" + "." + "openai/*"
+			for innerK, innerV := range flattenPatternMap(inner) {
+				result[k+"."+innerK] = innerV
+			}
+		default:
+			result[k] = v
+		}
+	}
+	return result
 }
 
 // configureViper sets up viper's configuration paths and environment variables.

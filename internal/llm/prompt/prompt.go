@@ -47,7 +47,7 @@ func getEnvironmentInfo() string {
 	isGit := isGitRepo(cwd)
 	platform := runtime.GOOS
 	date := time.Now().Format("1/2/2006")
-	ls := tools.NewLsTool(config.Get())
+	ls := tools.NewLsTool(config.Get(), nil, nil)
 	r, _ := ls.Run(context.Background(), tools.ToolCall{
 		Input: `{"path":"."}`,
 	})

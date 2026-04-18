@@ -595,6 +595,10 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.pageConsumesCtrlC() {
 				break
 			}
+			// Completion dialog open — let ctrl+c flow to page to close it
+			if a.pageHasActiveOverlay() {
+				break
+			}
 			// Cancel running request before showing quit dialog
 			if a.pageCancelAgent() {
 				return a, nil

@@ -163,7 +163,8 @@ OpenCode looks for `.opencode.json` in:
     "skill": { "*": "ask" },
     "rules": {
       "bash": { "*": "ask", "git *": "allow" },
-      "edit": { "*": "allow" }
+      "edit": { "*": "allow" },
+      "read": { "/proc/*": "deny" }
     }
   },
   "webSearch": {
@@ -369,28 +370,30 @@ The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model
 
 ### Environment Variables
 
-| Variable | Purpose |
-|----------|---------|
-| `ANTHROPIC_API_KEY` | Anthropic Claude models |
-| `OPENAI_API_KEY` | OpenAI models |
-| `GEMINI_API_KEY` | Google Gemini models |
-| `VERTEXAI_PROJECT` | Google Cloud VertexAI |
-| `VERTEXAI_LOCATION` | Google Cloud VertexAI |
-| `VERTEXAI_LOCATION_COUNT` | VertexAI token count endpoint (global doesn't support) |
-| `AWS_ACCESS_KEY_ID` | AWS Bedrock |
-| `AWS_SECRET_ACCESS_KEY` | AWS Bedrock |
-| `AWS_REGION` | AWS Bedrock |
-| `YANDEXCLOUD_API_KEY` | YandexCloud AI Studio API key |
-| `YANDEXCLOUD_FOLDER_ID` | YandexCloud folder ID (required for model URI) |
-| `LOCAL_ENDPOINT` | Self-hosted model endpoint |
-| `LOCAL_ENDPOINT_API_KEY` | Self-hosted model API key |
-| `SHELL` | Default shell |
-| `OPENCODE_SESSION_PROVIDER_TYPE` | `sqlite` (default) or `mysql` |
-| `OPENCODE_MYSQL_DSN` | MySQL connection string |
-| `OPENCODE_DISABLE_CLAUDE_SKILLS` | Disable `.claude/skills/` discovery |
-| `OPENCODE_DISABLE_LSP_DOWNLOAD` | Disable auto-install of LSP servers |
-| `OPENCODE_MAX_REPEAT_CALLS` | How many consequent tool calls with the same params allowed (default 3) |
-| `OPENCODE_PROVIDER_STREAM_INACTIVITY_TIMEOUT` | Seconds to wait for next SSE event before treating stream as stalled (default 300) |
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ANTHROPIC_API_KEY` | | Anthropic Claude models |
+| `OPENAI_API_KEY` | | OpenAI models |
+| `GEMINI_API_KEY` | | Google Gemini models |
+| `VERTEXAI_PROJECT` | | Google Cloud VertexAI |
+| `VERTEXAI_LOCATION` | | Google Cloud VertexAI |
+| `VERTEXAI_LOCATION_COUNT` | | VertexAI token count endpoint (global doesn't support) |
+| `AWS_ACCESS_KEY_ID` | | AWS Bedrock |
+| `AWS_SECRET_ACCESS_KEY` | | AWS Bedrock |
+| `AWS_REGION` | | AWS Bedrock |
+| `YANDEXCLOUD_API_KEY` | | YandexCloud AI Studio API key |
+| `YANDEXCLOUD_FOLDER_ID` | | YandexCloud folder ID (required for model URI) |
+| `LOCAL_ENDPOINT` | | Self-hosted model endpoint |
+| `LOCAL_ENDPOINT_API_KEY` | | Self-hosted model API key |
+| `SHELL` | | Default shell |
+| `OPENCODE_SESSION_PROVIDER_TYPE` | `sqlite` | Session storage backend (`sqlite` or `mysql`) |
+| `OPENCODE_MYSQL_DSN` | | MySQL connection string |
+| `OPENCODE_FILE_OP_TIMEOUT` | `180` | Timeout in seconds for glob/grep file operations |
+| `OPENCODE_PROVIDER_STREAM_INACTIVITY_TIMEOUT` | `300` | Seconds to wait for next SSE event before treating stream as stalled |
+| `OPENCODE_MAX_REPEAT_CALLS` | `3` | Max identical consecutive tool calls before loop detection triggers |
+| `OPENCODE_DEV_DEBUG` | `false` | Enable development debug logging |
+| `OPENCODE_DISABLE_LSP_DOWNLOAD` | `false` | Disable automatic LSP binary downloads |
+| `OPENCODE_DISABLE_CLAUDE_SKILLS` | `false` | Disable `.claude/skills/` discovery |
 
 ## Supported Models
 

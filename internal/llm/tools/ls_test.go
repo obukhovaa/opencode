@@ -23,7 +23,7 @@ func TestLsTool_Info(t *testing.T) {
 	config := mock_config.NewMockConfigurator(ctrl)
 	config.EXPECT().WorkingDirectory().Times(0)
 
-	tool := NewLsTool(config)
+	tool := NewLsTool(config, nil, nil)
 	info := tool.Info()
 
 	assert.Equal(t, LSToolName, info.Name)
@@ -89,7 +89,7 @@ func TestLsTool_Run(t *testing.T) {
 		config := mock_config.NewMockConfigurator(ctrl)
 		config.EXPECT().WorkingDirectory().Times(0)
 
-		tool := NewLsTool(config)
+		tool := NewLsTool(config, nil, nil)
 		params := LSParams{
 			Path: tempDir,
 		}
@@ -124,7 +124,7 @@ func TestLsTool_Run(t *testing.T) {
 	t.Run("handles non-existent path", func(t *testing.T) {
 		config := mock_config.NewMockConfigurator(ctrl)
 		config.EXPECT().WorkingDirectory().Times(0)
-		tool := NewLsTool(config)
+		tool := NewLsTool(config, nil, nil)
 		params := LSParams{
 			Path: filepath.Join(tempDir, "non_existent_dir"),
 		}
@@ -145,7 +145,7 @@ func TestLsTool_Run(t *testing.T) {
 	t.Run("handles empty path parameter", func(t *testing.T) {
 		config := mock_config.NewMockConfigurator(ctrl)
 		config.EXPECT().WorkingDirectory().Return("").Times(2)
-		tool := NewLsTool(config)
+		tool := NewLsTool(config, nil, nil)
 		params := LSParams{
 			Path: "",
 		}
@@ -169,7 +169,7 @@ func TestLsTool_Run(t *testing.T) {
 	t.Run("handles invalid parameters", func(t *testing.T) {
 		config := mock_config.NewMockConfigurator(ctrl)
 		config.EXPECT().WorkingDirectory().Times(0)
-		tool := NewLsTool(config)
+		tool := NewLsTool(config, nil, nil)
 		call := ToolCall{
 			Name:  LSToolName,
 			Input: "invalid json",
@@ -183,7 +183,7 @@ func TestLsTool_Run(t *testing.T) {
 	t.Run("respects ignore patterns", func(t *testing.T) {
 		config := mock_config.NewMockConfigurator(ctrl)
 		config.EXPECT().WorkingDirectory().Times(0)
-		tool := NewLsTool(config)
+		tool := NewLsTool(config, nil, nil)
 		params := LSParams{
 			Path:   tempDir,
 			Ignore: []string{"file1.txt", "dir1"},
@@ -223,7 +223,7 @@ func TestLsTool_Run(t *testing.T) {
 		err = os.Chdir(parentDir)
 		require.NoError(t, err)
 
-		tool := NewLsTool(config)
+		tool := NewLsTool(config, nil, nil)
 		params := LSParams{
 			Path: filepath.Base(tempDir),
 		}

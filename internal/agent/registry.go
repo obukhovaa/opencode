@@ -48,6 +48,9 @@ type Registry interface {
 	ListByMode(mode config.AgentMode) []AgentInfo
 	// Resolves agent specific permission action for a given tool
 	EvaluatePermission(agentID, toolName, input string) permission.Action
+	// EvaluateReadPermission resolves permission for read-category tools
+	// (read, grep, glob, ls). Falls back from specific tool → "read" → "*" → allow.
+	EvaluateReadPermission(agentID, toolName, input string) permission.Action
 	IsToolEnabled(agentID, toolName string) bool
 	HasTools(agentID string) bool
 	GlobalPermissions() map[string]any
@@ -158,6 +161,19 @@ func (r *registry) EvaluatePermission(agentID, toolName, input string) permissio
 	}
 
 	return permission.EvaluateToolPermission(toolName, input, a.Permission, r.globalPerms)
+}
+
+func (r *registry) EvaluateReadPermission(agentID, toolName, input string) permission.Action {
+	a, ok := r.agents[agentID]
+	if !ok {
+		return permission.EvaluateReadToolPermission(toolName, input, nil, r.globalPerms)
+	}
+
+	if !permission.IsToolEnabled(toolName, a.Tools) {
+		return permission.ActionDeny
+	}
+
+	return permission.EvaluateReadToolPermission(toolName, input, a.Permission, r.globalPerms)
 }
 
 func (r *registry) IsToolEnabled(agentID, toolName string) bool {

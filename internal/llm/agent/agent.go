@@ -699,7 +699,17 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				}
 			}(entry)
 		}
-		wg.Wait()
+		waitDone := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(waitDone)
+		}()
+		select {
+		case <-waitDone:
+			// all parallel tools completed
+		case <-ctx.Done():
+			<-waitDone // wait for goroutines to drain after cancellation
+		}
 		permCancel()
 
 		// Check if any parallel tool returned permission denied

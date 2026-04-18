@@ -42,6 +42,10 @@ func (s *stubRegistry) EvaluatePermission(agentID, toolName, input string) permi
 	return permission.ActionAllow
 }
 
+func (s *stubRegistry) EvaluateReadPermission(agentID, toolName, input string) permission.Action {
+	return permission.ActionAllow
+}
+
 func (s *stubRegistry) IsToolEnabled(agentID, toolName string) bool {
 	return true
 }

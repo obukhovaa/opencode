@@ -7,9 +7,11 @@ import (
 	"slices"
 	"strings"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/diff"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/permission"
 )
 
 type ToolInfo struct {
@@ -263,4 +265,35 @@ func AddTag(ctx context.Context, k, v string) context.Context {
 		return context.WithValue(ctx, MetadataTagsContextKey, tags)
 	}
 	return context.WithValue(ctx, MetadataTagsContextKey, []string{tag})
+}
+
+// checkReadPermission evaluates read-category permission for a tool and path.
+// Returns nil if allowed, permission.ErrorPermissionDenied if denied or ask-rejected.
+// If registry is nil, permission check is skipped (always allowed).
+func checkReadPermission(ctx context.Context, reg agentregistry.Registry, perms permission.Service, toolName, path string) error {
+	if reg == nil || perms == nil {
+		return nil
+	}
+	action := reg.EvaluateReadPermission(string(GetAgentID(ctx)), toolName, path)
+	switch action {
+	case permission.ActionAllow:
+		return nil
+	case permission.ActionDeny:
+		return permission.ErrorPermissionDenied
+	default: // ask
+		sessionID, _ := GetContextValues(ctx)
+		if sessionID == "" {
+			return permission.ErrorPermissionDenied
+		}
+		if !perms.Request(ctx, permission.CreatePermissionRequest{
+			SessionID:   sessionID,
+			Path:        path,
+			ToolName:    toolName,
+			Action:      "read",
+			Description: fmt.Sprintf("Read access: %s %s", toolName, path),
+		}) {
+			return permission.ErrorPermissionDenied
+		}
+		return nil
+	}
 }

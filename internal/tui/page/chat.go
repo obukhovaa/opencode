@@ -275,7 +275,14 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, contextCmd)
 
 		if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
-			if keyMsg.String() == "enter" || keyMsg.String() == "tab" || keyMsg.String() == "shift+tab" {
+			k := keyMsg.String()
+			// Block dialog-action keys from flowing to the editor/vim handler
+			if k == "enter" || k == "tab" || k == "shift+tab" || k == "esc" {
+				return p, tea.Batch(cmds...)
+			}
+			// Ctrl+C also closes the completion dialog
+			if k == "ctrl+c" {
+				p.showCommandCompletionDialog = false
 				return p, tea.Batch(cmds...)
 			}
 		}
@@ -288,7 +295,12 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, contextCmd)
 
 		if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
-			if keyMsg.String() == "enter" || keyMsg.String() == "tab" || keyMsg.String() == "shift+tab" {
+			k := keyMsg.String()
+			if k == "enter" || k == "tab" || k == "shift+tab" || k == "esc" {
+				return p, tea.Batch(cmds...)
+			}
+			if k == "ctrl+c" {
+				p.showCompletionDialog = false
 				return p, tea.Batch(cmds...)
 			}
 		}

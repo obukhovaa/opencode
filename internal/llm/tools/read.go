@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/lsp"
+	"github.com/opencode-ai/opencode/internal/permission"
 )
 
 type ViewParams struct {
@@ -21,7 +23,9 @@ type ViewParams struct {
 }
 
 type viewTool struct {
-	lsp lsp.LspService
+	lsp         lsp.LspService
+	registry    agentregistry.Registry
+	permissions permission.Service
 }
 
 type ViewResponseMetadata struct {
@@ -67,9 +71,11 @@ TIPS:
 - Avoid tiny repeated slices (e.g. 30-line chunks). If you need more context, read a larger window in a single call`
 )
 
-func NewReadTool(lspService lsp.LspService) BaseTool {
+func NewReadTool(lspService lsp.LspService, reg agentregistry.Registry, permissions permission.Service) BaseTool {
 	return &viewTool{
-		lsp: lspService,
+		lsp:         lspService,
+		registry:    reg,
+		permissions: permissions,
 	}
 }
 
@@ -110,6 +116,13 @@ func (v *viewTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 	filePath := params.FilePath
 	if !filepath.IsAbs(filePath) {
 		filePath = filepath.Join(config.WorkingDirectory(), filePath)
+	}
+
+	if err := checkReadPermission(ctx, v.registry, v.permissions, ReadToolName, filePath); err != nil {
+		if err == permission.ErrorPermissionDenied {
+			return NewTextErrorResponse(fmt.Sprintf("Permission denied: reading %s", filePath)), nil
+		}
+		return NewEmptyResponse(), err
 	}
 
 	// Check if file exists

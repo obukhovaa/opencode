@@ -11,9 +11,11 @@ import (
 	"sort"
 	"strings"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/fileutil"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/permission"
 )
 
 const (
@@ -65,10 +67,13 @@ type GlobResponseMetadata struct {
 	Truncated     bool `json:"truncated"`
 }
 
-type globTool struct{}
+type globTool struct {
+	registry    agentregistry.Registry
+	permissions permission.Service
+}
 
-func NewGlobTool() BaseTool {
-	return &globTool{}
+func NewGlobTool(reg agentregistry.Registry, permissions permission.Service) BaseTool {
+	return &globTool{registry: reg, permissions: permissions}
 }
 
 func (g *globTool) Info() ToolInfo {
@@ -104,6 +109,13 @@ func (g *globTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		searchPath = config.WorkingDirectory()
 	}
 
+	if err := checkReadPermission(ctx, g.registry, g.permissions, GlobToolName, searchPath); err != nil {
+		if err == permission.ErrorPermissionDenied {
+			return NewTextErrorResponse(fmt.Sprintf("Permission denied: globbing %s", searchPath)), nil
+		}
+		return NewEmptyResponse(), err
+	}
+
 	info, err := os.Stat(searchPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -115,7 +127,7 @@ func (g *globTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		return NewTextErrorResponse(fmt.Sprintf("path is a file, not a directory: %s. Provide a directory path instead.", searchPath)), nil
 	}
 
-	files, truncated, err := globFiles(params.Pattern, searchPath, 100)
+	files, truncated, err := globFiles(ctx, params.Pattern, searchPath, 100)
 	if err != nil {
 		return NewEmptyResponse(), fmt.Errorf("error finding files: %w", err)
 	}
@@ -145,8 +157,12 @@ func (g *globTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
 
 func (g *globTool) IsBaseline() bool { return true }
 
-func globFiles(pattern, searchPath string, limit int) ([]string, bool, error) {
-	cmdRg := fileutil.GetRgCmd(pattern)
+func globFiles(ctx context.Context, pattern, searchPath string, limit int) ([]string, bool, error) {
+	timeout := fileutil.FileOpTimeout()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmdRg := fileutil.GetRgCmd(ctx, pattern)
 	if cmdRg != nil {
 		cmdRg.Dir = searchPath
 		matches, err := runRipgrep(cmdRg, searchPath, limit)
@@ -156,7 +172,7 @@ func globFiles(pattern, searchPath string, limit int) ([]string, bool, error) {
 		logging.Warn(fmt.Sprintf("Ripgrep execution failed: %v. Falling back to doublestar.", err))
 	}
 
-	return fileutil.GlobWithDoublestar(pattern, searchPath, limit)
+	return fileutil.GlobWithDoublestar(ctx, pattern, searchPath, limit)
 }
 
 func runRipgrep(cmd *exec.Cmd, searchRoot string, limit int) ([]string, error) {

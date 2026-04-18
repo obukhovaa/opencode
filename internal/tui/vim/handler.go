@@ -93,15 +93,9 @@ func (h *Handler) HandleKey(msg tea.KeyPressMsg, ta *textarea.Model) (handled bo
 		return false, nil, false
 	}
 
-	// Return key handling
+	// Enter / Ctrl+S: always let the editor handle send, regardless of mode
 	if keyStr == "enter" || keyStr == "ctrl+s" {
-		if h.state.Mode == ModeInsert {
-			// Let the editor handle send
-			return false, nil, false
-		}
-		// NORMAL mode: Enter maps to j (move down)
-		h.handleNormalInput("j", ta)
-		return true, nil, false
+		return false, nil, false
 	}
 
 	// INSERT mode: pass keys to textarea, track inserted text

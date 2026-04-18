@@ -214,6 +214,62 @@ func TestRegistryEvaluatePermission(t *testing.T) {
 	}
 }
 
+func TestRegistryEvaluateReadPermission(t *testing.T) {
+	r := &registry{
+		agents: map[string]AgentInfo{
+			"explorer": {
+				ID:   "explorer",
+				Mode: config.AgentModeSubagent,
+				Permission: map[string]any{
+					"read": map[string]any{
+						"*":      "allow",
+						"/proc/*": "deny",
+						"/sys/*":  "deny",
+					},
+				},
+			},
+			"restricted-grep": {
+				ID:   "restricted-grep",
+				Mode: config.AgentModeSubagent,
+				Permission: map[string]any{
+					"read": map[string]any{
+						"/proc/*": "deny",
+					},
+					"grep": map[string]any{
+						"/proc/*": "allow",
+					},
+				},
+			},
+		},
+		globalPerms: map[string]any{},
+	}
+
+	// read category denies /proc/* for explorer
+	if got := r.EvaluateReadPermission("explorer", "grep", "/proc/cpuinfo"); got != permission.ActionDeny {
+		t.Errorf("grep /proc should be denied for explorer, got %v", got)
+	}
+	// read category denies /sys/* for explorer
+	if got := r.EvaluateReadPermission("explorer", "ls", "/sys/class"); got != permission.ActionDeny {
+		t.Errorf("ls /sys should be denied for explorer, got %v", got)
+	}
+	// other paths allowed for explorer
+	if got := r.EvaluateReadPermission("explorer", "read", "/home/user/file.go"); got != permission.ActionAllow {
+		t.Errorf("read /home should be allowed for explorer, got %v", got)
+	}
+	// specific grep override allows /proc for restricted-grep
+	if got := r.EvaluateReadPermission("restricted-grep", "grep", "/proc/cpuinfo"); got != permission.ActionAllow {
+		t.Errorf("grep /proc should be allowed for restricted-grep (overrides read), got %v", got)
+	}
+	// read still denies /proc for ls on restricted-grep
+	if got := r.EvaluateReadPermission("restricted-grep", "ls", "/proc/cpuinfo"); got != permission.ActionDeny {
+		t.Errorf("ls /proc should be denied for restricted-grep (no override), got %v", got)
+	}
+	// unknown agent defaults to allow
+	if got := r.EvaluateReadPermission("unknown", "grep", "/anything"); got != permission.ActionAllow {
+		t.Errorf("unknown agent should default to allow, got %v", got)
+	}
+}
+
 func TestMergeMarkdownIntoExisting(t *testing.T) {
 	existing := AgentInfo{
 		ID:          "coder",

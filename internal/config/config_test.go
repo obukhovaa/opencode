@@ -292,3 +292,92 @@ func TestValidateTelemetryConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestFlattenPermissionMap(t *testing.T) {
+	// Simulate what viper does to {"read": {"~/.openai/*": "deny"}}:
+	// it splits on "." producing {"read": {"~/": {"openai/*": "deny"}}}
+	mangled := map[string]any{
+		"read": map[string]any{
+			"~/": map[string]any{
+				"openai/*": "deny",
+			},
+		},
+		"grep": map[string]any{
+			"/proc/*": "allow",
+		},
+		"bash": "allow",
+	}
+
+	fixed := flattenPermissionMap(mangled)
+
+	// "read" inner map should have the dot-joined key restored
+	readVal, ok := fixed["read"].(map[string]any)
+	if !ok {
+		t.Fatalf("read should be map[string]any, got %T", fixed["read"])
+	}
+	if _, ok := readVal["~/.openai/*"]; !ok {
+		t.Errorf("expected key '~/.openai/*' in read map, got keys: %v", readVal)
+	}
+	if v := readVal["~/.openai/*"]; v != "deny" {
+		t.Errorf("expected 'deny', got %v", v)
+	}
+
+	// "grep" should be unchanged
+	grepVal, ok := fixed["grep"].(map[string]any)
+	if !ok {
+		t.Fatalf("grep should be map[string]any, got %T", fixed["grep"])
+	}
+	if v := grepVal["/proc/*"]; v != "allow" {
+		t.Errorf("expected 'allow', got %v", v)
+	}
+
+	// "bash" string should be unchanged
+	if v := fixed["bash"]; v != "allow" {
+		t.Errorf("expected 'allow', got %v", v)
+	}
+}
+
+func TestFixPermissionKeys_Agents(t *testing.T) {
+	cfg := &Config{
+		Agents: map[AgentName]Agent{
+			"explorer": {
+				Permission: map[string]any{
+					"read": map[string]any{
+						"~/": map[string]any{
+							"openai/*": "deny",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	fixPermissionKeys(cfg)
+
+	readMap := cfg.Agents["explorer"].Permission["read"].(map[string]any)
+	if _, ok := readMap["~/.openai/*"]; !ok {
+		t.Errorf("expected '~/.openai/*' key after fix, got: %v", readMap)
+	}
+}
+
+func TestFixPermissionKeys_GlobalRules(t *testing.T) {
+	cfg := &Config{
+		Agents: map[AgentName]Agent{},
+		Permission: &PermissionConfig{
+			Rules: map[string]any{
+				"read": map[string]any{
+					"~/": map[string]any{
+						"ssh/*": "deny",
+					},
+				},
+			},
+		},
+	}
+
+	fixPermissionKeys(cfg)
+
+	readMap := cfg.Permission.Rules["read"].(map[string]any)
+	if _, ok := readMap["~/.ssh/*"]; !ok {
+		t.Errorf("expected '~/.ssh/*' key after fix, got: %v", readMap)
+	}
+}

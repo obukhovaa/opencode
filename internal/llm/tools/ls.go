@@ -11,8 +11,10 @@ import (
 	"sort"
 	"strings"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/permission"
 )
 
 type LSParams struct {
@@ -33,7 +35,9 @@ type LSResponseMetadata struct {
 }
 
 type lsTool struct {
-	cfg config.Configurator
+	cfg         config.Configurator
+	registry    agentregistry.Registry
+	permissions permission.Service
 }
 
 const (
@@ -72,8 +76,8 @@ TIPS:
 - Combine with other tools for more effective exploration`
 )
 
-func NewLsTool(cfg config.Configurator) BaseTool {
-	return &lsTool{cfg}
+func NewLsTool(cfg config.Configurator, reg agentregistry.Registry, permissions permission.Service) BaseTool {
+	return &lsTool{cfg: cfg, registry: reg, permissions: permissions}
 }
 
 func (l *lsTool) Info() ToolInfo {
@@ -110,6 +114,13 @@ func (l *lsTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
 
 	if !filepath.IsAbs(searchPath) {
 		searchPath = filepath.Join(l.cfg.WorkingDirectory(), searchPath)
+	}
+
+	if err := checkReadPermission(ctx, l.registry, l.permissions, LSToolName, searchPath); err != nil {
+		if err == permission.ErrorPermissionDenied {
+			return NewTextErrorResponse(fmt.Sprintf("Permission denied: listing %s", searchPath)), nil
+		}
+		return NewEmptyResponse(), err
 	}
 
 	if _, err := os.Stat(searchPath); os.IsNotExist(err) {

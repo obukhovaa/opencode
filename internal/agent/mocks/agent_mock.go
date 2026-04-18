@@ -56,6 +56,20 @@ func (mr *MockRegistryMockRecorder) EvaluatePermission(agentID, toolName, input 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EvaluatePermission", reflect.TypeOf((*MockRegistry)(nil).EvaluatePermission), agentID, toolName, input)
 }
 
+// EvaluateReadPermission mocks base method.
+func (m *MockRegistry) EvaluateReadPermission(agentID, toolName, input string) permission.Action {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "EvaluateReadPermission", agentID, toolName, input)
+	ret0, _ := ret[0].(permission.Action)
+	return ret0
+}
+
+// EvaluateReadPermission indicates an expected call of EvaluateReadPermission.
+func (mr *MockRegistryMockRecorder) EvaluateReadPermission(agentID, toolName, input any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EvaluateReadPermission", reflect.TypeOf((*MockRegistry)(nil).EvaluateReadPermission), agentID, toolName, input)
+}
+
 // Get mocks base method.
 func (m *MockRegistry) Get(id string) (agent.AgentInfo, bool) {
 	m.ctrl.T.Helper()

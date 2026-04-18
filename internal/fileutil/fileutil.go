@@ -1,18 +1,39 @@
 package fileutil
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/opencode-ai/opencode/internal/logging"
 )
+
+const defaultFileOpTimeout = 3 * time.Minute
+
+var fileOpTimeout = resolveFileOpTimeout()
+
+func resolveFileOpTimeout() time.Duration {
+	if envVal := os.Getenv("OPENCODE_FILE_OP_TIMEOUT"); envVal != "" {
+		if secs, err := strconv.Atoi(envVal); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+		logging.Warn("Invalid OPENCODE_FILE_OP_TIMEOUT value, using default",
+			"value", envVal, "default", defaultFileOpTimeout)
+	}
+	return defaultFileOpTimeout
+}
+
+func FileOpTimeout() time.Duration {
+	return fileOpTimeout
+}
 
 var (
 	rgPath  string
@@ -33,7 +54,7 @@ func init() {
 	}
 }
 
-func GetRgCmd(globPattern string) *exec.Cmd {
+func GetRgCmd(ctx context.Context, globPattern string) *exec.Cmd {
 	if rgPath == "" {
 		return nil
 	}
@@ -48,7 +69,7 @@ func GetRgCmd(globPattern string) *exec.Cmd {
 		}
 		rgArgs = append(rgArgs, "--glob", globPattern)
 	}
-	cmd := exec.Command(rgPath, rgArgs...)
+	cmd := exec.CommandContext(ctx, rgPath, rgArgs...)
 	cmd.Dir = "."
 	return cmd
 }
@@ -112,52 +133,99 @@ func SkipHidden(path string) bool {
 	return false
 }
 
-func GlobWithDoublestar(pattern, searchPath string, limit int) ([]string, bool, error) {
-	fsys := os.DirFS(searchPath)
-	relPattern := strings.TrimPrefix(pattern, "/")
-	var matches []FileInfo
+// ctxFS wraps an fs.FS to check context cancellation on every Open call.
+// This prevents walks from blocking indefinitely on problematic paths
+// (e.g. /proc entries where stat() can hang on processes in D-state).
+type ctxFS struct {
+	inner fs.FS
+	ctx   context.Context
+}
 
-	err := doublestar.GlobWalk(fsys, relPattern, func(path string, d fs.DirEntry) error {
-		if d.IsDir() {
-			return nil
-		}
-		if SkipHidden(path) {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		absPath := path
-		if !strings.HasPrefix(absPath, searchPath) && searchPath != "." {
-			absPath = filepath.Join(searchPath, absPath)
-		} else if !strings.HasPrefix(absPath, "/") && searchPath == "." {
-			absPath = filepath.Join(searchPath, absPath) // Ensure relative paths are joined correctly
-		}
-
-		matches = append(matches, FileInfo{Path: absPath, ModTime: info.ModTime()})
-		if limit > 0 && len(matches) >= limit*2 {
-			return fs.SkipAll
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, false, fmt.Errorf("glob walk error: %w", err)
+func (c *ctxFS) Open(name string) (fs.File, error) {
+	if err := c.ctx.Err(); err != nil {
+		return nil, err
 	}
+	return c.inner.Open(name)
+}
 
-	sort.Slice(matches, func(i, j int) bool {
-		return matches[i].ModTime.After(matches[j].ModTime)
-	})
-
-	truncated := false
-	if limit > 0 && len(matches) > limit {
-		matches = matches[:limit]
-		truncated = true
+func (c *ctxFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	if err := c.ctx.Err(); err != nil {
+		return nil, err
 	}
-
-	results := make([]string, len(matches))
-	for i, m := range matches {
-		results[i] = m.Path
+	if rd, ok := c.inner.(fs.ReadDirFS); ok {
+		return rd.ReadDir(name)
 	}
-	return results, truncated, nil
+	return fs.ReadDir(c.inner, name)
+}
+
+func GlobWithDoublestar(ctx context.Context, pattern, searchPath string, limit int) ([]string, bool, error) {
+	type result struct {
+		matches []FileInfo
+		err     error
+	}
+	ch := make(chan result, 1)
+
+	go func() {
+		fsys := &ctxFS{inner: os.DirFS(searchPath), ctx: ctx}
+		relPattern := strings.TrimPrefix(pattern, "/")
+		var matches []FileInfo
+
+		err := doublestar.GlobWalk(fsys, relPattern, func(path string, d fs.DirEntry) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			if SkipHidden(path) {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			absPath := path
+			if !strings.HasPrefix(absPath, searchPath) && searchPath != "." {
+				absPath = filepath.Join(searchPath, absPath)
+			} else if !strings.HasPrefix(absPath, "/") && searchPath == "." {
+				absPath = filepath.Join(searchPath, absPath)
+			}
+
+			matches = append(matches, FileInfo{Path: absPath, ModTime: info.ModTime()})
+			if limit > 0 && len(matches) >= limit*2 {
+				return fs.SkipAll
+			}
+			return nil
+		})
+		if err != nil && ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		ch <- result{matches, err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, false, fmt.Errorf("glob walk timed out: %w", ctx.Err())
+	case r := <-ch:
+		if r.err != nil {
+			return nil, false, fmt.Errorf("glob walk error: %w", r.err)
+		}
+		matches := r.matches
+
+		sort.Slice(matches, func(i, j int) bool {
+			return matches[i].ModTime.After(matches[j].ModTime)
+		})
+
+		truncated := false
+		if limit > 0 && len(matches) > limit {
+			matches = matches[:limit]
+			truncated = true
+		}
+
+		results := make([]string, len(matches))
+		for i, m := range matches {
+			results[i] = m.Path
+		}
+		return results, truncated, nil
+	}
 }

@@ -2,6 +2,7 @@ package completions
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -56,7 +57,7 @@ func processNullTerminatedOutput(outputBytes []byte) []string {
 }
 
 func (cg *filesAndFoldersContextGroup) getFiles(query string) ([]string, error) {
-	cmdRg := fileutil.GetRgCmd("") // No glob pattern for this use case
+	cmdRg := fileutil.GetRgCmd(context.Background(), "") // No glob pattern for this use case
 	cmdFzf := fileutil.GetFzfCmd(query)
 
 	var matches []string
@@ -112,7 +113,7 @@ func (cg *filesAndFoldersContextGroup) getFiles(query string) ([]string, error) 
 		// Case 3: Only fzf available
 	} else if cmdFzf != nil {
 		logging.Debug("Using FZF with doublestar fallback for file completions")
-		files, _, err := fileutil.GlobWithDoublestar("**/*", ".", 0)
+		files, _, err := fileutil.GlobWithDoublestar(context.Background(), "**/*", ".", 0)
 		if err != nil {
 			return nil, fmt.Errorf("failed to list files for fzf: %w", err)
 		}
@@ -148,7 +149,7 @@ func (cg *filesAndFoldersContextGroup) getFiles(query string) ([]string, error) 
 		// Case 4: Fallback to doublestar with fuzzy match
 	} else {
 		logging.Debug("Using doublestar with fuzzy match for file completions")
-		allFiles, _, err := fileutil.GlobWithDoublestar("**/*", ".", 0)
+		allFiles, _, err := fileutil.GlobWithDoublestar(context.Background(), "**/*", ".", 0)
 		if err != nil {
 			return nil, fmt.Errorf("failed to glob files: %w", err)
 		}

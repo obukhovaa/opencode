@@ -14,8 +14,10 @@ import (
 	"strings"
 	"time"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/fileutil"
+	"github.com/opencode-ai/opencode/internal/permission"
 )
 
 type GrepParams struct {
@@ -37,7 +39,10 @@ type GrepResponseMetadata struct {
 	Truncated       bool `json:"truncated"`
 }
 
-type grepTool struct{}
+type grepTool struct {
+	registry    agentregistry.Registry
+	permissions permission.Service
+}
 
 const (
 	GrepToolName    = "grep"
@@ -80,8 +85,8 @@ TIPS:
 - Use literal_text=true when searching for exact text containing special characters like dots, parentheses, etc.`
 )
 
-func NewGrepTool() BaseTool {
-	return &grepTool{}
+func NewGrepTool(reg agentregistry.Registry, permissions permission.Service) BaseTool {
+	return &grepTool{registry: reg, permissions: permissions}
 }
 
 func (g *grepTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
@@ -149,7 +154,14 @@ func (g *grepTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		searchPath = config.WorkingDirectory()
 	}
 
-	matches, truncated, err := searchFiles(searchPattern, searchPath, params.Include, 100)
+	if err := checkReadPermission(ctx, g.registry, g.permissions, GrepToolName, searchPath); err != nil {
+		if err == permission.ErrorPermissionDenied {
+			return NewTextErrorResponse(fmt.Sprintf("Permission denied: searching %s", searchPath)), nil
+		}
+		return NewEmptyResponse(), err
+	}
+
+	matches, truncated, err := searchFiles(ctx, searchPattern, searchPath, params.Include, 100)
 	if err != nil {
 		return NewEmptyResponse(), fmt.Errorf("error searching files: %w", err)
 	}
@@ -190,10 +202,14 @@ func (g *grepTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 	), nil
 }
 
-func searchFiles(pattern, rootPath, include string, limit int) ([]grepMatch, bool, error) {
-	matches, err := searchWithRipgrep(pattern, rootPath, include)
+func searchFiles(ctx context.Context, pattern, rootPath, include string, limit int) ([]grepMatch, bool, error) {
+	timeout := fileutil.FileOpTimeout()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	matches, err := searchWithRipgrep(ctx, pattern, rootPath, include)
 	if err != nil {
-		matches, err = searchFilesWithRegex(pattern, rootPath, include)
+		matches, err = searchFilesWithRegex(ctx, pattern, rootPath, include)
 		if err != nil {
 			return nil, false, err
 		}
@@ -212,7 +228,7 @@ func searchFiles(pattern, rootPath, include string, limit int) ([]grepMatch, boo
 	return matches, truncated, nil
 }
 
-func searchWithRipgrep(pattern, path, include string) ([]grepMatch, error) {
+func searchWithRipgrep(ctx context.Context, pattern, path, include string) ([]grepMatch, error) {
 	_, err := exec.LookPath("rg")
 	if err != nil {
 		return nil, fmt.Errorf("ripgrep not found: %w", err)
@@ -224,7 +240,7 @@ func searchWithRipgrep(pattern, path, include string) ([]grepMatch, error) {
 	}
 	args = append(args, path)
 
-	cmd := exec.Command("rg", args...)
+	cmd := exec.CommandContext(ctx, "rg", args...)
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -279,7 +295,7 @@ func searchWithRipgrep(pattern, path, include string) ([]grepMatch, error) {
 	return matches, nil
 }
 
-func searchFilesWithRegex(pattern, rootPath, include string) ([]grepMatch, error) {
+func searchFilesWithRegex(ctx context.Context, pattern, rootPath, include string) ([]grepMatch, error) {
 	matches := []grepMatch{}
 
 	regex, err := regexp.Compile(pattern)
@@ -297,6 +313,9 @@ func searchFilesWithRegex(pattern, rootPath, include string) ([]grepMatch, error
 	}
 
 	err = filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil {
 			return nil // Skip errors
 		}

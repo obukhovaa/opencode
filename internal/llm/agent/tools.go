@@ -65,13 +65,13 @@ func NewToolSet(
 	createTool := func(name string) tools.BaseTool {
 		switch name {
 		case tools.LSToolName:
-			return tools.NewLsTool(config.Get())
+			return tools.NewLsTool(config.Get(), reg, permissions)
 		case tools.GlobToolName:
-			return tools.NewGlobTool()
+			return tools.NewGlobTool(reg, permissions)
 		case tools.GrepToolName:
-			return tools.NewGrepTool()
+			return tools.NewGrepTool(reg, permissions)
 		case tools.ReadToolName:
-			return tools.NewReadTool(lspService)
+			return tools.NewReadTool(lspService, reg, permissions)
 		case tools.ViewImageToolName:
 			return tools.NewViewImageTool()
 		case tools.WebFetchToolName:
