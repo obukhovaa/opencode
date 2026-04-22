@@ -7,6 +7,7 @@ const (
 	Claude45Sonnet1M ModelID = "claude-4-5-sonnet[1m]"
 	Claude45Opus     ModelID = "claude-4.5-opus"
 	Claude46Opus     ModelID = "claude-4.6-opus"
+	Claude47Opus     ModelID = "claude-4.7-opus"
 	Claude46Sonnet   ModelID = "claude-4.6-sonnet"
 )
 
@@ -54,6 +55,24 @@ var AnthropicModels = map[ModelID]Model{
 		CanReason:                true,
 		SupportsAdaptiveThinking: true,
 		SupportsMaximumThinking:  true,
+		SupportsAttachments:      true,
+	},
+	Claude47Opus: {
+		ID:                       Claude47Opus,
+		Name:                     "Claude 4.7 Opus",
+		Provider:                 ProviderAnthropic,
+		APIModel:                 "claude-opus-4-7",
+		CostPer1MIn:              5.0,
+		CostPer1MInCached:        6.25,
+		CostPer1MOutCached:       0.50,
+		CostPer1MOut:             25.0,
+		ContextWindow:            1000000,
+		DefaultMaxTokens:         128000,
+		CanReason:                true,
+		SupportsAdaptiveThinking: true,
+		SupportsMaximumThinking:  true,
+		SupportsXHighThinking:    true,
+		SupportsTaskBudget:       true,
 		SupportsAttachments:      true,
 	},
 	Claude46Sonnet: {

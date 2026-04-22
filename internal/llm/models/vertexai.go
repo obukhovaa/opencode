@@ -9,6 +9,7 @@ const (
 	VertexAISonnet45M     ModelID = "vertexai.claude-sonnet-4-5-m"
 	VertexAIOpus45        ModelID = "vertexai.claude-opus-4-5"
 	VertexAIOpus46        ModelID = "vertexai.claude-opus-4-6"
+	VertexAIOpus47        ModelID = "vertexai.claude-opus-4-7"
 	VertexAISonnet46      ModelID = "vertexai.claude-sonnet-4-6"
 )
 
@@ -87,6 +88,24 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		CanReason:                AnthropicModels[Claude46Opus].CanReason,
 		SupportsAdaptiveThinking: AnthropicModels[Claude46Opus].SupportsAdaptiveThinking,
 		SupportsMaximumThinking:  AnthropicModels[Claude46Opus].SupportsMaximumThinking,
+	},
+	VertexAIOpus47: {
+		ID:                       VertexAIOpus47,
+		Name:                     "VertexAI: Claude Opus 4.7",
+		Provider:                 ProviderVertexAI,
+		APIModel:                 "claude-opus-4-7",
+		CostPer1MIn:              AnthropicModels[Claude47Opus].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[Claude47Opus].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[Claude47Opus].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[Claude47Opus].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[Claude47Opus].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[Claude47Opus].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[Claude47Opus].SupportsAttachments,
+		CanReason:                AnthropicModels[Claude47Opus].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[Claude47Opus].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[Claude47Opus].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[Claude47Opus].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[Claude47Opus].SupportsTaskBudget,
 	},
 	VertexAISonnet46: {
 		ID:                  VertexAISonnet46,

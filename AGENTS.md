@@ -81,6 +81,7 @@ Agents can be configured in `.opencode.json`:
 - `hidden`: If true, agent is not shown in TUI switcher or subagent lists
 - `native`: Whether this is a built-in agent (set automatically, not user-configurable)
 - `skills`: List of skill names to preload into the agent's system prompt at startup (e.g., `["review", "domain-knowledge"]`). Skills are injected as `<skill_content>` blocks — the agent gets the knowledge without needing to invoke the skill tool. Only skills with `allow` or default (no explicit deny) permission are injected. Preloaded skills are independent of the skill tool — `tools: {"skill": false}` disables runtime loading but preloaded skills are still injected. Variable substitution (`$ARGUMENTS`, `${SKILL_DIR}`) and shell markup (`!`command``) are not expanded for preloaded skills.
+- `taskBudget`: Advisory token budget for the full agentic loop (min 20,000). Only supported by models with `SupportsTaskBudget` (currently Claude Opus 4.7). Uses the `task-budgets-2026-03-13` beta header. The budget is carried across compaction via the `remaining` field.
 - `permission`: Agent-specific permission overrides (supports granular glob patterns per tool)
 - `tools`: Enable/disable specific tools (e.g., `{"skill": false, "bash": false}`)
 

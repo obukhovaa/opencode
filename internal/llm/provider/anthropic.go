@@ -19,6 +19,8 @@ import (
 	"github.com/opencode-ai/opencode/internal/message"
 )
 
+const taskBudgetsBeta = "task-budgets-2026-03-13"
+
 type anthropicOptions struct {
 	useBedrock      bool
 	useVertex       bool
@@ -26,6 +28,7 @@ type anthropicOptions struct {
 	disableCache    bool
 	shouldThink     func(userMessage string) bool
 	reasoningEffort string
+	taskBudget      int64
 }
 
 type AnthropicOption func(*anthropicOptions)
@@ -234,14 +237,18 @@ func (a *anthropicClient) finishReason(reason string) message.FinishReason {
 	}
 }
 
-func (a *anthropicClient) preparedMessages(messages []anthropic.MessageParam, tools []anthropic.ToolUnionParam) anthropic.MessageNewParams {
+func (a *anthropicClient) preparedMessages(ctx context.Context, messages []anthropic.MessageParam, tools []anthropic.ToolUnionParam) anthropic.MessageNewParams {
 	var thinkingParam anthropic.ThinkingConfigParamUnion
 	var outputConfig anthropic.OutputConfigParam
 	lastMessage := messages[len(messages)-1]
 	isUser := lastMessage.Role == anthropic.MessageParamRoleUser
 	messageContent := ""
 	// TODO: parameterise temperature via agent config
+	// Opus 4.7+ rejects non-default temperature values; omit to let the API use its default (1.0).
 	temperature := anthropic.Float(0)
+	if a.providerOptions.model.SupportsXHighThinking {
+		temperature = param.Opt[float64]{}
+	}
 	if isUser {
 		for _, m := range lastMessage.Content {
 			if m.OfText != nil && m.OfText.Text != "" {
@@ -251,13 +258,27 @@ func (a *anthropicClient) preparedMessages(messages []anthropic.MessageParam, to
 		if a.providerOptions.model.SupportsAdaptiveThinking {
 			adaptiveParam := anthropic.ThinkingConfigAdaptiveParam{}
 			thinkingParam = anthropic.ThinkingConfigParamUnion{OfAdaptive: &adaptiveParam}
-			temperature = anthropic.Float(1)
+			if !a.providerOptions.model.SupportsXHighThinking {
+				temperature = anthropic.Float(1)
+			}
 			effort := a.options.reasoningEffort
 			if effort == "" {
 				effort = "high"
 			}
 			outputConfig = anthropic.OutputConfigParam{
 				Effort: anthropic.OutputConfigEffort(effort),
+			}
+			if a.options.taskBudget > 0 {
+				budget := map[string]any{
+					"type":  "tokens",
+					"total": a.options.taskBudget,
+				}
+				if remaining, ok := ctx.Value(taskBudgetRemainingKey).(int64); ok && remaining > 0 {
+					budget["remaining"] = remaining
+				}
+				outputConfig.SetExtraFields(map[string]any{
+					"task_budget": budget,
+				})
 			}
 		} else if messageContent != "" && a.options.shouldThink != nil && a.options.shouldThink(messageContent) {
 			thinkingParam = anthropic.ThinkingConfigParamOfEnabled(int64(float64(a.providerOptions.maxTokens) * 0.8))
@@ -284,7 +305,7 @@ func (a *anthropicClient) preparedMessages(messages []anthropic.MessageParam, to
 }
 
 func (a *anthropicClient) send(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) (resposne *ProviderResponse, err error) {
-	preparedMessages := a.preparedMessages(a.convertMessages(messages), a.convertTools(tools))
+	preparedMessages := a.preparedMessages(ctx, a.convertMessages(messages), a.convertTools(tools))
 	a.applyMetadata(ctx, &preparedMessages)
 	cfg := config.Get()
 	if cfg.Debug {
@@ -295,9 +316,14 @@ func (a *anthropicClient) send(ctx context.Context, messages []message.Message, 
 	attempts := 0
 	for {
 		attempts++
+		var requestOpts []option.RequestOption
+		if a.options.taskBudget > 0 {
+			requestOpts = append(requestOpts, option.WithHeaderAdd("anthropic-beta", taskBudgetsBeta))
+		}
 		anthropicResponse, err := a.client.Messages.New(
 			ctx,
 			preparedMessages,
+			requestOpts...,
 		)
 		// If there is an error we are going to see if we can retry the call
 		if err != nil {
@@ -334,7 +360,7 @@ func (a *anthropicClient) send(ctx context.Context, messages []message.Message, 
 }
 
 func (a *anthropicClient) stream(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) <-chan ProviderEvent {
-	preparedMessages := a.preparedMessages(a.convertMessages(messages), a.convertTools(tools))
+	preparedMessages := a.preparedMessages(ctx, a.convertMessages(messages), a.convertTools(tools))
 	a.applyMetadata(ctx, &preparedMessages)
 	cfg := config.Get()
 
@@ -357,9 +383,14 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 	go func() {
 		for {
 			attempts++
+			var requestOpts []option.RequestOption
+			if a.options.taskBudget > 0 {
+				requestOpts = append(requestOpts, option.WithHeaderAdd("anthropic-beta", taskBudgetsBeta))
+			}
 			anthropicStream := a.client.Messages.NewStreaming(
 				ctx,
 				preparedMessages,
+				requestOpts...,
 			)
 			accumulatedMessage := anthropic.Message{}
 
@@ -664,6 +695,22 @@ func WithAnthropicReasoningEffort(effort string) AnthropicOption {
 	return func(options *anthropicOptions) {
 		options.reasoningEffort = effort
 	}
+}
+
+func WithAnthropicTaskBudget(budget int64) AnthropicOption {
+	return func(options *anthropicOptions) {
+		options.taskBudget = budget
+	}
+}
+
+type taskBudgetRemainingKeyType struct{}
+
+var taskBudgetRemainingKey = taskBudgetRemainingKeyType{}
+
+// TaskBudgetRemainingContext returns a context with the task budget remaining value set.
+// Used after compaction to carry the budget across context resets.
+func TaskBudgetRemainingContext(ctx context.Context, remaining int64) context.Context {
+	return context.WithValue(ctx, taskBudgetRemainingKey, remaining)
 }
 
 func WithVertexAI(projectID, localtion string, localForCounting string) AnthropicOption {

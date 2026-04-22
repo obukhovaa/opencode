@@ -19,6 +19,8 @@ type Model struct {
 	CanReason                bool          `json:"can_reason"`
 	SupportsAdaptiveThinking bool          `json:"supports_adaptive_thinking"`
 	SupportsMaximumThinking  bool          `json:"supports_maximum_thinking"`
+	SupportsXHighThinking    bool          `json:"supports_xhigh_thinking"`
+	SupportsTaskBudget       bool          `json:"supports_task_budget"`
 	SupportsAttachments      bool          `json:"supports_attachments"`
 	UseLegacyMaxTokens       bool          `json:"use_legacy_max_tokens,omitempty"`
 }

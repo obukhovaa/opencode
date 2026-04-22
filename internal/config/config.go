@@ -90,6 +90,7 @@ type Agent struct {
 	ParallelToolUse *bool           `json:"parallelToolUse,omitempty"`
 	Output          *AgentOutput    `json:"output,omitempty"`
 	Skills          []string        `json:"skills,omitempty"`
+	TaskBudget      int64           `json:"taskBudget,omitempty"`
 }
 
 // LangfuseConfig defines configuration for Langfuse observability integration.
@@ -807,7 +808,15 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 	} else if model.CanReason && model.SupportsAdaptiveThinking {
 		if agent.ReasoningEffort != "" {
 			effort := strings.ToLower(agent.ReasoningEffort)
-			if effort == "max" && !model.SupportsMaximumThinking {
+			if effort == "xhigh" && !model.SupportsXHighThinking {
+				logging.Warn("model doesn't support 'xhigh' reasoning effort, falling back to 'high'",
+					"agent", name,
+					"model", agent.Model)
+
+				updatedAgent := cfg.Agents[name]
+				updatedAgent.ReasoningEffort = "high"
+				cfg.Agents[name] = updatedAgent
+			} else if effort == "max" && !model.SupportsMaximumThinking {
 				logging.Warn("model doesn't support 'max' reasoning effort, falling back to 'high'",
 					"agent", name,
 					"model", agent.Model)
@@ -815,7 +824,7 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 				updatedAgent := cfg.Agents[name]
 				updatedAgent.ReasoningEffort = "high"
 				cfg.Agents[name] = updatedAgent
-			} else if effort != "low" && effort != "medium" && effort != "high" && effort != "max" {
+			} else if effort != "low" && effort != "medium" && effort != "high" && effort != "xhigh" && effort != "max" {
 				logging.Warn("invalid reasoning effort for adaptive thinking model, setting to high",
 					"agent", name,
 					"model", agent.Model,
@@ -837,6 +846,29 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 		updatedAgent := cfg.Agents[name]
 		updatedAgent.ReasoningEffort = ""
 		cfg.Agents[name] = updatedAgent
+	}
+
+	// Validate task budget
+	if agent.TaskBudget > 0 {
+		if !model.SupportsTaskBudget {
+			logging.Warn("model doesn't support task budgets, ignoring",
+				"agent", name,
+				"model", agent.Model,
+				"task_budget", agent.TaskBudget)
+
+			updatedAgent := cfg.Agents[name]
+			updatedAgent.TaskBudget = 0
+			cfg.Agents[name] = updatedAgent
+		} else if agent.TaskBudget < 20000 {
+			logging.Warn("task budget below minimum (20000), adjusting",
+				"agent", name,
+				"model", agent.Model,
+				"task_budget", agent.TaskBudget)
+
+			updatedAgent := cfg.Agents[name]
+			updatedAgent.TaskBudget = 20000
+			cfg.Agents[name] = updatedAgent
+		}
 	}
 
 	return nil

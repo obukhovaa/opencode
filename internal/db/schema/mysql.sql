@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   prompt_tokens BIGINT NOT NULL DEFAULT 0,
   completion_tokens BIGINT NOT NULL DEFAULT 0,
   cost DOUBLE NOT NULL DEFAULT 0.0,
+  total_prompt_tokens BIGINT NOT NULL DEFAULT 0,
+  total_completion_tokens BIGINT NOT NULL DEFAULT 0,
   updated_at BIGINT NOT NULL,
   created_at BIGINT NOT NULL,
   summary_message_id VARCHAR(255),

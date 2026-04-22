@@ -44,6 +44,8 @@ SET
     title = ?,
     prompt_tokens = ?,
     completion_tokens = ?,
+    total_prompt_tokens = ?,
+    total_completion_tokens = ?,
     summary_message_id = ?,
     cost = ?
 WHERE id = ?

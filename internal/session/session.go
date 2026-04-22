@@ -12,18 +12,20 @@ import (
 )
 
 type Session struct {
-	ID               string
-	ProjectID        string
-	ParentSessionID  string
-	RootSessionID    string
-	Title            string
-	MessageCount     int64
-	PromptTokens     int64
-	CompletionTokens int64
-	SummaryMessageID string
-	Cost             float64
-	CreatedAt        int64
-	UpdatedAt        int64
+	ID                    string
+	ProjectID             string
+	ParentSessionID       string
+	RootSessionID         string
+	Title                 string
+	MessageCount          int64
+	PromptTokens          int64
+	CompletionTokens      int64
+	TotalPromptTokens     int64
+	TotalCompletionTokens int64
+	SummaryMessageID      string
+	Cost                  float64
+	CreatedAt             int64
+	UpdatedAt             int64
 }
 
 type Service interface {
@@ -160,10 +162,12 @@ func (s *service) Get(ctx context.Context, id string) (Session, error) {
 
 func (s *service) Save(ctx context.Context, session Session) (Session, error) {
 	dbSession, err := s.q.UpdateSession(ctx, db.UpdateSessionParams{
-		ID:               session.ID,
-		Title:            session.Title,
-		PromptTokens:     session.PromptTokens,
-		CompletionTokens: session.CompletionTokens,
+		ID:                    session.ID,
+		Title:                 session.Title,
+		PromptTokens:          session.PromptTokens,
+		CompletionTokens:      session.CompletionTokens,
+		TotalPromptTokens:     session.TotalPromptTokens,
+		TotalCompletionTokens: session.TotalCompletionTokens,
 		SummaryMessageID: sql.NullString{
 			String: session.SummaryMessageID,
 			Valid:  session.SummaryMessageID != "",
@@ -204,18 +208,20 @@ func (s *service) ListChildren(ctx context.Context, rootSessionID string) ([]Ses
 
 func (s service) fromDBItem(item db.Session) Session {
 	return Session{
-		ID:               item.ID,
-		ProjectID:        item.ProjectID.String,
-		ParentSessionID:  item.ParentSessionID.String,
-		RootSessionID:    item.RootSessionID.String,
-		Title:            item.Title,
-		MessageCount:     item.MessageCount,
-		PromptTokens:     item.PromptTokens,
-		CompletionTokens: item.CompletionTokens,
-		SummaryMessageID: item.SummaryMessageID.String,
-		Cost:             item.Cost,
-		CreatedAt:        item.CreatedAt,
-		UpdatedAt:        item.UpdatedAt,
+		ID:                    item.ID,
+		ProjectID:             item.ProjectID.String,
+		ParentSessionID:       item.ParentSessionID.String,
+		RootSessionID:         item.RootSessionID.String,
+		Title:                 item.Title,
+		MessageCount:          item.MessageCount,
+		PromptTokens:          item.PromptTokens,
+		CompletionTokens:      item.CompletionTokens,
+		TotalPromptTokens:     item.TotalPromptTokens,
+		TotalCompletionTokens: item.TotalCompletionTokens,
+		SummaryMessageID:      item.SummaryMessageID.String,
+		Cost:                  item.Cost,
+		CreatedAt:             item.CreatedAt,
+		UpdatedAt:             item.UpdatedAt,
 	}
 }
 

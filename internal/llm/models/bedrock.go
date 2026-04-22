@@ -3,8 +3,10 @@ package models
 const (
 	ProviderBedrock   ModelProvider = "bedrock"
 	BedrockEUOpus46   ModelID       = "bedrock.eu-claude-opus-4-6"
+	BedrockEUOpus47   ModelID       = "bedrock.eu-claude-opus-4-7"
 	BedrockEUSonnet46 ModelID       = "bedrock.eu-claude-sonnet-4-6"
 	BedrockOpus46     ModelID       = "bedrock.claude-opus-4-6"
+	BedrockOpus47     ModelID       = "bedrock.claude-opus-4-7"
 	BedrockSonnet46   ModelID       = "bedrock.claude-sonnet-4-6"
 )
 
@@ -13,7 +15,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		ID:                       BedrockEUOpus46,
 		Name:                     "Bedrock EU: Claude 4.6 Opus",
 		Provider:                 ProviderBedrock,
-		APIModel:                 "eu-claude-opus-4-6",
+		APIModel:                 "eu.anthropic.claude-opus-4-6-v1",
 		CostPer1MIn:              AnthropicModels[Claude46Opus].CostPer1MIn,
 		CostPer1MInCached:        AnthropicModels[Claude46Opus].CostPer1MInCached,
 		CostPer1MOut:             AnthropicModels[Claude46Opus].CostPer1MOut,
@@ -25,11 +27,29 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsAdaptiveThinking: AnthropicModels[Claude46Opus].SupportsAdaptiveThinking,
 		SupportsMaximumThinking:  AnthropicModels[Claude46Opus].SupportsMaximumThinking,
 	},
+	BedrockEUOpus47: {
+		ID:                       BedrockEUOpus47,
+		Name:                     "Bedrock EU: Claude 4.7 Opus",
+		Provider:                 ProviderBedrock,
+		APIModel:                 "eu.anthropic.claude-opus-4-7",
+		CostPer1MIn:              AnthropicModels[Claude47Opus].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[Claude47Opus].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[Claude47Opus].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[Claude47Opus].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[Claude47Opus].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[Claude47Opus].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[Claude47Opus].SupportsAttachments,
+		CanReason:                AnthropicModels[Claude47Opus].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[Claude47Opus].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[Claude47Opus].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[Claude47Opus].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[Claude47Opus].SupportsTaskBudget,
+	},
 	BedrockEUSonnet46: {
 		ID:                  BedrockEUSonnet46,
 		Name:                "Bedrock EU: Claude 4.6 Sonnet",
 		Provider:            ProviderBedrock,
-		APIModel:            "eu-claude-sonnet-4-6",
+		APIModel:            "eu.anthropic.claude-sonnet-4-6",
 		CostPer1MIn:         AnthropicModels[Claude46Sonnet].CostPer1MIn,
 		CostPer1MInCached:   AnthropicModels[Claude46Sonnet].CostPer1MInCached,
 		CostPer1MOut:        AnthropicModels[Claude46Sonnet].CostPer1MOut,
@@ -43,7 +63,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		ID:                       BedrockOpus46,
 		Name:                     "Bedrock: Claude 4.6 Opus",
 		Provider:                 ProviderBedrock,
-		APIModel:                 "claude-opus-4-6",
+		APIModel:                 "anthropic.claude-opus-4-6-v1",
 		CostPer1MIn:              AnthropicModels[Claude46Opus].CostPer1MIn,
 		CostPer1MInCached:        AnthropicModels[Claude46Opus].CostPer1MInCached,
 		CostPer1MOut:             AnthropicModels[Claude46Opus].CostPer1MOut,
@@ -55,11 +75,29 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsAdaptiveThinking: AnthropicModels[Claude46Opus].SupportsAdaptiveThinking,
 		SupportsMaximumThinking:  AnthropicModels[Claude46Opus].SupportsMaximumThinking,
 	},
+	BedrockOpus47: {
+		ID:                       BedrockOpus47,
+		Name:                     "Bedrock: Claude 4.7 Opus",
+		Provider:                 ProviderBedrock,
+		APIModel:                 "anthropic.claude-opus-4-7",
+		CostPer1MIn:              AnthropicModels[Claude47Opus].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[Claude47Opus].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[Claude47Opus].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[Claude47Opus].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[Claude47Opus].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[Claude47Opus].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[Claude47Opus].SupportsAttachments,
+		CanReason:                AnthropicModels[Claude47Opus].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[Claude47Opus].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[Claude47Opus].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[Claude47Opus].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[Claude47Opus].SupportsTaskBudget,
+	},
 	BedrockSonnet46: {
 		ID:                  BedrockSonnet46,
 		Name:                "Bedrock: Claude 4.6 Sonnet",
 		Provider:            ProviderBedrock,
-		APIModel:            "claude-sonnet-4-6",
+		APIModel:            "anthropic.claude-sonnet-4-6",
 		CostPer1MIn:         AnthropicModels[Claude46Sonnet].CostPer1MIn,
 		CostPer1MInCached:   AnthropicModels[Claude46Sonnet].CostPer1MInCached,
 		CostPer1MOut:        AnthropicModels[Claude46Sonnet].CostPer1MOut,

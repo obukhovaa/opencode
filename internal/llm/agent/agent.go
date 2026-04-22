@@ -384,6 +384,17 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 					return a.err(fmt.Errorf("failed to get session after compaction: %w", errMsg))
 				}
 				msgs = a.filterMessagesFromSummary(msgs, session.SummaryMessageID)
+
+				// Carry task budget across compaction: tell provider how much budget remains
+				if agentCfg, hasCfg := config.Get().Agents[a.agentID]; hasCfg && agentCfg.TaskBudget > 0 {
+					spent := session.TotalCompletionTokens
+					remaining := agentCfg.TaskBudget - spent
+					if remaining < 0 {
+						remaining = 0
+					}
+					ctx = provider.TaskBudgetRemainingContext(ctx, remaining)
+				}
+
 				// Preserve original problem and result from the last tool iteration to ensure no dead-loop
 				if preserveTail {
 					preserveTail = false
@@ -1056,6 +1067,8 @@ func (a *agent) TrackUsage(ctx context.Context, sessionID string, model models.M
 	sess.Cost += cost
 	sess.CompletionTokens = usage.OutputTokens + usage.CacheReadTokens
 	sess.PromptTokens = usage.InputTokens + usage.CacheCreationTokens
+	sess.TotalCompletionTokens += usage.OutputTokens
+	sess.TotalPromptTokens += usage.InputTokens + usage.CacheCreationTokens + usage.CacheReadTokens
 
 	logging.Info("Track usage",
 		"token_out_total", sess.CompletionTokens,
@@ -1207,10 +1220,11 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 		return fmt.Errorf("failed to create summary message: %w", err)
 	}
 
-	// Update the session with the summary message ID
 	oldSession.SummaryMessageID = msg.ID
 	oldSession.CompletionTokens = response.Usage.OutputTokens
 	oldSession.PromptTokens = 0
+	oldSession.TotalCompletionTokens += response.Usage.OutputTokens
+	oldSession.TotalPromptTokens += response.Usage.InputTokens + response.Usage.CacheCreationTokens + response.Usage.CacheReadTokens
 	inCost, outCost := provider.CalculateCost(a.summarizeProvider.Model(), response.Usage)
 	oldSession.Cost += inCost + outCost
 
@@ -1382,6 +1396,8 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 		oldSession.SummaryMessageID = msg.ID
 		oldSession.CompletionTokens = response.Usage.OutputTokens
 		oldSession.PromptTokens = 0
+		oldSession.TotalCompletionTokens += response.Usage.OutputTokens
+		oldSession.TotalPromptTokens += response.Usage.InputTokens + response.Usage.CacheCreationTokens + response.Usage.CacheReadTokens
 		inCost, outCost := provider.CalculateCost(a.summarizeProvider.Model(), response.Usage)
 		oldSession.Cost += inCost + outCost
 		_, err = a.sessions.Save(summarizeCtx, oldSession)
@@ -1492,6 +1508,9 @@ func createAgentProvider(agentName config.AgentName) (agentProvider provider.Pro
 		}
 		if model.SupportsAdaptiveThinking {
 			anthropicOpts = append(anthropicOpts, provider.WithAnthropicReasoningEffort(agentConfig.ReasoningEffort))
+		}
+		if agentConfig.TaskBudget > 0 && model.SupportsTaskBudget {
+			anthropicOpts = append(anthropicOpts, provider.WithAnthropicTaskBudget(agentConfig.TaskBudget))
 		}
 		opts = append(
 			opts,

@@ -55,18 +55,20 @@ func (q *MySQLQuerier) CreateSession(ctx context.Context, arg CreateSessionParam
 	}
 
 	return Session{
-		ID:               mysqlSession.ID,
-		ParentSessionID:  mysqlSession.ParentSessionID,
-		RootSessionID:    mysqlSession.RootSessionID,
-		Title:            mysqlSession.Title,
-		MessageCount:     mysqlSession.MessageCount,
-		PromptTokens:     mysqlSession.PromptTokens,
-		CompletionTokens: mysqlSession.CompletionTokens,
-		Cost:             mysqlSession.Cost,
-		UpdatedAt:        mysqlSession.UpdatedAt,
-		CreatedAt:        mysqlSession.CreatedAt,
-		SummaryMessageID: mysqlSession.SummaryMessageID,
-		ProjectID:        mysqlSession.ProjectID,
+		ID:                    mysqlSession.ID,
+		ParentSessionID:       mysqlSession.ParentSessionID,
+		RootSessionID:         mysqlSession.RootSessionID,
+		Title:                 mysqlSession.Title,
+		MessageCount:          mysqlSession.MessageCount,
+		PromptTokens:          mysqlSession.PromptTokens,
+		CompletionTokens:      mysqlSession.CompletionTokens,
+		TotalPromptTokens:     mysqlSession.TotalPromptTokens,
+		TotalCompletionTokens: mysqlSession.TotalCompletionTokens,
+		Cost:                  mysqlSession.Cost,
+		UpdatedAt:             mysqlSession.UpdatedAt,
+		CreatedAt:             mysqlSession.CreatedAt,
+		SummaryMessageID:      mysqlSession.SummaryMessageID,
+		ProjectID:             mysqlSession.ProjectID,
 	}, nil
 }
 
@@ -78,18 +80,20 @@ func (q *MySQLQuerier) GetSessionByID(ctx context.Context, id string) (Session, 
 	}
 
 	return Session{
-		ID:               mysqlSession.ID,
-		ParentSessionID:  mysqlSession.ParentSessionID,
-		RootSessionID:    mysqlSession.RootSessionID,
-		Title:            mysqlSession.Title,
-		MessageCount:     mysqlSession.MessageCount,
-		PromptTokens:     mysqlSession.PromptTokens,
-		CompletionTokens: mysqlSession.CompletionTokens,
-		Cost:             mysqlSession.Cost,
-		UpdatedAt:        mysqlSession.UpdatedAt,
-		CreatedAt:        mysqlSession.CreatedAt,
-		SummaryMessageID: mysqlSession.SummaryMessageID,
-		ProjectID:        mysqlSession.ProjectID,
+		ID:                    mysqlSession.ID,
+		ParentSessionID:       mysqlSession.ParentSessionID,
+		RootSessionID:         mysqlSession.RootSessionID,
+		Title:                 mysqlSession.Title,
+		MessageCount:          mysqlSession.MessageCount,
+		PromptTokens:          mysqlSession.PromptTokens,
+		CompletionTokens:      mysqlSession.CompletionTokens,
+		TotalPromptTokens:     mysqlSession.TotalPromptTokens,
+		TotalCompletionTokens: mysqlSession.TotalCompletionTokens,
+		Cost:                  mysqlSession.Cost,
+		UpdatedAt:             mysqlSession.UpdatedAt,
+		CreatedAt:             mysqlSession.CreatedAt,
+		SummaryMessageID:      mysqlSession.SummaryMessageID,
+		ProjectID:             mysqlSession.ProjectID,
 	}, nil
 }
 
@@ -103,18 +107,20 @@ func (q *MySQLQuerier) ListSessions(ctx context.Context, projectID sql.NullStrin
 	sessions := make([]Session, len(mysqlSessions))
 	for i, s := range mysqlSessions {
 		sessions[i] = Session{
-			ID:               s.ID,
-			ParentSessionID:  s.ParentSessionID,
-			RootSessionID:    s.RootSessionID,
-			Title:            s.Title,
-			MessageCount:     s.MessageCount,
-			PromptTokens:     s.PromptTokens,
-			CompletionTokens: s.CompletionTokens,
-			Cost:             s.Cost,
-			UpdatedAt:        s.UpdatedAt,
-			CreatedAt:        s.CreatedAt,
-			SummaryMessageID: s.SummaryMessageID,
-			ProjectID:        s.ProjectID,
+			ID:                    s.ID,
+			ParentSessionID:       s.ParentSessionID,
+			RootSessionID:         s.RootSessionID,
+			Title:                 s.Title,
+			MessageCount:          s.MessageCount,
+			PromptTokens:          s.PromptTokens,
+			CompletionTokens:      s.CompletionTokens,
+			TotalPromptTokens:     s.TotalPromptTokens,
+			TotalCompletionTokens: s.TotalCompletionTokens,
+			Cost:                  s.Cost,
+			UpdatedAt:             s.UpdatedAt,
+			CreatedAt:             s.CreatedAt,
+			SummaryMessageID:      s.SummaryMessageID,
+			ProjectID:             s.ProjectID,
 		}
 	}
 	return sessions, nil
@@ -130,18 +136,20 @@ func (q *MySQLQuerier) ListChildSessions(ctx context.Context, rootSessionID sql.
 	sessions := make([]Session, len(mysqlSessions))
 	for i, s := range mysqlSessions {
 		sessions[i] = Session{
-			ID:               s.ID,
-			ParentSessionID:  s.ParentSessionID,
-			RootSessionID:    s.RootSessionID,
-			Title:            s.Title,
-			MessageCount:     s.MessageCount,
-			PromptTokens:     s.PromptTokens,
-			CompletionTokens: s.CompletionTokens,
-			Cost:             s.Cost,
-			UpdatedAt:        s.UpdatedAt,
-			CreatedAt:        s.CreatedAt,
-			SummaryMessageID: s.SummaryMessageID,
-			ProjectID:        s.ProjectID,
+			ID:                    s.ID,
+			ParentSessionID:       s.ParentSessionID,
+			RootSessionID:         s.RootSessionID,
+			Title:                 s.Title,
+			MessageCount:          s.MessageCount,
+			PromptTokens:          s.PromptTokens,
+			CompletionTokens:      s.CompletionTokens,
+			TotalPromptTokens:     s.TotalPromptTokens,
+			TotalCompletionTokens: s.TotalCompletionTokens,
+			Cost:                  s.Cost,
+			UpdatedAt:             s.UpdatedAt,
+			CreatedAt:             s.CreatedAt,
+			SummaryMessageID:      s.SummaryMessageID,
+			ProjectID:             s.ProjectID,
 		}
 	}
 	return sessions, nil
@@ -150,12 +158,14 @@ func (q *MySQLQuerier) ListChildSessions(ctx context.Context, rootSessionID sql.
 // UpdateSession updates a session and returns it
 func (q *MySQLQuerier) UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error) {
 	_, err := q.queries.UpdateSession(ctx, mysqldb.UpdateSessionParams{
-		Title:            arg.Title,
-		PromptTokens:     arg.PromptTokens,
-		CompletionTokens: arg.CompletionTokens,
-		SummaryMessageID: arg.SummaryMessageID,
-		Cost:             arg.Cost,
-		ID:               arg.ID,
+		Title:                 arg.Title,
+		PromptTokens:          arg.PromptTokens,
+		CompletionTokens:      arg.CompletionTokens,
+		TotalPromptTokens:     arg.TotalPromptTokens,
+		TotalCompletionTokens: arg.TotalCompletionTokens,
+		SummaryMessageID:      arg.SummaryMessageID,
+		Cost:                  arg.Cost,
+		ID:                    arg.ID,
 	})
 	if err != nil {
 		return Session{}, err

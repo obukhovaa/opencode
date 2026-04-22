@@ -11,3 +11,4 @@ Specs not yet implemented.
 - [Git Worktree Isolation](spec/20260311T120000-git-worktree-isolation.md)
 - [Cron Scheduled Tasks](spec/20260325T120000-cron-scheduled-tasks.md)
 - [Deferred Tools and ToolSearchTool](spec/20260405T120000-deferred-tools-and-toolsearch.md)
+- [Memory Tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool)

@@ -29,6 +29,8 @@ Model{
     CanReason:                bool,          // Whether model supports reasoning/thinking
     SupportsAdaptiveThinking: bool,          // Whether model supports adaptive thinking (reasoningEffort)
     SupportsMaximumThinking:  bool,          // Whether model supports "max" reasoning effort
+    SupportsXHighThinking:    bool,          // Whether model supports "xhigh" reasoning effort (Opus 4.7+)
+    SupportsTaskBudget:       bool,          // Whether model supports task_budget (beta, Opus 4.7+)
     SupportsAttachments:      bool,          // Whether model supports file attachments
 }
 ```
@@ -41,8 +43,9 @@ Extract these from the model card/documentation. If any are missing, ask the use
 2. **Pricing**: input cost, output cost, cached input cost, cached output cost (per 1M tokens)
 3. **Context window** size (in tokens)
 4. **Max output tokens** (default)
-5. **Reasoning support**: does it support thinking/reasoning? Adaptive thinking? Maximum thinking?
-6. **Attachments**: does it support file/image attachments?
+5. **Reasoning support**: does it support thinking/reasoning? Adaptive thinking? Maximum thinking? XHigh thinking?
+6. **Task budget support**: does it support the task_budget beta feature? (requires `task-budgets-2026-03-13` beta header)
+7. **Attachments**: does it support file/image attachments?
 
 For VertexAI models: the API model name format differs (e.g. `claude-sonnet-4-5@20250929` instead of `claude-sonnet-4-5`). The model card usually provides this.
 
@@ -57,7 +60,7 @@ For VertexAI models: the API model name format differs (e.g. `claude-sonnet-4-5@
 | Gemini | `gemini.go` | `GeminiModels` | `ProviderGemini` |
 | VertexAI (Gemini) | `vertexai.go` | `VertexAIGeminiModels` | `ProviderVertexAI` |
 | VertexAI (Anthropic) | `vertexai.go` | `VertexAIAnthropicModels` | `ProviderVertexAI` |
-| Bedrock | `models.go` | `SupportedModels` (inline) | `ProviderBedrock` |
+| Bedrock | `bedrock.go` | `BedrockAnthropicModels` | `ProviderBedrock` |
 
 ### 2. Add the ModelID constant
 

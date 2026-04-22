@@ -33,6 +33,7 @@ type AgentInfo struct {
 	MaxTokens       int64            `yaml:"maxTokens,omitempty"`
 	MaxTurns        int              `yaml:"maxTurns,omitempty"`
 	ReasoningEffort string           `yaml:"reasoningEffort,omitempty"`
+	TaskBudget      int64            `yaml:"taskBudget,omitempty"`
 	Prompt          string           `yaml:"-"`
 	Skills          []string         `yaml:"skills,omitempty"`
 	Permission      map[string]any   `yaml:"permission,omitempty"`
@@ -109,6 +110,9 @@ func newRegistry() Registry {
 		args := []any{"agentID", a.ID, "mode", a.Mode, "model", a.Model, "path", path, "tools", tools, "permissions", permissions}
 		if len(a.Skills) > 0 {
 			args = append(args, "skills", a.Skills)
+		}
+		if a.TaskBudget > 0 {
+			args = append(args, "taskBudget", a.TaskBudget)
 		}
 		logging.Info("Agent discovered", args...)
 	}
@@ -287,6 +291,7 @@ func registerBuiltins(agents map[string]AgentInfo, cfg *config.Config) {
 			b.Model = string(agentCfg.Model)
 			b.MaxTokens = agentCfg.MaxTokens
 			b.ReasoningEffort = agentCfg.ReasoningEffort
+			b.TaskBudget = agentCfg.TaskBudget
 		}
 		agents[b.ID] = b
 	}
@@ -338,6 +343,9 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 		}
 		if agentCfg.ReasoningEffort != "" {
 			existing.ReasoningEffort = agentCfg.ReasoningEffort
+		}
+		if agentCfg.TaskBudget > 0 {
+			existing.TaskBudget = agentCfg.TaskBudget
 		}
 		if agentCfg.Name != "" {
 			existing.Name = agentCfg.Name
@@ -417,6 +425,9 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 	}
 	if md.MaxTurns > 0 {
 		existing.MaxTurns = md.MaxTurns
+	}
+	if md.TaskBudget > 0 {
+		existing.TaskBudget = md.TaskBudget
 	}
 	if md.Prompt != "" {
 		existing.Prompt = md.Prompt
