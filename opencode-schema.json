@@ -136,6 +136,11 @@
           },
           "type": "array"
         },
+        "taskBudget": {
+          "description": "Advisory token budget for the full agentic loop (minimum 20000). Only supported by models with SupportsTaskBudget. The budget is carried across compaction via the remaining field.",
+          "minimum": 20000,
+          "type": "integer"
+        },
         "tools": {
           "additionalProperties": {
             "description": "Whether the tool is enabled for this agent",
@@ -288,6 +293,11 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "taskBudget": {
+            "description": "Advisory token budget for the full agentic loop (minimum 20000). Only supported by models with SupportsTaskBudget. The budget is carried across compaction via the remaining field.",
+            "minimum": 20000,
+            "type": "integer"
           },
           "tools": {
             "additionalProperties": {

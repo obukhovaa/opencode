@@ -349,6 +349,11 @@ func generateSchema() map[string]any {
 						"type": "string",
 					},
 				},
+				"taskBudget": map[string]any{
+					"type":        "integer",
+					"description": "Advisory token budget for the full agentic loop (minimum 20000). Only supported by models with SupportsTaskBudget. The budget is carried across compaction via the remaining field.",
+					"minimum":     20000,
+				},
 			},
 			"required": []string{"model"},
 		},
