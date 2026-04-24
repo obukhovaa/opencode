@@ -48,11 +48,11 @@ type sessionDialogCmp struct {
 }
 
 const (
-	sessionDialogMinWidth     = 40
-	sessionDialogMaxVisible   = 7
-	sessionDialogChromeRows   = 10 // padding + border + title + search + help + separators
-	sessionDialogItemRows     = 2  // title line + metadata line
-	sessionDialogItemChrome   = 4  // 2-char indent + 1-char left/right padding
+	sessionDialogMinWidth   = 40
+	sessionDialogMaxVisible = 7
+	sessionDialogChromeRows = 10 // padding + border + title + search + help + separators
+	sessionDialogItemRows   = 2  // title line + metadata line
+	sessionDialogItemChrome = 4  // 2-char indent + 1-char left/right padding
 )
 
 type sessionKeyMap struct {

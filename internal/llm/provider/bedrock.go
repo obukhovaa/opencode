@@ -148,6 +148,14 @@ func bedrockMiddleware() sdkoption.Middleware {
 			body, _ = sjson.SetBytes(body, "anthropic_beta", betas)
 		}
 
+		// Strip metadata entirely for Bedrock. The native Bedrock API only
+		// accepts "user_id" but many proxies (e.g. litellm) reject even that.
+		// Since metadata is optional and purely informational, removing it
+		// is the safest approach for compatibility.
+		if gjson.GetBytes(body, "metadata").Exists() {
+			body, _ = sjson.DeleteBytes(body, "metadata")
+		}
+
 		model := gjson.GetBytes(body, "model").String()
 		stream := gjson.GetBytes(body, "stream").Bool()
 

@@ -618,6 +618,30 @@ func generateSchema() map[string]any {
 					"enum": []string{"agent"},
 				},
 			},
+			"langfuse": map[string]any{
+				"type":        "object",
+				"description": "Langfuse observability integration. When enabled, traces and generations are sent directly to Langfuse for LLM observability.",
+				"properties": map[string]any{
+					"enabled": map[string]any{
+						"type":        "boolean",
+						"description": "Enable Langfuse tracing",
+						"default":     false,
+					},
+					"publicKey": map[string]any{
+						"type":        "string",
+						"description": "Langfuse public key. Supports 'env:VAR_NAME' syntax. Falls back to LANGFUSE_PUBLIC_KEY env var.",
+					},
+					"secretKey": map[string]any{
+						"type":        "string",
+						"description": "Langfuse secret key. Supports 'env:VAR_NAME' syntax. Falls back to LANGFUSE_SECRET_KEY env var.",
+					},
+					"baseURL": map[string]any{
+						"type":        "string",
+						"description": "Langfuse host URL. Supports 'env:VAR_NAME' syntax. Falls back to LANGFUSE_BASE_URL env var, then https://cloud.langfuse.com.",
+					},
+				},
+				"additionalProperties": false,
+			},
 		},
 		"additionalProperties": false,
 	}

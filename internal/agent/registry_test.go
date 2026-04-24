@@ -222,7 +222,7 @@ func TestRegistryEvaluateReadPermission(t *testing.T) {
 				Mode: config.AgentModeSubagent,
 				Permission: map[string]any{
 					"read": map[string]any{
-						"*":      "allow",
+						"*":       "allow",
 						"/proc/*": "deny",
 						"/sys/*":  "deny",
 					},

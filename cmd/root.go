@@ -13,6 +13,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/flow"
 	"github.com/opencode-ai/opencode/internal/format"
+	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/tui"
@@ -121,12 +122,23 @@ to assist developers in writing, debugging, and understanding code directly from
 			spinner.Start()
 		}
 
-		_, err := config.Load(cwd, debug)
+		cfg, err := config.Load(cwd, debug)
 		if err != nil {
 			if spinner != nil {
 				spinner.Stop()
 			}
 			return err
+		}
+
+		// Initialize Langfuse tracing if enabled
+		if cfg.Telemetry != nil && cfg.Telemetry.Langfuse != nil && cfg.Telemetry.Langfuse.Enabled {
+			lf := cfg.Telemetry.Langfuse
+			if langfuse.Init(lf.PublicKey, lf.SecretKey, lf.BaseURL) {
+				defer langfuse.ShutdownGlobal()
+				logging.Info("Langfuse tracing enabled")
+			} else {
+				logging.Warn("Langfuse enabled in config but credentials resolved to empty — tracing disabled")
+			}
 		}
 
 		if maxTurns < 0 {

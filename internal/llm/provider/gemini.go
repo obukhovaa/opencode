@@ -336,6 +336,7 @@ func (g *geminiClient) stream(ctx context.Context, messages []message.Message, t
 			logging.ErrorPersist("gemini client has failed")
 		})
 
+		retryLoop:
 		for {
 			attempts++
 
@@ -392,6 +393,26 @@ func (g *geminiClient) stream(ctx context.Context, messages []message.Message, t
 				}
 
 				if item.err != nil {
+					// Retry transient transport errors (e.g. unexpected EOF, connection reset)
+					if isTransientStreamError(item.err) {
+						logging.Warn("Gemini stream transport error, will retry", "attempt", attempts, "error", item.err)
+						reader.Close()
+						if attempts < maxRetries {
+							backoffMs := 2000 * (1 << (attempts - 1))
+							select {
+							case <-ctx.Done():
+								if ctx.Err() != nil {
+									eventChan <- ProviderEvent{Type: EventError, Error: ctx.Err()}
+								}
+								return
+							case <-time.After(time.Duration(backoffMs) * time.Millisecond):
+								continue retryLoop
+							}
+						}
+						eventChan <- ProviderEvent{Type: EventError, Error: item.err}
+						return
+					}
+
 					retry, after, retryErr := g.shouldRetry(attempts, item.err)
 					if retryErr != nil {
 						eventChan <- ProviderEvent{Type: EventError, Error: retryErr}
@@ -707,13 +728,4 @@ func mapJSONTypeToGenAI(jsonType string) genai.Type {
 	default:
 		return genai.TypeString // Default to string for unknown types
 	}
-}
-
-func contains(s string, substrs ...string) bool {
-	for _, substr := range substrs {
-		if strings.Contains(strings.ToLower(s), strings.ToLower(substr)) {
-			return true
-		}
-	}
-	return false
 }

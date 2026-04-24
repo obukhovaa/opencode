@@ -2,6 +2,9 @@ package provider
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"testing"
 
 	"github.com/opencode-ai/opencode/internal/config"
@@ -472,6 +475,74 @@ func TestResolveMetadata(t *testing.T) {
 			}
 			if len(result) != len(tt.wantKeys) {
 				t.Errorf("expected %d keys, got %d: %v", len(tt.wantKeys), len(result), result)
+			}
+		})
+	}
+}
+
+func TestIsTransientStreamError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "io.ErrUnexpectedEOF is transient",
+			err:  io.ErrUnexpectedEOF,
+			want: true,
+		},
+		{
+			name: "wrapped io.ErrUnexpectedEOF is transient",
+			err:  fmt.Errorf("stream failed: %w", io.ErrUnexpectedEOF),
+			want: true,
+		},
+		{
+			name: "io.ErrClosedPipe is transient",
+			err:  io.ErrClosedPipe,
+			want: true,
+		},
+		{
+			name: "connection reset by peer is transient",
+			err:  errors.New("read tcp 10.0.0.1:443: connection reset by peer"),
+			want: true,
+		},
+		{
+			name: "use of closed network connection is transient",
+			err:  errors.New("use of closed network connection"),
+			want: true,
+		},
+		{
+			name: "broken pipe is transient",
+			err:  errors.New("write: broken pipe"),
+			want: true,
+		},
+		{
+			name: "unexpected EOF in message is transient",
+			err:  errors.New("reading response body: unexpected EOF"),
+			want: true,
+		},
+		{
+			name: "io.EOF is not transient",
+			err:  io.EOF,
+			want: false,
+		},
+		{
+			name: "regular error is not transient",
+			err:  errors.New("invalid API key"),
+			want: false,
+		},
+		{
+			name: "context canceled is not transient",
+			err:  context.Canceled,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isTransientStreamError(tt.err)
+			if got != tt.want {
+				t.Errorf("isTransientStreamError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}

@@ -10,9 +10,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/history"
+	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/prompt"
 	"github.com/opencode-ai/opencode/internal/llm/provider"
@@ -23,6 +25,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/session"
+	"github.com/opencode-ai/opencode/internal/version"
 )
 
 // Common errors
@@ -202,11 +205,13 @@ func (a *agent) generateTitle(ctx context.Context, sessionID string, content str
 	if a.titleProvider == nil {
 		return nil
 	}
-	session, err := a.sessions.Get(ctx, sessionID)
+	sess, err := a.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return err
 	}
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
+	ctx = context.WithValue(ctx, tools.AgentIDContextKey, config.AgentName("descriptor"))
+	ctx = a.createLangfuseTrace(ctx, sess)
 	parts := []message.ContentPart{message.TextContent{Text: content}}
 	response, err := a.titleProvider.SendMessages(
 		ctx,
@@ -227,8 +232,8 @@ func (a *agent) generateTitle(ctx context.Context, sessionID string, content str
 		return nil
 	}
 
-	session.Title = title
-	_, err = a.sessions.Save(ctx, session)
+	sess.Title = title
+	_, err = a.sessions.Save(ctx, sess)
 	return err
 }
 
@@ -315,6 +320,8 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
 	ctx = context.WithValue(ctx, tools.AgentIDContextKey, a.AgentID())
 	ctx = tools.AddTag(ctx, "agent", a.AgentID())
+
+	ctx = a.createLangfuseTrace(ctx, session)
 
 	userMsg, err := a.createUserMessage(ctx, sessionID, content, attachmentParts)
 	if err != nil {
@@ -1095,6 +1102,13 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 	}
 
 	summarizeCtx := context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
+	summarizeCtx = context.WithValue(summarizeCtx, tools.AgentIDContextKey, config.AgentName("summarizer"))
+	if lf := langfuse.Get(); lf != nil && lf.Enabled() {
+		sess, sessErr := a.sessions.Get(ctx, sessionID)
+		if sessErr == nil {
+			summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess)
+		}
+	}
 	summarizePrompt, err := AgentPrompts.ReadFile("prompts/compaction.md")
 	if err != nil {
 		return fmt.Errorf("failed to load summary prompt: %w", err)
@@ -1195,6 +1209,13 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 			return
 		}
 		summarizeCtx = context.WithValue(summarizeCtx, tools.SessionIDContextKey, sessionID)
+		summarizeCtx = context.WithValue(summarizeCtx, tools.AgentIDContextKey, config.AgentName("summarizer"))
+		if lf := langfuse.Get(); lf != nil && lf.Enabled() {
+			sess, sessErr := a.sessions.Get(summarizeCtx, sessionID)
+			if sessErr == nil {
+				summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess)
+			}
+		}
 
 		if len(msgs) == 0 {
 			event = AgentEvent{
@@ -1403,6 +1424,9 @@ func createAgentProvider(agentName config.AgentName) (agentProvider provider.Pro
 	if providerCfg.Metadata != nil {
 		opts = append(opts, provider.WithMetadata(providerCfg.Metadata))
 	}
+	if lf := langfuse.Get(); lf != nil && lf.Enabled() {
+		opts = append(opts, provider.WithLangfuse(lf))
+	}
 
 	if model.Provider == models.ProviderOpenAI || model.Provider == models.ProviderYandexCloud || model.Provider == models.ProviderLocal && model.CanReason {
 		openaiOpts := []provider.OpenAIOption{
@@ -1436,4 +1460,45 @@ func createAgentProvider(agentName config.AgentName) (agentProvider provider.Pro
 	}
 
 	return agentProvider, nil
+}
+
+// createLangfuseTrace creates a Langfuse trace for the current agent generation
+// and returns a context enriched with the trace ID and session ID.
+// If Langfuse is not initialized, the context is returned unchanged.
+func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session) context.Context {
+	lf := langfuse.Get()
+	if lf == nil || !lf.Enabled() {
+		return ctx
+	}
+
+	traceID := uuid.New().String()
+	ctx = langfuse.WithTraceID(ctx, traceID)
+
+	rootSessionID := sess.RootSessionID
+	if rootSessionID == "" {
+		rootSessionID = sess.ID
+	}
+	ctx = langfuse.WithSessionID(ctx, rootSessionID)
+
+	tags := provider.ResolveTags(ctx)
+
+	metadata := map[string]any{
+		"agent_id":   string(a.AgentID()),
+		"session_id": sess.ID,
+	}
+	if sess.ParentSessionID != "" {
+		metadata["parent_session_id"] = sess.ParentSessionID
+	}
+
+	lf.TraceCreate(langfuse.TraceBody{
+		ID:        traceID,
+		Name:      string(a.AgentID()),
+		SessionID: rootSessionID,
+		UserID:    provider.GetUserID(),
+		Tags:      tags,
+		Release:   version.Version,
+		Metadata:  metadata,
+	})
+
+	return ctx
 }

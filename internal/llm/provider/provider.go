@@ -4,19 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	toolsPkg "github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
+	"github.com/opencode-ai/opencode/internal/version"
 )
 
 type EventType string
@@ -26,6 +30,35 @@ const maxRetries = 8
 const defaultStreamInactivityTimeout = 5 * time.Minute
 
 var ErrStreamStalled = errors.New("stream stalled: no events received within timeout")
+
+// isTransientStreamError returns true for transport-level errors that indicate
+// the HTTP stream was interrupted (e.g. server closed connection mid-response).
+// These are worth retrying because they are not application-level rejections.
+func isTransientStreamError(err error) bool {
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if errors.Is(err, io.ErrClosedPipe) {
+		return true
+	}
+	msg := err.Error()
+	return contains(msg,
+		"connection reset by peer",
+		"use of closed network connection",
+		"broken pipe",
+		"unexpected EOF",
+	)
+}
+
+func contains(s string, substrs ...string) bool {
+	lower := strings.ToLower(s)
+	for _, sub := range substrs {
+		if strings.Contains(lower, strings.ToLower(sub)) {
+			return true
+		}
+	}
+	return false
+}
 
 func resolveStreamInactivityTimeout() time.Duration {
 	if envVal := os.Getenv("OPENCODE_PROVIDER_STREAM_INACTIVITY_TIMEOUT"); envVal != "" {
@@ -184,6 +217,8 @@ type providerClientOptions struct {
 	baseURL       string
 	headers       map[string]string
 	metadata      *config.ProviderMetadata
+
+	langfuseClient *langfuse.Client
 
 	anthropicOptions []AnthropicOption
 	openaiOptions    []OpenAIOption
@@ -446,6 +481,40 @@ func (p *baseProvider[C]) sanitizeToolPairs(messages []message.Message) []messag
 func (p *baseProvider[C]) SendMessages(ctx context.Context, messages []message.Message, tools []tools.BaseTool) (*ProviderResponse, error) {
 	messages = p.cleanMessages(messages)
 	messages = p.sanitizeToolPairs(messages)
+
+	lf := p.options.langfuseClient
+	if lf != nil && lf.Enabled() {
+		genID := uuid.New().String()
+		startTime := time.Now().UTC()
+		model := p.options.model
+
+		lf.GenerationCreate(langfuse.GenerationBody{
+			ID:        genID,
+			TraceID:   langfuse.GetTraceID(ctx),
+			Name:      langfuse.FormatGenerationName(getAgentIDFromCtx(ctx), string(model.APIModel)),
+			Model:     string(model.APIModel),
+			StartTime: &startTime,
+			Metadata:  p.generationMetadata(ctx),
+		})
+
+		resp, err := p.client.send(ctx, messages, tools)
+
+		endTime := time.Now().UTC()
+		update := langfuse.GenerationBody{
+			ID:      genID,
+			EndTime: &endTime,
+		}
+		if err != nil {
+			update.Level = "ERROR"
+			update.StatusMessage = err.Error()
+		}
+		if resp != nil {
+			update.Usage = p.buildUsage(resp.Usage)
+		}
+		lf.GenerationEnd(update)
+		return resp, err
+	}
+
 	return p.client.send(ctx, messages, tools)
 }
 
@@ -472,7 +541,74 @@ func (p *baseProvider[C]) Model() models.Model {
 func (p *baseProvider[C]) StreamResponse(ctx context.Context, messages []message.Message, tools []tools.BaseTool) <-chan ProviderEvent {
 	messages = p.cleanMessages(messages)
 	messages = p.sanitizeToolPairs(messages)
-	return p.client.stream(ctx, messages, tools)
+
+	lf := p.options.langfuseClient
+	if lf == nil || !lf.Enabled() {
+		return p.client.stream(ctx, messages, tools)
+	}
+
+	genID := uuid.New().String()
+	startTime := time.Now().UTC()
+	model := p.options.model
+
+	lf.GenerationCreate(langfuse.GenerationBody{
+		ID:        genID,
+		TraceID:   langfuse.GetTraceID(ctx),
+		Name:      langfuse.FormatGenerationName(getAgentIDFromCtx(ctx), string(model.APIModel)),
+		Model:     string(model.APIModel),
+		StartTime: &startTime,
+		Metadata:  p.generationMetadata(ctx),
+	})
+
+	upstream := p.client.stream(ctx, messages, tools)
+	wrapped := make(chan ProviderEvent)
+
+	go func() {
+		defer close(wrapped)
+		var completionStartTime *time.Time
+		var lastErr error
+		var usage *langfuse.Usage
+
+		for event := range upstream {
+			// Capture time-to-first-token from the first content delta
+			if completionStartTime == nil && (event.Type == EventContentDelta || event.Type == EventThinkingDelta) {
+				t := time.Now().UTC()
+				completionStartTime = &t
+			}
+			if event.Type == EventError {
+				lastErr = event.Error
+			}
+			if event.Type == EventComplete && event.Response != nil {
+				usage = p.buildUsage(event.Response.Usage)
+			}
+			select {
+			case wrapped <- event:
+			case <-ctx.Done():
+				// Consumer stopped reading (cancellation/error). Record the
+				// generation as an error so it doesn't stay open in Langfuse,
+				// then drain upstream to let the provider goroutine exit.
+				lastErr = ctx.Err()
+				for range upstream {
+				}
+				goto done
+			}
+		}
+	done:
+		endTime := time.Now().UTC()
+		update := langfuse.GenerationBody{
+			ID:                  genID,
+			EndTime:             &endTime,
+			CompletionStartTime: completionStartTime,
+			Usage:               usage,
+		}
+		if lastErr != nil {
+			update.Level = "ERROR"
+			update.StatusMessage = lastErr.Error()
+		}
+		lf.GenerationEnd(update)
+	}()
+
+	return wrapped
 }
 
 func (p *baseProvider[C]) CountTokens(ctx context.Context, threshold float64, messages []message.Message, tools []toolsPkg.BaseTool) (int64, bool) {
@@ -548,6 +684,45 @@ func (p *baseProvider[C]) AdjustMaxTokens(estimatedTokens int64) int64 {
 	return newMaxTokens
 }
 
+// buildUsage converts a ProviderResponse's TokenUsage into a Langfuse Usage struct
+// with cost calculated from the model's pricing.
+func (p *baseProvider[C]) buildUsage(u TokenUsage) *langfuse.Usage {
+	model := p.options.model
+	inputCost := model.CostPer1MInCached/1e6*float64(u.CacheCreationTokens) +
+		model.CostPer1MOutCached/1e6*float64(u.CacheReadTokens) +
+		model.CostPer1MIn/1e6*float64(u.InputTokens)
+	outputCost := model.CostPer1MOut / 1e6 * float64(u.OutputTokens)
+	totalInput := u.InputTokens + u.CacheCreationTokens + u.CacheReadTokens
+	return &langfuse.Usage{
+		Input:      totalInput,
+		Output:     u.OutputTokens,
+		Total:      totalInput + u.OutputTokens,
+		Unit:       "TOKENS",
+		InputCost:  inputCost,
+		OutputCost: outputCost,
+		TotalCost:  inputCost + outputCost,
+	}
+}
+
+// generationMetadata builds metadata for a Langfuse generation event.
+func (p *baseProvider[C]) generationMetadata(ctx context.Context) map[string]any {
+	meta := map[string]any{
+		"opencode_version": version.Version,
+	}
+	if agentID := getAgentIDFromCtx(ctx); agentID != "" {
+		meta["agent_id"] = agentID
+	}
+	return meta
+}
+
+// getAgentIDFromCtx reads the agent ID from context using the tools package key.
+func getAgentIDFromCtx(ctx context.Context) string {
+	if v, ok := ctx.Value(toolsPkg.AgentIDContextKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
 func WithBaseURL(baseURL string) ProviderClientOption {
 	return func(options *providerClientOptions) {
 		options.baseURL = baseURL
@@ -614,6 +789,12 @@ func WithMetadata(metadata *config.ProviderMetadata) ProviderClientOption {
 	}
 }
 
+func WithLangfuse(client *langfuse.Client) ProviderClientOption {
+	return func(options *providerClientOptions) {
+		options.langfuseClient = client
+	}
+}
+
 var processUserID = func() string {
 	if id := os.Getenv("OPENCODE_USER_ID"); id != "" {
 		return id
@@ -630,7 +811,9 @@ var (
 	userIDOnce     sync.Once
 )
 
-func getUserID() string {
+// GetUserID returns the resolved user ID (from env, config, or auto-generated UUID).
+// The value is cached after first resolution.
+func GetUserID() string {
 	userIDOnce.Do(func() {
 		resolvedUserID = processUserID()
 	})
@@ -648,12 +831,12 @@ func resolveMetadata(ctx context.Context, meta *config.ProviderMetadata) map[str
 		}
 	}
 	if meta.UserID != "" {
-		if uid := getUserID(); uid != "" {
+		if uid := GetUserID(); uid != "" {
 			resolved[meta.UserID] = uid
 		}
 	}
 	if meta.Tags != "" {
-		tags := resolveTags(ctx)
+		tags := ResolveTags(ctx)
 		if len(tags) > 0 {
 			resolved[meta.Tags] = tags
 		}
@@ -664,7 +847,8 @@ func resolveMetadata(ctx context.Context, meta *config.ProviderMetadata) map[str
 	return resolved
 }
 
-func resolveTags(ctx context.Context) []string {
+// ResolveTags collects tags from config (telemetry.tags) and dynamic context values.
+func ResolveTags(ctx context.Context) []string {
 	var tags []string
 	cfg := config.Get()
 	if cfg != nil && cfg.Telemetry != nil {

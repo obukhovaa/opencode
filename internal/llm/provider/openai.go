@@ -345,6 +345,27 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 				return
 			}
 
+			// Retry transient transport errors (e.g. unexpected EOF, connection reset)
+			if isTransientStreamError(err) {
+				logging.Warn("OpenAI stream transport error, will retry", "attempt", attempts, "error", err)
+				if attempts < maxRetries {
+					backoffMs := 2000 * (1 << (attempts - 1))
+					select {
+					case <-ctx.Done():
+						if ctx.Err() != nil {
+							eventChan <- ProviderEvent{Type: EventError, Error: ctx.Err()}
+						}
+						close(eventChan)
+						return
+					case <-time.After(time.Duration(backoffMs) * time.Millisecond):
+						continue
+					}
+				}
+				eventChan <- ProviderEvent{Type: EventError, Error: err}
+				close(eventChan)
+				return
+			}
+
 			// If there is an error we are going to see if we can retry the call
 			retry, after, retryErr := o.shouldRetry(attempts, err)
 			if retryErr != nil {
@@ -357,7 +378,7 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 				select {
 				case <-ctx.Done():
 					// context cancelled
-					if ctx.Err() == nil {
+					if ctx.Err() != nil {
 						eventChan <- ProviderEvent{Type: EventError, Error: ctx.Err()}
 					}
 					close(eventChan)
@@ -366,7 +387,7 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 					continue
 				}
 			}
-			eventChan <- ProviderEvent{Type: EventError, Error: retryErr}
+			eventChan <- ProviderEvent{Type: EventError, Error: err}
 			close(eventChan)
 			return
 		}

@@ -203,8 +203,8 @@ func TestMatchPatternsDeterministic(t *testing.T) {
 	// Run many times to catch non-determinism.
 	perms := map[string]any{
 		"bash": map[string]any{
-			"/proc/*":        "deny",
-			"/proc/cpuinfo":  "allow",
+			"/proc/*":       "deny",
+			"/proc/cpuinfo": "allow",
 		},
 	}
 	for i := 0; i < 100; i++ {
@@ -242,7 +242,7 @@ func TestEvaluateReadToolPermission(t *testing.T) {
 			input: "/proc/1/status",
 			agentPerms: map[string]any{
 				"read": map[string]any{
-					"*":      "allow",
+					"*":       "allow",
 					"/proc/*": "deny",
 				},
 			},

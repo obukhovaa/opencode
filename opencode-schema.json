@@ -691,6 +691,30 @@
           },
           "type": "array"
         },
+        "langfuse": {
+          "additionalProperties": false,
+          "description": "Langfuse observability integration. When enabled, traces and generations are sent directly to Langfuse for LLM observability.",
+          "properties": {
+            "baseURL": {
+              "description": "Langfuse host URL. Supports 'env:VAR_NAME' syntax. Falls back to LANGFUSE_BASE_URL env var, then https://cloud.langfuse.com.",
+              "type": "string"
+            },
+            "enabled": {
+              "default": false,
+              "description": "Enable Langfuse tracing",
+              "type": "boolean"
+            },
+            "publicKey": {
+              "description": "Langfuse public key. Supports 'env:VAR_NAME' syntax. Falls back to LANGFUSE_PUBLIC_KEY env var.",
+              "type": "string"
+            },
+            "secretKey": {
+              "description": "Langfuse secret key. Supports 'env:VAR_NAME' syntax. Falls back to LANGFUSE_SECRET_KEY env var.",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
         "tags": {
           "description": "Static tags attached to every LLM request when the provider metadata has a tags field configured. Useful for environment labels (e.g., 'prod', 'dev', 'team-a').",
           "items": {

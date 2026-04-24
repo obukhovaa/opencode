@@ -92,11 +92,20 @@ type Agent struct {
 	Skills          []string        `json:"skills,omitempty"`
 }
 
+// LangfuseConfig defines configuration for Langfuse observability integration.
+type LangfuseConfig struct {
+	Enabled   bool   `json:"enabled,omitempty"`
+	SecretKey string `json:"secretKey,omitempty"` // Supports "env:VAR_NAME"; falls back to LANGFUSE_SECRET_KEY
+	PublicKey string `json:"publicKey,omitempty"` // Supports "env:VAR_NAME"; falls back to LANGFUSE_PUBLIC_KEY
+	BaseURL   string `json:"baseURL,omitempty"`   // Supports "env:VAR_NAME"; falls back to LANGFUSE_BASE_URL
+}
+
 // TelemetryConfig defines telemetry configuration for identifying requests.
 type TelemetryConfig struct {
-	UserID      string   `json:"userId,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	DefaultTags []string `json:"defaultTags,omitempty"`
+	UserID      string          `json:"userId,omitempty"`
+	Tags        []string        `json:"tags,omitempty"`
+	DefaultTags []string        `json:"defaultTags,omitempty"`
+	Langfuse    *LangfuseConfig `json:"langfuse,omitempty"`
 }
 
 // ProviderMetadata defines metadata key-value pairs attached to every LLM API request.
@@ -936,7 +945,29 @@ func validateTelemetryConfig(telemetry *TelemetryConfig) error {
 			return fmt.Errorf("telemetry: unsupported defaultTag %q (supported: %v)", tag, SupportedDefaultTags)
 		}
 	}
+	if lf := telemetry.Langfuse; lf != nil && lf.Enabled {
+		pk := resolveEnvValue(lf.PublicKey, "LANGFUSE_PUBLIC_KEY")
+		if pk == "" {
+			return fmt.Errorf("telemetry.langfuse: publicKey is required when enabled (set in config or LANGFUSE_PUBLIC_KEY env var)")
+		}
+		sk := resolveEnvValue(lf.SecretKey, "LANGFUSE_SECRET_KEY")
+		if sk == "" {
+			return fmt.Errorf("telemetry.langfuse: secretKey is required when enabled (set in config or LANGFUSE_SECRET_KEY env var)")
+		}
+	}
 	return nil
+}
+
+// resolveEnvValue resolves a config value that may use "env:VAR_NAME" syntax,
+// falling back to the given environment variable name.
+func resolveEnvValue(value, envFallback string) string {
+	if value == "" {
+		return os.Getenv(envFallback)
+	}
+	if after, ok := strings.CutPrefix(value, "env:"); ok {
+		return os.Getenv(after)
+	}
+	return value
 }
 
 // SupportedDefaultTags lists the tag keys that OpenCode supports for dynamic metadata.
