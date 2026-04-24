@@ -1531,6 +1531,8 @@ func createAgentProvider(agentName config.AgentName) (agentProvider provider.Pro
 // createLangfuseTrace creates a Langfuse trace for the current agent generation
 // and returns a context enriched with the root trace span.
 // If Langfuse is not initialized, the context is returned unchanged.
+// When running inside a flow, the trace name uses the format "agentID/flowID/stepID"
+// and flow-specific metadata (flowID, stepID, extracted flow args) is included.
 func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session) context.Context {
 	lf := langfuse.Get()
 	if lf == nil || !lf.Enabled() {
@@ -1552,8 +1554,30 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session) c
 		metadata["parent_session_id"] = sess.ParentSessionID
 	}
 
+	// Build trace name — enrich with flow context when available
+	traceName := string(a.AgentID())
+	flowID, _ := ctx.Value(tools.FlowIDContextKey).(string)
+	flowStepID, _ := ctx.Value(tools.FlowStepIDContextKey).(string)
+
+	if flowID != "" {
+		metadata["flow_id"] = flowID
+		if flowStepID != "" {
+			metadata["flow_step_id"] = flowStepID
+			traceName = truncateStr(fmt.Sprintf("%s/%s/%s", a.AgentID(), flowID, flowStepID), maxTraceNameLen)
+		} else {
+			traceName = truncateStr(fmt.Sprintf("%s/%s", a.AgentID(), flowID), maxTraceNameLen)
+		}
+
+		// Include extracted flow args as dedicated metadata fields
+		if flowArgs, ok := ctx.Value(tools.FlowArgsContextKey).(map[string]string); ok {
+			for k, v := range flowArgs {
+				metadata["flow_arg_"+k] = truncateStr(v, maxMetadataValueLen)
+			}
+		}
+	}
+
 	return lf.TraceStart(ctx, langfuse.TraceParams{
-		Name:      string(a.AgentID()),
+		Name:      traceName,
 		SessionID: rootSessionID,
 		UserID:    provider.GetUserID(),
 		Tags:      tags,
@@ -1561,6 +1585,11 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session) c
 		Metadata:  metadata,
 	})
 }
+
+const (
+	maxTraceNameLen     = 200
+	maxMetadataValueLen = 200
+)
 
 // shouldLogToolInput returns true if the tool's input should be logged to telemetry.
 func shouldLogToolInput(toolName string) bool {
@@ -1588,4 +1617,15 @@ func matchAnyPattern(patterns []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// truncateStr truncates a string to at most max bytes, appending "..." if truncated.
+func truncateStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
 }

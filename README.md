@@ -18,6 +18,7 @@ OpenCode is a CLI tool that brings AI assistance to your terminal. It provides b
 - **MCP support**: extend capabilities via Model Context Protocol servers
 - **Agent skills**: reusable instruction sets with argument substitution and dynamic shell expansion ([guide](docs/skills.md))
 - **Custom commands**: predefined prompts with named arguments ([guide](docs/custom-commands.md))
+- **Langfuse observability**: built-in tracing for LLM calls, tool executions, token usage, and cost ([guide](docs/telemetry.md))
 - **Session management** with SQLite or MySQL storage ([guide](docs/session-providers.md))
 - **LSP integration** with auto-install for 30+ language servers ([guide](docs/lsp.md))
 - **File change tracking** during sessions
@@ -385,6 +386,10 @@ The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model
 | `YANDEXCLOUD_FOLDER_ID` | | YandexCloud folder ID (required for model URI) |
 | `LOCAL_ENDPOINT` | | Self-hosted model endpoint |
 | `LOCAL_ENDPOINT_API_KEY` | | Self-hosted model API key |
+| `LANGFUSE_PUBLIC_KEY` | | Langfuse public key ([guide](docs/telemetry.md)) |
+| `LANGFUSE_SECRET_KEY` | | Langfuse secret key |
+| `LANGFUSE_BASE_URL` | `https://cloud.langfuse.com` | Langfuse host URL |
+| `OPENCODE_USER_ID` | | User ID for telemetry (overrides config) |
 | `SHELL` | | Default shell |
 | `OPENCODE_SESSION_PROVIDER_TYPE` | `sqlite` | Session storage backend (`sqlite` or `mysql`) |
 | `OPENCODE_MYSQL_DSN` | | MySQL connection string |
@@ -480,6 +485,7 @@ The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model
 | Skills | [docs/skills.md](docs/skills.md) |
 | Flows | [docs/flows.md](docs/flows.md) |
 | Custom Commands | [docs/custom-commands.md](docs/custom-commands.md) |
+| Telemetry & Langfuse | [docs/telemetry.md](docs/telemetry.md) |
 | Session Providers | [docs/session-providers.md](docs/session-providers.md) |
 | LSP Servers | [docs/lsp.md](docs/lsp.md) |
 | Structured Output | [docs/structured-output.md](docs/structured-output.md) |

@@ -119,6 +119,7 @@ type TelemetryConfig struct {
 	DefaultTags []string             `json:"defaultTags,omitempty"`
 	Langfuse    *LangfuseConfig      `json:"langfuse,omitempty"`
 	Tools       *ToolTelemetryConfig `json:"tools,omitempty"`
+	FlowArgs    []string             `json:"flowArgs,omitempty"` // Top-level flow arg names (wildcards supported) to extract into trace metadata
 }
 
 // ProviderMetadata defines metadata key-value pairs attached to every LLM API request.

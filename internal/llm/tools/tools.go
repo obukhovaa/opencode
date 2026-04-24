@@ -30,6 +30,9 @@ type (
 	isTaskAgentContextKey  string
 	agentIDContextKey      string
 	metadataTagsContextKey string
+	flowIDContextKey       string
+	flowStepIDContextKey   string
+	flowArgsContextKey     string
 )
 
 const (
@@ -41,6 +44,9 @@ const (
 	IsTaskAgentContextKey  isTaskAgentContextKey  = "is_task_agent"
 	AgentIDContextKey      agentIDContextKey      = "agent_id"
 	MetadataTagsContextKey metadataTagsContextKey = "metadata_tags"
+	FlowIDContextKey       flowIDContextKey       = "flow_id"
+	FlowStepIDContextKey   flowStepIDContextKey   = "flow_step_id"
+	FlowArgsContextKey     flowArgsContextKey     = "flow_args"
 
 	// MaxToolResponseTokens is the maximum number of tokens allowed in a tool response
 	// to prevent context overflow. ~1200KB of text content.

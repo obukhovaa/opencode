@@ -18,6 +18,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/format"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
@@ -348,6 +349,11 @@ func (s *service) runStep(
 		logging.Info("Step postponed for next execution", "step", step.ID)
 		return
 	}
+
+	// Inject flow context for downstream telemetry (Langfuse trace naming + metadata)
+	ctx = context.WithValue(ctx, tools.FlowIDContextKey, f.ID)
+	ctx = context.WithValue(ctx, tools.FlowStepIDContextKey, step.ID)
+	ctx = withFlowArgs(ctx, args)
 
 	var result agentpkg.AgentEvent
 	maxAttempts := 1
@@ -877,6 +883,28 @@ func checkType(key string, val any, expectedType string) error {
 		}
 	}
 	return nil
+}
+
+// withFlowArgs extracts top-level args whose names match the configured
+// telemetry.flowArgs patterns and stores them in context for downstream
+// Langfuse trace metadata.
+func withFlowArgs(ctx context.Context, args map[string]any) context.Context {
+	cfg := config.Get()
+	if cfg == nil || cfg.Telemetry == nil || len(cfg.Telemetry.FlowArgs) == 0 || len(args) == 0 {
+		return ctx
+	}
+	extracted := make(map[string]string)
+	for _, pattern := range cfg.Telemetry.FlowArgs {
+		for k, v := range args {
+			if permission.MatchWildcard(pattern, k) {
+				extracted[k] = fmt.Sprintf("%v", v)
+			}
+		}
+	}
+	if len(extracted) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, tools.FlowArgsContextKey, extracted)
 }
 
 func dbFlowStateToFlowState(fs db.FlowState) *FlowState {

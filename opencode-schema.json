@@ -709,6 +709,13 @@
           },
           "type": "array"
         },
+        "flowArgs": {
+          "description": "Top-level flow argument names to extract into Langfuse trace metadata. Supports wildcards (e.g., 'ticket_id', 'project*', '*'). Matched args appear as dedicated metadata fields on flow step traces.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "langfuse": {
           "additionalProperties": false,
           "description": "Langfuse observability integration. When enabled, traces and generations are sent directly to Langfuse for LLM observability.",

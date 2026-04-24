@@ -673,6 +673,13 @@ func generateSchema() map[string]any {
 				},
 				"additionalProperties": false,
 			},
+			"flowArgs": map[string]any{
+				"type":        "array",
+				"description": "Top-level flow argument names to extract into Langfuse trace metadata. Supports wildcards (e.g., 'ticket_id', 'project*', '*'). Matched args appear as dedicated metadata fields on flow step traces.",
+				"items": map[string]any{
+					"type": "string",
+				},
+			},
 		},
 		"additionalProperties": false,
 	}
