@@ -34,7 +34,8 @@ checksum:
 snapshot:
   name_template: "0.0.0-{{ .Timestamp }}"
 brews:
-  - repository:
+  - directory: Formula
+    repository:
       owner: obukhovaa
       name: homebrew-tap
 nfpms:
