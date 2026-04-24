@@ -1,205 +1,234 @@
 package langfuse
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
+	"encoding/base64"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/version"
 )
 
 const (
 	defaultBaseURL = "https://cloud.langfuse.com"
-	flushInterval  = 1 * time.Second
-	maxBatchSize   = 10
-	ingestionPath  = "/api/public/ingestion"
+	tracerName     = "opencode"
 )
 
-// Client is a Langfuse ingestion client that batches events and flushes
-// them periodically or when the batch reaches a threshold.
+// Client wraps an OpenTelemetry TracerProvider configured to export
+// spans to Langfuse via the OTLP HTTP endpoint.
 type Client struct {
-	publicKey  string
-	secretKey  string
-	baseURL    string
-	httpClient *http.Client
-
-	mu           sync.Mutex
-	queue        []IngestionEvent
-	done         chan struct{}
-	wg           sync.WaitGroup
-	shutdownOnce sync.Once
+	tracer   trace.Tracer
+	provider *sdktrace.TracerProvider
+	enabled  bool
 }
 
-// New creates a new Langfuse client. Keys and baseURL are resolved from
-// the provided values, falling back to environment variables.
+// New creates a new Langfuse client backed by the OTEL OTLP HTTP exporter.
+// Keys and baseURL are resolved from the provided values, falling back
+// to environment variables.
 func New(publicKey, secretKey, baseURL string) *Client {
 	pk := resolveKey(publicKey, "LANGFUSE_PUBLIC_KEY")
 	sk := resolveKey(secretKey, "LANGFUSE_SECRET_KEY")
+	if pk == "" || sk == "" {
+		return &Client{enabled: false}
+	}
+
 	bu := resolveKey(baseURL, "LANGFUSE_BASE_URL")
 	if bu == "" {
 		bu = defaultBaseURL
 	}
 	bu = strings.TrimRight(bu, "/")
 
-	c := &Client{
-		publicKey:  pk,
-		secretKey:  sk,
-		baseURL:    bu,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
-		queue:      make([]IngestionEvent, 0, maxBatchSize),
-		done:       make(chan struct{}),
+	authStr := base64.StdEncoding.EncodeToString([]byte(pk + ":" + sk))
+
+	exporter, err := otlptracehttp.New(context.Background(),
+		otlptracehttp.WithEndpointURL(bu+"/api/public/otel/v1/traces"),
+		otlptracehttp.WithHeaders(map[string]string{
+			"Authorization":                "Basic " + authStr,
+			"x-langfuse-ingestion-version": "4",
+		}),
+	)
+	if err != nil {
+		logging.Warn("langfuse: failed to create OTEL exporter", "error", err)
+		return &Client{enabled: false}
 	}
-	c.wg.Add(1)
-	go c.flushLoop()
-	return c
+
+	res, _ := resource.New(context.Background(),
+		resource.WithAttributes(
+			semconv.ServiceName(tracerName),
+			semconv.ServiceVersion(version.Version),
+		),
+	)
+
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter, sdktrace.WithBatchTimeout(time.Second)),
+		sdktrace.WithResource(res),
+	)
+
+	return &Client{
+		tracer:   tp.Tracer(tracerName),
+		provider: tp,
+		enabled:  true,
+	}
 }
 
-// Enabled returns true if the client has valid credentials.
+// Enabled returns true if the client has valid credentials and a working exporter.
 func (c *Client) Enabled() bool {
-	return c.publicKey != "" && c.secretKey != ""
+	return c != nil && c.enabled
 }
 
-// TraceCreate enqueues a trace-create event.
-func (c *Client) TraceCreate(body TraceBody) {
-	c.enqueue(IngestionEvent{
-		ID:        uuid.New().String(),
-		Type:      EventTraceCreate,
-		Timestamp: time.Now().UTC(),
-		Body:      body,
-	})
-}
-
-// GenerationCreate enqueues a generation-create event.
-func (c *Client) GenerationCreate(body GenerationBody) {
-	c.enqueue(IngestionEvent{
-		ID:        uuid.New().String(),
-		Type:      EventGenerationCreate,
-		Timestamp: time.Now().UTC(),
-		Body:      body,
-	})
-}
-
-// GenerationEnd enqueues a generation-update event with completion data.
-func (c *Client) GenerationEnd(body GenerationBody) {
-	c.enqueue(IngestionEvent{
-		ID:        uuid.New().String(),
-		Type:      EventGenerationUpdate,
-		Timestamp: time.Now().UTC(),
-		Body:      body,
-	})
-}
-
-// Shutdown flushes all remaining events and stops the background goroutine.
-// Blocks until all events are sent or the shutdown timeout is reached.
-// Safe to call multiple times.
+// Shutdown flushes all pending spans and stops the exporter.
+// Blocks until complete or timeout. Safe to call on a nil/disabled client.
 func (c *Client) Shutdown() {
-	c.shutdownOnce.Do(func() {
-		close(c.done)
-		c.wg.Wait()
-
-		// Final flush of any remaining events
-		c.mu.Lock()
-		remaining := c.queue
-		c.queue = nil
-		c.mu.Unlock()
-
-		if len(remaining) > 0 {
-			c.sendBatch(remaining)
-		}
-	})
+	if c == nil || c.provider == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.provider.Shutdown(ctx); err != nil {
+		logging.Warn("langfuse: shutdown error", "error", err)
+	}
 }
 
-func (c *Client) enqueue(event IngestionEvent) {
+// TraceStart begins a root span representing a Langfuse trace.
+// The returned context carries the root span for child span creation.
+// Call TraceEnd (or EndTrace) when the agent turn completes.
+func (c *Client) TraceStart(ctx context.Context, params TraceParams) context.Context {
 	if !c.Enabled() {
-		return
+		return ctx
 	}
 
-	c.mu.Lock()
-	c.queue = append(c.queue, event)
-	shouldFlush := len(c.queue) >= maxBatchSize
-	var batch []IngestionEvent
-	if shouldFlush {
-		batch = c.queue
-		c.queue = make([]IngestionEvent, 0, maxBatchSize)
+	attrs := []attribute.KeyValue{
+		attribute.String("langfuse.trace.name", params.Name),
 	}
-	c.mu.Unlock()
+	if params.SessionID != "" {
+		attrs = append(attrs, attribute.String("langfuse.session.id", params.SessionID))
+	}
+	if params.UserID != "" {
+		attrs = append(attrs, attribute.String("langfuse.user.id", params.UserID))
+	}
+	if len(params.Tags) > 0 {
+		attrs = append(attrs, attribute.StringSlice("langfuse.trace.tags", params.Tags))
+	}
+	if params.Release != "" {
+		attrs = append(attrs, attribute.String("langfuse.release", params.Release))
+	}
+	for k, v := range params.Metadata {
+		attrs = append(attrs, attribute.String("langfuse.trace.metadata."+k, fmt.Sprint(v)))
+	}
 
-	if shouldFlush && len(batch) > 0 {
-		c.wg.Add(1)
-		go func() {
-			defer c.wg.Done()
-			c.sendBatch(batch)
-		}()
+	ctx, span := c.tracer.Start(ctx, params.Name, trace.WithAttributes(attrs...))
+	return withRootSpan(ctx, span)
+}
+
+// TraceEnd ends the root trace span stored in context.
+// No-op if context has no root span.
+func (c *Client) TraceEnd(ctx context.Context) {
+	if span := getRootSpan(ctx); span != nil {
+		span.End()
 	}
 }
 
-func (c *Client) flushLoop() {
-	defer c.wg.Done()
-	ticker := time.NewTicker(flushInterval)
-	defer ticker.Stop()
+// GenerationStart begins a generation observation as a child of the root trace span.
+// Returns a Span handle; call Span.End() when the LLM call completes.
+func (c *Client) GenerationStart(ctx context.Context, params GenerationParams) *Span {
+	if !c.Enabled() {
+		return nil
+	}
 
-	for {
-		select {
-		case <-c.done:
-			return
-		case <-ticker.C:
-			c.flush()
-		}
+	// Always parent to root span so generations are siblings, not nested
+	parentCtx := ctx
+	if root := getRootSpan(ctx); root != nil {
+		parentCtx = trace.ContextWithSpan(ctx, root)
+	}
+
+	attrs := []attribute.KeyValue{
+		attribute.String("langfuse.observation.type", "generation"),
+	}
+	if params.Model != "" {
+		attrs = append(attrs, attribute.String("langfuse.observation.model.name", params.Model))
+		attrs = append(attrs, attribute.String("gen_ai.request.model", params.Model))
+	}
+	for k, v := range params.Metadata {
+		attrs = append(attrs, attribute.String("langfuse.observation.metadata."+k, fmt.Sprint(v)))
+	}
+
+	_, span := c.tracer.Start(parentCtx, params.Name, trace.WithAttributes(attrs...))
+	return &Span{span: span}
+}
+
+// ToolStart begins a tool call observation as a child of the root trace span.
+// Returns a Span handle; call Span.End() when the tool execution completes.
+func (c *Client) ToolStart(ctx context.Context, params ToolParams) *Span {
+	if !c.Enabled() {
+		return nil
+	}
+
+	parentCtx := ctx
+	if root := getRootSpan(ctx); root != nil {
+		parentCtx = trace.ContextWithSpan(ctx, root)
+	}
+
+	attrs := []attribute.KeyValue{
+		attribute.String("langfuse.observation.type", "tool"),
+	}
+	if params.Input != nil {
+		inputStr := marshalAny(params.Input)
+		attrs = append(attrs, attribute.String("langfuse.observation.input", truncate(inputStr, maxIOSize)))
+	}
+
+	_, span := c.tracer.Start(parentCtx, params.Name, trace.WithAttributes(attrs...))
+	return &Span{span: span}
+}
+
+// Nop returns a disabled client that discards all events.
+func Nop() *Client {
+	return &Client{enabled: false}
+}
+
+// --- Global singleton ---
+
+var globalClient *Client
+
+// Init creates the global Langfuse client. Should be called once at startup.
+// Returns true if the client is enabled.
+func Init(publicKey, secretKey, baseURL string) bool {
+	globalClient = New(publicKey, secretKey, baseURL)
+	return globalClient.Enabled()
+}
+
+// Get returns the global Langfuse client, or nil if not initialized.
+func Get() *Client {
+	return globalClient
+}
+
+// ShutdownGlobal shuts down the global client, flushing remaining spans.
+func ShutdownGlobal() {
+	if globalClient != nil {
+		globalClient.Shutdown()
 	}
 }
 
-func (c *Client) flush() {
-	c.mu.Lock()
-	if len(c.queue) == 0 {
-		c.mu.Unlock()
-		return
+// EndTrace is a convenience function that ends the root trace span in context.
+// Safe to call even when Langfuse is not initialized or context has no span.
+func EndTrace(ctx context.Context) {
+	if span := getRootSpan(ctx); span != nil {
+		span.End()
 	}
-	batch := c.queue
-	c.queue = make([]IngestionEvent, 0, maxBatchSize)
-	c.mu.Unlock()
-
-	c.sendBatch(batch)
 }
 
-func (c *Client) sendBatch(events []IngestionEvent) {
-	if len(events) == 0 {
-		return
-	}
-
-	body, err := json.Marshal(IngestionRequest{Batch: events})
-	if err != nil {
-		logging.Warn("langfuse: failed to marshal batch", "error", err)
-		return
-	}
-
-	req, err := http.NewRequest(http.MethodPost, c.baseURL+ingestionPath, bytes.NewReader(body))
-	if err != nil {
-		logging.Warn("langfuse: failed to create request", "error", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.SetBasicAuth(c.publicKey, c.secretKey)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		logging.Warn("langfuse: failed to send batch", "error", err, "events", len(events))
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusMultiStatus {
-		logging.Warn("langfuse: ingestion returned unexpected status",
-			"status", resp.StatusCode, "events", len(events))
-		return
-	}
-
-	logging.Debug("langfuse: batch sent", "events", len(events), "status", resp.StatusCode)
+// FormatGenerationName builds a generation name like "coder/claude-sonnet-4-6".
+func FormatGenerationName(agentID, model string) string {
+	return fmt.Sprintf("%s/%s", agentID, model)
 }
 
 // resolveKey resolves a config value: supports "env:VAR_NAME" syntax,
@@ -212,38 +241,4 @@ func resolveKey(value, envFallback string) string {
 		return os.Getenv(after)
 	}
 	return value
-}
-
-// Nop returns a no-op client that discards all events.
-func Nop() *Client {
-	c := &Client{
-		done: make(chan struct{}),
-	}
-	return c
-}
-
-var globalClient *Client
-
-// Init creates the global Langfuse client. Should be called once at startup.
-// Returns true if the client is enabled (credentials resolved successfully).
-func Init(publicKey, secretKey, baseURL string) bool {
-	globalClient = New(publicKey, secretKey, baseURL)
-	return globalClient.Enabled()
-}
-
-// Get returns the global Langfuse client, or nil if not initialized.
-func Get() *Client {
-	return globalClient
-}
-
-// Shutdown shuts down the global client, flushing remaining events.
-func ShutdownGlobal() {
-	if globalClient != nil {
-		globalClient.Shutdown()
-	}
-}
-
-// FormatGenerationName builds a generation name like "coder/claude-sonnet-4-6".
-func FormatGenerationName(agentID, model string) string {
-	return fmt.Sprintf("%s/%s", agentID, model)
 }

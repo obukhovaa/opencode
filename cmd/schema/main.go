@@ -642,6 +642,32 @@ func generateSchema() map[string]any {
 				},
 				"additionalProperties": false,
 			},
+			"tools": map[string]any{
+				"type":        "object",
+				"description": "Controls what tool call data is logged to the telemetry backend. When enabled is false, no tool input/output is logged.",
+				"properties": map[string]any{
+					"enabled": map[string]any{
+						"type":        "boolean",
+						"description": "Enable tool input/output logging. When false, no tool data is logged regardless of logInput/logOutput patterns.",
+						"default":     false,
+					},
+					"logInput": map[string]any{
+						"type":        "array",
+						"description": "Tool name patterns controlling which tools have their input logged. Supports wildcards (e.g., 'datadog*', 'read', '*'). If empty, no tool inputs are logged.",
+						"items": map[string]any{
+							"type": "string",
+						},
+					},
+					"logOutput": map[string]any{
+						"type":        "array",
+						"description": "Tool name patterns controlling which tools have their output logged. Supports wildcards (e.g., 'bash', 'grep', '*'). If empty, no tool outputs are logged.",
+						"items": map[string]any{
+							"type": "string",
+						},
+					},
+				},
+				"additionalProperties": false,
+			},
 		},
 		"additionalProperties": false,
 	}

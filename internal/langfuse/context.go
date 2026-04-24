@@ -1,36 +1,25 @@
 package langfuse
 
-import "context"
+import (
+	"context"
+
+	"go.opentelemetry.io/otel/trace"
+)
 
 type contextKey string
 
-const (
-	traceIDKey   contextKey = "langfuse_trace_id"
-	sessionIDKey contextKey = "langfuse_session_id"
-)
+const rootSpanKey contextKey = "langfuse_root_span"
 
-// WithTraceID stores the current Langfuse trace ID in context.
-func WithTraceID(ctx context.Context, traceID string) context.Context {
-	return context.WithValue(ctx, traceIDKey, traceID)
+// withRootSpan stores the root trace span in context so child spans
+// (generations, tools) can be created as siblings under the same trace.
+func withRootSpan(ctx context.Context, span trace.Span) context.Context {
+	return context.WithValue(ctx, rootSpanKey, span)
 }
 
-// GetTraceID returns the Langfuse trace ID from context, or empty string.
-func GetTraceID(ctx context.Context) string {
-	if v, ok := ctx.Value(traceIDKey).(string); ok {
+// getRootSpan returns the root trace span from context, or nil.
+func getRootSpan(ctx context.Context) trace.Span {
+	if v, ok := ctx.Value(rootSpanKey).(trace.Span); ok {
 		return v
 	}
-	return ""
-}
-
-// WithSessionID stores the Langfuse session ID (root session) in context.
-func WithSessionID(ctx context.Context, sessionID string) context.Context {
-	return context.WithValue(ctx, sessionIDKey, sessionID)
-}
-
-// GetSessionID returns the Langfuse session ID from context, or empty string.
-func GetSessionID(ctx context.Context) string {
-	if v, ok := ctx.Value(sessionIDKey).(string); ok {
-		return v
-	}
-	return ""
+	return nil
 }

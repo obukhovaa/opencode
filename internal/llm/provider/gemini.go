@@ -336,7 +336,7 @@ func (g *geminiClient) stream(ctx context.Context, messages []message.Message, t
 			logging.ErrorPersist("gemini client has failed")
 		})
 
-		retryLoop:
+	retryLoop:
 		for {
 			attempts++
 

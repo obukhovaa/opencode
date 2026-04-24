@@ -722,6 +722,32 @@
           },
           "type": "array"
         },
+        "tools": {
+          "additionalProperties": false,
+          "description": "Controls what tool call data is logged to the telemetry backend. When enabled is false, no tool input/output is logged.",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "description": "Enable tool input/output logging. When false, no tool data is logged regardless of logInput/logOutput patterns.",
+              "type": "boolean"
+            },
+            "logInput": {
+              "description": "Tool name patterns controlling which tools have their input logged. Supports wildcards (e.g., 'datadog*', 'read', '*'). If empty, no tool inputs are logged.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "logOutput": {
+              "description": "Tool name patterns controlling which tools have their output logged. Supports wildcards (e.g., 'bash', 'grep', '*'). If empty, no tool outputs are logged.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
         "userId": {
           "description": "User identifier attached to LLM requests. Takes precedence over auto-generated UUID but is overridden by OPENCODE_USER_ID env var.",
           "type": "string"

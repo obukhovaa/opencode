@@ -135,7 +135,7 @@ to assist developers in writing, debugging, and understanding code directly from
 			lf := cfg.Telemetry.Langfuse
 			if langfuse.Init(lf.PublicKey, lf.SecretKey, lf.BaseURL) {
 				defer langfuse.ShutdownGlobal()
-				logging.Info("Langfuse tracing enabled")
+				logging.Info("Langfuse tracing enabled", "url", lf.BaseURL)
 			} else {
 				logging.Warn("Langfuse enabled in config but credentials resolved to empty — tracing disabled")
 			}

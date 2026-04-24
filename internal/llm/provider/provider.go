@@ -483,39 +483,28 @@ func (p *baseProvider[C]) SendMessages(ctx context.Context, messages []message.M
 	messages = p.sanitizeToolPairs(messages)
 
 	lf := p.options.langfuseClient
+	var gen *langfuse.Span
 	if lf != nil && lf.Enabled() {
-		genID := uuid.New().String()
-		startTime := time.Now().UTC()
 		model := p.options.model
-
-		lf.GenerationCreate(langfuse.GenerationBody{
-			ID:        genID,
-			TraceID:   langfuse.GetTraceID(ctx),
-			Name:      langfuse.FormatGenerationName(getAgentIDFromCtx(ctx), string(model.APIModel)),
-			Model:     string(model.APIModel),
-			StartTime: &startTime,
-			Metadata:  p.generationMetadata(ctx),
+		gen = lf.GenerationStart(ctx, langfuse.GenerationParams{
+			Name:     langfuse.FormatGenerationName(getAgentIDFromCtx(ctx), string(model.APIModel)),
+			Model:    string(model.APIModel),
+			Metadata: p.generationMetadata(ctx),
 		})
-
-		resp, err := p.client.send(ctx, messages, tools)
-
-		endTime := time.Now().UTC()
-		update := langfuse.GenerationBody{
-			ID:      genID,
-			EndTime: &endTime,
-		}
-		if err != nil {
-			update.Level = "ERROR"
-			update.StatusMessage = err.Error()
-		}
-		if resp != nil {
-			update.Usage = p.buildUsage(resp.Usage)
-		}
-		lf.GenerationEnd(update)
-		return resp, err
+		defer gen.End()
 	}
 
-	return p.client.send(ctx, messages, tools)
+	resp, err := p.client.send(ctx, messages, tools)
+
+	if gen != nil {
+		if err != nil {
+			gen.SetError(err)
+		}
+		if resp != nil {
+			gen.SetUsage(p.buildUsage(resp.Usage))
+		}
+	}
+	return resp, err
 }
 
 // StreamToResponse consumes a StreamResponse channel and collects the result
@@ -547,17 +536,11 @@ func (p *baseProvider[C]) StreamResponse(ctx context.Context, messages []message
 		return p.client.stream(ctx, messages, tools)
 	}
 
-	genID := uuid.New().String()
-	startTime := time.Now().UTC()
 	model := p.options.model
-
-	lf.GenerationCreate(langfuse.GenerationBody{
-		ID:        genID,
-		TraceID:   langfuse.GetTraceID(ctx),
-		Name:      langfuse.FormatGenerationName(getAgentIDFromCtx(ctx), string(model.APIModel)),
-		Model:     string(model.APIModel),
-		StartTime: &startTime,
-		Metadata:  p.generationMetadata(ctx),
+	gen := lf.GenerationStart(ctx, langfuse.GenerationParams{
+		Name:     langfuse.FormatGenerationName(getAgentIDFromCtx(ctx), string(model.APIModel)),
+		Model:    string(model.APIModel),
+		Metadata: p.generationMetadata(ctx),
 	})
 
 	upstream := p.client.stream(ctx, messages, tools)
@@ -565,9 +548,9 @@ func (p *baseProvider[C]) StreamResponse(ctx context.Context, messages []message
 
 	go func() {
 		defer close(wrapped)
+		defer gen.End()
 		var completionStartTime *time.Time
 		var lastErr error
-		var usage *langfuse.Usage
 
 		for event := range upstream {
 			// Capture time-to-first-token from the first content delta
@@ -579,7 +562,7 @@ func (p *baseProvider[C]) StreamResponse(ctx context.Context, messages []message
 				lastErr = event.Error
 			}
 			if event.Type == EventComplete && event.Response != nil {
-				usage = p.buildUsage(event.Response.Usage)
+				gen.SetUsage(p.buildUsage(event.Response.Usage))
 			}
 			select {
 			case wrapped <- event:
@@ -594,18 +577,12 @@ func (p *baseProvider[C]) StreamResponse(ctx context.Context, messages []message
 			}
 		}
 	done:
-		endTime := time.Now().UTC()
-		update := langfuse.GenerationBody{
-			ID:                  genID,
-			EndTime:             &endTime,
-			CompletionStartTime: completionStartTime,
-			Usage:               usage,
+		if completionStartTime != nil {
+			gen.SetCompletionStartTime(*completionStartTime)
 		}
 		if lastErr != nil {
-			update.Level = "ERROR"
-			update.StatusMessage = lastErr.Error()
+			gen.SetError(lastErr)
 		}
-		lf.GenerationEnd(update)
 	}()
 
 	return wrapped
@@ -684,20 +661,24 @@ func (p *baseProvider[C]) AdjustMaxTokens(estimatedTokens int64) int64 {
 	return newMaxTokens
 }
 
-// buildUsage converts a ProviderResponse's TokenUsage into a Langfuse Usage struct
-// with cost calculated from the model's pricing.
-func (p *baseProvider[C]) buildUsage(u TokenUsage) *langfuse.Usage {
-	model := p.options.model
-	inputCost := model.CostPer1MInCached/1e6*float64(u.CacheCreationTokens) +
+// CalculateCost computes input and output costs for the given token usage and model pricing.
+// This is the single source of truth for cost calculation across the codebase.
+func CalculateCost(model models.Model, u TokenUsage) (inputCost, outputCost float64) {
+	inputCost = model.CostPer1MInCached/1e6*float64(u.CacheCreationTokens) +
 		model.CostPer1MOutCached/1e6*float64(u.CacheReadTokens) +
 		model.CostPer1MIn/1e6*float64(u.InputTokens)
-	outputCost := model.CostPer1MOut / 1e6 * float64(u.OutputTokens)
+	outputCost = model.CostPer1MOut / 1e6 * float64(u.OutputTokens)
+	return
+}
+
+// buildUsage converts a ProviderResponse's TokenUsage into a Langfuse Usage struct.
+func (p *baseProvider[C]) buildUsage(u TokenUsage) *langfuse.Usage {
+	inputCost, outputCost := CalculateCost(p.options.model, u)
 	totalInput := u.InputTokens + u.CacheCreationTokens + u.CacheReadTokens
 	return &langfuse.Usage{
 		Input:      totalInput,
 		Output:     u.OutputTokens,
 		Total:      totalInput + u.OutputTokens,
-		Unit:       "TOKENS",
 		InputCost:  inputCost,
 		OutputCost: outputCost,
 		TotalCost:  inputCost + outputCost,

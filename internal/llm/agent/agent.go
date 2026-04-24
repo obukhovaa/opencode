@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/history"
@@ -212,6 +211,7 @@ func (a *agent) generateTitle(ctx context.Context, sessionID string, content str
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
 	ctx = context.WithValue(ctx, tools.AgentIDContextKey, config.AgentName("descriptor"))
 	ctx = a.createLangfuseTrace(ctx, sess)
+	defer langfuse.EndTrace(ctx)
 	parts := []message.ContentPart{message.TextContent{Text: content}}
 	response, err := a.titleProvider.SendMessages(
 		ctx,
@@ -322,6 +322,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	ctx = tools.AddTag(ctx, "agent", a.AgentID())
 
 	ctx = a.createLangfuseTrace(ctx, session)
+	defer langfuse.EndTrace(ctx)
 
 	userMsg, err := a.createUserMessage(ctx, sessionID, content, attachmentParts)
 	if err != nil {
@@ -626,6 +627,9 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		"session_id", sessionID,
 	)
 
+	// Langfuse client for tool call tracing (declared here to avoid goto-over-decl)
+	lfClient := langfuse.Get()
+
 	// Phase 2: Execute parallel group concurrently
 	permissionDenied := false
 	if len(parallelGroup) > 0 {
@@ -636,6 +640,20 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 			go func(e toolEntry) {
 				defer wg.Done()
 				now := time.Now()
+
+				// Start Langfuse tool span
+				var toolSpan *langfuse.Span
+				if lfClient != nil && lfClient.Enabled() {
+					var toolInput any
+					if shouldLogToolInput(e.toolCall.Name) {
+						toolInput = e.toolCall.Input
+					}
+					toolSpan = lfClient.ToolStart(ctx, langfuse.ToolParams{
+						Name:  e.toolCall.Name,
+						Input: toolInput,
+					})
+					defer toolSpan.End()
+				}
 
 				type runResult struct {
 					resp tools.ToolResponse
@@ -654,6 +672,9 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				var toolErr error
 				select {
 				case <-permCtx.Done():
+					if toolSpan != nil {
+						toolSpan.SetError(permCtx.Err())
+					}
 					return
 				case res := <-ch:
 					toolResult, toolErr = res.resp, res.err
@@ -661,6 +682,9 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 
 				gauge := time.Since(now).Milliseconds()
 				if toolErr != nil {
+					if toolSpan != nil {
+						toolSpan.SetError(toolErr)
+					}
 					if errors.Is(toolErr, permission.ErrorPermissionDenied) {
 						logging.Warn("Tool call denied", "tool", e.toolCall.Name,
 							"ID", e.toolCall.ID,
@@ -689,6 +713,13 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 						IsError:    true,
 					}
 					return
+				}
+				if toolSpan != nil {
+					if toolResult.IsError {
+						toolSpan.SetError(fmt.Errorf("%s", toolResult.Content))
+					} else if shouldLogToolOutput(e.toolCall.Name) {
+						toolSpan.SetOutput(toolResult.Content)
+					}
 				}
 				logging.Debug("Tool call completed", "tool", e.toolCall.Name,
 					"ID", e.toolCall.ID,
@@ -772,6 +803,8 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 
 	// Phase 3: Execute sequential group
 	for _, entry := range sequentialGroup {
+		var seqToolSpan *langfuse.Span
+
 		select {
 		case <-ctx.Done():
 			a.finishMessage(context.Background(), &assistantMsg, message.FinishReasonCanceled)
@@ -796,6 +829,18 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		default:
 		}
 
+		// Start Langfuse tool span
+		if lfClient != nil && lfClient.Enabled() {
+			var seqToolInput any
+			if shouldLogToolInput(entry.toolCall.Name) {
+				seqToolInput = entry.toolCall.Input
+			}
+			seqToolSpan = lfClient.ToolStart(ctx, langfuse.ToolParams{
+				Name:  entry.toolCall.Name,
+				Input: seqToolInput,
+			})
+		}
+
 		now := time.Now()
 		toolResult, toolErr := entry.tool.Run(ctx, tools.ToolCall{
 			ID:    entry.toolCall.ID,
@@ -804,6 +849,10 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		})
 		gauge := time.Since(now).Milliseconds()
 		if toolErr != nil {
+			if seqToolSpan != nil {
+				seqToolSpan.SetError(toolErr)
+				seqToolSpan.End()
+			}
 			if errors.Is(toolErr, permission.ErrorPermissionDenied) {
 				logging.Warn("Tool call denied", "tool", entry.toolCall.Name,
 					"ID", entry.toolCall.ID,
@@ -842,6 +891,14 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				IsError:    true,
 			}
 			continue
+		}
+		if seqToolSpan != nil {
+			if toolResult.IsError {
+				seqToolSpan.SetError(fmt.Errorf("%s", toolResult.Content))
+			} else if shouldLogToolOutput(entry.toolCall.Name) {
+				seqToolSpan.SetOutput(toolResult.Content)
+			}
+			seqToolSpan.End()
 		}
 		logging.Debug("Tool call completed", "tool", entry.toolCall.Name,
 			"ID", entry.toolCall.ID,
@@ -993,10 +1050,8 @@ func (a *agent) TrackUsage(ctx context.Context, sessionID string, model models.M
 		return fmt.Errorf("failed to get session: %w", err)
 	}
 
-	cost := model.CostPer1MInCached/1e6*float64(usage.CacheCreationTokens) +
-		model.CostPer1MOutCached/1e6*float64(usage.CacheReadTokens) +
-		model.CostPer1MIn/1e6*float64(usage.InputTokens) +
-		model.CostPer1MOut/1e6*float64(usage.OutputTokens)
+	inputCost, outputCost := provider.CalculateCost(model, usage)
+	cost := inputCost + outputCost
 
 	sess.Cost += cost
 	sess.CompletionTokens = usage.OutputTokens + usage.CacheReadTokens
@@ -1109,6 +1164,7 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 			summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess)
 		}
 	}
+	defer langfuse.EndTrace(summarizeCtx)
 	summarizePrompt, err := AgentPrompts.ReadFile("prompts/compaction.md")
 	if err != nil {
 		return fmt.Errorf("failed to load summary prompt: %w", err)
@@ -1155,13 +1211,8 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 	oldSession.SummaryMessageID = msg.ID
 	oldSession.CompletionTokens = response.Usage.OutputTokens
 	oldSession.PromptTokens = 0
-	model := a.summarizeProvider.Model()
-	usage := response.Usage
-	cost := model.CostPer1MInCached/1e6*float64(usage.CacheCreationTokens) +
-		model.CostPer1MOutCached/1e6*float64(usage.CacheReadTokens) +
-		model.CostPer1MIn/1e6*float64(usage.InputTokens) +
-		model.CostPer1MOut/1e6*float64(usage.OutputTokens)
-	oldSession.Cost += cost
+	inCost, outCost := provider.CalculateCost(a.summarizeProvider.Model(), response.Usage)
+	oldSession.Cost += inCost + outCost
 
 	_, err = a.sessions.Save(summarizeCtx, oldSession)
 	if err != nil {
@@ -1216,6 +1267,7 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 				summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess)
 			}
 		}
+		defer langfuse.EndTrace(summarizeCtx)
 
 		if len(msgs) == 0 {
 			event = AgentEvent{
@@ -1330,13 +1382,8 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 		oldSession.SummaryMessageID = msg.ID
 		oldSession.CompletionTokens = response.Usage.OutputTokens
 		oldSession.PromptTokens = 0
-		model := a.summarizeProvider.Model()
-		usage := response.Usage
-		cost := model.CostPer1MInCached/1e6*float64(usage.CacheCreationTokens) +
-			model.CostPer1MOutCached/1e6*float64(usage.CacheReadTokens) +
-			model.CostPer1MIn/1e6*float64(usage.InputTokens) +
-			model.CostPer1MOut/1e6*float64(usage.OutputTokens)
-		oldSession.Cost += cost
+		inCost, outCost := provider.CalculateCost(a.summarizeProvider.Model(), response.Usage)
+		oldSession.Cost += inCost + outCost
 		_, err = a.sessions.Save(summarizeCtx, oldSession)
 		if err != nil {
 			event = AgentEvent{
@@ -1463,7 +1510,7 @@ func createAgentProvider(agentName config.AgentName) (agentProvider provider.Pro
 }
 
 // createLangfuseTrace creates a Langfuse trace for the current agent generation
-// and returns a context enriched with the trace ID and session ID.
+// and returns a context enriched with the root trace span.
 // If Langfuse is not initialized, the context is returned unchanged.
 func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session) context.Context {
 	lf := langfuse.Get()
@@ -1471,14 +1518,10 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session) c
 		return ctx
 	}
 
-	traceID := uuid.New().String()
-	ctx = langfuse.WithTraceID(ctx, traceID)
-
 	rootSessionID := sess.RootSessionID
 	if rootSessionID == "" {
 		rootSessionID = sess.ID
 	}
-	ctx = langfuse.WithSessionID(ctx, rootSessionID)
 
 	tags := provider.ResolveTags(ctx)
 
@@ -1490,8 +1533,7 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session) c
 		metadata["parent_session_id"] = sess.ParentSessionID
 	}
 
-	lf.TraceCreate(langfuse.TraceBody{
-		ID:        traceID,
+	return lf.TraceStart(ctx, langfuse.TraceParams{
 		Name:      string(a.AgentID()),
 		SessionID: rootSessionID,
 		UserID:    provider.GetUserID(),
@@ -1499,6 +1541,32 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session) c
 		Release:   version.Version,
 		Metadata:  metadata,
 	})
+}
 
-	return ctx
+// shouldLogToolInput returns true if the tool's input should be logged to telemetry.
+func shouldLogToolInput(toolName string) bool {
+	cfg := config.Get()
+	if cfg.Telemetry == nil || cfg.Telemetry.Tools == nil || !cfg.Telemetry.Tools.Enabled {
+		return false
+	}
+	return matchAnyPattern(cfg.Telemetry.Tools.LogInput, toolName)
+}
+
+// shouldLogToolOutput returns true if the tool's output should be logged to telemetry.
+func shouldLogToolOutput(toolName string) bool {
+	cfg := config.Get()
+	if cfg.Telemetry == nil || cfg.Telemetry.Tools == nil || !cfg.Telemetry.Tools.Enabled {
+		return false
+	}
+	return matchAnyPattern(cfg.Telemetry.Tools.LogOutput, toolName)
+}
+
+// matchAnyPattern returns true if the name matches any of the wildcard patterns.
+func matchAnyPattern(patterns []string, name string) bool {
+	for _, p := range patterns {
+		if permission.MatchWildcard(p, name) {
+			return true
+		}
+	}
+	return false
 }

@@ -100,12 +100,24 @@ type LangfuseConfig struct {
 	BaseURL   string `json:"baseURL,omitempty"`   // Supports "env:VAR_NAME"; falls back to LANGFUSE_BASE_URL
 }
 
+// ToolTelemetryConfig controls what tool call data is logged to the telemetry backend.
+// When Enabled is false, no tool input/output is logged regardless of other fields.
+// LogInput and LogOutput are lists of tool name patterns (supporting wildcards via
+// MatchWildcard) that control which tools have their input/output logged.
+// Use "*" to match all tools.
+type ToolTelemetryConfig struct {
+	Enabled   bool     `json:"enabled,omitempty"`
+	LogInput  []string `json:"logInput,omitempty"`
+	LogOutput []string `json:"logOutput,omitempty"`
+}
+
 // TelemetryConfig defines telemetry configuration for identifying requests.
 type TelemetryConfig struct {
-	UserID      string          `json:"userId,omitempty"`
-	Tags        []string        `json:"tags,omitempty"`
-	DefaultTags []string        `json:"defaultTags,omitempty"`
-	Langfuse    *LangfuseConfig `json:"langfuse,omitempty"`
+	UserID      string               `json:"userId,omitempty"`
+	Tags        []string             `json:"tags,omitempty"`
+	DefaultTags []string             `json:"defaultTags,omitempty"`
+	Langfuse    *LangfuseConfig      `json:"langfuse,omitempty"`
+	Tools       *ToolTelemetryConfig `json:"tools,omitempty"`
 }
 
 // ProviderMetadata defines metadata key-value pairs attached to every LLM API request.
