@@ -107,8 +107,18 @@ func (c *Client) TraceStart(ctx context.Context, params TraceParams) context.Con
 		return ctx
 	}
 
-	attrs := []attribute.KeyValue{
-		attribute.String("langfuse.trace.name", params.Name),
+	var attrs []attribute.KeyValue
+	if params.IsChild {
+		// Child spans (subagents) are observations within the parent trace.
+		// Do NOT set langfuse.trace.name — it would overwrite the parent trace's name.
+		attrs = []attribute.KeyValue{
+			attribute.String("langfuse.observation.type", "span"),
+		}
+	} else {
+		// Root spans define a new Langfuse trace.
+		attrs = []attribute.KeyValue{
+			attribute.String("langfuse.trace.name", params.Name),
+		}
 	}
 	if params.SessionID != "" {
 		attrs = append(attrs, attribute.String("langfuse.session.id", params.SessionID))
