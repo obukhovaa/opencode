@@ -126,7 +126,11 @@ func (c *Client) TraceStart(ctx context.Context, params TraceParams) context.Con
 		attrs = append(attrs, attribute.String("langfuse.trace.metadata."+k, fmt.Sprint(v)))
 	}
 
-	ctx, span := c.tracer.Start(ctx, params.Name, trace.WithAttributes(attrs...))
+	opts := []trace.SpanStartOption{trace.WithAttributes(attrs...)}
+	if !params.IsChild {
+		opts = append(opts, trace.WithNewRoot())
+	}
+	ctx, span := c.tracer.Start(ctx, params.Name, opts...)
 	return withRootSpan(ctx, span)
 }
 

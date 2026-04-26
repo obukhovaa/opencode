@@ -1583,6 +1583,7 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session) c
 		Tags:      tags,
 		Release:   version.Version,
 		Metadata:  metadata,
+		IsChild:   sess.ParentSessionID != "",
 	})
 }
 

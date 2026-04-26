@@ -31,9 +31,16 @@ func (s *Span) SetUsage(u *Usage) {
 	if s == nil || u == nil {
 		return
 	}
-	usage, _ := json.Marshal(map[string]int64{
+	usageMap := map[string]int64{
 		"input": u.Input, "output": u.Output, "total": u.Total,
-	})
+	}
+	if u.CacheRead > 0 {
+		usageMap["cache_read"] = u.CacheRead
+	}
+	if u.CacheCreation > 0 {
+		usageMap["cache_creation"] = u.CacheCreation
+	}
+	usage, _ := json.Marshal(usageMap)
 	cost, _ := json.Marshal(map[string]float64{
 		"input": u.InputCost, "output": u.OutputCost, "total": u.TotalCost,
 	})

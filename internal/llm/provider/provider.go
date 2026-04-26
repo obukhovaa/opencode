@@ -676,12 +676,14 @@ func (p *baseProvider[C]) buildUsage(u TokenUsage) *langfuse.Usage {
 	inputCost, outputCost := CalculateCost(p.options.model, u)
 	totalInput := u.InputTokens + u.CacheCreationTokens + u.CacheReadTokens
 	return &langfuse.Usage{
-		Input:      totalInput,
-		Output:     u.OutputTokens,
-		Total:      totalInput + u.OutputTokens,
-		InputCost:  inputCost,
-		OutputCost: outputCost,
-		TotalCost:  inputCost + outputCost,
+		Input:         totalInput,
+		Output:        u.OutputTokens,
+		Total:         totalInput + u.OutputTokens,
+		CacheRead:     u.CacheReadTokens,
+		CacheCreation: u.CacheCreationTokens,
+		InputCost:     inputCost,
+		OutputCost:    outputCost,
+		TotalCost:     inputCost + outputCost,
 	}
 }
 
