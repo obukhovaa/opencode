@@ -240,6 +240,13 @@ func (a *agent) generateTitle(ctx context.Context, sessionID string, content str
 
 const recapMessageWindow = 30
 
+// Minimum thresholds for generating a recap. Sessions below either threshold
+// are too short to warrant the cost of a summarization call.
+const (
+	recapMinMessages    = 5
+	recapMinTotalTokens = 8000
+)
+
 func (a *agent) GenerateRecap(ctx context.Context, sessionID string) (string, error) {
 	if a.summarizeProvider == nil {
 		return "", fmt.Errorf("summarize provider not available")
@@ -256,6 +263,24 @@ func (a *agent) GenerateRecap(ctx context.Context, sessionID string) (string, er
 	sess, err := a.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return "", fmt.Errorf("failed to get session: %w", err)
+	}
+
+	totalTokens := sess.TotalPromptTokens + sess.TotalCompletionTokens
+	if len(recent) < recapMinMessages {
+		logging.Debug("recap: session too short, skipping",
+			"session_id", sessionID,
+			"messages", len(recent),
+			"tokens", totalTokens,
+		)
+		return "", nil
+	}
+	if totalTokens > 0 && totalTokens < recapMinTotalTokens {
+		logging.Debug("recap: session too few tokens, skipping",
+			"session_id", sessionID,
+			"messages", len(recent),
+			"tokens", totalTokens,
+		)
+		return "", nil
 	}
 
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)

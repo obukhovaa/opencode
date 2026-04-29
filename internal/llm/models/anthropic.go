@@ -9,6 +9,7 @@ const (
 	Claude46Opus     ModelID = "claude-4.6-opus"
 	Claude47Opus     ModelID = "claude-4.7-opus"
 	Claude46Sonnet   ModelID = "claude-4.6-sonnet"
+	Claude45Haiku    ModelID = "claude-4.5-haiku"
 )
 
 // https://docs.anthropic.com/en/docs/about-claude/models/all-models
@@ -76,17 +77,31 @@ var AnthropicModels = map[ModelID]Model{
 		SupportsAttachments:      true,
 	},
 	Claude46Sonnet: {
-		ID:                  Claude46Sonnet,
-		Name:                "Claude 4.6 Sonnet",
+		ID:                       Claude46Sonnet,
+		Name:                     "Claude 4.6 Sonnet",
+		Provider:                 ProviderAnthropic,
+		APIModel:                 "claude-sonnet-4-6",
+		CostPer1MIn:              3.0,
+		CostPer1MInCached:        3.75,
+		CostPer1MOutCached:       0.30,
+		CostPer1MOut:             15.0,
+		ContextWindow:            1000000,
+		DefaultMaxTokens:         128000,
+		CanReason:                true,
+		SupportsAdaptiveThinking: true,
+		SupportsAttachments:      true,
+	},
+	Claude45Haiku: {
+		ID:                  Claude45Haiku,
+		Name:                "Claude 4.5 Haiku",
 		Provider:            ProviderAnthropic,
-		APIModel:            "claude-sonnet-4-6",
-		CostPer1MIn:         3.0,
-		CostPer1MInCached:   3.75,
-		CostPer1MOutCached:  0.30,
-		CostPer1MOut:        15.0,
-		ContextWindow:       1000000,
-		DefaultMaxTokens:    128000,
-		CanReason:           true,
+		APIModel:            "claude-haiku-4-5-20251001",
+		CostPer1MIn:         1.0,
+		CostPer1MInCached:   1.25,
+		CostPer1MOutCached:  0.10,
+		CostPer1MOut:        5.0,
+		ContextWindow:       200000,
+		DefaultMaxTokens:    8192,
 		SupportsAttachments: true,
 	},
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
 )
@@ -33,6 +34,89 @@ func (m *testTool) IsBaseline() bool { return m.baseline }
 
 func newTestTool(name string, baseline bool) tools.BaseTool {
 	return &testTool{name: name, baseline: baseline}
+}
+
+func TestFilterBetaHeaders(t *testing.T) {
+	model1M := models.Model{ContextWindow: 1_000_000}
+	model200K := models.Model{ContextWindow: 200_000}
+
+	tests := []struct {
+		name  string
+		value string
+		model models.Model
+		want  string
+	}{
+		{
+			name:  "single context-1m beta kept for 1M model",
+			value: "context-1m-2025-08-07",
+			model: model1M,
+			want:  "context-1m-2025-08-07",
+		},
+		{
+			name:  "single context-1m beta stripped for 200K model",
+			value: "context-1m-2025-08-07",
+			model: model200K,
+			want:  "",
+		},
+		{
+			name:  "context-1m among multiple betas stripped for 200K model",
+			value: "context-1m-2025-08-07,task-budgets-2026-03-13",
+			model: model200K,
+			want:  "task-budgets-2026-03-13",
+		},
+		{
+			name:  "context-1m among multiple betas kept for 1M model",
+			value: "context-1m-2025-08-07,task-budgets-2026-03-13",
+			model: model1M,
+			want:  "context-1m-2025-08-07,task-budgets-2026-03-13",
+		},
+		{
+			name:  "non-context beta unchanged for 200K model",
+			value: "task-budgets-2026-03-13",
+			model: model200K,
+			want:  "task-budgets-2026-03-13",
+		},
+		{
+			name:  "empty string returns empty",
+			value: "",
+			model: model200K,
+			want:  "",
+		},
+		{
+			name:  "whitespace around values is trimmed",
+			value: " context-1m-2025-08-07 , task-budgets-2026-03-13 ",
+			model: model200K,
+			want:  "task-budgets-2026-03-13",
+		},
+		{
+			name:  "future context-1m version also stripped for small model",
+			value: "context-1m-2026-01-01",
+			model: model200K,
+			want:  "",
+		},
+		{
+			name:  "only context-1m values stripped, others preserved",
+			value: "advanced-tool-use,context-1m-2025-08-07,task-budgets-2026-03-13",
+			model: model200K,
+			want:  "advanced-tool-use,task-budgets-2026-03-13",
+		},
+		{
+			name:  "trailing comma handled",
+			value: "context-1m-2025-08-07,",
+			model: model200K,
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterBetaHeaders(tt.value, tt.model)
+			if got != tt.want {
+				t.Errorf("filterBetaHeaders(%q, ctx=%d) = %q, want %q",
+					tt.value, tt.model.ContextWindow, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestConvertToolsCacheBreakpoints(t *testing.T) {

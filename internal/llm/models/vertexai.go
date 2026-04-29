@@ -11,6 +11,7 @@ const (
 	VertexAIOpus46        ModelID = "vertexai.claude-opus-4-6"
 	VertexAIOpus47        ModelID = "vertexai.claude-opus-4-7"
 	VertexAISonnet46      ModelID = "vertexai.claude-sonnet-4-6"
+	VertexAIHaiku45       ModelID = "vertexai.claude-haiku-4-5"
 )
 
 var VertexAIGeminiModels = map[ModelID]Model{
@@ -108,17 +109,31 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsTaskBudget:       AnthropicModels[Claude47Opus].SupportsTaskBudget,
 	},
 	VertexAISonnet46: {
-		ID:                  VertexAISonnet46,
-		Name:                "VertexAI: Claude Sonnet 4.6",
+		ID:                       VertexAISonnet46,
+		Name:                     "VertexAI: Claude Sonnet 4.6",
+		Provider:                 ProviderVertexAI,
+		APIModel:                 "claude-sonnet-4-6",
+		CostPer1MIn:              AnthropicModels[Claude46Sonnet].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[Claude46Sonnet].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[Claude46Sonnet].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[Claude46Sonnet].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[Claude46Sonnet].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[Claude46Sonnet].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[Claude46Sonnet].SupportsAttachments,
+		CanReason:                AnthropicModels[Claude46Sonnet].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[Claude46Sonnet].SupportsAdaptiveThinking,
+	},
+	VertexAIHaiku45: {
+		ID:                  VertexAIHaiku45,
+		Name:                "VertexAI: Claude Haiku 4.5",
 		Provider:            ProviderVertexAI,
-		APIModel:            "claude-sonnet-4-6",
-		CostPer1MIn:         AnthropicModels[Claude46Sonnet].CostPer1MIn,
-		CostPer1MInCached:   AnthropicModels[Claude46Sonnet].CostPer1MInCached,
-		CostPer1MOut:        AnthropicModels[Claude46Sonnet].CostPer1MOut,
-		CostPer1MOutCached:  AnthropicModels[Claude46Sonnet].CostPer1MOutCached,
-		ContextWindow:       AnthropicModels[Claude46Sonnet].ContextWindow,
-		DefaultMaxTokens:    AnthropicModels[Claude46Sonnet].DefaultMaxTokens,
-		SupportsAttachments: AnthropicModels[Claude46Sonnet].SupportsAttachments,
-		CanReason:           AnthropicModels[Claude46Sonnet].CanReason,
+		APIModel:            "claude-haiku-4-5@20251001",
+		CostPer1MIn:         AnthropicModels[Claude45Haiku].CostPer1MIn,
+		CostPer1MInCached:   AnthropicModels[Claude45Haiku].CostPer1MInCached,
+		CostPer1MOut:        AnthropicModels[Claude45Haiku].CostPer1MOut,
+		CostPer1MOutCached:  AnthropicModels[Claude45Haiku].CostPer1MOutCached,
+		ContextWindow:       AnthropicModels[Claude45Haiku].ContextWindow,
+		DefaultMaxTokens:    AnthropicModels[Claude45Haiku].DefaultMaxTokens,
+		SupportsAttachments: AnthropicModels[Claude45Haiku].SupportsAttachments,
 	},
 }

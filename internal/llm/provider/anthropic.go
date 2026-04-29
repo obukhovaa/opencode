@@ -21,6 +21,25 @@ import (
 
 const taskBudgetsBeta = "task-budgets-2026-03-13"
 
+// filterBetaHeaders removes beta header values that are incompatible with the
+// given model. For example, "context-1m-*" betas are stripped for models whose
+// context window is below 1M tokens.
+func filterBetaHeaders(value string, model models.Model) string {
+	parts := strings.Split(value, ",")
+	var kept []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.HasPrefix(p, "context-1m") && model.ContextWindow < 1_000_000 {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return strings.Join(kept, ",")
+}
+
 type anthropicOptions struct {
 	useBedrock      bool
 	useVertex       bool
@@ -75,6 +94,12 @@ func newAnthropicClient(opts providerClientOptions) AnthropicClient {
 
 	if opts.headers != nil {
 		for k, v := range opts.headers {
+			if strings.EqualFold(k, "anthropic-beta") {
+				v = filterBetaHeaders(v, opts.model)
+				if v == "" {
+					continue
+				}
+			}
 			anthropicClientOptions = append(anthropicClientOptions, option.WithHeader(k, v))
 		}
 	}
