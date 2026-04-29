@@ -12,3 +12,4 @@ Specs not yet implemented.
 - [Cron Scheduled Tasks](spec/20260325T120000-cron-scheduled-tasks.md)
 - [Deferred Tools and ToolSearchTool](spec/20260405T120000-deferred-tools-and-toolsearch.md)
 - [Memory Tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool)
+- [Session Recap](spec/20260428T120000-session-recap.md)
