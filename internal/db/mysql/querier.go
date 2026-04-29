@@ -17,6 +17,7 @@ type Querier interface {
 	DeleteFile(ctx context.Context, id string) error
 	DeleteFlowStatesByRootSession(ctx context.Context, rootSessionID string) error
 	DeleteMessage(ctx context.Context, id string) error
+	DeleteRecapBySessionID(ctx context.Context, sessionID string) error
 	DeleteSession(ctx context.Context, id string) error
 	DeleteSessionFiles(ctx context.Context, sessionID string) error
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
@@ -25,6 +26,7 @@ type Querier interface {
 	GetFlowState(ctx context.Context, sessionID string) (FlowState, error)
 	GetMaxSeqBySession(ctx context.Context, sessionID string) (int64, error)
 	GetMessage(ctx context.Context, id string) (Message, error)
+	GetRecapBySessionID(ctx context.Context, sessionID string) (SessionRecap, error)
 	GetSessionByID(ctx context.Context, id string) (Session, error)
 	ListChildSessions(ctx context.Context, rootSessionID sql.NullString) ([]Session, error)
 	ListFilesByPath(ctx context.Context, path string) ([]File, error)
@@ -32,6 +34,7 @@ type Querier interface {
 	ListFilesBySessionTree(ctx context.Context, rootSessionID sql.NullString) ([]File, error)
 	ListFlowStatesByFlowID(ctx context.Context, flowID string) ([]FlowState, error)
 	ListFlowStatesByRootSession(ctx context.Context, rootSessionID string) ([]FlowState, error)
+	ListLatestMessagesBySession(ctx context.Context, arg ListLatestMessagesBySessionParams) ([]Message, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)
 	ListLatestSessionTreeFiles(ctx context.Context, rootSessionID sql.NullString) ([]File, error)
 	ListMessagesBySession(ctx context.Context, sessionID string) ([]Message, error)
@@ -40,6 +43,7 @@ type Querier interface {
 	UpdateFlowState(ctx context.Context, arg UpdateFlowStateParams) (sql.Result, error)
 	UpdateMessage(ctx context.Context, arg UpdateMessageParams) error
 	UpdateSession(ctx context.Context, arg UpdateSessionParams) (sql.Result, error)
+	UpsertRecap(ctx context.Context, arg UpsertRecapParams) (sql.Result, error)
 }
 
 var _ Querier = (*Queries)(nil)

@@ -1086,6 +1086,7 @@ func (a appModel) View() tea.View {
 
 	v := tea.NewView(appView)
 	v.AltScreen = true
+	v.ReportFocus = true
 	return v
 }
 

@@ -263,6 +263,22 @@ func (q *MySQLQuerier) GetMaxSeqBySession(ctx context.Context, sessionID string)
 	return q.queries.GetMaxSeqBySession(ctx, sessionID)
 }
 
+// ListLatestMessagesBySession lists the latest N messages for a session
+func (q *MySQLQuerier) ListLatestMessagesBySession(ctx context.Context, arg ListLatestMessagesBySessionParams) ([]Message, error) {
+	mysqlMessages, err := q.queries.ListLatestMessagesBySession(ctx, mysqldb.ListLatestMessagesBySessionParams{
+		SessionID: arg.SessionID,
+		Limit:     int32(arg.Limit),
+	})
+	if err != nil {
+		return nil, err
+	}
+	messages := make([]Message, len(mysqlMessages))
+	for i, m := range mysqlMessages {
+		messages[i] = mysqlMessageToMessage(m)
+	}
+	return messages, nil
+}
+
 // CreateFile creates a file and returns it
 func (q *MySQLQuerier) CreateFile(ctx context.Context, arg CreateFileParams) (File, error) {
 	_, err := q.queries.CreateFile(ctx, mysqldb.CreateFileParams{
@@ -571,4 +587,38 @@ func (q *MySQLQuerier) UpdateFlowState(ctx context.Context, arg UpdateFlowStateP
 // DeleteFlowStatesByRootSession deletes all flow states for a root session
 func (q *MySQLQuerier) DeleteFlowStatesByRootSession(ctx context.Context, rootSessionID string) error {
 	return q.queries.DeleteFlowStatesByRootSession(ctx, rootSessionID)
+}
+
+// GetRecapBySessionID gets a recap by session ID
+func (q *MySQLQuerier) GetRecapBySessionID(ctx context.Context, sessionID string) (SessionRecap, error) {
+	r, err := q.queries.GetRecapBySessionID(ctx, sessionID)
+	if err != nil {
+		return SessionRecap{}, err
+	}
+	return SessionRecap{
+		ID:           r.ID,
+		SessionID:    r.SessionID,
+		Content:      r.Content,
+		MessageCount: r.MessageCount,
+		CreatedAt:    r.CreatedAt,
+	}, nil
+}
+
+// UpsertRecap creates or updates a recap and returns it
+func (q *MySQLQuerier) UpsertRecap(ctx context.Context, arg UpsertRecapParams) (SessionRecap, error) {
+	_, err := q.queries.UpsertRecap(ctx, mysqldb.UpsertRecapParams{
+		ID:           arg.ID,
+		SessionID:    arg.SessionID,
+		Content:      arg.Content,
+		MessageCount: arg.MessageCount,
+	})
+	if err != nil {
+		return SessionRecap{}, err
+	}
+	return q.GetRecapBySessionID(ctx, arg.SessionID)
+}
+
+// DeleteRecapBySessionID deletes a recap by session ID
+func (q *MySQLQuerier) DeleteRecapBySessionID(ctx context.Context, sessionID string) error {
+	return q.queries.DeleteRecapBySessionID(ctx, sessionID)
 }

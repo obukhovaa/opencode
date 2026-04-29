@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -16,6 +17,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/format"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
+	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/session"
 	"github.com/opencode-ai/opencode/internal/skill"
@@ -32,6 +34,8 @@ var ChatPage PageID = "chat"
 // and there is no running request to cancel — signals the app to show the quit dialog.
 type ShowQuitDialogMsg struct{}
 
+const focusRecapThreshold = 5 * time.Minute
+
 type chatPage struct {
 	app                         *app.App
 	editor                      layout.Container
@@ -45,6 +49,7 @@ type chatPage struct {
 	commands                    []dialog.Command
 	shellMode                   bool
 	vimMode                     string // "" when disabled, "INSERT" or "NORMAL" when active
+	lastBlurAt                  time.Time
 }
 
 type ChatKeyMap struct {
@@ -224,6 +229,18 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		p.session = msg
+		if cmd := p.loadRecap(session.Session(msg)); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case tea.BlurMsg:
+		p.lastBlurAt = time.Now()
+	case tea.FocusMsg:
+		if !p.lastBlurAt.IsZero() && time.Since(p.lastBlurAt) >= focusRecapThreshold && !p.app.ActiveAgent().IsBusy() {
+			if cmd := p.loadRecap(p.session); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		p.lastBlurAt = time.Time{}
 	case tea.PasteMsg:
 		// Paste events go directly to the editor, skip dialog triggers
 		u, cmd := p.layout.Update(msg)
@@ -508,6 +525,80 @@ func (p *chatPage) BindingKeys() []key.Binding {
 	bindings = append(bindings, p.messages.BindingKeys()...)
 	bindings = append(bindings, p.editor.BindingKeys()...)
 	return bindings
+}
+
+func (p *chatPage) loadRecap(sess session.Session) tea.Cmd {
+	if sess.ID == "" {
+		return nil
+	}
+
+	sessionID := sess.ID
+	activeAgent := p.app.ActiveAgent()
+	recaps := p.app.Recaps
+	messages := p.app.Messages
+
+	return func() tea.Msg {
+		ctx := context.Background()
+		logging.Debug("recap: loading", "session_id", sessionID)
+
+		maxSeq, err := messages.MaxSeq(ctx, sessionID)
+		if err != nil {
+			logging.Warn("recap: failed to get max seq", "session_id", sessionID, "error", err)
+			return nil
+		}
+		// Legacy sessions may have seq=NULL on all messages, making MAX(seq)=0
+		// despite having messages. Use ListLatest as the source of truth —
+		// if it returns nothing, the session truly has no messages.
+		if maxSeq == 0 {
+			probe, probeErr := messages.ListLatest(ctx, sessionID, 1)
+			if probeErr != nil || len(probe) == 0 {
+				logging.Debug("recap: session has no messages", "session_id", sessionID)
+				return nil
+			}
+		}
+
+		existing, found, err := recaps.Get(ctx, sessionID)
+		if err != nil {
+			logging.Warn("recap: failed to load existing", "session_id", sessionID, "error", err)
+			return nil
+		}
+
+		if found && existing.MessageCount == maxSeq {
+			logging.Debug("recap: using cached", "session_id", sessionID, "maxSeq", maxSeq)
+			return chat.RecapReadyMsg{
+				SessionID:    sessionID,
+				Content:      existing.Content,
+				MessageCount: existing.MessageCount,
+			}
+		}
+
+		logging.Debug("recap: generating", "session_id", sessionID, "maxSeq", maxSeq)
+		content, err := activeAgent.GenerateRecap(ctx, sessionID)
+		if err != nil {
+			logging.Warn("recap: generation failed", "session_id", sessionID, "error", err)
+			if found {
+				return chat.RecapReadyMsg{
+					SessionID:    sessionID,
+					Content:      existing.Content,
+					MessageCount: existing.MessageCount,
+				}
+			}
+			return nil
+		}
+		if content == "" {
+			return nil
+		}
+
+		if _, err := recaps.Save(ctx, sessionID, content, maxSeq); err != nil {
+			logging.Warn("recap: failed to persist", "session_id", sessionID, "error", err)
+		}
+		logging.Debug("recap: ready", "session_id", sessionID, "length", len(content))
+		return chat.RecapReadyMsg{
+			SessionID:    sessionID,
+			Content:      content,
+			MessageCount: maxSeq,
+		}
+	}
 }
 
 func NewChatPage(app *app.App, commands []dialog.Command) tea.Model {

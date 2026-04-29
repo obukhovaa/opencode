@@ -20,6 +20,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
+	"github.com/opencode-ai/opencode/internal/recap"
 	"github.com/opencode-ai/opencode/internal/session"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
 )
@@ -28,6 +29,7 @@ type App struct {
 	Sessions     session.Service
 	Messages     message.Service
 	History      history.Service
+	Recaps       recap.Service
 	Permissions  permission.Service
 	Registry     agentregistry.Registry
 	MCPRegistry  agent.MCPRegistry
@@ -99,6 +101,7 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 	sessions := session.NewService(q, projectID)
 	messages := message.NewService(q, conn)
 	files := history.NewService(q, conn)
+	recaps := recap.NewService(q)
 	reg := agentregistry.GetRegistry()
 	perm := permission.NewPermissionService()
 	lspSvc := NewLspService()
@@ -110,6 +113,7 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 		Sessions:      sessions,
 		Messages:      messages,
 		History:       files,
+		Recaps:        recaps,
 		Permissions:   perm,
 		Registry:      reg,
 		LspService:    lspSvc,

@@ -101,6 +101,55 @@ func (q *Queries) GetMessage(ctx context.Context, id string) (Message, error) {
 	return i, err
 }
 
+const listLatestMessagesBySession = `-- name: ListLatestMessagesBySession :many
+SELECT id, session_id, role, parts, model, seq, created_at, updated_at, finished_at FROM (
+    SELECT id, session_id, role, parts, model, seq, created_at, updated_at, finished_at
+    FROM messages
+    WHERE session_id = ?
+    ORDER BY seq DESC, created_at DESC
+    LIMIT ?
+) sub
+ORDER BY seq ASC, created_at ASC
+`
+
+type ListLatestMessagesBySessionParams struct {
+	SessionID string `json:"session_id"`
+	Limit     int32  `json:"limit"`
+}
+
+func (q *Queries) ListLatestMessagesBySession(ctx context.Context, arg ListLatestMessagesBySessionParams) ([]Message, error) {
+	rows, err := q.db.QueryContext(ctx, listLatestMessagesBySession, arg.SessionID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Message{}
+	for rows.Next() {
+		var i Message
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Role,
+			&i.Parts,
+			&i.Model,
+			&i.Seq,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMessagesBySession = `-- name: ListMessagesBySession :many
 SELECT id, session_id, role, parts, model, seq, created_at, updated_at, finished_at
 FROM messages

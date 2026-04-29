@@ -42,6 +42,16 @@ WHERE id = ?;
 DELETE FROM messages
 WHERE id = ?;
 
+-- name: ListLatestMessagesBySession :many
+SELECT * FROM (
+    SELECT *
+    FROM messages
+    WHERE session_id = ?
+    ORDER BY seq DESC, created_at DESC
+    LIMIT ?
+) sub
+ORDER BY seq ASC, created_at ASC;
+
 -- name: DeleteSessionMessages :exec
 DELETE FROM messages
 WHERE session_id = ?;

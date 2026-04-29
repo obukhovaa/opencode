@@ -45,6 +45,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteMessageStmt, err = db.PrepareContext(ctx, deleteMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteMessage: %w", err)
 	}
+	if q.deleteRecapBySessionIDStmt, err = db.PrepareContext(ctx, deleteRecapBySessionID); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteRecapBySessionID: %w", err)
+	}
 	if q.deleteSessionStmt, err = db.PrepareContext(ctx, deleteSession); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSession: %w", err)
 	}
@@ -69,6 +72,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getMessageStmt, err = db.PrepareContext(ctx, getMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query GetMessage: %w", err)
 	}
+	if q.getRecapBySessionIDStmt, err = db.PrepareContext(ctx, getRecapBySessionID); err != nil {
+		return nil, fmt.Errorf("error preparing query GetRecapBySessionID: %w", err)
+	}
 	if q.getSessionByIDStmt, err = db.PrepareContext(ctx, getSessionByID); err != nil {
 		return nil, fmt.Errorf("error preparing query GetSessionByID: %w", err)
 	}
@@ -89,6 +95,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.listFlowStatesByRootSessionStmt, err = db.PrepareContext(ctx, listFlowStatesByRootSession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListFlowStatesByRootSession: %w", err)
+	}
+	if q.listLatestMessagesBySessionStmt, err = db.PrepareContext(ctx, listLatestMessagesBySession); err != nil {
+		return nil, fmt.Errorf("error preparing query ListLatestMessagesBySession: %w", err)
 	}
 	if q.listLatestSessionFilesStmt, err = db.PrepareContext(ctx, listLatestSessionFiles); err != nil {
 		return nil, fmt.Errorf("error preparing query ListLatestSessionFiles: %w", err)
@@ -113,6 +122,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.updateSessionStmt, err = db.PrepareContext(ctx, updateSession); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateSession: %w", err)
+	}
+	if q.upsertRecapStmt, err = db.PrepareContext(ctx, upsertRecap); err != nil {
+		return nil, fmt.Errorf("error preparing query UpsertRecap: %w", err)
 	}
 	return &q, nil
 }
@@ -152,6 +164,11 @@ func (q *Queries) Close() error {
 	if q.deleteMessageStmt != nil {
 		if cerr := q.deleteMessageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteMessageStmt: %w", cerr)
+		}
+	}
+	if q.deleteRecapBySessionIDStmt != nil {
+		if cerr := q.deleteRecapBySessionIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteRecapBySessionIDStmt: %w", cerr)
 		}
 	}
 	if q.deleteSessionStmt != nil {
@@ -194,6 +211,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getMessageStmt: %w", cerr)
 		}
 	}
+	if q.getRecapBySessionIDStmt != nil {
+		if cerr := q.getRecapBySessionIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getRecapBySessionIDStmt: %w", cerr)
+		}
+	}
 	if q.getSessionByIDStmt != nil {
 		if cerr := q.getSessionByIDStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getSessionByIDStmt: %w", cerr)
@@ -227,6 +249,11 @@ func (q *Queries) Close() error {
 	if q.listFlowStatesByRootSessionStmt != nil {
 		if cerr := q.listFlowStatesByRootSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listFlowStatesByRootSessionStmt: %w", cerr)
+		}
+	}
+	if q.listLatestMessagesBySessionStmt != nil {
+		if cerr := q.listLatestMessagesBySessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listLatestMessagesBySessionStmt: %w", cerr)
 		}
 	}
 	if q.listLatestSessionFilesStmt != nil {
@@ -267,6 +294,11 @@ func (q *Queries) Close() error {
 	if q.updateSessionStmt != nil {
 		if cerr := q.updateSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing updateSessionStmt: %w", cerr)
+		}
+	}
+	if q.upsertRecapStmt != nil {
+		if cerr := q.upsertRecapStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing upsertRecapStmt: %w", cerr)
 		}
 	}
 	return err
@@ -315,6 +347,7 @@ type Queries struct {
 	deleteFileStmt                    *sql.Stmt
 	deleteFlowStatesByRootSessionStmt *sql.Stmt
 	deleteMessageStmt                 *sql.Stmt
+	deleteRecapBySessionIDStmt        *sql.Stmt
 	deleteSessionStmt                 *sql.Stmt
 	deleteSessionFilesStmt            *sql.Stmt
 	deleteSessionMessagesStmt         *sql.Stmt
@@ -323,6 +356,7 @@ type Queries struct {
 	getFlowStateStmt                  *sql.Stmt
 	getMaxSeqBySessionStmt            *sql.Stmt
 	getMessageStmt                    *sql.Stmt
+	getRecapBySessionIDStmt           *sql.Stmt
 	getSessionByIDStmt                *sql.Stmt
 	listChildSessionsStmt             *sql.Stmt
 	listFilesByPathStmt               *sql.Stmt
@@ -330,6 +364,7 @@ type Queries struct {
 	listFilesBySessionTreeStmt        *sql.Stmt
 	listFlowStatesByFlowIDStmt        *sql.Stmt
 	listFlowStatesByRootSessionStmt   *sql.Stmt
+	listLatestMessagesBySessionStmt   *sql.Stmt
 	listLatestSessionFilesStmt        *sql.Stmt
 	listLatestSessionTreeFilesStmt    *sql.Stmt
 	listMessagesBySessionStmt         *sql.Stmt
@@ -338,6 +373,7 @@ type Queries struct {
 	updateFlowStateStmt               *sql.Stmt
 	updateMessageStmt                 *sql.Stmt
 	updateSessionStmt                 *sql.Stmt
+	upsertRecapStmt                   *sql.Stmt
 }
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
@@ -351,6 +387,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		deleteFileStmt:                    q.deleteFileStmt,
 		deleteFlowStatesByRootSessionStmt: q.deleteFlowStatesByRootSessionStmt,
 		deleteMessageStmt:                 q.deleteMessageStmt,
+		deleteRecapBySessionIDStmt:        q.deleteRecapBySessionIDStmt,
 		deleteSessionStmt:                 q.deleteSessionStmt,
 		deleteSessionFilesStmt:            q.deleteSessionFilesStmt,
 		deleteSessionMessagesStmt:         q.deleteSessionMessagesStmt,
@@ -359,6 +396,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getFlowStateStmt:                  q.getFlowStateStmt,
 		getMaxSeqBySessionStmt:            q.getMaxSeqBySessionStmt,
 		getMessageStmt:                    q.getMessageStmt,
+		getRecapBySessionIDStmt:           q.getRecapBySessionIDStmt,
 		getSessionByIDStmt:                q.getSessionByIDStmt,
 		listChildSessionsStmt:             q.listChildSessionsStmt,
 		listFilesByPathStmt:               q.listFilesByPathStmt,
@@ -366,6 +404,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listFilesBySessionTreeStmt:        q.listFilesBySessionTreeStmt,
 		listFlowStatesByFlowIDStmt:        q.listFlowStatesByFlowIDStmt,
 		listFlowStatesByRootSessionStmt:   q.listFlowStatesByRootSessionStmt,
+		listLatestMessagesBySessionStmt:   q.listLatestMessagesBySessionStmt,
 		listLatestSessionFilesStmt:        q.listLatestSessionFilesStmt,
 		listLatestSessionTreeFilesStmt:    q.listLatestSessionTreeFilesStmt,
 		listMessagesBySessionStmt:         q.listMessagesBySessionStmt,
@@ -374,5 +413,6 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		updateFlowStateStmt:               q.updateFlowStateStmt,
 		updateMessageStmt:                 q.updateMessageStmt,
 		updateSessionStmt:                 q.updateSessionStmt,
+		upsertRecapStmt:                   q.upsertRecapStmt,
 	}
 }

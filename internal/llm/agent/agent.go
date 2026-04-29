@@ -77,6 +77,7 @@ type Service interface {
 	IsBusy() bool
 	Update(agentName config.AgentName, modelID models.ModelID) (models.Model, error)
 	Summarize(ctx context.Context, sessionID string) error
+	GenerateRecap(ctx context.Context, sessionID string) (string, error)
 }
 
 type agent struct {
@@ -119,11 +120,11 @@ func newAgent(
 
 	var titleProvider, summarizeProvider provider.Provider
 	if agentInfo.Mode == config.AgentModeAgent {
-		summarizeProvider, err = createAgentProvider(config.AgentSummarizer)
+		summarizeProvider, err = createAgentProvider(config.AgentSummarizer, withDisableCache())
 		if err != nil {
 			return nil, err
 		}
-		titleProvider, err = createAgentProvider(config.AgentDescriptor)
+		titleProvider, err = createAgentProvider(config.AgentDescriptor, withDisableCache())
 		if err != nil {
 			return nil, err
 		}
@@ -235,6 +236,55 @@ func (a *agent) generateTitle(ctx context.Context, sessionID string, content str
 	sess.Title = title
 	_, err = a.sessions.Save(ctx, sess)
 	return err
+}
+
+const recapMessageWindow = 30
+
+func (a *agent) GenerateRecap(ctx context.Context, sessionID string) (string, error) {
+	if a.summarizeProvider == nil {
+		return "", fmt.Errorf("summarize provider not available")
+	}
+
+	recent, err := a.messages.ListLatest(ctx, sessionID, recapMessageWindow)
+	if err != nil {
+		return "", fmt.Errorf("failed to list messages: %w", err)
+	}
+	if len(recent) == 0 {
+		return "", nil
+	}
+
+	sess, err := a.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get session: %w", err)
+	}
+
+	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
+	ctx = context.WithValue(ctx, tools.AgentIDContextKey, config.AgentName("summarizer"))
+	ctx = a.createLangfuseTrace(ctx, sess)
+	defer langfuse.EndTrace(ctx)
+
+	recapPrompt, err := AgentPrompts.ReadFile("prompts/recap.md")
+	if err != nil {
+		return "", fmt.Errorf("failed to load recap prompt: %w", err)
+	}
+
+	promptMsg := message.Message{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: string(recapPrompt)}},
+	}
+
+	msgsWithPrompt := append(recent, promptMsg)
+	events := a.summarizeProvider.StreamResponse(
+		ctx,
+		msgsWithPrompt,
+		make([]tools.BaseTool, 0),
+	)
+	response, err := provider.StreamToResponse(events)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate recap: %w", err)
+	}
+
+	return strings.TrimSpace(response.Content), nil
 }
 
 func (a *agent) err(err error) AgentEvent {
@@ -1423,7 +1473,23 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-func createAgentProvider(agentName config.AgentName) (agentProvider provider.Provider, err error) {
+type providerOptions struct {
+	disableCache bool
+}
+
+type providerOption func(*providerOptions)
+
+func withDisableCache() providerOption {
+	return func(o *providerOptions) {
+		o.disableCache = true
+	}
+}
+
+func createAgentProvider(agentName config.AgentName, providerOpts ...providerOption) (agentProvider provider.Provider, err error) {
+	var popts providerOptions
+	for _, o := range providerOpts {
+		o(&popts)
+	}
 	defer func() {
 		if err == nil {
 			logging.Info("Agent provider created", "agent", agentName, "model", agentProvider.Model())
@@ -1498,25 +1564,34 @@ func createAgentProvider(agentName config.AgentName) (agentProvider provider.Pro
 		if model.UseLegacyMaxTokens {
 			openaiOpts = append(openaiOpts, provider.WithLegacyMaxTokens())
 		}
+		if popts.disableCache {
+			openaiOpts = append(openaiOpts, provider.WithOpenAIDisableCache())
+		}
 		opts = append(
 			opts,
 			provider.WithOpenAIOptions(openaiOpts...),
 		)
-	} else if (model.Provider == models.ProviderAnthropic || model.Provider == models.ProviderVertexAI || model.Provider == models.ProviderBedrock) && model.CanReason {
-		anthropicOpts := []provider.AnthropicOption{
-			provider.WithAnthropicShouldThinkFn(provider.DefaultShouldThinkFn),
+	} else if model.Provider == models.ProviderAnthropic || model.Provider == models.ProviderVertexAI || model.Provider == models.ProviderBedrock {
+		var anthropicOpts []provider.AnthropicOption
+		if model.CanReason {
+			anthropicOpts = append(anthropicOpts, provider.WithAnthropicShouldThinkFn(provider.DefaultShouldThinkFn))
+			if model.SupportsAdaptiveThinking {
+				anthropicOpts = append(anthropicOpts, provider.WithAnthropicReasoningEffort(agentConfig.ReasoningEffort))
+			}
+			if agentConfig.TaskBudget > 0 && model.SupportsTaskBudget {
+				anthropicOpts = append(anthropicOpts, provider.WithAnthropicTaskBudget(agentConfig.TaskBudget))
+			}
 		}
-		if model.SupportsAdaptiveThinking {
-			anthropicOpts = append(anthropicOpts, provider.WithAnthropicReasoningEffort(agentConfig.ReasoningEffort))
+		if popts.disableCache {
+			anthropicOpts = append(anthropicOpts, provider.WithAnthropicDisableCache())
 		}
-		if agentConfig.TaskBudget > 0 && model.SupportsTaskBudget {
-			anthropicOpts = append(anthropicOpts, provider.WithAnthropicTaskBudget(agentConfig.TaskBudget))
+		if len(anthropicOpts) > 0 {
+			opts = append(opts, provider.WithAnthropicOptions(anthropicOpts...))
 		}
-		opts = append(
-			opts,
-			provider.WithAnthropicOptions(anthropicOpts...),
-		)
+	} else if model.Provider == models.ProviderGemini && popts.disableCache {
+		opts = append(opts, provider.WithGeminiOptions(provider.WithGeminiDisableCache()))
 	}
+
 	agentProvider, err = provider.NewProvider(
 		model.Provider,
 		opts...,

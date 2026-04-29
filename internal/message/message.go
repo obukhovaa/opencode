@@ -29,6 +29,8 @@ type Service interface {
 	Update(ctx context.Context, message Message) error
 	Get(ctx context.Context, id string) (Message, error)
 	List(ctx context.Context, sessionID string) ([]Message, error)
+	ListLatest(ctx context.Context, sessionID string, limit int64) ([]Message, error)
+	MaxSeq(ctx context.Context, sessionID string) (int64, error)
 	Delete(ctx context.Context, id string) error
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
 }
@@ -195,6 +197,28 @@ func (s *service) List(ctx context.Context, sessionID string) ([]Message, error)
 		}
 	}
 	return messages, nil
+}
+
+func (s *service) ListLatest(ctx context.Context, sessionID string, limit int64) ([]Message, error) {
+	dbMessages, err := s.q.ListLatestMessagesBySession(ctx, db.ListLatestMessagesBySessionParams{
+		SessionID: sessionID,
+		Limit:     limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	messages := make([]Message, len(dbMessages))
+	for i, dbMessage := range dbMessages {
+		messages[i], err = s.fromDBItem(dbMessage)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return messages, nil
+}
+
+func (s *service) MaxSeq(ctx context.Context, sessionID string) (int64, error) {
+	return s.q.GetMaxSeqBySession(ctx, sessionID)
 }
 
 func (s *service) fromDBItem(item db.Message) (Message, error) {

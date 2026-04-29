@@ -145,6 +145,9 @@ func (a *stubAgent) Update(_ config.AgentName, _ models.ModelID) (models.Model, 
 	return models.Model{}, nil
 }
 func (a *stubAgent) Summarize(_ context.Context, _ string) error { return nil }
+func (a *stubAgent) GenerateRecap(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
 
 // stubAgentFactory returns the stubAgent.
 type stubAgentFactory struct{}

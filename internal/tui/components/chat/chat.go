@@ -59,6 +59,12 @@ type VimModeChangedMsg struct {
 
 type ToggleVimModeMsg struct{}
 
+type RecapReadyMsg struct {
+	SessionID    string
+	Content      string
+	MessageCount int64
+}
+
 func header(width int) string {
 	return lipgloss.JoinVertical(
 		lipgloss.Top,

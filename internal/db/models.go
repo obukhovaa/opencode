@@ -59,3 +59,11 @@ type Session struct {
 	TotalPromptTokens     int64          `json:"total_prompt_tokens"`
 	TotalCompletionTokens int64          `json:"total_completion_tokens"`
 }
+
+type SessionRecap struct {
+	ID           string `json:"id"`
+	SessionID    string `json:"session_id"`
+	Content      string `json:"content"`
+	MessageCount int64  `json:"message_count"`
+	CreatedAt    int64  `json:"created_at"`
+}

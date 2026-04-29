@@ -43,6 +43,7 @@ type messagesCmp struct {
 	taskMessages        map[string][]message.Message
 	userScrolledUp      bool
 	newMessageCount     int
+	recapContent        string
 }
 type renderFinishedMsg struct {
 	uiMessages      []uiMessage
@@ -94,12 +95,22 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd := m.SetSession(msg)
 			cmds = append(cmds, cmd)
 		}
+	case RecapReadyMsg:
+		if msg.SessionID == m.session.ID && msg.Content != "" {
+			m.recapContent = msg.Content
+			if m.rendering {
+				m.rendering = false
+			}
+			m.renderViewSync()
+			m.viewport.GotoBottom()
+		}
 	case SessionClearedMsg:
 		m.session = session.Session{}
 		m.messages = make([]message.Message, 0)
 		m.taskMessages = make(map[string][]message.Message)
 		m.cachedContent = make(map[string]cacheItem)
 		m.currentMsgID = ""
+		m.recapContent = ""
 		m.rendering = false
 		m.userScrolledUp = false
 		m.newMessageCount = 0
@@ -179,6 +190,9 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.invalidateCache(m.currentMsgID)
 					m.currentMsgID = msg.Payload.ID
 					needsRerender = true
+					if msg.Payload.Role == message.User && m.recapContent != "" {
+						m.recapContent = ""
+					}
 				}
 			}
 			// There are tool calls from the child task
@@ -297,6 +311,26 @@ func (m *messagesCmp) hasCacheMisses() bool {
 	return false
 }
 
+func renderRecapBlock(content string, width int) string {
+	if content == "" || width < 4 {
+		return ""
+	}
+	t := theme.CurrentTheme()
+	baseStyle := styles.BaseStyle()
+	marker := baseStyle.
+		Foreground(t.TextMuted()).
+		Render("◆ ")
+	markerWidth := lipgloss.Width(marker)
+	text := baseStyle.
+		Foreground(t.TextMuted()).
+		Italic(true).
+		Width(width - markerWidth).
+		Render(content)
+	return baseStyle.
+		Width(width).
+		Render(marker + text)
+}
+
 type renderResult struct {
 	uiMessages   []uiMessage
 	cacheUpdates map[string]cacheItem
@@ -364,9 +398,10 @@ func (m *messagesCmp) applyRender(result renderResult) {
 	}
 
 	baseStyle := styles.BaseStyle()
-	messages := make([]string, 0, len(m.uiMessages)*2)
+	var sections []string
+
 	for _, v := range m.uiMessages {
-		messages = append(messages, lipgloss.JoinVertical(lipgloss.Left, v.content),
+		sections = append(sections, lipgloss.JoinVertical(lipgloss.Left, v.content),
 			baseStyle.
 				Width(m.width).
 				Render(
@@ -375,13 +410,17 @@ func (m *messagesCmp) applyRender(result renderResult) {
 		)
 	}
 
+	if recap := renderRecapBlock(m.recapContent, m.width); recap != "" {
+		sections = append(sections, recap)
+	}
+
 	m.viewport.SetContent(
 		baseStyle.
 			Width(m.width).
 			Render(
 				lipgloss.JoinVertical(
 					lipgloss.Top,
-					messages...,
+					sections...,
 				),
 			),
 	)
@@ -418,6 +457,7 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 	width := m.width
 	currentMsgID := m.currentMsgID
 	summaryMsgID := m.session.SummaryMessageID
+	recapContent := m.recapContent
 
 	return func() tea.Msg {
 		var uiMsgs []uiMessage
@@ -472,9 +512,10 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 		}
 
 		baseStyle := styles.BaseStyle()
-		messages := make([]string, 0, len(uiMsgs)*2)
+		var sections []string
+
 		for _, v := range uiMsgs {
-			messages = append(messages, lipgloss.JoinVertical(lipgloss.Left, v.content),
+			sections = append(sections, lipgloss.JoinVertical(lipgloss.Left, v.content),
 				baseStyle.
 					Width(width).
 					Render(
@@ -483,12 +524,16 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 			)
 		}
 
+		if recap := renderRecapBlock(recapContent, width); recap != "" {
+			sections = append(sections, recap)
+		}
+
 		viewportContent := baseStyle.
 			Width(width).
 			Render(
 				lipgloss.JoinVertical(
 					lipgloss.Top,
-					messages...,
+					sections...,
 				),
 			)
 
@@ -741,6 +786,7 @@ func (m *messagesCmp) SetSession(session session.Session) tea.Cmd {
 		return nil
 	}
 	m.session = session
+	m.recapContent = ""
 	messages, err := m.app.Messages.List(context.Background(), session.ID)
 	if err != nil {
 		return util.ReportError(err)
