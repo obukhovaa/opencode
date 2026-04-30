@@ -57,6 +57,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteSessionMessagesStmt, err = db.PrepareContext(ctx, deleteSessionMessages); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSessionMessages: %w", err)
 	}
+	if q.deleteSessionTreeStmt, err = db.PrepareContext(ctx, deleteSessionTree); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteSessionTree: %w", err)
+	}
 	if q.getFileStmt, err = db.PrepareContext(ctx, getFile); err != nil {
 		return nil, fmt.Errorf("error preparing query GetFile: %w", err)
 	}
@@ -184,6 +187,11 @@ func (q *Queries) Close() error {
 	if q.deleteSessionMessagesStmt != nil {
 		if cerr := q.deleteSessionMessagesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteSessionMessagesStmt: %w", cerr)
+		}
+	}
+	if q.deleteSessionTreeStmt != nil {
+		if cerr := q.deleteSessionTreeStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteSessionTreeStmt: %w", cerr)
 		}
 	}
 	if q.getFileStmt != nil {
@@ -351,6 +359,7 @@ type Queries struct {
 	deleteSessionStmt                 *sql.Stmt
 	deleteSessionFilesStmt            *sql.Stmt
 	deleteSessionMessagesStmt         *sql.Stmt
+	deleteSessionTreeStmt             *sql.Stmt
 	getFileStmt                       *sql.Stmt
 	getFileByPathAndSessionStmt       *sql.Stmt
 	getFlowStateStmt                  *sql.Stmt
@@ -391,6 +400,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		deleteSessionStmt:                 q.deleteSessionStmt,
 		deleteSessionFilesStmt:            q.deleteSessionFilesStmt,
 		deleteSessionMessagesStmt:         q.deleteSessionMessagesStmt,
+		deleteSessionTreeStmt:             q.deleteSessionTreeStmt,
 		getFileStmt:                       q.getFileStmt,
 		getFileByPathAndSessionStmt:       q.getFileByPathAndSessionStmt,
 		getFlowStateStmt:                  q.getFlowStateStmt,

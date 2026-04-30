@@ -54,6 +54,10 @@ WHERE id = ?;
 DELETE FROM sessions
 WHERE id = ?;
 
+-- name: DeleteSessionTree :exec
+DELETE FROM sessions
+WHERE id = ? OR root_session_id = ?;
+
 -- name: ListChildSessions :many
 SELECT *
 FROM sessions

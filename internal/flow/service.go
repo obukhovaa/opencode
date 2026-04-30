@@ -122,11 +122,11 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 		if err := s.querier.DeleteFlowStatesByRootSession(ctx, rootSessionID); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			logging.Warn("Failed to delete existing flow states", "error", err)
 		}
-		for _, step := range f.Spec.Steps {
-			stepSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, flowID, step.ID)
-			if err := s.sessions.Delete(ctx, stepSessionID); err != nil {
-				logging.Debug("Could not delete session during fresh start", "session_id", stepSessionID, "error", err)
-			}
+		// Wipe the entire session tree in one shot. The first step is the
+		// flow root, so DeleteTree removes every step session that shares
+		// its root_session_id (plus FK-cascaded messages, files, recaps).
+		if err := s.sessions.DeleteTree(ctx, rootSessionID); err != nil {
+			logging.Debug("Could not delete session tree during fresh start", "session_id", rootSessionID, "error", err)
 		}
 		existingStates = nil
 	}

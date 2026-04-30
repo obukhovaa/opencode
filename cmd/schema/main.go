@@ -546,6 +546,20 @@ func generateSchema() map[string]any {
 		},
 	}
 
+	// Add session cleanup configuration
+	schema["properties"].(map[string]any)["sessionCleanup"] = map[string]any{
+		"type":        "object",
+		"description": "Session cleanup configuration for removing old sessions",
+		"properties": map[string]any{
+			"maxAge": map[string]any{
+				"type":        "string",
+				"description": "Maximum age of sessions before they are eligible for cleanup. Supports Go duration strings (e.g. \"720h\") plus \"d\" for days and \"y\" for years. Examples: \"720h\", \"30d\", \"1y\". Defaults to \"30d\" (720h).",
+				"default":     "30d",
+			},
+		},
+		"additionalProperties": false,
+	}
+
 	// Add skills configuration
 	schema["properties"].(map[string]any)["skills"] = map[string]any{
 		"type":        "object",

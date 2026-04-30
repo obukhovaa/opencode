@@ -90,11 +90,17 @@ func (q *stubQuerier) WithTx(_ *sql.Tx) db.QuerierWithTx { return q }
 // stubSessions records delete calls and provides minimal session operations.
 type stubSessions struct {
 	session.Service
-	deletedIDs []string
+	deletedIDs     []string
+	deletedTreeIDs []string
 }
 
 func (s *stubSessions) Delete(_ context.Context, id string) error {
 	s.deletedIDs = append(s.deletedIDs, id)
+	return nil
+}
+
+func (s *stubSessions) DeleteTree(_ context.Context, id string) error {
+	s.deletedTreeIDs = append(s.deletedTreeIDs, id)
 	return nil
 }
 
@@ -222,18 +228,18 @@ func TestRunFreshDeletesRunningStates(t *testing.T) {
 		t.Errorf("deleted root session = %q, want %q", q.deletedFlowRootSessions[0], rootSessionID)
 	}
 
-	if len(sessions.deletedIDs) == 0 {
-		t.Fatal("expected session Delete to be called, but it was not")
+	if len(sessions.deletedTreeIDs) == 0 {
+		t.Fatal("expected session DeleteTree to be called, but it was not")
 	}
 	found := false
-	for _, id := range sessions.deletedIDs {
+	for _, id := range sessions.deletedTreeIDs {
 		if id == "prefix-test-fresh-step-one" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected session 'prefix-test-fresh-step-one' to be deleted, got %v", sessions.deletedIDs)
+		t.Errorf("expected session 'prefix-test-fresh-step-one' tree to be deleted, got %v", sessions.deletedTreeIDs)
 	}
 
 	if len(q.createdFlowStates) == 0 {
@@ -295,6 +301,9 @@ func TestRunWithoutFreshReturnsRunningStates(t *testing.T) {
 
 	if len(sessions.deletedIDs) != 0 {
 		t.Errorf("expected no session deletions, got %v", sessions.deletedIDs)
+	}
+	if len(sessions.deletedTreeIDs) != 0 {
+		t.Errorf("expected no session tree deletions, got %v", sessions.deletedTreeIDs)
 	}
 
 	if len(states) != 1 {

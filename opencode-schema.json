@@ -609,6 +609,18 @@
       "description": "LLM provider configurations",
       "type": "object"
     },
+    "sessionCleanup": {
+      "additionalProperties": false,
+      "description": "Session cleanup configuration for removing old sessions",
+      "properties": {
+        "maxAge": {
+          "default": "30d",
+          "description": "Maximum age of sessions before they are eligible for cleanup. Supports Go duration strings (e.g. \"720h\") plus \"d\" for days and \"y\" for years. Examples: \"720h\", \"30d\", \"1y\". Defaults to \"30d\" (720h).",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "sessionProvider": {
       "description": "Session storage provider configuration",
       "properties": {

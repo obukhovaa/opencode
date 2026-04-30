@@ -79,6 +79,12 @@ func BuiltinCommands() []CommandInfo {
 			Description: "Toggle vim-style keybindings for the chat input",
 			TUIOnly:     true,
 		},
+		{
+			ID:          "sessions-cleanup",
+			Title:       "Cleanup Old Sessions",
+			Description: "Delete sessions older than the configured max age",
+			TUIOnly:     true,
+		},
 	}
 }
 

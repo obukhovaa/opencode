@@ -179,6 +179,17 @@ func (q *MySQLQuerier) DeleteSession(ctx context.Context, id string) error {
 	return q.queries.DeleteSession(ctx, id)
 }
 
+// DeleteSessionTree deletes the session with the given root id and every
+// descendant whose root_session_id points to it. Passing the same value for
+// both id and root_session_id matches legacy rows where root_session_id is
+// NULL via the id branch.
+func (q *MySQLQuerier) DeleteSessionTree(ctx context.Context, arg DeleteSessionTreeParams) error {
+	return q.queries.DeleteSessionTree(ctx, mysqldb.DeleteSessionTreeParams{
+		ID:            arg.ID,
+		RootSessionID: arg.RootSessionID,
+	})
+}
+
 // CreateMessage creates a message and returns it
 func (q *MySQLQuerier) CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error) {
 	_, err := q.queries.CreateMessage(ctx, mysqldb.CreateMessageParams{

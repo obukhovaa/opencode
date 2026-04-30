@@ -76,6 +76,21 @@ func (q *Queries) DeleteSession(ctx context.Context, id string) error {
 	return err
 }
 
+const deleteSessionTree = `-- name: DeleteSessionTree :exec
+DELETE FROM sessions
+WHERE id = ? OR root_session_id = ?
+`
+
+type DeleteSessionTreeParams struct {
+	ID            string         `json:"id"`
+	RootSessionID sql.NullString `json:"root_session_id"`
+}
+
+func (q *Queries) DeleteSessionTree(ctx context.Context, arg DeleteSessionTreeParams) error {
+	_, err := q.db.ExecContext(ctx, deleteSessionTree, arg.ID, arg.RootSessionID)
+	return err
+}
+
 const getSessionByID = `-- name: GetSessionByID :one
 SELECT id, parent_session_id, root_session_id, title, message_count, prompt_tokens, completion_tokens, cost, total_prompt_tokens, total_completion_tokens, updated_at, created_at, summary_message_id, project_id
 FROM sessions

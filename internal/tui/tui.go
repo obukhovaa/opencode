@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -42,10 +43,14 @@ type keyMap struct {
 }
 
 type (
-	startCompactSessionMsg struct{}
-	toggleAutoApproveMsg   struct{}
-	toggleVimModeMsg       struct{}
-	sessionDeletedMsg      struct{ id string }
+	startCompactSessionMsg       struct{}
+	toggleAutoApproveMsg         struct{}
+	toggleVimModeMsg             struct{}
+	sessionDeletedMsg            struct{ id string }
+	startSessionsCleanupMsg      struct{}
+	showSessionsCleanupDialogMsg struct{ count int }
+	sessionsCleanupDoneMsg       struct{ count int }
+	sessionsCleanupFailedMsg     struct{ err error }
 )
 
 const (
@@ -164,6 +169,9 @@ type appModel struct {
 	showMultiArgumentsDialog bool
 	multiArgumentsDialog     dialog.MultiArgumentsDialogCmp
 
+	showSessionsCleanupDialog bool
+	sessionsCleanupDialog     dialog.SessionsCleanupDialog
+
 	isCompacting      bool
 	compactingMessage string
 }
@@ -194,6 +202,8 @@ func (a appModel) Init() tea.Cmd {
 	cmd = a.themeDialog.Init()
 	cmds = append(cmds, cmd)
 	cmd = a.deleteSessionDialog.Init()
+	cmds = append(cmds, cmd)
+	cmd = a.sessionsCleanupDialog.Init()
 	cmds = append(cmds, cmd)
 
 	// Check if we should show the init dialog
@@ -381,6 +391,49 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			util.CmdHandler(chat.ToggleVimModeMsg{}),
 			util.ReportInfo(statusMsg),
 		)
+
+	case startSessionsCleanupMsg:
+		activeID := a.selectedSession.ID
+		return a, func() tea.Msg {
+			ctx := context.Background()
+			old, err := a.app.Sessions.ListOldSessions(ctx, activeID)
+			if err != nil {
+				return util.InfoMsg{Type: util.InfoTypeError, Msg: "Failed to list old sessions: " + err.Error()}
+			}
+			if len(old) == 0 {
+				maxAge := config.Get().SessionCleanupMaxAge()
+				return util.InfoMsg{Type: util.InfoTypeInfo, Msg: fmt.Sprintf("No sessions older than %s found", formatDuration(maxAge))}
+			}
+			return showSessionsCleanupDialogMsg{count: len(old)}
+		}
+
+	case showSessionsCleanupDialogMsg:
+		a.sessionsCleanupDialog.SetCount(msg.count)
+		a.sessionsCleanupDialog.SetMaxAge(formatDuration(config.Get().SessionCleanupMaxAge()))
+		a.showSessionsCleanupDialog = true
+		return a, nil
+
+	case dialog.ConfirmSessionsCleanupMsg:
+		a.showSessionsCleanupDialog = false
+		activeID := a.selectedSession.ID
+		return a, func() tea.Msg {
+			ctx := context.Background()
+			count, err := a.app.Sessions.CleanupOldSessions(ctx, activeID)
+			if err != nil {
+				return sessionsCleanupFailedMsg{err: err}
+			}
+			return sessionsCleanupDoneMsg{count: count}
+		}
+
+	case dialog.CloseSessionsCleanupMsg:
+		a.showSessionsCleanupDialog = false
+		return a, nil
+
+	case sessionsCleanupDoneMsg:
+		return a, util.ReportInfo(fmt.Sprintf("Deleted %d old session(s)", msg.count))
+
+	case sessionsCleanupFailedMsg:
+		return a, util.ReportError(msg.err)
 
 	case startCompactSessionMsg:
 		// Start compacting the current session
@@ -855,6 +908,15 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if a.showSessionsCleanupDialog {
+		d, cleanupCmd := a.sessionsCleanupDialog.Update(msg)
+		a.sessionsCleanupDialog = d.(dialog.SessionsCleanupDialog)
+		cmds = append(cmds, cleanupCmd)
+		if _, ok := msg.(tea.KeyPressMsg); ok {
+			return a, tea.Batch(cmds...)
+		}
+	}
+
 	switch msg.(type) {
 	case pubsub.Event[agent.MCPServerEvent]:
 		chat.InvalidateMcpCache()
@@ -923,7 +985,8 @@ func (a *appModel) anyDismissibleDialogOpen() bool {
 		a.showModelDialog ||
 		a.showMultiArgumentsDialog ||
 		a.showThemeDialog ||
-		a.showInitDialog
+		a.showInitDialog ||
+		a.showSessionsCleanupDialog
 }
 
 // dismissAllDialogs closes every dismissible overlay. Intended for ctrl+c
@@ -937,6 +1000,7 @@ func (a *appModel) dismissAllDialogs() {
 	a.showMultiArgumentsDialog = false
 	a.showThemeDialog = false
 	a.showInitDialog = false
+	a.showSessionsCleanupDialog = false
 	if a.showFilepicker {
 		a.showFilepicker = false
 		a.filepicker.ToggleFilepicker(a.showFilepicker)
@@ -1084,6 +1148,10 @@ func (a appModel) View() tea.View {
 		centerOverlay(a.multiArgumentsDialog.View().Content)
 	}
 
+	if a.showSessionsCleanupDialog {
+		centerOverlay(a.sessionsCleanupDialog.View().Content)
+	}
+
 	v := tea.NewView(appView)
 	v.AltScreen = true
 	v.ReportFocus = true
@@ -1117,7 +1185,8 @@ func New(app *app.App) tea.Model {
 			page.LogsPage:   page.NewLogsPage(),
 			page.AgentsPage: page.NewAgentsPage(app.Registry),
 		},
-		filepicker: dialog.NewFilepickerCmp(app),
+		filepicker:            dialog.NewFilepickerCmp(app),
+		sessionsCleanupDialog: dialog.NewSessionsCleanupDialogCmp(),
 	}
 
 	return model
@@ -1150,6 +1219,9 @@ func buildCommands() []dialog.Command {
 		"vim": func(_ dialog.Command) tea.Cmd {
 			return func() tea.Msg { return toggleVimModeMsg{} }
 		},
+		"sessions-cleanup": func(_ dialog.Command) tea.Cmd {
+			return func() tea.Msg { return startSessionsCleanupMsg{} }
+		},
 	}
 
 	for _, b := range builtins {
@@ -1168,4 +1240,28 @@ func buildCommands() []dialog.Command {
 	}
 
 	return commands
+}
+
+// formatDuration returns a human-readable duration string like "30 days",
+// "2 hours", or "5 minutes".
+func formatDuration(d time.Duration) string {
+	if days := int(d.Hours() / 24); days > 0 {
+		if days == 1 {
+			return "1 day"
+		}
+		return fmt.Sprintf("%d days", days)
+	}
+	if hours := int(d.Hours()); hours > 0 {
+		if hours == 1 {
+			return "1 hour"
+		}
+		return fmt.Sprintf("%d hours", hours)
+	}
+	if mins := int(d.Minutes()); mins > 0 {
+		if mins == 1 {
+			return "1 minute"
+		}
+		return fmt.Sprintf("%d minutes", mins)
+	}
+	return d.String()
 }

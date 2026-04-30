@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -195,6 +197,64 @@ type SessionProviderConfig struct {
 	MySQL MySQLConfig  `json:"mysql,omitempty"`
 }
 
+// DefaultSessionCleanupMaxAge is the default max age for session cleanup (30 days).
+const DefaultSessionCleanupMaxAge = 30 * 24 * time.Hour
+
+// SessionCleanupConfig defines configuration for session cleanup.
+type SessionCleanupConfig struct {
+	// MaxAge is the maximum age of sessions before they are eligible for cleanup.
+	// Supports Go duration strings (e.g. "720h") plus "d" for days and "y" for years.
+	// Examples: "720h", "30d", "1y". Defaults to "30d" (720h).
+	MaxAge string `json:"maxAge,omitempty"`
+}
+
+// SessionCleanupMaxAge returns the configured max age duration, or the default.
+func (c *Config) SessionCleanupMaxAge() time.Duration {
+	if c.SessionCleanup == nil || c.SessionCleanup.MaxAge == "" {
+		return DefaultSessionCleanupMaxAge
+	}
+	d, err := ParseDurationExtended(c.SessionCleanup.MaxAge)
+	if err != nil {
+		logging.Warn("invalid sessionCleanup.maxAge, using default", "value", c.SessionCleanup.MaxAge, "error", err, "default", DefaultSessionCleanupMaxAge)
+		return DefaultSessionCleanupMaxAge
+	}
+	return d
+}
+
+// ParseDurationExtended extends time.ParseDuration with support for "d" (days) and "y" (years).
+// Negative or zero durations are rejected.
+func ParseDurationExtended(s string) (time.Duration, error) {
+	if len(s) == 0 {
+		return 0, fmt.Errorf("empty duration string")
+	}
+	var d time.Duration
+	suffix := s[len(s)-1]
+	switch suffix {
+	case 'd':
+		val, err := strconv.Atoi(s[:len(s)-1])
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+		}
+		d = time.Duration(val) * 24 * time.Hour
+	case 'y':
+		val, err := strconv.Atoi(s[:len(s)-1])
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+		}
+		d = time.Duration(val) * 365 * 24 * time.Hour
+	default:
+		var err error
+		d, err = time.ParseDuration(s)
+		if err != nil {
+			return 0, err
+		}
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("duration %q must be positive", s)
+	}
+	return d, nil
+}
+
 // SkillsConfig defines configuration for skills.
 type SkillsConfig struct {
 	Paths []string `json:"paths,omitempty"` // Custom skill paths
@@ -241,6 +301,7 @@ type Config struct {
 	WebSearch          *WebSearchConfig                  `json:"webSearch,omitempty"`
 	MaxTurns           int                               `json:"maxTurns,omitempty"`
 	Telemetry          *TelemetryConfig                  `json:"telemetry,omitempty"`
+	SessionCleanup     *SessionCleanupConfig             `json:"sessionCleanup,omitempty"`
 }
 
 // Application constants
