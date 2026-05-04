@@ -390,6 +390,21 @@ func (s *service) runStep(
 				continue
 			}
 
+			// Validate output: if the step defines an output schema, we require
+			// structured output to evaluate routing rules. Treat a missing or empty
+			// struct output as a retryable failure — covers both transient empty
+			// API responses (end_turn with no content) and the model returning
+			// plain text instead of calling struct_output.
+			if step.Output != nil && (result.StructOutput == nil || result.StructOutput.Content == "") {
+				lastErr = fmt.Errorf("step %q expects structured output but agent did not produce one", step.ID)
+				logging.Warn("Missing structured output for step with output schema",
+					"step", step.ID,
+					"attempt", attempt+1,
+					"max_attempts", maxAttempts,
+					"finish_reason", result.Message.FinishReason())
+				continue
+			}
+
 			lastErr = nil
 			break
 		}
