@@ -390,19 +390,29 @@ func (s *service) runStep(
 				continue
 			}
 
-			// Validate output: if the step defines an output schema, we require
-			// structured output to evaluate routing rules. Treat a missing or empty
-			// struct output as a retryable failure — covers both transient empty
-			// API responses (end_turn with no content) and the model returning
-			// plain text instead of calling struct_output.
+			// Validate output when the step defines an output schema.
+			// Two severity levels:
+			//  1. Agent produced NOTHING (no struct output AND no text) — treat as
+			//     retryable failure. Catches transient model issues (empty API
+			//     responses reported as end_turn).
+			//  2. Agent produced text but didn't call struct_output — log a warning
+			//     but proceed. The text is stored as output and unconditional routing
+			//     rules still work. Conditional rules referencing output fields will
+			//     evaluate to false (missing key), same as pre-validation behavior.
 			if step.Output != nil && (result.StructOutput == nil || result.StructOutput.Content == "") {
-				lastErr = fmt.Errorf("step %q expects structured output but agent did not produce one", step.ID)
-				logging.Warn("Missing structured output for step with output schema",
+				textOutput := result.Message.Content().Text
+				if textOutput == "" {
+					lastErr = fmt.Errorf("step %q expects structured output but agent produced empty response", step.ID)
+					logging.Warn("Empty agent response for step with output schema",
+						"step", step.ID,
+						"attempt", attempt+1,
+						"max_attempts", maxAttempts,
+						"finish_reason", result.Message.FinishReason())
+					continue
+				}
+				logging.Warn("Step has output schema but agent returned text instead of struct_output — proceeding with text fallback",
 					"step", step.ID,
-					"attempt", attempt+1,
-					"max_attempts", maxAttempts,
-					"finish_reason", result.Message.FinishReason())
-				continue
+					"text_length", len(textOutput))
 			}
 
 			lastErr = nil

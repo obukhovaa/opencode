@@ -350,7 +350,7 @@ func TestRunStepStructOutputValidation(t *testing.T) {
 		wantOutputIs string // expected substring of failed-state output, when failing
 	}{
 		{
-			name: "missing struct output fails after exhausting retries",
+			name: "text fallback succeeds when struct output missing but text present",
 			responses: []agentpkg.AgentEvent{
 				{
 					Type: agentpkg.AgentEventTypeResponse,
@@ -360,10 +360,9 @@ func TestRunStepStructOutputValidation(t *testing.T) {
 					},
 				},
 			},
-			retry:        2,
-			wantStatus:   FlowStatusFailed,
-			wantCalls:    3, // initial + 2 retries
-			wantOutputIs: "expects structured output",
+			retry:      2,
+			wantStatus: FlowStatusCompleted,
+			wantCalls:  1, // no retry — text fallback accepted on first attempt
 		},
 		{
 			name: "empty struct output content fails",
