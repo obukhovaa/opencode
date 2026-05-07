@@ -38,6 +38,7 @@ type fetchTool struct {
 
 const (
 	WebFetchToolName     = "webfetch"
+	browserUserAgent     = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 	fetchToolDescription = `Fetches text-based content from a URL and returns it in the specified format.
 
 WHEN TO USE THIS TOOL:
@@ -66,7 +67,7 @@ LIMITATIONS:
 - Binary content (images, archives, executables, PDFs) will be rejected — use bash with curl for those
 - Only supports HTTP and HTTPS protocols
 - Cannot handle authentication or cookies
-- Some websites may block automated requests
+- Automatically retries with a browser User-Agent when Cloudflare bot protection is detected
 
 TIPS:
 - IMPORTANT: if another tool is available that offers better web fetching capabilities (such as an MCP tool), prefer using that tool instead
@@ -188,11 +189,42 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	if err != nil {
 		return NewEmptyResponse(), fmt.Errorf("failed to fetch URL: %w", err)
 	}
-	defer resp.Body.Close()
 
+	// Handle non-200 responses, including WAF challenge detection and retry.
 	if resp.StatusCode != http.StatusOK {
-		return NewTextErrorResponse(fmt.Sprintf("Request failed with status code: %d", resp.StatusCode)), nil
+		if isWAFChallenge(resp) {
+			// Drain and close the initial response to release the connection.
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+
+			retryReq, err := http.NewRequestWithContext(ctx, "GET", params.URL, nil)
+			if err != nil {
+				return NewEmptyResponse(), fmt.Errorf("failed to create retry request: %w", err)
+			}
+			retryReq.Header.Set("User-Agent", browserUserAgent)
+			retryReq.Header.Set("Accept-Language", "en-US,en;q=0.9")
+			retryReq.Header.Set("Accept", req.Header.Get("Accept"))
+
+			resp, err = client.Do(retryReq)
+			if err != nil {
+				return NewEmptyResponse(), fmt.Errorf("failed to fetch URL: %w", err)
+			}
+			// If retry also failed, return a WAF-aware error.
+			if resp.StatusCode != http.StatusOK {
+				resp.Body.Close()
+				return NewTextErrorResponse(fmt.Sprintf(
+					"Request blocked by Cloudflare bot protection (cf-mitigated: challenge). "+
+						"Retry with browser User-Agent also failed (status: %d).",
+					resp.StatusCode,
+				)), nil
+			}
+			// Retry succeeded — fall through to body processing below.
+		} else {
+			resp.Body.Close()
+			return NewTextErrorResponse(fmt.Sprintf("Request failed with status code: %d", resp.StatusCode)), nil
+		}
 	}
+	defer resp.Body.Close()
 
 	maxSize := int64(5 * 1024 * 1024) // 5MB
 	if cl := resp.Header.Get("Content-Length"); cl != "" {
@@ -253,6 +285,14 @@ func (t *fetchTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
 }
 
 func (t *fetchTool) IsBaseline() bool { return true }
+
+// isWAFChallenge detects Cloudflare bot challenge responses.
+// The cf-mitigated header is set by Cloudflare's edge network specifically
+// to indicate a bot challenge page — it is not present on legitimate 403s.
+func isWAFChallenge(resp *http.Response) bool {
+	return resp.StatusCode == http.StatusForbidden &&
+		resp.Header.Get("Cf-Mitigated") == "challenge"
+}
 
 func extractTextFromHTML(html string) (string, error) {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))

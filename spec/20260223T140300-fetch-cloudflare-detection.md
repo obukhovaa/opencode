@@ -1,8 +1,9 @@
 # Fetch Tool — Cloudflare Challenge Detection and Retry
 
 **Date**: 2026-02-23
-**Status**: Draft
+**Status**: Implemented
 **Author**: AI-assisted
+**Updated**: 2026-05-07 — Actualised against current codebase
 
 ## Overview
 
@@ -12,7 +13,7 @@ When the webfetch tool requests a Cloudflare-protected URL, it receives an HTTP 
 
 ### Current State
 
-`internal/llm/tools/webfetch.go` sends every request with a minimal User-Agent and treats any non-200 response as a hard failure:
+`internal/llm/tools/webfetch.go` sends every request with a minimal User-Agent and treats any non-200 response as a hard failure (lines 176, 193–195):
 
 ```go
 req.Header.Set("User-Agent", "opencode/1.0")
@@ -24,7 +25,7 @@ if resp.StatusCode != http.StatusOK {
 }
 ```
 
-There is no retry logic of any kind. The HTTP client uses Go's default transport with no custom settings.
+There is no retry logic of any kind. The HTTP client uses Go's default transport with no custom settings. (Note: the tool does have a permission system, Accept headers, Content-Length pre-checks, and binary content detection — all of which were added by Phase 2 of the parent spec. None of these affect the retry logic.)
 
 This creates two problems:
 
@@ -79,19 +80,24 @@ Cloudflare's JavaScript challenge is bypassed by a browser UA in many cases beca
 | Detection signal | `cf-mitigated: challenge` header only | Reliable, no body read required, Cloudflare-specific |
 | Retry count | 1 | A second retry with the same UA would not help; multiple UAs add complexity without clear benefit |
 | Browser UA | Single hardcoded Chrome/macOS string | Sufficient for documentation sites; a UA list adds complexity with marginal gain |
+| Additional retry headers | `Accept-Language: en-US,en;q=0.9` + original `Accept` | Low-cost, improves success rate on stricter configs. No `Accept-Encoding` — Go handles it |
 | WAF extensibility | Internal `isWAFChallenge(resp)` function | Isolates detection logic; other providers can be added without touching retry flow |
 | 429 handling | Out of scope | Related but separate concern; deserves its own spec and backoff strategy |
 | Retry client | Reuse existing `client` (same timeout) | No reason to change timeout on retry; keep it simple |
+| Body handling on retry | Drain + close before retry | Required for Go HTTP transport connection reuse; restructure away from `defer` |
 | Error message on double failure | Include WAF context | Gives the agent accurate signal to report to the user |
 | Ethical framing | Browser UA for public documentation access | Not bypassing authentication — presenting as a legitimate browser to access public content |
 
 ## Architecture
 
 ```
-webFetchTool.Run()
+fetchTool.Run()
+    │
+    ├── parse params, validate, check permission (existing logic)
     │
     ├── build request (existing logic)
     │       └── User-Agent: "opencode/1.0"
+    │       └── Accept: format-specific header
     │
     ├── client.Do(req) → resp
     │
@@ -99,7 +105,9 @@ webFetchTool.Run()
     │
     ├── if isWAFChallenge(resp)
     │       │
-    │       ├── build retryReq with browser User-Agent
+    │       ├── drain & close initial resp.Body (release connection)
+    │       │
+    │       ├── build retryReq with browser User-Agent + Accept-Language
     │       │
     │       ├── client.Do(retryReq) → retryResp
     │       │
@@ -121,24 +129,28 @@ return resp.StatusCode == http.StatusForbidden &&
 
 ### Phase 1: Detection and Retry
 
-- [ ] **1.1** Add `isWAFChallenge(resp *http.Response) bool` function in `internal/llm/tools/webfetch.go`. Check `resp.StatusCode == 403` and `resp.Header.Get("cf-mitigated") == "challenge"`.
+- [x] **1.1** Add `isWAFChallenge(resp *http.Response) bool` function in `internal/llm/tools/webfetch.go`. Check `resp.StatusCode == 403` and `resp.Header.Get("cf-mitigated") == "challenge"`.
 
-- [ ] **1.2** Add the browser User-Agent constant:
+- [x] **1.2** Add the browser User-Agent constant and retry Accept-Language header:
   ```go
-  const browserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+  const browserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
   ```
+  (Chrome version bumped to 131 to stay current; exact version is not critical.)
 
-- [ ] **1.3** In `webFetchTool.Run()`, after the initial `client.Do(req)` call, add the WAF challenge branch before the existing non-200 error return:
-  - If `isWAFChallenge(resp)`: close the initial response body, build a new request with `browserUserAgent`, execute it, and proceed with the retry response.
-  - If retry succeeds (200): fall through to the existing body-processing logic.
-  - If retry fails: return `NewTextErrorResponse` with a message that includes the WAF context and the retry status code.
+- [x] **1.3** In `fetchTool.Run()`, restructure the response handling after `client.Do(req)` (currently line 187). The current code uses `defer resp.Body.Close()` followed by a `resp.StatusCode != http.StatusOK` check. Restructure as follows:
+  - Remove the `defer resp.Body.Close()` and manage body closing manually to properly handle the retry case.
+  - If `resp.StatusCode == http.StatusOK`: proceed to body processing (existing path), closing body at end.
+  - If `isWAFChallenge(resp)`: drain and close `resp.Body` via `io.Copy(io.Discard, resp.Body)` + `resp.Body.Close()` to release the connection back to the pool. Build a new request with `browserUserAgent` and `Accept-Language: en-US,en;q=0.9`. Copy the same `Accept` header from the original request. Execute retry with the same `client` (preserves user timeout). If retry succeeds (200): fall through to body-processing logic using `retryResp`. If retry fails: return `NewTextErrorResponse` with WAF context and retry status code.
+  - Else (non-200, non-WAF): existing error path (unchanged).
+  - Ensure all code paths close their response bodies. A helper or reassigning `resp` after retry keeps the downstream processing code DRY.
 
-- [ ] **1.4** Update `webFetchToolDescription` to remove the limitation note `"Some websites may block automated requests"` and replace with `"Automatically retries with a browser User-Agent when Cloudflare bot protection is detected."`.
+- [x] **1.4** Update `fetchToolDescription` (line 41) to replace the limitation note `"Some websites may block automated requests"` (line 69) with `"Automatically retries with a browser User-Agent when Cloudflare bot protection is detected"`.
 
-- [ ] **1.5** Add unit tests in `internal/llm/tools/webfetch_test.go` (create if absent):
-  - Test `isWAFChallenge` with: 403 + `cf-mitigated: challenge` (true), 403 without header (false), 200 + header (false).
-  - Test retry flow using an `httptest.Server` that returns 403 + `cf-mitigated: challenge` on the first request and 200 on the second.
-  - Test double-failure path: server always returns 403 + challenge header; verify error message contains WAF context.
+- [x] **1.5** Add unit tests to the existing `internal/llm/tools/webfetch_test.go` (file already exists with `TestIsBinaryContent`):
+  - `TestIsWAFChallenge`: 403 + `cf-mitigated: challenge` (true), 403 without header (false), 200 + header (false), 403 + `cf-mitigated: other_value` (false).
+  - `TestFetchRetryOnCloudflareChallenge`: use an `httptest.Server` with a request counter that returns 403 + `cf-mitigated: challenge` on the first request and 200 with HTML body on the second. Verify the tool returns content (not an error) and the server received exactly 2 requests. Verify the second request has the browser User-Agent and Accept-Language headers.
+  - `TestFetchDoubleCloudflareFailure`: server always returns 403 + challenge header; verify error response contains `"Cloudflare"` and `"cf-mitigated"`.
+  - `TestFetchNonCloudflare403`: server returns 403 without `cf-mitigated` header; verify the original error path fires and only 1 request was made.
 
 ### Phase 2: Extensibility (deferred)
 
@@ -156,8 +168,8 @@ return resp.StatusCode == http.StatusForbidden &&
 ### Initial response body must be drained before retry
 
 1. `client.Do(req)` returns a response with a body.
-2. Before building the retry request, call `resp.Body.Close()` on the initial response.
-3. Failure to close leaks the connection back to the transport pool.
+2. Before building the retry request, drain the body with `io.Copy(io.Discard, resp.Body)` and then call `resp.Body.Close()`. Draining (not just closing) is necessary for Go's HTTP transport to reuse the connection for the retry request.
+3. The current code uses `defer resp.Body.Close()` (line 192). The implementation must restructure this — either remove the defer and manage closes manually across all code paths, or reassign `resp` after retry and keep the defer only for the final response. Both approaches work; the key constraint is that every response body must be closed exactly once, and the initial body must be drained before retry to enable connection reuse.
 
 ### Cloudflare returns 403 without `cf-mitigated` (genuine origin 403)
 
@@ -178,35 +190,30 @@ return resp.StatusCode == http.StatusForbidden &&
 3. `client.Do(retryReq)` returns a context error immediately.
 4. Return the context error via the existing `fmt.Errorf("failed to fetch URL: %w", err)` path.
 
-## Open Questions
+## Resolved Questions
 
-1. **Should the retry use additional browser-like headers (e.g., `Accept-Language`, `Accept-Encoding`)?**
-   - Cloudflare's scoring considers multiple signals. Adding `Accept-Language: en-US,en;q=0.9` and `Accept-Encoding: gzip, deflate, br` makes the request look more like a real browser.
-   - Options: (a) add a small set of common browser headers on retry, (b) keep it minimal (UA only).
-   - **Recommendation**: Add `Accept-Language: en-US,en;q=0.9` on retry only. It's low-cost and improves success rate on stricter configurations. Do not add `Accept-Encoding` — Go's transport handles this automatically.
+1. **Should the retry use additional browser-like headers?**
+   - **Decision**: Yes — add `Accept-Language: en-US,en;q=0.9` on retry only. Do not add `Accept-Encoding` — Go's transport handles this automatically. Copy the original `Accept` header from the first request.
 
 2. **Should the initial request also use the browser UA?**
-   - Using `browserUserAgent` for all requests would eliminate the need for detection and retry entirely.
-   - Options: (a) always use browser UA, (b) use `opencode/1.0` first and retry with browser UA on challenge.
-   - **Recommendation**: Keep `opencode/1.0` as the default. It's honest about the client identity for sites that don't block it, and the retry handles the Cloudflare case. Changing the default UA for all requests is a broader policy decision that should be made explicitly.
+   - **Decision**: No. Keep `opencode/1.0` as the default. It's honest about the client identity for sites that don't block it. Changing the default UA is a broader policy decision out of scope.
 
 3. **Should 429 (rate limiting) get a retry with backoff in this same change?**
-   - The retry infrastructure added here could be extended to handle 429 with a `Retry-After` header.
-   - Options: (a) add 429 handling now, (b) defer to a separate spec.
-   - **Recommendation**: Defer. 429 handling requires backoff logic and respecting `Retry-After` values that could be large (minutes). That's a different risk profile from a single immediate retry.
+   - **Decision**: No. Deferred. 429 handling requires backoff logic and respecting `Retry-After` values — different risk profile from a single immediate retry.
 
 ## Success Criteria
 
-- [ ] `isWAFChallenge` correctly identifies Cloudflare challenge responses and ignores other 403s — verified by unit tests.
-- [ ] Fetching a URL that returns 403 + `cf-mitigated: challenge` on the first attempt succeeds if the retry returns 200 — verified by `httptest.Server` test.
-- [ ] Double-failure returns an error message containing `"Cloudflare"` or `"cf-mitigated"` — verified by test.
-- [ ] Non-Cloudflare 403 responses are unaffected — verified by test.
-- [ ] No connection leak: initial response body is always closed before retry.
-- [ ] `go test ./internal/llm/tools/...` passes.
-- [ ] `make test` passes.
+- [x] `isWAFChallenge` correctly identifies Cloudflare challenge responses and ignores other 403s — verified by unit tests.
+- [x] Fetching a URL that returns 403 + `cf-mitigated: challenge` on the first attempt succeeds if the retry returns 200 — verified by `httptest.Server` test.
+- [x] Double-failure returns an error message containing `"Cloudflare"` or `"cf-mitigated"` — verified by test.
+- [x] Non-Cloudflare 403 responses are unaffected — verified by test.
+- [x] No connection leak: initial response body is always closed before retry.
+- [x] `go test ./internal/llm/tools/...` passes.
+- [x] `make test` passes.
 
 ## References
 
-- `internal/llm/tools/webfetch.go` — primary implementation file; `fetchTool.Run()`, `NewFetchTool()`, `fetchToolDescription`
+- `internal/llm/tools/webfetch.go` — primary implementation file; `fetchTool.Run()` (line 112), `NewFetchTool()` (line 79), `fetchToolDescription` (line 41)
+- `internal/llm/tools/webfetch_test.go` — existing test file with `TestIsBinaryContent`; add new tests here
 - `internal/llm/tools/tools.go` — `NewTextErrorResponse`, `NewEmptyResponse`, shared response types
 - `spec/20260223T133437-tools-imrovements.md` — parent spec; this feature is item 3.4

@@ -1,7 +1,7 @@
 # Vim Mode for Chat Text Input
 
 **Date**: 2026-04-14
-**Status**: Draft
+**Status**: Implemented
 **Author**: AI-assisted
 
 ## Overview
