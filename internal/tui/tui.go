@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -10,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/cron"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp"
@@ -51,6 +53,8 @@ type (
 	showSessionsCleanupDialogMsg struct{ count int }
 	sessionsCleanupDoneMsg       struct{ count int }
 	sessionsCleanupFailedMsg     struct{ err error }
+	loopCreatedMsg               struct{ info string }
+	loopFailedMsg                struct{ err error }
 )
 
 const (
@@ -172,6 +176,9 @@ type appModel struct {
 	showSessionsCleanupDialog bool
 	sessionsCleanupDialog     dialog.SessionsCleanupDialog
 
+	showMissedCronDialog bool
+	missedCronDialog     dialog.MissedCronDialog
+
 	isCompacting      bool
 	compactingMessage string
 }
@@ -204,6 +211,8 @@ func (a appModel) Init() tea.Cmd {
 	cmd = a.deleteSessionDialog.Init()
 	cmds = append(cmds, cmd)
 	cmd = a.sessionsCleanupDialog.Init()
+	cmds = append(cmds, cmd)
+	cmd = a.missedCronDialog.Init()
 	cmds = append(cmds, cmd)
 
 	// Check if we should show the init dialog
@@ -435,6 +444,50 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsCleanupFailedMsg:
 		return a, util.ReportError(msg.err)
 
+	case pubsub.Event[cron.MissedOneShotsEvent]:
+		// Surface missed one-shots as a confirmation dialog. The scheduler
+		// publishes this once at startup; jobs queue up if the dialog is
+		// already open.
+		if len(msg.Payload.Jobs) > 0 {
+			a.missedCronDialog.SetJobs(msg.Payload.Jobs)
+			a.showMissedCronDialog = true
+		}
+		return a, nil
+
+	case dialog.ResolveMissedCronMsg:
+		jobID := msg.JobID
+		action := msg.Action
+		crons := a.app.Crons
+		return a, func() tea.Msg {
+			if crons == nil {
+				return nil
+			}
+			if err := crons.ResolveMissedOneShot(context.Background(), jobID, action); err != nil {
+				return util.InfoMsg{Type: util.InfoTypeError, Msg: fmt.Sprintf("Failed to resolve cron %s: %s", jobID, err)}
+			}
+			return nil
+		}
+
+	case dialog.CloseMissedCronDialogMsg:
+		a.showMissedCronDialog = false
+		if !a.missedCronDialog.HasJobs() {
+			return a, nil
+		}
+		// More jobs queued (e.g. user pressed ESC) — keep the model state but
+		// the dialog stays hidden until the next event/activation.
+		return a, nil
+
+	case dialog.CommandRunCustomMsg:
+		if msg.CommandID == "loop" {
+			return a, a.handleLoopCommand(msg.Args)
+		}
+
+	case loopCreatedMsg:
+		return a, util.ReportInfo(msg.info)
+
+	case loopFailedMsg:
+		return a, util.ReportError(msg.err)
+
 	case startCompactSessionMsg:
 		// Start compacting the current session
 		a.isCompacting = true
@@ -637,7 +690,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// On non-chat pages (logs, agents), ctrl+c returns to the chat
 			// page, same as esc. Only show the quit dialog from the chat page.
-			if a.currentPage == page.LogsPage || a.currentPage == page.AgentsPage {
+			if a.currentPage == page.LogsPage || a.currentPage == page.AgentsPage || a.currentPage == page.CronsPage {
 				return a, a.moveToPage(page.ChatPage)
 			}
 			// In shell mode, ctrl+c exits shell mode instead of showing quit dialog
@@ -917,6 +970,15 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if a.showMissedCronDialog {
+		d, missedCmd := a.missedCronDialog.Update(msg)
+		a.missedCronDialog = d.(dialog.MissedCronDialog)
+		cmds = append(cmds, missedCmd)
+		if _, ok := msg.(tea.KeyPressMsg); ok {
+			return a, tea.Batch(cmds...)
+		}
+	}
+
 	switch msg.(type) {
 	case pubsub.Event[agent.MCPServerEvent]:
 		chat.InvalidateMcpCache()
@@ -986,7 +1048,8 @@ func (a *appModel) anyDismissibleDialogOpen() bool {
 		a.showMultiArgumentsDialog ||
 		a.showThemeDialog ||
 		a.showInitDialog ||
-		a.showSessionsCleanupDialog
+		a.showSessionsCleanupDialog ||
+		a.showMissedCronDialog
 }
 
 // dismissAllDialogs closes every dismissible overlay. Intended for ctrl+c
@@ -1001,6 +1064,7 @@ func (a *appModel) dismissAllDialogs() {
 	a.showThemeDialog = false
 	a.showInitDialog = false
 	a.showSessionsCleanupDialog = false
+	a.showMissedCronDialog = false
 	if a.showFilepicker {
 		a.showFilepicker = false
 		a.filepicker.ToggleFilepicker(a.showFilepicker)
@@ -1040,6 +1104,17 @@ func (a *appModel) moveToPage(pageID page.PageID) tea.Cmd {
 	}
 	if pageID == page.LogsPage {
 		cmds = append(cmds, util.CmdHandler(logs.LogsPageActivatedMsg{}))
+	}
+	if pageID == page.CronsPage {
+		// The crons page only sees messages while it is the active page, so
+		// hand it the current session whenever the user opens it.
+		var pageCmd tea.Cmd
+		if a.selectedSession.ID != "" {
+			a.pages[pageID], pageCmd = a.pages[pageID].Update(chat.SessionSelectedMsg(a.selectedSession))
+		} else {
+			a.pages[pageID], pageCmd = a.pages[pageID].Update(chat.SessionClearedMsg{})
+		}
+		cmds = append(cmds, pageCmd)
 	}
 
 	return tea.Batch(cmds...)
@@ -1152,6 +1227,10 @@ func (a appModel) View() tea.View {
 		centerOverlay(a.sessionsCleanupDialog.View().Content)
 	}
 
+	if a.showMissedCronDialog {
+		centerOverlay(a.missedCronDialog.View().Content)
+	}
+
 	v := tea.NewView(appView)
 	v.AltScreen = true
 	v.ReportFocus = true
@@ -1184,9 +1263,20 @@ func New(app *app.App) tea.Model {
 			page.ChatPage:   page.NewChatPage(app, commands),
 			page.LogsPage:   page.NewLogsPage(),
 			page.AgentsPage: page.NewAgentsPage(app.Registry),
+			page.CronsPage:  page.NewCronsPage(app.Crons),
 		},
 		filepicker:            dialog.NewFilepickerCmp(app),
 		sessionsCleanupDialog: dialog.NewSessionsCleanupDialogCmp(),
+		missedCronDialog:      dialog.NewMissedCronDialog(),
+	}
+
+	// Wire the cron scheduler's active-session view to the TUI's selected session.
+	// Without this the scheduler treats every session as inactive, which means
+	// non-auto-approved jobs are deferred forever and never fire.
+	if app.CronScheduler != nil {
+		app.CronScheduler.SetActiveSessionProvider(cron.NewAppActiveSessionProvider(func() string {
+			return model.selectedSession.ID
+		}))
 	}
 
 	return model
@@ -1222,6 +1312,19 @@ func buildCommands() []dialog.Command {
 		"sessions-cleanup": func(_ dialog.Command) tea.Cmd {
 			return func() tea.Msg { return startSessionsCleanupMsg{} }
 		},
+		"loop": func(_ dialog.Command) tea.Cmd {
+			return func() tea.Msg {
+				return dialog.ShowMultiArgumentsDialogMsg{
+					CommandID: "loop",
+					Content:   "",
+					ArgNames:  []string{"interval", "prompt"},
+					ArgHints:  map[string]string{"interval": "e.g., 5m, 1h, 30s", "prompt": "Task to run on schedule"},
+				}
+			}
+		},
+		"crons": func(_ dialog.Command) tea.Cmd {
+			return util.CmdHandler(page.PageChangeMsg{ID: page.CronsPage})
+		},
 	}
 
 	for _, b := range builtins {
@@ -1240,6 +1343,94 @@ func buildCommands() []dialog.Command {
 	}
 
 	return commands
+}
+
+// handleLoopCommand creates a cron job from /loop arguments.
+func (a appModel) handleLoopCommand(args map[string]string) tea.Cmd {
+	if a.app.Crons == nil {
+		return util.ReportWarn("Cron scheduling is disabled")
+	}
+	if a.selectedSession.ID == "" {
+		return util.ReportWarn("No active session")
+	}
+
+	interval := args["interval"]
+	prompt := args["prompt"]
+	if prompt == "" {
+		return util.ReportWarn("Prompt is required for /loop")
+	}
+
+	// Parse interval, default to 10 minutes
+	var d time.Duration
+	if interval == "" {
+		d = 10 * time.Minute
+	} else {
+		var err error
+		d, err = time.ParseDuration(interval)
+		if err != nil {
+			return util.ReportWarn(fmt.Sprintf("Invalid interval %q: %s", interval, err))
+		}
+	}
+
+	schedule := cron.DurationToCron(d)
+
+	// If prompt starts with /, wrap as skill invocation instruction
+	taskPrompt := prompt
+	if len(prompt) > 0 && prompt[0] == '/' {
+		name, skillArgs := splitLoopSkill(prompt)
+		if name == "" {
+			return util.ReportWarn("Skill name is required after / in prompt")
+		}
+		taskPrompt = fmt.Sprintf(
+			"Invoke the skill tool with name=%q and arguments=%q. Report the skill's output verbatim as your final response.",
+			name, skillArgs,
+		)
+	}
+
+	taskTitle := truncateRunes(prompt, 80)
+
+	sessionID := a.selectedSession.ID
+
+	return func() tea.Msg {
+		job, err := a.app.Crons.Create(context.Background(), cron.CreateParams{
+			SessionID:       sessionID,
+			Schedule:        schedule,
+			Prompt:          taskPrompt,
+			SubagentType:    "explorer",
+			TaskTitle:       taskTitle,
+			IsRecurring:     true,
+			Source:          cron.SourceLoop,
+			FireImmediately: true,
+		})
+		if err != nil {
+			return loopFailedMsg{err: err}
+		}
+		human := cron.CronToHuman(schedule)
+		return loopCreatedMsg{
+			info: fmt.Sprintf("⏲ Scheduled cron job %s — %s (%s). First run starting now.",
+				job.ID, human, schedule),
+		}
+	}
+}
+
+// splitLoopSkill splits "/skillname args" into ("skillname", "args").
+func splitLoopSkill(s string) (string, string) {
+	s = strings.TrimPrefix(s, "/")
+	name, args, _ := strings.Cut(s, " ")
+	return name, args
+}
+
+// truncateRunes returns s truncated to at most max runes without splitting a
+// multi-byte sequence.
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max])
 }
 
 // formatDuration returns a human-readable duration string like "30 days",

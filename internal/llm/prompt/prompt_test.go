@@ -223,6 +223,17 @@ func (r *mockRegistry) IsToolEnabled(agentID, toolName string) bool {
 	return permission.IsToolEnabled(toolName, a.Tools)
 }
 
+func (r *mockRegistry) IsToolExplicitlyEnabled(agentID, toolName string) bool {
+	a, ok := r.agents[agentID]
+	if !ok {
+		return false
+	}
+	if enabled, ok := a.Tools[toolName]; ok {
+		return enabled
+	}
+	return false
+}
+
 func (r *mockRegistry) HasTools(agentID string) bool { return true }
 
 func (r *mockRegistry) GlobalPermissions() map[string]any { return r.globalPerms }

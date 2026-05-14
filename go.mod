@@ -23,6 +23,7 @@ require (
 	github.com/ncruces/go-sqlite3 v0.25.0
 	github.com/openai/openai-go v1.12.0
 	github.com/pressly/goose/v3 v3.24.2
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/sergi/go-diff v1.4.0
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.20.0

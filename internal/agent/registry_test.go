@@ -164,9 +164,22 @@ func TestRegistryBuiltins(t *testing.T) {
 		t.Error("descriptor Tools[*] should be false")
 	}
 
-	// Coder and workhorse should have nil Tools (all enabled)
+	// Coder should have nil Tools (all standard tools enabled; cron tools are
+	// default-deny via IsToolExplicitlyEnabled, no per-agent flag needed).
 	if agents[config.AgentCoder].Tools != nil {
-		t.Error("coder should have nil Tools (all enabled)")
+		t.Error("coder should have nil Tools (all enabled by default)")
+	}
+
+	// Hivemind opts in to cron tools explicitly so the coordinator can
+	// schedule recurring tasks. Other restrictions still apply.
+	hivemindTools := agents[config.AgentHivemind].Tools
+	if hivemindTools == nil {
+		t.Fatal("hivemind should have Tools restrictions")
+	}
+	for _, tool := range []string{"croncreate", "crondelete", "cronlist"} {
+		if enabled, exists := hivemindTools[tool]; !exists || !enabled {
+			t.Errorf("hivemind Tools[%q] should be true (explicit opt-in)", tool)
+		}
 	}
 	if agents[config.AgentWorkhorse].Tools == nil {
 		t.Error("workhorse should have Tools restrictions")

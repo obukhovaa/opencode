@@ -127,6 +127,20 @@ func (mr *MockRegistryMockRecorder) IsToolEnabled(agentID, toolName any) *gomock
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsToolEnabled", reflect.TypeOf((*MockRegistry)(nil).IsToolEnabled), agentID, toolName)
 }
 
+// IsToolExplicitlyEnabled mocks base method.
+func (m *MockRegistry) IsToolExplicitlyEnabled(agentID, toolName string) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IsToolExplicitlyEnabled", agentID, toolName)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// IsToolExplicitlyEnabled indicates an expected call of IsToolExplicitlyEnabled.
+func (mr *MockRegistryMockRecorder) IsToolExplicitlyEnabled(agentID, toolName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsToolExplicitlyEnabled", reflect.TypeOf((*MockRegistry)(nil).IsToolExplicitlyEnabled), agentID, toolName)
+}
+
 // List mocks base method.
 func (m *MockRegistry) List() []agent.AgentInfo {
 	m.ctrl.T.Helper()

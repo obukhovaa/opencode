@@ -85,6 +85,19 @@ func BuiltinCommands() []CommandInfo {
 			Description: "Delete sessions older than the configured max age",
 			TUIOnly:     true,
 		},
+		{
+			ID:           "loop",
+			Title:        "Schedule Recurring Task",
+			Description:  "Schedule a task to run on a recurring interval (e.g., /loop 5m check build status)",
+			ArgumentHint: "[interval] <prompt>",
+			TUIOnly:      true,
+		},
+		{
+			ID:          "crons",
+			Title:       "Cron Jobs",
+			Description: "View and manage scheduled cron jobs",
+			TUIOnly:     true,
+		},
 	}
 }
 

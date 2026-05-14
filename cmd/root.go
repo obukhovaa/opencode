@@ -445,6 +445,10 @@ func setupSubscriptions(app *app.App, parentCtx context.Context) (chan tea.Msg, 
 	setupSubscriber(ctx, &wg, "mcp", app.MCPRegistry.Subscribe, ch)
 	setupSubscriber(ctx, &wg, "lsp", app.LspService.Subscribe, ch)
 	setupBlockingSubscriber(ctx, &wg, "permissions", app.Permissions.Subscribe, permCh)
+	if app.Crons != nil {
+		setupSubscriber(ctx, &wg, "cron-jobs", app.Crons.Subscribe, ch)
+		setupSubscriber(ctx, &wg, "cron-missed", app.Crons.SubscribeMissed, ch)
+	}
 	for name, primaryAgent := range app.PrimaryAgents {
 		setupSubscriber(ctx, &wg, fmt.Sprintf("agent-%s", name), primaryAgent.Subscribe, ch)
 	}

@@ -222,10 +222,6 @@ func (m *statusCmp) View() tea.View {
 		vimWidgetWidth = lipgloss.Width(vimWidget)
 	}
 
-	status := vimWidget
-	status += helpWidget
-	status += agentHintWidget
-
 	autoApproveWidget := ""
 	autoApproveWidgetWidth := 0
 	if m.autoApproveActive {
@@ -237,7 +233,6 @@ func (m *statusCmp) View() tea.View {
 			Render(autoApproveText)
 		autoApproveWidgetWidth = lipgloss.Width(autoApproveWidget)
 	}
-	status += autoApproveWidget
 
 	scrollWidget := ""
 	scrollWidgetWidth := 0
@@ -258,8 +253,8 @@ func (m *statusCmp) View() tea.View {
 			Render(scrollText)
 		scrollWidgetWidth = lipgloss.Width(scrollWidget)
 	}
-	status += scrollWidget
 
+	tokensRendered := ""
 	tokenInfoWidth := 0
 	if m.session.ID != "" {
 		totalTokens := m.session.PromptTokens + m.session.CompletionTokens
@@ -273,20 +268,37 @@ func (m *statusCmp) View() tea.View {
 				tokensStyle = tokensStyle.Background(t.Warning())
 			}
 		}
-		tokenInfoWidth = lipgloss.Width(tokens) + 2
-		status += tokensStyle.Render(tokens)
+		tokensRendered = tokensStyle.Render(tokens)
+		tokenInfoWidth = lipgloss.Width(tokensRendered)
 	}
 
 	diagnostics := styles.Padded().
 		Background(t.BackgroundDarker()).
 		Render(m.projectDiagnostics())
 
-	availableWidht := max(0, m.width-vimWidgetWidth-lipgloss.Width(helpWidget)-lipgloss.Width(agentHintWidget)-lipgloss.Width(modelWidget)-lipgloss.Width(diagnostics)-tokenInfoWidth-scrollWidgetWidth-autoApproveWidgetWidth)
+	essentialWidth := vimWidgetWidth + autoApproveWidgetWidth + scrollWidgetWidth + tokenInfoWidth + lipgloss.Width(diagnostics) + lipgloss.Width(modelWidget)
+	helpersWidth := lipgloss.Width(helpWidget) + lipgloss.Width(agentHintWidget)
+
+	helpRendered := ""
+	agentHintRendered := ""
+	if m.width >= essentialWidth+helpersWidth {
+		helpRendered = helpWidget
+		agentHintRendered = agentHintWidget
+	}
+
+	status := vimWidget
+	status += helpRendered
+	status += agentHintRendered
+	status += autoApproveWidget
+	status += scrollWidget
+	status += tokensRendered
+
+	availableWidth := max(0, m.width-essentialWidth-lipgloss.Width(helpRendered)-lipgloss.Width(agentHintRendered))
 
 	if m.info.Msg != "" {
 		infoStyle := styles.Padded().
 			Foreground(t.Background()).
-			Width(availableWidht)
+			Width(availableWidth)
 
 		switch m.info.Type {
 		case util.InfoTypeInfo:
@@ -297,7 +309,7 @@ func (m *statusCmp) View() tea.View {
 			infoStyle = infoStyle.Background(t.Error())
 		}
 
-		infoWidth := availableWidht - 10
+		infoWidth := availableWidth - 10
 		msg := m.info.Msg
 		if len(msg) > infoWidth && infoWidth > 0 {
 			msg = msg[:infoWidth] + "..."
@@ -307,7 +319,7 @@ func (m *statusCmp) View() tea.View {
 		status += styles.Padded().
 			Foreground(t.Text()).
 			Background(t.BackgroundSecondary()).
-			Width(availableWidht).
+			Width(availableWidth).
 			Render("")
 	}
 

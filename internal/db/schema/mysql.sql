@@ -73,3 +73,27 @@ CREATE TABLE IF NOT EXISTS session_recaps (
   KEY idx_session_recaps_session_id (session_id),
   CONSTRAINT fk_session_recaps_session_id FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS cron_jobs (
+  id VARCHAR(255) PRIMARY KEY,
+  session_id VARCHAR(255) NOT NULL,
+  schedule VARCHAR(255) NOT NULL,
+  prompt LONGTEXT NOT NULL,
+  subagent_type VARCHAR(255) NOT NULL,
+  task_title VARCHAR(512) NOT NULL,
+  task_id VARCHAR(255) NOT NULL,
+  is_recurring TINYINT(1) NOT NULL DEFAULT 1,
+  source VARCHAR(50) NOT NULL DEFAULT 'agent',
+  status VARCHAR(50) NOT NULL DEFAULT 'active',
+  firing TINYINT(1) NOT NULL DEFAULT 0,
+  last_run_at BIGINT,
+  next_run_at BIGINT,
+  run_count BIGINT NOT NULL DEFAULT 0,
+  last_result LONGTEXT,
+  error LONGTEXT,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  KEY idx_cron_jobs_session_id (session_id),
+  KEY idx_cron_jobs_due (status, firing, next_run_at),
+  CONSTRAINT fk_cron_jobs_session FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;

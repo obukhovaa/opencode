@@ -50,6 +50,10 @@ func (s *stubRegistry) IsToolEnabled(agentID, toolName string) bool {
 	return true
 }
 
+func (s *stubRegistry) IsToolExplicitlyEnabled(agentID, toolName string) bool {
+	return false
+}
+
 func (s *stubRegistry) HasTools(agentID string) bool {
 	return true
 }

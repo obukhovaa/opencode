@@ -11,6 +11,7 @@ import (
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/cron"
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/flow"
 	"github.com/opencode-ai/opencode/internal/history"
@@ -26,16 +27,18 @@ import (
 )
 
 type App struct {
-	Sessions     session.Service
-	Messages     message.Service
-	History      history.Service
-	Recaps       recap.Service
-	Permissions  permission.Service
-	Registry     agentregistry.Registry
-	MCPRegistry  agent.MCPRegistry
-	Flows        flow.Service
-	AgentFactory agent.AgentFactory
-	LspService   lsp.LspService
+	Sessions      session.Service
+	Messages      message.Service
+	History       history.Service
+	Recaps        recap.Service
+	Permissions   permission.Service
+	Registry      agentregistry.Registry
+	MCPRegistry   agent.MCPRegistry
+	Flows         flow.Service
+	Crons         cron.Service
+	CronScheduler *cron.Scheduler
+	AgentFactory  agent.AgentFactory
+	LspService    lsp.LspService
 
 	activeAgent agent.Service
 
@@ -109,6 +112,15 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 	factory := agent.NewAgentFactory(sessions, messages, perm, files, lspSvc, reg, mcpRegistry)
 	flows := flow.NewService(sessions, messages, q, perm, factory)
 
+	// Initialize cron service (unless disabled)
+	var cronSvc cron.Service
+	if os.Getenv("OPENCODE_DISABLE_CRON") == "" {
+		cronSvc = cron.NewService(q)
+		cronAdapter := cron.NewToolServiceAdapter(cronSvc)
+		schedHelper := cron.NewScheduleHelper()
+		factory.SetCronServices(cronAdapter, schedHelper)
+	}
+
 	app := &App{
 		Sessions:      sessions,
 		Messages:      messages,
@@ -121,6 +133,7 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 		MCPRegistry:   mcpRegistry,
 		AgentFactory:  factory,
 		Flows:         flows,
+		Crons:         cronSvc,
 	}
 
 	app.initTheme()
@@ -147,6 +160,41 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 	} else if len(primaryAgents) > 0 {
 		app.activeAgent = primaryAgents[0]
 	}
+
+	// Create and start the cron scheduler after primary agents are ready
+	if cronSvc != nil {
+		taskTool := agent.NewAgentTool(sessions, perm, reg, factory)
+		taskRunner := cron.NewTaskToolRunner(taskTool)
+		busyChecker := cron.NewAppBusyChecker(
+			func(sessionID string) bool {
+				activeAgent := app.ActiveAgent()
+				if activeAgent == nil {
+					return false
+				}
+				return activeAgent.IsSessionBusy(sessionID)
+			},
+			func(sessionID string) bool {
+				activeAgent := app.ActiveAgent()
+				if activeAgent == nil {
+					return true
+				}
+				return activeAgent.TryLockSession(sessionID)
+			},
+			func(sessionID string) {
+				activeAgent := app.ActiveAgent()
+				if activeAgent == nil {
+					return
+				}
+				activeAgent.UnlockSession(sessionID)
+			},
+		)
+		// The TUI wires the active-session provider via
+		// scheduler.SetActiveSessionProvider once it has been constructed.
+		scheduler := cron.NewScheduler(cronSvc, messages, sessions, perm, busyChecker, nil, taskRunner)
+		app.CronScheduler = scheduler
+		scheduler.Start(ctx)
+	}
+
 	return app, nil
 }
 
@@ -167,6 +215,9 @@ func (app *App) initTheme() {
 
 // Shutdown performs a clean shutdown of the application
 func (app *App) Shutdown() {
+	if app.CronScheduler != nil {
+		app.CronScheduler.Stop()
+	}
 	tools.CleanupTempDir()
 	app.LspService.Shutdown(context.Background())
 }
@@ -174,6 +225,9 @@ func (app *App) Shutdown() {
 // ForceShutdown performs an aggressive shutdown for non-interactive mode
 func (app *App) ForceShutdown() {
 	logging.Info("Starting force shutdown")
+	if app.CronScheduler != nil {
+		app.CronScheduler.Stop()
+	}
 	tools.CleanupTempDir()
 	app.LspService.ForceShutdown()
 	app.forceKillAllChildProcesses()

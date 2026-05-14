@@ -26,6 +26,10 @@ type CreateMessageParams struct {
 type Service interface {
 	pubsub.Suscriber[Message]
 	Create(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error)
+	// CreatePair atomically creates two messages in a single transaction with consecutive
+	// sequence numbers. Used by the cron scheduler to write synthetic tool_call + tool_result
+	// pairs that cannot be interleaved with agent-authored messages.
+	CreatePair(ctx context.Context, sessionID string, first, second CreateMessageParams) (Message, Message, error)
 	Update(ctx context.Context, message Message) error
 	Get(ctx context.Context, id string) (Message, error)
 	List(ctx context.Context, sessionID string) ([]Message, error)
@@ -127,6 +131,94 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 	}
 	s.Publish(pubsub.CreatedEvent, message)
 	return message, nil
+}
+
+func (s *service) CreatePair(ctx context.Context, sessionID string, first, second CreateMessageParams) (Message, Message, error) {
+	if (first.Seq != 0) != (second.Seq != 0) {
+		return Message{}, Message{}, fmt.Errorf("CreatePair: both Seq values must be set or both must be zero")
+	}
+	if first.Seq != 0 && second.Seq <= first.Seq {
+		return Message{}, Message{}, fmt.Errorf("CreatePair: second Seq (%d) must be greater than first (%d)", second.Seq, first.Seq)
+	}
+
+	firstJSON, err := marshallParts(first.Parts)
+	if err != nil {
+		return Message{}, Message{}, err
+	}
+	// Add finish part for non-assistant messages. Copy the slice first so we
+	// never mutate the caller's backing array (a future caller might reuse the
+	// same slice across calls or hold a reference to it).
+	secondParts := second.Parts
+	if second.Role != Assistant {
+		secondParts = make([]ContentPart, len(second.Parts), len(second.Parts)+1)
+		copy(secondParts, second.Parts)
+		secondParts = append(secondParts, Finish{Reason: "stop"})
+	}
+	secondJSON, err := marshallParts(secondParts)
+	if err != nil {
+		return Message{}, Message{}, err
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Message{}, Message{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	qtx := s.q.WithTx(tx)
+
+	seq1 := first.Seq
+	seq2 := second.Seq
+	if seq1 == 0 {
+		seq1, err = s.nextSeqTx(ctx, qtx, sessionID)
+		if err != nil {
+			return Message{}, Message{}, err
+		}
+		seq2 = seq1 + 1
+	}
+
+	dbMsg1, err := qtx.CreateMessage(ctx, db.CreateMessageParams{
+		ID:        uuid.New().String(),
+		SessionID: sessionID,
+		Role:      string(first.Role),
+		Parts:     string(firstJSON),
+		Model:     sql.NullString{String: string(first.Model), Valid: true},
+		Seq:       sql.NullInt64{Int64: seq1, Valid: true},
+	})
+	if err != nil {
+		return Message{}, Message{}, fmt.Errorf("failed to create first message: %w", err)
+	}
+
+	dbMsg2, err := qtx.CreateMessage(ctx, db.CreateMessageParams{
+		ID:        uuid.New().String(),
+		SessionID: sessionID,
+		Role:      string(second.Role),
+		Parts:     string(secondJSON),
+		Model:     sql.NullString{String: string(second.Model), Valid: true},
+		Seq:       sql.NullInt64{Int64: seq2, Valid: true},
+	})
+	if err != nil {
+		return Message{}, Message{}, fmt.Errorf("failed to create second message: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return Message{}, Message{}, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	msg1, err := s.fromDBItem(dbMsg1)
+	if err != nil {
+		return Message{}, Message{}, err
+	}
+	msg2, err := s.fromDBItem(dbMsg2)
+	if err != nil {
+		return Message{}, Message{}, err
+	}
+
+	// Publish after commit
+	s.Publish(pubsub.CreatedEvent, msg1)
+	s.Publish(pubsub.CreatedEvent, msg2)
+
+	return msg1, msg2, nil
 }
 
 func (s *service) nextSeqTx(ctx context.Context, qtx db.Querier, sessionID string) (int64, error) {

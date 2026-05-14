@@ -11,4 +11,5 @@ const (
 	SpinnerIcon  string = "..."
 	LoadingIcon  string = "⟳"
 	DocumentIcon string = "🖼"
+	CronIcon     string = "⏲"
 )

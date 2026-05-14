@@ -600,6 +600,181 @@ func (q *MySQLQuerier) DeleteFlowStatesByRootSession(ctx context.Context, rootSe
 	return q.queries.DeleteFlowStatesByRootSession(ctx, rootSessionID)
 }
 
+// CreateCronJob creates a cron job and returns it
+func (q *MySQLQuerier) CreateCronJob(ctx context.Context, arg CreateCronJobParams) (CronJob, error) {
+	_, err := q.queries.CreateCronJob(ctx, mysqldb.CreateCronJobParams{
+		ID:           arg.ID,
+		SessionID:    arg.SessionID,
+		Schedule:     arg.Schedule,
+		Prompt:       arg.Prompt,
+		SubagentType: arg.SubagentType,
+		TaskTitle:    arg.TaskTitle,
+		TaskID:       arg.TaskID,
+		IsRecurring:  arg.IsRecurring,
+		Source:       arg.Source,
+		Status:       arg.Status,
+		NextRunAt:    arg.NextRunAt,
+	})
+	if err != nil {
+		return CronJob{}, err
+	}
+	return q.GetCronJob(ctx, arg.ID)
+}
+
+// GetCronJob gets a cron job by ID
+func (q *MySQLQuerier) GetCronJob(ctx context.Context, id string) (CronJob, error) {
+	j, err := q.queries.GetCronJob(ctx, id)
+	if err != nil {
+		return CronJob{}, err
+	}
+	return mysqlCronJobToCronJob(j), nil
+}
+
+// ListCronJobsBySession lists cron jobs by session
+func (q *MySQLQuerier) ListCronJobsBySession(ctx context.Context, sessionID string) ([]CronJob, error) {
+	mysqlJobs, err := q.queries.ListCronJobsBySession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	jobs := make([]CronJob, len(mysqlJobs))
+	for i, j := range mysqlJobs {
+		jobs[i] = mysqlCronJobToCronJob(j)
+	}
+	return jobs, nil
+}
+
+// ListActiveCronJobs lists all active cron jobs
+func (q *MySQLQuerier) ListActiveCronJobs(ctx context.Context) ([]CronJob, error) {
+	mysqlJobs, err := q.queries.ListActiveCronJobs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	jobs := make([]CronJob, len(mysqlJobs))
+	for i, j := range mysqlJobs {
+		jobs[i] = mysqlCronJobToCronJob(j)
+	}
+	return jobs, nil
+}
+
+// ListDueCronJobs lists cron jobs that are due for execution
+func (q *MySQLQuerier) ListDueCronJobs(ctx context.Context, nextRunAt sql.NullInt64) ([]CronJob, error) {
+	mysqlJobs, err := q.queries.ListDueCronJobs(ctx, nextRunAt)
+	if err != nil {
+		return nil, err
+	}
+	jobs := make([]CronJob, len(mysqlJobs))
+	for i, j := range mysqlJobs {
+		jobs[i] = mysqlCronJobToCronJob(j)
+	}
+	return jobs, nil
+}
+
+// ListMissedOneShots lists one-shot cron jobs that missed their fire time
+func (q *MySQLQuerier) ListMissedOneShots(ctx context.Context, nextRunAt sql.NullInt64) ([]CronJob, error) {
+	mysqlJobs, err := q.queries.ListMissedOneShots(ctx, nextRunAt)
+	if err != nil {
+		return nil, err
+	}
+	jobs := make([]CronJob, len(mysqlJobs))
+	for i, j := range mysqlJobs {
+		jobs[i] = mysqlCronJobToCronJob(j)
+	}
+	return jobs, nil
+}
+
+// CountActiveCronJobsBySession counts active cron jobs for a session
+func (q *MySQLQuerier) CountActiveCronJobsBySession(ctx context.Context, sessionID string) (int64, error) {
+	return q.queries.CountActiveCronJobsBySession(ctx, sessionID)
+}
+
+// SetCronJobFiring sets the firing flag on a cron job
+func (q *MySQLQuerier) SetCronJobFiring(ctx context.Context, arg SetCronJobFiringParams) error {
+	return q.queries.SetCronJobFiring(ctx, mysqldb.SetCronJobFiringParams{
+		Firing: arg.Firing,
+		ID:     arg.ID,
+	})
+}
+
+// ClaimCronJobForFiring atomically marks a cron job as firing only if it is still due.
+func (q *MySQLQuerier) ClaimCronJobForFiring(ctx context.Context, arg ClaimCronJobForFiringParams) (int64, error) {
+	return q.queries.ClaimCronJobForFiring(ctx, mysqldb.ClaimCronJobForFiringParams{
+		ID:        arg.ID,
+		NextRunAt: arg.NextRunAt,
+	})
+}
+
+// ClearStaleFiring resets firing flag for all stale rows
+func (q *MySQLQuerier) ClearStaleFiring(ctx context.Context) error {
+	return q.queries.ClearStaleFiring(ctx)
+}
+
+// UpdateCronJobAfterRun updates a cron job after execution
+func (q *MySQLQuerier) UpdateCronJobAfterRun(ctx context.Context, arg UpdateCronJobAfterRunParams) (CronJob, error) {
+	_, err := q.queries.UpdateCronJobAfterRun(ctx, mysqldb.UpdateCronJobAfterRunParams{
+		LastRunAt:  arg.LastRunAt,
+		LastResult: arg.LastResult,
+		NextRunAt:  arg.NextRunAt,
+		Status:     arg.Status,
+		ID:         arg.ID,
+	})
+	if err != nil {
+		return CronJob{}, err
+	}
+	return q.GetCronJob(ctx, arg.ID)
+}
+
+// UpdateCronJobNextRun updates the next run time for a cron job
+func (q *MySQLQuerier) UpdateCronJobNextRun(ctx context.Context, arg UpdateCronJobNextRunParams) error {
+	return q.queries.UpdateCronJobNextRun(ctx, mysqldb.UpdateCronJobNextRunParams{
+		NextRunAt: arg.NextRunAt,
+		ID:        arg.ID,
+	})
+}
+
+// UpdateCronJobStatus updates the status of a cron job
+func (q *MySQLQuerier) UpdateCronJobStatus(ctx context.Context, arg UpdateCronJobStatusParams) error {
+	return q.queries.UpdateCronJobStatus(ctx, mysqldb.UpdateCronJobStatusParams{
+		Status: arg.Status,
+		ID:     arg.ID,
+	})
+}
+
+// UpdateCronJobError updates the error field of a cron job
+func (q *MySQLQuerier) UpdateCronJobError(ctx context.Context, arg UpdateCronJobErrorParams) error {
+	return q.queries.UpdateCronJobError(ctx, mysqldb.UpdateCronJobErrorParams{
+		Error: arg.Error,
+		ID:    arg.ID,
+	})
+}
+
+// DeleteCronJob deletes a cron job
+func (q *MySQLQuerier) DeleteCronJob(ctx context.Context, id string) error {
+	return q.queries.DeleteCronJob(ctx, id)
+}
+
+func mysqlCronJobToCronJob(j mysqldb.CronJob) CronJob {
+	return CronJob{
+		ID:           j.ID,
+		SessionID:    j.SessionID,
+		Schedule:     j.Schedule,
+		Prompt:       j.Prompt,
+		SubagentType: j.SubagentType,
+		TaskTitle:    j.TaskTitle,
+		TaskID:       j.TaskID,
+		IsRecurring:  j.IsRecurring,
+		Source:       j.Source,
+		Status:       j.Status,
+		Firing:       j.Firing,
+		LastRunAt:    j.LastRunAt,
+		NextRunAt:    j.NextRunAt,
+		RunCount:     j.RunCount,
+		LastResult:   j.LastResult,
+		Error:        j.Error,
+		CreatedAt:    j.CreatedAt,
+		UpdatedAt:    j.UpdatedAt,
+	}
+}
+
 // GetRecapBySessionID gets a recap by session ID
 func (q *MySQLQuerier) GetRecapBySessionID(ctx context.Context, sessionID string) (SessionRecap, error) {
 	r, err := q.queries.GetRecapBySessionID(ctx, sessionID)

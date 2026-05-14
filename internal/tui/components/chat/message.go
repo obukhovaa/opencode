@@ -367,6 +367,12 @@ func toolName(name string) string {
 		return "Structured Output"
 	case tools.WebSearchToolName:
 		return "Web Search"
+	case tools.CronCreateToolName:
+		return "Schedule Task"
+	case tools.CronDeleteToolName:
+		return "Cancel Task"
+	case tools.CronListToolName:
+		return "List Scheduled"
 	}
 	return name
 }
@@ -407,6 +413,12 @@ func getToolAction(name string) string {
 		return "Formatting output..."
 	case tools.WebSearchToolName:
 		return "Searching the web..."
+	case tools.CronCreateToolName:
+		return "Scheduling task..."
+	case tools.CronDeleteToolName:
+		return "Cancelling task..."
+	case tools.CronListToolName:
+		return "Listing tasks..."
 	}
 	return "Working..."
 }
@@ -460,18 +472,10 @@ func renderParams(paramsWidth int, params ...string) string {
 
 func removeWorkingDirPrefix(path string) string {
 	wd := config.WorkingDirectory()
-	if strings.HasPrefix(path, wd) {
-		path = strings.TrimPrefix(path, wd)
-	}
-	if strings.HasPrefix(path, "/") {
-		path = strings.TrimPrefix(path, "/")
-	}
-	if strings.HasPrefix(path, "./") {
-		path = strings.TrimPrefix(path, "./")
-	}
-	if strings.HasPrefix(path, "../") {
-		path = strings.TrimPrefix(path, "../")
-	}
+	path = strings.TrimPrefix(path, wd)
+	path = strings.TrimPrefix(path, "/")
+	path = strings.TrimPrefix(path, "./")
+	path = strings.TrimPrefix(path, "../")
 	return path
 }
 
@@ -925,7 +929,13 @@ func renderToolMessage(
 func subagentBadge(agentType string, title string, isResumed bool) string {
 	t := theme.CurrentTheme()
 
+	// Detect cron-fired tasks by ⏲ prefix in title
+	isCron := strings.HasPrefix(title, "⏲")
+
 	icon := "●"
+	if isCron {
+		icon = "⏲"
+	}
 	var color color.Color
 	name := agentType
 
@@ -964,7 +974,9 @@ func subagentBadge(agentType string, title string, isResumed bool) string {
 	}
 
 	status := "new task"
-	if isResumed {
+	if isCron {
+		status = "cron"
+	} else if isResumed {
 		status = "resumed"
 	}
 

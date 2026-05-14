@@ -8,6 +8,27 @@ import (
 	"database/sql"
 )
 
+type CronJob struct {
+	ID           string         `json:"id"`
+	SessionID    string         `json:"session_id"`
+	Schedule     string         `json:"schedule"`
+	Prompt       string         `json:"prompt"`
+	SubagentType string         `json:"subagent_type"`
+	TaskTitle    string         `json:"task_title"`
+	TaskID       string         `json:"task_id"`
+	IsRecurring  bool           `json:"is_recurring"`
+	Source       string         `json:"source"`
+	Status       string         `json:"status"`
+	Firing       bool           `json:"firing"`
+	LastRunAt    sql.NullInt64  `json:"last_run_at"`
+	NextRunAt    sql.NullInt64  `json:"next_run_at"`
+	RunCount     int64          `json:"run_count"`
+	LastResult   sql.NullString `json:"last_result"`
+	Error        sql.NullString `json:"error"`
+	CreatedAt    int64          `json:"created_at"`
+	UpdatedAt    int64          `json:"updated_at"`
+}
+
 type File struct {
 	ID        string `json:"id"`
 	SessionID string `json:"session_id"`
