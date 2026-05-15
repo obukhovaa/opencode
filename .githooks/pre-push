@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# pre-push hook: run E2E tests before pushing release tags.
+#
+# Git passes the remote name and URL as $1/$2, then feeds lines on stdin:
+#   <local-ref> <local-sha> <remote-ref> <remote-sha>
+#
+# We scan those lines for semver tags (vN.N.N) and, if any are found,
+# build the binary once and run every test under scripts/test/.
+
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+SEMVER_RE='^refs/tags/v?[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'
+
+pushing_release=false
+while read -r local_ref local_sha remote_ref remote_sha; do
+    if [[ "$local_ref" =~ $SEMVER_RE ]]; then
+        pushing_release=true
+        break
+    fi
+done
+
+if [ "$pushing_release" = false ]; then
+    exit 0
+fi
+
+echo "Release tag detected — running E2E tests before push …"
+
+# Build once, share the binary across all test scripts.
+BIN="$(mktemp)"
+trap 'rm -f "$BIN"' EXIT
+
+echo "Building opencode …"
+(cd "$ROOT" && go build -o "$BIN" .) || { echo "Build failed. Aborting push."; exit 1; }
+
+# Run every executable script under scripts/test/.
+failed=0
+for script in "$ROOT"/scripts/test/*.sh; do
+    [ -x "$script" ] || continue
+    echo ""
+    echo "── $(basename "$script") ──"
+    if ! bash "$script" "$BIN"; then
+        failed=1
+    fi
+done
+
+if [ "$failed" -ne 0 ]; then
+    echo ""
+    echo "E2E tests failed. Push aborted."
+    exit 1
+fi
+
+echo ""
+echo "All E2E tests passed."
+exit 0

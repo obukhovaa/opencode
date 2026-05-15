@@ -101,6 +101,70 @@ func lookupToolAction(toolName, input string, agentPerms, globalPerms map[string
 	return ""
 }
 
+// ReadDenyPatterns collects file patterns with "deny" action from the
+// read-category permission chain (specific tool → "read" → global).
+// The returned patterns are suitable for passing to ripgrep as --glob !pattern.
+func ReadDenyPatterns(toolName string, agentPerms, globalPerms map[string]any) []string {
+	seen := make(map[string]bool)
+	var patterns []string
+
+	collect := func(permKey string, perms map[string]any) {
+		if perms == nil {
+			return
+		}
+		v, ok := perms[permKey]
+		if !ok {
+			return
+		}
+		switch m := v.(type) {
+		case map[string]any:
+			for pattern, action := range m {
+				if pattern == "*" {
+					continue
+				}
+				expanded := expandHome(pattern)
+				if seen[expanded] {
+					continue // Already claimed by a higher-priority level
+				}
+				seen[expanded] = true
+				if s, ok := action.(string); ok && Action(strings.ToLower(s)) == ActionDeny {
+					patterns = append(patterns, expanded)
+				}
+			}
+		case map[string]string:
+			for pattern, action := range m {
+				if pattern == "*" {
+					continue
+				}
+				expanded := expandHome(pattern)
+				if seen[expanded] {
+					continue // Already claimed by a higher-priority level
+				}
+				seen[expanded] = true
+				if Action(strings.ToLower(action)) == ActionDeny {
+					patterns = append(patterns, expanded)
+				}
+			}
+		}
+	}
+
+	// Mirror the EvaluateReadToolPermission chain:
+	// 1. Specific tool (e.g., "grep")
+	if toolName != "read" {
+		collect(toolName, agentPerms)
+		collect(toolName, globalPerms)
+	}
+	// 2. "read" category
+	collect("read", agentPerms)
+	collect("read", globalPerms)
+	// 3. "*" wildcard
+	collect("*", agentPerms)
+	collect("*", globalPerms)
+
+	sort.Strings(patterns)
+	return patterns
+}
+
 func IsToolEnabled(toolName string, toolsConfig map[string]bool) bool {
 	if toolsConfig == nil {
 		return true

@@ -383,3 +383,169 @@ func TestIsToolEnabled(t *testing.T) {
 		})
 	}
 }
+
+func TestReadDenyPatterns(t *testing.T) {
+	tests := []struct {
+		name        string
+		tool        string
+		agentPerms  map[string]any
+		globalPerms map[string]any
+		want        []string
+	}{
+		{
+			name: "no perms returns nil",
+			tool: "grep",
+		},
+		{
+			name: "collects deny from read rules",
+			tool: "grep",
+			globalPerms: map[string]any{
+				"read": map[string]any{
+					"*":       "allow",
+					"*.env":   "deny",
+					"*.env.*": "deny",
+				},
+			},
+			want: []string{"*.env", "*.env.*"},
+		},
+		{
+			name: "collects deny from tool-specific rules",
+			tool: "grep",
+			globalPerms: map[string]any{
+				"grep": map[string]any{
+					"/proc/*": "deny",
+				},
+			},
+			want: []string{"/proc/*"},
+		},
+		{
+			name: "merges agent and global deny patterns",
+			tool: "grep",
+			agentPerms: map[string]any{
+				"read": map[string]any{
+					".env": "deny",
+				},
+			},
+			globalPerms: map[string]any{
+				"read": map[string]any{
+					"/proc/*": "deny",
+				},
+			},
+			want: []string{".env", "/proc/*"},
+		},
+		{
+			name: "ignores allow and ask patterns",
+			tool: "grep",
+			globalPerms: map[string]any{
+				"read": map[string]any{
+					"*.go":  "allow",
+					"*.env": "deny",
+					"*.log": "ask",
+				},
+			},
+			want: []string{"*.env"},
+		},
+		{
+			name: "deduplicates across sources",
+			tool: "grep",
+			agentPerms: map[string]any{
+				"read": map[string]any{
+					"*.env": "deny",
+				},
+			},
+			globalPerms: map[string]any{
+				"read": map[string]any{
+					"*.env": "deny",
+				},
+			},
+			want: []string{"*.env"},
+		},
+		{
+			name: "ignores wildcard star",
+			tool: "grep",
+			globalPerms: map[string]any{
+				"read": map[string]any{
+					"*": "deny",
+				},
+			},
+			want: nil,
+		},
+		{
+			name: "read tool skips tool-specific lookup",
+			tool: "read",
+			globalPerms: map[string]any{
+				"read": map[string]any{
+					".env": "deny",
+				},
+			},
+			want: []string{".env"},
+		},
+		{
+			name: "collects deny from wildcard tool key",
+			tool: "grep",
+			globalPerms: map[string]any{
+				"*": map[string]any{
+					"*.env": "deny",
+				},
+			},
+			want: []string{"*.env"},
+		},
+		{
+			name: "deduplicates across read and wildcard",
+			tool: "grep",
+			globalPerms: map[string]any{
+				"read": map[string]any{
+					"*.env": "deny",
+				},
+				"*": map[string]any{
+					"*.env":  "deny",
+					"*.keys": "deny",
+				},
+			},
+			want: []string{"*.env", "*.keys"},
+		},
+		{
+			name: "allow at higher level prevents deny at lower level",
+			tool: "grep",
+			agentPerms: map[string]any{
+				"grep": map[string]any{
+					"*.env": "allow",
+				},
+			},
+			globalPerms: map[string]any{
+				"read": map[string]any{
+					"*.env": "deny",
+				},
+			},
+			want: nil,
+		},
+		{
+			name: "ask at higher level prevents deny at lower level",
+			tool: "grep",
+			agentPerms: map[string]any{
+				"read": map[string]any{
+					"*.env": "ask",
+				},
+			},
+			globalPerms: map[string]any{
+				"*": map[string]any{
+					"*.env": "deny",
+				},
+			},
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ReadDenyPatterns(tt.tool, tt.agentPerms, tt.globalPerms)
+			if len(got) != len(tt.want) {
+				t.Fatalf("ReadDenyPatterns() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("ReadDenyPatterns()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}

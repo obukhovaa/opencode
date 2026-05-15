@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,10 +22,47 @@ import (
 )
 
 type GrepParams struct {
-	Pattern     string `json:"pattern"`
-	Path        string `json:"path"`
-	Include     string `json:"include"`
-	LiteralText bool   `json:"literal_text"`
+	Pattern         string `json:"pattern"`
+	Path            string `json:"path"`
+	Include         string `json:"include"`
+	Glob            string `json:"glob"`
+	LiteralText     bool   `json:"literal_text"`
+	OutputMode      string `json:"output_mode"`
+	Context         *int   `json:"context"`
+	BeforeContext   *int   `json:"before_context"`
+	AfterContext    *int   `json:"after_context"`
+	CaseInsensitive bool   `json:"case_insensitive"`
+	FileType        string `json:"file_type"`
+	HeadLimit       *int   `json:"head_limit"`
+	Offset          int    `json:"offset"`
+	Multiline       bool   `json:"multiline"`
+}
+
+// resolveGlob returns the effective glob pattern, preferring the new "glob"
+// parameter but falling back to the legacy "include" alias.
+func (p *GrepParams) resolveGlob() string {
+	if p.Glob != "" {
+		return p.Glob
+	}
+	return p.Include
+}
+
+// resolveHeadLimit returns the effective head limit, defaulting to 250.
+func (p *GrepParams) resolveHeadLimit() int {
+	if p.HeadLimit != nil {
+		return *p.HeadLimit
+	}
+	return 250
+}
+
+// resolveOutputMode returns the effective output mode, defaulting to "files_with_matches".
+func (p *GrepParams) resolveOutputMode() string {
+	switch p.OutputMode {
+	case "content", "files_with_matches", "count":
+		return p.OutputMode
+	default:
+		return "files_with_matches"
+	}
 }
 
 type grepMatch struct {
@@ -35,8 +73,12 @@ type grepMatch struct {
 }
 
 type GrepResponseMetadata struct {
-	NumberOfMatches int  `json:"number_of_matches"`
-	Truncated       bool `json:"truncated"`
+	Mode            string `json:"mode"`
+	NumberOfFiles   int    `json:"number_of_files"`
+	NumberOfMatches int    `json:"number_of_matches"`
+	Truncated       bool   `json:"truncated"`
+	Offset          int    `json:"offset,omitempty"`
+	Limit           int    `json:"limit"`
 }
 
 type grepTool struct {
@@ -46,43 +88,17 @@ type grepTool struct {
 
 const (
 	GrepToolName    = "grep"
-	grepDescription = `Fast content search tool that finds files containing specific text or patterns, returning matching file paths sorted by modification time (newest first).
+	grepDescription = `A powerful search tool built on ripgrep
 
-WHEN TO USE THIS TOOL:
-- Use when you need to find files containing specific text or patterns
-- Great for searching code bases for function names, variable declarations, or error messages
-- Useful for finding all files that use a particular API or pattern
-
-HOW TO USE:
-- Provide a regex pattern to search for within file contents
-- Set literal_text=true if you want to search for the exact text with special characters (recommended for non-regex users)
-- Optionally specify a starting directory (defaults to current working directory)
-- Optionally provide an include pattern to filter which files to search
-- Results are sorted with most recently modified files first
-
-REGEX PATTERN SYNTAX (when literal_text=false):
-- Supports standard regular expression syntax
-- 'function' searches for the literal text "function"
-- 'log\..*Error' finds text starting with "log." and ending with "Error"
-- 'import\s+.*\s+from' finds import statements in JavaScript/TypeScript
-
-COMMON INCLUDE PATTERN EXAMPLES:
-- '*.js' - Only search JavaScript files
-- '*.{ts,tsx}' - Only search TypeScript files
-- '*.go' - Only search Go files
-
-LIMITATIONS:
-- Results are limited to 100 files (newest first)
-- Performance depends on the number of files being searched
-- Very large binary files may be skipped
-- Hidden files (starting with '.') are skipped
-
-TIPS:
-- For faster, more targeted searches, first use Glob to find relevant files, then use Grep
-- If you need to identify or count the number of matches within files, use the Bash tool with ` + "`rg`" + ` directly
-- When doing iterative exploration that may require multiple rounds of searching, consider using the Task tool instead
-- Always check if results are truncated and refine your search pattern if needed
-- Use literal_text=true when searching for exact text containing special characters like dots, parentheses, etc.`
+Usage:
+- ALWAYS use grep for search tasks. NEVER invoke ` + "`grep`" + ` or ` + "`rg`" + ` as a bash command. The grep tool has been optimized for correct permissions and access.
+- Supports full regex syntax (e.g., "log.*Error", "function\\s+\\w+")
+- Filter files with glob parameter (e.g., "*.js", "**/*.tsx") or file_type parameter (e.g., "js", "py", "go")
+- Output modes: "content" shows matching lines, "files_with_matches" shows only file paths (default), "count" shows match counts
+- Use Task tool for open-ended searches requiring multiple rounds
+- Pattern syntax: Uses ripgrep (not grep) — literal braces need escaping (use ` + "`interface\\{\\}`" + ` to find ` + "`interface{}`" + ` in Go code)
+- Multiline matching: By default patterns match within single lines only. For cross-line patterns like ` + "`struct \\{[\\s\\S]*?field`" + `, use multiline=true
+`
 )
 
 func NewGrepTool(reg agentregistry.Registry, permissions permission.Service) BaseTool {
@@ -108,13 +124,54 @@ func (g *grepTool) Info() ToolInfo {
 				"type":        "string",
 				"description": "The directory to search in. Defaults to the current working directory.",
 			},
+			"glob": map[string]any{
+				"type":        "string",
+				"description": "Glob pattern to filter files (e.g. \"*.js\", \"*.{ts,tsx}\") — maps to rg --glob",
+			},
 			"include": map[string]any{
 				"type":        "string",
-				"description": "File pattern to include in the search (e.g. \"*.js\", \"*.{ts,tsx}\")",
+				"description": "Deprecated alias for glob. Use glob instead.",
 			},
 			"literal_text": map[string]any{
 				"type":        "boolean",
 				"description": "If true, the pattern will be treated as literal text with special regex characters escaped. Default is false.",
+			},
+			"output_mode": map[string]any{
+				"type":        "string",
+				"enum":        []string{"content", "files_with_matches", "count"},
+				"description": "Output mode: \"content\" shows matching lines (supports context flags, head_limit), \"files_with_matches\" shows file paths (supports head_limit), \"count\" shows match counts (supports head_limit). Defaults to \"files_with_matches\".",
+			},
+			"context": map[string]any{
+				"type":        "integer",
+				"description": "Number of lines to show before and after each match (rg -C). Requires output_mode: \"content\", ignored otherwise.",
+			},
+			"before_context": map[string]any{
+				"type":        "integer",
+				"description": "Number of lines to show before each match (rg -B). Requires output_mode: \"content\", ignored otherwise.",
+			},
+			"after_context": map[string]any{
+				"type":        "integer",
+				"description": "Number of lines to show after each match (rg -A). Requires output_mode: \"content\", ignored otherwise.",
+			},
+			"case_insensitive": map[string]any{
+				"type":        "boolean",
+				"description": "Case insensitive search (rg -i). Default is false.",
+			},
+			"file_type": map[string]any{
+				"type":        "string",
+				"description": "File type to search (rg --type). Common types: js, py, go, java, rust, etc. More efficient than glob for standard file types.",
+			},
+			"head_limit": map[string]any{
+				"type":        "integer",
+				"description": "Limit output to first N entries. Defaults to 250. Pass 0 for unlimited (use sparingly).",
+			},
+			"offset": map[string]any{
+				"type":        "integer",
+				"description": "Skip first N entries before applying head_limit. Defaults to 0.",
+			},
+			"multiline": map[string]any{
+				"type":        "boolean",
+				"description": "Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall). Default: false.",
 			},
 		},
 		Required: []string{"pattern"},
@@ -143,7 +200,6 @@ func (g *grepTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		return NewTextErrorResponse("pattern is required"), nil
 	}
 
-	// If literal_text is true, escape the pattern
 	searchPattern := params.Pattern
 	if params.LiteralText {
 		searchPattern = escapeRegexPattern(params.Pattern)
@@ -161,83 +217,50 @@ func (g *grepTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		return NewEmptyResponse(), err
 	}
 
-	matches, truncated, err := searchFiles(ctx, searchPattern, searchPath, params.Include, 100)
+	mode := params.resolveOutputMode()
+	headLimit := params.resolveHeadLimit()
+	glob := params.resolveGlob()
+
+	// Extract read deny patterns from the permission system and convert to
+	// ripgrep --glob exclusions, mirroring Claude Code's getFileReadIgnorePatterns.
+	var denyPatterns []string
+	if g.registry != nil {
+		agentID := string(GetAgentID(ctx))
+		denyPatterns = g.registry.ReadDenyPatterns(agentID, GrepToolName)
+	}
+
+	output, metadata, err := runGrepSearch(ctx, searchPattern, searchPath, &params, glob, mode, headLimit, denyPatterns)
 	if err != nil {
 		return NewEmptyResponse(), fmt.Errorf("error searching files: %w", err)
 	}
 
-	var output string
-	if len(matches) == 0 {
-		output = "No files found"
-	} else {
-		output = fmt.Sprintf("Found %d matches\n", len(matches))
-
-		currentFile := ""
-		for _, match := range matches {
-			if currentFile != match.path {
-				if currentFile != "" {
-					output += "\n"
-				}
-				currentFile = match.path
-				output += fmt.Sprintf("%s:\n", match.path)
-			}
-			if match.lineNum > 0 {
-				output += fmt.Sprintf("  Line %d: %s\n", match.lineNum, match.lineText)
-			} else {
-				output += fmt.Sprintf("  %s\n", match.path)
-			}
-		}
-
-		if truncated {
-			output += fmt.Sprintf("\n(Results truncated: showing %d matches. Consider using a more specific path or pattern.)", len(matches))
-		}
-	}
-
-	return WithResponseMetadata(
-		NewTextResponse(output),
-		GrepResponseMetadata{
-			NumberOfMatches: len(matches),
-			Truncated:       truncated,
-		},
-	), nil
+	return WithResponseMetadata(NewTextResponse(output), metadata), nil
 }
 
-func searchFiles(ctx context.Context, pattern, rootPath, include string, limit int) ([]grepMatch, bool, error) {
+func runGrepSearch(ctx context.Context, pattern, rootPath string, params *GrepParams, glob, mode string, headLimit int, denyPatterns []string) (string, GrepResponseMetadata, error) {
 	timeout := fileutil.FileOpTimeout()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	matches, err := searchWithRipgrep(ctx, pattern, rootPath, include)
-	if err != nil {
-		matches, err = searchFilesWithRegex(ctx, pattern, rootPath, include)
-		if err != nil {
-			return nil, false, err
-		}
+	// Try ripgrep first; fall back to Go regex search
+	rgAvailable := isRipgrepAvailable()
+
+	if rgAvailable {
+		return searchWithRipgrepModes(ctx, pattern, rootPath, params, glob, mode, headLimit, denyPatterns)
 	}
 
-	sort.Slice(matches, func(i, j int) bool {
-		return matches[i].modTime.After(matches[j].modTime)
-	})
-
-	totalMatches := len(matches)
-	truncated := totalMatches > limit
-	if truncated {
-		matches = matches[:limit]
-	}
-
-	return matches, truncated, nil
+	// Fallback: Go regex search only supports basic files_with_matches-like output.
+	// Pass headLimit so the fallback collection cap aligns with the requested limit.
+	return searchWithRegexFallback(ctx, pattern, rootPath, glob, mode, headLimit, params.Offset, denyPatterns)
 }
 
-func searchWithRipgrep(ctx context.Context, pattern, path, include string) ([]grepMatch, error) {
+func isRipgrepAvailable() bool {
 	_, err := exec.LookPath("rg")
-	if err != nil {
-		return nil, fmt.Errorf("ripgrep not found: %w", err)
-	}
+	return err == nil
+}
 
-	args := []string{"-H", "-n", "--no-messages", "--field-match-separator=\x00", pattern}
-	if include != "" {
-		args = append(args, "--glob", include)
-	}
+func searchWithRipgrepModes(ctx context.Context, pattern, path string, params *GrepParams, glob, mode string, headLimit int, denyPatterns []string) (string, GrepResponseMetadata, error) {
+	args := buildRipgrepArgs(pattern, params, glob, mode, denyPatterns)
 	args = append(args, path)
 
 	cmd := exec.CommandContext(ctx, "rg", args...)
@@ -246,61 +269,426 @@ func searchWithRipgrep(ctx context.Context, pattern, path, include string) ([]gr
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			switch exitErr.ExitCode() {
 			case 1:
-				return []grepMatch{}, nil
+				// No matches
+				return "No matches found", GrepResponseMetadata{Mode: mode, Limit: headLimit}, nil
 			case 2:
-				// Partial results (e.g. broken symlinks, permission denied)
-				// Continue processing whatever output we got
+				// Partial results — continue processing
 			default:
-				return nil, err
+				return "", GrepResponseMetadata{}, err
 			}
 		} else {
-			return nil, err
+			return "", GrepResponseMetadata{}, err
 		}
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	matches := make([]grepMatch, 0, len(lines))
+	raw := strings.TrimSuffix(string(output), "\n")
+	if raw == "" {
+		return "No matches found", GrepResponseMetadata{Mode: mode, Limit: headLimit}, nil
+	}
 
+	rootPath := path
+	switch mode {
+	case "content":
+		return formatContentMode(raw, rootPath, params.Offset, headLimit)
+	case "count":
+		return formatCountMode(raw, rootPath, params.Offset, headLimit)
+	default:
+		return formatFilesMode(raw, rootPath, params.Offset, headLimit)
+	}
+}
+
+// commonIgnoredDirs lists directories that should be skipped during search.
+// VCS dirs are always excluded; heavy dependency/build dirs are excluded because
+// ripgrep only respects .gitignore inside git repos — outside git (or if the
+// entry is missing from .gitignore) these would be walked in full.
+var commonIgnoredDirs = []string{
+	// VCS
+	".git", ".svn", ".hg",
+	// Dependencies
+	"node_modules", "bower_components", "jspm_packages",
+	// Build output / caches
+	"__pycache__", ".opencode",
+}
+
+func buildRipgrepArgs(pattern string, params *GrepParams, glob, mode string, denyPatterns []string) []string {
+	args := []string{
+		"--hidden",
+		"--max-columns", "500",
+		"--max-columns-preview",
+		"--no-messages",
+	}
+
+	for _, dir := range commonIgnoredDirs {
+		args = append(args, "--glob", "!"+dir)
+	}
+
+	// Apply read deny patterns from the permission system as --glob exclusions.
+	// Patterns may be absolute paths (e.g., "/etc/secrets/*") or relative globs
+	// (e.g., "*.env", ".env.*"). Non-absolute patterns get a **/ prefix so
+	// ripgrep matches them at any depth.
+	for _, dp := range denyPatterns {
+		if strings.HasPrefix(dp, "/") {
+			args = append(args, "--glob", "!"+dp)
+		} else {
+			args = append(args, "--glob", "!**/"+dp)
+		}
+	}
+
+	switch mode {
+	case "files_with_matches":
+		args = append(args, "-l")
+	case "count":
+		args = append(args, "-c")
+	case "content":
+		args = append(args, "-H", "-n", "--field-match-separator=\x1f")
+		if params.Context != nil && *params.Context > 0 {
+			args = append(args, "-C", strconv.Itoa(*params.Context))
+		}
+		if params.BeforeContext != nil && *params.BeforeContext > 0 {
+			args = append(args, "-B", strconv.Itoa(*params.BeforeContext))
+		}
+		if params.AfterContext != nil && *params.AfterContext > 0 {
+			args = append(args, "-A", strconv.Itoa(*params.AfterContext))
+		}
+	}
+
+	if params.CaseInsensitive {
+		args = append(args, "-i")
+	}
+
+	if params.Multiline {
+		args = append(args, "-U", "--multiline-dotall")
+	}
+
+	if params.FileType != "" {
+		args = append(args, "--type", params.FileType)
+	}
+
+	if glob != "" {
+		args = append(args, "--glob", glob)
+	}
+
+	// Use -e when pattern starts with dash to avoid flag ambiguity
+	if strings.HasPrefix(pattern, "-") {
+		args = append(args, "-e", pattern)
+	} else {
+		args = append(args, pattern)
+	}
+
+	return args
+}
+
+// paginationResult holds the output of paginating a slice.
+type paginationResult struct {
+	start     int
+	end       int
+	total     int
+	truncated bool
+}
+
+// paginate applies offset and head_limit to a total count, returning
+// the slice bounds and whether the result was truncated.
+func paginate(total, offset, headLimit int) paginationResult {
+	start := min(offset, total)
+	remaining := total - start
+
+	end := total
+	truncated := false
+	if headLimit > 0 && remaining > headLimit {
+		end = start + headLimit
+		truncated = true
+	}
+
+	return paginationResult{
+		start:     start,
+		end:       end,
+		total:     total,
+		truncated: truncated,
+	}
+}
+
+// formatFilesMode processes rg -l output: one file path per line.
+// Sorts by mtime (newest first), applies offset/limit pagination.
+func formatFilesMode(raw, rootPath string, offset, headLimit int) (string, GrepResponseMetadata, error) {
+	lines := strings.Split(raw, "\n")
+
+	type fileEntry struct {
+		path    string
+		modTime time.Time
+	}
+	entries := make([]fileEntry, 0, len(lines))
 	for _, line := range lines {
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-
-		// Parse ripgrep output format: file\x00line\x00content
-		parts := strings.SplitN(line, "\x00", 3)
-		if len(parts) < 3 {
+		info, err := os.Stat(line)
+		if err != nil {
+			entries = append(entries, fileEntry{path: line})
 			continue
 		}
+		entries = append(entries, fileEntry{path: line, modTime: info.ModTime()})
+	}
 
-		filePath := parts[0]
-		lineNum, err := strconv.Atoi(parts[1])
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].modTime.After(entries[j].modTime)
+	})
+
+	pg := paginate(len(entries), offset, headLimit)
+	page := entries[pg.start:pg.end]
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Found %d files", pg.total)
+	if pg.truncated {
+		fmt.Fprintf(&sb, " (showing %d, limit: %d)", len(page), headLimit)
+	}
+	sb.WriteByte('\n')
+
+	for _, e := range page {
+		sb.WriteString(toRelativePath(e.path, rootPath))
+		sb.WriteByte('\n')
+	}
+
+	return sb.String(), GrepResponseMetadata{
+		Mode:          "files_with_matches",
+		NumberOfFiles: pg.total,
+		Truncated:     pg.truncated,
+		Offset:        offset,
+		Limit:         headLimit,
+	}, nil
+}
+
+// formatContentMode processes rg -H -n output (with optional context).
+// Converts absolute paths to relative, applies offset/limit pagination on output lines.
+func formatContentMode(raw, rootPath string, offset, headLimit int) (string, GrepResponseMetadata, error) {
+	lines := strings.Split(raw, "\n")
+
+	// Count match lines and unique files using the unit separator (\x1f).
+	// buildRipgrepArgs uses --field-match-separator=\x1f for content mode, so
+	// match lines contain \x1f (e.g. "file\x1fline\x1fcontent") while context
+	// lines use dashes ("file-line-content") and separators are "--".
+	matchCount := 0
+	fileSet := make(map[string]struct{})
+	for i, line := range lines {
+		if strings.ContainsRune(line, '\x1f') {
+			matchCount++
+			if idx := strings.IndexByte(line, '\x1f'); idx > 0 {
+				fileSet[line[:idx]] = struct{}{}
+			}
+			lines[i] = strings.ReplaceAll(line, "\x1f", ":")
+		}
+	}
+
+	// Convert absolute paths to relative in each line
+	for i, line := range lines {
+		lines[i] = relativizeLine(line, rootPath)
+	}
+
+	pg := paginate(len(lines), offset, headLimit)
+	page := lines[pg.start:pg.end]
+
+	var sb strings.Builder
+	for _, line := range page {
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+	}
+
+	if pg.truncated || offset > 0 {
+		fmt.Fprintf(&sb, "[Showing lines %d-%d of %d total]\n", pg.start+1, pg.end, pg.total)
+	}
+
+	return sb.String(), GrepResponseMetadata{
+		Mode:            "content",
+		NumberOfFiles:   len(fileSet),
+		NumberOfMatches: matchCount,
+		Truncated:       pg.truncated,
+		Offset:          offset,
+		Limit:           headLimit,
+	}, nil
+}
+
+// formatCountMode processes rg -c output (file:count per line).
+// Sums total matches, applies offset/limit pagination on file entries.
+func formatCountMode(raw, rootPath string, offset, headLimit int) (string, GrepResponseMetadata, error) {
+	lines := strings.Split(raw, "\n")
+
+	type countEntry struct {
+		path  string
+		count int
+	}
+	entries := make([]countEntry, 0, len(lines))
+	totalMatches := 0
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Format: file:count (last colon separates)
+		idx := strings.LastIndex(line, ":")
+		if idx < 0 {
+			continue
+		}
+		filePath := line[:idx]
+		count, err := strconv.Atoi(line[idx+1:])
 		if err != nil {
 			continue
 		}
-		lineText := parts[2]
-
-		fileInfo, err := os.Stat(filePath)
-		if err != nil {
-			continue // Skip files we can't access
-		}
-
-		matches = append(matches, grepMatch{
-			path:     filePath,
-			modTime:  fileInfo.ModTime(),
-			lineNum:  lineNum,
-			lineText: lineText,
+		totalMatches += count
+		entries = append(entries, countEntry{
+			path:  filePath,
+			count: count,
 		})
 	}
 
-	return matches, nil
+	pg := paginate(len(entries), offset, headLimit)
+	page := entries[pg.start:pg.end]
+
+	var sb strings.Builder
+	for _, e := range page {
+		fmt.Fprintf(&sb, "%s:%d\n", toRelativePath(e.path, rootPath), e.count)
+	}
+	fmt.Fprintf(&sb, "Found %d total matches across %d files.\n", totalMatches, pg.total)
+
+	return sb.String(), GrepResponseMetadata{
+		Mode:            "count",
+		NumberOfFiles:   pg.total,
+		NumberOfMatches: totalMatches,
+		Truncated:       pg.truncated,
+		Offset:          offset,
+		Limit:           headLimit,
+	}, nil
 }
 
-func searchFilesWithRegex(ctx context.Context, pattern, rootPath, include string) ([]grepMatch, error) {
+// toRelativePath converts an absolute path to relative if it's under rootPath.
+func toRelativePath(absPath, rootPath string) string {
+	rel, err := filepath.Rel(rootPath, absPath)
+	if err != nil {
+		return absPath
+	}
+	return rel
+}
+
+// relativizeLine converts the leading file path in a ripgrep content line to relative.
+// Lines may be "file:line:content", "file-line-content" (context), or "--" (separator).
+func relativizeLine(line, rootPath string) string {
+	if line == "--" {
+		return line
+	}
+	if strings.HasPrefix(line, rootPath+"/") {
+		return line[len(rootPath)+1:]
+	}
+	return line
+}
+
+// searchWithRegexFallback is the Go regex fallback for environments without ripgrep.
+func searchWithRegexFallback(ctx context.Context, pattern, rootPath, glob, mode string, headLimit, offset int, denyPatterns []string) (string, GrepResponseMetadata, error) {
+	// Collect more than headLimit so pagination can report accurate totals,
+	// but still cap to avoid unbounded memory use.
+	collectLimit := max(headLimit+offset, 500)
+	matches, capped, err := searchFilesWithRegex(ctx, pattern, rootPath, glob, collectLimit)
+	if err != nil {
+		return "", GrepResponseMetadata{}, err
+	}
+
+	// Filter out files matching read deny patterns.
+	// Absolute patterns match the full path; relative patterns match against
+	// the base name and relative path (mirroring ripgrep's !**/pattern behavior).
+	if len(denyPatterns) > 0 {
+		filtered := matches[:0]
+		for _, m := range matches {
+			denied := false
+			for _, dp := range denyPatterns {
+				if strings.HasPrefix(dp, "/") {
+					if permission.MatchWildcard(dp, m.path) {
+						denied = true
+						break
+					}
+				} else {
+					base := filepath.Base(m.path)
+					rel, _ := filepath.Rel(rootPath, m.path)
+					if permission.MatchWildcard(dp, base) || (rel != "" && permission.MatchWildcard(dp, rel)) {
+						denied = true
+						break
+					}
+				}
+			}
+			if !denied {
+				filtered = append(filtered, m)
+			}
+		}
+		matches = filtered
+	}
+
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].modTime.After(matches[j].modTime)
+	})
+
+	if len(matches) == 0 {
+		return "No matches found", GrepResponseMetadata{Mode: mode, Limit: headLimit}, nil
+	}
+
+	pg := paginate(len(matches), offset, headLimit)
+	// If the walk was capped, the total we have may be incomplete.
+	truncated := pg.truncated || capped
+	page := matches[pg.start:pg.end]
+
+	var sb strings.Builder
+	note := ""
+	if mode == "content" || mode == "count" {
+		note = "\n(Advanced search features require ripgrep. Install it for full functionality.)\n"
+	}
+
+	if capped {
+		fmt.Fprintf(&sb, "Found %d+ files\n", pg.total)
+	} else {
+		fmt.Fprintf(&sb, "Found %d files\n", pg.total)
+	}
+
+	currentFile := ""
+	for _, match := range page {
+		relPath := toRelativePath(match.path, rootPath)
+		if currentFile != relPath {
+			if currentFile != "" {
+				sb.WriteByte('\n')
+			}
+			currentFile = relPath
+			fmt.Fprintf(&sb, "%s:\n", relPath)
+		}
+		if match.lineNum > 0 {
+			fmt.Fprintf(&sb, "  Line %d: %s\n", match.lineNum, match.lineText)
+		}
+	}
+
+	if truncated {
+		fmt.Fprintf(&sb, "\n(Results truncated: showing %d files. Consider a more specific path or pattern.)", len(page))
+	}
+
+	sb.WriteString(note)
+
+	return sb.String(), GrepResponseMetadata{
+		Mode:          mode,
+		NumberOfFiles: pg.total,
+		Truncated:     truncated,
+		Offset:        offset,
+		Limit:         headLimit,
+	}, nil
+}
+
+// searchFilesWithRegex walks rootPath and returns files matching the regex.
+// collectLimit caps how many matches are collected (0 = no limit, uses a
+// sensible default of 500). The boolean return indicates whether the walk
+// was stopped early because the cap was reached.
+func searchFilesWithRegex(ctx context.Context, pattern, rootPath, include string, collectLimit int) ([]grepMatch, bool, error) {
+	if collectLimit <= 0 {
+		collectLimit = 500
+	}
+
 	matches := []grepMatch{}
 
 	regex, err := regexp.Compile(pattern)
 	if err != nil {
-		return nil, fmt.Errorf("invalid regex pattern: %w", err)
+		return nil, false, fmt.Errorf("invalid regex pattern: %w", err)
 	}
 
 	var includePattern *regexp.Regexp
@@ -308,10 +696,11 @@ func searchFilesWithRegex(ctx context.Context, pattern, rootPath, include string
 		regexPattern := globToRegex(include)
 		includePattern, err = regexp.Compile(regexPattern)
 		if err != nil {
-			return nil, fmt.Errorf("invalid include pattern: %w", err)
+			return nil, false, fmt.Errorf("invalid include pattern: %w", err)
 		}
 	}
 
+	capped := false
 	err = filepath.Walk(rootPath, func(path string, info os.FileInfo, err error) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -321,10 +710,12 @@ func searchFilesWithRegex(ctx context.Context, pattern, rootPath, include string
 		}
 
 		if info.IsDir() {
-			return nil // Skip directories
-		}
-
-		if fileutil.SkipHidden(path) {
+			// Skip common ignored directories (matching ripgrep's --glob exclusions).
+			// Hidden files/dirs are allowed (matching ripgrep's --hidden flag).
+			// Never skip the root search directory itself.
+			if path != rootPath && slices.Contains(commonIgnoredDirs, filepath.Base(path)) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
@@ -345,7 +736,8 @@ func searchFilesWithRegex(ctx context.Context, pattern, rootPath, include string
 				lineText: lineText,
 			})
 
-			if len(matches) >= 200 {
+			if len(matches) >= collectLimit {
+				capped = true
 				return filepath.SkipAll
 			}
 		}
@@ -353,10 +745,10 @@ func searchFilesWithRegex(ctx context.Context, pattern, rootPath, include string
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	return matches, nil
+	return matches, capped, nil
 }
 
 func fileContainsPattern(filePath string, pattern *regexp.Regexp) (bool, int, string, error) {

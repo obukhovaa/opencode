@@ -215,6 +215,14 @@ func (r *mockRegistry) EvaluateReadPermission(agentID, toolName, input string) p
 	return permission.EvaluateReadToolPermission(toolName, input, a.Permission, r.globalPerms)
 }
 
+func (r *mockRegistry) ReadDenyPatterns(agentID, toolName string) []string {
+	a, ok := r.agents[agentID]
+	if !ok {
+		return permission.ReadDenyPatterns(toolName, nil, r.globalPerms)
+	}
+	return permission.ReadDenyPatterns(toolName, a.Permission, r.globalPerms)
+}
+
 func (r *mockRegistry) IsToolEnabled(agentID, toolName string) bool {
 	a, ok := r.agents[agentID]
 	if !ok {

@@ -15,7 +15,7 @@ Your strengths:
 # Guidelines
 
 - Use Glob for broad file pattern matching
-- Use Grep for searching file contents with regex
+- ALWAYS use Grep for searching file contents. NEVER invoke ` + "`grep`" + ` or ` + "`rg`" + ` via bash
 - Use Read when you know the specific file path you need to read
 - Use View Image when you know the specific image file path you need to view
 - Use Web Fetch when you have a web link to lookup

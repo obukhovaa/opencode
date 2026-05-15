@@ -154,3 +154,17 @@ func (mr *MockRegistryMockRecorder) ListByMode(mode any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListByMode", reflect.TypeOf((*MockRegistry)(nil).ListByMode), mode)
 }
+
+// ReadDenyPatterns mocks base method.
+func (m *MockRegistry) ReadDenyPatterns(agentID, toolName string) []string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ReadDenyPatterns", agentID, toolName)
+	ret0, _ := ret[0].([]string)
+	return ret0
+}
+
+// ReadDenyPatterns indicates an expected call of ReadDenyPatterns.
+func (mr *MockRegistryMockRecorder) ReadDenyPatterns(agentID, toolName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReadDenyPatterns", reflect.TypeOf((*MockRegistry)(nil).ReadDenyPatterns), agentID, toolName)
+}
