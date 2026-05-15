@@ -52,6 +52,9 @@ type Registry interface {
 	// EvaluateReadPermission resolves permission for read-category tools
 	// (read, grep, glob, ls). Falls back from specific tool → "read" → "*" → allow.
 	EvaluateReadPermission(agentID, toolName, input string) permission.Action
+	// ReadDenyPatterns returns file patterns with "deny" action from the
+	// read-category permission chain for the given agent and tool.
+	ReadDenyPatterns(agentID, toolName string) []string
 	IsToolEnabled(agentID, toolName string) bool
 	// IsToolExplicitlyEnabled returns true only when the agent's tools map
 	// names this tool with an explicit `true` value (or a matching wildcard
@@ -184,6 +187,14 @@ func (r *registry) EvaluateReadPermission(agentID, toolName, input string) permi
 	}
 
 	return permission.EvaluateReadToolPermission(toolName, input, a.Permission, r.globalPerms)
+}
+
+func (r *registry) ReadDenyPatterns(agentID, toolName string) []string {
+	a, ok := r.agents[agentID]
+	if !ok {
+		return permission.ReadDenyPatterns(toolName, nil, r.globalPerms)
+	}
+	return permission.ReadDenyPatterns(toolName, a.Permission, r.globalPerms)
 }
 
 func (r *registry) IsToolEnabled(agentID, toolName string) bool {

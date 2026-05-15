@@ -18,7 +18,8 @@ SCOPE ?= minor
 .PHONY: init init-hooks clean generate build \
         init-test-bin build-test-bin coverage-report-bin coverage-report \
         test-bin test-it test test-it-debug test-debug init-test lint \
-        dev-build  dev dev-stop build-docker run-docker release version
+        dev-build  dev dev-stop build-docker run-docker release version \
+        test-e2e
 
 # Main targets
 init: clean init-hooks
@@ -94,6 +95,13 @@ test-debug:
 lint:
 	go fmt ./...
 	go vet ./...
+
+test-e2e:
+	@for script in scripts/test/*.sh; do \
+		[ -x "$$script" ] || continue; \
+		echo "── $$(basename $$script) ──"; \
+		bash "$$script" || exit 1; \
+	done
 
 mysql-cli:
 	@mysql --host=$(MYSQL_HOST) --port=3306 --user=$(MYSQL_USER) --password=$(MYSQL_PASSWORD) --database=$(MYSQL_DATABASE)

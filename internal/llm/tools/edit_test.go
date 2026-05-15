@@ -46,6 +46,10 @@ func (s *stubRegistry) EvaluateReadPermission(agentID, toolName, input string) p
 	return permission.ActionAllow
 }
 
+func (s *stubRegistry) ReadDenyPatterns(agentID, toolName string) []string {
+	return nil
+}
+
 func (s *stubRegistry) IsToolEnabled(agentID, toolName string) bool {
 	return true
 }
