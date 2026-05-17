@@ -193,11 +193,15 @@ func (a *agent) Cancel(sessionID string) {
 func (a *agent) IsBusy() bool {
 	busy := false
 	a.activeRequests.Range(func(key, value any) bool {
-		if cancelFunc, ok := value.(context.CancelFunc); ok {
-			if cancelFunc != nil {
+		switch v := value.(type) {
+		case context.CancelFunc:
+			if v != nil {
 				busy = true
 				return false // Stop iterating
 			}
+		case cronLock:
+			busy = true
+			return false
 		}
 		return true // Continue iterating
 	})

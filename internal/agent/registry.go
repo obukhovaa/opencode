@@ -267,13 +267,13 @@ func registerBuiltins(agents map[string]AgentInfo, cfg *config.Config) {
 			Mode:        config.AgentModeAgent,
 			Native:      true,
 			Tools: map[string]bool{
-				"bash":       false,
-				"edit":       false,
-				"multiedit":  false,
-				"write":      false,
-				"delete":     false,
-				"patch":      false,
-				"lsp":        false,
+				"bash":      false,
+				"edit":      false,
+				"multiedit": false,
+				"write":     false,
+				"delete":    false,
+				"patch":     false,
+				"lsp":       false,
 				// Cron tools are default-deny across the fleet (see
 				// IsToolExplicitlyEnabled). Hivemind opts in here so the
 				// coordinator can schedule recurring tasks out of the box.

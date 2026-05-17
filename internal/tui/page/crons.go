@@ -26,11 +26,15 @@ type cronsPage struct {
 	selected      int
 	ctx           context.Context
 	cancel        context.CancelFunc
+	updatesCh     <-chan pubsub.Event[cron.CronJob]
 }
 
 func (p *cronsPage) Init() tea.Cmd {
 	p.ctx, p.cancel = context.WithCancel(context.Background())
-	return tea.Batch(p.reloadCmd(), p.listenForUpdates())
+	if p.cronService != nil {
+		p.updatesCh = p.cronService.Subscribe(p.ctx)
+	}
+	return tea.Batch(p.reloadCmd(), p.waitForUpdate())
 }
 
 type cronJobsLoadedMsg struct {
@@ -68,11 +72,16 @@ func (p *cronsPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case cronJobDeletedMsg:
 		return p, p.reloadCmd()
 	case pubsub.Event[cron.CronJob]:
-		// Only reload when the change concerns the session we're showing.
+		// Re-arm the listener on the same long-lived subscription channel so
+		// each event triggers exactly one new tea.Cmd. Subscribing here would
+		// leak orphan channels in the broker because p.ctx is never cancelled
+		// until the page itself goes away.
+		var cmds []tea.Cmd
 		if msg.Payload.SessionID == p.sessionID {
-			return p, tea.Batch(p.reloadCmd(), p.listenForUpdates())
+			cmds = append(cmds, p.reloadCmd())
 		}
-		return p, p.listenForUpdates()
+		cmds = append(cmds, p.waitForUpdate())
+		return p, tea.Batch(cmds...)
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
@@ -112,13 +121,12 @@ func (p *cronsPage) reloadCmd() tea.Cmd {
 	}
 }
 
-func (p *cronsPage) listenForUpdates() tea.Cmd {
-	if p.cronService == nil {
+func (p *cronsPage) waitForUpdate() tea.Cmd {
+	if p.updatesCh == nil {
 		return nil
 	}
-	ch := p.cronService.Subscribe(p.ctx)
 	return func() tea.Msg {
-		event, ok := <-ch
+		event, ok := <-p.updatesCh
 		if !ok {
 			return nil
 		}
@@ -179,14 +187,8 @@ func (p *cronsPage) View() tea.View {
 			nextRun = time.Unix(job.NextRunAt, 0).Format("15:04")
 		}
 
-		id := job.ID
-		if len(id) > 12 {
-			id = id[:12]
-		}
-		schedule := cron.CronToHuman(job.Schedule)
-		if len(schedule) > 14 {
-			schedule = schedule[:14]
-		}
+		id := truncateRunes(job.ID, 12)
+		schedule := truncateRunes(cron.CronToHuman(job.Schedule), 14)
 
 		row := fmt.Sprintf("%s%-12s %-14s %-8s %-8s %6d  %-8s",
 			prefix, id, schedule, job.Source, job.Status, job.RunCount, nextRun)
@@ -262,4 +264,17 @@ func formatLastRun(ts int64) string {
 		return "never"
 	}
 	return time.Unix(ts, 0).Format("2006-01-02 15:04")
+}
+
+// truncateRunes returns s truncated to at most max runes without splitting a
+// multi-byte sequence.
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max])
 }

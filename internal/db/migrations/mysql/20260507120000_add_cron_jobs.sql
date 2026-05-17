@@ -32,10 +32,6 @@ CREATE INDEX idx_cron_jobs_due ON cron_jobs(status, firing, next_run_at);
 
 -- +goose StatementEnd
 -- +goose StatementBegin
-DROP TRIGGER IF EXISTS update_cron_jobs_updated_at;
-
--- +goose StatementEnd
--- +goose StatementBegin
 CREATE TRIGGER update_cron_jobs_updated_at BEFORE
 UPDATE ON cron_jobs FOR EACH ROW
 SET

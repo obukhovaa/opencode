@@ -195,12 +195,13 @@ func (s *Scheduler) fireJob(ctx context.Context, job CronJob) {
 	// Permission check: keyed on "cron:<job_id>"
 	if s.permissions != nil && !s.permissions.IsAutoApproveSession(job.SessionID) {
 		activeSessionID := s.activeSessionID()
-		// For inactive sessions with no prior grant, skip and retry when session becomes active
+		// For inactive sessions with no prior grant, defer until the session
+		// becomes active. Without advancing next_run_at the row would stay
+		// due and pulse firing=true/false every tick (1 DB write/sec/job).
+		// Push the next attempt out by 60s so churn stays bounded.
 		if job.SessionID != activeSessionID {
 			logging.Debug("Cron job on inactive session, deferring permission check", "id", job.ID)
-			if err := s.svc.MarkFiring(ctx, job.ID, false); err != nil {
-				logging.Error("Failed to clear firing flag", "id", job.ID, "error", err)
-			}
+			s.deferAndClear(ctx, job, time.Now().Add(60*time.Second))
 			return
 		}
 
@@ -214,9 +215,9 @@ func (s *Scheduler) fireJob(ctx context.Context, job CronJob) {
 		})
 		if !granted {
 			logging.Info("Cron job permission denied", "id", job.ID)
-			if err := s.svc.MarkFiring(ctx, job.ID, false); err != nil {
-				logging.Error("Failed to clear firing flag after denial", "id", job.ID, "error", err)
-			}
+			// Advance to the next scheduled fire so a recurring job does not
+			// re-prompt every tick. One-shots are marked done.
+			s.deferOnDenial(ctx, job)
 			return
 		}
 	}
@@ -262,18 +263,24 @@ func (s *Scheduler) fireJob(ctx context.Context, job CronJob) {
 
 	resultContent := result.Content
 
-	// Write synthetic messages into parent session atomically. Hold the
-	// session-busy slot while the transaction commits so the agent cannot
-	// start a Run that would insert messages between our tool_call and its
-	// tool_result. If the slot is already held (e.g. user just sent a message
-	// and the agent grabbed it after our IsSessionBusy check), defer to the
-	// next tick — task output is already preserved on the cron row.
+	// Always advance next_run_at after a successful execution — even if we
+	// can't commit synthetic messages below — so the task does not re-fire
+	// on the next tick. UpdateAfterRun also clears firing and stores
+	// last_result so the user can see the output via the cron jobs page.
+	if _, err := s.svc.UpdateAfterRun(ctx, job, resultContent); err != nil {
+		logging.Error("Failed to update cron job after run", "id", job.ID, "error", err)
+	}
+
+	// Try to commit synthetic messages into the parent session atomically.
+	// Hold the session-busy slot while the transaction commits so the agent
+	// cannot start a Run that would insert messages between our tool_call
+	// and its tool_result. If the slot is already held (e.g. user just sent
+	// a message and the agent grabbed it after our IsSessionBusy check),
+	// skip the synthetic write — the task output is preserved on the cron
+	// row and visible via the cron jobs page.
 	if s.busyChecker != nil {
 		if !s.busyChecker.TryLockSession(job.SessionID) {
-			logging.Debug("Cron job: session became busy after task ran, deferring synthetic write", "id", job.ID)
-			if err := s.svc.MarkFiring(ctx, job.ID, false); err != nil {
-				logging.Error("Failed to clear firing flag after defer", "id", job.ID, "error", err)
-			}
+			logging.Warn("Cron job: session became busy after task ran, skipping synthetic write", "id", job.ID)
 			return
 		}
 		defer s.busyChecker.UnlockSession(job.SessionID)
@@ -283,12 +290,36 @@ func (s *Scheduler) fireJob(ctx context.Context, job CronJob) {
 		logging.Error("Failed to write synthetic messages", "id", job.ID, "error", err)
 	}
 
-	// Update job after run
-	if _, err := s.svc.UpdateAfterRun(ctx, job, resultContent); err != nil {
-		logging.Error("Failed to update cron job after run", "id", job.ID, "error", err)
-	}
-
 	logging.Info("Cron job completed", "id", job.ID, "schedule", job.Schedule)
+}
+
+// deferAndClear pushes next_run_at out and clears the firing flag. Used for
+// the inactive-session deferral path to avoid per-tick churn.
+func (s *Scheduler) deferAndClear(ctx context.Context, job CronJob, next time.Time) {
+	if err := s.svc.RescheduleAndClear(ctx, job.ID, next); err != nil {
+		logging.Error("Failed to defer cron job", "id", job.ID, "error", err)
+	}
+}
+
+// deferOnDenial advances next_run_at to the next scheduled fire after a
+// permission denial. Recurring jobs are pushed to schedule.Next(now);
+// one-shots are marked done so they never re-prompt.
+func (s *Scheduler) deferOnDenial(ctx context.Context, job CronJob) {
+	if !job.IsRecurring {
+		if err := s.svc.MarkDone(ctx, job.ID); err != nil {
+			logging.Error("Failed to mark one-shot done after denial", "id", job.ID, "error", err)
+		}
+		return
+	}
+	next, err := ComputeNextFire(job.Schedule, time.Now())
+	if err != nil {
+		logging.Error("Failed to compute next fire after denial", "id", job.ID, "error", err)
+		// Fallback: nudge by a minute so we don't re-prompt every tick.
+		next = time.Now().Add(time.Minute)
+	}
+	if err := s.svc.RescheduleAndClear(ctx, job.ID, next); err != nil {
+		logging.Error("Failed to reschedule cron job after denial", "id", job.ID, "error", err)
+	}
 }
 
 func (s *Scheduler) writeSyntheticMessages(ctx context.Context, job CronJob, callID, inputJSON, resultContent string) error {

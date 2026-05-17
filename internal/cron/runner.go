@@ -23,9 +23,9 @@ func (r *TaskToolRunner) RunTask(ctx context.Context, call tools.ToolCall) (tool
 // and to acquire/release the session-busy slot for the cron scheduler's atomic
 // synthetic-message commit.
 type AppBusyChecker struct {
-	checker  func(sessionID string) bool
-	tryLock  func(sessionID string) bool
-	unlock   func(sessionID string)
+	checker func(sessionID string) bool
+	tryLock func(sessionID string) bool
+	unlock  func(sessionID string)
 }
 
 func NewAppBusyChecker(

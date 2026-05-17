@@ -95,6 +95,14 @@ type service struct {
 	q            db.Querier
 	missedBroker *pubsub.Broker[MissedOneShotsEvent]
 	createMu     sync.Mutex // serializes Create to enforce MaxJobsPerSession
+
+	// pendingMissed holds an event collected during InitStartup that ran
+	// before any subscriber existed. The first SubscribeMissed call drains
+	// it and re-publishes — without this, the missed-one-shots dialog at
+	// startup would never appear because pubsub.Broker drops events when
+	// there are no subscribers.
+	pendingMu     sync.Mutex
+	pendingMissed *MissedOneShotsEvent
 }
 
 func NewService(q db.Querier) Service {
@@ -106,7 +114,17 @@ func NewService(q db.Querier) Service {
 }
 
 func (s *service) SubscribeMissed(ctx context.Context) <-chan pubsub.Event[MissedOneShotsEvent] {
-	return s.missedBroker.Subscribe(ctx)
+	ch := s.missedBroker.Subscribe(ctx)
+	s.pendingMu.Lock()
+	pending := s.pendingMissed
+	s.pendingMissed = nil
+	s.pendingMu.Unlock()
+	if pending != nil {
+		// Publish asynchronously so we return ch first; the broker delivers
+		// to all current subscribers including the one we just registered.
+		go s.missedBroker.Publish(pubsub.CreatedEvent, *pending)
+	}
+	return ch
 }
 
 func (s *service) Create(ctx context.Context, params CreateParams) (CronJob, error) {
@@ -278,7 +296,18 @@ func (s *service) InitStartup(ctx context.Context) {
 		for i, j := range missedJobs {
 			missed[i] = fromDBItem(j)
 		}
-		s.missedBroker.Publish(pubsub.CreatedEvent, MissedOneShotsEvent{Jobs: missed})
+		event := MissedOneShotsEvent{Jobs: missed}
+		// InitStartup runs synchronously inside app.New, before the TUI
+		// has wired up its subscription. Buffer the event so the first
+		// SubscribeMissed call can drain and re-publish it; otherwise
+		// pubsub.Broker would drop it (no subscribers).
+		if s.missedBroker.GetSubscriberCount() == 0 {
+			s.pendingMu.Lock()
+			s.pendingMissed = &event
+			s.pendingMu.Unlock()
+		} else {
+			s.missedBroker.Publish(pubsub.CreatedEvent, event)
+		}
 	}
 }
 
@@ -299,6 +328,37 @@ func (s *service) ListDue(ctx context.Context, now time.Time) ([]CronJob, error)
 func (s *service) MarkFiring(ctx context.Context, id string, firing bool) error {
 	return s.q.SetCronJobFiring(ctx, db.SetCronJobFiringParams{
 		Firing: firing,
+		ID:     id,
+	})
+}
+
+// RescheduleAndClear advances next_run_at and clears the firing flag in a
+// single transaction. Used when a job's permission was denied or its session
+// is inactive — the row needs to fall out of the due set so it does not
+// re-fire on the next tick.
+func (s *service) RescheduleAndClear(ctx context.Context, id string, next time.Time) error {
+	if err := s.q.UpdateCronJobNextRun(ctx, db.UpdateCronJobNextRunParams{
+		NextRunAt: sql.NullInt64{Int64: next.Unix(), Valid: true},
+		ID:        id,
+	}); err != nil {
+		return err
+	}
+	return s.q.SetCronJobFiring(ctx, db.SetCronJobFiringParams{
+		Firing: false,
+		ID:     id,
+	})
+}
+
+// MarkDone marks a one-shot job as done and clears the firing flag.
+func (s *service) MarkDone(ctx context.Context, id string) error {
+	if err := s.q.UpdateCronJobStatus(ctx, db.UpdateCronJobStatusParams{
+		Status: StatusDone,
+		ID:     id,
+	}); err != nil {
+		return err
+	}
+	return s.q.SetCronJobFiring(ctx, db.SetCronJobFiringParams{
+		Firing: false,
 		ID:     id,
 	})
 }
