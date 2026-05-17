@@ -169,6 +169,7 @@ func (d *missedCronDialogCmp) View() tea.View {
 		keepBtn,
 	)
 
+	bg := t.Background()
 	content := baseStyle.Render(
 		lipgloss.JoinVertical(
 			lipgloss.Left,
@@ -191,12 +192,14 @@ func (d *missedCronDialogCmp) View() tea.View {
 		width = w
 	}
 
-	return tea.NewView(baseStyle.Padding(1, 2).
+	rendered := baseStyle.Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
-		BorderBackground(t.Background()).
+		BorderBackground(bg).
 		BorderForeground(t.TextMuted()).
 		Width(width + 6).
-		Render(content))
+		Render(content)
+
+	return tea.NewView(styles.ForceReplaceBackgroundWithLipgloss(rendered, bg))
 }
 
 func (d *missedCronDialogCmp) BindingKeys() []key.Binding {

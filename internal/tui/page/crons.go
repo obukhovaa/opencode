@@ -136,44 +136,51 @@ func (p *cronsPage) waitForUpdate() tea.Cmd {
 
 func (p *cronsPage) View() tea.View {
 	t := theme.CurrentTheme()
+	bg := t.Background()
 	style := styles.BaseStyle().Width(p.width).Height(p.height)
 
 	if p.cronService == nil {
-		return tea.NewView(style.Render(
+		return tea.NewView(style.Render(styles.ForceReplaceBackgroundWithLipgloss(
 			lipgloss.NewStyle().
 				Padding(1, 2).
 				Foreground(t.TextMuted()).
+				Background(bg).
 				Render("Cron scheduling is disabled (OPENCODE_DISABLE_CRON is set)"),
-		))
+			bg,
+		)))
 	}
 
 	if p.sessionID == "" {
-		return tea.NewView(style.Render(
+		return tea.NewView(style.Render(styles.ForceReplaceBackgroundWithLipgloss(
 			lipgloss.NewStyle().
 				Padding(1, 2).
 				Foreground(t.TextMuted()).
+				Background(bg).
 				Render("Select a session to view its scheduled cron jobs."),
-		))
+			bg,
+		)))
 	}
 
 	if len(p.jobs) == 0 {
-		return tea.NewView(style.Render(
+		return tea.NewView(style.Render(styles.ForceReplaceBackgroundWithLipgloss(
 			lipgloss.NewStyle().
 				Padding(1, 2).
 				Foreground(t.TextMuted()).
+				Background(bg).
 				Render("No cron jobs in this session.\nUse /loop or the croncreate tool to schedule tasks."),
-		))
+			bg,
+		)))
 	}
 
 	// Render table header
-	header := lipgloss.NewStyle().Bold(true).Foreground(t.Primary()).
+	header := lipgloss.NewStyle().Bold(true).Foreground(t.Primary()).Background(bg).
 		Render(fmt.Sprintf("  %-12s %-14s %-8s %-8s %6s  %-8s", "ID", "Schedule", "Source", "Status", "Runs", "Next Run"))
 
 	// Render rows
 	rows := ""
 	for i, job := range p.jobs {
 		prefix := "  "
-		rowStyle := lipgloss.NewStyle().Foreground(t.Text())
+		rowStyle := lipgloss.NewStyle().Foreground(t.Text()).Background(bg)
 		if i == p.selected {
 			prefix = "> "
 			rowStyle = rowStyle.Bold(true).Foreground(t.Primary())
@@ -200,7 +207,7 @@ func (p *cronsPage) View() tea.View {
 	if p.selected < len(p.jobs) {
 		job := p.jobs[p.selected]
 		human := cron.CronToHuman(job.Schedule)
-		detailStyle := lipgloss.NewStyle().Padding(0, 2).Foreground(t.Text())
+		detailStyle := lipgloss.NewStyle().Padding(0, 2).Foreground(t.Text()).Background(bg)
 
 		detail = detailStyle.Render(fmt.Sprintf(
 			"ID: %s\nSchedule: %s (%s)\nPrompt: %s\nSubagent: %s\nCreated: %s\nLast run: %s\nRun count: %d",
@@ -216,27 +223,30 @@ func (p *cronsPage) View() tea.View {
 			if len(result) > 500 {
 				result = result[:500] + "\n[truncated]"
 			}
-			detail += "\n\n" + lipgloss.NewStyle().Foreground(t.TextMuted()).Render("Latest output:\n"+result)
+			detail += "\n\n" + lipgloss.NewStyle().Foreground(t.TextMuted()).Background(bg).Render("Latest output:\n"+result)
 		}
 		if job.Error != "" {
-			detail += "\n\n" + lipgloss.NewStyle().Foreground(t.Error()).Render("Error: "+job.Error)
+			detail += "\n\n" + lipgloss.NewStyle().Foreground(t.Error()).Background(bg).Render("Error: "+job.Error)
 		}
 	}
 
-	footer := lipgloss.NewStyle().Foreground(t.TextMuted()).Padding(0, 2).
+	footer := lipgloss.NewStyle().Foreground(t.TextMuted()).Background(bg).Padding(0, 2).
 		Render("[d] Delete  [j/k] Navigate  [esc] Back")
 
 	content := lipgloss.JoinVertical(lipgloss.Top,
-		lipgloss.NewStyle().Padding(1, 0).Render("⏲ Cron Jobs"),
+		lipgloss.NewStyle().Padding(1, 0).Background(bg).Render("⏲ Cron Jobs"),
 		header,
 		rows,
-		"",
+		lipgloss.NewStyle().Background(bg).Render(""),
 		detail,
-		"",
+		lipgloss.NewStyle().Background(bg).Render(""),
 		footer,
 	)
 
-	return tea.NewView(style.Render(content))
+	// Belt-and-suspenders: even with explicit Background(bg) above, lipgloss
+	// can leave gaps with no bg around joined blocks. Sweep the final output
+	// to force every cell to the theme background.
+	return tea.NewView(style.Render(styles.ForceReplaceBackgroundWithLipgloss(content, bg)))
 }
 
 func (p *cronsPage) BindingKeys() []key.Binding {

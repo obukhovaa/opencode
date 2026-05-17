@@ -193,3 +193,13 @@ Permissions use pattern matching with priority:
 ### TUI Agent Switching
 
 Press `tab` to cycle through primary agents (mode=`agent`, hidden=false) in the TUI. The active agent is shown in the status bar. Agent switching applies to the next new session.
+
+## TUI Pitfalls
+
+### Background color gaps in dialogs/pages
+
+`lipgloss.JoinVertical` and `lipgloss.JoinHorizontal` produce lines of different widths. Shorter lines (e.g. a button row) leave cells with no background, which render as black. **Always** wrap the final rendered string with `styles.ForceReplaceBackgroundWithLipgloss(rendered, bg)` before returning from `View()`. This forces every ANSI cell to the theme background. See `internal/tui/styles/background.go` for the implementation and `internal/tui/page/crons.go` or `internal/tui/components/dialog/missed_crons.go` for usage examples.
+
+### Value-receiver Update and shared state
+
+`appModel.Update` uses a **value receiver** (`func (a appModel) Update`). Bubbletea dereferences the pointer returned by `New()`, copies the struct, mutates the copy, and stores the returned copy. The original `*appModel` is never updated again. **Never** capture the model pointer in a closure that outlives `New()` — the closure will read stale zero-values. Instead, store shared mutable state on `*app.App` (which is a pointer field that survives copying) using `atomic.Value` or a mutex. See `App.SetActiveSessionID` / `App.ActiveSessionID` for the pattern.

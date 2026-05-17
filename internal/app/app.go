@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -50,7 +51,29 @@ type App struct {
 	InitialSessionID string
 	AutoApprove      bool
 
+	// activeSessionID is the session currently visible in the TUI. Written by
+	// the TUI Update loop (which uses a value receiver, so the appModel struct
+	// is copied each tick), read by the cron scheduler from a separate goroutine.
+	// Using atomic.Value avoids the stale-pointer problem that arises when a
+	// closure captures the original *appModel pointer which bubbletea never
+	// updates again after the first Update call.
+	activeSessionID atomic.Value // stores string
+
 	cliOutputSchema map[string]any
+}
+
+// SetActiveSessionID is called by the TUI whenever the selected session changes.
+func (app *App) SetActiveSessionID(id string) {
+	app.activeSessionID.Store(id)
+}
+
+// ActiveSessionID returns the session currently visible in the TUI.
+func (app *App) ActiveSessionID() string {
+	v := app.activeSessionID.Load()
+	if v == nil {
+		return ""
+	}
+	return v.(string)
 }
 
 func (app *App) ActiveAgent() agent.Service {

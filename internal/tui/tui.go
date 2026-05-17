@@ -591,6 +591,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds := []tea.Cmd{util.ReportInfo("Session deleted")}
 		if a.selectedSession.ID == msg.id {
 			a.selectedSession = session.Session{}
+			a.app.SetActiveSessionID("")
 			a.sessionDialog.SetSelectedSession("")
 			if a.currentPage == page.ChatPage {
 				cmds = append(cmds, util.CmdHandler(chat.SessionClearedMsg{}))
@@ -604,6 +605,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case chat.SessionSelectedMsg:
 		a.selectedSession = msg
+		a.app.SetActiveSessionID(msg.ID)
 		a.sessionDialog.SetSelectedSession(msg.ID)
 		tb, _ := a.topbar.Update(msg)
 		a.topbar = tb.(core.TopBarCmp)
@@ -819,7 +821,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, returnKey) || key.Matches(msg):
 			if msg.String() == quitKey {
-				if a.currentPage == page.LogsPage || a.currentPage == page.AgentsPage {
+				if a.currentPage == page.LogsPage || a.currentPage == page.AgentsPage || a.currentPage == page.CronsPage {
 					return a, a.moveToPage(page.ChatPage)
 				}
 			} else if !a.filepicker.IsCWDFocused() {
@@ -844,7 +846,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.filepicker.ToggleFilepicker(a.showFilepicker)
 					return a, nil
 				}
-				if a.currentPage == page.LogsPage || a.currentPage == page.AgentsPage {
+				if a.currentPage == page.LogsPage || a.currentPage == page.AgentsPage || a.currentPage == page.CronsPage {
 					return a, a.moveToPage(page.ChatPage)
 				}
 			}
@@ -1273,9 +1275,15 @@ func New(app *app.App) tea.Model {
 	// Wire the cron scheduler's active-session view to the TUI's selected session.
 	// Without this the scheduler treats every session as inactive, which means
 	// non-auto-approved jobs are deferred forever and never fire.
+	//
+	// IMPORTANT: We read from app.ActiveSessionID() (an atomic.Value on the shared
+	// *App) instead of model.selectedSession.ID. The appModel.Update method has a
+	// value receiver, so bubbletea works with copies — the original *appModel that
+	// `model` points to is never updated after Init. Reading the field from the
+	// stale pointer would always return "".
 	if app.CronScheduler != nil {
 		app.CronScheduler.SetActiveSessionProvider(cron.NewAppActiveSessionProvider(func() string {
-			return model.selectedSession.ID
+			return app.ActiveSessionID()
 		}))
 	}
 

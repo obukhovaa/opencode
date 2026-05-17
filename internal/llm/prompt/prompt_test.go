@@ -422,6 +422,12 @@ func TestTaskToolNameMatchesAgentConst(t *testing.T) {
 	assert.Equal(t, "task", taskToolName, "taskToolName must match agent.TaskToolName")
 }
 
+func TestCronCreateToolNameMatchesToolsConst(t *testing.T) {
+	// cronCreateToolName is duplicated in this package to avoid an import cycle.
+	// This test ensures it stays in sync with tools.CronCreateToolName.
+	assert.Equal(t, "croncreate", cronCreateToolName, "cronCreateToolName must match tools.CronCreateToolName")
+}
+
 func createTestFiles(t *testing.T, tmpDir string, testFiles []string) {
 	t.Helper()
 	for _, path := range testFiles {
