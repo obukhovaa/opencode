@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/opencode-ai/opencode/internal/llm/agent"
+	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/logging"
 )
 
@@ -37,15 +39,46 @@ func (s *Server) handleMessageGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ConvertMessageToResponse(msg))
 }
 
-// extractTextFromParts extracts the concatenated text from prompt parts.
-func extractTextFromParts(parts []APIPromptPart) string {
+// extractPromptContent extracts text and attachments from prompt parts.
+// Text parts are concatenated; file parts are converted to message.Attachment.
+func extractPromptContent(parts []APIPromptPart) (string, []message.Attachment) {
 	var texts []string
+	var attachments []message.Attachment
 	for _, p := range parts {
-		if p.Type == "text" && p.Text != "" {
-			texts = append(texts, p.Text)
+		switch p.Type {
+		case "text":
+			if p.Text != "" {
+				texts = append(texts, p.Text)
+			}
+		case "file":
+			if p.URL == "" {
+				continue
+			}
+			att := message.Attachment{
+				FileName: p.FileName,
+				MimeType: p.Mime,
+			}
+			// Data URLs: "data:<mime>;base64,<data>"
+			if strings.HasPrefix(p.URL, "data:") {
+				if idx := strings.Index(p.URL, ","); idx >= 0 {
+					decoded, err := base64.StdEncoding.DecodeString(p.URL[idx+1:])
+					if err != nil {
+						logging.Warn("failed to decode file attachment base64", "filename", p.FileName, "error", err)
+						continue
+					}
+					att.Content = decoded
+				} else {
+					continue
+				}
+			} else if strings.HasPrefix(p.URL, "file://") {
+				att.FilePath = strings.TrimPrefix(p.URL, "file://")
+			} else {
+				continue
+			}
+			attachments = append(attachments, att)
 		}
 	}
-	return strings.Join(texts, "\n")
+	return strings.Join(texts, "\n"), attachments
 }
 
 // handleSessionPrompt sends a prompt and waits for the agent to complete.
@@ -58,7 +91,7 @@ func (s *Server) handleSessionPrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	text := extractTextFromParts(req.Parts)
+	text, attachments := extractPromptContent(req.Parts)
 	if text == "" {
 		writeError(w, http.StatusBadRequest, "prompt text is required")
 		return
@@ -70,7 +103,7 @@ func (s *Server) handleSessionPrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := activeAgent.Run(r.Context(), sessionID, text)
+	events, err := activeAgent.Run(r.Context(), sessionID, text, attachments...)
 	if err != nil {
 		if errors.Is(err, agent.ErrSessionBusy) {
 			writeError(w, http.StatusConflict, "session is busy")
@@ -104,7 +137,7 @@ func (s *Server) handleSessionPromptAsync(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	text := extractTextFromParts(req.Parts)
+	text, attachments := extractPromptContent(req.Parts)
 	if text == "" {
 		writeError(w, http.StatusBadRequest, "prompt text is required")
 		return
@@ -116,7 +149,7 @@ func (s *Server) handleSessionPromptAsync(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	events, err := activeAgent.Run(context.Background(), sessionID, text)
+	events, err := activeAgent.Run(context.Background(), sessionID, text, attachments...)
 	if err != nil {
 		if errors.Is(err, agent.ErrSessionBusy) {
 			writeError(w, http.StatusConflict, "session is busy")

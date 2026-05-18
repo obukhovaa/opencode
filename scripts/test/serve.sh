@@ -178,7 +178,7 @@ fi
 # ── 7. Session status ───────────────────────────────────────────────
 name="GET /session/status"
 resp=$(api GET /session/status)
-status=$(echo "$resp" | jq -r ".[\"$session_id\"].status")
+status=$(echo "$resp" | jq -r ".[\"$session_id\"].type")
 if [ "$status" = "idle" ]; then
     log_pass "$name (status=idle)"
 else

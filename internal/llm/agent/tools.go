@@ -39,12 +39,12 @@ var (
 		tools.PatchToolName,
 		tools.BashToolName,
 	}
-	// TODO: add todo tool
 	managerToolNames = []string{
 		TaskToolName,
 		tools.CronCreateToolName,
 		tools.CronDeleteToolName,
 		tools.CronListToolName,
+		tools.TodoWriteToolName,
 	}
 )
 
@@ -112,6 +112,11 @@ func NewToolSet(
 		case tools.CronListToolName:
 			if svc, helper := factory.CronServices(); svc != nil {
 				return tools.NewCronListTool(svc, helper)
+			}
+			return nil
+		case tools.TodoWriteToolName:
+			if store := factory.TodoStore(); store != nil {
+				return tools.NewTodoWriteTool(store)
 			}
 			return nil
 		default:

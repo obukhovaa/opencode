@@ -90,11 +90,24 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /session/{sessionID}/prompt_async", s.handleSessionPromptAsync)
 	mux.HandleFunc("POST /session/{sessionID}/summarize", s.handleSessionSummarize)
 
+	// Todos
+	mux.HandleFunc("GET /session/{sessionID}/todo", s.handleSessionTodo)
+
 	// Config
 	mux.HandleFunc("GET /config", s.handleConfigGet)
 	mux.HandleFunc("GET /config/providers", s.handleConfigProviders)
 
+	// Provider (OpenWork proxies /opencode/provider → /provider, expects dax format)
+	mux.HandleFunc("GET /provider", s.handleProvider)
+
+	// MCP servers
+	mux.HandleFunc("GET /mcp", s.handleMCPList)
+
+	// Instance lifecycle (used by OpenWork workspace activation)
+	mux.HandleFunc("POST /instance/dispose", s.handleInstanceDispose)
+
 	// Permissions
+	mux.HandleFunc("GET /permission", s.handlePermissionList)
 	mux.HandleFunc("POST /permission/{requestID}/reply", s.handlePermissionReply)
 
 	// Agents
@@ -115,6 +128,10 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.password != "" {
 		auth = "Basic (password set)"
 	}
+
+	// Sentinel line on stdout — OpenWork and other launchers read stdout
+	// for this exact prefix to detect that the server is ready.
+	fmt.Fprintf(os.Stdout, "opencode server listening on %s\n", url)
 
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  ⌬ OpenCode HTTP Server\n")

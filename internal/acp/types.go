@@ -173,9 +173,17 @@ type PromptParams struct {
 }
 
 // PromptPart is a single part of a prompt message.
+// Supports text ({type:"text"}), image ({type:"image"}), and
+// resource_link ({type:"resource_link"}) content from ACP clients.
 type PromptPart struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	// Image fields
+	MimeType string `json:"mimeType,omitempty"`
+	Data     string `json:"data,omitempty"` // base64
+	URI      string `json:"uri,omitempty"`
+	// Resource link fields
+	Name string `json:"name,omitempty"`
 }
 
 // PromptResult is the result of "session/prompt".
@@ -271,6 +279,19 @@ type ToolContent struct {
 	Path    string `json:"path,omitempty"`
 	OldText string `json:"oldText,omitempty"`
 	NewText string `json:"newText,omitempty"`
+}
+
+// PlanUpdate is a session update for todo/plan changes.
+type PlanUpdate struct {
+	SessionUpdate string      `json:"sessionUpdate"` // "plan"
+	Entries       []PlanEntry `json:"entries"`
+}
+
+// PlanEntry is a single item in a plan update.
+type PlanEntry struct {
+	Content  string `json:"content"`
+	Status   string `json:"status"`   // pending, in_progress, completed, cancelled
+	Priority string `json:"priority"` // high, medium, low
 }
 
 // Location represents a file location.

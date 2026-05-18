@@ -204,6 +204,9 @@ to assist developers in writing, debugging, and understanding code directly from
 					}
 					return fmt.Errorf("failed to delete session %q: %w", sessionID, delErr)
 				}
+				if app.Todos != nil {
+					app.Todos.Delete(sessionID)
+				}
 				logging.Info("Deleted existing session, will recreate with same ID", "session_id", sessionID)
 			} else {
 				app.InitialSession = &sess

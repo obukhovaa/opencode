@@ -1,0 +1,16 @@
+diff --git a/apps/desktop/electron/runtime.mjs b/apps/desktop/electron/runtime.mjs
+index 07c82dc4..4009cbe8 100644
+--- a/apps/desktop/electron/runtime.mjs
++++ b/apps/desktop/electron/runtime.mjs
+@@ -672,7 +672,10 @@ export function createRuntimeManager({ app, desktopRoot, listLocalWorkspacePaths
+ 
+   function resolveOpencodeBinary(opencodeBinPath) {
+     const explicitPath = typeof opencodeBinPath === "string" ? opencodeBinPath.trim() : "";
+-    return explicitPath ? { path: explicitPath, source: "custom" } : resolveBinaryInfo("opencode");
++    if (explicitPath) return { path: explicitPath, source: "custom" };
++    const envPath = process.env.OPENWORK_OPENCODE_BIN?.trim();
++    if (envPath) return { path: envPath, source: "env" };
++    return resolveBinaryInfo("opencode");
+   }
+ 
+   function resolveDockerCandidates() {

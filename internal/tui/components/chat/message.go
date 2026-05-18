@@ -779,6 +779,8 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 			toMarkdown(resultContent, true, width),
 			t.Background(),
 		)
+	case tools.TodoWriteToolName:
+		return renderTodoChecklist(response.Metadata, resultContent, width)
 	default:
 		resultContent = fmt.Sprintf("```text\n%s\n```", resultContent)
 		return styles.ForceReplaceBackgroundWithLipgloss(
@@ -1047,6 +1049,51 @@ func renderDiagnosticsSummary(content string, width int) string {
 
 	summary := strings.Join(parts, baseStyle.Foreground(t.TextMuted()).Render("  "))
 	return baseStyle.Width(width).Render(summary)
+}
+
+// renderTodoChecklist renders todowrite metadata as a visual checklist.
+func renderTodoChecklist(metadata string, fallback string, width int) string {
+	t := theme.CurrentTheme()
+	baseStyle := styles.BaseStyle()
+
+	var meta struct {
+		Todos []struct {
+			Content  string `json:"content"`
+			Status   string `json:"status"`
+			Priority string `json:"priority"`
+		} `json:"todos"`
+	}
+	if err := json.Unmarshal([]byte(metadata), &meta); err != nil || len(meta.Todos) == 0 {
+		return baseStyle.Width(width).Foreground(t.TextMuted()).Render(fallback)
+	}
+
+	bg := t.Background()
+	var sb strings.Builder
+	for _, item := range meta.Todos {
+		var icon string
+		var style lipgloss.Style
+		switch item.Status {
+		case "completed":
+			icon = "✓"
+			style = baseStyle.Foreground(t.Success()).Background(bg).Strikethrough(true)
+		case "in_progress":
+			icon = "→"
+			style = baseStyle.Foreground(t.Primary()).Background(bg)
+		case "cancelled":
+			icon = "~"
+			style = baseStyle.Foreground(t.TextMuted()).Background(bg).Strikethrough(true)
+		default: // pending
+			icon = "○"
+			style = baseStyle.Foreground(t.Text()).Background(bg)
+		}
+		iconStyle := baseStyle.Foreground(style.GetForeground()).Background(bg)
+		pad := baseStyle.Background(bg).Render("  ")
+		gap := baseStyle.Background(bg).Render(" ")
+		sb.WriteString(fmt.Sprintf("%s%s%s%s\n", pad, iconStyle.Render(icon), gap, style.Render(item.Content)))
+	}
+
+	rendered := baseStyle.Width(width).Render(strings.TrimRight(sb.String(), "\n"))
+	return styles.ForceReplaceBackgroundWithLipgloss(rendered, bg)
 }
 
 // Helper function to format the time difference between two Unix timestamps (seconds)

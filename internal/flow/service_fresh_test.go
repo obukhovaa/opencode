@@ -192,6 +192,12 @@ func (f *stubAgentFactory) CronServices() (tools.CronToolService, tools.CronSche
 	return nil, nil
 }
 
+func (f *stubAgentFactory) SetTodoStore(_ tools.TodoStore) {}
+
+func (f *stubAgentFactory) TodoStore() tools.TodoStore {
+	return nil
+}
+
 func registerTestFlow(t *testing.T, f Flow) {
 	t.Helper()
 	flowCacheLock.Lock()

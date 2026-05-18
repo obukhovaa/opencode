@@ -633,6 +633,9 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if err := a.app.Sessions.Delete(ctx, deletedID); err != nil {
 					return util.InfoMsg{Type: util.InfoTypeError, Msg: "Delete failed: " + err.Error()}
 				}
+				if a.app.Todos != nil {
+					a.app.Todos.Delete(deletedID)
+				}
 				return sessionDeletedMsg{id: deletedID}
 			}
 		}

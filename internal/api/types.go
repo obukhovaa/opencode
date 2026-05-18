@@ -24,8 +24,10 @@ type APISessionToken struct {
 }
 
 // APISessionStatus represents the current status of a session.
+// The field is "type" (not "status") to match the dax opencode SDK schema
+// which uses a discriminated union on the "type" field.
 type APISessionStatus struct {
-	Status string `json:"status"` // "idle", "busy", "error"
+	Type string `json:"type"` // "idle", "busy", "retry"
 }
 
 // APIMessageInfo holds metadata about a message without its content parts.
@@ -68,9 +70,12 @@ type APIMessageResponse struct {
 
 // APIPart represents a single content part in the external API format.
 // The Type field determines which other fields are populated.
+// MessageID and SessionID are required by the OpenWork session snapshot schema.
 type APIPart struct {
-	ID   string `json:"id"`
-	Type string `json:"type"` // "text", "tool", "reasoning", "file"
+	ID        string `json:"id"`
+	Type      string `json:"type"` // "text", "tool", "reasoning", "file"
+	MessageID string `json:"messageID"`
+	SessionID string `json:"sessionID"`
 
 	// For text and reasoning parts
 	Text string `json:"text,omitempty"`
@@ -93,9 +98,12 @@ type APIToolState struct {
 
 // APIProvider represents a model provider with its available models.
 type APIProvider struct {
-	ID     string                  `json:"id"`
-	Name   string                  `json:"name"`
-	Models map[string]APIModelInfo `json:"models"`
+	ID      string                  `json:"id"`
+	Name    string                  `json:"name"`
+	Source  string                  `json:"source"`
+	Env     []string                `json:"env"`
+	Options map[string]any          `json:"options"`
+	Models  map[string]APIModelInfo `json:"models"`
 }
 
 // APIModelInfo describes a single model's capabilities and limits.
@@ -163,9 +171,14 @@ type APIPromptRequest struct {
 }
 
 // APIPromptPart represents a part in a prompt request.
+// Supports text parts ({type:"text", text:"..."}) and file parts
+// ({type:"file", url:"data:...", filename:"...", mime:"image/png"}).
 type APIPromptPart struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	URL      string `json:"url,omitempty"`
+	FileName string `json:"filename,omitempty"`
+	Mime     string `json:"mime,omitempty"`
 }
 
 // APIPromptModel specifies which model to use for a prompt.

@@ -14,6 +14,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/cron"
 	"github.com/opencode-ai/opencode/internal/db"
+	"github.com/opencode-ai/opencode/internal/todo"
 	"github.com/opencode-ai/opencode/internal/flow"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
@@ -38,6 +39,7 @@ type App struct {
 	Flows         flow.Service
 	Crons         cron.Service
 	CronScheduler *cron.Scheduler
+	Todos         *todo.Store
 	AgentFactory  agent.AgentFactory
 	LspService    lsp.LspService
 
@@ -133,6 +135,8 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 	lspSvc := NewLspService()
 	mcpRegistry := agent.NewMCPRegistry(perm, reg)
 	factory := agent.NewAgentFactory(sessions, messages, perm, files, lspSvc, reg, mcpRegistry)
+	todoStore := todo.NewStore()
+	factory.SetTodoStore(todoStore)
 	flows := flow.NewService(sessions, messages, q, perm, factory)
 
 	// Initialize cron service (unless disabled)
@@ -157,6 +161,7 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 		AgentFactory:  factory,
 		Flows:         flows,
 		Crons:         cronSvc,
+		Todos:         todoStore,
 	}
 
 	app.initTheme()

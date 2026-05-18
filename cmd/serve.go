@@ -34,14 +34,19 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
   opencode serve --port 8080 --hostname 0.0.0.0
 
   # Start with a specific CORS origin
-  opencode serve --cors-origin "http://localhost:3000"
+  opencode serve --cors "http://localhost:3000"
 
   # Start with authentication
   OPENCODE_SERVER_PASSWORD=secret opencode serve`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		port, _ := cmd.Flags().GetInt("port")
 		hostname, _ := cmd.Flags().GetString("hostname")
-		corsOrigin, _ := cmd.Flags().GetString("cors-origin")
+		corsOrigin, _ := cmd.Flags().GetString("cors")
+		if corsOrigin == "" || !cmd.Flags().Changed("cors") {
+			if alias, _ := cmd.Flags().GetString("cors-origin"); alias != "" {
+				corsOrigin = alias
+			}
+		}
 		debug, _ := cmd.Flags().GetBool("debug")
 		cwd, _ := cmd.Flags().GetString("cwd")
 
@@ -118,7 +123,9 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 func init() {
 	serveCmd.Flags().Int("port", 4096, "Port to listen on")
 	serveCmd.Flags().String("hostname", "127.0.0.1", "Hostname to bind to")
-	serveCmd.Flags().String("cors-origin", "*", "Allowed CORS origin")
+	serveCmd.Flags().String("cors", "*", "Allowed CORS origin")
+	serveCmd.Flags().String("cors-origin", "", "Alias for --cors (deprecated)")
+	_ = serveCmd.Flags().MarkHidden("cors-origin")
 	serveCmd.Flags().BoolP("debug", "d", false, "Debug")
 	serveCmd.Flags().StringP("cwd", "c", "", "Current working directory")
 

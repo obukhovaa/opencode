@@ -86,7 +86,7 @@ Start a headless HTTP REST API server for external UIs like [OpenWork](https://g
 ```bash
 opencode serve                                    # Default: localhost:4096
 opencode serve --port 8080 --hostname 0.0.0.0     # Custom port and hostname
-opencode serve --cors-origin "http://localhost:3000"  # Restrict CORS
+opencode serve --cors "http://localhost:3000"          # Restrict CORS
 OPENCODE_SERVER_PASSWORD=secret opencode serve    # With authentication
 ```
 
@@ -468,6 +468,7 @@ The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model
 | `task` | Run sub-tasks with a subagent (supports `subagent_type` and `task_id` for resumption) |
 | `skill` | Load agent skills on-demand (supports `args` for argument substitution and shell expansion) |
 | `struct_output` | Emit structured JSON conforming to a user-supplied schema |
+| `todowrite` | Create and maintain a structured task list for multi-step sessions (progress tracking for external UIs) |
 | `croncreate` / `crondelete` / `cronlist` | Schedule, cancel, and list cron jobs that fire prompts via subagents ([guide](docs/crons.md)) |
 
 ## Keyboard Shortcuts

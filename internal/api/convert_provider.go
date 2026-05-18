@@ -18,6 +18,18 @@ var providerDisplayNames = map[models.ModelProvider]string{
 	models.ProviderLocal:       "Local",
 }
 
+// providerEnvKeys maps providers to the environment variable names used
+// for their API keys. Shown in the provider list so UIs can display them.
+var providerEnvKeys = map[models.ModelProvider][]string{
+	models.ProviderAnthropic:   {"ANTHROPIC_API_KEY"},
+	models.ProviderOpenAI:      {"OPENAI_API_KEY"},
+	models.ProviderGemini:      {"GEMINI_API_KEY"},
+	models.ProviderVertexAI:    {"VERTEXAI_PROJECT", "VERTEXAI_LOCATION"},
+	models.ProviderBedrock:     {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"},
+	models.ProviderYandexCloud: {"YANDEXCLOUD_API_KEY", "YANDEXCLOUD_FOLDER_ID"},
+	models.ProviderLocal:       {"LOCAL_ENDPOINT"},
+}
+
 // ConvertProviders groups all supported models by their provider and returns
 // a sorted slice of APIProvider values.
 func ConvertProviders() []APIProvider {
@@ -35,10 +47,17 @@ func ConvertProviders() []APIProvider {
 	// Build provider list.
 	providers := make([]APIProvider, 0, len(grouped))
 	for provider, providerModels := range grouped {
+		envKeys := providerEnvKeys[provider]
+		if envKeys == nil {
+			envKeys = []string{}
+		}
 		providers = append(providers, APIProvider{
-			ID:     string(provider),
-			Name:   resolveProviderName(provider),
-			Models: providerModels,
+			ID:      string(provider),
+			Name:    resolveProviderName(provider),
+			Source:  "env",
+			Env:     envKeys,
+			Options: map[string]any{},
+			Models:  providerModels,
 		})
 	}
 

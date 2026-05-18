@@ -13,7 +13,7 @@ func (s *Server) handleSessionList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list sessions")
 		return
 	}
-	writeJSON(w, http.StatusOK, ConvertSessions(sessions))
+	writeJSON(w, http.StatusOK, ConvertSessionsWithDir(sessions, resolveDirectory(r)))
 }
 
 // handleSessionCreate creates a new session.
@@ -37,7 +37,7 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to create session")
 		return
 	}
-	writeJSON(w, http.StatusCreated, ConvertSession(session))
+	writeJSON(w, http.StatusCreated, ConvertSessionWithDir(session, resolveDirectory(r)))
 }
 
 // handleSessionGet returns a single session by ID.
@@ -52,7 +52,7 @@ func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to get session")
 		return
 	}
-	writeJSON(w, http.StatusOK, ConvertSession(session))
+	writeJSON(w, http.StatusOK, ConvertSessionWithDir(session, resolveDirectory(r)))
 }
 
 // handleSessionDelete deletes a session by ID.
@@ -66,6 +66,9 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, http.StatusInternalServerError, "failed to delete session")
 		return
+	}
+	if s.app.Todos != nil {
+		s.app.Todos.Delete(sessionID)
 	}
 	writeJSON(w, http.StatusOK, true)
 }
@@ -96,7 +99,7 @@ func (s *Server) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to update session")
 		return
 	}
-	writeJSON(w, http.StatusOK, ConvertSession(updated))
+	writeJSON(w, http.StatusOK, ConvertSessionWithDir(updated, resolveDirectory(r)))
 }
 
 // handleSessionStatus returns the busy/idle status of all sessions.
@@ -114,9 +117,21 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 		if agent != nil && agent.IsSessionBusy(sess.ID) {
 			status = "busy"
 		}
-		statuses[sess.ID] = APISessionStatus{Status: status}
+		statuses[sess.ID] = APISessionStatus{Type: status}
 	}
 	writeJSON(w, http.StatusOK, statuses)
+}
+
+// handleSessionTodo returns the todo list for a session.
+func (s *Server) handleSessionTodo(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("sessionID")
+	if s.app.Todos != nil {
+		if items := s.app.Todos.Get(sessionID); items != nil {
+			writeJSON(w, http.StatusOK, items)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, []struct{}{})
 }
 
 // handleSessionAbort cancels the active agent run for a session.

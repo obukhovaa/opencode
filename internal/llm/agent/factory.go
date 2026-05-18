@@ -25,6 +25,8 @@ type AgentFactory interface {
 	InitPrimaryAgents(ctx context.Context, outputSchema map[string]any) ([]Service, error)
 	SetCronServices(cronToolSvc tools.CronToolService, schedHelper tools.CronScheduleHelper)
 	CronServices() (tools.CronToolService, tools.CronScheduleHelper)
+	SetTodoStore(store tools.TodoStore)
+	TodoStore() tools.TodoStore
 }
 
 type agentFactory struct {
@@ -38,6 +40,7 @@ type agentFactory struct {
 
 	cronToolService    tools.CronToolService
 	cronScheduleHelper tools.CronScheduleHelper
+	todoStore          tools.TodoStore
 
 	mu        sync.Mutex
 	stepCache map[string]Service
@@ -78,6 +81,20 @@ func (f *agentFactory) CronServices() (tools.CronToolService, tools.CronSchedule
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.cronToolService, f.cronScheduleHelper
+}
+
+// SetTodoStore injects the in-memory todo store.
+func (f *agentFactory) SetTodoStore(store tools.TodoStore) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.todoStore = store
+}
+
+// TodoStore returns the injected todo store.
+func (f *agentFactory) TodoStore() tools.TodoStore {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.todoStore
 }
 
 func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string) (Service, error) {

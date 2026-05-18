@@ -1,6 +1,6 @@
 # Server API and Agent Client Protocol (ACP) Support
 
-**Status:** Draft  
+**Status:** Implemented  
 **Created:** 2026-05-17
 
 ## Problem

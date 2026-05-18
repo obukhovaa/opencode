@@ -56,7 +56,7 @@ func ConvertMessages(msgs []message.Message) []APIMessageResponse {
 // Pass nil if no result merging is needed.
 func ConvertMessage(msg message.Message, resultMap map[string]message.ToolResult) APIMessageResponse {
 	info := ConvertMessageInfo(msg)
-	parts := convertParts(msg.Parts, resultMap)
+	parts := convertParts(msg.ID, msg.SessionID, msg.Parts, resultMap)
 
 	return APIMessageResponse{
 		Info:  info,
@@ -68,7 +68,7 @@ func ConvertMessage(msg message.Message, resultMap map[string]message.ToolResult
 // ToolCall parts are merged with their results from resultMap. ToolResult parts
 // that were already merged into a ToolCall are skipped. Standalone ToolResults
 // (without a matching ToolCall in the same message) are emitted as tool parts.
-func convertParts(parts []message.ContentPart, resultMap map[string]message.ToolResult) []APIPart {
+func convertParts(messageID, sessionID string, parts []message.ContentPart, resultMap map[string]message.ToolResult) []APIPart {
 	// Track which tool call IDs appear as ToolCall parts in this message
 	// so we can skip their standalone ToolResult counterparts.
 	toolCallIDs := make(map[string]struct{})
@@ -140,6 +140,12 @@ func convertParts(parts []message.ContentPart, resultMap map[string]message.Tool
 			})
 			partIndex++
 		}
+	}
+
+	// Stamp messageID and sessionID on all parts (required by OpenWork schema).
+	for i := range apiParts {
+		apiParts[i].MessageID = messageID
+		apiParts[i].SessionID = sessionID
 	}
 
 	return apiParts

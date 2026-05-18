@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -140,15 +141,28 @@ func (h *Handler) HandleListSessions(id any, params ListSessionsParams) error {
 		return h.transport.SendError(id, ErrCodeInternal, fmt.Sprintf("failed to list sessions: %v", err))
 	}
 
+	// Use the CWD from the request if provided, otherwise fall back to
+	// the stored ACP session CWD or the process working directory.
+	listCWD := params.CWD
+	if listCWD == "" {
+		listCWD = config.WorkingDirectory()
+	}
+
 	entries := make([]SessionInfo, 0, len(sessions))
+	h.mu.RLock()
 	for _, sess := range sessions {
+		cwd := listCWD
+		if tracked, ok := h.sessions[sess.ID]; ok {
+			cwd = tracked.cwd
+		}
 		entries = append(entries, SessionInfo{
 			SessionID: sess.ID,
-			CWD:       config.WorkingDirectory(),
+			CWD:       cwd,
 			Title:     sess.Title,
 			UpdatedAt: time.UnixMilli(sess.UpdatedAt).UTC().Format(time.RFC3339),
 		})
 	}
+	h.mu.RUnlock()
 
 	return h.transport.SendResponse(id, ListSessionsResult{
 		Sessions: entries,
@@ -186,11 +200,38 @@ func (h *Handler) HandlePrompt(id any, params PromptParams) error {
 		return h.transport.SendError(id, ErrCodeInvalidParams, fmt.Sprintf("session not found: %s", params.SessionID))
 	}
 
-	// Extract text from prompt parts.
+	// Extract text and attachments from prompt parts.
 	var texts []string
+	var attachments []message.Attachment
 	for _, part := range params.Prompt {
-		if part.Type == "text" && part.Text != "" {
-			texts = append(texts, part.Text)
+		switch part.Type {
+		case "text":
+			if part.Text != "" {
+				texts = append(texts, part.Text)
+			}
+		case "image":
+			if part.Data != "" && part.MimeType != "" {
+				decoded, err := base64.StdEncoding.DecodeString(part.Data)
+				if err == nil {
+					name := part.Name
+					if name == "" {
+						name = "image"
+					}
+					attachments = append(attachments, message.Attachment{
+						FileName: name,
+						MimeType: part.MimeType,
+						Content:  decoded,
+					})
+				}
+			}
+		case "resource_link":
+			if part.URI != "" && strings.HasPrefix(part.URI, "file://") {
+				attachments = append(attachments, message.Attachment{
+					FilePath: strings.TrimPrefix(part.URI, "file://"),
+					FileName: part.Name,
+					MimeType: part.MimeType,
+				})
+			}
 		}
 	}
 	text := strings.Join(texts, "\n")
@@ -205,7 +246,7 @@ func (h *Handler) HandlePrompt(id any, params PromptParams) error {
 
 	_ = acpSess // cwd available for future use
 
-	events, err := activeAgent.Run(context.Background(), params.SessionID, text)
+	events, err := activeAgent.Run(context.Background(), params.SessionID, text, attachments...)
 	if err != nil {
 		if errors.Is(err, agent.ErrSessionBusy) {
 			return h.transport.SendError(id, ErrCodeInternal, "session is busy")
@@ -375,6 +416,20 @@ func (h *Handler) handleMessageEvent(event pubsub.Event[message.Message]) {
 					Title:         p.Name,
 					Content:       content,
 				})
+
+				// Emit plan update for todowrite results so ACP clients
+				// (AionUI, OpenWork) can render the todo panel.
+				if p.Name == "todowrite" && p.Metadata != "" {
+					var meta struct {
+						Todos []PlanEntry `json:"todos"`
+					}
+					if json.Unmarshal([]byte(p.Metadata), &meta) == nil && len(meta.Todos) > 0 {
+						h.sendSessionUpdate(msg.SessionID, PlanUpdate{
+							SessionUpdate: "plan",
+							Entries:       meta.Todos,
+						})
+					}
+				}
 			}
 		}
 	}

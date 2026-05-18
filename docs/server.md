@@ -16,7 +16,7 @@ opencode serve
 |------|---------|-------------|
 | `--port` | `4096` | Port to listen on |
 | `--hostname` | `127.0.0.1` | Hostname to bind to |
-| `--cors-origin` | `*` | Allowed CORS origin |
+| `--cors` | `*` | Allowed CORS origin |
 | `--cwd`, `-c` | current dir | Working directory |
 | `--debug`, `-d` | `false` | Enable debug logging |
 
@@ -103,11 +103,59 @@ Request body: `{"allow": true}` or `{"allow": false}`
 
 ### Connecting OpenWork
 
-[OpenWork](https://github.com/different-ai/openwork) connects to the server using the `@opencode-ai/sdk/v2` client:
+[OpenWork](https://github.com/different-ai/openwork) is a desktop UI that can connect to our opencode fork via the HTTP REST API.
 
-1. Start the server: `opencode serve --port 4096`
-2. Configure OpenWork to point to `http://localhost:4096`
-3. OpenWork subscribes to SSE events and uses the REST API for sessions, messages, and permissions
+#### Option A: Managed mode (OpenWork spawns opencode)
+
+OpenWork can spawn and manage the `opencode serve` process automatically. Set the binary path and run:
+
+```bash
+OPENWORK_OPENCODE_BIN=/path/to/opencode pnpm dev
+```
+
+OpenWork will:
+1. Find a free port and spawn `opencode serve --hostname 127.0.0.1 --port <port> --cors "*"`
+2. Wait for the `opencode server listening on http://...` stdout sentinel
+3. Set up Basic Auth using auto-generated credentials via `OPENCODE_SERVER_PASSWORD`
+4. Proxy all `/opencode/*` requests from the UI to the opencode server
+
+**Config**: OpenWork spawns opencode with `cwd` set to its managed workdir inside Application Support. To use your existing `.opencode.json`, symlink it there:
+
+```bash
+# macOS (dev build)
+ln -sf ~/.opencode.json \
+  ~/Library/Application\ Support/com.differentai.openwork.dev/managed-opencode-workdir/.opencode.json
+```
+
+#### Option B: External mode (you run opencode separately)
+
+Start your own server and point OpenWork to it:
+
+```bash
+# Terminal 1: start opencode
+OPENCODE_SERVER_PASSWORD=mysecret opencode serve --port 4096
+
+# Terminal 2: start OpenWork, pointing to your server
+OPENWORK_OPENCODE_BASE_URL=http://127.0.0.1:4096 \
+OPENWORK_OPENCODE_PASSWORD=mysecret \
+pnpm dev
+```
+
+Or for the desktop app, set these env vars before launching:
+
+| Variable | Description |
+|----------|-------------|
+| `OPENWORK_OPENCODE_BASE_URL` | URL of your running opencode server |
+| `OPENWORK_OPENCODE_PASSWORD` | Password for Basic Auth (matches `OPENCODE_SERVER_PASSWORD`) |
+| `OPENWORK_OPENCODE_USERNAME` | Username for Basic Auth (optional, any value works) |
+| `OPENWORK_OPENCODE_DIRECTORY` | Working directory for session scoping |
+| `OPENWORK_OPENCODE_BIN` | Path to `opencode` binary (for managed mode) |
+| `OPENWORK_MANAGED_OPENCODE_CWD` | Override cwd for managed opencode (CLI mode only) |
+
+#### Known limitations with OpenWork
+
+- **MCP display**: OpenWork reads MCP server config directly from the workspace `.opencode.json` file, looking for an `mcp` key (dax format). Our fork uses `mcpServers`. MCP servers work at runtime but won't appear in OpenWork's MCP panel.
+- **Session directory**: OpenWork scopes sessions by directory using the `X-Opencode-Directory` header. Sessions created via the TUI use the project directory; sessions created via OpenWork use the managed workspace directory. They appear as separate session lists.
 
 ## ACP Mode
 
@@ -117,7 +165,7 @@ Start an Agent Client Protocol server for editor integration:
 opencode acp
 ```
 
-ACP uses JSON-RPC 2.0 over stdio with LSP-style `Content-Length` framing. This is the protocol used by [Zed](https://zed.dev), JetBrains, and other ACP-compatible editors.
+ACP uses JSON-RPC 2.0 over stdio with newline-delimited JSON (NDJSON) framing. This is the protocol used by [AionUI](https://github.com/iOfficeAI/AionUi), [Zed](https://zed.dev), JetBrains, and other ACP-compatible editors.
 
 ### Flags
 
@@ -159,11 +207,31 @@ The server sends `session/update` notifications with real-time updates:
 - `tool_call_update` — tool call status change (pending/in_progress/completed/failed)
 - `permission_request` — permission needed for a tool call
 
-### Compatible Clients
+### Connecting AionUI
 
-- [AionUI](https://github.com/iOfficeAI/AionUi) — auto-detects `opencode` on PATH and connects via `opencode acp`
+[AionUI](https://github.com/iOfficeAI/AionUi) is a desktop app that auto-detects CLI agents on your system and connects via ACP.
+
+**Setup**: Just have `opencode` on your PATH. AionUI will:
+1. Detect the `opencode` binary via `which opencode`
+2. Spawn `opencode acp` with stdin/stdout wired for JSON-RPC
+3. Send `initialize`, then `session/new` to start a conversation
+
+No configuration needed — AionUI's built-in agent list includes OpenCode with `acpArgs: ["acp"]`.
+
+If `opencode` is installed somewhere not on PATH, set the binary path in AionUI's settings or add it to PATH:
+
+```bash
+# Add to ~/.zshrc or ~/.bashrc
+export PATH="$PATH:/path/to/opencode/bin"
+```
+
+### Other ACP Clients
+
+Any ACP-compatible client can connect:
+
 - [Zed](https://zed.dev) — ACP-compatible editor
 - JetBrains IDEs with ACP plugin support
+- Custom integrations — spawn `opencode acp` and communicate via NDJSON on stdio
 
 ### Logging
 

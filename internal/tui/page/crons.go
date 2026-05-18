@@ -137,7 +137,7 @@ func (p *cronsPage) waitForUpdate() tea.Cmd {
 func (p *cronsPage) View() tea.View {
 	t := theme.CurrentTheme()
 	bg := t.Background()
-	style := styles.BaseStyle().Width(p.width).Height(p.height)
+	style := styles.BaseStyle().Width(p.width).Height(p.height).Padding(0, 1)
 
 	if p.cronService == nil {
 		return tea.NewView(style.Render(styles.ForceReplaceBackgroundWithLipgloss(
