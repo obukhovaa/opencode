@@ -695,6 +695,10 @@ func (p *baseProvider[C]) generationMetadata(ctx context.Context) map[string]any
 	if agentID := getAgentIDFromCtx(ctx); agentID != "" {
 		meta["agent_id"] = agentID
 	}
+	// Apply metadata namespace prefix when configured.
+	if cfg := config.Get(); cfg.Telemetry != nil && cfg.Telemetry.MetadataNamespace != "" {
+		meta = langfuse.NamespaceMetadata(meta, cfg.Telemetry.MetadataNamespace)
+	}
 	return meta
 }
 

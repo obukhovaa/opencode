@@ -760,6 +760,10 @@
           },
           "type": "object"
         },
+        "metadataNamespace": {
+          "description": "Prefix for custom (non-Langfuse-standard) metadata keys on traces and generations. When set, keys like flow_id and agent_id become namespace.flow_id, namespace.agent_id — grouping them visually in the Langfuse UI while keeping each value independently filterable. Empty (default) preserves flat keys.",
+          "type": "string"
+        },
         "tags": {
           "description": "Static tags attached to every LLM request when the provider metadata has a tags field configured. Useful for environment labels (e.g., 'prod', 'dev', 'team-a').",
           "items": {

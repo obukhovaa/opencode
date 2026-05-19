@@ -116,12 +116,13 @@ type ToolTelemetryConfig struct {
 
 // TelemetryConfig defines telemetry configuration for identifying requests.
 type TelemetryConfig struct {
-	UserID      string               `json:"userId,omitempty"`
-	Tags        []string             `json:"tags,omitempty"`
-	DefaultTags []string             `json:"defaultTags,omitempty"`
-	Langfuse    *LangfuseConfig      `json:"langfuse,omitempty"`
-	Tools       *ToolTelemetryConfig `json:"tools,omitempty"`
-	FlowArgs    []string             `json:"flowArgs,omitempty"` // Top-level flow arg names (wildcards supported) to extract into trace metadata
+	UserID            string               `json:"userId,omitempty"`
+	Tags              []string             `json:"tags,omitempty"`
+	DefaultTags       []string             `json:"defaultTags,omitempty"`
+	Langfuse          *LangfuseConfig      `json:"langfuse,omitempty"`
+	Tools             *ToolTelemetryConfig `json:"tools,omitempty"`
+	FlowArgs          []string             `json:"flowArgs,omitempty"`          // Top-level flow arg names (wildcards supported) to extract into trace metadata
+	MetadataNamespace string               `json:"metadataNamespace,omitempty"` // Prefix for custom (non-Langfuse-standard) metadata keys; empty = flat keys (default)
 }
 
 // ProviderMetadata defines metadata key-value pairs attached to every LLM API request.
@@ -1049,6 +1050,13 @@ func validateTelemetryConfig(telemetry *TelemetryConfig) error {
 	for _, tag := range telemetry.DefaultTags {
 		if !supported[tag] {
 			return fmt.Errorf("telemetry: unsupported defaultTag %q (supported: %v)", tag, SupportedDefaultTags)
+		}
+	}
+	if ns := telemetry.MetadataNamespace; ns != "" {
+		for _, r := range ns {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
+				return fmt.Errorf("telemetry: metadataNamespace %q contains invalid character %q (only alphanumeric and underscore allowed)", ns, string(r))
+			}
 		}
 	}
 	if lf := telemetry.Langfuse; lf != nil && lf.Enabled {

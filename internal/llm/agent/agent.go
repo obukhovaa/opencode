@@ -1676,6 +1676,12 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session) c
 		}
 	}
 
+	// Apply metadata namespace prefix when configured so custom keys are
+	// grouped under a common prefix in Langfuse (e.g. "app.flow_id").
+	if cfg := config.Get(); cfg.Telemetry != nil && cfg.Telemetry.MetadataNamespace != "" {
+		metadata = langfuse.NamespaceMetadata(metadata, cfg.Telemetry.MetadataNamespace)
+	}
+
 	return lf.TraceStart(ctx, langfuse.TraceParams{
 		Name:      traceName,
 		SessionID: rootSessionID,

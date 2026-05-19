@@ -278,6 +278,34 @@ func TestValidateTelemetryConfig(t *testing.T) {
 			},
 			expectError: true,
 		},
+		{
+			name: "valid metadataNamespace alphanumeric",
+			telemetry: &TelemetryConfig{
+				MetadataNamespace: "myApp_v2",
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid metadataNamespace with dot",
+			telemetry: &TelemetryConfig{
+				MetadataNamespace: "my.app",
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid metadataNamespace with space",
+			telemetry: &TelemetryConfig{
+				MetadataNamespace: "my app",
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid metadataNamespace with slash",
+			telemetry: &TelemetryConfig{
+				MetadataNamespace: "ns/group",
+			},
+			expectError: true,
+		},
 	}
 
 	for _, tt := range tests {

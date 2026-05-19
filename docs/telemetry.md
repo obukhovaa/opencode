@@ -112,6 +112,7 @@ The `telemetry` section in `.opencode.json` controls all telemetry behavior:
 | `langfuse` | object | Langfuse configuration (see [above](#langfuse-config-fields)). |
 | `tools` | object | Controls tool input/output logging (see [below](#tool-io-logging)). |
 | `flowArgs` | string[] | Flow argument names to extract into Langfuse trace metadata. Supports wildcards (e.g., `"ticket_id"`, `"project*"`, `"*"`). |
+| `metadataNamespace` | string | Prefix for custom metadata keys. When set, keys like `flow_id` become `namespace.flow_id` — grouping them in the Langfuse UI while keeping each independently filterable. Empty (default) preserves flat keys. |
 
 ### Tool I/O Logging
 
@@ -150,6 +151,33 @@ When using flows, you can extract business-critical arguments into Langfuse trac
 ```
 
 Each matched arg appears as a dedicated metadata field (e.g., `flow_arg_ticket_id`). Values are truncated to 200 characters. Only top-level args are checked.
+
+### Metadata Namespace
+
+By default, custom metadata keys (`flow_id`, `agent_id`, `flow_arg_*`, etc.) are stored as flat top-level keys in Langfuse metadata. When multiple systems write metadata to the same traces, this can cause collisions or clutter.
+
+Set `metadataNamespace` to group all OpenCode-specific metadata under a common prefix:
+
+```json
+{
+  "telemetry": {
+    "metadataNamespace": "app"
+  }
+}
+```
+
+This changes how metadata keys appear in Langfuse:
+
+| Without namespace (default) | With `"metadataNamespace": "app"` |
+|---|---|
+| `flow_id` | `app.flow_id` |
+| `flow_step_id` | `app.flow_step_id` |
+| `flow_arg_ticket_id` | `app.flow_arg_ticket_id` |
+| `agent_id` | `app.agent_id` |
+| `session_id` | `app.session_id` |
+| `opencode_version` | `app.opencode_version` |
+
+Each prefixed key remains a top-level metadata entry in Langfuse and is independently filterable. Standard Langfuse attributes (`langfuse.session.id`, `langfuse.user.id`, `langfuse.trace.tags`, etc.) are not affected — only custom metadata keys are namespaced.
 
 ## Provider Metadata
 
@@ -200,6 +228,7 @@ Not all providers handle metadata the same way:
     "userId": "artem@example.com",
     "tags": ["team:composer"],
     "defaultTags": ["agent"],
+    "metadataNamespace": "app",
     "langfuse": {
       "enabled": true,
       "publicKey": "env:LANGFUSE_PUBLIC_KEY",
@@ -222,6 +251,7 @@ Not all providers handle metadata the same way:
 
 This configuration:
 - Sends all traces to Langfuse with user ID and team tag
+- Groups custom metadata under the `app.` prefix (e.g., `app.flow_id`, `app.agent_id`)
 - Logs input for `bash`, `edit`, and `read` tools; logs output for all tools
 - Extracts `ticket_id` and `project_name` from flow args into trace metadata
 - Does not use provider-level metadata (recommended when using Langfuse)

@@ -694,6 +694,10 @@ func generateSchema() map[string]any {
 					"type": "string",
 				},
 			},
+			"metadataNamespace": map[string]any{
+				"type":        "string",
+				"description": "Prefix for custom (non-Langfuse-standard) metadata keys on traces and generations. When set, keys like flow_id and agent_id become namespace.flow_id, namespace.agent_id — grouping them visually in the Langfuse UI while keeping each value independently filterable. Empty (default) preserves flat keys.",
+			},
 		},
 		"additionalProperties": false,
 	}
