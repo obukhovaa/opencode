@@ -1,131 +1,179 @@
 # OpenCode + OpenWork Integration
 
-OpenWork is an open-source desktop/web control surface for agentic workflows. OpenCode serves as the backend engine that OpenWork connects to via its HTTP/SSE API.
-
-This fork of OpenCode is fully compatible with the upstream `opencode-ai` version used by OpenWork. Any `opencode serve` instance — whether from this fork or the original — works as a drop-in backend.
+OpenWork is an open-source control surface for agentic workflows. OpenCode serves as the backend engine. This fork is fully compatible with the upstream `opencode-ai` version — any `opencode serve` instance works as a drop-in backend.
 
 - OpenWork repo: https://github.com/different-ai/openwork.git
-- OpenWork docs: https://openworklabs.com/docs
 
-## How it works
+## Architecture
 
-OpenWork connects to an OpenCode server via `@opencode-ai/sdk/v2/client`. By default, OpenWork spawns its own OpenCode subprocess (a "sidecar"). All variants below replace that sidecar with your own OpenCode instance.
+```
+                          ┌─────────────────────┐
+                          │   opencode serve    │  ← your OpenCode instance
+                          └──────────┬──────────┘
+                                     │ HTTP/SSE API
+                    ┌────────────────┼────────────────┐
+                    │                │                │
+             ┌──────┴──────┐   ┌─────┴──────┐  ┌──────┴───────┐
+             │   router    │   │   server   │  │ orchestrator │
+             │  (chat)     │   │  (web API) │  │ (supervisor) │
+             └──────┬──────┘   └─────┬──────┘  └──────────────┘
+                    │                │
+            ┌───────┴─────┐          │
+            │             │          │
+        Telegram        Slack      Web UI
+```
 
-## Quick start: desktop app with local OpenCode
+**Components** (all from the OpenWork repo, all optional):
 
-Start OpenCode, then point OpenWork at it:
+- **opencode-router** — bidirectional Telegram/Slack bridge. Receives messages, forwards to OpenCode, sends replies back. Supports file exchange.
+- **openwork-server** — REST + SSE API layer with workspace management, approvals, file sync. Includes a built-in lightweight Toy UI at `/ui`.
+- **openwork-orchestrator** — process supervisor that manages opencode + server + router as a unit. Not needed when you run OpenCode yourself.
+
+Since we run our own `opencode serve`, the orchestrator is redundant. The scenarios below use the router and server directly.
+
+## Prerequisites
+
+All scenarios assume OpenCode is running:
 
 ```bash
-# Terminal 1 — start OpenCode server
 opencode serve --hostname 127.0.0.1 --port 3456
-
-# Terminal 2 — start OpenWork desktop (from the openwork repo)
-OPENWORK_OPENCODE_BASE_URL=http://127.0.0.1:3456 pnpm dev
 ```
 
-OpenWork will skip spawning its own OpenCode process and connect to yours instead.
+---
 
-## Web UI options
+## Scenario 1: Router only (Telegram/Slack, no web UI)
 
-OpenWork has two web interfaces:
+The lightest setup. Chat with your agent entirely through Telegram or Slack. No web interface.
 
-- **Full React UI** — the same rich interface used by the Electron desktop app (sessions, skills, permissions, live streaming, execution plans). Requires building or running the `apps/app` Vite project and serving it alongside the OpenWork server. The React app connects to the server via `VITE_OPENWORK_URL`.
-- **Toy UI** — a lightweight built-in UI served by the OpenWork server at `/ui`. No separate build or process needed. Sufficient for basic session interaction.
+### Telegram setup
 
-The full React UI is available as a browser-accessible web app in **variants 2, 3, and 5** below.
+1. Create a bot via [@BotFather](https://t.me/BotFather), copy the bot token.
 
-## All integration variants
-
-### 1. Desktop app (development from source)
-
-Clone OpenWork and run the Electron desktop app backed by your local OpenCode:
+2. Install and configure:
 
 ```bash
-git clone https://github.com/different-ai/openwork.git
-cd openwork
-pnpm install
+npm install -g opencode-router
 
-# Start with your running OpenCode server
-OPENWORK_OPENCODE_BASE_URL=http://127.0.0.1:3456 pnpm dev
+# Register the bot
+opencode-router telegram add <BOT_TOKEN> --id default
+
+# Bind a Telegram chat to a workspace (use numeric chat_id, not @username)
+opencode-router bindings set \
+  --channel telegram \
+  --identity default \
+  --peer <CHAT_ID> \
+  --dir /path/to/workspace
 ```
 
-**UI:** Full React UI inside Electron (not browser-accessible).
+To find your `chat_id`: message the bot, then check `https://api.telegram.org/bot<BOT_TOKEN>/getUpdates`.
 
-`pnpm dev` enables `OPENWORK_DEV_MODE=1` automatically, which isolates dev state from your personal OpenCode config.
-
-To use a local OpenCode binary as the managed sidecar instead of connecting to an already-running server, set `OPENWORK_OPENCODE_BIN` (requires the [runtime patch](./opencode-fork-for-openwork.patch)):
+3. Start the router:
 
 ```bash
-OPENWORK_OPENCODE_BIN=$(which opencode) pnpm dev
+OPENCODE_URL=http://127.0.0.1:3456 \
+OPENCODE_DIRECTORY=/path/to/workspace \
+  opencode-router start
 ```
 
-### 2. Headless web with full UI (development from source)
+Message the bot in Telegram — it forwards to OpenCode and sends the reply back automatically.
 
-Run the full React UI as a web server accessible from any browser, without the Electron shell:
+### Slack setup
+
+1. Create a Slack app at https://api.slack.com/apps.
+2. Enable **Socket Mode**, generate an app-level token (`xapp-...`).
+3. Add bot token scopes: `chat:write`, `app_mentions:read`, `im:history`, `files:read`, `files:write`.
+4. Subscribe to bot events: `app_mention`, `message.im`.
+5. Install the app to your workspace, copy the bot token (`xoxb-...`).
 
 ```bash
-cd openwork
+# Register the Slack app
+opencode-router slack add <XOXB_TOKEN> <XAPP_TOKEN> --id default
 
-# Local only (127.0.0.1)
-OPENWORK_OPENCODE_BASE_URL=http://127.0.0.1:3456 \
-  pnpm dev:headless-web
-
-# Remote access (0.0.0.0) — accessible from other machines
-OPENWORK_REMOTE_ACCESS=1 \
-OPENWORK_OPENCODE_BASE_URL=http://127.0.0.1:3456 \
-  pnpm dev:headless-web
+# Bind a Slack DM or channel to a workspace
+opencode-router bindings set \
+  --channel slack \
+  --identity default \
+  --peer <CHANNEL_OR_DM_ID> \
+  --dir /path/to/workspace
 ```
 
-**UI:** Full React UI served by Vite dev server (browser-accessible).
+Start:
 
-This spawns two processes:
-- **Vite dev server** — serves the full React UI, configured with `VITE_OPENWORK_URL` pointing at the OpenWork server
-- **Orchestrator** — runs the OpenWork server (API + Toy UI + OpenCode proxy)
+```bash
+OPENCODE_URL=http://127.0.0.1:3456 \
+OPENCODE_DIRECTORY=/path/to/workspace \
+  opencode-router start
+```
 
-Open the Vite URL printed at startup to access the full UI. Logs go to `tmp/dev-web.log` and `tmp/dev-headless.log`.
+### File exchange
 
-Key environment variables:
+**Receiving files** — send a file in Telegram/Slack along with your message. The router downloads it to `<workspace>/.opencode-router/media/` and includes the local path in the prompt to OpenCode. The agent can read and process the file.
 
-| Variable | Default | Description |
+**Sending files back** — the agent's text replies are sent automatically. To send files (documents, images, audio), use the router's HTTP API or CLI:
+
+```bash
+# CLI
+opencode-router send \
+  --channel telegram --identity default --to <CHAT_ID> \
+  --file ./output/report.docx
+
+# HTTP (useful from OpenCode tools/hooks)
+curl http://127.0.0.1:${OPENCODE_ROUTER_HEALTH_PORT:-3005}/send \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel": "telegram",
+    "directory": "/path/to/workspace",
+    "text": "Updated document attached",
+    "parts": [
+      {"type": "file", "filePath": "./output/report.docx"},
+      {"type": "image", "filePath": "./charts/summary.png", "caption": "Summary chart"}
+    ]
+  }'
+```
+
+Supported part types: `file` (any document), `image`, `audio`.
+
+### How the chat loop works
+
+```
+User sends message in Telegram
+  → router downloads any attachments to .opencode-router/media/
+  → router calls session.prompt() on the OpenCode SDK
+  → OpenCode processes the request (reads files, runs tools, etc.)
+  → router extracts text reply from the response
+  → router sends reply back to Telegram
+```
+
+The round-trip is fully automatic. No UI or manual intervention needed for the text conversation. File sending back requires the agent to call the router's `/send` endpoint (via a tool or hook).
+
+### Router environment variables
+
+| Variable | Required | Description |
 |---|---|---|
-| `OPENWORK_REMOTE_ACCESS` | `0` | Bind to `0.0.0.0` for remote access |
-| `OPENWORK_WORKSPACE` | cwd | Workspace directory |
-| `OPENWORK_PORT` | auto | OpenWork server port |
-| `OPENWORK_WEB_PORT` | auto | Vite UI port (this is what you open in the browser) |
-| `OPENWORK_OPENCODE_BASE_URL` | — | URL of your running OpenCode server |
+| `OPENCODE_URL` | Yes | OpenCode server URL |
+| `OPENCODE_DIRECTORY` | Yes | Default workspace directory |
+| `OPENCODE_SERVER_USERNAME` | If auth | OpenCode basic auth username |
+| `OPENCODE_SERVER_PASSWORD` | If auth | OpenCode basic auth password |
+| `TELEGRAM_BOT_TOKEN` | Alt | Single-bot shorthand (alternative to `opencode-router telegram add`) |
+| `SLACK_BOT_TOKEN` | Alt | Single-app shorthand (`xoxb-...`) |
+| `SLACK_APP_TOKEN` | Alt | Single-app shorthand (`xapp-...`) |
+| `SLACK_ENABLED` | Alt | Set `true` with the env var shorthand |
+| `GROUPS_ENABLED` | No | Set `true` to allow group chat messages |
+| `OPENCODE_ROUTER_HEALTH_PORT` | No | HTTP API port (default: auto) |
 
-### 3. Orchestrator CLI (no desktop, no source checkout)
+### Config and data paths
 
-The `openwork-orchestrator` npm package provides the `openwork` CLI for running OpenWork as a headless service:
+- Config: `~/.openwork/opencode-router/opencode-router.json`
+- Database: `~/.openwork/opencode-router/opencode-router.db` (SQLite)
+- Downloaded media: `<workspace>/.opencode-router/media/`
 
-```bash
-npm install -g openwork-orchestrator
+---
 
-# Connect to your OpenCode server
-OPENWORK_OPENCODE_BASE_URL=http://127.0.0.1:3456 \
-  openwork start \
-    --workspace /path/to/workspace \
-    --approval auto
+## Scenario 2: Server only (web UI, no chat)
 
-# With remote access
-OPENWORK_OPENCODE_BASE_URL=http://127.0.0.1:3456 \
-  openwork start \
-    --workspace /path/to/workspace \
-    --approval auto \
-    --remote-access
-```
+Run the OpenWork server for browser-based access. Two sub-options for the UI.
 
-**UI:** Toy UI at `/ui` (browser-accessible). For the full React UI, see variant 5.
-
-For log-only mode without the interactive TUI dashboard:
-
-```bash
-openwork serve --workspace /path/to/workspace --approval auto
-```
-
-### 4. Standalone server (API only)
-
-Run just the OpenWork server layer, without the orchestrator managing sidecars:
+### 2a. Toy UI (zero build, built into the server)
 
 ```bash
 npm install -g openwork-server
@@ -139,7 +187,7 @@ openwork-server \
   --approval auto
 ```
 
-**UI:** Toy UI at `/ui`. The server exposes the full REST + SSE API that any frontend can consume.
+Open `http://your-server:8787/ui` in a browser. The Toy UI is lightweight and baked into the server binary — no frontend build required.
 
 Or via environment variables:
 
@@ -152,15 +200,6 @@ OPENWORK_APPROVAL_MODE=auto \
   openwork-server --workspace /path/to/workspace
 ```
 
-If your OpenCode server uses authentication:
-
-```bash
-OPENWORK_OPENCODE_BASE_URL=http://127.0.0.1:3456 \
-OPENWORK_OPENCODE_USERNAME=user \
-OPENWORK_OPENCODE_PASSWORD=pass \
-  openwork-server --workspace /path/to/workspace
-```
-
 Config file alternative at `~/.config/openwork/server.json`:
 
 ```json
@@ -169,35 +208,49 @@ Config file alternative at `~/.config/openwork/server.json`:
   "port": 8787,
   "approval": { "mode": "auto" },
   "opencodeBaseUrl": "http://127.0.0.1:3456",
-  "workspaces": [
-    { "path": "/path/to/workspace" }
-  ],
+  "workspaces": [{ "path": "/path/to/workspace" }],
   "corsOrigins": ["*"]
 }
 ```
 
-### 5. Production self-hosted (full React UI + server)
-
-Build the React UI as static files and serve them alongside the OpenWork server for a production-like self-hosted setup:
+If OpenCode uses authentication:
 
 ```bash
-cd openwork
+OPENWORK_OPENCODE_BASE_URL=http://127.0.0.1:3456 \
+OPENWORK_OPENCODE_USERNAME=user \
+OPENWORK_OPENCODE_PASSWORD=pass \
+  openwork-server --workspace /path/to/workspace
+```
 
-# Build the full React UI
+### 2b. Full React UI (requires building from source)
+
+The full UI (sessions, skills, permissions, execution plans, live streaming) must be built as static files and served separately.
+
+```bash
+git clone https://github.com/different-ai/openwork.git
+cd openwork
+pnpm install
+
+# Build the React app — env vars are baked in at build time
 VITE_OPENWORK_URL=http://your-server:8787 \
 VITE_OPENWORK_TOKEN=your-token \
   pnpm build:ui
 # Output: apps/app/dist/
-
-# Run the server (variant 3 or 4)
-OPENWORK_OPENCODE_BASE_URL=http://127.0.0.1:3456 \
-  openwork start \
-    --workspace /path/to/workspace \
-    --approval auto \
-    --remote-access
 ```
 
-Serve `apps/app/dist/` with any static file server (nginx, caddy, etc.) and point `VITE_OPENWORK_URL` at your OpenWork server URL at build time. The Vite env vars are baked into the bundle at build time:
+Serve `apps/app/dist/` with nginx, caddy, or any static file server. Then run the OpenWork server as in 2a.
+
+Example nginx config:
+
+```nginx
+server {
+    listen 3000;
+    root /path/to/openwork/apps/app/dist;
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
 
 | Build-time variable | Description |
 |---|---|
@@ -205,17 +258,114 @@ Serve `apps/app/dist/` with any static file server (nginx, caddy, etc.) and poin
 | `VITE_OPENWORK_TOKEN` | Client bearer token (must match server's `--token`) |
 | `VITE_OPENWORK_HOST_TOKEN` | Host token for approval actions (optional) |
 
-**UI:** Full React UI (browser-accessible), served by your own static file server.
+For development (Vite dev server instead of static build):
 
-## Comparison
+```bash
+cd openwork
 
-| Variant | UI | Browser-accessible | Requires source | Best for |
+OPENWORK_REMOTE_ACCESS=1 \
+OPENWORK_OPENCODE_BASE_URL=http://127.0.0.1:3456 \
+  pnpm dev:headless-web
+```
+
+This starts both the Vite dev server (full React UI) and the OpenWork server in one command.
+
+### Server environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `OPENWORK_OPENCODE_BASE_URL` | — | OpenCode server URL |
+| `OPENWORK_HOST` | `127.0.0.1` | Bind host (`0.0.0.0` for remote) |
+| `OPENWORK_PORT` | `8787` | Server port |
+| `OPENWORK_TOKEN` | auto | Client bearer token |
+| `OPENWORK_HOST_TOKEN` | auto | Host/admin token |
+| `OPENWORK_APPROVAL_MODE` | `manual` | `manual` or `auto` |
+| `OPENWORK_CORS_ORIGINS` | — | Comma-separated origins or `*` |
+| `OPENWORK_OPENCODE_USERNAME` | — | OpenCode basic auth username |
+| `OPENWORK_OPENCODE_PASSWORD` | — | OpenCode basic auth password |
+| `OPENWORK_TOY_UI` | `true` | Disable Toy UI with `false` |
+
+---
+
+## Scenario 3: Router + Server (chat and web UI)
+
+Run both for maximum flexibility — chat via Telegram/Slack and monitor via web browser.
+
+```bash
+# Terminal 1: OpenCode
+opencode serve --hostname 127.0.0.1 --port 3456
+
+# Terminal 2: OpenWork server (web UI at /ui)
+openwork-server \
+  --workspace /path/to/workspace \
+  --opencode-base-url http://127.0.0.1:3456 \
+  --host 0.0.0.0 \
+  --port 8787 \
+  --cors '*' \
+  --approval auto
+
+# Terminal 3: Router (Telegram/Slack)
+OPENCODE_URL=http://127.0.0.1:3456 \
+OPENCODE_DIRECTORY=/path/to/workspace \
+  opencode-router start
+```
+
+For the full React UI instead of Toy UI, build it as described in Scenario 2b and serve the static files.
+
+---
+
+## Scenario 4: Orchestrator (all-in-one, manages its own OpenCode)
+
+The orchestrator downloads and supervises opencode + server + router as a single process tree. **You typically don't need this** since you're running your own `opencode serve`, but it's useful if you want a single command that manages everything.
+
+```bash
+npm install -g openwork-orchestrator
+
+# Manages its own OpenCode sidecar + server + router
+openwork start \
+  --workspace /path/to/workspace \
+  --approval auto \
+  --remote-access
+
+# Or point at your existing OpenCode
+OPENWORK_OPENCODE_BASE_URL=http://127.0.0.1:3456 \
+  openwork start \
+    --workspace /path/to/workspace \
+    --approval auto
+```
+
+The orchestrator provides a TUI dashboard in the terminal and the Toy UI at `/ui`.
+
+---
+
+## Summary
+
+| Scenario | What you run | Web UI | Chat | Best for |
 |---|---|---|---|---|
-| 1. Desktop app (`pnpm dev`) | Full React (Electron) | No | Yes | Local development |
-| 2. Headless web (`pnpm dev:headless-web`) | Full React (Vite) | Yes | Yes | Remote dev access |
-| 3. Orchestrator CLI (`openwork start`) | Toy UI at `/ui` | Yes | No | Self-hosted headless |
-| 4. Standalone server (`openwork-server`) | Toy UI at `/ui` | Yes | No | API-first / custom UI |
-| 5. Production self-hosted (build + serve) | Full React (static) | Yes | Yes (build only) | Production self-host |
+| 1. Router only | `opencode serve` + `opencode-router` | None | Telegram/Slack | Headless agent control |
+| 2a. Server (Toy UI) | `opencode serve` + `openwork-server` | Toy UI at `/ui` | None | Quick browser access |
+| 2b. Server (full UI) | `opencode serve` + `openwork-server` + static files | Full React UI | None | Production web UI |
+| 3. Router + Server | `opencode serve` + `openwork-server` + `opencode-router` | Toy UI or full | Telegram/Slack | Full remote control |
+| 4. Orchestrator | `openwork start` | Toy UI at `/ui` | Optional | Single-command setup |
+
+All scenarios work with this fork or dax's `opencode-ai`. The orchestrator (scenario 4) is the only one that can manage its own OpenCode subprocess — all others expect you to run `opencode serve` yourself.
+
+## Desktop app (development)
+
+For local Electron desktop development:
+
+```bash
+git clone https://github.com/different-ai/openwork.git
+cd openwork && pnpm install
+
+OPENWORK_OPENCODE_BASE_URL=http://127.0.0.1:3456 pnpm dev
+```
+
+To use a local OpenCode binary as the managed sidecar (instead of connecting to an already-running server), apply the [runtime patch](./opencode-fork-for-openwork.patch) and set `OPENWORK_OPENCODE_BIN`:
+
+```bash
+OPENWORK_OPENCODE_BIN=$(which opencode) pnpm dev
+```
 
 ## Patches
 
