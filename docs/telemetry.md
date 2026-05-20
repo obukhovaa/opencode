@@ -76,7 +76,7 @@ Session: abc-123
 When running [flows](flows.md), traces are enriched with flow context:
 
 - **Trace name** becomes `agentID/flowID/stepID` (e.g., `coder/deploy/analyze`)
-- **Metadata** includes `flow_id`, `flow_step_id`, and any extracted flow args
+- **Metadata** includes `flow_id`, `flow_step_id`, and any matched flow args (as bare keys, no prefix)
 
 ```
 Session: deploy-flow-abc123
@@ -150,11 +150,11 @@ When using flows, you can extract business-critical arguments into Langfuse trac
 }
 ```
 
-Each matched arg appears as a dedicated metadata field (e.g., `flow_arg_ticket_id`). Values are truncated to 200 characters. Only top-level args are checked.
+Each matched arg appears as a dedicated metadata field (e.g., `ticket_id`). Values are truncated to 200 characters. Only top-level args are checked.
 
 ### Metadata Namespace
 
-By default, custom metadata keys (`flow_id`, `agent_id`, `flow_arg_*`, etc.) are stored as flat top-level keys in Langfuse metadata. When multiple systems write metadata to the same traces, this can cause collisions or clutter.
+By default, custom metadata keys (`flow_id`, `agent_id`, flow args, etc.) are stored as flat top-level keys in Langfuse metadata. When multiple systems write metadata to the same traces, this can cause collisions or clutter.
 
 Set `metadataNamespace` to group all OpenCode-specific metadata under a common prefix:
 
@@ -172,7 +172,7 @@ This changes how metadata keys appear in Langfuse:
 |---|---|
 | `flow_id` | `app.flow_id` |
 | `flow_step_id` | `app.flow_step_id` |
-| `flow_arg_ticket_id` | `app.flow_arg_ticket_id` |
+| `ticket_id` | `app.ticket_id` |
 | `agent_id` | `app.agent_id` |
 | `session_id` | `app.session_id` |
 | `opencode_version` | `app.opencode_version` |
@@ -251,7 +251,7 @@ Not all providers handle metadata the same way:
 
 This configuration:
 - Sends all traces to Langfuse with user ID and team tag
-- Groups custom metadata under the `app.` prefix (e.g., `app.flow_id`, `app.agent_id`)
+- Groups custom metadata under the `app.` prefix (e.g., `app.flow_id`, `app.agent_id`, `app.ticket_id`)
 - Logs input for `bash`, `edit`, and `read` tools; logs output for all tools
 - Extracts `ticket_id` and `project_name` from flow args into trace metadata
 - Does not use provider-level metadata (recommended when using Langfuse)

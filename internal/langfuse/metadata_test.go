@@ -33,9 +33,9 @@ func TestNamespaceMetadata(t *testing.T) {
 		},
 		{
 			name:      "namespace prefixes all keys",
-			metadata:  map[string]any{"flow_id": "deploy", "agent_id": "coder", "flow_arg_ticket": "PROJ-123"},
+			metadata:  map[string]any{"flow_id": "deploy", "agent_id": "coder", "ticket": "PROJ-123"},
 			namespace: "app",
-			wantKeys:  []string{"app.flow_id", "app.agent_id", "app.flow_arg_ticket"},
+			wantKeys:  []string{"app.flow_id", "app.agent_id", "app.ticket"},
 			wantLen:   3,
 		},
 		{

@@ -1668,10 +1668,11 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session) c
 			traceName = truncateStr(fmt.Sprintf("%s/%s", a.AgentID(), flowID), maxTraceNameLen)
 		}
 
-		// Include extracted flow args as dedicated metadata fields
+		// Include extracted flow args as dedicated metadata fields.
+		// No prefix — the metadata namespace already ensures uniqueness.
 		if flowArgs, ok := ctx.Value(tools.FlowArgsContextKey).(map[string]string); ok {
 			for k, v := range flowArgs {
-				metadata["flow_arg_"+k] = truncateStr(v, maxMetadataValueLen)
+				metadata[k] = truncateStr(v, maxMetadataValueLen)
 			}
 		}
 	}

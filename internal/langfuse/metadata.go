@@ -5,7 +5,7 @@ package langfuse
 // original map is returned unchanged (default behaviour — flat keys).
 //
 // This allows custom (non-Langfuse-standard) metadata like flow_id,
-// agent_id, flow_arg_* to be visually grouped under a common prefix
+// agent_id, and flow args to be visually grouped under a common prefix
 // in the Langfuse UI while remaining independently filterable as
 // top-level metadata keys.
 func NamespaceMetadata(metadata map[string]any, namespace string) map[string]any {
