@@ -38,9 +38,28 @@ const taskToolReportingPrompt = `
 
 Whenever you invoke the task tool, its result includes a ` + "`<task_id>...</task_id>`" + ` trailer. When reporting back to the user, mention the task_id together with a one-line description of what each subagent did so the user can reference or ask to resume it. If you launched multiple subagents in a single turn, list every task_id. Use natural phrasing, for example: "Task abcd1234 (explorer — audited the auth module) is still around if you want to dig deeper." To continue a subagent's session later, pass its task_id back to the task tool along with a new prompt. Do NOT surface a task_id if it was not present in the tool result (e.g., when the subagent produced struct_output).`
 
+// cronToolPrompt instructs agents that have cron tools enabled to use them
+// directly when the user asks for reminders, recurring tasks, or scheduled work.
+// Without this guidance, agents tend to delegate scheduling requests to subagents
+// instead of calling croncreate themselves.
+const cronToolPrompt = `
+# Scheduling & Reminders
+
+You have cron tools (croncreate, crondelete, cronlist) available. When the user asks you to:
+- Set a reminder ("remind me at...", "remind me in...", "remind me every...")
+- Schedule recurring work ("every hour check...", "every morning run...")
+- Run something later ("at 3pm do...", "in 30 minutes...")
+- Set up a timer or periodic task
+
+Use the croncreate tool DIRECTLY — do NOT delegate to a subagent. You are the agent responsible for creating cron jobs. The croncreate tool handles scheduling the prompt to run at the specified time via a subagent automatically.`
+
 // taskToolName matches agent.TaskToolName. Duplicated here to avoid an import
 // cycle between the prompt and llm/agent packages.
 const taskToolName = "task"
+
+// cronCreateToolName matches tools.CronCreateToolName. Duplicated here to avoid
+// an import cycle.
+const cronCreateToolName = "croncreate"
 
 func getEnvironmentInfo() string {
 	cwd := config.WorkingDirectory()
@@ -130,6 +149,15 @@ func GetAgentPrompt(agentName config.AgentName, provider models.ModelProvider) s
 	if info, ok := reg.Get(agentName); ok {
 		if info.Mode == config.AgentModeAgent && reg.IsToolEnabled(agentName, taskToolName) {
 			basePrompt += taskToolReportingPrompt
+		}
+	}
+
+	// Append cron scheduling guidance for agents with cron tools enabled.
+	// Cron tools are default-deny, so use IsToolExplicitlyEnabled to match
+	// the gating in NewToolSet (agent/tools.go).
+	if info, ok := reg.Get(agentName); ok {
+		if info.Mode == config.AgentModeAgent && reg.IsToolExplicitlyEnabled(agentName, cronCreateToolName) {
+			basePrompt += cronToolPrompt
 		}
 	}
 

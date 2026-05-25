@@ -56,6 +56,12 @@ type Registry interface {
 	// read-category permission chain for the given agent and tool.
 	ReadDenyPatterns(agentID, toolName string) []string
 	IsToolEnabled(agentID, toolName string) bool
+	// IsToolExplicitlyEnabled returns true only when the agent's tools map
+	// names this tool with an explicit `true` value (or a matching wildcard
+	// set to true). Used by tools that are default-deny — the registry's
+	// regular IsToolEnabled returns true for unmentioned tools, which is
+	// wrong for tools like cron that should require opt-in.
+	IsToolExplicitlyEnabled(agentID, toolName string) bool
 	HasTools(agentID string) bool
 	GlobalPermissions() map[string]any
 }
@@ -199,6 +205,30 @@ func (r *registry) IsToolEnabled(agentID, toolName string) bool {
 	return permission.IsToolEnabled(toolName, a.Tools)
 }
 
+// IsToolExplicitlyEnabled returns true only when the agent's tools map
+// contains an explicit entry for this tool that is set to true (either by
+// exact match or by a matching wildcard). Unlike IsToolEnabled it returns
+// false for tools the agent never mentions — used for default-deny tools
+// (e.g. cron) that must require opt-in.
+func (r *registry) IsToolExplicitlyEnabled(agentID, toolName string) bool {
+	a, ok := r.agents[agentID]
+	if !ok {
+		return false
+	}
+	if enabled, ok := a.Tools[toolName]; ok {
+		return enabled
+	}
+	for pattern, enabled := range a.Tools {
+		if pattern == "*" {
+			continue // wildcard "*" doesn't count as explicit opt-in
+		}
+		if permission.MatchWildcard(pattern, toolName) {
+			return enabled
+		}
+	}
+	return false
+}
+
 func (r *registry) HasTools(agentID string) bool {
 	a, ok := r.agents[agentID]
 	if !ok {
@@ -244,6 +274,12 @@ func registerBuiltins(agents map[string]AgentInfo, cfg *config.Config) {
 				"delete":    false,
 				"patch":     false,
 				"lsp":       false,
+				// Cron tools are default-deny across the fleet (see
+				// IsToolExplicitlyEnabled). Hivemind opts in here so the
+				// coordinator can schedule recurring tasks out of the box.
+				"croncreate": true,
+				"crondelete": true,
+				"cronlist":   true,
 			},
 		},
 		{

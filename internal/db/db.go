@@ -24,6 +24,18 @@ func New(db DBTX) *Queries {
 func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	q := Queries{db: db}
 	var err error
+	if q.claimCronJobForFiringStmt, err = db.PrepareContext(ctx, claimCronJobForFiring); err != nil {
+		return nil, fmt.Errorf("error preparing query ClaimCronJobForFiring: %w", err)
+	}
+	if q.clearStaleFiringStmt, err = db.PrepareContext(ctx, clearStaleFiring); err != nil {
+		return nil, fmt.Errorf("error preparing query ClearStaleFiring: %w", err)
+	}
+	if q.countActiveCronJobsBySessionStmt, err = db.PrepareContext(ctx, countActiveCronJobsBySession); err != nil {
+		return nil, fmt.Errorf("error preparing query CountActiveCronJobsBySession: %w", err)
+	}
+	if q.createCronJobStmt, err = db.PrepareContext(ctx, createCronJob); err != nil {
+		return nil, fmt.Errorf("error preparing query CreateCronJob: %w", err)
+	}
 	if q.createFileStmt, err = db.PrepareContext(ctx, createFile); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateFile: %w", err)
 	}
@@ -35,6 +47,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.createSessionStmt, err = db.PrepareContext(ctx, createSession); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateSession: %w", err)
+	}
+	if q.deleteCronJobStmt, err = db.PrepareContext(ctx, deleteCronJob); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteCronJob: %w", err)
 	}
 	if q.deleteFileStmt, err = db.PrepareContext(ctx, deleteFile); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteFile: %w", err)
@@ -60,6 +75,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteSessionTreeStmt, err = db.PrepareContext(ctx, deleteSessionTree); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSessionTree: %w", err)
 	}
+	if q.getCronJobStmt, err = db.PrepareContext(ctx, getCronJob); err != nil {
+		return nil, fmt.Errorf("error preparing query GetCronJob: %w", err)
+	}
 	if q.getFileStmt, err = db.PrepareContext(ctx, getFile); err != nil {
 		return nil, fmt.Errorf("error preparing query GetFile: %w", err)
 	}
@@ -81,8 +99,17 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getSessionByIDStmt, err = db.PrepareContext(ctx, getSessionByID); err != nil {
 		return nil, fmt.Errorf("error preparing query GetSessionByID: %w", err)
 	}
+	if q.listActiveCronJobsStmt, err = db.PrepareContext(ctx, listActiveCronJobs); err != nil {
+		return nil, fmt.Errorf("error preparing query ListActiveCronJobs: %w", err)
+	}
 	if q.listChildSessionsStmt, err = db.PrepareContext(ctx, listChildSessions); err != nil {
 		return nil, fmt.Errorf("error preparing query ListChildSessions: %w", err)
+	}
+	if q.listCronJobsBySessionStmt, err = db.PrepareContext(ctx, listCronJobsBySession); err != nil {
+		return nil, fmt.Errorf("error preparing query ListCronJobsBySession: %w", err)
+	}
+	if q.listDueCronJobsStmt, err = db.PrepareContext(ctx, listDueCronJobs); err != nil {
+		return nil, fmt.Errorf("error preparing query ListDueCronJobs: %w", err)
 	}
 	if q.listFilesByPathStmt, err = db.PrepareContext(ctx, listFilesByPath); err != nil {
 		return nil, fmt.Errorf("error preparing query ListFilesByPath: %w", err)
@@ -111,8 +138,26 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listMessagesBySessionStmt, err = db.PrepareContext(ctx, listMessagesBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListMessagesBySession: %w", err)
 	}
+	if q.listMissedOneShotsStmt, err = db.PrepareContext(ctx, listMissedOneShots); err != nil {
+		return nil, fmt.Errorf("error preparing query ListMissedOneShots: %w", err)
+	}
 	if q.listSessionsStmt, err = db.PrepareContext(ctx, listSessions); err != nil {
 		return nil, fmt.Errorf("error preparing query ListSessions: %w", err)
+	}
+	if q.setCronJobFiringStmt, err = db.PrepareContext(ctx, setCronJobFiring); err != nil {
+		return nil, fmt.Errorf("error preparing query SetCronJobFiring: %w", err)
+	}
+	if q.updateCronJobAfterRunStmt, err = db.PrepareContext(ctx, updateCronJobAfterRun); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateCronJobAfterRun: %w", err)
+	}
+	if q.updateCronJobErrorStmt, err = db.PrepareContext(ctx, updateCronJobError); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateCronJobError: %w", err)
+	}
+	if q.updateCronJobNextRunStmt, err = db.PrepareContext(ctx, updateCronJobNextRun); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateCronJobNextRun: %w", err)
+	}
+	if q.updateCronJobStatusStmt, err = db.PrepareContext(ctx, updateCronJobStatus); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateCronJobStatus: %w", err)
 	}
 	if q.updateFileStmt, err = db.PrepareContext(ctx, updateFile); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateFile: %w", err)
@@ -134,6 +179,26 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 
 func (q *Queries) Close() error {
 	var err error
+	if q.claimCronJobForFiringStmt != nil {
+		if cerr := q.claimCronJobForFiringStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing claimCronJobForFiringStmt: %w", cerr)
+		}
+	}
+	if q.clearStaleFiringStmt != nil {
+		if cerr := q.clearStaleFiringStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing clearStaleFiringStmt: %w", cerr)
+		}
+	}
+	if q.countActiveCronJobsBySessionStmt != nil {
+		if cerr := q.countActiveCronJobsBySessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing countActiveCronJobsBySessionStmt: %w", cerr)
+		}
+	}
+	if q.createCronJobStmt != nil {
+		if cerr := q.createCronJobStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing createCronJobStmt: %w", cerr)
+		}
+	}
 	if q.createFileStmt != nil {
 		if cerr := q.createFileStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing createFileStmt: %w", cerr)
@@ -152,6 +217,11 @@ func (q *Queries) Close() error {
 	if q.createSessionStmt != nil {
 		if cerr := q.createSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing createSessionStmt: %w", cerr)
+		}
+	}
+	if q.deleteCronJobStmt != nil {
+		if cerr := q.deleteCronJobStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteCronJobStmt: %w", cerr)
 		}
 	}
 	if q.deleteFileStmt != nil {
@@ -194,6 +264,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing deleteSessionTreeStmt: %w", cerr)
 		}
 	}
+	if q.getCronJobStmt != nil {
+		if cerr := q.getCronJobStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getCronJobStmt: %w", cerr)
+		}
+	}
 	if q.getFileStmt != nil {
 		if cerr := q.getFileStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getFileStmt: %w", cerr)
@@ -229,9 +304,24 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getSessionByIDStmt: %w", cerr)
 		}
 	}
+	if q.listActiveCronJobsStmt != nil {
+		if cerr := q.listActiveCronJobsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listActiveCronJobsStmt: %w", cerr)
+		}
+	}
 	if q.listChildSessionsStmt != nil {
 		if cerr := q.listChildSessionsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listChildSessionsStmt: %w", cerr)
+		}
+	}
+	if q.listCronJobsBySessionStmt != nil {
+		if cerr := q.listCronJobsBySessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listCronJobsBySessionStmt: %w", cerr)
+		}
+	}
+	if q.listDueCronJobsStmt != nil {
+		if cerr := q.listDueCronJobsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listDueCronJobsStmt: %w", cerr)
 		}
 	}
 	if q.listFilesByPathStmt != nil {
@@ -279,9 +369,39 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listMessagesBySessionStmt: %w", cerr)
 		}
 	}
+	if q.listMissedOneShotsStmt != nil {
+		if cerr := q.listMissedOneShotsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listMissedOneShotsStmt: %w", cerr)
+		}
+	}
 	if q.listSessionsStmt != nil {
 		if cerr := q.listSessionsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listSessionsStmt: %w", cerr)
+		}
+	}
+	if q.setCronJobFiringStmt != nil {
+		if cerr := q.setCronJobFiringStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing setCronJobFiringStmt: %w", cerr)
+		}
+	}
+	if q.updateCronJobAfterRunStmt != nil {
+		if cerr := q.updateCronJobAfterRunStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateCronJobAfterRunStmt: %w", cerr)
+		}
+	}
+	if q.updateCronJobErrorStmt != nil {
+		if cerr := q.updateCronJobErrorStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateCronJobErrorStmt: %w", cerr)
+		}
+	}
+	if q.updateCronJobNextRunStmt != nil {
+		if cerr := q.updateCronJobNextRunStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateCronJobNextRunStmt: %w", cerr)
+		}
+	}
+	if q.updateCronJobStatusStmt != nil {
+		if cerr := q.updateCronJobStatusStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateCronJobStatusStmt: %w", cerr)
 		}
 	}
 	if q.updateFileStmt != nil {
@@ -348,10 +468,15 @@ func (q *Queries) queryRow(ctx context.Context, stmt *sql.Stmt, query string, ar
 type Queries struct {
 	db                                DBTX
 	tx                                *sql.Tx
+	claimCronJobForFiringStmt         *sql.Stmt
+	clearStaleFiringStmt              *sql.Stmt
+	countActiveCronJobsBySessionStmt  *sql.Stmt
+	createCronJobStmt                 *sql.Stmt
 	createFileStmt                    *sql.Stmt
 	createFlowStateStmt               *sql.Stmt
 	createMessageStmt                 *sql.Stmt
 	createSessionStmt                 *sql.Stmt
+	deleteCronJobStmt                 *sql.Stmt
 	deleteFileStmt                    *sql.Stmt
 	deleteFlowStatesByRootSessionStmt *sql.Stmt
 	deleteMessageStmt                 *sql.Stmt
@@ -360,6 +485,7 @@ type Queries struct {
 	deleteSessionFilesStmt            *sql.Stmt
 	deleteSessionMessagesStmt         *sql.Stmt
 	deleteSessionTreeStmt             *sql.Stmt
+	getCronJobStmt                    *sql.Stmt
 	getFileStmt                       *sql.Stmt
 	getFileByPathAndSessionStmt       *sql.Stmt
 	getFlowStateStmt                  *sql.Stmt
@@ -367,7 +493,10 @@ type Queries struct {
 	getMessageStmt                    *sql.Stmt
 	getRecapBySessionIDStmt           *sql.Stmt
 	getSessionByIDStmt                *sql.Stmt
+	listActiveCronJobsStmt            *sql.Stmt
 	listChildSessionsStmt             *sql.Stmt
+	listCronJobsBySessionStmt         *sql.Stmt
+	listDueCronJobsStmt               *sql.Stmt
 	listFilesByPathStmt               *sql.Stmt
 	listFilesBySessionStmt            *sql.Stmt
 	listFilesBySessionTreeStmt        *sql.Stmt
@@ -377,7 +506,13 @@ type Queries struct {
 	listLatestSessionFilesStmt        *sql.Stmt
 	listLatestSessionTreeFilesStmt    *sql.Stmt
 	listMessagesBySessionStmt         *sql.Stmt
+	listMissedOneShotsStmt            *sql.Stmt
 	listSessionsStmt                  *sql.Stmt
+	setCronJobFiringStmt              *sql.Stmt
+	updateCronJobAfterRunStmt         *sql.Stmt
+	updateCronJobErrorStmt            *sql.Stmt
+	updateCronJobNextRunStmt          *sql.Stmt
+	updateCronJobStatusStmt           *sql.Stmt
 	updateFileStmt                    *sql.Stmt
 	updateFlowStateStmt               *sql.Stmt
 	updateMessageStmt                 *sql.Stmt
@@ -389,10 +524,15 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 	return &Queries{
 		db:                                tx,
 		tx:                                tx,
+		claimCronJobForFiringStmt:         q.claimCronJobForFiringStmt,
+		clearStaleFiringStmt:              q.clearStaleFiringStmt,
+		countActiveCronJobsBySessionStmt:  q.countActiveCronJobsBySessionStmt,
+		createCronJobStmt:                 q.createCronJobStmt,
 		createFileStmt:                    q.createFileStmt,
 		createFlowStateStmt:               q.createFlowStateStmt,
 		createMessageStmt:                 q.createMessageStmt,
 		createSessionStmt:                 q.createSessionStmt,
+		deleteCronJobStmt:                 q.deleteCronJobStmt,
 		deleteFileStmt:                    q.deleteFileStmt,
 		deleteFlowStatesByRootSessionStmt: q.deleteFlowStatesByRootSessionStmt,
 		deleteMessageStmt:                 q.deleteMessageStmt,
@@ -401,6 +541,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		deleteSessionFilesStmt:            q.deleteSessionFilesStmt,
 		deleteSessionMessagesStmt:         q.deleteSessionMessagesStmt,
 		deleteSessionTreeStmt:             q.deleteSessionTreeStmt,
+		getCronJobStmt:                    q.getCronJobStmt,
 		getFileStmt:                       q.getFileStmt,
 		getFileByPathAndSessionStmt:       q.getFileByPathAndSessionStmt,
 		getFlowStateStmt:                  q.getFlowStateStmt,
@@ -408,7 +549,10 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getMessageStmt:                    q.getMessageStmt,
 		getRecapBySessionIDStmt:           q.getRecapBySessionIDStmt,
 		getSessionByIDStmt:                q.getSessionByIDStmt,
+		listActiveCronJobsStmt:            q.listActiveCronJobsStmt,
 		listChildSessionsStmt:             q.listChildSessionsStmt,
+		listCronJobsBySessionStmt:         q.listCronJobsBySessionStmt,
+		listDueCronJobsStmt:               q.listDueCronJobsStmt,
 		listFilesByPathStmt:               q.listFilesByPathStmt,
 		listFilesBySessionStmt:            q.listFilesBySessionStmt,
 		listFilesBySessionTreeStmt:        q.listFilesBySessionTreeStmt,
@@ -418,7 +562,13 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listLatestSessionFilesStmt:        q.listLatestSessionFilesStmt,
 		listLatestSessionTreeFilesStmt:    q.listLatestSessionTreeFilesStmt,
 		listMessagesBySessionStmt:         q.listMessagesBySessionStmt,
+		listMissedOneShotsStmt:            q.listMissedOneShotsStmt,
 		listSessionsStmt:                  q.listSessionsStmt,
+		setCronJobFiringStmt:              q.setCronJobFiringStmt,
+		updateCronJobAfterRunStmt:         q.updateCronJobAfterRunStmt,
+		updateCronJobErrorStmt:            q.updateCronJobErrorStmt,
+		updateCronJobNextRunStmt:          q.updateCronJobNextRunStmt,
+		updateCronJobStatusStmt:           q.updateCronJobStatusStmt,
 		updateFileStmt:                    q.updateFileStmt,
 		updateFlowStateStmt:               q.updateFlowStateStmt,
 		updateMessageStmt:                 q.updateMessageStmt,

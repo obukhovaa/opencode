@@ -9,6 +9,7 @@ import (
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/history"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -22,6 +23,10 @@ import (
 type AgentFactory interface {
 	NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string) (Service, error)
 	InitPrimaryAgents(ctx context.Context, outputSchema map[string]any) ([]Service, error)
+	SetCronServices(cronToolSvc tools.CronToolService, schedHelper tools.CronScheduleHelper)
+	CronServices() (tools.CronToolService, tools.CronScheduleHelper)
+	SetTodoStore(store tools.TodoStore)
+	TodoStore() tools.TodoStore
 }
 
 type agentFactory struct {
@@ -32,6 +37,10 @@ type agentFactory struct {
 	lspService  lsp.LspService
 	registry    agentregistry.Registry
 	mcpRegistry MCPRegistry
+
+	cronToolService    tools.CronToolService
+	cronScheduleHelper tools.CronScheduleHelper
+	todoStore          tools.TodoStore
 
 	mu        sync.Mutex
 	stepCache map[string]Service
@@ -56,6 +65,36 @@ func NewAgentFactory(
 		mcpRegistry: mcpRegistry,
 		stepCache:   make(map[string]Service),
 	}
+}
+
+// SetCronServices injects cron tool dependencies after factory creation
+// (to break the initialization cycle between cron and agent packages).
+func (f *agentFactory) SetCronServices(cronToolSvc tools.CronToolService, schedHelper tools.CronScheduleHelper) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cronToolService = cronToolSvc
+	f.cronScheduleHelper = schedHelper
+}
+
+// CronServices returns the injected cron tool dependencies under lock.
+func (f *agentFactory) CronServices() (tools.CronToolService, tools.CronScheduleHelper) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cronToolService, f.cronScheduleHelper
+}
+
+// SetTodoStore injects the in-memory todo store.
+func (f *agentFactory) SetTodoStore(store tools.TodoStore) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.todoStore = store
+}
+
+// TodoStore returns the injected todo store.
+func (f *agentFactory) TodoStore() tools.TodoStore {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.todoStore
 }
 
 func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string) (Service, error) {

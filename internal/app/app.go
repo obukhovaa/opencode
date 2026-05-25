@@ -8,10 +8,13 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/cron"
 	"github.com/opencode-ai/opencode/internal/db"
+	"github.com/opencode-ai/opencode/internal/todo"
 	"github.com/opencode-ai/opencode/internal/flow"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
@@ -26,16 +29,19 @@ import (
 )
 
 type App struct {
-	Sessions     session.Service
-	Messages     message.Service
-	History      history.Service
-	Recaps       recap.Service
-	Permissions  permission.Service
-	Registry     agentregistry.Registry
-	MCPRegistry  agent.MCPRegistry
-	Flows        flow.Service
-	AgentFactory agent.AgentFactory
-	LspService   lsp.LspService
+	Sessions      session.Service
+	Messages      message.Service
+	History       history.Service
+	Recaps        recap.Service
+	Permissions   permission.Service
+	Registry      agentregistry.Registry
+	MCPRegistry   agent.MCPRegistry
+	Flows         flow.Service
+	Crons         cron.Service
+	CronScheduler *cron.Scheduler
+	Todos         *todo.Store
+	AgentFactory  agent.AgentFactory
+	LspService    lsp.LspService
 
 	activeAgent agent.Service
 
@@ -47,7 +53,29 @@ type App struct {
 	InitialSessionID string
 	AutoApprove      bool
 
+	// activeSessionID is the session currently visible in the TUI. Written by
+	// the TUI Update loop (which uses a value receiver, so the appModel struct
+	// is copied each tick), read by the cron scheduler from a separate goroutine.
+	// Using atomic.Value avoids the stale-pointer problem that arises when a
+	// closure captures the original *appModel pointer which bubbletea never
+	// updates again after the first Update call.
+	activeSessionID atomic.Value // stores string
+
 	cliOutputSchema map[string]any
+}
+
+// SetActiveSessionID is called by the TUI whenever the selected session changes.
+func (app *App) SetActiveSessionID(id string) {
+	app.activeSessionID.Store(id)
+}
+
+// ActiveSessionID returns the session currently visible in the TUI.
+func (app *App) ActiveSessionID() string {
+	v := app.activeSessionID.Load()
+	if v == nil {
+		return ""
+	}
+	return v.(string)
 }
 
 func (app *App) ActiveAgent() agent.Service {
@@ -107,7 +135,18 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 	lspSvc := NewLspService()
 	mcpRegistry := agent.NewMCPRegistry(perm, reg)
 	factory := agent.NewAgentFactory(sessions, messages, perm, files, lspSvc, reg, mcpRegistry)
+	todoStore := todo.NewStore()
+	factory.SetTodoStore(todoStore)
 	flows := flow.NewService(sessions, messages, q, perm, factory)
+
+	// Initialize cron service (unless disabled)
+	var cronSvc cron.Service
+	if os.Getenv("OPENCODE_DISABLE_CRON") == "" {
+		cronSvc = cron.NewService(q)
+		cronAdapter := cron.NewToolServiceAdapter(cronSvc)
+		schedHelper := cron.NewScheduleHelper()
+		factory.SetCronServices(cronAdapter, schedHelper)
+	}
 
 	app := &App{
 		Sessions:      sessions,
@@ -121,6 +160,8 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 		MCPRegistry:   mcpRegistry,
 		AgentFactory:  factory,
 		Flows:         flows,
+		Crons:         cronSvc,
+		Todos:         todoStore,
 	}
 
 	app.initTheme()
@@ -147,6 +188,41 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 	} else if len(primaryAgents) > 0 {
 		app.activeAgent = primaryAgents[0]
 	}
+
+	// Create and start the cron scheduler after primary agents are ready
+	if cronSvc != nil {
+		taskTool := agent.NewAgentTool(sessions, perm, reg, factory)
+		taskRunner := cron.NewTaskToolRunner(taskTool)
+		busyChecker := cron.NewAppBusyChecker(
+			func(sessionID string) bool {
+				activeAgent := app.ActiveAgent()
+				if activeAgent == nil {
+					return false
+				}
+				return activeAgent.IsSessionBusy(sessionID)
+			},
+			func(sessionID string) bool {
+				activeAgent := app.ActiveAgent()
+				if activeAgent == nil {
+					return true
+				}
+				return activeAgent.TryLockSession(sessionID)
+			},
+			func(sessionID string) {
+				activeAgent := app.ActiveAgent()
+				if activeAgent == nil {
+					return
+				}
+				activeAgent.UnlockSession(sessionID)
+			},
+		)
+		// The TUI wires the active-session provider via
+		// scheduler.SetActiveSessionProvider once it has been constructed.
+		scheduler := cron.NewScheduler(cronSvc, messages, sessions, perm, busyChecker, nil, taskRunner)
+		app.CronScheduler = scheduler
+		scheduler.Start(ctx)
+	}
+
 	return app, nil
 }
 
@@ -167,6 +243,9 @@ func (app *App) initTheme() {
 
 // Shutdown performs a clean shutdown of the application
 func (app *App) Shutdown() {
+	if app.CronScheduler != nil {
+		app.CronScheduler.Stop()
+	}
 	tools.CleanupTempDir()
 	app.LspService.Shutdown(context.Background())
 }
@@ -174,6 +253,9 @@ func (app *App) Shutdown() {
 // ForceShutdown performs an aggressive shutdown for non-interactive mode
 func (app *App) ForceShutdown() {
 	logging.Info("Starting force shutdown")
+	if app.CronScheduler != nil {
+		app.CronScheduler.Stop()
+	}
 	tools.CleanupTempDir()
 	app.LspService.ForceShutdown()
 	app.forceKillAllChildProcesses()

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 // OutputFormat represents the output format type for non-interactive mode
@@ -214,4 +215,18 @@ func formatAsJSON(content string) string {
 	}
 
 	return string(jsonBytes)
+}
+
+// TruncateRunes returns s truncated to at most max runes without splitting a
+// multi-byte sequence. For max <= 0 the result is the empty string. Strings
+// already shorter than max are returned unchanged.
+func TruncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:max])
 }

@@ -4,14 +4,17 @@
 
 # ⌬ OpenCode
 
-OpenCode is a CLI tool that brings AI assistance to your terminal. It provides both a TUI (Terminal User Interface) and a headless non-interactive mode for scripting and autonomous agents.
+OpenCode is a CLI tool that brings AI assistance to your terminal. It provides a TUI (Terminal User Interface), a headless non-interactive mode for scripting, an HTTP REST API server for external UI integration, and an ACP server for editor integration.
 
 ## Features
 
 - **Interactive TUI** built with [Bubble Tea](https://github.com/charmbracelet/bubbletea)
 - **Non-interactive mode** for headless automation and autonomous agents
+- **HTTP REST API server** for external UI integration (e.g., [OpenWork](https://github.com/different-ai/openwork)) with SSE event streaming ([guide](docs/server.md))
+- **ACP server** (Agent Client Protocol) for editor and desktop UI integration ([AionUI](https://github.com/iOfficeAI/AionUi), Zed, JetBrains) via JSON-RPC over stdio ([guide](docs/server.md#acp-mode))
 - **Flows**: deterministic multi-step agent workflows defined in YAML ([guide](docs/flows.md))
 - **Subagents**: highly customizable agents calling another agents to do work [[#Agents]]
+- **Cron jobs**: schedule prompts to run once or recurringly via subagents, with `/loop` and the `croncreate`/`crondelete`/`cronlist` tools ([guide](docs/crons.md))
 - **Multiple AI providers**: Anthropic, OpenAI, Google Gemini, AWS Bedrock, VertexAI, YandexCloud, and self-hosted
 - **Tool integration**: file operations, shell commands, code search, LSP code intelligence
 - **Structured output**: enforce final agent's output with json schema, perfect for automated pipelines
@@ -75,6 +78,28 @@ opencode -p "Explain context in Go" -F ralph-does -s wiggum         # Run flow w
 ```
 
 All permissions are auto-approved in non-interactive mode.
+
+### Server Mode
+
+Start a headless HTTP REST API server for external UIs like [OpenWork](https://github.com/different-ai/openwork):
+
+```bash
+opencode serve                                    # Default: localhost:4096
+opencode serve --port 8080 --hostname 0.0.0.0     # Custom port and hostname
+opencode serve --cors "http://localhost:3000"          # Restrict CORS
+OPENCODE_SERVER_PASSWORD=secret opencode serve    # With authentication
+```
+
+See the [full server guide](docs/server.md) for endpoints and SSE events.
+
+### ACP Mode
+
+Start an Agent Client Protocol server for editor integration (Zed, JetBrains):
+
+```bash
+opencode acp                    # JSON-RPC over stdio
+opencode acp --cwd /path/to/project  # Specific project directory
+```
 
 ### Command-Line Flags
 
@@ -396,9 +421,11 @@ The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model
 | `OPENCODE_FILE_OP_TIMEOUT` | `180` | Timeout in seconds for glob/grep file operations |
 | `OPENCODE_PROVIDER_STREAM_INACTIVITY_TIMEOUT` | `300` | Seconds to wait for next SSE event before treating stream as stalled |
 | `OPENCODE_MAX_REPEAT_CALLS` | `3` | Max identical consecutive tool calls before loop detection triggers |
+| `OPENCODE_SERVER_PASSWORD` | | HTTP Basic Auth password for `opencode serve` ([guide](docs/server.md)) |
 | `OPENCODE_DEV_DEBUG` | `false` | Enable development debug logging |
 | `OPENCODE_DISABLE_LSP_DOWNLOAD` | `false` | Disable automatic LSP binary downloads |
 | `OPENCODE_DISABLE_CLAUDE_SKILLS` | `false` | Disable `.claude/skills/` discovery |
+| `OPENCODE_DISABLE_CRON` | | Disable cron scheduling entirely ([guide](docs/crons.md)) |
 
 ## Supported Models
 
@@ -441,6 +468,8 @@ The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model
 | `task` | Run sub-tasks with a subagent (supports `subagent_type` and `task_id` for resumption) |
 | `skill` | Load agent skills on-demand (supports `args` for argument substitution and shell expansion) |
 | `struct_output` | Emit structured JSON conforming to a user-supplied schema |
+| `todowrite` | Create and maintain a structured task list for multi-step sessions (progress tracking for external UIs) |
+| `croncreate` / `crondelete` / `cronlist` | Schedule, cancel, and list cron jobs that fire prompts via subagents ([guide](docs/crons.md)) |
 
 ## Keyboard Shortcuts
 
@@ -484,6 +513,7 @@ The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model
 |-------|------|
 | Skills | [docs/skills.md](docs/skills.md) |
 | Flows | [docs/flows.md](docs/flows.md) |
+| Crons | [docs/crons.md](docs/crons.md) |
 | Custom Commands | [docs/custom-commands.md](docs/custom-commands.md) |
 | Telemetry & Langfuse | [docs/telemetry.md](docs/telemetry.md) |
 | Session Providers | [docs/session-providers.md](docs/session-providers.md) |

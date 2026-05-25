@@ -160,6 +160,8 @@ func (a *stubAgent) ResolvedTools() ([]tools.BaseTool, bool) { return nil, true 
 func (a *stubAgent) Cancel(_ string)                         {}
 func (a *stubAgent) IsSessionBusy(_ string) bool             { return false }
 func (a *stubAgent) IsBusy() bool                            { return false }
+func (a *stubAgent) TryLockSession(_ string) bool            { return true }
+func (a *stubAgent) UnlockSession(_ string)                  {}
 func (a *stubAgent) Update(_ config.AgentName, _ models.ModelID) (models.Model, error) {
 	return models.Model{}, nil
 }
@@ -182,6 +184,18 @@ func (f *stubAgentFactory) NewAgent(_ context.Context, _ string, _ map[string]an
 
 func (f *stubAgentFactory) InitPrimaryAgents(_ context.Context, _ map[string]any) ([]agentpkg.Service, error) {
 	return nil, nil
+}
+
+func (f *stubAgentFactory) SetCronServices(_ tools.CronToolService, _ tools.CronScheduleHelper) {}
+
+func (f *stubAgentFactory) CronServices() (tools.CronToolService, tools.CronScheduleHelper) {
+	return nil, nil
+}
+
+func (f *stubAgentFactory) SetTodoStore(_ tools.TodoStore) {}
+
+func (f *stubAgentFactory) TodoStore() tools.TodoStore {
+	return nil
 }
 
 func registerTestFlow(t *testing.T, f Flow) {

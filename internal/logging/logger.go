@@ -13,6 +13,17 @@ import (
 	"time"
 )
 
+// SetupStderrLogging reconfigures the default slog logger to write to stderr
+// using a human-readable text format. Use this in headless commands (serve, acp)
+// where there is no TUI to display logs and the default ring-buffer writer
+// would swallow all output.
+func SetupStderrLogging(level slog.Level) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level: level,
+	}))
+	slog.SetDefault(logger)
+}
+
 func getCaller() string {
 	var caller string
 	if _, file, line, ok := runtime.Caller(2); ok {

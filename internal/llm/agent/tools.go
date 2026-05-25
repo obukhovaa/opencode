@@ -39,9 +39,12 @@ var (
 		tools.PatchToolName,
 		tools.BashToolName,
 	}
-	// TODO: add todo tool
 	managerToolNames = []string{
 		TaskToolName,
+		tools.CronCreateToolName,
+		tools.CronDeleteToolName,
+		tools.CronListToolName,
+		tools.TodoWriteToolName,
 	}
 )
 
@@ -96,6 +99,26 @@ func NewToolSet(
 			return tools.NewBashTool(permissions, reg)
 		case TaskToolName:
 			return NewAgentTool(sessions, permissions, reg, factory)
+		case tools.CronCreateToolName:
+			if svc, helper := factory.CronServices(); svc != nil {
+				return tools.NewCronCreateTool(svc, helper)
+			}
+			return nil
+		case tools.CronDeleteToolName:
+			if svc, _ := factory.CronServices(); svc != nil {
+				return tools.NewCronDeleteTool(svc)
+			}
+			return nil
+		case tools.CronListToolName:
+			if svc, helper := factory.CronServices(); svc != nil {
+				return tools.NewCronListTool(svc, helper)
+			}
+			return nil
+		case tools.TodoWriteToolName:
+			if store := factory.TodoStore(); store != nil {
+				return tools.NewTodoWriteTool(store)
+			}
+			return nil
 		default:
 			return nil
 		}
@@ -128,7 +151,21 @@ func NewToolSet(
 	}
 
 	for _, name := range managerToolNames {
-		if reg.IsToolEnabled(agentID, name) {
+		// Cron tools are default-deny: an agent must opt in by setting the
+		// tool to true in its config. Without this hivemind would inherit
+		// "enabled" for any tool not explicitly listed in its Tools map.
+		isCronTool := name == tools.CronCreateToolName ||
+			name == tools.CronDeleteToolName ||
+			name == tools.CronListToolName
+
+		var enabled bool
+		if isCronTool {
+			enabled = reg.IsToolExplicitlyEnabled(agentID, name)
+		} else {
+			enabled = reg.IsToolEnabled(agentID, name)
+		}
+
+		if enabled {
 			if info.Mode == config.AgentModeAgent {
 				if t := createTool(name); t != nil {
 					result <- t
