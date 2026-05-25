@@ -332,10 +332,12 @@ func (s *service) MarkFiring(ctx context.Context, id string, firing bool) error 
 	})
 }
 
-// RescheduleAndClear advances next_run_at and clears the firing flag in a
-// single transaction. Used when a job's permission was denied or its session
-// is inactive — the row needs to fall out of the due set so it does not
-// re-fire on the next tick.
+// RescheduleAndClear advances next_run_at and clears the firing flag in two
+// separate queries (not a single transaction). If the process crashes between
+// the two writes, ClearStaleFiring on the next startup will reset the stale
+// firing flag. Used when a job's permission was denied or its session is
+// inactive — the row needs to fall out of the due set so it does not re-fire
+// on the next tick.
 func (s *service) RescheduleAndClear(ctx context.Context, id string, next time.Time) error {
 	if err := s.q.UpdateCronJobNextRun(ctx, db.UpdateCronJobNextRunParams{
 		NextRunAt: sql.NullInt64{Int64: next.Unix(), Valid: true},
@@ -425,6 +427,17 @@ func (s *service) UpdateError(ctx context.Context, job CronJob, errMsg string) e
 	if err := s.q.UpdateCronJobError(ctx, db.UpdateCronJobErrorParams{
 		Error: sql.NullString{String: errMsg, Valid: errMsg != ""},
 		ID:    job.ID,
+	}); err != nil {
+		return err
+	}
+
+	// Clear the firing flag first so the row falls out of the due set
+	// regardless of what happens next. Without this, a recurring job would
+	// stay firing=TRUE and never be picked up again (ListDueCronJobs
+	// filters on firing=FALSE).
+	if err := s.q.SetCronJobFiring(ctx, db.SetCronJobFiringParams{
+		Firing: false,
+		ID:     job.ID,
 	}); err != nil {
 		return err
 	}

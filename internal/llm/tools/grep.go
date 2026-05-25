@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
@@ -254,9 +255,17 @@ func runGrepSearch(ctx context.Context, pattern, rootPath string, params *GrepPa
 	return searchWithRegexFallback(ctx, pattern, rootPath, glob, mode, headLimit, params.Offset, denyPatterns)
 }
 
+var (
+	ripgrepOnce      sync.Once
+	ripgrepAvailable bool
+)
+
 func isRipgrepAvailable() bool {
-	_, err := exec.LookPath("rg")
-	return err == nil
+	ripgrepOnce.Do(func() {
+		_, err := exec.LookPath("rg")
+		ripgrepAvailable = err == nil
+	})
+	return ripgrepAvailable
 }
 
 func searchWithRipgrepModes(ctx context.Context, pattern, path string, params *GrepParams, glob, mode string, headLimit int, denyPatterns []string) (string, GrepResponseMetadata, error) {
