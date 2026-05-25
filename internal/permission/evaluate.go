@@ -172,10 +172,24 @@ func IsToolEnabled(toolName string, toolsConfig map[string]bool) bool {
 	if enabled, ok := toolsConfig[toolName]; ok {
 		return enabled
 	}
-	for pattern, enabled := range toolsConfig {
+	// Walk patterns least-specific first so the most specific (longest) match
+	// wins. "*" is handled separately as the final fallback, matching the
+	// "specific beats wildcard" semantics used by matchPatternsAny /
+	// matchPatternsString. Plain map iteration would be non-deterministic
+	// and let "*" beat e.g. "jarvis-memory*" on roughly 1-in-N runs.
+	matched := false
+	matchValue := false
+	for _, pattern := range sortedPatternKeys(toolsConfig) {
 		if MatchWildcard(pattern, toolName) {
-			return enabled
+			matched = true
+			matchValue = toolsConfig[pattern]
 		}
+	}
+	if matched {
+		return matchValue
+	}
+	if v, ok := toolsConfig["*"]; ok {
+		return v
 	}
 	return true
 }

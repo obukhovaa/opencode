@@ -373,6 +373,33 @@ func TestIsToolEnabled(t *testing.T) {
 		{"explicit false", "bash", map[string]bool{"bash": false}, false},
 		{"wildcard match", "mymcp_list", map[string]bool{"mymcp_*": false}, false},
 		{"not in config", "edit", map[string]bool{"bash": false}, true},
+		// "*" must not beat a specific wildcard, regardless of map iteration
+		// order. Pre-fix, ~1-in-N runs returned the wrong answer when both
+		// "*" and a specific pattern matched.
+		{
+			"specific allow beats wildcard deny",
+			"jarvis-memory_append",
+			map[string]bool{"*": false, "jarvis-memory*": true},
+			true,
+		},
+		{
+			"specific deny beats wildcard allow",
+			"gitlab_list_issues",
+			map[string]bool{"*": true, "gitlab*": false},
+			false,
+		},
+		{
+			"longest specific wildcard wins",
+			"jarvis-memory_append",
+			map[string]bool{"*": false, "jarvis-*": false, "jarvis-memory*": true},
+			true,
+		},
+		{
+			"wildcard-only fallback",
+			"anything",
+			map[string]bool{"*": false},
+			false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
