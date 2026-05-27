@@ -665,26 +665,18 @@ func (s *service) copySessionMessages(ctx context.Context, fromSessionID, toSess
 	return nil
 }
 
-var argsVarRegex = regexp.MustCompile(`^\$\{args\.([^}]+)\}$`)
-
 // resolveSessionPrefix determines the session prefix from the flow spec, CLI flag, or timestamp.
-// If the spec prefix references an arg variable (e.g. ${args.foo}), the variable must exist in args.
 func resolveSessionPrefix(specPrefix string, args map[string]any) (string, error) {
 	if specPrefix == "" {
 		return fmt.Sprintf("%d", time.Now().Unix()), nil
 	}
 
-	matches := argsVarRegex.FindStringSubmatch(specPrefix)
-	if matches != nil {
-		key := matches[1]
-		val, ok := args[key]
-		if !ok {
-			return "", fmt.Errorf("session prefix references undefined arg %q", key)
-		}
-		return fmt.Sprintf("%v", val), nil
+	result := substituteArgs(specPrefix, args)
+	if strings.Contains(result, "${args.") {
+		return "", fmt.Errorf("session prefix contains unresolved variables: %s", result)
 	}
 
-	return specPrefix, nil
+	return result, nil
 }
 
 // TODO: consider adding default value support ${args.name:-default}

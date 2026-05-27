@@ -145,8 +145,10 @@ func TestResolveSessionPrefix(t *testing.T) {
 		{"literal constant", "my_static_id", map[string]any{}, "my_static_id", false},
 		{"args variable", "${args.jira_issue_id}", map[string]any{"jira_issue_id": "PROJ-123"}, "PROJ-123", false},
 		{"args variable numeric", "${args.build_num}", map[string]any{"build_num": 42}, "42", false},
+		{"mixed literal and variables", "psb-${args.monitor_id}-${args.event_id}", map[string]any{"monitor_id": "123", "event_id": "456"}, "psb-123-456", false},
+		{"mixed with one variable", "prefix-${args.id}", map[string]any{"id": "abc"}, "prefix-abc", false},
 		{"args variable missing", "${args.missing_key}", map[string]any{}, "", true},
-		{"args variable missing with other args", "${args.missing}", map[string]any{"other": "val"}, "", true},
+		{"mixed with partial missing", "psb-${args.found}-${args.missing}", map[string]any{"found": "ok"}, "", true},
 	}
 
 	for _, tt := range tests {
