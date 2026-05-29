@@ -15,6 +15,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/pubsub"
+	"github.com/opencode-ai/opencode/internal/question"
 	"github.com/opencode-ai/opencode/internal/session"
 )
 
@@ -195,6 +196,12 @@ func (f *stubAgentFactory) CronServices() (tools.CronToolService, tools.CronSche
 func (f *stubAgentFactory) SetTodoStore(_ tools.TodoStore) {}
 
 func (f *stubAgentFactory) TodoStore() tools.TodoStore {
+	return nil
+}
+
+func (f *stubAgentFactory) SetQuestionService(_ question.Service) {}
+
+func (f *stubAgentFactory) QuestionService() question.Service {
 	return nil
 }
 

@@ -176,8 +176,8 @@ type PromptParams struct {
 // Supports text ({type:"text"}), image ({type:"image"}), and
 // resource_link ({type:"resource_link"}) content from ACP clients.
 type PromptPart struct {
-	Type     string `json:"type"`
-	Text     string `json:"text,omitempty"`
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
 	// Image fields
 	MimeType string `json:"mimeType,omitempty"`
 	Data     string `json:"data,omitempty"` // base64

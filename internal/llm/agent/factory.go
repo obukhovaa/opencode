@@ -14,6 +14,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
+	"github.com/opencode-ai/opencode/internal/question"
 	"github.com/opencode-ai/opencode/internal/session"
 )
 
@@ -27,6 +28,8 @@ type AgentFactory interface {
 	CronServices() (tools.CronToolService, tools.CronScheduleHelper)
 	SetTodoStore(store tools.TodoStore)
 	TodoStore() tools.TodoStore
+	SetQuestionService(svc question.Service)
+	QuestionService() question.Service
 }
 
 type agentFactory struct {
@@ -41,6 +44,7 @@ type agentFactory struct {
 	cronToolService    tools.CronToolService
 	cronScheduleHelper tools.CronScheduleHelper
 	todoStore          tools.TodoStore
+	questionService    question.Service
 
 	mu        sync.Mutex
 	stepCache map[string]Service
@@ -95,6 +99,21 @@ func (f *agentFactory) TodoStore() tools.TodoStore {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.todoStore
+}
+
+// SetQuestionService injects the question service after factory creation
+// (only in interactive mode).
+func (f *agentFactory) SetQuestionService(svc question.Service) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.questionService = svc
+}
+
+// QuestionService returns the injected question service (nil in non-interactive mode).
+func (f *agentFactory) QuestionService() question.Service {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.questionService
 }
 
 func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string) (Service, error) {

@@ -27,8 +27,8 @@ import (
 type Handler struct {
 	app       *app.App
 	transport *Transport
-	mu        sync.RWMutex                // protects sessions map
-	sessions  map[string]*acpSession      // sessionID -> ACP session state
+	mu        sync.RWMutex           // protects sessions map
+	sessions  map[string]*acpSession // sessionID -> ACP session state
 	cancel    context.CancelFunc
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/question"
 )
 
 var serveCmd = &cobra.Command{
@@ -100,6 +101,15 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			return err
 		}
 		defer application.Shutdown()
+
+		// Initialize question service if enabled via env var.
+		// Off by default in server mode to not disrupt autonomous flows.
+		if os.Getenv("OPENCODE_ENABLE_QUESTION_TOOL") == "1" || os.Getenv("OPENCODE_ENABLE_QUESTION_TOOL") == "true" {
+			questionSvc := question.NewService()
+			application.Questions = questionSvc
+			application.AgentFactory.SetQuestionService(questionSvc)
+			logging.Info("Question tool enabled via OPENCODE_ENABLE_QUESTION_TOOL")
+		}
 
 		server := api.NewServer(application, api.ServerOptions{
 			Port:       port,

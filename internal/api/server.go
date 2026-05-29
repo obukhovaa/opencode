@@ -110,6 +110,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /permission", s.handlePermissionList)
 	mux.HandleFunc("POST /permission/{requestID}/reply", s.handlePermissionReply)
 
+	// Questions
+	mux.HandleFunc("GET /question", s.handleQuestionList)
+	mux.HandleFunc("POST /question/{requestID}/reply", s.handleQuestionReply)
+	mux.HandleFunc("POST /question/{requestID}/reject", s.handleQuestionReject)
+
 	// Agents
 	mux.HandleFunc("GET /agent", s.handleAgentList)
 }

@@ -18,14 +18,14 @@ OpenWork is an open-source control surface for agentic workflows. OpenCode serve
              │  (chat)     │   │  (web API) │  │ (supervisor) │
              └──────┬──────┘   └─────┬──────┘  └──────────────┘
                     │                │
-            ┌───────┴─────┐          │
-            │             │          │
-        Telegram        Slack      Web UI
+          ┌────────┼────────┐       │
+          │        │        │       │
+      Telegram   Slack  Mattermost Web UI
 ```
 
 **Components** (all from the OpenWork repo, all optional):
 
-- **opencode-router** — bidirectional Telegram/Slack bridge. Receives messages, forwards to OpenCode, sends replies back. Supports file exchange.
+- **opencode-router** — bidirectional Telegram/Slack/Mattermost bridge. Receives messages, forwards to OpenCode, sends replies back. Supports file exchange.
 - **openwork-server** — REST + SSE API layer with workspace management, approvals, file sync. Includes a built-in lightweight Toy UI at `/ui`.
 - **openwork-orchestrator** — process supervisor that manages opencode + server + router as a unit. Not needed when you run OpenCode yourself.
 
@@ -41,9 +41,9 @@ opencode serve --hostname 127.0.0.1 --port 3456
 
 ---
 
-## Scenario 1: Router only (Telegram/Slack, no web UI)
+## Scenario 1: Router only (Telegram/Slack/Mattermost, no web UI)
 
-The lightest setup. Chat with your agent entirely through Telegram or Slack. No web interface.
+The lightest setup. Chat with your agent entirely through Telegram, Slack, or Mattermost. No web interface.
 
 ### Telegram setup
 
@@ -105,6 +105,45 @@ OPENCODE_DIRECTORY=/path/to/workspace \
   opencode-router start
 ```
 
+### Mattermost setup
+
+Mattermost support uses a personal access token + native WebSocket — no external npm dependencies.
+
+1. In your Mattermost server, go to **Account Settings > Security > Personal Access Tokens** and create a token. (Requires the system admin to enable personal access tokens in **System Console > Integrations > Integration Management**.)
+
+2. Register the identity:
+
+```bash
+# Register the Mattermost instance
+opencode-router mattermost add https://mm.example.com <ACCESS_TOKEN> --id default
+
+# Optionally bind a channel to a workspace
+opencode-router bindings set \
+  --channel mattermost \
+  --identity default \
+  --peer <CHANNEL_ID> \
+  --dir /path/to/workspace
+```
+
+3. Start:
+
+```bash
+OPENCODE_URL=http://127.0.0.1:3456 \
+OPENCODE_DIRECTORY=/path/to/workspace \
+  opencode-router start
+```
+
+The bot responds to DMs and group DMs automatically. For public/private channel messages, set `GROUPS_ENABLED=true` and @mention the bot by username.
+
+Environment variable shorthand (single instance):
+
+```bash
+MATTERMOST_SERVER_URL=https://mm.example.com \
+MATTERMOST_ACCESS_TOKEN=<token> \
+MATTERMOST_ENABLED=true \
+  opencode-router start
+```
+
 ### File exchange
 
 **Receiving files** — send a file in Telegram/Slack along with your message. The router downloads it to `<workspace>/.opencode-router/media/` and includes the local path in the prompt to OpenCode. The agent can read and process the file.
@@ -158,7 +197,10 @@ The round-trip is fully automatic. No UI or manual intervention needed for the t
 | `SLACK_BOT_TOKEN` | Alt | Single-app shorthand (`xoxb-...`) |
 | `SLACK_APP_TOKEN` | Alt | Single-app shorthand (`xapp-...`) |
 | `SLACK_ENABLED` | Alt | Set `true` with the env var shorthand |
-| `GROUPS_ENABLED` | No | Set `true` to allow group chat messages |
+| `MATTERMOST_SERVER_URL` | Alt | Mattermost server URL (e.g. `https://mm.example.com`) |
+| `MATTERMOST_ACCESS_TOKEN` | Alt | Personal access token |
+| `MATTERMOST_ENABLED` | Alt | Set `true` with the env var shorthand |
+| `GROUPS_ENABLED` | No | Set `true` to allow group/channel messages |
 | `OPENCODE_ROUTER_HEALTH_PORT` | No | HTTP API port (default: auto) |
 
 ### Config and data paths
@@ -289,7 +331,7 @@ This starts both the Vite dev server (full React UI) and the OpenWork server in 
 
 ## Scenario 3: Router + Server (chat and web UI)
 
-Run both for maximum flexibility — chat via Telegram/Slack and monitor via web browser.
+Run both for maximum flexibility — chat via Telegram/Slack/Mattermost and monitor via web browser.
 
 ```bash
 # Terminal 1: OpenCode
@@ -304,7 +346,7 @@ openwork-server \
   --cors '*' \
   --approval auto
 
-# Terminal 3: Router (Telegram/Slack)
+# Terminal 3: Router (Telegram/Slack/Mattermost)
 OPENCODE_URL=http://127.0.0.1:3456 \
 OPENCODE_DIRECTORY=/path/to/workspace \
   opencode-router start
@@ -342,10 +384,10 @@ The orchestrator provides a TUI dashboard in the terminal and the Toy UI at `/ui
 
 | Scenario | What you run | Web UI | Chat | Best for |
 |---|---|---|---|---|
-| 1. Router only | `opencode serve` + `opencode-router` | None | Telegram/Slack | Headless agent control |
+| 1. Router only | `opencode serve` + `opencode-router` | None | Telegram/Slack/Mattermost | Headless agent control |
 | 2a. Server (Toy UI) | `opencode serve` + `openwork-server` | Toy UI at `/ui` | None | Quick browser access |
 | 2b. Server (full UI) | `opencode serve` + `openwork-server` + static files | Full React UI | None | Production web UI |
-| 3. Router + Server | `opencode serve` + `openwork-server` + `opencode-router` | Toy UI or full | Telegram/Slack | Full remote control |
+| 3. Router + Server | `opencode serve` + `openwork-server` + `opencode-router` | Toy UI or full | Telegram/Slack/Mattermost | Full remote control |
 | 4. Orchestrator | `openwork start` | Toy UI at `/ui` | Optional | Single-command setup |
 
 All scenarios work with this fork or dax's `opencode-ai`. The orchestrator (scenario 4) is the only one that can manage its own OpenCode subprocess — all others expect you to run `opencode serve` yourself.

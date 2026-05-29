@@ -17,6 +17,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/pubsub"
+	"github.com/opencode-ai/opencode/internal/question"
 	"github.com/opencode-ai/opencode/internal/session"
 	"github.com/opencode-ai/opencode/internal/slashcmd"
 	"github.com/opencode-ai/opencode/internal/tui/components/chat"
@@ -179,6 +180,9 @@ type appModel struct {
 	showMissedCronDialog bool
 	missedCronDialog     dialog.MissedCronDialog
 
+	showQuestionDialog bool
+	questionDialog     dialog.QuestionDialogCmp
+
 	isCompacting      bool
 	compactingMessage string
 }
@@ -213,6 +217,8 @@ func (a appModel) Init() tea.Cmd {
 	cmd = a.sessionsCleanupDialog.Init()
 	cmds = append(cmds, cmd)
 	cmd = a.missedCronDialog.Init()
+	cmds = append(cmds, cmd)
+	cmd = a.questionDialog.Init()
 	cmds = append(cmds, cmd)
 
 	// Check if we should show the init dialog
@@ -348,6 +354,21 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		a.showPermissions = false
 		return a, cmd
+
+	// Question dialog
+	case pubsub.Event[question.Request]:
+		a.showQuestionDialog = true
+		return a, a.questionDialog.SetQuestion(msg.Payload)
+	case dialog.QuestionResponseMsg:
+		a.showQuestionDialog = false
+		if a.app.Questions != nil {
+			if msg.Rejected {
+				_ = a.app.Questions.Reject(msg.RequestID)
+			} else {
+				_ = a.app.Questions.Reply(msg.RequestID, msg.Answers)
+			}
+		}
+		return a, nil
 
 	case page.PageChangeMsg:
 		return a, a.moveToPage(msg.ID)
@@ -604,6 +625,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, tea.Batch(cmds...)
 
 	case chat.SessionSelectedMsg:
+		a.dismissQuestionDialog()
 		a.selectedSession = msg
 		a.app.SetActiveSessionID(msg.ID)
 		a.sessionDialog.SetSelectedSession(msg.ID)
@@ -736,7 +758,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, nil
 		case key.Matches(msg, keys.SwitchSession):
-			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showCommandDialog {
+			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showQuestionDialog && !a.showCommandDialog {
 				// Load sessions and show the dialog
 				sessions, err := a.app.Sessions.List(context.Background())
 				if err != nil {
@@ -751,7 +773,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, nil
 		case key.Matches(msg, keys.Commands):
-			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showSessionDialog && !a.showThemeDialog && !a.showFilepicker {
+			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showQuestionDialog && !a.showSessionDialog && !a.showThemeDialog && !a.showFilepicker {
 				// Show commands dialog
 				if len(a.commands) == 0 {
 					return a, util.ReportWarn("No commands available")
@@ -766,13 +788,13 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.showModelDialog = false
 				return a, nil
 			}
-			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showSessionDialog && !a.showCommandDialog {
+			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showQuestionDialog && !a.showSessionDialog && !a.showCommandDialog {
 				a.showModelDialog = true
 				return a, nil
 			}
 			return a, nil
 		case key.Matches(msg, keys.SwitchTheme):
-			if !a.showQuit && !a.showPermissions && !a.showSessionDialog && !a.showCommandDialog {
+			if !a.showQuit && !a.showPermissions && !a.showQuestionDialog && !a.showSessionDialog && !a.showCommandDialog {
 				// Show theme switcher dialog
 				a.showThemeDialog = true
 				// Theme list is dynamically loaded by the dialog component
@@ -780,7 +802,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, nil
 		case key.Matches(msg, keys.PruneSession):
-			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions &&
+			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showQuestionDialog &&
 				!a.showSessionDialog && !a.showCommandDialog {
 				sessions, err := a.app.Sessions.List(context.Background())
 				if err != nil {
@@ -795,7 +817,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return a, nil
 		case key.Matches(msg, keys.SwitchAgent):
-			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions &&
+			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showQuestionDialog &&
 				!a.showSessionDialog && !a.showDeleteSessionDialog && !a.showCommandDialog &&
 				!a.showModelDialog && !a.showFilepicker && !a.showThemeDialog &&
 				!a.showHelp && !a.showInitDialog && !a.showMultiArgumentsDialog &&
@@ -809,7 +831,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				)
 			}
 		case key.Matches(msg, keys.SwitchAgentBack):
-			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions &&
+			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showQuestionDialog &&
 				!a.showSessionDialog && !a.showDeleteSessionDialog && !a.showCommandDialog &&
 				!a.showModelDialog && !a.showFilepicker && !a.showThemeDialog &&
 				!a.showHelp && !a.showInitDialog && !a.showMultiArgumentsDialog &&
@@ -900,6 +922,16 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, permissionsCmd := a.permissions.Update(msg)
 		a.permissions = d.(dialog.PermissionDialogCmp)
 		cmds = append(cmds, permissionsCmd)
+		// Only block key messages send all other messages down
+		if _, ok := msg.(tea.KeyPressMsg); ok {
+			return a, tea.Batch(cmds...)
+		}
+	}
+
+	if a.showQuestionDialog {
+		d, questionCmd := a.questionDialog.Update(msg)
+		a.questionDialog = d.(dialog.QuestionDialogCmp)
+		cmds = append(cmds, questionCmd)
 		// Only block key messages send all other messages down
 		if _, ok := msg.(tea.KeyPressMsg); ok {
 			return a, tea.Batch(cmds...)
@@ -1018,6 +1050,20 @@ func (a *appModel) pageIsShellMode() bool {
 		return p.IsShellMode()
 	}
 	return false
+}
+
+// dismissQuestionDialog rejects any pending question and hides the dialog.
+func (a *appModel) dismissQuestionDialog() {
+	if !a.showQuestionDialog {
+		return
+	}
+	a.showQuestionDialog = false
+	if a.app.Questions != nil {
+		reqID := a.questionDialog.RequestID()
+		if reqID != "" {
+			_ = a.app.Questions.Reject(reqID)
+		}
+	}
 }
 
 func (a *appModel) pageConsumesCtrlC() bool {
@@ -1152,6 +1198,10 @@ func (a appModel) View() tea.View {
 		centerOverlay(a.permissions.View().Content)
 	}
 
+	if a.showQuestionDialog {
+		centerOverlay(a.questionDialog.View().Content)
+	}
+
 	if a.showFilepicker {
 		centerOverlay(a.filepicker.View().Content)
 	}
@@ -1260,6 +1310,7 @@ func New(app *app.App) tea.Model {
 		commandDialog:       dialog.NewCommandDialogCmp(),
 		modelDialog:         dialog.NewModelDialogCmp(),
 		permissions:         dialog.NewPermissionDialogCmp(),
+		questionDialog:      dialog.NewQuestionDialogCmp(),
 		initDialog:          dialog.NewInitDialogCmp(),
 		themeDialog:         dialog.NewThemeDialogCmp(),
 		app:                 app,

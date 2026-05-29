@@ -41,6 +41,7 @@ var (
 	}
 	managerToolNames = []string{
 		TaskToolName,
+		tools.QuestionToolName,
 		tools.CronCreateToolName,
 		tools.CronDeleteToolName,
 		tools.CronListToolName,
@@ -112,6 +113,11 @@ func NewToolSet(
 		case tools.CronListToolName:
 			if svc, helper := factory.CronServices(); svc != nil {
 				return tools.NewCronListTool(svc, helper)
+			}
+			return nil
+		case tools.QuestionToolName:
+			if qSvc := factory.QuestionService(); qSvc != nil {
+				return tools.NewQuestionTool(qSvc)
 			}
 			return nil
 		case tools.TodoWriteToolName:

@@ -11,6 +11,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/pubsub"
+	"github.com/opencode-ai/opencode/internal/question"
 	"github.com/opencode-ai/opencode/internal/session"
 )
 
@@ -88,7 +89,12 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	sesCh := s.app.Sessions.Subscribe(ctx)
 	permCh := s.app.Permissions.Subscribe(ctx)
 
-	streamLoop(ctx, w, flusher, msgCh, sesCh, permCh)
+	var questionCh <-chan pubsub.Event[question.Request]
+	if s.app.Questions != nil {
+		questionCh = s.app.Questions.Subscribe(ctx)
+	}
+
+	streamLoop(ctx, w, flusher, msgCh, sesCh, permCh, questionCh)
 }
 
 // streamLoop runs the fan-in select loop that reads from the broker channels
@@ -100,10 +106,12 @@ func streamLoop(
 	msgCh <-chan pubsub.Event[message.Message],
 	sesCh <-chan pubsub.Event[session.Session],
 	permCh <-chan pubsub.Event[permission.PermissionRequest],
+	questionCh <-chan pubsub.Event[question.Request],
 ) {
 	heartbeat := time.NewTicker(30 * time.Second)
 	defer heartbeat.Stop()
 
+	// nil channels are never selected, so if questionCh is nil the case is a no-op
 	for {
 		select {
 		case <-ctx.Done():
@@ -133,15 +141,21 @@ func streamLoop(
 			if !ok {
 				return
 			}
-			// Permission requests are only published on CreatedEvent, which maps
-			// to the "permission.asked" type the SDK expects.
 			props := ConvertPermissionRequest(event.Payload)
 			if err := writeSSEEvent(w, flusher, "permission.asked", props); err != nil {
 				return
 			}
 
+		case event, ok := <-questionCh:
+			if !ok {
+				return
+			}
+			props := ConvertQuestionRequest(event.Payload)
+			if err := writeSSEEvent(w, flusher, "question.asked", props); err != nil {
+				return
+			}
+
 		case <-heartbeat.C:
-			// SSE comment line keeps the connection alive through proxies/LBs.
 			if _, err := fmt.Fprintf(w, ": heartbeat\n\n"); err != nil {
 				return
 			}

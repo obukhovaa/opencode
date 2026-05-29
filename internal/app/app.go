@@ -14,7 +14,6 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/cron"
 	"github.com/opencode-ai/opencode/internal/db"
-	"github.com/opencode-ai/opencode/internal/todo"
 	"github.com/opencode-ai/opencode/internal/flow"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
@@ -23,8 +22,10 @@ import (
 	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
+	"github.com/opencode-ai/opencode/internal/question"
 	"github.com/opencode-ai/opencode/internal/recap"
 	"github.com/opencode-ai/opencode/internal/session"
+	"github.com/opencode-ai/opencode/internal/todo"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
 )
 
@@ -40,6 +41,7 @@ type App struct {
 	Crons         cron.Service
 	CronScheduler *cron.Scheduler
 	Todos         *todo.Store
+	Questions     question.Service // nil in non-interactive mode
 	AgentFactory  agent.AgentFactory
 	LspService    lsp.LspService
 

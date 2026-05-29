@@ -149,6 +149,32 @@ type APIPermissionReply struct {
 	Allow bool `json:"allow"`
 }
 
+// APIQuestionOption represents a single option in a question.
+type APIQuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+// APIQuestionPrompt represents a single question with its options.
+type APIQuestionPrompt struct {
+	Question string              `json:"question"`
+	Options  []APIQuestionOption `json:"options"`
+	Multiple bool                `json:"multiple,omitempty"`
+	Custom   *bool               `json:"custom,omitempty"`
+}
+
+// APIQuestionRequest is the SDK-facing question request representation.
+type APIQuestionRequest struct {
+	ID        string              `json:"id"`
+	SessionID string              `json:"sessionID"`
+	Questions []APIQuestionPrompt `json:"questions"`
+}
+
+// APIQuestionReply is the request body for replying to a question request.
+type APIQuestionReply struct {
+	Answers [][]string `json:"answers"`
+}
+
 // APIAgent represents an agent in the external API format.
 type APIAgent struct {
 	ID          string `json:"id"`

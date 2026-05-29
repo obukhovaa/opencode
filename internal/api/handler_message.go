@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/opencode-ai/opencode/internal/llm/agent"
-	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/message"
 )
 
 // handleMessageList returns all messages for a session.
