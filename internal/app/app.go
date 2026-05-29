@@ -150,6 +150,17 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 		factory.SetCronServices(cronAdapter, schedHelper)
 	}
 
+	// Initialize question service if enabled.
+	// In interactive (TUI) mode the caller sets OPENCODE_QUESTIONS=1 before
+	// calling New(), or calls SetQuestionService() directly on the returned App.
+	// The service must be injected into the factory before InitPrimaryAgents
+	// so agents see the tool during tool resolution.
+	var questionSvc question.Service
+	if os.Getenv("OPENCODE_ENABLE_QUESTION_TOOL") == "1" || os.Getenv("OPENCODE_ENABLE_QUESTION_TOOL") == "true" {
+		questionSvc = question.NewService()
+		factory.SetQuestionService(questionSvc)
+	}
+
 	app := &App{
 		Sessions:      sessions,
 		Messages:      messages,
@@ -164,6 +175,7 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 		Flows:         flows,
 		Crons:         cronSvc,
 		Todos:         todoStore,
+		Questions:     questionSvc,
 	}
 
 	app.initTheme()

@@ -347,12 +347,11 @@ func (q *questionDialogCmp) View() tea.View {
 	}
 	endIdx := min(startIdx+slots, len(prompt.Options))
 
-	blankSlot := lipgloss.JoinVertical(lipgloss.Left, blankRow, blankRow)
-
 	optionItems := make([]string, 0, slots)
 	for i := startIdx; i < endIdx; i++ {
 		opt := prompt.Options[i]
 		isHighlighted := i == q.selectedIdx && !q.customFocused
+		showDesc := opt.Description != "" && opt.Description != opt.Label
 
 		// Build indicator
 		var indicator string
@@ -371,24 +370,25 @@ func (q *questionDialogCmp) View() tea.View {
 		}
 
 		labelStyle := baseStyle.Width(w).Padding(0, 1)
-		descStyle := baseStyle.Width(w).Padding(0, 1).Foreground(t.TextMuted())
 
 		if isHighlighted {
 			labelStyle = labelStyle.
-				Background(t.Primary()).
-				Foreground(t.Background()).
+				Foreground(t.Accent()).
 				Bold(true)
-			descStyle = descStyle.
-				Background(t.Primary()).
-				Foreground(t.Background())
 		}
 
 		labelLine := labelStyle.Render(indicator + opt.Label)
-		descLine := descStyle.Render("    " + opt.Description)
-		optionItems = append(optionItems, lipgloss.JoinVertical(lipgloss.Left, labelLine, descLine))
+
+		if showDesc {
+			descStyle := baseStyle.Width(w).Padding(0, 1).Foreground(t.TextMuted())
+			descLine := descStyle.Render("    " + opt.Description)
+			optionItems = append(optionItems, lipgloss.JoinVertical(lipgloss.Left, labelLine, descLine))
+		} else {
+			optionItems = append(optionItems, labelLine)
+		}
 	}
 	for len(optionItems) < slots {
-		optionItems = append(optionItems, blankSlot)
+		optionItems = append(optionItems, blankRow)
 	}
 
 	optionsBlock := baseStyle.Width(w).Render(lipgloss.JoinVertical(lipgloss.Left, optionItems...))

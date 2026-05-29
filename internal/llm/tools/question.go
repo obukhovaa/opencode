@@ -35,50 +35,46 @@ func (q *questionTool) Info() ToolInfo {
 		Name:        QuestionToolName,
 		Description: questionDescription,
 		Parameters: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"questions": map[string]any{
-					"type":        "array",
-					"description": "Questions to ask the user",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"question": map[string]any{
-								"type":        "string",
-								"description": "Complete question text",
-							},
-							"options": map[string]any{
-								"type":        "array",
-								"description": "Available choices",
-								"items": map[string]any{
-									"type": "object",
-									"properties": map[string]any{
-										"label": map[string]any{
-											"type":        "string",
-											"description": "Display text (1-5 words, concise)",
-										},
-										"description": map[string]any{
-											"type":        "string",
-											"description": "Explanation of choice",
-										},
+			"questions": map[string]any{
+				"type":        "array",
+				"description": "Questions to ask the user",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"question": map[string]any{
+							"type":        "string",
+							"description": "Complete question text",
+						},
+						"options": map[string]any{
+							"type":        "array",
+							"description": "Available choices",
+							"items": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"label": map[string]any{
+										"type":        "string",
+										"description": "Display text (1-5 words, concise)",
 									},
-									"required": []string{"label", "description"},
+									"description": map[string]any{
+										"type":        "string",
+										"description": "Explanation of choice",
+									},
 								},
-							},
-							"multiple": map[string]any{
-								"type":        "boolean",
-								"description": "Allow selecting multiple choices (default: false)",
-							},
-							"custom": map[string]any{
-								"type":        "boolean",
-								"description": "Allow typing a custom answer (default: true)",
+								"required": []string{"label", "description"},
 							},
 						},
-						"required": []string{"question", "options"},
+						"multiple": map[string]any{
+							"type":        "boolean",
+							"description": "Allow selecting multiple choices (default: false)",
+						},
+						"custom": map[string]any{
+							"type":        "boolean",
+							"description": "Allow typing a custom answer (default: true)",
+						},
 					},
+					"required": []string{"question", "options"},
 				},
 			},
-			"required": []string{"questions"},
 		},
 		Required: []string{"questions"},
 	}

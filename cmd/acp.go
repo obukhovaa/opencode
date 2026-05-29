@@ -16,7 +16,6 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/logging"
-	"github.com/opencode-ai/opencode/internal/question"
 )
 
 var acpCmd = &cobra.Command{
@@ -78,14 +77,6 @@ protocol stream.`,
 			return err
 		}
 		defer application.Shutdown()
-
-		// Enable question tool in ACP mode if explicitly opted in.
-		if os.Getenv("OPENCODE_ENABLE_QUESTION_TOOL") == "1" || os.Getenv("OPENCODE_ENABLE_QUESTION_TOOL") == "true" {
-			questionSvc := question.NewService()
-			application.Questions = questionSvc
-			application.AgentFactory.SetQuestionService(questionSvc)
-			logging.Info("Question tool enabled via OPENCODE_ENABLE_QUESTION_TOOL")
-		}
 
 		// Pipe stdin through an io.Pipe so we can close the read end
 		// on signal. Closing os.Stdin directly doesn't unblock a

@@ -16,7 +16,6 @@ import (
 	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
-	"github.com/opencode-ai/opencode/internal/question"
 	"github.com/opencode-ai/opencode/internal/tui"
 	"github.com/opencode-ai/opencode/internal/version"
 	"github.com/spf13/cobra"
@@ -161,6 +160,13 @@ to assist developers in writing, debugging, and understanding code directly from
 			return err
 		}
 
+		// In interactive (TUI) mode, always enable the question tool.
+		// In non-interactive modes it's controlled by OPENCODE_ENABLE_QUESTION_TOOL env var.
+		// Must be set before app.New() so agents see the tool during initialization.
+		if prompt == "" && flowID == "" {
+			os.Setenv("OPENCODE_ENABLE_QUESTION_TOOL", "1")
+		}
+
 		// Create main context for the application
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -219,15 +225,6 @@ to assist developers in writing, debugging, and understanding code directly from
 			spinner.Stop()
 		}
 
-		// Enable question tool in non-interactive modes if explicitly opted in.
-		// Off by default to not disrupt autonomous flows.
-		if os.Getenv("OPENCODE_ENABLE_QUESTION_TOOL") == "1" || os.Getenv("OPENCODE_ENABLE_QUESTION_TOOL") == "true" {
-			questionSvc := question.NewService()
-			app.Questions = questionSvc
-			app.AgentFactory.SetQuestionService(questionSvc)
-			logging.Info("Question tool enabled via OPENCODE_ENABLE_QUESTION_TOOL")
-		}
-
 		// Non-interactive flow mode
 		if flowID != "" {
 			nonInteractiveCtx := ctx
@@ -263,13 +260,6 @@ to assist developers in writing, debugging, and understanding code directly from
 		}
 
 		// Interactive mode
-		// Initialize question service if not already created by env var opt-in above.
-		if app.Questions == nil {
-			questionSvc := question.NewService()
-			app.Questions = questionSvc
-			app.AgentFactory.SetQuestionService(questionSvc)
-		}
-
 		// Set up the TUI
 		program := tea.NewProgram(
 			tui.New(app),
