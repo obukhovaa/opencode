@@ -263,7 +263,36 @@ else
     log_fail "$name" "expected true, got: $resp"
 fi
 
-# ── 16. Delete session ──────────────────────────────────────────────
+# ── 16. Question list (empty, service not enabled) ──────────────────
+name="GET /question (empty list)"
+resp=$(api GET /question)
+q_count=$(echo "$resp" | jq 'length')
+if [ "$q_count" -eq 0 ]; then
+    log_pass "$name (count=$q_count)"
+else
+    log_fail "$name" "expected empty array, got: $resp"
+fi
+
+# ── 17. Question reply (service not enabled → 503) ──────────────────
+name="POST /question/{id}/reply (no service → 503)"
+http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" \
+    -d '{"answers":[["yes"]]}' "$BASE/question/fake-id/reply")
+if [ "$http_code" = "503" ]; then
+    log_pass "$name"
+else
+    log_fail "$name" "expected 503, got $http_code"
+fi
+
+# ── 18. Question reject (service not enabled → 503) ─────────────────
+name="POST /question/{id}/reject (no service → 503)"
+http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/question/fake-id/reject")
+if [ "$http_code" = "503" ]; then
+    log_pass "$name"
+else
+    log_fail "$name" "expected 503, got $http_code"
+fi
+
+# ── 19. Delete session ─────────────────────────────────────────────
 name="DELETE /session/{id}"
 resp=$(curl -sf -X DELETE "$BASE/session/$session_id")
 if [ "$resp" = "true" ]; then
@@ -275,7 +304,7 @@ fi
 # Also clean up the second session
 curl -sf -X DELETE "$BASE/session/$session_id2" >/dev/null 2>&1 || true
 
-# ── 17. Deleted session returns 404 ──────────────────────────────────
+# ── 20. Deleted session returns 404 ─────────────────────────────────
 name="GET /session/{id} after delete returns 404"
 http_code=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/session/$session_id")
 if [ "$http_code" = "404" ]; then
@@ -284,7 +313,7 @@ else
     log_fail "$name" "expected 404, got $http_code"
 fi
 
-# ── 18. CORS headers ────────────────────────────────────────────────
+# ── 21. CORS headers ────────────────────────────────────────────────
 name="CORS headers present"
 cors=$(curl -sf -I "$BASE/global/health" 2>/dev/null | grep -i "access-control-allow-origin" || true)
 if echo "$cors" | grep -qi "allow-origin"; then
@@ -293,7 +322,7 @@ else
     log_fail "$name" "expected Access-Control-Allow-Origin header"
 fi
 
-# ── 19. Graceful shutdown ────────────────────────────────────────────
+# ── 22. Graceful shutdown ───────────────────────────────────────────
 name="server shuts down on SIGINT"
 kill -INT "$SERVER_PID" 2>/dev/null
 wait "$SERVER_PID" 2>/dev/null

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/question"
 )
@@ -30,7 +31,7 @@ func TestQuestionToolInfo(t *testing.T) {
 		t.Fatal("unexpected Ask call")
 		return nil, nil
 	}}
-	tool := NewQuestionTool(svc)
+	tool := NewQuestionTool(svc, nil)
 
 	info := tool.Info()
 	if info.Name != QuestionToolName {
@@ -53,7 +54,7 @@ func TestQuestionToolRun(t *testing.T) {
 			return [][]string{{"Option A"}}, nil
 		},
 	}
-	tool := NewQuestionTool(svc)
+	tool := NewQuestionTool(svc, nil)
 
 	input, _ := json.Marshal(questionParams{
 		Questions: []question.Prompt{
@@ -86,7 +87,7 @@ func TestQuestionToolRunRejected(t *testing.T) {
 			return nil, question.ErrQuestionRejected
 		},
 	}
-	tool := NewQuestionTool(svc)
+	tool := NewQuestionTool(svc, nil)
 
 	input, _ := json.Marshal(questionParams{
 		Questions: []question.Prompt{
@@ -115,7 +116,7 @@ func TestQuestionToolRunEmptyQuestions(t *testing.T) {
 		t.Fatal("unexpected Ask call")
 		return nil, nil
 	}}
-	tool := NewQuestionTool(svc)
+	tool := NewQuestionTool(svc, nil)
 
 	input, _ := json.Marshal(questionParams{Questions: []question.Prompt{}})
 
@@ -134,7 +135,7 @@ func TestQuestionToolRunNoSession(t *testing.T) {
 		t.Fatal("unexpected Ask call")
 		return nil, nil
 	}}
-	tool := NewQuestionTool(svc)
+	tool := NewQuestionTool(svc, nil)
 
 	input, _ := json.Marshal(questionParams{
 		Questions: []question.Prompt{
@@ -152,14 +153,14 @@ func TestQuestionToolRunNoSession(t *testing.T) {
 }
 
 func TestQuestionToolParallelism(t *testing.T) {
-	tool := NewQuestionTool(&mockQuestionService{})
+	tool := NewQuestionTool(&mockQuestionService{}, nil)
 	if tool.AllowParallelism(ToolCall{}, nil) {
 		t.Error("question tool should not allow parallelism")
 	}
 }
 
 func TestQuestionToolBaseline(t *testing.T) {
-	tool := NewQuestionTool(&mockQuestionService{})
+	tool := NewQuestionTool(&mockQuestionService{}, nil)
 	if !tool.IsBaseline() {
 		t.Error("question tool should be baseline")
 	}
@@ -170,7 +171,7 @@ func TestQuestionToolRunNoOptionsNoCustom(t *testing.T) {
 		t.Fatal("unexpected Ask call")
 		return nil, nil
 	}}
-	tool := NewQuestionTool(svc)
+	tool := NewQuestionTool(svc, nil)
 
 	customFalse := false
 	input, _ := json.Marshal(questionParams{
@@ -190,5 +191,61 @@ func TestQuestionToolRunNoOptionsNoCustom(t *testing.T) {
 	}
 	if !resp.IsError {
 		t.Fatal("expected error for no options and custom disabled")
+	}
+}
+
+type mockPermissionService struct {
+	autoApproved map[string]bool
+}
+
+func (m *mockPermissionService) Grant(_ permission.PermissionRequest)          {}
+func (m *mockPermissionService) GrantPersistant(_ permission.PermissionRequest) {}
+func (m *mockPermissionService) Deny(_ permission.PermissionRequest)            {}
+func (m *mockPermissionService) Request(_ context.Context, _ permission.CreatePermissionRequest) bool {
+	return false
+}
+func (m *mockPermissionService) AutoApproveSession(id string) {
+	m.autoApproved[id] = true
+}
+func (m *mockPermissionService) RemoveAutoApproveSession(id string) {
+	delete(m.autoApproved, id)
+}
+func (m *mockPermissionService) IsAutoApproveSession(id string) bool {
+	return m.autoApproved[id]
+}
+func (m *mockPermissionService) Subscribe(_ context.Context) <-chan pubsub.Event[permission.PermissionRequest] {
+	return nil
+}
+
+func TestQuestionToolAutoApprove(t *testing.T) {
+	svc := &mockQuestionService{askFn: func(_ context.Context, _ string, _ []question.Prompt) ([][]string, error) {
+		t.Fatal("Ask should not be called when auto-approve is active")
+		return nil, nil
+	}}
+	perms := &mockPermissionService{autoApproved: map[string]bool{"test-session": true}}
+	tool := NewQuestionTool(svc, perms)
+
+	input, _ := json.Marshal(questionParams{
+		Questions: []question.Prompt{
+			{
+				Question: "Pick one",
+				Options: []question.Option{
+					{Label: "First (Recommended)", Description: "The recommended option"},
+					{Label: "Second", Description: "Another option"},
+				},
+			},
+		},
+	})
+
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	resp, err := tool.Run(ctx, ToolCall{ID: "1", Name: QuestionToolName, Input: string(input)})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.IsError {
+		t.Fatalf("expected success, got error: %s", resp.Content)
+	}
+	if !strings.Contains(resp.Content, "First (Recommended)") {
+		t.Errorf("expected auto-selected first option, got: %s", resp.Content)
 	}
 }

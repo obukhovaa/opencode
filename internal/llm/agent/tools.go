@@ -117,7 +117,7 @@ func NewToolSet(
 			return nil
 		case tools.QuestionToolName:
 			if qSvc := factory.QuestionService(); qSvc != nil {
-				return tools.NewQuestionTool(qSvc)
+				return tools.NewQuestionTool(qSvc, permissions)
 			}
 			return nil
 		case tools.TodoWriteToolName:

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/question"
 )
 
@@ -23,7 +24,8 @@ Usage notes:
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label`
 
 type questionTool struct {
-	service question.Service
+	service     question.Service
+	permissions permission.Service
 }
 
 type questionParams struct {
@@ -102,14 +104,32 @@ func (q *questionTool) Run(ctx context.Context, call ToolCall) (ToolResponse, er
 		return NewTextErrorResponse("No active session"), nil
 	}
 
+	// When auto-approve is active, auto-select the first option for each
+	// question instead of blocking on user input. The tool description
+	// instructs the LLM to put the recommended option first.
+	if q.permissions != nil && q.permissions.IsAutoApproveSession(sessionID) {
+		answers := make([][]string, len(params.Questions))
+		for i, prompt := range params.Questions {
+			if len(prompt.Options) > 0 {
+				answers[i] = []string{prompt.Options[0].Label}
+			} else {
+				answers[i] = []string{}
+			}
+		}
+		return q.formatResponse(params.Questions, answers), nil
+	}
+
 	answers, err := q.service.Ask(ctx, sessionID, params.Questions)
 	if err != nil {
 		return NewTextErrorResponse("The user dismissed the question"), nil
 	}
 
-	// Format answers
-	parts := make([]string, 0, len(params.Questions))
-	for i, prompt := range params.Questions {
+	return q.formatResponse(params.Questions, answers), nil
+}
+
+func (q *questionTool) formatResponse(questions []question.Prompt, answers [][]string) ToolResponse {
+	parts := make([]string, 0, len(questions))
+	for i, prompt := range questions {
 		var answerText string
 		if i < len(answers) && len(answers[i]) > 0 {
 			answerText = strings.Join(answers[i], ", ")
@@ -119,15 +139,15 @@ func (q *questionTool) Run(ctx context.Context, call ToolCall) (ToolResponse, er
 		parts = append(parts, fmt.Sprintf("%q=%q", prompt.Question, answerText))
 	}
 
-	title := fmt.Sprintf("Asked %d question", len(params.Questions))
-	if len(params.Questions) > 1 {
+	title := fmt.Sprintf("Asked %d question", len(questions))
+	if len(questions) > 1 {
 		title += "s"
 	}
 
 	return WithResponseMetadata(
 		NewTextResponse(fmt.Sprintf("User has answered your questions: %s. You can now continue with the user's answers in mind.", strings.Join(parts, ", "))),
 		map[string]any{"title": title},
-	), nil
+	)
 }
 
 func (q *questionTool) AllowParallelism(_ ToolCall, _ []ToolCall) bool {
@@ -138,6 +158,6 @@ func (q *questionTool) IsBaseline() bool {
 	return true
 }
 
-func NewQuestionTool(service question.Service) BaseTool {
-	return &questionTool{service: service}
+func NewQuestionTool(service question.Service, permissions permission.Service) BaseTool {
+	return &questionTool{service: service, permissions: permissions}
 }
