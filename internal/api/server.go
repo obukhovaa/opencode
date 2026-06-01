@@ -81,7 +81,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /session/{sessionID}", s.handleSessionGet)
 	mux.HandleFunc("DELETE /session/{sessionID}", s.handleSessionDelete)
 	mux.HandleFunc("PATCH /session/{sessionID}", s.handleSessionUpdate)
+	mux.HandleFunc("GET /session/{sessionID}/children", s.handleSessionChildren)
 	mux.HandleFunc("POST /session/{sessionID}/abort", s.handleSessionAbort)
+	mux.HandleFunc("POST /session/{sessionID}/permissions/{permissionID}", s.handlePermissionRespond)
 
 	// Messages & prompts
 	mux.HandleFunc("GET /session/{sessionID}/message", s.handleMessageList)
@@ -104,7 +106,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /mcp", s.handleMCPList)
 
 	// Instance lifecycle (used by OpenWork workspace activation)
+	// Both paths point at the same no-op stub — dax SDK v2 uses /global/dispose,
+	// older callers use /instance/dispose.
 	mux.HandleFunc("POST /instance/dispose", s.handleInstanceDispose)
+	mux.HandleFunc("POST /global/dispose", s.handleInstanceDispose)
 
 	// Permissions
 	mux.HandleFunc("GET /permission", s.handlePermissionList)
@@ -117,6 +122,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Agents
 	mux.HandleFunc("GET /agent", s.handleAgentList)
+
+	// Skills
+	mux.HandleFunc("GET /skill", s.handleSkillList)
+
+	// Client log ingest (dax SDK forwards client errors here)
+	mux.HandleFunc("POST /log", s.handleLogWrite)
 }
 
 // Start starts the HTTP server. It blocks until the server is shut down.

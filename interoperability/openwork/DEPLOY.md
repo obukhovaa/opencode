@@ -54,6 +54,9 @@ Edit `~/.openwork/opencode-router/opencode-router.json`:
   "opencodeUrl": "http://127.0.0.1:3456",
   "opencodeDirectory": "/path/to/workspace",
   "groupsEnabled": false,
+  "toolUpdatesEnabled": true,
+  "questionMode": "interactive",
+  "permissionMode": "allow",
   "channels": {
     "telegram": {
       "enabled": true,
@@ -77,6 +80,10 @@ Key fields:
 - `pairingCodeHash` — SHA-256 hex of your secret code (uppercased, non-alphanumeric stripped). The user must send `/pair MY-SECRET-CODE` to authenticate.
 - `directory` — default workspace for this bot. Prevents `/dir` from escaping the workspace root.
 - `groupsEnabled: false` — disables group chat messages (only DMs accepted).
+
+- `toolUpdatesEnabled` – send tool output to the chat
+- `questionMode` – use special opencode structured question api
+- `permissionMode` – allow | deny
 
 ### 3c. Pair from Telegram
 
@@ -133,6 +140,8 @@ Or edit `~/.openwork/opencode-router/opencode-router.json` to add a Slack sectio
   "opencodeUrl": "http://127.0.0.1:3456",
   "opencodeDirectory": "/path/to/workspace",
   "groupsEnabled": false,
+  "toolUpdatesEnabled": true,
+  "questionMode": "interactive",
   "channels": {
     "slack": {
       "enabled": true,
@@ -182,6 +191,8 @@ Or edit `~/.openwork/opencode-router/opencode-router.json` to add a Mattermost s
   "opencodeUrl": "http://127.0.0.1:3456",
   "opencodeDirectory": "/path/to/workspace",
   "groupsEnabled": false,
+  "toolUpdatesEnabled": true,
+  "questionMode": "interactive",
   "channels": {
     "mattermost": {
       "enabled": true,
@@ -326,6 +337,8 @@ Any non-command message is forwarded to OpenCode as a prompt.
   "opencodeUrl": "http://127.0.0.1:3456",
   "opencodeDirectory": "/path/to/workspace",
   "groupsEnabled": false,
+  "toolUpdatesEnabled": true,
+  "questionMode": "interactive",
   "channels": {
     "telegram": {
       "enabled": true,

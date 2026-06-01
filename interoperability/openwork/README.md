@@ -36,7 +36,8 @@ Since we run our own `opencode serve`, the orchestrator is redundant. The scenar
 All scenarios assume OpenCode is running:
 
 ```bash
-OPENCODE_ENABLE_QUESTION_TOOL=1 opencode serve --hostname 127.0.0.1 --port 3456
+OPENCODE_ENABLE_QUESTION_TOOL=1 opencode serve --hostname 127.0.0.1 --port 3456 --auto-approve
+
 ```
 
 The `OPENCODE_ENABLE_QUESTION_TOOL=1` env var enables the interactive question tool — the agent can ask users questions with selectable options through chat channels. Omit it if you don't need this feature.

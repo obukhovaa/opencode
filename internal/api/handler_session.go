@@ -4,7 +4,24 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+
+	"github.com/opencode-ai/opencode/internal/session"
 )
+
+// shouldAutoApprove reports whether a permission ruleset asks for blanket
+// auto-approval. Our permission service is binary per session, so we only
+// honor the wildcard-allow shape (`{permission:"*", pattern:"*", action:"allow"}`)
+// that the openwork router emits. Any other rule shape is silently ignored —
+// callers can still resolve individual permission requests via the
+// /session/{id}/permissions/{id} or /permission/{id}/reply endpoints.
+func shouldAutoApprove(rules []APIPermissionRule) bool {
+	for _, rule := range rules {
+		if rule.Permission == "*" && rule.Pattern == "*" && rule.Action == "allow" {
+			return true
+		}
+	}
+	return false
+}
 
 // handleSessionList returns all sessions.
 func (s *Server) handleSessionList(w http.ResponseWriter, r *http.Request) {
@@ -36,6 +53,9 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create session")
 		return
+	}
+	if shouldAutoApprove(req.Permission) {
+		s.app.Permissions.AutoApproveSession(session.ID)
 	}
 	writeJSON(w, http.StatusCreated, ConvertSessionWithDir(session, resolveDirectory(r)))
 }
@@ -73,7 +93,9 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, true)
 }
 
-// handleSessionUpdate updates a session's title.
+// handleSessionUpdate updates a session's title and/or permission rules.
+// Title and Permission are both optional — a permission-only PATCH must NOT
+// clobber the existing title, so Save() is skipped when Title is nil.
 func (s *Server) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("sessionID")
 
@@ -93,13 +115,21 @@ func (s *Server) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session.Title = req.Title
-	updated, err := s.app.Sessions.Save(r.Context(), session)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update session")
-		return
+	if req.Title != nil {
+		session.Title = *req.Title
+		updated, err := s.app.Sessions.Save(r.Context(), session)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update session")
+			return
+		}
+		session = updated
 	}
-	writeJSON(w, http.StatusOK, ConvertSessionWithDir(updated, resolveDirectory(r)))
+
+	if shouldAutoApprove(req.Permission) {
+		s.app.Permissions.AutoApproveSession(sessionID)
+	}
+
+	writeJSON(w, http.StatusOK, ConvertSessionWithDir(session, resolveDirectory(r)))
 }
 
 // handleSessionStatus returns the busy/idle status of all sessions.
@@ -132,6 +162,27 @@ func (s *Server) handleSessionTodo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, []struct{}{})
+}
+
+// handleSessionChildren returns descendant sessions of the given session.
+// Sessions.ListChildren returns the whole subtree (matches by root_session_id,
+// which equals the session's own ID for top-level sessions), so we filter out
+// the parent itself — the SDK endpoint is "children", not "tree".
+func (s *Server) handleSessionChildren(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("sessionID")
+	subtree, err := s.app.Sessions.ListChildren(r.Context(), sessionID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list session children")
+		return
+	}
+	children := make([]session.Session, 0, len(subtree))
+	for _, sess := range subtree {
+		if sess.ID == sessionID {
+			continue
+		}
+		children = append(children, sess)
+	}
+	writeJSON(w, http.StatusOK, ConvertSessionsWithDir(children, resolveDirectory(r)))
 }
 
 // handleSessionAbort cancels the active agent run for a session.

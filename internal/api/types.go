@@ -145,8 +145,24 @@ type APIPermissionRequest struct {
 }
 
 // APIPermissionReply is the request body for replying to a permission request.
+// Supports two shapes:
+//   - Legacy OpenWork: {"allow": true|false}
+//   - dax SDK v2 ("permission.reply"): {"reply": "once"|"always"|"reject", "message"?: string}
+//
+// When Reply is set it takes precedence over Allow. Both shapes route to the
+// same permission service methods (Grant/Deny).
 type APIPermissionReply struct {
-	Allow bool `json:"allow"`
+	Allow   *bool  `json:"allow,omitempty"`
+	Reply   string `json:"reply,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// APIPermissionRespond is the request body for the session-scoped
+// `POST /session/{sessionID}/permissions/{permissionID}` endpoint (dax SDK
+// `permission.respond`). The `response` field has the same semantics as
+// APIPermissionReply.Reply.
+type APIPermissionRespond struct {
+	Response string `json:"response"`
 }
 
 // APIQuestionOption represents a single option in a question.
@@ -215,10 +231,22 @@ type APIPromptModel struct {
 
 // APISessionCreateRequest is the request body for creating a session.
 type APISessionCreateRequest struct {
-	Title string `json:"title"`
+	Title      string              `json:"title"`
+	Permission []APIPermissionRule `json:"permission,omitempty"`
 }
 
 // APISessionUpdateRequest is the request body for updating a session.
+// Title is a pointer so a permission-only PATCH does not clobber the existing title.
 type APISessionUpdateRequest struct {
-	Title string `json:"title"`
+	Title      *string             `json:"title,omitempty"`
+	Permission []APIPermissionRule `json:"permission,omitempty"`
+}
+
+// APIPermissionRule mirrors the dax SDK PermissionRule shape so SDK clients
+// can pass through their wildcard-allow rules. Only a single shape is honored
+// today (see shouldAutoApprove); other rules are silently ignored.
+type APIPermissionRule struct {
+	Permission string `json:"permission"`
+	Pattern    string `json:"pattern"`
+	Action     string `json:"action"`
 }

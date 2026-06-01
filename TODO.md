@@ -10,3 +10,4 @@ Specs not yet implemented.
 - [Git Worktree Isolation](spec/20260311T120000-git-worktree-isolation.md)
 - [Deferred Tools and ToolSearchTool](spec/20260405T120000-deferred-tools-and-toolsearch.md)
 - [Memory Tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool)
+- [Flow API expose](/spec/20260518T010000-flow-api-and-orchestrator.md)

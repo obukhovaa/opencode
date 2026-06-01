@@ -198,7 +198,7 @@ type mockPermissionService struct {
 	autoApproved map[string]bool
 }
 
-func (m *mockPermissionService) Grant(_ permission.PermissionRequest)          {}
+func (m *mockPermissionService) Grant(_ permission.PermissionRequest)           {}
 func (m *mockPermissionService) GrantPersistant(_ permission.PermissionRequest) {}
 func (m *mockPermissionService) Deny(_ permission.PermissionRequest)            {}
 func (m *mockPermissionService) Request(_ context.Context, _ permission.CreatePermissionRequest) bool {

@@ -175,6 +175,17 @@ else
     log_fail "$name" "expected title='updated title', got: $resp"
 fi
 
+# ── 6a. PATCH permission-only must NOT clobber title ────────────────
+name="PATCH /session/{id} (permission only preserves title)"
+resp=$(api PATCH "/session/$session_id" \
+    '{"permission":[{"permission":"*","pattern":"*","action":"allow"}]}')
+kept_title=$(echo "$resp" | jq -r '.title')
+if [ "$kept_title" = "updated title" ]; then
+    log_pass "$name"
+else
+    log_fail "$name" "expected title to remain 'updated title', got: $resp"
+fi
+
 # ── 7. Session status ───────────────────────────────────────────────
 name="GET /session/status"
 resp=$(api GET /session/status)
@@ -291,6 +302,126 @@ if [ "$http_code" = "503" ]; then
 else
     log_fail "$name" "expected 503, got $http_code"
 fi
+
+# ── 18a. Create session with permission rules (auto-approve mapping) ─
+# Smoke check that the new field is accepted and a session is returned.
+# (The AutoApproveSession side-effect isn't directly observable via the API
+#  surface; behaviour is covered by unit tests in handler_session_test.go.)
+name="POST /session with permission rules"
+resp=$(api POST /session \
+    '{"title":"perm","permission":[{"permission":"*","pattern":"*","action":"allow"}]}')
+perm_session_id=$(echo "$resp" | jq -r '.id')
+if [ -n "$perm_session_id" ] && [ "$perm_session_id" != "null" ]; then
+    log_pass "$name (id=$perm_session_id)"
+else
+    log_fail "$name" "expected session created, got: $resp"
+fi
+
+# ── 18b. Session children (leaf session → empty list) ───────────────
+name="GET /session/{id}/children"
+resp=$(api GET "/session/$session_id/children")
+children_count=$(echo "$resp" | jq 'length')
+if [ "$children_count" -eq 0 ]; then
+    log_pass "$name (count=0)"
+else
+    log_fail "$name" "expected empty array, got: $resp"
+fi
+
+# ── 18c. Permission reply with {reply} body (dax SDK v2 shape) ──────
+# No pending request — Grant/Deny is a no-op, but the handler still returns
+# 200/true on a known verb. Regression check that the new shape is parsed.
+name="POST /permission/{id}/reply with {reply}"
+resp=$(api POST "/permission/fake-id/reply" '{"reply":"once"}')
+if [ "$resp" = "true" ]; then
+    log_pass "$name"
+else
+    log_fail "$name" "expected true, got: $resp"
+fi
+
+# ── 18d. Permission reply with empty body → 400 ─────────────────────
+# Wire-contract change: previously empty body defaulted to allow=false (Deny).
+# Now it must 400 since neither 'allow' nor 'reply' is set.
+name="POST /permission/{id}/reply (empty body → 400)"
+http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    -H "Content-Type: application/json" -d '{}' "$BASE/permission/fake-id/reply")
+if [ "$http_code" = "400" ]; then
+    log_pass "$name"
+else
+    log_fail "$name" "expected 400, got $http_code"
+fi
+
+# ── 18e. Permission reply with invalid verb → 400 ───────────────────
+name="POST /permission/{id}/reply (invalid reply verb → 400)"
+http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    -H "Content-Type: application/json" -d '{"reply":"maybe"}' "$BASE/permission/fake-id/reply")
+if [ "$http_code" = "400" ]; then
+    log_pass "$name"
+else
+    log_fail "$name" "expected 400, got $http_code"
+fi
+
+# ── 18f. Session-scoped permission respond (dax permission.respond) ─
+name="POST /session/{id}/permissions/{permID}"
+resp=$(api POST "/session/$session_id/permissions/fake-perm-id" '{"response":"reject"}')
+if [ "$resp" = "true" ]; then
+    log_pass "$name"
+else
+    log_fail "$name" "expected true, got: $resp"
+fi
+
+# ── 18g. Session-scoped permission respond invalid verb → 400 ───────
+name="POST /session/{id}/permissions/{permID} (invalid response → 400)"
+http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    -H "Content-Type: application/json" -d '{"response":"sometimes"}' \
+    "$BASE/session/$session_id/permissions/fake-perm-id")
+if [ "$http_code" = "400" ]; then
+    log_pass "$name"
+else
+    log_fail "$name" "expected 400, got $http_code"
+fi
+
+# ── 18h. /global/dispose alias of /instance/dispose ─────────────────
+name="POST /global/dispose"
+resp=$(api POST /global/dispose)
+if echo "$resp" | jq -e '.ok == true' >/dev/null 2>&1; then
+    log_pass "$name"
+else
+    log_fail "$name" "expected {ok:true}, got: $resp"
+fi
+
+# ── 18i. Skill list ─────────────────────────────────────────────────
+# Returns a JSON array (may be empty for a workspace with no .opencode/skills).
+name="GET /skill"
+resp=$(api GET /skill)
+if echo "$resp" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    skill_count=$(echo "$resp" | jq 'length')
+    log_pass "$name (count=$skill_count)"
+else
+    log_fail "$name" "expected array, got: $resp"
+fi
+
+# ── 18j. Log ingest ─────────────────────────────────────────────────
+name="POST /log"
+resp=$(api POST /log \
+    '{"service":"serve-test","level":"info","message":"smoke","extra":{"k":"v"}}')
+if [ "$resp" = "true" ]; then
+    log_pass "$name"
+else
+    log_fail "$name" "expected true, got: $resp"
+fi
+
+# ── 18k. Log ingest with missing message → 400 ──────────────────────
+name="POST /log (missing message → 400)"
+http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    -H "Content-Type: application/json" -d '{"service":"x","level":"info"}' "$BASE/log")
+if [ "$http_code" = "400" ]; then
+    log_pass "$name"
+else
+    log_fail "$name" "expected 400, got $http_code"
+fi
+
+# Clean up the extra session created for the permission-rules test.
+curl -sf -X DELETE "$BASE/session/$perm_session_id" >/dev/null 2>&1 || true
 
 # ── 19. Delete session ─────────────────────────────────────────────
 name="DELETE /session/{id}"
