@@ -36,8 +36,10 @@ Since we run our own `opencode serve`, the orchestrator is redundant. The scenar
 All scenarios assume OpenCode is running:
 
 ```bash
-opencode serve --hostname 127.0.0.1 --port 3456
+OPENCODE_ENABLE_QUESTION_TOOL=1 opencode serve --hostname 127.0.0.1 --port 3456
 ```
+
+The `OPENCODE_ENABLE_QUESTION_TOOL=1` env var enables the interactive question tool — the agent can ask users questions with selectable options through chat channels. Omit it if you don't need this feature.
 
 ---
 
@@ -203,6 +205,12 @@ The round-trip is fully automatic. No UI or manual intervention needed for the t
 | `GROUPS_ENABLED` | No | Set `true` to allow group/channel messages |
 | `OPENCODE_ROUTER_HEALTH_PORT` | No | HTTP API port (default: auto) |
 
+**OpenCode server env var** (set on the `opencode serve` process, not the router):
+
+| Variable | Required | Description |
+|---|---|---|
+| `OPENCODE_ENABLE_QUESTION_TOOL` | No | Set `1` to enable the interactive question tool (agent can ask users questions via chat) |
+
 ### Config and data paths
 
 - Config: `~/.openwork/opencode-router/opencode-router.json`
@@ -335,7 +343,7 @@ Run both for maximum flexibility — chat via Telegram/Slack/Mattermost and moni
 
 ```bash
 # Terminal 1: OpenCode
-opencode serve --hostname 127.0.0.1 --port 3456
+OPENCODE_ENABLE_QUESTION_TOOL=1 opencode serve --hostname 127.0.0.1 --port 3456
 
 # Terminal 2: OpenWork server (web UI at /ui)
 openwork-server \

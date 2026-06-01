@@ -1,6 +1,6 @@
-# Deploying OpenCode with Telegram and Slack via opencode-router
+# Deploying OpenCode with Telegram, Slack, and Mattermost via opencode-router
 
-Step-by-step guide for setting up secure remote agent control through Telegram and Slack using the OpenWork router.
+Step-by-step guide for setting up secure remote agent control through Telegram, Slack, and Mattermost using the OpenWork router.
 
 ## Prerequisites
 
@@ -17,10 +17,12 @@ npm install -g opencode-router
 ## 2. Start OpenCode
 
 ```bash
-opencode serve --hostname 127.0.0.1 --port 3456
+OPENCODE_ENABLE_QUESTION_TOOL=1 opencode serve --hostname 127.0.0.1 --port 3456
 ```
 
 Keep this running in a dedicated terminal or as a background service.
+
+The `OPENCODE_ENABLE_QUESTION_TOOL=1` env var enables the interactive question tool, which allows the agent to ask users questions with selectable options via chat. Without it, the question API is disabled and the agent cannot request structured input from users.
 
 ## 3. Configure Telegram (private bot)
 
@@ -155,7 +157,63 @@ Or edit `~/.openwork/opencode-router/opencode-router.json` to add a Slack sectio
 - Restrict the bot to specific channels by only subscribing to `app_mention` (the bot must be @mentioned) rather than reading all channel messages.
 - For DMs, only users in your Slack workspace can reach the bot.
 
-## 5. Bind chats to workspaces
+## 5. Configure Mattermost
+
+Mattermost uses a personal access token + native WebSocket. No external npm dependencies required.
+
+### 5a. Create a personal access token
+
+1. In your Mattermost server, go to **Account Settings > Security > Personal Access Tokens**.
+2. Click **Create Token**, give it a description, and copy the token.
+
+> **Note:** The system admin must enable personal access tokens in **System Console > Integrations > Integration Management > Enable Personal Access Tokens**.
+
+### 5b. Register in the router
+
+```bash
+opencode-router mattermost add https://mm.example.com <ACCESS_TOKEN> --id default
+```
+
+Or edit `~/.openwork/opencode-router/opencode-router.json` to add a Mattermost section:
+
+```json
+{
+  "version": 1,
+  "opencodeUrl": "http://127.0.0.1:3456",
+  "opencodeDirectory": "/path/to/workspace",
+  "groupsEnabled": false,
+  "channels": {
+    "mattermost": {
+      "enabled": true,
+      "instances": [
+        {
+          "id": "default",
+          "serverUrl": "https://mm.example.com",
+          "accessToken": "<PERSONAL_ACCESS_TOKEN>",
+          "enabled": true,
+          "directory": "/path/to/workspace"
+        }
+      ]
+    }
+  }
+}
+```
+
+### 5c. Mattermost-specific behavior
+
+- **DMs and group DMs** (`D` / `G` channel types): the bot responds to all messages automatically.
+- **Public/private channels** (`O` / `P` channel types): the bot only responds when `groupsEnabled: true` AND the user @mentions the bot by username.
+- The bot ignores its own messages and posts from webhooks/integrations (`props.from_webhook` / `props.from_bot`) to prevent feedback loops.
+- WebSocket reconnects automatically with exponential backoff (1s → 30s cap, 20 max attempts).
+
+### 5d. Mattermost-specific security notes
+
+- Personal access tokens bypass MFA by design in Mattermost.
+- The token scope is limited to what the bot account can access — use a dedicated bot account with restricted channel access.
+- The WebSocket connection is outbound-only (no inbound webhook URL needed).
+- For self-hosted instances with self-signed TLS certificates: valid certificates are required. Self-signed certs are not supported in v1.
+
+## 6. Bind chats to workspaces
 
 Bindings map a specific chat to a workspace directory. Without a binding, the router uses the default `directory` from the identity config.
 
@@ -173,6 +231,13 @@ opencode-router bindings set \
   --identity default \
   --peer <CHANNEL_ID> \
   --dir /path/to/workspace
+
+# Mattermost — use channel ID
+opencode-router bindings set \
+  --channel mattermost \
+  --identity default \
+  --peer <CHANNEL_ID> \
+  --dir /path/to/workspace
 ```
 
 To find your Telegram `chat_id`: message the bot, then check:
@@ -182,7 +247,7 @@ curl -s "https://api.telegram.org/bot<BOT_TOKEN>/getUpdates" | jq '.result[-1].m
 
 Directories are confined to the workspace root — the router rejects paths that escape it.
 
-## 6. Start the router
+## 7. Start the router
 
 ```bash
 OPENCODE_URL=http://127.0.0.1:3456 \
@@ -202,7 +267,7 @@ OPENCODE_SERVER_PASSWORD=pass \
 
 The router logs startup details including which bots/apps are active.
 
-## 7. Chat commands
+## 8. Chat commands
 
 Once paired (Telegram) or installed (Slack), these commands are available in chat:
 
@@ -234,16 +299,24 @@ Any non-command message is forwarded to OpenCode as a prompt.
 - [ ] App installed only to your workspace
 - [ ] Bot added only to intended channels
 
+### Mattermost
+- [ ] Dedicated bot account with restricted channel access (not an admin account)
+- [ ] Personal access tokens enabled only for bot accounts in System Console
+- [ ] Valid TLS certificate on the Mattermost server
+- [ ] `groupsEnabled: false` unless channel @mention responses are desired
+- [ ] `directory` set to a specific workspace
+
 ### OpenCode
 - [ ] `opencode serve` bound to `127.0.0.1` (not `0.0.0.0`) unless remote access is intentional
 - [ ] Basic auth enabled (`OPENCODE_SERVER_USERNAME` / `OPENCODE_SERVER_PASSWORD`) if exposed beyond localhost
+- [ ] `OPENCODE_ENABLE_QUESTION_TOOL=1` set to enable interactive questions via chat
 
 ### Router
 - [ ] `OPENCODE_DIRECTORY` set to a specific workspace path
 - [ ] `PERMISSION_MODE=deny` if you want the router to reject tool permission requests rather than auto-allow
 - [ ] Router health API bound to localhost (default `127.0.0.1`, controlled by `OPENCODE_ROUTER_HEALTH_HOST`)
 
-## Combined config example (Telegram + Slack)
+## Combined config example (Telegram + Slack + Mattermost)
 
 `~/.openwork/opencode-router/opencode-router.json`:
 
@@ -278,6 +351,18 @@ Any non-command message is forwarded to OpenCode as a prompt.
           "directory": "/path/to/workspace"
         }
       ]
+    },
+    "mattermost": {
+      "enabled": true,
+      "instances": [
+        {
+          "id": "default",
+          "serverUrl": "https://mm.example.com",
+          "accessToken": "<PERSONAL_ACCESS_TOKEN>",
+          "enabled": true,
+          "directory": "/path/to/workspace"
+        }
+      ]
     }
   }
 }
@@ -302,10 +387,11 @@ curl http://127.0.0.1:${OPENCODE_ROUTER_HEALTH_PORT}/send \
 
 ## Network requirements
 
-The router uses **outbound-only connections** for both Telegram and Slack. No public ingress or webhook URLs are needed.
+The router uses **outbound-only connections** for all three channels. No public ingress or webhook URLs are needed.
 
 - **Telegram** — the router uses long polling via grammY (`getUpdates`). It makes outbound HTTPS requests to `api.telegram.org` and waits for new messages. No inbound connections.
 - **Slack** — the router uses Socket Mode (`@slack/socket-mode`), which opens an outbound WebSocket to Slack's servers. No webhook URL.
+- **Mattermost** — the router opens an outbound WebSocket (`wss://`) to the Mattermost server for real-time events and uses REST API calls for sending. No webhook URL.
 
 The only listening port is the router's health/send HTTP API (`OPENCODE_ROUTER_HEALTH_PORT`), which defaults to `127.0.0.1` and is only needed for local diagnostics and the `/send` endpoint for proactive file delivery.
 
@@ -315,6 +401,7 @@ The only listening port is the router's health/send HTTP API (`OPENCODE_ROUTER_H
 |---|---|---|
 | `api.telegram.org` | HTTPS (443) | Telegram Bot API (polling + sending) |
 | `wss-primary.slack.com` | WSS (443) | Slack Socket Mode |
+| Your Mattermost server | HTTPS/WSS (443) | Mattermost REST API + WebSocket |
 | OpenCode (e.g. `127.0.0.1:3456`) | HTTP | Agent API |
 
 ### No inbound access required
@@ -336,6 +423,7 @@ The router is well-suited for running as a sidecar container alongside OpenCode 
 │  │               │        │   outbound:            │  │
 │  └──────────────┘         │   → api.telegram.org   │  │
 │                           │   → wss.slack.com      │  │
+│                           │   → mm.example.com     │  │
 │                           └────────────────────────┘  │
 │                                                       │
 │  shared volume: /workspace                            │
@@ -354,6 +442,9 @@ spec:
     - name: opencode
       image: your-registry/opencode:latest
       command: ["opencode", "serve", "--hostname", "127.0.0.1", "--port", "3456"]
+      env:
+        - name: OPENCODE_ENABLE_QUESTION_TOOL
+          value: "1"
       volumeMounts:
         - name: workspace
           mountPath: /workspace
@@ -434,7 +525,7 @@ spec:
             cidr: 0.0.0.0/0
       ports:
         - port: 443
-          protocol: TCP  # Telegram API + Slack WSS
+          protocol: TCP  # Telegram API + Slack WSS + Mattermost
     - to:
         - ipBlock:
             cidr: 10.0.0.0/8  # adjust for your cluster DNS
@@ -455,7 +546,7 @@ WORKSPACE="/path/to/workspace"
 OPENCODE_PORT=3456
 
 # Start OpenCode in background
-opencode serve --hostname 127.0.0.1 --port "$OPENCODE_PORT" &
+OPENCODE_ENABLE_QUESTION_TOOL=1 opencode serve --hostname 127.0.0.1 --port "$OPENCODE_PORT" &
 OPENCODE_PID=$!
 
 # Wait for OpenCode to be ready
