@@ -142,6 +142,7 @@ Or edit `~/.openwork/opencode-router/opencode-router.json` to add a Slack sectio
   "groupsEnabled": false,
   "toolUpdatesEnabled": true,
   "questionMode": "interactive",
+  "permissionMode": "allow",
   "channels": {
     "slack": {
       "enabled": true,
@@ -193,6 +194,7 @@ Or edit `~/.openwork/opencode-router/opencode-router.json` to add a Mattermost s
   "groupsEnabled": false,
   "toolUpdatesEnabled": true,
   "questionMode": "interactive",
+  "permissionMode": "allow",
   "channels": {
     "mattermost": {
       "enabled": true,
@@ -339,6 +341,7 @@ Any non-command message is forwarded to OpenCode as a prompt.
   "groupsEnabled": false,
   "toolUpdatesEnabled": true,
   "questionMode": "interactive",
+  "permissionMode": "allow",
   "channels": {
     "telegram": {
       "enabled": true,

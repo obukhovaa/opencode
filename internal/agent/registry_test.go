@@ -55,6 +55,30 @@ You are in code review mode. Focus on quality.
 	}
 }
 
+// Upstream dax/opencode spells the primary agent mode as "primary"; we use
+// "agent". parseAgentMarkdown must accept the dax spelling so .md files
+// authored against either fork drop in unchanged.
+func TestParseAgentMarkdown_PrimaryAlias(t *testing.T) {
+	dir := t.TempDir()
+	md := `---
+description: dax-style primary agent
+mode: primary
+---
+
+Body.
+`
+	path := filepath.Join(dir, "primary-agent.md")
+	os.WriteFile(path, []byte(md), 0o644)
+
+	agent, err := parseAgentMarkdown(path)
+	if err != nil {
+		t.Fatalf("parseAgentMarkdown() error = %v", err)
+	}
+	if agent.Mode != config.AgentModeAgent {
+		t.Errorf("Mode = %q, want %q (primary should alias to agent)", agent.Mode, config.AgentModeAgent)
+	}
+}
+
 func TestScanAgentDirectory(t *testing.T) {
 	dir := t.TempDir()
 

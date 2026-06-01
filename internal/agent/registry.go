@@ -662,6 +662,11 @@ func parseAgentMarkdown(path string) (*AgentInfo, error) {
 	agent.Prompt = body
 	agent.Location = path
 
+	// For compatibility with upstream opencode
+	if agent.Mode == "primary" {
+		agent.Mode = config.AgentModeAgent
+	}
+
 	if agent.Mode == "" {
 		agent.Mode = config.AgentModeSubagent
 	}
