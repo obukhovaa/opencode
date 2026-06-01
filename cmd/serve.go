@@ -41,7 +41,10 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
   OPENCODE_SERVER_PASSWORD=secret opencode serve
 
   # Auto-approve all permission requests (no human in the loop)
-  opencode serve --auto-approve`,
+  opencode serve --auto-approve
+
+  # Pick a specific agent (built-in or custom .opencode/agents/<name>.md)
+  opencode serve -a hivemind`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		port, _ := cmd.Flags().GetInt("port")
 		hostname, _ := cmd.Flags().GetString("hostname")
@@ -54,6 +57,7 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 		debug, _ := cmd.Flags().GetBool("debug")
 		cwd, _ := cmd.Flags().GetString("cwd")
 		autoApprove, _ := cmd.Flags().GetBool("auto-approve")
+		agentID, _ := cmd.Flags().GetString("agent")
 
 		if cwd != "" {
 			if err := os.Chdir(cwd); err != nil {
@@ -105,6 +109,17 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			return err
 		}
 		defer application.Shutdown()
+
+		// Pin the active agent if one was named on the command line. Without this,
+		// `serve` always boots with whatever agent app.New picks first; OpenWork
+		// and other SDK clients don't have a way to switch the active agent at
+		// runtime, so the only way to host a non-default agent is via this flag.
+		if agentID != "" {
+			if err := application.SetActiveAgent(config.AgentName(agentID)); err != nil {
+				return fmt.Errorf("invalid agent: %w", err)
+			}
+			logging.Info("Active agent pinned via --agent flag", "agent", agentID)
+		}
 
 		// Auto-approve every session created in the server when --auto-approve is set.
 		// Useful for headless deployments where no human is present to grant permissions.
@@ -184,6 +199,7 @@ func init() {
 	serveCmd.Flags().Bool("auto-approve", false, "Auto-approve all permission requests (dangerous — no human in the loop)")
 	serveCmd.Flags().BoolP("debug", "d", false, "Debug")
 	serveCmd.Flags().StringP("cwd", "c", "", "Current working directory")
+	serveCmd.Flags().StringP("agent", "a", "", "Agent ID to use (e.g. coder, hivemind, or a custom one from .opencode/agents/)")
 
 	rootCmd.AddCommand(serveCmd)
 }
