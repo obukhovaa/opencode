@@ -36,6 +36,7 @@ protocol stream.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cwd, _ := cmd.Flags().GetString("cwd")
 		debug, _ := cmd.Flags().GetBool("debug")
+		autoApprove, _ := cmd.Flags().GetBool("auto-approve")
 
 		if cwd != "" {
 			if err := os.Chdir(cwd); err != nil {
@@ -78,6 +79,14 @@ protocol stream.`,
 		}
 		defer application.Shutdown()
 
+		// Auto-approve every session when --auto-approve is set. ACP clients
+		// typically don't have a UI to surface permission requests, so this
+		// is often required for the agent to make progress.
+		if autoApprove {
+			logging.Warn("ACP: auto-approve enabled — all permission requests will be granted automatically")
+			enableAutoApprove(ctx, application)
+		}
+
 		// Pipe stdin through an io.Pipe so we can close the read end
 		// on signal. Closing os.Stdin directly doesn't unblock a
 		// blocking Read() on macOS, but closing a pipe writer does.
@@ -112,6 +121,7 @@ protocol stream.`,
 func init() {
 	acpCmd.Flags().StringP("cwd", "c", "", "Working directory for the project")
 	acpCmd.Flags().BoolP("debug", "d", false, "Enable debug logging")
+	acpCmd.Flags().Bool("auto-approve", false, "Auto-approve all permission requests (dangerous — no human in the loop)")
 
 	rootCmd.AddCommand(acpCmd)
 }

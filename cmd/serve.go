@@ -16,6 +16,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/pubsub"
 )
 
 var serveCmd = &cobra.Command{
@@ -37,7 +38,10 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
   opencode serve --cors "http://localhost:3000"
 
   # Start with authentication
-  OPENCODE_SERVER_PASSWORD=secret opencode serve`,
+  OPENCODE_SERVER_PASSWORD=secret opencode serve
+
+  # Auto-approve all permission requests (no human in the loop)
+  opencode serve --auto-approve`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		port, _ := cmd.Flags().GetInt("port")
 		hostname, _ := cmd.Flags().GetString("hostname")
@@ -49,6 +53,7 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 		}
 		debug, _ := cmd.Flags().GetBool("debug")
 		cwd, _ := cmd.Flags().GetString("cwd")
+		autoApprove, _ := cmd.Flags().GetBool("auto-approve")
 
 		if cwd != "" {
 			if err := os.Chdir(cwd); err != nil {
@@ -101,6 +106,14 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 		}
 		defer application.Shutdown()
 
+		// Auto-approve every session created in the server when --auto-approve is set.
+		// Useful for headless deployments where no human is present to grant permissions.
+		// DANGEROUS in shared/networked deployments — every tool call is silently allowed.
+		if autoApprove {
+			logging.Warn("Auto-approve enabled — all permission requests will be granted automatically")
+			enableAutoApprove(ctx, application)
+		}
+
 		server := api.NewServer(application, api.ServerOptions{
 			Port:       port,
 			Hostname:   hostname,
@@ -120,12 +133,55 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 	},
 }
 
+// enableAutoApprove marks all current and future sessions as auto-approved.
+// The subscription is established BEFORE listing existing sessions, so any
+// session created between list and subscribe is captured by the channel
+// rather than lost. Used by headless modes (serve, acp) when --auto-approve
+// is set.
+func enableAutoApprove(ctx context.Context, application *app.App) {
+	// Subscribe first so we don't miss CreatedEvent for sessions made
+	// between the list call returning and the goroutine entering its loop.
+	sesCh := application.Sessions.Subscribe(ctx)
+
+	// Mark existing sessions. sync.Map.Store is idempotent, so racing with
+	// a CreatedEvent for the same ID is harmless.
+	sessions, err := application.Sessions.List(ctx)
+	if err != nil {
+		logging.Warn("Failed to list sessions for auto-approve", "error", err)
+	} else {
+		for _, sess := range sessions {
+			application.Permissions.AutoApproveSession(sess.ID)
+		}
+		logging.Debug("Auto-approved existing sessions", "count", len(sessions))
+	}
+
+	go func() {
+		defer logging.RecoverPanic("autoApproveSessions", nil)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case event, ok := <-sesCh:
+				if !ok {
+					return
+				}
+				if event.Type != pubsub.CreatedEvent {
+					continue
+				}
+				application.Permissions.AutoApproveSession(event.Payload.ID)
+				logging.Debug("Auto-approved session", "session_id", event.Payload.ID)
+			}
+		}
+	}()
+}
+
 func init() {
 	serveCmd.Flags().Int("port", 4096, "Port to listen on")
 	serveCmd.Flags().String("hostname", "127.0.0.1", "Hostname to bind to")
 	serveCmd.Flags().String("cors", "*", "Allowed CORS origin")
 	serveCmd.Flags().String("cors-origin", "", "Alias for --cors (deprecated)")
 	_ = serveCmd.Flags().MarkHidden("cors-origin")
+	serveCmd.Flags().Bool("auto-approve", false, "Auto-approve all permission requests (dangerous — no human in the loop)")
 	serveCmd.Flags().BoolP("debug", "d", false, "Debug")
 	serveCmd.Flags().StringP("cwd", "c", "", "Current working directory")
 
