@@ -1708,12 +1708,22 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session) c
 	traceName := string(a.AgentID())
 	flowID, _ := ctx.Value(tools.FlowIDContextKey).(string)
 	flowStepID, _ := ctx.Value(tools.FlowStepIDContextKey).(string)
+	flowStepIteration, _ := ctx.Value(tools.FlowStepIterationContextKey).(int)
 
 	if flowID != "" {
 		metadata["flow_id"] = flowID
 		if flowStepID != "" {
 			metadata["flow_step_id"] = flowStepID
-			traceName = truncateStr(fmt.Sprintf("%s/%s/%s", a.AgentID(), flowID, flowStepID), maxTraceNameLen)
+			// Compose the full name including the optional `#N` iteration
+			// suffix in one go, then truncate once. Truncating in two passes
+			// can strip the suffix when the agent/flow/step concatenation
+			// already hits maxTraceNameLen.
+			fullName := fmt.Sprintf("%s/%s/%s", a.AgentID(), flowID, flowStepID)
+			if flowStepIteration > 1 {
+				metadata["flow_step_iteration"] = fmt.Sprintf("%d", flowStepIteration)
+				fullName = fmt.Sprintf("%s#%d", fullName, flowStepIteration)
+			}
+			traceName = truncateStr(fullName, maxTraceNameLen)
 		} else {
 			traceName = truncateStr(fmt.Sprintf("%s/%s", a.AgentID(), flowID), maxTraceNameLen)
 		}

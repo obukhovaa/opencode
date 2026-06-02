@@ -5,17 +5,18 @@ import (
 )
 
 var (
-	ErrFlowNotFound     = errors.New("flow not found")
-	ErrFlowDisabled     = errors.New("flow is disabled")
-	ErrInvalidFlowName  = errors.New("invalid flow name")
-	ErrInvalidStepID    = errors.New("invalid step ID")
-	ErrDuplicateStepID  = errors.New("duplicate step ID")
-	ErrInvalidRule      = errors.New("rule references non-existent step")
-	ErrInvalidFallback  = errors.New("fallback references non-existent step")
-	ErrNoSteps          = errors.New("flow has no steps")
-	ErrInvalidYAML      = errors.New("invalid flow YAML")
-	ErrInvalidPredicate = errors.New("invalid predicate")
-	ErrInvalidMaxTurns  = errors.New("invalid maxTurns")
+	ErrFlowNotFound         = errors.New("flow not found")
+	ErrFlowDisabled         = errors.New("flow is disabled")
+	ErrInvalidFlowName      = errors.New("invalid flow name")
+	ErrInvalidStepID        = errors.New("invalid step ID")
+	ErrDuplicateStepID      = errors.New("duplicate step ID")
+	ErrInvalidRule          = errors.New("rule references non-existent step")
+	ErrInvalidFallback      = errors.New("fallback references non-existent step")
+	ErrNoSteps              = errors.New("flow has no steps")
+	ErrInvalidYAML          = errors.New("invalid flow YAML")
+	ErrInvalidPredicate     = errors.New("invalid predicate")
+	ErrInvalidMaxTurns      = errors.New("invalid maxTurns")
+	ErrInvalidMaxIterations = errors.New("invalid maxIterations")
 )
 
 // Flow represents a discovered flow definition.
@@ -54,6 +55,11 @@ type Step struct {
 	// falls back to the global default). When explicitly set in the YAML it
 	// must be >= 1 — enforced by validateFlow.
 	MaxTurns int `yaml:"maxTurns,omitempty"`
+	// MaxIterations caps the number of in-process self-loop iterations of
+	// this step. 0 (unset) means unbounded — capped only by flow timeout.
+	// When the (N+1)th self-route would exceed this value, the step is
+	// failed instead of re-scheduled, and the fallback (if any) runs.
+	MaxIterations int `yaml:"maxIterations,omitempty"`
 }
 
 // StepSession controls session behavior for a step.

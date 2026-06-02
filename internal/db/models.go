@@ -50,6 +50,7 @@ type FlowState struct {
 	IsStructOutput bool           `json:"is_struct_output"`
 	CreatedAt      int64          `json:"created_at"`
 	UpdatedAt      int64          `json:"updated_at"`
+	Iteration      int64          `json:"iteration"`
 }
 
 type Message struct {

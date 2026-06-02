@@ -25,28 +25,30 @@ type ToolInfo struct {
 type toolResponseType string
 
 type (
-	sessionIDContextKey    string
-	messageIDContextKey    string
-	isTaskAgentContextKey  string
-	agentIDContextKey      string
-	metadataTagsContextKey string
-	flowIDContextKey       string
-	flowStepIDContextKey   string
-	flowArgsContextKey     string
+	sessionIDContextKey         string
+	messageIDContextKey         string
+	isTaskAgentContextKey       string
+	agentIDContextKey           string
+	metadataTagsContextKey      string
+	flowIDContextKey            string
+	flowStepIDContextKey        string
+	flowStepIterationContextKey string
+	flowArgsContextKey          string
 )
 
 const (
 	ToolResponseTypeText  toolResponseType = "text"
 	ToolResponseTypeImage toolResponseType = "image"
 
-	SessionIDContextKey    sessionIDContextKey    = "session_id"
-	MessageIDContextKey    messageIDContextKey    = "message_id"
-	IsTaskAgentContextKey  isTaskAgentContextKey  = "is_task_agent"
-	AgentIDContextKey      agentIDContextKey      = "agent_id"
-	MetadataTagsContextKey metadataTagsContextKey = "metadata_tags"
-	FlowIDContextKey       flowIDContextKey       = "flow_id"
-	FlowStepIDContextKey   flowStepIDContextKey   = "flow_step_id"
-	FlowArgsContextKey     flowArgsContextKey     = "flow_args"
+	SessionIDContextKey         sessionIDContextKey         = "session_id"
+	MessageIDContextKey         messageIDContextKey         = "message_id"
+	IsTaskAgentContextKey       isTaskAgentContextKey       = "is_task_agent"
+	AgentIDContextKey           agentIDContextKey           = "agent_id"
+	MetadataTagsContextKey      metadataTagsContextKey      = "metadata_tags"
+	FlowIDContextKey            flowIDContextKey            = "flow_id"
+	FlowStepIDContextKey        flowStepIDContextKey        = "flow_step_id"
+	FlowStepIterationContextKey flowStepIterationContextKey = "flow_step_iteration"
+	FlowArgsContextKey          flowArgsContextKey          = "flow_args"
 
 	// MaxToolResponseTokens is the maximum number of tokens allowed in a tool response
 	// to prevent context overflow. ~1200KB of text content.

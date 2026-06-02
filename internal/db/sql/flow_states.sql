@@ -8,9 +8,11 @@ INSERT INTO flow_states (
     args,
     output,
     is_struct_output,
+    iteration,
     created_at,
     updated_at
 ) VALUES (
+    ?,
     ?,
     ?,
     ?,
@@ -38,6 +40,7 @@ SET status = ?,
     args = ?,
     output = ?,
     is_struct_output = ?,
+    iteration = ?,
     updated_at = strftime('%s', 'now')
 WHERE session_id = ?
 RETURNING *;

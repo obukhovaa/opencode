@@ -255,6 +255,10 @@ func validateFlow(f *Flow) error {
 		if step.MaxTurns < 0 {
 			return fmt.Errorf("%w: step %q maxTurns must be >= 0 (got %d; 0 means inherit from agent)", ErrInvalidMaxTurns, step.ID, step.MaxTurns)
 		}
+		// MaxIterations is optional; 0 means unbounded. Negative values are invalid.
+		if step.MaxIterations < 0 {
+			return fmt.Errorf("%w: step %q maxIterations must be >= 0 (got %d; 0 means unbounded)", ErrInvalidMaxIterations, step.ID, step.MaxIterations)
+		}
 	}
 
 	// Validate rule and fallback references

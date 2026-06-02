@@ -80,10 +80,12 @@ The flow ID is derived from the filename without its extension. For example, `re
 | `id` | string | Yes | Unique step identifier (kebab-case, max 64 chars) |
 | `agent` | string | No | Agent ID to use (defaults to `coder`) |
 | `session.fork` | bool | No | Fork previous step's session (same agent only) |
-| `prompt` | string | Yes | Prompt template with `${args.*}` placeholders |
+| `prompt` | string | Yes | Prompt template with `${args.*}` and `${step.*}` placeholders |
 | `output.schema` | object | No | JSON Schema for structured output |
 | `rules` | array | No | Conditional routing rules |
 | `fallback` | object | No | Retry and error routing |
+| `maxTurns` | int | No | Per-step override for the agent's `maxTurns`. `0` (unset) inherits from the agent. |
+| `maxIterations` | int | No | Cap on in-process self-loop iterations. `0` (unset) is unbounded — only the flow timeout applies. When the (N+1)th self-route would exceed the cap, the step fails (and runs its `fallback`). See [Self-Loops](#self-loops). |
 
 ### Rules
 
@@ -111,6 +113,13 @@ Supported operators:
 | `==` | Equality |
 | `!=` | Inequality |
 | `=~` | Regex match (pattern delimited by `/`) |
+
+Predicates can reference two scopes:
+
+- `${args.X}` — the flow's accumulated args (structured outputs from prior steps merge in here). A missing key evaluates the predicate to false (no error).
+- `${step.X}` — step-scoped variables. Currently `${step.iteration}` (1-based, incremented on each self-route). Unknown `step.` keys are flow-author bugs and produce an error rather than silently matching false. Step variables are **not** stored on `args` and never persisted.
+
+The `sizeof` prefix works on both scopes (`sizeof ${args.items} != 0`, `sizeof ${step.iteration} == 1`).
 
 When multiple rules match, the corresponding steps execute in parallel.
 
@@ -169,13 +178,16 @@ opencode -F my-flow -s my-prefix -D -p "restart"
 
 ## Template Substitution
 
-Prompts support `${args.*}` placeholders:
+Prompts support `${args.*}` and `${step.*}` placeholders:
 
 - `${args.prompt}` — Value of the `prompt` argument
 - `${args.key}` — Value of any argument by key
 - `${args}` — Full JSON dump of all arguments
+- `${step.iteration}` — Current iteration of the step (1-based, increments per self-route). Always available; equals `1` for non-looping steps.
 
-Arguments accumulate as the flow progresses. When a step produces structured output, its fields are merged into the args map for subsequent steps.
+Step-scoped variables are substituted first so they cannot be shadowed by args of the same name.
+
+Arguments accumulate as the flow progresses. When a step produces structured output, its fields are merged into the args map for subsequent steps. `${step.*}` values are **not** merged into args — they exist only for rendering/predicates and do not leak into downstream steps.
 
 ## Session Management
 
@@ -231,20 +243,36 @@ Flow execution produces a JSON envelope:
 ```json
 {
   "flow_id": "my-flow",
-  "completed_steps": [
+  "steps": [
     {
       "step_id": "review",
       "session_id": "prefix-my-flow-review",
       "status": "completed",
+      "iteration": 3,
       "output": "...",
-      "is_struct_output": true
+      "is_struct_output": true,
+      "finished_at": 1780000000,
+      "context_size": 12345,
+      "cost": 0.0021
     }
   ],
-  "failed_steps": [],
-  "running_steps": [],
-  "postponed_steps": []
+  "metrics": {
+    "cost": 0.0021,
+    "gauge": 12345
+  }
 }
 ```
+
+The `steps` array is in completion order; each entry's `status` is its terminal state (`completed`, `failed`, or `postponed`). `metrics.cost` is the flow-wide total; `metrics.gauge` is wall-clock duration in milliseconds.
+
+The envelope contains exactly **one entry per step ID**, even when the step iterated. The latest published state wins:
+
+- `iteration` is the count of how many times the step ran before reaching its terminal state (1-based; `1` for non-looping steps).
+- `status` is the terminal status — `completed` if the loop exited cleanly, `failed` if a `maxIterations` cap (or any other error) tripped, `postponed` if the loop suspended itself.
+- `output` is the structured output (or text) from the **last** iteration.
+- `cost` and `context_size` are session-level totals — because all iterations share one session, these aggregate automatically across the whole loop.
+
+The intermediate iterations are not surfaced in the JSON envelope. To inspect them, query the session (its messages span all iterations) or Langfuse (one trace per iteration, distinguishable by the `#N` suffix in the trace name).
 
 ## Naming Rules
 
@@ -385,6 +413,8 @@ When multiple rules on a single step evaluate to true, all matching successor st
 
 If two parallel branches both route to the same step (A→B, A→C, B→D, C→D), the first branch to arrive runs step D. The second branch detects that step D is already running and skips it. Step D executes exactly once with the args from whichever branch arrived first.
 
+**Self-loops are exempt** from this guard. A step that routes back to itself (via a rule whose `then` names the step itself) re-enters intentionally — see [Self-Loops](#self-loops) below. The guard only applies when the route comes from a different step.
+
 ### Session forking
 
 When `session.fork: true` is set on a step, the step's session is created by copying the message history from the previous step's session. This only works when both steps use the same agent — if the agents differ, a fresh session is created instead and the previous step's output is still prepended to the prompt.
@@ -427,6 +457,50 @@ steps:
       Implement the changes now that all blockers are resolved.
       ${args.prompt}
 ```
+
+### Self-loops
+
+A step can route back to itself to iterate over a workload that doesn't fit in a single agent turn — for example, building libraries level-by-level, polling an external job, or scanning a paginated source.
+
+```yaml
+- id: build-level
+  agent: coder
+  prompt: |
+    Build libraries at level ${args.current_level}. Iteration ${step.iteration}.
+    Current state: ${args.snapshot_versions}
+  output:
+    schema:
+      type: object
+      properties:
+        current_level:
+          type: integer
+        has_more_levels:
+          type: boolean
+        snapshot_versions:
+          type: object
+      required: [current_level, has_more_levels, snapshot_versions]
+  maxIterations: 20  # safety cap
+  rules:
+    - if: ${args.has_more_levels} == true
+      then: build-level   # self-route
+    - if: ${args.has_more_levels} != true
+      then: publish
+```
+
+Two modes for self-routing:
+
+- **In-process** (`postpone` omitted or `false`) — the next iteration runs in the same flow invocation, immediately after the current one completes. Counts against the flow timeout.
+- **Postponed** (`postpone: true`) — the row is marked `postponed`; the step does not re-enter the agent loop. The next iteration runs only when the flow is re-invoked with the same session prefix. Use this when iteration progress depends on external state changing between runs.
+
+Both modes reuse the same step session, so the agent has memory of prior iterations (and the session's cost/tokens aggregate naturally). `${step.iteration}` is 1-based and survives postpone → resume via the `flow_states.iteration` column.
+
+Caveats to design around:
+
+- **Args persist between iterations.** Fields the agent omits from one iteration's structured output stay at the value the prior iteration set. List those fields under `required:` on the output schema — the model's structured-output API enforces required keys, so each iteration is forced to emit the freshly-computed value (e.g. `has_more_levels`). The flow runner itself does not re-validate the output beyond what the schema enforces on the model.
+- **Always cap with `maxIterations`** when the termination condition comes from the agent. If the predicate has a bug, an uncapped loop burns through the flow timeout. The cap fires the step's `fallback` so you can route to a clean failure handler. Two notes on cap semantics:
+  - The cap counts **in-process** iterations only. A `postpone: true` self-route does not bump the iteration counter, so a postpone loop is not bounded by `maxIterations` — each invocation runs the postponed step once before pausing. Bound those externally (e.g. orchestrator-level retry limits).
+  - The cap is a **post-step check**: with `maxIterations: N`, exactly N agent calls happen — iter N's pre-check sees that iter N+1 would exceed the cap and fails the step. If you want a strict token budget below the agent's cost-per-iteration, set the cap one below the desired hard limit.
+- **Diamond and self-loop are independent.** A self-loop bypasses the diamond-convergence guard, but a normal (non-self) route into a step still runs at most once per invocation.
 
 ## See Also
 

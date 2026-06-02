@@ -503,6 +503,7 @@ func (q *MySQLQuerier) CreateFlowState(ctx context.Context, arg CreateFlowStateP
 		Args:           arg.Args,
 		Output:         arg.Output,
 		IsStructOutput: arg.IsStructOutput,
+		Iteration:      int32(arg.Iteration),
 	})
 	if err != nil {
 		return FlowState{}, err
@@ -525,6 +526,7 @@ func (q *MySQLQuerier) GetFlowState(ctx context.Context, sessionID string) (Flow
 		Args:           fs.Args,
 		Output:         fs.Output,
 		IsStructOutput: fs.IsStructOutput,
+		Iteration:      int64(fs.Iteration),
 		CreatedAt:      fs.CreatedAt,
 		UpdatedAt:      fs.UpdatedAt,
 	}, nil
@@ -548,6 +550,7 @@ func (q *MySQLQuerier) ListFlowStatesByRootSession(ctx context.Context, rootSess
 			Args:           fs.Args,
 			Output:         fs.Output,
 			IsStructOutput: fs.IsStructOutput,
+			Iteration:      int64(fs.Iteration),
 			CreatedAt:      fs.CreatedAt,
 			UpdatedAt:      fs.UpdatedAt,
 		}
@@ -573,6 +576,7 @@ func (q *MySQLQuerier) ListFlowStatesByFlowID(ctx context.Context, flowID string
 			Args:           fs.Args,
 			Output:         fs.Output,
 			IsStructOutput: fs.IsStructOutput,
+			Iteration:      int64(fs.Iteration),
 			CreatedAt:      fs.CreatedAt,
 			UpdatedAt:      fs.UpdatedAt,
 		}
@@ -587,6 +591,7 @@ func (q *MySQLQuerier) UpdateFlowState(ctx context.Context, arg UpdateFlowStateP
 		Args:           arg.Args,
 		Output:         arg.Output,
 		IsStructOutput: arg.IsStructOutput,
+		Iteration:      int32(arg.Iteration),
 		SessionID:      arg.SessionID,
 	})
 	if err != nil {

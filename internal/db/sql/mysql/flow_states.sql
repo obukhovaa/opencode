@@ -8,9 +8,11 @@ INSERT INTO flow_states (
     args,
     output,
     is_struct_output,
+    iteration,
     created_at,
     updated_at
 ) VALUES (
+    ?,
     ?,
     ?,
     ?,
@@ -37,7 +39,8 @@ UPDATE flow_states
 SET status = ?,
     args = ?,
     output = ?,
-    is_struct_output = ?
+    is_struct_output = ?,
+    iteration = ?
 WHERE session_id = ?;
 
 -- name: DeleteFlowStatesByRootSession :exec

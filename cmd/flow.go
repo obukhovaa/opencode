@@ -158,6 +158,7 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 		StepID         string  `json:"step_id"`
 		SessionID      string  `json:"session_id"`
 		Status         string  `json:"status"`
+		Iteration      int     `json:"iteration,omitempty"`
 		Output         any     `json:"output,omitempty"`
 		IsStructOutput bool    `json:"is_struct_output,omitempty"`
 		FinishedAt     int64   `json:"finished_at,omitempty"`
@@ -196,10 +197,18 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 			StepID:         state.StepID,
 			SessionID:      state.SessionID,
 			Status:         string(state.Status),
+			Iteration:      state.Iteration,
 			Output:         output,
 			IsStructOutput: state.IsStructOutput,
 			FinishedAt:     state.UpdatedAt,
 		}
+		// One row per step ID in the envelope. A step that iterates via a
+		// self-loop publishes a state event per iteration (running, completed,
+		// possibly failed/postponed); the latest one wins. The `Iteration`
+		// field on the surviving row reflects how many times the step ran
+		// before reaching its terminal state, and `Cost`/`ContextSize` are
+		// session-level totals that aggregate naturally across iterations
+		// (same session ID).
 		if idx, exists := stepIndex[state.StepID]; exists {
 			orderedSteps[idx] = sr
 		} else {

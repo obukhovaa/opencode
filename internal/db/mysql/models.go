@@ -48,6 +48,7 @@ type FlowState struct {
 	Args           sql.NullString `json:"args"`
 	Output         sql.NullString `json:"output"`
 	IsStructOutput bool           `json:"is_struct_output"`
+	Iteration      int32          `json:"iteration"`
 	CreatedAt      int64          `json:"created_at"`
 	UpdatedAt      int64          `json:"updated_at"`
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,15 +21,30 @@ import (
 )
 
 // stubQuerier records calls to delete operations and returns pre-configured flow states.
+// All methods are safe for concurrent use.
 type stubQuerier struct {
 	db.QuerierWithTx
 
+	mu                      sync.Mutex
 	flowStates              []db.FlowState
 	deletedFlowRootSessions []string
 	createdFlowStates       []db.CreateFlowStateParams
 }
 
+// snapshotFlowStates returns a copy of the current flow_states slice under
+// the lock. Use this from tests that read state after the flow finishes —
+// the lock + copy gives the race detector a clean happens-before edge.
+func (q *stubQuerier) snapshotFlowStates() []db.FlowState {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	out := make([]db.FlowState, len(q.flowStates))
+	copy(out, q.flowStates)
+	return out
+}
+
 func (q *stubQuerier) ListFlowStatesByRootSession(_ context.Context, rootSessionID string) ([]db.FlowState, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	var result []db.FlowState
 	for _, fs := range q.flowStates {
 		if fs.RootSessionID == rootSessionID {
@@ -39,6 +55,8 @@ func (q *stubQuerier) ListFlowStatesByRootSession(_ context.Context, rootSession
 }
 
 func (q *stubQuerier) DeleteFlowStatesByRootSession(_ context.Context, rootSessionID string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	q.deletedFlowRootSessions = append(q.deletedFlowRootSessions, rootSessionID)
 	var remaining []db.FlowState
 	for _, fs := range q.flowStates {
@@ -51,6 +69,8 @@ func (q *stubQuerier) DeleteFlowStatesByRootSession(_ context.Context, rootSessi
 }
 
 func (q *stubQuerier) GetFlowState(_ context.Context, sessionID string) (db.FlowState, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	for _, fs := range q.flowStates {
 		if fs.SessionID == sessionID {
 			return fs, nil
@@ -60,9 +80,11 @@ func (q *stubQuerier) GetFlowState(_ context.Context, sessionID string) (db.Flow
 }
 
 func (q *stubQuerier) CreateFlowState(_ context.Context, arg db.CreateFlowStateParams) (db.FlowState, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	q.createdFlowStates = append(q.createdFlowStates, arg)
 	now := time.Now().Unix()
-	return db.FlowState{
+	fs := db.FlowState{
 		SessionID:      arg.SessionID,
 		RootSessionID:  arg.RootSessionID,
 		FlowID:         arg.FlowID,
@@ -70,20 +92,39 @@ func (q *stubQuerier) CreateFlowState(_ context.Context, arg db.CreateFlowStateP
 		Status:         arg.Status,
 		Args:           arg.Args,
 		IsStructOutput: arg.IsStructOutput,
+		Iteration:      arg.Iteration,
 		CreatedAt:      now,
 		UpdatedAt:      now,
-	}, nil
+	}
+	q.flowStates = append(q.flowStates, fs)
+	return fs, nil
 }
 
 func (q *stubQuerier) UpdateFlowState(_ context.Context, arg db.UpdateFlowStateParams) (db.FlowState, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	now := time.Now().Unix()
-	return db.FlowState{
-		SessionID: arg.SessionID,
-		Status:    arg.Status,
-		Args:      arg.Args,
-		Output:    arg.Output,
-		UpdatedAt: now,
-	}, nil
+	updated := db.FlowState{
+		SessionID:      arg.SessionID,
+		Status:         arg.Status,
+		Args:           arg.Args,
+		Output:         arg.Output,
+		IsStructOutput: arg.IsStructOutput,
+		Iteration:      arg.Iteration,
+		UpdatedAt:      now,
+	}
+	for i, fs := range q.flowStates {
+		if fs.SessionID == arg.SessionID {
+			// Preserve immutable fields and CreatedAt
+			updated.RootSessionID = fs.RootSessionID
+			updated.FlowID = fs.FlowID
+			updated.StepID = fs.StepID
+			updated.CreatedAt = fs.CreatedAt
+			q.flowStates[i] = updated
+			return updated, nil
+		}
+	}
+	return updated, nil
 }
 
 func (q *stubQuerier) WithTx(_ *sql.Tx) db.QuerierWithTx { return q }
@@ -121,28 +162,50 @@ func (p *stubPermissions) AutoApproveSession(_ string) {}
 
 // stubAgent returns a response event immediately. If responses is non-empty,
 // successive Run calls return the scripted events in order; otherwise a default
-// "done" text response is returned.
+// "done" text response is returned. Prompts received are captured into
+// `prompts` for assertions. Safe for concurrent Run calls.
 type stubAgent struct {
 	*pubsub.Broker[agentpkg.AgentEvent]
+
+	mu        sync.Mutex
 	responses []agentpkg.AgentEvent
 	calls     int
+	prompts   []string
 }
 
 func newStubAgent() *stubAgent {
 	return &stubAgent{Broker: pubsub.NewBroker[agentpkg.AgentEvent]()}
 }
 
-func (a *stubAgent) Run(_ context.Context, _ string, _ string, _ int, _ ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
+func (a *stubAgent) snapshotPrompts() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]string, len(a.prompts))
+	copy(out, a.prompts)
+	return out
+}
+
+func (a *stubAgent) callCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.calls
+}
+
+func (a *stubAgent) Run(_ context.Context, _ string, prompt string, _ int, _ ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
+	a.mu.Lock()
+	a.prompts = append(a.prompts, prompt)
 	ch := make(chan agentpkg.AgentEvent, 1)
+	var event agentpkg.AgentEvent
 	if len(a.responses) > 0 {
 		idx := a.calls
 		if idx >= len(a.responses) {
 			idx = len(a.responses) - 1
 		}
 		a.calls++
-		ch <- a.responses[idx]
+		event = a.responses[idx]
 	} else {
-		ch <- agentpkg.AgentEvent{
+		a.calls++
+		event = agentpkg.AgentEvent{
 			Type: agentpkg.AgentEventTypeResponse,
 			Message: message.Message{
 				Role:  message.Assistant,
@@ -150,6 +213,8 @@ func (a *stubAgent) Run(_ context.Context, _ string, _ string, _ int, _ ...messa
 			},
 		}
 	}
+	a.mu.Unlock()
+	ch <- event
 	close(ch)
 	return ch, nil
 }
@@ -483,8 +548,8 @@ func TestRunStepStructOutputValidation(t *testing.T) {
 			for range agentEvents {
 			}
 
-			if agent.calls != tt.wantCalls {
-				t.Errorf("agent Run calls = %d, want %d", agent.calls, tt.wantCalls)
+			if c := agent.callCount(); c != tt.wantCalls {
+				t.Errorf("agent Run calls = %d, want %d", c, tt.wantCalls)
 			}
 
 			var terminal *FlowState
@@ -544,8 +609,8 @@ func TestRunStepStructOutputValidationSkippedWithoutSchema(t *testing.T) {
 	for range agentEvents {
 	}
 
-	if agent.calls != 1 {
-		t.Errorf("agent Run calls = %d, want 1 (no retry expected)", agent.calls)
+	if c := agent.callCount(); c != 1 {
+		t.Errorf("agent Run calls = %d, want 1 (no retry expected)", c)
 	}
 	var terminal *FlowState
 	for _, s := range states {

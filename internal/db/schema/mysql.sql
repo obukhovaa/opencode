@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS flow_states (
   args LONGTEXT,
   output LONGTEXT,
   is_struct_output TINYINT(1) NOT NULL DEFAULT 0,
+  iteration INT NOT NULL DEFAULT 1,
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
   KEY idx_flow_states_root_session (root_session_id),

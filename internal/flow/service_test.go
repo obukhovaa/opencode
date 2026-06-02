@@ -45,7 +45,7 @@ func TestEvaluatePredicate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := evaluatePredicate(tt.predicate, tt.args)
+			got, err := evaluatePredicate(tt.predicate, tt.args, nil)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("evaluatePredicate() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -54,6 +54,55 @@ func TestEvaluatePredicate(t *testing.T) {
 				t.Errorf("evaluatePredicate() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestEvaluatePredicate_StepScope(t *testing.T) {
+	tests := []struct {
+		name      string
+		predicate string
+		stepVars  map[string]any
+		want      bool
+		wantErr   bool
+	}{
+		{"iteration equals 1", `${step.iteration} == 1`, map[string]any{"iteration": 1}, true, false},
+		{"iteration not equals", `${step.iteration} != 1`, map[string]any{"iteration": 3}, true, false},
+		{"iteration regex", `${step.iteration} =~ /^[0-9]+$/`, map[string]any{"iteration": 5}, true, false},
+		{"unknown step var errors", `${step.bogus} == 1`, map[string]any{"iteration": 1}, false, true},
+		{"sizeof on int", `sizeof ${step.iteration} == 1`, map[string]any{"iteration": 5}, true, false}, // "5" has length 1
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := evaluatePredicate(tt.predicate, nil, tt.stepVars)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("evaluatePredicate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("evaluatePredicate() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSubstituteScoped_StepIteration(t *testing.T) {
+	tmpl := "Iteration ${step.iteration} of ${args.label}"
+	got := substituteScoped(tmpl, map[string]any{"label": "build"}, map[string]any{"iteration": 3})
+	want := "Iteration 3 of build"
+	if got != want {
+		t.Errorf("substituteScoped() = %q, want %q", got, want)
+	}
+}
+
+func TestSubstituteScoped_StepIterationNotInArgs(t *testing.T) {
+	// Even when args also has an "iteration" key, ${step.iteration} must
+	// resolve from stepVars (closed namespace, not args). Conversely
+	// ${args.iteration} must resolve from args, not stepVars.
+	tmpl := "step=${step.iteration} args=${args.iteration}"
+	got := substituteScoped(tmpl, map[string]any{"iteration": 99}, map[string]any{"iteration": 3})
+	want := "step=3 args=99"
+	if got != want {
+		t.Errorf("substituteScoped() = %q, want %q", got, want)
 	}
 }
 
@@ -306,7 +355,7 @@ func TestResolveNextSteps(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resolveNextSteps(tt.rules, allSteps, tt.args)
+			got := resolveNextSteps(tt.rules, allSteps, tt.args, nil)
 
 			if len(got) != len(tt.wantStepIDs) {
 				t.Fatalf("resolveNextSteps() returned %d steps, want %d", len(got), len(tt.wantStepIDs))
