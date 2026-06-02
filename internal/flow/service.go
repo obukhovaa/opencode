@@ -378,7 +378,7 @@ func (s *service) runStep(
 		}
 
 		{
-			done, runErr := agentSvc.Run(ctx, sess.ID, prompt)
+			done, runErr := agentSvc.Run(ctx, sess.ID, prompt, step.MaxTurns)
 			if runErr != nil {
 				lastErr = runErr
 				continue

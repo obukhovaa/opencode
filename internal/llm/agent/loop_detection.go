@@ -13,6 +13,13 @@ import (
 const (
 	DefaultMaxTurns        = 100
 	DefaultRepeatThreshold = 3
+
+	// MaxTurnsProactiveHintThreshold is the effective max-turn budget at or
+	// below which we proactively tell the model how many turns it has. Empirically
+	// budget hints help when the cap is tight (the model is more likely to commit
+	// to a direct path) and add noise when the cap is large, so we only inject
+	// the hint when the budget is small. See proactiveMaxTurnsHint.
+	MaxTurnsProactiveHintThreshold = 10
 )
 
 type callTracker struct {
@@ -50,7 +57,19 @@ func resolveRepeatThreshold() int {
 	return DefaultRepeatThreshold
 }
 
-func resolveMaxTurnsValues(globalMaxTurns, agentMaxTurns int) int {
+// resolveMaxTurnsValues picks the effective max-turn budget for a generation.
+// Precedence (highest wins):
+//  1. callerOverride  — per-call override (e.g. a flow step setting Step.MaxTurns).
+//  2. globalMaxTurns  — `maxTurns` in .opencode.json / --max-turns CLI flag.
+//  3. agentMaxTurns   — `maxTurns` in the agent's config.
+//  4. DefaultMaxTurns — hard-coded fallback (100).
+//
+// A value of 0 at any level means "not set; fall through". Negative values are
+// validated out at the source (flow validator, config loader) and treated as 0 here.
+func resolveMaxTurnsValues(callerOverride, globalMaxTurns, agentMaxTurns int) int {
+	if callerOverride > 0 {
+		return callerOverride
+	}
 	if globalMaxTurns > 0 {
 		return globalMaxTurns
 	}
@@ -60,7 +79,10 @@ func resolveMaxTurnsValues(globalMaxTurns, agentMaxTurns int) int {
 	return DefaultMaxTurns
 }
 
-func resolveMaxTurns(agentID config.AgentName) int {
+// resolveMaxTurns resolves the effective max-turn budget for a generation,
+// optionally honoring a caller-supplied override (e.g. flow step Step.MaxTurns).
+// Pass 0 for callerOverride to opt out of the override (existing call sites).
+func resolveMaxTurns(callerOverride int, agentID config.AgentName) int {
 	var globalMaxTurns int
 	if cfg := config.Get(); cfg != nil {
 		globalMaxTurns = cfg.MaxTurns
@@ -70,7 +92,19 @@ func resolveMaxTurns(agentID config.AgentName) int {
 	if info, ok := reg.Get(agentID); ok {
 		agentMaxTurns = info.MaxTurns
 	}
-	return resolveMaxTurnsValues(globalMaxTurns, agentMaxTurns)
+	return resolveMaxTurnsValues(callerOverride, globalMaxTurns, agentMaxTurns)
+}
+
+// proactiveMaxTurnsHint returns a short constraint suffix to append to the
+// user's prompt when the effective max-turn budget is tight
+// (≤ MaxTurnsProactiveHintThreshold). Returns empty string when the budget is
+// larger — at that point the hint becomes irrelevant noise that can cause
+// premature "I'm running out of turns" guessing.
+func proactiveMaxTurnsHint(effectiveMaxTurns int) string {
+	if effectiveMaxTurns <= 0 || effectiveMaxTurns > MaxTurnsProactiveHintThreshold {
+		return ""
+	}
+	return fmt.Sprintf("\n\n[Turn budget] You have %d tool-use turns to complete this task.", effectiveMaxTurns)
 }
 
 func loopDetectedMessage(toolName string, streak int) string {

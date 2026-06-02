@@ -161,7 +161,7 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		)
 	}
 
-	done, err := a.Run(ctx, taskSession.ID, prompt)
+	done, err := a.Run(ctx, taskSession.ID, prompt, 0)
 	if err != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error while running task agent: %s", err)
 	}

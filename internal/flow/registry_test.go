@@ -134,6 +134,36 @@ func TestValidateFlow(t *testing.T) {
 			},
 			wantErr: ErrInvalidFallback,
 		},
+		{
+			name: "maxTurns positive is valid",
+			flow: Flow{
+				ID: "mt-positive",
+				Spec: FlowSpec{
+					Steps: []Step{{ID: "step-a", Prompt: "x", MaxTurns: 5}},
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "maxTurns zero (unset) is valid",
+			flow: Flow{
+				ID: "mt-zero",
+				Spec: FlowSpec{
+					Steps: []Step{{ID: "step-a", Prompt: "x", MaxTurns: 0}},
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "maxTurns negative rejected",
+			flow: Flow{
+				ID: "mt-neg",
+				Spec: FlowSpec{
+					Steps: []Step{{ID: "step-a", Prompt: "x", MaxTurns: -1}},
+				},
+			},
+			wantErr: ErrInvalidMaxTurns,
+		},
 	}
 
 	for _, tt := range tests {

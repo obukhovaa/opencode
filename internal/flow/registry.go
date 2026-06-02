@@ -249,6 +249,12 @@ func validateFlow(f *Flow) error {
 			return fmt.Errorf("%w: %q", ErrDuplicateStepID, step.ID)
 		}
 		stepIDs[step.ID] = true
+
+		// MaxTurns is optional; 0 means "inherit from agent" (Go zero-value /
+		// field omitted in YAML). Negative values are always invalid.
+		if step.MaxTurns < 0 {
+			return fmt.Errorf("%w: step %q maxTurns must be >= 0 (got %d; 0 means inherit from agent)", ErrInvalidMaxTurns, step.ID, step.MaxTurns)
+		}
 	}
 
 	// Validate rule and fallback references

@@ -449,7 +449,7 @@ func (p *chatPage) sendMessage(text string, attachments []message.Attachment) te
 		cmds = append(cmds, sessionCmd)
 	}
 
-	_, err = p.app.ActiveAgent().Run(context.Background(), p.session.ID, text, attachments...)
+	_, err = p.app.ActiveAgent().Run(context.Background(), p.session.ID, text, 0, attachments...)
 	if err != nil {
 		return util.ReportError(err)
 	}

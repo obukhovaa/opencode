@@ -71,7 +71,11 @@ type Service interface {
 	Model() models.Model
 	Tools() []tools.BaseTool
 	ResolvedTools() ([]tools.BaseTool, bool)
-	Run(ctx context.Context, sessionID string, content string, attachments ...message.Attachment) (<-chan AgentEvent, error)
+	// Run starts an agent turn for the given session.
+	// maxTurnsOverride > 0 caps the agentic loop to that many turns for THIS call
+	// only (e.g. a flow step's Step.MaxTurns). Pass 0 to inherit the agent /
+	// global / default precedence.
+	Run(ctx context.Context, sessionID string, content string, maxTurnsOverride int, attachments ...message.Attachment) (<-chan AgentEvent, error)
 	Cancel(sessionID string)
 	IsSessionBusy(sessionID string) bool
 	IsBusy() bool
@@ -360,7 +364,7 @@ func (a *agent) err(err error) AgentEvent {
 	}
 }
 
-func (a *agent) Run(ctx context.Context, sessionID string, content string, attachments ...message.Attachment) (<-chan AgentEvent, error) {
+func (a *agent) Run(ctx context.Context, sessionID string, content string, maxTurnsOverride int, attachments ...message.Attachment) (<-chan AgentEvent, error) {
 	if !a.provider.Model().SupportsAttachments && attachments != nil {
 		attachments = nil
 	}
@@ -383,7 +387,7 @@ func (a *agent) Run(ctx context.Context, sessionID string, content string, attac
 			attachmentParts = append(attachmentParts, message.BinaryContent{Path: attachment.FilePath, MIMEType: attachment.MimeType, Data: attachment.Content})
 		}
 
-		result := a.processGeneration(genCtx, sessionID, content, attachmentParts)
+		result := a.processGeneration(genCtx, sessionID, content, maxTurnsOverride, attachmentParts)
 		gauge := time.Since(now).Milliseconds()
 		if result.Error != nil {
 			if errors.Is(result.Error, ErrRequestCancelled) || errors.Is(result.Error, context.Canceled) {
@@ -405,7 +409,7 @@ func (a *agent) Run(ctx context.Context, sessionID string, content string, attac
 	return events, nil
 }
 
-func (a *agent) processGeneration(ctx context.Context, sessionID, content string, attachmentParts []message.ContentPart) AgentEvent {
+func (a *agent) processGeneration(ctx context.Context, sessionID, content string, maxTurnsOverride int, attachmentParts []message.ContentPart) AgentEvent {
 	cfg := config.Get()
 	// List existing messages; if none, start title generation asynchronously.
 	msgs, err := a.messages.List(ctx, sessionID)
@@ -413,11 +417,12 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		return a.err(fmt.Errorf("failed to list messages: %w", err))
 	}
 	if len(msgs) == 0 {
+		titleContent := content
 		go func() {
 			defer logging.RecoverPanic("agent.Run", func() {
 				logging.ErrorPersist("panic while generating title")
 			})
-			titleErr := a.generateTitle(context.Background(), sessionID, content)
+			titleErr := a.generateTitle(context.Background(), sessionID, titleContent)
 			if titleErr != nil {
 				logging.ErrorPersist(fmt.Sprintf("failed to generate title: %v", titleErr))
 			}
@@ -440,6 +445,11 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	ctx = a.createLangfuseTrace(ctx, session)
 	defer langfuse.EndTrace(ctx)
 
+	effectiveMaxTurns := resolveMaxTurns(maxTurnsOverride, a.agentID)
+	if hint := proactiveMaxTurnsHint(effectiveMaxTurns); hint != "" {
+		content += hint
+	}
+
 	userMsg, err := a.createUserMessage(ctx, sessionID, content, attachmentParts)
 	if err != nil {
 		return a.err(fmt.Errorf("failed to create user message: %w", err))
@@ -456,7 +466,6 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// Susped to get lazy tools
 	toolSet := a.resolveTools()
 
-	effectiveMaxTurns := resolveMaxTurns(a.agentID)
 	tracker := newCallTracker()
 
 	for {

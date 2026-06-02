@@ -132,7 +132,7 @@ func newStubAgent() *stubAgent {
 	return &stubAgent{Broker: pubsub.NewBroker[agentpkg.AgentEvent]()}
 }
 
-func (a *stubAgent) Run(_ context.Context, _ string, _ string, _ ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
+func (a *stubAgent) Run(_ context.Context, _ string, _ string, _ int, _ ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
 	ch := make(chan agentpkg.AgentEvent, 1)
 	if len(a.responses) > 0 {
 		idx := a.calls

@@ -246,7 +246,7 @@ func (h *Handler) HandlePrompt(id any, params PromptParams) error {
 
 	_ = acpSess // cwd available for future use
 
-	events, err := activeAgent.Run(context.Background(), params.SessionID, text, attachments...)
+	events, err := activeAgent.Run(context.Background(), params.SessionID, text, 0, attachments...)
 	if err != nil {
 		if errors.Is(err, agent.ErrSessionBusy) {
 			return h.transport.SendError(id, ErrCodeInternal, "session is busy")

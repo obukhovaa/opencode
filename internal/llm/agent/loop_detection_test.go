@@ -114,21 +114,57 @@ func TestResolveRepeatThreshold_InvalidEnv(t *testing.T) {
 func TestResolveMaxTurnsValues(t *testing.T) {
 	tests := []struct {
 		name     string
-		cli      int
+		override int
+		global   int
 		agent    int
 		expected int
 	}{
-		{"Global wins over agent", 50, 200, 50},
-		{"Agent wins over default", 0, 75, 75},
-		{"Default when both zero", 0, 0, DefaultMaxTurns},
-		{"Global wins when agent zero", 30, 0, 30},
+		// override > global > agent > default
+		{"Override wins over global+agent", 10, 50, 200, 10},
+		{"Override wins when others zero", 7, 0, 0, 7},
+		{"Override skipped when zero, global wins", 0, 50, 200, 50},
+		{"Override and global zero, agent wins", 0, 0, 75, 75},
+		{"All zero falls through to default", 0, 0, 0, DefaultMaxTurns},
+		{"Override skipped, global wins when agent zero", 0, 30, 0, 30},
+		{"Negative override treated as unset", -5, 0, 200, 200},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resolveMaxTurnsValues(tt.cli, tt.agent)
+			got := resolveMaxTurnsValues(tt.override, tt.global, tt.agent)
 			if got != tt.expected {
-				t.Errorf("resolveMaxTurnsValues(%d, %d) = %d, want %d", tt.cli, tt.agent, got, tt.expected)
+				t.Errorf("resolveMaxTurnsValues(%d, %d, %d) = %d, want %d", tt.override, tt.global, tt.agent, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestProactiveMaxTurnsHint(t *testing.T) {
+	tests := []struct {
+		name              string
+		effectiveMaxTurns int
+		wantNonEmpty      bool
+		wantContains      string
+	}{
+		{"zero → no hint", 0, false, ""},
+		{"negative → no hint", -1, false, ""},
+		{"1 → hint with 1", 1, true, "1 tool-use turns"},
+		{"5 → hint with 5", 5, true, "5 tool-use turns"},
+		{"exactly at threshold → hint", MaxTurnsProactiveHintThreshold, true, "10 tool-use turns"},
+		{"just above threshold → no hint", MaxTurnsProactiveHintThreshold + 1, false, ""},
+		{"large budget → no hint", 100, false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := proactiveMaxTurnsHint(tt.effectiveMaxTurns)
+			if tt.wantNonEmpty && got == "" {
+				t.Fatalf("proactiveMaxTurnsHint(%d) = empty, want non-empty", tt.effectiveMaxTurns)
+			}
+			if !tt.wantNonEmpty && got != "" {
+				t.Fatalf("proactiveMaxTurnsHint(%d) = %q, want empty", tt.effectiveMaxTurns, got)
+			}
+			if tt.wantContains != "" && !strings.Contains(got, tt.wantContains) {
+				t.Errorf("proactiveMaxTurnsHint(%d) = %q, want substring %q", tt.effectiveMaxTurns, got, tt.wantContains)
 			}
 		})
 	}

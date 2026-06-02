@@ -74,7 +74,7 @@ func runNonInteractive(ctx context.Context, a *app.App, prompt string, outputFor
 
 	a.Permissions.AutoApproveSession(sess.ID)
 
-	done, err := a.ActiveAgent().Run(ctx, sess.ID, prompt)
+	done, err := a.ActiveAgent().Run(ctx, sess.ID, prompt, 0)
 	if err != nil {
 		return fmt.Errorf("failed to start agent processing stream for session %s: %w", sess.ID, err)
 	}

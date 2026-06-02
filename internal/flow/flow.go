@@ -15,6 +15,7 @@ var (
 	ErrNoSteps          = errors.New("flow has no steps")
 	ErrInvalidYAML      = errors.New("invalid flow YAML")
 	ErrInvalidPredicate = errors.New("invalid predicate")
+	ErrInvalidMaxTurns  = errors.New("invalid maxTurns")
 )
 
 // Flow represents a discovered flow definition.
@@ -48,6 +49,11 @@ type Step struct {
 	Output   *StepOutput `yaml:"output,omitempty"`
 	Rules    []Rule      `yaml:"rules,omitempty"`
 	Fallback *Fallback   `yaml:"fallback,omitempty"`
+	// MaxTurns optionally overrides the agent's maxTurns for this step.
+	// 0 (unset) inherits the agent's configured maxTurns (which in turn
+	// falls back to the global default). When explicitly set in the YAML it
+	// must be >= 1 — enforced by validateFlow.
+	MaxTurns int `yaml:"maxTurns,omitempty"`
 }
 
 // StepSession controls session behavior for a step.

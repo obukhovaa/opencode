@@ -103,7 +103,7 @@ func (s *Server) handleSessionPrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := activeAgent.Run(r.Context(), sessionID, text, attachments...)
+	events, err := activeAgent.Run(r.Context(), sessionID, text, 0, attachments...)
 	if err != nil {
 		if errors.Is(err, agent.ErrSessionBusy) {
 			writeError(w, http.StatusConflict, "session is busy")
@@ -149,7 +149,7 @@ func (s *Server) handleSessionPromptAsync(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	events, err := activeAgent.Run(context.Background(), sessionID, text, attachments...)
+	events, err := activeAgent.Run(context.Background(), sessionID, text, 0, attachments...)
 	if err != nil {
 		if errors.Is(err, agent.ErrSessionBusy) {
 			writeError(w, http.StatusConflict, "session is busy")
