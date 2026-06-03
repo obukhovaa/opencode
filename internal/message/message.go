@@ -14,6 +14,11 @@ import (
 	"github.com/opencode-ai/opencode/internal/pubsub"
 )
 
+// partsBufferSize is the per-subscriber channel buffer for the parts broker.
+// One turn with ~10 parallel tools × 3 lifecycle transitions = 30 events.
+// A higher cap than the default (64) reduces drops if an SSE client is slow.
+const partsBufferSize = 256
+
 const BytesPerTokenEta = 4
 
 type CreateMessageParams struct {
@@ -37,20 +42,55 @@ type Service interface {
 	MaxSeq(ctx context.Context, sessionID string) (int64, error)
 	Delete(ctx context.Context, id string) error
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
+
+	// Per-part SSE event surface — independent of the whole-message broker.
+	SubscribeParts(ctx context.Context) <-chan pubsub.Event[PartEvent]
+	// PublishPart emits a part-level event. Returns immediately without
+	// allocating when no subscribers are connected (the dominant CLI/TUI case).
+	PublishPart(sessionID, messageID string, part ContentPart)
+	// Shutdown stops both brokers and releases subscriber channels. Safe to
+	// call multiple times.
+	Shutdown()
 }
 
 type service struct {
 	*pubsub.Broker[Message]
-	db *sql.DB
-	q  db.QuerierWithTx
+	parts *pubsub.Broker[PartEvent]
+	db    *sql.DB
+	q     db.QuerierWithTx
 }
 
 func NewService(q db.QuerierWithTx, database *sql.DB) Service {
 	return &service{
 		Broker: pubsub.NewBroker[Message](),
+		parts:  pubsub.NewBrokerWithOptions[PartEvent](partsBufferSize, 1000),
 		q:      q,
 		db:     database,
 	}
+}
+
+func (s *service) SubscribeParts(ctx context.Context) <-chan pubsub.Event[PartEvent] {
+	return s.parts.Subscribe(ctx)
+}
+
+func (s *service) PublishPart(sessionID, messageID string, part ContentPart) {
+	// Fast path: zero subscribers (CLI/TUI default). One RLock via
+	// GetSubscriberCount() returns the cached subCount; no allocation,
+	// no clonePart, no map iteration, no channel send.
+	if s.parts.GetSubscriberCount() == 0 {
+		return
+	}
+	s.parts.Publish(pubsub.UpdatedEvent, PartEvent{
+		SessionID: sessionID,
+		MessageID: messageID,
+		Part:      clonePart(part),
+		Time:      time.Now().UnixMilli(),
+	})
+}
+
+func (s *service) Shutdown() {
+	s.Broker.Shutdown()
+	s.parts.Shutdown()
 }
 
 func (s *service) Delete(ctx context.Context, id string) error {

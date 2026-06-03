@@ -254,6 +254,59 @@ func ConvertMessageToResponse(msg message.Message) APIMessageResponse {
 	return ConvertMessage(msg, nil)
 }
 
+// ConvertPart converts a single ContentPart into an APIPart for use in
+// `message.part.updated` SSE frames. Unlike convertParts, this has no
+// cross-message context — ToolCall parts emit with status from Finished
+// (pending/running) and ToolResult parts emit standalone with
+// completed/error status. The SSE consumer reconciles by callID.
+//
+// Only ToolCall and ToolResult are emitted today (see PublishPart call
+// sites in internal/llm/agent/agent.go). If text/reasoning/file delta
+// streaming is added, extend this with position-derived part IDs — do not
+// use static IDs, since the SSE consumer keys on `id` for dedup.
+func ConvertPart(messageID, sessionID string, part message.ContentPart) APIPart {
+	switch p := part.(type) {
+	case message.ToolCall:
+		status := "pending"
+		if p.Finished {
+			status = "running"
+		}
+		return APIPart{
+			ID:        "tool-" + p.ID,
+			Type:      "tool",
+			MessageID: messageID,
+			SessionID: sessionID,
+			Tool:      p.Name,
+			CallID:    p.ID,
+			State: &APIToolState{
+				Status: status,
+				Input:  parseToolInput(p.Input),
+			},
+		}
+	case message.ToolResult:
+		state := &APIToolState{
+			Status:   "completed",
+			Output:   p.Content,
+			Metadata: parseMetadata(p.Metadata),
+		}
+		if p.IsError {
+			state.Status = "error"
+			state.Error = p.Content
+			state.Output = ""
+		}
+		return APIPart{
+			ID:        "tool-" + p.ToolCallID,
+			Type:      "tool",
+			MessageID: messageID,
+			SessionID: sessionID,
+			Tool:      p.Name,
+			CallID:    p.ToolCallID,
+			State:     state,
+		}
+	}
+	return APIPart{MessageID: messageID, SessionID: sessionID}
+}
+
 // buildToolResultMap builds a lookup from tool call ID to ToolResult across
 // all messages. If multiple results exist for the same call ID, the last one wins.
 func buildToolResultMap(msgs []message.Message) map[string]message.ToolResult {

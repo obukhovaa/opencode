@@ -260,6 +260,9 @@ func (app *App) Shutdown() {
 	if app.CronScheduler != nil {
 		app.CronScheduler.Stop()
 	}
+	if app.Messages != nil {
+		app.Messages.Shutdown()
+	}
 	tools.CleanupTempDir()
 	app.LspService.Shutdown(context.Background())
 }
@@ -269,6 +272,9 @@ func (app *App) ForceShutdown() {
 	logging.Info("Starting force shutdown")
 	if app.CronScheduler != nil {
 		app.CronScheduler.Stop()
+	}
+	if app.Messages != nil {
+		app.Messages.Shutdown()
 	}
 	tools.CleanupTempDir()
 	app.LspService.ForceShutdown()

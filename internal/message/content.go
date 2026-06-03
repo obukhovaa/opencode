@@ -181,6 +181,18 @@ func (m *Message) ToolCalls() []ToolCall {
 	return toolCalls
 }
 
+// FindToolCall returns the ToolCall with the given ID and true if found.
+// Used by SSE part-event emission to snapshot the current state of a tool
+// after AddToolCall / FinishToolCall mutates the parts slice.
+func (m *Message) FindToolCall(id string) (ToolCall, bool) {
+	for _, part := range m.Parts {
+		if c, ok := part.(ToolCall); ok && c.ID == id {
+			return c, true
+		}
+	}
+	return ToolCall{}, false
+}
+
 func (m *Message) ToolResults() []ToolResult {
 	return m.ToolResultsByToolName("")
 }

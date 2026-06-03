@@ -699,6 +699,17 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	toolResults := make([]message.ToolResult, len(assistantMsg.ToolCalls()))
 	toolCalls := assistantMsg.ToolCalls()
 
+	// record writes a tool result into the shared toolResults slice and
+	// emits a per-part SSE event for the same tool. Each call must own a
+	// unique index — the parallel-group goroutines below preserve this
+	// invariant by passing entry.index, which is assigned during phase 1.
+	// Concurrent invocation from those goroutines is safe: the broker's
+	// Publish takes RLock, and per-index ownership prevents slice races.
+	record := func(index int, tr message.ToolResult) {
+		toolResults[index] = tr
+		a.messages.PublishPart(sessionID, assistantMsg.ID, tr)
+	}
+
 	// Phase 1: Pre-processing (synchronous) — resolve tools, loop detection, classify parallelism
 	type toolEntry struct {
 		index    int
@@ -723,12 +734,12 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 			}
 		}
 		if tool == nil {
-			toolResults[i] = message.ToolResult{
+			record(i, message.ToolResult{
 				ToolCallID: toolCall.ID,
 				Name:       toolCall.Name,
 				Content:    fmt.Sprintf("Tool not found: %s", toolCall.Name),
 				IsError:    true,
-			}
+			})
 			continue
 		}
 
@@ -739,12 +750,12 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				"streak", streak,
 				"session_id", sessionID,
 			)
-			toolResults[i] = message.ToolResult{
+			record(i, message.ToolResult{
 				ToolCallID: toolCall.ID,
 				Name:       toolCall.Name,
 				Content:    loopDetectedMessage(toolCall.Name, streak),
 				IsError:    true,
-			}
+			})
 			continue
 		}
 
@@ -827,12 +838,12 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 							"input", e.toolCall.Input,
 							"gauge", gauge,
 						)
-						toolResults[e.index] = message.ToolResult{
+						record(e.index, message.ToolResult{
 							ToolCallID: e.toolCall.ID,
 							Name:       e.toolCall.Name,
 							Content:    "Permission denied",
 							IsError:    true,
-						}
+						})
 						permCancel()
 						return
 					}
@@ -842,12 +853,12 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 						"error", toolErr.Error(),
 						"gauge", gauge,
 					)
-					toolResults[e.index] = message.ToolResult{
+					record(e.index, message.ToolResult{
 						ToolCallID: e.toolCall.ID,
 						Name:       e.toolCall.Name,
 						Content:    fmt.Sprintf("Tool returned error: %s", toolErr.Error()),
 						IsError:    true,
-					}
+					})
 					return
 				}
 				if toolSpan != nil {
@@ -863,14 +874,14 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 					"successful", !toolResult.IsError,
 					"gauge", gauge,
 				)
-				toolResults[e.index] = message.ToolResult{
+				record(e.index, message.ToolResult{
 					Type:       message.ToolResultType(toolResult.Type),
 					Name:       e.toolCall.Name,
 					ToolCallID: e.toolCall.ID,
 					Content:    toolResult.Content,
 					Metadata:   toolResult.Metadata,
 					IsError:    toolResult.IsError,
-				}
+				})
 			}(entry)
 		}
 		waitDone := make(chan struct{})
@@ -901,12 +912,12 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		a.finishMessage(context.Background(), &assistantMsg, message.FinishReasonCanceled)
 		for i, tc := range toolCalls {
 			if toolResults[i].ToolCallID == "" {
-				toolResults[i] = message.ToolResult{
+				record(i, message.ToolResult{
 					ToolCallID: tc.ID,
 					Name:       tc.Name,
 					Content:    "Tool execution canceled by user",
 					IsError:    true,
-				}
+				})
 			}
 		}
 		goto out
@@ -915,22 +926,22 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	// If permission denied in parallel group, skip sequential and fill remaining
 	if permissionDenied {
 		for _, entry := range sequentialGroup {
-			toolResults[entry.index] = message.ToolResult{
+			record(entry.index, message.ToolResult{
 				ToolCallID: entry.toolCall.ID,
 				Name:       entry.toolCall.Name,
 				Content:    "Tool execution canceled by user",
 				IsError:    true,
-			}
+			})
 		}
 		// Fill any unset parallel results (cancelled mid-flight)
 		for _, entry := range parallelGroup {
 			if toolResults[entry.index].ToolCallID == "" {
-				toolResults[entry.index] = message.ToolResult{
+				record(entry.index, message.ToolResult{
 					ToolCallID: entry.toolCall.ID,
 					Name:       entry.toolCall.Name,
 					Content:    "Tool execution canceled by user",
 					IsError:    true,
-				}
+				})
 			}
 		}
 		a.finishMessage(ctx, &assistantMsg, message.FinishReasonPermissionDenied)
@@ -944,21 +955,21 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		select {
 		case <-ctx.Done():
 			a.finishMessage(context.Background(), &assistantMsg, message.FinishReasonCanceled)
-			toolResults[entry.index] = message.ToolResult{
+			record(entry.index, message.ToolResult{
 				ToolCallID: entry.toolCall.ID,
 				Name:       entry.toolCall.Name,
 				Content:    "Tool execution canceled by user",
 				IsError:    true,
-			}
+			})
 			// Fill remaining sequential entries
 			for _, remaining := range sequentialGroup {
 				if toolResults[remaining.index].ToolCallID == "" {
-					toolResults[remaining.index] = message.ToolResult{
+					record(remaining.index, message.ToolResult{
 						ToolCallID: remaining.toolCall.ID,
 						Name:       remaining.toolCall.Name,
 						Content:    "Tool execution canceled by user",
 						IsError:    true,
-					}
+					})
 				}
 			}
 			goto out
@@ -995,20 +1006,20 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 					"input", entry.toolCall.Input,
 					"gauge", gauge,
 				)
-				toolResults[entry.index] = message.ToolResult{
+				record(entry.index, message.ToolResult{
 					ToolCallID: entry.toolCall.ID,
 					Name:       entry.toolCall.Name,
 					Content:    "Permission denied",
 					IsError:    true,
-				}
+				})
 				for _, remaining := range sequentialGroup {
 					if toolResults[remaining.index].ToolCallID == "" {
-						toolResults[remaining.index] = message.ToolResult{
+						record(remaining.index, message.ToolResult{
 							ToolCallID: remaining.toolCall.ID,
 							Name:       remaining.toolCall.Name,
 							Content:    "Tool execution canceled by user",
 							IsError:    true,
-						}
+						})
 					}
 				}
 				a.finishMessage(ctx, &assistantMsg, message.FinishReasonPermissionDenied)
@@ -1020,12 +1031,12 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				"error", toolErr.Error(),
 				"gauge", gauge,
 			)
-			toolResults[entry.index] = message.ToolResult{
+			record(entry.index, message.ToolResult{
 				ToolCallID: entry.toolCall.ID,
 				Name:       entry.toolCall.Name,
 				Content:    fmt.Sprintf("Tool returned error: %s", toolErr.Error()),
 				IsError:    true,
-			}
+			})
 			continue
 		}
 		if seqToolSpan != nil {
@@ -1042,14 +1053,14 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 			"successful", !toolResult.IsError,
 			"gauge", gauge,
 		)
-		toolResults[entry.index] = message.ToolResult{
+		record(entry.index, message.ToolResult{
 			Type:       message.ToolResultType(toolResult.Type),
 			Name:       entry.toolCall.Name,
 			ToolCallID: entry.toolCall.ID,
 			Content:    toolResult.Content,
 			Metadata:   toolResult.Metadata,
 			IsError:    toolResult.IsError,
-		}
+		})
 	}
 out:
 	if len(toolResults) == 0 {
@@ -1142,6 +1153,12 @@ func (a *agent) processEvent(ctx context.Context, sessionID string, assistantMsg
 		return a.messages.Update(ctx, *assistantMsg)
 	case provider.EventToolUseStart:
 		assistantMsg.AddToolCall(*event.ToolCall)
+		// Emit per-part event so SSE consumers see the tool transition to
+		// "pending" mid-stream. Snapshot from the message (post-AddToolCall)
+		// so we publish the same shape that lands in the message store.
+		if tc, ok := assistantMsg.FindToolCall(event.ToolCall.ID); ok {
+			a.messages.PublishPart(sessionID, assistantMsg.ID, tc)
+		}
 		return a.messages.Update(ctx, *assistantMsg)
 	// TODO: see how to handle this
 	// case provider.EventToolUseDelta:
@@ -1154,6 +1171,11 @@ func (a *agent) processEvent(ctx context.Context, sessionID string, assistantMsg
 	// 	}
 	case provider.EventToolUseStop:
 		assistantMsg.FinishToolCall(event.ToolCall.ID)
+		// "running" — provider finished assembling the call, tool execution
+		// is about to begin. Snapshot reflects Finished=true.
+		if tc, ok := assistantMsg.FindToolCall(event.ToolCall.ID); ok {
+			a.messages.PublishPart(sessionID, assistantMsg.ID, tc)
+		}
 		return a.messages.Update(ctx, *assistantMsg)
 	case provider.EventError:
 		if errors.Is(event.Error, context.Canceled) {

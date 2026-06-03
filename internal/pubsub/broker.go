@@ -8,11 +8,12 @@ import (
 const bufferSize = 64
 
 type Broker[T any] struct {
-	subs      map[chan Event[T]]struct{}
-	mu        sync.RWMutex
-	done      chan struct{}
-	subCount  int
-	maxEvents int
+	subs       map[chan Event[T]]struct{}
+	mu         sync.RWMutex
+	done       chan struct{}
+	subCount   int
+	maxEvents  int
+	bufferSize int
 }
 
 func NewBroker[T any]() *Broker[T] {
@@ -20,11 +21,15 @@ func NewBroker[T any]() *Broker[T] {
 }
 
 func NewBrokerWithOptions[T any](channelBufferSize, maxEvents int) *Broker[T] {
+	if channelBufferSize <= 0 {
+		channelBufferSize = bufferSize
+	}
 	b := &Broker[T]{
-		subs:      make(map[chan Event[T]]struct{}),
-		done:      make(chan struct{}),
-		subCount:  0,
-		maxEvents: maxEvents,
+		subs:       make(map[chan Event[T]]struct{}),
+		done:       make(chan struct{}),
+		subCount:   0,
+		maxEvents:  maxEvents,
+		bufferSize: channelBufferSize,
 	}
 	return b
 }
@@ -60,7 +65,7 @@ func (b *Broker[T]) Subscribe(ctx context.Context) <-chan Event[T] {
 	default:
 	}
 
-	sub := make(chan Event[T], bufferSize)
+	sub := make(chan Event[T], b.bufferSize)
 	b.subs[sub] = struct{}{}
 	b.subCount++
 

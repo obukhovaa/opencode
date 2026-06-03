@@ -86,6 +86,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	msgCh := s.app.Messages.Subscribe(ctx)
+	partCh := s.app.Messages.SubscribeParts(ctx)
 	sesCh := s.app.Sessions.Subscribe(ctx)
 	permCh := s.app.Permissions.Subscribe(ctx)
 
@@ -94,7 +95,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		questionCh = s.app.Questions.Subscribe(ctx)
 	}
 
-	streamLoop(ctx, w, flusher, msgCh, sesCh, permCh, questionCh)
+	streamLoop(ctx, w, flusher, msgCh, partCh, sesCh, permCh, questionCh)
 }
 
 // streamLoop runs the fan-in select loop that reads from the broker channels
@@ -104,6 +105,7 @@ func streamLoop(
 	w http.ResponseWriter,
 	flusher http.Flusher,
 	msgCh <-chan pubsub.Event[message.Message],
+	partCh <-chan pubsub.Event[message.PartEvent],
 	sesCh <-chan pubsub.Event[session.Session],
 	permCh <-chan pubsub.Event[permission.PermissionRequest],
 	questionCh <-chan pubsub.Event[question.Request],
@@ -124,6 +126,16 @@ func streamLoop(
 			eventType := sseEventType("message", event.Type)
 			props := ConvertMessageToResponse(event.Payload)
 			if err := writeSSEEvent(w, flusher, eventType, props); err != nil {
+				return
+			}
+
+		case event, ok := <-partCh:
+			if !ok {
+				return
+			}
+			apiPart := ConvertPart(event.Payload.MessageID, event.Payload.SessionID, event.Payload.Part)
+			props := map[string]any{"part": apiPart}
+			if err := writeSSEEvent(w, flusher, "message.part.updated", props); err != nil {
 				return
 			}
 
