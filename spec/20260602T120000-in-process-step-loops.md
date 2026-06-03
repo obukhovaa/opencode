@@ -13,7 +13,7 @@
 - [x] Phase 6 — CLI iteration indicator (added `iteration` to `cmd/flow.go` stepResult JSON; no live TUI flow component exists so spinner-title update was descoped)
 - [x] Phase 7 — Langfuse telemetry (`flow_step_iteration` metadata + trace-name suffix `#N` when iter > 1)
 - [x] Phase 8 — Docs update (Step fields table extended w/ `maxIterations` + `maxTurns`, Diamond Convergence amended, Self-loops section added, Template Substitution + predicate scope docs, Output JSON example)
-- [x] Phase 9 — Skill copy + sync (project `.agents/skills/flow-creator/` mirrored from piano repo; both locations updated with `maxIterations`, `maxTurns`, `${step.iteration}`, in-process self-loop pattern)
+- [x] Phase 9 — Skill update (`.agents/skills/flow-creator/` updated with `maxIterations`, `maxTurns`, `${step.iteration}`, in-process self-loop pattern)
 - [x] Phase 10 — `make test` green (`-race`, full suite); coverage in `internal/flow` is 80.1% after post-review regression tests
 
 ## Post-Review Fixes
@@ -353,9 +353,8 @@ counter.
 | `internal/flow/service_test.go` | New tests (see below) |
 | `internal/tui/components/flow/` | Render iteration count in step status line |
 | `docs/flows.md` | Document in-process self-loops, `${step.iteration}`, `maxIterations` |
-| `.agents/skills/flow-creator/SKILL.md` | New — copied from piano repo, updated for this spec |
-| `.agents/skills/flow-creator/references/flow-spec.md` | New — copied and updated |
-| `/Users/nouwa/Development/piano/agents/composer-developer/.agents/skills/flow-creator/...` | Mirror the same updates upstream |
+| `.agents/skills/flow-creator/SKILL.md` | New — flow-authoring skill for this spec |
+| `.agents/skills/flow-creator/references/flow-spec.md` | New — flow YAML reference |
 
 ## Tests
 
@@ -397,18 +396,18 @@ Update `docs/flows.md`:
 - Note that args accumulation can be a footgun for loops (fields omitted from
   one iteration's output persist from prior iteration).
 
-## Skill Sync Plan
+## Skill Update Plan
 
-1. Copy `/Users/nouwa/Development/piano/agents/composer-developer/.agents/skills/flow-creator/`
-   to `/Users/nouwa/Development/open-source-fork/opencode/.agents/skills/flow-creator/`.
-2. Update `references/flow-spec.md` in **both** locations:
+Update `.agents/skills/flow-creator/`:
+
+1. `references/flow-spec.md`:
    - Add `maxIterations` to Step fields.
    - Document `${step.iteration}` in Template Substitution and predicate
      operators.
    - Add a "Self-loops (in-process)" subsection with a worked example
      mirroring the build-dependencies pattern.
    - Update "Diamond Convergence" note to mention the self-loop carve-out.
-3. Update `SKILL.md` in both locations:
+2. `SKILL.md`:
    - Mention `maxTurns` (per-agent config, already exists but not yet in the
      skill) alongside `maxIterations` (per-step) in design guidelines.
    - Update the "Self-loop with Postpone" pattern to also show the
@@ -428,7 +427,7 @@ Update `docs/flows.md`:
 7. TUI iteration indicator.
 8. Telemetry: iteration in Langfuse metadata.
 9. Docs update (`docs/flows.md`).
-10. Skill copy + sync (both locations).
+10. Skill update (`.agents/skills/flow-creator/`).
 11. Run `go test ./internal/flow/...` and `make test`.
 
 ## Resolved Decisions (from review)
