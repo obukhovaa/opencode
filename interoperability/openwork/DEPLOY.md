@@ -390,12 +390,13 @@ Once paired (Telegram) or installed (Slack), these commands are available in cha
 | Command | Description |
 |---|---|
 | `/reset` | Clear session and model, start fresh |
+| `/sessions` | List recent OpenCode sessions in the current workspace (with current one marked) |
+| `/session <id-prefix>` | Switch to an existing OpenCode session by ID prefix |
 | `/dir` | Show current workspace directory |
 | `/dir <path>` | Switch workspace (resets session) |
 | `/model` | Show current model |
 | `/opus` | Switch to Claude Opus |
 | `/codex` | Switch to GPT Codex |
-| `/agent` | Show workspace agent config |
 | `/pair <code>` | Pair with a private Telegram bot |
 | `/help` | List commands |
 

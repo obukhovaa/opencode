@@ -1,7 +1,7 @@
 # Message-Part SSE Events — Streaming Tool Updates
 
 **Date**: 2026-06-02
-**Status**: Proposed
+**Status**: Implemented
 **Author**: AI-assisted
 
 ## Problem

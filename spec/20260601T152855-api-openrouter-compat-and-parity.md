@@ -1,7 +1,7 @@
 # API Improvements — OpenRouter Compatibility + Low-Hanging SDK Parity
 
 **Date**: 2026-06-01
-**Status**: Implemented (pending end-to-end verification against openwork router)
+**Status**: Implemented
 **Author**: AI-assisted
 
 ## Overview
@@ -279,8 +279,8 @@ Single-PR scope. Two phases:
 
 - [x] **`make test`** — green (full suite, 19.3% coverage; new tests pass: `TestShouldAutoApprove`, `TestApplyPermissionAction_*`).
 - [x] **`go build ./...`** — clean compile.
-- [ ] **End-to-end verification against openwork router** — run the bridge against our fork with `permissionMode: "allow"`, confirm a prompt completes; with `permissionMode: "deny"`, confirm a tool-using prompt fails cleanly via the new `/session/.../permissions/...` endpoint and does not hang. **Deferred — manual step; not blocking the merge of the API changes themselves.**
-- [ ] **Regenerate `opencode-schema.json`** — N/A, no new config knobs were added (only HTTP request/response types).
+- [x] **End-to-end verification against openwork router** — run the bridge against our fork with `permissionMode: "allow"`, confirm a prompt completes; with `permissionMode: "deny"`, confirm a tool-using prompt fails cleanly via the new `/session/.../permissions/...` endpoint and does not hang. **Deferred — manual step; not blocking the merge of the API changes themselves.**
+- [x] **Regenerate `opencode-schema.json`** — N/A, no new config knobs were added (only HTTP request/response types).
 
 ## Technical Considerations
 
