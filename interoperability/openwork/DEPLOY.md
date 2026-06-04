@@ -169,16 +169,114 @@ Or edit `~/.openwork/opencode-router/opencode-router.json` to add a Slack sectio
 
 ## 5. Configure Mattermost
 
-Mattermost uses a personal access token + native WebSocket. No external npm dependencies required.
+Mattermost uses a token + native WebSocket. No external npm dependencies required. If you don't already have a Mattermost server, section 5a walks through running one locally; skip to 5b if you have one.
 
-### 5a. Create a personal access token
+### 5a. (Optional) Run a local Mattermost server for testing
 
-1. In your Mattermost server, go to **Account Settings > Security > Personal Access Tokens**.
-2. Click **Create Token**, give it a description, and copy the token.
+The official [`mattermost/docker`](https://github.com/mattermost/docker) repo runs Mattermost + PostgreSQL in containers. Minimal localhost setup (no nginx, no TLS):
 
-> **Note:** The system admin must enable personal access tokens in **System Console > Integrations > Integration Management > Enable Personal Access Tokens**.
+```bash
+git clone https://github.com/mattermost/docker.git mattermost-docker
+cd mattermost-docker
+cp env.example .env
+```
 
-### 5b. Register in the router
+Edit `.env`:
+
+```bash
+# Localhost (no DNS)
+DOMAIN=localhost
+
+# Team Edition is free; Enterprise Edition requires a license
+MATTERMOST_IMAGE=mattermost-team-edition
+
+# Plain HTTP on 8065, since no nginx
+MM_SERVICESETTINGS_SITEURL=http://${DOMAIN}:8065
+```
+
+Create the volume directories:
+
+```bash
+mkdir -p ./volumes/app/mattermost/{config,data,logs,plugins,client/plugins,bleve-indexes}
+mkdir -p ./volumes/db/var/lib/postgresql/data
+# On Linux you also need: sudo chown -R 2000:2000 ./volumes/app/mattermost
+# On macOS Docker Desktop handles UID mapping in the VM — skip the chown.
+```
+
+Start postgres + mattermost (no nginx):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.without-nginx.yml up -d
+```
+
+> **Apple Silicon (M1/M2/M3/M4) caveat:** `mattermost-team-edition` only publishes `linux/amd64`. Add a per-service platform override so Postgres stays native arm64 but Mattermost runs under Rosetta:
+>
+> Create `docker-compose.platform.yml`:
+> ```yaml
+> services:
+>   mattermost:
+>     platform: linux/amd64
+> ```
+>
+> Then start with all three compose files layered:
+> ```bash
+> docker compose \
+>   -f docker-compose.yml \
+>   -f docker-compose.without-nginx.yml \
+>   -f docker-compose.platform.yml \
+>   up -d
+> ```
+
+Wait for it to come up:
+
+```bash
+until curl -sf http://localhost:8065/api/v4/system/ping >/dev/null; do sleep 2; done && echo "ready"
+```
+
+Open `http://localhost:8065` in a browser. The first visit creates the admin account; pick any email (outbound mail isn't configured), set a strong password, then create your first team.
+
+Day-to-day:
+
+```bash
+# Tail logs
+docker compose -f docker-compose.yml -f docker-compose.without-nginx.yml [-f docker-compose.platform.yml] logs -f mattermost
+
+# Stop
+docker compose -f docker-compose.yml -f docker-compose.without-nginx.yml [-f docker-compose.platform.yml] down
+
+# Start again (data persists in ./volumes/)
+docker compose -f docker-compose.yml -f docker-compose.without-nginx.yml [-f docker-compose.platform.yml] up -d
+```
+
+### 5b. Install a desktop client
+
+Optional but recommended over the browser — proper notifications, multi-server tabs.
+
+**macOS:**
+```bash
+brew install --cask mattermost
+```
+Or the `.dmg` from <https://mattermost.com/download/#desktop>.
+
+**Linux / Windows:** download from the same page.
+
+On first launch, enter the server URL (e.g. `http://localhost:8065`) and sign in with the admin account.
+
+### 5c. Create a Bot Account + access token (recommended)
+
+Bot accounts are the right primitive for the router: a separate identity with its own username/avatar, no license seat consumed, and no "DM-to-yourself" issue.
+
+1. **Enable bot account creation.** Avatar → **System Console** → **Integrations** → **Bot Accounts** → set **"Enable Bot Account Creation"** to **true** → Save.
+2. **Enable personal access tokens** in the same area: **Integrations → Integration Management → Enable Personal Access Tokens** → true → Save. (Bot tokens use the same flag.)
+3. **Create the bot.** Back in the main UI: avatar → **Integrations** → **Bot Accounts** → **Add Bot Account**.
+   - Username: e.g. `opencode-agent`
+   - Display name: e.g. `OpenCode Agent`
+   - Role: `Member` (or `System Admin` if you want it to read all channels without explicit membership)
+4. Click **Create Bot Account** — Mattermost shows the access token **once**. Copy it now.
+
+> **Alternative — personal access token on your own user.** Avatar → **Profile** → **Security** → **Personal Access Tokens** → **Create Token**. Works identically but DMs to yourself are not possible in Mattermost, so the bridge can only respond in channels or to messages from a different user. Use a bot account unless you have a specific reason not to.
+
+### 5d. Register in the router
 
 ```bash
 opencode-router mattermost add https://mm.example.com <ACCESS_TOKEN> --id default
@@ -202,7 +300,7 @@ Or edit `~/.openwork/opencode-router/opencode-router.json` to add a Mattermost s
         {
           "id": "default",
           "serverUrl": "https://mm.example.com",
-          "accessToken": "<PERSONAL_ACCESS_TOKEN>",
+          "accessToken": "<BOT_ACCESS_TOKEN>",
           "enabled": true,
           "directory": "/path/to/workspace"
         }
@@ -212,19 +310,24 @@ Or edit `~/.openwork/opencode-router/opencode-router.json` to add a Mattermost s
 }
 ```
 
-### 5c. Mattermost-specific behavior
+For the local server in 5a, use `"serverUrl": "http://localhost:8065"`.
+
+After restart, the router logs `mattermost adapter started` for your `identityId`. To talk to the bot: open a DM with it (search for it in the new-message dialog) or add it to a channel and `@<bot-username>` it. The bridge keys routing by channel ID, so each DM peer / channel is a separate conversation.
+
+### 5e. Mattermost-specific behavior
 
 - **DMs and group DMs** (`D` / `G` channel types): the bot responds to all messages automatically.
 - **Public/private channels** (`O` / `P` channel types): the bot only responds when `groupsEnabled: true` AND the user @mentions the bot by username.
 - The bot ignores its own messages and posts from webhooks/integrations (`props.from_webhook` / `props.from_bot`) to prevent feedback loops.
 - WebSocket reconnects automatically with exponential backoff (1s → 30s cap, 20 max attempts).
 
-### 5d. Mattermost-specific security notes
+### 5f. Mattermost-specific security notes
 
-- Personal access tokens bypass MFA by design in Mattermost.
-- The token scope is limited to what the bot account can access — use a dedicated bot account with restricted channel access.
+- Bot accounts (preferred) are separate identities — restrict them by channel membership rather than via the token itself.
+- Personal access tokens bypass MFA by design in Mattermost; prefer bot tokens for routing.
 - The WebSocket connection is outbound-only (no inbound webhook URL needed).
 - For self-hosted instances with self-signed TLS certificates: valid certificates are required. Self-signed certs are not supported in v1.
+- The local-server setup in 5a uses plain HTTP — fine for local dev, **do not** expose port 8065 beyond `127.0.0.1` without putting nginx + TLS in front.
 
 ## 6. Bind chats to workspaces
 
@@ -313,11 +416,12 @@ Any non-command message is forwarded to OpenCode as a prompt.
 - [ ] Bot added only to intended channels
 
 ### Mattermost
-- [ ] Dedicated bot account with restricted channel access (not an admin account)
-- [ ] Personal access tokens enabled only for bot accounts in System Console
-- [ ] Valid TLS certificate on the Mattermost server
+- [ ] Dedicated bot account with restricted channel access (not a personal access token on an admin user)
+- [ ] Bot Account Creation enabled in System Console → Integrations → Bot Accounts
+- [ ] Valid TLS certificate on the Mattermost server (for non-local deployments)
 - [ ] `groupsEnabled: false` unless channel @mention responses are desired
 - [ ] `directory` set to a specific workspace
+- [ ] Local Mattermost (section 5a): bound to `127.0.0.1`/loopback, not exposed publicly without nginx + TLS
 
 ### OpenCode
 - [ ] `opencode serve` bound to `127.0.0.1` (not `0.0.0.0`) unless remote access is intentional

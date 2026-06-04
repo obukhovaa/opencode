@@ -1,6 +1,7 @@
 package completions
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/lithammer/fuzzysearch/fuzzy"
@@ -71,29 +72,59 @@ func (p *commandCompletionProvider) GetChildEntries(query string) ([]dialog.Comp
 	}
 
 	q := strings.ToLower(query)
-	ranks := fuzzy.RankFind(q, labels)
+	// RankFindFold is case-insensitive. RankFind returns matches in target-slice
+	// order, not by distance — sort the returned ranks ourselves.
+	fuzzyRanks := fuzzy.RankFindFold(q, labels)
+	sort.Sort(fuzzyRanks)
+	fuzzyOrder := make(map[int]int, len(fuzzyRanks))
+	for i, r := range fuzzyRanks {
+		fuzzyOrder[r.OriginalIndex] = i
+	}
 
-	matched := make(map[int]bool, len(ranks))
-	for _, r := range ranks {
-		matched[r.OriginalIndex] = true
-		e := entries[r.OriginalIndex]
+	// Score every candidate. Lower score = better. Literal substring hits beat
+	// fuzzy hits; prefix-of-value beats substring-of-value beats substring-of-title.
+	const (
+		tierValuePrefix = iota
+		tierValueSubstr
+		tierTitleSubstr
+		tierFuzzy
+	)
+	type scored struct {
+		idx       int
+		tier      int
+		secondary int // tie-breaker within tier (e.g. fuzzy distance, match position)
+	}
+	scoredEntries := make([]scored, 0, len(entries))
+	for i, e := range entries {
+		valueLC := strings.ToLower(e.value)
+		titleLC := strings.ToLower(e.title)
+		switch {
+		case strings.HasPrefix(valueLC, q):
+			scoredEntries = append(scoredEntries, scored{i, tierValuePrefix, len(valueLC)})
+		case strings.Contains(valueLC, q):
+			scoredEntries = append(scoredEntries, scored{i, tierValueSubstr, strings.Index(valueLC, q)})
+		case strings.Contains(titleLC, q):
+			scoredEntries = append(scoredEntries, scored{i, tierTitleSubstr, strings.Index(titleLC, q)})
+		default:
+			if pos, ok := fuzzyOrder[i]; ok {
+				scoredEntries = append(scoredEntries, scored{i, tierFuzzy, pos})
+			}
+		}
+	}
+
+	sort.SliceStable(scoredEntries, func(i, j int) bool {
+		if scoredEntries[i].tier != scoredEntries[j].tier {
+			return scoredEntries[i].tier < scoredEntries[j].tier
+		}
+		return scoredEntries[i].secondary < scoredEntries[j].secondary
+	})
+
+	for _, s := range scoredEntries {
+		e := entries[s.idx]
 		items = append(items, dialog.NewCompletionItem(dialog.CompletionItem{
 			Title: e.title,
 			Value: e.value,
 		}))
-	}
-
-	// Also include exact substring matches that fuzzy may have missed
-	for i, e := range entries {
-		if matched[i] {
-			continue
-		}
-		if strings.Contains(strings.ToLower(e.value), q) || strings.Contains(strings.ToLower(e.title), q) {
-			items = append(items, dialog.NewCompletionItem(dialog.CompletionItem{
-				Title: e.title,
-				Value: e.value,
-			}))
-		}
 	}
 
 	return items, nil
