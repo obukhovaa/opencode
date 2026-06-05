@@ -31,6 +31,10 @@ import (
 var (
 	ErrRequestCancelled = errors.New("request cancelled by user")
 	ErrSessionBusy      = errors.New("session is currently processing another request")
+	// ErrAgentBusy is returned by agent.Update when called while the agent
+	// is mid-request. Callers (notably the API /agent/model/select handler)
+	// match against this sentinel via errors.Is to surface a 409 Conflict.
+	ErrAgentBusy = errors.New("cannot change model while processing requests")
 
 	//go:embed prompts/*.md
 	AgentPrompts embed.FS
@@ -1236,7 +1240,7 @@ func (a *agent) TrackUsage(ctx context.Context, sessionID string, model models.M
 
 func (a *agent) Update(agentName config.AgentName, modelID models.ModelID) (models.Model, error) {
 	if a.IsBusy() {
-		return models.Model{}, fmt.Errorf("cannot change model while processing requests")
+		return models.Model{}, ErrAgentBusy
 	}
 
 	if err := config.UpdateAgentModel(agentName, modelID); err != nil {

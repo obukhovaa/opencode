@@ -192,12 +192,26 @@ type APIQuestionReply struct {
 }
 
 // APIAgent represents an agent in the external API format.
+// `Active` is always false for subagents; primary agents have it set
+// to true for whichever agent App.ActiveAgent currently returns.
 type APIAgent struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Mode        string `json:"mode"`
 	Model       string `json:"model,omitempty"`
+	Active      bool   `json:"active"`
+}
+
+// APIAgentSelectRequest is the body for POST /agent/select.
+type APIAgentSelectRequest struct {
+	ID string `json:"id"`
+}
+
+// APIAgentModelSelectRequest is the body for POST /agent/model/select.
+type APIAgentModelSelectRequest struct {
+	ProviderID string `json:"providerID"`
+	ModelID    string `json:"modelID"`
 }
 
 // APIProvidersResponse wraps the provider list returned by GET /config/providers.

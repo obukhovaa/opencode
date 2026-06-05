@@ -122,6 +122,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Agents
 	mux.HandleFunc("GET /agent", s.handleAgentList)
+	mux.HandleFunc("POST /agent/select", s.handleAgentSelect)
+	mux.HandleFunc("POST /agent/model/select", s.handleAgentModelSelect)
 
 	// Skills
 	mux.HandleFunc("GET /skill", s.handleSkillList)

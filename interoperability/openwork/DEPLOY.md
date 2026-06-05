@@ -389,14 +389,15 @@ Once paired (Telegram) or installed (Slack), these commands are available in cha
 
 | Command | Description |
 |---|---|
-| `/reset` | Clear session and model, start fresh |
-| `/sessions` | List recent OpenCode sessions in the current workspace (with current one marked) |
+| `/reset` | Clear session, start fresh |
+| `/sessions` | List recent OpenCode sessions in the current workspace (current marked) |
 | `/session <id-prefix>` | Switch to an existing OpenCode session by ID prefix |
+| `/agent` | List primary OpenCode agents (current marked) |
+| `/agent <id-prefix>` | Switch active agent. Affects every chat on this OpenCode process; prompt cache is invalidated |
+| `/model` | List models grouped by connected provider (current marked) |
+| `/model <model-id>` | Switch model on the active agent. Qualify as `provider/model-id` if ambiguous |
 | `/dir` | Show current workspace directory |
 | `/dir <path>` | Switch workspace (resets session) |
-| `/model` | Show current model |
-| `/opus` | Switch to Claude Opus |
-| `/codex` | Switch to GPT Codex |
 | `/pair <code>` | Pair with a private Telegram bot |
 | `/help` | List commands |
 
