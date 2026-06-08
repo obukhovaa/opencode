@@ -121,6 +121,22 @@ Predicates can reference two scopes:
 
 The `sizeof` prefix works on both scopes (`sizeof ${args.items} != 0`, `sizeof ${step.iteration} == 1`).
 
+Multiple atoms can be composed with `&&` (logical AND) and `||` (logical OR), grouped with parentheses. `&&` binds tighter than `||`; evaluation is short-circuited.
+
+```yaml
+rules:
+  - if: sizeof ${args.blockers} != 0
+    then: failed
+  - if: sizeof ${args.blockers} == 0 && ${args.build_service_snapshots} == true
+    then: build-service-snapshots
+  - if: sizeof ${args.blockers} == 0 && ${args.build_service_snapshots} != true && ${args.trigger_review} == true
+    then: trigger-review
+  - if: (${args.env} == prod || ${args.env} == staging) && ${args.deploy} == true
+    then: deploy
+```
+
+Composite operators inside `${...}` placeholders and `/.../` regex literals are not interpreted (so `${args.x} =~ /IMPL|REVIEW/` works). Literal `&&` / `||` / `(` / `)` in the right-hand-side of `==` / `!=` are not currently supported.
+
 When multiple rules match, the corresponding steps execute in parallel.
 
 #### Rule fields

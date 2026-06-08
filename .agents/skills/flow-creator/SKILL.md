@@ -27,6 +27,8 @@ Keep step prompts focused on a single responsibility. If a prompt grows beyond 3
 
 Use `sizeof` prefix operator for array/object emptiness checks in rules rather than string comparison.
 
+Compose multiple atomic predicates with `&&` (AND) and `||` (OR), grouped with parentheses, instead of emitting overlapping rules. `&&` binds tighter than `||`; evaluation short-circuits. Example: `sizeof ${args.blockers} == 0 && ${args.deploy} == true`.
+
 Use `session.fork: true` when consecutive steps with the same agent benefit from shared conversation history. Do not set fork when agents differ because the engine ignores it and creates a fresh session anyway.
 
 Always define a fallback step for flows where reliability matters. A common pattern is a terminal `failed` step that summarizes the error.

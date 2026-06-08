@@ -48,6 +48,7 @@ rules:
 
 Operators: `==` (equality), `!=` (inequality), `=~` (regex, pattern delimited by `/`).
 Prefix operator: `sizeof` for arrays/objects, e.g. `sizeof ${args.items} != 0`.
+Boolean composition: `&&` (AND), `||` (OR), parenthesised groups. `&&` binds tighter than `||`; evaluation short-circuits. Example: `sizeof ${args.blockers} == 0 && ${args.deploy} == true`.
 
 Predicates can reference two scopes:
 - `${args.X}` — flow args. Missing key → predicate is false (silent, no error).

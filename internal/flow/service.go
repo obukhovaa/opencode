@@ -8,8 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -876,74 +874,6 @@ func substituteScoped(template string, args map[string]any, stepVars map[string]
 	}
 
 	return template
-}
-
-var predicateRegex = regexp.MustCompile(`^(?:(sizeof)\s+)?\$\{(args|step)\.([^}]+)\}\s*(==|!=|=~)\s*(.+)$`)
-
-func evaluatePredicate(predicate string, args map[string]any, stepVars map[string]any) (bool, error) {
-	matches := predicateRegex.FindStringSubmatch(strings.TrimSpace(predicate))
-	if matches == nil {
-		return false, fmt.Errorf("%w: %q", ErrInvalidPredicate, predicate)
-	}
-
-	prefix := matches[1]
-	scope := matches[2]
-	key := matches[3]
-	op := matches[4]
-	expected := strings.TrimSpace(matches[5])
-
-	var actual any
-	var ok bool
-	switch scope {
-	case "step":
-		// Closed namespace — unknown keys are flow-author bugs, not "missing optional".
-		actual, ok = stepVars[key]
-		if !ok {
-			return false, fmt.Errorf("unknown step variable %q", key)
-		}
-	case "args":
-		actual, ok = args[key]
-		if !ok {
-			return false, nil
-		}
-	default:
-		return false, fmt.Errorf("unknown scope %q", scope)
-	}
-	actualStr := fmt.Sprintf("%v", actual)
-
-	if prefix == "sizeof" {
-		actualStr = resolveSizeof(actual)
-	}
-
-	switch op {
-	case "==":
-		return actualStr == expected, nil
-	case "!=":
-		return actualStr != expected, nil
-	case "=~":
-		if len(expected) < 2 || expected[0] != '/' || expected[len(expected)-1] != '/' {
-			return false, fmt.Errorf("regex pattern must be delimited by /: %q", expected)
-		}
-		pattern := expected[1 : len(expected)-1]
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			return false, fmt.Errorf("invalid regex pattern %q: %w", pattern, err)
-		}
-		return re.MatchString(actualStr), nil
-	default:
-		return false, fmt.Errorf("unknown operator %q", op)
-	}
-}
-
-func resolveSizeof(value any) string {
-	switch v := value.(type) {
-	case []any:
-		return strconv.Itoa(len(v))
-	case map[string]any:
-		return strconv.Itoa(len(v))
-	default:
-		return strconv.Itoa(len(fmt.Sprintf("%v", v)))
-	}
 }
 
 type resolvedStep struct {
