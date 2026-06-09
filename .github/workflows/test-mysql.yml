@@ -1,0 +1,60 @@
+name: test-mysql
+
+# MySQL integration tests live behind the `mysql_integration` build tag so
+# they don't run as part of the default `go test ./...` path on developer
+# laptops. CI runs them in this separate workflow against the MySQL service
+# container declared below.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - 'internal/db/**'
+      - 'internal/bridge/**'
+      - 'docker-compose.test-mysql.yml'
+      - 'Makefile'
+      - '.github/workflows/test-mysql.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test-mysql:
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0.39
+        env:
+          MYSQL_ROOT_PASSWORD: testroot
+          MYSQL_DATABASE: opencode_test
+          MYSQL_USER: opencode_test
+          MYSQL_PASSWORD: opencode_test
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -u root -ptestroot"
+          --health-interval=3s
+          --health-timeout=3s
+          --health-retries=30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.23.2"
+          cache: true
+          cache-dependency-path: go.sum
+
+      - run: go mod download
+
+      - name: Run mysql_integration tests
+        env:
+          TEST_MYSQL_DSN: "opencode_test:opencode_test@tcp(127.0.0.1:3307)/opencode_test?parseTime=true&multiStatements=true"
+        run: go test -tags=mysql_integration -count=1 ./...

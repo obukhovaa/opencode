@@ -151,12 +151,20 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 	}
 
 	// Initialize question service if enabled.
-	// In interactive (TUI) mode the caller sets OPENCODE_QUESTIONS=1 before
-	// calling New(), or calls SetQuestionService() directly on the returned App.
-	// The service must be injected into the factory before InitPrimaryAgents
-	// so agents see the tool during tool resolution.
+	// Three triggers (any one of them enables Questions):
+	//   1. OPENCODE_ENABLE_QUESTION_TOOL env var (legacy TUI path)
+	//   2. cfg.Router.QuestionMode is non-empty in .opencode.json (chat
+	//      bridge needs Questions live to route platform-native UI back
+	//      to agents — per the bridge-http-api + chat-bridge specs the
+	//      questionMode field is the canonical gate for the in-process
+	//      bridge, replacing the legacy env var)
+	// The service must be injected into the factory before
+	// InitPrimaryAgents so agents see the tool during tool resolution.
 	var questionSvc question.Service
-	if os.Getenv("OPENCODE_ENABLE_QUESTION_TOOL") == "1" || os.Getenv("OPENCODE_ENABLE_QUESTION_TOOL") == "true" {
+	appCfg := config.Get()
+	enabledByEnv := os.Getenv("OPENCODE_ENABLE_QUESTION_TOOL") == "1" || os.Getenv("OPENCODE_ENABLE_QUESTION_TOOL") == "true"
+	enabledByRouter := appCfg != nil && appCfg.Router != nil && appCfg.Router.QuestionMode != "" && appCfg.Router.QuestionMode != "disabled"
+	if enabledByEnv || enabledByRouter {
 		questionSvc = question.NewService()
 		factory.SetQuestionService(questionSvc)
 	}

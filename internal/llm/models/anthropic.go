@@ -8,8 +8,10 @@ const (
 	Claude45Opus     ModelID = "claude-4.5-opus"
 	Claude46Opus     ModelID = "claude-4.6-opus"
 	Claude47Opus     ModelID = "claude-4.7-opus"
+	Claude48Opus     ModelID = "claude-4.8-opus"
 	Claude46Sonnet   ModelID = "claude-4.6-sonnet"
 	Claude45Haiku    ModelID = "claude-4.5-haiku"
+	ClaudeFable5     ModelID = "claude-fable-5"
 )
 
 // https://docs.anthropic.com/en/docs/about-claude/models/all-models
@@ -67,6 +69,42 @@ var AnthropicModels = map[ModelID]Model{
 		CostPer1MInCached:        6.25,
 		CostPer1MOutCached:       0.50,
 		CostPer1MOut:             25.0,
+		ContextWindow:            1000000,
+		DefaultMaxTokens:         128000,
+		CanReason:                true,
+		SupportsAdaptiveThinking: true,
+		SupportsMaximumThinking:  true,
+		SupportsXHighThinking:    true,
+		SupportsTaskBudget:       true,
+		SupportsAttachments:      true,
+	},
+	Claude48Opus: {
+		ID:                       Claude48Opus,
+		Name:                     "Claude 4.8 Opus",
+		Provider:                 ProviderAnthropic,
+		APIModel:                 "claude-opus-4-8",
+		CostPer1MIn:              5.0,
+		CostPer1MInCached:        6.25,
+		CostPer1MOutCached:       0.50,
+		CostPer1MOut:             25.0,
+		ContextWindow:            1000000,
+		DefaultMaxTokens:         128000,
+		CanReason:                true,
+		SupportsAdaptiveThinking: true,
+		SupportsMaximumThinking:  true,
+		SupportsXHighThinking:    true,
+		SupportsTaskBudget:       true,
+		SupportsAttachments:      true,
+	},
+	ClaudeFable5: {
+		ID:                       ClaudeFable5,
+		Name:                     "Claude Fable 5",
+		Provider:                 ProviderAnthropic,
+		APIModel:                 "claude-fable-5",
+		CostPer1MIn:              10.0,
+		CostPer1MInCached:        12.50,
+		CostPer1MOutCached:       1.00,
+		CostPer1MOut:             50.0,
 		ContextWindow:            1000000,
 		DefaultMaxTokens:         128000,
 		CanReason:                true,

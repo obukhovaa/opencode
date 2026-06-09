@@ -4,10 +4,14 @@ const (
 	ProviderBedrock   ModelProvider = "bedrock"
 	BedrockEUOpus46   ModelID       = "bedrock.eu-claude-opus-4-6"
 	BedrockEUOpus47   ModelID       = "bedrock.eu-claude-opus-4-7"
+	BedrockEUOpus48   ModelID       = "bedrock.eu-claude-opus-4-8"
 	BedrockEUSonnet46 ModelID       = "bedrock.eu-claude-sonnet-4-6"
+	BedrockEUFable5   ModelID       = "bedrock.eu-claude-fable-5"
 	BedrockOpus46     ModelID       = "bedrock.claude-opus-4-6"
 	BedrockOpus47     ModelID       = "bedrock.claude-opus-4-7"
+	BedrockOpus48     ModelID       = "bedrock.claude-opus-4-8"
 	BedrockSonnet46   ModelID       = "bedrock.claude-sonnet-4-6"
+	BedrockFable5     ModelID       = "bedrock.claude-fable-5"
 	BedrockEUHaiku45  ModelID       = "bedrock.eu-claude-haiku-4-5"
 	BedrockHaiku45    ModelID       = "bedrock.claude-haiku-4-5"
 )
@@ -46,6 +50,42 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude47Opus].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude47Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude47Opus].SupportsTaskBudget,
+	},
+	BedrockEUOpus48: {
+		ID:                       BedrockEUOpus48,
+		Name:                     "Bedrock EU: Claude 4.8 Opus",
+		Provider:                 ProviderBedrock,
+		APIModel:                 "eu-claude-opus-4-8",
+		CostPer1MIn:              AnthropicModels[Claude48Opus].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[Claude48Opus].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[Claude48Opus].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[Claude48Opus].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[Claude48Opus].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[Claude48Opus].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[Claude48Opus].SupportsAttachments,
+		CanReason:                AnthropicModels[Claude48Opus].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[Claude48Opus].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[Claude48Opus].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[Claude48Opus].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[Claude48Opus].SupportsTaskBudget,
+	},
+	BedrockEUFable5: {
+		ID:                       BedrockEUFable5,
+		Name:                     "Bedrock EU: Claude Fable 5",
+		Provider:                 ProviderBedrock,
+		APIModel:                 "eu-claude-fable-5",
+		CostPer1MIn:              AnthropicModels[ClaudeFable5].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[ClaudeFable5].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[ClaudeFable5].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[ClaudeFable5].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[ClaudeFable5].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[ClaudeFable5].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[ClaudeFable5].SupportsAttachments,
+		CanReason:                AnthropicModels[ClaudeFable5].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[ClaudeFable5].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[ClaudeFable5].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[ClaudeFable5].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[ClaudeFable5].SupportsTaskBudget,
 	},
 	BedrockEUSonnet46: {
 		ID:                       BedrockEUSonnet46,
@@ -95,6 +135,42 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude47Opus].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude47Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude47Opus].SupportsTaskBudget,
+	},
+	BedrockOpus48: {
+		ID:                       BedrockOpus48,
+		Name:                     "Bedrock: Claude 4.8 Opus",
+		Provider:                 ProviderBedrock,
+		APIModel:                 "claude-opus-4-8",
+		CostPer1MIn:              AnthropicModels[Claude48Opus].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[Claude48Opus].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[Claude48Opus].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[Claude48Opus].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[Claude48Opus].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[Claude48Opus].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[Claude48Opus].SupportsAttachments,
+		CanReason:                AnthropicModels[Claude48Opus].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[Claude48Opus].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[Claude48Opus].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[Claude48Opus].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[Claude48Opus].SupportsTaskBudget,
+	},
+	BedrockFable5: {
+		ID:                       BedrockFable5,
+		Name:                     "Bedrock: Claude Fable 5",
+		Provider:                 ProviderBedrock,
+		APIModel:                 "claude-fable-5",
+		CostPer1MIn:              AnthropicModels[ClaudeFable5].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[ClaudeFable5].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[ClaudeFable5].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[ClaudeFable5].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[ClaudeFable5].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[ClaudeFable5].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[ClaudeFable5].SupportsAttachments,
+		CanReason:                AnthropicModels[ClaudeFable5].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[ClaudeFable5].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[ClaudeFable5].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[ClaudeFable5].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[ClaudeFable5].SupportsTaskBudget,
 	},
 	BedrockSonnet46: {
 		ID:                       BedrockSonnet46,

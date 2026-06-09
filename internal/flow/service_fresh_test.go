@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
@@ -268,6 +269,12 @@ func (f *stubAgentFactory) SetQuestionService(_ question.Service) {}
 
 func (f *stubAgentFactory) QuestionService() question.Service {
 	return nil
+}
+
+func (f *stubAgentFactory) SetBridgeSender(_ tools.BridgeSender, _ *bridge.Config, _ string) {}
+
+func (f *stubAgentFactory) BridgeSender() (tools.BridgeSender, *bridge.Config, string) {
+	return nil, nil, ""
 }
 
 func registerTestFlow(t *testing.T, f Flow) {

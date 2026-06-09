@@ -374,7 +374,7 @@ func TestAtomEndsWithRegexOp(t *testing.T) {
 		// Bare operator.
 		{`=~`, true},
 		// Tails of larger tokens — must NOT be treated as regex op.
-		{`${args.x} ==~`, false},  // typo: extra `=`
+		{`${args.x} ==~`, false}, // typo: extra `=`
 		{`${args.x} == foo=~`, false},
 		{`${args.x} != foo=~`, false},
 		{`${args.x} !=~`, false},

@@ -372,7 +372,15 @@ func (a *agent) Run(ctx context.Context, sessionID string, content string, maxTu
 	if !a.provider.Model().SupportsAttachments && attachments != nil {
 		attachments = nil
 	}
-	events := make(chan AgentEvent)
+	// Events channel is buffered (cap 1) so the recover handler — and
+	// the normal-path send below — can never block on a consumer that
+	// has gone away (ctx cancellation, caller stopped ranging). agent.Run
+	// emits exactly one terminal event, so cap 1 is sufficient. A blocked
+	// send in the panic path would prevent the deferred cleanup
+	// (activeRequests.Delete + cancel) from running and leak the
+	// session's busy lock — that's the regression scenario the deferred
+	// cleanup was added to prevent in the first place.
+	events := make(chan AgentEvent, 1)
 	if a.IsSessionBusy(sessionID) {
 		return nil, ErrSessionBusy
 	}
@@ -383,8 +391,20 @@ func (a *agent) Run(ctx context.Context, sessionID string, content string, maxTu
 	go func() {
 		logging.Info("Agent started", "sessionID", sessionID, "agent", a.AgentID())
 		now := time.Now()
+		// Cleanup MUST run regardless of how the goroutine exits.
+		// Defer LIFO order: RecoverPanic registered LAST runs FIRST
+		// on panic. With the events channel now buffered, the recover
+		// handler's send + close never block, so the subsequent
+		// cancel + Delete defers always get to run and the session's
+		// busy lock is released.
+		defer a.activeRequests.Delete(sessionID)
+		defer cancel()
 		defer logging.RecoverPanic("agent.Run", func() {
+			// Send is non-blocking due to events channel buffer.
+			// Close after so consumers observing the channel-close
+			// signal don't deadlock either.
 			events <- a.err(fmt.Errorf("panic while running the agent"))
+			close(events)
 		})
 		var attachmentParts []message.ContentPart
 		for _, attachment := range attachments {
@@ -404,8 +424,6 @@ func (a *agent) Run(ctx context.Context, sessionID string, content string, maxTu
 			logging.Info("Agent completed", "sessionID", sessionID, "agent", a.AgentID(), "gauge", gauge)
 		}
 
-		a.activeRequests.Delete(sessionID)
-		cancel()
 		a.Publish(pubsub.CreatedEvent, result)
 		events <- result
 		close(events)

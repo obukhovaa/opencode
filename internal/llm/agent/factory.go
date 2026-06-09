@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
+	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
@@ -30,6 +31,15 @@ type AgentFactory interface {
 	TodoStore() tools.TodoStore
 	SetQuestionService(svc question.Service)
 	QuestionService() question.Service
+	// SetBridgeSender installs the chat-bridge handle the router_send
+	// tool calls into. cmd/serve.go invokes this after the bridge
+	// orchestrator starts. nil sender disables the router_send tool.
+	SetBridgeSender(sender tools.BridgeSender, cfg *bridge.Config, mediaRoot string)
+	// BridgeSender returns the registered handle (or nil) plus the
+	// cfg.Router snapshot captured at SetBridgeSender time and the
+	// media-store root. NewToolSet reads this to decide router_send
+	// registration.
+	BridgeSender() (tools.BridgeSender, *bridge.Config, string)
 }
 
 type agentFactory struct {
@@ -46,8 +56,31 @@ type agentFactory struct {
 	todoStore          tools.TodoStore
 	questionService    question.Service
 
+	bridgeSender    tools.BridgeSender
+	bridgeCfg       *bridge.Config
+	bridgeMediaRoot string
+
 	mu        sync.Mutex
 	stepCache map[string]Service
+}
+
+// SetBridgeSender installs the chat-bridge handle the router_send tool
+// uses. cmd/serve.go calls this after the bridge orchestrator starts.
+// nil sender disables the router_send tool entirely.
+func (f *agentFactory) SetBridgeSender(sender tools.BridgeSender, cfg *bridge.Config, mediaRoot string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bridgeSender = sender
+	f.bridgeCfg = cfg
+	f.bridgeMediaRoot = mediaRoot
+}
+
+// BridgeSender returns the registered handle (or nil) plus the
+// associated cfg.Router snapshot and media-root path.
+func (f *agentFactory) BridgeSender() (tools.BridgeSender, *bridge.Config, string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.bridgeSender, f.bridgeCfg, f.bridgeMediaRoot
 }
 
 func NewAgentFactory(

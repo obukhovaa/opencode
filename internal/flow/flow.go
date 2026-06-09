@@ -60,6 +60,31 @@ type Step struct {
 	// When the (N+1)th self-route would exceed this value, the step is
 	// failed instead of re-scheduled, and the fallback (if any) runs.
 	MaxIterations int `yaml:"maxIterations,omitempty"`
+	// Interactive marks this step as router-initiated. When true, the
+	// flow engine MUST resolve Interaction.Target against flow-args, call
+	// the configured InteractiveHook.OnInteractiveStepStart before
+	// agent.Run, and call OnInteractiveStepComplete after the agent
+	// produces a struct_output. See flow-api spec "interactive flow step
+	// type with interaction block".
+	Interactive bool `yaml:"interactive,omitempty"`
+	// Interaction carries the binding targets for an Interactive step.
+	// Ignored when Interactive is false.
+	Interaction *StepInteraction `yaml:"interaction,omitempty"`
+}
+
+// StepInteraction captures the binding targets a router-initiated step
+// expects to receive replies from. Target is a flow-arg expression
+// (e.g. `${args.reviewer}` or `${args.reviewers}`) that resolves to a
+// single PeerRef-shaped map or an array of such maps. Mention is an
+// optional flow-arg expression for the first-message ping handle.
+type StepInteraction struct {
+	// Target is a flow-arg expression resolving to either a single
+	// PeerRef map or an array of them. Format:
+	//   target: ${args.reviewer}      # single
+	//   target: ${args.reviewers}     # array
+	Target string `yaml:"target"`
+	// Mention is an optional first-message ping handle expression.
+	Mention string `yaml:"mention,omitempty"`
 }
 
 // StepSession controls session behavior for a step.

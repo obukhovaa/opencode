@@ -432,10 +432,10 @@ The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model
 | Provider | Models |
 |----------|--------|
 | **OpenAI** | GPT-5, O3 Mini, O4 Mini |
-| **Anthropic** | Claude 4.7 Opus (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 4.5 Haiku |
+| **Anthropic** | Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 4.5 Haiku |
 | **Google Gemini** | Gemini 3.0 Pro, Gemini 3.0 Flash |
-| **AWS Bedrock** | Claude 4.7 Opus (1M)(EU/Global), Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global), Claude 4.5 Haiku (EU/Global) |
-| **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude 4.7 Opus (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 4.5 Haiku |
+| **AWS Bedrock** | Claude Fable 5 (1M)(EU/Global), Claude 4.8 Opus (1M)(EU/Global), Claude 4.7 Opus (1M)(EU/Global), Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global), Claude 4.5 Haiku (EU/Global) |
+| **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 4.5 Haiku |
 | **YandexCloud** | Alice AI LLM, YandexGPT Pro 5.1, YandexGPT Pro 5, YandexGPT Lite 5, DeepSeek V3.2, Qwen3 235B, Qwen3.5 35B, gpt-oss-120b |
 | **Local** | Any OpenAI-compatible API |
 

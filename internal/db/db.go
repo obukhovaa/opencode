@@ -24,6 +24,9 @@ func New(db DBTX) *Queries {
 func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	q := Queries{db: db}
 	var err error
+	if q.addBridgeAllowlistEntryStmt, err = db.PrepareContext(ctx, addBridgeAllowlistEntry); err != nil {
+		return nil, fmt.Errorf("error preparing query AddBridgeAllowlistEntry: %w", err)
+	}
 	if q.claimCronJobForFiringStmt, err = db.PrepareContext(ctx, claimCronJobForFiring); err != nil {
 		return nil, fmt.Errorf("error preparing query ClaimCronJobForFiring: %w", err)
 	}
@@ -32,6 +35,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.countActiveCronJobsBySessionStmt, err = db.PrepareContext(ctx, countActiveCronJobsBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query CountActiveCronJobsBySession: %w", err)
+	}
+	if q.countBridgeSessionsByIdentityStmt, err = db.PrepareContext(ctx, countBridgeSessionsByIdentity); err != nil {
+		return nil, fmt.Errorf("error preparing query CountBridgeSessionsByIdentity: %w", err)
 	}
 	if q.createCronJobStmt, err = db.PrepareContext(ctx, createCronJob); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateCronJob: %w", err)
@@ -47,6 +53,15 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.createSessionStmt, err = db.PrepareContext(ctx, createSession); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateSession: %w", err)
+	}
+	if q.deleteBridgeSessionByPeerStmt, err = db.PrepareContext(ctx, deleteBridgeSessionByPeer); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteBridgeSessionByPeer: %w", err)
+	}
+	if q.deleteBridgeSessionsByIdentityStmt, err = db.PrepareContext(ctx, deleteBridgeSessionsByIdentity); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteBridgeSessionsByIdentity: %w", err)
+	}
+	if q.deleteBridgeSessionsBySessionStmt, err = db.PrepareContext(ctx, deleteBridgeSessionsBySession); err != nil {
+		return nil, fmt.Errorf("error preparing query DeleteBridgeSessionsBySession: %w", err)
 	}
 	if q.deleteCronJobStmt, err = db.PrepareContext(ctx, deleteCronJob); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteCronJob: %w", err)
@@ -75,6 +90,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteSessionTreeStmt, err = db.PrepareContext(ctx, deleteSessionTree); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSessionTree: %w", err)
 	}
+	if q.getBridgeSessionStmt, err = db.PrepareContext(ctx, getBridgeSession); err != nil {
+		return nil, fmt.Errorf("error preparing query GetBridgeSession: %w", err)
+	}
 	if q.getCronJobStmt, err = db.PrepareContext(ctx, getCronJob); err != nil {
 		return nil, fmt.Errorf("error preparing query GetCronJob: %w", err)
 	}
@@ -99,8 +117,20 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getSessionByIDStmt, err = db.PrepareContext(ctx, getSessionByID); err != nil {
 		return nil, fmt.Errorf("error preparing query GetSessionByID: %w", err)
 	}
+	if q.isBridgeAllowlistedStmt, err = db.PrepareContext(ctx, isBridgeAllowlisted); err != nil {
+		return nil, fmt.Errorf("error preparing query IsBridgeAllowlisted: %w", err)
+	}
 	if q.listActiveCronJobsStmt, err = db.PrepareContext(ctx, listActiveCronJobs); err != nil {
 		return nil, fmt.Errorf("error preparing query ListActiveCronJobs: %w", err)
+	}
+	if q.listBridgeAllowlistStmt, err = db.PrepareContext(ctx, listBridgeAllowlist); err != nil {
+		return nil, fmt.Errorf("error preparing query ListBridgeAllowlist: %w", err)
+	}
+	if q.listBridgeSessionsByIdentityStmt, err = db.PrepareContext(ctx, listBridgeSessionsByIdentity); err != nil {
+		return nil, fmt.Errorf("error preparing query ListBridgeSessionsByIdentity: %w", err)
+	}
+	if q.listBridgeSessionsBySessionStmt, err = db.PrepareContext(ctx, listBridgeSessionsBySession); err != nil {
+		return nil, fmt.Errorf("error preparing query ListBridgeSessionsBySession: %w", err)
 	}
 	if q.listChildSessionsStmt, err = db.PrepareContext(ctx, listChildSessions); err != nil {
 		return nil, fmt.Errorf("error preparing query ListChildSessions: %w", err)
@@ -144,8 +174,20 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listSessionsStmt, err = db.PrepareContext(ctx, listSessions); err != nil {
 		return nil, fmt.Errorf("error preparing query ListSessions: %w", err)
 	}
+	if q.markBridgeSessionMentionConsumedStmt, err = db.PrepareContext(ctx, markBridgeSessionMentionConsumed); err != nil {
+		return nil, fmt.Errorf("error preparing query MarkBridgeSessionMentionConsumed: %w", err)
+	}
+	if q.removeBridgeAllowlistEntryStmt, err = db.PrepareContext(ctx, removeBridgeAllowlistEntry); err != nil {
+		return nil, fmt.Errorf("error preparing query RemoveBridgeAllowlistEntry: %w", err)
+	}
 	if q.setCronJobFiringStmt, err = db.PrepareContext(ctx, setCronJobFiring); err != nil {
 		return nil, fmt.Errorf("error preparing query SetCronJobFiring: %w", err)
+	}
+	if q.updateBridgeSessionPeerIDStmt, err = db.PrepareContext(ctx, updateBridgeSessionPeerID); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateBridgeSessionPeerID: %w", err)
+	}
+	if q.updateBridgeSessionSessionIDStmt, err = db.PrepareContext(ctx, updateBridgeSessionSessionID); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateBridgeSessionSessionID: %w", err)
 	}
 	if q.updateCronJobAfterRunStmt, err = db.PrepareContext(ctx, updateCronJobAfterRun); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateCronJobAfterRun: %w", err)
@@ -171,6 +213,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.updateSessionStmt, err = db.PrepareContext(ctx, updateSession); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateSession: %w", err)
 	}
+	if q.upsertBridgeSessionStmt, err = db.PrepareContext(ctx, upsertBridgeSession); err != nil {
+		return nil, fmt.Errorf("error preparing query UpsertBridgeSession: %w", err)
+	}
 	if q.upsertRecapStmt, err = db.PrepareContext(ctx, upsertRecap); err != nil {
 		return nil, fmt.Errorf("error preparing query UpsertRecap: %w", err)
 	}
@@ -179,6 +224,11 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 
 func (q *Queries) Close() error {
 	var err error
+	if q.addBridgeAllowlistEntryStmt != nil {
+		if cerr := q.addBridgeAllowlistEntryStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing addBridgeAllowlistEntryStmt: %w", cerr)
+		}
+	}
 	if q.claimCronJobForFiringStmt != nil {
 		if cerr := q.claimCronJobForFiringStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing claimCronJobForFiringStmt: %w", cerr)
@@ -192,6 +242,11 @@ func (q *Queries) Close() error {
 	if q.countActiveCronJobsBySessionStmt != nil {
 		if cerr := q.countActiveCronJobsBySessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing countActiveCronJobsBySessionStmt: %w", cerr)
+		}
+	}
+	if q.countBridgeSessionsByIdentityStmt != nil {
+		if cerr := q.countBridgeSessionsByIdentityStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing countBridgeSessionsByIdentityStmt: %w", cerr)
 		}
 	}
 	if q.createCronJobStmt != nil {
@@ -217,6 +272,21 @@ func (q *Queries) Close() error {
 	if q.createSessionStmt != nil {
 		if cerr := q.createSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing createSessionStmt: %w", cerr)
+		}
+	}
+	if q.deleteBridgeSessionByPeerStmt != nil {
+		if cerr := q.deleteBridgeSessionByPeerStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteBridgeSessionByPeerStmt: %w", cerr)
+		}
+	}
+	if q.deleteBridgeSessionsByIdentityStmt != nil {
+		if cerr := q.deleteBridgeSessionsByIdentityStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteBridgeSessionsByIdentityStmt: %w", cerr)
+		}
+	}
+	if q.deleteBridgeSessionsBySessionStmt != nil {
+		if cerr := q.deleteBridgeSessionsBySessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing deleteBridgeSessionsBySessionStmt: %w", cerr)
 		}
 	}
 	if q.deleteCronJobStmt != nil {
@@ -264,6 +334,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing deleteSessionTreeStmt: %w", cerr)
 		}
 	}
+	if q.getBridgeSessionStmt != nil {
+		if cerr := q.getBridgeSessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getBridgeSessionStmt: %w", cerr)
+		}
+	}
 	if q.getCronJobStmt != nil {
 		if cerr := q.getCronJobStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getCronJobStmt: %w", cerr)
@@ -304,9 +379,29 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing getSessionByIDStmt: %w", cerr)
 		}
 	}
+	if q.isBridgeAllowlistedStmt != nil {
+		if cerr := q.isBridgeAllowlistedStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing isBridgeAllowlistedStmt: %w", cerr)
+		}
+	}
 	if q.listActiveCronJobsStmt != nil {
 		if cerr := q.listActiveCronJobsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listActiveCronJobsStmt: %w", cerr)
+		}
+	}
+	if q.listBridgeAllowlistStmt != nil {
+		if cerr := q.listBridgeAllowlistStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listBridgeAllowlistStmt: %w", cerr)
+		}
+	}
+	if q.listBridgeSessionsByIdentityStmt != nil {
+		if cerr := q.listBridgeSessionsByIdentityStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listBridgeSessionsByIdentityStmt: %w", cerr)
+		}
+	}
+	if q.listBridgeSessionsBySessionStmt != nil {
+		if cerr := q.listBridgeSessionsBySessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listBridgeSessionsBySessionStmt: %w", cerr)
 		}
 	}
 	if q.listChildSessionsStmt != nil {
@@ -379,9 +474,29 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listSessionsStmt: %w", cerr)
 		}
 	}
+	if q.markBridgeSessionMentionConsumedStmt != nil {
+		if cerr := q.markBridgeSessionMentionConsumedStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing markBridgeSessionMentionConsumedStmt: %w", cerr)
+		}
+	}
+	if q.removeBridgeAllowlistEntryStmt != nil {
+		if cerr := q.removeBridgeAllowlistEntryStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing removeBridgeAllowlistEntryStmt: %w", cerr)
+		}
+	}
 	if q.setCronJobFiringStmt != nil {
 		if cerr := q.setCronJobFiringStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing setCronJobFiringStmt: %w", cerr)
+		}
+	}
+	if q.updateBridgeSessionPeerIDStmt != nil {
+		if cerr := q.updateBridgeSessionPeerIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateBridgeSessionPeerIDStmt: %w", cerr)
+		}
+	}
+	if q.updateBridgeSessionSessionIDStmt != nil {
+		if cerr := q.updateBridgeSessionSessionIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateBridgeSessionSessionIDStmt: %w", cerr)
 		}
 	}
 	if q.updateCronJobAfterRunStmt != nil {
@@ -422,6 +537,11 @@ func (q *Queries) Close() error {
 	if q.updateSessionStmt != nil {
 		if cerr := q.updateSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing updateSessionStmt: %w", cerr)
+		}
+	}
+	if q.upsertBridgeSessionStmt != nil {
+		if cerr := q.upsertBridgeSessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing upsertBridgeSessionStmt: %w", cerr)
 		}
 	}
 	if q.upsertRecapStmt != nil {
@@ -466,113 +586,143 @@ func (q *Queries) queryRow(ctx context.Context, stmt *sql.Stmt, query string, ar
 }
 
 type Queries struct {
-	db                                DBTX
-	tx                                *sql.Tx
-	claimCronJobForFiringStmt         *sql.Stmt
-	clearStaleFiringStmt              *sql.Stmt
-	countActiveCronJobsBySessionStmt  *sql.Stmt
-	createCronJobStmt                 *sql.Stmt
-	createFileStmt                    *sql.Stmt
-	createFlowStateStmt               *sql.Stmt
-	createMessageStmt                 *sql.Stmt
-	createSessionStmt                 *sql.Stmt
-	deleteCronJobStmt                 *sql.Stmt
-	deleteFileStmt                    *sql.Stmt
-	deleteFlowStatesByRootSessionStmt *sql.Stmt
-	deleteMessageStmt                 *sql.Stmt
-	deleteRecapBySessionIDStmt        *sql.Stmt
-	deleteSessionStmt                 *sql.Stmt
-	deleteSessionFilesStmt            *sql.Stmt
-	deleteSessionMessagesStmt         *sql.Stmt
-	deleteSessionTreeStmt             *sql.Stmt
-	getCronJobStmt                    *sql.Stmt
-	getFileStmt                       *sql.Stmt
-	getFileByPathAndSessionStmt       *sql.Stmt
-	getFlowStateStmt                  *sql.Stmt
-	getMaxSeqBySessionStmt            *sql.Stmt
-	getMessageStmt                    *sql.Stmt
-	getRecapBySessionIDStmt           *sql.Stmt
-	getSessionByIDStmt                *sql.Stmt
-	listActiveCronJobsStmt            *sql.Stmt
-	listChildSessionsStmt             *sql.Stmt
-	listCronJobsBySessionStmt         *sql.Stmt
-	listDueCronJobsStmt               *sql.Stmt
-	listFilesByPathStmt               *sql.Stmt
-	listFilesBySessionStmt            *sql.Stmt
-	listFilesBySessionTreeStmt        *sql.Stmt
-	listFlowStatesByFlowIDStmt        *sql.Stmt
-	listFlowStatesByRootSessionStmt   *sql.Stmt
-	listLatestMessagesBySessionStmt   *sql.Stmt
-	listLatestSessionFilesStmt        *sql.Stmt
-	listLatestSessionTreeFilesStmt    *sql.Stmt
-	listMessagesBySessionStmt         *sql.Stmt
-	listMissedOneShotsStmt            *sql.Stmt
-	listSessionsStmt                  *sql.Stmt
-	setCronJobFiringStmt              *sql.Stmt
-	updateCronJobAfterRunStmt         *sql.Stmt
-	updateCronJobErrorStmt            *sql.Stmt
-	updateCronJobNextRunStmt          *sql.Stmt
-	updateCronJobStatusStmt           *sql.Stmt
-	updateFileStmt                    *sql.Stmt
-	updateFlowStateStmt               *sql.Stmt
-	updateMessageStmt                 *sql.Stmt
-	updateSessionStmt                 *sql.Stmt
-	upsertRecapStmt                   *sql.Stmt
+	db                                   DBTX
+	tx                                   *sql.Tx
+	addBridgeAllowlistEntryStmt          *sql.Stmt
+	claimCronJobForFiringStmt            *sql.Stmt
+	clearStaleFiringStmt                 *sql.Stmt
+	countActiveCronJobsBySessionStmt     *sql.Stmt
+	countBridgeSessionsByIdentityStmt    *sql.Stmt
+	createCronJobStmt                    *sql.Stmt
+	createFileStmt                       *sql.Stmt
+	createFlowStateStmt                  *sql.Stmt
+	createMessageStmt                    *sql.Stmt
+	createSessionStmt                    *sql.Stmt
+	deleteBridgeSessionByPeerStmt        *sql.Stmt
+	deleteBridgeSessionsByIdentityStmt   *sql.Stmt
+	deleteBridgeSessionsBySessionStmt    *sql.Stmt
+	deleteCronJobStmt                    *sql.Stmt
+	deleteFileStmt                       *sql.Stmt
+	deleteFlowStatesByRootSessionStmt    *sql.Stmt
+	deleteMessageStmt                    *sql.Stmt
+	deleteRecapBySessionIDStmt           *sql.Stmt
+	deleteSessionStmt                    *sql.Stmt
+	deleteSessionFilesStmt               *sql.Stmt
+	deleteSessionMessagesStmt            *sql.Stmt
+	deleteSessionTreeStmt                *sql.Stmt
+	getBridgeSessionStmt                 *sql.Stmt
+	getCronJobStmt                       *sql.Stmt
+	getFileStmt                          *sql.Stmt
+	getFileByPathAndSessionStmt          *sql.Stmt
+	getFlowStateStmt                     *sql.Stmt
+	getMaxSeqBySessionStmt               *sql.Stmt
+	getMessageStmt                       *sql.Stmt
+	getRecapBySessionIDStmt              *sql.Stmt
+	getSessionByIDStmt                   *sql.Stmt
+	isBridgeAllowlistedStmt              *sql.Stmt
+	listActiveCronJobsStmt               *sql.Stmt
+	listBridgeAllowlistStmt              *sql.Stmt
+	listBridgeSessionsByIdentityStmt     *sql.Stmt
+	listBridgeSessionsBySessionStmt      *sql.Stmt
+	listChildSessionsStmt                *sql.Stmt
+	listCronJobsBySessionStmt            *sql.Stmt
+	listDueCronJobsStmt                  *sql.Stmt
+	listFilesByPathStmt                  *sql.Stmt
+	listFilesBySessionStmt               *sql.Stmt
+	listFilesBySessionTreeStmt           *sql.Stmt
+	listFlowStatesByFlowIDStmt           *sql.Stmt
+	listFlowStatesByRootSessionStmt      *sql.Stmt
+	listLatestMessagesBySessionStmt      *sql.Stmt
+	listLatestSessionFilesStmt           *sql.Stmt
+	listLatestSessionTreeFilesStmt       *sql.Stmt
+	listMessagesBySessionStmt            *sql.Stmt
+	listMissedOneShotsStmt               *sql.Stmt
+	listSessionsStmt                     *sql.Stmt
+	markBridgeSessionMentionConsumedStmt *sql.Stmt
+	removeBridgeAllowlistEntryStmt       *sql.Stmt
+	setCronJobFiringStmt                 *sql.Stmt
+	updateBridgeSessionPeerIDStmt        *sql.Stmt
+	updateBridgeSessionSessionIDStmt     *sql.Stmt
+	updateCronJobAfterRunStmt            *sql.Stmt
+	updateCronJobErrorStmt               *sql.Stmt
+	updateCronJobNextRunStmt             *sql.Stmt
+	updateCronJobStatusStmt              *sql.Stmt
+	updateFileStmt                       *sql.Stmt
+	updateFlowStateStmt                  *sql.Stmt
+	updateMessageStmt                    *sql.Stmt
+	updateSessionStmt                    *sql.Stmt
+	upsertBridgeSessionStmt              *sql.Stmt
+	upsertRecapStmt                      *sql.Stmt
 }
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 	return &Queries{
-		db:                                tx,
-		tx:                                tx,
-		claimCronJobForFiringStmt:         q.claimCronJobForFiringStmt,
-		clearStaleFiringStmt:              q.clearStaleFiringStmt,
-		countActiveCronJobsBySessionStmt:  q.countActiveCronJobsBySessionStmt,
-		createCronJobStmt:                 q.createCronJobStmt,
-		createFileStmt:                    q.createFileStmt,
-		createFlowStateStmt:               q.createFlowStateStmt,
-		createMessageStmt:                 q.createMessageStmt,
-		createSessionStmt:                 q.createSessionStmt,
-		deleteCronJobStmt:                 q.deleteCronJobStmt,
-		deleteFileStmt:                    q.deleteFileStmt,
-		deleteFlowStatesByRootSessionStmt: q.deleteFlowStatesByRootSessionStmt,
-		deleteMessageStmt:                 q.deleteMessageStmt,
-		deleteRecapBySessionIDStmt:        q.deleteRecapBySessionIDStmt,
-		deleteSessionStmt:                 q.deleteSessionStmt,
-		deleteSessionFilesStmt:            q.deleteSessionFilesStmt,
-		deleteSessionMessagesStmt:         q.deleteSessionMessagesStmt,
-		deleteSessionTreeStmt:             q.deleteSessionTreeStmt,
-		getCronJobStmt:                    q.getCronJobStmt,
-		getFileStmt:                       q.getFileStmt,
-		getFileByPathAndSessionStmt:       q.getFileByPathAndSessionStmt,
-		getFlowStateStmt:                  q.getFlowStateStmt,
-		getMaxSeqBySessionStmt:            q.getMaxSeqBySessionStmt,
-		getMessageStmt:                    q.getMessageStmt,
-		getRecapBySessionIDStmt:           q.getRecapBySessionIDStmt,
-		getSessionByIDStmt:                q.getSessionByIDStmt,
-		listActiveCronJobsStmt:            q.listActiveCronJobsStmt,
-		listChildSessionsStmt:             q.listChildSessionsStmt,
-		listCronJobsBySessionStmt:         q.listCronJobsBySessionStmt,
-		listDueCronJobsStmt:               q.listDueCronJobsStmt,
-		listFilesByPathStmt:               q.listFilesByPathStmt,
-		listFilesBySessionStmt:            q.listFilesBySessionStmt,
-		listFilesBySessionTreeStmt:        q.listFilesBySessionTreeStmt,
-		listFlowStatesByFlowIDStmt:        q.listFlowStatesByFlowIDStmt,
-		listFlowStatesByRootSessionStmt:   q.listFlowStatesByRootSessionStmt,
-		listLatestMessagesBySessionStmt:   q.listLatestMessagesBySessionStmt,
-		listLatestSessionFilesStmt:        q.listLatestSessionFilesStmt,
-		listLatestSessionTreeFilesStmt:    q.listLatestSessionTreeFilesStmt,
-		listMessagesBySessionStmt:         q.listMessagesBySessionStmt,
-		listMissedOneShotsStmt:            q.listMissedOneShotsStmt,
-		listSessionsStmt:                  q.listSessionsStmt,
-		setCronJobFiringStmt:              q.setCronJobFiringStmt,
-		updateCronJobAfterRunStmt:         q.updateCronJobAfterRunStmt,
-		updateCronJobErrorStmt:            q.updateCronJobErrorStmt,
-		updateCronJobNextRunStmt:          q.updateCronJobNextRunStmt,
-		updateCronJobStatusStmt:           q.updateCronJobStatusStmt,
-		updateFileStmt:                    q.updateFileStmt,
-		updateFlowStateStmt:               q.updateFlowStateStmt,
-		updateMessageStmt:                 q.updateMessageStmt,
-		updateSessionStmt:                 q.updateSessionStmt,
-		upsertRecapStmt:                   q.upsertRecapStmt,
+		db:                                   tx,
+		tx:                                   tx,
+		addBridgeAllowlistEntryStmt:          q.addBridgeAllowlistEntryStmt,
+		claimCronJobForFiringStmt:            q.claimCronJobForFiringStmt,
+		clearStaleFiringStmt:                 q.clearStaleFiringStmt,
+		countActiveCronJobsBySessionStmt:     q.countActiveCronJobsBySessionStmt,
+		countBridgeSessionsByIdentityStmt:    q.countBridgeSessionsByIdentityStmt,
+		createCronJobStmt:                    q.createCronJobStmt,
+		createFileStmt:                       q.createFileStmt,
+		createFlowStateStmt:                  q.createFlowStateStmt,
+		createMessageStmt:                    q.createMessageStmt,
+		createSessionStmt:                    q.createSessionStmt,
+		deleteBridgeSessionByPeerStmt:        q.deleteBridgeSessionByPeerStmt,
+		deleteBridgeSessionsByIdentityStmt:   q.deleteBridgeSessionsByIdentityStmt,
+		deleteBridgeSessionsBySessionStmt:    q.deleteBridgeSessionsBySessionStmt,
+		deleteCronJobStmt:                    q.deleteCronJobStmt,
+		deleteFileStmt:                       q.deleteFileStmt,
+		deleteFlowStatesByRootSessionStmt:    q.deleteFlowStatesByRootSessionStmt,
+		deleteMessageStmt:                    q.deleteMessageStmt,
+		deleteRecapBySessionIDStmt:           q.deleteRecapBySessionIDStmt,
+		deleteSessionStmt:                    q.deleteSessionStmt,
+		deleteSessionFilesStmt:               q.deleteSessionFilesStmt,
+		deleteSessionMessagesStmt:            q.deleteSessionMessagesStmt,
+		deleteSessionTreeStmt:                q.deleteSessionTreeStmt,
+		getBridgeSessionStmt:                 q.getBridgeSessionStmt,
+		getCronJobStmt:                       q.getCronJobStmt,
+		getFileStmt:                          q.getFileStmt,
+		getFileByPathAndSessionStmt:          q.getFileByPathAndSessionStmt,
+		getFlowStateStmt:                     q.getFlowStateStmt,
+		getMaxSeqBySessionStmt:               q.getMaxSeqBySessionStmt,
+		getMessageStmt:                       q.getMessageStmt,
+		getRecapBySessionIDStmt:              q.getRecapBySessionIDStmt,
+		getSessionByIDStmt:                   q.getSessionByIDStmt,
+		isBridgeAllowlistedStmt:              q.isBridgeAllowlistedStmt,
+		listActiveCronJobsStmt:               q.listActiveCronJobsStmt,
+		listBridgeAllowlistStmt:              q.listBridgeAllowlistStmt,
+		listBridgeSessionsByIdentityStmt:     q.listBridgeSessionsByIdentityStmt,
+		listBridgeSessionsBySessionStmt:      q.listBridgeSessionsBySessionStmt,
+		listChildSessionsStmt:                q.listChildSessionsStmt,
+		listCronJobsBySessionStmt:            q.listCronJobsBySessionStmt,
+		listDueCronJobsStmt:                  q.listDueCronJobsStmt,
+		listFilesByPathStmt:                  q.listFilesByPathStmt,
+		listFilesBySessionStmt:               q.listFilesBySessionStmt,
+		listFilesBySessionTreeStmt:           q.listFilesBySessionTreeStmt,
+		listFlowStatesByFlowIDStmt:           q.listFlowStatesByFlowIDStmt,
+		listFlowStatesByRootSessionStmt:      q.listFlowStatesByRootSessionStmt,
+		listLatestMessagesBySessionStmt:      q.listLatestMessagesBySessionStmt,
+		listLatestSessionFilesStmt:           q.listLatestSessionFilesStmt,
+		listLatestSessionTreeFilesStmt:       q.listLatestSessionTreeFilesStmt,
+		listMessagesBySessionStmt:            q.listMessagesBySessionStmt,
+		listMissedOneShotsStmt:               q.listMissedOneShotsStmt,
+		listSessionsStmt:                     q.listSessionsStmt,
+		markBridgeSessionMentionConsumedStmt: q.markBridgeSessionMentionConsumedStmt,
+		removeBridgeAllowlistEntryStmt:       q.removeBridgeAllowlistEntryStmt,
+		setCronJobFiringStmt:                 q.setCronJobFiringStmt,
+		updateBridgeSessionPeerIDStmt:        q.updateBridgeSessionPeerIDStmt,
+		updateBridgeSessionSessionIDStmt:     q.updateBridgeSessionSessionIDStmt,
+		updateCronJobAfterRunStmt:            q.updateCronJobAfterRunStmt,
+		updateCronJobErrorStmt:               q.updateCronJobErrorStmt,
+		updateCronJobNextRunStmt:             q.updateCronJobNextRunStmt,
+		updateCronJobStatusStmt:              q.updateCronJobStatusStmt,
+		updateFileStmt:                       q.updateFileStmt,
+		updateFlowStateStmt:                  q.updateFlowStateStmt,
+		updateMessageStmt:                    q.updateMessageStmt,
+		updateSessionStmt:                    q.updateSessionStmt,
+		upsertBridgeSessionStmt:              q.upsertBridgeSessionStmt,
+		upsertRecapStmt:                      q.upsertRecapStmt,
 	}
 }

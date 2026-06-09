@@ -19,16 +19,31 @@ type ServerOptions struct {
 	Port       int
 	Hostname   string
 	CORSOrigin string
+	// Bridge, when non-nil, registers its HTTP routes under /router/*
+	// on the same mux. The orchestrator owns the handlers — the API
+	// server only forwards mux registration. Routes outside /router/*
+	// (e.g. /flow/*) follow the same pattern in future phases.
+	Bridge RouteRegistrar
+}
+
+// RouteRegistrar is the contract bridge / flow subsystems satisfy to
+// hook into the API mux. Keeping it as an interface avoids
+// internal/api importing internal/bridge/service (which would drag the
+// chat-platform deps into every binary that builds the API server).
+type RouteRegistrar interface {
+	RegisterRoutes(mux *http.ServeMux)
 }
 
 // Server holds the HTTP server and application reference.
 type Server struct {
-	app        *app.App
-	httpSrv    *http.Server
-	port       int
-	hostname   string
-	password   string
-	corsOrigin string
+	app            *app.App
+	httpSrv        *http.Server
+	port           int
+	hostname       string
+	password       string
+	corsOrigin     string
+	healthReporter HealthReporter
+	flowRunner     *flowRunner
 }
 
 // NewServer creates a new API server.
@@ -40,8 +55,23 @@ func NewServer(application *app.App, opts ServerOptions) *Server {
 		password: os.Getenv("OPENCODE_SERVER_PASSWORD"),
 	}
 
+	// Flow runner: a single-flow-at-a-time tracker driven by /flow/*
+	// HTTP routes. Created up-front so /flow handlers always have a
+	// valid runner to delegate to; idle until a POST /flow.
+	if application != nil && application.Flows != nil {
+		s.flowRunner = newFlowRunner(application.Flows)
+	}
+
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
+	if opts.Bridge != nil {
+		opts.Bridge.RegisterRoutes(mux)
+		// If the bridge also satisfies HealthReporter (the bridge service
+		// does), wire it so /global/health embeds the bridge snapshot.
+		if hr, ok := opts.Bridge.(HealthReporter); ok {
+			s.healthReporter = hr
+		}
+	}
 
 	s.corsOrigin = opts.CORSOrigin
 	if s.corsOrigin == "" {
@@ -130,6 +160,13 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Client log ingest (dax SDK forwards client errors here)
 	mux.HandleFunc("POST /log", s.handleLogWrite)
+
+	// Flow API (per flow-api spec). Routes 404 cleanly if flowRunner
+	// is nil (application without flow.Service — e.g. tests).
+	mux.HandleFunc("GET /flow", s.handleFlowList)
+	mux.HandleFunc("POST /flow", s.handleFlowStart)
+	mux.HandleFunc("GET /flow/status", s.handleFlowStatus)
+	mux.HandleFunc("DELETE /flow", s.handleFlowAbort)
 }
 
 // Start starts the HTTP server. It blocks until the server is shut down.
@@ -158,6 +195,22 @@ func (s *Server) Start(ctx context.Context) error {
 	fmt.Fprintf(os.Stderr, "  Version:    %s\n", version.Version)
 	fmt.Fprintf(os.Stderr, "  Auth:       %s\n", auth)
 	fmt.Fprintf(os.Stderr, "  CORS:       %s\n", s.corsOrigin)
+
+	// Router/bridge status. Three cases:
+	//   1. No bridge wired (cfg.Router == nil) → don't print anything.
+	//   2. Bridge wired but no channel enabled → "Router: disabled".
+	//   3. Bridge wired with adapters → print overall status + one
+	//      line per adapter showing per-identity status + binding count.
+	// This makes it obvious at a glance whether a chat consumer should
+	// be able to reach the server.
+	if bp, ok := s.healthReporter.(BannerProvider); ok && bp != nil {
+		bridgeStatus, adapterLines := bp.BridgeBanner(ctx)
+		fmt.Fprintf(os.Stderr, "  Router:     %s\n", bridgeStatus)
+		for _, line := range adapterLines {
+			fmt.Fprintf(os.Stderr, "                %s\n", line)
+		}
+	}
+
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "  Press Ctrl+C to stop\n")
 	fmt.Fprintf(os.Stderr, "\n")

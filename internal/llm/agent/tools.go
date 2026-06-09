@@ -46,6 +46,7 @@ var (
 		tools.CronDeleteToolName,
 		tools.CronListToolName,
 		tools.TodoWriteToolName,
+		tools.RouterSendToolName,
 	}
 )
 
@@ -125,6 +126,20 @@ func NewToolSet(
 				return tools.NewTodoWriteTool(store)
 			}
 			return nil
+		case tools.RouterSendToolName:
+			// Conditional registration per chat-bridge-agent-tool spec:
+			// (a) agent mode (enforced by managerToolNames branch's
+			//     info.Mode == AgentModeAgent gate) and
+			// (b) at least one configured + enabled channel.
+			sender, cfg, mediaRoot := factory.BridgeSender()
+			if sender == nil || !tools.ShouldRegisterRouterSend(cfg) {
+				return nil
+			}
+			return tools.NewRouterSendTool(tools.RouterSendDeps{
+				Sender:    sender,
+				Cfg:       cfg,
+				MediaRoot: mediaRoot,
+			})
 		default:
 			return nil
 		}

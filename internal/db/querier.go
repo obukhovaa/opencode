@@ -10,17 +10,22 @@ import (
 )
 
 type Querier interface {
+	AddBridgeAllowlistEntry(ctx context.Context, arg AddBridgeAllowlistEntryParams) error
 	// Atomically marks a cron job as firing only if it is still due. Returns the
 	// number of rows affected; 0 means another worker already claimed it or the
 	// row's next_run_at moved into the future.
 	ClaimCronJobForFiring(ctx context.Context, arg ClaimCronJobForFiringParams) (int64, error)
 	ClearStaleFiring(ctx context.Context) error
 	CountActiveCronJobsBySession(ctx context.Context, sessionID string) (int64, error)
+	CountBridgeSessionsByIdentity(ctx context.Context, arg CountBridgeSessionsByIdentityParams) (int64, error)
 	CreateCronJob(ctx context.Context, arg CreateCronJobParams) (CronJob, error)
 	CreateFile(ctx context.Context, arg CreateFileParams) (File, error)
 	CreateFlowState(ctx context.Context, arg CreateFlowStateParams) (FlowState, error)
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
+	DeleteBridgeSessionByPeer(ctx context.Context, arg DeleteBridgeSessionByPeerParams) error
+	DeleteBridgeSessionsByIdentity(ctx context.Context, arg DeleteBridgeSessionsByIdentityParams) error
+	DeleteBridgeSessionsBySession(ctx context.Context, arg DeleteBridgeSessionsBySessionParams) error
 	DeleteCronJob(ctx context.Context, id string) error
 	DeleteFile(ctx context.Context, id string) error
 	DeleteFlowStatesByRootSession(ctx context.Context, rootSessionID string) error
@@ -30,6 +35,7 @@ type Querier interface {
 	DeleteSessionFiles(ctx context.Context, sessionID string) error
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
 	DeleteSessionTree(ctx context.Context, arg DeleteSessionTreeParams) error
+	GetBridgeSession(ctx context.Context, arg GetBridgeSessionParams) (BridgeSession, error)
 	GetCronJob(ctx context.Context, id string) (CronJob, error)
 	GetFile(ctx context.Context, id string) (File, error)
 	GetFileByPathAndSession(ctx context.Context, arg GetFileByPathAndSessionParams) (File, error)
@@ -38,7 +44,11 @@ type Querier interface {
 	GetMessage(ctx context.Context, id string) (Message, error)
 	GetRecapBySessionID(ctx context.Context, sessionID string) (SessionRecap, error)
 	GetSessionByID(ctx context.Context, id string) (Session, error)
+	IsBridgeAllowlisted(ctx context.Context, arg IsBridgeAllowlistedParams) (int64, error)
 	ListActiveCronJobs(ctx context.Context) ([]CronJob, error)
+	ListBridgeAllowlist(ctx context.Context, arg ListBridgeAllowlistParams) ([]BridgeAllowlist, error)
+	ListBridgeSessionsByIdentity(ctx context.Context, arg ListBridgeSessionsByIdentityParams) ([]BridgeSession, error)
+	ListBridgeSessionsBySession(ctx context.Context, arg ListBridgeSessionsBySessionParams) ([]BridgeSession, error)
 	ListChildSessions(ctx context.Context, rootSessionID sql.NullString) ([]Session, error)
 	ListCronJobsBySession(ctx context.Context, sessionID string) ([]CronJob, error)
 	ListDueCronJobs(ctx context.Context, nextRunAt sql.NullInt64) ([]CronJob, error)
@@ -53,7 +63,11 @@ type Querier interface {
 	ListMessagesBySession(ctx context.Context, sessionID string) ([]Message, error)
 	ListMissedOneShots(ctx context.Context, nextRunAt sql.NullInt64) ([]CronJob, error)
 	ListSessions(ctx context.Context, projectID sql.NullString) ([]Session, error)
+	MarkBridgeSessionMentionConsumed(ctx context.Context, arg MarkBridgeSessionMentionConsumedParams) error
+	RemoveBridgeAllowlistEntry(ctx context.Context, arg RemoveBridgeAllowlistEntryParams) error
 	SetCronJobFiring(ctx context.Context, arg SetCronJobFiringParams) error
+	UpdateBridgeSessionPeerID(ctx context.Context, arg UpdateBridgeSessionPeerIDParams) error
+	UpdateBridgeSessionSessionID(ctx context.Context, arg UpdateBridgeSessionSessionIDParams) error
 	UpdateCronJobAfterRun(ctx context.Context, arg UpdateCronJobAfterRunParams) (CronJob, error)
 	UpdateCronJobError(ctx context.Context, arg UpdateCronJobErrorParams) error
 	UpdateCronJobNextRun(ctx context.Context, arg UpdateCronJobNextRunParams) error
@@ -62,6 +76,7 @@ type Querier interface {
 	UpdateFlowState(ctx context.Context, arg UpdateFlowStateParams) (FlowState, error)
 	UpdateMessage(ctx context.Context, arg UpdateMessageParams) error
 	UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error)
+	UpsertBridgeSession(ctx context.Context, arg UpsertBridgeSessionParams) (BridgeSession, error)
 	UpsertRecap(ctx context.Context, arg UpsertRecapParams) (SessionRecap, error)
 }
 

@@ -8,6 +8,26 @@ import (
 	"database/sql"
 )
 
+type BridgeAllowlist struct {
+	ProjectID  string `json:"project_id"`
+	Channel    string `json:"channel"`
+	IdentityID string `json:"identity_id"`
+	PeerID     string `json:"peer_id"`
+	CreatedAt  int64  `json:"created_at"`
+}
+
+type BridgeSession struct {
+	ProjectID         string         `json:"project_id"`
+	Channel           string         `json:"channel"`
+	IdentityID        string         `json:"identity_id"`
+	PeerID            string         `json:"peer_id"`
+	SessionID         sql.NullString `json:"session_id"`
+	MentionHandle     sql.NullString `json:"mention_handle"`
+	MentionConsumedAt sql.NullInt64  `json:"mention_consumed_at"`
+	CreatedAt         int64          `json:"created_at"`
+	UpdatedAt         int64          `json:"updated_at"`
+}
+
 type CronJob struct {
 	ID           string         `json:"id"`
 	SessionID    string         `json:"session_id"`

@@ -4,225 +4,192 @@ OpenWork is an open-source control surface for agentic workflows. OpenCode serve
 
 - OpenWork repo: https://github.com/different-ai/openwork.git
 
-## Architecture
+## What's new — in-process chat bridge
+
+As of this fork, the **chat bridge runs inside `opencode serve`**. There is no separate Node `opencode-router` process to install or supervise; channels, identities, and tokens live under the `router` section of `.opencode.json`, and HTTP routes are mounted under `/router/*` on the existing opencode API mux. See **[DEPLOY.md](./DEPLOY.md)** for end-to-end setup and cutover instructions.
+
+> **Status of the legacy TS package** (`apps/opencode-router` in the openwork repo): **deprecated**. It still works against any plain `opencode serve` that hasn't enabled the in-process bridge, but no new features land there. Scenarios 1 and 3 below have been rewritten around the in-process bridge; scenario 4 (the orchestrator) remains as-is since it has nothing to do with the router.
+
+## Architecture (in-process bridge)
 
 ```
-                          ┌─────────────────────┐
-                          │   opencode serve    │  ← your OpenCode instance
-                          └──────────┬──────────┘
-                                     │ HTTP/SSE API
-                    ┌────────────────┼────────────────┐
-                    │                │                │
-             ┌──────┴──────┐   ┌─────┴──────┐  ┌──────┴───────┐
-             │   router    │   │   server   │  │ orchestrator │
-             │  (chat)     │   │  (web API) │  │ (supervisor) │
-             └──────┬──────┘   └─────┬──────┘  └──────────────┘
-                    │                │
-          ┌────────┼────────┐       │
-          │        │        │       │
-      Telegram   Slack  Mattermost Web UI
+                          ┌──────────────────────────────────────────┐
+                          │   opencode serve                          │
+                          │                                            │
+                          │   ┌──────────┐  ┌──────────┐  ┌─────────┐ │
+                          │   │ telegram │  │  slack   │  │mattermost│ │
+                          │   │ adapter  │  │ adapter  │  │ adapter │ │
+                          │   └────┬─────┘  └────┬─────┘  └────┬────┘ │
+                          │        │             │             │       │
+                          │   ┌────┴─────────────┴─────────────┴────┐ │
+                          │   │  bridge orchestrator                 │ │
+                          │   │  per-session dispatch goroutine      │ │
+                          │   └──────────┬───────────────────────────┘ │
+                          │              │                              │
+                          │   ┌──────────┴───────────────────────────┐ │
+                          │   │  agent.Run / question / permission    │ │
+                          │   └───────────────────────────────────────┘ │
+                          │                                            │
+                          │   HTTP /router/* /flow/* /session/* /event │
+                          └──────────────────────────────────────────┘
+                                            ▲
+                                            │ same HTTP/SSE API
+                                            │ (also serves openwork-server, web UI)
+                                  ┌─────────┴─────────┐
+                                  │  external clients │
+                                  │  (UI, c2-agent,   │
+                                  │   orchestrators)  │
+                                  └───────────────────┘
 ```
 
-**Components** (all from the OpenWork repo, all optional):
+**Components in the openwork repo** (now optional, downstream of the bridge):
 
-- **opencode-router** — bidirectional Telegram/Slack/Mattermost bridge. Receives messages, forwards to OpenCode, sends replies back. Supports file exchange.
-- **openwork-server** — REST + SSE API layer with workspace management, approvals, file sync. Includes a built-in lightweight Toy UI at `/ui`.
-- **openwork-orchestrator** — process supervisor that manages opencode + server + router as a unit. Not needed when you run OpenCode yourself.
-
-Since we run our own `opencode serve`, the orchestrator is redundant. The scenarios below use the router and server directly.
+- ~~**opencode-router**~~ — **deprecated**. The bidirectional Telegram/Slack/Mattermost bridge is now in-process inside `opencode serve`. See [DEPLOY.md](./DEPLOY.md).
+- **openwork-server** — REST + SSE API layer with workspace management, approvals, file sync. Includes a built-in lightweight Toy UI at `/ui`. Unaffected by the bridge port — it talks to `opencode serve`'s HTTP API the same way.
+- **openwork-orchestrator** — process supervisor that manages opencode + server as a unit. Not needed when you run OpenCode yourself.
 
 ## Prerequisites
 
 All scenarios assume OpenCode is running:
 
 ```bash
-OPENCODE_ENABLE_QUESTION_TOOL=1 opencode serve --hostname 127.0.0.1 --port 3456 --auto-approve
-
+opencode serve --hostname 127.0.0.1 --port 3456
 ```
 
-The `OPENCODE_ENABLE_QUESTION_TOOL=1` env var enables the interactive question tool — the agent can ask users questions with selectable options through chat channels. Omit it if you don't need this feature.
+The legacy `OPENCODE_ENABLE_QUESTION_TOOL=1` env var is no longer needed — the interactive question tool is gated by `router.questionMode = "interactive"` in `.opencode.json`.
 
 ---
 
-## Scenario 1: Router only (Telegram/Slack/Mattermost, no web UI)
+## Scenario 1: In-process bridge (Telegram/Slack/Mattermost, no web UI)
 
-The lightest setup. Chat with your agent entirely through Telegram, Slack, or Mattermost. No web interface.
+The lightest setup. Chat with your agent through Telegram, Slack, or Mattermost; everything runs inside `opencode serve`. **Full deployment walkthrough lives in [DEPLOY.md](./DEPLOY.md)** — this section is a quick overview.
 
-### Telegram setup
+### 30-second example: Telegram
 
-1. Create a bot via [@BotFather](https://t.me/BotFather), copy the bot token.
+1. Create a bot via [@BotFather](https://t.me/BotFather), copy the token.
 
-2. Install and configure:
-
-```bash
-npm install -g opencode-router
-
-# Register the bot
-opencode-router telegram add <BOT_TOKEN> --id default
-
-# Bind a Telegram chat to a workspace (use numeric chat_id, not @username)
-opencode-router bindings set \
-  --channel telegram \
-  --identity default \
-  --peer <CHAT_ID> \
-  --dir /path/to/workspace
-```
-
-To find your `chat_id`: message the bot, then check `https://api.telegram.org/bot<BOT_TOKEN>/getUpdates`.
-
-3. Start the router:
+2. Register the bot via the bridge's CRUD endpoint:
 
 ```bash
-OPENCODE_URL=http://127.0.0.1:3456 \
-OPENCODE_DIRECTORY=/path/to/workspace \
-  opencode-router start
-```
-
-Message the bot in Telegram — it forwards to OpenCode and sends the reply back automatically.
-
-### Slack setup
-
-1. Create a Slack app at https://api.slack.com/apps.
-2. Enable **Socket Mode**, generate an app-level token (`xapp-...`).
-3. Add bot token scopes: `chat:write`, `app_mentions:read`, `im:history`, `files:read`, `files:write`.
-4. Subscribe to bot events: `app_mention`, `message.im`.
-5. Install the app to your workspace, copy the bot token (`xoxb-...`).
-
-```bash
-# Register the Slack app
-opencode-router slack add <XOXB_TOKEN> <XAPP_TOKEN> --id default
-
-# Bind a Slack DM or channel to a workspace
-opencode-router bindings set \
-  --channel slack \
-  --identity default \
-  --peer <CHANNEL_OR_DM_ID> \
-  --dir /path/to/workspace
-```
-
-Start:
-
-```bash
-OPENCODE_URL=http://127.0.0.1:3456 \
-OPENCODE_DIRECTORY=/path/to/workspace \
-  opencode-router start
-```
-
-### Mattermost setup
-
-Mattermost support uses a personal access token + native WebSocket — no external npm dependencies.
-
-1. In your Mattermost server, go to **Account Settings > Security > Personal Access Tokens** and create a token. (Requires the system admin to enable personal access tokens in **System Console > Integrations > Integration Management**.)
-
-2. Register the identity:
-
-```bash
-# Register the Mattermost instance
-opencode-router mattermost add https://mm.example.com <ACCESS_TOKEN> --id default
-
-# Optionally bind a channel to a workspace
-opencode-router bindings set \
-  --channel mattermost \
-  --identity default \
-  --peer <CHANNEL_ID> \
-  --dir /path/to/workspace
-```
-
-3. Start:
-
-```bash
-OPENCODE_URL=http://127.0.0.1:3456 \
-OPENCODE_DIRECTORY=/path/to/workspace \
-  opencode-router start
-```
-
-The bot responds to DMs and group DMs automatically. For public/private channel messages, set `GROUPS_ENABLED=true` and @mention the bot by username.
-
-Environment variable shorthand (single instance):
-
-```bash
-MATTERMOST_SERVER_URL=https://mm.example.com \
-MATTERMOST_ACCESS_TOKEN=<token> \
-MATTERMOST_ENABLED=true \
-  opencode-router start
-```
-
-### File exchange
-
-**Receiving files** — send a file in Telegram/Slack along with your message. The router downloads it to `<workspace>/.opencode-router/media/` and includes the local path in the prompt to OpenCode. The agent can read and process the file.
-
-**Sending files back** — the agent's text replies are sent automatically. To send files (documents, images, audio), use the router's HTTP API or CLI:
-
-```bash
-# CLI
-opencode-router send \
-  --channel telegram --identity default --to <CHAT_ID> \
-  --file ./output/report.docx
-
-# HTTP (useful from OpenCode tools/hooks)
-curl http://127.0.0.1:${OPENCODE_ROUTER_HEALTH_PORT:-3005}/send \
+curl -X POST http://127.0.0.1:3456/router/identities/telegram \
   -H 'Content-Type: application/json' \
   -d '{
-    "channel": "telegram",
-    "directory": "/path/to/workspace",
-    "text": "Updated document attached",
-    "parts": [
-      {"type": "file", "filePath": "./output/report.docx"},
-      {"type": "image", "filePath": "./charts/summary.png", "caption": "Summary chart"}
+    "id": "default",
+    "token": "<BOT_TOKEN>",
+    "enabled": true
+  }'
+```
+
+3. Message the bot in Telegram — the bridge forwards to OpenCode and sends the reply back automatically.
+
+For private bots (recommended), add `access: "private"` and a `pairingCodeHash`. See [DEPLOY.md §3](./DEPLOY.md#3-configure-telegram).
+
+### 30-second example: Slack
+
+1. Create a Slack app, enable Socket Mode, generate bot + app tokens, install to workspace.
+
+```bash
+curl -X POST http://127.0.0.1:3456/router/identities/slack \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "default",
+    "botToken": "xoxb-...",
+    "appToken": "xapp-...",
+    "enabled": true
+  }'
+```
+
+DM the bot or `@mention` it in a channel — the bridge handles routing.
+
+### 30-second example: Mattermost
+
+1. Create a Bot Account in Mattermost, copy the access token.
+
+```bash
+curl -X POST http://127.0.0.1:3456/router/identities/mattermost \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "default",
+    "serverUrl": "https://mm.example.com",
+    "accessToken": "<BOT_ACCESS_TOKEN>",
+    "enabled": true
+  }'
+```
+
+DMs work automatically; channel `@mentions` require the per-identity `groupsEnabled` flag.
+
+### Binding sessions to peers
+
+The bridge supports **multi-reviewer fan-out**: one opencode session can be bound to multiple chat peers across platforms. Output goes to every peer; inbound from any peer is attributed back to the agent with `[<who> via <channel>]: `.
+
+```bash
+curl -X POST http://127.0.0.1:3456/router/bind \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "sessionId": "<SESSION_ID>",
+    "peers": [
+      {"channel":"telegram","identity":"default","peerId":"<CHAT_ID>"},
+      {"channel":"slack",   "identity":"default","peerId":"U123ABC"}
     ]
   }'
 ```
 
-Supported part types: `file` (any document), `image`, `audio`.
+Slack `U<id>` and Mattermost user-IDs auto-resolve to a DM channel before binding. Channel-only Slack peers (`C<id>`) get the binding mutated to channel+thread (`C<id>|<ts>`) after the first outbound. See [DEPLOY.md §6](./DEPLOY.md#6-bind-sessions-to-peers) for details.
+
+### Router-initiated conversations
+
+`POST /router/bind` for a peer who has never messaged the bot is the load-bearing primitive — the agent's first turn lands in that peer's inbox. This unlocks the c2-agent-style "agent reaches out first" pattern and powers `interactive: true` flow steps.
+
+### File exchange
+
+**Receiving files** — send a file alongside your message. The bridge downloads it to `<dataDir>/bridge/media/` and threads the path into the agent's prompt.
+
+**Sending files back** — either have the agent emit a `FILE:<path>` line in its reply (the bridge parses, validates the path is under the media root, and attaches), or POST to `/router/send` with a `parts` array:
+
+```bash
+curl http://127.0.0.1:3456/router/send \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel": "telegram",
+    "identity": "default",
+    "peerId": "<CHAT_ID>",
+    "text": "Updated document",
+    "parts": [{"type":"file","filePath":"./output/report.docx"}]
+  }'
+```
+
+### `router_send` agent tool
+
+When the agent is in `mode: "agent"` and at least one channel has an enabled identity, the agent's tool list automatically includes `router_send` — an in-process tool for sending messages mid-turn. Description is built dynamically from `cfg.Router` so the agent sees available channels, identities, and currently-bound peers without external docs.
 
 ### How the chat loop works
 
 ```
-User sends message in Telegram
-  → router downloads any attachments to .opencode-router/media/
-  → router calls session.prompt() on the OpenCode SDK
-  → OpenCode processes the request (reads files, runs tools, etc.)
-  → router extracts text reply from the response
-  → router sends reply back to Telegram
+User sends message in chat
+  → adapter normalizes to bridge.Inbound, downloads attachments to <dataDir>/bridge/media/
+  → orchestrator resolves peer → bound sessionId (or creates a fresh one)
+  → per-session dispatch goroutine calls agent.Run(prompt)
+  → agent emits parts via messages.SubscribeParts → typing/tool updates fan to chat
+  → terminal event → text parsed for FILE: tokens → adapters.Send to every bound peer
 ```
 
-The round-trip is fully automatic. No UI or manual intervention needed for the text conversation. File sending back requires the agent to call the router's `/send` endpoint (via a tool or hook).
-
-### Router environment variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `OPENCODE_URL` | Yes | OpenCode server URL |
-| `OPENCODE_DIRECTORY` | Yes | Default workspace directory |
-| `OPENCODE_SERVER_USERNAME` | If auth | OpenCode basic auth username |
-| `OPENCODE_SERVER_PASSWORD` | If auth | OpenCode basic auth password |
-| `TELEGRAM_BOT_TOKEN` | Alt | Single-bot shorthand (alternative to `opencode-router telegram add`) |
-| `SLACK_BOT_TOKEN` | Alt | Single-app shorthand (`xoxb-...`) |
-| `SLACK_APP_TOKEN` | Alt | Single-app shorthand (`xapp-...`) |
-| `SLACK_ENABLED` | Alt | Set `true` with the env var shorthand |
-| `MATTERMOST_SERVER_URL` | Alt | Mattermost server URL (e.g. `https://mm.example.com`) |
-| `MATTERMOST_ACCESS_TOKEN` | Alt | Personal access token |
-| `MATTERMOST_ENABLED` | Alt | Set `true` with the env var shorthand |
-| `GROUPS_ENABLED` | No | Set `true` to allow group/channel messages |
-| `OPENCODE_ROUTER_HEALTH_PORT` | No | HTTP API port (default: auto) |
-
-**OpenCode server env var** (set on the `opencode serve` process, not the router):
-
-| Variable | Required | Description |
-|---|---|---|
-| `OPENCODE_ENABLE_QUESTION_TOOL` | No | Set `1` to enable the interactive question tool (agent can ask users questions via chat) |
+The whole loop is in-process — no HTTP loopback for inbound, no SSE round-trip for parts. See [DEPLOY.md](./DEPLOY.md) for chat commands, health endpoints, security checklists, and the migration guide from the legacy TS router.
 
 ### Config and data paths
 
-- Config: `~/.openwork/opencode-router/opencode-router.json`
-- Database: `~/.openwork/opencode-router/opencode-router.db` (SQLite)
-- Downloaded media: `<workspace>/.opencode-router/media/`
+| | Old (TS router) | New (in-process bridge) |
+|---|---|---|
+| Tokens & channels | `~/.openwork/opencode-router/opencode-router.json` | `router` section of `.opencode.json` |
+| Bindings DB | `~/.openwork/opencode-router/opencode-router.db` (separate SQLite) | `bridge_sessions` / `bridge_allowlist` tables in opencode's existing DB (SQLite or MySQL) |
+| Downloaded media | `<workspace>/.opencode-router/media/` | `<dataDir>/bridge/media/` |
+| HTTP port | `OPENCODE_ROUTER_HEALTH_PORT` (separate) | opencode API port (`--port`) |
+| HTTP paths | `/send`, `/identities/*`, `/config/groups` | `/router/send`, `/router/identities/*`, `/router/config/groups` (bare paths return 404) |
 
 ---
 
 ## Scenario 2: Server only (web UI, no chat)
 
-Run the OpenWork server for browser-based access. Two sub-options for the UI.
+Run the OpenWork server for browser-based access. Unaffected by the bridge port — `openwork-server` talks to `opencode serve`'s HTTP API regardless of whether the in-process bridge is enabled.
 
 ### 2a. Toy UI (zero build, built into the server)
 
@@ -338,13 +305,13 @@ This starts both the Vite dev server (full React UI) and the OpenWork server in 
 
 ---
 
-## Scenario 3: Router + Server (chat and web UI)
+## Scenario 3: In-process bridge + Server (chat and web UI)
 
-Run both for maximum flexibility — chat via Telegram/Slack/Mattermost and monitor via web browser.
+Run both for maximum flexibility — chat via Telegram/Slack/Mattermost AND monitor via web browser. With the bridge in-process, this is two processes total (down from three).
 
 ```bash
-# Terminal 1: OpenCode
-OPENCODE_ENABLE_QUESTION_TOOL=1 opencode serve --hostname 127.0.0.1 --port 3456
+# Terminal 1: OpenCode (with bridge configured in .opencode.json)
+opencode serve --hostname 127.0.0.1 --port 3456
 
 # Terminal 2: OpenWork server (web UI at /ui)
 openwork-server \
@@ -354,11 +321,6 @@ openwork-server \
   --port 8787 \
   --cors '*' \
   --approval auto
-
-# Terminal 3: Router (Telegram/Slack/Mattermost)
-OPENCODE_URL=http://127.0.0.1:3456 \
-OPENCODE_DIRECTORY=/path/to/workspace \
-  opencode-router start
 ```
 
 For the full React UI instead of Toy UI, build it as described in Scenario 2b and serve the static files.
@@ -367,12 +329,12 @@ For the full React UI instead of Toy UI, build it as described in Scenario 2b an
 
 ## Scenario 4: Orchestrator (all-in-one, manages its own OpenCode)
 
-The orchestrator downloads and supervises opencode + server + router as a single process tree. **You typically don't need this** since you're running your own `opencode serve`, but it's useful if you want a single command that manages everything.
+The orchestrator downloads and supervises opencode + server as a single process tree. **You typically don't need this** since you're running your own `opencode serve`, but it's useful if you want a single command that manages everything.
 
 ```bash
 npm install -g openwork-orchestrator
 
-# Manages its own OpenCode sidecar + server + router
+# Manages its own OpenCode sidecar + server
 openwork start \
   --workspace /path/to/workspace \
   --approval auto \
@@ -385,7 +347,7 @@ OPENWORK_OPENCODE_BASE_URL=http://127.0.0.1:3456 \
     --approval auto
 ```
 
-The orchestrator provides a TUI dashboard in the terminal and the Toy UI at `/ui`.
+The orchestrator provides a TUI dashboard in the terminal and the Toy UI at `/ui`. Chat support comes from the in-process bridge inside the managed `opencode serve` — no separate router sidecar.
 
 ---
 
@@ -393,13 +355,15 @@ The orchestrator provides a TUI dashboard in the terminal and the Toy UI at `/ui
 
 | Scenario | What you run | Web UI | Chat | Best for |
 |---|---|---|---|---|
-| 1. Router only | `opencode serve` + `opencode-router` | None | Telegram/Slack/Mattermost | Headless agent control |
+| 1. In-process bridge | `opencode serve` (single process) | None | Telegram/Slack/Mattermost | Headless agent control, k8s Jobs |
 | 2a. Server (Toy UI) | `opencode serve` + `openwork-server` | Toy UI at `/ui` | None | Quick browser access |
 | 2b. Server (full UI) | `opencode serve` + `openwork-server` + static files | Full React UI | None | Production web UI |
-| 3. Router + Server | `opencode serve` + `openwork-server` + `opencode-router` | Toy UI or full | Telegram/Slack/Mattermost | Full remote control |
-| 4. Orchestrator | `openwork start` | Toy UI at `/ui` | Optional | Single-command setup |
+| 3. Bridge + Server | `opencode serve` + `openwork-server` | Toy UI or full | Telegram/Slack/Mattermost | Full remote control |
+| 4. Orchestrator | `openwork start` | Toy UI at `/ui` | Optional (in-process bridge if configured) | Single-command setup |
 
 All scenarios work with this fork or dax's `opencode-ai`. The orchestrator (scenario 4) is the only one that can manage its own OpenCode subprocess — all others expect you to run `opencode serve` yourself.
+
+> **Legacy scenarios**: Earlier revisions of this README documented a fifth process (`opencode-router`, the Node bridge) for chat. That package is now **deprecated** — every chat scenario above uses the in-process Go bridge baked into `opencode serve`. If you have an existing `opencode-router` deployment, see [DEPLOY.md — Cutover from the TS bridge](./DEPLOY.md#cutover-from-the-ts-bridge) for the migration steps.
 
 ## Desktop app (development)
 

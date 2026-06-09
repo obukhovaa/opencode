@@ -19,7 +19,7 @@ SCOPE ?= minor
         init-test-bin build-test-bin coverage-report-bin coverage-report \
         test-bin test-it test test-it-debug test-debug init-test lint \
         dev-build  dev dev-stop build-docker run-docker release version \
-        test-e2e
+        test-e2e test-mysql test-mysql-up test-mysql-down
 
 # Main targets
 init: clean init-hooks
@@ -102,6 +102,35 @@ test-e2e:
 		echo "── $$(basename $$script) ──"; \
 		bash "$$script" || exit 1; \
 	done
+
+# MySQL integration tests. Boots a throwaway MySQL 8 on host port 3307,
+# waits for it to become healthy, runs all tests built with the
+# `mysql_integration` build tag (in particular the bridge store and
+# provider round-trip tests), then tears the container down.
+#
+# Env vars consumed by the integration tests:
+#   TEST_MYSQL_DSN — fully qualified DSN for the throwaway DB.
+#
+# The DSN below intentionally matches docker-compose.test-mysql.yml so
+# operators can `make test-mysql-up` once and re-run tests interactively
+# with the same connection string.
+TEST_MYSQL_DSN ?= opencode_test:opencode_test@tcp(127.0.0.1:3307)/opencode_test?parseTime=true&multiStatements=true
+
+test-mysql-up:
+	docker compose -f docker-compose.test-mysql.yml up -d --wait
+
+test-mysql-down:
+	docker compose -f docker-compose.test-mysql.yml down -v
+
+# -p 1 serializes test packages so the two MySQL integration suites
+# (internal/db and internal/bridge/store) don't race each other
+# dropping and recreating the same schema in the shared throwaway DB.
+# Without it, Go runs different packages' test binaries concurrently
+# and the parallel drop/migrate cycles produce nondeterministic
+# "Table 'X' doesn't exist" / "Duplicate key" errors mid-migration.
+test-mysql: test-mysql-up
+	@trap 'docker compose -f docker-compose.test-mysql.yml down -v' EXIT; \
+	TEST_MYSQL_DSN='$(TEST_MYSQL_DSN)' go test -tags=mysql_integration -count=1 -p 1 ./...
 
 mysql-cli:
 	@mysql --host=$(MYSQL_HOST) --port=3306 --user=$(MYSQL_USER) --password=$(MYSQL_PASSWORD) --database=$(MYSQL_DATABASE)

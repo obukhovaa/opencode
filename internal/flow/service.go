@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/format"
@@ -27,10 +28,11 @@ import (
 type FlowStatus string
 
 const (
-	FlowStatusRunning   FlowStatus = "running"
-	FlowStatusCompleted FlowStatus = "completed"
-	FlowStatusFailed    FlowStatus = "failed"
-	FlowStatusPostponed FlowStatus = "postponed"
+	FlowStatusRunning         FlowStatus = "running"
+	FlowStatusCompleted       FlowStatus = "completed"
+	FlowStatusFailed          FlowStatus = "failed"
+	FlowStatusPostponed       FlowStatus = "postponed"
+	FlowStatusWaitingForInput FlowStatus = "waiting_for_input"
 )
 
 type FlowState struct {
@@ -45,6 +47,12 @@ type FlowState struct {
 	Iteration      int
 	CreatedAt      int64
 	UpdatedAt      int64
+	// WaitingTarget carries the resolved interaction.target peers when
+	// Status == FlowStatusWaitingForInput. It is emitted exactly once per
+	// interactive step, immediately after the bridge bind succeeds and
+	// before agent.Run begins. Consumers (API runner) translate this into
+	// the flow.waiting_for_input SSE event.
+	WaitingTarget []bridge.PeerRef
 }
 
 // AgentProvider interface removed — use agentpkg.AgentFactory directly.
@@ -61,6 +69,33 @@ type service struct {
 	querier     db.QuerierWithTx
 	permissions permission.Service
 	agents      agentpkg.AgentFactory
+
+	interactiveHook InteractiveHook // nil → uses nopInteractiveHook (fail-fast)
+}
+
+// SetInteractiveHook installs the chat-bridge hook used by
+// interactive: true steps. cmd/serve.go injects the bridge service's
+// implementation; tests and headless flows that never enter interactive
+// steps can leave this unset.
+func (s *service) SetInteractiveHook(h InteractiveHook) {
+	s.interactiveHook = h
+}
+
+// interactiveHookOrNop returns the configured hook or a fail-fast stub.
+// The flow engine calls this every time an interactive step starts.
+func (s *service) interactiveHookOrNop() InteractiveHook {
+	if s.interactiveHook != nil {
+		return s.interactiveHook
+	}
+	return nopInteractiveHook{}
+}
+
+// SetInteractiveHook on the Service interface (for callers that hold
+// only the interface). Forwards to the concrete service. Use this from
+// cmd/serve.go where we have a flow.Service interface but need to wire
+// the bridge hook.
+type InteractiveHookSetter interface {
+	SetInteractiveHook(h InteractiveHook)
 }
 
 func NewService(
@@ -373,6 +408,54 @@ func (s *service) runStep(
 	ctx = context.WithValue(ctx, tools.FlowStepIDContextKey, step.ID)
 	ctx = context.WithValue(ctx, tools.FlowStepIterationContextKey, iteration)
 	ctx = withFlowArgs(ctx, args)
+
+	// Interactive bind: per the flow-api spec, on entering an interactive
+	// step we resolve interaction.target from args and call the bridge's
+	// InteractiveHook BEFORE agent.Run. Failure here fails the step fast.
+	// The bind is automatically reversed in deferred Unbind below.
+	if step.Interactive {
+		peers, resolveErr := resolveInteractionTarget(step.Interaction, args)
+		if resolveErr != nil {
+			s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration,
+				fmt.Errorf("interactive step %q: %w", step.ID, resolveErr),
+				wg, agentEvents, flowStates, nextSteps, f)
+			return
+		}
+		if err := s.interactiveHookOrNop().OnInteractiveStepStart(ctx, sess.ID, peers); err != nil {
+			s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration,
+				fmt.Errorf("interactive step %q bind: %w", step.ID, err),
+				wg, agentEvents, flowStates, nextSteps, f)
+			return
+		}
+		// Defer unbind so any return path (success, error, panic) unwinds
+		// the binding. Use a fresh ctx so a cancelled parent doesn't
+		// short-circuit the Unbind call.
+		defer func() {
+			unbindCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := s.interactiveHookOrNop().OnInteractiveStepComplete(unbindCtx, sess.ID); err != nil {
+				logging.Warn("interactive step unbind failed", "step", step.ID, "err", err)
+			}
+		}()
+		// Per the flow-api spec, emit the waiting_for_input transition
+		// AFTER the bind succeeds and BEFORE agent.Run. The API runner
+		// translates this FlowState into the flow.waiting_for_input SSE
+		// event. We DO NOT persist this state — it's an in-flight signal
+		// only, not a step terminal status.
+		waitingState := &FlowState{
+			SessionID:     sess.ID,
+			RootSessionID: rootSessionID,
+			FlowID:        f.ID,
+			StepID:        step.ID,
+			Status:        FlowStatusWaitingForInput,
+			Args:          args,
+			Iteration:     iteration,
+			UpdatedAt:     time.Now().Unix(),
+			WaitingTarget: peers,
+		}
+		flowStates <- waitingState
+		s.Publish(pubsub.UpdatedEvent, *waitingState)
+	}
 
 	var result agentpkg.AgentEvent
 	maxAttempts := 1

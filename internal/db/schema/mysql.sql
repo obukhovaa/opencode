@@ -98,3 +98,30 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
   KEY idx_cron_jobs_due (status, firing, next_run_at),
   CONSTRAINT fk_cron_jobs_session FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+-- Bridge composite PK column sizes are chosen so the PK fits within
+-- MySQL InnoDB's 3072-byte (utf8mb4 → 4 bytes/char) key-length cap;
+-- see the goose migration of the same date for the size derivation.
+CREATE TABLE IF NOT EXISTS bridge_sessions (
+  project_id VARCHAR(255) NOT NULL,
+  channel VARCHAR(32) NOT NULL,
+  identity_id VARCHAR(64) NOT NULL,
+  peer_id VARCHAR(128) NOT NULL,
+  session_id VARCHAR(255) NULL,
+  mention_handle VARCHAR(255) NULL,
+  mention_consumed_at BIGINT NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL,
+  PRIMARY KEY (project_id, channel, identity_id, peer_id),
+  KEY idx_bridge_sessions_session_id (session_id),
+  CONSTRAINT fk_bridge_sessions_session FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE SET NULL
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS bridge_allowlist (
+  project_id VARCHAR(255) NOT NULL,
+  channel VARCHAR(32) NOT NULL,
+  identity_id VARCHAR(64) NOT NULL,
+  peer_id VARCHAR(128) NOT NULL,
+  created_at BIGINT NOT NULL,
+  PRIMARY KEY (project_id, channel, identity_id, peer_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;

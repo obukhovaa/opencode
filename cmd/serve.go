@@ -6,14 +6,22 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/opencode-ai/opencode/internal/api"
 	"github.com/opencode-ai/opencode/internal/app"
+	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/bridge/mattermost"
+	bridgesvc "github.com/opencode-ai/opencode/internal/bridge/service"
+	"github.com/opencode-ai/opencode/internal/bridge/slack"
+	"github.com/opencode-ai/opencode/internal/bridge/telegram"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
+	"github.com/opencode-ai/opencode/internal/flow"
 	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
@@ -129,11 +137,79 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			enableAutoApprove(ctx, application)
 		}
 
-		server := api.NewServer(application, api.ServerOptions{
+		// Conditionally start the chat-bridge orchestrator. The bridge
+		// stays disabled unless an operator opted in by adding a
+		// `router` section to .opencode.json with at least one enabled
+		// channel + identity. When disabled, no chat-platform code is
+		// loaded and /router/* routes return 404 (per the
+		// chat-bridge-http-api spec).
+		var bridgeSvc *bridgesvc.Service
+		if cfg.Router != nil && cfg.Router.AnyChannelEnabled() {
+			s, err := bridgesvc.New(bridgesvc.Dependencies{
+				App:          application,
+				DB:           conn,
+				ProviderType: cfg.SessionProvider.Type,
+				ProjectID:    db.GetProjectID(cwd),
+				DataDir:      cfg.Data.Directory,
+				RouterCfg:    cfg.Router,
+			})
+			if err != nil {
+				logging.Error("Bridge orchestrator init failed", "error", err)
+				return err
+			}
+			s.SetAdapterFactory(newBridgeAdapterFactory(cfg.Data.Directory, s))
+			if err := s.Start(ctx); err != nil {
+				logging.Error("Bridge orchestrator start failed", "error", err)
+				return err
+			}
+			defer func() {
+				if err := s.Stop(); err != nil {
+					logging.Warn("Bridge orchestrator stop returned error", "error", err)
+				}
+			}()
+			bridgeSvc = s
+
+			// Wire the bridge into the flow engine so interactive: true
+			// steps auto-bind their session to the resolved peer(s) before
+			// agent.Run and auto-unbind on struct_output. Flow steps
+			// without `interactive: true` are untouched.
+			if hookSetter, ok := application.Flows.(flow.InteractiveHookSetter); ok {
+				hookSetter.SetInteractiveHook(bridgeSvc.InteractiveHook())
+			}
+
+			// Wire the bridge into the agent factory so the router_send
+			// agent tool registers conditionally per the
+			// chat-bridge-agent-tool spec. Mid-flight config changes are
+			// seen by NEW agents (constructed after the mutation), matching
+			// the spec's "already-running agents do NOT gain the tool"
+			// requirement.
+			if application.AgentFactory != nil {
+				mediaRoot := filepathJoin(cfg.Data.Directory, "bridge", "media")
+				application.AgentFactory.SetBridgeSender(bridgeSvc, cfg.Router, mediaRoot)
+			}
+		}
+
+		serverOpts := api.ServerOptions{
 			Port:       port,
 			Hostname:   hostname,
 			CORSOrigin: corsOrigin,
-		})
+		}
+		if bridgeSvc != nil {
+			serverOpts.Bridge = bridgeSvc
+		}
+		server := api.NewServer(application, serverOpts)
+
+		// --flow / --flow-args / --flow-exit support (the k8s Job
+		// entrypoint pattern). The server boots healthy first, THEN the
+		// flow run is kicked off; --flow-exit causes the process to
+		// terminate after the run completes (success or failure).
+		if flowID, _ := cmd.Flags().GetString("flow"); flowID != "" {
+			flowArgsPath, _ := cmd.Flags().GetString("flow-args")
+			flowExit, _ := cmd.Flags().GetBool("flow-exit")
+			if err := scheduleAutoFlow(ctx, cancel, server, flowID, flowArgsPath, flowExit); err != nil {
+				return err
+			}
+		}
 
 		// Handle OS signals for graceful shutdown
 		sigCh := make(chan os.Signal, 1)
@@ -190,6 +266,153 @@ func enableAutoApprove(ctx context.Context, application *app.App) {
 	}()
 }
 
+// newBridgeAdapterFactory returns a bridgesvc.AdapterFactory closure that
+// constructs the right platform adapter for an identity. cmd/serve.go is
+// the only place in the codebase that imports all three platform packages
+// together — the bridge service itself stays decoupled.
+//
+// The dataDir is the project-level data directory; the bridge media store
+// lives at <dataDir>/bridge/media/. The svc reference lets the factory
+// build store-backed callbacks for adapters that need them (Telegram's
+// private-mode allowlist).
+func newBridgeAdapterFactory(dataDir string, svc *bridgesvc.Service) bridgesvc.AdapterFactory {
+	mediaDir := filepathJoin(dataDir, "bridge", "media")
+	return func(_ context.Context, channel, identityID string, cfg *bridge.Config) (bridge.Adapter, error) {
+		switch channel {
+		case "telegram":
+			if cfg.Channels.Telegram == nil {
+				return nil, fmt.Errorf("telegram channel not configured")
+			}
+			for _, b := range cfg.Channels.Telegram.Bots {
+				if b.ID != identityID {
+					continue
+				}
+				access := telegram.AccessPublic
+				if b.Access == "private" {
+					access = telegram.AccessPrivate
+				}
+				// Private-mode bots require allowlist callbacks; build
+				// them against the bridge store so /pair persists and
+				// future inbound is gated correctly. Public-mode bots
+				// don't need them but we wire them up unconditionally
+				// — the constructor only validates them when Access ==
+				// AccessPrivate.
+				opts := telegram.Options{MediaDir: mediaDir}
+				if svc != nil && svc.Store() != nil {
+					store := svc.Store()
+					projectID := svc.ProjectID()
+					opts.Allowlisted = func(ctx context.Context, peerID string) (bool, error) {
+						return store.IsAllowlisted(ctx, projectID, "telegram", b.ID, peerID)
+					}
+					opts.AddAllowlist = func(ctx context.Context, peerID string) error {
+						return store.AddAllowlistEntry(ctx, projectID, "telegram", b.ID, peerID)
+					}
+				}
+				return telegram.New(telegram.Identity{
+					ID:              b.ID,
+					Token:           b.Token,
+					Access:          access,
+					PairingCodeHash: b.PairingCodeHash,
+					GroupsEnabled:   b.GroupsEnabled,
+				}, opts)
+			}
+		case "slack":
+			if cfg.Channels.Slack == nil {
+				return nil, fmt.Errorf("slack channel not configured")
+			}
+			for _, a := range cfg.Channels.Slack.Apps {
+				if a.ID != identityID {
+					continue
+				}
+				return slack.New(slack.Identity{
+					ID:            a.ID,
+					BotToken:      a.BotToken,
+					AppToken:      a.AppToken,
+					GroupsEnabled: a.GroupsEnabled,
+				}, slack.Options{
+					MediaDir: mediaDir,
+				})
+			}
+		case "mattermost":
+			if cfg.Channels.Mattermost == nil {
+				return nil, fmt.Errorf("mattermost channel not configured")
+			}
+			for _, m := range cfg.Channels.Mattermost.Instances {
+				if m.ID != identityID {
+					continue
+				}
+				return mattermost.New(mattermost.Identity{
+					ID:            m.ID,
+					ServerURL:     m.ServerURL,
+					AccessToken:   m.AccessToken,
+					GroupsEnabled: m.GroupsEnabled,
+				}, mattermost.Options{
+					MediaDir: mediaDir,
+				})
+			}
+		}
+		return nil, fmt.Errorf("identity %s:%s not found in cfg", channel, identityID)
+	}
+}
+
+// filepathJoin is a tiny indirection so the imports block doesn't drag in
+// path/filepath solely for this one call.
+func filepathJoin(parts ...string) string {
+	return filepath.Join(parts...)
+}
+
+// scheduleAutoFlow boots the requested flow once the server is healthy.
+// Per the flow-api spec scenario "Server boots, becomes healthy, then
+// auto-starts flow", we kick the flow off in a background goroutine
+// AFTER api.NewServer returns (the server starts listening in Start;
+// the goroutine waits for a brief window then POSTs).
+//
+// flowArgsPath, when non-empty, points at a JSON file the flow
+// arguments are loaded from. The k8s-Job entrypoint pattern populates
+// this file with the reviewer PeerRef(s) etc.
+//
+// flowExit, when true, cancels the parent context (triggering server
+// shutdown) once the flow terminates.
+func scheduleAutoFlow(ctx context.Context, cancel context.CancelFunc, server *api.Server, flowID, flowArgsPath string, flowExit bool) error {
+	args := map[string]any{}
+	if flowArgsPath != "" {
+		data, err := os.ReadFile(flowArgsPath)
+		if err != nil {
+			return fmt.Errorf("flow-args: read %s: %w", flowArgsPath, err)
+		}
+		if err := api.UnmarshalFlowArgs(data, &args); err != nil {
+			return fmt.Errorf("flow-args: parse %s: %w", flowArgsPath, err)
+		}
+	}
+
+	go func() {
+		// Wait briefly so the server starts listening before we kick
+		// the flow. The sentinel line in api.Start runs synchronously
+		// before flow execution would need any HTTP-mediated bind.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(250 * time.Millisecond):
+		}
+
+		runID, err := server.StartFlow(flowID, args, false)
+		if err != nil {
+			logging.Error("auto-flow start failed", "flow", flowID, "err", err)
+			if flowExit {
+				cancel()
+			}
+			return
+		}
+		logging.Info("auto-flow started", "flow", flowID, "runID", runID)
+
+		if flowExit {
+			// Watch for the run to terminate, then exit.
+			go server.WaitFlowTerminal(ctx, runID, cancel)
+		}
+	}()
+	return nil
+}
+
 func init() {
 	serveCmd.Flags().Int("port", 4096, "Port to listen on")
 	serveCmd.Flags().String("hostname", "127.0.0.1", "Hostname to bind to")
@@ -200,6 +423,9 @@ func init() {
 	serveCmd.Flags().BoolP("debug", "d", false, "Debug")
 	serveCmd.Flags().StringP("cwd", "c", "", "Current working directory")
 	serveCmd.Flags().StringP("agent", "a", "", "Agent ID to use (e.g. coder, hivemind, or a custom one from .opencode/agents/)")
+	serveCmd.Flags().String("flow", "", "Auto-start the named flow once the server is healthy (k8s Job entrypoint pattern)")
+	serveCmd.Flags().String("flow-args", "", "Path to a JSON file with flow arguments (e.g. reviewers, ticket IDs)")
+	serveCmd.Flags().Bool("flow-exit", false, "Exit the process when the auto-started flow completes (only honored with --flow)")
 
 	rootCmd.AddCommand(serveCmd)
 }

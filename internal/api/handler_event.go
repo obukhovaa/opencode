@@ -95,7 +95,16 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		questionCh = s.app.Questions.Subscribe(ctx)
 	}
 
-	streamLoop(ctx, w, flusher, msgCh, partCh, sesCh, permCh, questionCh)
+	// Flow API SSE events: piggyback on the existing /event stream so
+	// orchestrators see flow.step.started/completed/failed,
+	// flow.waiting_for_input, flow.completed, flow.failed without
+	// opening a second connection. nil when flowRunner is not wired.
+	var flowCh <-chan pubsub.Event[FlowEvent]
+	if s.flowRunner != nil {
+		flowCh = s.flowRunner.subscribeFlowEvents(ctx)
+	}
+
+	streamLoop(ctx, w, flusher, msgCh, partCh, sesCh, permCh, questionCh, flowCh)
 }
 
 // streamLoop runs the fan-in select loop that reads from the broker channels
@@ -109,6 +118,7 @@ func streamLoop(
 	sesCh <-chan pubsub.Event[session.Session],
 	permCh <-chan pubsub.Event[permission.PermissionRequest],
 	questionCh <-chan pubsub.Event[question.Request],
+	flowCh <-chan pubsub.Event[FlowEvent],
 ) {
 	heartbeat := time.NewTicker(30 * time.Second)
 	defer heartbeat.Stop()
@@ -164,6 +174,14 @@ func streamLoop(
 			}
 			props := ConvertQuestionRequest(event.Payload)
 			if err := writeSSEEvent(w, flusher, "question.asked", props); err != nil {
+				return
+			}
+
+		case event, ok := <-flowCh:
+			if !ok {
+				return
+			}
+			if err := writeSSEEvent(w, flusher, string(event.Payload.Type), event.Payload); err != nil {
 				return
 			}
 

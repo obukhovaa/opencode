@@ -1,0 +1,184 @@
+name: Plan Next TODO Item
+description: >
+  Three-step planning flow. (1) Reviews TODO.md, prunes already-implemented
+  items, surfaces remaining work. (2) Interactively asks the reviewer which
+  item to tackle next via the chat bridge. (3) Drives an openspec-backed
+  conversation with the reviewer to produce a ready-for-implementation
+  change proposal, then tags the chosen item in TODO.md with the spec
+  reference and "READY FOR IMPLEMENTATION".
+
+flow:
+  args:
+    type: object
+    properties:
+      reviewer:
+        type: object
+        description: >
+          PeerRef of the reviewer the bridge auto-binds for the interactive
+          steps. Supplied via `--flow-args` JSON. The bridge resolves Slack
+          user-IDs to DM channels and mutates channel peers to channel|thread
+          on first outbound (channel-bridge spec).
+        properties:
+          channel:
+            type: string
+            enum: [slack, telegram, mattermost]
+          identity:
+            type: string
+          peerId:
+            type: string
+          mention:
+            type: string
+        required: [channel, identity, peerId]
+    required: [reviewer]
+  session:
+    prefix: ${args.reviewer.peerId}
+  steps:
+    # 1. Autonomous: review TODO.md, drop items that are already implemented
+    #    in code/specs, and report what's left.
+    - id: review-todo
+      agent: workhorse
+      prompt: |
+        Read TODO.md at the repo root.
+
+        For each item:
+        - Search the codebase, openspec/specs/, and git history to determine
+          if it has already been implemented.
+        - If implemented: remove the item from TODO.md (rewrite the file).
+        - If still pending: keep it.
+
+        Return the remaining unimplemented items as a structured list. Each
+        item MUST include its title (verbatim from the TODO line) and a
+        short description capturing the intent.
+
+        DO NOT pick anything yet — that's the next step.
+      output:
+        schema:
+          type: object
+          properties:
+            remaining_items:
+              type: array
+              items:
+                type: object
+                properties:
+                  title: { type: string }
+                  description: { type: string }
+                required: [title, description]
+            removed_items:
+              type: array
+              description: titles removed from TODO.md because already implemented
+              items: { type: string }
+          required: [remaining_items, removed_items]
+      maxTurns: 40
+      rules:
+        - if: sizeof ${args.remaining_items} == 0
+          then: nothing-to-do
+        - if: sizeof ${args.remaining_items} != 0
+          then: ask-user
+
+    # 2. Interactive: ask the reviewer via the chat bridge which remaining
+    #    item to pursue. The bridge auto-binds the session to args.reviewer
+    #    before agent.Run; the agent fans questions over chat; reviewer
+    #    replies route back to the agent; struct_output completes the step.
+    - id: ask-user
+      agent: coder
+      interactive: true
+      interaction:
+        target: ${args.reviewer}
+        mention: ${args.reviewer.mention}
+      prompt: |
+        Active TODO items (after pruning implemented ones):
+        ${args.remaining_items}
+
+        Removed (already implemented): ${args.removed_items}
+
+        Ask the reviewer which item to work on next. Present the list with
+        numbered options using the `question` tool so the reviewer can pick
+        with one click on platforms that support interactive UI
+        (Slack/Telegram), or by reply number on Mattermost.
+
+        Once the reviewer picks, return the chosen item via struct_output.
+      output:
+        schema:
+          type: object
+          properties:
+            chosen_item:
+              type: object
+              properties:
+                title: { type: string }
+                description: { type: string }
+              required: [title, description]
+          required: [chosen_item]
+      maxTurns: 30
+      rules:
+        - then: prepare-spec
+
+    # 3. Interactive: collaborate with the reviewer over chat to author an
+    #    openspec change for the chosen item. Iterate until proposal + design
+    #    + tasks are ready; then update TODO.md with the spec reference and
+    #    "READY FOR IMPLEMENTATION" tag.
+    - id: prepare-spec
+      agent: coder
+      interactive: true
+      interaction:
+        target: ${args.reviewer}
+      prompt: |
+        Chosen item: "${args.chosen_item.title}"
+        Description: ${args.chosen_item.description}
+
+        Your job:
+        1. Use the openspec tooling (the /opsx:propose skill or the
+           `openspec` CLI) to either find an existing change for this item
+           or create a new one. Project lives under openspec/changes/.
+        2. Iterate with the reviewer over chat until the change is ready
+           for implementation. That means proposal.md, design.md (if
+           non-trivial), specs/**/spec.md, and tasks.md are all complete
+           and `openspec validate <name> --strict` passes.
+        3. Use the question / chat surface to clarify scope, scenarios,
+           and acceptance criteria. Don't proceed silently — surface
+           decisions to the reviewer.
+        4. When the spec is ready (validator green, reviewer confirms),
+           update TODO.md: replace the chosen item's line with one that
+           includes the openspec change name and the literal tag
+           "READY FOR IMPLEMENTATION" at the end.
+
+        Return via struct_output the change name + a confirmation that
+        TODO.md was updated.
+      output:
+        schema:
+          type: object
+          properties:
+            change_name:
+              type: string
+              description: openspec change ID under openspec/changes/<name>
+            todo_updated:
+              type: boolean
+              description: TODO.md updated with spec reference + READY FOR IMPLEMENTATION tag
+            validator_passed:
+              type: boolean
+              description: openspec validate <change_name> --strict returned exit 0
+          required: [change_name, todo_updated, validator_passed]
+      maxTurns: 150
+      rules:
+        - then: done
+
+    # Terminal — summarize the outcome for the reviewer.
+    - id: done
+      agent: summarizer
+      prompt: |
+        Planning complete.
+
+        - Chosen TODO item: ${args.chosen_item.title}
+        - OpenSpec change:  ${args.change_name}
+        - TODO.md updated:  ${args.todo_updated}
+        - Validator green:  ${args.validator_passed}
+
+        The change is ready for a follow-up `/opsx:apply ${args.change_name}` run.
+
+    # Terminal — nothing left to plan.
+    - id: nothing-to-do
+      agent: summarizer
+      prompt: |
+        TODO.md has no remaining unimplemented items. The pruning pass
+        removed: ${args.removed_items}
+
+        Nothing to plan today.

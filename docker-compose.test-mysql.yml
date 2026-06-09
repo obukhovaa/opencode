@@ -1,0 +1,27 @@
+services:
+  # Separate MySQL service for `make test-mysql`. Bound to the non-default
+  # host port 3307 so it does not collide with the developer-facing 3306
+  # in docker-compose.yml. Data lives in tmpfs so each `make test-mysql`
+  # run starts from a clean slate without manual `volume rm`.
+  test-mysql:
+    image: mysql:8.0.39
+    container_name: opencode-test-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: testroot
+      MYSQL_DATABASE: opencode_test
+      MYSQL_USER: opencode_test
+      MYSQL_PASSWORD: opencode_test
+    ports:
+      - "3307:3306"
+    tmpfs:
+      - /var/lib/mysql
+    command: >-
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --log-bin-trust-function-creators=1
+      --skip-log-bin
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-ptestroot"]
+      interval: 3s
+      timeout: 3s
+      retries: 30

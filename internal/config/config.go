@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/spf13/viper"
@@ -303,6 +304,7 @@ type Config struct {
 	MaxTurns           int                               `json:"maxTurns,omitempty"`
 	Telemetry          *TelemetryConfig                  `json:"telemetry,omitempty"`
 	SessionCleanup     *SessionCleanupConfig             `json:"sessionCleanup,omitempty"`
+	Router             *bridge.Config                    `json:"router,omitempty"`
 }
 
 // Application constants
@@ -1202,13 +1204,37 @@ func setDefaultModelForAgent(agent AgentName) bool {
 	return false
 }
 
-func updateCfgFile(updateCfg func(config *Config)) error {
+// UpdateCfgFile atomically rewrites .opencode.json by applying the provided
+// closure to the on-disk copy of the configuration.
+//
+// Atomicity guarantee: the function writes to <configFile>.tmp in the same
+// directory, fsyncs it, atomically renames it over the target, and fsyncs the
+// parent directory. A crash at any point leaves either the prior file or the
+// new file on disk — never a truncated/invalid JSON.
+//
+// File mode: when the resulting configuration contains any token-bearing
+// field (cfg.Router.* tokens — see bridge.Config.HasTokenBearingFields), the
+// file is written with mode 0o600. Otherwise the existing file's mode is
+// preserved via os.Stat; new files default to 0o600. The intent is to
+// upgrade pre-existing 0o644 installs the moment they gain secrets, and
+// never silently widen an operator-tightened mode.
+//
+// Live-state contract: UpdateCfgFile does NOT refresh the in-memory cfg
+// singleton returned by config.Get(). Every caller MUST mutate config.cfg in
+// process alongside this call if subsequent reads must reflect the change
+// without a process restart. The existing callers (UpdateTheme,
+// UpdateVimMode, UpdateAgentModel) and the bridge HTTP handlers under
+// internal/bridge/* follow this contract — mutating cfg.X first, then
+// invoking UpdateCfgFile to persist the same change.
+func UpdateCfgFile(updateCfg func(config *Config)) error {
 	if cfg == nil {
 		return fmt.Errorf("config not loaded")
 	}
 
-	// Get the config file path
+	// Resolve the config file path. When viper hasn't observed a file
+	// (first ever write on a clean install), default to ~/.opencode.json.
 	configFile := viper.ConfigFileUsed()
+	createdFresh := false
 	var configData []byte
 	if configFile == "" {
 		homeDir, err := os.UserHomeDir()
@@ -1218,8 +1244,8 @@ func updateCfgFile(updateCfg func(config *Config)) error {
 		configFile = filepath.Join(homeDir, fmt.Sprintf(".%s.json", appName))
 		logging.Info("config file not found, creating new one", "path", configFile)
 		configData = []byte(`{}`)
+		createdFresh = true
 	} else {
-		// Read the existing config file
 		data, err := os.ReadFile(configFile)
 		if err != nil {
 			return fmt.Errorf("failed to read config file: %w", err)
@@ -1227,7 +1253,6 @@ func updateCfgFile(updateCfg func(config *Config)) error {
 		configData = data
 	}
 
-	// Parse the JSON
 	var userCfg *Config
 	if err := json.Unmarshal(configData, &userCfg); err != nil {
 		return fmt.Errorf("failed to parse config file: %w", err)
@@ -1235,9 +1260,9 @@ func updateCfgFile(updateCfg func(config *Config)) error {
 
 	updateCfg(userCfg)
 
-	// Write the updated config back to file.
-	// Use an encoder with SetEscapeHTML(false) to preserve characters like <, >, &
-	// in MCP server args (e.g., "--with 'fakeredis<2.26'").
+	// SetEscapeHTML(false) preserves characters like <, >, & in MCP server
+	// args (e.g. "--with 'fakeredis<2.26'") that JSON-default escaping would
+	// mangle.
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -1246,10 +1271,95 @@ func updateCfgFile(updateCfg func(config *Config)) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(configFile, buf.Bytes(), 0o644); err != nil {
-		return fmt.Errorf("failed to write config file: %w", err)
-	}
+	mode := resolveCfgFileMode(userCfg, configFile, createdFresh)
+	return atomicWriteFile(configFile, buf.Bytes(), mode)
+}
 
+// resolveCfgFileMode picks the file mode for an UpdateCfgFile write per the
+// rules documented on UpdateCfgFile: 0o600 when token-bearing fields are
+// present or for a brand-new file; otherwise preserve the existing mode via
+// os.Stat. Errors stating the existing file degrade to 0o600 (safer default).
+func resolveCfgFileMode(userCfg *Config, configFile string, createdFresh bool) os.FileMode {
+	if userCfg != nil && userCfg.Router.HasTokenBearingFields() {
+		return 0o600
+	}
+	if createdFresh {
+		return 0o600
+	}
+	st, err := os.Stat(configFile)
+	if err != nil {
+		// If we can't stat the existing file (rare — we just read it),
+		// fall back to the conservative default.
+		return 0o600
+	}
+	return st.Mode().Perm()
+}
+
+// atomicWriteFile writes payload to target using the canonical POSIX
+// safe-replace sequence: temp file in the same directory, fsync, rename,
+// parent-dir fsync. The parent-dir fsync is required — without it a
+// power-loss-class crash can lose the rename even after the file contents
+// have been fsync'd.
+//
+// On Windows, os.Rename calls MoveFileEx(MOVEFILE_REPLACE_EXISTING) which is
+// best-effort atomic on NTFS; the parent-dir fsync is a no-op (opening a
+// directory and calling Sync() returns an error which we ignore). POSIX is
+// the production target.
+func atomicWriteFile(target string, payload []byte, mode os.FileMode) error {
+	dir := filepath.Dir(target)
+	tmp, err := os.CreateTemp(dir, filepath.Base(target)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp config file: %w", err)
+	}
+	tmpName := tmp.Name()
+	// Tidy up the temp file if anything below fails before the rename.
+	cleanup := func() {
+		_ = os.Remove(tmpName)
+	}
+	defer func() {
+		if cleanup != nil {
+			cleanup()
+		}
+	}()
+
+	if _, err := tmp.Write(payload); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to write temp config: %w", err)
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to chmod temp config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to fsync temp config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("failed to close temp config: %w", err)
+	}
+	if err := os.Rename(tmpName, target); err != nil {
+		return fmt.Errorf("failed to rename temp config: %w", err)
+	}
+	// Successful rename — don't remove the now-target file.
+	cleanup = nil
+
+	// Parent-directory fsync. The spec calls this REQUIRED on POSIX —
+	// without it a crash between rename and a future power loss can
+	// leave the directory entry still pointing at the temp file even
+	// though the target file's data is already on disk. On Windows it's
+	// effectively a no-op (NTFS doesn't expose dir handles the same
+	// way), so failures here are logged at info-level rather than
+	// surfaced as caller errors.
+	if d, err := os.Open(dir); err == nil {
+		if syncErr := d.Sync(); syncErr != nil {
+			logging.Info("config: parent-dir fsync failed (write succeeded; durability may be reduced)",
+				"dir", dir, "err", syncErr)
+		}
+		_ = d.Close()
+	} else {
+		logging.Info("config: parent-dir open for fsync failed (write succeeded; durability may be reduced)",
+			"dir", dir, "err", err)
+	}
 	return nil
 }
 
@@ -1299,7 +1409,7 @@ func UpdateAgentModel(agentName AgentName, modelID models.ModelID) error {
 		return fmt.Errorf("failed to update agent model: %w", err)
 	}
 
-	return updateCfgFile(func(config *Config) {
+	return UpdateCfgFile(func(config *Config) {
 		if config.Agents == nil {
 			config.Agents = make(map[AgentName]Agent)
 		}
@@ -1317,7 +1427,7 @@ func UpdateTheme(themeName string) error {
 	cfg.TUI.Theme = themeName
 
 	// Update the file config
-	return updateCfgFile(func(config *Config) {
+	return UpdateCfgFile(func(config *Config) {
 		config.TUI.Theme = themeName
 	})
 }
@@ -1330,7 +1440,7 @@ func UpdateVimMode(enabled bool) error {
 
 	cfg.TUI.VimMode = enabled
 
-	return updateCfgFile(func(config *Config) {
+	return UpdateCfgFile(func(config *Config) {
 		config.TUI.VimMode = enabled
 	})
 }

@@ -10,8 +10,10 @@ const (
 	VertexAIOpus45        ModelID = "vertexai.claude-opus-4-5"
 	VertexAIOpus46        ModelID = "vertexai.claude-opus-4-6"
 	VertexAIOpus47        ModelID = "vertexai.claude-opus-4-7"
+	VertexAIOpus48        ModelID = "vertexai.claude-opus-4-8"
 	VertexAISonnet46      ModelID = "vertexai.claude-sonnet-4-6"
 	VertexAIHaiku45       ModelID = "vertexai.claude-haiku-4-5"
+	VertexAIFable5        ModelID = "vertexai.claude-fable-5"
 )
 
 var VertexAIGeminiModels = map[ModelID]Model{
@@ -107,6 +109,42 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude47Opus].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude47Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude47Opus].SupportsTaskBudget,
+	},
+	VertexAIOpus48: {
+		ID:                       VertexAIOpus48,
+		Name:                     "VertexAI: Claude Opus 4.8",
+		Provider:                 ProviderVertexAI,
+		APIModel:                 "claude-opus-4-8",
+		CostPer1MIn:              AnthropicModels[Claude48Opus].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[Claude48Opus].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[Claude48Opus].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[Claude48Opus].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[Claude48Opus].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[Claude48Opus].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[Claude48Opus].SupportsAttachments,
+		CanReason:                AnthropicModels[Claude48Opus].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[Claude48Opus].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[Claude48Opus].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[Claude48Opus].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[Claude48Opus].SupportsTaskBudget,
+	},
+	VertexAIFable5: {
+		ID:                       VertexAIFable5,
+		Name:                     "VertexAI: Claude Fable 5",
+		Provider:                 ProviderVertexAI,
+		APIModel:                 "claude-fable-5",
+		CostPer1MIn:              AnthropicModels[ClaudeFable5].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[ClaudeFable5].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[ClaudeFable5].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[ClaudeFable5].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[ClaudeFable5].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[ClaudeFable5].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[ClaudeFable5].SupportsAttachments,
+		CanReason:                AnthropicModels[ClaudeFable5].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[ClaudeFable5].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[ClaudeFable5].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[ClaudeFable5].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[ClaudeFable5].SupportsTaskBudget,
 	},
 	VertexAISonnet46: {
 		ID:                       VertexAISonnet46,
