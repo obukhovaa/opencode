@@ -177,10 +177,14 @@ func (s *Service) cmdSessions(ctx context.Context, in bridge.Inbound) string {
 		// context replay, which inflates the number ~10x and
 		// disagrees with what the user sees locally. Same goes for
 		// the relative-age field: TUI says "updated Nm", which maps
-		// to UpdatedAt, not CreatedAt.
-		lines = append(lines, fmt.Sprintf("%s%s · %s · %s tokens · updated %s",
+		// to UpdatedAt, not CreatedAt. Cost matches the TUI's
+		// status-bar formula and includes successful subagent costs
+		// via agent-tool.go:205's parent.Cost += subagent.Cost
+		// roll-up — see cmdSession below for full notes.
+		lines = append(lines, fmt.Sprintf("%s%s · %s · %s tokens · %s · updated %s",
 			marker, shortSessionID(sess.ID), sess.Title,
 			formatTokens(sess.PromptTokens+sess.CompletionTokens),
+			formatCost(sess.Cost),
 			formatRelativeAge(sess.UpdatedAt*1000, now),
 		))
 	}
@@ -217,10 +221,22 @@ func (s *Service) cmdSession(ctx context.Context, in bridge.Inbound) string {
 		// net usage matching the local TUI; TotalPromptTokens et al
 		// aggregate every API call including cached context replay
 		// and inflate the number by ~10x.
-		return fmt.Sprintf("★ Session %s\nTitle: %s\nTokens: %s in / %s out\nMessages: %d\n\nUse `/sessions` to list, `/session <id-prefix>` to switch.",
+		//
+		// Cost is the running USD total accumulated by TrackUsage
+		// across every model call in this session — same value the
+		// TUI status bar displays. Subagent (`task` tool) costs are
+		// rolled INTO the parent via agent-tool.go:205
+		// (parentSession.Cost += updatedSession.Cost) once the task
+		// completes successfully, so the number here already covers
+		// the whole conversation tree. Note: subagents that fail or
+		// are canceled mid-run (e.g. a hung MCP call) do NOT credit
+		// back to the parent — that's an opencode-wide accounting
+		// blind spot, not bridge-specific.
+		return fmt.Sprintf("★ Session %s\nTitle: %s\nTokens: %s in / %s out\nCost: %s\nMessages: %d\n\nUse `/sessions` to list, `/session <id-prefix>` to switch.",
 			shortSessionID(sess.ID), sess.Title,
 			formatTokens(sess.PromptTokens),
 			formatTokens(sess.CompletionTokens),
+			formatCost(sess.Cost),
 			sess.MessageCount,
 		)
 	}

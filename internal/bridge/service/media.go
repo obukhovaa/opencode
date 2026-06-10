@@ -194,3 +194,19 @@ func formatTokens(n int64) string {
 		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
 	}
 }
+
+// formatCost renders the running session cost in USD. Two-decimal
+// format matches what the TUI's status bar shows (status.go:167), so
+// the reviewer sees the same number in chat and in the local UI. For
+// sub-cent runs (cost < $0.005 rounds to $0.00) we emit "<$0.01" so
+// the zero isn't misread as "free" — it tells the reviewer the run
+// happened but cost less than one cent.
+func formatCost(cost float64) string {
+	if cost <= 0 {
+		return "$0.00"
+	}
+	if cost < 0.005 {
+		return "<$0.01"
+	}
+	return fmt.Sprintf("$%.2f", cost)
+}

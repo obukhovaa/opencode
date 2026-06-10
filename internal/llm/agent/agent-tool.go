@@ -166,6 +166,32 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		return tools.ToolResponse{}, fmt.Errorf("error while running task agent: %s", err)
 	}
 	result := <-done
+
+	// Attribute the subagent's cost to the parent session BEFORE any
+	// error/early-return branches. The subagent's TrackUsage persists
+	// sess.Cost after every model call (agent.go:1241-1268), so the
+	// taskSession row already holds the correct cumulative cost even
+	// if the run errored, was canceled, or panicked. Previously this
+	// rollup only ran on the success path — canceled/hung subagents
+	// (e.g. an MCP tool that wedges) silently dropped their incurred
+	// cost from the parent's accounting, understating the
+	// conversation's true spend. The rollup is a side-effect; if
+	// either Get or Save fails we log and continue so the caller
+	// still sees the real subagent result.
+	if updated, err := b.sessions.Get(ctx, taskSession.ID); err != nil {
+		logging.Warn("task tool: cost rollup get subagent failed",
+			"task_session", taskSession.ID, "err", err)
+	} else if parent, err := b.sessions.Get(ctx, sessionID); err != nil {
+		logging.Warn("task tool: cost rollup get parent failed",
+			"parent_session", sessionID, "err", err)
+	} else {
+		parent.Cost += updated.Cost
+		if _, err := b.sessions.Save(ctx, parent); err != nil {
+			logging.Warn("task tool: cost rollup save parent failed",
+				"parent_session", sessionID, "err", err)
+		}
+	}
+
 	if result.Error != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error while running task agent: %s", result.Error)
 	}
@@ -191,22 +217,6 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 			"%s\n\n<task_id>%s</task_id>\n<task_resume_hint>To continue this same subagent session later, call the %s tool again with task_id=%q. Mention this task_id (alongside a short description of what was done) in your reply so the user can reference or resume it.</task_resume_hint>",
 			responseContent, taskSession.ID, TaskToolName, taskSession.ID,
 		)
-	}
-
-	updatedSession, err := b.sessions.Get(ctx, taskSession.ID)
-	if err != nil {
-		return tools.ToolResponse{}, fmt.Errorf("error getting session: %s", err)
-	}
-	parentSession, err := b.sessions.Get(ctx, sessionID)
-	if err != nil {
-		return tools.ToolResponse{}, fmt.Errorf("error getting parent session: %s", err)
-	}
-
-	parentSession.Cost += updatedSession.Cost
-
-	_, err = b.sessions.Save(ctx, parentSession)
-	if err != nil {
-		return tools.ToolResponse{}, fmt.Errorf("error saving parent session: %s", err)
 	}
 
 	agentName := subagentType
