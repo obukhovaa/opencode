@@ -12,6 +12,7 @@ OpenCode is a CLI tool that brings AI assistance to your terminal. It provides a
 - **Non-interactive mode** for headless automation and autonomous agents
 - **HTTP REST API server** for external UI integration (e.g., [OpenWork](https://github.com/different-ai/openwork)) with SSE event streaming ([guide](docs/server.md))
 - **ACP server** (Agent Client Protocol) for editor and desktop UI integration ([AionUI](https://github.com/iOfficeAI/AionUi), Zed, JetBrains) via JSON-RPC over stdio ([guide](docs/server.md#acp-mode))
+- **Chat bridge**: in-process Telegram / Slack / Mattermost adapters with multi-reviewer fan-out, router-initiated conversations, interactive question UI (buttons + inline keyboards), `router_send` agent tool, single-writer election, and per-identity health reporting ([guide](docs/bridge.md))
 - **Flows**: deterministic multi-step agent workflows defined in YAML ([guide](docs/flows.md))
 - **Subagents**: highly customizable agents calling another agents to do work [[#Agents]]
 - **Cron jobs**: schedule prompts to run once or recurringly via subagents, with `/loop` and the `croncreate`/`crondelete`/`cronlist` tools ([guide](docs/crons.md))

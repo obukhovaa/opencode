@@ -194,6 +194,20 @@ Permissions use pattern matching with priority:
 
 Press `tab` to cycle through primary agents (mode=`agent`, hidden=false) in the TUI. The active agent is shown in the status bar. Agent switching applies to the next new session.
 
+### Chat Bridge
+
+Telegram / Slack / Mattermost adapters live in-process under `internal/bridge/` and mount HTTP routes under `/router/*` on the existing API mux. The bridge boots when `.opencode.json` has a non-empty `router` section with at least one enabled channel identity. Full docs: [`docs/bridge.md`](docs/bridge.md).
+
+Things to know when working in the codebase:
+
+- **Package layout**: `internal/bridge/` holds types only (no internal deps); orchestrator code lives in `internal/bridge/service/`; per-platform adapters under `internal/bridge/{slack,telegram,mattermost}/`. The split is required to break the import cycle `bridge.service → llm/agent → llm/tools → bridge`.
+- **Per-session dispatch goroutine**: each bound session owns one inbound-handling goroutine (cap 16 inbound, never drop) + one parts-handling goroutine (cap 64 parts, drop-oldest). Tool-update streaming runs in parallel with `agent.Run` — both run concurrently so tool icons interleave with the agent's progress instead of arriving after the final reply.
+- **Sub-package config**: `cfg.Router.PermissionMode` (`allow` / `deny` / `ask` / empty) determines whether the bridge auto-resolves agent permission requests on bridge-owned sessions (direct bindings or subagent sessions whose `root_session_id` matches a bound row). Unrecognised values fail-safe to deny with a one-shot WARN log.
+- **`router_send` agent tool**: lives at `internal/llm/tools/router_send.go` (not under `internal/llm/agent/tools/`). The tools package declares a `BridgeSender` interface; the bridge service satisfies it without creating an import cycle. The tool's description is rebuilt dynamically per registration from the live `cfg.Router` snapshot.
+- **Single-writer election**: the bridge takes a per-identity lock to prevent two opencode processes from owning the same chat identity — SQLite uses `flock` on `<dataDir>/bridge.lock`; MySQL uses `GET_LOCK` on a dedicated `*sql.Conn`. Adapter launch fails cleanly if another process already owns the identity.
+- **Cost attribution**: subagent costs (`task` tool) roll into the parent's `sess.Cost` via `agent-tool.go::Run` even on canceled/error paths. The bridge's `/sessions` and `/session` commands use this aggregated value.
+- **`tools.GetContextValues(ctx)`** returns `(sessionID, messageID)`; the bridge dispatcher injects both before calling `agent.Run`. Subagent sessions inherit `sessionID` from `taskSession.ID` and `root_session_id` from the parent — this is the link the bridge's `PermissionRouter` and parts demux use to scope to "bridge-owned" sessions.
+
 ## TUI Pitfalls
 
 ### Background color gaps in dialogs/pages
