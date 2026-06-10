@@ -22,7 +22,7 @@ External-consumer coordination work that lives outside this repo. Tracked here s
 
 ## 11.5 — c2-agent coordination
 
-**Repo:** `/Users/nouwa/Development/piano/c2-agent` (Piano's primary use case for the bridge).
+**Repo:** `c2-agent` (external orchestrator repository — the primary external consumer of the bridge).
 
 **Status in this PR:** the bridge and Flow API ship with the contract c2-agent needs. The actual c2-agent edits land in that repo.
 

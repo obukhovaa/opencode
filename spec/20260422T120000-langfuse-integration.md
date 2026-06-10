@@ -61,8 +61,8 @@ Direct Langfuse integration that:
 ```json
 {
   "telemetry": {
-    "userId": "artem@piano.io",
-    "tags": ["team:composer"],
+    "userId": "user@example.com",
+    "tags": ["team:example"],
     "defaultTags": ["agent"],
     "langfuse": {
       "enabled": true,
