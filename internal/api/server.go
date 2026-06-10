@@ -59,7 +59,7 @@ func NewServer(application *app.App, opts ServerOptions) *Server {
 	// HTTP routes. Created up-front so /flow handlers always have a
 	// valid runner to delegate to; idle until a POST /flow.
 	if application != nil && application.Flows != nil {
-		s.flowRunner = newFlowRunner(application.Flows)
+		s.flowRunner = newFlowRunnerWithSessions(application.Flows, application.Sessions)
 	}
 
 	mux := http.NewServeMux()

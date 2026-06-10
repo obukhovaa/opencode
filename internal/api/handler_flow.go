@@ -15,6 +15,7 @@ import (
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
+	"github.com/opencode-ai/opencode/internal/session"
 )
 
 // flowRunStatus mirrors the state machine the flow-api spec describes
@@ -60,6 +61,22 @@ type FlowEvent struct {
 	StartedAt   int64         `json:"startedAt,omitempty"`
 	CompletedAt int64         `json:"completedAt,omitempty"`
 	FailedAt    int64         `json:"failedAt,omitempty"`
+	// IsStructOutput is true when the step produced a JSON struct_output.
+	// Sourced from flow.FlowState.IsStructOutput. Orchestrators use this
+	// to render the per-step block differently (struct vs free-text).
+	IsStructOutput bool `json:"isStructOutput,omitempty"`
+	// Iteration is the 1-based self-loop iteration number for this step.
+	// Sourced from flow.FlowState.Iteration. Surfaced for cost-attribution
+	// of in-step retries.
+	Iteration int `json:"iteration,omitempty"`
+	// Cost is the running cumulative session cost (USD) at event-emit time.
+	// Looked up via session.Service.Get(state.SessionID).Cost. Zero when
+	// the session lookup fails (missing or service unavailable).
+	Cost float64 `json:"cost,omitempty"`
+	// ContextSize is the cumulative prompt tokens for the session at emit
+	// time. Looked up via session.Service.Get(state.SessionID).PromptTokens.
+	// Zero on lookup failure.
+	ContextSize int64 `json:"contextSize,omitempty"`
 }
 
 // flowStepRecord captures one completed step's outcome for /flow/status.
@@ -115,8 +132,14 @@ type flowRunner struct {
 
 // appReadOnly is the minimal app surface the flow runner uses. We don't
 // import internal/app's full struct just to read Flows.
+//
+// SessionsService is optional; nil-returning implementations cause the
+// per-step Cost/ContextSize lookup to gracefully fall back to zero
+// values (the FlowEvent JSON omits the fields via omitempty). Production
+// always wires the real service; tests can leave it unset.
 type appReadOnly interface {
 	FlowsService() flow.Service
+	SessionsService() session.Service
 }
 
 type flowRunState struct {
@@ -344,6 +367,11 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 		Output:    st.Output,
 		StartedAt: st.UpdatedAt * 1000,
 	}
+	// Pull Cost / ContextSize from session.Service at emit time so the
+	// FlowEvent payload reflects what the step actually consumed up to
+	// this transition. Lookup-failure path zero-values both fields (the
+	// JSON omits them via omitempty) and warn-logs once.
+	cost, contextSize := fr.lookupSessionCost(st.SessionID)
 	switch st.Status {
 	case flow.FlowStatusRunning:
 		state.currentStep = &rec
@@ -355,11 +383,15 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 			state.Status = flowRunRunning
 		}
 		fr.publishEvent(state, FlowEvent{
-			Type:      evFlowStepStarted,
-			RunID:     state.RunID,
-			StepID:    rec.ID,
-			SessionID: rec.SessionID,
-			StartedAt: now,
+			Type:           evFlowStepStarted,
+			RunID:          state.RunID,
+			StepID:         rec.ID,
+			SessionID:      rec.SessionID,
+			StartedAt:      now,
+			IsStructOutput: st.IsStructOutput,
+			Iteration:      st.Iteration,
+			Cost:           cost,
+			ContextSize:    contextSize,
 		})
 	case flow.FlowStatusWaitingForInput:
 		// Interactive step transitioned to bound-and-waiting. Per the
@@ -369,37 +401,77 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 		state.waitingTarget = st.WaitingTarget
 		state.Status = flowRunWaitingForInput
 		fr.publishEvent(state, FlowEvent{
-			Type:      evFlowWaitingForInput,
-			RunID:     state.RunID,
-			FlowID:    state.FlowID,
-			StepID:    rec.ID,
-			SessionID: rec.SessionID,
-			Target:    st.WaitingTarget,
+			Type:           evFlowWaitingForInput,
+			RunID:          state.RunID,
+			FlowID:         state.FlowID,
+			StepID:         rec.ID,
+			SessionID:      rec.SessionID,
+			Target:         st.WaitingTarget,
+			IsStructOutput: st.IsStructOutput,
+			Iteration:      st.Iteration,
+			Cost:           cost,
+			ContextSize:    contextSize,
 		})
 	case flow.FlowStatusCompleted:
 		rec.CompletedAt = now
 		state.completedSteps = append(state.completedSteps, rec)
 		state.currentStep = nil
 		fr.publishEvent(state, FlowEvent{
-			Type:        evFlowStepCompleted,
-			RunID:       state.RunID,
-			StepID:      rec.ID,
-			SessionID:   rec.SessionID,
-			Output:      rec.Output,
-			CompletedAt: now,
+			Type:           evFlowStepCompleted,
+			RunID:          state.RunID,
+			StepID:         rec.ID,
+			SessionID:      rec.SessionID,
+			Output:         rec.Output,
+			CompletedAt:    now,
+			IsStructOutput: st.IsStructOutput,
+			Iteration:      st.Iteration,
+			Cost:           cost,
+			ContextSize:    contextSize,
 		})
 	case flow.FlowStatusFailed:
 		rec.Error = st.Output
 		state.completedSteps = append(state.completedSteps, rec)
 		state.err = st.Output
 		fr.publishEvent(state, FlowEvent{
-			Type:     evFlowStepFailed,
-			RunID:    state.RunID,
-			StepID:   rec.ID,
-			Error:    rec.Error,
-			FailedAt: now,
+			Type:           evFlowStepFailed,
+			RunID:          state.RunID,
+			StepID:         rec.ID,
+			Error:          rec.Error,
+			FailedAt:       now,
+			IsStructOutput: st.IsStructOutput,
+			Iteration:      st.Iteration,
+			Cost:           cost,
+			ContextSize:    contextSize,
 		})
 	}
+}
+
+// lookupSessionCost reads cumulative Cost and PromptTokens for the
+// session. Returns zero values on any failure (missing session, nil
+// service) — callers MUST tolerate that. A single warn is logged per
+// failure so a flaky DB doesn't flood the log.
+//
+// Caller MUST hold fr.mu (we touch nothing on fr but route through
+// fr.app which is set once at construction).
+func (fr *flowRunner) lookupSessionCost(sessionID string) (cost float64, contextSize int64) {
+	if sessionID == "" {
+		return 0, 0
+	}
+	svc := fr.app.SessionsService()
+	if svc == nil {
+		return 0, 0
+	}
+	// Use a short-lived background context: this is a fast in-memory or
+	// SQLite read; we don't want to inherit a long-deadline parent.
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	sess, err := svc.Get(ctx, sessionID)
+	if err != nil {
+		logging.Warn("flow event: session lookup failed; cost/context fields will be zero",
+			"session", sessionID, "err", err)
+		return 0, 0
+	}
+	return sess.Cost, sess.PromptTokens
 }
 
 // publishEvent emits a FlowEvent on the SSE broker. Caller must hold mu.
@@ -503,9 +575,18 @@ func (fr *flowRunner) MarkSnapshotJSON() ([]byte, error) {
 // flowAppAdapter is the trivial *app.App → appReadOnly adapter used by
 // NewServer. Lives here so handler_flow.go can stay decoupled from the
 // app package via an interface.
-type flowAppAdapter struct{ get func() flow.Service }
+type flowAppAdapter struct {
+	get        func() flow.Service
+	getSession func() session.Service
+}
 
 func (a flowAppAdapter) FlowsService() flow.Service { return a.get() }
+func (a flowAppAdapter) SessionsService() session.Service {
+	if a.getSession == nil {
+		return nil
+	}
+	return a.getSession()
+}
 
 // newFlowRunner constructs the singleton runner. cmd/serve.go indirectly
 // invokes this through NewServer; tests can construct one directly via
@@ -516,9 +597,21 @@ func (a flowAppAdapter) FlowsService() flow.Service { return a.get() }
 // Tests that drive a stub flow.Service set fr.validateFlowID = nil to
 // skip the check (synthetic flow IDs don't appear in any YAML).
 func newFlowRunner(svc flow.Service) *flowRunner {
+	return newFlowRunnerWithSessions(svc, nil)
+}
+
+// newFlowRunnerWithSessions constructs the runner with both the flow
+// service and the session service. NewServer uses this so per-step
+// FlowEvent payloads can include the running Cost / ContextSize via
+// session.Service.Get. Tests can pass nil for the session service when
+// they don't need cost/context fields populated.
+func newFlowRunnerWithSessions(svc flow.Service, sessions session.Service) *flowRunner {
 	return &flowRunner{
 		broker: pubsub.NewBroker[FlowEvent](),
-		app:    flowAppAdapter{get: func() flow.Service { return svc }},
+		app: flowAppAdapter{
+			get:        func() flow.Service { return svc },
+			getSession: func() session.Service { return sessions },
+		},
 		validateFlowID: func(id string) error {
 			if _, err := flow.Get(id); err != nil {
 				return err
@@ -543,10 +636,17 @@ func (s *Server) StartFlow(flowID string, args map[string]any, fresh bool) (stri
 }
 
 // WaitFlowTerminal blocks until the flow run identified by runID
-// reaches a terminal status (completed | failed), then invokes
-// onTerminal. Used by --flow-exit to trigger process shutdown after
-// the auto-started flow finishes.
-func (s *Server) WaitFlowTerminal(ctx context.Context, runID string, onTerminal context.CancelFunc) {
+// reaches a terminal status (completed | failed), then waits `grace`
+// for any external reconciliation reader (e.g. an orchestrator calling
+// GET /flow/status), then invokes onTerminal. Used by --flow-exit to
+// trigger process shutdown after the auto-started flow finishes.
+//
+// The grace window deliberately holds the HTTP server up after terminal
+// so the orchestrator's opportunistic reconciliation read doesn't race
+// the pod's shutdown — see openspec change c2-agent-flow-http-migration
+// design.md R3. A SIGTERM (parent ctx cancellation) during the grace
+// short-circuits the wait to honor explicit shutdown intent.
+func (s *Server) WaitFlowTerminal(ctx context.Context, runID string, grace time.Duration, onTerminal context.CancelFunc) {
 	if s.flowRunner == nil {
 		return
 	}
@@ -562,8 +662,16 @@ func (s *Server) WaitFlowTerminal(ctx context.Context, runID string, onTerminal 
 				continue
 			}
 			if snap.Status == flowRunCompleted || snap.Status == flowRunFailed {
-				logging.Info("auto-flow terminal — exiting",
-					"flow", snap.FlowID, "runID", runID, "status", snap.Status)
+				logging.Info("auto-flow terminal — holding for reconciliation grace",
+					"flow", snap.FlowID, "runID", runID, "status", snap.Status, "grace", grace)
+				if grace > 0 {
+					select {
+					case <-ctx.Done():
+						// Parent shutdown overrides grace.
+					case <-time.After(grace):
+					}
+				}
+				logging.Info("auto-flow grace elapsed — exiting", "runID", runID)
 				if onTerminal != nil {
 					onTerminal()
 				}

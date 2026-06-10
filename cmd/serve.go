@@ -206,7 +206,12 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 		if flowID, _ := cmd.Flags().GetString("flow"); flowID != "" {
 			flowArgsPath, _ := cmd.Flags().GetString("flow-args")
 			flowExit, _ := cmd.Flags().GetBool("flow-exit")
-			if err := scheduleAutoFlow(ctx, cancel, server, flowID, flowArgsPath, flowExit); err != nil {
+			flowExitGrace, _ := cmd.Flags().GetDuration("flow-exit-grace")
+			flowFresh, _ := cmd.Flags().GetBool("flow-fresh")
+			if flowExitGrace > 60*time.Second {
+				return fmt.Errorf("--flow-exit-grace must be ≤ 60s (got %s)", flowExitGrace)
+			}
+			if err := scheduleAutoFlow(ctx, cancel, server, flowID, flowArgsPath, flowExit, flowExitGrace, flowFresh); err != nil {
 				return err
 			}
 		}
@@ -373,7 +378,7 @@ func filepathJoin(parts ...string) string {
 //
 // flowExit, when true, cancels the parent context (triggering server
 // shutdown) once the flow terminates.
-func scheduleAutoFlow(ctx context.Context, cancel context.CancelFunc, server *api.Server, flowID, flowArgsPath string, flowExit bool) error {
+func scheduleAutoFlow(ctx context.Context, cancel context.CancelFunc, server *api.Server, flowID, flowArgsPath string, flowExit bool, flowExitGrace time.Duration, flowFresh bool) error {
 	args := map[string]any{}
 	if flowArgsPath != "" {
 		data, err := os.ReadFile(flowArgsPath)
@@ -395,7 +400,7 @@ func scheduleAutoFlow(ctx context.Context, cancel context.CancelFunc, server *ap
 		case <-time.After(250 * time.Millisecond):
 		}
 
-		runID, err := server.StartFlow(flowID, args, false)
+		runID, err := server.StartFlow(flowID, args, flowFresh)
 		if err != nil {
 			logging.Error("auto-flow start failed", "flow", flowID, "err", err)
 			if flowExit {
@@ -406,8 +411,12 @@ func scheduleAutoFlow(ctx context.Context, cancel context.CancelFunc, server *ap
 		logging.Info("auto-flow started", "flow", flowID, "runID", runID)
 
 		if flowExit {
-			// Watch for the run to terminate, then exit.
-			go server.WaitFlowTerminal(ctx, runID, cancel)
+			// Watch for the run to terminate, then exit after the grace
+			// window. The grace gives an external reconciliation reader
+			// (orchestrator GET /flow/status) time to land its request
+			// before the HTTP server shuts down — see openspec change
+			// c2-agent-flow-http-migration design.md R3.
+			go server.WaitFlowTerminal(ctx, runID, flowExitGrace, cancel)
 		}
 	}()
 	return nil
@@ -426,6 +435,8 @@ func init() {
 	serveCmd.Flags().String("flow", "", "Auto-start the named flow once the server is healthy (k8s Job entrypoint pattern)")
 	serveCmd.Flags().String("flow-args", "", "Path to a JSON file with flow arguments (e.g. reviewers, ticket IDs)")
 	serveCmd.Flags().Bool("flow-exit", false, "Exit the process when the auto-started flow completes (only honored with --flow)")
+	serveCmd.Flags().Duration("flow-exit-grace", 5*time.Second, "Hold the HTTP server up this long after the auto-flow terminates so an external reconciler (e.g. orchestrator GET /flow/status) can land before shutdown. Capped at 60s. Only honored with --flow-exit. Default 5s.")
+	serveCmd.Flags().Bool("flow-fresh", false, "Discard any existing per-step session state when auto-starting the flow (equivalent to `opencode -F <flow> -D`).")
 
 	rootCmd.AddCommand(serveCmd)
 }
