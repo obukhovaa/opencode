@@ -396,9 +396,12 @@ func (a *Adapter) Send(ctx context.Context, out bridge.Outbound) bridge.SendResu
 	if out.Mention != "" {
 		text = out.Mention + " " + text
 	}
-	if len(text) > MaxTextLength {
-		text = text[:MaxTextLength]
-	}
+	// Mattermost counts MaxTextLength in characters, not bytes. Slicing
+	// at a byte boundary that lands mid-codepoint produces invalid UTF-8
+	// that the server can reject and renders as the replacement
+	// character. Cap by rune so the cut always lands on a codepoint
+	// boundary.
+	text = truncateRunes(text, MaxTextLength)
 
 	var fileIDs []string
 	if len(out.Attachments) > 0 {
@@ -594,4 +597,23 @@ func redactToken(s, token string) string {
 		return s
 	}
 	return strings.ReplaceAll(s, token, "<redacted>")
+}
+
+// truncateRunes returns s capped to maxRunes codepoints. Cutting a
+// UTF-8 string at a byte index can land mid-codepoint and produce
+// invalid UTF-8; counting runes guarantees the cut is at a codepoint
+// boundary. No ellipsis is appended — the Mattermost post is rendered
+// as-is.
+func truncateRunes(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	count := 0
+	for i := range s {
+		if count == maxRunes {
+			return s[:i]
+		}
+		count++
+	}
+	return s
 }

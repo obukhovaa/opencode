@@ -57,6 +57,14 @@ type sessionDispatch struct {
 	overflowLog time.Time
 
 	stop atomic.Bool
+
+	// ownedSessions caches whether a given session ID is "ours" —
+	// either this dispatcher's session or one of its descendants
+	// (subagent sessions spawned via the `task` tool, which share
+	// root_session_id with the parent). Per-event store lookups
+	// would be too expensive in the hot path; this map amortises it.
+	// Keys: session ID; values: bool. See isOwnedSession.
+	ownedSessions sync.Map
 }
 
 // newSessionDispatch constructs and launches the per-session dispatcher
@@ -219,10 +227,25 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	}
 }
 
-// drainParts forwards parts for this session from the broker subscription
-// to d.parts (non-blocking, drop-oldest). Other sessions' parts are
-// ignored. Returns when partsCtx is cancelled (set by handleInbound after
-// agent.Run completes).
+// drainParts forwards parts for this session AND any of its descendant
+// (subagent) sessions from the broker subscription to d.parts. Returns
+// when partsCtx is cancelled (set by handleInbound after agent.Run
+// completes).
+//
+// Subagent visibility: when the parent agent calls the `task` tool,
+// opencode spawns a subagent on a NEW session whose root_session_id
+// points back at the parent. Subagent tool activity (which can
+// dominate the run — e.g. 15 minutes of Atlassian MCP calls inside one
+// task) emits part events on the SUBAGENT's session, not the parent's.
+// Without the descendant filter, the reviewer would see "🔧 task ·
+// ..." at the start and then silence for the entire subagent run.
+// Including descendant events makes the chat surface reflect what the
+// run is actually doing, so a hung MCP call is visible instead of
+// looking like the bridge itself is stuck.
+//
+// Drop-oldest semantics are preserved — the consumer (runParts) drains
+// d.parts in parallel with handleInbound, so backlog is rare; when it
+// does happen, the oldest event is dropped first.
 func (d *sessionDispatch) drainParts(partsCtx context.Context, sub <-chan pubsub.Event[message.PartEvent]) {
 	for {
 		select {
@@ -232,7 +255,7 @@ func (d *sessionDispatch) drainParts(partsCtx context.Context, sub <-chan pubsub
 			if !ok {
 				return
 			}
-			if ev.Payload.SessionID != d.sessionID {
+			if !d.isOwnedSession(partsCtx, ev.Payload.SessionID) {
 				continue
 			}
 			select {
@@ -255,6 +278,39 @@ func (d *sessionDispatch) drainParts(partsCtx context.Context, sub <-chan pubsub
 			}
 		}
 	}
+}
+
+// isOwnedSession reports whether a part event's session_id is either
+// this dispatcher's own session, or a descendant subagent session
+// (root_session_id == d.sessionID). Results are cached in
+// d.ownedSessions to amortise the per-event store lookup — a busy
+// subagent can emit hundreds of events per minute, all from the same
+// session ID, so we only want to look up once per discovered session.
+//
+// The cache is per-dispatcher and tied to its lifetime; no GC needed
+// because a dispatcher is torn down when the binding is unbound.
+func (d *sessionDispatch) isOwnedSession(ctx context.Context, sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	if sessionID == d.sessionID {
+		return true
+	}
+	if v, ok := d.ownedSessions.Load(sessionID); ok {
+		return v.(bool)
+	}
+	// Cache miss — resolve via the session service. Unknown sessions
+	// (deleted, not yet flushed) cache as false so we don't repeat
+	// the lookup for every event in a flood.
+	owned := false
+	if d.svc.app != nil && d.svc.app.Sessions != nil {
+		sess, err := d.svc.app.Sessions.Get(ctx, sessionID)
+		if err == nil && sess.RootSessionID == d.sessionID {
+			owned = true
+		}
+	}
+	d.ownedSessions.Store(sessionID, owned)
+	return owned
 }
 
 // logOverflow emits a rate-limited warn log when the parts buffer
@@ -348,10 +404,14 @@ func agentMessageText(m message.Message) string {
 // failures are too easy to miss otherwise.
 //
 // Emission rules (kept terse to avoid spamming chat):
-//   - ToolCall with Finished=false → one message "🔧 <name>"
-//   - ToolResult with IsError=true → "✗ <name>: <error preview>"
-//   - Successful completions are NOT emitted (the agent's final reply
-//     implies success).
+//   - ToolCall with Finished=true → one message "🔧 <name>#<id> · <params>"
+//   - ToolResult with IsError=true → "✗ <name>#<id> · <error preview>"
+//   - Successful completions emit "✓ <name>#<id> · <preview>"
+//
+// The #<id> suffix is a short stable hash of the tool_call_id so a
+// reviewer watching parallel tool calls can pair each ✓/✗ result back
+// to the originating 🔧 call. Without it, two concurrent `bash` calls
+// would render as indistinguishable "🔧 bash" / "✓ bash" pairs.
 //
 // Per the chat-bridge spec the dispatcher MUST consume from d.parts
 // even when the outbound is suppressed — otherwise drainParts back-
@@ -363,28 +423,42 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
 	tu := d.svc.cfg.ToolUpdatesEnabled
 	switch part := ev.Payload.Part.(type) {
 	case message.ToolCall:
-		// Skip "running" updates entirely; only emit on tool-call
-		// START so each tool produces one line. The agent emits one
-		// ToolCall part with Finished=false at start, then updates
-		// it to Finished=true (or a ToolResult arrives) at end —
-		// emitting on both is too chatty.
-		if !tu || part.Finished {
+		// Streaming providers (Anthropic) publish each ToolCall up to
+		// THREE times:
+		//   1. EventToolUseStart — Finished=false, Input empty
+		//   2. EventToolUseStop  — Finished=true,  Input STILL empty
+		//      (the delta-accumulation path is commented out in
+		//      agent.go, so Input isn't merged at this point)
+		//   3. EventComplete     — Finished=true,  Input MERGED with
+		//      the assembled args (via mergeToolCalls)
+		// Non-streaming providers (OpenAI / Gemini) only fire #3.
+		//
+		// We want exactly one line per tool call, with the full args.
+		// Filter on `Finished && Input != ""`:
+		//   - #1 fails Finished                  → skip
+		//   - #2 has empty Input                 → skip
+		//   - #3 (the only useful one)           → emit
+		// A genuinely-no-args tool (e.g. get_all_projects → "{}")
+		// still passes because its Input is the literal "{}", not "".
+		if !tu || !part.Finished || part.Input == "" {
 			return
 		}
+		label := part.Name + callIDSuffix(part.ID)
 		params := formatToolParams(part.Name, part.Input)
 		if params != "" {
-			d.emitToolUpdate(fmt.Sprintf("🔧 %s · %s", part.Name, params))
+			d.emitToolUpdate(fmt.Sprintf("🔧 %s · %s", label, params))
 		} else {
-			d.emitToolUpdate(fmt.Sprintf("🔧 %s", part.Name))
+			d.emitToolUpdate(fmt.Sprintf("🔧 %s", label))
 		}
 	case message.ToolResult:
+		label := part.Name + callIDSuffix(part.ToolCallID)
 		if part.IsError {
 			// Failures always surface, even with ToolUpdatesEnabled=false,
 			// so silent breakage is visible to the reviewer. Truncate by
 			// rune (codepoint) so a multi-byte glyph at the boundary is
 			// not split into invalid UTF-8.
 			preview := truncateRunes(oneLine(part.Content), 200)
-			d.emitToolUpdate(fmt.Sprintf("✗ %s · %s", part.Name, preview))
+			d.emitToolUpdate(fmt.Sprintf("✗ %s · %s", label, preview))
 			return
 		}
 		// Successful tool result: emit a compact preview so the
@@ -398,11 +472,31 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
 		if preview == "" {
 			// Empty success — represent it explicitly so the user
 			// doesn't think the tool transition was dropped.
-			d.emitToolUpdate(fmt.Sprintf("✓ %s", part.Name))
+			d.emitToolUpdate(fmt.Sprintf("✓ %s", label))
 		} else {
-			d.emitToolUpdate(fmt.Sprintf("✓ %s · %s", part.Name, preview))
+			d.emitToolUpdate(fmt.Sprintf("✓ %s · %s", label, preview))
 		}
 	}
+}
+
+// callIDSuffix renders a short stable suffix derived from the tool
+// call ID so reviewers can pair "🔧 bash#abcd" with its "✓ bash#abcd"
+// (or "✗ bash#abcd") result. Empty input yields an empty suffix.
+//
+// The ID is truncated to the trailing 6 chars — provider-issued IDs
+// are typically opaque strings like "toolu_01ABC..." or "call_xyz...".
+// The trailing portion is more entropic than the prefix (which is
+// often a fixed scheme prefix) and short enough to keep chat lines
+// compact.
+func callIDSuffix(id string) string {
+	if id == "" {
+		return ""
+	}
+	const n = 6
+	if len(id) > n {
+		id = id[len(id)-n:]
+	}
+	return "#" + id
 }
 
 // truncateRunes returns s capped to maxRunes codepoints. Slicing a
@@ -598,9 +692,3 @@ func (d *sessionDispatch) pushInbound(ctx context.Context, in bridge.Inbound) er
 		return ctx.Err()
 	}
 }
-
-// orphanedSessionError indicates the inbound's resolved session_id is
-// NULL (FK ON DELETE SET NULL fired after opencode GC'd the session).
-// The orchestrator handles this by allocating a fresh opencode session
-// and UPDATEing the bridge_sessions row.
-var orphanedSessionError = fmt.Errorf("bridge: orphaned binding (session_id is NULL)")

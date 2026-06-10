@@ -1218,6 +1218,20 @@ func (a *agent) processEvent(ctx context.Context, sessionID string, assistantMsg
 		if err := a.messages.Update(ctx, *assistantMsg); err != nil {
 			return fmt.Errorf("failed to update message: %w", err)
 		}
+		// Re-publish each ToolCall with its finalized Input. The
+		// streaming path's EventToolUseStart / EventToolUseStop only
+		// publishes the call shape (ID + Name), and non-streaming
+		// providers (OpenAI / Gemini) never emit the per-call events
+		// at all — they assemble everything in the EventComplete
+		// payload. Without this republish, PartEvent subscribers
+		// (chat bridge tool-update indicators, SSE consumers) see
+		// the tool name without any context, and parallel calls
+		// of the same tool can't be told apart from their results.
+		// Publishing post-merge gives subscribers the canonical
+		// shape that lands in the message store.
+		for _, tc := range assistantMsg.ToolCalls() {
+			a.messages.PublishPart(sessionID, assistantMsg.ID, tc)
+		}
 		return a.TrackUsage(ctx, sessionID, a.provider.Model(), event.Response.Usage)
 	}
 

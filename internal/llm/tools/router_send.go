@@ -462,6 +462,14 @@ func scrubPrefix(s, prefix string) string {
 
 // safePath validates that path resolves inside mediaRoot, returns the
 // absolute form. ErrUnsafeMediaPath is returned when it escapes.
+//
+// Symlink resolution mirrors internal/bridge/service.loadMediaAttachment:
+// on macOS the canonical dataDir resolves through /private/tmp/... while
+// the user-supplied path may come in as /tmp/..., so a literal prefix
+// check would falsely reject a legitimate path that the bridge itself
+// staged via StoreOutboundFile. EvalSymlinks is only applied when the
+// candidate exists; a probe-for-write path validates by lexical
+// comparison.
 func safePath(path, mediaRoot string) (string, error) {
 	abs, err := absClean(path)
 	if err != nil {
@@ -470,6 +478,12 @@ func safePath(path, mediaRoot string) (string, error) {
 	root, err := absClean(mediaRoot)
 	if err != nil {
 		return "", err
+	}
+	if eval, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = eval
+	}
+	if eval, err := filepath.EvalSymlinks(root); err == nil {
+		root = eval
 	}
 	if !strings.HasPrefix(abs, root+string(os.PathSeparator)) && abs != root {
 		return "", errUnsafeMediaPath

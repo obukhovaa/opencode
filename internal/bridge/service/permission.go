@@ -37,6 +37,13 @@ type PermissionRouter struct {
 	// from a bridge-bound session arrives with a mode the router
 	// doesn't understand.
 	warnUnknownOnce sync.Once
+
+	// ownedSessions caches the "is this session bound (or a descendant
+	// of a bound session)" answer per session ID. MCP-heavy subagent
+	// runs can fire dozens of permission requests per turn; without
+	// the cache each one would hit the store for a binding lookup AND
+	// a session-row lookup. Keys: session ID; values: bool.
+	ownedSessions sync.Map
 }
 
 // newPermissionRouter constructs the router and launches its
@@ -86,16 +93,20 @@ func (r *PermissionRouter) handleRequest(ctx context.Context, req permission.Per
 	}
 
 	// Only auto-resolve for sessions that this bridge cares about —
-	// i.e. ones with a bound row. Permission requests from sessions
-	// owned by the TUI / API caller / scheduled flows pass through
-	// unchanged so the human-in-the-loop UX still works for them.
-	bindings, err := r.svc.store.ListBindingsBySession(ctx, r.svc.projectID, req.SessionID)
-	if err != nil {
-		logging.Warn("bridge: permission router store lookup",
-			"session", req.SessionID, "err", err)
-		return
-	}
-	if len(bindings) == 0 {
+	// either the bound session itself OR one of its descendant subagent
+	// sessions. Permission requests from sessions owned by the TUI /
+	// API caller / scheduled flows pass through unchanged so the
+	// human-in-the-loop UX still works for them.
+	//
+	// Subagent sessions (spawned via the `task` tool) carry the bound
+	// session's ID as root_session_id but NOT in bridge_sessions
+	// directly. Without the root-session fallback, every MCP tool call
+	// in a subagent hangs forever in serve mode (mcp-tool.go's default
+	// permission branch calls permissions.Request which blocks until
+	// Grant/Deny — but with no TUI subscriber AND the router skipping
+	// the unbound subagent session_id, nobody ever resolves it). That
+	// is exactly the "MCP hangs in bridge but not in TUI" asymmetry.
+	if !r.isBridgeOwnedSession(ctx, req.SessionID) {
 		return
 	}
 
@@ -132,4 +143,48 @@ func (r *PermissionRouter) handleRequest(ctx context.Context, req permission.Per
 			"mode", r.svc.cfg.PermissionMode)
 		r.svc.app.Permissions.Deny(req)
 	}
+}
+
+// isBridgeOwnedSession reports whether a permission request's session
+// is in this bridge's scope — either bound directly via bridge_sessions
+// or a descendant subagent of a bound session (root_session_id matches
+// a bound row). Cached in r.ownedSessions to amortise the per-request
+// store lookups; subagent MCP-heavy turns can fire dozens of permission
+// requests with the same session_id.
+func (r *PermissionRouter) isBridgeOwnedSession(ctx context.Context, sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	if v, ok := r.ownedSessions.Load(sessionID); ok {
+		return v.(bool)
+	}
+	owned := false
+
+	// 1. Direct binding?
+	bindings, err := r.svc.store.ListBindingsBySession(ctx, r.svc.projectID, sessionID)
+	if err != nil {
+		logging.Warn("bridge: permission router binding lookup",
+			"session", sessionID, "err", err)
+		// Don't cache on error so a transient DB blip doesn't make us
+		// permanently ignore the session.
+		return false
+	}
+	if len(bindings) > 0 {
+		owned = true
+	}
+
+	// 2. Descendant via root_session_id? (subagent path)
+	if !owned && r.svc.app != nil && r.svc.app.Sessions != nil {
+		sess, err := r.svc.app.Sessions.Get(ctx, sessionID)
+		if err == nil && sess.RootSessionID != "" && sess.RootSessionID != sessionID {
+			rootBindings, err := r.svc.store.ListBindingsBySession(ctx,
+				r.svc.projectID, sess.RootSessionID)
+			if err == nil && len(rootBindings) > 0 {
+				owned = true
+			}
+		}
+	}
+
+	r.ownedSessions.Store(sessionID, owned)
+	return owned
 }

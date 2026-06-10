@@ -33,11 +33,36 @@ func (s *Service) ChatCommands() map[string]CommandHandler {
 		"sessions": s.cmdSessions,
 		"session":  s.cmdSession,
 		"reset":    s.cmdReset,
+		"abort":    s.cmdAbort,
 		"pair":     s.cmdPair,
 		"skip":     s.cmdSkip,
 		"help":     s.cmdHelp,
 		"dir":      s.cmdDir,
 	}
+}
+
+// cmdAbort cancels any in-flight agent.Run on the current session and
+// releases the busy lock. Use case: a subagent (`task` tool) calls an
+// MCP tool that hangs forever — the parent run is wedged and the
+// session won't accept new messages until aborted. Previously the
+// reviewer had no way to recover without an HTTP POST to /session/<id>/abort
+// or restarting opencode.
+func (s *Service) cmdAbort(ctx context.Context, in bridge.Inbound) string {
+	binding, err := s.resolveBinding(ctx, in.Peer)
+	if err != nil {
+		return "Failed to resolve binding: " + err.Error()
+	}
+	activeAgent := s.app.ActiveAgent()
+	if activeAgent == nil {
+		return "No active agent — nothing to abort."
+	}
+	if !activeAgent.IsSessionBusy(binding.SessionID) {
+		return fmt.Sprintf("Session %s is not running anything to abort.",
+			shortSessionID(binding.SessionID))
+	}
+	activeAgent.Cancel(binding.SessionID)
+	return fmt.Sprintf("Aborted in-flight run on session %s. Send another message to continue.",
+		shortSessionID(binding.SessionID))
 }
 
 // cmdAgent: list available agents or switch the active one.
@@ -289,12 +314,22 @@ func shortSessionID(id string) string {
 
 // cmdReset: forget the current binding so the next inbound creates a
 // fresh session. Equivalent to /router/unbind for the inbound's
-// (channel, identity, peerKey) tuple.
+// (channel, identity, peerKey) tuple. Also tears down the per-session
+// dispatcher when no other peer references the session, so a deployment
+// where users `/reset` frequently doesn't accumulate idle dispatcher
+// goroutines.
 func (s *Service) cmdReset(ctx context.Context, in bridge.Inbound) string {
+	// Look up the existing binding directly (no resolveBinding — that
+	// would auto-allocate a fresh session for a missing row).
+	existing, _ := s.store.GetBinding(ctx, s.projectID,
+		in.Peer.Channel, in.Peer.Identity, in.Peer.PeerID)
 	if err := s.store.DeleteBindingByPeer(
 		ctx, s.projectID, in.Peer.Channel, in.Peer.Identity, in.Peer.PeerID,
 	); err != nil {
 		return "Failed to reset binding: " + err.Error()
+	}
+	if existing.SessionID != "" {
+		s.closeDispatcherIfEmpty(ctx, existing.SessionID)
 	}
 	return "Session reset; next message starts fresh."
 }
@@ -329,6 +364,7 @@ func (s *Service) cmdHelp(_ context.Context, _ bridge.Inbound) string {
 		"/session              show details for the current session",
 		"/session <id-prefix>  switch to another session by ID prefix",
 		"/reset             forget this binding; next message starts fresh",
+		"/abort             cancel an in-flight run on the current session (use when stuck)",
 		"/pair              pairing-code information",
 		"/skip              skip the current pending question",
 		"/help              this listing",
