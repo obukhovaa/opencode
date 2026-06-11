@@ -24,6 +24,59 @@ import (
 const structuredOutputPrompt = `
 IMPORTANT: The user has requested structured output. You MUST use the struct_output tool to provide your final response. Do NOT respond with plain text - you MUST call the struct_output tool with your answer formatted according to the schema.`
 
+// interactiveStructuredOutputPrompt replaces structuredOutputPrompt
+// when the agent is running an `interactive: true` flow step. The
+// chat-bridge has already bound the agent's session to a human
+// reviewer; this prompt teaches the agent to engage in multi-turn
+// dialogue via the bridge (using the question tool for structured
+// asks + plain agent responses for prose) until ALL the required
+// fields of the output schema have been clarified, and only THEN
+// emit struct_output.
+//
+// Without this override the default structuredOutputPrompt pushes the
+// model to emit struct_output on its first turn — which short-
+// circuits the entire human-in-the-loop interaction and makes
+// interactive: true a no-op behaviorally.
+const interactiveStructuredOutputPrompt = `
+IMPORTANT — INTERACTIVE FLOW STEP:
+
+You are running inside a human-in-the-loop flow step. Your session is
+bound to a human reviewer via a chat bridge — every message you produce
+flows to them in real time over Slack (or another chat platform), and
+their replies arrive as new user messages in this session. Your job is
+to gather all the information needed to populate the structured output
+schema by COLLABORATING with the reviewer over multiple turns.
+
+How to behave:
+
+- Treat this as a CONVERSATION, not a one-shot response. Open with a
+  short greeting that explains what you need from them and why. Avoid
+  walls of text — chat users skim.
+- Use the question tool for any clarification with a constrained answer
+  shape (yes/no, pick-from-options, single-line text). It renders as
+  native UI on the chat platform (Slack buttons, etc.) and pairs the
+  reply back to your session automatically. Prefer it over free-form
+  prose questions when the answer is bounded.
+- For open-ended or follow-up exchanges, just send a plain reply — it
+  fans out to the reviewer the same way.
+- Acknowledge each reviewer message before moving on. Reflect back what
+  you understood so they can correct you cheaply.
+- Do NOT emit struct_output until you have CONCRETE, REVIEWED values
+  for every required field in the schema. Premature struct_output
+  terminates the step and discards the conversation — there is no
+  redo.
+- When you do call struct_output, do it as the FINAL action of the
+  conversation. Don't follow it with more chat — the step ends the
+  moment struct_output fires.
+- Keep your environment in mind: this is a text/markdown chat surface,
+  not a TUI. Don't try to render tables, ANSI colors, big code blocks,
+  or anything that depends on a fixed-width display. Short paragraphs,
+  bullet lists, and ` + "`inline code`" + ` are safe.
+
+The struct_output schema and the prompt above describe what to collect.
+The reviewer is the source of truth — defer to them and confirm
+ambiguous items.`
+
 const parallelToolUsePrompt = `
 You have the capability to call multiple tools in a single response. When multiple independent pieces of information are requested and all commands are likely to succeed, run multiple tool calls in parallel for optimal performance. For example, if you need to read 3 files, call read 3 times in parallel rather than sequentially.`
 
@@ -104,7 +157,32 @@ func boolToYesNo(b bool) string {
 	return "No"
 }
 
+// AgentPromptOptions tunes per-call overrides for GetAgentPrompt.
+// Today only `Interactive` is exposed — set true when the agent is
+// running an `interactive: true` flow step so the multi-turn-friendly
+// structured-output prompt is appended. Future per-call overrides
+// (e.g. forcing a specific tool subset's guidance off) go here.
+type AgentPromptOptions struct {
+	// Interactive overrides the registered AgentInfo.Interactive
+	// (which is the in-memory flag set by AgentFactory.NewAgent for
+	// this specific agent instance). Callers that pass through the
+	// AgentInfo from NewAgent should set this to AgentInfo.Interactive.
+	Interactive bool
+}
+
+// GetAgentPromptWithOptions is GetAgentPrompt + per-call overrides.
+// The registered AgentInfo is still consulted for tool gating,
+// permissions, skills, etc. — only the prompt-shape selection bits
+// come from opts.
+func GetAgentPromptWithOptions(agentName config.AgentName, provider models.ModelProvider, opts AgentPromptOptions) string {
+	return getAgentPromptInternal(agentName, provider, opts)
+}
+
 func GetAgentPrompt(agentName config.AgentName, provider models.ModelProvider) string {
+	return getAgentPromptInternal(agentName, provider, AgentPromptOptions{})
+}
+
+func getAgentPromptInternal(agentName config.AgentName, provider models.ModelProvider, opts AgentPromptOptions) string {
 	reg := agentregistry.GetRegistry()
 
 	var basePrompt string
@@ -129,10 +207,28 @@ func GetAgentPrompt(agentName config.AgentName, provider models.ModelProvider) s
 		}
 	}
 
-	// Append structured output instruction if the agent has the tool enabled
+	// Append structured output instruction if the agent has the tool
+	// enabled. Interactive flow steps get a multi-turn-friendly variant
+	// (see interactiveStructuredOutputPrompt) — it tells the agent to
+	// collaborate with the human reviewer via the chat bridge over
+	// multiple turns and reserve struct_output for the END. Without
+	// this swap, the terse default prompt pushes the model to emit
+	// struct_output on its first turn, effectively skipping the
+	// human-in-the-loop.
+	//
+	// opts.Interactive (set by AgentFactory.NewAgent for interactive
+	// flow steps) wins over info.Interactive (which is also set in
+	// the same code path — they're kept in sync but the per-call
+	// override is the authoritative one because the registered
+	// AgentInfo from reg.Get() returns the original Registry copy,
+	// NOT the per-call infoCopy with Interactive set).
 	if info, ok := reg.Get(agentName); ok {
 		if info.Output != nil && info.Output.Schema != nil && reg.IsToolEnabled(agentName, tools.StructOutputToolName) {
-			basePrompt += structuredOutputPrompt
+			if opts.Interactive || info.Interactive {
+				basePrompt += interactiveStructuredOutputPrompt
+			} else {
+				basePrompt += structuredOutputPrompt
+			}
 		}
 	}
 

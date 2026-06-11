@@ -307,7 +307,11 @@ func (s *service) runStep(
 	if step.Output != nil {
 		outputSchema = step.Output.Schema
 	}
-	agentSvc, err := s.agents.NewAgent(ctx, agentID, outputSchema, step.ID)
+	// Pass step.Interactive so the agent's system prompt gets the
+	// multi-turn-friendly variant (see prompt.GetAgentPrompt). The
+	// in-memory AgentInfo.Interactive flag plumbs through to
+	// prompt-shape selection.
+	agentSvc, err := s.agents.NewAgent(ctx, agentID, outputSchema, step.ID, step.Interactive)
 	if err != nil {
 		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
 		return

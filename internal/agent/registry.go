@@ -41,6 +41,18 @@ type AgentInfo struct {
 	Output          *Output          `yaml:"output,omitempty"`
 	Location        string           `yaml:"-"`
 	ParallelToolUse *bool            `yaml:"parallelToolUse,omitempty"`
+	// Interactive is set in-memory by AgentFactory.NewAgent when the
+	// agent is being constructed for a flow step with `interactive: true`.
+	// NOT persisted via YAML — agent-level interactiveness is derived
+	// from the flow step, not from the agent definition.
+	//
+	// When true, GetAgentPrompt replaces the terse "use struct_output
+	// for your final response" prompt with one that encourages
+	// multi-turn dialogue via the chat bridge first and reserves
+	// struct_output for the END of the conversation. The agent
+	// effectively becomes a human-in-the-loop collaborator instead of
+	// a one-shot answerer.
+	Interactive bool `yaml:"-"`
 }
 
 type Registry interface {

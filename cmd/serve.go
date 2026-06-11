@@ -208,9 +208,7 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			flowExit, _ := cmd.Flags().GetBool("flow-exit")
 			flowExitGrace, _ := cmd.Flags().GetDuration("flow-exit-grace")
 			flowFresh, _ := cmd.Flags().GetBool("flow-fresh")
-			// --flow-exit-grace is only honored when --flow-exit is set, so
-			// only validate it in that case. This avoids rejecting harmless
-			// stale config from deployments that never opt into auto-exit.
+			flowStartDelay, _ := cmd.Flags().GetDuration("flow-start-delay")
 			if flowExit {
 				if flowExitGrace < 0 {
 					return fmt.Errorf("--flow-exit-grace must be ≥ 0 (got %s)", flowExitGrace)
@@ -219,7 +217,13 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 					return fmt.Errorf("--flow-exit-grace must be ≤ 60s (got %s)", flowExitGrace)
 				}
 			}
-			if err := scheduleAutoFlow(ctx, cancel, server, flowID, flowArgsPath, flowExit, flowExitGrace, flowFresh); err != nil {
+			if flowStartDelay < 0 {
+				return fmt.Errorf("--flow-start-delay must be ≥ 0 (got %s)", flowStartDelay)
+			}
+			if flowStartDelay > 30*time.Second {
+				return fmt.Errorf("--flow-start-delay must be ≤ 30s (got %s)", flowStartDelay)
+			}
+			if err := scheduleAutoFlow(ctx, cancel, server, flowID, flowArgsPath, flowExit, flowExitGrace, flowFresh, flowStartDelay); err != nil {
 				return err
 			}
 		}
@@ -386,7 +390,7 @@ func filepathJoin(parts ...string) string {
 //
 // flowExit, when true, cancels the parent context (triggering server
 // shutdown) once the flow terminates.
-func scheduleAutoFlow(ctx context.Context, cancel context.CancelFunc, server *api.Server, flowID, flowArgsPath string, flowExit bool, flowExitGrace time.Duration, flowFresh bool) error {
+func scheduleAutoFlow(ctx context.Context, cancel context.CancelFunc, server *api.Server, flowID, flowArgsPath string, flowExit bool, flowExitGrace time.Duration, flowFresh bool, flowStartDelay time.Duration) error {
 	args := map[string]any{}
 	if flowArgsPath != "" {
 		data, err := os.ReadFile(flowArgsPath)
@@ -398,14 +402,25 @@ func scheduleAutoFlow(ctx context.Context, cancel context.CancelFunc, server *ap
 		}
 	}
 
+	// Default wait so the server starts listening before we kick the
+	// flow. flowStartDelay (if positive) overrides — it gives external
+	// SSE subscribers (orchestrators) time to connect and start
+	// consuming flow.* events BEFORE the auto-flow emits its first
+	// event. Without this, the orchestrator's reconnect-backoff often
+	// misses the early flow.waiting_for_input / flow.step.started
+	// events because the flow starts within ~500ms of API boot — way
+	// faster than the orchestrator's 1s→2s→4s exponential reconnect
+	// can bridge the gap.
+	startWait := 250 * time.Millisecond
+	if flowStartDelay > startWait {
+		startWait = flowStartDelay
+	}
+
 	go func() {
-		// Wait briefly so the server starts listening before we kick
-		// the flow. The sentinel line in api.Start runs synchronously
-		// before flow execution would need any HTTP-mediated bind.
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(250 * time.Millisecond):
+		case <-time.After(startWait):
 		}
 
 		runID, err := server.StartFlow(flowID, args, flowFresh)
@@ -445,6 +460,7 @@ func init() {
 	serveCmd.Flags().Bool("flow-exit", false, "Exit the process when the auto-started flow completes (only honored with --flow)")
 	serveCmd.Flags().Duration("flow-exit-grace", 5*time.Second, "Hold the HTTP server up this long after the auto-flow terminates so an external reconciler (e.g. orchestrator GET /flow/status) can land before shutdown. Capped at 60s. Only honored with --flow-exit. Default 5s.")
 	serveCmd.Flags().Bool("flow-fresh", false, "Discard any existing per-step session state when auto-starting the flow (equivalent to `opencode -F <flow> -D`).")
+	serveCmd.Flags().Duration("flow-start-delay", 0, "Wait this long after the HTTP server is healthy BEFORE auto-starting the flow. Gives external SSE subscribers (e.g. orchestrators) time to connect and start consuming flow.* events from the very first one. Capped at 30s. Default 0 (no extra delay beyond the 250ms boot wait).")
 
 	rootCmd.AddCommand(serveCmd)
 }
