@@ -41,6 +41,16 @@ type Service interface {
 	AutoApproveSession(sessionID string)
 	RemoveAutoApproveSession(sessionID string)
 	IsAutoApproveSession(sessionID string) bool
+
+	// MarkInteractiveSession flags a session as interactively bound
+	// to a human (via the chat-bridge for `interactive: true` flow
+	// steps). When set, the question tool will NOT short-circuit on
+	// auto-approve — it'll still defer to the bridge so the human
+	// actually picks the answer. Cleared by RemoveInteractiveSession
+	// (typically called from the InteractiveHook's unbind path).
+	MarkInteractiveSession(sessionID string)
+	RemoveInteractiveSession(sessionID string)
+	IsInteractiveSession(sessionID string) bool
 }
 
 type permissionService struct {
@@ -49,6 +59,7 @@ type permissionService struct {
 	sessionPermissions   []PermissionRequest
 	pendingRequests      sync.Map
 	autoApproveSessions  sync.Map
+	interactiveSessions  sync.Map
 	serializePermissions sync.Mutex
 }
 
@@ -127,6 +138,19 @@ func (s *permissionService) RemoveAutoApproveSession(sessionID string) {
 
 func (s *permissionService) IsAutoApproveSession(sessionID string) bool {
 	_, ok := s.autoApproveSessions.Load(sessionID)
+	return ok
+}
+
+func (s *permissionService) MarkInteractiveSession(sessionID string) {
+	s.interactiveSessions.Store(sessionID, true)
+}
+
+func (s *permissionService) RemoveInteractiveSession(sessionID string) {
+	s.interactiveSessions.Delete(sessionID)
+}
+
+func (s *permissionService) IsInteractiveSession(sessionID string) bool {
+	_, ok := s.interactiveSessions.Load(sessionID)
 	return ok
 }
 
