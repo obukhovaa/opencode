@@ -459,8 +459,12 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 // per session ID so a flow whose session row is permanently missing
 // doesn't flood the log on every step transition.
 //
-// Safe to call without holding fr.mu — touches only fr.app (set once at
-// construction) and the per-runner warnedSessions set (own mutex).
+// MUST NOT be called while holding fr.mu — svc.Get is bounded by a
+// 250 ms ctx timeout and would re-block concurrent Snapshot() / Abort()
+// callers (which is the bug this method's call-site reordering fixed).
+// The function itself is safe to call concurrently — it touches only
+// fr.app (set once at construction) and the warnedSessions set
+// (guarded by its own mutex).
 func (fr *flowRunner) lookupSessionCost(sessionID string) (cost float64, contextSize int64) {
 	if sessionID == "" {
 		return 0, 0
@@ -484,9 +488,18 @@ func (fr *flowRunner) lookupSessionCost(sessionID string) (cost float64, context
 	return sess.Cost, sess.PromptTokens
 }
 
+// warnedSessionsCap bounds the warn-dedup set. Long-running serve
+// processes can encounter many distinct broken session IDs over their
+// lifetime; without a cap the map would grow without bound. When the
+// set reaches the cap, it is reset — old session IDs will warn again
+// on their next failure, which is acceptable degradation (worst case:
+// one extra warn per session after wrap, then dedup resumes).
+const warnedSessionsCap = 1024
+
 // markWarned returns true the first time a given sessionID's lookup
 // failure is recorded, false on subsequent failures. Used by
-// lookupSessionCost to log a warn once per session ID.
+// lookupSessionCost to log a warn once per session ID. The dedup set
+// is capped at warnedSessionsCap entries — see the constant's doc.
 func (fr *flowRunner) markWarned(sessionID string) bool {
 	fr.warnedMu.Lock()
 	defer fr.warnedMu.Unlock()
@@ -495,6 +508,9 @@ func (fr *flowRunner) markWarned(sessionID string) bool {
 	}
 	if _, seen := fr.warnedSessions[sessionID]; seen {
 		return false
+	}
+	if len(fr.warnedSessions) >= warnedSessionsCap {
+		fr.warnedSessions = make(map[string]struct{})
 	}
 	fr.warnedSessions[sessionID] = struct{}{}
 	return true

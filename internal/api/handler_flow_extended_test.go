@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -352,5 +353,39 @@ func TestWaitFlowTerminalCtxCancelShortCircuitsGrace(t *testing.T) {
 	case <-called:
 	case <-time.After(1 * time.Second):
 		t.Fatalf("ctx cancellation during grace did not unblock onTerminal in 1s")
+	}
+}
+
+// TestMarkWarnedDedupesAndCaps verifies markWarned's two contracts:
+// (1) returns true exactly once per session ID, false thereafter; and
+// (2) when the set reaches warnedSessionsCap, it resets so subsequent
+// new IDs warn again rather than growing the map unbounded.
+func TestMarkWarnedDedupesAndCaps(t *testing.T) {
+	t.Parallel()
+	fr := &flowRunner{}
+
+	// (1) first call returns true, subsequent calls for the same ID
+	// return false.
+	if !fr.markWarned("a") {
+		t.Errorf("first markWarned(a) = false, want true")
+	}
+	if fr.markWarned("a") {
+		t.Errorf("second markWarned(a) = true, want false (should dedup)")
+	}
+
+	// (2) fill the dedup set to its cap with distinct IDs, then add
+	// one more. The map should reset; the additional ID returns true,
+	// and the map size after addition should be 1 (post-reset).
+	for i := range warnedSessionsCap - 1 {
+		fr.markWarned(fmt.Sprintf("sess-%d", i))
+	}
+	if got := len(fr.warnedSessions); got != warnedSessionsCap {
+		t.Fatalf("pre-cap len = %d, want %d", got, warnedSessionsCap)
+	}
+	if !fr.markWarned("trigger-reset") {
+		t.Errorf("markWarned at cap = false, want true (new ID)")
+	}
+	if got := len(fr.warnedSessions); got != 1 {
+		t.Errorf("post-reset len = %d, want 1 (the triggering ID only)", got)
 	}
 }
