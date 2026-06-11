@@ -2,6 +2,13 @@
 
 Flows provide deterministic, multi-step agent workflows. A Flow is a YAML-defined directed graph of steps, each with its own agent, prompt template, optional structured output, routing rules, and fallback strategy.
 
+When authoring or editing a flow, prefer the bundled **[flow-creator skill](../.agents/skills/flow-creator/SKILL.md)** — it encodes the YAML spec, design guidelines, common patterns (sequential pipeline, conditional branching, parallel fan-out, postponed and in-process self-loops, interactive human-in-the-loop steps), and the available built-in agents, so the LLM produces a valid file on the first try.
+
+Flows run in two modes — see [Execution Modes](#execution-modes):
+
+- **Direct CLI Mode** — `opencode -F <flow-id>` runs the flow once, prints the JSON envelope, exits.
+- **Server Mode** — `opencode serve` exposes HTTP and SSE so an external orchestrator (k8s Job, c2-agent, OpenWork, etc.) can start, observe, and abort flows over the wire. Also supports `--flow` auto-start as a Job entrypoint pattern.
+
 ## Quick Start
 
 Create a flow file in your project:
@@ -162,7 +169,20 @@ fallback:
 | `delay` | int | Delay between retries (seconds) |
 | `to` | string | Step ID to route to after all retries fail |
 
-## CLI Usage
+## Execution Modes
+
+Flows can be executed in two ways. Both modes use the same flow YAML and engine — only the entrypoint, output channel, and lifecycle differ.
+
+| | Direct CLI | Server |
+|---|---|---|
+| Entry | `opencode -F <flow-id>` | `opencode serve` + HTTP, or `opencode serve --flow <id>` |
+| Output | Single JSON envelope on stdout, then process exits | SSE events on `/event`, snapshot on `/flow/status` |
+| Concurrency | One flow per invocation | One flow at a time per process (POST `/flow` returns 409 otherwise) |
+| Best for | Local one-shots, CI pipelines that want stdout output | Long-running interactive flows, k8s Jobs with external reconcilers, OpenWork/c2-agent integration |
+| Auto-exit | Always — the process exits when the flow terminates | Opt-in via `--flow-exit` (plus optional `--flow-exit-grace`) |
+| Interactive steps | Not supported (chat bridge isn't started) | Supported when `router` is configured — see [Bridge docs](bridge.md) |
+
+### Direct CLI Mode
 
 ```bash
 # Basic flow execution
@@ -181,7 +201,7 @@ opencode -F my-flow -p "PROJ-1234" --args-file flow-args.json
 opencode -F my-flow -s my-prefix -D -p "restart"
 ```
 
-### Flags
+#### CLI flags
 
 | Flag | Short | Description |
 |------|-------|-------------|
@@ -191,6 +211,122 @@ opencode -F my-flow -s my-prefix -D -p "restart"
 | `--prompt` | `-p` | Initial prompt (optional with `--flow`, added to args) |
 | `--session` | `-s` | Session prefix for deterministic naming |
 | `--delete` | `-D` | Delete previous state and start fresh |
+
+#### CLI output
+
+Direct CLI mode prints a single JSON envelope to stdout when the flow terminates and exits — see [JSON envelope](#json-envelope).
+
+### Server Mode
+
+Run `opencode serve` to expose the flow engine over HTTP. External callers (orchestrators, dashboards, k8s controllers) start and observe flows via REST + SSE. See [`docs/server.md`](server.md) for the general server flags and authentication.
+
+#### Server-only `--flow*` flags
+
+These are honored by `opencode serve` only:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--flow` | _(unset)_ | Auto-start the named flow once the server is healthy (k8s Job entrypoint pattern). |
+| `--flow-args` | _(unset)_ | Path to a JSON file with flow arguments (e.g. reviewers, ticket IDs). Read once at start. |
+| `--flow-fresh` | `false` | Discard any existing per-step session state when auto-starting (equivalent to `-D` in direct mode). |
+| `--flow-exit` | `false` | Cancel the parent context (shutting the server down) once the auto-started flow terminates. |
+| `--flow-exit-grace` | `5s` | Hold the HTTP server up this long after the flow terminates so an external reconciler (`GET /flow/status`) can land before shutdown. Capped at 60 s. Only honored with `--flow-exit`. Set to `0s` to exit immediately. |
+
+`--flow-exit-grace` exists for the k8s pattern where an external controller polls `GET /flow/status` after seeing the pod transition to `Succeeded` — without the grace the server may shut down before the reconciliation read lands. A SIGTERM during the grace short-circuits the wait.
+
+> **Behaviour change.** Prior to the grace flag, `--flow-exit` exited immediately. Existing deployments that relied on immediate exit must now pass `--flow-exit-grace=0s`.
+
+#### HTTP endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/flow` | List every discovered flow YAML (`{id, name, description, disabled, args}`). |
+| POST | `/flow` | Start a new run. Body: `{flowID, args, fresh}`. Returns `202 Accepted` with `{runID, flowID, status, currentStep}`, or `409` if another run is in flight, or `404` for an unknown flow ID. |
+| GET | `/flow/status` | Snapshot of the latest run: `{runID, flowID, status, startedAt, completedAt, currentStep, completedSteps, waitingTarget, error}`, or `{"status":"idle"}` if no run has been started in this process. |
+| DELETE | `/flow` | Abort the in-flight run. `409` if no run is active. |
+
+`status` values mirror the flow-api spec: `running`, `waiting_for_input`, `completed`, `failed`.
+
+#### SSE events on `/event`
+
+Server mode multiplexes flow lifecycle events onto the existing `/event` SSE stream (the same stream that carries `message.*` / `session.*` events — see [`docs/server.md`](server.md#events-sse)). Each event is a `FlowEvent` JSON payload:
+
+```json
+{
+  "type": "flow.step.completed",
+  "runID": "8f3a…",
+  "stepID": "review",
+  "sessionID": "1700000000-review-and-fix-review",
+  "output": "{\"has_issues\":false}",
+  "completedAt": 1780000000123,
+  "isStructOutput": true,
+  "iteration": 1,
+  "cost": 0.0042,
+  "contextSize": 12345
+}
+```
+
+| `type` | When emitted | Notable fields |
+|---|---|---|
+| `flow.step.started` | A step enters `running`. | `stepID`, `sessionID`, `startedAt`, plus the per-step fields below. |
+| `flow.step.completed` | A step finishes successfully. | `stepID`, `output`, `completedAt`, per-step fields. |
+| `flow.step.failed` | A step exhausted retries / hit `maxIterations` / errored. | `stepID`, `error`, `failedAt`, per-step fields. |
+| `flow.waiting_for_input` | An `interactive: true` step bound to its peer(s) and is awaiting reviewer reply. | `stepID`, `sessionID`, `target` (resolved PeerRef or array). |
+| `flow.completed` | The run terminated successfully. | `runID`, `completedAt`. |
+| `flow.failed` | The run failed. | `runID`, `error`, `failedAt`. |
+
+Per-step fields (present on `flow.step.*` and `flow.waiting_for_input`):
+
+- `isStructOutput` — `true` when the step produced a JSON `struct_output`, mirrored from `flow.FlowState.IsStructOutput`. Orchestrators can render struct vs free-text blocks differently.
+- `iteration` — 1-based self-loop iteration number, mirrored from `flow.FlowState.Iteration`. `1` for non-looping steps; bumps on every in-process self-route.
+- `cost` — cumulative session cost (USD) at emit time, looked up via `session.Service.Get(state.SessionID).Cost`. Zero on session-lookup failure.
+- `contextSize` — cumulative prompt tokens for the session at emit time. Zero on lookup failure.
+
+All four use `omitempty` — older consumers that don't read them ignore the keys.
+
+#### Example: k8s Job entrypoint
+
+```bash
+# Job spec command — auto-start a flow with reviewer PeerRefs from a mounted ConfigMap.
+opencode serve \
+  --hostname 0.0.0.0 \
+  --port 4096 \
+  --flow review-and-fix \
+  --flow-args /etc/flow-args/args.json \
+  --flow-exit \
+  --flow-exit-grace 10s
+```
+
+The Job's controller polls `GET /flow/status` and reads the final snapshot before the pod shuts down.
+
+#### Example: start a flow over HTTP
+
+```bash
+# Start
+curl -X POST http://127.0.0.1:4096/flow \
+  -H 'content-type: application/json' \
+  -d '{"flowID":"review-and-fix","args":{"prompt":"Check src/main.go for bugs"}}'
+#  -> 202 {"runID":"8f3a…","flowID":"review-and-fix","status":"running","currentStep":null}
+
+# Tail events
+curl -N http://127.0.0.1:4096/event
+
+# Snapshot
+curl http://127.0.0.1:4096/flow/status
+
+# Abort
+curl -X DELETE http://127.0.0.1:4096/flow
+```
+
+#### Interactive steps
+
+When the chat bridge is configured (a `router` section in `.opencode.json` — see [`docs/bridge.md`](bridge.md)), flow steps can be marked `interactive: true` with an `interaction.target` PeerRef. The flow engine auto-binds the step session to the resolved peer(s), `agent.Run` fans out to the bound peer(s), reviewer replies route back over the bridge, and the step completes when the agent emits `struct_output`. Server mode emits `flow.waiting_for_input` on `/event` so orchestrators can render a "waiting on reviewer" indicator without polling. See the flow-creator skill's [Interactive Step section](../.agents/skills/flow-creator/SKILL.md#interactive-step-human-in-the-loop-via-chat-bridge) for YAML syntax and supported channels.
+
+If `router` is unconfigured, interactive steps fail-fast on bind with `flow.ErrInteractiveBridgeDisabled` — they cannot be used in Direct CLI Mode.
+
+## JSON envelope
+
+Direct CLI Mode prints this envelope to stdout when the flow terminates. (Server Mode does not emit this envelope — consumers reconstruct equivalent information from `flow.step.*` and `flow.completed`/`flow.failed` SSE events, or call `GET /flow/status` for a final snapshot.)
 
 ## Template Substitution
 
@@ -251,10 +387,6 @@ A `--session` flag on the CLI always overrides the spec value:
 # Uses "override" as prefix, ignoring whatever flow.session.prefix says
 opencode -F my-flow -s override -p "do the thing"
 ```
-
-## Output
-
-Flow execution produces a JSON envelope:
 
 ```json
 {
@@ -520,6 +652,9 @@ Caveats to design around:
 
 ## See Also
 
+- [flow-creator skill](../.agents/skills/flow-creator/SKILL.md) — bundled skill for authoring flow YAML
+- [Server & ACP Mode](server.md) — general HTTP server flags, auth, and endpoint catalog
+- [Chat Bridge](bridge.md) — required for `interactive: true` steps
 - [Custom Commands](custom-commands.md)
 - [Skills](skills.md)
 - [Session Providers](session-providers.md)

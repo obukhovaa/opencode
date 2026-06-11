@@ -409,6 +409,19 @@ func (s *service) runStep(
 	ctx = context.WithValue(ctx, tools.FlowStepIterationContextKey, iteration)
 	ctx = withFlowArgs(ctx, args)
 
+	// DEBUG: trace interactive step path. Remove after diagnosing
+	// flow.waiting_for_input non-emission.
+	logging.Info("flow: step pre-interactive check",
+		"step", step.ID, "interactive", step.Interactive,
+		"has_interaction_block", step.Interaction != nil,
+		"target", func() string {
+			if step.Interaction != nil {
+				return step.Interaction.Target
+			}
+			return ""
+		}(),
+		"hook_registered", s.interactiveHook != nil,
+	)
 	// Interactive bind: per the flow-api spec, on entering an interactive
 	// step we resolve interaction.target from args and call the bridge's
 	// InteractiveHook BEFORE agent.Run. Failure here fails the step fast.

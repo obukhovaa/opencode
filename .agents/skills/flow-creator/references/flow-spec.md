@@ -35,7 +35,53 @@ flow:               # flow specification (required)
   fallback: object       # retry and error routing (optional)
   maxTurns: int          # per-step override for agent's maxTurns. 0 (unset) inherits from agent. (optional)
   maxIterations: int     # cap on in-process self-loop iterations. 0 (unset) is unbounded — only flow timeout applies. (optional)
+  interactive: bool      # if true, the step is human-in-the-loop via the chat bridge — see Interactive Steps. (optional)
+  interaction:           # required when interactive: true; ignored otherwise
+    target: string       # ${args.NAME} expression resolving to a PeerRef or []PeerRef
+    mention: string      # optional first-message ping handle (passed through to the binding)
 ```
+
+## Interactive Steps
+
+When `interactive: true`, the flow engine binds the step's session to the
+peer(s) named in `interaction.target` **before** invoking `agent.Run` and
+unbinds afterwards. The agent's output fans out via the chat bridge to the
+bound peer(s); reviewer replies route back to the agent across the same
+session, all within a single `agent.Run` call. The step completes when the
+agent emits `struct_output`.
+
+`interaction.target` MUST be a `${args.NAME}` expression. The resolved
+value can be:
+
+- A **single PeerRef-shaped object** — `{channel, identity, peerId, mention?}`.
+- An **array** of PeerRef-shaped objects — multi-reviewer fan-out; inbound
+  from any reviewer routes back to the same agent run with a
+  `[<peerId> via <channel>]: ` attribution prefix prepended.
+
+Channel/peerId formats:
+
+| Channel | peerId | Notes |
+|---|---|---|
+| `slack` | `D<id>` \| `C<id>` \| `C<id>\|<thread_ts>` \| `U<id>` | `U<id>` auto-resolved to DM. `C<id>` mutates to `C<id>\|<ts>` after first outbound. |
+| `telegram` | numeric `chat_id` | Private bots need prior `/pair`. Outbound works regardless. |
+| `mattermost` | `<channelId>` \| `<channelId>\|<rootPostId>` \| 26-char user-id | User-id auto-resolved to DM. Channel mutates to channel\|rootPostId. |
+
+If `cfg.Router == nil` at boot, the step's bind fails immediately with
+`flow.ErrInteractiveBridgeDisabled` — interactive flows REQUIRE the chat
+bridge to be configured.
+
+The `question` tool renders platform-native UI when
+`cfg.Router.QuestionMode == "interactive"` (Slack actions blocks, Telegram
+inline keyboards). Mattermost always falls back to numbered text. Reviewer
+button clicks are normalized into the same inbound shape as text replies.
+
+Set `maxTurns` high enough to cover the expected conversation length plus
+tool calls — for a planning back-and-forth of ~15–30 exchanges, use
+`maxTurns: 100–150`.
+
+External orchestrators can watch `flow.waiting_for_input` on `/event` to
+display a "waiting on reviewer" indicator without polling
+`/flow/status` — the event carries `{runID, stepID, sessionID, target}`.
 
 ## Rules
 

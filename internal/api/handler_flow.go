@@ -128,6 +128,12 @@ type flowRunner struct {
 	// substitute a noop so synthetic flow IDs are accepted without
 	// touching the real flow registry (which depends on config.Get()).
 	validateFlowID func(string) error
+
+	// warnedSessions records session IDs whose lookup has already
+	// produced a warn so lookupSessionCost logs at most once per ID.
+	// Lazy-initialised in markWarned.
+	warnedMu       sync.Mutex
+	warnedSessions map[string]struct{}
 }
 
 // appReadOnly is the minimal app surface the flow runner uses. We don't
@@ -357,6 +363,12 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 	if st == nil {
 		return
 	}
+	// Pull Cost / ContextSize from session.Service BEFORE taking fr.mu so
+	// the bounded (250 ms) DB read doesn't block concurrent Snapshot() /
+	// Abort() callers (the orchestrator polls /flow/status). Lookup-failure
+	// path zero-values both fields (the JSON omits them via omitempty).
+	cost, contextSize := fr.lookupSessionCost(st.SessionID)
+
 	fr.mu.Lock()
 	defer fr.mu.Unlock()
 	now := time.Now().UnixMilli()
@@ -367,11 +379,6 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 		Output:    st.Output,
 		StartedAt: st.UpdatedAt * 1000,
 	}
-	// Pull Cost / ContextSize from session.Service at emit time so the
-	// FlowEvent payload reflects what the step actually consumed up to
-	// this transition. Lookup-failure path zero-values both fields (the
-	// JSON omits them via omitempty) and warn-logs once.
-	cost, contextSize := fr.lookupSessionCost(st.SessionID)
 	switch st.Status {
 	case flow.FlowStatusRunning:
 		state.currentStep = &rec
@@ -448,11 +455,12 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 
 // lookupSessionCost reads cumulative Cost and PromptTokens for the
 // session. Returns zero values on any failure (missing session, nil
-// service) — callers MUST tolerate that. A single warn is logged per
-// failure so a flaky DB doesn't flood the log.
+// service) — callers MUST tolerate that. The warn-log is deduplicated
+// per session ID so a flow whose session row is permanently missing
+// doesn't flood the log on every step transition.
 //
-// Caller MUST hold fr.mu (we touch nothing on fr but route through
-// fr.app which is set once at construction).
+// Safe to call without holding fr.mu — touches only fr.app (set once at
+// construction) and the per-runner warnedSessions set (own mutex).
 func (fr *flowRunner) lookupSessionCost(sessionID string) (cost float64, contextSize int64) {
 	if sessionID == "" {
 		return 0, 0
@@ -467,11 +475,29 @@ func (fr *flowRunner) lookupSessionCost(sessionID string) (cost float64, context
 	defer cancel()
 	sess, err := svc.Get(ctx, sessionID)
 	if err != nil {
-		logging.Warn("flow event: session lookup failed; cost/context fields will be zero",
-			"session", sessionID, "err", err)
+		if fr.markWarned(sessionID) {
+			logging.Warn("flow event: session lookup failed; cost/context fields will be zero",
+				"session", sessionID, "err", err)
+		}
 		return 0, 0
 	}
 	return sess.Cost, sess.PromptTokens
+}
+
+// markWarned returns true the first time a given sessionID's lookup
+// failure is recorded, false on subsequent failures. Used by
+// lookupSessionCost to log a warn once per session ID.
+func (fr *flowRunner) markWarned(sessionID string) bool {
+	fr.warnedMu.Lock()
+	defer fr.warnedMu.Unlock()
+	if fr.warnedSessions == nil {
+		fr.warnedSessions = make(map[string]struct{})
+	}
+	if _, seen := fr.warnedSessions[sessionID]; seen {
+		return false
+	}
+	fr.warnedSessions[sessionID] = struct{}{}
+	return true
 }
 
 // publishEvent emits a FlowEvent on the SSE broker. Caller must hold mu.

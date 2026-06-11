@@ -208,8 +208,16 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			flowExit, _ := cmd.Flags().GetBool("flow-exit")
 			flowExitGrace, _ := cmd.Flags().GetDuration("flow-exit-grace")
 			flowFresh, _ := cmd.Flags().GetBool("flow-fresh")
-			if flowExitGrace > 60*time.Second {
-				return fmt.Errorf("--flow-exit-grace must be ≤ 60s (got %s)", flowExitGrace)
+			// --flow-exit-grace is only honored when --flow-exit is set, so
+			// only validate it in that case. This avoids rejecting harmless
+			// stale config from deployments that never opt into auto-exit.
+			if flowExit {
+				if flowExitGrace < 0 {
+					return fmt.Errorf("--flow-exit-grace must be ≥ 0 (got %s)", flowExitGrace)
+				}
+				if flowExitGrace > 60*time.Second {
+					return fmt.Errorf("--flow-exit-grace must be ≤ 60s (got %s)", flowExitGrace)
+				}
 			}
 			if err := scheduleAutoFlow(ctx, cancel, server, flowID, flowArgsPath, flowExit, flowExitGrace, flowFresh); err != nil {
 				return err

@@ -240,22 +240,50 @@ func TestFlowEventNoSessionService(t *testing.T) {
 	}
 }
 
+// waitForFlowTerminal polls the runner's snapshot until the run
+// reaches a terminal status (completed or failed). Returns the time
+// the terminal status was observed. Fails the test on timeout. Used by
+// WaitFlowTerminal tests to decouple "the flow finished" from
+// "WaitFlowTerminal noticed it" — the latter is the thing under test.
+func waitForFlowTerminal(t *testing.T, fr *flowRunner, timeout time.Duration) time.Time {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		snap := fr.Snapshot()
+		if snap != nil && (snap.Status == flowRunCompleted || snap.Status == flowRunFailed) {
+			return time.Now()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("flow did not reach terminal status within %s", timeout)
+	return time.Time{} // unreachable
+}
+
 // TestWaitFlowTerminalGraceHoldsThenExits verifies that
 // WaitFlowTerminal sleeps approximately `grace` after observing a
 // terminal status, then invokes onTerminal exactly once.
+//
+// To make timing deterministic, we wait for the runner to reach
+// terminal BEFORE starting WaitFlowTerminal, so the ticker observes
+// terminal on its first tick. That isolates the elapsed time to
+// (ticker discovery ≤ 250 ms) + grace, instead of (flow runtime +
+// ticker discovery + grace).
 func TestWaitFlowTerminalGraceHoldsThenExits(t *testing.T) {
 	t.Parallel()
 	svc := newStubFlowService([]flow.FlowState{
 		{StepID: "s1", SessionID: "sess-1", Status: flow.FlowStatusCompleted, Output: "done"},
 	})
-	server, fr := newFlowTestServerWithSessions(t, svc, &stubSessions{byID: map[string]session.Session{"sess-1": {ID: "sess-1"}}})
-	_ = server
+	_, fr := newFlowTestServerWithSessions(t, svc, &stubSessions{byID: map[string]session.Session{"sess-1": {ID: "sess-1"}}})
 
 	apiServer := &Server{flowRunner: fr}
 	runID, err := apiServer.StartFlow("x", nil, false)
 	if err != nil {
 		t.Fatalf("StartFlow: %v", err)
 	}
+
+	// Block until the runner is terminal — removes the "did the flow
+	// finish yet?" race from the elapsed-time check.
+	waitForFlowTerminal(t, fr, 2*time.Second)
 
 	terminalAt := time.Time{}
 	called := make(chan struct{}, 1)
@@ -285,19 +313,27 @@ func TestWaitFlowTerminalGraceHoldsThenExits(t *testing.T) {
 // TestWaitFlowTerminalCtxCancelShortCircuitsGrace verifies that a
 // parent ctx cancellation during the grace window short-circuits the
 // wait so SIGTERM is honored.
+//
+// Determinism: we wait for the runner to reach terminal first, THEN
+// start WaitFlowTerminal, THEN wait one ticker period (250 ms) plus a
+// buffer so WaitFlowTerminal is guaranteed to have observed terminal
+// and entered the grace `select`. Only then do we cancel. This removes
+// the race where cancel() could land in the outer loop's ctx.Done case
+// (which returns WITHOUT calling onTerminal) instead of the inner
+// grace-select's ctx.Done case (which DOES call onTerminal).
 func TestWaitFlowTerminalCtxCancelShortCircuitsGrace(t *testing.T) {
 	t.Parallel()
 	svc := newStubFlowService([]flow.FlowState{
 		{StepID: "s1", SessionID: "sess-1", Status: flow.FlowStatusCompleted, Output: "done"},
 	})
-	server, fr := newFlowTestServerWithSessions(t, svc, &stubSessions{byID: map[string]session.Session{"sess-1": {ID: "sess-1"}}})
-	_ = server
+	_, fr := newFlowTestServerWithSessions(t, svc, &stubSessions{byID: map[string]session.Session{"sess-1": {ID: "sess-1"}}})
 
 	apiServer := &Server{flowRunner: fr}
 	runID, err := apiServer.StartFlow("x", nil, false)
 	if err != nil {
 		t.Fatalf("StartFlow: %v", err)
 	}
+	waitForFlowTerminal(t, fr, 2*time.Second)
 
 	called := make(chan struct{}, 1)
 	onTerminal := func() { called <- struct{}{} }
@@ -307,8 +343,8 @@ func TestWaitFlowTerminalCtxCancelShortCircuitsGrace(t *testing.T) {
 
 	grace := 5 * time.Second
 	go apiServer.WaitFlowTerminal(ctx, runID, grace, onTerminal)
-	// Wait for the terminal status to be observed and the grace window
-	// to start, then cancel.
+	// Sleep > one ticker period (250 ms) so WaitFlowTerminal definitely
+	// observed terminal and is now blocked in the grace `select`.
 	time.Sleep(400 * time.Millisecond)
 	cancel()
 

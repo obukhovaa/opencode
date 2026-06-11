@@ -128,6 +128,116 @@ rules:
     then: write-docs
 ```
 
+### Interactive Step (Human-in-the-Loop via Chat Bridge)
+
+When a step needs the user (a reviewer, operator, or stakeholder) to provide
+information mid-flow, mark it `interactive: true` and supply an `interaction`
+block. The flow engine auto-binds the step's session to the resolved peer(s)
+via the in-process chat bridge BEFORE `agent.Run` starts, and auto-unbinds
+on `struct_output`. The agent's first turn fans out to the bound peer(s);
+reviewer replies route back to the agent through the bridge's inbound
+dispatcher. The conversation lives entirely inside one `agent.Run`
+invocation — no postpone/resume needed for the in-conversation back-and-forth.
+
+```yaml
+- id: ask-reviewer
+  agent: coder
+  interactive: true
+  interaction:
+    target: ${args.reviewer}           # single PeerRef OR array — see "Target shapes" below
+    mention: ${args.reviewer.mention}  # optional: ping handle for first message only
+  prompt: |
+    Ask the reviewer for clarification on ${args.topic}. Use the `question`
+    tool to present numbered options — on Slack/Telegram the bridge renders
+    them as interactive buttons; on Mattermost it falls back to numbered text.
+    Capture the reviewer's choice via struct_output.
+  output:
+    schema:
+      type: object
+      properties:
+        decision: { type: string }
+      required: [decision]
+  maxTurns: 50   # long conversations need headroom
+  rules:
+    - then: next-step
+```
+
+**Target shapes.** `interaction.target` accepts:
+
+- **Single PeerRef** (object) — the step binds to exactly one chat peer.
+  ```yaml
+  interaction:
+    target: ${args.reviewer}    # PeerRef object {channel, identity, peerId, mention?}
+  ```
+- **Array of PeerRefs** — the step binds to multiple reviewers; agent output
+  fans out to every reviewer, inbound from any reviewer routes back to the
+  same agent run with `[<who> via <channel>]: ` attribution prefix.
+  ```yaml
+  interaction:
+    target: ${args.reviewers}   # array of PeerRef objects
+  ```
+
+The target value MUST come from a `${args.NAME}` expression — the resolver
+does not support literal PeerRefs in YAML or nested-path expressions. The
+caller (orchestrator, `/flow` POST body, or `--flow-args` JSON) supplies the
+PeerRef in the args object. This forces dynamic peer selection to live in
+the orchestrator layer where access control is enforced, not in YAML.
+
+**PeerRef shape** (each entry, whether single or array):
+
+```json
+{
+  "channel":  "slack" | "telegram" | "mattermost",
+  "identity": "<configured identity id, e.g. 'default'>",
+  "peerId":   "<platform-specific peer id, see below>",
+  "mention":  "<optional first-message ping handle>"
+}
+```
+
+**Supported channels and peerId formats:**
+
+| Channel | peerId form | Notes |
+|---|---|---|
+| `slack` | `D<id>` (DM), `C<id>` (channel), `C<id>\|<thread_ts>` (thread), `U<id>` (user) | `U<id>` is auto-resolved to a DM channel via `conversations.open` before persistence. Channel-only `C<id>` is auto-mutated to `C<id>\|<ts>` on first outbound — subsequent replies thread correctly. |
+| `telegram` | numeric `chat_id` (e.g. `344281281`) | Private bots require the chat to have paired with `/pair <code>` first (allowlist gate is inbound-only — outbound delivery works regardless). |
+| `mattermost` | `<channelId>` (DM/channel), `<channelId>\|<rootPostId>` (thread), 26-char user-id | User-id is auto-resolved to a DM via `channels/direct`. Channel peers mutate to channel\|rootPostId on first outbound. |
+
+**`interaction.mention`** (optional) is a platform-native ping handle (e.g.
+`@username` on Slack, `@FirstName` on Telegram) prepended to the FIRST
+outbound message for the binding only — then cleared. Useful for paging the
+reviewer on a busy channel.
+
+**Bridge-disabled fail-fast.** If `cfg.Router == nil` at server boot
+(no `router` section in `.opencode.json`), the no-op `InteractiveHook`
+returns `flow.ErrInteractiveBridgeDisabled` on `OnInteractiveStepStart`,
+so the interactive step transitions to `failed` immediately with a clear
+error rather than silently hanging. Don't author interactive flows for
+deployments where the bridge isn't configured.
+
+**Tuning maxTurns for interactive steps.** Each user reply consumes one
+tool-use turn (the inbound→agent.Run cycle counts as one). For a planning
+conversation spanning 15–30 reviewer exchanges plus tool calls per turn,
+`maxTurns: 100–150` is the right ballpark. The agent's default is much
+lower and will cut off the conversation mid-way.
+
+**Question UI rendering.** When `cfg.Router.QuestionMode == "interactive"`
+(set in `.opencode.json`), the agent's `question` tool renders choices
+using platform-native UI:
+- Slack: actions block with one button per option.
+- Telegram: inline keyboard with one row per option.
+- Mattermost: numbered-text fallback (interactive attachments need a
+  webhook URL the bridge doesn't host).
+
+Reviewer button clicks are normalized into the same `bridge.Inbound`
+shape as text replies, so the agent's question-reply parsing works
+identically across all three channels.
+
+**SSE for orchestrators.** When an interactive step enters its
+conversation phase, the flow runner emits `flow.waiting_for_input` on
+the `/event` SSE stream with `{runID, stepID, sessionID, target}`. External
+orchestrators (c2-agent, k8s Jobs) MAY use this to display a "waiting on
+reviewer" indicator without polling `/flow/status`.
+
 ### Self-loop with Postpone (Blocker Pattern)
 A step routes back to itself with `postpone: true` when blockers exist. The flow pauses until the next invocation:
 ```yaml

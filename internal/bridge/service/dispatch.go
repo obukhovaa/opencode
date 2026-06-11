@@ -552,25 +552,25 @@ func formatToolParams(name, input string) string {
 	// present and non-empty wins. The "params" tail appends any
 	// secondary keys for context (e.g. read offset/limit).
 	type keySpec struct {
-		primary  string
+		primary   string
 		secondary []string
 	}
 	keys := map[string]keySpec{
-		"bash":         {primary: "command"},
-		"read":         {primary: "file_path", secondary: []string{"limit", "offset"}},
-		"write":        {primary: "file_path"},
-		"edit":         {primary: "file_path"},
-		"multiedit":    {primary: "file_path", secondary: []string{"edits"}},
-		"delete":       {primary: "path"},
-		"ls":           {primary: "path"},
-		"grep":         {primary: "pattern", secondary: []string{"path", "include"}},
-		"glob":         {primary: "pattern", secondary: []string{"path"}},
-		"view_image":   {primary: "file_path"},
-		"webfetch":     {primary: "url"},
-		"websearch":    {primary: "query", secondary: []string{"max_results"}},
-		"sourcegraph":  {primary: "query"},
-		"task":         {primary: "prompt", secondary: []string{"subagent_type"}},
-		"router_send":  {primary: "peerId", secondary: []string{"channel", "identity"}},
+		"bash":        {primary: "command"},
+		"read":        {primary: "file_path", secondary: []string{"limit", "offset"}},
+		"write":       {primary: "file_path"},
+		"edit":        {primary: "file_path"},
+		"multiedit":   {primary: "file_path", secondary: []string{"edits"}},
+		"delete":      {primary: "path"},
+		"ls":          {primary: "path"},
+		"grep":        {primary: "pattern", secondary: []string{"path", "include"}},
+		"glob":        {primary: "pattern", secondary: []string{"path"}},
+		"view_image":  {primary: "file_path"},
+		"webfetch":    {primary: "url"},
+		"websearch":   {primary: "query", secondary: []string{"max_results"}},
+		"sourcegraph": {primary: "query"},
+		"task":        {primary: "prompt", secondary: []string{"subagent_type"}},
+		"router_send": {primary: "peerId", secondary: []string{"channel", "identity"}},
 	}
 	spec, known := keys[name]
 	var parts []string
