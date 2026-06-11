@@ -23,7 +23,13 @@ import (
 // Agents are cached by stepID for flow step reuse. Primary agents (created
 // without a stepID) are tracked for reuse when no schema override is needed.
 type AgentFactory interface {
-	NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string) (Service, error)
+	// NewAgent constructs an agent. `interactive` should be true when
+	// the requested agent is for an `interactive: true` flow step —
+	// it propagates to AgentInfo.Interactive and adjusts the system
+	// prompt so the agent prefers multi-turn dialogue via the chat
+	// bridge over an immediate struct_output emission. Callers that
+	// don't know (subagent task tool, primary agent init) pass false.
+	NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool) (Service, error)
 	InitPrimaryAgents(ctx context.Context, outputSchema map[string]any) ([]Service, error)
 	SetCronServices(cronToolSvc tools.CronToolService, schedHelper tools.CronScheduleHelper)
 	CronServices() (tools.CronToolService, tools.CronScheduleHelper)
@@ -149,7 +155,7 @@ func (f *agentFactory) QuestionService() question.Service {
 	return f.questionService
 }
 
-func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string) (Service, error) {
+func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool) (Service, error) {
 	if stepID != "" {
 		f.mu.Lock()
 		if svc, ok := f.stepCache[stepID]; ok {
@@ -171,6 +177,9 @@ func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchem
 	if outputSchema != nil {
 		infoCopy.Output = &agentregistry.Output{Schema: outputSchema}
 	}
+	// Interactive lives on the in-memory AgentInfo copy only. It
+	// flows downstream into GetAgentPrompt for prompt-shape selection.
+	infoCopy.Interactive = interactive
 
 	svc, err := newAgent(ctx, &infoCopy, f.sessions, f.messages, f.permissions, f.history, f.lspService, f.registry, f.mcpRegistry, f)
 	if err != nil {
@@ -196,7 +205,7 @@ func (f *agentFactory) InitPrimaryAgents(ctx context.Context, outputSchema map[s
 	}
 	res := make([]Service, 0, len(primaryAgents))
 	for _, agentInfo := range primaryAgents {
-		primaryAgent, err := f.NewAgent(ctx, string(agentInfo.ID), outputSchema, "")
+		primaryAgent, err := f.NewAgent(ctx, string(agentInfo.ID), outputSchema, "", false)
 		if err != nil {
 			logging.Error("Failed to create agent", "agent", agentInfo.ID, "error", err)
 			continue

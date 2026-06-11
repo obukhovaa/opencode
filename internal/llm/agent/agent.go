@@ -129,7 +129,7 @@ func newAgent(
 ) (Service, error) {
 	agentTools := NewToolSet(ctx, agentInfo, reg, permissions, historyService, lspService, sessions, messages, mcpReg, factory)
 
-	agentProvider, err := createAgentProvider(agentInfo.ID)
+	agentProvider, err := createAgentProvider(agentInfo.ID, withInteractive(agentInfo.Interactive))
 	if err != nil {
 		return nil, err
 	}
@@ -1608,6 +1608,11 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 
 type providerOptions struct {
 	disableCache bool
+	// interactive is propagated to prompt.GetAgentPromptWithOptions
+	// so the interactive-step variant of the structured-output prompt
+	// is selected when this agent is running an `interactive: true`
+	// flow step.
+	interactive bool
 }
 
 type providerOption func(*providerOptions)
@@ -1615,6 +1620,12 @@ type providerOption func(*providerOptions)
 func withDisableCache() providerOption {
 	return func(o *providerOptions) {
 		o.disableCache = true
+	}
+}
+
+func withInteractive(b bool) providerOption {
+	return func(o *providerOptions) {
+		o.interactive = b
 	}
 }
 
@@ -1674,7 +1685,9 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 	opts := []provider.ProviderClientOption{
 		provider.WithAPIKey(providerCfg.APIKey),
 		provider.WithModel(model),
-		provider.WithSystemMessage(prompt.GetAgentPrompt(agentName, model.Provider)),
+		provider.WithSystemMessage(prompt.GetAgentPromptWithOptions(agentName, model.Provider, prompt.AgentPromptOptions{
+			Interactive: popts.interactive,
+		})),
 		provider.WithMaxTokens(maxTokens),
 	}
 	if providerCfg.BaseURL != "" {
