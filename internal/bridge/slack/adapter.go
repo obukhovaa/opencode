@@ -223,13 +223,13 @@ func (a *Adapter) Stop() error {
 // block (one button per choice). The button's `value` field carries the
 // callback payload; when the reviewer clicks, Socket Mode delivers a
 // `block_actions` envelope that handleInteractiveCallback parses.
-func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerRef, prompt string, choices []bridge.QuestionChoice) error {
+func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerRef, prompt string, choices []bridge.QuestionChoice) (string, error) {
 	parsed := ParsePeerID(peer.PeerID)
 	if parsed.ChannelID == "" {
-		return ErrInvalidPeerID
+		return "", ErrInvalidPeerID
 	}
 	if len(choices) == 0 {
-		return errors.New("slack: SendInteractiveQuestion requires at least one choice")
+		return "", errors.New("slack: SendInteractiveQuestion requires at least one choice")
 	}
 
 	textBlock := slackgo.NewTextBlockObject(slackgo.MarkdownType, prompt, false, false)
@@ -248,10 +248,17 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 	if parsed.ThreadTS != "" {
 		opts = append(opts, slackgo.MsgOptionTS(parsed.ThreadTS))
 	}
-	if _, _, err := a.api.PostMessageContext(ctx, parsed.ChannelID, opts...); err != nil {
-		return fmt.Errorf("slack: SendInteractiveQuestion: %w", err)
+	_, ts, err := a.api.PostMessageContext(ctx, parsed.ChannelID, opts...)
+	if err != nil {
+		return "", fmt.Errorf("slack: SendInteractiveQuestion: %w", err)
 	}
-	return nil
+	// When the bind started with a channel-only peer-id (e.g. "C123"),
+	// posting this question opens a new thread whose ts is the peer-id
+	// component the reviewer's reply will arrive with. Echo the
+	// composite "<channel>|<ts>" back so the bridge can mutate the
+	// binding row — exactly like Adapter.Send does for prose.
+	resolved := FormatPeerID(Peer{ChannelID: parsed.ChannelID, ThreadTS: ts})
+	return resolved, nil
 }
 
 // ResolveUserToDM implements bridge.Adapter. Slack user-id form (U-prefix)

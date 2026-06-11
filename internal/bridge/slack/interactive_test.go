@@ -40,7 +40,7 @@ func TestSlackSendInteractiveQuestionPostsBlocks(t *testing.T) {
 	a.SetBotUserID("UBOT")
 	t.Cleanup(func() { _ = a.Stop() })
 
-	err = a.SendInteractiveQuestion(context.Background(),
+	resolved, err := a.SendInteractiveQuestion(context.Background(),
 		bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "D012345"},
 		"Ship it?",
 		[]bridge.QuestionChoice{
@@ -50,6 +50,9 @@ func TestSlackSendInteractiveQuestionPostsBlocks(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("SendInteractiveQuestion: %v", err)
+	}
+	if resolved == "" {
+		t.Errorf("expected resolved peer-id, got empty")
 	}
 
 	// The mock now has 1 post call with `blocks` content. Pull blocks.
@@ -102,7 +105,7 @@ func TestSlackSendInteractiveQuestionInvalidPeerID(t *testing.T) {
 	a.SetBotUserID("UBOT")
 	t.Cleanup(func() { _ = a.Stop() })
 
-	err = a.SendInteractiveQuestion(context.Background(),
+	_, err = a.SendInteractiveQuestion(context.Background(),
 		bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: ""},
 		"x",
 		[]bridge.QuestionChoice{{Label: "ok", Value: "ok"}},
@@ -123,7 +126,7 @@ func TestSlackSendInteractiveQuestionRequiresChoices(t *testing.T) {
 	a.SetBotUserID("UBOT")
 	t.Cleanup(func() { _ = a.Stop() })
 
-	err = a.SendInteractiveQuestion(context.Background(),
+	_, err = a.SendInteractiveQuestion(context.Background(),
 		bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "D1"},
 		"x", nil,
 	)

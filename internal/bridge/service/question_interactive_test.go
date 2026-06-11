@@ -32,14 +32,14 @@ func newInteractiveStubAdapter(channel, identity string) *interactiveStubAdapter
 	return &interactiveStubAdapter{stubAdapter: newStubAdapter(channel, identity)}
 }
 
-func (s *interactiveStubAdapter) SendInteractiveQuestion(_ context.Context, peer bridge.PeerRef, prompt string, choices []bridge.QuestionChoice) error {
+func (s *interactiveStubAdapter) SendInteractiveQuestion(_ context.Context, peer bridge.PeerRef, prompt string, choices []bridge.QuestionChoice) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.interactiveErr != nil {
-		return s.interactiveErr
+		return "", s.interactiveErr
 	}
 	s.interactive = append(s.interactive, interactiveCall{Peer: peer, Prompt: prompt, Choices: choices})
-	return nil
+	return "", nil
 }
 
 func (s *interactiveStubAdapter) Interactive() []interactiveCall {

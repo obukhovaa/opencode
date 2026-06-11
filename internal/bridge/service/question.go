@@ -106,7 +106,23 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 	for _, b := range bindings {
 		peer := b.AsPeerRef()
 		if interactiveOK {
-			if err := r.tryInteractiveSend(ctx, peer, req.Questions[0]); err == nil {
+			resolved, err := r.tryInteractiveSend(ctx, peer, req.Questions[0])
+			if err == nil {
+				// Mirror service.Send's binding mutation: when posting
+				// the question opens a new thread (Slack's "<channel>|
+				// <thread_ts>" form), rewrite the binding row's peer_id
+				// so the reviewer's reply — which arrives keyed by the
+				// composite — matches THIS session instead of falling
+				// through resolveBinding's ErrNotFound branch.
+				if resolved != "" && resolved != b.PeerID {
+					if uerr := r.svc.store.UpdateBindingPeerID(
+						ctx, r.svc.projectID, b.Channel, b.IdentityID,
+						b.PeerID, resolved,
+					); uerr != nil {
+						logging.Warn("bridge: question binding peer_id mutation failed",
+							"session", b.SessionID, "old", b.PeerID, "new", resolved, "err", uerr)
+					}
+				}
 				continue
 			} else {
 				logging.Info("bridge: question interactive UI failed, falling back to text",
@@ -138,17 +154,19 @@ func (r *QuestionRouter) shouldUseInteractive(prompts []question.Prompt) bool {
 }
 
 // tryInteractiveSend asks the adapter to render the prompt with
-// platform-native UI. Returns an error if the adapter doesn't satisfy
-// the InteractiveQuestionSender contract or if the platform call fails
-// — the caller treats that as a fallback signal.
-func (r *QuestionRouter) tryInteractiveSend(ctx context.Context, peer bridge.PeerRef, prompt question.Prompt) error {
+// platform-native UI. Returns the resolved peer-id (e.g. Slack's
+// "<channel>|<thread_ts>" when the post opens a new thread) so the
+// caller can mutate the binding row, plus an error if the adapter
+// doesn't satisfy InteractiveQuestionSender or if the platform call
+// fails — the caller treats that as a fallback signal.
+func (r *QuestionRouter) tryInteractiveSend(ctx context.Context, peer bridge.PeerRef, prompt question.Prompt) (string, error) {
 	adapter := r.svc.Adapter(peer.Channel, peer.Identity)
 	if adapter == nil {
-		return errors.New("no adapter")
+		return "", errors.New("no adapter")
 	}
 	sender, ok := adapter.(bridge.InteractiveQuestionSender)
 	if !ok {
-		return errors.New("adapter does not support interactive UI")
+		return "", errors.New("adapter does not support interactive UI")
 	}
 	choices := make([]bridge.QuestionChoice, 0, len(prompt.Options))
 	for _, opt := range prompt.Options {

@@ -63,7 +63,7 @@ func TestTelegramSendInteractiveQuestionEmitsInlineKeyboard(t *testing.T) {
 	a.SetMe(&models.User{ID: 999, Username: "routerbot", IsBot: true})
 	t.Cleanup(func() { _ = a.Stop() })
 
-	err = a.SendInteractiveQuestion(context.Background(),
+	_, err = a.SendInteractiveQuestion(context.Background(),
 		bridge.PeerRef{Channel: "telegram", Identity: "default", PeerID: "12345"},
 		"Ship it?",
 		[]bridge.QuestionChoice{
@@ -109,7 +109,7 @@ func TestTelegramSendInteractiveQuestionInvalidPeerID(t *testing.T) {
 	a.SetMe(&models.User{ID: 999, Username: "routerbot", IsBot: true})
 	t.Cleanup(func() { _ = a.Stop() })
 
-	err = a.SendInteractiveQuestion(context.Background(),
+	_, err = a.SendInteractiveQuestion(context.Background(),
 		bridge.PeerRef{Channel: "telegram", Identity: "default", PeerID: "@username"},
 		"x", []bridge.QuestionChoice{{Label: "ok", Value: "ok"}},
 	)
