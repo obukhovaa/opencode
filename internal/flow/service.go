@@ -468,6 +468,9 @@ func (s *service) runStep(
 		}
 		flowStates <- waitingState
 		s.Publish(pubsub.UpdatedEvent, *waitingState)
+		// DEBUG
+		logging.Info("flow: emitted waiting_for_input FlowState",
+			"step", step.ID, "session", sess.ID, "target_count", len(peers))
 	}
 
 	var result agentpkg.AgentEvent
