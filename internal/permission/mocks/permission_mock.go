@@ -116,6 +116,44 @@ func (mr *MockServiceMockRecorder) RemoveAutoApproveSession(sessionID any) *gomo
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveAutoApproveSession", reflect.TypeOf((*MockService)(nil).RemoveAutoApproveSession), sessionID)
 }
 
+// MarkInteractiveSession mocks base method.
+func (m *MockService) MarkInteractiveSession(sessionID string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "MarkInteractiveSession", sessionID)
+}
+
+// MarkInteractiveSession indicates an expected call of MarkInteractiveSession.
+func (mr *MockServiceMockRecorder) MarkInteractiveSession(sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkInteractiveSession", reflect.TypeOf((*MockService)(nil).MarkInteractiveSession), sessionID)
+}
+
+// RemoveInteractiveSession mocks base method.
+func (m *MockService) RemoveInteractiveSession(sessionID string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "RemoveInteractiveSession", sessionID)
+}
+
+// RemoveInteractiveSession indicates an expected call of RemoveInteractiveSession.
+func (mr *MockServiceMockRecorder) RemoveInteractiveSession(sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveInteractiveSession", reflect.TypeOf((*MockService)(nil).RemoveInteractiveSession), sessionID)
+}
+
+// IsInteractiveSession mocks base method.
+func (m *MockService) IsInteractiveSession(sessionID string) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IsInteractiveSession", sessionID)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// IsInteractiveSession indicates an expected call of IsInteractiveSession.
+func (mr *MockServiceMockRecorder) IsInteractiveSession(sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsInteractiveSession", reflect.TypeOf((*MockService)(nil).IsInteractiveSession), sessionID)
+}
+
 // Request mocks base method.
 func (m *MockService) Request(ctx context.Context, opts permission.CreatePermissionRequest) bool {
 	m.ctrl.T.Helper()

@@ -107,7 +107,18 @@ func (q *questionTool) Run(ctx context.Context, call ToolCall) (ToolResponse, er
 	// When auto-approve is active, auto-select the first option for each
 	// question instead of blocking on user input. The tool description
 	// instructs the LLM to put the recommended option first.
-	if q.permissions != nil && q.permissions.IsAutoApproveSession(sessionID) {
+	//
+	// EXCEPTION: when the session is also marked as interactive (i.e.
+	// it's a `interactive: true` flow step bound to a human reviewer
+	// via the chat bridge), DO NOT auto-approve. The whole point of
+	// the interactive step is that the human picks the answer — the
+	// auto-approve would silently steal that turn and the bridge
+	// roundtrip would never happen. Defer to q.service.Ask which
+	// publishes the request to the broker so the bridge can route it
+	// to Slack/Telegram/Mattermost and wait for the human reply.
+	if q.permissions != nil &&
+		q.permissions.IsAutoApproveSession(sessionID) &&
+		!q.permissions.IsInteractiveSession(sessionID) {
 		answers := make([][]string, len(params.Questions))
 		for i, prompt := range params.Questions {
 			if len(prompt.Options) > 0 {

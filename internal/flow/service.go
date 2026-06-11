@@ -444,10 +444,17 @@ func (s *service) runStep(
 				wg, agentEvents, flowStates, nextSteps, f)
 			return
 		}
+		// Mark the session as interactively bound so the question tool
+		// won't auto-approve away the human's chance to answer (see
+		// permission.Service.MarkInteractiveSession + question tool's
+		// auto-approve short-circuit guard). Cleared in the deferred
+		// unbind below.
+		s.permissions.MarkInteractiveSession(sess.ID)
 		// Defer unbind so any return path (success, error, panic) unwinds
 		// the binding. Use a fresh ctx so a cancelled parent doesn't
 		// short-circuit the Unbind call.
 		defer func() {
+			s.permissions.RemoveInteractiveSession(sess.ID)
 			unbindCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := s.interactiveHookOrNop().OnInteractiveStepComplete(unbindCtx, sess.ID); err != nil {
