@@ -249,12 +249,18 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 	// AgentInfo from reg.Get() returns the original Registry copy,
 	// NOT the per-call infoCopy with Interactive set).
 	if info, ok := reg.Get(agentName); ok {
-		if info.Output != nil && info.Output.Schema != nil && reg.IsToolEnabled(agentName, tools.StructOutputToolName) {
-			if opts.Interactive || info.Interactive {
-				basePrompt += interactiveStructuredOutputPrompt
-			} else {
-				basePrompt += structuredOutputPrompt
-			}
+		// Interactive flow steps always get the multi-turn prompt: the
+		// flow service injects both struct_output + the output schema
+		// dynamically, so the static info.Output check would miss them.
+		// Without this branch the agent never sees the "you MUST call
+		// router_send / question to reach the reviewer" instructions
+		// and silently role-plays both sides of the conversation
+		// before emitting struct_output — defeating the whole point of
+		// interactive: true.
+		if opts.Interactive || info.Interactive {
+			basePrompt += interactiveStructuredOutputPrompt
+		} else if info.Output != nil && info.Output.Schema != nil && reg.IsToolEnabled(agentName, tools.StructOutputToolName) {
+			basePrompt += structuredOutputPrompt
 		}
 	}
 
