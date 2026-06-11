@@ -262,13 +262,13 @@ func (a *Adapter) ResolveUserToDM(_ context.Context, peerID string) (string, err
 // callback payload; when the reviewer clicks, Telegram delivers a
 // `callback_query` Update which dispatchUpdate routes to
 // handleCallbackQuery.
-func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerRef, prompt string, choices []bridge.QuestionChoice) error {
+func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerRef, prompt string, choices []bridge.QuestionChoice) (string, error) {
 	chatID, err := ParsePeerID(peer.PeerID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if len(choices) == 0 {
-		return errors.New("telegram: SendInteractiveQuestion requires at least one choice")
+		return "", errors.New("telegram: SendInteractiveQuestion requires at least one choice")
 	}
 
 	rows := make([][]models.InlineKeyboardButton, 0, len(choices))
@@ -294,9 +294,11 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 		ReplyMarkup: markup,
 	})
 	if err != nil {
-		return fmt.Errorf("telegram: SendInteractiveQuestion: %w", err)
+		return "", fmt.Errorf("telegram: SendInteractiveQuestion: %w", err)
 	}
-	return nil
+	// Telegram chat IDs are stable across messages — no thread-style
+	// mutation needed, so return "" to signal "no binding update".
+	return "", nil
 }
 
 // handleCallbackQuery converts an inline-keyboard click into a

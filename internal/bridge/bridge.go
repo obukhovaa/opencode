@@ -148,8 +148,17 @@ type QuestionChoice struct {
 // numbered-text rendering. Adapters that DO satisfy it but fail at
 // send time (missing scope, deprecated feature) MUST return an error
 // — the bridge's question router catches it and retries with text.
+//
+// Returns the resolved peer-id of the posted message (e.g. Slack's
+// "<channel>|<thread_ts>" when the message opens a new thread). The
+// bridge service mutates the binding row's peer_id to this value so
+// the reviewer's reply — which arrives keyed by the thread's
+// composite peer-id — finds the original session instead of falling
+// through resolveBinding's ErrNotFound branch and spawning a fresh
+// coder session. Empty resolvedPeer means "no mutation needed"
+// (e.g. Telegram chat-id stays stable).
 type InteractiveQuestionSender interface {
-	SendInteractiveQuestion(ctx context.Context, peer PeerRef, prompt string, choices []QuestionChoice) error
+	SendInteractiveQuestion(ctx context.Context, peer PeerRef, prompt string, choices []QuestionChoice) (resolvedPeer string, err error)
 }
 
 // Adapter is the contract every per-platform implementation satisfies.
