@@ -118,6 +118,35 @@ type Adapter struct {
 	// fileBaseURL is the base URL for inbound file downloads. Empty
 	// means use the Telegram default (https://api.telegram.org).
 	fileBaseURL atomic.Value // string
+
+	// toolCardsOnce lazy-initialises the tool-call → message reference
+	// cache used by RichRenderer.Render to coalesce a tool's call+result
+	// into a single edit_message_text'd message. See bridge-tool-render-native.
+	toolCardsOnce  sync.Once
+	toolCardsCache *toolCardCache
+
+	// multiSelectOnce lazy-initialises the multi-select state map
+	// used by SendInteractiveMultiSelect (toggle/apply lifecycle).
+	multiSelectOnce  sync.Once
+	multiSelectStateMap *multiSelectState
+}
+
+// toolCards returns the adapter's tool-card cache, lazy-initialised
+// on first use.
+func (a *Adapter) toolCards() *toolCardCache {
+	a.toolCardsOnce.Do(func() {
+		a.toolCardsCache = newToolCardCache()
+	})
+	return a.toolCardsCache
+}
+
+// multiSelectStates returns the adapter's in-flight multi-select
+// state map, lazy-initialised on first use.
+func (a *Adapter) multiSelectStates() *multiSelectState {
+	a.multiSelectOnce.Do(func() {
+		a.multiSelectStateMap = newMultiSelectState()
+	})
+	return a.multiSelectStateMap
 }
 
 // New constructs a Telegram adapter. The bot is initialized but not
@@ -301,9 +330,91 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 	return "", nil
 }
 
+// SendInteractiveMultiSelect implements bridge.InteractiveMultiSelectSender
+// for Telegram. Renders a stateful inline keyboard where each option is a
+// toggle button (clicking flips a tick prefix), plus a final Submit row.
+// The selection state lives in adapter.multiSelectStates() keyed by
+// message_id; on Submit the adapter emits a comma-separated inbound and
+// clears state. State entries TTL-evict after 30 minutes (D5).
+//
+// callback_data shapes:
+//   - "ms:t:<i>" — toggle option at index i
+//   - "ms:submit" — submit current selection
+//
+// Telegram callback_data has a 64-byte limit; "ms:t:99" is 7 bytes so
+// up to 100 options fit comfortably; we cap at MultiSelectMaxOptions
+// to match Slack's render limit.
+const MultiSelectMaxOptions = 100
+
+func (a *Adapter) SendInteractiveMultiSelect(ctx context.Context, peer bridge.PeerRef, prompt string, choices []bridge.QuestionChoice) (string, error) {
+	chatID, err := ParsePeerID(peer.PeerID)
+	if err != nil {
+		return "", err
+	}
+	if len(choices) == 0 {
+		return "", errors.New("telegram: SendInteractiveMultiSelect requires at least one choice")
+	}
+	if len(choices) > MultiSelectMaxOptions {
+		return "", errors.New("telegram: too many options for multi-select inline keyboard")
+	}
+
+	rows := buildMultiSelectKeyboard(choices, nil)
+	markup := &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+	msg, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{
+		ChatID:      chatID,
+		Text:        prompt,
+		ReplyMarkup: markup,
+	})
+	if err != nil {
+		return "", fmt.Errorf("telegram: SendInteractiveMultiSelect: %w", err)
+	}
+	if msg != nil {
+		entry := &multiSelectEntry{
+			ChatID:   msg.Chat.ID,
+			Selected: map[string]bool{},
+			Labels:   map[string]string{},
+			Order:    make([]string, 0, len(choices)),
+		}
+		for _, c := range choices {
+			entry.Order = append(entry.Order, c.Value)
+			entry.Labels[c.Value] = c.Label
+		}
+		a.multiSelectStates().put(msg.ID, entry)
+	}
+	return "", nil
+}
+
+// buildMultiSelectKeyboard constructs the inline-keyboard rows for a
+// multi-select prompt. Each choice gets its own row; selected items
+// render with a "✓ " prefix on the label. A final row contains a
+// "Submit" button.
+func buildMultiSelectKeyboard(choices []bridge.QuestionChoice, selected map[string]bool) [][]models.InlineKeyboardButton {
+	rows := make([][]models.InlineKeyboardButton, 0, len(choices)+1)
+	for i, c := range choices {
+		label := c.Label
+		if selected != nil && selected[c.Value] {
+			label = "✓ " + label
+		}
+		rows = append(rows, []models.InlineKeyboardButton{{
+			Text:         label,
+			CallbackData: fmt.Sprintf("ms:t:%d", i),
+		}})
+	}
+	rows = append(rows, []models.InlineKeyboardButton{{
+		Text:         "Submit",
+		CallbackData: "ms:submit",
+	}})
+	return rows
+}
+
 // handleCallbackQuery converts an inline-keyboard click into a
 // bridge.Inbound carrying the button's callback_data so the bridge's
 // QuestionRouter parses it as a question reply.
+//
+// Multi-select prefix routing (cb.Data prefix):
+//   - "ms:t:<i>" — toggle option index <i>, edit reply markup, swallow
+//   - "ms:submit" — emit comma-separated inbound, clear state, swallow
+//   - anything else — emit inbound carrying cb.Data verbatim (single-select)
 func (a *Adapter) handleCallbackQuery(ctx context.Context, cb *models.CallbackQuery) {
 	if cb == nil || cb.Data == "" {
 		return
@@ -318,6 +429,12 @@ func (a *Adapter) handleCallbackQuery(ctx context.Context, cb *models.CallbackQu
 		CallbackQueryID: cb.ID,
 	})
 
+	// Multi-select state routing.
+	if strings.HasPrefix(cb.Data, "ms:") {
+		a.handleMultiSelectCallback(ctx, cb, msg)
+		return
+	}
+
 	chatID := strconv.FormatInt(msg.Chat.ID, 10)
 	a.pushInbound(ctx, bridge.Inbound{
 		Peer: bridge.PeerRef{
@@ -329,6 +446,90 @@ func (a *Adapter) handleCallbackQuery(ctx context.Context, cb *models.CallbackQu
 		AuthorID:   strconv.FormatInt(cb.From.ID, 10),
 		ReceivedAt: time.Now().UnixMilli(),
 	})
+}
+
+// handleMultiSelectCallback owns the toggle/submit lifecycle for a
+// stateful multi-select keyboard. Called when cb.Data starts with "ms:".
+//
+// Toggle ("ms:t:<i>"): flips selected[options[i]], edits the message's
+// reply_markup to redraw the keyboard with the new tick state. The
+// adapter swallows the callback (no inbound emitted).
+//
+// Submit ("ms:submit"): collects all selected option values in their
+// original choice order, emits a single comma-separated inbound, clears
+// state, and edits the message to remove the keyboard (so the reviewer
+// sees the question as resolved).
+//
+// On state-map miss (TTL evicted, restart between post and click) — the
+// callback is swallowed silently; reviewer's click does nothing visible.
+// Acceptable degradation per D5; preventing the click producing a
+// nonsensical inbound is more important than perfect ergonomics.
+func (a *Adapter) handleMultiSelectCallback(ctx context.Context, cb *models.CallbackQuery, msg *models.Message) {
+	entry, ok := a.multiSelectStates().get(msg.ID)
+	if !ok {
+		logging.Info("telegram: multi-select state miss; ignoring callback",
+			"message_id", msg.ID, "data", cb.Data)
+		return
+	}
+	if cb.Data == "ms:submit" {
+		selected := make([]string, 0, len(entry.Selected))
+		for _, k := range entry.Order {
+			if entry.Selected[k] {
+				selected = append(selected, k)
+			}
+		}
+		// Clear state regardless of whether anything was selected — the
+		// submit click consumes the message-state binding.
+		a.multiSelectStates().delete(msg.ID)
+		// Remove the keyboard so the reviewer sees the question is
+		// resolved. Best-effort; failure leaves the keyboard up but
+		// state is already cleared so further clicks no-op.
+		_, _ = a.bot.EditMessageReplyMarkup(ctx, &tgbot.EditMessageReplyMarkupParams{
+			ChatID:    msg.Chat.ID,
+			MessageID: msg.ID,
+		})
+		if len(selected) == 0 {
+			return
+		}
+		chatID := strconv.FormatInt(msg.Chat.ID, 10)
+		a.pushInbound(ctx, bridge.Inbound{
+			Peer: bridge.PeerRef{
+				Channel:  "telegram",
+				Identity: a.id.ID,
+				PeerID:   chatID,
+			},
+			Text:       strings.Join(selected, ", "),
+			AuthorID:   strconv.FormatInt(cb.From.ID, 10),
+			ReceivedAt: time.Now().UnixMilli(),
+		})
+		return
+	}
+	// Toggle: "ms:t:<i>"
+	if !strings.HasPrefix(cb.Data, "ms:t:") {
+		return
+	}
+	idx, err := strconv.Atoi(strings.TrimPrefix(cb.Data, "ms:t:"))
+	if err != nil || idx < 0 || idx >= len(entry.Order) {
+		return
+	}
+	value := entry.Order[idx]
+	entry.Selected[value] = !entry.Selected[value]
+	a.multiSelectStates().put(msg.ID, entry) // refreshes TTL
+	// Rebuild keyboard with the new tick state and edit-message.
+	choices := make([]bridge.QuestionChoice, 0, len(entry.Order))
+	for _, v := range entry.Order {
+		choices = append(choices, bridge.QuestionChoice{Label: entry.Labels[v], Value: v})
+	}
+	markup := &models.InlineKeyboardMarkup{InlineKeyboard: buildMultiSelectKeyboard(choices, entry.Selected)}
+	_, err = a.bot.EditMessageReplyMarkup(ctx, &tgbot.EditMessageReplyMarkupParams{
+		ChatID:      msg.Chat.ID,
+		MessageID:   msg.ID,
+		ReplyMarkup: markup,
+	})
+	if err != nil {
+		logging.Warn("telegram: EditMessageReplyMarkup failed for multi-select toggle",
+			"message_id", msg.ID, "err", err)
+	}
 }
 
 // pushInbound is a small helper for handleCallbackQuery (and any other

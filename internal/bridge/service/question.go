@@ -159,14 +159,15 @@ func (r *QuestionRouter) shouldUseInteractive(prompts []question.Prompt) bool {
 // caller can mutate the binding row, plus an error if the adapter
 // doesn't satisfy InteractiveQuestionSender or if the platform call
 // fails — the caller treats that as a fallback signal.
+//
+// When prompt.Multiple is true AND the adapter satisfies
+// InteractiveMultiSelectSender AND len(options) >= 2, the multi-select
+// path runs instead (single-submit widget that the adapter parses into
+// a comma-separated reply matching parseQuestionAnswers' format).
 func (r *QuestionRouter) tryInteractiveSend(ctx context.Context, peer bridge.PeerRef, prompt question.Prompt) (string, error) {
 	adapter := r.svc.Adapter(peer.Channel, peer.Identity)
 	if adapter == nil {
 		return "", errors.New("no adapter")
-	}
-	sender, ok := adapter.(bridge.InteractiveQuestionSender)
-	if !ok {
-		return "", errors.New("adapter does not support interactive UI")
 	}
 	choices := make([]bridge.QuestionChoice, 0, len(prompt.Options))
 	for _, opt := range prompt.Options {
@@ -177,6 +178,21 @@ func (r *QuestionRouter) tryInteractiveSend(ctx context.Context, peer bridge.Pee
 			// back to a choice without any extra decoding.
 			Value: opt.Label,
 		})
+	}
+	// Multi-select path: gated on prompt.Multiple + >= 2 options + adapter
+	// support. Single-option multi-select degrades to single-select per
+	// the spec (it's just a yes/no in disguise).
+	if prompt.Multiple && len(prompt.Options) >= 2 {
+		if multi, ok := adapter.(bridge.InteractiveMultiSelectSender); ok {
+			return multi.SendInteractiveMultiSelect(ctx, peer, prompt.Question, choices)
+		}
+		// Adapter doesn't support multi-select widget — fall through to
+		// single-select; parseQuestionAnswers still parses comma-separated
+		// typed replies for Multiple prompts.
+	}
+	sender, ok := adapter.(bridge.InteractiveQuestionSender)
+	if !ok {
+		return "", errors.New("adapter does not support interactive UI")
 	}
 	return sender.SendInteractiveQuestion(ctx, peer, prompt.Question, choices)
 }

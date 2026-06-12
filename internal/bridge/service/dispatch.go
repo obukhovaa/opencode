@@ -65,6 +65,14 @@ type sessionDispatch struct {
 	// would be too expensive in the hot path; this map amortises it.
 	// Keys: session ID; values: bool. See isOwnedSession.
 	ownedSessions sync.Map
+
+	// toolCallStart records each tool call's wall-clock start so the
+	// matching result emit can compute DurationMs. Keys are the raw
+	// provider tool-call ID (e.g. toolu_01...); values are unix-millis.
+	// Entries are evicted on consume by consumeToolCallDuration; a 5-min
+	// sweep removes stale entries when a call never produces a paired
+	// result (rare — usually a cancelled cycle).
+	toolCallStart sync.Map // map[string]int64
 }
 
 // newSessionDispatch constructs and launches the per-session dispatcher
@@ -443,40 +451,105 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
 		if !tu || !part.Finished || part.Input == "" {
 			return
 		}
-		label := part.Name + callIDSuffix(part.ID)
-		params := formatToolParams(part.Name, part.Input)
-		if params != "" {
-			d.emitToolUpdate(fmt.Sprintf("🔧 %s · %s", label, params))
+		callID := callIDSuffix(part.ID)
+		label := part.Name + callID
+		paramsText := formatToolParams(part.Name, part.Input)
+		paramsMap := formatToolParamMap(part.Name, part.Input)
+		var fallback string
+		if paramsText != "" {
+			fallback = fmt.Sprintf("🔧 %s · %s", label, paramsText)
 		} else {
-			d.emitToolUpdate(fmt.Sprintf("🔧 %s", label))
+			fallback = fmt.Sprintf("🔧 %s", label)
 		}
+		// Record the call's wall-clock start so the result emit can
+		// compute DurationMs even when the adapter doesn't track timing
+		// per-call.
+		d.recordToolCallStart(part.ID)
+		hint := bridge.NewToolCallHint(part.Name, callID, paramsMap)
+		d.emitToolRender(hint, fallback)
 	case message.ToolResult:
-		label := part.Name + callIDSuffix(part.ToolCallID)
+		callID := callIDSuffix(part.ToolCallID)
+		label := part.Name + callID
+		status := "ok"
 		if part.IsError {
-			// Failures always surface, even with ToolUpdatesEnabled=false,
-			// so silent breakage is visible to the reviewer. Truncate by
-			// rune (codepoint) so a multi-byte glyph at the boundary is
-			// not split into invalid UTF-8.
-			preview := truncateRunes(oneLine(part.Content), 200)
-			d.emitToolUpdate(fmt.Sprintf("✗ %s · %s", label, preview))
+			status = "error"
+		}
+		preview := truncateRunes(oneLine(part.Content), 1000)
+		// Gate non-error results behind tu (matches today's behaviour).
+		if !part.IsError && !tu {
 			return
 		}
-		// Successful tool result: emit a compact preview so the
-		// reviewer can see what the tool actually returned, not just
-		// that it ran. Gated by ToolUpdatesEnabled (errors above are
-		// not gated; successes are).
-		if !tu {
-			return
+		var fallback string
+		switch {
+		case part.IsError:
+			fallback = fmt.Sprintf("✗ %s · %s", label, truncateRunes(preview, 200))
+		case preview == "":
+			fallback = fmt.Sprintf("✓ %s", label)
+		default:
+			fallback = fmt.Sprintf("✓ %s · %s", label, truncateRunes(preview, 200))
 		}
-		preview := truncateRunes(oneLine(part.Content), 200)
-		if preview == "" {
-			// Empty success — represent it explicitly so the user
-			// doesn't think the tool transition was dropped.
-			d.emitToolUpdate(fmt.Sprintf("✓ %s", label))
-		} else {
-			d.emitToolUpdate(fmt.Sprintf("✓ %s · %s", label, preview))
+		durationMs := d.consumeToolCallDuration(part.ToolCallID)
+		hint := bridge.NewToolResultHint(part.Name, callID, status, preview, durationMs)
+		d.emitToolRender(hint, fallback)
+	}
+}
+
+// formatToolParamMap is the structured analogue of formatToolParams —
+// returns the same priority-keyed primary + secondary params as a map
+// so a RenderHint can carry them for adapters that render fields
+// natively (Slack Block Kit context, Mattermost attachment.fields).
+// Returns nil for unknown tools or malformed JSON so adapters fall
+// back to a header-only render.
+func formatToolParamMap(name, input string) map[string]string {
+	if input == "" {
+		return nil
+	}
+	const maxParamInputBytes = 64 * 1024
+	if len(input) > maxParamInputBytes {
+		return nil
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(input), &raw); err != nil {
+		return nil
+	}
+	type keySpec struct {
+		primary   string
+		secondary []string
+	}
+	keys := map[string]keySpec{
+		"bash":        {primary: "command"},
+		"read":        {primary: "file_path", secondary: []string{"limit", "offset"}},
+		"write":       {primary: "file_path"},
+		"edit":        {primary: "file_path"},
+		"multiedit":   {primary: "file_path", secondary: []string{"edits"}},
+		"delete":      {primary: "path"},
+		"ls":          {primary: "path"},
+		"grep":        {primary: "pattern", secondary: []string{"path", "include"}},
+		"glob":        {primary: "pattern", secondary: []string{"path"}},
+		"view_image":  {primary: "file_path"},
+		"webfetch":    {primary: "url"},
+		"websearch":   {primary: "query", secondary: []string{"max_results"}},
+		"sourcegraph": {primary: "query"},
+		"task":        {primary: "prompt", secondary: []string{"subagent_type"}},
+		"router_send": {primary: "peerId", secondary: []string{"channel", "identity"}},
+	}
+	spec, known := keys[name]
+	if !known {
+		return nil
+	}
+	out := map[string]string{}
+	if v := stringField(raw, spec.primary); v != "" {
+		out[spec.primary] = truncateRunes(oneLine(v), 200)
+	}
+	for _, k := range spec.secondary {
+		if v := stringField(raw, k); v != "" {
+			out[k] = truncateRunes(oneLine(v), 200)
 		}
 	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // callIDSuffix renders a short stable suffix derived from the tool
@@ -648,6 +721,59 @@ func (d *sessionDispatch) emitToolUpdate(text string) {
 			logging.Warn("bridge: tool-update fan-out failed", "session", d.sessionID, "err", err)
 		}
 	}()
+}
+
+// emitToolRender fans out a structured RenderHint to every bound peer
+// for the dispatcher's session. Mirrors emitToolUpdate's
+// fire-and-forget posture (per the spec: "Indicator emission MUST NOT
+// block the inbound dispatch loop") but routes through Outbound.Render
+// so adapters that satisfy bridge.RichRenderer produce platform-native
+// UI; non-rich adapters fall back to the supplied text via Outbound.Text.
+func (d *sessionDispatch) emitToolRender(hint *bridge.RenderHint, fallbackText string) {
+	ctx := d.svc.ctx
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Warn("bridge: emitToolRender panic", "session", d.sessionID, "panic", r)
+			}
+		}()
+		_, err := d.svc.SendBySessionID(ctx, d.sessionID, bridge.Outbound{
+			Text:   fallbackText,
+			Render: hint,
+		})
+		if err != nil {
+			logging.Warn("bridge: tool-render fan-out failed", "session", d.sessionID, "err", err)
+		}
+	}()
+}
+
+// recordToolCallStart stamps the wall-clock start time for a tool
+// call so the matching ToolResult event can report DurationMs. Called
+// at the ToolCall (Finished=true, Input!="") emit point.
+func (d *sessionDispatch) recordToolCallStart(toolCallID string) {
+	if toolCallID == "" {
+		return
+	}
+	d.toolCallStart.Store(toolCallID, time.Now().UnixMilli())
+}
+
+// consumeToolCallDuration returns the elapsed milliseconds since the
+// matching ToolCall start was recorded, then deletes the entry. Returns
+// 0 if no start was recorded (rare — usually means the call was
+// emitted under !ToolUpdatesEnabled so the start path was skipped).
+func (d *sessionDispatch) consumeToolCallDuration(toolCallID string) int64 {
+	if toolCallID == "" {
+		return 0
+	}
+	v, ok := d.toolCallStart.LoadAndDelete(toolCallID)
+	if !ok {
+		return 0
+	}
+	start, ok := v.(int64)
+	if !ok {
+		return 0
+	}
+	return time.Now().UnixMilli() - start
 }
 
 // translateAttachments converts the bridge-domain Attachment slice into

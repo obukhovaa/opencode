@@ -95,6 +95,14 @@ type Outbound struct {
 	// nils it for subsequent outbounds (see chat-bridge-router-initiated
 	// spec). The adapter does NOT decide whether to prepend.
 	Mention string
+	// Render, when non-nil, requests platform-native structured rendering
+	// (Slack Block Kit, Telegram MarkdownV2, Mattermost attachments) via
+	// the optional RichRenderer interface. When the destination adapter
+	// does NOT satisfy RichRenderer, the bridge falls through to the
+	// existing Text path verbatim — callers are REQUIRED to populate
+	// Text as the plain-text fallback for minimal adapters. See
+	// bridge-outbound-render-hint capability.
+	Render *RenderHint
 }
 
 // SendResult reports the outcome of a single Adapter.Send call. Adapters

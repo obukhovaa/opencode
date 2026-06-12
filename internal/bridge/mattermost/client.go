@@ -122,10 +122,14 @@ type CreatePostInput struct {
 	Message   string
 	RootID    string // optional thread root
 	FileIDs   []string
+	// Props is the post's `props` field. Used by the bridge's rich
+	// renderer to carry `attachments` (Slack-compatible attachment
+	// schema for color/fields/actions) and the multi-select binding.
+	Props map[string]any
 }
 
 // CreatePost calls POST /api/v4/posts and returns the resulting Post.
-// rootID and fileIDs are optional — pass empty/nil to omit.
+// rootID, fileIDs, and props are optional — pass empty/nil to omit.
 func (c *Client) CreatePost(ctx context.Context, in CreatePostInput) (Post, error) {
 	body := map[string]any{
 		"channel_id": in.ChannelID,
@@ -137,8 +141,39 @@ func (c *Client) CreatePost(ctx context.Context, in CreatePostInput) (Post, erro
 	if len(in.FileIDs) > 0 {
 		body["file_ids"] = in.FileIDs
 	}
+	if len(in.Props) > 0 {
+		body["props"] = in.Props
+	}
 	var p Post
 	if err := c.do(ctx, http.MethodPost, "/api/v4/posts", body, &p); err != nil {
+		return Post{}, err
+	}
+	return p, nil
+}
+
+// UpdatePostInput is the body of PUT /api/v4/posts/{post_id}.
+type UpdatePostInput struct {
+	PostID  string
+	Message string
+	Props   map[string]any
+}
+
+// UpdatePost calls PUT /api/v4/posts/{post_id} and returns the updated
+// Post. Used by RichRenderer to update a tool-call card in place when
+// the matching tool-result fires (D6).
+func (c *Client) UpdatePost(ctx context.Context, in UpdatePostInput) (Post, error) {
+	if in.PostID == "" {
+		return Post{}, fmt.Errorf("mattermost: UpdatePost requires PostID")
+	}
+	body := map[string]any{
+		"id":      in.PostID,
+		"message": in.Message,
+	}
+	if len(in.Props) > 0 {
+		body["props"] = in.Props
+	}
+	var p Post
+	if err := c.do(ctx, http.MethodPut, "/api/v4/posts/"+in.PostID, body, &p); err != nil {
 		return Post{}, err
 	}
 	return p, nil
