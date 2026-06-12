@@ -81,16 +81,15 @@ func resolveInteractionTarget(interaction *StepInteraction, args map[string]any)
 		return nil, &interactionMissingArgError{Name: name}
 	}
 	// Accept either a single PeerRef-shaped map or an array of them.
-	var peers []bridge.PeerRef
 	switch v := raw.(type) {
 	case map[string]any:
 		peer, err := peerRefFromMap(v)
 		if err != nil {
 			return nil, err
 		}
-		peers = []bridge.PeerRef{peer}
+		return []bridge.PeerRef{peer}, nil
 	case []any:
-		peers = make([]bridge.PeerRef, 0, len(v))
+		peers := make([]bridge.PeerRef, 0, len(v))
 		for i, entry := range v {
 			m, ok := entry.(map[string]any)
 			if !ok {
@@ -105,19 +104,10 @@ func resolveInteractionTarget(interaction *StepInteraction, args map[string]any)
 		if len(peers) == 0 {
 			return nil, errors.New("interaction.target resolved to empty array")
 		}
+		return peers, nil
 	default:
 		return nil, errInteractionTargetType
 	}
-	// Identity override: when the step's interaction block declares an
-	// identity, force it onto every resolved peer — flow YAML wins over
-	// args.reviewer.identity. Empty Identity in the StepInteraction
-	// means "use whatever the args carry" (backwards-compat default).
-	if interaction.Identity != "" {
-		for i := range peers {
-			peers[i].Identity = interaction.Identity
-		}
-	}
-	return peers, nil
 }
 
 var (

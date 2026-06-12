@@ -77,6 +77,14 @@ type Step struct {
 // (e.g. `${args.reviewer}` or `${args.reviewers}`) that resolves to a
 // single PeerRef-shaped map or an array of such maps. Mention is an
 // optional flow-arg expression for the first-message ping handle.
+//
+// The bridge identity is carried by the resolved PeerRef itself
+// (args.reviewer.identity). The c2-agent orchestrator populates it
+// from the trigger source (slash command's Slack app identity, webhook
+// mapping's target_identity, REST caller's explicit value). There is
+// intentionally no separate `interaction.identity` override in the flow
+// YAML — the caller is the source of truth, and adding an override
+// here would just duplicate that knowledge.
 type StepInteraction struct {
 	// Target is a flow-arg expression resolving to either a single
 	// PeerRef map or an array of them. Format:
@@ -85,15 +93,6 @@ type StepInteraction struct {
 	Target string `yaml:"target"`
 	// Mention is an optional first-message ping handle expression.
 	Mention string `yaml:"mention,omitempty"`
-	// Identity is the bridge identity ID this step's bind should scope
-	// to (e.g. "default", "c2-agent-prod"). When non-empty, overrides
-	// the Identity field on the resolved PeerRef so flow YAML controls
-	// which bridge identity an interactive step uses — independent of
-	// what args.reviewer.identity carries. Defaults to "default" when
-	// omitted, preserving backwards compat with existing flow specs.
-	// See c2-agent-flow-trigger-context capability
-	// flow-interaction-identity-binding.
-	Identity string `yaml:"identity,omitempty"`
 }
 
 // StepSession controls session behavior for a step.
