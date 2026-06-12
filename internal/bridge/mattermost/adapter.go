@@ -58,6 +58,20 @@ type Adapter struct {
 	lastError     atomic.Value // string
 	lastInboundAt atomic.Int64
 	lastFailureAt atomic.Int64
+
+	// toolCardsOnce lazy-initialises the tool-call → post-id cache used
+	// by RichRenderer.Render to coalesce a tool's call+result into a
+	// single PUT /posts/{id} update. See bridge-tool-render-native.
+	toolCardsOnce  sync.Once
+	toolCardsCache *toolCardCache
+}
+
+// toolCards returns the adapter's tool-card cache, lazy-initialised.
+func (a *Adapter) toolCards() *toolCardCache {
+	a.toolCardsOnce.Do(func() {
+		a.toolCardsCache = newToolCardCache()
+	})
+	return a.toolCardsCache
 }
 
 // Identity configures one Mattermost adapter instance.

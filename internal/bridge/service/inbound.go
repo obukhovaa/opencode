@@ -95,8 +95,8 @@ func (s *Service) dispatchInbound(ctx context.Context, in bridge.Inbound) {
 	// command may not be tied to a session (e.g. /help has no agent run).
 	if in.Text != "" && in.Text[0] == '/' {
 		in.Command, in.CommandArgs = splitChatCommand(in.Text)
-		if reply := s.handleChatCommand(ctx, in); reply != "" {
-			s.replyToPeer(ctx, in.Peer, reply)
+		if reply := s.handleChatCommand(ctx, in); !reply.IsEmpty() {
+			s.replyToPeerWithHint(ctx, in.Peer, reply)
 			return
 		}
 	}
@@ -256,22 +256,43 @@ func (s *Service) closeDispatcherIfEmpty(ctx context.Context, sessionID string) 
 }
 
 // handleChatCommand dispatches an inbound whose text starts with "/" to
-// the matching command handler. Returns the reply text the bridge should
-// send back via replyToPeer, or empty if the command is unknown (in which
-// case the dispatcher proceeds with normal agent-run dispatch — keeping
-// the door open for prompt-style messages that happen to start with /).
-func (s *Service) handleChatCommand(ctx context.Context, in bridge.Inbound) string {
+// the matching command handler. Returns the reply the bridge should
+// send back via replyToPeerWithHint, or nil if the command is unknown
+// (in which case the dispatcher proceeds with normal agent-run dispatch —
+// keeping the door open for prompt-style messages that happen to start
+// with /).
+//
+// Adapter-scoped command filtering: /pair is only available on Telegram
+// per bridge-adapter-scoped-commands. Unknown commands on a channel are
+// treated identically to unknown commands globally — the inbound falls
+// through to the agent as a regular prompt.
+func (s *Service) handleChatCommand(ctx context.Context, in bridge.Inbound) *bridge.CommandReply {
+	if !s.commandAvailableForChannel(in.Command, in.Peer.Channel) {
+		return nil
+	}
 	cmds := s.ChatCommands()
 	h, ok := cmds[in.Command]
 	if !ok {
-		return ""
+		return nil
 	}
 	return h(ctx, in)
 }
 
+// commandAvailableForChannel implements adapter-scoped command filtering
+// per bridge-adapter-scoped-commands. /pair only resolves on Telegram;
+// everything else is universal. Returning false makes handleChatCommand
+// behave as if the command were unknown, so the inbound falls through
+// to the agent as a regular prompt.
+func (s *Service) commandAvailableForChannel(cmd, channel string) bool {
+	if cmd == "pair" && channel != "telegram" {
+		return false
+	}
+	return true
+}
+
 // replyToPeer sends a single text message back to the inbound's peer.
-// Used by chat-command handlers and by the question/permission flows
-// (Phase 3.7) to acknowledge user input without involving the agent.
+// Used by the question/permission flows (Phase 3.7) and other paths
+// that don't carry a structured render.
 func (s *Service) replyToPeer(ctx context.Context, peer bridge.PeerRef, text string) {
 	adapter := s.Adapter(peer.Channel, peer.Identity)
 	if adapter == nil {
@@ -281,6 +302,37 @@ func (s *Service) replyToPeer(ctx context.Context, peer bridge.PeerRef, text str
 	result := adapter.Send(ctx, bridge.Outbound{Peer: peer, Text: text})
 	if !result.Delivered && result.Err != nil {
 		logging.Warn("bridge: replyToPeer delivery failed", "peer", peer, "err", result.Err)
+	}
+}
+
+// replyToPeerWithHint sends a chat-command reply, preferring the
+// structured render path when the adapter satisfies bridge.RichRenderer
+// AND reply.Hint != nil. Falls through to the plain-text path
+// otherwise (mirrors Service.Send's hint-routing logic).
+func (s *Service) replyToPeerWithHint(ctx context.Context, peer bridge.PeerRef, reply *bridge.CommandReply) {
+	if reply.IsEmpty() {
+		return
+	}
+	adapter := s.Adapter(peer.Channel, peer.Identity)
+	if adapter == nil {
+		logging.Warn("bridge: replyToPeerWithHint no adapter", "peer", peer)
+		return
+	}
+	if reply.Hint != nil {
+		if renderer, ok := adapter.(bridge.RichRenderer); ok {
+			res := renderer.Render(ctx, peer, reply.Hint)
+			if res.Err == nil {
+				return
+			}
+			// Fallback to text on ErrRenderUnsupported or any other
+			// adapter-side failure.
+			logging.Info("bridge: command-reply render failed, falling back to text",
+				"peer", peer, "err", res.Err)
+		}
+	}
+	result := adapter.Send(ctx, bridge.Outbound{Peer: peer, Text: reply.Text})
+	if !result.Delivered && result.Err != nil {
+		logging.Warn("bridge: replyToPeerWithHint delivery failed", "peer", peer, "err", result.Err)
 	}
 }
 

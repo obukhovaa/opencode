@@ -72,6 +72,20 @@ type Adapter struct {
 	// fileBaseURL overrides the URL prefix for file_private downloads.
 	// Tests set this so the adapter fetches from their mock server.
 	fileBaseURL atomic.Value // string
+
+	// toolCardsOnce lazy-initialises the tool-call → message reference
+	// cache used by RichRenderer.Render to coalesce a tool's call+result
+	// into a single chat.update'd message. See bridge-tool-render-native.
+	toolCardsOnce  sync.Once
+	toolCardsCache *toolCardCache
+}
+
+// toolCards returns the adapter's lazily-initialised tool-card cache.
+func (a *Adapter) toolCards() *toolCardCache {
+	a.toolCardsOnce.Do(func() {
+		a.toolCardsCache = newToolCardCache()
+	})
+	return a.toolCardsCache
 }
 
 // New constructs a Slack adapter. Bot and app tokens are required.
@@ -261,6 +275,72 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 	return resolved, nil
 }
 
+// MultiSelectMaxOptions is Slack's documented upper bound for the
+// multi_static_select element's options list. Prompts with more
+// choices fall back to a numbered-text render that accepts a typed
+// comma-separated reply (parseQuestionAnswers handles it).
+const MultiSelectMaxOptions = 50
+
+// SendInteractiveMultiSelect implements bridge.InteractiveMultiSelectSender.
+// Renders a `Multiple = true` question as a Slack Block Kit message with
+// a multi_static_select element + Apply button. The reviewer toggles
+// selections in the menu; on Apply, Slack delivers a `block_actions`
+// envelope whose state holds the selected option list — the adapter's
+// callback handler reads it and pushes a comma-separated inbound for the
+// bridge's parseQuestionAnswers to consume.
+//
+// When len(choices) > MultiSelectMaxOptions, returns ErrTooManyOptions
+// so the router falls back to the numbered-text path.
+func (a *Adapter) SendInteractiveMultiSelect(ctx context.Context, peer bridge.PeerRef, prompt string, choices []bridge.QuestionChoice) (string, error) {
+	parsed := ParsePeerID(peer.PeerID)
+	if parsed.ChannelID == "" {
+		return "", ErrInvalidPeerID
+	}
+	if len(choices) == 0 {
+		return "", errors.New("slack: SendInteractiveMultiSelect requires at least one choice")
+	}
+	if len(choices) > MultiSelectMaxOptions {
+		return "", ErrTooManyOptions
+	}
+
+	textBlock := slackgo.NewTextBlockObject(slackgo.MarkdownType, prompt, false, false)
+	header := slackgo.NewSectionBlock(textBlock, nil, nil)
+
+	options := make([]*slackgo.OptionBlockObject, 0, len(choices))
+	for _, c := range choices {
+		label := slackgo.NewTextBlockObject(slackgo.PlainTextType, c.Label, false, false)
+		options = append(options, slackgo.NewOptionBlockObject(c.Value, label, nil))
+	}
+	multi := slackgo.NewOptionsMultiSelectBlockElement(
+		slackgo.MultiOptTypeStatic,
+		slackgo.NewTextBlockObject(slackgo.PlainTextType, "Select options", false, false),
+		"router_multi_select",
+		options...,
+	)
+	applyBtn := slackgo.NewButtonBlockElement(
+		"router_multi_apply",
+		"submit",
+		slackgo.NewTextBlockObject(slackgo.PlainTextType, "Apply", false, false),
+	)
+	actions := slackgo.NewActionBlock("router_multi", multi, applyBtn)
+
+	opts := []slackgo.MsgOption{slackgo.MsgOptionBlocks(header, actions)}
+	if parsed.ThreadTS != "" {
+		opts = append(opts, slackgo.MsgOptionTS(parsed.ThreadTS))
+	}
+	_, ts, err := a.api.PostMessageContext(ctx, parsed.ChannelID, opts...)
+	if err != nil {
+		return "", fmt.Errorf("slack: SendInteractiveMultiSelect: %w", err)
+	}
+	resolved := FormatPeerID(Peer{ChannelID: parsed.ChannelID, ThreadTS: ts})
+	return resolved, nil
+}
+
+// ErrTooManyOptions signals the caller that the choice list exceeds
+// Slack's multi-select widget capacity — the question router catches
+// this and falls back to the numbered-text path.
+var ErrTooManyOptions = errors.New("slack: too many options for multi_static_select widget")
+
 // ResolveUserToDM implements bridge.Adapter. Slack user-id form (U-prefix)
 // is resolved to a DM channel via conversations.open; D-prefix and C-prefix
 // (channel) values pass through unchanged.
@@ -324,12 +404,35 @@ func (a *Adapter) dispatchSocketModeEvent(ctx context.Context, env socketmode.Ev
 // a bridge.Inbound whose Text is the action's value (the question
 // choice's canonical answer label). The bridge's QuestionRouter does
 // the rest.
+//
+// Single-select (button): action.Value carries the answer.
+// Multi-select (Apply button): the most recent multi_static_select
+// state lives on callback.BlockActionState (or in the action's
+// SelectedOptions field). We snapshot it as a comma-separated list and
+// emit one inbound — the bridge's parseQuestionAnswers honours the same
+// format as a comma-separated typed reply.
 func (a *Adapter) handleInteractiveCallback(ctx context.Context, callback slackgo.InteractionCallback) {
 	if len(callback.ActionCallback.BlockActions) == 0 {
 		return
 	}
 	action := callback.ActionCallback.BlockActions[0]
 	value := action.Value
+	// Multi-select Apply button: collect SelectedOptions from the message
+	// state (the multi_static_select element's accumulated selection).
+	if action.ActionID == "router_multi_apply" {
+		selected := collectMultiSelectAnswers(callback)
+		if len(selected) == 0 {
+			// Nothing selected — silently ignore; reviewer can re-submit.
+			return
+		}
+		value = strings.Join(selected, ", ")
+	} else if action.ActionID == "router_multi_select" {
+		// Toggle event for the multi-select widget — DO NOT emit an
+		// inbound; wait for the Apply button. Slack delivers a
+		// block_actions on every selection change but we coalesce into
+		// the Apply press to give the reviewer one chance to revise.
+		return
+	}
 	if value == "" {
 		return
 	}
@@ -365,6 +468,28 @@ func (a *Adapter) handleInteractiveCallback(ctx context.Context, callback slackg
 		AuthorID:   callback.User.ID,
 		ReceivedAt: time.Now().UnixMilli(),
 	})
+}
+
+// collectMultiSelectAnswers extracts the selected values from a multi-
+// select widget's state attached to a block_actions callback. The
+// state shape is callback.BlockActionState.Values[blockID][actionID]
+// .SelectedOptions for multi_static_select. Returns the slice of
+// canonical answer labels (Option.Value) in selection order; nil when
+// no state OR no selection.
+func collectMultiSelectAnswers(callback slackgo.InteractionCallback) []string {
+	if callback.BlockActionState == nil {
+		return nil
+	}
+	for _, blockState := range callback.BlockActionState.Values {
+		if action, ok := blockState["router_multi_select"]; ok {
+			out := make([]string, 0, len(action.SelectedOptions))
+			for _, opt := range action.SelectedOptions {
+				out = append(out, opt.Value)
+			}
+			return out
+		}
+	}
+	return nil
 }
 
 // SetInbound stores the orchestrator's inbound channel. Tests use this

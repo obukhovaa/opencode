@@ -124,7 +124,25 @@ func (s *Service) sendToOnePeer(ctx context.Context, b store.Binding, out bridge
 		peerOut.Mention = b.MentionHandle
 	}
 
-	platformResult := adapter.Send(ctx, peerOut)
+	// Rich-render path: if the caller supplied Outbound.Render AND the
+	// adapter satisfies bridge.RichRenderer, route through Render so the
+	// adapter produces platform-native UI. On ErrRenderUnsupported (kind
+	// not yet implemented by this adapter), fall through to the text path
+	// transparently. Other errors are treated as delivery failures.
+	var platformResult bridge.SendResult
+	if peerOut.Render != nil {
+		if renderer, ok := adapter.(bridge.RichRenderer); ok {
+			platformResult = renderer.Render(ctx, peerOut.Peer, peerOut.Render)
+			if errors.Is(platformResult.Err, bridge.ErrRenderUnsupported) {
+				// Adapter didn't implement this kind — fall through to text.
+				platformResult = adapter.Send(ctx, peerOut)
+			}
+		} else {
+			platformResult = adapter.Send(ctx, peerOut)
+		}
+	} else {
+		platformResult = adapter.Send(ctx, peerOut)
+	}
 	res.Delivered = platformResult.Delivered
 	res.Err = platformResult.Err
 	res.ResolvedPeer = platformResult.ResolvedPeer
@@ -225,6 +243,16 @@ func (s *Service) BoundPeersSnapshot(ctx context.Context) []bridge.PeerRef {
 // sending. Returns the platform-level SendResult; callers translate it
 // into the tool/HTTP response shape.
 func (s *Service) Send(ctx context.Context, peer bridge.PeerRef, text string, mention string, attachments []bridge.Attachment) (bridge.SendResult, error) {
+	return s.SendWithRender(ctx, peer, text, mention, attachments, nil)
+}
+
+// SendWithRender is Send with an optional structured render hint. When
+// hint != nil AND the adapter satisfies bridge.RichRenderer, the bridge
+// routes through Render so the adapter produces platform-native UI; on
+// ErrRenderUnsupported or non-RichRenderer adapter, falls back to the
+// text path verbatim. Callers that don't want rich rendering use Send
+// (which passes nil).
+func (s *Service) SendWithRender(ctx context.Context, peer bridge.PeerRef, text string, mention string, attachments []bridge.Attachment, hint *bridge.RenderHint) (bridge.SendResult, error) {
 	adapter := s.Adapter(peer.Channel, peer.Identity)
 	if adapter == nil {
 		return bridge.SendResult{}, fmt.Errorf("bridge: no adapter for %s:%s", peer.Channel, peer.Identity)
@@ -240,8 +268,21 @@ func (s *Service) Send(ctx context.Context, peer bridge.PeerRef, text string, me
 		Text:        StripAttribution(text),
 		Attachments: attachments,
 		Mention:     mention,
+		Render:      hint,
 	}
-	result := adapter.Send(ctx, out)
+	var result bridge.SendResult
+	if hint != nil {
+		if renderer, ok := adapter.(bridge.RichRenderer); ok {
+			result = renderer.Render(ctx, peer, hint)
+			if errors.Is(result.Err, bridge.ErrRenderUnsupported) {
+				result = adapter.Send(ctx, out)
+			}
+		} else {
+			result = adapter.Send(ctx, out)
+		}
+	} else {
+		result = adapter.Send(ctx, out)
+	}
 	// Channel→thread mutation: if the adapter performed platform-side
 	// resolution (Slack C<id> → C<id>|<ts>, Mattermost channel → root
 	// post) and the resulting form differs from what we just sent
