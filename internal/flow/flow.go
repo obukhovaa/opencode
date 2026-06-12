@@ -85,6 +85,15 @@ type StepInteraction struct {
 	Target string `yaml:"target"`
 	// Mention is an optional first-message ping handle expression.
 	Mention string `yaml:"mention,omitempty"`
+	// Identity is the bridge identity ID this step's bind should scope
+	// to (e.g. "default", "c2-agent-prod"). When non-empty, overrides
+	// the Identity field on the resolved PeerRef so flow YAML controls
+	// which bridge identity an interactive step uses — independent of
+	// what args.reviewer.identity carries. Defaults to "default" when
+	// omitted, preserving backwards compat with existing flow specs.
+	// See c2-agent-flow-trigger-context capability
+	// flow-interaction-identity-binding.
+	Identity string `yaml:"identity,omitempty"`
 }
 
 // StepSession controls session behavior for a step.
