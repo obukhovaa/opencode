@@ -40,8 +40,13 @@ func TestSlackSendInteractiveQuestionPostsBlocks(t *testing.T) {
 	a.SetBotUserID("UBOT")
 	t.Cleanup(func() { _ = a.Stop() })
 
+	// Channel-only peer (C-prefix) — first post opens a thread and the
+	// adapter MUST echo the new thread_ts as resolvedPeer so the bridge
+	// mutates the binding row. DM peers (D-prefix) and already-thread-
+	// anchored composites do NOT trigger a mutation (covered in
+	// TestSlackSendInteractiveQuestionThreadAnchoredNoMutation).
 	resolved, err := a.SendInteractiveQuestion(context.Background(),
-		bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "D012345"},
+		bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "C012345"},
 		"Ship it?",
 		[]bridge.QuestionChoice{
 			{Label: "Yes", Value: "Yes"},
@@ -52,7 +57,7 @@ func TestSlackSendInteractiveQuestionPostsBlocks(t *testing.T) {
 		t.Fatalf("SendInteractiveQuestion: %v", err)
 	}
 	if resolved == "" {
-		t.Errorf("expected resolved peer-id, got empty")
+		t.Errorf("expected resolved peer-id for channel-only bind, got empty")
 	}
 
 	// The mock now has 1 post call with `blocks` content. Pull blocks.
