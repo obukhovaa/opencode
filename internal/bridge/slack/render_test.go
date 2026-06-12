@@ -220,8 +220,11 @@ func TestSlackSendInteractiveMultiSelectPostsMultiStaticSelect(t *testing.T) {
 	t.Cleanup(func() { _ = a.Stop() })
 
 	resetCapturedBlocks()
+	// Use a channel-only peer (C-prefix) so the mutation guard returns
+	// a non-empty resolved peer-id. DM peers and composite peers do NOT
+	// trigger a mutation per the spec.
 	resolved, err := a.SendInteractiveMultiSelect(context.Background(),
-		bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "D012345"},
+		bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "C012345"},
 		"Pick capabilities",
 		[]bridge.QuestionChoice{
 			{Label: "auth", Value: "auth"},
@@ -233,7 +236,7 @@ func TestSlackSendInteractiveMultiSelectPostsMultiStaticSelect(t *testing.T) {
 		t.Fatalf("SendInteractiveMultiSelect: %v", err)
 	}
 	if resolved == "" {
-		t.Errorf("resolved peer-id is empty; want composite for DM channel? — D-prefix should still return non-empty if mock returns ts")
+		t.Errorf("expected non-empty resolved peer-id for channel-only bind")
 	}
 	captures := capturedBlocks()
 	if len(captures) == 0 {
@@ -262,6 +265,68 @@ func TestSlackSendInteractiveMultiSelectPostsMultiStaticSelect(t *testing.T) {
 	second, _ := elements[1].(map[string]any)
 	if second["type"] != "button" {
 		t.Errorf("second element type = %v; want button", second["type"])
+	}
+}
+
+// TestSlackSendInteractiveQuestionThreadAnchoredNoMutation guards
+// against the regression where SendInteractiveQuestion unconditionally
+// returned the new message-ts as resolvedPeer, mutating an already-
+// thread-anchored binding away from the THREAD ts to a MESSAGE ts —
+// causing subsequent inbound replies to fall through resolveBinding's
+// ErrNotFound branch and spawn a fresh coder session.
+func TestSlackSendInteractiveQuestionThreadAnchoredNoMutation(t *testing.T) {
+	resetCapturedBlocks()
+	mock := newMockServer(t)
+	mock.server.Config.Handler = blockCapturingHandler(mock.server.Config.Handler, t, mock)
+
+	a, err := New(Identity{ID: "default", BotToken: "xoxb", AppToken: "xapp"}, Options{APIURL: mock.URL() + "/"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Stop() })
+
+	// Composite peer-id (C|threadTS) — bind is already thread-anchored;
+	// the question post lands INSIDE the thread; resolvedPeer MUST be
+	// empty so the bridge does NOT mutate the binding.
+	resolved, err := a.SendInteractiveQuestion(context.Background(),
+		bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "C0AJ|1781245696.715859"},
+		"Ship it?",
+		[]bridge.QuestionChoice{
+			{Label: "Yes", Value: "Yes"},
+			{Label: "No", Value: "No"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("SendInteractiveQuestion: %v", err)
+	}
+	if resolved != "" {
+		t.Errorf("expected empty resolvedPeer for thread-anchored bind, got %q", resolved)
+	}
+}
+
+// TestSlackSendInteractiveMultiSelectThreadAnchoredNoMutation guards
+// the same regression for SendInteractiveMultiSelect.
+func TestSlackSendInteractiveMultiSelectThreadAnchoredNoMutation(t *testing.T) {
+	resetCapturedBlocks()
+	mock := newMockServer(t)
+	mock.server.Config.Handler = blockCapturingHandler(mock.server.Config.Handler, t, mock)
+
+	a, err := New(Identity{ID: "default", BotToken: "xoxb", AppToken: "xapp"}, Options{APIURL: mock.URL() + "/"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Stop() })
+
+	resolved, err := a.SendInteractiveMultiSelect(context.Background(),
+		bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "C0AJ|1781245696.715859"},
+		"Pick",
+		[]bridge.QuestionChoice{{Label: "a", Value: "a"}, {Label: "b", Value: "b"}},
+	)
+	if err != nil {
+		t.Fatalf("SendInteractiveMultiSelect: %v", err)
+	}
+	if resolved != "" {
+		t.Errorf("expected empty resolvedPeer for thread-anchored bind, got %q", resolved)
 	}
 }
 

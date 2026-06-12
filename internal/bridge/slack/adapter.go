@@ -266,11 +266,18 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 	if err != nil {
 		return "", fmt.Errorf("slack: SendInteractiveQuestion: %w", err)
 	}
-	// When the bind started with a channel-only peer-id (e.g. "C123"),
-	// posting this question opens a new thread whose ts is the peer-id
-	// component the reviewer's reply will arrive with. Echo the
-	// composite "<channel>|<ts>" back so the bridge can mutate the
-	// binding row — exactly like Adapter.Send does for prose.
+	// Mutation guard: only echo the resolved composite peer-id when the
+	// bind STARTED channel-only AND the post is on a channel (not DM).
+	// When the bind was already composite (e.g. "C123|<thread_ts>"), the
+	// post uses MsgOptionTS(threadTS) and lands INSIDE that thread; the
+	// returned `ts` is the new MESSAGE'S ts (different from the thread
+	// ts) — mutating to that would BREAK subsequent inbound routing
+	// because the reviewer's reply arrives keyed by the THREAD ts, not
+	// the message ts. See bridge-question-binding-anchoring scenario
+	// "Subsequent question in the same thread is a no-op for the binding".
+	if parsed.ThreadTS != "" || IsDM(parsed.ChannelID) {
+		return "", nil
+	}
 	resolved := FormatPeerID(Peer{ChannelID: parsed.ChannelID, ThreadTS: ts})
 	return resolved, nil
 }
@@ -331,6 +338,11 @@ func (a *Adapter) SendInteractiveMultiSelect(ctx context.Context, peer bridge.Pe
 	_, ts, err := a.api.PostMessageContext(ctx, parsed.ChannelID, opts...)
 	if err != nil {
 		return "", fmt.Errorf("slack: SendInteractiveMultiSelect: %w", err)
+	}
+	// Same guard as SendInteractiveQuestion: only mutate when bind
+	// started channel-only.
+	if parsed.ThreadTS != "" || IsDM(parsed.ChannelID) {
+		return "", nil
 	}
 	resolved := FormatPeerID(Peer{ChannelID: parsed.ChannelID, ThreadTS: ts})
 	return resolved, nil
