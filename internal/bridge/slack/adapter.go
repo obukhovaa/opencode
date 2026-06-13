@@ -258,7 +258,11 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 	}
 	actions := slackgo.NewActionBlock("router_question", buttons...)
 
-	opts := []slackgo.MsgOption{slackgo.MsgOptionBlocks(header, actions)}
+	blocks := []slackgo.Block{header, actions}
+	if choices[0].Custom {
+		blocks = append(blocks, customAnswerHintBlock())
+	}
+	opts := []slackgo.MsgOption{slackgo.MsgOptionBlocks(blocks...)}
 	if parsed.ThreadTS != "" {
 		opts = append(opts, slackgo.MsgOptionTS(parsed.ThreadTS))
 	}
@@ -331,7 +335,11 @@ func (a *Adapter) SendInteractiveMultiSelect(ctx context.Context, peer bridge.Pe
 	)
 	actions := slackgo.NewActionBlock("router_multi", multi, applyBtn)
 
-	opts := []slackgo.MsgOption{slackgo.MsgOptionBlocks(header, actions)}
+	blocks := []slackgo.Block{header, actions}
+	if choices[0].Custom {
+		blocks = append(blocks, customAnswerHintBlock())
+	}
+	opts := []slackgo.MsgOption{slackgo.MsgOptionBlocks(blocks...)}
 	if parsed.ThreadTS != "" {
 		opts = append(opts, slackgo.MsgOptionTS(parsed.ThreadTS))
 	}
@@ -480,6 +488,53 @@ func (a *Adapter) handleInteractiveCallback(ctx context.Context, callback slackg
 		AuthorID:   callback.User.ID,
 		ReceivedAt: time.Now().UnixMilli(),
 	})
+
+	// Replace the actionable widget with a confirmation. Inbound has
+	// already been pushed; update failure is non-fatal — log warn and
+	// move on. See spec: bridge-question-answered-widget-update.
+	a.updateAnsweredWidget(ctx, callback, value)
+}
+
+// updateAnsweredWidget rewrites the question message to drop its
+// actions block and add a "✓ Answered: …" confirmation section.
+// Selected labels for multi-select come from the comma-joined `value`
+// the caller already produced for the inbound.
+func (a *Adapter) updateAnsweredWidget(ctx context.Context, callback slackgo.InteractionCallback, value string) {
+	if callback.Container.ChannelID == "" || callback.Container.MessageTs == "" {
+		return
+	}
+	labels := splitMultiSelectValue(value)
+	originalBlocks := callback.Message.Blocks.BlockSet
+	fallback := callback.Message.Text
+	newBlocks := buildAnsweredBlocks(originalBlocks, fallback, labels)
+	_, _, _, err := a.api.UpdateMessageContext(ctx,
+		callback.Container.ChannelID,
+		callback.Container.MessageTs,
+		slackgo.MsgOptionBlocks(newBlocks...),
+	)
+	if err != nil {
+		logging.Warn("bridge: slack answered widget update failed",
+			"channel", callback.Container.ChannelID,
+			"ts", callback.Container.MessageTs,
+			"err", err,
+		)
+	}
+}
+
+// splitMultiSelectValue splits the comma-joined Apply value back into
+// labels; single-select inbounds carry one element.
+func splitMultiSelectValue(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, strings.TrimSpace(value))
+	}
+	return out
 }
 
 // collectMultiSelectAnswers extracts the selected values from a multi-

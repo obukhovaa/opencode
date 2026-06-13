@@ -223,6 +223,46 @@ func (a *Adapter) renderStatus(ctx context.Context, peer bridge.PeerRef, hint *b
 	return bridge.SendResult{Delivered: true, ResolvedPeer: resolved}
 }
 
+// customAnswerHintBlock returns the discoverability hint appended to a
+// question widget when prompt.Custom == true — a context block that
+// tells the reviewer they can type their own answer instead of clicking.
+// See spec: bridge-question-custom-answer-hint.
+func customAnswerHintBlock() slackgo.Block {
+	return slackgo.NewContextBlock("router_q_hint",
+		slackgo.NewTextBlockObject(slackgo.MarkdownType,
+			"💬 Or type your own answer in this thread (@-mention the bot if in a channel)",
+			false, false))
+}
+
+// buildAnsweredBlocks composes the Block Kit replacement for a question
+// widget after the reviewer answers. Preserves the original prompt
+// section (first SectionBlock from the original message) and appends a
+// confirmation section that lists the selected labels. The actions block
+// is dropped — re-clicking is no longer possible.
+//
+// originalBlocks is the slice from callback.Message.Blocks. When the
+// first block isn't a SectionBlock (defensive — adapter writes
+// section-then-actions today), the helper synthesises a section from the
+// callback's fallback text via promptFallback.
+func buildAnsweredBlocks(originalBlocks []slackgo.Block, promptFallback string, selectedLabels []string) []slackgo.Block {
+	confirmation := slackgo.NewSectionBlock(
+		slackgo.NewTextBlockObject(slackgo.MarkdownType,
+			fmt.Sprintf("✓ Answered: %s", strings.Join(selectedLabels, ", ")),
+			false, false),
+		nil, nil,
+	)
+	for _, b := range originalBlocks {
+		if section, ok := b.(*slackgo.SectionBlock); ok {
+			return []slackgo.Block{section, confirmation}
+		}
+	}
+	fallback := slackgo.NewSectionBlock(
+		slackgo.NewTextBlockObject(slackgo.MarkdownType, promptFallback, false, false),
+		nil, nil,
+	)
+	return []slackgo.Block{fallback, confirmation}
+}
+
 // buildToolCallBlocks composes the Block Kit blocks for a pending
 // tool call. Header line includes a spinner glyph and ID suffix;
 // params (if any) appear in a context block beneath.

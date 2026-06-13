@@ -7,12 +7,27 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/question"
 )
+
+const (
+	recentlyAnsweredTTL           = 30 * time.Second
+	recentlyAnsweredSweepInterval = 10 * time.Second
+)
+
+// answeredKey is the cache key for stale-click suppression. The triple
+// (projectID, sessionID, label) lets a future multi-project Service stay
+// collision-safe while keeping the lookup a single sync.Map hit.
+type answeredKey struct {
+	projectID string
+	sessionID string
+	label     string
+}
 
 // QuestionRouter watches the question.Service broker for new Request
 // events, surfaces them to the chat surface for any session that has at
@@ -28,6 +43,12 @@ type QuestionRouter struct {
 
 	mu      sync.Mutex
 	pending map[string]*pendingQuestion // sessionID → pending
+
+	// recentlyAnswered caches answered (projectID, sessionID, label) → time
+	// for the stale-click suppression window. Populated on Reply, swept on
+	// a 10s tick, evicting entries older than recentlyAnsweredTTL.
+	// See spec: bridge-question-stale-click-suppression.
+	recentlyAnswered sync.Map
 }
 
 // pendingQuestion is what the router remembers between Publish and
@@ -48,8 +69,80 @@ func (s *Service) newQuestionRouter() *QuestionRouter {
 	}
 	if s.app != nil && s.app.Questions != nil {
 		s.launchSupervised("question-router", r.run)
+		s.launchSupervised("question-stale-cache-sweeper", r.runSweeper)
 	}
 	return r
+}
+
+// runSweeper evicts recentlyAnswered entries older than the TTL. Stops
+// when the service context cancels.
+func (r *QuestionRouter) runSweeper(ctx context.Context) {
+	ticker := time.NewTicker(recentlyAnsweredSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			r.sweepRecentlyAnswered(now, recentlyAnsweredTTL)
+		}
+	}
+}
+
+// sweepRecentlyAnswered deletes entries older than ttl as of now. Split
+// from runSweeper so tests can drive eviction deterministically.
+func (r *QuestionRouter) sweepRecentlyAnswered(now time.Time, ttl time.Duration) {
+	cutoff := now.Add(-ttl)
+	r.recentlyAnswered.Range(func(k, v any) bool {
+		if ts, ok := v.(time.Time); ok && ts.Before(cutoff) {
+			r.recentlyAnswered.Delete(k)
+		}
+		return true
+	})
+}
+
+// rememberAnswers stores every label from a successful Reply into the
+// stale-click cache so subsequent inbounds matching the same label get
+// swallowed for the TTL window.
+func (r *QuestionRouter) rememberAnswers(sessionID string, answers [][]string) {
+	now := time.Now()
+	for _, row := range answers {
+		for _, label := range row {
+			label = strings.TrimSpace(label)
+			if label == "" {
+				continue
+			}
+			r.recentlyAnswered.Store(answeredKey{
+				projectID: r.svc.projectID,
+				sessionID: sessionID,
+				label:     label,
+			}, now)
+		}
+	}
+}
+
+// wasRecentlyAnswered reports whether the inbound text matches a cached
+// answer for the session within the TTL. Returns the cached entry's age
+// for log context when true.
+func (r *QuestionRouter) wasRecentlyAnswered(sessionID, text string) (time.Duration, bool) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0, false
+	}
+	v, ok := r.recentlyAnswered.Load(answeredKey{
+		projectID: r.svc.projectID,
+		sessionID: sessionID,
+		label:     text,
+	})
+	if !ok {
+		return 0, false
+	}
+	ts, _ := v.(time.Time)
+	age := time.Since(ts)
+	if age > recentlyAnsweredTTL {
+		return age, false
+	}
+	return age, true
 }
 
 // run subscribes to question.Service.Subscribe and forwards each new
@@ -169,6 +262,7 @@ func (r *QuestionRouter) tryInteractiveSend(ctx context.Context, peer bridge.Pee
 	if adapter == nil {
 		return "", errors.New("no adapter")
 	}
+	custom := prompt.IsCustomEnabled()
 	choices := make([]bridge.QuestionChoice, 0, len(prompt.Options))
 	for _, opt := range prompt.Options {
 		choices = append(choices, bridge.QuestionChoice{
@@ -176,7 +270,8 @@ func (r *QuestionRouter) tryInteractiveSend(ctx context.Context, peer bridge.Pee
 			// Value MUST be the canonical answer label so the
 			// inbound-reply parser (parseQuestionAnswers) maps it
 			// back to a choice without any extra decoding.
-			Value: opt.Label,
+			Value:  opt.Label,
+			Custom: custom,
 		})
 	}
 	// Multi-select path: gated on prompt.Multiple + >= 2 options + adapter
@@ -205,12 +300,22 @@ func (r *QuestionRouter) tryInteractiveSend(ctx context.Context, peer bridge.Pee
 func (r *QuestionRouter) TryHandleQuestionReply(ctx context.Context, sessionID string, in bridge.Inbound) bool {
 	r.mu.Lock()
 	pending, ok := r.pending[sessionID]
+	if ok {
+		delete(r.pending, sessionID)
+	}
+	r.mu.Unlock()
+
 	if !ok {
-		r.mu.Unlock()
+		// No pending question — check the stale-click cache. A reviewer
+		// who clicks the same button twice (or whose adapter delivers a
+		// buffered callback after Reply consumed the question) lands here.
+		if age, hit := r.wasRecentlyAnswered(sessionID, in.Text); hit {
+			logging.Info("bridge: stale answer suppressed",
+				"session", sessionID, "label", strings.TrimSpace(in.Text), "age", age)
+			return true
+		}
 		return false
 	}
-	delete(r.pending, sessionID)
-	r.mu.Unlock()
 
 	if r.svc.app == nil || r.svc.app.Questions == nil {
 		return false
@@ -221,13 +326,19 @@ func (r *QuestionRouter) TryHandleQuestionReply(ctx context.Context, sessionID s
 			"session", sessionID, "reqID", pending.requestID, "err", err)
 		return false
 	}
+	r.rememberAnswers(sessionID, answers)
 	return true
 }
 
 // renderQuestionPrompt formats one or more question.Prompt entries as
 // numbered-option chat text. Format mirrors the TS bridge's fallback
 // rendering so the user experience is unchanged.
+//
+// When at least one prompt has Custom enabled, the text ends with a
+// trailing clause that surfaces the "type your own answer" affordance
+// per bridge-question-custom-answer-hint (text-fallback path).
 func renderQuestionPrompt(prompts []question.Prompt) string {
+	anyCustom := false
 	var buf strings.Builder
 	for i, p := range prompts {
 		if i > 0 {
@@ -242,7 +353,17 @@ func renderQuestionPrompt(prompts []question.Prompt) string {
 			}
 		}
 		if p.IsCustomEnabled() {
-			buf.WriteString("\n(or type a custom answer)")
+			anyCustom = true
+		}
+	}
+	// Trailing instruction clause. Adapt the wording to whether typed
+	// custom answers are accepted on any of the prompts.
+	if len(prompts) > 0 && len(prompts[0].Options) > 0 {
+		buf.WriteString("\n\n")
+		if anyCustom {
+			buf.WriteString("Reply with the number of your choice — or type your own answer.")
+		} else {
+			buf.WriteString("Reply with the number of your choice.")
 		}
 	}
 	return buf.String()
