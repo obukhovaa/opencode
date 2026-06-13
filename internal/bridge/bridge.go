@@ -146,6 +146,11 @@ type AdapterStatus struct {
 type QuestionChoice struct {
 	Label string
 	Value string
+	// Custom is a per-prompt flag replicated on every choice (the bridge's
+	// question router sets it from `Prompt.IsCustomEnabled`). Adapters
+	// read `choices[0].Custom` to decide whether to render the
+	// "type your own answer" hint per bridge-question-custom-answer-hint.
+	Custom bool
 }
 
 // InteractiveQuestionSender is an OPTIONAL contract per-platform

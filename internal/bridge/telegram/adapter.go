@@ -317,9 +317,10 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 	}
 	markup := &models.InlineKeyboardMarkup{InlineKeyboard: rows}
 
+	text := appendCustomAnswerHint(prompt, choices[0].Custom)
 	_, err = a.bot.SendMessage(ctx, &tgbot.SendMessageParams{
 		ChatID:      chatID,
-		Text:        prompt,
+		Text:        text,
 		ReplyMarkup: markup,
 	})
 	if err != nil {
@@ -360,9 +361,10 @@ func (a *Adapter) SendInteractiveMultiSelect(ctx context.Context, peer bridge.Pe
 
 	rows := buildMultiSelectKeyboard(choices, nil)
 	markup := &models.InlineKeyboardMarkup{InlineKeyboard: rows}
+	text := appendCustomAnswerHint(prompt, choices[0].Custom)
 	msg, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{
 		ChatID:      chatID,
-		Text:        prompt,
+		Text:        text,
 		ReplyMarkup: markup,
 	})
 	if err != nil {
@@ -446,6 +448,58 @@ func (a *Adapter) handleCallbackQuery(ctx context.Context, cb *models.CallbackQu
 		AuthorID:   strconv.FormatInt(cb.From.ID, 10),
 		ReceivedAt: time.Now().UnixMilli(),
 	})
+
+	// Replace the inline keyboard + prefix the prompt with a confirmation
+	// so the reviewer cannot re-click. Inbound was already pushed; update
+	// failures are non-fatal. See bridge-question-answered-widget-update.
+	a.updateAnsweredWidget(ctx, msg, []string{cb.Data})
+}
+
+// appendCustomAnswerHint adds the "type your own answer" discoverability
+// suffix when the prompt allows custom answers. The hint is italicised
+// and separated from the prompt by a blank line per
+// bridge-question-custom-answer-hint.
+func appendCustomAnswerHint(prompt string, custom bool) string {
+	if !custom {
+		return prompt
+	}
+	return prompt + "\n\n_Or reply with your own answer._"
+}
+
+// updateAnsweredWidget removes a question message's inline keyboard and
+// rewrites its text with a "✓ Answered: <labels>" prefix. Both API calls
+// are best-effort: failure logs warn-level but never propagates.
+func (a *Adapter) updateAnsweredWidget(ctx context.Context, msg *models.Message, labels []string) {
+	if msg == nil || msg.Chat.ID == 0 {
+		return
+	}
+	clean := make([]string, 0, len(labels))
+	for _, l := range labels {
+		if l = strings.TrimSpace(l); l != "" {
+			clean = append(clean, l)
+		}
+	}
+	if len(clean) == 0 {
+		return
+	}
+	_, err := a.bot.EditMessageReplyMarkup(ctx, &tgbot.EditMessageReplyMarkupParams{
+		ChatID:    msg.Chat.ID,
+		MessageID: msg.ID,
+	})
+	if err != nil {
+		logging.Warn("telegram: clear keyboard for answered widget failed",
+			"message_id", msg.ID, "err", err)
+	}
+	newText := fmt.Sprintf("✓ Answered: %s\n\n%s", strings.Join(clean, ", "), msg.Text)
+	_, err = a.bot.EditMessageText(ctx, &tgbot.EditMessageTextParams{
+		ChatID:    msg.Chat.ID,
+		MessageID: msg.ID,
+		Text:      newText,
+	})
+	if err != nil {
+		logging.Warn("telegram: prefix answered widget text failed",
+			"message_id", msg.ID, "err", err)
+	}
 }
 
 // handleMultiSelectCallback owns the toggle/submit lifecycle for a
@@ -481,14 +535,13 @@ func (a *Adapter) handleMultiSelectCallback(ctx context.Context, cb *models.Call
 		// Clear state regardless of whether anything was selected — the
 		// submit click consumes the message-state binding.
 		a.multiSelectStates().delete(msg.ID)
-		// Remove the keyboard so the reviewer sees the question is
-		// resolved. Best-effort; failure leaves the keyboard up but
-		// state is already cleared so further clicks no-op.
-		_, _ = a.bot.EditMessageReplyMarkup(ctx, &tgbot.EditMessageReplyMarkupParams{
-			ChatID:    msg.Chat.ID,
-			MessageID: msg.ID,
-		})
 		if len(selected) == 0 {
+			// Nothing selected — just clear the keyboard, no inbound, no
+			// confirmation text (there's no answer to confirm).
+			_, _ = a.bot.EditMessageReplyMarkup(ctx, &tgbot.EditMessageReplyMarkupParams{
+				ChatID:    msg.Chat.ID,
+				MessageID: msg.ID,
+			})
 			return
 		}
 		chatID := strconv.FormatInt(msg.Chat.ID, 10)
@@ -502,6 +555,16 @@ func (a *Adapter) handleMultiSelectCallback(ctx context.Context, cb *models.Call
 			AuthorID:   strconv.FormatInt(cb.From.ID, 10),
 			ReceivedAt: time.Now().UnixMilli(),
 		})
+		// Map state values → display labels for the confirmation prefix.
+		labels := make([]string, 0, len(selected))
+		for _, v := range selected {
+			if lbl, ok := entry.Labels[v]; ok && lbl != "" {
+				labels = append(labels, lbl)
+			} else {
+				labels = append(labels, v)
+			}
+		}
+		a.updateAnsweredWidget(ctx, msg, labels)
 		return
 	}
 	// Toggle: "ms:t:<i>"

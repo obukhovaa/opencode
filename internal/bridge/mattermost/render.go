@@ -77,6 +77,14 @@ const MultiSelectMaxOptions = 50
 // HTTP mux). For this change we render the widget but the handler stub
 // is documented in tasks/9.2 — the action_url SHOULD point at
 // /router/mattermost/interactive once that route exists.
+//
+// TODO(chat-bridge-question-answered-state Phase D): once the attachment-
+// action POST handler lands per `chat-bridge-rich-rendering` §9.2, it MUST
+// also reshape the attachment after the answer is consumed — remove the
+// `actions` array and set `pretext: "✓ Answered: <labels>"` — by calling
+// `client.UpdatePost`. The widget-update contract from
+// `bridge-question-answered-widget-update` applies symmetrically across
+// Slack, Telegram, and Mattermost.
 func (a *Adapter) SendInteractiveMultiSelect(ctx context.Context, peer bridge.PeerRef, prompt string, choices []bridge.QuestionChoice) (string, error) {
 	parsed := ParsePeerID(peer.PeerID)
 	if parsed.ChannelID == "" {
@@ -88,30 +96,7 @@ func (a *Adapter) SendInteractiveMultiSelect(ctx context.Context, peer bridge.Pe
 	if len(choices) > MultiSelectMaxOptions {
 		return "", fmt.Errorf("mattermost: too many options for multi-select")
 	}
-	options := make([]map[string]any, 0, len(choices))
-	for _, c := range choices {
-		options = append(options, map[string]any{
-			"text":  c.Label,
-			"value": c.Value,
-		})
-	}
-	action := map[string]any{
-		"name":        "router_multi_select",
-		"type":        "select",
-		"multiselect": true,
-		"options":     options,
-		// Integration is Mattermost's webhook target. Leave url empty
-		// for now; the handler registration is tracked under
-		// bridge-question-multi-select tasks Phase D §9.2.
-		"integration": map[string]any{
-			"url": "",
-		},
-	}
-	att := map[string]any{
-		"color":   "#0066cc",
-		"pretext": prompt,
-		"actions": []map[string]any{action},
-	}
+	att := buildMultiSelectAttachment(prompt, choices)
 	props := map[string]any{"attachments": []map[string]any{att}}
 	post, err := a.client.CreatePost(ctx, CreatePostInput{
 		ChannelID: parsed.ChannelID,
@@ -285,6 +270,37 @@ func (a *Adapter) renderStatus(ctx context.Context, peer bridge.PeerRef, hint *b
 }
 
 // --- attachment builders ----------------------------------------------------
+
+// buildMultiSelectAttachment composes the Slack-compatible attachment
+// dict for a multi-select question widget. Extracted so unit tests can
+// assert on shape without driving the full SendInteractiveMultiSelect
+// flow. The Custom flag on the first choice gates the discoverability
+// `footer` per bridge-question-custom-answer-hint.
+func buildMultiSelectAttachment(prompt string, choices []bridge.QuestionChoice) map[string]any {
+	options := make([]map[string]any, 0, len(choices))
+	for _, c := range choices {
+		options = append(options, map[string]any{
+			"text":  c.Label,
+			"value": c.Value,
+		})
+	}
+	action := map[string]any{
+		"name":        "router_multi_select",
+		"type":        "select",
+		"multiselect": true,
+		"options":     options,
+		"integration": map[string]any{"url": ""},
+	}
+	att := map[string]any{
+		"color":   "#0066cc",
+		"pretext": prompt,
+		"actions": []map[string]any{action},
+	}
+	if len(choices) > 0 && choices[0].Custom {
+		att["footer"] = "💬 Or reply in this thread (@-mention required)"
+	}
+	return att
+}
 
 func buildToolCallAttachment(hint *bridge.RenderHint) map[string]any {
 	att := map[string]any{

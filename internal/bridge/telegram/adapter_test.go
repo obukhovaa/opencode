@@ -20,17 +20,32 @@ import (
 // captures requests so tests can assert what was sent without going
 // through the real Telegram service.
 type mockTelegramServer struct {
-	t       *testing.T
-	server  *httptest.Server
-	mu      sync.Mutex
-	sendMsg []sendCall
-	sendPh  []sendCall
-	sendAud []sendCall
-	sendDoc []sendCall
-	getFile []string
+	t                 *testing.T
+	server            *httptest.Server
+	mu                sync.Mutex
+	sendMsg           []sendCall
+	sendPh            []sendCall
+	sendAud           []sendCall
+	sendDoc           []sendCall
+	getFile           []string
+	editMessageText   []editTextCall
+	editMessageMarkup []editMarkupCall
 	// fileBody is what the adapter receives when downloading inbound
 	// files (the /file/bot<token>/<path> endpoint).
 	fileBody string
+}
+
+type editTextCall struct {
+	ChatID    string
+	MessageID string
+	Text      string
+}
+
+type editMarkupCall struct {
+	ChatID    string
+	MessageID string
+	// Markup is the raw reply_markup form value (empty when keyboard cleared).
+	Markup string
 }
 
 type sendCall struct {
@@ -119,6 +134,42 @@ func (m *mockTelegramServer) handleBotMethod(w http.ResponseWriter, r *http.Requ
 		m.sendDoc = append(m.sendDoc, call)
 		m.mu.Unlock()
 		m.respond(w, models.Message{ID: 4})
+	case "editMessageText":
+		call := editTextCall{}
+		if err := r.ParseMultipartForm(64 << 20); err == nil {
+			if vals := r.MultipartForm.Value["chat_id"]; len(vals) > 0 {
+				call.ChatID = vals[0]
+			}
+			if vals := r.MultipartForm.Value["message_id"]; len(vals) > 0 {
+				call.MessageID = vals[0]
+			}
+			if vals := r.MultipartForm.Value["text"]; len(vals) > 0 {
+				call.Text = vals[0]
+			}
+		}
+		m.mu.Lock()
+		m.editMessageText = append(m.editMessageText, call)
+		m.mu.Unlock()
+		m.respond(w, true)
+	case "editMessageReplyMarkup":
+		call := editMarkupCall{}
+		if err := r.ParseMultipartForm(64 << 20); err == nil {
+			if vals := r.MultipartForm.Value["chat_id"]; len(vals) > 0 {
+				call.ChatID = vals[0]
+			}
+			if vals := r.MultipartForm.Value["message_id"]; len(vals) > 0 {
+				call.MessageID = vals[0]
+			}
+			if vals := r.MultipartForm.Value["reply_markup"]; len(vals) > 0 {
+				call.Markup = vals[0]
+			}
+		}
+		m.mu.Lock()
+		m.editMessageMarkup = append(m.editMessageMarkup, call)
+		m.mu.Unlock()
+		m.respond(w, true)
+	case "answerCallbackQuery":
+		m.respond(w, true)
 	default:
 		http.Error(w, "unknown method "+method, http.StatusNotFound)
 	}
