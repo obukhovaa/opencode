@@ -74,6 +74,17 @@ type SlackIdentity struct {
 	AppToken      string `json:"appToken,omitempty"`
 	Enabled       bool   `json:"enabled"`
 	GroupsEnabled bool   `json:"groupsEnabled,omitempty"`
+	// Access is "private" or "public". In private mode the adapter only
+	// accepts inbound from peers in PeerAllowlist (seeded into
+	// bridge_allowlist at Service.Start). Default (empty or "public")
+	// preserves today's accept-all behaviour. See spec:
+	// slack-inbound-allowlist.
+	Access string `json:"access,omitempty"`
+	// PeerAllowlist is the static seed of authorised peer identifiers
+	// for this Slack identity when Access == "private". Accepted shapes:
+	// user IDs ("U…"), DM channel IDs ("D…"), or channel IDs ("C…").
+	// Empty when Access is unset/public.
+	PeerAllowlist []string `json:"peerAllowlist,omitempty"`
 }
 
 // MattermostChannelConfig configures the Mattermost channel and its instance
@@ -90,6 +101,13 @@ type MattermostIdentity struct {
 	AccessToken   string `json:"accessToken,omitempty"`
 	Enabled       bool   `json:"enabled"`
 	GroupsEnabled bool   `json:"groupsEnabled,omitempty"`
+	// Access is "private" or "public" — same semantics as
+	// SlackIdentity.Access. See spec: mattermost-inbound-allowlist.
+	Access string `json:"access,omitempty"`
+	// PeerAllowlist is the static seed of authorised peer identifiers
+	// (26-char user IDs or channel IDs) for this Mattermost identity
+	// when Access == "private".
+	PeerAllowlist []string `json:"peerAllowlist,omitempty"`
 }
 
 // HasTokenBearingFields reports whether the config contains any token-bearing

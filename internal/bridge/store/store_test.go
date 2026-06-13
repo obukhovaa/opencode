@@ -339,6 +339,43 @@ func TestAllowlistRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSeedAllowlistInsertsOnce(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+
+	n, err := s.SeedAllowlist(ctx, "proj", "slack", "default", []string{"U1", "C2", ""})
+	if err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("first Seed inserted = %d, want 2 (empty entry skipped)", n)
+	}
+	// Subsequent run with same peers must report zero insertions.
+	n, err = s.SeedAllowlist(ctx, "proj", "slack", "default", []string{"U1", "C2"})
+	if err != nil {
+		t.Fatalf("Seed idempotent: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("idempotent re-Seed inserted = %d, want 0", n)
+	}
+	// Mixed (one new, one existing) inserts only the new one.
+	n, err = s.SeedAllowlist(ctx, "proj", "slack", "default", []string{"U1", "U3"})
+	if err != nil {
+		t.Fatalf("Seed mixed: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("mixed Seed inserted = %d, want 1", n)
+	}
+	entries, err := s.ListAllowlist(ctx, "proj", "slack", "default")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("final list size = %d, want 3", len(entries))
+	}
+}
+
 func TestProjectIDIsolation(t *testing.T) {
 	t.Parallel()
 	s, db := newTestStore(t)

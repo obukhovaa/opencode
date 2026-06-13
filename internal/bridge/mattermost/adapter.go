@@ -40,8 +40,10 @@ type Adapter struct {
 	serverURL     string
 	accessToken   string
 	groupsEnabled bool
+	access        string
 	mediaDir      string
 	maxFileSize   int64
+	allowlist     bridge.AllowlistChecker
 
 	client        *Client
 	dialer        *websocket.Dialer
@@ -80,7 +82,15 @@ type Identity struct {
 	ServerURL     string
 	AccessToken   string
 	GroupsEnabled bool
+	// Access is "private" or empty/public. In private mode the adapter
+	// gates inbound against the bridge_allowlist table. See spec:
+	// mattermost-inbound-allowlist.
+	Access string
 }
+
+// AccessPrivate is the Identity.Access value that enables per-peer
+// inbound gating; empty or any other string is treated as public.
+const AccessPrivate = "private"
 
 // Options bundles construction-time knobs. HTTPClient and Dialer default to
 // sensible production choices but tests typically override them.
@@ -97,6 +107,10 @@ type Options struct {
 	// .opencode.json or via a future identity-CRUD field. Zero falls
 	// back to DefaultMaxFileSize.
 	MaxFileSize int64
+	// Allowlisted is consulted at dispatchPosted when the identity is
+	// configured for private access. Nil checker in private mode is
+	// treated as public with a warn at startup.
+	Allowlisted bridge.AllowlistChecker
 }
 
 // New constructs an Adapter from the supplied identity. ServerURL and
@@ -119,8 +133,10 @@ func New(id Identity, opts Options) (*Adapter, error) {
 		serverURL:     url,
 		accessToken:   tok,
 		groupsEnabled: id.GroupsEnabled,
+		access:        id.Access,
 		mediaDir:      opts.MediaDir,
 		maxFileSize:   maxFileSize,
+		allowlist:     opts.Allowlisted,
 		client:        NewClient(url, tok, opts.HTTPClient),
 		dialer:        opts.Dialer,
 	}
@@ -129,6 +145,10 @@ func New(id Identity, opts Options) (*Adapter, error) {
 	}
 	a.statusVal.Store("disabled")
 	a.lastError.Store("")
+	if id.Access == AccessPrivate && opts.Allowlisted == nil {
+		logging.Warn("mattermost: private mode set but no allowlist checker — treating as public",
+			"identity", id.ID)
+	}
 	return a, nil
 }
 
@@ -266,6 +286,32 @@ func (a *Adapter) readLoop(ctx context.Context, inbound chan<- bridge.Inbound) e
 	}
 }
 
+// isInboundAllowed reports whether an inbound from (peerID, authorID,
+// channelID) is permitted. Public mode (default) always allows. Private
+// mode with no checker fails-open (logged warn at construction). Private
+// mode with a checker tries the peer-id, then the author-id, then the
+// channel-id in turn.
+func (a *Adapter) isInboundAllowed(ctx context.Context, peerID, authorID, channelID string) bool {
+	if a.access != AccessPrivate || a.allowlist == nil {
+		return true
+	}
+	for _, c := range []string{peerID, authorID, channelID} {
+		if c == "" {
+			continue
+		}
+		ok, err := a.allowlist(ctx, c)
+		if err != nil {
+			logging.Warn("mattermost: allowlist lookup failed — failing closed",
+				"identity", a.identityID, "identifier", c, "err", err)
+			return false
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
 // dispatchPosted converts a "posted" WS event to a bridge.Inbound and
 // pushes it onto the supplied channel. Per the spec, bot/webhook posts are
 // filtered; channels require groupsEnabled + @mention; unknown channel
@@ -329,6 +375,11 @@ func (a *Adapter) dispatchPosted(ctx context.Context, ev WSEvent, inbound chan<-
 		Channel:  "mattermost",
 		Identity: a.identityID,
 		PeerID:   FormatPeerID(Peer{ChannelID: post.ChannelID, RootPostID: rootPost}),
+	}
+	if !a.isInboundAllowed(ctx, peer.PeerID, post.UserID, post.ChannelID) {
+		logging.Info("mattermost: inbound dropped — not allowlisted",
+			"identity", a.identityID, "peer_id", peer.PeerID, "author_id", post.UserID, "channel", post.ChannelID)
+		return
 	}
 
 	in := bridge.Inbound{

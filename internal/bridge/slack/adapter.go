@@ -38,7 +38,15 @@ type Identity struct {
 	BotToken      string // xoxb-...
 	AppToken      string // xapp-... (Socket Mode app-level token)
 	GroupsEnabled bool   // accept messages in public/private channels (not just DMs); spec calls this out as per-identity
+	// Access is "private" or "public" (default). In private mode the
+	// adapter gates inbound against the bridge_allowlist table for this
+	// identity. See spec: slack-inbound-allowlist.
+	Access string
 }
+
+// AccessPrivate is the Identity.Access value that enables per-peer
+// inbound gating. Empty or any other string is treated as public.
+const AccessPrivate = "private"
 
 // Options bundles construction-time knobs. Tests use APIURL +
 // HTTPClient to point the REST surface at an httptest.Server; production
@@ -47,12 +55,18 @@ type Options struct {
 	APIURL     string
 	HTTPClient *http.Client
 	MediaDir   string
+	// Allowlisted is consulted at the inbound entry points when the
+	// identity's Access == "private". Adapters that receive a nil
+	// callback in private mode treat the bot as public and log warn
+	// once at startup — they MUST NOT silently drop all inbound.
+	Allowlisted bridge.AllowlistChecker
 }
 
 // Adapter is the bridge.Adapter implementation for one Slack app identity.
 type Adapter struct {
-	id       Identity
-	mediaDir string
+	id        Identity
+	mediaDir  string
+	allowlist bridge.AllowlistChecker
 
 	api    *slackgo.Client
 	socket *socketmode.Client
@@ -111,14 +125,22 @@ func New(id Identity, opts Options) (*Adapter, error) {
 	smc := socketmode.New(api)
 
 	a := &Adapter{
-		id:       id,
-		mediaDir: opts.MediaDir,
-		api:      api,
-		socket:   smc,
+		id:        id,
+		mediaDir:  opts.MediaDir,
+		allowlist: opts.Allowlisted,
+		api:       api,
+		socket:    smc,
 	}
 	a.statusVal.Store("disabled")
 	a.lastError.Store("")
 	a.botUserID.Store("")
+	if id.Access == AccessPrivate && opts.Allowlisted == nil {
+		// Fail-open guard: a private identity without a checker would
+		// otherwise drop every inbound. One warn-level breadcrumb is
+		// enough — the operator sees it at boot.
+		logging.Warn("slack: private mode set but no allowlist checker — treating as public",
+			"identity", id.ID)
+	}
 	return a, nil
 }
 
@@ -604,6 +626,11 @@ func (a *Adapter) handleMessageEvent(ctx context.Context, ev *slackevents.Messag
 	}
 
 	peerID := FormatPeerID(Peer{ChannelID: ev.Channel, ThreadTS: ev.ThreadTimeStamp})
+	if !a.isInboundAllowed(ctx, peerID, ev.User, ev.Channel) {
+		logging.Info("slack: inbound dropped — not allowlisted",
+			"identity", a.id.ID, "peer_id", peerID, "author_id", ev.User, "channel", ev.Channel)
+		return
+	}
 	// MessageEvent's custom UnmarshalJSON normalises top-level fields
 	// (including `files`) into ev.Message, even for regular messages.
 	// See slackevents/inner_events.go's UnmarshalJSON.
@@ -654,6 +681,11 @@ func (a *Adapter) handleAppMention(ctx context.Context, ev *slackevents.AppMenti
 		rootTS = ev.TimeStamp
 	}
 	peerID := FormatPeerID(Peer{ChannelID: ev.Channel, ThreadTS: rootTS})
+	if !a.isInboundAllowed(ctx, peerID, ev.User, ev.Channel) {
+		logging.Info("slack: app-mention dropped — not allowlisted",
+			"identity", a.id.ID, "peer_id", peerID, "author_id", ev.User, "channel", ev.Channel)
+		return
+	}
 	atts := a.downloadFiles(ctx, peerID, ev.Files)
 	text := StripMention(ev.Text, a.BotUserID())
 	if text == "" && len(atts) == 0 {
@@ -671,6 +703,34 @@ func (a *Adapter) handleAppMention(ctx context.Context, ev *slackevents.AppMenti
 		AuthorID:    ev.User,
 		ReceivedAt:  time.Now().UnixMilli(),
 	})
+}
+
+// isInboundAllowed reports whether an inbound from (peerID, authorID,
+// channelID) is permitted. Public mode (default) always allows. Private
+// mode with no checker fails-open (and logged warn at construction).
+// Private mode with a checker tries the peer-id, then the author-id,
+// then the channel-id in turn — matching whichever shape the operator
+// chose for the allowlist seed.
+func (a *Adapter) isInboundAllowed(ctx context.Context, peerID, authorID, channelID string) bool {
+	if a.id.Access != AccessPrivate || a.allowlist == nil {
+		return true
+	}
+	candidates := []string{peerID, authorID, channelID}
+	for _, c := range candidates {
+		if c == "" {
+			continue
+		}
+		ok, err := a.allowlist(ctx, c)
+		if err != nil {
+			logging.Warn("slack: allowlist lookup failed — failing closed",
+				"identity", a.id.ID, "identifier", c, "err", err)
+			return false
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
 }
 
 // pushInbound forwards an Inbound onto the orchestrator's channel, with
