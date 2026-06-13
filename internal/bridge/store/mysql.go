@@ -164,6 +164,27 @@ func (s *mysqlStore) CountBindingsByIdentity(ctx context.Context, projectID, cha
 	return int(n), nil
 }
 
+func (s *mysqlStore) SeedAllowlist(ctx context.Context, projectID, channel, identityID string, peers []string) (int, error) {
+	inserted := 0
+	for _, p := range peers {
+		if p == "" {
+			continue
+		}
+		exists, err := s.IsAllowlisted(ctx, projectID, channel, identityID, p)
+		if err != nil {
+			return inserted, err
+		}
+		if exists {
+			continue
+		}
+		if err := s.AddAllowlistEntry(ctx, projectID, channel, identityID, p); err != nil {
+			return inserted, err
+		}
+		inserted++
+	}
+	return inserted, nil
+}
+
 func (s *mysqlStore) AddAllowlistEntry(ctx context.Context, projectID, channel, identityID, peerID string) error {
 	_, err := s.queries.AddBridgeAllowlistEntry(ctx, mysqldb.AddBridgeAllowlistEntryParams{
 		ProjectID:  projectID,

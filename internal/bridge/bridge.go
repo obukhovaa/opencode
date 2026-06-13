@@ -153,6 +153,19 @@ type QuestionChoice struct {
 	Custom bool
 }
 
+// AllowlistChecker reports whether the given peer / author / channel
+// identifier is authorised for inbound on a given identity. Adapters
+// receiving this callback consult it at the inbound entry point when
+// their identity is configured for `access: "private"`. The Service
+// implementation wires the callback to `Store.IsAllowlisted` for a
+// specific (projectID, channel, identityID) triple.
+//
+// `identifier` is matched as an exact string against the
+// `bridge_allowlist` table — callers MAY invoke it multiple times to
+// check different shapes (e.g. peerID, then authorID, then channel-id
+// prefix of a composite peer) per the per-adapter spec.
+type AllowlistChecker func(ctx context.Context, identifier string) (bool, error)
+
 // InteractiveQuestionSender is an OPTIONAL contract per-platform
 // adapters MAY satisfy to render a question with platform-native UI
 // (Slack interactive blocks, Telegram inline keyboards, etc).

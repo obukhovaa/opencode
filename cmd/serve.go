@@ -341,14 +341,21 @@ func newBridgeAdapterFactory(dataDir string, svc *bridgesvc.Service) bridgesvc.A
 				if a.ID != identityID {
 					continue
 				}
+				opts := slack.Options{MediaDir: mediaDir}
+				if svc != nil && svc.Store() != nil && a.Access == slack.AccessPrivate {
+					store := svc.Store()
+					projectID := svc.ProjectID()
+					opts.Allowlisted = func(ctx context.Context, identifier string) (bool, error) {
+						return store.IsAllowlisted(ctx, projectID, "slack", a.ID, identifier)
+					}
+				}
 				return slack.New(slack.Identity{
 					ID:            a.ID,
 					BotToken:      a.BotToken,
 					AppToken:      a.AppToken,
 					GroupsEnabled: a.GroupsEnabled,
-				}, slack.Options{
-					MediaDir: mediaDir,
-				})
+					Access:        a.Access,
+				}, opts)
 			}
 		case "mattermost":
 			if cfg.Channels.Mattermost == nil {
@@ -358,14 +365,21 @@ func newBridgeAdapterFactory(dataDir string, svc *bridgesvc.Service) bridgesvc.A
 				if m.ID != identityID {
 					continue
 				}
+				opts := mattermost.Options{MediaDir: mediaDir}
+				if svc != nil && svc.Store() != nil && m.Access == mattermost.AccessPrivate {
+					store := svc.Store()
+					projectID := svc.ProjectID()
+					opts.Allowlisted = func(ctx context.Context, identifier string) (bool, error) {
+						return store.IsAllowlisted(ctx, projectID, "mattermost", m.ID, identifier)
+					}
+				}
 				return mattermost.New(mattermost.Identity{
 					ID:            m.ID,
 					ServerURL:     m.ServerURL,
 					AccessToken:   m.AccessToken,
 					GroupsEnabled: m.GroupsEnabled,
-				}, mattermost.Options{
-					MediaDir: mediaDir,
-				})
+					Access:        m.Access,
+				}, opts)
 			}
 		}
 		return nil, fmt.Errorf("identity %s:%s not found in cfg", channel, identityID)

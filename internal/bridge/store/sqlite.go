@@ -147,6 +147,27 @@ func (s *sqliteStore) CountBindingsByIdentity(ctx context.Context, projectID, ch
 	return int(n), nil
 }
 
+func (s *sqliteStore) SeedAllowlist(ctx context.Context, projectID, channel, identityID string, peers []string) (int, error) {
+	inserted := 0
+	for _, p := range peers {
+		if p == "" {
+			continue
+		}
+		exists, err := s.IsAllowlisted(ctx, projectID, channel, identityID, p)
+		if err != nil {
+			return inserted, err
+		}
+		if exists {
+			continue
+		}
+		if err := s.AddAllowlistEntry(ctx, projectID, channel, identityID, p); err != nil {
+			return inserted, err
+		}
+		inserted++
+	}
+	return inserted, nil
+}
+
 func (s *sqliteStore) AddAllowlistEntry(ctx context.Context, projectID, channel, identityID, peerID string) error {
 	err := s.queries.AddBridgeAllowlistEntry(ctx, db.AddBridgeAllowlistEntryParams{
 		ProjectID:  projectID,

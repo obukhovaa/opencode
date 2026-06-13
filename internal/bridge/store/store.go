@@ -123,6 +123,13 @@ type Store interface {
 	// peer_id) tuple into the allowlist. Idempotent.
 	AddAllowlistEntry(ctx context.Context, projectID, channel, identityID, peerID string) error
 
+	// SeedAllowlist upserts every peerID in `peers` into bridge_allowlist
+	// for (projectID, channel, identityID). Existing rows are preserved
+	// (the operation is additive — config seeds never delete). Returns
+	// the count of rows actually inserted (vs. already-present skips).
+	// Used at Service.Start to load per-identity PeerAllowlist config.
+	SeedAllowlist(ctx context.Context, projectID, channel, identityID string, peers []string) (int, error)
+
 	// IsAllowlisted reports whether the given peer is on the allowlist
 	// for the given identity.
 	IsAllowlisted(ctx context.Context, projectID, channel, identityID, peerID string) (bool, error)

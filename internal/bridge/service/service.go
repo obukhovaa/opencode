@@ -234,6 +234,7 @@ func (s *Service) launchEnabledAdapters(ctx context.Context) {
 			if !a.Enabled {
 				continue
 			}
+			s.seedIdentityAllowlist(ctx, "slack", a.ID, a.Access, a.PeerAllowlist)
 			if err := s.LaunchAdapter(ctx, "slack", a.ID); err != nil {
 				logging.Warn("bridge: slack adapter launch failed",
 					"identity", a.ID, "err", err)
@@ -245,12 +246,31 @@ func (s *Service) launchEnabledAdapters(ctx context.Context) {
 			if !mm.Enabled {
 				continue
 			}
+			s.seedIdentityAllowlist(ctx, "mattermost", mm.ID, mm.Access, mm.PeerAllowlist)
 			if err := s.LaunchAdapter(ctx, "mattermost", mm.ID); err != nil {
 				logging.Warn("bridge: mattermost adapter launch failed",
 					"identity", mm.ID, "err", err)
 			}
 		}
 	}
+}
+
+// seedIdentityAllowlist upserts the operator-configured `peerAllowlist`
+// for a private identity into `bridge_allowlist`. No-op when the
+// identity is public OR has an empty list. Existing rows are preserved
+// — config is additive.
+func (s *Service) seedIdentityAllowlist(ctx context.Context, channel, identityID, access string, peers []string) {
+	if access != "private" || len(peers) == 0 || s.store == nil {
+		return
+	}
+	inserted, err := s.store.SeedAllowlist(ctx, s.projectID, channel, identityID, peers)
+	if err != nil {
+		logging.Warn("bridge: allowlist seed failed",
+			"channel", channel, "identity", identityID, "err", err)
+		return
+	}
+	logging.Info("bridge: allowlist seeded",
+		"channel", channel, "identity", identityID, "inserted", inserted, "total_config", len(peers))
 }
 
 // runInboundLoop drains the shared inboundCh and forwards each message
