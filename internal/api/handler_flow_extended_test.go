@@ -118,6 +118,9 @@ func TestFlowEventCarriesExtendedFields(t *testing.T) {
 		case ev := <-ch:
 			switch ev.Payload.Type {
 			case evFlowStepStarted:
+				if ev.Payload.FlowID != "x" {
+					t.Errorf("started FlowID = %q, want %q", ev.Payload.FlowID, "x")
+				}
 				if ev.Payload.Iteration != 1 {
 					t.Errorf("started Iteration = %d, want 1", ev.Payload.Iteration)
 				}
@@ -132,6 +135,9 @@ func TestFlowEventCarriesExtendedFields(t *testing.T) {
 				}
 				startedSeen = true
 			case evFlowStepCompleted:
+				if ev.Payload.FlowID != "x" {
+					t.Errorf("completed FlowID = %q, want %q", ev.Payload.FlowID, "x")
+				}
 				if !ev.Payload.IsStructOutput {
 					t.Errorf("completed IsStructOutput = false, want true")
 				}

@@ -396,6 +396,7 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 		fr.publishEvent(state, FlowEvent{
 			Type:           evFlowStepStarted,
 			RunID:          state.RunID,
+			FlowID:         state.FlowID,
 			StepID:         rec.ID,
 			SessionID:      rec.SessionID,
 			StartedAt:      now,
@@ -430,6 +431,7 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 		fr.publishEvent(state, FlowEvent{
 			Type:           evFlowStepCompleted,
 			RunID:          state.RunID,
+			FlowID:         state.FlowID,
 			StepID:         rec.ID,
 			SessionID:      rec.SessionID,
 			Output:         rec.Output,
@@ -446,6 +448,7 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 		fr.publishEvent(state, FlowEvent{
 			Type:           evFlowStepFailed,
 			RunID:          state.RunID,
+			FlowID:         state.FlowID,
 			StepID:         rec.ID,
 			Error:          rec.Error,
 			FailedAt:       now,
@@ -542,12 +545,14 @@ func (fr *flowRunner) finish(state *flowRunState, status flowRunStatus, errMsg s
 		fr.publishEvent(state, FlowEvent{
 			Type:        evFlowCompleted,
 			RunID:       state.RunID,
+			FlowID:      state.FlowID,
 			CompletedAt: state.completedAt,
 		})
 	} else {
 		fr.publishEvent(state, FlowEvent{
 			Type:     evFlowFailed,
 			RunID:    state.RunID,
+			FlowID:   state.FlowID,
 			Error:    errMsg,
 			FailedAt: state.completedAt,
 		})
