@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -471,9 +472,24 @@ func (w *WorkspaceWatcher) isPathWatched(path string) (bool, protocol.WatchKind)
 	w.registrationMu.RLock()
 	defer w.registrationMu.RUnlock()
 
-	// If no explicit registrations, watch everything
+	// No explicit registrations: fall back to the server's declared extensions
+	// (e.g. gopls handles .go/.mod/.sum, bashls handles .sh/.bash). Without this
+	// scope, every LSP would receive every file event — flooding e.g.
+	// bash-language-server with Go file notifications until its child process
+	// crashes and every subsequent write returns EPIPE.
 	if len(w.registrations) == 0 {
-		return true, protocol.WatchKind(protocol.WatchChange | protocol.WatchCreate | protocol.WatchDelete)
+		allKinds := protocol.WatchKind(protocol.WatchChange | protocol.WatchCreate | protocol.WatchDelete)
+		exts := w.client.GetExtensions()
+		if len(exts) == 0 {
+			// Server didn't declare extensions (custom LSP without registry
+			// metadata) — preserve the legacy "watch everything" behavior.
+			return true, allKinds
+		}
+		fileExt := strings.ToLower(filepath.Ext(path))
+		if slices.Contains(exts, fileExt) {
+			return true, allKinds
+		}
+		return false, 0
 	}
 
 	// Check each registration
