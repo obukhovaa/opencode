@@ -93,7 +93,7 @@ func TestFlowEventCarriesExtendedFields(t *testing.T) {
 	t.Parallel()
 	sessions := &stubSessions{
 		byID: map[string]session.Session{
-			"sess-1": {ID: "sess-1", Cost: 0.42, PromptTokens: 1234},
+			"sess-1": {ID: "sess-1", Cost: 0.42, PromptTokens: 1234, CompletionTokens: 766},
 		},
 	}
 	svc := newStubFlowService([]flow.FlowState{
@@ -124,8 +124,8 @@ func TestFlowEventCarriesExtendedFields(t *testing.T) {
 				if ev.Payload.Cost != 0.42 {
 					t.Errorf("started Cost = %v, want 0.42", ev.Payload.Cost)
 				}
-				if ev.Payload.ContextSize != 1234 {
-					t.Errorf("started ContextSize = %d, want 1234", ev.Payload.ContextSize)
+				if ev.Payload.ContextSize != 2000 {
+					t.Errorf("started ContextSize = %d, want 2000 (PromptTokens+CompletionTokens)", ev.Payload.ContextSize)
 				}
 				if ev.Payload.IsStructOutput {
 					t.Errorf("started IsStructOutput = true, want false")

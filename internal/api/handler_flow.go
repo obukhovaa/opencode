@@ -73,9 +73,13 @@ type FlowEvent struct {
 	// Looked up via session.Service.Get(state.SessionID).Cost. Zero when
 	// the session lookup fails (missing or service unavailable).
 	Cost float64 `json:"cost,omitempty"`
-	// ContextSize is the cumulative prompt tokens for the session at emit
-	// time. Looked up via session.Service.Get(state.SessionID).PromptTokens.
-	// Zero on lookup failure.
+	// ContextSize is the size of the LLM context window in use at emit
+	// time — i.e., the last turn's input + cache-creation tokens plus
+	// its output + cache-read tokens. Looked up via
+	// session.Service.Get(state.SessionID).{PromptTokens,CompletionTokens}.
+	// Mirrors the legacy `cmd/flow.go` accounting so live SSE-driven
+	// Slack updates match the post-completion values. Zero on lookup
+	// failure.
 	ContextSize int64 `json:"contextSize,omitempty"`
 }
 
@@ -485,7 +489,7 @@ func (fr *flowRunner) lookupSessionCost(sessionID string) (cost float64, context
 		}
 		return 0, 0
 	}
-	return sess.Cost, sess.PromptTokens
+	return sess.Cost, sess.PromptTokens + sess.CompletionTokens
 }
 
 // warnedSessionsCap bounds the warn-dedup set. Long-running serve
