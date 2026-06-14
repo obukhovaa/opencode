@@ -1,6 +1,8 @@
 package install
 
 import (
+	"path/filepath"
+
 	"github.com/opencode-ai/opencode/internal/config"
 )
 
@@ -46,12 +48,28 @@ func builtinByID() map[string]ServerDefinition {
 	return m
 }
 
+// builtinByCommand returns a lookup from binary basename (e.g.
+// "bash-language-server") to its built-in definition. Used as a fallback so
+// users who key their config under an alias (e.g. "bashls" instead of "bash")
+// still inherit the builtin's Extensions and install metadata.
+func builtinByCommand() map[string]ServerDefinition {
+	m := make(map[string]ServerDefinition, len(BuiltinServers))
+	for _, def := range BuiltinServers {
+		if len(def.Command) == 0 {
+			continue
+		}
+		m[filepath.Base(def.Command[0])] = def
+	}
+	return m
+}
+
 // ResolveServers returns only LSP servers explicitly configured by the user.
 // If a configured server matches a built-in, its defaults are merged.
 // Disabled servers are excluded from the result.
 func ResolveServers(cfg *config.Config) map[string]ResolvedServer {
 	result := make(map[string]ResolvedServer)
 	builtins := builtinByID()
+	builtinsByCmd := builtinByCommand()
 
 	for name, lspCfg := range cfg.LSP {
 		if lspCfg.Disabled {
@@ -60,7 +78,16 @@ func ResolveServers(cfg *config.Config) map[string]ResolvedServer {
 
 		var server ResolvedServer
 
-		if def, ok := builtins[name]; ok {
+		def, ok := builtins[name]
+		if !ok && lspCfg.Command != "" {
+			// Fallback: alias-keyed configs (e.g. "bashls" instead of "bash")
+			// still resolve to their builtin via the command binary basename.
+			// Without this, alias-keyed servers get Extensions=nil and the
+			// watcher falls back to "watch everything," flooding e.g.
+			// bash-language-server with events for files it can't handle.
+			def, ok = builtinsByCmd[filepath.Base(lspCfg.Command)]
+		}
+		if ok {
 			var initOpts any
 			if def.DefaultInit != nil {
 				initOpts = def.DefaultInit

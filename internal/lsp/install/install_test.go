@@ -164,6 +164,96 @@ func TestResolveServers_DisabledCustomServer(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// User keys their config under an alias ("bashls") instead of the builtin ID
+// ("bash"). The command field points at the right binary, so the resolver
+// should still merge the builtin's Extensions and install metadata.
+func TestResolveServers_AliasResolvesByCommand(t *testing.T) {
+	cfg := &config.Config{
+		LSP: map[string]config.LSPConfig{
+			"bashls": {
+				Command: "bash-language-server",
+				Args:    []string{"start"},
+			},
+			"ts_ls": {
+				Command: "typescript-language-server",
+				Args:    []string{"--stdio"},
+			},
+		},
+	}
+
+	servers := ResolveServers(cfg)
+	require.Len(t, servers, 2)
+
+	bashls, ok := servers["bashls"]
+	require.True(t, ok)
+	assert.Equal(t, "bash", bashls.ID) // resolved to builtin ID
+	assert.Equal(t, []string{".sh", ".bash", ".zsh", ".ksh"}, bashls.Extensions)
+	assert.Equal(t, StrategyNpm, bashls.Strategy)
+	// User's command/args take precedence over the builtin's.
+	assert.Equal(t, []string{"bash-language-server", "start"}, bashls.Command)
+
+	tsls, ok := servers["ts_ls"]
+	require.True(t, ok)
+	assert.Equal(t, "typescript", tsls.ID)
+	assert.Contains(t, tsls.Extensions, ".ts")
+	assert.Contains(t, tsls.Extensions, ".tsx")
+}
+
+// Absolute command paths should still resolve via basename matching.
+func TestResolveServers_AliasResolvesByCommandAbsolutePath(t *testing.T) {
+	cfg := &config.Config{
+		LSP: map[string]config.LSPConfig{
+			"bashls": {
+				Command: "/usr/local/bin/bash-language-server",
+				Args:    []string{"start"},
+			},
+		},
+	}
+
+	servers := ResolveServers(cfg)
+	bashls, ok := servers["bashls"]
+	require.True(t, ok)
+	assert.Equal(t, "bash", bashls.ID)
+	assert.Equal(t, []string{".sh", ".bash", ".zsh", ".ksh"}, bashls.Extensions)
+}
+
+// A custom command that doesn't match any builtin keeps the user's key as ID
+// and gets no auto-populated extensions.
+func TestResolveServers_AliasFallsThroughWhenCommandUnknown(t *testing.T) {
+	cfg := &config.Config{
+		LSP: map[string]config.LSPConfig{
+			"my-lsp": {
+				Command: "totally-custom-lsp",
+			},
+		},
+	}
+
+	servers := ResolveServers(cfg)
+	custom, ok := servers["my-lsp"]
+	require.True(t, ok)
+	assert.Equal(t, "my-lsp", custom.ID)
+	assert.Empty(t, custom.Extensions)
+	assert.Equal(t, StrategyNone, custom.Strategy)
+}
+
+// ID lookup wins over command-basename lookup so explicit builtin keys keep
+// their existing behavior even if a user's command points elsewhere.
+func TestResolveServers_IDMatchWinsOverCommandMatch(t *testing.T) {
+	cfg := &config.Config{
+		LSP: map[string]config.LSPConfig{
+			"gopls": {
+				Command: "bash-language-server", // pathological override
+			},
+		},
+	}
+
+	servers := ResolveServers(cfg)
+	gopls, ok := servers["gopls"]
+	require.True(t, ok)
+	assert.Equal(t, "gopls", gopls.ID)
+	assert.Equal(t, []string{".go"}, gopls.Extensions)
+}
+
 func TestResolveServers_GoplsDefaultInit(t *testing.T) {
 	cfg := &config.Config{
 		LSP: map[string]config.LSPConfig{

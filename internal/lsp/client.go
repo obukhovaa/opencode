@@ -599,12 +599,17 @@ type OpenFileInfo struct {
 	URI     protocol.DocumentUri
 }
 
-// SetExtensions configures which file extensions this server handles
+// SetExtensions configures which file extensions this server handles.
+// Must be called once during LSP startup before any goroutine (e.g. the
+// workspace watcher) reads via GetExtensions — neither accessor takes a
+// lock, so concurrent mutation would race.
 func (c *Client) SetExtensions(exts []string) {
 	c.extensions = exts
 }
 
-// GetExtensions returns the file extensions this server handles
+// GetExtensions returns the file extensions this server handles.
+// Safe to call concurrently only if SetExtensions has already completed
+// (see contract on SetExtensions).
 func (c *Client) GetExtensions() []string {
 	return c.extensions
 }
