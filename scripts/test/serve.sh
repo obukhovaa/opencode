@@ -284,23 +284,27 @@ else
     log_fail "$name" "expected empty array, got: $resp"
 fi
 
-# ── 17. Question reply (service not enabled → 503) ──────────────────
-name="POST /question/{id}/reply (no service → 503)"
+# ── 17. Question reply (unknown request id → 404) ───────────────────
+# The QuestionService is now always available (the bridge orchestrator
+# initialises it at boot regardless of router config), so the no-service
+# 503 path is unreachable from a serving binary. Replying to an unknown
+# request id falls through to the "request not found" 404 instead.
+name="POST /question/{id}/reply (unknown id → 404)"
 http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" \
     -d '{"answers":[["yes"]]}' "$BASE/question/fake-id/reply")
-if [ "$http_code" = "503" ]; then
+if [ "$http_code" = "404" ]; then
     log_pass "$name"
 else
-    log_fail "$name" "expected 503, got $http_code"
+    log_fail "$name" "expected 404, got $http_code"
 fi
 
-# ── 18. Question reject (service not enabled → 503) ─────────────────
-name="POST /question/{id}/reject (no service → 503)"
+# ── 18. Question reject (unknown request id → 404) ──────────────────
+name="POST /question/{id}/reject (unknown id → 404)"
 http_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/question/fake-id/reject")
-if [ "$http_code" = "503" ]; then
+if [ "$http_code" = "404" ]; then
     log_pass "$name"
 else
-    log_fail "$name" "expected 503, got $http_code"
+    log_fail "$name" "expected 404, got $http_code"
 fi
 
 # ── 18a. Create session with permission rules (auto-approve mapping) ─
