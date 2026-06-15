@@ -54,7 +54,41 @@ jobs:
 
       - run: go mod download
 
+      - name: Allow non-SUPER user to create triggers
+        # MySQL 8 with binary logging (default) requires SUPER privilege
+        # to CREATE TRIGGER unless log_bin_trust_function_creators is ON.
+        # Our migrations run as the non-SUPER `opencode_test` user and
+        # include trigger definitions (e.g. update_sessions_updated_at
+        # in 20250424200609_initial.sql) — without this flag the goose
+        # up step fails with `Error 1419 (HY000): You do not have the
+        # SUPER privilege …`. Setting the GLOBAL via root before tests
+        # is the standard workaround for restricted-user CI setups.
+        env:
+          MYSQL_PWD: testroot
+        run: |
+          mysql -h 127.0.0.1 -P 3307 -u root -e "SET GLOBAL log_bin_trust_function_creators=ON;"
+
       - name: Run mysql_integration tests
         env:
           TEST_MYSQL_DSN: "opencode_test:opencode_test@tcp(127.0.0.1:3307)/opencode_test?parseTime=true&multiStatements=true"
-        run: go test -tags=mysql_integration -count=1 ./...
+        # Scope to the packages that actually host mysql_integration-tagged
+        # files. `./...` with the tag still builds + runs everything else
+        # (the tag is additive, not exclusive), which has bitten us:
+        # internal/llm/tools grep tests assert ripgrep-shaped output and
+        # fail on minimal runner images that lack rg in $PATH. Those
+        # failures aren't this workflow's concern — the default test job
+        # in build.yml is responsible for grep, and develops can install
+        # ripgrep there separately. Listing the two packages here keeps
+        # the signal tight: one of these failing means a real MySQL
+        # regression, not unrelated CI environment drift.
+        #
+        # -p 1 serialises packages. Both internal/db and internal/bridge/
+        # store share the single TEST_MYSQL_DSN-pointed database and each
+        # DROP TABLEs + goose-ups in their per-test setup helpers; with
+        # default parallelism they collide on the shared schema (one
+        # package's DROP wipes the other's mid-migration). Per-package
+        # DSN isolation would be cleaner but is invasive — serialising
+        # is the one-line fix that matches the comment in
+        # newMySQLTestStore ("we drop all tables before each migration
+        # to keep tests independent" implicitly assumes sequential).
+        run: go test -tags=mysql_integration -count=1 -p 1 ./internal/db/... ./internal/bridge/store/...
