@@ -42,6 +42,12 @@ type Identity struct {
 	// adapter gates inbound against the bridge_allowlist table for this
 	// identity. See spec: slack-inbound-allowlist.
 	Access string
+	// Inbound controls whether Start opens the Socket Mode connection.
+	// bridge.InboundDisabled skips the listener goroutine entirely;
+	// outbound Send / Render / interactive-question posting remain
+	// active. Used by orchestrator-mediated-inbound deployments. Empty
+	// or bridge.InboundEnabled keeps today's behaviour.
+	Inbound string
 }
 
 // AccessPrivate is the Identity.Access value that enables per-peer
@@ -102,14 +108,17 @@ func (a *Adapter) toolCards() *toolCardCache {
 	return a.toolCardsCache
 }
 
-// New constructs a Slack adapter. Bot and app tokens are required.
+// New constructs a Slack adapter. Bot token is required; app token is
+// required UNLESS Identity.Inbound == bridge.InboundDisabled (orchestrator-
+// mediated mode where outbound is the only responsibility — Socket Mode
+// connection lives on the orchestrator side, not here).
 func New(id Identity, opts Options) (*Adapter, error) {
 	bot := strings.TrimSpace(id.BotToken)
 	app := strings.TrimSpace(id.AppToken)
 	if bot == "" {
 		return nil, errors.New("slack: bot token is required")
 	}
-	if app == "" {
+	if app == "" && !bridge.IsInboundDisabled(id.Inbound) {
 		return nil, errors.New("slack: app token is required")
 	}
 
@@ -180,11 +189,23 @@ func (a *Adapter) API() *slackgo.Client { return a.api }
 // Start implements bridge.Adapter. AuthTest is called first to learn the
 // bot's user ID; then the Socket Mode connection runs in its own
 // goroutine. Start returns immediately after the goroutine is launched.
+//
+// When Identity.Inbound == bridge.InboundDisabled the listener goroutines
+// are skipped entirely: no AuthTest round-trip, no Socket Mode connect.
+// Outbound paths (Send, SendInteractive*) keep working because they only
+// depend on the REST client + bot token, which New already wired.
 func (a *Adapter) Start(ctx context.Context, inbound chan<- bridge.Inbound) error {
 	if !a.started.CompareAndSwap(false, true) {
 		return errors.New("slack: adapter already started")
 	}
 	a.inbound.Store(inbound)
+
+	if bridge.IsInboundDisabled(a.id.Inbound) {
+		a.statusVal.Store("running")
+		logging.Info("slack: inbound disabled — Socket Mode listener skipped; outbound active",
+			"identity", a.id.ID)
+		return nil
+	}
 
 	// AuthTest reveals the bot user ID we need for own-message + mention
 	// filtering. Tests inject via SetBotUserID before Start to skip this.

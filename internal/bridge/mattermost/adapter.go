@@ -41,6 +41,7 @@ type Adapter struct {
 	accessToken   string
 	groupsEnabled bool
 	access        string
+	inboundMode   string
 	mediaDir      string
 	maxFileSize   int64
 	allowlist     bridge.AllowlistChecker
@@ -86,6 +87,12 @@ type Identity struct {
 	// gates inbound against the bridge_allowlist table. See spec:
 	// mattermost-inbound-allowlist.
 	Access string
+	// Inbound controls whether Start opens the WebSocket listener.
+	// bridge.InboundDisabled skips the WebSocket dial + read loop;
+	// outbound posting / file uploads / interactive-attachment posting
+	// remain active. Used by orchestrator-mediated-inbound deployments.
+	// Empty or bridge.InboundEnabled keeps today's behaviour.
+	Inbound string
 }
 
 // AccessPrivate is the Identity.Access value that enables per-peer
@@ -134,6 +141,7 @@ func New(id Identity, opts Options) (*Adapter, error) {
 		accessToken:   tok,
 		groupsEnabled: id.GroupsEnabled,
 		access:        id.Access,
+		inboundMode:   id.Inbound,
 		mediaDir:      opts.MediaDir,
 		maxFileSize:   maxFileSize,
 		allowlist:     opts.Allowlisted,
@@ -183,9 +191,21 @@ func (a *Adapter) Status() bridge.AdapterStatus {
 // fetch and WebSocket auth handshake complete (or fail), then dispatches
 // inbound events asynchronously. The supplied context is the parent for
 // all background work — cancel it to shut the adapter down.
+//
+// When Identity.Inbound == bridge.InboundDisabled the WebSocket listener
+// is skipped entirely: no getMe round-trip, no WS dial. Outbound posting
+// keeps working because Send / SendInteractiveAttachment only depend on
+// the REST client + access token, set up in New.
 func (a *Adapter) Start(ctx context.Context, inbound chan<- bridge.Inbound) error {
 	if !a.started.CompareAndSwap(false, true) {
 		return errors.New("mattermost: adapter already started")
+	}
+
+	if bridge.IsInboundDisabled(a.inboundMode) {
+		a.statusVal.Store("running")
+		logging.Info("mattermost: inbound disabled — WebSocket listener skipped; outbound active",
+			"identity", a.identityID)
+		return nil
 	}
 
 	botUser, err := a.client.GetMe(ctx)

@@ -59,6 +59,14 @@ type TelegramIdentity struct {
 	Access          string `json:"access,omitempty"`
 	PairingCodeHash string `json:"pairingCodeHash,omitempty"`
 	GroupsEnabled   bool   `json:"groupsEnabled,omitempty"`
+	// Inbound controls whether this identity's adapter opens its own
+	// platform listener at Start. Values: "" (default → enabled),
+	// "enabled", "disabled". When "disabled" the adapter skips its
+	// listener goroutine but outbound (Send / Render) stays active —
+	// used by orchestrator-mediated-inbound deployments where the
+	// c2-agent orchestrator owns the single platform connection and
+	// forwards each inbound to the right runner via HTTP.
+	Inbound string `json:"inbound,omitempty"`
 }
 
 // SlackChannelConfig configures the Slack channel and its app identities.
@@ -85,6 +93,9 @@ type SlackIdentity struct {
 	// user IDs ("U…"), DM channel IDs ("D…"), or channel IDs ("C…").
 	// Empty when Access is unset/public.
 	PeerAllowlist []string `json:"peerAllowlist,omitempty"`
+	// Inbound controls whether this identity's adapter opens its own
+	// platform listener at Start. See TelegramIdentity.Inbound.
+	Inbound string `json:"inbound,omitempty"`
 }
 
 // MattermostChannelConfig configures the Mattermost channel and its instance
@@ -108,6 +119,24 @@ type MattermostIdentity struct {
 	// (26-char user IDs or channel IDs) for this Mattermost identity
 	// when Access == "private".
 	PeerAllowlist []string `json:"peerAllowlist,omitempty"`
+	// Inbound controls whether this identity's adapter opens its own
+	// platform listener at Start. See TelegramIdentity.Inbound.
+	Inbound string `json:"inbound,omitempty"`
+}
+
+// Inbound-mode values for SlackIdentity.Inbound / TelegramIdentity.Inbound /
+// MattermostIdentity.Inbound. Empty string is treated as InboundEnabled to
+// preserve existing config compatibility.
+const (
+	InboundEnabled  = "enabled"
+	InboundDisabled = "disabled"
+)
+
+// IsInboundDisabled reports whether the given inbound-mode value disables
+// the adapter's listener goroutine. Centralised here so every adapter
+// applies the same parsing rule.
+func IsInboundDisabled(mode string) bool {
+	return mode == InboundDisabled
 }
 
 // HasTokenBearingFields reports whether the config contains any token-bearing
