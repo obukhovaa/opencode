@@ -242,7 +242,7 @@ type stubAgentFactory struct {
 	agent *stubAgent
 }
 
-func (f *stubAgentFactory) NewAgent(_ context.Context, _ string, _ map[string]any, _ string, _ bool) (agentpkg.Service, error) {
+func (f *stubAgentFactory) NewAgent(_ context.Context, _ string, _ map[string]any, _ string, _ bool, _ []bridge.PeerRef) (agentpkg.Service, error) {
 	if f.agent != nil {
 		return f.agent, nil
 	}

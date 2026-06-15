@@ -11,6 +11,7 @@ import (
 	"time"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
+	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/langfuse"
@@ -129,7 +130,7 @@ func newAgent(
 ) (Service, error) {
 	agentTools := NewToolSet(ctx, agentInfo, reg, permissions, historyService, lspService, sessions, messages, mcpReg, factory)
 
-	agentProvider, err := createAgentProvider(agentInfo.ID, withInteractive(agentInfo.Interactive))
+	agentProvider, err := createAgentProvider(agentInfo.ID, withInteractive(agentInfo.Interactive), withBoundPeers(agentInfo.BoundPeers))
 	if err != nil {
 		return nil, err
 	}
@@ -1613,6 +1614,11 @@ type providerOptions struct {
 	// is selected when this agent is running an `interactive: true`
 	// flow step.
 	interactive bool
+	// boundPeers is the resolved chat-bridge peer list (from
+	// resolveInteractionTarget) for this interactive step. Passed
+	// through to prompt.AgentPromptOptions so the "## Reviewer
+	// details" section knows the mention handle + channel + peerId.
+	boundPeers []bridge.PeerRef
 }
 
 type providerOption func(*providerOptions)
@@ -1626,6 +1632,16 @@ func withDisableCache() providerOption {
 func withInteractive(b bool) providerOption {
 	return func(o *providerOptions) {
 		o.interactive = b
+	}
+}
+
+// withBoundPeers carries the resolved chat-bridge peers through to
+// prompt.AgentPromptOptions. Empty / nil for non-interactive callers
+// — the prompt builder gates the reviewer-details section on the
+// interactive branch anyway, so a nil here is a no-op.
+func withBoundPeers(peers []bridge.PeerRef) providerOption {
+	return func(o *providerOptions) {
+		o.boundPeers = peers
 	}
 }
 
@@ -1687,6 +1703,7 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 		provider.WithModel(model),
 		provider.WithSystemMessage(prompt.GetAgentPromptWithOptions(agentName, model.Provider, prompt.AgentPromptOptions{
 			Interactive: popts.interactive,
+			BoundPeers:  popts.boundPeers,
 		})),
 		provider.WithMaxTokens(maxTokens),
 	}

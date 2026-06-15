@@ -12,6 +12,7 @@ import (
 	"time"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
+	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
@@ -24,7 +25,7 @@ import (
 const structuredOutputPrompt = `
 IMPORTANT: The user has requested structured output. You MUST use the struct_output tool to provide your final response. Do NOT respond with plain text - you MUST call the struct_output tool with your answer formatted according to the schema.`
 
-// interactiveStructuredOutputPrompt replaces structuredOutputPrompt
+// interactiveStructuredOutputPromptBase replaces structuredOutputPrompt
 // when the agent is running an `interactive: true` flow step. The
 // chat-bridge has already bound the agent's session to a human
 // reviewer; this prompt teaches the agent to engage in multi-turn
@@ -37,7 +38,12 @@ IMPORTANT: The user has requested structured output. You MUST use the struct_out
 // model to emit struct_output on its first turn — which short-
 // circuits the entire human-in-the-loop interaction and makes
 // interactive: true a no-op behaviorally.
-const interactiveStructuredOutputPrompt = `
+//
+// The "Base" suffix marks this as the static body; the dynamic
+// per-step "## Reviewer details" suffix is appended by
+// interactiveStructuredOutputPromptFor based on
+// AgentPromptOptions.BoundPeers.
+const interactiveStructuredOutputPromptBase = `
 IMPORTANT — INTERACTIVE FLOW STEP:
 
 You are running inside a human-in-the-loop flow step. Your session is
@@ -102,6 +108,89 @@ which triggers your next cycle automatically.
 The struct_output schema and the prompt above describe what to
 collect. The reviewer is the source of truth — defer to them and
 confirm ambiguous items via ` + "`router_send`" + ` before recording.`
+
+// interactiveStructuredOutputPromptFor returns the interactive flow-step
+// system-prompt suffix. When `peers` is non-empty the returned string
+// includes a "## Reviewer details" section listing each peer's channel,
+// peerId, and (when present) mention handle so the agent knows WHO it's
+// bound to without flow authors having to template `${args.reviewer.*}`
+// into the YAML prompt.
+//
+// Empty `peers` returns the legacy base const verbatim — preserves
+// backwards-compat for callers (TUI, ACP, etc.) that haven't been
+// updated to populate `AgentPromptOptions.BoundPeers`.
+func interactiveStructuredOutputPromptFor(peers []bridge.PeerRef) string {
+	if len(peers) == 0 {
+		return interactiveStructuredOutputPromptBase
+	}
+	return interactiveStructuredOutputPromptBase + "\n\n" + reviewerDetailsSection(peers)
+}
+
+// reviewerDetailsSection renders a "## Reviewer details" markdown block.
+// Single-peer → bare per-peer fragment. Multi-peer → opens with the
+// multi-reviewer fan-out preamble (matches the bridge's actual inbound
+// attribution shape) + a numbered list of per-peer fragments.
+func reviewerDetailsSection(peers []bridge.PeerRef) string {
+	var b strings.Builder
+	b.WriteString("## Reviewer details\n\n")
+	if len(peers) == 1 {
+		b.WriteString(renderOnePeer(peers[0], ""))
+		return b.String()
+	}
+	fmt.Fprintf(&b,
+		"You are bound to %d reviewers; outbound fans out to all, inbound from any routes back here with `[<who> via <channel>]: ` attribution prefix.\n\n",
+		len(peers),
+	)
+	for i, p := range peers {
+		b.WriteString(renderOnePeer(p, fmt.Sprintf("%d. ", i+1)))
+	}
+	return b.String()
+}
+
+// renderOnePeer formats a single PeerRef as a one- or two-sentence
+// markdown fragment. `labelPrefix` is "" for single-peer renders and
+// "<n>. " for numbered multi-peer entries. The "begin your FIRST
+// `router_send` with the mention …" sentence is dropped when
+// peer.Mention is empty (e.g. Slack DMs where pinging makes no sense).
+func renderOnePeer(peer bridge.PeerRef, labelPrefix string) string {
+	var primary, mentionSentence string
+	switch peer.Channel {
+	case "slack":
+		primary = fmt.Sprintf("You are bound to %s in Slack channel `%s`.", peerMentionOrFallback(peer, "the bound peer"), peer.PeerID)
+		if peer.Mention != "" {
+			mentionSentence = fmt.Sprintf("Begin your FIRST `router_send` with the mention `%s` to ping them.", peer.Mention)
+		}
+	case "telegram":
+		primary = fmt.Sprintf("You are bound to chat `%s` on Telegram.", peer.PeerID)
+		if peer.Mention != "" {
+			mentionSentence = fmt.Sprintf("The reviewer's first-message ping handle is `%s` (use it once in your FIRST `router_send`).", peer.Mention)
+		}
+	case "mattermost":
+		primary = fmt.Sprintf("You are bound to %s in Mattermost channel `%s`.", peerMentionOrFallback(peer, "the bound peer"), peer.PeerID)
+		if peer.Mention != "" {
+			mentionSentence = fmt.Sprintf("Begin your FIRST `router_send` with the mention `%s` to ping them.", peer.Mention)
+		}
+	default:
+		// Unknown channel: render a generic line so the agent at least
+		// sees something. Don't suppress — silent gaps cause the agent
+		// to guess (the exact bug this prompt closes).
+		primary = fmt.Sprintf("You are bound to peer `%s` on channel `%s`.", peer.PeerID, peer.Channel)
+		if peer.Mention != "" {
+			mentionSentence = fmt.Sprintf("First-message handle: `%s`.", peer.Mention)
+		}
+	}
+	if mentionSentence == "" {
+		return labelPrefix + primary + "\n"
+	}
+	return labelPrefix + primary + " " + mentionSentence + "\n"
+}
+
+func peerMentionOrFallback(peer bridge.PeerRef, fallback string) string {
+	if peer.Mention != "" {
+		return peer.Mention
+	}
+	return fallback
+}
 
 const parallelToolUsePrompt = `
 You have the capability to call multiple tools in a single response. When multiple independent pieces of information are requested and all commands are likely to succeed, run multiple tool calls in parallel for optimal performance. For example, if you need to read 3 files, call read 3 times in parallel rather than sequentially.`
@@ -194,6 +283,20 @@ type AgentPromptOptions struct {
 	// this specific agent instance). Callers that pass through the
 	// AgentInfo from NewAgent should set this to AgentInfo.Interactive.
 	Interactive bool
+
+	// BoundPeers is the resolved list of chat-bridge peers the agent's
+	// session is bound to for the current interactive flow step. The
+	// flow runner populates it from the resolved interaction.target
+	// before calling NewAgent. When non-empty AND Interactive is true,
+	// the auto-injected interactive prompt grows a "## Reviewer details"
+	// section so the agent knows the mention handle / channel / peerId
+	// without flow authors having to template ${args.reviewer.*} into
+	// the YAML prompt (the legacy resolver doesn't support nested-path
+	// access anyway — see internal/flow/service.go::substituteScoped).
+	//
+	// Empty / nil for non-interactive agents (TUI, ACP, non-bound
+	// flow steps). The interactive branch is the only consumer.
+	BoundPeers []bridge.PeerRef
 }
 
 // GetAgentPromptWithOptions is GetAgentPrompt + per-call overrides.
@@ -235,7 +338,7 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 
 	// Append structured output instruction if the agent has the tool
 	// enabled. Interactive flow steps get a multi-turn-friendly variant
-	// (see interactiveStructuredOutputPrompt) — it tells the agent to
+	// (see interactiveStructuredOutputPromptBase) — it tells the agent to
 	// collaborate with the human reviewer via the chat bridge over
 	// multiple turns and reserve struct_output for the END. Without
 	// this swap, the terse default prompt pushes the model to emit
@@ -258,7 +361,7 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 		// before emitting struct_output — defeating the whole point of
 		// interactive: true.
 		if opts.Interactive || info.Interactive {
-			basePrompt += interactiveStructuredOutputPrompt
+			basePrompt += interactiveStructuredOutputPromptFor(opts.BoundPeers)
 		} else if info.Output != nil && info.Output.Schema != nil && reg.IsToolEnabled(agentName, tools.StructOutputToolName) {
 			basePrompt += structuredOutputPrompt
 		}

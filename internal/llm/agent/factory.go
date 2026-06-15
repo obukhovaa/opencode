@@ -29,7 +29,15 @@ type AgentFactory interface {
 	// prompt so the agent prefers multi-turn dialogue via the chat
 	// bridge over an immediate struct_output emission. Callers that
 	// don't know (subagent task tool, primary agent init) pass false.
-	NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool) (Service, error)
+	//
+	// `boundPeers` is the resolved chat-bridge peers the interactive
+	// step is bound to (from resolveInteractionTarget on the flow's
+	// args). The system prompt grows a "## Reviewer details" section
+	// listing them so the agent sees mention handles + channels
+	// without flow authors having to template ${args.reviewer.*}
+	// (the flow resolver has no nested-path support anyway). Pass nil
+	// for non-interactive callers or when the binding isn't known yet.
+	NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool, boundPeers []bridge.PeerRef) (Service, error)
 	InitPrimaryAgents(ctx context.Context, outputSchema map[string]any) ([]Service, error)
 	SetCronServices(cronToolSvc tools.CronToolService, schedHelper tools.CronScheduleHelper)
 	CronServices() (tools.CronToolService, tools.CronScheduleHelper)
@@ -155,7 +163,7 @@ func (f *agentFactory) QuestionService() question.Service {
 	return f.questionService
 }
 
-func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool) (Service, error) {
+func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool, boundPeers []bridge.PeerRef) (Service, error) {
 	if stepID != "" {
 		f.mu.Lock()
 		if svc, ok := f.stepCache[stepID]; ok {
@@ -180,6 +188,11 @@ func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchem
 	// Interactive lives on the in-memory AgentInfo copy only. It
 	// flows downstream into GetAgentPrompt for prompt-shape selection.
 	infoCopy.Interactive = interactive
+	// BoundPeers is the resolved chat-bridge peer list for this
+	// step — passed through AgentInfo so newAgent → createAgentProvider
+	// → GetAgentPromptWithOptions sees it and the prompt grows the
+	// "## Reviewer details" section. Empty / nil for non-interactive.
+	infoCopy.BoundPeers = boundPeers
 
 	svc, err := newAgent(ctx, &infoCopy, f.sessions, f.messages, f.permissions, f.history, f.lspService, f.registry, f.mcpRegistry, f)
 	if err != nil {
@@ -205,7 +218,7 @@ func (f *agentFactory) InitPrimaryAgents(ctx context.Context, outputSchema map[s
 	}
 	res := make([]Service, 0, len(primaryAgents))
 	for _, agentInfo := range primaryAgents {
-		primaryAgent, err := f.NewAgent(ctx, string(agentInfo.ID), outputSchema, "", false)
+		primaryAgent, err := f.NewAgent(ctx, string(agentInfo.ID), outputSchema, "", false, nil)
 		if err != nil {
 			logging.Error("Failed to create agent", "agent", agentInfo.ID, "error", err)
 			continue

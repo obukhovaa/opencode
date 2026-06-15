@@ -307,11 +307,30 @@ func (s *service) runStep(
 	if step.Output != nil {
 		outputSchema = step.Output.Schema
 	}
+	// Resolve interaction.target peers BEFORE NewAgent so the system
+	// prompt's "## Reviewer details" section can include the mention
+	// handle + channel + peerId. The actual bridge bind happens later
+	// (after session resolution) — see OnInteractiveStepStart below —
+	// but the resolver itself is pure and side-effect-free, so running
+	// it twice (once here, once in the bind block) is safe. We could
+	// hoist the second call out too, but that would tangle the bind
+	// error-path with this one; better to keep both calls explicit.
+	var boundPeers []bridge.PeerRef
+	if step.Interactive {
+		peers, resolveErr := resolveInteractionTarget(step.Interaction, args)
+		if resolveErr != nil {
+			s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration,
+				fmt.Errorf("interactive step %q: %w", step.ID, resolveErr),
+				wg, agentEvents, flowStates, nextSteps, f)
+			return
+		}
+		boundPeers = peers
+	}
 	// Pass step.Interactive so the agent's system prompt gets the
 	// multi-turn-friendly variant (see prompt.GetAgentPrompt). The
-	// in-memory AgentInfo.Interactive flag plumbs through to
+	// in-memory AgentInfo.Interactive + BoundPeers flow through to
 	// prompt-shape selection.
-	agentSvc, err := s.agents.NewAgent(ctx, agentID, outputSchema, step.ID, step.Interactive)
+	agentSvc, err := s.agents.NewAgent(ctx, agentID, outputSchema, step.ID, step.Interactive, boundPeers)
 	if err != nil {
 		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
 		return
@@ -431,14 +450,11 @@ func (s *service) runStep(
 	// InteractiveHook BEFORE agent.Run. Failure here fails the step fast.
 	// The bind is automatically reversed in deferred Unbind below.
 	if step.Interactive {
-		peers, resolveErr := resolveInteractionTarget(step.Interaction, args)
-		if resolveErr != nil {
-			s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration,
-				fmt.Errorf("interactive step %q: %w", step.ID, resolveErr),
-				wg, agentEvents, flowStates, nextSteps, f)
-			return
-		}
-		if err := s.interactiveHookOrNop().OnInteractiveStepStart(ctx, sess.ID, peers); err != nil {
+		// boundPeers was already resolved above (before NewAgent) so the
+		// system prompt could include the "## Reviewer details" section.
+		// Re-using the slice here keeps the bind call wire-compatible
+		// without paying the resolve cost twice.
+		if err := s.interactiveHookOrNop().OnInteractiveStepStart(ctx, sess.ID, boundPeers); err != nil {
 			s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration,
 				fmt.Errorf("interactive step %q bind: %w", step.ID, err),
 				wg, agentEvents, flowStates, nextSteps, f)
@@ -475,7 +491,7 @@ func (s *service) runStep(
 			Args:          args,
 			Iteration:     iteration,
 			UpdatedAt:     time.Now().Unix(),
-			WaitingTarget: peers,
+			WaitingTarget: boundPeers,
 		}
 		flowStates <- waitingState
 		s.Publish(pubsub.UpdatedEvent, *waitingState)
