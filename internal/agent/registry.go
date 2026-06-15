@@ -11,6 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/permission"
@@ -53,6 +54,15 @@ type AgentInfo struct {
 	// effectively becomes a human-in-the-loop collaborator instead of
 	// a one-shot answerer.
 	Interactive bool `yaml:"-"`
+	// BoundPeers is the resolved chat-bridge peer list for the
+	// current interactive flow step. Populated by AgentFactory.NewAgent
+	// for `interactive: true` steps; nil otherwise. NOT persisted via
+	// YAML — derived per-step from interaction.target. Plumbs into
+	// GetAgentPromptWithOptions so the "## Reviewer details" section
+	// of the interactive prompt knows the mention handle / channel /
+	// peerId without flow authors having to template ${args.reviewer.*}
+	// into the YAML prompt.
+	BoundPeers []bridge.PeerRef `yaml:"-"`
 }
 
 type Registry interface {
