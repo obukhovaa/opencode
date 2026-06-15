@@ -121,7 +121,13 @@ Health snapshot: `curl http://127.0.0.1:3456/router/health` (per-adapter `status
       "botToken": "xoxb-...",
       "appToken": "xapp-...",
       "enabled": true,
-      "groupsEnabled": true
+      "groupsEnabled": true,
+      "access": "private",
+      "peerAllowlist": [
+        "D0123ABCDEF",
+        "U0123ABCDEF",
+        "C0123FAKEXX"
+      ]
     }
   ]
 }
@@ -130,6 +136,7 @@ Health snapshot: `curl http://127.0.0.1:3456/router/health` (per-adapter `status
 - Uses Socket Mode (no public webhook URL needed).
 - Required Slack app scopes: `chat:write`, `app_mentions:read`, `im:history`, `files:read`, `files:write`. Event subscriptions: `app_mention`, `message.im`.
 - Peer ID formats: `D<id>` (DM), `C<id>` (channel — auto-mutates to `C<id>|<thread_ts>` after first outbound), `C<id>|<thread_ts>` (existing thread), `U<id>` (user — auto-resolved to DM via `conversations.open` before persistence).
+- `access: "public"` (default) accepts inbound from any DM or @mention. `access: "private"` gates every inbound through a per-identity allowlist — see "Per-identity allowlist" below.
 
 ### Mattermost
 
@@ -142,7 +149,12 @@ Health snapshot: `curl http://127.0.0.1:3456/router/health` (per-adapter `status
       "serverUrl": "https://mm.example.com",
       "accessToken": "<BOT_ACCESS_TOKEN>",
       "enabled": true,
-      "groupsEnabled": true
+      "groupsEnabled": true,
+      "access": "private",
+      "peerAllowlist": [
+        "x1234567890abcdef12345678",
+        "u1234567890abcdef12345678"
+      ]
     }
   ]
 }
@@ -152,6 +164,31 @@ Health snapshot: `curl http://127.0.0.1:3456/router/health` (per-adapter `status
 - Peer ID formats: `<channelId>` (DM/channel — auto-mutates to `<channelId>|<rootPostId>` on first outbound), `<channelId>|<rootPostId>` (existing thread), 26-char user-id (auto-resolved to DM via `channels/direct`).
 - Reconnect: 1s → 30s exponential backoff, 20 attempts max. After exhaustion the adapter is marked `error` in `/router/health`.
 - Interactive question UI is **NOT** supported (would require a Mattermost-callable webhook URL the bridge doesn't host). Mattermost peers always use the numbered-text question fallback regardless of `questionMode`.
+- `access: "public"` (default) accepts inbound from any DM or @mention. `access: "private"` gates every inbound through a per-identity allowlist — see "Per-identity allowlist" below.
+
+### Per-identity allowlist
+
+The Slack and Mattermost adapters share a per-identity inbound allowlist. Telegram has its own `/pair` flow plus `pairingCodeHash` — that mechanism is unchanged and does NOT use `peerAllowlist`.
+
+**Configuration:**
+- `access: "private"` enables gating. When unset or `"public"`, no gating runs and the adapter accepts inbound from any DM / @mention.
+- `peerAllowlist: ["D0123ABCDEF", "C0123FAKEXX", "U0123ABCDEF", …]` — peers permitted to interact. Each entry may be any of the platform's peer-id shapes the adapter recognises (Slack: `D…` DM, `C…` channel, `U…` user; Mattermost: 26-char channel id or 26-char user id). The matcher checks the inbound's peerID → authorID → channelID in turn; a match on any of the three accepts the message.
+
+**Seed behaviour:**
+- On `Service.Start`, the bridge copies each identity's `peerAllowlist` into the `bridge_allowlist` table once. The copy is idempotent (existing rows are skipped) and additive (rows already present from a previous run survive when the config drops a peer — to remove a peer from the allowlist, delete the DB row or use the admin path; editing config alone is insufficient).
+- An operator changing `peerAllowlist` in `.opencode.json` and restarting opencode inserts any NEW peers but does NOT delete peers removed from the array. This is intentional — config is the seed, the DB is the source of truth at steady state.
+
+**Fail-open / fail-closed:**
+- If `access: "private"` but no `AllowlistChecker` is wired (older callers, misconfigured embedder), the adapter logs a one-time WARN at constructor and treats the identity as public. This keeps a misconfigured deploy reachable rather than silently dark.
+- If `AllowlistChecker` is wired and returns an error (DB unavailable mid-flight), the adapter fails CLOSED — the inbound is dropped and an error is logged. The single-bot-running-one-process model means a DB outage stops new conversations, which is the safer default.
+
+**Gated paths:**
+- Slack: DM (`message.im`) and channel @mention (`app_mention`).
+- Mattermost: DM and @mention dispatch in the WebSocket `posted` handler.
+
+**Not gated (yet):**
+- Outbound (`router_send`, `question`) — there's no `agentPeerAllowlist` for fanout from agent to chat. Tracked separately if operator demand surfaces.
+- Telegram (uses `/pair` + `pairingCodeHash`).
 
 ## HTTP API (`/router/*`)
 
