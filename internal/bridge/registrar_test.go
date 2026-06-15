@@ -226,25 +226,29 @@ func TestHTTPRegistrar_DeregisterAuthFailureSurfaces(t *testing.T) {
 // operators can configure either shape without breakage.
 func TestHTTPRegistrar_URLJoiningHandlesTrailingSlash(t *testing.T) {
 	t.Parallel()
-	for _, base := range []string{"http://orchestrator.svc:8080", "http://orchestrator.svc:8080/"} {
+	for _, suffix := range []string{"", "/"} {
 		orch := newCaptureOrchestrator(t)
 		r, err := NewHTTPRegistrar(HTTPRegistrarConfig{
-			BaseURL:    base + "?ignored=x", // overridden by orch.URL below
-			HTTPClient: orch.server.Client(),
-		})
-		_ = r
-		_ = err
-		// Verify NewHTTPRegistrar at least accepts the shape; the
-		// real round-trip is covered by RegisterHappyPath which
-		// uses orch.URL() which httptest synthesises without a
-		// trailing slash. This loop is a structural sanity check.
-		r2, err := NewHTTPRegistrar(HTTPRegistrarConfig{
-			BaseURL:    orch.URL(),
+			BaseURL:    orch.URL() + suffix,
 			HTTPClient: orch.server.Client(),
 		})
 		if err != nil {
-			t.Fatalf("NewHTTPRegistrar(%q): %v", base, err)
+			t.Fatalf("NewHTTPRegistrar(suffix=%q): %v", suffix, err)
 		}
-		_ = r2
+		if err := r.Register(context.Background(), RemoteBinding{
+			ProjectID: "default", Channel: "slack", Identity: "default", PeerID: "D-1",
+			JobID: "j", ContainerHost: "h", ContainerPort: 1,
+		}); err != nil {
+			t.Fatalf("Register(suffix=%q): %v", suffix, err)
+		}
+		if got := orch.registerCalls.Load(); got != 1 {
+			t.Errorf("suffix=%q: register calls = %d, want 1 (URL joining must hit /router/bindings/register regardless of trailing slash)", suffix, got)
+		}
+		if err := r.Deregister(context.Background(), "default", "slack", "default", "D-1"); err != nil {
+			t.Fatalf("Deregister(suffix=%q): %v", suffix, err)
+		}
+		if got := orch.deregisterCalls.Load(); got != 1 {
+			t.Errorf("suffix=%q: deregister calls = %d, want 1", suffix, got)
+		}
 	}
 }
