@@ -72,6 +72,12 @@ type Identity struct {
 	// equality grants the peer access. Required when Access == Private.
 	PairingCodeHash string
 	GroupsEnabled   bool
+	// Inbound controls whether Start opens the long-poll loop.
+	// bridge.InboundDisabled skips the long-poll goroutine entirely;
+	// outbound Send / Render / interactive-question posting remain
+	// active. Used by orchestrator-mediated-inbound deployments. Empty
+	// or bridge.InboundEnabled keeps today's behaviour.
+	Inbound string
 }
 
 // Options bundles construction-time knobs. The HTTPClient and ServerURL
@@ -236,11 +242,23 @@ func (a *Adapter) Bot() *tgbot.Bot { return a.bot }
 
 // Start implements bridge.Adapter. The library's long-poll loop runs in
 // its own goroutine; Start returns once the loop has been kicked off.
+//
+// When Identity.Inbound == bridge.InboundDisabled the long-poll goroutine
+// is skipped: no getMe round-trip, no /getUpdates. Outbound SendMessage /
+// EditMessageText paths keep working because they only need the REST bot
+// client + token, set up in New.
 func (a *Adapter) Start(ctx context.Context, inbound chan<- bridge.Inbound) error {
 	if !a.started.CompareAndSwap(false, true) {
 		return errors.New("telegram: adapter already started")
 	}
 	a.inbound.Store(inbound)
+
+	if bridge.IsInboundDisabled(a.id.Inbound) {
+		a.statusVal.Store("running")
+		logging.Info("telegram: inbound disabled — long-poll listener skipped; outbound active",
+			"identity", a.id.ID)
+		return nil
+	}
 
 	// Resolve bot identity if it hasn't been injected via SetMe. The lib
 	// auto-fetches via GetMe unless WithSkipGetMe was set; we mirror that

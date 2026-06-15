@@ -331,6 +331,7 @@ func newBridgeAdapterFactory(dataDir string, svc *bridgesvc.Service) bridgesvc.A
 					Access:          access,
 					PairingCodeHash: b.PairingCodeHash,
 					GroupsEnabled:   b.GroupsEnabled,
+					Inbound:         b.Inbound,
 				}, opts)
 			}
 		case "slack":
@@ -355,6 +356,7 @@ func newBridgeAdapterFactory(dataDir string, svc *bridgesvc.Service) bridgesvc.A
 					AppToken:      a.AppToken,
 					GroupsEnabled: a.GroupsEnabled,
 					Access:        a.Access,
+					Inbound:       a.Inbound,
 				}, opts)
 			}
 		case "mattermost":
@@ -379,6 +381,7 @@ func newBridgeAdapterFactory(dataDir string, svc *bridgesvc.Service) bridgesvc.A
 					AccessToken:   m.AccessToken,
 					GroupsEnabled: m.GroupsEnabled,
 					Access:        m.Access,
+					Inbound:       m.Inbound,
 				}, opts)
 			}
 		}

@@ -33,10 +33,10 @@ import (
 // internal/config from internal/bridge (e.g. via internal/message → db →
 // config) would create a package import cycle.
 type Attachment struct {
-	FilePath string
-	FileName string
-	MimeType string
-	Content  []byte
+	FilePath string `json:"filePath,omitempty"`
+	FileName string `json:"fileName,omitempty"`
+	MimeType string `json:"mimeType,omitempty"`
+	Content  []byte `json:"content,omitempty"`
 }
 
 // PeerRef identifies a chat-platform peer that a session may be bound to.
@@ -58,25 +58,25 @@ type PeerRef struct {
 // extraction, file download, from_bot filtering) then push Inbound values
 // onto the orchestrator's inbound channel.
 type Inbound struct {
-	Peer        PeerRef
-	Text        string
-	Attachments []Attachment
+	Peer        PeerRef      `json:"peer"`
+	Text        string       `json:"text,omitempty"`
+	Attachments []Attachment `json:"attachments,omitempty"`
 	// AuthorID is the platform-reported author of the message (used in
 	// channel/thread contexts where a single binding row can receive
 	// messages from multiple users; the attribution prefix uses AuthorID
 	// rather than the binding's peer_id).
-	AuthorID string
+	AuthorID string `json:"authorId,omitempty"`
 	// ReceivedAt is the unix-millis timestamp at which the adapter
 	// received the message (used for /router/health lastInboundAt).
-	ReceivedAt int64
+	ReceivedAt int64 `json:"receivedAt,omitempty"`
 	// Command, when set, is the parsed chat-command name without the
 	// leading slash (e.g. "model", "session"). Empty for non-command
 	// inbound. The orchestrator dispatches commands in-process via
 	// direct service calls.
-	Command string
+	Command string `json:"command,omitempty"`
 	// CommandArgs is the remainder of the message after the command name,
 	// if Command is set.
-	CommandArgs string
+	CommandArgs string `json:"commandArgs,omitempty"`
 }
 
 // Outbound is the normalized representation of an outbound message the
