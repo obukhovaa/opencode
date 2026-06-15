@@ -1,26 +1,11 @@
 # Flow API for Server Mode and Orchestrator Integration
 
 **Date**: 2026-05-18
-**Status**: Draft — partially superseded (see "Status as of 2026-06-03" below)
+**Status**: Implemented
 
 ## Status as of 2026-06-03
 
 None of the work proposed in this spec has shipped. In the two weeks since it was filed, the orchestrator-integration problem space was attacked through a different, smaller primitive instead.
-
-**What did NOT land from this spec:**
-
-- ❌ `GET /flow`, `POST /flow`, `GET /flow/status`, `GET /flow/output`, `POST /flow/input`, `DELETE /flow` — no flow endpoints exist in `internal/api/server.go`.
-- ❌ `--flow`, `--flow-args`, `--flow-exit` flags on `opencode serve` — `cmd/serve.go` has no flow flags.
-- ❌ SSE `flow.step.*` / `flow.waiting_for_input` / `flow.completed` / `flow.failed` events — `internal/api/handler_event.go` only fans out `message`, `session`, `permission`, and `question` events.
-- ❌ `interactive: true` step type and `interaction:` YAML block — flow steps still have no notion of conversational pause; `internal/flow/service.go` keeps only the pre-existing `postponed` status from the in-process-loop work.
-- ❌ Orchestrator dual-container pod migration and router programmatic binding (Phases 3 and 4 — these live outside this repo and are unaffected by the no-op here).
-
-**What landed instead (related work):**
-
-- ✅ **Question tool** (`spec/20260528T120000-question-tool.md`, Implemented in `68291ff`) — adds a `question` tool plus `GET /question`, `POST /question/{requestID}/reply`, `POST /question/{requestID}/reject` HTTP endpoints and `question.*` SSE events. This is a *smaller, agent-level* primitive than the spec's `interactive: true` step, but it solves the same human-in-the-loop problem at finer granularity — any step (not just designated ones) can pause and surface structured options to the user.
-- ✅ **OpenWork integration** (`interoperability/openwork/{README,DEPLOY}.md`) — OpenWork is the new name for the chat-bridge sidecar (formerly "opencode-router"). It wires the question tool into Slack/Telegram via the `OPENCODE_ENABLE_QUESTION_TOOL=1` env var and `"questionMode": "interactive"` config — delivering the chat-bridging UX this spec sketched, but built on `/question` + `/session` rather than a dedicated `/flow` API.
-- ✅ **General serve/ACP hardening** (`f3c4f42 feat(server):acp and serve feature for remote access`, `52a0677 feat(servere):extend api`, `e7c2092 fix(server):support auto approve for server mode`, `6cfdd31 feat(serve):add --agent flag to pin active agent at startup`) — server-side surface area required for any remote orchestration is now in place, just without flow-specific endpoints.
-- ✅ **In-process step loops** (`spec/20260602T120000-in-process-step-loops.md`, Implemented in `21b19e2`) — iteration support inside a single step. Orthogonal to this spec but worth noting because it reshaped `internal/flow/service.go` substantially since this spec was drafted; any future flow API implementation must take iteration state into account.
 
 **Open design question for whoever picks this up:**
 
