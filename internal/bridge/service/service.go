@@ -101,6 +101,25 @@ type Service struct {
 	// installs one that imports the per-platform packages; tests use stubs
 	// or leave it nil (LaunchAdapter becomes a no-op).
 	adapterFactory AdapterFactory
+
+	// remoteRegistrar, when non-nil, mirrors local bind/unbind
+	// operations into the orchestrator's global binding index via
+	// HTTP. Wired by cmd/serve.go when OPENCODE_BRIDGE_REGISTRAR_URL
+	// is set (openspec change bridge-orchestrator-mediated-inbound,
+	// Phase F). When nil, the bridge runs in legacy single-container
+	// mode — local bind alone is sufficient because the runner pod
+	// owns its own platform listener.
+	remoteRegistrar bridge.RemoteRegistrar
+
+	// remoteSelfHost / remoteSelfPort identify THIS container in
+	// orchestrator-mediated mode. Stamped onto every Register call
+	// so the orchestrator's forwarder knows where to POST inbound
+	// events. Empty / zero → don't call Register (defensive — the
+	// runner shouldn't have registrar wired without self-identity).
+	remoteSelfHost  string
+	remoteSelfPort  int
+	remoteJobID     string
+	remoteProjectID string
 }
 
 // Dependencies bundles the inputs Service needs at construction time.
@@ -113,6 +132,32 @@ type Dependencies struct {
 	ProjectID    string
 	DataDir      string
 	RouterCfg    *bridge.Config
+
+	// RemoteRegistrar, when non-nil, enables the orchestrator-
+	// mediated-inbound bind path: every OnInteractiveStepStart
+	// mirrors the local bind into the orchestrator's global binding
+	// index, and OnInteractiveStepComplete mirrors the unbind. See
+	// openspec change `bridge-orchestrator-mediated-inbound`,
+	// Phase F.
+	//
+	// RemoteSelfHost / RemoteSelfPort identify THIS container in
+	// the orchestrator's binding row — they are stamped onto every
+	// Register call so the forwarder knows where to POST inbound
+	// events. RemoteJobID groups all of a job's bindings so the
+	// orchestrator's DeregisterByJob hook can clear them en masse.
+	// RemoteProjectID matches the orchestrator's bridge project
+	// scope (defaults to "default" when empty).
+	//
+	// All fields are individually optional: if RemoteRegistrar is
+	// nil OR RemoteSelfHost/RemoteSelfPort/RemoteJobID is unset, the
+	// runner stays in single-container mode and only the local
+	// binding row is written. cmd/serve.go gates the wiring on
+	// OPENCODE_BRIDGE_REGISTRAR_URL being set.
+	RemoteRegistrar bridge.RemoteRegistrar
+	RemoteSelfHost  string
+	RemoteSelfPort  int
+	RemoteJobID     string
+	RemoteProjectID string
 }
 
 // New constructs a Service from the given dependencies. It does NOT start
@@ -136,16 +181,25 @@ func New(deps Dependencies) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("bridge.service: identity lock manager: %w", err)
 	}
+	projectID := deps.RemoteProjectID
+	if projectID == "" {
+		projectID = "default"
+	}
 	return &Service{
-		cfg:         deps.RouterCfg,
-		app:         deps.App,
-		store:       store.New(deps.DB, deps.ProviderType),
-		lockMgr:     lockMgr,
-		projectID:   deps.ProjectID,
-		dataDir:     deps.DataDir,
-		adapters:    make(map[string]bridge.Adapter),
-		inboundCh:   make(chan bridge.Inbound, 64),
-		dispatchers: make(map[string]*sessionDispatch),
+		cfg:             deps.RouterCfg,
+		app:             deps.App,
+		store:           store.New(deps.DB, deps.ProviderType),
+		lockMgr:         lockMgr,
+		projectID:       deps.ProjectID,
+		dataDir:         deps.DataDir,
+		adapters:        make(map[string]bridge.Adapter),
+		inboundCh:       make(chan bridge.Inbound, 64),
+		dispatchers:     make(map[string]*sessionDispatch),
+		remoteRegistrar: deps.RemoteRegistrar,
+		remoteSelfHost:  deps.RemoteSelfHost,
+		remoteSelfPort:  deps.RemoteSelfPort,
+		remoteJobID:     deps.RemoteJobID,
+		remoteProjectID: projectID,
 	}, nil
 }
 
