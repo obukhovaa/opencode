@@ -2,12 +2,20 @@ package service
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/logging"
 )
+
+// sameCancelFunc returns true when two context.CancelFunc values
+// refer to the same underlying function. CancelFunc is a func type,
+// so equality requires reflect pointer comparison.
+func sameCancelFunc(a, b context.CancelFunc) bool {
+	return reflect.ValueOf(a).Pointer() == reflect.ValueOf(b).Pointer()
+}
 
 // remoteRegisterRetryInterval is how often the bridge retries a
 // failed Register call against the orchestrator while the
@@ -171,7 +179,7 @@ func (h *interactiveBridge) scheduleRemoteRetry(sessionID string, pending []brid
 	h.retryCancels[sessionID] = cancel
 	h.retryMu.Unlock()
 
-	go h.runRemoteRetryLoop(ctx, sessionID, pending)
+	go h.runRemoteRetryLoop(ctx, sessionID, cancel, pending)
 }
 
 // runRemoteRetryLoop is the per-session retry goroutine. Recovers
@@ -181,7 +189,12 @@ func (h *interactiveBridge) scheduleRemoteRetry(sessionID string, pending []brid
 // The retry interval is snapshotted at goroutine start so that
 // tests using `withFastRetry` to temporarily shorten the global var
 // can't race the goroutine's reads.
-func (h *interactiveBridge) runRemoteRetryLoop(ctx context.Context, sessionID string, pending []bridge.RemoteBinding) {
+//
+// ownCancel is the cancel func this goroutine was launched with — used
+// at teardown to ensure we only delete OUR entry from retryCancels.
+// A racing scheduleRemoteRetry that already replaced the entry stays
+// untouched, so subsequent cancelRemoteRetry calls still see it.
+func (h *interactiveBridge) runRemoteRetryLoop(ctx context.Context, sessionID string, ownCancel context.CancelFunc, pending []bridge.RemoteBinding) {
 	interval := remoteRegisterRetryInterval
 	defer func() {
 		if r := recover(); r != nil {
@@ -189,7 +202,14 @@ func (h *interactiveBridge) runRemoteRetryLoop(ctx context.Context, sessionID st
 				"sessionID", sessionID, "panic", r)
 		}
 		h.retryMu.Lock()
-		delete(h.retryCancels, sessionID)
+		// Only clear the map entry if it still points at OUR cancel
+		// func — comparing via reflect.ValueOf().Pointer() because
+		// context.CancelFunc is not directly comparable. A racing
+		// scheduleRemoteRetry that replaced the entry installs a
+		// fresh func; we MUST NOT delete that one.
+		if existing, ok := h.retryCancels[sessionID]; ok && sameCancelFunc(existing, ownCancel) {
+			delete(h.retryCancels, sessionID)
+		}
 		h.retryMu.Unlock()
 	}()
 	for {
