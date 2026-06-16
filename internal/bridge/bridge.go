@@ -215,6 +215,25 @@ type InteractiveQuestionSender interface {
 	SendInteractiveQuestion(ctx context.Context, peer PeerRef, prompt string, choices []QuestionChoice) (resolvedPeer string, err error)
 }
 
+// AdapterInboundActiver is an OPTIONAL contract per-platform adapters
+// MAY implement to report whether they open a platform listener at
+// Start. Adapters in mediated-inbound mode (Identity.Inbound ==
+// InboundDisabled) return false; the bridge service uses this to
+// skip the per-identity lock acquisition.
+//
+// Adapters that don't implement this interface are treated as
+// inbound-active (today's behaviour) — the lock is acquired and the
+// listener may open at Start. This keeps the interface backwards
+// compatible for callers (tests, future adapters) that don't need
+// the gate.
+type AdapterInboundActiver interface {
+	// InboundActive reports whether this adapter will open a
+	// platform listener at Start. When false, the bridge service
+	// skips the per-identity GET_LOCK that prevents multi-process
+	// Socket Mode collisions — moot when no listener opens.
+	InboundActive() bool
+}
+
 // Adapter is the contract every per-platform implementation satisfies.
 //
 // The orchestrator constructs one Adapter per configured identity. Adapters

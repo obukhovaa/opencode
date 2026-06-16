@@ -34,19 +34,47 @@ func (s *Service) RegisterAdapter(ctx context.Context, adapter bridge.Adapter) e
 	s.adapters[key] = adapter
 	s.mu.Unlock()
 
-	lock, err := s.lockMgr.Lock(ctx, s.projectID, adapter.Channel(), adapter.Identity())
-	if err != nil {
-		s.mu.Lock()
-		delete(s.adapters, key)
-		s.mu.Unlock()
-		if errors.Is(err, store.ErrIdentityLocked) {
-			logging.Info("bridge: identity is owned by another opencode instance",
-				"channel", adapter.Channel(), "identity", adapter.Identity())
-		} else {
-			logging.Warn("bridge: identity lock failed",
-				"channel", adapter.Channel(), "identity", adapter.Identity(), "err", err)
+	// Identity-lock acquisition is gated on whether the adapter
+	// opens a platform listener. In mediated-inbound mode the
+	// runner's adapter is constructed with Identity.Inbound ==
+	// "disabled" (openspec change bridge-orchestrator-mediated-inbound
+	// Phase A): no Socket Mode connection, no "one event = one
+	// connection" race to coordinate, so the per-identity lock is
+	// moot. Acquiring it here actively breaks the multi-runner-on-
+	// same-identity case that mediated-inbound was designed to
+	// enable — runner 1 takes the lock, runner 2 fails with
+	// ErrIdentityLocked, no adapter registered, every subsequent
+	// Bind on runner 2 errors with "no adapter for slack:default".
+	//
+	// Adapters opt out of the lock by implementing
+	// AdapterInboundActiver and returning false. Adapters that don't
+	// implement the interface are treated as inbound-active (today's
+	// behaviour for non-mediated deployments).
+	inboundActive := true
+	if a, ok := adapter.(bridge.AdapterInboundActiver); ok {
+		inboundActive = a.InboundActive()
+	}
+
+	var lock store.LockHandle
+	if inboundActive {
+		var err error
+		lock, err = s.lockMgr.Lock(ctx, s.projectID, adapter.Channel(), adapter.Identity())
+		if err != nil {
+			s.mu.Lock()
+			delete(s.adapters, key)
+			s.mu.Unlock()
+			if errors.Is(err, store.ErrIdentityLocked) {
+				logging.Info("bridge: identity is owned by another opencode instance",
+					"channel", adapter.Channel(), "identity", adapter.Identity())
+			} else {
+				logging.Warn("bridge: identity lock failed",
+					"channel", adapter.Channel(), "identity", adapter.Identity(), "err", err)
+			}
+			return fmt.Errorf("bridge: lock %s: %w", key, err)
 		}
-		return fmt.Errorf("bridge: lock %s: %w", key, err)
+	} else {
+		logging.Info("bridge: adapter inbound is disabled — skipping identity lock (mediated-inbound mode)",
+			"channel", adapter.Channel(), "identity", adapter.Identity())
 	}
 
 	// Adapter-side per-(channel, identity, peerKey) serialization happens
@@ -56,7 +84,9 @@ func (s *Service) RegisterAdapter(ctx context.Context, adapter bridge.Adapter) e
 	// channel that pumps into the shared inboundCh.
 	adapterInbound := make(chan bridge.Inbound, 32)
 	if err := adapter.Start(s.ctx, adapterInbound); err != nil {
-		_ = lock.Release()
+		if lock != nil {
+			_ = lock.Release()
+		}
 		s.mu.Lock()
 		delete(s.adapters, key)
 		s.mu.Unlock()
@@ -64,12 +94,16 @@ func (s *Service) RegisterAdapter(ctx context.Context, adapter bridge.Adapter) e
 	}
 
 	// Track the lock so Stop / DeregisterAdapter can release it.
-	s.adapterMu.Lock()
-	if s.adapterLocks == nil {
-		s.adapterLocks = make(map[string]store.LockHandle)
+	// nil lock (mediated-inbound adapters) is recorded as a sentinel
+	// — the release path nil-checks before calling Release.
+	if lock != nil {
+		s.adapterMu.Lock()
+		if s.adapterLocks == nil {
+			s.adapterLocks = make(map[string]store.LockHandle)
+		}
+		s.adapterLocks[key] = lock
+		s.adapterMu.Unlock()
 	}
-	s.adapterLocks[key] = lock
-	s.adapterMu.Unlock()
 
 	// Pump adapter inbound into the shared orchestrator channel. One
 	// goroutine per adapter — these are tiny (no parsing, no IO) but get

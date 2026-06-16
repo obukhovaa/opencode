@@ -210,6 +210,13 @@ func (a *Adapter) Channel() string { return "telegram" }
 // Identity implements bridge.Adapter.
 func (a *Adapter) Identity() string { return a.id.ID }
 
+// InboundActive implements bridge.AdapterInboundActiver. See the
+// Slack adapter's implementation for the rationale — mediated-mode
+// adapters skip the per-identity lock to enable multi-runner.
+func (a *Adapter) InboundActive() bool {
+	return !bridge.IsInboundDisabled(a.id.Inbound)
+}
+
 // Status implements bridge.Adapter.
 func (a *Adapter) Status() bridge.AdapterStatus {
 	return bridge.AdapterStatus{
