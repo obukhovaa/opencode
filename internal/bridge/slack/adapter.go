@@ -159,6 +159,16 @@ func (a *Adapter) Channel() string { return "slack" }
 // Identity implements bridge.Adapter.
 func (a *Adapter) Identity() string { return a.id.ID }
 
+// InboundActive implements bridge.AdapterInboundActiver. Returns
+// false when the identity is configured with `inbound: "disabled"`
+// (orchestrator-mediated mode) — the bridge service uses this to
+// skip the per-identity GET_LOCK, which is unnecessary when no
+// Socket Mode listener will open and BREAKS multi-runner-on-same-
+// identity that mediated-inbound was designed to enable.
+func (a *Adapter) InboundActive() bool {
+	return !bridge.IsInboundDisabled(a.id.Inbound)
+}
+
 // Status implements bridge.Adapter.
 func (a *Adapter) Status() bridge.AdapterStatus {
 	return bridge.AdapterStatus{

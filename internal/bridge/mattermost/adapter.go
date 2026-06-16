@@ -166,6 +166,13 @@ func (a *Adapter) Channel() string { return "mattermost" }
 // Identity implements bridge.Adapter.
 func (a *Adapter) Identity() string { return a.identityID }
 
+// InboundActive implements bridge.AdapterInboundActiver. See the
+// Slack adapter's implementation for the rationale — mediated-mode
+// adapters skip the per-identity lock to enable multi-runner.
+func (a *Adapter) InboundActive() bool {
+	return !bridge.IsInboundDisabled(a.inboundMode)
+}
+
 // Client exposes the underlying REST client for tests and the
 // router_send agent tool wiring.
 func (a *Adapter) Client() *Client { return a.client }
