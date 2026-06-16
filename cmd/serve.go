@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -145,13 +146,55 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 		// chat-bridge-http-api spec).
 		var bridgeSvc *bridgesvc.Service
 		if cfg.Router != nil && cfg.Router.AnyChannelEnabled() {
+			// Orchestrator-mediated-inbound (openspec Phase F): when
+			// OPENCODE_BRIDGE_REGISTRAR_URL is set, mirror local
+			// bind/unbind into the orchestrator's global binding
+			// index via HTTP. The orchestrator's forwarder uses that
+			// index to route inbound events back to THIS pod. Self-
+			// identity (host:port the orchestrator should POST to)
+			// + jobID come from env vars the orchestrator stamps on
+			// the runner Pod spec.
+			var (
+				registrar     bridge.RemoteRegistrar
+				selfHost      = os.Getenv("OPENCODE_BRIDGE_SELF_HOST")
+				selfPortStr   = os.Getenv("OPENCODE_BRIDGE_SELF_PORT")
+				registrarURL  = os.Getenv("OPENCODE_BRIDGE_REGISTRAR_URL")
+				registrarPass = os.Getenv("OPENCODE_BRIDGE_REGISTRAR_PASSWORD")
+				remoteJobID   = os.Getenv("OPENCODE_BRIDGE_JOB_ID")
+				remoteProj    = os.Getenv("OPENCODE_BRIDGE_PROJECT_ID")
+			)
+			selfPort := 0
+			if selfPortStr != "" {
+				if p, err := strconv.Atoi(selfPortStr); err == nil {
+					selfPort = p
+				}
+			}
+			if registrarURL != "" {
+				r, err := bridge.NewHTTPRegistrar(bridge.HTTPRegistrarConfig{
+					BaseURL:  registrarURL,
+					Password: registrarPass,
+				})
+				if err != nil {
+					logging.Error("Bridge remote registrar init failed", "error", err)
+					return err
+				}
+				registrar = r
+				logging.Info("Bridge remote registrar wired",
+					"url", registrarURL, "selfHost", selfHost, "selfPort", selfPort, "jobID", remoteJobID)
+			}
+
 			s, err := bridgesvc.New(bridgesvc.Dependencies{
-				App:          application,
-				DB:           conn,
-				ProviderType: cfg.SessionProvider.Type,
-				ProjectID:    db.GetProjectID(cwd),
-				DataDir:      cfg.Data.Directory,
-				RouterCfg:    cfg.Router,
+				App:             application,
+				DB:              conn,
+				ProviderType:    cfg.SessionProvider.Type,
+				ProjectID:       db.GetProjectID(cwd),
+				DataDir:         cfg.Data.Directory,
+				RouterCfg:       cfg.Router,
+				RemoteRegistrar: registrar,
+				RemoteSelfHost:  selfHost,
+				RemoteSelfPort:  selfPort,
+				RemoteJobID:     remoteJobID,
+				RemoteProjectID: remoteProj,
 			})
 			if err != nil {
 				logging.Error("Bridge orchestrator init failed", "error", err)
