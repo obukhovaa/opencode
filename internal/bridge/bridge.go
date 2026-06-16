@@ -23,7 +23,35 @@ package bridge
 
 import (
 	"context"
+	"strings"
 )
+
+// PrependMentionIfMissing returns `mention + " " + text` UNLESS text
+// already starts with the mention (ignoring leading whitespace).
+// Adapters call this on the first outbound for a binding so the
+// reviewer gets exactly one ping — the auto-injected interactive
+// step prompt (`interactiveStructuredOutputPrompt` in
+// internal/llm/prompt) tells the agent to start its first message
+// with the mention, AND the bridge's binding state machine sets
+// `Outbound.Mention` on the first send. Both fire, so the
+// unconditional `mention + " " + text` prepend that adapters used
+// pre-v0.11.x produced doubled mentions like `@alice @alice Hi!`.
+//
+// Empty mention → returns text unchanged.
+// Empty text + mention → returns mention only (no trailing space).
+func PrependMentionIfMissing(mention, text string) string {
+	if mention == "" {
+		return text
+	}
+	trimmed := strings.TrimLeft(text, " \t")
+	if strings.HasPrefix(trimmed, mention) {
+		return text
+	}
+	if text == "" {
+		return mention
+	}
+	return mention + " " + text
+}
 
 // Attachment is the bridge-local file-attachment value type. It mirrors
 // internal/Attachment field-for-field — the orchestrator service

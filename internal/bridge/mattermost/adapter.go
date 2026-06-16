@@ -477,10 +477,7 @@ func (a *Adapter) Send(ctx context.Context, out bridge.Outbound) bridge.SendResu
 		return bridge.SendResult{Err: fmt.Errorf("mattermost: invalid peerId %q", out.Peer.PeerID)}
 	}
 
-	text := out.Text
-	if out.Mention != "" {
-		text = out.Mention + " " + text
-	}
+	text := bridge.PrependMentionIfMissing(out.Mention, out.Text)
 	// Mattermost counts MaxTextLength in characters, not bytes. Slicing
 	// at a byte boundary that lands mid-codepoint produces invalid UTF-8
 	// that the server can reject and renders as the replacement
