@@ -360,7 +360,11 @@ func newBridgeAdapterFactory(dataDir string, svc *bridgesvc.Service) bridgesvc.A
 				opts := telegram.Options{MediaDir: mediaDir}
 				if svc != nil && svc.Store() != nil {
 					store := svc.Store()
-					projectID := svc.ProjectID()
+					// Use remoteProjectID so single-process AND mediated-
+					// inbound deployments key on the SAME project_id as
+					// seedIdentityAllowlist. See Service.RemoteProjectID
+					// docstring for the contract.
+					projectID := svc.RemoteProjectID()
 					opts.Allowlisted = func(ctx context.Context, peerID string) (bool, error) {
 						return store.IsAllowlisted(ctx, projectID, "telegram", b.ID, peerID)
 					}
@@ -388,7 +392,8 @@ func newBridgeAdapterFactory(dataDir string, svc *bridgesvc.Service) bridgesvc.A
 				opts := slack.Options{MediaDir: mediaDir}
 				if svc != nil && svc.Store() != nil && a.Access == slack.AccessPrivate {
 					store := svc.Store()
-					projectID := svc.ProjectID()
+					// remoteProjectID — see telegram branch above.
+					projectID := svc.RemoteProjectID()
 					opts.Allowlisted = func(ctx context.Context, identifier string) (bool, error) {
 						return store.IsAllowlisted(ctx, projectID, "slack", a.ID, identifier)
 					}
@@ -413,7 +418,8 @@ func newBridgeAdapterFactory(dataDir string, svc *bridgesvc.Service) bridgesvc.A
 				opts := mattermost.Options{MediaDir: mediaDir}
 				if svc != nil && svc.Store() != nil && m.Access == mattermost.AccessPrivate {
 					store := svc.Store()
-					projectID := svc.ProjectID()
+					// remoteProjectID — see telegram branch above.
+					projectID := svc.RemoteProjectID()
 					opts.Allowlisted = func(ctx context.Context, identifier string) (bool, error) {
 						return store.IsAllowlisted(ctx, projectID, "mattermost", m.ID, identifier)
 					}
