@@ -313,18 +313,31 @@ func (s *Service) launchEnabledAdapters(ctx context.Context) {
 // for a private identity into `bridge_allowlist`. No-op when the
 // identity is public OR has an empty list. Existing rows are preserved
 // — config is additive.
+//
+// The seed uses remoteProjectID rather than the local projectID
+// because the allowlist is consulted by the orchestrator's forwarder
+// (in mediated-inbound deployments), which keys on the SAME
+// remoteProjectID the runner already uses for POST /router/bindings/register.
+// If we seeded with the local s.projectID (db.GetProjectID(cwd) →
+// e.g. "gitlab.com/org/repo") the orchestrator would query with
+// "default" (its hardcoded bridgeProjectID) and never find a match,
+// silently dropping every inbound from peers the operator allowlisted.
+// For single-process (non-mediated) deployments where the runner does
+// the allowlist check itself, remoteProjectID defaults to "default"
+// anyway — same value either way, so single-process behaviour is
+// preserved.
 func (s *Service) seedIdentityAllowlist(ctx context.Context, channel, identityID, access string, peers []string) {
 	if access != "private" || len(peers) == 0 || s.store == nil {
 		return
 	}
-	inserted, err := s.store.SeedAllowlist(ctx, s.projectID, channel, identityID, peers)
+	inserted, err := s.store.SeedAllowlist(ctx, s.remoteProjectID, channel, identityID, peers)
 	if err != nil {
 		logging.Warn("bridge: allowlist seed failed",
 			"channel", channel, "identity", identityID, "err", err)
 		return
 	}
 	logging.Info("bridge: allowlist seeded",
-		"channel", channel, "identity", identityID, "inserted", inserted, "total_config", len(peers))
+		"channel", channel, "identity", identityID, "project_id", s.remoteProjectID, "inserted", inserted, "total_config", len(peers))
 }
 
 // runInboundLoop drains the shared inboundCh and forwards each message
@@ -426,6 +439,18 @@ func (s *Service) Store() store.Store {
 // separate copy of the project resolution logic.
 func (s *Service) ProjectID() string {
 	return s.projectID
+}
+
+// RemoteProjectID returns the project ID the bridge uses for entries
+// the orchestrator's forwarder consults (allowlist, bindings register).
+// In mediated-inbound deployments this is the OPENCODE_BRIDGE_PROJECT_ID
+// env value the orchestrator stamps on runner pods (defaults to
+// "default" when unset, matching the orchestrator's hardcoded
+// bridgeProjectID). Callers that need the projectID a downstream
+// consumer (orchestrator) will key on — NOT the local cwd hash —
+// should use this method.
+func (s *Service) RemoteProjectID() string {
+	return s.remoteProjectID
 }
 
 // Config returns the bridge configuration snapshot the service was
