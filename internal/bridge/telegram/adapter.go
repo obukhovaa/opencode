@@ -834,10 +834,7 @@ func (a *Adapter) Send(ctx context.Context, out bridge.Outbound) bridge.SendResu
 		return bridge.SendResult{Err: err}
 	}
 
-	text := out.Text
-	if out.Mention != "" {
-		text = out.Mention + " " + text
-	}
+	text := bridge.PrependMentionIfMissing(out.Mention, out.Text)
 
 	// Attachments first so the chat-surface ordering matches the agent's
 	// intent: file then trailing prose. Per the TS impl, attachments use
