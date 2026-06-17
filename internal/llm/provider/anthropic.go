@@ -67,7 +67,17 @@ func newAnthropicClient(opts providerClientOptions) AnthropicClient {
 	}
 	resolvedBaseURL := ""
 
-	anthropicClientOptions := []option.RequestOption{}
+	anthropicClientOptions := []option.RequestOption{
+		// Disable the SDK's built-in retry layer (default MaxRetries=2,
+		// see anthropic-sdk-go/option/requestoption.go). Opencode owns
+		// retry policy via shouldRetry + isTransientStreamError — the
+		// SDK retrying first would stack 2 SDK attempts on top of our
+		// up-to-8 attempts, producing a worst-case ~8.5 min wall-clock
+		// on a single failing request (2s/4s/8s/16s/32s/64s/128s/256s
+		// opencode backoff after the SDK's own internal retries). One
+		// retry policy, one place to reason about it.
+		option.WithMaxRetries(0),
+	}
 	if anthropicOpts.useBedrock {
 		middleware := bedrockMiddleware()
 		anthropicClientOptions = append(anthropicClientOptions, option.WithMiddleware(middleware))
@@ -358,7 +368,7 @@ func (a *anthropicClient) send(ctx context.Context, messages []message.Message, 
 				return nil, retryErr
 			}
 			if retry {
-				logging.WarnPersist(fmt.Sprintf("Retrying due to rate limit... attempt %d of %d", attempts, maxRetries), logging.PersistTimeArg, time.Millisecond*time.Duration(after+100))
+				logging.WarnPersist(fmt.Sprintf("Retrying transient API error... attempt %d of %d", attempts, maxRetries), logging.PersistTimeArg, time.Millisecond*time.Duration(after+100))
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
@@ -588,7 +598,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 				return
 			}
 			if retry {
-				logging.WarnPersist(fmt.Sprintf("Retrying due to rate limit... attempt %d of %d", attempts, maxRetries), logging.PersistTimeArg, time.Millisecond*time.Duration(after+100))
+				logging.WarnPersist(fmt.Sprintf("Retrying transient API error... attempt %d of %d", attempts, maxRetries), logging.PersistTimeArg, time.Millisecond*time.Duration(after+100))
 				select {
 				case <-ctx.Done():
 					// context cancelled
@@ -634,18 +644,42 @@ func (a *anthropicClient) applyMetadata(ctx context.Context, params *anthropic.M
 	params.Metadata = meta
 }
 
+// retryableHTTPStatuses are the status codes we treat as transient and
+// worth retrying with exponential backoff. Applies to ALL anthropic-SDK
+// transports (direct Anthropic API, AWS Bedrock, GCP Vertex) — the SDK
+// surfaces upstream HTTP status codes verbatim on `*anthropic.Error`:
+//   - 429 Too Many Requests        — rate limit (Retry-After honored)
+//   - 503 Service Unavailable      — standard transient-overload signal.
+//     Notably surfaces from AWS Bedrock's serviceUnavailableException
+//     ("Bedrock is unable to process your request") on pre-stream
+//     rejection, but Anthropic's direct API and Vertex also return 503
+//     for genuinely transient upstream overload.
+//   - 529 Overloaded               — Anthropic's own overload signal.
+//
+// 500 / 502 / 504 are deliberately excluded — they tend to signal real
+// upstream bugs rather than transient blips, and aggressive retry on
+// them just amplifies impact during incidents.
+//
+// The retry path uses 2s/4s/8s/… exponential backoff with 20% jitter,
+// capped by maxRetries.
+var retryableHTTPStatuses = map[int]struct{}{
+	429: {},
+	503: {},
+	529: {},
+}
+
 func (a *anthropicClient) shouldRetry(attempts int, err error) (bool, int64, error) {
 	var apierr *anthropic.Error
 	if !errors.As(err, &apierr) {
 		return false, 0, err
 	}
 
-	if apierr.StatusCode != 429 && apierr.StatusCode != 529 {
+	if _, ok := retryableHTTPStatuses[apierr.StatusCode]; !ok {
 		return false, 0, err
 	}
 
 	if attempts > maxRetries {
-		return false, 0, fmt.Errorf("maximum retry attempts reached for rate limit: %d retries", maxRetries)
+		return false, 0, fmt.Errorf("maximum retry attempts reached for HTTP %d: %d retries", apierr.StatusCode, maxRetries)
 	}
 
 	retryMs := 0

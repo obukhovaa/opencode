@@ -536,6 +536,55 @@ func TestIsTransientStreamError(t *testing.T) {
 			err:  context.Canceled,
 			want: false,
 		},
+
+		// Bedrock mid-stream exceptions — the anthropic-sdk-go bedrock
+		// decoder wraps these as `received exception <Type>: <msg>`.
+		// The transient subset must retry; the terminal subset must NOT.
+		{
+			name: "Bedrock ServiceUnavailableException mid-stream is transient",
+			err:  errors.New("received exception ServiceUnavailableException: Bedrock is unable to process your request."),
+			want: true,
+		},
+		{
+			name: "Bedrock ThrottlingException mid-stream is transient",
+			err:  errors.New("received exception ThrottlingException: Too many requests, please wait before trying again."),
+			want: true,
+		},
+		{
+			name: "Bedrock ModelTimeoutException mid-stream is transient",
+			err:  errors.New("received exception ModelTimeoutException: model inference timed out"),
+			want: true,
+		},
+		{
+			name: "Bedrock ModelStreamErrorException mid-stream is transient",
+			err:  errors.New("received exception ModelStreamErrorException: an error occurred while streaming the response"),
+			want: true,
+		},
+		{
+			name: "Bedrock InternalServerException mid-stream is transient",
+			err:  errors.New("received exception InternalServerException: internal error"),
+			want: true,
+		},
+		{
+			name: "Bedrock ValidationException is NOT transient (bad request, retry would loop)",
+			err:  errors.New("received exception ValidationException: malformed input"),
+			want: false,
+		},
+		{
+			name: "Bedrock AccessDeniedException is NOT transient (auth, retry would loop)",
+			err:  errors.New("received exception AccessDeniedException: not authorized to invoke model"),
+			want: false,
+		},
+		{
+			name: "Bedrock ResourceNotFoundException is NOT transient (wrong model, retry would loop)",
+			err:  errors.New("received exception ResourceNotFoundException: model not found"),
+			want: false,
+		},
+		{
+			name: "Bedrock ModelErrorException is NOT transient (model rejected input)",
+			err:  errors.New("received exception ModelErrorException: model could not process input"),
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {

@@ -31,9 +31,28 @@ const defaultStreamInactivityTimeout = 5 * time.Minute
 
 var ErrStreamStalled = errors.New("stream stalled: no events received within timeout")
 
-// isTransientStreamError returns true for transport-level errors that indicate
-// the HTTP stream was interrupted (e.g. server closed connection mid-response).
-// These are worth retrying because they are not application-level rejections.
+// isTransientStreamError returns true for errors that indicate the
+// stream was interrupted by a recoverable upstream condition (transport
+// disconnect, provider-side temporary failure). These are worth retrying
+// because they are not application-level rejections (auth, schema,
+// content policy).
+//
+// Two classes are covered:
+//
+//  1. Transport-level — the HTTP/TCP connection died mid-response. The
+//     standard library error sentinels and the well-known driver
+//     substrings catch this.
+//
+//  2. Provider-protocol-level — the upstream sent an in-band error
+//     frame in the eventstream/SSE payload. AWS Bedrock's
+//     anthropic-sdk-go bedrock decoder wraps these as
+//     `fmt.Errorf("received exception <ExceptionType>: <message>")`
+//     (see anthropics/anthropic-sdk-go/bedrock/bedrock.go). Only the
+//     transient AWS exception types are matched — `ValidationException`
+//     / `AccessDeniedException` / `ResourceNotFoundException` /
+//     `ModelErrorException` are deliberately omitted because they
+//     reflect bad inputs or auth misconfig, retrying would just
+//     hammer the same wall.
 func isTransientStreamError(err error) bool {
 	if errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
@@ -43,10 +62,18 @@ func isTransientStreamError(err error) bool {
 	}
 	msg := err.Error()
 	return contains(msg,
+		// Transport-level
 		"connection reset by peer",
 		"use of closed network connection",
 		"broken pipe",
 		"unexpected EOF",
+		// Bedrock mid-stream exceptions wrapped as
+		// "received exception <Type>: <msg>".
+		"ServiceUnavailableException", // 503 — Bedrock unable to process (the canonical "Bedrock is unable to process your request" failure mode)
+		"ThrottlingException",         // 429 — Bedrock-side rate limit
+		"ModelTimeoutException",       // 408 — model inference timed out upstream
+		"ModelStreamErrorException",   // mid-stream error from the model itself, retryable per AWS docs
+		"InternalServerException",     // 500 — generic upstream blip
 	)
 }
 
