@@ -37,6 +37,10 @@ type MCPServer struct {
 	URL      string            `json:"url"`
 	Headers  map[string]string `json:"headers"`
 	Disabled bool              `json:"disabled,omitempty"`
+	// CallToolTimeoutSeconds overrides the default per-tool-call timeout for this server.
+	// Set to 0 (or omit) to use the built-in default. Useful for slow MCP servers whose
+	// individual tool calls can legitimately exceed the default budget.
+	CallToolTimeoutSeconds int `json:"callToolTimeoutSeconds,omitempty"`
 }
 
 // ResolveMCPServers returns only the MCP servers that are not disabled.

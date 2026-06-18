@@ -476,6 +476,11 @@
             },
             "type": "array"
           },
+          "callToolTimeoutSeconds": {
+            "description": "Per-tool-call timeout override in seconds. Zero or omitted falls back to the built-in default (5 minutes).",
+            "minimum": 0,
+            "type": "integer"
+          },
           "command": {
             "description": "Command to execute for the MCP server",
             "type": "string"

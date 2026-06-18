@@ -177,6 +177,11 @@ func generateSchema() map[string]any {
 					"description": "Whether the MCP server is disabled",
 					"default":     false,
 				},
+				"callToolTimeoutSeconds": map[string]any{
+					"type":        "integer",
+					"description": "Per-tool-call timeout override in seconds. Zero or omitted falls back to the built-in default (5 minutes).",
+					"minimum":     0,
+				},
 			},
 			"required": []string{"command"},
 		},

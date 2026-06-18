@@ -203,7 +203,8 @@ func (r *mcpRegistry) LoadTools(ctx context.Context, filter *MCPRegistryFiler) <
 }
 
 const (
-	ttl = 30 * time.Minute
+	ttl                = 30 * time.Minute
+	mcpCallToolTimeout = 5 * time.Minute
 )
 
 type toolsCacheEntry struct {
@@ -357,10 +358,20 @@ func (b *mcpTool) Run(ctx context.Context, params tools.ToolCall) (tools.ToolRes
 		return tools.NewTextErrorResponse(err.Error()), nil
 	}
 	defer c.Close()
-	return runTool(ctx, c, b.tool.Name, params.Input)
+	return runTool(ctx, c, b.tool.Name, params.Input, resolveCallToolTimeout(b.mcpConfig))
 }
 
-func runTool(ctx context.Context, c MCPClient, toolName string, input string) (tools.ToolResponse, error) {
+// resolveCallToolTimeout returns the per-call timeout for an MCP server. A positive
+// CallToolTimeoutSeconds in the server config overrides the default; 0 or omitted falls
+// back to mcpCallToolTimeout.
+func resolveCallToolTimeout(m config.MCPServer) time.Duration {
+	if m.CallToolTimeoutSeconds > 0 {
+		return time.Duration(m.CallToolTimeoutSeconds) * time.Second
+	}
+	return mcpCallToolTimeout
+}
+
+func runTool(ctx context.Context, c MCPClient, toolName string, input string, callTimeout time.Duration) (tools.ToolResponse, error) {
 	initRequest := mcp.InitializeRequest{}
 	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 	initRequest.Params.ClientInfo = mcp.Implementation{
@@ -380,8 +391,20 @@ func runTool(ctx context.Context, c MCPClient, toolName string, input string) (t
 		return tools.NewTextErrorResponse(fmt.Sprintf("error parsing parameters: %s", err)), nil
 	}
 	toolRequest.Params.Arguments = args
-	result, err := c.CallTool(ctx, toolRequest)
+
+	callCtx, cancelCall := context.WithTimeout(ctx, callTimeout)
+	defer cancelCall()
+	result, err := c.CallTool(callCtx, toolRequest)
 	if err != nil {
+		// Only attribute the timeout to our per-call budget when the parent ctx is
+		// still alive — otherwise the deadline came from upstream and reporting our
+		// callTimeout would be misleading.
+		if ctx.Err() == nil && callCtx.Err() == context.DeadlineExceeded {
+			return tools.NewTextErrorResponse(fmt.Sprintf(
+				"MCP tool %q timed out after %s — upstream MCP server did not respond. The agent should try a different approach or skip this step.",
+				toolName, callTimeout,
+			)), nil
+		}
 		return tools.NewTextErrorResponse(err.Error()), nil
 	}
 
