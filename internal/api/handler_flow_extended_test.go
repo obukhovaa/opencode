@@ -434,7 +434,7 @@ func waitForFlowTerminal(t *testing.T, fr *flowRunner, timeout time.Duration) ti
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		snap := fr.Snapshot()
-		if snap != nil && (snap.Status == flowRunCompleted || snap.Status == flowRunFailed) {
+		if snap != nil && (snap.Status == flowRunCompleted || snap.Status == flowRunFailed || snap.Status == flowRunPostponed) {
 			return time.Now()
 		}
 		time.Sleep(10 * time.Millisecond)

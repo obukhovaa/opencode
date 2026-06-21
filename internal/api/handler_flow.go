@@ -781,7 +781,7 @@ func (s *Server) WaitFlowTerminal(ctx context.Context, runID string, grace time.
 			if snap == nil || snap.RunID != runID {
 				continue
 			}
-			if snap.Status == flowRunCompleted || snap.Status == flowRunFailed {
+			if snap.Status == flowRunCompleted || snap.Status == flowRunFailed || snap.Status == flowRunPostponed {
 				logging.Info("auto-flow terminal — holding for reconciliation grace",
 					"flow", snap.FlowID, "runID", runID, "status", snap.Status, "grace", grace)
 				if grace > 0 {
