@@ -29,6 +29,12 @@ const (
 	flowRunWaitingForInput flowRunStatus = "waiting_for_input"
 	flowRunCompleted       flowRunStatus = "completed"
 	flowRunFailed          flowRunStatus = "failed"
+	// flowRunPostponed marks a run that terminated because the last
+	// observed step transitioned to FlowStatusPostponed (via a
+	// `postpone: true` rule) and no further work was queued. Distinct
+	// from flowRunCompleted so downstream consumers can render
+	// "Waiting for user action..." instead of "Completed".
+	flowRunPostponed flowRunStatus = "postponed"
 )
 
 // flowEventType is the SSE event-type enum the bridge-http-api spec
@@ -40,9 +46,11 @@ const (
 	evFlowStepStarted     flowEventType = "flow.step.started"
 	evFlowStepCompleted   flowEventType = "flow.step.completed"
 	evFlowStepFailed      flowEventType = "flow.step.failed"
+	evFlowStepPostponed   flowEventType = "flow.step.postponed"
 	evFlowWaitingForInput flowEventType = "flow.waiting_for_input"
 	evFlowCompleted       flowEventType = "flow.completed"
 	evFlowFailed          flowEventType = "flow.failed"
+	evFlowPostponed       flowEventType = "flow.postponed"
 )
 
 // FlowEvent is the SSE payload for every flow-* event type. Fields are
@@ -167,6 +175,17 @@ type flowRunState struct {
 	completedAt    int64
 	err            string
 	waitingTarget  any
+
+	// lastStepPostponed records whether the most recent step transition
+	// was a postpone (FlowStatusPostponed). Cleared by any subsequent
+	// Running / Completed / Failed transition so a postpone-then-resume
+	// sequence ends in flowRunCompleted, not flowRunPostponed. Read by
+	// the runner's terminal selector to pick between flow.completed and
+	// flow.postponed when the flowStates channel drains. Same-goroutine
+	// access only: observeStep writes it under fr.mu; the run() terminal
+	// selector reads it from the same goroutine that drove observeStep,
+	// so the read sees the latest write without re-locking.
+	lastStepPostponed bool
 }
 
 // flowRunnerSingleton is the process-wide tracker installed on
@@ -354,11 +373,21 @@ func (fr *flowRunner) run(ctx context.Context, state *flowRunState, flowID strin
 		default:
 		}
 	}
-	if state.err != "" {
+	// Terminal status selector — mutually exclusive:
+	//   err set            → flow.failed
+	//   last step postponed → flow.postponed
+	//   otherwise          → flow.completed
+	// The lastStepPostponed flag is set in observeStep when a step
+	// transitions to FlowStatusPostponed and cleared by any subsequent
+	// Running/Completed/Failed transition. See flowRunState comment.
+	switch {
+	case state.err != "":
 		fr.finish(state, flowRunFailed, state.err)
-		return
+	case state.lastStepPostponed:
+		fr.finish(state, flowRunPostponed, "")
+	default:
+		fr.finish(state, flowRunCompleted, "")
 	}
-	fr.finish(state, flowRunCompleted, "")
 }
 
 // observeStep updates the run state when a step transitions and
@@ -390,6 +419,10 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 		// waiting_for_input signal — the previous interactive step has
 		// concluded by the time the next step starts.
 		state.waitingTarget = nil
+		// A step entering Running invalidates a previous postpone —
+		// either it's a fresh step or a resume of the postponed one.
+		// Either way the run can no longer terminate as postponed.
+		state.lastStepPostponed = false
 		if state.Status == flowRunWaitingForInput {
 			state.Status = flowRunRunning
 		}
@@ -428,8 +461,34 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 		rec.CompletedAt = now
 		state.completedSteps = append(state.completedSteps, rec)
 		state.currentStep = nil
+		state.lastStepPostponed = false
 		fr.publishEvent(state, FlowEvent{
 			Type:           evFlowStepCompleted,
+			RunID:          state.RunID,
+			FlowID:         state.FlowID,
+			StepID:         rec.ID,
+			SessionID:      rec.SessionID,
+			Output:         rec.Output,
+			CompletedAt:    now,
+			IsStructOutput: st.IsStructOutput,
+			Iteration:      st.Iteration,
+			Cost:           cost,
+			ContextSize:    contextSize,
+		})
+	case flow.FlowStatusPostponed:
+		// A step matched a `postpone: true` rule — the row in flow_states
+		// was updated to status=postponed and the previous iteration's
+		// Output is preserved on it. Emit flow.step.postponed carrying
+		// the same per-step extension fields as completed so consumers
+		// can render the waiting-for-resume state. Mark the run-level
+		// flag so the terminal selector picks flowRunPostponed when the
+		// channel drains.
+		rec.CompletedAt = now
+		state.completedSteps = append(state.completedSteps, rec)
+		state.currentStep = nil
+		state.lastStepPostponed = true
+		fr.publishEvent(state, FlowEvent{
+			Type:           evFlowStepPostponed,
 			RunID:          state.RunID,
 			FlowID:         state.FlowID,
 			StepID:         rec.ID,
@@ -445,6 +504,7 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 		rec.Error = st.Output
 		state.completedSteps = append(state.completedSteps, rec)
 		state.err = st.Output
+		state.lastStepPostponed = false
 		fr.publishEvent(state, FlowEvent{
 			Type:           evFlowStepFailed,
 			RunID:          state.RunID,
@@ -531,8 +591,9 @@ func (fr *flowRunner) publishEvent(_ *flowRunState, ev FlowEvent) {
 	fr.broker.Publish(pubsub.UpdatedEvent, ev)
 }
 
-// finish records the terminal status of a run and emits the
-// flow.completed / flow.failed SSE event.
+// finish records the terminal status of a run and emits the matching
+// terminal SSE event — flow.completed, flow.postponed, or flow.failed.
+// The three events are mutually exclusive; exactly one fires per run.
 func (fr *flowRunner) finish(state *flowRunState, status flowRunStatus, errMsg string) {
 	fr.mu.Lock()
 	defer fr.mu.Unlock()
@@ -541,14 +602,22 @@ func (fr *flowRunner) finish(state *flowRunState, status flowRunStatus, errMsg s
 	if errMsg != "" {
 		state.err = errMsg
 	}
-	if status == flowRunCompleted {
+	switch status {
+	case flowRunCompleted:
 		fr.publishEvent(state, FlowEvent{
 			Type:        evFlowCompleted,
 			RunID:       state.RunID,
 			FlowID:      state.FlowID,
 			CompletedAt: state.completedAt,
 		})
-	} else {
+	case flowRunPostponed:
+		fr.publishEvent(state, FlowEvent{
+			Type:        evFlowPostponed,
+			RunID:       state.RunID,
+			FlowID:      state.FlowID,
+			CompletedAt: state.completedAt,
+		})
+	default:
 		fr.publishEvent(state, FlowEvent{
 			Type:     evFlowFailed,
 			RunID:    state.RunID,

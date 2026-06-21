@@ -219,6 +219,183 @@ func TestFlowEventSessionLookupFailureZeroValues(t *testing.T) {
 	}
 }
 
+// TestFlowEventPostponedSequence drives a postpone-self transition and
+// verifies the SSE event sequence: step.started → step.completed
+// (iteration 1) → step.postponed (iteration 2) → flow.postponed.
+// Also verifies that the postponed event carries the same per-step
+// extension fields as step.completed and that the final snapshot
+// reports the run as postponed with the postponed step in completedSteps.
+func TestFlowEventPostponedSequence(t *testing.T) {
+	t.Parallel()
+	sessions := &stubSessions{
+		byID: map[string]session.Session{
+			"sess-1": {ID: "sess-1", Cost: 0.7, PromptTokens: 800, CompletionTokens: 200},
+		},
+	}
+	svc := newStubFlowService([]flow.FlowState{
+		// Iteration 1: agent body runs and produces output that matches
+		// the postpone rule.
+		{StepID: "announce-spec-mr", SessionID: "sess-1", Status: flow.FlowStatusRunning, Iteration: 1},
+		{StepID: "announce-spec-mr", SessionID: "sess-1", Status: flow.FlowStatusCompleted, Output: `{"blockers":["x"]}`, IsStructOutput: true, Iteration: 1},
+		// Iteration 2: engine re-enters with postpone=true; row updated
+		// to status=postponed, output preserved.
+		{StepID: "announce-spec-mr", SessionID: "sess-1", Status: flow.FlowStatusPostponed, Output: `{"blockers":["x"]}`, IsStructOutput: true, Iteration: 2},
+	})
+	server, fr := newFlowTestServerWithSessions(t, svc, sessions)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := fr.subscribeFlowEvents(ctx)
+
+	if _, err := fr.Start(context.Background(), "x", nil, false); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Collect events in order; the runner emits started, completed,
+	// postponed, and the run-terminal flow.postponed.
+	var seen []flowEventType
+	deadline := time.After(2 * time.Second)
+	var stepPostponedEv FlowEvent
+	for {
+		done := false
+		select {
+		case ev := <-ch:
+			seen = append(seen, ev.Payload.Type)
+			if ev.Payload.Type == evFlowStepPostponed {
+				stepPostponedEv = ev.Payload
+			}
+			if ev.Payload.Type == evFlowPostponed {
+				done = true
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for flow.postponed; seen=%v", seen)
+		}
+		if done {
+			break
+		}
+	}
+
+	want := []flowEventType{
+		evFlowStepStarted,
+		evFlowStepCompleted,
+		evFlowStepPostponed,
+		evFlowPostponed,
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("event sequence = %v, want %v", seen, want)
+	}
+	for i, ty := range want {
+		if seen[i] != ty {
+			t.Errorf("event[%d] = %q, want %q", i, seen[i], ty)
+		}
+	}
+
+	// step.postponed carries the same per-step extension fields as
+	// step.completed (per flow-postponed-event-propagation spec).
+	if stepPostponedEv.FlowID != "x" {
+		t.Errorf("step.postponed FlowID = %q, want x", stepPostponedEv.FlowID)
+	}
+	if stepPostponedEv.StepID != "announce-spec-mr" {
+		t.Errorf("step.postponed StepID = %q", stepPostponedEv.StepID)
+	}
+	if stepPostponedEv.Iteration != 2 {
+		t.Errorf("step.postponed Iteration = %d, want 2 (the iteration that decided to postpone)", stepPostponedEv.Iteration)
+	}
+	if !stepPostponedEv.IsStructOutput {
+		t.Errorf("step.postponed IsStructOutput = false, want true")
+	}
+	if stepPostponedEv.Output != `{"blockers":["x"]}` {
+		t.Errorf("step.postponed Output = %q, want preserved prior-iter output", stepPostponedEv.Output)
+	}
+	if stepPostponedEv.Cost != 0.7 {
+		t.Errorf("step.postponed Cost = %v, want 0.7 (cumulative session cost)", stepPostponedEv.Cost)
+	}
+	if stepPostponedEv.ContextSize != 1000 {
+		t.Errorf("step.postponed ContextSize = %d, want 1000", stepPostponedEv.ContextSize)
+	}
+	if stepPostponedEv.CompletedAt == 0 {
+		t.Errorf("step.postponed CompletedAt is zero")
+	}
+
+	// Snapshot reports the run as postponed with the step in
+	// completedSteps[] carrying status="postponed".
+	resp, err := server.Client().Get(server.URL + "/flow/status")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	defer resp.Body.Close()
+	var snap flowRunSnapshot
+	if err := json.NewDecoder(resp.Body).Decode(&snap); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if snap.Status != flowRunPostponed {
+		t.Errorf("snapshot status = %q, want %q", snap.Status, flowRunPostponed)
+	}
+	if len(snap.CompletedSteps) != 2 {
+		t.Fatalf("completedSteps count = %d, want 2 (completed + postponed)", len(snap.CompletedSteps))
+	}
+	last := snap.CompletedSteps[len(snap.CompletedSteps)-1]
+	if last.Status != string(flow.FlowStatusPostponed) {
+		t.Errorf("last step status = %q, want postponed", last.Status)
+	}
+	if last.Output != `{"blockers":["x"]}` {
+		t.Errorf("last step output = %q, want preserved", last.Output)
+	}
+}
+
+// TestFlowEventPostponeThenResumeEndsCompleted exercises the
+// postpone-then-resume sequence: a step postpones, then a later
+// observation transitions it (or a successor) back to Running and
+// eventually Completed. The terminal MUST be flow.completed, NOT
+// flow.postponed — lastStepPostponed is cleared by the Running /
+// Completed transitions.
+func TestFlowEventPostponeThenResumeEndsCompleted(t *testing.T) {
+	t.Parallel()
+	sessions := &stubSessions{
+		byID: map[string]session.Session{
+			"sess-1": {ID: "sess-1", Cost: 0.1, PromptTokens: 100, CompletionTokens: 0},
+		},
+	}
+	svc := newStubFlowService([]flow.FlowState{
+		// Step 1 postpones.
+		{StepID: "s1", SessionID: "sess-1", Status: flow.FlowStatusRunning, Iteration: 1},
+		{StepID: "s1", SessionID: "sess-1", Status: flow.FlowStatusCompleted, Output: "x", Iteration: 1},
+		{StepID: "s1", SessionID: "sess-1", Status: flow.FlowStatusPostponed, Output: "x", Iteration: 2},
+		// Resume of s1 in the same synthetic run — same step starts
+		// running again, then completes for real.
+		{StepID: "s1", SessionID: "sess-1", Status: flow.FlowStatusRunning, Iteration: 3},
+		{StepID: "s1", SessionID: "sess-1", Status: flow.FlowStatusCompleted, Output: "done", Iteration: 3},
+	})
+	server, fr := newFlowTestServerWithSessions(t, svc, sessions)
+
+	if _, err := fr.Start(context.Background(), "x", nil, false); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for the run to drain.
+	deadline := time.After(2 * time.Second)
+	for {
+		resp, err := server.Client().Get(server.URL + "/flow/status")
+		if err != nil {
+			t.Fatalf("status: %v", err)
+		}
+		var snap flowRunSnapshot
+		_ = json.NewDecoder(resp.Body).Decode(&snap)
+		_ = resp.Body.Close()
+		if snap.Status == flowRunCompleted || snap.Status == flowRunPostponed || snap.Status == flowRunFailed {
+			if snap.Status != flowRunCompleted {
+				t.Fatalf("terminal status = %q, want completed (postpone was cleared by resume)", snap.Status)
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("never reached terminal status; last status=%q", snap.Status)
+		case <-time.After(30 * time.Millisecond):
+		}
+	}
+}
+
 // TestFlowEventNoSessionService asserts that when the session service
 // is nil (test seam), the runner still emits FlowEvents with zero cost/
 // context — no nil-deref.
