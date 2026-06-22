@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -209,4 +210,45 @@ func formatCost(cost float64) string {
 		return "<$0.01"
 	}
 	return fmt.Sprintf("$%.2f", cost)
+}
+
+// formatNextRun renders a future unix-seconds timestamp as a short
+// "in 3m" / "in 2h" / "in 4d" string plus an absolute fallback when
+// the job is further out than a day. Past/zero timestamps render as
+// "due" — the scheduler should pick those up on its next tick.
+func formatNextRun(unixSec int64, now time.Time) string {
+	if unixSec <= 0 {
+		return "—"
+	}
+	target := time.Unix(unixSec, 0)
+	delta := target.Sub(now)
+	if delta <= 0 {
+		return "due"
+	}
+	switch {
+	case delta < time.Minute:
+		return fmt.Sprintf("in %ds", int(delta.Seconds()))
+	case delta < time.Hour:
+		return fmt.Sprintf("in %dm", int(delta.Minutes()))
+	case delta < 24*time.Hour:
+		return fmt.Sprintf("in %dh", int(delta.Hours()))
+	default:
+		return fmt.Sprintf("%s (in %dd)", target.Format("Mon 15:04"), int(delta.Hours()/24))
+	}
+}
+
+// truncateOneLine collapses newlines and runs of whitespace into single
+// spaces and truncates to max runes with an ellipsis. Used to render
+// multi-line bodies (e.g. cron prompts) as a single table cell without
+// breaking row alignment. A non-positive max disables truncation.
+func truncateOneLine(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if max <= 0 {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
 }

@@ -311,33 +311,23 @@ func TestShouldSkip(t *testing.T) {
 }
 
 func TestCreateFileTree(t *testing.T) {
+	// createFileTree is fed paths that have already been made relative to
+	// the listed directory, so the tree's top-level nodes are direct
+	// children of that directory.
 	paths := []string{
-		"/path/to/file1.txt",
-		"/path/to/dir1/file2.txt",
-		"/path/to/dir1/subdir/file3.txt",
-		"/path/to/dir2/file4.txt",
+		"file1.txt",
+		"dir1/file2.txt",
+		"dir1/subdir/file3.txt",
+		"dir2/file4.txt",
 	}
 
 	tree := createFileTree(paths)
 
-	// Check the structure of the tree
-	assert.Len(t, tree, 1) // Should have one root node
+	// Top-level should have file1.txt, dir1, dir2
+	assert.Len(t, tree, 3)
 
-	// Check the root node
-	rootNode := tree[0]
-	assert.Equal(t, "path", rootNode.Name)
-	assert.Equal(t, "directory", rootNode.Type)
-	assert.Len(t, rootNode.Children, 1)
-
-	// Check the "to" node
-	toNode := rootNode.Children[0]
-	assert.Equal(t, "to", toNode.Name)
-	assert.Equal(t, "directory", toNode.Type)
-	assert.Len(t, toNode.Children, 3) // file1.txt, dir1, dir2
-
-	// Find the dir1 node
 	var dir1Node *TreeNode
-	for _, child := range toNode.Children {
+	for _, child := range tree {
 		if child.Name == "dir1" {
 			dir1Node = child
 			break
@@ -347,6 +337,45 @@ func TestCreateFileTree(t *testing.T) {
 	require.NotNil(t, dir1Node)
 	assert.Equal(t, "directory", dir1Node.Type)
 	assert.Len(t, dir1Node.Children, 2) // file2.txt and subdir
+}
+
+// TestLsTool_NoDuplicatedRootSegment guards against the regression where
+// passing absolute paths into createFileTree caused the tree's top-level
+// node to repeat a segment of the searchPath. The bug produced output like:
+//
+//	- /tmp/ls_dup_test123/
+//	- ls_dup_test123/                  <-- duplicated
+//	  - dir1/
+//
+// which models read as "/tmp/ls_dup_test123/ls_dup_test123/dir1/" and then
+// failed every subsequent read.
+func TestLsTool_NoDuplicatedRootSegment(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "ls_dup_test")
+	require.NoError(t, err)
+	defer os.RemoveAll(tempDir)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(tempDir, "dir1"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "dir1", "file.txt"), []byte("x"), 0644))
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	config := mock_config.NewMockConfigurator(ctrl)
+	config.EXPECT().WorkingDirectory().Times(0)
+
+	tool := NewLsTool(config, nil, nil)
+	params := LSParams{Path: tempDir}
+	paramsJSON, err := json.Marshal(params)
+	require.NoError(t, err)
+
+	response, err := tool.Run(context.Background(), ToolCall{Name: LSToolName, Input: string(paramsJSON)})
+	require.NoError(t, err)
+
+	baseName := filepath.Base(tempDir)
+	// The bare basename should never appear as its own top-level tree node
+	// — that's the duplicated-root rendering bug.
+	assert.NotContains(t, response.Content, "- "+baseName+"/\n",
+		"output should not contain a top-level node repeating the searchPath basename:\n%s", response.Content)
 }
 
 func TestPrintTree(t *testing.T) {

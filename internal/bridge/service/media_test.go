@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseFileTokensExtractsAttachment(t *testing.T) {
@@ -109,6 +110,66 @@ func TestFormatTokens(t *testing.T) {
 		if got != c.want {
 			t.Errorf("formatTokens(%d) = %q, want %q", c.n, got, c.want)
 		}
+	}
+}
+
+func TestFormatNextRun(t *testing.T) {
+	t.Parallel()
+	// Anchor "now" in time.Local because the implementation calls
+	// time.Unix(sec, 0) which returns the timestamp in the local zone;
+	// formatting in any other zone would mismatch the test expectation
+	// on CI runners with non-UTC TZ.
+	now := time.Date(2026, time.January, 5, 10, 0, 0, 0, time.Local) // a Monday
+	farFuture := now.Add(48 * time.Hour)
+	cases := []struct {
+		name string
+		next int64
+		want string
+	}{
+		{"zero is em-dash", 0, "—"},
+		{"negative is em-dash", -1, "—"},
+		{"past is due", now.Add(-1 * time.Minute).Unix(), "due"},
+		{"equal-to-now is due", now.Unix(), "due"},
+		{"sub-minute", now.Add(30 * time.Second).Unix(), "in 30s"},
+		{"sub-hour", now.Add(5 * time.Minute).Unix(), "in 5m"},
+		{"sub-day", now.Add(3 * time.Hour).Unix(), "in 3h"},
+		{"far future absolute", farFuture.Unix(), farFuture.Format("Mon 15:04") + " (in 2d)"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := formatNextRun(c.next, now)
+			if got != c.want {
+				t.Errorf("formatNextRun(%d, now) = %q, want %q", c.next, got, c.want)
+			}
+		})
+	}
+}
+
+func TestTruncateOneLine(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		max  int
+		want string
+	}{
+		{"empty", "", 10, ""},
+		{"under limit", "hello world", 20, "hello world"},
+		{"exact boundary", "abcdef", 6, "abcdef"},
+		{"truncate ascii", "abcdefghij", 4, "abcd…"},
+		{"collapses newlines and runs of whitespace", "line one\nline two\n\n  line  three", 30, "line one line two line three"},
+		{"truncates after collapsing", "hello\n\nworld friend", 7, "hello w…"},
+		{"max zero disables truncation", "abcdef", 0, "abcdef"},
+		{"negative max disables truncation", "abcdef", -1, "abcdef"},
+		{"multi-byte runes counted as one", "ünîçødé!", 4, "ünîç…"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := truncateOneLine(c.in, c.max)
+			if got != c.want {
+				t.Errorf("truncateOneLine(%q, %d) = %q, want %q", c.in, c.max, got, c.want)
+			}
+		})
 	}
 }
 

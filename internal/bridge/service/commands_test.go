@@ -41,6 +41,12 @@ func TestHelpEntriesPerChannel(t *testing.T) {
 		if e.Cmd == "/pair" {
 			t.Errorf("slack help should NOT include /pair, got entries: %+v", slackEntries)
 		}
+		if e.Cmd == "/dir" {
+			t.Errorf("slack help should NOT include /dir (removed), got entries: %+v", slackEntries)
+		}
+	}
+	if !hasHelpEntry(slackEntries, "/crons") {
+		t.Errorf("slack help should include /crons, got entries: %+v", slackEntries)
 	}
 
 	telegramEntries := s.helpEntriesForChannel("telegram")
@@ -67,6 +73,15 @@ func TestHelpEntriesPerChannel(t *testing.T) {
 	if !hasPair {
 		t.Errorf("empty-channel help should include /pair (all-channel view), got: %+v", allEntries)
 	}
+}
+
+func hasHelpEntry(entries []helpEntry, cmd string) bool {
+	for _, e := range entries {
+		if e.Cmd == cmd {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCommandReplyIsEmpty(t *testing.T) {

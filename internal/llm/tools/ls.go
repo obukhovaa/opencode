@@ -132,7 +132,26 @@ func (l *lsTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
 		return NewEmptyResponse(), fmt.Errorf("error listing directory: %w", err)
 	}
 
-	tree := createFileTree(files)
+	// Strip the searchPath prefix so the tree's top-level nodes are direct
+	// children of the listed directory. Without this, absolute paths like
+	// "/workspace/foo" produce a tree rooted at "workspace", which printTree
+	// then renders under the "- /workspace/" header — making the output look
+	// like "/workspace/workspace/foo" to the reader.
+	sep := string(filepath.Separator)
+	relPaths := make([]string, 0, len(files))
+	for _, p := range files {
+		rel, err := filepath.Rel(searchPath, p)
+		if err != nil {
+			relPaths = append(relPaths, p)
+			continue
+		}
+		if strings.HasSuffix(p, sep) && !strings.HasSuffix(rel, sep) {
+			rel += sep
+		}
+		relPaths = append(relPaths, rel)
+	}
+
+	tree := createFileTree(relPaths)
 	output := printTree(tree, searchPath)
 
 	if truncated {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/cron"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 )
 
@@ -45,12 +46,12 @@ func (s *Service) ChatCommands() map[string]CommandHandler {
 		"model":    s.cmdModel,
 		"sessions": s.cmdSessions,
 		"session":  s.cmdSession,
+		"crons":    s.cmdCrons,
 		"reset":    s.cmdReset,
 		"abort":    s.cmdAbort,
 		"pair":     s.cmdPair,
 		"skip":     s.cmdSkip,
 		"help":     s.cmdHelp,
-		"dir":      s.cmdDir,
 	}
 }
 
@@ -354,6 +355,67 @@ func (s *Service) cmdSession(ctx context.Context, in bridge.Inbound) *bridge.Com
 		shortSessionID(target.ID), target.Title))
 }
 
+// cmdCrons: list active scheduled cron jobs across the workspace.
+// Shows each job's ID prefix, task title, human-readable schedule, next
+// fire time, source (loop/agent), and the session it belongs to. Jobs
+// in the current binding's session are marked with ★ so the reviewer
+// can tell which ones belong to "this" conversation.
+//
+// Jobs that are currently firing are flagged with `(firing)` next to the
+// next-run column so the reviewer doesn't think a long-running job is
+// stuck. Empty list short-circuits with a friendlier message than an
+// empty table.
+func (s *Service) cmdCrons(ctx context.Context, in bridge.Inbound) *bridge.CommandReply {
+	if s.app.Crons == nil {
+		return replyText("Cron service is not enabled in this deployment.")
+	}
+	jobs, err := s.app.Crons.ListActive(ctx)
+	if err != nil {
+		return replyText("Failed to list cron jobs: " + err.Error())
+	}
+	if len(jobs) == 0 {
+		return replyText("No active scheduled cron jobs.")
+	}
+	currentSessionID := ""
+	if b, err := s.resolveBinding(ctx, in.Peer); err == nil {
+		currentSessionID = b.SessionID
+	}
+	now := time.Now()
+	lines := make([]string, 0, len(jobs))
+	tableRows := make([][]string, 0, len(jobs))
+	for _, job := range jobs {
+		marker := "  "
+		if currentSessionID != "" && job.SessionID == currentSessionID {
+			marker = "★ "
+		}
+		task := job.TaskTitle
+		if task == "" {
+			task = truncateOneLine(job.Prompt, 60)
+		}
+		schedule := cron.CronToHuman(job.Schedule)
+		nextRun := formatNextRun(job.NextRunAt, now)
+		if job.Firing {
+			nextRun += " (firing)"
+		}
+		lines = append(lines, fmt.Sprintf("%s%s · %s · %s · next %s · %s · session %s",
+			marker, shortSessionID(job.ID), task, schedule, nextRun, job.Source, shortSessionID(job.SessionID),
+		))
+		tableRows = append(tableRows, []string{
+			strings.TrimSpace(marker) + shortSessionID(job.ID),
+			task,
+			schedule,
+			nextRun,
+			job.Source,
+			shortSessionID(job.SessionID),
+		})
+	}
+	text := "Active cron jobs (★ = current session):\n" + strings.Join(lines, "\n")
+	return &bridge.CommandReply{
+		Text: text,
+		Hint: bridge.NewTableHint([]string{"ID", "Task", "Schedule", "Next", "Source", "Session"}, tableRows),
+	}
+}
+
 // sessionMatch is the trimmed view of session.List() used by the switch
 // path so we don't keep the full Session struct around.
 type sessionMatch struct {
@@ -406,14 +468,6 @@ func (s *Service) cmdSkip(_ context.Context, _ bridge.Inbound) *bridge.CommandRe
 	return replyText("No pending question to skip.")
 }
 
-// cmdDir: workspace switching is NOT supported in the Go bridge — one
-// opencode process = one workspace, pinned to config.WorkingDirectory().
-// This command is intercepted only to give the user a clear "unsupported"
-// reply rather than letting it fall through to the agent prompt.
-func (s *Service) cmdDir(_ context.Context, _ bridge.Inbound) *bridge.CommandReply {
-	return replyText("Workspace switching is not supported in this deployment. Restart opencode in the desired directory.")
-}
-
 // helpEntry pairs a command's display form with its description for
 // rich rendering. The list is iterated for both the text fallback and
 // the structured hint to keep them in sync.
@@ -432,12 +486,12 @@ func (s *Service) helpEntriesForChannel(channel string) []helpEntry {
 		{Cmd: "/model [id]", Desc: "list or switch the model"},
 		{Cmd: "/sessions", Desc: "list recent sessions (★ = current)"},
 		{Cmd: "/session [id-prefix]", Desc: "show details or switch by ID prefix"},
+		{Cmd: "/crons", Desc: "list active scheduled cron jobs (★ = current session)"},
 		{Cmd: "/reset", Desc: "forget this binding; next message starts fresh"},
 		{Cmd: "/abort", Desc: "cancel an in-flight run on the current session"},
 		{Cmd: "/pair", Desc: "pairing-code information"},
 		{Cmd: "/skip", Desc: "skip the current pending question"},
 		{Cmd: "/help", Desc: "this listing"},
-		{Cmd: "/dir", Desc: "(not supported — opencode is pinned to one workspace)"},
 	}
 	if channel == "" || channel == "telegram" {
 		return all
