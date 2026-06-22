@@ -97,6 +97,14 @@ type Service struct {
 	// UI handles requests as usual).
 	permissionRouter *PermissionRouter
 
+	// cronOutputRouter watches the cron.Service broker and forwards
+	// each successful run's result to every peer bound to the cron's
+	// session. Without it the synthetic tool_call/tool_result pair
+	// the scheduler writes is invisible to the chat surface — the
+	// dispatcher's parts subscription only spans the lifetime of a
+	// single inbound turn.
+	cronOutputRouter *CronOutputRouter
+
 	// adapterFactory builds adapters for each enabled identity. cmd/serve.go
 	// installs one that imports the per-platform packages; tests use stubs
 	// or leave it nil (LaunchAdapter becomes a no-op).
@@ -255,6 +263,12 @@ func (s *Service) Start(ctx context.Context) error {
 	// sessions. A no-op for sessions not bound to chat peers — those
 	// continue to use opencode's interactive permission UI.
 	s.permissionRouter = s.newPermissionRouter()
+
+	// Cron output router: subscribes to cron.Service so each
+	// successful run's result is forwarded back to every peer bound
+	// to the cron's session. Without it the synthetic messages the
+	// scheduler writes are only visible in the TUI / cron-jobs page.
+	s.cronOutputRouter = s.newCronOutputRouter()
 
 	// Boot-time adapter launch: iterate every enabled identity in the
 	// router config and call LaunchAdapter. Per-identity failures are

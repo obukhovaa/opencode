@@ -230,6 +230,16 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 				mediaRoot := filepathJoin(cfg.Data.Directory, "bridge", "media")
 				application.AgentFactory.SetBridgeSender(bridgeSvc, cfg.Router, mediaRoot)
 			}
+
+			// Wire the bridge into the cron scheduler so jobs created in
+			// bridge-bound sessions are recognised as "watched" and the
+			// scheduler proceeds to permissions.Request() (which the
+			// bridge's PermissionRouter answers) instead of deferring
+			// 60s/tick forever on the active-session gate that only the
+			// TUI satisfies.
+			if application.CronScheduler != nil {
+				application.CronScheduler.SetPermissionResolverChecker(bridgeSvc)
+			}
 		}
 
 		serverOpts := api.ServerOptions{

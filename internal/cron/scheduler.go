@@ -35,6 +35,21 @@ type ActiveSessionProvider interface {
 	ActiveSessionID() string
 }
 
+// PermissionResolverChecker reports whether a session has an out-of-band
+// permission resolver attached (e.g. the chat bridge's PermissionRouter
+// for bridge-bound sessions). When this returns true for a job's session,
+// the scheduler will call permissions.Request() instead of deferring on
+// the active-session gate — the resolver will answer the request quickly,
+// so there is no risk of a permission dialog hanging in a session that no
+// human is actively watching in the TUI.
+//
+// The scheduler treats a nil checker as "no out-of-band resolvers" and
+// keeps the legacy active-session-only behaviour (which the standalone
+// TUI deployment depends on).
+type PermissionResolverChecker interface {
+	HasPermissionResolver(ctx context.Context, sessionID string) bool
+}
+
 // TaskRunner executes a task via the task tool.
 type TaskRunner interface {
 	RunTask(ctx context.Context, call tools.ToolCall) (tools.ToolResponse, error)
@@ -51,6 +66,9 @@ type Scheduler struct {
 
 	provMu            sync.RWMutex
 	activeSessionProv ActiveSessionProvider
+
+	resolverMu      sync.RWMutex
+	permResolverChk PermissionResolverChecker
 
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
@@ -87,6 +105,18 @@ func (s *Scheduler) SetActiveSessionProvider(prov ActiveSessionProvider) {
 	s.activeSessionProv = prov
 }
 
+// SetPermissionResolverChecker injects the resolver checker after
+// construction. The chat bridge wires itself here once Service.Start
+// finishes (the bridge is constructed AFTER the scheduler in app.New /
+// serve.go) so the cron scheduler can recognise bridge-bound sessions
+// as "watched" and proceed to permissions.Request() instead of
+// deferring 60s/tick forever on the active-session gate.
+func (s *Scheduler) SetPermissionResolverChecker(c PermissionResolverChecker) {
+	s.resolverMu.Lock()
+	defer s.resolverMu.Unlock()
+	s.permResolverChk = c
+}
+
 func (s *Scheduler) activeSessionID() string {
 	s.provMu.RLock()
 	prov := s.activeSessionProv
@@ -95,6 +125,16 @@ func (s *Scheduler) activeSessionID() string {
 		return ""
 	}
 	return prov.ActiveSessionID()
+}
+
+func (s *Scheduler) hasPermissionResolver(ctx context.Context, sessionID string) bool {
+	s.resolverMu.RLock()
+	chk := s.permResolverChk
+	s.resolverMu.RUnlock()
+	if chk == nil {
+		return false
+	}
+	return chk.HasPermissionResolver(ctx, sessionID)
 }
 
 // Start initializes cron jobs from DB and starts the scheduler goroutine.
@@ -149,14 +189,16 @@ func (s *Scheduler) tick(ctx context.Context) {
 		bySession[job.SessionID] = append(bySession[job.SessionID], job)
 	}
 
-	activeSessionID := s.activeSessionID()
-
 	for sessionID, jobs := range bySession {
 		sessionID := sessionID
 		jobs := jobs
 
-		// If this is the active session and the agent is busy, skip and retry next tick.
-		if sessionID == activeSessionID && s.busyChecker != nil && s.busyChecker.IsSessionBusy(sessionID) {
+		// Skip and retry next tick if an agent.Run is already in flight
+		// on this session — interleaving a synthetic tool_call/result pair
+		// with a live Run would split that Run's message stream. The check
+		// applies to any session (TUI active OR bridge-bound), because
+		// either surface can hold the agent busy-lock.
+		if s.busyChecker != nil && s.busyChecker.IsSessionBusy(sessionID) {
 			continue
 		}
 
@@ -195,12 +237,16 @@ func (s *Scheduler) fireJob(ctx context.Context, job CronJob) {
 	// Permission check: keyed on "cron:<job_id>"
 	if s.permissions != nil && !s.permissions.IsAutoApproveSession(job.SessionID) {
 		activeSessionID := s.activeSessionID()
-		// For inactive sessions with no prior grant, defer until the session
-		// becomes active. Without advancing next_run_at the row would stay
-		// due and pulse firing=true/false every tick (1 DB write/sec/job).
-		// Push the next attempt out by 60s so churn stays bounded.
-		if job.SessionID != activeSessionID {
-			logging.Debug("Cron job on inactive session, deferring permission check", "id", job.ID)
+		// For inactive sessions with no out-of-band resolver, defer until
+		// the session becomes active. A bridge-bound session counts as
+		// "has a resolver" — the bridge's PermissionRouter answers
+		// permission requests synchronously per cfg.Router.PermissionMode,
+		// so a chat user's crons would otherwise never fire. Without
+		// advancing next_run_at the row would stay due and pulse
+		// firing=true/false every tick (1 DB write/sec/job); push the
+		// next attempt out by 60s so churn stays bounded.
+		if job.SessionID != activeSessionID && !s.hasPermissionResolver(ctx, job.SessionID) {
+			logging.Debug("Cron job on unwatched session, deferring permission check", "id", job.ID)
 			s.deferAndClear(ctx, job, time.Now().Add(60*time.Second))
 			return
 		}

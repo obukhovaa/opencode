@@ -145,6 +145,31 @@ func (r *PermissionRouter) handleRequest(ctx context.Context, req permission.Per
 	}
 }
 
+// HasPermissionResolver satisfies cron.PermissionResolverChecker so the
+// cron scheduler can recognise bridge-bound sessions as "watched" and
+// proceed to call permissions.Request() instead of deferring 60s/tick
+// forever on the active-session gate. Only returns true when the bridge
+// is configured with a mode that actually resolves requests today —
+// "allow" and "deny". "ask" is reserved for a future chat-relayed
+// permission flow that doesn't exist yet (see handleRequest), and an
+// empty mode means the bridge stays out of permissions entirely. In
+// both unhandled cases the scheduler keeps its safer "defer until the
+// TUI active session" behaviour to avoid hanging Request() forever.
+func (s *Service) HasPermissionResolver(ctx context.Context, sessionID string) bool {
+	if s == nil || s.permissionRouter == nil {
+		return false
+	}
+	if s.cfg == nil {
+		return false
+	}
+	switch s.cfg.PermissionMode {
+	case "allow", "deny":
+		return s.permissionRouter.isBridgeOwnedSession(ctx, sessionID)
+	default:
+		return false
+	}
+}
+
 // isBridgeOwnedSession reports whether a permission request's session
 // is in this bridge's scope — either bound directly via bridge_sessions
 // or a descendant subagent of a bound session (root_session_id matches
