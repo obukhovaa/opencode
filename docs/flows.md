@@ -388,6 +388,43 @@ A `--session` flag on the CLI always overrides the spec value:
 opencode -F my-flow -s override -p "do the thing"
 ```
 
+### Re-trigger semantics
+
+When `Run` is invoked for a `(prefix, flow_id)` pair that already has `flow_states` rows, the runtime decides between **resume** (continue prior mid-state) and **restart** (re-execute from step 0). The decision is governed by a "resumable work" predicate over the prior rows that folds two checks:
+
+- **Status-driven** — any row in `running` / `postponed` / `waiting_for_input` short-circuits to resume. `failed` is opt-in via `resume_on_failure` (see below); otherwise it counts as terminal.
+- **Rule-walk-driven** — for completed rows, the runtime re-evaluates the step's routing rules using the row's persisted args and iteration. If any rule still points at the same step (self-route — the next iteration was never scheduled, e.g. a crash between iter-N-completed and iter-N+1-running) or at a step that hasn't reached terminal, the runtime resumes.
+
+If neither check fires, the prior run terminated cleanly and the runtime **restarts** from step 0. Per-step sessions are preserved on restart, so the agent retains cumulative LLM history across re-triggers. This is the "react on external event" case — a flow keyed by `${args.jira_issue_id}` re-fires when the Jira issue changes and the new comment must be re-evaluated, with the prior conversation still visible.
+
+`--flow-fresh` / `-D` / `{fresh: true}` is the hard reset: deletes both `flow_states` rows AND the per-step session tree, then runs from step 0 with empty LLM history. This is the only path that touches per-step sessions.
+
+> Full contract in [`openspec/specs/flow-runtime-resume/spec.md`](../openspec/specs/flow-runtime-resume/spec.md).
+
+#### `resume_on_failure`
+
+By default a `failed` flow_states row is terminal — the next re-trigger restarts from step 0. Flows that want retry-from-failure semantics (long pipelines where re-doing prior expensive steps after a transient failure is wasteful) can opt in:
+
+```yaml
+flow:
+  session:
+    prefix: ${args.build_id}
+    resume_on_failure: true
+  steps:
+    - id: download-artifacts
+      prompt: "..."
+    - id: build
+      prompt: "..."
+    - id: publish
+      prompt: "..."
+```
+
+With `resume_on_failure: true`, a re-trigger of a run whose latest row is `failed` continues from that failed step instead of restarting. Step args are restored from the failed row, so the retry sees the same inputs the previous attempt had.
+
+Default `false` matches the React-on-event use case: a re-trigger after failure means "the world may have changed, re-evaluate from step 0," not "retry the same step."
+
+Unknown keys inside `session:` (e.g. a typo `resume_on_fail` missing the trailing `ure`) are rejected at flow load time with `ErrInvalidYAML`, naming the offending key so the author can fix the config.
+
 ```json
 {
   "flow_id": "my-flow",

@@ -104,16 +104,18 @@ func (mr *MockServiceMockRecorder) IsAutoApproveSession(sessionID any) *gomock.C
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsAutoApproveSession", reflect.TypeOf((*MockService)(nil).IsAutoApproveSession), sessionID)
 }
 
-// RemoveAutoApproveSession mocks base method.
-func (m *MockService) RemoveAutoApproveSession(sessionID string) {
+// IsInteractiveSession mocks base method.
+func (m *MockService) IsInteractiveSession(sessionID string) bool {
 	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "RemoveAutoApproveSession", sessionID)
+	ret := m.ctrl.Call(m, "IsInteractiveSession", sessionID)
+	ret0, _ := ret[0].(bool)
+	return ret0
 }
 
-// RemoveAutoApproveSession indicates an expected call of RemoveAutoApproveSession.
-func (mr *MockServiceMockRecorder) RemoveAutoApproveSession(sessionID any) *gomock.Call {
+// IsInteractiveSession indicates an expected call of IsInteractiveSession.
+func (mr *MockServiceMockRecorder) IsInteractiveSession(sessionID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveAutoApproveSession", reflect.TypeOf((*MockService)(nil).RemoveAutoApproveSession), sessionID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsInteractiveSession", reflect.TypeOf((*MockService)(nil).IsInteractiveSession), sessionID)
 }
 
 // MarkInteractiveSession mocks base method.
@@ -128,6 +130,18 @@ func (mr *MockServiceMockRecorder) MarkInteractiveSession(sessionID any) *gomock
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkInteractiveSession", reflect.TypeOf((*MockService)(nil).MarkInteractiveSession), sessionID)
 }
 
+// RemoveAutoApproveSession mocks base method.
+func (m *MockService) RemoveAutoApproveSession(sessionID string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "RemoveAutoApproveSession", sessionID)
+}
+
+// RemoveAutoApproveSession indicates an expected call of RemoveAutoApproveSession.
+func (mr *MockServiceMockRecorder) RemoveAutoApproveSession(sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveAutoApproveSession", reflect.TypeOf((*MockService)(nil).RemoveAutoApproveSession), sessionID)
+}
+
 // RemoveInteractiveSession mocks base method.
 func (m *MockService) RemoveInteractiveSession(sessionID string) {
 	m.ctrl.T.Helper()
@@ -138,20 +152,6 @@ func (m *MockService) RemoveInteractiveSession(sessionID string) {
 func (mr *MockServiceMockRecorder) RemoveInteractiveSession(sessionID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveInteractiveSession", reflect.TypeOf((*MockService)(nil).RemoveInteractiveSession), sessionID)
-}
-
-// IsInteractiveSession mocks base method.
-func (m *MockService) IsInteractiveSession(sessionID string) bool {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IsInteractiveSession", sessionID)
-	ret0, _ := ret[0].(bool)
-	return ret0
-}
-
-// IsInteractiveSession indicates an expected call of IsInteractiveSession.
-func (mr *MockServiceMockRecorder) IsInteractiveSession(sessionID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsInteractiveSession", reflect.TypeOf((*MockService)(nil).IsInteractiveSession), sessionID)
 }
 
 // Request mocks base method.

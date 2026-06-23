@@ -343,9 +343,9 @@ func TestCreateFileTree(t *testing.T) {
 // passing absolute paths into createFileTree caused the tree's top-level
 // node to repeat a segment of the searchPath. The bug produced output like:
 //
-//	- /tmp/ls_dup_test123/
-//	- ls_dup_test123/                  <-- duplicated
-//	  - dir1/
+//   - /tmp/ls_dup_test123/
+//   - ls_dup_test123/                  <-- duplicated
+//   - dir1/
 //
 // which models read as "/tmp/ls_dup_test123/ls_dup_test123/dir1/" and then
 // failed every subsequent read.

@@ -182,6 +182,17 @@ func parseFlowFile(path string) (*Flow, error) {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidYAML, err)
 	}
 
+	// Reject typos in the session block. The typed decode silently
+	// drops unknown keys (e.g. `resume_on_fail` instead of
+	// `resume_on_failure`), which would leave the flow on the default
+	// behavior with no signal to the author. Parse the raw YAML
+	// separately and enforce the allow-list. Keep this check narrow —
+	// global strict-mode decoding would break legitimate top-level
+	// extension keys (`description`, future additions).
+	if err := validateFlowSessionKeys(data); err != nil {
+		return nil, err
+	}
+
 	// Derive ID from filename (basename without extension)
 	base := filepath.Base(path)
 	ext := filepath.Ext(base)
@@ -285,6 +296,41 @@ func validateFlow(f *Flow) error {
 		}
 	}
 
+	return nil
+}
+
+// knownSessionKeys is the allow-list of keys permitted under
+// `flow.session:` in a flow YAML. Adding a new field to FlowSession
+// MUST also extend this set; otherwise the new key will be silently
+// dropped during typed decode and the author gets no signal that the
+// flow runtime didn't see their config.
+var knownSessionKeys = map[string]struct{}{
+	"prefix":            {},
+	"resume_on_failure": {},
+}
+
+// validateFlowSessionKeys parses the raw flow YAML, reaches into
+// `flow.session:`, and returns ErrInvalidYAML if any key in that
+// block is not in knownSessionKeys. Returns nil for a missing or
+// non-map `flow.session` block (the typed decode catches structural
+// errors elsewhere).
+func validateFlowSessionKeys(data []byte) error {
+	var raw struct {
+		Flow struct {
+			Session map[string]any `yaml:"session"`
+		} `yaml:"flow"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		// Structural parse errors are surfaced by the typed
+		// yaml.Unmarshal call above; here we just bail and let that
+		// path produce the user-visible error.
+		return nil
+	}
+	for key := range raw.Flow.Session {
+		if _, ok := knownSessionKeys[key]; !ok {
+			return fmt.Errorf("%w: unknown key %q in flow.session", ErrInvalidYAML, key)
+		}
+	}
 	return nil
 }
 

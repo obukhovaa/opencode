@@ -278,6 +278,134 @@ flow:
 		}
 	})
 
+	t.Run("session.resume_on_failure is accepted and round-trips", func(t *testing.T) {
+		dir := t.TempDir()
+		content := `name: Resume On Failure Flow
+description: A flow that opts into retry-from-failure
+flow:
+  session:
+    prefix: "${args.id}"
+    resume_on_failure: true
+  args:
+    id:
+      type: string
+  steps:
+    - id: step-one
+      prompt: "x"
+`
+		path := filepath.Join(dir, "resume-on-failure-flow.yaml")
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		f, err := parseFlowFile(path)
+		if err != nil {
+			t.Fatalf("parseFlowFile() error: %v", err)
+		}
+		if !f.Spec.Session.ResumeOnFailure {
+			t.Errorf("ResumeOnFailure = false, want true")
+		}
+		if f.Spec.Session.Prefix != "${args.id}" {
+			t.Errorf("Prefix = %q, want %q", f.Spec.Session.Prefix, "${args.id}")
+		}
+	})
+
+	t.Run("session.resume_on_failure defaults to false when omitted", func(t *testing.T) {
+		dir := t.TempDir()
+		content := `name: Default Session Flow
+description: No resume_on_failure key
+flow:
+  session:
+    prefix: "${args.id}"
+  args:
+    id:
+      type: string
+  steps:
+    - id: step-one
+      prompt: "x"
+`
+		path := filepath.Join(dir, "default-session-flow.yaml")
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		f, err := parseFlowFile(path)
+		if err != nil {
+			t.Fatalf("parseFlowFile() error: %v", err)
+		}
+		if f.Spec.Session.ResumeOnFailure {
+			t.Errorf("ResumeOnFailure = true, want false (default)")
+		}
+	})
+
+	t.Run("typo in session block is rejected with ErrInvalidYAML", func(t *testing.T) {
+		dir := t.TempDir()
+		// `resume_on_fail` (missing `ure`) is the kind of typo that
+		// would otherwise be silently dropped by the typed YAML
+		// decode. Authors deserve a signal so they can fix the
+		// config; the gate test in service_retrigger_test.go relies
+		// on this signal to ensure ResumeOnFailure actually reaches
+		// the runtime when the author intends it to.
+		content := `name: Typo Flow
+description: Has a typo'd session key
+flow:
+  session:
+    prefix: "${args.id}"
+    resume_on_fail: true
+  args:
+    id:
+      type: string
+  steps:
+    - id: step-one
+      prompt: "x"
+`
+		path := filepath.Join(dir, "typo-flow.yaml")
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := parseFlowFile(path)
+		if err == nil {
+			t.Fatal("expected error for typo'd session key, got nil")
+		}
+		if !errors.Is(err, ErrInvalidYAML) {
+			t.Errorf("error = %v, want wraps ErrInvalidYAML", err)
+		}
+		if !strings.Contains(err.Error(), "resume_on_fail") {
+			t.Errorf("error message should name the unknown key %q; got %v", "resume_on_fail", err)
+		}
+	})
+
+	t.Run("no session block is accepted", func(t *testing.T) {
+		// Flows without a session block are valid — the runtime
+		// derives a Unix-timestamp prefix in resolveSessionPrefix.
+		// The validation only fires on keys WITHIN session, so an
+		// absent block must not trip it.
+		dir := t.TempDir()
+		content := `name: No Session Flow
+description: Has no session block
+flow:
+  steps:
+    - id: step-one
+      prompt: "x"
+`
+		path := filepath.Join(dir, "no-session-flow.yaml")
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		f, err := parseFlowFile(path)
+		if err != nil {
+			t.Fatalf("parseFlowFile() error: %v", err)
+		}
+		if f.Spec.Session.Prefix != "" {
+			t.Errorf("Prefix = %q, want \"\"", f.Spec.Session.Prefix)
+		}
+		if f.Spec.Session.ResumeOnFailure {
+			t.Errorf("ResumeOnFailure = true, want false")
+		}
+	})
+
 	t.Run("disabled flow", func(t *testing.T) {
 		dir := t.TempDir()
 		content := `name: Disabled Flow

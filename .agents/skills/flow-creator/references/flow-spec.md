@@ -17,7 +17,9 @@ disabled: bool      # if true, flow cannot be executed (optional)
 description: string # description of the flow (optional)
 flow:               # flow specification (required)
   args: object      # JSON Schema for expected arguments (optional)
-  session: object   # session configuration (optional)
+  session:          # session configuration (optional, see Session Management)
+    prefix: string            # ${args.*} expression or literal (optional)
+    resume_on_failure: bool   # treat `failed` as resumable on re-trigger (optional, default false)
   steps: array      # ordered list of step definitions (required)
 ```
 
@@ -136,6 +138,15 @@ Session prefix resolution (highest priority first):
 2. `flow.session.prefix` (literal or `${args.*}` reference)
 3. Unix timestamp fallback
 
+### `flow.session` fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `prefix` | string | (timestamp) | Session prefix expression. Literal string or `${args.*}` reference. Defines the identity of a re-triggerable flow run. |
+| `resume_on_failure` | bool | `false` | When `true`, a re-trigger of a flow whose latest row is `failed` resumes from the failed step (with its persisted args restored). When `false` (default), `failed` is terminal — the re-trigger restarts from step 0. See [Re-trigger Semantics](#re-trigger-semantics). |
+
+Unknown keys under `session:` are rejected at flow-load time with `ErrInvalidYAML` naming the offending key — a typo (e.g. `resume_on_fail` missing the trailing `ure`) fails fast rather than silently falling back to defaults.
+
 ## CLI Usage
 
 ```bash
@@ -170,10 +181,27 @@ If two parallel branches route to the same step, the first arrival runs it. The 
 `session.fork: true` copies message history from the previous step's session. Only works when both steps use the same agent. If agents differ, a fresh session is created and the previous step's output is prepended to the prompt instead.
 
 ### Running State Guard
-If a flow invocation finds steps in `running` status from a previous interrupted run, it returns existing states without invoking agents. Use `-D` to force a fresh start.
+If a flow invocation finds steps in `running` status from a previous interrupted run, it returns existing states without invoking agents and exits (no new work scheduled). This is the cross-process replay path — another opencode process is presumed to be executing the flow concurrently. Use `-D` to force a fresh start (which wipes flow_states and the session tree, then runs from step 0).
+
+### Re-trigger Semantics
+When `Run` is invoked for a `(prefix, flow_id)` pair that already has `flow_states` rows AND no row is in `running` status, the runtime chooses between **resume** (continue from mid-state) and **restart** (re-execute from step 0). The discriminator is whether any work is still owed to the prior run:
+
+| Existing state | Default (`resume_on_failure: false`) | With `resume_on_failure: true` |
+|---|---|---|
+| All rows `completed`, rules produce no pending target | **Restart from step 0** | Restart from step 0 |
+| A row is `postponed` or `waiting_for_input` | Resume the paused step | Resume the paused step |
+| Latest row is `failed` | Restart from step 0 | Resume the failed step |
+| A `completed` row's rules self-route (next iteration was never scheduled — crash window) | Resume the next iteration | Same |
+| A `completed` row's rules route to a step whose row is missing or non-terminal | Resume the forward target | Same |
+
+**Restart preserves per-step sessions.** The runtime does NOT delete sessions on restart — each step routes through its existing session, so prior LLM message history remains visible as cumulative context. This is the "react on new external event" case: a flow keyed by `${args.jira_issue_id}` re-fires when the issue changes, re-evaluates the world from step 0, and the agent at each step still sees its prior turns.
+
+**`-D` / `--flow-fresh` / `{fresh: true}` is the hard reset.** It deletes both `flow_states` rows AND the per-step session tree, then runs from step 0 with empty LLM history. Use this when prior conversation state is irrelevant or actively misleading.
+
+**Pick `resume_on_failure: true` when the flow is a long, idempotency-safe pipeline where redoing earlier completed work after a transient failure is wasteful** (build artifacts, paid API calls, anything with side-effects you don't want to repeat). Pick the default `false` for event-driven flows where a re-trigger means "the external world may have changed, re-evaluate from step 0" — typically anything keyed by a Jira issue, PR number, or Slack thread.
 
 ### Postponed Steps
-`postpone: true` on a rule defers the target step until the next flow invocation with the same session prefix. Useful for blockers requiring external action. On re-invocation, the postponed step is picked up normally.
+`postpone: true` on a rule defers the target step until the next flow invocation with the same session prefix. The deferred step's `flow_states.status = postponed`, and on the next `Run` the runtime resumes that step in place — the re-trigger itself is the wake signal. Useful for blockers requiring external action. The step's iteration counter is preserved across the pause.
 
 ### Self-Loops
 A step may route back to itself in two modes:

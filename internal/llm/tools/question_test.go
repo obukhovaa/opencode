@@ -213,9 +213,9 @@ func (m *mockPermissionService) RemoveAutoApproveSession(id string) {
 func (m *mockPermissionService) IsAutoApproveSession(id string) bool {
 	return m.autoApproved[id]
 }
-func (m *mockPermissionService) MarkInteractiveSession(_ string)     {}
-func (m *mockPermissionService) RemoveInteractiveSession(_ string)   {}
-func (m *mockPermissionService) IsInteractiveSession(_ string) bool  { return false }
+func (m *mockPermissionService) MarkInteractiveSession(_ string)    {}
+func (m *mockPermissionService) RemoveInteractiveSession(_ string)  {}
+func (m *mockPermissionService) IsInteractiveSession(_ string) bool { return false }
 func (m *mockPermissionService) Subscribe(_ context.Context) <-chan pubsub.Event[permission.PermissionRequest] {
 	return nil
 }

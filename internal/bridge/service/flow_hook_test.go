@@ -18,7 +18,7 @@ type fakeRegistrar struct {
 	registers         []bridge.RemoteBinding
 	deregisters       []string // formatted as "channel|identity|peer"
 	registerErr       error
-	registerErrUntilN int           // when > 0, fail the first N register calls then succeed
+	registerErrUntilN int // when > 0, fail the first N register calls then succeed
 	registerCalls     atomic.Int64
 }
 

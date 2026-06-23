@@ -30,8 +30,15 @@ type Flow struct {
 }
 
 // FlowSession controls session behavior at the flow level.
+//
+// ResumeOnFailure governs how a re-trigger interprets prior `failed`
+// flow-state rows. When false (default), `failed` is terminal — a
+// re-trigger restarts the flow from step 0. When true, `failed` joins
+// the in-progress set and a re-trigger resumes from the failed step.
+// See openspec/specs/flow-runtime-resume for the full gating contract.
 type FlowSession struct {
-	Prefix string `yaml:"prefix,omitempty"`
+	Prefix          string `yaml:"prefix,omitempty"`
+	ResumeOnFailure bool   `yaml:"resume_on_failure,omitempty"`
 }
 
 // FlowSpec contains the flow's args schema and step definitions.

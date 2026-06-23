@@ -190,17 +190,67 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 	var wg sync.WaitGroup
 	startedSteps := &sync.Map{}
 
+	// Resume vs restart gate. The discriminating property is whether
+	// any existing flow_states row represents work still in flight —
+	// crash recovery (`running`), explicit pause (`postponed`,
+	// `waiting_for_input`), or opt-in retry-from-failure (`failed` when
+	// flow.session.resume_on_failure is true). The gate ALSO walks the
+	// rules of completed rows (using their persisted args+iteration) to
+	// detect self-loop crash recovery — iter N completed with a
+	// self-route but iter N+1's running row never landed. If nothing is
+	// in flight and no completed row's rule walk produces a pending
+	// target, the prior run terminated cleanly and a re-trigger must
+	// re-execute the flow from step 0 against the current world.
+	// Per-step sessions are NOT touched here — only `fresh=true` deletes
+	// them (handled above). Step sessions persist across the restart so
+	// the agent retains cumulative LLM context. See
+	// openspec/specs/flow-runtime-resume for the full contract.
 	var initialWork []stepWork
-	if len(existingStates) > 0 && !fresh {
+	if !fresh && hasResumableWork(existingStates, f, f.Spec.Session.ResumeOnFailure) {
 		stateMap := make(map[string]*FlowState, len(existingStates))
 		for _, es := range existingStates {
 			state := dbFlowStateToFlowState(es)
 			stateMap[state.StepID] = state
 		}
 		visited := make(map[string]bool)
-		logging.Info("Resuming flow from previous state", "flow", flowID, "existing_steps", len(existingStates))
+		logging.Info("Resuming flow from previous state",
+			"flow", flowID,
+			"existing_steps", len(existingStates),
+			"resume_on_failure", f.Spec.Session.ResumeOnFailure)
 		initialWork = s.collectResumableSteps(ctx, f, f.Spec.Steps[0], copyArgs(args), nil, stateMap, visited, startedSteps, flowStates)
+		// Safety net: the gate uses each row's persisted args+iteration,
+		// while collectResumableSteps walks rules with the CURRENT caller
+		// args. A self-loop whose predicate depends on a caller arg that
+		// changed between runs can produce a gate=true / planner=empty
+		// mismatch — without this fallback the flow would close its
+		// channels with no agent calls, silently no-op'ing the re-trigger.
+		// Fall back to restart-from-step-0 to keep the runtime making
+		// forward progress instead of returning the cited regression
+		// shape ("zero LLM calls on retrigger").
+		if len(initialWork) == 0 {
+			logging.Warn("Resume planner produced no work; falling back to restart from step 0",
+				"flow", flowID,
+				"existing_steps", len(existingStates),
+				"resume_on_failure", f.Spec.Session.ResumeOnFailure)
+			// collectResumableSteps' skip-completed path stored every
+			// visited completed step in `startedSteps` so downstream
+			// convergence doesn't re-run a cached step. On fallback we
+			// want a true restart from step 0, so swap in a fresh map —
+			// the scheduler goroutine hasn't started yet and captures
+			// `startedSteps` by closure, so reassignment is safe.
+			startedSteps = &sync.Map{}
+			initialWork = []stepWork{{step: f.Spec.Steps[0], args: copyArgs(args), iteration: 1}}
+		}
 	} else {
+		// `fresh=true` zeroed existingStates above, so a non-empty slice
+		// here implies fresh=false: this branch is the re-trigger
+		// restart path. First-ever runs (empty slice) skip the log.
+		if len(existingStates) > 0 {
+			logging.Info("Restarting flow from step 0 (no in-progress state)",
+				"flow", flowID,
+				"existing_steps", len(existingStates),
+				"resume_on_failure", f.Spec.Session.ResumeOnFailure)
+		}
 		initialWork = []stepWork{{step: f.Spec.Steps[0], args: copyArgs(args), iteration: 1}}
 	}
 
@@ -751,6 +801,115 @@ func (s *service) handleStepError(
 			nextSteps <- stepWork{step: *fallbackStep, args: copyArgs(args), prevStep: failedState, iteration: 1}
 		}
 	}
+}
+
+// hasResumableWork reports whether Run should enter the resume path
+// (collectResumableSteps) for the given existing-states set. A
+// re-invocation of Run for the same session prefix resumes when there
+// is work still owed to the prior run — either a mid-state status
+// (running / postponed / waiting_for_input, or `failed` under per-flow
+// opt-in), OR a completed step whose rules still produce a pending
+// target: a self-route (next iteration was never scheduled — the
+// crash window between writing "iter N completed" and "iter N+1
+// running") or a forward route to a step that hasn't reached terminal.
+//
+// Statuses considered terminal for forward-route checks:
+//   - completed
+//   - failed (only when resumeOnFailure is false; with resumeOnFailure
+//     the function returns true above and never reaches this check)
+//
+// When all completed rows' rules point only at terminal targets and no
+// in-progress row exists, the prior run terminated cleanly and a
+// re-trigger restarts from step 0 (with per-step sessions preserved —
+// see openspec/specs/flow-runtime-resume requirement D4).
+//
+// The function is pure (no I/O, no state mutation); it deserializes
+// row.Args and row.Output locally to evaluate rule predicates against
+// the same args+iteration context collectResumableSteps would use.
+func hasResumableWork(states []db.FlowState, f *Flow, resumeOnFailure bool) bool {
+	terminal := make(map[string]bool, len(states))
+	rowByStep := make(map[string]db.FlowState, len(states))
+	for _, st := range states {
+		switch st.Status {
+		case string(FlowStatusRunning),
+			string(FlowStatusPostponed),
+			string(FlowStatusWaitingForInput):
+			return true
+		case string(FlowStatusFailed):
+			if resumeOnFailure {
+				return true
+			}
+			terminal[st.StepID] = true
+		case string(FlowStatusCompleted):
+			terminal[st.StepID] = true
+			rowByStep[st.StepID] = st
+		default:
+			// Schema drift or partial migration: treat as non-terminal so
+			// any forward route lands as pending. Log once so the row is
+			// discoverable instead of silently steering the gate.
+			logging.Warn("Unknown flow_states.status in hasResumableWork",
+				"step", st.StepID, "status", st.Status, "flow", f.ID)
+		}
+	}
+	for stepID, row := range rowByStep {
+		stepDef := findStep(f.Spec.Steps, stepID)
+		if stepDef == nil {
+			continue
+		}
+		for _, ns := range evaluateRowNextSteps(row, stepDef, f.Spec.Steps) {
+			if ns.step.ID == stepID {
+				// Self-route: the next iteration was never scheduled.
+				// collectResumableSteps may still trip MaxIterations when
+				// it gets to schedule the next iter — that's fine; the
+				// gate predicate just decides whether to enter the resume
+				// path at all, not what the resume path produces.
+				return true
+			}
+			if !terminal[ns.step.ID] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// evaluateRowNextSteps reconstructs the args+iteration context that
+// runStep would have at the END of the given completed row's
+// execution, then evaluates the step's routing rules against that
+// context. Returns the resolved next-step list — same shape
+// collectResumableSteps uses when walking the rule graph on resume.
+//
+// args at end-of-step = row.Args (the input args persisted on entry)
+// merged with row.Output when the row carries struct output, matching
+// the merge collectResumableSteps performs at its skip-completed
+// emission.
+func evaluateRowNextSteps(row db.FlowState, stepDef *Step, allSteps []Step) []resolvedStep {
+	var rowArgs map[string]any
+	if row.Args.Valid {
+		if err := json.Unmarshal([]byte(row.Args.String), &rowArgs); err != nil {
+			// Corrupted args JSON: predicates referencing ${args.x} will
+			// see absent keys and may produce a different routing than the
+			// original run. Surface so the row is observable; the gate
+			// still falls through with empty args (safe default).
+			logging.Debug("Malformed flow_states.args in evaluateRowNextSteps",
+				"step", row.StepID, "session", row.SessionID, "error", err)
+		}
+	}
+	if rowArgs == nil {
+		rowArgs = map[string]any{}
+	}
+	if row.IsStructOutput && row.Output.Valid && row.Output.String != "" {
+		var structData map[string]any
+		if err := json.Unmarshal([]byte(row.Output.String), &structData); err == nil {
+			maps.Copy(rowArgs, structData)
+		}
+	}
+	iter := int(row.Iteration)
+	if iter < 1 {
+		iter = 1
+	}
+	stepVars := map[string]any{"iteration": iter}
+	return resolveNextSteps(stepDef.Rules, allSteps, rowArgs, stepVars)
 }
 
 func (s *service) collectResumableSteps(

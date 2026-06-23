@@ -133,7 +133,7 @@ type Adapter struct {
 
 	// multiSelectOnce lazy-initialises the multi-select state map
 	// used by SendInteractiveMultiSelect (toggle/apply lifecycle).
-	multiSelectOnce  sync.Once
+	multiSelectOnce     sync.Once
 	multiSelectStateMap *multiSelectState
 }
 

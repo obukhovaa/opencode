@@ -39,7 +39,9 @@ When a step needs to iterate inside a single invocation (build levels of a graph
 
 `maxTurns` (per-step) overrides the agent's `maxTurns` for a single step. Useful when one step in a flow needs more (or fewer) tool-use turns than the rest of the flow — e.g. a long-running build coordinator vs. a short summary step. `maxIterations` is a different axis (counts whole agent runs of the step, not tool-use turns within one run).
 
-Use `flow.session.prefix` with an `${args.*}` reference when the flow should be resumable by a user-provided identifier (e.g., ticket ID). Otherwise omit it to get independent invocations.
+Use `flow.session.prefix` with an `${args.*}` reference when the flow should be **re-triggerable by a user-provided identifier** (e.g. Jira ticket key, PR number, Slack thread ID). On a re-trigger of a cleanly-completed prior run, the flow re-executes from step 0 against the current world — picking up new comments, status changes, or other external events — while every step's session keeps its prior message history so the agent has cumulative context. Mid-state re-triggers (a step is `postponed`, `waiting_for_input`, or stuck `running`) resume the paused step instead. Omit `prefix` to get independent invocations (each run gets a fresh timestamp prefix and shares no state).
+
+Set `flow.session.resume_on_failure: true` only when the flow is a long, idempotency-safe pipeline whose earlier completed steps must NOT be redone after a transient failure (e.g. paid API calls, build artifacts, anything with non-repeatable side-effects). Default `false` is correct for event-driven flows where a re-trigger after failure means "re-evaluate from step 0 against current state," not "retry the same step." A typo in the `session` block (e.g. `resume_on_fail` missing the `ure`) fails flow load with `ErrInvalidYAML` rather than silently defaulting.
 
 Use `flow.args` with JSON Schema to validate required inputs upfront. The `prompt` key is always allowed without declaration.
 
