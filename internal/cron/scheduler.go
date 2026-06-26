@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -69,6 +70,15 @@ type Scheduler struct {
 
 	resolverMu      sync.RWMutex
 	permResolverChk PermissionResolverChecker
+
+	leaderMu sync.RWMutex
+	leader   LeaderLock
+
+	// transitionHook overrides onLeaderTransition's default body when set.
+	// Test-only; production wiring leaves it nil so ClearStaleFiring runs.
+	transitionHook func(context.Context)
+
+	stopOnce sync.Once
 
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
@@ -137,6 +147,116 @@ func (s *Scheduler) hasPermissionResolver(ctx context.Context, sessionID string)
 	return chk.HasPermissionResolver(ctx, sessionID)
 }
 
+// SetLeaderLock wires the cross-process leader lock that pins cron
+// scheduling to a single opencode process per DB. When unset (nil) every
+// scheduler ticks freely — that is the right default for unit tests and
+// for deployments that never run more than one opencode process. The
+// caller is responsible for constructing the lock with the correct
+// provider (SQLite file lock or MySQL GET_LOCK); see NewLeaderLock.
+//
+// If a prior lock was set, replacing it with a different reference (or
+// with nil) releases the displaced lock. Otherwise a runtime swap would
+// leak the file descriptor / MySQL conn the old lock holds. Release
+// errors are logged at Warn and otherwise swallowed — they cannot
+// propagate through the setter, and the new lock should take over
+// regardless.
+func (s *Scheduler) SetLeaderLock(l LeaderLock) {
+	s.leaderMu.Lock()
+	prev := s.leader
+	s.leader = l
+	s.leaderMu.Unlock()
+	if prev != nil && prev != l {
+		if err := prev.Release(); err != nil {
+			logging.Warn("Cron leader lock release on replace failed", "error", err)
+		}
+	}
+}
+
+// isLeader reports whether this process currently owns the lock. With no
+// lock configured, every process is a leader (backward-compatible
+// single-process behaviour).
+func (s *Scheduler) isLeader() bool {
+	s.leaderMu.RLock()
+	l := s.leader
+	s.leaderMu.RUnlock()
+	if l == nil {
+		return true
+	}
+	return l.Held()
+}
+
+// tryAcquireLeadership attempts to grab the leader lock. Returns
+// (newlyAcquired, reason):
+//
+//   - (true, nil)             — just transitioned to leader; caller should
+//     run once-per-transition setup (ClearStaleFiring).
+//   - (false, nil)            — no lock configured OR already held.
+//   - (false, ErrLeaderHeld)  — a peer process is the current leader
+//     (expected steady state, silent).
+//   - (false, other err)      — transport failure (already logged at Warn
+//     by this method; caller may inspect for boot-vs-retry messaging).
+func (s *Scheduler) tryAcquireLeadership(ctx context.Context) (bool, error) {
+	s.leaderMu.RLock()
+	l := s.leader
+	s.leaderMu.RUnlock()
+	if l == nil {
+		return false, nil
+	}
+	if l.Held() {
+		return false, nil
+	}
+	if err := l.TryAcquire(ctx); err != nil {
+		if errors.Is(err, ErrLeaderHeld) {
+			// Expected when another opencode process is the leader.
+			// Silent on purpose — the 5s retry would otherwise spam
+			// the log in a stable two-process deployment.
+			return false, err
+		}
+		logging.Warn("Cron leader lock acquire failed", "error", err)
+		return false, err
+	}
+	logging.Info("Cron scheduler became leader")
+	return true, nil
+}
+
+// onLeaderTransition runs the once-per-transition cleanup. Stale firing=true
+// rows from a crashed predecessor would otherwise be invisible to
+// ListDueCronJobs forever (it filters out firing=true). Cheap single
+// UPDATE; safe to re-run on every transition.
+//
+// Tests in this package may override transitionHook to observe transitions
+// without needing a real *service to wire up.
+func (s *Scheduler) onLeaderTransition(ctx context.Context) {
+	if s.transitionHook != nil {
+		s.transitionHook(ctx)
+		return
+	}
+	if err := s.svc.ClearStaleFiring(ctx); err != nil {
+		logging.Error("Cron leader transition: clear stale firing failed", "error", err)
+	}
+}
+
+// pingLeadership verifies the lock is still ours and downgrades to
+// follower on connection loss. For MySQL this is the load-bearing call —
+// without it a killed *sql.Conn would silently release the server-side
+// GET_LOCK while Held() kept reporting true, letting this process race
+// the new leader on ClaimForFiring. Runs every 30s from the run loop.
+func (s *Scheduler) pingLeadership(ctx context.Context) {
+	s.leaderMu.RLock()
+	l := s.leader
+	s.leaderMu.RUnlock()
+	if l == nil || !l.Held() {
+		return
+	}
+	if err := l.Ping(ctx); err != nil {
+		if errors.Is(err, ErrLeaderHeld) {
+			logging.Info("Cron leader lock lost; downgrading to follower (peer will take over)")
+			return
+		}
+		logging.Warn("Cron leader lock ping failed", "error", err)
+	}
+}
+
 // Start initializes cron jobs from DB and starts the scheduler goroutine.
 func (s *Scheduler) Start(ctx context.Context) {
 	// Handle startup: clear stale firing, recompute next_run_at, surface missed one-shots
@@ -152,26 +272,111 @@ func (s *Scheduler) Start(ctx context.Context) {
 	logging.Info("Cron scheduler started")
 }
 
-// Stop stops the scheduler goroutine.
+// Stop stops the scheduler goroutine and releases the leader lock so a
+// peer process can take over within its next retry tick. Guarded by
+// sync.Once so a Shutdown + ForceShutdown sequence (or a duplicate
+// signal handler) cannot double-release the lock.
 func (s *Scheduler) Stop() {
-	if s.cancel != nil {
-		s.cancel()
-		s.wg.Wait()
-	}
-	logging.Info("Cron scheduler stopped")
+	s.stopOnce.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+			s.wg.Wait()
+		}
+		s.leaderMu.RLock()
+		l := s.leader
+		s.leaderMu.RUnlock()
+		if l != nil {
+			if err := l.Release(); err != nil {
+				logging.Warn("Cron leader lock release failed", "error", err)
+			}
+		}
+		logging.Info("Cron scheduler stopped")
+	})
 }
 
 func (s *Scheduler) run(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	// Followers retry leadership every 5s so a peer's crash hands over
+	// scheduling within a bounded delay. The retry is independent of the
+	// per-second tick so the loss-of-cache cost stays bounded even if the
+	// DB call is slow.
+	retryTicker := time.NewTicker(5 * time.Second)
+	defer retryTicker.Stop()
+
+	// Pinging the lock guards against the MySQL "conn dropped, server
+	// released GET_LOCK, peer grabbed it" split-brain. 30s matches the
+	// bridge's ping cadence — short enough that a misowned leader stops
+	// claiming jobs within a manageable window, long enough that the
+	// DB doesn't see meaningful extra load.
+	pingTicker := time.NewTicker(30 * time.Second)
+	defer pingTicker.Stop()
+
+	// Boot acquire. If a lock is configured and we don't immediately
+	// become leader, surface a single INFO line so operators can tell
+	// from the log whether this process is the scheduler or a follower.
+	s.bootAcquire(ctx)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if !s.isLeader() {
+				continue
+			}
 			s.tick(ctx)
+		case <-retryTicker.C:
+			if s.isLeader() {
+				continue
+			}
+			if acquired, _ := s.tryAcquireLeadership(ctx); acquired {
+				s.onLeaderTransition(ctx)
+			}
+		case <-pingTicker.C:
+			s.pingLeadership(ctx)
 		}
+	}
+}
+
+// bootAcquire runs once at scheduler start. With no lock configured it
+// is a no-op. With a lock it either acquires immediately (this process
+// becomes leader) or logs a single INFO line announcing follower state.
+// The follower message distinguishes "peer holds it" (steady-state
+// two-process deployment, expected) from "lock unavailable" (DB unhealthy
+// at startup, retry will eventually succeed) so the role of this process
+// is unambiguous in the logs.
+func (s *Scheduler) bootAcquire(ctx context.Context) {
+	s.leaderMu.RLock()
+	l := s.leader
+	s.leaderMu.RUnlock()
+	if l == nil {
+		return
+	}
+	acquired, reason := s.tryAcquireLeadership(ctx)
+	if acquired {
+		s.onLeaderTransition(ctx)
+		return
+	}
+	// (false, nil) covers two cases: lock not configured (handled above)
+	// or l.Held() was already true before we called tryAcquireLeadership.
+	// The second case is reachable if a caller pre-acquires the lock
+	// before Start — today nobody does, but treat it as a transition so
+	// onLeaderTransition runs (ClearStaleFiring would otherwise be
+	// skipped despite this process effectively being the new leader).
+	if reason == nil && l.Held() {
+		logging.Info("Cron scheduler started as leader (lock pre-acquired)")
+		s.onLeaderTransition(ctx)
+		return
+	}
+	switch {
+	case errors.Is(reason, ErrLeaderHeld):
+		logging.Info("Cron scheduler started as follower (peer process holds the lock; will retry every 5s)")
+	case reason != nil:
+		// tryAcquireLeadership already logged a Warn with the underlying
+		// error; this Info just makes the follower state explicit.
+		logging.Info("Cron scheduler started as follower (lock unavailable; will retry every 5s)")
 	}
 }
 

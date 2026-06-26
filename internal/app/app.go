@@ -260,6 +260,27 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 		// scheduler.SetActiveSessionProvider once it has been constructed.
 		scheduler := cron.NewScheduler(cronSvc, messages, sessions, perm, busyChecker, nil, taskRunner)
 		app.CronScheduler = scheduler
+
+		// Pin scheduling to a single opencode process per database. Without
+		// this, two processes (e.g. `opencode serve` + `opencode` TUI) tick
+		// every second and race on ClaimForFiring; whichever wins runs the
+		// job, which means a TUI process can claim a cron whose session is
+		// bridge-bound and then defer it forever (no bridge resolver in this
+		// process) or pop a permission dialog the chat user cannot see.
+		// First process to start wins; followers retry every 5s and take
+		// over on leader exit. Construction failure is non-fatal so a
+		// misconfigured deployment still falls back to the legacy
+		// every-process-ticks behaviour rather than disabling cron outright.
+		cfg := config.Get()
+		if cfg != nil {
+			lock, err := cron.NewLeaderLock(cfg.SessionProvider.Type, cfg.Data.Directory, projectID, conn)
+			if err != nil {
+				logging.Warn("Cron leader lock disabled (continuing without single-process pinning)", "error", err)
+			} else {
+				scheduler.SetLeaderLock(lock)
+			}
+		}
+
 		scheduler.Start(ctx)
 	}
 

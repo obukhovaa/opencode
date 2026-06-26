@@ -208,6 +208,17 @@ The scheduler waits for any in-flight cron fires to finish before allowing shutd
 
 Set `OPENCODE_DISABLE_CRON=1` in your environment to skip cron initialization. The crons page shows a "disabled" message, `/loop` reports the same, and `croncreate` is not registered for any agent.
 
+### Multiple opencode processes against one database
+
+When you run more than one opencode process against the same database (e.g. `opencode serve` for the chat bridge plus `opencode` TUI in another terminal), only **one** process schedules cron jobs at a time. A cross-process leader lock pins scheduling to whichever process acquires the lock first:
+
+- **SQLite**: an OS file lock at `<dataDir>/cron.lock`. Held by the open file descriptor; released by clean shutdown or process exit.
+- **MySQL**: a per-project `GET_LOCK` on a dedicated `*sql.Conn`. Released by `RELEASE_LOCK`, by closing the conn, or by MySQL killing the conn (network blip, server restart, idle timeout).
+
+Followers stay dormant and retry every 5 seconds; on the leader's exit a follower takes over within that window. The leader pings the lock every 30 seconds; if the MySQL conn was killed in the background the leader downgrades to follower (logged as `Cron leader lock lost; downgrading to follower`) and the next follower retry takes over. This prevents a split-brain where the original holder keeps claiming jobs after the server-side `GET_LOCK` has already been released.
+
+This matters most for the chat bridge: a cron scheduled in a bridge-bound session needs the bridge's permission resolver to fire. If a TUI process raced the bridge process and acquired the lock, the TUI's scheduler would either defer the job 60s (no bridge resolver in this process) or pop a permission dialog the chat user cannot see. **Start the process that owns the bridge first** to make sure it wins the lock. Followers log a single `Cron scheduler started as follower` line at boot so the deployment's role is obvious.
+
 ## Data layout
 
 Cron jobs are persisted in the `cron_jobs` table (both SQLite and MySQL backends). Schema in [internal/db/migrations/sqlite/20260507120000_add_cron_jobs.sql](../internal/db/migrations/sqlite/20260507120000_add_cron_jobs.sql) and the corresponding MySQL migration. Key columns:

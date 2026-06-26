@@ -311,6 +311,15 @@ func (s *service) InitStartup(ctx context.Context) {
 	}
 }
 
+// ClearStaleFiring resets firing=true rows left behind by a crashed
+// predecessor. InitStartup already calls this once at process start, but
+// after a leader-transition the new leader needs to re-run it to clean
+// up rows the prior leader left in mid-flight. Cheap (single UPDATE)
+// and idempotent, so safe to call on every transition.
+func (s *service) ClearStaleFiring(ctx context.Context) error {
+	return s.q.ClearStaleFiring(ctx)
+}
+
 // ListDue returns jobs that are due for execution.
 func (s *service) ListDue(ctx context.Context, now time.Time) ([]CronJob, error) {
 	dbJobs, err := s.q.ListDueCronJobs(ctx, sql.NullInt64{Int64: now.Unix(), Valid: true})
