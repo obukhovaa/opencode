@@ -85,7 +85,21 @@ func (s *permissionService) Deny(permission PermissionRequest) {
 	}
 }
 
+// hookAllowKey is a context key set by the agent loop when a PreToolUse
+// hook returned permissionDecision: "allow". The permission service
+// honors it as a per-call auto-approve, mirroring D8 in the
+// flow-runtime-resume-adjacent claude-code-hooks-plugin-system spec.
+type hookAllowKeyType struct{}
+
+// HookAllowKey is the context key used by the agent loop to signal that
+// a PreToolUse hook explicitly allowed this tool invocation, bypassing
+// the standard permission gate for this call only.
+var HookAllowKey = hookAllowKeyType{}
+
 func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRequest) bool {
+	if v, ok := ctx.Value(HookAllowKey).(bool); ok && v {
+		return true
+	}
 	if s.IsAutoApproveSession(opts.SessionID) {
 		return true
 	}

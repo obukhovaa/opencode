@@ -45,6 +45,7 @@ Thumbs.db
 .opencode/
 
 opencode
+/hooks-e2e
 .aider*
 opencode.md
 DEBUG.md

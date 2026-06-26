@@ -1,0 +1,41 @@
+{
+  "_comment_top": "Example .opencode.json showing the hooks block. Drop this in either ~/.opencode.json (global) or <project>/.opencode.json (project scope). All other .opencode.json fields can sit alongside `hooks` — only the relevant key is shown here.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "_comment": "RTK-style Bash command rewriter. Compacts noisy commands (cargo test, git status, etc.) by piping through rtk. The rtk binary must be installed (https://github.com/rtk-ai/rtk).",
+        "matcher": "bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/rtk",
+            "args": ["hook"]
+          }
+        ]
+      },
+      {
+        "_comment": "Block destructive bash commands matching `rm -rf`. Hook exits 2 if it detects the pattern; opencode surfaces stderr to the agent as the tool result.",
+        "matcher": "bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${OPENCODE_PROJECT_DIR}/.opencode/hooks/block-rm-rf.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "_comment": "Redact API keys from tool output before the LLM sees it. Pattern-matches sk-* and AKIA* style tokens via updatedToolOutput.",
+        "matcher": "bash|read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${OPENCODE_PROJECT_DIR}/.opencode/hooks/redact-secrets.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -54,6 +54,54 @@ func TestAutoApproveRequestSkipsDialog(t *testing.T) {
 	}
 }
 
+// TestHookAllowAndAutoApproveCompose locks in the precedence inside
+// Request that lets RTK + serve-mode auto-approve coexist. RTK's hook
+// can return `permissionDecision: "allow"` (sets HookAllowKey via the
+// agent loop) OR omit it (current RTK 0.42.4 default: emit only
+// updatedInput). In both cases, when the session is auto-approved
+// (serve --auto-approve), Request MUST return true without publishing
+// to the broker.
+//
+// Scenario matrix:
+//
+//	HookAllow  AutoApprove  Want
+//	false      false        false (broker dispatch — exercised elsewhere)
+//	false      true         true  (this test — RTK rewrite + serve auto-approve)
+//	true       false        true  (this test — RTK explicit allow alone)
+//	true       true         true  (this test — both signals; first wins)
+func TestHookAllowAndAutoApproveCompose(t *testing.T) {
+	cases := []struct {
+		name        string
+		hookAllow   bool
+		autoApprove bool
+	}{
+		{"hook_allow_only", true, false},
+		{"auto_approve_only", false, true},
+		{"both", true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewPermissionService()
+			sessionID := "session-" + tc.name
+			if tc.autoApprove {
+				svc.AutoApproveSession(sessionID)
+			}
+			ctx := context.Background()
+			if tc.hookAllow {
+				ctx = context.WithValue(ctx, HookAllowKey, true)
+			}
+			got := svc.Request(ctx, CreatePermissionRequest{
+				SessionID: sessionID,
+				ToolName:  "bash",
+				Action:    "execute",
+			})
+			if !got {
+				t.Errorf("Request returned false; want true (hookAllow=%v autoApprove=%v)", tc.hookAllow, tc.autoApprove)
+			}
+		})
+	}
+}
+
 func TestAutoApproveDenyStillEnforced(t *testing.T) {
 	agentPerms := map[string]any{
 		"bash": map[string]any{

@@ -11,6 +11,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
+	"github.com/opencode-ai/opencode/internal/hooks"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
@@ -276,6 +277,10 @@ func (f *stubAgentFactory) SetBridgeSender(_ tools.BridgeSender, _ *bridge.Confi
 func (f *stubAgentFactory) BridgeSender() (tools.BridgeSender, *bridge.Config, string) {
 	return nil, nil, ""
 }
+
+func (f *stubAgentFactory) SetHookRegistry(_ *hooks.Registry) {}
+
+func (f *stubAgentFactory) HookRegistry() *hooks.Registry { return nil }
 
 func registerTestFlow(t *testing.T, f Flow) {
 	t.Helper()

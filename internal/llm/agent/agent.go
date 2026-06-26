@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +16,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/history"
+	"github.com/opencode-ai/opencode/internal/hooks"
 	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/prompt"
@@ -113,6 +116,13 @@ type agent struct {
 	titleProvider     provider.Provider
 	summarizeProvider provider.Provider
 
+	// factory exposes services that are late-injected on the factory
+	// after agent construction. Today we read HookRegistry off it at
+	// tool-dispatch time (per claude-code-hooks-plugin-system); future
+	// late-injected services (e.g. additional hook surfaces) would
+	// reach the agent the same way without enlarging this struct.
+	factory AgentFactory
+
 	activeRequests sync.Map
 }
 
@@ -158,6 +168,7 @@ func newAgent(
 		summarizeProvider: summarizeProvider,
 		activeRequests:    sync.Map{},
 		allowParallelism:  agentInfo.AllowsParallelToolUse(),
+		factory:           factory,
 	}
 
 	// Resolve tools in background so they're ready before first Run() call
@@ -168,6 +179,141 @@ func newAgent(
 	}()
 
 	return agent, nil
+}
+
+// hookCall is the result of a PreToolUse evaluation that the dispatch
+// code branches on. It collapses "no hooks registered" / "no matching
+// hooks" / "hooks ran but returned no decision" into a single zero value
+// so the call sites don't repeat the nil-check three times.
+type hookCall struct {
+	registry *hooks.Registry
+	decision hooks.PreToolDecision
+}
+
+// firePreTool evaluates PreToolUse for the given tool call. Returns the
+// (possibly-mutated) input JSON string to pass to the tool, plus the
+// hookCall capturing whether a block / explicit-allow / additional-context
+// applies. When no registry is installed or no hooks match, the returned
+// hookCall has registry=nil and the original input is returned unchanged.
+//
+// On JSON-parse failure (rare — input strings come from the LLM provider
+// already JSON-validated) we skip the hook entirely and return the
+// original input, logging a debug message. We never crash the agent loop
+// over a malformed hook input.
+func (a *agent) firePreTool(ctx context.Context, sessionID, toolCallName, toolCallInput string) (string, hookCall) {
+	if a.factory == nil {
+		return toolCallInput, hookCall{}
+	}
+	reg := a.factory.HookRegistry()
+	if reg == nil {
+		return toolCallInput, hookCall{}
+	}
+	// Fast-path: skip JSON parse + os.Getwd() when no PreToolUse hooks
+	// are configured for any tool. This is the common case for users
+	// who don't configure hooks at all — most tool calls in most
+	// sessions. Without this gate the helper unmarshals every tool
+	// input for nothing, costing a few µs per call across a hot loop.
+	if !reg.HasEvent(hooks.EventPreToolUse) {
+		return toolCallInput, hookCall{}
+	}
+	var inputMap map[string]any
+	if toolCallInput != "" {
+		if err := json.Unmarshal([]byte(toolCallInput), &inputMap); err != nil {
+			logging.Debug("hook PreToolUse: tool input was not a JSON object; skipping hook",
+				"tool", toolCallName, "error", err)
+			return toolCallInput, hookCall{}
+		}
+	}
+	cwd := hookCWD(reg)
+	dec := reg.RunPreTool(ctx, sessionID, cwd, toolCallName, inputMap)
+	if dec.UpdatedInput != nil {
+		if rewritten, err := json.Marshal(dec.UpdatedInput); err == nil {
+			toolCallInput = string(rewritten)
+		} else {
+			logging.Warn("hook PreToolUse: failed to re-serialize updatedInput; using original",
+				"tool", toolCallName, "error", err)
+		}
+	}
+	return toolCallInput, hookCall{registry: reg, decision: dec}
+}
+
+// appendHookContext glues a tool's content with a hook's additionalContext.
+// Format: "<content>\n\n[hook context: <ctx>]". When ctx is empty, returns
+// the content unchanged. Applied at every record(...) site so PreToolUse
+// (block path and non-block path) and PostToolUse contexts all reach the
+// agent on the next turn — spec requires additionalContext to be visible
+// to the agent regardless of whether the hook blocked.
+func appendHookContext(content, ctx string) string {
+	if ctx == "" {
+		return content
+	}
+	if content == "" {
+		return "[hook context: " + ctx + "]"
+	}
+	return content + "\n\n[hook context: " + ctx + "]"
+}
+
+// joinHookContext combines a PreToolUse additionalContext with a
+// PostToolUse additionalContext. Either may be empty; the result is
+// `\n`-separated when both are present so the agent sees them as
+// distinct lines.
+func joinHookContext(pre, post string) string {
+	switch {
+	case pre == "":
+		return post
+	case post == "":
+		return pre
+	default:
+		return pre + "\n" + post
+	}
+}
+
+// hookCWD resolves the working directory passed to hooks. Prefers the
+// live process cwd (`os.Getwd`) so a flow that `chdir`'d sees its real
+// location; falls back to the registry's project root if `os.Getwd`
+// fails (rare — only when the working directory was unlinked, e.g. a
+// flow stepped into a tempdir that was later cleaned).
+func hookCWD(reg *hooks.Registry) string {
+	if cwd, err := os.Getwd(); err == nil {
+		return cwd
+	}
+	return reg.ProjectRoot()
+}
+
+// firePostTool evaluates PostToolUse for a successful tool call. Returns
+// the (possibly-mutated) tool output plus any additionalContext the hook
+// chain accumulated — callers MUST apply the context via appendHookContext
+// before recording the result so the agent sees it on its next turn.
+// A nil registry / no matching hooks / no decision degrades to the
+// original output and empty context.
+func (a *agent) firePostTool(ctx context.Context, sessionID, toolCallName, toolCallInput, toolOutput string) (string, string) {
+	if a.factory == nil {
+		return toolOutput, ""
+	}
+	reg := a.factory.HookRegistry()
+	if reg == nil {
+		return toolOutput, ""
+	}
+	// Fast-path: same rationale as firePreTool — most tool calls don't
+	// have PostToolUse hooks configured. Avoid the JSON unmarshal and
+	// the os.Getwd syscall when there's no event to dispatch.
+	if !reg.HasEvent(hooks.EventPostToolUse) {
+		return toolOutput, ""
+	}
+	var inputMap map[string]any
+	if toolCallInput != "" {
+		_ = json.Unmarshal([]byte(toolCallInput), &inputMap) // best-effort; nil map is fine
+	}
+	cwd := hookCWD(reg)
+	dec := reg.RunPostTool(ctx, sessionID, cwd, toolCallName, inputMap, toolOutput)
+	out := toolOutput
+	switch {
+	case dec.BlockReason != "":
+		out = dec.BlockReason
+	case dec.UpdatedOutput != nil:
+		out = *dec.UpdatedOutput
+	}
+	return out, dec.AdditionalContext
 }
 
 func (a *agent) AgentID() config.AgentName {
@@ -825,16 +971,44 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 					defer toolSpan.End()
 				}
 
+				// PreToolUse: hooks may mutate Input or block this call.
+				// Mutation chain runs synchronously before the tool dispatch
+				// goroutine starts so the tool sees the final input.
+				mutatedInput, hc := a.firePreTool(ctx, sessionID, e.toolCall.Name, e.toolCall.Input)
+				if hc.decision.Block {
+					reason := hc.decision.BlockReason
+					if reason == "" {
+						reason = "Tool call blocked by PreToolUse hook"
+					}
+					logging.Info("Tool call blocked by hook", "tool", e.toolCall.Name, "ID", e.toolCall.ID, "reason", reason)
+					if toolSpan != nil {
+						toolSpan.SetError(fmt.Errorf("blocked by hook: %s", reason))
+					}
+					record(e.index, message.ToolResult{
+						ToolCallID: e.toolCall.ID,
+						Name:       e.toolCall.Name,
+						Content:    appendHookContext(reason, hc.decision.AdditionalContext),
+						IsError:    true,
+					})
+					return
+				}
+
 				type runResult struct {
 					resp tools.ToolResponse
 					err  error
 				}
 				ch := make(chan runResult, 1)
+				// ExplicitAllow from a PreToolUse hook bypasses the
+				// in-tool permission check for this call only (D8).
+				toolCtx := permCtx
+				if hc.decision.ExplicitAllow {
+					toolCtx = context.WithValue(permCtx, permission.HookAllowKey, true)
+				}
 				go func() {
-					r, errTool := e.tool.Run(permCtx, tools.ToolCall{
+					r, errTool := e.tool.Run(toolCtx, tools.ToolCall{
 						ID:    e.toolCall.ID,
 						Name:  e.toolCall.Name,
-						Input: e.toolCall.Input,
+						Input: mutatedInput,
 					})
 					ch <- runResult{r, errTool}
 				}()
@@ -897,11 +1071,23 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 					"successful", !toolResult.IsError,
 					"gauge", gauge,
 				)
+				// PostToolUse: hooks may mutate the result content before
+				// it reaches the conversation history. Only fires when
+				// the tool succeeded (IsError=false) per spec contract.
+				resultContent := toolResult.Content
+				var postCtx string
+				if !toolResult.IsError {
+					resultContent, postCtx = a.firePostTool(ctx, sessionID, e.toolCall.Name, mutatedInput, toolResult.Content)
+				}
+				// additionalContext from BOTH PreToolUse and PostToolUse
+				// must reach the agent; spec requires it to be visible
+				// on the next turn whether or not the hook blocked.
+				resultContent = appendHookContext(resultContent, joinHookContext(hc.decision.AdditionalContext, postCtx))
 				record(e.index, message.ToolResult{
 					Type:       message.ToolResultType(toolResult.Type),
 					Name:       e.toolCall.Name,
 					ToolCallID: e.toolCall.ID,
-					Content:    toolResult.Content,
+					Content:    resultContent,
 					Metadata:   toolResult.Metadata,
 					IsError:    toolResult.IsError,
 				})
@@ -1011,11 +1197,37 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 			})
 		}
 
+		// PreToolUse: same contract as the parallel path. Mutated input
+		// feeds the tool; block short-circuits with the hook's reason.
+		seqMutatedInput, seqHC := a.firePreTool(ctx, sessionID, entry.toolCall.Name, entry.toolCall.Input)
+		if seqHC.decision.Block {
+			reason := seqHC.decision.BlockReason
+			if reason == "" {
+				reason = "Tool call blocked by PreToolUse hook"
+			}
+			logging.Info("Tool call blocked by hook", "tool", entry.toolCall.Name, "ID", entry.toolCall.ID, "reason", reason)
+			if seqToolSpan != nil {
+				seqToolSpan.SetError(fmt.Errorf("blocked by hook: %s", reason))
+				seqToolSpan.End()
+			}
+			record(entry.index, message.ToolResult{
+				ToolCallID: entry.toolCall.ID,
+				Name:       entry.toolCall.Name,
+				Content:    appendHookContext(reason, seqHC.decision.AdditionalContext),
+				IsError:    true,
+			})
+			continue
+		}
+
 		now := time.Now()
-		toolResult, toolErr := entry.tool.Run(ctx, tools.ToolCall{
+		seqToolCtx := ctx
+		if seqHC.decision.ExplicitAllow {
+			seqToolCtx = context.WithValue(ctx, permission.HookAllowKey, true)
+		}
+		toolResult, toolErr := entry.tool.Run(seqToolCtx, tools.ToolCall{
 			ID:    entry.toolCall.ID,
 			Name:  entry.toolCall.Name,
-			Input: entry.toolCall.Input,
+			Input: seqMutatedInput,
 		})
 		gauge := time.Since(now).Milliseconds()
 		if toolErr != nil {
@@ -1076,11 +1288,17 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 			"successful", !toolResult.IsError,
 			"gauge", gauge,
 		)
+		seqResultContent := toolResult.Content
+		var seqPostCtx string
+		if !toolResult.IsError {
+			seqResultContent, seqPostCtx = a.firePostTool(ctx, sessionID, entry.toolCall.Name, seqMutatedInput, toolResult.Content)
+		}
+		seqResultContent = appendHookContext(seqResultContent, joinHookContext(seqHC.decision.AdditionalContext, seqPostCtx))
 		record(entry.index, message.ToolResult{
 			Type:       message.ToolResultType(toolResult.Type),
 			Name:       entry.toolCall.Name,
 			ToolCallID: entry.toolCall.ID,
-			Content:    toolResult.Content,
+			Content:    seqResultContent,
 			Metadata:   toolResult.Metadata,
 			IsError:    toolResult.IsError,
 		})

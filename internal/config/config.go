@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/hooks"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/spf13/viper"
@@ -309,6 +310,15 @@ type Config struct {
 	Telemetry          *TelemetryConfig                  `json:"telemetry,omitempty"`
 	SessionCleanup     *SessionCleanupConfig             `json:"sessionCleanup,omitempty"`
 	Router             *bridge.Config                    `json:"router,omitempty"`
+	// Hooks is the Claude-Code-compatible PreToolUse / PostToolUse
+	// subprocess hook map. Keys are event names (`PreToolUse`,
+	// `PostToolUse`); values are matcher groups whose entries fire as
+	// POSIX subprocesses with JSON over stdio. Loaded once at process
+	// startup; restart required to pick up edits. Same shape as the
+	// `hooks` block in Claude Code's `settings.json` so plugin authors
+	// can copy-paste between hosts. See docs/hooks.md and
+	// openspec/specs/hook-runtime/spec.md.
+	Hooks map[string][]hooks.MatcherGroup `json:"hooks,omitempty"`
 }
 
 // Application constants
@@ -964,7 +974,6 @@ func Validate() error {
 	// Validate providers
 	for provider, providerCfg := range cfg.Providers {
 		if providerCfg.APIKey == "" && !providerCfg.Disabled {
-			fmt.Printf("provider has no API key, marking as disabled %s", provider)
 			logging.Warn("provider has no API key, marking as disabled", "provider", provider)
 			providerCfg.Disabled = true
 			cfg.Providers[provider] = providerCfg

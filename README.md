@@ -514,6 +514,7 @@ The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model
 |-------|------|
 | Skills | [docs/skills.md](docs/skills.md) |
 | Flows | [docs/flows.md](docs/flows.md) |
+| Hooks (Claude-Code-compatible) | [docs/hooks.md](docs/hooks.md) |
 | Crons | [docs/crons.md](docs/crons.md) |
 | Custom Commands | [docs/custom-commands.md](docs/custom-commands.md) |
 | Telemetry & Langfuse | [docs/telemetry.md](docs/telemetry.md) |

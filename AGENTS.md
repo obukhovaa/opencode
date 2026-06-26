@@ -4,10 +4,23 @@
 - **Build**: `./scripts/snapshot` (uses goreleaser)
 - **Test**: `go test ./...` (all packages) or `go test ./internal/llm/agent` (single package)
 - **Final check**: run `make test` when work is done to run final checks, including all tests and fromatters
+- **E2E tests**: `make test-e2e` runs every `scripts/test/*.sh` against a freshly-built binary or in-process driver. Each script is self-contained (mktemp sandbox, no external services). Add a new script there when adding a feature whose runtime behavior isn't fully exercised by unit tests (cross-process integration, viper round-trip, etc.).
 - **Generate schema**: `go run cmd/schema/main.go > opencode-schema.json`
 - **Generate mocks**: `go generate ./...` (generates mocks for interfaces)
 - **Database migrations**: Uses sqlc for SQL code generation from `internal/db/sql/`
 - **Security check**: `./scripts/check_hidden_chars.sh` (detects hidden Unicode)
+
+### `.opencode.json` schema is part of the public contract
+
+**Whenever you add, rename, or remove a field on `Config` (`internal/config/config.go`) — or on any struct it references that surfaces in `.opencode.json` — you MUST:**
+
+1. Update `cmd/schema/main.go` to declare the new field's JSON-Schema shape (type, description, defaults, enum constraints).
+2. Regenerate `opencode-schema.json` via `go run cmd/schema/main.go > opencode-schema.json` and commit the result alongside the code change.
+3. Update `docs/` (`docs/hooks.md`, `docs/flows.md`, etc.) and the relevant `openspec/changes/.../specs/<capability>/spec.md` if the field has user-facing behavior.
+
+The schema file is consumed by IDEs / `vscode-jsonschema` / Claude Code's own validators — a stale schema means our users see false-positive errors on a valid config or no validation on an invalid one. Schema drift is a silent breakage; treat it as a build failure.
+
+When adding fields that contain hooks, agents, providers, or any map keyed on user-supplied names, ALSO add a unit test under `internal/config/` exercising `viper.Unmarshal` end-to-end. Viper case-folds map keys; pure `json.Unmarshal` tests pass but the loader silently mangles in production (see `TestConfig_HooksViperRoundTripLowercasesEventKeys`).
 
 ## Code Style Guidelines
 

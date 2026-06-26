@@ -692,6 +692,7 @@ Caveats to design around:
 - [flow-creator skill](../.agents/skills/flow-creator/SKILL.md) — bundled skill for authoring flow YAML
 - [Server & ACP Mode](server.md) — general HTTP server flags, auth, and endpoint catalog
 - [Chat Bridge](bridge.md) — required for `interactive: true` steps
+- [Hooks](hooks.md) — intercept and mutate tool calls inside flow steps via Claude-Code-compatible subprocess hooks (RTK, log redactors, command rewriters)
 - [Custom Commands](custom-commands.md)
 - [Skills](skills.md)
 - [Session Providers](session-providers.md)

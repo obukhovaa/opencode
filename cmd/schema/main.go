@@ -707,6 +707,81 @@ func generateSchema() map[string]any {
 		"additionalProperties": false,
 	}
 
+	// Add hooks configuration (Claude-Code-compatible PreToolUse / PostToolUse
+	// subprocess hooks). When updating this schema, also update
+	// `internal/hooks/config.go` (MatcherGroup, HookEntry) and the docs at
+	// docs/hooks.md so the on-disk JSON shape stays in sync with the loader.
+	hookEntrySchema := map[string]any{
+		"type":        "object",
+		"description": "A single executable hook within a matcher group.",
+		"properties": map[string]any{
+			"type": map[string]any{
+				"type":        "string",
+				"description": "Hook implementation type. v1 supports `command` only; settings entries with any other type are loaded and silently skipped with a WARN log so a settings.json that targets Claude Code's other hook types still loads cleanly.",
+				"enum":        []string{"command"},
+				"default":     "command",
+			},
+			"command": map[string]any{
+				"type":        "string",
+				"description": "Executable to spawn. When `args` is omitted, the value is passed to `sh -c \"…\"` (shell form). When `args` is present, the value is exec'd directly with `args` as argv[1:] (no shell tokenization).",
+			},
+			"args": map[string]any{
+				"type":        "array",
+				"description": "Optional argv tail. Presence switches the spawn from shell form to exec form — author-controlled inputs are passed through verbatim with no shell expansion.",
+				"items":       map[string]any{"type": "string"},
+			},
+			"timeout": map[string]any{
+				"type":        "integer",
+				"description": "Per-hook timeout in seconds. Default 600. The runner SIGTERMs the process group on overrun, then SIGKILLs after a 2-second grace.",
+				"minimum":     1,
+			},
+			"shell": map[string]any{
+				"type":        "string",
+				"description": "Override the shell binary used for shell-form invocations. Defaults to `bash` if available on PATH, else `sh`.",
+			},
+		},
+		"required":             []string{"command"},
+		"additionalProperties": false,
+	}
+	matcherGroupSchema := map[string]any{
+		"type":        "object",
+		"description": "A matcher group runs its inner `hooks` list sequentially when its matcher matches the triggering tool name.",
+		"properties": map[string]any{
+			"matcher": map[string]any{
+				"type":        "string",
+				"description": "Tool-name predicate. Empty / `*` matches every tool. A value composed only of `[A-Za-z0-9_, |]` is an exact name or `|`/`,`-separated list, compared case-insensitively. Anything else is a Go RE2 regex (case-sensitive unless `(?i)` is used). opencode tool names are lowercase (`bash`, `edit`, `write`, …); PascalCase matchers from Claude Code configs (`Bash`, `Edit|Write`) also match.",
+			},
+			"hooks": map[string]any{
+				"type":        "array",
+				"description": "Sequentially-run hook entries.",
+				"items":       hookEntrySchema,
+			},
+		},
+		"required":             []string{"hooks"},
+		"additionalProperties": false,
+	}
+	schema["properties"].(map[string]any)["hooks"] = map[string]any{
+		"type":        "object",
+		"description": "Claude-Code-compatible PreToolUse / PostToolUse subprocess hooks. Keys are event names (`PreToolUse`, `PostToolUse`); values are matcher groups whose entries fire as POSIX subprocesses receiving event JSON on stdin and returning decisions on stdout. The block is loaded once at process startup; restart required to pick up edits. Shape matches Claude Code's `settings.json` `hooks` block byte-for-byte for the events implemented here. See docs/hooks.md and openspec/specs/hook-runtime/spec.md.",
+		"properties": map[string]any{
+			"PreToolUse": map[string]any{
+				"type":        "array",
+				"description": "Fires before tool dispatch. Hooks can mutate `tool_input`, deny the call (`permissionDecision: \"deny\"` or exit 2), or override the standard permission gate (`permissionDecision: \"allow\"`).",
+				"items":       matcherGroupSchema,
+			},
+			"PostToolUse": map[string]any{
+				"type":        "array",
+				"description": "Fires after a tool's Run returns successfully. Hooks can replace `tool_output` (RTK-style log compaction) or append additional context to the next agent turn. Does NOT fire on tool error.",
+				"items":       matcherGroupSchema,
+			},
+		},
+		"additionalProperties": map[string]any{
+			"type":        "array",
+			"description": "Other Claude Code event names (SessionStart, UserPromptSubmit, Stop, etc.) load cleanly but do not yet fire in opencode v1.",
+			"items":       matcherGroupSchema,
+		},
+	}
+
 	// Add permission configuration
 	schema["properties"].(map[string]any)["permission"] = map[string]any{
 		"type":        "object",

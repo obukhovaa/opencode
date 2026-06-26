@@ -16,6 +16,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/flow"
 	"github.com/opencode-ai/opencode/internal/history"
+	"github.com/opencode-ai/opencode/internal/hooks"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -140,6 +141,23 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 	todoStore := todo.NewStore()
 	factory.SetTodoStore(todoStore)
 	flows := flow.NewService(sessions, messages, q, perm, factory)
+
+	// Hook registry: reads the `hooks` block from .opencode.json on
+	// every event fire (via config.Get()). The getter indirection
+	// keeps internal/hooks decoupled from internal/config — same
+	// pattern as bridge late-injection.
+	if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+		hookReg := hooks.NewRegistry(func() map[string][]hooks.MatcherGroup {
+			c := config.Get()
+			if c == nil {
+				return nil
+			}
+			return c.Hooks
+		}, cwd)
+		factory.SetHookRegistry(hookReg)
+	} else {
+		logging.Warn("Hook registry not installed: could not resolve project root", "error", cwdErr)
+	}
 
 	// Initialize cron service (unless disabled)
 	var cronSvc cron.Service

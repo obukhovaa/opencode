@@ -10,6 +10,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/history"
+	"github.com/opencode-ai/opencode/internal/hooks"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp"
@@ -54,6 +55,17 @@ type AgentFactory interface {
 	// media-store root. NewToolSet reads this to decide router_send
 	// registration.
 	BridgeSender() (tools.BridgeSender, *bridge.Config, string)
+
+	// SetHookRegistry installs the hook runtime that fires PreToolUse /
+	// PostToolUse subprocess hooks around tool dispatch. nil disables
+	// hooks entirely (the agent loop behaves as if hooks were absent).
+	// Mirrors the SetBridgeSender pattern: late-injected after agent
+	// construction so the hooks package depends only on logging and not
+	// on the agent.
+	SetHookRegistry(reg *hooks.Registry)
+	// HookRegistry returns the registered hook runtime, or nil if none
+	// has been installed.
+	HookRegistry() *hooks.Registry
 }
 
 type agentFactory struct {
@@ -74,8 +86,26 @@ type agentFactory struct {
 	bridgeCfg       *bridge.Config
 	bridgeMediaRoot string
 
+	hookRegistry *hooks.Registry
+
 	mu        sync.Mutex
 	stepCache map[string]Service
+}
+
+// SetHookRegistry installs the hook runtime. nil disables hooks. Mirrors
+// SetBridgeSender's late-injection pattern.
+func (f *agentFactory) SetHookRegistry(reg *hooks.Registry) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hookRegistry = reg
+}
+
+// HookRegistry returns the installed runtime (or nil). Read-locked so
+// concurrent agent dispatch can fetch it without contention.
+func (f *agentFactory) HookRegistry() *hooks.Registry {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.hookRegistry
 }
 
 // SetBridgeSender installs the chat-bridge handle the router_send tool
