@@ -50,3 +50,4 @@ opencode
 opencode.md
 DEBUG.md
 .claude/settings*
+.claude/scheduled*
