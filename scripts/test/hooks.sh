@@ -13,8 +13,13 @@
 # "pretooluse" during JSON ingestion and would otherwise make every
 # real-world hook never fire.
 #
-# Usage: ./scripts/test/hooks.sh [path-to-driver-binary]
-#   Without an argument, builds cmd/hooks-e2e fresh into a tempfile.
+# Usage: ./scripts/test/hooks.sh [opencode-binary]
+#
+# The positional arg is the opencode binary path passed by the
+# `.githooks/pre-push` release wrapper. It's IGNORED here — hooks.sh
+# exercises `cmd/hooks-e2e` (a separate Go driver), not the main
+# opencode binary. We always build our own driver to keep this script
+# self-contained and aligned with rtk.sh's convention.
 
 set -euo pipefail
 
@@ -34,23 +39,18 @@ done
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SANDBOX="$(mktemp -d)"
-BUILT_DRIVER=false
-DRIVER="${1:-}"
+DRIVER="$(mktemp)"
 
 cleanup() {
     rm -rf "$SANDBOX"
-    if [ "$BUILT_DRIVER" = true ] && [ -n "$DRIVER" ] && [ -f "$DRIVER" ]; then
-        rm -f "$DRIVER"
-    fi
+    [ -f "$DRIVER" ] && rm -f "$DRIVER"
 }
 trap cleanup EXIT
 
-if [ -z "$DRIVER" ]; then
-    DRIVER="$(mktemp)"
-    echo "Building cmd/hooks-e2e …"
-    (cd "$ROOT" && go build -o "$DRIVER" ./cmd/hooks-e2e) || { echo "Build failed"; exit 1; }
-    BUILT_DRIVER=true
-fi
+# Always build a fresh hooks-e2e driver — the positional arg from the
+# release wrapper is the opencode binary, which is the wrong tool here.
+echo "Building cmd/hooks-e2e …"
+(cd "$ROOT" && go build -o "$DRIVER" ./cmd/hooks-e2e) || { echo "Build failed"; exit 1; }
 
 # ── sandbox: hook scripts ────────────────────────────────────────────
 # PreToolUse hook: rewrites `git status` to `rtk git status` (RTK-style).
