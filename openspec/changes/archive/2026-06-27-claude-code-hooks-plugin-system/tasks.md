@@ -78,5 +78,5 @@
 
 ## 11. Archive
 
-- [ ] 11.1 After merge + RTK acceptance: `openspec archive claude-code-hooks-plugin-system` to move `openspec/changes/claude-code-hooks-plugin-system/specs/hook-runtime/` to `openspec/specs/hook-runtime/`.
+- [x] 11.1 After merge + RTK acceptance: `openspec archive claude-code-hooks-plugin-system` to move `openspec/changes/claude-code-hooks-plugin-system/specs/hook-runtime/` to `openspec/specs/hook-runtime/`.
 - [ ] 11.2 Verify the docs cross-link in `docs/hooks.md` to the archived spec path resolves.
