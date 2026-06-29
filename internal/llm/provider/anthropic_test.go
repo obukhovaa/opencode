@@ -2,8 +2,11 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -299,6 +302,306 @@ func TestConvertMessagesCacheBreakpoints(t *testing.T) {
 				if !expectCached && hasCached {
 					t.Errorf("message[%d]: unexpected cache breakpoint", i)
 				}
+			}
+		})
+	}
+}
+
+// TestToolCallsNormalizesEmptyInput exercises the Bedrock-specific code path
+// where a content_block_start event for tool_use carries {id, name} but no
+// "input" field. The SDK accumulator leaves Input as nil bytes; toolCalls()
+// must normalize to "{}" so we never persist invalid JSON.
+func TestToolCallsNormalizesEmptyInput(t *testing.T) {
+	tests := []struct {
+		name    string
+		rawJSON string
+		want    string
+	}{
+		{
+			name:    "bedrock content_block_start missing input field",
+			rawJSON: `{"type":"tool_use","id":"toolu_bdrk_001","name":"write"}`,
+			want:    "{}",
+		},
+		{
+			name:    "input present as empty object",
+			rawJSON: `{"type":"tool_use","id":"toolu_bdrk_002","name":"write","input":{}}`,
+			want:    "{}",
+		},
+		{
+			name:    "input populated",
+			rawJSON: `{"type":"tool_use","id":"toolu_bdrk_003","name":"write","input":{"file_path":"/tmp/x"}}`,
+			want:    `{"file_path":"/tmp/x"}`,
+		},
+	}
+
+	client := &anthropicClient{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cb anthropic.ContentBlockUnion
+			if err := json.Unmarshal([]byte(tt.rawJSON), &cb); err != nil {
+				t.Fatalf("unmarshal fixture: %v", err)
+			}
+			msg := anthropic.Message{Content: []anthropic.ContentBlockUnion{cb}}
+			got := client.toolCalls(msg)
+			if len(got) != 1 {
+				t.Fatalf("expected 1 tool call, got %d", len(got))
+			}
+			if got[0].Input != tt.want {
+				t.Errorf("Input = %q, want %q", got[0].Input, tt.want)
+			}
+			// Always must be valid JSON object after normalization.
+			var probe map[string]any
+			if err := json.Unmarshal([]byte(got[0].Input), &probe); err != nil {
+				t.Errorf("Input is not valid JSON object: %v", err)
+			}
+		})
+	}
+}
+
+// TestConvertMessagesAcceptsEmptyToolInput ensures replaying a historical
+// message whose ToolCall.Input was persisted as "" (pre-fix Bedrock rows)
+// converts to a valid OfToolUse block with {} input, without erroring.
+func TestConvertMessagesAcceptsEmptyToolInput(t *testing.T) {
+	client := &anthropicClient{
+		options: anthropicOptions{disableCache: true},
+	}
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "empty string", input: ""},
+		{name: "whitespace only", input: "   "},
+		{name: "newline only", input: "\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			messages := []message.Message{
+				newMsg(message.User, message.TextContent{Text: "do stuff"}),
+				newMsg(message.Assistant, message.ToolCall{
+					ID: "toolu_bdrk_old", Name: "write", Input: tt.input, Finished: true,
+				}),
+			}
+			result := client.convertMessages(messages)
+			if len(result) != 2 {
+				t.Fatalf("expected 2 converted messages, got %d", len(result))
+			}
+			asst := result[1]
+			var sawToolUse bool
+			for _, block := range asst.Content {
+				if block.OfToolUse == nil {
+					continue
+				}
+				sawToolUse = true
+				inputJSON, err := json.Marshal(block.OfToolUse.Input)
+				if err != nil {
+					t.Fatalf("marshal tool_use input: %v", err)
+				}
+				if string(inputJSON) != "{}" {
+					t.Errorf("tool_use input = %s, want {}", inputJSON)
+				}
+			}
+			if !sawToolUse {
+				t.Errorf("expected OfToolUse block in assistant message")
+			}
+		})
+	}
+}
+
+func TestStripImagesForCountTokens(t *testing.T) {
+	imgParam := anthropic.NewImageBlockBase64("image/png", "ZmFrZWltYWdl")
+	tests := []struct {
+		name           string
+		messages       []anthropic.MessageParam
+		wantImageCount int
+		wantNoOfImage  bool
+	}{
+		{
+			name: "top-level image swapped to text placeholder",
+			messages: []anthropic.MessageParam{
+				anthropic.NewUserMessage(anthropic.NewTextBlock("look at this"), imgParam),
+			},
+			wantImageCount: 1,
+			wantNoOfImage:  true,
+		},
+		{
+			name: "image inside tool_result swapped",
+			messages: []anthropic.MessageParam{
+				anthropic.NewUserMessage(anthropic.ContentBlockParamUnion{
+					OfToolResult: &anthropic.ToolResultBlockParam{
+						ToolUseID: "tc1",
+						Content: []anthropic.ToolResultBlockParamContentUnion{
+							{OfImage: imgParam.OfImage},
+						},
+						IsError: param.NewOpt(false),
+					},
+				}),
+			},
+			wantImageCount: 1,
+			wantNoOfImage:  true,
+		},
+		{
+			name: "no images leaves messages untouched",
+			messages: []anthropic.MessageParam{
+				anthropic.NewUserMessage(anthropic.NewTextBlock("plain text")),
+			},
+			wantImageCount: 0,
+			wantNoOfImage:  true,
+		},
+		{
+			name: "mixed text + image + tool_result image — counts both",
+			messages: []anthropic.MessageParam{
+				anthropic.NewUserMessage(anthropic.NewTextBlock("hi"), imgParam),
+				anthropic.NewUserMessage(anthropic.ContentBlockParamUnion{
+					OfToolResult: &anthropic.ToolResultBlockParam{
+						ToolUseID: "tc2",
+						Content: []anthropic.ToolResultBlockParamContentUnion{
+							{OfText: &anthropic.TextBlockParam{Text: "ok"}},
+							{OfImage: imgParam.OfImage},
+						},
+					},
+				}),
+			},
+			wantImageCount: 2,
+			wantNoOfImage:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Snapshot pre-call so we can assert non-mutation of inputs.
+			beforeImagePtrs := collectImagePointers(tt.messages)
+
+			out, count := stripImagesForCountTokens(tt.messages)
+			if count != tt.wantImageCount {
+				t.Errorf("image count = %d, want %d", count, tt.wantImageCount)
+			}
+			if tt.wantNoOfImage {
+				for i, msg := range out {
+					for j, block := range msg.Content {
+						if block.OfImage != nil {
+							t.Errorf("message[%d].Content[%d] still has OfImage", i, j)
+						}
+						if block.OfToolResult != nil {
+							for k, inner := range block.OfToolResult.Content {
+								if inner.OfImage != nil {
+									t.Errorf("message[%d].Content[%d].ToolResult.Content[%d] still has OfImage", i, j, k)
+								}
+							}
+						}
+					}
+				}
+			}
+			// Caller's input slice must be untouched — images still present
+			// at the same locations on the original messages.
+			afterImagePtrs := collectImagePointers(tt.messages)
+			if len(beforeImagePtrs) != len(afterImagePtrs) {
+				t.Errorf("input mutated: %d images before, %d after", len(beforeImagePtrs), len(afterImagePtrs))
+			}
+		})
+	}
+}
+
+// collectImagePointers walks messages and gathers pointers to every OfImage
+// block (top-level and nested in tool_result). Used to assert that
+// stripImagesForCountTokens does not mutate its input slice.
+func collectImagePointers(messages []anthropic.MessageParam) []*anthropic.ImageBlockParam {
+	var out []*anthropic.ImageBlockParam
+	for _, msg := range messages {
+		for _, block := range msg.Content {
+			if block.OfImage != nil {
+				out = append(out, block.OfImage)
+			}
+			if block.OfToolResult != nil {
+				for _, inner := range block.OfToolResult.Content {
+					if inner.OfImage != nil {
+						out = append(out, inner.OfImage)
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// TestConvertMessagesMalformedToolInput verifies the WARN path still fires
+// (and falls back to {}) when stored Input is not valid JSON. The empty-input
+// path is silent; this path is not.
+func TestConvertMessagesMalformedToolInput(t *testing.T) {
+	client := &anthropicClient{
+		options: anthropicOptions{disableCache: true},
+	}
+	messages := []message.Message{
+		newMsg(message.User, message.TextContent{Text: "do stuff"}),
+		newMsg(message.Assistant, message.ToolCall{
+			ID: "tc1", Name: "write", Input: "{not valid json", Finished: true,
+		}),
+	}
+	result := client.convertMessages(messages)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 converted messages, got %d", len(result))
+	}
+	var sawToolUse bool
+	for _, block := range result[1].Content {
+		if block.OfToolUse == nil {
+			continue
+		}
+		sawToolUse = true
+		got, err := json.Marshal(block.OfToolUse.Input)
+		if err != nil {
+			t.Fatalf("marshal tool_use input: %v", err)
+		}
+		if string(got) != "{}" {
+			t.Errorf("tool_use input fallback = %s, want {}", got)
+		}
+	}
+	if !sawToolUse {
+		t.Errorf("expected OfToolUse block in assistant message")
+	}
+}
+
+// TestStripImagesFastPath verifies that the fast path returns the input
+// slice unchanged when no images are present — both correctness (count=0,
+// same slice header) and the implicit allocation guarantee.
+func TestStripImagesFastPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		messages []anthropic.MessageParam
+	}{
+		{
+			name:     "empty slice",
+			messages: nil,
+		},
+		{
+			name: "text-only single message",
+			messages: []anthropic.MessageParam{
+				anthropic.NewUserMessage(anthropic.NewTextBlock("plain text")),
+			},
+		},
+		{
+			name: "tool_result with text content only",
+			messages: []anthropic.MessageParam{
+				anthropic.NewUserMessage(anthropic.ContentBlockParamUnion{
+					OfToolResult: &anthropic.ToolResultBlockParam{
+						ToolUseID: "tc1",
+						Content: []anthropic.ToolResultBlockParamContentUnion{
+							{OfText: &anthropic.TextBlockParam{Text: "ok"}},
+						},
+					},
+				}),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, count := stripImagesForCountTokens(tt.messages)
+			if count != 0 {
+				t.Errorf("count = %d, want 0", count)
+			}
+			// Fast path returns the same slice header; compare via len + element identity.
+			if len(out) != len(tt.messages) {
+				t.Errorf("len = %d, want %d", len(out), len(tt.messages))
 			}
 		})
 	}

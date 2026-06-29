@@ -162,7 +162,13 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 
 			for _, toolCall := range msg.ToolCalls() {
 				var inputMap map[string]any
-				if err := json.Unmarshal([]byte(toolCall.Input), &inputMap); err != nil {
+				// Empty Input is valid on rows persisted before the
+				// toolCalls() empty-input normalization (Bedrock zero-delta
+				// tool_use blocks). Treat as no-args silently; reserve the
+				// WARN for genuinely malformed JSON.
+				if strings.TrimSpace(toolCall.Input) == "" {
+					inputMap = map[string]any{}
+				} else if err := json.Unmarshal([]byte(toolCall.Input), &inputMap); err != nil {
 					logging.Warn("Failed to unmarshal tool call input, using empty input",
 						"tool_call_id", toolCall.ID,
 						"tool_name", toolCall.Name,
@@ -702,10 +708,19 @@ func (a *anthropicClient) toolCalls(msg anthropic.Message) []message.ToolCall {
 	for _, block := range msg.Content {
 		switch variant := block.AsAny().(type) {
 		case anthropic.ToolUseBlock:
+			// Bedrock's eventstream omits "input" from content_block_start,
+			// so when a tool_use receives zero input_json_delta events the
+			// accumulator leaves Input as nil bytes. Persisting "" is invalid
+			// JSON; normalize to "{}" so future replays don't need to
+			// recover. Tool-arg validation still happens in the tool layer.
+			input := string(variant.Input)
+			if strings.TrimSpace(input) == "" {
+				input = "{}"
+			}
 			toolCall := message.ToolCall{
 				ID:       variant.ID,
 				Name:     variant.Name,
-				Input:    string(variant.Input),
+				Input:    input,
 				Type:     string(variant.Type),
 				Finished: true,
 			}
@@ -804,8 +819,90 @@ func (a *anthropicClient) newToolResultImageBlock(toolResult message.ToolResult)
 	return &anthropic.ContentBlockParamUnion{OfToolResult: &toolBlock}, nil
 }
 
+// countTokensImagePlaceholder is what swapped-out image blocks become for the
+// count_tokens call. Per-image we add a flat estimate to compensate.
+const (
+	countTokensImagePlaceholder   = "[image elided for tokenization]"
+	countTokensImageTokenEstimate = 1500 // Anthropic's rough per-image budget at standard res
+)
+
+// messagesContainImages reports whether any message holds an image block,
+// either at the top level or nested inside a tool_result. Used as a fast-path
+// guard for stripImagesForCountTokens.
+func messagesContainImages(messages []anthropic.MessageParam) bool {
+	for _, msg := range messages {
+		for _, block := range msg.Content {
+			if block.OfImage != nil {
+				return true
+			}
+			if block.OfToolResult != nil {
+				for _, inner := range block.OfToolResult.Content {
+					if inner.OfImage != nil {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+// stripImagesForCountTokens returns a copy of messages with every image block
+// (top-level or inside a tool_result) swapped for a short text placeholder,
+// plus the count of swaps performed. LiteLLM's count_tokens proxy doesn't
+// understand Anthropic's "image" content type and 500s on it, so we keep the
+// request text-only and account for images locally.
+//
+// Fast path: if no images are present the input slice is returned unchanged
+// (count=0), avoiding per-message allocations for text-only conversations —
+// which is the common case even on the Bedrock path.
+func stripImagesForCountTokens(messages []anthropic.MessageParam) ([]anthropic.MessageParam, int) {
+	if !messagesContainImages(messages) {
+		return messages, 0
+	}
+	imageCount := 0
+	out := make([]anthropic.MessageParam, len(messages))
+	for i, msg := range messages {
+		newContent := make([]anthropic.ContentBlockParamUnion, 0, len(msg.Content))
+		for _, block := range msg.Content {
+			if block.OfImage != nil {
+				imageCount++
+				newContent = append(newContent, anthropic.NewTextBlock(countTokensImagePlaceholder))
+				continue
+			}
+			if block.OfToolResult != nil {
+				tr := *block.OfToolResult
+				newInner := make([]anthropic.ToolResultBlockParamContentUnion, 0, len(tr.Content))
+				for _, inner := range tr.Content {
+					if inner.OfImage != nil {
+						imageCount++
+						newInner = append(newInner, anthropic.ToolResultBlockParamContentUnion{
+							OfText: &anthropic.TextBlockParam{Text: countTokensImagePlaceholder},
+						})
+						continue
+					}
+					newInner = append(newInner, inner)
+				}
+				tr.Content = newInner
+				newContent = append(newContent, anthropic.ContentBlockParamUnion{OfToolResult: &tr})
+				continue
+			}
+			newContent = append(newContent, block)
+		}
+		out[i] = anthropic.MessageParam{Role: msg.Role, Content: newContent}
+	}
+	return out, imageCount
+}
+
 func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) (int64, error) {
 	anthropicMessages := a.convertMessages(messages)
+	// Only strip images for Bedrock, where count_tokens is routed through the
+	// LiteLLM proxy that rejects Anthropic's "image" content type. The native
+	// Anthropic and Vertex count_tokens endpoints handle images accurately.
+	imageCount := 0
+	if a.options.useBedrock {
+		anthropicMessages, imageCount = stripImagesForCountTokens(anthropicMessages)
+	}
 	anthropicTools := a.convertTools(tools)
 	countTools := make([]anthropic.MessageCountTokensToolUnionParam, len(anthropicTools))
 	for i, t := range anthropicTools {
@@ -834,7 +931,7 @@ func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Me
 		return 0, fmt.Errorf("failed to count tokens: %w", err)
 	}
 
-	return response.InputTokens, nil
+	return response.InputTokens + int64(imageCount*countTokensImageTokenEstimate), nil
 }
 
 func (a *anthropicClient) setMaxTokens(maxTokens int64) {

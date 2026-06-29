@@ -97,12 +97,20 @@ func (o *openaiClient) convertMessages(messages []message.Message) (openaiMessag
 			if len(msg.ToolCalls()) > 0 {
 				assistantMsg.ToolCalls = make([]openai.ChatCompletionMessageToolCallParam, len(msg.ToolCalls()))
 				for i, call := range msg.ToolCalls() {
+					// Empty arguments are valid on rows persisted before the
+					// toolCalls() normalization. Substitute "{}" so the OpenAI
+					// API receives a parsable JSON object instead of an empty
+					// string.
+					arguments := call.Input
+					if strings.TrimSpace(arguments) == "" {
+						arguments = "{}"
+					}
 					assistantMsg.ToolCalls[i] = openai.ChatCompletionMessageToolCallParam{
 						ID:   call.ID,
 						Type: "function",
 						Function: openai.ChatCompletionMessageToolCallFunctionParam{
 							Name:      call.Name,
-							Arguments: call.Input,
+							Arguments: arguments,
 						},
 					}
 				}
@@ -448,10 +456,14 @@ func (o *openaiClient) toolCalls(completion openai.ChatCompletion) []message.Too
 
 	if len(completion.Choices) > 0 && len(completion.Choices[0].Message.ToolCalls) > 0 {
 		for _, call := range completion.Choices[0].Message.ToolCalls {
+			input := call.Function.Arguments
+			if strings.TrimSpace(input) == "" {
+				input = "{}"
+			}
 			toolCall := message.ToolCall{
 				ID:       call.ID,
 				Name:     call.Function.Name,
-				Input:    call.Function.Arguments,
+				Input:    input,
 				Type:     "function",
 				Finished: true,
 			}
