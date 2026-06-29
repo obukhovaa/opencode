@@ -18,12 +18,13 @@ INSERT INTO messages (
     parts,
     model,
     seq,
+    synthetic,
     created_at,
     updated_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now')
+    ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now')
 )
-RETURNING id, session_id, role, parts, model, created_at, updated_at, finished_at, seq
+RETURNING id, session_id, role, parts, model, created_at, updated_at, finished_at, seq, synthetic
 `
 
 type CreateMessageParams struct {
@@ -33,6 +34,7 @@ type CreateMessageParams struct {
 	Parts     string         `json:"parts"`
 	Model     sql.NullString `json:"model"`
 	Seq       sql.NullInt64  `json:"seq"`
+	Synthetic bool           `json:"synthetic"`
 }
 
 func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error) {
@@ -43,6 +45,7 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 		arg.Parts,
 		arg.Model,
 		arg.Seq,
+		arg.Synthetic,
 	)
 	var i Message
 	err := row.Scan(
@@ -55,6 +58,7 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 		&i.UpdatedAt,
 		&i.FinishedAt,
 		&i.Seq,
+		&i.Synthetic,
 	)
 	return i, err
 }
@@ -93,7 +97,7 @@ func (q *Queries) GetMaxSeqBySession(ctx context.Context, sessionID string) (int
 }
 
 const getMessage = `-- name: GetMessage :one
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, seq
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, seq, synthetic
 FROM messages
 WHERE id = ? LIMIT 1
 `
@@ -111,13 +115,14 @@ func (q *Queries) GetMessage(ctx context.Context, id string) (Message, error) {
 		&i.UpdatedAt,
 		&i.FinishedAt,
 		&i.Seq,
+		&i.Synthetic,
 	)
 	return i, err
 }
 
 const listLatestMessagesBySession = `-- name: ListLatestMessagesBySession :many
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, seq FROM (
-    SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, seq
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, seq, synthetic FROM (
+    SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, seq, synthetic
     FROM messages
     WHERE session_id = ?
     ORDER BY seq DESC, created_at DESC
@@ -150,6 +155,7 @@ func (q *Queries) ListLatestMessagesBySession(ctx context.Context, arg ListLates
 			&i.UpdatedAt,
 			&i.FinishedAt,
 			&i.Seq,
+			&i.Synthetic,
 		); err != nil {
 			return nil, err
 		}
@@ -165,7 +171,7 @@ func (q *Queries) ListLatestMessagesBySession(ctx context.Context, arg ListLates
 }
 
 const listMessagesBySession = `-- name: ListMessagesBySession :many
-SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, seq
+SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, seq, synthetic
 FROM messages
 WHERE session_id = ?
 ORDER BY seq ASC, created_at ASC
@@ -190,6 +196,7 @@ func (q *Queries) ListMessagesBySession(ctx context.Context, sessionID string) (
 			&i.UpdatedAt,
 			&i.FinishedAt,
 			&i.Seq,
+			&i.Synthetic,
 		); err != nil {
 			return nil, err
 		}

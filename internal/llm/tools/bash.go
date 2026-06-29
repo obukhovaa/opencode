@@ -19,6 +19,17 @@ type BashParams struct {
 	Timeout     int    `json:"timeout"`
 	Workdir     string `json:"workdir"`
 	Description string `json:"description"`
+	// RunInBackground spawns the command as a detached subprocess. The tool
+	// returns immediately with an ack carrying a task_id and the path to the
+	// per-task output file under `<data.dir>/tasks/<task_id>.out`. When the
+	// subprocess exits, a synthetic Assistant(ToolCall)+Tool(ToolResult)
+	// pair is injected into the bound session via the task package's
+	// EnqueueTaskCompletion primitive.
+	//
+	// The 600s synchronous timeout cap does NOT apply when RunInBackground
+	// is true — the subprocess can run until natural exit, `taskstop`,
+	// opencode shutdown, or the pod's activeDeadlineSeconds.
+	RunInBackground bool `json:"run_in_background,omitempty"`
 }
 
 type BashPermissionsParams struct {
@@ -209,6 +220,10 @@ func (b *bashTool) Info() ToolInfo {
 				"type":        "string",
 				"description": "Clear, concise description of what this command does in 5-10 words. Examples:\nInput: ls\nOutput: Lists files in current directory\n\nInput: git status\nOutput: Shows working tree status\n\nInput: npm install\nOutput: Installs package dependencies\n\nInput: mkdir foo\nOutput: Creates directory 'foo'",
 			},
+			"run_in_background": map[string]any{
+				"type":        "boolean",
+				"description": "If true, start the command as a detached subprocess. The tool returns IMMEDIATELY with an ack containing a `task_id` and an `output_file` path. The subprocess keeps running; when it exits, a synthetic completion notification is automatically injected into this session (no polling — wait for the notification). Use this for long-running commands (test suites, builds, deploys) instead of `sleep` loops. The 600s timeout cap does NOT apply in background mode. Use the `tasklist` tool to inspect, and the `taskstop` tool to kill a background task.",
+			},
 		},
 		Required: []string{"command", "description"},
 	}
@@ -267,6 +282,9 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 				return NewEmptyResponse(), permission.ErrorPermissionDenied
 			}
 		}
+	}
+	if params.RunInBackground {
+		return b.runBackground(ctx, call, params, workdir, sessionID)
 	}
 	startTime := time.Now()
 	sh := shell.GetPersistentShell(workdir)

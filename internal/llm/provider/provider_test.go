@@ -585,6 +585,23 @@ func TestIsTransientStreamError(t *testing.T) {
 			err:  errors.New("received exception ModelErrorException: model could not process input"),
 			want: false,
 		},
+
+		// HTTP/2 RST_STREAM frames are deliberately NOT classified as
+		// transient — proxies (litellm) can wrap permanent upstream
+		// errors (e.g. 400 invalid_request_error from Vertex) as
+		// RST_STREAM(INTERNAL_ERROR). Retrying would loop the same bad
+		// request through the ~8.5 min backoff window before giving up.
+		// Better to fail fast.
+		{
+			name: "http2 stream error INTERNAL_ERROR is NOT transient (may wrap a 400)",
+			err:  errors.New("stream error: stream ID 17; INTERNAL_ERROR; received from peer"),
+			want: false,
+		},
+		{
+			name: "http2 stream error REFUSED_STREAM is NOT transient (may wrap a 400)",
+			err:  errors.New("stream error: stream ID 3; REFUSED_STREAM; received from peer"),
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {

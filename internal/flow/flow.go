@@ -2,6 +2,8 @@ package flow
 
 import (
 	"errors"
+	"fmt"
+	"time"
 )
 
 var (
@@ -67,6 +69,15 @@ type Step struct {
 	// When the (N+1)th self-route would exceed this value, the step is
 	// failed instead of re-scheduled, and the fallback (if any) runs.
 	MaxIterations int `yaml:"maxIterations,omitempty"`
+	// Timeout bounds the wall-clock time the flow runner gives this
+	// step's agent.Run invocation. It cascades into agent.RunWith's ctx
+	// so the non-interactive end-of-turn wait for pending background
+	// tasks (bash run_in_background, task async, monitor) also honors
+	// this deadline. Empty (unset) falls back to the
+	// OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT env var; if neither is
+	// set the wait is bounded only by the parent flow's surrounding ctx.
+	// Format: any Go duration string (`5m`, `1h30m`, `30s`).
+	Timeout string `yaml:"timeout,omitempty"`
 	// Interactive marks this step as router-initiated. When true, the
 	// flow engine MUST resolve Interaction.Target against flow-args, call
 	// the configured InteractiveHook.OnInteractiveStepStart before
@@ -124,4 +135,24 @@ type Fallback struct {
 	Retry int    `yaml:"retry"`
 	Delay int    `yaml:"delay,omitempty"`
 	To    string `yaml:"to,omitempty"`
+}
+
+// TimeoutDuration parses Step.Timeout as a Go duration string and returns
+// the value. Empty / whitespace-only returns (0, nil) — caller should
+// treat zero as "no per-step timeout set". A non-empty value that fails
+// to parse OR is negative returns an error suitable for surfacing during
+// flow validation. Successful parse of a positive duration is the only
+// path that returns a non-zero value.
+func (s Step) TimeoutDuration() (time.Duration, error) {
+	if s.Timeout == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s.Timeout)
+	if err != nil {
+		return 0, fmt.Errorf("step %q: invalid timeout %q: %w", s.ID, s.Timeout, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("step %q: timeout must be non-negative, got %v", s.ID, d)
+	}
+	return d, nil
 }

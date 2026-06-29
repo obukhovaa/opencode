@@ -428,6 +428,14 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
 	if d.svc.cfg == nil {
 		return
 	}
+	// Synthetic messages (cron-fired completions, background bash/task/
+	// monitor completions injected via task.EnqueueTaskCompletion) must NOT
+	// surface as tool-update indicators in chat. The agent's NEXT real
+	// assistant message — its human-readable reaction to the synthetic
+	// ToolResult — still flows to chat through the normal text path.
+	if ev.Payload.Synthetic {
+		return
+	}
 	tu := d.svc.cfg.ToolUpdatesEnabled
 	switch part := ev.Payload.Part.(type) {
 	case message.ToolCall:

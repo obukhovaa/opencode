@@ -193,7 +193,11 @@ func (a *stubAgent) callCount() int {
 	return a.calls
 }
 
-func (a *stubAgent) Run(_ context.Context, _ string, prompt string, _ int, _ ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
+func (a *stubAgent) Run(ctx context.Context, sessionID string, prompt string, maxTurns int, atts ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
+	return a.RunWith(ctx, sessionID, prompt, maxTurns, agentpkg.RunOptions{}, atts...)
+}
+
+func (a *stubAgent) RunWith(_ context.Context, _ string, prompt string, _ int, _ agentpkg.RunOptions, _ ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
 	a.mu.Lock()
 	a.prompts = append(a.prompts, prompt)
 	ch := make(chan agentpkg.AgentEvent, 1)

@@ -31,6 +31,15 @@ type TaskParams struct {
 	SubagentType string `json:"subagent_type"`
 	TaskID       string `json:"task_id,omitempty"`
 	TaskTitle    string `json:"task_title,omitempty"`
+	// Async spawns the subagent in the background. The tool returns an
+	// immediate ack containing the task_id; the subagent's final response
+	// arrives later as a synthetic Assistant(ToolCall name="task") +
+	// Tool(ToolResult) pair injected via task.EnqueueTaskCompletion.
+	//
+	// Default (false) preserves the synchronous behavior every existing
+	// caller relies on — the tool blocks on the subagent's `done` channel
+	// and returns the final response in-line.
+	Async bool `json:"async,omitempty"`
 }
 
 type TaskResponseMetadata struct {
@@ -91,6 +100,10 @@ func (b *agentTool) Info() tools.ToolInfo {
 			"task_title": map[string]any{
 				"type":        "string",
 				"description": "A short (up to 80 char long) title describing the task to perform",
+			},
+			"async": map[string]any{
+				"type":        "boolean",
+				"description": "If true, spawn the subagent in the background. The tool returns IMMEDIATELY with an ack containing a `task_id`. When the subagent finishes, a synthetic completion notification is automatically injected into THIS session (no polling). Use this when you want to fan out work in parallel — keep working on other things while the subagent runs. The synchronous default (false) blocks until the subagent finishes. Use `tasklist`/`taskstop` to inspect/kill async tasks.",
 			},
 		},
 		Required: []string{"prompt", "subagent_type", "task_title"},
@@ -164,6 +177,13 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		)
 	}
 
+	// Async path: spawn the subagent in the background, return an
+	// immediate ack. A goroutine waits on `done` and fires the synthetic
+	// completion via task.EnqueueTaskCompletion when the subagent exits.
+	if params.Async {
+		return b.runAsync(ctx, call, params, sessionID, subagentType, subagentInfo, taskSession, isResumed, a, prompt)
+	}
+
 	done, err := a.Run(ctx, taskSession.ID, prompt, 0)
 	if err != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error while running task agent: %s", err)
@@ -181,19 +201,7 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 	// conversation's true spend. The rollup is a side-effect; if
 	// either Get or Save fails we log and continue so the caller
 	// still sees the real subagent result.
-	if updated, err := b.sessions.Get(ctx, taskSession.ID); err != nil {
-		logging.Warn("task tool: cost rollup get subagent failed",
-			"task_session", taskSession.ID, "err", err)
-	} else if parent, err := b.sessions.Get(ctx, sessionID); err != nil {
-		logging.Warn("task tool: cost rollup get parent failed",
-			"parent_session", sessionID, "err", err)
-	} else {
-		parent.Cost += updated.Cost
-		if _, err := b.sessions.Save(ctx, parent); err != nil {
-			logging.Warn("task tool: cost rollup save parent failed",
-				"parent_session", sessionID, "err", err)
-		}
-	}
+	b.rollUpSubagentCost(ctx, sessionID, taskSession.ID)
 
 	if result.Error != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error while running task agent: %s", result.Error)
@@ -203,24 +211,8 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 	if response.Role != message.Assistant {
 		return tools.NewTextErrorResponse("no response"), nil
 	}
-	responseContent := result.Message.Content().String()
-	isStructOutput := result.StructOutput != nil && result.StructOutput.Content != ""
-	if isStructOutput {
-		responseContent = result.StructOutput.Content
-	}
+	responseContent, isStructOutput := buildTaskResponseContent(result, taskSession.ID)
 	logging.Debug("Task completed", "subagent", subagentType, "structured", isStructOutput, "error", result.Error)
-
-	// Append a task_id trailer so the main agent can surface it to the user
-	// (Claude Code emits a similar "agentId: ..." block after each subagent
-	// completes). Skip for struct output — appending trailing text would break
-	// JSON parsing downstream; the TaskID stays available via metadata in that
-	// case for the TUI and downstream consumers.
-	if !isStructOutput {
-		responseContent = fmt.Sprintf(
-			"%s\n\n<task_id>%s</task_id>\n<task_resume_hint>To continue this same subagent session later, call the %s tool again with task_id=%q. Mention this task_id (alongside a short description of what was done) in your reply so the user can reference or resume it.</task_resume_hint>",
-			responseContent, taskSession.ID, TaskToolName, taskSession.ID,
-		)
-	}
 
 	agentName := subagentType
 	if subagentInfo.Name != "" {
@@ -236,6 +228,43 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 			isResumed,
 			isStructOutput,
 		}), nil
+}
+
+// rollUpSubagentCost moves the subagent's accumulated cost into the parent
+// session. Extracted so the async path's goroutine can call it from
+// background context without duplicating the resilient-error logging.
+func (b *agentTool) rollUpSubagentCost(ctx context.Context, parentSessionID, taskSessionID string) {
+	if updated, err := b.sessions.Get(ctx, taskSessionID); err != nil {
+		logging.Warn("task tool: cost rollup get subagent failed",
+			"task_session", taskSessionID, "err", err)
+	} else if parent, err := b.sessions.Get(ctx, parentSessionID); err != nil {
+		logging.Warn("task tool: cost rollup get parent failed",
+			"parent_session", parentSessionID, "err", err)
+	} else {
+		parent.Cost += updated.Cost
+		if _, err := b.sessions.Save(ctx, parent); err != nil {
+			logging.Warn("task tool: cost rollup save parent failed",
+				"parent_session", parentSessionID, "err", err)
+		}
+	}
+}
+
+// buildTaskResponseContent produces the content body for the task tool's
+// response — either the subagent's normal text response (with task_id and
+// task_resume_hint trailers) or its struct_output content. Returns the
+// content and whether it was a struct output.
+func buildTaskResponseContent(result AgentEvent, taskSessionID string) (content string, isStructOutput bool) {
+	content = result.Message.Content().String()
+	isStructOutput = result.StructOutput != nil && result.StructOutput.Content != ""
+	if isStructOutput {
+		content = result.StructOutput.Content
+		return
+	}
+	content = fmt.Sprintf(
+		"%s\n\n<task_id>%s</task_id>\n<task_resume_hint>To continue this same subagent session later, call the %s tool again with task_id=%q. Mention this task_id (alongside a short description of what was done) in your reply so the user can reference or resume it.</task_resume_hint>",
+		content, taskSessionID, TaskToolName, taskSessionID,
+	)
+	return
 }
 
 func (a *agentTool) AllowParallelism(call tools.ToolCall, allCalls []tools.ToolCall) bool {

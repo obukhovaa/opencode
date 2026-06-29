@@ -74,7 +74,11 @@ func runNonInteractive(ctx context.Context, a *app.App, prompt string, outputFor
 
 	a.Permissions.AutoApproveSession(sess.ID)
 
-	done, err := a.ActiveAgent().Run(ctx, sess.ID, prompt, 0)
+	// Headless prompt invocation is non-interactive: hold the turn open
+	// until background tasks (bash run_in_background, task async, monitor)
+	// complete so the CLI's final output reflects the post-completion
+	// state. See openspec/specs/background-tasks.
+	done, err := a.ActiveAgent().RunWith(ctx, sess.ID, prompt, 0, agent.RunOptions{NonInteractive: true})
 	if err != nil {
 		return fmt.Errorf("failed to start agent processing stream for session %s: %w", sess.ID, err)
 	}

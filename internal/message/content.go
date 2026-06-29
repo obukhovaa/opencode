@@ -131,6 +131,11 @@ type Message struct {
 	Seq       int64
 	CreatedAt int64
 	UpdatedAt int64
+	// Synthetic marks messages injected by the system on the agent's behalf
+	// (cron-fired completions, background bash/task/monitor completions).
+	// Bridge tool-update indicator emission is suppressed for synthetic
+	// Assistant messages.
+	Synthetic bool
 }
 
 func (m *Message) Content() TextContent {

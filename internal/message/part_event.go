@@ -5,10 +5,17 @@ package message
 // completed/error). Subscribers translate this into SSE `message.part.updated`
 // frames. The broker is independent of the message-level broker so per-part
 // emission does not serialize against whole-message updates.
+//
+// Synthetic mirrors the owning Assistant message's `synthetic` flag — set
+// when the part comes from a system-injected completion (cron, background
+// bash/task/monitor). The chat bridge reads this to skip tool-update
+// indicator emission for system-injected messages, so a cron-fired tool
+// call doesn't surface a spurious 🔧 in Slack.
 type PartEvent struct {
 	SessionID string
 	MessageID string
 	Part      ContentPart
+	Synthetic bool
 	Time      int64 // unix millis
 }
 

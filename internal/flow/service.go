@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -570,13 +571,25 @@ func (s *service) runStep(
 		}
 
 		{
-			done, runErr := agentSvc.Run(ctx, sess.ID, prompt, step.MaxTurns)
+			// Flow steps are non-interactive: RunWith holds the turn open
+			// at the end of each agentic cycle until pending background
+			// tasks (bash run_in_background, task async, monitor) reach
+			// terminal state, so the step's struct_output reflects the
+			// post-completion state rather than the immediate ack. See
+			// openspec/specs/flow-runtime-resume.
+			//
+			// stepCtx applies the precedence chain:
+			//   Step.Timeout > OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT > ctx unwrapped.
+			runCtx, cancelStep := stepCtx(ctx, step)
+			done, runErr := agentSvc.RunWith(runCtx, sess.ID, prompt, step.MaxTurns, agentpkg.RunOptions{NonInteractive: true})
 			if runErr != nil {
+				cancelStep()
 				lastErr = runErr
 				continue
 			}
 
 			result = <-done
+			cancelStep()
 			if result.Type == agentpkg.AgentEventTypeError {
 				lastErr = result.Error
 				continue
@@ -1358,4 +1371,61 @@ func dbFlowStateToFlowState(fs db.FlowState) *FlowState {
 		CreatedAt:      fs.CreatedAt,
 		UpdatedAt:      fs.UpdatedAt,
 	}
+}
+
+// envNonInteractiveTaskWaitTimeout is the parsed-once value of the
+// OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT environment variable. Zero
+// when unset, malformed, or non-positive. Initialised lazily on first
+// call to envTaskWaitTimeout.
+var (
+	envNonInteractiveTaskWaitTimeoutOnce sync.Once
+	envNonInteractiveTaskWaitTimeoutVal  time.Duration
+)
+
+// envTaskWaitTimeout returns the parsed value of the
+// OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT env var. Parsed once at
+// first call so SIGHUP-style reloads are explicit (process restart
+// required to change). Returns 0 when unset / malformed.
+func envTaskWaitTimeout() time.Duration {
+	envNonInteractiveTaskWaitTimeoutOnce.Do(func() {
+		raw := strings.TrimSpace(os.Getenv("OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT"))
+		if raw == "" {
+			return
+		}
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			logging.Warn("Invalid OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT; ignoring", "value", raw, "err", err)
+			return
+		}
+		if d <= 0 {
+			logging.Warn("OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT must be positive; ignoring", "value", raw)
+			return
+		}
+		envNonInteractiveTaskWaitTimeoutVal = d
+	})
+	return envNonInteractiveTaskWaitTimeoutVal
+}
+
+// stepCtx builds the per-step ctx for the agent.RunWith call. Precedence:
+//  1. Step.Timeout (parsed via Step.TimeoutDuration)
+//  2. OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT env var
+//  3. Parent ctx unwrapped (the parent's own deadline, if any, is the only
+//     bound)
+//
+// Always returns a non-nil cancel func; callers MUST invoke it on every
+// exit path to release resources.
+func stepCtx(parent context.Context, step Step) (context.Context, context.CancelFunc) {
+	if step.Timeout != "" {
+		// If parsing fails here, we silently fall through to the env-var
+		// fallback — validation has already surfaced the bad value (see
+		// validateFlow). Treating this as a soft error keeps the runtime
+		// resilient to YAML drift.
+		if d, err := step.TimeoutDuration(); err == nil && d > 0 {
+			return context.WithTimeout(parent, d)
+		}
+	}
+	if d := envTaskWaitTimeout(); d > 0 {
+		return context.WithTimeout(parent, d)
+	}
+	return context.WithCancel(parent)
 }

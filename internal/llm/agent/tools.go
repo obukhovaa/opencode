@@ -38,6 +38,12 @@ var (
 		tools.DeleteToolName,
 		tools.PatchToolName,
 		tools.BashToolName,
+		// Background-task tools spawn/kill subprocesses or subagents and are
+		// available to both agents and subagents (subagents may want to
+		// monitor or kill their own background work too).
+		tools.MonitorToolName,
+		tools.TaskListToolName,
+		tools.TaskStopToolName,
 	}
 	managerToolNames = []string{
 		TaskToolName,
@@ -126,6 +132,12 @@ func NewToolSet(
 				return tools.NewTodoWriteTool(store)
 			}
 			return nil
+		case tools.MonitorToolName:
+			return tools.NewMonitorTool(permissions, reg)
+		case tools.TaskListToolName:
+			return tools.NewTaskListTool()
+		case tools.TaskStopToolName:
+			return tools.NewTaskStopTool(permissions, reg)
 		case tools.RouterSendToolName:
 			// Conditional registration per chat-bridge-agent-tool spec:
 			// (a) agent mode (enforced by managerToolNames branch's

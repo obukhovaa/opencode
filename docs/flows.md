@@ -93,6 +93,7 @@ The flow ID is derived from the filename without its extension. For example, `re
 | `fallback` | object | No | Retry and error routing |
 | `maxTurns` | int | No | Per-step override for the agent's `maxTurns`. `0` (unset) inherits from the agent. |
 | `maxIterations` | int | No | Cap on in-process self-loop iterations. `0` (unset) is unbounded — only the flow timeout applies. When the (N+1)th self-route would exceed the cap, the step fails (and runs its `fallback`). See [Self-Loops](#self-loops). |
+| `timeout` | duration | No | Wall-clock deadline for the step's `agent.RunWith` invocation, including the non-interactive end-of-turn wait for any background tasks (`bash run_in_background`, `task async`, `monitor`) the step's agent spawned. Format is a Go duration string (`5m`, `1h30m`). Unset falls back to `OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT`; if that is also unset, the wait is bounded only by the surrounding orchestrator's ctx. When the deadline trips, the runtime injects a synthetic Assistant `[wait-timeout]` message into the session log enumerating still-pending tasks, then returns the step's pre-wait result. |
 
 ### Rules
 

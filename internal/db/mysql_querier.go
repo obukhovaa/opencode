@@ -199,6 +199,7 @@ func (q *MySQLQuerier) CreateMessage(ctx context.Context, arg CreateMessageParam
 		Parts:     arg.Parts,
 		Model:     arg.Model,
 		Seq:       arg.Seq,
+		Synthetic: arg.Synthetic,
 	})
 	if err != nil {
 		return Message{}, err
@@ -247,6 +248,7 @@ func mysqlMessageToMessage(m mysqldb.Message) Message {
 		CreatedAt:  m.CreatedAt,
 		UpdatedAt:  m.UpdatedAt,
 		FinishedAt: m.FinishedAt,
+		Synthetic:  m.Synthetic,
 	}
 }
 

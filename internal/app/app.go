@@ -26,6 +26,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/question"
 	"github.com/opencode-ai/opencode/internal/recap"
 	"github.com/opencode-ai/opencode/internal/session"
+	"github.com/opencode-ai/opencode/internal/task"
 	"github.com/opencode-ai/opencode/internal/todo"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
 )
@@ -204,6 +205,24 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 		Questions:     questionSvc,
 	}
 
+	// Install the global background-task registry. EnqueueTaskCompletion
+	// (used by bash run_in_background, task async, monitor, and the cron
+	// migration) writes synthetic Assistant(ToolCall)+Tool(ToolResult) pairs
+	// via the message service and auto-resumes the bound session if idle.
+	// Output files live under `<data.dir>/tasks/`; orphans from prior runs
+	// are swept at boot before any session activates.
+	task.ResetGlobalRegistry()
+	dataDir := func() string {
+		if c := config.Get(); c != nil {
+			return c.Data.Directory
+		}
+		return ""
+	}
+	taskReg := task.NewRegistry(dataDir)
+	task.SetGlobalRegistry(taskReg)
+	taskReg.SweepOrphans(dataDir())
+	task.SetDeps(&taskDeps{app: app})
+
 	app.initTheme()
 	// start lsp in background
 	go lspSvc.Init(ctx)
@@ -307,6 +326,10 @@ func (app *App) Shutdown() {
 	if app.CronScheduler != nil {
 		app.CronScheduler.Stop()
 	}
+	// Reset the task registry singleton so a fresh test run / embedded
+	// re-init (rare) sees a clean slate. Production processes shut down the
+	// whole binary so this is mostly defensive.
+	task.ResetGlobalRegistry()
 	if app.Messages != nil {
 		app.Messages.Shutdown()
 	}
@@ -327,6 +350,81 @@ func (app *App) ForceShutdown() {
 	app.LspService.ForceShutdown()
 	app.forceKillAllChildProcesses()
 	logging.Info("Force shutdown completed")
+}
+
+// taskDeps adapts the App's session-aware services into the small Deps
+// interface required by internal/task. This adapter exists to avoid an
+// import cycle between internal/task and internal/message / internal/llm/agent:
+// task can't import message (message → tools, tools → task would cycle), so
+// the adapter translates the task package's message-shape-agnostic
+// SyntheticPair into the concrete message.CreateMessageParams shape on the
+// way through.
+type taskDeps struct {
+	app *App
+}
+
+func (d *taskDeps) WritePair(ctx context.Context, sessionID string, p task.SyntheticPair) error {
+	assistant := message.CreateMessageParams{
+		Role: message.Assistant,
+		Parts: []message.ContentPart{
+			message.ToolCall{
+				ID:       p.AssistantToolCallID,
+				Name:     p.AssistantToolName,
+				Input:    p.AssistantInput,
+				Type:     "tool_use",
+				Finished: true,
+			},
+		},
+		Synthetic: true,
+	}
+	tool := message.CreateMessageParams{
+		Role: message.Tool,
+		Parts: []message.ContentPart{
+			message.ToolResult{
+				Type:       message.ToolResultTypeText,
+				ToolCallID: p.ToolToolCallID,
+				Name:       p.ToolName,
+				Content:    p.ToolContent,
+			},
+		},
+		Synthetic: true,
+	}
+	_, _, err := d.app.Messages.CreatePair(ctx, sessionID, assistant, tool)
+	return err
+}
+
+func (d *taskDeps) IsSessionBusy(sessionID string) bool {
+	ag := d.app.ActiveAgent()
+	if ag == nil {
+		return false
+	}
+	return ag.IsSessionBusy(sessionID)
+}
+
+// ResumeSession kicks off a fresh agent.Run with empty content on the bound
+// session. The empty content signals the agent that the next turn's input is
+// the just-written synthetic ToolResult. The call is fire-and-forget — we
+// drain the events channel in a goroutine so the agent's panic-recover path
+// can complete and release the busy lock.
+func (d *taskDeps) ResumeSession(sessionID string) {
+	ag := d.app.ActiveAgent()
+	if ag == nil {
+		return
+	}
+	go func() {
+		defer logging.RecoverPanic("task.ResumeSession", nil)
+		ctx := context.Background()
+		events, err := ag.Run(ctx, sessionID, "", 0)
+		if err != nil {
+			logging.Warn("task: auto-resume run failed", "session", sessionID, "err", err)
+			return
+		}
+		// Drain the channel — Run sends exactly one terminal event then
+		// closes. We don't care about the result here; downstream consumers
+		// (TUI, bridge) observe via the message broker.
+		for range events {
+		}
+	}()
 }
 
 // forceKillAllChildProcesses kills all child processes of the current process

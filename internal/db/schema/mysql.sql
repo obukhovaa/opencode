@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
   finished_at BIGINT,
+  synthetic TINYINT(1) NOT NULL DEFAULT 0,
   KEY idx_messages_session_id (session_id),
 
   CONSTRAINT fk_messages_session_id FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE

@@ -28,6 +28,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/session"
+	"github.com/opencode-ai/opencode/internal/task"
 	"github.com/opencode-ai/opencode/internal/version"
 )
 
@@ -73,17 +74,37 @@ type AgentEvent struct {
 	FlowStepID string
 }
 
+// RunOptions configures a single agent.Run invocation. New options should
+// be added here rather than as new positional parameters on Run/RunWith so
+// existing call sites stay terse.
+type RunOptions struct {
+	// NonInteractive marks the calling context as a one-shot (flow step,
+	// headless CLI, ACP one-shot). When true, processGeneration holds the
+	// turn open at the end of each agentic cycle until pending background
+	// tasks (bash run_in_background, task async, monitor) for the session
+	// reach terminal state, then re-enters the agentic loop so the model
+	// can react to the synthetic completion(s) within the same RunWith
+	// invocation. Default (false) preserves the original interactive
+	// auto-resume behaviour where ResumeSession kicks a fresh agent.Run.
+	NonInteractive bool
+}
+
 type Service interface {
 	pubsub.Suscriber[AgentEvent]
 	AgentID() config.AgentName
 	Model() models.Model
 	Tools() []tools.BaseTool
 	ResolvedTools() ([]tools.BaseTool, bool)
-	// Run starts an agent turn for the given session.
+	// Run starts an agent turn for the given session. Backward-compat shim
+	// that calls RunWith with the zero-value RunOptions (interactive mode).
 	// maxTurnsOverride > 0 caps the agentic loop to that many turns for THIS call
 	// only (e.g. a flow step's Step.MaxTurns). Pass 0 to inherit the agent /
 	// global / default precedence.
 	Run(ctx context.Context, sessionID string, content string, maxTurnsOverride int, attachments ...message.Attachment) (<-chan AgentEvent, error)
+	// RunWith is the full-options entry point. See RunOptions for available
+	// flags. Use this from non-interactive callers (flow runner, headless
+	// CLI / ACP) to engage the end-of-turn wait on pending background tasks.
+	RunWith(ctx context.Context, sessionID string, content string, maxTurnsOverride int, opts RunOptions, attachments ...message.Attachment) (<-chan AgentEvent, error)
 	Cancel(sessionID string)
 	IsSessionBusy(sessionID string) bool
 	IsBusy() bool
@@ -515,7 +536,14 @@ func (a *agent) err(err error) AgentEvent {
 	}
 }
 
+// Run is the backward-compat shim — see Service.Run. Delegates to RunWith
+// with zero-value RunOptions (interactive mode, no end-of-turn wait).
 func (a *agent) Run(ctx context.Context, sessionID string, content string, maxTurnsOverride int, attachments ...message.Attachment) (<-chan AgentEvent, error) {
+	return a.RunWith(ctx, sessionID, content, maxTurnsOverride, RunOptions{}, attachments...)
+}
+
+// RunWith is the full-options entry point. See RunOptions for available flags.
+func (a *agent) RunWith(ctx context.Context, sessionID string, content string, maxTurnsOverride int, opts RunOptions, attachments ...message.Attachment) (<-chan AgentEvent, error) {
 	if !a.provider.Model().SupportsAttachments && attachments != nil {
 		attachments = nil
 	}
@@ -536,7 +564,7 @@ func (a *agent) Run(ctx context.Context, sessionID string, content string, maxTu
 
 	a.activeRequests.Store(sessionID, cancel)
 	go func() {
-		logging.Info("Agent started", "sessionID", sessionID, "agent", a.AgentID())
+		logging.Info("Agent started", "sessionID", sessionID, "agent", a.AgentID(), "nonInteractive", opts.NonInteractive)
 		now := time.Now()
 		// Cleanup MUST run regardless of how the goroutine exits.
 		// Defer LIFO order: RecoverPanic registered LAST runs FIRST
@@ -558,7 +586,7 @@ func (a *agent) Run(ctx context.Context, sessionID string, content string, maxTu
 			attachmentParts = append(attachmentParts, message.BinaryContent{Path: attachment.FilePath, MIMEType: attachment.MimeType, Data: attachment.Content})
 		}
 
-		result := a.processGeneration(genCtx, sessionID, content, maxTurnsOverride, attachmentParts)
+		result := a.processGeneration(genCtx, sessionID, content, maxTurnsOverride, attachmentParts, opts)
 		gauge := time.Since(now).Milliseconds()
 		if result.Error != nil {
 			if errors.Is(result.Error, ErrRequestCancelled) || errors.Is(result.Error, context.Canceled) {
@@ -578,7 +606,7 @@ func (a *agent) Run(ctx context.Context, sessionID string, content string, maxTu
 	return events, nil
 }
 
-func (a *agent) processGeneration(ctx context.Context, sessionID, content string, maxTurnsOverride int, attachmentParts []message.ContentPart) AgentEvent {
+func (a *agent) processGeneration(ctx context.Context, sessionID, content string, maxTurnsOverride int, attachmentParts []message.ContentPart, opts RunOptions) AgentEvent {
 	cfg := config.Get()
 	// List existing messages; if none, start title generation asynchronously.
 	msgs, err := a.messages.List(ctx, sessionID)
@@ -604,6 +632,14 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	if session.SummaryMessageID != "" {
 		msgs = a.filterMessagesFromSummary(msgs, session.SummaryMessageID)
 	}
+	// Auto-recover sessions previously corrupted by an empty user turn
+	// (older builds called createUserMessage unconditionally on auto-resume
+	// — see the comment block before the createUserMessage call below).
+	// The persisted `user(text="")` makes every subsequent agent.Run on
+	// that session fail with HTTP 400 `messages: text content blocks must
+	// be non-empty`. Dropping these messages from the history we send
+	// upstream lets the model continue without manual intervention.
+	msgs = filterEmptyUserMessages(msgs)
 	if session.ParentSessionID != "" {
 		ctx = context.WithValue(ctx, tools.IsTaskAgentContextKey, true)
 	}
@@ -615,16 +651,31 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	defer langfuse.EndTrace(ctx)
 
 	effectiveMaxTurns := resolveMaxTurns(maxTurnsOverride, a.agentID)
-	if hint := proactiveMaxTurnsHint(effectiveMaxTurns); hint != "" {
-		content += hint
-	}
 
-	userMsg, err := a.createUserMessage(ctx, sessionID, content, attachmentParts)
-	if err != nil {
-		return a.err(fmt.Errorf("failed to create user message: %w", err))
+	// When the caller supplied no content and no attachments, this is an
+	// auto-resume turn — task.EnqueueTaskCompletion has already written
+	// the synthetic Assistant(ToolCall) + Tool(ToolResult) pair, and that
+	// Tool message IS the input the model needs to react to. Creating
+	// an additional user message with an empty TextContent block here
+	// would send `[..., assistant(tool_use), user(tool_result), user("")]`
+	// upstream, and the Anthropic/Vertex/Bedrock API rejects empty text
+	// blocks with `messages: text content blocks must be non-empty` (HTTP
+	// 400). Skip the synthetic-user-turn and drive the model off the
+	// existing history.
+	var userMsg message.Message
+	hasUserTurn := content != "" || len(attachmentParts) > 0
+	msgHistory := msgs
+	if hasUserTurn {
+		if hint := proactiveMaxTurnsHint(effectiveMaxTurns); hint != "" {
+			content += hint
+		}
+		var err error
+		userMsg, err = a.createUserMessage(ctx, sessionID, content, attachmentParts)
+		if err != nil {
+			return a.err(fmt.Errorf("failed to create user message: %w", err))
+		}
+		msgHistory = append(msgs, userMsg)
 	}
-	// Append the new user message to the conversation history.
-	msgHistory := append(msgs, userMsg)
 	var agentMessage message.Message
 	var toolResults *message.Message
 	var structOutput *message.ToolResult
@@ -637,197 +688,323 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 
 	tracker := newCallTracker()
 
+	// finalResult holds the natural-completion event that the inner loop
+	// produced. Errors return directly from processGeneration; only the
+	// success paths flow through finalResult so the outer non-interactive
+	// wait can decide whether to re-cycle.
+	var finalResult AgentEvent
+	// outerCycles caps the number of "wait for background tasks then re-
+	// enter the inner agentic loop" iterations. Bounded by effectiveMaxTurns
+	// so a runaway "spawn background, terminal turn, wait, spawn more"
+	// pattern cannot exceed the per-Run budget.
+	outerCycles := 0
+OuterLoop:
 	for {
-		cycles += 1
-		// Check for cancellation before each iteration
-		select {
-		case <-ctx.Done():
-			return a.err(ctx.Err())
-		default:
-			// Continue processing
+		outerCycles++
+		if outerCycles > effectiveMaxTurns {
+			break OuterLoop
 		}
+		for {
+			cycles += 1
+			// Check for cancellation before each iteration
+			select {
+			case <-ctx.Done():
+				return a.err(ctx.Err())
+			default:
+				// Continue processing
+			}
 
-		etaTokens, shouldTriggerAutoCompaction := a.provider.CountTokens(ctx, AutoCompactionThreshold, msgHistory, toolSet)
-		// Check if auto-compaction should be triggered before each model call
-		// This is crucial for long tool use loops that can exceed context limits
-		// NOTE: since tool may provide output exceeding context limit when combined with existing history,
-		// we have to do summary, which would "lossy compress" it, providing less context to the following LLM call,
-		// but alternative is to fail with context limit, so we do it anyway.
-		if cfg.AutoCompact && cycles != 1 && shouldTriggerAutoCompaction {
-			logging.Info(
-				"Auto-compaction triggered during tool use loop",
-				"session_id", sessionID,
-				"history_length", len(msgHistory),
-				"token_count", etaTokens,
-				"cycle", cycles,
-			)
+			etaTokens, shouldTriggerAutoCompaction := a.provider.CountTokens(ctx, AutoCompactionThreshold, msgHistory, toolSet)
+			// Check if auto-compaction should be triggered before each model call
+			// This is crucial for long tool use loops that can exceed context limits
+			// NOTE: since tool may provide output exceeding context limit when combined with existing history,
+			// we have to do summary, which would "lossy compress" it, providing less context to the following LLM call,
+			// but alternative is to fail with context limit, so we do it anyway.
+			if cfg.AutoCompact && cycles != 1 && shouldTriggerAutoCompaction {
+				logging.Info(
+					"Auto-compaction triggered during tool use loop",
+					"session_id", sessionID,
+					"history_length", len(msgHistory),
+					"token_count", etaTokens,
+					"cycle", cycles,
+				)
 
-			// Perform synchronous compaction to shrink context
-			if errSync := a.performSynchronousCompaction(ctx, sessionID); errSync != nil {
-				logging.Warn("Failed to perform auto-compaction during tool use", "error", errSync)
-				// Continue anyway - better to risk context overflow than stop completely
-			} else {
-				// After successful compaction, reload messages and rebuild msgHistory
-				msgs, errMsg := a.messages.List(ctx, sessionID)
-				if err != nil {
-					return a.err(fmt.Errorf("failed to reload messages after compaction: %w", errMsg))
-				}
-
-				session, errMsg := a.sessions.Get(ctx, sessionID)
-				if errMsg != nil {
-					return a.err(fmt.Errorf("failed to get session after compaction: %w", errMsg))
-				}
-				msgs = a.filterMessagesFromSummary(msgs, session.SummaryMessageID)
-
-				// Carry task budget across compaction: tell provider how much budget remains
-				if agentCfg, hasCfg := config.Get().Agents[a.agentID]; hasCfg && agentCfg.TaskBudget > 0 {
-					spent := session.TotalCompletionTokens
-					remaining := agentCfg.TaskBudget - spent
-					if remaining < 0 {
-						remaining = 0
+				// Perform synchronous compaction to shrink context
+				if errSync := a.performSynchronousCompaction(ctx, sessionID); errSync != nil {
+					logging.Warn("Failed to perform auto-compaction during tool use", "error", errSync)
+					// Continue anyway - better to risk context overflow than stop completely
+				} else {
+					// After successful compaction, reload messages and rebuild msgHistory
+					msgs, errMsg := a.messages.List(ctx, sessionID)
+					if err != nil {
+						return a.err(fmt.Errorf("failed to reload messages after compaction: %w", errMsg))
 					}
-					ctx = provider.TaskBudgetRemainingContext(ctx, remaining)
-				}
 
-				// Preserve original problem and result from the last tool iteration to ensure no dead-loop
-				if preserveTail {
-					preserveTail = false
-					msgHistory = append(msgs, agentMessage, *toolResults)
+					session, errMsg := a.sessions.Get(ctx, sessionID)
+					if errMsg != nil {
+						return a.err(fmt.Errorf("failed to get session after compaction: %w", errMsg))
+					}
+					msgs = a.filterMessagesFromSummary(msgs, session.SummaryMessageID)
+
+					// Carry task budget across compaction: tell provider how much budget remains
+					if agentCfg, hasCfg := config.Get().Agents[a.agentID]; hasCfg && agentCfg.TaskBudget > 0 {
+						spent := session.TotalCompletionTokens
+						remaining := agentCfg.TaskBudget - spent
+						if remaining < 0 {
+							remaining = 0
+						}
+						ctx = provider.TaskBudgetRemainingContext(ctx, remaining)
+					}
+
+					// Preserve original problem and result from the last tool iteration to ensure no dead-loop
+					if preserveTail {
+						preserveTail = false
+						msgHistory = append(msgs, agentMessage, *toolResults)
+					} else if hasUserTurn {
+						msgHistory = append(msgs, userMsg)
+					} else {
+						// Auto-resume turn — no user message to re-append.
+						msgHistory = msgs
+					}
+
+					etaTokens, shouldTriggerAutoCompaction = a.provider.CountTokens(ctx, AutoCompactionThreshold, msgHistory, toolSet)
+					if shouldTriggerAutoCompaction {
+						logging.Warn(
+							"Context compacted, but still exceed context threshold",
+							"session_id", sessionID,
+							"history_length", len(msgHistory),
+							"token_count", etaTokens,
+							"cycle", cycles,
+						)
+					} else {
+						logging.Info(
+							"Context compacted, continuing with reduced history",
+							"session_id", sessionID,
+							"history_length", len(msgHistory),
+							"token_count", etaTokens,
+							"cycle", cycles,
+						)
+					}
+				}
+			}
+
+			// Ensure we don't run into API limitation (max_token to be generated + current tokens count)
+			a.provider.AdjustMaxTokens(etaTokens)
+
+			// Check max turns — give the model one final turn to wrap up
+			if cycles > effectiveMaxTurns {
+				logging.Warn("Max turns reached, requesting final response", "turns", cycles-1, "max", effectiveMaxTurns, "session_id", sessionID)
+				maxTurnsPrompt, promptErr := AgentPrompts.ReadFile("prompts/max_turns.md")
+				if promptErr != nil {
+					logging.Warn("Failed to load max_turns prompt", "error", promptErr)
+					return AgentEvent{
+						Type:         AgentEventTypeResponse,
+						Message:      agentMessage,
+						StructOutput: structOutput,
+						Done:         true,
+					}
+				}
+				wrapUpMsg, wrapUpErr := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
+					Role:  message.User,
+					Parts: []message.ContentPart{message.TextContent{Text: string(maxTurnsPrompt)}},
+				})
+				if wrapUpErr != nil {
+					logging.Warn("Failed to create wrap-up message", "error", wrapUpErr)
+					return AgentEvent{
+						Type:         AgentEventTypeResponse,
+						Message:      agentMessage,
+						StructOutput: structOutput,
+						Done:         true,
+					}
+				}
+				msgHistory = append(msgHistory, wrapUpMsg)
+				// Pass full toolSet to preserve the cache prefix, but discard any tool calls the model makes
+				finalMsg, _, finalErr := a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
+				if finalErr != nil {
+					logging.Warn("Failed to get final response after max turns", "error", finalErr)
+					return AgentEvent{
+						Type:         AgentEventTypeResponse,
+						Message:      agentMessage,
+						StructOutput: structOutput,
+						Done:         true,
+					}
+				}
+				// If the model ignored the instruction and made tool calls, discard them —
+				// we only want the text content as the final response
+				if finalMsg.FinishReason() == message.FinishReasonToolUse {
+					logging.Warn("Model made tool calls after max turns wrap-up, discarding them", "session_id", sessionID)
+					a.createErrorToolResults(finalMsg)
+					a.finishMessage(ctx, &finalMsg, message.FinishReasonEndTurn)
+				}
+				finalResult = AgentEvent{
+					Type:         AgentEventTypeResponse,
+					Message:      finalMsg,
+					StructOutput: structOutput,
+					Done:         true,
+				}
+				break OuterLoop
+			}
+
+			agentMessage, toolResults, err = a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
+			if err != nil {
+				a.createErrorToolResults(agentMessage)
+				if errors.Is(err, context.Canceled) {
+					a.finishMessage(ctx, &agentMessage, message.FinishReasonCanceled)
+					return a.err(ErrRequestCancelled)
+				}
+				a.finishMessage(ctx, &agentMessage, message.FinishReasonError)
+				return a.err(fmt.Errorf("failed to process events: %w", err))
+			}
+			if cfg.Debug {
+				seqID := (len(msgHistory) + 1) / 2
+				toolResultFilepath := logging.WriteToolResultsJson(sessionID, seqID, toolResults)
+				logging.Info("Provider stream completed", "reason", agentMessage.FinishReason(), "filepath", toolResultFilepath, "cycle", cycles)
+			} else {
+				logging.Info("Provider stream completed", "reason", agentMessage.FinishReason(), "cycle", cycles)
+			}
+			if agentMessage.FinishReason() == message.FinishReasonToolUse {
+				if toolResults == nil {
+					// Tool results are nil (tool execution failed or returned empty)
+					// Create an empty tool results message to allow the LLM to provide a final response
+					logging.Warn("Tool results are nil, creating empty tool results message to allow final response", "session_id", sessionID)
+					emptyToolMsg, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
+						Role:  message.Tool,
+						Parts: []message.ContentPart{message.TextContent{Text: "Tool execution completed with no results."}},
+					})
+					if err != nil {
+						logging.Warn("Failed to create empty tool results message", "error", err)
+						// If we can't create the message, just return what we have
+						return AgentEvent{
+							Type:    AgentEventTypeResponse,
+							Message: agentMessage,
+							Done:    true,
+						}
+					}
+					toolResults = &emptyToolMsg
 				} else {
-					msgHistory = append(msgs, userMsg)
+					if structOutput == nil || structOutputIsErr {
+						if s, ok := toolResults.StructOutput(); ok || structOutput == nil {
+							structOutput = s
+						}
+					}
 				}
 
-				etaTokens, shouldTriggerAutoCompaction = a.provider.CountTokens(ctx, AutoCompactionThreshold, msgHistory, toolSet)
-				if shouldTriggerAutoCompaction {
-					logging.Warn(
-						"Context compacted, but still exceed context threshold",
-						"session_id", sessionID,
-						"history_length", len(msgHistory),
-						"token_count", etaTokens,
-						"cycle", cycles,
-					)
-				} else {
-					logging.Info(
-						"Context compacted, continuing with reduced history",
-						"session_id", sessionID,
-						"history_length", len(msgHistory),
-						"token_count", etaTokens,
-						"cycle", cycles,
-					)
-				}
+				msgHistory = append(msgHistory, agentMessage, *toolResults)
+				preserveTail = true
+				continue
 			}
-		}
-
-		// Ensure we don't run into API limitation (max_token to be generated + current tokens count)
-		a.provider.AdjustMaxTokens(etaTokens)
-
-		// Check max turns — give the model one final turn to wrap up
-		if cycles > effectiveMaxTurns {
-			logging.Warn("Max turns reached, requesting final response", "turns", cycles-1, "max", effectiveMaxTurns, "session_id", sessionID)
-			maxTurnsPrompt, promptErr := AgentPrompts.ReadFile("prompts/max_turns.md")
-			if promptErr != nil {
-				logging.Warn("Failed to load max_turns prompt", "error", promptErr)
-				return AgentEvent{
-					Type:         AgentEventTypeResponse,
-					Message:      agentMessage,
-					StructOutput: structOutput,
-					Done:         true,
-				}
-			}
-			wrapUpMsg, wrapUpErr := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
-				Role:  message.User,
-				Parts: []message.ContentPart{message.TextContent{Text: string(maxTurnsPrompt)}},
-			})
-			if wrapUpErr != nil {
-				logging.Warn("Failed to create wrap-up message", "error", wrapUpErr)
-				return AgentEvent{
-					Type:         AgentEventTypeResponse,
-					Message:      agentMessage,
-					StructOutput: structOutput,
-					Done:         true,
-				}
-			}
-			msgHistory = append(msgHistory, wrapUpMsg)
-			// Pass full toolSet to preserve the cache prefix, but discard any tool calls the model makes
-			finalMsg, _, finalErr := a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
-			if finalErr != nil {
-				logging.Warn("Failed to get final response after max turns", "error", finalErr)
-				return AgentEvent{
-					Type:         AgentEventTypeResponse,
-					Message:      agentMessage,
-					StructOutput: structOutput,
-					Done:         true,
-				}
-			}
-			// If the model ignored the instruction and made tool calls, discard them —
-			// we only want the text content as the final response
-			if finalMsg.FinishReason() == message.FinishReasonToolUse {
-				logging.Warn("Model made tool calls after max turns wrap-up, discarding them", "session_id", sessionID)
-				a.createErrorToolResults(finalMsg)
-				a.finishMessage(ctx, &finalMsg, message.FinishReasonEndTurn)
-			}
-			return AgentEvent{
+			finalResult = AgentEvent{
 				Type:         AgentEventTypeResponse,
-				Message:      finalMsg,
+				Message:      agentMessage,
 				StructOutput: structOutput,
 				Done:         true,
 			}
+			break
 		}
+		// Inner agentic loop has produced a natural terminal turn.
+		// In interactive mode we return directly. In non-interactive mode,
+		// check for pending background tasks the model spawned this turn
+		// and wait for them (bounded by ctx) before re-entering the inner
+		// loop so the model can react to the synthetic completion(s)
+		// within this same RunWith invocation.
+		if !opts.NonInteractive {
+			break OuterLoop
+		}
+		reg := task.GlobalRegistry()
+		if reg == nil {
+			break OuterLoop
+		}
+		pending := reg.PendingForSession(sessionID, nil)
+		if len(pending) == 0 {
+			break OuterLoop
+		}
+		logging.Info(
+			"Non-interactive turn complete with pending background tasks; waiting before re-cycling",
+			"session_id", sessionID,
+			"pending_count", len(pending),
+			"outer_cycle", outerCycles,
+		)
+		if err := reg.WaitForActiveTasks(ctx, sessionID, task.WaitOptions{IncludeMonitor: true}); err != nil {
+			// ctx cancelled (timeout or upstream cancel). Inject the
+			// synthetic Assistant timeout note enumerating still-
+			// pending tasks so any subsequent agent.Run on this
+			// session sees the reason and avoids re-spawning the
+			// same dead-end work.
+			stillPending := reg.PendingForSession(sessionID, nil)
+			a.injectWaitTimeoutNote(ctx, sessionID, stillPending, err)
+			logging.Warn(
+				"Non-interactive wait did not complete cleanly",
+				"session_id", sessionID,
+				"err", err,
+				"still_pending", len(stillPending),
+			)
+			break OuterLoop
+		}
+		// Wait completed — synthetic completions are in the message log.
+		// Reload, filter the empty-user-turn corruption, and let the
+		// inner loop run another cycle so the model can react.
+		freshMsgs, listErr := a.messages.List(ctx, sessionID)
+		if listErr != nil {
+			logging.Warn(
+				"Failed to reload messages after non-interactive wait; returning pre-wait result",
+				"session_id", sessionID,
+				"err", listErr,
+			)
+			break OuterLoop
+		}
+		if session.SummaryMessageID != "" {
+			freshMsgs = a.filterMessagesFromSummary(freshMsgs, session.SummaryMessageID)
+		}
+		freshMsgs = filterEmptyUserMessages(freshMsgs)
+		msgs = freshMsgs
+		msgHistory = msgs
+		// Reset inner-loop bookkeeping for the next cycle. hasUserTurn
+		// MUST flip to false: the original userMsg is already part of
+		// the reloaded `msgs` (persisted before the first outer cycle).
+		// Leaving hasUserTurn=true would make the auto-compaction reload
+		// path inside the inner loop re-append userMsg to msgs, creating
+		// a duplicate user turn on the second-and-later outer iterations
+		// whenever compaction triggers.
+		cycles = 0
+		preserveTail = false
+		hasUserTurn = false
+	}
+	return finalResult
+}
 
-		agentMessage, toolResults, err = a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
-		if err != nil {
-			a.createErrorToolResults(agentMessage)
-			if errors.Is(err, context.Canceled) {
-				a.finishMessage(ctx, &agentMessage, message.FinishReasonCanceled)
-				return a.err(ErrRequestCancelled)
-			}
-			a.finishMessage(ctx, &agentMessage, message.FinishReasonError)
-			return a.err(fmt.Errorf("failed to process events: %w", err))
+// injectWaitTimeoutNote writes a synthetic Assistant text message into
+// the session enumerating still-pending background tasks at the moment
+// the non-interactive wait was cancelled. Marked Synthetic:true so the
+// bridge filter skips it for outbound chat indicators; transcript / SSE
+// / model-on-re-invocation consumers still observe it as ambient context.
+func (a *agent) injectWaitTimeoutNote(ctx context.Context, sessionID string, pending []*task.Task, waitErr error) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[wait-timeout] %d background task(s) did not complete within the step's deadline (%v).\n", len(pending), waitErr)
+	for _, t := range pending {
+		fmt.Fprintf(&b,
+			" - task_id=%s kind=%s started=%s output_file=%s",
+			t.ID, string(t.Kind), t.StartedAt.UTC().Format(time.RFC3339), t.OutputPath,
+		)
+		if t.Description != "" {
+			fmt.Fprintf(&b, " desc=%q", t.Description)
 		}
-		if cfg.Debug {
-			seqID := (len(msgHistory) + 1) / 2
-			toolResultFilepath := logging.WriteToolResultsJson(sessionID, seqID, toolResults)
-			logging.Info("Provider stream completed", "reason", agentMessage.FinishReason(), "filepath", toolResultFilepath, "cycle", cycles)
-		} else {
-			logging.Info("Provider stream completed", "reason", agentMessage.FinishReason(), "cycle", cycles)
-		}
-		if agentMessage.FinishReason() == message.FinishReasonToolUse {
-			if toolResults == nil {
-				// Tool results are nil (tool execution failed or returned empty)
-				// Create an empty tool results message to allow the LLM to provide a final response
-				logging.Warn("Tool results are nil, creating empty tool results message to allow final response", "session_id", sessionID)
-				emptyToolMsg, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
-					Role:  message.Tool,
-					Parts: []message.ContentPart{message.TextContent{Text: "Tool execution completed with no results."}},
-				})
-				if err != nil {
-					logging.Warn("Failed to create empty tool results message", "error", err)
-					// If we can't create the message, just return what we have
-					return AgentEvent{
-						Type:    AgentEventTypeResponse,
-						Message: agentMessage,
-						Done:    true,
-					}
-				}
-				toolResults = &emptyToolMsg
-			} else {
-				if structOutput == nil || structOutputIsErr {
-					if s, ok := toolResults.StructOutput(); ok || structOutput == nil {
-						structOutput = s
-					}
-				}
-			}
-
-			msgHistory = append(msgHistory, agentMessage, *toolResults)
-			preserveTail = true
-			continue
-		}
-		return AgentEvent{
-			Type:         AgentEventTypeResponse,
-			Message:      agentMessage,
-			StructOutput: structOutput,
-			Done:         true,
-		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\nThe step's terminal turn above was produced WITHOUT observing these tasks' completions. ")
+	b.WriteString("On any subsequent agent.Run on this session, inspect the per-task output_file before re-spawning equivalent work, ")
+	b.WriteString("or call `tasklist` to confirm whether the tasks are still running.")
+	// Write with a background context so a cancelled parent ctx doesn't
+	// silently drop the note (the whole point is observability after the
+	// caller's deadline already elapsed).
+	writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = ctx // reserved for future enrichment (langfuse trace ID, etc.)
+	if _, err := a.messages.Create(writeCtx, sessionID, message.CreateMessageParams{
+		Role:      message.Assistant,
+		Parts:     []message.ContentPart{message.TextContent{Text: b.String()}},
+		Synthetic: true,
+	}); err != nil {
+		logging.Warn("Failed to inject wait-timeout note", "session_id", sessionID, "err", err)
 	}
 }
 
@@ -1511,6 +1688,54 @@ func (a *agent) Update(agentName config.AgentName, modelID models.ModelID) (mode
 // shouldTriggerAutoCompaction checks if the session should trigger auto-compaction
 // based on token usage approaching the context window limit
 // filterMessagesFromSummary filters messages to start from the summary message if one exists.
+// filterEmptyUserMessages drops User messages that carry only empty
+// TextContent and no other parts (no attachments, no tool results). Those
+// are the corruption pattern left behind by older builds where
+// `createUserMessage(ctx, sid, "", nil)` ran on auto-resume — the persisted
+// `user(text="")` makes the Anthropic/Vertex/Bedrock API reject every
+// subsequent agent.Run on the session with `messages: text content blocks
+// must be non-empty` (HTTP 400). Filtering at read time auto-recovers
+// these sessions without needing a DB migration or manual cleanup.
+func filterEmptyUserMessages(msgs []message.Message) []message.Message {
+	out := msgs[:0]
+	for _, m := range msgs {
+		if isEmptyUserTextMessage(m) {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func isEmptyUserTextMessage(m message.Message) bool {
+	if m.Role != message.User || len(m.Parts) == 0 {
+		return false
+	}
+	sawEmptyText := false
+	for _, p := range m.Parts {
+		switch part := p.(type) {
+		case message.TextContent:
+			// Whitespace-only counts as empty; any real text makes the
+			// message legitimate.
+			if strings.TrimSpace(part.Text) != "" {
+				return false
+			}
+			sawEmptyText = true
+		case message.Finish:
+			// message.Service.Create unconditionally appends a Finish
+			// marker to every non-assistant message. It's metadata, not
+			// content — ignore when assessing emptiness.
+			continue
+		default:
+			// Any other content type (BinaryContent attachment,
+			// ImageURLContent, ToolResult, etc.) carries real payload —
+			// the message is not "empty" for filter purposes.
+			return false
+		}
+	}
+	return sawEmptyText
+}
+
 // This reduces context size by excluding messages before the summary.
 // It ensures that tool_use/tool_result pairs are not split by the filter boundary.
 func (a *agent) filterMessagesFromSummary(msgs []message.Message, summaryMessageID string) []message.Message {

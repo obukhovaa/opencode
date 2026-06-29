@@ -246,7 +246,13 @@ func (h *Handler) HandlePrompt(id any, params PromptParams) error {
 
 	_ = acpSess // cwd available for future use
 
-	events, err := activeAgent.Run(context.Background(), params.SessionID, text, 0, attachments...)
+	// ACP is a one-shot RPC: the handler drains events and returns the
+	// last one. RunWith(NonInteractive: true) holds the turn open at the
+	// end of each agentic cycle until pending background tasks reach
+	// terminal state, so the lastEvent reflects the post-completion
+	// response rather than the pre-completion ack. See
+	// openspec/specs/background-tasks.
+	events, err := activeAgent.RunWith(context.Background(), params.SessionID, text, 0, agent.RunOptions{NonInteractive: true}, attachments...)
 	if err != nil {
 		if errors.Is(err, agent.ErrSessionBusy) {
 			return h.transport.SendError(id, ErrCodeInternal, "session is busy")

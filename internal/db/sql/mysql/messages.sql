@@ -17,10 +17,11 @@ INSERT INTO messages (
     parts,
     model,
     seq,
+    synthetic,
     created_at,
     updated_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP(), UNIX_TIMESTAMP()
+    ?, ?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP(), UNIX_TIMESTAMP()
 );
 
 -- name: GetMaxSeqBySession :one

@@ -75,6 +75,16 @@ func isTransientStreamError(err error) bool {
 		"ModelStreamErrorException",   // mid-stream error from the model itself, retryable per AWS docs
 		"InternalServerException",     // 500 — generic upstream blip
 	)
+	// HTTP/2 RST_STREAM frames (`stream error: stream ID <N>; <CODE>;
+	// received from peer`) are deliberately NOT classified as transient.
+	// Proxies like litellm sometimes wrap permanent upstream errors (400
+	// invalid_request_error, etc.) as RST_STREAM(INTERNAL_ERROR), and the
+	// HTTP/2 frame carries no status code — we can't tell a real proxy
+	// blip from a permanent client error. Retrying on these would hammer
+	// the same bad request through the full exponential-backoff window
+	// (~8.5 min) before giving up, which the user experiences as an
+	// indefinite "generating…" hang. Better to fail fast and surface the
+	// underlying error.
 }
 
 func contains(s string, substrs ...string) bool {

@@ -83,6 +83,7 @@ type Message struct {
 	UpdatedAt  int64          `json:"updated_at"`
 	FinishedAt sql.NullInt64  `json:"finished_at"`
 	Seq        sql.NullInt64  `json:"seq"`
+	Synthetic  bool           `json:"synthetic"`
 }
 
 type Session struct {

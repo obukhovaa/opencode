@@ -15,6 +15,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/session"
+	"github.com/opencode-ai/opencode/internal/task"
 )
 
 // AgentBusyChecker checks whether the active session's agent is busy and lets
@@ -574,33 +575,25 @@ func (s *Scheduler) deferOnDenial(ctx context.Context, job CronJob) {
 }
 
 func (s *Scheduler) writeSyntheticMessages(ctx context.Context, job CronJob, callID, inputJSON, resultContent string) error {
-	// Write both messages atomically in a single transaction with consecutive seq numbers.
-	_, _, err := s.messages.CreatePair(ctx, job.SessionID,
-		message.CreateMessageParams{
-			Role: message.Assistant,
-			Parts: []message.ContentPart{
-				message.ToolCall{
-					ID:       callID,
-					Name:     "task",
-					Input:    inputJSON,
-					Type:     "tool_use",
-					Finished: true,
-				},
-			},
-		},
-		message.CreateMessageParams{
-			Role: message.Tool,
-			Parts: []message.ContentPart{
-				message.ToolResult{
-					Type:       message.ToolResultTypeText,
-					ToolCallID: callID,
-					Name:       "task",
-					Content:    resultContent,
-				},
-			},
-		},
-	)
-	return err
+	// Delegates to the shared task-notifications primitive. The end-state
+	// pair shape is identical to the previous hand-written CreatePair call,
+	// with two additions: (a) the Assistant message carries `synthetic: true`
+	// so the bridge filter suppresses its tool-update indicator emission,
+	// and (b) any other synthetic background-task code path observes the
+	// same write semantics. Cron retains its own session-busy lock (held by
+	// the caller) so SuppressIfNotified is false — the dedupe gate is not
+	// relevant to cron.
+	return task.EnqueueTaskCompletion(ctx, task.CompletionInput{
+		SessionID:             job.SessionID,
+		OriginatingToolCallID: callID,
+		OriginatingToolName:   "task",
+		TaskID:                job.ID,
+		Kind:                  task.KindCron,
+		Status:                task.StatusCompleted,
+		Input:                 inputJSON,
+		Content:               resultContent,
+		SuppressIfNotified:    false,
+	})
 }
 
 func (s *Scheduler) getSessionMutex(sessionID string) *sync.Mutex {

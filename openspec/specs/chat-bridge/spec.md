@@ -302,3 +302,22 @@ When `cfg.Router.QuestionMode != "interactive"` (default / empty / "disabled"), 
 
 - **WHEN** the agent's question request carries more than one prompt
 - **THEN** the bridge bypasses the interactive path for every peer (the actions-block widget can't represent multi-prompt) and renders the prompts as numbered-options text
+
+### Requirement: Bridge suppresses tool-update indicators for synthetic messages
+
+The bridge's per-session tool-update indicator emission path SHALL skip any `PartEvent` whose `Synthetic` flag is `true`. Synthetic Assistant messages produced by `task.EnqueueTaskCompletion` (background bash completions, async task completions, monitor events, cron-fired completions) MUST NOT trigger any outbound chat indicator activity. This requirement covers ALL synthetic message sources uniformly — the bridge filter is keyed off the `Synthetic` flag, not off the originating tool name.
+
+#### Scenario: Cron-fired completion does not emit a tool indicator
+
+- **WHEN** a cron job fires and `EnqueueTaskCompletion` writes a synthetic Assistant(ToolCall name=task) + Tool(ToolResult) pair
+- **THEN** the bridge's parts demux observes the Assistant message, sees `Synthetic = true`, and does NOT emit a 🔧 task indicator to the bound chat platform; the next REAL assistant message (the agent's reply to the synthetic ToolResult) DOES fan out to chat as a normal text reply
+
+#### Scenario: Background bash completion does not emit a tool indicator
+
+- **WHEN** a background bash subprocess exits and `EnqueueTaskCompletion` writes a synthetic pair
+- **THEN** the bridge does NOT emit a 🔧 bash indicator; the agent's human-readable reaction to the completion DOES flow to chat
+
+#### Scenario: Real (non-synthetic) tool calls still emit indicators
+
+- **WHEN** the agent invokes a real tool call (e.g., a synchronous bash, a read, a grep) — the PartEvent's `Synthetic` flag is `false`
+- **THEN** the bridge emits the appropriate 🔧 indicator as it does today; no behavior change for non-synthetic messages

@@ -270,6 +270,14 @@ func validateFlow(f *Flow) error {
 		if step.MaxIterations < 0 {
 			return fmt.Errorf("%w: step %q maxIterations must be >= 0 (got %d; 0 means unbounded)", ErrInvalidMaxIterations, step.ID, step.MaxIterations)
 		}
+		// Timeout, when set, must parse cleanly and be non-negative. The
+		// runtime falls back gracefully on parse errors (env-var default,
+		// then unwrapped ctx), but surfacing the typo at load time is
+		// much more debuggable than discovering the silent fallback at
+		// step run time.
+		if _, err := step.TimeoutDuration(); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidYAML, err)
+		}
 	}
 
 	// Validate rule and fallback references

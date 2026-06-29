@@ -26,6 +26,9 @@ type CreateMessageParams struct {
 	Parts []ContentPart
 	Model models.ModelID
 	Seq   int64
+	// Synthetic marks the message as system-injected (not produced by the
+	// agent or user). See message.Message.Synthetic for details.
+	Synthetic bool
 }
 
 type Service interface {
@@ -125,6 +128,7 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 			Parts:     string(partsJSON),
 			Model:     sql.NullString{String: string(params.Model), Valid: true},
 			Seq:       sql.NullInt64{Int64: seq, Valid: true},
+			Synthetic: params.Synthetic,
 		})
 		if err != nil {
 			return Message{}, err
@@ -157,6 +161,7 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 		Parts:     string(partsJSON),
 		Model:     sql.NullString{String: string(params.Model), Valid: true},
 		Seq:       sql.NullInt64{Int64: seq, Valid: true},
+		Synthetic: params.Synthetic,
 	})
 	if err != nil {
 		return Message{}, err
@@ -224,6 +229,7 @@ func (s *service) CreatePair(ctx context.Context, sessionID string, first, secon
 		Parts:     string(firstJSON),
 		Model:     sql.NullString{String: string(first.Model), Valid: true},
 		Seq:       sql.NullInt64{Int64: seq1, Valid: true},
+		Synthetic: first.Synthetic,
 	})
 	if err != nil {
 		return Message{}, Message{}, fmt.Errorf("failed to create first message: %w", err)
@@ -236,6 +242,7 @@ func (s *service) CreatePair(ctx context.Context, sessionID string, first, secon
 		Parts:     string(secondJSON),
 		Model:     sql.NullString{String: string(second.Model), Valid: true},
 		Seq:       sql.NullInt64{Int64: seq2, Valid: true},
+		Synthetic: second.Synthetic,
 	})
 	if err != nil {
 		return Message{}, Message{}, fmt.Errorf("failed to create second message: %w", err)
@@ -258,7 +265,39 @@ func (s *service) CreatePair(ctx context.Context, sessionID string, first, secon
 	s.Publish(pubsub.CreatedEvent, msg1)
 	s.Publish(pubsub.CreatedEvent, msg2)
 
+	// For synthetic injections (cron-fired completions, background
+	// bash/task/monitor) also publish per-part events with Synthetic=true
+	// so SSE/TUI/bridge subscribers see them. The bridge's parts demux
+	// filters on Synthetic and skips outbound tool-update indicators —
+	// but transcript-style consumers (TUI, transcript exporter) still need
+	// the events to render the synthetic pair.
+	if msg1.Synthetic {
+		for _, p := range msg1.Parts {
+			s.publishSyntheticPart(msg1.SessionID, msg1.ID, p)
+		}
+	}
+	if msg2.Synthetic {
+		for _, p := range msg2.Parts {
+			s.publishSyntheticPart(msg2.SessionID, msg2.ID, p)
+		}
+	}
+
 	return msg1, msg2, nil
+}
+
+// publishSyntheticPart is the synthetic-flavored variant of PublishPart.
+// Emits a PartEvent with Synthetic=true. Same zero-subscriber fast path.
+func (s *service) publishSyntheticPart(sessionID, messageID string, part ContentPart) {
+	if s.parts.GetSubscriberCount() == 0 {
+		return
+	}
+	s.parts.Publish(pubsub.UpdatedEvent, PartEvent{
+		SessionID: sessionID,
+		MessageID: messageID,
+		Part:      clonePart(part),
+		Synthetic: true,
+		Time:      time.Now().UnixMilli(),
+	})
 }
 
 func (s *service) nextSeqTx(ctx context.Context, qtx db.Querier, sessionID string) (int64, error) {
@@ -367,6 +406,7 @@ func (s *service) fromDBItem(item db.Message) (Message, error) {
 		Seq:       item.Seq.Int64,
 		CreatedAt: item.CreatedAt,
 		UpdatedAt: item.UpdatedAt,
+		Synthetic: item.Synthetic,
 	}, nil
 }
 
