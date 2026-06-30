@@ -45,6 +45,11 @@ Set `flow.session.resume_on_failure: true` only when the flow is a long, idempot
 
 Use `flow.args` with JSON Schema to validate required inputs upfront. The `prompt` key is always allowed without declaration.
 
+**Args schema constraints when args render as a form input.** Trigger surfaces that present flows interactively (chat-platform modals, web forms, slash-command wizards) render each declared arg as a form field. Renderers validate per field against the platform's view-spec rules, and a single non-conforming field can reject the whole form — leaving the user with an unactionable error and no job dispatched. Author args defensively:
+
+- **Keep `description` short — a one-sentence summary on `string`, `array`, and `object` args.** Renderers commonly reuse `description` verbatim as the input's placeholder, and platforms cap placeholder text per field (e.g. Slack: 150 characters). Booleans typically only feed the input label (much higher cap — Slack: 2000) so their descriptions can be longer. Put multi-paragraph rationale in the file-level `description:` instead, where there is no length limit.
+- **Avoid empty defaults on `string`, `array`, and `object` args** (`default: ""`, `default: []`, `default: {}`). Renderers tend to apply these as the field's `initial_value`, which validators commonly reject as a malformed empty input on a typed field. Omit `default` entirely (absent args resolve to empty when the prompt substitutes `${args.foo}` for a missing key) or set a non-empty placeholder default. Boolean defaults render as checkbox state, which is always valid.
+
 When multiple rules on a step can match simultaneously, the engine forks and runs all matching steps in parallel. Design rules to be mutually exclusive when parallel execution is not desired.
 
 Step IDs and flow filenames must be kebab-case, max 64 characters.
