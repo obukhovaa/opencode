@@ -627,7 +627,20 @@ func (s *service) runStep(
 doneRetry:
 
 	if lastErr != nil {
-		if state, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+		// When the parent ctx is cancelled (graceful shutdown, ctx-cancelled
+		// retry-delay path above) the failure-state UPDATE would also fail
+		// the SQL call immediately, leaving the flow_state row stuck on
+		// `running` from the entry-time write at line ~425. Subsequent
+		// inspection / resume can't then tell apart "agent still working"
+		// from "agent gave up". Persist with a fresh deadline so the
+		// terminal status lands regardless of how this run is unwinding.
+		writeCtx := ctx
+		if ctx.Err() != nil {
+			var cancelWrite context.CancelFunc
+			writeCtx, cancelWrite = context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancelWrite()
+		}
+		if state, updateErr := s.querier.UpdateFlowState(writeCtx, db.UpdateFlowStateParams{
 			Status:         string(FlowStatusFailed),
 			Args:           sql.NullString{String: string(argsJSON), Valid: true},
 			Output:         sql.NullString{String: lastErr.Error(), Valid: true},

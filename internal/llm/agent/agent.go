@@ -1501,7 +1501,20 @@ out:
 
 func (a *agent) finishMessage(ctx context.Context, msg *message.Message, finishReson message.FinishReason) {
 	msg.AddFinish(finishReson)
-	_ = a.messages.Update(ctx, *msg)
+	// When the caller's ctx is already cancelled (graceful shutdown, step
+	// timeout, ErrRequestCancelled cleanup), a.messages.Update would fail
+	// the SQL call immediately and the assistant message would persist with
+	// parts=[] / finished_at=null — indistinguishable from "stream still
+	// in flight" on subsequent inspection or resume. Fall back to a fresh
+	// background context with a short deadline so the finish marker lands
+	// regardless of how the agent loop is unwinding.
+	writeCtx := ctx
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		writeCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+	}
+	_ = a.messages.Update(writeCtx, *msg)
 }
 
 // createErrorToolResults creates a tool results message with error results for all tool calls
