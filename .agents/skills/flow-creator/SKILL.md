@@ -54,6 +54,8 @@ When multiple rules on a step can match simultaneously, the engine forks and run
 
 Step IDs and flow filenames must be kebab-case, max 64 characters.
 
+**Keep each flow YAML under 300 KB.** OpenCode's flow registry hard-caps a single file at `OPENCODE_MAX_FLOW_FILE_SIZE` (default 300 KB / 307200 bytes). Files above the ceiling are logged at `WARN msg="Failed to parse flow file" error="invalid flow YAML: file exceeds NNNN bytes"` and **silently dropped from the registry** — the flow won't resolve when referenced by `--flow` or `POST /flow/{id}/start`, producing `auto-flow start failed err="flow not found"`. Under `--flow-exit` this now exits the process non-zero, but pre-fix flows fail silently. If a flow is approaching the ceiling, split status-routed lanes into sibling flow files or factor duplicated prelude blocks into fewer, more compact prompts before reaching for the env override — the readability cost of a giant single YAML is real.
+
 Default agent is `coder` when `agent` is omitted from a step.
 
 ## Available Agents

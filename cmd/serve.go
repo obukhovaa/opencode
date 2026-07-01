@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -256,6 +257,16 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 		// entrypoint pattern). The server boots healthy first, THEN the
 		// flow run is kicked off; --flow-exit causes the process to
 		// terminate after the run completes (success or failure).
+		//
+		// autoFlowStartErr carries an error observed by the background
+		// StartFlow goroutine back to this RunE handler so it can be
+		// returned AFTER server.Start unblocks. Without this, a failed
+		// auto-flow-start (e.g. `flow not found` when a flow YAML is
+		// oversized and got dropped from the registry) leaves the
+		// process exiting cleanly with code 0 — which K8s reports as
+		// Job Succeeded, and the c2-agent orchestrator then treats as
+		// a "completed successfully" job even though the flow never ran.
+		var autoFlowStartErr atomic.Pointer[error]
 		if flowID, _ := cmd.Flags().GetString("flow"); flowID != "" {
 			flowArgsPath, _ := cmd.Flags().GetString("flow-args")
 			flowExit, _ := cmd.Flags().GetBool("flow-exit")
@@ -276,7 +287,7 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			if flowStartDelay > 30*time.Second {
 				return fmt.Errorf("--flow-start-delay must be ≤ 30s (got %s)", flowStartDelay)
 			}
-			if err := scheduleAutoFlow(ctx, cancel, server, flowID, flowArgsPath, flowExit, flowExitGrace, flowFresh, flowStartDelay); err != nil {
+			if err := scheduleAutoFlow(ctx, cancel, server, flowID, flowArgsPath, flowExit, flowExitGrace, flowFresh, flowStartDelay, &autoFlowStartErr); err != nil {
 				return err
 			}
 		}
@@ -290,7 +301,16 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			cancel()
 		}()
 
-		return server.Start(ctx)
+		if err := server.Start(ctx); err != nil {
+			return err
+		}
+		// Propagate a background auto-flow-start failure so the process
+		// exits non-zero. Distinct from server.Start's own error so a
+		// clean shutdown path still surfaces the underlying cause.
+		if p := autoFlowStartErr.Load(); p != nil && *p != nil {
+			return *p
+		}
+		return nil
 	},
 }
 
@@ -466,7 +486,7 @@ func filepathJoin(parts ...string) string {
 //
 // flowExit, when true, cancels the parent context (triggering server
 // shutdown) once the flow terminates.
-func scheduleAutoFlow(ctx context.Context, cancel context.CancelFunc, server *api.Server, flowID, flowArgsPath string, flowExit bool, flowExitGrace time.Duration, flowFresh bool, flowStartDelay time.Duration) error {
+func scheduleAutoFlow(ctx context.Context, cancel context.CancelFunc, server *api.Server, flowID, flowArgsPath string, flowExit bool, flowExitGrace time.Duration, flowFresh bool, flowStartDelay time.Duration, startErr *atomic.Pointer[error]) error {
 	args := map[string]any{}
 	if flowArgsPath != "" {
 		data, err := os.ReadFile(flowArgsPath)
@@ -502,6 +522,14 @@ func scheduleAutoFlow(ctx context.Context, cancel context.CancelFunc, server *ap
 		runID, err := server.StartFlow(flowID, args, flowFresh)
 		if err != nil {
 			logging.Error("auto-flow start failed", "flow", flowID, "err", err)
+			// Record the error so RunE can return it after server.Start
+			// unblocks (via the cancel() below when --flow-exit is set).
+			// Without this, the process exits 0 and K8s reports Job
+			// Succeeded even though the flow never actually ran.
+			if startErr != nil {
+				wrapped := fmt.Errorf("auto-flow start failed: flow=%s: %w", flowID, err)
+				startErr.Store(&wrapped)
+			}
 			if flowExit {
 				cancel()
 			}

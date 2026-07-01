@@ -473,6 +473,36 @@ Flow IDs and step IDs must be kebab-case:
 
 Maximum length is 64 characters for both flow IDs and step IDs.
 
+## Flow File Size Limit
+
+Each individual flow YAML file is capped at **300 KB (307200 bytes)** by
+default. Files above the ceiling are logged at `WARN` with
+`msg="Failed to parse flow file" error="invalid flow YAML: file exceeds
+NNNN bytes"` and **silently dropped from the registry** — the flow will
+not resolve when referenced by `--flow` or `POST /flow/{id}/start`,
+producing an `auto-flow start failed err="flow not found"` at
+ERROR-level and (with `--flow-exit`) a non-zero process exit.
+
+Override the ceiling with `OPENCODE_MAX_FLOW_FILE_SIZE`. Accepts a raw
+integer in bytes or an SI-style suffix (case-insensitive, no fractions):
+
+```sh
+OPENCODE_MAX_FLOW_FILE_SIZE=500k opencode serve --flow developer-react-on-jira
+OPENCODE_MAX_FLOW_FILE_SIZE=1MB   opencode serve
+OPENCODE_MAX_FLOW_FILE_SIZE=524288 opencode serve
+```
+
+The env var is read **once** on first flow-registry access — restart
+the process to pick up a new value. Invalid or non-positive values are
+logged and the default is used.
+
+**Authoring guidance:** if a flow is approaching the ceiling, the two
+sustainable ways to shrink it are (a) extract shared prelude / boiler-
+plate prompts into fewer, more compact blocks, and (b) split lanes
+(status-routed sub-workflows) into sibling flow files. Raising the env
+knob is fine as an operational escape hatch but doesn't address the
+underlying readability cost of a giant single YAML.
+
 ## Examples
 
 ### Multi-step analysis flow

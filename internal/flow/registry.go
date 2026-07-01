@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -16,10 +17,87 @@ import (
 )
 
 const (
-	maxFlowFileSize = 100 * 1024 // 100KB
+	// defaultMaxFlowFileSize is the fallback ceiling on a single flow
+	// YAML file when OPENCODE_MAX_FLOW_FILE_SIZE is unset / malformed.
+	// Historically 100 KB — raised to 300 KB after real-world flows
+	// (multi-lane routers with per-step blocker-resolution preludes)
+	// grew past the old limit and were silently dropped from the
+	// registry. See docs/flows.md#flow-file-size-limit.
+	defaultMaxFlowFileSize = 300 * 1024 // 300KB
+
 	maxNameLength   = 64
 	maxStepIDLength = 64
 )
+
+// maxFlowFileSize returns the byte ceiling on a single flow YAML file.
+// Sourced from OPENCODE_MAX_FLOW_FILE_SIZE (accepts a raw int in bytes
+// or an SI-style suffix: `NN`, `NNk`/`NNKB`, `NNm`/`NNMB`; case-
+// insensitive). Parsed once on first call. Falls back to
+// defaultMaxFlowFileSize when unset, malformed, or non-positive; the
+// malformed / non-positive path emits a WARN so operators can spot
+// typos in Helm values / env manifests.
+func maxFlowFileSize() int {
+	maxFlowFileSizeOnce.Do(func() {
+		maxFlowFileSizeVal = defaultMaxFlowFileSize
+		raw := strings.TrimSpace(os.Getenv("OPENCODE_MAX_FLOW_FILE_SIZE"))
+		if raw == "" {
+			return
+		}
+		parsed, err := parseByteSize(raw)
+		if err != nil {
+			logging.Warn("Invalid OPENCODE_MAX_FLOW_FILE_SIZE; falling back to default",
+				"value", raw, "default_bytes", defaultMaxFlowFileSize, "err", err)
+			return
+		}
+		if parsed <= 0 {
+			logging.Warn("OPENCODE_MAX_FLOW_FILE_SIZE must be positive; falling back to default",
+				"value", raw, "default_bytes", defaultMaxFlowFileSize)
+			return
+		}
+		maxFlowFileSizeVal = parsed
+	})
+	return maxFlowFileSizeVal
+}
+
+var (
+	maxFlowFileSizeOnce sync.Once
+	maxFlowFileSizeVal  int
+)
+
+// parseByteSize parses a byte-size literal. Accepts:
+//   - raw integer ("307200") — interpreted as bytes
+//   - integer + k/kb/kib suffix ("300k", "300KB") — ×1024
+//   - integer + m/mb/mib suffix ("2m", "2MB") — ×1024²
+//
+// Suffixes are case-insensitive; whitespace between number and suffix
+// is tolerated. Fractional / negative values are rejected.
+func parseByteSize(raw string) (int, error) {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if s == "" {
+		return 0, fmt.Errorf("empty value")
+	}
+	mult := 1
+	// Longest suffix wins so "kib" doesn't trigger the "k" branch first.
+	suffixes := []struct {
+		suffix string
+		mult   int
+	}{
+		{"kib", 1024}, {"kb", 1024}, {"k", 1024},
+		{"mib", 1024 * 1024}, {"mb", 1024 * 1024}, {"m", 1024 * 1024},
+	}
+	for _, sfx := range suffixes {
+		if strings.HasSuffix(s, sfx.suffix) {
+			mult = sfx.mult
+			s = strings.TrimSpace(strings.TrimSuffix(s, sfx.suffix))
+			break
+		}
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("not an integer: %v", err)
+	}
+	return n * mult, nil
+}
 
 var (
 	kebabCaseRegex = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
@@ -173,8 +251,8 @@ func parseFlowFile(path string) (*Flow, error) {
 		return nil, fmt.Errorf("reading flow file: %w", err)
 	}
 
-	if len(data) > maxFlowFileSize {
-		return nil, fmt.Errorf("%w: file exceeds %d bytes", ErrInvalidYAML, maxFlowFileSize)
+	if limit := maxFlowFileSize(); len(data) > limit {
+		return nil, fmt.Errorf("%w: file exceeds %d bytes (raise via OPENCODE_MAX_FLOW_FILE_SIZE)", ErrInvalidYAML, limit)
 	}
 
 	var ff flowFile

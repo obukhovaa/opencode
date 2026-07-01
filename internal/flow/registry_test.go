@@ -465,6 +465,68 @@ flow:
 	})
 }
 
+func TestParseByteSize(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    int
+		wantErr bool
+	}{
+		{"307200", 307200, false},
+		{"300k", 300 * 1024, false},
+		{"300K", 300 * 1024, false},
+		{"300kb", 300 * 1024, false},
+		{"300KB", 300 * 1024, false},
+		{"300 kb", 300 * 1024, false},
+		{"300kib", 300 * 1024, false},
+		{"2m", 2 * 1024 * 1024, false},
+		{"2MB", 2 * 1024 * 1024, false},
+		{"2mib", 2 * 1024 * 1024, false},
+		{"0", 0, false},
+		{"", 0, true},
+		{"abc", 0, true},
+		{"300kb kb", 0, true},
+		{"1.5m", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			got, err := parseByteSize(tt.in)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseByteSize(%q) err=%v wantErr=%v", tt.in, err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("parseByteSize(%q) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseFlowFile_RejectsOversized(t *testing.T) {
+	dir := t.TempDir()
+	// Write a file that exceeds the default 300 KB limit. The body is
+	// syntactically valid YAML padding inside a comment so the size
+	// check fires BEFORE the YAML decoder would otherwise pass.
+	header := "name: Big\ndescription: Big flow\nflow:\n  steps:\n    - id: step-one\n      prompt: \"x\"\n# "
+	padding := strings.Repeat("x", 320*1024)
+	path := filepath.Join(dir, "big-flow.yaml")
+	if err := os.WriteFile(path, []byte(header+padding+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := parseFlowFile(path)
+	if err == nil {
+		t.Fatal("expected error for oversized flow file")
+	}
+	if !errors.Is(err, ErrInvalidYAML) {
+		t.Errorf("error not wrapping ErrInvalidYAML: %v", err)
+	}
+	if !strings.Contains(err.Error(), "file exceeds") {
+		t.Errorf("error text should mention size ceiling: %v", err)
+	}
+	if !strings.Contains(err.Error(), "OPENCODE_MAX_FLOW_FILE_SIZE") {
+		t.Errorf("error text should point at the env knob: %v", err)
+	}
+}
+
 func TestGetAndAll(t *testing.T) {
 	tmpDir := t.TempDir()
 	config.Reset()
