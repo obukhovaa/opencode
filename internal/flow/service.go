@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -1156,10 +1157,24 @@ func substituteArgs(template string, args map[string]any) string {
 	return substituteScoped(template, args, nil)
 }
 
+// argsPlaceholderRegex matches ${args.PATH} where PATH is any run of
+// non-brace characters. PATH may be a top-level key ("email") or a
+// dot-separated path into a nested map ("reviewer.email"). Bare
+// ${args} without a path is handled separately above and is NOT
+// matched by this regex (the `.` after `args` is required).
+var argsPlaceholderRegex = regexp.MustCompile(`\$\{args\.([^}]+)\}`)
+
 // substituteScoped expands ${args.X} and ${step.X} placeholders in template.
 // Step-scoped variables are substituted first so they can't accidentally
 // shadow args. Step variables are NOT merged into args and never persisted —
 // they exist only for prompt rendering and predicate evaluation.
+//
+// Args placeholders support dot-path traversal into nested maps —
+// ${args.reviewer.email} resolves to args["reviewer"]["email"] when
+// args["reviewer"] is a map. Top-level keys are still preferred: if
+// args has a key that literally contains a dot (e.g. "a.b"), that
+// wins over walking a["b"]. Unresolved placeholders are left in place
+// verbatim so callers can detect them (see resolveSessionPrefix).
 // TODO: consider adding default value support ${args.name:-default}
 func substituteScoped(template string, args map[string]any, stepVars map[string]any) string {
 	// Step scope first — closed namespace, only known keys.
@@ -1176,12 +1191,46 @@ func substituteScoped(template string, args map[string]any, stepVars map[string]
 		template = strings.ReplaceAll(template, "${args}", string(argsJSON))
 	}
 
-	for key, value := range args {
-		placeholder := fmt.Sprintf("${args.%s}", key)
-		template = strings.ReplaceAll(template, placeholder, fmt.Sprintf("%v", value))
-	}
+	return argsPlaceholderRegex.ReplaceAllStringFunc(template, func(match string) string {
+		// match is the whole placeholder "${args.PATH}". Strip the
+		// wrapper to recover PATH.
+		path := match[len("${args.") : len(match)-1]
+		value, ok := resolveArgsPath(args, path)
+		if !ok {
+			// Preserve the literal placeholder — matches the pre-dot-path
+			// behaviour and lets resolveSessionPrefix detect misses.
+			return match
+		}
+		return fmt.Sprintf("%v", value)
+	})
+}
 
-	return template
+// resolveArgsPath resolves a dot-path against args. Top-level exact-key
+// match wins first (preserves backward compatibility with any flat key
+// that literally contains a dot); otherwise the path is split on `.`
+// and walked through nested map[string]any values. Returns (value, true)
+// when the full path resolves, otherwise (nil, false). Traversal stops
+// at the first non-map value or missing key.
+func resolveArgsPath(args map[string]any, path string) (any, bool) {
+	if v, ok := args[path]; ok {
+		return v, true
+	}
+	parts := strings.Split(path, ".")
+	if len(parts) < 2 {
+		return nil, false
+	}
+	var cur any = args
+	for _, p := range parts {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur, ok = m[p]
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
 }
 
 type resolvedStep struct {

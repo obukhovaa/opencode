@@ -41,6 +41,11 @@ func TestEvaluatePredicate(t *testing.T) {
 		{"sizeof string", `sizeof ${args.name} == 5`, map[string]any{"name": "hello"}, true, false},
 		{"sizeof missing key", `sizeof ${args.missing} == 0`, map[string]any{}, false, false},
 		{"sizeof regex", `sizeof ${args.items} =~ /^[0-9]+$/`, map[string]any{"items": []any{"a", "b"}}, true, false},
+
+		// Dot-path traversal into nested maps.
+		{"dot-path equals", `${args.reviewer.email} == u@x.com`, map[string]any{"reviewer": map[string]any{"email": "u@x.com"}}, true, false},
+		{"dot-path missing leaf", `${args.reviewer.mention} == whatever`, map[string]any{"reviewer": map[string]any{"email": "u@x.com"}}, false, false},
+		{"dot-path through non-map", `${args.reviewer.email} == whatever`, map[string]any{"reviewer": "string-not-map"}, false, false},
 	}
 
 	for _, tt := range tests {
@@ -103,6 +108,74 @@ func TestSubstituteScoped_StepIterationNotInArgs(t *testing.T) {
 	want := "step=3 args=99"
 	if got != want {
 		t.Errorf("substituteScoped() = %q, want %q", got, want)
+	}
+}
+
+func TestSubstituteScoped_DotPath(t *testing.T) {
+	args := map[string]any{
+		"reviewer": map[string]any{
+			"email":       "user@example.com",
+			"displayName": "Test User",
+			"mention":     "<@U1>",
+		},
+	}
+	tmpl := "email=${args.reviewer.email} name=${args.reviewer.displayName}"
+	got := substituteScoped(tmpl, args, nil)
+	want := "email=user@example.com name=Test User"
+	if got != want {
+		t.Errorf("substituteScoped() = %q, want %q", got, want)
+	}
+}
+
+func TestSubstituteScoped_DotPathMissingLeafPreserved(t *testing.T) {
+	// A dot-path where the leaf key is missing must preserve the literal
+	// placeholder (same behaviour as a flat missing key). Otherwise the
+	// prompt silently loses the marker and downstream detection (e.g.
+	// resolveSessionPrefix) can't flag it.
+	args := map[string]any{
+		"reviewer": map[string]any{"email": "u@x.com"},
+	}
+	got := substituteScoped("m=${args.reviewer.mention}", args, nil)
+	want := "m=${args.reviewer.mention}"
+	if got != want {
+		t.Errorf("substituteScoped() = %q, want %q", got, want)
+	}
+}
+
+func TestSubstituteScoped_DotPathThroughNonMapPreserved(t *testing.T) {
+	// Walking past a non-map value must preserve the placeholder rather
+	// than emitting a partial result.
+	args := map[string]any{"reviewer": "just-a-string"}
+	got := substituteScoped("m=${args.reviewer.email}", args, nil)
+	want := "m=${args.reviewer.email}"
+	if got != want {
+		t.Errorf("substituteScoped() = %q, want %q", got, want)
+	}
+}
+
+func TestSubstituteScoped_TopLevelWinsOverDotWalk(t *testing.T) {
+	// Backward compat: a flat key that literally contains a dot must
+	// resolve before the resolver falls back to walking a["b"].
+	args := map[string]any{
+		"a.b": "flat-wins",
+		"a":   map[string]any{"b": "nested-loses"},
+	}
+	got := substituteScoped("${args.a.b}", args, nil)
+	if got != "flat-wins" {
+		t.Errorf("substituteScoped() = %q, want %q", got, "flat-wins")
+	}
+}
+
+func TestSubstituteScoped_BareArgsStillJSON(t *testing.T) {
+	// Bare ${args} (no path) still emits the whole args as JSON — must
+	// not be swallowed by the dot-path regex.
+	args := map[string]any{"k": "v"}
+	got := substituteScoped("${args}", args, nil)
+	if got == "${args}" {
+		t.Errorf("bare ${args} was not substituted, got %q", got)
+	}
+	if !containsSubstring(got, `"k": "v"`) {
+		t.Errorf("bare ${args} did not emit JSON, got %q", got)
 	}
 }
 

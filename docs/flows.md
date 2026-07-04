@@ -335,8 +335,11 @@ Prompts support `${args.*}` and `${step.*}` placeholders:
 
 - `${args.prompt}` — Value of the `prompt` argument
 - `${args.key}` — Value of any argument by key
+- `${args.parent.child}` — Dot-path traversal into nested map values (e.g. `${args.reviewer.email}`)
 - `${args}` — Full JSON dump of all arguments
 - `${step.iteration}` — Current iteration of the step (1-based, increments per self-route). Always available; equals `1` for non-looping steps.
+
+Dot-paths walk nested `map[string]any` values one segment at a time. If any segment is missing or points to a non-map value, the literal placeholder is preserved so downstream tooling (e.g. `flow.session.prefix` validation) can flag the miss. Top-level exact-key match wins first, so a flat key that literally contains a dot (e.g. `"a.b"` in args) resolves before the resolver falls back to walking `a["b"]`. Predicates use the same resolver, so `${args.reviewer.email} == user@x.com` works in `if:` rules.
 
 Step-scoped variables are substituted first so they cannot be shadowed by args of the same name.
 

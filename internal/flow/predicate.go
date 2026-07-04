@@ -63,7 +63,10 @@ func evaluateAtom(atom string, args map[string]any, stepVars map[string]any) (bo
 			return false, fmt.Errorf("unknown step variable %q", key)
 		}
 	case "args":
-		actual, ok = args[key]
+		// Dot-path support: ${args.reviewer.email} walks nested maps.
+		// Top-level exact-key match still wins first for backward
+		// compatibility with flat keys that literally contain a dot.
+		actual, ok = resolveArgsPath(args, key)
 		if !ok {
 			return false, nil
 		}
