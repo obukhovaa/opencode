@@ -186,11 +186,15 @@ invocation — no postpone/resume needed for the in-conversation back-and-forth.
     target: ${args.reviewers}   # array of PeerRef objects
   ```
 
-The target value MUST come from a `${args.NAME}` expression — the resolver
-does not support literal PeerRefs in YAML or nested-path expressions. The
-caller (orchestrator, `/flow` POST body, or `--flow-args` JSON) supplies the
-PeerRef in the args object. This forces dynamic peer selection to live in
-the orchestrator layer where access control is enforced, not in YAML.
+The target value MUST come from a top-level `${args.NAME}` expression. The
+`interaction.target` resolver is deliberately stricter than the general
+prompt/predicate resolver — it does not accept literal PeerRefs in YAML,
+and it does NOT walk dot-paths (even though prompt/predicate templates
+do — see the Template Substitution section of the flow-spec reference).
+So the caller (orchestrator, `/flow` POST body, or `--flow-args` JSON)
+must supply the PeerRef as the whole top-level arg, not a nested field.
+This forces dynamic peer selection to live in the orchestrator layer
+where access control is enforced, not in YAML.
 
 **PeerRef shape** (each entry, whether single or array):
 

@@ -124,8 +124,9 @@ fallback:
 
 - `${args.prompt}` expands to the value of the `prompt` argument.
 - `${args.key}` expands to any argument by key.
+- `${args.parent.child}` walks dot-separated segments into nested `map[string]any` args (e.g. `${args.reviewer.email}` resolves `args["reviewer"]["email"]`). Top-level exact-key match wins first, so a flat key that literally contains a `.` resolves before the resolver falls back to walking. Missing leaves or paths that walk through a non-map value preserve the placeholder verbatim so `flow.session.prefix` validation can flag misses. Predicates use the same resolver — `if: ${args.reviewer.channel} == slack` works.
 - `${args}` dumps all arguments as formatted JSON.
-- `${step.iteration}` expands to the step's current iteration (1-based). Always available; equals `1` for non-looping steps. Step-scoped — never merged into args, never persisted.
+- `${step.iteration}` expands to the step's current iteration (1-based). Always available; equals `1` for non-looping steps. Step-scoped — never merged into args, never persisted. `step.*` does not support dot-path traversal.
 - Arguments accumulate: structured output fields merge into args for subsequent steps. `${step.*}` does NOT accumulate or leak into downstream steps.
 - Step-scoped variables are substituted before args, so they cannot be shadowed by an args key of the same name.
 
