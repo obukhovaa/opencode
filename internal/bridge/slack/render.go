@@ -223,6 +223,21 @@ func (a *Adapter) renderStatus(ctx context.Context, peer bridge.PeerRef, hint *b
 	return bridge.SendResult{Delivered: true, ResolvedPeer: resolved}
 }
 
+// defaultQuestionPrompt returns a non-empty header string for a Slack
+// interactive question widget. Slack rejects Section blocks whose markdown
+// text.text is empty ("Section blocks with markdown-typed text require a
+// text length of at least 1 char") with an `invalid_blocks` API error,
+// which cascades into the text-numbered fallback path. Agents that render
+// the question narrative via a preceding `router_send` and pass only
+// `options` (empty `question` field) trip this — provide a neutral
+// fallback so the widget renders with buttons regardless.
+func defaultQuestionPrompt(prompt string) string {
+	if strings.TrimSpace(prompt) == "" {
+		return "Please choose one:"
+	}
+	return prompt
+}
+
 // customAnswerHintBlock returns the discoverability hint appended to a
 // question widget when prompt.Custom == true — a context block that
 // tells the reviewer they can type their own answer instead of clicking.

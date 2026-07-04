@@ -299,7 +299,12 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 		return "", errors.New("slack: SendInteractiveQuestion requires at least one choice")
 	}
 
-	textBlock := slackgo.NewTextBlockObject(slackgo.MarkdownType, prompt, false, false)
+	// Slack's block-kit Section requires text.text to have >=1 char when
+	// markdown-typed. Agents sometimes emit `question` tool calls with
+	// only `options` populated (question text goes into a preceding
+	// `router_send` greeting), which would otherwise trigger Slack's
+	// `invalid_blocks` and silently drop back to text-numbered rendering.
+	textBlock := slackgo.NewTextBlockObject(slackgo.MarkdownType, defaultQuestionPrompt(prompt), false, false)
 	header := slackgo.NewSectionBlock(textBlock, nil, nil)
 
 	buttons := make([]slackgo.BlockElement, 0, len(choices))
@@ -367,7 +372,8 @@ func (a *Adapter) SendInteractiveMultiSelect(ctx context.Context, peer bridge.Pe
 		return "", ErrTooManyOptions
 	}
 
-	textBlock := slackgo.NewTextBlockObject(slackgo.MarkdownType, prompt, false, false)
+	// Same empty-prompt guard as SendInteractiveQuestion — see comment there.
+	textBlock := slackgo.NewTextBlockObject(slackgo.MarkdownType, defaultQuestionPrompt(prompt), false, false)
 	header := slackgo.NewSectionBlock(textBlock, nil, nil)
 
 	options := make([]*slackgo.OptionBlockObject, 0, len(choices))

@@ -140,6 +140,110 @@ func TestSlackSendInteractiveQuestionRequiresChoices(t *testing.T) {
 	}
 }
 
+// TestSlackSendInteractiveQuestionEmptyPromptRendersDefault verifies the
+// adapter substitutes a non-empty default header when the caller passes
+// an empty prompt string. Without this guard, Slack rejects the Section
+// block with `invalid_blocks` (markdown text.text must be >=1 char) and
+// the caller falls back to numbered-text rendering — dropping the
+// interactive buttons even though the config gate is on. Field-observed
+// on CD-4497 propose-with-user (2026-07-04 07:27:54Z).
+func TestSlackSendInteractiveQuestionEmptyPromptRendersDefault(t *testing.T) {
+	// Not t.Parallel — shares capturedBlocksJ with TestSlackSendInteractiveQuestionPostsBlocks.
+	// Sequential tests run before the parallel block, so `[len-1]` in the
+	// parallel test still resolves to its own capture.
+	mock := newMockServer(t)
+	mock.server.Config.Handler = blockCapturingHandler(mock.server.Config.Handler, t, mock)
+	before := len(capturedBlocks())
+
+	apiURL := mock.URL() + "/"
+	a, err := New(Identity{ID: "default", BotToken: "xoxb", AppToken: "xapp"}, Options{APIURL: apiURL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetBotUserID("UBOT")
+	t.Cleanup(func() { _ = a.Stop() })
+
+	_, err = a.SendInteractiveQuestion(context.Background(),
+		bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "C012345"},
+		"",
+		[]bridge.QuestionChoice{
+			{Label: "A", Value: "A"},
+			{Label: "B", Value: "B"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("SendInteractiveQuestion with empty prompt: %v", err)
+	}
+
+	captures := capturedBlocks()
+	if len(captures) <= before {
+		t.Fatalf("no new blocks captured (before=%d after=%d)", before, len(captures))
+	}
+	bs := captures[before]
+	var section map[string]any
+	for _, b := range bs {
+		if b["type"] == "section" {
+			section = b
+			break
+		}
+	}
+	if section == nil {
+		t.Fatalf("no section block found in %+v", bs)
+	}
+	text, ok := section["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("section.text missing or wrong shape: %+v", section["text"])
+	}
+	got, _ := text["text"].(string)
+	if strings.TrimSpace(got) == "" {
+		t.Errorf("section.text.text = %q, want non-empty default", got)
+	}
+}
+
+// TestSlackSendInteractiveQuestionWhitespacePromptRendersDefault mirrors
+// the empty-prompt case for whitespace-only inputs — Slack rejects those
+// the same way, and TrimSpace-based guards must catch them.
+func TestSlackSendInteractiveQuestionWhitespacePromptRendersDefault(t *testing.T) {
+	// Not t.Parallel — see note on TestSlackSendInteractiveQuestionEmptyPromptRendersDefault.
+	mock := newMockServer(t)
+	mock.server.Config.Handler = blockCapturingHandler(mock.server.Config.Handler, t, mock)
+	before := len(capturedBlocks())
+
+	apiURL := mock.URL() + "/"
+	a, err := New(Identity{ID: "default", BotToken: "xoxb", AppToken: "xapp"}, Options{APIURL: apiURL})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a.SetBotUserID("UBOT")
+	t.Cleanup(func() { _ = a.Stop() })
+
+	_, err = a.SendInteractiveQuestion(context.Background(),
+		bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "C012345"},
+		"   \n\t  ",
+		[]bridge.QuestionChoice{{Label: "A", Value: "A"}, {Label: "B", Value: "B"}},
+	)
+	if err != nil {
+		t.Fatalf("SendInteractiveQuestion with whitespace prompt: %v", err)
+	}
+	captures := capturedBlocks()
+	if len(captures) <= before {
+		t.Fatalf("no new blocks captured (before=%d after=%d)", before, len(captures))
+	}
+	bs := captures[before]
+	var section map[string]any
+	for _, b := range bs {
+		if b["type"] == "section" {
+			section = b
+			break
+		}
+	}
+	text, _ := section["text"].(map[string]any)
+	got, _ := text["text"].(string)
+	if strings.TrimSpace(got) == "" {
+		t.Errorf("section.text.text = %q, want non-empty default (whitespace-only prompt trimmed)", got)
+	}
+}
+
 // --- Test helpers below --------------------------------------------------
 
 // Captured blocks payloads, indexed in order of POST calls. Each entry
