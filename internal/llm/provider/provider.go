@@ -356,9 +356,18 @@ func (p *baseProvider[C]) cleanMessages(messages []message.Message) (cleaned []m
 			continue
 		}
 		// Skip assistant messages that have no text content and no tool calls
-		// (e.g., canceled messages that only contain a Finish part)
-		if msg.Role == message.Assistant && msg.Content().String() == "" && len(msg.ToolCalls()) == 0 {
-			logging.Warn("Skipping assistant message with no content or tool calls (likely canceled)",
+		// (e.g., canceled messages that only contain a Finish part, or a
+		// whitespace-only TextContent left behind by an aborted stream).
+		// The whitespace-trim check must match the provider-side conversion
+		// (see internal/llm/provider/anthropic.go — the anthropic path also
+		// drops whitespace-only text), otherwise such messages slip past
+		// cleanup and trigger a downstream "no content blocks" warn.
+		if msg.Role == message.Assistant && strings.TrimSpace(msg.Content().String()) == "" && len(msg.ToolCalls()) == 0 {
+			// Info, not Warn: this is a benign path — the row exists because
+			// an assistant stream was canceled or aborted before producing
+			// any content or tool calls, and the provider APIs reject empty
+			// assistant turns. No operator action is needed.
+			logging.Info("Skipping assistant message with no content or tool calls (likely canceled)",
 				"message_id", msg.ID,
 			)
 			continue

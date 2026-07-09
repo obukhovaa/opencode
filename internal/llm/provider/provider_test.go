@@ -347,6 +347,29 @@ func TestCleanMessages(t *testing.T) {
 			},
 			wantMsgCount: 1,
 		},
+		{
+			// Whitespace-only TextContent must be dropped so it stays aligned
+			// with the provider-side conversion (anthropic/openai/gemini all
+			// TrimSpace before emitting a text block). Without this, the
+			// converter emits zero content blocks and logs a WARN.
+			name: "removes assistant with whitespace-only text and no tool calls",
+			messages: []message.Message{
+				{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "hello"}}},
+				{Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: "   \n\t"}, message.Finish{Reason: message.FinishReasonCanceled}}},
+			},
+			wantMsgCount: 1,
+		},
+		{
+			name: "keeps assistant with whitespace-only text when tool calls present",
+			messages: []message.Message{
+				{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "hello"}}},
+				{Role: message.Assistant, Parts: []message.ContentPart{
+					message.TextContent{Text: " "},
+					message.ToolCall{ID: "tc-1", Name: "bash", Input: "{}", Finished: true},
+				}},
+			},
+			wantMsgCount: 2,
+		},
 	}
 
 	for _, tt := range tests {

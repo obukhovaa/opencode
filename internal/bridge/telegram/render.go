@@ -147,7 +147,7 @@ func (a *Adapter) renderToolCall(ctx context.Context, peer bridge.PeerRef, hint 
 	msg, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{
 		ChatID:    chatID,
 		Text:      text,
-		ParseMode: models.ParseModeMarkdown,
+		ParseMode: models.ParseModeMarkdownV1,
 	})
 	if err != nil {
 		a.recordFailure(err)
@@ -166,9 +166,6 @@ func (a *Adapter) renderToolResult(ctx context.Context, peer bridge.PeerRef, hin
 	}
 	text := buildTelegramToolResultText(hint)
 	// Look up the cached call card to update in place.
-	if chatNum, perr := strconv.ParseInt(strings.TrimPrefix(strings.TrimPrefix(strconv.FormatInt(0, 10), ""), ""), 10, 64); perr == nil {
-		_ = chatNum
-	}
 	chatNum, perr := chatIDToInt64(chatID)
 	if perr == nil {
 		if ref, ok := a.toolCards().consume(chatNum, hint.CallID); ok {
@@ -176,7 +173,7 @@ func (a *Adapter) renderToolResult(ctx context.Context, peer bridge.PeerRef, hin
 				ChatID:    ref.ChatID,
 				MessageID: ref.MessageID,
 				Text:      text,
-				ParseMode: models.ParseModeMarkdown,
+				ParseMode: models.ParseModeMarkdownV1,
 			})
 			if eerr == nil {
 				return bridge.SendResult{Delivered: true}
@@ -187,7 +184,7 @@ func (a *Adapter) renderToolResult(ctx context.Context, peer bridge.PeerRef, hin
 	_, err = a.bot.SendMessage(ctx, &tgbot.SendMessageParams{
 		ChatID:    chatID,
 		Text:      text,
-		ParseMode: models.ParseModeMarkdown,
+		ParseMode: models.ParseModeMarkdownV1,
 	})
 	if err != nil {
 		a.recordFailure(err)
@@ -205,7 +202,7 @@ func (a *Adapter) renderList(ctx context.Context, peer bridge.PeerRef, hint *bri
 	_, err = a.bot.SendMessage(ctx, &tgbot.SendMessageParams{
 		ChatID:    chatID,
 		Text:      text,
-		ParseMode: models.ParseModeMarkdown,
+		ParseMode: models.ParseModeMarkdownV1,
 	})
 	if err != nil {
 		a.recordFailure(err)
@@ -223,7 +220,7 @@ func (a *Adapter) renderTable(ctx context.Context, peer bridge.PeerRef, hint *br
 	_, err = a.bot.SendMessage(ctx, &tgbot.SendMessageParams{
 		ChatID:    chatID,
 		Text:      text,
-		ParseMode: models.ParseModeMarkdown,
+		ParseMode: models.ParseModeMarkdownV1,
 	})
 	if err != nil {
 		a.recordFailure(err)
@@ -244,7 +241,7 @@ func (a *Adapter) renderStatus(ctx context.Context, peer bridge.PeerRef, hint *b
 	_, err = a.bot.SendMessage(ctx, &tgbot.SendMessageParams{
 		ChatID:    chatID,
 		Text:      body,
-		ParseMode: models.ParseModeMarkdown,
+		ParseMode: models.ParseModeMarkdownV1,
 	})
 	if err != nil {
 		a.recordFailure(err)
@@ -257,8 +254,11 @@ func (a *Adapter) renderStatus(ctx context.Context, peer bridge.PeerRef, hint *b
 
 // Telegram's "Markdown" (legacy) parse mode is more forgiving than
 // MarkdownV2 for free-text content. We use it because tool params and
-// previews contain too many otherwise-reserved chars to escape reliably.
-// Code blocks (```...```) still render as monospace.
+// previews contain too many otherwise-reserved chars to escape reliably
+// (e.g. '.' in decimal durations is reserved in MarkdownV2).
+// Note: in go-telegram/bot, ParseModeMarkdownV1 is the legacy "Markdown";
+// ParseModeMarkdown is actually MarkdownV2. Always use ParseModeMarkdownV1
+// here. Code blocks (```...```) still render as monospace.
 
 func buildTelegramToolCallText(hint *bridge.RenderHint) string {
 	var b strings.Builder
