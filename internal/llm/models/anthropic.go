@@ -4,32 +4,18 @@ const (
 	ProviderAnthropic ModelProvider = "anthropic"
 
 	// Models
-	Claude45Sonnet1M ModelID = "claude-4-5-sonnet[1m]"
-	Claude45Opus     ModelID = "claude-4.5-opus"
-	Claude46Opus     ModelID = "claude-4.6-opus"
-	Claude47Opus     ModelID = "claude-4.7-opus"
-	Claude48Opus     ModelID = "claude-4.8-opus"
-	Claude46Sonnet   ModelID = "claude-4.6-sonnet"
-	Claude45Haiku    ModelID = "claude-4.5-haiku"
-	ClaudeFable5     ModelID = "claude-fable-5"
+	Claude45Opus   ModelID = "claude-4.5-opus"
+	Claude46Opus   ModelID = "claude-4.6-opus"
+	Claude47Opus   ModelID = "claude-4.7-opus"
+	Claude48Opus   ModelID = "claude-4.8-opus"
+	Claude46Sonnet ModelID = "claude-4.6-sonnet"
+	Claude5Sonnet  ModelID = "claude-5-sonnet"
+	Claude45Haiku  ModelID = "claude-4.5-haiku"
+	ClaudeFable5   ModelID = "claude-fable-5"
 )
 
 // https://docs.anthropic.com/en/docs/about-claude/models/all-models
 var AnthropicModels = map[ModelID]Model{
-	Claude45Sonnet1M: {
-		ID:                  Claude45Sonnet1M,
-		Name:                "Claude 4.5 Sonnet",
-		Provider:            ProviderAnthropic,
-		APIModel:            "claude-sonnet-4-5",
-		CostPer1MIn:         3.0,
-		CostPer1MInCached:   3.75,
-		CostPer1MOutCached:  0.30,
-		CostPer1MOut:        15.0,
-		ContextWindow:       1000000,
-		DefaultMaxTokens:    64000,
-		CanReason:           true,
-		SupportsAttachments: true,
-	},
 	Claude45Opus: {
 		ID:                  Claude45Opus,
 		Name:                "Claude 4.5 Opus",
@@ -127,6 +113,24 @@ var AnthropicModels = map[ModelID]Model{
 		DefaultMaxTokens:         128000,
 		CanReason:                true,
 		SupportsAdaptiveThinking: true,
+		SupportsAttachments:      true,
+	},
+	Claude5Sonnet: {
+		ID:                       Claude5Sonnet,
+		Name:                     "Claude 5 Sonnet",
+		Provider:                 ProviderAnthropic,
+		APIModel:                 "claude-sonnet-5",
+		CostPer1MIn:              3.0,
+		CostPer1MInCached:        3.75,
+		CostPer1MOutCached:       0.30,
+		CostPer1MOut:             15.0,
+		ContextWindow:            1000000,
+		DefaultMaxTokens:         128000,
+		CanReason:                true,
+		SupportsAdaptiveThinking: true,
+		SupportsMaximumThinking:  true,
+		SupportsXHighThinking:    true,
+		SupportsTaskBudget:       true,
 		SupportsAttachments:      true,
 	},
 	Claude45Haiku: {
