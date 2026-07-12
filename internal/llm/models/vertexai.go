@@ -6,12 +6,12 @@ const (
 	// Models
 	VertexAIGemini30Flash ModelID = "vertexai.gemini-3.0-flash"
 	VertexAIGemini30Pro   ModelID = "vertexai.gemini-3.0-pro"
-	VertexAISonnet45M     ModelID = "vertexai.claude-sonnet-4-5-m"
 	VertexAIOpus45        ModelID = "vertexai.claude-opus-4-5"
 	VertexAIOpus46        ModelID = "vertexai.claude-opus-4-6"
 	VertexAIOpus47        ModelID = "vertexai.claude-opus-4-7"
 	VertexAIOpus48        ModelID = "vertexai.claude-opus-4-8"
 	VertexAISonnet46      ModelID = "vertexai.claude-sonnet-4-6"
+	VertexAISonnet5       ModelID = "vertexai.claude-sonnet-5"
 	VertexAIHaiku45       ModelID = "vertexai.claude-haiku-4-5"
 	VertexAIFable5        ModelID = "vertexai.claude-fable-5"
 )
@@ -48,20 +48,6 @@ var VertexAIGeminiModels = map[ModelID]Model{
 }
 
 var VertexAIAnthropicModels = map[ModelID]Model{
-	VertexAISonnet45M: {
-		ID:                  VertexAISonnet45M,
-		Name:                "VertexAI: Claude Sonnet 4.5 [1m]",
-		Provider:            ProviderVertexAI,
-		APIModel:            "claude-sonnet-4-5@20250929",
-		CostPer1MIn:         AnthropicModels[Claude45Sonnet1M].CostPer1MIn,
-		CostPer1MInCached:   AnthropicModels[Claude45Sonnet1M].CostPer1MInCached,
-		CostPer1MOut:        AnthropicModels[Claude45Sonnet1M].CostPer1MOut,
-		CostPer1MOutCached:  AnthropicModels[Claude45Sonnet1M].CostPer1MOutCached,
-		ContextWindow:       AnthropicModels[Claude45Sonnet1M].ContextWindow,
-		DefaultMaxTokens:    AnthropicModels[Claude45Sonnet1M].DefaultMaxTokens,
-		SupportsAttachments: AnthropicModels[Claude45Sonnet1M].SupportsAttachments,
-		CanReason:           AnthropicModels[Claude45Sonnet1M].CanReason,
-	},
 	VertexAIOpus45: {
 		ID:                  VertexAIOpus45,
 		Name:                "VertexAI: Claude Opus 4.5",
@@ -160,6 +146,24 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsAttachments:      AnthropicModels[Claude46Sonnet].SupportsAttachments,
 		CanReason:                AnthropicModels[Claude46Sonnet].CanReason,
 		SupportsAdaptiveThinking: AnthropicModels[Claude46Sonnet].SupportsAdaptiveThinking,
+	},
+	VertexAISonnet5: {
+		ID:                       VertexAISonnet5,
+		Name:                     "VertexAI: Claude Sonnet 5",
+		Provider:                 ProviderVertexAI,
+		APIModel:                 "claude-sonnet-5",
+		CostPer1MIn:              AnthropicModels[Claude5Sonnet].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[Claude5Sonnet].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[Claude5Sonnet].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[Claude5Sonnet].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[Claude5Sonnet].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[Claude5Sonnet].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[Claude5Sonnet].SupportsAttachments,
+		CanReason:                AnthropicModels[Claude5Sonnet].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[Claude5Sonnet].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[Claude5Sonnet].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[Claude5Sonnet].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[Claude5Sonnet].SupportsTaskBudget,
 	},
 	VertexAIHaiku45: {
 		ID:                  VertexAIHaiku45,

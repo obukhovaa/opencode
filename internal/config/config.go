@@ -600,12 +600,12 @@ func setProviderDefaults() {
 
 	// Anthropic configuration
 	if key := viper.GetString("providers.anthropic.apiKey"); strings.TrimSpace(key) != "" {
-		viper.SetDefault("agents.coder.model", models.Claude45Sonnet1M)
-		viper.SetDefault("agents.summarizer.model", models.Claude45Sonnet1M)
-		viper.SetDefault("agents.explorer.model", models.Claude45Sonnet1M)
-		viper.SetDefault("agents.descriptor.model", models.Claude45Sonnet1M)
-		viper.SetDefault("agents.workhorse.model", models.Claude45Sonnet1M)
-		viper.SetDefault("agents.hivemind.model", models.Claude45Sonnet1M)
+		viper.SetDefault("agents.coder.model", models.Claude5Sonnet)
+		viper.SetDefault("agents.summarizer.model", models.Claude5Sonnet)
+		viper.SetDefault("agents.explorer.model", models.Claude5Sonnet)
+		viper.SetDefault("agents.descriptor.model", models.Claude5Sonnet)
+		viper.SetDefault("agents.workhorse.model", models.Claude5Sonnet)
+		viper.SetDefault("agents.hivemind.model", models.Claude5Sonnet)
 		return
 	}
 
