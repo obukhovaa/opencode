@@ -13,9 +13,9 @@ import (
 // records a successful update.
 type recordingMessages struct {
 	message.Service
-	updateCalls   int
-	updateCtxErr  []error // ctx.Err() at the moment of each Update call
-	updatedMsg    message.Message
+	updateCalls  int
+	updateCtxErr []error // ctx.Err() at the moment of each Update call
+	updatedMsg   message.Message
 }
 
 func (r *recordingMessages) Update(ctx context.Context, msg message.Message) error {
