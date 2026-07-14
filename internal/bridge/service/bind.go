@@ -201,6 +201,13 @@ func (s *Service) Unbind(ctx context.Context, sessionID string, peers ...bridge.
 			return err
 		}
 		s.closeDispatcher(sessionID)
+		// Drop any pending question / buffered reviewer messages for the
+		// session — the interactive step is over (OnInteractiveStepComplete
+		// unbinds with no peers), so nothing should drain into a future
+		// step that re-uses this session id.
+		if s.questionRouter != nil {
+			s.questionRouter.ClearSession(sessionID)
+		}
 		return nil
 	}
 	for _, p := range peers {
