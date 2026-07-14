@@ -24,8 +24,9 @@ const (
 	// pending (see BufferInbound). Drop-oldest once the cap is hit so a
 	// reviewer firing many messages into the between-questions gap — or a
 	// wedged step that never asks again — can't grow memory unbounded.
-	// 16 matches the dispatcher's inbound channel capacity.
-	interactiveInboundBufferCap = 16
+	// Tied to the dispatcher's inbound channel capacity so the two stay in
+	// sync.
+	interactiveInboundBufferCap = dispatchInboundCap
 )
 
 // answeredKey is the cache key for stale-click suppression. The triple
