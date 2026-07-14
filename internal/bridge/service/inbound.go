@@ -116,6 +116,27 @@ func (s *Service) dispatchInbound(ctx context.Context, in bridge.Inbound) {
 		return
 	}
 
+	// Interactive flow steps own their session: the flow engine runs the
+	// step's agent (e.g. architect) with the manager tools and the step's
+	// struct_output schema, and reviewer replies reach it ONLY via a
+	// pending question (handled just above). If nothing was pending, the
+	// reviewer spoke between questions (or while the agent was mid tool
+	// call). Do NOT fall through to the dispatcher — that starts a
+	// SEPARATE app.ActiveAgent() run (the workspace default agent) on the
+	// same session, which lacks the flow agent's manager tools and can
+	// never emit the step's struct_output, orphaning the step. Buffer the
+	// message instead; QuestionRouter drains it into the next question the
+	// flow agent asks. The interactive marker is set exclusively by the
+	// flow engine (flow.Service.runStep), so this branch is inert for
+	// daemon agents and non-flow bridge chat.
+	if s.questionRouter != nil && s.app != nil && s.app.Permissions != nil &&
+		s.app.Permissions.IsInteractiveSession(binding.SessionID) {
+		s.questionRouter.BufferInbound(binding.SessionID, in)
+		logging.Info("bridge: buffered inbound for interactive session (no pending question)",
+			"session", binding.SessionID, "peer", in.Peer.PeerID)
+		return
+	}
+
 	// For multi-peer sessions, prepend the attribution envelope so the
 	// agent knows which reviewer spoke. Lookup once per inbound — the
 	// peerCount drives both the envelope decision and the fan-out cardinality.

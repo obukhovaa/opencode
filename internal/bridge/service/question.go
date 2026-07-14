@@ -18,6 +18,14 @@ import (
 const (
 	recentlyAnsweredTTL           = 30 * time.Second
 	recentlyAnsweredSweepInterval = 10 * time.Second
+
+	// interactiveInboundBufferCap bounds the per-session queue of reviewer
+	// messages buffered while an interactive flow step has no question
+	// pending (see BufferInbound). Drop-oldest once the cap is hit so a
+	// reviewer firing many messages into the between-questions gap — or a
+	// wedged step that never asks again — can't grow memory unbounded.
+	// 16 matches the dispatcher's inbound channel capacity.
+	interactiveInboundBufferCap = 16
 )
 
 // answeredKey is the cache key for stale-click suppression. The triple
@@ -44,6 +52,15 @@ type QuestionRouter struct {
 	mu      sync.Mutex
 	pending map[string]*pendingQuestion // sessionID → pending
 
+	// buffered holds reviewer messages that arrived for an interactive
+	// flow session while no question was pending. dispatchInbound queues
+	// them here (instead of dispatching to app.ActiveAgent(), which would
+	// hijack the interactive step with the workspace default agent);
+	// handleNewRequest drains the head into the next question the flow
+	// agent asks. FIFO, guarded by mu, capped at
+	// interactiveInboundBufferCap.
+	buffered map[string][]bridge.Inbound // sessionID → queued inbounds
+
 	// recentlyAnswered caches answered (projectID, sessionID, label) → time
 	// for the stale-click suppression window. Populated on Reply, swept on
 	// a 10s tick, evicting entries older than recentlyAnsweredTTL.
@@ -64,8 +81,9 @@ type pendingQuestion struct {
 // goroutine. The router stays alive for the lifetime of Service.
 func (s *Service) newQuestionRouter() *QuestionRouter {
 	r := &QuestionRouter{
-		svc:     s,
-		pending: make(map[string]*pendingQuestion),
+		svc:      s,
+		pending:  make(map[string]*pendingQuestion),
+		buffered: make(map[string][]bridge.Inbound),
 	}
 	if s.app != nil && s.app.Questions != nil {
 		s.launchSupervised("question-router", r.run)
@@ -186,12 +204,41 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 		return
 	}
 
-	r.mu.Lock()
-	r.pending[req.SessionID] = &pendingQuestion{
+	pend := &pendingQuestion{
 		requestID: req.ID,
 		prompts:   req.Questions,
 	}
+	r.mu.Lock()
+	r.pending[req.SessionID] = pend
+	// Drain any reviewer message buffered while no question was pending
+	// (dispatchInbound → BufferInbound for interactive sessions). Claim
+	// the just-registered pending entry in the SAME critical section so a
+	// racing live reply cannot double-consume the question.
+	buffered, hasBuffered := r.popBufferedLocked(req.SessionID)
+	if hasBuffered {
+		delete(r.pending, req.SessionID)
+	}
 	r.mu.Unlock()
+
+	// Auto-answer THIS question from the buffered message, keeping the
+	// reply inside the flow agent's turn instead of the workspace default
+	// agent. On Reply failure, restore the pending entry and fall through
+	// to the normal fan-out so the reviewer can still respond live.
+	if hasBuffered {
+		answers := parseQuestionAnswers(buffered.Text, pend.prompts)
+		if err := r.svc.app.Questions.Reply(pend.requestID, answers); err != nil {
+			logging.Warn("bridge: auto-answer from buffered inbound failed — falling back to fan-out",
+				"session", req.SessionID, "reqID", pend.requestID, "err", err)
+			r.mu.Lock()
+			r.pending[req.SessionID] = pend
+			r.mu.Unlock()
+		} else {
+			r.rememberAnswers(req.SessionID, answers)
+			logging.Info("bridge: interactive question auto-answered from buffered reviewer message",
+				"session", req.SessionID, "reqID", pend.requestID)
+			return
+		}
+	}
 
 	interactiveOK := r.shouldUseInteractive(req.Questions)
 	text := renderQuestionPrompt(req.Questions)
@@ -328,6 +375,59 @@ func (r *QuestionRouter) TryHandleQuestionReply(ctx context.Context, sessionID s
 	}
 	r.rememberAnswers(sessionID, answers)
 	return true
+}
+
+// BufferInbound queues a reviewer message that arrived for an
+// interactive flow session while no question was pending. The next
+// question the flow agent asks (handleNewRequest) is auto-answered from
+// the head of this queue.
+//
+// Without this, dispatchInbound would fall through to the per-session
+// dispatcher and start a SEPARATE app.ActiveAgent() run — the workspace
+// default agent — on the flow's session. That agent lacks the flow
+// agent's manager tools (router_send) and the step's struct_output
+// schema, so it can never complete the interactive step: the step hangs
+// on running/NULL while the reviewer talks to the wrong agent. Buffering
+// keeps every reply inside the flow agent's turn.
+//
+// FIFO with a drop-oldest cap so a reviewer firing many messages into
+// the between-questions gap can't grow memory unbounded.
+func (r *QuestionRouter) BufferInbound(sessionID string, in bridge.Inbound) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	q := r.buffered[sessionID]
+	if len(q) >= interactiveInboundBufferCap {
+		logging.Warn("bridge: interactive inbound buffer full — dropping oldest",
+			"session", sessionID, "cap", interactiveInboundBufferCap)
+		q = q[1:]
+	}
+	r.buffered[sessionID] = append(q, in)
+}
+
+// popBufferedLocked removes and returns the oldest buffered inbound for
+// the session. Caller MUST hold r.mu.
+func (r *QuestionRouter) popBufferedLocked(sessionID string) (bridge.Inbound, bool) {
+	q := r.buffered[sessionID]
+	if len(q) == 0 {
+		return bridge.Inbound{}, false
+	}
+	in := q[0]
+	if len(q) == 1 {
+		delete(r.buffered, sessionID)
+	} else {
+		r.buffered[sessionID] = q[1:]
+	}
+	return in, true
+}
+
+// ClearSession drops the pending question and any buffered inbounds for
+// the session. Called from Unbind at interactive-step completion so a
+// later step (or a re-used session id) never inherits stale state.
+func (r *QuestionRouter) ClearSession(sessionID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.pending, sessionID)
+	delete(r.buffered, sessionID)
 }
 
 // renderQuestionPrompt formats one or more question.Prompt entries as
