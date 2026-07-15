@@ -303,6 +303,52 @@ A step routes back to itself **without** `postpone` to iterate within the same f
 
 Each iteration shares the same step session (the agent remembers prior iterations). The iteration counter persists across postpone → resume cycles via `flow_states.iteration`. The cap fires the step's `fallback` (if any) on exhaustion.
 
+### Multi-Step Cycles (`cycle: true`)
+
+A **multi-step cycle** is a sequential loop between two or more different steps — the flow author wants step B to run again after step A routed to it and A ran once more from B's output. Classic case: `verify ⇄ implement` drift-fix, where `verify` emits `verified=false` with drift notes and the flow bounces back to `implement` to close the gaps, then re-runs verify.
+
+**These loops need an explicit `cycle: true` marker on the back-edge rule** — otherwise the runtime's diamond-convergence guard (see `internal/flow/service.go` `startedSteps`) treats the second scheduling of the target step as accidental parallel fan-out and silently drops it. The guard exempts self-loops and postpone routes automatically because those arrive sequentially; multi-step cycles look identical in wire behaviour but the guard can't distinguish them from a true diamond without the author's declaration.
+
+Both edges of the cycle must be marked (verify → implement AND implement → verify) — the guard blocks re-entry from either direction, so marking only one side degrades the loop to a single pass.
+
+```yaml
+- id: implement
+  # ...
+  rules:
+    - if: sizeof ${args.blockers} == 0
+      then: verify
+      cycle: true                # forward edge of the loop
+- id: verify
+  maxIterations: 6               # ALWAYS cap the cycle with an iteration limit
+  output:
+    schema:
+      type: object
+      properties:
+        verified: { type: boolean }
+        drift_notes: { type: array, items: { type: string } }
+      required: [verified, drift_notes]   # required so the rule below evaluates cleanly
+  rules:
+    - if: ${args.verified} == true
+      then: end
+    - if: ${args.verified} != true && ${step.iteration} < 3
+      then: implement
+      cycle: true                # back-edge of the loop
+    - if: ${args.verified} != true && ${step.iteration} >= 3
+      then: end                  # degrade after N bounces
+```
+
+**When NOT to use `cycle: true`**:
+- Self-loops (step routes to itself) — already exempt from the guard.
+- Postpone routes (`postpone: true`) — bypass by design.
+- Real diamond convergence (fork → left + right → join) — the guard is correct to fire; leave those rules unmarked.
+
+**Symptoms of a missing `cycle: true`** (matches the pre-fix failure mode this flag was introduced to address):
+- Flow ends as `completed` after the second-to-last step in the cycle.
+- No `flow_states` row for the re-entry target after the cycle-back rule fires.
+- Log line: `Step already started, skipping (diamond convergence)` (source `internal/flow/service.go`).
+
+Test coverage: `TestMultiStepCycle_VerifyImplementLoop` (regression) and `TestSelfLoop_DiamondGuardPreserved` (protects the unmarked-diamond case) in `internal/flow/service_loop_test.go`.
+
 ### Error Recovery
 Use fallback to retry and then route to an error-handler step:
 ```yaml
