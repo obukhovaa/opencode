@@ -581,7 +581,15 @@ func (s *service) runStep(
 			//
 			// stepCtx applies the precedence chain:
 			//   Step.Timeout > OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT > ctx unwrapped.
-			runCtx, cancelStep := stepCtx(ctx, step)
+			stepScopedCtx, cancelStep := stepCtx(ctx, step)
+			// Install the step-scoped ctx as a value so the async task
+			// spawn path (agent-tool-async.go) can derive detached
+			// subagent contexts from it: a subagent then survives any
+			// single turn ending but is cancelled when the step deadline
+			// elapses or the step completes (cancelStep below) — instead
+			// of running unbounded on context.Background(). See openspec
+			// flow-runtime-resume "step-scoped context" requirement.
+			runCtx := context.WithValue(stepScopedCtx, tools.StepScopedContextKey, stepScopedCtx)
 			done, runErr := agentSvc.RunWith(runCtx, sess.ID, prompt, step.MaxTurns, agentpkg.RunOptions{NonInteractive: true})
 			if runErr != nil {
 				cancelStep()

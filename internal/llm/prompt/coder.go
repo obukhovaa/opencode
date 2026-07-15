@@ -146,12 +146,4 @@ Avoid giving time estimates or predictions for how long tasks will take.
 - Use Delete tool to remove files and directories. Do not use rm or rm -rf in bash for file deletion.
 - IMPORTANT: The user does not see the full output of the tool responses, so if you need the output of the tool for the response make sure to summarize it for the user.
 
-# Background tasks (event-driven, no polling)
-- For long-running shell work (test suites, builds, deploys, log tails) prefer ` + "`bash`" + ` with ` + "`run_in_background: true`" + ` over a synchronous bash with a sleep loop. The tool returns immediately with a ` + "`task_id`" + ` and an ` + "`output_file`" + ` path; a synthetic completion notification arrives automatically when the subprocess exits.
-- For parallel sub-work, use the ` + "`task`" + ` tool with ` + "`async: true`" + ` to fan out subagents in the background. Same pattern: immediate ack with ` + "`task_id`" + `, synthetic completion when the subagent finishes.
-- To watch a streaming command for specific markers, use ` + "`monitor`" + ` (cmd + pattern). Matched lines are coalesced into per-window notifications — strictly better than ` + "`while true; do sleep 5; grep ERROR ...; done`" + `.
-- ` + "`tasklist`" + ` is for ONE-SHOT inventory queries only. Do NOT poll it. Completion notifications arrive automatically.
-- ` + "`taskstop`" + ` kills a background task and emits a synthetic ` + "`killed`" + ` completion. Use only when the task is no longer useful.
-- DO NOT use ` + "`sleep N`" + ` followed by status-check tool calls — every polling round costs tokens and invalidates the prompt cache. Spawn the work in background and let the notification system wake you when it finishes.
-
 You MUST answer concisely with fewer than 4 lines of text (not including tool use or code generation), unless user asks for detail.`

@@ -38,12 +38,29 @@ The caller invokes `agent.RunWith(ctx, sessionID, content, maxTurns, RunOptions{
 
 1. Runs the inner agentic loop as usual — including the model emitting a tool_use for `bash run_in_background` (or `task async`, or `monitor`) and receiving the ack as a tool result.
 2. When the model emits its terminal turn, the OUTER loop checks `task.GlobalRegistry().PendingForSession(sessionID, nil)`.
-3. If there are pending tasks, the outer loop calls `WaitForActiveTasks(ctx, sessionID, WaitOptions{IncludeMonitor: true})` and blocks the same goroutine until they finish (or the ctx deadline trips — see [Timeouts](#timeouts)).
+3. If there are pending tasks, the outer loop drains them: it calls `WaitForActiveTasks(ctx, sessionID, WaitOptions{IncludeMonitor: true})`, and on a clean return re-reads the pending set — if tasks appeared after the wait's snapshot (e.g. a later fan-out wave), it waits again, looping until the session has zero pending tasks or the ctx deadline trips (see [Timeouts](#timeouts)).
 4. While the wait runs, `IsSessionBusy` continues to return true (the original `RunWith` goroutine still holds `activeRequests`), so `ResumeSession` is naturally a no-op — synthetic completions land in the DB without spawning a parallel agent run.
-5. Once the wait returns, the runtime reloads the session's message history (which now contains the synthetic completion pair) and re-enters the inner agentic loop for one more cycle. The model observes the synthetic Tool result and produces a final response that reflects the post-completion state.
+5. Once the drain returns, the runtime reloads the session's message history (which now contains the synthetic completion pair(s)) and re-enters the inner agentic loop for one more cycle. The model observes the synthetic Tool results and produces a final response that reflects the post-completion state. If THAT cycle spawns more background work, the outer loop catches it again — `RunWith` never returns while the session has running tasks.
 6. Only then does `RunWith` return — and the caller (flow runner / CLI / ACP handler) gets the post-completion `AgentEvent`, not the premature ack.
 
 The wait is naturally bounded by the surrounding `ctx`. No internal timeout knob.
+
+### Anti-spin: foreground `sleep` is redirected to the wait
+
+The hold-the-turn guarantee above is only reachable when the model eventually emits a terminal turn. A model that instead busy-waits — issuing foreground `bash` calls like `sleep 300; echo done` between `tasklist`/`read` probes (incident CD-4761) — would burn its entire step budget without ever hitting the end-of-turn wait.
+
+The runtime therefore intercepts the poll primitive itself. In a non-interactive run, when the session has pending non-monitor background tasks and the model issues a foreground `bash` command whose sole effect is a wall-clock wait (a leading `sleep <n>`, optionally followed by one `echo`), the tool does NOT execute the sleep. It blocks on `WaitForActiveTasks(ctx, sessionID, WaitOptions{IncludeMonitor: false})` — bounded by the step deadline — and returns a synthetic result enumerating the tasks that reached terminal state during the wait. The model's "wait for the work" intent succeeds deterministically; the requested sleep duration is irrelevant.
+
+Scope guards:
+
+- Interactive runs (`NonInteractive: false`) never intercept — a TUI `sleep 5` runs verbatim.
+- No pending non-monitor tasks → the command runs verbatim (an idle sleep is pointless but harmless).
+- Only-monitors-pending → the command runs verbatim; a stray sleep must not become a block on a monitor's whole lifetime (the end-of-turn drain is what bounds monitors).
+- Anything beyond `sleep [;|&&] echo …` (pipes, redirects, extra commands) runs verbatim.
+
+### Detached subagents are bounded by the step
+
+`task async` subagents run detached from the parent's per-turn context so a turn ending never kills them. Under a flow step they now derive from a **step-scoped context** the flow runner installs (`tools.StepScopedContextKey`): the subagent survives any number of parent turns, but the step's deadline elapsing — or the step completing — cancels every subagent spawned during the step (each gets its `StatusFailed` completion via the normal notification path; `taskstop` still yields `StatusKilled`). Interactive callers don't install a step scope, so their async subagents keep the original unbounded `context.Background()` lifetime.
 
 ## Bounding monitor lifetime
 
@@ -72,7 +89,7 @@ This means the model can react to a previous step's timeout when a flow is re-tr
 
 ## Output files
 
-Every background task writes its full output to `<config.Data.Directory>/tasks/<task_id>.out`. The path is included in the ack response and in the `tasklist` output. The agent can use the `Read` tool to inspect partial progress at any time. Files are swept at opencode boot — there is no per-task cleanup on shutdown because the process owns the data directory.
+Every background task writes its full output to `<config.Data.Directory>/tasks/<task_id>.out`. The path is included in the ack response and in the `tasklist` output. For `bash`/`monitor` tasks the subprocess streams into the file as it runs; for `task async` the subagent's final response is written at completion. The file is the canonical post-completion record — the acks deliberately do not frame it as a progress-polling target (reading it in a sleep loop is the exact anti-pattern the anti-spin interception neutralizes). Files are swept at opencode boot — there is no per-task cleanup on shutdown because the process owns the data directory.
 
 ## What does NOT change in non-interactive mode
 
@@ -119,6 +136,6 @@ The orchestrator launches the flow. Under the hood:
 If the 20m timeout trips before the bash finishes:
 
 1. Wait returns `ctx.Err()`.
-2. Synthetic Assistant text message lands: `[wait-timeout] 1 background task(s) did not complete within the step's deadline (context deadline exceeded). - task_id=shell_5KFKDU… kind=bash started=… output_file=… desc="..."  ...`.
+2. Synthetic Assistant text message lands: `[wait-timeout] 1 background task(s) did not complete before the non-interactive wait ended (context deadline exceeded). - task_id=shell_5KFKDU… kind=bash started=… output_file=… desc="..."  ...`.
 3. Outer loop breaks. The step returns its pre-wait `AgentEvent` (likely with `status: pending` or text-only).
 4. A re-triggered flow on the same session reads the timeout note in the message history and can decide to wait longer, taskstop the orphan, or abort with a recorded reason.

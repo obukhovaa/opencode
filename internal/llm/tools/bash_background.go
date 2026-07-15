@@ -75,7 +75,7 @@ func (b *bashTool) runBackground(_ context.Context, call ToolCall, params BashPa
 		notice = "\n(timeout parameter is ignored in background mode)"
 	}
 	body := fmt.Sprintf(
-		"Background task started.\ntask_id: %s\noutput_file: %s\ncommand: %s%s\n\nThe task is running. You will receive a synthetic tool result with the final output when it completes. Read the output file with the Read tool if you need to inspect progress in the meantime.",
+		"Background task started.\ntask_id: %s\noutput_file: %s\ncommand: %s%s\n\nThe task is running. A synthetic tool result with the final output will arrive automatically when it completes — do NOT poll and do NOT sleep while waiting. In a non-interactive (flow) step the runtime holds the turn open until the task reaches a terminal state, so sleeping cannot observe progress sooner. The output_file holds the full output once the task finishes. Use `tasklist` for a one-shot inventory query and `taskstop` to kill.",
 		taskID,
 		outputPath,
 		truncateCommand(params.Command),
