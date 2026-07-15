@@ -75,6 +75,25 @@ export OPENCODE_MYSQL_DSN="user:password@tcp(localhost:3306)/opencode?parseTime=
 }
 ```
 
+### Amazon Aurora / RDS with verified TLS
+
+For a managed Aurora Serverless / RDS MySQL endpoint, add `tls=aurora` to the
+DSN. OpenCode ships the Amazon RDS CA trust chain and registers it under the
+name `aurora`, so the driver verifies the server certificate (no
+`skip-verify`, no external cert files):
+
+```bash
+export OPENCODE_SESSION_PROVIDER_TYPE=mysql
+export OPENCODE_MYSQL_DSN="opencode_user:password@tcp(my-cluster.cluster-xxxx.eu-central-1.rds.amazonaws.com:3306)/opencode?parseTime=true&tls=aurora"
+```
+
+The `tls=aurora` parameter is purely additive: DSNs that omit it (for example
+the self-hosted MySQL from the Docker Compose setup below) keep connecting over
+plaintext exactly as before. The embedded bundle is the `eu-central-1` RDS CA
+(`internal/db/assets/rds-eu-central-1-bundle.pem`); refresh it from
+`https://truststore.pki.rds.amazonaws.com/eu-central-1/eu-central-1-bundle.pem`
+if AWS rotates the CA, or swap in another region's bundle as needed.
+
 ### Setup
 
 **Option 1: Docker Compose**
