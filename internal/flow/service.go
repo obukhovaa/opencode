@@ -118,10 +118,10 @@ func NewService(
 }
 
 type stepWork struct {
-	step      Step
-	args      map[string]any
-	prevStep  *FlowState
-	postpone  bool
+	step     Step
+	args     map[string]any
+	prevStep *FlowState
+	postpone bool
 	// cycle set to true when the routing rule that produced this stepWork
 	// declared `cycle: true`. It bypasses the diamond-convergence guard so
 	// legitimate re-entries (e.g. verify → implement → verify) admit the
