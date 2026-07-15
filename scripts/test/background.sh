@@ -194,7 +194,40 @@ else
     log_fail "WaitForActiveTasks honors ctx deadline on hung task" "deadline did not trip"
 fi
 
-# ── 10. final cleanup verification ──────────────────────────────────
+# ── 11. anti-spin: foreground sleep interception ────────────────────
+sleep_intercept_ok=$(echo "$OUTPUT" | jq -r '.sleep_intercept_ok')
+sleep_intercept_fast=$(echo "$OUTPUT" | jq -r '.sleep_intercept_fast')
+sleep_intercept_no_echo=$(echo "$OUTPUT" | jq -r '.sleep_intercept_no_echo')
+sleep_passthrough_interactive=$(echo "$OUTPUT" | jq -r '.sleep_passthrough_interactive_ok')
+sleep_passthrough_no_pending=$(echo "$OUTPUT" | jq -r '.sleep_passthrough_no_pending_ok')
+
+if [ "$sleep_intercept_ok" = "true" ]; then
+    log_pass "non-interactive foreground sleep redirected to task wait"
+else
+    log_fail "non-interactive foreground sleep redirected to task wait" "no interception note / task id"
+fi
+if [ "$sleep_intercept_fast" = "true" ]; then
+    log_pass "intercepted sleep returns when tasks finish (not after 30s)"
+else
+    log_fail "intercepted sleep returns when tasks finish (not after 30s)" "wall-clock sleep executed"
+fi
+if [ "$sleep_intercept_no_echo" = "true" ]; then
+    log_pass "intercepted command's echo never executed"
+else
+    log_fail "intercepted command's echo never executed" "echo output leaked into result"
+fi
+if [ "$sleep_passthrough_interactive" = "true" ]; then
+    log_pass "interactive foreground sleep still executes verbatim"
+else
+    log_fail "interactive foreground sleep still executes verbatim" "passthrough broken"
+fi
+if [ "$sleep_passthrough_no_pending" = "true" ]; then
+    log_pass "non-interactive sleep with no pending tasks executes verbatim"
+else
+    log_fail "non-interactive sleep with no pending tasks executes verbatim" "over-eager interception"
+fi
+
+# ── 12. final cleanup verification ──────────────────────────────────
 # The trap will rm -rf the sandbox — verify it works on a known artifact
 # by listing the tasks directory before exit.
 TASK_DIR="$SANDBOX/.opencode/tasks"

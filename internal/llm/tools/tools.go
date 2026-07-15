@@ -34,6 +34,8 @@ type (
 	flowStepIDContextKey        string
 	flowStepIterationContextKey string
 	flowArgsContextKey          string
+	nonInteractiveContextKey    string
+	stepScopedContextKey        string
 )
 
 const (
@@ -49,6 +51,20 @@ const (
 	FlowStepIDContextKey        flowStepIDContextKey        = "flow_step_id"
 	FlowStepIterationContextKey flowStepIterationContextKey = "flow_step_iteration"
 	FlowArgsContextKey          flowArgsContextKey          = "flow_args"
+	// NonInteractiveContextKey marks the tool-execution ctx of a
+	// RunOptions{NonInteractive: true} agent run (flow step, headless
+	// prompt, ACP one-shot). Set by agent.processGeneration alongside
+	// SessionIDContextKey; runtime-only, never persisted. The bash tool
+	// reads it to redirect foreground wall-clock waits to the background-
+	// task wait (see openspec bash-background-mode spec).
+	NonInteractiveContextKey nonInteractiveContextKey = "non_interactive"
+	// StepScopedContextKey carries the step-scoped base context installed
+	// by the flow runner: a context that survives any single agent turn
+	// ending but is cancelled when the step's deadline elapses or the step
+	// completes. Detached async subagents derive their run context from it
+	// instead of context.Background() so a timed-out step cancels them
+	// (see openspec flow-runtime-resume / task-async-mode specs).
+	StepScopedContextKey stepScopedContextKey = "step_scoped_ctx"
 
 	// MaxToolResponseTokens is the maximum number of tokens allowed in a tool response
 	// to prevent context overflow. ~1200KB of text content.
@@ -219,6 +235,34 @@ func GetContextValues(ctx context.Context) (string, string) {
 		return sessionID.(string), ""
 	}
 	return sessionID.(string), messageID.(string)
+}
+
+// IsNonInteractive reports whether the tool-execution context belongs to a
+// non-interactive agent run (RunOptions{NonInteractive: true}). Absent
+// marker (interactive runs, tests that don't set it) returns false.
+func IsNonInteractive(ctx context.Context) bool {
+	v := ctx.Value(NonInteractiveContextKey)
+	if v == nil {
+		return false
+	}
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	return false
+}
+
+// StepScopedContext returns the step-scoped base context installed by the
+// flow runner (see StepScopedContextKey), or nil when the caller did not
+// install one (interactive runs, headless callers without a step scope).
+func StepScopedContext(ctx context.Context) context.Context {
+	v := ctx.Value(StepScopedContextKey)
+	if v == nil {
+		return nil
+	}
+	if c, ok := v.(context.Context); ok {
+		return c
+	}
+	return nil
 }
 
 // IsTaskAgent returns true if the context indicates this is a task agent

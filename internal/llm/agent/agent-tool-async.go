@@ -12,6 +12,19 @@ import (
 	"github.com/opencode-ai/opencode/internal/task"
 )
 
+// subagentBaseContext returns the base context for a detached async
+// subagent run: the step-scoped ctx installed by the flow runner when
+// present (see tools.StepScopedContextKey — survives single turns, dies
+// with the step), else context.Background(). Interactive callers never
+// install the value, so their async subagents keep today's unbounded
+// lifetime.
+func subagentBaseContext(ctx context.Context) context.Context {
+	if base := tools.StepScopedContext(ctx); base != nil {
+		return base
+	}
+	return context.Background()
+}
+
 // runAsync spawns the subagent in the background and returns an immediate
 // ack ToolResult. A goroutine waits on the subagent's `done` channel; when
 // it fires, cost is rolled up to the parent session and the final response
@@ -40,10 +53,18 @@ func (b *agentTool) runAsync(
 		return tools.ToolResponse{}, fmt.Errorf("async task: prepare output file: %w", err)
 	}
 
-	// Run the subagent against its own background context so the parent's
-	// turn ending (which cancels the parent ctx) does not cancel the
-	// subagent. We retain a cancel function so taskstop can kill it.
-	runCtx, cancel := context.WithCancel(context.Background())
+	// Run the subagent against a context detached from the parent's
+	// per-turn ctx so the parent's turn ending does not cancel the
+	// subagent. The base is the step-scoped ctx when the caller installed
+	// one (flow steps — bounded by Step.Timeout / the env default, and
+	// cancelled when the step completes), else context.Background()
+	// (interactive callers — unchanged). We retain a cancel function so
+	// taskstop can kill it. Re-installing the step-scope value on runCtx
+	// lets nested async spawns inherit the same step bound.
+	runCtx, cancel := context.WithCancel(subagentBaseContext(ctx))
+	if stepScope := tools.StepScopedContext(ctx); stepScope != nil {
+		runCtx = context.WithValue(runCtx, tools.StepScopedContextKey, stepScope)
+	}
 	done, err := a.Run(runCtx, taskSession.ID, prompt, 0)
 	if err != nil {
 		cancel()
@@ -77,7 +98,7 @@ func (b *agentTool) runAsync(
 		agentName = subagentInfo.Name
 	}
 	body := fmt.Sprintf(
-		"Async subagent task started.\ntask_id: %s\ntask_session_id: %s\nsubagent: %s\noutput_file: %s\ntitle: %s\nresumed: %t\n\nThe subagent is running in the background. You will receive a synthetic tool result with the final response when it completes — do NOT poll. Use the `tasklist` tool for a one-shot inventory query and `taskstop` to cancel.",
+		"Async subagent task started.\ntask_id: %s\ntask_session_id: %s\nsubagent: %s\noutput_file: %s\ntitle: %s\nresumed: %t\n\nThe subagent is running in the background. A synthetic tool result with its final response will arrive automatically when it completes — do NOT poll and do NOT sleep while waiting. In a non-interactive (flow) step the runtime holds the turn open until the subagent reaches a terminal state, so sleeping cannot observe progress sooner. The output_file receives the final response only AFTER completion (it is not a progress log). To continue this subagent later, call the task tool again with the same task_id to reattach to its session. Use `tasklist` for a one-shot inventory query and `taskstop` to cancel.",
 		taskID, taskSession.ID, agentName, outputPath, params.TaskTitle, isResumed,
 	)
 

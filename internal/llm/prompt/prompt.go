@@ -195,6 +195,23 @@ func peerMentionOrFallback(peer bridge.PeerRef, fallback string) string {
 const parallelToolUsePrompt = `
 You have the capability to call multiple tools in a single response. When multiple independent pieces of information are requested and all commands are likely to succeed, run multiple tool calls in parallel for optimal performance. For example, if you need to read 3 files, call read 3 times in parallel rather than sequentially.`
 
+// backgroundTasksPrompt is the no-poll contract for background work. It is
+// appended for EVERY agent with tool access — independent of the agent's
+// (possibly custom) base prompt — because the guidance previously lived only
+// in CoderPrompt, which is skipped when info.Prompt is set; custom-prompt
+// flow agents never saw it and busy-waited with foreground sleeps (incident
+// CD-4761). The runtime additionally enforces this contract in
+// non-interactive runs (see openspec background-tasks / bash-background-mode
+// specs); the prompt is defense-in-depth that saves wasted cycles.
+const backgroundTasksPrompt = `
+# Background tasks (event-driven, no polling)
+- For long-running shell work (test suites, builds, deploys, log tails) prefer ` + "`bash`" + ` with ` + "`run_in_background: true`" + ` over a synchronous bash with a sleep loop. The tool returns immediately with a ` + "`task_id`" + ` and an ` + "`output_file`" + ` path; a synthetic completion notification arrives automatically when the subprocess exits.
+- For parallel sub-work, use the ` + "`task`" + ` tool with ` + "`async: true`" + ` to fan out subagents in the background. Same pattern: immediate ack with ` + "`task_id`" + `, synthetic completion when the subagent finishes.
+- To watch a streaming command for specific markers, use ` + "`monitor`" + ` (cmd + pattern). Matched lines are coalesced into per-window notifications — strictly better than ` + "`while true; do sleep 5; grep ERROR ...; done`" + `.
+- ` + "`tasklist`" + ` is for ONE-SHOT inventory queries only. Do NOT poll it. Completion notifications arrive automatically.
+- ` + "`taskstop`" + ` kills a background task and emits a synthetic ` + "`killed`" + ` completion. Use only when the task is no longer useful.
+- DO NOT use ` + "`sleep N`" + ` followed by status-check tool calls — every polling round costs tokens and invalidates the prompt cache. Spawn the work in background and let the notification system wake you when it finishes. In non-interactive (flow) runs the runtime holds your turn open until pending background tasks complete and converts a foreground ` + "`sleep`" + ` into that same wait — sleeping can never observe progress sooner.`
+
 // taskToolReportingPrompt instructs primary (mode=agent) agents that have the
 // task tool enabled to surface each subagent's task_id to the user so it can
 // be referenced or resumed later. This mirrors how Claude Code's coordinator
@@ -372,6 +389,15 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 		if reg.HasTools(agentName) && info.AllowsParallelToolUse() {
 			basePrompt += parallelToolUsePrompt
 		}
+	}
+
+	// Append the background-tasks no-poll contract for every agent with
+	// tool access — deliberately NOT part of any base prompt so custom-
+	// prompt agents (info.Prompt != "") receive it too. Tool-less agents
+	// (summarizer, descriptor) are exempt: they cannot spawn or poll
+	// background work.
+	if reg.HasTools(agentName) {
+		basePrompt += backgroundTasksPrompt
 	}
 
 	// Append task_id reporting guidance for primary agents that can spawn

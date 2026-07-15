@@ -286,6 +286,13 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 	if params.RunInBackground {
 		return b.runBackground(ctx, call, params, workdir, sessionID)
 	}
+	// Anti-spin: in a non-interactive run with pending non-monitor
+	// background tasks, a foreground command whose sole effect is a
+	// wall-clock wait is redirected to the deterministic background-task
+	// wait instead of executing the sleep (see bash_wait.go).
+	if resp, intercepted := interceptForegroundWait(ctx, params.Command, sessionID); intercepted {
+		return resp, nil
+	}
 	startTime := time.Now()
 	sh := shell.GetPersistentShell(workdir)
 	if sh == nil {

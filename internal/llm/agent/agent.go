@@ -645,6 +645,11 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	}
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
 	ctx = context.WithValue(ctx, tools.AgentIDContextKey, a.AgentID())
+	// Propagate the non-interactive marker onto the tool-execution ctx so
+	// tools (bash) can make non-interactive-aware decisions — e.g. redirect
+	// a foreground `sleep` to the background-task wait instead of burning
+	// wall-clock while tasks are pending. Runtime-only, never persisted.
+	ctx = context.WithValue(ctx, tools.NonInteractiveContextKey, opts.NonInteractive)
 	ctx = tools.AddTag(ctx, "agent", a.AgentID())
 
 	ctx = a.createLangfuseTrace(ctx, session)
@@ -702,6 +707,19 @@ OuterLoop:
 	for {
 		outerCycles++
 		if outerCycles > effectiveMaxTurns {
+			// Outer-cycle budget exhausted. Bare drain re-waits do not
+			// consume this budget (they live inside a single iteration);
+			// only cycles that re-invoke the model count. If tasks are
+			// still pending, surface why the run stopped observing them
+			// instead of returning silently.
+			if opts.NonInteractive {
+				if reg := task.GlobalRegistry(); reg != nil {
+					if stillPending := reg.PendingForSession(sessionID, nil); len(stillPending) > 0 {
+						a.injectWaitTimeoutNote(ctx, sessionID, stillPending,
+							fmt.Errorf("outer-cycle budget exhausted after %d turns", effectiveMaxTurns))
+					}
+				}
+			}
 			break OuterLoop
 		}
 		for {
@@ -924,7 +942,7 @@ OuterLoop:
 			"pending_count", len(pending),
 			"outer_cycle", outerCycles,
 		)
-		if err := reg.WaitForActiveTasks(ctx, sessionID, task.WaitOptions{IncludeMonitor: true}); err != nil {
+		if err := drainSessionTasks(ctx, reg, sessionID); err != nil {
 			// ctx cancelled (timeout or upstream cancel). Inject the
 			// synthetic Assistant timeout note enumerating still-
 			// pending tasks so any subsequent agent.Run on this
@@ -972,6 +990,31 @@ OuterLoop:
 	return finalResult
 }
 
+// drainSessionTasks blocks until the session has NO pending background
+// tasks, or ctx is cancelled. WaitForActiveTasks keeps its snapshot-at-
+// start semantics (tasks registered after a wait begins are not observed
+// by that wait), so after each clean return the pending set is re-read
+// and the wait repeats — covering tasks that appeared during the previous
+// wait window. Returns nil once drained, ctx.Err() on cancellation. The
+// loop cannot spin hot: a non-empty re-read means at least one running
+// task, and the next wait blocks on it.
+func drainSessionTasks(ctx context.Context, reg task.Registry, sessionID string) error {
+	for {
+		if err := reg.WaitForActiveTasks(ctx, sessionID, task.WaitOptions{IncludeMonitor: true}); err != nil {
+			return err
+		}
+		remaining := reg.PendingForSession(sessionID, nil)
+		if len(remaining) == 0 {
+			return nil
+		}
+		logging.Info(
+			"Non-interactive drain: tasks registered after the wait snapshot; re-waiting",
+			"session_id", sessionID,
+			"pending_count", len(remaining),
+		)
+	}
+}
+
 // injectWaitTimeoutNote writes a synthetic Assistant text message into
 // the session enumerating still-pending background tasks at the moment
 // the non-interactive wait was cancelled. Marked Synthetic:true so the
@@ -979,7 +1022,7 @@ OuterLoop:
 // / model-on-re-invocation consumers still observe it as ambient context.
 func (a *agent) injectWaitTimeoutNote(ctx context.Context, sessionID string, pending []*task.Task, waitErr error) {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[wait-timeout] %d background task(s) did not complete within the step's deadline (%v).\n", len(pending), waitErr)
+	fmt.Fprintf(&b, "[wait-timeout] %d background task(s) did not complete before the non-interactive wait ended (%v).\n", len(pending), waitErr)
 	for _, t := range pending {
 		fmt.Fprintf(&b,
 			" - task_id=%s kind=%s started=%s output_file=%s",

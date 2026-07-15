@@ -121,12 +121,20 @@ type result struct {
 	OrphanSweepRemoved       bool   `json:"orphan_sweep_removed"`
 	SandboxLeak              bool   `json:"sandbox_leak"`
 	// Non-interactive wait primitive end-to-end check.
-	NonInteractiveWaitOK        bool     `json:"non_interactive_wait_ok"`
-	NonInteractiveWaitElapsedOK bool     `json:"non_interactive_wait_elapsed_ok"`
-	NonInteractiveCtxTimeoutOK  bool     `json:"non_interactive_ctx_timeout_ok"`
-	WriteCalls                  int      `json:"write_calls"`
-	WriteErr                    string   `json:"write_err,omitempty"`
-	Errors                      []string `json:"errors,omitempty"`
+	NonInteractiveWaitOK        bool `json:"non_interactive_wait_ok"`
+	NonInteractiveWaitElapsedOK bool `json:"non_interactive_wait_elapsed_ok"`
+	NonInteractiveCtxTimeoutOK  bool `json:"non_interactive_ctx_timeout_ok"`
+	// Anti-spin: foreground sleep interception through the full bash-tool
+	// Run path (openspec bash-background-mode "Foreground wall-clock waits
+	// are redirected ..." requirement).
+	SleepInterceptOK              bool     `json:"sleep_intercept_ok"`
+	SleepInterceptFast            bool     `json:"sleep_intercept_fast"`
+	SleepInterceptNoEcho          bool     `json:"sleep_intercept_no_echo"`
+	SleepPassthroughInteractiveOK bool     `json:"sleep_passthrough_interactive_ok"`
+	SleepPassthroughNoPendingOK   bool     `json:"sleep_passthrough_no_pending_ok"`
+	WriteCalls                    int      `json:"write_calls"`
+	WriteErr                      string   `json:"write_err,omitempty"`
+	Errors                        []string `json:"errors,omitempty"`
 }
 
 func main() {
@@ -438,6 +446,68 @@ func main() {
 		}
 		// Clean up the hanging task so the orphan sweep at end-of-run is honest.
 		waitReg.MarkFinished(hangID, task.StateKilled, nil)
+	}
+
+	// ── 8. Anti-spin: foreground sleep interception ───────────────────
+	// Full bash-tool Run path (permission gate included). In a
+	// non-interactive ctx with a pending non-monitor task, a pure-wait
+	// command (`sleep N; echo …`) must NOT execute; the tool blocks on
+	// WaitForActiveTasks and returns a synthetic result enumerating the
+	// task(s) that completed during the wait. Interactive ctx and
+	// no-pending-task ctx must execute the sleep verbatim.
+	{
+		fullBash := tools.NewBashTool(perm, agentReg)
+		ireg := task.GlobalRegistry()
+		niCtx := context.WithValue(ctx, tools.NonInteractiveContextKey, true)
+
+		// 8a. Interception: pending task finishes ~300ms in; the requested
+		// sleep is 30s. A pass returns fast with the interception note and
+		// without the echo output.
+		pendID := task.NewTaskID(task.KindBash)
+		if err := ireg.Register(&task.Task{ID: pendID, SessionID: "SESS", Kind: task.KindBash}); err != nil {
+			res.Errors = append(res.Errors, fmt.Sprintf("intercept register: %v", err))
+		}
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			ireg.MarkFinished(pendID, task.StateCompleted, nil)
+		}()
+		interceptStart := time.Now()
+		iResp, iErr := fullBash.Run(niCtx, tools.ToolCall{
+			ID:    "sleep-intercept-call",
+			Input: `{"command":"sleep 30; echo intercept-should-not-run","description":"e2e sleep intercept"}`,
+		})
+		interceptElapsed := time.Since(interceptStart)
+		if iErr != nil {
+			res.Errors = append(res.Errors, fmt.Sprintf("intercept run: %v", iErr))
+		}
+		res.SleepInterceptOK = iErr == nil &&
+			strings.Contains(iResp.Content, "[non-interactive wait]") &&
+			strings.Contains(iResp.Content, pendID)
+		res.SleepInterceptFast = interceptElapsed < 10*time.Second
+		res.SleepInterceptNoEcho = !strings.Contains(iResp.Content, "intercept-should-not-run")
+		if !res.SleepInterceptOK {
+			res.Errors = append(res.Errors, fmt.Sprintf("intercept content (elapsed=%v): %.300s", interceptElapsed, iResp.Content))
+		}
+
+		// 8b. Interactive passthrough: same command shape actually runs.
+		pResp, pErr := fullBash.Run(ctx, tools.ToolCall{
+			ID:    "sleep-passthrough-call",
+			Input: `{"command":"sleep 0.2; echo passthrough-ok","description":"e2e sleep passthrough"}`,
+		})
+		if pErr != nil {
+			res.Errors = append(res.Errors, fmt.Sprintf("passthrough run: %v", pErr))
+		}
+		res.SleepPassthroughInteractiveOK = pErr == nil && strings.Contains(pResp.Content, "passthrough-ok")
+
+		// 8c. Non-interactive but zero pending tasks: passthrough too.
+		nResp, nErr := fullBash.Run(niCtx, tools.ToolCall{
+			ID:    "sleep-no-pending-call",
+			Input: `{"command":"sleep 0.2; echo no-pending-ok","description":"e2e no-pending passthrough"}`,
+		})
+		if nErr != nil {
+			res.Errors = append(res.Errors, fmt.Sprintf("no-pending run: %v", nErr))
+		}
+		res.SleepPassthroughNoPendingOK = nErr == nil && strings.Contains(nResp.Content, "no-pending-ok")
 	}
 
 	deps.mu.Lock()
