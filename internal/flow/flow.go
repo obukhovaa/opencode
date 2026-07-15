@@ -128,6 +128,14 @@ type Rule struct {
 	If       string `yaml:"if"`
 	Then     string `yaml:"then"`
 	Postpone bool   `yaml:"postpone,omitempty"`
+	// Cycle opts this rule out of the diamond-convergence guard. Set to
+	// `true` when this rule intentionally routes back to a step that may
+	// have already completed earlier in the same invocation (e.g. a
+	// verify → implement drift-fix cycle). Without it, the runtime treats
+	// the re-schedule as diamond convergence and silently drops it. Rules
+	// that are NOT part of a cycle should leave this false so the guard
+	// keeps protecting against unintended parallel double-scheduling.
+	Cycle bool `yaml:"cycle,omitempty"`
 }
 
 // Fallback defines retry and error-routing behavior for a step.

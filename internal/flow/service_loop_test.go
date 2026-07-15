@@ -568,6 +568,91 @@ func TestStepIteration_NotInArgs(t *testing.T) {
 // persists the iteration counter so a future invocation can resume at the
 // correct iteration. The postpone path itself stops at iteration N's "I am
 // postponed" marker — it does not enter the agent loop again.
+// TestMultiStepCycle_VerifyImplementLoop verifies that a two-step sequential
+// cycle (verify → implement → verify), marked with `cycle: true` on the
+// back-edge rule, admits the second `implement` schedule instead of dropping
+// it as diamond convergence. Regression coverage for the pre-fix bug that
+// caused CD-4497 to terminate at openspec-verify with drift notes populated
+// but implement never re-running.
+//
+// The flow: implement (always ok) → verify (returns verified=false first,
+// verified=true second) → cycle back to implement when verified=false OR
+// route to end when verified=true.
+func TestMultiStepCycle_VerifyImplementLoop(t *testing.T) {
+	testFlow := Flow{
+		ID:   "test-multi-step-cycle",
+		Name: "Verify-Implement Cycle",
+		Spec: FlowSpec{
+			Steps: []Step{
+				{
+					ID:     "implement",
+					Prompt: "impl iter=${step.iteration}",
+					Output: &StepOutput{Schema: map[string]any{"type": "object"}},
+					Rules: []Rule{
+						// Cycle: true — this edge participates in the
+						// verify/implement cycle. Both sides of the loop must
+						// be marked so the guard admits re-entry from either
+						// direction.
+						{Then: "verify", Cycle: true},
+					},
+				},
+				{
+					ID:     "verify",
+					Prompt: "verify iter=${step.iteration}",
+					Output: &StepOutput{Schema: map[string]any{"type": "object"}},
+					Rules: []Rule{
+						{If: "${args.verified} == true", Then: "end"},
+						// Cycle: true — back-edge of the two-step verify/implement
+						// cycle. Without this flag the runtime treats the second
+						// schedule of implement as diamond convergence.
+						{If: "${args.verified} != true", Then: "implement", Cycle: true},
+					},
+				},
+				{ID: "end", Prompt: "done"},
+			},
+		},
+	}
+	registerTestFlow(t, testFlow)
+
+	// Call sequence:
+	//   1. implement (iter 1) → {} (routes to verify)
+	//   2. verify (iter 1) → {verified:false} (routes back to implement)
+	//   3. implement (iter 1 again — cross-step target starts at 1) → {} (routes to verify)
+	//   4. verify (iter 1 again) → {verified:true} (routes to end)
+	//   5. end (iter 1) → {}
+	agent := &stubAgent{
+		Broker: pubsub.NewBroker[agentpkg.AgentEvent](),
+		responses: []agentpkg.AgentEvent{
+			loopRespond(`{}`),
+			loopRespond(`{"verified":false}`),
+			loopRespond(`{}`),
+			loopRespond(`{"verified":true}`),
+			loopRespond(`{}`),
+		},
+	}
+	q := &stubQuerier{}
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+
+	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", testFlow.ID, map[string]any{}, true)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	states := drainFlow(t, agentEvents, flowStates)
+
+	// Pre-fix bug: implement ran once, verify ran once, cycle-back was silently
+	// dropped by the diamond-guard, end never ran. After the fix implement and
+	// verify each run TWICE and end runs once.
+	if got := countCompletedByStepID(states, "implement"); got != 2 {
+		t.Errorf("implement completed = %d, want 2 (multi-step cycle should admit the second schedule)", got)
+	}
+	if got := countCompletedByStepID(states, "verify"); got != 2 {
+		t.Errorf("verify completed = %d, want 2", got)
+	}
+	if got := countCompletedByStepID(states, "end"); got != 1 {
+		t.Errorf("end completed = %d, want 1 (cycle should terminate cleanly)", got)
+	}
+}
+
 func TestSelfLoop_PostponeStoresIteration(t *testing.T) {
 	testFlow := Flow{
 		ID:   "test-postpone-stores-iter",
