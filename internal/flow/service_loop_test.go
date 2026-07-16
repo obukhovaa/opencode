@@ -653,6 +653,96 @@ func TestMultiStepCycle_VerifyImplementLoop(t *testing.T) {
 	}
 }
 
+// TestMultiStepCycle_IterationIncrements verifies that on a cycle:true
+// back-edge, the target step's iteration counter is bumped to prior+1
+// instead of resetting to 1 (as it does for a normal cross-step route).
+// Regression coverage for the CD-4497 finding where
+// `${step.iteration} < 3` on the verify→implement back-edge failed to
+// cap the loop because both steps' flow_states rows always showed
+// iteration=1 no matter how many times the cycle spun.
+func TestMultiStepCycle_IterationIncrements(t *testing.T) {
+	testFlow := Flow{
+		ID:   "test-cycle-iter",
+		Name: "Cycle Iteration",
+		Spec: FlowSpec{
+			Steps: []Step{
+				{
+					ID:     "implement",
+					Prompt: "impl iter=${step.iteration}",
+					Output: &StepOutput{Schema: map[string]any{"type": "object"}},
+					Rules: []Rule{
+						{Then: "verify", Cycle: true},
+					},
+				},
+				{
+					ID:     "verify",
+					Prompt: "verify iter=${step.iteration}",
+					Output: &StepOutput{Schema: map[string]any{"type": "object"}},
+					Rules: []Rule{
+						// step.iteration-driven cap: after 3 verify passes,
+						// exit via `end`. Pre-fix bug: iteration reset to 1
+						// on every re-entry, so this rule always failed the
+						// `< 3` clause and the >= 3 branch never fired.
+						{If: "${step.iteration} >= 3", Then: "end"},
+						{If: "${step.iteration} < 3", Then: "implement", Cycle: true},
+					},
+				},
+				{ID: "end", Prompt: "done"},
+			},
+		},
+	}
+	registerTestFlow(t, testFlow)
+
+	// Verify keeps saying `verified: false` — the cap decides when to
+	// exit, not the agent's output. All responses are empty {} so both
+	// steps flow strictly by rule.
+	agent := &stubAgent{
+		Broker: pubsub.NewBroker[agentpkg.AgentEvent](),
+		responses: []agentpkg.AgentEvent{
+			loopRespond(`{}`),
+		},
+	}
+	q := &stubQuerier{}
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+
+	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", testFlow.ID, map[string]any{}, true)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	states := drainFlow(t, agentEvents, flowStates)
+
+	// The cycle should run 3 verify passes then exit through `end`.
+	// implement runs 3 times (once before each verify): iter 1, 2, 3.
+	// verify runs 3 times as well: iter 1, 2, 3.
+	// On verify's 3rd pass the >= 3 rule fires and routes to `end`.
+	if got := countCompletedByStepID(states, "implement"); got != 3 {
+		t.Errorf("implement completed = %d, want 3", got)
+	}
+	if got := countCompletedByStepID(states, "verify"); got != 3 {
+		t.Errorf("verify completed = %d, want 3", got)
+	}
+	if got := countCompletedByStepID(states, "end"); got != 1 {
+		t.Errorf("end completed = %d, want 1", got)
+	}
+
+	// Confirm iteration bump: the last verify state should have iteration=3,
+	// not the pre-fix value of 1.
+	finalVerify := findLatestByStepID(states, "verify")
+	if finalVerify == nil {
+		t.Fatalf("no verify state persisted")
+	}
+	if finalVerify.Iteration != 3 {
+		t.Errorf("final verify iteration = %d, want 3 (cycle re-entry must bump target iteration)", finalVerify.Iteration)
+	}
+	finalImpl := findLatestByStepID(states, "implement")
+	if finalImpl == nil {
+		t.Fatalf("no implement state persisted")
+	}
+	if finalImpl.Iteration != 3 {
+		t.Errorf("final implement iteration = %d, want 3", finalImpl.Iteration)
+	}
+}
+
 func TestSelfLoop_PostponeStoresIteration(t *testing.T) {
 	testFlow := Flow{
 		ID:   "test-postpone-stores-iter",

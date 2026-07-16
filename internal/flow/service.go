@@ -330,6 +330,27 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 				}
 			}
 
+			// Cycle back-edge iteration bump. A rule marked cycle:true
+			// carries the intent "re-enter a step that may have already
+			// completed in this session" (verify → implement → verify …).
+			// The default cross-step scheduling (see runStep line ~766)
+			// resets nextIteration to 1 because most cross-step routes
+			// are fresh entries — but for a cycle re-entry that resets
+			// the target's own ${step.iteration}, so cap rules like
+			// `${step.iteration} < 3` on the back-edge never fire and
+			// the cycle runs unbounded. Look up the target step's prior
+			// flow_state row (if any) and bump iteration to prior+1, so
+			// the target's rules see the true cycle depth. On first-ever
+			// entry (no row yet), the DB lookup misses and iteration
+			// stays at whatever the sender set (typically 1). See
+			// TestMultiStepCycle_IterationIncrements + the CD-4497
+			// verify-loop postmortem in openspec/specs/flow-runtime-cycles.
+			if work.cycle {
+				if fs, dbErr := s.querier.GetFlowState(ctx, stepSessionID); dbErr == nil && fs.Iteration >= 1 {
+					work.iteration = int(fs.Iteration) + 1
+				}
+			}
+
 			go func(w stepWork, sessID string) {
 				defer wg.Done()
 				s.runStep(ctx, f, w.step, sessID, rootSessionID, w.args, w.prevStep, &wg, agentEvents, flowStates, nextSteps, w.postpone, w.iteration)

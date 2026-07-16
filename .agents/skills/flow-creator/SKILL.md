@@ -339,6 +339,8 @@ A **multi-step cycle** is a sequential loop between two or more different steps 
 
 Both edges of the cycle must be marked (verify → implement AND implement → verify) — the guard blocks re-entry from either direction, so marking only one side degrades the loop to a single pass.
 
+**`${step.iteration}` on cycle re-entries.** When a step is re-entered via `cycle: true`, its iteration counter is bumped to `prior + 1` instead of the default cross-step reset to 1. That means a rule like `${step.iteration} < 3` on the back-edge caps the cycle at the target step's OWN total run count in this session — three verify passes total, not three passes within one implement→verify segment. Same semantic as `maxIterations` on a self-loop, so `${step.iteration}` in the target's rules and prompt reflects true cycle depth. First-ever entry of a cycle-target starts at 1 (no prior row) — the cap fires cleanly on the 3rd, 4th, … re-entry as expected.
+
 ```yaml
 - id: implement
   # ...
