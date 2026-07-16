@@ -159,6 +159,40 @@ func TestEvaluatePredicate_Composite(t *testing.T) {
 			true, false,
 		},
 
+		// Numeric comparisons — <, <=, >, >=
+		{"lt true", `${args.iter} < 3`, map[string]any{"iter": 1}, true, false},
+		{"lt false at boundary", `${args.iter} < 3`, map[string]any{"iter": 3}, false, false},
+		{"lt false", `${args.iter} < 3`, map[string]any{"iter": 5}, false, false},
+		{"le true at boundary", `${args.iter} <= 3`, map[string]any{"iter": 3}, true, false},
+		{"le true below", `${args.iter} <= 3`, map[string]any{"iter": 2}, true, false},
+		{"le false", `${args.iter} <= 3`, map[string]any{"iter": 4}, false, false},
+		{"gt true", `${args.iter} > 3`, map[string]any{"iter": 5}, true, false},
+		{"gt false at boundary", `${args.iter} > 3`, map[string]any{"iter": 3}, false, false},
+		{"ge true at boundary", `${args.iter} >= 3`, map[string]any{"iter": 3}, true, false},
+		{"ge false", `${args.iter} >= 3`, map[string]any{"iter": 2}, false, false},
+
+		// Step-scoped iteration — the canonical use case
+		{"step.iteration < N true", `${step.iteration} < 3`, map[string]any{}, true, false},
+		{"sizeof with numeric operator", `sizeof ${args.blockers} > 0`, map[string]any{"blockers": []any{"x", "y"}}, true, false},
+		{"sizeof zero not gt zero", `sizeof ${args.blockers} > 0`, map[string]any{"blockers": []any{}}, false, false},
+
+		// Numeric AND-composition — the exact CD-4497 rule shape
+		{
+			"drift-cycle rule matches",
+			`sizeof ${args.blockers} == 0 && ${args.verified} != true && ${step.iteration} < 3`,
+			map[string]any{"blockers": []any{}, "verified": false},
+			true, false,
+		},
+		{
+			"drift-cycle rule falls off at cap",
+			`sizeof ${args.blockers} == 0 && ${args.verified} != true && ${step.iteration} >= 3`,
+			map[string]any{"blockers": []any{}, "verified": false},
+			false, false,
+		},
+
+		// Non-numeric LHS with numeric operator → error
+		{"lt non-numeric errors", `${args.name} < 3`, map[string]any{"name": "hello"}, false, true},
+
 		// Malformed input
 		{"trailing &&", `${args.a} == 1 &&`, map[string]any{"a": 1}, false, true},
 		{"leading ||", `|| ${args.a} == 1`, map[string]any{"a": 1}, false, true},
