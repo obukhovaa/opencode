@@ -818,7 +818,10 @@ OuterLoop:
 						msgHistory = msgs
 					}
 
-					etaTokens, shouldTriggerAutoCompaction = a.provider.CountTokens(ctx, AutoCompactionThreshold, msgHistory, toolSet)
+					// Re-count against the same effective threshold that triggered
+					// this compaction so the log reflects the step's configured
+					// gate, not the global default.
+					etaTokens, shouldTriggerAutoCompaction = a.provider.CountTokens(ctx, effectiveCompactionThreshold(opts.CompactionThreshold), msgHistory, toolSet)
 					if shouldTriggerAutoCompaction {
 						logging.Warn(
 							"Context compacted, but still exceed context threshold",

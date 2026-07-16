@@ -26,10 +26,12 @@ import (
 const AuroraTLSConfigName = "aurora"
 
 // rdsCABundle is the Amazon RDS certificate bundle for eu-central-1 (the region
-// the c2 agent Aurora Serverless cluster lives in — see GENAI-48). It contains
-// the regional intermediate plus the AWS RDS global root, which is all that is
-// required to verify an Aurora MySQL endpoint's server certificate. Refresh it
-// from https://truststore.pki.rds.amazonaws.com/eu-central-1/eu-central-1-bundle.pem
+// the c2 agent Aurora Serverless cluster lives in — see GENAI-48). It is the
+// verbatim AWS bundle and contains the three self-signed regional root CAs
+// (ECC384, RSA2048, RSA4096 G1). The Aurora endpoint sends its leaf plus the
+// signing intermediate during the handshake, so trusting these roots is all
+// that is required to verify the server certificate. Refresh it from
+// https://truststore.pki.rds.amazonaws.com/eu-central-1/eu-central-1-bundle.pem
 // if AWS rotates the CA.
 //
 //go:embed assets/rds-eu-central-1-bundle.pem

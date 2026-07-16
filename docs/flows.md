@@ -94,6 +94,7 @@ The flow ID is derived from the filename without its extension. For example, `re
 | `maxTurns` | int | No | Per-step override for the agent's `maxTurns`. `0` (unset) inherits from the agent. |
 | `maxIterations` | int | No | Cap on in-process self-loop iterations. `0` (unset) is unbounded — only the flow timeout applies. When the (N+1)th self-route would exceed the cap, the step fails (and runs its `fallback`). See [Self-Loops](#self-loops). |
 | `timeout` | duration | No | Wall-clock deadline for the step's `agent.RunWith` invocation, including the non-interactive end-of-turn wait for any background tasks (`bash run_in_background`, `task async`, `monitor`) the step's agent spawned. Format is a Go duration string (`5m`, `1h30m`). Unset falls back to `OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT`; if that is also unset, the wait is bounded only by the surrounding orchestrator's ctx. When the deadline trips, the runtime injects a synthetic Assistant `[wait-timeout]` message into the session log enumerating still-pending tasks, then returns the step's pre-wait result. |
+| `compact.threshold` | float | No | Per-step override for the auto-compaction trigger (tokens-used / context-window ratio). Must be in `(0, 1]`; out-of-range values are clamped (`< 0` → default, `> 1` → 1) with a warn. `0` (unset) inherits the global default (`~0.95`), so this is strictly opt-in. Set lower (e.g. `0.7`) for context-heavy steps that should compact earlier. Only the tool-use-loop compaction check honours the override. |
 
 ### Rules
 
@@ -118,9 +119,12 @@ Supported operators:
 
 | Operator | Description |
 |----------|-------------|
-| `==` | Equality |
-| `!=` | Inequality |
+| `==` | Equality (string comparison) |
+| `!=` | Inequality (string comparison) |
 | `=~` | Regex match (pattern delimited by `/`) |
+| `<` `<=` `>` `>=` | Numeric comparison |
+
+Numeric operators parse both sides as `float64`. The left-hand value is coerced from int / float / bool (`true` = 1) or, failing that, parsed from its string form; a `sizeof` prefix compares the size. A non-numeric left-hand side returns an error and the rule is skipped (fail-loud, mirroring the string operators) rather than silently matching false. Use them to cap self-loops explicitly, e.g. `${step.iteration} < 3`.
 
 Predicates can reference two scopes:
 
