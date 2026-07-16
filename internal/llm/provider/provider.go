@@ -634,17 +634,64 @@ func (p *baseProvider[C]) StreamResponse(ctx context.Context, messages []message
 	return wrapped
 }
 
+// localTokenEstimate computes the heuristic token count for the request.
+// Unlike some provider count_tokens endpoints, it ALWAYS accounts for the
+// tool schemas (via message.EstimateTokens) and the system prompt — the two
+// components that dominate a fresh request's footprint. It is a lower-bound
+// estimate (the 4-bytes/token heuristic tends to slightly undercount dense
+// JSON), which is exactly why it is safe to use as a floor for the endpoint
+// result in CountTokens.
+func (p *baseProvider[C]) localTokenEstimate(messages []message.Message, tools []toolsPkg.BaseTool) int64 {
+	est := message.EstimateTokens(messages, tools, message.BytesPerTokenEta)
+	// Account for system message tokens not included in EstimateTokens.
+	if p.options.systemMessage != "" {
+		est += int64(len(p.options.systemMessage) / message.BytesPerTokenEta)
+	}
+	return est
+}
+
+// reconcileTokenEstimate picks the trustworthy token count between the
+// provider's count_tokens endpoint result and the local heuristic estimate.
+//
+// Some proxies (observed: LiteLLM in front of Bedrock) answer HTTP 200 from
+// /count_tokens but silently omit the system prompt AND tool schemas from the
+// returned count — undercounting a fresh, tool-heavy request by tens of
+// thousands of tokens. Because the loop trusts this value to decide when to
+// auto-compact, the truncation makes compaction fire late or never, risking a
+// hard context-overflow error mid-run.
+//
+// The local estimate always includes system + tools, so we take the larger of
+// the two as a floor: a healthy endpoint (native Anthropic / Vertex) already
+// counts everything and stays >= local, so it wins unchanged; a truncating
+// proxy is corrected up to the local estimate.
+func reconcileTokenEstimate(endpoint, local int64) int64 {
+	if endpoint > local {
+		return endpoint
+	}
+	return local
+}
+
 func (p *baseProvider[C]) CountTokens(ctx context.Context, threshold float64, messages []message.Message, tools []toolsPkg.BaseTool) (int64, bool) {
-	estimatedTokens, err := p.client.countTokens(ctx, messages, tools)
-	// Fallback to local estimation
+	local := p.localTokenEstimate(messages, tools)
+	estimatedTokens := local
+	endpointTokens, err := p.client.countTokens(ctx, messages, tools)
 	if err != nil {
+		// Endpoint unavailable — fall back to the local estimate.
 		if !errors.Is(err, context.Canceled) {
 			logging.Warn("Provider doesn't support countTokens endpoint, using local strategy for max_tokens", "model", p.options.model.Name, "cause", err.Error())
 		}
-		estimatedTokens = message.EstimateTokens(messages, tools, message.BytesPerTokenEta)
-		// Account for system message tokens not included in EstimateTokens
-		if p.options.systemMessage != "" {
-			estimatedTokens += int64(len(p.options.systemMessage) / message.BytesPerTokenEta)
+	} else {
+		estimatedTokens = reconcileTokenEstimate(endpointTokens, local)
+		// A proxy that returns fewer tokens than the local estimate is almost
+		// certainly omitting system + tools from the count (see
+		// reconcileTokenEstimate). Warn once per call so the drift is visible
+		// without silently under-compacting.
+		if endpointTokens < local {
+			logging.Warn("count_tokens endpoint returned fewer tokens than the local estimate; using local estimate (endpoint likely omits system prompt and tool schemas)",
+				"model", p.options.model.Name,
+				"endpoint_tokens", endpointTokens,
+				"local_tokens", local,
+			)
 		}
 	}
 	contextWindow := p.Model().ContextWindow
@@ -655,6 +702,8 @@ func (p *baseProvider[C]) CountTokens(ctx context.Context, threshold float64, me
 	hitThreshold := estimatedTokens >= thresholdAbs
 	logging.Debug("Token estimation for auto-compaction",
 		"estimated_tokens", estimatedTokens,
+		"endpoint_tokens", endpointTokens,
+		"local_tokens", local,
 		"threshold", thresholdAbs,
 		"context_window", contextWindow,
 		"auto-compaction required", hitThreshold,
