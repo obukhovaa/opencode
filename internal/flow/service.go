@@ -607,7 +607,15 @@ func (s *service) runStep(
 			// of running unbounded on context.Background(). See openspec
 			// flow-runtime-resume "step-scoped context" requirement.
 			runCtx := context.WithValue(stepScopedCtx, tools.StepScopedContextKey, stepScopedCtx)
-			done, runErr := agentSvc.RunWith(runCtx, sess.ID, prompt, step.MaxTurns, agentpkg.RunOptions{NonInteractive: true})
+			runOpts := agentpkg.RunOptions{NonInteractive: true}
+			// Per-step compaction-threshold override. Nil / zero leaves the
+			// agent runtime on its global default (AutoCompactionThreshold).
+			// Range validation (must be in (0, 1]) happens inside
+			// effectiveCompactionThreshold — the flow layer just forwards.
+			if step.Compact != nil && step.Compact.Threshold > 0 {
+				runOpts.CompactionThreshold = step.Compact.Threshold
+			}
+			done, runErr := agentSvc.RunWith(runCtx, sess.ID, prompt, step.MaxTurns, runOpts)
 			if runErr != nil {
 				cancelStep()
 				lastErr = runErr

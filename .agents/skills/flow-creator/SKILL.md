@@ -39,6 +39,34 @@ When a step needs to iterate inside a single invocation (build levels of a graph
 
 `maxTurns` (per-step) overrides the agent's `maxTurns` for a single step. Useful when one step in a flow needs more (or fewer) tool-use turns than the rest of the flow — e.g. a long-running build coordinator vs. a short summary step. `maxIterations` is a different axis (counts whole agent runs of the step, not tool-use turns within one run).
 
+**Per-step compaction (`compact.threshold`).** OpenCode's tool-use loop checks context usage before each model call and, when `token_count / context_window` exceeds `AutoCompactionThreshold` (0.95 by default), synchronously summarises the session before continuing. That default is right for most flows but too late for context-heavy steps — a `composer-developer` implement step with many `bash` / `read` results can burn a third of the window on a single tool call, missing the 0.95 gate on the way up and then blowing past it on the next turn. Set `compact.threshold` on such a step to trigger earlier:
+
+```yaml
+- id: implement-with-openspec
+  agent: composer-developer
+  maxTurns: 300
+  compact:
+    threshold: 0.7   # compact when 70 % of the context window is used
+  # ...
+```
+
+Guardrails: values MUST be in `(0, 1]`; the runtime clamps out-of-range inputs (`< 0` → default, `> 1` → 1) and logs a warn. Omitting the block or leaving `threshold: 0` inherits the global default, so this is strictly opt-in — no regression risk for flows that don't need it. Only the tool-use-loop compaction check honours the override; final-turn cleanup and provider-side hard limits remain on their built-in thresholds.
+
+**Numeric predicates in rules (`<`, `<=`, `>`, `>=`).** Rule predicates support numeric comparison in addition to `==`, `!=`, `=~`. Use them with `${step.iteration}` or numeric args to cap loops explicitly:
+
+```yaml
+rules:
+  - if: ${args.verified} != true && ${step.iteration} < 3
+    then: implement
+    cycle: true
+  - if: ${args.verified} != true && ${step.iteration} >= 3
+    then: end
+  - if: sizeof ${args.blockers} > 0
+    then: resolve
+```
+
+Both sides are parsed as float64. Numeric coercion covers int / int64 / float / bool (true=1). A non-numeric LHS returns an error and the rule is skipped — mirrors the fail-loud semantics of the string operators so authoring bugs surface instead of no-matching silently.
+
 Use `flow.session.prefix` with an `${args.*}` reference when the flow should be **re-triggerable by a user-provided identifier** (e.g. Jira ticket key, PR number, Slack thread ID). On a re-trigger of a cleanly-completed prior run, the flow re-executes from step 0 against the current world — picking up new comments, status changes, or other external events — while every step's session keeps its prior message history so the agent has cumulative context. Mid-state re-triggers (a step is `postponed`, `waiting_for_input`, or stuck `running`) resume the paused step instead. Omit `prefix` to get independent invocations (each run gets a fresh timestamp prefix and shares no state).
 
 Set `flow.session.resume_on_failure: true` only when the flow is a long, idempotency-safe pipeline whose earlier completed steps must NOT be redone after a transient failure (e.g. paid API calls, build artifacts, anything with non-repeatable side-effects). Default `false` is correct for event-driven flows where a re-trigger after failure means "re-evaluate from step 0 against current state," not "retry the same step." A typo in the `session` block (e.g. `resume_on_fail` missing the `ure`) fails flow load with `ErrInvalidYAML` rather than silently defaulting.

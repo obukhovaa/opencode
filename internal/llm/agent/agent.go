@@ -57,6 +57,29 @@ const (
 	AutoCompactionThreshold = 0.95
 )
 
+// effectiveCompactionThreshold applies RunOptions.CompactionThreshold as an
+// override to the global AutoCompactionThreshold. A zero override means
+// "use the default"; values outside (0, 1] are clamped and warned so a
+// misconfigured flow step can't silently disable compaction or force it
+// on every turn. Kept as a top-level helper (not a RunOptions method) so
+// hot-path calls compile inline without an extra receiver load.
+func effectiveCompactionThreshold(override float64) float64 {
+	if override == 0 {
+		return AutoCompactionThreshold
+	}
+	if override < 0 {
+		logging.Warn("negative compaction threshold clamped to default",
+			"got", override, "default", AutoCompactionThreshold)
+		return AutoCompactionThreshold
+	}
+	if override > 1 {
+		logging.Warn("compaction threshold > 1 clamped to 1",
+			"got", override)
+		return 1
+	}
+	return override
+}
+
 type AgentEvent struct {
 	Type    AgentEventType
 	Message message.Message
@@ -87,6 +110,16 @@ type RunOptions struct {
 	// invocation. Default (false) preserves the original interactive
 	// auto-resume behaviour where ResumeSession kicks a fresh agent.Run.
 	NonInteractive bool
+
+	// CompactionThreshold overrides the global AutoCompactionThreshold
+	// (default 0.95) for this Run only. Set to a value in (0, 1] to trigger
+	// synchronous compaction earlier — e.g. a flow step processing a lot of
+	// tool output can set 0.7 to compact well before the hard limit. Zero
+	// means "use the global default"; values outside (0, 1] are clamped to
+	// the closest valid endpoint and a warn is logged. Only the tool-use
+	// loop's pre-model-call check consults this override; unrelated paths
+	// (final-turn checks, provider-side hard limits) remain unchanged.
+	CompactionThreshold float64
 }
 
 type Service interface {
@@ -732,7 +765,7 @@ OuterLoop:
 				// Continue processing
 			}
 
-			etaTokens, shouldTriggerAutoCompaction := a.provider.CountTokens(ctx, AutoCompactionThreshold, msgHistory, toolSet)
+			etaTokens, shouldTriggerAutoCompaction := a.provider.CountTokens(ctx, effectiveCompactionThreshold(opts.CompactionThreshold), msgHistory, toolSet)
 			// Check if auto-compaction should be triggered before each model call
 			// This is crucial for long tool use loops that can exceed context limits
 			// NOTE: since tool may provide output exceeding context limit when combined with existing history,
