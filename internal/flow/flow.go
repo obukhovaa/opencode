@@ -88,6 +88,29 @@ type Step struct {
 	// Interaction carries the binding targets for an Interactive step.
 	// Ignored when Interactive is false.
 	Interaction *StepInteraction `yaml:"interaction,omitempty"`
+	// Compact optionally overrides context-compaction behaviour for this
+	// step only. Nil / zero leaves the agent runtime on its global default
+	// (AutoCompactionThreshold ~0.95). Set a lower value (e.g. 0.7) when a
+	// step's agent burns context fast on long tool-use loops — the agent
+	// then compacts earlier, before the hard limit, so more of the run
+	// stays inside the model's cached prompt. See flow-creator SKILL
+	// "Per-step context compaction".
+	Compact *StepCompact `yaml:"compact,omitempty"`
+}
+
+// StepCompact configures per-step overrides to the auto-compaction
+// trigger. Fields are additive: unset fields fall through to the runtime
+// default; a set Threshold overrides the global AutoCompactionThreshold
+// for the pre-model-call check inside the tool-use loop. Reserved room
+// for a future `rules:` predicate list so the flow author can request
+// compaction on specific arg shapes without leaning on the tokens ratio.
+type StepCompact struct {
+	// Threshold is the tokens-used / context-window ratio that triggers
+	// synchronous compaction before the next model call. Must be in
+	// (0, 1]; the agent clamps out-of-range values and logs a warn.
+	// Zero (unset) means "use the global default" — behaviour identical
+	// to omitting the whole Compact block.
+	Threshold float64 `yaml:"threshold,omitempty"`
 }
 
 // StepInteraction captures the binding targets a router-initiated step
@@ -128,6 +151,14 @@ type Rule struct {
 	If       string `yaml:"if"`
 	Then     string `yaml:"then"`
 	Postpone bool   `yaml:"postpone,omitempty"`
+	// Cycle opts this rule out of the diamond-convergence guard. Set to
+	// `true` when this rule intentionally routes back to a step that may
+	// have already completed earlier in the same invocation (e.g. a
+	// verify → implement drift-fix cycle). Without it, the runtime treats
+	// the re-schedule as diamond convergence and silently drops it. Rules
+	// that are NOT part of a cycle should leave this false so the guard
+	// keeps protecting against unintended parallel double-scheduling.
+	Cycle bool `yaml:"cycle,omitempty"`
 }
 
 // Fallback defines retry and error-routing behavior for a step.

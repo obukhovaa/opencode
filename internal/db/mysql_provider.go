@@ -26,6 +26,11 @@ func NewMySQLProvider(cfg config.MySQLConfig) *MySQLProvider {
 
 // Connect establishes a connection to the MySQL database.
 func (p *MySQLProvider) Connect() (*sql.DB, error) {
+	// Make the "aurora" TLS config available so a DSN carrying `tls=aurora`
+	// (Aurora/RDS with a verified server certificate) connects successfully.
+	// No-op for self-hosted DSNs that omit the parameter.
+	registerAuroraTLS()
+
 	dsn := p.buildDSN()
 
 	// Open the MySQL database

@@ -118,10 +118,15 @@ func NewService(
 }
 
 type stepWork struct {
-	step      Step
-	args      map[string]any
-	prevStep  *FlowState
-	postpone  bool
+	step     Step
+	args     map[string]any
+	prevStep *FlowState
+	postpone bool
+	// cycle set to true when the routing rule that produced this stepWork
+	// declared `cycle: true`. It bypasses the diamond-convergence guard so
+	// legitimate re-entries (e.g. verify → implement → verify) admit the
+	// second implement schedule instead of dropping it as convergence.
+	cycle     bool
 	iteration int
 }
 
@@ -301,12 +306,24 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 		for work := range nextSteps {
 			stepSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, flowID, work.step.ID)
 			// Diamond-convergence guard: a step scheduled by multiple upstream
-			// paths runs at most once per invocation. Self-loops are exempt —
-			// they arrive sequentially (only after the prior iteration completes
-			// and enqueues the next) so re-entry is safe and intentional.
+			// paths runs at most once per invocation. Three exemptions:
+			//   1. Self-loops (step routes to itself, non-postpone): arrive
+			//      sequentially, the prior iteration's completion is what
+			//      enqueues the next iteration.
+			//   2. Postponed re-entry: postpone is an explicit external
+			//      re-schedule, not a race.
+			//   3. Explicit cycle rules (Rule.Cycle == true): the flow author
+			//      declared "this route is a legitimate cycle back to a step
+			//      that may have run before" — e.g. verify → implement →
+			//      verify cycles. Without this the guard would silently drop
+			//      the second `implement` schedule as diamond convergence
+			//      (pre-fix bug: CD-4497 openspec-verify emitted verified=false,
+			//      routed back to implement, engine dropped it → flow closed
+			//      with drift unhealed; see openspec/specs/flow-runtime-cycles).
 			isSelfLoop := work.prevStep != nil && work.prevStep.StepID == work.step.ID
-			if !isSelfLoop {
-				if _, loaded := startedSteps.LoadOrStore(work.step.ID, true); loaded && !work.postpone {
+			bypass := isSelfLoop || work.postpone || work.cycle
+			if !bypass {
+				if _, loaded := startedSteps.LoadOrStore(work.step.ID, true); loaded {
 					logging.Debug("Step already started, skipping (diamond convergence)", "step", work.step.ID)
 					wg.Done() // balance the Add from sender
 					continue
@@ -590,7 +607,15 @@ func (s *service) runStep(
 			// of running unbounded on context.Background(). See openspec
 			// flow-runtime-resume "step-scoped context" requirement.
 			runCtx := context.WithValue(stepScopedCtx, tools.StepScopedContextKey, stepScopedCtx)
-			done, runErr := agentSvc.RunWith(runCtx, sess.ID, prompt, step.MaxTurns, agentpkg.RunOptions{NonInteractive: true})
+			runOpts := agentpkg.RunOptions{NonInteractive: true}
+			// Per-step compaction-threshold override. Nil / zero leaves the
+			// agent runtime on its global default (AutoCompactionThreshold).
+			// Range validation (must be in (0, 1]) happens inside
+			// effectiveCompactionThreshold — the flow layer just forwards.
+			if step.Compact != nil && step.Compact.Threshold > 0 {
+				runOpts.CompactionThreshold = step.Compact.Threshold
+			}
+			done, runErr := agentSvc.RunWith(runCtx, sess.ID, prompt, step.MaxTurns, runOpts)
 			if runErr != nil {
 				cancelStep()
 				lastErr = runErr
@@ -766,7 +791,7 @@ doneRetry:
 			nextIteration = 1
 		}
 		wg.Add(1)
-		nextSteps <- stepWork{step: rs.step, args: copyArgs(args), prevStep: completedState, postpone: rs.postpone, iteration: nextIteration}
+		nextSteps <- stepWork{step: rs.step, args: copyArgs(args), prevStep: completedState, postpone: rs.postpone, cycle: rs.cycle, iteration: nextIteration}
 	}
 }
 
@@ -1244,6 +1269,7 @@ func resolveArgsPath(args map[string]any, path string) (any, bool) {
 type resolvedStep struct {
 	step     Step
 	postpone bool
+	cycle    bool
 }
 
 func resolveNextSteps(rules []Rule, allSteps []Step, args map[string]any, stepVars map[string]any) []resolvedStep {
@@ -1251,7 +1277,7 @@ func resolveNextSteps(rules []Rule, allSteps []Step, args map[string]any, stepVa
 	for _, rule := range rules {
 		if rule.If == "" {
 			if next := findStep(allSteps, rule.Then); next != nil {
-				result = append(result, resolvedStep{step: *next, postpone: rule.Postpone})
+				result = append(result, resolvedStep{step: *next, postpone: rule.Postpone, cycle: rule.Cycle})
 			}
 			continue
 		}
@@ -1262,7 +1288,7 @@ func resolveNextSteps(rules []Rule, allSteps []Step, args map[string]any, stepVa
 		}
 		if match {
 			if next := findStep(allSteps, rule.Then); next != nil {
-				result = append(result, resolvedStep{step: *next, postpone: rule.Postpone})
+				result = append(result, resolvedStep{step: *next, postpone: rule.Postpone, cycle: rule.Cycle})
 			}
 		}
 	}

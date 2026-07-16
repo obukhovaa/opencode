@@ -11,9 +11,11 @@ import (
 //
 //	[sizeof ]${args|step.KEY} OP VALUE
 //
-// where OP is ==, !=, or =~. The value is captured greedily up to end of input,
-// so callers must strip composite-operator tails before passing a string in.
-var atomRegex = regexp.MustCompile(`^(?:(sizeof)\s+)?\$\{(args|step)\.([^}]+)\}\s*(==|!=|=~)\s*(.+)$`)
+// where OP is ==, !=, =~, <, <=, >, >=. The value is captured greedily up to
+// end of input, so callers must strip composite-operator tails before passing
+// a string in. Two-char operators (>=, <=) come before their one-char prefixes
+// in the alternation so the regex prefers the longer match.
+var atomRegex = regexp.MustCompile(`^(?:(sizeof)\s+)?\$\{(args|step)\.([^}]+)\}\s*(==|!=|=~|<=|>=|<|>)\s*(.+)$`)
 
 // evaluatePredicate evaluates a flow-rule predicate expression. The expression
 // is a single atom (e.g. `${args.status} == done`) or a boolean composition of
@@ -94,6 +96,65 @@ func evaluateAtom(atom string, args map[string]any, stepVars map[string]any) (bo
 			return false, fmt.Errorf("invalid regex pattern %q: %w", pattern, err)
 		}
 		return re.MatchString(actualStr), nil
+	case "<", "<=", ">", ">=":
+		// Numeric comparison. Both sides must parse as float64; any parse
+		// failure returns an error so the flow author sees the problem
+		// instead of the rule silently no-matching (mirrors the fail-loudly
+		// semantics of the other operators). Bool actual is coerced to 0/1
+		// so `${args.blocked} > 0` works, matching the sizeof shorthand.
+		var lhs float64
+		switch v := actual.(type) {
+		case float64:
+			lhs = v
+		case float32:
+			lhs = float64(v)
+		case int:
+			lhs = float64(v)
+		case int32:
+			lhs = float64(v)
+		case int64:
+			lhs = float64(v)
+		case uint:
+			lhs = float64(v)
+		case uint32:
+			lhs = float64(v)
+		case uint64:
+			lhs = float64(v)
+		case bool:
+			if v {
+				lhs = 1
+			}
+		default:
+			f, err := strconv.ParseFloat(actualStr, 64)
+			if err != nil {
+				return false, fmt.Errorf("numeric %s: LHS %q is not a number: %w", op, actualStr, err)
+			}
+			lhs = f
+		}
+		if prefix == "sizeof" {
+			// resolveSizeof already rendered actualStr as an int-string;
+			// re-parse it so `sizeof ${args.items} > 0` works on sized values.
+			f, err := strconv.ParseFloat(actualStr, 64)
+			if err != nil {
+				return false, fmt.Errorf("numeric %s: sizeof result %q is not a number: %w", op, actualStr, err)
+			}
+			lhs = f
+		}
+		rhs, err := strconv.ParseFloat(expected, 64)
+		if err != nil {
+			return false, fmt.Errorf("numeric %s: RHS %q is not a number: %w", op, expected, err)
+		}
+		switch op {
+		case "<":
+			return lhs < rhs, nil
+		case "<=":
+			return lhs <= rhs, nil
+		case ">":
+			return lhs > rhs, nil
+		case ">=":
+			return lhs >= rhs, nil
+		}
+		return false, fmt.Errorf("unreachable numeric op %q", op)
 	default:
 		return false, fmt.Errorf("unknown operator %q", op)
 	}
