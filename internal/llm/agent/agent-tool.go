@@ -158,14 +158,17 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 	}
 	if !isResumed {
 		taskSession, err = b.sessions.CreateTaskSession(ctx, call.ID, sessionID, fmt.Sprintf("%s task: %s", subagentType, params.TaskTitle))
-		// Ensure subagents inherit auto approve behaviour for the non-interactive mode
-		if b.permissions.IsAutoApproveSession(sessionID) {
-			b.permissions.AutoApproveSession(taskSession.ID)
-		}
 		if err != nil {
 			return tools.ToolResponse{}, fmt.Errorf("error creating session: %s", err)
 		}
 	}
+	// Link the subagent session to its caller so it resolves auto-approve
+	// (and persistent grants) through the caller live. A one-time copy here
+	// goes stale: toggling auto-approve after the subagent was spawned — or
+	// resuming a task created before the toggle — left the subagent
+	// prompting for every tool call while the status bar showed
+	// auto-approve enabled.
+	b.permissions.LinkSession(taskSession.ID, sessionID)
 
 	prompt := params.Prompt
 	if !isResumed {

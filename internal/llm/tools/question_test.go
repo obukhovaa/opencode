@@ -213,6 +213,7 @@ func (m *mockPermissionService) RemoveAutoApproveSession(id string) {
 func (m *mockPermissionService) IsAutoApproveSession(id string) bool {
 	return m.autoApproved[id]
 }
+func (m *mockPermissionService) LinkSession(_, _ string)            {}
 func (m *mockPermissionService) MarkInteractiveSession(_ string)    {}
 func (m *mockPermissionService) RemoveInteractiveSession(_ string)  {}
 func (m *mockPermissionService) IsInteractiveSession(_ string) bool { return false }

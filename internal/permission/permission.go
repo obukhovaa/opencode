@@ -42,6 +42,15 @@ type Service interface {
 	RemoveAutoApproveSession(sessionID string)
 	IsAutoApproveSession(sessionID string) bool
 
+	// LinkSession records parentSessionID as the permission ancestor of
+	// sessionID (task-tool subagent sessions link to their caller).
+	// IsAutoApproveSession and persisted grants resolve through the chain
+	// live: enabling auto-approve on the parent applies to subagents that
+	// are already running (and to resumed tasks), and disabling it revokes
+	// them at the same moment. A point-in-time copy at spawn cannot do
+	// either.
+	LinkSession(sessionID, parentSessionID string)
+
 	// MarkInteractiveSession flags a session as interactively bound
 	// to a human (via the chat-bridge for `interactive: true` flow
 	// steps). When set, the question tool will NOT short-circuit on
@@ -60,6 +69,7 @@ type permissionService struct {
 	pendingRequests      sync.Map
 	autoApproveSessions  sync.Map
 	interactiveSessions  sync.Map
+	sessionParents       sync.Map // child session ID -> parent session ID
 	serializePermissions sync.Mutex
 }
 
@@ -122,7 +132,13 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 	s.serializePermissions.Lock()
 
 	for _, p := range s.sessionPermissions {
-		if p.ToolName == permission.ToolName && p.Action == permission.Action && p.SessionID == permission.SessionID && p.Path == permission.Path {
+		if p.ToolName != permission.ToolName || p.Action != permission.Action || p.Path != permission.Path {
+			continue
+		}
+		// A persistent grant covers the session it was issued on and every
+		// descendant session linked below it, so "allow always" on the main
+		// conversation also covers subagents it spawns later.
+		if s.walkSessionChain(permission.SessionID, func(id string) bool { return p.SessionID == id }) {
 			return true
 		}
 	}
@@ -151,8 +167,40 @@ func (s *permissionService) RemoveAutoApproveSession(sessionID string) {
 }
 
 func (s *permissionService) IsAutoApproveSession(sessionID string) bool {
-	_, ok := s.autoApproveSessions.Load(sessionID)
-	return ok
+	return s.walkSessionChain(sessionID, func(id string) bool {
+		_, ok := s.autoApproveSessions.Load(id)
+		return ok
+	})
+}
+
+func (s *permissionService) LinkSession(sessionID, parentSessionID string) {
+	if sessionID == "" || parentSessionID == "" || sessionID == parentSessionID {
+		return
+	}
+	s.sessionParents.Store(sessionID, parentSessionID)
+}
+
+// walkSessionChain calls visit for sessionID and each linked ancestor in
+// turn, returning true at the first match. It stops on a missing link or a
+// repeated ID, so a malformed link cycle (e.g. an agent resuming its own
+// ancestor as a task) terminates instead of spinning.
+func (s *permissionService) walkSessionChain(sessionID string, visit func(string) bool) bool {
+	seen := make(map[string]struct{})
+	for id := sessionID; id != ""; {
+		if visit(id) {
+			return true
+		}
+		if _, dup := seen[id]; dup {
+			return false
+		}
+		seen[id] = struct{}{}
+		parent, ok := s.sessionParents.Load(id)
+		if !ok {
+			return false
+		}
+		id, _ = parent.(string)
+	}
+	return false
 }
 
 func (s *permissionService) MarkInteractiveSession(sessionID string) {

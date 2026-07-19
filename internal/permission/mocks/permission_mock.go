@@ -118,6 +118,18 @@ func (mr *MockServiceMockRecorder) IsInteractiveSession(sessionID any) *gomock.C
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsInteractiveSession", reflect.TypeOf((*MockService)(nil).IsInteractiveSession), sessionID)
 }
 
+// LinkSession mocks base method.
+func (m *MockService) LinkSession(sessionID, parentSessionID string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "LinkSession", sessionID, parentSessionID)
+}
+
+// LinkSession indicates an expected call of LinkSession.
+func (mr *MockServiceMockRecorder) LinkSession(sessionID, parentSessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LinkSession", reflect.TypeOf((*MockService)(nil).LinkSession), sessionID, parentSessionID)
+}
+
 // MarkInteractiveSession mocks base method.
 func (m *MockService) MarkInteractiveSession(sessionID string) {
 	m.ctrl.T.Helper()
