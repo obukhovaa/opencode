@@ -1656,7 +1656,10 @@ func (a *agent) processEvent(ctx context.Context, sessionID string, assistantMsg
 
 	switch event.Type {
 	case provider.EventThinkingDelta:
-		assistantMsg.AppendReasoningContent(event.Content)
+		// Thinking deltas ride the Thinking field (Content is empty on
+		// these events) — this feeds the live preview part; the
+		// authoritative signed blocks replace it at EventComplete.
+		assistantMsg.AppendReasoningContent(event.Thinking)
 		return a.messages.Update(ctx, *assistantMsg)
 	case provider.EventContentDelta:
 		assistantMsg.AppendContent(event.Content)
@@ -1702,6 +1705,14 @@ func (a *agent) processEvent(ctx context.Context, sessionID string, assistantMsg
 		// different IDs (e.g. through proxies), so we must preserve the streaming IDs
 		// and only update the Input field which is accumulated by the SDK.
 		a.mergeToolCalls(assistantMsg, event.Response.ToolCalls)
+		// Replace streamed reasoning preview parts with the finalized
+		// per-block list (text + signature verbatim) so the blocks can be
+		// replayed on subsequent requests. When the provider reports no
+		// reasoning, any preview parts stay as display-only (unsigned)
+		// parts — same as canceled turns.
+		if len(event.Response.Reasoning) > 0 {
+			assistantMsg.SetReasoningParts(event.Response.Reasoning)
+		}
 		assistantMsg.AddFinish(event.Response.FinishReason)
 		if err := a.messages.Update(ctx, *assistantMsg); err != nil {
 			return fmt.Errorf("failed to update message: %w", err)
@@ -2269,7 +2280,7 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 			opts,
 			provider.WithOpenAIOptions(openaiOpts...),
 		)
-	} else if model.Provider == models.ProviderAnthropic || model.Provider == models.ProviderVertexAI || model.Provider == models.ProviderBedrock {
+	} else if model.Provider == models.ProviderAnthropic || model.Provider == models.ProviderVertexAI || model.Provider == models.ProviderBedrock || model.Provider == models.ProviderKimi {
 		var anthropicOpts []provider.AnthropicOption
 		if model.CanReason {
 			anthropicOpts = append(anthropicOpts, provider.WithAnthropicShouldThinkFn(provider.DefaultShouldThinkFn))

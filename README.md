@@ -16,7 +16,7 @@ OpenCode is a CLI tool that brings AI assistance to your terminal. It provides a
 - **Flows**: deterministic multi-step agent workflows defined in YAML ([guide](docs/flows.md))
 - **Subagents**: highly customizable agents calling another agents to do work [[#Agents]]
 - **Cron jobs**: schedule prompts to run once or recurringly via subagents, with `/loop` and the `croncreate`/`crondelete`/`cronlist` tools ([guide](docs/crons.md))
-- **Multiple AI providers**: Anthropic, OpenAI, Google Gemini, AWS Bedrock, VertexAI, YandexCloud, and self-hosted
+- **Multiple AI providers**: Anthropic, OpenAI, Google Gemini, AWS Bedrock, VertexAI, YandexCloud, Kimi (Moonshot), and self-hosted
 - **Tool integration**: file operations, shell commands, code search, LSP code intelligence
 - **Structured output**: enforce final agent's output with json schema, perfect for automated pipelines
 - **MCP support**: extend capabilities via Model Context Protocol servers
@@ -379,6 +379,23 @@ export YANDEXCLOUD_FOLDER_ID="b1g..."
 
 The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model_path>`). If not set, the provider will fail with a clear error message.
 
+### Kimi (Moonshot) Configuration
+
+Kimi K3 is served through Moonshot's Anthropic-compatible endpoint (`https://api.moonshot.ai/anthropic`) — the same integration path Moonshot documents for Claude Code — so it gets streaming thinking, tool-call streaming, vision, and reasoning replay out of the box:
+
+```bash
+export MOONSHOT_API_KEY="sk-..."   # KIMI_API_KEY works as an alias
+```
+
+Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it resolves to `max` (the only effort level K3 exposes at launch). Override the endpoint with `providers.kimi.baseURL` if needed:
+
+```json
+{
+  "providers": { "kimi": { "apiKey": "sk-..." } },
+  "agents": { "coder": { "model": "kimi.kimi-k3" } }
+}
+```
+
 **LiteLLM proxy:**
 
 ```json
@@ -410,6 +427,8 @@ The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model
 | `AWS_REGION` | | AWS Bedrock |
 | `YANDEXCLOUD_API_KEY` | | YandexCloud AI Studio API key |
 | `YANDEXCLOUD_FOLDER_ID` | | YandexCloud folder ID (required for model URI) |
+| `MOONSHOT_API_KEY` | | Kimi (Moonshot) models |
+| `KIMI_API_KEY` | | Alias for `MOONSHOT_API_KEY` |
 | `LOCAL_ENDPOINT` | | Self-hosted model endpoint |
 | `LOCAL_ENDPOINT_API_KEY` | | Self-hosted model API key |
 | `LANGFUSE_PUBLIC_KEY` | | Langfuse public key ([guide](docs/telemetry.md)) |
@@ -438,6 +457,7 @@ The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model
 | **AWS Bedrock** | Claude Fable 5 (1M)(EU/Global), Claude 4.8 Opus (1M)(EU/Global), Claude 4.7 Opus (1M)(EU/Global), Claude 5 Sonnet (1M)(EU/Global), Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global), Claude 4.5 Haiku (EU/Global) |
 | **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 4.5 Haiku |
 | **YandexCloud** | Alice AI LLM, YandexGPT Pro 5.1, YandexGPT Pro 5, YandexGPT Lite 5, DeepSeek V3.2, Qwen3 235B, Qwen3.5 35B, gpt-oss-120b |
+| **Kimi (Moonshot)** | Kimi K3 (1M) |
 | **Local** | Any OpenAI-compatible API |
 
 ## Tools

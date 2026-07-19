@@ -245,6 +245,8 @@ func generateSchema() map[string]any {
 		string(models.ProviderGemini),
 		string(models.ProviderBedrock),
 		string(models.ProviderVertexAI),
+		string(models.ProviderYandexCloud),
+		string(models.ProviderKimi),
 	}
 
 	providerSchema["additionalProperties"].(map[string]any)["properties"].(map[string]any)["provider"] = map[string]any{

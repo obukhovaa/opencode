@@ -67,6 +67,7 @@
             "bedrock.claude-fable-5",
             "gemini-3.0-flash",
             "gemini-3.0-pro",
+            "kimi.kimi-k3",
             "gpt-5",
             "o3",
             "o4-mini",
@@ -239,6 +240,7 @@
               "bedrock.claude-fable-5",
               "gemini-3.0-flash",
               "gemini-3.0-pro",
+              "kimi.kimi-k3",
               "gpt-5",
               "o3",
               "o4-mini",
@@ -810,7 +812,9 @@
               "openai",
               "gemini",
               "bedrock",
-              "vertexai"
+              "vertexai",
+              "yandexcloud",
+              "kimi"
             ],
             "type": "string"
           }

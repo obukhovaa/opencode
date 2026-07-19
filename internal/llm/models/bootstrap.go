@@ -10,6 +10,7 @@ func init() {
 	maps.Copy(SupportedModels, VertexAIAnthropicModels)
 	maps.Copy(SupportedModels, BedrockAnthropicModels)
 	maps.Copy(SupportedModels, YandexCloudModels)
+	maps.Copy(SupportedModels, KimiModels)
 
 	initLocalModels()
 }

@@ -360,6 +360,21 @@ func TestCleanMessages(t *testing.T) {
 			wantMsgCount: 1,
 		},
 		{
+			// thinking-block-replay spec: an assistant turn whose only
+			// content is reasoning (aborted before any text/tool_use) must
+			// not reach the provider — a replayed thinking block without
+			// other blocks is an invalid assistant turn.
+			name: "removes assistant with only reasoning parts",
+			messages: []message.Message{
+				{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "hello"}}},
+				{Role: message.Assistant, Parts: []message.ContentPart{
+					message.ReasoningContent{Thinking: "half-finished thought", Signature: "sig"},
+					message.Finish{Reason: message.FinishReasonCanceled},
+				}},
+			},
+			wantMsgCount: 1,
+		},
+		{
 			name: "keeps assistant with whitespace-only text when tool calls present",
 			messages: []message.Message{
 				{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "hello"}}},

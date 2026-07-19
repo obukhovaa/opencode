@@ -590,6 +590,9 @@ func setProviderDefaults() {
 	if hasYandexCloudCredentials() {
 		viper.SetDefault("providers.yandexcloud.apiKey", os.Getenv("YANDEXCLOUD_API_KEY"))
 	}
+	if apiKey := kimiAPIKeyFromEnv(); apiKey != "" {
+		viper.SetDefault("providers.kimi.apiKey", apiKey)
+	}
 
 	// Use this order to set the default models
 	// 1. Anthropic
@@ -597,6 +600,7 @@ func setProviderDefaults() {
 	// 3. Google Gemini
 	// 4. AWS Bedrock
 	// 5. Google Cloud VertexAI
+	// 6. Kimi (Moonshot)
 
 	// Anthropic configuration
 	if key := viper.GetString("providers.anthropic.apiKey"); strings.TrimSpace(key) != "" {
@@ -652,6 +656,26 @@ func setProviderDefaults() {
 		viper.SetDefault("agents.hivemind.model", models.VertexAIOpus46)
 		return
 	}
+
+	// Kimi (Moonshot) configuration
+	if key := viper.GetString("providers.kimi.apiKey"); strings.TrimSpace(key) != "" {
+		viper.SetDefault("agents.coder.model", models.KimiK3)
+		viper.SetDefault("agents.summarizer.model", models.KimiK3)
+		viper.SetDefault("agents.explorer.model", models.KimiK3)
+		viper.SetDefault("agents.descriptor.model", models.KimiK3)
+		viper.SetDefault("agents.workhorse.model", models.KimiK3)
+		viper.SetDefault("agents.hivemind.model", models.KimiK3)
+		return
+	}
+}
+
+// kimiAPIKeyFromEnv resolves the Kimi (Moonshot) API key: MOONSHOT_API_KEY
+// is Moonshot's documented variable; KIMI_API_KEY is accepted as an alias.
+func kimiAPIKeyFromEnv() string {
+	if key := os.Getenv("MOONSHOT_API_KEY"); key != "" {
+		return key
+	}
+	return os.Getenv("KIMI_API_KEY")
 }
 
 // hasAWSCredentials checks if AWS credentials are available in the environment.
@@ -885,7 +909,22 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 			}
 		}
 	} else if model.CanReason && model.SupportsAdaptiveThinking {
-		if agent.ReasoningEffort != "" {
+		if agent.ReasoningEffort == "" {
+			if model.Provider == models.ProviderKimi {
+				// Kimi K3 exposes only the "max" effort level at launch
+				// (Moonshot's own Claude Code guide pins effort to max);
+				// the anthropic client's generic empty-effort default of
+				// "high" is not a documented K3 level, so resolve it here
+				// where the value stays visible in config.
+				logging.Info("setting default reasoning effort 'max' for kimi model",
+					"agent", name,
+					"model", agent.Model)
+
+				updatedAgent := cfg.Agents[name]
+				updatedAgent.ReasoningEffort = "max"
+				cfg.Agents[name] = updatedAgent
+			}
+		} else {
 			effort := strings.ToLower(agent.ReasoningEffort)
 			if effort == "xhigh" && !model.SupportsXHighThinking {
 				logging.Warn("model doesn't support 'xhigh' reasoning effort, falling back to 'high'",
@@ -1123,6 +1162,8 @@ func getProviderAPIKey(provider models.ModelProvider) string {
 		if hasYandexCloudCredentials() {
 			return os.Getenv("YANDEXCLOUD_API_KEY")
 		}
+	case models.ProviderKimi:
+		return kimiAPIKeyFromEnv()
 	}
 	return ""
 }
@@ -1211,6 +1252,16 @@ func setDefaultModelForAgent(agent AgentName) bool {
 		}
 
 		setAgentModelDefaults(agent, models.BedrockEUSonnet46, maxTokens, "medium")
+		return true
+	}
+
+	if kimiAPIKeyFromEnv() != "" {
+		maxTokens := models.KimiModels[models.KimiK3].DefaultMaxTokens
+		if agent == AgentDescriptor {
+			maxTokens = 80
+		}
+
+		setAgentModelDefaults(agent, models.KimiK3, maxTokens, "max")
 		return true
 	}
 

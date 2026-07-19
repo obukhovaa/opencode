@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -307,6 +308,139 @@ func TestConvertMessagesCacheBreakpoints(t *testing.T) {
 	}
 }
 
+// TestConvertBinaryContentBlockTypes locks in the MIME-type routing for
+// binary attachments. PDFs must become document blocks — wrapping them in
+// image blocks (the old behavior) is an invalid request that Bedrock
+// surfaces as an HTTP/2 stream reset, permanently poisoning any session
+// whose history contains the attachment.
+func TestConvertBinaryContentBlockTypes(t *testing.T) {
+	tests := []struct {
+		name     string
+		bc       message.BinaryContent
+		wantKind string
+	}{
+		{
+			name:     "png stays an image block",
+			bc:       message.BinaryContent{MIMEType: "image/png", Data: []byte{1, 2, 3}},
+			wantKind: "image",
+		},
+		{
+			name:     "mime parameters are stripped",
+			bc:       message.BinaryContent{MIMEType: "image/jpeg; charset=binary", Data: []byte{1}},
+			wantKind: "image",
+		},
+		{
+			name:     "pdf becomes a document block",
+			bc:       message.BinaryContent{MIMEType: "application/pdf", Data: []byte("%PDF-1.7")},
+			wantKind: "document",
+		},
+		{
+			name:     "plain text becomes a text-source document block",
+			bc:       message.BinaryContent{MIMEType: "text/plain; charset=utf-8", Data: []byte("hello")},
+			wantKind: "document",
+		},
+		{
+			name:     "audio degrades to a text placeholder",
+			bc:       message.BinaryContent{MIMEType: "audio/ogg", Path: ".opencode/bridge/media/voice.ogg", Data: []byte{1, 2}},
+			wantKind: "text",
+		},
+		{
+			name:     "unknown mime degrades to a text placeholder",
+			bc:       message.BinaryContent{MIMEType: "application/zip", Data: []byte{1, 2}},
+			wantKind: "text",
+		},
+		{
+			// A zero-byte payload must not become an empty document block —
+			// the API rejects empty content, and the persisted attachment
+			// would poison every subsequent turn of the session.
+			name:     "zero-byte text file degrades to a text placeholder",
+			bc:       message.BinaryContent{MIMEType: "text/plain", Path: "empty.log", Data: nil},
+			wantKind: "text",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			block := convertBinaryContent(tt.bc)
+			var gotKind string
+			switch {
+			case block.OfImage != nil:
+				gotKind = "image"
+			case block.OfDocument != nil:
+				gotKind = "document"
+			case block.OfText != nil:
+				gotKind = "text"
+			default:
+				gotKind = "other"
+			}
+			if gotKind != tt.wantKind {
+				t.Fatalf("got %s block, want %s", gotKind, tt.wantKind)
+			}
+			if gotKind == "text" && tt.bc.Path != "" && !strings.Contains(block.OfText.Text, tt.bc.Path) {
+				t.Errorf("placeholder text %q should reference saved path %q", block.OfText.Text, tt.bc.Path)
+			}
+		})
+	}
+}
+
+// TestConvertMessagesSkipsEmptyUserText covers the caption-less bridge
+// attachment: the user message has an empty text part plus a binary part.
+// The API rejects empty text blocks, so conversion must drop the text and
+// keep the attachment.
+func TestConvertMessagesSkipsEmptyUserText(t *testing.T) {
+	client := &anthropicClient{options: anthropicOptions{disableCache: true}}
+
+	messages := []message.Message{
+		newMsg(message.User,
+			message.TextContent{Text: ""},
+			message.BinaryContent{MIMEType: "application/pdf", Data: []byte("%PDF-1.7")},
+		),
+	}
+	result := client.convertMessages(messages)
+	if len(result) != 1 {
+		t.Fatalf("got %d messages, want 1", len(result))
+	}
+	if len(result[0].Content) != 1 {
+		t.Fatalf("got %d content blocks, want 1 (empty text must be dropped)", len(result[0].Content))
+	}
+	if result[0].Content[0].OfDocument == nil {
+		t.Fatal("expected the remaining block to be the pdf document block")
+	}
+
+	// A user message that ends up with no renderable blocks is skipped
+	// entirely rather than sent as an (invalid) empty-content message.
+	empty := client.convertMessages([]message.Message{
+		newMsg(message.User, message.TextContent{Text: "   "}),
+	})
+	if len(empty) != 0 {
+		t.Fatalf("got %d messages, want 0 for blank-only user message", len(empty))
+	}
+}
+
+// TestConvertMessagesCacheOnAttachmentBlock verifies the cache breakpoint
+// lands on the last block even when that block is an attachment (the old
+// code pinned it to the text block, which no longer always exists).
+func TestConvertMessagesCacheOnAttachmentBlock(t *testing.T) {
+	client := &anthropicClient{options: anthropicOptions{}}
+
+	result := client.convertMessages([]message.Message{
+		newMsg(message.User,
+			message.TextContent{Text: "see attached"},
+			message.BinaryContent{MIMEType: "application/pdf", Data: []byte("%PDF-1.7")},
+		),
+	})
+	if len(result) != 1 || len(result[0].Content) != 2 {
+		t.Fatalf("unexpected conversion shape: %d messages", len(result))
+	}
+	doc := result[0].Content[1].OfDocument
+	if doc == nil {
+		t.Fatal("expected document block last")
+	}
+	if doc.CacheControl.Type == "" {
+		t.Error("expected cache breakpoint on the trailing document block")
+	}
+}
+
 // TestToolCallsNormalizesEmptyInput exercises the Bedrock-specific code path
 // where a content_block_start event for tool_use carries {id, name} but no
 // "input" field. The SDK accumulator leaves Input as nil bytes; toolCalls()
@@ -409,21 +543,33 @@ func TestConvertMessagesAcceptsEmptyToolInput(t *testing.T) {
 	}
 }
 
-func TestStripImagesForCountTokens(t *testing.T) {
+func TestStripMediaForCountTokens(t *testing.T) {
 	imgParam := anthropic.NewImageBlockBase64("image/png", "ZmFrZWltYWdl")
+	// 400 base64 chars → 300 decoded bytes → below the 1500-token floor.
+	smallPDF := anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{
+		Data: strings.Repeat("A", 400),
+	})
+	// 400_000 base64 chars → 300_000 decoded bytes → 3000 tokens at the
+	// 100 bytes/token heuristic, above the floor.
+	largePDF := anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{
+		Data: strings.Repeat("A", 400_000),
+	})
+	textDoc := anthropic.NewDocumentBlock(anthropic.PlainTextSourceParam{
+		Data: "inline text document",
+	})
 	tests := []struct {
-		name           string
-		messages       []anthropic.MessageParam
-		wantImageCount int
-		wantNoOfImage  bool
+		name            string
+		messages        []anthropic.MessageParam
+		wantExtraTokens int64
+		wantNoMedia     bool
 	}{
 		{
 			name: "top-level image swapped to text placeholder",
 			messages: []anthropic.MessageParam{
 				anthropic.NewUserMessage(anthropic.NewTextBlock("look at this"), imgParam),
 			},
-			wantImageCount: 1,
-			wantNoOfImage:  true,
+			wantExtraTokens: countTokensImageTokenEstimate,
+			wantNoMedia:     true,
 		},
 		{
 			name: "image inside tool_result swapped",
@@ -438,16 +584,16 @@ func TestStripImagesForCountTokens(t *testing.T) {
 					},
 				}),
 			},
-			wantImageCount: 1,
-			wantNoOfImage:  true,
+			wantExtraTokens: countTokensImageTokenEstimate,
+			wantNoMedia:     true,
 		},
 		{
-			name: "no images leaves messages untouched",
+			name: "no media leaves messages untouched",
 			messages: []anthropic.MessageParam{
 				anthropic.NewUserMessage(anthropic.NewTextBlock("plain text")),
 			},
-			wantImageCount: 0,
-			wantNoOfImage:  true,
+			wantExtraTokens: 0,
+			wantNoMedia:     true,
 		},
 		{
 			name: "mixed text + image + tool_result image — counts both",
@@ -463,8 +609,32 @@ func TestStripImagesForCountTokens(t *testing.T) {
 					},
 				}),
 			},
-			wantImageCount: 2,
-			wantNoOfImage:  true,
+			wantExtraTokens: 2 * countTokensImageTokenEstimate,
+			wantNoMedia:     true,
+		},
+		{
+			name: "small pdf document swapped at the token floor",
+			messages: []anthropic.MessageParam{
+				anthropic.NewUserMessage(anthropic.NewTextBlock("see attached"), smallPDF),
+			},
+			wantExtraTokens: countTokensImageTokenEstimate,
+			wantNoMedia:     true,
+		},
+		{
+			name: "large pdf document estimated from payload size",
+			messages: []anthropic.MessageParam{
+				anthropic.NewUserMessage(largePDF),
+			},
+			wantExtraTokens: 3000,
+			wantNoMedia:     true,
+		},
+		{
+			name: "plain-text document re-inlined exactly, no extra estimate",
+			messages: []anthropic.MessageParam{
+				anthropic.NewUserMessage(textDoc),
+			},
+			wantExtraTokens: 0,
+			wantNoMedia:     true,
 		},
 	}
 
@@ -473,15 +643,18 @@ func TestStripImagesForCountTokens(t *testing.T) {
 			// Snapshot pre-call so we can assert non-mutation of inputs.
 			beforeImagePtrs := collectImagePointers(tt.messages)
 
-			out, count := stripImagesForCountTokens(tt.messages)
-			if count != tt.wantImageCount {
-				t.Errorf("image count = %d, want %d", count, tt.wantImageCount)
+			out, extra := stripMediaForCountTokens(tt.messages)
+			if extra != tt.wantExtraTokens {
+				t.Errorf("extra tokens = %d, want %d", extra, tt.wantExtraTokens)
 			}
-			if tt.wantNoOfImage {
+			if tt.wantNoMedia {
 				for i, msg := range out {
 					for j, block := range msg.Content {
 						if block.OfImage != nil {
 							t.Errorf("message[%d].Content[%d] still has OfImage", i, j)
+						}
+						if block.OfDocument != nil {
+							t.Errorf("message[%d].Content[%d] still has OfDocument", i, j)
 						}
 						if block.OfToolResult != nil {
 							for k, inner := range block.OfToolResult.Content {
@@ -595,9 +768,9 @@ func TestStripImagesFastPath(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, count := stripImagesForCountTokens(tt.messages)
-			if count != 0 {
-				t.Errorf("count = %d, want 0", count)
+			out, extra := stripMediaForCountTokens(tt.messages)
+			if extra != 0 {
+				t.Errorf("extra tokens = %d, want 0", extra)
 			}
 			// Fast path returns the same slice header; compare via len + element identity.
 			if len(out) != len(tt.messages) {

@@ -38,6 +38,7 @@ var ProviderPopularity = map[ModelProvider]int{
 	ProviderGemini:      4,
 	ProviderBedrock:     5,
 	ProviderYandexCloud: 6,
+	ProviderKimi:        7,
 }
 
 var SupportedModels = map[ModelID]Model{}

@@ -214,8 +214,14 @@ type TokenUsage struct {
 }
 
 type ProviderResponse struct {
-	Content      string
-	ToolCalls    []message.ToolCall
+	Content   string
+	ToolCalls []message.ToolCall
+	// Reasoning holds the finalized reasoning blocks (text + signature,
+	// or redacted payloads) exactly as produced by the provider, in
+	// emission order. Consumers persist these verbatim so they can be
+	// replayed on subsequent requests (thinking-block echo). Empty for
+	// providers/turns without reasoning.
+	Reasoning    []message.ReasoningContent
 	Usage        TokenUsage
 	FinishReason message.FinishReason
 }
@@ -319,6 +325,18 @@ func NewProvider(providerName models.ModelProvider, opts ...ProviderClientOption
 		return &baseProvider[BedrockClient]{
 			options: clientOptions,
 			client:  newBedrockClient(clientOptions),
+		}, nil
+	case models.ProviderKimi:
+		// Moonshot maintains an Anthropic-compatible endpoint (their
+		// documented Claude Code integration path), so Kimi rides the
+		// anthropic client: adaptive thinking + effort, thinking/tool
+		// streaming, and Bearer auth via the baseURL→WithAuthToken path.
+		if clientOptions.baseURL == "" {
+			clientOptions.baseURL = "https://api.moonshot.ai/anthropic"
+		}
+		return &baseProvider[AnthropicClient]{
+			options: clientOptions,
+			client:  newAnthropicClient(clientOptions),
 		}, nil
 	case models.ProviderYandexCloud:
 		if clientOptions.baseURL == "" {
@@ -677,7 +695,15 @@ func (p *baseProvider[C]) CountTokens(ctx context.Context, threshold float64, me
 	endpointTokens, err := p.client.countTokens(ctx, messages, tools)
 	if err != nil {
 		// Endpoint unavailable — fall back to the local estimate.
-		if !errors.Is(err, context.Canceled) {
+		switch {
+		case errors.Is(err, context.Canceled):
+			// Shutdown/cancel noise, nothing to log.
+		case errors.Is(err, errors.ErrUnsupported):
+			// Known-unsupported endpoint (e.g. 404-latched or a client
+			// with no count_tokens at all): local estimation is the
+			// steady state, so don't warn once per loop iteration.
+			logging.Debug("countTokens unsupported, using local strategy for max_tokens", "model", p.options.model.Name, "cause", err.Error())
+		default:
 			logging.Warn("Provider doesn't support countTokens endpoint, using local strategy for max_tokens", "model", p.options.model.Name, "cause", err.Error())
 		}
 	} else {

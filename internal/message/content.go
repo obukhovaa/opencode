@@ -3,6 +3,7 @@ package message
 import (
 	"encoding/base64"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/llm/models"
@@ -38,6 +39,16 @@ type ContentPart interface {
 
 type ReasoningContent struct {
 	Thinking string `json:"thinking"`
+	// Signature is the provider-issued cryptographic signature over this
+	// reasoning block. Replay (thinking-block echo on Anthropic-dialect
+	// requests) requires the block byte-exact with this signature; parts
+	// without one (legacy rows, streamed previews, non-Anthropic sources)
+	// are display-only and never replayed.
+	Signature string `json:"signature,omitempty"`
+	// Redacted marks a provider redacted_thinking block: Thinking is empty
+	// and Data carries the opaque payload that must be replayed verbatim.
+	Redacted bool   `json:"redacted,omitempty"`
+	Data     string `json:"data,omitempty"`
 }
 
 func (tc ReasoningContent) String() string {
@@ -147,13 +158,28 @@ func (m *Message) Content() TextContent {
 	return TextContent{}
 }
 
+// ReasoningContent returns a display-oriented view of the message's
+// reasoning: the concatenated thinking text across all reasoning blocks.
+// For replay-accurate per-block access use ReasoningParts.
 func (m *Message) ReasoningContent() ReasoningContent {
+	var sb strings.Builder
 	for _, part := range m.Parts {
 		if c, ok := part.(ReasoningContent); ok {
-			return c
+			sb.WriteString(c.Thinking)
 		}
 	}
-	return ReasoningContent{}
+	return ReasoningContent{Thinking: sb.String()}
+}
+
+// ReasoningParts returns the reasoning blocks in emission order, verbatim.
+func (m *Message) ReasoningParts() []ReasoningContent {
+	parts := make([]ReasoningContent, 0)
+	for _, part := range m.Parts {
+		if c, ok := part.(ReasoningContent); ok {
+			parts = append(parts, c)
+		}
+	}
+	return parts
 }
 
 func (m *Message) ImageURLContent() []ImageURLContent {
@@ -276,13 +302,44 @@ func (m *Message) AppendReasoningContent(delta string) {
 	found := false
 	for i, part := range m.Parts {
 		if c, ok := part.(ReasoningContent); ok {
-			m.Parts[i] = ReasoningContent{Thinking: c.Thinking + delta}
+			c.Thinking += delta
+			m.Parts[i] = c
 			found = true
 		}
 	}
 	if !found {
 		m.Parts = append(m.Parts, ReasoningContent{Thinking: delta})
 	}
+}
+
+// SetReasoningParts replaces any streamed reasoning preview parts with the
+// authoritative per-block list (text + signature exactly as produced by the
+// provider). Blocks are inserted at the position of the first existing
+// reasoning part, or ahead of all other parts when none exists — reasoning
+// precedes text/tool_use in provider emission order and is replayed in the
+// same position.
+func (m *Message) SetReasoningParts(blocks []ReasoningContent) {
+	insertAt := -1
+	kept := make([]ContentPart, 0, len(m.Parts)+len(blocks))
+	for _, part := range m.Parts {
+		if _, ok := part.(ReasoningContent); ok {
+			if insertAt == -1 {
+				insertAt = len(kept)
+			}
+			continue
+		}
+		kept = append(kept, part)
+	}
+	if insertAt == -1 {
+		insertAt = 0
+	}
+	replaced := make([]ContentPart, 0, len(kept)+len(blocks))
+	replaced = append(replaced, kept[:insertAt]...)
+	for _, b := range blocks {
+		replaced = append(replaced, b)
+	}
+	replaced = append(replaced, kept[insertAt:]...)
+	m.Parts = replaced
 }
 
 func (m *Message) FinishToolCall(toolCallID string) {

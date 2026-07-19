@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -72,13 +74,21 @@ func (o *openaiClient) convertMessages(messages []message.Message) (openaiMessag
 		switch msg.Role {
 		case message.User:
 			var content []openai.ChatCompletionContentPartUnionParam
-			textBlock := openai.ChatCompletionContentPartTextParam{Text: msg.Content().String()}
-			content = append(content, openai.ChatCompletionContentPartUnionParam{OfText: &textBlock})
+			// Mirror the anthropic converter: a caption-less bridge
+			// attachment arrives with empty text — don't emit an empty
+			// text part alongside the attachment.
+			if text := msg.Content().String(); strings.TrimSpace(text) != "" {
+				textBlock := openai.ChatCompletionContentPartTextParam{Text: text}
+				content = append(content, openai.ChatCompletionContentPartUnionParam{OfText: &textBlock})
+			}
 			for _, binaryContent := range msg.BinaryContent() {
-				imageURL := openai.ChatCompletionContentPartImageImageURLParam{URL: binaryContent.String(models.ProviderOpenAI)}
-				imageBlock := openai.ChatCompletionContentPartImageParam{ImageURL: imageURL}
-
-				content = append(content, openai.ChatCompletionContentPartUnionParam{OfImageURL: &imageBlock})
+				content = append(content, convertBinaryContentOpenAI(binaryContent))
+			}
+			if len(content) == 0 {
+				logging.Warn("Skipping user message with no renderable content",
+					"message_id", msg.ID,
+				)
+				continue
 			}
 
 			openaiMessages = append(openaiMessages, openai.UserMessage(content))
@@ -130,6 +140,55 @@ func (o *openaiClient) convertMessages(messages []message.Message) (openaiMessag
 	}
 
 	return
+}
+
+// convertBinaryContentOpenAI maps a binary attachment to the content part
+// type the OpenAI Chat Completions API accepts for its MIME type — the
+// same defect class as the anthropic converter: wrapping every attachment
+// in an image_url part makes any request containing a PDF (or voice note,
+// archive, ...) invalid, and since attachments persist in session history,
+// one bad attachment poisons every subsequent turn of the session.
+func convertBinaryContentOpenAI(bc message.BinaryContent) openai.ChatCompletionContentPartUnionParam {
+	mimeType := strings.ToLower(strings.TrimSpace(bc.MIMEType))
+	if i := strings.Index(mimeType, ";"); i >= 0 { // strip parameters, e.g. "; charset=utf-8"
+		mimeType = strings.TrimSpace(mimeType[:i])
+	}
+	switch mimeType {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
+		imageURL := openai.ChatCompletionContentPartImageImageURLParam{URL: bc.String(models.ProviderOpenAI)}
+		return openai.ChatCompletionContentPartUnionParam{
+			OfImageURL: &openai.ChatCompletionContentPartImageParam{ImageURL: imageURL},
+		}
+	case "application/pdf":
+		filename := "document.pdf"
+		if bc.Path != "" {
+			filename = filepath.Base(bc.Path)
+		}
+		return openai.ChatCompletionContentPartUnionParam{
+			OfFile: &openai.ChatCompletionContentPartFileParam{
+				File: openai.ChatCompletionContentPartFileFileParam{
+					// file_data expects a data URL, which the OpenAI
+					// variant of String() already produces.
+					FileData: openai.String(bc.String(models.ProviderOpenAI)),
+					Filename: openai.String(filename),
+				},
+			},
+		}
+	}
+	// Zero-byte payloads must not become empty text parts — the persisted
+	// attachment would replay an invalid part on every subsequent turn.
+	if len(bc.Data) > 0 && strings.HasPrefix(mimeType, "text/") && utf8.Valid(bc.Data) {
+		return openai.ChatCompletionContentPartUnionParam{
+			OfText: &openai.ChatCompletionContentPartTextParam{Text: string(bc.Data)},
+		}
+	}
+	// Unsupported by the API (audio outside the audio-preview models,
+	// video, archives, ...): substitute a text note instead of an invalid
+	// part. The bridge saves inbound media to disk before dispatch, so the
+	// model can still reach the payload through file tools.
+	return openai.ChatCompletionContentPartUnionParam{
+		OfText: &openai.ChatCompletionContentPartTextParam{Text: unsupportedAttachmentNote(bc)},
+	}
 }
 
 func (o *openaiClient) convertTools(tools []tools.BaseTool) []openai.ChatCompletionToolParam {

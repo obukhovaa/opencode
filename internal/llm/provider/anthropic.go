@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -56,6 +59,12 @@ type anthropicClient struct {
 	providerOptions providerClientOptions
 	options         anthropicOptions
 	client          anthropic.Client
+	// countTokensUnsupported latches after the endpoint answers 404/405 —
+	// Anthropic-compatible endpoints (e.g. Moonshot's) may not implement
+	// count_tokens, and probing it once per agent-loop iteration would add
+	// a wasted HTTP round-trip; the provider layer falls back to the local
+	// estimate whenever countTokens errors.
+	countTokensUnsupported atomic.Bool
 }
 
 type AnthropicClient ProviderClient
@@ -140,21 +149,57 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 		cache := !a.options.disableCache && i > len(messages)-3
 		switch msg.Role {
 		case message.User:
-			content := anthropic.NewTextBlock(msg.Content().String())
-			if cache {
-				content.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
-			}
 			var contentBlocks []anthropic.ContentBlockParamUnion
-			contentBlocks = append(contentBlocks, content)
+			// The API rejects empty text blocks ("String should have at
+			// least 1 character") — a caption-less bridge attachment
+			// produces exactly that, so only emit text when present.
+			if text := msg.Content().String(); strings.TrimSpace(text) != "" {
+				contentBlocks = append(contentBlocks, anthropic.NewTextBlock(text))
+			}
 			for _, binaryContent := range msg.BinaryContent() {
-				base64Image := binaryContent.String(models.ProviderAnthropic)
-				imageBlock := anthropic.NewImageBlockBase64(binaryContent.MIMEType, base64Image)
-				contentBlocks = append(contentBlocks, imageBlock)
+				contentBlocks = append(contentBlocks, convertBinaryContent(binaryContent))
+			}
+			if len(contentBlocks) == 0 {
+				logging.Warn("Skipping user message with no renderable content",
+					"message_index", i, "message_id", msg.ID,
+				)
+				continue
+			}
+			if cache {
+				lastBlock := &contentBlocks[len(contentBlocks)-1]
+				switch {
+				case lastBlock.OfText != nil:
+					lastBlock.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
+				case lastBlock.OfImage != nil:
+					lastBlock.OfImage.CacheControl = anthropic.NewCacheControlEphemeralParam()
+				case lastBlock.OfDocument != nil:
+					lastBlock.OfDocument.CacheControl = anthropic.NewCacheControlEphemeralParam()
+				}
 			}
 			anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(contentBlocks...))
 
 		case message.Assistant:
 			blocks := []anthropic.ContentBlockParamUnion{}
+			// Replay reasoning blocks first, exactly as produced — the API
+			// verifies each block's signature over its content and rejects
+			// modified blocks, while absent blocks merely forfeit reasoning
+			// continuity across tool boundaries. Unsigned parts (legacy rows,
+			// streamed previews, non-Anthropic sources) are skipped, which
+			// preserves the pre-capability behavior for old data. Redacted
+			// blocks carry an opaque payload that round-trips verbatim.
+			if a.shouldReplayReasoning(msg) {
+				for _, rc := range msg.ReasoningParts() {
+					if rc.Redacted {
+						if rc.Data != "" {
+							blocks = append(blocks, anthropic.NewRedactedThinkingBlock(rc.Data))
+						}
+						continue
+					}
+					if rc.Signature != "" {
+						blocks = append(blocks, anthropic.NewThinkingBlock(rc.Signature, rc.Thinking))
+					}
+				}
+			}
 			if strings.TrimSpace(msg.Content().String()) != "" {
 				content := anthropic.NewTextBlock(msg.Content().String())
 				blocks = append(blocks, content)
@@ -228,6 +273,52 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 	return
 }
 
+// convertBinaryContent maps a binary attachment to the content block type
+// the Anthropic Messages API actually accepts for its MIME type. Wrapping
+// everything in an image block (the old behavior) produces an invalid
+// request for non-image attachments — a PDF sent through the Telegram
+// bridge poisoned its session permanently: Bedrock resets the response
+// stream (HTTP/2 INTERNAL_ERROR) instead of returning a 400, and since the
+// attachment is persisted in history, every subsequent turn replays it.
+func convertBinaryContent(bc message.BinaryContent) anthropic.ContentBlockParamUnion {
+	mimeType := strings.ToLower(strings.TrimSpace(bc.MIMEType))
+	if i := strings.Index(mimeType, ";"); i >= 0 { // strip parameters, e.g. "; charset=utf-8"
+		mimeType = strings.TrimSpace(mimeType[:i])
+	}
+	switch mimeType {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
+		return anthropic.NewImageBlockBase64(mimeType, bc.String(models.ProviderAnthropic))
+	case "application/pdf":
+		return anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{
+			Data: bc.String(models.ProviderAnthropic),
+		})
+	}
+	// Zero-byte payloads must not become empty content blocks — the API
+	// rejects empty strings, and a persisted invalid attachment poisons
+	// every subsequent turn of the session.
+	if len(bc.Data) > 0 && strings.HasPrefix(mimeType, "text/") && utf8.Valid(bc.Data) {
+		return anthropic.NewDocumentBlock(anthropic.PlainTextSourceParam{
+			Data: string(bc.Data),
+		})
+	}
+	// Unsupported by the API (audio, video, archives, ...): substitute a
+	// text note instead of an invalid block. The bridge saves inbound media
+	// to disk before dispatch, so the model can still reach the payload
+	// through file tools via the referenced path.
+	return anthropic.NewTextBlock(unsupportedAttachmentNote(bc))
+}
+
+// unsupportedAttachmentNote renders the placeholder text substituted for
+// attachments no provider block type can carry. Shared by the anthropic
+// and openai converters.
+func unsupportedAttachmentNote(bc message.BinaryContent) string {
+	saved := ""
+	if bc.Path != "" {
+		saved = fmt.Sprintf("; the file is saved at %q and can be inspected with file tools", bc.Path)
+	}
+	return fmt.Sprintf("[Attachment of unsupported media type %q omitted (%d bytes)%s]", bc.MIMEType, len(bc.Data), saved)
+}
+
 func (a *anthropicClient) convertTools(tools []toolsPkg.BaseTool) []anthropic.ToolUnionParam {
 	anthropicTools := make([]anthropic.ToolUnionParam, len(tools))
 
@@ -281,9 +372,18 @@ func (a *anthropicClient) finishReason(reason string) message.FinishReason {
 func (a *anthropicClient) preparedMessages(ctx context.Context, messages []anthropic.MessageParam, tools []anthropic.ToolUnionParam) anthropic.MessageNewParams {
 	var thinkingParam anthropic.ThinkingConfigParamUnion
 	var outputConfig anthropic.OutputConfigParam
-	lastMessage := messages[len(messages)-1]
-	isUser := lastMessage.Role == anthropic.MessageParamRoleUser
+	// convertMessages can legitimately return an empty slice — e.g. the
+	// only user message had no renderable content and was skipped. Guard
+	// the last-message peek so the request fails with the API's own
+	// "at least one message required" validation error instead of an
+	// index panic swallowed by RecoverPanic.
+	isUser := false
 	messageContent := ""
+	var lastMessage anthropic.MessageParam
+	if len(messages) > 0 {
+		lastMessage = messages[len(messages)-1]
+		isUser = lastMessage.Role == anthropic.MessageParamRoleUser
+	}
 	// TODO: parameterise temperature via agent config
 	// Opus 4.7+ rejects non-default temperature values; omit to let the API use its default (1.0).
 	temperature := anthropic.Float(0)
@@ -395,6 +495,7 @@ func (a *anthropicClient) send(ctx context.Context, messages []message.Message, 
 		return &ProviderResponse{
 			Content:   sb.String(),
 			ToolCalls: a.toolCalls(*anthropicResponse),
+			Reasoning: a.reasoningParts(*anthropicResponse),
 			Usage:     a.usage(*anthropicResponse),
 		}, nil
 	}
@@ -529,6 +630,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 						Response: &ProviderResponse{
 							Content:      sb.String(),
 							ToolCalls:    a.toolCalls(accumulatedMessage),
+							Reasoning:    a.reasoningParts(accumulatedMessage),
 							Usage:        a.usage(accumulatedMessage),
 							FinishReason: a.finishReason(string(accumulatedMessage.StopReason)),
 						},
@@ -567,6 +669,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 						Response: &ProviderResponse{
 							Content:      sb.String(),
 							ToolCalls:    a.toolCalls(accumulatedMessage),
+							Reasoning:    a.reasoningParts(accumulatedMessage),
 							Usage:        a.usage(accumulatedMessage),
 							FinishReason: message.FinishReasonEndTurn,
 						},
@@ -702,6 +805,50 @@ func (a *anthropicClient) shouldRetry(attempts int, err error) (bool, int64, err
 	return true, int64(retryMs), nil
 }
 
+// shouldReplayReasoning gates thinking-block replay to messages produced by
+// the same provider family this client talks to. Signatures are
+// provider-issued: Anthropic documents silently dropping blocks signed by a
+// different model, but an Anthropic-compatible endpoint's behavior for a
+// cross-vendor signature (e.g. a Moonshot-signed block sent to Anthropic
+// after a mid-session model switch, or vice versa) is undocumented — skip
+// them; absence merely forfeits reasoning continuity. Messages without a
+// recorded/known model keep replaying: such rows predate model tracking and
+// came from this session's own provider.
+func (a *anthropicClient) shouldReplayReasoning(msg message.Message) bool {
+	if msg.Model == "" {
+		return true
+	}
+	m, ok := models.SupportedModels[msg.Model]
+	if !ok {
+		return true
+	}
+	return m.Provider == a.providerOptions.model.Provider
+}
+
+// reasoningParts extracts the finalized reasoning blocks from a response,
+// verbatim and in emission order: thinking blocks carry text + signature,
+// redacted_thinking blocks carry the opaque payload. These are persisted
+// as-is so convertMessages can replay them byte-exact — Anthropic verifies
+// the signature over each replayed block's content.
+func (a *anthropicClient) reasoningParts(msg anthropic.Message) []message.ReasoningContent {
+	var parts []message.ReasoningContent
+	for _, block := range msg.Content {
+		switch variant := block.AsAny().(type) {
+		case anthropic.ThinkingBlock:
+			parts = append(parts, message.ReasoningContent{
+				Thinking:  variant.Thinking,
+				Signature: variant.Signature,
+			})
+		case anthropic.RedactedThinkingBlock:
+			parts = append(parts, message.ReasoningContent{
+				Redacted: true,
+				Data:     variant.Data,
+			})
+		}
+	}
+	return parts
+}
+
 func (a *anthropicClient) toolCalls(msg anthropic.Message) []message.ToolCall {
 	var toolCalls []message.ToolCall
 
@@ -819,20 +966,30 @@ func (a *anthropicClient) newToolResultImageBlock(toolResult message.ToolResult)
 	return &anthropic.ContentBlockParamUnion{OfToolResult: &toolBlock}, nil
 }
 
-// countTokensImagePlaceholder is what swapped-out image blocks become for the
-// count_tokens call. Per-image we add a flat estimate to compensate.
+// countTokensImagePlaceholder is what swapped-out image/document blocks
+// become for the count_tokens call. Per swapped block we add an estimate to
+// compensate.
 const (
-	countTokensImagePlaceholder   = "[image elided for tokenization]"
-	countTokensImageTokenEstimate = 1500 // Anthropic's rough per-image budget at standard res
+	countTokensImagePlaceholder    = "[image elided for tokenization]"
+	countTokensImageTokenEstimate  = 1500 // Anthropic's rough per-image budget at standard res
+	countTokensDocumentPlaceholder = "[document elided for tokenization]"
+	// countTokensDocumentBytesPerToken converts a PDF's decoded byte size
+	// into a rough token estimate. Anthropic budgets 1,500-3,000 tokens per
+	// PDF page (each page is processed as an image plus extracted text) and
+	// mixed-content PDFs typically weigh tens-to-hundreds of KB per page;
+	// ~100 bytes/token lands the estimate in the right order of magnitude
+	// for compaction-threshold purposes. Floored at one image-equivalent so
+	// tiny PDFs don't count as free.
+	countTokensDocumentBytesPerToken = 100
 )
 
-// messagesContainImages reports whether any message holds an image block,
-// either at the top level or nested inside a tool_result. Used as a fast-path
-// guard for stripImagesForCountTokens.
-func messagesContainImages(messages []anthropic.MessageParam) bool {
+// messagesContainMedia reports whether any message holds an image or
+// document block, either at the top level or nested inside a tool_result.
+// Used as a fast-path guard for stripMediaForCountTokens.
+func messagesContainMedia(messages []anthropic.MessageParam) bool {
 	for _, msg := range messages {
 		for _, block := range msg.Content {
-			if block.OfImage != nil {
+			if block.OfImage != nil || block.OfDocument != nil {
 				return true
 			}
 			if block.OfToolResult != nil {
@@ -847,27 +1004,54 @@ func messagesContainImages(messages []anthropic.MessageParam) bool {
 	return false
 }
 
-// stripImagesForCountTokens returns a copy of messages with every image block
-// (top-level or inside a tool_result) swapped for a short text placeholder,
-// plus the count of swaps performed. LiteLLM's count_tokens proxy doesn't
-// understand Anthropic's "image" content type and 500s on it, so we keep the
-// request text-only and account for images locally.
+// documentTokenEstimate approximates the token cost of a stripped document
+// block. Plain-text sources return 0 because the caller re-inlines their
+// text verbatim (the endpoint counts it exactly); base64 PDFs are estimated
+// from decoded payload size.
+func documentTokenEstimate(doc *anthropic.DocumentBlockParam) int64 {
+	if doc.Source.OfBase64 != nil {
+		decodedBytes := len(doc.Source.OfBase64.Data) * 3 / 4
+		if est := int64(decodedBytes / countTokensDocumentBytesPerToken); est > countTokensImageTokenEstimate {
+			return est
+		}
+	}
+	return countTokensImageTokenEstimate
+}
+
+// stripMediaForCountTokens returns a copy of messages with every image and
+// document block swapped for a short text stand-in, plus the token estimate
+// compensating for the removed blocks. LiteLLM's count_tokens proxy only
+// understands text/tool block types — it 500s on Anthropic's "image" and
+// "document" content types — so we keep the request text-only and account
+// for the stripped media locally. Plain-text document sources are re-inlined
+// as text blocks (counted exactly by the endpoint, estimate 0); images and
+// base64 PDFs get placeholder text plus a local estimate.
 //
-// Fast path: if no images are present the input slice is returned unchanged
-// (count=0), avoiding per-message allocations for text-only conversations —
-// which is the common case even on the Bedrock path.
-func stripImagesForCountTokens(messages []anthropic.MessageParam) ([]anthropic.MessageParam, int) {
-	if !messagesContainImages(messages) {
+// Fast path: if no media is present the input slice is returned unchanged
+// (estimate=0), avoiding per-message allocations for text-only
+// conversations — which is the common case even on the Bedrock path.
+func stripMediaForCountTokens(messages []anthropic.MessageParam) ([]anthropic.MessageParam, int64) {
+	if !messagesContainMedia(messages) {
 		return messages, 0
 	}
-	imageCount := 0
+	var extraTokens int64
 	out := make([]anthropic.MessageParam, len(messages))
 	for i, msg := range messages {
 		newContent := make([]anthropic.ContentBlockParamUnion, 0, len(msg.Content))
 		for _, block := range msg.Content {
 			if block.OfImage != nil {
-				imageCount++
+				extraTokens += countTokensImageTokenEstimate
 				newContent = append(newContent, anthropic.NewTextBlock(countTokensImagePlaceholder))
+				continue
+			}
+			if block.OfDocument != nil {
+				if txt := block.OfDocument.Source.OfText; txt != nil {
+					// Text-source document: count its content exactly.
+					newContent = append(newContent, anthropic.NewTextBlock(txt.Data))
+					continue
+				}
+				extraTokens += documentTokenEstimate(block.OfDocument)
+				newContent = append(newContent, anthropic.NewTextBlock(countTokensDocumentPlaceholder))
 				continue
 			}
 			if block.OfToolResult != nil {
@@ -875,7 +1059,7 @@ func stripImagesForCountTokens(messages []anthropic.MessageParam) ([]anthropic.M
 				newInner := make([]anthropic.ToolResultBlockParamContentUnion, 0, len(tr.Content))
 				for _, inner := range tr.Content {
 					if inner.OfImage != nil {
-						imageCount++
+						extraTokens += countTokensImageTokenEstimate
 						newInner = append(newInner, anthropic.ToolResultBlockParamContentUnion{
 							OfText: &anthropic.TextBlockParam{Text: countTokensImagePlaceholder},
 						})
@@ -891,17 +1075,21 @@ func stripImagesForCountTokens(messages []anthropic.MessageParam) ([]anthropic.M
 		}
 		out[i] = anthropic.MessageParam{Role: msg.Role, Content: newContent}
 	}
-	return out, imageCount
+	return out, extraTokens
 }
 
 func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) (int64, error) {
+	if a.countTokensUnsupported.Load() {
+		return 0, fmt.Errorf("count_tokens previously answered 404/405 on this endpoint: %w", errors.ErrUnsupported)
+	}
 	anthropicMessages := a.convertMessages(messages)
-	// Only strip images for Bedrock, where count_tokens is routed through the
-	// LiteLLM proxy that rejects Anthropic's "image" content type. The native
-	// Anthropic and Vertex count_tokens endpoints handle images accurately.
-	imageCount := 0
+	// Only strip media for Bedrock, where count_tokens is routed through the
+	// LiteLLM proxy that rejects Anthropic's "image" and "document" content
+	// types. The native Anthropic and Vertex count_tokens endpoints handle
+	// both accurately.
+	var mediaTokenEstimate int64
 	if a.options.useBedrock {
-		anthropicMessages, imageCount = stripImagesForCountTokens(anthropicMessages)
+		anthropicMessages, mediaTokenEstimate = stripMediaForCountTokens(anthropicMessages)
 	}
 	anthropicTools := a.convertTools(tools)
 	countTools := make([]anthropic.MessageCountTokensToolUnionParam, len(anthropicTools))
@@ -928,10 +1116,19 @@ func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Me
 
 	response, err := a.client.Messages.CountTokens(ctx, params)
 	if err != nil {
+		var apierr *anthropic.Error
+		if errors.As(err, &apierr) && (apierr.StatusCode == http.StatusNotFound || apierr.StatusCode == http.StatusMethodNotAllowed) {
+			a.countTokensUnsupported.Store(true)
+			logging.Info("count_tokens endpoint not implemented by provider; using local estimation for the rest of the session",
+				"model", a.providerOptions.model.Name,
+				"status", apierr.StatusCode,
+			)
+			return 0, fmt.Errorf("count_tokens endpoint not implemented (HTTP %d): %w", apierr.StatusCode, errors.ErrUnsupported)
+		}
 		return 0, fmt.Errorf("failed to count tokens: %w", err)
 	}
 
-	return response.InputTokens + int64(imageCount*countTokensImageTokenEstimate), nil
+	return response.InputTokens + mediaTokenEstimate, nil
 }
 
 func (a *anthropicClient) setMaxTokens(maxTokens int64) {
