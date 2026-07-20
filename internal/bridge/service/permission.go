@@ -43,7 +43,59 @@ type PermissionRouter struct {
 	// runs can fire dozens of permission requests per turn; without
 	// the cache each one would hit the store for a binding lookup AND
 	// a session-row lookup. Keys: session ID; values: bool.
+	//
+	// The verdict depends on live binding rows, so every binding
+	// mutation (bind, unbind, /session switch) MUST invalidate via
+	// Service.invalidateSessionScopeCaches. A stale false here is how
+	// cron jobs on a re-bound session silently deferred forever: the
+	// scheduler's HasPermissionResolver gate kept reading the cached
+	// verdict from before the switch until the process restarted.
 	ownedSessions sync.Map
+
+	// cacheMu serialises verdict commits (isBridgeOwnedSession) against
+	// invalidations. Without it a verdict computed from binding rows read
+	// *before* an invalidation could be written back *after* the Clear() —
+	// a TOCTOU that re-caches a stale verdict permanently, reviving the
+	// exact defer-forever bug behind a narrow race window. cacheGen is
+	// bumped on every invalidation; a commit whose snapshot generation no
+	// longer matches is dropped and recomputed on the next lookup. cacheGen
+	// is only ever read or written under cacheMu.
+	cacheMu  sync.Mutex
+	cacheGen uint64
+
+	// beforeCommitHook, when non-nil, runs inside isBridgeOwnedSession after
+	// the binding rows are read but before the verdict is committed.
+	// Test-only (mirrors Scheduler.transitionHook); lets a test drop an
+	// invalidation into the commit window deterministically. Production
+	// leaves it nil.
+	beforeCommitHook func()
+}
+
+// invalidateOwnedSessions drops every cached ownership verdict so the
+// next lookup re-reads the binding rows. Called on any binding mutation;
+// bindings change rarely (human-driven), so a full clear is simpler and
+// safer than tracking which session IDs a mutation affected — a rebind
+// changes the answer for BOTH the old and the new session. Bumping
+// cacheGen under cacheMu also cancels any in-flight verdict computation
+// whose store read predates this call (see isBridgeOwnedSession).
+func (r *PermissionRouter) invalidateOwnedSessions() {
+	if r == nil {
+		return
+	}
+	r.cacheMu.Lock()
+	r.cacheGen++
+	r.ownedSessions.Clear()
+	r.cacheMu.Unlock()
+}
+
+// invalidateSessionScopeCaches drops binding-derived caches after a
+// binding mutation. Dispatcher-level ownedSessions caches are NOT
+// touched: they key on root_session_id lineage, which is immutable.
+func (s *Service) invalidateSessionScopeCaches() {
+	if s == nil {
+		return
+	}
+	s.permissionRouter.invalidateOwnedSessions()
 }
 
 // newPermissionRouter constructs the router and launches its
@@ -183,6 +235,15 @@ func (r *PermissionRouter) isBridgeOwnedSession(ctx context.Context, sessionID s
 	if v, ok := r.ownedSessions.Load(sessionID); ok {
 		return v.(bool)
 	}
+
+	// Snapshot the cache generation before reading binding rows. If an
+	// invalidation lands while we read (a binding mutation on another
+	// goroutine), cacheGen moves and we drop the about-to-be-stale verdict
+	// instead of caching it past the Clear().
+	r.cacheMu.Lock()
+	gen := r.cacheGen
+	r.cacheMu.Unlock()
+
 	owned := false
 
 	// 1. Direct binding?
@@ -210,6 +271,18 @@ func (r *PermissionRouter) isBridgeOwnedSession(ctx context.Context, sessionID s
 		}
 	}
 
-	r.ownedSessions.Store(sessionID, owned)
+	if r.beforeCommitHook != nil {
+		r.beforeCommitHook()
+	}
+
+	// Commit only if no invalidation happened while we were reading. The
+	// gen-compare and the Store run together under cacheMu so an invalidation
+	// can't slip between them — otherwise a verdict read before a rebind
+	// could still be written back after the Clear() and stick forever.
+	r.cacheMu.Lock()
+	if r.cacheGen == gen {
+		r.ownedSessions.Store(sessionID, owned)
+	}
+	r.cacheMu.Unlock()
 	return owned
 }

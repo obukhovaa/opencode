@@ -170,6 +170,7 @@ func (s *Service) resolveBinding(ctx context.Context, peer bridge.PeerRef) (stor
 		if err := s.store.UpdateBindingSessionID(ctx, s.projectID, peer.Channel, peer.Identity, peer.PeerID, newSess); err != nil {
 			return store.Binding{}, err
 		}
+		s.invalidateSessionScopeCaches()
 		b.SessionID = newSess
 		return b, nil
 	case errors.Is(err, store.ErrNotFound):
@@ -191,6 +192,7 @@ func (s *Service) resolveBinding(ctx context.Context, peer bridge.PeerRef) (stor
 		if err != nil {
 			return store.Binding{}, err
 		}
+		s.invalidateSessionScopeCaches()
 		return nb, nil
 	default:
 		return store.Binding{}, err

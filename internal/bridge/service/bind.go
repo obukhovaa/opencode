@@ -92,6 +92,7 @@ func (s *Service) Bind(ctx context.Context, sessionID string, peers []bridge.Pee
 	}
 	if anySuccess {
 		_ = s.dispatcherFor(sessionID)
+		s.invalidateSessionScopeCaches()
 	}
 	return out, nil
 }
@@ -200,6 +201,7 @@ func (s *Service) Unbind(ctx context.Context, sessionID string, peers ...bridge.
 		if err := s.store.DeleteBindingsBySession(ctx, s.projectID, sessionID); err != nil {
 			return err
 		}
+		s.invalidateSessionScopeCaches()
 		s.closeDispatcher(sessionID)
 		// Drop any pending question / buffered reviewer messages for the
 		// session — the interactive step is over (OnInteractiveStepComplete
@@ -215,6 +217,7 @@ func (s *Service) Unbind(ctx context.Context, sessionID string, peers ...bridge.
 			return err
 		}
 	}
+	s.invalidateSessionScopeCaches()
 	// Tear down the dispatcher if no bindings remain. The check + close
 	// happens atomically under dispatchMu inside closeDispatcherIfEmpty
 	// so a concurrent Bind cannot race the teardown (see method docs).

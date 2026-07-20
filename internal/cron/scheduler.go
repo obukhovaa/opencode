@@ -79,6 +79,14 @@ type Scheduler struct {
 	// Test-only; production wiring leaves it nil so ClearStaleFiring runs.
 	transitionHook func(context.Context)
 
+	// deferLoggedJobs marks job IDs whose unwatched-session deferral has
+	// already been logged at Info, so a job stuck in the 60s defer loop
+	// produces one visible line instead of one per minute. Cleared when
+	// the job actually fires so a later regression logs again. Bounded by
+	// the number of due-but-unwatched jobs; entries for deleted jobs are
+	// harmless residue.
+	deferLoggedJobs sync.Map
+
 	stopOnce sync.Once
 
 	cancel    context.CancelFunc
@@ -452,7 +460,15 @@ func (s *Scheduler) fireJob(ctx context.Context, job CronJob) {
 		// firing=true/false every tick (1 DB write/sec/job); push the
 		// next attempt out by 60s so churn stays bounded.
 		if job.SessionID != activeSessionID && !s.hasPermissionResolver(ctx, job.SessionID) {
-			logging.Debug("Cron job on unwatched session, deferring permission check", "id", job.ID)
+			// Log once per job at Info: this deferral repeats every 60s
+			// until the session becomes watched again (TUI selects it,
+			// the chat re-binds to it, or it's auto-approved), and a
+			// Debug-only line made "my crons silently stopped firing"
+			// undiagnosable from default logs.
+			if _, seen := s.deferLoggedJobs.LoadOrStore(job.ID, true); !seen {
+				logging.Info("Cron job deferred: session is not watched by any surface (no TUI focus, no bridge binding); will retry every 60s",
+					"id", job.ID, "session", job.SessionID, "title", job.TaskTitle)
+			}
 			s.deferAndClear(ctx, job, time.Now().Add(60*time.Second))
 			return
 		}
@@ -475,6 +491,9 @@ func (s *Scheduler) fireJob(ctx context.Context, job CronJob) {
 	}
 
 	logging.Info("Cron job firing", "id", job.ID, "schedule", job.Schedule, "title", job.TaskTitle)
+	// The job is executing again — re-arm the one-shot deferral log so a
+	// future unwatched stretch is reported anew.
+	s.deferLoggedJobs.Delete(job.ID)
 
 	// Generate unique call_id
 	callID := generateCallID()

@@ -345,6 +345,11 @@ func (s *Service) cmdSession(ctx context.Context, in bridge.Inbound) *bridge.Com
 		in.Peer.Channel, in.Peer.Identity, in.Peer.PeerID, target.ID); err != nil {
 		return replyText("Failed to switch session: " + err.Error())
 	}
+	// Binding-derived caches now hold stale verdicts for BOTH sessions —
+	// without this the cron scheduler's HasPermissionResolver gate kept
+	// seeing the pre-switch answer and jobs on the re-bound session
+	// deferred 60s/tick forever (until process restart).
+	s.invalidateSessionScopeCaches()
 	// Ensure the dispatcher for the new session is up so the next
 	// inbound routes without a cold-start delay. The old session's
 	// dispatcher is left alone — closeDispatcherIfEmpty would tear it
@@ -449,6 +454,7 @@ func (s *Service) cmdReset(ctx context.Context, in bridge.Inbound) *bridge.Comma
 	); err != nil {
 		return replyText("Failed to reset binding: " + err.Error())
 	}
+	s.invalidateSessionScopeCaches()
 	if existing.SessionID != "" {
 		s.closeDispatcherIfEmpty(ctx, existing.SessionID)
 	}

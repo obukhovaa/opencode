@@ -322,6 +322,7 @@ func (s *Service) deleteIdentity(ctx context.Context, channel, id string) error 
 	s.DeregisterAdapter(channel, id)
 	// Cascade cleanup — silent if no rows match.
 	_ = s.store.DeleteBindingsByIdentity(ctx, s.projectID, channel, id)
+	s.invalidateSessionScopeCaches()
 	return nil
 }
 
