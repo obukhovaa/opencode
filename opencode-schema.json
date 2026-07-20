@@ -173,6 +173,13 @@
   },
   "description": "Configuration schema for the OpenCode application",
   "properties": {
+    "agentPaths": {
+      "description": "Custom directories to scan for markdown agent definitions (*.md) at startup. Supports ~ for the home directory and relative paths (resolved against the working directory). Custom-path agents have the lowest precedence among discovery sources.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "agents": {
       "additionalProperties": {
         "description": "Agent configuration",

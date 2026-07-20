@@ -289,27 +289,33 @@ type PermissionConfig struct {
 
 // Config is the main configuration structure for the application.
 type Config struct {
-	Data               Data                              `json:"data"`
-	WorkingDir         string                            `json:"wd,omitempty"`
-	MCPServers         map[string]MCPServer              `json:"mcpServers,omitempty"`
-	Providers          map[models.ModelProvider]Provider `json:"providers,omitempty"`
-	LSP                map[string]LSPConfig              `json:"lsp,omitempty"`
-	Agents             map[AgentName]Agent               `json:"agents,omitempty"`
-	Debug              bool                              `json:"debug,omitempty"`
-	DebugLSP           bool                              `json:"debugLSP,omitempty"`
-	ContextPaths       []string                          `json:"contextPaths,omitempty"`
-	TUI                TUIConfig                         `json:"tui"`
-	Shell              ShellConfig                       `json:"shell,omitempty"`
-	AutoCompact        bool                              `json:"autoCompact,omitempty"`
-	DisableLSPDownload bool                              `json:"disableLSPDownload,omitempty"`
-	SessionProvider    SessionProviderConfig             `json:"sessionProvider,omitempty"`
-	Skills             *SkillsConfig                     `json:"skills,omitempty"`
-	Permission         *PermissionConfig                 `json:"permission,omitempty"`
-	WebSearch          *WebSearchConfig                  `json:"webSearch,omitempty"`
-	MaxTurns           int                               `json:"maxTurns,omitempty"`
-	Telemetry          *TelemetryConfig                  `json:"telemetry,omitempty"`
-	SessionCleanup     *SessionCleanupConfig             `json:"sessionCleanup,omitempty"`
-	Router             *bridge.Config                    `json:"router,omitempty"`
+	Data         Data                              `json:"data"`
+	WorkingDir   string                            `json:"wd,omitempty"`
+	MCPServers   map[string]MCPServer              `json:"mcpServers,omitempty"`
+	Providers    map[models.ModelProvider]Provider `json:"providers,omitempty"`
+	LSP          map[string]LSPConfig              `json:"lsp,omitempty"`
+	Agents       map[AgentName]Agent               `json:"agents,omitempty"`
+	Debug        bool                              `json:"debug,omitempty"`
+	DebugLSP     bool                              `json:"debugLSP,omitempty"`
+	ContextPaths []string                          `json:"contextPaths,omitempty"`
+	// AgentPaths lists custom directories to scan for markdown agent
+	// definitions (*.md) at startup, mirroring Skills.Paths. Supports "~"
+	// for the home directory and relative paths (resolved against the
+	// working directory). Custom-path agents have the lowest precedence
+	// among discovery sources — see internal/agent/registry.go.
+	AgentPaths         []string              `json:"agentPaths,omitempty"`
+	TUI                TUIConfig             `json:"tui"`
+	Shell              ShellConfig           `json:"shell,omitempty"`
+	AutoCompact        bool                  `json:"autoCompact,omitempty"`
+	DisableLSPDownload bool                  `json:"disableLSPDownload,omitempty"`
+	SessionProvider    SessionProviderConfig `json:"sessionProvider,omitempty"`
+	Skills             *SkillsConfig         `json:"skills,omitempty"`
+	Permission         *PermissionConfig     `json:"permission,omitempty"`
+	WebSearch          *WebSearchConfig      `json:"webSearch,omitempty"`
+	MaxTurns           int                   `json:"maxTurns,omitempty"`
+	Telemetry          *TelemetryConfig      `json:"telemetry,omitempty"`
+	SessionCleanup     *SessionCleanupConfig `json:"sessionCleanup,omitempty"`
+	Router             *bridge.Config        `json:"router,omitempty"`
 	// Hooks is the Claude-Code-compatible PreToolUse / PostToolUse
 	// subprocess hook map. Keys are event names (`PreToolUse`,
 	// `PostToolUse`); values are matcher groups whose entries fire as

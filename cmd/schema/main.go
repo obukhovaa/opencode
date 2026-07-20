@@ -101,6 +101,14 @@ func generateSchema() map[string]any {
 		},
 	}
 
+	schema["properties"].(map[string]any)["agentPaths"] = map[string]any{
+		"type":        "array",
+		"description": "Custom directories to scan for markdown agent definitions (*.md) at startup. Supports ~ for the home directory and relative paths (resolved against the working directory). Custom-path agents have the lowest precedence among discovery sources.",
+		"items": map[string]any{
+			"type": "string",
+		},
+	}
+
 	schema["properties"].(map[string]any)["tui"] = map[string]any{
 		"type":        "object",
 		"description": "Terminal User Interface configuration",

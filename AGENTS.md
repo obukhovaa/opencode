@@ -110,11 +110,12 @@ Here's the list of **built-in agents** available by default:
 
 Agents can also be defined as markdown files with YAML frontmatter (same format as skills). The registry discovers agents from these locations, in merge priority order (lowest to highest):
 
-1. `~/.config/opencode/agents/*.md` (global)
-2. `~/.agents/types/*.md` (global)
-3. `.opencode/agents/*.md` (project)
-4. `.agents/types/*.md` (project)
-5. `.opencode.json` `agents` config (project — highest priority)
+1. `agentPaths` in `.opencode.json` — custom directories scanned for `*.md` agents (lowest priority; supports `~` and relative paths, scanned non-recursively, mirrors `skills.paths`)
+2. `~/.config/opencode/agents/*.md` (global)
+3. `~/.agents/types/*.md` (global)
+4. `.opencode/agents/*.md` (project)
+5. `.agents/types/*.md` (project)
+6. `.opencode.json` `agents` config (project — highest priority)
 
 The file basename (without `.md`) becomes the agent ID. Example:
 

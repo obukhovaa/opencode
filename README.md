@@ -242,11 +242,20 @@ Each built-in agent can be customized:
 
 Define custom agents as markdown files with YAML frontmatter. Discovery locations (merge priority, lowest to highest):
 
-1. `~/.config/opencode/agents/*.md` — Global agents
-2. `~/.agents/types/*.md` — Global agents
-3. `.opencode/agents/*.md` — Project agents
-4. `.agents/types/*.md` — Project agents
-5. `.opencode.json` config — Highest priority
+1. `agentPaths` in `.opencode.json` — custom directories scanned for `*.md` agents (lowest priority)
+2. `~/.config/opencode/agents/*.md` — Global agents
+3. `~/.agents/types/*.md` — Global agents
+4. `.opencode/agents/*.md` — Project agents
+5. `.agents/types/*.md` — Project agents
+6. `.opencode.json` `agents` config — Highest priority
+
+`agentPaths` accepts absolute paths, `~` (home directory), and relative paths (resolved against the working directory). Each directory is scanned non-recursively for `*.md` files, mirroring the `skills.paths` option:
+
+```json
+{
+  "agentPaths": ["~/.my-agents", ".team/agents"]
+}
+```
 
 Example `.opencode/agents/reviewer.md`:
 

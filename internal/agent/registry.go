@@ -386,6 +386,19 @@ func discoverMarkdownAgents(agents map[string]AgentInfo, cfg *config.Config) {
 			agents[a.ID] = a
 		}
 	}
+
+	// Custom agent paths have the lowest precedence among discovery
+	// sources (mirroring skills' custom-path handling): they contribute
+	// only agents whose ID isn't already provided by a builtin, global,
+	// or project source. Config overrides (applyConfigOverrides) still
+	// win over everything, since they run after this.
+	customAgents := discoverCustomPathMarkdownAgents(cfg)
+	for _, a := range customAgents {
+		if _, ok := agents[a.ID]; ok {
+			continue
+		}
+		agents[a.ID] = a
+	}
 }
 
 func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
@@ -605,6 +618,43 @@ func discoverProjectMarkdownAgents(workingDir string) []AgentInfo {
 		found := scanAgentDirectory(dir)
 		agents = append(agents, found...)
 	}
+	return agents
+}
+
+// discoverCustomPathMarkdownAgents scans the directories listed in
+// cfg.AgentPaths for markdown agent definitions. It mirrors the skills
+// package's discoverCustomPaths: "~/" is expanded to the home directory and
+// relative paths are resolved against the working directory. Missing paths and
+// non-directories are logged and skipped rather than failing discovery.
+func discoverCustomPathMarkdownAgents(cfg *config.Config) []AgentInfo {
+	if cfg == nil || len(cfg.AgentPaths) == 0 {
+		return nil
+	}
+
+	var agents []AgentInfo
+	homeDir, _ := os.UserHomeDir()
+
+	for _, agentPath := range cfg.AgentPaths {
+		// Expand ~ to the home directory.
+		expanded := agentPath
+		if strings.HasPrefix(agentPath, "~/") && homeDir != "" {
+			expanded = filepath.Join(homeDir, agentPath[2:])
+		}
+
+		// Resolve relative paths against the working directory.
+		resolved := expanded
+		if !filepath.IsAbs(expanded) {
+			resolved = filepath.Join(cfg.WorkingDir, expanded)
+		}
+
+		if info, err := os.Stat(resolved); err != nil || !info.IsDir() {
+			logging.Warn("Agent path not found or not a directory", "path", resolved)
+			continue
+		}
+
+		agents = append(agents, scanAgentDirectory(resolved)...)
+	}
+
 	return agents
 }
 

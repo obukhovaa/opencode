@@ -615,6 +615,120 @@ func TestConfigOverridesSkillsDedup(t *testing.T) {
 	}
 }
 
+func TestDiscoverCustomPathMarkdownAgents(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	customDir := filepath.Join(tmpDir, "my-agents")
+	if err := os.MkdirAll(customDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	md := `---
+description: Custom agent from a custom path
+mode: subagent
+---
+
+Custom agent prompt.
+`
+	if err := os.WriteFile(filepath.Join(customDir, "custom-agent.md"), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A non-markdown file in the same dir must be ignored.
+	if err := os.WriteFile(filepath.Join(customDir, "notes.txt"), []byte("ignore"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Absolute path.
+	absAgents := discoverCustomPathMarkdownAgents(&config.Config{
+		WorkingDir: tmpDir,
+		AgentPaths: []string{filepath.Join(tmpDir, "my-agents")},
+	})
+	if len(absAgents) != 1 {
+		t.Fatalf("absolute path: got %d agents, want 1", len(absAgents))
+	}
+	if absAgents[0].ID != "custom-agent" {
+		t.Errorf("absolute path: ID = %q, want custom-agent", absAgents[0].ID)
+	}
+	if absAgents[0].Mode != config.AgentModeSubagent {
+		t.Errorf("absolute path: Mode = %q, want subagent", absAgents[0].Mode)
+	}
+
+	// Relative path, resolved against WorkingDir.
+	relAgents := discoverCustomPathMarkdownAgents(&config.Config{
+		WorkingDir: tmpDir,
+		AgentPaths: []string{"my-agents"},
+	})
+	if len(relAgents) != 1 {
+		t.Fatalf("relative path: got %d agents, want 1", len(relAgents))
+	}
+
+	// Missing path is skipped without error.
+	missingAgents := discoverCustomPathMarkdownAgents(&config.Config{
+		WorkingDir: tmpDir,
+		AgentPaths: []string{filepath.Join(tmpDir, "does-not-exist")},
+	})
+	if len(missingAgents) != 0 {
+		t.Errorf("missing path: got %d agents, want 0", len(missingAgents))
+	}
+
+	// Nil config and empty AgentPaths both yield nothing.
+	if got := discoverCustomPathMarkdownAgents(nil); got != nil {
+		t.Errorf("nil config: got %v, want nil", got)
+	}
+	if got := discoverCustomPathMarkdownAgents(&config.Config{WorkingDir: tmpDir}); len(got) != 0 {
+		t.Errorf("empty AgentPaths: got %d agents, want 0", len(got))
+	}
+}
+
+// TestCustomPathAgentsLowestPrecedence verifies that a project agent wins
+// over a custom-path agent with the same ID: custom paths are additive and
+// have the lowest precedence among discovery sources.
+func TestCustomPathAgentsLowestPrecedence(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Project source: .opencode/agents/dup.md
+	projDir := filepath.Join(tmpDir, ".opencode", "agents")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projMD := "---\ndescription: project version\nmode: subagent\n---\nproject body"
+	if err := os.WriteFile(filepath.Join(projDir, "dup.md"), []byte(projMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Custom path source: <tmp>/custom/dup.md (+ a unique agent)
+	customDir := filepath.Join(tmpDir, "custom")
+	if err := os.MkdirAll(customDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	customDupMD := "---\ndescription: custom version\nmode: subagent\n---\ncustom body"
+	if err := os.WriteFile(filepath.Join(customDir, "dup.md"), []byte(customDupMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uniqueMD := "---\ndescription: only in custom path\nmode: subagent\n---\nunique body"
+	if err := os.WriteFile(filepath.Join(customDir, "unique.md"), []byte(uniqueMD), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	agents := map[string]AgentInfo{}
+	discoverMarkdownAgents(agents, &config.Config{
+		WorkingDir: tmpDir,
+		AgentPaths: []string{customDir},
+	})
+
+	dup, ok := agents["dup"]
+	if !ok {
+		t.Fatal("dup agent not discovered")
+	}
+	if dup.Description != "project version" {
+		t.Errorf("Description = %q, want %q (project must win over custom path)", dup.Description, "project version")
+	}
+
+	// A custom-path agent with a non-colliding ID is still contributed.
+	if _, ok := agents["unique"]; !ok {
+		t.Error("unique custom-path agent should be discovered")
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr))
 }
