@@ -109,6 +109,14 @@ func generateSchema() map[string]any {
 		},
 	}
 
+	schema["properties"].(map[string]any)["flowPaths"] = map[string]any{
+		"type":        "array",
+		"description": "Custom directories to scan for flow YAML definitions (*.yaml / *.yml) at startup. Supports ~ for the home directory and relative paths (resolved against the working directory). Flows discovered here get a namespaced ID <parent-dir-basename>/<file-basename> and can never shadow a built-in (slash-free) flow ID.",
+		"items": map[string]any{
+			"type": "string",
+		},
+	}
+
 	schema["properties"].(map[string]any)["tui"] = map[string]any{
 		"type":        "object",
 		"description": "Terminal User Interface configuration",
