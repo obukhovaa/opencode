@@ -936,14 +936,48 @@ OuterLoop:
 					}
 					toolResults = &emptyToolMsg
 				} else {
-					if structOutput == nil || structOutputIsErr {
-						if s, ok := toolResults.StructOutput(); ok || structOutput == nil {
-							structOutput = s
-						}
-					}
+					structOutput, structOutputIsErr = captureStructOutput(toolResults, structOutput, structOutputIsErr)
 				}
 
 				msgHistory = append(msgHistory, agentMessage, *toolResults)
+
+				// struct_output is contractually the model's terminal tool call:
+				// the accepted result IS the run's output and nothing downstream
+				// consumes a post-struct_output assistant turn. Skip the wrap-up
+				// round-trip — on long reasoning sessions it is the largest,
+				// most throttle-prone request of the whole run, and a provider
+				// retry storm there has stranded fully-completed steps until the
+				// job deadline killed them.
+				//
+				// With background tasks pending we cannot finish here (their
+				// completions would be enqueued onto a finished session), so we
+				// fall through to the pre-existing path: give the model its
+				// wrap-up turn; when that turn ends the outer loop BLOCKS in
+				// drainSessionTasks (WaitForActiveTasks — no busy-spin) and then
+				// re-enters this loop so the model reacts to the completions. A
+				// struct_output re-emitted on that later pass finishes the run
+				// through this same branch. Bounded by effectiveMaxTurns like
+				// any other cycle.
+				if structOutput != nil && !structOutputIsErr {
+					pendingTasks := 0
+					if opts.NonInteractive {
+						if reg := task.GlobalRegistry(); reg != nil {
+							pendingTasks = len(reg.PendingForSession(sessionID, nil))
+						}
+					}
+					if pendingTasks == 0 {
+						logging.Info("struct_output accepted — finishing run without wrap-up turn", "session_id", sessionID, "cycle", cycles)
+						finalResult = AgentEvent{
+							Type:         AgentEventTypeResponse,
+							Message:      agentMessage,
+							StructOutput: structOutput,
+							Done:         true,
+						}
+						break OuterLoop
+					}
+					logging.Info("struct_output accepted but background tasks pending — continuing to the wait cycle", "session_id", sessionID, "pending_count", pendingTasks)
+				}
+
 				preserveTail = true
 				continue
 			}
@@ -1799,6 +1833,21 @@ func (a *agent) Update(agentName config.AgentName, modelID models.ModelID) (mode
 // subsequent agent.Run on the session with `messages: text content blocks
 // must be non-empty` (HTTP 400). Filtering at read time auto-recovers
 // these sessions without needing a DB migration or manual cleanup.
+// captureStructOutput merges the struct_output tool result (if any) from a
+// tool-results message into the running (structOutput, isErr) pair. A
+// non-error result always wins — including over an earlier success, so a
+// model that re-emits struct_output after reacting to background-task
+// completions (the deferred-finish path) gets its update through. An error
+// (schema-rejected) result is kept only as a fallback while no result
+// exists at all, so the final AgentEvent can still surface it; it never
+// downgrades a captured success.
+func captureStructOutput(toolResults *message.Message, structOutput *message.ToolResult, isErr bool) (*message.ToolResult, bool) {
+	if s, ok := toolResults.StructOutput(); ok || structOutput == nil {
+		return s, !ok
+	}
+	return structOutput, isErr
+}
+
 func filterEmptyUserMessages(msgs []message.Message) []message.Message {
 	out := msgs[:0]
 	for _, m := range msgs {
