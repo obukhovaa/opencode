@@ -303,7 +303,16 @@ type Config struct {
 	// for the home directory and relative paths (resolved against the
 	// working directory). Custom-path agents have the lowest precedence
 	// among discovery sources — see internal/agent/registry.go.
-	AgentPaths         []string              `json:"agentPaths,omitempty"`
+	AgentPaths []string `json:"agentPaths,omitempty"`
+	// FlowPaths lists custom directories to scan for flow YAML
+	// definitions (*.yaml / *.yml) at startup, mirroring AgentPaths.
+	// Supports "~" for the home directory and relative paths (resolved
+	// against the working directory). Flows discovered here get a
+	// namespaced ID `<parent-dir-basename>/<file-basename>` — e.g.
+	// /workspace/id/flows/fix-failing-tests.yaml → `id/fix-failing-tests`
+	// — so they can never collide with or shadow a built-in (slash-free)
+	// flow ID. See internal/flow/registry.go.
+	FlowPaths          []string              `json:"flowPaths,omitempty"`
 	TUI                TUIConfig             `json:"tui"`
 	Shell              ShellConfig           `json:"shell,omitempty"`
 	AutoCompact        bool                  `json:"autoCompact,omitempty"`

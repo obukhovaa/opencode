@@ -150,7 +150,13 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 			return nil, nil, fmt.Errorf("resolving session prefix: %w", prefixErr)
 		}
 	}
-	rootSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, flowID, f.Spec.Steps[0].ID)
+	// Session IDs travel as single URL path segments downstream
+	// (`GET /session/{sessionID}` and friends), so the "/" in a
+	// namespaced custom-path flow ID must not leak into them. All
+	// session-ID construction sites in this function use the folded
+	// form; shared (slash-free) flow IDs pass through unchanged.
+	sessionFlowID := sessionSafeFlowID(flowID)
+	rootSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, sessionFlowID, f.Spec.Steps[0].ID)
 
 	existingStates, err := s.querier.ListFlowStatesByRootSession(ctx, rootSessionID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -262,7 +268,7 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 	}
 
 	for _, w := range initialWork {
-		stepSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, flowID, w.step.ID)
+		stepSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, sessionFlowID, w.step.ID)
 		argsJSON, _ := json.Marshal(w.args)
 		if existingFS, getErr := s.querier.GetFlowState(ctx, stepSessionID); getErr == nil {
 			output := sql.NullString{}
@@ -304,7 +310,7 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 
 	go func() {
 		for work := range nextSteps {
-			stepSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, flowID, work.step.ID)
+			stepSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, sessionFlowID, work.step.ID)
 			// Diamond-convergence guard: a step scheduled by multiple upstream
 			// paths runs at most once per invocation. Three exemptions:
 			//   1. Self-loops (step routes to itself, non-postpone): arrive
@@ -1188,6 +1194,28 @@ func (s *service) copySessionMessages(ctx context.Context, fromSessionID, toSess
 		}
 	}
 	return nil
+}
+
+// sessionSafeFlowID converts a flow ID into the form embedded in flow
+// session IDs. Namespaced custom-path flow IDs contain a "/"
+// (`<namespace>/<basename>` — see registry.go), but session IDs are
+// consumed as single URL path segments (`GET /session/{sessionID}`,
+// `POST /session/{sessionID}/message`, …) where an unescaped "/" would
+// break route matching.
+//
+// The separator is folded to "--" (`id/fix-failing-tests` →
+// `id--fix-failing-tests`), NOT to a single "-": the flow ID grammar
+// (kebab-case per segment, see validateFlowID) forbids consecutive
+// hyphens inside any valid flow ID, so the folded form of a namespaced
+// ID can never be byte-identical to a shared flow ID (a single-hyphen
+// fold would collide `id/fix-failing-tests` with a legacy flow named
+// `id-fix-failing-tests`, aliasing their root/step session IDs and
+// cross-wiring resume state). The fold is injective across all valid
+// flow IDs. Shared (slash-free) IDs pass through unchanged. All
+// session-ID construction sites in Run use this fold consistently, so
+// resume / re-trigger lookups keyed by session ID keep working.
+func sessionSafeFlowID(flowID string) string {
+	return strings.ReplaceAll(flowID, "/", "--")
 }
 
 // resolveSessionPrefix determines the session prefix from the flow spec, CLI flag, or timestamp.

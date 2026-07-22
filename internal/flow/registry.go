@@ -176,6 +176,22 @@ func discoverFlows() map[string]Flow {
 		flows[f.ID] = f
 	}
 
+	// Custom flow paths (cfg.FlowPaths) are discovered after the built-in
+	// dirs. Their IDs are namespaced (`<namespace>/<basename>`), while
+	// built-in discovery derives IDs from file basenames — which can never
+	// contain a path separator — so a custom-path flow can never collide
+	// with or spoof a shared flow ID. The duplicate guard below is
+	// therefore defensive only (e.g. two flowPaths entries resolving to
+	// the same directory), mirroring the built-in dup handling above.
+	customFlows := discoverCustomPathFlows(config.Get())
+	for _, f := range customFlows {
+		if _, exists := flows[f.ID]; exists {
+			logging.Warn("Duplicate flow ID, keeping first occurrence", "id", f.ID, "location", f.Location)
+			continue
+		}
+		flows[f.ID] = f
+	}
+
 	return flows
 }
 
@@ -210,6 +226,72 @@ func discoverGlobalFlows() []Flow {
 	for _, dir := range globalDirs {
 		result = append(result, scanFlowDirectory(dir)...)
 	}
+	return result
+}
+
+// discoverCustomPathFlows scans the directories listed in cfg.FlowPaths
+// for flow YAML definitions. It mirrors the agent registry's
+// discoverCustomPathMarkdownAgents: "~/" is expanded to the home
+// directory and relative paths are resolved against the working
+// directory. Missing paths and non-directories are logged and skipped
+// rather than failing discovery.
+//
+// Unlike built-in discovery, flows found here get a namespaced ID
+// `<namespace>/<basename>` where the namespace is the basename of the
+// flows directory's PARENT — e.g. /workspace/id/flows/fix-failing-tests.yaml
+// becomes `id/fix-failing-tests`. Namespaced IDs occupy a disjoint key
+// space from shared (slash-free) flow IDs, so team flows are addressable
+// without ever shadowing a shared flow. Flows whose namespaced ID fails
+// validateFlowID (non-kebab parent dir, over-long ID) are warned about
+// and skipped.
+func discoverCustomPathFlows(cfg *config.Config) []Flow {
+	if cfg == nil || len(cfg.FlowPaths) == 0 {
+		return nil
+	}
+
+	var result []Flow
+	homeDir, _ := os.UserHomeDir()
+
+	for _, flowPath := range cfg.FlowPaths {
+		// Expand ~ to the home directory.
+		expanded := flowPath
+		if strings.HasPrefix(flowPath, "~/") && homeDir != "" {
+			expanded = filepath.Join(homeDir, flowPath[2:])
+		}
+
+		// Resolve relative paths against the working directory.
+		resolved := expanded
+		if !filepath.IsAbs(expanded) {
+			resolved = filepath.Join(cfg.WorkingDir, expanded)
+		}
+
+		// Clean the path so trailing slashes don't skew the namespace
+		// derivation below: filepath.Dir on an uncleaned
+		// "/workspace/id/flows/" yields ".../flows", which would derive
+		// the namespace "flows" for every trailing-slash entry (and
+		// collapse multiple teams into one colliding namespace).
+		// filepath.Join already cleans the relative branch; absolute
+		// entries need it explicitly.
+		resolved = filepath.Clean(resolved)
+
+		if info, err := os.Stat(resolved); err != nil || !info.IsDir() {
+			logging.Warn("Flow path not found or not a directory", "path", resolved)
+			continue
+		}
+
+		namespace := filepath.Base(filepath.Dir(resolved))
+		for _, f := range scanFlowDirectory(resolved) {
+			nsID := namespace + "/" + f.ID
+			if err := validateFlowID(nsID); err != nil {
+				logging.Warn("Skipping custom-path flow with invalid namespaced ID",
+					"id", nsID, "location", f.Location, "error", err)
+				continue
+			}
+			f.ID = nsID
+			result = append(result, f)
+		}
+	}
+
 	return result
 }
 
@@ -308,7 +390,13 @@ func parseFlowFile(path string) (*Flow, error) {
 	return &flow, nil
 }
 
-// validateFlowID checks the flow ID (derived from filename) is valid kebab-case.
+// validateFlowID checks a flow ID is valid: either a single kebab-case
+// segment (shared flows — the ID is the file basename, which can never
+// contain a path separator) or exactly two kebab-case segments joined
+// by one "/" (namespaced custom-path flows, `<namespace>/<basename>` —
+// see discoverCustomPathFlows). Because the two forms are disjoint, a
+// namespaced ID can never collide with or spoof a shared flow ID. The
+// maxNameLength cap applies to the full ID, separator included.
 func validateFlowID(id string) error {
 	if id == "" {
 		return fmt.Errorf("%w: empty ID", ErrInvalidFlowName)
@@ -316,8 +404,14 @@ func validateFlowID(id string) error {
 	if len(id) > maxNameLength {
 		return fmt.Errorf("%w: %q exceeds %d characters", ErrInvalidFlowName, id, maxNameLength)
 	}
-	if !kebabCaseRegex.MatchString(id) {
-		return fmt.Errorf("%w: %q must be kebab-case (lowercase alphanumeric with hyphens)", ErrInvalidFlowName, id)
+	segments := strings.Split(id, "/")
+	if len(segments) > 2 {
+		return fmt.Errorf("%w: %q may contain at most one '/' (<namespace>/<name>)", ErrInvalidFlowName, id)
+	}
+	for _, segment := range segments {
+		if !kebabCaseRegex.MatchString(segment) {
+			return fmt.Errorf("%w: %q must be kebab-case (lowercase alphanumeric with hyphens), optionally namespaced as <namespace>/<name>", ErrInvalidFlowName, id)
+		}
 	}
 	return nil
 }

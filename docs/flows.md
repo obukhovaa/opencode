@@ -60,8 +60,25 @@ Flow files are YAML and are discovered from these locations (project paths take 
 | `.agents/flows/*.yaml` | Project |
 | `~/.config/opencode/flows/*.yaml` | Global |
 | `~/.agents/flows/*.yaml` | Global |
+| `flowPaths` in `.opencode.json` | Custom (namespaced IDs) |
 
 The flow ID is derived from the filename without its extension. For example, `review-and-fix.yaml` becomes the flow ID `review-and-fix`. Both `.yaml` and `.yml` extensions are supported.
+
+### Custom flow paths (`flowPaths`)
+
+`flowPaths` accepts absolute paths, `~` (home directory), and relative paths (resolved against the working directory), mirroring the `agentPaths` option. Each directory is scanned non-recursively; missing paths and non-directories are logged and skipped, as are flows whose derived namespace is invalid (see below):
+
+```json
+{
+  "flowPaths": ["/workspace/id/flows", "teams/vx/flows"]
+}
+```
+
+Flows discovered via `flowPaths` get a **namespaced ID** `<namespace>/<basename>`, where the namespace is the basename of the configured directory's **parent** — so `/workspace/id/flows/fix-failing-tests.yaml` becomes `id/fix-failing-tests`, and the relative `teams/vx/flows` yields the namespace `vx`. The namespace is *derived from the directory layout*, not set directly: point each entry at `<…>/<namespace>/<dir>`, where `<dir>` is the directory that holds the YAML files.
+
+The namespace must itself be kebab-case (lowercase alphanumeric with hyphens, no leading/trailing hyphen). If the parent basename is not — e.g. `.team` (leading dot), `My_Team` (uppercase/underscore), or the checkout-directory name that a bare relative path like `flows` resolves against — the namespaced ID fails validation and every flow under that directory is skipped with a warning rather than registered under an unusable ID. This is the one behavioral difference from `agentPaths`, which derives no namespace and takes its ID from the file basename alone.
+
+Because built-in discovery derives IDs from file basenames (which can never contain `/`), a custom-path flow can never collide with or shadow a shared flow ID: a flow ID is either a single kebab-case segment or exactly two kebab-case segments joined by one `/` (64 chars max, separator included). Namespaced flows work everywhere plain ones do (`--flow id/fix-failing-tests`, `POST /flow`, flow listings); in session IDs the `/` is folded to `--` (kebab-case segments can never contain consecutive hyphens, so the folded form cannot collide with any shared flow ID).
 
 ### Top-level fields
 
