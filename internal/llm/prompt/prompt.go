@@ -383,6 +383,13 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 	// AgentInfo from reg.Get() returns the original Registry copy,
 	// NOT the per-call infoCopy with Interactive set).
 	if info, ok := reg.Get(agentName); ok {
+		// A flow step's output schema is injected onto the factory's
+		// per-call AgentInfo copy, which reg.Get does NOT return here (it
+		// returns the original registry entry — same reason Interactive is
+		// plumbed through opts). opts.HasOutputSchema carries that per-call
+		// presence; info.Output covers agents that declare a STATIC schema
+		// in their definition. Either one arms the struct_output prompt.
+		hasOutputSchema := opts.HasOutputSchema || (info.Output != nil && info.Output.Schema != nil)
 		// Interactive flow steps always get the multi-turn prompt: the
 		// flow service injects both struct_output + the output schema
 		// dynamically, so the static info.Output check would miss them.
@@ -391,13 +398,6 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 		// and silently role-plays both sides of the conversation
 		// before emitting struct_output — defeating the whole point of
 		// interactive: true.
-		// A flow step's output schema is injected onto the factory's
-		// per-call AgentInfo copy, which reg.Get does NOT return here (it
-		// returns the original registry entry — same reason Interactive is
-		// plumbed through opts). opts.HasOutputSchema carries that per-call
-		// presence; info.Output covers agents that declare a STATIC schema
-		// in their definition. Either one arms the struct_output prompt.
-		hasOutputSchema := opts.HasOutputSchema || (info.Output != nil && info.Output.Schema != nil)
 		if opts.Interactive || info.Interactive {
 			basePrompt += interactiveStructuredOutputPromptFor(opts.BoundPeers)
 		} else if hasOutputSchema && reg.IsToolEnabled(agentName, tools.StructOutputToolName) {

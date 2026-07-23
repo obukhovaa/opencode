@@ -39,19 +39,20 @@ steps:
     prompt: Just talk, no structured result.
 `
 
-// TestFlowStepWithOutputSchemaGetsStructOutputPrompt is an end-to-end check
-// that a flow step declaring an output schema yields an agent system prompt
-// containing the struct_output instruction — the regression that silently
-// stranded plan-to-implement (the agent replied in prose, never called
-// struct_output, so the blockers-based routing rules matched nothing and the
-// flow stopped).
+// TestFlowStepWithOutputSchemaGetsStructOutputPrompt guards against the
+// regression that silently stranded plan-to-implement: a flow step declaring
+// an output schema whose agent replied in prose, never called struct_output,
+// so the blockers-based routing rules matched nothing and the flow stopped.
 //
-// It parses a real flow definition, then runs the SAME schema-presence
-// computation the agent factory does — AgentFactory.NewAgent sets
-// infoCopy.Output from step.Output.Schema, and newAgent passes
-// withHasOutputSchema(info.Output != nil && info.Output.Schema != nil) into
-// the prompt builder — against a schemaless agent type (the piano-developer
-// shape: a custom prompt, no static output schema).
+// It parses a real flow definition and asserts the prompt builder appends the
+// struct_output instruction for a step with an output schema (and not for one
+// without), against a schemaless agent type (the piano-developer shape: a
+// custom prompt, no static output schema). The flag it feeds is the SAME
+// schema-presence predicate the factory computes — AgentFactory.NewAgent sets
+// infoCopy.Output from step.Output.Schema and newAgent passes
+// withHasOutputSchema(info.Output != nil && info.Output.Schema != nil). This
+// test does not execute the factory itself (that path builds a live provider);
+// the factory→opts wiring is the trivial mirror of the Interactive plumbing.
 func TestFlowStepWithOutputSchemaGetsStructOutputPrompt(t *testing.T) {
 	var spec FlowSpec
 	require.NoError(t, yaml.Unmarshal([]byte(testFlowYAML), &spec))
