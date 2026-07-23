@@ -151,6 +151,11 @@ type Service interface {
 	UnlockSession(sessionID string)
 	Update(agentName config.AgentName, modelID models.ModelID) (models.Model, error)
 	Summarize(ctx context.Context, sessionID string) error
+	// SummarizeSync compacts the session and blocks until the summary has been
+	// written (unlike Summarize, which is event-driven and returns immediately).
+	// It holds the session-busy lock for the duration so a concurrent Run can't
+	// interleave, and returns ErrSessionBusy if the session is already in use.
+	SummarizeSync(ctx context.Context, sessionID string) error
 	GenerateRecap(ctx context.Context, sessionID string) (string, error)
 }
 
@@ -459,6 +464,12 @@ func (a *agent) generateTitle(ctx context.Context, sessionID string, content str
 	if err != nil {
 		return err
 	}
+	// A user-set title is authoritative — skip generation entirely so we don't
+	// waste a descriptor call. The write below is also guarded at the DB level
+	// (SetGeneratedTitle) to close the race where a rename lands after this read.
+	if sess.UserSetTitle {
+		return nil
+	}
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
 	ctx = context.WithValue(ctx, tools.AgentIDContextKey, config.AgentName("descriptor"))
 	ctx = a.createLangfuseTrace(ctx, sess)
@@ -483,8 +494,9 @@ func (a *agent) generateTitle(ctx context.Context, sessionID string, content str
 		return nil
 	}
 
-	sess.Title = title
-	_, err = a.sessions.Save(ctx, sess)
+	// Guarded write: only lands if the session is still not user-titled, so a
+	// rename that commits while this descriptor call was in flight wins.
+	_, err = a.sessions.SetGeneratedTitle(ctx, sessionID, title)
 	return err
 }
 
@@ -2200,6 +2212,24 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 	}()
 
 	return nil
+}
+
+// SummarizeSync compacts the session synchronously, returning only once the
+// summary message has been written and the session's token counts updated.
+// Callers that need a deterministic completion signal (e.g. the chat bridge's
+// /compact command, which posts a "done" reply with the new context size) use
+// this instead of the async, event-driven Summarize. It takes the same
+// session-busy lock a Run/cron uses, so it will not interleave with an
+// in-flight turn and returns ErrSessionBusy when the session is occupied.
+func (a *agent) SummarizeSync(ctx context.Context, sessionID string) error {
+	if a.summarizeProvider == nil {
+		return fmt.Errorf("summarize provider not available")
+	}
+	if !a.TryLockSession(sessionID) {
+		return ErrSessionBusy
+	}
+	defer a.UnlockSession(sessionID)
+	return a.performSynchronousCompaction(ctx, sessionID)
 }
 
 type providerOptions struct {

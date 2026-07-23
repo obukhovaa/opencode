@@ -101,6 +101,7 @@ type Session struct {
 	RootSessionID         sql.NullString `json:"root_session_id"`
 	TotalPromptTokens     int64          `json:"total_prompt_tokens"`
 	TotalCompletionTokens int64          `json:"total_completion_tokens"`
+	UserSetTitle          bool           `json:"user_set_title"`
 }
 
 type SessionRecap struct {

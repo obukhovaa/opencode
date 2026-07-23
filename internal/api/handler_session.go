@@ -95,7 +95,10 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 
 // handleSessionUpdate updates a session's title and/or permission rules.
 // Title and Permission are both optional — a permission-only PATCH must NOT
-// clobber the existing title, so Save() is skipped when Title is nil.
+// clobber the existing title, so the rename is skipped when Title is nil.
+// A title update goes through Sessions.Rename, which marks the session
+// user-titled (so automatic title generation won't overwrite it) and rejects
+// an empty/whitespace title with 400.
 func (s *Server) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("sessionID")
 
@@ -105,7 +108,7 @@ func (s *Server) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := s.app.Sessions.Get(r.Context(), sessionID)
+	sess, err := s.app.Sessions.Get(r.Context(), sessionID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "session not found")
@@ -116,20 +119,23 @@ func (s *Server) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Title != nil {
-		session.Title = *req.Title
-		updated, err := s.app.Sessions.Save(r.Context(), session)
+		updated, err := s.app.Sessions.Rename(r.Context(), sessionID, *req.Title)
 		if err != nil {
+			if errors.Is(err, session.ErrEmptyTitle) {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 			writeError(w, http.StatusInternalServerError, "failed to update session")
 			return
 		}
-		session = updated
+		sess = updated
 	}
 
 	if shouldAutoApprove(req.Permission) {
 		s.app.Permissions.AutoApproveSession(sessionID)
 	}
 
-	writeJSON(w, http.StatusOK, ConvertSessionWithDir(session, resolveDirectory(r)))
+	writeJSON(w, http.StatusOK, ConvertSessionWithDir(sess, resolveDirectory(r)))
 }
 
 // handleSessionStatus returns the busy/idle status of all sessions.

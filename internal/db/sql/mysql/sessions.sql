@@ -50,6 +50,18 @@ SET
     cost = ?
 WHERE id = ?;
 
+-- name: RenameSession :execresult
+UPDATE sessions
+SET
+    title = ?,
+    user_set_title = 1
+WHERE id = ?;
+
+-- name: SetGeneratedTitle :execrows
+UPDATE sessions
+SET title = ?
+WHERE id = ? AND user_set_title = 0;
+
 -- name: DeleteSession :exec
 DELETE FROM sessions
 WHERE id = ?;
