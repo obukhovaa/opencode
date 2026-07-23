@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at BIGINT NOT NULL,
   summary_message_id VARCHAR(255),
   project_id VARCHAR(512),
+  user_set_title TINYINT(1) NOT NULL DEFAULT 0,
   KEY idx_sessions_project_id (project_id(255)),
   KEY idx_sessions_project_created (project_id(255), created_at DESC),
   KEY idx_sessions_root_session_id (root_session_id)

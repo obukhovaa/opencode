@@ -502,6 +502,9 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.CommandID == "loop" {
 			return a, a.handleLoopCommand(msg.Args)
 		}
+		if msg.CommandID == "rename" {
+			return a, a.handleRenameCommand(msg.Args)
+		}
 
 	case loopCreatedMsg:
 		return a, util.ReportInfo(msg.info)
@@ -1374,6 +1377,16 @@ func buildCommands() []dialog.Command {
 		"sessions-cleanup": func(_ dialog.Command) tea.Cmd {
 			return func() tea.Msg { return startSessionsCleanupMsg{} }
 		},
+		"rename": func(_ dialog.Command) tea.Cmd {
+			return func() tea.Msg {
+				return dialog.ShowMultiArgumentsDialogMsg{
+					CommandID: "rename",
+					Content:   "",
+					ArgNames:  []string{"title"},
+					ArgHints:  map[string]string{"title": "New session title"},
+				}
+			}
+		},
 		"loop": func(_ dialog.Command) tea.Cmd {
 			return func() tea.Msg {
 				return dialog.ShowMultiArgumentsDialogMsg{
@@ -1405,6 +1418,27 @@ func buildCommands() []dialog.Command {
 	}
 
 	return commands
+}
+
+// handleRenameCommand renames the active session from /rename arguments.
+// It does not mutate a.selectedSession directly (appModel.Update is a value
+// receiver); the session UpdatedEvent published by Rename refreshes the top bar
+// and selectedSession via the pubsub subscription.
+func (a appModel) handleRenameCommand(args map[string]string) tea.Cmd {
+	if a.selectedSession.ID == "" {
+		return util.ReportWarn("No active session")
+	}
+	title := strings.TrimSpace(args["title"])
+	if title == "" {
+		return util.ReportWarn("Session title cannot be empty")
+	}
+	sessionID := a.selectedSession.ID
+	return func() tea.Msg {
+		if _, err := a.app.Sessions.Rename(context.Background(), sessionID, title); err != nil {
+			return util.InfoMsg{Type: util.InfoTypeError, Msg: "Failed to rename session: " + err.Error()}
+		}
+		return util.InfoMsg{Type: util.InfoTypeInfo, Msg: "Renamed session to: " + title}
+	}
 }
 
 // handleLoopCommand creates a cron job from /loop arguments.

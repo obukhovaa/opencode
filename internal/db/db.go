@@ -180,8 +180,14 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.removeBridgeAllowlistEntryStmt, err = db.PrepareContext(ctx, removeBridgeAllowlistEntry); err != nil {
 		return nil, fmt.Errorf("error preparing query RemoveBridgeAllowlistEntry: %w", err)
 	}
+	if q.renameSessionStmt, err = db.PrepareContext(ctx, renameSession); err != nil {
+		return nil, fmt.Errorf("error preparing query RenameSession: %w", err)
+	}
 	if q.setCronJobFiringStmt, err = db.PrepareContext(ctx, setCronJobFiring); err != nil {
 		return nil, fmt.Errorf("error preparing query SetCronJobFiring: %w", err)
+	}
+	if q.setGeneratedTitleStmt, err = db.PrepareContext(ctx, setGeneratedTitle); err != nil {
+		return nil, fmt.Errorf("error preparing query SetGeneratedTitle: %w", err)
 	}
 	if q.updateBridgeSessionPeerIDStmt, err = db.PrepareContext(ctx, updateBridgeSessionPeerID); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateBridgeSessionPeerID: %w", err)
@@ -484,9 +490,19 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing removeBridgeAllowlistEntryStmt: %w", cerr)
 		}
 	}
+	if q.renameSessionStmt != nil {
+		if cerr := q.renameSessionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing renameSessionStmt: %w", cerr)
+		}
+	}
 	if q.setCronJobFiringStmt != nil {
 		if cerr := q.setCronJobFiringStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing setCronJobFiringStmt: %w", cerr)
+		}
+	}
+	if q.setGeneratedTitleStmt != nil {
+		if cerr := q.setGeneratedTitleStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing setGeneratedTitleStmt: %w", cerr)
 		}
 	}
 	if q.updateBridgeSessionPeerIDStmt != nil {
@@ -640,7 +656,9 @@ type Queries struct {
 	listSessionsStmt                     *sql.Stmt
 	markBridgeSessionMentionConsumedStmt *sql.Stmt
 	removeBridgeAllowlistEntryStmt       *sql.Stmt
+	renameSessionStmt                    *sql.Stmt
 	setCronJobFiringStmt                 *sql.Stmt
+	setGeneratedTitleStmt                *sql.Stmt
 	updateBridgeSessionPeerIDStmt        *sql.Stmt
 	updateBridgeSessionSessionIDStmt     *sql.Stmt
 	updateCronJobAfterRunStmt            *sql.Stmt
@@ -711,7 +729,9 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listSessionsStmt:                     q.listSessionsStmt,
 		markBridgeSessionMentionConsumedStmt: q.markBridgeSessionMentionConsumedStmt,
 		removeBridgeAllowlistEntryStmt:       q.removeBridgeAllowlistEntryStmt,
+		renameSessionStmt:                    q.renameSessionStmt,
 		setCronJobFiringStmt:                 q.setCronJobFiringStmt,
+		setGeneratedTitleStmt:                q.setGeneratedTitleStmt,
 		updateBridgeSessionPeerIDStmt:        q.updateBridgeSessionPeerIDStmt,
 		updateBridgeSessionSessionIDStmt:     q.updateBridgeSessionSessionIDStmt,
 		updateCronJobAfterRunStmt:            q.updateCronJobAfterRunStmt,

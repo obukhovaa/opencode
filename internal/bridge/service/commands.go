@@ -46,6 +46,7 @@ func (s *Service) ChatCommands() map[string]CommandHandler {
 		"model":    s.cmdModel,
 		"sessions": s.cmdSessions,
 		"session":  s.cmdSession,
+		"rename":   s.cmdRename,
 		"crons":    s.cmdCrons,
 		"reset":    s.cmdReset,
 		"abort":    s.cmdAbort,
@@ -360,6 +361,29 @@ func (s *Service) cmdSession(ctx context.Context, in bridge.Inbound) *bridge.Com
 		shortSessionID(target.ID), target.Title))
 }
 
+// cmdRename sets the user-facing title of the peer's currently bound session.
+// The whole argument string is the new title. Renaming marks the session
+// user-titled so automatic title generation won't overwrite it, and the
+// UpdatedEvent it publishes keeps every other consumer (TUI, SSE, other bound
+// peers) consistent.
+func (s *Service) cmdRename(ctx context.Context, in bridge.Inbound) *bridge.CommandReply {
+	title := strings.TrimSpace(in.CommandArgs)
+	if title == "" {
+		return replyText("Usage: `/rename <new title>`")
+	}
+	binding, err := s.resolveBinding(ctx, in.Peer)
+	if err != nil {
+		return replyText("Failed to resolve binding: " + err.Error())
+	}
+	if binding.SessionID == "" {
+		return replyText("No session bound here yet — send a message first, then `/rename`.")
+	}
+	if _, err := s.app.Sessions.Rename(ctx, binding.SessionID, title); err != nil {
+		return replyText("Failed to rename session: " + err.Error())
+	}
+	return replyText(fmt.Sprintf("Renamed session %s to: %s", shortSessionID(binding.SessionID), title))
+}
+
 // cmdCrons: list active scheduled cron jobs across the workspace.
 // Shows each job's ID prefix, task title, human-readable schedule, next
 // fire time, source (loop/agent), and the session it belongs to. Jobs
@@ -492,6 +516,7 @@ func (s *Service) helpEntriesForChannel(channel string) []helpEntry {
 		{Cmd: "/model [id]", Desc: "list or switch the model"},
 		{Cmd: "/sessions", Desc: "list recent sessions (★ = current)"},
 		{Cmd: "/session [id-prefix]", Desc: "show details or switch by ID prefix"},
+		{Cmd: "/rename <new title>", Desc: "rename the current session"},
 		{Cmd: "/crons", Desc: "list active scheduled cron jobs (★ = current session)"},
 		{Cmd: "/reset", Desc: "forget this binding; next message starts fresh"},
 		{Cmd: "/abort", Desc: "cancel an in-flight run on the current session"},

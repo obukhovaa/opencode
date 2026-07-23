@@ -65,7 +65,9 @@ type Querier interface {
 	ListSessions(ctx context.Context, projectID sql.NullString) ([]Session, error)
 	MarkBridgeSessionMentionConsumed(ctx context.Context, arg MarkBridgeSessionMentionConsumedParams) error
 	RemoveBridgeAllowlistEntry(ctx context.Context, arg RemoveBridgeAllowlistEntryParams) error
+	RenameSession(ctx context.Context, arg RenameSessionParams) (sql.Result, error)
 	SetCronJobFiring(ctx context.Context, arg SetCronJobFiringParams) error
+	SetGeneratedTitle(ctx context.Context, arg SetGeneratedTitleParams) (int64, error)
 	UpdateBridgeSessionPeerID(ctx context.Context, arg UpdateBridgeSessionPeerIDParams) error
 	UpdateBridgeSessionSessionID(ctx context.Context, arg UpdateBridgeSessionSessionIDParams) error
 	UpdateCronJobAfterRun(ctx context.Context, arg UpdateCronJobAfterRunParams) (sql.Result, error)

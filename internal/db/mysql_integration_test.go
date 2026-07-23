@@ -133,3 +133,60 @@ func TestMySQLSessionRoundTrip(t *testing.T) {
 		t.Errorf("Title = %q, want %q", got.Title, "round trip")
 	}
 }
+
+// TestMySQLQuerierRenameRoundTrip exercises the hand-written MySQLQuerier
+// adapter (not the raw mysqldb layer) end-to-end. It guards against the adapter
+// dropping user_set_title in its db.Session mappers — the field the rename
+// anti-clobber guard depends on. The SQLite-backed unit tests can't catch a
+// MySQL-adapter mapping omission, so this lives here.
+func TestMySQLQuerierRenameRoundTrip(t *testing.T) {
+	conn := openTestMySQL(t)
+	q := db.NewMySQLQuerier(conn)
+	ctx := context.Background()
+
+	created, err := q.CreateSession(ctx, db.CreateSessionParams{
+		ID:        "S-rename",
+		ProjectID: sql.NullString{String: "proj", Valid: true},
+		Title:     "placeholder",
+	})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if created.UserSetTitle {
+		t.Fatal("new session should not be user-titled")
+	}
+
+	renamed, err := q.RenameSession(ctx, db.RenameSessionParams{ID: "S-rename", Title: "User Title"})
+	if err != nil {
+		t.Fatalf("RenameSession: %v", err)
+	}
+	if renamed.Title != "User Title" || !renamed.UserSetTitle {
+		t.Errorf("RenameSession returned {%q, userSet=%v}, want {User Title, true}", renamed.Title, renamed.UserSetTitle)
+	}
+
+	// GetSessionByID must reflect the persisted flag — this is the mapper that
+	// previously dropped it.
+	got, err := q.GetSessionByID(ctx, "S-rename")
+	if err != nil {
+		t.Fatalf("GetSessionByID: %v", err)
+	}
+	if !got.UserSetTitle {
+		t.Error("GetSessionByID dropped user_set_title (adapter mapping bug)")
+	}
+
+	// A guarded generated-title write must no-op on a user-titled row.
+	rows, err := q.SetGeneratedTitle(ctx, db.SetGeneratedTitleParams{ID: "S-rename", Title: "Auto"})
+	if err != nil {
+		t.Fatalf("SetGeneratedTitle: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("SetGeneratedTitle changed %d rows on a user-titled session, want 0", rows)
+	}
+	after, err := q.GetSessionByID(ctx, "S-rename")
+	if err != nil {
+		t.Fatalf("GetSessionByID: %v", err)
+	}
+	if after.Title != "User Title" {
+		t.Errorf("title after guarded write = %q, want %q", after.Title, "User Title")
+	}
+}

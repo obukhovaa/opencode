@@ -69,6 +69,7 @@ func (q *MySQLQuerier) CreateSession(ctx context.Context, arg CreateSessionParam
 		CreatedAt:             mysqlSession.CreatedAt,
 		SummaryMessageID:      mysqlSession.SummaryMessageID,
 		ProjectID:             mysqlSession.ProjectID,
+		UserSetTitle:          mysqlSession.UserSetTitle,
 	}, nil
 }
 
@@ -94,6 +95,7 @@ func (q *MySQLQuerier) GetSessionByID(ctx context.Context, id string) (Session, 
 		CreatedAt:             mysqlSession.CreatedAt,
 		SummaryMessageID:      mysqlSession.SummaryMessageID,
 		ProjectID:             mysqlSession.ProjectID,
+		UserSetTitle:          mysqlSession.UserSetTitle,
 	}, nil
 }
 
@@ -121,6 +123,7 @@ func (q *MySQLQuerier) ListSessions(ctx context.Context, projectID sql.NullStrin
 			CreatedAt:             s.CreatedAt,
 			SummaryMessageID:      s.SummaryMessageID,
 			ProjectID:             s.ProjectID,
+			UserSetTitle:          s.UserSetTitle,
 		}
 	}
 	return sessions, nil
@@ -150,6 +153,7 @@ func (q *MySQLQuerier) ListChildSessions(ctx context.Context, rootSessionID sql.
 			CreatedAt:             s.CreatedAt,
 			SummaryMessageID:      s.SummaryMessageID,
 			ProjectID:             s.ProjectID,
+			UserSetTitle:          s.UserSetTitle,
 		}
 	}
 	return sessions, nil
@@ -172,6 +176,30 @@ func (q *MySQLQuerier) UpdateSession(ctx context.Context, arg UpdateSessionParam
 	}
 
 	return q.GetSessionByID(ctx, arg.ID)
+}
+
+// RenameSession sets the user-facing title and marks the session user-titled.
+// MySQL has no RETURNING, so run the update then re-read the row (mirrors
+// UpdateSession).
+func (q *MySQLQuerier) RenameSession(ctx context.Context, arg RenameSessionParams) (Session, error) {
+	_, err := q.queries.RenameSession(ctx, mysqldb.RenameSessionParams{
+		Title: arg.Title,
+		ID:    arg.ID,
+	})
+	if err != nil {
+		return Session{}, err
+	}
+
+	return q.GetSessionByID(ctx, arg.ID)
+}
+
+// SetGeneratedTitle writes an auto-generated title only when the session has
+// not been user-renamed; returns the number of rows changed.
+func (q *MySQLQuerier) SetGeneratedTitle(ctx context.Context, arg SetGeneratedTitleParams) (int64, error) {
+	return q.queries.SetGeneratedTitle(ctx, mysqldb.SetGeneratedTitleParams{
+		Title: arg.Title,
+		ID:    arg.ID,
+	})
 }
 
 // DeleteSession deletes a session

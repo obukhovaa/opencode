@@ -459,6 +459,12 @@ func (a *agent) generateTitle(ctx context.Context, sessionID string, content str
 	if err != nil {
 		return err
 	}
+	// A user-set title is authoritative — skip generation entirely so we don't
+	// waste a descriptor call. The write below is also guarded at the DB level
+	// (SetGeneratedTitle) to close the race where a rename lands after this read.
+	if sess.UserSetTitle {
+		return nil
+	}
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
 	ctx = context.WithValue(ctx, tools.AgentIDContextKey, config.AgentName("descriptor"))
 	ctx = a.createLangfuseTrace(ctx, sess)
@@ -483,8 +489,9 @@ func (a *agent) generateTitle(ctx context.Context, sessionID string, content str
 		return nil
 	}
 
-	sess.Title = title
-	_, err = a.sessions.Save(ctx, sess)
+	// Guarded write: only lands if the session is still not user-titled, so a
+	// rename that commits while this descriptor call was in flight wins.
+	_, err = a.sessions.SetGeneratedTitle(ctx, sessionID, title)
 	return err
 }
 

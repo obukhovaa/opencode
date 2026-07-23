@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +13,10 @@ import (
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 )
+
+// ErrEmptyTitle is returned by Rename when the requested title is empty or
+// only whitespace.
+var ErrEmptyTitle = errors.New("session title cannot be empty")
 
 type Session struct {
 	ID                    string
@@ -28,6 +33,9 @@ type Session struct {
 	Cost                  float64
 	CreatedAt             int64
 	UpdatedAt             int64
+	// UserSetTitle is true once a user has explicitly renamed the session.
+	// While set, automatic title generation must not overwrite Title.
+	UserSetTitle bool
 }
 
 type Service interface {
@@ -41,6 +49,13 @@ type Service interface {
 	List(ctx context.Context) ([]Session, error)
 	ListChildren(ctx context.Context, rootSessionID string) ([]Session, error)
 	Save(ctx context.Context, session Session) (Session, error)
+	// Rename sets the user-facing title and durably marks the session as
+	// user-titled so automatic title generation will not overwrite it.
+	Rename(ctx context.Context, id, title string) (Session, error)
+	// SetGeneratedTitle applies an automatically generated title, but only if
+	// the session has not been user-renamed. It is a no-op on user-titled
+	// sessions.
+	SetGeneratedTitle(ctx context.Context, id, title string) (Session, error)
 	Delete(ctx context.Context, id string) error
 	DeleteTree(ctx context.Context, id string) error
 	ListOldSessions(ctx context.Context, activeSessionID string) ([]Session, error)
@@ -220,6 +235,49 @@ func (s *service) Save(ctx context.Context, session Session) (Session, error) {
 	return session, nil
 }
 
+func (s *service) Rename(ctx context.Context, id, title string) (Session, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return Session{}, ErrEmptyTitle
+	}
+	dbSession, err := s.q.RenameSession(ctx, db.RenameSessionParams{
+		ID:    id,
+		Title: title,
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	session := s.fromDBItem(dbSession)
+	s.Publish(pubsub.UpdatedEvent, session)
+	return session, nil
+}
+
+func (s *service) SetGeneratedTitle(ctx context.Context, id, title string) (Session, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return s.Get(ctx, id)
+	}
+	rows, err := s.q.SetGeneratedTitle(ctx, db.SetGeneratedTitleParams{
+		ID:    id,
+		Title: title,
+	})
+	if err != nil {
+		return Session{}, err
+	}
+	// rows == 0 means the session was renamed by a user (user_set_title = TRUE)
+	// so the guarded update matched nothing — leave the user's title intact and
+	// do not broadcast a spurious change.
+	if rows == 0 {
+		return s.Get(ctx, id)
+	}
+	session, err := s.Get(ctx, id)
+	if err != nil {
+		return Session{}, err
+	}
+	s.Publish(pubsub.UpdatedEvent, session)
+	return session, nil
+}
+
 func (s *service) List(ctx context.Context) ([]Session, error) {
 	dbSessions, err := s.q.ListSessions(ctx, sql.NullString{String: s.projectID, Valid: true})
 	if err != nil {
@@ -260,6 +318,7 @@ func (s service) fromDBItem(item db.Session) Session {
 		Cost:                  item.Cost,
 		CreatedAt:             item.CreatedAt,
 		UpdatedAt:             item.UpdatedAt,
+		UserSetTitle:          item.UserSetTitle,
 	}
 }
 

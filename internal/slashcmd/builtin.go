@@ -86,6 +86,13 @@ func BuiltinCommands() []CommandInfo {
 			TUIOnly:     true,
 		},
 		{
+			ID:           "rename",
+			Title:        "Rename Session",
+			Description:  "Rename the current session",
+			ArgumentHint: "[new title]",
+			TUIOnly:      true,
+		},
+		{
 			ID:           "loop",
 			Title:        "Schedule Recurring Task",
 			Description:  "Schedule a task to run on a recurring interval (e.g., /loop 5m check build status)",

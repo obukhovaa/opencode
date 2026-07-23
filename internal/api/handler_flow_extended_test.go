@@ -58,6 +58,32 @@ func (s *stubSessions) ListChildren(context.Context, string) ([]session.Session,
 func (s *stubSessions) Save(_ context.Context, sess session.Session) (session.Session, error) {
 	return sess, nil
 }
+func (s *stubSessions) Rename(_ context.Context, id, title string) (session.Session, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return session.Session{}, session.ErrEmptyTitle
+	}
+	sess := s.byID[id]
+	sess.ID = id
+	sess.Title = title
+	sess.UserSetTitle = true
+	if s.byID != nil {
+		s.byID[id] = sess
+	}
+	return sess, nil
+}
+func (s *stubSessions) SetGeneratedTitle(_ context.Context, id, title string) (session.Session, error) {
+	sess := s.byID[id]
+	if sess.UserSetTitle {
+		return sess, nil
+	}
+	sess.ID = id
+	sess.Title = title
+	if s.byID != nil {
+		s.byID[id] = sess
+	}
+	return sess, nil
+}
 func (s *stubSessions) Delete(context.Context, string) error     { return nil }
 func (s *stubSessions) DeleteTree(context.Context, string) error { return nil }
 func (s *stubSessions) ListOldSessions(context.Context, string) ([]session.Session, error) {
