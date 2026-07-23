@@ -385,9 +385,28 @@ func (s *Service) cmdRename(ctx context.Context, in bridge.Inbound) *bridge.Comm
 	return replyText(fmt.Sprintf("Renamed session %s to: %s", shortSessionID(binding.SessionID), title))
 }
 
-// compactSummaryMaxChars caps how much of the retained summary is echoed back
-// to chat so a long summary can't blow past platform message-size limits.
-const compactSummaryMaxChars = 2000
+// compactSummaryMinChars is the floor for how much of the retained summary is
+// echoed back to chat. The actual limit scales with the model's context window
+// (see compactSummaryLimit) so large-context models — whose summaries run
+// correspondingly longer — aren't truncated as aggressively. This bounds only
+// the chat echo; the full summary is always retained in the session as the
+// forward-context message.
+const compactSummaryMinChars = 2000
+
+// compactSummaryLimit is the maximum number of summary characters echoed into
+// the chat reply: 2% of the active model's context window, floored at
+// compactSummaryMinChars (and used as-is when no context window is advertised).
+func (s *Service) compactSummaryLimit() int {
+	limit := compactSummaryMinChars
+	if aa := s.app.ActiveAgent(); aa != nil {
+		if cw := aa.Model().ContextWindow; cw > 0 {
+			if scaled := int(float64(cw) * 0.02); scaled > limit {
+				limit = scaled
+			}
+		}
+	}
+	return limit
+}
 
 // cmdCompact summarizes (compacts) the peer's bound session — the bridge
 // equivalent of the TUI /compact command. It acknowledges immediately with the
@@ -477,7 +496,7 @@ func (s *Service) retainedSummary(ctx context.Context, summaryMessageID string) 
 	if text == "" {
 		return "(empty summary)"
 	}
-	return truncateRunes(text, compactSummaryMaxChars)
+	return truncateRunes(text, s.compactSummaryLimit())
 }
 
 // cmdCrons: list active scheduled cron jobs across the workspace.

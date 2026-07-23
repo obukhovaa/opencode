@@ -159,6 +159,59 @@ func TestCmdCompactRegistered(t *testing.T) {
 	}
 }
 
+// serviceWithModel builds a bare Service whose ActiveAgent reports the given
+// context window — enough to exercise compactSummaryLimit / retainedSummary
+// without a store or DB.
+func serviceWithModel(cw int64, msgs message.Service) *Service {
+	return &Service{app: &app.App{
+		Messages:         msgs,
+		PrimaryAgents:    map[config.AgentName]agentpkg.Service{config.AgentCoder: &compactStubAgent{model: models.Model{ContextWindow: cw}}},
+		PrimaryAgentKeys: []config.AgentName{config.AgentCoder},
+	}}
+}
+
+func TestCompactSummaryLimit(t *testing.T) {
+	cases := []struct {
+		name string
+		cw   int64
+		want int
+	}{
+		{"no context window → floor", 0, 2000},
+		{"2% below floor → floor", 50_000, 2000},   // 0.02*50k = 1000
+		{"2% equals floor", 100_000, 2000},         // 0.02*100k = 2000
+		{"2% above floor scales", 500_000, 10_000}, // 0.02*500k = 10000
+		{"large window", 1_000_000, 20_000},        // 0.02*1M = 20000
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := serviceWithModel(c.cw, nil).compactSummaryLimit(); got != c.want {
+				t.Errorf("compactSummaryLimit(cw=%d) = %d, want %d", c.cw, got, c.want)
+			}
+		})
+	}
+}
+
+func TestRetainedSummaryTruncatesToDynamicLimit(t *testing.T) {
+	long := strings.Repeat("x", 30000)
+	msgs := &stubMessages{byID: map[string]message.Message{
+		"m": {Parts: []message.ContentPart{message.TextContent{Text: long}}},
+	}}
+	// ContextWindow 500k → limit 10000 runes; truncateRunes appends "…".
+	out := serviceWithModel(500_000, msgs).retainedSummary(context.Background(), "m")
+	if runes := len([]rune(out)); runes != 10_001 || !strings.HasSuffix(out, "…") {
+		t.Errorf("retainedSummary length = %d (ends with … = %v), want 10001 with ellipsis",
+			runes, strings.HasSuffix(out, "…"))
+	}
+
+	// A summary shorter than the floor is returned untouched.
+	shortMsgs := &stubMessages{byID: map[string]message.Message{
+		"m": {Parts: []message.ContentPart{message.TextContent{Text: "brief"}}},
+	}}
+	if out := serviceWithModel(0, shortMsgs).retainedSummary(context.Background(), "m"); out != "brief" {
+		t.Errorf("short summary = %q, want %q (no truncation)", out, "brief")
+	}
+}
+
 // waitForSend polls the stub adapter until it has recorded at least one
 // outbound, returning that outbound's text. Fails the test on timeout.
 func waitForSend(t *testing.T, ad *stubAdapter, timeout time.Duration) string {
