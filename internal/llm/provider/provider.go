@@ -27,6 +27,14 @@ type EventType string
 
 const maxRetries = 8
 
+// maxRSTStreamRetries bounds retries for peer-initiated HTTP/2 RST_STREAM
+// resets (see isRetryableRSTStreamError). Deliberately small and separate from
+// maxRetries: a reset that actually wraps a permanent upstream error (a proxy
+// can surface a 400 as RST_STREAM) must not loop through the full ~8.5 min
+// exponential window, while a genuine transient reset only needs a couple of
+// quick attempts to land on a fresh connection.
+const maxRSTStreamRetries = 3
+
 const defaultStreamInactivityTimeout = 5 * time.Minute
 
 var ErrStreamStalled = errors.New("stream stalled: no events received within timeout")
@@ -76,15 +84,55 @@ func isTransientStreamError(err error) bool {
 		"InternalServerException",     // 500 — generic upstream blip
 	)
 	// HTTP/2 RST_STREAM frames (`stream error: stream ID <N>; <CODE>;
-	// received from peer`) are deliberately NOT classified as transient.
-	// Proxies like litellm sometimes wrap permanent upstream errors (400
-	// invalid_request_error, etc.) as RST_STREAM(INTERNAL_ERROR), and the
-	// HTTP/2 frame carries no status code — we can't tell a real proxy
-	// blip from a permanent client error. Retrying on these would hammer
-	// the same bad request through the full exponential-backoff window
-	// (~8.5 min) before giving up, which the user experiences as an
-	// indefinite "generating…" hang. Better to fail fast and surface the
-	// underlying error.
+	// received from peer`) are deliberately NOT classified here. The frame
+	// carries no HTTP status code, and a proxy like litellm can wrap a
+	// permanent upstream error (400 invalid_request_error, etc.) as
+	// RST_STREAM(INTERNAL_ERROR) — so folding them into this full
+	// up-to-maxRetries exponential window (~8.5 min) the way genuine
+	// transport blips are handled would risk hammering a permanent error.
+	// They instead get a dedicated, bounded, output-guarded retry via
+	// isRetryableRSTStreamError + maxRSTStreamRetries in the per-provider
+	// stream loops (retry only before any delta reached the consumer, capped
+	// at a few quick attempts). Keep returning false here so the two policies
+	// stay distinct.
+}
+
+// retryableRSTStreamCodes are the HTTP/2 RST_STREAM error codes worth a
+// bounded retry. golang.org/x/net/http2 renders a peer-sent RST_STREAM as
+// `stream error: stream ID <N>; <CODE>; received from peer` (StreamError.Error
+// with the errFromPeer cause attached in clientConnReadLoop.processResetStream).
+// These codes reflect a stream/connection-level condition — a proxy or load
+// balancer resetting a (often stale, pooled) connection, a graceful GOAWAY
+// mid-flight, or a back-off request — rather than an application-level
+// rejection, so replaying the request on a fresh connection is the right move.
+// Codes signalling a genuine protocol/application fault (PROTOCOL_ERROR,
+// FLOW_CONTROL_ERROR, FRAME_SIZE_ERROR, COMPRESSION_ERROR, …) are omitted:
+// retrying those would just reproduce the same fault.
+var retryableRSTStreamCodes = []string{
+	"INTERNAL_ERROR",    // 0x2 — generic peer/proxy blip (litellm/ALB reset, upstream hiccup)
+	"REFUSED_STREAM",    // 0x7 — peer never processed the request; always safe to replay
+	"ENHANCE_YOUR_CALM", // 0xb — peer asking the client to slow down
+	"NO_ERROR",          // 0x0 — graceful GOAWAY / stream closed mid-flight
+}
+
+// isRetryableRSTStreamError reports whether err is a peer-initiated HTTP/2
+// RST_STREAM whose code (see retryableRSTStreamCodes) reflects a
+// stream/connection-level condition rather than an application error. Callers
+// pair this with a bounded budget (maxRSTStreamRetries) and an
+// "output not yet emitted" guard so a wrapped-permanent error can't loop and a
+// mid-stream reset can't duplicate already-streamed content.
+func isRetryableRSTStreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// Require both the stream-error shape and the peer-origin marker so we
+	// don't match locally-generated stream errors or unrelated errors that
+	// merely happen to contain a code name.
+	if !contains(msg, "stream error") || !contains(msg, "received from peer") {
+		return false
+	}
+	return contains(msg, retryableRSTStreamCodes...)
 }
 
 func contains(s string, substrs ...string) bool {

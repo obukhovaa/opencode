@@ -625,18 +625,17 @@ func TestIsTransientStreamError(t *testing.T) {
 		},
 
 		// HTTP/2 RST_STREAM frames are deliberately NOT classified as
-		// transient — proxies (litellm) can wrap permanent upstream
-		// errors (e.g. 400 invalid_request_error from Vertex) as
-		// RST_STREAM(INTERNAL_ERROR). Retrying would loop the same bad
-		// request through the ~8.5 min backoff window before giving up.
-		// Better to fail fast.
+		// transient here — they get a separate, bounded, output-guarded
+		// retry via isRetryableRSTStreamError (see TestIsRetryableRSTStreamError)
+		// rather than the full up-to-maxRetries transient window. Keeping them
+		// false here preserves that separation.
 		{
-			name: "http2 stream error INTERNAL_ERROR is NOT transient (may wrap a 400)",
+			name: "http2 stream error INTERNAL_ERROR is NOT a transient-stream error",
 			err:  errors.New("stream error: stream ID 17; INTERNAL_ERROR; received from peer"),
 			want: false,
 		},
 		{
-			name: "http2 stream error REFUSED_STREAM is NOT transient (may wrap a 400)",
+			name: "http2 stream error REFUSED_STREAM is NOT a transient-stream error",
 			err:  errors.New("stream error: stream ID 3; REFUSED_STREAM; received from peer"),
 			want: false,
 		},
@@ -647,6 +646,80 @@ func TestIsTransientStreamError(t *testing.T) {
 			got := isTransientStreamError(tt.err)
 			if got != tt.want {
 				t.Errorf("isTransientStreamError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsRetryableRSTStreamError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		// Peer-initiated RST_STREAM with a stream/connection-level code —
+		// retryable (bounded, output-guarded). This is the incident signature.
+		{
+			name: "INTERNAL_ERROR from peer is retryable",
+			err:  errors.New("stream error: stream ID 65; INTERNAL_ERROR; received from peer"),
+			want: true,
+		},
+		{
+			name: "REFUSED_STREAM from peer is retryable (never processed)",
+			err:  errors.New("stream error: stream ID 3; REFUSED_STREAM; received from peer"),
+			want: true,
+		},
+		{
+			name: "ENHANCE_YOUR_CALM from peer is retryable",
+			err:  errors.New("stream error: stream ID 7; ENHANCE_YOUR_CALM; received from peer"),
+			want: true,
+		},
+		{
+			name: "NO_ERROR from peer is retryable (graceful GOAWAY mid-flight)",
+			err:  errors.New("stream error: stream ID 9; NO_ERROR; received from peer"),
+			want: true,
+		},
+		// Protocol/application-fault codes — replaying just reproduces them.
+		{
+			name: "PROTOCOL_ERROR from peer is NOT retryable",
+			err:  errors.New("stream error: stream ID 5; PROTOCOL_ERROR; received from peer"),
+			want: false,
+		},
+		{
+			name: "FLOW_CONTROL_ERROR from peer is NOT retryable",
+			err:  errors.New("stream error: stream ID 11; FLOW_CONTROL_ERROR; received from peer"),
+			want: false,
+		},
+		// Must be peer-initiated: a locally-generated stream error (no
+		// "received from peer" marker) is not our transient-proxy case.
+		{
+			name: "locally-generated INTERNAL_ERROR (no peer marker) is NOT retryable",
+			err:  errors.New("stream error: stream ID 1; INTERNAL_ERROR"),
+			want: false,
+		},
+		// Not a stream error at all.
+		{
+			name: "connection reset by peer is not an RST_STREAM error",
+			err:  errors.New("read tcp 10.0.0.1:443->10.0.0.2:52000: connection reset by peer"),
+			want: false,
+		},
+		{
+			name: "plain application error is not retryable",
+			err:  errors.New("invalid API key"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isRetryableRSTStreamError(tt.err)
+			if got != tt.want {
+				t.Errorf("isRetryableRSTStreamError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}

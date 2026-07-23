@@ -523,6 +523,13 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 	attempts := 0
 	eventChan := make(chan ProviderEvent)
 	go func() {
+		// emittedOutput latches once any streamed content/thinking/tool event
+		// has reached the consumer — a retry after that point would replay the
+		// request and duplicate the assistant message (processEvent appends
+		// every delta). rstStreamRetries is a dedicated budget for
+		// peer-initiated HTTP/2 RST_STREAM resets, separate from attempts.
+		emittedOutput := false
+		rstStreamRetries := 0
 		for {
 			attempts++
 			var requestOpts []option.RequestOption
@@ -565,6 +572,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 
 				switch event := event.AsAny().(type) {
 				case anthropic.ContentBlockStartEvent:
+					emittedOutput = true
 					switch event.ContentBlock.Type {
 					case "text":
 						eventChan <- ProviderEvent{Type: EventContentStart}
@@ -582,6 +590,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 					}
 
 				case anthropic.ContentBlockDeltaEvent:
+					emittedOutput = true
 					if event.Delta.Type == "thinking_delta" && event.Delta.Thinking != "" {
 						eventChan <- ProviderEvent{
 							Type:     EventThinkingDelta,
@@ -693,6 +702,43 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 					case <-time.After(time.Duration(backoffMs) * time.Millisecond):
 						continue
 					}
+				}
+				eventChan <- ProviderEvent{Type: EventError, Error: err}
+				close(eventChan)
+				return
+			}
+
+			// Peer-initiated HTTP/2 RST_STREAM (e.g. INTERNAL_ERROR /
+			// REFUSED_STREAM): a stream/connection-level reset from the proxy
+			// (litellm) or its load balancer — typically a stale pooled
+			// connection or a transient upstream blip. Retry on a fresh
+			// connection with a small dedicated budget and short backoff, but
+			// ONLY while nothing has reached the consumer yet: a pre-first-token
+			// reset is safe to replay, whereas retrying after deltas were
+			// emitted would duplicate the assistant message. A permanent error a
+			// proxy wrapped as RST_STREAM also lands here, but the small budget
+			// caps the wasted work at a few quick attempts.
+			if isRetryableRSTStreamError(err) {
+				if !emittedOutput && rstStreamRetries < maxRSTStreamRetries {
+					backoffMs := 500 * (1 << rstStreamRetries)
+					rstStreamRetries++
+					logging.Warn("Anthropic stream reset by peer (HTTP/2 RST_STREAM), will retry on a fresh connection",
+						"attempt", rstStreamRetries, "max", maxRSTStreamRetries, "error", err)
+					select {
+					case <-ctx.Done():
+						if ctx.Err() != nil {
+							eventChan <- ProviderEvent{Type: EventError, Error: ctx.Err()}
+						}
+						close(eventChan)
+						return
+					case <-time.After(time.Duration(backoffMs) * time.Millisecond):
+						continue
+					}
+				}
+				if emittedOutput {
+					logging.Warn("Anthropic stream reset by peer (HTTP/2 RST_STREAM) after partial output; not retrying to avoid duplicate content", "error", err)
+				} else {
+					logging.Warn("Anthropic stream reset by peer (HTTP/2 RST_STREAM); retry budget exhausted", "attempts", rstStreamRetries, "error", err)
 				}
 				eventChan <- ProviderEvent{Type: EventError, Error: err}
 				close(eventChan)
