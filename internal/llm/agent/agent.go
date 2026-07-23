@@ -199,7 +199,12 @@ func newAgent(
 ) (Service, error) {
 	agentTools := NewToolSet(ctx, agentInfo, reg, permissions, historyService, lspService, sessions, messages, mcpReg, factory)
 
-	agentProvider, err := createAgentProvider(agentInfo.ID, withInteractive(agentInfo.Interactive), withBoundPeers(agentInfo.BoundPeers))
+	agentProvider, err := createAgentProvider(
+		agentInfo.ID,
+		withInteractive(agentInfo.Interactive),
+		withBoundPeers(agentInfo.BoundPeers),
+		withHasOutputSchema(agentInfo.Output != nil && agentInfo.Output.Schema != nil),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -2244,6 +2249,14 @@ type providerOptions struct {
 	// through to prompt.AgentPromptOptions so the "## Reviewer
 	// details" section knows the mention handle + channel + peerId.
 	boundPeers []bridge.PeerRef
+	// hasOutputSchema is propagated to prompt.GetAgentPromptWithOptions so
+	// the terse structured-output instruction is appended when this agent
+	// runs a flow step that declares an output schema. The schema itself is
+	// injected onto the per-call AgentInfo by AgentFactory.NewAgent; the
+	// prompt builder re-fetches the ORIGINAL registry entry (which lacks
+	// it), so — exactly like `interactive` — this presence bit must be
+	// threaded through explicitly.
+	hasOutputSchema bool
 }
 
 type providerOption func(*providerOptions)
@@ -2267,6 +2280,17 @@ func withInteractive(b bool) providerOption {
 func withBoundPeers(peers []bridge.PeerRef) providerOption {
 	return func(o *providerOptions) {
 		o.boundPeers = peers
+	}
+}
+
+// withHasOutputSchema carries whether the agent's (per-call) AgentInfo has
+// an output schema through to prompt.AgentPromptOptions.HasOutputSchema, so
+// a flow step declaring `output.schema` gets the struct_output instruction
+// even when the agent TYPE declares no static schema. See the field comment
+// on providerOptions.hasOutputSchema.
+func withHasOutputSchema(b bool) providerOption {
+	return func(o *providerOptions) {
+		o.hasOutputSchema = b
 	}
 }
 
@@ -2327,8 +2351,9 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 		provider.WithAPIKey(providerCfg.APIKey),
 		provider.WithModel(model),
 		provider.WithSystemMessage(prompt.GetAgentPromptWithOptions(agentName, model.Provider, prompt.AgentPromptOptions{
-			Interactive: popts.interactive,
-			BoundPeers:  popts.boundPeers,
+			Interactive:     popts.interactive,
+			BoundPeers:      popts.boundPeers,
+			HasOutputSchema: popts.hasOutputSchema,
 		})),
 		provider.WithMaxTokens(maxTokens),
 	}

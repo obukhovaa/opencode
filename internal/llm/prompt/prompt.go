@@ -314,6 +314,20 @@ type AgentPromptOptions struct {
 	// Empty / nil for non-interactive agents (TUI, ACP, non-bound
 	// flow steps). The interactive branch is the only consumer.
 	BoundPeers []bridge.PeerRef
+
+	// HasOutputSchema is true when the agent is running a flow step that
+	// declares an `output.schema`. Like Interactive, this MUST be plumbed
+	// through opts: the per-step schema is injected onto the factory's
+	// per-call AgentInfo copy (AgentFactory.NewAgent), but the prompt
+	// builder re-fetches the ORIGINAL registry entry via reg.Get, which
+	// does NOT carry it. Without this flag a non-interactive flow step on
+	// an agent type that declares no STATIC output schema (e.g. a general
+	// piano-developer / coder agent) never receives the structuredOutputPrompt
+	// instruction, so the model may answer in prose and strand the flow
+	// (its routing rules see no output fields). Callers that pass through
+	// the AgentInfo from NewAgent should set this to
+	// (AgentInfo.Output != nil && AgentInfo.Output.Schema != nil).
+	HasOutputSchema bool
 }
 
 // GetAgentPromptWithOptions is GetAgentPrompt + per-call overrides.
@@ -377,9 +391,16 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 		// and silently role-plays both sides of the conversation
 		// before emitting struct_output — defeating the whole point of
 		// interactive: true.
+		// A flow step's output schema is injected onto the factory's
+		// per-call AgentInfo copy, which reg.Get does NOT return here (it
+		// returns the original registry entry — same reason Interactive is
+		// plumbed through opts). opts.HasOutputSchema carries that per-call
+		// presence; info.Output covers agents that declare a STATIC schema
+		// in their definition. Either one arms the struct_output prompt.
+		hasOutputSchema := opts.HasOutputSchema || (info.Output != nil && info.Output.Schema != nil)
 		if opts.Interactive || info.Interactive {
 			basePrompt += interactiveStructuredOutputPromptFor(opts.BoundPeers)
-		} else if info.Output != nil && info.Output.Schema != nil && reg.IsToolEnabled(agentName, tools.StructOutputToolName) {
+		} else if hasOutputSchema && reg.IsToolEnabled(agentName, tools.StructOutputToolName) {
 			basePrompt += structuredOutputPrompt
 		}
 	}
