@@ -47,6 +47,7 @@ func (s *Service) ChatCommands() map[string]CommandHandler {
 		"sessions": s.cmdSessions,
 		"session":  s.cmdSession,
 		"rename":   s.cmdRename,
+		"compact":  s.cmdCompact,
 		"crons":    s.cmdCrons,
 		"reset":    s.cmdReset,
 		"abort":    s.cmdAbort,
@@ -384,6 +385,101 @@ func (s *Service) cmdRename(ctx context.Context, in bridge.Inbound) *bridge.Comm
 	return replyText(fmt.Sprintf("Renamed session %s to: %s", shortSessionID(binding.SessionID), title))
 }
 
+// compactSummaryMaxChars caps how much of the retained summary is echoed back
+// to chat so a long summary can't blow past platform message-size limits.
+const compactSummaryMaxChars = 2000
+
+// cmdCompact summarizes (compacts) the peer's bound session — the bridge
+// equivalent of the TUI /compact command. It acknowledges immediately with the
+// current context size, runs the summarization synchronously in a background
+// goroutine (the CommandHandler contract requires long work off the inbound
+// loop), then posts a second message with the new context size and the retained
+// summary. The compaction takes the session-busy lock, so it will not race an
+// in-flight agent turn.
+func (s *Service) cmdCompact(ctx context.Context, in bridge.Inbound) *bridge.CommandReply {
+	binding, err := s.resolveBinding(ctx, in.Peer)
+	if err != nil {
+		return replyText("Failed to resolve binding: " + err.Error())
+	}
+	if binding.SessionID == "" {
+		return replyText("No session bound here yet — send a message first, then `/compact`.")
+	}
+	activeAgent := s.app.ActiveAgent()
+	if activeAgent == nil {
+		return replyText("No active agent — cannot compact.")
+	}
+	sess, err := s.app.Sessions.Get(ctx, binding.SessionID)
+	if err != nil {
+		return replyText("Failed to get session: " + err.Error())
+	}
+	if activeAgent.IsSessionBusy(binding.SessionID) {
+		return replyText(fmt.Sprintf("Session %s is mid-run — wait for it to finish or `/abort` first.",
+			shortSessionID(binding.SessionID)))
+	}
+
+	sessionID := binding.SessionID
+	peer := in.Peer
+	beforeTokens := sess.PromptTokens + sess.CompletionTokens
+
+	go func() {
+		// Detached from the inbound ctx: compaction outlives the command turn,
+		// and the inbound ctx may be cancelled once we return the ack below.
+		bg := context.Background()
+		if err := activeAgent.SummarizeSync(bg, sessionID); err != nil {
+			s.replyToPeerWithHint(bg, peer, replyText(fmt.Sprintf(
+				"Compaction failed for session %s: %s", shortSessionID(sessionID), err.Error())))
+			return
+		}
+		newSess, err := s.app.Sessions.Get(bg, sessionID)
+		if err != nil {
+			s.replyToPeerWithHint(bg, peer, replyText(
+				"Compaction finished, but reading the new session state failed: "+err.Error()))
+			return
+		}
+		afterTokens := newSess.PromptTokens + newSess.CompletionTokens
+		s.replyToPeerWithHint(bg, peer, replyText(fmt.Sprintf(
+			"✓ Compaction complete for session %s.\nContext: %s → %s\n\nRetained summary:\n%s",
+			shortSessionID(sessionID),
+			s.contextSizeLabel(beforeTokens),
+			s.contextSizeLabel(afterTokens),
+			s.retainedSummary(bg, newSess.SummaryMessageID))))
+	}()
+
+	return replyText(fmt.Sprintf(
+		"Compaction started for session %s (current context: %s). I'll post the result here when it's done.",
+		shortSessionID(sessionID), s.contextSizeLabel(beforeTokens)))
+}
+
+// contextSizeLabel renders a token count, adding a context-window percentage
+// when the active model advertises a window.
+func (s *Service) contextSizeLabel(tokens int64) string {
+	label := formatTokens(tokens) + " tokens"
+	if aa := s.app.ActiveAgent(); aa != nil {
+		if cw := aa.Model().ContextWindow; cw > 0 {
+			label += fmt.Sprintf(" (%d%% of context)", int(float64(tokens)/float64(cw)*100))
+		}
+	}
+	return label
+}
+
+// retainedSummary reads the compaction summary message back and truncates it
+// for chat display. Best-effort: a missing/unreadable summary is reported
+// inline rather than failing the whole reply.
+func (s *Service) retainedSummary(ctx context.Context, summaryMessageID string) string {
+	if summaryMessageID == "" || s.app.Messages == nil {
+		return "(summary unavailable)"
+	}
+	msg, err := s.app.Messages.Get(ctx, summaryMessageID)
+	if err != nil {
+		return "(summary unavailable: " + err.Error() + ")"
+	}
+	text := strings.TrimSpace(msg.Content().String())
+	if text == "" {
+		return "(empty summary)"
+	}
+	return truncateRunes(text, compactSummaryMaxChars)
+}
+
 // cmdCrons: list active scheduled cron jobs across the workspace.
 // Shows each job's ID prefix, task title, human-readable schedule, next
 // fire time, source (loop/agent), and the session it belongs to. Jobs
@@ -517,6 +613,7 @@ func (s *Service) helpEntriesForChannel(channel string) []helpEntry {
 		{Cmd: "/sessions", Desc: "list recent sessions (★ = current)"},
 		{Cmd: "/session [id-prefix]", Desc: "show details or switch by ID prefix"},
 		{Cmd: "/rename <new title>", Desc: "rename the current session"},
+		{Cmd: "/compact", Desc: "summarize the current session to shrink its context"},
 		{Cmd: "/crons", Desc: "list active scheduled cron jobs (★ = current session)"},
 		{Cmd: "/reset", Desc: "forget this binding; next message starts fresh"},
 		{Cmd: "/abort", Desc: "cancel an in-flight run on the current session"},
