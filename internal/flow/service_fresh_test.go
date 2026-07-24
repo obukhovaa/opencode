@@ -465,7 +465,11 @@ func TestRunStepStructOutputValidation(t *testing.T) {
 			},
 			retry:      2,
 			wantStatus: FlowStatusCompleted,
-			wantCalls:  1, // no retry — text fallback accepted on first attempt
+			// 2 calls: the agentic turn returns prose, then the forcing
+			// wrap-up turn is attempted once. The stub replays the same prose
+			// (no struct_output), so the step gracefully falls back to the
+			// text — behavior preserved, one extra forced attempt.
+			wantCalls: 2,
 		},
 		{
 			name: "empty struct output content fails",

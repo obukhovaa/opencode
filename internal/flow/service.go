@@ -739,6 +739,30 @@ doneRetry:
 		return
 	}
 
+	// Forcing wrap-up turn (openspec force-struct-output-final-turn): a
+	// non-interactive schema-bearing step whose agent ended with prose and no
+	// struct_output gets ONE bounded forced attempt to emit struct_output
+	// before we accept the text fallback below. Conditional routing rules key
+	// off struct_output fields, so leaving prose here would strand the flow.
+	// Best-effort — on any failure we keep the prose (graceful degradation).
+	//
+	// The Schema != nil guard mirrors the struct_output tool-injection
+	// condition (agent tools.go): the tool is only added when Output.Schema is
+	// set, so with Output present but Schema nil the tool is absent from the
+	// request and forcing tool_choice on it would 400. Such a config
+	// (`output:` with no `schema:`) then behaves like a plain no-schema step —
+	// no force attempt, prose accepted as-is.
+	if !step.Interactive && step.Output != nil && step.Output.Schema != nil &&
+		(result.StructOutput == nil || result.StructOutput.Content == "") &&
+		result.Message.Content().Text != "" {
+		if forced := s.forceStructOutputTurn(ctx, agentSvc, sess.ID, step); forced != nil {
+			logging.Info("Forcing wrap-up turn produced struct_output", "step", step.ID)
+			// Copy only the struct output; keep the original prose Message on
+			// the event for any consumer that inspects it.
+			result.StructOutput = forced
+		}
+	}
+
 	var output string
 	isStructOutput := false
 	if result.StructOutput != nil {
@@ -1557,6 +1581,64 @@ func envTaskWaitTimeout() time.Duration {
 //  3. Parent ctx unwrapped (the parent's own deadline, if any, is the only
 //     bound)
 //
+// forceStructOutputTurn issues exactly one bounded "forcing" wrap-up turn for
+// a schema-bearing step whose agent ended with prose and no struct_output. It
+// re-invokes the same session with struct_output forced
+// (RunOptions.ForceStructOutput, maxTurns=1) and returns the resulting
+// non-error struct_output, or nil to fall back to the prose. Best-effort — a
+// start error, ErrSessionBusy exhaustion, an errored turn, or a still-missing
+// struct_output all return nil (graceful degradation).
+func (s *service) forceStructOutputTurn(ctx context.Context, agentSvc agentpkg.Service, sessionID string, step Step) *message.ToolResult {
+	// The retry loop's step-scoped context was already cancelled by the time
+	// we get here; derive a fresh one from ctx (which already carries the flow
+	// telemetry values set earlier in runStep) and re-install the step-scoped
+	// base so detached subagents can derive from it, mirroring the loop.
+	base, cancel := stepCtx(ctx, step)
+	defer cancel()
+	forcingCtx := context.WithValue(base, tools.StepScopedContextKey, base)
+
+	const forcingPrompt = "You ended your previous turn without calling the struct_output tool. Call struct_output now to return your result, conforming exactly to the required schema. Do not reply with prose."
+	runOpts := agentpkg.RunOptions{NonInteractive: true, ForceStructOutput: true}
+
+	// agent.RunWith releases the session busy-lock in a deferred delete that
+	// runs after it delivers the prior turn's terminal event, so an immediate
+	// call here can observe ErrSessionBusy. Retry briefly before giving up.
+	var (
+		done <-chan agentpkg.AgentEvent
+		err  error
+	)
+	for attempt := 0; attempt < 6; attempt++ {
+		done, err = agentSvc.RunWith(forcingCtx, sessionID, forcingPrompt, 1, runOpts)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, agentpkg.ErrSessionBusy) {
+			logging.Warn("Forcing struct_output turn failed to start — keeping text fallback", "step", step.ID, "error", err)
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if err != nil {
+		logging.Warn("Forcing struct_output turn still session-busy after retries — keeping text fallback", "step", step.ID)
+		return nil
+	}
+
+	ev := <-done
+	if ev.Type == agentpkg.AgentEventTypeError {
+		logging.Warn("Forcing struct_output turn errored — keeping text fallback", "step", step.ID, "error", ev.Error)
+		return nil
+	}
+	if ev.StructOutput == nil || ev.StructOutput.Content == "" || ev.StructOutput.IsError {
+		logging.Warn("Forcing struct_output turn produced no usable struct_output — keeping text fallback", "step", step.ID)
+		return nil
+	}
+	return ev.StructOutput
+}
+
 // Always returns a non-nil cancel func; callers MUST invoke it on every
 // exit path to release resources.
 func stepCtx(parent context.Context, step Step) (context.Context, context.CancelFunc) {

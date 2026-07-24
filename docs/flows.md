@@ -663,6 +663,19 @@ When `session.fork: true` is set on a step, the step's session is created by cop
 
 If a flow invocation finds steps in `running` status from a previous interrupted run, it returns the existing states without invoking any agents. Use `-D` to force a fresh start.
 
+### Forced `struct_output` on schema steps
+
+A non-interactive step that declares an `output.schema` is expected to finish by calling the `struct_output` tool — conditional [rules](#rules) key off the structured fields, so a step that ends in plain prose leaves those fields unset and can strand routing. Under the default tool choice a model may still opt for prose, especially on long prompts.
+
+When such a step's agent ends its turn with a non-empty text response and no `struct_output`, the runner issues exactly **one** extra bounded wrap-up turn on the same session (`maxTurns: 1`, extended thinking disabled) with `struct_output` forced via the provider's tool choice. The prior prose is already in the session, so the model only has to restructure it. If that turn yields a valid `struct_output` it becomes the step result; if it errors or still returns prose, the runner keeps the original text as a fallback and the step does **not** fail (graceful degradation).
+
+Scope and caveats:
+
+- **Only steps with a schema.** A step with no `output.schema` — including a free-prose step such as a summary — never triggers a wrap-up turn: the agent receives no schema and no `struct_output` tool. An `output:` block with no nested `schema:` counts as no schema.
+- **Provider support is best-effort.** The Anthropic client family (Anthropic, AWS Bedrock, GCP Vertex, Moonshot/Kimi) honours forced tool choice; OpenAI and Gemini currently ignore the signal and fall through to the text fallback.
+- **Interactive steps are exempt** — they have their own multi-turn `struct_output` completion path (see [Interactive steps](#interactive-steps)).
+- **Cost:** at most one extra turn, and only on the path where the agent would otherwise have ended in prose. The step's normal agentic turns keep the provider's default tool choice.
+
 ### Postponed steps
 
 A rule can set `postpone: true` to defer a step's execution until the next flow invocation. When a postponed rule matches, the target step is stored with status `postponed` instead of being run immediately. On the next invocation (with the same session prefix), the postponed step is picked up and executed normally.

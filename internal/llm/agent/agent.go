@@ -120,6 +120,14 @@ type RunOptions struct {
 	// loop's pre-model-call check consults this override; unrelated paths
 	// (final-turn checks, provider-side hard limits) remain unchanged.
 	CompactionThreshold float64
+
+	// ForceStructOutput, when true, forces the model to call the
+	// struct_output tool on this run (via provider tool_choice) and disables
+	// extended thinking for the request. Used by the flow runner's forcing
+	// wrap-up turn for a schema-bearing step that ended in prose. Best-effort:
+	// providers that don't support forced tool choice ignore it, and the flow
+	// runner falls back to the prose. Pair with maxTurnsOverride=1.
+	ForceStructOutput bool
 }
 
 type Service interface {
@@ -611,6 +619,14 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 	}
 
 	genCtx, cancel := context.WithCancel(ctx)
+	// Translate the flow↔agent ForceStructOutput contract into the provider
+	// ctx signal. It rides genCtx through processGeneration →
+	// streamAndHandleEvents → provider.StreamResponse → preparedMessages,
+	// which forces tool_choice to struct_output and disables thinking for the
+	// request. Best-effort — providers that don't read the key ignore it.
+	if opts.ForceStructOutput {
+		genCtx = provider.WithForcedTool(genCtx, tools.StructOutputToolName)
+	}
 
 	a.activeRequests.Store(sessionID, cancel)
 	go func() {
