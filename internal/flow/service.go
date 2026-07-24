@@ -745,7 +745,14 @@ doneRetry:
 	// before we accept the text fallback below. Conditional routing rules key
 	// off struct_output fields, so leaving prose here would strand the flow.
 	// Best-effort — on any failure we keep the prose (graceful degradation).
-	if !step.Interactive && step.Output != nil &&
+	//
+	// The Schema != nil guard mirrors the struct_output tool-injection
+	// condition (agent tools.go): the tool is only added when Output.Schema is
+	// set, so with Output present but Schema nil the tool is absent from the
+	// request and forcing tool_choice on it would 400. Such a config
+	// (`output:` with no `schema:`) then behaves like a plain no-schema step —
+	// no force attempt, prose accepted as-is.
+	if !step.Interactive && step.Output != nil && step.Output.Schema != nil &&
 		(result.StructOutput == nil || result.StructOutput.Content == "") &&
 		result.Message.Content().Text != "" {
 		if forced := s.forceStructOutputTurn(ctx, agentSvc, sess.ID, step); forced != nil {

@@ -32,12 +32,12 @@ func structEvent(content string) agentpkg.AgentEvent {
 	}
 }
 
-func runForceFlow(t *testing.T, flowID string, responses []agentpkg.AgentEvent) (*stubAgent, *FlowState) {
+func runForceFlow(t *testing.T, flowID string, output *StepOutput, responses []agentpkg.AgentEvent) (*stubAgent, *FlowState) {
 	t.Helper()
 	step := Step{
 		ID:     "plan",
 		Prompt: "produce a plan",
-		Output: &StepOutput{Schema: map[string]any{"type": "object"}},
+		Output: output,
 	}
 	testFlow := Flow{ID: flowID, Name: "Force Struct Output", Spec: FlowSpec{Steps: []Step{step}}}
 	registerTestFlow(t, testFlow)
@@ -67,7 +67,7 @@ func runForceFlow(t *testing.T, flowID string, responses []agentpkg.AgentEvent) 
 // ends in prose gets a forcing wrap-up turn; when that turn emits struct_output
 // it becomes the step result (so routing sees the structured fields).
 func TestForceStructOutput_UpgradesProseToStructOutput(t *testing.T) {
-	agent, terminal := runForceFlow(t, "force-upgrade",
+	agent, terminal := runForceFlow(t, "force-upgrade", &StepOutput{Schema: map[string]any{"type": "object"}},
 		[]agentpkg.AgentEvent{proseEvent("here is my plan, in prose"), structEvent(`{"ok":true}`)})
 
 	if got := agent.callCount(); got != 2 {
@@ -88,7 +88,7 @@ func TestForceStructOutput_UpgradesProseToStructOutput(t *testing.T) {
 // also returns prose (e.g. a provider that ignores forced tool choice), the
 // step falls back to the original prose and does NOT fail.
 func TestForceStructOutput_GracefulFallbackWhenStillProse(t *testing.T) {
-	agent, terminal := runForceFlow(t, "force-fallback",
+	agent, terminal := runForceFlow(t, "force-fallback", &StepOutput{Schema: map[string]any{"type": "object"}},
 		[]agentpkg.AgentEvent{proseEvent("original prose plan"), proseEvent("still prose, no struct_output")})
 
 	if got := agent.callCount(); got != 2 {
@@ -102,5 +102,25 @@ func TestForceStructOutput_GracefulFallbackWhenStillProse(t *testing.T) {
 	}
 	if containsSubstring(terminal.Output, `"ok"`) {
 		t.Fatalf("did not expect struct_output content in fallback, got %q", terminal.Output)
+	}
+}
+
+// TestForceStructOutput_SkippedWhenNoSchema: a step whose output block carries
+// no schema never gets the struct_output tool injected (agent tools.go gates
+// injection on Output.Schema != nil), so the forcing turn must NOT fire —
+// forcing tool_choice on an absent tool would 400 the request. Such a step
+// behaves like a plain prose step: a single agentic turn, prose accepted.
+func TestForceStructOutput_SkippedWhenNoSchema(t *testing.T) {
+	agent, terminal := runForceFlow(t, "force-no-schema", &StepOutput{},
+		[]agentpkg.AgentEvent{proseEvent("free prose summary")})
+
+	if got := agent.callCount(); got != 1 {
+		t.Fatalf("expected exactly 1 agent call (no forcing turn without a schema), got %d", got)
+	}
+	if terminal.Status != FlowStatusCompleted {
+		t.Fatalf("terminal status = %q, want completed", terminal.Status)
+	}
+	if !containsSubstring(terminal.Output, "free prose summary") {
+		t.Fatalf("expected prose output, got %q", terminal.Output)
 	}
 }
