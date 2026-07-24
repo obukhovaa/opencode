@@ -384,13 +384,22 @@ func (a *anthropicClient) preparedMessages(ctx context.Context, messages []anthr
 		lastMessage = messages[len(messages)-1]
 		isUser = lastMessage.Role == anthropic.MessageParamRoleUser
 	}
+	// forced != "" ⇒ the flow runner's forcing wrap-up turn wants this tool
+	// forced via tool_choice. The Anthropic Messages API rejects a forced
+	// tool_choice while extended thinking is enabled, so when forced we skip
+	// the thinking-selection block below AND omit temperature: the skipped
+	// block is also where adaptive-but-not-XHigh models (Claude 4.6, Kimi)
+	// would set temperature=1, and a leftover Float(0) is a non-default value
+	// Opus 4.7+ rejects. Omitting lets the API use its own default.
+	forced := forcedTool(ctx)
+
 	// TODO: parameterise temperature via agent config
 	// Opus 4.7+ rejects non-default temperature values; omit to let the API use its default (1.0).
 	temperature := anthropic.Float(0)
-	if a.providerOptions.model.SupportsXHighThinking {
+	if a.providerOptions.model.SupportsXHighThinking || forced != "" {
 		temperature = param.Opt[float64]{}
 	}
-	if isUser {
+	if isUser && forced == "" {
 		for _, m := range lastMessage.Content {
 			if m.OfText != nil && m.OfText.Text != "" {
 				messageContent = m.OfText.Text
@@ -427,8 +436,7 @@ func (a *anthropicClient) preparedMessages(ctx context.Context, messages []anthr
 		}
 	}
 
-	// TODO: Consider adding ToolChoice in case of agent having output schema set, however it limits tool calls
-	return anthropic.MessageNewParams{
+	params := anthropic.MessageNewParams{
 		Model:        anthropic.Model(a.providerOptions.model.APIModel),
 		MaxTokens:    a.providerOptions.maxTokens,
 		Temperature:  temperature,
@@ -443,6 +451,13 @@ func (a *anthropicClient) preparedMessages(ctx context.Context, messages []anthr
 			},
 		},
 	}
+	// Forcing wrap-up turn: compel the model to call the named tool (e.g.
+	// struct_output) on this single request. thinking/OutputConfig were left
+	// unset above so the API accepts the forced choice.
+	if forced != "" {
+		params.ToolChoice = anthropic.ToolChoiceParamOfTool(forced)
+	}
+	return params
 }
 
 func (a *anthropicClient) send(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) (resposne *ProviderResponse, err error) {
@@ -978,6 +993,33 @@ var taskBudgetRemainingKey = taskBudgetRemainingKeyType{}
 // Used after compaction to carry the budget across context resets.
 func TaskBudgetRemainingContext(ctx context.Context, remaining int64) context.Context {
 	return context.WithValue(ctx, taskBudgetRemainingKey, remaining)
+}
+
+type forceStructOutputToolKeyType struct{}
+
+// ForceStructOutputToolKey carries a non-empty tool name that the request
+// builder must force via tool_choice for a single request. When present, the
+// Anthropic client family (native Anthropic, AWS Bedrock, GCP Vertex, and
+// Moonshot/Kimi — all share preparedMessages) forces that tool AND disables
+// extended thinking + omits temperature for the request (the Anthropic API
+// rejects a forced tool_choice while thinking is enabled). Best-effort:
+// providers outside that family do not read the key and simply ignore it.
+// Set by the flow runner's forcing wrap-up turn (via agent RunOptions).
+var ForceStructOutputToolKey = forceStructOutputToolKeyType{}
+
+// WithForcedTool returns a context that forces the named tool on the next
+// provider request built from it. An empty name is a no-op.
+func WithForcedTool(ctx context.Context, toolName string) context.Context {
+	if toolName == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, ForceStructOutputToolKey, toolName)
+}
+
+// forcedTool reads the forced-tool name from ctx, or "" when unset.
+func forcedTool(ctx context.Context) string {
+	name, _ := ctx.Value(ForceStructOutputToolKey).(string)
+	return name
 }
 
 func WithVertexAI(projectID, localtion string, localForCounting string) AnthropicOption {
