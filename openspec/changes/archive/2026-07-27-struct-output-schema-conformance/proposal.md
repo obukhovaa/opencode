@@ -21,7 +21,7 @@ The prior `force-struct-output-final-turn` change guaranteed that `struct_output
 
 ## Impact
 
-- **Code:** `internal/llm/tools/struct_output.go` — `Run` gains a default-materialization + required-enforcement pass and three unexported helpers (`objectProperties`, `applyDefaults`, `missingRequiredFields`, `cloneJSONValue`). No signature or interface change.
+- **Code:** `internal/llm/tools/struct_output.go` — `Run` gains a default-materialization + required-enforcement pass and four unexported helpers (`objectProperties`, `applyDefaults`, `missingRequiredFields`, `cloneJSONValue`). No signature or interface change.
 - **APIs:** internal only. No config, `.opencode.json` schema, or public-API surface change.
 - **Behavior:** flow steps whose model omits a defaulted routing field (e.g. `blockers`) now route deterministically instead of stranding; steps whose model omits a required-no-default field now retry instead of storing an incomplete output. Compliant, already-complete `struct_output` calls are unaffected.
 - **Docs:** `docs/structured-output.md` gains a "Schema conformance" section.

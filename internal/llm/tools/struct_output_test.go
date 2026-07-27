@@ -282,8 +282,10 @@ func TestApplyDefaults_DoesNotAliasSchema(t *testing.T) {
 
 	first := map[string]any{}
 	applyDefaults(schema, first)
-	// Mutate the materialized slice from the first call.
-	first["tags"] = append(first["tags"].([]any), "mutated")
+	// Mutate the materialized slice IN PLACE. An in-place element write (not an
+	// append, which would reallocate and mask aliasing) propagates to any shared
+	// backing array — so this fails if the default was handed out by reference.
+	first["tags"].([]any)[0] = "mutated"
 
 	second := map[string]any{}
 	applyDefaults(schema, second)
