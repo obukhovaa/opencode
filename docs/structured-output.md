@@ -9,7 +9,14 @@ When a JSON schema is provided, OpenCode:
 1. Injects a `struct_output` tool whose parameters match the schema
 2. Appends an instruction to the system prompt telling the agent to call the tool
 3. The agent performs its work normally, then calls `struct_output` with the result
-4. The tool validates the input as JSON and returns it as plain text
+4. The tool parses the input as JSON, makes it schema-conformant, and returns it as plain text
+
+### Schema conformance
+
+Before the output is returned (and, in flows, threaded into routing args), the tool reconciles it against the schema:
+
+- **Defaults are materialized.** Any property omitted by the model that declares a `default` in the schema is filled in with that default (recursively, including inside present nested objects). Models routinely drop empty-valued fields — an empty array such as `"blockers": []` is the most common — and a missing key would otherwise be indistinguishable from "unset" to a flow routing rule that references `${args.blockers}`, causing every predicate to evaluate false and the flow to silently strand. Filling declared defaults keeps that contract whole.
+- **Required fields are enforced.** If a `required` field is still absent after defaults are applied (i.e. it has no default to fall back on), the call is rejected with an error naming the missing field(s). The agent loop re-enters on that error so the model retries with a complete payload, rather than persisting a half-filled result. A `required` field that also declares a `default` is satisfied by the default and never triggers a rejection.
 
 ## Usage
 
