@@ -141,35 +141,47 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 		return message, nil
 	}
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		return Message{}, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
+	// seq is allocated inside the transaction as MAX(seq)+1 for the session.
+	// That SELECT-then-INSERT races with any concurrent write to the same
+	// session (e.g. a foreground tool result and a background task's synthetic
+	// result landing together), which InnoDB resolves as a deadlock; retry the
+	// whole transaction on that transient conflict. See db.WithTxRetry.
+	var dbMessage db.Message
+	if err := db.WithTxRetry(ctx, func() error {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("failed to begin transaction: %w", err)
+		}
+		defer tx.Rollback()
 
-	qtx := s.q.WithTx(tx)
+		qtx := s.q.WithTx(tx)
 
-	seq, err = s.nextSeqTx(ctx, qtx, sessionID)
-	if err != nil {
+		seq, err := s.nextSeqTx(ctx, qtx, sessionID)
+		if err != nil {
+			return err
+		}
+
+		dbMessage, err = qtx.CreateMessage(ctx, db.CreateMessageParams{
+			ID:        uuid.New().String(),
+			SessionID: sessionID,
+			Role:      string(params.Role),
+			Parts:     string(partsJSON),
+			Model:     sql.NullString{String: string(params.Model), Valid: true},
+			Seq:       sql.NullInt64{Int64: seq, Valid: true},
+			Synthetic: params.Synthetic,
+		})
+		if err != nil {
+			return err
+		}
+
+		if err = tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
+		}
+		return nil
+	}); err != nil {
 		return Message{}, err
 	}
 
-	dbMessage, err := qtx.CreateMessage(ctx, db.CreateMessageParams{
-		ID:        uuid.New().String(),
-		SessionID: sessionID,
-		Role:      string(params.Role),
-		Parts:     string(partsJSON),
-		Model:     sql.NullString{String: string(params.Model), Valid: true},
-		Seq:       sql.NullInt64{Int64: seq, Valid: true},
-		Synthetic: params.Synthetic,
-	})
-	if err != nil {
-		return Message{}, err
-	}
-
-	if err = tx.Commit(); err != nil {
-		return Message{}, fmt.Errorf("failed to commit transaction: %w", err)
-	}
 	message, err := s.fromDBItem(dbMessage)
 	if err != nil {
 		return Message{}, err
@@ -204,52 +216,61 @@ func (s *service) CreatePair(ctx context.Context, sessionID string, first, secon
 		return Message{}, Message{}, err
 	}
 
-	tx, err := s.db.Begin()
-	if err != nil {
-		return Message{}, Message{}, fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	qtx := s.q.WithTx(tx)
-
-	seq1 := first.Seq
-	seq2 := second.Seq
-	if seq1 == 0 {
-		seq1, err = s.nextSeqTx(ctx, qtx, sessionID)
+	// Same concurrent SELECT MAX(seq) / INSERT deadlock window as Create when
+	// the pair's sequence is allocated rather than supplied — retry the whole
+	// transaction on a transient conflict. See db.WithTxRetry.
+	var dbMsg1, dbMsg2 db.Message
+	if err := db.WithTxRetry(ctx, func() error {
+		tx, err := s.db.Begin()
 		if err != nil {
-			return Message{}, Message{}, err
+			return fmt.Errorf("failed to begin transaction: %w", err)
 		}
-		seq2 = seq1 + 1
-	}
+		defer tx.Rollback()
 
-	dbMsg1, err := qtx.CreateMessage(ctx, db.CreateMessageParams{
-		ID:        uuid.New().String(),
-		SessionID: sessionID,
-		Role:      string(first.Role),
-		Parts:     string(firstJSON),
-		Model:     sql.NullString{String: string(first.Model), Valid: true},
-		Seq:       sql.NullInt64{Int64: seq1, Valid: true},
-		Synthetic: first.Synthetic,
-	})
-	if err != nil {
-		return Message{}, Message{}, fmt.Errorf("failed to create first message: %w", err)
-	}
+		qtx := s.q.WithTx(tx)
 
-	dbMsg2, err := qtx.CreateMessage(ctx, db.CreateMessageParams{
-		ID:        uuid.New().String(),
-		SessionID: sessionID,
-		Role:      string(second.Role),
-		Parts:     string(secondJSON),
-		Model:     sql.NullString{String: string(second.Model), Valid: true},
-		Seq:       sql.NullInt64{Int64: seq2, Valid: true},
-		Synthetic: second.Synthetic,
-	})
-	if err != nil {
-		return Message{}, Message{}, fmt.Errorf("failed to create second message: %w", err)
-	}
+		seq1 := first.Seq
+		seq2 := second.Seq
+		if seq1 == 0 {
+			seq1, err = s.nextSeqTx(ctx, qtx, sessionID)
+			if err != nil {
+				return err
+			}
+			seq2 = seq1 + 1
+		}
 
-	if err = tx.Commit(); err != nil {
-		return Message{}, Message{}, fmt.Errorf("failed to commit transaction: %w", err)
+		dbMsg1, err = qtx.CreateMessage(ctx, db.CreateMessageParams{
+			ID:        uuid.New().String(),
+			SessionID: sessionID,
+			Role:      string(first.Role),
+			Parts:     string(firstJSON),
+			Model:     sql.NullString{String: string(first.Model), Valid: true},
+			Seq:       sql.NullInt64{Int64: seq1, Valid: true},
+			Synthetic: first.Synthetic,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create first message: %w", err)
+		}
+
+		dbMsg2, err = qtx.CreateMessage(ctx, db.CreateMessageParams{
+			ID:        uuid.New().String(),
+			SessionID: sessionID,
+			Role:      string(second.Role),
+			Parts:     string(secondJSON),
+			Model:     sql.NullString{String: string(second.Model), Valid: true},
+			Seq:       sql.NullInt64{Int64: seq2, Valid: true},
+			Synthetic: second.Synthetic,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create second message: %w", err)
+		}
+
+		if err = tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return Message{}, Message{}, err
 	}
 
 	msg1, err := s.fromDBItem(dbMsg1)
