@@ -3,6 +3,7 @@ package flow
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -194,6 +195,30 @@ func (s Step) TimeoutDuration() (time.Duration, error) {
 	}
 	if d < 0 {
 		return 0, fmt.Errorf("step %q: timeout must be non-negative, got %v", s.ID, d)
+	}
+	return d, nil
+}
+
+// ResumeAfterDuration parses the step's resume_after opt-in. Returns (0, nil)
+// when unset or blank (a bare opt-in the orchestrator resolves to its default).
+// A non-blank value MUST be a positive Go duration string; anything else is a
+// load-time error so a typo (e.g. "15minutes") surfaces immediately instead of
+// silently degrading to the orchestrator's default wake — and instead of the
+// flow runner parking a step on a value the orchestrator can't schedule from.
+func (s Step) ResumeAfterDuration() (time.Duration, error) {
+	if s.ResumeAfter == nil {
+		return 0, nil
+	}
+	raw := strings.TrimSpace(*s.ResumeAfter)
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("step %q: invalid resume_after %q: %w", s.ID, raw, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("step %q: resume_after must be positive, got %v", s.ID, d)
 	}
 	return d, nil
 }

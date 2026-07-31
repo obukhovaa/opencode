@@ -945,18 +945,40 @@ func (s *service) postponeStepForTransientError(
 
 	argsJSON, _ := json.Marshal(args)
 	var updatedAt int64
-	if state, updateErr := s.querier.UpdateFlowState(writeCtx, db.UpdateFlowStateParams{
-		Status:         string(FlowStatusPostponed),
-		Args:           sql.NullString{String: string(argsJSON), Valid: true},
-		Output:         sql.NullString{},
-		IsStructOutput: false,
-		Iteration:      int64(iteration),
-		SessionID:      sessionID,
-	}); updateErr != nil {
-		logging.Warn("Failed to persist step postpone state", "session_id", sessionID, "error", updateErr)
-		updatedAt = time.Now().Unix()
+	// Update the entry-time `running` row to `postponed`. handleStepError (the
+	// other caller) can fire from the pre-persist setup paths where that row
+	// doesn't exist yet, so create it if it's missing rather than silently
+	// no-op'ing the UPDATE. Mirrors the entry-time Get-or-Create write.
+	if _, getErr := s.querier.GetFlowState(writeCtx, sessionID); getErr == nil {
+		if state, updateErr := s.querier.UpdateFlowState(writeCtx, db.UpdateFlowStateParams{
+			Status:         string(FlowStatusPostponed),
+			Args:           sql.NullString{String: string(argsJSON), Valid: true},
+			Output:         sql.NullString{},
+			IsStructOutput: false,
+			Iteration:      int64(iteration),
+			SessionID:      sessionID,
+		}); updateErr != nil {
+			logging.Warn("Failed to persist step postpone state", "session_id", sessionID, "error", updateErr)
+			updatedAt = time.Now().Unix()
+		} else {
+			updatedAt = state.UpdatedAt
+		}
 	} else {
-		updatedAt = state.UpdatedAt
+		if state, createErr := s.querier.CreateFlowState(writeCtx, db.CreateFlowStateParams{
+			SessionID:      sessionID,
+			RootSessionID:  rootSessionID,
+			FlowID:         flowID,
+			StepID:         step.ID,
+			Status:         string(FlowStatusPostponed),
+			Args:           sql.NullString{String: string(argsJSON), Valid: true},
+			IsStructOutput: false,
+			Iteration:      int64(iteration),
+		}); createErr != nil {
+			logging.Warn("Failed to persist step postpone state", "session_id", sessionID, "error", createErr)
+			updatedAt = time.Now().Unix()
+		} else {
+			updatedAt = state.CreatedAt
+		}
 	}
 
 	postponedState := &FlowState{

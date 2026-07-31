@@ -450,6 +450,14 @@ func validateFlow(f *Flow) error {
 		if _, err := step.TimeoutDuration(); err != nil {
 			return fmt.Errorf("%w: %v", ErrInvalidYAML, err)
 		}
+		// resume_after, when set non-blank, must parse as a positive Go
+		// duration. The orchestrator falls back to its default on an
+		// unparseable value, so validating here is what turns a typo into a
+		// fast load-time failure instead of a silently-wrong wake timer on a
+		// parked step.
+		if _, err := step.ResumeAfterDuration(); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidYAML, err)
+		}
 	}
 
 	// Validate rule and fallback references

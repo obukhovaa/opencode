@@ -35,6 +35,31 @@ func TestIsTransientProviderError(t *testing.T) {
 	}
 }
 
+func TestStepResumeAfterDuration(t *testing.T) {
+	dur := func(s string) *string { return &s }
+	tests := []struct {
+		name    string
+		step    Step
+		wantErr bool
+	}{
+		{"unset", Step{ID: "a"}, false},
+		{"blank (bare opt-in)", Step{ID: "a", ResumeAfter: dur("  ")}, false},
+		{"valid 15m", Step{ID: "a", ResumeAfter: dur("15m")}, false},
+		{"valid 1h30m", Step{ID: "a", ResumeAfter: dur("1h30m")}, false},
+		{"typo 15minutes", Step{ID: "a", ResumeAfter: dur("15minutes")}, true},
+		{"zero", Step{ID: "a", ResumeAfter: dur("0s")}, true},
+		{"negative", Step{ID: "a", ResumeAfter: dur("-5m")}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.step.ResumeAfterDuration()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ResumeAfterDuration() err = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestStepPostponesOnProviderError(t *testing.T) {
 	dur := func(s string) *string { return &s }
 	tests := []struct {
