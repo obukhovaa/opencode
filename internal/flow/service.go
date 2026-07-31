@@ -688,6 +688,15 @@ func (s *service) runStep(
 doneRetry:
 
 	if lastErr != nil {
+		// A transient provider error (rate limit / HTTP-2 stream reset) that
+		// survived the in-call and fallback.retry budgets parks an opted-in
+		// step (resume_after) for timed auto-resume instead of failing the
+		// flow — the endpoint is expected to recover. See
+		// postponeStepForTransientError.
+		if stepPostponesOnProviderError(step) && isTransientProviderError(lastErr) {
+			s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, lastErr, flowStates)
+			return
+		}
 		// When the parent ctx is cancelled (graceful shutdown, ctx-cancelled
 		// retry-delay path above) the failure-state UPDATE would also fail
 		// the SQL call immediately, leaving the flow_state row stuck on
@@ -846,6 +855,124 @@ doneRetry:
 	}
 }
 
+// transientProviderErrorSignatures are lowercased substrings of surfaced
+// error messages that indicate a transient LLM-provider / gateway failure the
+// provider already exhausted its in-call retry budget on — a rate limit or an
+// upstream blip that is expected to clear on its own. The HTTP/2 RST_STREAM
+// case (peer-initiated reset) is matched separately in isTransientProviderError
+// because it needs two co-occurring markers.
+var transientProviderErrorSignatures = []string{
+	"http 429",                       // provider retry budget exhausted on a 429
+	"maximum retry attempts reached", // retry-exhaustion wrapper
+	"rate limit",
+	"rate_limit",
+	"too many requests",
+	"overloaded",                  // Anthropic 529
+	"service unavailable",         // 503
+	"serviceunavailableexception", // Bedrock 503
+	"throttlingexception",         // Bedrock 429
+	"modeltimeoutexception",       // Bedrock 408
+	"internalserverexception",     // Bedrock 500
+}
+
+// isTransientProviderError reports whether err is a transient LLM-provider /
+// gateway failure worth parking the whole step for (postpone-and-auto-resume)
+// rather than failing the flow. Matching is on the surfaced message: the typed
+// provider error is wrapped by the agent runtime before it reaches the flow
+// layer, so string signatures are the reliable surface. Mirrors the provider's
+// own transient/RST classifiers (internal/llm/provider) without importing them.
+func isTransientProviderError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	// Peer-initiated HTTP/2 RST_STREAM whose per-call retry budget was
+	// exhausted (e.g. "stream error: stream ID 147; INTERNAL_ERROR; received
+	// from peer"). Require both markers so we don't match unrelated errors —
+	// same shape as provider.isRetryableRSTStreamError.
+	if strings.Contains(msg, "stream error") && strings.Contains(msg, "received from peer") {
+		return true
+	}
+	for _, sig := range transientProviderErrorSignatures {
+		if strings.Contains(msg, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// stepPostponesOnProviderError reports whether the step opted into
+// postpone-and-auto-resume on a transient provider error, which it does by
+// declaring resume_after (the same field that drives the orchestrator's timed
+// resume). Without it, transient failures stay terminal.
+func stepPostponesOnProviderError(step Step) bool {
+	return step.ResumeAfter != nil && strings.TrimSpace(*step.ResumeAfter) != ""
+}
+
+// postponeStepForTransientError parks a step that failed with a transient
+// provider error instead of failing it: it persists the flow_state row as
+// `postponed` and emits the postponed state. The orchestrator's postpone sweep
+// then re-enters the step after the step's resume_after (its resume-chain
+// loop-breaker bounds a persistently-degraded upstream). No AgentEvent error is
+// emitted and no fallback is routed — this is a pause, not a failure.
+func (s *service) postponeStepForTransientError(
+	ctx context.Context,
+	step Step,
+	sessionID string,
+	rootSessionID string,
+	flowID string,
+	args map[string]any,
+	iteration int,
+	cause error,
+	flowStates chan<- *FlowState,
+) {
+	if iteration < 1 {
+		iteration = 1
+	}
+	logging.Warn("Flow step hit a transient provider error; postponing for timed auto-resume",
+		"step", step.ID, "resume_after", *step.ResumeAfter, "error", cause)
+
+	// A cancelled parent ctx (graceful shutdown) would fail the SQL write
+	// immediately and strand the row on `running`; persist with a fresh
+	// deadline so the postponed status lands regardless. Mirrors the failed-
+	// state write path.
+	writeCtx := ctx
+	if ctx.Err() != nil {
+		var cancelWrite context.CancelFunc
+		writeCtx, cancelWrite = context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelWrite()
+	}
+
+	argsJSON, _ := json.Marshal(args)
+	var updatedAt int64
+	if state, updateErr := s.querier.UpdateFlowState(writeCtx, db.UpdateFlowStateParams{
+		Status:         string(FlowStatusPostponed),
+		Args:           sql.NullString{String: string(argsJSON), Valid: true},
+		Output:         sql.NullString{},
+		IsStructOutput: false,
+		Iteration:      int64(iteration),
+		SessionID:      sessionID,
+	}); updateErr != nil {
+		logging.Warn("Failed to persist step postpone state", "session_id", sessionID, "error", updateErr)
+		updatedAt = time.Now().Unix()
+	} else {
+		updatedAt = state.UpdatedAt
+	}
+
+	postponedState := &FlowState{
+		SessionID:     sessionID,
+		RootSessionID: rootSessionID,
+		FlowID:        flowID,
+		StepID:        step.ID,
+		Status:        FlowStatusPostponed,
+		Args:          args,
+		Iteration:     iteration,
+		UpdatedAt:     updatedAt,
+	}
+	flowStates <- postponedState
+	s.Publish(pubsub.UpdatedEvent, *postponedState)
+}
+
 func (s *service) handleStepError(
 	ctx context.Context,
 	step Step,
@@ -861,6 +988,13 @@ func (s *service) handleStepError(
 	nextSteps chan<- stepWork,
 	f *Flow,
 ) {
+	// A transient provider error (rate limit / stream reset) on an opted-in
+	// step parks it for timed auto-resume rather than failing the flow.
+	if stepPostponesOnProviderError(step) && isTransientProviderError(err) {
+		s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, flowID, args, iteration, err, flowStates)
+		return
+	}
+
 	logging.Error("Flow step failed", "step", step.ID, "error", err)
 
 	if iteration < 1 {

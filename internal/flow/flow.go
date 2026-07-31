@@ -96,6 +96,16 @@ type Step struct {
 	// stays inside the model's cached prompt. See flow-creator SKILL
 	// "Per-step context compaction".
 	Compact *StepCompact `yaml:"compact,omitempty"`
+	// ResumeAfter opts this step into timed auto-resume when it postpones:
+	// the orchestrator's postpone sweep re-enters the parked step after the
+	// given delay (clamped to POSTPONE_RESUME_MAX_TIMEOUT). It is consumed
+	// orchestrator-side for the wake schedule; the flow runner reads it only
+	// to decide whether a step MAY park rather than fail on a transient
+	// provider error (rate-limit / stream reset) — see
+	// isTransientProviderError + postponeStepForTransientError in service.go.
+	// A Go duration string (`10m`, `1h`). Absent (nil) keeps the step's
+	// failures terminal.
+	ResumeAfter *string `yaml:"resume_after,omitempty"`
 }
 
 // StepCompact configures per-step overrides to the auto-compaction
