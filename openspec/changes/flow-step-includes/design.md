@@ -2,7 +2,7 @@
 
 ## Context
 
-`loadFlowFile` (`internal/flow/registry.go`) reads a flow file, rejects it over
+`parseFlowFile` (`internal/flow/registry.go:330`) reads a flow file, rejects it over
 `OPENCODE_MAX_FLOW_FILE_SIZE`, decodes it into `flowFile`, re-parses the raw YAML
 to reject typos in `flow.session`, derives the flow ID from the filename, resolves
 `$ref` in each step's output schema **relative to the flow file's directory**, and
@@ -98,15 +98,24 @@ earlier, then the step's own keys override all of them. Same order as GitLab's.
 
 ### D3. Resolve at load, before validation
 
-Includes are read and merged inside `loadFlowFile`, before `$ref` resolution and
+Includes are read and merged inside `parseFlowFile`, before `$ref` resolution and
 before `validateFlow`. Consequences, all wanted:
 
-- Every existing validation applies to merged steps unchanged — kebab-case IDs,
-  `maxTurns >= 1`, rule targets naming a real step, duplicate step IDs.
+- Every existing validation applies to merged steps unchanged — kebab-case step
+  IDs (`registry.go:428`), duplicate step IDs (`:431`), rule targets naming a real
+  step (`:459`), `maxTurns >= 0` (`:438`).
+  *Correction from review:* `validateFlow` does **not** enforce `maxTurns >= 1`;
+  it rejects only negatives, and `0` legitimately means "inherit from the agent".
+  The stale doc comment at `flow.go:62-66` claims otherwise and should be fixed
+  while here — believing it is how this design acquired the wrong claim.
 - A template cannot introduce a step shape that inline YAML could not.
-- `$ref` inside a template's `output.schema` resolves against **the template
-  file's** directory, not the flow's, because that is where its author was
-  looking. This must be explicit or it will be got wrong.
+- A template's `output.schema` `$ref` MUST be resolved **at include-load time,
+  against the template file's own directory, before the merge** — not after. The
+  flow's existing `$ref` loop (`registry.go:365-375`) walks the merged steps with a
+  single `baseDir` of the *flow's* directory, so once merged there is no per-key
+  provenance left to resolve against. Resolving early is also free: that loop then
+  finds no `$ref` key and `ResolveSchemaRef` returns the schema unchanged
+  (`format.go:122-125`).
 
 ### D4. Only opencode-consumed keys are inheritable, enforced by an allow-list
 
@@ -127,6 +136,12 @@ author would write a correct-looking flow and get silent misbehaviour:
   timeout and the step waits indefinitely, or resumes on the wrong bound.
 - `id` in a template → two flows extending it collide, and the flow file no longer
   shows which steps it has.
+
+`agent` and `prompt` are inheritable but DO appear in the orchestrator's struct,
+re-emitted verbatim by `GET /api/v1/workspaces` and the MCP `list_workspaces`
+tool. No orchestrator logic reads them, so inheriting them is safe — but those
+surfaces will report `prompt: ""` for a migrated step, which is an API surface
+degrading and belongs in the record rather than being discovered later.
 
 An **allow-list, not a deny-list**, because the coupling is cross-repo and will
 outlive whoever reads this. A deny-list has to be updated when the orchestrator
@@ -161,9 +176,11 @@ level deep means the merge order in D2 is fully explainable, there is no cycle t
 detect, and no depth limit to choose. If a real second-level case appears,
 generalise then — with the case in hand rather than imagined.
 
-`OPENCODE_MAX_FLOW_FILE_SIZE` applies to **each** included file, and the number of
-`include` entries per flow is bounded. That cap exists to stop one runaway file
-from being loaded; includes must not become the way around it.
+`OPENCODE_MAX_FLOW_FILE_SIZE` applies to **each** included file. That cap exists to
+stop one runaway file from being loaded; includes must not become the way around
+it. No separate limit on the NUMBER of includes is specified — the per-file cap and
+the leaf rule together bound the total, and an arbitrary count limit would be a
+number nobody can justify.
 
 ## Risks / Trade-offs
 

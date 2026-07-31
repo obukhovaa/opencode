@@ -56,7 +56,7 @@ runtime capability — nothing about execution, scheduling or state changes.
 **`github.com/obukhovaa/opencode`**
 
 - `internal/flow/registry.go` — resolve includes and merge `extends` inside
-  `loadFlowFile`, before `$ref` resolution and `validateFlow`.
+  `parseFlowFile`, before `$ref` resolution and `validateFlow`.
 - `internal/flow/flow.go` — `Step` gains `Extends`; a template type is added.
 
 **`piano/ai-agents/piano-developer`** (separate change, separate MR)

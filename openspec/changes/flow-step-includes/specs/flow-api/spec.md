@@ -21,7 +21,8 @@ the template's value wholly, including `output`, `rules` and `fallback`. With
 several `extends` entries, templates MUST apply in declaration order with later
 entries overriding earlier ones, and the step's own keys overriding all of them.
 
-Only step keys consumed by the flow engine itself SHALL be inheritable:
+Only step keys consumed by the flow engine ALONE SHALL be inheritable — not
+"consumed by the engine", which `id`, `interactive` and `interaction` also are:
 `agent`, `prompt`, `session`, `output`, `rules`, `fallback`, `maxTurns`,
 `maxIterations`, `timeout`, `compact`. A template declaring any other key — in
 particular `id`, `interactive`, `interaction` or `resume_after` — MUST be a load
