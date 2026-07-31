@@ -691,10 +691,11 @@ doneRetry:
 		// A transient provider error (rate limit / HTTP-2 stream reset) that
 		// survived the in-call and fallback.retry budgets parks an opted-in
 		// step (resume_after) for timed auto-resume instead of failing the
-		// flow — the endpoint is expected to recover. See
+		// flow — the endpoint is expected to recover. Past the age cap it
+		// declines to park and we fall through to terminal failure. See
 		// postponeStepForTransientError.
-		if stepPostponesOnProviderError(step) && isTransientProviderError(lastErr) {
-			s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, lastErr, flowStates)
+		if stepPostponesOnProviderError(step) && isTransientProviderError(lastErr) &&
+			s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, lastErr, flowStates) {
 			return
 		}
 		// When the parent ctx is cancelled (graceful shutdown, ctx-cancelled
@@ -909,12 +910,23 @@ func stepPostponesOnProviderError(step Step) bool {
 	return step.ResumeAfter != nil && strings.TrimSpace(*step.ResumeAfter) != ""
 }
 
+// maxTransientPostponeAge bounds how long a step may keep parking-and-resuming
+// on transient provider errors before it is failed terminally. The orchestrator
+// has a resume-chain loop-breaker, but it only fires for TeamCity build-await
+// chains (match_key prefix), NOT for a work-item job that keeps transient-
+// postponing — so this is the backstop that keeps a persistently-throttled
+// endpoint from parking a step forever. Measured against the step's flow_states
+// row created_at, which is stable across resume (the row is UPDATEd, not
+// recreated), so it survives the park→resume cycle without a per-resume counter.
+const maxTransientPostponeAge = 2 * time.Hour
+
 // postponeStepForTransientError parks a step that failed with a transient
 // provider error instead of failing it: it persists the flow_state row as
-// `postponed` and emits the postponed state. The orchestrator's postpone sweep
-// then re-enters the step after the step's resume_after (its resume-chain
-// loop-breaker bounds a persistently-degraded upstream). No AgentEvent error is
-// emitted and no fallback is routed — this is a pause, not a failure.
+// `postponed` and emits the postponed state, so the orchestrator's postpone
+// sweep re-enters the step after its resume_after. No AgentEvent error is
+// emitted and no fallback is routed — this is a pause, not a failure. Returns
+// false WITHOUT parking when the step has been retrying past
+// maxTransientPostponeAge, so the caller fails it terminally instead.
 func (s *service) postponeStepForTransientError(
 	ctx context.Context,
 	step Step,
@@ -925,12 +937,10 @@ func (s *service) postponeStepForTransientError(
 	iteration int,
 	cause error,
 	flowStates chan<- *FlowState,
-) {
+) bool {
 	if iteration < 1 {
 		iteration = 1
 	}
-	logging.Warn("Flow step hit a transient provider error; postponing for timed auto-resume",
-		"step", step.ID, "resume_after", *step.ResumeAfter, "error", cause)
 
 	// A cancelled parent ctx (graceful shutdown) would fail the SQL write
 	// immediately and strand the row on `running`; persist with a fresh
@@ -943,13 +953,26 @@ func (s *service) postponeStepForTransientError(
 		defer cancelWrite()
 	}
 
+	existingFS, getErr := s.querier.GetFlowState(writeCtx, sessionID)
+	// Age backstop for the park→resume→park chain (see maxTransientPostponeAge).
+	if getErr == nil && existingFS.CreatedAt > 0 {
+		if age := time.Since(time.Unix(existingFS.CreatedAt, 0)); age > maxTransientPostponeAge {
+			logging.Warn("Transient-postpone age cap exceeded; failing step terminally instead of re-parking",
+				"step", step.ID, "age", age.Round(time.Second), "cap", maxTransientPostponeAge, "error", cause)
+			return false
+		}
+	}
+
+	logging.Warn("Flow step hit a transient provider error; postponing for timed auto-resume",
+		"step", step.ID, "resume_after", *step.ResumeAfter, "error", cause)
+
 	argsJSON, _ := json.Marshal(args)
 	var updatedAt int64
 	// Update the entry-time `running` row to `postponed`. handleStepError (the
 	// other caller) can fire from the pre-persist setup paths where that row
 	// doesn't exist yet, so create it if it's missing rather than silently
 	// no-op'ing the UPDATE. Mirrors the entry-time Get-or-Create write.
-	if _, getErr := s.querier.GetFlowState(writeCtx, sessionID); getErr == nil {
+	if getErr == nil {
 		if state, updateErr := s.querier.UpdateFlowState(writeCtx, db.UpdateFlowStateParams{
 			Status:         string(FlowStatusPostponed),
 			Args:           sql.NullString{String: string(argsJSON), Valid: true},
@@ -993,6 +1016,7 @@ func (s *service) postponeStepForTransientError(
 	}
 	flowStates <- postponedState
 	s.Publish(pubsub.UpdatedEvent, *postponedState)
+	return true
 }
 
 func (s *service) handleStepError(
@@ -1011,9 +1035,10 @@ func (s *service) handleStepError(
 	f *Flow,
 ) {
 	// A transient provider error (rate limit / stream reset) on an opted-in
-	// step parks it for timed auto-resume rather than failing the flow.
-	if stepPostponesOnProviderError(step) && isTransientProviderError(err) {
-		s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, flowID, args, iteration, err, flowStates)
+	// step parks it for timed auto-resume rather than failing the flow — unless
+	// it has been retrying past the age cap, in which case fail terminally.
+	if stepPostponesOnProviderError(step) && isTransientProviderError(err) &&
+		s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, flowID, args, iteration, err, flowStates) {
 		return
 	}
 
