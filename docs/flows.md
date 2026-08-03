@@ -87,6 +87,7 @@ Because built-in discovery derives IDs from file basenames (which can never cont
 | `name` | string | No | Display name |
 | `disabled` | bool | No | If true, flow cannot be executed |
 | `description` | string | No | Description of the flow |
+| `include` | array | No | Local files contributing reusable step templates (see [Shared step templates](#shared-step-templates-include--extends)) |
 | `flow` | object | Yes | Flow specification |
 
 ### Flow specification
@@ -102,6 +103,7 @@ Because built-in discovery derives IDs from file basenames (which can never cont
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `id` | string | Yes | Unique step identifier (kebab-case, max 64 chars) |
+| `extends` | array | No | Step-template names (`.`-prefixed) whose keys seed this step (see [Shared step templates](#shared-step-templates-include--extends)) |
 | `agent` | string | No | Agent ID to use (defaults to `coder`) |
 | `session.fork` | bool | No | Fork previous step's session (same agent only) |
 | `prompt` | string | Yes | Prompt template with `${args.*}` and `${step.*}` placeholders |
@@ -190,6 +192,113 @@ fallback:
 | `retry` | int | Number of retry attempts |
 | `delay` | int | Delay between retries (seconds) |
 | `to` | string | Step ID to route to after all retries fail |
+
+## Shared step templates (`include` / `extends`)
+
+A step reused across several flows can live in one file instead of being
+copy-pasted. The shape is GitLab CI's: `include:` at the top of the flow,
+`extends:` on the step, and templates are **hidden top-level keys** —
+names starting with `.` — in the included file.
+
+```yaml
+# .agents/flows/react-on-jira.yaml
+include:
+  - local: .agents/steps/resolve-team.yaml
+
+flow:
+  steps:
+    - id: resolve-team
+      extends: [".resolve-team"]
+      maxTurns: 20            # wins over the template
+```
+
+```yaml
+# .agents/steps/resolve-team.yaml
+.resolve-team:
+  agent: piano-manager
+  maxTurns: 15
+  prompt: |
+    # Resolve the owning team
+    ...
+```
+
+### Merge semantics
+
+- **Shallow, per top-level step key.** A key present on the step replaces
+  the template's value **wholly** — including `output`, `rules` and
+  `fallback`. There is no deep merge: a step's `output.schema` does not
+  merge into the template's schema, it replaces it.
+- **Order.** Templates apply left to right (`extends: [".base",
+  ".override"]` → `.override` wins), then the step's own keys override all
+  of them.
+- **An explicit zero counts as a value.** `maxTurns: 0`, `timeout: ""`,
+  `agent: ""` and `session: {fork: false}` on the step override the
+  template; only an *absent* key inherits.
+- **Resolution happens at load time**, before output-schema `$ref`
+  resolution and before validation, so a merged step is validated exactly
+  as an inline one (kebab-case IDs, duplicate IDs, rule targets naming a
+  real step, non-negative `maxTurns`).
+
+### Keys a template may NOT declare
+
+`id`, `interactive`, `interaction` and `resume_after` in a template are a
+**load error** naming the key. Everything else a step supports is
+inheritable.
+
+The reason is not style, and it is not inferable from this repo alone:
+**the flow file has a second parser.** The Piano `c2-agent` orchestrator
+reads the same YAML with its own structs — to build the task card, decide
+reviewer-argument enrichment, and compute postpone-resume timing — and it
+never resolves templates. A key it reads must therefore stay in the flow
+file where it can see it:
+
+| Key | What breaks if inherited |
+|-----|--------------------------|
+| `id` | Two flows extending the template collide, and the flow file no longer shows which steps it has |
+| `interactive` | The orchestrator sees a non-interactive step, skips reviewer binding, and the job runs with nobody bound to answer |
+| `interaction` | Same as `interactive` — the binding target is never resolved |
+| `resume_after` | Read by the orchestrator only, not modelled by this engine at all, so it would be silently dropped |
+
+`agent` and `prompt` *are* inheritable but do appear in the orchestrator's
+struct and are re-emitted verbatim by its `GET /api/v1/workspaces` and
+`list_workspaces` surfaces — those will report an empty `prompt` for a
+step that inherits one. No orchestrator logic reads them, so inheriting is
+safe; the reporting degradation is known and accepted.
+
+A key the step schema does not model at all (e.g. a `promt:` typo) is also
+a load error, rather than being silently dropped as a typed decode would.
+
+### Path resolution — note the asymmetry
+
+`include: local:` paths are **root-relative**: resolved against the
+working directory (`/workspace` in the Piano agent pod), *not* against the
+including file's directory. An `output.schema` `$ref` stays **relative to
+the file that declares it** — so a `$ref` inside a template resolves
+against the template file's directory. GitLab CI has the same split.
+
+Root-relative is what lets a shared flow in `.agents/flows/` and a team
+flow in `<team>/flows/` write the identical include line. Absolute paths
+are honoured as-is.
+
+### Limits
+
+- **Templates are leaves.** A template file may not itself declare
+  `include`, and a template may not declare `extends`. One level deep, no
+  cycles, no depth limit to reason about.
+- Only the `local:` include kind exists. A `remote:` or `project:` entry
+  is an error, not an ignored entry.
+- `extends` naming a template no include provides is an error.
+- The per-file size cap (`OPENCODE_MAX_FLOW_FILE_SIZE`, see [Flow File
+  Size Limit](#flow-file-size-limit)) applies to **each** included file —
+  `include` is not a way around it.
+
+### How failures surface
+
+Every error above is raised by `parseFlowFile`, and `scanFlowDirectory`
+logs it at `WARN` and **skips the flow** — same as any other malformed
+flow file. The symptom is a *missing* flow (`flow not found` when
+triggered), not a stopped one, so the WARN line is the only diagnosis an
+operator gets. It names the file, the template and the offending key.
 
 ## Execution Modes
 

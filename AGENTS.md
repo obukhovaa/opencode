@@ -208,6 +208,20 @@ Permissions use pattern matching with priority:
 
 Press `tab` to cycle through primary agents (mode=`agent`, hidden=false) in the TUI. The active agent is shown in the status bar. Agent switching applies to the next new session.
 
+### Flow step templates (`include` / `extends`)
+
+A flow file may declare `include:` at the top level listing local files that contribute reusable **step templates**, and a step may declare `extends: [".name", …]`. Templates are `.`-prefixed top-level keys in the included file. Full docs: [`docs/flows.md`](docs/flows.md#shared-step-templates-include--extends). Implementation: `internal/flow/include.go`, called from `parseFlowFile`.
+
+What to keep in mind when working on this code:
+
+- **Resolution runs inside `parseFlowFile` before `$ref` resolution and before `validateFlow`**, so a merged step is validated exactly as an inline one. Moving it after validation would let a template smuggle an invalid step through.
+- **The merge is driven by each step's RAW declared keys**, recovered by a second `yaml.Unmarshal` of the same bytes (`stepRawKeys`) — the pattern `validateFlowSessionKeys` already uses. This is not incidental: on a typed struct an explicit zero is indistinguishable from an absent key, and the affected inheritable fields are exactly `maxTurns`, `maxIterations`, `timeout`, `agent`, `prompt` and `session` (a **value** type, so `session: {fork: false}` decodes identically to omitting it). Only `compact` is safe, being a pointer. If you add an inheritable field, add it to `inheritableStepKeys` **and** the `mergeTemplates` switch.
+- **A template MUST NOT declare `id`, `interactive`, `interaction` or `resume_after`** — each is a load error naming the key. The reason cannot be inferred from this repo: **the flow YAML has a second parser.** The Piano `c2-agent` orchestrator reads the same file with its own structs (task card, reviewer-argument enrichment, postpone-resume timing), is built and released separately, and never resolves templates. A key it reads must stay in the flow file where it can see it, or the author gets a correct-looking flow with silent misbehaviour (`interactive` in a template → a job with nobody bound to answer). `resume_after` is not even modelled by this engine. Do not "simplify" this by modelling the template as a `Step`: `stepTemplate` is a separate type precisely so a field added to `Step` later is non-inheritable until someone deliberately admits it.
+- **Templates are decoded into a raw map first** so an unknown key is *visible*. A typed decode drops it silently — that is how `flow.session` typos used to pass unnoticed.
+- **`include: local:` paths are root-relative** (`config.WorkingDir`), while an `output.schema` `$ref` stays relative to the file declaring it — so a template's `$ref` is resolved at include-load time against the template's own directory, before the merge, because afterwards there is no per-key provenance left. Use `config.Get()` and nil-check it, never `config.WorkingDirectory()`: that panics when no config is loaded and `parseFlowFile` is called from tests without one.
+- **Templates are leaves**: no `include` in a template file, no `extends` in a template. The per-file size cap applies to each included file.
+- **Errors surface as a missing flow, not a stopped one** — `scanFlowDirectory` WARNs and skips. Keep error messages naming the file, template and key; that log line is all an operator gets.
+
 ### Chat Bridge
 
 Telegram / Slack / Mattermost adapters live in-process under `internal/bridge/` and mount HTTP routes under `/router/*` on the existing API mux. The bridge boots when `.opencode.json` has a non-empty `router` section with at least one enabled channel identity. Full docs: [`docs/bridge.md`](docs/bridge.md).
