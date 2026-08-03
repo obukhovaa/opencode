@@ -155,11 +155,10 @@ tool. No orchestrator logic reads them, so inheriting them is safe — but those
 surfaces will report `prompt: ""` for a migrated step, which is an API surface
 degrading and belongs in the record rather than being discovered later.
 
-An **allow-list, not a deny-list**, because the coupling is cross-repo and will
-outlive whoever reads this. A deny-list has to be updated when the orchestrator
-starts reading a new field — by someone working in the *other* repo, who has no
-reason to look here. An allow-list fails safe: a field added to the schema later
-is non-inheritable until this list deliberately admits it.
+*(An earlier revision argued the opposite here — that an allow-list fails safe because
+a new field stays non-inheritable until admitted. That paragraph is withdrawn: it
+described the shape this decision replaced, and it survived into a later draft where it
+contradicted the paragraphs above it.)*
 
 *Alternative rejected:* implement the resolver in the orchestrator too. It would
 mean two implementations of a merge algorithm, in two independently released
@@ -226,11 +225,24 @@ number nobody can justify.
   job completed having done nothing". There is no flow-validate CLI for CI to call,
   so nothing catches it earlier. That is pre-existing and not this change's to fix,
   but the errors specified here inherit it and the spec should not imply otherwise.
-- **[The allow-list drifts from what the orchestrator reads]** → The direction
-  that matters is safe by construction: a newly orchestrator-read field is
-  non-inheritable by default. The remaining risk is the reverse — a field
-  inheritable here that the orchestrator *starts* reading later — which is why the
-  allow-list entry carries the reason it is safe, not just the name.
+- **[A field the orchestrator starts reading is silently inheritable]** → This is the
+  real exposure of the chosen rule, and the inverse of what an earlier revision of this
+  section claimed. Rejecting four keys by name means anything added to `Step` later is
+  inheritable **by default**, so if the orchestrator begins reading a fifth key, a
+  template may set it and the orchestrator will see it as absent — the same silent class
+  as `interactive` today. Mitigation is deliberately thin because the alternative cost
+  more: the rejected set is one map carrying a per-key reason, so the question "why is
+  this key here" is answerable at the point of change, and `docs/flows.md` states that a
+  second parser exists at all. Accepted knowingly, not overlooked.
+- **[A `,inline` step field would be unreachable]** → A field tagged `yaml:",inline"`
+  yields an empty yaml key under reflection and is skipped, so its sub-keys would be
+  rejected as "not a step field". No such field exists today; noted so the next person
+  adding one is not surprised.
+- **[Sub-values are shared between steps extending one template]** → The merge copies a
+  field wholesale, so two steps extending the same template share the same `*StepOutput`,
+  `Rules` slice and `*Fallback`. Benign today — nothing mutates them in place after load
+  — but an in-place mutation added later becomes cross-step bleed rather than a local
+  bug.
 - **[Two flows extend one template and one of them needed the old text]** → Same
   risk as any shared code; the override in D2 is the answer, and a flow that must
   differ wholesale should stop extending rather than fight the template.
