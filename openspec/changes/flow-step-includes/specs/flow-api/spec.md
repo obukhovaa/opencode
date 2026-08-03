@@ -21,16 +21,19 @@ the template's value wholly, including `output`, `rules` and `fallback`. With
 several `extends` entries, templates MUST apply in declaration order with later
 entries overriding earlier ones, and the step's own keys overriding all of them.
 
-Only step keys consumed by the flow engine ALONE SHALL be inheritable — not
-"consumed by the engine", which `id`, `interactive` and `interaction` also are:
-`agent`, `prompt`, `session`, `output`, `rules`, `fallback`, `maxTurns`,
-`maxIterations`, `timeout`, `compact`. A template declaring any other key — in
-particular `id`, `interactive`, `interaction` or `resume_after` — MUST be a load
-error naming the offending key. This MUST be enforced as an allow-list rather than
-a deny-list: the flow file is also parsed by the orchestrator, which is a separate
-program that never resolves templates and which reads a different subset of the
-schema, so a key it reads must not be inheritable, and a key added to the schema
-later must be non-inheritable until deliberately admitted.
+A template carries a step's **behaviour**, not its identity or its scheduling.
+Concretely, a template MUST NOT declare `id`, `interactive`, `interaction` or
+`resume_after`; each MUST be a load error naming the offending key. Every other step
+key is inheritable.
+
+The reason is that the flow file is also parsed by the orchestrator — a separate
+program that never resolves templates and reads a different subset of the schema.
+`id` identifies the step in its task card and its postpone matching; `interactive`
+and `interaction` decide reviewer-argument enrichment, so a template setting them
+yields a job with nobody bound to answer; `resume_after` is read by the orchestrator
+and is not modelled by the engine at all. Any key added to the flow schema later is
+inheritable by default, and this list grows only when a specific key is shown to be
+read by a second consumer.
 
 A template MUST NOT itself declare `include` or `extends`. Include paths MUST
 resolve relative to the directory of the file declaring them, matching output-schema

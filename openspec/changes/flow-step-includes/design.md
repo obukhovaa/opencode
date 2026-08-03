@@ -159,15 +159,33 @@ import. Correct in the long run and much larger than this ticket: no module
 boundary exists today, the orchestrator's structs are deliberately a different
 subset, and the agent image builds opencode from a pinned git tag.
 
-### D5. Paths resolve like `$ref`: relative to the including file
+### D5. `local:` paths are ROOT-relative, as GitLab's are
 
-`local:` paths are joined to the directory of the file that declares the
-`include`, absolute paths are taken as-is. Identical to `ResolveSchemaRef`, so the
-workspace has one rule for "where do file references point" rather than two.
+Resolved against `config.WorkingDir` — `/workspace` in the pod — not against the
+including file's directory. An earlier revision said file-relative and contradicted
+D1's own example, which writes `.agents/steps/resolve-team.yaml` from a flow living
+in `.agents/flows/`; file-relative would have resolved that to
+`.agents/flows/.agents/steps/…`.
 
-No traversal guard, matching `$ref`. Flow files are trusted workspace content
-already able to name any agent and run any tool; a `../` restriction here would be
-security theatre inconsistent with the mechanism next to it.
+Root-relative is also what makes team-hosted flows work, which is a requirement:
+team flows MAY extend shared steps (requester, 2026-07-31). A flow at
+`composer/flows/fix-tests.yaml` writes the same
+`.agents/steps/resolve-team.yaml` as a shared flow does, instead of
+`../../.agents/steps/…` — and the relative form would differ per team-directory
+depth, so every team repo would carry a subtly different include line.
+
+`config.WorkingDir` is not a new concept: `discoverCustomPathFlows` already resolves
+relative `flowPaths` entries against it (`registry.go:232-262`), which is how
+`"composer/flows"` finds its target. This reuses that base rather than inventing one.
+
+**The asymmetry must be documented**, because it will surprise someone: `include:`
+is root-relative while an `output.schema` `$ref` next to it stays file-relative.
+GitLab CI has the same split (`include:local:` from the root, everything else
+relative), so the audience has met it before — but nobody should have to infer it.
+
+No traversal guard. Flow files are trusted workspace content already able to name
+any agent and run any tool; a `../` restriction would be security theatre next to a
+mechanism that has none.
 
 ### D6. Templates are leaves: no `include` or `extends` inside a template
 
@@ -188,9 +206,14 @@ number nobody can justify.
   cost of any de-duplication. Mitigated by the text still being unavoidably in
   context at runtime, which is the property that ruled out a skill; and by the
   include being one named file away. Accepted.
-- **[A shared template's `rules` name steps the extending flow lacks]** → Fails at
-  load: `validateFlow` already rejects a rule targeting an unknown step, and D3
-  puts merging before validation. Loud, not silent.
+- **[A shared template's `rules` name steps the extending flow lacks]** → Rejected
+  at load by `validateFlow`, since D3 puts merging first. But "loud" overstates it:
+  `scanFlowDirectory` (`registry.go:320-327`) logs a WARN and **skips the flow**, so
+  every error path in this change surfaces as a *missing flow* rather than a stopped
+  one — the shape `flow-creator/SKILL.md` itself documents as the trap behind "the
+  job completed having done nothing". There is no flow-validate CLI for CI to call,
+  so nothing catches it earlier. That is pre-existing and not this change's to fix,
+  but the errors specified here inherit it and the spec should not imply otherwise.
 - **[The allow-list drifts from what the orchestrator reads]** → The direction
   that matters is safe by construction: a newly orchestrator-read field is
   non-inheritable by default. The remaining risk is the reverse — a field
