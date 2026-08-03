@@ -3,6 +3,7 @@ package flow
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -109,6 +110,16 @@ type Step struct {
 	// stays inside the model's cached prompt. See flow-creator SKILL
 	// "Per-step context compaction".
 	Compact *StepCompact `yaml:"compact,omitempty"`
+	// ResumeAfter opts this step into timed auto-resume when it postpones:
+	// the orchestrator's postpone sweep re-enters the parked step after the
+	// given delay (clamped to POSTPONE_RESUME_MAX_TIMEOUT). It is consumed
+	// orchestrator-side for the wake schedule; the flow runner reads it only
+	// to decide whether a step MAY park rather than fail on a transient
+	// provider error (rate-limit / stream reset) — see
+	// isTransientProviderError + postponeStepForTransientError in service.go.
+	// A Go duration string (`10m`, `1h`). Absent (nil) keeps the step's
+	// failures terminal.
+	ResumeAfter *string `yaml:"resume_after,omitempty"`
 }
 
 // StepCompact configures per-step overrides to the auto-compaction
@@ -197,6 +208,30 @@ func (s Step) TimeoutDuration() (time.Duration, error) {
 	}
 	if d < 0 {
 		return 0, fmt.Errorf("step %q: timeout must be non-negative, got %v", s.ID, d)
+	}
+	return d, nil
+}
+
+// ResumeAfterDuration parses the step's resume_after opt-in. Returns (0, nil)
+// when unset or blank (a bare opt-in the orchestrator resolves to its default).
+// A non-blank value MUST be a positive Go duration string; anything else is a
+// load-time error so a typo (e.g. "15minutes") surfaces immediately instead of
+// silently degrading to the orchestrator's default wake — and instead of the
+// flow runner parking a step on a value the orchestrator can't schedule from.
+func (s Step) ResumeAfterDuration() (time.Duration, error) {
+	if s.ResumeAfter == nil {
+		return 0, nil
+	}
+	raw := strings.TrimSpace(*s.ResumeAfter)
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("step %q: invalid resume_after %q: %w", s.ID, raw, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("step %q: resume_after must be positive, got %v", s.ID, d)
 	}
 	return d, nil
 }
