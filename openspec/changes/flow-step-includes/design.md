@@ -117,12 +117,24 @@ before `validateFlow`. Consequences, all wanted:
   finds no `$ref` key and `ResolveSchemaRef` returns the schema unchanged
   (`format.go:122-125`).
 
-### D4. Only opencode-consumed keys are inheritable, enforced by an allow-list
+### D4. A template carries behaviour, not identity or scheduling
 
-**The decisive constraint.** Inheritable: `agent`, `prompt`, `session`, `output`,
-`rules`, `fallback`, `maxTurns`, `maxIterations`, `timeout`, `compact`. A template
-declaring anything else — notably `id`, `interactive`, `interaction`,
-`resume_after` — is a load error naming the offending key.
+**The decisive constraint.** `id`, `interactive`, `interaction` and `resume_after` are
+rejected by name; every other real step key is inheritable, including fields added to
+the schema later.
+
+*Revised from an allow-list* (requester, 2026-07-31). An allow-list of ten inheritable
+keys was the first shape, and it put the maintenance burden on the wrong side: opencode's
+`Step` gains fields regularly, and each would have been silently non-inheritable until
+somebody curated the list — friction on every engine change, to guard a rare change in
+the orchestrator's six-field struct.
+
+Rejecting four by name inverts that: the common case needs no maintenance, and the list
+grows only when a key is *shown* to be read by a second consumer. The one thing an
+allow-list gave for free must be kept deliberately: a template key that is not a real
+step field at all (`promt:`) must still be an error, or a typo is silently dropped —
+the same failure `validateFlowSessionKeys` exists to prevent. So the rule is two-part:
+the key must be a known step field, **and** must not be one of the four.
 
 Why: those four are read by the **orchestrator**, out of the same file, by a
 different program that will never resolve a template. Were they inheritable, an

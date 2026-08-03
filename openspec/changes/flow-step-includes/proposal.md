@@ -31,11 +31,11 @@ each flow from one source puts machine-written content into hand-authored files.
 - Resolution happens at **load time, before validation**, so a merged step is
   validated exactly as an inline one and a template cannot smuggle an invalid
   step past `validateFlow`.
-- Only step keys that opencode alone consumes are inheritable. Keys the
-  orchestrator reads out of the same file — `id`, `interactive`, `interaction`,
-  `resume_after` — MUST stay in the flow, enforced by an **allow-list** so the
-  rule holds for fields added later. See design D4; this is the non-obvious part
-  of the change.
+- A template carries a step's **behaviour**, not its identity or scheduling: `id`,
+  `interactive`, `interaction` and `resume_after` are rejected by name, because the
+  orchestrator reads them out of the same file and never resolves templates. Every
+  other real step key is inheritable, including ones added later. See design D4;
+  this is the non-obvious part of the change.
 - Existing flows are untouched and keep working: no `include`, no `extends`, no
   behaviour change.
 
@@ -49,7 +49,7 @@ runtime capability — nothing about execution, scheduling or state changes.
 ### Modified Capabilities
 
 - `flow-api`: the flow-definition contract gains `include` / `extends`, with the
-  merge semantics and the inheritance allow-list stated as requirements.
+  merge semantics and the four rejected keys stated as requirements.
 
 ## Impact
 
@@ -69,5 +69,5 @@ runtime capability — nothing about execution, scheduling or state changes.
 
 - **No changes, by design.** It parses the same flow files with its own structs
   and is built separately (cloned at a pinned tag into the agent image), so it
-  cannot see resolved templates. D4's allow-list is what keeps that safe rather
-  than silently wrong.
+  cannot see resolved templates. D4's four rejected keys are what keep that safe
+  rather than silently wrong.

@@ -35,10 +35,12 @@ and is not modelled by the engine at all. Any key added to the flow schema later
 inheritable by default, and this list grows only when a specific key is shown to be
 read by a second consumer.
 
-A template MUST NOT itself declare `include` or `extends`. Include paths MUST
-resolve relative to the directory of the file declaring them, matching output-schema
-`$ref` resolution, and a `$ref` inside a template MUST resolve relative to the
-template file. The per-file size limit MUST apply to each included file.
+A template MUST NOT itself declare `include` or `extends`. `local:` include paths MUST
+resolve against the workspace root, as GitLab CI's do, so that one include line works
+from a flow at any depth — including a team-hosted flow in its own directory. A `$ref`
+inside a template MUST resolve relative to the **template** file, which is deliberately
+a different rule and must be documented as such. The per-file size limit MUST apply to
+each included file.
 
 #### Scenario: A step inherits a template
 - **WHEN** a flow includes a file defining `.resolve-team` with `agent` and `prompt`, and a step declares `extends: [".resolve-team"]` and no `agent` or `prompt`
