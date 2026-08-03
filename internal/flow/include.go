@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -88,38 +89,34 @@ type stepTemplate struct {
 }
 
 // stepFieldIndexByYAMLKey maps each of Step's yaml keys to its struct
-// field index. Derived by reflection so the set of known step fields —
-// and therefore the set of inheritable ones — follows the Step type
-// automatically. opencode's Step gains fields regularly while the
-// orchestrator's struct rarely changes, so the maintenance burden belongs
-// on the small, rarely-changing rejected set, not on a list that must be
-// curated every time the engine grows a field.
-//
-// Two rules here mirror yaml.v3 exactly, and both are load-bearing:
-//
-//   - UNEXPORTED fields are skipped even if tagged. yaml.v3 ignores them,
-//     and reflect cannot Set them: including one would turn a template
-//     naming that key into `reflect: reflect.Value.Set using value
-//     obtained using unexported field` — a PANIC during flow discovery,
-//     which has no recover() anywhere between here and discoverFlows, so
-//     it takes the process down rather than skipping one flow.
-//   - An exported field with NO yaml tag falls back to the lowercased
-//     field name, which is what yaml.v3 does. Without the fallback such a
-//     field would be settable inline (`retries: 3` decodes fine) yet
-//     rejected as "not a step field" in a template — silently breaking
-//     the "new step fields are inheritable by default" guarantee for
-//     exactly the field an author forgot to tag.
+// field index, so the set of known — and therefore inheritable — step
+// keys follows the Step type with no curated list to maintain. See
+// docs/flows.md#shared-step-templates-include--extends for the rule and
+// its rationale.
 var stepFieldIndexByYAMLKey = sync.OnceValue(func() map[string]int {
 	return yamlFieldIndexes(reflect.TypeOf(Step{}))
 })
 
 // yamlFieldIndexes derives the yaml-key → field-index map for a struct
-// type, applying the two rules above. Split out from
-// stepFieldIndexByYAMLKey so the rules can be tested against a probe type
-// carrying an unexported tagged field and an untagged exported one —
-// shapes Step does not currently have, and which would otherwise make the
-// IsExported filter and the lowercase fallback untestable (and therefore
-// deletable without any test noticing).
+// type, mirroring yaml.v3's own field rules. Each skip below is a shape
+// whose key CANNOT be honoured by the merge, and admitting one fails
+// unsafely rather than loudly:
+//
+//   - unexported: reflect cannot Set it, so a template naming that key
+//     would panic (`reflect.Value.Set using value obtained using
+//     unexported field`) inside flow discovery, which nothing recovers.
+//   - `,inline` / embedded: yaml.v3 accepts the INNER fields' keys and
+//     ignores the outer field's name, so the derived name would be
+//     accepted by the key check, left zero by the decode, and then
+//     written over the step's own value — silent data loss.
+//
+// The untagged-exported fallback to the lowercased field name is likewise
+// yaml.v3's rule; without it such a field decodes fine inline yet is
+// rejected in a template.
+//
+// Split out of stepFieldIndexByYAMLKey so these rules can be tested
+// against a probe type: Step has none of these shapes today, which would
+// otherwise leave every rule here deletable with the suite green.
 func yamlFieldIndexes(t reflect.Type) map[string]int {
 	fields := map[string]int{}
 	for i := 0; i < t.NumField(); i++ {
@@ -127,7 +124,12 @@ func yamlFieldIndexes(t reflect.Type) map[string]int {
 		if !field.IsExported() {
 			continue
 		}
-		key := strings.Split(field.Tag.Get("yaml"), ",")[0]
+		tag := field.Tag.Get("yaml")
+		parts := strings.Split(tag, ",")
+		if slices.Contains(parts[1:], "inline") || field.Anonymous {
+			continue
+		}
+		key := parts[0]
 		if key == "-" {
 			continue
 		}
@@ -233,27 +235,20 @@ func resolveStepIncludes(flowPath string, includes []IncludeEntry, steps []Step,
 }
 
 // mergeTemplates seeds step from the templates and lets the step's own
-// declared keys win. The merge is shallow per top-level key: `output`,
-// `rules` and `fallback` are single values, so a step overriding one
-// replaces the whole block (design D2). Templates apply left to right,
-// later overriding earlier.
+// declared keys win, shallow per top-level key and left to right. The
+// author-facing semantics are in
+// docs/flows.md#shared-step-templates-include--extends; what matters here:
 //
-// declared is the step's set of RAW declared keys and is what decides
-// what overrides — NOT the decoded values, which cannot tell an explicit
-// zero from an omitted key.
-//
-// The copy is by yaml key through reflection rather than a per-field
-// switch: a field added to Step is then inheritable with no code to
-// update here, which is the point of rejecting keys by name instead of
-// curating an inheritable set.
-//
-// Inherited values are DEEP-copied. A shallow copy would give every step
-// extending one template the same *StepOutput, Output.Schema map, Rules
-// backing array, *Fallback and *Compact — and flows live in the
-// process-wide flowCache shared by every concurrent job, so the first
-// per-step mutation anyone adds later would corrupt sibling steps and
-// other jobs at once, with -race silent while nothing writes. Deep-copying
-// at load time costs nothing measurable and removes the class.
+//   - declared is the step's set of RAW declared keys and is what decides
+//     what overrides — NOT the decoded values, which cannot tell an
+//     explicit zero from an omitted key.
+//   - the copy is by yaml key through reflection, not a per-field switch,
+//     so a field added to Step needs no code here.
+//   - inherited values are DEEP-copied: flows live in the process-wide
+//     flowCache shared by every concurrent job, so sharing a *StepOutput,
+//     Schema map, Rules array, *Fallback or *Compact between steps turns
+//     the first per-step mutation anyone adds later into cross-step and
+//     cross-job corruption, with -race silent while nothing writes.
 func mergeTemplates(step *Step, declared map[string]struct{}, templates []*stepTemplate) {
 	fields := stepFieldIndexByYAMLKey()
 	dst := reflect.ValueOf(step).Elem()
@@ -271,21 +266,13 @@ func mergeTemplates(step *Step, declared map[string]struct{}, templates []*stepT
 		if src == nil {
 			continue
 		}
-		idx, ok := fields[key]
-		if !ok {
-			continue
-		}
-		target := dst.Field(idx)
-		// Belt and braces next to the IsExported() filter in
-		// stepFieldIndexByYAMLKey: Set on an unexported field panics, and
-		// a panic here kills flow discovery outright (no recover between
-		// parseFlowFile and discoverFlows).
-		if !target.CanSet() {
-			logging.Warn("Skipping inherited step key: field is not settable",
-				"key", key, "template", src.Name)
-			continue
-		}
-		target.Set(deepCopyValue(reflect.ValueOf(src.step).Field(idx)))
+		// inheritableStepKeys() derives its keys from this same map, and
+		// yamlFieldIndexes admits only exported, settable fields — so the
+		// lookup always hits and the field is always settable. Both facts
+		// are asserted by TestStepFieldIndexByYAMLKey_MirrorsDecoder
+		// rather than re-checked here, where a fallback branch could only
+		// hide a broken invariant.
+		dst.Field(fields[key]).Set(deepCopyValue(reflect.ValueOf(src.step).Field(fields[key])))
 	}
 }
 
@@ -390,22 +377,11 @@ func loadStepTemplates(path string) (map[string]*stepTemplate, error) {
 // because after merging there is no per-key provenance left and the
 // flow's own $ref loop knows only the flow's directory (design D3).
 //
-// Template keys are checked by a TWO-PART rule, not an allow-list of
-// inheritable fields:
-//
-//  1. the key must be a known Step field — so `promt:` is an error naming
-//     the real fields, rather than being silently dropped the way a typed
-//     decode drops it (that is how `flow.session` typos used to pass);
-//  2. and it must not be one of `id`, `interactive`, `interaction`,
-//     `resume_after` — the keys the orchestrator reads out of the same
-//     file without ever resolving templates.
-//
-// Consequence, and the reason for the shape: a field added to Step later
-// is inheritable BY DEFAULT. An allow-list would put the maintenance
-// friction on the fast-growing side — opencode's Step gains fields
-// regularly, the orchestrator's small struct rarely changes — so each new
-// engine field would be silently non-inheritable until someone thought to
-// curate a list in this file.
+// Template keys are checked by a TWO-PART rule — a known Step field, and
+// not one of the keys the orchestrator reads (nonInheritableStepKeys) —
+// which is why a field added to Step later is inheritable by default. The
+// rule and its rationale are in
+// docs/flows.md#shared-step-templates-include--extends.
 func decodeStepTemplate(name string, node *yaml.Node, path, baseDir string) (*stepTemplate, error) {
 	// Decode into a raw map first so an unknown key is VISIBLE: a typed
 	// decode drops it silently, which is exactly how `flow.session`
@@ -455,14 +431,11 @@ func decodeStepTemplate(name string, node *yaml.Node, path, baseDir string) (*st
 			return nil, fmt.Errorf("%w: resolving output schema $ref for template %q in %q: %v",
 				ErrInvalidTemplate, name, path, err)
 		}
-		// ResolveSchemaRef resolves exactly ONE level: if the file it
-		// loaded is itself a bare `{"$ref": ...}`, the remaining hop
-		// would be resolved later by the flow's own $ref loop, against
-		// the FLOW's directory — quietly breaking the rule that a
-		// template's $ref resolves against the template file, and
-		// picking the wrong file when a same-named schema sits beside
-		// the flow. Reject instead of resolving a chain here: nothing
-		// needs chained refs, and a rejection cannot be silently wrong.
+		// ResolveSchemaRef resolves exactly ONE level, so a schema file
+		// that is itself a bare `{"$ref": ...}` would have its second hop
+		// resolved later by the flow's own loop against the FLOW's
+		// directory — silently wrong, and it picks the wrong file when a
+		// same-named schema sits beside the flow.
 		if _, chained := resolved["$ref"]; chained {
 			return nil, fmt.Errorf("%w: template %q in %q resolves its output schema to another %q (%v); "+
 				"chained refs are not supported, because the second hop would resolve against the flow's directory instead of the template's",
@@ -477,16 +450,15 @@ func decodeStepTemplate(name string, node *yaml.Node, path, baseDir string) (*st
 	return tmpl, nil
 }
 
-// resolveIncludePath resolves an include's `local:` path. Absolute paths
-// are honoured as-is; a relative path is ROOT-relative, resolved against
-// config.WorkingDir — the same base discoverCustomPathFlows uses for
-// relative flowPaths entries (design D5).
+// resolveIncludePath resolves an include's `local:` path: absolute as-is,
+// relative against config.WorkingDir (root-relative — the same base
+// discoverCustomPathFlows uses for relative flowPaths entries; see
+// docs/flows.md#path-resolution--note-the-asymmetry).
 //
-// config.Get() is used rather than config.WorkingDirectory(), which
-// panics when no config is loaded: parseFlowFile is reachable from tests
-// and from tooling that never calls config.Load. With no config the base
-// is empty and a relative include falls back to the process working
-// directory.
+// config.Get() rather than config.WorkingDirectory(), which PANICS when no
+// config is loaded: parseFlowFile is reachable from tests and from tooling
+// that never calls config.Load. With no config a relative include falls
+// back to the process working directory.
 func resolveIncludePath(local string) string {
 	if filepath.IsAbs(local) {
 		return filepath.Clean(local)
@@ -511,15 +483,14 @@ func resolveIncludePath(local string) string {
 // (Session is a VALUE type, so a false fork reads as unset). Only
 // `compact` is safe, being a pointer.
 //
-// A custom Step.UnmarshalYAML could record the same key set but could not
-// perform the merge — the templates live outside the step's YAML node and
-// are unreachable from it — so the merge would still happen here. A
-// second parse of the same bytes is the established pattern in this file:
-// validateFlowSessionKeys already does it.
+// A second parse of the same bytes is the established pattern here —
+// validateFlowSessionKeys already does it. (A custom Step.UnmarshalYAML
+// could record the key set but not perform the merge: templates live
+// outside the step's YAML node.)
 //
-// A failure to parse is returned, NOT swallowed into a nil slice: nil is
-// indistinguishable from "no step declared any key", which would let
-// every template overwrite every step's own values at once.
+// A parse failure is returned, NOT swallowed into a nil slice: nil is
+// indistinguishable from "no step declared any key", which would let every
+// template overwrite every step's own values at once.
 func stepRawKeys(data []byte) ([]map[string]struct{}, error) {
 	var raw struct {
 		Flow struct {

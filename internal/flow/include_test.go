@@ -66,7 +66,7 @@ func TestParseFlowFile_StepInheritsTemplate(t *testing.T) {
 	setIncludeWorkspace(t, root)
 
 	writeIncludeFile(t, filepath.Join(root, ".agents", "steps", "resolve-team.yaml"), `.resolve-team:
-  agent: piano-manager
+  agent: template-agent
   maxTurns: 15
   timeout: 10m
   session:
@@ -83,7 +83,7 @@ flow:
     - id: resolve-team
       extends: [".resolve-team"]
     - id: work
-      agent: piano-coder
+      agent: step-agent
       prompt: "work"
 `)
 
@@ -92,8 +92,8 @@ flow:
 		t.Fatalf("parseFlowFile() error: %v", err)
 	}
 	step := stepByID(t, f, "resolve-team")
-	if step.Agent != "piano-manager" {
-		t.Errorf("Agent = %q, want piano-manager", step.Agent)
+	if step.Agent != "template-agent" {
+		t.Errorf("Agent = %q, want template-agent", step.Agent)
 	}
 	if !strings.Contains(step.Prompt, "Resolve the owning team.") {
 		t.Errorf("Prompt = %q, want the template's prompt", step.Prompt)
@@ -113,8 +113,8 @@ flow:
 		t.Errorf("Interactive = true, want false — a template may not set it")
 	}
 	// Untouched sibling step is unaffected.
-	if other := stepByID(t, f, "work"); other.Agent != "piano-coder" {
-		t.Errorf("sibling step Agent = %q, want piano-coder", other.Agent)
+	if other := stepByID(t, f, "work"); other.Agent != "step-agent" {
+		t.Errorf("sibling step Agent = %q, want step-agent", other.Agent)
 	}
 }
 
@@ -128,7 +128,7 @@ func TestParseFlowFile_StepOverridesInheritedKeys(t *testing.T) {
 	setIncludeWorkspace(t, root)
 
 	writeIncludeFile(t, filepath.Join(root, "steps", "base.yaml"), `.base:
-  agent: piano-manager
+  agent: template-agent
   prompt: "template prompt"
   maxTurns: 15
   maxIterations: 3
@@ -168,7 +168,7 @@ flow:
 		if step.MaxTurns != 20 {
 			t.Errorf("MaxTurns = %d, want 20", step.MaxTurns)
 		}
-		if step.Agent != "piano-manager" || step.Prompt != "template prompt" {
+		if step.Agent != "template-agent" || step.Prompt != "template prompt" {
 			t.Errorf("unset keys not inherited: agent=%q prompt=%q", step.Agent, step.Prompt)
 		}
 		if step.MaxIterations != 3 || step.Timeout != "10m" {
@@ -220,7 +220,7 @@ func TestParseFlowFile_OverridingBlockReplacesWholly(t *testing.T) {
 	setIncludeWorkspace(t, root)
 
 	writeIncludeFile(t, filepath.Join(root, "steps", "blocks.yaml"), `.blocks:
-  agent: piano-manager
+  agent: template-agent
   prompt: "p"
   output:
     schema:
@@ -550,7 +550,7 @@ func TestParseFlowFile_MergedStepValidatedLikeInline(t *testing.T) {
 	setIncludeWorkspace(t, root)
 
 	writeIncludeFile(t, filepath.Join(root, "steps", "routes.yaml"), `.routes:
-  agent: piano-manager
+  agent: template-agent
   prompt: "p"
   rules:
     - if: "${output.status} == ok"
@@ -769,7 +769,7 @@ flow:
 			flow: `name: X
 description: d
 include:
-  - project: piano/other
+  - project: group/other
     file: steps.yaml
 flow:
   steps:
@@ -935,7 +935,7 @@ func TestParseFlowFile_IncludePathResolution(t *testing.T) {
   "required": ["team"]
 }`)
 	writeIncludeFile(t, filepath.Join(root, ".agents", "steps", "resolve-team.yaml"), `.resolve-team:
-  agent: piano-manager
+  agent: template-agent
   prompt: "resolve"
   output:
     schema:
@@ -963,8 +963,8 @@ flow:
 				t.Fatalf("parseFlowFile() error: %v", err)
 			}
 			step := stepByID(t, f, "resolve-team")
-			if step.Agent != "piano-manager" {
-				t.Errorf("Agent = %q, want piano-manager", step.Agent)
+			if step.Agent != "template-agent" {
+				t.Errorf("Agent = %q, want template-agent", step.Agent)
 			}
 			// The $ref was resolved against the TEMPLATE's dir; the
 			// flow's own dir holds no schema.json at all.
@@ -1021,7 +1021,7 @@ func TestParseFlowFile_IncludedFileSizeCap(t *testing.T) {
 	root := t.TempDir()
 	setIncludeWorkspace(t, root)
 
-	oversized := ".big:\n  agent: piano-manager\n  prompt: |\n    " + strings.Repeat("x", 320*1024) + "\n"
+	oversized := ".big:\n  agent: template-agent\n  prompt: |\n    " + strings.Repeat("x", 320*1024) + "\n"
 	writeIncludeFile(t, filepath.Join(root, "steps", "big.yaml"), oversized)
 	flowPath := writeIncludeFile(t, filepath.Join(root, "flows", "big.yaml"), `name: Big
 description: d
@@ -1069,7 +1069,7 @@ func TestIncludedFileSizeCapHonoursEnvVar(t *testing.T) {
 
 	// ~2 KB of template: over a 1k cap, well under a 400k one.
 	writeIncludeFile(t, filepath.Join(root, "steps", "mid.yaml"),
-		".mid:\n  agent: piano-manager\n  prompt: |\n    "+strings.Repeat("x", 2*1024)+"\n")
+		".mid:\n  agent: template-agent\n  prompt: |\n    "+strings.Repeat("x", 2*1024)+"\n")
 	flowPath := writeIncludeFile(t, filepath.Join(root, "flows", "mid.yaml"), `name: Mid
 description: d
 include:
@@ -1215,7 +1215,7 @@ func TestParseFlowFile_InheritedValuesAreDeepCopied(t *testing.T) {
 	root := t.TempDir()
 	setIncludeWorkspace(t, root)
 	writeIncludeFile(t, filepath.Join(root, "steps", "shared.yaml"), `.shared:
-  agent: piano-manager
+  agent: template-agent
   prompt: p
   output:
     schema:
@@ -1380,11 +1380,19 @@ func TestStepFieldIndexByYAMLKey_MirrorsDecoder(t *testing.T) {
 		// and the first unexported tagged field added to Step would take
 		// the process down with "reflect: reflect.Value.Set using value
 		// obtained using unexported field".
+		type nested struct {
+			Deep string `yaml:"deep"`
+		}
+		type embedded struct {
+			Shallow string `yaml:"shallow"`
+		}
 		type probe struct {
 			Tagged   string `yaml:"tagged"`
 			Untagged string
 			Skipped  string `yaml:"-"`
 			hidden   string `yaml:"hidden"` //nolint:unused // presence is the point
+			Inner    nested `yaml:",inline"`
+			embedded `yaml:",inline"`
 		}
 		got := yamlFieldIndexes(reflect.TypeOf(probe{}))
 		if _, ok := got["hidden"]; ok {
@@ -1399,8 +1407,42 @@ func TestStepFieldIndexByYAMLKey_MirrorsDecoder(t *testing.T) {
 		if _, ok := got["tagged"]; !ok {
 			t.Errorf("tagged field not mapped: %v", sortedKeys(got))
 		}
+		// An inline / embedded field must contribute NO key of its own.
+		// yaml.v3 accepts the inner fields' keys (`deep:`) and ignores the
+		// outer field's name, so mapping `inner` would be accepted by the
+		// key check, left zero by node.Decode, and then written over the
+		// step's own value — silent data loss, the one shape where "add a
+		// field to Step and it just works" fails quietly.
+		for _, key := range []string{"inner", "embedded"} {
+			if _, ok := got[key]; ok {
+				t.Errorf("inline/embedded field is mapped under %q; the merge would zero the step's value", key)
+			}
+		}
 		if len(got) != 2 {
 			t.Errorf("derived %d keys (%v), want exactly tagged+untagged", len(got), sortedKeys(got))
+		}
+	})
+
+	t.Run("yaml.v3 ignores an inline field's own name and takes the inner keys", func(t *testing.T) {
+		// The decoder behaviour the inline skip mirrors: `deep:` lands,
+		// `inner:` is ignored entirely. If this ever changes, the skip in
+		// yamlFieldIndexes needs revisiting (and inline fields could then
+		// be made inheritable deliberately).
+		type nested struct {
+			Deep string `yaml:"deep"`
+		}
+		var probe struct {
+			Inner nested `yaml:",inline"`
+		}
+		if err := yaml.Unmarshal([]byte("deep: landed\n"), &probe); err != nil {
+			t.Fatal(err)
+		}
+		if probe.Inner.Deep != "landed" {
+			t.Errorf("inline inner key did not land (Deep = %q)", probe.Inner.Deep)
+		}
+		probe.Inner.Deep = ""
+		if err := yaml.Unmarshal([]byte("inner:\n  deep: ignored\n"), &probe); err == nil && probe.Inner.Deep != "" {
+			t.Errorf("yaml.v3 now honours an inline field's own name (Deep = %q); revisit the inline skip", probe.Inner.Deep)
 		}
 	})
 
@@ -1440,7 +1482,7 @@ flow:
     prefix: "${args.id}"
   steps:
     - id: step-one
-      agent: piano-coder
+      agent: step-agent
       prompt: "Do ${args.prompt}"
       rules:
         - if: "${output.status} == done"
@@ -1464,7 +1506,7 @@ flow:
 			Steps: []Step{
 				{
 					ID:     "step-one",
-					Agent:  "piano-coder",
+					Agent:  "step-agent",
 					Prompt: "Do ${args.prompt}",
 					Rules:  []Rule{{If: "${output.status} == done", Then: "step-two"}},
 				},
@@ -1478,4 +1520,33 @@ flow:
 	if !reflect.DeepEqual(*f, want) {
 		t.Errorf("parsed flow differs from the pre-change value:\n got: %#v\nwant: %#v", *f, want)
 	}
+
+	// The one shape where this change could bite a flow that predates it:
+	// a null / comment-only entry under `steps:` is silently dropped by the
+	// typed decode (pre-existing behaviour), and the new alignment guard
+	// WOULD reject it — but the guard sits behind the inertness gate in
+	// parseFlowFile, so a flow declaring neither `include` nor `extends`
+	// never reaches it. Removing that gate leaves the whole suite green
+	// except this case.
+	t.Run("a legacy flow with an empty steps entry still loads", func(t *testing.T) {
+		legacy := writeIncludeFile(t, filepath.Join(dir, "placeholder-flow.yaml"), `name: Placeholder Flow
+description: Predates include/extends and carries an empty steps entry
+flow:
+  steps:
+    - # placeholder
+    - id: step-one
+      agent: step-agent
+      prompt: "x"
+`)
+		f, err := parseFlowFile(legacy)
+		if err != nil {
+			t.Fatalf("parseFlowFile() on a pre-existing flow with an empty steps entry: %v", err)
+		}
+		if len(f.Spec.Steps) != 1 {
+			t.Fatalf("Steps count = %d, want 1 (the empty entry is dropped by the decoder, as before)", len(f.Spec.Steps))
+		}
+		if got := f.Spec.Steps[0].Agent; got != "step-agent" {
+			t.Errorf("Agent = %q, want step-agent", got)
+		}
+	})
 }
