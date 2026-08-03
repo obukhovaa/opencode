@@ -239,11 +239,19 @@ flow:
   as an inline one (kebab-case IDs, duplicate IDs, rule targets naming a
   real step, non-negative `maxTurns`).
 
-### Keys a template may NOT declare
+### Which keys a template may declare
 
-`id`, `interactive`, `interaction` and `resume_after` in a template are a
-**load error** naming the key. Everything else a step supports is
-inheritable.
+Two-part rule:
+
+1. the key must be a **known step field** — a `promt:` typo is a load
+   error listing the real fields, not a silently ignored line;
+2. **and** it must not be one of `id`, `interactive`, `interaction`,
+   `resume_after` — each of those is a load error naming the key and the
+   reason.
+
+Everything else a step supports is inheritable, **including step fields
+added to the engine after this was written** — there is no curated list of
+inheritable keys to keep up to date.
 
 The reason is not style, and it is not inferable from this repo alone:
 **the flow file has a second parser.** The Piano `c2-agent` orchestrator
@@ -265,8 +273,10 @@ struct and are re-emitted verbatim by its `GET /api/v1/workspaces` and
 step that inherits one. No orchestrator logic reads them, so inheriting is
 safe; the reporting degradation is known and accepted.
 
-A key the step schema does not model at all (e.g. a `promt:` typo) is also
-a load error, rather than being silently dropped as a typed decode would.
+The rule applies to **top-level** step keys only. A nested field (say a
+future `session:` sub-key) that the orchestrator starts reading would ride
+in inside an inheritable key — a known limitation, not something the
+loader checks.
 
 ### Path resolution — note the asymmetry
 

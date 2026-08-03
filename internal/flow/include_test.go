@@ -336,8 +336,11 @@ flow:
 
 // TestParseFlowFile_TemplateRejectsNonInheritableKeys covers scenario "A
 // template declaring an orchestrator-read key is rejected". Table-driven
-// per task 2.5, so a future field argued into the inheritable set has an
-// obvious place to be argued for.
+// per task 2.5, and cross-checked against nonInheritableStepKeys so
+// arguing a key into or out of that set forces a case here. This is the
+// SECOND half of the two-part rule — the four keys the orchestrator reads
+// are rejected by name; everything else Step models is inheritable (see
+// TestTemplateKeyRule_TwoPart).
 func TestParseFlowFile_TemplateRejectsNonInheritableKeys(t *testing.T) {
 	cases := []struct {
 		key      string
@@ -347,6 +350,15 @@ func TestParseFlowFile_TemplateRejectsNonInheritableKeys(t *testing.T) {
 		{"interactive", ".t:\n  interactive: true\n  prompt: p\n"},
 		{"interaction", ".t:\n  interaction:\n    target: \"${args.reviewer}\"\n  prompt: p\n"},
 		{"resume_after", ".t:\n  resume_after: 1h\n  prompt: p\n"},
+	}
+	if len(cases) != len(nonInheritableStepKeys) {
+		t.Errorf("table has %d cases but nonInheritableStepKeys has %d entries — keep them in step",
+			len(cases), len(nonInheritableStepKeys))
+	}
+	for _, tc := range cases {
+		if _, forbidden := nonInheritableStepKeys[tc.key]; !forbidden {
+			t.Errorf("case %q is not in nonInheritableStepKeys", tc.key)
+		}
 	}
 	for _, tc := range cases {
 		t.Run(tc.key, func(t *testing.T) {
@@ -375,8 +387,155 @@ flow:
 			if !strings.Contains(err.Error(), ".t") {
 				t.Errorf("error %v does not name the template", err)
 			}
+			// The message must carry WHY, not just the key: the
+			// orchestrator reason is the whole contract here.
+			if !strings.Contains(err.Error(), nonInheritableStepKeys[tc.key]) {
+				t.Errorf("error %v does not quote the reason for rejecting %q", err, tc.key)
+			}
 		})
 	}
+}
+
+// TestTemplateKeyRule_TwoPart pins the two-part template-key rule: a key
+// must be a KNOWN STEP FIELD, and must not be one of the four the
+// orchestrator reads. There is deliberately no curated allow-list of
+// inheritable fields, so a field added to Step later is inheritable BY
+// DEFAULT — the first subtest is driven off Step's own yaml tags and
+// fails when a new field appears without a sample, which is the only
+// maintenance this rule asks for.
+func TestTemplateKeyRule_TwoPart(t *testing.T) {
+	t.Run("every step field except the rejected four is inheritable", func(t *testing.T) {
+		// One sample value per inheritable step field, plus the
+		// assertion that it survived the merge.
+		samples := map[string]struct {
+			yaml  string
+			check func(t *testing.T, s Step)
+		}{
+			"agent": {"  agent: tmpl-agent\n", func(t *testing.T, s Step) {
+				if s.Agent != "tmpl-agent" {
+					t.Errorf("Agent = %q", s.Agent)
+				}
+			}},
+			"prompt": {"  prompt: tmpl prompt\n", func(t *testing.T, s Step) {
+				if s.Prompt != "tmpl prompt" {
+					t.Errorf("Prompt = %q", s.Prompt)
+				}
+			}},
+			"session": {"  session:\n    fork: true\n", func(t *testing.T, s Step) {
+				if !s.Session.Fork {
+					t.Errorf("Session.Fork = false, want true")
+				}
+			}},
+			"output": {"  output:\n    schema:\n      type: object\n", func(t *testing.T, s Step) {
+				if s.Output == nil || s.Output.Schema["type"] != "object" {
+					t.Errorf("Output = %#v", s.Output)
+				}
+			}},
+			"rules": {"  rules:\n    - then: other\n", func(t *testing.T, s Step) {
+				if len(s.Rules) != 1 || s.Rules[0].Then != "other" {
+					t.Errorf("Rules = %+v", s.Rules)
+				}
+			}},
+			"fallback": {"  fallback:\n    retry: 2\n", func(t *testing.T, s Step) {
+				if s.Fallback == nil || s.Fallback.Retry != 2 {
+					t.Errorf("Fallback = %#v", s.Fallback)
+				}
+			}},
+			"maxTurns": {"  maxTurns: 7\n", func(t *testing.T, s Step) {
+				if s.MaxTurns != 7 {
+					t.Errorf("MaxTurns = %d", s.MaxTurns)
+				}
+			}},
+			"maxIterations": {"  maxIterations: 4\n", func(t *testing.T, s Step) {
+				if s.MaxIterations != 4 {
+					t.Errorf("MaxIterations = %d", s.MaxIterations)
+				}
+			}},
+			"timeout": {"  timeout: 3m\n", func(t *testing.T, s Step) {
+				if s.Timeout != "3m" {
+					t.Errorf("Timeout = %q", s.Timeout)
+				}
+			}},
+			"compact": {"  compact:\n    threshold: 0.7\n", func(t *testing.T, s Step) {
+				if s.Compact == nil || s.Compact.Threshold != 0.7 {
+					t.Errorf("Compact = %#v", s.Compact)
+				}
+			}},
+		}
+
+		// Coverage guard: the rule admits every step field, so a field
+		// added to Step must show up here. This failing is the signal to
+		// add a sample — NOT to curate an allow-list in include.go.
+		for _, key := range inheritableStepKeys() {
+			if _, ok := samples[key]; !ok {
+				t.Errorf("step field %q is inheritable but has no sample here — add one (the rule itself needs no code change)", key)
+			}
+		}
+		for key := range samples {
+			if _, forbidden := nonInheritableStepKeys[key]; forbidden {
+				t.Errorf("sample %q is in the rejected set and must not be inheritable", key)
+			}
+		}
+
+		for _, key := range sortedKeys(samples) {
+			sample := samples[key]
+			t.Run(key, func(t *testing.T) {
+				root := t.TempDir()
+				setIncludeWorkspace(t, root)
+				writeIncludeFile(t, filepath.Join(root, "steps", "t.yaml"), ".t:\n"+sample.yaml)
+				flowPath := writeIncludeFile(t, filepath.Join(root, "flows", "x.yaml"), `name: X
+description: d
+include:
+  - local: steps/t.yaml
+flow:
+  steps:
+    - id: main
+      extends: [".t"]
+    - id: other
+      prompt: o
+`)
+				f, err := parseFlowFile(flowPath)
+				if err != nil {
+					t.Fatalf("a template declaring step field %q must load: %v", key, err)
+				}
+				sample.check(t, stepByID(t, f, "main"))
+			})
+		}
+	})
+
+	t.Run("a key that is not a step field is rejected", func(t *testing.T) {
+		// The first half of the rule: typo protection survives the move
+		// away from an allow-list, and the message lists the real fields.
+		for _, key := range []string{"promt", "resume_aftr", "maxturns", "invented"} {
+			t.Run(key, func(t *testing.T) {
+				root := t.TempDir()
+				setIncludeWorkspace(t, root)
+				writeIncludeFile(t, filepath.Join(root, "steps", "t.yaml"), ".t:\n  "+key+": x\n")
+				flowPath := writeIncludeFile(t, filepath.Join(root, "flows", "x.yaml"), `name: X
+description: d
+include:
+  - local: steps/t.yaml
+flow:
+  steps:
+    - id: main
+      extends: [".t"]
+`)
+				_, err := parseFlowFile(flowPath)
+				if err == nil {
+					t.Fatalf("expected %q to be rejected as not a step field", key)
+				}
+				if !errors.Is(err, ErrInvalidTemplate) {
+					t.Errorf("error = %v, want ErrInvalidTemplate", err)
+				}
+				if !strings.Contains(err.Error(), key) {
+					t.Errorf("error %v does not name the offending key", err)
+				}
+				if !strings.Contains(err.Error(), "prompt") {
+					t.Errorf("error %v does not list the real step fields", err)
+				}
+			})
+		}
+	})
 }
 
 // TestParseFlowFile_MergedStepValidatedLikeInline covers scenario "A

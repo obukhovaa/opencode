@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 
@@ -55,49 +57,66 @@ func (e *IncludeEntry) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-// stepTemplate is the reusable subset of a Step that an included file may
-// contribute. It is deliberately its own type rather than an alias of
-// Step: `id`, `interactive`, `interaction` (and the orchestrator-only
-// `resume_after`, which Step does not model at all) MUST NOT be
-// inheritable, and modelling the template as a Step would quietly make
-// every one of them — plus every field added later — inheritable. See
-// design D4.
+// stepTemplate is one template contributed by an included file. It is its
+// own type rather than an alias of Step so the template's provenance
+// (Name) and its RAW declared keys (Keys) travel with the values.
 //
-// Keys records the template's RAW declared top-level keys. Without it an
-// explicit zero (`maxTurns: 0`, `agent: ""`, `session: {fork: false}`)
-// is indistinguishable from an omitted key on a typed struct, so a later
+// Keys is what makes the merge correct: without it an explicit zero
+// (`maxTurns: 0`, `agent: ""`, `session: {fork: false}`) is
+// indistinguishable from an omitted key on a typed struct, so a later
 // template could not override an earlier one back to a zero value.
+//
+// step holds the decoded values. Decoding into a Step is safe BECAUSE the
+// two-part key rule (see decodeStepTemplate) runs first and rejects
+// `id` / `interactive` / `interaction` / `resume_after` by name — so the
+// decode never sees them. Holding a Step is also what makes a field added
+// to Step later inheritable by DEFAULT: there is no curated list of
+// inheritable fields to update, and mergeTemplates copies by yaml key via
+// reflection rather than a per-field switch that could be forgotten.
 type stepTemplate struct {
-	Name string              `yaml:"-"`
-	Keys map[string]struct{} `yaml:"-"`
-
-	Agent         string       `yaml:"agent,omitempty"`
-	Session       StepSession  `yaml:"session,omitempty"`
-	Prompt        string       `yaml:"prompt,omitempty"`
-	Output        *StepOutput  `yaml:"output,omitempty"`
-	Rules         []Rule       `yaml:"rules,omitempty"`
-	Fallback      *Fallback    `yaml:"fallback,omitempty"`
-	MaxTurns      int          `yaml:"maxTurns,omitempty"`
-	MaxIterations int          `yaml:"maxIterations,omitempty"`
-	Timeout       string       `yaml:"timeout,omitempty"`
-	Compact       *StepCompact `yaml:"compact,omitempty"`
+	Name string
+	Keys map[string]struct{}
+	step Step
 }
 
-// inheritableStepKeys is the set of step keys a template may declare, in
-// the order the merge applies them. Every other key that Step models —
-// `id`, `interactive`, `interaction` — plus the orchestrator-only
-// `resume_after` is rejected by name; see nonInheritableStepKeys.
-var inheritableStepKeys = []string{
-	"agent",
-	"prompt",
-	"session",
-	"output",
-	"rules",
-	"fallback",
-	"maxTurns",
-	"maxIterations",
-	"timeout",
-	"compact",
+// stepFieldIndexByYAMLKey maps each of Step's yaml keys to its struct
+// field index. Derived by reflection so the set of known step fields —
+// and therefore the set of inheritable ones — follows the Step type
+// automatically. opencode's Step gains fields regularly while the
+// orchestrator's struct rarely changes, so the maintenance burden belongs
+// on the small, rarely-changing rejected set, not on a list that must be
+// curated every time the engine grows a field.
+var stepFieldIndexByYAMLKey = sync.OnceValue(func() map[string]int {
+	fields := map[string]int{}
+	t := reflect.TypeOf(Step{})
+	for i := 0; i < t.NumField(); i++ {
+		key := strings.Split(t.Field(i).Tag.Get("yaml"), ",")[0]
+		if key == "" || key == "-" {
+			continue
+		}
+		fields[key] = i
+	}
+	return fields
+})
+
+// inheritableStepKeys returns the step keys a template may contribute:
+// every known Step field except the ones rejected by name and `extends`
+// itself (templates are leaves — design D6). Sorted, so error messages
+// and merge iteration are deterministic.
+func inheritableStepKeys() []string {
+	all := stepFieldIndexByYAMLKey()
+	keys := make([]string, 0, len(all))
+	for key := range all {
+		if _, forbidden := nonInheritableStepKeys[key]; forbidden {
+			continue
+		}
+		if key == "extends" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // nonInheritableStepKeys maps each key a template MUST NOT declare to the
@@ -106,6 +125,11 @@ var inheritableStepKeys = []string{
 // c2-agent orchestrator) which parses it with its own structs and never
 // resolves templates, so a key it reads must stay in the flow file where
 // it can see it.
+//
+// This set — not an allow-list of inheritable fields — is the whole rule's
+// second half. It names the four keys a second program reads and is
+// expected to change roughly never; everything else Step models is
+// inheritable, including fields added after this was written.
 var nonInheritableStepKeys = map[string]string{
 	"id":           "a step's identity must stay in the flow (two flows extending one template would collide, and the flow file would no longer show which steps it has)",
 	"interactive":  "the orchestrator reads it to bind a reviewer; a template would leave it seeing a non-interactive step and start a job with nobody bound to answer",
@@ -169,8 +193,15 @@ func resolveStepIncludes(flowPath string, includes []IncludeEntry, steps []Step,
 // declared is the step's set of RAW declared keys and is what decides
 // what overrides — NOT the decoded values, which cannot tell an explicit
 // zero from an omitted key.
+//
+// The copy is by yaml key through reflection rather than a per-field
+// switch: a field added to Step is then inheritable with no code to
+// update here, which is the point of rejecting keys by name instead of
+// curating an inheritable set.
 func mergeTemplates(step *Step, declared map[string]struct{}, templates []*stepTemplate) {
-	for _, key := range inheritableStepKeys {
+	fields := stepFieldIndexByYAMLKey()
+	dst := reflect.ValueOf(step).Elem()
+	for _, key := range inheritableStepKeys() {
 		if _, own := declared[key]; own {
 			continue
 		}
@@ -184,28 +215,11 @@ func mergeTemplates(step *Step, declared map[string]struct{}, templates []*stepT
 		if src == nil {
 			continue
 		}
-		switch key {
-		case "agent":
-			step.Agent = src.Agent
-		case "prompt":
-			step.Prompt = src.Prompt
-		case "session":
-			step.Session = src.Session
-		case "output":
-			step.Output = src.Output
-		case "rules":
-			step.Rules = src.Rules
-		case "fallback":
-			step.Fallback = src.Fallback
-		case "maxTurns":
-			step.MaxTurns = src.MaxTurns
-		case "maxIterations":
-			step.MaxIterations = src.MaxIterations
-		case "timeout":
-			step.Timeout = src.Timeout
-		case "compact":
-			step.Compact = src.Compact
+		idx, ok := fields[key]
+		if !ok {
+			continue
 		}
+		dst.Field(idx).Set(reflect.ValueOf(src.step).Field(idx))
 	}
 }
 
@@ -250,11 +264,27 @@ func loadStepTemplates(path string) (map[string]*stepTemplate, error) {
 	return templates, nil
 }
 
-// decodeStepTemplate decodes one template, rejecting keys that may not be
-// inherited, and resolves its output-schema $ref against the TEMPLATE
-// file's own directory — before the merge, because after merging there is
-// no per-key provenance left and the flow's own $ref loop knows only the
-// flow's directory (design D3).
+// decodeStepTemplate decodes one template and resolves its output-schema
+// $ref against the TEMPLATE file's own directory — before the merge,
+// because after merging there is no per-key provenance left and the
+// flow's own $ref loop knows only the flow's directory (design D3).
+//
+// Template keys are checked by a TWO-PART rule, not an allow-list of
+// inheritable fields:
+//
+//  1. the key must be a known Step field — so `promt:` is an error naming
+//     the real fields, rather than being silently dropped the way a typed
+//     decode drops it (that is how `flow.session` typos used to pass);
+//  2. and it must not be one of `id`, `interactive`, `interaction`,
+//     `resume_after` — the keys the orchestrator reads out of the same
+//     file without ever resolving templates.
+//
+// Consequence, and the reason for the shape: a field added to Step later
+// is inheritable BY DEFAULT. An allow-list would put the maintenance
+// friction on the fast-growing side — opencode's Step gains fields
+// regularly, the orchestrator's small struct rarely changes — so each new
+// engine field would be silently non-inheritable until someone thought to
+// curate a list in this file.
 func decodeStepTemplate(name string, node *yaml.Node, path, baseDir string) (*stepTemplate, error) {
 	// Decode into a raw map first so an unknown key is VISIBLE: a typed
 	// decode drops it silently, which is exactly how `flow.session`
@@ -275,22 +305,22 @@ func decodeStepTemplate(name string, node *yaml.Node, path, baseDir string) (*st
 			return nil, fmt.Errorf("%w: template %q in %q must not declare %q: %s",
 				ErrInvalidTemplate, name, path, key, reason)
 		}
-		if !isInheritableStepKey(key) {
-			return nil, fmt.Errorf("%w: template %q in %q declares unknown step key %q (inheritable keys: %s)",
-				ErrInvalidTemplate, name, path, key, strings.Join(inheritableStepKeys, ", "))
+		if _, known := stepFieldIndexByYAMLKey()[key]; !known {
+			return nil, fmt.Errorf("%w: template %q in %q declares %q, which is not a step field (inheritable step fields: %s)",
+				ErrInvalidTemplate, name, path, key, strings.Join(inheritableStepKeys(), ", "))
 		}
 		keys[key] = struct{}{}
 	}
 
-	tmpl := &stepTemplate{}
-	if err := node.Decode(tmpl); err != nil {
+	tmpl := &stepTemplate{Name: name, Keys: keys}
+	// Decoding into a Step is safe only because the loop above already
+	// rejected the four keys a template may not carry.
+	if err := node.Decode(&tmpl.step); err != nil {
 		return nil, fmt.Errorf("%w: template %q in %q: %v", ErrInvalidTemplate, name, path, err)
 	}
-	tmpl.Name = name
-	tmpl.Keys = keys
 
-	if tmpl.Output != nil && tmpl.Output.Schema != nil {
-		resolved, err := format.ResolveSchemaRef(tmpl.Output.Schema, baseDir)
+	if tmpl.step.Output != nil && tmpl.step.Output.Schema != nil {
+		resolved, err := format.ResolveSchemaRef(tmpl.step.Output.Schema, baseDir)
 		if err != nil {
 			return nil, fmt.Errorf("%w: resolving output schema $ref for template %q in %q: %v",
 				ErrInvalidTemplate, name, path, err)
@@ -298,7 +328,7 @@ func decodeStepTemplate(name string, node *yaml.Node, path, baseDir string) (*st
 		// Copy rather than mutate: the same template value may be
 		// merged into several steps, and callers must not share the
 		// resolved map with the file-level decode.
-		tmpl.Output = &StepOutput{Schema: resolved}
+		tmpl.step.Output = &StepOutput{Schema: resolved}
 	}
 	return tmpl, nil
 }
@@ -370,15 +400,6 @@ func stepRawKeys(data []byte) []map[string]struct{} {
 func stepsDeclareExtends(steps []Step) bool {
 	for _, step := range steps {
 		if len(step.Extends) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func isInheritableStepKey(key string) bool {
-	for _, k := range inheritableStepKeys {
-		if k == key {
 			return true
 		}
 	}
