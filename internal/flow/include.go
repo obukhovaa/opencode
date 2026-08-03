@@ -94,18 +94,50 @@ type stepTemplate struct {
 // orchestrator's struct rarely changes, so the maintenance burden belongs
 // on the small, rarely-changing rejected set, not on a list that must be
 // curated every time the engine grows a field.
+//
+// Two rules here mirror yaml.v3 exactly, and both are load-bearing:
+//
+//   - UNEXPORTED fields are skipped even if tagged. yaml.v3 ignores them,
+//     and reflect cannot Set them: including one would turn a template
+//     naming that key into `reflect: reflect.Value.Set using value
+//     obtained using unexported field` — a PANIC during flow discovery,
+//     which has no recover() anywhere between here and discoverFlows, so
+//     it takes the process down rather than skipping one flow.
+//   - An exported field with NO yaml tag falls back to the lowercased
+//     field name, which is what yaml.v3 does. Without the fallback such a
+//     field would be settable inline (`retries: 3` decodes fine) yet
+//     rejected as "not a step field" in a template — silently breaking
+//     the "new step fields are inheritable by default" guarantee for
+//     exactly the field an author forgot to tag.
 var stepFieldIndexByYAMLKey = sync.OnceValue(func() map[string]int {
+	return yamlFieldIndexes(reflect.TypeOf(Step{}))
+})
+
+// yamlFieldIndexes derives the yaml-key → field-index map for a struct
+// type, applying the two rules above. Split out from
+// stepFieldIndexByYAMLKey so the rules can be tested against a probe type
+// carrying an unexported tagged field and an untagged exported one —
+// shapes Step does not currently have, and which would otherwise make the
+// IsExported filter and the lowercase fallback untestable (and therefore
+// deletable without any test noticing).
+func yamlFieldIndexes(t reflect.Type) map[string]int {
 	fields := map[string]int{}
-	t := reflect.TypeOf(Step{})
 	for i := 0; i < t.NumField(); i++ {
-		key := strings.Split(t.Field(i).Tag.Get("yaml"), ",")[0]
-		if key == "" || key == "-" {
+		field := t.Field(i)
+		if !field.IsExported() {
 			continue
+		}
+		key := strings.Split(field.Tag.Get("yaml"), ",")[0]
+		if key == "-" {
+			continue
+		}
+		if key == "" {
+			key = strings.ToLower(field.Name)
 		}
 		fields[key] = i
 	}
 	return fields
-})
+}
 
 // inheritableStepKeys returns the step keys a template may contribute:
 // every known Step field except the ones rejected by name and `extends`
@@ -214,6 +246,14 @@ func resolveStepIncludes(flowPath string, includes []IncludeEntry, steps []Step,
 // switch: a field added to Step is then inheritable with no code to
 // update here, which is the point of rejecting keys by name instead of
 // curating an inheritable set.
+//
+// Inherited values are DEEP-copied. A shallow copy would give every step
+// extending one template the same *StepOutput, Output.Schema map, Rules
+// backing array, *Fallback and *Compact — and flows live in the
+// process-wide flowCache shared by every concurrent job, so the first
+// per-step mutation anyone adds later would corrupt sibling steps and
+// other jobs at once, with -race silent while nothing writes. Deep-copying
+// at load time costs nothing measurable and removes the class.
 func mergeTemplates(step *Step, declared map[string]struct{}, templates []*stepTemplate) {
 	fields := stepFieldIndexByYAMLKey()
 	dst := reflect.ValueOf(step).Elem()
@@ -235,7 +275,72 @@ func mergeTemplates(step *Step, declared map[string]struct{}, templates []*stepT
 		if !ok {
 			continue
 		}
-		dst.Field(idx).Set(reflect.ValueOf(src.step).Field(idx))
+		target := dst.Field(idx)
+		// Belt and braces next to the IsExported() filter in
+		// stepFieldIndexByYAMLKey: Set on an unexported field panics, and
+		// a panic here kills flow discovery outright (no recover between
+		// parseFlowFile and discoverFlows).
+		if !target.CanSet() {
+			logging.Warn("Skipping inherited step key: field is not settable",
+				"key", key, "template", src.Name)
+			continue
+		}
+		target.Set(deepCopyValue(reflect.ValueOf(src.step).Field(idx)))
+	}
+}
+
+// deepCopyValue returns a value that shares no mutable state with v.
+// Generic by reflection rather than a per-type switch, for the same reason
+// the merge is: a field added to Step must not need code here.
+//
+// Unexported struct fields are skipped — reflect cannot read or set them —
+// which is safe because every type reachable from Step is plain data.
+func deepCopyValue(v reflect.Value) reflect.Value {
+	switch v.Kind() {
+	case reflect.Pointer:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.New(v.Type().Elem())
+		out.Elem().Set(deepCopyValue(v.Elem()))
+		return out
+	case reflect.Slice:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.MakeSlice(v.Type(), v.Len(), v.Len())
+		for i := 0; i < v.Len(); i++ {
+			out.Index(i).Set(deepCopyValue(v.Index(i)))
+		}
+		return out
+	case reflect.Map:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.MakeMapWithSize(v.Type(), v.Len())
+		iter := v.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(deepCopyValue(iter.Key()), deepCopyValue(iter.Value()))
+		}
+		return out
+	case reflect.Interface:
+		if v.IsNil() {
+			return v
+		}
+		out := reflect.New(v.Type()).Elem()
+		out.Set(deepCopyValue(v.Elem()))
+		return out
+	case reflect.Struct:
+		out := reflect.New(v.Type()).Elem()
+		for i := 0; i < v.NumField(); i++ {
+			if !v.Type().Field(i).IsExported() {
+				continue
+			}
+			out.Field(i).Set(deepCopyValue(v.Field(i)))
+		}
+		return out
+	default:
+		return v
 	}
 }
 
@@ -328,6 +433,15 @@ func decodeStepTemplate(name string, node *yaml.Node, path, baseDir string) (*st
 		keys[key] = struct{}{}
 	}
 
+	// A template that contributes nothing is a mistake, not a no-op: a
+	// null template (`.empty:` with no body) would otherwise merge an
+	// empty agent and prompt into the extending step, and validateFlow
+	// does not require a prompt — so the step would run empty.
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("%w: template %q in %q declares no keys; a template must contribute at least one step key",
+			ErrInvalidTemplate, name, path)
+	}
+
 	tmpl := &stepTemplate{Name: name, Keys: keys}
 	// Decoding into a Step is safe only because the loop above already
 	// rejected the four keys a template may not carry.
@@ -341,9 +455,23 @@ func decodeStepTemplate(name string, node *yaml.Node, path, baseDir string) (*st
 			return nil, fmt.Errorf("%w: resolving output schema $ref for template %q in %q: %v",
 				ErrInvalidTemplate, name, path, err)
 		}
-		// Copy rather than mutate: the same template value may be
-		// merged into several steps, and callers must not share the
-		// resolved map with the file-level decode.
+		// ResolveSchemaRef resolves exactly ONE level: if the file it
+		// loaded is itself a bare `{"$ref": ...}`, the remaining hop
+		// would be resolved later by the flow's own $ref loop, against
+		// the FLOW's directory — quietly breaking the rule that a
+		// template's $ref resolves against the template file, and
+		// picking the wrong file when a same-named schema sits beside
+		// the flow. Reject instead of resolving a chain here: nothing
+		// needs chained refs, and a rejection cannot be silently wrong.
+		if _, chained := resolved["$ref"]; chained {
+			return nil, fmt.Errorf("%w: template %q in %q resolves its output schema to another %q (%v); "+
+				"chained refs are not supported, because the second hop would resolve against the flow's directory instead of the template's",
+				ErrInvalidTemplate, name, path, "$ref", resolved["$ref"])
+		}
+		// Fresh wrapper holding the resolved map. This alone does NOT
+		// isolate steps from each other — the map inside is still one
+		// object — which is why mergeTemplates deep-copies whatever it
+		// inherits.
 		tmpl.step.Output = &StepOutput{Schema: resolved}
 	}
 	return tmpl, nil

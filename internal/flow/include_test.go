@@ -6,7 +6,10 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/opencode-ai/opencode/internal/config"
 )
@@ -777,6 +780,42 @@ flow:
 			wantParts: []string{"project", "file", "local"},
 		},
 		{
+			// An empty `local:` cannot resolve to anything; rejecting it
+			// at the include line beats a "file not found" naming the
+			// workspace root.
+			name:     "empty local path",
+			template: ".present:\n  prompt: p\n",
+			flow: `name: X
+description: d
+include:
+  - local: ""
+flow:
+  steps:
+    - id: main
+      extends: [".present"]
+`,
+			wantErr:   ErrInvalidYAML,
+			wantParts: []string{"empty", "local"},
+		},
+		{
+			// A null template contributes nothing, and validateFlow does
+			// not require a prompt — so without this the extending step
+			// would load and run empty.
+			name:     "null template",
+			template: ".present:\n",
+			flow: `name: X
+description: d
+include:
+  - local: steps/t.yaml
+flow:
+  steps:
+    - id: main
+      extends: [".present"]
+`,
+			wantErr:   ErrInvalidTemplate,
+			wantParts: []string{".present", "no keys"},
+		},
+		{
 			// `local:` present but joined by an unsupported sibling: the
 			// entry is still rejected, and the message names the sibling
 			// rather than silently honouring the local path.
@@ -1004,6 +1043,385 @@ flow:
 	if !strings.Contains(err.Error(), "OPENCODE_MAX_FLOW_FILE_SIZE") {
 		t.Errorf("error %v does not point at the size-cap env var", err)
 	}
+}
+
+// resetMaxFlowFileSize re-arms the sync.Once behind maxFlowFileSize so a
+// test can exercise OPENCODE_MAX_FLOW_FILE_SIZE, and restores the default
+// afterwards. Without this the cap is parsed once per test binary and the
+// env var is untestable — which is why nothing held it before.
+func resetMaxFlowFileSize(t *testing.T) {
+	t.Helper()
+	maxFlowFileSizeOnce = sync.Once{}
+	maxFlowFileSizeVal = 0
+	t.Cleanup(func() {
+		maxFlowFileSizeOnce = sync.Once{}
+		maxFlowFileSizeVal = 0
+	})
+}
+
+// TestIncludedFileSizeCapHonoursEnvVar proves an included file is checked
+// against the ENV-CONFIGURED cap, not a literal: the same file is accepted
+// under a large cap and rejected under a small one. Replacing
+// maxFlowFileSize() with a constant fails this test.
+func TestIncludedFileSizeCapHonoursEnvVar(t *testing.T) {
+	root := t.TempDir()
+	setIncludeWorkspace(t, root)
+
+	// ~2 KB of template: over a 1k cap, well under a 400k one.
+	writeIncludeFile(t, filepath.Join(root, "steps", "mid.yaml"),
+		".mid:\n  agent: piano-manager\n  prompt: |\n    "+strings.Repeat("x", 2*1024)+"\n")
+	flowPath := writeIncludeFile(t, filepath.Join(root, "flows", "mid.yaml"), `name: Mid
+description: d
+include:
+  - local: steps/mid.yaml
+flow:
+  steps:
+    - id: main
+      extends: [".mid"]
+`)
+
+	t.Run("raised cap admits the file", func(t *testing.T) {
+		resetMaxFlowFileSize(t)
+		t.Setenv("OPENCODE_MAX_FLOW_FILE_SIZE", "400k")
+		if got := maxFlowFileSize(); got != 400*1024 {
+			t.Fatalf("maxFlowFileSize() = %d, want %d — env var not honoured", got, 400*1024)
+		}
+		if _, err := parseFlowFile(flowPath); err != nil {
+			t.Errorf("parseFlowFile() under a 400k cap: %v", err)
+		}
+	})
+
+	t.Run("lowered cap rejects the same included file", func(t *testing.T) {
+		resetMaxFlowFileSize(t)
+		t.Setenv("OPENCODE_MAX_FLOW_FILE_SIZE", "1k")
+		if got := maxFlowFileSize(); got != 1024 {
+			t.Fatalf("maxFlowFileSize() = %d, want 1024 — env var not honoured", got)
+		}
+		_, err := parseFlowFile(flowPath)
+		if err == nil {
+			t.Fatal("expected the included file to exceed a 1k cap")
+		}
+		if !errors.Is(err, ErrInvalidInclude) {
+			t.Errorf("error = %v, want ErrInvalidInclude", err)
+		}
+		if !strings.Contains(err.Error(), "1024") {
+			t.Errorf("error %v does not quote the configured limit", err)
+		}
+	})
+}
+
+// TestParseFlowFile_DuplicateTemplateLastIncludeWins pins the include
+// precedence: two included files defining the same template name — the
+// LAST include wins. Making the first win survives every other test here.
+func TestParseFlowFile_DuplicateTemplateLastIncludeWins(t *testing.T) {
+	root := t.TempDir()
+	setIncludeWorkspace(t, root)
+	writeIncludeFile(t, filepath.Join(root, "steps", "first.yaml"), ".dup:\n  agent: first-agent\n  prompt: first\n")
+	writeIncludeFile(t, filepath.Join(root, "steps", "second.yaml"), ".dup:\n  agent: second-agent\n")
+
+	flowPath := writeIncludeFile(t, filepath.Join(root, "flows", "dup.yaml"), `name: Dup
+description: d
+include:
+  - local: steps/first.yaml
+  - local: steps/second.yaml
+flow:
+  steps:
+    - id: main
+      extends: [".dup"]
+`)
+	f, err := parseFlowFile(flowPath)
+	if err != nil {
+		t.Fatalf("parseFlowFile() error: %v", err)
+	}
+	step := stepByID(t, f, "main")
+	if step.Agent != "second-agent" {
+		t.Errorf("Agent = %q, want second-agent (the LAST include's definition wins)", step.Agent)
+	}
+	// Redefinition replaces the template wholly: the second `.dup`
+	// declares no prompt, so nothing supplies one.
+	if step.Prompt != "" {
+		t.Errorf("Prompt = %q, want empty — the later template redefines `.dup` and declares no prompt", step.Prompt)
+	}
+}
+
+// TestParseFlowFile_NonTemplateKeysContributeNothing pins the `.` prefix
+// convention: a top-level key WITHOUT the prefix is not a template.
+// Deleting the prefix filter survives every other test.
+func TestParseFlowFile_NonTemplateKeysContributeNothing(t *testing.T) {
+	root := t.TempDir()
+	setIncludeWorkspace(t, root)
+	writeIncludeFile(t, filepath.Join(root, "steps", "mixed.yaml"), `undotted:
+  agent: undotted-agent
+  prompt: undotted
+.real:
+  agent: real-agent
+  prompt: real
+`)
+
+	t.Run("the dotted template is usable", func(t *testing.T) {
+		flowPath := writeIncludeFile(t, filepath.Join(root, "flows", "ok.yaml"), `name: X
+description: d
+include:
+  - local: steps/mixed.yaml
+flow:
+  steps:
+    - id: main
+      extends: [".real"]
+`)
+		f, err := parseFlowFile(flowPath)
+		if err != nil {
+			t.Fatalf("parseFlowFile() error: %v", err)
+		}
+		if got := stepByID(t, f, "main").Agent; got != "real-agent" {
+			t.Errorf("Agent = %q, want real-agent", got)
+		}
+	})
+
+	for _, name := range []string{"undotted", ".undotted"} {
+		t.Run("extending "+name+" fails", func(t *testing.T) {
+			flowPath := writeIncludeFile(t, filepath.Join(root, "flows", "bad.yaml"), `name: X
+description: d
+include:
+  - local: steps/mixed.yaml
+flow:
+  steps:
+    - id: main
+      extends: ["`+name+`"]
+`)
+			_, err := parseFlowFile(flowPath)
+			if err == nil {
+				t.Fatalf("expected extending %q to fail: an undotted key is not a template", name)
+			}
+			if !errors.Is(err, ErrUnknownTemplate) {
+				t.Errorf("error = %v, want ErrUnknownTemplate", err)
+			}
+			// The message lists what IS available, which is how a missing
+			// `.` prefix gets diagnosed.
+			if !strings.Contains(err.Error(), ".real") {
+				t.Errorf("error %v does not list the available templates", err)
+			}
+		})
+	}
+}
+
+// TestParseFlowFile_InheritedValuesAreDeepCopied pins the isolation
+// contract for reference-typed inherited fields. Two steps extending one
+// template must not share an `*StepOutput`, its `Schema` map, the `Rules`
+// backing array, `*Fallback` or `*Compact`: flows live in the
+// process-wide flowCache shared by every concurrent job, so the first
+// per-step mutation anyone adds would otherwise corrupt sibling steps and
+// other jobs at once — and -race stays silent while nothing writes.
+func TestParseFlowFile_InheritedValuesAreDeepCopied(t *testing.T) {
+	root := t.TempDir()
+	setIncludeWorkspace(t, root)
+	writeIncludeFile(t, filepath.Join(root, "steps", "shared.yaml"), `.shared:
+  agent: piano-manager
+  prompt: p
+  output:
+    schema:
+      type: object
+      properties:
+        team:
+          type: string
+  rules:
+    - then: other
+  fallback:
+    retry: 3
+    to: other
+  compact:
+    threshold: 0.7
+`)
+	flowPath := writeIncludeFile(t, filepath.Join(root, "flows", "shared.yaml"), `name: Shared
+description: d
+include:
+  - local: steps/shared.yaml
+flow:
+  steps:
+    - id: main
+      extends: [".shared"]
+    - id: twin
+      extends: [".shared"]
+    - id: other
+      prompt: o
+`)
+	f, err := parseFlowFile(flowPath)
+	if err != nil {
+		t.Fatalf("parseFlowFile() error: %v", err)
+	}
+	main := stepByID(t, f, "main")
+	twin := stepByID(t, f, "twin")
+
+	if main.Output == twin.Output {
+		t.Error("both steps share the same *StepOutput")
+	}
+	if main.Fallback == twin.Fallback {
+		t.Error("both steps share the same *Fallback")
+	}
+	if main.Compact == twin.Compact {
+		t.Error("both steps share the same *StepCompact")
+	}
+
+	// Mutate everything reachable from one step; the other must not move.
+	main.Rules[0].Then = "mutated"
+	main.Output.Schema["type"] = "mutated"
+	main.Output.Schema["properties"].(map[string]any)["team"] = "mutated"
+	main.Fallback.Retry = 99
+	main.Compact.Threshold = 0.1
+
+	if twin.Rules[0].Then != "other" {
+		t.Errorf("twin.Rules[0].Then = %q — the Rules backing array is shared", twin.Rules[0].Then)
+	}
+	if twin.Output.Schema["type"] != "object" {
+		t.Errorf("twin schema type = %v — the Schema map is shared", twin.Output.Schema["type"])
+	}
+	if props, ok := twin.Output.Schema["properties"].(map[string]any); !ok || props["team"] == "mutated" {
+		t.Errorf("twin nested schema = %v — nested maps are shared", twin.Output.Schema["properties"])
+	}
+	if twin.Fallback.Retry != 3 {
+		t.Errorf("twin.Fallback.Retry = %d — Fallback is shared", twin.Fallback.Retry)
+	}
+	if twin.Compact.Threshold != 0.7 {
+		t.Errorf("twin.Compact.Threshold = %v — Compact is shared", twin.Compact.Threshold)
+	}
+}
+
+// TestParseFlowFile_TemplateChainedSchemaRefRejected pins that a
+// template's output schema may not resolve to ANOTHER $ref.
+// format.ResolveSchemaRef resolves exactly one level, so the second hop
+// would be resolved later by the flow's own loop against the FLOW's
+// directory — silently violating "a template's $ref resolves against the
+// template file", and picking the wrong file when a same-named schema
+// sits beside the flow (as one does here).
+func TestParseFlowFile_TemplateChainedSchemaRefRejected(t *testing.T) {
+	root := t.TempDir()
+	setIncludeWorkspace(t, root)
+	writeIncludeFile(t, filepath.Join(root, "steps", "outer.json"), `{"$ref": "inner.json"}`)
+	writeIncludeFile(t, filepath.Join(root, "steps", "inner.json"), `{"type": "object", "properties": {"from": {"const": "template-dir"}}}`)
+	// Decoy beside the FLOW, which the flow's own $ref loop would pick.
+	writeIncludeFile(t, filepath.Join(root, "flows", "inner.json"), `{"type": "object", "properties": {"from": {"const": "flow-dir"}}}`)
+	writeIncludeFile(t, filepath.Join(root, "steps", "chain.yaml"), ".chain:\n  prompt: p\n  output:\n    schema:\n      $ref: outer.json\n")
+
+	flowPath := writeIncludeFile(t, filepath.Join(root, "flows", "chain.yaml"), `name: Chain
+description: d
+include:
+  - local: steps/chain.yaml
+flow:
+  steps:
+    - id: main
+      extends: [".chain"]
+`)
+	_, err := parseFlowFile(flowPath)
+	if err == nil {
+		t.Fatal("expected a chained template $ref to be rejected rather than resolved against the flow's directory")
+	}
+	if !errors.Is(err, ErrInvalidTemplate) {
+		t.Errorf("error = %v, want ErrInvalidTemplate", err)
+	}
+	for _, part := range []string{"$ref", ".chain", "inner.json"} {
+		if !strings.Contains(err.Error(), part) {
+			t.Errorf("error %v does not mention %q", err, part)
+		}
+	}
+}
+
+// TestStepFieldIndexByYAMLKey_MirrorsDecoder pins the two invariants the
+// reflection-driven key rule and merge both depend on.
+func TestStepFieldIndexByYAMLKey_MirrorsDecoder(t *testing.T) {
+	stepType := reflect.TypeOf(Step{})
+	fields := stepFieldIndexByYAMLKey()
+
+	t.Run("every mapped field is exported and settable", func(t *testing.T) {
+		// An unexported field in the map makes the merge panic with
+		// "reflect: reflect.Value.Set using value obtained using
+		// unexported field" — a PROCESS panic, since nothing between
+		// parseFlowFile and discoverFlows recovers.
+		probe := reflect.ValueOf(&Step{}).Elem()
+		for _, key := range sortedKeys(fields) {
+			idx := fields[key]
+			if !stepType.Field(idx).IsExported() {
+				t.Errorf("key %q maps to unexported field %q", key, stepType.Field(idx).Name)
+				continue
+			}
+			if !probe.Field(idx).CanSet() {
+				t.Errorf("key %q maps to a field the merge cannot Set (%q)", key, stepType.Field(idx).Name)
+			}
+		}
+	})
+
+	t.Run("every exported step field is reachable by some key", func(t *testing.T) {
+		// The invariant behind "a field added to Step later is
+		// inheritable by default": an exported field missing here would
+		// be settable inline yet rejected in a template.
+		byIndex := map[int]string{}
+		for key, idx := range fields {
+			byIndex[idx] = key
+		}
+		for i := 0; i < stepType.NumField(); i++ {
+			field := stepType.Field(i)
+			if !field.IsExported() {
+				if key, mapped := byIndex[i]; mapped {
+					t.Errorf("unexported field %q is mapped to key %q", field.Name, key)
+				}
+				continue
+			}
+			if strings.Split(field.Tag.Get("yaml"), ",")[0] == "-" {
+				continue
+			}
+			if _, mapped := byIndex[i]; !mapped {
+				t.Errorf("exported field %q has no key — it would be settable inline but rejected in a template", field.Name)
+			}
+		}
+	})
+
+	t.Run("derivation skips unexported fields and lowercases untagged ones", func(t *testing.T) {
+		// Step has neither shape today, so the rules are exercised
+		// against a probe type — otherwise the IsExported filter and the
+		// lowercase fallback could be deleted with the suite still green,
+		// and the first unexported tagged field added to Step would take
+		// the process down with "reflect: reflect.Value.Set using value
+		// obtained using unexported field".
+		type probe struct {
+			Tagged   string `yaml:"tagged"`
+			Untagged string
+			Skipped  string `yaml:"-"`
+			hidden   string `yaml:"hidden"` //nolint:unused // presence is the point
+		}
+		got := yamlFieldIndexes(reflect.TypeOf(probe{}))
+		if _, ok := got["hidden"]; ok {
+			t.Error("unexported tagged field is mapped; the merge would panic on it")
+		}
+		if _, ok := got["skipped"]; ok {
+			t.Error(`yaml:"-" field is mapped`)
+		}
+		if _, ok := got["untagged"]; !ok {
+			t.Errorf("untagged exported field not mapped to its lowercased name: %v", sortedKeys(got))
+		}
+		if _, ok := got["tagged"]; !ok {
+			t.Errorf("tagged field not mapped: %v", sortedKeys(got))
+		}
+		if len(got) != 2 {
+			t.Errorf("derived %d keys (%v), want exactly tagged+untagged", len(got), sortedKeys(got))
+		}
+	})
+
+	t.Run("yaml.v3 maps an untagged exported field to its lowercased name", func(t *testing.T) {
+		// The decoder behaviour our fallback mirrors. Pinned here because
+		// the rule lives in our code while the behaviour it must match
+		// lives in the library.
+		var probe struct {
+			Retries int
+			Tagged  int `yaml:"custom"`
+		}
+		if err := yaml.Unmarshal([]byte("retries: 3\ncustom: 4\n"), &probe); err != nil {
+			t.Fatal(err)
+		}
+		if probe.Retries != 3 {
+			t.Errorf("yaml.v3 no longer lowercases untagged field names (Retries = %d); revisit the fallback in stepFieldIndexByYAMLKey", probe.Retries)
+		}
+		if probe.Tagged != 4 {
+			t.Errorf("tagged field = %d, want 4", probe.Tagged)
+		}
+	})
 }
 
 // TestParseFlowFile_WithoutIncludeUnchanged covers scenario "Flows

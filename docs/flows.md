@@ -290,14 +290,28 @@ Root-relative is what lets a shared flow in `.agents/flows/` and a team
 flow in `<team>/flows/` write the identical include line. Absolute paths
 are honoured as-is.
 
+A template's schema file may **not** itself be a bare `{"$ref": …}`:
+chained refs are rejected at load. Only one hop is resolved
+template-relative, so a second hop would silently resolve against the
+*flow's* directory instead — the opposite of the rule above.
+
 ### Limits
 
 - **Templates are leaves.** A template file may not itself declare
   `include`, and a template may not declare `extends`. One level deep, no
   cycles, no depth limit to reason about.
 - Only the `local:` include kind exists. A `remote:` or `project:` entry
-  is an error, not an ignored entry.
+  is an error, not an ignored entry, and so is an empty `local:` path.
 - `extends` naming a template no include provides is an error.
+- **A template must declare at least one key.** `.empty:` with no body is
+  an error, not a no-op — otherwise the extending step would inherit an
+  empty prompt and run empty (nothing requires a step to have a prompt).
+- **Only `.`-prefixed top-level keys are templates.** An undotted key in
+  an included file contributes nothing; `extends` naming it fails with the
+  available template names listed, which is how a forgotten `.` is found.
+- **Two includes defining the same template name: the last one wins**, and
+  it replaces the earlier definition wholly rather than filling gaps in
+  it. A WARN is logged.
 - The per-file size cap (`OPENCODE_MAX_FLOW_FILE_SIZE`, see [Flow File
   Size Limit](#flow-file-size-limit)) applies to **each** included file —
   `include` is not a way around it.
