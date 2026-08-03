@@ -19,6 +19,9 @@ var (
 	ErrInvalidPredicate     = errors.New("invalid predicate")
 	ErrInvalidMaxTurns      = errors.New("invalid maxTurns")
 	ErrInvalidMaxIterations = errors.New("invalid maxIterations")
+	ErrInvalidInclude       = errors.New("invalid flow include")
+	ErrInvalidTemplate      = errors.New("invalid step template")
+	ErrUnknownTemplate      = errors.New("unknown step template")
 )
 
 // Flow represents a discovered flow definition.
@@ -52,7 +55,16 @@ type FlowSpec struct {
 
 // Step defines a single step in the flow graph.
 type Step struct {
-	ID       string      `yaml:"id"`
+	ID string `yaml:"id"`
+	// Extends names step templates — `.`-prefixed top-level keys in a
+	// file listed under the flow's `include:` — whose keys seed this
+	// step. Templates apply in declaration order, later overriding
+	// earlier, and this step's own keys override all of them. Resolution
+	// happens at load time in parseFlowFile, before $ref resolution and
+	// before validateFlow, so a merged step is validated exactly as an
+	// inline one. See the flow-api spec "Flow files compose shared step
+	// definitions via include and extends".
+	Extends  []string    `yaml:"extends,omitempty"`
 	Agent    string      `yaml:"agent,omitempty"`
 	Session  StepSession `yaml:"session,omitempty"`
 	Prompt   string      `yaml:"prompt"`
@@ -61,8 +73,9 @@ type Step struct {
 	Fallback *Fallback   `yaml:"fallback,omitempty"`
 	// MaxTurns optionally overrides the agent's maxTurns for this step.
 	// 0 (unset) inherits the agent's configured maxTurns (which in turn
-	// falls back to the global default). When explicitly set in the YAML it
-	// must be >= 1 — enforced by validateFlow.
+	// falls back to the global default). validateFlow rejects only
+	// NEGATIVE values — an explicit 0 is legal and means "inherit from
+	// the agent", identical to omitting the key.
 	MaxTurns int `yaml:"maxTurns,omitempty"`
 	// MaxIterations caps the number of in-process self-loop iterations of
 	// this step. 0 (unset) means unbounded — capped only by flow timeout.

@@ -113,6 +113,9 @@ type flowFile struct {
 	Disabled    bool     `yaml:"disabled,omitempty"`
 	Description string   `yaml:"description"`
 	Flow        FlowSpec `yaml:"flow"`
+	// Include lists local files contributing reusable step templates.
+	// Resolved in parseFlowFile before $ref resolution and validation.
+	Include []IncludeEntry `yaml:"include,omitempty"`
 }
 
 // Get returns a flow by ID, or ErrFlowNotFound.
@@ -360,6 +363,19 @@ func parseFlowFile(path string) (*Flow, error) {
 
 	if err := validateFlowID(id); err != nil {
 		return nil, err
+	}
+
+	// Resolve `include:` / `extends:` BEFORE $ref resolution and before
+	// validateFlow: a merged step must be validated exactly as an inline
+	// one, so a template cannot smuggle an invalid step past validation.
+	// A template's own output-schema $ref is resolved inside
+	// resolveStepIncludes against the TEMPLATE file's directory; the loop
+	// below then finds no $ref key and ResolveSchemaRef returns the
+	// schema unchanged.
+	if len(ff.Include) > 0 || stepsDeclareExtends(ff.Flow.Steps) {
+		if err := resolveStepIncludes(path, ff.Include, ff.Flow.Steps, stepRawKeys(data)); err != nil {
+			return nil, fmt.Errorf("resolving includes for flow %q: %w", id, err)
+		}
 	}
 
 	// Resolve $ref in step output schemas
