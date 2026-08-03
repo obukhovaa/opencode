@@ -105,10 +105,17 @@ var stepFieldIndexByYAMLKey = sync.OnceValue(func() map[string]int {
 //   - unexported: reflect cannot Set it, so a template naming that key
 //     would panic (`reflect.Value.Set using value obtained using
 //     unexported field`) inside flow discovery, which nothing recovers.
-//   - `,inline` / embedded: yaml.v3 accepts the INNER fields' keys and
-//     ignores the outer field's name, so the derived name would be
-//     accepted by the key check, left zero by the decode, and then
-//     written over the step's own value — silent data loss.
+//   - `,inline`: yaml.v3 accepts the INNER fields' keys and ignores the
+//     outer field's name, so the derived name would pass the key check,
+//     be left zero by the decode, and then be written over the step's own
+//     value — silent data loss. This is the one shape that fails unsafely.
+//   - embedded without `,inline`: yaml.v3 DOES key this by the lowercased
+//     type name (verified, not assumed), so skipping it is deliberately
+//     broader than the decoder — such a field is declarable in a flow step
+//     but rejected in a template, which fails LOUDLY. Excluded because an
+//     embedded struct's keys belong to whatever owns it, and inheriting
+//     half of one is not a thing a template author can reason about. If
+//     Step ever needs one, decide then; the invariant test will say so.
 //
 // The untagged-exported fallback to the lowercased field name is likewise
 // yaml.v3's rule; without it such a field decodes fine inline yet is

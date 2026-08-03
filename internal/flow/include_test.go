@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1364,7 +1365,21 @@ func TestStepFieldIndexByYAMLKey_MirrorsDecoder(t *testing.T) {
 				}
 				continue
 			}
-			if strings.Split(field.Tag.Get("yaml"), ",")[0] == "-" {
+			parts := strings.Split(field.Tag.Get("yaml"), ",")
+			if parts[0] == "-" {
+				continue
+			}
+			// Mirror the derivation's own skips, or this invariant
+			// contradicts them: adding a legitimate `,inline` field to
+			// Step would fail HERE with the wrong reason. An inline
+			// field's inner keys are what an author declares; the outer
+			// field name is not a key at all (yaml.v3 inlines it), and an
+			// anonymous field without `,inline` IS keyed by its lowercased
+			// type name but is skipped deliberately — see yamlFieldIndexes.
+			if slices.Contains(parts[1:], "inline") || field.Anonymous {
+				if key, mapped := byIndex[i]; mapped {
+					t.Errorf("inline/embedded field %q is mapped to key %q; the merge would zero it", field.Name, key)
+				}
 				continue
 			}
 			if _, mapped := byIndex[i]; !mapped {
