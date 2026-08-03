@@ -241,80 +241,49 @@ flow:
 
 ### Which keys a template may declare
 
-Two-part rule:
+A key must be a **known step field** — a `promt:` typo is a load error listing
+the real fields — **and** must not be one of `id`, `interactive`,
+`interaction`, `resume_after`. Everything else is inheritable, including step
+fields added later; there is no list to maintain.
 
-1. the key must be a **known step field** — a `promt:` typo is a load
-   error listing the real fields, not a silently ignored line;
-2. **and** it must not be one of `id`, `interactive`, `interaction`,
-   `resume_after` — each of those is a load error naming the key and the
-   reason.
-
-Everything else a step supports is inheritable, **including step fields
-added to the engine after this was written** — there is no curated list of
-inheritable keys to keep up to date.
-
-The reason is not style, and it is not inferable from this repo alone:
-**the flow file has a second parser.** The Piano `c2-agent` orchestrator
-reads the same YAML with its own structs — to build the task card, decide
-reviewer-argument enrichment, and compute postpone-resume timing — and it
-never resolves templates. A key it reads must therefore stay in the flow
-file where it can see it:
+Those four are excluded because a flow file may have a **second,
+independently released parser** that reads it without resolving templates. A
+key such a reader consumes must stay in the flow file where it can see it:
 
 | Key | What breaks if inherited |
 |-----|--------------------------|
-| `id` | Two flows extending the template collide, and the flow file no longer shows which steps it has |
-| `interactive` | The orchestrator sees a non-interactive step, skips reviewer binding, and the job runs with nobody bound to answer |
-| `interaction` | Same as `interactive` — the binding target is never resolved |
-| `resume_after` | Read by the orchestrator only, not modelled by this engine at all, so it would be silently dropped |
+| `id` | Two flows extending the template collide, and the flow no longer shows which steps it has |
+| `interactive` / `interaction` | The reader sees a non-interactive step and the job runs with nobody bound to answer |
+| `resume_after` | A reader computing a postpone deadline sees no opt-in, so the step waits indefinitely |
 
-`agent` and `prompt` *are* inheritable but do appear in the orchestrator's
-struct and are re-emitted verbatim by its `GET /api/v1/workspaces` and
-`list_workspaces` surfaces — those will report an empty `prompt` for a
-step that inherits one. No orchestrator logic reads them, so inheriting is
-safe; the reporting degradation is known and accepted.
-
-The rule applies to **top-level** step keys only. A nested field (say a
-future `session:` sub-key) that the orchestrator starts reading would ride
-in inside an inheritable key — a known limitation, not something the
-loader checks.
+Top-level keys only: a nested field a second reader consumes would ride in
+inside an inheritable key.
 
 ### Path resolution — note the asymmetry
 
-`include: local:` paths are **root-relative**: resolved against the
-working directory (`/workspace` in the Piano agent pod), *not* against the
-including file's directory. An `output.schema` `$ref` stays **relative to
-the file that declares it** — so a `$ref` inside a template resolves
-against the template file's directory. GitLab CI has the same split.
+`include: local:` is **root-relative** — resolved against the working
+directory, not the including file — so flows at different depths share one
+include line. Absolute paths are honoured as-is.
 
-Root-relative is what lets a shared flow in `.agents/flows/` and a team
-flow in `<team>/flows/` write the identical include line. Absolute paths
-are honoured as-is.
-
-A template's schema file may **not** itself be a bare `{"$ref": …}`:
-chained refs are rejected at load. Only one hop is resolved
-template-relative, so a second hop would silently resolve against the
-*flow's* directory instead — the opposite of the rule above.
+An `output.schema` `$ref` stays relative to the file declaring it, so a `$ref`
+inside a template resolves next to the template. GitLab CI has the same split.
+Chained refs are rejected: only one hop is template-relative, so a second would
+silently resolve against the flow's directory.
 
 ### Limits
 
-- **Templates are leaves.** A template file may not itself declare
-  `include`, and a template may not declare `extends`. One level deep, no
-  cycles, no depth limit to reason about.
-- Only the `local:` include kind exists. A `remote:` or `project:` entry
-  is an error, not an ignored entry, and so is an empty `local:` path.
-- `extends` naming a template no include provides is an error.
-- **A template must declare at least one key.** `.empty:` with no body is
-  an error, not a no-op — otherwise the extending step would inherit an
-  empty prompt and run empty (nothing requires a step to have a prompt).
-- **Only `.`-prefixed top-level keys are templates.** An undotted key in
-  an included file contributes nothing; `extends` naming it fails with the
-  available template names listed, which is how a forgotten `.` is found.
-- **Two includes defining the same template name: the last one wins**, and
-  it replaces the earlier definition wholly rather than filling gaps in
-  it. A WARN is logged.
-- The per-file size cap (`OPENCODE_MAX_FLOW_FILE_SIZE`, see [Flow File
-  Size Limit](#flow-file-size-limit)) applies to **each** included file —
-  `include` is not a way around it.
+- **Templates are leaves** — no `include` in a template file, no `extends` in a
+  template. One level, no cycles.
+- Only `local:` exists. `remote:`, `project:` and an empty `local:` are errors,
+  not ignored entries.
+- `extends` naming an unprovided template is an error listing the available
+  names — how a forgotten `.` prefix is found.
+- **A template must declare at least one key**, or the extending step inherits
+  an empty prompt and runs empty.
+- Only `.`-prefixed top-level keys are templates.
+- **Same name from two includes: the last wins**, replacing the earlier wholly.
+- The per-file size cap ([Flow File Size Limit](#flow-file-size-limit)) applies
+  to **each** included file.
 
 ### How failures surface
 
