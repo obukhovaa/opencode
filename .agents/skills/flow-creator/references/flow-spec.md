@@ -15,6 +15,7 @@ Flow ID is derived from the filename without extension. Both `.yaml` and `.yml` 
 name: string        # display name (optional)
 disabled: bool      # if true, flow cannot be executed (optional)
 description: string # description of the flow (optional)
+include: array      # local files contributing reusable step templates (see Shared Step Templates) (optional)
 flow:               # flow specification (required)
   args: object      # JSON Schema for expected arguments (optional)
   session:          # session configuration (optional, see Session Management)
@@ -27,6 +28,7 @@ flow:               # flow specification (required)
 
 ```yaml
 - id: string             # unique, kebab-case, max 64 chars (required)
+  extends: array         # step-template names (".name") whose keys seed this step (see Shared Step Templates) (optional)
   agent: string          # agent ID, defaults to "coder" (optional)
   session:
     fork: bool           # copy message history from previous step, same agent only (optional)
@@ -120,6 +122,66 @@ fallback:
   delay: 10     # seconds between retries (int)
   to: step-id   # step to route to after all retries fail (string)
 ```
+
+## Shared Step Templates (`include` / `extends`)
+
+A step reused across several flows can live in one file instead of being copy-pasted, GitLab-CI style: the flow lists template files under a top-level `include:`, and a step pulls one or more templates in via `extends:`. Templates are **hidden top-level keys** — names starting with `.` — in the included file.
+
+```yaml
+# .agents/flows/review.yaml
+include:
+  - local: .agents/steps/resolve-context.yaml
+flow:
+  steps:
+    - id: resolve-context
+      extends: [".resolve-context"]   # seed this step from the template
+      maxTurns: 20                     # the step's own key wins over the template
+```
+
+```yaml
+# .agents/steps/resolve-context.yaml — templates are `.`-prefixed keys
+.resolve-context:
+  agent: coder
+  maxTurns: 15
+  prompt: |
+    Resolve the working context before doing any work.
+```
+
+### Merge semantics
+
+- **Shallow, per top-level step key.** A key present on the step replaces the template's value **wholly** — `output`, `rules`, and `fallback` included. There is no deep merge: a step's `output.schema` replaces the template's, it does not merge into it.
+- **Order.** Templates apply left to right (`extends: [".base", ".override"]` → `.override` wins), then the step's own keys override all of them.
+- **An explicit zero counts as a value.** `maxTurns: 0`, `timeout: ""`, `agent: ""`, and `session: {fork: false}` on the step override the template; only an *absent* key inherits.
+- **Resolution runs at load time**, before output-schema `$ref` resolution and before validation — so a merged step is validated exactly as an inline one (kebab-case IDs, duplicate IDs, rule targets naming a real step, non-negative `maxTurns`).
+
+### Which keys a template may declare
+
+A key must be a **known step field** — a `promt:` typo is a load error listing the real fields — **and** must not be one of `id`, `interactive`, `interaction`, `resume_after`. Everything else is inheritable, including step fields added later; there is no allow-list to maintain.
+
+Those four are excluded because the flow file may be read by a **second, independently-released parser** (an external orchestrator) that never resolves templates. A key that reader consumes must stay in the flow file itself:
+
+| Key | Why it can't be inherited |
+|-----|---------------------------|
+| `id` | Two flows extending one template would collide, and the flow would no longer show which steps it has |
+| `interactive` / `interaction` | The reader sees a non-interactive step and starts a job with nobody bound to answer |
+| `resume_after` | A reader computing a postpone-resume deadline sees no opt-in, so a postponed step waits indefinitely |
+
+The rule is top-level only: a *nested* field a second reader consumes (e.g. a future `session:` sub-key) would ride in inside an inheritable key.
+
+### Path resolution — note the asymmetry
+
+`include: local:` paths are **root-relative** — resolved against the working directory, not the including file — so flows at different depths share one include line. Absolute paths are honoured as-is. An `output.schema` `$ref` inside a template stays relative to the **template** file. Chained `$ref`s are rejected (only one hop is template-relative; a second would silently resolve against the flow's directory).
+
+### Limits
+
+- **Templates are leaves** — no `include` in a template file, no `extends` in a template. One level, no cycles.
+- Only `local:` includes exist; `remote:` / `project:` / an empty `local:` are errors, not ignored entries.
+- `extends` naming a template no include provides is an error listing the available names — this is how a forgotten `.` prefix is found.
+- **A template must declare at least one key**, or the extending step inherits an empty prompt and runs empty.
+- **Same template name from two includes: the last wins** (replacing the earlier wholly).
+- The per-file size cap (`OPENCODE_MAX_FLOW_FILE_SIZE`) applies to **each** included file — `include` is not a way around it.
+
+Every error above is raised at flow load; the registry logs it at `WARN` and **skips the flow**, so the symptom is a *missing* flow (`flow not found` when triggered), not a stopped one. The WARN line names the file, template, and offending key.
 
 ## Template Substitution
 
