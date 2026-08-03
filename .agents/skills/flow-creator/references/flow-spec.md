@@ -37,6 +37,7 @@ flow:               # flow specification (required)
   fallback: object       # retry and error routing (optional)
   maxTurns: int          # per-step override for agent's maxTurns. 0 (unset) inherits from agent. (optional)
   maxIterations: int     # cap on in-process self-loop iterations. 0 (unset) is unbounded — only flow timeout applies. (optional)
+  resume_after: string   # Go duration (e.g. "15m", "1h"). Opts a postponed step into timed auto-resume, and parks (not fails) the step on a transient provider error. See `resume_after` below. (optional)
   interactive: bool      # if true, the step is human-in-the-loop via the chat bridge — see Interactive Steps. (optional)
   interaction:           # required when interactive: true; ignored otherwise
     target: string       # ${args.NAME} expression resolving to a PeerRef or []PeerRef
@@ -215,6 +216,12 @@ Both modes reuse the same step session, so the agent has memory of prior iterati
 Cap unconditional self-loops with `maxIterations` — if the agent's termination predicate has a bug, an uncapped loop burns through the flow timeout. When the cap trips, the step fails (and its `fallback`, if any, runs).
 
 Cap semantics: counts **in-process** iterations only — a `postpone: true` self-route does not bump the counter, so a postpone loop is not bounded by `maxIterations` (bound those externally). The cap is a **post-step check** — with `maxIterations: N`, exactly N agent calls happen before the step fails.
+
+### `resume_after` — timed auto-resume, incl. on transient provider errors
+
+A step-level `resume_after: "<duration>"` (e.g. `"15m"`, `"1h"`) opts a **postponed** step into timed auto-resume: the orchestrator's postpone sweep re-enters the parked step after the delay (clamped to `POSTPONE_RESUME_MAX_TIMEOUT`; its resume-chain loop-breaker bounds a persistently-stuck resume), instead of waiting for a webhook / manual re-trigger.
+
+Declaring `resume_after` ALSO opts the step into **postpone-and-auto-resume on a transient provider error**: when a step's agent run fails with a rate limit (HTTP 429), an overloaded/5xx upstream, or an HTTP/2 stream reset the provider already exhausted its in-call retries on, the runtime parks the step as `postponed` (not `failed`, and no `fallback` routing) so it retries later when the endpoint recovers. Steps **without** `resume_after` keep such failures terminal (they route to `fallback.to`). Do NOT set `resume_after` on must-run-now steps (e.g. a salvage/safety-net step that pushes local WIP before the workspace is torn down) — a resume runs in a fresh workspace where that local state is gone.
 
 ```yaml
 - id: build-level
