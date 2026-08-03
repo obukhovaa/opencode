@@ -592,6 +592,115 @@ flow:
 	}
 }
 
+// TestParseFlowFile_RawStepAlignmentIsVerified pins the fail-closed guard
+// on the two parses' element count. yaml.v3 DROPS a null / comment-only
+// sequence entry from the typed `[]Step` decode but KEEPS it as an empty
+// map in the raw decode, so without the guard the real step is paired with
+// the empty key set, read as declaring nothing, and has its own `agent`
+// overwritten by the template's — a guard step silently running an agent
+// its flow does not name. validateFlow cannot catch it: the dropped entry
+// is absent from the typed tree.
+//
+// If the guard in stepsRawKeysAligned is removed, this test fails.
+func TestParseFlowFile_RawStepAlignmentIsVerified(t *testing.T) {
+	root := t.TempDir()
+	setIncludeWorkspace(t, root)
+	writeIncludeFile(t, filepath.Join(root, "steps", "base.yaml"), ".base:\n  agent: template-agent\n  prompt: p\n")
+
+	cases := []struct {
+		name string
+		flow string
+	}{
+		{"comment-only entry", `name: X
+description: d
+include:
+  - local: steps/base.yaml
+flow:
+  steps:
+    - # placeholder
+    - id: main
+      agent: mine
+      extends: [".base"]
+`},
+		{"explicit null entry", `name: X
+description: d
+include:
+  - local: steps/base.yaml
+flow:
+  steps:
+    - null
+    - id: main
+      agent: mine
+      extends: [".base"]
+`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			flowPath := writeIncludeFile(t, filepath.Join(root, "flows", "x.yaml"), tc.flow)
+			f, err := parseFlowFile(flowPath)
+			if err == nil {
+				// Fail closed is the specified contract, but if a future
+				// change makes the parses agree instead, the step's own
+				// agent MUST still win — never the template's.
+				if got := stepByID(t, f, "main").Agent; got != "mine" {
+					t.Fatalf("flow loaded with Agent = %q; the step's own `agent: mine` must never be overwritten by the template", got)
+				}
+				t.Fatal("expected the flow to fail loading: the typed and raw step counts disagree, so per-step declared keys cannot be recovered")
+			}
+			if !errors.Is(err, ErrInvalidInclude) {
+				t.Errorf("error = %v, want ErrInvalidInclude", err)
+			}
+			for _, part := range []string{"raw", "steps", "2", "1"} {
+				if !strings.Contains(err.Error(), part) {
+					t.Errorf("error %v does not mention %q (the counts and what to fix)", err, part)
+				}
+			}
+		})
+	}
+
+	t.Run("stepRawKeys reports a parse failure instead of returning nil", func(t *testing.T) {
+		// nil would be indistinguishable from "no step declared any key",
+		// which would let templates overwrite every step at once.
+		if _, err := stepRawKeys([]byte("flow:\n  steps: not-a-sequence\n")); err == nil {
+			t.Error("stepRawKeys() on an unparseable flow.steps returned nil error")
+		}
+		if _, err := stepRawKeys([]byte("flow:\n  steps:\n    - id: main\n")); err != nil {
+			t.Errorf("stepRawKeys() on a valid flow: %v", err)
+		}
+	})
+
+	t.Run("shapes that do NOT diverge still load", func(t *testing.T) {
+		// Probed alongside the null-entry case: anchors + aliases, a merge
+		// key (whose merged-in keys appear in BOTH decodes, so an
+		// anchor-supplied `agent` counts as declared by the step), and a
+		// multi-document file (both decodes take the first document).
+		writeIncludeFile(t, filepath.Join(root, "steps", "base.yaml"), ".base:\n  agent: template-agent\n  prompt: p\n")
+		anchors := writeIncludeFile(t, filepath.Join(root, "flows", "anchors.yaml"), `name: X
+description: d
+include:
+  - local: steps/base.yaml
+defaults:
+  common: &common
+    agent: anchor-agent
+flow:
+  steps:
+    - id: main
+      extends: [".base"]
+      <<: *common
+    - id: other
+      prompt: o
+`)
+		f, err := parseFlowFile(anchors)
+		if err != nil {
+			t.Fatalf("anchors / merge key must still load: %v", err)
+		}
+		if got := stepByID(t, f, "main").Agent; got != "anchor-agent" {
+			t.Errorf("Agent = %q, want anchor-agent — a merge-key-supplied key counts as declared by the step", got)
+		}
+	})
+}
+
 // TestParseFlowFile_IncludeAndExtendsErrors covers scenarios "An unknown
 // template name is an error", "A template may not nest composition" and
 // the unsupported-include-kind requirement (task 2.7). Each failure mode
@@ -648,6 +757,10 @@ flow:
 			wantParts: []string{"remote", "local"},
 		},
 		{
+			// A GitLab-style project include carries `file:` alongside
+			// `project:`. EVERY unsupported key must be reported — naming
+			// only the first one encountered points the author at `file:`
+			// and hides the actual mistake.
 			name:     "project include kind",
 			template: ".present:\n  prompt: p\n",
 			flow: `name: X
@@ -661,7 +774,26 @@ flow:
       extends: [".present"]
 `,
 			wantErr:   ErrInvalidYAML,
-			wantParts: []string{"local"},
+			wantParts: []string{"project", "file", "local"},
+		},
+		{
+			// `local:` present but joined by an unsupported sibling: the
+			// entry is still rejected, and the message names the sibling
+			// rather than silently honouring the local path.
+			name:     "local with an unsupported sibling key",
+			template: ".present:\n  prompt: p\n",
+			flow: `name: X
+description: d
+include:
+  - local: steps/t.yaml
+    ref: main
+flow:
+  steps:
+    - id: main
+      extends: [".present"]
+`,
+			wantErr:   ErrInvalidYAML,
+			wantParts: []string{"ref", "local"},
 		},
 		{
 			name:     "template file declares include",

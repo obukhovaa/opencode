@@ -43,11 +43,19 @@ func (e *IncludeEntry) UnmarshalYAML(node *yaml.Node) error {
 	if err := node.Decode(&raw); err != nil {
 		return fmt.Errorf("include entry must be a mapping with a %q key (got %v)", "local", err)
 	}
-	keys := sortedKeys(raw)
-	for _, k := range keys {
+	// Report EVERY non-local key, not the first one encountered: a
+	// GitLab-style `project:` include carries a `file:` alongside it, and
+	// naming only one of them points the author at the wrong line (
+	// `unsupported include kind "file"` for a `project:` entry).
+	var unsupported []string
+	for _, k := range sortedKeys(raw) {
 		if k != "local" {
-			return fmt.Errorf("unsupported include kind %q: only %q includes are supported", k, "local")
+			unsupported = append(unsupported, fmt.Sprintf("%q", k))
 		}
+	}
+	if len(unsupported) > 0 {
+		return fmt.Errorf("unsupported include %s %s: only %q includes are supported",
+			pluralise(len(unsupported), "kind", "kinds"), strings.Join(unsupported, ", "), "local")
 	}
 	local := strings.TrimSpace(raw["local"])
 	if local == "" {
@@ -143,9 +151,16 @@ var nonInheritableStepKeys = map[string]string{
 // validateFlow, so a merged step is validated exactly as an inline one
 // and a template cannot smuggle a step shape past validation (design D3).
 //
-// rawSteps carries each step's RAW declared keys, positionally aligned
-// with steps; see stepRawKeys for why a second parse is needed.
-func resolveStepIncludes(flowPath string, includes []IncludeEntry, steps []Step, rawSteps []map[string]struct{}) error {
+// data is the flow file's original bytes, re-parsed here to recover each
+// step's RAW declared keys; see stepRawKeys for why that second parse is
+// needed and stepsRawKeysAligned for why its element count is verified
+// rather than trusted.
+func resolveStepIncludes(flowPath string, includes []IncludeEntry, steps []Step, data []byte) error {
+	rawSteps, err := stepsRawKeysAligned(steps, data)
+	if err != nil {
+		return err
+	}
+
 	templates := map[string]*stepTemplate{}
 	for _, entry := range includes {
 		file := resolveIncludePath(entry.Local)
@@ -175,11 +190,12 @@ func resolveStepIncludes(flowPath string, includes []IncludeEntry, steps []Step,
 			}
 			applied = append(applied, tmpl)
 		}
-		var declared map[string]struct{}
-		if i < len(rawSteps) {
-			declared = rawSteps[i]
-		}
-		mergeTemplates(&steps[i], declared, applied)
+		// Indexed without a bounds check on purpose: alignment is
+		// guaranteed by stepsRawKeysAligned above, and a length check
+		// HERE would silently substitute an empty key set — which reads
+		// as "the step declared nothing" and inverts override
+		// precedence, letting a template overwrite a key the step set.
+		mergeTemplates(&steps[i], rawSteps[i], applied)
 	}
 	return nil
 }
@@ -372,16 +388,19 @@ func resolveIncludePath(local string) string {
 // are unreachable from it — so the merge would still happen here. A
 // second parse of the same bytes is the established pattern in this file:
 // validateFlowSessionKeys already does it.
-func stepRawKeys(data []byte) []map[string]struct{} {
+//
+// A failure to parse is returned, NOT swallowed into a nil slice: nil is
+// indistinguishable from "no step declared any key", which would let
+// every template overwrite every step's own values at once.
+func stepRawKeys(data []byte) ([]map[string]struct{}, error) {
 	var raw struct {
 		Flow struct {
 			Steps []map[string]yaml.Node `yaml:"steps"`
 		} `yaml:"flow"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		// Structural errors are surfaced by the typed decode in
-		// parseFlowFile; nothing to add here.
-		return nil
+		return nil, fmt.Errorf("%w: cannot re-parse flow.steps to recover per-step declared keys: %v",
+			ErrInvalidInclude, err)
 	}
 	result := make([]map[string]struct{}, len(raw.Flow.Steps))
 	for i, step := range raw.Flow.Steps {
@@ -391,7 +410,46 @@ func stepRawKeys(data []byte) []map[string]struct{} {
 		}
 		result[i] = keys
 	}
-	return result
+	return result, nil
+}
+
+// stepsRawKeysAligned returns the per-step raw key sets, verifying they
+// are positionally aligned with the typed steps.
+//
+// The check is not defensive padding — the two decodes genuinely disagree
+// on element count for one real shape. yaml.v3 DROPS a null / comment-only
+// sequence entry when decoding into `[]Step`, but keeps it as an empty map
+// when decoding into `[]map[string]yaml.Node`:
+//
+//	flow:
+//	  steps:
+//	    - # placeholder
+//	    - id: main
+//	      agent: mine
+//	      extends: [".base"]
+//
+// gives len(steps) == 1 and len(rawSteps) == 2, so `main` would be paired
+// with the empty key set, read as declaring nothing, and have its own
+// `agent: mine` overwritten by the template's — a guard step silently
+// running an agent its flow does not name. validateFlow cannot catch it
+// because the dropped entry is absent from the typed tree.
+//
+// Probed and found NOT to diverge: anchors and aliases, a merge key
+// (`<<:`, whose merged-in keys appear in both decodes), a multi-document
+// file (both take the first document), an empty-map entry (`- {}`, kept by
+// both), and a non-sequence `steps:` (both fail, and the typed decode in
+// parseFlowFile reports it first). This guard covers any future divergence
+// regardless.
+func stepsRawKeysAligned(steps []Step, data []byte) ([]map[string]struct{}, error) {
+	rawSteps, err := stepRawKeys(data)
+	if err != nil {
+		return nil, err
+	}
+	if len(rawSteps) != len(steps) {
+		return nil, fmt.Errorf("%w: cannot recover per-step declared keys (%d raw vs %d steps); "+
+			"remove empty entries from flow.steps", ErrInvalidInclude, len(rawSteps), len(steps))
+	}
+	return rawSteps, nil
 }
 
 // stepsDeclareExtends reports whether any step declares `extends:`. A
@@ -411,6 +469,13 @@ func availableTemplates(templates map[string]*stepTemplate) string {
 		return "none — the flow declares no include, or its includes define no `.`-prefixed template"
 	}
 	return strings.Join(sortedKeys(templates), ", ")
+}
+
+func pluralise(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
 }
 
 // sortedKeys returns a map's keys in sorted order so error messages are

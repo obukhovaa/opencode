@@ -373,7 +373,7 @@ func parseFlowFile(path string) (*Flow, error) {
 	// below then finds no $ref key and ResolveSchemaRef returns the
 	// schema unchanged.
 	if len(ff.Include) > 0 || stepsDeclareExtends(ff.Flow.Steps) {
-		if err := resolveStepIncludes(path, ff.Include, ff.Flow.Steps, stepRawKeys(data)); err != nil {
+		if err := resolveStepIncludes(path, ff.Include, ff.Flow.Steps, data); err != nil {
 			return nil, fmt.Errorf("resolving includes for flow %q: %w", id, err)
 		}
 	}
