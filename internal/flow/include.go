@@ -174,7 +174,7 @@ var nonInheritableStepKeys = map[string]string{
 	"id":           "a step's identity must stay in the flow (two flows extending one template would collide, and the flow file would no longer show which steps it has)",
 	"interactive":  "the orchestrator reads it to bind a reviewer; a template would leave it seeing a non-interactive step and start a job with nobody bound to answer",
 	"interaction":  "the orchestrator reads it to bind a reviewer; a template would leave it seeing a non-interactive step and start a job with nobody bound to answer",
-	"resume_after": "it is read by the orchestrator only and is not modelled by the flow engine at all, so a template would silently drop it",
+	"resume_after": "the orchestrator reads it to compute a postpone-resume deadline; a template would leave it seeing no opt-in, so a postponed step waits indefinitely or resumes on the wrong bound",
 }
 
 // resolveStepIncludes reads the flow's `include:` entries, decodes their

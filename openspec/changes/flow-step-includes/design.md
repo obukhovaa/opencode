@@ -16,9 +16,11 @@ orchestrator (`c2-agent`) parses the same file with its own Go structs to build
 the Slack task card, decide reviewer-argument enrichment, and compute
 postpone-resume timing. They are separate programs — opencode is cloned at a
 pinned tag and compiled into the agent image, not imported as a module — and they
-model *different subsets* of the schema. `resume_after` is read by the
-orchestrator and **is not modelled in opencode at all**; unknown keys are silently
-dropped by both.
+model *different subsets* of the schema. The two model *different subsets*, and the boundary moves:
+when this change was designed `resume_after` existed only in the orchestrator's struct,
+and `v0.13.19` has since added it to the engine's — so a key can be one program's alone
+today and shared tomorrow. Unknown keys are silently dropped by both, which is why the
+divergence is invisible.
 
 So a step field is not simply "a field": it may be one nobody but the orchestrator
 reads, in a file only opencode will resolve includes for.
@@ -159,6 +161,13 @@ degrading and belongs in the record rather than being discovered later.
 a new field stays non-inheritable until admitted. That paragraph is withdrawn: it
 described the shape this decision replaced, and it survived into a later draft where it
 contradicted the paragraphs above it.)*
+
+**A key can stop being one program's alone.** `v0.13.19` added `resume_after` to the
+engine's `Step` while this change was in review, so the "only the orchestrator reads it"
+half of its rationale expired — but the decision did not: the orchestrator still reads it
+and still never resolves templates, so it stays rejected. Worth noting because it shows
+the rejected set is justified by *who reads a key*, not by which struct models it, and
+the reasons in `nonInheritableStepKeys` have to be maintained on that basis.
 
 *Alternative rejected:* implement the resolver in the orchestrator too. It would
 mean two implementations of a merge algorithm, in two independently released

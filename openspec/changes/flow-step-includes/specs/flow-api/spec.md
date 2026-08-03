@@ -36,8 +36,9 @@ The reason is that the flow file is also parsed by the orchestrator — a separa
 program that never resolves templates and reads a different subset of the schema.
 `id` identifies the step in its task card and its postpone matching; `interactive`
 and `interaction` decide reviewer-argument enrichment, so a template setting them
-yields a job with nobody bound to answer; `resume_after` is read by the orchestrator
-and is not modelled by the engine at all. Any key added to the flow schema later is
+yields a job with nobody bound to answer; `resume_after` is read by the orchestrator to
+compute a postpone-resume deadline, so a template setting it leaves the orchestrator
+seeing no opt-in. Any key added to the flow schema later is
 inheritable by default, and this list grows only when a specific key is shown to be
 read by a second consumer.
 
