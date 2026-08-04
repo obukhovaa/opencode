@@ -36,3 +36,30 @@ Because the Anthropic Messages API rejects a forced `tool_choice` while extended
 - **THEN** the request MUST omit `thinking` and `OutputConfig`
 - **AND** MUST set the forced `tool_choice`
 
+### Requirement: Agent loop forces struct_output on the max-turns wrap-up for schema-bearing runs
+
+When the agentic loop reaches its max-turns limit and the run's tool set includes the `struct_output` tool (i.e. a schema-bearing step), the final wrap-up turn MUST force `tool_choice=struct_output` via the forced-tool-choice mechanism and MUST capture the resulting `struct_output` as the run's output. The runtime MUST NOT discard a `struct_output` tool call produced on this turn, and MUST NOT instead request a free-text summary for such a run.
+
+A run whose tool set does NOT include `struct_output` (a plain, no-schema step) keeps the existing behavior: a text wrap-up turn whose stray tool calls are discarded.
+
+If the forced wrap-up turn errors, or yields no non-error `struct_output`, the loop MUST fall back to returning whatever `struct_output` was captured on an earlier turn (possibly none), without a hard failure — the flow layer's own guard then applies.
+
+#### Scenario: Schema-bearing run at max turns forces and captures struct_output
+
+- **WHEN** the agentic loop reaches max turns on a run whose tool set includes `struct_output`, and the model never called `struct_output` on a normal turn
+- **THEN** the final wrap-up turn MUST be issued with `struct_output` forced via `tool_choice`
+- **AND** a non-error `struct_output` returned on that turn MUST be captured as the run's structured output
+- **AND** that `struct_output` tool call MUST NOT be discarded
+
+#### Scenario: Plain run at max turns still gets a text wrap-up
+
+- **WHEN** the agentic loop reaches max turns on a run whose tool set does NOT include `struct_output`
+- **THEN** the final wrap-up turn MUST request a free-text final response
+- **AND** any tool call the model makes on that turn MUST be discarded
+
+#### Scenario: Forced wrap-up turn yields nothing usable
+
+- **WHEN** the forced max-turns wrap-up turn errors or returns no non-error `struct_output`
+- **THEN** the loop MUST NOT hard-fail on that basis
+- **AND** MUST return whatever `struct_output` (if any) was captured on an earlier turn
+

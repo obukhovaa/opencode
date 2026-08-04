@@ -1022,6 +1022,13 @@ func forcedTool(ctx context.Context) string {
 	return name
 }
 
+// ForcedTool reports the forced-tool name carried on ctx (set by
+// WithForcedTool), or "" when none is set. Exported so callers and tests
+// outside this package can observe the forced-tool signal.
+func ForcedTool(ctx context.Context) string {
+	return forcedTool(ctx)
+}
+
 func WithVertexAI(projectID, localtion string, localForCounting string) AnthropicOption {
 	return func(options *anthropicOptions) {
 		options.useVertex = true

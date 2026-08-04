@@ -878,12 +878,22 @@ OuterLoop:
 			// Ensure we don't run into API limitation (max_token to be generated + current tokens count)
 			a.provider.AdjustMaxTokens(etaTokens)
 
-			// Check max turns — give the model one final turn to wrap up
+			// Check max turns — give the model one final turn to wrap up.
 			if cycles > effectiveMaxTurns {
 				logging.Warn("Max turns reached, requesting final response", "turns", cycles-1, "max", effectiveMaxTurns, "session_id", sessionID)
-				maxTurnsPrompt, promptErr := AgentPrompts.ReadFile("prompts/max_turns.md")
+				// A schema-bearing run (struct_output tool present) MUST end
+				// with struct_output, not prose: force tool_choice=struct_output
+				// on the wrap-up turn and CAPTURE it, instead of asking for a
+				// text summary and discarding the struct_output the model makes.
+				// A plain run keeps the free-text wrap-up.
+				forceStruct := hasStructOutputTool(toolSet)
+				wrapUpPromptFile := "prompts/max_turns.md"
+				if forceStruct {
+					wrapUpPromptFile = "prompts/max_turns_struct_output.md"
+				}
+				maxTurnsPrompt, promptErr := AgentPrompts.ReadFile(wrapUpPromptFile)
 				if promptErr != nil {
-					logging.Warn("Failed to load max_turns prompt", "error", promptErr)
+					logging.Warn("Failed to load max_turns prompt", "error", promptErr, "file", wrapUpPromptFile)
 					return AgentEvent{
 						Type:         AgentEventTypeResponse,
 						Message:      agentMessage,
@@ -905,8 +915,15 @@ OuterLoop:
 					}
 				}
 				msgHistory = append(msgHistory, wrapUpMsg)
-				// Pass full toolSet to preserve the cache prefix, but discard any tool calls the model makes
-				finalMsg, _, finalErr := a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
+				// Pass full toolSet to preserve the cache prefix. For a schema
+				// run, force struct_output on this turn (rides genCtx into the
+				// provider, which also disables thinking); for a plain run keep
+				// the default tool choice and discard any tool calls below.
+				finalCtx := ctx
+				if forceStruct {
+					finalCtx = provider.WithForcedTool(ctx, tools.StructOutputToolName)
+				}
+				finalMsg, finalToolResults, finalErr := a.streamAndHandleEvents(finalCtx, sessionID, msgHistory, toolSet, tracker)
 				if finalErr != nil {
 					logging.Warn("Failed to get final response after max turns", "error", finalErr)
 					return AgentEvent{
@@ -916,8 +933,31 @@ OuterLoop:
 						Done:         true,
 					}
 				}
-				// If the model ignored the instruction and made tool calls, discard them —
-				// we only want the text content as the final response
+				if forceStruct {
+					// Capture the forced struct_output as the run's output.
+					// finalToolResults is nil when the forced turn made no tool
+					// call (a provider that ignores forced tool_choice, or an
+					// end_turn text reply) — capturing a nil message would
+					// panic, so guard on it. On that graceful-degradation path
+					// we keep whatever struct_output was captured earlier and
+					// let the flow layer's own guard retry.
+					if finalToolResults != nil {
+						structOutput, structOutputIsErr = captureStructOutput(finalToolResults, structOutput, structOutputIsErr)
+					}
+					var finalStruct *message.ToolResult
+					if structOutput != nil && !structOutputIsErr {
+						finalStruct = structOutput
+					}
+					finalResult = AgentEvent{
+						Type:         AgentEventTypeResponse,
+						Message:      finalMsg,
+						StructOutput: finalStruct,
+						Done:         true,
+					}
+					break OuterLoop
+				}
+				// Plain run: if the model ignored the instruction and made tool
+				// calls, discard them — we only want the text content.
 				if finalMsg.FinishReason() == message.FinishReasonToolUse {
 					logging.Warn("Model made tool calls after max turns wrap-up, discarding them", "session_id", sessionID)
 					a.createErrorToolResults(finalMsg)
@@ -1235,7 +1275,14 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 			continue
 		}
 
-		if tracker.Track(toolCall.Name, toolCall.Input) {
+		// The forced tool (struct_output on a forcing wrap-up turn) is the run's
+		// guaranteed terminal action: never let loop detection block it, even if
+		// the model re-emitted byte-identical input across the preceding turns
+		// (exactly the struggling-model case the forcing exists to rescue). The
+		// wrap-up turn breaks the loop right after, so skipping streak
+		// bookkeeping for the forced tool is harmless. Also covers the whole-run
+		// ForceStructOutput path (RunWith).
+		if provider.ForcedTool(ctx) != toolCall.Name && tracker.Track(toolCall.Name, toolCall.Input) {
 			streak := tracker.streakCount[toolCall.Name]
 			logging.Warn("Tool call loop detected",
 				"tool", toolCall.Name,
@@ -1879,6 +1926,20 @@ func captureStructOutput(toolResults *message.Message, structOutput *message.Too
 		return s, !ok
 	}
 	return structOutput, isErr
+}
+
+// hasStructOutputTool reports whether the resolved tool set includes the
+// injected struct_output tool — i.e. the run is a schema-bearing step (see
+// internal/llm/agent/tools.go, which injects struct_output only when
+// Output.Schema != nil). The max-turns wrap-up uses this to decide whether to
+// force struct_output (schema-bearing) or ask for a free-text summary (plain).
+func hasStructOutputTool(toolSet []tools.BaseTool) bool {
+	for _, t := range toolSet {
+		if t.Info().Name == tools.StructOutputToolName {
+			return true
+		}
+	}
+	return false
 }
 
 func filterEmptyUserMessages(msgs []message.Message) []message.Message {

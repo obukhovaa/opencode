@@ -169,10 +169,12 @@ func (p *stubPermissions) AutoApproveSession(_ string) {}
 type stubAgent struct {
 	*pubsub.Broker[agentpkg.AgentEvent]
 
-	mu        sync.Mutex
-	responses []agentpkg.AgentEvent
-	calls     int
-	prompts   []string
+	mu          sync.Mutex
+	responses   []agentpkg.AgentEvent
+	calls       int
+	prompts     []string
+	runOpts     []agentpkg.RunOptions // per-call RunOptions (to assert forcing)
+	ctxDeadline []bool                // per-call: did the ctx carry a deadline
 }
 
 func newStubAgent() *stubAgent {
@@ -197,9 +199,28 @@ func (a *stubAgent) Run(ctx context.Context, sessionID string, prompt string, ma
 	return a.RunWith(ctx, sessionID, prompt, maxTurns, agentpkg.RunOptions{}, atts...)
 }
 
-func (a *stubAgent) RunWith(_ context.Context, _ string, prompt string, _ int, _ agentpkg.RunOptions, _ ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
+func (a *stubAgent) snapshotRunOpts() []agentpkg.RunOptions {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]agentpkg.RunOptions, len(a.runOpts))
+	copy(out, a.runOpts)
+	return out
+}
+
+func (a *stubAgent) snapshotCtxDeadline() []bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]bool, len(a.ctxDeadline))
+	copy(out, a.ctxDeadline)
+	return out
+}
+
+func (a *stubAgent) RunWith(ctx context.Context, _ string, prompt string, _ int, opts agentpkg.RunOptions, _ ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
 	a.mu.Lock()
 	a.prompts = append(a.prompts, prompt)
+	a.runOpts = append(a.runOpts, opts)
+	_, hasDeadline := ctx.Deadline()
+	a.ctxDeadline = append(a.ctxDeadline, hasDeadline)
 	ch := make(chan agentpkg.AgentEvent, 1)
 	var event agentpkg.AgentEvent
 	if len(a.responses) > 0 {
@@ -472,7 +493,7 @@ func TestRunStepStructOutputValidation(t *testing.T) {
 			wantCalls: 2,
 		},
 		{
-			name: "empty struct output content fails",
+			name: "empty struct output content is force-attempted then fails",
 			responses: []agentpkg.AgentEvent{
 				{
 					Type:         agentpkg.AgentEventTypeResponse,
@@ -480,22 +501,28 @@ func TestRunStepStructOutputValidation(t *testing.T) {
 					StructOutput: &message.ToolResult{Name: "struct_output", Content: ""},
 				},
 			},
-			retry:        0,
-			wantStatus:   FlowStatusFailed,
-			wantCalls:    1,
+			retry:      0,
+			wantStatus: FlowStatusFailed,
+			// The empty struct_output triggers the last-ditch forcing turn; the
+			// stub replays the same empty result, so the step still fails — but
+			// only after that one forced attempt (2 calls).
+			wantCalls:    2,
 			wantOutputIs: "expects structured output",
 		},
 		{
-			name: "nil struct output and empty text fails (transient empty response)",
+			name: "empty response is force-attempted then fails",
 			responses: []agentpkg.AgentEvent{
 				{
 					Type:    agentpkg.AgentEventTypeResponse,
 					Message: message.Message{Role: message.Assistant},
 				},
 			},
-			retry:        0,
-			wantStatus:   FlowStatusFailed,
-			wantCalls:    1,
+			retry:      0,
+			wantStatus: FlowStatusFailed,
+			// Empty response now triggers one bounded forcing turn before the
+			// step is failed (supersedes the old "empty stays a retryable
+			// failure"); the stub replays empty, so it still fails after 2 calls.
+			wantCalls:    2,
 			wantOutputIs: "expects structured output",
 		},
 		{
