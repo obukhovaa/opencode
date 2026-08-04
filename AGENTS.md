@@ -208,6 +208,10 @@ Permissions use pattern matching with priority:
 
 Press `tab` to cycle through primary agents (mode=`agent`, hidden=false) in the TUI. The active agent is shown in the status bar. Agent switching applies to the next new session.
 
+### Flow step templates (`include` / `extends`)
+
+Flow files can share step definitions: a top-level `include:` lists files of `.`-prefixed step templates that steps pull in via `extends:`. See [`docs/flows.md`](docs/flows.md#shared-step-templates-include--extends) and the `flow-creator` skill (`.agents/skills/flow-creator/`) for authoring; the implementation and its load-order / merge / reflection invariants live in `internal/flow/include.go` (heavily commented) and `openspec/changes/flow-step-includes/design.md`.
+
 ### Chat Bridge
 
 Telegram / Slack / Mattermost adapters live in-process under `internal/bridge/` and mount HTTP routes under `/router/*` on the existing API mux. The bridge boots when `.opencode.json` has a non-empty `router` section with at least one enabled channel identity. Full docs: [`docs/bridge.md`](docs/bridge.md).

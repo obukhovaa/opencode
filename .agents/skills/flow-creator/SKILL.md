@@ -5,7 +5,8 @@ description: >
   Use when the user asks to create a new flow, build an automation pipeline, design a multi-step
   agent workflow, convert a process description into a flow, or edit an existing flow definition.
   Also use when the user asks about flow syntax, step routing, structured output schemas,
-  session management, parallel branching, fallback strategies, or postponed steps in the context
+  session management, parallel branching, fallback strategies, postponed steps, or sharing
+  step definitions across flows via include/extends templates, in the context
   of OpenCode flows.
 ---
 
@@ -83,6 +84,8 @@ When multiple rules on a step can match simultaneously, the engine forks and run
 Step IDs and flow filenames must be kebab-case, max 64 characters.
 
 **Keep each flow YAML under 300 KB.** OpenCode's flow registry hard-caps a single file at `OPENCODE_MAX_FLOW_FILE_SIZE` (default 300 KB / 307200 bytes). Files above the ceiling are logged at `WARN msg="Failed to parse flow file" error="invalid flow YAML: file exceeds NNNN bytes"` and **silently dropped from the registry** — the flow won't resolve when referenced by `--flow` or `POST /flow/{id}/start`, producing `auto-flow start failed err="flow not found"`. Under `--flow-exit` this now exits the process non-zero, but pre-fix flows fail silently. If a flow is approaching the ceiling, split status-routed lanes into sibling flow files or factor duplicated prelude blocks into fewer, more compact prompts before reaching for the env override — the readability cost of a giant single YAML is real.
+
+**Shared step templates (`include` / `extends`).** When the same step — a guard, a context resolver, a standard summary — is reused across several flows, factor it into a template file rather than copy-pasting it: a copy-pasted step drifts silently the day one flow's copy is edited and the others are missed. List the template file under a top-level `include:` and pull it into a step with `extends: [".template-name"]`. The step's own keys override the template's (shallow, per top-level key; when several templates are listed, later entries win over earlier ones). A template may NOT declare `id`, `interactive`, `interaction`, or `resume_after` — those stay on the concrete step (a second, template-unaware parser may read them). Prefer this over duplicating a step when the same block appears in two or more flows. See `references/flow-spec.md` → "Shared Step Templates" for the full merge and path-resolution rules.
 
 Default agent is `coder` when `agent` is omitted from a step.
 
@@ -387,3 +390,32 @@ fallback:
   delay: 10
   to: error-handler
 ```
+
+### Shared Step Templates (`include` / `extends`)
+
+Factor a step reused across flows into a template file and pull it in with `extends`, so one source of truth replaces N copy-pasted blocks:
+
+```yaml
+# .agents/flows/my-flow.yaml
+include:
+  - local: .agents/steps/resolve-context.yaml
+flow:
+  steps:
+    - id: resolve-context
+      extends: [".resolve-context"]   # seed from the template
+      maxTurns: 20                     # this step's own keys win
+    - id: work
+      agent: coder
+      prompt: "Do the work using ${args}."
+```
+
+```yaml
+# .agents/steps/resolve-context.yaml — templates are `.`-prefixed keys
+.resolve-context:
+  agent: coder
+  maxTurns: 15
+  prompt: |
+    Resolve the working context before doing any work.
+```
+
+The merged `resolve-context` step is indistinguishable from an inline one and is validated the same way. Keep `id`, `interactive`, `interaction`, and `resume_after` on the concrete step — a template may not declare them. Later `extends` entries and the step's own keys override earlier templates, shallow per top-level key. Full rules in `references/flow-spec.md` → "Shared Step Templates".
