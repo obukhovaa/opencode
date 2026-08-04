@@ -1,0 +1,1 @@
+You have reached the maximum number of tool-use turns for this request. Call the `struct_output` tool now to return your result, conforming exactly to the required schema. Do not reply with prose and do not call any other tool.

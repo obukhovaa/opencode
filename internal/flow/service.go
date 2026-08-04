@@ -698,6 +698,29 @@ doneRetry:
 			s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, lastErr, flowStates) {
 			return
 		}
+
+		// Last-ditch forcing wrap-up (empty / errored shapes): before recording
+		// terminal failure, give a schema-bearing non-interactive step one
+		// bounded forced struct_output turn — but only while the parent ctx is
+		// still alive (a forced turn could not otherwise run) and the error is
+		// not a transient provider error (handled above). The bounded ctx keeps
+		// a step that already exhausted its step-scoped budget from re-hanging
+		// for another full Step.Timeout. On success we publish a fresh Response
+		// event so a completed step never carries an error type downstream.
+		if !step.Interactive && step.Output != nil && step.Output.Schema != nil &&
+			ctx.Err() == nil && !isTransientProviderError(lastErr) {
+			boundedCtx, cancelBounded := context.WithTimeout(ctx, forceStructOutputMaxWait)
+			forced := s.forceStructOutputTurn(boundedCtx, agentSvc, sess.ID, step)
+			cancelBounded()
+			if forced != nil {
+				logging.Info("Last-ditch forced struct_output rescued a failing step", "step", step.ID)
+				result = agentpkg.AgentEvent{Type: agentpkg.AgentEventTypeResponse, StructOutput: forced, Done: true}
+				lastErr = nil
+			}
+		}
+	}
+
+	if lastErr != nil {
 		// When the parent ctx is cancelled (graceful shutdown, ctx-cancelled
 		// retry-delay path above) the failure-state UPDATE would also fail
 		// the SQL call immediately, leaving the flow_state row stuck on
@@ -919,6 +942,12 @@ func stepPostponesOnProviderError(step Step) bool {
 // row created_at, which is stable across resume (the row is UPDATEd, not
 // recreated), so it survives the park→resume cycle without a per-resume counter.
 const maxTransientPostponeAge = 2 * time.Hour
+
+// forceStructOutputMaxWait bounds the last-ditch forcing wrap-up turn issued on
+// the failure path (empty or errored run). It is deliberately short — a single
+// forced struct_output turn — so a step that already exhausted its step-scoped
+// budget cannot re-hang for another full Step.Timeout.
+const forceStructOutputMaxWait = 2 * time.Minute
 
 // postponeStepForTransientError parks a step that failed with a transient
 // provider error instead of failing it: it persists the flow_state row as

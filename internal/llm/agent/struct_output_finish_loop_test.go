@@ -109,20 +109,23 @@ func (s *memSessions) Save(_ context.Context, sess session.Session) (session.Ses
 type scriptedProvider struct {
 	mu      sync.Mutex
 	calls   int
-	respond func(call int) *provider.ProviderResponse
+	respond func(call int, forced bool) *provider.ProviderResponse
 	onCall  func(call int)
+	forced  []bool // per-call: was struct_output forced on this request's ctx
 }
 
-func (p *scriptedProvider) StreamResponse(_ context.Context, _ []message.Message, _ []tools.BaseTool) <-chan provider.ProviderEvent {
+func (p *scriptedProvider) StreamResponse(ctx context.Context, _ []message.Message, _ []tools.BaseTool) <-chan provider.ProviderEvent {
+	isForced := provider.ForcedTool(ctx) == tools.StructOutputToolName
 	p.mu.Lock()
 	p.calls++
 	n := p.calls
+	p.forced = append(p.forced, isForced)
 	p.mu.Unlock()
 	if p.onCall != nil {
 		p.onCall(n)
 	}
 	ch := make(chan provider.ProviderEvent, 1)
-	ch <- provider.ProviderEvent{Type: provider.EventComplete, Response: p.respond(n)}
+	ch <- provider.ProviderEvent{Type: provider.EventComplete, Response: p.respond(n, isForced)}
 	close(ch)
 	return ch
 }
@@ -210,7 +213,7 @@ func withFreshTaskRegistry(t *testing.T) task.Registry {
 // retries until the job deadline killed a fully-completed step.
 func TestProcessGeneration_FinishesOnAcceptedStructOutputWithoutWrapUpTurn(t *testing.T) {
 	withFreshTaskRegistry(t)
-	p := &scriptedProvider{respond: func(call int) *provider.ProviderResponse {
+	p := &scriptedProvider{respond: func(call int, _ bool) *provider.ProviderResponse {
 		if call == 1 {
 			return structOutputTurn()
 		}
@@ -256,7 +259,7 @@ func TestProcessGeneration_PendingTaskDefersFinishUntilWrapUp(t *testing.T) {
 	}
 
 	p := &scriptedProvider{}
-	p.respond = func(call int) *provider.ProviderResponse {
+	p.respond = func(call int, _ bool) *provider.ProviderResponse {
 		if call == 1 {
 			return structOutputTurn()
 		}
@@ -284,5 +287,184 @@ func TestProcessGeneration_PendingTaskDefersFinishUntilWrapUp(t *testing.T) {
 	}
 	if remaining := reg.PendingForSession(sess, nil); len(remaining) != 0 {
 		t.Errorf("%d task(s) still pending after run returned", len(remaining))
+	}
+}
+
+// ---- max-turns forcing (Decision 1) ----------------------------------------
+
+// testStructOutputTool mirrors the struct_output tool newLoopAgent injects:
+// an object with a required string `status`.
+func testStructOutputTool() tools.BaseTool {
+	return tools.NewStructOutputTool(map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"status": map[string]any{"type": "string"}},
+		"required":   []any{"status"},
+	})
+}
+
+// structOutputCall is a single struct_output tool-call turn with the given
+// input; the id varies per call so tool_result matching is unambiguous.
+func structOutputCall(id, input string) *provider.ProviderResponse {
+	return &provider.ProviderResponse{
+		ToolCalls: []message.ToolCall{{
+			ID:       id,
+			Name:     tools.StructOutputToolName,
+			Input:    input,
+			Finished: true,
+		}},
+		FinishReason: message.FinishReasonToolUse,
+	}
+}
+
+// noopTool is a harmless registered tool used to keep the plain-run loop
+// iterating toward max turns without side effects.
+type noopTool struct{}
+
+func (noopTool) Info() tools.ToolInfo { return tools.ToolInfo{Name: "noop", Description: "no-op"} }
+func (noopTool) Run(context.Context, tools.ToolCall) (tools.ToolResponse, error) {
+	return tools.NewTextResponse("ok"), nil
+}
+func (noopTool) AllowParallelism(tools.ToolCall, []tools.ToolCall) bool { return true }
+func (noopTool) IsBaseline() bool                                       { return true }
+
+func newLoopAgentWithTools(t *testing.T, p provider.Provider, ts []tools.BaseTool) *agent {
+	t.Helper()
+	if config.Get() == nil {
+		if _, err := config.Load(t.TempDir(), false); err != nil {
+			t.Fatalf("config.Load: %v", err)
+		}
+	}
+	toolsCh := make(chan tools.BaseTool, len(ts))
+	for _, tl := range ts {
+		toolsCh <- tl
+	}
+	close(toolsCh)
+	return &agent{
+		Broker:   pubsub.NewBroker[AgentEvent](),
+		sessions: &memSessions{},
+		messages: newMemMessages(),
+		agentID:  config.AgentName("coder"),
+		toolsCh:  toolsCh,
+		provider: p,
+	}
+}
+
+// A schema-bearing run (struct_output tool present) that never emits a valid
+// struct_output on its own MUST, at max turns, get a FORCED struct_output
+// wrap-up turn whose result is CAPTURED — not a prose request whose tool call
+// is discarded. Regression guard for the GENAI-134 max-turns-discard incident.
+func TestProcessGeneration_MaxTurnsForcesStructOutputForSchemaStep(t *testing.T) {
+	withFreshTaskRegistry(t)
+	p := &scriptedProvider{respond: func(call int, forced bool) *provider.ProviderResponse {
+		if forced {
+			// The forced max-turns wrap-up: emit a valid struct_output.
+			return structOutputCall(fmt.Sprintf("call-%d", call), `{"status":"done"}`)
+		}
+		// Normal turns: an invalid struct_output (missing required `status`)
+		// is schema-rejected, so the loop keeps going toward max turns without
+		// finishing early.
+		return structOutputCall(fmt.Sprintf("call-%d", call), `{}`)
+	}}
+	a := newLoopAgentWithTools(t, p, []tools.BaseTool{testStructOutputTool()})
+
+	res := a.processGeneration(context.Background(), "sess-maxturns-force", "do work", 1, nil, RunOptions{NonInteractive: true})
+
+	if res.Error != nil {
+		t.Fatalf("processGeneration error: %v", res.Error)
+	}
+	if res.StructOutput == nil || res.StructOutput.IsError {
+		t.Fatalf("StructOutput = %+v, want the forced struct_output captured at max turns", res.StructOutput)
+	}
+	if !strings.Contains(res.StructOutput.Content, `"status"`) {
+		t.Errorf("StructOutput content = %q, want the forced JSON", res.StructOutput.Content)
+	}
+	if n := len(p.forced); n == 0 || !p.forced[n-1] {
+		t.Errorf("forced per-call = %v, want the final (max-turns wrap-up) call to be forced", p.forced)
+	}
+	if len(p.forced) > 0 && p.forced[0] {
+		t.Errorf("the first normal turn must NOT be forced; forced=%v", p.forced)
+	}
+}
+
+// Graceful degradation: if the forced wrap-up turn returns text and no tool
+// call (a provider that ignores forced tool_choice), the run MUST NOT panic
+// (a nil tool-results message) and MUST NOT hard-fail — it returns without a
+// usable struct_output and lets the flow layer's own guard retry. Regression
+// guard for the nil-`finalToolResults` capture panic.
+func TestProcessGeneration_MaxTurnsForcedWrapUpReturningTextDoesNotPanic(t *testing.T) {
+	withFreshTaskRegistry(t)
+	p := &scriptedProvider{respond: func(call int, forced bool) *provider.ProviderResponse {
+		if forced {
+			return endTurn() // provider ignores forcing → plain text, no tool call
+		}
+		return structOutputCall(fmt.Sprintf("call-%d", call), `{}`) // invalid → loop
+	}}
+	a := newLoopAgentWithTools(t, p, []tools.BaseTool{testStructOutputTool()})
+
+	res := a.processGeneration(context.Background(), "sess-maxturns-graceful", "do work", 1, nil, RunOptions{NonInteractive: true})
+
+	if res.Error != nil {
+		t.Fatalf("processGeneration error: %v — a nil finalToolResults on the forced turn must not panic/hard-fail", res.Error)
+	}
+	if res.StructOutput != nil && !res.StructOutput.IsError {
+		t.Errorf("StructOutput = %+v, want none usable (forced turn produced no tool call)", res.StructOutput)
+	}
+	if n := len(p.forced); n == 0 || !p.forced[n-1] {
+		t.Errorf("forced per-call = %v, want the wrap-up to have been forced", p.forced)
+	}
+}
+
+// A plain run (no struct_output tool) at max turns keeps the existing behavior:
+// a free-text wrap-up (never forced), with any stray tool call discarded.
+func TestProcessGeneration_MaxTurnsPlainStepReturnsTextNotForced(t *testing.T) {
+	withFreshTaskRegistry(t)
+	p := &scriptedProvider{respond: func(call int, _ bool) *provider.ProviderResponse {
+		if call == 1 {
+			return &provider.ProviderResponse{
+				ToolCalls:    []message.ToolCall{{ID: "call-noop", Name: "noop", Input: "{}", Finished: true}},
+				FinishReason: message.FinishReasonToolUse,
+			}
+		}
+		return endTurn()
+	}}
+	a := newLoopAgentWithTools(t, p, []tools.BaseTool{noopTool{}})
+
+	res := a.processGeneration(context.Background(), "sess-maxturns-plain", "do work", 1, nil, RunOptions{NonInteractive: true})
+
+	if res.Error != nil {
+		t.Fatalf("processGeneration error: %v", res.Error)
+	}
+	if res.StructOutput != nil {
+		t.Errorf("plain step must not produce struct_output, got %+v", res.StructOutput)
+	}
+	for i, f := range p.forced {
+		if f {
+			t.Fatalf("plain step must never force struct_output; forced[%d]=true (%v)", i, p.forced)
+		}
+	}
+}
+
+// If the FORCED max-turns wrap-up turn itself emits a schema-rejected
+// struct_output, that error result must NOT be promoted as the run's output
+// (the !structOutputIsErr guard) — the run ends with no usable StructOutput and
+// the flow layer decides what to do, rather than persisting a bad result.
+func TestProcessGeneration_MaxTurnsForcedSchemaRejectedNotPromoted(t *testing.T) {
+	withFreshTaskRegistry(t)
+	p := &scriptedProvider{respond: func(call int, _ bool) *provider.ProviderResponse {
+		// Every turn (including the forced wrap-up) emits an invalid payload.
+		return structOutputCall(fmt.Sprintf("call-%d", call), `{}`)
+	}}
+	a := newLoopAgentWithTools(t, p, []tools.BaseTool{testStructOutputTool()})
+
+	res := a.processGeneration(context.Background(), "sess-maxturns-rejected", "do work", 1, nil, RunOptions{NonInteractive: true})
+
+	if res.Error != nil {
+		t.Fatalf("processGeneration error: %v", res.Error)
+	}
+	if res.StructOutput != nil {
+		t.Errorf("a schema-rejected forced struct_output must NOT be promoted, got %+v", res.StructOutput)
+	}
+	if n := len(p.forced); n == 0 || !p.forced[n-1] {
+		t.Errorf("forced per-call = %v, want the wrap-up to have been forced", p.forced)
 	}
 }
