@@ -149,9 +149,9 @@ func TestNudgeDue_RespectsMaxCap(t *testing.T) {
 	r, ad := newNudgeRouter(t, 10*time.Minute)
 	r.svc.cfg.QuestionNudgeMax = 1
 	now := time.Now()
-	r.nudgeDue(context.Background(), now)                       // #1
-	r.nudgeDue(context.Background(), now.Add(1*time.Hour))      // capped
-	r.nudgeDue(context.Background(), now.Add(2*time.Hour))      // capped
+	r.nudgeDue(context.Background(), now)                  // #1
+	r.nudgeDue(context.Background(), now.Add(1*time.Hour)) // capped
+	r.nudgeDue(context.Background(), now.Add(2*time.Hour)) // capped
 	if n := len(ad.Sends()); n != 1 {
 		t.Errorf("sends=%d, want 1 (QuestionNudgeMax=1)", n)
 	}

@@ -430,6 +430,11 @@ func TestGroupMessagesWithGroupsEnabledRequireMention(t *testing.T) {
 	if in.Text != "please review" {
 		t.Errorf("group inbound Text = %q, want %q", in.Text, "please review")
 	}
+	// Typed message → no widget feedback → tagged so a reply to a pending
+	// question gets an explicit acknowledgment.
+	if in.Source != bridge.InboundSourceMessage {
+		t.Errorf("Source = %q, want %q", in.Source, bridge.InboundSourceMessage)
+	}
 }
 
 func TestPrivateModeRejectsNonAllowlistedPeer(t *testing.T) {

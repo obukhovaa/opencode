@@ -414,6 +414,11 @@ func (a *Adapter) dispatchPosted(ctx context.Context, ev WSEvent, inbound chan<-
 		Text:       text,
 		AuthorID:   post.UserID,
 		ReceivedAt: time.Now().UnixMilli(),
+		// Mattermost has no interactive question widget — every answer is a
+		// typed post with no transport-side feedback, so a reply to a pending
+		// question gets an explicit acknowledgment downstream (see
+		// QuestionRouter.TryHandleQuestionReply).
+		Source: bridge.InboundSourceMessage,
 	}
 
 	// Persist any attached files into the bridge media store. Failures

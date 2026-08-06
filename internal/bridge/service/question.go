@@ -90,10 +90,10 @@ type QuestionRouter struct {
 type pendingQuestion struct {
 	requestID string
 	prompts   []question.Prompt
-	// askedAt is when the question was surfaced; sinceLast tracks the
-	// nudger's clock. nudges counts how many "still waiting" reminders
-	// have been sent so the per-question cap is enforced. Guarded by
-	// QuestionRouter.mu.
+	// askedAt is when the question was surfaced; lastNudge is when the
+	// nudger last re-posted a "still waiting" reminder (zero until the
+	// first one). nudges counts how many reminders have been sent so the
+	// per-question cap is enforced. Guarded by QuestionRouter.mu.
 	askedAt   time.Time
 	lastNudge time.Time
 	nudges    int

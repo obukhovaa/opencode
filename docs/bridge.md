@@ -78,6 +78,8 @@ Health snapshot: `curl http://127.0.0.1:3456/router/health` (per-adapter `status
 | Field | Values | Description |
 |---|---|---|
 | `questionMode` | `"interactive"` \| `"disabled"` | When `interactive`, the agent's `question` tool renders Slack actions blocks / Telegram inline keyboards with a numbered-text fallback. When unset or `"disabled"`, the question tool isn't initialized. |
+| `questionNudgeIntervalSeconds` | `int` | Idle gap after which the bridge re-posts a "still waiting for your answer" nudge to a session's bound peers when a `question` is outstanding, and the spacing between subsequent nudges. Re-surfaces an answer lost in transit (e.g. a misrouted bridge reply) instead of letting the step hang to the job's hard deadline. `0` → built-in default (5 min); `<0` → disable nudging. |
+| `questionNudgeMax` | `int` | Caps how many nudges are sent for a single pending question (so a walked-away reviewer can't be pinged forever). `0` → built-in default (3); `<0` → unlimited (bounded in practice by the job deadline). |
 | `permissionMode` | `"allow"` \| `"deny"` \| `"ask"` \| empty | How the bridge resolves agent permission requests on bridge-bound sessions. `allow`/`deny` auto-resolve; `ask`/empty defer to opencode's default UI (will hang headless). Unrecognised values fail-safe to deny with a one-shot WARN log. |
 | `toolUpdatesEnabled` | `bool` | Stream tool-call lifecycle (`🔧 <tool> · <params>`, `✓ <tool> · <result>`, `✗ <tool> · <error>`) to chat. Error lines surface regardless of this flag. |
 | `channels.{telegram,slack,mattermost}` | object | Per-platform configuration; see below. |

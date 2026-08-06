@@ -338,6 +338,11 @@ func TestHandlesDMPostedEvents(t *testing.T) {
 	if in.Peer.PeerID != "dm_channel_1|post1" {
 		t.Errorf("PeerID = %q, want dm_channel_1|post1", in.Peer.PeerID)
 	}
+	// Mattermost has no interactive widget → typed answer → tagged so a
+	// reply to a pending question gets an explicit acknowledgment.
+	if in.Source != bridge.InboundSourceMessage {
+		t.Errorf("Source = %q, want %q", in.Source, bridge.InboundSourceMessage)
+	}
 }
 
 func TestFiltersOwnMessages(t *testing.T) {

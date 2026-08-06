@@ -145,6 +145,11 @@ func TestTelegramCallbackQueryRoutesAsInbound(t *testing.T) {
 	if in.AuthorID != "12345" {
 		t.Errorf("AuthorID = %q", in.AuthorID)
 	}
+	// Button click self-renders "✓ Answered", so it must be tagged as such
+	// to suppress the downstream typed-answer acknowledgment.
+	if in.Source != bridge.InboundSourceButton {
+		t.Errorf("Source = %q, want %q", in.Source, bridge.InboundSourceButton)
+	}
 }
 
 // io import marker

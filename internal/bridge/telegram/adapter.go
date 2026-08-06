@@ -472,6 +472,10 @@ func (a *Adapter) handleCallbackQuery(ctx context.Context, cb *models.CallbackQu
 		Text:       cb.Data,
 		AuthorID:   strconv.FormatInt(cb.From.ID, 10),
 		ReceivedAt: time.Now().UnixMilli(),
+		// Button click: updateAnsweredWidget (below) rewrites the message to
+		// "✓ Answered", so the question router must NOT send a second
+		// acknowledgment.
+		Source: bridge.InboundSourceButton,
 	})
 
 	// Replace the inline keyboard + prefix the prompt with a confirmation
@@ -579,6 +583,9 @@ func (a *Adapter) handleMultiSelectCallback(ctx context.Context, cb *models.Call
 			Text:       strings.Join(selected, ", "),
 			AuthorID:   strconv.FormatInt(cb.From.ID, 10),
 			ReceivedAt: time.Now().UnixMilli(),
+			// Multi-select submit: updateAnsweredWidget (below) rewrites the
+			// message to "✓ Answered", so no separate acknowledgment is sent.
+			Source: bridge.InboundSourceButton,
 		})
 		// Map state values → display labels for the confirmation prefix.
 		labels := make([]string, 0, len(selected))
@@ -740,6 +747,10 @@ func (a *Adapter) handleMessage(ctx context.Context, msg *models.Message) {
 		Text:        cleanText,
 		Attachments: attachments,
 		ReceivedAt:  time.Now().UnixMilli(),
+		// Free-text DM / stripped @mention: no widget feedback, so a typed
+		// answer to a pending question gets an explicit acknowledgment
+		// downstream (see QuestionRouter.TryHandleQuestionReply).
+		Source: bridge.InboundSourceMessage,
 	}
 	if msg.From != nil {
 		in.AuthorID = strconv.FormatInt(msg.From.ID, 10)
