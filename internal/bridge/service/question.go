@@ -19,6 +19,20 @@ const (
 	recentlyAnsweredTTL           = 30 * time.Second
 	recentlyAnsweredSweepInterval = 10 * time.Second
 
+	// questionNudgeDefaultInterval is the idle gap before the first "still
+	// waiting" nudge, and the spacing between subsequent nudges, when the
+	// operator hasn't overridden cfg.QuestionNudgeIntervalSeconds. Chosen so
+	// a reviewer who stepped away is reminded a few times well inside a
+	// typical job deadline, without pinging on every brief pause.
+	questionNudgeDefaultInterval = 5 * time.Minute
+	// questionNudgeDefaultMax caps nudges per pending question when the
+	// operator hasn't overridden cfg.QuestionNudgeMax.
+	questionNudgeDefaultMax = 3
+	// questionNudgeSweepInterval is how often the nudger wakes to look for
+	// questions that have gone quiet past the interval. Kept well below the
+	// nudge interval so a due nudge fires promptly without busy-looping.
+	questionNudgeSweepInterval = 30 * time.Second
+
 	// interactiveInboundBufferCap bounds the per-session queue of reviewer
 	// messages buffered while an interactive flow step has no question
 	// pending (see BufferInbound). Drop-oldest once the cap is hit so a
@@ -76,6 +90,13 @@ type QuestionRouter struct {
 type pendingQuestion struct {
 	requestID string
 	prompts   []question.Prompt
+	// askedAt is when the question was surfaced; sinceLast tracks the
+	// nudger's clock. nudges counts how many "still waiting" reminders
+	// have been sent so the per-question cap is enforced. Guarded by
+	// QuestionRouter.mu.
+	askedAt   time.Time
+	lastNudge time.Time
+	nudges    int
 }
 
 // NewQuestionRouter constructs a router and starts the subscriber
@@ -89,6 +110,7 @@ func (s *Service) newQuestionRouter() *QuestionRouter {
 	if s.app != nil && s.app.Questions != nil {
 		s.launchSupervised("question-router", r.run)
 		s.launchSupervised("question-stale-cache-sweeper", r.runSweeper)
+		s.launchSupervised("question-nudger", r.runNudger)
 	}
 	return r
 }
@@ -208,6 +230,7 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 	pend := &pendingQuestion{
 		requestID: req.ID,
 		prompts:   req.Questions,
+		askedAt:   time.Now(),
 	}
 	r.mu.Lock()
 	r.pending[req.SessionID] = pend
@@ -375,7 +398,45 @@ func (r *QuestionRouter) TryHandleQuestionReply(ctx context.Context, sessionID s
 		return false
 	}
 	r.rememberAnswers(sessionID, answers)
+	r.maybeAckAnswer(ctx, in, answers)
 	return true
+}
+
+// maybeAckAnswer sends a short confirmation for a typed/custom answer that
+// got NO transport-side feedback. A button click already self-renders a
+// "✓ Answered" widget (InboundSourceButton, or an unstamped inbound from an
+// older orchestrator — treated conservatively as already-acked), so it is
+// skipped; a free-text @mention / DM / modal answer otherwise leaves the
+// reviewer with no sign the agent received it. Sent to the answering peer
+// via the pod's own outbound adapter, so it works in both daemon and
+// orchestrator-mediated deployments. Best-effort — a delivery failure never
+// blocks the (already-committed) Reply.
+func (r *QuestionRouter) maybeAckAnswer(ctx context.Context, in bridge.Inbound, answers [][]string) {
+	if in.AnswerWasAcknowledgedByTransport() {
+		return
+	}
+	if ack := formatAnswerAck(answers); ack != "" {
+		r.svc.replyToPeer(ctx, in.Peer, ack)
+	}
+}
+
+// formatAnswerAck renders the short confirmation sent back to a reviewer
+// who typed/mentioned a custom answer. Lists the recorded answer(s) so it's
+// unambiguous what the agent captured; returns "" when there's nothing to
+// echo (defensive — the caller then skips the send).
+func formatAnswerAck(answers [][]string) string {
+	var picks []string
+	for _, row := range answers {
+		for _, a := range row {
+			if a = strings.TrimSpace(a); a != "" {
+				picks = append(picks, a)
+			}
+		}
+	}
+	if len(picks) == 0 {
+		return ""
+	}
+	return "👍 Got it — recorded your answer: " + strings.Join(picks, ", ") + ". Working on it…"
 }
 
 // BufferInbound queues a reviewer message that arrived for an
@@ -429,6 +490,108 @@ func (r *QuestionRouter) ClearSession(sessionID string) {
 	defer r.mu.Unlock()
 	delete(r.pending, sessionID)
 	delete(r.buffered, sessionID)
+}
+
+// runNudger periodically re-surfaces questions that have gone unanswered
+// past the nudge interval, re-posting a short "still waiting" status to the
+// session's bound peers. This turns a silently-lost answer (e.g. a bridge
+// reply misrouted to another Socket Mode consumer, GENAI-151) into a
+// visible, recoverable prompt instead of an interactive step that hangs to
+// the job's hard deadline. Stops when the service context cancels.
+func (r *QuestionRouter) runNudger(ctx context.Context) {
+	ticker := time.NewTicker(questionNudgeSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			r.nudgeDue(ctx, now)
+		}
+	}
+}
+
+// nudgeConfig resolves the effective nudge settings from cfg, applying
+// defaults for zero values. A negative interval disables nudging; a
+// negative max means unlimited (bounded in practice by the job deadline).
+func (r *QuestionRouter) nudgeConfig() (interval time.Duration, max int, enabled bool) {
+	interval = questionNudgeDefaultInterval
+	max = questionNudgeDefaultMax
+	if r.svc != nil && r.svc.cfg != nil {
+		switch s := r.svc.cfg.QuestionNudgeIntervalSeconds; {
+		case s < 0:
+			return 0, 0, false
+		case s > 0:
+			interval = time.Duration(s) * time.Second
+		}
+		if m := r.svc.cfg.QuestionNudgeMax; m != 0 {
+			max = m
+		}
+	}
+	return interval, max, true
+}
+
+// nudgeDue sends a reminder for every pending question idle past the
+// interval and under the per-question cap. The pending map is scanned under
+// the lock to collect the due-list — updating each entry's counters in the
+// SAME critical section so a concurrent reply/sweep can't double-send — then
+// the chat I/O happens after the lock is released.
+func (r *QuestionRouter) nudgeDue(ctx context.Context, now time.Time) {
+	interval, max, enabled := r.nudgeConfig()
+	if !enabled {
+		return
+	}
+	type dueNudge struct {
+		sessionID string
+		prompts   []question.Prompt
+	}
+	var todo []dueNudge
+	r.mu.Lock()
+	for sid, p := range r.pending {
+		// Reference clock: the last nudge, or the ask time if none sent yet.
+		last := p.lastNudge
+		if last.IsZero() {
+			last = p.askedAt
+		}
+		if now.Sub(last) < interval {
+			continue
+		}
+		if max >= 0 && p.nudges >= max {
+			continue
+		}
+		p.nudges++
+		p.lastNudge = now
+		todo = append(todo, dueNudge{sessionID: sid, prompts: p.prompts})
+	}
+	r.mu.Unlock()
+
+	for _, d := range todo {
+		text := formatNudge(d.prompts)
+		if text == "" {
+			continue
+		}
+		if _, err := r.svc.SendBySessionID(ctx, d.sessionID, bridge.Outbound{Text: text}); err != nil {
+			logging.Warn("bridge: question nudge send failed",
+				"session", d.sessionID, "err", err)
+			continue
+		}
+		logging.Info("bridge: question nudge sent", "session", d.sessionID)
+	}
+}
+
+// formatNudge renders the short "still waiting" status. Includes the first
+// prompt's question text so the reviewer knows exactly what's outstanding;
+// returns "" when there's nothing to echo (caller skips the send).
+func formatNudge(prompts []question.Prompt) string {
+	if len(prompts) == 0 {
+		return ""
+	}
+	q := strings.TrimSpace(prompts[0].Question)
+	if q == "" {
+		return ""
+	}
+	return "⏳ Still waiting on your answer to continue:\n> " + q +
+		"\nReply with a button/number above, or @mention me with your answer."
 }
 
 // renderQuestionPrompt formats one or more question.Prompt entries as

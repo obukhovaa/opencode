@@ -546,6 +546,10 @@ func (a *Adapter) handleInteractiveCallback(ctx context.Context, callback slackg
 		Text:       value,
 		AuthorID:   callback.User.ID,
 		ReceivedAt: time.Now().UnixMilli(),
+		// Button click: updateAnsweredWidget (below) rewrites the message
+		// to "✓ Answered", so the question router must NOT send a second
+		// acknowledgment.
+		Source: bridge.InboundSourceButton,
 	})
 
 	// Replace the actionable widget with a confirmation. Inbound has
@@ -691,6 +695,9 @@ func (a *Adapter) handleMessageEvent(ctx context.Context, ev *slackevents.Messag
 		Attachments: atts,
 		AuthorID:    ev.User,
 		ReceivedAt:  time.Now().UnixMilli(),
+		// Free-text DM/message: no widget feedback, so a typed answer to a
+		// pending question gets an explicit acknowledgment downstream.
+		Source: bridge.InboundSourceMessage,
 	})
 }
 
@@ -739,6 +746,9 @@ func (a *Adapter) handleAppMention(ctx context.Context, ev *slackevents.AppMenti
 		Attachments: atts,
 		AuthorID:    ev.User,
 		ReceivedAt:  time.Now().UnixMilli(),
+		// @-mention answer: no widget feedback, so it gets an explicit
+		// acknowledgment downstream (see QuestionRouter.TryHandleQuestionReply).
+		Source: bridge.InboundSourceAppMention,
 	})
 }
 

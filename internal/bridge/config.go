@@ -33,6 +33,22 @@ type Config struct {
 	// router_send agent tool to specific peers. NOT enforced in v1 (see
 	// chat-bridge-agent-tool spec). Schema-defined but ignored at runtime.
 	AgentPeerAllowlist []PeerRef `json:"agentPeerAllowlist,omitempty"`
+
+	// QuestionNudgeIntervalSeconds is the idle gap after which the question
+	// router re-posts a short "still waiting for your answer" status to the
+	// bound peers of a session with an outstanding question, and the spacing
+	// between subsequent nudges. It re-surfaces a question whose answer was
+	// lost in transit (e.g. a misrouted bridge reply) instead of letting the
+	// interactive step sit silent until the job's hard deadline.
+	//   0  → use the built-in default (QuestionNudgeDefaultInterval)
+	//   <0 → disable nudging entirely
+	QuestionNudgeIntervalSeconds int `json:"questionNudgeIntervalSeconds,omitempty"`
+
+	// QuestionNudgeMax caps how many nudges are sent for a single pending
+	// question (so a walked-away reviewer can't be pinged forever).
+	//   0  → use the built-in default (QuestionNudgeDefaultMax)
+	//   <0 → unlimited (bounded in practice by the job deadline)
+	QuestionNudgeMax int `json:"questionNudgeMax,omitempty"`
 }
 
 // ChannelsConfig holds per-platform channel sections.

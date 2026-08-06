@@ -105,6 +105,53 @@ type Inbound struct {
 	// CommandArgs is the remainder of the message after the command name,
 	// if Command is set.
 	CommandArgs string `json:"commandArgs,omitempty"`
+	// Source classifies how the adapter produced this inbound (see the
+	// InboundSource* constants). The question router reads it to decide
+	// whether the transport already gave the reviewer visual feedback —
+	// a button click self-renders a "✓ Answered" widget, so no extra
+	// acknowledgment is sent — versus a typed/custom answer, which gets
+	// none otherwise and so is acknowledged explicitly. Empty when the
+	// producing adapter (or an older orchestrator, over /router/inbound)
+	// didn't set it; treated as "unknown", which SUPPRESSES the extra ack
+	// so an unstamped button click is never double-acknowledged.
+	Source string `json:"source,omitempty"`
+}
+
+// InboundSource classifies how a reviewer's inbound was produced. It rides
+// on Inbound.Source (JSON `source`) across the /router/inbound wire so the
+// orchestrator-mediated path and the daemon (adapter-owned) path agree on
+// whether an explicit answer acknowledgment is warranted.
+const (
+	// InboundSourceButton is a question-UI block-actions button click. The
+	// adapter/orchestrator already rewrote the message to "✓ Answered", so
+	// the question router does NOT send a separate acknowledgment.
+	InboundSourceButton = "button"
+	// InboundSourceModal is a custom-answer modal submit (view_submission).
+	// No widget confirmation is rendered for it, so it IS acknowledged.
+	InboundSourceModal = "modal"
+	// InboundSourceMessage is a free-text DM / channel-thread message. No
+	// widget feedback exists for it, so a typed answer IS acknowledged.
+	InboundSourceMessage = "message"
+	// InboundSourceAppMention is an @-mention of the bot in a channel. Like
+	// a plain message, a typed answer via mention IS acknowledged.
+	InboundSourceAppMention = "appmention"
+)
+
+// AnswerWasAcknowledgedByTransport reports whether the transport that
+// produced this inbound already gave the reviewer visible confirmation of
+// their answer (today: only the interactive button, which self-renders a
+// "✓ Answered" widget). When true the question router skips its own
+// acknowledgment to avoid double feedback. Unknown/empty Source returns
+// true (conservative: suppress the extra ack rather than risk double-acking
+// an unstamped button click from an older orchestrator).
+func (in Inbound) AnswerWasAcknowledgedByTransport() bool {
+	switch in.Source {
+	case InboundSourceModal, InboundSourceMessage, InboundSourceAppMention:
+		return false
+	default:
+		// InboundSourceButton and any unknown/empty value.
+		return true
+	}
 }
 
 // Outbound is the normalized representation of an outbound message the
