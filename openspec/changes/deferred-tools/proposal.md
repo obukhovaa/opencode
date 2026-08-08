@@ -26,10 +26,14 @@ SDK bump.
 - **Opt-in per agent**: new `deferredTools` map (same wildcard semantics as
   `tools`) on `.opencode.json` agents and markdown-agent frontmatter. Absent
   config ⇒ zero behavior change for every existing agent.
-- **`toolsearch` tool**: auto-registered only when the agent has ≥1 deferred
-  tool. Searches deferred tools by exact name, `select:a,b` multi-select, or
-  keyword; activates matches. Never deferrable itself; `struct_output` is
-  never deferrable.
+- **`toolsearch` tool**: registered in the toolset whenever the agent has
+  ≥1 deferred tool (the frozen toolset must survive mid-session model
+  switches; whether it is *serialized* into a request is a per-turn
+  provider decision — omitted on the native path in favor of the server
+  tool). Searches deferred tools by exact name, `select:a,b` multi-select,
+  or keyword; activates matches **per session**. Never deferrable itself;
+  `struct_output` is never deferrable; disabling `toolsearch` via `tools`
+  while declaring deferrals fails open (deferral ignored, warned).
 - **Two activation paths, gated per model** (new `SupportsToolSearch` model
   capability, following the `SupportsTaskBudget` pattern):
   - **Native** (Claude models on anthropic/bedrock/vertexai): deferred tools
@@ -47,8 +51,11 @@ SDK bump.
   `<system-reminder>` block in the system prompt; late-arriving deferred MCP
   tools announced via delta user messages only when the pool changes.
 - **Cache correctness**: the Anthropic last-tool `cache_control` breakpoint
-  moves to the last **non-deferred** tool (deferred tools are stripped from
+  moves to the last **non-deferred** entry (deferred tools are stripped from
   the prefix, so a breakpoint on one would be lost).
+- **Token accounting follows serialization**: local estimation and the
+  anthropic count_tokens request count what is actually sent, so
+  auto-compaction is not triggered by phantom schemas of unloaded tools.
 - Old draft `spec/20260405T120000-deferred-tools-and-toolsearch.md` gets a
   "superseded by this change" banner; content is carried here, actualized.
 
