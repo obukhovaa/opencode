@@ -29,6 +29,7 @@ var AnthropicModels = map[ModelID]Model{
 		ContextWindow:       200000,
 		DefaultMaxTokens:    32000,
 		CanReason:           true,
+		SupportsToolSearch:  true,
 		SupportsAttachments: true,
 	},
 	Claude46Opus: {
@@ -45,6 +46,7 @@ var AnthropicModels = map[ModelID]Model{
 		CanReason:                true,
 		SupportsAdaptiveThinking: true,
 		SupportsMaximumThinking:  true,
+		SupportsToolSearch:       true,
 		SupportsAttachments:      true,
 	},
 	Claude47Opus: {
@@ -63,6 +65,7 @@ var AnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  true,
 		SupportsXHighThinking:    true,
 		SupportsTaskBudget:       true,
+		SupportsToolSearch:       true,
 		SupportsAttachments:      true,
 	},
 	Claude48Opus: {
@@ -81,6 +84,7 @@ var AnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  true,
 		SupportsXHighThinking:    true,
 		SupportsTaskBudget:       true,
+		SupportsToolSearch:       true,
 		SupportsAttachments:      true,
 	},
 	Claude5Opus: {
@@ -99,6 +103,7 @@ var AnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  true,
 		SupportsXHighThinking:    true,
 		SupportsTaskBudget:       true,
+		SupportsToolSearch:       true,
 		SupportsAttachments:      true,
 	},
 	ClaudeFable5: {
@@ -117,6 +122,7 @@ var AnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  true,
 		SupportsXHighThinking:    true,
 		SupportsTaskBudget:       true,
+		SupportsToolSearch:       true,
 		SupportsAttachments:      true,
 	},
 	Claude46Sonnet: {
@@ -132,6 +138,7 @@ var AnthropicModels = map[ModelID]Model{
 		DefaultMaxTokens:         128000,
 		CanReason:                true,
 		SupportsAdaptiveThinking: true,
+		SupportsToolSearch:       true,
 		SupportsAttachments:      true,
 	},
 	Claude5Sonnet: {
@@ -150,6 +157,7 @@ var AnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  true,
 		SupportsXHighThinking:    true,
 		SupportsTaskBudget:       true,
+		SupportsToolSearch:       true,
 		SupportsAttachments:      true,
 	},
 	Claude45Haiku: {
@@ -163,6 +171,7 @@ var AnthropicModels = map[ModelID]Model{
 		CostPer1MOut:        5.0,
 		ContextWindow:       200000,
 		DefaultMaxTokens:    8192,
+		SupportsToolSearch:  true,
 		SupportsAttachments: true,
 	},
 }

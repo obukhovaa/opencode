@@ -269,7 +269,12 @@ type ProviderResponse struct {
 	// emission order. Consumers persist these verbatim so they can be
 	// replayed on subsequent requests (thinking-block echo). Empty for
 	// providers/turns without reasoning.
-	Reasoning    []message.ReasoningContent
+	Reasoning []message.ReasoningContent
+	// ToolSearches holds server-side tool-search invocations (Anthropic
+	// native deferred-tools path): the server_tool_use + result pairs, in
+	// emission order. Persisted for replay so discovered deferred tools
+	// stay expanded for the rest of the session. Empty elsewhere.
+	ToolSearches []message.ToolSearchContent
 	Usage        TokenUsage
 	FinishReason message.FinishReason
 }
@@ -738,7 +743,14 @@ func reconcileTokenEstimate(endpoint, local int64) int64 {
 }
 
 func (p *baseProvider[C]) CountTokens(ctx context.Context, threshold float64, messages []message.Message, tools []toolsPkg.BaseTool) (int64, bool) {
-	local := p.localTokenEstimate(messages, tools)
+	// Token accounting must mirror serialization (deferred-tools D7): count
+	// only the tools that would actually be sent for this session, or
+	// deferring hundreds of MCP tools still "costs" their schemas here and
+	// auto-compaction fires tens of thousands of tokens early. For agents
+	// without deferred tools this is the identity.
+	sessionID, _ := toolsPkg.GetContextValues(ctx)
+	countable := toolsPkg.SerializableFor(sessionID, tools)
+	local := p.localTokenEstimate(messages, countable)
 	estimatedTokens := local
 	endpointTokens, err := p.client.countTokens(ctx, messages, tools)
 	if err != nil {

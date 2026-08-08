@@ -85,8 +85,9 @@ type Agent struct {
 	MaxTokens       int64           `json:"maxTokens"`
 	MaxTurns        int             `json:"maxTurns,omitempty"`
 	ReasoningEffort string          `json:"reasoningEffort"`      // For openai models low,medium,high
-	Permission      map[string]any  `json:"permission,omitempty"` // tool name -> "allow" | {"pattern": "action"}
-	Tools           map[string]bool `json:"tools,omitempty"`      // e.g., {"skill": false}
+	Permission      map[string]any  `json:"permission,omitempty"`    // tool name -> "allow" | {"pattern": "action"}
+	Tools           map[string]bool `json:"tools,omitempty"`         // e.g., {"skill": false}
+	DeferredTools   map[string]bool `json:"deferredTools,omitempty"` // e.g., {"jira_*": true} — schemas loaded on demand via toolsearch
 	Mode            AgentMode       `json:"mode,omitempty"`       // "agent" or "subagent"
 	Name            string          `json:"name,omitempty"`
 	Native          bool            `json:"native,omitempty"`

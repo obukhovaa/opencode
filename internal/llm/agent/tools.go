@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -72,6 +73,28 @@ func NewToolSet(
 ) <-chan tools.BaseTool {
 	agentID := info.ID
 	result := make(chan tools.BaseTool, 100)
+
+	// Deferral is opt-in per agent. Fail-open: deferring tools without the
+	// toolsearch discovery ladder would strand them (fallback providers omit
+	// their schemas entirely), so a config that disables toolsearch while
+	// declaring deferrals is ignored wholesale.
+	deferredCfg := info.DeferredTools
+	if len(deferredCfg) > 0 && !reg.IsToolEnabled(agentID, tools.ToolSearchToolName) {
+		logging.Warn("deferredTools configured but toolsearch is disabled; ignoring deferral (fail-open)", "agent", agentID)
+		deferredCfg = nil
+	}
+	// One activation-sequence counter per toolset: the fallback path appends
+	// activated tools in this order, keeping previously sent positions stable.
+	deferSeq := &atomic.Int64{}
+	maybeDefer := func(t tools.BaseTool) tools.BaseTool {
+		if t == nil || len(deferredCfg) == 0 {
+			return t
+		}
+		if permission.IsToolDeferred(t.Info().Name, deferredCfg) {
+			return tools.WrapDeferred(t, deferSeq)
+		}
+		return t
+	}
 
 	// When adding a case here, also add the tool to
 	// tools/description_budget_test.go so its description stays budgeted.
@@ -162,7 +185,7 @@ func NewToolSet(
 	for _, name := range viewerToolNames {
 		if reg.IsToolEnabled(agentID, name) {
 			if t := createTool(name); t != nil {
-				result <- t
+				result <- maybeDefer(t)
 			}
 		}
 	}
@@ -172,7 +195,7 @@ func NewToolSet(
 	if cfg != nil && cfg.WebSearch != nil && len(cfg.WebSearch.Providers) > 0 {
 		if reg.IsToolEnabled(agentID, tools.WebSearchToolName) {
 			if t := createTool(tools.WebSearchToolName); t != nil {
-				result <- t
+				result <- maybeDefer(t)
 			}
 		}
 	}
@@ -180,7 +203,7 @@ func NewToolSet(
 	for _, name := range editorToolNames {
 		if reg.IsToolEnabled(agentID, name) {
 			if t := createTool(name); t != nil {
-				result <- t
+				result <- maybeDefer(t)
 			}
 		}
 	}
@@ -203,7 +226,7 @@ func NewToolSet(
 		if enabled {
 			if info.Mode == config.AgentModeAgent {
 				if t := createTool(name); t != nil {
-					result <- t
+					result <- maybeDefer(t)
 				}
 			} else {
 				logging.Warn("Subagent can't have manager tools enabled, tool will be ignored", "agent", agentID, "tool", name)
@@ -229,6 +252,15 @@ func NewToolSet(
 		}
 	}
 
+	if len(deferredCfg) > 0 {
+		// Registered whenever deferral is in effect — regardless of model
+		// (mid-session model switches must not strand deferred tools) and
+		// regardless of whether any known tool currently matches (MCP-only
+		// patterns match tools that arrive asynchronously below). Providers
+		// decide per request whether to serialize it.
+		result <- tools.NewToolSearchTool()
+	}
+
 	wg := sync.WaitGroup{}
 
 	// MCP tools — shared instances, filter per agent
@@ -238,7 +270,7 @@ func NewToolSet(
 		defer wg.Done()
 		for mt := range mcpRegistry.LoadTools(ctx, nil) {
 			if reg.IsToolEnabled(agentID, mt.Info().Name) {
-				result <- mt
+				result <- maybeDefer(mt)
 			}
 		}
 	}()
@@ -250,7 +282,7 @@ func NewToolSet(
 		defer wg.Done()
 		cfg := config.Get()
 		if len(install.ResolveServers(cfg)) > 0 && reg.IsToolEnabled(agentID, tools.LSPToolName) {
-			result <- tools.NewLspTool(lspService)
+			result <- maybeDefer(tools.NewLspTool(lspService))
 		}
 	}()
 
@@ -288,6 +320,13 @@ func (a *agent) resolveTools() []tools.BaseTool {
 		}
 		a.tools = toolSet
 		a.toolsResolved.Store(true)
+		// toolsearch is created before the full toolset exists (it streams
+		// through the same channel); hand it the resolved slice to search.
+		for _, t := range toolSet {
+			if ts, ok := t.(*tools.ToolSearchTool); ok {
+				ts.BindToolset(toolSet)
+			}
+		}
 		logging.Info("Resolved tool set", "agent", a.AgentID(), "tools", strings.Join(toolNames, ", "))
 	})
 	return a.tools

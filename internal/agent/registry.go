@@ -39,6 +39,7 @@ type AgentInfo struct {
 	Skills          []string         `yaml:"skills,omitempty"`
 	Permission      map[string]any   `yaml:"permission,omitempty"`
 	Tools           map[string]bool  `yaml:"tools,omitempty"`
+	DeferredTools   map[string]bool  `yaml:"deferredTools,omitempty"`
 	Output          *Output          `yaml:"output,omitempty"`
 	Location        string           `yaml:"-"`
 	ParallelToolUse *bool            `yaml:"parallelToolUse,omitempty"`
@@ -459,6 +460,12 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 			}
 			maps.Copy(existing.Tools, agentCfg.Tools)
 		}
+		if agentCfg.DeferredTools != nil {
+			if existing.DeferredTools == nil {
+				existing.DeferredTools = make(map[string]bool)
+			}
+			maps.Copy(existing.DeferredTools, agentCfg.DeferredTools)
+		}
 		if agentCfg.Output != nil && agentCfg.Output.Schema != nil {
 			if existing.Output == nil {
 				existing.Output = &Output{}
@@ -522,6 +529,12 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 			existing.Tools = make(map[string]bool)
 		}
 		maps.Copy(existing.Tools, md.Tools)
+	}
+	if md.DeferredTools != nil {
+		if existing.DeferredTools == nil {
+			existing.DeferredTools = make(map[string]bool)
+		}
+		maps.Copy(existing.DeferredTools, md.DeferredTools)
 	}
 	if md.Output != nil && md.Output.Schema != nil {
 		if existing.Output == nil {

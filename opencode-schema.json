@@ -8,6 +8,14 @@
           "description": "Badge color for subagent display (e.g., 'blue', 'orange', 'primary', 'warning')",
           "type": "string"
         },
+        "deferredTools": {
+          "additionalProperties": {
+            "description": "Whether tools matching this pattern are deferred",
+            "type": "boolean"
+          },
+          "description": "Tool name patterns (exact or wildcard, case-insensitive) whose schemas are deferred: excluded from the request payload until discovered via the toolsearch tool (or Anthropic server-side tool search on models that support it). Only enabled tools can be deferred; 'toolsearch' and 'struct_output' are never deferrable. Keys use the same wildcard matching as 'tools' (e.g. {\"jira_*\": true}).",
+          "type": "object"
+        },
         "description": {
           "description": "Description of the agent's purpose",
           "type": "string"
@@ -191,6 +199,14 @@
           "color": {
             "description": "Badge color for subagent display (e.g., 'blue', 'orange', 'primary', 'warning')",
             "type": "string"
+          },
+          "deferredTools": {
+            "additionalProperties": {
+              "description": "Whether tools matching this pattern are deferred",
+              "type": "boolean"
+            },
+            "description": "Tool name patterns (exact or wildcard, case-insensitive) whose schemas are deferred: excluded from the request payload until discovered via the toolsearch tool (or Anthropic server-side tool search on models that support it). Only enabled tools can be deferred; 'toolsearch' and 'struct_output' are never deferrable. Keys use the same wildcard matching as 'tools' (e.g. {\"jira_*\": true}).",
+            "type": "object"
           },
           "description": {
             "description": "Description of the agent's purpose",

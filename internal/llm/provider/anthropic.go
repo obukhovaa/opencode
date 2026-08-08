@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -199,6 +200,32 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 						blocks = append(blocks, anthropic.NewThinkingBlock(rc.Signature, rc.Thinking))
 					}
 				}
+				// Replay server-side tool-search invocations (deferred-tools
+				// native path) with the same provider-family gating: the API
+				// re-expands the referenced deferred tools' schemas from the
+				// replayed references, keeping them loaded for the session.
+				for _, ts := range msg.ToolSearchParts() {
+					var inputMap map[string]any
+					if err := json.Unmarshal([]byte(ts.Input), &inputMap); err != nil {
+						inputMap = map[string]any{}
+					}
+					blocks = append(blocks, anthropic.NewServerToolUseBlock(ts.ToolUseID, inputMap, anthropic.ServerToolUseBlockParamName(ts.Name)))
+					if ts.ErrorCode != "" {
+						blocks = append(blocks, anthropic.NewToolSearchToolResultBlock(
+							anthropic.ToolSearchToolResultErrorParam{ErrorCode: anthropic.ToolSearchToolResultErrorCode(ts.ErrorCode)},
+							ts.ToolUseID,
+						))
+						continue
+					}
+					refs := make([]anthropic.ToolReferenceBlockParam, 0, len(ts.References))
+					for _, name := range ts.References {
+						refs = append(refs, anthropic.ToolReferenceBlockParam{ToolName: name})
+					}
+					blocks = append(blocks, anthropic.NewToolSearchToolResultBlock(
+						anthropic.ToolSearchToolSearchResultBlockParam{ToolReferences: refs},
+						ts.ToolUseID,
+					))
+				}
 			}
 			if strings.TrimSpace(msg.Content().String()) != "" {
 				content := anthropic.NewTextBlock(msg.Content().String())
@@ -319,11 +346,34 @@ func unsupportedAttachmentNote(bc message.BinaryContent) string {
 	return fmt.Sprintf("[Attachment of unsupported media type %q omitted (%d bytes)%s]", bc.MIMEType, len(bc.Data), saved)
 }
 
-func (a *anthropicClient) convertTools(tools []toolsPkg.BaseTool) []anthropic.ToolUnionParam {
-	anthropicTools := make([]anthropic.ToolUnionParam, len(tools))
+func (a *anthropicClient) convertTools(ctx context.Context, tools []toolsPkg.BaseTool) []anthropic.ToolUnionParam {
+	// Deferred-tool handling is path-dependent per model, decided fresh on
+	// every request (the toolset slice itself is frozen per agent):
+	//   - native (SupportsToolSearch): deferred tools ship full schemas with
+	//     defer_loading:true (permanently — the API strips them from the
+	//     cache key, so a stable flag means a stable prefix) and the GA
+	//     server tool-search tool replaces the client-side toolsearch.
+	//   - fallback (e.g. Kimi on this same client): non-activated deferred
+	//     tools are omitted entirely; session-activated ones are appended
+	//     AFTER the stable ordering, in activation order, so previously
+	//     serialized tool positions never shift.
+	native := a.providerOptions.model.SupportsToolSearch
+	sessionID, _ := toolsPkg.GetContextValues(ctx)
 
-	for i, tool := range tools {
+	type activatedEntry struct {
+		param anthropic.ToolUnionParam
+		seq   int64
+	}
+	out := make([]anthropic.ToolUnionParam, 0, len(tools)+1)
+	var activatedTail []activatedEntry
+	hasDeferred := false
+
+	for _, tool := range tools {
 		info := tool.Info()
+		if native && info.Name == toolsPkg.ToolSearchToolName {
+			// The server tool owns discovery on the native path.
+			continue
+		}
 		toolParam := anthropic.ToolParam{
 			Name:        info.Name,
 			Description: anthropic.String(info.Description),
@@ -332,17 +382,59 @@ func (a *anthropicClient) convertTools(tools []toolsPkg.BaseTool) []anthropic.To
 				Required:   info.Required,
 			},
 		}
-
-		// Single cache breakpoint on the last tool definition. The
-		// deterministic ordering from OrderTools() ensures a stable prefix.
-		if i == len(tools)-1 && !a.options.disableCache {
-			toolParam.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		w, isDeferred := tool.(*toolsPkg.DeferredWrapper)
+		switch {
+		case isDeferred && native:
+			hasDeferred = true
+			toolParam.DeferLoading = anthropic.Bool(true)
+			out = append(out, anthropic.ToolUnionParam{OfTool: &toolParam})
+		case isDeferred:
+			hasDeferred = true
+			if seq, ok := w.ActivatedAt(sessionID); ok {
+				activatedTail = append(activatedTail, activatedEntry{anthropic.ToolUnionParam{OfTool: &toolParam}, seq})
+			}
+		default:
+			out = append(out, anthropic.ToolUnionParam{OfTool: &toolParam})
 		}
-
-		anthropicTools[i] = anthropic.ToolUnionParam{OfTool: &toolParam}
 	}
 
-	return anthropicTools
+	sort.Slice(activatedTail, func(i, j int) bool { return activatedTail[i].seq < activatedTail[j].seq })
+	for _, e := range activatedTail {
+		out = append(out, e.param)
+	}
+
+	if native && hasDeferred {
+		out = append(out, anthropic.ToolUnionParam{
+			OfToolSearchToolRegex20251119: &anthropic.ToolSearchToolRegex20251119Param{
+				Type: anthropic.ToolSearchToolRegex20251119TypeToolSearchToolRegex20251119,
+			},
+		})
+	}
+
+	// Single cache breakpoint on the last entry that participates in the
+	// rendered prefix — i.e. the last one WITHOUT defer_loading (deferred
+	// entries are stripped from the prefix by the API, so a breakpoint on
+	// one would silently vanish). On the native path that is the appended
+	// server tool-search tool; without deferrals it is simply the last tool
+	// (the pre-feature behavior).
+	if !a.options.disableCache {
+		for i := len(out) - 1; i >= 0; i-- {
+			if st := out[i].OfToolSearchToolRegex20251119; st != nil {
+				st.CacheControl = anthropic.NewCacheControlEphemeralParam()
+				break
+			}
+			if t := out[i].OfTool; t != nil {
+				if t.DeferLoading.Valid() && t.DeferLoading.Value {
+					continue
+				}
+				t.CacheControl = anthropic.NewCacheControlEphemeralParam()
+				break
+			}
+			break
+		}
+	}
+
+	return out
 }
 
 // cacheControlParam returns an ephemeral cache control parameter unless caching
@@ -461,7 +553,7 @@ func (a *anthropicClient) preparedMessages(ctx context.Context, messages []anthr
 }
 
 func (a *anthropicClient) send(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) (resposne *ProviderResponse, err error) {
-	preparedMessages := a.preparedMessages(ctx, a.convertMessages(messages), a.convertTools(tools))
+	preparedMessages := a.preparedMessages(ctx, a.convertMessages(messages), a.convertTools(ctx, tools))
 	a.applyMetadata(ctx, &preparedMessages)
 	cfg := config.Get()
 	if cfg.Debug {
@@ -508,16 +600,17 @@ func (a *anthropicClient) send(ctx context.Context, messages []message.Message, 
 		}
 
 		return &ProviderResponse{
-			Content:   sb.String(),
-			ToolCalls: a.toolCalls(*anthropicResponse),
-			Reasoning: a.reasoningParts(*anthropicResponse),
-			Usage:     a.usage(*anthropicResponse),
+			Content:      sb.String(),
+			ToolCalls:    a.toolCalls(*anthropicResponse),
+			Reasoning:    a.reasoningParts(*anthropicResponse),
+			ToolSearches: a.toolSearchParts(*anthropicResponse),
+			Usage:        a.usage(*anthropicResponse),
 		}, nil
 	}
 }
 
 func (a *anthropicClient) stream(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) <-chan ProviderEvent {
-	preparedMessages := a.preparedMessages(ctx, a.convertMessages(messages), a.convertTools(tools))
+	preparedMessages := a.preparedMessages(ctx, a.convertMessages(messages), a.convertTools(ctx, tools))
 	a.applyMetadata(ctx, &preparedMessages)
 	cfg := config.Get()
 
@@ -655,6 +748,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 							Content:      sb.String(),
 							ToolCalls:    a.toolCalls(accumulatedMessage),
 							Reasoning:    a.reasoningParts(accumulatedMessage),
+							ToolSearches: a.toolSearchParts(accumulatedMessage),
 							Usage:        a.usage(accumulatedMessage),
 							FinishReason: a.finishReason(string(accumulatedMessage.StopReason)),
 						},
@@ -694,6 +788,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 							Content:      sb.String(),
 							ToolCalls:    a.toolCalls(accumulatedMessage),
 							Reasoning:    a.reasoningParts(accumulatedMessage),
+							ToolSearches: a.toolSearchParts(accumulatedMessage),
 							Usage:        a.usage(accumulatedMessage),
 							FinishReason: message.FinishReasonEndTurn,
 						},
@@ -905,6 +1000,47 @@ func (a *anthropicClient) reasoningParts(msg anthropic.Message) []message.Reason
 				Redacted: true,
 				Data:     variant.Data,
 			})
+		}
+	}
+	return parts
+}
+
+// toolSearchParts extracts server-side tool-search invocations from a
+// response: each server_tool_use block for a tool-search variant paired
+// with its tool_search_tool_result by tool_use_id. Persisted for replay
+// (see message.ToolSearchContent) and used to activate deferred wrappers
+// at discovery time.
+func (a *anthropicClient) toolSearchParts(msg anthropic.Message) []message.ToolSearchContent {
+	var parts []message.ToolSearchContent
+	byUseID := map[string]int{}
+	for _, block := range msg.Content {
+		switch variant := block.AsAny().(type) {
+		case anthropic.ServerToolUseBlock:
+			if !strings.HasPrefix(string(variant.Name), "tool_search_tool") {
+				continue
+			}
+			input, err := json.Marshal(variant.Input)
+			if err != nil {
+				input = []byte("{}")
+			}
+			parts = append(parts, message.ToolSearchContent{
+				ToolUseID: variant.ID,
+				Name:      string(variant.Name),
+				Input:     string(input),
+			})
+			byUseID[variant.ID] = len(parts) - 1
+		case anthropic.ToolSearchToolResultBlock:
+			idx, ok := byUseID[variant.ToolUseID]
+			if !ok {
+				continue
+			}
+			if variant.Content.ErrorCode != "" {
+				parts[idx].ErrorCode = string(variant.Content.ErrorCode)
+				continue
+			}
+			for _, ref := range variant.Content.ToolReferences {
+				parts[idx].References = append(parts[idx].References, ref.ToolName)
+			}
 		}
 	}
 	return parts
@@ -1186,10 +1322,17 @@ func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Me
 	if a.options.useBedrock {
 		anthropicMessages, mediaTokenEstimate = stripMediaForCountTokens(anthropicMessages)
 	}
-	anthropicTools := a.convertTools(tools)
-	countTools := make([]anthropic.MessageCountTokensToolUnionParam, len(anthropicTools))
-	for i, t := range anthropicTools {
-		countTools[i] = anthropic.MessageCountTokensToolUnionParam{OfTool: t.OfTool}
+	anthropicTools := a.convertTools(ctx, tools)
+	countTools := make([]anthropic.MessageCountTokensToolUnionParam, 0, len(anthropicTools))
+	for _, t := range anthropicTools {
+		// Map every union member we emit; an unmapped entry would serialize
+		// as an empty object and 400 the count_tokens call.
+		switch {
+		case t.OfTool != nil:
+			countTools = append(countTools, anthropic.MessageCountTokensToolUnionParam{OfTool: t.OfTool})
+		case t.OfToolSearchToolRegex20251119 != nil:
+			countTools = append(countTools, anthropic.MessageCountTokensToolUnionParam{OfToolSearchToolRegex20251119: t.OfToolSearchToolRegex20251119})
+		}
 	}
 
 	params := anthropic.MessageCountTokensParams{
