@@ -191,10 +191,15 @@ func convertBinaryContentOpenAI(bc message.BinaryContent) openai.ChatCompletionC
 	}
 }
 
-func (o *openaiClient) convertTools(tools []tools.BaseTool) []openai.ChatCompletionToolParam {
-	openaiTools := make([]openai.ChatCompletionToolParam, len(tools))
+func (o *openaiClient) convertTools(ctx context.Context, allTools []tools.BaseTool) []openai.ChatCompletionToolParam {
+	// Fallback deferred-tool path: omit non-activated deferred tools and
+	// append session-activated ones after the stable ordering (see
+	// tools.SerializableFor). This client has no native tool-search models.
+	sessionID, _ := tools.GetContextValues(ctx)
+	serializable := tools.SerializableFor(sessionID, allTools)
+	openaiTools := make([]openai.ChatCompletionToolParam, len(serializable))
 
-	for i, tool := range tools {
+	for i, tool := range serializable {
 		info := tool.Info()
 		openaiTools[i] = openai.ChatCompletionToolParam{
 			Function: openai.FunctionDefinitionParam{
@@ -255,7 +260,7 @@ func (o *openaiClient) preparedParams(messages []openai.ChatCompletionMessagePar
 }
 
 func (o *openaiClient) send(ctx context.Context, messages []message.Message, tools []tools.BaseTool) (response *ProviderResponse, err error) {
-	params := o.preparedParams(o.convertMessages(messages), o.convertTools(tools))
+	params := o.preparedParams(o.convertMessages(messages), o.convertTools(ctx, tools))
 	o.applyMetadata(ctx, &params)
 	cfg := config.Get()
 	if cfg.Debug {
@@ -309,7 +314,7 @@ func (o *openaiClient) send(ctx context.Context, messages []message.Message, too
 }
 
 func (o *openaiClient) stream(ctx context.Context, messages []message.Message, tools []tools.BaseTool) <-chan ProviderEvent {
-	params := o.preparedParams(o.convertMessages(messages), o.convertTools(tools))
+	params := o.preparedParams(o.convertMessages(messages), o.convertTools(ctx, tools))
 	o.applyMetadata(ctx, &params)
 	params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
 		IncludeUsage: openai.Bool(true),

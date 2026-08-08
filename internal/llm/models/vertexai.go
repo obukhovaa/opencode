@@ -96,6 +96,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude47Opus].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude47Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude47Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude47Opus].SupportsToolSearch,
 	},
 	VertexAIOpus48: {
 		ID:                       VertexAIOpus48,
@@ -114,6 +115,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude48Opus].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude48Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude48Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude48Opus].SupportsToolSearch,
 	},
 	VertexAIOpus5: {
 		ID:                       VertexAIOpus5,
@@ -132,6 +134,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude5Opus].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude5Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude5Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude5Opus].SupportsToolSearch,
 	},
 	VertexAIFable5: {
 		ID:                       VertexAIFable5,
@@ -150,6 +153,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[ClaudeFable5].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[ClaudeFable5].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[ClaudeFable5].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[ClaudeFable5].SupportsToolSearch,
 	},
 	VertexAISonnet46: {
 		ID:                       VertexAISonnet46,
@@ -183,6 +187,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude5Sonnet].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude5Sonnet].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude5Sonnet].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude5Sonnet].SupportsToolSearch,
 	},
 	VertexAIHaiku45: {
 		ID:                  VertexAIHaiku45,

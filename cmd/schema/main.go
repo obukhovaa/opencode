@@ -360,6 +360,14 @@ func generateSchema() map[string]any {
 						"description": "Whether the tool is enabled for this agent",
 					},
 				},
+				"deferredTools": map[string]any{
+					"type":        "object",
+					"description": "Tool name patterns (exact or wildcard, case-insensitive) whose schemas are deferred: excluded from the request payload until discovered via the toolsearch tool (or Anthropic server-side tool search on models that support it). Only enabled tools can be deferred; 'toolsearch' and 'struct_output' are never deferrable. Keys use the same wildcard matching as 'tools' (e.g. {\"jira_*\": true}).",
+					"additionalProperties": map[string]any{
+						"type":        "boolean",
+						"description": "Whether tools matching this pattern are deferred",
+					},
+				},
 				"parallelToolUse": map[string]any{
 					"type":        "boolean",
 					"description": "Whether to enable parallel tool execution for this agent. When true (default), independent tool calls run concurrently. Set to false to force sequential execution.",

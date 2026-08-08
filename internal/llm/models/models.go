@@ -21,6 +21,7 @@ type Model struct {
 	SupportsMaximumThinking  bool          `json:"supports_maximum_thinking"`
 	SupportsXHighThinking    bool          `json:"supports_xhigh_thinking"`
 	SupportsTaskBudget       bool          `json:"supports_task_budget"`
+	SupportsToolSearch       bool          `json:"supports_tool_search"`
 	SupportsAttachments      bool          `json:"supports_attachments"`
 	UseLegacyMaxTokens       bool          `json:"use_legacy_max_tokens,omitempty"`
 }

@@ -194,6 +194,49 @@ func IsToolEnabled(toolName string, toolsConfig map[string]bool) bool {
 	return true
 }
 
+// IsToolDeferred reports whether a tool's schema should be deferred (loaded
+// on demand via toolsearch) for an agent with the given deferredTools config.
+// Semantics mirror IsToolEnabled with three deliberate differences:
+//   - nil/empty config means NOT deferred (deferral is opt-in),
+//   - matching is case-insensitive: viper lowercases map keys loaded from
+//     .opencode.json while MCP tool names may contain uppercase, so
+//     case-sensitive matching would silently diverge between JSON- and
+//     markdown-configured agents,
+//   - toolsearch and struct_output are never deferrable: toolsearch is the
+//     discovery ladder itself, and struct_output is force-called by the flow
+//     wrap-up (forced tool_choice cannot target an undeclared tool).
+func IsToolDeferred(toolName string, deferredConfig map[string]bool) bool {
+	if len(deferredConfig) == 0 {
+		return false
+	}
+	name := strings.ToLower(toolName)
+	if name == "toolsearch" || name == "struct_output" {
+		return false
+	}
+	lowered := make(map[string]bool, len(deferredConfig))
+	for k, v := range deferredConfig {
+		lowered[strings.ToLower(k)] = v
+	}
+	if deferred, ok := lowered[name]; ok {
+		return deferred
+	}
+	matched := false
+	matchValue := false
+	for _, pattern := range sortedPatternKeys(lowered) {
+		if MatchWildcard(pattern, name) {
+			matched = true
+			matchValue = lowered[pattern]
+		}
+	}
+	if matched {
+		return matchValue
+	}
+	if v, ok := lowered["*"]; ok {
+		return v
+	}
+	return false
+}
+
 func resolvePermissionValue(input string, value any) Action {
 	switch v := value.(type) {
 	case string:

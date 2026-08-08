@@ -40,6 +40,9 @@ func clonePart(p ContentPart) ContentPart {
 		return v
 	case ImageURLContent:
 		return v
+	case ToolSearchContent:
+		// References is a []string — shared, never mutated in place.
+		return v
 	case Finish:
 		return v
 	default:
