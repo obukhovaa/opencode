@@ -152,3 +152,31 @@ turn. Both blocks MUST be absent for agents with no deferred tools.
 - **WHEN** deferred MCP tools finish resolving after the session started
 - **THEN** exactly one delta message announces the new names
 - **AND** no further delta is injected until the deferred pool changes again
+
+### Requirement: Both activation paths are e2e-verified
+
+The repository SHALL ship two e2e checks under `scripts/test/`. The
+fallback-path check MUST be fully self-contained: it drives a session
+against an in-process mock OpenAI-compatible server (the `cmd/*-e2e` driver
+pattern) and asserts the wire-level contract — the first request omits the
+deferred tool and includes `toolsearch`; after a `toolsearch` call the next
+request includes the activated tool appended after the previously sent
+tools; and with no `deferredTools` config the serialized tools payload is
+byte-identical to a run without the feature. The native-path check runs a
+real session against an Anthropic model with server-side tool search and
+MUST skip (not fail) when no Anthropic credential is available in the
+environment; when it runs, it asserts the request carried
+`defer_loading: true` plus the server tool-search tool, and that the model
+successfully discovered and invoked a deferred tool.
+
+#### Scenario: Fallback e2e runs offline
+
+- **WHEN** `make test-e2e` runs on a machine with no provider credentials
+- **THEN** the fallback deferred-tools script executes against the local mock and passes
+- **AND** the native-path script reports SKIP rather than failing
+
+#### Scenario: Native e2e verifies live server-side tool search
+
+- **WHEN** the native-path script runs with an Anthropic credential present
+- **THEN** the session's requests include `defer_loading: true` on deferred tools and the server tool-search tool
+- **AND** the model invokes a deferred tool that was discovered via tool search during the session

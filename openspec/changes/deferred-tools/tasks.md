@@ -32,7 +32,8 @@
 ## 5. End-to-end & docs
 
 - [ ] 5.1 Unit-level flow tests: native single-turn (recorded fixture with tool_search results replayed) and fallback two-turn (search → next-request inclusion)
-- [ ] 5.2 E2E script under `scripts/test/` exercising fallback activation cross-process (per CLAUDE.md e2e guidance)
+- [ ] 5.2 Fallback e2e: `cmd/deferred-e2e` driver with an in-process mock OpenAI-compatible server (compaction-e2e pattern) + `scripts/test/deferred_tools.sh` asserting: first request omits deferred tool and carries `toolsearch`; post-search request appends the activated tool after the previously sent tools; no-config run is byte-identical on the tools payload
+- [ ] 5.2b Native e2e: `scripts/test/deferred_tools_native.sh` running a live session against an Anthropic model with server-side tool search; SKIP cleanly when no Anthropic credential is present; assert `defer_loading` + server tool present in requests and a deferred tool was discovered and invoked
 - [ ] 5.3 Add superseded banner to `spec/20260405T120000-deferred-tools-and-toolsearch.md` pointing here; update TODO.md reference
 - [ ] 5.4 Docs: CLAUDE.md agent-fields entry for `deferredTools` (+ never-defer exclusions, case-insensitivity), `docs/` agent configuration section
 - [ ] 5.5 `make test` + `make test-e2e` green; record before/after per-turn input tokens on an MCP-heavy agent (Langfuse) in the PR description

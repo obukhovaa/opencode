@@ -182,6 +182,13 @@ one MCP-heavy agent, compare per-turn input tokens and cache-read rates via
 Langfuse. Rollback = removing the config key. The old draft file gets a
 superseded banner pointing here.
 
+Verification is two-tier: the fallback path gets a fully offline e2e (an
+in-process mock OpenAI-compatible server via the `cmd/compaction-e2e`
+driver pattern) asserting the wire contract, while the native path gets a
+live, credential-gated e2e against a real Anthropic model with server-side
+tool search that SKIPs when no key is available — CI stays hermetic, and
+the real integration is exercised wherever credentials exist.
+
 ## Open Questions
 
 - BM25 vs regex server variant default — ship regex, revisit with usage data.
