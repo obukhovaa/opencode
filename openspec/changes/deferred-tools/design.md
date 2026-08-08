@@ -71,15 +71,16 @@ value: rejected, breaks the existing boolean type and every consumer.
 
 ### D2. Per-turn decision in providers via wrapper with per-session state
 
-`BaseTool` gains `IsDeferred() bool` (concrete tools return false; the
-wrapper returns true — meaning "deferral applies to me", not "currently
-hidden"). `NewToolSet` wraps matching tools in `deferredWrapper`, which
-carries **per-session** activation state: a concurrent map
-`sessionID → activation sequence number` (sequence from a per-agent atomic
-counter). Providers extract the sessionID from the request context (the
-same `tools.GetContextValues` plumbing every tool already uses) and ask the
-wrapper `ActivatedAt(sessionID) (seq int64, ok bool)`; `toolsearch` and the
-native discovery path call `Activate(sessionID)`.
+`NewToolSet` wraps matching tools in an exported `tools.DeferredWrapper`;
+providers and `toolsearch` recognize deferral by **type assertion** on the
+wrapper rather than a new `BaseTool` method (implementation refinement: an
+interface change would touch every concrete tool and mock for zero
+semantic gain). The wrapper carries **per-session** activation state: a
+map `sessionID → activation sequence number` (sequence from a per-toolset
+atomic counter). Providers extract the sessionID from the request context
+(the same `tools.GetContextValues` plumbing every tool already uses) and
+ask the wrapper `ActivatedAt(sessionID) (seq int64, ok bool)`;
+`toolsearch` and the native discovery path call `Activate(sessionID)`.
 
 Per-session state is mandatory, not a nicety: primary agent Service
 instances are constructed once per process and serve every session

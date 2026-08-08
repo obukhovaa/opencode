@@ -8,5 +8,5 @@ Specs not yet implemented.
 - [Edit Tool — Fuzzy Matching Pipeline](spec/20260223T140200-edit-fuzzy-matching.md)
 - [Write Tool — Cross-File LSP Diagnostics](spec/20260223T140400-write-cross-file-diagnostics.md)
 - [Git Worktree Isolation](spec/20260311T120000-git-worktree-isolation.md)
-- [Deferred Tools and ToolSearchTool](spec/20260405T120000-deferred-tools-and-toolsearch.md)
+- [Deferred Tools and ToolSearchTool](openspec/changes/deferred-tools/proposal.md) (superseded draft: spec/20260405T120000-deferred-tools-and-toolsearch.md)
 - [Memory Tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool)
