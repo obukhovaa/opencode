@@ -139,3 +139,25 @@ discovery turn (on the fallback path) isn't worth it; leave them loaded.
 Start with the noisiest MCP namespaces (`{"jira_*": true, "slack_*": true}`) and
 measure per-turn input tokens. There is no default deferral set — every agent
 keeps its current behavior until you opt in.
+
+## Known limitations
+
+- **Bedrock / Vertex without server tool search.** The native path requires the
+  serving endpoint to execute Anthropic's server-side tool search. This is
+  verified working through the LiteLLM proxy for both `bedrock.*` and
+  `vertexai.*` Claude models. A *direct* AWS Bedrock / Google Vertex endpoint
+  that does not support the GA tool-search tool (or requires the
+  `tool-search-tool` beta) may reject a deferred-tools request; set that beta
+  via `providers.<name>.headers`, or don't declare `deferredTools` for such
+  agents.
+- **Cross-path model switch mid-session.** Activation *state* carries across a
+  model switch, but switching between a native (server tool search) model and a
+  fallback model within one session can leave provider-specific tool-search
+  history blocks that the new model's request doesn't declare. Native→fallback
+  is handled (those blocks are dropped on replay); the reverse, after the model
+  has called the client `toolsearch`, may require a compaction to clear. Prefer
+  keeping an agent on one path for a session.
+- **Fallback restart re-discovery.** Fallback-path activations live only in
+  memory. After a process restart a resumed fallback session re-discovers tools
+  via `toolsearch` (one self-correcting turn); native sessions restore from the
+  replayed tool-search blocks and need no re-discovery.

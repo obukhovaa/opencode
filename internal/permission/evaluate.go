@@ -213,25 +213,26 @@ func IsToolDeferred(toolName string, deferredConfig map[string]bool) bool {
 	if name == "toolsearch" || name == "struct_output" {
 		return false
 	}
-	lowered := make(map[string]bool, len(deferredConfig))
+	// Case-insensitive matching without allocating a lowercased copy of the
+	// whole config on every call (this runs once per tool in NewToolSet and
+	// once per builtin when the deferred-tools prompt block is built).
 	for k, v := range deferredConfig {
-		lowered[strings.ToLower(k)] = v
-	}
-	if deferred, ok := lowered[name]; ok {
-		return deferred
+		if strings.EqualFold(k, toolName) {
+			return v
+		}
 	}
 	matched := false
 	matchValue := false
-	for _, pattern := range sortedPatternKeys(lowered) {
-		if MatchWildcard(pattern, name) {
+	for _, pattern := range sortedPatternKeys(deferredConfig) {
+		if MatchWildcard(strings.ToLower(pattern), name) {
 			matched = true
-			matchValue = lowered[pattern]
+			matchValue = deferredConfig[pattern]
 		}
 	}
 	if matched {
 		return matchValue
 	}
-	if v, ok := lowered["*"]; ok {
+	if v, ok := deferredConfig["*"]; ok {
 		return v
 	}
 	return false

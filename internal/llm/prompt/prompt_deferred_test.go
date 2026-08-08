@@ -8,6 +8,19 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestIsBuiltinDeferralName(t *testing.T) {
+	// Builtins covered by the static prompt block — the agent delta must
+	// skip these (incl. the non-baseline monitor/tasklist/taskstop, whose
+	// double-announcement this predicate exists to prevent).
+	for _, n := range []string{"ls", "bash", "monitor", "tasklist", "taskstop", "task", "websearch", "lsp"} {
+		assert.True(t, IsBuiltinDeferralName(n), "%s should be a builtin deferral name", n)
+	}
+	// MCP / dynamic tools are NOT builtins → announced via the delta.
+	for _, n := range []string{"mcp__gitlab__get_issue", "jira_add_comment", "toolsearch"} {
+		assert.False(t, IsBuiltinDeferralName(n), "%s should not be a builtin deferral name", n)
+	}
+}
+
 func TestDeferredToolsPrompt(t *testing.T) {
 	t.Run("absent without config", func(t *testing.T) {
 		reg := &mockRegistry{agents: map[string]agentregistry.AgentInfo{

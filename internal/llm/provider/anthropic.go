@@ -201,30 +201,43 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 					}
 				}
 				// Replay server-side tool-search invocations (deferred-tools
-				// native path) with the same provider-family gating: the API
-				// re-expands the referenced deferred tools' schemas from the
-				// replayed references, keeping them loaded for the session.
-				for _, ts := range msg.ToolSearchParts() {
-					var inputMap map[string]any
-					if err := json.Unmarshal([]byte(ts.Input), &inputMap); err != nil {
-						inputMap = map[string]any{}
-					}
-					blocks = append(blocks, anthropic.NewServerToolUseBlock(ts.ToolUseID, inputMap, anthropic.ServerToolUseBlockParamName(ts.Name)))
-					if ts.ErrorCode != "" {
+				// native path). Gated additionally on the CURRENT model's
+				// SupportsToolSearch: only a native-path request declares the
+				// server tool-search tool, so replaying these blocks into a
+				// fallback-path request (e.g. after a mid-session switch to a
+				// non-tool-search model of the same provider family) would
+				// reference an undeclared server tool and 400. The discovered
+				// tools themselves remain activated+declared via SerializableFor,
+				// so dropping only the search blocks is safe.
+				if a.providerOptions.model.SupportsToolSearch {
+					for _, ts := range msg.ToolSearchParts() {
+						// Nothing to replay for a search that returned neither
+						// references nor an error; an empty tool_references array
+						// is also a rejectable shape on some backends.
+						if len(ts.References) == 0 && ts.ErrorCode == "" {
+							continue
+						}
+						var inputMap map[string]any
+						if err := json.Unmarshal([]byte(ts.Input), &inputMap); err != nil {
+							inputMap = map[string]any{}
+						}
+						blocks = append(blocks, anthropic.NewServerToolUseBlock(ts.ToolUseID, inputMap, anthropic.ServerToolUseBlockParamName(ts.Name)))
+						if ts.ErrorCode != "" {
+							blocks = append(blocks, anthropic.NewToolSearchToolResultBlock(
+								anthropic.ToolSearchToolResultErrorParam{ErrorCode: anthropic.ToolSearchToolResultErrorCode(ts.ErrorCode)},
+								ts.ToolUseID,
+							))
+							continue
+						}
+						refs := make([]anthropic.ToolReferenceBlockParam, 0, len(ts.References))
+						for _, name := range ts.References {
+							refs = append(refs, anthropic.ToolReferenceBlockParam{ToolName: name})
+						}
 						blocks = append(blocks, anthropic.NewToolSearchToolResultBlock(
-							anthropic.ToolSearchToolResultErrorParam{ErrorCode: anthropic.ToolSearchToolResultErrorCode(ts.ErrorCode)},
+							anthropic.ToolSearchToolSearchResultBlockParam{ToolReferences: refs},
 							ts.ToolUseID,
 						))
-						continue
 					}
-					refs := make([]anthropic.ToolReferenceBlockParam, 0, len(ts.References))
-					for _, name := range ts.References {
-						refs = append(refs, anthropic.ToolReferenceBlockParam{ToolName: name})
-					}
-					blocks = append(blocks, anthropic.NewToolSearchToolResultBlock(
-						anthropic.ToolSearchToolSearchResultBlockParam{ToolReferences: refs},
-						ts.ToolUseID,
-					))
 				}
 			}
 			if strings.TrimSpace(msg.Content().String()) != "" {

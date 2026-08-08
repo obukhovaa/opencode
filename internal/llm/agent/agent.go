@@ -197,8 +197,11 @@ type agent struct {
 	// tool names have already been announced via a delta message. Keyed by
 	// sessionID because this agent instance outlives sessions: a
 	// process-global set would suppress announcements for every session
-	// after the first. Values are map[string]bool.
-	deferredAnnounced sync.Map
+	// after the first. Values are map[string]bool, mutated only under
+	// deferredAnnouncedMu (Go maps are not safe for concurrent writes, and
+	// two Run calls for one session can briefly overlap).
+	deferredAnnounced   sync.Map
+	deferredAnnouncedMu sync.Mutex
 }
 
 func newAgent(
@@ -1903,16 +1906,32 @@ func (a *agent) backfillDeferredActivations(sessionID string, history []message.
 // History is scanned as a secondary source so resumed sessions don't
 // receive duplicate deltas after a restart.
 func (a *agent) injectDeferredDelta(ctx context.Context, sessionID string, toolSet []tools.BaseTool) (message.Message, bool) {
-	var pending []string
+	// The per-session announced-set is a plain map; guard every read/write
+	// with the agent mutex. Two Run calls for one session can overlap (the
+	// IsSessionBusy check and activeRequests.Store are not atomic), and
+	// concurrent writes to a Go map are a fatal, unrecoverable process crash.
+	a.deferredAnnouncedMu.Lock()
+	defer a.deferredAnnouncedMu.Unlock()
+
 	setAny, _ := a.deferredAnnounced.LoadOrStore(sessionID, map[string]bool{})
 	announced := setAny.(map[string]bool)
 
+	var pending []string
 	for _, t := range toolSet {
 		w, ok := t.(*tools.DeferredWrapper)
-		if !ok || w.IsBaseline() {
+		if !ok {
 			continue
 		}
 		name := w.Info().Name
+		// Builtins are already listed in the static system-prompt block
+		// (deferredToolsPrompt); the delta is only for dynamic tools (MCP)
+		// that resolve after the prompt was built. Gating on the builtin
+		// name set — not IsBaseline() — is required because monitor /
+		// tasklist / taskstop are non-baseline builtins that the static
+		// block already covers, so IsBaseline() would double-announce them.
+		if prompt.IsBuiltinDeferralName(name) {
+			continue
+		}
 		if !announced[name] {
 			pending = append(pending, name)
 		}
@@ -1922,9 +1941,12 @@ func (a *agent) injectDeferredDelta(ctx context.Context, sessionID string, toolS
 	}
 
 	// Secondary dedup against history: a restarted process has an empty
-	// in-memory set, but the previous delta message is persisted.
-	msgs, err := a.messages.List(ctx, sessionID)
-	if err == nil {
+	// in-memory set, but the previous delta message is persisted. Parse the
+	// EXACT names from prior delta messages (each on its own "- <name>"
+	// line) — a substring test would wrongly treat `get_issue` as already
+	// announced because it is contained in `get_issue_link`.
+	alreadyAnnounced := map[string]bool{}
+	if msgs, err := a.messages.List(ctx, sessionID); err == nil {
 		for _, msg := range msgs {
 			if msg.Role != message.User {
 				continue
@@ -1933,17 +1955,22 @@ func (a *agent) injectDeferredDelta(ctx context.Context, sessionID string, toolS
 			if !strings.Contains(text, deferredDeltaMarker) {
 				continue
 			}
-			kept := pending[:0]
-			for _, name := range pending {
-				if strings.Contains(text, name) {
-					announced[name] = true
-				} else {
-					kept = append(kept, name)
+			for _, line := range strings.Split(text, "\n") {
+				if name, ok := strings.CutPrefix(strings.TrimSpace(line), "- "); ok {
+					alreadyAnnounced[name] = true
 				}
 			}
-			pending = kept
 		}
 	}
+	kept := pending[:0]
+	for _, name := range pending {
+		if alreadyAnnounced[name] {
+			announced[name] = true
+		} else {
+			kept = append(kept, name)
+		}
+	}
+	pending = kept
 	if len(pending) == 0 {
 		return message.Message{}, false
 	}

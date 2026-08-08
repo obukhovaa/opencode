@@ -75,6 +75,12 @@ func (t *ToolSearchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, 
 		return NewTextErrorResponse("toolset is still loading; retry in a moment"), nil
 	}
 	sessionID, _ := GetContextValues(ctx)
+	if sessionID == "" {
+		// Activation is per session; without a session id it would be a
+		// silent no-op while the reply claims success, leaving the tool
+		// permanently uncallable. Fail loudly instead.
+		return NewTextErrorResponse("toolsearch requires a session; none was found in context"), nil
+	}
 
 	deferred := map[string]*DeferredWrapper{} // still-deferred for this session
 	active := map[string]bool{}               // already activated for this session

@@ -469,6 +469,22 @@ var builtinToolNamesForDeferral = []string{
 	tools.LSPToolName,
 }
 
+var builtinDeferralNameSet = func() map[string]bool {
+	m := make(map[string]bool, len(builtinToolNamesForDeferral))
+	for _, n := range builtinToolNamesForDeferral {
+		m[n] = true
+	}
+	return m
+}()
+
+// IsBuiltinDeferralName reports whether a tool name is a builtin covered by
+// the static deferred-tools system-prompt block. The agent loop uses this to
+// decide which deferred tools need a runtime delta message (only non-builtin,
+// e.g. MCP, tools do — builtins are already listed in the static block).
+func IsBuiltinDeferralName(name string) bool {
+	return builtinDeferralNameSet[name]
+}
+
 // deferredToolsPrompt renders the deferred-tools announcement for agents
 // with a non-empty deferredTools config: the <system-reminder> convention
 // explainer, the deferred builtin names (when any), and the MCP-delta
