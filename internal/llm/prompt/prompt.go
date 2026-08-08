@@ -192,7 +192,7 @@ func peerMentionOrFallback(peer bridge.PeerRef, fallback string) string {
 }
 
 const parallelToolUsePrompt = `
-You can call multiple tools in a single response. When several independent pieces of information are needed, batch the tool calls in one response instead of issuing them sequentially.`
+You can call multiple tools in a single response. When several independent pieces of information are needed and the calls are likely to succeed, batch the tool calls in one response instead of issuing them sequentially.`
 
 // backgroundTasksPrompt is the no-poll contract for background work. It is
 // appended for EVERY agent with tool access — independent of the agent's

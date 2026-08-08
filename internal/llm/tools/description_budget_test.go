@@ -1,11 +1,9 @@
 package tools
 
 import (
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/opencode-ai/opencode/internal/config"
 )
@@ -27,17 +25,12 @@ const (
 // channels, the task tool's agent list) are deliberately excluded: their size
 // is a function of the user's config, not of this repo's prompt surface.
 func TestToolDescriptionBudgets(t *testing.T) {
-	// bash/ls descriptions read the working directory from the loaded
-	// config. Usually edit_test.go's init has already loaded it; load it
-	// here too so this test survives alone. Never Reset it: later tests
-	// rely on the same package-lifetime config.
-	if config.Get() == nil {
-		wd, err := os.Getwd()
-		require.NoError(t, err)
-		_, err = config.Load(wd, false)
-		require.NoError(t, err)
-	}
-
+	// Config comes from this package's shared test init (testsetup_test.go).
+	//
+	// This inventory mirrors the builtin constructors reachable from
+	// NewToolSet's createTool switch (internal/llm/agent/tools.go) — that
+	// switch carries the matching pointer back here. When adding a builtin
+	// tool, add it to BOTH sites or its description escapes the budget.
 	tools := []struct {
 		tool   BaseTool
 		budget int

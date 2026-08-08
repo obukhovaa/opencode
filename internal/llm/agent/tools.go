@@ -73,6 +73,8 @@ func NewToolSet(
 	agentID := info.ID
 	result := make(chan tools.BaseTool, 100)
 
+	// When adding a case here, also add the tool to
+	// tools/description_budget_test.go so its description stays budgeted.
 	createTool := func(name string) tools.BaseTool {
 		switch name {
 		case tools.LSToolName:

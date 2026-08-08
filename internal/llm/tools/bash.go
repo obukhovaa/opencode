@@ -74,6 +74,8 @@ func bashDescription() string {
 		"${directory}", config.WorkingDirectory(),
 		"${maxBytes}", strconv.Itoa(MaxOutputBytes),
 		"${maxLines}", strconv.Itoa(MaxOutputLines),
+		"${maxReadKB}", strconv.Itoa(MaxReadSize/1024),
+		"${previewLines}", strconv.Itoa(TruncatedHeadLines),
 	)
 	return r.Replace(bashDescriptionTemplate)
 }
@@ -82,7 +84,7 @@ const bashDescriptionTemplate = `Executes a bash command in a persistent shell s
 
 Commands run in ${directory} by default; use the ` + "`workdir`" + ` parameter to run elsewhere instead of ` + "`cd <dir> && <command>`" + `. Quote file paths that contain spaces. The default timeout is 120000ms (2 minutes); set ` + "`timeout`" + ` for commands that need longer.
 
-Output: if it exceeds ${maxLines} lines or ${maxBytes} bytes, the full output is saved to a temp file and a truncated preview (first/last 500 lines) is shown. Search the saved file with the grep tool; the read tool works on it only under 250KB — for bigger files extract line ranges with sed in bash. Never pipe the original command through ` + "`head`/`tail`" + ` to pre-truncate; just run it.
+Output: if it exceeds ${maxLines} lines or ${maxBytes} bytes, the full output is saved to a temp file and a truncated preview (first/last ${previewLines} lines) is shown. Search the saved file with the grep tool; the read tool works on it only under ${maxReadKB}KB — for bigger files extract line ranges with sed in bash. Never pipe the original command through ` + "`head`/`tail`" + ` to pre-truncate; just run it.
 
 For long-running work (test suites, builds, deploys, log tails) pass ` + "`run_in_background: true`" + ` instead of waiting in the foreground or sleeping.
 
@@ -94,14 +96,14 @@ Prefer dedicated tools over shell equivalents:
 - Communicate with the user via your text output, never echo
 This tool is for real terminal operations: git, go, npm, docker, and anything without a dedicated tool.
 
-Issue independent commands as multiple bash calls in one response; chain dependent commands with ` + "`&&`" + ` in a single call (` + "`;`" + ` when earlier failures may be ignored). Do not separate commands with newlines.
+Chain dependent commands with ` + "`&&`" + ` in a single call (` + "`;`" + ` when earlier failures may be ignored). Do not separate commands with newlines.
 
 Git/GitHub policy:
 - NEVER commit, push, or modify git config unless the user explicitly asks
 - NEVER use destructive flags (push --force, reset --hard) or skip hooks (--no-verify, --no-gpg-sign) unless explicitly requested; never force-push main/master — warn the user if they ask for it
-- NEVER amend unless the user explicitly asks: never amend pushed commits or commits you did not create in this conversation, and after a failed or hook-rejected commit fix the issue and create a NEW commit instead of amending
+- NEVER amend pushed commits or commits you did not create in this conversation, and after a failed or hook-rejected commit fix the issue and create a NEW commit instead of amending. Amend only when the user explicitly asks, or when your own successful, unpushed commit needs the files a pre-commit hook just auto-modified
 - Interactive flags (git rebase -i, git add -i) are not supported
-- Follow the repository's commit-message style; do not commit files that likely contain secrets, and do not create empty commits
+- Follow the repository's commit-message style; do not commit files that likely contain secrets (.env, credentials.json) — warn the user if they explicitly ask to commit one — and do not create empty commits
 - Use the gh CLI for all GitHub operations (PRs, issues, checks, releases); return the PR URL after creating one`
 
 func NewBashTool(permission permission.Service, reg agentregistry.Registry) BaseTool {

@@ -43,8 +43,7 @@ const (
 - Reads up to 2000 lines from the start by default; use offset/limit for other sections. Avoid tiny repeated slices (e.g. 30-line chunks) — read a larger window in a single call.
 - Maximum file size is 250KB; lines longer than 2000 characters are truncated.
 - Cannot display binary files or images (use the view_image tool for images).
-- Suggests similar file names when the requested file is not found.
-- Read multiple files by issuing several calls in one response.`
+- Suggests similar file names when the requested file is not found.`
 )
 
 func NewReadTool(lspService lsp.LspService, reg agentregistry.Registry, permissions permission.Service) BaseTool {

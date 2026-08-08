@@ -43,8 +43,8 @@ Constraints discovered during investigation:
   (`getLastReadTime` checks in edit.go/multiedit.go/write.go), so the
   descriptions state it as a hard precondition; conversely `multiedit`
   rejects empty `old_string`, so it must not advertise `edit`'s create-file
-  special case. Do not copy contract text from dax our code doesn't enforce,
-  and do not drop contract text it does.
+  special case. Do not copy contract text from dax that our code doesn't
+  enforce, and do not drop contract text it does enforce.
 - Pin the result with a size-budget test so bloat cannot silently return.
 
 **Non-Goals:**

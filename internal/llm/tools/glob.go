@@ -23,8 +23,7 @@ const (
 	globDescription = `Fast file pattern matching that returns paths matching a glob (e.g. "**/*.js", "src/**/*.{ts,tsx}"), sorted by modification time, newest first.
 
 - Results are capped at 100 files; hidden files (dot-prefixed) are skipped. Refine the pattern if results are truncated.
-- Matches names only — use the grep tool for file contents, and the task tool for open-ended searches needing multiple rounds.
-- Batch speculative searches by issuing several calls in one response.`
+- Matches names only — use the grep tool for file contents, and the task tool for open-ended searches needing multiple rounds.`
 )
 
 type GlobParams struct {

@@ -31,3 +31,13 @@
 - [x] 4.3 Remove coder tool-routing bullets duplicating tool descriptions; spec now scopes the routing-list single-home rule and allows per-tool shell-equivalent preferences
 - [x] 4.4 Scope byte budgets to statically defined descriptions (spec + design); add five-primitives pin test; make budget test config-self-sufficient; fix test import grouping
 - [x] 4.5 Correct design.md read-before-edit statement and touched/left-alone inventory; align proposal.md Impact and task 1.2 with the shipped diff
+
+## 5. Review round 2 fixes (high-effort re-review)
+
+- [x] 5.1 Restore hook-modified-files amend exception and the warn-on-explicit-secrets-commit clause (bash policy)
+- [x] 5.2 Scope edit's read-first precondition to exclude the create-new-file path
+- [x] 5.3 Restore "likely to succeed" guard in parallelToolUsePrompt; restore explorer's no-emoji rule
+- [x] 5.4 Keep batching advice only in the gated parallelToolUsePrompt appendix (dropped from read/glob/bash descriptions)
+- [x] 5.5 Interpolate read-cap/preview constants into the bash description via the existing replacer (no hardcoded 250KB/500)
+- [x] 5.6 Move package config-loading init to testsetup_test.go; drop the dead guard; cross-link the budget-test inventory with NewToolSet's createTool switch
+- [x] 5.7 Fix garbled design.md sentence
