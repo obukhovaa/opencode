@@ -1,7 +1,7 @@
 # Deferred Tools and ToolSearchTool
 
 **Date**: 2026-04-05
-**Status**: Draft
+**Status**: Superseded — actualized and migrated to [`openspec/changes/deferred-tools/`](../openspec/changes/deferred-tools/proposal.md) (2026-08-08). Key drift since this draft: Anthropic tool search is GA (server-side `tool_search_tool_regex_20251119`/`_bm25_20251119`, no beta header), `defer_loading` is a standard tool property documented to be stripped before the cache key is computed, SDK v1.37.0 carries all types in the stable API, and Kimi rides the anthropic client so native-path gating is per-model (`SupportsToolSearch`), not per-client-family.
 **Author**: AI-assisted
 
 ## Overview
