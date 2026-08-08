@@ -3,10 +3,11 @@ package prompt
 import (
 	"testing"
 
-	"github.com/opencode-ai/opencode/internal/config"
-	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/llm/models"
 )
 
 // TestBasePromptBudgets pins the size of the builtin base prompts so the
@@ -31,6 +32,27 @@ func TestBasePromptBudgets(t *testing.T) {
 			assert.LessOrEqual(t, len(tc.prompt), tc.budget,
 				"%s base prompt is %d bytes (budget %d)", tc.name, len(tc.prompt), tc.budget)
 		})
+	}
+}
+
+// TestBackgroundTasksPromptKeepsPrimitives pins the prompt-surface
+// requirement that slimming the background-tasks appendix never drops the
+// no-poll contract's moving parts: the header and sleep ban (also pinned by
+// prompt_background_tasks_test.go) plus all five background-primitive tool
+// references.
+func TestBackgroundTasksPromptKeepsPrimitives(t *testing.T) {
+	required := []string{
+		"# Background tasks (event-driven, no polling)",
+		"DO NOT use `sleep N`",
+		"`run_in_background: true`",
+		"`async: true`",
+		"`monitor`",
+		"`tasklist`",
+		"`taskstop`",
+	}
+	for _, phrase := range required {
+		assert.Contains(t, backgroundTasksPrompt, phrase,
+			"background-tasks appendix lost required phrase %q", phrase)
 	}
 }
 

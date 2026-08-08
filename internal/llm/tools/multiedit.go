@@ -56,7 +56,7 @@ const (
 	MultiEditToolName    = "multiedit"
 	multiEditDescription = `Applies multiple exact string replacements to a single file in one atomic operation. Prefer this over several edit calls on the same file.
 
-- Same contract as the edit tool: the file must have been read first, and each old_string must match exactly and be unique (or set replace_all).
+- Same read-first and uniqueness contract as the edit tool: the file must have been read first, and each old_string must match exactly and be unique (or set replace_all). Unlike edit, empty old_string is rejected — multiedit cannot create files; use write or edit for that.
 - Edits apply in order, each operating on the result of the previous one — make sure earlier edits don't change text later edits need to find.
 - Atomic: if any edit fails, none are applied.`
 )

@@ -49,7 +49,7 @@ const (
 
 - You must read the file (read tool) before editing; the edit fails if the file was never read or changed on disk after your last read.
 - old_string must match the file contents exactly, including whitespace and indentation, and must be unique in the file — otherwise the edit fails. Add surrounding context to disambiguate, or set replace_all to change every occurrence (e.g. renaming a variable).
-- Special cases: empty old_string creates a new file with new_string as content; empty new_string deletes every match of old_string.
+- Special cases: empty old_string creates a new file with new_string as content; empty new_string deletes old_string (same uniqueness rule — set replace_all to delete every occurrence).
 - For several edits to the same file, prefer the multiedit tool.`
 )
 

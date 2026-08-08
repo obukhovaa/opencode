@@ -39,8 +39,12 @@ Constraints discovered during investigation:
   semantics, injection flagging) or any *behavioral contract* (struct_output
   gating, interactive bridge, no-poll).
 - Make tool descriptions honest interface contracts for what OUR runtime
-  actually does (e.g. our `edit` does not require a prior `read` — do not
-  cargo-cult contracts from dax that our code doesn't enforce).
+  actually does. Our `edit`/`multiedit`/`write` DO enforce read-before-edit
+  (`getLastReadTime` checks in edit.go/multiedit.go/write.go), so the
+  descriptions state it as a hard precondition; conversely `multiedit`
+  rejects empty `old_string`, so it must not advertise `edit`'s create-file
+  special case. Do not copy contract text from dax our code doesn't enforce,
+  and do not drop contract text it does.
 - Pin the result with a size-budget test so bloat cannot silently return.
 
 **Non-Goals:**
@@ -76,30 +80,37 @@ background mode pointer, compact git/PR policy — policy bullets, not the
 step-by-step ceremony).
 
 The git-commit/PR *tutorials* in `bash` (verification rituals, staged-file
-analysis steps, amend decision tree, PR body heredoc example) are deleted, kept
-as 6 policy bullets (no config edits, no destructive/skip-hooks flags, no amend
-unless asked, no commit/push unless asked, no `-i` flags, `gh` for GitHub).
-Rationale: Claude 5-gen and Gemini 3 models perform these workflows natively;
-step recipes drift and actively constrain (per Anthropic blog).
+analysis steps, PR body heredoc example) are deleted, kept as policy bullets:
+no config edits, no destructive/skip-hooks flags, never force-push
+main/master (warn if asked), no commit/push unless asked, the compact amend
+protocol (never after a failed/hook-rejected commit, never on pushed or
+foreign commits — fix and create a NEW commit), no `-i` flags, `gh` for
+GitHub. Rationale: Claude 5-gen and Gemini 3 models perform these workflows
+natively; step recipes drift and actively constrain (per Anthropic blog).
+The policy bullets survive because they are *policy* — the model cannot
+infer house rules it was never told.
 
-Left alone (already lean or spec-pinned semantics): `grep`, `patch`,
-`struct_output`, `question`, `router_send` (dynamic), `monitor`, `cron`,
-`tasklist`, `taskstop`, `todowrite`, `bash` background-param texts, `task`
-(agent-tool.go — already modern; only the duplicated "You can call multiple
-tools…" boilerplate trimmed if present).
+Light rewrites keeping their format contracts: `patch` (drops the redundant
+second Move-to example and the read/ls ritual) and `struct_output` (drops
+the WHEN/HOW section headers).
+
+Left alone (already lean, dynamic, or spec-pinned semantics): `grep`,
+`question`, `router_send` (dynamic), `monitor`, `cron`, `tasklist`,
+`taskstop`, `todowrite`, `websearch` (dynamic), `skill` (dynamic), `lsp`,
+`bash` background-param texts, `task` (agent-tool.go — already modern).
 
 ### D3. Base prompts: keep policy, drop pedagogy
 
 `coder` (13.7 KB → target ≤ 5.5 KB): keeps identity, memory-file pointer
 (AGENTS.md/CLAUDE.md), CLI/markdown output conventions + `file:line` refs,
-concision guidance (one statement, judgment-based — the "≤4 lines" hard rule
-stated once as a default, not three times), conventions/minimal-change taste,
-action blast-radius + git discipline, task flow essentials (verify with
-tests/lint), system notes (permission-denial semantics, compaction, `!` prefix,
-injection flagging). Drops: the nine Q/A examples (blog: examples constrain
-Claude 5-gen models), tool-routing list (now only in `bash` description),
-duplicated commit warnings (bash description owns git policy), step-numbered
-recipes.
+concision guidance stated once and judgment-based (short default, expand on
+request), the URL anti-hallucination guard, the summarize-tool-output note,
+conventions/minimal-change taste, action blast-radius + git discipline, task
+flow essentials (verify with tests/lint), system notes (permission-denial
+semantics, compaction, `!` prefix, injection flagging). Drops: the nine Q/A
+examples (blog: examples constrain Claude 5-gen models), tool-routing
+bullets (the routing list lives only in the `bash` description), duplicated
+commit warnings (bash description owns git policy), step-numbered recipes.
 
 `workhorse` (5.4 KB → ~3 KB): same structure minus TUI/interactivity; drops its
 9-line tool-routing list. `hivemind` (4.9 KB → ~3 KB): delegation contract and
@@ -126,11 +137,16 @@ when it actually needs to. Alternative considered — top-level-only listing
 ### D5. Size budgets enforced in-package
 
 `internal/llm/tools/description_budget_test.go` (package `tools`, so unexported
-consts/funcs are reachable) asserts each builtin description ≤ its budget:
-default 2,048 bytes, `bash` 4,096. `internal/llm/prompt/prompt_budget_test.go`
-asserts `CoderPrompt()` ≤ 6,144, `WorkhorsePrompt`/`HivemindPrompt` ≤ 4,096,
-`ExplorerPrompt` ≤ 2,048, and `getEnvironmentInfo()` contains no `<project>`
-tag. Budgets are ~15–25% above targets to allow drift without churn.
+consts/funcs are reachable) asserts each statically defined builtin
+description ≤ its budget: default 2,048 bytes, `bash` 4,096. Dynamic
+descriptions (`skill`, `websearch`, `router_send`, `task`) are excluded —
+their size scales with user config, not this repo's surface.
+`internal/llm/prompt/prompt_budget_test.go` asserts `CoderPrompt()` ≤ 6,144,
+`WorkhorsePrompt`/`HivemindPrompt` ≤ 4,096, `ExplorerPrompt` ≤ 2,048, that
+`getEnvironmentInfo()` contains no `<project>` tag, and that the
+background-tasks appendix keeps its header, the no-sleep instruction, and all
+five background-primitive references. Budgets are ~15–25% above targets to
+allow drift without churn.
 
 ## Risks / Trade-offs
 

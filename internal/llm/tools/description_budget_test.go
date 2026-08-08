@@ -1,10 +1,13 @@
 package tools
 
 import (
+	"os"
 	"testing"
 
-	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/opencode-ai/opencode/internal/config"
 )
 
 const (
@@ -24,9 +27,17 @@ const (
 // channels, the task tool's agent list) are deliberately excluded: their size
 // is a function of the user's config, not of this repo's prompt surface.
 func TestToolDescriptionBudgets(t *testing.T) {
-	// Config is loaded once by this package's test init (edit_test.go) —
-	// bash/ls descriptions read the working directory from it. Do NOT
-	// Reset it here: later tests rely on that same package-lifetime config.
+	// bash/ls descriptions read the working directory from the loaded
+	// config. Usually edit_test.go's init has already loaded it; load it
+	// here too so this test survives alone. Never Reset it: later tests
+	// rely on the same package-lifetime config.
+	if config.Get() == nil {
+		wd, err := os.Getwd()
+		require.NoError(t, err)
+		_, err = config.Load(wd, false)
+		require.NoError(t, err)
+	}
+
 	tools := []struct {
 		tool   BaseTool
 		budget int

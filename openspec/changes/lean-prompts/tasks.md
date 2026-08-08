@@ -3,7 +3,7 @@
 ## 1. Tool descriptions (`internal/llm/tools/`)
 
 - [x] 1.1 Rewrite `bash` description: keep workdir-over-cd, one-line quoting note, output-spillover contract, canonical dedicated-tools routing list, background-mode pointer, git/GitHub policy bullets; delete commit/PR walkthroughs, quoting examples, directory-verification ritual, repeated parallelism boilerplate
-- [x] 1.2 Rewrite legacy-template descriptions to interface contracts: `read`, `write`, `edit`, `multiedit`, `glob`, `ls`, `delete`, `view_image`, `webfetch`, `websearch`, `sourcegraph`, `lsp`, `skill`, `patch` (light), `fetch` if present
+- [x] 1.2 Rewrite legacy-template descriptions to interface contracts: `read`, `write`, `edit`, `multiedit`, `glob`, `ls`, `delete`, `view_image`, `webfetch`, `sourcegraph`, `patch` (light), `struct_output` (light) — `grep`/`websearch`/`lsp`/`skill` inspected and left as-is (already lean or dynamic)
 - [x] 1.3 Verify untouched tools stay contract-compliant: `grep`, `question`, `struct_output`, `router_send`, `monitor`, `cron`, `tasklist`, `taskstop`, `todowrite`; trim only obvious duplication
 - [x] 1.4 Trim `task` tool description boilerplate in `internal/llm/agent/agent-tool.go` if duplicated guidance found (keep structure — already modern)
 - [x] 1.5 Add `description_budget_test.go` in package `tools` (default 2,048 bytes; `bash` 4,096) covering every builtin description
@@ -23,3 +23,11 @@
 - [x] 3.1 `go test ./internal/llm/...` green; fix any assertion still pinning removed wording
 - [x] 3.2 `make test` green (fmt, vet, full suite)
 - [x] 3.3 Record before/after byte counts per surface in the PR description
+
+## 4. Review fixes (max-effort review round on PR #24)
+
+- [x] 4.1 Fix contract drift: edit empty-new_string semantics, multiedit no-create carve-out, bash spillover guidance vs read's 250KB cap
+- [x] 4.2 Restore over-trimmed policy: amend protocol + never-force-push-main/master (bash), webfetch-over-curl routing entry (bash), URL anti-hallucination guard + summarize-tool-output note (coder), colon-before-tool-call rule (hivemind)
+- [x] 4.3 Remove coder tool-routing bullets duplicating tool descriptions; spec now scopes the routing-list single-home rule and allows per-tool shell-equivalent preferences
+- [x] 4.4 Scope byte budgets to statically defined descriptions (spec + design); add five-primitives pin test; make budget test config-self-sufficient; fix test import grouping
+- [x] 4.5 Correct design.md read-before-edit statement and touched/left-alone inventory; align proposal.md Impact and task 1.2 with the shipped diff

@@ -20,16 +20,22 @@ good/bad-example blocks, section-template boilerplate (`WHEN TO USE`,
 schema already encodes. Descriptions MUST describe only behavior the runtime
 actually implements.
 
-Each builtin tool description SHALL fit within an explicit byte budget
-enforced by a unit test: 4,096 bytes for `bash`, 2,048 bytes for every other
-builtin tool. The cross-tool routing guidance ("prefer dedicated tools over
-shell equivalents") SHALL appear in exactly one place: the `bash` tool
-description.
+Every statically defined builtin tool description SHALL fit within an
+explicit byte budget enforced by a unit test: 4,096 bytes for `bash`, 2,048
+bytes for every other builtin tool. Descriptions assembled from user
+configuration at runtime (`skill`, `websearch`, `router_send`, the `task`
+tool's subagent list) are exempt from the byte budget — their size is a
+function of the user's config — but remain bound by the content rules above.
+
+The cross-tool routing list ("prefer dedicated tools over shell equivalents")
+SHALL appear in exactly one place: the `bash` tool description. An individual
+tool description MAY state its own shell-equivalent preference (e.g. `delete`
+over `rm`); builtin base prompts MUST NOT carry cross-tool routing lists.
 
 #### Scenario: Description budgets are test-enforced
 
 - **WHEN** `go test ./internal/llm/tools` runs
-- **THEN** a budget test iterates every builtin tool description constant
+- **THEN** a budget test iterates every statically defined builtin tool description
 - **AND** fails naming the offending tool if any description exceeds its byte budget
 
 #### Scenario: Bash description carries policy, not ceremony
@@ -95,6 +101,7 @@ Appendix gating logic (which agents receive which appendix) MUST NOT change.
 
 - **WHEN** the system prompt is assembled for any agent with tool access
 - **THEN** the background-tasks appendix is present with its header, the no-sleep instruction, and all five background-primitive tool references
+- **AND** a unit test pins the header, the no-sleep instruction, and the five primitive references so a later tightening pass cannot silently drop them
 
 #### Scenario: Interactive and struct_output prompts unchanged
 

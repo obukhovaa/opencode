@@ -78,9 +78,11 @@ system prompt" requirement is untouched (the guidance stays, only tighter);
 **`github.com/obukhovaa/opencode`**
 
 - `internal/llm/tools/*.go` — description constants rewritten (`bash`, `edit`,
-  `read`, `write`, `glob`, `ls`, `grep` (light), `multiedit`, `patch`, `delete`,
-  `view_image`, `webfetch`, `websearch`, `sourcegraph`, `lsp`, `skill`, `fetch`
-  where applicable); parameter descriptions kept/trimmed in place.
+  `multiedit`, `read`, `write`, `glob`, `ls`, `delete`, `view_image`,
+  `webfetch`, `sourcegraph`; light: `patch`, `struct_output`); left as-is
+  because already lean, dynamic, or spec-pinned: `grep`, `lsp`, `skill`,
+  `websearch`, `question`, `todowrite`, `router_send`, `monitor`, `cron*`,
+  `tasklist`, `taskstop`. Parameter descriptions kept/trimmed in place.
 - `internal/llm/prompt/coder.go`, `workhorse.go`, `hivemind.go`, `explorer.go` —
   base prompts rewritten; `summarizer.go`, `descriptor.go` unchanged.
 - `internal/llm/prompt/prompt.go` — `getEnvironmentInfo()` loses the `ls` call +
