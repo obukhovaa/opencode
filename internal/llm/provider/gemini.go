@@ -158,11 +158,14 @@ func (g *geminiClient) convertMessages(messages []message.Message) []*genai.Cont
 	return history
 }
 
-func (g *geminiClient) convertTools(tools []tools.BaseTool) []*genai.Tool {
+func (g *geminiClient) convertTools(ctx context.Context, allTools []tools.BaseTool) []*genai.Tool {
+	// Fallback deferred-tool path — see tools.SerializableFor.
+	sessionID, _ := tools.GetContextValues(ctx)
+	serializable := tools.SerializableFor(sessionID, allTools)
 	geminiTool := &genai.Tool{}
-	geminiTool.FunctionDeclarations = make([]*genai.FunctionDeclaration, 0, len(tools))
+	geminiTool.FunctionDeclarations = make([]*genai.FunctionDeclaration, 0, len(serializable))
 
-	for _, tool := range tools {
+	for _, tool := range serializable {
 		info := tool.Info()
 		declaration := &genai.FunctionDeclaration{
 			Name:        info.Name,
@@ -216,7 +219,7 @@ func (g *geminiClient) send(ctx context.Context, messages []message.Message, too
 	}
 	g.applyMetadata(ctx, config)
 	if len(tools) > 0 {
-		config.Tools = g.convertTools(tools)
+		config.Tools = g.convertTools(ctx, tools)
 	}
 	chat, _ := g.client.Chats.Create(ctx, g.providerOptions.model.APIModel, config, history)
 
@@ -315,7 +318,7 @@ func (g *geminiClient) stream(ctx context.Context, messages []message.Message, t
 	}
 	g.applyMetadata(ctx, config)
 	if len(tools) > 0 {
-		config.Tools = g.convertTools(tools)
+		config.Tools = g.convertTools(ctx, tools)
 	}
 	chat, err := g.client.Chats.Create(ctx, g.providerOptions.model.APIModel, config, history)
 	if err != nil {
@@ -621,7 +624,7 @@ func (g *geminiClient) usage(resp *genai.GenerateContentResponse) TokenUsage {
 
 func (a *geminiClient) countTokens(ctx context.Context, messages []message.Message, tools []tools.BaseTool) (int64, error) {
 	cfg := genai.CountTokensConfig{
-		Tools: a.convertTools(tools),
+		Tools: a.convertTools(ctx, tools),
 		SystemInstruction: &genai.Content{
 			Parts: []*genai.Part{
 				{Text: a.providerOptions.systemMessage},

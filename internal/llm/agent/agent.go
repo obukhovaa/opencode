@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -191,6 +192,16 @@ type agent struct {
 	factory AgentFactory
 
 	activeRequests sync.Map
+
+	// deferredAnnounced tracks, per session, which deferred external (MCP)
+	// tool names have already been announced via a delta message. Keyed by
+	// sessionID because this agent instance outlives sessions: a
+	// process-global set would suppress announcements for every session
+	// after the first. Values are map[string]bool, mutated only under
+	// deferredAnnouncedMu (Go maps are not safe for concurrent writes, and
+	// two Run calls for one session can briefly overlap).
+	deferredAnnounced   sync.Map
+	deferredAnnouncedMu sync.Mutex
 }
 
 func newAgent(
@@ -756,6 +767,16 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 
 	// Susped to get lazy tools
 	toolSet := a.resolveTools()
+
+	// Deferred tools: backfill session activation from replayed tool-search
+	// parts (native-path sessions resumed after a process restart), then
+	// announce any deferred MCP tools this session hasn't been told about.
+	// The delta message is per-session and injected only when the deferred
+	// pool changes — never on every turn.
+	a.backfillDeferredActivations(sessionID, msgHistory)
+	if deltaMsg, ok := a.injectDeferredDelta(ctx, sessionID, toolSet); ok {
+		msgHistory = append(msgHistory, deltaMsg)
+	}
 
 	tracker := newCallTracker()
 
@@ -1827,6 +1848,15 @@ func (a *agent) processEvent(ctx context.Context, sessionID string, assistantMsg
 		if len(event.Response.Reasoning) > 0 {
 			assistantMsg.SetReasoningParts(event.Response.Reasoning)
 		}
+		// Server-side tool-search results (deferred-tools native path):
+		// persist the invocation parts for replay AND activate the
+		// discovered tools' wrappers for this session IMMEDIATELY — before
+		// the next request is built — so a mid-session switch to a
+		// fallback-path model still serializes the just-discovered tools.
+		if len(event.Response.ToolSearches) > 0 {
+			assistantMsg.SetToolSearchParts(event.Response.ToolSearches)
+			a.activateDiscoveredTools(sessionID, event.Response.ToolSearches)
+		}
 		assistantMsg.AddFinish(event.Response.FinishReason)
 		if err := a.messages.Update(ctx, *assistantMsg); err != nil {
 			return fmt.Errorf("failed to update message: %w", err)
@@ -1849,6 +1879,152 @@ func (a *agent) processEvent(ctx context.Context, sessionID string, assistantMsg
 	}
 
 	return nil
+}
+
+// backfillDeferredActivations restores per-session activation state from
+// persisted tool-search parts when a session resumes after a process
+// restart (native path). In-memory wrapper state is authoritative while the
+// process lives; this scan only fills the gap for reloaded histories.
+func (a *agent) backfillDeferredActivations(sessionID string, history []message.Message) {
+	var searches []message.ToolSearchContent
+	for _, msg := range history {
+		if msg.Role != message.Assistant {
+			continue
+		}
+		searches = append(searches, msg.ToolSearchParts()...)
+	}
+	if len(searches) > 0 {
+		a.activateDiscoveredTools(sessionID, searches)
+	}
+}
+
+// injectDeferredDelta announces deferred EXTERNAL (MCP) tools the session
+// has not been told about yet. Builtin deferred names live in the static
+// system-prompt block; MCP tools resolve asynchronously and can't be known
+// at prompt-build time, so they arrive as a persisted user-role delta
+// message — injected only when this session's announced-set changes.
+// History is scanned as a secondary source so resumed sessions don't
+// receive duplicate deltas after a restart.
+func (a *agent) injectDeferredDelta(ctx context.Context, sessionID string, toolSet []tools.BaseTool) (message.Message, bool) {
+	// The per-session announced-set is a plain map; guard every read/write
+	// with the agent mutex. Two Run calls for one session can overlap (the
+	// IsSessionBusy check and activeRequests.Store are not atomic), and
+	// concurrent writes to a Go map are a fatal, unrecoverable process crash.
+	a.deferredAnnouncedMu.Lock()
+	defer a.deferredAnnouncedMu.Unlock()
+
+	setAny, _ := a.deferredAnnounced.LoadOrStore(sessionID, map[string]bool{})
+	announced := setAny.(map[string]bool)
+
+	var pending []string
+	for _, t := range toolSet {
+		w, ok := t.(*tools.DeferredWrapper)
+		if !ok {
+			continue
+		}
+		name := w.Info().Name
+		// Builtins are already listed in the static system-prompt block
+		// (deferredToolsPrompt); the delta is only for dynamic tools (MCP)
+		// that resolve after the prompt was built. Gating on the builtin
+		// name set — not IsBaseline() — is required because monitor /
+		// tasklist / taskstop are non-baseline builtins that the static
+		// block already covers, so IsBaseline() would double-announce them.
+		if prompt.IsBuiltinDeferralName(name) {
+			continue
+		}
+		if !announced[name] {
+			pending = append(pending, name)
+		}
+	}
+	if len(pending) == 0 {
+		return message.Message{}, false
+	}
+
+	// Secondary dedup against history: a restarted process has an empty
+	// in-memory set, but the previous delta message is persisted. Parse the
+	// EXACT names from prior delta messages (each on its own "- <name>"
+	// line) — a substring test would wrongly treat `get_issue` as already
+	// announced because it is contained in `get_issue_link`.
+	alreadyAnnounced := map[string]bool{}
+	if msgs, err := a.messages.List(ctx, sessionID); err == nil {
+		for _, msg := range msgs {
+			if msg.Role != message.User {
+				continue
+			}
+			text := msg.Content().String()
+			if !strings.Contains(text, deferredDeltaMarker) {
+				continue
+			}
+			for _, line := range strings.Split(text, "\n") {
+				if name, ok := strings.CutPrefix(strings.TrimSpace(line), "- "); ok {
+					alreadyAnnounced[name] = true
+				}
+			}
+		}
+	}
+	kept := pending[:0]
+	for _, name := range pending {
+		if alreadyAnnounced[name] {
+			announced[name] = true
+		} else {
+			kept = append(kept, name)
+		}
+	}
+	pending = kept
+	if len(pending) == 0 {
+		return message.Message{}, false
+	}
+
+	sort.Strings(pending)
+	var sb strings.Builder
+	sb.WriteString("<system-reminder>\n")
+	sb.WriteString(deferredDeltaMarker)
+	sb.WriteString(" Their schemas are NOT loaded — call toolsearch to load a tool before using it:\n")
+	for _, name := range pending {
+		sb.WriteString("- " + name + "\n")
+	}
+	sb.WriteString("</system-reminder>")
+
+	deltaMsg, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:      message.User,
+		Parts:     []message.ContentPart{message.TextContent{Text: sb.String()}},
+		Synthetic: true,
+	})
+	if err != nil {
+		logging.Warn("Failed to create deferred-tools delta message", "error", err)
+		return message.Message{}, false
+	}
+	for _, name := range pending {
+		announced[name] = true
+	}
+	return deltaMsg, true
+}
+
+const deferredDeltaMarker = "The following deferred tools are now available via toolsearch."
+
+// activateDiscoveredTools marks deferred wrappers activated for the session
+// when server-side tool search references them (native path, discovery
+// time). Also used to backfill activation from replayed parts when a
+// session resumes after a process restart.
+func (a *agent) activateDiscoveredTools(sessionID string, searches []message.ToolSearchContent) {
+	referenced := map[string]bool{}
+	for _, ts := range searches {
+		for _, name := range ts.References {
+			referenced[strings.ToLower(name)] = true
+		}
+	}
+	if len(referenced) == 0 {
+		return
+	}
+	for _, t := range a.resolveTools() {
+		w, ok := t.(*tools.DeferredWrapper)
+		if !ok {
+			continue
+		}
+		if referenced[strings.ToLower(w.Info().Name)] {
+			w.Activate(sessionID)
+		}
+	}
 }
 
 func (a *agent) TrackUsage(ctx context.Context, sessionID string, model models.Model, usage provider.TokenUsage) error {

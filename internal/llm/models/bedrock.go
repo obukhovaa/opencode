@@ -33,6 +33,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		ContextWindow:            AnthropicModels[Claude46Opus].ContextWindow,
 		DefaultMaxTokens:         AnthropicModels[Claude46Opus].DefaultMaxTokens,
 		SupportsAttachments:      AnthropicModels[Claude46Opus].SupportsAttachments,
+		SupportsToolSearch:       AnthropicModels[Claude46Opus].SupportsToolSearch,
 		CanReason:                AnthropicModels[Claude46Opus].CanReason,
 		SupportsAdaptiveThinking: AnthropicModels[Claude46Opus].SupportsAdaptiveThinking,
 		SupportsMaximumThinking:  AnthropicModels[Claude46Opus].SupportsMaximumThinking,
@@ -54,6 +55,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude47Opus].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude47Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude47Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude47Opus].SupportsToolSearch,
 	},
 	BedrockEUOpus48: {
 		ID:                       BedrockEUOpus48,
@@ -72,6 +74,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude48Opus].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude48Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude48Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude48Opus].SupportsToolSearch,
 	},
 	BedrockEUOpus5: {
 		ID:                       BedrockEUOpus5,
@@ -90,6 +93,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude5Opus].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude5Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude5Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude5Opus].SupportsToolSearch,
 	},
 	BedrockEUFable5: {
 		ID:                       BedrockEUFable5,
@@ -108,6 +112,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[ClaudeFable5].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[ClaudeFable5].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[ClaudeFable5].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[ClaudeFable5].SupportsToolSearch,
 	},
 	BedrockEUSonnet46: {
 		ID:                       BedrockEUSonnet46,
@@ -121,6 +126,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		ContextWindow:            AnthropicModels[Claude46Sonnet].ContextWindow,
 		DefaultMaxTokens:         AnthropicModels[Claude46Sonnet].DefaultMaxTokens,
 		SupportsAttachments:      AnthropicModels[Claude46Sonnet].SupportsAttachments,
+		SupportsToolSearch:       AnthropicModels[Claude46Sonnet].SupportsToolSearch,
 		CanReason:                AnthropicModels[Claude46Sonnet].CanReason,
 		SupportsAdaptiveThinking: AnthropicModels[Claude46Sonnet].SupportsAdaptiveThinking,
 	},
@@ -141,6 +147,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude5Sonnet].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude5Sonnet].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude5Sonnet].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude5Sonnet].SupportsToolSearch,
 	},
 	BedrockOpus46: {
 		ID:                       BedrockOpus46,
@@ -154,6 +161,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		ContextWindow:            AnthropicModels[Claude46Opus].ContextWindow,
 		DefaultMaxTokens:         AnthropicModels[Claude46Opus].DefaultMaxTokens,
 		SupportsAttachments:      AnthropicModels[Claude46Opus].SupportsAttachments,
+		SupportsToolSearch:       AnthropicModels[Claude46Opus].SupportsToolSearch,
 		CanReason:                AnthropicModels[Claude46Opus].CanReason,
 		SupportsAdaptiveThinking: AnthropicModels[Claude46Opus].SupportsAdaptiveThinking,
 		SupportsMaximumThinking:  AnthropicModels[Claude46Opus].SupportsMaximumThinking,
@@ -175,6 +183,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude47Opus].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude47Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude47Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude47Opus].SupportsToolSearch,
 	},
 	BedrockOpus48: {
 		ID:                       BedrockOpus48,
@@ -193,6 +202,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude48Opus].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude48Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude48Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude48Opus].SupportsToolSearch,
 	},
 	BedrockOpus5: {
 		ID:                       BedrockOpus5,
@@ -211,6 +221,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude5Opus].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude5Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude5Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude5Opus].SupportsToolSearch,
 	},
 	BedrockFable5: {
 		ID:                       BedrockFable5,
@@ -229,6 +240,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[ClaudeFable5].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[ClaudeFable5].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[ClaudeFable5].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[ClaudeFable5].SupportsToolSearch,
 	},
 	BedrockSonnet46: {
 		ID:                       BedrockSonnet46,
@@ -242,6 +254,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		ContextWindow:            AnthropicModels[Claude46Sonnet].ContextWindow,
 		DefaultMaxTokens:         AnthropicModels[Claude46Sonnet].DefaultMaxTokens,
 		SupportsAttachments:      AnthropicModels[Claude46Sonnet].SupportsAttachments,
+		SupportsToolSearch:       AnthropicModels[Claude46Sonnet].SupportsToolSearch,
 		CanReason:                AnthropicModels[Claude46Sonnet].CanReason,
 		SupportsAdaptiveThinking: AnthropicModels[Claude46Sonnet].SupportsAdaptiveThinking,
 	},
@@ -262,6 +275,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude5Sonnet].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude5Sonnet].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude5Sonnet].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude5Sonnet].SupportsToolSearch,
 	},
 	BedrockEUHaiku45: {
 		ID:                  BedrockEUHaiku45,
@@ -275,6 +289,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		ContextWindow:       AnthropicModels[Claude45Haiku].ContextWindow,
 		DefaultMaxTokens:    AnthropicModels[Claude45Haiku].DefaultMaxTokens,
 		SupportsAttachments: AnthropicModels[Claude45Haiku].SupportsAttachments,
+		SupportsToolSearch:  AnthropicModels[Claude45Haiku].SupportsToolSearch,
 	},
 	BedrockHaiku45: {
 		ID:                  BedrockHaiku45,
@@ -288,5 +303,6 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		ContextWindow:       AnthropicModels[Claude45Haiku].ContextWindow,
 		DefaultMaxTokens:    AnthropicModels[Claude45Haiku].DefaultMaxTokens,
 		SupportsAttachments: AnthropicModels[Claude45Haiku].SupportsAttachments,
+		SupportsToolSearch:  AnthropicModels[Claude45Haiku].SupportsToolSearch,
 	},
 }

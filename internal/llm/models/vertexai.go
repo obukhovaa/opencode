@@ -61,6 +61,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		ContextWindow:       AnthropicModels[Claude45Opus].ContextWindow,
 		DefaultMaxTokens:    AnthropicModels[Claude45Opus].DefaultMaxTokens,
 		SupportsAttachments: AnthropicModels[Claude45Opus].SupportsAttachments,
+		SupportsToolSearch:  AnthropicModels[Claude45Opus].SupportsToolSearch,
 		CanReason:           AnthropicModels[Claude45Opus].CanReason,
 	},
 	VertexAIOpus46: {
@@ -75,6 +76,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		ContextWindow:            AnthropicModels[Claude46Opus].ContextWindow,
 		DefaultMaxTokens:         AnthropicModels[Claude46Opus].DefaultMaxTokens,
 		SupportsAttachments:      AnthropicModels[Claude46Opus].SupportsAttachments,
+		SupportsToolSearch:       AnthropicModels[Claude46Opus].SupportsToolSearch,
 		CanReason:                AnthropicModels[Claude46Opus].CanReason,
 		SupportsAdaptiveThinking: AnthropicModels[Claude46Opus].SupportsAdaptiveThinking,
 		SupportsMaximumThinking:  AnthropicModels[Claude46Opus].SupportsMaximumThinking,
@@ -96,6 +98,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude47Opus].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude47Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude47Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude47Opus].SupportsToolSearch,
 	},
 	VertexAIOpus48: {
 		ID:                       VertexAIOpus48,
@@ -114,6 +117,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude48Opus].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude48Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude48Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude48Opus].SupportsToolSearch,
 	},
 	VertexAIOpus5: {
 		ID:                       VertexAIOpus5,
@@ -132,6 +136,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude5Opus].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude5Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude5Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude5Opus].SupportsToolSearch,
 	},
 	VertexAIFable5: {
 		ID:                       VertexAIFable5,
@@ -150,6 +155,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[ClaudeFable5].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[ClaudeFable5].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[ClaudeFable5].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[ClaudeFable5].SupportsToolSearch,
 	},
 	VertexAISonnet46: {
 		ID:                       VertexAISonnet46,
@@ -163,6 +169,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		ContextWindow:            AnthropicModels[Claude46Sonnet].ContextWindow,
 		DefaultMaxTokens:         AnthropicModels[Claude46Sonnet].DefaultMaxTokens,
 		SupportsAttachments:      AnthropicModels[Claude46Sonnet].SupportsAttachments,
+		SupportsToolSearch:       AnthropicModels[Claude46Sonnet].SupportsToolSearch,
 		CanReason:                AnthropicModels[Claude46Sonnet].CanReason,
 		SupportsAdaptiveThinking: AnthropicModels[Claude46Sonnet].SupportsAdaptiveThinking,
 	},
@@ -183,6 +190,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsMaximumThinking:  AnthropicModels[Claude5Sonnet].SupportsMaximumThinking,
 		SupportsXHighThinking:    AnthropicModels[Claude5Sonnet].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude5Sonnet].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude5Sonnet].SupportsToolSearch,
 	},
 	VertexAIHaiku45: {
 		ID:                  VertexAIHaiku45,
@@ -196,5 +204,6 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		ContextWindow:       AnthropicModels[Claude45Haiku].ContextWindow,
 		DefaultMaxTokens:    AnthropicModels[Claude45Haiku].DefaultMaxTokens,
 		SupportsAttachments: AnthropicModels[Claude45Haiku].SupportsAttachments,
+		SupportsToolSearch:  AnthropicModels[Claude45Haiku].SupportsToolSearch,
 	},
 }

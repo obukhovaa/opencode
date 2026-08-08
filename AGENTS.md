@@ -97,6 +97,7 @@ Agents can be configured in `.opencode.json`:
 - `taskBudget`: Advisory token budget for the full agentic loop (min 20,000). Only supported by models with `SupportsTaskBudget` (currently Claude Opus 4.7). Uses the `task-budgets-2026-03-13` beta header. The budget is carried across compaction via the `remaining` field.
 - `permission`: Agent-specific permission overrides (supports granular glob patterns per tool)
 - `tools`: Enable/disable specific tools (e.g., `{"skill": false, "bash": false}`)
+- `deferredTools`: Opt-in on-demand tool loading (e.g., `{"jira_*": true}`). Matching enabled tools keep only their name in context until discovered via tool search: on models with `SupportsToolSearch` (Claude on anthropic/vertexai/bedrock) Anthropic's GA server-side tool search gives single-turn discovery with the prompt-cache prefix untouched; elsewhere (OpenAI-compatible, Gemini, Kimi) a client-side `toolsearch` tool loads schemas with two-turn activation. Patterns use the same wildcards as `tools`, matched case-insensitively (viper lowercases JSON keys). `toolsearch` and `struct_output` are never deferrable; disabling `toolsearch` while declaring deferrals ignores the deferral entirely (fail-open). Activation state is per session.
 
 Here's the list of **built-in agents** available by default:
 - `coder`: Main coding agent, can spawn subagents (all tools)

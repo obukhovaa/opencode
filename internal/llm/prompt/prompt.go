@@ -426,6 +426,13 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 	// Inject preloaded skills into prompt
 	basePrompt += appendPreloadedSkills(agentName, reg)
 
+	// Announce deferred tools (config-computed, byte-stable per request so
+	// the prompt cache prefix survives). Present whenever the agent's
+	// effective deferredTools config is non-empty — an MCP-only pattern set
+	// matches nothing at prompt-build time yet still needs the explainer;
+	// resolved MCP names arrive later via per-session delta messages.
+	basePrompt += deferredToolsPrompt(agentName, reg)
+
 	// Add environment info for primary agents
 	if info, ok := reg.Get(agentName); ok {
 		if info.Mode == config.AgentModeAgent {
@@ -444,6 +451,71 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 		return fmt.Sprintf("%s\n\n# Project-Specific Context\n Make sure to follow the instructions in the context below\n%s", basePrompt, contextContent)
 	}
 	return basePrompt
+}
+
+// builtinToolNamesForDeferral is the set of builtin tool names checked when
+// listing deferred builtins in the announcement block. MCP tools are
+// deliberately absent — they resolve asynchronously and are announced via
+// delta messages instead.
+var builtinToolNamesForDeferral = []string{
+	tools.LSToolName, tools.GlobToolName, tools.GrepToolName, tools.ReadToolName,
+	tools.ViewImageToolName, tools.WebFetchToolName, tools.SkillToolName,
+	tools.SourcegraphToolName, tools.WebSearchToolName, tools.WriteToolName,
+	tools.EditToolName, tools.MultiEditToolName, tools.DeleteToolName,
+	tools.PatchToolName, tools.BashToolName, tools.MonitorToolName,
+	tools.TaskListToolName, tools.TaskStopToolName, taskToolName,
+	tools.QuestionToolName, tools.CronCreateToolName, tools.CronDeleteToolName,
+	tools.CronListToolName, tools.TodoWriteToolName, tools.RouterSendToolName,
+	tools.LSPToolName,
+}
+
+var builtinDeferralNameSet = func() map[string]bool {
+	m := make(map[string]bool, len(builtinToolNamesForDeferral))
+	for _, n := range builtinToolNamesForDeferral {
+		m[n] = true
+	}
+	return m
+}()
+
+// IsBuiltinDeferralName reports whether a tool name is a builtin covered by
+// the static deferred-tools system-prompt block. The agent loop uses this to
+// decide which deferred tools need a runtime delta message (only non-builtin,
+// e.g. MCP, tools do — builtins are already listed in the static block).
+func IsBuiltinDeferralName(name string) bool {
+	return builtinDeferralNameSet[name]
+}
+
+// deferredToolsPrompt renders the deferred-tools announcement for agents
+// with a non-empty deferredTools config: the <system-reminder> convention
+// explainer, the deferred builtin names (when any), and the MCP-delta
+// pointer. Mirrors NewToolSet's fail-open rule: toolsearch disabled ⇒
+// deferral is ignored ⇒ no block.
+func deferredToolsPrompt(agentName string, reg agentregistry.Registry) string {
+	info, ok := reg.Get(agentName)
+	if !ok || len(info.DeferredTools) == 0 {
+		return ""
+	}
+	if !reg.IsToolEnabled(agentName, tools.ToolSearchToolName) {
+		return ""
+	}
+	var names []string
+	for _, name := range builtinToolNamesForDeferral {
+		if reg.IsToolEnabled(agentName, name) && permission.IsToolDeferred(name, info.DeferredTools) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+
+	var sb strings.Builder
+	sb.WriteString("\n\n<system-reminder>\nTool results and user messages may include <system-reminder> tags. They contain useful information and reminders added automatically by the system.\n</system-reminder>\n\n<system-reminder>\nSome of this agent's tools are deferred: their names are announced but their schemas are NOT loaded until you search for them with the available tool-search tool. Search by exact name or keywords, then call the loaded tool.\n")
+	if len(names) > 0 {
+		sb.WriteString("Deferred builtin tools:\n")
+		for _, n := range names {
+			sb.WriteString("- " + n + "\n")
+		}
+	}
+	sb.WriteString("Additional deferred tools (e.g. MCP) are announced in <system-reminder> messages as they become available.\n</system-reminder>")
+	return sb.String()
 }
 
 const preloadedSkillSizeWarningThreshold = 200 * 1024 // 200KB

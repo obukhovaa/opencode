@@ -56,6 +56,29 @@ func (tc ReasoningContent) String() string {
 }
 func (ReasoningContent) isPart() {}
 
+// ToolSearchContent captures one Anthropic server-side tool-search
+// invocation: the server_tool_use block plus its paired
+// tool_search_tool_result block from the same assistant message. It is
+// persisted so later requests can replay both blocks — the API re-expands
+// the referenced deferred tools' schemas from the replayed references,
+// keeping discovered tools loaded for the rest of the session (mirrors the
+// thinking-block replay mechanism).
+type ToolSearchContent struct {
+	// ToolUseID links the server_tool_use block to its result block.
+	ToolUseID string `json:"tool_use_id"`
+	// Name is the server tool that ran (e.g. "tool_search_tool_regex").
+	Name string `json:"name"`
+	// Input is the JSON-encoded server_tool_use input (the search query).
+	Input string `json:"input"`
+	// References are the deferred tool names the search discovered.
+	References []string `json:"references,omitempty"`
+	// ErrorCode is set when the server search errored instead of returning
+	// references; replayed as a tool_search_tool_result error block.
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+func (ToolSearchContent) isPart() {}
+
 type TextContent struct {
 	Text string `json:"text"`
 }
@@ -180,6 +203,52 @@ func (m *Message) ReasoningParts() []ReasoningContent {
 		}
 	}
 	return parts
+}
+
+// ToolSearchParts returns the server-side tool-search invocations captured
+// on this assistant message, in emission order.
+func (m *Message) ToolSearchParts() []ToolSearchContent {
+	parts := make([]ToolSearchContent, 0)
+	for _, part := range m.Parts {
+		if c, ok := part.(ToolSearchContent); ok {
+			parts = append(parts, c)
+		}
+	}
+	return parts
+}
+
+// SetToolSearchParts replaces any existing tool-search parts with the
+// authoritative list from the provider response. Parts are inserted after
+// the last reasoning part (or ahead of everything else when none exists),
+// matching Anthropic's emission order: thinking, then server_tool_use +
+// tool_search_tool_result, then text/tool_use.
+func (m *Message) SetToolSearchParts(blocks []ToolSearchContent) {
+	kept := make([]ContentPart, 0, len(m.Parts)+len(blocks))
+	insertAt := -1
+	for _, part := range m.Parts {
+		if _, ok := part.(ToolSearchContent); ok {
+			if insertAt == -1 {
+				insertAt = len(kept)
+			}
+			continue
+		}
+		kept = append(kept, part)
+	}
+	if insertAt == -1 {
+		insertAt = 0
+		for i, part := range kept {
+			if _, ok := part.(ReasoningContent); ok {
+				insertAt = i + 1
+			}
+		}
+	}
+	replaced := make([]ContentPart, 0, len(kept)+len(blocks))
+	replaced = append(replaced, kept[:insertAt]...)
+	for _, b := range blocks {
+		replaced = append(replaced, b)
+	}
+	replaced = append(replaced, kept[insertAt:]...)
+	m.Parts = replaced
 }
 
 func (m *Message) ImageURLContent() []ImageURLContent {

@@ -169,7 +169,7 @@ func TestConvertToolsCacheBreakpoints(t *testing.T) {
 				options: anthropicOptions{disableCache: tt.disableCache},
 			}
 
-			result := client.convertTools(tt.tools)
+			result := client.convertTools(context.Background(), tt.tools)
 
 			breakpointSet := make(map[int]bool)
 			for _, idx := range tt.expectedBreakpoints {

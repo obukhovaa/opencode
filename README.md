@@ -20,6 +20,7 @@ OpenCode is a CLI tool that brings AI assistance to your terminal. It provides a
 - **Tool integration**: file operations, shell commands, code search, LSP code intelligence
 - **Structured output**: enforce final agent's output with json schema, perfect for automated pipelines
 - **MCP support**: extend capabilities via Model Context Protocol servers
+- **Deferred tools**: keep large MCP fleets out of context until needed — matching tools are loaded on demand via `toolsearch` (Anthropic server-side tool search on capable models, cache-preserving; a client-side fallback elsewhere) ([guide](docs/deferred-tools.md))
 - **Agent skills**: reusable instruction sets with argument substitution and dynamic shell expansion ([guide](docs/skills.md))
 - **Custom commands**: predefined prompts with named arguments ([guide](docs/custom-commands.md))
 - **Langfuse observability**: built-in tracing for LLM calls, tool executions, token usage, and cost ([guide](docs/telemetry.md))
@@ -234,8 +235,8 @@ Each built-in agent can be customized:
 | `description` | Short description of agent's purpose |
 | `permission` | Agent-specific permission overrides (supports granular glob patterns) |
 | `tools` | Enable/disable specific tools (e.g., `{"skill": false}`) |
+| `deferredTools` | On-demand tool loading — matching tools stay out of context until discovered via `toolsearch` (e.g., `{"jira_*": true}`, [guide](docs/deferred-tools.md)) |
 | `parallelToolUse` | Enable/disable parallel tool invocation if tool allows it |
-| `tools` | Enable/disable specific tools (e.g., `{"skill": false}`) |
 | `color` | Badge color for subagent indication in TUI |
 
 #### Custom Agents via Markdown
@@ -498,6 +499,7 @@ Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it re
 | `task` | Run sub-tasks with a subagent (supports `subagent_type` and `task_id` for resumption) |
 | `skill` | Load agent skills on-demand (supports `args` for argument substitution and shell expansion) |
 | `struct_output` | Emit structured JSON conforming to a user-supplied schema |
+| `toolsearch` | Discover and load deferred tools on demand (auto-registered only when an agent declares `deferredTools`, [guide](docs/deferred-tools.md)) |
 | `todowrite` | Create and maintain a structured task list for multi-step sessions (progress tracking for external UIs) |
 | `croncreate` / `crondelete` / `cronlist` | Schedule, cancel, and list cron jobs that fire prompts via subagents ([guide](docs/crons.md)) |
 
