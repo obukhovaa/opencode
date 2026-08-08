@@ -180,12 +180,13 @@ re-discovery (self-correcting via `toolsearch`).
 
 ### Requirement: Cache breakpoint never lands on a deferred entry
 
-For anthropic-family requests carrying deferred tools, the tools-section
-`cache_control` breakpoint SHALL be attached to the last serialized tool
-definition that participates in the rendered prefix — i.e. the last entry
-without `defer_loading: true`; on the native path this is the appended
-server tool-search tool. Deferred entries are stripped from the rendered
-prefix by the API, so a breakpoint attached to one would silently vanish.
+The system SHALL attach the tools-section `cache_control` breakpoint of
+anthropic-family requests carrying deferred tools to the last serialized
+tool definition that participates in the rendered prefix — i.e. the last
+entry without `defer_loading: true`; on the native path this is the
+appended server tool-search tool. Deferred entries are stripped from the
+rendered prefix by the API, so a breakpoint attached to one would silently
+vanish.
 
 #### Scenario: Breakpoint placement with deferred tools present
 
@@ -214,17 +215,17 @@ rather than dropped or sent as empty union members.
 
 ### Requirement: Deferred tools are announced without breaking cache
 
-When an agent's effective `deferredTools` config is non-empty (regardless
-of whether any currently known tool matches), the system prompt SHALL gain
-a `<system-reminder>` block explaining the tag convention, listing deferred
-**builtin** tool names when any exist, and stating that deferred MCP tools
-are announced as they become available — computed from config at
-prompt-build time so it is identical on every request. Deferred MCP tools
-(which resolve asynchronously) SHALL be announced via a user-role delta
-message listing newly available deferred names, injected only when that
-session's announced-set changes — never on every turn — with the
-announced-set scoped per session. Both blocks MUST be absent for agents
-with no `deferredTools` config.
+The system SHALL add a `<system-reminder>` block to the system prompt when
+an agent's effective `deferredTools` config is non-empty (regardless of
+whether any currently known tool matches): it explains the tag convention,
+lists deferred **builtin** tool names when any exist, and states that
+deferred MCP tools are announced as they become available — computed from
+config at prompt-build time so it is identical on every request. The
+system SHALL announce deferred MCP tools (which resolve asynchronously)
+via a user-role delta message listing newly available deferred names,
+injected only when that session's announced-set changes — never on every
+turn — with the announced-set scoped per session. Both blocks MUST be
+absent for agents with no `deferredTools` config.
 
 #### Scenario: Static announcement is cache-stable
 
