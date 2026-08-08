@@ -14,13 +14,7 @@ const (
 
 	structOutputDescription = `Emit your final answer as structured JSON conforming to the schema defined in this tool's parameters.
 
-WHEN TO USE THIS TOOL:
-- Use this tool to provide your final response when the user has requested structured output
-- You MUST call this tool exactly once as your final action
-
-HOW TO USE:
-- Populate every required field described in the parameters
-- The JSON you pass will be validated and returned as the agent's output`
+Call it exactly once, as your final action, populating every required field; the JSON is validated and returned as the agent's output.`
 )
 
 type structOutputTool struct {

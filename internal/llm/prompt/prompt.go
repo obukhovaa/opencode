@@ -1,7 +1,6 @@
 package prompt
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -193,7 +192,7 @@ func peerMentionOrFallback(peer bridge.PeerRef, fallback string) string {
 }
 
 const parallelToolUsePrompt = `
-You have the capability to call multiple tools in a single response. When multiple independent pieces of information are requested and all commands are likely to succeed, run multiple tool calls in parallel for optimal performance. For example, if you need to read 3 files, call read 3 times in parallel rather than sequentially.`
+You can call multiple tools in a single response. When several independent pieces of information are needed and the calls are likely to succeed, batch the tool calls in one response instead of issuing them sequentially.`
 
 // backgroundTasksPrompt is the no-poll contract for background work. It is
 // appended for EVERY agent with tool access — independent of the agent's
@@ -205,12 +204,11 @@ You have the capability to call multiple tools in a single response. When multip
 // specs); the prompt is defense-in-depth that saves wasted cycles.
 const backgroundTasksPrompt = `
 # Background tasks (event-driven, no polling)
-- For long-running shell work (test suites, builds, deploys, log tails) prefer ` + "`bash`" + ` with ` + "`run_in_background: true`" + ` over a synchronous bash with a sleep loop. The tool returns immediately with a ` + "`task_id`" + ` and an ` + "`output_file`" + ` path; a synthetic completion notification arrives automatically when the subprocess exits.
-- For parallel sub-work, use the ` + "`task`" + ` tool with ` + "`async: true`" + ` to fan out subagents in the background. Same pattern: immediate ack with ` + "`task_id`" + `, synthetic completion when the subagent finishes.
-- To watch a streaming command for specific markers, use ` + "`monitor`" + ` (cmd + pattern). Matched lines are coalesced into per-window notifications — strictly better than ` + "`while true; do sleep 5; grep ERROR ...; done`" + `.
-- ` + "`tasklist`" + ` is for ONE-SHOT inventory queries only. Do NOT poll it. Completion notifications arrive automatically.
-- ` + "`taskstop`" + ` kills a background task and emits a synthetic ` + "`killed`" + ` completion. Use only when the task is no longer useful.
-- DO NOT use ` + "`sleep N`" + ` followed by status-check tool calls — every polling round costs tokens and invalidates the prompt cache. Spawn the work in background and let the notification system wake you when it finishes. In non-interactive (flow) runs the runtime holds your turn open until pending background tasks complete and converts a foreground ` + "`sleep`" + ` into that same wait — sleeping can never observe progress sooner.`
+- For long-running shell work (test suites, builds, deploys, log tails) use ` + "`bash`" + ` with ` + "`run_in_background: true`" + `. It returns immediately with a ` + "`task_id`" + ` and ` + "`output_file`" + `; a synthetic completion notification arrives when the subprocess exits.
+- To fan out parallel sub-work, use the ` + "`task`" + ` tool with ` + "`async: true`" + ` — same ack + completion-notification pattern.
+- To watch a streaming command for specific markers, use ` + "`monitor`" + ` (cmd + pattern); matched lines arrive as coalesced notifications.
+- ` + "`tasklist`" + ` is for one-shot inventory queries — do NOT poll it. ` + "`taskstop`" + ` kills a background task that is no longer useful.
+- DO NOT use ` + "`sleep N`" + ` followed by status checks: polling wastes tokens and invalidates the prompt cache; completions arrive on their own. In non-interactive (flow) runs the runtime holds your turn open until pending background tasks complete and converts a foreground ` + "`sleep`" + ` into that same wait — sleeping can never observe progress sooner.`
 
 // taskToolReportingPrompt instructs primary (mode=agent) agents that have the
 // task tool enabled to surface each subagent's task_id to the user so it can
@@ -221,7 +219,7 @@ const backgroundTasksPrompt = `
 const taskToolReportingPrompt = `
 # Subagent task IDs
 
-Whenever you invoke the task tool, its result includes a ` + "`<task_id>...</task_id>`" + ` trailer. When reporting back to the user, mention the task_id together with a one-line description of what each subagent did so the user can reference or ask to resume it. If you launched multiple subagents in a single turn, list every task_id. Use natural phrasing, for example: "Task abcd1234 (explorer — audited the auth module) is still around if you want to dig deeper." To continue a subagent's session later, pass its task_id back to the task tool along with a new prompt. Do NOT surface a task_id if it was not present in the tool result (e.g., when the subagent produced struct_output).`
+Task tool results include a ` + "`<task_id>...</task_id>`" + ` trailer. When reporting back to the user, mention each task_id with a one-line description of what that subagent did, so the user can reference it or ask to resume it (pass the task_id back to the task tool with a new prompt). Do NOT surface a task_id that was not present in the tool result (e.g. when the subagent produced struct_output).`
 
 // cronToolPrompt instructs agents that have cron tools enabled to use them
 // directly when the user asks for reminders, recurring tasks, or scheduled work.
@@ -230,13 +228,7 @@ Whenever you invoke the task tool, its result includes a ` + "`<task_id>...</tas
 const cronToolPrompt = `
 # Scheduling & Reminders
 
-You have cron tools (croncreate, crondelete, cronlist) available. When the user asks you to:
-- Set a reminder ("remind me at...", "remind me in...", "remind me every...")
-- Schedule recurring work ("every hour check...", "every morning run...")
-- Run something later ("at 3pm do...", "in 30 minutes...")
-- Set up a timer or periodic task
-
-Use the croncreate tool DIRECTLY — do NOT delegate to a subagent. You are the agent responsible for creating cron jobs. The croncreate tool handles scheduling the prompt to run at the specified time via a subagent automatically.`
+You have cron tools (croncreate, crondelete, cronlist). When the user asks for a reminder, recurring work, or anything scheduled ("remind me at...", "every morning run...", "in 30 minutes do..."), call croncreate DIRECTLY — do NOT delegate scheduling to a subagent. croncreate runs the prompt at the specified time via a subagent automatically.`
 
 // taskToolName matches agent.TaskToolName. Duplicated here to avoid an import
 // cycle between the prompt and llm/agent packages.
@@ -251,21 +243,13 @@ func getEnvironmentInfo() string {
 	isGit := isGitRepo(cwd)
 	platform := runtime.GOOS
 	date := time.Now().Format("1/2/2006")
-	ls := tools.NewLsTool(config.Get(), nil, nil)
-	r, _ := ls.Run(context.Background(), tools.ToolCall{
-		Input: `{"path":"."}`,
-	})
 	return fmt.Sprintf(`Here is useful information about the environment you are running in:
 <env>
 Working directory: %s
 Is directory a git repo: %s
 Platform: %s
 Today's date: %s
-</env>
-<project>
-%s
-</project>
-		`, cwd, boolToYesNo(isGit), platform, date, r.Content)
+</env>`, cwd, boolToYesNo(isGit), platform, date)
 }
 
 func isGitRepo(dir string) bool {

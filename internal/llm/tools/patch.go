@@ -70,25 +70,10 @@ Example patch:
 *** End Patch
 ` + "```" + `
 
-To rename or move a file, use ` + "`*** Move to: <new_path>`" + ` immediately after the ` + "`*** Update File:`" + ` header:
-
-` + "```" + `
-*** Begin Patch
-*** Update File: old/path.py
-*** Move to: new/path.py
-*** End Patch
-` + "```" + `
-
-Before using this tool:
-1. Use the Read tool to understand the files' content and context
-2. Verify all file paths are correct (use the LS tool)
-
 Important:
-- You must include a header with your intended action (Add/Delete/Update)
-- You must prefix new lines with ` + "`+`" + ` even when creating a new file
-- Context lines (@@) must uniquely identify the section you want to change
-- All whitespace, indentation, and surrounding code must match exactly
-- Always use absolute file paths (starting with /)`
+- Read the files first; context lines (@@) must uniquely identify the section, and all whitespace and surrounding code must match exactly
+- Prefix added lines with ` + "`+`" + ` even when creating a new file
+- Use absolute file paths`
 )
 
 func NewPatchTool(lspService lsp.LspService, permissions permission.Service, files history.Service, reg agentregistry.Registry) BaseTool {

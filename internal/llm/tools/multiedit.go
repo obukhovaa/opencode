@@ -54,41 +54,11 @@ type multiEditTool struct {
 
 const (
 	MultiEditToolName    = "multiedit"
-	multiEditDescription = `This is a tool for making multiple edits to a single file in one operation. It is built on top of the Edit tool and allows you to perform multiple find-and-replace operations efficiently. Prefer this tool over the Edit tool when you need to make multiple edits to the same file.
+	multiEditDescription = `Applies multiple exact string replacements to a single file in one atomic operation. Prefer this over several edit calls on the same file.
 
-Before using this tool:
-
-1. Use the Read tool to understand the file's contents and context
-2. Verify the directory path is correct
-
-To make multiple file edits, provide the following:
-1. file_path: The absolute path to the file to modify (must be absolute, not relative)
-2. edits: An array of edit operations to perform sequentially on the file, where each edit contains:
-   - old_string: The text to replace (must match the file contents exactly, including all whitespace and indentation)
-   - new_string: The edited text to replace the old_string
-   - replace_all: Replace all occurrences of old_string. This parameter is optional and defaults to false.
-
-IMPORTANT:
-- All edits are applied in sequence, in the order they are provided
-- Each edit operates on the result of the previous edit
-- All edits must be valid for the operation to succeed - if any edit fails, none will be applied
-- This tool is ideal when you need to make several changes to different parts of the same file
-
-CRITICAL REQUIREMENTS:
-1. All edits follow the same requirements as the single Edit tool
-2. The edits are atomic - either all succeed or none are applied
-3. Plan your edits carefully to avoid conflicts between sequential operations
-
-WARNING:
-- The tool will fail if edits.old_string doesn't match the file contents exactly (including whitespace)
-- The tool will fail if edits.old_string and edits.new_string are the same
-- Since edits are applied in sequence, ensure that earlier edits don't affect the text that later edits are trying to find
-
-When making edits:
-- Ensure all edits result in idiomatic, correct code
-- Do not leave the code in a broken state
-- Always use absolute file paths (starting with /)
-- Use replace_all for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.`
+- Same read-first and uniqueness contract as the edit tool: the file must have been read first, and each old_string must match exactly and be unique (or set replace_all). Unlike edit, empty old_string is rejected — multiedit cannot create files; use write or edit for that.
+- Edits apply in order, each operating on the result of the previous one — make sure earlier edits don't change text later edits need to find.
+- Atomic: if any edit fails, none are applied.`
 )
 
 func NewMultiEditTool(lspService lsp.LspService, permissions permission.Service, files history.Service, reg agentregistry.Registry) BaseTool {

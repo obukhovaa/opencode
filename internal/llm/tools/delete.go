@@ -39,34 +39,10 @@ type deleteTool struct {
 
 const (
 	DeleteToolName    = "delete"
-	deleteDescription = `File and directory deletion tool that removes files or directories from the filesystem while tracking changes in file history.
+	deleteDescription = `Deletes a file or directory (recursively), tracking the removal in file history. Prefer this over rm in bash.
 
-WHEN TO USE THIS TOOL:
-- Use when you need to remove files or directories
-- Helpful for cleaning up unused code or resources
-- Perfect for removing temporary or generated files
-
-HOW TO USE:
-- Provide the path to the file or directory to delete
-- The tool will handle both files and directories automatically
-- All deletions are tracked in file history for visibility
-
-FEATURES:
-- Supports both files and directories (directories are deleted recursively)
-- Tracks all deletions in file history for visibility in the sidebar
-- Generates diffs showing what was removed
-- Requires permission for deletions
-
-LIMITATIONS:
-- Cannot delete files outside the working directory
-- Directory deletions are limited to 500 files for safety
-- Cannot undo deletions (files are permanently removed)
-
-TIPS:
-- Prefer this over 'rm' in bash for proper file tracking
-- Use the Read tool first to verify you're deleting the correct file
-- Use the LS tool to verify directory contents before deleting
-- For large directory deletions (>500 files), use bash rm -rf or delete subdirectories individually`
+- Deletions are permanent, require permission, and are limited to paths inside the working directory.
+- Directory deletions are capped at 500 files for safety — for larger trees, delete subdirectories individually or fall back to bash rm -rf.`
 )
 
 func NewDeleteTool(permissions permission.Service, files history.Service, reg agentregistry.Registry) BaseTool {

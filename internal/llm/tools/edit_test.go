@@ -19,11 +19,6 @@ import (
 	"go.uber.org/mock/gomock"
 )
 
-func init() {
-	wd, _ := os.Getwd()
-	config.Load(wd, false)
-}
-
 type stubRegistry struct{}
 
 func (s *stubRegistry) Get(id string) (agentregistry.AgentInfo, bool) {
