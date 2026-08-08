@@ -43,37 +43,11 @@ type lsTool struct {
 const (
 	LSToolName    = "ls"
 	MaxLSFiles    = 1000
-	lsDescription = `Directory listing tool that shows files and subdirectories in a tree structure, helping you explore and understand the project organization.
+	lsDescription = `Lists files and subdirectories of a path as a tree, for exploring project structure.
 
-WHEN TO USE THIS TOOL:
-- Use when you need to explore the structure of a directory
-- Helpful for understanding the organization of a project
-- Good first step when getting familiar with a new codebase
-
-HOW TO USE:
-- Provide a path to list (defaults to current working directory)
-- Optionally specify glob patterns to ignore
-- Results are displayed in a tree structure
-
-FEATURES:
-- Displays a hierarchical view of files and directories
-- Automatically skips hidden files/directories (starting with '.')
-- Automatically respects .gitignore rules when ripgrep is available
-- Skips common system directories like __pycache__
-- Can filter out files matching specific patterns
-
-LIMITATIONS:
-- Results are limited to 1000 files
-- Very large directories will be truncated
-- Does not show file sizes or permissions
-- Cannot recursively list all directories in a large project
-- Falls back to built-in walker if ripgrep is not installed (no .gitignore support in fallback mode)
-
-TIPS:
-- You should generally prefer the Glob and Grep tools if you know which directories or file patterns to search for
-- Use Glob tool for finding files by name patterns instead of browsing
-- Use Grep tool for searching file contents
-- Combine with other tools for more effective exploration`
+- Skips hidden files, common system directories, and (when ripgrep is available) .gitignore'd paths; optional glob patterns filter out more.
+- Results are capped at 1000 files — very large trees are truncated.
+- Prefer glob (find by name) or the grep tool (find by content) when you know what you're looking for.`
 )
 
 func NewLsTool(cfg config.Configurator, reg agentregistry.Registry, permissions permission.Service) BaseTool {

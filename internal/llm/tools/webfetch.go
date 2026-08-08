@@ -39,42 +39,11 @@ type fetchTool struct {
 const (
 	WebFetchToolName     = "webfetch"
 	browserUserAgent     = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-	fetchToolDescription = `Fetches text-based content from a URL and returns it in the specified format.
+	fetchToolDescription = `Fetches text-based content (HTML, JSON, plain text, XML) from an HTTP/HTTPS URL and returns it as text, markdown (default), or html.
 
-WHEN TO USE THIS TOOL:
-- Use when you need to fetch text-based content from a URL (HTML pages, API responses, documentation)
-- Helpful for retrieving documentation, API responses, or web content
-- Useful for getting external information to assist with tasks
-
-WHEN NOT TO USE THIS TOOL:
-- Do NOT use for binary files (JARs, ZIPs, PDFs, images, executables, etc.) — use the bash tool with curl instead
-- Do NOT use for downloading artifacts, packages, or compiled binaries
-
-HOW TO USE:
-- Provide the URL to fetch content from
-- Specify the desired output format (text, markdown, or html)
-- Optionally set a timeout for the request
-
-FEATURES:
-- Supports three output formats: text, markdown, and html
-- Automatically handles HTTP redirects
-- Sets reasonable timeouts to prevent hanging
-- Validates input parameters before making requests
-
-LIMITATIONS:
-- Maximum response size is 5MB
-- Only supports text-based content (HTML, JSON, plain text, XML, etc.)
-- Binary content (images, archives, executables, PDFs) will be rejected — use bash with curl for those
-- Only supports HTTP and HTTPS protocols
-- Cannot handle authentication or cookies
-- Automatically retries with a browser User-Agent when Cloudflare bot protection is detected
-
-TIPS:
-- IMPORTANT: if another tool is available that offers better web fetching capabilities (such as an MCP tool), prefer using that tool instead
-- Use text format for plain text content or simple API responses
-- Use markdown format for content that should be rendered with formatting
-- Use html format when you need the raw HTML structure
-- Set appropriate timeouts for potentially slow websites`
+- Max response size 5MB; no authentication or cookies; binary content (archives, PDFs, images, executables) is rejected — use bash with curl for downloads.
+- Retries with a browser User-Agent when Cloudflare bot protection is detected.
+- If another available tool offers better fetching for the target (e.g. an MCP tool), prefer it.`
 )
 
 func NewFetchTool(agents agentregistry.Registry, permissions permission.Service) BaseTool {

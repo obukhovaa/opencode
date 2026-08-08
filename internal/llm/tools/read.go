@@ -38,37 +38,13 @@ const (
 	MaxReadSize      = 250 * 1024
 	DefaultReadLimit = 2000
 	MaxLineLength    = 2000
-	viewDescription  = `File reading tool that reads and displays the contents of files with line numbers, allowing you to examine code, logs, or text data.
+	viewDescription  = `Reads a file from the local filesystem and returns its contents with line numbers.
 
-WHEN TO USE THIS TOOL:
-- Use when you need to read the contents of a specific file
-- Helpful for examining source code, configuration files, or log files
-- Perfect for looking at text-based file formats
-
-HOW TO USE:
-- Provide the path to the file you want to view
-- Optionally specify an offset to start reading from a specific line
-- Optionally specify a limit to control how many lines are read
-
-FEATURES:
-- Displays file contents with line numbers for easy reference
-- Can read from any position in a file using the offset parameter
-- Handles large files by limiting the number of lines read
-- Automatically truncates very long lines for better display
-- Suggests similar file names when the requested file isn't found
-
-LIMITATIONS:
-- Maximum file size is 250KB
-- Default reading limit is 2000 lines
-- Lines longer than 2000 characters are truncated
-- Cannot display binary files or images
-- Images can be identified but not displayed
-
-TIPS:
-- Use with Glob tool to first find files you want to read
-- For code exploration, first use Grep to find relevant files, then Read to examine them
-- When viewing large files, use the offset parameter to read specific sections
-- Avoid tiny repeated slices (e.g. 30-line chunks). If you need more context, read a larger window in a single call`
+- Reads up to 2000 lines from the start by default; use offset/limit for other sections. Avoid tiny repeated slices (e.g. 30-line chunks) — read a larger window in a single call.
+- Maximum file size is 250KB; lines longer than 2000 characters are truncated.
+- Cannot display binary files or images (use the view_image tool for images).
+- Suggests similar file names when the requested file is not found.
+- Read multiple files by issuing several calls in one response.`
 )
 
 func NewReadTool(lspService lsp.LspService, reg agentregistry.Registry, permissions permission.Service) BaseTool {

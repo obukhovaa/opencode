@@ -32,27 +32,7 @@ type imageContent struct {
 const (
 	ViewImageToolName    = "view_image"
 	MaxImageSize         = 5 * 1024 * 1024 // 5MB
-	viewImageDescription = `Read an image file as base64 encoded data and MIME type.
-
-WHEN TO USE THIS TOOL:
-- Use when you need to analyze or examine image files
-- Helpful for understanding visual content in the codebase
-- Perfect for processing screenshots, diagrams, or other visual assets
-
-HOW TO USE:
-- Provide the path to the image file you want to view
-- The tool will return the image as base64 encoded content and MIME type
-
-SUPPORTED FILE FORMATS:
-- PNG, JPEG, GIF, WebP, BMP
-
-LIMITATIONS:
-- Maximum file size is 5MB
-
-TIPS:
-- Use with Glob tool to first find image files you want to view
-- Check file size before processing very large images
-- Combine with other tools for comprehensive image analysis`
+	viewImageDescription = `Reads an image file (PNG, JPEG, GIF, WebP, BMP; max 5MB) so you can view and analyze it. Use for screenshots, diagrams, and other visual assets.`
 )
 
 var supportedImageTypes = map[string]string{

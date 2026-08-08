@@ -43,37 +43,11 @@ type WriteResponseMetadata struct {
 
 const (
 	WriteToolName    = "write"
-	writeDescription = `File writing tool that creates or updates files in the filesystem, allowing you to save or modify text content.
+	writeDescription = `Writes a file to the local filesystem, creating it (with parent directories) or overwriting the existing content entirely.
 
-WHEN TO USE THIS TOOL:
-- Use when you need to create a new file or temporary file
-- Helpful for updating existing files with modified content
-- Perfect for saving generated code, configurations, or text data
-
-HOW TO USE:
-- Provide the path to the file you want to write
-- Include the content to be written to the file
-- The tool will create any necessary parent directories
-
-FEATURES:
-- Can create new files or overwrite existing ones
-- Creates parent directories automatically if they don't exist
-- Checks if the file has been modified since last read for safety
-- Avoids unnecessary writes when content hasn't changed
-
-LIMITATIONS:
-- You should read a file before writing to it to avoid conflicts
-- Cannot append to files (rewrites the entire file)
-
-
-TIPS:
-- ALWAYS prefer editing existing files in the codebase over writing entirely new content
-- NEVER proactively create documentation files (*.md) or README files unless explicitly requested
-- Only use emojis if the user explicitly requests it
-- Use the Read tool first to examine existing files before modifying them
-- Use the LS tool to verify the correct location when creating new files
-- Combine with Glob and Grep tools to find and modify multiple files
-- Always include descriptive comments when making changes to existing code`
+- Read an existing file before overwriting it: the tool rejects writes to a file that changed on disk after your last read.
+- Prefer editing existing files over creating new ones; never proactively create documentation files (*.md, README) unless explicitly requested.
+- Writes with identical content are rejected as no-ops. Appending is not supported — provide the full file content.`
 )
 
 func NewWriteTool(lspService lsp.LspService, permissions permission.Service, files history.Service, reg agentregistry.Registry) BaseTool {

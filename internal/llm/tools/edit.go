@@ -45,36 +45,12 @@ type editTool struct {
 
 const (
 	EditToolName    = "edit"
-	editDescription = `Performs exact string replacements in files.
+	editDescription = `Performs exact string replacement in a file.
 
-Before using this tool:
-
-1. Use the Read tool to understand the file's contents and context
-
-2. Verify the directory path is correct (only applicable when creating new files):
-   - Use the LS tool to verify the parent directory exists and is the correct location
-
-To make a file edit, provide the following:
-1. file_path: The absolute path to the file to modify (must be absolute, not relative)
-2. old_string: The text to replace (must match the file contents exactly, including all whitespace and indentation)
-3. new_string: The edited text to replace the old_string
-4. replace_all: (optional) Replace all occurrences of old_string (default false)
-
-Special cases:
-- To create a new file: provide file_path and new_string, leave old_string empty
-- To delete content: provide file_path and old_string, leave new_string empty
-
-The edit will FAIL if old_string is not found in the file.
-The edit will FAIL if old_string is found multiple times in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance.
-
-Use replace_all for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.
-
-When making edits:
-   - Ensure the edit results in idiomatic, correct code
-   - Do not leave the code in a broken state
-   - Always use absolute file paths (starting with /)
-
-When making multiple edits to the same file, prefer the MultiEdit tool over multiple calls to this tool.`
+- You must read the file (read tool) before editing; the edit fails if the file was never read or changed on disk after your last read.
+- old_string must match the file contents exactly, including whitespace and indentation, and must be unique in the file — otherwise the edit fails. Add surrounding context to disambiguate, or set replace_all to change every occurrence (e.g. renaming a variable).
+- Special cases: empty old_string creates a new file with new_string as content; empty new_string deletes every match of old_string.
+- For several edits to the same file, prefer the multiedit tool.`
 )
 
 func NewEditTool(
