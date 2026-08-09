@@ -181,3 +181,45 @@ func TestConfigAnyChannelEnabled(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeToolUpdateVerbosity(t *testing.T) {
+	tests := []struct {
+		in       string
+		wantMode string
+		wantOK   bool
+	}{
+		{"", ToolUpdateVerbosityCompact, true},
+		{"compact", ToolUpdateVerbosityCompact, true},
+		{"full", ToolUpdateVerbosityFull, true},
+		{"  FULL  ", ToolUpdateVerbosityFull, true},
+		{"Compact", ToolUpdateVerbosityCompact, true},
+		{"verbose", ToolUpdateVerbosityCompact, false},
+		{"off", ToolUpdateVerbosityCompact, false},
+	}
+	for _, tt := range tests {
+		mode, ok := NormalizeToolUpdateVerbosity(tt.in)
+		if mode != tt.wantMode || ok != tt.wantOK {
+			t.Errorf("NormalizeToolUpdateVerbosity(%q) = (%q, %v); want (%q, %v)",
+				tt.in, mode, ok, tt.wantMode, tt.wantOK)
+		}
+	}
+}
+
+// TestConfig_ToolVerbosityDefaultsCompact pins the default: an operator
+// who never set the key gets the quiet rendering, and a typo does not
+// silently opt them into the noisy one.
+func TestConfig_ToolVerbosityDefaultsCompact(t *testing.T) {
+	var nilCfg *Config
+	if got := nilCfg.ToolVerbosity(); got != ToolUpdateVerbosityCompact {
+		t.Errorf("nil cfg ToolVerbosity() = %q; want compact", got)
+	}
+	if got := (&Config{}).ToolVerbosity(); got != ToolUpdateVerbosityCompact {
+		t.Errorf("zero cfg ToolVerbosity() = %q; want compact", got)
+	}
+	if got := (&Config{ToolUpdateVerbosity: "full"}).ToolVerbosity(); got != ToolUpdateVerbosityFull {
+		t.Errorf("full cfg ToolVerbosity() = %q; want full", got)
+	}
+	if got := (&Config{ToolUpdateVerbosity: "nonsense"}).ToolVerbosity(); got != ToolUpdateVerbosityCompact {
+		t.Errorf("bad cfg ToolVerbosity() = %q; want compact fallback", got)
+	}
+}

@@ -38,6 +38,17 @@ const (
 	partsDrainGrace = 100 * time.Millisecond
 )
 
+// toolErrorPreviewRunes caps the failure reason appended to a ✗ tool
+// line. Tool updates are compact by design (name + id + duration only);
+// a failed call is the one case that carries body text, because an
+// invisible failure is worse than an extra short line. The full result
+// is always in the session store and Langfuse.
+const toolErrorPreviewRunes = 200
+
+// toolFullPreviewRunes caps the successful-result body included only
+// under full verbosity. Matches the pre-compact behaviour.
+const toolFullPreviewRunes = 1000
+
 // sessionDispatch owns the single agent.Run callsite for one bound
 // sessionID. It runs in its own goroutine; all inbound messages for the
 // session route through its inbound channel, ensuring serialization (no
@@ -245,8 +256,9 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 // points back at the parent. Subagent tool activity (which can
 // dominate the run — e.g. 15 minutes of Atlassian MCP calls inside one
 // task) emits part events on the SUBAGENT's session, not the parent's.
-// Without the descendant filter, the reviewer would see "🔧 task ·
-// ..." at the start and then silence for the entire subagent run.
+// Without the descendant filter, the reviewer would see a single
+// "🔧 task#<id>" line at the start and then silence for the entire
+// subagent run.
 // Including descendant events makes the chat surface reflect what the
 // run is actually doing, so a hung MCP call is visible instead of
 // looking like the bridge itself is stuck.
@@ -411,10 +423,24 @@ func agentMessageText(m message.Message) string {
 // IsError) are ALWAYS surfaced regardless of the flag — silent tool
 // failures are too easy to miss otherwise.
 //
-// Emission rules (kept terse to avoid spamming chat):
-//   - ToolCall with Finished=true → one message "🔧 <name>#<id> · <params>"
-//   - ToolResult with IsError=true → "✗ <name>#<id> · <error preview>"
-//   - Successful completions emit "✓ <name>#<id> · <preview>"
+// Emission defaults to COMPACT — one line per tool call, carrying only
+// the status glyph, the tool name, the pairing id and (on completion)
+// the elapsed time:
+//   - ToolCall with Finished=true → "🔧 <name>#<id>"
+//   - Successful completion       → "✓ <name>#<id> · <duration>"
+//   - Failed completion           → "✗ <name>#<id> · <duration> · <reason>"
+//
+// In compact mode, tool ARGUMENTS and successful result BODIES are NOT
+// sent to chat. A daemon-mode thread is a progress indicator, not a
+// transcript: the full input/output of every call is already durably
+// recorded in the session store (messages.parts) and in Langfuse, which
+// is where an investigation belongs. The single exception is a failure
+// reason, truncated to toolErrorPreviewRunes — an error the reviewer
+// can't see at all is worse than one extra short line.
+//
+// Under `router.toolUpdateVerbosity: "full"` (or after `/verbosity full`)
+// the argument summary and a truncated result body are included, for
+// reviewers watching a single run closely.
 //
 // The #<id> suffix is a short stable hash of the tool_call_id so a
 // reviewer watching parallel tool calls can pair each ✓/✗ result back
@@ -437,6 +463,7 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
 		return
 	}
 	tu := d.svc.cfg.ToolUpdatesEnabled
+	full := d.svc.ToolVerbosity() == bridge.ToolUpdateVerbosityFull
 	switch part := ev.Payload.Part.(type) {
 	case message.ToolCall:
 		// Streaming providers (Anthropic) publish each ToolCall up to
@@ -459,49 +486,125 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
 		if !tu || !part.Finished || part.Input == "" {
 			return
 		}
-		callID := callIDSuffix(part.ID)
-		label := part.Name + callID
-		paramsText := formatToolParams(part.Name, part.Input)
-		paramsMap := formatToolParamMap(part.Name, part.Input)
-		var fallback string
-		if paramsText != "" {
-			fallback = fmt.Sprintf("🔧 %s · %s", label, paramsText)
-		} else {
-			fallback = fmt.Sprintf("🔧 %s", label)
-		}
 		// Record the call's wall-clock start so the result emit can
 		// compute DurationMs even when the adapter doesn't track timing
 		// per-call.
 		d.recordToolCallStart(part.ID)
-		hint := bridge.NewToolCallHint(part.Name, callID, paramsMap)
+		hint, fallback := toolCallRender(part.Name, callIDSuffix(part.ID), part.Input, full)
 		d.emitToolRender(hint, fallback)
 	case message.ToolResult:
-		callID := callIDSuffix(part.ToolCallID)
-		label := part.Name + callID
-		status := "ok"
-		if part.IsError {
-			status = "error"
-		}
-		preview := truncateRunes(oneLine(part.Content), 1000)
 		// Gate non-error results behind tu (matches today's behaviour).
 		if !part.IsError && !tu {
 			return
 		}
-		var fallback string
-		switch {
-		case part.IsError:
-			fallback = fmt.Sprintf("✗ %s · %s", label, truncateRunes(preview, 200))
-		case preview == "":
-			fallback = fmt.Sprintf("✓ %s", label)
-		default:
-			fallback = fmt.Sprintf("✓ %s · %s", label, truncateRunes(preview, 200))
-		}
 		durationMs := d.consumeToolCallDuration(part.ToolCallID)
-		hint := bridge.NewToolResultHint(part.Name, callID, status, preview, durationMs)
+		hint, fallback := toolResultRender(
+			part.Name, callIDSuffix(part.ToolCallID), part.IsError, part.Content, durationMs, full)
 		d.emitToolRender(hint, fallback)
 	}
 }
 
+// toolCallRender builds the compact pending-call render: a status glyph,
+// the tool name and the pairing id — nothing else. Params are nil in
+// compact mode so RichRenderer adapters skip their params block and the
+// chat line stays one line (see handlePartEvent's contract note); in
+// full mode the argument summary is attached.
+func toolCallRender(name, callID, input string, full bool) (*bridge.RenderHint, string) {
+	label := name + callID
+	if !full {
+		return bridge.NewToolCallHint(name, callID, nil), fmt.Sprintf("🔧 %s", label)
+	}
+	fallback := fmt.Sprintf("🔧 %s", label)
+	if params := formatToolParams(name, input); params != "" {
+		fallback += " · " + params
+	}
+	return bridge.NewToolCallHint(name, callID, formatToolParamMap(name, input)), fallback
+}
+
+// toolResultRender builds the compact completion render. Successful
+// calls carry NO body — only the glyph, name, pairing id and elapsed
+// time. Failures append a rune-capped reason so a broken call is
+// actionable from chat alone; the full result stays in the session
+// store and Langfuse. In full mode a successful call also carries a
+// truncated result body.
+func toolResultRender(name, callID string, isError bool, content string, durationMs int64, full bool) (*bridge.RenderHint, string) {
+	status := "ok"
+	glyph := "✓"
+	preview := ""
+	if isError {
+		status = "error"
+		glyph = "✗"
+		preview = truncateRunes(oneLine(content), toolErrorPreviewRunes)
+	} else if full {
+		preview = truncateRunes(oneLine(content), toolFullPreviewRunes)
+	}
+	fallback := fmt.Sprintf("%s %s%s", glyph, name, callID)
+	if durationMs > 0 {
+		fallback += " · " + formatDurationMs(durationMs)
+	}
+	if preview != "" {
+		fallback += " · " + truncateRunes(preview, toolErrorPreviewRunes)
+	}
+	return bridge.NewToolResultHint(name, callID, status, preview, durationMs), fallback
+}
+
+// callIDSuffix renders a short stable suffix derived from the tool
+// call ID so reviewers can pair "🔧 bash#abcd" with its "✓ bash#abcd"
+// (or "✗ bash#abcd") result. Empty input yields an empty suffix.
+//
+// The ID is truncated to the trailing 6 chars — provider-issued IDs
+// are typically opaque strings like "toolu_01ABC..." or "call_xyz...".
+// The trailing portion is more entropic than the prefix (which is
+// often a fixed scheme prefix) and short enough to keep chat lines
+// compact.
+func callIDSuffix(id string) string {
+	if id == "" {
+		return ""
+	}
+	const n = 6
+	if len(id) > n {
+		id = id[len(id)-n:]
+	}
+	return "#" + id
+}
+
+// truncateRunes returns s capped to maxRunes codepoints. Slicing a
+// UTF-8 string at a byte index can land mid-codepoint and produce
+// invalid UTF-8; counting runes guarantees the cut is at a codepoint
+// boundary. Appends an ellipsis when truncation occurred.
+func truncateRunes(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	count := 0
+	for i := range s {
+		if count == maxRunes {
+			return s[:i] + "…"
+		}
+		count++
+	}
+	return s
+}
+
+// formatDurationMs renders a millisecond duration as a compact
+// "850ms" / "1.4s" / "1m2s" for the plain-text fallback line. Adapters
+// that satisfy bridge.RichRenderer format the duration themselves from
+// RenderHint.DurationMs; this is only used when the render hint can't
+// be honoured.
+func formatDurationMs(ms int64) string {
+	switch {
+	case ms < 1000:
+		return fmt.Sprintf("%dms", ms)
+	case ms < 60_000:
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
+	default:
+		return fmt.Sprintf("%dm%ds", ms/60_000, (ms%60_000)/1000)
+	}
+}
+
+// Full-verbosity helpers below. They are only reached when the live
+// verbosity is "full" (router.toolUpdateVerbosity or /verbosity full);
+// compact mode never calls them.
 // formatToolParamMap is the structured analogue of formatToolParams —
 // returns the same priority-keyed primary + secondary params as a map
 // so a RenderHint can carry them for adapters that render fields
@@ -558,44 +661,6 @@ func formatToolParamMap(name, input string) map[string]string {
 		return nil
 	}
 	return out
-}
-
-// callIDSuffix renders a short stable suffix derived from the tool
-// call ID so reviewers can pair "🔧 bash#abcd" with its "✓ bash#abcd"
-// (or "✗ bash#abcd") result. Empty input yields an empty suffix.
-//
-// The ID is truncated to the trailing 6 chars — provider-issued IDs
-// are typically opaque strings like "toolu_01ABC..." or "call_xyz...".
-// The trailing portion is more entropic than the prefix (which is
-// often a fixed scheme prefix) and short enough to keep chat lines
-// compact.
-func callIDSuffix(id string) string {
-	if id == "" {
-		return ""
-	}
-	const n = 6
-	if len(id) > n {
-		id = id[len(id)-n:]
-	}
-	return "#" + id
-}
-
-// truncateRunes returns s capped to maxRunes codepoints. Slicing a
-// UTF-8 string at a byte index can land mid-codepoint and produce
-// invalid UTF-8; counting runes guarantees the cut is at a codepoint
-// boundary. Appends an ellipsis when truncation occurred.
-func truncateRunes(s string, maxRunes int) string {
-	if maxRunes <= 0 {
-		return ""
-	}
-	count := 0
-	for i := range s {
-		if count == maxRunes {
-			return s[:i] + "…"
-		}
-		count++
-	}
-	return s
 }
 
 // formatToolParams extracts a short informative summary from a

@@ -42,18 +42,19 @@ func replyText(text string) *bridge.CommandReply {
 // are stateless except for what's reachable via Service.
 func (s *Service) ChatCommands() map[string]CommandHandler {
 	return map[string]CommandHandler{
-		"agent":    s.cmdAgent,
-		"model":    s.cmdModel,
-		"sessions": s.cmdSessions,
-		"session":  s.cmdSession,
-		"rename":   s.cmdRename,
-		"compact":  s.cmdCompact,
-		"crons":    s.cmdCrons,
-		"reset":    s.cmdReset,
-		"abort":    s.cmdAbort,
-		"pair":     s.cmdPair,
-		"skip":     s.cmdSkip,
-		"help":     s.cmdHelp,
+		"agent":     s.cmdAgent,
+		"model":     s.cmdModel,
+		"sessions":  s.cmdSessions,
+		"session":   s.cmdSession,
+		"rename":    s.cmdRename,
+		"compact":   s.cmdCompact,
+		"crons":     s.cmdCrons,
+		"reset":     s.cmdReset,
+		"abort":     s.cmdAbort,
+		"pair":      s.cmdPair,
+		"skip":      s.cmdSkip,
+		"verbosity": s.cmdVerbosity,
+		"help":      s.cmdHelp,
 	}
 }
 
@@ -613,6 +614,55 @@ func (s *Service) cmdSkip(_ context.Context, _ bridge.Inbound) *bridge.CommandRe
 	return replyText("No pending question to skip.")
 }
 
+// cmdVerbosity: show or switch how much detail tool updates carry.
+// "/verbosity"         → report the live mode and the alternatives.
+// "/verbosity full"    → include tool arguments and result bodies.
+// "/verbosity compact" → back to one line per call (the default).
+//
+// The switch is process-wide and in-memory: it affects every bound
+// session immediately and is forgotten on restart, which returns to
+// router.toolUpdateVerbosity. Deliberately NOT persisted — a reviewer
+// turning on detail to watch one run should not silently reconfigure
+// the deployment.
+func (s *Service) cmdVerbosity(_ context.Context, in bridge.Inbound) *bridge.CommandReply {
+	args := strings.TrimSpace(in.CommandArgs)
+	if args == "" {
+		current := s.ToolVerbosity()
+		items := []bridge.ListItem{
+			{
+				Label:    bridge.ToolUpdateVerbosityCompact,
+				Sublabel: "one line per tool call: name, id, duration (default)",
+			},
+			{
+				Label:    bridge.ToolUpdateVerbosityFull,
+				Sublabel: "also include tool arguments and result bodies",
+			},
+		}
+		for i := range items {
+			if items[i].Label == current {
+				items[i].Marker = "active"
+			}
+		}
+		text := fmt.Sprintf("Tool-update verbosity: %s\n- %s: %s\n- %s: %s\nSwitch with /verbosity <mode>.",
+			current,
+			bridge.ToolUpdateVerbosityCompact, items[0].Sublabel,
+			bridge.ToolUpdateVerbosityFull, items[1].Sublabel)
+		return &bridge.CommandReply{
+			Text: text,
+			Hint: bridge.NewListHint("Tool-update verbosity", items, "active"),
+		}
+	}
+	mode, err := s.SetToolVerbosity(args)
+	if err != nil {
+		return replyText(fmt.Sprintf("Failed to set verbosity: %v", err))
+	}
+	body := fmt.Sprintf("Tool-update verbosity: %s (this process only; restart restores the configured value)", mode)
+	return &bridge.CommandReply{
+		Text: body,
+		Hint: bridge.NewStatusHint(body),
+	}
+}
+
 // helpEntry pairs a command's display form with its description for
 // rich rendering. The list is iterated for both the text fallback and
 // the structured hint to keep them in sync.
@@ -638,6 +688,7 @@ func (s *Service) helpEntriesForChannel(channel string) []helpEntry {
 		{Cmd: "/abort", Desc: "cancel an in-flight run on the current session"},
 		{Cmd: "/pair", Desc: "pairing-code information"},
 		{Cmd: "/skip", Desc: "skip the current pending question"},
+		{Cmd: "/verbosity [mode]", Desc: "show or switch tool-update detail (compact|full)"},
 		{Cmd: "/help", Desc: "this listing"},
 	}
 	if channel == "" || channel == "telegram" {

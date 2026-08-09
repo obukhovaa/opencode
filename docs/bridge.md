@@ -81,7 +81,8 @@ Health snapshot: `curl http://127.0.0.1:3456/router/health` (per-adapter `status
 | `questionNudgeIntervalSeconds` | `int` | Idle gap after which the bridge re-posts a "still waiting for your answer" nudge to a session's bound peers when a `question` is outstanding, and the spacing between subsequent nudges. Re-surfaces an answer lost in transit (e.g. a misrouted bridge reply) instead of letting the step hang to the job's hard deadline. `0` → built-in default (5 min); `<0` → disable nudging. |
 | `questionNudgeMax` | `int` | Caps how many nudges are sent for a single pending question (so a walked-away reviewer can't be pinged forever). `0` → built-in default (3); `<0` → unlimited (bounded in practice by the job deadline). |
 | `permissionMode` | `"allow"` \| `"deny"` \| `"ask"` \| empty | How the bridge resolves agent permission requests on bridge-bound sessions. `allow`/`deny` auto-resolve; `ask`/empty defer to opencode's default UI (will hang headless). Unrecognised values fail-safe to deny with a one-shot WARN log. |
-| `toolUpdatesEnabled` | `bool` | Stream tool-call lifecycle (`🔧 <tool> · <params>`, `✓ <tool> · <result>`, `✗ <tool> · <error>`) to chat. Error lines surface regardless of this flag. |
+| `toolUpdatesEnabled` | `bool` | Stream tool-call lifecycle to chat. Detail level is set by `toolUpdateVerbosity`. Failures surface regardless of this flag. |
+| `toolUpdateVerbosity` | `"compact"` (default) \| `"full"` | `compact` emits **one line per tool call**: `🔧 <tool>#<id>` while running, updated in place to `✓ <tool>#<id> · <duration>` on completion — arguments and result bodies stay out of chat (they're in the session store and Langfuse). Failures always append a truncated reason: `✗ <tool>#<id> · <duration> · <reason>`. `full` restores the argument summary on the call line and a truncated result body on completion. Unrecognised values fall back to `compact` with a one-shot WARN. Flip it live with `/verbosity`. |
 | `channels.{telegram,slack,mattermost}` | object | Per-platform configuration; see below. |
 
 ## Per-channel configuration
@@ -246,6 +247,8 @@ Once a peer is bound (manually or via the first inbound), the following commands
 | `/abort` | Cancel an in-flight run on the current session (releases the busy lock — use when an MCP tool hangs). |
 | `/pair <code>` | Pair with a private Telegram bot. |
 | `/skip` | Dismiss a pending agent question. |
+| `/verbosity` | Show the live tool-update detail level. |
+| `/verbosity compact\|full` | Switch it for this process (not persisted; restart restores `router.toolUpdateVerbosity`). |
 | `/help` | List commands. |
 | `/dir` | Unsupported — one opencode process is pinned to one workspace (returns an explanatory message). |
 

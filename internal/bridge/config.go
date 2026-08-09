@@ -1,5 +1,7 @@
 package bridge
 
+import "strings"
+
 // Config is the top-level configuration block hosted under the `router` key
 // in .opencode.json. It is referenced by internal/config.Config.Router so the
 // bridge boots when the operator opts in by adding this section.
@@ -25,6 +27,22 @@ type Config struct {
 	// surface. When false, only typing indicators and final agent
 	// messages are emitted.
 	ToolUpdatesEnabled bool `json:"toolUpdatesEnabled,omitempty"`
+
+	// ToolUpdateVerbosity selects how much detail each tool update
+	// carries when ToolUpdatesEnabled is true:
+	//
+	//   "compact" (default) — one line per call: glyph, tool name,
+	//       pairing id and elapsed time. Arguments and result bodies
+	//       stay out of chat; they're in the session store and the
+	//       telemetry backend.
+	//   "full" — the pre-compact rendering: argument summary on the
+	//       call line and a truncated result body on completion. Useful
+	//       when watching a single run closely, noisy in a long thread.
+	//
+	// Unrecognised values resolve to "compact" (fail-safe to the quiet
+	// option). Reviewers can flip this per-process at runtime with the
+	// `/verbosity` chat command without editing config.
+	ToolUpdateVerbosity string `json:"toolUpdateVerbosity,omitempty"`
 
 	// Channels carries per-platform configuration and identity lists.
 	Channels ChannelsConfig `json:"channels,omitempty"`
@@ -147,6 +165,42 @@ const (
 	InboundEnabled  = "enabled"
 	InboundDisabled = "disabled"
 )
+
+// Tool-update verbosity values for Config.ToolUpdateVerbosity.
+const (
+	// ToolUpdateVerbosityCompact emits one line per tool call.
+	ToolUpdateVerbosityCompact = "compact"
+	// ToolUpdateVerbosityFull adds argument and result detail.
+	ToolUpdateVerbosityFull = "full"
+)
+
+// NormalizeToolUpdateVerbosity canonicalises a verbosity value
+// (trimmed, lower-cased). ok reports whether the input named a known
+// mode; an empty input is a valid request for the default, so it
+// returns (compact, true). Unknown values return (compact, false) so
+// callers can fail safe to the quiet mode AND warn about the typo.
+func NormalizeToolUpdateVerbosity(v string) (mode string, ok bool) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "":
+		return ToolUpdateVerbosityCompact, true
+	case ToolUpdateVerbosityCompact:
+		return ToolUpdateVerbosityCompact, true
+	case ToolUpdateVerbosityFull:
+		return ToolUpdateVerbosityFull, true
+	default:
+		return ToolUpdateVerbosityCompact, false
+	}
+}
+
+// ToolVerbosity resolves the configured tool-update verbosity, applying
+// the compact default. Returns compact for a nil receiver.
+func (c *Config) ToolVerbosity() string {
+	if c == nil {
+		return ToolUpdateVerbosityCompact
+	}
+	mode, _ := NormalizeToolUpdateVerbosity(c.ToolUpdateVerbosity)
+	return mode
+}
 
 // IsInboundDisabled reports whether the given inbound-mode value disables
 // the adapter's listener goroutine. Centralised here so every adapter

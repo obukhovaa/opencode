@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/bridge"
@@ -63,6 +64,16 @@ type Service struct {
 	// adapters keyed by "channel:identity" — populated lazily as Phase 2
 	// (Mattermost), Phase 4 (Telegram), and Phase 5 (Slack) land.
 	adapters map[string]bridge.Adapter
+
+	// toolVerbosity is the LIVE tool-update verbosity, seeded from
+	// cfg.ToolUpdateVerbosity at New and flipped at runtime by the
+	// `/verbosity` chat command. Held in an atomic (never read under
+	// cfgMu) because every per-session dispatcher goroutine reads it
+	// once per tool transition — a hot path that must not contend with
+	// the config mutex. Runtime-only by design: the override is not
+	// written back to .opencode.json, so a restart returns to the
+	// configured value.
+	toolVerbosity atomic.Value // string
 
 	// adapterLocks tracks the identity locks acquired by RegisterAdapter
 	// so DeregisterAdapter can release them in the same lifecycle path.
@@ -193,7 +204,7 @@ func New(deps Dependencies) (*Service, error) {
 	if projectID == "" {
 		projectID = "default"
 	}
-	return &Service{
+	svc := &Service{
 		cfg:             deps.RouterCfg,
 		app:             deps.App,
 		store:           store.New(deps.DB, deps.ProviderType),
@@ -208,7 +219,38 @@ func New(deps Dependencies) (*Service, error) {
 		remoteSelfPort:  deps.RemoteSelfPort,
 		remoteJobID:     deps.RemoteJobID,
 		remoteProjectID: projectID,
-	}, nil
+	}
+	mode, ok := bridge.NormalizeToolUpdateVerbosity(deps.RouterCfg.ToolUpdateVerbosity)
+	if !ok {
+		logging.Warn("bridge: unrecognised router.toolUpdateVerbosity, falling back to compact",
+			"configured", deps.RouterCfg.ToolUpdateVerbosity, "using", mode)
+	}
+	svc.toolVerbosity.Store(mode)
+	return svc, nil
+}
+
+// ToolVerbosity returns the live tool-update verbosity — the value the
+// dispatchers render against. Safe for concurrent use.
+func (s *Service) ToolVerbosity() string {
+	if v, ok := s.toolVerbosity.Load().(string); ok && v != "" {
+		return v
+	}
+	return bridge.ToolUpdateVerbosityCompact
+}
+
+// SetToolVerbosity switches the live tool-update verbosity. Returns the
+// canonical mode that was applied, or an error when the requested value
+// isn't a known mode (in which case nothing changes). The override lives
+// in memory only — see the toolVerbosity field comment.
+func (s *Service) SetToolVerbosity(v string) (string, error) {
+	mode, ok := bridge.NormalizeToolUpdateVerbosity(v)
+	if !ok {
+		return s.ToolVerbosity(), fmt.Errorf("unknown verbosity %q (want %q or %q)",
+			v, bridge.ToolUpdateVerbosityCompact, bridge.ToolUpdateVerbosityFull)
+	}
+	s.toolVerbosity.Store(mode)
+	logging.Info("bridge: tool-update verbosity changed", "verbosity", mode)
+	return mode, nil
 }
 
 // providerDB returns the *sql.DB the MySQL lock manager needs, or nil for
