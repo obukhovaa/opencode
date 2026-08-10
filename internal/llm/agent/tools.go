@@ -315,8 +315,20 @@ func (a *agent) resolveTools() []tools.BaseTool {
 			toolSet = append(toolSet, t)
 		}
 		toolSet = OrderTools(toolSet)
+		// Split the log by deferral state so it's clear which tools are
+		// loaded into the model's context vs. which are enabled-but-deferred
+		// (schema withheld until discovered via toolsearch). Deferred tools
+		// remain in the resolved set — they are wrapped, not removed — so
+		// this log is NOT the wire payload; the per-request convertTools is
+		// where deferred tools get defer_loading (native) or are omitted
+		// (fallback).
+		var deferredNames []string
 		for _, t := range toolSet {
-			toolNames = append(toolNames, t.Info().Name)
+			if _, ok := t.(*tools.DeferredWrapper); ok {
+				deferredNames = append(deferredNames, t.Info().Name)
+			} else {
+				toolNames = append(toolNames, t.Info().Name)
+			}
 		}
 		a.tools = toolSet
 		a.toolsResolved.Store(true)
@@ -327,7 +339,13 @@ func (a *agent) resolveTools() []tools.BaseTool {
 				ts.BindToolset(toolSet)
 			}
 		}
-		logging.Info("Resolved tool set", "agent", a.AgentID(), "tools", strings.Join(toolNames, ", "))
+		if len(deferredNames) > 0 {
+			logging.Info("Resolved tool set", "agent", a.AgentID(),
+				"tools", strings.Join(toolNames, ", "),
+				"deferredTools", strings.Join(deferredNames, ", "))
+		} else {
+			logging.Info("Resolved tool set", "agent", a.AgentID(), "tools", strings.Join(toolNames, ", "))
+		}
 	})
 	return a.tools
 }
