@@ -779,3 +779,109 @@ func TestStripImagesFastPath(t *testing.T) {
 		})
 	}
 }
+
+// countReplayBlocks tallies the reasoning/tool-search/tool-use blocks the
+// converter emitted for one assistant message.
+func countReplayBlocks(mp anthropic.MessageParam) (thinking, serverToolUse, toolSearchResult, toolUse int) {
+	for _, b := range mp.Content {
+		switch {
+		case b.OfThinking != nil, b.OfRedactedThinking != nil:
+			thinking++
+		case b.OfServerToolUse != nil:
+			serverToolUse++
+		case b.OfToolSearchToolResult != nil:
+			toolSearchResult++
+		case b.OfToolUse != nil:
+			toolUse++
+		}
+	}
+	return
+}
+
+// TestConvertMessagesDropsThinkingOnUnreplayableToolSearch locks in the fix for
+// the deferred-tools native-path RST_STREAM: when a server-side tool-search
+// block cannot be faithfully replayed (empty References captured from the
+// stream, no ErrorCode) it is skipped, and on the native path the turn's
+// thinking blocks MUST be dropped with it — otherwise Anthropic/Bedrock rejects
+// the latest assistant turn's "modified" thinking (surfaced as an HTTP/2
+// stream reset). The other cases guard against regressing the capability:
+// searches with references or an error code, plain reasoning turns, and
+// non-native models must all still replay thinking.
+func TestConvertMessagesDropsThinkingOnUnreplayableToolSearch(t *testing.T) {
+	reasoning := message.ReasoningContent{Thinking: "planning the search", Signature: "sig-abc"}
+	toolCall := message.ToolCall{ID: "toolu_1", Name: "gitlab_get_merge_request", Input: `{}`, Finished: true}
+
+	// Empty References + no ErrorCode: the extraction did not surface the
+	// discovered tools, so this search is skipped on replay.
+	emptySearch := message.ToolSearchContent{ToolUseID: "srvtoolu_1", Name: "tool_search_tool_regex", Input: `{"pattern":"gitlab_get_merge_request"}`}
+	refSearch := message.ToolSearchContent{ToolUseID: "srvtoolu_1", Name: "tool_search_tool_regex", Input: `{}`, References: []string{"gitlab_get_merge_request"}}
+	errSearch := message.ToolSearchContent{ToolUseID: "srvtoolu_1", Name: "tool_search_tool_regex", Input: `{}`, ErrorCode: "too_many_requests"}
+
+	native := models.Model{SupportsToolSearch: true}
+	fallback := models.Model{SupportsToolSearch: false}
+
+	tests := []struct {
+		name                                                              string
+		model                                                             models.Model
+		parts                                                             []message.ContentPart
+		wantThinking, wantServerToolUse, wantToolSearchResult, wantToolUse int
+	}{
+		{
+			name:  "native + unreplayable search: thinking AND search dropped",
+			model: native,
+			parts: []message.ContentPart{reasoning, emptySearch, toolCall},
+			// The regression: keeping thinking here is what triggers the 400.
+			wantThinking: 0, wantServerToolUse: 0, wantToolSearchResult: 0, wantToolUse: 1,
+		},
+		{
+			name:  "native + search with references: everything replayed",
+			model: native,
+			parts: []message.ContentPart{reasoning, refSearch, toolCall},
+			wantThinking: 1, wantServerToolUse: 1, wantToolSearchResult: 1, wantToolUse: 1,
+		},
+		{
+			name:  "native + errored search: thinking and error result replayed",
+			model: native,
+			parts: []message.ContentPart{reasoning, errSearch, toolCall},
+			wantThinking: 1, wantServerToolUse: 1, wantToolSearchResult: 1, wantToolUse: 1,
+		},
+		{
+			name:  "native + no tool search: reasoning replay unchanged",
+			model: native,
+			parts: []message.ContentPart{reasoning, toolCall},
+			wantThinking: 1, wantServerToolUse: 0, wantToolSearchResult: 0, wantToolUse: 1,
+		},
+		{
+			name:  "non-native model: thinking preserved, no native replay path",
+			model: fallback,
+			parts: []message.ContentPart{reasoning, emptySearch, toolCall},
+			wantThinking: 1, wantServerToolUse: 0, wantToolSearchResult: 0, wantToolUse: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &anthropicClient{
+				options:         anthropicOptions{disableCache: true},
+				providerOptions: providerClientOptions{model: tt.model},
+			}
+			result := client.convertMessages([]message.Message{newMsg(message.Assistant, tt.parts...)})
+			if len(result) != 1 {
+				t.Fatalf("expected 1 converted message, got %d", len(result))
+			}
+			th, srv, tsr, tu := countReplayBlocks(result[0])
+			if th != tt.wantThinking {
+				t.Errorf("thinking blocks = %d, want %d", th, tt.wantThinking)
+			}
+			if srv != tt.wantServerToolUse {
+				t.Errorf("server_tool_use blocks = %d, want %d", srv, tt.wantServerToolUse)
+			}
+			if tsr != tt.wantToolSearchResult {
+				t.Errorf("tool_search_tool_result blocks = %d, want %d", tsr, tt.wantToolSearchResult)
+			}
+			if tu != tt.wantToolUse {
+				t.Errorf("tool_use blocks = %d, want %d", tu, tt.wantToolUse)
+			}
+		})
+	}
+}
