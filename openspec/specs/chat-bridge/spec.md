@@ -262,6 +262,43 @@ The bridge SHALL emit platform-appropriate typing indicators while a run is in f
 - **WHEN** `cfg.Router.ToolUpdatesEnabled == false`
 - **THEN** the bridge suppresses per-tool transition messages but still emits typing indicators and the final agent reply
 
+### Requirement: Tool updates are compact by default, one line per call
+
+A tool update is a PROGRESS INDICATOR, not a transcript. In the default `compact` verbosity the bridge SHALL emit at most one chat line per tool call, carrying only the status glyph, the tool name, the short pairing id and — on completion — the elapsed time. In `compact` the bridge SHALL NOT send tool ARGUMENTS or successful result BODIES to the chat surface; both are already durably recorded in the session store (`messages.parts`) and in the telemetry backend, which is where investigation belongs.
+
+A FAILED call is the single exception: its render MAY carry a one-line failure reason, rune-capped, so a broken call is actionable from chat alone.
+
+`cfg.Router.ToolUpdateVerbosity` selects the level: `compact` (default) or `full`, where `full` additionally carries the call's argument summary and a rune-capped result body. An absent or unrecognised value SHALL resolve to `compact` — the quiet option is the fail-safe — and an unrecognised value SHALL be logged once at WARN.
+
+#### Scenario: Successful call renders name, id and duration only
+
+- **WHEN** a `bash` tool call with a 4 KB `command` argument completes successfully after 1.4s, returning 300 lines of stdout
+- **THEN** the render hint carries no params and no preview, and the chat surface shows a single line equivalent to `✓ bash#a1b2c3 · 1.4s` — neither the command nor the stdout appears in chat
+
+#### Scenario: Failed call keeps a truncated reason
+
+- **WHEN** the same call fails with a multi-line error body
+- **THEN** the render hint's preview holds the error body flattened to one line and truncated to the failure-reason cap, rendered as `✗ bash#a1b2c3 · 1.4s · <reason>`
+
+#### Scenario: Unset verbosity resolves to compact
+
+- **WHEN** `.opencode.json` sets `router.toolUpdatesEnabled: true` and omits `router.toolUpdateVerbosity` (or sets it to an unknown value such as `"verbose"`)
+- **THEN** the bridge renders compact updates; the unknown value additionally produces one WARN naming the configured value and the mode actually used
+
+### Requirement: Reviewers can switch tool-update verbosity at runtime
+
+The bridge SHALL expose a `/verbosity` chat command that reports the live verbosity and switches it between `compact` and `full`. The switch SHALL take effect for every bound session without a restart, and SHALL NOT be written back to `.opencode.json` — a reviewer enabling detail to watch one run MUST NOT silently reconfigure the deployment. A restart therefore returns to the configured value. An unknown mode SHALL be rejected with a usage reply and leave the live value unchanged.
+
+#### Scenario: Reviewer asks for detail mid-run
+
+- **WHEN** a reviewer sends `/verbosity full` on a bound peer while a run is in flight
+- **THEN** the bridge replies with the applied mode, and every subsequent tool update in that process — including on other bound sessions — carries argument and result detail until the mode is switched back or the process restarts
+
+#### Scenario: Unknown mode is rejected
+
+- **WHEN** a reviewer sends `/verbosity chatty`
+- **THEN** the bridge replies with the accepted values and the live verbosity is unchanged
+
 ### Requirement: Bridge restart loses in-flight runs
 
 When `opencode serve` restarts, any in-flight agent runs MUST be considered lost. The bridge MUST NOT attempt to resume runs across process restarts. On the next inbound message from a peer with a NULLed or stale pointer, the bridge creates a fresh session.
