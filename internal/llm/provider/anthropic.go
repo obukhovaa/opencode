@@ -21,6 +21,7 @@ import (
 	toolsPkg "github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
+	"github.com/tidwall/gjson"
 )
 
 const taskBudgetsBeta = "task-budgets-2026-03-13"
@@ -189,15 +190,29 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 			// preserves the pre-capability behavior for old data. Redacted
 			// blocks carry an opaque payload that round-trips verbatim.
 			if a.shouldReplayReasoning(msg) {
-				for _, rc := range msg.ReasoningParts() {
-					if rc.Redacted {
-						if rc.Data != "" {
-							blocks = append(blocks, anthropic.NewRedactedThinkingBlock(rc.Data))
+				// A server-side tool-search block whose references were not
+				// captured (empty References, no ErrorCode) is skipped on replay
+				// just below. On the native path that strands this turn's
+				// thinking blocks: the server_tool_use/tool_search_tool_result
+				// that originally followed them is now gone, so the API sees the
+				// thinking blocks of the latest assistant turn as "modified" and
+				// rejects the request (surfaced through the LiteLLM/Bedrock proxy
+				// as an HTTP/2 RST_STREAM INTERNAL_ERROR). When we cannot
+				// faithfully replay the search, drop this turn's reasoning too —
+				// absent thinking only forfeits reasoning continuity, which is
+				// the same trade-off the search-skip already accepts.
+				replayReasoning := !(a.providerOptions.model.SupportsToolSearch && messageHasUnreplayableToolSearch(msg))
+				if replayReasoning {
+					for _, rc := range msg.ReasoningParts() {
+						if rc.Redacted {
+							if rc.Data != "" {
+								blocks = append(blocks, anthropic.NewRedactedThinkingBlock(rc.Data))
+							}
+							continue
 						}
-						continue
-					}
-					if rc.Signature != "" {
-						blocks = append(blocks, anthropic.NewThinkingBlock(rc.Signature, rc.Thinking))
+						if rc.Signature != "" {
+							blocks = append(blocks, anthropic.NewThinkingBlock(rc.Signature, rc.Thinking))
+						}
 					}
 				}
 				// Replay server-side tool-search invocations (deferred-tools
@@ -357,6 +372,56 @@ func unsupportedAttachmentNote(bc message.BinaryContent) string {
 		saved = fmt.Sprintf("; the file is saved at %q and can be inspected with file tools", bc.Path)
 	}
 	return fmt.Sprintf("[Attachment of unsupported media type %q omitted (%d bytes)%s]", bc.MIMEType, len(bc.Data), saved)
+}
+
+// toolSearchRefsFromStartEvent parses a raw content_block_start payload for a
+// tool_search_tool_result block and returns its tool_use_id plus the discovered
+// tool names. The SDK's stream accumulator mistypes this block and drops its
+// tool_references, so we recover them straight from the raw event.
+func toolSearchRefsFromStartEvent(rawJSON string) (toolUseID string, names []string) {
+	toolUseID = gjson.Get(rawJSON, "tool_use_id").String()
+	for _, ref := range gjson.Get(rawJSON, "content.tool_references").Array() {
+		if n := ref.Get("tool_name").String(); n != "" {
+			names = append(names, n)
+		}
+	}
+	return toolUseID, names
+}
+
+// applyStreamedToolSearchRefs backfills the tool-search references captured
+// from the raw stream (keyed by tool_use_id) onto the parts whose references
+// the SDK accumulator dropped. Parts that already carry references, or that
+// carry an ErrorCode, are left untouched. Restoring the references lets the
+// server-side search blocks replay faithfully, so the accompanying thinking
+// blocks stay valid on the next request instead of having to be dropped.
+func applyStreamedToolSearchRefs(parts []message.ToolSearchContent, streamed map[string][]string) []message.ToolSearchContent {
+	if len(streamed) == 0 {
+		return parts
+	}
+	for i := range parts {
+		if len(parts[i].References) > 0 || parts[i].ErrorCode != "" {
+			continue
+		}
+		if refs, ok := streamed[parts[i].ToolUseID]; ok {
+			parts[i].References = refs
+		}
+	}
+	return parts
+}
+
+// messageHasUnreplayableToolSearch reports whether an assistant message carries
+// a server-side tool-search invocation that cannot be faithfully replayed:
+// empty References (the streaming response did not surface the discovered tool
+// references) and no ErrorCode. Such a part is skipped when building the
+// request, so on the native tool-search path the message's thinking blocks must
+// be dropped too, or the API rejects the "modified" latest-turn thinking.
+func messageHasUnreplayableToolSearch(msg message.Message) bool {
+	for _, ts := range msg.ToolSearchParts() {
+		if len(ts.References) == 0 && ts.ErrorCode == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *anthropicClient) convertTools(ctx context.Context, tools []toolsPkg.BaseTool) []anthropic.ToolUnionParam {
@@ -664,6 +729,18 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 			)
 			accumulatedMessage := anthropic.Message{}
 
+			// streamedToolSearchRefs recovers the server-side tool-search
+			// references the SDK's stream accumulator drops: it mistypes the
+			// tool_search_tool_result content (as a web-search union) and
+			// re-marshals tool_references away, so toolSearchParts reads them
+			// back empty. We capture them verbatim from the raw
+			// content_block_start event (keyed by tool_use_id) and merge them in
+			// at stream completion, so discovered tools replay WITH their
+			// references — which keeps the turn's thinking blocks faithfully
+			// replayable instead of being dropped (see convertMessages /
+			// messageHasUnreplayableToolSearch).
+			streamedToolSearchRefs := map[string][]string{}
+
 			currentToolCallID := ""
 
 			reader := newStreamReader(ctx, func() (anthropic.MessageStreamEventUnion, bool) {
@@ -694,6 +771,14 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 				switch event := event.AsAny().(type) {
 				case anthropic.ContentBlockStartEvent:
 					emittedOutput = true
+					if event.ContentBlock.Type == "tool_search_tool_result" {
+						// Capture references before the SDK accumulator drops
+						// them (see streamedToolSearchRefs). The raw start event
+						// carries the full tool_search_tool_search_result content.
+						if id, names := toolSearchRefsFromStartEvent(event.ContentBlock.RawJSON()); id != "" && len(names) > 0 {
+							streamedToolSearchRefs[id] = names
+						}
+					}
 					switch event.ContentBlock.Type {
 					case "text":
 						eventChan <- ProviderEvent{Type: EventContentStart}
@@ -761,7 +846,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 							Content:      sb.String(),
 							ToolCalls:    a.toolCalls(accumulatedMessage),
 							Reasoning:    a.reasoningParts(accumulatedMessage),
-							ToolSearches: a.toolSearchParts(accumulatedMessage),
+							ToolSearches: applyStreamedToolSearchRefs(a.toolSearchParts(accumulatedMessage), streamedToolSearchRefs),
 							Usage:        a.usage(accumulatedMessage),
 							FinishReason: a.finishReason(string(accumulatedMessage.StopReason)),
 						},
@@ -801,7 +886,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 							Content:      sb.String(),
 							ToolCalls:    a.toolCalls(accumulatedMessage),
 							Reasoning:    a.reasoningParts(accumulatedMessage),
-							ToolSearches: a.toolSearchParts(accumulatedMessage),
+							ToolSearches: applyStreamedToolSearchRefs(a.toolSearchParts(accumulatedMessage), streamedToolSearchRefs),
 							Usage:        a.usage(accumulatedMessage),
 							FinishReason: message.FinishReasonEndTurn,
 						},
