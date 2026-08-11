@@ -798,16 +798,16 @@ func countReplayBlocks(mp anthropic.MessageParam) (thinking, serverToolUse, tool
 	return
 }
 
-// TestConvertMessagesDropsThinkingOnUnreplayableToolSearch locks in the fix for
-// the deferred-tools native-path RST_STREAM: when a server-side tool-search
-// block cannot be faithfully replayed (empty References captured from the
-// stream, no ErrorCode) it is skipped, and on the native path the turn's
-// thinking blocks MUST be dropped with it — otherwise Anthropic/Bedrock rejects
-// the latest assistant turn's "modified" thinking (surfaced as an HTTP/2
-// stream reset). The other cases guard against regressing the capability:
-// searches with references or an error code, plain reasoning turns, and
-// non-native models must all still replay thinking.
-func TestConvertMessagesDropsThinkingOnUnreplayableToolSearch(t *testing.T) {
+// TestConvertMessagesDropsThinkingOnToolSearch locks in the fix for the
+// deferred-tools native-path RST_STREAM: a turn's server-side tool-search
+// blocks are rebuilt from persisted fields (or skipped), never echoed
+// byte-for-byte, so on the native path the turn's thinking blocks MUST be
+// dropped — otherwise Anthropic/Bedrock rejects the latest assistant turn's
+// "modified" thinking (surfaced as an HTTP/2 stream reset). This holds whether
+// the search carried references, hit an error, or captured nothing; the search
+// blocks themselves still replay (with references / as an error). Plain
+// reasoning turns and non-native models keep their thinking.
+func TestConvertMessagesDropsThinkingOnToolSearch(t *testing.T) {
 	reasoning := message.ReasoningContent{Thinking: "planning the search", Signature: "sig-abc"}
 	toolCall := message.ToolCall{ID: "toolu_1", Name: "gitlab_get_merge_request", Input: `{}`, Finished: true}
 
@@ -834,16 +834,18 @@ func TestConvertMessagesDropsThinkingOnUnreplayableToolSearch(t *testing.T) {
 			wantThinking: 0, wantServerToolUse: 0, wantToolSearchResult: 0, wantToolUse: 1,
 		},
 		{
-			name:  "native + search with references: everything replayed",
+			name:  "native + search with references: search replayed, thinking dropped",
 			model: native,
 			parts: []message.ContentPart{reasoning, refSearch, toolCall},
-			wantThinking: 1, wantServerToolUse: 1, wantToolSearchResult: 1, wantToolUse: 1,
+			// Rebuilt search blocks never match the original bytes, so thinking
+			// must go even though the references were captured.
+			wantThinking: 0, wantServerToolUse: 1, wantToolSearchResult: 1, wantToolUse: 1,
 		},
 		{
-			name:  "native + errored search: thinking and error result replayed",
+			name:  "native + errored search: error result replayed, thinking dropped",
 			model: native,
 			parts: []message.ContentPart{reasoning, errSearch, toolCall},
-			wantThinking: 1, wantServerToolUse: 1, wantToolSearchResult: 1, wantToolUse: 1,
+			wantThinking: 0, wantServerToolUse: 1, wantToolSearchResult: 1, wantToolUse: 1,
 		},
 		{
 			name:  "native + no tool search: reasoning replay unchanged",
