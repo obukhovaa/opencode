@@ -1006,6 +1006,30 @@ func TestConvertMessagesReplaysThinkingInOrderWithToolSearch(t *testing.T) {
 			},
 			wantKinds: []string{"server_tool_use", "tool_search_tool_result", "server_tool_use", "tool_search_tool_result", "tool_use"},
 		},
+		{
+			// Regression for the real subagent turn that failed on v0.14.5
+			// (session toolu_bdrk_016uvBvwojhDhNbMEaMxNMQF seq 7,
+			// piano-repository-discoverer): four reasoning blocks and three
+			// searches, all with offsets, but two searches lost their references
+			// (multiple server-searches in one turn — refs not captured from the
+			// stream). Under the loose offset-only guard this took the
+			// keep-thinking path yet skipped the two ref-less searches, stranding
+			// the thinking -> 400 (RST). It MUST fall back: drop all reasoning and
+			// emit only the replayable (ref-bearing) search.
+			name:  "multi-search turn with some refs missing falls back (psb-5103022 seq7)",
+			model: native,
+			parts: []message.ContentPart{
+				message.ReasoningContent{Thinking: "r0", Signature: "sig-0"},
+				message.ReasoningContent{Thinking: "r1", Signature: "sig-1"},
+				message.ReasoningContent{Thinking: "r2", Signature: "sig-2"},
+				message.ReasoningContent{Thinking: "r3", Signature: "sig-3"},
+				message.ToolSearchContent{ToolUseID: "srvtoolu_1", Name: "tool_search_tool_regex", Input: `{}`, ReasoningOffset: off(1)},
+				message.ToolSearchContent{ToolUseID: "srvtoolu_2", Name: "tool_search_tool_regex", Input: `{}`, ReasoningOffset: off(2)},
+				message.ToolSearchContent{ToolUseID: "srvtoolu_3", Name: "tool_search_tool_regex", Input: `{}`, References: []string{"gitlab_search_repositories"}, ReasoningOffset: off(3)},
+				toolCall,
+			},
+			wantKinds: []string{"server_tool_use", "tool_search_tool_result", "tool_use"},
+		},
 	}
 
 	for _, tt := range tests {
