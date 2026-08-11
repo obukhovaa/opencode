@@ -75,6 +75,16 @@ type ToolSearchContent struct {
 	// ErrorCode is set when the server search errored instead of returning
 	// references; replayed as a tool_search_tool_result error block.
 	ErrorCode string `json:"error_code,omitempty"`
+	// ReasoningOffset records how many reasoning (thinking / redacted_thinking)
+	// blocks the model emitted BEFORE this server-side search in the original
+	// response. The model interleaves thinking with the search (e.g. thinking →
+	// search → thinking → tool_use), and Anthropic requires the assistant turn
+	// replayed unchanged — it rejects a latest turn whose thinking blocks moved
+	// position. This lets the replay re-insert the search at its original index
+	// within the reasoning sequence instead of grouping all reasoning first, so
+	// the thinking blocks stay put and can be replayed. nil on rows persisted
+	// before this was captured — those fall back to dropping the turn's reasoning.
+	ReasoningOffset *int `json:"reasoning_offset,omitempty"`
 }
 
 func (ToolSearchContent) isPart() {}

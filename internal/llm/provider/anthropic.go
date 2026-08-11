@@ -190,67 +190,103 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 			// preserves the pre-capability behavior for old data. Redacted
 			// blocks carry an opaque payload that round-trips verbatim.
 			if a.shouldReplayReasoning(msg) {
-				// A turn that used server-side tool search has its
-				// server_tool_use/tool_search_tool_result blocks rebuilt from
-				// persisted fields (or skipped), never echoed back byte-for-byte
-				// — so on the native path the API sees the latest assistant
-				// turn's thinking as "modified" by the changed blocks and rejects
-				// the request (surfaced through the LiteLLM/Bedrock proxy as an
-				// HTTP/2 RST_STREAM INTERNAL_ERROR). Drop this turn's reasoning
-				// whenever it used server-side search; that only forfeits
-				// reasoning continuity, while the discovered tools still replay
-				// via their references below (see messageHasToolSearch).
-				replayReasoning := !(a.providerOptions.model.SupportsToolSearch && messageHasToolSearch(msg))
-				if replayReasoning {
-					for _, rc := range msg.ReasoningParts() {
-						if rc.Redacted {
-							if rc.Data != "" {
-								blocks = append(blocks, anthropic.NewRedactedThinkingBlock(rc.Data))
-							}
-							continue
+				reasoning := msg.ReasoningParts()
+				var searches []message.ToolSearchContent
+				// Only the native path declares the server tool-search tool, so
+				// server-search blocks are replayed only there. Replaying them
+				// into a fallback-path request (e.g. after a mid-session switch
+				// to a non-tool-search model of the same provider family) would
+				// reference an undeclared server tool and 400.
+				if a.providerOptions.model.SupportsToolSearch {
+					searches = msg.ToolSearchParts()
+				}
+
+				emitReasoning := func(rc message.ReasoningContent) {
+					// Replay reasoning blocks exactly as produced — the API
+					// verifies each block's signature and rejects modified
+					// blocks. Unsigned parts (legacy rows, streamed previews,
+					// non-Anthropic sources) are skipped; redacted blocks carry
+					// an opaque payload that round-trips verbatim.
+					if rc.Redacted {
+						if rc.Data != "" {
+							blocks = append(blocks, anthropic.NewRedactedThinkingBlock(rc.Data))
 						}
-						if rc.Signature != "" {
-							blocks = append(blocks, anthropic.NewThinkingBlock(rc.Signature, rc.Thinking))
-						}
+						return
+					}
+					if rc.Signature != "" {
+						blocks = append(blocks, anthropic.NewThinkingBlock(rc.Signature, rc.Thinking))
 					}
 				}
-				// Replay server-side tool-search invocations (deferred-tools
-				// native path). Gated additionally on the CURRENT model's
-				// SupportsToolSearch: only a native-path request declares the
-				// server tool-search tool, so replaying these blocks into a
-				// fallback-path request (e.g. after a mid-session switch to a
-				// non-tool-search model of the same provider family) would
-				// reference an undeclared server tool and 400. The discovered
-				// tools themselves remain activated+declared via SerializableFor,
-				// so dropping only the search blocks is safe.
-				if a.providerOptions.model.SupportsToolSearch {
-					for _, ts := range msg.ToolSearchParts() {
-						// Nothing to replay for a search that returned neither
-						// references nor an error; an empty tool_references array
-						// is also a rejectable shape on some backends.
-						if len(ts.References) == 0 && ts.ErrorCode == "" {
-							continue
-						}
-						var inputMap map[string]any
-						if err := json.Unmarshal([]byte(ts.Input), &inputMap); err != nil {
-							inputMap = map[string]any{}
-						}
-						blocks = append(blocks, anthropic.NewServerToolUseBlock(ts.ToolUseID, inputMap, anthropic.ServerToolUseBlockParamName(ts.Name)))
-						if ts.ErrorCode != "" {
-							blocks = append(blocks, anthropic.NewToolSearchToolResultBlock(
-								anthropic.ToolSearchToolResultErrorParam{ErrorCode: anthropic.ToolSearchToolResultErrorCode(ts.ErrorCode)},
-								ts.ToolUseID,
-							))
-							continue
-						}
-						refs := make([]anthropic.ToolReferenceBlockParam, 0, len(ts.References))
-						for _, name := range ts.References {
-							refs = append(refs, anthropic.ToolReferenceBlockParam{ToolName: name})
-						}
+				emitSearch := func(ts message.ToolSearchContent) {
+					// Nothing to replay for a search that returned neither
+					// references nor an error; an empty tool_references array is
+					// also a rejectable shape on some backends. The discovered
+					// tools stay activated+declared via SerializableFor, so
+					// skipping such a search is safe.
+					if len(ts.References) == 0 && ts.ErrorCode == "" {
+						return
+					}
+					var inputMap map[string]any
+					if err := json.Unmarshal([]byte(ts.Input), &inputMap); err != nil {
+						inputMap = map[string]any{}
+					}
+					blocks = append(blocks, anthropic.NewServerToolUseBlock(ts.ToolUseID, inputMap, anthropic.ServerToolUseBlockParamName(ts.Name)))
+					if ts.ErrorCode != "" {
 						blocks = append(blocks, anthropic.NewToolSearchToolResultBlock(
-							anthropic.ToolSearchToolSearchResultBlockParam{ToolReferences: refs},
+							anthropic.ToolSearchToolResultErrorParam{ErrorCode: anthropic.ToolSearchToolResultErrorCode(ts.ErrorCode)},
 							ts.ToolUseID,
 						))
+						return
+					}
+					refs := make([]anthropic.ToolReferenceBlockParam, 0, len(ts.References))
+					for _, name := range ts.References {
+						refs = append(refs, anthropic.ToolReferenceBlockParam{ToolName: name})
+					}
+					blocks = append(blocks, anthropic.NewToolSearchToolResultBlock(
+						anthropic.ToolSearchToolSearchResultBlockParam{ToolReferences: refs},
+						ts.ToolUseID,
+					))
+				}
+
+				if len(searches) > 0 && toolSearchesHaveOffset(searches) {
+					// Order-preserving replay: re-insert each search at its
+					// captured index within the reasoning sequence (the model
+					// interleaves thinking → search → thinking → tool_use), so
+					// the thinking blocks are replayed in their original
+					// positions and the API doesn't reject them as "modified".
+					// This keeps the reasoning AND the discovered tools loaded.
+					ordered := append([]message.ToolSearchContent(nil), searches...)
+					sort.SliceStable(ordered, func(i, j int) bool {
+						return *ordered[i].ReasoningOffset < *ordered[j].ReasoningOffset
+					})
+					si := 0
+					for i := 0; i <= len(reasoning); i++ {
+						for si < len(ordered) && *ordered[si].ReasoningOffset == i {
+							emitSearch(ordered[si])
+							si++
+						}
+						if i < len(reasoning) {
+							emitReasoning(reasoning[i])
+						}
+					}
+					for ; si < len(ordered); si++ {
+						emitSearch(ordered[si])
+					}
+				} else {
+					// Fallback: rows persisted before offsets were captured, so
+					// we can't reproduce the exact thinking/search interleave. On
+					// the native path a reconstructed search block would strand
+					// this turn's thinking as "modified", so drop the reasoning
+					// (it only forfeits reasoning continuity; the discovered
+					// tools still replay via their references). Off the native
+					// path, or with no search at all, replay reasoning normally.
+					if !(a.providerOptions.model.SupportsToolSearch && len(searches) > 0) {
+						for _, rc := range reasoning {
+							emitReasoning(rc)
+						}
+					}
+					for _, ts := range searches {
+						emitSearch(ts)
 					}
 				}
 			}
@@ -408,21 +444,27 @@ func applyStreamedToolSearchRefs(parts []message.ToolSearchContent, streamed map
 	return parts
 }
 
-// messageHasToolSearch reports whether an assistant message carries any
-// server-side tool-search invocation.
+// toolSearchesHaveOffset reports whether every server-side search on a turn
+// carries a captured ReasoningOffset — the index (in the turn's reasoning
+// sequence) at which the model originally emitted it.
 //
-// On the native path a turn's server_tool_use / tool_search_tool_result blocks
-// are rebuilt from persisted fields (references, error code) or skipped when
-// references were not captured — never echoed back as the model's original
-// bytes. The reproduced blocks therefore never match the original response
-// exactly, and the API rejects the latest assistant turn's thinking as
-// "modified" whenever the blocks that followed it changed (the Bedrock/LiteLLM
-// proxy surfaces that 400 as an HTTP/2 `RST_STREAM INTERNAL_ERROR`). So any
-// turn that used server-side search must drop its thinking blocks. Dropping
-// thinking only forfeits reasoning continuity; the discovered tools still
-// replay via their references and stay loaded for the session.
-func messageHasToolSearch(msg message.Message) bool {
-	return len(msg.ToolSearchParts()) > 0
+// With offsets we can re-insert each search at its original position and
+// replay the thinking blocks in place, exactly as produced, so the API accepts
+// them. Without offsets (rows persisted before capture, or any partial set) we
+// can't reproduce the original interleave: a reconstructed server_tool_use /
+// tool_search_tool_result block never matches the model's original bytes, and
+// the API rejects the latest assistant turn's thinking as "modified" whenever
+// the blocks that followed it changed (the Bedrock/LiteLLM proxy surfaces that
+// 400 as an HTTP/2 `RST_STREAM INTERNAL_ERROR`). The caller then falls back to
+// dropping the reasoning; the discovered tools still replay via their
+// references and stay loaded for the session.
+func toolSearchesHaveOffset(searches []message.ToolSearchContent) bool {
+	for _, ts := range searches {
+		if ts.ReasoningOffset == nil {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *anthropicClient) convertTools(ctx context.Context, tools []toolsPkg.BaseTool) []anthropic.ToolUnionParam {
@@ -1112,8 +1154,15 @@ func (a *anthropicClient) reasoningParts(msg anthropic.Message) []message.Reason
 func (a *anthropicClient) toolSearchParts(msg anthropic.Message) []message.ToolSearchContent {
 	var parts []message.ToolSearchContent
 	byUseID := map[string]int{}
+	// reasoningSeen counts thinking/redacted_thinking blocks encountered so far,
+	// in emission order — captured onto each search as ReasoningOffset so the
+	// replay can restore the exact thinking/search interleave (reasoningParts
+	// extracts the same blocks, in the same order, without filtering).
+	reasoningSeen := 0
 	for _, block := range msg.Content {
 		switch variant := block.AsAny().(type) {
+		case anthropic.ThinkingBlock, anthropic.RedactedThinkingBlock:
+			reasoningSeen++
 		case anthropic.ServerToolUseBlock:
 			if !strings.HasPrefix(string(variant.Name), "tool_search_tool") {
 				continue
@@ -1122,10 +1171,12 @@ func (a *anthropicClient) toolSearchParts(msg anthropic.Message) []message.ToolS
 			if err != nil {
 				input = []byte("{}")
 			}
+			offset := reasoningSeen
 			parts = append(parts, message.ToolSearchContent{
-				ToolUseID: variant.ID,
-				Name:      string(variant.Name),
-				Input:     string(input),
+				ToolUseID:       variant.ID,
+				Name:            string(variant.Name),
+				Input:           string(input),
+				ReasoningOffset: &offset,
 			})
 			byUseID[variant.ID] = len(parts) - 1
 		case anthropic.ToolSearchToolResultBlock:

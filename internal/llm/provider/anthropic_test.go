@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -798,6 +799,29 @@ func countReplayBlocks(mp anthropic.MessageParam) (thinking, serverToolUse, tool
 	return
 }
 
+// replayBlockKinds returns the ordered block-kind sequence of a converted
+// assistant message, so tests can assert the exact interleave (not just counts).
+func replayBlockKinds(mp anthropic.MessageParam) []string {
+	kinds := make([]string, 0, len(mp.Content))
+	for _, b := range mp.Content {
+		switch {
+		case b.OfThinking != nil:
+			kinds = append(kinds, "thinking")
+		case b.OfRedactedThinking != nil:
+			kinds = append(kinds, "redacted_thinking")
+		case b.OfServerToolUse != nil:
+			kinds = append(kinds, "server_tool_use")
+		case b.OfToolSearchToolResult != nil:
+			kinds = append(kinds, "tool_search_tool_result")
+		case b.OfText != nil:
+			kinds = append(kinds, "text")
+		case b.OfToolUse != nil:
+			kinds = append(kinds, "tool_use")
+		}
+	}
+	return kinds
+}
+
 // TestConvertMessagesDropsThinkingOnToolSearch locks in the fix for the
 // deferred-tools native-path RST_STREAM: a turn's server-side tool-search
 // blocks are rebuilt from persisted fields (or skipped), never echoed
@@ -821,9 +845,9 @@ func TestConvertMessagesDropsThinkingOnToolSearch(t *testing.T) {
 	fallback := models.Model{SupportsToolSearch: false}
 
 	tests := []struct {
-		name                                                              string
-		model                                                             models.Model
-		parts                                                             []message.ContentPart
+		name                                                               string
+		model                                                              models.Model
+		parts                                                              []message.ContentPart
 		wantThinking, wantServerToolUse, wantToolSearchResult, wantToolUse int
 	}{
 		{
@@ -842,21 +866,21 @@ func TestConvertMessagesDropsThinkingOnToolSearch(t *testing.T) {
 			wantThinking: 0, wantServerToolUse: 1, wantToolSearchResult: 1, wantToolUse: 1,
 		},
 		{
-			name:  "native + errored search: error result replayed, thinking dropped",
-			model: native,
-			parts: []message.ContentPart{reasoning, errSearch, toolCall},
+			name:         "native + errored search: error result replayed, thinking dropped",
+			model:        native,
+			parts:        []message.ContentPart{reasoning, errSearch, toolCall},
 			wantThinking: 0, wantServerToolUse: 1, wantToolSearchResult: 1, wantToolUse: 1,
 		},
 		{
-			name:  "native + no tool search: reasoning replay unchanged",
-			model: native,
-			parts: []message.ContentPart{reasoning, toolCall},
+			name:         "native + no tool search: reasoning replay unchanged",
+			model:        native,
+			parts:        []message.ContentPart{reasoning, toolCall},
 			wantThinking: 1, wantServerToolUse: 0, wantToolSearchResult: 0, wantToolUse: 1,
 		},
 		{
-			name:  "non-native model: thinking preserved, no native replay path",
-			model: fallback,
-			parts: []message.ContentPart{reasoning, emptySearch, toolCall},
+			name:         "non-native model: thinking preserved, no native replay path",
+			model:        fallback,
+			parts:        []message.ContentPart{reasoning, emptySearch, toolCall},
 			wantThinking: 1, wantServerToolUse: 0, wantToolSearchResult: 0, wantToolUse: 1,
 		},
 	}
@@ -883,6 +907,106 @@ func TestConvertMessagesDropsThinkingOnToolSearch(t *testing.T) {
 			}
 			if tu != tt.wantToolUse {
 				t.Errorf("tool_use blocks = %d, want %d", tu, tt.wantToolUse)
+			}
+		})
+	}
+}
+
+// TestConvertMessagesReplaysThinkingInOrderWithToolSearch locks in the
+// docs-aligned "proper fix": when every server-side search on a turn carries a
+// captured ReasoningOffset, the searches are re-inserted at their original
+// positions within the reasoning sequence and the thinking blocks are replayed
+// in place (KEPT, not dropped). Anthropic's guidance is to pass the assistant
+// turn's blocks back unchanged; preserving the interleave means the thinking
+// signatures still validate. A partial set (any nil offset) can't reproduce the
+// exact order, so it falls back to dropping the reasoning.
+func TestConvertMessagesReplaysThinkingInOrderWithToolSearch(t *testing.T) {
+	off := func(n int) *int { return &n }
+	native := models.Model{SupportsToolSearch: true}
+	toolCall := message.ToolCall{ID: "toolu_1", Name: "gitlab_get_merge_request", Input: `{}`, Finished: true}
+
+	tests := []struct {
+		name      string
+		model     models.Model
+		parts     []message.ContentPart
+		wantKinds []string
+	}{
+		{
+			// thinking → search → tool_use (offset 1: one thinking precedes it).
+			name:  "thinking before search: thinking kept, search after it",
+			model: native,
+			parts: []message.ContentPart{
+				message.ReasoningContent{Thinking: "planning", Signature: "sig-a"},
+				message.ToolSearchContent{ToolUseID: "srvtoolu_1", Name: "tool_search_tool_regex", Input: `{}`, References: []string{"gitlab_get_merge_request"}, ReasoningOffset: off(1)},
+				toolCall,
+			},
+			wantKinds: []string{"thinking", "server_tool_use", "tool_search_tool_result", "tool_use"},
+		},
+		{
+			// search → thinking → tool_use (offset 0: search precedes all thinking).
+			name:  "search before thinking: search kept ahead of thinking",
+			model: native,
+			parts: []message.ContentPart{
+				message.ToolSearchContent{ToolUseID: "srvtoolu_1", Name: "tool_search_tool_regex", Input: `{}`, References: []string{"gitlab_get_merge_request"}, ReasoningOffset: off(0)},
+				message.ReasoningContent{Thinking: "reflecting", Signature: "sig-b"},
+				toolCall,
+			},
+			wantKinds: []string{"server_tool_use", "tool_search_tool_result", "thinking", "tool_use"},
+		},
+		{
+			// thinking A → search → thinking B → tool_use (offset 1: search sits
+			// between the two thinking blocks). Both thinking blocks are kept.
+			name:  "search sandwiched between two thinking blocks",
+			model: native,
+			parts: []message.ContentPart{
+				message.ReasoningContent{Thinking: "before", Signature: "sig-a"},
+				message.ToolSearchContent{ToolUseID: "srvtoolu_1", Name: "tool_search_tool_regex", Input: `{}`, References: []string{"gitlab_get_merge_request"}, ReasoningOffset: off(1)},
+				message.ReasoningContent{Thinking: "after", Signature: "sig-b"},
+				toolCall,
+			},
+			wantKinds: []string{"thinking", "server_tool_use", "tool_search_tool_result", "thinking", "tool_use"},
+		},
+		{
+			// errored search still replays in place (as an error result) with
+			// thinking kept.
+			name:  "errored search kept in place, thinking kept",
+			model: native,
+			parts: []message.ContentPart{
+				message.ReasoningContent{Thinking: "planning", Signature: "sig-a"},
+				message.ToolSearchContent{ToolUseID: "srvtoolu_1", Name: "tool_search_tool_regex", Input: `{}`, ErrorCode: "too_many_requests", ReasoningOffset: off(1)},
+				toolCall,
+			},
+			wantKinds: []string{"thinking", "server_tool_use", "tool_search_tool_result", "tool_use"},
+		},
+		{
+			// Partial offsets (one search never captured its offset): can't
+			// reproduce the interleave, so fall back to dropping the reasoning.
+			// Both searches still replay (order among themselves preserved).
+			name:  "partial offsets fall back to dropping thinking",
+			model: native,
+			parts: []message.ContentPart{
+				message.ReasoningContent{Thinking: "planning", Signature: "sig-a"},
+				message.ToolSearchContent{ToolUseID: "srvtoolu_1", Name: "tool_search_tool_regex", Input: `{}`, References: []string{"a"}, ReasoningOffset: off(1)},
+				message.ToolSearchContent{ToolUseID: "srvtoolu_2", Name: "tool_search_tool_regex", Input: `{}`, References: []string{"b"}},
+				toolCall,
+			},
+			wantKinds: []string{"server_tool_use", "tool_search_tool_result", "server_tool_use", "tool_search_tool_result", "tool_use"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &anthropicClient{
+				options:         anthropicOptions{disableCache: true},
+				providerOptions: providerClientOptions{model: tt.model},
+			}
+			result := client.convertMessages([]message.Message{newMsg(message.Assistant, tt.parts...)})
+			if len(result) != 1 {
+				t.Fatalf("expected 1 converted message, got %d", len(result))
+			}
+			got := replayBlockKinds(result[0])
+			if !reflect.DeepEqual(got, tt.wantKinds) {
+				t.Errorf("block order = %v, want %v", got, tt.wantKinds)
 			}
 		})
 	}
