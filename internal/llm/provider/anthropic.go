@@ -190,18 +190,17 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 			// preserves the pre-capability behavior for old data. Redacted
 			// blocks carry an opaque payload that round-trips verbatim.
 			if a.shouldReplayReasoning(msg) {
-				// A server-side tool-search block whose references were not
-				// captured (empty References, no ErrorCode) is skipped on replay
-				// just below. On the native path that strands this turn's
-				// thinking blocks: the server_tool_use/tool_search_tool_result
-				// that originally followed them is now gone, so the API sees the
-				// thinking blocks of the latest assistant turn as "modified" and
-				// rejects the request (surfaced through the LiteLLM/Bedrock proxy
-				// as an HTTP/2 RST_STREAM INTERNAL_ERROR). When we cannot
-				// faithfully replay the search, drop this turn's reasoning too —
-				// absent thinking only forfeits reasoning continuity, which is
-				// the same trade-off the search-skip already accepts.
-				replayReasoning := !(a.providerOptions.model.SupportsToolSearch && messageHasUnreplayableToolSearch(msg))
+				// A turn that used server-side tool search has its
+				// server_tool_use/tool_search_tool_result blocks rebuilt from
+				// persisted fields (or skipped), never echoed back byte-for-byte
+				// — so on the native path the API sees the latest assistant
+				// turn's thinking as "modified" by the changed blocks and rejects
+				// the request (surfaced through the LiteLLM/Bedrock proxy as an
+				// HTTP/2 RST_STREAM INTERNAL_ERROR). Drop this turn's reasoning
+				// whenever it used server-side search; that only forfeits
+				// reasoning continuity, while the discovered tools still replay
+				// via their references below (see messageHasToolSearch).
+				replayReasoning := !(a.providerOptions.model.SupportsToolSearch && messageHasToolSearch(msg))
 				if replayReasoning {
 					for _, rc := range msg.ReasoningParts() {
 						if rc.Redacted {
@@ -409,19 +408,21 @@ func applyStreamedToolSearchRefs(parts []message.ToolSearchContent, streamed map
 	return parts
 }
 
-// messageHasUnreplayableToolSearch reports whether an assistant message carries
-// a server-side tool-search invocation that cannot be faithfully replayed:
-// empty References (the streaming response did not surface the discovered tool
-// references) and no ErrorCode. Such a part is skipped when building the
-// request, so on the native tool-search path the message's thinking blocks must
-// be dropped too, or the API rejects the "modified" latest-turn thinking.
-func messageHasUnreplayableToolSearch(msg message.Message) bool {
-	for _, ts := range msg.ToolSearchParts() {
-		if len(ts.References) == 0 && ts.ErrorCode == "" {
-			return true
-		}
-	}
-	return false
+// messageHasToolSearch reports whether an assistant message carries any
+// server-side tool-search invocation.
+//
+// On the native path a turn's server_tool_use / tool_search_tool_result blocks
+// are rebuilt from persisted fields (references, error code) or skipped when
+// references were not captured — never echoed back as the model's original
+// bytes. The reproduced blocks therefore never match the original response
+// exactly, and the API rejects the latest assistant turn's thinking as
+// "modified" whenever the blocks that followed it changed (the Bedrock/LiteLLM
+// proxy surfaces that 400 as an HTTP/2 `RST_STREAM INTERNAL_ERROR`). So any
+// turn that used server-side search must drop its thinking blocks. Dropping
+// thinking only forfeits reasoning continuity; the discovered tools still
+// replay via their references and stay loaded for the session.
+func messageHasToolSearch(msg message.Message) bool {
+	return len(msg.ToolSearchParts()) > 0
 }
 
 func (a *anthropicClient) convertTools(ctx context.Context, tools []toolsPkg.BaseTool) []anthropic.ToolUnionParam {
