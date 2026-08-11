@@ -979,6 +979,20 @@ func TestConvertMessagesReplaysThinkingInOrderWithToolSearch(t *testing.T) {
 			wantKinds: []string{"thinking", "server_tool_use", "tool_search_tool_result", "tool_use"},
 		},
 		{
+			// Offset captured but references never captured (and no error): the
+			// search can't be emitted in place, so keeping the thinking around
+			// it would strand it exactly like the reorder bug. Must fall back to
+			// dropping the reasoning; the unreplayable search is skipped too.
+			name:  "offset without references falls back to dropping thinking",
+			model: native,
+			parts: []message.ContentPart{
+				message.ReasoningContent{Thinking: "planning", Signature: "sig-a"},
+				message.ToolSearchContent{ToolUseID: "srvtoolu_1", Name: "tool_search_tool_regex", Input: `{}`, ReasoningOffset: off(1)},
+				toolCall,
+			},
+			wantKinds: []string{"tool_use"},
+		},
+		{
 			// Partial offsets (one search never captured its offset): can't
 			// reproduce the interleave, so fall back to dropping the reasoning.
 			// Both searches still replay (order among themselves preserved).

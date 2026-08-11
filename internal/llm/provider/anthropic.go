@@ -248,7 +248,7 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 					))
 				}
 
-				if len(searches) > 0 && toolSearchesHaveOffset(searches) {
+				if len(searches) > 0 && toolSearchesReplayableInOrder(searches) {
 					// Order-preserving replay: re-insert each search at its
 					// captured index within the reasoning sequence (the model
 					// interleaves thinking → search → thinking → tool_use), so
@@ -444,23 +444,32 @@ func applyStreamedToolSearchRefs(parts []message.ToolSearchContent, streamed map
 	return parts
 }
 
-// toolSearchesHaveOffset reports whether every server-side search on a turn
-// carries a captured ReasoningOffset — the index (in the turn's reasoning
-// sequence) at which the model originally emitted it.
+// toolSearchesReplayableInOrder reports whether every server-side search on a
+// turn can be replayed at its original position so the turn's thinking blocks
+// can be kept in place. Two conditions must hold for ALL searches:
 //
-// With offsets we can re-insert each search at its original position and
-// replay the thinking blocks in place, exactly as produced, so the API accepts
-// them. Without offsets (rows persisted before capture, or any partial set) we
-// can't reproduce the original interleave: a reconstructed server_tool_use /
-// tool_search_tool_result block never matches the model's original bytes, and
-// the API rejects the latest assistant turn's thinking as "modified" whenever
-// the blocks that followed it changed (the Bedrock/LiteLLM proxy surfaces that
-// 400 as an HTTP/2 `RST_STREAM INTERNAL_ERROR`). The caller then falls back to
-// dropping the reasoning; the discovered tools still replay via their
-// references and stay loaded for the session.
-func toolSearchesHaveOffset(searches []message.ToolSearchContent) bool {
+//   - a captured ReasoningOffset — the index (in the turn's reasoning sequence)
+//     at which the model emitted the search — so we can re-insert it exactly
+//     where it was; and
+//   - something to emit there: captured references or an error code. emitSearch
+//     drops a search that has neither, which would leave the surrounding
+//     thinking blocks with a hole where the search used to be — the very
+//     modification the API rejects.
+//
+// When both hold for every search we replay the thinking in place, unchanged,
+// and the API accepts it. Otherwise (rows persisted before offsets/refs were
+// captured, or any partial set) the exact interleave can't be reproduced: a
+// reconstructed or missing server_tool_use / tool_search_tool_result block
+// makes the latest assistant turn's thinking "modified", and the Bedrock/LiteLLM
+// proxy surfaces that 400 as an HTTP/2 `RST_STREAM INTERNAL_ERROR`. The caller
+// then falls back to dropping the reasoning; searches that do carry references
+// still replay and keep their tools loaded for the session.
+func toolSearchesReplayableInOrder(searches []message.ToolSearchContent) bool {
 	for _, ts := range searches {
 		if ts.ReasoningOffset == nil {
+			return false
+		}
+		if len(ts.References) == 0 && ts.ErrorCode == "" {
 			return false
 		}
 	}
