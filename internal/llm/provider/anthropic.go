@@ -223,7 +223,7 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 					// also a rejectable shape on some backends. The discovered
 					// tools stay activated+declared via SerializableFor, so
 					// skipping such a search is safe.
-					if len(ts.References) == 0 && ts.ErrorCode == "" {
+					if !toolSearchEmittable(ts) {
 						return
 					}
 					var inputMap map[string]any
@@ -444,6 +444,17 @@ func applyStreamedToolSearchRefs(parts []message.ToolSearchContent, streamed map
 	return parts
 }
 
+// toolSearchEmittable reports whether a server-side search has something to
+// replay: captured references or an error code. emitSearch drops a search with
+// neither (an empty tool_references array is itself a rejectable shape on some
+// backends), so this is the single source of truth for "will this search
+// produce blocks". toolSearchesReplayableInOrder relies on it staying in lock
+// step with emitSearch: a search the guard counts as emittable but emitSearch
+// skips (or vice versa) would reopen the hole-in-the-thinking bug.
+func toolSearchEmittable(ts message.ToolSearchContent) bool {
+	return len(ts.References) > 0 || ts.ErrorCode != ""
+}
+
 // toolSearchesReplayableInOrder reports whether every server-side search on a
 // turn can be replayed at its original position so the turn's thinking blocks
 // can be kept in place. Two conditions must hold for ALL searches:
@@ -451,10 +462,10 @@ func applyStreamedToolSearchRefs(parts []message.ToolSearchContent, streamed map
 //   - a captured ReasoningOffset — the index (in the turn's reasoning sequence)
 //     at which the model emitted the search — so we can re-insert it exactly
 //     where it was; and
-//   - something to emit there: captured references or an error code. emitSearch
-//     drops a search that has neither, which would leave the surrounding
-//     thinking blocks with a hole where the search used to be — the very
-//     modification the API rejects.
+//   - something to emit there (toolSearchEmittable): captured references or an
+//     error code. emitSearch drops a search that has neither, which would leave
+//     the surrounding thinking blocks with a hole where the search used to be —
+//     the very modification the API rejects.
 //
 // When both hold for every search we replay the thinking in place, unchanged,
 // and the API accepts it. Otherwise (rows persisted before offsets/refs were
@@ -469,7 +480,7 @@ func toolSearchesReplayableInOrder(searches []message.ToolSearchContent) bool {
 		if ts.ReasoningOffset == nil {
 			return false
 		}
-		if len(ts.References) == 0 && ts.ErrorCode == "" {
+		if !toolSearchEmittable(ts) {
 			return false
 		}
 	}
