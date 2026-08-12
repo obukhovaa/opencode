@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -99,6 +100,87 @@ func buildTruncationHeader(label string, totalLines int, filePath string, origin
 	}
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// PersistLargeOutput caps a tool call's output at maxBytes for the model's
+// context while keeping the full payload available on disk. When content is
+// within the cap — or maxBytes <= 0, meaning "unlimited" — it is returned
+// unchanged with an empty path. Otherwise the full content is spilled to a temp
+// file (same per-process scratch dir as the bash tool) and a compact,
+// byte-aligned head+tail preview (~maxBytes total) is returned along with the
+// file path, so the caller can point the agent at the file to explore with the
+// grep/read/bash tools rather than re-running the tool.
+//
+// source/label form the temp-file prefix ("<source>-<label>-<nanos>.txt") and
+// label names the output in the overflow header.
+func PersistLargeOutput(content, label, source string, maxBytes int) (preview string, filePath string) {
+	if maxBytes <= 0 || len(content) <= maxBytes {
+		return content, ""
+	}
+	filePath = persistToTempFile(content, source+"-"+label)
+	head := maxBytes / 2
+	tail := maxBytes - head
+	return buildOutputOverflowHeader(label, len(content), filePath) + buildBytePreview(content, head, tail), filePath
+}
+
+// buildBytePreview returns a byte-aligned head+tail preview of content, keeping
+// roughly headBytes from the start and tailBytes from the end with an elision
+// marker between them. Unlike buildPreview it is byte- (not line-) based, so it
+// bounds single-line payloads such as minified JSON. Cut points are snapped to
+// UTF-8 rune boundaries (and to a nearby newline when one exists) so the preview
+// never splits a rune or a line mid-way.
+func buildBytePreview(content string, headBytes, tailBytes int) string {
+	if len(content) <= headBytes+tailBytes {
+		return content
+	}
+	headEnd := toRuneBoundaryBackward(content, headBytes)
+	if nl := strings.LastIndexByte(content[:headEnd], '\n'); nl > headBytes/2 {
+		headEnd = nl
+	}
+	tailStart := toRuneBoundaryForward(content, len(content)-tailBytes)
+	if nl := strings.IndexByte(content[tailStart:], '\n'); nl >= 0 && nl < tailBytes/2 {
+		tailStart += nl + 1
+	}
+	elided := tailStart - headEnd
+	return fmt.Sprintf("%s\n\n... [%d bytes elided — full output in the saved file] ...\n\n%s",
+		content[:headEnd], elided, content[tailStart:])
+}
+
+func buildOutputOverflowHeader(label string, totalBytes int, filePath string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "<%s output truncated: %d bytes total>\n", label, totalBytes)
+	if filePath != "" {
+		if totalBytes > MaxPersistBytes {
+			fmt.Fprintf(&sb, "Full output saved to: %s (saved copy truncated at 100MB)\n", filePath)
+		} else {
+			fmt.Fprintf(&sb, "Full output saved to: %s\n", filePath)
+		}
+		sb.WriteString("Explore it with the grep tool, read specific ranges with the read tool (offset/limit), or use sed in bash. Do not re-run the tool just to get the full output.\n")
+	}
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// toRuneBoundaryBackward returns the largest index <= i that starts a UTF-8 rune.
+func toRuneBoundaryBackward(s string, i int) int {
+	if i >= len(s) {
+		i = len(s)
+	}
+	for i > 0 && !utf8.RuneStart(s[i]) {
+		i--
+	}
+	return i
+}
+
+// toRuneBoundaryForward returns the smallest index >= i that starts a UTF-8 rune.
+func toRuneBoundaryForward(s string, i int) int {
+	if i < 0 {
+		i = 0
+	}
+	for i < len(s) && !utf8.RuneStart(s[i]) {
+		i++
+	}
+	return i
 }
 
 // truncateToMaxChars truncates content to fit within maxChars,

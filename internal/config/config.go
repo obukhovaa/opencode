@@ -42,6 +42,13 @@ type MCPServer struct {
 	// Set to 0 (or omit) to use the built-in default. Useful for slow MCP servers whose
 	// individual tool calls can legitimately exceed the default budget.
 	CallToolTimeoutSeconds int `json:"callToolTimeoutSeconds,omitempty"`
+	// CallToolMaxOutputBytes caps the size (in bytes) of a single tool call's output kept
+	// in the model context for this server. Output beyond the cap is spilled to a temp
+	// file and replaced with a head+tail preview that points the agent at the file (which
+	// it can grep/read/sed). Set to 0 (or omit) to use the built-in default; set a
+	// positive value to raise or lower it; set a negative value to disable the cap
+	// entirely (unbounded output — use with care, large results can overflow the context).
+	CallToolMaxOutputBytes int `json:"callToolMaxOutputBytes,omitempty"`
 }
 
 // ResolveMCPServers returns only the MCP servers that are not disabled.
