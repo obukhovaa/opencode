@@ -205,7 +205,6 @@ type agent struct {
 }
 
 func newAgent(
-	ctx context.Context,
 	agentInfo *agentregistry.AgentInfo,
 	sessions session.Service,
 	messages message.Service,
@@ -216,7 +215,7 @@ func newAgent(
 	mcpReg MCPRegistry,
 	factory AgentFactory,
 ) (Service, error) {
-	agentTools := NewToolSet(ctx, agentInfo, reg, permissions, historyService, lspService, sessions, messages, mcpReg, factory)
+	agentTools := NewToolSet(agentInfo, reg, permissions, historyService, lspService, sessions, messages, mcpReg, factory)
 
 	agentProvider, err := createAgentProvider(
 		agentInfo.ID,

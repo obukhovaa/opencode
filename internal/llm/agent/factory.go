@@ -193,7 +193,12 @@ func (f *agentFactory) QuestionService() question.Service {
 	return f.questionService
 }
 
+// NewAgent builds an agent service. ctx is kept for interface stability but
+// agent construction is context-free: the toolset (incl. MCP loading) is
+// resolved under registry-owned lifetimes, so a caller's request-scoped ctx
+// cannot cancel it (see NewToolSet / mcpRegistry.getTools).
 func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool, boundPeers []bridge.PeerRef) (Service, error) {
+	_ = ctx
 	if stepID != "" {
 		f.mu.Lock()
 		if svc, ok := f.stepCache[stepID]; ok {
@@ -224,7 +229,7 @@ func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchem
 	// "## Reviewer details" section. Empty / nil for non-interactive.
 	infoCopy.BoundPeers = boundPeers
 
-	svc, err := newAgent(ctx, &infoCopy, f.sessions, f.messages, f.permissions, f.history, f.lspService, f.registry, f.mcpRegistry, f)
+	svc, err := newAgent(&infoCopy, f.sessions, f.messages, f.permissions, f.history, f.lspService, f.registry, f.mcpRegistry, f)
 	if err != nil {
 		return nil, fmt.Errorf("creating agent %q: %w", agentID, err)
 	}

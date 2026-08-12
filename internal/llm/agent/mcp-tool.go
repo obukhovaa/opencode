@@ -51,8 +51,11 @@ type (
 	}
 
 	MCPRegistry interface {
-		// GetTools return tools matching filter, if registry is not loaded it will begin loading
-		LoadTools(ctx context.Context, filter *MCPRegistryFiler) <-chan tools.BaseTool
+		// LoadTools returns tools matching filter, if registry is not loaded it will
+		// begin loading. Load lifetime is owned by the registry (bounded per server by
+		// mcpInitTimeout), never by a caller: results land in a cache shared across
+		// every agent, and the returned channel always closes within that bound.
+		LoadTools(filter *MCPRegistryFiler) <-chan tools.BaseTool
 		// StartClient starts a new MCPClient, caller have to properly close when done
 		StartClient(ctx context.Context, name string) (c *client.Client, err error)
 		// LoadedServers returns the set of MCP server names that have successfully loaded tools.
@@ -69,6 +72,13 @@ type (
 		// *mcp.ListToolsResult by MCP server name
 		mcpTools sync.Map
 
+		// baseCtx owns the lifetime of cache fetches (see getTools). Fetch
+		// results are shared singleflight-style across every agent, so a
+		// fetch must never run under one caller's request-scoped context —
+		// that caller being canceled would poison the entry for every
+		// concurrent and future waiter. Normally the app root context.
+		baseCtx context.Context
+
 		permissions   permission.Service
 		agentRegistry agentregistry.Registry
 		*pubsub.Broker[MCPServerEvent]
@@ -84,9 +94,16 @@ type (
 	}
 )
 
-func NewMCPRegistry(permissions permission.Service, agentRegistry agentregistry.Registry) MCPRegistry {
+// NewMCPRegistry creates the shared MCP registry. ctx bounds the lifetime of
+// every cache fetch the registry performs (app shutdown stops in-flight
+// loads); it must be a long-lived context, not a request-scoped one.
+func NewMCPRegistry(ctx context.Context, permissions permission.Service, agentRegistry agentregistry.Registry) MCPRegistry {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return &mcpRegistry{
 		mcpTools:      sync.Map{},
+		baseCtx:       ctx,
 		permissions:   permissions,
 		agentRegistry: agentRegistry,
 		Broker:        pubsub.NewBroker[MCPServerEvent](),
@@ -167,10 +184,10 @@ func (r *mcpRegistry) ServerTools(name string) []string {
 	}
 }
 
-func (r *mcpRegistry) LoadTools(ctx context.Context, filter *MCPRegistryFiler) <-chan tools.BaseTool {
+func (r *mcpRegistry) LoadTools(filter *MCPRegistryFiler) <-chan tools.BaseTool {
 	toolsCh := make(chan tools.BaseTool, 100)
 
-	go func(ctx context.Context, filter *MCPRegistryFiler) {
+	go func(filter *MCPRegistryFiler) {
 		wg := sync.WaitGroup{}
 		for name, m := range config.ResolveMCPServers() {
 			if filter != nil && len(filter.ServerNames) != 0 && !slices.Contains(filter.ServerNames, name) {
@@ -178,12 +195,10 @@ func (r *mcpRegistry) LoadTools(ctx context.Context, filter *MCPRegistryFiler) <
 			}
 
 			wg.Add(1)
-			go func(ctx context.Context, filter *MCPRegistryFiler) {
+			go func(filter *MCPRegistryFiler) {
 				defer wg.Done()
 
-				toolsCtx, cancelTools := context.WithTimeout(ctx, 30*time.Second)
-				defer cancelTools()
-				serverTools := r.getTools(toolsCtx, name, m)
+				serverTools := r.getTools(name, m)
 				for _, t := range serverTools {
 					if filter != nil && len(filter.ToolNames) != 0 && !slices.Contains(filter.ToolNames, t.Info().Name) {
 						continue
@@ -195,16 +210,20 @@ func (r *mcpRegistry) LoadTools(ctx context.Context, filter *MCPRegistryFiler) <
 					ServerName: name,
 					ToolCount:  len(serverTools),
 				})
-			}(ctx, filter)
+			}(filter)
 		}
 		wg.Wait()
 		close(toolsCh)
-	}(ctx, filter)
+	}(filter)
 	return toolsCh
 }
 
 const (
-	ttl                = 30 * time.Minute
+	ttl = 30 * time.Minute
+	// mcpInitTimeout bounds a single cache fetch (start + initialize + list
+	// tools) for one MCP server. It is also what bounds getTools' waiter
+	// path: every fetcher closes entry.done within this budget.
+	mcpInitTimeout     = 30 * time.Second
 	mcpCallToolTimeout = 5 * time.Minute
 	// mcpCallToolMaxOutputBytes is the default cap on a single MCP tool call's
 	// output kept in the model context. Output beyond this is spilled to a temp
@@ -226,7 +245,7 @@ func (entry *toolsCacheEntry) expired() bool {
 	return now > entry.ts+ttl.Milliseconds()
 }
 
-func (r *mcpRegistry) getTools(ctx context.Context, name string, m config.MCPServer) []tools.BaseTool {
+func (r *mcpRegistry) getTools(name string, m config.MCPServer) []tools.BaseTool {
 	toolsToAdd := []tools.BaseTool{}
 	entry := &toolsCacheEntry{done: make(chan bool)}
 	value, loaded := r.mcpTools.LoadOrStore(name, entry)
@@ -236,27 +255,32 @@ func (r *mcpRegistry) getTools(ctx context.Context, name string, m config.MCPSer
 	}
 
 	if loaded {
-		// cache/reuse
-		select {
-		case <-ctx.Done():
-			return toolsToAdd
-		case <-entry.done:
-			// entry is a pointer, and close(done) provides
-			// happens-before: entry.data and entry.err are
-			// visible directly
-			if entry.expired() && entry.del.CompareAndSwap(false, true) {
-				logging.Debug("MCP client cache expired", "server", name, "ts", entry.ts)
-				r.mcpTools.Delete(name)
-			} else {
-				logging.Debug("MCP client cache is used", "server", name, "ts", entry.ts)
-			}
+		// cache/reuse — wait for the (possibly in-flight) fetch. Bounded:
+		// the fetcher closes entry.done within mcpInitTimeout.
+		<-entry.done
+		// entry is a pointer, and close(done) provides
+		// happens-before: entry.data and entry.err are
+		// visible directly
+		if entry.expired() && entry.del.CompareAndSwap(false, true) {
+			logging.Debug("MCP client cache expired", "server", name, "ts", entry.ts)
+			r.mcpTools.Delete(name)
+		} else {
+			logging.Debug("MCP client cache is used", "server", name, "ts", entry.ts)
 		}
 	} else {
-		// fetch
+		// fetch — runs under the registry's own context, never a caller's.
+		// The entry is shared by every concurrent and future waiter, so a
+		// request-scoped context here lets one canceled caller destroy the
+		// toolset of unrelated agents: an async `task` spawn builds the
+		// subagent's toolset under the parent's parallel-tool-batch ctx,
+		// and the batch is canceled as soon as the ack returns — with a
+		// cold cache the subagent resolved zero MCP tools.
+		fetchCtx, cancelFetch := context.WithTimeout(r.baseCtx, mcpInitTimeout)
+		defer cancelFetch()
 		defer close(entry.done)
 
 		var c *client.Client
-		c, entry.err = r.StartClient(ctx, name)
+		c, entry.err = r.StartClient(fetchCtx, name)
 		if entry.err != nil {
 			logging.Error("Error starting MCP client", "server", name, "cause", entry.err.Error())
 			r.mcpTools.Delete(name)
@@ -271,14 +295,14 @@ func (r *mcpRegistry) getTools(ctx context.Context, name string, m config.MCPSer
 			Version: version.Version,
 		}
 
-		_, entry.err = c.Initialize(ctx, initRequest)
+		_, entry.err = c.Initialize(fetchCtx, initRequest)
 		if entry.err != nil {
 			logging.Error("Error initializing MCP client", "server", name, "cause", entry.err.Error())
 			r.mcpTools.Delete(name)
 			return toolsToAdd
 		}
 		toolsRequest := mcp.ListToolsRequest{}
-		entry.data, entry.err = c.ListTools(ctx, toolsRequest)
+		entry.data, entry.err = c.ListTools(fetchCtx, toolsRequest)
 		if entry.err != nil {
 			logging.Error("Error listing MCP tools", "server", name, "cause", entry.err.Error())
 			r.mcpTools.Delete(name)

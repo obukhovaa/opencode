@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -59,8 +58,10 @@ var (
 
 // NewToolSet dynamically builds the tool slice for an agent based on its
 // registry info. Only tools that pass registry.IsToolEnabled are included.
+// Deliberately context-free: MCP tool loading runs under the registry's own
+// lifetime, so a short-lived creator (e.g. an async task tool call whose ctx
+// dies with its parallel batch) cannot strand the agent without MCP tools.
 func NewToolSet(
-	ctx context.Context,
 	info *agentregistry.AgentInfo,
 	reg agentregistry.Registry,
 	permissions permission.Service,
@@ -268,7 +269,7 @@ func NewToolSet(
 	go func() {
 		defer logging.RecoverPanic("MCP-goroutine", nil)
 		defer wg.Done()
-		for mt := range mcpRegistry.LoadTools(ctx, nil) {
+		for mt := range mcpRegistry.LoadTools(nil) {
 			if reg.IsToolEnabled(agentID, mt.Info().Name) {
 				result <- maybeDefer(mt)
 			}

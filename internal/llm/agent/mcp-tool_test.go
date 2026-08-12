@@ -2,10 +2,15 @@ package agent
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 )
@@ -98,4 +103,142 @@ func TestRunToolOutputCap(t *testing.T) {
 			t.Errorf("multi-block not concatenated: got %q, want %q", resp.Content, "AAAABBBB")
 		}
 	})
+}
+
+// newTestMCPHTTPServer starts an in-process streamable-HTTP MCP server with a
+// single "echo" tool and returns its base URL plus a counter of MCP HTTP
+// requests received (a registry cache hit performs zero requests).
+func newTestMCPHTTPServer(t *testing.T) (string, *atomic.Int64) {
+	t.Helper()
+	mcpSrv := server.NewMCPServer("registry-test", "0.0.1")
+	mcpSrv.AddTool(mcp.NewTool("echo", mcp.WithDescription("echoes")), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return textResult("ok"), nil
+	})
+	h := server.NewStreamableHTTPServer(mcpSrv)
+	requests := &atomic.Int64{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	return ts.URL, requests
+}
+
+// seedMCPServerConfig points the global config's MCPServers at a single test
+// server and restores the previous value on cleanup.
+func seedMCPServerConfig(t *testing.T, name, url string) {
+	t.Helper()
+	if config.Get() == nil {
+		if _, err := config.Load(t.TempDir(), false); err != nil {
+			t.Fatalf("config.Load: %v", err)
+		}
+	}
+	cfg := config.Get()
+	old := cfg.MCPServers
+	cfg.MCPServers = map[string]config.MCPServer{
+		name: {Type: config.MCPHttp, URL: url},
+	}
+	t.Cleanup(func() { cfg.MCPServers = old })
+}
+
+func drainLoadTools(t *testing.T, ch <-chan tools.BaseTool) []tools.BaseTool {
+	t.Helper()
+	var got []tools.BaseTool
+	deadline := time.After(15 * time.Second)
+	for {
+		select {
+		case tl, ok := <-ch:
+			if !ok {
+				return got
+			}
+			got = append(got, tl)
+		case <-deadline:
+			// t.Error, not t.Fatal: this helper runs inside spawned goroutines
+			// (see the concurrent-load test), where FailNow would only kill that
+			// goroutine and deadlock the test-goroutine receive on its result.
+			t.Error("LoadTools channel did not close in time")
+			return got
+		}
+	}
+}
+
+// TestMCPRegistry_LoadToolsRegistryOwnedLifetime is the regression guard for
+// the async-task toolset loss: subagent toolsets used to be fetched under the
+// spawning tool call's context, which the parent's parallel-tool batch cancels
+// as soon as the async ack returns — with a cold cache the subagent resolved
+// zero MCP tools. Fetches now run under the registry's own context, so a
+// live registry must deliver tools no matter how short-lived the creator was.
+func TestMCPRegistry_LoadToolsRegistryOwnedLifetime(t *testing.T) {
+	url, _ := newTestMCPHTTPServer(t)
+	seedMCPServerConfig(t, "ctxtest", url)
+
+	reg := NewMCPRegistry(context.Background(), nil, nil)
+
+	got := drainLoadTools(t, reg.LoadTools(nil))
+	if len(got) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(got))
+	}
+	if name := got[0].Info().Name; name != "ctxtest_echo" {
+		t.Errorf("tool name = %q, want %q", name, "ctxtest_echo")
+	}
+	if loaded := reg.LoadedServers(); !loaded["ctxtest"] {
+		t.Errorf("LoadedServers() = %v, want ctxtest loaded", loaded)
+	}
+}
+
+// TestMCPRegistry_ConcurrentLoadSharesSingleFetch verifies the singleflight
+// cache: concurrent LoadTools callers all receive the tools, later callers hit
+// the cache, and the MCP server sees only the initial fetch's requests.
+func TestMCPRegistry_ConcurrentLoadSharesSingleFetch(t *testing.T) {
+	url, requests := newTestMCPHTTPServer(t)
+	seedMCPServerConfig(t, "shared", url)
+
+	reg := NewMCPRegistry(context.Background(), nil, nil)
+
+	const callers = 5
+	results := make(chan int, callers)
+	for range callers {
+		go func() {
+			results <- len(drainLoadTools(t, reg.LoadTools(nil)))
+		}()
+	}
+	for range callers {
+		if n := <-results; n != 1 {
+			t.Fatalf("concurrent caller got %d tools, want 1", n)
+		}
+	}
+
+	fetched := requests.Load()
+	if fetched == 0 {
+		t.Fatal("expected the fetch to hit the test server")
+	}
+	if got := len(drainLoadTools(t, reg.LoadTools(nil))); got != 1 {
+		t.Fatalf("cache-hit caller got %d tools, want 1", got)
+	}
+	if after := requests.Load(); after != fetched {
+		t.Errorf("cache hit performed %d extra HTTP requests, want 0", after-fetched)
+	}
+}
+
+// TestMCPRegistry_ShutdownBoundsFetch verifies the one context that SHOULD
+// stop a fetch — the registry's own (app shutdown) — does so promptly and
+// gracefully: the channel closes with no tools instead of hanging.
+func TestMCPRegistry_ShutdownBoundsFetch(t *testing.T) {
+	url, _ := newTestMCPHTTPServer(t)
+	seedMCPServerConfig(t, "shutdown", url)
+
+	appCtx, cancel := context.WithCancel(context.Background())
+	reg := NewMCPRegistry(appCtx, nil, nil)
+	cancel() // app is shutting down before the load starts
+
+	done := make(chan []tools.BaseTool, 1)
+	go func() { done <- drainLoadTools(t, reg.LoadTools(nil)) }()
+	select {
+	case got := <-done:
+		if len(got) != 0 {
+			t.Errorf("expected no tools after shutdown, got %d", len(got))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("LoadTools did not terminate after registry shutdown")
+	}
 }
