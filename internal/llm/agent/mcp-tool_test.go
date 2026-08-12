@@ -7,6 +7,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 )
 
 func TestResolveCallToolMaxOutputBytes(t *testing.T) {
@@ -53,6 +54,7 @@ func textResult(blocks ...string) *mcp.CallToolResult {
 }
 
 func TestRunToolOutputCap(t *testing.T) {
+	t.Cleanup(tools.CleanupTempDir)
 	ctx := context.Background()
 
 	t.Run("small output is returned unchanged", func(t *testing.T) {

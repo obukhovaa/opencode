@@ -28,7 +28,7 @@ The system SHALL expose a per-server MCP configuration field `callToolMaxOutputB
 
 ### Requirement: Oversized MCP tool output is spilled to a file with a head+tail preview
 
-When an MCP tool call's combined output exceeds the resolved cap, the system SHALL write the full output to a temp file in the process scratch directory and return, in place of the full output, a compact preview consisting of a header followed by a byte-aligned head+tail excerpt (approximately one cap's worth of bytes total). The header SHALL state the total byte size, name the temp file path, and instruct the agent to explore the file with the grep/read tools or sed in bash rather than re-running the tool. Output at or below the cap SHALL be returned unchanged with no file written. The returned response SHALL NOT be marked as an error.
+When an MCP tool call's combined output exceeds the resolved cap, the system SHALL write the full output to a temp file in the process scratch directory and return, in place of the full output, a compact preview consisting of a header followed by a byte-aligned head+tail excerpt (approximately one cap's worth of bytes total). The header SHALL state the total byte size, name the temp file path, and instruct the agent to explore the file with the grep/read tools or sed in bash rather than re-running the tool. Output at or below the cap SHALL be returned unchanged with no file written. The returned response SHALL NOT be marked as an error. The spill file SHALL be created directly inside the scratch directory even when the tool name contains path separators or other unsafe filename characters (the server-supplied name is sanitized to a single safe path component), concurrent spills SHALL never overwrite one another (unique file names), and each spill SHALL be logged with the tool name, total size, resolved cap, and file path.
 
 #### Scenario: Output under the cap is unchanged
 
@@ -52,6 +52,16 @@ When an MCP tool call's combined output exceeds the resolved cap, the system SHA
 
 - **WHEN** the cap falls inside a multi-byte UTF-8 character while building the preview
 - **THEN** the returned preview is valid UTF-8 (cut points are snapped to rune boundaries; no character is split)
+
+#### Scenario: Hostile tool name cannot escape the scratch directory
+
+- **WHEN** a tool whose server-supplied name contains path separators (e.g. `a/../../evil`) returns output larger than the cap
+- **THEN** the full output is written to a file directly inside the process scratch directory (the name is sanitized; no path traversal)
+
+#### Scenario: Concurrent spills do not collide
+
+- **WHEN** two tool calls with the same tool name spill oversized output concurrently
+- **THEN** each call's output is written to a distinct temp file (neither overwrites the other)
 
 ### Requirement: MCP tool output combines all content blocks before capping
 

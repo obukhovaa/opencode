@@ -12,7 +12,7 @@ The bash tool already solves the same problem well: when output exceeds a thresh
 
 - New per-server MCP config field `callToolMaxOutputBytes` (sibling of `callToolTimeoutSeconds`) on `MCPServer`, with a sane built-in default (50KB), a positive override to raise/lower it, and a negative value to disable the cap (intentional unbounded output).
 - `runTool` concatenates all returned content blocks (fixing a pre-existing bug where only the last block survived) and applies the resolved cap. Oversized output is spilled to the per-process scratch dir and replaced with a compact head+tail preview plus a header naming the byte size and file path and instructing the agent to `grep`/`read`/`sed` it — reusing the bash tool's temp-file infrastructure.
-- A new exported, byte-aware truncate-and-spill helper (`PersistLargeOutput`) in the `tools` package. Byte-based (not line-based) so it also bounds single-line payloads such as minified JSON, and rune-boundary-safe so previews never split a UTF-8 character.
+- A new exported, byte-aware truncate-and-spill helper (`PersistLargeOutput`) in the `tools` package. Byte-based (not line-based) so it also bounds single-line payloads such as minified JSON, and rune-boundary-safe so previews never split a UTF-8 character. Spill file names sanitize the server-supplied tool name (no path traversal), are collision-safe under concurrent calls (`os.CreateTemp`), and each spill is logged.
 - Config JSON schema (`opencode-schema.json` via `cmd/schema/main.go`) and README gain the new setting.
 
 The existing global `MaxToolResponseTokens` backstop is unchanged and still applies on top.

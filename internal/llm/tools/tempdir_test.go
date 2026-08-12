@@ -2,12 +2,14 @@ package tools
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
 )
 
 func TestPersistLargeOutput(t *testing.T) {
+	t.Cleanup(CleanupTempDir)
 	t.Run("under cap returned unchanged with no file", func(t *testing.T) {
 		content := strings.Repeat("a", 100)
 		out, path := PersistLargeOutput(content, "tool", "mcp", 1024)
@@ -86,6 +88,62 @@ func TestPersistLargeOutput(t *testing.T) {
 			t.Error("preview is not valid UTF-8 — a rune was split at a cut boundary")
 		}
 	})
+
+	t.Run("hostile tool name cannot escape the scratch dir", func(t *testing.T) {
+		// An MCP server controls its tool names; path separators in one must not
+		// direct the spill file outside the process scratch directory.
+		content := strings.Repeat("x", 10_000)
+		_, path := PersistLargeOutput(content, "a/../../../../evil", "mcp", 1024)
+		if path == "" {
+			t.Fatal("expected spill to file")
+		}
+		dir, err := ensureTempDir()
+		if err != nil {
+			t.Fatalf("ensureTempDir: %v", err)
+		}
+		if filepath.Dir(path) != dir {
+			t.Errorf("spill file escaped the scratch dir: %q (want inside %q)", path, dir)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("spill file not readable: %v", err)
+		}
+	})
+
+	t.Run("concurrent-style spills get distinct files", func(t *testing.T) {
+		content := strings.Repeat("y", 10_000)
+		_, p1 := PersistLargeOutput(content, "tool", "mcp", 1024)
+		_, p2 := PersistLargeOutput(content, "tool", "mcp", 1024)
+		if p1 == "" || p2 == "" {
+			t.Fatal("expected both spills to produce files")
+		}
+		if p1 == p2 {
+			t.Errorf("two spills reused the same file: %q", p1)
+		}
+	})
+}
+
+func TestSanitizeFilePrefix(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"safe name unchanged", "mcp-teamcity_fetch_build_log", "mcp-teamcity_fetch_build_log"},
+		{"path separators replaced", "mcp-a/../b", "mcp-a_.._b"},
+		{"backslashes and spaces replaced", `mcp-a\b c`, "mcp-a_b_c"},
+		{"empty falls back", "", "output"},
+		{"overlong is capped", strings.Repeat("a", 200), strings.Repeat("a", 80)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitizeFilePrefix(tt.in); got != tt.want {
+				t.Errorf("sanitizeFilePrefix(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			if got := sanitizeFilePrefix(tt.in); strings.ContainsAny(got, `/\`) {
+				t.Errorf("sanitized prefix still contains a path separator: %q", got)
+			}
+		})
+	}
 }
 
 func TestBuildBytePreview(t *testing.T) {

@@ -28,3 +28,10 @@
 - [x] 5.2 `go vet ./internal/llm/tools/ ./internal/llm/agent/ ./internal/config/` is clean.
 - [x] 5.3 `go test ./internal/llm/tools/ ./internal/llm/agent/ ./internal/config/` passes.
 - [x] 5.4 `openspec validate 2026-08-12-mcp-tool-output-limit --strict` passes.
+
+## 6. Review hardening (post-review fixes)
+
+- [x] 6.1 Sanitize the temp-file prefix in `persistToTempFile` (`sanitizeFilePrefix`: `[a-zA-Z0-9._-]`, length-capped) — the MCP tool name is server-supplied and must not become a path traversal vector; test that a hostile name (`a/../../evil`) stays inside the scratch dir.
+- [x] 6.2 Create spill files via `os.CreateTemp` (unique suffix, atomic, 0600) so concurrent spills with the same prefix never overwrite each other; test two spills yield distinct paths.
+- [x] 6.3 Log each spill in `runTool` (`logging.Info`: tool, totalBytes, maxOutputBytes, file) so cap activations are observable when diagnosing context-pressure incidents.
+- [x] 6.4 Clean up spill files created by tests (`t.Cleanup(CleanupTempDir)` in `tempdir_test.go` and `mcp-tool_test.go`).

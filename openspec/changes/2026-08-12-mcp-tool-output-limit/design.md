@@ -37,6 +37,8 @@ Cut points are snapped to UTF-8 rune boundaries (`toRuneBoundaryBackward`/`Forwa
 
 While wiring the cap, `runTool`'s content-capture loop is changed from "keep the last block" (`output = v.Text` each iteration — a latent bug that dropped data for multi-block results) to concatenating all blocks, so the cap sees and preserves the full output.
 
+Because the temp-file prefix now embeds a **server-supplied** string (the MCP tool name) — unlike bash, which only ever passes fixed labels — `persistToTempFile` sanitizes the prefix to a single safe path component (`[a-zA-Z0-9._-]`, length-capped, `sanitizeFilePrefix`) so a hostile tool name like `a/../../evil` cannot direct the write outside the scratch dir. File creation goes through `os.CreateTemp` (unique suffix, atomic, 0600), so concurrent spills — MCP tools allow parallelism — can never overwrite each other, which the previous `UnixNano`-only naming could. Each spill is logged (`logging.Info`: tool, total bytes, cap, path) so cap activations are visible when diagnosing context-pressure incidents like the one that motivated this change.
+
 ### 4. Ordering vs. the global backstop
 
 `runTool` applies the per-server cap first (producing a small preview) and then calls `NewTextResponse`, whose `validateAndTruncate` backstop is now effectively a no-op for capped output. For the unlimited case (`callToolMaxOutputBytes < 0`) the global 300K-token backstop still protects against catastrophic sizes.

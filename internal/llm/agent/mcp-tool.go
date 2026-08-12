@@ -446,7 +446,12 @@ func runTool(ctx context.Context, c MCPClient, toolName string, input string, ca
 	// via grep/read/bash). This guards the context window against tools that
 	// return very large payloads (e.g. multi-MB CI build logs). NewTextResponse
 	// still applies the global backstop cap on top.
-	preview, _ := tools.PersistLargeOutput(sb.String(), toolName, "mcp", maxOutputBytes)
+	output := sb.String()
+	preview, filePath := tools.PersistLargeOutput(output, toolName, "mcp", maxOutputBytes)
+	if filePath != "" {
+		logging.Info("MCP tool output capped",
+			"tool", toolName, "totalBytes", len(output), "maxOutputBytes", maxOutputBytes, "file", filePath)
+	}
 	return tools.NewTextResponse(preview), nil
 }
 

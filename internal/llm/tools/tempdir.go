@@ -43,19 +43,53 @@ func persistToTempFile(content, prefix string) string {
 		return ""
 	}
 
-	filename := fmt.Sprintf("%s-%d.txt", prefix, time.Now().UnixNano())
-	filePath := filepath.Join(dir, filename)
-
 	data := content
 	if len(data) > MaxPersistBytes {
 		data = data[:MaxPersistBytes]
 	}
 
-	if err := os.WriteFile(filePath, []byte(data), 0o600); err != nil {
+	// os.CreateTemp fills the '*' with a unique suffix atomically (0600), so
+	// concurrent spills with the same prefix can never overwrite each other.
+	// The prefix is sanitized because it may embed caller-supplied names (e.g.
+	// an MCP server's tool name) that must not influence the file's directory.
+	pattern := fmt.Sprintf("%s-%d-*.txt", sanitizeFilePrefix(prefix), time.Now().UnixNano())
+	f, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	if _, err := f.WriteString(data); err != nil {
+		os.Remove(f.Name())
 		return ""
 	}
 
-	return filePath
+	return f.Name()
+}
+
+// sanitizeFilePrefix reduces a caller-supplied temp-file prefix to a single safe
+// filename component: any byte outside [a-zA-Z0-9._-] (e.g. path separators in
+// an MCP-server-supplied tool name) becomes '_', and the result is capped to a
+// filesystem-friendly length. An all-unsafe or empty prefix yields "output".
+func sanitizeFilePrefix(prefix string) string {
+	const maxPrefixLen = 80
+	var sb strings.Builder
+	for _, r := range prefix {
+		if sb.Len() >= maxPrefixLen {
+			break
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-':
+			sb.WriteRune(r)
+		default:
+			sb.WriteByte('_')
+		}
+	}
+	if sb.Len() == 0 {
+		return "output"
+	}
+	return sb.String()
 }
 
 // CleanupTempDir removes the process-scoped temp directory and all its contents.
