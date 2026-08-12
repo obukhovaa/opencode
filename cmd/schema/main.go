@@ -198,6 +198,10 @@ func generateSchema() map[string]any {
 					"description": "Per-tool-call timeout override in seconds. Zero or omitted falls back to the built-in default (5 minutes).",
 					"minimum":     0,
 				},
+				"callToolMaxOutputBytes": map[string]any{
+					"type":        "integer",
+					"description": "Cap on a single tool call's output kept in the model context, in bytes. Output beyond the cap is spilled to a temp file and replaced with a head+tail preview pointing at it. Zero or omitted uses the built-in default (50KB); a positive value raises or lowers it; a negative value disables the cap (unbounded).",
+				},
 			},
 			"required": []string{"command"},
 		},

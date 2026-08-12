@@ -54,8 +54,8 @@ func TestApplyStreamedToolSearchRefs(t *testing.T) {
 		"srvtoolu_9": {"unused"},
 	}
 	parts := []message.ToolSearchContent{
-		{ToolUseID: "srvtoolu_1", Name: "tool_search_tool_regex"},                                // empty refs -> backfilled
-		{ToolUseID: "srvtoolu_2", Name: "tool_search_tool_regex", References: []string{"kept"}},  // already has refs -> untouched
+		{ToolUseID: "srvtoolu_1", Name: "tool_search_tool_regex"},                                 // empty refs -> backfilled
+		{ToolUseID: "srvtoolu_2", Name: "tool_search_tool_regex", References: []string{"kept"}},   // already has refs -> untouched
 		{ToolUseID: "srvtoolu_3", Name: "tool_search_tool_regex", ErrorCode: "too_many_requests"}, // error -> untouched
 	}
 	out := applyStreamedToolSearchRefs(parts, streamed)

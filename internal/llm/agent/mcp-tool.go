@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -205,6 +206,11 @@ func (r *mcpRegistry) LoadTools(ctx context.Context, filter *MCPRegistryFiler) <
 const (
 	ttl                = 30 * time.Minute
 	mcpCallToolTimeout = 5 * time.Minute
+	// mcpCallToolMaxOutputBytes is the default cap on a single MCP tool call's
+	// output kept in the model context. Output beyond this is spilled to a temp
+	// file and replaced with a head+tail preview. Overridable per server via
+	// MCPServer.CallToolMaxOutputBytes.
+	mcpCallToolMaxOutputBytes = 50 * 1024 // 50KB
 )
 
 type toolsCacheEntry struct {
@@ -358,7 +364,7 @@ func (b *mcpTool) Run(ctx context.Context, params tools.ToolCall) (tools.ToolRes
 		return tools.NewTextErrorResponse(err.Error()), nil
 	}
 	defer c.Close()
-	return runTool(ctx, c, b.tool.Name, params.Input, resolveCallToolTimeout(b.mcpConfig))
+	return runTool(ctx, c, b.tool.Name, params.Input, resolveCallToolTimeout(b.mcpConfig), resolveCallToolMaxOutputBytes(b.mcpConfig))
 }
 
 // resolveCallToolTimeout returns the per-call timeout for an MCP server. A positive
@@ -371,7 +377,22 @@ func resolveCallToolTimeout(m config.MCPServer) time.Duration {
 	return mcpCallToolTimeout
 }
 
-func runTool(ctx context.Context, c MCPClient, toolName string, input string, callTimeout time.Duration) (tools.ToolResponse, error) {
+// resolveCallToolMaxOutputBytes returns the per-call output-size cap (bytes) for an MCP
+// server. A positive CallToolMaxOutputBytes overrides the default; a negative value
+// disables the cap entirely (unbounded, signalled as -1); 0 or omitted falls back to
+// mcpCallToolMaxOutputBytes.
+func resolveCallToolMaxOutputBytes(m config.MCPServer) int {
+	switch {
+	case m.CallToolMaxOutputBytes < 0:
+		return -1
+	case m.CallToolMaxOutputBytes > 0:
+		return m.CallToolMaxOutputBytes
+	default:
+		return mcpCallToolMaxOutputBytes
+	}
+}
+
+func runTool(ctx context.Context, c MCPClient, toolName string, input string, callTimeout time.Duration, maxOutputBytes int) (tools.ToolResponse, error) {
 	initRequest := mcp.InitializeRequest{}
 	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 	initRequest.Params.ClientInfo = mcp.Implementation{
@@ -408,16 +429,30 @@ func runTool(ctx context.Context, c MCPClient, toolName string, input string, ca
 		return tools.NewTextErrorResponse(err.Error()), nil
 	}
 
-	output := ""
+	// Concatenate every content block. (Previously only the last block survived,
+	// which silently dropped data for multi-block results — and would undercount
+	// the output when applying the size cap below.)
+	var sb strings.Builder
 	for _, v := range result.Content {
-		if v, ok := v.(mcp.TextContent); ok {
-			output = v.Text
+		if tc, ok := v.(mcp.TextContent); ok {
+			sb.WriteString(tc.Text)
 		} else {
-			output = fmt.Sprintf("%v", v)
+			fmt.Fprintf(&sb, "%v", v)
 		}
 	}
 
-	return tools.NewTextResponse(output), nil
+	// Cap the output kept in context; oversized results spill to a temp file and
+	// are replaced with a head+tail preview pointing at it (the agent explores it
+	// via grep/read/bash). This guards the context window against tools that
+	// return very large payloads (e.g. multi-MB CI build logs). NewTextResponse
+	// still applies the global backstop cap on top.
+	output := sb.String()
+	preview, filePath := tools.PersistLargeOutput(output, toolName, "mcp", maxOutputBytes)
+	if filePath != "" {
+		logging.Info("MCP tool output capped",
+			"tool", toolName, "totalBytes", len(output), "maxOutputBytes", maxOutputBytes, "file", filePath)
+	}
+	return tools.NewTextResponse(preview), nil
 }
 
 func (b *mcpTool) AllowParallelism(call tools.ToolCall, allCalls []tools.ToolCall) bool {
