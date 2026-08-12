@@ -153,7 +153,11 @@ func drainLoadTools(t *testing.T, ch <-chan tools.BaseTool) []tools.BaseTool {
 			}
 			got = append(got, tl)
 		case <-deadline:
-			t.Fatal("LoadTools channel did not close in time")
+			// t.Error, not t.Fatal: this helper runs inside spawned goroutines
+			// (see the concurrent-load test), where FailNow would only kill that
+			// goroutine and deadlock the test-goroutine receive on its result.
+			t.Error("LoadTools channel did not close in time")
+			return got
 		}
 	}
 }
