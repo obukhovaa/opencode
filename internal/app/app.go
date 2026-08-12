@@ -137,7 +137,7 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 	reg := agentregistry.GetRegistry()
 	perm := permission.NewPermissionService()
 	lspSvc := NewLspService()
-	mcpRegistry := agent.NewMCPRegistry(perm, reg)
+	mcpRegistry := agent.NewMCPRegistry(ctx, perm, reg)
 	factory := agent.NewAgentFactory(sessions, messages, perm, files, lspSvc, reg, mcpRegistry)
 	todoStore := todo.NewStore()
 	factory.SetTodoStore(todoStore)
