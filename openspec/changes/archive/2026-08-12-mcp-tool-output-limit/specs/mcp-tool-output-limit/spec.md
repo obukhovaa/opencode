@@ -1,5 +1,9 @@
 # mcp-tool-output-limit Specification
 
+## Purpose
+
+Bounds the context-window footprint of a single MCP tool call: a per-server configurable byte cap (`callToolMaxOutputBytes`) on tool-call output, with oversized results spilled safely to a temp file and replaced by a head+tail preview the agent can explore with its existing file tools. Protects against context-overflow failures from tools that return very large payloads (e.g. multi-MB CI build logs).
+
 ## ADDED Requirements
 
 ### Requirement: Per-server MCP tool-call output cap is configurable
