@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
 )
@@ -20,7 +21,7 @@ type stubBridgeSender struct {
 	calls      []sendCall
 	result     bridge.SendResult
 	err        error
-	boundPeers []bridge.PeerRef
+	boundPeers []bridge.BoundPeer
 }
 
 type sendCall struct {
@@ -37,7 +38,7 @@ func (s *stubBridgeSender) Send(_ context.Context, peer bridge.PeerRef, text, me
 	return s.result, s.err
 }
 
-func (s *stubBridgeSender) BoundPeersSnapshot(_ context.Context) []bridge.PeerRef {
+func (s *stubBridgeSender) BoundPeersSnapshot(_ context.Context) []bridge.BoundPeer {
 	return s.boundPeers
 }
 
@@ -118,8 +119,17 @@ func TestRouterSendInfoEnumeratesIdentities(t *testing.T) {
 func TestRouterSendDescriptionListsBoundPeers(t *testing.T) {
 	t.Parallel()
 	sender := &stubBridgeSender{
-		boundPeers: []bridge.PeerRef{
-			{Channel: "slack", Identity: "default", PeerID: "D012345"},
+		boundPeers: []bridge.BoundPeer{
+			{
+				PeerRef:   bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "D012345"},
+				SessionID: "1786387649-kickoff-work-clarify-and-prepare",
+				UpdatedAt: time.Now().Add(-3 * 24 * time.Hour).Unix(),
+			},
+			{
+				PeerRef: bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "GLVT73S0K"},
+				// No SessionID / UpdatedAt: an orphaned binding whose
+				// session row was garbage-collected.
+			},
 		},
 	}
 	tool := NewRouterSendTool(RouterSendDeps{Sender: sender, Cfg: testCfg(), MediaRoot: t.TempDir()})
@@ -129,6 +139,40 @@ func TestRouterSendDescriptionListsBoundPeers(t *testing.T) {
 	}
 	if !strings.Contains(desc, "slack:default:D012345") {
 		t.Errorf("description missing bound peer entry:\n%s", desc)
+	}
+	if !strings.Contains(desc, "bound by session 1786387649-kickoff-work-clarify-and-prepare") {
+		t.Errorf("description missing owning-session annotation:\n%s", desc)
+	}
+	if !strings.Contains(desc, "last active 3d ago") {
+		t.Errorf("description missing age annotation:\n%s", desc)
+	}
+	if !strings.Contains(desc, "slack:default:GLVT73S0K — orphaned (owning session gone)") {
+		t.Errorf("description missing orphaned-binding annotation:\n%s", desc)
+	}
+	if !strings.Contains(desc, "may belong to a DIFFERENT run") {
+		t.Errorf("description missing foreign-run caveat:\n%s", desc)
+	}
+}
+
+func TestHumanAge(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		secs int64
+		want string
+	}{
+		{5, "just now"},
+		{59, "just now"},
+		{60, "1m ago"},
+		{3599, "59m ago"},
+		{3600, "1h ago"},
+		{86399, "23h ago"},
+		{86400, "1d ago"},
+		{86400 * 12, "12d ago"},
+	}
+	for _, c := range cases {
+		if got := humanAge(c.secs); got != c.want {
+			t.Errorf("humanAge(%d) = %q, want %q", c.secs, got, c.want)
+		}
 	}
 }
 

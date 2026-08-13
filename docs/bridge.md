@@ -268,7 +268,7 @@ When at least one channel has an enabled identity AND the agent is in `mode: "ag
 }
 ```
 
-The tool's description is **built dynamically at registration time** from the live `cfg.Router` snapshot — the agent sees enumerated channels, peer-ID formats, identities, and currently-bound peers without needing external documentation. Implementation calls `bridge.Service.Send(...)` directly in-process (no HTTP loopback).
+The tool's description is **built dynamically at registration time** from the live `cfg.Router` snapshot — the agent sees enumerated channels, peer-ID formats, identities, and currently-bound peers without needing external documentation. Each bound-peer entry is annotated with the owning session id and a coarse last-active age (`— bound by session <id>, last active 3d ago`), or marked `orphaned (owning session gone)` when the session row was garbage-collected — in shared-DB deployments the snapshot spans other runs' bindings, and the annotation lets the agent recognise a foreign or stale binding before reusing it (GENAI-186). Implementation calls `bridge.Service.Send(...)` directly in-process (no HTTP loopback).
 
 Response shape: `{"delivered": bool, "error"?: string, "resolvedPeerId"?: string}`. Multi-peer fan-out isn't exposed — the agent makes parallel `router_send` calls if it needs to reach multiple peers (allowed via `AllowParallelism: true`).
 

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
 )
@@ -34,12 +35,15 @@ type BridgeSender interface {
 	// the agent's response.
 	Send(ctx context.Context, peer bridge.PeerRef, text string, mention string, attachments []bridge.Attachment) (bridge.SendResult, error)
 
-	// HasBoundPeers reports whether a session has any active
-	// bridge_sessions rows. Used by the dynamic description to list
-	// currently-bound peers for the agent. Implementations MAY
-	// reasonably no-op (returning nil, nil) when describing all peers
-	// is expensive; the tool degrades gracefully.
-	BoundPeersSnapshot(ctx context.Context) []bridge.PeerRef
+	// BoundPeersSnapshot lists the currently-bound bridge_sessions rows,
+	// annotated with the owning session id and last-touch time. Used by
+	// the dynamic description to list currently-bound peers for the
+	// agent together with enough provenance to judge their relevance
+	// (in shared-DB deployments the snapshot spans other runs' bindings,
+	// including stale ones — GENAI-186). Implementations MAY reasonably
+	// no-op (returning nil) when describing all peers is expensive; the
+	// tool degrades gracefully.
+	BoundPeersSnapshot(ctx context.Context) []bridge.BoundPeer
 }
 
 // RouterSendDeps bundles the tool's runtime dependencies. The tool
@@ -395,13 +399,50 @@ func buildRouterSendDescription(deps RouterSendDeps) string {
 	if deps.Sender != nil {
 		bound := deps.Sender.BoundPeersSnapshot(context.Background())
 		if len(bound) > 0 {
-			b.WriteString("\nCurrently bound peers (you can reach these without learning new IDs):\n")
+			b.WriteString("\nCurrently bound peers (reachable without learning new IDs — but each entry may belong to a DIFFERENT run: check the owning session and age before reusing one for messages meant for a specific person):\n")
+			now := time.Now().Unix()
 			for _, p := range bound {
-				fmt.Fprintf(&b, "  - %s:%s:%s\n", p.Channel, p.Identity, p.PeerID)
+				fmt.Fprintf(&b, "  - %s:%s:%s%s\n", p.Channel, p.Identity, p.PeerID, describeBindingProvenance(p, now))
 			}
 		}
 	}
 	return b.String()
+}
+
+// describeBindingProvenance renders the " — bound by session …, last
+// active …" suffix for one bound peer in the tool description. The
+// session id is included verbatim — opencode session ids embed the flow
+// and step name (e.g. "1786387649-kickoff-work-clarify-and-prepare"),
+// which is exactly the context an agent needs to recognise a foreign
+// binding. An empty session id marks an orphaned binding whose session
+// row was garbage-collected.
+func describeBindingProvenance(p bridge.BoundPeer, nowUnix int64) string {
+	var parts []string
+	if p.SessionID != "" {
+		parts = append(parts, "bound by session "+p.SessionID)
+	} else {
+		parts = append(parts, "orphaned (owning session gone)")
+	}
+	if p.UpdatedAt > 0 {
+		parts = append(parts, "last active "+humanAge(nowUnix-p.UpdatedAt))
+	}
+	return " — " + strings.Join(parts, ", ")
+}
+
+// humanAge renders a coarse human-readable age from a duration in
+// seconds: "just now", "5m ago", "3h ago", "12d ago". Coarse on
+// purpose — the reader is an LLM judging staleness, not a dashboard.
+func humanAge(secs int64) string {
+	switch {
+	case secs < 60:
+		return "just now"
+	case secs < 3600:
+		return fmt.Sprintf("%dm ago", secs/60)
+	case secs < 86400:
+		return fmt.Sprintf("%dh ago", secs/3600)
+	default:
+		return fmt.Sprintf("%dd ago", secs/86400)
+	}
 }
 
 func writeChannelDescription(b *strings.Builder, name, peerFormat string, channelEnabled any, identitiesFn func() []string) {
