@@ -419,3 +419,55 @@ flow:
 ```
 
 The merged `resolve-context` step is indistinguishable from an inline one and is validated the same way. Keep `id`, `interactive`, `interaction`, and `resume_after` on the concrete step — a template may not declare them. Later `extends` entries and the step's own keys override earlier templates, shallow per top-level key. Full rules in `references/flow-spec.md` → "Shared Step Templates".
+
+**When to reach for a shared step, and what to put in it.** The syntax above is *how*; this is *when*. Factor a key out only when it is the SAME across the flows that carry the step and you would otherwise have to edit each one. A large `output` schema duplicated across several flows is the classic case — a field added to one copy is invisible to the others, so they drift. `agent` and `maxTurns` qualify when they are identical everywhere the step appears.
+
+`prompt` usually does NOT qualify. `extends` merges whole top-level keys, so a flow that declares `prompt` replaces the template's entirely — "shared preamble plus a local body" cannot be expressed. If each flow needs its own wording, either keep `prompt` per-flow, or move the shared prose into the agent TYPE's system prompt (`.agents/types/<agent>.md`), which is always in context and needs no invocation. Sharing three boilerplate lines is not worth costing every flow its own body.
+
+A step's own key always wins over the template's, so a flow that genuinely differs in one shared key overrides just that key — e.g. it extends a resolver for `agent` + `maxTurns` while declaring its own `output` because it needs one extra field.
+
+Even a template with a single consumer today is worth it when more flows will need the same contract: it puts the schema in one place before the copies exist to drift.
+
+## Common Pitfalls
+
+### In-prompt polling and the loop detector
+
+If a step's prompt instructs the agent to **poll** an external system inside a single LLM session (waiting for a build, an HTTP job, a rollout), be aware that OpenCode's tool-call loop detector blocks any tool called 3 times consecutively with **identical input args**. The streak is **per-tool name** and is NOT reset by interleaving other tools (`internal/llm/agent/loop_detection.go`).
+
+So a naïve "poll every 60s" instruction like:
+
+```
+sleep 60 && echo done
+<poll_tool>(id=X, state="running")
+```
+
+is killed after the 3rd identical call of each tool. The agent then returns an empty response and the step fails opaquely as `job failed`.
+
+When writing a prompt that polls, tell the agent to vary the args between consecutive calls of every polling tool. Two reliable patterns:
+
+- **Embed a unique marker into a `bash` command** (a timestamp comment, an iteration count) so the input string changes on every call.
+- **Alternate a semantically-equivalent argument** on the polling tool (e.g. flip between two filter values that both match the resource of interest).
+
+Prefer a single multi-poll bash loop (`until <check>; do sleep 60; done`) when the polling logic can run entirely in shell — that is one tool call regardless of poll count. Use the in-prompt vary-args approach only when the agent must inspect each poll result with the LLM.
+
+## Runtime Safety (pre-merge audit)
+
+The Design Guidelines above are about *constructing* a flow; this is the *runtime-safety* lens to apply on **every** flow edit. Most production flow failures are runtime/state failures — invalid input reaching an external validator, a tool call missing the params that make its result correct, a misjudged partial result, assumed-but-absent upstream state — not prompt-wording ones. Core invariant: **the step proposes; the flow validates its own inputs before any side-effecting call, records the observation, and routes on it.**
+
+### Flow audit checklist (run on every edit)
+
+1. **Validated external inputs.** Every side-effecting call (create a child job, trigger a build, create/update a PR) has its required inputs present **and format-checked in the step prompt before the call**. Never pass a value straight through to an external validator unchecked.
+2. **Partial/empty result rule.** Every tool result that can legitimately be partial or empty has an explicit "this is normal" vs "this is a failure" rule; a non-failure partial result MUST NOT route to `failed`. For lookups, distinguish a genuinely-absent artifact (404 / no such version → blocker) from a transient lookup failure (connection/timeout/5xx → warn and degrade, never block a good result on a blip).
+3. **No assumed upstream state.** No step reads `${args.X}` that an earlier step only *conditionally* produced without a fallback/guard. Args accumulate — an input persists unless a step overwrites it, so also don't re-emit an input flag you don't intend to change.
+4. **Correctness params passed.** Any build/trigger with a "mode" (snapshot vs release, qa vs prod) passes the params that force the intended mode — omitting them must never silently pick the wrong mode.
+5. **Bounded loops.** Every self-loop and every wait/retry has an explicit bound (`maxIterations` and/or a poll cap) and a reasoned terminal exit on exhaustion — never an unbounded wait.
+6. **Observable skips.** When a step legitimately does nothing (a guard tripped, nothing to do), it returns a structured result with a `reason`, not a silent success or a crash.
+
+### Guarded-external-call rule
+
+Any step that creates a child job or triggers a build MUST, before the call:
+
+- assert every required argument is **present** and **well-formed** (format / enum / non-empty);
+- on failure, return a structured `{..._triggered: false, reason: "<why>"}` and route onward — do **not** invoke the tool with bad input and do **not** invent a placeholder to satisfy a required field.
+
+An external validator rejecting bad input aborts the step with an opaque error and can strand a whole run; validating in the step turns it into a graceful, reasoned skip that downstream steps and the summarizer can report.
