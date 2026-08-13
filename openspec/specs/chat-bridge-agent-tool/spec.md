@@ -39,7 +39,7 @@ The `router_send` tool's description SHALL be built at registration time from a 
 - Each configured channel (`telegram`, `slack`, `mattermost`).
 - For each channel, each enabled identity by ID.
 - For each identity, the platform-specific peer-id format (numeric `chat_id` for Telegram; `D<id>` / `U<id>` / `C<id>[|<ts>]` for Slack; `<channelId>[|<rootPostId>]` for Mattermost).
-- The list of currently-bound peers from `bridge_sessions` (snapshot at registration time) so the agent knows which conversations it can address.
+- The list of currently-bound peers from `bridge_sessions` (snapshot at registration time) so the agent knows which conversations it can address. Each entry MUST carry its provenance: the owning opencode session id (or an explicit orphan marker when the session row was garbage-collected — the FK is `ON DELETE SET NULL`) and a coarse last-active age derived from the row's `updated_at`. The list header MUST warn that entries may belong to a different run — in shared-DB deployments the snapshot spans every run's bindings, including stale leftovers (GENAI-186).
 
 The description format MUST be agent-friendly natural text, not a JSON dump — the agent reads the description as part of its system context.
 
@@ -52,6 +52,11 @@ The description format MUST be agent-friendly natural text, not a JSON dump — 
 
 - **WHEN** the tool is registered and `bridge_sessions` contains three rows for the current process's session-bindings
 - **THEN** the description includes those bound peers under "currently bound" so the agent knows where it can address messages without learning a new peer ID
+
+#### Scenario: Bound peer entries carry provenance annotations
+
+- **WHEN** the description renders one binding owned by session `1786387649-kickoff-work-clarify-and-prepare` last touched three days ago, and another whose owning session row was garbage-collected
+- **THEN** the first entry is annotated `— bound by session 1786387649-kickoff-work-clarify-and-prepare, last active 3d ago` and the second `— orphaned (owning session gone)`, so the agent can recognise a foreign or stale binding before reusing it for a message meant for a specific person
 
 ### Requirement: router_send tool input schema
 
