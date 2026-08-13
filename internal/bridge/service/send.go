@@ -185,15 +185,18 @@ func (s *Service) sendToOnePeer(ctx context.Context, b store.Binding, out bridge
 }
 
 // BoundPeersSnapshot returns the peers currently bound to any session
-// in this project. Used by the router_send tool's dynamic description
-// so the agent can address bound peers without learning new IDs. Best-
-// effort — store errors are swallowed and the snapshot returns an
-// empty slice.
+// in this project, annotated with the owning session id and the row's
+// last-touch time. Used by the router_send tool's dynamic description
+// so the agent can address bound peers without learning new IDs — and
+// judge whether a binding belongs to its own run or is a stale leftover
+// from another one (GENAI-186). Best-effort — store errors are
+// swallowed and the snapshot returns an empty slice.
 //
-// The result is a global snapshot across all sessions; the tool's
-// description doesn't differentiate per-session because the agent
-// invoking the tool already knows its own session.
-func (s *Service) BoundPeersSnapshot(ctx context.Context) []bridge.PeerRef {
+// The result is a global snapshot across all sessions: in shared-DB
+// deployments (many runner pods, one MySQL) it includes bindings owned
+// by other, possibly finished, runs. The annotations exist precisely so
+// the consumer can tell those apart.
+func (s *Service) BoundPeersSnapshot(ctx context.Context) []bridge.BoundPeer {
 	// Snapshot the (channel, identity) pairs under the cfg read lock,
 	// then release it before performing store I/O. Holding the cfg
 	// mutex across the store call would block concurrent identity
@@ -221,14 +224,18 @@ func (s *Service) BoundPeersSnapshot(ctx context.Context) []bridge.PeerRef {
 	}
 	s.cfgMu.RUnlock()
 
-	var out []bridge.PeerRef
+	var out []bridge.BoundPeer
 	for _, p := range pairs {
 		bindings, err := s.store.ListBindingsByIdentity(ctx, s.projectID, p.ch, p.id)
 		if err != nil {
 			continue
 		}
 		for _, b := range bindings {
-			out = append(out, b.AsPeerRef())
+			out = append(out, bridge.BoundPeer{
+				PeerRef:   b.AsPeerRef(),
+				SessionID: b.SessionID,
+				UpdatedAt: b.UpdatedAt,
+			})
 		}
 	}
 	return out

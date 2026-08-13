@@ -81,6 +81,22 @@ type PeerRef struct {
 	Mention  string `json:"mention,omitempty"`
 }
 
+// BoundPeer is a PeerRef annotated with the binding's provenance: which
+// session bound it and when it was last touched. The router_send tool
+// description surfaces both so an agent can judge whether a bound peer is
+// relevant to its own run before reusing it — in shared-DB deployments the
+// snapshot spans every run's bindings, including stale ones left behind by
+// killed runner pods (GENAI-186).
+type BoundPeer struct {
+	PeerRef
+	// SessionID is the opencode session that owns the binding; empty for
+	// an orphaned binding (its session row was garbage-collected).
+	SessionID string `json:"sessionId,omitempty"`
+	// UpdatedAt is the binding row's last-touch time in Unix seconds
+	// (bind, re-bind, or peer-id thread mutation).
+	UpdatedAt int64 `json:"updatedAt,omitempty"`
+}
+
 // Inbound is the normalized representation of a chat-platform message
 // received from any adapter. Adapters do per-platform parsing (mention
 // extraction, file download, from_bot filtering) then push Inbound values
