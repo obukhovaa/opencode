@@ -663,8 +663,18 @@ func (s *service) runStep(
 			//     responses reported as end_turn).
 			//  2. Agent produced text but didn't call struct_output — log a warning
 			//     but proceed. The text is stored as output and unconditional routing
-			//     rules still work. Conditional rules referencing output fields will
-			//     evaluate to false (missing key), same as pre-validation behavior.
+			//     rules still work.
+			//
+			//     CAVEAT (GENAI-170): "conditional rules evaluate to false (missing
+			//     key)" holds ONLY for a field no earlier step emitted. The args map
+			//     accumulates across steps, and the merge below sits inside the
+			//     `result.StructOutput != nil` branch — so a field an EARLIER step
+			//     emitted keeps its stale value here and its rule MATCHES, advancing
+			//     the flow on a value this step never produced. That is why the
+			//     forcing wrap-up now covers interactive steps too, and why flow
+			//     authors are told to gate a step's rules on at least one field only
+			//     that step emits (flow-creator skill, flow-spec reference, "Fields a
+			//     rule reads must be rendered in the emitting step's prompt").
 			if step.Output != nil && (result.StructOutput == nil || result.StructOutput.Content == "") {
 				textOutput := result.Message.Content().Text
 				if textOutput == "" {
@@ -700,14 +710,20 @@ doneRetry:
 		}
 
 		// Last-ditch forcing wrap-up (empty / errored shapes): before recording
-		// terminal failure, give a schema-bearing non-interactive step one
-		// bounded forced struct_output turn — but only while the parent ctx is
-		// still alive (a forced turn could not otherwise run) and the error is
-		// not a transient provider error (handled above). The bounded ctx keeps
-		// a step that already exhausted its step-scoped budget from re-hanging
-		// for another full Step.Timeout. On success we publish a fresh Response
-		// event so a completed step never carries an error type downstream.
-		if !step.Interactive && step.Output != nil && step.Output.Schema != nil &&
+		// terminal failure, give a schema-bearing step one bounded forced
+		// struct_output turn — but only while the parent ctx is still alive (a
+		// forced turn could not otherwise run) and the error is not a transient
+		// provider error (handled above). The bounded ctx keeps a step that
+		// already exhausted its step-scoped budget from re-hanging for another
+		// full Step.Timeout. On success we publish a fresh Response event so a
+		// completed step never carries an error type downstream.
+		//
+		// Interactive steps are INCLUDED (GENAI-170) — see the prose-shape site
+		// below for why the original !Interactive exemption was a scope decision
+		// rather than a safety one. Here the case is stronger still: the reviewer's
+		// answers exist only in the turn that just failed, so skipping the rescue
+		// means discarding a conversation that already happened.
+		if step.Output != nil && step.Output.Schema != nil &&
 			ctx.Err() == nil && !isTransientProviderError(lastErr) {
 			boundedCtx, cancelBounded := context.WithTimeout(ctx, forceStructOutputMaxWait)
 			forced := s.forceStructOutputTurn(boundedCtx, agentSvc, sess.ID, step)
@@ -773,10 +789,10 @@ doneRetry:
 	}
 
 	// Forcing wrap-up turn (openspec force-struct-output-final-turn): a
-	// non-interactive schema-bearing step whose agent ended with prose and no
-	// struct_output gets ONE bounded forced attempt to emit struct_output
-	// before we accept the text fallback below. Conditional routing rules key
-	// off struct_output fields, so leaving prose here would strand the flow.
+	// schema-bearing step whose agent ended with prose and no struct_output gets
+	// ONE bounded forced attempt to emit struct_output before we accept the text
+	// fallback below. Conditional routing rules key off struct_output fields, so
+	// leaving prose here would strand the flow.
 	// Best-effort — on any failure we keep the prose (graceful degradation).
 	//
 	// The Schema != nil guard mirrors the struct_output tool-injection
@@ -785,7 +801,29 @@ doneRetry:
 	// request and forcing tool_choice on it would 400. Such a config
 	// (`output:` with no `schema:`) then behaves like a plain no-schema step —
 	// no force attempt, prose accepted as-is.
-	if !step.Interactive && step.Output != nil && step.Output.Schema != nil &&
+	//
+	// INTERACTIVE STEPS ARE INCLUDED (GENAI-170). The original change scoped them
+	// out — its design doc lists "Changing interactive-step behavior (interactive
+	// steps have their own multi-turn struct_output flow)" under Non-Goals — but
+	// that is an assumption about the agent, not a guarantee from the runtime, and
+	// when it does not hold the consequence is worse here than anywhere else: the
+	// reviewer's answers live only in the discarded turn, and because the args
+	// merge below sits inside the `result.StructOutput != nil` branch the flow then
+	// routes on values an EARLIER step emitted. Two reachable productions in
+	// developer-react-on-jira-openspec: a research conversation dropped with
+	// `research_summary` never set, and a spec MR pushed on a pre-edit
+	// `validated: true` after the reviewer's edits broke strict validation.
+	//
+	// Running the forcing turn on a bound session is safe: the bridge unbind and
+	// RemoveInteractiveSession are deferred to runStep's return, so the session is
+	// still bound and still marked interactive here, and RunOptions.NonInteractive
+	// governs only background-task draining (the main run already passes it for
+	// every step, interactive included). Forced tool_choice makes this a single
+	// struct_output call on the Anthropic client family, so it cannot reach for
+	// `question` and block on a human. On providers that ignore the force signal it
+	// degrades to the prose exactly as before, at the cost of one extra assistant
+	// message reaching the reviewer.
+	if step.Output != nil && step.Output.Schema != nil &&
 		(result.StructOutput == nil || result.StructOutput.Content == "") &&
 		result.Message.Content().Text != "" {
 		if forced := s.forceStructOutputTurn(ctx, agentSvc, sess.ID, step); forced != nil {
