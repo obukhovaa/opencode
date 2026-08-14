@@ -1975,18 +1975,9 @@ func (a *agent) injectDeferredDelta(ctx context.Context, sessionID string, toolS
 	}
 
 	sort.Strings(pending)
-	var sb strings.Builder
-	sb.WriteString("<system-reminder>\n")
-	sb.WriteString(deferredDeltaMarker)
-	sb.WriteString(" Their schemas are NOT loaded — call toolsearch to load a tool before using it:\n")
-	for _, name := range pending {
-		sb.WriteString("- " + name + "\n")
-	}
-	sb.WriteString("</system-reminder>")
-
 	deltaMsg, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
 		Role:      message.User,
-		Parts:     []message.ContentPart{message.TextContent{Text: sb.String()}},
+		Parts:     []message.ContentPart{message.TextContent{Text: buildDeferredDelta(pending)}},
 		Synthetic: true,
 	})
 	if err != nil {
@@ -1999,7 +1990,35 @@ func (a *agent) injectDeferredDelta(ctx context.Context, sessionID string, toolS
 	return deltaMsg, true
 }
 
-const deferredDeltaMarker = "The following deferred tools are now available via toolsearch."
+// buildDeferredDelta renders the announcement for a sorted set of newly
+// available deferred tool names. Split out from injectDeferredDelta so the
+// wording — the part models actually act on — is testable without a message
+// store: naming a concrete tool-search tool anywhere in here is the bug this
+// message caused (see deferredDeltaMarker).
+func buildDeferredDelta(pending []string) string {
+	var sb strings.Builder
+	sb.WriteString("<system-reminder>\n")
+	sb.WriteString(deferredDeltaMarker)
+	sb.WriteString(". Their schemas are NOT loaded — search for them with the available tool-search tool before calling them:\n")
+	for _, name := range pending {
+		sb.WriteString("- " + name + "\n")
+	}
+	sb.WriteString("</system-reminder>")
+	return sb.String()
+}
+
+// deferredDeltaMarker opens every delta message and is the substring the
+// history scan above dedups on. Deliberately name-agnostic about *which*
+// tool-search tool to use: which one exists is per-request and per-model
+// (native server-side `tool_search_tool_regex` on SupportsToolSearch models,
+// the client-side `toolsearch` elsewhere), while this message is persisted
+// once and survives mid-session model switches. Naming `toolsearch` here made
+// native-path models emit `toolsearch` calls carrying the server tool's
+// `pattern` argument — a wasted turn against a tool whose schema they never
+// received. The trailing punctuation is intentionally left off so the string
+// still matches deltas persisted by older builds ("... available via
+// toolsearch.").
+const deferredDeltaMarker = "The following deferred tools are now available"
 
 // activateDiscoveredTools marks deferred wrappers activated for the session
 // when server-side tool search references them (native path, discovery

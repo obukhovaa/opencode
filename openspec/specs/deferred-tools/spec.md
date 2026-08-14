@@ -78,6 +78,24 @@ tags. A query matching nothing SHALL return the list of still-deferred tool
 names; a query matching an already-activated tool SHALL state that the tool
 is already loaded and directly callable.
 
+Keyword search SHALL load at most a bounded number of tools per call,
+best-ranked first, and SHALL state how many further matches were withheld.
+Exact-name and `select:` hits are exempt: the model named those tools
+explicitly, whereas keyword terms are substring-matched and can score most of
+a large MCP fleet at once — loading all of them would reproduce the very
+context cost deferral exists to avoid.
+
+`toolsearch` SHALL also accept an undeclared `pattern` argument as a fallback
+for `query` (`query` wins when both are supplied). This is the argument name
+of the native server-side tool-search tool, which native-path models hold a
+schema for and sometimes aim at this tool's name. Because that argument is a
+regular expression while matching here is literal, `pattern` SHALL be reduced
+to keyword terms before matching — regex syntax carrying no literal text is
+replaced by term separators, alternation becomes separate terms, and terms
+left without letters or digits are discarded. A `pattern` that reduces to no
+usable term SHALL take the no-match path. `query` SHALL NOT be normalized:
+its `+term` syntax means "require this term", not a quantifier.
+
 #### Scenario: Keyword search activates a deferred tool
 
 - **WHEN** the model calls `toolsearch` with `query: "send slack message"` and a deferred `mcp_slack_send_message` tool exists
@@ -87,6 +105,21 @@ is already loaded and directly callable.
 
 - **WHEN** `toolsearch` matches no deferred tool
 - **THEN** the result states no match and lists the available deferred tool names
+
+#### Scenario: Native-path model calls toolsearch with a regex pattern
+
+- **WHEN** the model calls `toolsearch` with `pattern: "^mcp__gitlab__get_file.*"` and no `query`
+- **THEN** the pattern is reduced to keyword terms and the matching deferred tools are activated, rather than the call failing for a missing `query`
+
+#### Scenario: A pattern carrying no literal text matches nothing
+
+- **WHEN** the model calls `toolsearch` with `pattern: "_"` or `pattern: "[a-z]+_[a-z]+"`
+- **THEN** no tool is activated and the result lists the still-deferred names
+
+#### Scenario: Broad keyword search is bounded
+
+- **WHEN** a keyword search scores more deferred tools than the per-call limit
+- **THEN** only the best-ranked ones are activated and the result reports how many further matches were withheld
 
 #### Scenario: Already-activated tool is disambiguated
 
