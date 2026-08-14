@@ -60,6 +60,13 @@ Deferred **MCP** tools resolve asynchronously, so they are announced through a
 follow-up `<system-reminder>` message once they become available (per session,
 only when the set changes).
 
+Neither reminder names a specific tool-search tool — they say "the available
+tool-search tool". Which one the model actually holds a schema for is decided
+per request by the provider (native `tool_search_tool_regex_20251119` vs the
+client-side `toolsearch`), while the MCP delta is persisted once and outlives a
+mid-session model switch. Naming `toolsearch` there made native-path models
+emit a `toolsearch` call carrying the *server* tool's `pattern` argument.
+
 Two activation paths exist, chosen automatically per the resolved model's
 `SupportsToolSearch` capability.
 
@@ -108,6 +115,32 @@ The result contains each matched tool's full contract (description, parameters,
 required fields). A query that matches nothing returns the list of still-deferred
 tool names; a query for an already-loaded tool says so and tells the model to
 call it directly.
+
+The declared argument is `query`. An undeclared `pattern` argument is also
+accepted (`query` wins when both are set): models that know the server-side
+`tool_search_tool_regex` schema sometimes aim a call at this tool's name while
+filling in that tool's argument, and honouring it beats spending a turn on
+`query is required`. The client tool stays in the toolset on the native path —
+it is filtered out of the request, not out of dispatch — so such a call lands
+here rather than failing as `Tool not found`.
+
+`pattern` is a **regex** while matching here is literal, so it is normalized
+before searching: anchors, wildcards, quantifiers, character classes, inline
+flags and escape classes are replaced by term separators, and `|` becomes
+separate keyword terms (the matcher already ORs and ranks them). So `^jira`,
+`jira_.*`, `(?i)jira` and `jira[a-z_]+comment` all reach `jira_add_comment`,
+and `a|b` reaches both. Terms left with no letters or digits are dropped:
+matching is substring-based, so the `_` that `[a-z]+_[a-z]+` reduces to would
+score against every tool name and activate the whole deferred set. A pattern
+that reduces to no usable term (`.*`, `_`) takes the no-match branch, which
+lists the still-deferred names — it is never retried raw. `query` is never
+normalized — its `+term` syntax means "require this term", not a quantifier.
+
+Keyword search loads at most 12 tools per call, best-ranked first, and says how
+many further matches it withheld. Terms are ORed over substrings, so one broad
+query (`mcp gitlab`, or a regex whose namespace prefix survives normalization)
+can otherwise score most of a large MCP fleet and dump every schema it was
+deferring. Exact-name and `select:` hits are exempt — the model named those.
 
 ## Scope & lifecycle
 

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync/atomic"
+	"unicode"
 )
 
 const (
@@ -20,6 +22,9 @@ const (
 
 	// minKeywordScore filters noise matches on keyword queries.
 	minKeywordScore = 2
+
+	// maxKeywordMatches bounds how many tools one keyword search can load.
+	maxKeywordMatches = 12
 )
 
 // ToolSearchTool discovers and activates deferred tools on the client-side
@@ -32,6 +37,14 @@ type ToolSearchTool struct {
 
 type toolSearchParams struct {
 	Query string `json:"query"`
+	// Pattern is not part of this tool's declared schema. It is the argument
+	// name of Anthropic's server-side tool_search_tool_regex, which models on
+	// the native path have a schema for — they occasionally aim a call at this
+	// tool's name while filling in that tool's argument. Accepting it turns a
+	// wasted turn into a working search; `query` still wins when both are set.
+	// The value is a REGEX, so it goes through normalizeRegexPattern before
+	// reaching the literal matcher.
+	Pattern string `json:"pattern"`
 }
 
 func NewToolSearchTool() *ToolSearchTool { return &ToolSearchTool{} }
@@ -66,8 +79,18 @@ func (t *ToolSearchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, 
 		return NewTextErrorResponse("invalid parameters"), nil
 	}
 	query := strings.TrimSpace(params.Query)
-	if query == "" {
+	pattern := strings.TrimSpace(params.Pattern)
+	if query == "" && pattern == "" {
 		return NewTextErrorResponse("query is required"), nil
+	}
+	if query == "" {
+		// Normalizing to "" means the pattern carried no literal text (".*",
+		// "_", "[a-z]+_[a-z]+"). Carry the empty query forward rather than
+		// falling back to the raw pattern: an empty query matches nothing and
+		// lands on the no-match branch, which lists the still-deferred names —
+		// whereas handing "_" to a substring matcher would score against every
+		// tool name and activate the entire deferred set.
+		query = normalizeRegexPattern(pattern)
 	}
 
 	ptr := t.toolset.Load()
@@ -97,7 +120,7 @@ func (t *ToolSearchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, 
 		}
 	}
 
-	matches := matchDeferred(query, deferred)
+	matches, dropped := matchDeferred(query, deferred)
 	if len(matches) == 0 {
 		var sb strings.Builder
 		sb.WriteString("No deferred tools matched the query.")
@@ -148,13 +171,82 @@ func (t *ToolSearchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, 
 			}
 		}
 	}
+	if dropped > 0 {
+		fmt.Fprintf(&sb, "\n%d further tools also matched and were NOT loaded (only the best-ranked %d are). Search again with a narrower query, or name them with \"select:\", if the one you need is missing.\n",
+			dropped, maxKeywordMatches)
+	}
 	sb.WriteString("</system-reminder>")
 	return NewTextResponse(sb.String()), nil
 }
 
+// Every regex construct below is replaced by a SPACE, never by "": the
+// literal fragments around it are separate keyword terms, and gluing them
+// together invents a term that matches nothing ("jira[a-z_]+comment" must
+// become "jira comment", not "jiracomment").
+var (
+	// Inline flag / non-capturing group openers: `(?i)`, `(?im)`, `(?:`, `(?i:`.
+	// Matched as a unit — dropping the punctuation alone would leave the flag
+	// letters behind as a bogus term ("(?i)jira" -> "ijira").
+	regexInlineGroup = regexp.MustCompile(`\(\?[a-zA-Z]*[:)]`)
+	// Character classes and repeat specs, likewise whole: "[a-z0-9_]" must not
+	// decay into the term "a-z0-9_".
+	regexCharClass  = regexp.MustCompile(`\[[^\]]*\]`)
+	regexRepeatSpec = regexp.MustCompile(`\{[^}]*\}`)
+	// Escape classes (\w, \d, \s, \b...) carry no literal text.
+	regexEscapeClass = regexp.MustCompile(`\\[a-zA-Z0-9]`)
+	// What survives the group-level passes above: anchors, wildcards,
+	// quantifiers, grouping punctuation, and escapes of literal characters.
+	regexLeftovers = strings.NewReplacer(
+		"^", " ", "$", " ", "(", " ", ")", " ", "*", " ", "+", " ", "?", " ", ".", " ", "\\", " ",
+	)
+)
+
+// normalizeRegexPattern converts a tool_search_tool_regex `pattern` into a
+// query this tool can match. That argument is a REGEX, while matching here is
+// literal (exact name, then substring keywords) — so "jira_.*", "^jira" and
+// "(?i)jira" would all match nothing and cost the very turn that accepting
+// `pattern` at all is meant to save. Drop the regex syntax that carries no
+// literal text, and split alternation into separate terms: the keyword matcher
+// already ORs and ranks its terms, which is what `a|b` asks for.
+//
+// Only `pattern` is normalized, never `query` — this tool's own query syntax
+// gives `+` a meaning (require this term) that the regex reading would eat.
+func normalizeRegexPattern(pattern string) string {
+	p := regexInlineGroup.ReplaceAllString(pattern, " ")
+	p = regexCharClass.ReplaceAllString(p, " ")
+	p = regexRepeatSpec.ReplaceAllString(p, " ")
+	p = regexEscapeClass.ReplaceAllString(p, " ")
+
+	var terms []string
+	for _, alt := range strings.Split(p, "|") {
+		// Fields also collapses the runs of spaces the replacements leave, so
+		// a pattern that reduces to one token still hits the exact-name path.
+		for _, term := range strings.Fields(regexLeftovers.Replace(alt)) {
+			// A token the replacements left with no letters or digits ("_",
+			// "__", "-") is regex debris, not a search term. Keeping it would
+			// be worse than dropping the pattern: the matcher is substring-
+			// based, so "_" scores against nearly every tool name and would
+			// activate the ENTIRE deferred set — the context blowup deferral
+			// exists to prevent. "[a-z]+_[a-z]+" reduces to exactly that, and
+			// "^(gitlab|teamcity)_" would drag every other tool in alongside
+			// the two it names.
+			if strings.ContainsFunc(term, isAlnum) {
+				terms = append(terms, term)
+			}
+		}
+	}
+	return strings.Join(terms, " ")
+}
+
+func isAlnum(r rune) bool {
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
+}
+
 // matchDeferred resolves a query against still-deferred tools: exact name,
 // select: multi-select, then scored keyword search (+term requires a term).
-func matchDeferred(query string, deferred map[string]*DeferredWrapper) []*DeferredWrapper {
+// The second return is how many keyword matches were dropped by the
+// maxKeywordMatches cap, for the caller to report.
+func matchDeferred(query string, deferred map[string]*DeferredWrapper) ([]*DeferredWrapper, int) {
 	q := strings.ToLower(strings.TrimSpace(query))
 
 	if rest, ok := strings.CutPrefix(q, "select:"); ok {
@@ -164,11 +256,13 @@ func matchDeferred(query string, deferred map[string]*DeferredWrapper) []*Deferr
 				out = append(out, w)
 			}
 		}
-		return out
+		// Never capped: the model named these tools one by one, so every hit
+		// is something it explicitly asked to load.
+		return out, 0
 	}
 
 	if w := lookupName(q, deferred); w != nil {
-		return []*DeferredWrapper{w}
+		return []*DeferredWrapper{w}, 0
 	}
 
 	var requiredTerms, terms []string
@@ -181,7 +275,7 @@ func matchDeferred(query string, deferred map[string]*DeferredWrapper) []*Deferr
 		}
 	}
 	if len(terms) == 0 {
-		return nil
+		return nil, 0
 	}
 
 	type scored struct {
@@ -225,11 +319,22 @@ func matchDeferred(query string, deferred map[string]*DeferredWrapper) []*Deferr
 		}
 		return results[i].name < results[j].name
 	})
+	// Keyword scoring is substring-based and ORs its terms, so a broad query
+	// ("mcp gitlab", or a regex whose namespace prefix survives normalization)
+	// can score most of a large MCP fleet above minKeywordScore. Loading them
+	// all would dump every schema into the context — the exact blowup deferral
+	// exists to prevent — so keep the best-ranked slice and tell the model the
+	// rest exist. Exact-name and select: hits bypass this entirely.
+	dropped := 0
+	if len(results) > maxKeywordMatches {
+		dropped = len(results) - maxKeywordMatches
+		results = results[:maxKeywordMatches]
+	}
 	out := make([]*DeferredWrapper, len(results))
 	for i, r := range results {
 		out[i] = r.w
 	}
-	return out
+	return out, dropped
 }
 
 func lookupName(name string, deferred map[string]*DeferredWrapper) *DeferredWrapper {
