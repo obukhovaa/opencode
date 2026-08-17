@@ -465,6 +465,11 @@ func TestTemplateKeyRule_TwoPart(t *testing.T) {
 					t.Errorf("Compact = %#v", s.Compact)
 				}
 			}},
+			"require_route": {"  require_route: true\n", func(t *testing.T, s Step) {
+				if !s.RequireRoute {
+					t.Errorf("RequireRoute = %v", s.RequireRoute)
+				}
+			}},
 		}
 
 		// Coverage guard: the rule admits every step field, so a field

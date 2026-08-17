@@ -83,6 +83,25 @@ type Step struct {
 	// When the (N+1)th self-route would exceed this value, the step is
 	// failed instead of re-scheduled, and the fallback (if any) runs.
 	MaxIterations int `yaml:"maxIterations,omitempty"`
+	// RequireRoute declares that this step MUST select a successor. When it is
+	// true and every rule evaluates false, the runtime treats that as a step
+	// error so the step's `fallback.to` receives control — reaching a step that
+	// can report what happened — instead of ending the run silently.
+	//
+	// Absent/false preserves the historical behaviour: no successor is
+	// scheduled and the run ends through the normal terminal-status path,
+	// reported as a completion. That default is deliberate, not lazy: a
+	// zero-match is a SANCTIONED way for a bounded loop to end (a self-route
+	// guarded by `${step.iteration} != N` selects nothing at iteration N — see
+	// the flow-runtime-resume spec, "Self-loop terminated by predicate restarts
+	// on re-trigger"), so making zero-match an error for every step would turn
+	// that documented pattern into a failure.
+	//
+	// Set it on a step whose rules are meant to be exhaustive — typically one
+	// gating on a field it is `required` to emit with no `default`, where an
+	// absent value makes every predicate false and the run would otherwise
+	// report success having done nothing.
+	RequireRoute bool `yaml:"require_route,omitempty"`
 	// Timeout bounds the wall-clock time the flow runner gives this
 	// step's agent.Run invocation. It cascades into agent.RunWith's ctx
 	// so the non-interactive end-of-turn wait for pending background

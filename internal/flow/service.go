@@ -827,6 +827,33 @@ doneRetry:
 		}
 	}
 
+	// Dead end: this step declares rules and none matched, so nothing is scheduled
+	// below and the run ends here. That was silent until now — the step persists
+	// `completed`, the channels drain, and the API runner's terminal selector
+	// defaults to flow.completed, indistinguishable from a flow that finished its
+	// work. A predicate that ERRORS on this same path already warns inside
+	// resolveNextSteps, so the outcome that quietly ends the run was the quieter of
+	// the two.
+	//
+	// Warn unconditionally. A step declaring no rules at all is excluded: selecting
+	// no successor is a terminal step's whole purpose.
+	if len(step.Rules) > 0 && len(nextResolved) == 0 {
+		logging.Warn("Step selected no successor — the run ends here",
+			"step", step.ID, "rules", len(step.Rules), "require_route", step.RequireRoute)
+
+		// Only an opted-in step turns that into an error. handleStepError routes to
+		// step.Fallback.To when declared, so the author's existing fallback chain
+		// carries the explanation to whoever triggered the job; with no fallback it
+		// is a terminal failure, still louder than a false success. Off by default
+		// because a zero-match is how a bounded loop legitimately ends — see
+		// Step.RequireRoute for why this is opt-in rather than universal.
+		if step.RequireRoute {
+			lastErr = fmt.Errorf("step %q requires a route but no rule matched (%d rules evaluated)", step.ID, len(step.Rules))
+			s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, lastErr, wg, agentEvents, flowStates, nextSteps, f)
+			return
+		}
+	}
+
 	if state, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
 		Status:         string(FlowStatusCompleted),
 		Args:           sql.NullString{String: string(argsJSON), Valid: true},
