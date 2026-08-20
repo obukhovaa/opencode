@@ -771,8 +771,18 @@ doneRetry:
 		// flow — the endpoint is expected to recover. Past the age cap it
 		// declines to park and we fall through to terminal failure. See
 		// postponeStepForTransientError.
+		//
+		// existingFS is this attempt's inbound row, read above BEFORE the
+		// entry-time write blanked its output. On a resumed postpone that write
+		// runs with status=running (the resume stepWork carries postpone=false),
+		// so it is the only place the previous iteration's struct output still
+		// exists — hand it to the park or the await is lost (GENAI-230).
+		var priorRow *db.FlowState
+		if getErr == nil {
+			priorRow = &existingFS
+		}
 		if stepPostponesOnProviderError(step) && isTransientProviderError(lastErr) &&
-			s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, lastErr, flowStates) {
+			s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, lastErr, priorRow, flowStates) {
 			return
 		}
 
@@ -1063,6 +1073,16 @@ const forceStructOutputMaxWait = 2 * time.Minute
 // emitted and no fallback is routed — this is a pause, not a failure. Returns
 // false WITHOUT parking when the step has been retrying past
 // maxTransientPostponeAge, so the caller fails it terminally instead.
+//
+// priorRow is the flow_states row as it stood when this attempt began, captured
+// by the caller BEFORE the entry-time `running` write cleared output (see the
+// preserve-if-postponed branch in runStep). It is the only surviving record of
+// the struct output the step carried into the attempt, and a park must keep it:
+// the postponed row's output is what tells the orchestrator the step is still
+// awaiting a TeamCity build. Losing it made the orchestrator read the park as
+// "nothing left to await", abandon the build match_key and complete the job
+// silently (GENAI-230). nil means the caller has no snapshot, in which case the
+// row read here is used — correct for the callers that run before that write.
 func (s *service) postponeStepForTransientError(
 	ctx context.Context,
 	step Step,
@@ -1072,6 +1092,7 @@ func (s *service) postponeStepForTransientError(
 	args map[string]any,
 	iteration int,
 	cause error,
+	priorRow *db.FlowState,
 	flowStates chan<- *FlowState,
 ) bool {
 	if iteration < 1 {
@@ -1099,8 +1120,20 @@ func (s *service) postponeStepForTransientError(
 		}
 	}
 
+	// Carry the attempt's inbound output onto the park. Prefer the caller's
+	// pre-write snapshot; fall back to the row read above, which is still intact
+	// for the callers that fire before the entry-time write.
+	carryOutput, carryIsStruct := sql.NullString{}, false
+	switch {
+	case priorRow != nil:
+		carryOutput, carryIsStruct = priorRow.Output, priorRow.IsStructOutput
+	case getErr == nil:
+		carryOutput, carryIsStruct = existingFS.Output, existingFS.IsStructOutput
+	}
+
 	logging.Warn("Flow step hit a transient provider error; postponing for timed auto-resume",
-		"step", step.ID, "resume_after", *step.ResumeAfter, "error", cause)
+		"step", step.ID, "resume_after", *step.ResumeAfter,
+		"carried_output_bytes", len(carryOutput.String), "error", cause)
 
 	argsJSON, _ := json.Marshal(args)
 	var updatedAt int64
@@ -1112,8 +1145,8 @@ func (s *service) postponeStepForTransientError(
 		if state, updateErr := s.querier.UpdateFlowState(writeCtx, db.UpdateFlowStateParams{
 			Status:         string(FlowStatusPostponed),
 			Args:           sql.NullString{String: string(argsJSON), Valid: true},
-			Output:         sql.NullString{},
-			IsStructOutput: false,
+			Output:         carryOutput,
+			IsStructOutput: carryIsStruct,
 			Iteration:      int64(iteration),
 			SessionID:      sessionID,
 		}); updateErr != nil {
@@ -1130,7 +1163,8 @@ func (s *service) postponeStepForTransientError(
 			StepID:         step.ID,
 			Status:         string(FlowStatusPostponed),
 			Args:           sql.NullString{String: string(argsJSON), Valid: true},
-			IsStructOutput: false,
+			Output:         carryOutput,
+			IsStructOutput: carryIsStruct,
 			Iteration:      int64(iteration),
 		}); createErr != nil {
 			logging.Warn("Failed to persist step postpone state", "session_id", sessionID, "error", createErr)
@@ -1140,15 +1174,23 @@ func (s *service) postponeStepForTransientError(
 		}
 	}
 
+	// The emitted state — not the row — is what every consumer reads (cmd/flow.go
+	// and the API's flow handler build their payload from this channel value and
+	// never re-query), so the carry has to land here too. IsStructOutput must
+	// travel with Output: with the flag false the orchestrator stores the JSON as
+	// a plain string, its map assertion fails, and the park looks output-less all
+	// over again. Mirrors the rule-driven postpone in runStep.
 	postponedState := &FlowState{
-		SessionID:     sessionID,
-		RootSessionID: rootSessionID,
-		FlowID:        flowID,
-		StepID:        step.ID,
-		Status:        FlowStatusPostponed,
-		Args:          args,
-		Iteration:     iteration,
-		UpdatedAt:     updatedAt,
+		SessionID:      sessionID,
+		RootSessionID:  rootSessionID,
+		FlowID:         flowID,
+		StepID:         step.ID,
+		Status:         FlowStatusPostponed,
+		Args:           args,
+		Output:         carryOutput.String,
+		IsStructOutput: carryIsStruct,
+		Iteration:      iteration,
+		UpdatedAt:      updatedAt,
 	}
 	flowStates <- postponedState
 	s.Publish(pubsub.UpdatedEvent, *postponedState)
@@ -1173,8 +1215,13 @@ func (s *service) handleStepError(
 	// A transient provider error (rate limit / stream reset) on an opted-in
 	// step parks it for timed auto-resume rather than failing the flow — unless
 	// it has been retrying past the age cap, in which case fail terminally.
+	//
+	// nil priorRow: every path that reaches here with a transient provider error
+	// runs before the entry-time `running` write, so the row the park reads for
+	// itself still carries the output. Passing nil keeps this already-wide
+	// signature from growing another parameter.
 	if stepPostponesOnProviderError(step) && isTransientProviderError(err) &&
-		s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, flowID, args, iteration, err, flowStates) {
+		s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, flowID, args, iteration, err, nil, flowStates) {
 		return
 	}
 
