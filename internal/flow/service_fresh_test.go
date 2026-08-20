@@ -93,6 +93,7 @@ func (q *stubQuerier) CreateFlowState(_ context.Context, arg db.CreateFlowStateP
 		StepID:         arg.StepID,
 		Status:         arg.Status,
 		Args:           arg.Args,
+		Output:         arg.Output,
 		IsStructOutput: arg.IsStructOutput,
 		Iteration:      arg.Iteration,
 		CreatedAt:      now,
