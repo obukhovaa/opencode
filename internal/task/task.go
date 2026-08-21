@@ -110,6 +110,15 @@ type Task struct {
 	OriginatingToolName   string
 	// Description is a short human-readable label used by tasklist output.
 	Description string
+	// FlowOwned marks a task spawned under a flow step's step-scoped
+	// context (tools.StepScopedContextKey present at spawn time).
+	// EnqueueTaskCompletion suppresses idle auto-resume for such tasks: a
+	// flow step's non-interactive RunWith drains its own background tasks
+	// (the busy check covers the in-flight case), and once the step has
+	// ended a resume would start a zombie turn on a session whose step
+	// already routed — under the active/primary agent rather than the
+	// step's own agent (GENAI-239).
+	FlowOwned bool
 	// Notified is the per-task dedupe flag. EnqueueTaskCompletion CAS-flips
 	// this from false → true before writing a TERMINAL synthetic pair; a
 	// losing CAS means another path already notified the parent session and

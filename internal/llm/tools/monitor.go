@@ -207,6 +207,7 @@ func (m *monitorTool) Run(ctx context.Context, call ToolCall) (ToolResponse, err
 		OriginatingToolCallID: call.ID,
 		OriginatingToolName:   MonitorToolName,
 		Description:           params.Description,
+		FlowOwned:             StepScopedContext(ctx) != nil,
 		Proc:                  cmd.Process,
 	}
 	if err := reg.Register(tk); err != nil {

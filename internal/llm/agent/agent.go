@@ -416,6 +416,16 @@ func (a *agent) Cancel(sessionID string) {
 			logging.InfoPersist(fmt.Sprintf("Request cancellation initiated for session: %s", sessionID))
 			cancel()
 		}
+	} else if val, exists := globalSessionSlots.Load(sessionID); exists {
+		// The session's Run is held by ANOTHER agent instance (flow-step
+		// agents run sessions the primary instance never sees). Cancel it
+		// through the global slot's holder; the owning goroutine's deferred
+		// cleanup releases both ledger entries. The cron sentinel is not a
+		// CancelFunc, so it is naturally skipped.
+		if cancel, ok := val.(context.CancelFunc); ok {
+			logging.InfoPersist(fmt.Sprintf("Cross-instance cancellation initiated for session: %s", sessionID))
+			cancel()
+		}
 	}
 
 	// Also check for summarize requests
@@ -445,33 +455,37 @@ func (a *agent) IsBusy() bool {
 	return busy
 }
 
+// IsSessionBusy reports whether the session's run slot is held anywhere in
+// the process. Despite being a method, the answer is instance-independent:
+// mutual exclusion lives in the global ledger (see session_locks.go), so a
+// session run by a per-step flow agent reads as busy from every instance.
 func (a *agent) IsSessionBusy(sessionID string) bool {
-	_, busy := a.activeRequests.Load(sessionID)
-	return busy
+	return SessionBusy(sessionID)
 }
 
-// cronLock is a sentinel stored in activeRequests when the cron scheduler
-// holds a session-busy slot. It is distinguishable from a real Run's
-// context.CancelFunc by type, so UnlockSession never deletes a live cancel.
+// cronLock is a sentinel stored in the global session-slot ledger when the
+// cron scheduler holds a session-busy slot. It is distinguishable from a
+// real Run's context.CancelFunc by type, so UnlockSession never deletes a
+// live cancel and Cancel never invokes it.
 type cronLock struct{}
 
-// TryLockSession attempts to acquire the session-busy slot. Returns false if
-// the slot is already held (by an in-flight Run or another lock holder).
-// While held, IsSessionBusy/IsBusy report true and a concurrent Run() returns
-// ErrSessionBusy — preventing the agent from starting a turn that would
-// interleave with the cron scheduler's synthetic tool_call/tool_result pair.
+// TryLockSession attempts to acquire the session's run slot. Returns false
+// if the slot is already held (by an in-flight Run on ANY agent instance,
+// or another lock holder). While held, IsSessionBusy reports true and a
+// concurrent Run() returns ErrSessionBusy — preventing the agent from
+// starting a turn that would interleave with the cron scheduler's synthetic
+// tool_call/tool_result pair.
 func (a *agent) TryLockSession(sessionID string) bool {
-	_, loaded := a.activeRequests.LoadOrStore(sessionID, cronLock{})
-	return !loaded
+	return acquireSessionSlot(sessionID, cronLock{})
 }
 
-// UnlockSession releases a slot acquired via TryLockSession. It is a no-op if
-// the slot is not held by the cron sentinel — never deletes a live Run's
+// UnlockSession releases a slot acquired via TryLockSession. It is a no-op
+// if the slot is not held by the cron sentinel — never deletes a live Run's
 // cancel func.
 func (a *agent) UnlockSession(sessionID string) {
-	if val, ok := a.activeRequests.Load(sessionID); ok {
+	if val, ok := globalSessionSlots.Load(sessionID); ok {
 		if _, isLock := val.(cronLock); isLock {
-			a.activeRequests.Delete(sessionID)
+			globalSessionSlots.Delete(sessionID)
 		}
 	}
 }
@@ -624,9 +638,6 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 	// session's busy lock — that's the regression scenario the deferred
 	// cleanup was added to prevent in the first place.
 	events := make(chan AgentEvent, 1)
-	if a.IsSessionBusy(sessionID) {
-		return nil, ErrSessionBusy
-	}
 
 	genCtx, cancel := context.WithCancel(ctx)
 	// Translate the flow↔agent ForceStructOutput contract into the provider
@@ -638,6 +649,17 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 		genCtx = provider.WithForcedTool(genCtx, tools.StructOutputToolName)
 	}
 
+	// Claim the process-wide session slot atomically (see session_locks.go).
+	// This replaces the old check-then-store on the per-instance map, which
+	// was (a) racy within one instance and (b) blind to Runs held by OTHER
+	// agent instances — in flow mode a step's session runs on a per-step
+	// instance while auto-resume/cron/bridge consult the primary one, and
+	// that false-negative let a second Run interleave the session's message
+	// log (GENAI-239).
+	if !acquireSessionSlot(sessionID, cancel) {
+		cancel()
+		return nil, ErrSessionBusy
+	}
 	a.activeRequests.Store(sessionID, cancel)
 	go func() {
 		logging.Info("Agent started", "sessionID", sessionID, "agent", a.AgentID(), "nonInteractive", opts.NonInteractive)
@@ -647,7 +669,9 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 		// on panic. With the events channel now buffered, the recover
 		// handler's send + close never block, so the subsequent
 		// cancel + Delete defers always get to run and the session's
-		// busy lock is released.
+		// busy lock is released. The global slot is registered FIRST so
+		// it releases LAST — the instance-map entry never outlives it.
+		defer releaseSessionSlot(sessionID)
 		defer a.activeRequests.Delete(sessionID)
 		defer cancel()
 		defer logging.RecoverPanic("agent.Run", func() {

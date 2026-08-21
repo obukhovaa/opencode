@@ -127,14 +127,19 @@ type result struct {
 	// Anti-spin: foreground sleep interception through the full bash-tool
 	// Run path (openspec bash-background-mode "Foreground wall-clock waits
 	// are redirected ..." requirement).
-	SleepInterceptOK              bool     `json:"sleep_intercept_ok"`
-	SleepInterceptFast            bool     `json:"sleep_intercept_fast"`
-	SleepInterceptNoEcho          bool     `json:"sleep_intercept_no_echo"`
-	SleepPassthroughInteractiveOK bool     `json:"sleep_passthrough_interactive_ok"`
-	SleepPassthroughNoPendingOK   bool     `json:"sleep_passthrough_no_pending_ok"`
-	WriteCalls                    int      `json:"write_calls"`
-	WriteErr                      string   `json:"write_err,omitempty"`
-	Errors                        []string `json:"errors,omitempty"`
+	SleepInterceptOK              bool `json:"sleep_intercept_ok"`
+	SleepInterceptFast            bool `json:"sleep_intercept_fast"`
+	SleepInterceptNoEcho          bool `json:"sleep_intercept_no_echo"`
+	SleepPassthroughInteractiveOK bool `json:"sleep_passthrough_interactive_ok"`
+	SleepPassthroughNoPendingOK   bool `json:"sleep_passthrough_no_pending_ok"`
+	// Flow-owned auto-resume suppression (session-run-exclusivity spec):
+	// a task spawned under a step-scoped ctx must NOT auto-resume its idle
+	// session on completion, while a plain spawn still must.
+	NonFlowResumeFired     bool     `json:"non_flow_resume_fired"`
+	FlowOwnedResumeSkipped bool     `json:"flow_owned_resume_skipped"`
+	WriteCalls             int      `json:"write_calls"`
+	WriteErr               string   `json:"write_err,omitempty"`
+	Errors                 []string `json:"errors,omitempty"`
 }
 
 func main() {
@@ -508,6 +513,77 @@ func main() {
 			res.Errors = append(res.Errors, fmt.Sprintf("no-pending run: %v", nErr))
 		}
 		res.SleepPassthroughNoPendingOK = nErr == nil && strings.Contains(nResp.Content, "no-pending-ok")
+	}
+
+	// ── 9. Flow-owned completions never auto-resume ───────────────────
+	// Mirrors the flow runner's contract: the step installs a step-scoped
+	// ctx value (tools.StepScopedContextKey); tasks spawned under it are
+	// flow-owned and their completions must NOT kick ResumeSession — the
+	// step's own end-of-turn drain is the reaction mechanism, and after
+	// the step ends a resume would zombie-run the routed session under
+	// the wrong (primary) agent. A plain spawn keeps today's auto-resume.
+	{
+		// 9a. Plain spawn: terminal completion fires ResumeSession.
+		deps.mu.Lock()
+		resumesBefore := deps.resumeCalls
+		deps.mu.Unlock()
+		if _, err := bashTool.RunBackgroundForTest(ctx, tools.ToolCall{ID: "bash-plain-resume"}, tools.BashParams{
+			Command:         "sleep 0.1 && echo plain-resume",
+			Description:     "e2e plain resume",
+			RunInBackground: true,
+		}, abs, "SESS"); err != nil {
+			res.Errors = append(res.Errors, fmt.Sprintf("plain resume spawn: %v", err))
+		}
+		deadline = time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			deps.mu.Lock()
+			fired := deps.resumeCalls > resumesBefore
+			deps.mu.Unlock()
+			if fired {
+				res.NonFlowResumeFired = true
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		// 9b. Flow-owned spawn: install a step-scoped ctx, spawn, wait for
+		// the terminal completion pair to be written, then assert no new
+		// ResumeSession call happened.
+		flowCtx := context.WithValue(ctx, tools.StepScopedContextKey, context.Background())
+		deps.mu.Lock()
+		resumesBefore = deps.resumeCalls
+		writesBefore := deps.writeCalls
+		deps.mu.Unlock()
+		if _, err := bashTool.RunBackgroundForTest(flowCtx, tools.ToolCall{ID: "bash-flow-owned"}, tools.BashParams{
+			Command:         "sleep 0.1 && echo flow-owned-no-resume",
+			Description:     "e2e flow-owned no resume",
+			RunInBackground: true,
+		}, abs, "SESS"); err != nil {
+			res.Errors = append(res.Errors, fmt.Sprintf("flow-owned spawn: %v", err))
+		}
+		completionWritten := false
+		deadline = time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			deps.mu.Lock()
+			written := deps.writeCalls > writesBefore
+			deps.mu.Unlock()
+			if written {
+				completionWritten = true
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		// ResumeSession (if it were wrongly called) runs after WritePair
+		// in the same EnqueueTaskCompletion invocation — give it a grace
+		// window before asserting it stayed silent.
+		time.Sleep(300 * time.Millisecond)
+		deps.mu.Lock()
+		resumedAfter := deps.resumeCalls > resumesBefore
+		deps.mu.Unlock()
+		if !completionWritten {
+			res.Errors = append(res.Errors, "flow-owned completion pair never written")
+		}
+		res.FlowOwnedResumeSkipped = completionWritten && !resumedAfter
 	}
 
 	deps.mu.Lock()

@@ -110,10 +110,35 @@ func EnqueueTaskCompletion(ctx context.Context, in CompletionInput) error {
 	// Auto-resume if the session is idle. Cron retains its own busy lock
 	// (acquired externally), so when cron calls this primitive the session
 	// is already locked-busy and ResumeSession is a no-op.
+	//
+	// Flow-owned tasks NEVER auto-resume: while the owning step's Run is in
+	// flight, its end-of-turn drain reacts to the just-written pair (and the
+	// busy check is true anyway); after the step has ended, a resume would
+	// start a zombie turn on a session whose step already routed — and,
+	// resolved through the active/primary agent, it would not even run
+	// under the step's agent (GENAI-239).
+	if flowOwnedTask(in.TaskID) {
+		return nil
+	}
 	if !deps.IsSessionBusy(in.SessionID) {
 		deps.ResumeSession(in.SessionID)
 	}
 	return nil
+}
+
+// flowOwnedTask reports whether the task was spawned under a flow step's
+// step-scoped context. Unknown / unregistered task IDs (e.g. cron's empty
+// TaskID) are not flow-owned.
+func flowOwnedTask(taskID string) bool {
+	if taskID == "" {
+		return false
+	}
+	reg := GlobalRegistry()
+	if reg == nil {
+		return false
+	}
+	t, ok := reg.Get(taskID)
+	return ok && t.FlowOwned
 }
 
 func stateFromStatus(s Status) State {
