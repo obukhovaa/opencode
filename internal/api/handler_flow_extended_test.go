@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/flow"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/session"
@@ -596,5 +597,128 @@ func TestMarkWarnedDedupesAndCaps(t *testing.T) {
 	}
 	if got := len(fr.warnedSessions); got != 1 {
 		t.Errorf("post-reset len = %d, want 1 (the triggering ID only)", got)
+	}
+}
+
+// TestFlowEventRetryingIsInFlightOnly drives an interactive step through the
+// struct_output re-prompt and verifies the SSE projection: flow.step.retrying
+// lands between started/waiting_for_input and the terminal transition, the step
+// is NOT moved into completedSteps by it, and an interactive step keeps its
+// waiting_for_input target across the retry (an orchestrator must still see
+// "waiting on reviewer", not "step vanished").
+func TestFlowEventRetryingIsInFlightOnly(t *testing.T) {
+	t.Parallel()
+	sessions := &stubSessions{
+		byID: map[string]session.Session{
+			"sess-1": {ID: "sess-1", Cost: 0.5, PromptTokens: 100, CompletionTokens: 20},
+		},
+	}
+	target := []bridge.PeerRef{{Channel: "slack", Identity: "default", PeerID: "D1"}}
+	svc := newStubFlowService([]flow.FlowState{
+		{StepID: "products", SessionID: "sess-1", Status: flow.FlowStatusRunning, Iteration: 1},
+		{StepID: "products", SessionID: "sess-1", Status: flow.FlowStatusWaitingForInput, Iteration: 1, WaitingTarget: target},
+		// Agent ended a turn with no struct_output → engine re-prompts once.
+		{
+			StepID: "products", SessionID: "sess-1", Status: flow.FlowStatusRetrying, Iteration: 1,
+			Output: "agent turn ended without a struct_output call; re-prompting once",
+		},
+		{StepID: "products", SessionID: "sess-1", Status: flow.FlowStatusCompleted, Output: `{"ok":true}`, IsStructOutput: true, Iteration: 1},
+	})
+	_, fr := newFlowTestServerWithSessions(t, svc, sessions)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := fr.subscribeFlowEvents(ctx)
+
+	if _, err := fr.Start(context.Background(), "x", nil, false); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	var (
+		seen       []flowEventType
+		retryingEv FlowEvent
+	)
+	deadline := time.After(2 * time.Second)
+	for done := false; !done; {
+		select {
+		case ev := <-ch:
+			seen = append(seen, ev.Payload.Type)
+			if ev.Payload.Type == evFlowStepRetrying {
+				retryingEv = ev.Payload
+			}
+			if ev.Payload.Type == evFlowCompleted {
+				done = true
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for flow.completed; seen=%v", seen)
+		}
+	}
+
+	want := []flowEventType{
+		evFlowStepStarted,
+		evFlowWaitingForInput,
+		evFlowStepRetrying,
+		evFlowStepCompleted,
+		evFlowCompleted,
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("event sequence = %v, want %v", seen, want)
+	}
+	for i, ty := range want {
+		if seen[i] != ty {
+			t.Errorf("event[%d] = %q, want %q", i, seen[i], ty)
+		}
+	}
+
+	if retryingEv.StepID != "products" || retryingEv.SessionID != "sess-1" {
+		t.Errorf("retrying event = %+v, want stepID=products sessionID=sess-1", retryingEv)
+	}
+	if !strings.Contains(retryingEv.Output, "re-prompting once") {
+		t.Errorf("retrying event should carry the reason, got Output=%q", retryingEv.Output)
+	}
+	if retryingEv.Cost == 0 {
+		t.Error("retrying event should carry the per-step cost field like the other step events")
+	}
+}
+
+// TestFlowEventRetryingLeavesRunStateUntouched pins the in-flight contract
+// directly on observeStep (deterministic, unlike racing a Snapshot against the
+// SSE channel): a retrying transition publishes its event and changes nothing
+// else. The step is still running, and an interactive step is still waiting on
+// its reviewer — clearing either would make /flow/status lie for the duration
+// of the re-prompt.
+func TestFlowEventRetryingLeavesRunStateUntouched(t *testing.T) {
+	t.Parallel()
+	_, fr := newFlowTestServerWithSessions(t, newStubFlowService(nil), &stubSessions{})
+
+	target := []bridge.PeerRef{{Channel: "slack", Identity: "default", PeerID: "D1"}}
+	current := &flowStepRecord{ID: "products", SessionID: "sess-1", Status: string(flow.FlowStatusRunning)}
+	state := &flowRunState{
+		RunID:         "run-1",
+		FlowID:        "x",
+		Status:        flowRunWaitingForInput,
+		currentStep:   current,
+		waitingTarget: target,
+	}
+
+	fr.observeStep(state, &flow.FlowState{
+		StepID: "products", SessionID: "sess-1", Status: flow.FlowStatusRetrying,
+		Output: "agent turn ended without a struct_output call; re-prompting once", Iteration: 1,
+	})
+
+	if state.Status != flowRunWaitingForInput {
+		t.Errorf("run status = %q, want it unchanged at %q", state.Status, flowRunWaitingForInput)
+	}
+	if state.currentStep != current {
+		t.Errorf("currentStep was replaced: %+v", state.currentStep)
+	}
+	if len(state.completedSteps) != 0 {
+		t.Errorf("retrying must not append to completedSteps: %+v", state.completedSteps)
+	}
+	if state.err != "" {
+		t.Errorf("retrying must not record a run error, got %q", state.err)
+	}
+	if peers, ok := state.waitingTarget.([]bridge.PeerRef); !ok || len(peers) != 1 {
+		t.Errorf("retrying must not clear the waiting_for_input target, got %+v", state.waitingTarget)
 	}
 }

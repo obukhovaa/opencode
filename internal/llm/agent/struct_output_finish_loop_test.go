@@ -468,3 +468,47 @@ func TestProcessGeneration_MaxTurnsForcedSchemaRejectedNotPromoted(t *testing.T)
 		t.Errorf("forced per-call = %v, want the wrap-up to have been forced", p.forced)
 	}
 }
+
+// TestProcessGeneration_TurnsExhaustedFlag: the flow runner keys its
+// "is a struct_output re-prompt worth a request" decision off
+// AgentEvent.TurnsExhausted, so the flag must be set when — and only when — a
+// turn-budget gate ended the run, not when the model chose to end its turn.
+func TestProcessGeneration_TurnsExhaustedFlag(t *testing.T) {
+	t.Run("max turns exhaustion sets the flag", func(t *testing.T) {
+		withFreshTaskRegistry(t)
+		// Every normal turn emits a schema-rejected struct_output so the loop
+		// never finishes early and walks into the max-turns wrap-up.
+		p := &scriptedProvider{respond: func(call int, forced bool) *provider.ProviderResponse {
+			if forced {
+				return endTurn()
+			}
+			return structOutputCall(fmt.Sprintf("call-%d", call), `{}`)
+		}}
+		a := newLoopAgentWithTools(t, p, []tools.BaseTool{testStructOutputTool()})
+
+		res := a.processGeneration(context.Background(), "sess-exhausted", "do work", 1, nil, RunOptions{NonInteractive: true})
+
+		if res.Error != nil {
+			t.Fatalf("processGeneration error: %v", res.Error)
+		}
+		if !res.TurnsExhausted {
+			t.Error("TurnsExhausted = false, want true — the run ended on the max-turns gate")
+		}
+	})
+
+	t.Run("model-chosen end of turn leaves the flag clear", func(t *testing.T) {
+		withFreshTaskRegistry(t)
+		// First turn ends the turn on its own, well inside the budget.
+		p := &scriptedProvider{respond: func(int, bool) *provider.ProviderResponse { return endTurn() }}
+		a := newLoopAgentWithTools(t, p, []tools.BaseTool{testStructOutputTool()})
+
+		res := a.processGeneration(context.Background(), "sess-not-exhausted", "do work", 10, nil, RunOptions{NonInteractive: true})
+
+		if res.Error != nil {
+			t.Fatalf("processGeneration error: %v", res.Error)
+		}
+		if res.TurnsExhausted {
+			t.Error("TurnsExhausted = true, want false — the model ended its own turn within budget")
+		}
+	})
+}

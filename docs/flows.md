@@ -395,6 +395,8 @@ Server mode multiplexes flow lifecycle events onto the existing `/event` SSE str
 | `flow.step.started` | A step enters `running`. | `stepID`, `sessionID`, `startedAt`, plus the per-step fields below. |
 | `flow.step.completed` | A step finishes successfully. | `stepID`, `output`, `completedAt`, per-step fields. |
 | `flow.step.failed` | A step exhausted retries / hit `maxIterations` / errored. | `stepID`, `error`, `failedAt`, per-step fields. |
+| `flow.step.postponed` | A step matched a `postpone: true` rule and is parked for resume. | `stepID`, `output`, `completedAt`, per-step fields. |
+| `flow.step.retrying` | A step declaring `output.schema` ended a turn with no `struct_output` call, and the engine is spending its one bounded re-prompt. The step is still `running`. | `stepID`, `sessionID`, `output` (the reason), per-step fields. |
 | `flow.waiting_for_input` | An `interactive: true` step bound to its peer(s) and is awaiting reviewer reply. | `stepID`, `sessionID`, `target` (resolved PeerRef or array). |
 | `flow.completed` | The run terminated successfully. | `runID`, `completedAt`. |
 | `flow.failed` | The run failed. | `runID`, `error`, `failedAt`. |
@@ -775,8 +777,27 @@ Scope and caveats:
 
 - **Only steps with a schema.** A step with no `output.schema` — including a free-prose step such as a summary — never triggers a wrap-up turn: the agent receives no schema and no `struct_output` tool. An `output:` block with no nested `schema:` counts as no schema.
 - **Provider support is best-effort.** The Anthropic client family (Anthropic, AWS Bedrock, GCP Vertex, Moonshot/Kimi) honours forced tool choice; OpenAI and Gemini currently ignore the signal and fall through to the text fallback.
-- **Interactive steps are exempt** — they have their own multi-turn `struct_output` completion path (see [Interactive steps](#interactive-steps)).
+- **Interactive steps are exempt from *forcing*** — see the next section for their (unforced) re-prompt.
+- **Turn exhaustion is exempt.** If the turn ended because the step hit `maxTurns`, no extra turn is issued: the agent runtime already spends its own forced `struct_output` wrap-up turn on that path, so a second one has no budget to add.
 - **Cost:** at most one extra turn, and only on the path where the agent would otherwise have ended in prose. The step's normal agentic turns keep the provider's default tool choice.
+
+### Recovering a missing `struct_output`
+
+A step's `output.schema` guarantees the *handoff* between steps — the output is validated, merged into args, and `${args.*}` resolves downstream. It cannot guarantee the *production* of that output: "a document must arrive" is not a property of a document. So the engine can only notice the miss after the turn is over.
+
+When a schema-bearing step's agent ends a turn having produced **nothing at all** — no `struct_output` call and no message text — the engine spends exactly **one** bounded re-prompt before failing the step. The nudge names the missing `struct_output` call and lists the schema's required fields (falling back to its property names).
+
+On an **`interactive: true` step** the re-prompt additionally states that `question` is the only primitive that reaches the reviewer and waits for a reply, and it deliberately does **not** force `struct_output` — forcing the tool choice would make `question` unreachable, so an agent that stopped because it needed information from the human would be pushed into inventing an answer instead of asking for one. The re-prompt runs with the step's own `maxTurns` and `timeout`, so a full `question` round-trip still fits.
+
+The bridge is still bound while this happens: the interactive unbind is deferred to the step's own return, not to the end of the agent run, so the re-prompted agent keeps its peer bindings and its interactive-session flag. This matters because it is what lets a 20-turn customer conversation survive one malformed turn instead of dying on it.
+
+Bounds and caveats:
+
+- **Exactly one re-prompt per step**, capped in code — including across `fallback.retry` attempts, which re-run the whole step but do not refill the re-prompt budget.
+- **Never on turn exhaustion.** A step that ran out of turns fails without a re-prompt; a retry there has no budget to spend.
+- **Only for "nothing at all".** A turn that produced prose keeps the pre-existing behaviour (forced wrap-up on a non-interactive step, text fallback otherwise).
+- **Observable, not inferred.** The re-prompt emits `flow.step.retrying` on the `/event` SSE stream so an orchestrator sees the recovery rather than guessing from a gap in the timing. It is an in-flight signal only — nothing is persisted to `flow_states`, and the step stays `running`.
+- **The step error carries the agent's last words.** When the step does finally fail this way, the error appends the agent's most recent assistant text — e.g. `step "products" expects structured output but agent produced empty response (re-prompted once for struct_output, still nothing); last assistant message: "I have no tool that can list this client's products, so I cannot present them."` That prose is normally the only artefact explaining why the agent stopped, and it never leaves the session otherwise. It is collapsed to one line and truncated to 1000 characters.
 
 ### Postponed steps
 

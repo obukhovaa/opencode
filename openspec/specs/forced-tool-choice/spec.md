@@ -63,3 +63,24 @@ If the forced wrap-up turn errors, or yields no non-error `struct_output`, the l
 - **THEN** the loop MUST NOT hard-fail on that basis
 - **AND** MUST return whatever `struct_output` (if any) was captured on an earlier turn
 
+### Requirement: Agent events distinguish turn-budget exhaustion from a model-chosen end of turn
+
+An `AgentEvent` returned by the agentic loop SHALL carry a `TurnsExhausted` flag that is true when — and only when — the run ended because a turn budget gate fired, rather than because the model chose to end its turn. Both gates set it: the inner-loop max-turns wrap-up (every exit path within it, including the ones taken when the wrap-up prompt cannot be loaded, the wrap-up message cannot be persisted, or the wrap-up stream errors) and the outer-cycle cap that bounds background-task re-entry.
+
+Callers that recover from a missing `struct_output` by re-prompting MUST consult this flag: a re-prompt on an exhausted run has no budget to spend, and the forced wrap-up above has already been paid for on that path.
+
+#### Scenario: Max-turns exit marks the event exhausted
+
+- **WHEN** the agentic loop ends a run through the max-turns wrap-up branch, by any of its exit paths
+- **THEN** the returned `AgentEvent` reports `TurnsExhausted`
+
+#### Scenario: Outer-cycle cap marks the event exhausted
+
+- **WHEN** a non-interactive run ends because the outer background-task re-entry cap was reached
+- **THEN** the returned `AgentEvent` reports `TurnsExhausted`
+
+#### Scenario: A model-chosen end of turn is not exhausted
+
+- **WHEN** a run ends because the model produced a terminal turn within its budget — including a terminal turn that produced no `struct_output` and no text
+- **THEN** the returned `AgentEvent` does NOT report `TurnsExhausted`
+
