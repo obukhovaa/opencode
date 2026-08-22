@@ -35,6 +35,13 @@ const (
 	FlowStatusFailed          FlowStatus = "failed"
 	FlowStatusPostponed       FlowStatus = "postponed"
 	FlowStatusWaitingForInput FlowStatus = "waiting_for_input"
+	// FlowStatusRetrying is an IN-FLIGHT signal, never a persisted row: the
+	// step declared an output schema, the agent's turn ended without a
+	// struct_output call, and the engine is spending its one bounded
+	// re-prompt. Emitted so an orchestrator (c2-agent, a k8s Job tailing
+	// /event) can see the recovery happen instead of inferring it from a gap
+	// in the timing. The API runner translates it into flow.step.retrying.
+	FlowStatusRetrying FlowStatus = "retrying"
 )
 
 type FlowState struct {
@@ -602,6 +609,10 @@ func (s *service) runStep(
 	}
 
 	var lastErr error
+	// structOutputRetried caps the missing-struct_output re-prompt at exactly
+	// ONE per step — it is declared outside the fallback-attempt loop on
+	// purpose, so a step with `fallback.retry` cannot multiply it.
+	structOutputRetried := false
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
 			logging.Info("Retrying step", "step", step.ID, "attempt", attempt+1, "max", maxAttempts)
@@ -656,23 +667,89 @@ func (s *service) runStep(
 				continue
 			}
 
-			// Validate output when the step defines an output schema.
-			// Two severity levels:
+			// Recover a missing struct_output on an INTERACTIVE step before it
+			// becomes a failure: the agent produced NOTHING (no struct_output
+			// and no prose), so give it ONE bounded re-prompt. Two reasons this
+			// lives inside the attempt loop rather than on the failure path
+			// below:
+			//
+			//  1. Bridge lifetime. The interactive unbind is a `defer` on
+			//     runStep's return, so at this point the session is still bound
+			//     to its peers and still flagged interactive for the question
+			//     tool. A re-prompt here can still talk to the human; one
+			//     issued after unbind could not.
+			//  2. The non-interactive equivalent already exists — the
+			//     last-ditch forceStructOutputTurn on the failure path below —
+			//     and forcing tool_choice=struct_output there is right for a
+			//     step with nobody to ask. It is wrong for an interactive step,
+			//     where forcing makes `question` unreachable. See
+			//     retryStructOutputTurn.
+			//
+			// Turn exhaustion is excluded: a re-prompt on a run that is out
+			// of turn budget has nothing to spend. (On the inner-loop
+			// max-turns gate the agent runtime has additionally already paid
+			// for its own forced struct_output wrap-up turn; the outer-cycle
+			// cap has not, but it is out of budget just the same. See
+			// AgentEvent.TurnsExhausted.)
+			//
+			// A schema-REJECTED struct_output counts as missing here (see
+			// usableStructOutput): the rejection text is not a document any
+			// downstream step can read, so it is worth the same re-prompt as an
+			// empty turn.
+			if step.Output != nil && step.Output.Schema != nil && step.Interactive &&
+				usableStructOutput(result) == nil &&
+				result.Message.Content().Text == "" &&
+				!structOutputRetried && !result.TurnsExhausted && ctx.Err() == nil {
+				// The retrying transition and the one-per-step budget are both
+				// spent from inside onStarted, i.e. only once the re-prompt
+				// really reached the provider. retryStructOutputTurn can return
+				// without issuing any model call (ErrSessionBusy outliving its
+				// short retry budget, or a start error), and claiming a
+				// re-prompt that never happened would put a flow.step.retrying
+				// on the wire and "(re-prompted once…)" in the step error for a
+				// turn nobody paid for.
+				retried, ok := s.retryStructOutputTurn(ctx, agentSvc, sess.ID, step, func() {
+					structOutputRetried = true
+					s.publishStructOutputRetry(sess.ID, rootSessionID, f.ID, step, args, iteration,
+						retryReasonNoStructOutput, flowStates)
+				})
+				if ok {
+					logging.Info("struct_output re-prompt rescued an interactive step", "step", step.ID)
+					result = retried
+				}
+			}
+
+			// Validate output when the step defines an output schema, against
+			// the (possibly re-prompted) result. Two severity levels:
 			//  1. Agent produced NOTHING (no struct output AND no text) — treat as
 			//     retryable failure. Catches transient model issues (empty API
-			//     responses reported as end_turn).
+			//     responses reported as end_turn). The error carries the agent's
+			//     last words so the failure explains itself — see
+			//     missingStructOutputError.
 			//  2. Agent produced text but didn't call struct_output — log a warning
 			//     but proceed. The text is stored as output and unconditional routing
 			//     rules still work. Conditional rules referencing output fields will
 			//     evaluate to false (missing key), same as pre-validation behavior.
-			if step.Output != nil && (result.StructOutput == nil || result.StructOutput.Content == "") {
+			//
+			// "No struct output" means no USABLE one: a schema-rejected result
+			// is not a document (usableStructOutput), so it must not short-
+			// circuit this validation into reporting success.
+			if step.Output != nil && usableStructOutput(result) == nil {
 				textOutput := result.Message.Content().Text
 				if textOutput == "" {
-					lastErr = fmt.Errorf("step %q expects structured output but agent produced empty response", step.ID)
+					lastErr = &missingStructOutputError{
+						StepID:         step.ID,
+						TurnsExhausted: result.TurnsExhausted,
+						Retried:        structOutputRetried,
+						SchemaRejected: schemaRejectedStructOutput(result),
+					}
 					logging.Warn("Empty agent response for step with output schema",
 						"step", step.ID,
 						"attempt", attempt+1,
 						"max_attempts", maxAttempts,
+						"turns_exhausted", result.TurnsExhausted,
+						"struct_output_retried", structOutputRetried,
+						"schema_rejected", schemaRejectedStructOutput(result),
 						"finish_reason", result.Message.FinishReason())
 					continue
 				}
@@ -707,10 +784,26 @@ doneRetry:
 		// a step that already exhausted its step-scoped budget from re-hanging
 		// for another full Step.Timeout. On success we publish a fresh Response
 		// event so a completed step never carries an error type downstream.
+		//
+		// Turn exhaustion is excluded (structOutputTurnsExhausted): the run is
+		// out of turn budget, so a second forced turn has nothing new to spend
+		// and would just burn a request. On the inner-loop max-turns gate the
+		// agent runtime has already forced struct_output once for a
+		// schema-bearing run; the outer-cycle cap has not, but the budget
+		// argument holds for both. See AgentEvent.TurnsExhausted.
 		if !step.Interactive && step.Output != nil && step.Output.Schema != nil &&
-			ctx.Err() == nil && !isTransientProviderError(lastErr) {
+			ctx.Err() == nil && !isTransientProviderError(lastErr) &&
+			!structOutputTurnsExhausted(lastErr) {
 			boundedCtx, cancelBounded := context.WithTimeout(ctx, forceStructOutputMaxWait)
-			forced := s.forceStructOutputTurn(boundedCtx, agentSvc, sess.ID, step)
+			// Same contract as the interactive re-prompt above: the retrying
+			// transition and the "was a re-prompt spent" flag are set from
+			// inside onStarted, so neither claims a turn forceStructOutputTurn
+			// never managed to issue.
+			forced := s.forceStructOutputTurn(boundedCtx, agentSvc, sess.ID, step, func() {
+				structOutputRetried = true
+				s.publishStructOutputRetry(sess.ID, rootSessionID, f.ID, step, args, iteration,
+					retryReasonRunFailed, flowStates)
+			})
 			cancelBounded()
 			if forced != nil {
 				logging.Info("Last-ditch forced struct_output rescued a failing step", "step", step.ID)
@@ -718,6 +811,17 @@ doneRetry:
 				lastErr = nil
 			}
 		}
+	}
+
+	// Surface the agent's own last words in the step error. The failing turn
+	// itself said nothing — that is the failure — so the prose that explains it
+	// ("I have no tool that can list this client's products…") sits one turn
+	// back in the session and is otherwise discarded. Resolved once here rather
+	// than per attempt so a fallback.retry step pays for at most one read.
+	var missingStruct *missingStructOutputError
+	if errors.As(lastErr, &missingStruct) {
+		missingStruct.Retried = structOutputRetried
+		missingStruct.LastAssistant = s.lastAssistantText(ctx, sess.ID)
 	}
 
 	if lastErr != nil {
@@ -786,9 +890,9 @@ doneRetry:
 	// (`output:` with no `schema:`) then behaves like a plain no-schema step —
 	// no force attempt, prose accepted as-is.
 	if !step.Interactive && step.Output != nil && step.Output.Schema != nil &&
-		(result.StructOutput == nil || result.StructOutput.Content == "") &&
+		usableStructOutput(result) == nil &&
 		result.Message.Content().Text != "" {
-		if forced := s.forceStructOutputTurn(ctx, agentSvc, sess.ID, step); forced != nil {
+		if forced := s.forceStructOutputTurn(ctx, agentSvc, sess.ID, step, nil); forced != nil {
 			logging.Info("Forcing wrap-up turn produced struct_output", "step", step.ID)
 			// Copy only the struct output; keep the original prose Message on
 			// the event for any consumer that inspects it.
@@ -798,8 +902,11 @@ doneRetry:
 
 	var output string
 	isStructOutput := false
-	if result.StructOutput != nil {
-		output = result.StructOutput.Content
+	// usableStructOutput, not result.StructOutput: a schema-rejected result
+	// must fall through to the prose branch rather than be published as the
+	// step's structured output with IsStructOutput=true.
+	if su := usableStructOutput(result); su != nil {
+		output = su.Content
 		isStructOutput = true
 		// Minify
 		var buf bytes.Buffer
@@ -1798,7 +1905,13 @@ func envTaskWaitTimeout() time.Duration {
 // non-error struct_output, or nil to fall back to the prose. Best-effort — a
 // start error, ErrSessionBusy exhaustion, an errored turn, or a still-missing
 // struct_output all return nil (graceful degradation).
-func (s *service) forceStructOutputTurn(ctx context.Context, agentSvc agentpkg.Service, sessionID string, step Step) *message.ToolResult {
+//
+// onStarted, when non-nil, is invoked exactly once immediately after the turn
+// is accepted by the agent service, i.e. only when a model call was really
+// issued — see retryStructOutputTurn for why the callers key their
+// flow.step.retrying transition off that rather than off entering this
+// function.
+func (s *service) forceStructOutputTurn(ctx context.Context, agentSvc agentpkg.Service, sessionID string, step Step, onStarted func()) *message.ToolResult {
 	// The retry loop's step-scoped context was already cancelled by the time
 	// we get here; derive a fresh one from ctx (which already carries the flow
 	// telemetry values set earlier in runStep) and re-install the step-scoped
@@ -1807,7 +1920,12 @@ func (s *service) forceStructOutputTurn(ctx context.Context, agentSvc agentpkg.S
 	defer cancel()
 	forcingCtx := context.WithValue(base, tools.StepScopedContextKey, base)
 
-	const forcingPrompt = "You ended your previous turn without calling the struct_output tool. Call struct_output now to return your result, conforming exactly to the required schema. Do not reply with prose."
+	// structOutputRetryPrompt, shared with the interactive re-prompt: on a
+	// non-interactive step it names the missing primitive AND the schema fields
+	// the step owes, which the flow-runtime-resume spec requires of every
+	// re-prompt. (The step is non-interactive here, so the prompt's
+	// question-tool paragraph is not emitted.)
+	forcingPrompt := structOutputRetryPrompt(step)
 	runOpts := agentpkg.RunOptions{NonInteractive: true, ForceStructOutput: true}
 
 	// agent.RunWith releases the session busy-lock in a deferred delete that
@@ -1835,6 +1953,9 @@ func (s *service) forceStructOutputTurn(ctx context.Context, agentSvc agentpkg.S
 	if err != nil {
 		logging.Warn("Forcing struct_output turn still session-busy after retries — keeping text fallback", "step", step.ID)
 		return nil
+	}
+	if onStarted != nil {
+		onStarted()
 	}
 
 	ev := <-done

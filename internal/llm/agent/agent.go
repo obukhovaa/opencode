@@ -94,6 +94,24 @@ type AgentEvent struct {
 	Progress  string
 	Done      bool
 
+	// TurnsExhausted is true when the run ended because the agentic loop
+	// hit its turn budget (effectiveMaxTurns) rather than because the model
+	// chose to end its turn. Both budget gates set it: the inner-loop
+	// max-turns wrap-up and the outer-cycle (background-task re-entry) cap.
+	//
+	// The flow runner reads this to tell "the agent ended a turn without a
+	// qualifying tool call" (recoverable — worth one re-prompt) apart from
+	// "the agent ran out of turns" (a re-prompt has no budget to spend, so
+	// retrying just burns a request). See internal/flow/service.go's
+	// missing-struct_output handling.
+	//
+	// The two gates differ in what they already paid for, and only the first
+	// has a forced wrap-up to point at: the inner-loop max-turns gate spends
+	// its own forced struct_output turn before returning, while the
+	// outer-cycle cap breaks out with no extra turn at all. The exemption
+	// rests on "out of budget" in both cases, not on a wrap-up having run.
+	TurnsExhausted bool
+
 	// FlowStepID is set when event originates from a Flow step
 	FlowStepID string
 }
@@ -806,6 +824,7 @@ OuterLoop:
 					}
 				}
 			}
+			finalResult.TurnsExhausted = true
 			break OuterLoop
 		}
 		for {
@@ -901,6 +920,10 @@ OuterLoop:
 			// Check max turns — give the model one final turn to wrap up.
 			if cycles > effectiveMaxTurns {
 				logging.Warn("Max turns reached, requesting final response", "turns", cycles-1, "max", effectiveMaxTurns, "session_id", sessionID)
+				// Every exit from this branch is a turn-budget exhaustion, so
+				// each AgentEvent below carries TurnsExhausted: true. The flow
+				// runner keys its "is a re-prompt worth a request" decision off
+				// it — see AgentEvent.TurnsExhausted.
 				// A schema-bearing run (struct_output tool present) MUST end
 				// with struct_output, not prose: force tool_choice=struct_output
 				// on the wrap-up turn and CAPTURE it, instead of asking for a
@@ -915,10 +938,11 @@ OuterLoop:
 				if promptErr != nil {
 					logging.Warn("Failed to load max_turns prompt", "error", promptErr, "file", wrapUpPromptFile)
 					return AgentEvent{
-						Type:         AgentEventTypeResponse,
-						Message:      agentMessage,
-						StructOutput: structOutput,
-						Done:         true,
+						Type:           AgentEventTypeResponse,
+						Message:        agentMessage,
+						StructOutput:   structOutput,
+						Done:           true,
+						TurnsExhausted: true,
 					}
 				}
 				wrapUpMsg, wrapUpErr := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
@@ -928,10 +952,11 @@ OuterLoop:
 				if wrapUpErr != nil {
 					logging.Warn("Failed to create wrap-up message", "error", wrapUpErr)
 					return AgentEvent{
-						Type:         AgentEventTypeResponse,
-						Message:      agentMessage,
-						StructOutput: structOutput,
-						Done:         true,
+						Type:           AgentEventTypeResponse,
+						Message:        agentMessage,
+						StructOutput:   structOutput,
+						Done:           true,
+						TurnsExhausted: true,
 					}
 				}
 				msgHistory = append(msgHistory, wrapUpMsg)
@@ -947,10 +972,11 @@ OuterLoop:
 				if finalErr != nil {
 					logging.Warn("Failed to get final response after max turns", "error", finalErr)
 					return AgentEvent{
-						Type:         AgentEventTypeResponse,
-						Message:      agentMessage,
-						StructOutput: structOutput,
-						Done:         true,
+						Type:           AgentEventTypeResponse,
+						Message:        agentMessage,
+						StructOutput:   structOutput,
+						Done:           true,
+						TurnsExhausted: true,
 					}
 				}
 				if forceStruct {
@@ -969,10 +995,11 @@ OuterLoop:
 						finalStruct = structOutput
 					}
 					finalResult = AgentEvent{
-						Type:         AgentEventTypeResponse,
-						Message:      finalMsg,
-						StructOutput: finalStruct,
-						Done:         true,
+						Type:           AgentEventTypeResponse,
+						Message:        finalMsg,
+						StructOutput:   finalStruct,
+						Done:           true,
+						TurnsExhausted: true,
 					}
 					break OuterLoop
 				}
@@ -984,10 +1011,11 @@ OuterLoop:
 					a.finishMessage(ctx, &finalMsg, message.FinishReasonEndTurn)
 				}
 				finalResult = AgentEvent{
-					Type:         AgentEventTypeResponse,
-					Message:      finalMsg,
-					StructOutput: structOutput,
-					Done:         true,
+					Type:           AgentEventTypeResponse,
+					Message:        finalMsg,
+					StructOutput:   structOutput,
+					Done:           true,
+					TurnsExhausted: true,
 				}
 				break OuterLoop
 			}
