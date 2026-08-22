@@ -153,6 +153,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listFlowStatesByFlowIDStmt, err = db.PrepareContext(ctx, listFlowStatesByFlowID); err != nil {
 		return nil, fmt.Errorf("error preparing query ListFlowStatesByFlowID: %w", err)
 	}
+	if q.listFlowStatesByJobIDStmt, err = db.PrepareContext(ctx, listFlowStatesByJobID); err != nil {
+		return nil, fmt.Errorf("error preparing query ListFlowStatesByJobID: %w", err)
+	}
 	if q.listFlowStatesByRootSessionStmt, err = db.PrepareContext(ctx, listFlowStatesByRootSession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListFlowStatesByRootSession: %w", err)
 	}
@@ -445,6 +448,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listFlowStatesByFlowIDStmt: %w", cerr)
 		}
 	}
+	if q.listFlowStatesByJobIDStmt != nil {
+		if cerr := q.listFlowStatesByJobIDStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listFlowStatesByJobIDStmt: %w", cerr)
+		}
+	}
 	if q.listFlowStatesByRootSessionStmt != nil {
 		if cerr := q.listFlowStatesByRootSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listFlowStatesByRootSessionStmt: %w", cerr)
@@ -647,6 +655,7 @@ type Queries struct {
 	listFilesBySessionStmt               *sql.Stmt
 	listFilesBySessionTreeStmt           *sql.Stmt
 	listFlowStatesByFlowIDStmt           *sql.Stmt
+	listFlowStatesByJobIDStmt            *sql.Stmt
 	listFlowStatesByRootSessionStmt      *sql.Stmt
 	listLatestMessagesBySessionStmt      *sql.Stmt
 	listLatestSessionFilesStmt           *sql.Stmt
@@ -720,6 +729,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listFilesBySessionStmt:               q.listFilesBySessionStmt,
 		listFilesBySessionTreeStmt:           q.listFilesBySessionTreeStmt,
 		listFlowStatesByFlowIDStmt:           q.listFlowStatesByFlowIDStmt,
+		listFlowStatesByJobIDStmt:            q.listFlowStatesByJobIDStmt,
 		listFlowStatesByRootSessionStmt:      q.listFlowStatesByRootSessionStmt,
 		listLatestMessagesBySessionStmt:      q.listLatestMessagesBySessionStmt,
 		listLatestSessionFilesStmt:           q.listLatestSessionFilesStmt,

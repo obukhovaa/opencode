@@ -56,6 +56,7 @@ type Querier interface {
 	ListFilesBySession(ctx context.Context, sessionID string) ([]File, error)
 	ListFilesBySessionTree(ctx context.Context, rootSessionID sql.NullString) ([]File, error)
 	ListFlowStatesByFlowID(ctx context.Context, flowID string) ([]FlowState, error)
+	ListFlowStatesByJobID(ctx context.Context, jobID string) ([]FlowState, error)
 	ListFlowStatesByRootSession(ctx context.Context, rootSessionID string) ([]FlowState, error)
 	ListLatestMessagesBySession(ctx context.Context, arg ListLatestMessagesBySessionParams) ([]Message, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)

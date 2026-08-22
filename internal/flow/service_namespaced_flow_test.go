@@ -58,7 +58,7 @@ func TestNamespacedFlowRunProducesSlashFreeSessionIDs(t *testing.T) {
 	q := &stubQuerier{}
 	sessions := &stubSessions{}
 	agent := newStubAgent()
-	svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", "id/fix-failing-tests", map[string]any{}, false)
 	if err != nil {

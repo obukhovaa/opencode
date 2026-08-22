@@ -98,7 +98,7 @@ func TestSelfLoop_InProcess(t *testing.T) {
 		},
 	}
 	q := &stubQuerier{}
-	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", testFlow.ID, map[string]any{}, true)
 	if err != nil {
@@ -172,7 +172,7 @@ func TestSelfLoop_PostponeAtIterationNGreaterThanOne(t *testing.T) {
 		},
 	}
 	q := &stubQuerier{}
-	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", testFlow.ID, map[string]any{}, true)
 	if err != nil {
@@ -252,7 +252,7 @@ func TestSelfLoop_ResumeRespectsMaxIterationsCap(t *testing.T) {
 	}
 
 	agent := newStubAgent()
-	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	// Resume — loop is already at MaxIterations. Next iteration would trip
 	// the cap, so no agent call should happen for the loop step.
@@ -342,7 +342,7 @@ func TestSelfLoop_ResumeAfterCompletedIterationCrash(t *testing.T) {
 			loopRespond(`{"ok":true}`),
 		},
 	}
-	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	// fresh=false → resume path; should schedule iter 3 directly because the
 	// completed iter 2 row's rules self-route.
@@ -398,7 +398,7 @@ func TestSelfLoop_DiamondGuardPreserved(t *testing.T) {
 
 	agent := newStubAgent()
 	q := &stubQuerier{}
-	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", testFlow.ID, map[string]any{}, true)
 	if err != nil {
@@ -435,7 +435,7 @@ func TestSelfLoop_MaxIterationsCap(t *testing.T) {
 
 	agent := newStubAgent()
 	q := &stubQuerier{}
-	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", testFlow.ID, map[string]any{}, true)
 	if err != nil {
@@ -501,7 +501,7 @@ func TestStepIteration_TemplateSubstitution(t *testing.T) {
 		},
 	}
 	q := &stubQuerier{}
-	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", testFlow.ID, map[string]any{}, true)
 	if err != nil {
@@ -540,7 +540,7 @@ func TestStepIteration_NotInArgs(t *testing.T) {
 
 	agent := newStubAgent()
 	q := &stubQuerier{}
-	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", testFlow.ID, map[string]any{}, true)
 	if err != nil {
@@ -631,7 +631,7 @@ func TestMultiStepCycle_VerifyImplementLoop(t *testing.T) {
 		},
 	}
 	q := &stubQuerier{}
-	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", testFlow.ID, map[string]any{}, true)
 	if err != nil {
@@ -703,7 +703,7 @@ func TestMultiStepCycle_IterationIncrements(t *testing.T) {
 		},
 	}
 	q := &stubQuerier{}
-	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", testFlow.ID, map[string]any{}, true)
 	if err != nil {
@@ -771,7 +771,7 @@ func TestSelfLoop_PostponeStoresIteration(t *testing.T) {
 		},
 	}
 	q := &stubQuerier{}
-	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", testFlow.ID, map[string]any{}, true)
 	if err != nil {

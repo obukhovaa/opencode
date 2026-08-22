@@ -72,7 +72,29 @@ type service struct {
 	permissions permission.Service
 	agents      agentpkg.AgentFactory
 
+	// jobID identifies the external job or invocation this process is executing,
+	// empty when opencode runs standalone. Stamped onto every flow_states row so
+	// a run can be scoped by job instead of by flow id plus a timestamp window,
+	// which cannot separate two concurrent runs of the same flow.
+	jobID string
+
 	interactiveHook InteractiveHook // nil → uses nopInteractiveHook (fail-fast)
+}
+
+// createFlowState and updateFlowState are the ONLY paths that write flow_states.
+// They exist so jobID is stamped in exactly one place per operation: the engine
+// has ten write sites, and JobID is a plain string, so an omission at any one of
+// them would silently persist "" rather than fail to compile.
+func (s *service) createFlowState(ctx context.Context, arg db.CreateFlowStateParams) (db.FlowState, error) {
+	arg.JobID = s.jobID
+	return s.querier.CreateFlowState(ctx, arg)
+}
+
+// updateFlowState also refreshes job_id, so a row reused by a later run reports
+// the job that last wrote it rather than the one that first created it.
+func (s *service) updateFlowState(ctx context.Context, arg db.UpdateFlowStateParams) (db.FlowState, error) {
+	arg.JobID = s.jobID
+	return s.querier.UpdateFlowState(ctx, arg)
 }
 
 // SetInteractiveHook installs the chat-bridge hook used by
@@ -100,12 +122,16 @@ type InteractiveHookSetter interface {
 	SetInteractiveHook(h InteractiveHook)
 }
 
+// NewService builds the flow engine. jobID identifies the external job or
+// invocation this process is running under ("" when opencode runs standalone);
+// it is recorded on every flow_states row this engine writes.
 func NewService(
 	sessions session.Service,
 	messages message.Service,
 	querier db.QuerierWithTx,
 	permissions permission.Service,
 	agents agentpkg.AgentFactory,
+	jobID string,
 ) Service {
 	return &service{
 		Broker:      pubsub.NewBroker[FlowState](),
@@ -114,6 +140,7 @@ func NewService(
 		querier:     querier,
 		permissions: permissions,
 		agents:      agents,
+		jobID:       jobID,
 	}
 }
 
@@ -277,7 +304,7 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 				output = existingFS.Output
 				isStructOutput = existingFS.IsStructOutput
 			}
-			if _, err := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+			if _, err := s.updateFlowState(ctx, db.UpdateFlowStateParams{
 				Status:         string(FlowStatusRunning),
 				Args:           sql.NullString{String: string(argsJSON), Valid: true},
 				Output:         output,
@@ -288,7 +315,7 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 				logging.Warn("Failed to update initial flow state", "session_id", stepSessionID, "error", err)
 			}
 		} else {
-			if _, err := s.querier.CreateFlowState(ctx, db.CreateFlowStateParams{
+			if _, err := s.createFlowState(ctx, db.CreateFlowStateParams{
 				SessionID:      stepSessionID,
 				RootSessionID:  rootSessionID,
 				FlowID:         f.ID,
@@ -467,7 +494,7 @@ func (s *service) runStep(
 			output = existingFS.Output
 			isStructOutput = existingFS.IsStructOutput
 		}
-		if state, stateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+		if state, stateErr := s.updateFlowState(ctx, db.UpdateFlowStateParams{
 			Status:         string(status),
 			Args:           sql.NullString{String: string(argsJSON), Valid: true},
 			Output:         output,
@@ -480,7 +507,7 @@ func (s *service) runStep(
 			err = stateErr
 		}
 	} else {
-		if state, stateErr := s.querier.CreateFlowState(ctx, db.CreateFlowStateParams{
+		if state, stateErr := s.createFlowState(ctx, db.CreateFlowStateParams{
 			SessionID:      sessionID,
 			RootSessionID:  rootSessionID,
 			FlowID:         f.ID,
@@ -734,7 +761,7 @@ doneRetry:
 			writeCtx, cancelWrite = context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancelWrite()
 		}
-		if state, updateErr := s.querier.UpdateFlowState(writeCtx, db.UpdateFlowStateParams{
+		if state, updateErr := s.updateFlowState(writeCtx, db.UpdateFlowStateParams{
 			Status:         string(FlowStatusFailed),
 			Args:           sql.NullString{String: string(argsJSON), Valid: true},
 			Output:         sql.NullString{String: lastErr.Error(), Valid: true},
@@ -827,7 +854,7 @@ doneRetry:
 		}
 	}
 
-	if state, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+	if state, updateErr := s.updateFlowState(ctx, db.UpdateFlowStateParams{
 		Status:         string(FlowStatusCompleted),
 		Args:           sql.NullString{String: string(argsJSON), Valid: true},
 		Output:         sql.NullString{String: output, Valid: output != ""},
@@ -1002,7 +1029,7 @@ func (s *service) postponeStepForTransientError(
 	// doesn't exist yet, so create it if it's missing rather than silently
 	// no-op'ing the UPDATE. Mirrors the entry-time Get-or-Create write.
 	if getErr == nil {
-		if state, updateErr := s.querier.UpdateFlowState(writeCtx, db.UpdateFlowStateParams{
+		if state, updateErr := s.updateFlowState(writeCtx, db.UpdateFlowStateParams{
 			Status:         string(FlowStatusPostponed),
 			Args:           sql.NullString{String: string(argsJSON), Valid: true},
 			Output:         sql.NullString{},
@@ -1016,7 +1043,7 @@ func (s *service) postponeStepForTransientError(
 			updatedAt = state.UpdatedAt
 		}
 	} else {
-		if state, createErr := s.querier.CreateFlowState(writeCtx, db.CreateFlowStateParams{
+		if state, createErr := s.createFlowState(writeCtx, db.CreateFlowStateParams{
 			SessionID:      sessionID,
 			RootSessionID:  rootSessionID,
 			FlowID:         flowID,
@@ -1079,7 +1106,7 @@ func (s *service) handleStepError(
 
 	argsJSON, _ := json.Marshal(args)
 	var updatedAt int64
-	if state, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+	if state, updateErr := s.updateFlowState(ctx, db.UpdateFlowStateParams{
 		Status:         string(FlowStatusFailed),
 		Args:           sql.NullString{String: string(argsJSON), Valid: true},
 		Output:         sql.NullString{String: err.Error(), Valid: true},
@@ -1349,7 +1376,7 @@ func (s *service) failResumedSelfLoop(
 	capErr := fmt.Errorf("step %q exceeded maxIterations (%d)", step.ID, step.MaxIterations)
 	argsJSON, _ := json.Marshal(args)
 	updatedAt := time.Now().Unix()
-	if state, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+	if state, updateErr := s.updateFlowState(ctx, db.UpdateFlowStateParams{
 		Status:         string(FlowStatusFailed),
 		Args:           sql.NullString{String: string(argsJSON), Valid: true},
 		Output:         sql.NullString{String: capErr.Error(), Valid: true},

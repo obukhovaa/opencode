@@ -141,7 +141,7 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 	factory := agent.NewAgentFactory(sessions, messages, perm, files, lspSvc, reg, mcpRegistry)
 	todoStore := todo.NewStore()
 	factory.SetTodoStore(todoStore)
-	flows := flow.NewService(sessions, messages, q, perm, factory)
+	flows := flow.NewService(sessions, messages, q, perm, factory, externalJobID())
 
 	// Hook registry: reads the `hooks` block from .opencode.json on
 	// every event fire (via config.Get()). The getter indirection
@@ -445,4 +445,28 @@ func (app *App) forceKillAllChildProcesses() {
 			}
 		}
 	}
+}
+
+// externalJobID returns the id of the external job or invocation this process is
+// running under, or "" when opencode runs standalone. The flow engine records it
+// on every flow_states row so a run can be scoped by job.
+//
+// Two names, in preference order:
+//
+//   - OPENCODE_JOB_ID — the general contract. Any supervisor that launches
+//     opencode to execute a flow can set it, whatever that supervisor is and
+//     whichever of opencode's features the run uses.
+//   - OPENCODE_BRIDGE_JOB_ID — read for compatibility. This is the bridge
+//     subsystem's own variable (see cmd/serve.go, which uses it to register the
+//     process with a remote registrar), and it carries the same identity, so
+//     deployments already setting it get job scoping for free. It is bridge-scoped
+//     by definition, though: a run that uses no chat bridge has no reason to set
+//     it, which is why the general name above is preferred.
+//
+// An empty result is a truthful "no external job", never a fabricated one.
+func externalJobID() string {
+	if id := os.Getenv("OPENCODE_JOB_ID"); id != "" {
+		return id
+	}
+	return os.Getenv("OPENCODE_BRIDGE_JOB_ID")
 }

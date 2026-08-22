@@ -44,7 +44,7 @@ func runForceFlow(t *testing.T, flowID string, output *StepOutput, responses []a
 	registerTestFlow(t, testFlow)
 
 	agent := &stubAgent{Broker: pubsub.NewBroker[agentpkg.AgentEvent](), responses: responses}
-	svc := NewService(&stubSessions{}, nil, &stubQuerier{}, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(&stubSessions{}, nil, &stubQuerier{}, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", flowID, map[string]any{}, true)
 	if err != nil {
@@ -154,7 +154,7 @@ func runForceFlowCtx(t *testing.T, ctx context.Context, flowID string, output *S
 	registerTestFlow(t, testFlow)
 
 	agent := &stubAgent{Broker: pubsub.NewBroker[agentpkg.AgentEvent](), responses: responses}
-	svc := NewService(&stubSessions{}, nil, &stubQuerier{}, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(&stubSessions{}, nil, &stubQuerier{}, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(ctx, "prefix", flowID, map[string]any{}, true)
 	if err != nil {

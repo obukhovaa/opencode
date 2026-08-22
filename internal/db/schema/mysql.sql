@@ -59,10 +59,12 @@ CREATE TABLE IF NOT EXISTS flow_states (
   output LONGTEXT,
   is_struct_output TINYINT(1) NOT NULL DEFAULT 0,
   iteration INT NOT NULL DEFAULT 1,
+  job_id VARCHAR(255) NOT NULL DEFAULT '',
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
   KEY idx_flow_states_root_session (root_session_id),
   KEY idx_flow_states_flow_id (flow_id),
+  KEY idx_flow_states_job_id (job_id),
   CONSTRAINT fk_flow_states_session FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
 

@@ -534,6 +534,7 @@ func (q *MySQLQuerier) CreateFlowState(ctx context.Context, arg CreateFlowStateP
 		Output:         arg.Output,
 		IsStructOutput: arg.IsStructOutput,
 		Iteration:      int32(arg.Iteration),
+		JobID:          arg.JobID,
 	})
 	if err != nil {
 		return FlowState{}, err
@@ -541,12 +542,11 @@ func (q *MySQLQuerier) CreateFlowState(ctx context.Context, arg CreateFlowStateP
 	return q.GetFlowState(ctx, arg.SessionID)
 }
 
-// GetFlowState gets a flow state by session ID
-func (q *MySQLQuerier) GetFlowState(ctx context.Context, sessionID string) (FlowState, error) {
-	fs, err := q.queries.GetFlowState(ctx, sessionID)
-	if err != nil {
-		return FlowState{}, err
-	}
+// flowStateFromMySQL maps one generated MySQL row onto the dialect-agnostic
+// FlowState the flow engine consumes. Every read path goes through this, so a
+// column added to the table cannot be wired on some paths and forgotten on
+// others — which is what four hand-copied mappings invited.
+func flowStateFromMySQL(fs mysqldb.FlowState) FlowState {
 	return FlowState{
 		SessionID:      fs.SessionID,
 		RootSessionID:  fs.RootSessionID,
@@ -557,9 +557,19 @@ func (q *MySQLQuerier) GetFlowState(ctx context.Context, sessionID string) (Flow
 		Output:         fs.Output,
 		IsStructOutput: fs.IsStructOutput,
 		Iteration:      int64(fs.Iteration),
+		JobID:          fs.JobID,
 		CreatedAt:      fs.CreatedAt,
 		UpdatedAt:      fs.UpdatedAt,
-	}, nil
+	}
+}
+
+// GetFlowState gets a flow state by session ID
+func (q *MySQLQuerier) GetFlowState(ctx context.Context, sessionID string) (FlowState, error) {
+	fs, err := q.queries.GetFlowState(ctx, sessionID)
+	if err != nil {
+		return FlowState{}, err
+	}
+	return flowStateFromMySQL(fs), nil
 }
 
 // ListFlowStatesByRootSession lists flow states by root session ID
@@ -571,19 +581,7 @@ func (q *MySQLQuerier) ListFlowStatesByRootSession(ctx context.Context, rootSess
 
 	states := make([]FlowState, len(mysqlStates))
 	for i, fs := range mysqlStates {
-		states[i] = FlowState{
-			SessionID:      fs.SessionID,
-			RootSessionID:  fs.RootSessionID,
-			FlowID:         fs.FlowID,
-			StepID:         fs.StepID,
-			Status:         fs.Status,
-			Args:           fs.Args,
-			Output:         fs.Output,
-			IsStructOutput: fs.IsStructOutput,
-			Iteration:      int64(fs.Iteration),
-			CreatedAt:      fs.CreatedAt,
-			UpdatedAt:      fs.UpdatedAt,
-		}
+		states[i] = flowStateFromMySQL(fs)
 	}
 	return states, nil
 }
@@ -597,19 +595,26 @@ func (q *MySQLQuerier) ListFlowStatesByFlowID(ctx context.Context, flowID string
 
 	states := make([]FlowState, len(mysqlStates))
 	for i, fs := range mysqlStates {
-		states[i] = FlowState{
-			SessionID:      fs.SessionID,
-			RootSessionID:  fs.RootSessionID,
-			FlowID:         fs.FlowID,
-			StepID:         fs.StepID,
-			Status:         fs.Status,
-			Args:           fs.Args,
-			Output:         fs.Output,
-			IsStructOutput: fs.IsStructOutput,
-			Iteration:      int64(fs.Iteration),
-			CreatedAt:      fs.CreatedAt,
-			UpdatedAt:      fs.UpdatedAt,
-		}
+		states[i] = flowStateFromMySQL(fs)
+	}
+	return states, nil
+}
+
+// ListFlowStatesByJobID lists the flow states written by one external job.
+//
+// This is the query the column exists for: flow_states rows are keyed by
+// session_id (derived from flow + args + step) and are REUSED across runs, so
+// before job_id the only way to scope a run was flow_id plus a timestamp window
+// — which cannot separate two concurrent runs of the same flow.
+func (q *MySQLQuerier) ListFlowStatesByJobID(ctx context.Context, jobID string) ([]FlowState, error) {
+	mysqlStates, err := q.queries.ListFlowStatesByJobID(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+
+	states := make([]FlowState, len(mysqlStates))
+	for i, fs := range mysqlStates {
+		states[i] = flowStateFromMySQL(fs)
 	}
 	return states, nil
 }
@@ -622,6 +627,7 @@ func (q *MySQLQuerier) UpdateFlowState(ctx context.Context, arg UpdateFlowStateP
 		Output:         arg.Output,
 		IsStructOutput: arg.IsStructOutput,
 		Iteration:      int32(arg.Iteration),
+		JobID:          arg.JobID,
 		SessionID:      arg.SessionID,
 	})
 	if err != nil {
