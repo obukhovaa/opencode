@@ -71,6 +71,7 @@ type FlowState struct {
 	CreatedAt      int64          `json:"created_at"`
 	UpdatedAt      int64          `json:"updated_at"`
 	Iteration      int64          `json:"iteration"`
+	JobID          string         `json:"job_id"`
 }
 
 type Message struct {

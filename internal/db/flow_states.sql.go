@@ -21,6 +21,7 @@ INSERT INTO flow_states (
     output,
     is_struct_output,
     iteration,
+    job_id,
     created_at,
     updated_at
 ) VALUES (
@@ -33,9 +34,10 @@ INSERT INTO flow_states (
     ?,
     ?,
     ?,
+    ?,
     strftime('%s', 'now'),
     strftime('%s', 'now')
-) RETURNING session_id, root_session_id, flow_id, step_id, status, args, output, is_struct_output, created_at, updated_at, iteration
+) RETURNING session_id, root_session_id, flow_id, step_id, status, args, output, is_struct_output, created_at, updated_at, iteration, job_id
 `
 
 type CreateFlowStateParams struct {
@@ -48,6 +50,7 @@ type CreateFlowStateParams struct {
 	Output         sql.NullString `json:"output"`
 	IsStructOutput bool           `json:"is_struct_output"`
 	Iteration      int64          `json:"iteration"`
+	JobID          string         `json:"job_id"`
 }
 
 func (q *Queries) CreateFlowState(ctx context.Context, arg CreateFlowStateParams) (FlowState, error) {
@@ -61,6 +64,7 @@ func (q *Queries) CreateFlowState(ctx context.Context, arg CreateFlowStateParams
 		arg.Output,
 		arg.IsStructOutput,
 		arg.Iteration,
+		arg.JobID,
 	)
 	var i FlowState
 	err := row.Scan(
@@ -75,6 +79,7 @@ func (q *Queries) CreateFlowState(ctx context.Context, arg CreateFlowStateParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Iteration,
+		&i.JobID,
 	)
 	return i, err
 }
@@ -89,7 +94,7 @@ func (q *Queries) DeleteFlowStatesByRootSession(ctx context.Context, rootSession
 }
 
 const getFlowState = `-- name: GetFlowState :one
-SELECT session_id, root_session_id, flow_id, step_id, status, args, output, is_struct_output, created_at, updated_at, iteration FROM flow_states WHERE session_id = ? LIMIT 1
+SELECT session_id, root_session_id, flow_id, step_id, status, args, output, is_struct_output, created_at, updated_at, iteration, job_id FROM flow_states WHERE session_id = ? LIMIT 1
 `
 
 func (q *Queries) GetFlowState(ctx context.Context, sessionID string) (FlowState, error) {
@@ -107,12 +112,13 @@ func (q *Queries) GetFlowState(ctx context.Context, sessionID string) (FlowState
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Iteration,
+		&i.JobID,
 	)
 	return i, err
 }
 
 const listFlowStatesByFlowID = `-- name: ListFlowStatesByFlowID :many
-SELECT session_id, root_session_id, flow_id, step_id, status, args, output, is_struct_output, created_at, updated_at, iteration FROM flow_states WHERE flow_id = ? ORDER BY created_at ASC
+SELECT session_id, root_session_id, flow_id, step_id, status, args, output, is_struct_output, created_at, updated_at, iteration, job_id FROM flow_states WHERE flow_id = ? ORDER BY created_at ASC
 `
 
 func (q *Queries) ListFlowStatesByFlowID(ctx context.Context, flowID string) ([]FlowState, error) {
@@ -136,6 +142,47 @@ func (q *Queries) ListFlowStatesByFlowID(ctx context.Context, flowID string) ([]
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Iteration,
+			&i.JobID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listFlowStatesByJobID = `-- name: ListFlowStatesByJobID :many
+SELECT session_id, root_session_id, flow_id, step_id, status, args, output, is_struct_output, created_at, updated_at, iteration, job_id FROM flow_states WHERE job_id = ? ORDER BY updated_at ASC
+`
+
+func (q *Queries) ListFlowStatesByJobID(ctx context.Context, jobID string) ([]FlowState, error) {
+	rows, err := q.query(ctx, q.listFlowStatesByJobIDStmt, listFlowStatesByJobID, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []FlowState{}
+	for rows.Next() {
+		var i FlowState
+		if err := rows.Scan(
+			&i.SessionID,
+			&i.RootSessionID,
+			&i.FlowID,
+			&i.StepID,
+			&i.Status,
+			&i.Args,
+			&i.Output,
+			&i.IsStructOutput,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Iteration,
+			&i.JobID,
 		); err != nil {
 			return nil, err
 		}
@@ -151,7 +198,7 @@ func (q *Queries) ListFlowStatesByFlowID(ctx context.Context, flowID string) ([]
 }
 
 const listFlowStatesByRootSession = `-- name: ListFlowStatesByRootSession :many
-SELECT session_id, root_session_id, flow_id, step_id, status, args, output, is_struct_output, created_at, updated_at, iteration FROM flow_states WHERE root_session_id = ? ORDER BY created_at ASC
+SELECT session_id, root_session_id, flow_id, step_id, status, args, output, is_struct_output, created_at, updated_at, iteration, job_id FROM flow_states WHERE root_session_id = ? ORDER BY created_at ASC
 `
 
 func (q *Queries) ListFlowStatesByRootSession(ctx context.Context, rootSessionID string) ([]FlowState, error) {
@@ -175,6 +222,7 @@ func (q *Queries) ListFlowStatesByRootSession(ctx context.Context, rootSessionID
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Iteration,
+			&i.JobID,
 		); err != nil {
 			return nil, err
 		}
@@ -196,9 +244,10 @@ SET status = ?,
     output = ?,
     is_struct_output = ?,
     iteration = ?,
+    job_id = ?,
     updated_at = strftime('%s', 'now')
 WHERE session_id = ?
-RETURNING session_id, root_session_id, flow_id, step_id, status, args, output, is_struct_output, created_at, updated_at, iteration
+RETURNING session_id, root_session_id, flow_id, step_id, status, args, output, is_struct_output, created_at, updated_at, iteration, job_id
 `
 
 type UpdateFlowStateParams struct {
@@ -207,6 +256,7 @@ type UpdateFlowStateParams struct {
 	Output         sql.NullString `json:"output"`
 	IsStructOutput bool           `json:"is_struct_output"`
 	Iteration      int64          `json:"iteration"`
+	JobID          string         `json:"job_id"`
 	SessionID      string         `json:"session_id"`
 }
 
@@ -217,6 +267,7 @@ func (q *Queries) UpdateFlowState(ctx context.Context, arg UpdateFlowStateParams
 		arg.Output,
 		arg.IsStructOutput,
 		arg.Iteration,
+		arg.JobID,
 		arg.SessionID,
 	)
 	var i FlowState
@@ -232,6 +283,7 @@ func (q *Queries) UpdateFlowState(ctx context.Context, arg UpdateFlowStateParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Iteration,
+		&i.JobID,
 	)
 	return i, err
 }

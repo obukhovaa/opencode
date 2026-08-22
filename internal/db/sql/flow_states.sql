@@ -9,9 +9,11 @@ INSERT INTO flow_states (
     output,
     is_struct_output,
     iteration,
+    job_id,
     created_at,
     updated_at
 ) VALUES (
+    ?,
     ?,
     ?,
     ?,
@@ -34,6 +36,9 @@ SELECT * FROM flow_states WHERE root_session_id = ? ORDER BY created_at ASC;
 -- name: ListFlowStatesByFlowID :many
 SELECT * FROM flow_states WHERE flow_id = ? ORDER BY created_at ASC;
 
+-- name: ListFlowStatesByJobID :many
+SELECT * FROM flow_states WHERE job_id = ? ORDER BY updated_at ASC;
+
 -- name: UpdateFlowState :one
 UPDATE flow_states
 SET status = ?,
@@ -41,6 +46,7 @@ SET status = ?,
     output = ?,
     is_struct_output = ?,
     iteration = ?,
+    job_id = ?,
     updated_at = strftime('%s', 'now')
 WHERE session_id = ?
 RETURNING *;

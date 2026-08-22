@@ -31,6 +31,7 @@ type stubQuerier struct {
 	flowStates              []db.FlowState
 	deletedFlowRootSessions []string
 	createdFlowStates       []db.CreateFlowStateParams
+	updatedFlowStates       []db.UpdateFlowStateParams
 }
 
 // snapshotFlowStates returns a copy of the current flow_states slice under
@@ -105,6 +106,7 @@ func (q *stubQuerier) CreateFlowState(_ context.Context, arg db.CreateFlowStateP
 func (q *stubQuerier) UpdateFlowState(_ context.Context, arg db.UpdateFlowStateParams) (db.FlowState, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	q.updatedFlowStates = append(q.updatedFlowStates, arg)
 	now := time.Now().Unix()
 	updated := db.FlowState{
 		SessionID:      arg.SessionID,
@@ -350,7 +352,7 @@ func TestRunFreshDeletesRunningStates(t *testing.T) {
 	}
 	sessions := &stubSessions{}
 
-	svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{})
+	svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{}, "")
 
 	ctx := context.Background()
 	agentEvents, flowStates, err := svc.Run(ctx, "prefix", "test-fresh", map[string]any{}, true)
@@ -422,7 +424,7 @@ func TestRunWithoutFreshReturnsRunningStates(t *testing.T) {
 	}
 	sessions := &stubSessions{}
 
-	svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{})
+	svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{}, "")
 
 	ctx := context.Background()
 	agentEvents, flowStates, err := svc.Run(ctx, "prefix", "test-no-fresh", map[string]any{}, false)
@@ -582,7 +584,7 @@ func TestRunStepStructOutputValidation(t *testing.T) {
 			q := &stubQuerier{}
 			sessions := &stubSessions{}
 
-			svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+			svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 			agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", testFlow.ID, map[string]any{}, true)
 			if err != nil {
@@ -643,7 +645,7 @@ func TestRunStepStructOutputValidationSkippedWithoutSchema(t *testing.T) {
 	}
 	q := &stubQuerier{}
 	sessions := &stubSessions{}
-	svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", testFlow.ID, map[string]any{}, true)
 	if err != nil {

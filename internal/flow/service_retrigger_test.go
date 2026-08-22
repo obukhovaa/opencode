@@ -236,7 +236,7 @@ func TestRunRetrigger_GatePlannerMismatchFallsBackToRestart(t *testing.T) {
 	}
 	sessions := &stubSessions{}
 	agent := newStubAgent()
-	svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(context.Background(), prefix, flowID, map[string]any{"continue": "no"}, false)
 	if err != nil {
@@ -471,7 +471,7 @@ func TestRunRetrigger_Gating(t *testing.T) {
 			q := &stubQuerier{flowStates: tc.existing(prefix, flowID)}
 			sessions := &stubSessions{}
 			agent := newStubAgent()
-			svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+			svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 			agentEvents, flowStates, err := svc.Run(context.Background(), prefix, flowID, map[string]any{}, tc.fresh)
 			if err != nil {
@@ -573,7 +573,7 @@ func TestRunRetrigger_PreservesSessionsOnRestart(t *testing.T) {
 	}
 	sessions := &stubSessions{}
 	agent := newStubAgent()
-	svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(context.Background(), prefix, flowID, map[string]any{}, false)
 	if err != nil {
@@ -625,7 +625,7 @@ func TestRunRetrigger_WakesPostponedStep(t *testing.T) {
 	}
 	sessions := &stubSessions{}
 	agent := newStubAgent()
-	svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+	svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent}, "")
 
 	agentEvents, flowStates, err := svc.Run(context.Background(), prefix, flowID, map[string]any{}, false)
 	if err != nil {
