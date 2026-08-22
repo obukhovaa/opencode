@@ -778,14 +778,16 @@ Scope and caveats:
 - **Only steps with a schema.** A step with no `output.schema` — including a free-prose step such as a summary — never triggers a wrap-up turn: the agent receives no schema and no `struct_output` tool. An `output:` block with no nested `schema:` counts as no schema.
 - **Provider support is best-effort.** The Anthropic client family (Anthropic, AWS Bedrock, GCP Vertex, Moonshot/Kimi) honours forced tool choice; OpenAI and Gemini currently ignore the signal and fall through to the text fallback.
 - **Interactive steps are exempt from *forcing*** — see the next section for their (unforced) re-prompt.
-- **Turn exhaustion is exempt.** If the turn ended because the step hit `maxTurns`, no extra turn is issued: the agent runtime already spends its own forced `struct_output` wrap-up turn on that path, so a second one has no budget to add.
+- **Turn exhaustion is exempt.** If the turn ended because the step ran out of turn budget, no extra turn is issued — there is nothing left to spend. (On the `maxTurns` gate the agent runtime has additionally already paid for its own forced `struct_output` wrap-up turn; the outer background-task re-entry cap has not, but it is out of budget just the same.)
 - **Cost:** at most one extra turn, and only on the path where the agent would otherwise have ended in prose. The step's normal agentic turns keep the provider's default tool choice.
 
 ### Recovering a missing `struct_output`
 
 A step's `output.schema` guarantees the *handoff* between steps — the output is validated, merged into args, and `${args.*}` resolves downstream. It cannot guarantee the *production* of that output: "a document must arrive" is not a property of a document. So the engine can only notice the miss after the turn is over.
 
-When a schema-bearing step's agent ends a turn having produced **nothing at all** — no `struct_output` call and no message text — the engine spends exactly **one** bounded re-prompt before failing the step. The nudge names the missing `struct_output` call and lists the schema's required fields (falling back to its property names).
+When a schema-bearing step's agent ends a turn having produced **no usable result** — no `struct_output` call and no message text, or a `struct_output` call the schema rejected — the engine spends exactly **one** bounded re-prompt before failing the step. The nudge names the missing `struct_output` call and lists the schema's required fields (falling back to its property names). The non-interactive forcing turn uses the same nudge, so it names the fields too.
+
+A schema-**rejected** `struct_output` counts as missing throughout: the rejection text (`Output does not match schema: …`) is not a document any downstream step can read, so it is never published as the step's output and never sets `isStructOutput`.
 
 On an **`interactive: true` step** the re-prompt additionally states that `question` is the only primitive that reaches the reviewer and waits for a reply, and it deliberately does **not** force `struct_output` — forcing the tool choice would make `question` unreachable, so an agent that stopped because it needed information from the human would be pushed into inventing an answer instead of asking for one. The re-prompt runs with the step's own `maxTurns` and `timeout`, so a full `question` round-trip still fits.
 
@@ -795,9 +797,9 @@ Bounds and caveats:
 
 - **Exactly one re-prompt per step**, capped in code — including across `fallback.retry` attempts, which re-run the whole step but do not refill the re-prompt budget.
 - **Never on turn exhaustion.** A step that ran out of turns fails without a re-prompt; a retry there has no budget to spend.
-- **Only for "nothing at all".** A turn that produced prose keeps the pre-existing behaviour (forced wrap-up on a non-interactive step, text fallback otherwise).
-- **Observable, not inferred.** The re-prompt emits `flow.step.retrying` on the `/event` SSE stream so an orchestrator sees the recovery rather than guessing from a gap in the timing. It is an in-flight signal only — nothing is persisted to `flow_states`, and the step stays `running`.
-- **The step error carries the agent's last words.** When the step does finally fail this way, the error appends the agent's most recent assistant text — e.g. `step "products" expects structured output but agent produced empty response (re-prompted once for struct_output, still nothing); last assistant message: "I have no tool that can list this client's products, so I cannot present them."` That prose is normally the only artefact explaining why the agent stopped, and it never leaves the session otherwise. It is collapsed to one line and truncated to 1000 characters.
+- **Only when there is no usable result.** A turn that produced prose keeps the pre-existing behaviour (forced wrap-up on a non-interactive step, text fallback otherwise) — a schema-rejected `struct_output` alongside prose still earns the forcing turn.
+- **Observable, not inferred.** The re-prompt emits `flow.step.retrying` on the `/event` SSE stream so an orchestrator sees the recovery rather than guessing from a gap in the timing. It is an in-flight signal only — nothing is persisted to `flow_states`, and the step stays `running`. The event fires only once the re-prompt has actually reached the provider: if it cannot start (the session is still busy after its short retry budget), nothing is emitted and the one-per-step budget stays unspent.
+- **The step error carries the agent's last words.** When the step does finally fail this way, the error appends the agent's most recent assistant text — e.g. `step "products" expects structured output but agent produced empty response (re-prompted once for struct_output, still nothing); last assistant message: "I have no tool that can list this client's products, so I cannot present them."` That prose is normally the only artefact explaining why the agent stopped, and it never leaves the session otherwise. It is collapsed to one line and truncated to 1000 bytes, backing the cut off to a rune boundary so the error stays valid UTF-8 (`flow_states.output` is `utf8mb4` on MySQL and rejects anything else). A failure whose `struct_output` call was rejected rather than absent says so: `… empty response (its struct_output call was rejected by the schema)`.
 
 ### Postponed steps
 

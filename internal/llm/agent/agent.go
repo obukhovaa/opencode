@@ -101,10 +101,15 @@ type AgentEvent struct {
 	//
 	// The flow runner reads this to tell "the agent ended a turn without a
 	// qualifying tool call" (recoverable — worth one re-prompt) apart from
-	// "the agent ran out of turns" (a re-prompt has no budget to spend and
-	// the wrap-up turn above already forced struct_output, so retrying just
-	// burns a request). See internal/flow/service.go's missing-struct_output
-	// handling.
+	// "the agent ran out of turns" (a re-prompt has no budget to spend, so
+	// retrying just burns a request). See internal/flow/service.go's
+	// missing-struct_output handling.
+	//
+	// The two gates differ in what they already paid for, and only the first
+	// has a forced wrap-up to point at: the inner-loop max-turns gate spends
+	// its own forced struct_output turn before returning, while the
+	// outer-cycle cap breaks out with no extra turn at all. The exemption
+	// rests on "out of budget" in both cases, not on a wrap-up having run.
 	TurnsExhausted bool
 
 	// FlowStepID is set when event originates from a Flow step

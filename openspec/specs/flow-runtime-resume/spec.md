@@ -287,7 +287,7 @@ For the empty and errored/cancelled shapes the forcing turn MUST run under a sho
 
 If the forcing turn yields a non-empty `struct_output`, the runner MUST use it as the step result so downstream conditional routing rules see the structured fields (clearing the pending error for the empty/errored shapes). If the forcing turn errors or still yields no non-empty `struct_output`, the runner MUST fall back to the prior behavior for that shape — the text fallback for the prose shape, or the terminal failure for the empty/errored shapes — without any additional forcing turn.
 
-The forcing turn MUST NOT run during the step's normal agentic turns (which keep the provider's default tool choice), MUST be attempted at most once per step execution, MUST NOT apply to interactive steps, MUST NOT be attempted when the parent context is already cancelled (a forced turn could not run), and MUST NOT be attempted when the run ended because its turn budget was exhausted (the agent loop already spends its own forced `struct_output` wrap-up turn on that path — see the forced-tool-choice capability — so a second forced turn adds no budget).
+The forcing turn MUST NOT run during the step's normal agentic turns (which keep the provider's default tool choice), MUST be attempted at most once per step execution, MUST NOT apply to interactive steps, MUST NOT be attempted when the parent context is already cancelled (a forced turn could not run), and MUST NOT be attempted when the run ended because its turn budget was exhausted (the run has no budget left to spend; on the inner max-turns gate the agent loop has additionally already spent its own forced `struct_output` wrap-up turn — see the forced-tool-choice capability).
 
 #### Scenario: Prose result is upgraded to struct_output
 
@@ -334,7 +334,9 @@ The forcing turn MUST NOT run during the step's normal agentic turns (which keep
 
 A step's `output.schema` constrains the shape of a produced document; it cannot express "a document must arrive". The runner therefore detects a missing `struct_output` only after the turn is over, and SHALL NOT treat that detection as immediately terminal.
 
-When a step declares `output.schema` and its run returns with **neither** a usable `struct_output` **nor** any assistant text, the flow runner SHALL spend exactly **one** bounded re-prompt on the same session before recording a failure. The re-prompt MUST state that the step requires a `struct_output` call and MUST name the schema's fields (its `required` entries when present, otherwise its `properties` keys).
+When a step declares `output.schema` and its run returns with **neither** a usable `struct_output` **nor** any assistant text, the flow runner SHALL spend exactly **one** bounded re-prompt on the same session before recording a failure. The re-prompt MUST state that the step requires a `struct_output` call and MUST name the schema's fields (its `required` entries when present, otherwise its `properties` keys) — on interactive and non-interactive steps alike.
+
+A `struct_output` call the schema **rejected** SHALL count as not usable everywhere on this path: the runner MUST treat it as a missing result for the purposes of the re-prompt, the forcing turn, and the terminal-failure check, MUST NOT publish the rejection text as the step's output, and MUST NOT set `isStructOutput` for it. The recorded error SHALL distinguish a rejected call from an absent one.
 
 For an **`interactive: true`** step the re-prompt:
 
@@ -346,6 +348,8 @@ For an **`interactive: true`** step the re-prompt:
 The re-prompt MUST be capped at one per step execution in code, including across `fallback.retry` attempts (which re-run the step but do not refill the re-prompt budget), and MUST NOT be attempted when the parent context is already cancelled or when the run ended on turn-budget exhaustion.
 
 Spending the re-prompt SHALL emit an in-flight `retrying` step transition on the flow-state stream so orchestrators observe the recovery rather than inferring it from timing. That transition MUST NOT be persisted to `flow_states` — the step has not reached a terminal status, and a `retrying` row would not be understood by the resume gate.
+
+The transition and the one-per-step budget SHALL be spent only once the re-prompt has actually been accepted by the agent runtime. A re-prompt that cannot start (the session is still busy after the short start-retry budget, or the run fails to start) MUST NOT emit a `retrying` transition, MUST NOT consume the budget, and MUST NOT be described in the step error as having run.
 
 #### Scenario: Empty interactive turn is rescued by the re-prompt
 
@@ -380,7 +384,7 @@ Spending the re-prompt SHALL emit an in-flight `retrying` step transition on the
 
 When a schema-bearing step is finally failed for producing no `struct_output` and no text, the step error SHALL retain its existing prefix (`step "<id>" expects structured output but agent produced empty response`) and SHALL append the most recent non-empty assistant text from the step's session, when one exists.
 
-The failing turn says nothing by construction, so the lookup MUST scan backwards through session history past it. The appended text MUST be collapsed to a single line and truncated to a bounded length, since the error is persisted to `flow_states.output` and emitted on the event stream. The error SHALL also record whether the failure was a turn-budget exhaustion or followed a spent re-prompt. Unavailability of session history (no message service, a failed read, or a session with no assistant prose) MUST degrade to the bare error rather than fail the step differently.
+The failing turn says nothing by construction, so the lookup MUST scan backwards through session history past it. The appended text MUST be collapsed to a single line and truncated to a bounded byte length, cutting on a UTF-8 rune boundary — `flow_states.output` is a `utf8mb4` column on MySQL and rejects invalid sequences, and that write is the one that records the terminal status. The error SHALL also record whether the failure was a turn-budget exhaustion or followed a spent re-prompt. Unavailability of session history (no message service, a failed read, or a session with no assistant prose) MUST degrade to the bare error rather than fail the step differently.
 
 #### Scenario: Step error explains itself
 
@@ -392,3 +396,16 @@ The failing turn says nothing by construction, so the lookup MUST scan backwards
 - **WHEN** the same failure occurs but session history cannot be read
 - **THEN** the step error is recorded with the historical prefix alone
 
+#### Scenario: A schema-rejected struct_output is treated as missing
+
+- **WHEN** a schema-bearing step's agent calls `struct_output` with a payload the schema rejects, and produces no assistant text
+- **THEN** the runner treats the step as having produced no result — spending the re-prompt (interactive) or the forcing turn (non-interactive)
+- **AND** never publishes the rejection text as the step's output, nor sets `isStructOutput` for it
+- **AND** if the step is finally failed, records that its `struct_output` call was rejected rather than absent
+
+#### Scenario: A re-prompt that never started is not claimed
+
+- **WHEN** the re-prompt cannot be started because the session is still busy after its start-retry budget
+- **THEN** no `retrying` transition is emitted
+- **AND** the one-per-step re-prompt budget is left unspent
+- **AND** the step error does not report that a re-prompt was spent

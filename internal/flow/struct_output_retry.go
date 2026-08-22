@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
@@ -22,9 +23,10 @@ import (
 // already-failing path.
 const structOutputRetryHistoryScan = 20
 
-// lastAssistantTextMaxLen caps the assistant prose embedded in a step error.
-// The error string lands in flow_states.output and on the /event SSE stream,
-// so an unbounded model turn must not be pasted in whole.
+// lastAssistantTextMaxLen caps the assistant prose embedded in a step error,
+// in BYTES. The error string lands in flow_states.output and on the /event SSE
+// stream, so an unbounded model turn must not be pasted in whole — and a byte
+// budget is what those two actually care about.
 const lastAssistantTextMaxLen = 1000
 
 // missingStructOutputError is the terminal failure for a schema-bearing step
@@ -40,6 +42,11 @@ type missingStructOutputError struct {
 	StepID         string
 	TurnsExhausted bool
 	Retried        bool
+	// SchemaRejected distinguishes "the agent called struct_output and the
+	// schema refused the payload" from "the agent never called it at all".
+	// Both leave the step with no document, but only the first tells the
+	// operator the agent tried and got the shape wrong.
+	SchemaRejected bool
 	LastAssistant  string
 }
 
@@ -48,6 +55,9 @@ func (e *missingStructOutputError) Error() string {
 	// "expects structured output but agent produced empty response".
 	var b strings.Builder
 	fmt.Fprintf(&b, "step %q expects structured output but agent produced empty response", e.StepID)
+	if e.SchemaRejected {
+		b.WriteString(" (its struct_output call was rejected by the schema)")
+	}
 	switch {
 	case e.TurnsExhausted:
 		b.WriteString(" (turn budget exhausted; no re-prompt attempted)")
@@ -104,7 +114,46 @@ func truncateForError(s string) string {
 	if len(s) <= lastAssistantTextMaxLen {
 		return s
 	}
-	return s[:lastAssistantTextMaxLen] + "…"
+	// Keep the byte budget, but back the cut off to the nearest rune boundary:
+	// slicing straight through a multi-byte sequence yields invalid UTF-8, and
+	// this string is written to flow_states.output — LONGTEXT under
+	// CHARSET=utf8mb4 on MySQL, which rejects invalid utf8mb4 with error 1366.
+	// That UPDATE is the one that must land (see the "persist with a fresh
+	// deadline" comment in runStep): if it fails, the row is stranded on
+	// `running`, which hasResumableWork reads as "still working" and resumes.
+	cut := lastAssistantTextMaxLen
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
+// usableStructOutput returns the event's struct_output only when it is one the
+// step can actually hand downstream: present, non-empty, and NOT schema-
+// rejected.
+//
+// The IsError arm is the one that is easy to miss. message.Message.StructOutput
+// returns the ERRORED tool result as a fallback when the turn produced no
+// accepted one (see internal/message/content.go), and the struct_output tool
+// rejects a bad payload with NewTextErrorResponse — a non-empty Content
+// carrying "Output does not match schema: …". A bare `Content == ""` check
+// therefore reads a rejection as a success: the step completes with the
+// rejection text as its output and IsStructOutput=true, json.Unmarshal of that
+// text fails so nothing merges into args, and every downstream `${args.*}`
+// silently resolves to nothing. That is the same stranded handoff the re-prompt
+// exists to prevent, so every gate on this path goes through here.
+func usableStructOutput(ev agentpkg.AgentEvent) *message.ToolResult {
+	if ev.StructOutput == nil || ev.StructOutput.Content == "" || ev.StructOutput.IsError {
+		return nil
+	}
+	return ev.StructOutput
+}
+
+// schemaRejectedStructOutput reports whether the event carries a struct_output
+// the schema refused, as opposed to no struct_output at all. Only used to make
+// the step error say which of the two happened.
+func schemaRejectedStructOutput(ev agentpkg.AgentEvent) bool {
+	return ev.StructOutput != nil && ev.StructOutput.Content != "" && ev.StructOutput.IsError
 }
 
 // schemaFieldNames lists the schema's field names for the re-prompt: the
@@ -149,10 +198,14 @@ func schemaFieldNames(schema map[string]any) []string {
 // which never reaches the peer and never blocks.
 func structOutputRetryPrompt(step Step) string {
 	var b strings.Builder
-	b.WriteString("Your previous turn ended without calling the struct_output tool and without any message text, ")
-	b.WriteString("so this step has produced no result and cannot continue.\n\n")
+	b.WriteString("Your previous turn ended without a usable struct_output call, ")
+	b.WriteString("so this step has produced no result it can hand to the next step and cannot continue.\n\n")
 	b.WriteString("This step REQUIRES exactly one struct_output tool call to finish.")
-	if fields := schemaFieldNames(step.Output.Schema); len(fields) > 0 {
+	var schema map[string]any
+	if step.Output != nil {
+		schema = step.Output.Schema
+	}
+	if fields := schemaFieldNames(schema); len(fields) > 0 {
 		fmt.Fprintf(&b, " The schema fields are: %s.", strings.Join(fields, ", "))
 	}
 	b.WriteString("\n\n")
@@ -191,11 +244,17 @@ func structOutputRetryPrompt(step Step) string {
 // session for the question tool's auto-approve bypass. No rebind is needed —
 // and a retry must never be moved out of runStep, or it would run unbound and
 // fail again differently.
+//
+// onStarted, when non-nil, is invoked exactly once immediately after the
+// re-prompt is accepted by the agent service — i.e. only when a model call was
+// really issued. Callers hang the flow.step.retrying transition and the
+// one-per-step budget off it so neither is spent on a re-prompt that never ran.
 func (s *service) retryStructOutputTurn(
 	ctx context.Context,
 	agentSvc agentpkg.Service,
 	sessionID string,
 	step Step,
+	onStarted func(),
 ) (agentpkg.AgentEvent, bool) {
 	// The main loop's step-scoped ctx was cancelled on its way out; derive a
 	// fresh one so the re-prompt gets a real budget. ctx already carries the
@@ -235,6 +294,9 @@ func (s *service) retryStructOutputTurn(
 		logging.Warn("struct_output re-prompt still session-busy after retries", "step", step.ID)
 		return agentpkg.AgentEvent{}, false
 	}
+	if onStarted != nil {
+		onStarted()
+	}
 
 	ev := <-done
 	if ev.Type == agentpkg.AgentEventTypeError {
@@ -244,8 +306,7 @@ func (s *service) retryStructOutputTurn(
 	// Usable when it produced either a struct_output or prose: struct_output
 	// completes the step, prose falls through the caller's existing
 	// text-fallback path (and, failing that, lands in the step error).
-	usableStruct := ev.StructOutput != nil && ev.StructOutput.Content != "" && !ev.StructOutput.IsError
-	if !usableStruct && ev.Message.Content().Text == "" {
+	if usableStructOutput(ev) == nil && ev.Message.Content().Text == "" {
 		logging.Warn("struct_output re-prompt produced nothing usable", "step", step.ID)
 		return ev, false
 	}

@@ -3,12 +3,15 @@ package flow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/pubsub"
@@ -139,6 +142,9 @@ func (m *stubMessages) ListLatest(_ context.Context, _ string, limit int64) ([]m
 type scriptedAgent struct {
 	*stubAgent
 	onCall func(callIdx int, sessionID, prompt string)
+	// startErr, when non-nil, decides the error RunWith returns instead of
+	// starting a turn. Used to drive the "re-prompt never started" path.
+	startErr func(callIdx int) error
 }
 
 func (a *scriptedAgent) Run(ctx context.Context, sessionID string, prompt string, maxTurns int, atts ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
@@ -148,6 +154,11 @@ func (a *scriptedAgent) Run(ctx context.Context, sessionID string, prompt string
 func (a *scriptedAgent) RunWith(ctx context.Context, sessionID string, prompt string, maxTurns int, opts agentpkg.RunOptions, atts ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
 	if a.onCall != nil {
 		a.onCall(a.stubAgent.callCount(), sessionID, prompt)
+	}
+	if a.startErr != nil {
+		if err := a.startErr(a.stubAgent.callCount()); err != nil {
+			return nil, err
+		}
 	}
 	return a.stubAgent.RunWith(ctx, sessionID, prompt, maxTurns, opts, atts...)
 }
@@ -734,5 +745,199 @@ func TestStructOutputTurnsExhausted(t *testing.T) {
 	wrapped := errors.Join(errors.New("other"), &missingStructOutputError{StepID: "s", TurnsExhausted: true})
 	if !structOutputTurnsExhausted(wrapped) {
 		t.Error("errors.As must see through wrapping")
+	}
+}
+
+// ---- schema-rejected struct_output ----------------------------------------
+
+// rejectedStructEvent is an agent turn whose struct_output call was refused by
+// the schema: message.Message.StructOutput surfaces the ERRORED tool result
+// (non-empty Content, IsError) when the turn produced no accepted one.
+func rejectedStructEvent(reason string) agentpkg.AgentEvent {
+	return agentpkg.AgentEvent{
+		Type: agentpkg.AgentEventTypeResponse,
+		Done: true,
+		StructOutput: &message.ToolResult{
+			Name:    tools.StructOutputToolName,
+			Content: reason,
+			IsError: true,
+		},
+		Message: message.Message{
+			Role:  message.Assistant,
+			Parts: []message.ContentPart{message.TextContent{Text: ""}},
+		},
+	}
+}
+
+// TestStructOutputRetry_SchemaRejectedIsRepromptedNotAccepted: a rejection is
+// not a document. Before the fix the gate only asked `Content == ""`, so the
+// rejection TEXT satisfied it and the step completed with
+// `Output: "Output does not match schema: …"` and IsStructOutput=true — no
+// re-prompt, no failure, and nothing merged into args for downstream steps.
+func TestStructOutputRetry_SchemaRejectedIsRepromptedNotAccepted(t *testing.T) {
+	run := runInteractiveFlow(t, "retry-rejected", []Step{interactiveStep("products", 20)},
+		[]agentpkg.AgentEvent{
+			rejectedStructEvent(`Output does not match schema: missing required field "confirmed"`),
+			structEvent(`{"products":["a"],"confirmed":true}`),
+		}, nil)
+
+	if got := run.agent.callCount(); got != 2 {
+		t.Fatalf("expected the rejection to be re-prompted (2 agent calls), got %d", got)
+	}
+	if !run.hasStatus("products", FlowStatusRetrying) {
+		t.Errorf("expected a %q transition, got %v", FlowStatusRetrying, run.statusesFor("products"))
+	}
+	if run.terminal.Status != FlowStatusCompleted {
+		t.Fatalf("terminal status = %q, want completed; output=%q", run.terminal.Status, run.terminal.Output)
+	}
+	if !containsSubstring(run.terminal.Output, `"confirmed":true`) {
+		t.Errorf("step output = %q, want the rescued struct_output", run.terminal.Output)
+	}
+	if run.nextArgs["confirmed"] != true {
+		t.Errorf("rescued struct_output did not merge into args: %#v", run.nextArgs)
+	}
+}
+
+// TestStructOutputRetry_SchemaRejectedNeverBecomesStepOutput: when the
+// re-prompt is rejected too, the step must FAIL rather than publish the
+// rejection text as its structured output.
+func TestStructOutputRetry_SchemaRejectedNeverBecomesStepOutput(t *testing.T) {
+	const reason = `Output does not match schema: missing required field "confirmed"`
+	run := runInteractiveFlow(t, "retry-rejected-twice", []Step{interactiveStep("products", 20)},
+		[]agentpkg.AgentEvent{rejectedStructEvent(reason)}, nil)
+
+	if run.terminal.Status != FlowStatusFailed {
+		t.Fatalf("terminal status = %q, want failed; output=%q", run.terminal.Status, run.terminal.Output)
+	}
+	if run.terminal.IsStructOutput {
+		t.Error("a schema-rejected result must never be published as IsStructOutput")
+	}
+	if !containsSubstring(run.terminal.Output, "rejected by the schema") {
+		t.Errorf("error should say the call was rejected rather than absent: %q", run.terminal.Output)
+	}
+}
+
+// TestForceStructOutput_SchemaRejectedWithProseIsForced: the same gate on the
+// non-interactive prose path — a rejected struct_output alongside prose must
+// still earn the forcing wrap-up turn instead of being accepted as the result.
+func TestForceStructOutput_SchemaRejectedWithProseIsForced(t *testing.T) {
+	rejectedWithProse := rejectedStructEvent("Invalid JSON: unexpected end of input")
+	rejectedWithProse.Message = message.Message{
+		Role:  message.Assistant,
+		Parts: []message.ContentPart{message.TextContent{Text: "here is my plan, in prose"}},
+	}
+
+	agent, terminal := runForceFlow(t, "force-rejected", &StepOutput{Schema: map[string]any{"type": "object"}},
+		[]agentpkg.AgentEvent{rejectedWithProse, structEvent(`{"ok":true}`)})
+
+	if got := agent.callCount(); got != 2 {
+		t.Fatalf("expected the forcing turn to fire on a rejected struct_output, got %d calls", got)
+	}
+	if terminal.Status != FlowStatusCompleted {
+		t.Fatalf("terminal status = %q, want completed", terminal.Status)
+	}
+	if !containsSubstring(terminal.Output, `"ok":true`) {
+		t.Errorf("step output = %q, want the forced struct_output", terminal.Output)
+	}
+}
+
+// ---- the retrying signal must describe a turn that really ran --------------
+
+// TestStructOutputRetry_NotClaimedWhenRePromptNeverStarted: retryStructOutputTurn
+// can give up without issuing a model call (ErrSessionBusy outliving its short
+// retry budget). Neither the flow.step.retrying transition nor the
+// "(re-prompted once…)" clause in the step error may claim a turn nobody paid
+// for — and the one-per-step budget must remain unspent.
+func TestStructOutputRetry_NotClaimedWhenRePromptNeverStarted(t *testing.T) {
+	steps := []Step{interactiveStep("products", 20)}
+	registerTestFlow(t, Flow{ID: "retry-never-started", Name: "Interactive", Spec: FlowSpec{Steps: steps}})
+
+	base := &stubAgent{
+		Broker:    pubsub.NewBroker[agentpkg.AgentEvent](),
+		responses: []agentpkg.AgentEvent{emptyEvent()},
+	}
+	agent := &scriptedAgent{
+		stubAgent: base,
+		// Every call after the step's own turn is permanently session-busy, so
+		// the re-prompt exhausts its retry budget without ever starting.
+		startErr: func(callIdx int) error {
+			if callIdx == 0 {
+				return nil
+			}
+			return agentpkg.ErrSessionBusy
+		},
+	}
+	svc := NewService(&stubSessions{}, &stubMessages{}, &stubQuerier{}, newInteractivePermissions(),
+		&scriptedAgentFactory{agent: agent})
+	svc.(*service).SetInteractiveHook(newRecordingHook())
+
+	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", "retry-never-started", copyArgs(reviewerArgs), true)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	var (
+		terminal *FlowState
+		statuses []FlowStatus
+	)
+	for s := range flowStates {
+		statuses = append(statuses, s.Status)
+		if s.Status == FlowStatusFailed || s.Status == FlowStatusCompleted {
+			terminal = s
+		}
+	}
+	for range agentEvents {
+	}
+
+	if terminal == nil || terminal.Status != FlowStatusFailed {
+		t.Fatalf("expected the step to fail, got %+v", terminal)
+	}
+	for _, st := range statuses {
+		if st == FlowStatusRetrying {
+			t.Error("flow.step.retrying was emitted for a re-prompt that never started")
+		}
+	}
+	if containsSubstring(terminal.Output, "re-prompted once") {
+		t.Errorf("error claims a re-prompt that never ran: %q", terminal.Output)
+	}
+}
+
+// ---- truncation ------------------------------------------------------------
+
+// TestTruncateForError_KeepsValidUTF8: the truncated text is written to
+// flow_states.output (LONGTEXT / utf8mb4 on MySQL, which rejects invalid
+// utf8mb4 with error 1366), so the cut must land on a rune boundary while still
+// honouring the byte budget. 1000 % 3 == 1, so a bare s[:1000] splits the 334th
+// 3-byte rune.
+func TestTruncateForError_KeepsValidUTF8(t *testing.T) {
+	t.Parallel()
+	// Every rune width, at every alignment relative to the cut — the `pad`
+	// prefix shifts the multi-byte run so each width really does get a case
+	// where byte lastAssistantTextMaxLen lands mid-sequence.
+	for _, r := range []string{"é", "日", "😀"} { // 2, 3, 4 bytes
+		for pad := 0; pad < utf8.UTFMax; pad++ {
+			in := strings.Repeat("a", pad) + strings.Repeat(r, lastAssistantTextMaxLen)
+			got := truncateForError(in)
+			label := fmt.Sprintf("rune %q pad %d", r, pad)
+			if !utf8.ValidString(got) {
+				t.Errorf("%s: truncated text is not valid UTF-8: % x", label, got)
+			}
+			// The ellipsis is the only thing allowed past the byte budget.
+			body := strings.TrimSuffix(got, "…")
+			if len(body) > lastAssistantTextMaxLen {
+				t.Errorf("%s: body = %d bytes, want <= %d", label, len(body), lastAssistantTextMaxLen)
+			}
+			// Backing off to a rune boundary costs at most UTFMax-1 bytes.
+			if len(body) < lastAssistantTextMaxLen-(utf8.UTFMax-1) {
+				t.Errorf("%s: backed off too far: %d bytes", label, len(body))
+			}
+			if !strings.HasSuffix(got, "…") {
+				t.Errorf("%s: expected an ellipsis suffix", label)
+			}
+		}
+	}
+	// A string already inside the cap must come back byte-identical.
+	short := "короткий ответ агента"
+	if out := truncateForError(short); out != short {
+		t.Errorf("short multibyte text was altered: %q", out)
 	}
 }
