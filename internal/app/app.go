@@ -394,11 +394,9 @@ func (d *taskDeps) WritePair(ctx context.Context, sessionID string, p task.Synth
 }
 
 func (d *taskDeps) IsSessionBusy(sessionID string) bool {
-	ag := d.app.ActiveAgent()
-	if ag == nil {
-		return false
-	}
-	return ag.IsSessionBusy(sessionID)
+	// Process-wide truth: the session may be run by a per-step flow agent
+	// instance the active/primary agent knows nothing about (GENAI-239).
+	return agent.SessionBusy(sessionID)
 }
 
 // ResumeSession kicks off a fresh agent.Run with empty content on the bound

@@ -81,6 +81,7 @@ func (b *agentTool) runAsync(
 		OriginatingToolCallID: call.ID,
 		OriginatingToolName:   TaskToolName,
 		Description:           params.TaskTitle,
+		FlowOwned:             tools.StepScopedContext(ctx) != nil,
 		Cancel:                cancel,
 	}
 	if err := reg.Register(tk); err != nil {

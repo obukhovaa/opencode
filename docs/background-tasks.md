@@ -26,11 +26,19 @@ The tool returns immediately with an ack containing a `task_id` and an `output_f
 The agent's `Run` returns as soon as the model emits its terminal turn — the ack tool result was sent, the model wrote "I'll let you know when it finishes", and the turn closes. Later, when the background work completes:
 
 1. `EnqueueTaskCompletion` writes the synthetic pair.
-2. `IsSessionBusy(sessionID)` returns false (no `Run` in flight on this session).
+2. `IsSessionBusy(sessionID)` returns false (no `Run` in flight on this session — the check reads the process-global session-run ledger, so a run held by ANY agent instance counts).
 3. `task.deps.ResumeSession` kicks off a fresh `agent.Run` on the same session.
 4. The new turn's assistant message is published via the message broker and fans out to the TUI / bridge / SSE consumers as a regular assistant reply.
 
 The user (or chat thread) sees a new agent message appear when the work is done. No new wiring; the existing message broker carries it.
+
+**Flow-owned tasks are exempt from auto-resume.** A task spawned under a flow step's step-scoped context is marked `FlowOwned` at spawn time, and its completions never trigger `ResumeSession`.
+
+What reacts instead is the step's own run. A flow step is one `agent.RunWith` call, not one model turn: its outer loop blocks in the end-of-turn drain until every pending task is terminal, then reloads the message history and **re-enters the inner agentic loop for another model cycle** with the synthetic completion pairs in context (steps 3–5 of [Non-interactive mode](#non-interactive-mode-flow-steps-headless-cli-acp-one-shot); `internal/llm/agent/agent.go`, the `OuterLoop` reload). That cycle runs under the step's own agent, with the step's tools and its `output.schema` — which `ResumeSession` cannot do: it calls `agent.Run` on `app.ActiveAgent()`, and sessions record no owning agent, so the resume would run the workspace default agent on a session that belongs to a different one (GENAI-239). Auto-resume was never the reaction mechanism here — while the step's run is in flight the busy check already suppressed it; the process-global ledger is what makes that suppression reliable across agent instances.
+
+The one case with no reader is a flow-owned task that **outlives** its step. Background `bash` and `monitor` deliberately detach their subprocess from the turn context, so if the step's run exits first (step timeout, turn-budget exhaustion, shutdown) the subprocess keeps running and its completion pair lands in a session nothing will generate on again. The abandoned tasks are named in the synthetic wait-timeout note the runtime injects on that path, and the pair itself stays in the message log for the transcript, `tasklist`, and any later iteration of the step — but no model turn consumes it. This is deliberate: the alternative is the zombie turn above. Async `task` subagents are not exposed to it — their context derives from the step-scoped one, so the step's completion cancels them and their terminal pair is written before the step unwinds.
+
+See `openspec/specs/session-run-exclusivity` and the `task-notifications` spec.
 
 ### Non-interactive mode (flow steps, headless CLI, ACP one-shot)
 
@@ -39,7 +47,7 @@ The caller invokes `agent.RunWith(ctx, sessionID, content, maxTurns, RunOptions{
 1. Runs the inner agentic loop as usual — including the model emitting a tool_use for `bash run_in_background` (or `task async`, or `monitor`) and receiving the ack as a tool result.
 2. When the model emits its terminal turn, the OUTER loop checks `task.GlobalRegistry().PendingForSession(sessionID, nil)`.
 3. If there are pending tasks, the outer loop drains them: it calls `WaitForActiveTasks(ctx, sessionID, WaitOptions{IncludeMonitor: true})`, and on a clean return re-reads the pending set — if tasks appeared after the wait's snapshot (e.g. a later fan-out wave), it waits again, looping until the session has zero pending tasks or the ctx deadline trips (see [Timeouts](#timeouts)).
-4. While the wait runs, `IsSessionBusy` continues to return true (the original `RunWith` goroutine still holds `activeRequests`), so `ResumeSession` is naturally a no-op — synthetic completions land in the DB without spawning a parallel agent run.
+4. While the wait runs, `IsSessionBusy` continues to return true (the original `RunWith` goroutine holds the session's slot in the process-global run ledger — visible from every agent instance, not just the one running the step), so `ResumeSession` is naturally a no-op — synthetic completions land in the DB without spawning a parallel agent run.
 5. Once the drain returns, the runtime reloads the session's message history (which now contains the synthetic completion pair(s)) and re-enters the inner agentic loop for one more cycle. The model observes the synthetic Tool results and produces a final response that reflects the post-completion state. If THAT cycle spawns more background work, the outer loop catches it again — `RunWith` never returns while the session has running tasks.
 6. Only then does `RunWith` return — and the caller (flow runner / CLI / ACP handler) gets the post-completion `AgentEvent`, not the premature ack.
 

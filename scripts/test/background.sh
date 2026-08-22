@@ -227,7 +227,22 @@ else
     log_fail "non-interactive sleep with no pending tasks executes verbatim" "over-eager interception"
 fi
 
-# ── 12. final cleanup verification ──────────────────────────────────
+# ── 12. flow-owned auto-resume suppression ──────────────────────────
+non_flow_resume=$(echo "$OUTPUT" | jq -r '.non_flow_resume_fired')
+flow_owned_skip=$(echo "$OUTPUT" | jq -r '.flow_owned_resume_skipped')
+
+if [ "$non_flow_resume" = "true" ]; then
+    log_pass "plain background completion still auto-resumes idle session"
+else
+    log_fail "plain background completion still auto-resumes idle session" "ResumeSession never fired"
+fi
+if [ "$flow_owned_skip" = "true" ]; then
+    log_pass "flow-owned background completion does NOT auto-resume"
+else
+    log_fail "flow-owned background completion does NOT auto-resume" "ResumeSession fired for flow-owned task"
+fi
+
+# ── 13. final cleanup verification ──────────────────────────────────
 # The trap will rm -rf the sandbox — verify it works on a known artifact
 # by listing the tasks directory before exit.
 TASK_DIR="$SANDBOX/.opencode/tasks"
