@@ -107,3 +107,69 @@ func TestAcquireSessionSlot_Atomicity(t *testing.T) {
 		t.Fatalf("concurrent acquire wins = %d, want exactly 1", got)
 	}
 }
+
+// TestIsBusy_SeesCronSentinel pins that the cron scheduler's synthetic-commit
+// lock still reads as busy through Service.IsBusy. Moving the sentinel into
+// the global ledger took it out of the per-instance activeRequests map that
+// IsBusy ranges over, so IsBusy has to consult the ledger for it — otherwise
+// Update() would allow a model swap mid-commit and the TUI would show idle.
+func TestIsBusy_SeesCronSentinel(t *testing.T) {
+	const sid = "slot-test-isbusy-cron"
+	a := &agent{}
+	if a.IsBusy() {
+		t.Fatal("IsBusy() = true with no holders")
+	}
+	if !a.TryLockSession(sid) {
+		t.Fatal("acquire failed on a free slot")
+	}
+	t.Cleanup(func() { releaseSessionSlot(sid) })
+
+	if !a.IsBusy() {
+		t.Error("IsBusy() = false while the cron sentinel is held")
+	}
+	// Visible from a different instance too — the ledger is global.
+	if !(&agent{}).IsBusy() {
+		t.Error("IsBusy() = false on another instance while the sentinel is held")
+	}
+	a.UnlockSession(sid)
+	if a.IsBusy() {
+		t.Error("IsBusy() = true after the sentinel was released")
+	}
+}
+
+// TestIsBusy_RunHolderDoesNotLeakAcrossInstances guards the other direction:
+// cronLockHeld must not make a LIVE Run on another instance read as this
+// instance being busy. IsBusy is instance-scoped for runs; only the cron
+// sentinel is process-wide (it is always taken through ActiveAgent()).
+func TestIsBusy_RunHolderDoesNotLeakAcrossInstances(t *testing.T) {
+	const sid = "slot-test-isbusy-run-holder"
+	if !acquireSessionSlot(sid, context.CancelFunc(func() {})) {
+		t.Fatal("acquire failed on a free slot")
+	}
+	t.Cleanup(func() { releaseSessionSlot(sid) })
+
+	if (&agent{}).IsBusy() {
+		t.Error("IsBusy() = true for a run held by a different instance")
+	}
+	if !SessionBusy(sid) {
+		t.Fatal("the slot should still be held")
+	}
+}
+
+// TestRunWith_RejectsEmptySessionID: the session ID is the ledger's key, so an
+// empty one would have two unrelated runs claim the same slot and exclude each
+// other process-wide. The guard sits ahead of every other RunWith step, so a
+// bare &agent{} (no provider) is enough to exercise it.
+func TestRunWith_RejectsEmptySessionID(t *testing.T) {
+	ch, err := (&agent{}).RunWith(context.Background(), "", "hi", 0, RunOptions{})
+	if err == nil {
+		t.Fatal("RunWith accepted an empty session id")
+	}
+	if ch != nil {
+		t.Error("RunWith returned a channel alongside the error")
+	}
+	if SessionBusy("") {
+		t.Error("the rejected run still claimed the empty-string slot")
+		releaseSessionSlot("")
+	}
+}

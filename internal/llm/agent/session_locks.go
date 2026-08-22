@@ -45,3 +45,25 @@ func acquireSessionSlot(sessionID string, holder any) bool {
 func releaseSessionSlot(sessionID string) {
 	globalSessionSlots.Delete(sessionID)
 }
+
+// cronLockHeld reports whether the cron scheduler currently holds ANY
+// session's slot. Service.IsBusy needs this because moving the sentinel into
+// the global ledger took it out of the per-instance activeRequests map that
+// IsBusy ranges over — without it, a session locked for cron's synthetic
+// commit would read as idle from the instance the cron scheduler locked it
+// through (app.ActiveAgent()), which is a regression against the pre-ledger
+// behaviour that gated Update() and the TUI busy indicators.
+//
+// The Range is over a map that holds one entry per in-flight run — single
+// digits in practice — so this is cheap enough for the TUI's per-render call.
+func cronLockHeld() bool {
+	held := false
+	globalSessionSlots.Range(func(_, v any) bool {
+		if _, ok := v.(cronLock); ok {
+			held = true
+			return false
+		}
+		return true
+	})
+	return held
+}

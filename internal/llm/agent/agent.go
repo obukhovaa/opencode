@@ -440,19 +440,23 @@ func (a *agent) Cancel(sessionID string) {
 func (a *agent) IsBusy() bool {
 	busy := false
 	a.activeRequests.Range(func(key, value any) bool {
-		switch v := value.(type) {
-		case context.CancelFunc:
-			if v != nil {
-				busy = true
-				return false // Stop iterating
-			}
-		case cronLock:
+		// Only CancelFuncs live here now — the cron sentinel moved to the
+		// global ledger (see TryLockSession), so it is checked separately
+		// below rather than as a case in this switch.
+		if v, ok := value.(context.CancelFunc); ok && v != nil {
 			busy = true
-			return false
+			return false // Stop iterating
 		}
 		return true // Continue iterating
 	})
-	return busy
+	if busy {
+		return true
+	}
+	// The cron scheduler's synthetic-commit lock still has to read as busy:
+	// Update() gates a model swap on it and the TUI drives its working
+	// indicators off it. Before the global ledger the sentinel sat in
+	// activeRequests and the Range above found it.
+	return cronLockHeld()
 }
 
 // IsSessionBusy reports whether the session's run slot is held anywhere in
@@ -475,6 +479,12 @@ type cronLock struct{}
 // concurrent Run() returns ErrSessionBusy — preventing the agent from
 // starting a turn that would interleave with the cron scheduler's synthetic
 // tool_call/tool_result pair.
+//
+// The sentinel lands in the global ledger only, NOT in the per-instance
+// activeRequests map — so IsBusy consults cronLockHeld() to keep reporting
+// busy while it is held. Storing it per-instance instead would leak the
+// entry whenever lock and unlock resolve through different ActiveAgent()
+// instances (a TUI agent switch mid-commit).
 func (a *agent) TryLockSession(sessionID string) bool {
 	return acquireSessionSlot(sessionID, cronLock{})
 }
@@ -626,6 +636,12 @@ func (a *agent) Run(ctx context.Context, sessionID string, content string, maxTu
 
 // RunWith is the full-options entry point. See RunOptions for available flags.
 func (a *agent) RunWith(ctx context.Context, sessionID string, content string, maxTurnsOverride int, opts RunOptions, attachments ...message.Attachment) (<-chan AgentEvent, error) {
+	// The session ID is the session-run ledger's key. An empty one would make
+	// two unrelated runs claim the same slot and exclude each other
+	// process-wide, so reject it here rather than let it corrupt the ledger.
+	if sessionID == "" {
+		return nil, fmt.Errorf("agent.Run: empty session id")
+	}
 	if !a.provider.Model().SupportsAttachments && attachments != nil {
 		attachments = nil
 	}

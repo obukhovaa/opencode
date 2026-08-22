@@ -32,7 +32,13 @@ The agent's `Run` returns as soon as the model emits its terminal turn — the a
 
 The user (or chat thread) sees a new agent message appear when the work is done. No new wiring; the existing message broker carries it.
 
-**Flow-owned tasks are exempt from auto-resume.** A task spawned under a flow step's step-scoped context is marked `FlowOwned` at spawn time, and its completions never trigger `ResumeSession` — the step's own end-of-turn drain (below) is the reaction mechanism, and once the step has ended the flow has already routed on its result, so a resume would start a zombie turn under the active/primary agent instead of the step's agent. See `openspec/specs/session-run-exclusivity` and the `task-notifications` spec.
+**Flow-owned tasks are exempt from auto-resume.** A task spawned under a flow step's step-scoped context is marked `FlowOwned` at spawn time, and its completions never trigger `ResumeSession`.
+
+What reacts instead is the step's own run. A flow step is one `agent.RunWith` call, not one model turn: its outer loop blocks in the end-of-turn drain until every pending task is terminal, then reloads the message history and **re-enters the inner agentic loop for another model cycle** with the synthetic completion pairs in context (steps 3–5 of [Non-interactive mode](#non-interactive-mode-flow-steps-headless-cli-acp-one-shot); `internal/llm/agent/agent.go`, the `OuterLoop` reload). That cycle runs under the step's own agent, with the step's tools and its `output.schema` — which `ResumeSession` cannot do: it calls `agent.Run` on `app.ActiveAgent()`, and sessions record no owning agent, so the resume would run the workspace default agent on a session that belongs to a different one (GENAI-239). Auto-resume was never the reaction mechanism here — while the step's run is in flight the busy check already suppressed it; the process-global ledger is what makes that suppression reliable across agent instances.
+
+The one case with no reader is a flow-owned task that **outlives** its step. Background `bash` and `monitor` deliberately detach their subprocess from the turn context, so if the step's run exits first (step timeout, turn-budget exhaustion, shutdown) the subprocess keeps running and its completion pair lands in a session nothing will generate on again. The abandoned tasks are named in the synthetic wait-timeout note the runtime injects on that path, and the pair itself stays in the message log for the transcript, `tasklist`, and any later iteration of the step — but no model turn consumes it. This is deliberate: the alternative is the zombie turn above. Async `task` subagents are not exposed to it — their context derives from the step-scoped one, so the step's completion cancels them and their terminal pair is written before the step unwinds.
+
+See `openspec/specs/session-run-exclusivity` and the `task-notifications` spec.
 
 ### Non-interactive mode (flow steps, headless CLI, ACP one-shot)
 
