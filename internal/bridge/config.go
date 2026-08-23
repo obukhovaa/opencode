@@ -177,11 +177,11 @@ type ExternalIdentity struct {
 	ID      string `json:"id"`
 	Enabled bool   `json:"enabled"`
 	// RelayURL / RelayCredential mirror the orchestrator's binding-registrar
-	// URL/credential. In practice cmd/serve.go resolves these from
-	// OPENCODE_BRIDGE_REGISTRAR_URL/_PASSWORD at construction time (same
-	// pattern as MattermostIdentity's ActionURLBase/ActionSecret in
-	// Options, NOT read from this JSON struct) — present here so the type
-	// is self-describing and tests can construct values directly.
+	// URL/credential. cmd/serve.go prefers these when set and falls back to
+	// OPENCODE_BRIDGE_REGISTRAR_URL/_PASSWORD otherwise, so a consumer
+	// configured purely through `.opencode.json` or
+	// POST /router/identities/external is deliverable without the env vars
+	// being present.
 	RelayURL        string `json:"relayUrl,omitempty"`
 	RelayCredential string `json:"relayCredential,omitempty"`
 }

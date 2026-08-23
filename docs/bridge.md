@@ -83,7 +83,7 @@ Health snapshot: `curl http://127.0.0.1:3456/router/health` (per-adapter `status
 | `permissionMode` | `"allow"` \| `"deny"` \| `"ask"` \| empty | How the bridge resolves agent permission requests on bridge-bound sessions. `allow`/`deny` auto-resolve; `ask`/empty defer to opencode's default UI (will hang headless). Unrecognised values fail-safe to deny with a one-shot WARN log. |
 | `toolUpdatesEnabled` | `bool` | Stream tool-call lifecycle to chat. Detail level is set by `toolUpdateVerbosity`. Failures surface regardless of this flag. |
 | `toolUpdateVerbosity` | `"compact"` (default) \| `"full"` | `compact` emits **one line per tool call**: `🔧 <tool>#<id>` while running, updated in place to `✓ <tool>#<id> · <duration>` on completion — arguments and result bodies stay out of chat (they're in the session store and Langfuse). Failures always append a truncated reason: `✗ <tool>#<id> · <duration> · <reason>`. `full` restores the argument summary on the call line and a truncated result body on completion. Unrecognised values fall back to `compact` with a one-shot WARN. Flip it live with `/verbosity`. |
-| `channels.{telegram,slack,mattermost}` | object | Per-platform configuration; see below. |
+| `channels.{telegram,slack,mattermost,external}` | object | Per-platform configuration; see below. |
 
 ## Per-channel configuration
 
@@ -154,7 +154,40 @@ Health snapshot: `curl http://127.0.0.1:3456/router/health` (per-adapter `status
 - WebSocket + REST hand-rolled (no third-party Mattermost SDK; avoids ~272 transitive deps).
 - Peer ID formats: `<channelId>` (DM/channel — auto-mutates to `<channelId>|<rootPostId>` on first outbound), `<channelId>|<rootPostId>` (existing thread), 26-char user-id (auto-resolved to DM via `channels/direct`).
 - Reconnect: 1s → 30s exponential backoff, 20 attempts max. After exhaustion the adapter is marked `error` in `/router/health`.
-- Interactive question UI is **NOT** supported (would require a Mattermost-callable webhook URL the bridge doesn't host). Mattermost peers always use the numbered-text question fallback regardless of `questionMode`.
+- Interactive question UI: **single-select only**, and only when the pod knows where the orchestrator lives. Each choice renders as an `attachment.actions` button whose `integration.url` points at the orchestrator's `/router/mattermost/attachment-action`, with an `integration.context` of `{peerId, requestId, choice, token}`. Requires both:
+
+  | Env var | Purpose |
+  |---------|---------|
+  | `OPENCODE_BRIDGE_REGISTRAR_URL` | Base URL the button's `integration.url` is derived from. |
+  | `OPENCODE_BRIDGE_REGISTRAR_PASSWORD` | Shared orchestrator↔runner secret keying the action token (an HMAC-SHA256 over channel, identity, peerId, requestId and choice — Mattermost message actions carry no platform signature of their own). |
+
+  If **either** is unset the send fails and that peer falls back to numbered text. This is deliberate: a button with no URL submits nowhere, and a token keyed with an empty secret is forgeable by anyone who can read the message, so neither is posted.
+
+- Multi-select prompts always use the numbered-text / comma-separated-reply fallback — Mattermost attachment actions have no multi-select-with-apply semantics.
+
+### External
+
+A relay channel with **no chat platform of its own**. Outbound messages and questions are POSTed to the orchestrator's `/router/external/outbound`, which fans them out to a non-chat consumer (e.g. a service subscribing over SSE). `router_send` and the interactive-question flow behave exactly as they do for a chat channel — agent code doesn't know the difference.
+
+```json
+"external": {
+  "enabled": true,
+  "consumers": [
+    {
+      "id": "c3",
+      "enabled": true,
+      "relayUrl": "https://orchestrator.example.com",
+      "relayCredential": "<SHARED_SECRET>"
+    }
+  ]
+}
+```
+
+- `relayUrl` / `relayCredential` are optional in config: when omitted they fall back to `OPENCODE_BRIDGE_REGISTRAR_URL` / `OPENCODE_BRIDGE_REGISTRAR_PASSWORD`. When **neither** config nor env supplies them the adapter still registers but reports `disabled` in `/router/health` and fails every send, so a later reconfigure doesn't need a restart to have an adapter to attach to.
+- Peer ID format: `<aid>:<flow_id>:<run_id>`, composed by the consumer. The agent must echo back a peer id it was given — never construct one.
+- Inbound is never received directly. It arrives via the orchestrator's forward to `/router/inbound`, the same as any channel in mediated-inbound mode, so no single-listener lock is taken for this channel.
+- Relay frames are authenticated with HTTP Basic (the credential as password) and `202 Accepted` is the only success status. Attachments relay as **metadata only** (`fileName`, `mimeType`, `size`) — never content.
+- Groups / `@mention` gating don't apply; `POST /router/config/groups` rejects this channel explicitly.
 
 ## HTTP API (`/router/*`)
 
@@ -278,7 +311,8 @@ When `questionMode: "interactive"` is set and the agent calls the `question` too
 
 - **Slack** — `chat.postMessage` with an actions block (one button per option).
 - **Telegram** — `sendMessage` with `reply_markup.inline_keyboard` (one row per option).
-- **Mattermost** — numbered-text fallback (interactive attachments aren't supported, see the per-channel notes above).
+- **Mattermost** — `attachment.actions` buttons for single-select, when `OPENCODE_BRIDGE_REGISTRAR_URL` and `OPENCODE_BRIDGE_REGISTRAR_PASSWORD` are both set; numbered-text fallback otherwise, and always for multi-select. See the per-channel notes above.
+- **External** — a `question` relay frame carrying `requestId`, the choices, and the `multiple` / `custom` flags; the consumer renders it however it likes and answers against `requestId`.
 
 Button click callbacks are normalized into the same `bridge.Inbound` shape as text replies, so the agent's question-reply parsing works identically across platforms. Fallback to numbered text is per-peer — if Slack's `chat.postMessage` errors, only that peer falls back; other peers in a multi-reviewer session still get buttons.
 

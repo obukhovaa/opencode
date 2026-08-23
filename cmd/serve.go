@@ -485,18 +485,30 @@ func newBridgeAdapterFactory(dataDir string, svc *bridgesvc.Service) bridgesvc.A
 				if e.ID != identityID {
 					continue
 				}
-				// RelayBaseURL / RelayCredential are resolved from
-				// environment, NOT from cfg.Channels.External.Consumers'
-				// own RelayURL/RelayCredential fields — same pattern as
-				// the mattermost branch's ActionURLBase/ActionSecret
-				// above: the orchestrator's registrar URL/password are
-				// the single source of truth for this pod's relay
-				// target, re-read directly here rather than threaded
-				// through params.
+				// Per-consumer config wins; the orchestrator's registrar
+				// URL/password are the fallback for the common case where
+				// the pod is told about them only through env.
+				//
+				// The config fields have to be honoured, not ignored:
+				// POST /router/identities/external accepts
+				// relayUrl/relayCredential, persists them, and reports
+				// them back through hasToken. An operator who configures
+				// a consumer that way would otherwise get an adapter that
+				// silently disabled itself because the env vars happened
+				// to be unset — the API would claim the credential was
+				// there while nothing could be delivered.
+				relayURL := e.RelayURL
+				if relayURL == "" {
+					relayURL = os.Getenv("OPENCODE_BRIDGE_REGISTRAR_URL")
+				}
+				relayCred := e.RelayCredential
+				if relayCred == "" {
+					relayCred = os.Getenv("OPENCODE_BRIDGE_REGISTRAR_PASSWORD")
+				}
 				return external.New(external.Identity{
 					ID:              e.ID,
-					RelayBaseURL:    os.Getenv("OPENCODE_BRIDGE_REGISTRAR_URL"),
-					RelayCredential: os.Getenv("OPENCODE_BRIDGE_REGISTRAR_PASSWORD"),
+					RelayBaseURL:    relayURL,
+					RelayCredential: relayCred,
 				}, external.Options{})
 			}
 		}

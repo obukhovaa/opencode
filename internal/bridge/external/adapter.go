@@ -57,6 +57,10 @@ type Adapter struct {
 	relayBaseURL    string
 	relayCredential string
 	httpClient      *http.Client
+	// jobID is the orchestrator job this pod is executing, resolved once at
+	// construction from OPENCODE_BRIDGE_JOB_ID. Empty when opencode runs
+	// outside a job.
+	jobID string
 
 	disabled       bool
 	disabledReason string
@@ -85,10 +89,17 @@ func New(id Identity, opts Options) (*Adapter, error) {
 		client = &http.Client{Timeout: defaultHTTPTimeout}
 	}
 	a := &Adapter{
-		identityID:      id.ID,
+		identityID: id.ID,
+		// Both trimmed: a value that arrived with surrounding whitespace
+		// (env var, hand-edited JSON) would otherwise pass the
+		// "configured" check below and then fail at the wire — a 401 that
+		// reads like an orchestrator problem rather than a config typo.
 		relayBaseURL:    strings.TrimSpace(id.RelayBaseURL),
-		relayCredential: id.RelayCredential,
+		relayCredential: strings.TrimSpace(id.RelayCredential),
 		httpClient:      client,
+		// Resolved once here rather than per send: this is a process-level
+		// value, and every other adapter input is settled at construction.
+		jobID: os.Getenv("OPENCODE_BRIDGE_JOB_ID"),
 	}
 
 	var missing []string
@@ -197,7 +208,7 @@ func (a *Adapter) Send(ctx context.Context, out bridge.Outbound) bridge.SendResu
 	}
 
 	frame := relayFrame{
-		JobID:       os.Getenv("OPENCODE_BRIDGE_JOB_ID"),
+		JobID:       a.jobID,
 		Peer:        out.Peer,
 		SessionID:   sessionID,
 		Kind:        kind,
@@ -234,8 +245,22 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 		return "", errors.New("bridge/external: SendInteractiveQuestion requires a requestId on context (bridge.ContextWithExternalQuestion) — refusing to relay an unanswerable question")
 	}
 
+	// A question with nothing to choose from is not answerable, so it is
+	// rejected rather than relayed. The router's shouldUseInteractive gate
+	// already requires at least one option, which is exactly why this is
+	// worth asserting here: the mattermost adapter makes the same check,
+	// and without it the `custom` flag below would be derived from no
+	// choice at all.
+	if len(choices) == 0 {
+		return "", errors.New("bridge/external: SendInteractiveQuestion requires at least one choice")
+	}
+
 	relayChoices := make([]relayChoice, 0, len(choices))
-	custom := true // per spec: a prompt is never sent with zero choices in the interactive path
+	// Custom is a per-prompt flag replicated on every choice, read off the
+	// first per bridge.QuestionChoice's contract. Defaulting to false keeps
+	// the fail-safe direction: never advertise custom answers the prompt
+	// did not enable.
+	custom := false
 	for i, c := range choices {
 		relayChoices = append(relayChoices, relayChoice{
 			Label:  c.Label,
@@ -248,7 +273,7 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 	}
 
 	frame := relayFrame{
-		JobID:     os.Getenv("OPENCODE_BRIDGE_JOB_ID"),
+		JobID:     a.jobID,
 		Peer:      peer,
 		SessionID: sessionID,
 		Kind:      relayKindQuestion,
