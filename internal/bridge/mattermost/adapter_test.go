@@ -121,16 +121,17 @@ func (m *mockServer) handlePosts(w http.ResponseWriter, r *http.Request) {
 	}
 	body, _ := io.ReadAll(r.Body)
 	var in struct {
-		ChannelID string   `json:"channel_id"`
-		Message   string   `json:"message"`
-		RootID    string   `json:"root_id"`
-		FileIDs   []string `json:"file_ids"`
+		ChannelID string         `json:"channel_id"`
+		Message   string         `json:"message"`
+		RootID    string         `json:"root_id"`
+		FileIDs   []string       `json:"file_ids"`
+		Props     map[string]any `json:"props"`
 	}
 	if err := json.Unmarshal(body, &in); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	captured := CreatePostInput{ChannelID: in.ChannelID, Message: in.Message, RootID: in.RootID, FileIDs: in.FileIDs}
+	captured := CreatePostInput{ChannelID: in.ChannelID, Message: in.Message, RootID: in.RootID, FileIDs: in.FileIDs, Props: in.Props}
 	m.mu.Lock()
 	m.createPostCalls = append(m.createPostCalls, captured)
 	m.mu.Unlock()

@@ -445,7 +445,20 @@ func newBridgeAdapterFactory(dataDir string, svc *bridgesvc.Service) bridgesvc.A
 				if m.ID != identityID {
 					continue
 				}
-				opts := mattermost.Options{MediaDir: mediaDir}
+				opts := mattermost.Options{
+					MediaDir: mediaDir,
+					// Single-select question buttons (specs/mattermost-question-actions)
+					// need the orchestrator's URL to build a callable
+					// attachment-action integration.url, and the shared
+					// orchestrator<->runner credential to key the action-
+					// token MAC. Both are the SAME env vars cmd/serve.go
+					// already reads for the remote-registrar wiring above
+					// — re-read here rather than threaded through
+					// newBridgeAdapterFactory's params, matching this
+					// file's existing direct-os.Getenv style.
+					ActionURLBase: os.Getenv("OPENCODE_BRIDGE_REGISTRAR_URL"),
+					ActionSecret:  os.Getenv("OPENCODE_BRIDGE_REGISTRAR_PASSWORD"),
+				}
 				if svc != nil && svc.Store() != nil && m.Access == mattermost.AccessPrivate {
 					store := svc.Store()
 					// remoteProjectID — see telegram branch above.

@@ -2,6 +2,7 @@ package mattermost
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -67,36 +68,90 @@ func (c *toolCardCache) consume(channelID, callID string) (toolCardRef, bool) {
 const MultiSelectMaxOptions = 50
 
 // SendInteractiveMultiSelect implements bridge.InteractiveMultiSelectSender
-// for Mattermost via the `attachment.actions` `select` widget with
-// `multiselect: true`. On submit, Mattermost POSTs to the action URL
-// with `selected_options` populated; the bridge's parseQuestionAnswers
-// then handles the comma-separated reply.
+// for Mattermost. Multi-select stays descoped to the numbered-text /
+// comma-separated-reply fallback per design.md D11 ("Mattermost
+// attachment actions have no multi-select-with-apply semantics; high
+// cost, marginal path") and specs/mattermost-question-actions/spec.md
+// ("Multi-select prompts SHALL continue to use the numbered-text and
+// comma-separated-reply fallback... no multi-select widget is posted").
 //
-// NOTE: Mattermost's attachment-action POST handler lives outside the
-// bridge package today (it would need a route registered on the orchestrator's
-// HTTP mux). For this change we render the widget but the handler stub
-// is documented in tasks/9.2 — the action_url SHOULD point at
-// /router/mattermost/interactive once that route exists.
-//
-// TODO(chat-bridge-question-answered-state Phase D): once the attachment-
-// action POST handler lands per `chat-bridge-rich-rendering` §9.2, it MUST
-// also reshape the attachment after the answer is consumed — remove the
-// `actions` array and set `pretext: "✓ Answered: <labels>"` — by calling
-// `client.UpdatePost`. The widget-update contract from
-// `bridge-question-answered-widget-update` applies symmetrically across
-// Slack, Telegram, and Mattermost.
+// This always returns an error so the question router
+// (tryInteractiveSend) falls back to text — per task E.2, the chosen
+// alternative to wiring buildMultiSelectAttachment's integration.url for
+// real. Rendering a widget whose submit goes nowhere (the pre-existing
+// behaviour: integration.url was hardcoded to "") is worse than not
+// rendering one at all, so the widget is no longer posted.
 func (a *Adapter) SendInteractiveMultiSelect(ctx context.Context, peer bridge.PeerRef, prompt string, choices []bridge.QuestionChoice) (string, error) {
+	return "", errMultiSelectNotSupported
+}
+
+// errMultiSelectNotSupported is SendInteractiveMultiSelect's sentinel —
+// a package-level value (not just an inline error) so tests can assert
+// the exact no-widget-posted contract via errors.Is rather than message
+// text.
+var errMultiSelectNotSupported = errors.New("mattermost: multi-select is not supported; falls back to numbered text")
+
+// errActionURLUnavailable is returned by SendInteractiveQuestion when
+// the adapter has no orchestrator URL to derive an attachment-action
+// integration.url from. Per specs/mattermost-question-actions/spec.md
+// ("A missing action URL falls back to text rather than rendering a
+// dead button"), failing the send — not posting a widget with an empty
+// URL — is what makes the question router's tryInteractiveSend fall
+// back to numbered text.
+var errActionURLUnavailable = errors.New("mattermost: no orchestrator action URL configured (OPENCODE_BRIDGE_REGISTRAR_URL unset)")
+
+// SendInteractiveQuestion implements bridge.InteractiveQuestionSender for
+// Mattermost via the `attachment.actions` button widget — one action per
+// choice, each carrying an integration.url pointing at the
+// orchestrator's `/router/mattermost/attachment-action` endpoint and an
+// integration.context of {peerId, requestId, choice, token}. The token
+// is a keyed MAC over (channel, identity, peerId, requestId, choice) —
+// see computeActionToken — which the orchestrator recomputes to verify
+// the click before acting on it (Mattermost message actions carry no
+// platform signature of their own).
+//
+// Returns errActionURLUnavailable when the adapter has no action URL
+// (the pod's OPENCODE_BRIDGE_REGISTRAR_URL is unset) — this is a SEND
+// FAILURE, not a degraded post, so the question router falls back to
+// numbered text instead of posting a button that submits nowhere.
+func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerRef, prompt string, choices []bridge.QuestionChoice) (string, error) {
 	parsed := ParsePeerID(peer.PeerID)
 	if parsed.ChannelID == "" {
 		return "", fmt.Errorf("mattermost: invalid peer-id %q", peer.PeerID)
 	}
 	if len(choices) == 0 {
-		return "", fmt.Errorf("mattermost: SendInteractiveMultiSelect requires at least one choice")
+		return "", errors.New("mattermost: SendInteractiveQuestion requires at least one choice")
 	}
-	if len(choices) > MultiSelectMaxOptions {
-		return "", fmt.Errorf("mattermost: too many options for multi-select")
+	if a.actionURL == "" {
+		return "", errActionURLUnavailable
 	}
-	att := buildMultiSelectAttachment(prompt, choices)
+
+	requestID := newActionRequestID()
+	actions := make([]map[string]any, 0, len(choices))
+	for i, c := range choices {
+		token := computeActionToken(a.actionSecret, "mattermost", a.identityID, peer.PeerID, requestID, c.Value)
+		actions = append(actions, map[string]any{
+			"id":   fmt.Sprintf("router_q_%d", i),
+			"name": c.Label,
+			"integration": map[string]any{
+				"url": a.actionURL,
+				"context": map[string]any{
+					"peerId":    peer.PeerID,
+					"requestId": requestID,
+					"choice":    c.Value,
+					"token":     token,
+				},
+			},
+		})
+	}
+	att := map[string]any{
+		"color":   "#0066cc",
+		"pretext": defaultQuestionPrompt(prompt),
+		"actions": actions,
+	}
+	if choices[0].Custom {
+		att["footer"] = "💬 Or reply in this thread (@-mention required)"
+	}
 	props := map[string]any{"attachments": []map[string]any{att}}
 	post, err := a.client.CreatePost(ctx, CreatePostInput{
 		ChannelID: parsed.ChannelID,
@@ -104,13 +159,25 @@ func (a *Adapter) SendInteractiveMultiSelect(ctx context.Context, peer bridge.Pe
 		Props:     props,
 	})
 	if err != nil {
-		return "", fmt.Errorf("mattermost: SendInteractiveMultiSelect: %w", err)
+		return "", fmt.Errorf("mattermost: SendInteractiveQuestion: %w", err)
 	}
 	resolved := ""
 	if parsed.RootPostID == "" {
 		resolved = FormatPeerID(Peer{ChannelID: post.ChannelID, RootPostID: post.ID})
 	}
 	return resolved, nil
+}
+
+// defaultQuestionPrompt returns a non-empty header string for a
+// Mattermost interactive question widget — mirrors slack/render.go's
+// helper of the same name/behaviour so the two platforms present
+// identical fallback wording when an agent renders the narrative via a
+// preceding router_send and passes only `options`.
+func defaultQuestionPrompt(prompt string) string {
+	if strings.TrimSpace(prompt) == "" {
+		return "Please choose one:"
+	}
+	return prompt
 }
 
 // Render implements bridge.RichRenderer for Mattermost. Uses
