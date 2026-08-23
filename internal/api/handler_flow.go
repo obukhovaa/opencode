@@ -48,9 +48,15 @@ const (
 	evFlowStepFailed      flowEventType = "flow.step.failed"
 	evFlowStepPostponed   flowEventType = "flow.step.postponed"
 	evFlowWaitingForInput flowEventType = "flow.waiting_for_input"
-	evFlowCompleted       flowEventType = "flow.completed"
-	evFlowFailed          flowEventType = "flow.failed"
-	evFlowPostponed       flowEventType = "flow.postponed"
+	// evFlowStepRetrying marks the engine spending its one bounded re-prompt
+	// on a schema-bearing step whose agent turn ended with no struct_output
+	// call. The step is still running — this is a progress signal, not a
+	// terminal transition — so orchestrators can distinguish "recovering" from
+	// "hung" instead of inferring it from timing. Output carries the reason.
+	evFlowStepRetrying flowEventType = "flow.step.retrying"
+	evFlowCompleted    flowEventType = "flow.completed"
+	evFlowFailed       flowEventType = "flow.failed"
+	evFlowPostponed    flowEventType = "flow.postponed"
 )
 
 // FlowEvent is the SSE payload for every flow-* event type. Fields are
@@ -437,6 +443,23 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 			Iteration:      st.Iteration,
 			Cost:           cost,
 			ContextSize:    contextSize,
+		})
+	case flow.FlowStatusRetrying:
+		// In-flight only: the step stays `running` from the consumer's point
+		// of view, so deliberately do NOT touch currentStep / completedSteps /
+		// state.Status / waitingTarget. An interactive step that is being
+		// re-prompted is still waiting on its reviewer, and clearing
+		// waitingTarget here would drop that from /flow/status.
+		fr.publishEvent(state, FlowEvent{
+			Type:        evFlowStepRetrying,
+			RunID:       state.RunID,
+			FlowID:      state.FlowID,
+			StepID:      rec.ID,
+			SessionID:   rec.SessionID,
+			Output:      rec.Output,
+			Iteration:   st.Iteration,
+			Cost:        cost,
+			ContextSize: contextSize,
 		})
 	case flow.FlowStatusWaitingForInput:
 		// Interactive step transitioned to bound-and-waiting. Per the

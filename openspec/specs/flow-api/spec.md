@@ -54,13 +54,14 @@ The endpoints from the prior `spec/20260518T010000-flow-api-and-orchestrator.md`
 
 ### Requirement: SSE events for flow progress
 
-The existing `GET /event` SSE stream SHALL carry six new event types: `flow.step.started`, `flow.step.completed`, `flow.step.failed`, `flow.waiting_for_input`, `flow.completed`, `flow.failed`. Event payload schemas:
+The existing `GET /event` SSE stream SHALL carry these new event types: `flow.step.started`, `flow.step.completed`, `flow.step.failed`, `flow.step.retrying`, `flow.waiting_for_input`, `flow.completed`, `flow.failed`. Event payload schemas:
 
 | Type | Payload fields |
 |---|---|
 | `flow.step.started`      | `runID, stepID, sessionID, startedAt` |
 | `flow.step.completed`    | `runID, stepID, sessionID, output, startedAt, completedAt` |
 | `flow.step.failed`       | `runID, stepID, error, startedAt, failedAt` |
+| `flow.step.retrying`     | `runID, stepID, sessionID, output` (the reason) — the step is still `running` |
 | `flow.waiting_for_input` | `runID, stepID, sessionID, target` (resolved `PeerRef` or array thereof) |
 | `flow.completed`         | `runID, completedAt` (no output — orchestrator reads from session messages) |
 | `flow.failed`            | `runID, error, failedAt` |
@@ -71,6 +72,12 @@ External orchestrators subscribing to `/event` MUST be able to combine these wit
 
 - **WHEN** an autonomous step runs to completion
 - **THEN** the SSE stream emits `flow.step.started` then `flow.step.completed` for that step
+
+#### Scenario: Schema-bearing step emits flow.step.retrying when it is re-prompted
+
+- **WHEN** a step declaring `output.schema` ends a turn with no `struct_output` call and the flow runner spends its one bounded re-prompt (see the flow-runtime-resume capability)
+- **THEN** the SSE stream emits `flow.step.retrying` with the step's `sessionID` and a reason in `output`
+- **AND** the run's status is unchanged — the step is still in progress, so no `flow.step.completed` / `flow.step.failed` is emitted for it yet, and an interactive step keeps its `waiting_for_input` target in `GET /flow/status`
 
 #### Scenario: Interactive step emits waiting_for_input
 
