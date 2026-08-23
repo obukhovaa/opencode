@@ -124,8 +124,8 @@ func (t *routerSendTool) Info() ToolInfo {
 		Parameters: map[string]any{
 			"channel": map[string]any{
 				"type":        "string",
-				"description": `Chat platform: "telegram" | "slack" | "mattermost".`,
-				"enum":        []string{"telegram", "slack", "mattermost"},
+				"description": `Chat platform: "telegram" | "slack" | "mattermost" | "external".`,
+				"enum":        []string{"telegram", "slack", "mattermost", "external"},
 			},
 			"identity": map[string]any{
 				"type":        "string",
@@ -133,7 +133,7 @@ func (t *routerSendTool) Info() ToolInfo {
 			},
 			"peerId": map[string]any{
 				"type":        "string",
-				"description": "Platform-specific destination. Telegram: numeric chat_id. Slack: D<channel>, C<channel>[|<ts>], or U<user>. Mattermost: <channelID>[|<rootPostID>] or 26-char user ID.",
+				"description": "Platform-specific destination. Telegram: numeric chat_id. Slack: D<channel>, C<channel>[|<ts>], or U<user>. Mattermost: <channelID>[|<rootPostID>] or 26-char user ID. External: <aid>:<flow_id>:<run_id> — composed by the external consumer, do not construct or guess one yourself; only ever echo back a peer_id you were given.",
 			},
 			"text": map[string]any{
 				"type":        "string",
@@ -205,9 +205,9 @@ func (t *routerSendTool) validateInput(p routerSendParams) (ToolResponse, bool) 
 		return NewTextErrorResponse("channel, identity, peerId are required"), false
 	}
 	switch p.Channel {
-	case "telegram", "slack", "mattermost":
+	case "telegram", "slack", "mattermost", "external":
 	default:
-		return NewTextErrorResponse(fmt.Sprintf("unknown channel %q; supported: telegram, slack, mattermost", p.Channel)), false
+		return NewTextErrorResponse(fmt.Sprintf("unknown channel %q; supported: telegram, slack, mattermost, external", p.Channel)), false
 	}
 	if !t.identityConfigured(p.Channel, p.Identity) {
 		return NewTextErrorResponse(
@@ -307,6 +307,14 @@ func (t *routerSendTool) identityConfigured(channel, id string) bool {
 				}
 			}
 		}
+	case "external":
+		if c := t.deps.Cfg.Channels.External; c != nil {
+			for _, e := range c.Consumers {
+				if e.ID == id && e.Enabled {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -340,6 +348,14 @@ func (t *routerSendTool) configuredIdentities(channel string) []string {
 			for _, m := range c.Instances {
 				if m.Enabled {
 					out = append(out, m.ID)
+				}
+			}
+		}
+	case "external":
+		if c := t.deps.Cfg.Channels.External; c != nil {
+			for _, e := range c.Consumers {
+				if e.Enabled {
+					out = append(out, e.ID)
 				}
 			}
 		}
@@ -391,6 +407,18 @@ func buildRouterSendDescription(deps RouterSendDeps) string {
 			for _, m := range deps.Cfg.Channels.Mattermost.Instances {
 				if m.Enabled {
 					ids = append(ids, m.ID)
+				}
+			}
+			return ids
+		})
+		writeChannelDescription(&b, "external", "<aid>:<flow_id>:<run_id> — composed by the external consumer, do not construct or guess one yourself; only ever echo back a peer_id you were given", deps.Cfg.Channels.External, func() []string {
+			if deps.Cfg.Channels.External == nil {
+				return nil
+			}
+			ids := []string{}
+			for _, e := range deps.Cfg.Channels.External.Consumers {
+				if e.Enabled {
+					ids = append(ids, e.ID)
 				}
 			}
 			return ids
@@ -453,6 +481,8 @@ func writeChannelDescription(b *strings.Builder, name, peerFormat string, channe
 	case *bridge.SlackChannelConfig:
 		enabled = c != nil && c.Enabled
 	case *bridge.MattermostChannelConfig:
+		enabled = c != nil && c.Enabled
+	case *bridge.ExternalChannelConfig:
 		enabled = c != nil && c.Enabled
 	}
 	if !enabled {

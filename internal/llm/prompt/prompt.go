@@ -169,6 +169,11 @@ func renderOnePeer(peer bridge.PeerRef, labelPrefix string) string {
 		if peer.Mention != "" {
 			mentionSentence = fmt.Sprintf("Begin your FIRST `router_send` with the mention `%s` to ping them.", peer.Mention)
 		}
+	case "external":
+		// No chat platform, no mention concept: peer.PeerID is a
+		// <aid>:<flow_id>:<run_id> triple composed by the external
+		// consumer — echo it back verbatim, never construct one.
+		primary = fmt.Sprintf("You are bound to external consumer peer `%s` (echo this peerId back verbatim; do not construct or guess one).", peer.PeerID)
 	default:
 		// Unknown channel: render a generic line so the agent at least
 		// sees something. Don't suppress — silent gaps cause the agent
