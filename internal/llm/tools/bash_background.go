@@ -18,7 +18,7 @@ import (
 // the global registry, and returns an immediate ack ToolResult. A monitor
 // goroutine waits on cmd.Wait and fires the terminal synthetic completion
 // notification via task.EnqueueTaskCompletion when the process exits.
-func (b *bashTool) runBackground(_ context.Context, call ToolCall, params BashParams, workdir, sessionID string) (ToolResponse, error) {
+func (b *bashTool) runBackground(ctx context.Context, call ToolCall, params BashParams, workdir, sessionID string) (ToolResponse, error) {
 	reg := task.GlobalRegistry()
 	if reg == nil {
 		return NewTextErrorResponse("background tasks not available: task registry not initialized"), nil
@@ -54,6 +54,7 @@ func (b *bashTool) runBackground(_ context.Context, call ToolCall, params BashPa
 		OriginatingToolCallID: call.ID,
 		OriginatingToolName:   BashToolName,
 		Description:           params.Description,
+		FlowOwned:             StepScopedContext(ctx) != nil,
 		Proc:                  cmd.Process,
 	}
 	if err := reg.Register(tk); err != nil {

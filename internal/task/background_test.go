@@ -200,3 +200,70 @@ func TestEnqueue_CronUsesSuppressFalse(t *testing.T) {
 		t.Fatalf("cron write: want 1 pair got %d", len(deps.snapshot()))
 	}
 }
+
+// TestEnqueue_FlowOwnedSkipsResume pins the flow-owned suppression: a task
+// spawned under a flow step's step-scoped ctx writes its completion pair and
+// transitions terminal state as usual, but NEVER triggers idle auto-resume —
+// the owning step's end-of-turn drain is the reaction mechanism, and after
+// the step has ended a resume would zombie-run the routed session under the
+// active/primary agent instead of the step's agent (GENAI-239).
+func TestEnqueue_FlowOwnedSkipsResume(t *testing.T) {
+	deps, reg, tk, cleanup := setupTaskFixture(t, false)
+	defer cleanup()
+	tk.FlowOwned = true
+
+	err := EnqueueTaskCompletion(context.Background(), CompletionInput{
+		SessionID:           "s1",
+		OriginatingToolName: "bash",
+		TaskID:              tk.ID,
+		Kind:                KindBash,
+		Status:              StatusCompleted,
+		Content:             "ok",
+		SuppressIfNotified:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := deps.resumeCalls.Load(); got != 0 {
+		t.Fatalf("ResumeSession called %d times for a flow-owned task; want 0", got)
+	}
+	// Everything short of the resume still happens: the synthetic pair is
+	// written and the registry transitions the task to terminal state.
+	if pairs := deps.snapshot(); len(pairs) != 1 {
+		t.Fatalf("pairs written = %d, want 1", len(pairs))
+	}
+	got, ok := reg.Get(tk.ID)
+	if !ok {
+		t.Fatal("task vanished from registry")
+	}
+	if got.State() != StateCompleted {
+		t.Fatalf("task state = %v, want StateCompleted", got.State())
+	}
+}
+
+// TestEnqueue_FlowOwnedMonitorEventSkipsResume covers the non-terminal
+// monitor-event path: flow-owned suppression applies there too (the event
+// pair still lands; the in-flight step run reloads it on its next cycle).
+func TestEnqueue_FlowOwnedMonitorEventSkipsResume(t *testing.T) {
+	deps, _, tk, cleanup := setupTaskFixture(t, false)
+	defer cleanup()
+	tk.FlowOwned = true
+
+	err := EnqueueTaskCompletion(context.Background(), CompletionInput{
+		SessionID:           "s1",
+		OriginatingToolName: "monitor",
+		TaskID:              tk.ID,
+		Kind:                KindMonitor,
+		Status:              StatusMonitorEvent,
+		Content:             "match: ERROR",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := deps.resumeCalls.Load(); got != 0 {
+		t.Fatalf("ResumeSession called %d times for a flow-owned monitor event; want 0", got)
+	}
+	if pairs := deps.snapshot(); len(pairs) != 1 {
+		t.Fatalf("pairs written = %d, want 1", len(pairs))
+	}
+}

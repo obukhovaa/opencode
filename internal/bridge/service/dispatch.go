@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -187,8 +188,10 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 		}
 	}()
 
-	agent := d.svc.app.ActiveAgent()
-	if agent == nil {
+	// Named `ag`, not `agent`: the local must not shadow the agent package,
+	// which the ErrSessionBusy branch below needs.
+	ag := d.svc.app.ActiveAgent()
+	if ag == nil {
 		logging.Warn("bridge: no active agent; dropping inbound", "session", d.sessionID)
 		return
 	}
@@ -212,18 +215,10 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	partsSub := d.svc.app.Messages.SubscribeParts(partsCtx)
 
 	atts := translateAttachments(in.Attachments)
-	runCh, err := agent.Run(ctx, d.sessionID, in.Text, 0, atts...)
+	runCh, err := ag.Run(ctx, d.sessionID, in.Text, 0, atts...)
 	if err != nil {
-		// In our single-callsite design ErrSessionBusy MUST NOT escape —
-		// but other Run errors (e.g. shutting down) can. Log AND surface
-		// to the chat surface so a stuck session is observable to the
-		// reviewer instead of silently swallowing messages. Cap the
-		// detail leaked to chat to the public-facing fields.
 		logging.Warn("bridge: agent.Run failed", "session", d.sessionID, "err", err)
-		surfaceMsg := "bridge: agent run failed (" + err.Error() + "). " +
-			"If this keeps happening, use /reset in chat to clear the session " +
-			"or POST /session/" + d.sessionID + "/abort to release the busy lock."
-		d.svc.replyToPeer(ctx, in.Peer, surfaceMsg)
+		d.svc.replyToPeer(ctx, in.Peer, runFailureMessage(err, d.sessionID))
 		return
 	}
 
@@ -244,6 +239,33 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	for ev := range runCh {
 		d.handleTerminalEvent(ctx, ev)
 	}
+}
+
+// runFailureMessage builds the chat-surface text for an agent.Run that failed
+// to start. A stuck session must be observable to the reviewer instead of
+// silently swallowing messages, but the advice has to match the cause.
+//
+// ErrSessionBusy is split out deliberately. The per-session dispatch goroutine
+// serializes this package's only Run callsite, so the bridge cannot collide
+// with itself — but the session-run ledger is process-global (see
+// internal/llm/agent/session_locks.go), so a run started elsewhere in the
+// process (a flow step's own agent instance) makes the session read as busy
+// here. Interactive flow steps never reach handleInbound at all — inbound.go
+// buffers inbound for sessions carrying the interactive marker — but if that
+// guard ever regresses, the generic advice would be actively harmful:
+// aborting the session cancels the live step, which Cancel's cross-instance
+// fallback now actually reaches. So busy gets "wait and resend", not "abort".
+func runFailureMessage(err error, sessionID string) string {
+	if errors.Is(err, agent.ErrSessionBusy) {
+		return "bridge: this session already has a run in flight elsewhere " +
+			"(it may be owned by a flow step). Your message was not delivered — " +
+			"please resend once the current run finishes. Do NOT abort the session: " +
+			"that would cancel the in-flight run."
+	}
+	// Cap the detail leaked to chat to the public-facing fields.
+	return "bridge: agent run failed (" + err.Error() + "). " +
+		"If this keeps happening, use /reset in chat to clear the session " +
+		"or POST /session/" + sessionID + "/abort to release the busy lock."
 }
 
 // drainParts forwards parts for this session AND any of its descendant
