@@ -268,9 +268,24 @@ func (s *service) retryStructOutputTurn(
 		runOpts.CompactionThreshold = step.Compact.Threshold
 	}
 
-	// agent.RunWith releases the session busy-lock in a deferred delete that
-	// runs after it delivers the prior turn's terminal event, so an immediate
-	// call here can observe ErrSessionBusy. Retry briefly before giving up.
+	// The session's run slot lives in the PROCESS-GLOBAL ledger
+	// (internal/llm/agent/session_locks.go). RunWith releases it in the
+	// outermost defer of its run goroutine — which runs after the terminal
+	// event has already been delivered — so an immediate call here can still
+	// observe ErrSessionBusy from the turn we just consumed. That window is
+	// microseconds (the remaining defers are a cancel and two map deletes),
+	// which is what this short budget is sized for.
+	//
+	// Post-GENAI-239 the ledger is process-wide, so ErrSessionBusy can in
+	// principle also come from a FOREIGN holder — a cron synthetic-commit
+	// lock, a bridge-dispatched run, an auto-resume. This budget is
+	// deliberately hopeless against those (they last minutes): the right
+	// outcome there is to give up fast and leave the re-prompt unspent, which
+	// is what onStarted guarantees. The one holder that used to make this
+	// realistic — auto-resume grabbing the session between the step's run and
+	// this call — can no longer happen: tasks spawned under a step-scoped ctx
+	// are flow-owned and never auto-resume, and the ctx built below carries
+	// that same step scope.
 	var (
 		done <-chan agentpkg.AgentEvent
 		err  error

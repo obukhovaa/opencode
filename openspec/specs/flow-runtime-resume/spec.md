@@ -351,6 +351,12 @@ Spending the re-prompt SHALL emit an in-flight `retrying` step transition on the
 
 The transition and the one-per-step budget SHALL be spent only once the re-prompt has actually been accepted by the agent runtime. A re-prompt that cannot start (the session is still busy after the short start-retry budget, or the run fails to start) MUST NOT emit a `retrying` transition, MUST NOT consume the budget, and MUST NOT be described in the step error as having run.
 
+Both the re-prompt and the forcing turn re-enter `agent.Run` on a session whose previous run has only just terminated. The session's run slot is held in the process-global session-run ledger (see the `session-run-exclusivity` capability) and released in the outermost defer of the finishing run's goroutine — *after* its terminal event has been delivered — so the runner MUST tolerate a transient `ErrSessionBusy` on this call and retry over a short bounded budget rather than treating it as terminal.
+
+That budget MUST stay short. Since the ledger is process-wide, `ErrSessionBusy` here can also originate from a holder the step does not own (a cron synthetic-commit lock, a bridge-dispatched run, an auto-resume), and those outlast any budget worth spending; giving up quickly and leaving the re-prompt unspent is the correct outcome. The runner MUST NOT extend the budget to cover them.
+
+Correspondingly, a re-prompt or forcing turn MUST install the step-scoped context value on the run it issues, so background work it spawns is flow-owned and cannot auto-resume the session out from under the step (see `task-notifications`, "Flow-owned tasks never auto-resume").
+
 #### Scenario: Empty interactive turn is rescued by the re-prompt
 
 - **WHEN** an `interactive: true` step declaring `output.schema` has its agent end a turn with no `struct_output` call and no text, the turn budget is not exhausted, and the parent context is alive
@@ -409,3 +415,10 @@ The failing turn says nothing by construction, so the lookup MUST scan backwards
 - **THEN** no `retrying` transition is emitted
 - **AND** the one-per-step re-prompt budget is left unspent
 - **AND** the step error does not report that a re-prompt was spent
+
+#### Scenario: A transient busy slot from the just-finished run is retried, a foreign one is not
+
+- **WHEN** the re-prompt (or the forcing turn) calls `agent.Run` while the finishing run's goroutine has not yet released the session's slot in the process-global ledger
+- **THEN** the runner retries over its short bounded budget and the call succeeds
+- **WHEN** instead the slot is held by a run the step does not own (cron, bridge, auto-resume)
+- **THEN** the runner exhausts that same short budget and gives up, leaving the re-prompt unspent and emitting no `retrying` transition
