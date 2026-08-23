@@ -76,6 +76,29 @@ func TestConfigHasTokenBearingFields(t *testing.T) {
 			},
 			want: true,
 		},
+		{
+			name: "external with empty relay credential",
+			cfg: &Config{
+				Channels: ChannelsConfig{
+					External: &ExternalChannelConfig{
+						Enabled:   true,
+						Consumers: []ExternalIdentity{{ID: "c3", Enabled: true}},
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "external with relay credential, identity not enabled",
+			cfg: &Config{
+				Channels: ChannelsConfig{
+					External: &ExternalChannelConfig{
+						Consumers: []ExternalIdentity{{ID: "c3", RelayCredential: "secret"}},
+					},
+				},
+			},
+			want: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -169,6 +192,30 @@ func TestConfigAnyChannelEnabled(t *testing.T) {
 				},
 			},
 			want: true,
+		},
+		{
+			name: "external enabled+consumer enabled",
+			cfg: &Config{
+				Channels: ChannelsConfig{
+					External: &ExternalChannelConfig{
+						Enabled:   true,
+						Consumers: []ExternalIdentity{{ID: "c3", Enabled: true}},
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "external enabled but consumer disabled",
+			cfg: &Config{
+				Channels: ChannelsConfig{
+					External: &ExternalChannelConfig{
+						Enabled:   true,
+						Consumers: []ExternalIdentity{{ID: "c3", Enabled: false}},
+					},
+				},
+			},
+			want: false,
 		},
 	}
 

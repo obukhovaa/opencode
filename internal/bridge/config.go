@@ -74,6 +74,7 @@ type ChannelsConfig struct {
 	Telegram   *TelegramChannelConfig   `json:"telegram,omitempty"`
 	Slack      *SlackChannelConfig      `json:"slack,omitempty"`
 	Mattermost *MattermostChannelConfig `json:"mattermost,omitempty"`
+	External   *ExternalChannelConfig   `json:"external,omitempty"`
 }
 
 // TelegramChannelConfig configures the Telegram channel and its bot identities.
@@ -158,6 +159,33 @@ type MattermostIdentity struct {
 	Inbound string `json:"inbound,omitempty"`
 }
 
+// ExternalChannelConfig configures the "external" channel — a relay
+// channel with no chat-platform connection of its own. Outbound
+// messages/questions are POSTed to the orchestrator's
+// /router/external/outbound endpoint, which fans them out over SSE to a
+// non-chat consumer (e.g. c3). Inbound arrives exclusively via the
+// orchestrator's existing forward-to-/router/inbound path, identical to
+// every other channel's mediated-inbound mode — there is no
+// external-specific inbound wiring.
+type ExternalChannelConfig struct {
+	Enabled   bool               `json:"enabled"`
+	Consumers []ExternalIdentity `json:"consumers,omitempty"`
+}
+
+// ExternalIdentity is a single external relay consumer (e.g. "c3").
+type ExternalIdentity struct {
+	ID      string `json:"id"`
+	Enabled bool   `json:"enabled"`
+	// RelayURL / RelayCredential mirror the orchestrator's binding-registrar
+	// URL/credential. In practice cmd/serve.go resolves these from
+	// OPENCODE_BRIDGE_REGISTRAR_URL/_PASSWORD at construction time (same
+	// pattern as MattermostIdentity's ActionURLBase/ActionSecret in
+	// Options, NOT read from this JSON struct) — present here so the type
+	// is self-describing and tests can construct values directly.
+	RelayURL        string `json:"relayUrl,omitempty"`
+	RelayCredential string `json:"relayCredential,omitempty"`
+}
+
 // Inbound-mode values for SlackIdentity.Inbound / TelegramIdentity.Inbound /
 // MattermostIdentity.Inbound. Empty string is treated as InboundEnabled to
 // preserve existing config compatibility.
@@ -238,6 +266,13 @@ func (c *Config) HasTokenBearingFields() bool {
 			}
 		}
 	}
+	if e := c.Channels.External; e != nil {
+		for i := range e.Consumers {
+			if e.Consumers[i].RelayCredential != "" {
+				return true
+			}
+		}
+	}
 	return false
 }
 
@@ -265,6 +300,13 @@ func (c *Config) AnyChannelEnabled() bool {
 	if m := c.Channels.Mattermost; m != nil && m.Enabled {
 		for i := range m.Instances {
 			if m.Instances[i].Enabled {
+				return true
+			}
+		}
+	}
+	if e := c.Channels.External; e != nil && e.Enabled {
+		for i := range e.Consumers {
+			if e.Consumers[i].Enabled {
 				return true
 			}
 		}
