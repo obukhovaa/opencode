@@ -315,14 +315,19 @@ func (s *Service) commandAvailableForChannel(cmd, channel string) bool {
 
 // replyToPeer sends a single text message back to the inbound's peer.
 // Used by the question/permission flows (Phase 3.7) and other paths
-// that don't carry a structured render.
-func (s *Service) replyToPeer(ctx context.Context, peer bridge.PeerRef, text string) {
+// that don't carry a structured render. isAck MUST be true only for the
+// question-answer acknowledgement call site (question.go's
+// maybeAckAnswer) — it rides on Outbound.IsAck, which only the
+// "external" channel adapter reads to distinguish an ack from a
+// substantive message. The cron-output and run-failure call sites pass
+// false: those are not answer acknowledgements.
+func (s *Service) replyToPeer(ctx context.Context, peer bridge.PeerRef, text string, isAck bool) {
 	adapter := s.Adapter(peer.Channel, peer.Identity)
 	if adapter == nil {
 		logging.Warn("bridge: replyToPeer no adapter", "peer", peer)
 		return
 	}
-	result := adapter.Send(ctx, bridge.Outbound{Peer: peer, Text: text})
+	result := adapter.Send(ctx, bridge.Outbound{Peer: peer, Text: text, IsAck: isAck})
 	if !result.Delivered && result.Err != nil {
 		logging.Warn("bridge: replyToPeer delivery failed", "peer", peer, "err", result.Err)
 	}

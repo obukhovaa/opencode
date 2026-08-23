@@ -110,6 +110,12 @@ func (s *Service) sendToOnePeer(ctx context.Context, b store.Binding, out bridge
 		return res
 	}
 
+	// Stamp the binding's sessionId onto ctx unconditionally. This is a
+	// no-op for every adapter except "external", which has no other way
+	// to learn the sessionId — bridge.Outbound / bridge.PeerRef carry no
+	// such field (see internal/bridge/context.go).
+	ctx = bridge.ContextWithSessionID(ctx, b.SessionID)
+
 	// Decide whether the mention prefix is needed for THIS outbound: only
 	// when the binding has a mention_handle and it hasn't been consumed
 	// by a prior outbound. The adapter receives the mention via
@@ -220,6 +226,11 @@ func (s *Service) BoundPeersSnapshot(ctx context.Context) []bridge.BoundPeer {
 	if m := s.cfg.Channels.Mattermost; m != nil {
 		for _, mm := range m.Instances {
 			pairs = append(pairs, chid{"mattermost", mm.ID})
+		}
+	}
+	if e := s.cfg.Channels.External; e != nil {
+		for _, c := range e.Consumers {
+			pairs = append(pairs, chid{"external", c.ID})
 		}
 	}
 	s.cfgMu.RUnlock()

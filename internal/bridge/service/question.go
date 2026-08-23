@@ -267,10 +267,25 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 	interactiveOK := r.shouldUseInteractive(req.Questions)
 	text := renderQuestionPrompt(req.Questions)
 
+	// Stamp sessionId (every send) and, when an interactive question is
+	// about to be attempted, the requestId + multiple-choice flag. Both
+	// are no-ops for Slack/Mattermost/Telegram — only the "external"
+	// channel adapter reads them (see internal/bridge/context.go) since
+	// its relay wire frame needs sessionId on every send and requestId
+	// on question sends specifically.
+	sendCtx := bridge.ContextWithSessionID(ctx, req.SessionID)
+	questionCtx := sendCtx
+	if interactiveOK {
+		questionCtx = bridge.ContextWithExternalQuestion(sendCtx, bridge.ExternalQuestionContext{
+			RequestID: req.ID,
+			Multiple:  req.Questions[0].Multiple,
+		})
+	}
+
 	for _, b := range bindings {
 		peer := b.AsPeerRef()
 		if interactiveOK {
-			resolved, err := r.tryInteractiveSend(ctx, peer, req.Questions[0])
+			resolved, err := r.tryInteractiveSend(questionCtx, peer, req.Questions[0])
 			if err == nil {
 				// Mirror service.Send's binding mutation: when posting
 				// the question opens a new thread (Slack's "<channel>|
@@ -293,7 +308,7 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 					"peer", peer, "err", err)
 			}
 		}
-		_, _ = r.svc.Send(ctx, peer, text, "", nil)
+		_, _ = r.svc.Send(sendCtx, peer, text, "", nil)
 	}
 }
 
@@ -416,7 +431,7 @@ func (r *QuestionRouter) maybeAckAnswer(ctx context.Context, in bridge.Inbound, 
 		return
 	}
 	if ack := formatAnswerAck(answers); ack != "" {
-		r.svc.replyToPeer(ctx, in.Peer, ack)
+		r.svc.replyToPeer(ctx, in.Peer, ack, true)
 	}
 }
 
