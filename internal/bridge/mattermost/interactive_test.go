@@ -62,6 +62,15 @@ func TestMattermostSendInteractiveQuestionPostsButtons(t *testing.T) {
 		if action["name"] != want {
 			t.Errorf("action[%d].name = %v, want %q", i, action["name"], want)
 		}
+		// Mattermost server-side validation (model.PostAction.IsValid)
+		// requires "type" to be "button" or "select". A missing type
+		// doesn't hard-reject the post, but the server silently never
+		// registers the action as clickable — every button 404s on
+		// POST /api/v4/posts/{id}/actions/{actionId} — found via the
+		// local Mattermost e2e harness driving a real click.
+		if action["type"] != "button" {
+			t.Errorf("action[%d].type = %v, want %q", i, action["type"], "button")
+		}
 		integ, ok := action["integration"].(map[string]any)
 		if !ok {
 			t.Fatalf("action[%d].integration shape = %T", i, action["integration"])

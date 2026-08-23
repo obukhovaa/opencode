@@ -131,7 +131,19 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 	for i, c := range choices {
 		token := computeActionToken(a.actionSecret, "mattermost", a.identityID, peer.PeerID, requestID, c.Value)
 		actions = append(actions, map[string]any{
-			"id":   fmt.Sprintf("router_q_%d", i),
+			"id": fmt.Sprintf("router_q_%d", i),
+			// Mattermost validates message-attachment actions server-side
+			// and requires "type" to be "button" or "select" (server
+			// model.PostAction.IsValid). Without it the server doesn't
+			// hard-reject the post — it only logs "Invalid post props...
+			// invalid action type" and creates the post anyway — but it
+			// also never registers the action as a clickable PostAction:
+			// POST /api/v4/posts/{id}/actions/{actionId} 404s for every
+			// button on the post, so no click ever reaches
+			// /router/mattermost/attachment-action. Found via the local
+			// Mattermost e2e harness (c2-agent's
+			// scripts/test-mattermost-e2e.sh) driving a real click.
+			"type": "button",
 			"name": c.Label,
 			"integration": map[string]any{
 				"url": a.actionURL,
