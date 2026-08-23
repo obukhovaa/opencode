@@ -286,6 +286,7 @@ func (s *Service) Start(ctx context.Context) error {
 		"telegram_enabled", s.cfg.Channels.Telegram != nil && s.cfg.Channels.Telegram.Enabled,
 		"slack_enabled", s.cfg.Channels.Slack != nil && s.cfg.Channels.Slack.Enabled,
 		"mattermost_enabled", s.cfg.Channels.Mattermost != nil && s.cfg.Channels.Mattermost.Enabled,
+		"external_enabled", s.cfg.Channels.External != nil && s.cfg.Channels.External.Enabled,
 	)
 
 	// Inbound dispatch loop: reads from the shared inboundCh that
@@ -360,6 +361,20 @@ func (s *Service) launchEnabledAdapters(ctx context.Context) {
 			if err := s.LaunchAdapter(ctx, "mattermost", mm.ID); err != nil {
 				logging.Warn("bridge: mattermost adapter launch failed",
 					"identity", mm.ID, "err", err)
+			}
+		}
+	}
+	if e := s.cfg.Channels.External; e != nil && e.Enabled {
+		for _, c := range e.Consumers {
+			if !c.Enabled {
+				continue
+			}
+			// No seedIdentityAllowlist call: external has no per-peer
+			// allowlist concept on the pod side — that gate, if any,
+			// lives entirely on the orchestrator's relay ingestion.
+			if err := s.LaunchAdapter(ctx, "external", c.ID); err != nil {
+				logging.Warn("bridge: external adapter launch failed",
+					"identity", c.ID, "err", err)
 			}
 		}
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/api"
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/bridge/external"
 	"github.com/opencode-ai/opencode/internal/bridge/mattermost"
 	bridgesvc "github.com/opencode-ai/opencode/internal/bridge/service"
 	"github.com/opencode-ai/opencode/internal/bridge/slack"
@@ -445,7 +446,20 @@ func newBridgeAdapterFactory(dataDir string, svc *bridgesvc.Service) bridgesvc.A
 				if m.ID != identityID {
 					continue
 				}
-				opts := mattermost.Options{MediaDir: mediaDir}
+				opts := mattermost.Options{
+					MediaDir: mediaDir,
+					// Single-select question buttons (specs/mattermost-question-actions)
+					// need the orchestrator's URL to build a callable
+					// attachment-action integration.url, and the shared
+					// orchestrator<->runner credential to key the action-
+					// token MAC. Both are the SAME env vars cmd/serve.go
+					// already reads for the remote-registrar wiring above
+					// — re-read here rather than threaded through
+					// newBridgeAdapterFactory's params, matching this
+					// file's existing direct-os.Getenv style.
+					ActionURLBase: os.Getenv("OPENCODE_BRIDGE_REGISTRAR_URL"),
+					ActionSecret:  os.Getenv("OPENCODE_BRIDGE_REGISTRAR_PASSWORD"),
+				}
 				if svc != nil && svc.Store() != nil && m.Access == mattermost.AccessPrivate {
 					store := svc.Store()
 					// remoteProjectID — see telegram branch above.
@@ -462,6 +476,40 @@ func newBridgeAdapterFactory(dataDir string, svc *bridgesvc.Service) bridgesvc.A
 					Access:        m.Access,
 					Inbound:       m.Inbound,
 				}, opts)
+			}
+		case "external":
+			if cfg.Channels.External == nil {
+				return nil, fmt.Errorf("external channel not configured")
+			}
+			for _, e := range cfg.Channels.External.Consumers {
+				if e.ID != identityID {
+					continue
+				}
+				// Per-consumer config wins; the orchestrator's registrar
+				// URL/password are the fallback for the common case where
+				// the pod is told about them only through env.
+				//
+				// The config fields have to be honoured, not ignored:
+				// POST /router/identities/external accepts
+				// relayUrl/relayCredential, persists them, and reports
+				// them back through hasToken. An operator who configures
+				// a consumer that way would otherwise get an adapter that
+				// silently disabled itself because the env vars happened
+				// to be unset — the API would claim the credential was
+				// there while nothing could be delivered.
+				relayURL := e.RelayURL
+				if relayURL == "" {
+					relayURL = os.Getenv("OPENCODE_BRIDGE_REGISTRAR_URL")
+				}
+				relayCred := e.RelayCredential
+				if relayCred == "" {
+					relayCred = os.Getenv("OPENCODE_BRIDGE_REGISTRAR_PASSWORD")
+				}
+				return external.New(external.Identity{
+					ID:              e.ID,
+					RelayBaseURL:    relayURL,
+					RelayCredential: relayCred,
+				}, external.Options{})
 			}
 		}
 		return nil, fmt.Errorf("identity %s:%s not found in cfg", channel, identityID)

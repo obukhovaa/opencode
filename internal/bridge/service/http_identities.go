@@ -27,7 +27,12 @@ type identityPublic struct {
 	Access          string `json:"access,omitempty"`
 	PairingCodeHash string `json:"pairingCodeHash,omitempty"`
 	ServerURL       string `json:"serverUrl,omitempty"`
-	HasToken        bool   `json:"hasToken"`
+	// RelayURL is the external channel's relay endpoint. Unlike ServerURL
+	// it is not a secret, so it's surfaced as-is (no analog of HasToken
+	// needed for it) — HasToken below still reports whether a
+	// RelayCredential is configured.
+	RelayURL string `json:"relayUrl,omitempty"`
+	HasToken bool   `json:"hasToken"`
 }
 
 // identityUpsertRequest is the body for POST /router/identities/{channel}.
@@ -46,6 +51,9 @@ type identityUpsertRequest struct {
 	// Mattermost
 	ServerURL   string `json:"serverUrl,omitempty"`
 	AccessToken string `json:"accessToken,omitempty"`
+	// External
+	RelayURL        string `json:"relayUrl,omitempty"`
+	RelayCredential string `json:"relayCredential,omitempty"`
 }
 
 func (s *Service) handleIdentitiesList(channel string) http.HandlerFunc {
@@ -99,6 +107,19 @@ func (s *Service) listIdentitiesPublic(channel string) []identityPublic {
 				GroupsEnabled: m.GroupsEnabled,
 				ServerURL:     m.ServerURL,
 				HasToken:      m.AccessToken != "",
+			})
+		}
+	case "external":
+		if s.cfg.Channels.External == nil {
+			return out
+		}
+		for _, e := range s.cfg.Channels.External.Consumers {
+			out = append(out, identityPublic{
+				Channel:  "external",
+				ID:       e.ID,
+				Enabled:  e.Enabled,
+				RelayURL: e.RelayURL,
+				HasToken: e.RelayCredential != "",
 			})
 		}
 	}
@@ -279,6 +300,28 @@ func (s *Service) upsertIdentity(channel string, req identityUpsertRequest) erro
 				}
 			}
 			cfg.Channels.Mattermost.Enabled = true
+		case "external":
+			if cfg.Channels.External == nil {
+				cfg.Channels.External = &bridge.ExternalChannelConfig{Enabled: true}
+			}
+			existing := findExternal(cfg, req.ID)
+			if existing == nil {
+				cfg.Channels.External.Consumers = append(cfg.Channels.External.Consumers, bridge.ExternalIdentity{
+					ID:              req.ID,
+					Enabled:         enabled,
+					RelayURL:        req.RelayURL,
+					RelayCredential: req.RelayCredential,
+				})
+			} else {
+				if req.RelayURL != "" {
+					existing.RelayURL = req.RelayURL
+				}
+				if req.RelayCredential != "" {
+					existing.RelayCredential = req.RelayCredential
+				}
+				existing.Enabled = enabled
+			}
+			cfg.Channels.External.Enabled = true
 		default:
 			return fmt.Errorf("unknown channel %q", channel)
 		}
@@ -382,6 +425,23 @@ func removeIdentity(cfg *bridge.Config, channel, id string) error {
 			return fmt.Errorf("mattermost identity %q not found", id)
 		}
 		cfg.Channels.Mattermost.Instances = out
+	case "external":
+		if cfg.Channels.External == nil {
+			return fmt.Errorf("external channel not configured")
+		}
+		out := cfg.Channels.External.Consumers[:0]
+		removed := false
+		for _, e := range cfg.Channels.External.Consumers {
+			if e.ID == id {
+				removed = true
+				continue
+			}
+			out = append(out, e)
+		}
+		if !removed {
+			return fmt.Errorf("external identity %q not found", id)
+		}
+		cfg.Channels.External.Consumers = out
 	default:
 		return fmt.Errorf("unknown channel %q", channel)
 	}
@@ -419,6 +479,18 @@ func findMattermost(cfg *bridge.Config, id string) *bridge.MattermostIdentity {
 	for i := range cfg.Channels.Mattermost.Instances {
 		if cfg.Channels.Mattermost.Instances[i].ID == id {
 			return &cfg.Channels.Mattermost.Instances[i]
+		}
+	}
+	return nil
+}
+
+func findExternal(cfg *bridge.Config, id string) *bridge.ExternalIdentity {
+	if cfg == nil || cfg.Channels.External == nil {
+		return nil
+	}
+	for i := range cfg.Channels.External.Consumers {
+		if cfg.Channels.External.Consumers[i].ID == id {
+			return &cfg.Channels.External.Consumers[i]
 		}
 	}
 	return nil

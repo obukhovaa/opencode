@@ -315,14 +315,28 @@ func (s *Service) commandAvailableForChannel(cmd, channel string) bool {
 
 // replyToPeer sends a single text message back to the inbound's peer.
 // Used by the question/permission flows (Phase 3.7) and other paths
-// that don't carry a structured render.
-func (s *Service) replyToPeer(ctx context.Context, peer bridge.PeerRef, text string) {
+// that don't carry a structured render. isAck MUST be true only for the
+// question-answer acknowledgement call site (question.go's
+// maybeAckAnswer) — it rides on Outbound.IsAck, which only the
+// "external" channel adapter reads to distinguish an ack from a
+// substantive message. The cron-output and run-failure call sites pass
+// false: those are not answer acknowledgements.
+//
+// sessionID is stamped onto ctx the same way Service.sendToOnePeer does
+// it. This path calls adapter.Send DIRECTLY rather than going through
+// sendToOnePeer, so without stamping here the "external" adapter — the
+// only one that reads the value — would relay every ack, cron output and
+// run-failure notice with an empty sessionId, leaving the consumer
+// nothing to correlate the frame against. Every caller has the id in
+// scope; pass "" only when there genuinely is no session.
+func (s *Service) replyToPeer(ctx context.Context, peer bridge.PeerRef, text string, isAck bool, sessionID string) {
 	adapter := s.Adapter(peer.Channel, peer.Identity)
 	if adapter == nil {
 		logging.Warn("bridge: replyToPeer no adapter", "peer", peer)
 		return
 	}
-	result := adapter.Send(ctx, bridge.Outbound{Peer: peer, Text: text})
+	ctx = bridge.ContextWithSessionID(ctx, sessionID)
+	result := adapter.Send(ctx, bridge.Outbound{Peer: peer, Text: text, IsAck: isAck})
 	if !result.Delivered && result.Err != nil {
 		logging.Warn("bridge: replyToPeer delivery failed", "peer", peer, "err", result.Err)
 	}

@@ -36,7 +36,7 @@ func TestMaybeAckAnswer_TypedAnswersAreAcknowledged(t *testing.T) {
 			Text:   "the meta service README",
 			Source: src,
 		}
-		r.maybeAckAnswer(context.Background(), in, [][]string{{"the meta service README"}})
+		r.maybeAckAnswer(context.Background(), in, [][]string{{"the meta service README"}}, "S1")
 		sends := ad.Sends()
 		if len(sends) != 1 {
 			t.Fatalf("source=%s: sends=%d, want 1 (typed answer must be acknowledged)", src, len(sends))
@@ -59,7 +59,7 @@ func TestMaybeAckAnswer_ButtonAndUnknownAreNotAcknowledged(t *testing.T) {
 			Text:   "Yes, CD",
 			Source: src,
 		}
-		r.maybeAckAnswer(context.Background(), in, [][]string{{"Yes, CD"}})
+		r.maybeAckAnswer(context.Background(), in, [][]string{{"Yes, CD"}}, "S1")
 		if n := len(ad.Sends()); n != 0 {
 			t.Errorf("source=%q: sends=%d, want 0 (button self-renders ✓ Answered; unknown suppressed to avoid double-ack)", src, n)
 		}

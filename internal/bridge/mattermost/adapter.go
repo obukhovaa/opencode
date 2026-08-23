@@ -46,6 +46,20 @@ type Adapter struct {
 	maxFileSize   int64
 	allowlist     bridge.AllowlistChecker
 
+	// actionURL is the orchestrator's attachment-action endpoint
+	// (OPENCODE_BRIDGE_REGISTRAR_URL + "/router/mattermost/attachment-action"),
+	// empty when the pod has no orchestrator URL configured. Single-select
+	// SendInteractiveQuestion embeds this in every choice's
+	// integration.url; per specs/mattermost-question-actions, an empty
+	// value MUST fail the send rather than post a dead widget.
+	actionURL string
+	// actionSecret is the shared orchestrator<->runner credential
+	// (OPENCODE_BRIDGE_REGISTRAR_PASSWORD, the same value as
+	// OPENCODE_SERVER_PASSWORD) used to key the action-token MAC. MUST
+	// match the orchestrator's verification exactly — see
+	// computeActionToken's doc comment.
+	actionSecret string
+
 	client        *Client
 	dialer        *websocket.Dialer
 	authPredicate func(WSEvent) (ok bool, fail bool) // optional override; tests use this
@@ -118,6 +132,16 @@ type Options struct {
 	// configured for private access. Nil checker in private mode is
 	// treated as public with a warn at startup.
 	Allowlisted bridge.AllowlistChecker
+	// ActionURLBase is the orchestrator's base URL
+	// (OPENCODE_BRIDGE_REGISTRAR_URL) SendInteractiveQuestion derives its
+	// attachment-action integration.url from. Empty disables single-select
+	// button rendering — the send fails per specs/mattermost-question-actions
+	// so the question router falls back to numbered text rather than
+	// posting a widget with nowhere to submit.
+	ActionURLBase string
+	// ActionSecret is the shared orchestrator<->runner credential
+	// (OPENCODE_BRIDGE_REGISTRAR_PASSWORD) keying the action-token MAC.
+	ActionSecret string
 }
 
 // New constructs an Adapter from the supplied identity. ServerURL and
@@ -147,6 +171,10 @@ func New(id Identity, opts Options) (*Adapter, error) {
 		allowlist:     opts.Allowlisted,
 		client:        NewClient(url, tok, opts.HTTPClient),
 		dialer:        opts.Dialer,
+		actionSecret:  opts.ActionSecret,
+	}
+	if base := strings.TrimRight(strings.TrimSpace(opts.ActionURLBase), "/"); base != "" {
+		a.actionURL = base + "/router/mattermost/attachment-action"
 	}
 	if a.dialer == nil {
 		a.dialer = websocket.DefaultDialer

@@ -194,6 +194,17 @@ type Outbound struct {
 	// Text as the plain-text fallback for minimal adapters. See
 	// bridge-outbound-render-hint capability.
 	Render *RenderHint
+	// IsAck marks this outbound as an acknowledgement of a reviewer's
+	// answer to a question (set by Service.replyToPeer's ack call site,
+	// internal/bridge/service/question.go's maybeAckAnswer), as opposed
+	// to a substantive agent message or a cron/run-failure notification
+	// (both of which also route through replyToPeer but leave this
+	// false). Slack, Mattermost, and Telegram never read this field —
+	// only the "external" channel adapter does, to pick relay frame
+	// kind "ack" vs "message" (bridge.Outbound carries no other signal
+	// that would let it distinguish the two). Purely additive: adding
+	// this field changes no existing adapter's behavior.
+	IsAck bool
 }
 
 // SendResult reports the outcome of a single Adapter.Send call. Adapters
