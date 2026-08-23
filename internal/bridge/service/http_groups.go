@@ -157,6 +157,13 @@ func mutateIdentity(
 			}
 		}
 		return fmt.Errorf("mattermost identity %q not found", identityID)
+	case "external":
+		// The external channel relays to a non-chat consumer — there is
+		// no chat-group / @mention-gating concept to toggle. Reject
+		// explicitly (rather than falling through to the generic
+		// "unknown channel" default) since "external" IS a known
+		// channel, just not one this endpoint applies to.
+		return fmt.Errorf("groups are not supported for the external channel")
 	default:
 		return fmt.Errorf("unknown channel %q", channel)
 	}

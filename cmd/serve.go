@@ -17,6 +17,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/api"
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/bridge/external"
 	"github.com/opencode-ai/opencode/internal/bridge/mattermost"
 	bridgesvc "github.com/opencode-ai/opencode/internal/bridge/service"
 	"github.com/opencode-ai/opencode/internal/bridge/slack"
@@ -475,6 +476,28 @@ func newBridgeAdapterFactory(dataDir string, svc *bridgesvc.Service) bridgesvc.A
 					Access:        m.Access,
 					Inbound:       m.Inbound,
 				}, opts)
+			}
+		case "external":
+			if cfg.Channels.External == nil {
+				return nil, fmt.Errorf("external channel not configured")
+			}
+			for _, e := range cfg.Channels.External.Consumers {
+				if e.ID != identityID {
+					continue
+				}
+				// RelayBaseURL / RelayCredential are resolved from
+				// environment, NOT from cfg.Channels.External.Consumers'
+				// own RelayURL/RelayCredential fields — same pattern as
+				// the mattermost branch's ActionURLBase/ActionSecret
+				// above: the orchestrator's registrar URL/password are
+				// the single source of truth for this pod's relay
+				// target, re-read directly here rather than threaded
+				// through params.
+				return external.New(external.Identity{
+					ID:              e.ID,
+					RelayBaseURL:    os.Getenv("OPENCODE_BRIDGE_REGISTRAR_URL"),
+					RelayCredential: os.Getenv("OPENCODE_BRIDGE_REGISTRAR_PASSWORD"),
+				}, external.Options{})
 			}
 		}
 		return nil, fmt.Errorf("identity %s:%s not found in cfg", channel, identityID)
