@@ -191,20 +191,28 @@ func TestExternalChannelBindSendUnbind(t *testing.T) {
 
 // TestReplyToPeerSetsIsAckOnlyForAnswerAck proves replyToPeer's isAck
 // parameter is the ONLY thing that sets Outbound.IsAck — a normal reply
-// (the cron-output / run-failure call shape) leaves it false.
+// (the cron-output / run-failure call shape) leaves it false — and that
+// replyToPeer stamps its sessionID onto ctx.
+//
+// The sessionId half is a regression guard: replyToPeer calls
+// adapter.Send directly instead of going through sendToOnePeer, so it
+// does not inherit that path's stamping. Before it stamped its own, every
+// ack / cron output / run-failure frame reached the "external" adapter
+// with an empty sessionId — the one field the consumer needs to correlate
+// the frame, and the one the IsAck flag exists to be read alongside.
 func TestReplyToPeerSetsIsAckOnlyForAnswerAck(t *testing.T) {
 	t.Parallel()
 	svc, _ := newOrchestratorForTest(t)
 	_ = svc.Start(context.Background())
 
-	ad := newStubAdapter("external", "c3")
+	ad := newCtxCapturingAdapter("external", "c3")
 	if err := svc.RegisterAdapter(context.Background(), ad); err != nil {
 		t.Fatalf("RegisterAdapter: %v", err)
 	}
 	peer := bridge.PeerRef{Channel: "external", Identity: "c3", PeerID: "aid1:flow1:run1"}
 
-	svc.replyToPeer(context.Background(), peer, "normal message", false)
-	svc.replyToPeer(context.Background(), peer, "ack message", true)
+	svc.replyToPeer(context.Background(), peer, "normal message", false, "S1")
+	svc.replyToPeer(context.Background(), peer, "ack message", true, "S1")
 
 	sends := ad.Sends()
 	if len(sends) != 2 {
@@ -215,5 +223,14 @@ func TestReplyToPeerSetsIsAckOnlyForAnswerAck(t *testing.T) {
 	}
 	if !sends[1].IsAck {
 		t.Errorf("second (ack) reply: IsAck = false, want true")
+	}
+	if len(ad.gotSessionID) != 2 {
+		t.Fatalf("recorded sessionIds = %d, want 2", len(ad.gotSessionID))
+	}
+	for i, got := range ad.gotSessionID {
+		if !ad.gotHadSession[i] || got != "S1" {
+			t.Errorf("reply %d: sessionId on context = (%q, had=%v); want (\"S1\", true)",
+				i, got, ad.gotHadSession[i])
+		}
 	}
 }

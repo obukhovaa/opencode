@@ -218,7 +218,7 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	runCh, err := ag.Run(ctx, d.sessionID, in.Text, 0, atts...)
 	if err != nil {
 		logging.Warn("bridge: agent.Run failed", "session", d.sessionID, "err", err)
-		d.svc.replyToPeer(ctx, in.Peer, runFailureMessage(err, d.sessionID), false)
+		d.svc.replyToPeer(ctx, in.Peer, runFailureMessage(err, d.sessionID), false, d.sessionID)
 		return
 	}
 

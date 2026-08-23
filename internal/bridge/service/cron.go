@@ -92,7 +92,7 @@ func (r *CronOutputRouter) handleUpdate(ctx context.Context, job cron.CronJob) {
 	}
 	body := fmt.Sprintf("⏲ %s\n\n%s", title, job.LastResult)
 	for _, b := range bindings {
-		r.svc.replyToPeer(ctx, b.AsPeerRef(), body, false)
+		r.svc.replyToPeer(ctx, b.AsPeerRef(), body, false, job.SessionID)
 	}
 	logging.Info("bridge: cron output forwarded",
 		"session", job.SessionID, "id", job.ID, "peers", len(bindings))

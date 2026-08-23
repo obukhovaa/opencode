@@ -413,7 +413,7 @@ func (r *QuestionRouter) TryHandleQuestionReply(ctx context.Context, sessionID s
 		return false
 	}
 	r.rememberAnswers(sessionID, answers)
-	r.maybeAckAnswer(ctx, in, answers)
+	r.maybeAckAnswer(ctx, in, answers, sessionID)
 	return true
 }
 
@@ -426,12 +426,12 @@ func (r *QuestionRouter) TryHandleQuestionReply(ctx context.Context, sessionID s
 // via the pod's own outbound adapter, so it works in both daemon and
 // orchestrator-mediated deployments. Best-effort — a delivery failure never
 // blocks the (already-committed) Reply.
-func (r *QuestionRouter) maybeAckAnswer(ctx context.Context, in bridge.Inbound, answers [][]string) {
+func (r *QuestionRouter) maybeAckAnswer(ctx context.Context, in bridge.Inbound, answers [][]string, sessionID string) {
 	if in.AnswerWasAcknowledgedByTransport() {
 		return
 	}
 	if ack := formatAnswerAck(answers); ack != "" {
-		r.svc.replyToPeer(ctx, in.Peer, ack, true)
+		r.svc.replyToPeer(ctx, in.Peer, ack, true, sessionID)
 	}
 }
 
