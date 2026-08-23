@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"fmt"
 )
 
 // computeActionToken returns the keyed MAC over an interactive
@@ -55,14 +56,18 @@ func verifyActionToken(secret, channel, identity, peerID, requestID, choice, got
 // unlike a session or job id, nothing else in the system looks it up —
 // its only job is to make a token minted for one question unusable
 // against a different one.
-func newActionRequestID() string {
+//
+// A rand.Read failure is returned rather than substituted for, because
+// there is no safe substitute: any fixed fallback would be shared by
+// every question, and a token minted for one question would then verify
+// against another (same channel/identity/peer/choice). crypto/rand.Read
+// does not fail on a supported platform, so in practice this error is
+// unreachable — but the caller failing the send is the only correct
+// response if it ever does.
+func newActionRequestID() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
-		// crypto/rand.Read on a supported platform does not fail; if it
-		// somehow does, fall back to a fixed-but-unique-enough value
-		// rather than panicking the send path. Not a security concern:
-		// a failed rand.Read here would already indicate a broken host.
-		return hex.EncodeToString([]byte("fallback-request-id"))
+		return "", fmt.Errorf("mattermost: generating action request id: %w", err)
 	}
-	return hex.EncodeToString(b)
+	return hex.EncodeToString(b), nil
 }

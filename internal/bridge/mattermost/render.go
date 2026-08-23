@@ -62,11 +62,6 @@ func (c *toolCardCache) consume(channelID, callID string) (toolCardRef, bool) {
 	return ref, true
 }
 
-// MultiSelectMaxOptions is the upper option-count for Mattermost
-// multi-select attachment-action widgets. Mattermost doesn't publish a
-// hard cap but lots of options degrade the modal UX; match the others.
-const MultiSelectMaxOptions = 50
-
 // SendInteractiveMultiSelect implements bridge.InteractiveMultiSelectSender
 // for Mattermost. Multi-select stays descoped to the numbered-text /
 // comma-separated-reply fallback per design.md D11 ("Mattermost
@@ -77,10 +72,11 @@ const MultiSelectMaxOptions = 50
 //
 // This always returns an error so the question router
 // (tryInteractiveSend) falls back to text — per task E.2, the chosen
-// alternative to wiring buildMultiSelectAttachment's integration.url for
-// real. Rendering a widget whose submit goes nowhere (the pre-existing
+// alternative to wiring a real integration.url for the select widget.
+// Rendering a widget whose submit goes nowhere (the pre-existing
 // behaviour: integration.url was hardcoded to "") is worse than not
-// rendering one at all, so the widget is no longer posted.
+// rendering one at all, so the widget is no longer posted and its
+// builder has been removed rather than left unreachable.
 func (a *Adapter) SendInteractiveMultiSelect(ctx context.Context, peer bridge.PeerRef, prompt string, choices []bridge.QuestionChoice) (string, error) {
 	return "", errMultiSelectNotSupported
 }
@@ -100,6 +96,21 @@ var errMultiSelectNotSupported = errors.New("mattermost: multi-select is not sup
 // back to numbered text.
 var errActionURLUnavailable = errors.New("mattermost: no orchestrator action URL configured (OPENCODE_BRIDGE_REGISTRAR_URL unset)")
 
+// errActionSecretUnavailable is returned by SendInteractiveQuestion when
+// the adapter has an action URL but no shared secret to key the action
+// token with.
+//
+// This MUST fail the send rather than mint tokens under an empty key.
+// HMAC-SHA256 with a zero-length key is deterministic and computable by
+// anyone, and every input field is visible in the posted message
+// (peerId, requestId, choice) — so an empty secret turns the token from
+// "the only thing standing between a forged POST and an accepted answer"
+// (see computeActionToken) into a value any observer can produce, which
+// the orchestrator would then verify successfully against its own empty
+// secret. Falling back to numbered text is the safe degradation; a
+// widget whose authenticity cannot be established is not.
+var errActionSecretUnavailable = errors.New("mattermost: no action-token secret configured (OPENCODE_BRIDGE_REGISTRAR_PASSWORD unset)")
+
 // SendInteractiveQuestion implements bridge.InteractiveQuestionSender for
 // Mattermost via the `attachment.actions` button widget — one action per
 // choice, each carrying an integration.url pointing at the
@@ -111,9 +122,12 @@ var errActionURLUnavailable = errors.New("mattermost: no orchestrator action URL
 // platform signature of their own).
 //
 // Returns errActionURLUnavailable when the adapter has no action URL
-// (the pod's OPENCODE_BRIDGE_REGISTRAR_URL is unset) — this is a SEND
-// FAILURE, not a degraded post, so the question router falls back to
-// numbered text instead of posting a button that submits nowhere.
+// (the pod's OPENCODE_BRIDGE_REGISTRAR_URL is unset), or
+// errActionSecretUnavailable when it has no secret to key the token with
+// (OPENCODE_BRIDGE_REGISTRAR_PASSWORD unset). Both are SEND FAILURES,
+// not degraded posts, so the question router falls back to numbered text
+// instead of posting a button that submits nowhere — or one whose token
+// any observer could forge.
 func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerRef, prompt string, choices []bridge.QuestionChoice) (string, error) {
 	parsed := ParsePeerID(peer.PeerID)
 	if parsed.ChannelID == "" {
@@ -125,8 +139,14 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 	if a.actionURL == "" {
 		return "", errActionURLUnavailable
 	}
+	if a.actionSecret == "" {
+		return "", errActionSecretUnavailable
+	}
 
-	requestID := newActionRequestID()
+	requestID, err := newActionRequestID()
+	if err != nil {
+		return "", err
+	}
 	actions := make([]map[string]any, 0, len(choices))
 	for i, c := range choices {
 		token := computeActionToken(a.actionSecret, "mattermost", a.identityID, peer.PeerID, requestID, c.Value)
@@ -349,37 +369,6 @@ func (a *Adapter) renderStatus(ctx context.Context, peer bridge.PeerRef, hint *b
 }
 
 // --- attachment builders ----------------------------------------------------
-
-// buildMultiSelectAttachment composes the Slack-compatible attachment
-// dict for a multi-select question widget. Extracted so unit tests can
-// assert on shape without driving the full SendInteractiveMultiSelect
-// flow. The Custom flag on the first choice gates the discoverability
-// `footer` per bridge-question-custom-answer-hint.
-func buildMultiSelectAttachment(prompt string, choices []bridge.QuestionChoice) map[string]any {
-	options := make([]map[string]any, 0, len(choices))
-	for _, c := range choices {
-		options = append(options, map[string]any{
-			"text":  c.Label,
-			"value": c.Value,
-		})
-	}
-	action := map[string]any{
-		"name":        "router_multi_select",
-		"type":        "select",
-		"multiselect": true,
-		"options":     options,
-		"integration": map[string]any{"url": ""},
-	}
-	att := map[string]any{
-		"color":   "#0066cc",
-		"pretext": prompt,
-		"actions": []map[string]any{action},
-	}
-	if len(choices) > 0 && choices[0].Custom {
-		att["footer"] = "💬 Or reply in this thread (@-mention required)"
-	}
-	return att
-}
 
 func buildToolCallAttachment(hint *bridge.RenderHint) map[string]any {
 	att := map[string]any{

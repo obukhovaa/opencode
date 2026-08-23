@@ -205,6 +205,59 @@ func TestMattermostSendInteractiveQuestionInvalidPeerID(t *testing.T) {
 	}
 }
 
+// An action URL without a secret must fail the send, not post buttons
+// whose token was keyed with "". HMAC-SHA256 under a zero-length key is
+// computable by anyone, and every input field is visible in the posted
+// message, so such a token proves nothing — and the orchestrator would
+// verify it successfully against its own empty secret. Falling back to
+// numbered text is the safe degradation.
+func TestMattermostSendInteractiveQuestionRequiresActionSecret(t *testing.T) {
+	t.Parallel()
+	mock := newMockServer(t, mattermostTestBotUser())
+	a, err := New(Identity{ID: "default", ServerURL: mock.URL(), AccessToken: "tok"}, Options{
+		ActionURLBase: "https://orchestrator.example.com",
+		// ActionSecret deliberately unset — OPENCODE_BRIDGE_REGISTRAR_URL
+		// set while OPENCODE_BRIDGE_REGISTRAR_PASSWORD is not.
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = a.SendInteractiveQuestion(context.Background(), bridge.PeerRef{PeerID: "ch1"}, "Proceed?", []bridge.QuestionChoice{
+		{Label: "Yes", Value: "Yes"},
+	})
+	if !errors.Is(err, errActionSecretUnavailable) {
+		t.Errorf("err = %v, want errActionSecretUnavailable", err)
+	}
+
+	mock.mu.Lock()
+	calls := len(mock.createPostCalls)
+	mock.mu.Unlock()
+	if calls != 0 {
+		t.Errorf("createPostCalls = %d, want 0 — no widget may be posted without a usable secret", calls)
+	}
+}
+
+// Distinct request ids per question are what stop a token minted for one
+// question from verifying against another.
+func TestNewActionRequestIDIsUnique(t *testing.T) {
+	t.Parallel()
+	seen := make(map[string]struct{}, 64)
+	for i := 0; i < 64; i++ {
+		id, err := newActionRequestID()
+		if err != nil {
+			t.Fatalf("newActionRequestID: %v", err)
+		}
+		if id == "" {
+			t.Fatal("newActionRequestID returned an empty id")
+		}
+		if _, dup := seen[id]; dup {
+			t.Fatalf("duplicate request id %q — tokens would be cross-valid between questions", id)
+		}
+		seen[id] = struct{}{}
+	}
+}
+
 func mattermostTestBotUser() User {
 	return User{ID: "bot123", Username: "testbot"}
 }
