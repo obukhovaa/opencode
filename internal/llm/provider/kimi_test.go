@@ -172,12 +172,11 @@ func TestKimiRequestShape(t *testing.T) {
 	}
 }
 
-// TestCountTokensTransientErrorDoesNotLatch ensures 404/405 latch the
-// unsupported flag immediately while a 500/429 stays retryable — up to
-// countTokensServerErrorLatchThreshold consecutive failures, after which the
-// endpoint is given up on too (see
-// TestCountTokensLatchesAfterRepeatedServerErrors). This test stays below
-// that threshold on purpose.
+// TestCountTokensTransientErrorDoesNotLatch ensures a 500 is never
+// misclassified into the immediate 404/405 unsupported latch and keeps getting
+// probed. Repeated 500s do eventually put the endpoint on a temporary cooldown
+// (see TestCountTokensCoolsDownAfterRepeatedShapeRejections); this test stays
+// one call below that threshold on purpose.
 func TestCountTokensTransientErrorDoesNotLatch(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +193,10 @@ func TestCountTokensTransientErrorDoesNotLatch(t *testing.T) {
 		model:   models.KimiModels[models.KimiK3],
 	}).(*anthropicClient)
 
-	for i := range 2 {
+	// Pinned to the threshold so lowering the constant surfaces here as a
+	// real signal rather than a confusing failure.
+	calls := countTokensShapeErrorThreshold - 1
+	for i := range calls {
 		_, err := client.countTokens(context.Background(), nil, nil)
 		if err == nil {
 			t.Fatalf("call %d: expected error", i+1)
@@ -203,7 +205,7 @@ func TestCountTokensTransientErrorDoesNotLatch(t *testing.T) {
 			t.Fatalf("call %d: 500 must not be classified unsupported", i+1)
 		}
 	}
-	if got := hits.Load(); got != 2 {
-		t.Fatalf("500s must keep probing (no latch), probes = %d", got)
+	if got := int(hits.Load()); got != calls {
+		t.Fatalf("500s must keep probing below the threshold, probes = %d, want %d", got, calls)
 	}
 }

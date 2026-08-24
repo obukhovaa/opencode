@@ -67,24 +67,69 @@ type anthropicClient struct {
 	// a wasted HTTP round-trip; the provider layer falls back to the local
 	// estimate whenever countTokens errors.
 	countTokensUnsupported atomic.Bool
-	// countTokensServerErrors counts CONSECUTIVE 5xx answers from
-	// count_tokens (reset on every success). Proxies in front of the real
-	// endpoint reject content-block types their token counter does not
-	// model — we rewrite the shapes we know about (see
+	// countTokensShapeErrors counts consecutive shape-rejection answers from
+	// count_tokens — see countTokensShapeRejection. Proxies in front of the
+	// real endpoint reject content-block types their token counter does not
+	// model; we rewrite the shapes we know about (see
 	// stripServerToolBlocksForCountTokens and stripMediaForCountTokens), but
-	// a block type added upstream would otherwise 500 once per agent-loop
-	// iteration for the rest of the session. After
-	// countTokensServerErrorLatchThreshold in a row we latch
-	// countTokensUnsupported and stop probing.
-	countTokensServerErrors atomic.Int64
+	// a block type added upstream would otherwise fail once per agent-loop
+	// iteration forever. Any other outcome — success, transient overload, a
+	// 4xx — resets the streak.
+	countTokensShapeErrors atomic.Int64
+	// countTokensCooldownUntil is a unix-nano deadline before which
+	// count_tokens is skipped entirely, set once countTokensShapeErrors
+	// reaches countTokensShapeErrorThreshold.
+	//
+	// A cooldown rather than a permanent latch, because the blast radius of
+	// being wrong is large: one anthropicClient is built per agent and
+	// outlives every session that agent serves, and localTokenEstimate is a
+	// coarse floor that can undercount a tool-heavy conversation badly enough
+	// for auto-compaction to never fire. Expiring the skip re-probes the
+	// endpoint, so a mistaken cooldown costs minutes rather than the life of
+	// the process — which is also why the streak counter can stay a plain
+	// atomic increment instead of a compare-and-swap: concurrent calls
+	// sharing one client may reach the threshold off a single bad instant,
+	// and the worst case is one cooldown window of local estimation.
+	countTokensCooldownUntil atomic.Int64
 }
 
-// countTokensServerErrorLatchThreshold is how many consecutive 5xx answers
-// from count_tokens it takes to give up on the endpoint for the session.
-// Above 1 so a single blip (proxy restart, transient overload) does not cost
-// the accurate count; low enough that a structurally-rejected request shape
-// stops burning a round-trip per agent-loop iteration.
-const countTokensServerErrorLatchThreshold = 3
+const (
+	// countTokensShapeErrorThreshold is how many consecutive shape rejections
+	// it takes to put count_tokens on cooldown. Above 1 so a one-off upstream
+	// 500 does not cost the accurate count; low enough that a request shape
+	// the endpoint cannot parse stops burning a round-trip per agent-loop
+	// iteration.
+	countTokensShapeErrorThreshold = 3
+	// countTokensCooldown is how long count_tokens is skipped after the
+	// threshold is reached. Long enough that a genuinely unparseable shape
+	// costs ~one probe per cooldown instead of one per loop iteration, short
+	// enough that a transient upstream fault self-heals well within a
+	// session.
+	countTokensCooldown = 5 * time.Minute
+)
+
+// countTokensShapeRejection reports whether err is the kind of count_tokens
+// failure that repeating the identical request cannot fix, along with the
+// HTTP status that said so.
+//
+// Only 5xx qualifies, and only the codes this client does NOT already treat
+// as transient: retryableHTTPStatuses (429/503/529) are explicit "come back
+// later" signals — 503 in particular is what Bedrock returns for ordinary
+// overload — so counting them would put a perfectly healthy endpoint on
+// cooldown during a load spike. What is left (500/502/504) is what a proxy
+// answers when its token counter cannot parse a content block we sent, and
+// that fails identically on every retry.
+func countTokensShapeRejection(err error) (int, bool) {
+	var apierr *anthropic.Error
+	if !errors.As(err, &apierr) {
+		return 0, false
+	}
+	if apierr.StatusCode < http.StatusInternalServerError {
+		return apierr.StatusCode, false
+	}
+	_, transient := retryableHTTPStatuses[apierr.StatusCode]
+	return apierr.StatusCode, !transient
+}
 
 type AnthropicClient ProviderClient
 
@@ -1406,6 +1451,13 @@ const (
 	// names — is re-inlined verbatim and counted exactly by the endpoint, so
 	// this covers only the structure the text stand-in drops.
 	countTokensServerToolBlockOverhead = 10
+	// countTokensToolReferenceOverhead approximates the per-reference framing
+	// ({"type":"tool_reference","tool_name":…}) that toolSearchResultStandIn
+	// collapses into a comma-separated list. Scaled per reference rather than
+	// folded into the flat block constant because a regex search against a
+	// large MCP server returns dozens of tools, where a single constant would
+	// undercount by hundreds of tokens.
+	countTokensToolReferenceOverhead = 8
 )
 
 // messagesContainMedia reports whether any message holds an image or
@@ -1446,38 +1498,45 @@ func messagesContainServerToolBlocks(messages []anthropic.MessageParam) bool {
 }
 
 // serverToolUseStandIn renders a server_tool_use block as text for the
-// count_tokens call: the tool name plus its JSON input (the search query),
-// which is the block's entire semantic payload. Re-inlining rather than
-// eliding keeps the endpoint's count close to the real one — only the JSON
-// scaffolding is lost, and the caller compensates with
-// countTokensServerToolBlockOverhead.
-func serverToolUseStandIn(b *anthropic.ServerToolUseBlockParam) string {
+// count_tokens call, and the token estimate compensating for what the
+// rendering drops. The text carries the block's entire semantic payload — the
+// tool name and its JSON input (the search query) — so the endpoint still
+// counts that exactly; only the JSON scaffolding needs compensating.
+func serverToolUseStandIn(b *anthropic.ServerToolUseBlockParam) (string, int64) {
+	// Input is an `any` that convertMessages always fills from
+	// json.Unmarshal, so the error branch is unreachable by construction —
+	// kept so a future caller passing something exotic degrades to "{}"
+	// rather than losing the block.
 	input := "{}"
-	if b.Input != nil {
-		if raw, err := json.Marshal(b.Input); err == nil {
-			input = string(raw)
-		}
+	if raw, err := json.Marshal(b.Input); err == nil {
+		input = string(raw)
 	}
-	return fmt.Sprintf("[server tool %s %s]", b.Name, input)
+	return fmt.Sprintf("[server tool %s %s]", b.Name, input), countTokensServerToolBlockOverhead
 }
 
 // toolSearchResultStandIn renders a tool_search_tool_result block as text for
-// the count_tokens call: either the error code, or the discovered tool names.
+// the count_tokens call, and the token estimate compensating for what the
+// rendering drops: either the error code, or the discovered tool names.
+//
 // The referenced tools' schemas are NOT part of this block — they are sent in
 // the request's tools array (see SerializableFor) and counted there — so the
-// names alone are the block's payload.
-func toolSearchResultStandIn(b *anthropic.ToolSearchToolResultBlockParam) string {
+// names alone are the block's payload, plus one tool_reference wrapper each.
+func toolSearchResultStandIn(b *anthropic.ToolSearchToolResultBlockParam) (string, int64) {
 	if errBlock := b.Content.OfRequestToolSearchToolResultError; errBlock != nil {
-		return fmt.Sprintf("[tool search error %s]", errBlock.ErrorCode)
+		return fmt.Sprintf("[tool search error %s]", errBlock.ErrorCode), countTokensServerToolBlockOverhead
 	}
-	if res := b.Content.OfRequestToolSearchToolSearchResultBlock; res != nil {
-		names := make([]string, 0, len(res.ToolReferences))
-		for _, ref := range res.ToolReferences {
-			names = append(names, ref.ToolName)
-		}
-		return fmt.Sprintf("[tool search results %s]", strings.Join(names, ","))
+	res := b.Content.OfRequestToolSearchToolSearchResultBlock
+	if res == nil {
+		// Neither union member set. Unreachable via convertMessages, which
+		// always builds the block with one of them.
+		return "[tool search results]", countTokensServerToolBlockOverhead
 	}
-	return "[tool search results]"
+	names := make([]string, 0, len(res.ToolReferences))
+	for _, ref := range res.ToolReferences {
+		names = append(names, ref.ToolName)
+	}
+	overhead := int64(countTokensServerToolBlockOverhead + countTokensToolReferenceOverhead*len(names))
+	return fmt.Sprintf("[tool search results %s]", strings.Join(names, ",")), overhead
 }
 
 // stripServerToolBlocksForCountTokens returns a copy of messages with every
@@ -1514,11 +1573,13 @@ func stripServerToolBlocksForCountTokens(messages []anthropic.MessageParam) ([]a
 		for _, block := range msg.Content {
 			switch {
 			case block.OfServerToolUse != nil:
-				extraTokens += countTokensServerToolBlockOverhead
-				newContent = append(newContent, anthropic.NewTextBlock(serverToolUseStandIn(block.OfServerToolUse)))
+				text, overhead := serverToolUseStandIn(block.OfServerToolUse)
+				extraTokens += overhead
+				newContent = append(newContent, anthropic.NewTextBlock(text))
 			case block.OfToolSearchToolResult != nil:
-				extraTokens += countTokensServerToolBlockOverhead
-				newContent = append(newContent, anthropic.NewTextBlock(toolSearchResultStandIn(block.OfToolSearchToolResult)))
+				text, overhead := toolSearchResultStandIn(block.OfToolSearchToolResult)
+				extraTokens += overhead
+				newContent = append(newContent, anthropic.NewTextBlock(text))
 			default:
 				newContent = append(newContent, block)
 			}
@@ -1607,7 +1668,10 @@ func stripMediaForCountTokens(messages []anthropic.MessageParam) ([]anthropic.Me
 
 func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) (int64, error) {
 	if a.countTokensUnsupported.Load() {
-		return 0, fmt.Errorf("count_tokens previously latched as unusable on this endpoint: %w", errors.ErrUnsupported)
+		return 0, fmt.Errorf("count_tokens previously answered 404/405 on this endpoint: %w", errors.ErrUnsupported)
+	}
+	if until := a.countTokensCooldownUntil.Load(); until > 0 && time.Now().UnixNano() < until {
+		return 0, fmt.Errorf("count_tokens is in cooldown after repeated shape rejections: %w", errors.ErrUnsupported)
 	}
 	anthropicMessages := a.convertMessages(messages)
 	// Server-side tool blocks go on every path: any Anthropic-dialect proxy
@@ -1664,24 +1728,35 @@ func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Me
 			)
 			return 0, fmt.Errorf("count_tokens endpoint not implemented (HTTP %d): %w", apierr.StatusCode, errors.ErrUnsupported)
 		}
-		// A 5xx usually means the proxy's token counter choked on a content
-		// block it does not model. Retrying the identical shape every
-		// iteration cannot succeed, so latch after a few in a row.
-		if errors.As(err, &apierr) && apierr.StatusCode >= http.StatusInternalServerError {
-			if a.countTokensServerErrors.Add(1) >= countTokensServerErrorLatchThreshold {
-				a.countTokensUnsupported.Store(true)
-				logging.Info("count_tokens endpoint failed repeatedly; using local estimation for the rest of the session",
+		status, shapeRejected := countTokensShapeRejection(err)
+		switch {
+		case ctx.Err() != nil:
+			// Our own cancellation. It says nothing about the endpoint, so
+			// it must neither extend nor break the streak.
+		case shapeRejected:
+			// The proxy's token counter could not parse what we sent.
+			// Retrying the identical shape cannot succeed, so back off once
+			// we have seen it a few times in a row.
+			if a.countTokensShapeErrors.Add(1) >= countTokensShapeErrorThreshold {
+				a.countTokensShapeErrors.Store(0)
+				a.countTokensCooldownUntil.Store(time.Now().Add(countTokensCooldown).UnixNano())
+				logging.Info("count_tokens endpoint rejected the request shape repeatedly; using local estimation until the cooldown expires",
 					"model", a.providerOptions.model.Name,
-					"status", apierr.StatusCode,
-					"consecutive_failures", countTokensServerErrorLatchThreshold,
+					"status", status,
+					"consecutive_failures", countTokensShapeErrorThreshold,
+					"cooldown", countTokensCooldown.String(),
 					"cause", err.Error(),
 				)
-				return 0, fmt.Errorf("count_tokens endpoint failed %d times in a row (HTTP %d): %w", countTokensServerErrorLatchThreshold, apierr.StatusCode, errors.ErrUnsupported)
+				return 0, fmt.Errorf("count_tokens rejected the request shape %d times in a row: %w", countTokensShapeErrorThreshold, errors.ErrUnsupported)
 			}
+		default:
+			// Transient overload, a 4xx, a transport reset — the endpoint is
+			// answering, just not usefully right now. Break the streak.
+			a.countTokensShapeErrors.Store(0)
 		}
 		return 0, fmt.Errorf("failed to count tokens: %w", err)
 	}
-	a.countTokensServerErrors.Store(0)
+	a.countTokensShapeErrors.Store(0)
 
 	return response.InputTokens + strippedTokenEstimate, nil
 }

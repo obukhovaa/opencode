@@ -6,9 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/opencode-ai/opencode/internal/llm/models"
@@ -66,7 +68,8 @@ func TestStripServerToolBlocksForCountTokens(t *testing.T) {
 					anthropic.NewTextBlock("on it"),
 				),
 			},
-			wantExtraTokens: 2 * countTokensServerToolBlockOverhead,
+			// server_tool_use + tool_search_tool_result + 2 tool_reference wrappers.
+			wantExtraTokens: 2*countTokensServerToolBlockOverhead + 2*countTokensToolReferenceOverhead,
 			wantSubstrings: []string{
 				"tool_search_tool_regex",
 				"gitlab_.*",
@@ -82,11 +85,12 @@ func TestStripServerToolBlocksForCountTokens(t *testing.T) {
 					toolSearchErrorBlock("srvtoolu_1", "too_many_requests"),
 				),
 			},
+			// An error result carries no references to scale on.
 			wantExtraTokens: 2 * countTokensServerToolBlockOverhead,
 			wantSubstrings:  []string{"tool_search_tool_bm25", "too_many_requests"},
 		},
 		{
-			name: "search with no references still yields non-empty content",
+			name: "empty reference list still yields non-empty content",
 			messages: []anthropic.MessageParam{
 				anthropic.NewAssistantMessage(
 					serverToolUseBlock("srvtoolu_1", "tool_search_tool_regex", "nothing"),
@@ -188,21 +192,35 @@ func countTokensTestServer(t *testing.T, status int, body string) (*httptest.Ser
 
 // toolSearchTurn is the assistant turn a native tool-search session persists:
 // reasoning, the search itself, and the tool call it enabled.
+//
+// ReasoningOffset is set so convertMessages takes the ORDER-PRESERVING replay
+// branch (toolSearchesReplayableInOrder) — the shape rows persisted by current
+// code produce, and the only one that replays the signed thinking block
+// alongside the search. Leaving it nil silently falls back to the
+// thinking-dropping branch, which would make the end-to-end assertions below
+// exercise a shape production never sends.
 func toolSearchTurn() []message.Message {
+	reasoningOffset := 1
 	return []message.Message{
 		newMsg(message.User, message.TextContent{Text: "look up the MR"}),
 		newMsg(message.Assistant,
 			message.ReasoningContent{Thinking: "need the gitlab tool", Signature: "sig-abc"},
 			message.ToolSearchContent{
-				ToolUseID:  "srvtoolu_1",
-				Name:       "tool_search_tool_regex",
-				Input:      `{"pattern":"gitlab_.*"}`,
-				References: []string{"gitlab_get_merge_request"},
+				ToolUseID:       "srvtoolu_1",
+				Name:            "tool_search_tool_regex",
+				Input:           `{"pattern":"gitlab_.*"}`,
+				References:      []string{"gitlab_get_merge_request"},
+				ReasoningOffset: &reasoningOffset,
 			},
 			message.ToolCall{ID: "toolu_1", Name: "gitlab_get_merge_request", Input: `{}`, Finished: true},
 		),
 	}
 }
+
+// toolSearchTurnOverhead is what stripServerToolBlocksForCountTokens adds back
+// for toolSearchTurn: one server_tool_use, one tool_search_tool_result, one
+// tool_reference.
+const toolSearchTurnOverhead = int64(2*countTokensServerToolBlockOverhead + countTokensToolReferenceOverhead)
 
 // TestCountTokensSanitizesServerToolBlocksOnBedrock is the end-to-end guard:
 // the request that actually leaves for LiteLLM must carry no server-side tool
@@ -234,9 +252,13 @@ func TestCountTokensSanitizesServerToolBlocksOnBedrock(t *testing.T) {
 	if !strings.Contains(body, "gitlab_get_merge_request") {
 		t.Errorf("outgoing body dropped the discovered tool name:\n%s", body)
 	}
-	// One server_tool_use + one tool_search_tool_result were swapped.
-	if want := int64(100 + 2*countTokensServerToolBlockOverhead); got != want {
+	if want := 100 + toolSearchTurnOverhead; got != want {
 		t.Errorf("tokens = %d, want %d", got, want)
+	}
+	// The signed thinking block rides along untouched — stripping the search
+	// blocks must not disturb it.
+	if !strings.Contains(body, `"thinking"`) {
+		t.Errorf("outgoing body dropped the replayed thinking block:\n%s", body)
 	}
 }
 
@@ -257,7 +279,7 @@ func TestCountTokensStripsServerToolBlocksOffBedrock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("countTokens: %v", err)
 	}
-	if want := int64(100 + 2*countTokensServerToolBlockOverhead); got != want {
+	if want := 100 + toolSearchTurnOverhead; got != want {
 		t.Errorf("tokens = %d, want %d", got, want)
 	}
 	body := lastBody()
@@ -299,90 +321,188 @@ func TestCountTokensLeavesMediaAloneOffBedrock(t *testing.T) {
 	}
 }
 
-// TestCountTokensLatchesAfterRepeatedServerErrors covers the backstop: a
+// countTokensStatusServer answers each call with the next status in the given
+// cycle, so a test can script an exact failure sequence.
+func countTokensStatusServer(t *testing.T, statuses ...int) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := int(hits.Add(1)) - 1
+		status := statuses[n%len(statuses)]
+		w.Header().Set("Content-Type", "application/json")
+		if status == http.StatusOK {
+			_, _ = w.Write([]byte(`{"input_tokens": 7}`))
+			return
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"api_error","message":"scripted"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &hits
+}
+
+func newTestAnthropicClient(t *testing.T, baseURL string) *anthropicClient {
+	t.Helper()
+	client, ok := newAnthropicClient(providerClientOptions{
+		apiKey:  "test-key",
+		baseURL: baseURL,
+		model:   models.AnthropicModels[models.Claude5Sonnet],
+	}).(*anthropicClient)
+	if !ok {
+		t.Fatal("newAnthropicClient did not return *anthropicClient")
+	}
+	return client
+}
+
+// TestCountTokensCoolsDownAfterRepeatedShapeRejections covers the backstop: a
 // proxy that 500s on a content shape it cannot model will do so on every
 // agent-loop iteration, so after a few consecutive failures we stop probing
 // and let the provider layer run on the local estimate.
-func TestCountTokensLatchesAfterRepeatedServerErrors(t *testing.T) {
-	srv, hits, _ := countTokensTestServer(t, http.StatusInternalServerError,
-		`{"detail":{"error":"Internal server error: Invalid content item type: server_tool_use."}}`)
-
-	client := newAnthropicClient(providerClientOptions{
-		apiKey:  "test-key",
-		baseURL: srv.URL,
-		model:   models.AnthropicModels[models.Claude5Sonnet],
-	}).(*anthropicClient)
+func TestCountTokensCoolsDownAfterRepeatedShapeRejections(t *testing.T) {
+	srv, hits := countTokensStatusServer(t, http.StatusInternalServerError)
+	client := newTestAnthropicClient(t, srv.URL)
 
 	// Failures below the threshold are plain errors — the endpoint keeps
-	// getting probed in case the 500 was transient.
-	for i := 1; i < countTokensServerErrorLatchThreshold; i++ {
+	// getting probed in case the 500 was a one-off.
+	for i := 1; i < countTokensShapeErrorThreshold; i++ {
 		_, err := client.countTokens(context.Background(), nil, nil)
 		if err == nil {
 			t.Fatalf("call %d: expected an error", i)
 		}
 		if errors.Is(err, errors.ErrUnsupported) {
-			t.Fatalf("call %d: latched too early", i)
+			t.Fatalf("call %d: cooled down too early", i)
 		}
 		if int(hits.Load()) != i {
 			t.Fatalf("call %d: probes = %d, want %d", i, hits.Load(), i)
 		}
 	}
 
-	_, err := client.countTokens(context.Background(), nil, nil)
-	if !errors.Is(err, errors.ErrUnsupported) {
+	if _, err := client.countTokens(context.Background(), nil, nil); !errors.Is(err, errors.ErrUnsupported) {
 		t.Fatalf("threshold call: want ErrUnsupported, got %v", err)
 	}
 	probes := hits.Load()
 
-	// Latched: no further HTTP round-trips for the rest of the session.
 	for range 3 {
 		if _, err := client.countTokens(context.Background(), nil, nil); !errors.Is(err, errors.ErrUnsupported) {
-			t.Fatalf("post-latch call: want ErrUnsupported, got %v", err)
+			t.Fatalf("in-cooldown call: want ErrUnsupported, got %v", err)
 		}
 	}
 	if hits.Load() != probes {
-		t.Errorf("post-latch probes = %d, want %d (endpoint must not be hit again)", hits.Load(), probes)
+		t.Errorf("in-cooldown probes = %d, want %d (endpoint must not be hit again)", hits.Load(), probes)
+	}
+
+	// The cooldown must NOT be permanent: one anthropicClient serves every
+	// session of an agent for the life of the process, and localTokenEstimate
+	// is coarse enough that never re-probing can cost auto-compaction.
+	if client.countTokensUnsupported.Load() {
+		t.Error("a shape rejection must cool down, not latch permanently like a 404")
+	}
+	client.countTokensCooldownUntil.Store(time.Now().Add(-time.Second).UnixNano())
+	if _, err := client.countTokens(context.Background(), nil, nil); errors.Is(err, errors.ErrUnsupported) {
+		t.Error("expired cooldown must re-probe the endpoint")
+	}
+	if hits.Load() != probes+1 {
+		t.Errorf("post-cooldown probes = %d, want %d", hits.Load(), probes+1)
 	}
 }
 
-// TestCountTokensServerErrorStreakResetsOnSuccess makes sure the latch needs
-// CONSECUTIVE failures: an intermittently flaky proxy must keep its accurate
-// count rather than degrading the whole session to the local estimate.
-func TestCountTokensServerErrorStreakResetsOnSuccess(t *testing.T) {
-	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := hits.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		// Fail every other call: never countTokensServerErrorLatchThreshold
-		// in a row.
-		if n%2 == 1 {
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(`{"detail":{"error":"transient"}}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"input_tokens": 7}`))
-	}))
-	defer srv.Close()
+// TestCountTokensTransientOverloadNeverCoolsDown pins the cooldown to statuses
+// this client does not already classify as transient. 429/503/529 are explicit
+// "come back later" signals (503 is Bedrock's ordinary overload answer), so a
+// load spike must not cost the accurate count.
+func TestCountTokensTransientOverloadNeverCoolsDown(t *testing.T) {
+	for status := range retryableHTTPStatuses {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			srv, hits := countTokensStatusServer(t, status)
+			client := newTestAnthropicClient(t, srv.URL)
 
-	client := newAnthropicClient(providerClientOptions{
-		apiKey:  "test-key",
-		baseURL: srv.URL,
-		model:   models.AnthropicModels[models.Claude5Sonnet],
-	}).(*anthropicClient)
-
-	for i := range 8 {
-		n, err := client.countTokens(context.Background(), nil, nil)
-		if err != nil {
-			if errors.Is(err, errors.ErrUnsupported) {
-				t.Fatalf("call %d: latched on a non-consecutive failure streak", i+1)
+			calls := countTokensShapeErrorThreshold * 3
+			for i := range calls {
+				_, err := client.countTokens(context.Background(), nil, nil)
+				if errors.Is(err, errors.ErrUnsupported) {
+					t.Fatalf("call %d: HTTP %d must never cool down the endpoint", i+1, status)
+				}
 			}
-			continue
-		}
-		if n != 7 {
-			t.Fatalf("call %d: tokens = %d, want 7", i+1, n)
+			if int(hits.Load()) != calls {
+				t.Errorf("probes = %d, want %d — every call must still reach the endpoint", hits.Load(), calls)
+			}
+		})
+	}
+}
+
+// TestCountTokensShapeErrorStreakIsConsecutive is the regression guard for a
+// streak that only reset on success: a 4xx, a transient 5xx or a cancellation
+// between shape rejections has to break it, or three SCATTERED 500s over a long
+// session would degrade it to local estimation.
+func TestCountTokensShapeErrorStreakIsConsecutive(t *testing.T) {
+	interrupters := map[string]int{
+		"success":            http.StatusOK,
+		"bad request":        http.StatusBadRequest,
+		"transient overload": http.StatusServiceUnavailable,
+	}
+	for name, interrupter := range interrupters {
+		t.Run(name, func(t *testing.T) {
+			srv, _ := countTokensStatusServer(t, http.StatusInternalServerError, interrupter)
+			client := newTestAnthropicClient(t, srv.URL)
+
+			// Alternating 500 / interrupter: never the threshold in a row.
+			for i := range countTokensShapeErrorThreshold * 4 {
+				_, err := client.countTokens(context.Background(), nil, nil)
+				if errors.Is(err, errors.ErrUnsupported) {
+					t.Fatalf("call %d: cooled down on a non-consecutive streak", i+1)
+				}
+			}
+		})
+	}
+}
+
+// TestCountTokensCancellationDoesNotAffectStreak covers the third streak
+// outcome: our own cancellation says nothing about the endpoint, so it must
+// neither extend nor break the streak.
+func TestCountTokensCancellationDoesNotAffectStreak(t *testing.T) {
+	srv, _ := countTokensStatusServer(t, http.StatusInternalServerError)
+	client := newTestAnthropicClient(t, srv.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for range countTokensShapeErrorThreshold * 2 {
+		if _, err := client.countTokens(ctx, nil, nil); errors.Is(err, errors.ErrUnsupported) {
+			t.Fatal("a cancelled context must not cool down the endpoint")
 		}
 	}
-	if client.countTokensUnsupported.Load() {
-		t.Error("intermittent 5xx must not latch the endpoint as unsupported")
+	if got := client.countTokensShapeErrors.Load(); got != 0 {
+		t.Errorf("streak = %d, want 0 — cancellations carry no signal", got)
+	}
+}
+
+// TestCountTokensBedrockSumsBothCompensations covers the one request that hits
+// both strippers: the server-tool and media estimates must add, and running
+// the media pass over the server-tool pass's output must not lose either.
+func TestCountTokensBedrockSumsBothCompensations(t *testing.T) {
+	srv, _, lastBody := countTokensTestServer(t, http.StatusOK, `{"input_tokens": 100}`)
+
+	client := newAnthropicClient(providerClientOptions{
+		apiKey:           "test-key",
+		baseURL:          srv.URL,
+		model:            models.BedrockAnthropicModels[models.BedrockEUSonnet5],
+		anthropicOptions: []AnthropicOption{WithAnthropicBedrock(true)},
+	}).(*anthropicClient)
+
+	messages := append(toolSearchTurn(), newMsg(message.User, message.BinaryContent{
+		MIMEType: "image/png",
+		Data:     []byte("fakeimage"),
+	}))
+	got, err := client.countTokens(context.Background(), messages, nil)
+	if err != nil {
+		t.Fatalf("countTokens: %v", err)
+	}
+	if want := 100 + toolSearchTurnOverhead + countTokensImageTokenEstimate; got != want {
+		t.Errorf("tokens = %d, want %d", got, want)
+	}
+	body := lastBody()
+	for _, forbidden := range []string{`"server_tool_use"`, `"tool_search_tool_result"`, `"image"`} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("outgoing body still contains %s:\n%s", forbidden, body)
+		}
 	}
 }
