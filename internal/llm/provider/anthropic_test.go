@@ -679,7 +679,7 @@ func TestStripMediaForCountTokens(t *testing.T) {
 
 // collectImagePointers walks messages and gathers pointers to every OfImage
 // block (top-level and nested in tool_result). Used to assert that
-// stripImagesForCountTokens does not mutate its input slice.
+// stripMediaForCountTokens does not mutate its input slice.
 func collectImagePointers(messages []anthropic.MessageParam) []*anthropic.ImageBlockParam {
 	var out []*anthropic.ImageBlockParam
 	for _, msg := range messages {
@@ -735,10 +735,10 @@ func TestConvertMessagesMalformedToolInput(t *testing.T) {
 	}
 }
 
-// TestStripImagesFastPath verifies that the fast path returns the input
+// TestStripMediaForCountTokensFastPath verifies that the fast path returns the input
 // slice unchanged when no images are present — both correctness (count=0,
 // same slice header) and the implicit allocation guarantee.
-func TestStripImagesFastPath(t *testing.T) {
+func TestStripMediaForCountTokensFastPath(t *testing.T) {
 	tests := []struct {
 		name     string
 		messages []anthropic.MessageParam

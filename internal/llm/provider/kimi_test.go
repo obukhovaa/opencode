@@ -172,8 +172,12 @@ func TestKimiRequestShape(t *testing.T) {
 	}
 }
 
-// TestCountTokensTransientErrorDoesNotLatch ensures only 404/405 latch the
-// unsupported flag — a 500/429 must stay retryable on later iterations.
+// TestCountTokensTransientErrorDoesNotLatch ensures 404/405 latch the
+// unsupported flag immediately while a 500/429 stays retryable — up to
+// countTokensServerErrorLatchThreshold consecutive failures, after which the
+// endpoint is given up on too (see
+// TestCountTokensLatchesAfterRepeatedServerErrors). This test stays below
+// that threshold on purpose.
 func TestCountTokensTransientErrorDoesNotLatch(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
