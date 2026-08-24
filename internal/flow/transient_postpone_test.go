@@ -264,3 +264,67 @@ func TestPostponeStepForTransientError_CreatesRowWithCarriedOutput(t *testing.T)
 		t.Fatal("no state emitted on the channel")
 	}
 }
+
+// TestPostponeStepForTransientError_NilPriorRowFallsBackToTheRow covers the
+// priorRow == nil branch, which is what makes handleStepError correct: its
+// transient-error paths all run BEFORE the entry-time write, so the row this
+// function reads for itself still holds the output and must be used. Without the
+// fallback those parks would silently drop the await — the same bug, one caller
+// over.
+func TestPostponeStepForTransientError_NilPriorRowFallsBackToTheRow(t *testing.T) {
+	const onRow = `{"awaiting_build_id":"149953","teamcity_instance":"vx"}`
+	resumeAfter := "30m"
+	q := &stubQuerier{flowStates: []db.FlowState{{
+		SessionID:      "sid",
+		RootSessionID:  "root",
+		FlowID:         "flow",
+		StepID:         "implement",
+		Status:         string(FlowStatusRunning),
+		Output:         sql.NullString{String: onRow, Valid: true},
+		IsStructOutput: true,
+		Iteration:      1,
+		CreatedAt:      time.Now().Unix(),
+	}}}
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{}).(*service)
+
+	ch := make(chan *FlowState, 1)
+	ok := svc.postponeStepForTransientError(
+		context.Background(),
+		Step{ID: "implement", ResumeAfter: &resumeAfter},
+		"sid", "root", "flow",
+		map[string]any{},
+		1,
+		errors.New("Overloaded"),
+		nil, // no caller snapshot
+		ch,
+	)
+	if !ok {
+		t.Fatal("postponeStepForTransientError returned false, want a park")
+	}
+
+	var row *db.FlowState
+	for _, fs := range q.snapshotFlowStates() {
+		if fs.SessionID == "sid" {
+			got := fs
+			row = &got
+		}
+	}
+	if row == nil {
+		t.Fatal("no persisted row")
+	}
+	if row.Status != string(FlowStatusPostponed) {
+		t.Errorf("persisted status = %q, want %q", row.Status, FlowStatusPostponed)
+	}
+	if row.Output.String != onRow || !row.IsStructOutput {
+		t.Errorf("persisted output = %q (struct=%v), want %q (struct=true) carried from the row", row.Output.String, row.IsStructOutput, onRow)
+	}
+
+	select {
+	case state := <-ch:
+		if state.Output != onRow || !state.IsStructOutput {
+			t.Errorf("emitted output = %q (struct=%v), want %q (struct=true)", state.Output, state.IsStructOutput, onRow)
+		}
+	default:
+		t.Fatal("no state emitted on the channel")
+	}
+}
