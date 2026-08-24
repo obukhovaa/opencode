@@ -466,6 +466,31 @@ func (s *service) runStep(
 
 	argsJSON, _ := json.Marshal(args)
 	existingFS, getErr := s.querier.GetFlowState(ctx, sessionID)
+
+	// existingFS is this attempt's inbound row, captured here BEFORE the
+	// entry-time write below blanks its output. On a resumed postpone that
+	// write runs with status=running (the resume stepWork carries
+	// postpone=false), so this is the only place the previous iteration's
+	// struct output still exists — hand it to a park or the await is lost
+	// (GENAI-230). Decided next to the read rather than at the park sites so
+	// there is no window in which a caller could mistake the post-write row
+	// for the snapshot.
+	//
+	// Hand it over ONLY when this attempt is the resume of this step's own
+	// park, which is exactly the shape collectResumableSteps builds
+	// (prevStep = the postponed row for the same step). Carrying
+	// unconditionally would re-assert an unrelated earlier output — a step
+	// re-entered through nextSteps or an in-process self-loop still has its
+	// previous iteration's row — and a carried output that declares no build
+	// reads downstream as "the await is over" rather than "no signal",
+	// completing the very job this fix exists to keep alive. Carrying nothing
+	// degrades to that "no signal" state, which is the safe side.
+	var priorRow *db.FlowState
+	if getErr == nil && prevState != nil &&
+		prevState.StepID == step.ID && prevState.Status == FlowStatusPostponed {
+		priorRow = &existingFS
+	}
+
 	var updatedAt int64
 	if getErr == nil {
 		output := sql.NullString{}
@@ -558,9 +583,26 @@ func (s *service) runStep(
 		// Re-using the slice here keeps the bind call wire-compatible
 		// without paying the resolve cost twice.
 		if err := s.interactiveHookOrNop().OnInteractiveStepStart(ctx, sess.ID, boundPeers); err != nil {
+			bindErr := fmt.Errorf("interactive step %q bind: %w", step.ID, err)
+			// Park here rather than leaving it to handleStepError, which passes
+			// priorRow=nil. That is correct only for call sites BEFORE the
+			// entry-time write; this one is after it, so the row the park would
+			// read for itself is already blanked and the await would be lost
+			// (GENAI-230) — the same shape the doneRetry park guards.
+			//
+			// The bind error is a chat-platform error, not an LLM one, but it
+			// reaches isTransientProviderError through the same message-substring
+			// surface: a Slack rate limit arrives as "slack rate limit exceeded,
+			// retry after 30s" (slack-go), which matches the "rate limit"
+			// signature. Parking an interactive step over a chat-side rate limit
+			// is the right outcome — it is exactly the transient-and-will-clear
+			// case — but it must not cost the step's output on the way.
+			if stepPostponesOnProviderError(step) && isTransientProviderError(bindErr) &&
+				s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, bindErr, priorRow, flowStates) {
+				return
+			}
 			s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration,
-				fmt.Errorf("interactive step %q bind: %w", step.ID, err),
-				wg, agentEvents, flowStates, nextSteps, f)
+				bindErr, wg, agentEvents, flowStates, nextSteps, f)
 			return
 		}
 		// Mark the session as interactively bound so the question tool
@@ -772,26 +814,9 @@ doneRetry:
 		// declines to park and we fall through to terminal failure. See
 		// postponeStepForTransientError.
 		//
-		// existingFS is this attempt's inbound row, read above BEFORE the
-		// entry-time write blanked its output. On a resumed postpone that write
-		// runs with status=running (the resume stepWork carries postpone=false),
-		// so it is the only place the previous iteration's struct output still
-		// exists — hand it to the park or the await is lost (GENAI-230).
-		//
-		// Hand it over ONLY when this attempt is the resume of this step's own
-		// park, which is exactly the shape collectResumableSteps builds
-		// (prevStep = the postponed row for the same step). Carrying
-		// unconditionally would re-assert an unrelated earlier output — a step
-		// re-entered through nextSteps or an in-process self-loop still has its
-		// previous iteration's row — and a carried output that declares no build
-		// reads downstream as "the await is over" rather than "no signal",
-		// completing the very job this fix exists to keep alive. Carrying
-		// nothing degrades to that "no signal" state, which is the safe side.
-		var priorRow *db.FlowState
-		if getErr == nil && prevState != nil &&
-			prevState.StepID == step.ID && prevState.Status == FlowStatusPostponed {
-			priorRow = &existingFS
-		}
+		// priorRow is the pre-write snapshot captured at the entry-time write
+		// (see its declaration in runStep); without it the park would persist
+		// the blanked row and lose the awaited build (GENAI-230).
 		if stepPostponesOnProviderError(step) && isTransientProviderError(lastErr) &&
 			s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, lastErr, priorRow, flowStates) {
 			return
@@ -1227,10 +1252,17 @@ func (s *service) handleStepError(
 	// step parks it for timed auto-resume rather than failing the flow — unless
 	// it has been retrying past the age cap, in which case fail terminally.
 	//
-	// nil priorRow: every path that reaches here with a transient provider error
-	// runs before the entry-time `running` write, so the row the park reads for
-	// itself still carries the output. Passing nil keeps this already-wide
-	// signature from growing another parameter.
+	// nil priorRow: this is safe only because every caller that can reach here
+	// with a transient provider error runs BEFORE runStep's entry-time `running`
+	// write, so the row the park reads for itself still carries the output.
+	// Passing nil keeps this already-wide signature from growing another
+	// parameter.
+	//
+	// The two call sites that sit past that write must NOT rely on this: the
+	// maxIterations site raises a synthetic message that no transient signature
+	// can match, and the interactive-bind site parks itself with the snapshot
+	// before falling through here. A new post-write caller has to do the same or
+	// it silently reintroduces GENAI-230.
 	if stepPostponesOnProviderError(step) && isTransientProviderError(err) &&
 		s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, flowID, args, iteration, err, nil, flowStates) {
 		return

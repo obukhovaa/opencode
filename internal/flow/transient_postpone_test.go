@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/db"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -417,5 +418,109 @@ func TestPostponeStepForTransientError_DoesNotCarryAnotherEntryPointsOutput(t *t
 		if fs.SessionID == secondSessionID && fs.Output.String != "" {
 			t.Errorf("persisted output = %q, want empty", fs.Output.String)
 		}
+	}
+}
+
+// stubRateLimitedBind is a bridge hook whose bind fails the way a chat-platform
+// rate limit actually surfaces: slack-go's *RateLimitedError message, wrapped by
+// slack.Adapter.ResolveUserToDM -> bridge.Bind ->
+// interactiveBridge.OnInteractiveStepStart. That message contains "rate limit",
+// so isTransientProviderError classifies it transient.
+type stubRateLimitedBind struct{}
+
+func (stubRateLimitedBind) OnInteractiveStepStart(_ context.Context, _ string, _ []bridge.PeerRef) error {
+	return fmt.Errorf("bridge.Bind: resolve U123: slack: conversations.open: %w",
+		errors.New("slack rate limit exceeded, retry after 30s"))
+}
+
+func (stubRateLimitedBind) OnInteractiveStepComplete(_ context.Context, _ string) error { return nil }
+
+// TestPostponeStepForTransientError_InteractiveBindParkKeepsOutput covers the
+// one transient-error path that runs PAST runStep's entry-time write.
+//
+// handleStepError parks with priorRow=nil, which is correct only for callers
+// that fire before that write. The interactive-bind failure at the top of the
+// step body is not one of them: by then the write has already blanked the row,
+// so routing this error through handleStepError would park with an empty output
+// — GENAI-230 again, one caller over. The bind site therefore parks itself with
+// the snapshot.
+//
+// The trigger is real: an interactive step resumed from its own park, whose
+// bridge bind hits a chat-platform rate limit. Interactive steps that declare
+// resume_after are exactly the shape this flow family uses.
+func TestPostponeStepForTransientError_InteractiveBindParkKeepsOutput(t *testing.T) {
+	const buildAwait = `{"awaiting_build_id":"155566","teamcity_instance":"c2"}`
+	resumeAfter := "30m"
+	testFlow := Flow{
+		ID:   "test-genai-230-interactive-park",
+		Name: "Interactive bind park preserves output",
+		Spec: FlowSpec{
+			Steps: []Step{{
+				ID:          "review",
+				Prompt:      "review it",
+				Interactive: true,
+				Interaction: &StepInteraction{Target: "${args.reviewer}"},
+				Output:      &StepOutput{Schema: map[string]any{"type": "object"}},
+				ResumeAfter: &resumeAfter,
+			}},
+		},
+	}
+	registerTestFlow(t, testFlow)
+
+	sessionID := "prefix-" + testFlow.ID + "-review"
+	now := time.Now().Unix()
+	q := &stubQuerier{flowStates: []db.FlowState{{
+		SessionID:     sessionID,
+		RootSessionID: sessionID,
+		FlowID:        testFlow.ID,
+		StepID:        "review",
+		Status:        string(FlowStatusPostponed),
+		// The resume path replays the ROW's args, not Run()'s, so the
+		// interaction target has to live here or the step fails resolving it
+		// before ever reaching the bind.
+		Args:           sql.NullString{String: `{"reviewer":{"channel":"slack","identity":"wk","peerId":"U123"}}`, Valid: true},
+		Output:         sql.NullString{String: buildAwait, Valid: true},
+		IsStructOutput: true,
+		Iteration:      1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}}}
+
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{}).(*service)
+	svc.SetInteractiveHook(stubRateLimitedBind{})
+
+	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", testFlow.ID, map[string]any{}, false)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	states := drainFlow(t, agentEvents, flowStates)
+
+	final := findLatestByStepID(states, "review")
+	if final == nil {
+		t.Fatalf("no state emitted for the step; got %+v", states)
+	}
+	if final.Status != FlowStatusPostponed {
+		t.Fatalf("emitted status = %q, want %q (a rate-limited bind must park, not fail)", final.Status, FlowStatusPostponed)
+	}
+	if final.Output != buildAwait || !final.IsStructOutput {
+		t.Errorf("emitted output = %q (struct=%v), want %q (struct=true) — the bind park runs past the entry-time write, so it must carry the snapshot",
+			final.Output, final.IsStructOutput, buildAwait)
+	}
+
+	var row *db.FlowState
+	for _, fs := range q.snapshotFlowStates() {
+		if fs.StepID == "review" {
+			got := fs
+			row = &got
+		}
+	}
+	if row == nil {
+		t.Fatal("no persisted row for the step")
+	}
+	if row.Status != string(FlowStatusPostponed) {
+		t.Errorf("persisted status = %q, want %q", row.Status, FlowStatusPostponed)
+	}
+	if row.Output.String != buildAwait || !row.IsStructOutput {
+		t.Errorf("persisted output = %q (struct=%v), want %q (struct=true)", row.Output.String, row.IsStructOutput, buildAwait)
 	}
 }
