@@ -67,6 +67,68 @@ type anthropicClient struct {
 	// a wasted HTTP round-trip; the provider layer falls back to the local
 	// estimate whenever countTokens errors.
 	countTokensUnsupported atomic.Bool
+	// countTokensShapeErrors counts consecutive shape-rejection answers from
+	// count_tokens — see countTokensShapeRejection. Proxies in front of the
+	// real endpoint reject content-block types their token counter does not
+	// model; we rewrite the shapes we know about (see
+	// stripServerToolBlocksForCountTokens and stripMediaForCountTokens), but
+	// a block type added upstream would otherwise fail once per agent-loop
+	// iteration forever. Any other outcome — success, transient overload, a
+	// 4xx — resets the streak.
+	countTokensShapeErrors atomic.Int64
+	// countTokensCooldownUntil is a unix-nano deadline before which
+	// count_tokens is skipped entirely, set once countTokensShapeErrors
+	// reaches countTokensShapeErrorThreshold.
+	//
+	// A cooldown rather than a permanent latch, because the blast radius of
+	// being wrong is large: one anthropicClient is built per agent and
+	// outlives every session that agent serves, and localTokenEstimate is a
+	// coarse floor that can undercount a tool-heavy conversation badly enough
+	// for auto-compaction to never fire. Expiring the skip re-probes the
+	// endpoint, so a mistaken cooldown costs minutes rather than the life of
+	// the process — which is also why the streak counter can stay a plain
+	// atomic increment instead of a compare-and-swap: concurrent calls
+	// sharing one client may reach the threshold off a single bad instant,
+	// and the worst case is one cooldown window of local estimation.
+	countTokensCooldownUntil atomic.Int64
+}
+
+const (
+	// countTokensShapeErrorThreshold is how many consecutive shape rejections
+	// it takes to put count_tokens on cooldown. Above 1 so a one-off upstream
+	// 500 does not cost the accurate count; low enough that a request shape
+	// the endpoint cannot parse stops burning a round-trip per agent-loop
+	// iteration.
+	countTokensShapeErrorThreshold = 3
+	// countTokensCooldown is how long count_tokens is skipped after the
+	// threshold is reached. Long enough that a genuinely unparseable shape
+	// costs ~one probe per cooldown instead of one per loop iteration, short
+	// enough that a transient upstream fault self-heals well within a
+	// session.
+	countTokensCooldown = 5 * time.Minute
+)
+
+// countTokensShapeRejection reports whether err is the kind of count_tokens
+// failure that repeating the identical request cannot fix, along with the
+// HTTP status that said so.
+//
+// Only 5xx qualifies, and only the codes this client does NOT already treat
+// as transient: retryableHTTPStatuses (429/503/529) are explicit "come back
+// later" signals — 503 in particular is what Bedrock returns for ordinary
+// overload — so counting them would put a perfectly healthy endpoint on
+// cooldown during a load spike. What is left (500/502/504) is what a proxy
+// answers when its token counter cannot parse a content block we sent, and
+// that fails identically on every retry.
+func countTokensShapeRejection(err error) (int, bool) {
+	var apierr *anthropic.Error
+	if !errors.As(err, &apierr) {
+		return 0, false
+	}
+	if apierr.StatusCode < http.StatusInternalServerError {
+		return apierr.StatusCode, false
+	}
+	_, transient := retryableHTTPStatuses[apierr.StatusCode]
+	return apierr.StatusCode, !transient
 }
 
 type AnthropicClient ProviderClient
@@ -1382,6 +1444,20 @@ const (
 	// for compaction-threshold purposes. Floored at one image-equivalent so
 	// tiny PDFs don't count as free.
 	countTokensDocumentBytesPerToken = 100
+	// countTokensServerToolBlockOverhead approximates the JSON scaffolding
+	// (type / id / tool_use_id / name framing) of a server-side tool block
+	// that stripServerToolBlocksForCountTokens re-inlined as text. The
+	// block's semantic payload — the search query, the discovered tool
+	// names — is re-inlined verbatim and counted exactly by the endpoint, so
+	// this covers only the structure the text stand-in drops.
+	countTokensServerToolBlockOverhead = 10
+	// countTokensToolReferenceOverhead approximates the per-reference framing
+	// ({"type":"tool_reference","tool_name":…}) that toolSearchResultStandIn
+	// collapses into a comma-separated list. Scaled per reference rather than
+	// folded into the flat block constant because a regex search against a
+	// large MCP server returns dozens of tools, where a single constant would
+	// undercount by hundreds of tokens.
+	countTokensToolReferenceOverhead = 8
 )
 
 // messagesContainMedia reports whether any message holds an image or
@@ -1403,6 +1479,114 @@ func messagesContainMedia(messages []anthropic.MessageParam) bool {
 		}
 	}
 	return false
+}
+
+// messagesContainServerToolBlocks reports whether any message holds a
+// server-side tool block — server_tool_use or its paired
+// tool_search_tool_result. Those only appear on the native tool-search path
+// (see convertMessages), so this is false for the vast majority of
+// conversations. Fast-path guard for stripServerToolBlocksForCountTokens.
+func messagesContainServerToolBlocks(messages []anthropic.MessageParam) bool {
+	for _, msg := range messages {
+		for _, block := range msg.Content {
+			if block.OfServerToolUse != nil || block.OfToolSearchToolResult != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// serverToolUseStandIn renders a server_tool_use block as text for the
+// count_tokens call, and the token estimate compensating for what the
+// rendering drops. The text carries the block's entire semantic payload — the
+// tool name and its JSON input (the search query) — so the endpoint still
+// counts that exactly; only the JSON scaffolding needs compensating.
+func serverToolUseStandIn(b *anthropic.ServerToolUseBlockParam) (string, int64) {
+	// Input is an `any` that convertMessages always fills from
+	// json.Unmarshal, so the error branch is unreachable by construction —
+	// kept so a future caller passing something exotic degrades to "{}"
+	// rather than losing the block.
+	input := "{}"
+	if raw, err := json.Marshal(b.Input); err == nil {
+		input = string(raw)
+	}
+	return fmt.Sprintf("[server tool %s %s]", b.Name, input), countTokensServerToolBlockOverhead
+}
+
+// toolSearchResultStandIn renders a tool_search_tool_result block as text for
+// the count_tokens call, and the token estimate compensating for what the
+// rendering drops: either the error code, or the discovered tool names.
+//
+// The referenced tools' schemas are NOT part of this block — they are sent in
+// the request's tools array (see SerializableFor) and counted there — so the
+// names alone are the block's payload, plus one tool_reference wrapper each.
+func toolSearchResultStandIn(b *anthropic.ToolSearchToolResultBlockParam) (string, int64) {
+	if errBlock := b.Content.OfRequestToolSearchToolResultError; errBlock != nil {
+		return fmt.Sprintf("[tool search error %s]", errBlock.ErrorCode), countTokensServerToolBlockOverhead
+	}
+	res := b.Content.OfRequestToolSearchToolSearchResultBlock
+	if res == nil {
+		// Neither union member set. Unreachable via convertMessages, which
+		// always builds the block with one of them.
+		return "[tool search results]", countTokensServerToolBlockOverhead
+	}
+	names := make([]string, 0, len(res.ToolReferences))
+	for _, ref := range res.ToolReferences {
+		names = append(names, ref.ToolName)
+	}
+	overhead := int64(countTokensServerToolBlockOverhead + countTokensToolReferenceOverhead*len(names))
+	return fmt.Sprintf("[tool search results %s]", strings.Join(names, ",")), overhead
+}
+
+// stripServerToolBlocksForCountTokens returns a copy of messages with every
+// server-side tool block — server_tool_use and its paired
+// tool_search_tool_result — re-inlined as text, plus the token estimate
+// compensating for the JSON scaffolding the swap drops.
+//
+// Once a session runs a native server-side tool search, convertMessages
+// replays those blocks on EVERY subsequent request (mandatory — dropping them
+// would strand the turn's signed thinking blocks as "modified"). Anthropic's
+// own count_tokens models them, but proxies in front of it generally do not:
+// LiteLLM's token counter accepts only text / image_url / tool_use /
+// tool_result / thinking / tool_reference content items and answers HTTP 500
+// with "Invalid content item type: server_tool_use" for the rest, which would
+// cost a failed round-trip per agent-loop iteration for the rest of the
+// session.
+//
+// Unlike stripMediaForCountTokens this runs on every path, not just Bedrock.
+// The blocks' entire payload — the search query, the discovered tool names —
+// is re-inlined verbatim and still counted exactly by the endpoint, so the
+// accuracy given up is a few tokens of framing per block; that is far cheaper
+// than guessing which deployments sit behind a proxy and being wrong.
+//
+// Fast path: conversations without a server-side search (the vast majority)
+// get their input slice back unchanged, with no allocations.
+func stripServerToolBlocksForCountTokens(messages []anthropic.MessageParam) ([]anthropic.MessageParam, int64) {
+	if !messagesContainServerToolBlocks(messages) {
+		return messages, 0
+	}
+	var extraTokens int64
+	out := make([]anthropic.MessageParam, len(messages))
+	for i, msg := range messages {
+		newContent := make([]anthropic.ContentBlockParamUnion, 0, len(msg.Content))
+		for _, block := range msg.Content {
+			switch {
+			case block.OfServerToolUse != nil:
+				text, overhead := serverToolUseStandIn(block.OfServerToolUse)
+				extraTokens += overhead
+				newContent = append(newContent, anthropic.NewTextBlock(text))
+			case block.OfToolSearchToolResult != nil:
+				text, overhead := toolSearchResultStandIn(block.OfToolSearchToolResult)
+				extraTokens += overhead
+				newContent = append(newContent, anthropic.NewTextBlock(text))
+			default:
+				newContent = append(newContent, block)
+			}
+		}
+		out[i] = anthropic.MessageParam{Role: msg.Role, Content: newContent}
+	}
+	return out, extraTokens
 }
 
 // documentTokenEstimate approximates the token cost of a stripped document
@@ -1427,6 +1611,9 @@ func documentTokenEstimate(doc *anthropic.DocumentBlockParam) int64 {
 // for the stripped media locally. Plain-text document sources are re-inlined
 // as text blocks (counted exactly by the endpoint, estimate 0); images and
 // base64 PDFs get placeholder text plus a local estimate.
+//
+// Bedrock-only: the per-image estimate is a coarse stand-in for what a real
+// endpoint counts exactly, so we pay it only where the proxy forces us to.
 //
 // Fast path: if no media is present the input slice is returned unchanged
 // (estimate=0), avoiding per-message allocations for text-only
@@ -1483,14 +1670,22 @@ func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Me
 	if a.countTokensUnsupported.Load() {
 		return 0, fmt.Errorf("count_tokens previously answered 404/405 on this endpoint: %w", errors.ErrUnsupported)
 	}
+	if until := a.countTokensCooldownUntil.Load(); until > 0 && time.Now().UnixNano() < until {
+		return 0, fmt.Errorf("count_tokens is in cooldown after repeated shape rejections: %w", errors.ErrUnsupported)
+	}
 	anthropicMessages := a.convertMessages(messages)
-	// Only strip media for Bedrock, where count_tokens is routed through the
-	// LiteLLM proxy that rejects Anthropic's "image" and "document" content
-	// types. The native Anthropic and Vertex count_tokens endpoints handle
-	// both accurately.
-	var mediaTokenEstimate int64
+	// Server-side tool blocks go on every path: any Anthropic-dialect proxy
+	// (LiteLLM in front of Bedrock OR Vertex, and third-party endpoints) 500s
+	// on them, and re-inlining costs only a few tokens of framing.
+	anthropicMessages, strippedTokenEstimate := stripServerToolBlocksForCountTokens(anthropicMessages)
+	// Media stripping stays Bedrock-only: there the swap trades an exact
+	// count for a coarse per-image estimate, so we pay it only where the
+	// proxy leaves no choice. Native Anthropic and Vertex count images and
+	// documents accurately.
 	if a.options.useBedrock {
-		anthropicMessages, mediaTokenEstimate = stripMediaForCountTokens(anthropicMessages)
+		stripped, mediaTokenEstimate := stripMediaForCountTokens(anthropicMessages)
+		anthropicMessages = stripped
+		strippedTokenEstimate += mediaTokenEstimate
 	}
 	anthropicTools := a.convertTools(ctx, tools)
 	countTools := make([]anthropic.MessageCountTokensToolUnionParam, 0, len(anthropicTools))
@@ -1533,10 +1728,37 @@ func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Me
 			)
 			return 0, fmt.Errorf("count_tokens endpoint not implemented (HTTP %d): %w", apierr.StatusCode, errors.ErrUnsupported)
 		}
+		status, shapeRejected := countTokensShapeRejection(err)
+		switch {
+		case ctx.Err() != nil:
+			// Our own cancellation. It says nothing about the endpoint, so
+			// it must neither extend nor break the streak.
+		case shapeRejected:
+			// The proxy's token counter could not parse what we sent.
+			// Retrying the identical shape cannot succeed, so back off once
+			// we have seen it a few times in a row.
+			if a.countTokensShapeErrors.Add(1) >= countTokensShapeErrorThreshold {
+				a.countTokensShapeErrors.Store(0)
+				a.countTokensCooldownUntil.Store(time.Now().Add(countTokensCooldown).UnixNano())
+				logging.Info("count_tokens endpoint rejected the request shape repeatedly; using local estimation until the cooldown expires",
+					"model", a.providerOptions.model.Name,
+					"status", status,
+					"consecutive_failures", countTokensShapeErrorThreshold,
+					"cooldown", countTokensCooldown.String(),
+					"cause", err.Error(),
+				)
+				return 0, fmt.Errorf("count_tokens rejected the request shape %d times in a row: %w", countTokensShapeErrorThreshold, errors.ErrUnsupported)
+			}
+		default:
+			// Transient overload, a 4xx, a transport reset — the endpoint is
+			// answering, just not usefully right now. Break the streak.
+			a.countTokensShapeErrors.Store(0)
+		}
 		return 0, fmt.Errorf("failed to count tokens: %w", err)
 	}
+	a.countTokensShapeErrors.Store(0)
 
-	return response.InputTokens + mediaTokenEstimate, nil
+	return response.InputTokens + strippedTokenEstimate, nil
 }
 
 func (a *anthropicClient) setMaxTokens(maxTokens int64) {
