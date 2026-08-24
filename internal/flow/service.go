@@ -777,8 +777,19 @@ doneRetry:
 		// runs with status=running (the resume stepWork carries postpone=false),
 		// so it is the only place the previous iteration's struct output still
 		// exists — hand it to the park or the await is lost (GENAI-230).
+		//
+		// Hand it over ONLY when this attempt is the resume of this step's own
+		// park, which is exactly the shape collectResumableSteps builds
+		// (prevStep = the postponed row for the same step). Carrying
+		// unconditionally would re-assert an unrelated earlier output — a step
+		// re-entered through nextSteps or an in-process self-loop still has its
+		// previous iteration's row — and a carried output that declares no build
+		// reads downstream as "the await is over" rather than "no signal",
+		// completing the very job this fix exists to keep alive. Carrying
+		// nothing degrades to that "no signal" state, which is the safe side.
 		var priorRow *db.FlowState
-		if getErr == nil {
+		if getErr == nil && prevState != nil &&
+			prevState.StepID == step.ID && prevState.Status == FlowStatusPostponed {
 			priorRow = &existingFS
 		}
 		if stepPostponesOnProviderError(step) && isTransientProviderError(lastErr) &&

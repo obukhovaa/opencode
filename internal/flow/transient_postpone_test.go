@@ -328,3 +328,94 @@ func TestPostponeStepForTransientError_NilPriorRowFallsBackToTheRow(t *testing.T
 		t.Fatal("no state emitted on the channel")
 	}
 }
+
+// TestPostponeStepForTransientError_DoesNotCarryAnotherEntryPointsOutput pins the
+// other side of the priorRow gate. A step re-entered from an UPSTREAM step still
+// has its own row from an earlier pass, and that row's output belongs to a
+// different lifecycle. Carrying it would make the park assert an output this
+// attempt never produced — and worse, an output that declares no build reads
+// downstream as "the await is over" rather than "no signal", completing the very
+// job the GENAI-230 fix keeps alive. Carrying nothing is the safe degradation.
+func TestPostponeStepForTransientError_DoesNotCarryAnotherEntryPointsOutput(t *testing.T) {
+	const stale = `{"correction_complete":true}`
+	resumeAfter := "30m"
+	testFlow := Flow{
+		ID:   "test-genai-230-stale",
+		Name: "Park must not re-assert a stale output",
+		Spec: FlowSpec{
+			Steps: []Step{
+				{
+					ID:     "first",
+					Prompt: "go",
+					Output: &StepOutput{Schema: map[string]any{"type": "object"}},
+					Rules:  []Rule{{Then: "second"}},
+				},
+				{
+					ID:          "second",
+					Prompt:      "go on",
+					Output:      &StepOutput{Schema: map[string]any{"type": "object"}},
+					ResumeAfter: &resumeAfter,
+				},
+			},
+		},
+	}
+	registerTestFlow(t, testFlow)
+
+	rootSessionID := "prefix-" + testFlow.ID + "-first"
+	secondSessionID := "prefix-" + testFlow.ID + "-second"
+	now := time.Now().Unix()
+	q := &stubQuerier{flowStates: []db.FlowState{
+		{
+			SessionID: rootSessionID, RootSessionID: rootSessionID, FlowID: testFlow.ID,
+			StepID: "first", Status: string(FlowStatusCompleted),
+			Args: sql.NullString{String: "{}", Valid: true}, Iteration: 1,
+			CreatedAt: now, UpdatedAt: now,
+		},
+		{
+			// `second` already ran once and completed; this is its stale row.
+			SessionID: secondSessionID, RootSessionID: rootSessionID, FlowID: testFlow.ID,
+			StepID: "second", Status: string(FlowStatusCompleted),
+			Args:   sql.NullString{String: "{}", Valid: true},
+			Output: sql.NullString{String: stale, Valid: true}, IsStructOutput: true,
+			Iteration: 1, CreatedAt: now, UpdatedAt: now,
+		},
+	}}
+
+	agent := &stubAgent{
+		Broker: pubsub.NewBroker[agentpkg.AgentEvent](),
+		responses: []agentpkg.AgentEvent{
+			// `first` succeeds and routes on to `second`...
+			loopRespond(`{"ok":true}`),
+			// ...whose attempt then dies on a transient provider error.
+			{
+				Type:    agentpkg.AgentEventTypeError,
+				Message: message.Message{Role: message.Assistant},
+				Error:   errors.New("stream error: stream ID 9; INTERNAL_ERROR; received from peer"),
+			},
+		},
+	}
+	svc := NewService(&stubSessions{}, nil, q, &stubPermissions{}, &stubAgentFactory{agent: agent})
+
+	agentEvents, flowStates, err := svc.Run(context.Background(), "prefix", testFlow.ID, map[string]any{}, false)
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	states := drainFlow(t, agentEvents, flowStates)
+
+	final := findLatestByStepID(states, "second")
+	if final == nil {
+		t.Fatalf("no state emitted for `second`; got %+v", states)
+	}
+	if final.Status != FlowStatusPostponed {
+		t.Fatalf("emitted status = %q, want %q", final.Status, FlowStatusPostponed)
+	}
+	if final.Output != "" || final.IsStructOutput {
+		t.Errorf("emitted output = %q (struct=%v), want empty: the stale row belongs to an earlier pass, and re-asserting it would read downstream as an authoritative \"no build to await\"", final.Output, final.IsStructOutput)
+	}
+
+	for _, fs := range q.snapshotFlowStates() {
+		if fs.SessionID == secondSessionID && fs.Output.String != "" {
+			t.Errorf("persisted output = %q, want empty", fs.Output.String)
+		}
+	}
+}
