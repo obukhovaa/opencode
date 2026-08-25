@@ -55,7 +55,12 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
   opencode serve --auto-approve
 
   # Pick a specific agent (built-in or custom .opencode/agents/<name>.md)
-  opencode serve -a hivemind`,
+  opencode serve -a hivemind
+
+  # Pool-pod posture: long-lived server that binds a workspace lazily via
+  # POST /pool/bind and serves many flows via POST /flow (mutually
+  # exclusive with --flow; see the pool-* flags)
+  opencode serve --pool-mode --port 8080 --hostname 0.0.0.0 --auto-approve --agent coder`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		port, _ := cmd.Flags().GetInt("port")
 		hostname, _ := cmd.Flags().GetString("hostname")
@@ -69,6 +74,29 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 		cwd, _ := cmd.Flags().GetString("cwd")
 		autoApprove, _ := cmd.Flags().GetBool("auto-approve")
 		agentID, _ := cmd.Flags().GetString("agent")
+
+		// Pool mode (openspec change agent-pod-pool-runtime). An explicit
+		// flag — NOT inferred from --flow absence, since daemon-mode pods
+		// also boot without --flow. Mutually exclusive with --flow: a pool
+		// pod receives its work via POST /flow over its lifetime, never as
+		// a boot-time auto-flow.
+		poolMode, _ := cmd.Flags().GetBool("pool-mode")
+		if flowID, _ := cmd.Flags().GetString("flow"); poolMode && flowID != "" {
+			return fmt.Errorf("--pool-mode and --flow are mutually exclusive")
+		}
+		flowIdleResetGrace, _ := cmd.Flags().GetDuration("flow-idle-reset-grace")
+		if flowIdleResetGrace < 0 || flowIdleResetGrace > 30*time.Second {
+			return fmt.Errorf("--flow-idle-reset-grace must be within [0s, 30s] (got %s)", flowIdleResetGrace)
+		}
+		poolDrainGrace, _ := cmd.Flags().GetDuration("pool-drain-grace")
+		if poolDrainGrace < 0 || poolDrainGrace > 60*time.Second {
+			return fmt.Errorf("--pool-drain-grace must be within [0s, 60s] (got %s)", poolDrainGrace)
+		}
+		poolBindExitGrace, _ := cmd.Flags().GetDuration("pool-bind-exit-grace")
+		if poolBindExitGrace < 0 {
+			return fmt.Errorf("--pool-bind-exit-grace must be ≥ 0 (got %s)", poolBindExitGrace)
+		}
+		poolBindSentinelPath, _ := cmd.Flags().GetString("pool-bind-sentinel-path")
 
 		if cwd != "" {
 			if err := os.Chdir(cwd); err != nil {
@@ -94,6 +122,20 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			level = slog.LevelDebug
 		}
 		logging.SetupStderrLogging(level)
+
+		// Pool-mode boot guard (agent-pod-pool-runtime Phase F): every
+		// enabled bridge identity on an inbound-capable channel MUST have
+		// inbound:"disabled" so pool replicas never contend on the per-
+		// identity single-listener lock. Runs after config.Load and BEFORE
+		// bridgesvc.New so a misrendered config fails the pod fast instead
+		// of taking the lock. Daemon-mode pods (no --pool-mode) are
+		// unaffected.
+		if poolMode {
+			if err := validatePoolModeInbound(cfg.Router); err != nil {
+				logging.Error("pool-mode boot guard failed", "error", err)
+				return err
+			}
+		}
 
 		// Initialize Langfuse tracing if enabled
 		if cfg.Telemetry != nil && cfg.Telemetry.Langfuse != nil && cfg.Telemetry.Langfuse.Enabled {
@@ -251,6 +293,31 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 		}
 		if bridgeSvc != nil {
 			serverOpts.Bridge = bridgeSvc
+		}
+		if poolMode {
+			// Bound-workspace derivation (B.6): a pool pod whose cwd is a
+			// git checkout (agent.sh cloned it after a bind cycle) boots
+			// bound to that origin; an empty /workspace boots unbound and
+			// waits for POST /pool/bind. The drain path (POST /flow/recycle)
+			// reuses the serve-context cancel so the deferred
+			// application.Shutdown() + bridge Stop() above run before exit —
+			// the same convergence the SIGTERM handler below uses.
+			boundWorkspace := derivePoolBoundWorkspace(cwd)
+			serverOpts.PoolMode = true
+			serverOpts.PoolBoundWorkspace = boundWorkspace
+			serverOpts.PoolBoundSince = time.Now().UnixMilli()
+			serverOpts.PoolAllowlist = os.Getenv("WORKSPACE_GIT_URLS_ALLOWLIST")
+			serverOpts.PoolSentinelPath = poolBindSentinelPath
+			serverOpts.PoolBindExitGrace = poolBindExitGrace
+			serverOpts.PoolDrainGrace = poolDrainGrace
+			serverOpts.PoolIdleResetGrace = flowIdleResetGrace
+			serverOpts.PoolShutdownFunc = cancel
+			logging.Info("pool mode enabled",
+				"boundWorkspace", boundWorkspace,
+				"sentinelPath", poolBindSentinelPath,
+				"idleResetGrace", flowIdleResetGrace,
+				"drainGrace", poolDrainGrace,
+				"bindExitGrace", poolBindExitGrace)
 		}
 		server := api.NewServer(application, serverOpts)
 
@@ -613,6 +680,17 @@ func init() {
 	serveCmd.Flags().Duration("flow-exit-grace", 5*time.Second, "Hold the HTTP server up this long after the auto-flow terminates so an external reconciler (e.g. orchestrator GET /flow/status) can land before shutdown. Capped at 60s. Only honored with --flow-exit. Default 5s.")
 	serveCmd.Flags().Bool("flow-fresh", false, "Discard any existing per-step session state when auto-starting the flow (equivalent to `opencode -F <flow> -D`).")
 	serveCmd.Flags().Duration("flow-start-delay", 0, "Wait this long after the HTTP server is healthy BEFORE auto-starting the flow. Gives external SSE subscribers (e.g. orchestrators) time to connect and start consuming flow.* events from the very first one. Capped at 30s. Default 0 (no extra delay beyond the 250ms boot wait).")
+
+	// Pool-mode flags (openspec change agent-pod-pool-runtime). A pool
+	// pod is a long-lived `opencode serve` that accepts many flows over
+	// its lifetime via POST /flow, binds a workspace lazily via POST
+	// /pool/bind (sentinel write + process restart), and retires cleanly
+	// via POST /flow/recycle.
+	serveCmd.Flags().Bool("pool-mode", false, "Run as a pool pod: register POST/GET /pool/bind and POST /flow/recycle, add the `pool` block to /global/health, gate POST /flow on workspace binding, and reset the flow snapshot to idle after --flow-idle-reset-grace. Mutually exclusive with --flow. Requires every enabled bridge identity to have inbound:\"disabled\" (boot guard). NOT implied by --flow absence — daemon-mode pods also run without --flow.")
+	serveCmd.Flags().Duration("flow-idle-reset-grace", 5*time.Second, "Pool mode only: how long a terminal flow snapshot is retained before GET /flow/status resets to {\"status\":\"idle\"}. MUST be ≥ the orchestrator's reconciliation budget (its --flow-exit-grace, default 5s) so the post-terminal reconciliation read still observes the snapshot. Range [0s, 30s]. Ignored without --pool-mode (per-Job and daemon pods retain the snapshot until process exit, exactly as before).")
+	serveCmd.Flags().Duration("pool-drain-grace", 5*time.Second, "Pool mode only: delay between accepting POST /flow/recycle (202, health pool.mode=\"draining\", new work refused with 503) and triggering the serve-context shutdown — the same path SIGTERM uses, so application.Shutdown() and bridge Stop() run before the process exits 0. Range [0s, 60s].")
+	serveCmd.Flags().Duration("pool-bind-exit-grace", 500*time.Millisecond, "Pool mode only: delay between accepting POST /pool/bind (202 + sentinel write) and os.Exit(0), so the HTTP response lands before the process exits for its workspace-clone respawn. Must be ≥ 0.")
+	serveCmd.Flags().String("pool-bind-sentinel-path", "/tmp/.pool-bind", "Pool mode only: path of the bind sentinel file POST /pool/bind writes (atomically, tmp+rename) for agent.sh to consume on the next boot.")
 
 	rootCmd.AddCommand(serveCmd)
 }

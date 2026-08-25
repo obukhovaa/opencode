@@ -16,6 +16,24 @@ import (
 	"go.uber.org/mock/gomock"
 )
 
+// fixtureGitEnv builds a from-scratch environment for the fixture `git
+// init` calls below. When these tests run inside a git hook (the
+// pre-commit hook runs `go test -short ./...`), the hook process
+// exports GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE — an inherited env would
+// point `git init <tempDir>` at the REAL repository, re-initialising it
+// (and leaving the temp dir without a .git, so the .gitignore
+// assertions fail too). The explicit allowlist makes both impossible.
+func fixtureGitEnv(t *testing.T) []string {
+	t.Helper()
+	return []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_CONFIG_NOSYSTEM=1",
+	}
+}
+
 func TestLsTool_Info(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -41,6 +59,7 @@ func TestLsTool_Run(t *testing.T) {
 
 	// Init git repo and add .gitignore so rg path also excludes __pycache__
 	gitInit := exec.Command("git", "init", tempDir)
+	gitInit.Env = fixtureGitEnv(t)
 	require.NoError(t, gitInit.Run())
 	require.NoError(t, os.WriteFile(filepath.Join(tempDir, ".gitignore"), []byte("__pycache__/\n"), 0644))
 
@@ -525,6 +544,7 @@ func TestListDirectoryWithRipgrep(t *testing.T) {
 
 	// Initialize a git repo so .gitignore is respected
 	gitInit := exec.Command("git", "init", tempDir)
+	gitInit.Env = fixtureGitEnv(t)
 	require.NoError(t, gitInit.Run())
 
 	testDirs := []string{

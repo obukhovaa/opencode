@@ -1,0 +1,264 @@
+package api
+
+import (
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/opencode-ai/opencode/internal/logging"
+)
+
+// This file implements the pool-mode HTTP surface of the openspec change
+// agent-pod-pool-runtime: POST/GET /pool/bind (workspace binding via a
+// sentinel-file + process-restart cycle, design D2), POST /flow/recycle
+// (clean pod retirement, design D4), and the `pool` block for
+// /global/health (design D5). All three routes are registered ONLY when
+// the server was constructed with ServerOptions.PoolMode — per-Job and
+// daemon-mode pods 404 on them.
+
+// defaultPoolSentinelPath is where POST /pool/bind writes the requested
+// workspace URL for agent.sh to pick up on the next boot. Overridable
+// via --pool-bind-sentinel-path.
+const defaultPoolSentinelPath = "/tmp/.pool-bind"
+
+// poolHealth is the `pool` block embedded in /global/health when the
+// pod runs in pool mode. Nullable fields are pointers so they render as
+// JSON null (not omitted) — the orchestrator's pool controller matches
+// on them.
+type poolHealth struct {
+	// Mode is "available" (idle, claimable), "busy" (a run is in
+	// flight), or "draining" (recycle accepted; pod exits shortly).
+	Mode           string  `json:"mode"`
+	BoundWorkspace *string `json:"boundWorkspace"`
+	RunCount       int64   `json:"runCount"`
+	LastTerminalAt *int64  `json:"lastTerminalAt"`
+	CurrentRunID   *string `json:"currentRunID"`
+	Draining       bool    `json:"draining"`
+}
+
+// buildPoolHealth assembles the pool block from the server's bind/drain
+// state and the flow runner's counters.
+func (s *Server) buildPoolHealth() poolHealth {
+	ph := poolHealth{
+		Mode:     "available",
+		Draining: s.poolDraining.Load(),
+	}
+	if s.poolBoundWorkspace != "" {
+		bound := s.poolBoundWorkspace
+		ph.BoundWorkspace = &bound
+	}
+	if s.flowRunner != nil {
+		ph.RunCount = s.flowRunner.RunCount()
+		if t := s.flowRunner.LastTerminalAt(); t != 0 {
+			ph.LastTerminalAt = &t
+		}
+		if id := s.flowRunner.CurrentRunID(); id != "" {
+			ph.CurrentRunID = &id
+			ph.Mode = "busy"
+		}
+	}
+	if ph.Draining {
+		ph.Mode = "draining"
+	}
+	return ph
+}
+
+// writePoolError writes the {"error": <msg>, ...extra} wire shape the
+// agent-pod-pool-runtime spec pins for the pool endpoints' failures.
+// Distinct from writeError (whose "error" field is the HTTP status text
+// and message lives under "message") because the orchestrator's pool
+// controller parses these bodies against the spec examples.
+func writePoolError(w http.ResponseWriter, status int, msg string, extra map[string]any) {
+	body := map[string]any{"error": msg}
+	for k, v := range extra {
+		body[k] = v
+	}
+	writeJSON(w, status, body)
+}
+
+// normalizeWorkspaceURL canonicalises a workspace git URL for equality
+// checks: trims whitespace, strips a trailing "/", a trailing ".git",
+// then a trailing "/" again (so ".git/" collapses too), and lowercases
+// the scheme+host portion of scheme://host/path URLs. The path segment
+// keeps its case (repo paths can be case-sensitive). The SAME
+// normalisation applies to the allowlist entries, the boot-derived
+// bound workspace, and every URL arriving over HTTP, so all comparisons
+// are canonical-vs-canonical.
+func normalizeWorkspaceURL(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimSuffix(s, "/")
+	s = strings.TrimSuffix(s, ".git")
+	s = strings.TrimSuffix(s, "/")
+	if i := strings.Index(s, "://"); i >= 0 {
+		rest := s[i+3:]
+		if j := strings.IndexByte(rest, '/'); j >= 0 {
+			s = strings.ToLower(s[:i+3]+rest[:j]) + rest[j:]
+		} else {
+			s = strings.ToLower(s)
+		}
+	}
+	return s
+}
+
+// parseWorkspaceAllowlist splits the WORKSPACE_GIT_URLS_ALLOWLIST CSV
+// into normalised entries, dropping empties.
+func parseWorkspaceAllowlist(csv string) []string {
+	var out []string
+	for _, entry := range strings.Split(csv, ",") {
+		if norm := normalizeWorkspaceURL(entry); norm != "" {
+			out = append(out, norm)
+		}
+	}
+	return out
+}
+
+// poolAllowlisted reports whether the (already normalised) workspace URL
+// is in the boot-time allowlist.
+func (s *Server) poolAllowlisted(normalizedURL string) bool {
+	for _, entry := range s.poolAllowlist {
+		if entry == normalizedURL {
+			return true
+		}
+	}
+	return false
+}
+
+// writeSentinelAtomic writes the bind sentinel via tmp-file + rename so
+// agent.sh can never observe a half-written URL.
+func writeSentinelAtomic(path, content string) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".pool-bind-*")
+	if err != nil {
+		return fmt.Errorf("create temp sentinel: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.WriteString(content); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("write temp sentinel: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("close temp sentinel: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("rename sentinel into place: %w", err)
+	}
+	return nil
+}
+
+// handlePoolBindPost implements POST /pool/bind (design D2). Guard
+// order follows the spec: draining → flow-in-flight (400) →
+// bound-elsewhere (409) → allowlist (403) → idempotent same-URL (200) →
+// fresh bind (202 + sentinel + scheduled exit).
+func (s *Server) handlePoolBindPost(w http.ResponseWriter, r *http.Request) {
+	if s.poolDraining.Load() {
+		writePoolError(w, http.StatusServiceUnavailable, "pod draining", nil)
+		return
+	}
+	if s.flowRunner != nil && s.flowRunner.InFlight() {
+		writePoolError(w, http.StatusBadRequest, "flow in progress; cannot rebind", nil)
+		return
+	}
+	var body struct {
+		Workspace string `json:"workspace"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writePoolError(w, http.StatusBadRequest, err.Error(), nil)
+		return
+	}
+	norm := normalizeWorkspaceURL(body.Workspace)
+	if norm == "" {
+		writePoolError(w, http.StatusBadRequest, "workspace is required", nil)
+		return
+	}
+	if s.poolBoundWorkspace != "" && s.poolBoundWorkspace != norm {
+		writePoolError(w, http.StatusConflict,
+			fmt.Sprintf("pod bound to %s; recycle to rebind", s.poolBoundWorkspace),
+			map[string]any{"boundWorkspace": s.poolBoundWorkspace})
+		return
+	}
+	if !s.poolAllowlisted(norm) {
+		writePoolError(w, http.StatusForbidden, "workspace not in allowlist", nil)
+		return
+	}
+	if s.poolBoundWorkspace == norm {
+		writeJSON(w, http.StatusOK, map[string]any{"binding": norm, "alreadyBound": true})
+		return
+	}
+	if err := writeSentinelAtomic(s.poolSentinelPath, norm); err != nil {
+		logging.Error("pool bind: sentinel write failed", "path", s.poolSentinelPath, "error", err)
+		writePoolError(w, http.StatusInternalServerError, fmt.Sprintf("sentinel write failed: %v", err), nil)
+		return
+	}
+	logging.Info("pool bind accepted — exiting for workspace clone on respawn",
+		"workspace", norm, "sentinel", s.poolSentinelPath, "exitGrace", s.poolBindExitGrace)
+	exit := s.poolExit
+	time.AfterFunc(s.poolBindExitGrace, func() {
+		logging.Info("pool bind exit grace elapsed — exiting for respawn")
+		exit(0)
+	})
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"binding":     norm,
+		"exitGraceMs": s.poolBindExitGrace.Milliseconds(),
+	})
+}
+
+// handlePoolBindGet implements GET /pool/bind.
+func (s *Server) handlePoolBindGet(w http.ResponseWriter, _ *http.Request) {
+	var bound, since any
+	if s.poolBoundWorkspace != "" {
+		bound = s.poolBoundWorkspace
+		since = s.poolBoundSince
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"boundWorkspace": bound, "since": since})
+}
+
+// handleFlowRecycle implements POST /flow/recycle (design D4): a clean
+// operator-initiated pod retirement. 409 while ANY non-terminal run is
+// in flight (running or waiting_for_input — design D8); otherwise flip
+// to draining (new work refused with 503, reads stay available for
+// observability) and, after --pool-drain-grace, trigger the SAME serve-
+// context cancellation SIGTERM uses so cmd/serve.go's deferred
+// application.Shutdown() and bridge Stop() run before the process exits
+// 0. POST /global/dispose is deliberately NOT involved — it is a no-op
+// stub (handler_health.go).
+func (s *Server) handleFlowRecycle(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := readJSON(r, &body); err != nil && !isEmptyBodyError(err) {
+		writePoolError(w, http.StatusBadRequest, err.Error(), nil)
+		return
+	}
+	// CAS so a repeated recycle is an idempotent 202 rather than a second
+	// scheduled drain. Store draining BEFORE the in-flight check: any
+	// concurrent POST /flow either landed first (visible to InFlight →
+	// rollback + 409) or hits the draining gate (503). Both interleavings
+	// are consistent; the transient draining=true window on the rollback
+	// path at worst 503s one concurrent POST /flow, which the
+	// orchestrator retries.
+	if !s.poolDraining.CompareAndSwap(false, true) {
+		writeJSON(w, http.StatusAccepted, map[string]any{"draining": true})
+		return
+	}
+	if s.flowRunner != nil && s.flowRunner.InFlight() {
+		s.poolDraining.Store(false)
+		writePoolError(w, http.StatusConflict, "flow in progress, abort first", nil)
+		return
+	}
+	logging.Info("pool recycle accepted — draining",
+		"reason", body.Reason, "drainGrace", s.poolDrainGrace)
+	shutdown := s.poolShutdown
+	time.AfterFunc(s.poolDrainGrace, func() {
+		logging.Info("pool drain grace elapsed — triggering serve shutdown")
+		if shutdown != nil {
+			shutdown()
+		}
+	})
+	writeJSON(w, http.StatusAccepted, map[string]any{"draining": true})
+}

@@ -12,6 +12,7 @@ import (
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/llm/agent/mcpauthctx"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/permission"
@@ -116,6 +117,13 @@ func (r *mcpRegistry) StartClient(ctx context.Context, name string) (c *client.C
 		return nil, fmt.Errorf("no mcp found with name %s", name)
 	}
 
+	// Layer a context-scoped Authorization override (per-flow MCP auth,
+	// openspec change agent-pod-pool-runtime D1) on top of the static
+	// config headers. The override shadows any boot-time Authorization
+	// value for the duration of the calling context only; the shared
+	// config map is never mutated.
+	headers := resolveMCPHeaders(ctx, name, m.Headers)
+
 	startCtx, cancelStart := context.WithTimeout(ctx, 20*time.Second)
 	defer cancelStart()
 	switch m.Type {
@@ -128,12 +136,12 @@ func (r *mcpRegistry) StartClient(ctx context.Context, name string) (c *client.C
 	case config.MCPSse:
 		c, err = client.NewSSEMCPClient(
 			m.URL,
-			client.WithHeaders(m.Headers),
+			client.WithHeaders(headers),
 		)
 	case config.MCPHttp:
 		c, err = client.NewStreamableHttpClient(
 			m.URL,
-			transport.WithHTTPHeaders(m.Headers),
+			transport.WithHTTPHeaders(headers),
 		)
 	}
 	if err != nil {
@@ -145,6 +153,27 @@ func (r *mcpRegistry) StartClient(ctx context.Context, name string) (c *client.C
 		return nil, err
 	}
 	return c, nil
+}
+
+// resolveMCPHeaders returns the header map to construct an MCP client
+// with: the server's static config headers, with a context-scoped
+// Authorization override (mcpauthctx.WithAuthOverride, stamped per flow
+// run by the flow runner) layered on top when present. The static map
+// is returned untouched when no override applies; when one does, a
+// fresh copy is built so the shared config map is never mutated —
+// concurrent tool calls under different run contexts each see their own
+// Authorization value.
+func resolveMCPHeaders(ctx context.Context, name string, static map[string]string) map[string]string {
+	override, ok := mcpauthctx.AuthOverrideFromContext(ctx, name)
+	if !ok {
+		return static
+	}
+	layered := make(map[string]string, len(static)+1)
+	for k, v := range static {
+		layered[k] = v
+	}
+	layered["Authorization"] = override
+	return layered
 }
 
 func (r *mcpRegistry) LoadedServers() map[string]bool {

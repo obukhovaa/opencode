@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/opencode-ai/opencode/internal/flow"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
+	"github.com/opencode-ai/opencode/internal/llm/agent/mcpauthctx"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/session"
@@ -36,6 +38,20 @@ const (
 	// "Waiting for user action..." instead of "Completed".
 	flowRunPostponed flowRunStatus = "postponed"
 )
+
+// isTerminalStatus reports whether a run status is terminal (completed,
+// failed, or postponed). Non-terminal statuses are running and
+// waiting_for_input — pool mode treats BOTH as in-flight for the POST
+// /flow, POST /pool/bind, and POST /flow/recycle guards (openspec
+// change agent-pod-pool-runtime, design D8).
+func isTerminalStatus(s flowRunStatus) bool {
+	switch s {
+	case flowRunCompleted, flowRunFailed, flowRunPostponed:
+		return true
+	default:
+		return false
+	}
+}
 
 // flowEventType is the SSE event-type enum the bridge-http-api spec
 // adds to /event. Values are stable wire-level strings — orchestrators
@@ -152,6 +168,43 @@ type flowRunner struct {
 	// Lazy-initialised in markWarned.
 	warnedMu       sync.Mutex
 	warnedSessions map[string]struct{}
+
+	// --- Pool-mode state (openspec change agent-pod-pool-runtime) ---
+
+	// poolMode gates every pool-only behaviour below. Set once at
+	// construction (NewServer, from --pool-mode); never mutated after.
+	// When false the runner behaves exactly as before the pool change:
+	// in-flight guard keyed on Status == running only, terminal snapshot
+	// retained until process exit, no idle reset.
+	poolMode bool
+
+	// idleResetGrace is how long a terminal snapshot is retained before
+	// the runner clears currentRun to nil so GET /flow/status returns
+	// {"status":"idle"} (--flow-idle-reset-grace, default 5s). Only
+	// consulted when poolMode is true. Zero means the reset happens
+	// synchronously in finish().
+	idleResetGrace time.Duration
+
+	// idleTimer is the pending terminal→idle reset timer scheduled by
+	// finish(). Guarded by mu. Start stops and clears it so a new run
+	// arriving inside the grace window cancels the previous run's reset.
+	idleTimer *time.Timer
+
+	// draining, when non-nil, is shared with the API server's recycle
+	// state. Start refuses new runs (errPodDraining) while it is set so
+	// a POST /flow racing POST /flow/recycle can't slip past the
+	// handler-level draining gate. Only consulted when poolMode is true.
+	draining *atomic.Bool
+
+	// runCount counts every run STARTED via Start since process boot,
+	// regardless of outcome (completed, failed, postponed, aborted).
+	// Guarded by mu. Surfaced as pool.runCount in /global/health.
+	runCount int64
+
+	// lastTerminalAt is the unix-ms timestamp of the most recent terminal
+	// transition (finish call), zero when no run has terminated yet.
+	// Guarded by mu. Surfaced as pool.lastTerminalAt in /global/health.
+	lastTerminalAt int64
 }
 
 // appReadOnly is the minimal app surface the flow runner uses. We don't
@@ -226,15 +279,36 @@ func (s *Server) handleFlowList(w http.ResponseWriter, _ *http.Request) {
 
 // handleFlowStart starts a new flow run if none is in flight. Returns
 // 409 when another run is active.
+//
+// Pool mode (agent-pod-pool-runtime) adds gates in front of the start:
+// 503 while draining, 400 while the pod is unbound, 409 when the body's
+// optional `workspace` field mismatches the bound workspace, and 400
+// when mcpAuth is set without mcpAuthServer. The error bodies use the
+// spec's {"error": ...} wire shape (writePoolError) — the orchestrator's
+// pool controller parses them.
 func (s *Server) handleFlowStart(w http.ResponseWriter, r *http.Request) {
 	if s.flowRunner == nil {
 		writeError(w, http.StatusServiceUnavailable, "flow runner not configured")
+		return
+	}
+	if s.poolMode && s.poolDraining.Load() {
+		writePoolError(w, http.StatusServiceUnavailable, "pod draining", nil)
 		return
 	}
 	var body struct {
 		FlowID string         `json:"flowID"`
 		Args   map[string]any `json:"args"`
 		Fresh  bool           `json:"fresh"`
+		// MCPAuth carries a job-scoped bearer token applied to the named
+		// MCP server's calls for the duration of this run only (design D1).
+		MCPAuth string `json:"mcpAuth"`
+		// MCPAuthServer names the MCP server whose Authorization header
+		// MCPAuth overrides. REQUIRED when MCPAuth is set — no default-by-
+		// name, workspaces are free to rename the server in their config.
+		MCPAuthServer string `json:"mcpAuthServer"`
+		// Workspace is an optional defence-in-depth assertion of the git
+		// URL the caller believes this pod is bound to (pool mode only).
+		Workspace string `json:"workspace"`
 	}
 	if err := readJSON(r, &body); err != nil && !isEmptyBodyError(err) {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -244,11 +318,32 @@ func (s *Server) handleFlowStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "flowID is required")
 		return
 	}
+	if body.MCPAuth != "" && body.MCPAuthServer == "" {
+		writePoolError(w, http.StatusBadRequest, "mcpAuthServer required when mcpAuth is set", nil)
+		return
+	}
+	if s.poolMode {
+		if s.poolBoundWorkspace == "" {
+			writePoolError(w, http.StatusBadRequest, "pod not bound; call POST /pool/bind first", nil)
+			return
+		}
+		if body.Workspace != "" && normalizeWorkspaceURL(body.Workspace) != s.poolBoundWorkspace {
+			writePoolError(w, http.StatusConflict,
+				fmt.Sprintf("pod bound to %s; workspace param doesn't match", s.poolBoundWorkspace),
+				map[string]any{"boundWorkspace": s.poolBoundWorkspace})
+			return
+		}
+	}
 
-	result, err := s.flowRunner.Start(r.Context(), body.FlowID, body.Args, body.Fresh)
+	result, err := s.flowRunner.StartWithOptions(r.Context(), body.FlowID, body.Args, body.Fresh, flowStartOptions{
+		mcpAuth:       body.MCPAuth,
+		mcpAuthServer: body.MCPAuthServer,
+	})
 	switch {
 	case errors.Is(err, errFlowAlreadyRunning):
 		writeError(w, http.StatusConflict, "another flow is already running")
+	case errors.Is(err, errPodDraining):
+		writePoolError(w, http.StatusServiceUnavailable, "pod draining", nil)
 	case errors.Is(err, flow.ErrFlowNotFound):
 		writeError(w, http.StatusNotFound, "flow not found")
 	case err != nil:
@@ -298,6 +393,23 @@ func (s *Server) handleFlowAbort(w http.ResponseWriter, _ *http.Request) {
 // run is in flight.
 var errFlowAlreadyRunning = errors.New("flow: another run is already in flight")
 
+// errPodDraining is the sentinel returned by Start when the pod is
+// draining after POST /flow/recycle (pool mode only). Checked under
+// fr.mu so a POST /flow racing a recycle can't start a run after the
+// recycle's own in-flight check observed the runner idle.
+var errPodDraining = errors.New("flow: pod draining")
+
+// flowStartOptions carries the optional per-run parameters POST /flow
+// accepts in pool deployments (agent-pod-pool-runtime, design D1).
+// Zero value = today's behaviour exactly.
+type flowStartOptions struct {
+	// mcpAuth is the job-scoped bearer token; empty means no override.
+	mcpAuth string
+	// mcpAuthServer names the MCP server the override applies to. The
+	// HTTP handler enforces "required when mcpAuth is set" before Start.
+	mcpAuthServer string
+}
+
 // StartResult is the immutable handle Start returns to the HTTP handler.
 // The mutable per-run state lives on fr.currentRun and is accessed only
 // under fr.mu.
@@ -314,18 +426,57 @@ type StartResult struct {
 // so the HTTP layer can map the error to a 404 instead of accepting the
 // request and surfacing the failure asynchronously.
 func (fr *flowRunner) Start(parent context.Context, flowID string, args map[string]any, fresh bool) (StartResult, error) {
+	return fr.StartWithOptions(parent, flowID, args, fresh, flowStartOptions{})
+}
+
+// StartWithOptions is Start with the optional pool-mode per-run
+// parameters (per-flow MCP auth). The in-flight guard differs by mode:
+//
+//   - non-pool (per-Job / daemon): a run is in flight only while its
+//     Status == running — today's behaviour, preserved exactly. A run
+//     sitting in waiting_for_input is replaced by the next Start.
+//   - pool: ANY non-terminal status (running, waiting_for_input) is
+//     in flight and returns errFlowAlreadyRunning (design D8) — a run
+//     waiting on a reviewer answer must not be clobbered by an
+//     inventory-desynced orchestrator.
+func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, args map[string]any, fresh bool, opts flowStartOptions) (StartResult, error) {
 	if fr.validateFlowID != nil {
 		if err := fr.validateFlowID(flowID); err != nil {
 			return StartResult{}, err
 		}
 	}
 	fr.mu.Lock()
-	if fr.currentRun != nil && fr.currentRun.Status == flowRunRunning {
+	if fr.poolMode && fr.draining != nil && fr.draining.Load() {
 		fr.mu.Unlock()
-		return StartResult{}, errFlowAlreadyRunning
+		return StartResult{}, errPodDraining
 	}
+	if fr.currentRun != nil {
+		inFlight := fr.currentRun.Status == flowRunRunning
+		if fr.poolMode {
+			inFlight = !isTerminalStatus(fr.currentRun.Status)
+		}
+		if inFlight {
+			fr.mu.Unlock()
+			return StartResult{}, errFlowAlreadyRunning
+		}
+	}
+	// A new run cancels any pending terminal→idle reset for the previous
+	// run — the new state replaces the snapshot immediately.
+	if fr.idleTimer != nil {
+		fr.idleTimer.Stop()
+		fr.idleTimer = nil
+	}
+	fr.runCount++
 	runID := uuid.NewString()
-	runCtx, cancel := context.WithCancel(context.Background())
+	// Inject the per-run MCP auth override BEFORE deriving the cancelable
+	// run context so cancellation (DELETE /flow, natural terminal) bounds
+	// the override's reach: tool calls under runCtx carry it, everything
+	// else never sees it (design D1).
+	base := context.Background()
+	if opts.mcpAuth != "" {
+		base = mcpauthctx.WithAuthOverride(base, opts.mcpAuthServer, "Bearer "+opts.mcpAuth)
+	}
+	runCtx, cancel := context.WithCancel(base)
 	state := &flowRunState{
 		RunID:     runID,
 		FlowID:    flowID,
@@ -617,13 +768,31 @@ func (fr *flowRunner) publishEvent(_ *flowRunState, ev FlowEvent) {
 // finish records the terminal status of a run and emits the matching
 // terminal SSE event — flow.completed, flow.postponed, or flow.failed.
 // The three events are mutually exclusive; exactly one fires per run.
+//
+// finish is the convergence point for EVERY termination cause (natural
+// terminal, abort via DELETE /flow, start failure) — design D7 — so the
+// pool-mode bookkeeping (lastTerminalAt, terminal→idle reset) lives
+// here and nowhere else.
 func (fr *flowRunner) finish(state *flowRunState, status flowRunStatus, errMsg string) {
 	fr.mu.Lock()
 	defer fr.mu.Unlock()
 	state.Status = status
 	state.completedAt = time.Now().UnixMilli()
+	fr.lastTerminalAt = state.completedAt
 	if errMsg != "" {
 		state.err = errMsg
+	}
+	// Cancel the run context on EVERY terminal path, not only on abort.
+	// This releases the context's resources and bounds the per-run MCP
+	// auth override's reach (agent-pod-pool-runtime D1): once a run is
+	// terminal, nothing can make MCP calls under its runCtx. finish is
+	// only ever reached after flow.Service.Run's channels closed (or
+	// never opened), so no in-flight engine work observes the cancel.
+	if state.cancel != nil {
+		state.cancel()
+	}
+	if fr.poolMode {
+		fr.scheduleIdleResetLocked(state)
 	}
 	switch status {
 	case flowRunCompleted:
@@ -651,17 +820,97 @@ func (fr *flowRunner) finish(state *flowRunState, status flowRunStatus, errMsg s
 	}
 }
 
+// scheduleIdleResetLocked arms the terminal→idle transition for a run
+// that just finished (pool mode only — the caller gates on fr.poolMode).
+// After idleResetGrace the terminal snapshot is cleared so GET
+// /flow/status returns {"status":"idle"} and the pool controller sees
+// the pod as claimable. Grace zero clears synchronously. The pointer-
+// identity guard means a run started inside the grace window (which
+// replaces currentRun AND stops the timer in Start) can never be
+// clobbered by a stale timer firing late. Caller must hold fr.mu.
+func (fr *flowRunner) scheduleIdleResetLocked(state *flowRunState) {
+	if fr.idleResetGrace <= 0 {
+		if fr.currentRun == state {
+			fr.currentRun = nil
+		}
+		return
+	}
+	if fr.idleTimer != nil {
+		fr.idleTimer.Stop()
+	}
+	fr.idleTimer = time.AfterFunc(fr.idleResetGrace, func() {
+		fr.mu.Lock()
+		defer fr.mu.Unlock()
+		if fr.currentRun == state && isTerminalStatus(fr.currentRun.Status) {
+			fr.currentRun = nil
+			fr.idleTimer = nil
+		}
+	})
+}
+
 // Abort cancels the in-flight run. Returns true if a run was cancelled.
+//
+// Non-pool mode preserves today's behaviour exactly: only a run with
+// Status == running is abortable. Pool mode extends the definition of
+// "in flight" to any non-terminal status (running, waiting_for_input) —
+// consistent with the pool-mode POST /flow guard, and required so the
+// orchestrator's documented recycle remedy ("on 409, DELETE /flow first
+// and retry") works for a run parked on a reviewer question.
 func (fr *flowRunner) Abort() bool {
 	fr.mu.Lock()
 	defer fr.mu.Unlock()
-	if fr.currentRun == nil || fr.currentRun.Status != flowRunRunning {
+	if fr.currentRun == nil {
+		return false
+	}
+	inFlight := fr.currentRun.Status == flowRunRunning
+	if fr.poolMode {
+		inFlight = !isTerminalStatus(fr.currentRun.Status)
+	}
+	if !inFlight {
 		return false
 	}
 	if fr.currentRun.cancel != nil {
 		fr.currentRun.cancel()
 	}
 	return true
+}
+
+// InFlight reports whether a non-terminal run (running or
+// waiting_for_input) exists. Used by the pool endpoints' guards (POST
+// /pool/bind → 400, POST /flow/recycle → 409); both treat
+// waiting_for_input as in-flight per design D8.
+func (fr *flowRunner) InFlight() bool {
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	return fr.currentRun != nil && !isTerminalStatus(fr.currentRun.Status)
+}
+
+// RunCount returns the number of runs started via Start since process
+// boot, regardless of outcome. Thread-safe.
+func (fr *flowRunner) RunCount() int64 {
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	return fr.runCount
+}
+
+// LastTerminalAt returns the unix-ms timestamp of the most recent
+// terminal transition, or zero when no run has terminated. Thread-safe.
+func (fr *flowRunner) LastTerminalAt() int64 {
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	return fr.lastTerminalAt
+}
+
+// CurrentRunID returns the runID of the in-flight (non-terminal) run,
+// or "" when the runner is idle or retaining a terminal snapshot.
+// Thread-safe.
+func (fr *flowRunner) CurrentRunID() string {
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	if fr.currentRun == nil || isTerminalStatus(fr.currentRun.Status) {
+		return ""
+	}
+	return fr.currentRun.RunID
 }
 
 // Snapshot returns the current run's projection. Nil when no run has
