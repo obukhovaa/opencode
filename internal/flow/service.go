@@ -466,6 +466,31 @@ func (s *service) runStep(
 
 	argsJSON, _ := json.Marshal(args)
 	existingFS, getErr := s.querier.GetFlowState(ctx, sessionID)
+
+	// existingFS is this attempt's inbound row, captured here BEFORE the
+	// entry-time write below blanks its output. On a resumed postpone that
+	// write runs with status=running (the resume stepWork carries
+	// postpone=false), so this is the only place the previous iteration's
+	// struct output still exists — hand it to a park or the await is lost
+	// (GENAI-230). Decided next to the read rather than at the park sites so
+	// there is no window in which a caller could mistake the post-write row
+	// for the snapshot.
+	//
+	// Hand it over ONLY when this attempt is the resume of this step's own
+	// park, which is exactly the shape collectResumableSteps builds
+	// (prevStep = the postponed row for the same step). Carrying
+	// unconditionally would re-assert an unrelated earlier output — a step
+	// re-entered through nextSteps or an in-process self-loop still has its
+	// previous iteration's row — and a carried output that declares no build
+	// reads downstream as "the await is over" rather than "no signal",
+	// completing the very job this fix exists to keep alive. Carrying nothing
+	// degrades to that "no signal" state, which is the safe side.
+	var priorRow *db.FlowState
+	if getErr == nil && prevState != nil &&
+		prevState.StepID == step.ID && prevState.Status == FlowStatusPostponed {
+		priorRow = &existingFS
+	}
+
 	var updatedAt int64
 	if getErr == nil {
 		output := sql.NullString{}
@@ -558,9 +583,26 @@ func (s *service) runStep(
 		// Re-using the slice here keeps the bind call wire-compatible
 		// without paying the resolve cost twice.
 		if err := s.interactiveHookOrNop().OnInteractiveStepStart(ctx, sess.ID, boundPeers); err != nil {
+			bindErr := fmt.Errorf("interactive step %q bind: %w", step.ID, err)
+			// Park here rather than leaving it to handleStepError, which passes
+			// priorRow=nil. That is correct only for call sites BEFORE the
+			// entry-time write; this one is after it, so the row the park would
+			// read for itself is already blanked and the await would be lost
+			// (GENAI-230) — the same shape the doneRetry park guards.
+			//
+			// The bind error is a chat-platform error, not an LLM one, but it
+			// reaches isTransientProviderError through the same message-substring
+			// surface: a Slack rate limit arrives as "slack rate limit exceeded,
+			// retry after 30s" (slack-go), which matches the "rate limit"
+			// signature. Parking an interactive step over a chat-side rate limit
+			// is the right outcome — it is exactly the transient-and-will-clear
+			// case — but it must not cost the step's output on the way.
+			if stepPostponesOnProviderError(step) && isTransientProviderError(bindErr) &&
+				s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, bindErr, priorRow, flowStates) {
+				return
+			}
 			s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration,
-				fmt.Errorf("interactive step %q bind: %w", step.ID, err),
-				wg, agentEvents, flowStates, nextSteps, f)
+				bindErr, wg, agentEvents, flowStates, nextSteps, f)
 			return
 		}
 		// Mark the session as interactively bound so the question tool
@@ -771,8 +813,12 @@ doneRetry:
 		// flow — the endpoint is expected to recover. Past the age cap it
 		// declines to park and we fall through to terminal failure. See
 		// postponeStepForTransientError.
+		//
+		// priorRow is the pre-write snapshot captured at the entry-time write
+		// (see its declaration in runStep); without it the park would persist
+		// the blanked row and lose the awaited build (GENAI-230).
 		if stepPostponesOnProviderError(step) && isTransientProviderError(lastErr) &&
-			s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, lastErr, flowStates) {
+			s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, lastErr, priorRow, flowStates) {
 			return
 		}
 
@@ -1063,6 +1109,16 @@ const forceStructOutputMaxWait = 2 * time.Minute
 // emitted and no fallback is routed — this is a pause, not a failure. Returns
 // false WITHOUT parking when the step has been retrying past
 // maxTransientPostponeAge, so the caller fails it terminally instead.
+//
+// priorRow is the flow_states row as it stood when this attempt began, captured
+// by the caller BEFORE the entry-time `running` write cleared output (see the
+// preserve-if-postponed branch in runStep). It is the only surviving record of
+// the struct output the step carried into the attempt, and a park must keep it:
+// the postponed row's output is what tells the orchestrator the step is still
+// awaiting a TeamCity build. Losing it made the orchestrator read the park as
+// "nothing left to await", abandon the build match_key and complete the job
+// silently (GENAI-230). nil means the caller has no snapshot, in which case the
+// row read here is used — correct for the callers that run before that write.
 func (s *service) postponeStepForTransientError(
 	ctx context.Context,
 	step Step,
@@ -1072,6 +1128,7 @@ func (s *service) postponeStepForTransientError(
 	args map[string]any,
 	iteration int,
 	cause error,
+	priorRow *db.FlowState,
 	flowStates chan<- *FlowState,
 ) bool {
 	if iteration < 1 {
@@ -1099,8 +1156,20 @@ func (s *service) postponeStepForTransientError(
 		}
 	}
 
+	// Carry the attempt's inbound output onto the park. Prefer the caller's
+	// pre-write snapshot; fall back to the row read above, which is still intact
+	// for the callers that fire before the entry-time write.
+	carryOutput, carryIsStruct := sql.NullString{}, false
+	switch {
+	case priorRow != nil:
+		carryOutput, carryIsStruct = priorRow.Output, priorRow.IsStructOutput
+	case getErr == nil:
+		carryOutput, carryIsStruct = existingFS.Output, existingFS.IsStructOutput
+	}
+
 	logging.Warn("Flow step hit a transient provider error; postponing for timed auto-resume",
-		"step", step.ID, "resume_after", *step.ResumeAfter, "error", cause)
+		"step", step.ID, "resume_after", *step.ResumeAfter,
+		"carried_output_bytes", len(carryOutput.String), "error", cause)
 
 	argsJSON, _ := json.Marshal(args)
 	var updatedAt int64
@@ -1112,8 +1181,8 @@ func (s *service) postponeStepForTransientError(
 		if state, updateErr := s.querier.UpdateFlowState(writeCtx, db.UpdateFlowStateParams{
 			Status:         string(FlowStatusPostponed),
 			Args:           sql.NullString{String: string(argsJSON), Valid: true},
-			Output:         sql.NullString{},
-			IsStructOutput: false,
+			Output:         carryOutput,
+			IsStructOutput: carryIsStruct,
 			Iteration:      int64(iteration),
 			SessionID:      sessionID,
 		}); updateErr != nil {
@@ -1130,7 +1199,8 @@ func (s *service) postponeStepForTransientError(
 			StepID:         step.ID,
 			Status:         string(FlowStatusPostponed),
 			Args:           sql.NullString{String: string(argsJSON), Valid: true},
-			IsStructOutput: false,
+			Output:         carryOutput,
+			IsStructOutput: carryIsStruct,
 			Iteration:      int64(iteration),
 		}); createErr != nil {
 			logging.Warn("Failed to persist step postpone state", "session_id", sessionID, "error", createErr)
@@ -1140,15 +1210,23 @@ func (s *service) postponeStepForTransientError(
 		}
 	}
 
+	// The emitted state — not the row — is what every consumer reads (cmd/flow.go
+	// and the API's flow handler build their payload from this channel value and
+	// never re-query), so the carry has to land here too. IsStructOutput must
+	// travel with Output: with the flag false the orchestrator stores the JSON as
+	// a plain string, its map assertion fails, and the park looks output-less all
+	// over again. Mirrors the rule-driven postpone in runStep.
 	postponedState := &FlowState{
-		SessionID:     sessionID,
-		RootSessionID: rootSessionID,
-		FlowID:        flowID,
-		StepID:        step.ID,
-		Status:        FlowStatusPostponed,
-		Args:          args,
-		Iteration:     iteration,
-		UpdatedAt:     updatedAt,
+		SessionID:      sessionID,
+		RootSessionID:  rootSessionID,
+		FlowID:         flowID,
+		StepID:         step.ID,
+		Status:         FlowStatusPostponed,
+		Args:           args,
+		Output:         carryOutput.String,
+		IsStructOutput: carryIsStruct,
+		Iteration:      iteration,
+		UpdatedAt:      updatedAt,
 	}
 	flowStates <- postponedState
 	s.Publish(pubsub.UpdatedEvent, *postponedState)
@@ -1173,8 +1251,20 @@ func (s *service) handleStepError(
 	// A transient provider error (rate limit / stream reset) on an opted-in
 	// step parks it for timed auto-resume rather than failing the flow — unless
 	// it has been retrying past the age cap, in which case fail terminally.
+	//
+	// nil priorRow: this is safe only because every caller that can reach here
+	// with a transient provider error runs BEFORE runStep's entry-time `running`
+	// write, so the row the park reads for itself still carries the output.
+	// Passing nil keeps this already-wide signature from growing another
+	// parameter.
+	//
+	// The two call sites that sit past that write must NOT rely on this: the
+	// maxIterations site raises a synthetic message that no transient signature
+	// can match, and the interactive-bind site parks itself with the snapshot
+	// before falling through here. A new post-write caller has to do the same or
+	// it silently reintroduces GENAI-230.
 	if stepPostponesOnProviderError(step) && isTransientProviderError(err) &&
-		s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, flowID, args, iteration, err, flowStates) {
+		s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, flowID, args, iteration, err, nil, flowStates) {
 		return
 	}
 
