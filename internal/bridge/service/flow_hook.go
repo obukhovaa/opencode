@@ -110,11 +110,11 @@ func (h *interactiveBridge) registerRemoteBindings(sessionID string, results []B
 	// Self-identity must be wired alongside the registrar — without
 	// host:port the orchestrator can't route inbound back to us.
 	// Skip the remote call rather than POST a malformed row.
-	if h.svc.remoteSelfHost == "" || h.svc.remoteSelfPort == 0 || h.svc.remoteJobID == "" {
+	if h.svc.remoteSelfHost == "" || h.svc.remoteSelfPort == 0 || h.svc.RemoteJobID() == "" {
 		logging.Warn("bridge: remote registrar configured but self-identity incomplete — skipping remote register",
 			"sessionID", sessionID,
 			"selfHost", h.svc.remoteSelfHost, "selfPort", h.svc.remoteSelfPort,
-			"jobID", h.svc.remoteJobID)
+			"jobID", h.svc.RemoteJobID())
 		return
 	}
 
@@ -132,7 +132,7 @@ func (h *interactiveBridge) registerRemoteBindings(sessionID string, results []B
 			Channel:       r.Requested.Channel,
 			Identity:      r.Requested.Identity,
 			PeerID:        peerID,
-			JobID:         h.svc.remoteJobID,
+			JobID:         h.svc.RemoteJobID(),
 			ContainerHost: h.svc.remoteSelfHost,
 			ContainerPort: h.svc.remoteSelfPort,
 			SessionID:     sessionID,

@@ -71,13 +71,48 @@ func validatePoolModeInbound(router *bridge.Config) error {
 	return nil
 }
 
+// poolWorkspaceURLEnv is the entrypoint-supplied fallback signal for the
+// bound workspace. c2-agent's agent.sh bootstraps a pool pod by cloning
+// the workspace into a temp dir and overlaying only `.agents/`,
+// `AGENTS.md`, `.agents.opencode.json` and `.agents.plugins.json` into
+// the working directory — so the working directory is NOT a git checkout
+// and the `.git`-based derivation below finds nothing. The script exports
+// this variable with the URL it bootstrapped from, which is the only
+// in-process evidence the pod is bound.
+const poolWorkspaceURLEnv = "AGENT_WORKSPACE_GIT_URL"
+
 // derivePoolBoundWorkspace reports the workspace git URL the pod booted
-// bound to: the `remote.origin.url` of the working directory's git
-// checkout, or "" when the directory is not a git repository (unbound
-// pool pod — first-ever boot or post-recycle clean state). Failures are
-// deliberately soft: an unreadable origin just means "unbound", and the
-// orchestrator binds via POST /pool/bind.
+// bound to, or "" when the pod is unbound (first-ever boot, or a
+// post-recycle clean state).
+//
+// Two sources, in order:
+//
+//  1. `remote.origin.url` of the working directory's git checkout — the
+//     shape the spec describes, and what an entrypoint that clones
+//     straight into the working directory produces.
+//  2. The $AGENT_WORKSPACE_GIT_URL export — what c2-agent's agent.sh
+//     actually produces, because its pool branch feeds the sentinel URL
+//     into the pre-existing clone-to-temp-dir + overlay bootstrap and
+//     leaves no `.git` in the working directory.
+//
+// Both must be honoured: deriving from `.git` alone left every pool pod
+// reporting `boundWorkspace: null` forever, so the orchestrator's bind
+// handshake could never converge and every pool-eligible job poisoned
+// two pods before falling back to the per-Job runner.
+//
+// Failures are deliberately soft: an unreadable origin and an unset env
+// var both just mean "unbound", and the orchestrator binds via POST
+// /pool/bind.
 func derivePoolBoundWorkspace(dir string) string {
+	if url := gitOriginURL(dir); url != "" {
+		return url
+	}
+	return strings.TrimSpace(os.Getenv(poolWorkspaceURLEnv))
+}
+
+// gitOriginURL returns dir's `remote.origin.url`, or "" when dir is not
+// a git checkout or has no origin.
+func gitOriginURL(dir string) string {
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
 		return ""
 	}

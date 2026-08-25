@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -37,6 +38,15 @@ type poolHealth struct {
 	LastTerminalAt *int64  `json:"lastTerminalAt"`
 	CurrentRunID   *string `json:"currentRunID"`
 	Draining       bool    `json:"draining"`
+	// LastRunID / LastStatus describe the most recently FINISHED run, and
+	// stay populated after the idle reset has cleared the live snapshot.
+	// They are what lets a restarted orchestrator distinguish "the run I
+	// was watching finished while I was away" (fetch it with GET
+	// /flow/status?runID=) from "this pod never ran anything", without
+	// which a completed job is reported as a timeout and a healthy pod
+	// gets poisoned.
+	LastRunID  *string `json:"lastRunID"`
+	LastStatus *string `json:"lastStatus"`
 }
 
 // buildPoolHealth assembles the pool block from the server's bind/drain
@@ -58,6 +68,11 @@ func (s *Server) buildPoolHealth() poolHealth {
 		if id := s.flowRunner.CurrentRunID(); id != "" {
 			ph.CurrentRunID = &id
 			ph.Mode = "busy"
+		}
+		if id, status := s.flowRunner.LastTerminal(); id != "" {
+			lastID, lastStatus := id, string(status)
+			ph.LastRunID = &lastID
+			ph.LastStatus = &lastStatus
 		}
 	}
 	if ph.Draining {
@@ -152,12 +167,20 @@ func writeSentinelAtomic(path, content string) error {
 }
 
 // handlePoolBindPost implements POST /pool/bind (design D2). Guard
-// order follows the spec: draining → flow-in-flight (400) →
-// bound-elsewhere (409) → allowlist (403) → idempotent same-URL (200) →
-// fresh bind (202 + sentinel + scheduled exit).
+// order follows the spec: draining → binding-in-progress (503) →
+// flow-in-flight (400) → bound-elsewhere (409) → allowlist (403) →
+// idempotent same-URL (200) → fresh bind (202 + sentinel + scheduled
+// exit).
 func (s *Server) handlePoolBindPost(w http.ResponseWriter, r *http.Request) {
 	if s.poolDraining.Load() {
 		writePoolError(w, http.StatusServiceUnavailable, "pod draining", nil)
+		return
+	}
+	if s.poolBinding.Load() {
+		// A bind was already accepted; the process is inside its exit
+		// grace. Accepting a second bind would write a second sentinel
+		// that the (already scheduled) exit races with.
+		writePoolError(w, http.StatusServiceUnavailable, "pod binding; exiting for respawn", nil)
 		return
 	}
 	if s.flowRunner != nil && s.flowRunner.InFlight() {
@@ -190,7 +213,21 @@ func (s *Server) handlePoolBindPost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"binding": norm, "alreadyBound": true})
 		return
 	}
+	// Latch BEFORE the sentinel write, and under the runner's lock, so a
+	// POST /flow that raced the in-flight check above either was already
+	// visible as in-flight (latchInFlight → 400) or now sees the gate and
+	// is refused. Otherwise a run could start on a process that is
+	// milliseconds from exiting for its workspace-clone respawn.
+	switch s.latchBinding() {
+	case latchAlreadySet:
+		writePoolError(w, http.StatusServiceUnavailable, "pod binding; exiting for respawn", nil)
+		return
+	case latchInFlight:
+		writePoolError(w, http.StatusBadRequest, "flow in progress; cannot rebind", nil)
+		return
+	}
 	if err := writeSentinelAtomic(s.poolSentinelPath, norm); err != nil {
+		s.flowRunnerUnlatch(&s.poolBinding)
 		logging.Error("pool bind: sentinel write failed", "path", s.poolSentinelPath, "error", err)
 		writePoolError(w, http.StatusInternalServerError, fmt.Sprintf("sentinel write failed: %v", err), nil)
 		return
@@ -235,22 +272,35 @@ func (s *Server) handleFlowRecycle(w http.ResponseWriter, r *http.Request) {
 		writePoolError(w, http.StatusBadRequest, err.Error(), nil)
 		return
 	}
-	// CAS so a repeated recycle is an idempotent 202 rather than a second
-	// scheduled drain. Store draining BEFORE the in-flight check: any
-	// concurrent POST /flow either landed first (visible to InFlight →
-	// rollback + 409) or hits the draining gate (503). Both interleavings
-	// are consistent; the transient draining=true window on the rollback
-	// path at worst 503s one concurrent POST /flow, which the
-	// orchestrator retries.
-	if !s.poolDraining.CompareAndSwap(false, true) {
+	// Latch draining and verify "no run in flight" as ONE step under the
+	// runner's lock. The earlier shape — latch, then check, then roll the
+	// latch back on conflict — had a window in which a second concurrent
+	// recycle saw draining already set, answered 202, and then had the
+	// first request clear it: the caller believed the pod was draining
+	// while nothing had been scheduled, and the pod lived on holding a
+	// pool slot forever. A repeated recycle after a successful one is
+	// still an idempotent 202.
+	switch s.latchDraining() {
+	case latchAlreadySet:
 		writeJSON(w, http.StatusAccepted, map[string]any{"draining": true})
 		return
-	}
-	if s.flowRunner != nil && s.flowRunner.InFlight() {
-		s.poolDraining.Store(false)
+	case latchInFlight:
 		writePoolError(w, http.StatusConflict, "flow in progress, abort first", nil)
 		return
 	}
+	// Clear the bind sentinel so the respawned pod comes back UNBOUND.
+	// The sentinel is the pod's durable binding record — agent.sh leaves
+	// it in place after a successful bootstrap so a container restart
+	// inside the same pod re-clones the same workspace (the working
+	// directory is ephemeral; /pool-state is not). Recycle is exactly the
+	// transition that must break that: design D2's rebind protocol is
+	// "recycle, wait for exit, then POST /pool/bind {workspace: B}" on a
+	// now-empty pod. Best-effort: a failure here is logged, not fatal —
+	// the pod still drains, and a stale sentinel only means the respawn
+	// comes back bound to its previous workspace, which the orchestrator
+	// resolves with a 409 on the next bind.
+	s.clearBindSentinel("recycle")
+
 	logging.Info("pool recycle accepted — draining",
 		"reason", body.Reason, "drainGrace", s.poolDrainGrace)
 	shutdown := s.poolShutdown
@@ -261,4 +311,52 @@ func (s *Server) handleFlowRecycle(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	writeJSON(w, http.StatusAccepted, map[string]any{"draining": true})
+}
+
+// latchDraining latches poolDraining iff no run is in flight, delegating
+// to the runner so the check and the latch share fr.mu. With no runner
+// wired (an app without a flow service) there is nothing that could be
+// in flight, so the gate is set directly.
+func (s *Server) latchDraining() latchResult {
+	if s.flowRunner == nil {
+		if s.poolDraining.CompareAndSwap(false, true) {
+			return latchAcquired
+		}
+		return latchAlreadySet
+	}
+	return s.flowRunner.latchExclusive(&s.poolDraining)
+}
+
+// latchBinding is latchDraining's counterpart for POST /pool/bind.
+func (s *Server) latchBinding() latchResult {
+	if s.flowRunner == nil {
+		if s.poolBinding.CompareAndSwap(false, true) {
+			return latchAcquired
+		}
+		return latchAlreadySet
+	}
+	return s.flowRunner.latchExclusive(&s.poolBinding)
+}
+
+// flowRunnerUnlatch clears a gate, going through the runner's lock when
+// one is wired so the clear is ordered against Start's read of the gate.
+func (s *Server) flowRunnerUnlatch(gate *atomic.Bool) {
+	if s.flowRunner == nil {
+		gate.Store(false)
+		return
+	}
+	s.flowRunner.unlatch(gate)
+}
+
+// clearBindSentinel removes the bind sentinel, tolerating its absence.
+func (s *Server) clearBindSentinel(reason string) {
+	if s.poolSentinelPath == "" {
+		return
+	}
+	if err := os.Remove(s.poolSentinelPath); err != nil && !os.IsNotExist(err) {
+		logging.Warn("pool: failed to clear bind sentinel",
+			"path", s.poolSentinelPath, "reason", reason, "error", err)
+		return
+	}
+	logging.Info("pool: bind sentinel cleared", "path", s.poolSentinelPath, "reason", reason)
 }

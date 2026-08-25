@@ -112,6 +112,7 @@ func newPoolTestServer(t *testing.T, o poolTestOpts) (*Server, *httptest.Server)
 		fr.poolMode = true
 		fr.idleResetGrace = o.idleResetGrace
 		fr.draining = &s.poolDraining
+		fr.binding = &s.poolBinding
 		s.flowRunner = fr
 	}
 	mux := http.NewServeMux()

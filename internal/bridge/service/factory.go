@@ -53,5 +53,11 @@ func (s *Service) LaunchAdapter(ctx context.Context, channel, identityID string)
 	if adapter == nil {
 		return nil
 	}
+	// Seed the current job identity so a hot-added adapter (or one
+	// relaunched mid-run by an identity upsert) stamps the job in flight
+	// rather than whatever the boot env said — for a pool pod, nothing.
+	if js, ok := adapter.(bridge.JobScopedAdapter); ok {
+		js.SetJobID(s.RemoteJobID())
+	}
 	return s.RegisterAdapter(ctx, adapter)
 }

@@ -92,8 +92,13 @@ type Server struct {
 
 	// Pool-mode state (agent-pod-pool-runtime). All fields except
 	// poolDraining are set once in NewServer and read-only afterwards.
-	poolMode           bool
-	poolDraining       atomic.Bool
+	poolMode     bool
+	poolDraining atomic.Bool
+	// poolBinding latches once POST /pool/bind has been accepted and the
+	// process-exit timer armed. It closes the window in which a POST
+	// /flow could start a run on a process that is about to exit for its
+	// workspace-clone respawn.
+	poolBinding        atomic.Bool
 	poolBoundWorkspace string // normalised; "" when unbound
 	poolBoundSince     int64
 	poolAllowlist      []string // normalised entries
@@ -142,6 +147,17 @@ func NewServer(application *app.App, opts ServerOptions) *Server {
 			s.flowRunner.poolMode = true
 			s.flowRunner.idleResetGrace = opts.PoolIdleResetGrace
 			s.flowRunner.draining = &s.poolDraining
+			s.flowRunner.binding = &s.poolBinding
+		}
+		// Run-scoped process identity (agent-pod-pool-runtime D1/D9). Both
+		// singletons are wired regardless of pool mode: the runner only
+		// touches them when POST /flow actually carries the corresponding
+		// field, which per-Job and daemon pods never do.
+		if application.MCPRegistry != nil {
+			s.flowRunner.mcpDiscovery = application.MCPRegistry
+		}
+		if js, ok := opts.Bridge.(bridgeJobScoper); ok {
+			s.flowRunner.bridgeJobs = js
 		}
 	}
 

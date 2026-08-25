@@ -152,21 +152,27 @@ func TestValidatePoolModeInbound(t *testing.T) {
 	}
 }
 
+// TestDerivePoolBoundWorkspace covers both derivation sources and their
+// precedence. The env-var arm is the one that matters in production:
+// c2-agent's agent.sh overlays the workspace instead of cloning into the
+// working directory, so `.git` is absent and $AGENT_WORKSPACE_GIT_URL is
+// the only signal the pod is bound. Every subtest pins the env var
+// explicitly (t.Setenv, hence no t.Parallel) so an inherited value from
+// the developer's shell cannot make an arm pass or fail spuriously.
 func TestDerivePoolBoundWorkspace(t *testing.T) {
-	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
 
-	t.Run("non-git directory reports unbound", func(t *testing.T) {
-		t.Parallel()
+	t.Run("no git checkout and no env reports unbound", func(t *testing.T) {
+		t.Setenv(poolWorkspaceURLEnv, "")
 		if got := derivePoolBoundWorkspace(t.TempDir()); got != "" {
 			t.Errorf("derivePoolBoundWorkspace = %q, want empty", got)
 		}
 	})
 
 	t.Run("git checkout reports its origin URL", func(t *testing.T) {
-		t.Parallel()
+		t.Setenv(poolWorkspaceURLEnv, "")
 		dir := t.TempDir()
 		origin := "https://gitlab.com/piano/composer/agents/developer.git"
 		fixtureGit(t, dir, "init", "--quiet")
@@ -176,12 +182,43 @@ func TestDerivePoolBoundWorkspace(t *testing.T) {
 		}
 	})
 
-	t.Run("git repo without origin reports unbound", func(t *testing.T) {
-		t.Parallel()
+	t.Run("git repo without origin falls through to env", func(t *testing.T) {
+		t.Setenv(poolWorkspaceURLEnv, "")
 		dir := t.TempDir()
 		fixtureGit(t, dir, "init", "--quiet")
 		if got := derivePoolBoundWorkspace(dir); got != "" {
 			t.Errorf("derivePoolBoundWorkspace = %q, want empty", got)
+		}
+	})
+
+	// The production shape: agent.sh cloned into a temp dir, overlaid
+	// .agents/... into /workspace and exported the URL. No .git anywhere.
+	t.Run("overlay bootstrap reports the exported workspace URL", func(t *testing.T) {
+		want := "https://gitlab.com/piano/composer/agents/developer"
+		t.Setenv(poolWorkspaceURLEnv, want)
+		if got := derivePoolBoundWorkspace(t.TempDir()); got != want {
+			t.Errorf("derivePoolBoundWorkspace = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("exported workspace URL is trimmed", func(t *testing.T) {
+		t.Setenv(poolWorkspaceURLEnv, "  https://gitlab.com/piano/composer/agents/developer\n")
+		if got := derivePoolBoundWorkspace(t.TempDir()); got != "https://gitlab.com/piano/composer/agents/developer" {
+			t.Errorf("derivePoolBoundWorkspace = %q, want the trimmed URL", got)
+		}
+	})
+
+	// A real checkout wins over the env var: if someone ever changes the
+	// entrypoint to clone straight into the working directory, the
+	// checkout is the more authoritative statement of what is on disk.
+	t.Run("git origin takes precedence over env", func(t *testing.T) {
+		t.Setenv(poolWorkspaceURLEnv, "https://gitlab.com/piano/other/repo")
+		dir := t.TempDir()
+		origin := "https://gitlab.com/piano/composer/agents/developer.git"
+		fixtureGit(t, dir, "init", "--quiet")
+		fixtureGit(t, dir, "remote", "add", "origin", origin)
+		if got := derivePoolBoundWorkspace(dir); got != origin {
+			t.Errorf("derivePoolBoundWorkspace = %q, want %q (git origin wins)", got, origin)
 		}
 	})
 }
