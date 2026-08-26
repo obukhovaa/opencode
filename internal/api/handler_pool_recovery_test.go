@@ -260,10 +260,14 @@ func TestFlowStartPublishesAndClearsRunScopedIdentity(t *testing.T) {
 	}
 }
 
-// TestFlowStartWithoutIdentityLeavesProcessStateAlone is the no-regression
-// guard for per-Job pods: a POST /flow that carries neither field must
-// not disturb the boot-time env identity they depend on.
-func TestFlowStartWithoutIdentityLeavesProcessStateAlone(t *testing.T) {
+// TestPoolRunWithoutIdentityClearsThePreviousRuns is the other half of
+// the per-run identity contract. On a pool pod there is no boot-time
+// value to preserve, so a run that carries no identity must positively
+// CLEAR whatever the previous run left — inheriting it would run job B
+// under job A's bearer token and job A's bridge identity. The terminal
+// revert alone cannot guarantee this: it is suppressed once another run
+// is current, which is exactly this case.
+func TestPoolRunWithoutIdentityClearsThePreviousRuns(t *testing.T) {
 	svc := newPoolStubFlowService(false, flow.FlowState{
 		StepID: "s1", Status: flow.FlowStatusCompleted,
 	})
@@ -279,18 +283,84 @@ func TestFlowStartWithoutIdentityLeavesProcessStateAlone(t *testing.T) {
 
 	startFlow(t, srv.Client(), srv.URL, `{"flowID":"A"}`)
 	waitFor(t, 2*time.Second, "run to terminate", func() bool {
-		// idleResetGrace is 0 here, so the terminal snapshot is cleared
-		// synchronously in finish() — "idle" is the observable terminal.
 		st := flowStatus(t, srv.Client(), srv.URL)["status"]
 		return st == string(flowRunCompleted) || st == "idle"
 	})
-	time.Sleep(50 * time.Millisecond) // give any stray clear a chance to land
+
+	if got := jobs.snapshot(); len(got) != 1 || got[0] != "" {
+		t.Errorf("bridge identity writes = %q, want a single clear", got)
+	}
+	sets := auth.snapshot()
+	if len(sets) != 1 || sets[0] != nil {
+		t.Errorf("discovery auth writes = %v, want a single clear", sets)
+	}
+}
+
+// TestNonPoolRunNeverTouchesTheBridgeIdentity is the per-Job
+// no-regression guard. A per-Job or daemon pod's identity is the
+// boot-time OPENCODE_BRIDGE_JOB_ID and the only one it will ever have;
+// honouring a body field there would let any caller replace it and, at
+// terminal, clear it for the rest of the process's life. The field is
+// therefore ignored entirely outside pool mode.
+func TestNonPoolRunNeverTouchesTheBridgeIdentity(t *testing.T) {
+	svc := newPoolStubFlowService(false, flow.FlowState{
+		StepID: "s1", Status: flow.FlowStatusCompleted,
+	})
+	s, srv := newPoolTestServer(t, poolTestOpts{svc: svc})
+	// Drop back to the per-Job / daemon posture.
+	s.poolMode = false
+	s.flowRunner.poolMode = false
+	s.flowRunner.draining = nil
+	s.flowRunner.binding = nil
+	jobs := &recordingJobScoper{}
+	auth := &recordingDiscoveryAuth{}
+	s.flowRunner.bridgeJobs = jobs
+	s.flowRunner.mcpDiscovery = auth
+
+	startFlow(t, srv.Client(), srv.URL,
+		`{"flowID":"A","bridgeJobID":"job-1","mcpAuth":"T1","mcpAuthServer":"orchestrator"}`)
+	waitFor(t, 2*time.Second, "run to terminate", func() bool {
+		return flowStatus(t, srv.Client(), srv.URL)["status"] == string(flowRunCompleted)
+	})
+	waitFor(t, 2*time.Second, "discovery auth to be cleared", func() bool {
+		return len(auth.snapshot()) == 2
+	})
+	time.Sleep(50 * time.Millisecond)
 
 	if got := jobs.snapshot(); len(got) != 0 {
-		t.Errorf("bridge job identity touched on a run that carried none: %q", got)
+		t.Errorf("a non-pool pod's boot bridge identity was touched: %q", got)
 	}
-	if got := auth.snapshot(); len(got) != 0 {
-		t.Errorf("discovery auth touched on a run that carried none: %v", got)
+	// mcpAuth still works outside pool mode — only the bridge identity is gated.
+	if sets := auth.snapshot(); len(sets) != 2 || sets[0]["orchestrator"] != "Bearer T1" || sets[1] != nil {
+		t.Errorf("discovery auth writes = %v, want set then clear", sets)
+	}
+}
+
+// TestMcpAuthServerNameIsFolded: config loading lower-cases MCP server
+// map keys, so an override keyed on the raw wire value would never be
+// found for a server whose configured name has an uppercase letter —
+// discovery would silently fall back to the boot header and 401.
+func TestMcpAuthServerNameIsFolded(t *testing.T) {
+	svc := newPoolStubFlowService(false, flow.FlowState{
+		StepID: "s1", Status: flow.FlowStatusCompleted,
+	})
+	s, srv := newPoolTestServer(t, poolTestOpts{
+		svc:       svc,
+		bound:     testWorkspace,
+		allowlist: testWorkspace,
+	})
+	auth := &recordingDiscoveryAuth{}
+	s.flowRunner.mcpDiscovery = auth
+
+	startFlow(t, srv.Client(), srv.URL,
+		`{"flowID":"A","mcpAuth":"T1","mcpAuthServer":"  C2-Orchestrator "}`)
+	waitFor(t, 2*time.Second, "discovery auth to be published", func() bool {
+		return len(auth.snapshot()) >= 1
+	})
+
+	sets := auth.snapshot()
+	if _, ok := sets[0]["c2-orchestrator"]; !ok {
+		t.Errorf("discovery auth keyed %v — want the folded name config loading produces", sets[0])
 	}
 }
 
@@ -482,63 +552,64 @@ func TestRecycleToleratesMissingSentinel(t *testing.T) {
 
 // --- run-scoped identity is reverted only where it was applied --------
 
-// TestMcpAuthOnlyRunLeavesBridgeIdentityAlone is the regression guard for
-// the coupled-latch bug: the two POST /flow fields are independent on the
-// wire, so a run carrying only mcpAuth must not revert the bridge job
-// identity it never set. Getting this wrong permanently wipes a per-Job
-// pod's boot-time OPENCODE_BRIDGE_JOB_ID — after which every interactive
-// step registers no binding and every relay frame is rejected 400, for
-// the rest of the process's life.
-func TestMcpAuthOnlyRunLeavesBridgeIdentityAlone(t *testing.T) {
-	svc := newPoolStubFlowService(false, flow.FlowState{
-		StepID: "s1", Status: flow.FlowStatusCompleted,
-	})
-	s, srv := newPoolTestServer(t, poolTestOpts{
-		svc:       svc,
-		bound:     testWorkspace,
-		allowlist: testWorkspace,
-	})
-	jobs := &recordingJobScoper{}
-	auth := &recordingDiscoveryAuth{}
-	s.flowRunner.bridgeJobs = jobs
-	s.flowRunner.mcpDiscovery = auth
+// TestPartialIdentityRunsClearTheOtherSingleton: the two POST /flow
+// fields are independent on the wire, and on a pool pod a run that
+// carries only one of them must set that one and CLEAR the other —
+// never inherit the previous run's. Inheriting is the cross-job leak;
+// clearing the wrong one is the identity wipe.
+func TestPartialIdentityRunsClearTheOtherSingleton(t *testing.T) {
+	t.Run("mcpAuth only", func(t *testing.T) {
+		svc := newPoolStubFlowService(false, flow.FlowState{
+			StepID: "s1", Status: flow.FlowStatusCompleted,
+		})
+		s, srv := newPoolTestServer(t, poolTestOpts{
+			svc: svc, bound: testWorkspace, allowlist: testWorkspace,
+		})
+		jobs := &recordingJobScoper{}
+		auth := &recordingDiscoveryAuth{}
+		s.flowRunner.bridgeJobs = jobs
+		s.flowRunner.mcpDiscovery = auth
 
-	startFlow(t, srv.Client(), srv.URL,
-		`{"flowID":"A","mcpAuth":"T1","mcpAuthServer":"orchestrator"}`)
-	waitFor(t, 2*time.Second, "discovery auth to be cleared", func() bool {
-		return len(auth.snapshot()) == 2
-	})
-	time.Sleep(50 * time.Millisecond) // let any stray bridge write land
+		startFlow(t, srv.Client(), srv.URL,
+			`{"flowID":"A","mcpAuth":"T1","mcpAuthServer":"orchestrator"}`)
+		waitFor(t, 2*time.Second, "discovery auth set then cleared", func() bool {
+			return len(auth.snapshot()) == 2
+		})
+		time.Sleep(50 * time.Millisecond)
 
-	if got := jobs.snapshot(); len(got) != 0 {
-		t.Errorf("a run carrying only mcpAuth touched the bridge job identity: %q", got)
-	}
-}
-
-// TestBridgeOnlyRunLeavesDiscoveryAuthAlone is the mirror case.
-func TestBridgeOnlyRunLeavesDiscoveryAuthAlone(t *testing.T) {
-	svc := newPoolStubFlowService(false, flow.FlowState{
-		StepID: "s1", Status: flow.FlowStatusCompleted,
+		if got := jobs.snapshot(); len(got) != 1 || got[0] != "" {
+			t.Errorf("bridge identity writes = %q, want exactly one clear (never a stale carry-over)", got)
+		}
+		if sets := auth.snapshot(); sets[0]["orchestrator"] != "Bearer T1" || sets[1] != nil {
+			t.Errorf("discovery auth writes = %v, want set then clear", sets)
+		}
 	})
-	s, srv := newPoolTestServer(t, poolTestOpts{
-		svc:       svc,
-		bound:     testWorkspace,
-		allowlist: testWorkspace,
-	})
-	jobs := &recordingJobScoper{}
-	auth := &recordingDiscoveryAuth{}
-	s.flowRunner.bridgeJobs = jobs
-	s.flowRunner.mcpDiscovery = auth
 
-	startFlow(t, srv.Client(), srv.URL, `{"flowID":"A","bridgeJobID":"job-1"}`)
-	waitFor(t, 2*time.Second, "bridge identity to be cleared", func() bool {
-		return len(jobs.snapshot()) == 2
-	})
-	time.Sleep(50 * time.Millisecond)
+	t.Run("bridgeJobID only", func(t *testing.T) {
+		svc := newPoolStubFlowService(false, flow.FlowState{
+			StepID: "s1", Status: flow.FlowStatusCompleted,
+		})
+		s, srv := newPoolTestServer(t, poolTestOpts{
+			svc: svc, bound: testWorkspace, allowlist: testWorkspace,
+		})
+		jobs := &recordingJobScoper{}
+		auth := &recordingDiscoveryAuth{}
+		s.flowRunner.bridgeJobs = jobs
+		s.flowRunner.mcpDiscovery = auth
 
-	if got := auth.snapshot(); len(got) != 0 {
-		t.Errorf("a run carrying only bridgeJobID touched the MCP discovery auth: %v", got)
-	}
+		startFlow(t, srv.Client(), srv.URL, `{"flowID":"A","bridgeJobID":"job-1"}`)
+		waitFor(t, 2*time.Second, "bridge identity set then cleared", func() bool {
+			return len(jobs.snapshot()) == 2
+		})
+		time.Sleep(50 * time.Millisecond)
+
+		if got := jobs.snapshot(); got[0] != "job-1" || got[1] != "" {
+			t.Errorf("bridge identity writes = %q, want [job-1 \"\"]", got)
+		}
+		if sets := auth.snapshot(); len(sets) != 1 || sets[0] != nil {
+			t.Errorf("discovery auth writes = %v, want exactly one clear", sets)
+		}
+	})
 }
 
 // TestStaleClearDoesNotWipeTheNextRunsIdentity: the publish and the
@@ -601,6 +672,56 @@ func TestStaleClearDoesNotWipeTheNextRunsIdentity(t *testing.T) {
 	for i := range want {
 		if ids[i] != want[i] {
 			t.Fatalf("bridge identity writes = %q, want %q", ids, want)
+		}
+	}
+}
+
+// recordingStepCacheResetter counts ResetStepCache calls.
+type recordingStepCacheResetter struct {
+	mu     sync.Mutex
+	resets int
+}
+
+func (r *recordingStepCacheResetter) ResetStepCache() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resets++
+}
+
+func (r *recordingStepCacheResetter) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.resets
+}
+
+// TestEveryRunDropsThePerStepAgentCache: the factory memoises agents by
+// the flow YAML's step ID, which recurs across runs, and each cached
+// agent resolves its toolset exactly once. On a process that serves many
+// runs, reusing run N-1's agents also reuses their frozen toolsets — so
+// a single failed MCP discovery would strip the tools from every later
+// job on the pod, and the per-run auth token would have nothing to apply
+// to. Every run must start from fresh agents.
+func TestEveryRunDropsThePerStepAgentCache(t *testing.T) {
+	svc := newPoolStubFlowService(false, flow.FlowState{
+		StepID: "s1", Status: flow.FlowStatusCompleted,
+	})
+	s, srv := newPoolTestServer(t, poolTestOpts{
+		svc:       svc,
+		bound:     testWorkspace,
+		allowlist: testWorkspace,
+	})
+	resetter := &recordingStepCacheResetter{}
+	s.flowRunner.stepAgents = resetter
+	client := srv.Client()
+
+	for i := 1; i <= 3; i++ {
+		startFlow(t, client, srv.URL, `{"flowID":"A"}`)
+		waitFor(t, 2*time.Second, "run to terminate", func() bool {
+			st := flowStatus(t, client, srv.URL)["status"]
+			return st == string(flowRunCompleted) || st == "idle"
+		})
+		if got := resetter.count(); got != i {
+			t.Fatalf("after run %d the step-agent cache was reset %d times, want %d", i, got, i)
 		}
 	}
 }

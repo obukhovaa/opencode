@@ -356,6 +356,13 @@ func (entry *toolsCacheEntry) expired() bool {
 }
 
 func (r *mcpRegistry) getTools(name string, m config.MCPServer) []tools.BaseTool {
+	return r.getToolsAttempt(name, m, true)
+}
+
+// getToolsAttempt is getTools with an explicit "may I retry" budget.
+// retryOnInheritedErr is true for the caller's first attempt and false
+// for the one retry it is allowed, so the recursion is bounded at two.
+func (r *mcpRegistry) getToolsAttempt(name string, m config.MCPServer, retryOnInheritedErr bool) []tools.BaseTool {
 	toolsToAdd := []tools.BaseTool{}
 	entry := &toolsCacheEntry{done: make(chan bool)}
 	value, loaded := r.mcpTools.LoadOrStore(name, entry)
@@ -428,6 +435,19 @@ func (r *mcpRegistry) getTools(name string, m config.MCPServer) []tools.BaseTool
 	}
 
 	if entry.err != nil {
+		// We may have INHERITED this error from a fetch someone else was
+		// already running — typically the boot-time one, which on a pool
+		// pod runs before any per-run MCP token exists and therefore 401s.
+		// Letting that verdict stand would freeze an empty toolset into
+		// this caller's agent (sync.Once) for the agent's whole life.
+		// The failing fetcher already removed the entry from the map, so
+		// one retry here re-fetches under the credentials in effect NOW.
+		// Bounded to a single extra attempt; a genuinely unreachable
+		// server still costs at most two tries per caller.
+		if loaded && retryOnInheritedErr {
+			logging.Debug("MCP discovery inherited a failed fetch — retrying once under current credentials", "server", name)
+			return r.getToolsAttempt(name, m, false)
+		}
 		return toolsToAdd
 	}
 

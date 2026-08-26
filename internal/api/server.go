@@ -159,6 +159,9 @@ func NewServer(application *app.App, opts ServerOptions) *Server {
 		if js, ok := opts.Bridge.(bridgeJobScoper); ok {
 			s.flowRunner.bridgeJobs = js
 		}
+		if application.AgentFactory != nil {
+			s.flowRunner.stepAgents = application.AgentFactory
+		}
 	}
 
 	mux := http.NewServeMux()

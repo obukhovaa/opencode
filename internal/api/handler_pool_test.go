@@ -117,7 +117,23 @@ func newPoolTestServer(t *testing.T, o poolTestOpts) (*Server, *httptest.Server)
 	}
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
-	server := httptest.NewServer(mux)
+	// Serve through the SAME middleware chain NewServer builds. Serving
+	// the bare mux would leave loggingMiddleware, authMiddleware,
+	// corsMiddleware and recoveryMiddleware unexercised for every pool
+	// route — so, for instance, the secrets-redaction guard would pass
+	// even if the request logger started dumping bodies, and nothing
+	// would pin that /pool/bind and /flow/recycle sit behind the server
+	// password at all.
+	s.corsOrigin = "*"
+	handler := chain(
+		mux,
+		recoveryMiddleware,
+		loggingMiddleware,
+		corsMiddleware(s.corsOrigin),
+		authMiddleware(s.password),
+		jsonContentTypeMiddleware,
+	)
+	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	return s, server
 }

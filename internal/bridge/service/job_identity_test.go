@@ -124,3 +124,66 @@ func registeredRows(f *fakeRegistrar) []bridge.RemoteBinding {
 	defer f.mu.Unlock()
 	return append([]bridge.RemoteBinding(nil), f.registers...)
 }
+
+// TestLaunchAdapterSeedsTheCurrentJobIdentity pins the seeding in
+// LaunchAdapter. An identity upsert tears down and relaunches an adapter;
+// on a pool pod mid-run the rebuilt external adapter would otherwise seed
+// its job id from OPENCODE_BRIDGE_JOB_ID, which is empty by design there,
+// and every relay frame after that — including the interactive question —
+// would be rejected 400 "jobId is required".
+func TestLaunchAdapterSeedsTheCurrentJobIdentity(t *testing.T) {
+	svc, _ := newOrchestratorForTest(t)
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	built := &jobScopedStubAdapter{stubAdapter: newStubAdapter("external", "c3")}
+	svc.SetAdapterFactory(func(context.Context, string, string, *bridge.Config) (bridge.Adapter, error) {
+		return built, nil
+	})
+
+	// A run is in flight with its own identity.
+	svc.SetRemoteJobID("job-live")
+
+	if err := svc.LaunchAdapter(context.Background(), "external", "c3"); err != nil {
+		t.Fatalf("LaunchAdapter: %v", err)
+	}
+
+	seen := built.seen()
+	if len(seen) == 0 {
+		t.Fatal("a relaunched job-scoped adapter was never seeded with the identity in effect")
+	}
+	if last := seen[len(seen)-1]; last != "job-live" {
+		t.Errorf("adapter ended up with job id %q, want job-live — it would stamp the wrong id on every relay frame", last)
+	}
+}
+
+// TestLaunchAdapterSeedIsNotLostToTheRegistrationRace: the seed must
+// survive a SetRemoteJobID that lands between the pre-registration seed
+// and the adapter becoming visible in s.adapters — otherwise the service
+// reports one identity while the adapter stamps another.
+func TestLaunchAdapterSeedIsNotLostToTheRegistrationRace(t *testing.T) {
+	svc, _ := newOrchestratorForTest(t)
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	built := &jobScopedStubAdapter{stubAdapter: newStubAdapter("external", "c3")}
+	svc.SetAdapterFactory(func(context.Context, string, string, *bridge.Config) (bridge.Adapter, error) {
+		// Simulate the interleaving: a new run publishes its identity
+		// while this adapter is being constructed, before it is visible
+		// to SetRemoteJobID's adapter sweep.
+		svc.SetRemoteJobID("job-B")
+		return built, nil
+	})
+	svc.SetRemoteJobID("job-A")
+
+	if err := svc.LaunchAdapter(context.Background(), "external", "c3"); err != nil {
+		t.Fatalf("LaunchAdapter: %v", err)
+	}
+	if got := svc.RemoteJobID(); got != "job-B" {
+		t.Fatalf("service identity = %q, want job-B", got)
+	}
+	seen := built.seen()
+	if last := seen[len(seen)-1]; last != "job-B" {
+		t.Errorf("adapter identity = %q, want job-B — service and adapter disagree, so relay frames carry a stale job id", last)
+	}
+}

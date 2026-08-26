@@ -268,7 +268,12 @@ func (a *stubAgent) GenerateRecap(_ context.Context, _ string) (string, error) {
 // stubAgentFactory returns the stubAgent.
 type stubAgentFactory struct {
 	agent *stubAgent
+	// resets counts ResetStepCache calls so a test can assert the flow
+	// runner drops the per-step agent memoisation between runs.
+	resets int
 }
+
+func (f *stubAgentFactory) ResetStepCache() { f.resets++ }
 
 func (f *stubAgentFactory) NewAgent(_ context.Context, _ string, _ map[string]any, _ string, _ bool, _ []bridge.PeerRef) (agentpkg.Service, error) {
 	if f.agent != nil {

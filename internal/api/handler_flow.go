@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -177,6 +178,11 @@ type flowRunner struct {
 	// mcpDiscovery, when non-nil, is the MCP registry. Used to publish the
 	// run's Authorization override to registry-owned tool discovery.
 	mcpDiscovery mcpDiscoveryAuthSetter
+
+	// stepAgents, when non-nil, is the agent factory. Its per-step agent
+	// cache is keyed on the flow YAML's step ID, which recurs across runs,
+	// so a process serving many runs must drop it between them.
+	stepAgents stepAgentCacheResetter
 
 	// --- Pool-mode state (openspec change agent-pod-pool-runtime) ---
 
@@ -547,6 +553,24 @@ type mcpDiscoveryAuthSetter interface {
 	SetDiscoveryAuth(overrides map[string]string)
 }
 
+// stepAgentCacheResetter is the narrow slice of the agent factory the
+// flow runner needs: drop the per-step agent memoisation between runs.
+type stepAgentCacheResetter interface {
+	ResetStepCache()
+}
+
+// foldMCPServerName canonicalises an MCP server name the way config
+// loading does. Viper lower-cases map keys read from .opencode.json, so
+// `mcpServers.C2-Orchestrator` is stored as `c2-orchestrator` and every
+// lookup — StartClient's, resolveMCPHeaders' — uses the folded form. An
+// override keyed on the raw wire value would therefore never be found
+// for any server whose configured name has an uppercase letter, and the
+// failure is silent: discovery falls back to the boot-time header, 401s,
+// and the tools are simply absent.
+func foldMCPServerName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
 // StartResult is the immutable handle Start returns to the HTTP handler.
 // The mutable per-run state lives on fr.currentRun and is accessed only
 // under fr.mu.
@@ -615,7 +639,7 @@ func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, ar
 	// else never sees it (design D1).
 	base := context.Background()
 	if opts.mcpAuth != "" {
-		base = mcpauthctx.WithAuthOverride(base, opts.mcpAuthServer, "Bearer "+opts.mcpAuth)
+		base = mcpauthctx.WithAuthOverride(base, foldMCPServerName(opts.mcpAuthServer), "Bearer "+opts.mcpAuth)
 	}
 	runCtx, cancel := context.WithCancel(base)
 	state := &flowRunState{
@@ -629,9 +653,22 @@ func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, ar
 	// Track each singleton SEPARATELY. A single OR'd flag would have a run
 	// that carried only mcpAuth clear the bridge identity it never set —
 	// permanently wiping a per-Job pod's boot-time OPENCODE_BRIDGE_JOB_ID.
-	state.setBridgeJobID = opts.bridgeJobID != "" && fr.bridgeJobs != nil
+	//
+	// The bridge identity is additionally gated on pool mode. A per-Job or
+	// daemon pod's identity comes from OPENCODE_BRIDGE_JOB_ID at boot and
+	// is the only one it will ever have; honouring a body field there
+	// would let any caller replace it and, at terminal, clear it for the
+	// rest of the process's life. Pool pods have no boot identity, which
+	// is exactly why they need the field.
+	state.setBridgeJobID = fr.poolMode && opts.bridgeJobID != "" && fr.bridgeJobs != nil
 	state.setDiscoveryAuth = opts.mcpAuth != "" && opts.mcpAuthServer != "" && fr.mcpDiscovery != nil
 	fr.currentRun = state
+	// Publish the run-scoped process identity while STILL holding fr.mu,
+	// and revert under it too (clearRunScopedIdentity takes the lock), so
+	// a run's publish and a previous run's revert can never interleave.
+	// Neither the bridge service nor the MCP registry calls back into the
+	// flow runner, so there is no lock cycle to invert.
+	fr.applyRunScopedIdentity(state, opts)
 	result := StartResult{
 		RunID:     state.RunID,
 		FlowID:    state.FlowID,
@@ -641,13 +678,14 @@ func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, ar
 	fr.mu.Unlock()
 	_ = parent
 
-	// Publish the run-scoped process identity BEFORE the goroutine starts,
-	// so the first interactive step and the first MCP tool discovery of
-	// this run already see it. Both are process-level by nature (the
-	// bridge service and the MCP registry are singletons) — the flow
-	// runner's one-run-at-a-time guard is what makes that safe, and
-	// finish() clears them on every terminal path.
-	fr.applyRunScopedIdentity(state, opts)
+	// Drop the per-step agent cache so this run builds fresh agents. The
+	// cache is keyed on the flow YAML's step ID, which recurs across runs;
+	// reusing run N-1's agents would also reuse their once-resolved MCP
+	// toolsets, so a run whose discovery failed would poison every later
+	// run on this process.
+	if fr.stepAgents != nil {
+		fr.stepAgents.ResetStepCache()
+	}
 
 	// Kick off the run in the background; SSE consumers see progress
 	// via fr.broker.
@@ -659,14 +697,28 @@ func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, ar
 // discovery auth override to the process-level singletons that need them.
 // A zero-valued option leaves the corresponding singleton untouched, so a
 // per-Job pod (which sets neither) keeps its boot-time env identity.
+// Caller must hold fr.mu.
 func (fr *flowRunner) applyRunScopedIdentity(state *flowRunState, opts flowStartOptions) {
 	if state.setBridgeJobID {
 		fr.bridgeJobs.SetRemoteJobID(opts.bridgeJobID)
 	}
 	if state.setDiscoveryAuth {
 		fr.mcpDiscovery.SetDiscoveryAuth(map[string]string{
-			opts.mcpAuthServer: "Bearer " + opts.mcpAuth,
+			foldMCPServerName(opts.mcpAuthServer): "Bearer " + opts.mcpAuth,
 		})
+	}
+	if fr.poolMode {
+		// On a pool pod there is no boot-time value to preserve, so a run
+		// that carries NO identity must positively clear whatever the
+		// previous run left rather than inherit it. The terminal revert
+		// alone cannot guarantee that: it is suppressed when another run
+		// has already become current, which is precisely this case.
+		if !state.setBridgeJobID && fr.bridgeJobs != nil {
+			fr.bridgeJobs.SetRemoteJobID("")
+		}
+		if !state.setDiscoveryAuth && fr.mcpDiscovery != nil {
+			fr.mcpDiscovery.SetDiscoveryAuth(nil)
+		}
 	}
 }
 
@@ -688,9 +740,12 @@ func (fr *flowRunner) clearRunScopedIdentity(state *flowRunState) {
 	// B's whole life. The pointer-identity check makes a stale clear a
 	// no-op; B's own clear still runs when B finishes.
 	fr.mu.Lock()
-	stale := fr.currentRun != nil && fr.currentRun != state
-	fr.mu.Unlock()
-	if stale {
+	defer fr.mu.Unlock()
+	if fr.currentRun != nil && fr.currentRun != state {
+		// A newer run is current. It published its own values (or, in pool
+		// mode, positively cleared them) under this same lock, so reverting
+		// here would clobber them. Held across the setter calls, not just
+		// the read, so there is no window between deciding and acting.
 		return
 	}
 	if state.setBridgeJobID {
