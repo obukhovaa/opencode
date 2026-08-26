@@ -344,3 +344,20 @@ type Adapter interface {
 	// Status returns the current health snapshot for this identity.
 	Status() AdapterStatus
 }
+
+// JobScopedAdapter is the optional capability an Adapter implements when
+// its outbound frames carry the orchestrator's job identity, so the
+// identity has to be rebound whenever the pod switches jobs.
+//
+// Per-Job pods never need it: they serve exactly one job and receive its
+// identity as a boot-time env var. Pool pods do — one process serves many
+// jobs over its lifetime, so the identity arrives per run in the POST
+// /flow body and the bridge pushes it down here before the run starts.
+// Adapters that don't stamp a job identity simply don't implement it.
+//
+// Implementations MUST be safe to call from any goroutine: the write
+// comes from the flow runner while sends run on dispatcher and
+// question-router goroutines.
+type JobScopedAdapter interface {
+	SetJobID(jobID string)
+}

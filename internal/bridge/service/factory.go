@@ -53,5 +53,8 @@ func (s *Service) LaunchAdapter(ctx context.Context, channel, identityID string)
 	if adapter == nil {
 		return nil
 	}
+	// The job identity is seeded inside RegisterAdapter, under the same
+	// lock that publishes the adapter — see the note there. Doing it here
+	// instead would be a read-then-store racing SetRemoteJobID's sweep.
 	return s.RegisterAdapter(ctx, adapter)
 }

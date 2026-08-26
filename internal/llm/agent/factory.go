@@ -40,6 +40,11 @@ type AgentFactory interface {
 	// for non-interactive callers or when the binding isn't known yet.
 	NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool, boundPeers []bridge.PeerRef) (Service, error)
 	InitPrimaryAgents(ctx context.Context, outputSchema map[string]any) ([]Service, error)
+	// ResetStepCache drops the per-step agent memoisation. The cache is
+	// keyed on the flow YAML's step ID, which recurs across runs, so a
+	// process that serves many flow runs MUST clear it between them or
+	// run 2 reuses run 1's agents — and their once-resolved toolsets.
+	ResetStepCache()
 	SetCronServices(cronToolSvc tools.CronToolService, schedHelper tools.CronScheduleHelper)
 	CronServices() (tools.CronToolService, tools.CronScheduleHelper)
 	SetTodoStore(store tools.TodoStore)
@@ -244,6 +249,28 @@ func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchem
 		logging.Debug("Cached agent for flow step", "agent", agentID, "step", stepID)
 	}
 	return svc, nil
+}
+
+// ResetStepCache drops every per-step agent memoised by NewAgent.
+//
+// The cache exists so the iterations of ONE step share an agent. It is
+// keyed on the flow YAML's step ID, which recurs across runs, so on a
+// long-lived pod (one that serves many flow runs from a single process)
+// run 2 of a flow would otherwise reuse run 1's agent objects — and with
+// them run 1's resolved toolset, frozen by sync.Once. That makes any
+// per-run state stale by construction, and turns a single failed MCP
+// discovery into a permanent loss: the empty toolset is baked into the
+// cached agent and every later run on that pod gets it.
+//
+// The flow runner calls this at the start of each run.
+func (f *agentFactory) ResetStepCache() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.stepCache) == 0 {
+		return
+	}
+	logging.Debug("Clearing per-step agent cache for a new flow run", "cached", len(f.stepCache))
+	f.stepCache = make(map[string]Service)
 }
 
 func (f *agentFactory) InitPrimaryAgents(ctx context.Context, outputSchema map[string]any) ([]Service, error) {

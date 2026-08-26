@@ -85,7 +85,7 @@ func TestInteractiveHook_RegistersOnStart(t *testing.T) {
 	svc.remoteRegistrar = reg
 	svc.remoteSelfHost = "c2-agent-job-T.svc"
 	svc.remoteSelfPort = 8080
-	svc.remoteJobID = "job-T"
+	svc.remoteJobID.Store("job-T")
 	svc.remoteProjectID = "default"
 
 	hook := svc.InteractiveHook()
@@ -127,7 +127,7 @@ func TestInteractiveHook_RegisterFailureDoesNotBlockLocalBind(t *testing.T) {
 	svc.remoteRegistrar = reg
 	svc.remoteSelfHost = "h"
 	svc.remoteSelfPort = 1
-	svc.remoteJobID = "j"
+	svc.remoteJobID.Store("j")
 	svc.remoteProjectID = "default"
 
 	hook := svc.InteractiveHook()
@@ -169,7 +169,7 @@ func TestInteractiveHook_RetryEventuallySucceeds(t *testing.T) {
 	svc.remoteRegistrar = reg
 	svc.remoteSelfHost = "h"
 	svc.remoteSelfPort = 1
-	svc.remoteJobID = "j"
+	svc.remoteJobID.Store("j")
 	svc.remoteProjectID = "default"
 
 	hook := svc.InteractiveHook()
@@ -214,7 +214,7 @@ func TestInteractiveHook_DeregisterOnComplete(t *testing.T) {
 	svc.remoteRegistrar = reg
 	svc.remoteSelfHost = "h"
 	svc.remoteSelfPort = 1
-	svc.remoteJobID = "j"
+	svc.remoteJobID.Store("j")
 	svc.remoteProjectID = "default"
 
 	hook := svc.InteractiveHook()

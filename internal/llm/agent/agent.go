@@ -22,6 +22,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/prompt"
 	"github.com/opencode-ai/opencode/internal/llm/provider"
+	"github.com/opencode-ai/opencode/internal/llm/runidentity"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp"
@@ -2633,6 +2634,46 @@ func withHasOutputSchema(b bool) providerOption {
 	}
 }
 
+// sharedEndpointKeyEnv names the environment variable a self-hosted
+// (LiteLLM-style) deployment uses for the API key shared by every
+// provider that routes through the local endpoint.
+const sharedEndpointKeyEnv = "LOCAL_ENDPOINT_API_KEY"
+
+// resolveProviderAPIKey returns the key this provider client should be
+// built with: the current run's override when one is published AND this
+// provider is one the override is meant to replace, else the configured
+// key unchanged.
+//
+// The override is NOT applied blindly to every provider. A run carries
+// one key, but a config may hold several unrelated ones — a real
+// Anthropic key alongside a LiteLLM key, say — and re-keying the wrong
+// provider would send a caller's per-team LiteLLM token to a vendor API
+// that has never heard of it.
+//
+// The set the override replaces is defined the same way the per-Job pod
+// defines it. There, the entrypoint substitutes $LOCAL_ENDPOINT_API_KEY
+// into the config, so exactly the providers routed through the local
+// endpoint end up holding that value. Matching on it here therefore
+// re-keys precisely the providers a per-Job pod would have re-keyed, and
+// nothing else — which is the functional-parity property the pool path
+// has to preserve.
+//
+// Config is never mutated, so configured is always the boot-time value
+// and this comparison is stable for the life of the process. With the
+// env var unset (any deployment that is not endpoint-shared) the set is
+// empty and the override is inert.
+func resolveProviderAPIKey(configured string) string {
+	override := runidentity.APIKey()
+	if override == "" || configured == "" {
+		return configured
+	}
+	shared := os.Getenv(sharedEndpointKeyEnv)
+	if shared == "" || configured != shared {
+		return configured
+	}
+	return override
+}
+
 func createAgentProvider(agentName config.AgentName, providerOpts ...providerOption) (agentProvider provider.Provider, err error) {
 	var popts providerOptions
 	for _, o := range providerOpts {
@@ -2687,7 +2728,7 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 	}
 
 	opts := []provider.ProviderClientOption{
-		provider.WithAPIKey(providerCfg.APIKey),
+		provider.WithAPIKey(resolveProviderAPIKey(providerCfg.APIKey)),
 		provider.WithModel(model),
 		provider.WithSystemMessage(prompt.GetAgentPromptWithOptions(agentName, model.Provider, prompt.AgentPromptOptions{
 			Interactive:     popts.interactive,

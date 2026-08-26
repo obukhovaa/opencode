@@ -16,6 +16,13 @@ type healthResponse struct {
 	// Shape is dictated by the bridge-http-api spec's "Extended /health
 	// reports per-identity bridge status" requirement.
 	Bridge any `json:"bridge,omitempty"`
+	// Pool, when present, carries the pool-mode claim-eligibility block
+	// (mode/boundWorkspace/runCount/lastTerminalAt/currentRunID/draining
+	// — agent-pod-pool-runtime design D5). Present ONLY when the server
+	// was started with --pool-mode; per-Job (--flow) and daemon-mode
+	// (RUN_AS_DAEMON) pods omit it so existing health consumers are
+	// unaffected.
+	Pool any `json:"pool,omitempty"`
 }
 
 // HealthReporter is the contract the bridge service satisfies to embed
@@ -42,6 +49,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.healthReporter != nil {
 		resp.Bridge = s.healthReporter.HealthSnapshot(r)
+	}
+	if s.poolMode {
+		resp.Pool = s.buildPoolHealth()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

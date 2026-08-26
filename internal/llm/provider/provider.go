@@ -16,6 +16,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	"github.com/opencode-ai/opencode/internal/llm/runidentity"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	toolsPkg "github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -979,9 +980,20 @@ var (
 	userIDOnce     sync.Once
 )
 
-// GetUserID returns the resolved user ID (from env, config, or auto-generated UUID).
-// The value is cached after first resolution.
+// GetUserID returns the user ID for the current LLM request: the run's
+// override when one is published, else the process value (env, config,
+// or auto-generated UUID) resolved once and cached.
+//
+// The run override is checked BEFORE the cached value and deliberately
+// outranks $OPENCODE_USER_ID. On a pool pod the process value is the
+// pod's static boot identity, which serves N runs for N different teams;
+// the run's own identity is strictly more specific. The sync.Once cache
+// still covers every non-pool deployment, where nothing publishes an
+// override and the value genuinely is process-wide.
 func GetUserID() string {
+	if id := runidentity.UserID(); id != "" {
+		return id
+	}
 	userIDOnce.Do(func() {
 		resolvedUserID = processUserID()
 	})
@@ -1015,13 +1027,20 @@ func resolveMetadata(ctx context.Context, meta *config.ProviderMetadata) map[str
 	return resolved
 }
 
-// ResolveTags collects tags from config (telemetry.tags) and dynamic context values.
+// ResolveTags collects tags from config (telemetry.tags), the current
+// run's identity, and dynamic context values.
+//
+// Run tags SHADOW config tags sharing their `key:` prefix rather than
+// appending to them: a pool pod's config carries a static `team:` tag
+// from boot, and a run for a different team must emit one team tag, not
+// two. See runidentity.MergeTags.
 func ResolveTags(ctx context.Context) []string {
 	var tags []string
 	cfg := config.Get()
 	if cfg != nil && cfg.Telemetry != nil {
 		tags = append(tags, cfg.Telemetry.Tags...)
 	}
+	tags = runidentity.MergeTags(tags, runidentity.Tags())
 	if dynamic, ok := ctx.Value(toolsPkg.MetadataTagsContextKey).([]string); ok {
 		tags = append(tags, dynamic...)
 	}

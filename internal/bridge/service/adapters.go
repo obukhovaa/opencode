@@ -32,6 +32,17 @@ func (s *Service) RegisterAdapter(ctx context.Context, adapter bridge.Adapter) e
 		return fmt.Errorf("bridge: adapter %s already registered", key)
 	}
 	s.adapters[key] = adapter
+	// Seed the current job identity under the SAME lock that publishes the
+	// adapter, so this and SetRemoteJobID's adapter sweep are mutually
+	// exclusive. Seeding outside the lock — before or after — is a
+	// read-then-store that a concurrent SetRemoteJobID can straddle,
+	// leaving the adapter stamping a job id the service has already moved
+	// on from: the cross-job attribution the per-run identity exists to
+	// prevent. The setter is an atomic store on the adapter side, so
+	// holding s.mu across it cannot invert any lock order.
+	if js, ok := adapter.(bridge.JobScopedAdapter); ok {
+		js.SetJobID(s.remoteJobIDLocked())
+	}
 	s.mu.Unlock()
 
 	// Identity-lock acquisition is gated on whether the adapter

@@ -57,10 +57,18 @@ type Adapter struct {
 	relayBaseURL    string
 	relayCredential string
 	httpClient      *http.Client
-	// jobID is the orchestrator job this pod is executing, resolved once at
-	// construction from OPENCODE_BRIDGE_JOB_ID. Empty when opencode runs
-	// outside a job.
-	jobID string
+	// jobID is the orchestrator job this pod is executing. Seeded at
+	// construction from OPENCODE_BRIDGE_JOB_ID (the per-Job pod's
+	// boot-time identity) and replaced per run via SetJobID on a pool
+	// pod, which serves many jobs over its lifetime and therefore cannot
+	// carry a boot-time job identity at all. Empty when opencode runs
+	// outside a job — outbound relay frames then carry an empty jobId,
+	// which the orchestrator rejects with 400.
+	//
+	// atomic because Send / SendInteractiveQuestion run on dispatcher,
+	// question-router and router_send goroutines while the flow runner
+	// writes it from the POST /flow handler goroutine.
+	jobID atomic.Value // string
 
 	disabled       bool
 	disabledReason string
@@ -97,10 +105,10 @@ func New(id Identity, opts Options) (*Adapter, error) {
 		relayBaseURL:    strings.TrimSpace(id.RelayBaseURL),
 		relayCredential: strings.TrimSpace(id.RelayCredential),
 		httpClient:      client,
-		// Resolved once here rather than per send: this is a process-level
-		// value, and every other adapter input is settled at construction.
-		jobID: os.Getenv("OPENCODE_BRIDGE_JOB_ID"),
 	}
+	// Seeded from the boot env for per-Job pods; a pool pod boots with it
+	// unset and the flow runner replaces it per run (SetJobID).
+	a.jobID.Store(os.Getenv("OPENCODE_BRIDGE_JOB_ID"))
 
 	var missing []string
 	if a.relayBaseURL == "" {
@@ -119,6 +127,19 @@ func New(id Identity, opts Options) (*Adapter, error) {
 	a.statusVal.Store(a.currentStatusString())
 	a.lastError.Store("")
 	return a, nil
+}
+
+// SetJobID replaces the orchestrator job identity stamped on outbound
+// relay frames. Satisfies bridge.JobScopedAdapter so the bridge service
+// can rebind it per flow run on a pool pod. Safe from any goroutine.
+func (a *Adapter) SetJobID(jobID string) {
+	a.jobID.Store(jobID)
+}
+
+// currentJobID reads the job identity for the frame being built.
+func (a *Adapter) currentJobID() string {
+	s, _ := a.jobID.Load().(string)
+	return s
 }
 
 func (a *Adapter) currentStatusString() string {
@@ -208,7 +229,7 @@ func (a *Adapter) Send(ctx context.Context, out bridge.Outbound) bridge.SendResu
 	}
 
 	frame := relayFrame{
-		JobID:       a.jobID,
+		JobID:       a.currentJobID(),
 		Peer:        out.Peer,
 		SessionID:   sessionID,
 		Kind:        kind,
@@ -273,7 +294,7 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 	}
 
 	frame := relayFrame{
-		JobID:     a.jobID,
+		JobID:     a.currentJobID(),
 		Peer:      peer,
 		SessionID: sessionID,
 		Kind:      relayKindQuestion,

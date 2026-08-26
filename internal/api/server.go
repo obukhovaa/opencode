@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/app"
@@ -24,6 +25,50 @@ type ServerOptions struct {
 	// server only forwards mux registration. Routes outside /router/*
 	// (e.g. /flow/*) follow the same pattern in future phases.
 	Bridge RouteRegistrar
+
+	// --- Pool mode (openspec change agent-pod-pool-runtime) ---
+
+	// PoolMode enables the pool-pod posture: the /pool/bind and
+	// /flow/recycle routes are registered, /global/health gains a `pool`
+	// block, POST /flow gains the bind/drain gates, and the flow runner
+	// switches to the pool-mode in-flight guard + terminal→idle reset.
+	// Set from `opencode serve --pool-mode`; NOT inferred from --flow
+	// absence (daemon-mode pods also lack --flow).
+	PoolMode bool
+	// PoolBoundWorkspace is the workspace git URL the pod booted bound
+	// to (derived from the working directory's git origin), or "" when
+	// unbound. Normalised internally.
+	PoolBoundWorkspace string
+	// PoolBoundSince is the unix-ms timestamp the binding was observed
+	// (process boot time). Surfaced by GET /pool/bind.
+	PoolBoundSince int64
+	// PoolAllowlist is the raw WORKSPACE_GIT_URLS_ALLOWLIST CSV; entries
+	// are normalised internally.
+	PoolAllowlist string
+	// PoolSentinelPath is where POST /pool/bind writes the requested
+	// workspace URL for the pod entrypoint's next boot (--pool-bind-sentinel-path;
+	// defaults to /tmp/.pool-bind when empty).
+	PoolSentinelPath string
+	// PoolBindExitGrace is the delay between a 202 bind response and
+	// os.Exit(0) so the HTTP response lands first
+	// (--pool-bind-exit-grace, default 500ms at the CLI layer).
+	PoolBindExitGrace time.Duration
+	// PoolDrainGrace is the delay between a 202 recycle response and the
+	// serve-context cancellation (--pool-drain-grace, default 5s at the
+	// CLI layer).
+	PoolDrainGrace time.Duration
+	// PoolIdleResetGrace is how long the flow runner retains a terminal
+	// snapshot before resetting to idle (--flow-idle-reset-grace,
+	// default 5s at the CLI layer; zero = immediate reset).
+	PoolIdleResetGrace time.Duration
+	// PoolExitFunc is the process-exit seam used by POST /pool/bind.
+	// Defaults to os.Exit; tests inject a recorder.
+	PoolExitFunc func(code int)
+	// PoolShutdownFunc triggers the serve-context cancellation POST
+	// /flow/recycle drains through — the same convergence SIGTERM and
+	// --flow-exit use, so cmd/serve.go's deferred application.Shutdown()
+	// and bridge Stop() run before exit.
+	PoolShutdownFunc func()
 }
 
 // RouteRegistrar is the contract bridge / flow subsystems satisfy to
@@ -44,6 +89,24 @@ type Server struct {
 	corsOrigin     string
 	healthReporter HealthReporter
 	flowRunner     *flowRunner
+
+	// Pool-mode state (agent-pod-pool-runtime). All fields except
+	// poolDraining are set once in NewServer and read-only afterwards.
+	poolMode     bool
+	poolDraining atomic.Bool
+	// poolBinding latches once POST /pool/bind has been accepted and the
+	// process-exit timer armed. It closes the window in which a POST
+	// /flow could start a run on a process that is about to exit for its
+	// workspace-clone respawn.
+	poolBinding        atomic.Bool
+	poolBoundWorkspace string // normalised; "" when unbound
+	poolBoundSince     int64
+	poolAllowlist      []string // normalised entries
+	poolSentinelPath   string
+	poolBindExitGrace  time.Duration
+	poolDrainGrace     time.Duration
+	poolExit           func(code int)
+	poolShutdown       func()
 }
 
 // NewServer creates a new API server.
@@ -55,11 +118,50 @@ func NewServer(application *app.App, opts ServerOptions) *Server {
 		password: os.Getenv("OPENCODE_SERVER_PASSWORD"),
 	}
 
+	if opts.PoolMode {
+		s.poolMode = true
+		s.poolBoundWorkspace = normalizeWorkspaceURL(opts.PoolBoundWorkspace)
+		if s.poolBoundWorkspace != "" {
+			s.poolBoundSince = opts.PoolBoundSince
+		}
+		s.poolAllowlist = parseWorkspaceAllowlist(opts.PoolAllowlist)
+		s.poolSentinelPath = opts.PoolSentinelPath
+		if s.poolSentinelPath == "" {
+			s.poolSentinelPath = defaultPoolSentinelPath
+		}
+		s.poolBindExitGrace = opts.PoolBindExitGrace
+		s.poolDrainGrace = opts.PoolDrainGrace
+		s.poolExit = opts.PoolExitFunc
+		if s.poolExit == nil {
+			s.poolExit = os.Exit
+		}
+		s.poolShutdown = opts.PoolShutdownFunc
+	}
+
 	// Flow runner: a single-flow-at-a-time tracker driven by /flow/*
 	// HTTP routes. Created up-front so /flow handlers always have a
 	// valid runner to delegate to; idle until a POST /flow.
 	if application != nil && application.Flows != nil {
 		s.flowRunner = newFlowRunnerWithSessions(application.Flows, application.Sessions)
+		if opts.PoolMode {
+			s.flowRunner.poolMode = true
+			s.flowRunner.idleResetGrace = opts.PoolIdleResetGrace
+			s.flowRunner.draining = &s.poolDraining
+			s.flowRunner.binding = &s.poolBinding
+		}
+		// Run-scoped process identity (agent-pod-pool-runtime D1/D9). Both
+		// singletons are wired regardless of pool mode: the runner only
+		// touches them when POST /flow actually carries the corresponding
+		// field, which per-Job and daemon pods never do.
+		if application.MCPRegistry != nil {
+			s.flowRunner.mcpDiscovery = application.MCPRegistry
+		}
+		if js, ok := opts.Bridge.(bridgeJobScoper); ok {
+			s.flowRunner.bridgeJobs = js
+		}
+		if application.AgentFactory != nil {
+			s.flowRunner.stepAgents = application.AgentFactory
+		}
 	}
 
 	mux := http.NewServeMux()
@@ -167,6 +269,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /flow", s.handleFlowStart)
 	mux.HandleFunc("GET /flow/status", s.handleFlowStatus)
 	mux.HandleFunc("DELETE /flow", s.handleFlowAbort)
+
+	// Pool-mode surface (agent-pod-pool-runtime). Registered ONLY when
+	// --pool-mode was set — per-Job and daemon-mode pods 404 on these,
+	// so a stray recycle can never kill a non-pool pod.
+	if s.poolMode {
+		mux.HandleFunc("POST /pool/bind", s.handlePoolBindPost)
+		mux.HandleFunc("GET /pool/bind", s.handlePoolBindGet)
+		mux.HandleFunc("POST /flow/recycle", s.handleFlowRecycle)
+	}
 }
 
 // Start starts the HTTP server. It blocks until the server is shut down.

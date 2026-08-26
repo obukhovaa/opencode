@@ -12,6 +12,7 @@ import (
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/llm/agent/mcpauthctx"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/permission"
@@ -58,6 +59,20 @@ type (
 		LoadTools(filter *MCPRegistryFiler) <-chan tools.BaseTool
 		// StartClient starts a new MCPClient, caller have to properly close when done
 		StartClient(ctx context.Context, name string) (c *client.Client, err error)
+		// SetDiscoveryAuth records Authorization overrides that registry-owned
+		// DISCOVERY fetches apply, keyed by MCP server name (value is the full
+		// header, e.g. "Bearer <jwt>"). Passing nil or an empty map clears them.
+		//
+		// Tool CALLS get their override from the caller's context
+		// (mcpauthctx) — per-call, per-run, no shared state. Discovery cannot
+		// work that way: it is deliberately context-free (NewToolSet /
+		// getTools run under the registry's own lifetime so a short-lived
+		// creator can't strand an agent without MCP tools), so the run's
+		// token has no context to ride in on. Without this seam a pool pod
+		// never authenticates `initialize`/`tools/list`, the server returns
+		// 401, and its tools are absent for the whole run — the per-call
+		// override then has no tool to apply to.
+		SetDiscoveryAuth(overrides map[string]string)
 		// LoadedServers returns the set of MCP server names that have successfully loaded tools.
 		LoadedServers() map[string]bool
 		// ServerTools returns the tool names for a loaded MCP server (without the server prefix).
@@ -78,6 +93,13 @@ type (
 		// that caller being canceled would poison the entry for every
 		// concurrent and future waiter. Normally the app root context.
 		baseCtx context.Context
+
+		// discoveryAuth holds Authorization overrides applied to fetches
+		// performed under baseCtx (see SetDiscoveryAuth). Guarded by
+		// discoveryAuthMu; read on every cache miss, written once per flow
+		// run by the flow runner.
+		discoveryAuthMu sync.RWMutex
+		discoveryAuth   map[string]string
 
 		permissions   permission.Service
 		agentRegistry agentregistry.Registry
@@ -116,6 +138,13 @@ func (r *mcpRegistry) StartClient(ctx context.Context, name string) (c *client.C
 		return nil, fmt.Errorf("no mcp found with name %s", name)
 	}
 
+	// Layer a context-scoped Authorization override (per-flow MCP auth,
+	// openspec change agent-pod-pool-runtime D1) on top of the static
+	// config headers. The override shadows any boot-time Authorization
+	// value for the duration of the calling context only; the shared
+	// config map is never mutated.
+	headers := resolveMCPHeaders(ctx, name, m.Headers)
+
 	startCtx, cancelStart := context.WithTimeout(ctx, 20*time.Second)
 	defer cancelStart()
 	switch m.Type {
@@ -128,12 +157,12 @@ func (r *mcpRegistry) StartClient(ctx context.Context, name string) (c *client.C
 	case config.MCPSse:
 		c, err = client.NewSSEMCPClient(
 			m.URL,
-			client.WithHeaders(m.Headers),
+			client.WithHeaders(headers),
 		)
 	case config.MCPHttp:
 		c, err = client.NewStreamableHttpClient(
 			m.URL,
-			transport.WithHTTPHeaders(m.Headers),
+			transport.WithHTTPHeaders(headers),
 		)
 	}
 	if err != nil {
@@ -145,6 +174,87 @@ func (r *mcpRegistry) StartClient(ctx context.Context, name string) (c *client.C
 		return nil, err
 	}
 	return c, nil
+}
+
+// resolveMCPHeaders returns the header map to construct an MCP client
+// with: the server's static config headers, with a context-scoped
+// Authorization override (mcpauthctx.WithAuthOverride, stamped per flow
+// run by the flow runner) layered on top when present. The static map
+// is returned untouched when no override applies; when one does, a
+// fresh copy is built so the shared config map is never mutated —
+// concurrent tool calls under different run contexts each see their own
+// Authorization value.
+//
+// The copy drops every pre-existing key that canonicalises to
+// Authorization before setting the override. That is not defensive
+// tidying: viper lower-cases map keys when loading .opencode.json, so a
+// config declaring "Authorization" arrives as "authorization". Setting
+// the override under the canonical spelling alongside it would leave the
+// map holding two keys that both target the same HTTP header, and the
+// mcp-go transport applies headers with `for k, v := range headers {
+// req.Header.Set(k, v) }` — so which token actually went out would be
+// decided by Go's randomised map iteration order, producing intermittent
+// 401s that succeed on retry.
+func resolveMCPHeaders(ctx context.Context, name string, static map[string]string) map[string]string {
+	override, ok := mcpauthctx.AuthOverrideFromContext(ctx, name)
+	if !ok {
+		return static
+	}
+	return layerAuthorization(static, override)
+}
+
+// authorizationHeader is the canonical spelling the override is written
+// under. net/http canonicalises on Set, but the map itself must hold
+// exactly one Authorization-equivalent key — see resolveMCPHeaders.
+const authorizationHeader = "Authorization"
+
+// layerAuthorization copies static and replaces any Authorization header
+// (in any letter case) with value.
+func layerAuthorization(static map[string]string, value string) map[string]string {
+	layered := make(map[string]string, len(static)+1)
+	for k, v := range static {
+		if strings.EqualFold(k, authorizationHeader) {
+			continue
+		}
+		layered[k] = v
+	}
+	layered[authorizationHeader] = value
+	return layered
+}
+
+// SetDiscoveryAuth records the Authorization overrides applied to
+// registry-owned discovery fetches. See the interface doc for why
+// discovery cannot take these from a context.
+func (r *mcpRegistry) SetDiscoveryAuth(overrides map[string]string) {
+	next := make(map[string]string, len(overrides))
+	for k, v := range overrides {
+		if k == "" || v == "" {
+			continue
+		}
+		next[k] = v
+	}
+	r.discoveryAuthMu.Lock()
+	defer r.discoveryAuthMu.Unlock()
+	if len(next) == 0 {
+		r.discoveryAuth = nil
+		return
+	}
+	r.discoveryAuth = next
+}
+
+// discoveryCtx returns baseCtx carrying the recorded discovery auth
+// overrides, so StartClient's existing mcpauthctx lookup finds them.
+// Values only — the lifetime stays baseCtx's, which is the invariant
+// TestMCPRegistry_LoadToolsRegistryOwnedLifetime and
+// TestMCPRegistry_ShutdownBoundsFetch pin.
+func (r *mcpRegistry) discoveryCtx() context.Context {
+	r.discoveryAuthMu.RLock()
+	defer r.discoveryAuthMu.RUnlock()
+	ctx := r.baseCtx
+	for server, header := range r.discoveryAuth {
+		ctx = mcpauthctx.WithAuthOverride(ctx, server, header)
+	}
+	return ctx
 }
 
 func (r *mcpRegistry) LoadedServers() map[string]bool {
@@ -246,6 +356,13 @@ func (entry *toolsCacheEntry) expired() bool {
 }
 
 func (r *mcpRegistry) getTools(name string, m config.MCPServer) []tools.BaseTool {
+	return r.getToolsAttempt(name, m, true)
+}
+
+// getToolsAttempt is getTools with an explicit "may I retry" budget.
+// retryOnInheritedErr is true for the caller's first attempt and false
+// for the one retry it is allowed, so the recursion is bounded at two.
+func (r *mcpRegistry) getToolsAttempt(name string, m config.MCPServer, retryOnInheritedErr bool) []tools.BaseTool {
 	toolsToAdd := []tools.BaseTool{}
 	entry := &toolsCacheEntry{done: make(chan bool)}
 	value, loaded := r.mcpTools.LoadOrStore(name, entry)
@@ -275,7 +392,12 @@ func (r *mcpRegistry) getTools(name string, m config.MCPServer) []tools.BaseTool
 		// subagent's toolset under the parent's parallel-tool-batch ctx,
 		// and the batch is canceled as soon as the ack returns — with a
 		// cold cache the subagent resolved zero MCP tools.
-		fetchCtx, cancelFetch := context.WithTimeout(r.baseCtx, mcpInitTimeout)
+		// discoveryCtx is baseCtx plus the recorded per-run Authorization
+		// overrides: values only, lifetime unchanged. A server whose only
+		// credential is the run's token (the orchestrator MCP endpoint on a
+		// pool pod) would otherwise 401 on initialize and contribute no
+		// tools at all.
+		fetchCtx, cancelFetch := context.WithTimeout(r.discoveryCtx(), mcpInitTimeout)
 		defer cancelFetch()
 		defer close(entry.done)
 
@@ -313,6 +435,19 @@ func (r *mcpRegistry) getTools(name string, m config.MCPServer) []tools.BaseTool
 	}
 
 	if entry.err != nil {
+		// We may have INHERITED this error from a fetch someone else was
+		// already running — typically the boot-time one, which on a pool
+		// pod runs before any per-run MCP token exists and therefore 401s.
+		// Letting that verdict stand would freeze an empty toolset into
+		// this caller's agent (sync.Once) for the agent's whole life.
+		// The failing fetcher already removed the entry from the map, so
+		// one retry here re-fetches under the credentials in effect NOW.
+		// Bounded to a single extra attempt; a genuinely unreachable
+		// server still costs at most two tries per caller.
+		if loaded && retryOnInheritedErr {
+			logging.Debug("MCP discovery inherited a failed fetch — retrying once under current credentials", "server", name)
+			return r.getToolsAttempt(name, m, false)
+		}
 		return toolsToAdd
 	}
 

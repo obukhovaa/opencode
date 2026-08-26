@@ -135,9 +135,18 @@ type Service struct {
 	// so the orchestrator's forwarder knows where to POST inbound
 	// events. Empty / zero → don't call Register (defensive — the
 	// runner shouldn't have registrar wired without self-identity).
-	remoteSelfHost  string
-	remoteSelfPort  int
-	remoteJobID     string
+	remoteSelfHost string
+	remoteSelfPort int
+	// remoteJobID groups this pod's binding rows under one orchestrator
+	// job. On a per-Job pod it is the boot-time OPENCODE_BRIDGE_JOB_ID and
+	// never changes. On a pool pod there IS no boot-time job — one process
+	// serves many jobs — so the flow runner replaces it per run from the
+	// POST /flow body (SetRemoteJobID) before the run starts.
+	//
+	// atomic.Value (not a plain string) because registerRemoteBindings
+	// reads it from per-step flow goroutines while the POST /flow handler
+	// goroutine writes it.
+	remoteJobID     atomic.Value // string
 	remoteProjectID string
 }
 
@@ -217,9 +226,9 @@ func New(deps Dependencies) (*Service, error) {
 		remoteRegistrar: deps.RemoteRegistrar,
 		remoteSelfHost:  deps.RemoteSelfHost,
 		remoteSelfPort:  deps.RemoteSelfPort,
-		remoteJobID:     deps.RemoteJobID,
 		remoteProjectID: projectID,
 	}
+	svc.remoteJobID.Store(deps.RemoteJobID)
 	mode, ok := bridge.NormalizeToolUpdateVerbosity(deps.RouterCfg.ToolUpdateVerbosity)
 	if !ok {
 		logging.Warn("bridge: unrecognised router.toolUpdateVerbosity, falling back to compact",
@@ -522,6 +531,57 @@ func (s *Service) ProjectID() string {
 // should use this method.
 func (s *Service) RemoteProjectID() string {
 	return s.remoteProjectID
+}
+
+// RemoteJobID returns the orchestrator job identity currently stamped on
+// binding registrations and outbound relay frames.
+func (s *Service) RemoteJobID() string {
+	return s.remoteJobIDLocked()
+}
+
+// remoteJobIDLocked reads the identity. Named for its call sites: it is
+// safe with or without s.mu held (the value is atomic), and
+// RegisterAdapter calls it while holding s.mu.
+func (s *Service) remoteJobIDLocked() string {
+	id, _ := s.remoteJobID.Load().(string)
+	return id
+}
+
+// SetRemoteJobID rebinds the pod's orchestrator job identity for the run
+// that is about to start, and pushes it down to every launched adapter
+// that stamps a job identity on its wire frames (bridge.JobScopedAdapter
+// — today, the external relay adapter).
+//
+// Per-Job pods never call this: their identity is the boot-time
+// OPENCODE_BRIDGE_JOB_ID and nothing overrides it. Pool pods must,
+// because a pool pod has no boot-time job — without it every interactive
+// step registers nothing (registerRemoteBindings skips on an empty job
+// id, so the reviewer's answer has no route home) and every external
+// relay frame is rejected by the orchestrator with 400 "jobId is
+// required".
+//
+// Passing "" restores the "no job in flight" state, which is what the
+// flow runner does on terminal so a late frame cannot be attributed to a
+// finished run.
+func (s *Service) SetRemoteJobID(jobID string) {
+	if s == nil {
+		return
+	}
+	s.remoteJobID.Store(jobID)
+	s.mu.Lock()
+	scoped := make([]bridge.JobScopedAdapter, 0, len(s.adapters))
+	for _, a := range s.adapters {
+		if js, ok := a.(bridge.JobScopedAdapter); ok {
+			scoped = append(scoped, js)
+		}
+	}
+	s.mu.Unlock()
+	// Push outside s.mu: adapters take their own locks, and holding the
+	// service lock across an adapter call is how lock-order inversions
+	// start.
+	for _, js := range scoped {
+		js.SetJobID(jobID)
+	}
 }
 
 // Config returns the bridge configuration snapshot the service was
