@@ -356,13 +356,13 @@ func TestMcpAuthServerNameIsFolded(t *testing.T) {
 	s.flowRunner.mcpDiscovery = auth
 
 	startFlow(t, srv.Client(), srv.URL,
-		`{"flowID":"A","mcpAuth":"T1","mcpAuthServer":"  C2-Orchestrator "}`)
+		`{"flowID":"A","mcpAuth":"T1","mcpAuthServer":"  My-Orchestrator "}`)
 	waitFor(t, 2*time.Second, "discovery auth to be published", func() bool {
 		return len(auth.snapshot()) >= 1
 	})
 
 	sets := auth.snapshot()
-	if _, ok := sets[0]["c2-orchestrator"]; !ok {
+	if _, ok := sets[0]["my-orchestrator"]; !ok {
 		t.Errorf("discovery auth keyed %v — want the folded name config loading produces", sets[0])
 	}
 }
@@ -501,7 +501,7 @@ func TestRecycleConflictLeavesNoDrainingResidue(t *testing.T) {
 }
 
 // TestRecycleClearsBindSentinel: the sentinel is the pod's durable
-// binding record (agent.sh leaves it in place so a container restart
+// binding record (the pod entrypoint leaves it in place so a restart
 // re-clones), and recycle is exactly the transition that must break it —
 // design D2's rebind protocol expects the respawned pod to come back
 // empty.
@@ -788,7 +788,7 @@ func TestPoolRoutesRequireThePassword(t *testing.T) {
 
 	// With credentials the pool routes answer normally.
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/pool/bind", nil)
-	req.SetBasicAuth("c2-agent-orchestrator", "s3cret")
+	req.SetBasicAuth("orchestrator", "s3cret")
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("authenticated GET /pool/bind: %v", err)

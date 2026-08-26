@@ -296,7 +296,7 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 		}
 		if poolMode {
 			// Bound-workspace derivation (B.6): a pool pod whose cwd is a
-			// git checkout (agent.sh cloned it after a bind cycle) boots
+			// git checkout (the entrypoint cloned it after a bind cycle) boots
 			// bound to that origin; an empty /workspace boots unbound and
 			// waits for POST /pool/bind. The drain path (POST /flow/recycle)
 			// reuses the serve-context cancel so the deferred
@@ -690,7 +690,7 @@ func init() {
 	serveCmd.Flags().Duration("flow-idle-reset-grace", 5*time.Second, "Pool mode only: how long a terminal flow snapshot is retained before GET /flow/status resets to {\"status\":\"idle\"}. MUST be ≥ the orchestrator's reconciliation budget (its --flow-exit-grace, default 5s) so the post-terminal reconciliation read still observes the snapshot. Range [0s, 30s]. Ignored without --pool-mode (per-Job and daemon pods retain the snapshot until process exit, exactly as before).")
 	serveCmd.Flags().Duration("pool-drain-grace", 5*time.Second, "Pool mode only: delay between accepting POST /flow/recycle (202, health pool.mode=\"draining\", new work refused with 503) and triggering the serve-context shutdown — the same path SIGTERM uses, so application.Shutdown() and bridge Stop() run before the process exits 0. Range [0s, 60s].")
 	serveCmd.Flags().Duration("pool-bind-exit-grace", 500*time.Millisecond, "Pool mode only: delay between accepting POST /pool/bind (202 + sentinel write) and os.Exit(0), so the HTTP response lands before the process exits for its workspace-clone respawn. Must be ≥ 0.")
-	serveCmd.Flags().String("pool-bind-sentinel-path", "/tmp/.pool-bind", "Pool mode only: path of the bind sentinel file POST /pool/bind writes (atomically, tmp+rename) for agent.sh to consume on the next boot.")
+	serveCmd.Flags().String("pool-bind-sentinel-path", "/tmp/.pool-bind", "Pool mode only: path of the bind sentinel file POST /pool/bind writes (atomically, tmp+rename) for the pod entrypoint to consume on the next boot.")
 
 	rootCmd.AddCommand(serveCmd)
 }

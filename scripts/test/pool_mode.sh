@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 # E2E blackbox test for `opencode serve --pool-mode` — the pod-pool
-# runtime contract from the c2-agent openspec change
-# agent-pod-pool-runtime.
+# runtime contract from the agent-pod-pool-runtime openspec change.
 #
 # Everything here is cross-process behaviour that unit tests cannot
 # reach: the CLI flag surface, the boot-time bound-workspace derivation
-# (including the $AGENT_WORKSPACE_GIT_URL path that c2-agent's agent.sh
-# actually produces), the sentinel file the pod writes for its own next
+# (including the $AGENT_WORKSPACE_GIT_URL path a real pod entrypoint
+# produces), the sentinel file the pod writes for its own next
 # boot, the exit-for-respawn cycle, and the fact that per-Job pods 404 on
 # the pool routes.
 #
 # The full-lifecycle case is driven the way the orchestrator drives it:
 #   unbound boot -> POST /flow rejected -> POST /pool/bind -> process
-#   exits -> "agent.sh" clones and re-execs -> pod reports bound ->
+#   exits -> the entrypoint clones and re-execs -> pod reports bound ->
 #   POST /pool/bind is idempotent -> POST /flow/recycle drains, clears
 #   the binding, and exits 0.
 #
@@ -62,8 +61,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# The pod's working directory (agent.sh's /workspace) and the emptyDir
-# the bind sentinel lives on (agent.sh's /pool-state).
+# The pod's working directory (the entrypoint's /workspace) and the
+# emptyDir the bind sentinel lives on (its /pool-state).
 POD_CWD="$WORKDIR/workspace"
 POOL_STATE="$WORKDIR/pool-state"
 SENTINEL="$POOL_STATE/bind"
@@ -77,8 +76,8 @@ export HOME="$WORKDIR/home"
 export XDG_CONFIG_HOME="$WORKDIR/home/.config"
 mkdir -p "$HOME" "$XDG_CONFIG_HOME"
 
-WORKSPACE_URL="https://gitlab.com/piano/composer/agents/developer"
-OTHER_URL="https://gitlab.com/piano/composer/agents/other"
+WORKSPACE_URL="https://git.example.com/acme/agents/developer"
+OTHER_URL="https://git.example.com/acme/agents/other"
 export WORKSPACE_GIT_URLS_ALLOWLIST="$WORKSPACE_URL,$OTHER_URL"
 
 # A provider key is required for any agent to be constructed at all, and
@@ -105,7 +104,7 @@ free_port() {
 
 # start_pod [extra serve args...] — launches the pod with the current
 # AGENT_WORKSPACE_GIT_URL (empty unless the caller exported one, exactly
-# like agent.sh) and waits for it to answer /global/health.
+# like the pod entrypoint) and waits for it to answer /global/health.
 start_pod() {
     PORT=$(free_port)
     BASE="http://127.0.0.1:$PORT"
@@ -275,8 +274,8 @@ else
     stop_pod
 fi
 
-# ── 3. respawn: agent.sh's bootstrap, then a bound pod ──────────────
-# This mirrors c2-agent's agent.sh exactly: read the sentinel, clone into
+# ── 3. respawn: the entrypoint's bootstrap, then a bound pod ────────
+# This mirrors a real pod entrypoint exactly: read the sentinel, clone into
 # a TEMP dir, overlay only the agent subset into the working directory —
 # so the working directory never becomes a git checkout — and export
 # AGENT_WORKSPACE_GIT_URL. Deriving the binding from a `.git` in the
@@ -292,7 +291,7 @@ export AGENT_WORKSPACE_GIT_URL="$BIND_URL"
 
 name="working directory is deliberately NOT a git checkout"
 if [ -d "$POD_CWD/.git" ]; then
-    log_fail "$name" "the fixture no longer reproduces agent.sh's overlay bootstrap"
+    log_fail "$name" "the fixture no longer reproduces the entrypoint's overlay bootstrap"
 else
     log_pass "$name"
 fi

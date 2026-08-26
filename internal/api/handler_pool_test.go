@@ -184,7 +184,7 @@ func flowStatus(t *testing.T, client *http.Client, baseURL string) map[string]an
 	return decodeBody(t, resp)
 }
 
-const testWorkspace = "https://gitlab.com/piano/composer/agents/developer"
+const testWorkspace = "https://git.example.com/acme/agents/developer"
 
 // --- URL normalisation (B.3) ---
 
@@ -195,14 +195,14 @@ func TestNormalizeWorkspaceURL(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"plain", "https://gitlab.com/piano/dev", "https://gitlab.com/piano/dev"},
-		{"trailing slash", "https://gitlab.com/piano/dev/", "https://gitlab.com/piano/dev"},
-		{"trailing .git", "https://gitlab.com/piano/dev.git", "https://gitlab.com/piano/dev"},
-		{"trailing .git slash", "https://gitlab.com/piano/dev.git/", "https://gitlab.com/piano/dev"},
-		{"host lowercased", "https://GitLab.COM/piano/dev", "https://gitlab.com/piano/dev"},
-		{"scheme lowercased", "HTTPS://gitlab.com/piano/dev", "https://gitlab.com/piano/dev"},
-		{"path case preserved", "https://gitlab.com/Piano/Dev", "https://gitlab.com/Piano/Dev"},
-		{"whitespace trimmed", "  https://gitlab.com/piano/dev \n", "https://gitlab.com/piano/dev"},
+		{"plain", "https://git.example.com/acme/dev", "https://git.example.com/acme/dev"},
+		{"trailing slash", "https://git.example.com/acme/dev/", "https://git.example.com/acme/dev"},
+		{"trailing .git", "https://git.example.com/acme/dev.git", "https://git.example.com/acme/dev"},
+		{"trailing .git slash", "https://git.example.com/acme/dev.git/", "https://git.example.com/acme/dev"},
+		{"host lowercased", "https://Git.EXAMPLE.com/acme/dev", "https://git.example.com/acme/dev"},
+		{"scheme lowercased", "HTTPS://git.example.com/acme/dev", "https://git.example.com/acme/dev"},
+		{"path case preserved", "https://git.example.com/Acme/Dev", "https://git.example.com/Acme/Dev"},
+		{"whitespace trimmed", "  https://git.example.com/acme/dev \n", "https://git.example.com/acme/dev"},
 		{"host only", "https://GITLAB.com", "https://gitlab.com"},
 		{"empty", "", ""},
 	}

@@ -72,13 +72,16 @@ func validatePoolModeInbound(router *bridge.Config) error {
 }
 
 // poolWorkspaceURLEnv is the entrypoint-supplied fallback signal for the
-// bound workspace. c2-agent's agent.sh bootstraps a pool pod by cloning
-// the workspace into a temp dir and overlaying only `.agents/`,
-// `AGENTS.md`, `.agents.opencode.json` and `.agents.plugins.json` into
-// the working directory — so the working directory is NOT a git checkout
-// and the `.git`-based derivation below finds nothing. The script exports
-// this variable with the URL it bootstrapped from, which is the only
-// in-process evidence the pod is bound.
+// bound workspace.
+//
+// An orchestrator's pod entrypoint typically bootstraps a pool pod by
+// cloning the workspace into a temp dir and overlaying only the agent
+// subset (`.agents/`, `AGENTS.md`, `.agents.opencode.json`,
+// `.agents.plugins.json`) into the working directory — so the working
+// directory is NOT a git checkout and the `.git`-based derivation below
+// finds nothing. Such an entrypoint exports this variable with the URL it
+// bootstrapped from, which is then the only in-process evidence the pod
+// is bound.
 const poolWorkspaceURLEnv = "AGENT_WORKSPACE_GIT_URL"
 
 // derivePoolBoundWorkspace reports the workspace git URL the pod booted
@@ -90,10 +93,10 @@ const poolWorkspaceURLEnv = "AGENT_WORKSPACE_GIT_URL"
 //  1. `remote.origin.url` of the working directory's git checkout — the
 //     shape the spec describes, and what an entrypoint that clones
 //     straight into the working directory produces.
-//  2. The $AGENT_WORKSPACE_GIT_URL export — what c2-agent's agent.sh
-//     actually produces, because its pool branch feeds the sentinel URL
-//     into the pre-existing clone-to-temp-dir + overlay bootstrap and
-//     leaves no `.git` in the working directory.
+//  2. The $AGENT_WORKSPACE_GIT_URL export — what the orchestrator's pod
+//     entrypoint actually produces, because its pool branch feeds the
+//     sentinel URL into the pre-existing clone-to-temp-dir + overlay
+//     bootstrap and leaves no `.git` in the working directory.
 //
 // Both must be honoured: deriving from `.git` alone left every pool pod
 // reporting `boundWorkspace: null` forever, so the orchestrator's bind

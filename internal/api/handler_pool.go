@@ -21,7 +21,7 @@ import (
 // daemon-mode pods 404 on them.
 
 // defaultPoolSentinelPath is where POST /pool/bind writes the requested
-// workspace URL for agent.sh to pick up on the next boot. Overridable
+// workspace URL for the pod entrypoint to pick up on the next boot. Overridable
 // via --pool-bind-sentinel-path.
 const defaultPoolSentinelPath = "/tmp/.pool-bind"
 
@@ -142,7 +142,7 @@ func (s *Server) poolAllowlisted(normalizedURL string) bool {
 }
 
 // writeSentinelAtomic writes the bind sentinel via tmp-file + rename so
-// agent.sh can never observe a half-written URL.
+// the pod entrypoint can never observe a half-written URL.
 func writeSentinelAtomic(path, content string) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".pool-bind-*")
@@ -289,8 +289,8 @@ func (s *Server) handleFlowRecycle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Clear the bind sentinel so the respawned pod comes back UNBOUND.
-	// The sentinel is the pod's durable binding record — agent.sh leaves
-	// it in place after a successful bootstrap so a container restart
+	// The sentinel is the pod's durable binding record — the entrypoint
+	// leaves it in place after a successful bootstrap so a container restart
 	// inside the same pod re-clones the same workspace (the working
 	// directory is ephemeral; /pool-state is not). Recycle is exactly the
 	// transition that must break that: design D2's rebind protocol is

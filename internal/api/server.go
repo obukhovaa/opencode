@@ -46,7 +46,7 @@ type ServerOptions struct {
 	// are normalised internally.
 	PoolAllowlist string
 	// PoolSentinelPath is where POST /pool/bind writes the requested
-	// workspace URL for agent.sh's next boot (--pool-bind-sentinel-path;
+	// workspace URL for the pod entrypoint's next boot (--pool-bind-sentinel-path;
 	// defaults to /tmp/.pool-bind when empty).
 	PoolSentinelPath string
 	// PoolBindExitGrace is the delay between a 202 bind response and
