@@ -479,3 +479,128 @@ func TestRecycleToleratesMissingSentinel(t *testing.T) {
 		t.Fatal("recycle did not schedule a shutdown")
 	}
 }
+
+// --- run-scoped identity is reverted only where it was applied --------
+
+// TestMcpAuthOnlyRunLeavesBridgeIdentityAlone is the regression guard for
+// the coupled-latch bug: the two POST /flow fields are independent on the
+// wire, so a run carrying only mcpAuth must not revert the bridge job
+// identity it never set. Getting this wrong permanently wipes a per-Job
+// pod's boot-time OPENCODE_BRIDGE_JOB_ID — after which every interactive
+// step registers no binding and every relay frame is rejected 400, for
+// the rest of the process's life.
+func TestMcpAuthOnlyRunLeavesBridgeIdentityAlone(t *testing.T) {
+	svc := newPoolStubFlowService(false, flow.FlowState{
+		StepID: "s1", Status: flow.FlowStatusCompleted,
+	})
+	s, srv := newPoolTestServer(t, poolTestOpts{
+		svc:       svc,
+		bound:     testWorkspace,
+		allowlist: testWorkspace,
+	})
+	jobs := &recordingJobScoper{}
+	auth := &recordingDiscoveryAuth{}
+	s.flowRunner.bridgeJobs = jobs
+	s.flowRunner.mcpDiscovery = auth
+
+	startFlow(t, srv.Client(), srv.URL,
+		`{"flowID":"A","mcpAuth":"T1","mcpAuthServer":"orchestrator"}`)
+	waitFor(t, 2*time.Second, "discovery auth to be cleared", func() bool {
+		return len(auth.snapshot()) == 2
+	})
+	time.Sleep(50 * time.Millisecond) // let any stray bridge write land
+
+	if got := jobs.snapshot(); len(got) != 0 {
+		t.Errorf("a run carrying only mcpAuth touched the bridge job identity: %q", got)
+	}
+}
+
+// TestBridgeOnlyRunLeavesDiscoveryAuthAlone is the mirror case.
+func TestBridgeOnlyRunLeavesDiscoveryAuthAlone(t *testing.T) {
+	svc := newPoolStubFlowService(false, flow.FlowState{
+		StepID: "s1", Status: flow.FlowStatusCompleted,
+	})
+	s, srv := newPoolTestServer(t, poolTestOpts{
+		svc:       svc,
+		bound:     testWorkspace,
+		allowlist: testWorkspace,
+	})
+	jobs := &recordingJobScoper{}
+	auth := &recordingDiscoveryAuth{}
+	s.flowRunner.bridgeJobs = jobs
+	s.flowRunner.mcpDiscovery = auth
+
+	startFlow(t, srv.Client(), srv.URL, `{"flowID":"A","bridgeJobID":"job-1"}`)
+	waitFor(t, 2*time.Second, "bridge identity to be cleared", func() bool {
+		return len(jobs.snapshot()) == 2
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	if got := auth.snapshot(); len(got) != 0 {
+		t.Errorf("a run carrying only bridgeJobID touched the MCP discovery auth: %v", got)
+	}
+}
+
+// TestStaleClearDoesNotWipeTheNextRunsIdentity: the publish and the
+// revert both happen outside fr.mu, so run A's terminal defer can be
+// descheduled past run B's start. Without the pointer-identity guard,
+// A's clear wipes B's identity for B's entire life — exactly the failure
+// the per-run identity was introduced to prevent.
+func TestStaleClearDoesNotWipeTheNextRunsIdentity(t *testing.T) {
+	// hold=true so run B stays in flight while we replay A's clear.
+	svc := newPoolStubFlowService(true, flow.FlowState{
+		StepID: "s1", Status: flow.FlowStatusRunning,
+	})
+	s, srv := newPoolTestServer(t, poolTestOpts{
+		svc:       svc,
+		bound:     testWorkspace,
+		allowlist: testWorkspace,
+		// Retain A's terminal state so we can hold a pointer to it, the
+		// way a descheduled goroutine would.
+		idleResetGrace: 5 * time.Second,
+	})
+	jobs := &recordingJobScoper{}
+	s.flowRunner.bridgeJobs = jobs
+	client := srv.Client()
+
+	// Run A: start, then abort so it reaches terminal and does its own
+	// (legitimate) clear.
+	startFlow(t, client, srv.URL, `{"flowID":"A","bridgeJobID":"job-A"}`)
+	waitFor(t, 2*time.Second, "run A running", func() bool {
+		return flowStatus(t, client, srv.URL)["status"] == string(flowRunRunning)
+	})
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/flow", nil)
+	if resp, err := client.Do(req); err == nil {
+		resp.Body.Close()
+	}
+	waitFor(t, 2*time.Second, "run A's own clear", func() bool {
+		return len(jobs.snapshot()) == 2
+	})
+	s.flowRunner.mu.Lock()
+	runA := s.flowRunner.currentRun
+	s.flowRunner.mu.Unlock()
+	if runA == nil {
+		t.Fatal("run A's state was not retained")
+	}
+
+	// Run B takes over and stays in flight.
+	startFlow(t, client, srv.URL, `{"flowID":"B","bridgeJobID":"job-B"}`)
+	waitFor(t, 2*time.Second, "run B running", func() bool {
+		return flowStatus(t, client, srv.URL)["status"] == string(flowRunRunning)
+	})
+
+	// Replay run A's terminal clear now that B is current — the exact
+	// interleaving a goroutine preemption between two defers produces.
+	s.flowRunner.clearRunScopedIdentity(runA)
+
+	ids := jobs.snapshot()
+	want := []string{"job-A", "", "job-B"}
+	if len(ids) != len(want) {
+		t.Fatalf("bridge identity writes = %q, want %q (a stale clear from run A leaked through)", ids, want)
+	}
+	for i := range want {
+		if ids[i] != want[i] {
+			t.Fatalf("bridge identity writes = %q, want %q", ids, want)
+		}
+	}
+}

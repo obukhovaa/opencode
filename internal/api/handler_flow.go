@@ -280,12 +280,15 @@ type flowRunState struct {
 	// so the read sees the latest write without re-locking.
 	lastStepPostponed bool
 
-	// runScopedIdentity records that this run replaced process-level
-	// identity state (the bridge job id and/or the MCP discovery auth
-	// override), so finish() knows to clear it. A run that carried
-	// neither leaves the boot-time values alone — that is the per-Job
-	// pod's path and it stays byte-identical to before.
-	runScopedIdentity bool
+	// setBridgeJobID / setDiscoveryAuth record which process-level
+	// singletons THIS run actually replaced, so finish() reverts exactly
+	// those and no others. They are deliberately separate flags: the two
+	// POST /flow fields are independent on the wire, and a run that
+	// carried only one of them must not revert the other. A run that
+	// carried neither leaves both boot-time values alone — the per-Job
+	// pod's path, byte-identical to before this change.
+	setBridgeJobID   bool
+	setDiscoveryAuth bool
 }
 
 // flowRunnerSingleton is the process-wide tracker installed on
@@ -623,7 +626,11 @@ func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, ar
 		cancel:    cancel,
 		done:      make(chan struct{}),
 	}
-	state.runScopedIdentity = opts.bridgeJobID != "" || opts.mcpAuth != ""
+	// Track each singleton SEPARATELY. A single OR'd flag would have a run
+	// that carried only mcpAuth clear the bridge identity it never set —
+	// permanently wiping a per-Job pod's boot-time OPENCODE_BRIDGE_JOB_ID.
+	state.setBridgeJobID = opts.bridgeJobID != "" && fr.bridgeJobs != nil
+	state.setDiscoveryAuth = opts.mcpAuth != "" && opts.mcpAuthServer != "" && fr.mcpDiscovery != nil
 	fr.currentRun = state
 	result := StartResult{
 		RunID:     state.RunID,
@@ -640,7 +647,7 @@ func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, ar
 	// bridge service and the MCP registry are singletons) — the flow
 	// runner's one-run-at-a-time guard is what makes that safe, and
 	// finish() clears them on every terminal path.
-	fr.applyRunScopedIdentity(opts)
+	fr.applyRunScopedIdentity(state, opts)
 
 	// Kick off the run in the background; SSE consumers see progress
 	// via fr.broker.
@@ -652,11 +659,11 @@ func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, ar
 // discovery auth override to the process-level singletons that need them.
 // A zero-valued option leaves the corresponding singleton untouched, so a
 // per-Job pod (which sets neither) keeps its boot-time env identity.
-func (fr *flowRunner) applyRunScopedIdentity(opts flowStartOptions) {
-	if opts.bridgeJobID != "" && fr.bridgeJobs != nil {
+func (fr *flowRunner) applyRunScopedIdentity(state *flowRunState, opts flowStartOptions) {
+	if state.setBridgeJobID {
 		fr.bridgeJobs.SetRemoteJobID(opts.bridgeJobID)
 	}
-	if opts.mcpAuth != "" && opts.mcpAuthServer != "" && fr.mcpDiscovery != nil {
+	if state.setDiscoveryAuth {
 		fr.mcpDiscovery.SetDiscoveryAuth(map[string]string{
 			opts.mcpAuthServer: "Bearer " + opts.mcpAuth,
 		})
@@ -668,13 +675,28 @@ func (fr *flowRunner) applyRunScopedIdentity(opts flowStartOptions) {
 // defer) so the bridge's and registry's own locks are never taken while
 // holding the runner's.
 func (fr *flowRunner) clearRunScopedIdentity(state *flowRunState) {
-	if state == nil || !state.runScopedIdentity {
+	if state == nil || (!state.setBridgeJobID && !state.setDiscoveryAuth) {
 		return
 	}
-	if fr.bridgeJobs != nil {
+	// Only the run that is STILL current may clear. Both the publish (in
+	// Start, after fr.mu is released) and this revert (finish's outermost
+	// defer, likewise after release) happen outside the runner lock, so
+	// nothing otherwise orders them: run A's goroutine could be
+	// descheduled between finish() releasing fr.mu and this defer firing,
+	// during which the orchestrator sees flow.completed, claims the pod
+	// and starts run B — and A's clear would then wipe B's identity for
+	// B's whole life. The pointer-identity check makes a stale clear a
+	// no-op; B's own clear still runs when B finishes.
+	fr.mu.Lock()
+	stale := fr.currentRun != nil && fr.currentRun != state
+	fr.mu.Unlock()
+	if stale {
+		return
+	}
+	if state.setBridgeJobID {
 		fr.bridgeJobs.SetRemoteJobID("")
 	}
-	if fr.mcpDiscovery != nil {
+	if state.setDiscoveryAuth {
 		fr.mcpDiscovery.SetDiscoveryAuth(nil)
 	}
 }
@@ -1017,11 +1039,17 @@ func (fr *flowRunner) finish(state *flowRunState, status flowRunStatus, errMsg s
 }
 
 // terminalRingSize bounds how many terminal snapshots stay addressable
-// by runID after the idle reset clears the live one. One would cover the
-// "orchestrator restarted during my run" case; a few give head-room for
-// a pod that served several short runs during the outage. Each entry
-// holds that run's completed-step outputs, so this is deliberately small.
-const terminalRingSize = 4
+// by runID after the idle reset clears the live one.
+//
+// One entry would cover "the orchestrator restarted during my run" only
+// if nothing else ran on the pod before the reconnect — but the
+// orchestrator's startup reconciliation frees a pod as soon as it reports
+// available, roughly a minute before its orphan-reclaim loop gets to the
+// job that was on it, so a couple of interleaved runs is the expected
+// case rather than the exception. The depth is the recovery margin for
+// exactly that window. Each entry holds that run's completed-step
+// outputs, so it stays modest.
+const terminalRingSize = 8
 
 // retainTerminalLocked appends the just-finished run's snapshot to the
 // retention ring, evicting the oldest when full. Caller must hold fr.mu.
