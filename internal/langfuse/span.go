@@ -10,7 +10,14 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-const maxIOSize = 10 * 1024 // 10KB limit for input/output attributes
+const maxIOSize = 10 * 1024 // 10KB limit for tool input/output attributes
+
+// maxGenIOSize caps LLM request/response payloads on generation spans and
+// trace-level input/output. Deliberately large — the point is to see the
+// exact request and response — but bounded so a pathological payload cannot
+// blow up the OTLP export or get the whole span rejected by Langfuse's
+// per-event ingestion limits.
+const maxGenIOSize = 400 * 1024
 
 // Span wraps an OpenTelemetry span for deferred completion.
 // All methods are nil-safe — calling them on a nil Span is a no-op.
@@ -80,6 +87,18 @@ func (s *Span) SetOutput(output any) {
 	str := marshalAny(output)
 	s.span.SetAttributes(
 		attribute.String("langfuse.observation.output", truncate(str, maxIOSize)),
+	)
+}
+
+// SetGenerationOutput records the LLM response on a generation span.
+// Same attribute as SetOutput but with the larger generation payload cap.
+func (s *Span) SetGenerationOutput(output any) {
+	if s == nil {
+		return
+	}
+	str := marshalAny(output)
+	s.span.SetAttributes(
+		attribute.String("langfuse.observation.output", truncate(str, maxGenIOSize)),
 	)
 }
 

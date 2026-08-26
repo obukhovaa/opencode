@@ -607,6 +607,7 @@ func (p *baseProvider[C]) SendMessages(ctx context.Context, messages []message.M
 			Name:     langfuse.FormatGenerationName(getAgentIDFromCtx(ctx), string(model.APIModel)),
 			Model:    string(model.APIModel),
 			Metadata: p.generationMetadata(ctx),
+			Input:    buildGenerationInput(p.options.systemMessage, messages),
 		})
 		defer gen.End()
 	}
@@ -619,6 +620,7 @@ func (p *baseProvider[C]) SendMessages(ctx context.Context, messages []message.M
 		}
 		if resp != nil {
 			gen.SetUsage(p.buildUsage(resp.Usage))
+			gen.SetGenerationOutput(buildGenerationOutput(resp))
 		}
 	}
 	return resp, err
@@ -658,6 +660,7 @@ func (p *baseProvider[C]) StreamResponse(ctx context.Context, messages []message
 		Name:     langfuse.FormatGenerationName(getAgentIDFromCtx(ctx), string(model.APIModel)),
 		Model:    string(model.APIModel),
 		Metadata: p.generationMetadata(ctx),
+		Input:    buildGenerationInput(p.options.systemMessage, messages),
 	})
 
 	upstream := p.client.stream(ctx, messages, tools)
@@ -680,6 +683,7 @@ func (p *baseProvider[C]) StreamResponse(ctx context.Context, messages []message
 			}
 			if event.Type == EventComplete && event.Response != nil {
 				gen.SetUsage(p.buildUsage(event.Response.Usage))
+				gen.SetGenerationOutput(buildGenerationOutput(event.Response))
 			}
 			select {
 			case wrapped <- event:

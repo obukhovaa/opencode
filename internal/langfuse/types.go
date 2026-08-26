@@ -8,6 +8,9 @@ type TraceParams struct {
 	Tags      []string
 	Release   string
 	Metadata  map[string]any
+	// Input is the initial input of the trace (e.g. the user message that
+	// started the agent turn). Rendered as the trace-level input in Langfuse.
+	Input any
 	// IsChild indicates this trace is a subagent invoked via the task tool.
 	// When false, the span is forced to be a new root (independent trace ID).
 	// When true, the span inherits the parent's trace ID so it nests under
@@ -20,6 +23,9 @@ type GenerationParams struct {
 	Name     string
 	Model    string
 	Metadata map[string]any
+	// Input is the full request payload sent to the LLM (system prompt +
+	// message history). Rendered as the generation's input in Langfuse.
+	Input any
 }
 
 // ToolParams holds parameters for starting a tool call span.

@@ -11,8 +11,8 @@ Langfuse provides LLM observability with traces, generations, tool calls, token 
 | Langfuse Concept | OpenCode Source | Description |
 |---|---|---|
 | **Session** | Root session ID | Groups all traces for a conversation (including subagent sessions) |
-| **Trace** | Agent turn | One trace per `processGeneration` call — covers the full tool-use loop |
-| **Generation** | LLM API call | Each `StreamResponse`/`SendMessages` call with model, tokens, cost, timing |
+| **Trace** | Agent turn | One trace per `processGeneration` call — covers the full tool-use loop. Trace input is the user message that started the turn; trace output is the final assistant response (or structured output) |
+| **Generation** | LLM API call | Each `StreamResponse`/`SendMessages` call with model, tokens, cost, timing. Input is the exact request payload (system prompt + message history, chat format); output is the exact response (content, reasoning, tool calls, finish reason) |
 | **Tool** | Tool execution | Each tool call with name, timing, optional input/output |
 
 ### Setup
@@ -137,6 +137,8 @@ By default, tool spans record only the tool name and timing. To include input/ou
 | `logOutput` | string[] | Tool name patterns whose output should be logged. Same wildcard support. If empty, no outputs are logged. |
 
 Tool input/output is truncated to 10KB. Error output is always logged regardless of `logOutput` patterns — errors are diagnostic, not sensitive content.
+
+Generation and trace input/output are always captured when Langfuse is enabled (truncated to 400KB per attribute). Binary attachments in the request are summarized (`[binary attachment: <mime>, N bytes]`), never embedded. Note this means full prompt and completion content — including tool results embedded in the message history — reaches Langfuse regardless of the per-tool `logInput`/`logOutput` patterns above, which only govern the dedicated tool observations.
 
 ### Flow Args
 
