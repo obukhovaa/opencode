@@ -10,6 +10,7 @@ import (
 
 	mock_agent "github.com/opencode-ai/opencode/internal/agent/mocks"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/llm/runidentity"
 	"github.com/opencode-ai/opencode/internal/permission"
 	permMocks "github.com/opencode-ai/opencode/internal/permission/mocks"
 	"go.uber.org/mock/gomock"
@@ -182,6 +183,67 @@ func TestResolveAPIKey(t *testing.T) {
 			}
 			got := resolveAPIKey(tt.provider)
 			if got != tt.want {
+				t.Errorf("resolveAPIKey() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestResolveAPIKeyHonoursTheRunIdentity covers the pool-pod parity gap:
+// on a per-Job pod $LOCAL_ENDPOINT_API_KEY IS the job's per-team key, so
+// web search bills that team. A pool pod's env holds the SHARED key for
+// every run it serves, so without the run override a pooled run's
+// searches would bill the shared budget while its completions bill the
+// team's — the same job's spend split across two buckets.
+func TestResolveAPIKeyHonoursTheRunIdentity(t *testing.T) {
+	tests := []struct {
+		name      string
+		provider  config.WebSearchProvider
+		sharedEnv string
+		runKey    string
+		want      string
+	}{
+		{
+			name:      "run key replaces the shared-endpoint fallback",
+			provider:  config.WebSearchProvider{},
+			sharedEnv: "shared-key",
+			runKey:    "team-key",
+			want:      "team-key",
+		},
+		{
+			// An explicitly configured literal is an independent
+			// credential — same rule createAgentProvider applies.
+			name:      "an explicit literal key is left alone",
+			provider:  config.WebSearchProvider{APIKey: "vendor-key"},
+			sharedEnv: "shared-key",
+			runKey:    "team-key",
+			want:      "vendor-key",
+		},
+		{
+			name:      "an explicit env:VAR that resolves is left alone",
+			provider:  config.WebSearchProvider{APIKey: "env:TEST_WS_INDEPENDENT"},
+			sharedEnv: "shared-key",
+			runKey:    "team-key",
+			want:      "independent-key",
+		},
+		{
+			name:      "no run identity keeps the shared-endpoint fallback",
+			provider:  config.WebSearchProvider{},
+			sharedEnv: "shared-key",
+			want:      "shared-key",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("LOCAL_ENDPOINT_API_KEY", tt.sharedEnv)
+			t.Setenv("TEST_WS_INDEPENDENT", "independent-key")
+			if tt.runKey != "" {
+				runidentity.Set(&runidentity.Identity{APIKey: tt.runKey})
+			} else {
+				runidentity.Set(nil)
+			}
+			t.Cleanup(func() { runidentity.Set(nil) })
+			if got := resolveAPIKey(tt.provider); got != tt.want {
 				t.Errorf("resolveAPIKey() = %q, want %q", got, tt.want)
 			}
 		})

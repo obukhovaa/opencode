@@ -15,6 +15,7 @@ import (
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/llm/runidentity"
 	"github.com/opencode-ai/opencode/internal/permission"
 )
 
@@ -114,6 +115,19 @@ func resolveAPIKey(p config.WebSearchProvider) string {
 		} else {
 			return p.APIKey
 		}
+	}
+	// The shared-endpoint fallback. Web search typically sits behind the
+	// same proxy as the models, so on a per-Job pod this env var IS the
+	// job's per-team key and the search bills that team. A pool pod's env
+	// holds the SHARED key for every run it serves, so without the run
+	// override a pooled run's searches would bill the shared budget while
+	// its completions bill the team's — the spend split silently across
+	// two buckets. Only this branch defers to the run: an explicitly
+	// configured provider key (literal or a resolved env:VAR) is an
+	// independent credential and is left alone, mirroring the rule
+	// createAgentProvider applies to model providers.
+	if val := runidentity.APIKey(); val != "" {
+		return val
 	}
 	if val := os.Getenv("LOCAL_ENDPOINT_API_KEY"); val != "" {
 		return val
