@@ -345,6 +345,36 @@ fi
 expect_status "a matching workspace passes the pool gates" 404 \
     "$(status_of POST /flow "{\"flowID\":\"no-such-flow\",\"workspace\":\"$WORKSPACE_URL\"}")"
 
+# ── per-run LLM + telemetry identity (design D10) ───────────────────
+# The pool pod boots with the SHARED endpoint key and a static telemetry
+# identity, because no team is known until a job arrives. These fields
+# carry the per-run values so a pooled run bills and attributes exactly
+# as the per-Job pod it replaced would have.
+#
+# The flow does not exist, so the gates answering 404 (rather than 400)
+# is the proof the fields parsed and were accepted; the unit tests cover
+# what the pod then does with them. What e2e adds here is the thing unit
+# tests cannot see: that a real HTTP round-trip with a credential in the
+# body never echoes it back.
+expect_status "POST /flow accepts the per-run LLM and telemetry identity" 404 \
+    "$(status_of POST /flow "{\"flowID\":\"no-such-flow\",\"llmApiKey\":\"sk-e2e-team-key\",\"telemetryUserId\":\"acme-dev\",\"telemetryTeam\":\"acme\"}")"
+
+name="the per-run LLM key is never echoed back to the caller"
+leak=$(body_of POST /flow '{"flowID":"no-such-flow","llmApiKey":"sk-e2e-team-key"}')
+leak="$leak$(body_of GET /flow/status)$(body_of GET /global/health)"
+if echo "$leak" | grep -q "sk-e2e-team-key"; then
+    log_fail "$name" "the key appears in a response body: $leak"
+else
+    log_pass "$name"
+fi
+
+name="the per-run LLM key never reaches the pod log"
+if grep -q "sk-e2e-team-key" "$LOG"; then
+    log_fail "$name" "the key appears in $LOG"
+else
+    log_pass "$name"
+fi
+
 name="GET /flow/status for an unknown runID is 404, not idle"
 code=$(status_of GET "/flow/status?runID=nope")
 idle=$(body_of GET /flow/status | jq -r '.status')

@@ -16,6 +16,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/flow"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/agent/mcpauthctx"
+	"github.com/opencode-ai/opencode/internal/llm/runidentity"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/session"
@@ -295,6 +296,7 @@ type flowRunState struct {
 	// pod's path, byte-identical to before this change.
 	setBridgeJobID   bool
 	setDiscoveryAuth bool
+	setRunIdentity   bool
 }
 
 // flowRunnerSingleton is the process-wide tracker installed on
@@ -375,6 +377,15 @@ func (s *Server) handleFlowStart(w http.ResponseWriter, r *http.Request) {
 		// so without this every interactive step registers nothing and the
 		// reviewer's reply has no route back to the pod.
 		BridgeJobID string `json:"bridgeJobID"`
+		// LLMAPIKey, TelemetryUserID and TelemetryTeam are this run's LLM
+		// billing and attribution identity (design D10). A pool pod boots
+		// with the SHARED endpoint key and a static telemetry identity
+		// because no team is known yet; these carry the per-run values so a
+		// pooled run bills and attributes exactly as the per-Job pod it
+		// replaced would have. All three are optional and independent.
+		LLMAPIKey       string `json:"llmApiKey"`
+		TelemetryUserID string `json:"telemetryUserId"`
+		TelemetryTeam   string `json:"telemetryTeam"`
 	}
 	if err := readJSON(r, &body); err != nil && !isEmptyBodyError(err) {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -402,9 +413,12 @@ func (s *Server) handleFlowStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := s.flowRunner.StartWithOptions(r.Context(), body.FlowID, body.Args, body.Fresh, flowStartOptions{
-		mcpAuth:       body.MCPAuth,
-		mcpAuthServer: body.MCPAuthServer,
-		bridgeJobID:   body.BridgeJobID,
+		mcpAuth:         body.MCPAuth,
+		mcpAuthServer:   body.MCPAuthServer,
+		bridgeJobID:     body.BridgeJobID,
+		llmAPIKey:       body.LLMAPIKey,
+		telemetryUserID: body.TelemetryUserID,
+		telemetryTeam:   body.TelemetryTeam,
 	})
 	switch {
 	case errors.Is(err, errFlowAlreadyRunning):
@@ -534,6 +548,15 @@ type flowStartOptions struct {
 	// registrations are grouped under; empty leaves the process-level
 	// (boot env) identity untouched, which is the per-Job pod's path.
 	bridgeJobID string
+	// llmAPIKey re-keys the providers that route through the shared local
+	// endpoint for this run (the caller's per-team LiteLLM key).
+	llmAPIKey string
+	// telemetryUserID overrides telemetry.userId for this run's traces
+	// and provider metadata.
+	telemetryUserID string
+	// telemetryTeam is the resolved team, rendered as a `team:` trace tag
+	// that shadows the pod's static boot-time one.
+	telemetryTeam string
 }
 
 // bridgeJobScoper is the narrow slice of the bridge service the flow
@@ -557,6 +580,22 @@ type mcpDiscoveryAuthSetter interface {
 // flow runner needs: drop the per-step agent memoisation between runs.
 type stepAgentCacheResetter interface {
 	ResetStepCache()
+}
+
+// teamTags renders a resolved team name as the trace tags this run
+// contributes, or nil when the caller sent no team.
+//
+// The `team:` prefix is the pod's to own, not the wire's: the caller
+// sends a bare team name and this decides how it is spelled as a tag, so
+// the pool path emits exactly the shape the boot-time config already uses
+// and runidentity.MergeTags can recognise it as the same namespace and
+// shadow the static one.
+func teamTags(team string) []string {
+	team = strings.TrimSpace(team)
+	if team == "" {
+		return nil
+	}
+	return []string{"team:" + team}
 }
 
 // foldMCPServerName canonicalises an MCP server name the way config
@@ -662,6 +701,12 @@ func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, ar
 	// is exactly why they need the field.
 	state.setBridgeJobID = fr.poolMode && opts.bridgeJobID != "" && fr.bridgeJobs != nil
 	state.setDiscoveryAuth = opts.mcpAuth != "" && opts.mcpAuthServer != "" && fr.mcpDiscovery != nil
+	// Run identity is NOT pool-gated. Unlike the bridge job id it has no
+	// boot-time source to destroy: the pod's static identity lives in
+	// config (telemetry.userId, providers[].apiKey), which this change
+	// never mutates, so the override is purely additive and clearing it
+	// always restores the configured value.
+	state.setRunIdentity = opts.llmAPIKey != "" || opts.telemetryUserID != "" || opts.telemetryTeam != ""
 	fr.currentRun = state
 	// Publish the run-scoped process identity while STILL holding fr.mu,
 	// and revert under it too (clearRunScopedIdentity takes the lock), so
@@ -707,6 +752,13 @@ func (fr *flowRunner) applyRunScopedIdentity(state *flowRunState, opts flowStart
 			foldMCPServerName(opts.mcpAuthServer): "Bearer " + opts.mcpAuth,
 		})
 	}
+	if state.setRunIdentity {
+		runidentity.Set(&runidentity.Identity{
+			APIKey: opts.llmAPIKey,
+			UserID: opts.telemetryUserID,
+			Tags:   teamTags(opts.telemetryTeam),
+		})
+	}
 	// A run that carries NO identity must positively clear whatever the
 	// previous run left rather than inherit it. The terminal revert alone
 	// cannot guarantee that: it is suppressed once another run is current,
@@ -722,6 +774,13 @@ func (fr *flowRunner) applyRunScopedIdentity(state *flowRunState, opts flowStart
 	if !state.setDiscoveryAuth && fr.mcpDiscovery != nil {
 		fr.mcpDiscovery.SetDiscoveryAuth(nil)
 	}
+	// Cleared in every mode for the same reason, and with more at stake:
+	// inheriting a previous run's identity would bill this run's tokens to
+	// the wrong team's LiteLLM key and file its traces under the wrong
+	// user — silently, and in the direction that looks like normal usage.
+	if !state.setRunIdentity {
+		runidentity.Set(nil)
+	}
 	// The bridge identity is pool-only, because outside pool mode the
 	// boot-time OPENCODE_BRIDGE_JOB_ID is the only identity the process
 	// will ever have and clearing it is unrecoverable.
@@ -735,7 +794,7 @@ func (fr *flowRunner) applyRunScopedIdentity(state *flowRunState, opts flowStart
 // defer) so the bridge's and registry's own locks are never taken while
 // holding the runner's.
 func (fr *flowRunner) clearRunScopedIdentity(state *flowRunState) {
-	if state == nil || (!state.setBridgeJobID && !state.setDiscoveryAuth) {
+	if state == nil || (!state.setBridgeJobID && !state.setDiscoveryAuth && !state.setRunIdentity) {
 		return
 	}
 	// Only the run that is STILL current may clear. Both the publish (in
@@ -761,6 +820,9 @@ func (fr *flowRunner) clearRunScopedIdentity(state *flowRunState) {
 	}
 	if state.setDiscoveryAuth {
 		fr.mcpDiscovery.SetDiscoveryAuth(nil)
+	}
+	if state.setRunIdentity {
+		runidentity.Set(nil)
 	}
 }
 

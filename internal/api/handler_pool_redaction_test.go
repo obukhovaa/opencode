@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/flow"
+	"github.com/opencode-ai/opencode/internal/llm/runidentity"
 )
 
 // syncBuffer is a bytes.Buffer safe for the logging goroutines to write
@@ -32,9 +33,9 @@ func (s *syncBuffer) String() string {
 	return s.buf.String()
 }
 
-// TestSecretsNeverReachTheLog is the redaction guard for the two secrets
-// that now travel in a POST /flow body: the job-scoped MCP JWT and the
-// orchestrator job identity.
+// TestSecretsNeverReachTheLog is the redaction guard for the secrets
+// that travel in a POST /flow body: the job-scoped MCP JWT, the
+// orchestrator job identity, and the run's per-team LLM API key.
 //
 // A pool pod is long-lived and its logs interleave many jobs, so a token
 // echoed once persists in the pod's log stream for the pod's whole
@@ -43,9 +44,11 @@ func (s *syncBuffer) String() string {
 // no handler echoes the body; this test fails the moment either changes.
 func TestSecretsNeverReachTheLog(t *testing.T) {
 	const (
-		secretToken = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.SUPER-SECRET-JWT-BODY.sig"
-		secretJobID = "job-should-not-be-logged-1234"
+		secretToken  = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.SUPER-SECRET-JWT-BODY.sig"
+		secretJobID  = "job-should-not-be-logged-1234"
+		secretLLMKey = "sk-litellm-TEAM-KEY-MUST-NOT-BE-LOGGED"
 	)
+	t.Cleanup(func() { runidentity.Set(nil) })
 
 	var captured syncBuffer
 	prev := slog.Default()
@@ -69,7 +72,7 @@ func TestSecretsNeverReachTheLog(t *testing.T) {
 	// The middleware chain (logging included) only applies to the server's
 	// own handler, so drive this through real HTTP.
 	resp := postJSON(t, client, srv.URL+"/flow",
-		`{"flowID":"A","mcpAuth":"`+secretToken+`","mcpAuthServer":"orchestrator","bridgeJobID":"`+secretJobID+`"}`)
+		`{"flowID":"A","mcpAuth":"`+secretToken+`","mcpAuthServer":"orchestrator","bridgeJobID":"`+secretJobID+`","llmApiKey":"`+secretLLMKey+`","telemetryUserId":"acme-dev","telemetryTeam":"acme"}`)
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("POST /flow = %d, want 202", resp.StatusCode)
 	}
@@ -97,13 +100,23 @@ func TestSecretsNeverReachTheLog(t *testing.T) {
 	if strings.Contains(logged, secretJobID) {
 		t.Errorf("the bridge job identity reached the log stream:\n%s", logged)
 	}
+	// The LLM key is the highest-value secret in the body: unlike the MCP
+	// JWT it is a long-lived LiteLLM credential with a team's budget
+	// behind it, and a pool pod's log stream outlives any single run.
+	if strings.Contains(logged, secretLLMKey) {
+		t.Errorf("the per-run LLM API key reached the log stream:\n%s", logged)
+	}
 }
 
 // TestSecretsNeverReachTheStatusSnapshot: /flow/status is polled by the
 // orchestrator and, on a bridge-backed flow, its contents can be rendered
 // into a chat card. Neither secret belongs in it.
 func TestSecretsNeverReachTheStatusSnapshot(t *testing.T) {
-	const secretToken = "eyJ-SECRET-TOKEN-IN-SNAPSHOT"
+	const (
+		secretToken  = "eyJ-SECRET-TOKEN-IN-SNAPSHOT"
+		secretLLMKey = "sk-litellm-KEY-IN-SNAPSHOT"
+	)
+	t.Cleanup(func() { runidentity.Set(nil) })
 
 	svc := newPoolStubFlowService(true, flow.FlowState{
 		StepID: "s1", Status: flow.FlowStatusRunning,
@@ -115,7 +128,7 @@ func TestSecretsNeverReachTheStatusSnapshot(t *testing.T) {
 	})
 	client := srv.Client()
 	startFlow(t, client, srv.URL,
-		`{"flowID":"A","mcpAuth":"`+secretToken+`","mcpAuthServer":"orchestrator","bridgeJobID":"job-x"}`)
+		`{"flowID":"A","mcpAuth":"`+secretToken+`","mcpAuthServer":"orchestrator","bridgeJobID":"job-x","llmApiKey":"`+secretLLMKey+`"}`)
 	waitFor(t, 2*time.Second, "run to be observed running", func() bool {
 		return flowStatus(t, client, srv.URL)["status"] == string(flowRunRunning)
 	})
@@ -132,6 +145,9 @@ func TestSecretsNeverReachTheStatusSnapshot(t *testing.T) {
 		}
 		if strings.Contains(string(body), secretToken) {
 			t.Errorf("GET %s echoes the per-flow MCP token: %s", path, body)
+		}
+		if strings.Contains(string(body), secretLLMKey) {
+			t.Errorf("GET %s echoes the per-run LLM API key: %s", path, body)
 		}
 	}
 }
