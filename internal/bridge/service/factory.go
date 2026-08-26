@@ -53,26 +53,8 @@ func (s *Service) LaunchAdapter(ctx context.Context, channel, identityID string)
 	if adapter == nil {
 		return nil
 	}
-	// Seed the current job identity so a hot-added adapter (or one
-	// relaunched mid-run by an identity upsert) stamps the job in flight
-	// rather than whatever the boot env said — for a pool pod, nothing.
-	js, jobScoped := adapter.(bridge.JobScopedAdapter)
-	if jobScoped {
-		js.SetJobID(s.RemoteJobID())
-	}
-	if err := s.RegisterAdapter(ctx, adapter); err != nil {
-		return err
-	}
-	// Re-seed AFTER registration. The seed above reads the identity before
-	// RegisterAdapter publishes the adapter into s.adapters, so a
-	// SetRemoteJobID landing in between updates neither: it snapshots
-	// s.adapters without this entry, and this entry keeps the pre-read
-	// value. The pod would then report the right identity on its binding
-	// rows while every relay frame carried the stale one. Re-reading once
-	// the adapter is visible closes the window; a redundant identical set
-	// is harmless.
-	if jobScoped {
-		js.SetJobID(s.RemoteJobID())
-	}
-	return nil
+	// The job identity is seeded inside RegisterAdapter, under the same
+	// lock that publishes the adapter — see the note there. Doing it here
+	// instead would be a read-then-store racing SetRemoteJobID's sweep.
+	return s.RegisterAdapter(ctx, adapter)
 }

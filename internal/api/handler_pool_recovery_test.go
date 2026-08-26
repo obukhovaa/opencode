@@ -1,9 +1,12 @@
 package api
 
 import (
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -723,5 +726,75 @@ func TestEveryRunDropsThePerStepAgentCache(t *testing.T) {
 		if got := resetter.count(); got != i {
 			t.Fatalf("after run %d the step-agent cache was reset %d times, want %d", i, got, i)
 		}
+	}
+}
+
+// TestPoolRoutesRequireThePassword pins the auth contract for the pool
+// surface directly, since the shared harness runs with an empty password
+// (authMiddleware is a passthrough there). /pool/bind exits the process
+// and /flow/recycle drains it — neither may be reachable unauthenticated
+// when the pod is configured with a server password.
+func TestPoolRoutesRequireThePassword(t *testing.T) {
+	s, _ := newPoolTestServer(t, poolTestOpts{
+		svc:       newPoolStubFlowService(false),
+		bound:     testWorkspace,
+		allowlist: testWorkspace,
+	})
+	s.password = "s3cret"
+
+	mux := http.NewServeMux()
+	s.registerRoutes(mux)
+	srv := httptest.NewServer(chain(
+		mux,
+		recoveryMiddleware,
+		loggingMiddleware,
+		corsMiddleware("*"),
+		authMiddleware(s.password),
+		jsonContentTypeMiddleware,
+	))
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+
+	cases := []struct {
+		name, method, path, body string
+	}{
+		{"POST /pool/bind", http.MethodPost, "/pool/bind", `{"workspace":"` + testWorkspace + `"}`},
+		{"GET /pool/bind", http.MethodGet, "/pool/bind", ""},
+		{"POST /flow/recycle", http.MethodPost, "/flow/recycle", `{}`},
+		{"POST /flow", http.MethodPost, "/flow", `{"flowID":"A"}`},
+		{"GET /flow/status", http.MethodGet, "/flow/status", ""},
+		{"GET /global/health", http.MethodGet, "/global/health", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+" without credentials", func(t *testing.T) {
+			var body io.Reader
+			if tc.body != "" {
+				body = strings.NewReader(tc.body)
+			}
+			req, err := http.NewRequest(tc.method, srv.URL+tc.path, body)
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Errorf("%s = %d, want 401", tc.name, resp.StatusCode)
+			}
+		})
+	}
+
+	// With credentials the pool routes answer normally.
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/pool/bind", nil)
+	req.SetBasicAuth("c2-agent-orchestrator", "s3cret")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("authenticated GET /pool/bind: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("authenticated GET /pool/bind = %d, want 200", resp.StatusCode)
 	}
 }

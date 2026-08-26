@@ -231,3 +231,70 @@ func equalFoldASCII(a, b string) bool {
 func writeFileForTest(dir, name, content string) error {
 	return os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600)
 }
+
+// TestDiscoveryRetriesAnInheritedFailure is the regression guard for the
+// poisoned-waiter path. Discovery is shared singleflight-style, so a
+// caller can block on a fetch someone else started — on a pool pod that
+// is the boot-time one, which runs before any per-run token exists and
+// therefore 401s. Letting that verdict stand froze an empty toolset into
+// the caller's agent for the agent's whole life.
+func TestDiscoveryRetriesAnInheritedFailure(t *testing.T) {
+	// The server rejects until the token appears, then serves normally.
+	var token atomic.Value
+	token.Store("")
+	mcpSrv := server.NewMCPServer("retry-test", "0.0.1")
+	mcpSrv.AddTool(mcp.NewTool("echo", mcp.WithDescription("echoes")), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return textResult("ok"), nil
+	})
+	h := server.NewStreamableHTTPServer(mcpSrv)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		want, _ := token.Load().(string)
+		if want == "" || r.Header.Get("Authorization") != want {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	seedMCPServerConfig(t, "orchestrator", ts.URL)
+
+	reg := NewMCPRegistry(context.Background(), nil, nil)
+
+	// Boot-time discovery, no token: fails and removes the cache entry.
+	if got := drainLoadTools(t, reg.LoadTools(nil)); len(got) != 0 {
+		t.Fatalf("expected no tools before the token exists, got %d", len(got))
+	}
+
+	// The run's token arrives; the very next load must succeed rather
+	// than inherit the boot verdict.
+	token.Store("Bearer T1")
+	reg.SetDiscoveryAuth(map[string]string{"orchestrator": "Bearer T1"})
+	if got := drainLoadTools(t, reg.LoadTools(nil)); len(got) != 1 {
+		t.Fatalf("expected 1 tool once the token is published, got %d", len(got))
+	}
+}
+
+// TestGetToolsRetryIsBounded: a genuinely unreachable server must not
+// cost unbounded work. Two attempts per caller, no more.
+func TestGetToolsRetryIsBounded(t *testing.T) {
+	rejected := &atomic.Int64{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rejected.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(ts.Close)
+	seedMCPServerConfig(t, "dead", ts.URL)
+
+	reg := NewMCPRegistry(context.Background(), nil, nil).(*mcpRegistry)
+	m := config.ResolveMCPServers()["dead"]
+
+	before := rejected.Load()
+	if got := reg.getTools("dead", m); len(got) != 0 {
+		t.Fatalf("expected no tools from a rejecting server, got %d", len(got))
+	}
+	// One caller: it is the fetcher on attempt 1 (no inherited error), so
+	// exactly one round-trip. The retry only applies to a WAITER.
+	if n := rejected.Load() - before; n > 2 {
+		t.Errorf("a single caller made %d requests to a dead server; the retry must stay bounded", n)
+	}
+}

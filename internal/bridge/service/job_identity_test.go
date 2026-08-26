@@ -57,14 +57,17 @@ func TestSetRemoteJobIDPropagatesToAdapters(t *testing.T) {
 	svc.SetRemoteJobID("job-2")
 	svc.SetRemoteJobID("")
 
+	// RegisterAdapter seeds the identity in effect at registration time
+	// (empty here), so assert the TAIL — the sequence this test drives.
 	want := []string{"job-1", "job-2", ""}
 	got := ad.seen()
-	if len(got) != len(want) {
-		t.Fatalf("adapter saw %q, want %q", got, want)
+	if len(got) < len(want) {
+		t.Fatalf("adapter saw %q, want it to end with %q", got, want)
 	}
+	tail := got[len(got)-len(want):]
 	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("adapter saw %q, want %q", got, want)
+		if tail[i] != want[i] {
+			t.Fatalf("adapter saw %q, want it to end with %q", got, want)
 		}
 	}
 	if svc.RemoteJobID() != "" {

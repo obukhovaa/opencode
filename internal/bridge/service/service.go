@@ -536,6 +536,13 @@ func (s *Service) RemoteProjectID() string {
 // RemoteJobID returns the orchestrator job identity currently stamped on
 // binding registrations and outbound relay frames.
 func (s *Service) RemoteJobID() string {
+	return s.remoteJobIDLocked()
+}
+
+// remoteJobIDLocked reads the identity. Named for its call sites: it is
+// safe with or without s.mu held (the value is atomic), and
+// RegisterAdapter calls it while holding s.mu.
+func (s *Service) remoteJobIDLocked() string {
 	id, _ := s.remoteJobID.Load().(string)
 	return id
 }

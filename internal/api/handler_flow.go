@@ -707,18 +707,26 @@ func (fr *flowRunner) applyRunScopedIdentity(state *flowRunState, opts flowStart
 			foldMCPServerName(opts.mcpAuthServer): "Bearer " + opts.mcpAuth,
 		})
 	}
-	if fr.poolMode {
-		// On a pool pod there is no boot-time value to preserve, so a run
-		// that carries NO identity must positively clear whatever the
-		// previous run left rather than inherit it. The terminal revert
-		// alone cannot guarantee that: it is suppressed when another run
-		// has already become current, which is precisely this case.
-		if !state.setBridgeJobID && fr.bridgeJobs != nil {
-			fr.bridgeJobs.SetRemoteJobID("")
-		}
-		if !state.setDiscoveryAuth && fr.mcpDiscovery != nil {
-			fr.mcpDiscovery.SetDiscoveryAuth(nil)
-		}
+	// A run that carries NO identity must positively clear whatever the
+	// previous run left rather than inherit it. The terminal revert alone
+	// cannot guarantee that: it is suppressed once another run is current,
+	// which is precisely this case.
+	//
+	// The MCP discovery override is cleared in EVERY mode. It has no
+	// boot-time source — the flow runner is its only writer — so there is
+	// nothing to preserve, and not clearing it leaks one run's job-scoped
+	// bearer token into every later run on the process. That is reachable
+	// outside pool mode too: a non-pool runner lets a new Start replace a
+	// run parked in waiting_for_input, so run B inherits run A's token and
+	// A's suppressed revert never takes it back.
+	if !state.setDiscoveryAuth && fr.mcpDiscovery != nil {
+		fr.mcpDiscovery.SetDiscoveryAuth(nil)
+	}
+	// The bridge identity is pool-only, because outside pool mode the
+	// boot-time OPENCODE_BRIDGE_JOB_ID is the only identity the process
+	// will ever have and clearing it is unrecoverable.
+	if fr.poolMode && !state.setBridgeJobID && fr.bridgeJobs != nil {
+		fr.bridgeJobs.SetRemoteJobID("")
 	}
 }
 
