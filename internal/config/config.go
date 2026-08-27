@@ -117,34 +117,33 @@ type LangfuseConfig struct {
 	BaseURL   string `json:"baseURL,omitempty"`   // Supports "env:VAR_NAME"; falls back to LANGFUSE_BASE_URL
 }
 
-// ToolTelemetryConfig controls what tool call data is logged to the telemetry backend.
-// When Enabled is false, no tool input/output is logged regardless of other fields.
-// LogInput and LogOutput are lists of tool name patterns (supporting wildcards via
-// MatchWildcard) that control which tools have their input/output logged.
-// Use "*" to match all tools.
-type ToolTelemetryConfig struct {
+// CaptureTelemetryConfig is the shared shape of the telemetry sections that
+// decide whether payloads are attached to the telemetry backend: a master
+// switch plus two independent pattern lists selecting what gets its input /
+// output captured. When Enabled is false nothing is captured regardless of the
+// lists, and an empty list captures nothing on that side.
+//
+// Patterns support wildcards via permission.MatchWildcard and are matched
+// case-insensitively. Use "*" to match everything.
+type CaptureTelemetryConfig struct {
 	Enabled   bool     `json:"enabled,omitempty"`
 	LogInput  []string `json:"logInput,omitempty"`
 	LogOutput []string `json:"logOutput,omitempty"`
 }
 
+// ToolTelemetryConfig controls what tool call data is logged to the telemetry
+// backend. LogInput / LogOutput select tools by name.
+type ToolTelemetryConfig = CaptureTelemetryConfig
+
 // GenerationTelemetryConfig controls whether LLM request/response payloads are
 // attached to the telemetry backend — the prompt sent to the model (system
 // prompt + message history) and the completion it returned, plus the
-// trace-level input/output of an agent turn.
+// trace-level input/output of an agent turn. LogInput / LogOutput select
+// agents by ID (e.g. "workhorse").
 //
 // Disabled by default: prompts and completions are the most sensitive and by
 // far the largest payload OpenCode handles, so capturing them is opt-in.
-// When Enabled is false nothing is captured regardless of the pattern lists.
-// LogInput and LogOutput are lists of agent ID patterns (supporting wildcards
-// via MatchWildcard, matched case-insensitively) that select which agents have
-// their request/response captured. Use "*" to cover every agent; list agent
-// IDs (e.g. "workhorse") to capture only those.
-type GenerationTelemetryConfig struct {
-	Enabled   bool     `json:"enabled,omitempty"`
-	LogInput  []string `json:"logInput,omitempty"`
-	LogOutput []string `json:"logOutput,omitempty"`
-}
+type GenerationTelemetryConfig = CaptureTelemetryConfig
 
 // TelemetryConfig defines telemetry configuration for identifying requests.
 type TelemetryConfig struct {

@@ -2,6 +2,7 @@ package langfuse
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -110,5 +111,59 @@ func TestTruncateKeepsValidUTF8(t *testing.T) {
 	}
 	if got := truncate(s, len(s)); got != s {
 		t.Errorf("truncate at exact length = %q, want unchanged", got)
+	}
+}
+
+// marshalAny's string fast path skips json.Marshal (which substitutes U+FFFD),
+// so it must sanitize itself: trace input/output are raw user/model strings, and
+// invalid UTF-8 in a proto3 string field fails the OTLP marshal and drops the
+// entire export batch.
+func TestMarshalAnySanitizesInvalidUTF8(t *testing.T) {
+	raw := "prompt \x80\xff tail" // lone continuation + invalid byte
+	if utf8.ValidString(raw) {
+		t.Fatal("fixture is supposed to be invalid UTF-8")
+	}
+
+	got := marshalAny(raw)
+	if !utf8.ValidString(got) {
+		t.Errorf("marshalAny(%q) = %q: still invalid UTF-8", raw, got)
+	}
+	if !strings.Contains(got, "prompt ") || !strings.Contains(got, " tail") {
+		t.Errorf("marshalAny(%q) = %q: dropped surrounding text", raw, got)
+	}
+
+	// The struct path goes through json.Marshal, which sanitizes already.
+	viaJSON := marshalAny(map[string]string{"content": raw})
+	if !utf8.ValidString(viaJSON) {
+		t.Errorf("marshalAny(struct) = %q: invalid UTF-8", viaJSON)
+	}
+}
+
+// SetOutput and SetGenerationOutput share one body; only the cap differs.
+func TestSetOutputCaps(t *testing.T) {
+	c, sr := newTestClient()
+	ctx := c.TraceStart(context.Background(), TraceParams{Name: "turn"})
+
+	big := strings.Repeat("x", maxGenIOSize+100)
+	tool := c.ToolStart(ctx, ToolParams{Name: "tool"})
+	tool.SetOutput(big)
+	tool.End()
+
+	gen := c.GenerationStart(ctx, GenerationParams{Name: "gen"})
+	gen.SetGenerationOutput(big)
+	gen.End()
+	c.TraceEnd(ctx)
+
+	spans := sr.Ended()
+	toolOut, ok := attrValue(spans, "tool", "langfuse.observation.output")
+	if !ok || len(toolOut) > maxIOSize+len("...[truncated]") {
+		t.Errorf("tool output len = %d, want <= %d", len(toolOut), maxIOSize)
+	}
+	genOut, ok := attrValue(spans, "gen", "langfuse.observation.output")
+	if !ok || len(genOut) <= maxIOSize {
+		t.Errorf("generation output len = %d, want the larger generation cap", len(genOut))
+	}
+	if len(genOut) > maxGenIOSize+len("...[truncated]") {
+		t.Errorf("generation output len = %d exceeds cap %d", len(genOut), maxGenIOSize)
 	}
 }

@@ -134,7 +134,7 @@ By default, tool spans record only the tool name and timing. To include input/ou
 | Field | Type | Description |
 |---|---|---|
 | `enabled` | bool | Master switch. When `false`, no tool input/output is logged regardless of other fields. |
-| `logInput` | string[] | Tool name patterns whose input should be logged. Supports wildcards (`"*"` = all tools, `"datadog*"` = prefix match). If empty, no inputs are logged. |
+| `logInput` | string[] | Tool name patterns whose input should be logged. Supports wildcards (`"*"` = all tools, `"datadog*"` = prefix match), matched case-insensitively. If empty, no inputs are logged. |
 | `logOutput` | string[] | Tool name patterns whose output should be logged. Same wildcard support. If empty, no outputs are logged. |
 
 Tool input/output is truncated to 10KB. Error output is always logged regardless of `logOutput` patterns — errors are diagnostic, not sensitive content.
@@ -166,7 +166,8 @@ Notes:
 - Patterns match the agent ID that issued the call, case-insensitively. Built-in agents that serve a specific job use their own ID, so they are selectable independently: `descriptor` (title generation), `summarizer` (compaction / recap), plus any configured agent (`coder`, `workhorse`, custom markdown agents, …).
 - Payloads are truncated to 400KB per attribute. Binary attachments are summarized (`[binary attachment: <mime>, N bytes]`), never embedded.
 - **This is the full conversation.** An opted-in agent sends the entire message history — including tool results embedded in it — to Langfuse, independently of the per-tool `logInput`/`logOutput` patterns above, which only govern the dedicated tool observations. Opt in per agent rather than using `"*"` when any agent handles sensitive content.
-- Enabling this materially increases export volume (up to ~800KB per LLM call versus a few hundred bytes). Spans are exported in batches, so on a busy session an oversized batch can be rejected by the ingestion endpoint and lose the whole batch — including traces that carried no payload. Prefer scoping `logInput`/`logOutput` to the agents you are actually debugging.
+- Reasoning (thinking) blocks and replayed Anthropic server-side tool-search blocks are included, since both are part of the outgoing request. Redacted thinking blocks are noted but their opaque payload is never embedded.
+- Enabling this materially increases export volume (up to ~800KB per LLM call versus a few hundred bytes). Spans are exported gzipped and in batches; a batch that still exceeds the ingestion endpoint's body limit is rejected whole — losing traces that carried no payload alongside the large ones. Scope `logInput`/`logOutput` to the agents you are actually debugging, and if you run `"*"` across a busy multi-agent fleet, consider lowering the OTel batch size (`sdktrace.WithMaxExportBatchSize`, currently the SDK default of 512, in `internal/langfuse/client.go`).
 
 ### Flow Args
 

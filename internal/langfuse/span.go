@@ -3,6 +3,7 @@ package langfuse
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -82,37 +83,38 @@ func (s *Span) SetError(err error) {
 
 // SetOutput records the output on the span (truncated to maxIOSize).
 func (s *Span) SetOutput(output any) {
-	if s == nil {
-		return
-	}
-	str := marshalAny(output)
-	s.span.SetAttributes(
-		attribute.String("langfuse.observation.output", truncate(str, maxIOSize)),
-	)
+	s.setOutput(output, maxIOSize)
 }
 
 // SetGenerationOutput records the LLM response on a generation span.
 // Same attribute as SetOutput but with the larger generation payload cap.
 func (s *Span) SetGenerationOutput(output any) {
+	s.setOutput(output, maxGenIOSize)
+}
+
+func (s *Span) setOutput(output any, max int) {
 	if s == nil {
 		return
 	}
-	str := marshalAny(output)
 	s.span.SetAttributes(
-		attribute.String("langfuse.observation.output", truncate(str, maxGenIOSize)),
+		attribute.String("langfuse.observation.output", truncate(marshalAny(output), max)),
 	)
 }
 
 func marshalAny(v any) string {
 	switch val := v.(type) {
 	case string:
-		return val
+		// Sanitize rather than trust the caller: trace input/output are raw
+		// user/model strings, and invalid UTF-8 in a proto3 string field makes
+		// the OTLP marshal fail — which drops the whole export batch, not just
+		// this span. json.Marshal (below) already substitutes U+FFFD itself.
+		return strings.ToValidUTF8(val, "\uFFFD")
 	case nil:
 		return ""
 	default:
 		data, err := json.Marshal(val)
 		if err != nil {
-			return fmt.Sprint(val)
+			return strings.ToValidUTF8(fmt.Sprint(val), "\uFFFD")
 		}
 		return string(data)
 	}

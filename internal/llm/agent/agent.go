@@ -731,20 +731,6 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	ctx = context.WithValue(ctx, tools.NonInteractiveContextKey, opts.NonInteractive)
 	ctx = tools.AddTag(ctx, "agent", a.AgentID())
 
-	traceInput := content
-	if traceInput == "" {
-		// Auto-resume turn: the model is reacting to an already-persisted
-		// background-task result, not a fresh user message.
-		traceInput = "[auto-resume: reacting to a completed background task]"
-	}
-	ctx = a.createLangfuseTrace(ctx, session, traceInput)
-	defer langfuse.EndTrace(ctx)
-	// Registered after EndTrace so it runs first (LIFO) — attributes must
-	// land before the span ends.
-	defer func() {
-		a.setTraceOutput(ctx, func() any { return traceOutputFromEvent(result) })
-	}()
-
 	effectiveMaxTurns := resolveMaxTurns(maxTurnsOverride, a.agentID)
 
 	// When the caller supplied no content and no attachments, this is an
@@ -757,13 +743,26 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// blocks with `messages: text content blocks must be non-empty` (HTTP
 	// 400). Skip the synthetic-user-turn and drive the model off the
 	// existing history.
-	var userMsg message.Message
 	hasUserTurn := content != "" || len(attachmentParts) > 0
-	msgHistory := msgs
 	if hasUserTurn {
+		// Applied before the trace input is snapshotted so the trace records
+		// what was actually sent upstream, hint included.
 		if hint := proactiveMaxTurnsHint(effectiveMaxTurns); hint != "" {
 			content += hint
 		}
+	}
+
+	ctx = a.createLangfuseTrace(ctx, session, traceInputFor(content, hasUserTurn, len(attachmentParts)))
+	defer langfuse.EndTrace(ctx)
+	// Registered after EndTrace so it runs first (LIFO) — attributes must
+	// land before the span ends.
+	defer func() {
+		a.setTraceOutput(ctx, func() any { return traceOutputFromEvent(result) })
+	}()
+
+	var userMsg message.Message
+	msgHistory := msgs
+	if hasUserTurn {
 		var err error
 		userMsg, err = a.createUserMessage(ctx, sessionID, content, attachmentParts)
 		if err != nil {
@@ -2358,15 +2357,10 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 		}
 		summarizeCtx = context.WithValue(summarizeCtx, tools.SessionIDContextKey, sessionID)
 		summarizeCtx = context.WithValue(summarizeCtx, tools.AgentIDContextKey, config.AgentName("summarizer"))
-		if lf := langfuse.Get(); lf != nil && lf.Enabled() {
-			sess, sessErr := a.sessions.Get(summarizeCtx, sessionID)
-			if sessErr == nil {
-				summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess,
-					fmt.Sprintf("summarize session over %d messages", len(msgs)))
-			}
-		}
-		defer langfuse.EndTrace(summarizeCtx)
 
+		// Guard before the trace starts: an empty session would otherwise emit
+		// a trace with no generation and no output, indistinguishable from a
+		// summarizer that hung.
 		if len(msgs) == 0 {
 			event = AgentEvent{
 				Type:  AgentEventTypeError,
@@ -2376,6 +2370,15 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 			a.Publish(pubsub.CreatedEvent, event)
 			return
 		}
+
+		if lf := langfuse.Get(); lf != nil && lf.Enabled() {
+			sess, sessErr := a.sessions.Get(summarizeCtx, sessionID)
+			if sessErr == nil {
+				summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess,
+					fmt.Sprintf("summarize session over %d messages", len(msgs)))
+			}
+		}
+		defer langfuse.EndTrace(summarizeCtx)
 
 		event = AgentEvent{
 			Type:     AgentEventTypeSummarize,
@@ -2803,6 +2806,11 @@ func telemetryAgentID(ctx context.Context, fallback string) string {
 // telemetry.generations.logOutput. output is a thunk so the value is not built
 // for the (default) opted-out case.
 func (a *agent) setTraceOutput(ctx context.Context, output func() any) {
+	// Check the client too: with no exporter the value would be built and then
+	// dropped for want of a root span, which is what the thunk exists to avoid.
+	if lf := langfuse.Get(); lf == nil || !lf.Enabled() {
+		return
+	}
 	if !langfuse.ShouldLogGenerationOutput(telemetryAgentID(ctx, string(a.AgentID()))) {
 		return
 	}
@@ -2814,6 +2822,20 @@ const (
 	maxMetadataValueLen = 200
 )
 
+// traceInputFor describes what started a turn, for the trace-level input.
+// A turn with attachments but no text is still a real user turn, so it must not
+// be reported as an auto-resume.
+func traceInputFor(content string, hasUserTurn bool, attachments int) string {
+	switch {
+	case !hasUserTurn:
+		return "[auto-resume: reacting to a completed background task]"
+	case content == "":
+		return fmt.Sprintf("[attachments only: %d part(s)]", attachments)
+	default:
+		return content
+	}
+}
+
 // traceOutputFromEvent derives the trace-level output from the event a turn
 // ended with: the structured output when the run produced one, otherwise the
 // final assistant text, otherwise the error.
@@ -2824,35 +2846,35 @@ func traceOutputFromEvent(ev AgentEvent) any {
 	if ev.StructOutput != nil {
 		return ev.StructOutput.Content
 	}
-	return ev.Message.Content().Text
+	return assistantText(&ev.Message)
+}
+
+// assistantText concatenates every text block in the message. Message.Content()
+// returns only the FIRST TextContent, which truncates answers that interleave
+// thinking and text (thinking -> text -> thinking -> text).
+func assistantText(msg *message.Message) string {
+	var b strings.Builder
+	for _, part := range msg.Parts {
+		t, ok := part.(message.TextContent)
+		if !ok {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(t.Text)
+	}
+	return b.String()
 }
 
 // shouldLogToolInput returns true if the tool's input should be logged to telemetry.
 func shouldLogToolInput(toolName string) bool {
-	cfg := config.Get()
-	if cfg.Telemetry == nil || cfg.Telemetry.Tools == nil || !cfg.Telemetry.Tools.Enabled {
-		return false
-	}
-	return matchAnyPattern(cfg.Telemetry.Tools.LogInput, toolName)
+	return langfuse.ShouldLogToolInput(toolName)
 }
 
 // shouldLogToolOutput returns true if the tool's output should be logged to telemetry.
 func shouldLogToolOutput(toolName string) bool {
-	cfg := config.Get()
-	if cfg.Telemetry == nil || cfg.Telemetry.Tools == nil || !cfg.Telemetry.Tools.Enabled {
-		return false
-	}
-	return matchAnyPattern(cfg.Telemetry.Tools.LogOutput, toolName)
-}
-
-// matchAnyPattern returns true if the name matches any of the wildcard patterns.
-func matchAnyPattern(patterns []string, name string) bool {
-	for _, p := range patterns {
-		if permission.MatchWildcard(p, name) {
-			return true
-		}
-	}
-	return false
+	return langfuse.ShouldLogToolOutput(toolName)
 }
 
 // truncateStr truncates a string to at most max bytes, appending "..." if truncated.

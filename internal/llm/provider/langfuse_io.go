@@ -13,9 +13,22 @@ import (
 type genChatMessage struct {
 	Role       string        `json:"role"`
 	Content    string        `json:"content,omitempty"`
+	Reasoning  string        `json:"reasoning,omitempty"`
 	ToolCalls  []genToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
 	Name       string        `json:"name,omitempty"`
+	// ToolSearches records replayed Anthropic server-side tool-search blocks.
+	// They are part of the outgoing request and are what keeps deferred tools
+	// loaded, so a deferred-tools bug is invisible without them.
+	ToolSearches []genToolSearch `json:"tool_searches,omitempty"`
+}
+
+type genToolSearch struct {
+	ToolUseID  string   `json:"tool_use_id"`
+	Name       string   `json:"name"`
+	Input      string   `json:"input,omitempty"`
+	References []string `json:"references,omitempty"`
+	ErrorCode  string   `json:"error_code,omitempty"`
 }
 
 type genToolCall struct {
@@ -59,6 +72,13 @@ func buildGenerationInput(system string, messages []message.Message) []genChatMe
 	return out
 }
 
+func appendReasoning(m *genChatMessage, s string) {
+	if m.Reasoning != "" {
+		m.Reasoning += "\n"
+	}
+	m.Reasoning += s
+}
+
 // renderMessage converts one internal message into its chat-format
 // rendering. A Tool message fans out into one entry per tool result so
 // each result keeps its tool_call_id pairing.
@@ -98,6 +118,24 @@ func renderMessage(msg *message.Message) []genChatMessage {
 			appendContent(fmt.Sprintf("[binary attachment: %s, %d bytes]", p.MIMEType, len(p.Data)))
 		case message.ToolCall:
 			m.ToolCalls = append(m.ToolCalls, genToolCall{ID: p.ID, Name: p.Name, Arguments: p.Input})
+		case message.ReasoningContent:
+			// Thinking blocks are replayed verbatim on Anthropic-dialect
+			// requests, so they are part of the payload. Redacted blocks carry
+			// an opaque provider blob — note it, never embed it.
+			switch {
+			case p.Redacted:
+				appendReasoning(&m, "[redacted thinking block]")
+			case p.Thinking != "":
+				appendReasoning(&m, p.Thinking)
+			}
+		case message.ToolSearchContent:
+			m.ToolSearches = append(m.ToolSearches, genToolSearch{
+				ToolUseID:  p.ToolUseID,
+				Name:       p.Name,
+				Input:      p.Input,
+				References: p.References,
+				ErrorCode:  p.ErrorCode,
+			})
 		}
 	}
 	return []genChatMessage{m}

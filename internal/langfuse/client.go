@@ -56,6 +56,10 @@ func New(publicKey, secretKey, baseURL string) *Client {
 			"Authorization":                "Basic " + authStr,
 			"x-langfuse-ingestion-version": "4",
 		}),
+		// Spans carrying captured prompts/completions (telemetry.generations)
+		// are large and highly compressible text; without this a batch can
+		// exceed the ingestion endpoint's body limit and be dropped whole.
+		otlptracehttp.WithCompression(otlptracehttp.GzipCompression),
 	)
 	if err != nil {
 		logging.Warn("langfuse: failed to create OTEL exporter", "error", err)

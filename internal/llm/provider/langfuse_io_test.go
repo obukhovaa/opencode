@@ -152,10 +152,7 @@ func TestGenerationInputGate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			config.Reset()
-			_, err := config.Load(".", false)
-			require.NoError(t, err)
-			t.Cleanup(config.Reset)
+			loadConfigIn(t, ".")
 			config.Get().Telemetry = &config.TelemetryConfig{Generations: tt.gen}
 
 			got := generationInput(tt.agentID, "you are a coder", msgs)
@@ -218,10 +215,7 @@ func TestGenerationInputGateFromLoadedConfig(t *testing.T) {
 			dir := t.TempDir()
 			require.NoError(t, os.WriteFile(filepath.Join(dir, ".opencode.json"), []byte(tt.body), 0o644))
 
-			config.Reset()
-			_, err := config.Load(dir, false)
-			require.NoError(t, err)
-			t.Cleanup(config.Reset)
+			loadConfigIn(t, dir)
 
 			got := generationInput(tt.agentID, "sys", msgs)
 			if tt.wantInput {
@@ -238,4 +232,79 @@ func TestGenerationInputGateFromLoadedConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+// loadConfigIn loads config from workDir with HOME/XDG pointed at empty temp
+// dirs. config.Load reads $HOME/.opencode.json and $XDG_CONFIG_HOME/opencode as
+// the *base* config and merges workDir on top — and a merge cannot un-set a
+// key, so without this isolation a developer's global telemetry settings make
+// the negative assertions here fail.
+func loadConfigIn(t *testing.T, workDir string) {
+	t.Helper()
+	empty := t.TempDir()
+	t.Setenv("HOME", empty)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(empty, "xdg"))
+	config.Reset()
+	if _, err := config.Load(workDir, false); err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	t.Cleanup(config.Reset)
+}
+
+// Reasoning and tool-search blocks ARE part of the outgoing Anthropic-dialect
+// request (anthropic.go replays msg.ReasoningParts() and msg.ToolSearchParts()),
+// so a payload that omits them is not the request that was sent.
+func TestBuildGenerationInputRendersReasoningAndToolSearch(t *testing.T) {
+	got := buildGenerationInput("", []message.Message{
+		{
+			Role: message.Assistant,
+			Parts: []message.ContentPart{
+				message.ReasoningContent{Thinking: "first thought", Signature: "sig"},
+				message.ToolSearchContent{
+					ToolUseID:  "srv1",
+					Name:       "tool_search_tool_regex",
+					Input:      `{"query":"jira"}`,
+					References: []string{"jira_create_issue"},
+				},
+				message.ReasoningContent{Redacted: true, Data: "OPAQUE_PROVIDER_BLOB"},
+				message.TextContent{Text: "here goes"},
+			},
+		},
+	})
+
+	require.Len(t, got, 1)
+	assert.Equal(t, "here goes", got[0].Content)
+	assert.Equal(t, "first thought\n[redacted thinking block]", got[0].Reasoning)
+	assert.NotContains(t, got[0].Reasoning, "OPAQUE_PROVIDER_BLOB", "redacted payload must never be embedded")
+	require.Len(t, got[0].ToolSearches, 1)
+	assert.Equal(t, genToolSearch{
+		ToolUseID:  "srv1",
+		Name:       "tool_search_tool_regex",
+		Input:      `{"query":"jira"}`,
+		References: []string{"jira_create_issue"},
+	}, got[0].ToolSearches[0])
+}
+
+// A thinking-only assistant turn must not render as an empty message.
+func TestBuildGenerationInputThinkingOnlyTurn(t *testing.T) {
+	got := buildGenerationInput("", []message.Message{
+		{Role: message.Assistant, Parts: []message.ContentPart{message.ReasoningContent{Thinking: "just thinking"}}},
+	})
+	require.Len(t, got, 1)
+	assert.Equal(t, "just thinking", got[0].Reasoning)
+}
+
+// An image or binary part opening a message must not produce a leading newline.
+func TestBuildGenerationInputNoLeadingNewline(t *testing.T) {
+	got := buildGenerationInput("", []message.Message{
+		{
+			Role: message.User,
+			Parts: []message.ContentPart{
+				message.BinaryContent{MIMEType: "image/png", Data: make([]byte, 8)},
+				message.TextContent{Text: "what is this"},
+			},
+		},
+	})
+	require.Len(t, got, 1)
+	assert.Equal(t, "[binary attachment: image/png, 8 bytes]\nwhat is this", got[0].Content)
 }
