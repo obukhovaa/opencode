@@ -538,7 +538,7 @@ func (a *agent) generateTitle(ctx context.Context, sessionID string, content str
 	}
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
 	ctx = context.WithValue(ctx, tools.AgentIDContextKey, config.AgentName("descriptor"))
-	ctx = a.createLangfuseTrace(ctx, sess)
+	ctx = a.createLangfuseTrace(ctx, sess, content)
 	defer langfuse.EndTrace(ctx)
 	parts := []message.ContentPart{message.TextContent{Text: content}}
 	response, err := a.titleProvider.SendMessages(
@@ -556,6 +556,7 @@ func (a *agent) generateTitle(ctx context.Context, sessionID string, content str
 	}
 
 	title := strings.TrimSpace(strings.ReplaceAll(response.Content, "\n", " "))
+	a.setTraceOutput(ctx, func() any { return title })
 	if title == "" {
 		return nil
 	}
@@ -613,7 +614,7 @@ func (a *agent) GenerateRecap(ctx context.Context, sessionID string) (string, er
 
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
 	ctx = context.WithValue(ctx, tools.AgentIDContextKey, config.AgentName("summarizer"))
-	ctx = a.createLangfuseTrace(ctx, sess)
+	ctx = a.createLangfuseTrace(ctx, sess, fmt.Sprintf("generate recap over the last %d messages", len(recent)))
 	defer langfuse.EndTrace(ctx)
 
 	recapPrompt, err := AgentPrompts.ReadFile("prompts/recap.md")
@@ -637,7 +638,9 @@ func (a *agent) GenerateRecap(ctx context.Context, sessionID string) (string, er
 		return "", fmt.Errorf("failed to generate recap: %w", err)
 	}
 
-	return strings.TrimSpace(response.Content), nil
+	recap := strings.TrimSpace(response.Content)
+	a.setTraceOutput(ctx, func() any { return recap })
+	return recap, nil
 }
 
 func (a *agent) err(err error) AgentEvent {
@@ -741,7 +744,7 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 	return events, nil
 }
 
-func (a *agent) processGeneration(ctx context.Context, sessionID, content string, maxTurnsOverride int, attachmentParts []message.ContentPart, opts RunOptions) AgentEvent {
+func (a *agent) processGeneration(ctx context.Context, sessionID, content string, maxTurnsOverride int, attachmentParts []message.ContentPart, opts RunOptions) (result AgentEvent) {
 	cfg := config.Get()
 	// List existing messages; if none, start title generation asynchronously.
 	msgs, err := a.messages.List(ctx, sessionID)
@@ -787,9 +790,6 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	ctx = context.WithValue(ctx, tools.NonInteractiveContextKey, opts.NonInteractive)
 	ctx = tools.AddTag(ctx, "agent", a.AgentID())
 
-	ctx = a.createLangfuseTrace(ctx, session)
-	defer langfuse.EndTrace(ctx)
-
 	effectiveMaxTurns := resolveMaxTurns(maxTurnsOverride, a.agentID)
 
 	// When the caller supplied no content and no attachments, this is an
@@ -802,13 +802,26 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// blocks with `messages: text content blocks must be non-empty` (HTTP
 	// 400). Skip the synthetic-user-turn and drive the model off the
 	// existing history.
-	var userMsg message.Message
 	hasUserTurn := content != "" || len(attachmentParts) > 0
-	msgHistory := msgs
 	if hasUserTurn {
+		// Applied before the trace input is snapshotted so the trace records
+		// what was actually sent upstream, hint included.
 		if hint := proactiveMaxTurnsHint(effectiveMaxTurns); hint != "" {
 			content += hint
 		}
+	}
+
+	ctx = a.createLangfuseTrace(ctx, session, traceInputFor(content, hasUserTurn, len(attachmentParts)))
+	defer langfuse.EndTrace(ctx)
+	// Registered after EndTrace so it runs first (LIFO) — attributes must
+	// land before the span ends.
+	defer func() {
+		a.setTraceOutput(ctx, func() any { return traceOutputFromEvent(result) })
+	}()
+
+	var userMsg message.Message
+	msgHistory := msgs
+	if hasUserTurn {
 		var err error
 		userMsg, err = a.createUserMessage(ctx, sessionID, content, attachmentParts)
 		if err != nil {
@@ -2310,7 +2323,8 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 	if lf := langfuse.Get(); lf != nil && lf.Enabled() {
 		sess, sessErr := a.sessions.Get(ctx, sessionID)
 		if sessErr == nil {
-			summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess)
+			summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess,
+				fmt.Sprintf("auto-compaction over %d messages", len(msgs)))
 		}
 	}
 	defer langfuse.EndTrace(summarizeCtx)
@@ -2336,6 +2350,7 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 	}
 
 	summary := strings.TrimSpace(response.Content)
+	a.setTraceOutput(summarizeCtx, func() any { return summary })
 	if summary == "" {
 		return fmt.Errorf("empty summary returned")
 	}
@@ -2411,14 +2426,10 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 		}
 		summarizeCtx = context.WithValue(summarizeCtx, tools.SessionIDContextKey, sessionID)
 		summarizeCtx = context.WithValue(summarizeCtx, tools.AgentIDContextKey, config.AgentName("summarizer"))
-		if lf := langfuse.Get(); lf != nil && lf.Enabled() {
-			sess, sessErr := a.sessions.Get(summarizeCtx, sessionID)
-			if sessErr == nil {
-				summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess)
-			}
-		}
-		defer langfuse.EndTrace(summarizeCtx)
 
+		// Guard before the trace starts: an empty session would otherwise emit
+		// a trace with no generation and no output, indistinguishable from a
+		// summarizer that hung.
 		if len(msgs) == 0 {
 			event = AgentEvent{
 				Type:  AgentEventTypeError,
@@ -2428,6 +2439,15 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 			a.Publish(pubsub.CreatedEvent, event)
 			return
 		}
+
+		if lf := langfuse.Get(); lf != nil && lf.Enabled() {
+			sess, sessErr := a.sessions.Get(summarizeCtx, sessionID)
+			if sessErr == nil {
+				summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess,
+					fmt.Sprintf("summarize session over %d messages", len(msgs)))
+			}
+		}
+		defer langfuse.EndTrace(summarizeCtx)
 
 		event = AgentEvent{
 			Type:     AgentEventTypeSummarize,
@@ -2481,6 +2501,7 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 		}
 
 		summary := strings.TrimSpace(response.Content)
+		a.setTraceOutput(summarizeCtx, func() any { return summary })
 		if summary == "" {
 			event = AgentEvent{
 				Type:  AgentEventTypeError,
@@ -2801,7 +2822,10 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 // If Langfuse is not initialized, the context is returned unchanged.
 // When running inside a flow, the trace name uses the format "agentID/flowID/stepID"
 // and flow-specific metadata (flowID, stepID, extracted flow args) is included.
-func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session) context.Context {
+// input is the trace-level input (the message that started this turn); pair it
+// with (*agent).setTraceOutput before the trace ends. Both are dropped unless
+// the agent is opted in via telemetry.generations.
+func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session, input any) context.Context {
 	lf := langfuse.Get()
 	if lf == nil || !lf.Enabled() {
 		return ctx
@@ -2861,6 +2885,10 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session) c
 		metadata = langfuse.NamespaceMetadata(metadata, cfg.Telemetry.MetadataNamespace)
 	}
 
+	if !langfuse.ShouldLogGenerationInput(telemetryAgentID(ctx, string(a.AgentID()))) {
+		input = nil
+	}
+
 	return lf.TraceStart(ctx, langfuse.TraceParams{
 		Name:      traceName,
 		SessionID: rootSessionID,
@@ -2868,8 +2896,34 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session) c
 		Tags:      tags,
 		Release:   version.Version,
 		Metadata:  metadata,
+		Input:     input,
 		IsChild:   sess.ParentSessionID != "",
 	})
+}
+
+// telemetryAgentID resolves the agent ID that telemetry policy is keyed on:
+// the per-call agent from context (e.g. "descriptor" for title generation,
+// "summarizer" for compaction), falling back to the owning agent.
+func telemetryAgentID(ctx context.Context, fallback string) string {
+	if id := tools.GetAgentID(ctx); id != "" {
+		return id
+	}
+	return fallback
+}
+
+// setTraceOutput records the trace-level output when the agent is opted in via
+// telemetry.generations.logOutput. output is a thunk so the value is not built
+// for the (default) opted-out case.
+func (a *agent) setTraceOutput(ctx context.Context, output func() any) {
+	// Check the client too: with no exporter the value would be built and then
+	// dropped for want of a root span, which is what the thunk exists to avoid.
+	if lf := langfuse.Get(); lf == nil || !lf.Enabled() {
+		return
+	}
+	if !langfuse.ShouldLogGenerationOutput(telemetryAgentID(ctx, string(a.AgentID()))) {
+		return
+	}
+	langfuse.SetTraceOutput(ctx, output())
 }
 
 const (
@@ -2877,32 +2931,59 @@ const (
 	maxMetadataValueLen = 200
 )
 
+// traceInputFor describes what started a turn, for the trace-level input.
+// A turn with attachments but no text is still a real user turn, so it must not
+// be reported as an auto-resume.
+func traceInputFor(content string, hasUserTurn bool, attachments int) string {
+	switch {
+	case !hasUserTurn:
+		return "[auto-resume: reacting to a completed background task]"
+	case content == "":
+		return fmt.Sprintf("[attachments only: %d part(s)]", attachments)
+	default:
+		return content
+	}
+}
+
+// traceOutputFromEvent derives the trace-level output from the event a turn
+// ended with: the structured output when the run produced one, otherwise the
+// final assistant text, otherwise the error.
+func traceOutputFromEvent(ev AgentEvent) any {
+	if ev.Error != nil {
+		return "error: " + ev.Error.Error()
+	}
+	if ev.StructOutput != nil {
+		return ev.StructOutput.Content
+	}
+	return assistantText(&ev.Message)
+}
+
+// assistantText concatenates every text block in the message. Message.Content()
+// returns only the FIRST TextContent, which truncates answers that interleave
+// thinking and text (thinking -> text -> thinking -> text).
+func assistantText(msg *message.Message) string {
+	var b strings.Builder
+	for _, part := range msg.Parts {
+		t, ok := part.(message.TextContent)
+		if !ok {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(t.Text)
+	}
+	return b.String()
+}
+
 // shouldLogToolInput returns true if the tool's input should be logged to telemetry.
 func shouldLogToolInput(toolName string) bool {
-	cfg := config.Get()
-	if cfg.Telemetry == nil || cfg.Telemetry.Tools == nil || !cfg.Telemetry.Tools.Enabled {
-		return false
-	}
-	return matchAnyPattern(cfg.Telemetry.Tools.LogInput, toolName)
+	return langfuse.ShouldLogToolInput(toolName)
 }
 
 // shouldLogToolOutput returns true if the tool's output should be logged to telemetry.
 func shouldLogToolOutput(toolName string) bool {
-	cfg := config.Get()
-	if cfg.Telemetry == nil || cfg.Telemetry.Tools == nil || !cfg.Telemetry.Tools.Enabled {
-		return false
-	}
-	return matchAnyPattern(cfg.Telemetry.Tools.LogOutput, toolName)
-}
-
-// matchAnyPattern returns true if the name matches any of the wildcard patterns.
-func matchAnyPattern(patterns []string, name string) bool {
-	for _, p := range patterns {
-		if permission.MatchWildcard(p, name) {
-			return true
-		}
-	}
-	return false
+	return langfuse.ShouldLogToolOutput(toolName)
 }
 
 // truncateStr truncates a string to at most max bytes, appending "..." if truncated.

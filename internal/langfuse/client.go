@@ -56,6 +56,10 @@ func New(publicKey, secretKey, baseURL string) *Client {
 			"Authorization":                "Basic " + authStr,
 			"x-langfuse-ingestion-version": "4",
 		}),
+		// Spans carrying captured prompts/completions (telemetry.generations)
+		// are large and highly compressible text; without this a batch can
+		// exceed the ingestion endpoint's body limit and be dropped whole.
+		otlptracehttp.WithCompression(otlptracehttp.GzipCompression),
 	)
 	if err != nil {
 		logging.Warn("langfuse: failed to create OTEL exporter", "error", err)
@@ -135,13 +139,22 @@ func (c *Client) TraceStart(ctx context.Context, params TraceParams) context.Con
 	for k, v := range params.Metadata {
 		attrs = append(attrs, attribute.String("langfuse.trace.metadata."+k, fmt.Sprint(v)))
 	}
+	if params.Input != nil {
+		// On a child trace the trace-level input belongs to the parent;
+		// record the input as this observation's input instead.
+		inputKey := "langfuse.trace.input"
+		if params.IsChild {
+			inputKey = "langfuse.observation.input"
+		}
+		attrs = append(attrs, attribute.String(inputKey, truncate(marshalAny(params.Input), maxGenIOSize)))
+	}
 
 	opts := []trace.SpanStartOption{trace.WithAttributes(attrs...)}
 	if !params.IsChild {
 		opts = append(opts, trace.WithNewRoot())
 	}
 	ctx, span := c.tracer.Start(ctx, params.Name, opts...)
-	return withRootSpan(ctx, span)
+	return withRootSpan(ctx, span, params.IsChild)
 }
 
 // TraceEnd ends the root trace span stored in context.
@@ -171,6 +184,9 @@ func (c *Client) GenerationStart(ctx context.Context, params GenerationParams) *
 	if params.Model != "" {
 		attrs = append(attrs, attribute.String("langfuse.observation.model.name", params.Model))
 		attrs = append(attrs, attribute.String("gen_ai.request.model", params.Model))
+	}
+	if params.Input != nil {
+		attrs = append(attrs, attribute.String("langfuse.observation.input", truncate(marshalAny(params.Input), maxGenIOSize)))
 	}
 	for k, v := range params.Metadata {
 		attrs = append(attrs, attribute.String("langfuse.observation.metadata."+k, fmt.Sprint(v)))

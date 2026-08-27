@@ -722,6 +722,32 @@ func generateSchema() map[string]any {
 				},
 				"additionalProperties": false,
 			},
+			"generations": map[string]any{
+				"type":        "object",
+				"description": "Controls whether LLM request/response payloads are logged to the telemetry backend — the prompt sent to the model (system prompt + message history), the completion it returned, and the trace-level input/output of an agent turn. Disabled by default; when enabled is false nothing is captured regardless of logInput/logOutput.",
+				"properties": map[string]any{
+					"enabled": map[string]any{
+						"type":        "boolean",
+						"description": "Enable LLM request/response logging. When false (default), no prompt or completion content is sent to the telemetry backend regardless of logInput/logOutput patterns.",
+						"default":     false,
+					},
+					"logInput": map[string]any{
+						"type":        "array",
+						"description": "Agent ID patterns controlling which agents have their LLM request payload (system prompt + message history) and trace input logged. Supports wildcards (e.g., 'workhorse', 'sub*', '*'). If empty, no request payloads are logged.",
+						"items": map[string]any{
+							"type": "string",
+						},
+					},
+					"logOutput": map[string]any{
+						"type":        "array",
+						"description": "Agent ID patterns controlling which agents have their LLM response (content, reasoning, tool calls, finish reason) and trace output logged. Supports wildcards (e.g., 'coder', 'sub*', '*'). If empty, no responses are logged.",
+						"items": map[string]any{
+							"type": "string",
+						},
+					},
+				},
+				"additionalProperties": false,
+			},
 			"flowArgs": map[string]any{
 				"type":        "array",
 				"description": "Top-level flow argument names to extract into Langfuse trace metadata. Supports wildcards (e.g., 'ticket_id', 'project*', '*'). Matched args appear as dedicated metadata fields on flow step traces.",

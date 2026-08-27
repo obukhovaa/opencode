@@ -3,14 +3,23 @@ package langfuse
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
-const maxIOSize = 10 * 1024 // 10KB limit for input/output attributes
+const maxIOSize = 10 * 1024 // 10KB limit for tool input/output attributes
+
+// maxGenIOSize caps LLM request/response payloads on generation spans and
+// trace-level input/output. Deliberately large — the point is to see the
+// exact request and response — but bounded so a pathological payload cannot
+// blow up the OTLP export or get the whole span rejected by Langfuse's
+// per-event ingestion limits.
+const maxGenIOSize = 400 * 1024
 
 // Span wraps an OpenTelemetry span for deferred completion.
 // All methods are nil-safe — calling them on a nil Span is a no-op.
@@ -74,25 +83,38 @@ func (s *Span) SetError(err error) {
 
 // SetOutput records the output on the span (truncated to maxIOSize).
 func (s *Span) SetOutput(output any) {
+	s.setOutput(output, maxIOSize)
+}
+
+// SetGenerationOutput records the LLM response on a generation span.
+// Same attribute as SetOutput but with the larger generation payload cap.
+func (s *Span) SetGenerationOutput(output any) {
+	s.setOutput(output, maxGenIOSize)
+}
+
+func (s *Span) setOutput(output any, max int) {
 	if s == nil {
 		return
 	}
-	str := marshalAny(output)
 	s.span.SetAttributes(
-		attribute.String("langfuse.observation.output", truncate(str, maxIOSize)),
+		attribute.String("langfuse.observation.output", truncate(marshalAny(output), max)),
 	)
 }
 
 func marshalAny(v any) string {
 	switch val := v.(type) {
 	case string:
-		return val
+		// Sanitize rather than trust the caller: trace input/output are raw
+		// user/model strings, and invalid UTF-8 in a proto3 string field makes
+		// the OTLP marshal fail — which drops the whole export batch, not just
+		// this span. json.Marshal (below) already substitutes U+FFFD itself.
+		return strings.ToValidUTF8(val, "\uFFFD")
 	case nil:
 		return ""
 	default:
 		data, err := json.Marshal(val)
 		if err != nil {
-			return fmt.Sprint(val)
+			return strings.ToValidUTF8(fmt.Sprint(val), "\uFFFD")
 		}
 		return string(data)
 	}
@@ -102,5 +124,13 @@ func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max] + "...[truncated]"
+	// Back off to a rune boundary. Slicing mid-rune yields invalid UTF-8, and
+	// the OTLP protobuf encoder rejects invalid UTF-8 in a string field —
+	// which fails the export of the whole batch, not just this span. Prompt
+	// payloads are full of multi-byte runes, so the boundary is easy to hit.
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "...[truncated]"
 }

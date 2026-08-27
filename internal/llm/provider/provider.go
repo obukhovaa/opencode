@@ -602,12 +602,16 @@ func (p *baseProvider[C]) SendMessages(ctx context.Context, messages []message.M
 
 	lf := p.options.langfuseClient
 	var gen *langfuse.Span
+	agentID := getAgentIDFromCtx(ctx)
 	if lf != nil && lf.Enabled() {
 		model := p.options.model
 		gen = lf.GenerationStart(ctx, langfuse.GenerationParams{
-			Name:     langfuse.FormatGenerationName(getAgentIDFromCtx(ctx), string(model.APIModel)),
+			Name:     langfuse.FormatGenerationName(agentID, string(model.APIModel)),
 			Model:    string(model.APIModel),
 			Metadata: p.generationMetadata(ctx),
+			// Built only when the agent is opted in — rendering the payload
+			// walks the whole message history, so it must not run by default.
+			Input: generationInput(agentID, p.options.systemMessage, messages),
 		})
 		defer gen.End()
 	}
@@ -620,6 +624,9 @@ func (p *baseProvider[C]) SendMessages(ctx context.Context, messages []message.M
 		}
 		if resp != nil {
 			gen.SetUsage(p.buildUsage(resp.Usage))
+			if langfuse.ShouldLogGenerationOutput(agentID) {
+				gen.SetGenerationOutput(buildGenerationOutput(resp))
+			}
 		}
 	}
 	return resp, err
@@ -655,10 +662,13 @@ func (p *baseProvider[C]) StreamResponse(ctx context.Context, messages []message
 	}
 
 	model := p.options.model
+	agentID := getAgentIDFromCtx(ctx)
+	logOutput := langfuse.ShouldLogGenerationOutput(agentID)
 	gen := lf.GenerationStart(ctx, langfuse.GenerationParams{
-		Name:     langfuse.FormatGenerationName(getAgentIDFromCtx(ctx), string(model.APIModel)),
+		Name:     langfuse.FormatGenerationName(agentID, string(model.APIModel)),
 		Model:    string(model.APIModel),
 		Metadata: p.generationMetadata(ctx),
+		Input:    generationInput(agentID, p.options.systemMessage, messages),
 	})
 
 	upstream := p.client.stream(ctx, messages, tools)
@@ -681,6 +691,9 @@ func (p *baseProvider[C]) StreamResponse(ctx context.Context, messages []message
 			}
 			if event.Type == EventComplete && event.Response != nil {
 				gen.SetUsage(p.buildUsage(event.Response.Usage))
+				if logOutput {
+					gen.SetGenerationOutput(buildGenerationOutput(event.Response))
+				}
 			}
 			select {
 			case wrapped <- event:
