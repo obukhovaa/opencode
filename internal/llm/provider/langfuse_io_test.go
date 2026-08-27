@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -168,6 +171,71 @@ func TestGenerationInputGate(t *testing.T) {
 			require.Len(t, rendered, 2)
 			assert.Equal(t, "system", rendered[0].Role)
 			assert.Equal(t, "secret prompt", rendered[1].Content)
+		})
+	}
+}
+
+// TestGenerationInputGateFromLoadedConfig walks the whole chain the operator
+// actually uses: telemetry.generations in a .opencode.json on disk, through the
+// viper loader, to the capture decision. The unit tests above set the struct
+// directly, so only this one would catch a loader-level regression (viper key
+// folding, a renamed json tag) that silently leaves capture off.
+func TestGenerationInputGateFromLoadedConfig(t *testing.T) {
+	msgs := []message.Message{
+		{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "secret prompt"}}},
+	}
+
+	tests := []struct {
+		name          string
+		body          string
+		agentID       string
+		wantInput     bool
+		wantOutputFor string // agent ID expected to be allowed on the output side
+	}{
+		{
+			name:      "langfuse on, generations absent: capture stays off",
+			body:      `{"telemetry":{"langfuse":{"enabled":true}}}`,
+			agentID:   "coder",
+			wantInput: false,
+		},
+		{
+			name:      "explicitly disabled with wildcards: capture stays off",
+			body:      `{"telemetry":{"generations":{"enabled":false,"logInput":["*"],"logOutput":["*"]}}}`,
+			agentID:   "coder",
+			wantInput: false,
+		},
+		{
+			name:          "per-agent opt-in reaches the gate",
+			body:          `{"telemetry":{"generations":{"enabled":true,"logInput":["workhorse"],"logOutput":["summarizer"]}}}`,
+			agentID:       "workhorse",
+			wantInput:     true,
+			wantOutputFor: "summarizer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, ".opencode.json"), []byte(tt.body), 0o644))
+
+			config.Reset()
+			_, err := config.Load(dir, false)
+			require.NoError(t, err)
+			t.Cleanup(config.Reset)
+
+			got := generationInput(tt.agentID, "sys", msgs)
+			if tt.wantInput {
+				require.NotNil(t, got, "loader dropped the opt-in")
+			} else {
+				assert.Nil(t, got)
+			}
+
+			if tt.wantOutputFor != "" {
+				assert.True(t, langfuse.ShouldLogGenerationOutput(tt.wantOutputFor),
+					"output side should be open for %q", tt.wantOutputFor)
+				assert.False(t, langfuse.ShouldLogGenerationOutput(tt.agentID),
+					"output side must stay closed for %q — it is only on logInput", tt.agentID)
+			}
 		})
 	}
 }
