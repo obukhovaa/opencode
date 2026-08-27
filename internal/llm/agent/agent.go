@@ -513,7 +513,7 @@ func (a *agent) generateTitle(ctx context.Context, sessionID string, content str
 	}
 
 	title := strings.TrimSpace(strings.ReplaceAll(response.Content, "\n", " "))
-	langfuse.SetTraceOutput(ctx, title)
+	a.setTraceOutput(ctx, func() any { return title })
 	if title == "" {
 		return nil
 	}
@@ -596,7 +596,7 @@ func (a *agent) GenerateRecap(ctx context.Context, sessionID string) (string, er
 	}
 
 	recap := strings.TrimSpace(response.Content)
-	langfuse.SetTraceOutput(ctx, recap)
+	a.setTraceOutput(ctx, func() any { return recap })
 	return recap, nil
 }
 
@@ -742,7 +742,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// Registered after EndTrace so it runs first (LIFO) — attributes must
 	// land before the span ends.
 	defer func() {
-		langfuse.SetTraceOutput(ctx, traceOutputFromEvent(result))
+		a.setTraceOutput(ctx, func() any { return traceOutputFromEvent(result) })
 	}()
 
 	effectiveMaxTurns := resolveMaxTurns(maxTurnsOverride, a.agentID)
@@ -2282,7 +2282,7 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 	}
 
 	summary := strings.TrimSpace(response.Content)
-	langfuse.SetTraceOutput(summarizeCtx, summary)
+	a.setTraceOutput(summarizeCtx, func() any { return summary })
 	if summary == "" {
 		return fmt.Errorf("empty summary returned")
 	}
@@ -2429,7 +2429,7 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 		}
 
 		summary := strings.TrimSpace(response.Content)
-		langfuse.SetTraceOutput(summarizeCtx, summary)
+		a.setTraceOutput(summarizeCtx, func() any { return summary })
 		if summary == "" {
 			event = AgentEvent{
 				Type:  AgentEventTypeError,
@@ -2710,8 +2710,9 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 // If Langfuse is not initialized, the context is returned unchanged.
 // When running inside a flow, the trace name uses the format "agentID/flowID/stepID"
 // and flow-specific metadata (flowID, stepID, extracted flow args) is included.
-// input is the trace-level input (the message that started this turn);
-// pair it with langfuse.SetTraceOutput before the trace ends.
+// input is the trace-level input (the message that started this turn); pair it
+// with (*agent).setTraceOutput before the trace ends. Both are dropped unless
+// the agent is opted in via telemetry.generations.
 func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session, input any) context.Context {
 	lf := langfuse.Get()
 	if lf == nil || !lf.Enabled() {
@@ -2772,6 +2773,10 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session, i
 		metadata = langfuse.NamespaceMetadata(metadata, cfg.Telemetry.MetadataNamespace)
 	}
 
+	if !langfuse.ShouldLogGenerationInput(telemetryAgentID(ctx, string(a.AgentID()))) {
+		input = nil
+	}
+
 	return lf.TraceStart(ctx, langfuse.TraceParams{
 		Name:      traceName,
 		SessionID: rootSessionID,
@@ -2782,6 +2787,26 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session, i
 		Input:     input,
 		IsChild:   sess.ParentSessionID != "",
 	})
+}
+
+// telemetryAgentID resolves the agent ID that telemetry policy is keyed on:
+// the per-call agent from context (e.g. "descriptor" for title generation,
+// "summarizer" for compaction), falling back to the owning agent.
+func telemetryAgentID(ctx context.Context, fallback string) string {
+	if id := tools.GetAgentID(ctx); id != "" {
+		return id
+	}
+	return fallback
+}
+
+// setTraceOutput records the trace-level output when the agent is opted in via
+// telemetry.generations.logOutput. output is a thunk so the value is not built
+// for the (default) opted-out case.
+func (a *agent) setTraceOutput(ctx context.Context, output func() any) {
+	if !langfuse.ShouldLogGenerationOutput(telemetryAgentID(ctx, string(a.AgentID()))) {
+		return
+	}
+	langfuse.SetTraceOutput(ctx, output())
 }
 
 const (

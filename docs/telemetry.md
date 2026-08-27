@@ -11,8 +11,8 @@ Langfuse provides LLM observability with traces, generations, tool calls, token 
 | Langfuse Concept | OpenCode Source | Description |
 |---|---|---|
 | **Session** | Root session ID | Groups all traces for a conversation (including subagent sessions) |
-| **Trace** | Agent turn | One trace per `processGeneration` call — covers the full tool-use loop. Trace input is the user message that started the turn; trace output is the final assistant response (or structured output) |
-| **Generation** | LLM API call | Each `StreamResponse`/`SendMessages` call with model, tokens, cost, timing. Input is the exact request payload (system prompt + message history, chat format); output is the exact response (content, reasoning, tool calls, finish reason) |
+| **Trace** | Agent turn | One trace per `processGeneration` call — covers the full tool-use loop. With `telemetry.generations` enabled for the agent, trace input is the user message that started the turn and trace output is the final assistant response (or structured output) |
+| **Generation** | LLM API call | Each `StreamResponse`/`SendMessages` call with model, tokens, cost, timing. With `telemetry.generations` enabled for the agent, input is the exact request payload (system prompt + message history, chat format) and output is the exact response (content, reasoning, tool calls, finish reason) |
 | **Tool** | Tool execution | Each tool call with name, timing, optional input/output |
 
 ### Setup
@@ -111,6 +111,7 @@ The `telemetry` section in `.opencode.json` controls all telemetry behavior:
 | `defaultTags` | string[] | Predefined dynamic tag keys. Currently only `"agent"` is supported — adds the active agent name as a tag. |
 | `langfuse` | object | Langfuse configuration (see [above](#langfuse-config-fields)). |
 | `tools` | object | Controls tool input/output logging (see [below](#tool-io-logging)). |
+| `generations` | object | Controls LLM request/response logging (see [below](#llm-request--response-logging)). |
 | `flowArgs` | string[] | Flow argument names to extract into Langfuse trace metadata. Supports wildcards (e.g., `"ticket_id"`, `"project*"`, `"*"`). |
 | `metadataNamespace` | string | Prefix for custom metadata keys. When set, keys like `flow_id` become `namespace.flow_id` — grouping them in the Langfuse UI while keeping each independently filterable. Empty (default) preserves flat keys. |
 
@@ -138,7 +139,34 @@ By default, tool spans record only the tool name and timing. To include input/ou
 
 Tool input/output is truncated to 10KB. Error output is always logged regardless of `logOutput` patterns — errors are diagnostic, not sensitive content.
 
-Generation and trace input/output are always captured when Langfuse is enabled (truncated to 400KB per attribute). Binary attachments in the request are summarized (`[binary attachment: <mime>, N bytes]`), never embedded. Note this means full prompt and completion content — including tool results embedded in the message history — reaches Langfuse regardless of the per-tool `logInput`/`logOutput` patterns above, which only govern the dedicated tool observations.
+### LLM Request / Response Logging
+
+By default, generation observations record only model, tokens, cost and timing — the prompt and completion themselves are **not** sent to Langfuse. Enable `telemetry.generations` to capture them, selecting agents by ID:
+
+```json
+{
+  "telemetry": {
+    "generations": {
+      "enabled": true,
+      "logInput": ["workhorse", "coder"],
+      "logOutput": ["*"]
+    }
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `enabled` | bool | Master switch. When `false` or absent (default), no prompt or completion content is logged regardless of other fields. |
+| `logInput` | string[] | Agent ID patterns whose **request** payload is logged — the system prompt plus the cleaned message history, rendered in chat format. Also sets the trace-level input. Supports wildcards (`"*"` = all agents, `"sub*"` = prefix match). If empty, no request payloads are logged. |
+| `logOutput` | string[] | Agent ID patterns whose **response** is logged — content, reasoning, tool calls and finish reason. Also sets the trace-level output. Same wildcard support. If empty, no responses are logged. |
+
+Notes:
+
+- Patterns match the agent ID that issued the call, case-insensitively. Built-in agents that serve a specific job use their own ID, so they are selectable independently: `descriptor` (title generation), `summarizer` (compaction / recap), plus any configured agent (`coder`, `workhorse`, custom markdown agents, …).
+- Payloads are truncated to 400KB per attribute. Binary attachments are summarized (`[binary attachment: <mime>, N bytes]`), never embedded.
+- **This is the full conversation.** An opted-in agent sends the entire message history — including tool results embedded in it — to Langfuse, independently of the per-tool `logInput`/`logOutput` patterns above, which only govern the dedicated tool observations. Opt in per agent rather than using `"*"` when any agent handles sensitive content.
+- Enabling this materially increases export volume (up to ~800KB per LLM call versus a few hundred bytes). Spans are exported in batches, so on a busy session an oversized batch can be rejected by the ingestion endpoint and lose the whole batch — including traces that carried no payload. Prefer scoping `logInput`/`logOutput` to the agents you are actually debugging.
 
 ### Flow Args
 

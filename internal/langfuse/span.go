@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -121,5 +122,13 @@ func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max] + "...[truncated]"
+	// Back off to a rune boundary. Slicing mid-rune yields invalid UTF-8, and
+	// the OTLP protobuf encoder rejects invalid UTF-8 in a string field —
+	// which fails the export of the whole batch, not just this span. Prompt
+	// payloads are full of multi-byte runes, so the boundary is easy to hit.
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "...[truncated]"
 }

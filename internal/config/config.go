@@ -128,15 +128,34 @@ type ToolTelemetryConfig struct {
 	LogOutput []string `json:"logOutput,omitempty"`
 }
 
+// GenerationTelemetryConfig controls whether LLM request/response payloads are
+// attached to the telemetry backend — the prompt sent to the model (system
+// prompt + message history) and the completion it returned, plus the
+// trace-level input/output of an agent turn.
+//
+// Disabled by default: prompts and completions are the most sensitive and by
+// far the largest payload OpenCode handles, so capturing them is opt-in.
+// When Enabled is false nothing is captured regardless of the pattern lists.
+// LogInput and LogOutput are lists of agent ID patterns (supporting wildcards
+// via MatchWildcard, matched case-insensitively) that select which agents have
+// their request/response captured. Use "*" to cover every agent; list agent
+// IDs (e.g. "workhorse") to capture only those.
+type GenerationTelemetryConfig struct {
+	Enabled   bool     `json:"enabled,omitempty"`
+	LogInput  []string `json:"logInput,omitempty"`
+	LogOutput []string `json:"logOutput,omitempty"`
+}
+
 // TelemetryConfig defines telemetry configuration for identifying requests.
 type TelemetryConfig struct {
-	UserID            string               `json:"userId,omitempty"`
-	Tags              []string             `json:"tags,omitempty"`
-	DefaultTags       []string             `json:"defaultTags,omitempty"`
-	Langfuse          *LangfuseConfig      `json:"langfuse,omitempty"`
-	Tools             *ToolTelemetryConfig `json:"tools,omitempty"`
-	FlowArgs          []string             `json:"flowArgs,omitempty"`          // Top-level flow arg names (wildcards supported) to extract into trace metadata
-	MetadataNamespace string               `json:"metadataNamespace,omitempty"` // Prefix for custom (non-Langfuse-standard) metadata keys; empty = flat keys (default)
+	UserID            string                     `json:"userId,omitempty"`
+	Tags              []string                   `json:"tags,omitempty"`
+	DefaultTags       []string                   `json:"defaultTags,omitempty"`
+	Langfuse          *LangfuseConfig            `json:"langfuse,omitempty"`
+	Tools             *ToolTelemetryConfig       `json:"tools,omitempty"`
+	Generations       *GenerationTelemetryConfig `json:"generations,omitempty"`
+	FlowArgs          []string                   `json:"flowArgs,omitempty"`          // Top-level flow arg names (wildcards supported) to extract into trace metadata
+	MetadataNamespace string                     `json:"metadataNamespace,omitempty"` // Prefix for custom (non-Langfuse-standard) metadata keys; empty = flat keys (default)
 }
 
 // ProviderMetadata defines metadata key-value pairs attached to every LLM API request.

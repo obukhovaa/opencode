@@ -3,6 +3,7 @@ package langfuse
 import (
 	"context"
 	"testing"
+	"unicode/utf8"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -90,4 +91,24 @@ func TestGenerationInputAndOutput(t *testing.T) {
 
 func TestSetTraceOutputNoTraceIsNoop(t *testing.T) {
 	SetTraceOutput(context.Background(), "ignored") // must not panic
+}
+
+// TestTruncateKeepsValidUTF8 guards the OTLP export: the protobuf encoder
+// rejects invalid UTF-8 in a string field and fails the whole batch, so a cut
+// that lands mid-rune must back off to the rune boundary.
+func TestTruncateKeepsValidUTF8(t *testing.T) {
+	// "€" is 3 bytes, so a cut at 1..2 bytes past "ab" lands mid-rune.
+	s := "ab€€€"
+	for max := 0; max <= len(s); max++ {
+		got := truncate(s, max)
+		if !utf8.ValidString(got) {
+			t.Errorf("truncate(%q, %d) = %q: invalid UTF-8", s, max, got)
+		}
+		if len(got) > max+len("...[truncated]") {
+			t.Errorf("truncate(%q, %d) = %q: exceeds cap", s, max, got)
+		}
+	}
+	if got := truncate(s, len(s)); got != s {
+		t.Errorf("truncate at exact length = %q, want unchanged", got)
+	}
 }

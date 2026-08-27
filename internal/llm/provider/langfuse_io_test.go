@@ -3,6 +3,7 @@ package provider
 import (
 	"testing"
 
+	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -92,4 +93,81 @@ func TestBuildGenerationOutput(t *testing.T) {
 
 func TestBuildGenerationOutputNil(t *testing.T) {
 	assert.Nil(t, buildGenerationOutput(nil))
+}
+
+// TestGenerationInputGate locks in the privacy default: the request payload is
+// rendered only for agents the operator opted in via telemetry.generations.
+func TestGenerationInputGate(t *testing.T) {
+	msgs := []message.Message{
+		{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "secret prompt"}}},
+	}
+
+	tests := []struct {
+		name    string
+		gen     *config.GenerationTelemetryConfig
+		agentID string
+		want    bool // want a payload
+	}{
+		{
+			name:    "unset config renders nothing",
+			gen:     nil,
+			agentID: "coder",
+		},
+		{
+			name:    "enabled but no patterns renders nothing",
+			gen:     &config.GenerationTelemetryConfig{Enabled: true},
+			agentID: "coder",
+		},
+		{
+			name:    "patterns without enabled render nothing",
+			gen:     &config.GenerationTelemetryConfig{LogInput: []string{"*"}},
+			agentID: "coder",
+		},
+		{
+			name:    "wildcard renders for every agent",
+			gen:     &config.GenerationTelemetryConfig{Enabled: true, LogInput: []string{"*"}},
+			agentID: "coder",
+			want:    true,
+		},
+		{
+			name:    "listed agent renders",
+			gen:     &config.GenerationTelemetryConfig{Enabled: true, LogInput: []string{"workhorse"}},
+			agentID: "workhorse",
+			want:    true,
+		},
+		{
+			name:    "unlisted agent renders nothing",
+			gen:     &config.GenerationTelemetryConfig{Enabled: true, LogInput: []string{"workhorse"}},
+			agentID: "coder",
+		},
+		{
+			name:    "logOutput alone does not open the input side",
+			gen:     &config.GenerationTelemetryConfig{Enabled: true, LogOutput: []string{"*"}},
+			agentID: "coder",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config.Reset()
+			_, err := config.Load(".", false)
+			require.NoError(t, err)
+			t.Cleanup(config.Reset)
+			config.Get().Telemetry = &config.TelemetryConfig{Generations: tt.gen}
+
+			got := generationInput(tt.agentID, "you are a coder", msgs)
+			if !tt.want {
+				// Must be a genuinely nil interface — a typed nil would still
+				// be recorded by GenerationStart's `Input != nil` check.
+				assert.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			rendered, ok := got.([]genChatMessage)
+			require.True(t, ok, "expected chat-format payload, got %T", got)
+			require.Len(t, rendered, 2)
+			assert.Equal(t, "system", rendered[0].Role)
+			assert.Equal(t, "secret prompt", rendered[1].Content)
+		})
+	}
 }

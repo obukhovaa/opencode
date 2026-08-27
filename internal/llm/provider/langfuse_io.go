@@ -3,6 +3,7 @@ package provider
 import (
 	"fmt"
 
+	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/message"
 )
 
@@ -30,6 +31,17 @@ type genOutput struct {
 	Reasoning    string        `json:"reasoning,omitempty"`
 	ToolCalls    []genToolCall `json:"tool_calls,omitempty"`
 	FinishReason string        `json:"finish_reason,omitempty"`
+}
+
+// generationInput renders the LLM request payload for the generation's
+// telemetry input, or nil when the agent is not opted in via
+// telemetry.generations.logInput. Returns `any` so an opted-out agent yields a
+// genuinely nil interface — a typed nil slice would still be recorded.
+func generationInput(agentID, system string, messages []message.Message) any {
+	if !langfuse.ShouldLogGenerationInput(agentID) {
+		return nil
+	}
+	return buildGenerationInput(system, messages)
 }
 
 // buildGenerationInput renders the exact request that goes to the LLM —
@@ -70,17 +82,20 @@ func renderMessage(msg *message.Message) []genChatMessage {
 	}
 
 	m := genChatMessage{Role: string(msg.Role)}
+	appendContent := func(s string) {
+		if m.Content != "" {
+			m.Content += "\n"
+		}
+		m.Content += s
+	}
 	for _, part := range msg.Parts {
 		switch p := part.(type) {
 		case message.TextContent:
-			if m.Content != "" {
-				m.Content += "\n"
-			}
-			m.Content += p.Text
+			appendContent(p.Text)
 		case message.ImageURLContent:
-			m.Content += fmt.Sprintf("\n[image: %s]", p.URL)
+			appendContent(fmt.Sprintf("[image: %s]", p.URL))
 		case message.BinaryContent:
-			m.Content += fmt.Sprintf("\n[binary attachment: %s, %d bytes]", p.MIMEType, len(p.Data))
+			appendContent(fmt.Sprintf("[binary attachment: %s, %d bytes]", p.MIMEType, len(p.Data)))
 		case message.ToolCall:
 			m.ToolCalls = append(m.ToolCalls, genToolCall{ID: p.ID, Name: p.Name, Arguments: p.Input})
 		}
