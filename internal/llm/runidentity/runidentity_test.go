@@ -120,6 +120,19 @@ func TestMergeTags(t *testing.T) {
 			run:  []string{"team:acme"},
 			want: []string{"team:acme"},
 		},
+		{
+			// The production shape, pinned verbatim (GENAI-251). A pool
+			// pod boots with the shared defaults in BOTH identity
+			// namespaces and serves runs for many teams. `identity:` is
+			// the LiteLLM key owner billed and `team:` the resolved owner;
+			// a mismatch between them is the agreed mis-billing signal, so
+			// shadowing only one would make every correctly-billed pooled
+			// run look mis-billed.
+			name: "a pooled run overrides both identity namespaces at once",
+			base: []string{"env:dev", "daemon:false", "identity:default-c2-agent", "team:unresolved", "flow:none"},
+			run:  []string{"identity:cos-c2-agent", "team:cos"},
+			want: []string{"env:dev", "daemon:false", "flow:none", "identity:cos-c2-agent", "team:cos"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -49,8 +49,9 @@ func TestRunIdentityIsPublishedForTheRunAndClearedAtTerminal(t *testing.T) {
 	if got := runidentity.UserID(); got != "acme-dev" {
 		t.Errorf("UserID during the run = %q, want acme-dev", got)
 	}
-	if got := runidentity.Tags(); !reflect.DeepEqual(got, []string{"team:acme"}) {
-		t.Errorf("Tags during the run = %v, want [team:acme]", got)
+	wantTags := []string{"identity:acme-dev", "team:acme"}
+	if got := runidentity.Tags(); !reflect.DeepEqual(got, wantTags) {
+		t.Errorf("Tags during the run = %v, want %v", got, wantTags)
 	}
 
 	// Abort releases the held run and drives the terminal revert.
@@ -119,12 +120,21 @@ func TestPartialRunIdentityPublishesOnlyWhatWasSent(t *testing.T) {
 			name:     "telemetry only",
 			body:     `{"flowID":"A","telemetryUserId":"u","telemetryTeam":"acme"}`,
 			wantUser: "u",
-			wantTags: []string{"team:acme"},
+			wantTags: []string{"identity:u", "team:acme"},
 		},
 		{
 			name:     "team only",
 			body:     `{"flowID":"A","telemetryTeam":"acme"}`,
 			wantTags: []string{"team:acme"},
+		},
+		{
+			// The identity tag must not wait on a team: a run billed to a
+			// per-team key whose team did not resolve still has to correct
+			// the pod's boot-time `identity:` tag.
+			name:     "user only",
+			body:     `{"flowID":"A","telemetryUserId":"u"}`,
+			wantUser: "u",
+			wantTags: []string{"identity:u"},
 		},
 	}
 	for _, tt := range tests {
@@ -156,17 +166,30 @@ func TestPartialRunIdentityPublishesOnlyWhatWasSent(t *testing.T) {
 	}
 }
 
-// A blank or whitespace-only team must not render a `team:` tag — an
-// empty one would shadow the pod's real boot-time team tag and leave the
-// trace with no team at all, which is worse than not overriding.
-func TestBlankTeamRendersNoTag(t *testing.T) {
-	for _, team := range []string{"", "   "} {
-		if got := teamTags(team); got != nil {
-			t.Errorf("teamTags(%q) = %v, want nil", team, got)
+// A blank or whitespace-only field must not render its tag — an empty
+// one would shadow the pod's real boot-time tag and leave the trace with
+// no value at all for that namespace, which is worse than not
+// overriding. Each field is independent: a blank team must not suppress
+// the identity tag, or vice versa.
+func TestBlankIdentityFieldsRenderNoTag(t *testing.T) {
+	blank := []string{"", "   "}
+	for _, user := range blank {
+		for _, team := range blank {
+			if got := identityTags(user, team); got != nil {
+				t.Errorf("identityTags(%q, %q) = %v, want nil", user, team, got)
+			}
 		}
 	}
-	if got := teamTags("  acme "); !reflect.DeepEqual(got, []string{"team:acme"}) {
-		t.Errorf("teamTags trims: got %v", got)
+	for _, blankField := range blank {
+		if got := identityTags("u", blankField); !reflect.DeepEqual(got, []string{"identity:u"}) {
+			t.Errorf("identityTags(\"u\", %q) = %v, want only the identity tag", blankField, got)
+		}
+		if got := identityTags(blankField, "acme"); !reflect.DeepEqual(got, []string{"team:acme"}) {
+			t.Errorf("identityTags(%q, \"acme\") = %v, want only the team tag", blankField, got)
+		}
+	}
+	if got := identityTags("  cos-c2-agent ", "  acme "); !reflect.DeepEqual(got, []string{"identity:cos-c2-agent", "team:acme"}) {
+		t.Errorf("identityTags trims: got %v", got)
 	}
 }
 
