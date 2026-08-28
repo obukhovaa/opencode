@@ -78,7 +78,11 @@ func (s *skillTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 	skillInfo, err := skill.Get(params.Name)
 	if err != nil {
-		available := skill.All()
+		// Scope the suggestion list the same way the listing is scoped: an
+		// agent that denied a family of skills must not have their names
+		// handed back to it by a typo, which would both leak the inventory it
+		// was scoped away from and invite loads that can only be refused.
+		available := s.filterSkillsByPermission(skill.All())
 		availableNames := make([]string, 0, len(available))
 		for _, s := range available {
 			availableNames = append(availableNames, s.Name)
@@ -284,11 +288,13 @@ func truncateDescription(description string, max int) string {
 	if max <= 0 || utf8.RuneCountInString(description) <= max {
 		return description
 	}
-	runes := []rune(description)[:max]
+	// The ellipsis is charged against the cap: cut one rune short so a
+	// truncated description is at most max runes, not max+1.
+	runes := []rune(description)[:max-1]
 	// Back up to the last word boundary, but only when one sits reasonably
 	// near the cut — a tail with no spaces would otherwise surrender most of
 	// its budget to the search.
-	if idx := lastWordBoundary(runes); idx >= max*3/4 {
+	if idx := lastWordBoundary(runes); idx >= len(runes)*3/4 {
 		runes = runes[:idx]
 	}
 	return strings.TrimRight(string(runes), " \t\n.,;:") + "…"
@@ -322,6 +328,29 @@ func renderSkillEntry(sk skill.Info, maxDescriptionChars int) string {
 	return sb.String()
 }
 
+// The wrapper around the entries costs two different amounts: a complete
+// listing is just the bare tags, while a partial one also carries the
+// showing/total counters and the note explaining the omission. Both are
+// measured rather than estimated so maxTotalChars is a real cap.
+const (
+	skillsOpenTag     = "<available_skills>\n"
+	skillsCloseTag    = "</available_skills>"
+	skillsOpenPartial = "<available_skills showing=\"%d\" total=\"%d\">\n"
+	skillsOmittedNote = "  <note>%d of %d skills are omitted from this listing to stay within the " +
+		"configured skill listing budget. An omitted skill can still be loaded by name if you " +
+		"know it; ask the user to name it when a task needs a skill you cannot see.</note>\n"
+)
+
+// partialWrapperChars is the cost of the wrapper on a listing that drops
+// entries. Both counters are formatted at their largest possible value
+// (total), so the result is an upper bound and the budget can only be
+// under-spent, never overrun.
+func partialWrapperChars(total int) int {
+	return utf8.RuneCountInString(fmt.Sprintf(skillsOpenPartial, total, total)) +
+		utf8.RuneCountInString(fmt.Sprintf(skillsOmittedNote, total, total)) +
+		utf8.RuneCountInString(skillsCloseTag)
+}
+
 // renderAvailableSkills renders the <available_skills> block, dropping whole
 // entries from the end once the block would exceed lim.maxTotalChars.
 //
@@ -331,43 +360,52 @@ func renderSkillEntry(sk skill.Info, maxDescriptionChars int) string {
 // Dropping is disclosed in-band: omitted skills remain loadable by name, so
 // the model needs to know the list it can see is partial.
 func renderAvailableSkills(skills []skill.Info, lim skillListingLimits) string {
-	const closing = "</available_skills>"
-
 	entries := make([]string, 0, len(skills))
-	shown := 0
-	used := 0
-	if lim.maxTotalChars > 0 {
-		// Reserve room for the tags that wrap the entries; the note is only
-		// emitted when something is dropped, and its own length is charged
-		// against the reserve rather than the entries.
-		used = utf8.RuneCountInString(closing) + 256
-	}
+	entriesChars := 0
 	for _, sk := range skills {
 		entry := renderSkillEntry(sk, lim.maxDescriptionChars)
-		if lim.maxTotalChars > 0 && used+utf8.RuneCountInString(entry) > lim.maxTotalChars {
-			break
-		}
-		used += utf8.RuneCountInString(entry)
 		entries = append(entries, entry)
-		shown++
+		entriesChars += utf8.RuneCountInString(entry)
+	}
+
+	// Fit against the *complete* wrapper first. Charging the partial wrapper
+	// up front would drop skills to make room for a note explaining a drop
+	// that only the reservation caused — a budget that comfortably holds the
+	// whole inventory must never come back truncated.
+	shown := len(entries)
+	completeChars := utf8.RuneCountInString(skillsOpenTag) + entriesChars + utf8.RuneCountInString(skillsCloseTag)
+	if lim.maxTotalChars > 0 && completeChars > lim.maxTotalChars {
+		used := partialWrapperChars(len(skills))
+		shown = 0
+		for _, entry := range entries {
+			n := utf8.RuneCountInString(entry)
+			if used+n > lim.maxTotalChars {
+				break
+			}
+			used += n
+			shown++
+		}
+		// A budget too small for even one entry would otherwise buy a block
+		// that is all note and no listing — ~300 characters that name nothing.
+		// Keep one skill so the block always carries more than its own excuse.
+		if shown == 0 && len(entries) > 0 {
+			shown = 1
+		}
 	}
 
 	var sb strings.Builder
 	if shown < len(skills) {
-		fmt.Fprintf(&sb, "<available_skills showing=\"%d\" total=\"%d\">\n", shown, len(skills))
+		fmt.Fprintf(&sb, skillsOpenPartial, shown, len(skills))
 	} else {
-		sb.WriteString("<available_skills>\n")
+		sb.WriteString(skillsOpenTag)
 	}
-	for _, e := range entries {
+	for _, e := range entries[:shown] {
 		sb.WriteString(e)
 	}
 	if shown < len(skills) {
-		fmt.Fprintf(&sb, "  <note>%d of %d skills are omitted from this listing to stay within the "+
-			"configured skill listing budget. An omitted skill can still be loaded by name if you "+
-			"know it; ask the user to name it when a task needs a skill you cannot see.</note>\n",
-			len(skills)-shown, len(skills))
+		fmt.Fprintf(&sb, skillsOmittedNote, len(skills)-shown, len(skills))
 	}
-	sb.WriteString(closing)
+	sb.WriteString(skillsCloseTag)
 	return sb.String()
 }
 
@@ -389,8 +427,12 @@ func (s *skillTool) buildSkillDescription() string {
 	sb.WriteString("Important:\n")
 	sb.WriteString("- If you see a <skill_content> tag in the current conversation turn, the skill has ALREADY been loaded - follow the instructions directly instead of calling this tool again\n")
 	sb.WriteString("- Do not invoke a skill that is already loaded in the conversation\n")
-	sb.WriteString("- A description may be truncated with an ellipsis; load the skill to see the whole thing\n\n")
-	sb.WriteString(renderAvailableSkills(accessibleSkills, skillLimitsFromConfig()))
+	lim := skillLimitsFromConfig()
+	if lim.maxDescriptionChars > 0 {
+		sb.WriteString("- A description may be truncated with an ellipsis; load the skill to see the whole thing\n")
+	}
+	sb.WriteString("\n")
+	sb.WriteString(renderAvailableSkills(accessibleSkills, lim))
 
 	return sb.String()
 }

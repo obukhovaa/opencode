@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -72,40 +73,44 @@ func TestConfig_SkillsListingBudgetViperRoundTrip(t *testing.T) {
 	}
 }
 
-// TestConfig_SkillsDefaultsThroughViper pins the two defaults set in
-// setDefaults: descriptions are capped (truncation loses nothing) while the
-// whole-block budget stays off (it drops skills from the listing, so it is
-// opt-in).
-func TestConfig_SkillsDefaultsThroughViper(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, ".opencode.json"), []byte(`{}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+// TestConfig_SkillsDefaultsComeFromSetDefaults pins the two defaults to the
+// production wiring, not to viper's behaviour. A test that re-declares the
+// SetDefault calls itself keeps passing after setDefaults stops making them —
+// and the failure that hides is silent: an operator whose config carries any
+// `skills` section (a `paths` list is the common case) would get
+// MaxDescriptionChars 0, i.e. truncation off, for exactly the large-inventory
+// workspace the cap exists to protect. skillLimitsFromConfig cannot recover,
+// because it only falls back to the default when the whole section is nil.
+func TestConfig_SkillsDefaultsComeFromSetDefaults(t *testing.T) {
+	viper.Reset()
+	defer viper.Reset()
 
-	v := viper.New()
-	v.SetConfigName(".opencode")
-	v.SetConfigType("json")
-	v.AddConfigPath(dir)
-	v.SetDefault("skills.maxDescriptionChars", DefaultSkillMaxDescriptionChars)
-	v.SetDefault("skills.maxListingChars", 0)
-	if err := v.ReadInConfig(); err != nil {
+	setDefaults(false)
+
+	viper.SetConfigType("json")
+	if err := viper.ReadConfig(strings.NewReader(`{"skills":{"paths":["team/skills"]}}`)); err != nil {
 		t.Fatalf("read: %v", err)
 	}
+
 	var cfg Config
-	if err := v.Unmarshal(&cfg); err != nil {
+	if err := viper.Unmarshal(&cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
 	if cfg.Skills == nil {
-		t.Fatal("Skills is nil; the defaults should have materialised the section")
+		t.Fatal("Skills is nil; setDefaults should have materialised the section")
 	}
 	if cfg.Skills.MaxDescriptionChars != DefaultSkillMaxDescriptionChars {
-		t.Errorf("MaxDescriptionChars = %d, want the default %d",
+		t.Errorf("MaxDescriptionChars = %d, want the default %d — setDefaults must register the key",
 			cfg.Skills.MaxDescriptionChars, DefaultSkillMaxDescriptionChars)
 	}
 	if cfg.Skills.MaxListingChars != 0 {
 		t.Errorf("MaxListingChars = %d, want 0 — a hard listing cap must be opt-in",
 			cfg.Skills.MaxListingChars)
+	}
+	if len(cfg.Skills.Paths) != 1 || cfg.Skills.Paths[0] != "team/skills" {
+		t.Errorf("Paths = %v, want [team/skills]; a partial section must not shadow its siblings",
+			cfg.Skills.Paths)
 	}
 }
 
@@ -113,22 +118,18 @@ func TestConfig_SkillsDefaultsThroughViper(t *testing.T) {
 // explicit 0: an operator who writes `maxDescriptionChars: 0` wants full
 // descriptions, not the default cap.
 func TestConfig_SkillsExplicitZeroDisablesTruncation(t *testing.T) {
-	dir := t.TempDir()
-	body := `{"skills":{"maxDescriptionChars":0}}`
-	if err := os.WriteFile(filepath.Join(dir, ".opencode.json"), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	viper.Reset()
+	defer viper.Reset()
 
-	v := viper.New()
-	v.SetConfigName(".opencode")
-	v.SetConfigType("json")
-	v.AddConfigPath(dir)
-	v.SetDefault("skills.maxDescriptionChars", DefaultSkillMaxDescriptionChars)
-	if err := v.ReadInConfig(); err != nil {
+	setDefaults(false)
+
+	viper.SetConfigType("json")
+	if err := viper.ReadConfig(strings.NewReader(`{"skills":{"maxDescriptionChars":0}}`)); err != nil {
 		t.Fatalf("read: %v", err)
 	}
+
 	var cfg Config
-	if err := v.Unmarshal(&cfg); err != nil {
+	if err := viper.Unmarshal(&cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 

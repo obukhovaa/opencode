@@ -38,13 +38,21 @@ var (
 )
 
 // Dropped records a SKILL.md that discovery found but did not register, and
-// why. Every reason here means the skill is invisible to every agent, so the
-// set is aggregated into one WARN at the end of discovery and kept for
-// Diagnostics: a per-file warning scattered through a busy startup log is how
-// a whole family of skills goes missing without anyone noticing.
+// why. A per-file warning scattered through a busy startup log is how a whole
+// family of skills goes missing without anyone noticing, so the set is
+// aggregated at the end of discovery and kept for Diagnostics.
+//
+// Shadowed separates the two very different reasons a file does not make it
+// into the registry. A validation failure means the skill is invisible to
+// every agent and nothing else serves that name — that is the signal worth a
+// WARN. A shadowed file lost a name to a higher-precedence copy, which is the
+// documented override order (project > global > custom paths) working as
+// intended: the name is still served, so reporting it as "unavailable" is
+// noise that buries the real drops.
 type Dropped struct {
-	Path   string // SKILL.md path, or the configured path that did not resolve
-	Reason string
+	Path     string // SKILL.md path, or the configured path that did not resolve
+	Reason   string
+	Shadowed bool // lost its name to a higher-precedence copy, rather than failing to load
 }
 
 // Info represents a skill with its metadata and content.
@@ -120,8 +128,10 @@ func All() []Info {
 	return result
 }
 
-// Diagnostics returns the skills discovery refused to register, in discovery
-// order. Empty once every SKILL.md on the configured paths loaded cleanly.
+// Diagnostics returns every SKILL.md discovery did not register, in discovery
+// order — both the ones that failed to load and the ones shadowed by a
+// higher-precedence copy (Dropped.Shadowed tells them apart). Only the former
+// mean a skill no agent can reach.
 func Diagnostics() []Dropped {
 	state() // ensure discovery has run
 	skillCacheLock.RLock()
@@ -160,6 +170,43 @@ func WrapSkillContent(name, content string) string {
 	return fmt.Sprintf("<skill_content name=%q>\n%s\n</skill_content>", name, content)
 }
 
+// maxLoggedDrops bounds the aggregated WARN. Each detail carries two absolute
+// paths, so an unbounded join runs to kilobytes on one log line — and that
+// line is retained in memory by the TUI log view. Diagnostics keeps the full
+// list for anything that wants it.
+const maxLoggedDrops = 10
+
+// classifyDrops splits the drops that leave a skill unreachable from the ones
+// that merely lost a name to a higher-precedence copy.
+func classifyDrops(dropped []Dropped) (unavailable []Dropped, shadowed int) {
+	unavailable = make([]Dropped, 0, len(dropped))
+	for _, d := range dropped {
+		if d.Shadowed {
+			shadowed++
+			continue
+		}
+		unavailable = append(unavailable, d)
+	}
+	return unavailable, shadowed
+}
+
+// summarizeDrops renders at most limit drops, saying how many it withheld.
+func summarizeDrops(drops []Dropped, limit int) string {
+	shown := drops
+	if len(shown) > limit {
+		shown = shown[:limit]
+	}
+	details := make([]string, 0, len(shown))
+	for _, d := range shown {
+		details = append(details, fmt.Sprintf("%s (%s)", d.Path, d.Reason))
+	}
+	summary := strings.Join(details, "; ")
+	if len(drops) > limit {
+		summary += fmt.Sprintf("; and %d more (see skill.Diagnostics())", len(drops)-limit)
+	}
+	return summary
+}
+
 // discoverSkills discovers all skills from various locations, returning the
 // registry and every skill it had to drop.
 func discoverSkills() (map[string]Info, []Dropped) {
@@ -182,14 +229,17 @@ func discoverSkills() (map[string]Info, []Dropped) {
 	worktreeRoot := getWorktreeRoot(workingDir)
 
 	// add registers a skill unless its name is already taken, recording the
-	// shadowed loser either way: a duplicate is a silently missing skill, and
-	// which copy wins depends on discovery order alone.
+	// loser as shadowed either way. Which copy wins is precedence, not
+	// failure — but knowing that a file you edited is not the one being
+	// served is worth keeping, so it lands in Diagnostics rather than in the
+	// WARN about genuinely unavailable skills.
 	add := func(skill Info) {
 		if existing, ok := skills[skill.Name]; ok {
 			dropped = append(dropped, Dropped{
 				Path: skill.Location,
 				Reason: fmt.Sprintf("duplicate skill name %q — already registered from %s, "+
 					"which takes precedence", skill.Name, existing.Location),
+				Shadowed: true,
 			})
 			return
 		}
@@ -220,15 +270,19 @@ func discoverSkills() (map[string]Info, []Dropped) {
 	}
 
 	logging.Debug("Discovered skills", "count", len(skills))
-	if len(dropped) > 0 {
-		details := make([]string, 0, len(dropped))
-		for _, d := range dropped {
-			details = append(details, fmt.Sprintf("%s (%s)", d.Path, d.Reason))
-		}
-		logging.Warn("Skills were dropped during discovery and are unavailable to every agent",
-			"count", len(dropped),
+
+	unavailable, shadowed := classifyDrops(dropped)
+	if shadowed > 0 {
+		// Expected in any checkout that keeps .claude/skills alongside
+		// .agents/skills, so it is not a warning.
+		logging.Debug("Skills shadowed by a higher-precedence copy of the same name",
+			"count", shadowed)
+	}
+	if len(unavailable) > 0 {
+		logging.Warn("Skills failed to load during discovery and are unavailable to every agent",
+			"count", len(unavailable),
 			"registered", len(skills),
-			"dropped", strings.Join(details, "; "))
+			"dropped", summarizeDrops(unavailable, maxLoggedDrops))
 	}
 	return skills, dropped
 }
@@ -275,7 +329,12 @@ func discoverGlobalSkills() ([]Info, []Dropped) {
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		logging.Warn("Failed to get user home directory", "error", err)
+		// Every global skill disappears at once, which is exactly the kind of
+		// wholesale loss Diagnostics exists to name.
+		dropped = append(dropped, Dropped{
+			Path:   "~",
+			Reason: fmt.Sprintf("cannot resolve the user home directory, so no global skills were scanned: %v", err),
+		})
 		return skills, dropped
 	}
 
@@ -358,7 +417,13 @@ func scanDirectory(baseDir, pattern string) ([]Info, []Dropped) {
 	fsys := os.DirFS(baseDir)
 	matches, err := doublestar.Glob(fsys, pattern)
 	if err != nil {
-		logging.Warn("Failed to glob skill directory", "dir", baseDir, "pattern", pattern, "error", err)
+		// The whole directory is lost, not one file — report it as such
+		// rather than leaving Diagnostics silent about the biggest drop of
+		// all.
+		dropped = append(dropped, Dropped{
+			Path:   baseDir,
+			Reason: fmt.Sprintf("could not scan %q for skills: %v", pattern, err),
+		})
 		return skills, dropped
 	}
 

@@ -122,7 +122,8 @@ func TestTruncateDescription(t *testing.T) {
 		{"under the cap is untouched", "short and sweet", 100, "short and sweet"},
 		{"zero means unbounded", strings.Repeat("x", 50), 0, strings.Repeat("x", 50)},
 		{"cuts at a word boundary", "alpha beta gamma delta epsilon", 20, "alpha beta gamma…"},
-		{"no boundary near the cut still fits the cap", strings.Repeat("x", 40), 10, strings.Repeat("x", 10) + "…"},
+		{"no boundary near the cut still fits the cap", strings.Repeat("x", 40), 10, strings.Repeat("x", 9) + "…"},
+		{"the ellipsis fits inside a cap of one", "hello world", 1, "…"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -130,7 +131,8 @@ func TestTruncateDescription(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("truncateDescription(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
 			}
-			if tc.max > 0 && utf8.RuneCountInString(got) > tc.max+1 { // +1 for the ellipsis
+			// The ellipsis is charged against the cap, so the cap is exact.
+			if tc.max > 0 && utf8.RuneCountInString(got) > tc.max {
 				t.Errorf("result is %d chars, over the %d cap", utf8.RuneCountInString(got), tc.max)
 			}
 		})
@@ -189,3 +191,71 @@ func TestRenderSkillEntryIncludesArgumentHint(t *testing.T) {
 
 // Guard the interface assumption the scoped filter relies on.
 var _ agentregistry.Registry = (*scopedRegistry)(nil)
+
+// TestRenderAvailableSkillsKeepsWhatFits guards the case where the budget is
+// large enough for the whole inventory. Reserving room for the omission note
+// before knowing whether anything is omitted drops skills to make space for an
+// explanation of a drop that only the reservation caused.
+func TestRenderAvailableSkillsKeepsWhatFits(t *testing.T) {
+	skills := skillsFixture("a-skill", "b-skill", "c-skill")
+	complete := renderAvailableSkills(skills, skillListingLimits{})
+	exact := utf8.RuneCountInString(complete)
+
+	for _, budget := range []int{exact, exact + 1, exact + 100} {
+		block := renderAvailableSkills(skills, skillListingLimits{maxTotalChars: budget})
+		if block != complete {
+			t.Errorf("budget %d fits the complete %d-char listing but it was truncated:\n%s",
+				budget, exact, block)
+		}
+	}
+
+	// One character short is the first budget that may truncate.
+	if block := renderAvailableSkills(skills, skillListingLimits{maxTotalChars: exact - 1}); block == complete {
+		t.Errorf("budget %d is under the %d-char listing yet nothing was dropped", exact-1, exact)
+	}
+}
+
+// TestRenderAvailableSkillsNeverExceedsBudget sweeps the boundaries instead of
+// sampling one comfortable budget: the block is only over the cap when the
+// slack left after the last entry that fits is smaller than the wrapper, which
+// a single fixture-sized budget will not hit.
+func TestRenderAvailableSkillsNeverExceedsBudget(t *testing.T) {
+	var many []string
+	for i := 0; i < 60; i++ {
+		many = append(many, fmt.Sprintf("skill-%02d", i))
+	}
+	skills := skillsFixture(many...)
+
+	// Below the wrapper plus one entry the floor in renderAvailableSkills
+	// deliberately wins (see TestRenderAvailableSkillsTinyBudgetStillListsASkill),
+	// so the cap only binds from the first budget that can hold a real listing.
+	floor := partialWrapperChars(len(skills)) +
+		utf8.RuneCountInString(renderSkillEntry(skills[0], 200))
+
+	for budget := floor; budget <= floor+4000; budget++ {
+		block := renderAvailableSkills(skills, skillListingLimits{maxDescriptionChars: 200, maxTotalChars: budget})
+		if got := utf8.RuneCountInString(block); got > budget {
+			t.Fatalf("budget %d produced a %d-char listing (over by %d):\n%s",
+				budget, got, got-budget, block)
+		}
+	}
+}
+
+// TestRenderAvailableSkillsTinyBudgetStillListsASkill covers a budget smaller
+// than the wrapper itself. Emitting the note and nothing else spends ~300
+// characters to say that no skill is visible, which is strictly worse than
+// naming one.
+func TestRenderAvailableSkillsTinyBudgetStillListsASkill(t *testing.T) {
+	skills := skillsFixture("a-skill", "b-skill", "c-skill")
+	block := renderAvailableSkills(skills, skillListingLimits{maxTotalChars: 10})
+
+	if !strings.Contains(block, "<name>a-skill</name>") {
+		t.Errorf("a budget below the wrapper cost listed no skill at all:\n%s", block)
+	}
+	if !strings.Contains(block, "showing=\"1\"") || !strings.Contains(block, "total=\"3\"") {
+		t.Errorf("counters do not match the one skill actually shown:\n%s", block)
+	}
+	if !strings.Contains(block, "2 of 3 skills are omitted") {
+		t.Errorf("note does not match the counters:\n%s", block)
+	}
+}
