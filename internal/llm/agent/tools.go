@@ -114,7 +114,7 @@ func NewToolSet(
 		case tools.WebFetchToolName:
 			return tools.NewFetchTool(reg, permissions)
 		case tools.SkillToolName:
-			return tools.NewSkillTool(permissions, reg)
+			return tools.NewSkillTool(permissions, reg, agentID)
 		case tools.SourcegraphToolName:
 			return tools.NewSourcegraphTool()
 		case tools.WebSearchToolName:

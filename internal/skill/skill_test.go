@@ -333,7 +333,7 @@ Sub content`
 
 	// Discover from subdirectory - should find both
 	worktreeRoot := getWorktreeRoot(subDir)
-	skills := discoverProjectSkills(subDir, worktreeRoot)
+	skills, _ := discoverProjectSkills(subDir, worktreeRoot)
 
 	if len(skills) != 2 {
 		t.Errorf("Expected 2 skills, got %d", len(skills))
@@ -379,7 +379,7 @@ Custom content`
 
 	// Test absolute path
 	paths := []string{filepath.Join(tmpDir, "my-skills")}
-	skills := discoverCustomPaths(paths, tmpDir)
+	skills, _ := discoverCustomPaths(paths, tmpDir)
 
 	if len(skills) != 1 {
 		t.Errorf("Expected 1 skill, got %d", len(skills))
@@ -391,7 +391,7 @@ Custom content`
 
 	// Test relative path
 	relPaths := []string{"my-skills"}
-	relSkills := discoverCustomPaths(relPaths, tmpDir)
+	relSkills, _ := discoverCustomPaths(relPaths, tmpDir)
 
 	if len(relSkills) != 1 {
 		t.Errorf("Expected 1 skill from relative path, got %d", len(relSkills))

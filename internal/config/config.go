@@ -291,6 +291,24 @@ func ParseDurationExtended(s string) (time.Duration, error) {
 // SkillsConfig defines configuration for skills.
 type SkillsConfig struct {
 	Paths []string `json:"paths,omitempty"` // Custom skill paths
+
+	// MaxDescriptionChars truncates each skill's description inside the
+	// `skill` tool's <available_skills> listing. Skill metadata is preloaded
+	// into every request, so an inventory of 100+ skills with unabridged
+	// descriptions costs tens of thousands of tokens of tool schema. 0 means
+	// "no truncation"; the loader defaults it to
+	// DefaultSkillMaxDescriptionChars.
+	MaxDescriptionChars int `json:"maxDescriptionChars,omitempty"`
+
+	// MaxListingChars caps the whole <available_skills> block. Skills past the
+	// cap are omitted from the listing (alphabetically last first, so the
+	// outcome is stable across runs) and the block says how many. Omitted
+	// skills stay loadable by name — the `skill` tool resolves against the
+	// full registry, not the listing. 0 (the default) means unbounded: losing
+	// a skill from the listing is worse than the tokens, so the hard cap is
+	// opt-in. Prefer per-agent `permission.skill` rules, which shrink the
+	// listing without hiding anything.
+	MaxListingChars int `json:"maxListingChars,omitempty"`
 }
 
 // WebSearchProvider defines configuration for a single web search provider.
@@ -369,6 +387,15 @@ const (
 	appName              = "opencode"
 
 	MaxTokensFallbackDefault = 4096
+
+	// DefaultSkillMaxDescriptionChars bounds a single skill's description in
+	// the `skill` tool's <available_skills> listing. Measured against a real
+	// 138-skill corpus the description lengths were p50 423 / p90 699 / max
+	// 998 chars, so 500 leaves the median untouched, trims the tail that
+	// dominates the block, and stays well clear of the 1024-char frontmatter
+	// limit authors write against. Truncation keeps the head of the
+	// description, so authors should front-load the trigger terms.
+	DefaultSkillMaxDescriptionChars = 500
 )
 
 var defaultContextPaths = []string{
@@ -570,6 +597,11 @@ func setDefaults(debug bool) {
 	viper.SetDefault("contextPaths", defaultContextPaths)
 	viper.SetDefault("tui.theme", "opencode")
 	viper.SetDefault("autoCompact", true)
+	// Bounding each description is safe (nothing disappears), so it is on by
+	// default; the whole-block cap drops skills from the listing, so it stays
+	// off until an operator asks for it.
+	viper.SetDefault("skills.maxDescriptionChars", DefaultSkillMaxDescriptionChars)
+	viper.SetDefault("skills.maxListingChars", 0)
 
 	// LSP download control
 	if v := os.Getenv("OPENCODE_DISABLE_LSP_DOWNLOAD"); v == "true" || v == "1" {
