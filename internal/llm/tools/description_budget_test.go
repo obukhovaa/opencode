@@ -24,6 +24,12 @@ const (
 // with user configuration (websearch providers, skill inventory, router_send
 // channels, the task tool's agent list) are deliberately excluded: their size
 // is a function of the user's config, not of this repo's prompt surface.
+//
+// The `skill` tool stays out for a second reason: its description would pick
+// up whatever skills happen to sit in the developer's home directory, so a
+// static byte budget here would pass or fail per machine. Its bound is the
+// configurable `skills.maxListingChars` / `skills.maxDescriptionChars` budget,
+// exercised over a synthetic inventory in skill_listing_test.go.
 func TestToolDescriptionBudgets(t *testing.T) {
 	// Config comes from this package's shared test init (testsetup_test.go).
 	//

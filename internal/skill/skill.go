@@ -31,7 +31,29 @@ var (
 	skillCache     map[string]Info
 	skillCacheLock sync.RWMutex
 	skillCacheOnce sync.Once
+
+	// Skills discovery refused to register, alongside skillCache and guarded
+	// by the same lock.
+	skillDropped []Dropped
 )
+
+// Dropped records a SKILL.md that discovery found but did not register, and
+// why. A per-file warning scattered through a busy startup log is how a whole
+// family of skills goes missing without anyone noticing, so the set is
+// aggregated at the end of discovery and kept for Diagnostics.
+//
+// Shadowed separates the two very different reasons a file does not make it
+// into the registry. A validation failure means the skill is invisible to
+// every agent and nothing else serves that name — that is the signal worth a
+// WARN. A shadowed file lost a name to a higher-precedence copy, which is the
+// documented override order (project > global > custom paths) working as
+// intended: the name is still served, so reporting it as "unavailable" is
+// noise that buries the real drops.
+type Dropped struct {
+	Path     string // SKILL.md path, or the configured path that did not resolve
+	Reason   string
+	Shadowed bool // lost its name to a higher-precedence copy, rather than failing to load
+}
 
 // Info represents a skill with its metadata and content.
 type Info struct {
@@ -106,10 +128,26 @@ func All() []Info {
 	return result
 }
 
+// Diagnostics returns every SKILL.md discovery did not register, in discovery
+// order — both the ones that failed to load and the ones shadowed by a
+// higher-precedence copy (Dropped.Shadowed tells them apart). Only the former
+// mean a skill no agent can reach.
+func Diagnostics() []Dropped {
+	state() // ensure discovery has run
+	skillCacheLock.RLock()
+	defer skillCacheLock.RUnlock()
+	out := make([]Dropped, len(skillDropped))
+	copy(out, skillDropped)
+	return out
+}
+
 // state returns the cached skill registry, initializing it if necessary.
 func state() map[string]Info {
 	skillCacheOnce.Do(func() {
-		skillCache = discoverSkills()
+		skills, dropped := discoverSkills()
+		skillCacheLock.Lock()
+		skillCache, skillDropped = skills, dropped
+		skillCacheLock.Unlock()
 	})
 
 	skillCacheLock.RLock()
@@ -122,6 +160,7 @@ func Invalidate() {
 	skillCacheLock.Lock()
 	defer skillCacheLock.Unlock()
 	skillCache = nil
+	skillDropped = nil
 	skillCacheOnce = sync.Once{}
 }
 
@@ -131,83 +170,146 @@ func WrapSkillContent(name, content string) string {
 	return fmt.Sprintf("<skill_content name=%q>\n%s\n</skill_content>", name, content)
 }
 
-// discoverSkills discovers all skills from various locations.
-func discoverSkills() map[string]Info {
+// maxLoggedDrops bounds the aggregated WARN. Each detail carries two absolute
+// paths, so an unbounded join runs to kilobytes on one log line — and that
+// line is retained in memory by the TUI log view. Diagnostics keeps the full
+// list for anything that wants it.
+const maxLoggedDrops = 10
+
+// classifyDrops splits the drops that leave a skill unreachable from the ones
+// that merely lost a name to a higher-precedence copy.
+func classifyDrops(dropped []Dropped) (unavailable []Dropped, shadowed int) {
+	unavailable = make([]Dropped, 0, len(dropped))
+	for _, d := range dropped {
+		if d.Shadowed {
+			shadowed++
+			continue
+		}
+		unavailable = append(unavailable, d)
+	}
+	return unavailable, shadowed
+}
+
+// summarizeDrops renders at most limit drops, saying how many it withheld.
+func summarizeDrops(drops []Dropped, limit int) string {
+	shown := drops
+	if len(shown) > limit {
+		shown = shown[:limit]
+	}
+	details := make([]string, 0, len(shown))
+	for _, d := range shown {
+		details = append(details, fmt.Sprintf("%s (%s)", d.Path, d.Reason))
+	}
+	summary := strings.Join(details, "; ")
+	if len(drops) > limit {
+		summary += fmt.Sprintf("; and %d more (see skill.Diagnostics())", len(drops)-limit)
+	}
+	return summary
+}
+
+// discoverSkills discovers all skills from various locations, returning the
+// registry and every skill it had to drop.
+func discoverSkills() (map[string]Info, []Dropped) {
 	skills := make(map[string]Info)
+	var dropped []Dropped
 
 	cfg := config.Get()
 	if cfg == nil {
 		logging.Warn("Config not initialized, skipping skill discovery")
-		return skills
+		return skills, dropped
 	}
 
 	workingDir := cfg.WorkingDir
 	if workingDir == "" {
 		logging.Warn("Working directory not set, skipping skill discovery")
-		return skills
+		return skills, dropped
 	}
 
 	// Get git worktree root
 	worktreeRoot := getWorktreeRoot(workingDir)
 
-	// Discover project-level skills (walk up from working dir to worktree)
-	projectSkills := discoverProjectSkills(workingDir, worktreeRoot)
-	for _, skill := range projectSkills {
+	// add registers a skill unless its name is already taken, recording the
+	// loser as shadowed either way. Which copy wins is precedence, not
+	// failure — but knowing that a file you edited is not the one being
+	// served is worth keeping, so it lands in Diagnostics rather than in the
+	// WARN about genuinely unavailable skills.
+	add := func(skill Info) {
 		if existing, ok := skills[skill.Name]; ok {
-			logging.Warn("Duplicate skill name found, using first occurrence",
-				"name", skill.Name,
-				"existing", existing.Location,
-				"duplicate", skill.Location)
-			continue
+			dropped = append(dropped, Dropped{
+				Path: skill.Location,
+				Reason: fmt.Sprintf("duplicate skill name %q — already registered from %s, "+
+					"which takes precedence", skill.Name, existing.Location),
+				Shadowed: true,
+			})
+			return
 		}
 		skills[skill.Name] = skill
 	}
 
-	// Discover global skills
-	globalSkills := discoverGlobalSkills()
+	// Discover project-level skills (walk up from working dir to worktree)
+	projectSkills, projectDropped := discoverProjectSkills(workingDir, worktreeRoot)
+	dropped = append(dropped, projectDropped...)
+	for _, skill := range projectSkills {
+		add(skill)
+	}
+
+	// Discover global skills (project skills take precedence)
+	globalSkills, globalDropped := discoverGlobalSkills()
+	dropped = append(dropped, globalDropped...)
 	for _, skill := range globalSkills {
-		if _, ok := skills[skill.Name]; ok {
-			// Project skills take precedence over global
-			continue
-		}
-		skills[skill.Name] = skill
+		add(skill)
 	}
 
-	// Discover skills from custom paths
+	// Discover skills from custom paths (earlier discoveries take precedence)
 	if cfg.Skills != nil && len(cfg.Skills.Paths) > 0 {
-		customSkills := discoverCustomPaths(cfg.Skills.Paths, workingDir)
+		customSkills, customDropped := discoverCustomPaths(cfg.Skills.Paths, workingDir)
+		dropped = append(dropped, customDropped...)
 		for _, skill := range customSkills {
-			if _, ok := skills[skill.Name]; ok {
-				// Earlier discoveries take precedence
-				continue
-			}
-			skills[skill.Name] = skill
+			add(skill)
 		}
 	}
 
 	logging.Debug("Discovered skills", "count", len(skills))
-	return skills
+
+	unavailable, shadowed := classifyDrops(dropped)
+	if shadowed > 0 {
+		// Expected in any checkout that keeps .claude/skills alongside
+		// .agents/skills, so it is not a warning.
+		logging.Debug("Skills shadowed by a higher-precedence copy of the same name",
+			"count", shadowed)
+	}
+	if len(unavailable) > 0 {
+		logging.Warn("Skills failed to load during discovery and are unavailable to every agent",
+			"count", len(unavailable),
+			"registered", len(skills),
+			"dropped", summarizeDrops(unavailable, maxLoggedDrops))
+	}
+	return skills, dropped
 }
 
 // discoverProjectSkills scans project-level skill directories.
-func discoverProjectSkills(workingDir, worktreeRoot string) []Info {
+func discoverProjectSkills(workingDir, worktreeRoot string) ([]Info, []Dropped) {
 	var skills []Info
+	var dropped []Dropped
+
+	scan := func(baseDir, pattern string) {
+		found, bad := scanDirectory(baseDir, pattern)
+		skills = append(skills, found...)
+		dropped = append(dropped, bad...)
+	}
 
 	// Walk up from working directory to worktree root
 	current := workingDir
 	for {
 		// Scan .opencode/{skill,skills}/**/SKILL.md
-		opencodeSkills := scanDirectory(filepath.Join(current, ".opencode"), "{skill,skills}/**/SKILL.md")
-		skills = append(skills, opencodeSkills...)
+		scan(filepath.Join(current, ".opencode"), "{skill,skills}/**/SKILL.md")
 
 		// Scan .agents/skills/**/SKILL.md
-		agentsSkills := scanDirectory(filepath.Join(current, ".agents"), "skills/**/SKILL.md")
-		skills = append(skills, agentsSkills...)
+		scan(filepath.Join(current, ".agents"), "skills/**/SKILL.md")
 
 		// Scan .claude/skills/**/SKILL.md (unless disabled)
 		if !isClaudeSkillsDisabled() {
-			claudeSkills := scanDirectory(filepath.Join(current, ".claude"), "skills/**/SKILL.md")
-			skills = append(skills, claudeSkills...)
+			scan(filepath.Join(current, ".claude"), "skills/**/SKILL.md")
 		}
 
 		// Stop if we've reached the worktree root or filesystem root
@@ -217,42 +319,49 @@ func discoverProjectSkills(workingDir, worktreeRoot string) []Info {
 		current = filepath.Dir(current)
 	}
 
-	return skills
+	return skills, dropped
 }
 
 // discoverGlobalSkills scans global skill directories.
-func discoverGlobalSkills() []Info {
+func discoverGlobalSkills() ([]Info, []Dropped) {
 	var skills []Info
+	var dropped []Dropped
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		logging.Warn("Failed to get user home directory", "error", err)
-		return skills
+		// Every global skill disappears at once, which is exactly the kind of
+		// wholesale loss Diagnostics exists to name.
+		dropped = append(dropped, Dropped{
+			Path:   "~",
+			Reason: fmt.Sprintf("cannot resolve the user home directory, so no global skills were scanned: %v", err),
+		})
+		return skills, dropped
+	}
+
+	scan := func(baseDir, pattern string) {
+		found, bad := scanDirectory(baseDir, pattern)
+		skills = append(skills, found...)
+		dropped = append(dropped, bad...)
 	}
 
 	// Scan ~/.config/opencode/{skill,skills}/**/SKILL.md
-	configDir := filepath.Join(homeDir, ".config", "opencode")
-	opencodeSkills := scanDirectory(configDir, "{skill,skills}/**/SKILL.md")
-	skills = append(skills, opencodeSkills...)
+	scan(filepath.Join(homeDir, ".config", "opencode"), "{skill,skills}/**/SKILL.md")
 
 	// Scan ~/.agents/skills/**/SKILL.md
-	agentsDir := filepath.Join(homeDir, ".agents")
-	agentsSkills := scanDirectory(agentsDir, "skills/**/SKILL.md")
-	skills = append(skills, agentsSkills...)
+	scan(filepath.Join(homeDir, ".agents"), "skills/**/SKILL.md")
 
 	// Scan ~/.claude/skills/**/SKILL.md (unless disabled)
 	if !isClaudeSkillsDisabled() {
-		claudeDir := filepath.Join(homeDir, ".claude")
-		claudeSkills := scanDirectory(claudeDir, "skills/**/SKILL.md")
-		skills = append(skills, claudeSkills...)
+		scan(filepath.Join(homeDir, ".claude"), "skills/**/SKILL.md")
 	}
 
-	return skills
+	return skills, dropped
 }
 
 // discoverCustomPaths scans custom skill paths from config.
-func discoverCustomPaths(paths []string, workingDir string) []Info {
+func discoverCustomPaths(paths []string, workingDir string) ([]Info, []Dropped) {
 	var skills []Info
+	var dropped []Dropped
 
 	homeDir, _ := os.UserHomeDir()
 
@@ -269,48 +378,77 @@ func discoverCustomPaths(paths []string, workingDir string) []Info {
 			resolved = filepath.Join(workingDir, expanded)
 		}
 
-		// Check if directory exists
+		// Check if directory exists. A configured path that does not resolve
+		// takes every skill under it with it — in a workspace that assembles
+		// team repos at runtime this is the difference between "the team has
+		// no skills" and "the team's checkout never landed".
 		if info, err := os.Stat(resolved); err != nil || !info.IsDir() {
-			logging.Warn("Skill path not found or not a directory", "path", resolved)
+			dropped = append(dropped, Dropped{
+				Path:   resolved,
+				Reason: fmt.Sprintf("configured skills path %q is not an existing directory", skillPath),
+			})
+			// Aggregated into the single discovery WARN below; a per-path
+			// warning here would double-report it.
+			logging.Debug("Skill path not found or not a directory", "path", resolved)
 			continue
 		}
 
 		// Scan for SKILL.md files
-		pathSkills := scanDirectory(resolved, "**/SKILL.md")
+		pathSkills, pathDropped := scanDirectory(resolved, "**/SKILL.md")
 		skills = append(skills, pathSkills...)
+		dropped = append(dropped, pathDropped...)
 	}
 
-	return skills
+	return skills, dropped
 }
 
-// scanDirectory scans a directory for SKILL.md files matching the pattern.
-func scanDirectory(baseDir, pattern string) []Info {
+// scanDirectory scans a directory for SKILL.md files matching the pattern,
+// returning the skills it parsed and the files it could not.
+func scanDirectory(baseDir, pattern string) ([]Info, []Dropped) {
 	var skills []Info
+	var dropped []Dropped
 
 	// Check if base directory exists
 	if _, err := os.Stat(baseDir); os.IsNotExist(err) {
-		return skills
+		return skills, dropped
 	}
 
 	// Use doublestar for glob matching
 	fsys := os.DirFS(baseDir)
 	matches, err := doublestar.Glob(fsys, pattern)
 	if err != nil {
-		logging.Warn("Failed to glob skill directory", "dir", baseDir, "pattern", pattern, "error", err)
-		return skills
+		// The whole directory is lost, not one file — report it as such
+		// rather than leaving Diagnostics silent about the biggest drop of
+		// all.
+		dropped = append(dropped, Dropped{
+			Path:   baseDir,
+			Reason: fmt.Sprintf("could not scan %q for skills: %v", pattern, err),
+		})
+		return skills, dropped
 	}
 
 	for _, match := range matches {
 		fullPath := filepath.Join(baseDir, match)
 		skill, err := parseSkillFile(fullPath)
 		if err != nil {
-			logging.Warn("Failed to parse skill file", "path", fullPath, "error", err)
+			var skillErr *SkillError
+			reason := err.Error()
+			if errors.As(err, &skillErr) {
+				// The path is reported separately; keep the reason readable.
+				reason = skillErr.Message
+				if skillErr.Err != nil {
+					reason = fmt.Sprintf("%s: %v", skillErr.Message, skillErr.Err)
+				}
+			}
+			dropped = append(dropped, Dropped{Path: fullPath, Reason: reason})
+			// Aggregated into the single discovery WARN in discoverSkills.
+			logging.Debug("Failed to parse skill file", "path", fullPath, "error", err)
 			continue
 		}
 		skills = append(skills, *skill)
 	}
 
-	return skills
+	return skills, dropped
 }
 
 // parseSkillFile parses a SKILL.md file and returns a skill Info.

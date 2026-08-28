@@ -607,6 +607,18 @@ func generateSchema() map[string]any {
 					"type": "string",
 				},
 			},
+			"maxDescriptionChars": map[string]any{
+				"type":        "integer",
+				"description": "Truncate each skill's description to this many characters in the skill tool's <available_skills> listing. Skill metadata is preloaded into every request, so a large inventory with unabridged descriptions costs tens of thousands of tokens of tool schema. Truncation keeps the head of the description, so front-load trigger terms. 0 disables truncation.",
+				"minimum":     0,
+				"default":     config.DefaultSkillMaxDescriptionChars,
+			},
+			"maxListingChars": map[string]any{
+				"type":        "integer",
+				"description": "Cap the whole <available_skills> listing at this many characters. Skills past the cap are omitted (alphabetically last first, so the result is reproducible) and the listing reports how many. Omitted skills remain loadable by name. 0 (default) means unbounded — prefer per-agent permission.skill rules, which shrink the listing without hiding anything.",
+				"minimum":     0,
+				"default":     0,
+			},
 		},
 	}
 

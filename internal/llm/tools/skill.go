@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -29,13 +30,21 @@ type SkillParams struct {
 type skillTool struct {
 	permissions permission.Service
 	registry    agentregistry.Registry
+	// agentID scopes the <available_skills> listing to the skills THIS agent
+	// may load. Empty means "no agent context" (only global permissions
+	// apply), which is what every caller used to get: the listing advertised
+	// every globally-permitted skill to every agent, so an agent that denied
+	// a whole family of skills still paid for their descriptions on every
+	// request.
+	agentID string
 }
 
-// NewSkillTool creates a new skill tool instance.
-func NewSkillTool(permissions permission.Service, reg agentregistry.Registry) BaseTool {
+// NewSkillTool creates a new skill tool instance scoped to agentID.
+func NewSkillTool(permissions permission.Service, reg agentregistry.Registry, agentID string) BaseTool {
 	return &skillTool{
 		permissions: permissions,
 		registry:    reg,
+		agentID:     agentID,
 	}
 }
 
@@ -69,7 +78,11 @@ func (s *skillTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 
 	skillInfo, err := skill.Get(params.Name)
 	if err != nil {
-		available := skill.All()
+		// Scope the suggestion list the same way the listing is scoped: an
+		// agent that denied a family of skills must not have their names
+		// handed back to it by a typo, which would both leak the inventory it
+		// was scoped away from and invite loads that can only be refused.
+		available := s.filterSkillsByPermission(skill.All())
 		availableNames := make([]string, 0, len(available))
 		for _, s := range available {
 			availableNames = append(availableNames, s.Name)
@@ -234,14 +247,166 @@ func (s *skillTool) checkPermission(ctx context.Context, sessionID string, agent
 }
 
 func (s *skillTool) filterSkillsByPermission(skills []skill.Info) []skill.Info {
+	if s.registry == nil {
+		// No permission model is wired (schema/description introspection):
+		// there is nothing to filter against, so list what discovery found.
+		return skills
+	}
 	filtered := make([]skill.Info, 0, len(skills))
 	for _, sk := range skills {
-		action := s.registry.EvaluatePermission("", SkillToolName, sk.Name)
+		action := s.registry.EvaluatePermission(s.agentID, SkillToolName, sk.Name)
 		if action != permission.ActionDeny {
 			filtered = append(filtered, sk)
 		}
 	}
 	return filtered
+}
+
+// skillListingLimits bounds the <available_skills> block. Zero on either
+// field means "unbounded" for that dimension.
+type skillListingLimits struct {
+	maxDescriptionChars int // per-skill description cap
+	maxTotalChars       int // whole-block cap, including the wrapper tags
+}
+
+// skillLimitsFromConfig reads the listing budget from config, tolerating an
+// absent skills section (every field then falls back to the same defaults the
+// loader would have applied).
+func skillLimitsFromConfig() skillListingLimits {
+	lim := skillListingLimits{maxDescriptionChars: config.DefaultSkillMaxDescriptionChars}
+	if cfg := config.Get(); cfg != nil && cfg.Skills != nil {
+		lim.maxDescriptionChars = cfg.Skills.MaxDescriptionChars
+		lim.maxTotalChars = cfg.Skills.MaxListingChars
+	}
+	return lim
+}
+
+// truncateDescription clips a description to max characters, preferring the
+// last word boundary so the tail does not end mid-token. Trigger terms belong
+// at the head of a description precisely because this is where it is cut.
+func truncateDescription(description string, max int) string {
+	if max <= 0 || utf8.RuneCountInString(description) <= max {
+		return description
+	}
+	// The ellipsis is charged against the cap: cut one rune short so a
+	// truncated description is at most max runes, not max+1.
+	runes := []rune(description)[:max-1]
+	// Back up to the last word boundary, but only when one sits reasonably
+	// near the cut — a tail with no spaces would otherwise surrender most of
+	// its budget to the search.
+	if idx := lastWordBoundary(runes); idx >= len(runes)*3/4 {
+		runes = runes[:idx]
+	}
+	return strings.TrimRight(string(runes), " \t\n.,;:") + "…"
+}
+
+// lastWordBoundary returns the index of the last whitespace rune, or -1.
+func lastWordBoundary(runes []rune) int {
+	for i := len(runes) - 1; i >= 0; i-- {
+		switch runes[i] {
+		case ' ', '\t', '\n':
+			return i
+		}
+	}
+	return -1
+}
+
+// renderSkillEntry renders one <skill> element of the listing.
+//
+// Deliberately no <location>: the path is useless before the skill is loaded
+// (Run reports the base directory with the content), and across a 60-skill
+// inventory the location lines alone were 17% of the whole block.
+func renderSkillEntry(sk skill.Info, maxDescriptionChars int) string {
+	var sb strings.Builder
+	sb.WriteString("  <skill>\n")
+	fmt.Fprintf(&sb, "    <name>%s</name>\n", sk.Name)
+	fmt.Fprintf(&sb, "    <description>%s</description>\n", truncateDescription(sk.Description, maxDescriptionChars))
+	if sk.ArgumentHint != "" {
+		fmt.Fprintf(&sb, "    <args>%s</args>\n", sk.ArgumentHint)
+	}
+	sb.WriteString("  </skill>\n")
+	return sb.String()
+}
+
+// The wrapper around the entries costs two different amounts: a complete
+// listing is just the bare tags, while a partial one also carries the
+// showing/total counters and the note explaining the omission. Both are
+// measured rather than estimated so maxTotalChars is a real cap.
+const (
+	skillsOpenTag     = "<available_skills>\n"
+	skillsCloseTag    = "</available_skills>"
+	skillsOpenPartial = "<available_skills showing=\"%d\" total=\"%d\">\n"
+	skillsOmittedNote = "  <note>%d of %d skills are omitted from this listing to stay within the " +
+		"configured skill listing budget. An omitted skill can still be loaded by name if you " +
+		"know it; ask the user to name it when a task needs a skill you cannot see.</note>\n"
+)
+
+// partialWrapperChars is the cost of the wrapper on a listing that drops
+// entries. Both counters are formatted at their largest possible value
+// (total), so the result is an upper bound and the budget can only be
+// under-spent, never overrun.
+func partialWrapperChars(total int) int {
+	return utf8.RuneCountInString(fmt.Sprintf(skillsOpenPartial, total, total)) +
+		utf8.RuneCountInString(fmt.Sprintf(skillsOmittedNote, total, total)) +
+		utf8.RuneCountInString(skillsCloseTag)
+}
+
+// renderAvailableSkills renders the <available_skills> block, dropping whole
+// entries from the end once the block would exceed lim.maxTotalChars.
+//
+// skills must already be sorted (skill.All sorts by name) so the same
+// inventory always yields the same listing — a budget that silently kept a
+// different subset per process would make a missing skill unreproducible.
+// Dropping is disclosed in-band: omitted skills remain loadable by name, so
+// the model needs to know the list it can see is partial.
+func renderAvailableSkills(skills []skill.Info, lim skillListingLimits) string {
+	entries := make([]string, 0, len(skills))
+	entriesChars := 0
+	for _, sk := range skills {
+		entry := renderSkillEntry(sk, lim.maxDescriptionChars)
+		entries = append(entries, entry)
+		entriesChars += utf8.RuneCountInString(entry)
+	}
+
+	// Fit against the *complete* wrapper first. Charging the partial wrapper
+	// up front would drop skills to make room for a note explaining a drop
+	// that only the reservation caused — a budget that comfortably holds the
+	// whole inventory must never come back truncated.
+	shown := len(entries)
+	completeChars := utf8.RuneCountInString(skillsOpenTag) + entriesChars + utf8.RuneCountInString(skillsCloseTag)
+	if lim.maxTotalChars > 0 && completeChars > lim.maxTotalChars {
+		used := partialWrapperChars(len(skills))
+		shown = 0
+		for _, entry := range entries {
+			n := utf8.RuneCountInString(entry)
+			if used+n > lim.maxTotalChars {
+				break
+			}
+			used += n
+			shown++
+		}
+		// A budget too small for even one entry would otherwise buy a block
+		// that is all note and no listing — ~300 characters that name nothing.
+		// Keep one skill so the block always carries more than its own excuse.
+		if shown == 0 && len(entries) > 0 {
+			shown = 1
+		}
+	}
+
+	var sb strings.Builder
+	if shown < len(skills) {
+		fmt.Fprintf(&sb, skillsOpenPartial, shown, len(skills))
+	} else {
+		sb.WriteString(skillsOpenTag)
+	}
+	for _, e := range entries[:shown] {
+		sb.WriteString(e)
+	}
+	if shown < len(skills) {
+		fmt.Fprintf(&sb, skillsOmittedNote, len(skills)-shown, len(skills))
+	}
+	sb.WriteString(skillsCloseTag)
+	return sb.String()
 }
 
 func (s *skillTool) buildSkillDescription() string {
@@ -261,22 +426,13 @@ func (s *skillTool) buildSkillDescription() string {
 	sb.WriteString("Invoke this tool to load a skill when a task matches one of the available skills listed below:\n\n")
 	sb.WriteString("Important:\n")
 	sb.WriteString("- If you see a <skill_content> tag in the current conversation turn, the skill has ALREADY been loaded - follow the instructions directly instead of calling this tool again\n")
-	sb.WriteString("- Do not invoke a skill that is already loaded in the conversation\n\n")
-	sb.WriteString("<available_skills>\n")
-
-	for _, sk := range accessibleSkills {
-		baseDir := filepath.Dir(sk.Location)
-		fmt.Fprintf(&sb, "  <skill>\n")
-		fmt.Fprintf(&sb, "    <name>%s</name>\n", sk.Name)
-		fmt.Fprintf(&sb, "    <description>%s</description>\n", sk.Description)
-		if sk.ArgumentHint != "" {
-			fmt.Fprintf(&sb, "    <args>%s</args>\n", sk.ArgumentHint)
-		}
-		fmt.Fprintf(&sb, "    <location>file://%s</location>\n", baseDir)
-		fmt.Fprintf(&sb, "  </skill>\n")
+	sb.WriteString("- Do not invoke a skill that is already loaded in the conversation\n")
+	lim := skillLimitsFromConfig()
+	if lim.maxDescriptionChars > 0 {
+		sb.WriteString("- A description may be truncated with an ellipsis; load the skill to see the whole thing\n")
 	}
-
-	sb.WriteString("</available_skills>")
+	sb.WriteString("\n")
+	sb.WriteString(renderAvailableSkills(accessibleSkills, lim))
 
 	return sb.String()
 }

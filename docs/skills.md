@@ -164,6 +164,87 @@ Add custom skill directories in your configuration:
 - `./path` → Relative to working directory
 - `/path` → Absolute path
 
+A configured path that is not an existing directory is skipped — and reported, see [Dropped skills](#dropped-skills). In a workspace that assembles team repos at runtime, a missing path is usually a checkout that never landed rather than a team with no skills.
+
+## The listing budget
+
+There is no limit on how many skills OpenCode discovers. Skill *bodies* load on demand, but every discovered skill's `name` and `description` are preloaded into the `skill` tool's `<available_skills>` listing, which is part of the tool schema on **every** request. At ~120 skills with unabridged descriptions that block runs to roughly 80 KB (~22k tokens). It sits in the prompt-cache prefix, so the marginal cost is a cache read — but it still occupies the context window, dilutes skill selection across many similar descriptions, and any skill edit invalidates the whole prefix.
+
+Three controls keep it in hand, in the order you should reach for them:
+
+### 1. Scope the listing per agent (preferred)
+
+An agent's own `permission.skill` rules filter its listing, not just its loads. A team-scoped agent that only needs one family of skills should say so:
+
+```json
+{
+  "agents": {
+    "composer-developer": {
+      "permission": {
+        "skill": { "composer-*": "allow", "piano-*": "allow", "*": "deny" }
+      }
+    }
+  }
+}
+```
+
+Nothing is hidden that the agent could have used, and the listing shrinks to what the agent is actually allowed to load. `tools: {"skill": false}` removes the listing entirely.
+
+### 2. Cap each description
+
+```json
+{
+  "skills": {
+    "maxDescriptionChars": 500
+  }
+}
+```
+
+Defaults to 500. Descriptions over the cap are truncated with an ellipsis and the listing tells the model that descriptions may be partial, so nothing disappears — but **truncation keeps the head**, so front-load the terms that should trigger the skill. `0` disables truncation.
+
+### 3. Cap the whole listing
+
+```json
+{
+  "skills": {
+    "maxListingChars": 16000
+  }
+}
+```
+
+Defaults to `0` (unbounded). When set, skills past the cap are omitted from the listing — alphabetically last first, so the outcome is reproducible rather than filesystem-order dependent — and the block discloses the omission:
+
+```xml
+<available_skills showing="42" total="63">
+  ...
+  <note>21 of 63 skills are omitted from this listing ...</note>
+</available_skills>
+```
+
+An omitted skill is still **loadable by name**: the `skill` tool resolves against the full registry, not the listing. Reach for this only when per-agent scoping is not enough, since a skill the model cannot see is a skill it will not think to use.
+
+## Dropped skills
+
+A skill that fails validation is not registered, and is invisible to every agent. Discovery drops a skill when:
+
+| Cause | Rule |
+|---|---|
+| `description` too long | over 1024 characters |
+| `name` mismatch | frontmatter `name` differs from the parent directory name |
+| `name` invalid | over 64 characters, or not `^[a-z0-9]+(-[a-z0-9]+)*$` |
+| File too large | `SKILL.md` over 100 KB |
+| Broken frontmatter | missing, unterminated, invalid YAML, or not a mapping |
+| Duplicate name | first discovery wins (project → global → custom paths) |
+| Missing path | a `skills.paths` entry that is not an existing directory |
+
+Every drop is collected and reported as a single warning at the end of discovery, listing each path and reason:
+
+```
+WARN Skills were dropped during discovery and are unavailable to every agent count=6 registered=138 dropped=...
+```
+
+Note that `description` over 1024 characters **rejects the skill outright** — it is not truncated. The `maxDescriptionChars` listing cap is a separate, later step that only shortens what the model sees. Author descriptions under 1024 characters, and enforce it in CI if you distribute skills across repositories.
+
 ## Naming Rules
 
 Skill names must follow strict rules:
@@ -292,6 +373,8 @@ Override global permissions for specific agents:
 **Result:**
 - Coder agent can access `internal-*` skills (agent override)
 - Other agents cannot access `internal-*` skills (global deny)
+
+Agent-specific rules apply to the `<available_skills>` **listing** as well as to loading, so a `deny` also removes those descriptions from that agent's tool schema. See [The listing budget](#the-listing-budget).
 
 ### Disabling Skills for Agents
 
