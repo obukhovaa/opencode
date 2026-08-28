@@ -552,7 +552,8 @@ type flowStartOptions struct {
 	// endpoint for this run (the caller's per-team LiteLLM key).
 	llmAPIKey string
 	// telemetryUserID overrides telemetry.userId for this run's traces
-	// and provider metadata.
+	// and provider metadata, and is rendered as an `identity:` trace tag
+	// that shadows the pod's static boot-time one.
 	telemetryUserID string
 	// telemetryTeam is the resolved team, rendered as a `team:` trace tag
 	// that shadows the pod's static boot-time one.
@@ -582,20 +583,34 @@ type stepAgentCacheResetter interface {
 	ResetStepCache()
 }
 
-// teamTags renders a resolved team name as the trace tags this run
-// contributes, or nil when the caller sent no team.
+// identityTags renders this run's telemetry identity as the trace tags it
+// contributes, or nil when the caller sent neither field.
 //
-// The `team:` prefix is the pod's to own, not the wire's: the caller
-// sends a bare team name and this decides how it is spelled as a tag, so
-// the pool path emits exactly the shape the boot-time config already uses
-// and runidentity.MergeTags can recognise it as the same namespace and
-// shadow the static one.
-func teamTags(team string) []string {
-	team = strings.TrimSpace(team)
-	if team == "" {
-		return nil
+// Both `identity:` and `team:` are namespaces the boot-time config
+// already populates, and BOTH must be overridden together on a pool pod.
+// They are deliberately different values — the identity is the LiteLLM
+// key owner actually billed, the team is the resolved owner — and a
+// mismatch between them is the agreed signal for a mis-billed job. A pool
+// pod boots with the shared defaults (identity:default-<agent>,
+// team:unresolved) and serves runs for many teams, so overriding only
+// `team:` would leave every pooled run reporting the boot identity: not
+// merely a stale label, but a permanent false mis-billing signal, since
+// the pair would disagree on exactly the runs that are billed correctly.
+//
+// The prefixes are the pod's to own, not the wire's: the caller sends
+// bare values and this decides how they are spelled, so the pool path
+// emits exactly the shape the boot-time config uses and
+// runidentity.MergeTags recognises them as the same namespaces and
+// shadows the static ones.
+func identityTags(userID, team string) []string {
+	var tags []string
+	if userID = strings.TrimSpace(userID); userID != "" {
+		tags = append(tags, "identity:"+userID)
 	}
-	return []string{"team:" + team}
+	if team = strings.TrimSpace(team); team != "" {
+		tags = append(tags, "team:"+team)
+	}
+	return tags
 }
 
 // foldMCPServerName canonicalises an MCP server name the way config
@@ -756,7 +771,7 @@ func (fr *flowRunner) applyRunScopedIdentity(state *flowRunState, opts flowStart
 		runidentity.Set(&runidentity.Identity{
 			APIKey: opts.llmAPIKey,
 			UserID: opts.telemetryUserID,
-			Tags:   teamTags(opts.telemetryTeam),
+			Tags:   identityTags(opts.telemetryUserID, opts.telemetryTeam),
 		})
 	}
 	// A run that carries NO identity must positively clear whatever the
