@@ -171,6 +171,13 @@ func (r *mcpRegistry) StartClient(ctx context.Context, name string) (c *client.C
 	}
 	if err = c.Start(startCtx); err != nil {
 		logging.Error("Error starting MCP client", "server", m.Command, "cause", err)
+		// The constructors above already spawned the child process (stdio) or
+		// built the transport (sse/http). Returning a nil client here would
+		// orphan it with no reference left to close: nothing would ever reap a
+		// stdio server whose Start merely timed out.
+		if cerr := c.Close(); cerr != nil {
+			logging.Warn("Error closing MCP client after failed start", "server", name, "cause", cerr)
+		}
 		return nil, err
 	}
 	return c, nil
@@ -330,10 +337,13 @@ func (r *mcpRegistry) LoadTools(filter *MCPRegistryFiler) <-chan tools.BaseTool 
 
 const (
 	ttl = 30 * time.Minute
-	// mcpInitTimeout bounds a single cache fetch (start + initialize + list
-	// tools) for one MCP server. It is also what bounds getTools' waiter
-	// path: every fetcher closes entry.done within this budget.
-	mcpInitTimeout     = 30 * time.Second
+	// mcpInitTimeout bounds every wait on an MCP server becoming usable: a
+	// single cache fetch (start + initialize + list tools), the getTools waiter
+	// path's backstop on entry.done, and the per-call initialize handshake in
+	// runTool. Deliberately NOT per-server overridable the way
+	// callToolTimeoutSeconds is: tool latency is genuinely server-specific,
+	// handshake latency is not — initialize is one request/response with no
+	// work behind it, so a server that misses this budget is broken, not slow.
 	mcpCallToolTimeout = 5 * time.Minute
 	// mcpCallToolMaxOutputBytes is the default cap on a single MCP tool call's
 	// output kept in the model context. Output beyond this is spilled to a temp
@@ -341,6 +351,9 @@ const (
 	// MCPServer.CallToolMaxOutputBytes.
 	mcpCallToolMaxOutputBytes = 50 * 1024 // 50KB
 )
+
+// A var rather than a const so tests can shorten it; never mutated at runtime.
+var mcpInitTimeout = 30 * time.Second
 
 type toolsCacheEntry struct {
 	done chan bool
@@ -353,6 +366,34 @@ type toolsCacheEntry struct {
 func (entry *toolsCacheEntry) expired() bool {
 	now := time.Now().UnixMilli()
 	return now > entry.ts+ttl.Milliseconds()
+}
+
+// awaitCacheEntry waits for an in-flight MCP client-cache fetch to finish.
+// Returns true when the entry became ready, false when the caller should give
+// up and contribute no tools for this server.
+//
+// On give-up the entry is deliberately LEFT IN PLACE: the fetcher owns its
+// lifecycle, matching what getToolsAttempt does when a fetch completes with
+// entry.err set. Deleting it here would let a wedged fetcher's eventual close
+// race a freshly stored entry.
+//
+// budget must stay >= the fetcher's own fetchCtx budget, or a healthy but
+// slow-starting server gets skipped by waiters while its fetch is still
+// legitimately in flight. Equal is the minimum safe value; if this proves
+// flaky in practice, lengthen the waiter's budget, not the fetcher's.
+func awaitCacheEntry(ctx context.Context, name string, entry *toolsCacheEntry, budget time.Duration) bool {
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case <-entry.done:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		logging.Warn("MCP client cache wait exceeded the fetch budget; skipping server for this resolution",
+			"server", name, "budget", budget)
+		return false
+	}
 }
 
 func (r *mcpRegistry) getTools(name string, m config.MCPServer) []tools.BaseTool {
@@ -372,9 +413,13 @@ func (r *mcpRegistry) getToolsAttempt(name string, m config.MCPServer, retryOnIn
 	}
 
 	if loaded {
-		// cache/reuse — wait for the (possibly in-flight) fetch. Bounded:
-		// the fetcher closes entry.done within mcpInitTimeout.
-		<-entry.done
+		// cache/reuse — wait for the (possibly in-flight) fetch. The fetcher
+		// closes entry.done from a defer, which does not run while it is blocked
+		// in a call that ignores its ctx (a started-but-mute stdio server), so
+		// the wait carries its own backstop rather than trusting that invariant.
+		if !awaitCacheEntry(r.discoveryCtx(), name, entry, mcpInitTimeout) {
+			return toolsToAdd
+		}
 		// entry is a pointer, and close(done) provides
 		// happens-before: entry.data and entry.err are
 		// visible directly
@@ -559,8 +604,29 @@ func runTool(ctx context.Context, c MCPClient, toolName string, input string, ca
 		Version: version.Version,
 	}
 
-	_, err := c.Initialize(ctx, initRequest)
+	// The handshake needs its own deadline: it is one request/response with no
+	// work behind it, so a server that has not answered within mcpInitTimeout is
+	// broken rather than slow. Unbounded, a server that starts but never replies
+	// parks the caller for the life of the process, and callTimeout below never
+	// applies because CallTool is never reached — the wedge shows up only as a
+	// tool part stuck at status=running with no start timestamp.
+	//
+	// cancelInit is called explicitly, not deferred: a defer would hold the timer
+	// across the up-to-callTimeout CallTool that follows.
+	initCtx, cancelInit := context.WithTimeout(ctx, mcpInitTimeout)
+	_, err := c.Initialize(initCtx, initRequest)
+	initErr := initCtx.Err()
+	cancelInit()
 	if err != nil {
+		// Only attribute the timeout to our handshake budget while the parent ctx
+		// is still alive — otherwise the deadline came from upstream and naming
+		// mcpInitTimeout would be misleading.
+		if ctx.Err() == nil && initErr == context.DeadlineExceeded {
+			return tools.NewTextErrorResponse(fmt.Sprintf(
+				"MCP handshake for tool %q did not complete within %s — the server started but never answered initialize. The agent should try a different approach or skip this step.",
+				toolName, mcpInitTimeout,
+			)), nil
+		}
 		return tools.NewTextErrorResponse(err.Error()), nil
 	}
 

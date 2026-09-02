@@ -1245,7 +1245,7 @@ OuterLoop:
 // task, and the next wait blocks on it.
 func drainSessionTasks(ctx context.Context, reg task.Registry, sessionID string) error {
 	for {
-		if err := reg.WaitForActiveTasks(ctx, sessionID, task.WaitOptions{IncludeMonitor: true}); err != nil {
+		if err := waitForTasksWithProgress(ctx, reg, sessionID); err != nil {
 			return err
 		}
 		remaining := reg.PendingForSession(sessionID, nil)
@@ -1258,6 +1258,64 @@ func drainSessionTasks(ctx context.Context, reg task.Registry, sessionID string)
 			"pending_count", len(remaining),
 		)
 	}
+}
+
+// drainProgressInterval is how often the non-interactive drain reports the
+// tasks it is still waiting on. A var, not a const, so tests can shorten it.
+var drainProgressInterval = 60 * time.Second
+
+// waitForTasksWithProgress is WaitForActiveTasks plus a periodic report of
+// what is still pending.
+//
+// Purely observability. The ticker NEVER shortens or ends the wait: per the
+// background-tasks spec the surrounding ctx is the sole deadline source, and a
+// future reader must not mistake this timer for a deadline. It exists because
+// the drain otherwise logs once on entry and then nothing, so a step legitimately
+// held open by a long task is indistinguishable in the log from a hung or dead
+// process — a production wedge once produced 1h50m of unbroken silence.
+func waitForTasksWithProgress(ctx context.Context, reg task.Registry, sessionID string) error {
+	opts := task.WaitOptions{IncludeMonitor: true}
+	// Nothing pending: the wait returns immediately, so no report is warranted.
+	if len(reg.PendingForSession(sessionID, nil)) == 0 {
+		return reg.WaitForActiveTasks(ctx, sessionID, opts)
+	}
+
+	// Buffered so the waiter goroutine can always finish even if we stop
+	// reading; we only leave this function once done has fired, and ctx
+	// cancellation makes WaitForActiveTasks return, so it cannot outlive us.
+	done := make(chan error, 1)
+	go func() { done <- reg.WaitForActiveTasks(ctx, sessionID, opts) }()
+
+	ticker := time.NewTicker(drainProgressInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ticker.C:
+			pending := reg.PendingForSession(sessionID, nil)
+			if len(pending) == 0 {
+				continue
+			}
+			logging.Info(
+				"Non-interactive drain: still waiting on background tasks",
+				"session_id", sessionID,
+				"pending_count", len(pending),
+				"pending", formatPendingTasks(pending),
+			)
+		}
+	}
+}
+
+// formatPendingTasks renders pending tasks as "<id>(<kind>,age=<d>)" joined by
+// commas, for a single structured log field.
+func formatPendingTasks(pending []*task.Task) string {
+	parts := make([]string, 0, len(pending))
+	for _, t := range pending {
+		parts = append(parts, fmt.Sprintf("%s(%s,age=%s)",
+			t.ID, t.Kind, time.Since(t.StartedAt).Round(time.Second)))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // injectWaitTimeoutNote writes a synthetic Assistant text message into

@@ -91,6 +91,17 @@ Three sources, in precedence order:
 | `OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT` env var | Deploy environment. | Fallback default when the step has no explicit `timeout`. Parsed once at process start; SIGHUP-style reloads require a process restart. Malformed / non-positive values are logged and ignored. |
 | Unbounded | When neither of the above is set. | The wait is bounded only by the orchestrator's surrounding ctx (e.g. an overall flow deadline). If there is no surrounding deadline, the wait blocks until the work completes or the process exits. |
 
+Deploying with neither source set is the configuration to avoid: a task that can never
+finish then holds its step until the process exits, and a step whose `struct_output` was
+already accepted still never routes. Prefer setting
+`OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT` deployment-wide even when individual steps
+carry no `timeout`.
+
+While the drain waits it logs the tasks it is still waiting on — id, kind and age —
+every 60 seconds (`Non-interactive drain: still waiting on background tasks`). This is
+observability only and never shortens the wait; it exists so a step legitimately held
+open by a long task is distinguishable in the log from a hung or dead process.
+
 When the wait returns `ctx.Err()`, the runtime writes a synthetic Assistant text message into the session log enumerating the still-pending task IDs, kinds, `started_at` timestamps, `output_file` paths, and any descriptions. The message has `Synthetic: true` so the chat bridge skips it for outbound indicators; non-bridge consumers (transcript export, SSE replay, the model on any subsequent `agent.Run` on this session) observe it as ambient context.
 
 This means the model can react to a previous step's timeout when a flow is re-triggered. Without this, a re-run on the same session would replay the same dead-end work without knowing why the previous attempt stopped.

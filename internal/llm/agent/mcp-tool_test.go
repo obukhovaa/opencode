@@ -37,18 +37,41 @@ func TestResolveCallToolMaxOutputBytes(t *testing.T) {
 
 type fakeMCPClient struct {
 	result *mcp.CallToolResult
+	// blockInitialize / blockCallTool make the respective method hang until its
+	// ctx is done, standing in for a server that accepts a request and never
+	// answers. Zero value = respond immediately, so existing tests are unaffected.
+	blockInitialize bool
+	blockCallTool   bool
+	// callToolDelay delays CallTool without ignoring ctx.
+	callToolDelay time.Duration
+	closed        atomic.Bool
 }
 
 func (f *fakeMCPClient) Initialize(ctx context.Context, req mcp.InitializeRequest) (*mcp.InitializeResult, error) {
+	if f.blockInitialize {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	return &mcp.InitializeResult{}, nil
 }
 func (f *fakeMCPClient) ListTools(ctx context.Context, req mcp.ListToolsRequest) (*mcp.ListToolsResult, error) {
 	return &mcp.ListToolsResult{}, nil
 }
 func (f *fakeMCPClient) CallTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if f.blockCallTool {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if f.callToolDelay > 0 {
+		select {
+		case <-time.After(f.callToolDelay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return f.result, nil
 }
-func (f *fakeMCPClient) Close() error { return nil }
+func (f *fakeMCPClient) Close() error { f.closed.Store(true); return nil }
 
 func textResult(blocks ...string) *mcp.CallToolResult {
 	r := &mcp.CallToolResult{}
@@ -241,4 +264,140 @@ func TestMCPRegistry_ShutdownBoundsFetch(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("LoadTools did not terminate after registry shutdown")
 	}
+}
+
+// withInitTimeout shortens the package-level handshake budget for one test so
+// the bound can be exercised without a 30s wait.
+func withInitTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := mcpInitTimeout
+	mcpInitTimeout = d
+	t.Cleanup(func() { mcpInitTimeout = prev })
+}
+
+// TestRunToolHandshakeBound covers the deadline on the per-call MCP handshake.
+// Before it existed, a server that started but never answered initialize parked
+// the caller for the life of the process: the tool part stayed at
+// status=running with no start timestamp, and the callTimeout below never
+// applied because CallTool was never reached.
+func TestRunToolHandshakeBound(t *testing.T) {
+	t.Cleanup(tools.CleanupTempDir)
+
+	t.Run("handshake that never answers fails within the budget", func(t *testing.T) {
+		withInitTimeout(t, 50*time.Millisecond)
+		c := &fakeMCPClient{blockInitialize: true}
+
+		start := time.Now()
+		resp, err := runTool(context.Background(), c, "wedged_tool", "{}", mcpCallToolTimeout, mcpCallToolMaxOutputBytes)
+		elapsed := time.Since(start)
+
+		if err != nil {
+			t.Fatalf("runTool returned a Go error, want a tool error: %v", err)
+		}
+		if elapsed > 5*time.Second {
+			t.Fatalf("runTool blocked for %s; the handshake bound did not apply", elapsed)
+		}
+		if !resp.IsError {
+			t.Error("wedged handshake should produce an error response")
+		}
+		for _, want := range []string{"wedged_tool", "handshake", mcpInitTimeout.String()} {
+			if !strings.Contains(resp.Content, want) {
+				t.Errorf("response missing %q; got: %s", want, resp.Content)
+			}
+		}
+	})
+
+	t.Run("upstream cancellation is not blamed on the handshake budget", func(t *testing.T) {
+		// A long budget so only the parent ctx can end the call.
+		withInitTimeout(t, time.Hour)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		resp, err := runTool(ctx, &fakeMCPClient{blockInitialize: true}, "cancelled_tool", "{}", mcpCallToolTimeout, mcpCallToolMaxOutputBytes)
+		if err != nil {
+			t.Fatalf("runTool returned a Go error: %v", err)
+		}
+		if strings.Contains(resp.Content, "handshake") {
+			t.Errorf("upstream cancellation attributed to the handshake budget: %s", resp.Content)
+		}
+	})
+
+	t.Run("handshake budget does not curtail a slow tool call", func(t *testing.T) {
+		// The tool takes longer than the handshake budget but stays inside its
+		// own call budget: a deferred cancelInit would have killed this.
+		withInitTimeout(t, 30*time.Millisecond)
+		c := &fakeMCPClient{result: textResult("done"), callToolDelay: 150 * time.Millisecond}
+
+		resp, err := runTool(context.Background(), c, "slow_tool", "{}", 10*time.Second, mcpCallToolMaxOutputBytes)
+		if err != nil {
+			t.Fatalf("runTool error: %v", err)
+		}
+		if resp.IsError {
+			t.Fatalf("slow-but-within-budget call failed: %s", resp.Content)
+		}
+		if resp.Content != "done" {
+			t.Errorf("content = %q, want %q", resp.Content, "done")
+		}
+	})
+
+	t.Run("call budget still applies after a prompt handshake", func(t *testing.T) {
+		withInitTimeout(t, time.Hour)
+		c := &fakeMCPClient{blockCallTool: true}
+
+		resp, err := runTool(context.Background(), c, "hung_call", "{}", 50*time.Millisecond, mcpCallToolMaxOutputBytes)
+		if err != nil {
+			t.Fatalf("runTool error: %v", err)
+		}
+		if !strings.Contains(resp.Content, "timed out") {
+			t.Errorf("expected the CallTool timeout message, got: %s", resp.Content)
+		}
+	})
+}
+
+// TestAwaitCacheEntry covers the backstop on the shared MCP client-cache wait.
+// The fetcher closes entry.done from a defer, which never runs while it is
+// blocked in a call that ignores its ctx — and an open entry blocks EVERY
+// waiter, including agents with no interest in that server.
+func TestAwaitCacheEntry(t *testing.T) {
+	t.Run("ready entry returns immediately", func(t *testing.T) {
+		entry := &toolsCacheEntry{done: make(chan bool)}
+		close(entry.done)
+		if !awaitCacheEntry(context.Background(), "srv", entry, time.Hour) {
+			t.Error("awaitCacheEntry = false for a closed entry, want true")
+		}
+	})
+
+	t.Run("wedged fetcher releases the waiter at the backstop", func(t *testing.T) {
+		entry := &toolsCacheEntry{done: make(chan bool)} // never closed
+
+		start := time.Now()
+		ok := awaitCacheEntry(context.Background(), "wedged", entry, 40*time.Millisecond)
+		elapsed := time.Since(start)
+
+		if ok {
+			t.Error("awaitCacheEntry = true for a wedged fetcher, want false")
+		}
+		if elapsed > 5*time.Second {
+			t.Fatalf("waiter blocked for %s; the backstop did not apply", elapsed)
+		}
+		select {
+		case <-entry.done:
+			t.Error("waiter closed the shared entry; the fetcher owns its lifecycle")
+		default:
+		}
+	})
+
+	t.Run("registry shutdown releases the waiter without waiting out the backstop", func(t *testing.T) {
+		entry := &toolsCacheEntry{done: make(chan bool)}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		start := time.Now()
+		if awaitCacheEntry(ctx, "srv", entry, time.Hour) {
+			t.Error("awaitCacheEntry = true after shutdown, want false")
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("shutdown waiter blocked for %s", elapsed)
+		}
+	})
 }
