@@ -1203,7 +1203,12 @@ OuterLoop:
 			)
 			break OuterLoop
 		}
-		// Wait completed — synthetic completions are in the message log.
+		// Wait completed. Synthetic completions are in the log on the normal
+		// path (EnqueueTaskCompletion writes the pair before MarkFinished), but
+		// NOT necessarily after a kill: Registry.Kill signals done before it
+		// cancels, so the pair may still be in flight. The reload below can
+		// therefore see nothing new and cost one extra cycle; struct_output
+		// survives regardless (declared outside OuterLoop).
 		// Reload, filter the empty-user-turn corruption, and let the
 		// inner loop run another cycle so the model can react.
 		freshMsgs, listErr := a.messages.List(ctx, sessionID)
@@ -1312,8 +1317,13 @@ func waitForTasksWithProgress(ctx context.Context, reg task.Registry, sessionID 
 // in rather than reached for so the drain stays independent of the agent; the
 // zero value disables detection, which is what every non-agent caller wants.
 type stallPolicy struct {
-	threshold    time.Duration
-	lastProgress func(context.Context, *task.Task) time.Time
+	threshold time.Duration
+	// lastProgress reports when the task last showed progress. The bool is
+	// "known": false means the probe could not answer, and an unknown answer
+	// MUST NOT be turned into a timestamp — a stale-looking one (StartedAt, or
+	// the zero time) reads as a stall for any task older than the threshold and
+	// would kill healthy long-running work on one failed read.
+	lastProgress func(context.Context, *task.Task) (time.Time, bool)
 }
 
 func (p stallPolicy) enabled() bool { return p.threshold > 0 && p.lastProgress != nil }
@@ -1336,10 +1346,23 @@ func (p stallPolicy) killStalled(ctx context.Context, reg task.Registry, pending
 		return
 	}
 	for _, t := range pending {
-		if t.Kind != task.KindTask || t.AgentSessionID == "" {
+		if t.Kind != task.KindTask {
 			continue
 		}
-		age := time.Since(p.lastProgress(ctx, t))
+		if t.AgentSessionID == "" {
+			// The only site that registers a KindTask records this, so an empty
+			// value means that wiring regressed — which silently disables
+			// detection for the task. Skip it (a missing signal is never
+			// evidence of a stall) but say so, or the regression is invisible.
+			logging.Warn("Subagent task has no recorded session; skipping stall detection for it",
+				"task_id", t.ID, "parent_session_id", t.SessionID)
+			continue
+		}
+		last, known := p.lastProgress(ctx, t)
+		if !known {
+			continue
+		}
+		age := time.Since(last)
 		if age < p.threshold {
 			continue
 		}
@@ -1362,23 +1385,59 @@ func (p stallPolicy) killStalled(ctx context.Context, reg task.Registry, pending
 // stallPolicy builds the drain's stall policy from config. A non-positive
 // configured threshold disables detection.
 func (a *agent) stallPolicy() stallPolicy {
+	threshold := config.Get().TaskStallThreshold()
+	warnUnsafeStallThreshold(threshold)
 	return stallPolicy{
-		threshold:    config.Get().TaskStallThreshold(),
+		threshold:    threshold,
 		lastProgress: a.lastSubagentProgress,
 	}
 }
 
-// lastSubagentProgress returns when the subagent's session last showed signs of
+var stallThresholdWarnOnce sync.Once
+
+// warnUnsafeStallThreshold reports MCP servers whose per-call budget meets or
+// exceeds the stall threshold. A subagent is silent for the whole of a blocking
+// call, so such a server means healthy work gets killed mid-call — the one
+// constraint an operator has to hold, and otherwise enforced only by docs.
+func warnUnsafeStallThreshold(threshold time.Duration) {
+	if threshold <= 0 {
+		return
+	}
+	stallThresholdWarnOnce.Do(func() {
+		for name, m := range config.ResolveMCPServers() {
+			if budget := resolveCallToolTimeout(m); budget >= threshold {
+				logging.Warn(
+					"MCP call budget meets or exceeds the subagent stall threshold; healthy subagents may be killed mid-call — raise backgroundTasks.stallThreshold above it",
+					"server", name, "call_budget", budget, "stall_threshold", threshold,
+				)
+			}
+		}
+	})
+}
+
+// lastSubagentProgress reports when the subagent's session last showed signs of
 // life. Any persisted message counts — a generation, a tool call, or a tool
-// result — and UpdatedAt is preferred over CreatedAt so a long streaming
-// generation also registers as progress.
+// result — and UpdatedAt is preferred over CreatedAt because processEvent
+// updates the assistant row on every delta, so a long streaming generation
+// registers as progress rather than as silence.
 //
-// Falls back to StartedAt when the subagent has persisted nothing yet, and on a
-// read error, so a failed lookup can never manufacture a stall.
-func (a *agent) lastSubagentProgress(ctx context.Context, t *task.Task) time.Time {
+// Returns known=false rather than a timestamp whenever it cannot answer. That
+// distinction is the safety property: a read error is not evidence of a stall,
+// and substituting StartedAt here would kill any healthy task already older
+// than the threshold the first time the session store hiccups — or the moment
+// the step ctx is cancelled and database/sql starts refusing queries.
+func (a *agent) lastSubagentProgress(ctx context.Context, t *task.Task) (time.Time, bool) {
 	msgs, err := a.messages.ListLatest(ctx, t.AgentSessionID, 1)
+	return progressFromMessages(msgs, err, t.StartedAt)
+}
+
+// progressFromMessages is the decision in lastSubagentProgress, split out so it
+// is testable without a session store — the inversion it guards against (an
+// unknown read reported as an old timestamp) is silent and kills healthy work,
+// so it needs direct coverage rather than coverage through a fake probe.
+func progressFromMessages(msgs []message.Message, err error, startedAt time.Time) (time.Time, bool) {
 	if err != nil || len(msgs) == 0 {
-		return t.StartedAt
+		return time.Time{}, false
 	}
 	last := msgs[len(msgs)-1]
 	ts := last.UpdatedAt
@@ -1386,12 +1445,14 @@ func (a *agent) lastSubagentProgress(ctx context.Context, t *task.Task) time.Tim
 		ts = last.CreatedAt
 	}
 	if ts <= 0 {
-		return t.StartedAt
+		return time.Time{}, false
 	}
-	if progress := time.Unix(ts, 0); progress.After(t.StartedAt) {
-		return progress
+	// Clamp to StartedAt: clock skew or a backdated row must not age the task
+	// past the threshold on its own.
+	if progress := time.Unix(ts, 0); progress.After(startedAt) {
+		return progress, true
 	}
-	return t.StartedAt
+	return startedAt, true
 }
 
 // formatPendingTasks renders pending tasks as "<id>(<kind>,age=<d>)" joined by

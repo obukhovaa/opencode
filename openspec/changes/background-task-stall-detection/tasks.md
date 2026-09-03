@@ -40,9 +40,10 @@
 
 ## 4. Detection and termination
 
-- [x] 4.1 Implement stall evaluation in `internal/task/registry.go` over `KindTask`
-  entries in `StateRunning` only; exempt `KindBash`, `KindMonitor`, `KindCron` by an
-  explicit kind check, not by an implicit property
+- [x] 4.1 Implemented in `internal/llm/agent/agent.go` (`stallPolicy.killStalled`), NOT
+  in `internal/task/registry.go` as originally planned — see the 2.1 deviation, which
+  keeps `internal/task` a leaf package. Scope is `KindTask` in `StateRunning` only, with
+  `KindBash` / `KindMonitor` / `KindCron` exempt by an explicit kind check
 
 - [x] 4.2 Terminate via the existing `Kill` semantics so downstream behaviour is
   identical to `taskstop` (terminal state stamped up front, `done` signalled, `Cancel`
@@ -57,25 +58,35 @@
 
 ## 5. Tests
 
-- [x] 5.1 `KindMonitor` with no events and no output past the threshold is NOT killed —
-  the regression guard for the whole exemption; assert on kind, not on a proxy
+- [x] 5.1 `KindMonitor` / `KindBash` / `KindCron` past the threshold are NOT killed.
+  Review caught that the first version asserted on a PROXY after all: the fixture blanked
+  `AgentSessionID` for exempt kinds, so the other guard in `killStalled` was doing the
+  work and dropping the kind check alone left the tests green. The fixture now gives
+  exempt kinds a real session id, and dropping only the kind conjunct fails all three
 
 - [x] 5.2 `KindBash` silent past the threshold is NOT killed
 
-- [x] 5.3 `KindTask` with stale last-message is killed; state becomes `StateKilled`,
-  `done` closes, `Cancel` fires
+- [x] 5.3 `KindTask` past the threshold is killed: state becomes `StateKilled` and
+  `done` closes. `Cancel` firing is NOT asserted — the fixture task carries a nil
+  `Cancel`, so `Registry.Kill`'s cancel branch is not exercised by any test in the repo
+  (pre-existing, but load-bearing here: if `Cancel` stopped firing the subagent's loop
+  would keep turning after the drain returned)
 
-- [x] 5.4 `KindTask` whose session gains a message before the threshold is NOT killed,
-  and a task that keeps persisting messages is never killed however long it runs (the
-  no-total-runtime-cap guarantee)
+- [x] 5.4 The no-total-runtime-cap guarantee is covered. The message-log behaviour is
+  covered by `TestProgressFromMessages` against the extracted `progressFromMessages`
+  (UpdatedAt-over-CreatedAt, zero timestamps, backdated clamp, newest-of-several,
+  read error, no messages) — added after review found `lastSubagentProgress` had ZERO
+  coverage and that flipping its fallback to the zero time passed the whole suite
 
 - [x] 5.5 `KindTask` with an empty `AgentSessionID` is never killed
 
 - [x] 5.6 Threshold zero / negative disables detection entirely
 
-- [x] 5.7 Drain integration: a stalled task lets `drainSessionTasks` return `nil` (the
-  every-task-terminal path) rather than `ctx.Err()`, and the synthetic completion pair
-  lands in the parent session
+- [x] 5.7 Drain integration: `TestDrainReturnsAfterStallKill` asserts the `nil`
+  (every-task-terminal) return rather than `ctx.Err()`. The synthetic-completion-pair
+  assertion is NOT included: task termination signals the completion channel before the
+  pair is written, so its arrival is not ordered ahead of the drain's return. The spec
+  was corrected to describe that rather than promise it
 
 - [x] 5.8 `go test -race ./internal/task/ ./internal/llm/agent/ ./internal/config/`
   green; `go build ./...` clean

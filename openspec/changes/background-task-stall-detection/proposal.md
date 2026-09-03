@@ -68,10 +68,13 @@ large enough to be safe is too large to be useful.
 
 **`github.com/opencode-ai/opencode`**
 
-- `internal/task/task.go`: `Task.AgentSessionID` (the subagent's own session), and a
-  progress accessor.
-- `internal/task/registry.go`: stall evaluation over `KindTask` entries, and the
-  kill-on-stall path reusing `Kill`'s existing terminal semantics.
+- `internal/task/task.go`: `Task.AgentSessionID` (the subagent's own session). Field
+  only — `internal/task` gains no new interface method and `registry.go` is untouched,
+  so it stays a leaf package.
+- `internal/llm/agent/agent.go`: `stallPolicy` (threshold + progress probe), the
+  evaluation and kill path driven from the drain's progress tick, the extracted
+  `progressFromMessages` decision, and the boot-time warning when an MCP server's call
+  budget meets or exceeds the threshold.
 - `internal/llm/agent/agent-tool-async.go`: record `taskSession.ID` on the registered
   task.
 - `internal/config/config.go` + `cmd/schema/main.go` + regenerated
@@ -79,8 +82,8 @@ large enough to be safe is too large to be useful.
 - `docs/background-tasks.md`: the stall contract, the per-kind scope table, and the
   relationship between the threshold and the largest single tool-call budget.
 
-**Stacked on `obukhovaa/opencode#45`.** The detection hook reuses that PR's drain
-progress ticker rather than adding a second timer, so this branch is based on it and #45
-merges first. The two changes stay conceptually independent — either would have
-shortened the incident alone, and together they give defence in depth: #45 removes the
-specific unbounded wait, this one catches whatever the next one turns out to be.
+**Shipped together with `mcp-call-deadline-bounds` in one PR.** The detection hook reuses
+that change's drain progress ticker rather than adding a second timer. The two remain
+conceptually independent — either would have shortened the incident alone, and together
+they give defence in depth: one removes the specific unbounded wait, this one catches
+whatever the next one turns out to be.

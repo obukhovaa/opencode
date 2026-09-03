@@ -1,12 +1,11 @@
 # mcp-call-deadline-bounds
 
-Guarantees that no wait on an MCP server can park an agent turn indefinitely. Every
+Guarantees that no wait on an MCP server can park an agent turn indefinitely. Each
 point at which opencode blocks on an MCP server — the per-call protocol handshake, the
-shared client-cache entry, and the tool invocation itself — carries an explicit
-deadline, and no MCP server process outlives the tool call that spawned it. Protects
-against a server that starts successfully but never answers, which previously wedged
-the calling goroutine for the life of the process and, through an async `task`
-subagent, parked an entire non-interactive flow step.
+tool invocation, the shared client-cache entry, and closing the client — carries an
+explicit deadline. Protects against a server that starts successfully but never
+answers, which previously wedged the calling goroutine for the life of the process
+and, through an async `task` subagent, parked an entire non-interactive flow step.
 
 ## ADDED Requirements
 
@@ -86,20 +85,37 @@ existing behavior for a fetch that completed with an error.
 - **WHEN** an agent resolves its tool set
 - **THEN** the tools are returned from cache with no additional latency and no warning
 
-### Requirement: No MCP server process outlives its tool call
+### Requirement: Closing an MCP client is bounded
 
-Every MCP client created for a tool call SHALL be closed on every exit path from that
-call, including handshake timeout, invocation timeout, argument-parsing failure, and
-any early error return between client creation and normal completion. A tool call that
-has returned MUST NOT leave a live MCP server child process behind.
+Every MCP client created for a tool call or a cache fetch SHALL be closed on every exit
+path. Because a stdio transport's close blocks until the child process exits, honouring
+no context, the close itself SHALL be bounded: on expiry the caller SHALL proceed rather
+than continue waiting, and the abandonment SHALL be logged with the server name.
 
-#### Scenario: Timed-out handshake closes its client
+Abandoning the close leaks the close goroutine and the child process for the life of the
+process. That is the accepted trade: the alternative is parking the agent turn, which is
+the failure this capability exists to remove, and the transport exposes no handle with
+which to signal the child.
 
-- **WHEN** an MCP tool call fails because the handshake deadline elapsed
-- **THEN** the client is closed
-- **AND** no MCP server child process spawned for that call remains alive
+A cache fetch SHALL make its cached entry available to waiters BEFORE closing its
+client, so a close that overruns cannot hold waiters on that server — and cannot leave
+the shared entry unreadable for the life of the process.
 
-#### Scenario: Early error return closes its client
+#### Scenario: A close that never completes does not park the caller
 
-- **WHEN** an MCP tool call returns early because its arguments could not be parsed
-- **THEN** the client created for that call is closed before returning
+- **GIVEN** an MCP server whose close blocks indefinitely
+- **WHEN** a tool call using it returns
+- **THEN** the caller proceeds within the close budget
+- **AND** the abandonment is logged with the server name
+
+#### Scenario: A cooperative close completes normally
+
+- **WHEN** an MCP server exits on stdin EOF as expected
+- **THEN** its client is closed and nothing is logged as abandoned
+
+#### Scenario: A wedged close does not block cache waiters
+
+- **GIVEN** a cache fetch whose client close overruns its budget
+- **WHEN** another caller waits on that server's cache entry
+- **THEN** the waiter is released as soon as the fetch result is available, without
+  waiting for the close

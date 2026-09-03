@@ -55,7 +55,9 @@ capability SHALL NOT add a time bound to monitors.
 
 The system SHALL record, on each registered `task`-kind entry, the session id of the
 subagent it spawned, distinct from the task's `SessionID` (which identifies the
-*parent* session and is what per-session pending lookups key on).
+*parent* session and is what per-session pending lookups key on). This field joins
+the set a task carries at registration (see the `background-tasks` registration
+requirement).
 
 A subagent task's progress timestamp SHALL be the creation/update time of the most
 recent message persisted on that subagent session, falling back to the task's
@@ -63,7 +65,15 @@ recent message persisted on that subagent session, falling back to the task's
 generation, a tool call, or a tool result — SHALL count as progress.
 
 A `task`-kind entry without a recorded subagent session id MUST NOT be considered
-stalled, so a missing signal can never cause a termination.
+stalled, so a missing signal can never cause a termination, and the skip SHALL be
+logged — that state means the spawn-site wiring regressed and detection is silently
+inactive for the task.
+
+An unavailable progress answer — a failed read of the subagent session — SHALL be
+treated as unknown and MUST NOT be substituted with a timestamp. Substituting either
+`StartedAt` or the zero time reads as a stall for any task already older than the
+threshold, which would terminate healthy long-running work on a single transient
+read failure.
 
 #### Scenario: New message resets the progress clock
 
@@ -82,6 +92,14 @@ stalled, so a missing signal can never cause a termination.
 - **GIVEN** a `task`-kind entry with no recorded subagent session id
 - **WHEN** stall evaluation runs
 - **THEN** the task is not considered stalled and is not terminated
+- **AND** the skip is logged, so the spawn-site regression that caused it is visible
+
+#### Scenario: A failed progress read never terminates a task
+
+- **GIVEN** a subagent task whose total runtime already exceeds the threshold
+- **AND** a read of its session that returns an error
+- **WHEN** stall evaluation runs
+- **THEN** the progress answer is unknown and the task is not terminated
 
 ### Requirement: The stall threshold is configurable and defaults above the largest tool-call budget
 
@@ -117,6 +135,45 @@ stall threshold MUST raise the threshold correspondingly.
 - **THEN** the stall-threshold field is present with a description naming its
   relationship to the largest tool-call budget
 
+### Requirement: A tool-call budget at or above the threshold is reported
+
+Because a subagent is silent for the whole of a blocking tool call, an MCP server whose
+resolved per-call budget meets or exceeds the stall threshold means healthy work will be
+killed mid-call. The system SHALL report every such server once per process at warning
+level, naming the server, its call budget and the threshold. No report SHALL be emitted
+when detection is disabled.
+
+This makes the operator-facing constraint checkable rather than documentation-only,
+since the per-server call budget has no upper bound.
+
+#### Scenario: An over-budget server is named
+
+- **GIVEN** stall detection enabled with a 30-minute threshold
+- **AND** an MCP server configured with a 45-minute per-call budget
+- **WHEN** the policy is first constructed
+- **THEN** a warning names that server, its budget and the threshold
+
+#### Scenario: Default-budget servers are not reported
+
+- **GIVEN** stall detection enabled with the default threshold
+- **AND** MCP servers on the default per-call budget
+- **THEN** no such warning is emitted
+
+### Requirement: Coverage is limited to the end-of-turn drain
+
+Stall detection SHALL apply to the non-interactive end-of-turn drain. It is NOT required
+to apply to the anti-spin foreground-wait redirect, which waits on the registry directly:
+a wedged subagent reached by a model self-poll remains bounded only by the surrounding
+ctx. This boundary SHALL be documented so it is not mistaken for coverage.
+
+#### Scenario: The anti-spin wait is not covered
+
+- **GIVEN** a wedged subagent task pending on a session
+- **WHEN** the model issues a foreground self-wait that is redirected to the registry
+  wait rather than entering the end-of-turn drain
+- **THEN** stall detection does not apply to that wait
+- **AND** the documented behaviour says so
+
 ### Requirement: A stalled subagent task is killed through the existing task-kill path
 
 On detecting a stalled task the system SHALL terminate it using the same mechanism
@@ -127,8 +184,15 @@ observed progress.
 
 Downstream behaviour MUST be indistinguishable from any other task kill: the pending
 wait observes a terminal task and returns for its ordinary reason, the synthetic
-completion pair is written into the parent session so the model learns the task ended
-and why, and the parent re-enters its agentic loop.
+completion pair is written into the parent session, and the parent re-enters its
+agentic loop.
+
+The completion pair is NOT ordered ahead of the drain's return. Task termination
+signals the task's completion channel before the pair is written, so the parent's
+first reload after the drain may not yet see it and may cost one additional cycle.
+This is the pre-existing ordering of the kill path, which stall detection makes
+routine rather than introduces; the step still completes, because the structured
+output is retained independently of the reload.
 
 #### Scenario: Stalled task unblocks the drain and the step completes
 
@@ -139,8 +203,6 @@ and why, and the parent re-enters its agentic loop.
 - **WHEN** the task is terminated as stalled
 - **THEN** the drain returns because every task is terminal, not because ctx was
   cancelled
-- **AND** the synthetic completion pair for the killed task is present in the parent
-  session
 - **AND** the parent re-enters the agentic loop and the step completes and routes
 
 #### Scenario: Structured output survives or is superseded, per the existing contract

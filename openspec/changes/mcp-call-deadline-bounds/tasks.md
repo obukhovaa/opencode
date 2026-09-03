@@ -34,12 +34,18 @@
 
 ## 3. Close every client on every path
 
-- [x] 3.1 Audit each `return` between `b.mcpReg.StartClient(...)` and normal
-  completion in `mcpTool.Run` plus every early return in `runTool`; ensure each closes
-  the client so no MCP server child process outlives its tool call
+- [x] 3.1 Audited. There are ZERO returns between `StartClient` and `defer c.Close()`
+  in `mcpTool.Run`, so nothing was missing there — the earlier claim of "three return
+  sites" was wrong. What the audit did find is that the close itself is unbounded
+  (`transport.Stdio.Close` ends in `cmd.Wait()`), which moved the park one frame later
+  instead of removing it; bounded via `closeMCPClient`, and the fetch branch now
+  publishes `entry.done` before closing so a slow close cannot hold waiters
 
-- [x] 3.2 Confirm the `defer c.Close()` in `mcpTool.Run` is now actually reachable for
-  the wedged-server case (it was not before: `runTool` never returned)
+- [x] 3.2 Confirmed reachable, and note the close-on-failed-`Start` added in
+  `StartClient` CANNOT fire for stdio: `NewStdioMCPClient` starts the transport in the
+  constructor, so `Stdio.Start` returns nil at its idempotence check. It is real value
+  for SSE only. The commit message and PR body originally billed it as a stdio orphan
+  fix; that was wrong
 
 ## 4. Drain progress log
 
@@ -69,13 +75,18 @@
 - [x] 5.4 `TestRunTool_SlowToolNotCurtailedByHandshakeBound`: prompt handshake plus a
   tool call slower than `mcpInitTimeout` but within its tool-call budget still succeeds
 
-- [x] 5.5 `TestMCPRegistry_WaiterBoundedByWedgedFetcher`: with a fetcher that never
-  closes `entry.done`, a concurrent waiter returns within the backstop, contributes no
-  tools for that server, and leaves the cache entry present; extend the existing
-  `TestMCPRegistry_ConcurrentLoadSharesSingleFetch` / `..._ShutdownBoundsFetch`
-  neighbours rather than duplicating their scaffolding
+- [x] 5.5 Covered by two tests, after review found the first alone left the actual bug
+  undetected: `TestAwaitCacheEntry` unit-tests the helper (ready / wedged / shutdown),
+  and `TestGetToolsAttemptBoundedByWedgedEntry` covers the CALL SITE by seeding a
+  never-completing entry and asserting `getToolsAttempt` returns no tools within the
+  budget and leaves the entry in place. Without the second, reverting the waiter to the
+  original bare `<-entry.done` passed the whole suite
 
-- [x] 5.6 Client-close coverage REDUCED, deliberately. `runTool` does not own the
+- [x] 5.6 Client-close coverage: `TestCloseMCPClientBounded` covers the wedged and
+  cooperative paths via a blocking `fakeMCPClient.Close`. The `StartClient`
+  failed-`Start` path remains untested (not injectable without a fake transport, and per
+  3.2 unreachable for stdio). Original note, kept for the record:
+ `runTool` does not own the
   client — `mcpTool.Run` does, via `defer c.Close()` — so there is nothing to assert at
   the `runTool` level; what mattered is that the defer is now *reachable*, which the
   handshake-bound tests prove (previously `runTool` never returned). The leak actually
@@ -122,17 +133,24 @@ Tasks 1-6 are implemented on branch `fix/GENAI-270-mcp-call-deadline-bounds`.
 `go build ./...` is clean and `go test -race ./internal/llm/agent/ ./internal/task/
 ./internal/flow/` is green.
 
-The handshake test was verified to be a real regression guard, not a tautology: with
-`c.Initialize(initCtx, …)` reverted to `c.Initialize(ctx, …)`, the package hangs to the
-25s test timeout and the goroutine dump points at `runTool` → `fakeMCPClient.Initialize`.
-With the bound it passes in ~1.4s.
+The handshake test was rewritten after review: it originally failed by HANGING to the
+binary timeout (a CI stall, not a red test) and its 5s tolerance did not pin the enforced
+budget — hardcoding a duration in place of `mcpInitTimeout` passed. It now runs `runTool`
+off-goroutine with a bounded select and asserts elapsed against the shortened budget.
+Mutation-verified: reverting to `c.Initialize(ctx, …)` fails, and so does hardcoding the
+budget. The upstream-attribution subtest was also tautological — it used `WithCancel`, so
+the `DeadlineExceeded` comparison alone passed; it now uses a parent with an expiring
+deadline, and dropping the `ctx.Err() == nil` conjunct fails.
 
-Two things found while implementing, beyond the original scope:
+Found while implementing and during review, beyond the original scope:
 
-- **A second, independent process leak in `StartClient`.** `NewStdioMCPClient` spawns
-  the child before `Start` is called; a `Start` failure returned `nil, err`, so the
-  spawned server was orphaned with no reference left to close it. Fixed alongside,
-  since it is the same "no MCP server process outlives its tool call" requirement.
+- **The unbounded close.** `transport.Stdio.Close` ends in `cmd.Wait()` with no ctx, so
+  the newly-bounded handshake just moved the park one frame later. Bounded via
+  `closeMCPClient`, and the fetch branch's defers reordered so `entry.done` is published
+  before the close — which was also the real reason the cache backstop was needed (the
+  fetcher's own requests DO honour ctx, contrary to the comment I first wrote).
+- **A retracted claim.** The `StartClient` close-on-failed-`Start` is not the stdio
+  orphan fix I billed it as; see task 3.2.
 - **`mcpInitTimeout` had to become a `var`** so tests can shorten it. It is never
   mutated at runtime.
 

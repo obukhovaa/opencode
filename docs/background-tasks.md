@@ -143,11 +143,27 @@ its longest blocking call:
 |---|---|
 | `bash` foreground | 10m hard cap |
 | MCP tool call | 5m default, raisable without limit via `callToolTimeoutSeconds` |
-| MCP transport start + handshake | 20s + 30s |
+| MCP transport start + handshake + close | 20s + 30s + 30s |
+| Provider retry backoff | ~10m over `maxRetries` (8) of exponential backoff, and unbounded when the provider sends a `Retry-After` that is honoured |
 
 The default clears the shipped ceilings with room to spare. If you raise an MCP server's
-`callToolTimeoutSeconds` above the stall threshold, raise the threshold too or healthy
-subagents will be killed mid-call.
+`callToolTimeoutSeconds` at or above the stall threshold, raise the threshold too or
+healthy subagents will be killed mid-call — the runtime logs a warning naming any server
+in that state, so check the log after changing either value.
+
+Provider retry backoff is worth noting because it is completely silent: a subagent being
+rate-limited persists no message while it backs off. The default threshold clears the
+default backoff, but a proxy that returns a long `Retry-After` can exceed it.
+
+Stall detection covers the end-of-turn drain. It does **not** cover the anti-spin
+redirect (`internal/llm/tools/bash_wait.go`), which waits on the registry directly: a
+wedged subagent reached by a model self-poll is still bounded only by the surrounding
+ctx.
+
+A progress answer that cannot be obtained — a failed read of the subagent's session — is
+treated as unknown, never as a stale timestamp. Substituting one would read as a stall
+for any task already older than the threshold and kill healthy work on a single
+transient read failure.
 
 This is not a timeout on the wait. No task that is making progress is ever terminated,
 however long it has been running in total — see the note above that the surrounding

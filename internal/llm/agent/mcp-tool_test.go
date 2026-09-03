@@ -44,7 +44,10 @@ type fakeMCPClient struct {
 	blockCallTool   bool
 	// callToolDelay delays CallTool without ignoring ctx.
 	callToolDelay time.Duration
-	closed        atomic.Bool
+	// blockClose makes Close hang, standing in for transport.Stdio.Close
+	// parking in cmd.Wait() on a child that ignores stdin EOF.
+	blockClose chan struct{}
+	closed     atomic.Bool
 }
 
 func (f *fakeMCPClient) Initialize(ctx context.Context, req mcp.InitializeRequest) (*mcp.InitializeResult, error) {
@@ -71,7 +74,13 @@ func (f *fakeMCPClient) CallTool(ctx context.Context, req mcp.CallToolRequest) (
 	}
 	return f.result, nil
 }
-func (f *fakeMCPClient) Close() error { f.closed.Store(true); return nil }
+func (f *fakeMCPClient) Close() error {
+	if f.blockClose != nil {
+		<-f.blockClose
+	}
+	f.closed.Store(true)
+	return nil
+}
 
 func textResult(blocks ...string) *mcp.CallToolResult {
 	r := &mcp.CallToolResult{}
@@ -284,41 +293,65 @@ func TestRunToolHandshakeBound(t *testing.T) {
 	t.Cleanup(tools.CleanupTempDir)
 
 	t.Run("handshake that never answers fails within the budget", func(t *testing.T) {
-		withInitTimeout(t, 50*time.Millisecond)
+		const budget = 100 * time.Millisecond
+		withInitTimeout(t, budget)
 		c := &fakeMCPClient{blockInitialize: true}
 
-		start := time.Now()
-		resp, err := runTool(context.Background(), c, "wedged_tool", "{}", mcpCallToolTimeout, mcpCallToolMaxOutputBytes)
-		elapsed := time.Since(start)
+		// Run off-goroutine and bound the wait: without the fix the fake blocks
+		// on ctx.Done() forever, and an in-line call would hang the package to
+		// the binary timeout instead of failing.
+		type result struct {
+			resp    tools.ToolResponse
+			err     error
+			elapsed time.Duration
+		}
+		ch := make(chan result, 1)
+		go func() {
+			start := time.Now()
+			resp, err := runTool(context.Background(), c, "wedged_tool", "{}", mcpCallToolTimeout, mcpCallToolMaxOutputBytes)
+			ch <- result{resp, err, time.Since(start)}
+		}()
 
-		if err != nil {
-			t.Fatalf("runTool returned a Go error, want a tool error: %v", err)
+		var got result
+		select {
+		case got = <-ch:
+		case <-time.After(50 * budget):
+			t.Fatal("runTool did not return; the handshake is not bounded")
 		}
-		if elapsed > 5*time.Second {
-			t.Fatalf("runTool blocked for %s; the handshake bound did not apply", elapsed)
+
+		if got.err != nil {
+			t.Fatalf("runTool returned a Go error, want a tool error: %v", got.err)
 		}
-		if !resp.IsError {
+		// Pin the ENFORCED budget, not just the advertised one: a hardcoded
+		// duration in place of mcpInitTimeout would otherwise pass.
+		if got.elapsed > 20*budget {
+			t.Errorf("elapsed %s far exceeds the %s budget; the enforced deadline is not mcpInitTimeout", got.elapsed, budget)
+		}
+		if !got.resp.IsError {
 			t.Error("wedged handshake should produce an error response")
 		}
-		for _, want := range []string{"wedged_tool", "handshake", mcpInitTimeout.String()} {
-			if !strings.Contains(resp.Content, want) {
-				t.Errorf("response missing %q; got: %s", want, resp.Content)
+		for _, want := range []string{"wedged_tool", "handshake", budget.String()} {
+			if !strings.Contains(got.resp.Content, want) {
+				t.Errorf("response missing %q; got: %s", want, got.resp.Content)
 			}
 		}
 	})
 
-	t.Run("upstream cancellation is not blamed on the handshake budget", func(t *testing.T) {
-		// A long budget so only the parent ctx can end the call.
+	t.Run("upstream deadline is not blamed on the handshake budget", func(t *testing.T) {
+		// A parent DEADLINE, not a bare cancel: both parent and child then
+		// report DeadlineExceeded, so only the ctx.Err() == nil conjunct can
+		// tell them apart. With a plain WithCancel the error is Canceled and
+		// the comparison alone would pass, making the test tautological.
 		withInitTimeout(t, time.Hour)
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
 
-		resp, err := runTool(ctx, &fakeMCPClient{blockInitialize: true}, "cancelled_tool", "{}", mcpCallToolTimeout, mcpCallToolMaxOutputBytes)
+		resp, err := runTool(ctx, &fakeMCPClient{blockInitialize: true}, "expired_tool", "{}", mcpCallToolTimeout, mcpCallToolMaxOutputBytes)
 		if err != nil {
 			t.Fatalf("runTool returned a Go error: %v", err)
 		}
 		if strings.Contains(resp.Content, "handshake") {
-			t.Errorf("upstream cancellation attributed to the handshake budget: %s", resp.Content)
+			t.Errorf("upstream deadline attributed to the handshake budget: %s", resp.Content)
 		}
 	})
 
@@ -400,4 +433,87 @@ func TestAwaitCacheEntry(t *testing.T) {
 			t.Fatalf("shutdown waiter blocked for %s", elapsed)
 		}
 	})
+}
+
+// TestCloseMCPClientBounded covers the wait that the handshake bound would
+// otherwise just move one frame later: transport.Stdio.Close ends in
+// cmd.Wait(), honouring no context, so a child that ignores stdin EOF could
+// hold the agent turn after the tool call itself had correctly timed out.
+func TestCloseMCPClientBounded(t *testing.T) {
+	t.Run("a wedged Close does not park the caller", func(t *testing.T) {
+		blocked := make(chan struct{})
+		t.Cleanup(func() { close(blocked) })
+		c := &fakeMCPClient{blockClose: blocked}
+
+		done := make(chan time.Duration, 1)
+		go func() {
+			start := time.Now()
+			closeMCPClient(c, "wedged", 50*time.Millisecond)
+			done <- time.Since(start)
+		}()
+
+		select {
+		case elapsed := <-done:
+			if elapsed > 5*time.Second {
+				t.Errorf("close took %s; the budget did not apply", elapsed)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("closeMCPClient never returned; a wedged Close still parks the caller")
+		}
+		if c.closed.Load() {
+			t.Error("Close reported completion while still blocked")
+		}
+	})
+
+	t.Run("a cooperative Close completes normally", func(t *testing.T) {
+		c := &fakeMCPClient{}
+		closeMCPClient(c, "ok", time.Minute)
+		if !c.closed.Load() {
+			t.Error("Close was not called")
+		}
+	})
+}
+
+// TestGetToolsAttemptBoundedByWedgedEntry covers the awaitCacheEntry CALL SITE,
+// not just the helper. Reverting the waiter branch to the original bare
+// `<-entry.done` is the exact bug this change fixes, and a helper-only unit test
+// leaves that revert green.
+func TestGetToolsAttemptBoundedByWedgedEntry(t *testing.T) {
+	withInitTimeout(t, 80*time.Millisecond)
+	url, _ := newTestMCPHTTPServer(t)
+	seedMCPServerConfig(t, "wedged", url)
+
+	reg := NewMCPRegistry(context.Background(), nil, nil).(*mcpRegistry)
+	// Seed the slot as an in-flight fetch that never completes — the shape of a
+	// fetcher stuck before its deferred close(entry.done).
+	reg.mcpTools.Store("wedged", &toolsCacheEntry{done: make(chan bool)})
+
+	type result struct {
+		tools   []tools.BaseTool
+		elapsed time.Duration
+	}
+	ch := make(chan result, 1)
+	go func() {
+		start := time.Now()
+		got := reg.getToolsAttempt("wedged", config.MCPServer{Type: config.MCPHttp, URL: url}, true)
+		ch <- result{got, time.Since(start)}
+	}()
+
+	select {
+	case got := <-ch:
+		if len(got.tools) != 0 {
+			t.Errorf("got %d tools from a wedged entry, want 0", len(got.tools))
+		}
+		if got.elapsed > 20*mcpInitTimeout {
+			t.Errorf("waiter took %s against a %s budget", got.elapsed, mcpInitTimeout)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("getToolsAttempt never returned; the waiter is not bounded")
+	}
+
+	// The fetcher owns the entry's lifecycle — a waiter giving up must not
+	// evict it and race a freshly stored one.
+	if _, ok := reg.mcpTools.Load("wedged"); !ok {
+		t.Error("waiter deleted the shared cache entry")
+	}
 }

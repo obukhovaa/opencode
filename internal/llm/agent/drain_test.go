@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/task"
 )
 
@@ -250,9 +252,6 @@ func registerKindTask(t *testing.T, reg task.Registry, kind task.Kind, sessionID
 		Kind:           kind,
 		StartedAt:      startedAt,
 	}
-	if kind != task.KindTask {
-		tk.AgentSessionID = ""
-	}
 	if err := reg.Register(tk); err != nil {
 		t.Fatalf("register %s: %v", kind, err)
 	}
@@ -264,8 +263,19 @@ func registerKindTask(t *testing.T, reg task.Registry, kind task.Kind, sessionID
 func staleProgress(threshold, age time.Duration) stallPolicy {
 	return stallPolicy{
 		threshold: threshold,
-		lastProgress: func(_ context.Context, _ *task.Task) time.Time {
-			return time.Now().Add(-age)
+		lastProgress: func(_ context.Context, _ *task.Task) (time.Time, bool) {
+			return time.Now().Add(-age), true
+		},
+	}
+}
+
+// unknownProgress is a stallPolicy whose probe cannot answer — the shape of a
+// failed session read.
+func unknownProgress(threshold time.Duration) stallPolicy {
+	return stallPolicy{
+		threshold: threshold,
+		lastProgress: func(_ context.Context, _ *task.Task) (time.Time, bool) {
+			return time.Time{}, false
 		},
 	}
 }
@@ -286,7 +296,10 @@ func TestKillStalledScope(t *testing.T) {
 	for _, kind := range exempt {
 		t.Run("exempt: "+string(kind), func(t *testing.T) {
 			reg := newDrainRegistry(t)
-			id := registerKindTask(t, reg, kind, "S", "", time.Now().Add(-time.Hour))
+			// A non-empty AgentSessionID on purpose: if the fixture left it
+			// empty, the other guard in killStalled would keep these tasks
+			// alive and the kind check would go unverified.
+			id := registerKindTask(t, reg, kind, "S", "sub-"+string(kind), time.Now().Add(-time.Hour))
 
 			policy.killStalled(ctx, reg, reg.PendingForSession("S", nil))
 
@@ -408,5 +421,196 @@ func TestDrainReturnsAfterStallKill(t *testing.T) {
 
 	if pending := reg.PendingForSession("S", nil); len(pending) != 0 {
 		t.Errorf("pending after drain = %d, want 0", len(pending))
+	}
+}
+
+// TestProgressFromMessages guards the inversion that would make stall detection
+// dangerous rather than useful. An unknown answer must stay unknown: reporting
+// it as a timestamp — StartedAt, or the zero time — reads as a stall for any
+// task already older than the threshold, so one failed session read would kill
+// a healthy subagent that has been working for 35 minutes.
+func TestProgressFromMessages(t *testing.T) {
+	started := time.Now().Add(-time.Hour)
+	at := func(sec int64) time.Time { return time.Unix(sec, 0) }
+
+	tests := []struct {
+		name      string
+		msgs      []message.Message
+		err       error
+		wantKnown bool
+		want      time.Time
+	}{{
+		name:      "read error is unknown, not stale",
+		err:       errors.New("session store unavailable"),
+		wantKnown: false,
+	}, {
+		name:      "no messages yet is unknown, not stale",
+		msgs:      nil,
+		wantKnown: false,
+	}, {
+		name:      "zero timestamps are unknown, not stale",
+		msgs:      []message.Message{{CreatedAt: 0, UpdatedAt: 0}},
+		wantKnown: false,
+	}, {
+		// processEvent updates the assistant row on every delta, so UpdatedAt is
+		// what makes a long streaming generation count as progress.
+		name:      "UpdatedAt wins over CreatedAt",
+		msgs:      []message.Message{{CreatedAt: started.Unix() + 60, UpdatedAt: started.Unix() + 3000}},
+		wantKnown: true,
+		want:      at(started.Unix() + 3000),
+	}, {
+		name:      "CreatedAt used when newer than UpdatedAt",
+		msgs:      []message.Message{{CreatedAt: started.Unix() + 3000, UpdatedAt: started.Unix() + 60}},
+		wantKnown: true,
+		want:      at(started.Unix() + 3000),
+	}, {
+		name:      "backdated row is clamped to StartedAt",
+		msgs:      []message.Message{{CreatedAt: started.Unix() - 9999, UpdatedAt: started.Unix() - 9999}},
+		wantKnown: true,
+		want:      started,
+	}, {
+		name:      "newest of several is used",
+		msgs:      []message.Message{{UpdatedAt: started.Unix() + 10}, {UpdatedAt: started.Unix() + 900}},
+		wantKnown: true,
+		want:      at(started.Unix() + 900),
+	}}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, known := progressFromMessages(tt.msgs, tt.err, started)
+			if known != tt.wantKnown {
+				t.Fatalf("known = %v, want %v", known, tt.wantKnown)
+			}
+			if !known {
+				return
+			}
+			if !got.Equal(tt.want) {
+				t.Errorf("progress = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// An unknown progress answer must never terminate a task, however old it is.
+// This is the companion to TestProgressFromMessages at the policy level.
+func TestKillStalledSkipsUnknownProgress(t *testing.T) {
+	reg := newDrainRegistry(t)
+	// Old enough that any timestamp-shaped fallback would read as a stall.
+	id := registerKindTask(t, reg, task.KindTask, "S", "sub-1", time.Now().Add(-24*time.Hour))
+
+	unknownProgress(time.Minute).killStalled(context.Background(), reg, reg.PendingForSession("S", nil))
+
+	got, _ := reg.Get(id)
+	if got.State() != task.StateRunning {
+		t.Errorf("task killed on an unknown progress answer (state=%v); a failed read is not evidence of a stall", got.State())
+	}
+}
+
+// The drain must gain no deadline from stall detection being enabled: an exempt
+// pending task with detection ON and a deadline-free ctx keeps the wait open.
+// This is the regression the spec fears — a live monitor ended by the drain.
+func TestDrainWithDetectionEnabledDoesNotBoundExemptTask(t *testing.T) {
+	withDrainProgressInterval(t, 10*time.Millisecond)
+	reg := newDrainRegistry(t)
+	registerKindTask(t, reg, task.KindMonitor, "S", "sub-mon", time.Now().Add(-time.Hour))
+
+	ctx, cancel := context.WithCancel(context.Background()) // no deadline
+	done := make(chan error, 1)
+	go func() { done <- drainSessionTasks(ctx, reg, "S", staleProgress(time.Millisecond, time.Hour)) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("drain returned %v with only an exempt task pending; detection must not bound the wait", err)
+	case <-time.After(200 * time.Millisecond): // ~20 ticks
+	}
+
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Errorf("drain err = %v, want context.Canceled", err)
+	}
+}
+
+// A KindTask with no recorded subagent session disables detection for it, so the
+// regression that would cause it (dropping AgentSessionID at the spawn site)
+// must at least be visible in the log.
+func TestKillStalledWarnsOnMissingAgentSession(t *testing.T) {
+	logs := captureLogs(t)
+	reg := newDrainRegistry(t)
+	id := task.NewTaskID(task.KindTask)
+	if err := reg.Register(&task.Task{
+		ID: id, SessionID: "S", Kind: task.KindTask, StartedAt: time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	staleProgress(time.Minute, time.Hour).killStalled(context.Background(), reg, reg.PendingForSession("S", nil))
+
+	if got, _ := reg.Get(id); got.State() != task.StateRunning {
+		t.Errorf("task killed despite no recorded session (state=%v)", got.State())
+	}
+	if !strings.Contains(logs.String(), "no recorded session") {
+		t.Errorf("missing-session skip was not logged:\n%s", logs.String())
+	}
+}
+
+// TestStallPolicyWiring guards the config→drain hookup. Returning a zero
+// stallPolicy here silently switches the feature off in every production run,
+// and nothing else in the suite notices.
+func TestStallPolicyWiring(t *testing.T) {
+	loadConfigIn(t, ".")
+
+	t.Run("threshold comes from config and the probe is wired", func(t *testing.T) {
+		config.Get().BackgroundTasks = &config.BackgroundTasksConfig{StallThreshold: "17m"}
+		a := &agent{}
+
+		p := a.stallPolicy()
+		if p.threshold != 17*time.Minute {
+			t.Errorf("threshold = %v, want 17m", p.threshold)
+		}
+		if p.lastProgress == nil {
+			t.Fatal("lastProgress is nil; detection would be disabled in production")
+		}
+		if !p.enabled() {
+			t.Error("policy reports disabled with a positive configured threshold")
+		}
+	})
+
+	t.Run("disabled by config", func(t *testing.T) {
+		config.Get().BackgroundTasks = &config.BackgroundTasksConfig{StallThreshold: "0s"}
+		if (&agent{}).stallPolicy().enabled() {
+			t.Error("policy enabled with a zero configured threshold")
+		}
+	})
+
+	t.Run("default applies when unconfigured", func(t *testing.T) {
+		config.Get().BackgroundTasks = nil
+		if got := (&agent{}).stallPolicy().threshold; got != config.DefaultTaskStallThreshold {
+			t.Errorf("threshold = %v, want the %v default", got, config.DefaultTaskStallThreshold)
+		}
+	})
+}
+
+// The threshold-vs-tool-call-budget constraint is the one thing an operator has
+// to hold; docs alone made it folkloric. A server configured at or above the
+// threshold must be named in the log.
+func TestWarnUnsafeStallThreshold(t *testing.T) {
+	loadConfigIn(t, ".")
+	config.Get().MCPServers = map[string]config.MCPServer{
+		"slow-ci":  {Type: config.MCPHttp, URL: "http://x", CallToolTimeoutSeconds: 2700},
+		"ordinary": {Type: config.MCPHttp, URL: "http://y"},
+	}
+
+	logs := captureLogs(t)
+	stallThresholdWarnOnce = sync.Once{}
+	t.Cleanup(func() { stallThresholdWarnOnce = sync.Once{} })
+
+	warnUnsafeStallThreshold(30 * time.Minute)
+
+	out := logs.String()
+	if !strings.Contains(out, "slow-ci") {
+		t.Errorf("a 45m call budget against a 30m threshold was not reported:\n%s", out)
+	}
+	if strings.Contains(out, "ordinary") {
+		t.Errorf("a default-budget server was reported:\n%s", out)
 	}
 }
