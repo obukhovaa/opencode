@@ -5,9 +5,11 @@ requirement that changes; unchanged requirements are not repeated here. For the
 full specification see `openspec/specs/background-tasks/spec.md`.
 
 The wait condition and both enforcement mechanisms are UNCHANGED — the
-requirement body below is reproduced verbatim because a MODIFIED requirement
-replaces the whole block. What changes is the set of deadline sources bounding
-the hold, since a stalled subagent task can now reach a terminal state sooner.
+requirement body below is reproduced verbatim, including the progress-log
+addendum already merged from `mcp-call-deadline-bounds`, because a MODIFIED
+requirement replaces the whole block. What changes is the set of deadline
+sources bounding the hold, since a stalled subagent task can now reach a
+terminal state sooner.
 
 ## MODIFIED Requirements
 
@@ -23,7 +25,18 @@ This guarantee MUST NOT be bypassable by model behavior. It is enforced through 
 
 The wait MUST NOT impose its own timeout — the surrounding `ctx` is the sole deadline source. See `flow-runtime-resume` for how callers derive the ctx deadline from `Step.Timeout` and the `OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT` env var.
 
-The following addendum is added by this change.
+The following addendum is added by this change:
+
+While the non-interactive drain is waiting for pending background tasks, the runtime
+SHALL emit a periodic progress log at a fixed interval naming the tasks it is still
+waiting on — each task's `task_id`, `Kind`, and age — so that a drain holding a step
+open is distinguishable in the process log from a hung or dead process. The log SHALL
+NOT be emitted when the drain returns without waiting (zero pending tasks).
+
+The progress log is observability only. It MUST NOT terminate, shorten, or otherwise
+influence the wait: the sentence above stating that the wait imposes no timeout of its
+own remains in force, and a future reader MUST NOT mistake the interval timer for a
+deadline.
 
 A `task`-kind background task that stops making progress may be terminated by
 the runtime, per `background-task-stall-detection`. The hold on such a task
@@ -91,6 +104,30 @@ at all.
 - **AND** the runtime MUST inject a synthetic Assistant timeout note into the session log
 - **AND** the outer agentic loop MUST break
 - **AND** `agent.RunWith` MUST return the latest `AgentEvent` (the pre-wait terminal turn)
+
+#### Scenario: Long drain is observable in the log
+
+- **GIVEN** a non-interactive step's agent has emitted its terminal turn with one
+  background task still running
+- **WHEN** the task remains running for several multiples of the progress interval
+- **THEN** the process log contains repeated progress entries naming that task's
+  `task_id`, `Kind`, and age
+- **AND** the drain does not return until the task reaches a terminal state or `ctx` is
+  cancelled
+
+#### Scenario: Progress log does not bound the wait
+
+- **GIVEN** a non-interactive drain is waiting on a task that never terminates
+- **AND** the surrounding `ctx` has no deadline
+- **WHEN** many progress intervals elapse
+- **THEN** the drain is still waiting
+- **AND** no timeout has been imposed by the drain itself
+
+#### Scenario: No progress log when nothing is pending
+
+- **WHEN** the drain is entered for a session with zero pending background tasks
+- **THEN** it returns immediately
+- **AND** no progress entry is logged
 
 #### Scenario: A stalled subagent task ends the hold without ctx cancellation
 
