@@ -147,6 +147,10 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 				logging.Warn("Langfuse enabled in config but credentials resolved to empty — tracing disabled")
 			}
 		}
+		// Prompt management is gated on its own switch, not on tracing:
+		// a deployment may manage prompts in Langfuse while sending its
+		// traces somewhere else entirely.
+		initLangfusePrompts(cfg)
 
 		conn, err := db.Connect()
 		if err != nil {

@@ -140,6 +140,10 @@ to assist developers in writing, debugging, and understanding code directly from
 				logging.Warn("Langfuse enabled in config but credentials resolved to empty — tracing disabled")
 			}
 		}
+		// Prompt management is gated on its own switch, not on tracing:
+		// a deployment may manage prompts in Langfuse while sending its
+		// traces somewhere else entirely.
+		initLangfusePrompts(cfg)
 
 		if maxTurns < 0 {
 			if spinner != nil {

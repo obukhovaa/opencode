@@ -49,6 +49,7 @@ export LANGFUSE_BASE_URL=https://cloud.langfuse.com  # optional, this is the def
 | `secretKey` | string | yes | Langfuse secret key. Supports `env:VAR_NAME` syntax |
 | `publicKey` | string | yes | Langfuse public key. Supports `env:VAR_NAME` syntax |
 | `baseURL` | string | no | Langfuse host URL. Falls back to `LANGFUSE_BASE_URL` env var, then `https://cloud.langfuse.com` |
+| `prompts` | object | no | Langfuse Prompt Management (see [below](#langfuse-prompt-management)). Independent of `enabled` — prompts may be used without tracing. |
 
 ### Trace Hierarchy
 
@@ -209,6 +210,78 @@ This changes how metadata keys appear in Langfuse:
 | `opencode_version` | `app.opencode_version` |
 
 Each prefixed key remains a top-level metadata entry in Langfuse and is independently filterable. Standard Langfuse attributes (`langfuse.session.id`, `langfuse.user.id`, `langfuse.trace.tags`, etc.) are not affected — only custom metadata keys are namespaced.
+
+## Langfuse Prompt Management
+
+Separate from tracing, Langfuse can also be the *source* of prompts rather
+than a destination for them. With `telemetry.langfuse.prompts.enabled`, a
+flow step or an agent type may reference a prompt stored in Langfuse by path
+instead of inlining its text, so wording changes ship from the Langfuse UI
+with no deploy.
+
+It is worth naming the wart: fetching prompts is not observability, and this
+is the one thing under `telemetry` that changes what the agent *does* rather
+than what is recorded about it. It lives here because the credentials and
+`baseURL` already resolve here, and duplicating them would create a second
+way for a deployment to end up half-configured.
+
+```json
+{
+  "telemetry": {
+    "langfuse": {
+      "publicKey": "env:LANGFUSE_PUBLIC_KEY",
+      "secretKey": "env:LANGFUSE_SECRET_KEY",
+      "baseURL": "env:LANGFUSE_BASE_URL",
+      "prompts": {
+        "enabled": true,
+        "label": "production",
+        "cacheTTL": "60s",
+        "timeout": "10s",
+        "warmup": true
+      }
+    }
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Enable prompt management. When false, a `langfusePromptPath` reference fails to resolve. |
+| `label` | string | `production` | Default label resolved for references that do not name one. Avoid `latest` — it moves on every save, so an unfinished edit in the UI would reach a running flow immediately. |
+| `cacheTTL` | duration | `60s` | How long a resolved prompt is reused before re-fetching. Also the upper bound on how long a UI edit takes to reach a running process. |
+| `timeout` | duration | `10s` | Timeout for a single prompt fetch. |
+| `warmup` | bool | `true` | Pre-fetch every prompt referenced by the flow and agent registries at startup. Failures are logged and never fail the boot. |
+
+**Credentials are shared with tracing, the switches are not.**
+`prompts.enabled` with resolvable `publicKey` / `secretKey` is sufficient;
+`telemetry.langfuse.enabled` may stay `false`. A deployment that manages
+prompts in Langfuse but ships its traces elsewhere is a supported setup.
+
+**Where references are declared:**
+
+- Flow steps — `langfusePromptPath` / `langfusePromptLabel` in place of
+  `prompt`. See [flows.md](flows.md#langfuse-managed-prompts).
+- Agent types — the same two keys in place of the markdown body or the
+  `prompt` field. See [the README](../README.md#langfuse-managed-system-prompts).
+
+Either way, exactly one prompt source per definition; declaring both is a
+load-time error, not a precedence rule.
+
+**Templating dialect.** Prompt bodies stored in Langfuse use opencode's own
+`${args.*}` / `${step.*}` placeholders, not Langfuse's `{{variable}}` syntax
+— `{{…}}` passes through verbatim. One dialect for authors, at the cost of
+the Langfuse playground not previewing variables.
+
+**Chat-type prompts** are accepted and flattened to text by joining their
+`role: content` blocks in source order, with a log line. Both consumers take
+a single string, so there is nowhere to put the message structure.
+
+**Failure behaviour.** A fetch failure with a cached copy serves the cached
+copy and logs a warning — a step running last minute's prompt beats a step
+that cannot run at all. A failure with nothing cached fails the step (or
+agent construction) naming the path and the HTTP status. An empty or
+whitespace-only prompt is a resolution error. The agent is never run on an
+empty prompt.
 
 ## Provider Metadata
 
