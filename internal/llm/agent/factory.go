@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
@@ -11,6 +12,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/hooks"
+	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp"
@@ -222,6 +224,18 @@ func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchem
 	}
 
 	infoCopy := info
+	// Resolve a Langfuse-managed system prompt here rather than at registry
+	// load, so an edit made in the Langfuse UI reaches the next agent built
+	// from this definition — bounded by the client's cache TTL — instead of
+	// waiting for a process restart. That holds for subagents (built per
+	// task spawn) and flow-step agents; a PRIMARY agent is built once by
+	// InitPrimaryAgents and held for the process lifetime, so for those the
+	// resolved text is pinned until restart. See docs/telemetry.md.
+	resolvedPrompt, promptErr := resolveManagedPrompt(agentID, infoCopy)
+	if promptErr != nil {
+		return nil, promptErr
+	}
+	infoCopy.Prompt = resolvedPrompt
 	if outputSchema != nil {
 		infoCopy.Output = &agentregistry.Output{Schema: outputSchema}
 	}
@@ -291,4 +305,47 @@ func (f *agentFactory) InitPrimaryAgents(ctx context.Context, outputSchema map[s
 		return res, errors.New("no primary agents has been created")
 	}
 	return res, nil
+}
+
+// resolveManagedPrompt returns the system prompt text a registry entry
+// should be built with: its inline Prompt, or the Langfuse-managed prompt
+// named by LangfusePromptPath.
+//
+// Deliberately NOT on a caller's ctx: agent construction is context-free by
+// design, so a request-scoped cancellation cannot half-build an agent. The
+// fetch is bounded by the prompt client's own timeout.
+//
+// The error is returned rather than absorbed into a fallback. A referencing
+// agent whose prompt could not be fetched must not run on the built-in
+// prompt for its name: that failure reads as "Langfuse is being ignored",
+// which is far harder to diagnose than a construction error naming the path.
+func resolveManagedPrompt(agentID string, info agentregistry.AgentInfo) (string, error) {
+	path := strings.TrimSpace(info.LangfusePromptPath)
+	if path == "" {
+		return info.Prompt, nil
+	}
+	resolved, err := langfuse.GetPrompts().Resolve(context.Background(), path, info.LangfusePromptLabel)
+	if err != nil {
+		return "", fmt.Errorf("agent %q: resolving langfusePromptPath %q: %w", agentID, path, err)
+	}
+	logging.Debug("Resolved agent prompt from Langfuse",
+		"agent", agentID, "path", resolved.Path, "label", resolved.Label, "version", resolved.Version)
+	return resolved.Text, nil
+}
+
+// resolveRegisteredPrompt is resolveManagedPrompt for an agent addressed by
+// name. It exists for the two built-in helper agents — summarizer and
+// descriptor — whose providers newAgent constructs directly instead of going
+// through NewAgent, and which would otherwise silently ignore a
+// langfusePromptPath while an inline `prompt` on the same agent worked.
+//
+// A name with no registry entry yields an empty prompt, which the prompt
+// builder reads as "use the registered/built-in prompt" — the pre-existing
+// behaviour for an unregistered helper agent.
+func resolveRegisteredPrompt(reg agentregistry.Registry, name config.AgentName) (string, error) {
+	info, ok := reg.Get(string(name))
+	if !ok {
+		return "", nil
+	}
+	return resolveManagedPrompt(string(name), info)
 }

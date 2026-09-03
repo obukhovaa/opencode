@@ -449,6 +449,14 @@ func validateFlow(f *Flow) error {
 		}
 		stepIDs[step.ID] = true
 
+		// A step's prompt comes from exactly one source. Checked here,
+		// after parseFlowFile has merged any `extends` templates, so a
+		// template supplying `prompt` and a step supplying
+		// `langfusePromptPath` collide loudly instead of one silently
+		// winning.
+		if err := validateStepPromptSource(step); err != nil {
+			return err
+		}
 		// MaxTurns is optional; 0 means "inherit from agent" (Go zero-value /
 		// field omitted in YAML). Negative values are always invalid.
 		if step.MaxTurns < 0 {
@@ -500,6 +508,36 @@ func validateFlow(f *Flow) error {
 		}
 	}
 
+	return nil
+}
+
+// validateStepPromptSource enforces exactly-one-of `prompt` /
+// `langfusePromptPath` on a step, and that `langfusePromptLabel` only
+// appears alongside a path.
+//
+// "Neither" is an error too, not a no-op: a step with no prompt at all was
+// always a bug, but before Langfuse references it was one the runtime
+// absorbed by sending an empty string to the model. Now that a missing
+// prompt could equally mean "the reference key is misspelled", it is worth
+// catching at load.
+func validateStepPromptSource(step Step) error {
+	hasInline := strings.TrimSpace(step.Prompt) != ""
+	path := strings.TrimSpace(step.LangfusePromptPath)
+
+	switch {
+	case hasInline && path != "":
+		// The extends hint is not decoration: a step's own YAML can show
+		// exactly one key and still land here when two templates between
+		// them supply the other (a step that declares one source no longer
+		// inherits the other — see suppressedByOwnPromptSource), and
+		// without the hint the message points at a file that looks
+		// correct.
+		return fmt.Errorf("%w: step %q declares both prompt and langfusePromptPath — declare exactly one (check any extends templates: one of the two may be inherited)", ErrInvalidPromptSource, step.ID)
+	case !hasInline && path == "":
+		return fmt.Errorf("%w: step %q declares neither prompt nor langfusePromptPath", ErrInvalidPromptSource, step.ID)
+	case path == "" && strings.TrimSpace(step.LangfusePromptLabel) != "":
+		return fmt.Errorf("%w: step %q sets langfusePromptLabel without langfusePromptPath", ErrInvalidPromptSource, step.ID)
+	}
 	return nil
 }
 

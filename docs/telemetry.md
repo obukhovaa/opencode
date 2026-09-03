@@ -49,6 +49,7 @@ export LANGFUSE_BASE_URL=https://cloud.langfuse.com  # optional, this is the def
 | `secretKey` | string | yes | Langfuse secret key. Supports `env:VAR_NAME` syntax |
 | `publicKey` | string | yes | Langfuse public key. Supports `env:VAR_NAME` syntax |
 | `baseURL` | string | no | Langfuse host URL. Falls back to `LANGFUSE_BASE_URL` env var, then `https://cloud.langfuse.com` |
+| `prompts` | object | no | Langfuse Prompt Management (see [below](#langfuse-prompt-management)). Independent of `enabled` — prompts may be used without tracing. |
 
 ### Trace Hierarchy
 
@@ -209,6 +210,117 @@ This changes how metadata keys appear in Langfuse:
 | `opencode_version` | `app.opencode_version` |
 
 Each prefixed key remains a top-level metadata entry in Langfuse and is independently filterable. Standard Langfuse attributes (`langfuse.session.id`, `langfuse.user.id`, `langfuse.trace.tags`, etc.) are not affected — only custom metadata keys are namespaced.
+
+## Langfuse Prompt Management
+
+Separate from tracing, Langfuse can also be the *source* of prompts rather
+than a destination for them. With `telemetry.langfuse.prompts.enabled`, a
+flow step or an agent type may reference a prompt stored in Langfuse by path
+instead of inlining its text, so wording changes ship from the Langfuse UI
+with no deploy.
+
+It is worth naming the wart: fetching prompts is not observability, and this
+is the one thing under `telemetry` that changes what the agent *does* rather
+than what is recorded about it. It lives here because the credentials and
+`baseURL` already resolve here, and duplicating them would create a second
+way for a deployment to end up half-configured.
+
+```json
+{
+  "telemetry": {
+    "langfuse": {
+      "publicKey": "env:LANGFUSE_PUBLIC_KEY",
+      "secretKey": "env:LANGFUSE_SECRET_KEY",
+      "baseURL": "env:LANGFUSE_BASE_URL",
+      "prompts": {
+        "enabled": true,
+        "label": "production",
+        "cacheTTL": "60s",
+        "timeout": "10s",
+        "warmup": true
+      }
+    }
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | bool | `false` | Enable prompt management. When false, a `langfusePromptPath` reference fails to resolve. |
+| `label` | string | `production` | Default label resolved for references that do not name one. Avoid `latest` — it moves on every save, so an unfinished edit in the UI would reach a running flow immediately. |
+| `cacheTTL` | duration | `60s` | How long a resolved prompt is reused before re-fetching. This is the upper bound on how long a UI edit takes to reach a running process for flow steps and subagents — see [Freshness](#freshness-what-a-ui-edit-reaches-and-when) for primary agents. |
+| `timeout` | duration | `10s` | Timeout for a single prompt fetch. |
+| `warmup` | bool | `true` | Pre-fetch every prompt referenced by the flow and agent registries at startup, in the background. Failures are logged and never fail — or delay — the boot. |
+
+**Credentials are shared with tracing, the switches are not.**
+`prompts.enabled` with resolvable `publicKey` / `secretKey` is sufficient;
+`telemetry.langfuse.enabled` may stay `false`. A deployment that manages
+prompts in Langfuse but ships its traces elsewhere is a supported setup.
+
+**Where references are declared:**
+
+- Flow steps — `langfusePromptPath` / `langfusePromptLabel` in place of
+  `prompt`. See [flows.md](flows.md#langfuse-managed-prompts).
+- Agent types — the same two keys in place of the markdown body or the
+  `prompt` field. See [the README](../README.md#langfuse-managed-system-prompts).
+
+Either way, exactly one prompt source per definition; declaring both is a
+load-time error, not a precedence rule.
+
+**Templating dialect.** Prompt bodies stored in Langfuse use opencode's own
+`${args.*}` / `${step.*}` placeholders, not Langfuse's `{{variable}}` syntax
+— `{{…}}` passes through verbatim. One dialect for authors, at the cost of
+the Langfuse playground not previewing variables.
+
+### Freshness: what a UI edit reaches, and when
+
+`cacheTTL` bounds the cache, but *when* a definition is re-resolved differs
+by consumer, and this is worth knowing before relying on "edit in the UI, no
+deploy":
+
+| Consumer | Resolved | A UI edit reaches it |
+|---|---|---|
+| Flow step | Every step run | Within `cacheTTL` |
+| Subagent (`task` tool) | Every spawn | Within `cacheTTL` |
+| Agent with `mode: subagent` used by a flow step | Per step | Within `cacheTTL` |
+| Primary agent (`mode: agent`) | Once, at startup | **On restart** |
+
+Primary agents are built once by `InitPrimaryAgents` and held for the
+process lifetime, with the resolved text baked into the provider's system
+message — so for a long-lived `opencode serve` or TUI process, a primary
+agent's system prompt is pinned to what it resolved at boot. Switching the
+model re-uses that same text rather than re-fetching. Restart the process to
+pick up an edit to a primary agent's prompt.
+
+**Chat-type prompts** are accepted and flattened to text by joining their
+`role: content` blocks in source order, with a log line. Both consumers take
+a single string, so there is nowhere to put the message structure. Blocks
+that carry no text — Langfuse's `placeholder` block, for instance — are
+dropped, with a warning naming how many blocks were seen versus kept. A chat
+prompt whose blocks carry *no* role or text at all (an array-valued
+`content`, say) is a resolution error naming the shape rather than a
+misleading "empty prompt".
+
+**Failure behaviour.** A fetch failure with a cached copy serves the cached
+copy and logs a warning — a step running last minute's prompt beats a step
+that cannot run at all. A failure with nothing cached fails the step (or
+agent construction) naming the path and the HTTP status. An empty or
+whitespace-only prompt is a resolution error. The agent is never run on an
+empty prompt, and never falls back to the built-in prompt for its name: that
+would read as "Langfuse is being ignored", which is much harder to diagnose
+than an error.
+
+A failed fetch is remembered for a short floor (10s) before another is
+attempted. Without it a sustained outage costs one full `timeout` per
+caller, serialised — a fan-out of parallel steps over one prompt would stall
+for minutes on a cached copy that was already available.
+
+Note the asymmetry with boot: a primary agent whose prompt cannot be
+resolved at startup is *skipped* — `InitPrimaryAgents` logs an error and
+continues — so the agent is absent from the switcher rather than broken. If
+it was the only primary agent, boot fails with `no primary agents has been
+created`. Check the log for `resolving langfusePromptPath` if an agent
+disappears.
 
 ## Provider Metadata
 

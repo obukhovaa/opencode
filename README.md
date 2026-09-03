@@ -238,6 +238,9 @@ Each built-in agent can be customized:
 | `deferredTools` | On-demand tool loading — matching tools stay out of context until discovered via `toolsearch` (e.g., `{"jira_*": true}`, [guide](docs/deferred-tools.md)) |
 | `parallelToolUse` | Enable/disable parallel tool invocation if tool allows it |
 | `color` | Badge color for subagent indication in TUI |
+| `prompt` | Custom system prompt (mutually exclusive with `langfusePromptPath`) |
+| `langfusePromptPath` | Path of a prompt in Langfuse Prompt Management to use as the system prompt ([guide](docs/telemetry.md#langfuse-prompt-management)) |
+| `langfusePromptLabel` | Langfuse label to resolve for `langfusePromptPath` (default `production`) |
 
 #### Custom Agents via Markdown
 
@@ -276,6 +279,58 @@ You are a code review specialist...
 ```
 
 The file basename (without `.md`) becomes the agent ID. Custom agents default to `subagent` mode.
+
+#### Langfuse-managed system prompts
+
+An agent's system prompt can live in [Langfuse Prompt Management](docs/telemetry.md#langfuse-prompt-management)
+instead of in the definition, so prompt changes ship from the Langfuse UI
+with no deploy. In a markdown agent it is a frontmatter key, and the body —
+which *is* the inline prompt — must be empty:
+
+```markdown
+---
+name: Code Reviewer
+description: Reviews code for quality and best practices
+mode: subagent
+langfusePromptPath: agents/reviewer/system
+langfusePromptLabel: production   # optional; this is the default
+---
+```
+
+The same two keys work in the `.opencode.json` `agents` block alongside
+`prompt` (note the JSON schema requires `model` on an agent entry, so
+restate it there even when only the prompt is changing):
+
+```json
+{
+  "agents": {
+    "reviewer": {
+      "model": "vertexai.claude-sonnet-4-5-m",
+      "langfusePromptPath": "agents/reviewer/system",
+      "langfusePromptLabel": "staging"
+    }
+  }
+}
+```
+
+Declaring both an inline prompt and a `langfusePromptPath` — a non-empty
+markdown body counts — is a load-time error rather than a precedence rule.
+Each definition layer is a partial override, so a higher-priority layer may
+declare `langfusePromptLabel` alone to re-label a path a lower one supplied;
+a label that ends up with no path anywhere is dropped with a warning rather
+than failing the boot.
+
+Resolution happens when the agent is constructed, not when the registry is
+loaded. For subagents (built per `task` spawn) and flow-step agents that
+means an edit in the Langfuse UI reaches the next run bounded by `cacheTTL`,
+with no restart. **Primary agents (`mode: agent`) are built once at startup
+and held for the process lifetime**, so their prompt is pinned until
+restart — see the freshness table in
+[telemetry.md](docs/telemetry.md#freshness-what-a-ui-edit-reaches-and-when).
+
+A reference that cannot be resolved and has nothing cached fails agent
+construction naming the path; the agent never runs on an empty system prompt
+and never silently falls back to the built-in prompt for its name.
 
 
 ### Auto Compact

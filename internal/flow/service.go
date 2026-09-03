@@ -18,6 +18,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/format"
+	"github.com/opencode-ai/opencode/internal/langfuse"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -80,6 +81,82 @@ type service struct {
 	agents      agentpkg.AgentFactory
 
 	interactiveHook InteractiveHook // nil → uses nopInteractiveHook (fail-fast)
+	promptResolver  PromptResolver  // nil → uses the global Langfuse prompt client
+}
+
+// PromptResolver resolves a step's langfusePromptPath to prompt text.
+//
+// An interface rather than a direct call into internal/langfuse so the flow
+// engine's tests can drive prompt-referencing steps without a Langfuse
+// backend, mirroring InteractiveHook. Production wiring needs no injection:
+// the default resolver reads the process-global prompt client.
+type PromptResolver interface {
+	ResolvePrompt(ctx context.Context, path, label string) (string, error)
+}
+
+// SetPromptResolver overrides the Langfuse-backed prompt resolver.
+//
+// Tests only, and it must be called before the service starts running steps:
+// promptResolverOrDefault reads the field from every runStep goroutine and
+// this write is unsynchronised. Production needs no injection at all — the
+// default resolver reads the process-global client that cmd/root.go,
+// cmd/serve.go and cmd/acp.go initialise. There is deliberately no exported
+// setter interface (the InteractiveHookSetter analogue) because nothing
+// outside this package has any reason to swap the resolver.
+func (s *service) SetPromptResolver(r PromptResolver) {
+	s.promptResolver = r
+}
+
+// langfusePromptResolver adapts the global Langfuse prompt client to
+// PromptResolver.
+type langfusePromptResolver struct{}
+
+func (langfusePromptResolver) ResolvePrompt(ctx context.Context, path, label string) (string, error) {
+	resolved, err := langfuse.GetPrompts().Resolve(ctx, path, label)
+	if err != nil {
+		return "", err
+	}
+	// Log the version here rather than in resolveStepPrompt: it is the one
+	// place that has it, and without it "which prompt produced this run" is
+	// unanswerable for a feature whose whole point is editing prompts out
+	// of band.
+	logging.Info("Resolved flow step prompt from Langfuse",
+		"path", resolved.Path, "label", resolved.Label, "version", resolved.Version)
+	return resolved.Text, nil
+}
+
+func (s *service) promptResolverOrDefault() PromptResolver {
+	if s.promptResolver != nil {
+		return s.promptResolver
+	}
+	return langfusePromptResolver{}
+}
+
+// resolveStepPrompt returns the step's prompt text: the inline one verbatim,
+// or the Langfuse-managed one fetched by path.
+//
+// The error path is deliberately terminal — there is no fall back to an
+// inline default, because a step that declares a reference has no inline
+// prompt to fall back to (validateStepPromptSource guarantees it). Running
+// the agent on an empty prompt would burn a model call and produce output
+// that routes the flow somewhere arbitrary. Resilience lives one level down
+// instead, in the prompt client's serve-stale-on-error cache.
+func (s *service) resolveStepPrompt(ctx context.Context, step Step) (string, error) {
+	// Trimmed, to agree with validateStepPromptSource: it treats a
+	// whitespace-only path as absent, so an untrimmed check here would send
+	// "  " to the client and fail the step at run time over a key
+	// validation had already decided was not a reference.
+	path := strings.TrimSpace(step.LangfusePromptPath)
+	if path == "" {
+		return step.Prompt, nil
+	}
+	text, err := s.promptResolverOrDefault().ResolvePrompt(ctx, path, step.LangfusePromptLabel)
+	if err != nil {
+		return "", fmt.Errorf("step %q: resolving langfusePromptPath %q: %w", step.ID, path, err)
+	}
+	logging.Debug("Resolved flow step prompt from Langfuse",
+		"step", step.ID, "path", step.LangfusePromptPath, "label", step.LangfusePromptLabel, "prompt_length", len(text))
+	return text, nil
 }
 
 // SetInteractiveHook installs the chat-bridge hook used by
@@ -447,7 +524,31 @@ func (s *service) runStep(
 
 	s.permissions.AutoApproveSession(sess.ID)
 
-	prompt := substituteScoped(step.Prompt, args, stepVars)
+	status := FlowStatusRunning
+	if prevState != nil && postpone {
+		status = FlowStatusPostponed
+	}
+
+	// Resolve the prompt source (inline, or fetched from Langfuse) BEFORE
+	// substitution, so a managed prompt goes through exactly the same
+	// ${args.…} / shell-markup / previous-output pipeline as an inline one.
+	//
+	// Skipped when the step is about to be parked: that path returns below
+	// without ever using the prompt, so a fetch here buys nothing and can
+	// only do harm — an unreachable Langfuse would route a postpone into
+	// handleStepError and fail the flow on an attempt that does no model
+	// work at all. The attempt that actually runs resolves it.
+	stepPrompt := step.Prompt
+	if status != FlowStatusPostponed {
+		resolved, resolveErr := s.resolveStepPrompt(ctx, step)
+		if resolveErr != nil {
+			s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, resolveErr, wg, agentEvents, flowStates, nextSteps, f)
+			return
+		}
+		stepPrompt = resolved
+	}
+
+	prompt := substituteScoped(stepPrompt, args, stepVars)
 	// Expand !`cmd` shell markup in flow prompts (after args substitution so args can parameterize commands)
 	if strings.Contains(prompt, "!`") {
 		cwd := config.WorkingDirectory()
@@ -457,11 +558,6 @@ func (s *service) runStep(
 	// NOTE: Structured output referenced via template variables if needed
 	if prevState != nil && prevState.Output != "" && !prevState.IsStructOutput {
 		prompt = fmt.Sprintf("Previous step (%s) output:\n%s\n\n%s", prevState.StepID, prevState.Output, prompt)
-	}
-
-	status := FlowStatusRunning
-	if prevState != nil && postpone {
-		status = FlowStatusPostponed
 	}
 
 	argsJSON, _ := json.Marshal(args)

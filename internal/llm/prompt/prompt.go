@@ -317,6 +317,19 @@ type AgentPromptOptions struct {
 	// the AgentInfo from NewAgent should set this to
 	// (AgentInfo.Output != nil && AgentInfo.Output.Schema != nil).
 	HasOutputSchema bool
+
+	// BasePrompt overrides the agent's registered system prompt.
+	//
+	// Needed for the same reason as HasOutputSchema: a Langfuse-managed
+	// prompt is fetched onto the per-call AgentInfo copy in
+	// AgentFactory.NewAgent, but this builder re-fetches the ORIGINAL
+	// registry entry via reg.Get, whose Prompt is empty for a
+	// reference-declaring agent. Without this the agent would silently
+	// fall back to the built-in default prompt for its name.
+	//
+	// Empty means "use the registered prompt", which is what every caller
+	// that does not manage prompts externally passes.
+	BasePrompt string
 }
 
 // GetAgentPromptWithOptions is GetAgentPrompt + per-call overrides.
@@ -335,7 +348,9 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 	reg := agentregistry.GetRegistry()
 
 	var basePrompt string
-	if info, ok := reg.Get(agentName); ok && info.Prompt != "" {
+	if opts.BasePrompt != "" {
+		basePrompt = opts.BasePrompt
+	} else if info, ok := reg.Get(agentName); ok && info.Prompt != "" {
 		basePrompt = info.Prompt
 	} else {
 		switch agentName {

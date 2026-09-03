@@ -279,7 +279,13 @@ files would otherwise get silent shadowing.
 
 #### Scenario: Flows without include are unaffected
 - **WHEN** a flow declares neither `include` nor `extends`
-- **THEN** it loads and executes exactly as before, with no new required keys
+- **THEN** it loads and executes exactly as before, with no keys required by the include mechanism itself
+
+#### Scenario: A declared prompt source is not merged with an inherited one
+- **WHEN** a step declares `prompt` and its `extends` template declares `langfusePromptPath` (or the reverse)
+- **THEN** the step inherits neither the competing key nor `langfusePromptLabel`, so the step's declared source replaces the template's rather than colliding on the exactly-one-source rule
+- **AND WHEN** a step declares only `langfusePromptLabel`
+- **THEN** it still inherits `langfusePromptPath` from its template, so a flow can run a shared prompt against a different label
 
 #### Scenario: An include path is the same from any flow depth
 - **WHEN** the same `include: - local: .agents/steps/x.yaml` line appears in a flow under `.agents/flows/` and in a team-hosted flow under `<team>/flows/`

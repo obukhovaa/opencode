@@ -23,6 +23,7 @@ var (
 	ErrInvalidInclude       = errors.New("invalid flow include")
 	ErrInvalidTemplate      = errors.New("invalid step template")
 	ErrUnknownTemplate      = errors.New("unknown step template")
+	ErrInvalidPromptSource  = errors.New("invalid step prompt source")
 )
 
 // Flow represents a discovered flow definition.
@@ -65,13 +66,33 @@ type Step struct {
 	// before validateFlow, so a merged step is validated exactly as an
 	// inline one. See the flow-api spec "Flow files compose shared step
 	// definitions via include and extends".
-	Extends  []string    `yaml:"extends,omitempty"`
-	Agent    string      `yaml:"agent,omitempty"`
-	Session  StepSession `yaml:"session,omitempty"`
-	Prompt   string      `yaml:"prompt"`
-	Output   *StepOutput `yaml:"output,omitempty"`
-	Rules    []Rule      `yaml:"rules,omitempty"`
-	Fallback *Fallback   `yaml:"fallback,omitempty"`
+	Extends []string    `yaml:"extends,omitempty"`
+	Agent   string      `yaml:"agent,omitempty"`
+	Session StepSession `yaml:"session,omitempty"`
+	Prompt  string      `yaml:"prompt"`
+	// LangfusePromptPath names a prompt in Langfuse Prompt Management to
+	// use instead of the inline Prompt, so wording changes ship from the
+	// Langfuse UI with no flow or image deploy. Slashes are part of the
+	// name and render as folders in that UI.
+	//
+	// Exactly one of Prompt / LangfusePromptPath must be present —
+	// validateFlow rejects both and neither, with no silent precedence,
+	// because a step that quietly ran the wrong one of two prompts is the
+	// hardest possible thing to notice from its output. The check runs
+	// after `extends` template merging, since a template may supply
+	// either key.
+	//
+	// Everything after resolution is unchanged: ${args.…} substitution,
+	// !`shell` markup, previous-step-output prefixing and struct output
+	// all see the resolved text exactly as they would an inline one.
+	LangfusePromptPath string `yaml:"langfusePromptPath,omitempty"`
+	// LangfusePromptLabel selects which labelled version of
+	// LangfusePromptPath to resolve. Empty means the configured default
+	// ("production"). Only legal alongside LangfusePromptPath.
+	LangfusePromptLabel string      `yaml:"langfusePromptLabel,omitempty"`
+	Output              *StepOutput `yaml:"output,omitempty"`
+	Rules               []Rule      `yaml:"rules,omitempty"`
+	Fallback            *Fallback   `yaml:"fallback,omitempty"`
 	// MaxTurns optionally overrides the agent's maxTurns for this step.
 	// 0 (unset) inherits the agent's configured maxTurns (which in turn
 	// falls back to the global default). validateFlow rejects only

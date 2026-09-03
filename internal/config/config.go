@@ -100,13 +100,22 @@ type Agent struct {
 	Native          bool            `json:"native,omitempty"`
 	Description     string          `json:"description,omitempty"`
 	Prompt          string          `json:"prompt,omitempty"`
-	Color           string          `json:"color,omitempty"`
-	Hidden          bool            `json:"hidden,omitempty"`
-	Disabled        bool            `json:"disabled,omitempty"`
-	ParallelToolUse *bool           `json:"parallelToolUse,omitempty"`
-	Output          *AgentOutput    `json:"output,omitempty"`
-	Skills          []string        `json:"skills,omitempty"`
-	TaskBudget      int64           `json:"taskBudget,omitempty"`
+	// LangfusePromptPath references a prompt stored in Langfuse Prompt
+	// Management instead of inlining its text in Prompt. Mutually
+	// exclusive with Prompt — see validateAgentPromptSource. Slashes are
+	// part of the name and render as folders in the Langfuse UI.
+	LangfusePromptPath string `json:"langfusePromptPath,omitempty"`
+	// LangfusePromptLabel selects which labelled version of
+	// LangfusePromptPath to resolve. Empty means the configured default
+	// ("production"). Only legal alongside LangfusePromptPath.
+	LangfusePromptLabel string       `json:"langfusePromptLabel,omitempty"`
+	Color               string       `json:"color,omitempty"`
+	Hidden              bool         `json:"hidden,omitempty"`
+	Disabled            bool         `json:"disabled,omitempty"`
+	ParallelToolUse     *bool        `json:"parallelToolUse,omitempty"`
+	Output              *AgentOutput `json:"output,omitempty"`
+	Skills              []string     `json:"skills,omitempty"`
+	TaskBudget          int64        `json:"taskBudget,omitempty"`
 }
 
 // LangfuseConfig defines configuration for Langfuse observability integration.
@@ -115,6 +124,74 @@ type LangfuseConfig struct {
 	SecretKey string `json:"secretKey,omitempty"` // Supports "env:VAR_NAME"; falls back to LANGFUSE_SECRET_KEY
 	PublicKey string `json:"publicKey,omitempty"` // Supports "env:VAR_NAME"; falls back to LANGFUSE_PUBLIC_KEY
 	BaseURL   string `json:"baseURL,omitempty"`   // Supports "env:VAR_NAME"; falls back to LANGFUSE_BASE_URL
+
+	// Prompts enables Langfuse Prompt Management: flow steps and agent
+	// types may reference a prompt stored in Langfuse instead of inlining
+	// its text, so wording changes ship from the Langfuse UI with no
+	// deploy. See LangfusePromptsConfig.
+	Prompts *LangfusePromptsConfig `json:"prompts,omitempty"`
+}
+
+// LangfusePromptsConfig controls Langfuse Prompt Management.
+//
+// It sits under telemetry.langfuse because that is where the credentials and
+// baseURL already resolve, and duplicating them would create two ways for a
+// deployment to be half-configured. It is worth naming the wart: fetching
+// prompts is not observability, and this block is the one thing under
+// `telemetry` that changes what the agent does rather than what is recorded
+// about it.
+//
+// Prompt management is independent of tracing. Enabled here with resolvable
+// credentials is sufficient — telemetry.langfuse.enabled may stay false.
+type LangfusePromptsConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+	// Label is the default Langfuse label resolved for references that do
+	// not name one. Defaults to "production". Never set this to "latest":
+	// that label moves on every save, so an unfinished edit in the UI
+	// would reach a running flow immediately.
+	Label string `json:"label,omitempty"`
+	// CacheTTL bounds how long a resolved prompt is reused before it is
+	// re-fetched, as a Go duration string. Defaults to "60s". This is the
+	// upper bound on how long a UI edit takes to reach a running process.
+	CacheTTL string `json:"cacheTTL,omitempty"`
+	// Timeout bounds a single prompt fetch, as a Go duration string.
+	// Defaults to "10s".
+	Timeout string `json:"timeout,omitempty"`
+	// Warmup pre-fetches every prompt referenced by the flow and agent
+	// registries at startup, so the first run does not pay a cold fetch.
+	// Defaults to true; failures are logged and never fail the boot.
+	Warmup *bool `json:"warmup,omitempty"`
+}
+
+// CacheTTLDuration parses CacheTTL. An empty value yields 0, which the
+// prompt client reads as "use the default".
+func (c *LangfusePromptsConfig) CacheTTLDuration() (time.Duration, error) {
+	return parseOptionalDuration(c.CacheTTL, "telemetry.langfuse.prompts.cacheTTL")
+}
+
+// TimeoutDuration parses Timeout. An empty value yields 0, which the prompt
+// client reads as "use the default".
+func (c *LangfusePromptsConfig) TimeoutDuration() (time.Duration, error) {
+	return parseOptionalDuration(c.Timeout, "telemetry.langfuse.prompts.timeout")
+}
+
+// WarmupEnabled reports whether startup pre-fetching is on. Absent means on.
+func (c *LangfusePromptsConfig) WarmupEnabled() bool {
+	return c == nil || c.Warmup == nil || *c.Warmup
+}
+
+func parseOptionalDuration(value, field string) (time.Duration, error) {
+	if strings.TrimSpace(value) == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid duration %q: %w", field, value, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%s: must be positive (got %q)", field, value)
+	}
+	return d, nil
 }
 
 // CaptureTelemetryConfig is the shared shape of the telemetry sections that
@@ -904,6 +981,10 @@ func applyDefaultValues() {
 
 // It validates model IDs and providers, ensuring they are supported.
 func validateAgent(cfg *Config, name AgentName, agent Agent) error {
+	if err := ValidateAgentPromptSource(string(name), agent.Prompt != "", agent.LangfusePromptPath); err != nil {
+		return err
+	}
+
 	// Check if model exists
 	model, modelExists := models.SupportedModels[agent.Model]
 	if !modelExists {
@@ -1211,6 +1292,32 @@ func validateProviderMetadata(provider models.ModelProvider, meta *ProviderMetad
 	return nil
 }
 
+// ValidateAgentPromptSource enforces that an agent type declares its system
+// prompt exactly one way: inline, or by Langfuse reference — never both.
+//
+// hasInlinePrompt is a presence bit rather than the text itself because the
+// two definition forms disagree on where the inline prompt lives: a JSON
+// agent puts it in `prompt`, while a markdown agent's prompt IS its body.
+// Both funnel here so the rule reads identically in either form's error.
+//
+// Declaring neither is legal and unchanged: built-in agents fall back to
+// their compiled-in prompts, and an agent that overrides only its model or
+// tools has no business restating a prompt.
+//
+// It deliberately does NOT reject langfusePromptLabel without a path. Each
+// definition layer is a PARTIAL override — a JSON entry re-labelling a path
+// that a markdown agent declared is a legitimate way to point one
+// environment at a `staging` prompt — so "label with no path" can only be
+// judged on the merged entry. The agent registry does that in
+// normalisePromptSources, where a genuinely orphaned label is dropped with a
+// warning instead of refusing the boot.
+func ValidateAgentPromptSource(id string, hasInlinePrompt bool, langfusePath string) error {
+	if hasInlinePrompt && strings.TrimSpace(langfusePath) != "" {
+		return fmt.Errorf("agent %q: prompt and langfusePromptPath are mutually exclusive — declare exactly one", id)
+	}
+	return nil
+}
+
 // validateTelemetryConfig validates telemetry configuration.
 func validateTelemetryConfig(telemetry *TelemetryConfig) error {
 	if telemetry == nil {
@@ -1240,6 +1347,22 @@ func validateTelemetryConfig(telemetry *TelemetryConfig) error {
 		sk := resolveEnvValue(lf.SecretKey, "LANGFUSE_SECRET_KEY")
 		if sk == "" {
 			return fmt.Errorf("telemetry.langfuse: secretKey is required when enabled (set in config or LANGFUSE_SECRET_KEY env var)")
+		}
+	}
+	// Prompt management is checked independently of langfuse.enabled: it
+	// resolves the same credentials but is a separate capability, so a
+	// deployment may run prompts without tracing.
+	if lf := telemetry.Langfuse; lf != nil && lf.Prompts != nil && lf.Prompts.Enabled {
+		p := lf.Prompts
+		if _, err := p.CacheTTLDuration(); err != nil {
+			return err
+		}
+		if _, err := p.TimeoutDuration(); err != nil {
+			return err
+		}
+		if resolveEnvValue(lf.PublicKey, "LANGFUSE_PUBLIC_KEY") == "" ||
+			resolveEnvValue(lf.SecretKey, "LANGFUSE_SECRET_KEY") == "" {
+			return fmt.Errorf("telemetry.langfuse.prompts: publicKey and secretKey are required when prompts are enabled (set in config or LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY env vars)")
 		}
 	}
 	return nil

@@ -316,6 +316,14 @@ func generateSchema() map[string]any {
 					"type":        "string",
 					"description": "Custom system prompt for the agent",
 				},
+				"langfusePromptPath": map[string]any{
+					"type":        "string",
+					"description": "Path of a prompt in Langfuse Prompt Management to use as this agent's system prompt, instead of an inline 'prompt'. Slashes render as folders in the Langfuse UI. Mutually exclusive with 'prompt'. Requires telemetry.langfuse.prompts.enabled.",
+				},
+				"langfusePromptLabel": map[string]any{
+					"type":        "string",
+					"description": "Langfuse label to resolve for langfusePromptPath (e.g. 'staging'). Defaults to telemetry.langfuse.prompts.label, itself defaulting to 'production'. Only valid alongside langfusePromptPath.",
+				},
 				"color": map[string]any{
 					"type":        "string",
 					"description": "Badge color for subagent display (e.g., 'blue', 'orange', 'primary', 'warning')",
@@ -718,6 +726,38 @@ func generateSchema() map[string]any {
 					"baseURL": map[string]any{
 						"type":        "string",
 						"description": "Langfuse host URL. Supports 'env:VAR_NAME' syntax. Falls back to LANGFUSE_BASE_URL env var, then https://cloud.langfuse.com.",
+					},
+					"prompts": map[string]any{
+						"type":        "object",
+						"description": "Langfuse Prompt Management. When enabled, flow steps and agent types may reference a prompt stored in Langfuse (langfusePromptPath) instead of inlining its text, so wording changes ship from the Langfuse UI with no deploy. Independent of tracing: this may be enabled while telemetry.langfuse.enabled is false. Uses the same credentials and baseURL.",
+						"properties": map[string]any{
+							"enabled": map[string]any{
+								"type":        "boolean",
+								"description": "Enable Langfuse prompt management. When false (default), a langfusePromptPath reference fails to resolve.",
+								"default":     false,
+							},
+							"label": map[string]any{
+								"type":        "string",
+								"description": "Default Langfuse label resolved for references that do not name one. Defaults to 'production'. Avoid 'latest' — it moves on every save, so an unfinished edit would reach a running flow immediately.",
+								"default":     "production",
+							},
+							"cacheTTL": map[string]any{
+								"type":        "string",
+								"description": "How long a resolved prompt is reused before re-fetching, as a Go duration string (e.g. '60s', '5m'). Defaults to '60s'. This is the upper bound on how long a Langfuse UI edit takes to reach a running process for flow steps and subagents; primary agents (mode: agent) resolve once at startup and are pinned until restart.",
+								"default":     "60s",
+							},
+							"timeout": map[string]any{
+								"type":        "string",
+								"description": "Timeout for a single prompt fetch, as a Go duration string. Defaults to '10s'.",
+								"default":     "10s",
+							},
+							"warmup": map[string]any{
+								"type":        "boolean",
+								"description": "Pre-fetch every prompt referenced by the flow and agent registries at startup, in the background, so the first run does not pay a cold fetch. Defaults to true. Failures are logged and never fail or delay startup.",
+								"default":     true,
+							},
+						},
+						"additionalProperties": false,
 					},
 				},
 				"additionalProperties": false,
