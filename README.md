@@ -298,15 +298,39 @@ langfusePromptLabel: production   # optional; this is the default
 ```
 
 The same two keys work in the `.opencode.json` `agents` block alongside
-`prompt`. Declaring both an inline prompt and a `langfusePromptPath` — a
-non-empty markdown body counts — is a load-time error rather than a
-precedence rule.
+`prompt` (note the JSON schema requires `model` on an agent entry, so
+restate it there even when only the prompt is changing):
+
+```json
+{
+  "agents": {
+    "reviewer": {
+      "model": "vertexai.claude-sonnet-4-5-m",
+      "langfusePromptPath": "agents/reviewer/system",
+      "langfusePromptLabel": "staging"
+    }
+  }
+}
+```
+
+Declaring both an inline prompt and a `langfusePromptPath` — a non-empty
+markdown body counts — is a load-time error rather than a precedence rule.
+Each definition layer is a partial override, so a higher-priority layer may
+declare `langfusePromptLabel` alone to re-label a path a lower one supplied;
+a label that ends up with no path anywhere is dropped with a warning rather
+than failing the boot.
 
 Resolution happens when the agent is constructed, not when the registry is
-loaded, so an edit in the Langfuse UI reaches the next run (bounded by
-`cacheTTL`) without restarting the process. A reference that cannot be
-resolved and has nothing cached fails agent construction naming the path;
-the agent never runs on an empty system prompt.
+loaded. For subagents (built per `task` spawn) and flow-step agents that
+means an edit in the Langfuse UI reaches the next run bounded by `cacheTTL`,
+with no restart. **Primary agents (`mode: agent`) are built once at startup
+and held for the process lifetime**, so their prompt is pinned until
+restart — see the freshness table in
+[telemetry.md](docs/telemetry.md#freshness-what-a-ui-edit-reaches-and-when).
+
+A reference that cannot be resolved and has nothing cached fails agent
+construction naming the path; the agent never runs on an empty system prompt
+and never silently falls back to the built-in prompt for its name.
 
 
 ### Auto Compact

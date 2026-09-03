@@ -981,8 +981,7 @@ func applyDefaultValues() {
 
 // It validates model IDs and providers, ensuring they are supported.
 func validateAgent(cfg *Config, name AgentName, agent Agent) error {
-	if err := ValidateAgentPromptSource(string(name), agent.Prompt != "",
-		agent.LangfusePromptPath, agent.LangfusePromptLabel); err != nil {
+	if err := ValidateAgentPromptSource(string(name), agent.Prompt != "", agent.LangfusePromptPath); err != nil {
 		return err
 	}
 
@@ -1304,13 +1303,17 @@ func validateProviderMetadata(provider models.ModelProvider, meta *ProviderMetad
 // Declaring neither is legal and unchanged: built-in agents fall back to
 // their compiled-in prompts, and an agent that overrides only its model or
 // tools has no business restating a prompt.
-func ValidateAgentPromptSource(id string, hasInlinePrompt bool, langfusePath, langfuseLabel string) error {
-	path := strings.TrimSpace(langfusePath)
-	if hasInlinePrompt && path != "" {
+//
+// It deliberately does NOT reject langfusePromptLabel without a path. Each
+// definition layer is a PARTIAL override — a JSON entry re-labelling a path
+// that a markdown agent declared is a legitimate way to point one
+// environment at a `staging` prompt — so "label with no path" can only be
+// judged on the merged entry. The agent registry does that in
+// normalisePromptSources, where a genuinely orphaned label is dropped with a
+// warning instead of refusing the boot.
+func ValidateAgentPromptSource(id string, hasInlinePrompt bool, langfusePath string) error {
+	if hasInlinePrompt && strings.TrimSpace(langfusePath) != "" {
 		return fmt.Errorf("agent %q: prompt and langfusePromptPath are mutually exclusive — declare exactly one", id)
-	}
-	if path == "" && strings.TrimSpace(langfuseLabel) != "" {
-		return fmt.Errorf("agent %q: langfusePromptLabel requires langfusePromptPath", id)
 	}
 	return nil
 }

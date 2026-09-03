@@ -130,6 +130,7 @@ func newRegistry() Registry {
 	registerBuiltins(agents, cfg)
 	discoverMarkdownAgents(agents, cfg)
 	applyConfigOverrides(agents, cfg)
+	normalisePromptSources(agents)
 	removeDisabledAgents(agents)
 
 	globalPerms := buildGlobalPerms(cfg)
@@ -467,6 +468,14 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 			existing.LangfusePromptPath = agentCfg.LangfusePromptPath
 			existing.LangfusePromptLabel = agentCfg.LangfusePromptLabel
 			existing.Prompt = ""
+		} else if agentCfg.LangfusePromptLabel != "" {
+			// A label with no path of its own re-labels the path this agent
+			// already has (from a markdown definition, typically) — the
+			// natural way to point one environment at a `staging` prompt.
+			// Every other agent key is a partial override; without this
+			// branch the prompt source would be the sole exception, and the
+			// label would be silently dropped.
+			existing.LangfusePromptLabel = agentCfg.LangfusePromptLabel
 		}
 		if agentCfg.Hidden {
 			existing.Hidden = true
@@ -552,6 +561,10 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 		existing.LangfusePromptPath = md.LangfusePromptPath
 		existing.LangfusePromptLabel = md.LangfusePromptLabel
 		existing.Prompt = ""
+	} else if md.LangfusePromptLabel != "" {
+		// As in applyConfigOverrides: a label alone re-labels an inherited
+		// path rather than being dropped.
+		existing.LangfusePromptLabel = md.LangfusePromptLabel
 	}
 	if md.Permission != nil {
 		existing.Permission = mergePermissions(existing.Permission, md.Permission)
@@ -728,7 +741,12 @@ func scanAgentDirectory(dir string) []AgentInfo {
 		fullPath := filepath.Join(dir, name)
 		agent, err := parseAgentMarkdown(fullPath)
 		if err != nil {
-			logging.Warn("Failed to parse agent markdown", "path", fullPath, "error", err)
+			// Error, not Warn: the whole definition is discarded, so the
+			// agent silently reverts to its built-in defaults (or vanishes
+			// entirely). The equivalent mistake in .opencode.json fails the
+			// boot — this is the quiet half of that asymmetry, and it needs
+			// to be findable in the log.
+			logging.Error("Failed to parse agent markdown — definition ignored", "path", fullPath, "error", err)
 			continue
 		}
 		agents = append(agents, *agent)
@@ -781,8 +799,7 @@ func parseAgentMarkdown(path string) (*AgentInfo, error) {
 	// a body". Reject it here rather than picking one: a file carrying
 	// both is a half-finished migration, and silently running the body
 	// would make the reference look broken on the Langfuse side.
-	if err := config.ValidateAgentPromptSource(baseName, strings.TrimSpace(body) != "",
-		agent.LangfusePromptPath, agent.LangfusePromptLabel); err != nil {
+	if err := config.ValidateAgentPromptSource(baseName, strings.TrimSpace(body) != "", agent.LangfusePromptPath); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	agent.Prompt = body
@@ -798,4 +815,37 @@ func parseAgentMarkdown(path string) (*AgentInfo, error) {
 	}
 
 	return &agent, nil
+}
+
+// normalisePromptSources cleans up prompt-source fields once every
+// definition layer has been merged, which is the first point at which an
+// entry's final prompt source is known.
+//
+// Two jobs:
+//
+//   - Trim the path. ValidateAgentPromptSource compares it trimmed, so
+//     `"langfusePromptPath": "  "` validates as "no reference", but every
+//     consumer checks it untrimmed and would send "  " to Langfuse and fail
+//     agent construction on a key validation already discounted.
+//   - Drop a label that has no path. A label alone selects a version of
+//     nothing. It is legal per layer — that is what makes a label-only
+//     override possible — so it can only be judged here, and it is a
+//     no-op rather than a failure: refusing to boot over a stray key on an
+//     agent that is otherwise fine is worse than ignoring it loudly.
+func normalisePromptSources(agents map[string]AgentInfo) {
+	for id, a := range agents {
+		trimmed := strings.TrimSpace(a.LangfusePromptPath)
+		changed := trimmed != a.LangfusePromptPath
+		a.LangfusePromptPath = trimmed
+
+		if a.LangfusePromptPath == "" && a.LangfusePromptLabel != "" {
+			logging.Warn("Agent sets langfusePromptLabel with no langfusePromptPath — ignoring the label",
+				"agent", id, "label", a.LangfusePromptLabel)
+			a.LangfusePromptLabel = ""
+			changed = true
+		}
+		if changed {
+			agents[id] = a
+		}
+	}
 }

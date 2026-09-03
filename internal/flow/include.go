@@ -258,9 +258,13 @@ func resolveStepIncludes(flowPath string, includes []IncludeEntry, steps []Step,
 //     cross-job corruption, with -race silent while nothing writes.
 func mergeTemplates(step *Step, declared map[string]struct{}, templates []*stepTemplate) {
 	fields := stepFieldIndexByYAMLKey()
+	suppressed := suppressedByOwnPromptSource(declared)
 	dst := reflect.ValueOf(step).Elem()
 	for _, key := range inheritableStepKeys() {
 		if _, own := declared[key]; own {
+			continue
+		}
+		if _, dead := suppressed[key]; dead {
 			continue
 		}
 		// Last template declaring the key wins.
@@ -281,6 +285,76 @@ func mergeTemplates(step *Step, declared map[string]struct{}, templates []*stepT
 		// hide a broken invariant.
 		dst.Field(fields[key]).Set(deepCopyValue(reflect.ValueOf(src.step).Field(fields[key])))
 	}
+}
+
+// The step keys naming each of the two mutually exclusive prompt sources:
+// an inline prompt, or a Langfuse reference. Declaring either source
+// suppresses inheritance of the OTHER one — see
+// suppressedByOwnPromptSource.
+var (
+	inlinePromptStepKeys  = []string{"prompt"}
+	managedPromptStepKeys = []string{"langfusePromptPath", "langfusePromptLabel"}
+)
+
+// suppressedByOwnPromptSource returns the keys mergeTemplates must not
+// inherit because the step declares the competing prompt source itself.
+// Empty when it declares neither, which is the common case.
+//
+// This is the one place mergeTemplates knows field names, and it is worth
+// the exception. Because prompt and langfusePromptPath are mutually
+// exclusive (validateStepPromptSource), inheriting them independently
+// produces two failures that read as bugs in the loader rather than as
+// mistakes in the flow:
+//
+//   - a template supplying `prompt` and a step supplying
+//     `langfusePromptPath` (or the reverse) collide on "declares both",
+//     even though the step's YAML shows exactly one key and the intent —
+//     replace the template's prompt with mine — is unambiguous;
+//   - overriding an inherited `langfusePromptPath` with an inline `prompt`
+//     would leave the template's `langfusePromptLabel` behind, failing with
+//     "sets langfusePromptLabel without langfusePromptPath" for a key the
+//     step never wrote.
+//
+// So a declared prompt source replaces the SOURCE, not just its own field —
+// the rule the agent registry already applies in applyConfigOverrides and
+// mergeMarkdownIntoExisting, and what
+// specs/langfuse-prompt-management/spec.md means by "a declared prompt
+// source SHALL replace the source".
+//
+// Deliberately directional rather than one three-key group:
+// langfusePromptLabel stays independently inheritable, so a step CAN
+// declare just a label and take the path from its template — the natural
+// way to run a template's prompt against a different label.
+//
+// Only a source the STEP declares suppresses anything. Two templates that
+// between them supply both sources still collide, which is a real conflict
+// with no author intent to honour.
+func suppressedByOwnPromptSource(declared map[string]struct{}) map[string]struct{} {
+	declaresAny := func(keys []string) bool {
+		for _, key := range keys {
+			if _, ok := declared[key]; ok {
+				return true
+			}
+		}
+		return false
+	}
+
+	var out map[string]struct{}
+	add := func(keys []string) {
+		if out == nil {
+			out = make(map[string]struct{}, len(inlinePromptStepKeys)+len(managedPromptStepKeys))
+		}
+		for _, key := range keys {
+			out[key] = struct{}{}
+		}
+	}
+	if declaresAny(inlinePromptStepKeys) {
+		add(managedPromptStepKeys)
+	}
+	if declaresAny(managedPromptStepKeys) {
+		add(inlinePromptStepKeys)
+	}
+	return out
 }
 
 // deepCopyValue returns a value that shares no mutable state with v.

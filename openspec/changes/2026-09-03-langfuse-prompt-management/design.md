@@ -193,6 +193,128 @@ and names itself; failing the boot instead would take down a process whose
 other flows and agents are perfectly runnable, over a subsystem that is
 optional by design.
 
+## Decision 10 — a failed fetch is remembered, so an outage costs one request
+
+Decision 2 serves a stale copy when a re-fetch fails. What it left out is that
+a failed fetch has nothing to advance `fetchedAt` with, so the entry stays
+stale for the whole outage — and since the fetch runs under the entry's
+single-flight lock, every caller then queues up to pay the full HTTP timeout in
+turn. Measured against a failing test server: 20 callers on one warm reference
+issued 20 requests, serialised. At the shipped 10s default that is minutes of
+stall for a prompt whose cached copy was sitting right there, and on the agent
+path it is uninterruptible (resolution is deliberately on
+`context.Background()`, and a mutex wait ignores ctx regardless).
+
+The fix is a retry floor: a failure stamps `lastAttempt` and stores `lastErr`,
+and a resolution inside the floor replays that outcome — cached copy where one
+exists, cached error otherwise — with no request. One request per reference per
+floor, not one per caller.
+
+Considered and rejected: moving the fetch out from under the lock (loses the
+single-flight guarantee that Decision 2 wants), and `x/sync/singleflight`
+(correct, but it only collapses concurrent callers — sequential ones during an
+outage would still each pay a timeout, so the floor is needed either way, and
+with the floor the extra dependency buys nothing).
+
+The floor is not configurable. It is a property of "how fast can a backend
+plausibly recover", not of a deployment's freshness appetite, and `cacheTTL`
+already covers the latter.
+
+## Decision 11 — a declared prompt source replaces the source, in flows too
+
+Decision 4 says there is no precedence rule between the two sources, and that
+the check runs on the merged step so a template and a step cannot each supply
+one. Both still hold for a genuine conflict. But applied to `extends` merging
+as originally written it produced two errors that read as loader bugs rather
+than author mistakes: overriding a template's `prompt` with your own
+`langfusePromptPath` collided on "declares both" even though the step's YAML
+shows exactly one key, and overriding an inherited path with an inline prompt
+left the template's `langfusePromptLabel` stranded, failing with "label without
+path" for a key the step never wrote. The only escape was declaring the other
+key as an explicit empty string — a raw-key trick nothing documented.
+
+So `mergeTemplates` now suppresses inheritance of the competing source when the
+step declares one. This is the same rule the agent registry already applied in
+`applyConfigOverrides` / `mergeMarkdownIntoExisting`, and it is what the spec's
+"a declared prompt source SHALL replace the source" was always describing; the
+flow half simply hadn't implemented it.
+
+It is deliberately the ONE place `mergeTemplates` knows a field name, against
+that function's own "a field added to Step needs no code here" rule. The
+exception is justified by the fields being mutually exclusive: independent
+per-key merging is only correct for independent keys.
+
+Directional rather than one three-key group, so `langfusePromptLabel` stays
+independently inheritable and a step can declare just a label to run a shared
+template prompt against a different label. Two templates that between them
+supply both sources still collide — no author intent to honour there — and the
+error now says to check the `extends` list, since the step's own file looks
+fine.
+
+## Decision 12 — a prompt source is judged per layer, a label on the merged entry
+
+Every agent definition layer is a PARTIAL override: `.opencode.json` may change
+only a markdown agent's model, or only its color. Validating
+"langfusePromptLabel requires langfusePromptPath" per layer broke that — a JSON
+entry re-labelling a markdown agent's path to `staging` refused to boot with a
+message contradicting what the user had written, and the label would have been
+dropped by the merge even if it had passed.
+
+Mutual exclusion is still per layer: one layer declaring both an inline prompt
+and a reference is unambiguously wrong wherever it appears. But the label
+question can only be answered on the merged entry, so it moved there
+(`normalisePromptSources`), and it is a warning rather than a failure: an
+orphaned label selects a version of nothing, and refusing to boot over a stray
+key on an otherwise valid agent is worse than ignoring it loudly.
+
+The same pass trims the path. Validation compared it trimmed while every
+consumer compared it raw, so `"langfusePromptPath": "   "` validated as "no
+reference" and then failed agent construction as one.
+
+## Decision 13 — the resolved prompt must reach EVERY prompt-building path
+
+Decision 6 covers why `BasePrompt` has to be plumbed explicitly. What it
+under-stated is how many paths need it. Three did not have it:
+
+- `summarizer` and `descriptor`, whose providers `newAgent` builds by NAME
+  rather than through the factory. A `langfusePromptPath` on either was
+  silently ignored while an inline `prompt` on the same agent worked, so
+  compaction and title generation kept running the compiled-in prompt.
+- `agent.Update`, the in-process model switch, which rebuilt the provider with
+  no options at all — swapping a managed system prompt for the built-in one for
+  the rest of the process.
+
+Hence `resolveManagedPrompt` / `resolveRegisteredPrompt` as shared helpers
+rather than the resolution living inline in `NewAgent`, and `agent.basePrompt`
+holding the constructed text for `Update` to re-supply. `Update` re-supplies
+rather than re-resolving on purpose: re-resolving would make a model switch
+fail when Langfuse is down, and a switch is not the moment to introduce a new
+network dependency.
+
+This is the failure mode the whole `BasePrompt` mechanism exists to prevent, so
+it is worth naming why it recurred: the prompt builder re-reads the registry by
+name, which makes "forgot to pass it" fail SILENTLY and plausibly. Nothing in
+the test suite could see it — the existing test drove
+`GetAgentPromptWithOptions` directly with a hand-supplied `BasePrompt`, so
+deleting the plumbing left the suite green.
+
+## Decision 14 — the prompt client is not optional per entry point
+
+Tracing is initialised in `cmd/root.go` and `cmd/serve.go` but not `cmd/acp.go`,
+and that is survivable: ACP loses traces. Prompt management is not analogous. A
+referencing agent cannot be CONSTRUCTED without the client, and
+`InitPrimaryAgents` logs and continues on a construction error — so the agent
+silently disappears from ACP rather than degrading, or boot fails outright if it
+was the only primary agent. The client therefore initialises in every entry
+point that builds agents, and `initLangfusePrompts` says so.
+
+The same asymmetry is why the warm-up fetch moved to a goroutine. It was
+synchronous inside the TUI's startup spinner with a 30s bound, so an
+unreachable Langfuse was a 30s boot hang — for a pass whose entire contract is
+"best-effort, nothing waits on this". Reference collection stays inline (it
+only walks the already-lazy registries); a use-time fetch that races the
+warm-up collapses onto it through the same per-entry single flight.
+
 ## Risks
 
 - **A silent config half-configuration.** `prompts.enabled` with unresolvable

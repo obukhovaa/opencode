@@ -29,22 +29,22 @@ func TestValidateAgentPromptSource(t *testing.T) {
 			path:      "agents/planner/system",
 			errHas:    "mutually exclusive",
 		},
+		// A label with no path is NOT rejected here. Each definition layer
+		// is a partial override, so a JSON entry may legitimately re-label
+		// a path declared by a markdown agent; only the merged entry can
+		// tell an orphaned label from a re-label, and the agent registry
+		// drops it there (normalisePromptSources) rather than failing boot.
+		{name: "label without a path is judged after merging, not here", label: "staging"},
 		{
-			name:   "label without a path",
-			label:  "staging",
-			errHas: "requires langfusePromptPath",
-		},
-		{
-			name:   "a whitespace-only path does not count as a path",
-			label:  "staging",
-			path:   "   ",
-			errHas: "requires langfusePromptPath",
+			name:      "a whitespace-only path does not collide with an inline prompt",
+			hasInline: true,
+			path:      "   ",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateAgentPromptSource("planner", tt.hasInline, tt.path, tt.label)
+			err := ValidateAgentPromptSource("planner", tt.hasInline, tt.path)
 			if tt.errHas == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)

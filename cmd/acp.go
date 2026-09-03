@@ -51,7 +51,7 @@ protocol stream.`,
 			cwd = c
 		}
 
-		_, err := config.Load(cwd, debug)
+		cfg, err := config.Load(cwd, debug)
 		if err != nil {
 			return err
 		}
@@ -63,6 +63,13 @@ protocol stream.`,
 			level = slog.LevelDebug
 		}
 		logging.SetupStderrLogging(level)
+
+		// Prompt management must come up here too, not just in the TUI and
+		// serve paths: an agent that references a Langfuse prompt cannot be
+		// CONSTRUCTED without the client, so without this InitPrimaryAgents
+		// drops it (logging one error and continuing) and the agent simply
+		// is not there — or boot fails outright if it was the only primary.
+		initLangfusePrompts(cfg)
 
 		conn, err := db.Connect()
 		if err != nil {

@@ -526,7 +526,13 @@ func validateStepPromptSource(step Step) error {
 
 	switch {
 	case hasInline && path != "":
-		return fmt.Errorf("%w: step %q declares both prompt and langfusePromptPath — declare exactly one", ErrInvalidPromptSource, step.ID)
+		// The extends hint is not decoration: a step's own YAML can show
+		// exactly one key and still land here when two templates between
+		// them supply the other (a step that declares one source no longer
+		// inherits the other — see suppressedByOwnPromptSource), and
+		// without the hint the message points at a file that looks
+		// correct.
+		return fmt.Errorf("%w: step %q declares both prompt and langfusePromptPath — declare exactly one (check any extends templates: one of the two may be inherited)", ErrInvalidPromptSource, step.ID)
 	case !hasInline && path == "":
 		return fmt.Errorf("%w: step %q declares neither prompt nor langfusePromptPath", ErrInvalidPromptSource, step.ID)
 	case path == "" && strings.TrimSpace(step.LangfusePromptLabel) != "":

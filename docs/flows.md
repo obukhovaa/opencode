@@ -310,7 +310,7 @@ flow:
       langfusePromptLabel: staging                           # optional; defaults to "production"
 ```
 
-Enable it once, in `opencode.json`:
+Enable it once, in `.opencode.json`:
 
 ```json
 {
@@ -334,9 +334,33 @@ for the full config block.
 `langfusePromptPath` — or neither — fails at flow load with
 `invalid step prompt source`. There is no precedence rule to remember,
 deliberately: a step that quietly ran the wrong one of two prompts produces
-plausible output and is very hard to notice. The check runs *after*
-`extends` template merging, so a template supplying one key and a step
-supplying the other collide loudly.
+plausible output and is very hard to notice.
+
+This is a compatibility break: a step with no prompt at all used to load and
+send an empty string to the model. Such a flow now fails validation, and
+because a flow that fails to parse is skipped with a warning rather than
+failing the boot, the operator-visible symptom is `flow not found` — check
+the log for `invalid step prompt source` if a flow disappears after
+upgrading.
+
+**With `extends`, a declared prompt source replaces the *source*.** The
+check runs after template merging, but a step that declares either key does
+not inherit the competing one — so overriding a template's `prompt` with
+your own `langfusePromptPath` (or the reverse) just works, and overriding an
+inherited path with an inline prompt does not leave the template's
+`langfusePromptLabel` stranded. `langfusePromptLabel` stays independently
+inheritable, so a step *can* declare only a label and take the path from its
+template:
+
+```yaml
+    - id: prepare-plan
+      extends: [".prepare-plan"]     # template supplies langfusePromptPath
+      langfusePromptLabel: staging   # this flow runs the staging revision
+```
+
+Two templates that between them supply both sources still collide — that is
+a real conflict with no author intent to honour, and the error says to check
+your `extends` list.
 
 **Nothing else changes.** The resolved text goes through exactly the same
 pipeline as an inline prompt: `${args.*}` / `${step.*}` substitution,
@@ -346,15 +370,35 @@ the Langfuse prompt body — opencode's own dialect, not Langfuse's
 `{{variable}}` syntax, which passes through verbatim. The trade-off is that
 the Langfuse playground will not preview your variables.
 
+> **`` !`shell` `` expansion is part of "identically", and it moves a trust
+> boundary.** Markup in a managed prompt is expanded before the model sees
+> it, by the same code path as an inline prompt — which runs outside the
+> permission system: no `bash` permission check, no allowlist, no prompt.
+> An inline prompt has the same power but lives in a code-reviewed,
+> version-controlled file. Once a step's prompt comes from Langfuse, write
+> access to that prompt in the Langfuse UI is equivalent to shell access in
+> every process that references it. Scope Langfuse prompt permissions
+> accordingly.
+
 **Freshness and failure.** Resolved prompts are cached in-process for
-`cacheTTL` (default 60s), which is also the upper bound on how long a UI
-edit takes to reach a running process. If Langfuse is unreachable and a
-copy is cached, the cached copy is used and a warning is logged — a step
-running last minute's prompt beats a step that cannot run. With nothing
-cached, the step fails naming the path and the HTTP status; it never runs
-the agent on an empty prompt. Startup pre-fetches every referenced prompt
-(`warmup`, on by default) so the first run does not pay a cold fetch;
-pre-fetch failures are logged and never fail the boot.
+`cacheTTL` (default 60s). A flow step re-resolves on every run, so for
+steps that TTL is the upper bound on how long a UI edit takes to reach a
+running process. (Agent *system* prompts differ — see
+[telemetry.md](telemetry.md#langfuse-prompt-management).)
+
+If Langfuse is unreachable and a copy is cached, the cached copy is used and
+a warning is logged — a step running last minute's prompt beats a step that
+cannot run. A failed fetch is remembered briefly, so a sustained outage
+costs one request rather than one per step. With nothing cached, the step
+fails naming the path and the HTTP status; it never runs the agent on an
+empty prompt. That failure is terminal for the step: it happens before the
+attempt loop, so `fallback.retry` does not re-try the fetch, though
+`fallback.to` still routes. A step that is being *postponed* does not
+resolve its prompt at all — it resolves on the attempt that actually runs.
+
+Startup pre-fetches every referenced prompt (`warmup`, on by default) so the
+first run does not pay a cold fetch. The pre-fetch runs in the background:
+failures are logged, never fail the boot, and never delay it.
 
 **Agent types can do this too** — an agent's *system* prompt takes the same
 two keys. See [the README](../README.md#langfuse-managed-system-prompts).

@@ -62,14 +62,21 @@ A flow step SHALL accept `langfusePromptPath` (string) and
 `langfusePromptLabel` (string, optional) as an alternative to `prompt`.
 Exactly one of `prompt` / `langfusePromptPath` MUST be present: declaring both,
 or neither, SHALL be a load error naming the step, with no precedence rule
-applied. An inline `prompt` consisting only of whitespace SHALL NOT count as a
-declared source. `langfusePromptLabel` SHALL be a load error unless
+applied. Neither an inline `prompt` nor a `langfusePromptPath` consisting only
+of whitespace SHALL count as a declared source, and the runtime SHALL agree
+with validation on that. `langfusePromptLabel` SHALL be a load error unless
 `langfusePromptPath` is also present.
 
-The check SHALL run after `extends` template merging, so that a template
-supplying one key and a step supplying the other is rejected rather than one
-silently winning. Both keys SHALL be inheritable through `extends` like any
-other step field.
+The check SHALL run after `extends` template merging, so that a template and a
+step that between them supply both sources are rejected rather than one
+silently winning, and the error SHALL point at the `extends` list because the
+step's own YAML may show only one key.
+
+Both keys SHALL be inheritable through `extends`, but NOT independently: a step
+that declares either source SHALL inherit none of the competing source's keys,
+so a declared prompt source replaces the SOURCE rather than colliding with it.
+`langfusePromptLabel` SHALL remain independently inheritable, so a step may
+declare only a label and take the path from its template.
 
 #### Scenario: Reference in place of an inline prompt
 
@@ -86,15 +93,32 @@ other step field.
 - **WHEN** a step declares neither `prompt` nor `langfusePromptPath`
 - **THEN** loading fails naming the step
 
-#### Scenario: Sources collide across a template boundary
+#### Scenario: A declared source replaces an inherited one
 
 - **WHEN** a step template supplies `prompt` and a step extending it supplies `langfusePromptPath`
-- **THEN** loading fails, because the check runs on the merged step
+- **THEN** the flow loads with the step's reference and no inline prompt, because the step's declared source suppresses inheritance of the competing one
+- **AND WHEN** a template supplies `langfusePromptPath` plus `langfusePromptLabel` and the step supplies `prompt`
+- **THEN** the flow loads with the step's inline prompt and neither Langfuse key, so no orphaned label survives
+
+#### Scenario: A label alone re-labels an inherited path
+
+- **WHEN** a step template supplies `langfusePromptPath` and the step extending it declares only `langfusePromptLabel`
+- **THEN** the flow loads with the template's path and the step's label
+
+#### Scenario: Two templates supply both sources
+
+- **WHEN** a step extends one template supplying `prompt` and another supplying `langfusePromptPath`, declaring neither itself
+- **THEN** loading fails naming the step and pointing at its `extends` templates
 
 #### Scenario: Label without a path
 
-- **WHEN** a step declares `langfusePromptLabel` and no `langfusePromptPath`
+- **WHEN** a step declares `langfusePromptLabel` and neither it nor its templates supply `langfusePromptPath`
 - **THEN** loading fails naming the step
+
+#### Scenario: A postponed step does not resolve its prompt
+
+- **WHEN** a step whose prompt comes from Langfuse is parked by a `postpone: true` rule
+- **THEN** no prompt fetch is attempted, and an unreachable Langfuse SHALL NOT turn the park into a step failure; the attempt that actually runs resolves it
 
 ### Requirement: An agent type declares exactly one prompt source
 
@@ -102,14 +126,22 @@ An agent type SHALL accept `langfusePromptPath` and `langfusePromptLabel` as an
 alternative to its inline system prompt, in a markdown agent's YAML frontmatter
 and in the `.opencode.json` `agents` block. For a markdown agent the file body
 IS the inline prompt, so a non-empty body together with `langfusePromptPath`
-SHALL be a load error. Declaring `langfusePromptLabel` without
-`langfusePromptPath` SHALL be a load error. Declaring neither source SHALL
-remain legal and SHALL leave the agent on its built-in prompt.
+SHALL be a load error. Declaring neither source SHALL remain legal and SHALL
+leave the agent on its built-in prompt.
 
 Where definition layers merge, a declared prompt source SHALL replace the
 inherited source wholly: a later inline prompt SHALL clear an inherited
 reference, and a later reference SHALL clear an inherited inline prompt, so
 that a registry entry never holds both.
+
+Because each layer is a PARTIAL override, `langfusePromptLabel` without a path
+SHALL NOT be a per-layer load error: a higher-priority layer may declare only a
+label to re-label a path a lower layer supplied. A label that has no path on the
+MERGED entry SHALL be dropped with a warning rather than failing the load — it
+selects a version of nothing, and refusing to boot over a stray key on an
+otherwise valid agent is worse than ignoring it loudly. A `langfusePromptPath`
+SHALL be trimmed on the merged entry, so a whitespace-only value is treated as
+absent by every consumer and not just by validation.
 
 #### Scenario: Markdown agent referencing a managed prompt
 
@@ -142,7 +174,10 @@ The system SHALL resolve a reference by requesting the prompt at the given path
 under the given label from the Langfuse prompts API, sending the configured
 credentials as HTTP Basic auth. A prompt path MAY contain slashes — they are
 part of the name and render as folders in the Langfuse UI — and SHALL be
-escaped so that the request addresses a single name rather than a sub-path.
+escaped as a single path SEGMENT so that the request addresses one name rather
+than a sub-path. The escaping SHALL be lossless for every character legal in a
+Langfuse prompt name: in particular a space SHALL be encoded such that the
+server decodes it back to a space, not to `+`.
 
 A reference that names no label SHALL resolve under the configured default
 label, which SHALL itself default to `production`. The default SHALL NOT be
@@ -153,6 +188,13 @@ flattened to text by joining its blocks as `role: content` in source order,
 with blocks carrying no role contributing their content alone. The payload's
 JSON shape SHALL decide how it is read, with any declared type treated only as
 a hint.
+
+Blocks dropped during flattening SHALL be logged with both the number seen and
+the number kept, so a silently discarded block — Langfuse's `placeholder`, for
+which opencode has nothing to substitute — is visible rather than inferred. A
+chat payload whose blocks carry neither a role nor text SHALL be reported as an
+unsupported shape naming the payload type, NOT as an empty prompt: those are
+different mistakes with different remedies.
 
 #### Scenario: Slash-bearing path is one escaped name
 
@@ -189,6 +231,20 @@ same reference on a cold cache SHALL result in a single upstream request.
 When a re-fetch fails and a cached copy exists, the system SHALL serve the
 cached copy and log a warning rather than returning an error.
 
+A failed fetch SHALL be remembered for a bounded retry floor, and resolutions
+within that floor SHALL replay its outcome — the cached copy where one exists,
+the cached error otherwise — without issuing another request. A failed fetch
+cannot advance the entry's freshness, so without this the entry stays stale for
+the whole outage and every caller re-attempts; because resolution of one
+reference is serialised, N callers would each pay the full fetch timeout in
+turn. The cost of a sustained outage SHALL therefore be one request per
+reference per floor, not one per caller.
+
+A resolution whose caller context is already cancelled SHALL return that
+cancellation rather than a cached copy: a caller can wait on the per-reference
+lock for longer than its own deadline, and serving stale text with no error
+would report a cancelled run as a successful resolution.
+
 #### Scenario: Repeat resolution inside the TTL
 
 - **WHEN** the same reference is resolved three times within `cacheTTL`
@@ -208,6 +264,23 @@ cached copy and log a warning rather than returning an error.
 
 - **WHEN** a reference has been resolved successfully and a later re-fetch fails
 - **THEN** the previously resolved text is returned and a warning is logged
+
+#### Scenario: A sustained outage costs one request, not one per caller
+
+- **WHEN** a reference with a cached copy is resolved many times while Langfuse is failing, within the retry floor
+- **THEN** exactly one upstream request is made and every caller receives the cached copy
+- **AND WHEN** the same happens with nothing cached
+- **THEN** exactly one upstream request is made and every caller receives the same error
+
+#### Scenario: The floor expires
+
+- **WHEN** the retry floor elapses after a failure and Langfuse has recovered
+- **THEN** the next resolution re-fetches and returns the new text
+
+#### Scenario: A cancelled caller is not served stale text
+
+- **WHEN** a reference with a cached copy is resolved with an already-cancelled context
+- **THEN** the cancellation is returned, not the cached copy
 
 ### Requirement: A cold resolution failure is terminal, and no agent runs on an empty prompt
 
@@ -256,12 +329,27 @@ pipeline as an inline prompt — argument and step-variable substitution, shell
 markup expansion, previous-step-output prefixing and structured-output handling
 all behave the same.
 
+A step that is about to be postponed SHALL NOT resolve its prompt, since it
+returns before the prompt is used.
+
 An agent type's prompt SHALL be resolved when the agent is constructed, not when
 the agent registry is loaded, so that an edit in Langfuse reaches the next agent
 built from that definition within the cache TTL rather than requiring a process
-restart. The resolved text SHALL reach the prompt builder even though the
-builder consults the agent registry by name, so that a referencing agent never
-falls back to a built-in prompt.
+restart. This holds for agents built per use — subagents spawned by the `task`
+tool and flow-step agents. A primary agent (`mode: agent`) is built once at
+startup and held for the process lifetime, so its resolved text is pinned until
+restart; documentation SHALL state this rather than claim TTL-bounded freshness
+for every agent.
+
+The resolved text SHALL reach the prompt builder even though the builder
+consults the agent registry by name, so that a referencing agent never falls
+back to a built-in prompt. This SHALL hold on EVERY path that builds a system
+prompt from an agent definition, including the built-in `summarizer` and
+`descriptor` agents — whose providers are constructed by name rather than
+through the agent factory — and including a provider rebuilt by an in-process
+model switch. A path that omits the resolved text would silently run the
+built-in prompt, which reads as "Langfuse is being ignored" rather than as an
+error, and is the failure mode this requirement exists to prevent.
 
 #### Scenario: Managed step prompt is substituted like an inline one
 
@@ -278,6 +366,16 @@ falls back to a built-in prompt.
 - **WHEN** an agent whose definition declares only `langfusePromptPath` is constructed and its system prompt is built
 - **THEN** the system prompt is based on the resolved text, not on the built-in prompt for that agent's name
 
+#### Scenario: A managed prompt on a built-in helper agent is honoured
+
+- **WHEN** the `summarizer` or `descriptor` agent declares `langfusePromptPath` and a primary agent is constructed
+- **THEN** that helper agent's provider is built with the resolved text, exactly as an inline `prompt` on the same agent would be
+
+#### Scenario: A model switch keeps the managed prompt
+
+- **WHEN** a running agent whose prompt came from Langfuse has its model changed in process
+- **THEN** the rebuilt provider keeps the same resolved system prompt instead of reverting to the built-in one
+
 ### Requirement: Startup pre-fetch is best-effort and never fails the boot
 
 When `warmup` is enabled, the system SHALL pre-fetch every prompt referenced by
@@ -285,6 +383,16 @@ the discovered flows and the registered agent types at startup, de-duplicating
 references that resolve to the same path and label. The pass SHALL be bounded in
 parallelism and in total duration. Every pre-fetch failure SHALL be logged and
 SHALL NOT prevent startup; such a reference SHALL simply be fetched at use time.
+
+The fetching SHALL NOT delay startup either: nothing downstream waits on its
+result, and a slow or unreachable Langfuse would otherwise show up as a boot
+hang for the pass's full duration.
+
+Separately, the prompt client SHALL be initialised in EVERY entry point that
+constructs agents, not only those that also start tracing. Tracing is optional
+per entry point — its absence loses traces — whereas a referencing agent cannot
+be constructed at all without the client, so omitting it makes the agent vanish
+from that entry point rather than degrade.
 
 #### Scenario: Warm-up populates the cache
 
@@ -300,3 +408,13 @@ SHALL NOT prevent startup; such a reference SHALL simply be fetched at use time.
 
 - **WHEN** one referenced prompt cannot be pre-fetched
 - **THEN** the failure is logged, startup continues, and other references are still pre-fetched
+
+#### Scenario: An unreachable Langfuse does not delay startup
+
+- **WHEN** warm-up is enabled and Langfuse does not respond
+- **THEN** startup proceeds without waiting for the pass to finish or time out
+
+#### Scenario: Every agent-constructing entry point can resolve references
+
+- **WHEN** an agent declaring `langfusePromptPath` is used under any entry point that builds agents, including the ACP server
+- **THEN** the reference resolves, rather than failing with prompt management not being enabled

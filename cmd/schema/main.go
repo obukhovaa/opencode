@@ -743,7 +743,7 @@ func generateSchema() map[string]any {
 							},
 							"cacheTTL": map[string]any{
 								"type":        "string",
-								"description": "How long a resolved prompt is reused before re-fetching, as a Go duration string (e.g. '60s', '5m'). Defaults to '60s'. This is the upper bound on how long a Langfuse UI edit takes to reach a running process.",
+								"description": "How long a resolved prompt is reused before re-fetching, as a Go duration string (e.g. '60s', '5m'). Defaults to '60s'. This is the upper bound on how long a Langfuse UI edit takes to reach a running process for flow steps and subagents; primary agents (mode: agent) resolve once at startup and are pinned until restart.",
 								"default":     "60s",
 							},
 							"timeout": map[string]any{
@@ -753,7 +753,7 @@ func generateSchema() map[string]any {
 							},
 							"warmup": map[string]any{
 								"type":        "boolean",
-								"description": "Pre-fetch every prompt referenced by the flow and agent registries at startup, so the first run does not pay a cold fetch. Defaults to true. Failures are logged and never fail startup.",
+								"description": "Pre-fetch every prompt referenced by the flow and agent registries at startup, in the background, so the first run does not pay a cold fetch. Defaults to true. Failures are logged and never fail or delay startup.",
 								"default":     true,
 							},
 						},

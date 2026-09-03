@@ -15,10 +15,12 @@ import (
 // and optionally pre-fetches every prompt the flow and agent registries
 // reference.
 //
-// Called from both entry points (cmd/root.go and cmd/serve.go) next to the
-// tracing Init, but gated separately: prompt management resolves the same
-// credentials yet is its own capability, so a deployment can manage prompts
-// without shipping traces, or vice versa.
+// Called from every entry point that builds agents (cmd/root.go,
+// cmd/serve.go and cmd/acp.go) next to the tracing Init, but gated
+// separately: prompt management resolves the same credentials yet is its own
+// capability, so a deployment can manage prompts without shipping traces, or
+// vice versa. Unlike tracing this is NOT optional per entry point — a
+// referencing agent cannot be constructed without the client.
 func initLangfusePrompts(cfg *config.Config) {
 	if cfg == nil || cfg.Telemetry == nil || cfg.Telemetry.Langfuse == nil {
 		return
@@ -55,12 +57,30 @@ func initLangfusePrompts(cfg *config.Config) {
 	if !lf.Prompts.WarmupEnabled() {
 		return
 	}
-	// Bounded so a slow or unreachable Langfuse cannot stretch startup:
-	// every reference that misses here is simply fetched at use time.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	langfuse.GetPrompts().Warm(ctx, collectPromptRefs())
+	// Reference collection is local (it walks the already-discovered flow
+	// and agent registries), so it runs inline. The fetching does NOT:
+	// warm-up is on by default and this call sits inside the TUI's startup
+	// spinner, so a slow or unreachable Langfuse would show up as a boot
+	// hang for its full bound. Nothing downstream waits on the result —
+	// every reference that misses here is simply fetched at use time, and a
+	// use-time fetch that races an in-flight warm-up collapses onto it via
+	// the client's per-entry single flight.
+	refs := collectPromptRefs()
+	if len(refs) == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), promptWarmupBudget)
+		defer cancel()
+		langfuse.GetPrompts().Warm(ctx, refs)
+	}()
 }
+
+// promptWarmupBudget bounds the whole background warm-up pass. It is not a
+// per-fetch timeout (the client owns that) — it stops a warm-up over many
+// references from running long past the point where use-time fetches have
+// already populated the cache.
+const promptWarmupBudget = 30 * time.Second
 
 // collectPromptRefs gathers every Langfuse prompt reference declared by a
 // discovered flow step or a registered agent type.

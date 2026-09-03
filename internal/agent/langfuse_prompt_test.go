@@ -76,7 +76,13 @@ You are a planner.
 		}
 	})
 
-	t.Run("a label without a path is rejected", func(t *testing.T) {
+	// A label with no path of its own is NOT a parse error: this layer may
+	// be re-labelling a path a lower-priority layer declared, which is the
+	// normal way to point one environment at a `staging` prompt. Whether
+	// the label is orphaned is only knowable once every layer has merged,
+	// so normalisePromptSources judges it — see
+	// TestNormalisePromptSources.
+	t.Run("a label without a path parses, to be judged after merging", func(t *testing.T) {
 		dir := t.TempDir()
 		path := writeAgentMarkdown(t, dir, "planner.md", `---
 langfusePromptLabel: staging
@@ -84,12 +90,15 @@ langfusePromptLabel: staging
 
 You are a planner.
 `)
-		_, err := parseAgentMarkdown(path)
-		if err == nil {
-			t.Fatal("parseAgentMarkdown() error = nil, want an error")
+		got, err := parseAgentMarkdown(path)
+		if err != nil {
+			t.Fatalf("parseAgentMarkdown() error = %v, want nil", err)
 		}
-		if !strings.Contains(err.Error(), "requires langfusePromptPath") {
-			t.Errorf("error = %v, want one naming the missing path", err)
+		if got.LangfusePromptLabel != "staging" {
+			t.Errorf("LangfusePromptLabel = %q, want %q", got.LangfusePromptLabel, "staging")
+		}
+		if got.Prompt == "" {
+			t.Error("Prompt is empty — the body is still the inline prompt here")
 		}
 	})
 
@@ -182,4 +191,95 @@ func TestPromptSourceOverridesAreExclusive(t *testing.T) {
 			t.Errorf("LangfusePromptPath = %q, want cleared", existing.LangfusePromptPath)
 		}
 	})
+}
+
+// TestNormalisePromptSources covers the post-merge cleanup that judges a
+// prompt source once every definition layer has contributed.
+func TestNormalisePromptSources(t *testing.T) {
+	t.Run("a whitespace-only path is trimmed away", func(t *testing.T) {
+		// ValidateAgentPromptSource compares the path trimmed, so "  "
+		// validates as "no reference" — but every consumer checks it
+		// untrimmed and would send "  " to Langfuse, failing agent
+		// construction over a key validation had already discounted.
+		agents := map[string]AgentInfo{
+			"planner": {ID: "planner", Prompt: "inline", LangfusePromptPath: "   "},
+		}
+		normalisePromptSources(agents)
+		if got := agents["planner"].LangfusePromptPath; got != "" {
+			t.Errorf("LangfusePromptPath = %q, want empty", got)
+		}
+		if got := agents["planner"].Prompt; got != "inline" {
+			t.Errorf("Prompt = %q, want it untouched", got)
+		}
+	})
+
+	t.Run("surrounding whitespace is trimmed off a real path", func(t *testing.T) {
+		agents := map[string]AgentInfo{
+			"planner": {ID: "planner", LangfusePromptPath: "  agents/planner/system\n"},
+		}
+		normalisePromptSources(agents)
+		if got := agents["planner"].LangfusePromptPath; got != "agents/planner/system" {
+			t.Errorf("LangfusePromptPath = %q, want it trimmed", got)
+		}
+	})
+
+	t.Run("an orphaned label is dropped, not fatal", func(t *testing.T) {
+		// A label with no path selects a version of nothing. It is legal
+		// per layer (that is what makes a label-only override possible), so
+		// it can only be judged here — and ignoring it loudly beats
+		// refusing to boot over a stray key on an otherwise fine agent.
+		agents := map[string]AgentInfo{
+			"planner": {ID: "planner", Prompt: "inline", LangfusePromptLabel: "staging"},
+		}
+		normalisePromptSources(agents)
+		if got := agents["planner"].LangfusePromptLabel; got != "" {
+			t.Errorf("LangfusePromptLabel = %q, want it dropped", got)
+		}
+	})
+
+	t.Run("a label with a path is left alone", func(t *testing.T) {
+		agents := map[string]AgentInfo{
+			"planner": {ID: "planner", LangfusePromptPath: "agents/planner/system", LangfusePromptLabel: "staging"},
+		}
+		normalisePromptSources(agents)
+		got := agents["planner"]
+		if got.LangfusePromptPath != "agents/planner/system" || got.LangfusePromptLabel != "staging" {
+			t.Errorf("got path=%q label=%q, want both preserved", got.LangfusePromptPath, got.LangfusePromptLabel)
+		}
+	})
+}
+
+// TestApplyConfigOverrides_LabelOnlyOverride pins that a JSON entry can
+// re-label a path another layer declared.
+//
+// Every other agent key is a partial override; the prompt source used to be
+// the sole exception — a label-only JSON entry failed config validation with
+// "langfusePromptLabel requires langfusePromptPath", contradicting what the
+// user wrote, and would have been dropped by the merge even if it had passed.
+func TestApplyConfigOverrides_LabelOnlyOverride(t *testing.T) {
+	agents := map[string]AgentInfo{
+		"planner": {
+			ID:                  "planner",
+			LangfusePromptPath:  "agents/planner/system",
+			LangfusePromptLabel: "production",
+		},
+	}
+	cfg := &config.Config{
+		Agents: map[config.AgentName]config.Agent{
+			"planner": {LangfusePromptLabel: "staging"},
+		},
+	}
+	applyConfigOverrides(agents, cfg)
+	normalisePromptSources(agents)
+
+	got := agents["planner"]
+	if got.LangfusePromptPath != "agents/planner/system" {
+		t.Errorf("LangfusePromptPath = %q, want the inherited path kept", got.LangfusePromptPath)
+	}
+	if got.LangfusePromptLabel != "staging" {
+		t.Errorf("LangfusePromptLabel = %q, want the override applied", got.LangfusePromptLabel)
+	}
+	if got.Prompt != "" {
+		t.Errorf("Prompt = %q, want empty — a label-only override must not resurrect an inline prompt", got.Prompt)
+	}
 }

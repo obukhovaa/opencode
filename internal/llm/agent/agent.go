@@ -200,6 +200,16 @@ type agent struct {
 	provider         provider.Provider
 	allowParallelism bool
 
+	// basePrompt is the system prompt this agent was CONSTRUCTED with,
+	// which for a Langfuse-managed agent is the resolved text rather than
+	// anything the registry holds. Update rebuilds the provider and must
+	// re-supply it: the prompt builder re-reads the registry entry by name,
+	// whose Prompt is empty for a referencing agent, so a model switch
+	// would otherwise silently swap the managed prompt for the built-in one
+	// for the rest of the process. Empty for agents with no prompt of their
+	// own, which is what the builder expects.
+	basePrompt string
+
 	titleProvider     provider.Provider
 	summarizeProvider provider.Provider
 
@@ -249,11 +259,26 @@ func newAgent(
 
 	var titleProvider, summarizeProvider provider.Provider
 	if agentInfo.Mode == config.AgentModeAgent {
-		summarizeProvider, err = createAgentProvider(config.AgentSummarizer, withDisableCache())
+		// These two are built by name, not through the factory, so their
+		// prompt source has to be resolved here. Without it a
+		// langfusePromptPath on summarizer/descriptor is silently ignored
+		// while an inline `prompt` on the same agent works — the same
+		// registry-re-read trap AgentPromptOptions.BasePrompt exists for.
+		summarizerPrompt, promptErr := resolveRegisteredPrompt(reg, config.AgentSummarizer)
+		if promptErr != nil {
+			return nil, promptErr
+		}
+		summarizeProvider, err = createAgentProvider(config.AgentSummarizer,
+			withDisableCache(), withBasePrompt(summarizerPrompt))
 		if err != nil {
 			return nil, err
 		}
-		titleProvider, err = createAgentProvider(config.AgentDescriptor, withDisableCache())
+		descriptorPrompt, promptErr := resolveRegisteredPrompt(reg, config.AgentDescriptor)
+		if promptErr != nil {
+			return nil, promptErr
+		}
+		titleProvider, err = createAgentProvider(config.AgentDescriptor,
+			withDisableCache(), withBasePrompt(descriptorPrompt))
 		if err != nil {
 			return nil, err
 		}
@@ -271,6 +296,7 @@ func newAgent(
 		activeRequests:    sync.Map{},
 		allowParallelism:  agentInfo.AllowsParallelToolUse(),
 		factory:           factory,
+		basePrompt:        agentInfo.Prompt,
 	}
 
 	// Resolve tools in background so they're ready before first Run() call
@@ -2375,7 +2401,8 @@ func (a *agent) Update(agentName config.AgentName, modelID models.ModelID) (mode
 		return models.Model{}, fmt.Errorf("failed to update config: %w", err)
 	}
 
-	provider, err := createAgentProvider(agentName)
+	// withBasePrompt is required, not optional: see agent.basePrompt.
+	provider, err := createAgentProvider(agentName, withBasePrompt(a.basePrompt))
 	if err != nil {
 		return models.Model{}, fmt.Errorf("failed to create provider for model %s: %w", modelID, err)
 	}

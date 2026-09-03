@@ -3,6 +3,7 @@ package flow
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -141,6 +142,31 @@ func TestResolveStepPrompt(t *testing.T) {
 		}
 	})
 
+	// Validation treats a whitespace-only path as "no reference" (it trims
+	// before comparing), so the runtime must agree. An untrimmed check here
+	// sent "  " to the client and failed the step at run time over a key
+	// the loader had already decided was not a reference.
+	t.Run("a whitespace-only path is not a reference", func(t *testing.T) {
+		stub := &stubPromptResolver{text: "should not be used"}
+		svc := &service{}
+		svc.SetPromptResolver(stub)
+
+		got, err := svc.resolveStepPrompt(context.Background(), Step{
+			ID:                 "s",
+			Prompt:             "inline",
+			LangfusePromptPath: "   ",
+		})
+		if err != nil {
+			t.Fatalf("resolveStepPrompt() error: %v", err)
+		}
+		if got != "inline" {
+			t.Errorf("prompt = %q, want the inline text", got)
+		}
+		if stub.callCount != 0 {
+			t.Errorf("resolver called %d times, want 0", stub.callCount)
+		}
+	})
+
 	t.Run("a resolution failure names the step and the path", func(t *testing.T) {
 		sentinel := errors.New("langfuse exploded")
 		svc := &service{promptResolver: &stubPromptResolver{err: sentinel}}
@@ -158,4 +184,142 @@ func TestResolveStepPrompt(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestParseFlowFile_PromptSourceReplacesSource pins that a step declaring
+// one prompt source does not inherit the other from its templates.
+//
+// The two sources are mutually exclusive (validateStepPromptSource), so
+// inheriting them independently produced two failures that read as loader
+// bugs rather than as author mistakes: a step overriding a template's
+// `prompt` with a `langfusePromptPath` collided on "declares both", and a
+// step overriding an inherited path with an inline prompt was left holding
+// the template's orphaned `langfusePromptLabel`.
+func TestParseFlowFile_PromptSourceReplacesSource(t *testing.T) {
+	root := t.TempDir()
+	setIncludeWorkspace(t, root)
+
+	writeIncludeFile(t, filepath.Join(root, "steps", "base.yaml"), `.inline:
+  agent: template-agent
+  maxTurns: 15
+  prompt: "template prompt"
+.managed:
+  agent: template-agent
+  maxTurns: 15
+  langfusePromptPath: flows/template/main
+  langfusePromptLabel: staging
+`)
+	flowPath := writeIncludeFile(t, filepath.Join(root, "flows", "sources.yaml"), `name: Sources
+description: d
+include:
+  - local: steps/base.yaml
+flow:
+  steps:
+    - id: reference-over-inline
+      extends: [".inline"]
+      langfusePromptPath: flows/own/main
+    - id: inline-over-reference
+      extends: [".managed"]
+      prompt: "own prompt"
+    - id: relabel-only
+      extends: [".managed"]
+      langfusePromptLabel: production
+    - id: explicit-empty-prompt
+      extends: [".inline"]
+      prompt: ""
+      langfusePromptPath: flows/own/other
+`)
+
+	f, err := parseFlowFile(flowPath)
+	if err != nil {
+		t.Fatalf("parseFlowFile() error: %v", err)
+	}
+
+	t.Run("a declared reference replaces an inherited inline prompt", func(t *testing.T) {
+		step := stepByID(t, f, "reference-over-inline")
+		if step.LangfusePromptPath != "flows/own/main" {
+			t.Errorf("LangfusePromptPath = %q, want the step's own", step.LangfusePromptPath)
+		}
+		if step.Prompt != "" {
+			t.Errorf("Prompt = %q, want empty — the template's inline prompt must not survive", step.Prompt)
+		}
+		// The template's other keys are unaffected: only the competing
+		// prompt source is suppressed.
+		if step.Agent != "template-agent" || step.MaxTurns != 15 {
+			t.Errorf("unrelated keys not inherited: agent=%q maxTurns=%d", step.Agent, step.MaxTurns)
+		}
+	})
+
+	t.Run("a declared inline prompt replaces an inherited reference AND its label", func(t *testing.T) {
+		step := stepByID(t, f, "inline-over-reference")
+		if step.Prompt != "own prompt" {
+			t.Errorf("Prompt = %q, want the step's own", step.Prompt)
+		}
+		if step.LangfusePromptPath != "" {
+			t.Errorf("LangfusePromptPath = %q, want empty", step.LangfusePromptPath)
+		}
+		if step.LangfusePromptLabel != "" {
+			t.Errorf("LangfusePromptLabel = %q, want empty — an orphaned label is the trap this rule removes", step.LangfusePromptLabel)
+		}
+	})
+
+	t.Run("a label alone re-labels the inherited path", func(t *testing.T) {
+		step := stepByID(t, f, "relabel-only")
+		if step.LangfusePromptPath != "flows/template/main" {
+			t.Errorf("LangfusePromptPath = %q, want the template's — a label-only override must keep it", step.LangfusePromptPath)
+		}
+		if step.LangfusePromptLabel != "production" {
+			t.Errorf("LangfusePromptLabel = %q, want the step's own", step.LangfusePromptLabel)
+		}
+	})
+
+	// Restores the explicit-zero coverage the include tests used to carry on
+	// `prompt`. It is load-bearing here: `prompt: ""` is how an author
+	// declares "I have no inline prompt" in a raw-key merge, and it is what
+	// makes the source suppression observable rather than incidental.
+	t.Run("an explicit empty prompt is a declaration, not an omission", func(t *testing.T) {
+		step := stepByID(t, f, "explicit-empty-prompt")
+		if step.Prompt != "" {
+			t.Errorf("Prompt = %q, want empty — an explicit \"\" must override the template", step.Prompt)
+		}
+		if step.LangfusePromptPath != "flows/own/other" {
+			t.Errorf("LangfusePromptPath = %q, want the step's own", step.LangfusePromptPath)
+		}
+	})
+}
+
+// TestParseFlowFile_TemplatesSupplyingBothSourcesCollide is the other half:
+// suppression only applies to a source the STEP declares. Two templates that
+// between them supply both sources is a real conflict with no author intent
+// to honour, and the error says to look at the templates.
+func TestParseFlowFile_TemplatesSupplyingBothSourcesCollide(t *testing.T) {
+	root := t.TempDir()
+	setIncludeWorkspace(t, root)
+
+	writeIncludeFile(t, filepath.Join(root, "steps", "base.yaml"), `.inline:
+  prompt: "template prompt"
+.managed:
+  langfusePromptPath: flows/template/main
+`)
+	flowPath := writeIncludeFile(t, filepath.Join(root, "flows", "collide.yaml"), `name: Collide
+description: d
+include:
+  - local: steps/base.yaml
+flow:
+  steps:
+    - id: both
+      extends: [".inline", ".managed"]
+      agent: coder
+`)
+
+	_, err := parseFlowFile(flowPath)
+	if err == nil {
+		t.Fatal("parseFlowFile() error = nil, want a prompt-source collision")
+	}
+	if !errors.Is(err, ErrInvalidPromptSource) {
+		t.Errorf("error = %v, want one wrapping ErrInvalidPromptSource", err)
+	}
+	if !strings.Contains(err.Error(), "extends") {
+		t.Errorf("error = %v, want one pointing at the extends templates — the step's own YAML shows neither key", err)
+	}
 }
