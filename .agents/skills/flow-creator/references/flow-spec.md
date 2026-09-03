@@ -39,6 +39,10 @@ flow:               # flow specification (required)
   fallback: object       # retry and error routing (optional)
   maxTurns: int          # per-step override for agent's maxTurns. 0 (unset) inherits from agent. (optional)
   maxIterations: int     # cap on in-process self-loop iterations. 0 (unset) is unbounded — only flow timeout applies. (optional)
+  context:               # scoped context override for this step — inheritable via extends; see docs/context.md (optional)
+    paths: array         # context files relative to the working dir; ${agent}, ${flow.id}, ${flow.step}, ${env.VAR} tokens supported
+    mode: string         # "replace" (default when paths is set — drops agent/global layers) | "append" (concatenates after them)
+    nested: bool         # false opts the step out of nested-context manifest and tool-result injection
   resume_after: string   # Go duration (e.g. "15m", "1h"). Opts a postponed step into timed auto-resume, and parks (not fails) the step on a transient provider error. See `resume_after` below. (optional)
   interactive: bool      # if true, the step is human-in-the-loop via the chat bridge — see Interactive Steps. (optional)
   interaction:           # required when interactive: true; ignored otherwise

@@ -618,6 +618,7 @@ Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it re
 | Topic | Link |
 |-------|------|
 | Skills | [docs/skills.md](docs/skills.md) |
+| Context Files (scoped resolution + progressive disclosure) | [docs/context.md](docs/context.md) |
 | Flows | [docs/flows.md](docs/flows.md) |
 | Hooks (Claude-Code-compatible) | [docs/hooks.md](docs/hooks.md) |
 | Crons | [docs/crons.md](docs/crons.md) |

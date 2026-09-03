@@ -40,6 +40,8 @@ When a step needs to iterate inside a single invocation (build levels of a graph
 
 `maxTurns` (per-step) overrides the agent's `maxTurns` for a single step. Useful when one step in a flow needs more (or fewer) tool-use turns than the rest of the flow — e.g. a long-running build coordinator vs. a short summary step. `maxIterations` is a different axis (counts whole agent runs of the step, not tool-use turns within one run).
 
+`context` (per-step) scopes which context files feed the step's system prompt: `context: { paths: ["AGENTS.runtime.md"], mode: replace }` gives the step exactly that file instead of the global `contextPaths` (use `mode: append` to add on top of them instead). Path entries support `${agent}`, `${flow.id}`, `${flow.step}`, and `${env.VAR}` tokens; `nested: false` additionally opts the step out of nested-context disclosure. The field is inheritable via `extends`, so a template can carry a shared per-step context override. Full semantics in OpenCode's `docs/context.md`.
+
 **Per-step compaction (`compact.threshold`).** OpenCode's tool-use loop checks context usage before each model call and, when `token_count / context_window` exceeds `AutoCompactionThreshold` (0.95 by default), synchronously summarises the session before continuing. That default is right for most flows but too late for context-heavy steps — a `composer-developer` implement step with many `bash` / `read` results can burn a third of the window on a single tool call, missing the 0.95 gate on the way up and then blowing past it on the next turn. Set `compact.threshold` on such a step to trigger earlier:
 
 ```yaml

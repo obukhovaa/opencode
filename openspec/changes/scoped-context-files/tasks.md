@@ -190,22 +190,22 @@
 
 ## 7. Docs and e2e
 
-- [ ] 7.1 Update `CLAUDE.md` agent-fields table: add `context` entry with the
+- [x] 7.1 Update `CLAUDE.md` agent-fields table: add `context` entry with the
   `paths`, `mode`, and `nested` sub-fields and a cross-reference to `docs/context.md`
 
-- [ ] 7.2 Create `docs/context.md`: full user-facing documentation of scoped context
+- [x] 7.2 Create `docs/context.md`: full user-facing documentation of scoped context
   resolution (field reference, `replace` vs `append` semantics, template tokens,
   backward compatibility note) and progressive context disclosure (how the manifest
   works, which tools trigger injection, opt-out with `nested: false`, cap configuration)
 
-- [ ] 7.3 Update `docs/flows.md`: add step-field entry for `context` in the step
+- [x] 7.3 Update `docs/flows.md`: add step-field entry for `context` in the step
   schema table, noting it is inheritable via `extends` and is absent from
   `nonInheritableStepKeys`
 
-- [ ] 7.4 Update the `flow-creator` skill (`.agents/skills/flow-creator/SKILL.md`)
+- [x] 7.4 Update the `flow-creator` skill (`.agents/skills/flow-creator/SKILL.md`)
   reference to include the `context` step field in the step schema summary
 
-- [ ] 7.5 Write `scripts/test/scoped_context.sh`: e2e script (self-contained,
+- [x] 7.5 Write `scripts/test/scoped_context.sh`: e2e script (self-contained,
   `mktemp` sandbox, no external services) that:
   - asserts a no-`context` agent produces a byte-identical system prompt (A/B against
     a reference capture)
@@ -215,7 +215,7 @@
     (verify via log or prompt-dump)
   - runs a second `read` into the same directory and confirms no duplicate injection
 
-- [ ] 7.6 Run `make test` and `make test-e2e` green; for NEW tests that assert on
+- [x] 7.6 Run `make test` and `make test-e2e` green; for NEW tests that assert on
   full assembled prompts (e.g. the byte-identical backward-compat test), guard
   discovery off by setting `contextDiscovery.enabled = false` in test configs where
   the walk would find unexpected files (`TestBasePromptBudgets` needs no guard — it
