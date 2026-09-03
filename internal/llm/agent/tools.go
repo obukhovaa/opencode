@@ -500,14 +500,17 @@ func (s *contextDisclosureState) claimAndRead(sessionID string, owners []string)
 		if !ok {
 			continue
 		}
-		if s.injectedBytes[sessionID]+len(body) > s.maxSessionBytes {
+		// Budget accounting runs on the POST-sanitization length — that is
+		// what actually lands in the tool result (defused tags grow the
+		// body by one byte each).
+		text := sanitizeReminderBody(string(body))
+		if s.injectedBytes[sessionID]+len(text) > s.maxSessionBytes {
 			s.budgetExhausted[sessionID] = true
 			logging.Info("Nested context session byte budget exhausted; no further bodies will be injected", "session", sessionID, "budget", s.maxSessionBytes)
 			break
 		}
 		injected[path] = true
-		s.injectedBytes[sessionID] += len(body)
-		text := sanitizeReminderBody(string(body))
+		s.injectedBytes[sessionID] += len(text)
 		if !strings.HasSuffix(text, "\n") {
 			text += "\n"
 		}
@@ -518,14 +521,23 @@ func (s *contextDisclosureState) claimAndRead(sessionID string, owners []string)
 
 // readNestedContextFile is the ONLY read path for nested context bodies,
 // and it never trusts the process-lifetime discovery cache: the
-// filesystem can change between discovery and activation, so the
-// regular-file and workDir-containment checks are re-verified here
-// (design D6/D10). The read itself is bounded — Lstat first (never opens,
-// so a FIFO cannot hang the call and a symlink swap is caught before
-// following it), then Stat on the OPENED fd (no TOCTOU window on the
-// size/type), then io.LimitReader at maxFileBytes+1 so even an
-// under-reporting Stat can never smuggle an unbounded read past the cap.
+// filesystem can change between discovery and activation (design D6/D10).
+// The read is bounded and race-free — Lstat first (a cheap, precisely
+// WARNed rejection of FIFOs/symlinks/devices without opening anything),
+// then a kernel-enforced beneath-only open (contextfile.OpenBeneath /
+// os.Root): the lookup cannot escape workDir even if a component is
+// swapped for a symlink AFTER the Lstat — closing the check-then-open
+// TOCTOU a userspace containment re-check cannot close. Then Stat on the
+// OPENED fd (no TOCTOU window on size/type), then io.LimitReader at
+// maxFileBytes+1 so even an under-reporting Stat can never smuggle an
+// unbounded read past the cap.
 func (s *contextDisclosureState) readNestedContextFile(path string) ([]byte, bool) {
+	relPath, err := filepath.Rel(s.workDir, path)
+	if err != nil || filepath.IsAbs(relPath) || relPath == ".." ||
+		strings.HasPrefix(relPath, ".."+string(os.PathSeparator)) {
+		logging.Warn("Nested context injection skipped: path escapes the working directory", "file", path, "workDir", s.workDir, "error", err)
+		return nil, false
+	}
 	lst, err := os.Lstat(path)
 	if err != nil {
 		logging.Warn("Nested context injection skipped: file unreadable", "file", path, "error", err)
@@ -535,13 +547,9 @@ func (s *contextDisclosureState) readNestedContextFile(path string) ([]byte, boo
 		logging.Warn("Nested context injection skipped: not a regular file", "file", path, "mode", lst.Mode().String())
 		return nil, false
 	}
-	if !contextfile.ResolvedWithinRoot(path, s.workDir) {
-		logging.Warn("Nested context injection skipped: file escapes the working directory", "file", path, "workDir", s.workDir)
-		return nil, false
-	}
-	f, err := os.Open(path)
+	f, err := contextfile.OpenBeneath(s.workDir, relPath)
 	if err != nil {
-		logging.Warn("Nested context injection skipped: file unreadable", "file", path, "error", err)
+		logging.Warn("Nested context injection skipped: beneath-only open failed", "file", path, "error", err)
 		return nil, false
 	}
 	defer f.Close()

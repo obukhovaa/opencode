@@ -178,8 +178,11 @@ injection path with no permission prompt — the exact bypass the scoped-entry
 containment (D5) closes. As defense in depth against symlinked parent directories,
 each accepted candidate is `EvalSymlinks`-resolved and must land strictly inside the
 `EvalSymlinks`-resolved `workDir` (same order as `containedInWorkDir`). Each accepted
-file's manifest label is extracted HERE — once, behind those checks — and stored in
-the cached result (`DiscoveryResult.Labels`), so prompt-build never opens candidate
+file's manifest label is extracted HERE — once, behind those checks, through the same
+kernel-enforced beneath-only open the activation path uses (`OpenBeneath`, see D10):
+a candidate raced into a symlink or FIFO between the walk's lstat and the label read
+can neither read outside `workDir` nor hang prompt-build. Labels are stored in the
+cached result (`DiscoveryResult.Labels`), so prompt-build never opens candidate
 files. The configured data directory reaches the walk's skip set via
 `config.EffectiveContextDiscovery()`, the single accessor both discovery call sites
 (manifest and wrapper state) must use.
@@ -233,11 +236,16 @@ context file's owning directory. Owner resolution: walk from the target director
 to (but excluding) `workDir`, collect every nested context file on the upward path,
 inject not-yet-injected ones outermost-first — reproducing Claude Code's additive
 layering without mutating the system prompt. Owner matching canonicalizes BOTH sides
-(discovered dirs and the model-supplied target) with the resolver-dedup normalization
-(`EvalSymlinks` on the deepest existing ancestor + lowercase): macOS/Windows default
-filesystems are case-insensitive, so the inner tool call succeeds with a
+(discovered dirs and the model-supplied target) with `EvalSymlinks` on the deepest
+existing ancestor, folding case ONLY when the workDir's filesystem is actually
+case-insensitive — probed once per workDir (stat a case-swapped spelling of the
+workDir path, compare identity via `os.SameFile`) and cached alongside the discovery
+cache. On macOS/Windows defaults the inner tool call succeeds with a
 differently-cased path while a byte-exact comparison would silently skip the
-injection.
+injection; on case-sensitive filesystems (Linux production) unconditional folding
+would cross-match case-DIFFERING sibling directories — injecting the wrong tree's
+context, or (in `FilterDiscovered`) silently subtracting a file the agent never
+inlined. The same fold flag governs the scoped-layer subtraction (D7).
 
 ### D9. Injection mechanism: `contextDisclosureWrapper`
 
@@ -272,15 +280,21 @@ log INFO once per session and stop injecting further bodies (the model may still
 those directories; only the body injection stops). None of these paths return an error
 to the caller.
 
-The activation read itself is bounded and re-verified — the discovery cache is
-process-lifetime and the filesystem can change under it. Per candidate: `Lstat` first
-(rejects a post-discovery symlink swap, FIFO, or device WITHOUT opening — opening a
-FIFO read-only blocks forever); re-check symlink-resolved workDir containment; then
-`Open` + `Stat` on the opened descriptor (no TOCTOU on size/type) and read through
-`io.LimitReader(f, maxFileBytes+1)` so an under-reporting `Stat` can never smuggle an
-unbounded read past the cap (a link to `/dev/zero` stats as size 0). All of this runs
-under the shared disclosure mutex, so bounding the read also bounds how long
-concurrent trigger tools can be stalled.
+The activation read itself is bounded and race-free — the discovery cache is
+process-lifetime and the filesystem can change under it, and a check-then-open
+sequence (Lstat/EvalSymlinks, then Open) leaves a winnable TOCTOU window: a candidate
+swapped for a symlink between the check and the open would be followed. Per
+candidate: reject a `filepath.Rel` escape (`..` or absolute); `Lstat` first (a cheap,
+precisely-WARNed rejection of FIFOs/symlinks/devices without opening anything); then
+open through `contextfile.OpenBeneath` — `os.Root` (Go 1.25) gives kernel-enforced
+beneath-only resolution, so the lookup CANNOT escape `workDir` no matter what a
+racing writer swaps in mid-lookup, with `O_NOFOLLOW` (a symlink swapped into the
+final component fails instead of being followed) and `O_NONBLOCK` (a swapped-in FIFO
+cannot block the open) on Unix; then `Stat` on the OPENED descriptor (no TOCTOU on
+size/type) and read through `io.LimitReader(f, maxFileBytes+1)` so an
+under-reporting `Stat` can never smuggle an unbounded read past the cap (a link to
+`/dev/zero` stats as size 0). All of this runs under the shared disclosure mutex, so
+bounding the read also bounds how long concurrent trigger tools can be stalled.
 
 ### D11. Per-session activation state
 

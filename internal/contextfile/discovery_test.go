@@ -1,6 +1,7 @@
 package contextfile
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,14 +161,36 @@ func TestDiscover(t *testing.T) {
 
 // labelsFor extracts labels the way the discovery walk does, so manifest
 // tests exercise the same label logic without going through Discover.
-func labelsFor(files ...string) map[string]string {
+func labelsFor(t *testing.T, files ...string) map[string]string {
+	t.Helper()
 	labels := make(map[string]string)
-	for _, f := range files {
+	for _, path := range files {
+		f, err := os.Open(path)
+		require.NoError(t, err)
 		if label := extractLabel(f); label != "" {
-			labels[f] = label
+			labels[path] = label
 		}
+		f.Close()
 	}
 	return labels
+}
+
+// fsFoldsCase reports whether dir's filesystem treats names
+// case-insensitively, by writing a lowercase probe entry and statting an
+// uppercase spelling of it. Tests use it to pick the arm that applies to
+// the machine they run on (macOS/Windows default: folds; Linux: doesn't),
+// so CI on each platform covers one arm.
+func fsFoldsCase(t *testing.T, dir string) bool {
+	t.Helper()
+	probe := filepath.Join(dir, "casefold_probe")
+	require.NoError(t, os.WriteFile(probe, []byte("x"), 0o644))
+	a, err := os.Stat(probe)
+	require.NoError(t, err)
+	b, err := os.Stat(filepath.Join(dir, "CASEFOLD_PROBE"))
+	if err != nil {
+		return false
+	}
+	return os.SameFile(a, b)
 }
 
 func TestRenderManifest(t *testing.T) {
@@ -188,7 +211,7 @@ func TestRenderManifest(t *testing.T) {
 		plain := writeFileAt(t, root, "services/misc/AGENTS.md", "just prose, no heading")
 		files := []string{withFrontmatter, withHeading, plain}
 
-		got := RenderManifest(files, labelsFor(files...), root, ManifestConfig{})
+		got := RenderManifest(files, labelsFor(t, files...), root, ManifestConfig{})
 		assert.Contains(t, got, "# Nested Context Files")
 		assert.Contains(t, got, "NOT loaded into this prompt")
 		assert.Contains(t, got, "- services/auth/AGENTS.md: Auth service conventions")
@@ -232,7 +255,7 @@ func TestRenderManifest(t *testing.T) {
 			files = append(files, writeFileAt(t, root, filepath.Join(d, "AGENTS.md"),
 				"# "+strings.Repeat(d, 60)+"\nbody"))
 		}
-		labels := labelsFor(files...)
+		labels := labelsFor(t, files...)
 
 		labeled := RenderManifest(files, labels, root, ManifestConfig{})
 		require.Contains(t, labeled, "aaaa", "sanity: labels render when the cap allows")
@@ -301,15 +324,42 @@ func TestOwnersForPath(t *testing.T) {
 		})
 	}
 
-	t.Run("mixed-case target dir still matches its owners", func(t *testing.T) {
-		t.Parallel()
+	t.Run("mixed-case target dir still matches its owners on a case-insensitive fs", func(t *testing.T) {
+		if !fsFoldsCase(t, root) {
+			t.Skipf("filesystem is case-sensitive; the folding arm does not apply here")
+		}
 		// The model-supplied path can differ in case from the WalkDir
-		// spelling (macOS/Windows default filesystems are
-		// case-insensitive); matching must use the same
-		// EvalSymlinks+lowercase normalization as the resolver's dedup.
+		// spelling on the default macOS/Windows filesystems; matching
+		// must fold case there — and ONLY there.
 		mixed := filepath.Join(root, "Services", "AUTH")
 		assert.Equal(t, []string{servicesFile, servicesClaude, authFile}, OwnersForPath(mixed, discovered, root))
 	})
+}
+
+// TestOwnersForPath_CaseSensitiveFS pins the other arm: on a
+// case-sensitive filesystem (Linux production), two sibling directories
+// differing only by case are DIFFERENT trees, and folding their names
+// would inject the wrong tree's context (and mark it injected). Skipped
+// where the filesystem folds case.
+func TestOwnersForPath_CaseSensitiveFS(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "Services"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "services"), 0o755))
+	a, err := os.Stat(filepath.Join(root, "Services"))
+	require.NoError(t, err)
+	b, err := os.Stat(filepath.Join(root, "services"))
+	require.NoError(t, err)
+	if os.SameFile(a, b) {
+		t.Skipf("filesystem folds case; the sibling-directory arm does not apply here")
+	}
+	owner := filepath.Join(root, "Services", "AGENTS.md")
+	require.NoError(t, os.WriteFile(owner, []byte("x"), 0o644))
+
+	assert.Nil(t, OwnersForPath(filepath.Join(root, "services"), []string{owner}, root),
+		"a read into the case-differing sibling tree must not activate the other tree's context")
+	assert.Equal(t, []string{owner}, OwnersForPath(filepath.Join(root, "Services"), []string{owner}, root),
+		"the exact-case directory still owns its file")
 }
 
 func TestFilterDiscovered(t *testing.T) {
@@ -362,5 +412,87 @@ func TestFilterDiscovered(t *testing.T) {
 			&StepContext{Paths: []string{"docs/AGENTS.md"}, Mode: "replace"},
 			root, vars)
 		assert.Equal(t, []string{authFile, billingFile}, got)
+	})
+
+	t.Run("case-differing sibling subtree is NOT subtracted on a case-sensitive fs", func(t *testing.T) {
+		t.Parallel()
+		caseRoot := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(caseRoot, "docs"), 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Join(caseRoot, "Docs"), 0o755))
+		a, err := os.Stat(filepath.Join(caseRoot, "docs"))
+		require.NoError(t, err)
+		b, err := os.Stat(filepath.Join(caseRoot, "Docs"))
+		require.NoError(t, err)
+		if os.SameFile(a, b) {
+			t.Skipf("filesystem folds case; the sibling-directory arm does not apply here")
+		}
+		nested := writeFileAt(t, caseRoot, "docs/AGENTS.md", "docs body")
+
+		got := FilterDiscovered([]string{nested},
+			&AgentContext{Paths: []string{"Docs/"}, Mode: "append"},
+			nil, caseRoot, vars)
+		assert.Equal(t, []string{nested}, got,
+			"inlining Docs/ must not silently drop the DIFFERENT docs/ tree's context")
+	})
+
+	t.Run("case-differing spelling IS subtracted on a case-insensitive fs", func(t *testing.T) {
+		t.Parallel()
+		caseRoot := t.TempDir()
+		if !fsFoldsCase(t, caseRoot) {
+			t.Skipf("filesystem is case-sensitive; the folding arm does not apply here")
+		}
+		nested := writeFileAt(t, caseRoot, "docs/AGENTS.md", "docs body")
+
+		got := FilterDiscovered([]string{nested},
+			&AgentContext{Paths: []string{"Docs/AGENTS.md"}, Mode: "append"},
+			nil, caseRoot, vars)
+		assert.Empty(t, got,
+			"on a folding filesystem Docs/AGENTS.md and docs/AGENTS.md are the same file")
+	})
+}
+
+// TestOpenBeneath pins the kernel-level beneath-only guarantee the
+// activation read and the discovery label extraction rely on: no spelling
+// of a relative path — including one raced into a symlink — can open a
+// file outside workDir.
+func TestOpenBeneath(t *testing.T) {
+	t.Parallel()
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.md")
+	require.NoError(t, os.WriteFile(secret, []byte("SECRET"), 0o600))
+
+	root := t.TempDir()
+	inner := writeFileAt(t, root, "sub/AGENTS.md", "inner body")
+
+	t.Run("regular file opens and reads", func(t *testing.T) {
+		t.Parallel()
+		f, err := OpenBeneath(root, filepath.Join("sub", "AGENTS.md"))
+		require.NoError(t, err)
+		defer f.Close()
+		body, err := io.ReadAll(f)
+		require.NoError(t, err)
+		assert.Equal(t, "inner body", string(body))
+		_ = inner
+	})
+
+	t.Run("symlink at the final component is refused", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, os.MkdirAll(filepath.Join(root, "linkleaf"), 0o755))
+		require.NoError(t, os.Symlink(secret, filepath.Join(root, "linkleaf", "AGENTS.md")))
+		_, err := OpenBeneath(root, filepath.Join("linkleaf", "AGENTS.md"))
+		assert.Error(t, err)
+	})
+
+	t.Run("symlinked intermediate escaping the root is refused", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, os.Symlink(outside, filepath.Join(root, "escape")))
+		_, err := OpenBeneath(root, filepath.Join("escape", "secret.md"))
+		assert.Error(t, err)
+	})
+
+	t.Run("dot-dot escape is refused", func(t *testing.T) {
+		t.Parallel()
+		_, err := OpenBeneath(root, filepath.Join("..", filepath.Base(outside), "secret.md"))
+		assert.Error(t, err)
 	})
 }

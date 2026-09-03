@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -103,20 +102,15 @@ func RenderManifest(discovered []string, labels map[string]string, workDir strin
 }
 
 // extractLabel returns a short human label for a context file: the YAML
-// frontmatter `description` value if the file starts with a frontmatter
-// block, else the first markdown heading, else "" (path-only line). Reads
-// at most manifestLabelReadBytes. Called ONLY from the discovery walk —
-// after the regular-file and symlink-containment checks — never at
-// prompt-build time. No YAML library on purpose — this package is a
-// leaf, and a top-of-file line scan is all a label needs.
-func extractLabel(path string) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(io.LimitReader(f, manifestLabelReadBytes))
+// frontmatter `description` value if the content starts with a
+// frontmatter block, else the first markdown heading, else "" (path-only
+// line). Reads at most manifestLabelReadBytes from r. Called ONLY from
+// the discovery walk — on a file already opened via the beneath-only
+// OpenBeneath path and fstat-verified regular — never at prompt-build
+// time. No YAML library on purpose — this package is a leaf, and a
+// top-of-file line scan is all a label needs.
+func extractLabel(r io.Reader) string {
+	scanner := bufio.NewScanner(io.LimitReader(r, manifestLabelReadBytes))
 	scanner.Buffer(make([]byte, 0, 64*1024), 64*1024)
 
 	inFrontmatter := false

@@ -169,9 +169,13 @@ Owner resolution walks upward from the target directory to (but excluding) `work
 collecting every nested context file whose owning directory is on the path, and
 injecting not-yet-injected ones outermost-first. Both sides of the owner comparison —
 the discovered owning directories and the model-supplied target directory — are
-canonicalized with the same EvalSymlinks + lowercase normalization the resolver's
-dedup uses, so a differently-cased path on a case-insensitive filesystem (macOS,
-Windows defaults) still matches its owners.
+canonicalized consistently: symlink resolution plus case folding applied ONLY when
+the workDir's filesystem is actually case-insensitive, probed once per workDir (stat
+a case-swapped spelling, compare identity with `os.SameFile`) and cached. A
+differently-cased path on macOS/Windows defaults still matches its owners, while on a
+case-sensitive filesystem two sibling directories differing only by case remain
+distinct trees — neither owner matching nor the scoped-layer subtraction may
+cross-match them.
 
 #### Scenario: First `read` into a subdirectory triggers injection
 
@@ -284,15 +288,19 @@ and activation, or exceeding `maxFileBytes`) SHALL be silently skipped: the trig
 tool's result is returned to the model unchanged, with no error propagation. The skip
 is logged at WARN level naming the file and the reason.
 
-The activation-time read is bounded and re-verified: the discovery cache lives for
-the process lifetime and the filesystem can change underneath it, so before reading,
-the file MUST re-pass the regular-file check (Lstat — a FIFO or device is skipped
-without opening, a post-discovery symlink swap is caught before following it) and the
-symlink-resolved workDir containment check; the size is checked via Stat on the
-OPENED descriptor (no TOCTOU window) and the read goes through a limit reader capped
-at `maxFileBytes`+1 bytes, so even an under-reporting Stat can never cause an
-unbounded read. The activation path never loads more than `maxFileBytes`+1 bytes of
-any candidate into memory.
+The activation-time read is bounded and race-free: the discovery cache lives for the
+process lifetime and the filesystem can change underneath it, so before reading, the
+file MUST re-pass the regular-file check (Lstat — a FIFO or device is skipped without
+opening), and the open itself MUST go through kernel-enforced beneath-only resolution
+(`os.Root`): the path lookup cannot escape `workDir` even when a component is swapped
+for a symlink BETWEEN the check and the open — a userspace re-check alone leaves that
+TOCTOU window winnable. On Unix the open also refuses a symlink at the final
+component (`O_NOFOLLOW`) and cannot block on a swapped-in FIFO (`O_NONBLOCK`). The
+size is checked via Stat on the OPENED descriptor (no TOCTOU window) and the read
+goes through a limit reader capped at `maxFileBytes`+1 bytes, so even an
+under-reporting Stat can never cause an unbounded read. The activation path never
+loads more than `maxFileBytes`+1 bytes of any candidate into memory. The discovery
+walk's label extraction uses the same beneath-only open.
 
 The disclosure wrapper SHALL be entirely absent from the tool chain when discovery is
 disabled (`contextDiscovery.enabled = false`) or when no nested files were found in
@@ -308,10 +316,11 @@ the walk — zero allocation and zero behavior change.
 #### Scenario: Post-discovery symlink swap is not followed
 
 - **WHEN** `services/auth/AGENTS.md` was discovered as a regular file and is later
-  replaced by a symlink pointing outside `workDir`, and the model then touches
-  `services/auth/`
-- **THEN** the activation-time re-verification skips the file with a WARN and nothing
-  from outside `workDir` is injected
+  replaced by a symlink pointing outside `workDir` — at any moment, including between
+  the activation-time checks and the open
+- **THEN** nothing from outside `workDir` is injected: the beneath-only open resolves
+  the path strictly inside `workDir` at the kernel level, so the swap cannot win a
+  race against a check-then-open sequence, and the skip is WARN-logged
 
 #### Scenario: Wrapper absent when discovery finds nothing
 

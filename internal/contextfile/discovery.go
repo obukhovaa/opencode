@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -277,49 +278,90 @@ func walkForContextFiles(workDir string, globalPaths []string, cfg DiscoveryConf
 			return filepath.SkipAll
 		}
 		res.Files = append(res.Files, path)
-		// Label computed here — once, behind the containment checks —
-		// and cached with the walk result (see DiscoveryResult.Labels).
-		if label := extractLabel(path); label != "" {
-			if res.Labels == nil {
-				res.Labels = make(map[string]string)
+		// Label computed here — once, behind the containment checks — and
+		// cached with the walk result (see DiscoveryResult.Labels). The
+		// open goes through the same kernel-enforced beneath-only path the
+		// activation read uses: a candidate raced into a symlink or FIFO
+		// between WalkDir's lstat and this open can neither read outside
+		// workDir nor hang prompt-build, and the fstat rejects whatever
+		// non-regular thing was swapped in.
+		if f, openErr := OpenBeneath(root, rel); openErr == nil {
+			if fi, statErr := f.Stat(); statErr == nil && fi.Mode().IsRegular() {
+				if label := extractLabel(f); label != "" {
+					if res.Labels == nil {
+						res.Labels = make(map[string]string)
+					}
+					res.Labels[path] = label
+				}
 			}
-			res.Labels[path] = label
+			f.Close()
 		}
 		return nil
 	})
 	return res
 }
 
-// ResolvedWithinRoot reports whether absPath — after symlink resolution —
-// lies strictly inside root (itself symlink-resolved), using the same
-// Clean → EvalSymlinks order containedInWorkDir applies to scoped
-// entries. Fail-closed: a path that cannot be resolved (missing file,
-// broken link) is NOT within the root. The disclosure wrapper re-checks
-// this at activation time because discovery results are cached for the
-// process lifetime and the filesystem can change underneath them.
-func ResolvedWithinRoot(absPath, root string) bool {
-	resolvedRoot := filepath.Clean(root)
-	if r, err := filepath.EvalSymlinks(resolvedRoot); err == nil {
-		resolvedRoot = r
+// canonicalDiscoveryPath normalizes a path for owner/exclusion matching:
+// EvalSymlinks (of the deepest existing ancestor — a write target or a
+// differently-cased spelling may not fully exist, and macOS TempDirs live
+// under the /var -> /private/var link), then case folding ONLY when
+// foldCase says the filesystem is actually case-insensitive. Folding
+// unconditionally (the resolver dedup's historical shortcut) would
+// cross-match case-DIFFERING sibling directories on case-sensitive
+// filesystems — subtracting or injecting the wrong tree's context.
+func canonicalDiscoveryPath(p string, foldCase bool) string {
+	resolved := resolveExistingPrefix(filepath.Clean(p))
+	if foldCase {
+		return strings.ToLower(resolved)
 	}
-	resolved, err := filepath.EvalSymlinks(filepath.Clean(absPath))
-	if err != nil {
-		return false
-	}
-	return strings.HasPrefix(resolved, resolvedRoot+string(os.PathSeparator))
+	return resolved
 }
 
-// canonicalDiscoveryPath normalizes a path for owner/exclusion matching
-// with the SAME normalization tryMarkProcessed uses for resolver dedup:
-// EvalSymlinks plus unconditional lowercasing — macOS's default
-// filesystem is case-insensitive, and a model-supplied tool path
-// routinely differs in case from the WalkDir spelling. Paths that do not
-// (fully) exist — a write into a new subdirectory, a differently-cased
-// spelling on a case-sensitive filesystem — resolve their deepest
-// existing ancestor so both sides of a comparison canonicalize
-// consistently (macOS TempDirs live under the /var -> /private/var link).
-func canonicalDiscoveryPath(p string) string {
-	return strings.ToLower(resolveExistingPrefix(filepath.Clean(p)))
+// caseFoldCache memoizes the per-workDir case-sensitivity probe alongside
+// the discovery cache (same process-lifetime staleness).
+var caseFoldCache sync.Map // cleaned workDir string -> bool
+
+// workDirFoldsCase reports whether workDir's filesystem treats names
+// case-insensitively — probed once per workDir and cached: stat a
+// case-swapped spelling of the workDir path and compare file identity
+// with os.SameFile.
+func workDirFoldsCase(workDir string) bool {
+	key := filepath.Clean(workDir)
+	if v, ok := caseFoldCache.Load(key); ok {
+		return v.(bool)
+	}
+	folds := probeCaseFold(key)
+	caseFoldCache.Store(key, folds)
+	return folds
+}
+
+// probeCaseFold flips the case of the LAST ASCII letter in the cleaned
+// workDir path — the flippable component closest to workDir itself, since
+// an ancestor may sit on a differently-behaving mount — and stats the
+// swapped spelling: identical file identity means the filesystem folds
+// case. A path that cannot be probed (does not exist, or carries no
+// letters at all) falls back to the platform default.
+func probeCaseFold(cleaned string) bool {
+	platformDefault := runtime.GOOS == "darwin" || runtime.GOOS == "windows"
+	fi, err := os.Stat(cleaned)
+	if err != nil {
+		return platformDefault
+	}
+	b := []byte(cleaned)
+	for i := len(b) - 1; i >= len(filepath.VolumeName(cleaned)); i-- {
+		c := b[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+			b[i] = c - 'a' + 'A'
+		case c >= 'A' && c <= 'Z':
+			b[i] = c - 'A' + 'a'
+		default:
+			continue
+		}
+		sfi, serr := os.Stat(string(b))
+		return serr == nil && os.SameFile(fi, sfi)
+	}
+	return platformDefault
 }
 
 // resolveExistingPrefix EvalSymlinks the deepest existing ancestor of
@@ -349,12 +391,13 @@ func FilterDiscovered(discovered []string, agentCtx *AgentContext, stepCtx *Step
 	if len(discovered) == 0 || (agentCtx == nil && stepCtx == nil) {
 		return discovered
 	}
+	fold := workDirFoldsCase(workDir)
 	files := make(map[string]struct{})
 	var prefixes []string
 	add := func(entries []string) {
 		for _, e := range entries {
 			abs := filepath.Clean(filepath.Join(workDir, e))
-			canon := canonicalDiscoveryPath(abs)
+			canon := canonicalDiscoveryPath(abs, fold)
 			if strings.HasSuffix(e, "/") {
 				prefixes = append(prefixes, canon+string(os.PathSeparator))
 				continue
@@ -375,7 +418,7 @@ func FilterDiscovered(discovered []string, agentCtx *AgentContext, stepCtx *Step
 	}
 	out := make([]string, 0, len(discovered))
 	for _, f := range discovered {
-		canon := canonicalDiscoveryPath(f)
+		canon := canonicalDiscoveryPath(f, fold)
 		if _, inlined := files[canon]; inlined {
 			continue
 		}
@@ -404,20 +447,23 @@ func FilterDiscovered(discovered []string, agentCtx *AgentContext, stepCtx *Step
 // discovery (lexical) order.
 //
 // Both sides of the comparison — the discovered owning directories and
-// the model-supplied target dir — are canonicalized with the same
-// EvalSymlinks+lowercase normalization the resolver's dedup uses
-// (tryMarkProcessed): on the default case-insensitive macOS/Windows
-// filesystems, the inner tool call succeeds with a differently-cased
-// path, and a byte-exact comparison would silently miss the injection.
+// the model-supplied target dir — are canonicalized consistently:
+// EvalSymlinks resolution plus case folding applied ONLY when the
+// workDir's filesystem is actually case-insensitive (probed once per
+// workDir). On macOS/Windows defaults the inner tool call succeeds with a
+// differently-cased path and a byte-exact comparison would silently miss
+// the injection; on case-sensitive filesystems (Linux) unconditional
+// folding would instead inject the WRONG sibling tree's context.
 func OwnersForPath(dir string, discovered []string, workDir string) []string {
-	root := canonicalDiscoveryPath(workDir)
-	cur := canonicalDiscoveryPath(dir)
+	fold := workDirFoldsCase(workDir)
+	root := canonicalDiscoveryPath(workDir, fold)
+	cur := canonicalDiscoveryPath(dir, fold)
 	if cur == root || !strings.HasPrefix(cur, root+string(os.PathSeparator)) {
 		return nil
 	}
 	byDir := make(map[string][]string, len(discovered))
 	for _, f := range discovered {
-		d := canonicalDiscoveryPath(filepath.Dir(f))
+		d := canonicalDiscoveryPath(filepath.Dir(f), fold)
 		byDir[d] = append(byDir[d], f)
 	}
 	// Collected innermost-first while walking up; emitted in reverse so
