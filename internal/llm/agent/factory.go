@@ -10,6 +10,7 @@ import (
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/hooks"
 	"github.com/opencode-ai/opencode/internal/langfuse"
@@ -40,7 +41,15 @@ type AgentFactory interface {
 	// without flow authors having to template ${args.reviewer.*}
 	// (the flow resolver has no nested-path support anyway). Pass nil
 	// for non-interactive callers or when the binding isn't known yet.
-	NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool, boundPeers []bridge.PeerRef) (Service, error)
+	//
+	// `stepCtx` is the flow step's `context` override (nil outside
+	// flows / for steps without one) and `flowVars` carries the
+	// ${flow.id} / ${flow.step} template token values. Both must ride
+	// the signature: NewAgent is context-free (its ctx is discarded),
+	// so the FlowIDContextKey/FlowStepIDContextKey telemetry ctx values
+	// — set later, on the Run context — are invisible at prompt-build
+	// time. The ${agent} token is filled in here from agentID.
+	NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool, boundPeers []bridge.PeerRef, stepCtx *contextfile.StepContext, flowVars contextfile.TemplateVars) (Service, error)
 	InitPrimaryAgents(ctx context.Context, outputSchema map[string]any) ([]Service, error)
 	// ResetStepCache drops the per-step agent memoisation. The cache is
 	// keyed on the flow YAML's step ID, which recurs across runs, so a
@@ -204,7 +213,7 @@ func (f *agentFactory) QuestionService() question.Service {
 // agent construction is context-free: the toolset (incl. MCP loading) is
 // resolved under registry-owned lifetimes, so a caller's request-scoped ctx
 // cannot cancel it (see NewToolSet / mcpRegistry.getTools).
-func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool, boundPeers []bridge.PeerRef) (Service, error) {
+func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool, boundPeers []bridge.PeerRef, stepCtx *contextfile.StepContext, flowVars contextfile.TemplateVars) (Service, error) {
 	_ = ctx
 	if stepID != "" {
 		f.mu.Lock()
@@ -247,6 +256,12 @@ func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchem
 	// → GetAgentPromptWithOptions sees it and the prompt grows the
 	// "## Reviewer details" section. Empty / nil for non-interactive.
 	infoCopy.BoundPeers = boundPeers
+	// The step context override and the template token values follow the
+	// same per-call path: the prompt builder re-fetches the ORIGINAL
+	// registry entry, which cannot carry per-step state.
+	infoCopy.StepContext = stepCtx
+	flowVars.Agent = agentID
+	infoCopy.ContextVars = flowVars
 
 	svc, err := newAgent(&infoCopy, f.sessions, f.messages, f.permissions, f.history, f.lspService, f.registry, f.mcpRegistry, f)
 	if err != nil {
@@ -294,7 +309,7 @@ func (f *agentFactory) InitPrimaryAgents(ctx context.Context, outputSchema map[s
 	}
 	res := make([]Service, 0, len(primaryAgents))
 	for _, agentInfo := range primaryAgents {
-		primaryAgent, err := f.NewAgent(ctx, string(agentInfo.ID), outputSchema, "", false, nil)
+		primaryAgent, err := f.NewAgent(ctx, string(agentInfo.ID), outputSchema, "", false, nil, nil, contextfile.TemplateVars{})
 		if err != nil {
 			logging.Error("Failed to create agent", "agent", agentInfo.ID, "error", err)
 			continue

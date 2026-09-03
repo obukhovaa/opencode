@@ -16,6 +16,7 @@ import (
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/hooks"
 	"github.com/opencode-ai/opencode/internal/langfuse"
@@ -252,6 +253,8 @@ func newAgent(
 		withBoundPeers(agentInfo.BoundPeers),
 		withHasOutputSchema(agentInfo.Output != nil && agentInfo.Output.Schema != nil),
 		withBasePrompt(agentInfo.Prompt),
+		withStepContext(agentInfo.StepContext),
+		withContextVars(agentInfo.ContextVars),
 	)
 	if err != nil {
 		return nil, err
@@ -2859,6 +2862,14 @@ type providerOptions struct {
 	// explicitly or the prompt builder falls back to a built-in default.
 	// Empty for every agent whose prompt is inline or built in.
 	basePrompt string
+	// stepContext is the flow step's `context` override for scoped
+	// context resolution. Per-call state, exactly like `interactive` —
+	// the prompt builder re-fetches the registry entry, which cannot
+	// carry it. Nil outside flows and for steps without an override.
+	stepContext *contextfile.StepContext
+	// contextVars carries the ${agent} / ${flow.id} / ${flow.step}
+	// template token values for context path expansion.
+	contextVars contextfile.TemplateVars
 }
 
 type providerOption func(*providerOptions)
@@ -2903,6 +2914,23 @@ func withHasOutputSchema(b bool) providerOption {
 func withBasePrompt(s string) providerOption {
 	return func(o *providerOptions) {
 		o.basePrompt = s
+	}
+}
+
+// withStepContext carries the flow step's `context` override through to
+// prompt.AgentPromptOptions.StepContext for scoped context resolution.
+// Nil is the normal case and changes nothing.
+func withStepContext(sc *contextfile.StepContext) providerOption {
+	return func(o *providerOptions) {
+		o.stepContext = sc
+	}
+}
+
+// withContextVars carries the context-path template token values through
+// to prompt.AgentPromptOptions.ContextVars.
+func withContextVars(vars contextfile.TemplateVars) providerOption {
+	return func(o *providerOptions) {
+		o.contextVars = vars
 	}
 }
 
@@ -3007,6 +3035,8 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 			BoundPeers:      popts.boundPeers,
 			HasOutputSchema: popts.hasOutputSchema,
 			BasePrompt:      popts.basePrompt,
+			StepContext:     popts.stepContext,
+			ContextVars:     popts.contextVars,
 		})),
 		provider.WithMaxTokens(maxTokens),
 	}

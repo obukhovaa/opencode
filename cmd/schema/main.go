@@ -109,6 +109,42 @@ func generateSchema() map[string]any {
 		},
 	}
 
+	schema["properties"].(map[string]any)["contextDiscovery"] = map[string]any{
+		"type":        "object",
+		"description": "Nested context file discovery (progressive context disclosure): a bounded walk below the working directory finds context files in subdirectories, lists them in a compact system-prompt manifest, and injects each file's body into the first tool result that touches its directory. See docs/context.md.",
+		"properties": map[string]any{
+			"enabled": map[string]any{
+				"type":        "boolean",
+				"description": "Enable the discovery walk and manifest injection. Individual agents/steps can opt out with context.nested: false.",
+				"default":     true,
+			},
+			"maxFiles": map[string]any{
+				"type":        "integer",
+				"description": "Maximum number of nested context files collected by the discovery walk (walk order decides which files make the cut).",
+				"minimum":     1,
+				"default":     100,
+			},
+			"maxDepth": map[string]any{
+				"type":        "integer",
+				"description": "Maximum directory depth below the working directory the discovery walk descends into.",
+				"minimum":     1,
+				"default":     8,
+			},
+			"maxFileBytes": map[string]any{
+				"type":        "integer",
+				"description": "Maximum size of a single nested context file eligible for body injection; larger files are skipped.",
+				"minimum":     1,
+				"default":     32768,
+			},
+			"maxSessionBytes": map[string]any{
+				"type":        "integer",
+				"description": "Total byte budget of nested context bodies injected into a single session; further injections are skipped once exhausted.",
+				"minimum":     1,
+				"default":     131072,
+			},
+		},
+	}
+
 	schema["properties"].(map[string]any)["flowPaths"] = map[string]any{
 		"type":        "array",
 		"description": "Custom directories to scan for flow YAML definitions (*.yaml / *.yml) at startup. Supports ~ for the home directory and relative paths (resolved against the working directory). Flows discovered here get a namespaced ID <parent-dir-basename>/<file-basename> and can never shadow a built-in (slash-free) flow ID.",
@@ -396,6 +432,30 @@ func generateSchema() map[string]any {
 					"type":        "integer",
 					"description": "Advisory token budget for the full agentic loop (minimum 20000). Only supported by models with SupportsTaskBudget. The budget is carried across compaction via the remaining field.",
 					"minimum":     20000,
+				},
+				"context": map[string]any{
+					"type":        "object",
+					"description": "Scoped context files for this agent's system prompt. Declared paths replace (default) or append to the global contextPaths. Path entries support the ${agent}, ${flow.id}, ${flow.step}, and ${env.VAR} template tokens and must resolve inside the working directory. See docs/context.md.",
+					"properties": map[string]any{
+						"paths": map[string]any{
+							"type":        "array",
+							"description": "Context file paths relative to the working directory. A trailing slash recurses into the directory.",
+							"items": map[string]any{
+								"type": "string",
+							},
+						},
+						"mode": map[string]any{
+							"type":        "string",
+							"description": "How the declared paths combine with lower-precedence layers: 'replace' discards them, 'append' concatenates after them. An unrecognized value falls back to append with a warning.",
+							"enum":        []string{"replace", "append"},
+							"default":     "replace",
+						},
+						"nested": map[string]any{
+							"type":        "boolean",
+							"description": "Opt out of nested-context manifest and body injection for this agent when false.",
+							"default":     true,
+						},
+					},
 				},
 			},
 			"required": []string{"model"},

@@ -478,6 +478,11 @@ func TestTemplateKeyRule_TwoPart(t *testing.T) {
 					t.Errorf("LangfusePromptLabel = %q", s.LangfusePromptLabel)
 				}
 			}},
+			"context": {"  context:\n    paths: [\"AGENTS.runtime.md\"]\n    mode: replace\n", func(t *testing.T, s Step) {
+				if s.Context == nil || len(s.Context.Paths) != 1 || s.Context.Paths[0] != "AGENTS.runtime.md" || s.Context.Mode != "replace" {
+					t.Errorf("Context = %#v", s.Context)
+				}
+			}},
 		}
 
 		// Coverage guard: the rule admits every step field, so a field

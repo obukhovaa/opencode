@@ -13,6 +13,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/permission"
 )
@@ -76,6 +77,20 @@ type AgentInfo struct {
 	// peerId without flow authors having to template ${args.reviewer.*}
 	// into the YAML prompt.
 	BoundPeers []bridge.PeerRef `yaml:"-"`
+	// Context scopes which context files feed this agent's system prompt
+	// (paths, replace/append mode, nested-disclosure opt-out). A YAML
+	// frontmatter field for markdown agents; `.opencode.json` overrides it
+	// whole via applyConfigOverrides. See docs/context.md.
+	Context *contextfile.AgentContext `yaml:"context,omitempty"`
+	// StepContext is the flow step's `context` override for the current
+	// construction. Populated in-memory by AgentFactory.NewAgent — like
+	// Interactive/BoundPeers it is per-call state the prompt builder
+	// cannot re-fetch from the registry. NOT persisted via YAML.
+	StepContext *contextfile.StepContext `yaml:"-"`
+	// ContextVars carries the ${agent} / ${flow.id} / ${flow.step}
+	// template token values for context path expansion. Populated
+	// in-memory by AgentFactory.NewAgent. NOT persisted via YAML.
+	ContextVars contextfile.TemplateVars `yaml:"-"`
 }
 
 type Registry interface {
@@ -510,6 +525,11 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 		if agentCfg.Skills != nil {
 			existing.Skills = deduplicateSkills(agentCfg.Skills, name)
 		}
+		// Like Output: a declared context object replaces the whole
+		// inherited one — paths/mode/nested travel together.
+		if agentCfg.Context != nil {
+			existing.Context = agentCfg.Context
+		}
 
 		agents[name] = existing
 	}
@@ -598,6 +618,11 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 	}
 	if md.Skills != nil {
 		existing.Skills = deduplicateSkills(md.Skills, existing.ID)
+	}
+	// As in applyConfigOverrides: a declared context replaces the whole
+	// inherited object.
+	if md.Context != nil {
+		existing.Context = md.Context
 	}
 	existing.Location = md.Location
 }

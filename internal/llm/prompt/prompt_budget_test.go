@@ -14,6 +14,12 @@ import (
 // prompt surface cannot silently re-bloat (see openspec/specs/prompt-surface).
 // If a prompt outgrows its budget, cut pedagogy — examples, repeated rules,
 // tool-routing lists — rather than raising the number.
+//
+// Only the base prompt CONSTRUCTORS are measured, never the assembled
+// prompt — so every appendix (context block, nested-context manifest,
+// deferred-tools announcement, environment info) is exempt by
+// construction, and discovery finding files in the test workspace cannot
+// move these numbers.
 func TestBasePromptBudgets(t *testing.T) {
 	budgets := []struct {
 		name   string

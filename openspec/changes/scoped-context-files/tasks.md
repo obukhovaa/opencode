@@ -2,19 +2,19 @@
 
 ## 1. `internal/contextfile` package
 
-- [ ] 1.1 Create `internal/contextfile/` package — a true leaf importing only the
+- [x] 1.1 Create `internal/contextfile/` package — a true leaf importing only the
   stdlib and `internal/logging` (never `internal/config`); move `processContextPaths`,
   `processFile`, and `tryMarkProcessed` from `internal/llm/prompt/prompt.go`
   (L617-703) into `contextfile/resolver.go`; preserve the `# From:<abs-path>\n<body>`,
   sort-by-absolute-path, silent-skip-on-missing, and EvalSymlinks+lowercase-dedup
   behaviors exactly
 
-- [ ] 1.2 Implement `Resolve(paths []string, workDir string, mode Mode) string` with
+- [x] 1.2 Implement `Resolve(paths []string, workDir string, mode Mode) string` with
   keyed memoization (`sync.Map` + `singleflight.Group`); key = SHA-256 of sorted
   absolute path list + mode string; add `Mode` type with `ModeReplace` / `ModeAppend`
   constants and the warn-on-unknown fallback-to-append logic
 
-- [ ] 1.3 Implement the three-layer merge in `ResolveForAgent(globalPaths []string,
+- [x] 1.3 Implement the three-layer merge in `ResolveForAgent(globalPaths []string,
   agentCtx *AgentContext, stepCtx *StepContext, workDir string) string` applying
   precedence `step > agent > global` with `replace`/`append` semantics and
   cross-layer deduplication via the existing `tryMarkProcessed` logic; define the
@@ -22,13 +22,13 @@
   agent registry, and `flow` reference them as `contextfile.*`, so the import edge
   always points at the leaf
 
-- [ ] 1.4 Implement shell-free templating (`expandTokens(entry string, vars
+- [x] 1.4 Implement shell-free templating (`expandTokens(entry string, vars
   TemplateVars) (string, bool)`) for `${agent}`, `${flow.id}`, `${flow.step}`,
   `${env.VAR}`; skip-on-unknown-token (DEBUG log) and skip-on-empty-segment (DEBUG
   log); workDir containment check (WARN log + reject) applied after template expansion
   and `filepath.Join(workDir, entry)` + `filepath.Clean`
 
-- [ ] 1.5 Port and extend `internal/llm/prompt/prompt_test.go` context-related test
+- [x] 1.5 Port and extend `internal/llm/prompt/prompt_test.go` context-related test
   cases into `internal/contextfile/resolver_test.go`; add new table-driven cases:
   replace vs append modes; three-layer merge with dedup; unknown-token skip; env var
   expansion; path traversal rejection; viper round-trip for `AgentContext` map key
@@ -37,7 +37,7 @@
 
 ## 2. Discovery walk and manifest
 
-- [ ] 2.1 Implement `Discover(workDir string, globalPaths []string, cfg
+- [x] 2.1 Implement `Discover(workDir string, globalPaths []string, cfg
   DiscoveryConfig) DiscoveryResult` in `contextfile/discovery.go`; extract basename
   set from file-type (non-trailing-slash) entries of `globalPaths`; walk subtree with
   `filepath.WalkDir` using a hardcoded skip set mirroring `internal/llm/tools/ls.go`
@@ -49,24 +49,24 @@
   caps; cache result by `workDir` in a `sync.Map`; files at depth 0 (root) are
   excluded from the result set
 
-- [ ] 2.2 Implement `RenderManifest(discovered []string, workDir string, cfg
+- [x] 2.2 Implement `RenderManifest(discovered []string, workDir string, cfg
   ManifestConfig) string` in `contextfile/manifest.go`: relative-path line per file;
   label from YAML frontmatter `description` else first markdown heading (truncated ~120
   chars) else path only; total-byte overflow degrades to paths-only then trailing
   "... N more"; absent (empty string) when `len(discovered) == 0`
 
-- [ ] 2.3 Add unit tests for `Discover`: finds AGENTS.md in subdirectory but not at
+- [x] 2.3 Add unit tests for `Discover`: finds AGENTS.md in subdirectory but not at
   root; skips `.git` / `node_modules` / hidden-dot subtrees via the hardcoded skip
   set (`.gitignore` is not consulted in v1); respects maxDepth and maxFiles; cached
   on second call (no re-walk); `enabled: false` returns empty result
 
-- [ ] 2.4 Add unit tests for `RenderManifest`: present when files found; absent when
+- [x] 2.4 Add unit tests for `RenderManifest`: present when files found; absent when
   none; label extraction from frontmatter vs heading; overflow degradation; byte-stable
   on repeated calls with same inputs
 
 ## 3. Config surface
 
-- [ ] 3.1 Reference the `contextfile` types from `internal/config/config.go`: add
+- [x] 3.1 Reference the `contextfile` types from `internal/config/config.go`: add
   `Agent.Context *contextfile.AgentContext` (`Paths []string`, `Mode string`,
   `Nested *bool`) and `Config.ContextDiscovery *contextfile.DiscoveryConfig`
   (`Enabled bool`, `MaxFiles int`, `MaxDepth int`, `MaxFileBytes int`,
@@ -78,42 +78,42 @@
   — note `viper.SetDefault` makes `Config.ContextDiscovery` always non-nil after
   `Unmarshal`, which is desired
 
-- [ ] 3.2 Add `AgentInfo.Context *contextfile.AgentContext` to
+- [x] 3.2 Add `AgentInfo.Context *contextfile.AgentContext` to
   `internal/agent/registry.go` (yaml frontmatter parses automatically); add merge in
   `applyConfigOverrides` (registry.go:418-516; mirror the `DeferredTools` `maps.Copy`
   block at 495-501) and in `mergeMarkdownIntoExisting` (registry.go:531-603; mirror
   the 578-583 block)
 
-- [ ] 3.3 Add `Step.Context *contextfile.StepContext` (yaml tag
+- [x] 3.3 Add `Step.Context *contextfile.StepContext` (yaml tag
   `context,omitempty`) to `internal/flow/flow.go` — the `StepContext` struct
   (`Paths []string`, `Mode string`, `Nested *bool`) is defined in
   `internal/contextfile` (task 1.3); no entry in `nonInheritableStepKeys` — confirm this by
   reviewing `include.go:182-187` and adding a comment noting it is intentionally absent
 
-- [ ] 3.4 Declare the `context` field shape in `cmd/schema/main.go` by adding it to
+- [x] 3.4 Declare the `context` field shape in `cmd/schema/main.go` by adding it to
   `agentSchema` `additionalProperties.properties` — that one map is shared by
   `agents.*` and `#/definitions/agent`, so one edit covers both surfaces; declare
   `contextDiscovery` at the top-level schema; regenerate `opencode-schema.json` via
   `go run cmd/schema/main.go > opencode-schema.json`
 
-- [ ] 3.5 Add viper round-trip unit test in `internal/config/` for `Agent.Context`:
+- [x] 3.5 Add viper round-trip unit test in `internal/config/` for `Agent.Context`:
   a config with an agent key containing uppercase letters (e.g., `"MyAgent"`) bearing
   a `context` object survives `viper.Unmarshal`, with the key lowercased and the
   `Context.Paths`, `Context.Mode`, and `Context.Nested` fields intact
 
 ## 4. Prompt integration
 
-- [ ] 4.1 Replace `getContextFromPaths()` + `sync.Once` (prompt.go:593-611) with a
+- [x] 4.1 Replace `getContextFromPaths()` + `sync.Once` (prompt.go:593-611) with a
   call to `contextfile.ResolveForAgent(cfg.ContextPaths, agentInfo.Context,
   nil /*stepCtx*/, cfg.WorkingDir)` in `getAgentPromptInternal`; remove
   `processContextPaths`, `processFile`, `tryMarkProcessed` from `prompt.go` (they now
   live in `internal/contextfile`)
 
-- [ ] 4.2 Add manifest rendering call in `getAgentPromptInternal` after the context
+- [x] 4.2 Add manifest rendering call in `getAgentPromptInternal` after the context
   block: `contextfile.RenderManifest(discovered, workDir, discoveryConfig)` appended
   to the system prompt when non-empty; guard on `info.Context.nested != false` (opt-out)
 
-- [ ] 4.3 Update `internal/llm/prompt/prompt_test.go`: update any test that assumed the
+- [x] 4.3 Update `internal/llm/prompt/prompt_test.go`: update any test that assumed the
   `sync.Once` global or the old `processContextPaths` signature (they port to
   `internal/contextfile` per task 1.5); add the explicit backward-compat scenario
   ("no agent/step context config ⇒ byte-identical prompt"). No budget-test change is
@@ -123,7 +123,7 @@
 
 ## 5. Flow integration
 
-- [ ] 5.1 In `internal/flow/service.go` `runStep` (service.go:461), read `step.Context`
+- [x] 5.1 In `internal/flow/service.go` `runStep` (service.go:461), read `step.Context`
   and pass a `contextfile.StepContext` into agent construction (`NewAgent` call at
   service.go:513); populate the `${flow.id}` / `${flow.step}` template tokens
   explicitly from `f.ID` and `step.ID`, both in scope at the call site — NOT from
@@ -131,13 +131,13 @@
   on the Run ctx for telemetry and are invisible to the context-free `NewAgent`
   (factory.go:207-208 discards its ctx)
 
-- [ ] 5.2 Thread `stepCtx *contextfile.StepContext` through the `NewAgent` signature
+- [x] 5.2 Thread `stepCtx *contextfile.StepContext` through the `NewAgent` signature
   in the agent factory and into `getAgentPromptInternal`; the flow/step template
   values ride the `StepContext` (or a `contextfile.TemplateVars`) through the
   signature because `NewAgent` discards its ctx (factory.go:207-208); use it in
   `contextfile.ResolveForAgent` for the step-layer resolution
 
-- [ ] 5.3 Add test: a flow YAML with a step declaring `context: { paths:
+- [x] 5.3 Add test: a flow YAML with a step declaring `context: { paths:
   ["STEP.md"], mode: replace }` resolves only `STEP.md`; a step without `context`
   receives the global default; a template with `context` is inherited by an extending
   step; an extending step's `context` overrides the template's

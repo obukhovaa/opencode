@@ -178,7 +178,10 @@ func inheritableStepKeys() []string {
 // This set — not an allow-list of inheritable fields — is the whole rule's
 // second half. It names the four keys a second program reads and is
 // expected to change roughly never; everything else Step models is
-// inheritable, including fields added after this was written.
+// inheritable, including fields added after this was written. In
+// particular `context` is intentionally absent: a template supplying a
+// per-step context override is exactly what template files are for, and
+// the orchestrator never reads that key.
 var nonInheritableStepKeys = map[string]string{
 	"id":           "a step's identity must stay in the flow (two flows extending one template would collide, and the flow file would no longer show which steps it has)",
 	"interactive":  "the orchestrator reads it to bind a reviewer; a template would leave it seeing a non-interactive step and start a job with nobody bound to answer",
