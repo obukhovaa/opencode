@@ -418,6 +418,18 @@
       "description": "Enable automatic compaction of session history",
       "type": "boolean"
     },
+    "backgroundTasks": {
+      "additionalProperties": false,
+      "description": "Background-task lifecycle policy",
+      "properties": {
+        "stallThreshold": {
+          "default": "30m",
+          "description": "How long an async subagent task may persist no new message on its own session before the runtime treats it as stalled and kills it, letting the step complete instead of parking until the flow deadline. Go duration string; \"0\" or any non-positive value disables detection. MUST exceed the largest single tool-call budget in the deployment (bash foreground hard cap 10m; MCP per-call budget 5m by default, raisable without limit via mcpServers.\u003cname\u003e.callToolTimeoutSeconds) or healthy subagents are killed mid-call. Applies to subagent tasks only — bash and monitor tasks are process-backed and a monitor is supposed to sit silent until its pattern matches. Defaults to \"30m\".",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "contextPaths": {
       "default": [
         ".github/copilot-instructions.md",

@@ -91,6 +91,84 @@ Three sources, in precedence order:
 | `OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT` env var | Deploy environment. | Fallback default when the step has no explicit `timeout`. Parsed once at process start; SIGHUP-style reloads require a process restart. Malformed / non-positive values are logged and ignored. |
 | Unbounded | When neither of the above is set. | The wait is bounded only by the orchestrator's surrounding ctx (e.g. an overall flow deadline). If there is no surrounding deadline, the wait blocks until the work completes or the process exits. |
 
+Deploying with neither source set is the configuration to avoid: a task that can never
+finish then holds its step until the process exits, and a step whose `struct_output` was
+already accepted still never routes. Prefer setting
+`OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT` deployment-wide even when individual steps
+carry no `timeout`.
+
+While the drain waits it logs the tasks it is still waiting on — id, kind and age —
+every 60 seconds (`Non-interactive drain: still waiting on background tasks`). This is
+observability only and never shortens the wait; it exists so a step legitimately held
+open by a long task is distinguishable in the log from a hung or dead process.
+
+## Stall detection
+
+A task that can never reach a terminal state would otherwise hold its step until the
+flow deadline, discarding an already-accepted `struct_output`. So on each drain progress
+tick the runtime also checks whether any pending **subagent** task has stopped making
+progress, and kills the ones that have — through the same path `taskstop` uses, so the
+drain then returns for its ordinary reason (every task terminal), the synthetic
+completion pair lands, and the parent re-cycles and finishes the step.
+
+Scope follows the task's lifecycle handle, and the exemptions are deliberate:
+
+| Kind | Handle | Liveness | Stall-checked |
+|---|---|---|---|
+| `bash` | `*os.Process` | definitional — the process runs or exits | no |
+| `monitor` | `*os.Process` | definitional | no |
+| `task` | `context.CancelFunc` | inferred — nothing observes an LLM loop | **yes** |
+| `cron` | synthetic completion | not a long-running wait | no |
+
+**A `monitor` is supposed to sit silent.** It spawns a script that polls an external
+source without LLM calls — that is the cheap way to wait — and emits nothing at all
+until its pattern matches. Silence is its healthy state, so inferring death from it
+would break the tool. Monitors are bounded by `max_events` (which the model chooses, so
+a step meaning "wait for one deploy-complete line" says `max_events: 1`), `taskstop`,
+natural subprocess exit, and the flow deadline. Note that `max_events` is an
+event-**count** threshold, not a timeout: monitors are deliberately not time-bounded,
+and stall detection must not become a backdoor time bound on them.
+
+For a subagent task the progress signal is the most recent message persisted on the
+subagent's own session — any generation, tool call or tool result counts. A task with no
+recorded subagent session is never considered stalled, so a missing signal cannot
+manufacture a kill.
+
+`backgroundTasks.stallThreshold` (default `30m`) sets the budget; `0` or any negative
+value disables detection entirely. **It must exceed the largest single tool-call budget
+reachable in the deployment**, because a subagent is legitimately silent for as long as
+its longest blocking call:
+
+| Blocking call | Ceiling |
+|---|---|
+| `bash` foreground | 10m hard cap |
+| MCP tool call | 5m default, raisable without limit via `callToolTimeoutSeconds` |
+| MCP transport start + handshake + close | 20s + 30s + 30s |
+| Provider retry backoff | ~10m over `maxRetries` (8) of exponential backoff, and unbounded when the provider sends a `Retry-After` that is honoured |
+
+The default clears the shipped ceilings with room to spare. If you raise an MCP server's
+`callToolTimeoutSeconds` at or above the stall threshold, raise the threshold too or
+healthy subagents will be killed mid-call — the runtime logs a warning naming any server
+in that state, so check the log after changing either value.
+
+Provider retry backoff is worth noting because it is completely silent: a subagent being
+rate-limited persists no message while it backs off. The default threshold clears the
+default backoff, but a proxy that returns a long `Retry-After` can exceed it.
+
+Stall detection covers the end-of-turn drain. It does **not** cover the anti-spin
+redirect (`internal/llm/tools/bash_wait.go`), which waits on the registry directly: a
+wedged subagent reached by a model self-poll is still bounded only by the surrounding
+ctx.
+
+A progress answer that cannot be obtained — a failed read of the subagent's session — is
+treated as unknown, never as a stale timestamp. Substituting one would read as a stall
+for any task already older than the threshold and kill healthy work on a single
+transient read failure.
+
+This is not a timeout on the wait. No task that is making progress is ever terminated,
+however long it has been running in total — see the note above that the surrounding
+`ctx` remains the only deadline on the wait itself.
+
 When the wait returns `ctx.Err()`, the runtime writes a synthetic Assistant text message into the session log enumerating the still-pending task IDs, kinds, `started_at` timestamps, `output_file` paths, and any descriptions. The message has `Synthetic: true` so the chat bridge skips it for outbound indicators; non-bridge consumers (transcript export, SSE replay, the model on any subsequent `agent.Run` on this session) observe it as ambient context.
 
 This means the model can react to a previous step's timeout when a flow is re-triggered. Without this, a re-run on the same session would replay the same dead-end work without knowing why the previous attempt stopped.

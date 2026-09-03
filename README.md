@@ -370,6 +370,20 @@ Optional per-server tuning:
 - `callToolTimeoutSeconds` — override the per-tool-call timeout (default 5 minutes). Raise it for slow servers.
 - `callToolMaxOutputBytes` — cap a single tool call's output kept in the model context (default `51200`, i.e. 50KB). Output beyond the cap is spilled to a temp file and replaced with a head+tail preview that points the agent at the file, which it can then `grep`/`read`/`sed`. This protects the context window from tools that return very large payloads (e.g. multi-MB CI build logs). Set a higher value to keep more inline, or a negative value to disable the cap entirely (unbounded — a single result can then overflow the context).
 
+Every wait on an MCP server is bounded, so a server that starts but never answers cannot park an agent turn:
+
+| Wait | Budget | Tunable |
+|---|---|---|
+| Transport start (`Start`) | 20s (SSE only — a stdio transport is started by its constructor, and streamable-HTTP never fails here) | no |
+| Protocol handshake (`initialize`) | 30s | no |
+| Tool call (`tools/call`) | 5 min | `callToolTimeoutSeconds` |
+| Client close | 30s, then the wait is abandoned | no |
+| Shared client-cache entry | 30s backstop | no |
+
+The handshake and cache budgets are deliberately not per-server tunable: `initialize` is one request/response with no work behind it, so a server that misses the budget is broken rather than slow. Only tool latency is genuinely server-specific. A blown budget surfaces as a normal tool error, so the agent can try another approach instead of hanging.
+
+The close budget matters because a stdio transport's `Close` blocks in `cmd.Wait()` honouring no context: a child that ignores stdin EOF would otherwise hold the agent turn immediately after its tool call had correctly timed out. On timeout the close is abandoned rather than the caller blocked, which leaks one goroutine and one child process per wedged server for the life of the process — deliberately, since leaking the turn is worse and the transport exposes no handle to signal the child.
+
 ### LSP
 
 OpenCode auto-detects and starts LSP servers for your project's languages. Over 30 servers are built-in with auto-install support. See the [full LSP guide](docs/lsp.md) for details.

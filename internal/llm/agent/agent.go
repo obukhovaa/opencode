@@ -1188,7 +1188,7 @@ OuterLoop:
 			"pending_count", len(pending),
 			"outer_cycle", outerCycles,
 		)
-		if err := drainSessionTasks(ctx, reg, sessionID); err != nil {
+		if err := drainSessionTasks(ctx, reg, sessionID, a.stallPolicy()); err != nil {
 			// ctx cancelled (timeout or upstream cancel). Inject the
 			// synthetic Assistant timeout note enumerating still-
 			// pending tasks so any subsequent agent.Run on this
@@ -1204,7 +1204,12 @@ OuterLoop:
 			)
 			break OuterLoop
 		}
-		// Wait completed — synthetic completions are in the message log.
+		// Wait completed. Synthetic completions are in the log on the normal
+		// path (EnqueueTaskCompletion writes the pair before MarkFinished), but
+		// NOT necessarily after a kill: Registry.Kill signals done before it
+		// cancels, so the pair may still be in flight. The reload below can
+		// therefore see nothing new and cost one extra cycle; struct_output
+		// survives regardless (declared outside OuterLoop).
 		// Reload, filter the empty-user-turn corruption, and let the
 		// inner loop run another cycle so the model can react.
 		freshMsgs, listErr := a.messages.List(ctx, sessionID)
@@ -1244,9 +1249,9 @@ OuterLoop:
 // wait window. Returns nil once drained, ctx.Err() on cancellation. The
 // loop cannot spin hot: a non-empty re-read means at least one running
 // task, and the next wait blocks on it.
-func drainSessionTasks(ctx context.Context, reg task.Registry, sessionID string) error {
+func drainSessionTasks(ctx context.Context, reg task.Registry, sessionID string, stalls stallPolicy) error {
 	for {
-		if err := reg.WaitForActiveTasks(ctx, sessionID, task.WaitOptions{IncludeMonitor: true}); err != nil {
+		if err := waitForTasksWithProgress(ctx, reg, sessionID, stalls); err != nil {
 			return err
 		}
 		remaining := reg.PendingForSession(sessionID, nil)
@@ -1259,6 +1264,207 @@ func drainSessionTasks(ctx context.Context, reg task.Registry, sessionID string)
 			"pending_count", len(remaining),
 		)
 	}
+}
+
+// drainProgressInterval is how often the non-interactive drain reports the
+// tasks it is still waiting on. A var, not a const, so tests can shorten it.
+var drainProgressInterval = 60 * time.Second
+
+// waitForTasksWithProgress is WaitForActiveTasks plus a periodic report of
+// what is still pending.
+//
+// Purely observability. The ticker NEVER shortens or ends the wait: per the
+// background-tasks spec the surrounding ctx is the sole deadline source, and a
+// future reader must not mistake this timer for a deadline. It exists because
+// the drain otherwise logs once on entry and then nothing, so a step legitimately
+// held open by a long task is indistinguishable in the log from a hung or dead
+// process — a production wedge once produced 1h50m of unbroken silence.
+func waitForTasksWithProgress(ctx context.Context, reg task.Registry, sessionID string, stalls stallPolicy) error {
+	opts := task.WaitOptions{IncludeMonitor: true}
+	// Nothing pending: the wait returns immediately, so no report is warranted.
+	if len(reg.PendingForSession(sessionID, nil)) == 0 {
+		return reg.WaitForActiveTasks(ctx, sessionID, opts)
+	}
+
+	// Buffered so the waiter goroutine can always finish even if we stop
+	// reading; we only leave this function once done has fired, and ctx
+	// cancellation makes WaitForActiveTasks return, so it cannot outlive us.
+	done := make(chan error, 1)
+	go func() { done <- reg.WaitForActiveTasks(ctx, sessionID, opts) }()
+
+	ticker := time.NewTicker(drainProgressInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ticker.C:
+			pending := reg.PendingForSession(sessionID, nil)
+			if len(pending) == 0 {
+				continue
+			}
+			stalls.killStalled(ctx, reg, pending)
+			logging.Info(
+				"Non-interactive drain: still waiting on background tasks",
+				"session_id", sessionID,
+				"pending_count", len(pending),
+				"pending", formatPendingTasks(pending),
+			)
+		}
+	}
+}
+
+// stallPolicy carries what the drain needs to judge a subagent stalled. Passed
+// in rather than reached for so the drain stays independent of the agent; the
+// zero value disables detection, which is what every non-agent caller wants.
+type stallPolicy struct {
+	threshold time.Duration
+	// lastProgress reports when the task last showed progress. The bool is
+	// "known": false means the probe could not answer, and an unknown answer
+	// MUST NOT be turned into a timestamp — a stale-looking one (StartedAt, or
+	// the zero time) reads as a stall for any task older than the threshold and
+	// would kill healthy long-running work on one failed read.
+	lastProgress func(context.Context, *task.Task) (time.Time, bool)
+}
+
+func (p stallPolicy) enabled() bool { return p.threshold > 0 && p.lastProgress != nil }
+
+// killStalled terminates pending subagent tasks whose LLM loop has
+// demonstrably stopped turning, so the drain can return for its ordinary reason
+// (every task terminal) instead of parking until the flow deadline.
+//
+// This is NOT a timeout on the wait: the wait still has no deadline of its own,
+// and no task that is making progress is ever terminated however long it runs.
+// It acts on task lifecycle, exactly as taskstop does.
+//
+// Scope is KindTask alone, by explicit kind check. bash and monitor tasks carry
+// a real *os.Process, so the OS already answers whether they are alive — and a
+// monitor polling an external source is SUPPOSED to sit silent until its
+// pattern matches, bounded by max_events / taskstop / process exit. Inferring
+// death from silence there would break the tool.
+func (p stallPolicy) killStalled(ctx context.Context, reg task.Registry, pending []*task.Task) {
+	if !p.enabled() {
+		return
+	}
+	for _, t := range pending {
+		if t.Kind != task.KindTask {
+			continue
+		}
+		if t.AgentSessionID == "" {
+			// The only site that registers a KindTask records this, so an empty
+			// value means that wiring regressed — which silently disables
+			// detection for the task. Skip it (a missing signal is never
+			// evidence of a stall) but say so, or the regression is invisible.
+			logging.Warn("Subagent task has no recorded session; skipping stall detection for it",
+				"task_id", t.ID, "parent_session_id", t.SessionID)
+			continue
+		}
+		last, known := p.lastProgress(ctx, t)
+		if !known {
+			continue
+		}
+		age := time.Since(last)
+		if age < p.threshold {
+			continue
+		}
+		if err := reg.Kill(t.ID); err != nil {
+			// Already terminal or gone: it finished between the pending
+			// snapshot and here, which is the benign race.
+			continue
+		}
+		logging.Warn(
+			"Killed stalled background task: no progress on its session past the threshold",
+			"task_id", t.ID,
+			"agent_session_id", t.AgentSessionID,
+			"parent_session_id", t.SessionID,
+			"last_progress_age", age.Round(time.Second),
+			"threshold", p.threshold,
+		)
+	}
+}
+
+// stallPolicy builds the drain's stall policy from config. A non-positive
+// configured threshold disables detection.
+func (a *agent) stallPolicy() stallPolicy {
+	threshold := config.Get().TaskStallThreshold()
+	warnUnsafeStallThreshold(threshold)
+	return stallPolicy{
+		threshold:    threshold,
+		lastProgress: a.lastSubagentProgress,
+	}
+}
+
+var stallThresholdWarnOnce sync.Once
+
+// warnUnsafeStallThreshold reports MCP servers whose per-call budget meets or
+// exceeds the stall threshold. A subagent is silent for the whole of a blocking
+// call, so such a server means healthy work gets killed mid-call — the one
+// constraint an operator has to hold, and otherwise enforced only by docs.
+func warnUnsafeStallThreshold(threshold time.Duration) {
+	if threshold <= 0 {
+		return
+	}
+	stallThresholdWarnOnce.Do(func() {
+		for name, m := range config.ResolveMCPServers() {
+			if budget := resolveCallToolTimeout(m); budget >= threshold {
+				logging.Warn(
+					"MCP call budget meets or exceeds the subagent stall threshold; healthy subagents may be killed mid-call — raise backgroundTasks.stallThreshold above it",
+					"server", name, "call_budget", budget, "stall_threshold", threshold,
+				)
+			}
+		}
+	})
+}
+
+// lastSubagentProgress reports when the subagent's session last showed signs of
+// life. Any persisted message counts — a generation, a tool call, or a tool
+// result — and UpdatedAt is preferred over CreatedAt because processEvent
+// updates the assistant row on every delta, so a long streaming generation
+// registers as progress rather than as silence.
+//
+// Returns known=false rather than a timestamp whenever it cannot answer. That
+// distinction is the safety property: a read error is not evidence of a stall,
+// and substituting StartedAt here would kill any healthy task already older
+// than the threshold the first time the session store hiccups — or the moment
+// the step ctx is cancelled and database/sql starts refusing queries.
+func (a *agent) lastSubagentProgress(ctx context.Context, t *task.Task) (time.Time, bool) {
+	msgs, err := a.messages.ListLatest(ctx, t.AgentSessionID, 1)
+	return progressFromMessages(msgs, err, t.StartedAt)
+}
+
+// progressFromMessages is the decision in lastSubagentProgress, split out so it
+// is testable without a session store — the inversion it guards against (an
+// unknown read reported as an old timestamp) is silent and kills healthy work,
+// so it needs direct coverage rather than coverage through a fake probe.
+func progressFromMessages(msgs []message.Message, err error, startedAt time.Time) (time.Time, bool) {
+	if err != nil || len(msgs) == 0 {
+		return time.Time{}, false
+	}
+	last := msgs[len(msgs)-1]
+	ts := last.UpdatedAt
+	if last.CreatedAt > ts {
+		ts = last.CreatedAt
+	}
+	if ts <= 0 {
+		return time.Time{}, false
+	}
+	// Clamp to StartedAt: clock skew or a backdated row must not age the task
+	// past the threshold on its own.
+	if progress := time.Unix(ts, 0); progress.After(startedAt) {
+		return progress, true
+	}
+	return startedAt, true
+}
+
+// formatPendingTasks renders pending tasks as "<id>(<kind>,age=<d>)" joined by
+// commas, for a single structured log field.
+func formatPendingTasks(pending []*task.Task) string {
+	parts := make([]string, 0, len(pending))
+	for _, t := range pending {
+		parts = append(parts, fmt.Sprintf("%s(%s,age=%s)",
+			t.ID, t.Kind, time.Since(t.StartedAt).Round(time.Second)))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // injectWaitTimeoutNote writes a synthetic Assistant text message into

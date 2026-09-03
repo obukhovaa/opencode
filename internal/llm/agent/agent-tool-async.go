@@ -76,6 +76,7 @@ func (b *agentTool) runAsync(
 	tk := &task.Task{
 		ID:                    taskID,
 		SessionID:             sessionID,
+		AgentSessionID:        taskSession.ID,
 		Kind:                  task.KindTask,
 		OutputPath:            outputPath,
 		OriginatingToolCallID: call.ID,
