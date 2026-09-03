@@ -1,0 +1,23 @@
+# Tasks
+
+- [x] `internal/langfuse/prompts.go`: `PromptRef`, `ResolvedPrompt`, `PromptOptions`, `PromptClient` over `GET /api/public/v2/prompts/{name}?label=…` with Basic auth; typed `ErrPromptNotFound` / `ErrPromptUnauthorized` / `ErrPromptEmpty` / `ErrPromptsDisabled`.
+- [x] Per-`(path,label)` TTL cache with a per-entry mutex (single-flight) and serve-stale-on-error; cold miss propagates.
+- [x] Text and chat payloads, flattened by JSON shape rather than by the `type` hint; `Warm` for best-effort pre-fetch; `InitPrompts` / `GetPrompts` globals with a usable nil receiver.
+- [x] `internal/config`: `LangfusePromptsConfig` (`enabled`, `label`, `cacheTTL`, `timeout`, `warmup`) under `LangfuseConfig`, duration accessors, `WarmupEnabled`; validation of durations and credentials, gated independently of `langfuse.enabled`.
+- [x] `internal/config`: `Agent.LangfusePromptPath` / `LangfusePromptLabel`, and shared `ValidateAgentPromptSource` called from `validateAgent`.
+- [x] `internal/flow`: `Step.LangfusePromptPath` / `LangfusePromptLabel`, `ErrInvalidPromptSource`, `validateStepPromptSource` in `validateFlow` (after `extends` merging).
+- [x] `internal/flow`: `PromptResolver` interface + `SetPromptResolver` + global-backed default; `resolveStepPrompt` called from `runStep` before `substituteScoped`, failures via `handleStepError`.
+- [x] `internal/agent`: `AgentInfo.LangfusePromptPath` / `LangfusePromptLabel`; markdown frontmatter validation (non-empty body + reference = error); merge exclusivity in `applyConfigOverrides` and `mergeMarkdownIntoExisting` so an entry never holds both sources.
+- [x] `internal/llm/agent/factory.go`: resolve a referencing agent's prompt in `NewAgent` on `context.Background()`; `internal/llm/agent/agent.go`: `providerOptions.basePrompt` + `withBasePrompt`; `internal/llm/prompt`: `AgentPromptOptions.BasePrompt` preferred over the registry lookup.
+- [x] `cmd/langfuse_prompts.go`: `initLangfusePrompts` + `collectPromptRefs`, called from `cmd/root.go` and `cmd/serve.go`; bounded, non-fatal warm-up.
+- [x] `cmd/schema/main.go` + regenerated `opencode-schema.json` for the agent keys and the `prompts` block.
+- [x] Unit tests: prompt client payload shapes, request shape (v2 path, escaped slashes, label query, Basic auth), default label, TTL caching, label as part of the cache key, serve-stale, cold-miss propagation, single-flight, disabled/nil client, warm-up dedupe and failure-swallowing (`internal/langfuse/prompts_test.go`).
+- [x] Unit tests: step prompt-source validation (both / neither / label-without-path / whitespace-only inline) and `resolveStepPrompt` (inline untouched, reference resolved, label passthrough, error naming step + path) (`internal/flow/langfuse_prompt_test.go`).
+- [x] Unit tests: markdown frontmatter reference + body rejection, label-without-path rejection, and prompt-source merge exclusivity in both directions (`internal/agent/langfuse_prompt_test.go`).
+- [x] Unit tests: `ValidateAgentPromptSource`, duration parsing, warm-up defaulting, telemetry validation, and viper binding of the camelCase keys through a real `config.Load` (`internal/config/config_langfuse_prompts_test.go`).
+- [x] Unit test: `BasePrompt` overrides the registry lookup, and its absence reproduces the built-in-fallback failure mode (`internal/llm/prompt/prompt_base_override_test.go`).
+- [x] Re-based two existing tests that pinned template-merge semantics through an empty prompt: include-precedence now pins whole replacement on `maxTurns`; the zero-value-override step declares its own prompt.
+- [x] Docs: `docs/flows.md` step-field table + "Langfuse-managed prompts"; `docs/telemetry.md` "Langfuse Prompt Management"; `README.md` agent-field table + "Langfuse-managed system prompts".
+- [x] `go build ./...`, `go vet ./...`, `gofmt -l` clean; full `go test ./...` shows no new failures (four pre-existing environment-driven failures confirmed against the base tree).
+- [ ] Verify end-to-end against a dev Langfuse: a labelled text prompt driving a flow step (with `${args.*}` substitution and trace linkage) and an agent type's system prompt; a UI edit reaching the next run with no deploy; an unreachable Langfuse serving the cached copy.
+- [ ] Confirm the target self-hosted Langfuse exposes `/api/public/v2/prompts` (version-dependent). Add a v1 fallback only if it does not.
