@@ -56,7 +56,7 @@ func TestDrainSessionTasks_TwoWaves(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	if err := drainSessionTasks(ctx, reg, sess); err != nil {
+	if err := drainSessionTasks(ctx, reg, sess, stallPolicy{}); err != nil {
 		t.Fatalf("drain returned error: %v", err)
 	}
 	elapsed := time.Since(start)
@@ -78,7 +78,7 @@ func TestDrainSessionTasks_EmptySession(t *testing.T) {
 	reg := newDrainRegistry(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	if err := drainSessionTasks(ctx, reg, "EMPTY"); err != nil {
+	if err := drainSessionTasks(ctx, reg, "EMPTY", stallPolicy{}); err != nil {
 		t.Fatalf("drain on empty session: %v", err)
 	}
 }
@@ -94,7 +94,7 @@ func TestDrainSessionTasks_CtxCancelPropagates(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	err := drainSessionTasks(ctx, reg, sess)
+	err := drainSessionTasks(ctx, reg, sess, stallPolicy{})
 	if err == nil {
 		t.Fatal("expected ctx error, got nil")
 	}
@@ -120,7 +120,7 @@ func TestDrainSessionTasks_IncludesMonitors(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	start := time.Now()
-	if err := drainSessionTasks(ctx, reg, sess); err != nil {
+	if err := drainSessionTasks(ctx, reg, sess, stallPolicy{}); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 	if elapsed := time.Since(start); elapsed < 100*time.Millisecond {
@@ -183,7 +183,7 @@ func TestDrainProgressLog(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := drainSessionTasks(ctx, reg, sess); err != nil {
+		if err := drainSessionTasks(ctx, reg, sess, stallPolicy{}); err != nil {
 			t.Fatalf("drain returned error: %v", err)
 		}
 
@@ -200,7 +200,7 @@ func TestDrainProgressLog(t *testing.T) {
 		logs := captureLogs(t)
 		reg := newDrainRegistry(t)
 
-		if err := drainSessionTasks(context.Background(), reg, "empty"); err != nil {
+		if err := drainSessionTasks(context.Background(), reg, "empty", stallPolicy{}); err != nil {
 			t.Fatalf("drain returned error: %v", err)
 		}
 		if strings.Contains(logs.String(), "still waiting on background tasks") {
@@ -220,7 +220,7 @@ func TestDrainProgressLog(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background()) // no deadline
 		done := make(chan error, 1)
-		go func() { done <- drainSessionTasks(ctx, reg, sess) }()
+		go func() { done <- drainSessionTasks(ctx, reg, sess, stallPolicy{}) }()
 
 		select {
 		case err := <-done:
@@ -238,4 +238,175 @@ func TestDrainProgressLog(t *testing.T) {
 			t.Fatal("drain did not return after ctx cancellation")
 		}
 	})
+}
+
+func registerKindTask(t *testing.T, reg task.Registry, kind task.Kind, sessionID, agentSessionID string, startedAt time.Time) string {
+	t.Helper()
+	id := task.NewTaskID(kind)
+	tk := &task.Task{
+		ID:             id,
+		SessionID:      sessionID,
+		AgentSessionID: agentSessionID,
+		Kind:           kind,
+		StartedAt:      startedAt,
+	}
+	if kind != task.KindTask {
+		tk.AgentSessionID = ""
+	}
+	if err := reg.Register(tk); err != nil {
+		t.Fatalf("register %s: %v", kind, err)
+	}
+	return id
+}
+
+// staleProgress is a stallPolicy whose progress probe always reports the task as
+// having last moved `age` ago.
+func staleProgress(threshold, age time.Duration) stallPolicy {
+	return stallPolicy{
+		threshold: threshold,
+		lastProgress: func(_ context.Context, _ *task.Task) time.Time {
+			return time.Now().Add(-age)
+		},
+	}
+}
+
+// TestKillStalledScope is the regression guard for the exemption that makes this
+// whole mechanism safe. A monitor spawns a script that polls an external source
+// without LLM calls and, by design, emits NOTHING until its pattern matches — so
+// silence is the healthy state, not evidence of death. Same for a background
+// bash running a long silent build. Both carry a real *os.Process, so the OS
+// already answers whether they are alive; only subagent tasks require inference.
+func TestKillStalledScope(t *testing.T) {
+	ctx := context.Background()
+	// Every task below looks maximally stale: an hour of silence against a
+	// one-minute threshold. Only the subagent may be killed.
+	policy := staleProgress(time.Minute, time.Hour)
+
+	exempt := []task.Kind{task.KindMonitor, task.KindBash, task.KindCron}
+	for _, kind := range exempt {
+		t.Run("exempt: "+string(kind), func(t *testing.T) {
+			reg := newDrainRegistry(t)
+			id := registerKindTask(t, reg, kind, "S", "", time.Now().Add(-time.Hour))
+
+			policy.killStalled(ctx, reg, reg.PendingForSession("S", nil))
+
+			got, _ := reg.Get(id)
+			if got.State() != task.StateRunning {
+				t.Errorf("%s task was killed on progress grounds (state=%v); silence is its healthy state", kind, got.State())
+			}
+		})
+	}
+
+	t.Run("subagent task is killed", func(t *testing.T) {
+		reg := newDrainRegistry(t)
+		id := registerKindTask(t, reg, task.KindTask, "S", "sub-1", time.Now().Add(-time.Hour))
+
+		policy.killStalled(ctx, reg, reg.PendingForSession("S", nil))
+
+		got, _ := reg.Get(id)
+		if got.State() != task.StateKilled {
+			t.Errorf("stalled subagent state = %v, want StateKilled", got.State())
+		}
+		select {
+		case <-got.Done():
+		default:
+			t.Error("kill did not signal the task's done channel")
+		}
+	})
+
+	t.Run("subagent with no recorded session is never killed", func(t *testing.T) {
+		reg := newDrainRegistry(t)
+		id := task.NewTaskID(task.KindTask)
+		// AgentSessionID deliberately empty — a task predating the field, or one
+		// whose session was never recorded. A missing signal must never be read
+		// as a stall.
+		if err := reg.Register(&task.Task{
+			ID: id, SessionID: "S", Kind: task.KindTask, StartedAt: time.Now().Add(-time.Hour),
+		}); err != nil {
+			t.Fatalf("register: %v", err)
+		}
+
+		policy.killStalled(ctx, reg, reg.PendingForSession("S", nil))
+
+		got, _ := reg.Get(id)
+		if got.State() != task.StateRunning {
+			t.Errorf("task with no AgentSessionID was killed (state=%v)", got.State())
+		}
+	})
+}
+
+func TestKillStalledThreshold(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("progressing task is never killed regardless of total runtime", func(t *testing.T) {
+		reg := newDrainRegistry(t)
+		// Running for a week, but moved a second ago.
+		id := registerKindTask(t, reg, task.KindTask, "S", "sub-1", time.Now().Add(-7*24*time.Hour))
+		policy := staleProgress(time.Minute, time.Second)
+
+		for range 5 {
+			policy.killStalled(ctx, reg, reg.PendingForSession("S", nil))
+		}
+
+		got, _ := reg.Get(id)
+		if got.State() != task.StateRunning {
+			t.Errorf("progressing task was killed (state=%v); only stalls may be terminated, never total runtime", got.State())
+		}
+	})
+
+	t.Run("disabled by a non-positive threshold", func(t *testing.T) {
+		reg := newDrainRegistry(t)
+		id := registerKindTask(t, reg, task.KindTask, "S", "sub-1", time.Now().Add(-time.Hour))
+
+		for _, threshold := range []time.Duration{0, -time.Minute} {
+			staleProgress(threshold, time.Hour).killStalled(ctx, reg, reg.PendingForSession("S", nil))
+			got, _ := reg.Get(id)
+			if got.State() != task.StateRunning {
+				t.Fatalf("threshold %v killed a task; non-positive must disable detection", threshold)
+			}
+		}
+	})
+
+	t.Run("nil progress probe disables detection", func(t *testing.T) {
+		reg := newDrainRegistry(t)
+		id := registerKindTask(t, reg, task.KindTask, "S", "sub-1", time.Now().Add(-time.Hour))
+
+		stallPolicy{threshold: time.Minute}.killStalled(ctx, reg, reg.PendingForSession("S", nil))
+
+		got, _ := reg.Get(id)
+		if got.State() != task.StateRunning {
+			t.Errorf("nil lastProgress killed a task (state=%v)", got.State())
+		}
+	})
+}
+
+// TestDrainReturnsAfterStallKill is the end-to-end point of the change: the
+// drain returns because every task is terminal, NOT because ctx was cancelled,
+// so the parent can re-cycle and the step completes with the struct_output it
+// already produced instead of parking to the flow deadline.
+func TestDrainReturnsAfterStallKill(t *testing.T) {
+	withDrainProgressInterval(t, 20*time.Millisecond)
+	reg := newDrainRegistry(t)
+	registerKindTask(t, reg, task.KindTask, "S", "sub-1", time.Now().Add(-time.Hour))
+
+	// No deadline: if the stall kill does not fire, this test hangs rather than
+	// passing for the wrong reason.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- drainSessionTasks(ctx, reg, "S", staleProgress(time.Minute, time.Hour)) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("drain returned %v, want nil (every-task-terminal path)", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("drain did not return after the stalled task should have been killed")
+	}
+
+	if pending := reg.PendingForSession("S", nil); len(pending) != 0 {
+		t.Errorf("pending after drain = %d, want 0", len(pending))
+	}
 }

@@ -1187,7 +1187,7 @@ OuterLoop:
 			"pending_count", len(pending),
 			"outer_cycle", outerCycles,
 		)
-		if err := drainSessionTasks(ctx, reg, sessionID); err != nil {
+		if err := drainSessionTasks(ctx, reg, sessionID, a.stallPolicy()); err != nil {
 			// ctx cancelled (timeout or upstream cancel). Inject the
 			// synthetic Assistant timeout note enumerating still-
 			// pending tasks so any subsequent agent.Run on this
@@ -1243,9 +1243,9 @@ OuterLoop:
 // wait window. Returns nil once drained, ctx.Err() on cancellation. The
 // loop cannot spin hot: a non-empty re-read means at least one running
 // task, and the next wait blocks on it.
-func drainSessionTasks(ctx context.Context, reg task.Registry, sessionID string) error {
+func drainSessionTasks(ctx context.Context, reg task.Registry, sessionID string, stalls stallPolicy) error {
 	for {
-		if err := waitForTasksWithProgress(ctx, reg, sessionID); err != nil {
+		if err := waitForTasksWithProgress(ctx, reg, sessionID, stalls); err != nil {
 			return err
 		}
 		remaining := reg.PendingForSession(sessionID, nil)
@@ -1273,7 +1273,7 @@ var drainProgressInterval = 60 * time.Second
 // the drain otherwise logs once on entry and then nothing, so a step legitimately
 // held open by a long task is indistinguishable in the log from a hung or dead
 // process — a production wedge once produced 1h50m of unbroken silence.
-func waitForTasksWithProgress(ctx context.Context, reg task.Registry, sessionID string) error {
+func waitForTasksWithProgress(ctx context.Context, reg task.Registry, sessionID string, stalls stallPolicy) error {
 	opts := task.WaitOptions{IncludeMonitor: true}
 	// Nothing pending: the wait returns immediately, so no report is warranted.
 	if len(reg.PendingForSession(sessionID, nil)) == 0 {
@@ -1297,6 +1297,7 @@ func waitForTasksWithProgress(ctx context.Context, reg task.Registry, sessionID 
 			if len(pending) == 0 {
 				continue
 			}
+			stalls.killStalled(ctx, reg, pending)
 			logging.Info(
 				"Non-interactive drain: still waiting on background tasks",
 				"session_id", sessionID,
@@ -1305,6 +1306,92 @@ func waitForTasksWithProgress(ctx context.Context, reg task.Registry, sessionID 
 			)
 		}
 	}
+}
+
+// stallPolicy carries what the drain needs to judge a subagent stalled. Passed
+// in rather than reached for so the drain stays independent of the agent; the
+// zero value disables detection, which is what every non-agent caller wants.
+type stallPolicy struct {
+	threshold    time.Duration
+	lastProgress func(context.Context, *task.Task) time.Time
+}
+
+func (p stallPolicy) enabled() bool { return p.threshold > 0 && p.lastProgress != nil }
+
+// killStalled terminates pending subagent tasks whose LLM loop has
+// demonstrably stopped turning, so the drain can return for its ordinary reason
+// (every task terminal) instead of parking until the flow deadline.
+//
+// This is NOT a timeout on the wait: the wait still has no deadline of its own,
+// and no task that is making progress is ever terminated however long it runs.
+// It acts on task lifecycle, exactly as taskstop does.
+//
+// Scope is KindTask alone, by explicit kind check. bash and monitor tasks carry
+// a real *os.Process, so the OS already answers whether they are alive — and a
+// monitor polling an external source is SUPPOSED to sit silent until its
+// pattern matches, bounded by max_events / taskstop / process exit. Inferring
+// death from silence there would break the tool.
+func (p stallPolicy) killStalled(ctx context.Context, reg task.Registry, pending []*task.Task) {
+	if !p.enabled() {
+		return
+	}
+	for _, t := range pending {
+		if t.Kind != task.KindTask || t.AgentSessionID == "" {
+			continue
+		}
+		age := time.Since(p.lastProgress(ctx, t))
+		if age < p.threshold {
+			continue
+		}
+		if err := reg.Kill(t.ID); err != nil {
+			// Already terminal or gone: it finished between the pending
+			// snapshot and here, which is the benign race.
+			continue
+		}
+		logging.Warn(
+			"Killed stalled background task: no progress on its session past the threshold",
+			"task_id", t.ID,
+			"agent_session_id", t.AgentSessionID,
+			"parent_session_id", t.SessionID,
+			"last_progress_age", age.Round(time.Second),
+			"threshold", p.threshold,
+		)
+	}
+}
+
+// stallPolicy builds the drain's stall policy from config. A non-positive
+// configured threshold disables detection.
+func (a *agent) stallPolicy() stallPolicy {
+	return stallPolicy{
+		threshold:    config.Get().TaskStallThreshold(),
+		lastProgress: a.lastSubagentProgress,
+	}
+}
+
+// lastSubagentProgress returns when the subagent's session last showed signs of
+// life. Any persisted message counts — a generation, a tool call, or a tool
+// result — and UpdatedAt is preferred over CreatedAt so a long streaming
+// generation also registers as progress.
+//
+// Falls back to StartedAt when the subagent has persisted nothing yet, and on a
+// read error, so a failed lookup can never manufacture a stall.
+func (a *agent) lastSubagentProgress(ctx context.Context, t *task.Task) time.Time {
+	msgs, err := a.messages.ListLatest(ctx, t.AgentSessionID, 1)
+	if err != nil || len(msgs) == 0 {
+		return t.StartedAt
+	}
+	last := msgs[len(msgs)-1]
+	ts := last.UpdatedAt
+	if last.CreatedAt > ts {
+		ts = last.CreatedAt
+	}
+	if ts <= 0 {
+		return t.StartedAt
+	}
+	if progress := time.Unix(ts, 0); progress.After(t.StartedAt) {
+		return progress
+	}
+	return t.StartedAt
 }
 
 // formatPendingTasks renders pending tasks as "<id>(<kind>,age=<d>)" joined by

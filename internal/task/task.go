@@ -101,8 +101,17 @@ func (s Status) IsTerminal() bool {
 // intended to be created by a tool's spawn path and handed to the global
 // Registry — the registry owns the lifetime.
 type Task struct {
-	ID                    string
-	SessionID             string
+	ID string
+	// SessionID is the PARENT session — the one that spawned this task and
+	// the key PendingForSession/ListBySession match on.
+	SessionID string
+	// AgentSessionID is the subagent's OWN session, set for KindTask only.
+	// It is the progress signal for stall detection: nothing else observes
+	// a subagent's LLM loop, so "has this session persisted a message
+	// recently" is the only evidence the loop is still turning. Empty for
+	// every other kind (and for a KindTask entry that predates this field),
+	// and an empty value is never treated as stalled.
+	AgentSessionID        string
 	Kind                  Kind
 	StartedAt             time.Time
 	OutputPath            string

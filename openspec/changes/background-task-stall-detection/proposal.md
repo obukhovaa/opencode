@@ -79,6 +79,8 @@ large enough to be safe is too large to be useful.
 - `docs/background-tasks.md`: the stall contract, the per-kind scope table, and the
   relationship between the threshold and the largest single tool-call budget.
 
-**Independent of `obukhovaa/opencode#45`.** Either can merge first. If stall detection
-lands first it will catch that unbounded handshake as a stalled task, which is the
-defence-in-depth the two changes are meant to provide together.
+**Stacked on `obukhovaa/opencode#45`.** The detection hook reuses that PR's drain
+progress ticker rather than adding a second timer, so this branch is based on it and #45
+merges first. The two changes stay conceptually independent — either would have
+shortened the incident alone, and together they give defence in depth: #45 removes the
+specific unbounded wait, this one catches whatever the next one turns out to be.
