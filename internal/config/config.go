@@ -233,6 +233,12 @@ type SessionProviderConfig struct {
 // DefaultSessionCleanupMaxAge is the default max age for session cleanup (30 days).
 const DefaultSessionCleanupMaxAge = 30 * 24 * time.Hour
 
+// DefaultTaskStallThreshold is the default subagent stall threshold. Chosen to
+// clear the largest single tool-call budget a healthy subagent can be silent
+// inside — 3x the bash foreground hard cap (10m) and 6x the default MCP
+// per-call budget (5m) — so no default deployment kills working tasks.
+const DefaultTaskStallThreshold = 30 * time.Minute
+
 // SessionCleanupConfig defines configuration for session cleanup.
 type SessionCleanupConfig struct {
 	// MaxAge is the maximum age of sessions before they are eligible for cleanup.
@@ -250,6 +256,45 @@ func (c *Config) SessionCleanupMaxAge() time.Duration {
 	if err != nil {
 		logging.Warn("invalid sessionCleanup.maxAge, using default", "value", c.SessionCleanup.MaxAge, "error", err, "default", DefaultSessionCleanupMaxAge)
 		return DefaultSessionCleanupMaxAge
+	}
+	return d
+}
+
+// BackgroundTasksConfig tunes background-task lifecycle policy.
+type BackgroundTasksConfig struct {
+	// StallThreshold is how long an async subagent task may persist no new
+	// message on its own session before the runtime treats it as stalled and
+	// kills it. Go duration string; "" uses DefaultTaskStallThreshold, and
+	// "0" (or any non-positive value) disables detection entirely.
+	//
+	// It MUST exceed the largest single tool-call budget reachable in the
+	// deployment, or healthy work gets killed mid-call: a subagent is
+	// legitimately silent for as long as its longest blocking tool call.
+	// Ceilings today are the bash foreground hard cap (10m) and the MCP
+	// per-call budget (5m by default but raisable without limit via
+	// mcpServers.<name>.callToolTimeoutSeconds).
+	//
+	// Applies to async subagent tasks only. bash and monitor tasks are
+	// process-backed, so their liveness is definitional rather than
+	// inferred — and a monitor polling an external source is SUPPOSED to sit
+	// silent until its pattern matches.
+	StallThreshold string `json:"stallThreshold,omitempty"`
+}
+
+// TaskStallThreshold returns the configured subagent stall threshold. A
+// non-positive configured value returns 0, which disables stall detection.
+func (c *Config) TaskStallThreshold() time.Duration {
+	if c.BackgroundTasks == nil || c.BackgroundTasks.StallThreshold == "" {
+		return DefaultTaskStallThreshold
+	}
+	d, err := time.ParseDuration(c.BackgroundTasks.StallThreshold)
+	if err != nil {
+		logging.Warn("invalid backgroundTasks.stallThreshold, using default",
+			"value", c.BackgroundTasks.StallThreshold, "error", err, "default", DefaultTaskStallThreshold)
+		return DefaultTaskStallThreshold
+	}
+	if d <= 0 {
+		return 0
 	}
 	return d
 }
@@ -356,19 +401,20 @@ type Config struct {
 	// /workspace/id/flows/fix-failing-tests.yaml → `id/fix-failing-tests`
 	// — so they can never collide with or shadow a built-in (slash-free)
 	// flow ID. See internal/flow/registry.go.
-	FlowPaths          []string              `json:"flowPaths,omitempty"`
-	TUI                TUIConfig             `json:"tui"`
-	Shell              ShellConfig           `json:"shell,omitempty"`
-	AutoCompact        bool                  `json:"autoCompact,omitempty"`
-	DisableLSPDownload bool                  `json:"disableLSPDownload,omitempty"`
-	SessionProvider    SessionProviderConfig `json:"sessionProvider,omitempty"`
-	Skills             *SkillsConfig         `json:"skills,omitempty"`
-	Permission         *PermissionConfig     `json:"permission,omitempty"`
-	WebSearch          *WebSearchConfig      `json:"webSearch,omitempty"`
-	MaxTurns           int                   `json:"maxTurns,omitempty"`
-	Telemetry          *TelemetryConfig      `json:"telemetry,omitempty"`
-	SessionCleanup     *SessionCleanupConfig `json:"sessionCleanup,omitempty"`
-	Router             *bridge.Config        `json:"router,omitempty"`
+	FlowPaths          []string               `json:"flowPaths,omitempty"`
+	TUI                TUIConfig              `json:"tui"`
+	Shell              ShellConfig            `json:"shell,omitempty"`
+	AutoCompact        bool                   `json:"autoCompact,omitempty"`
+	DisableLSPDownload bool                   `json:"disableLSPDownload,omitempty"`
+	SessionProvider    SessionProviderConfig  `json:"sessionProvider,omitempty"`
+	Skills             *SkillsConfig          `json:"skills,omitempty"`
+	Permission         *PermissionConfig      `json:"permission,omitempty"`
+	WebSearch          *WebSearchConfig       `json:"webSearch,omitempty"`
+	MaxTurns           int                    `json:"maxTurns,omitempty"`
+	Telemetry          *TelemetryConfig       `json:"telemetry,omitempty"`
+	SessionCleanup     *SessionCleanupConfig  `json:"sessionCleanup,omitempty"`
+	BackgroundTasks    *BackgroundTasksConfig `json:"backgroundTasks,omitempty"`
+	Router             *bridge.Config         `json:"router,omitempty"`
 	// Hooks is the Claude-Code-compatible PreToolUse / PostToolUse
 	// subprocess hook map. Keys are event names (`PreToolUse`,
 	// `PostToolUse`); values are matcher groups whose entries fire as

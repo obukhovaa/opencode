@@ -3,9 +3,7 @@
 ## Purpose
 
 Defines the per-process in-memory task registry that backs opencode's event-driven background work. Three tool families spawn background tasks — `bash run_in_background`, `task async`, and `monitor` — and the cron scheduler also produces synthetic completions through the same primitive. Every running task lives only in memory: opencode restart drops every in-flight task with no recovery. The registry is responsible for assigning unique `task_id`s of the form `<kind>_<base32(16-byte-random)>`, maintaining the strict `running → completed|failed|killed` state machine, owning the per-task output file at `<config.Data.Directory>/tasks/<task_id>.out`, sweeping orphan output files at boot, and gating duplicate terminal notifications via a per-task `notified atomic.Bool` flag.
-
 ## Requirements
-
 ### Requirement: Per-process in-memory task registry
 The system SHALL maintain a process-global, in-memory registry of background tasks keyed by `task_id`. The registry SHALL be the single source of truth for the lifecycle state of every running, completed, killed, or failed background task. The registry MUST NOT persist its contents to any durable store; opencode restart loses all in-flight tasks.
 
@@ -113,7 +111,20 @@ This guarantee MUST NOT be bypassable by model behavior. It is enforced through 
 
 2. **Anti-spin.** While the session has pending non-monitor background tasks (bash or task), the runtime SHALL NOT allow the model to consume wall-clock time in a foreground self-wait. The canonical case — a foreground `bash` command whose sole effect is to sleep — MUST be redirected to `WaitForActiveTasks` rather than executed as a sleep (see `bash-background-mode`). This ensures the guarantee holds even when the model never voluntarily emits a terminal turn but instead attempts to poll. (Long-lived monitors are excluded from the redirect; they are bounded by the end-of-turn drain above, not by a mid-turn sleep.)
 
-The wait MUST NOT impose its own timeout — the surrounding `ctx` is the sole deadline source. See `flow-runtime-resume` for how callers derive the ctx deadline from `Step.Timeout` and the `OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT` env var.
+The wait MUST NOT impose its own timeout: it never returns early on a task that is still pending, and the surrounding `ctx` is the only deadline it applies. See `flow-runtime-resume` for how callers derive the ctx deadline from `Step.Timeout` and the `OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT` env var.
+
+That bounds the *wait*. The hold on a `task`-kind entry may also end earlier because the task itself reached a terminal state, which `background-task-stall-detection` can bring about — so the deadline sources for the hold are `Step.Timeout`, `OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT`, and `backgroundTasks.stallThreshold`. No task that is making progress is ever terminated, regardless of total runtime, and `bash`, `monitor` and `cron` tasks are never terminated on progress grounds at all.
+
+While the non-interactive drain is waiting for pending background tasks, the runtime
+SHALL emit a periodic progress log at a fixed interval naming the tasks it is still
+waiting on — each task's `task_id`, `Kind`, and age — so that a drain holding a step
+open is distinguishable in the process log from a hung or dead process. The log SHALL
+NOT be emitted when the drain returns without waiting (zero pending tasks).
+
+The progress log is observability only. It MUST NOT terminate, shorten, or otherwise
+influence the wait, and a future reader MUST NOT mistake the interval timer for a
+deadline.
+
 
 #### Scenario: Flow step waits for background bash before returning struct_output
 
@@ -166,6 +177,50 @@ The wait MUST NOT impose its own timeout — the surrounding `ctx` is the sole d
 - **AND** the runtime MUST inject a synthetic Assistant timeout note into the session log
 - **AND** the outer agentic loop MUST break
 - **AND** `agent.RunWith` MUST return the latest `AgentEvent` (the pre-wait terminal turn)
+
+#### Scenario: Long drain is observable in the log
+
+- **GIVEN** a non-interactive step's agent has emitted its terminal turn with one
+  background task still running
+- **WHEN** the task remains running for several multiples of the progress interval
+- **THEN** the process log contains repeated progress entries naming that task's
+  `task_id`, `Kind`, and age
+- **AND** the drain does not return until the task reaches a terminal state or `ctx` is
+  cancelled
+
+#### Scenario: Progress log does not bound the wait
+
+- **GIVEN** a non-interactive drain is waiting on a task that never terminates
+- **AND** the surrounding `ctx` has no deadline
+- **WHEN** many progress intervals elapse
+- **THEN** the drain is still waiting
+- **AND** no timeout has been imposed by the drain itself
+
+#### Scenario: No progress log when nothing is pending
+
+- **WHEN** the drain is entered for a session with zero pending background tasks
+- **THEN** it returns immediately
+- **AND** no progress entry is logged
+
+#### Scenario: A stalled subagent task ends the hold without ctx cancellation
+
+- **GIVEN** a non-interactive step whose agent has emitted an accepted
+  `struct_output`
+- **AND** one pending `task`-kind entry that has made no progress for longer
+  than `backgroundTasks.stallThreshold`
+- **WHEN** the task is terminated as stalled
+- **THEN** the drain returns because every pending task is terminal, not because
+  `ctx` was cancelled
+- **AND** the outer loop re-enters the agentic loop as it does for any other
+  terminal task
+
+#### Scenario: An exempt pending task still holds the turn indefinitely
+
+- **GIVEN** stall detection is enabled
+- **AND** the only pending task is a `monitor` whose pattern has not matched
+- **AND** the surrounding `ctx` has no deadline
+- **THEN** the wait does not return until that monitor reaches a terminal state
+- **AND** the drain imposes no deadline of its own upon it
 
 ### Requirement: Task registry exposes a wait primitive
 
@@ -239,3 +294,4 @@ This is defense-in-depth: the anti-spin enforcement (see the hold-the-turn requi
 - **THEN** the ack MAY include the `output_file` path for resume/inspection semantics
 - **AND** the ack MUST NOT instruct or imply that the agent should read the output file to poll for progress
 - **AND** the ack MUST state that in a non-interactive step the runtime holds the turn until the subagent completes
+

@@ -595,6 +595,20 @@ func generateSchema() map[string]any {
 		"additionalProperties": false,
 	}
 
+	// Add background-task configuration
+	schema["properties"].(map[string]any)["backgroundTasks"] = map[string]any{
+		"type":        "object",
+		"description": "Background-task lifecycle policy",
+		"properties": map[string]any{
+			"stallThreshold": map[string]any{
+				"type":        "string",
+				"description": "How long an async subagent task may persist no new message on its own session before the runtime treats it as stalled and kills it, letting the step complete instead of parking until the flow deadline. Go duration string; \"0\" or any non-positive value disables detection. MUST exceed the largest single tool-call budget in the deployment (bash foreground hard cap 10m; MCP per-call budget 5m by default, raisable without limit via mcpServers.<name>.callToolTimeoutSeconds) or healthy subagents are killed mid-call. Applies to subagent tasks only — bash and monitor tasks are process-backed and a monitor is supposed to sit silent until its pattern matches. Defaults to \"30m\".",
+				"default":     "30m",
+			},
+		},
+		"additionalProperties": false,
+	}
+
 	// Add skills configuration
 	schema["properties"].(map[string]any)["skills"] = map[string]any{
 		"type":        "object",
