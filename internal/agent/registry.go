@@ -36,13 +36,25 @@ type AgentInfo struct {
 	ReasoningEffort string           `yaml:"reasoningEffort,omitempty"`
 	TaskBudget      int64            `yaml:"taskBudget,omitempty"`
 	Prompt          string           `yaml:"-"`
-	Skills          []string         `yaml:"skills,omitempty"`
-	Permission      map[string]any   `yaml:"permission,omitempty"`
-	Tools           map[string]bool  `yaml:"tools,omitempty"`
-	DeferredTools   map[string]bool  `yaml:"deferredTools,omitempty"`
-	Output          *Output          `yaml:"output,omitempty"`
-	Location        string           `yaml:"-"`
-	ParallelToolUse *bool            `yaml:"parallelToolUse,omitempty"`
+	// LangfusePromptPath references this agent's system prompt in Langfuse
+	// Prompt Management instead of carrying its text. For a markdown agent
+	// it is a frontmatter key and the body must be empty — the body IS the
+	// inline prompt, so a non-empty one is the mutual-exclusivity error.
+	//
+	// Unlike Prompt this IS a YAML field: it is authored in frontmatter,
+	// whereas Prompt is assembled from the body.
+	LangfusePromptPath string `yaml:"langfusePromptPath,omitempty"`
+	// LangfusePromptLabel selects which labelled version of
+	// LangfusePromptPath to resolve. Empty means the configured default
+	// ("production"). Only legal alongside LangfusePromptPath.
+	LangfusePromptLabel string          `yaml:"langfusePromptLabel,omitempty"`
+	Skills              []string        `yaml:"skills,omitempty"`
+	Permission          map[string]any  `yaml:"permission,omitempty"`
+	Tools               map[string]bool `yaml:"tools,omitempty"`
+	DeferredTools       map[string]bool `yaml:"deferredTools,omitempty"`
+	Output              *Output         `yaml:"output,omitempty"`
+	Location            string          `yaml:"-"`
+	ParallelToolUse     *bool           `yaml:"parallelToolUse,omitempty"`
 	// Interactive is set in-memory by AgentFactory.NewAgent when the
 	// agent is being constructed for a flow step with `interactive: true`.
 	// NOT persisted via YAML — agent-level interactiveness is derived
@@ -442,8 +454,19 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 		if agentCfg.Color != "" {
 			existing.Color = agentCfg.Color
 		}
+		// A prompt source overrides the whole source, not just its own
+		// field: a JSON agent that switches an existing markdown agent to
+		// a Langfuse reference must clear the inherited body, or the
+		// registry would carry both and the reference would look ignored.
 		if agentCfg.Prompt != "" {
 			existing.Prompt = agentCfg.Prompt
+			existing.LangfusePromptPath = ""
+			existing.LangfusePromptLabel = ""
+		}
+		if agentCfg.LangfusePromptPath != "" {
+			existing.LangfusePromptPath = agentCfg.LangfusePromptPath
+			existing.LangfusePromptLabel = agentCfg.LangfusePromptLabel
+			existing.Prompt = ""
 		}
 		if agentCfg.Hidden {
 			existing.Hidden = true
@@ -518,8 +541,17 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 	if md.TaskBudget > 0 {
 		existing.TaskBudget = md.TaskBudget
 	}
+	// As in applyConfigOverrides: a prompt source replaces the source, so
+	// the two can never both be set on one registry entry.
 	if md.Prompt != "" {
 		existing.Prompt = md.Prompt
+		existing.LangfusePromptPath = ""
+		existing.LangfusePromptLabel = ""
+	}
+	if md.LangfusePromptPath != "" {
+		existing.LangfusePromptPath = md.LangfusePromptPath
+		existing.LangfusePromptLabel = md.LangfusePromptLabel
+		existing.Prompt = ""
 	}
 	if md.Permission != nil {
 		existing.Permission = mergePermissions(existing.Permission, md.Permission)
@@ -743,6 +775,15 @@ func parseAgentMarkdown(path string) (*AgentInfo, error) {
 	agent.ID = baseName
 	if agent.Name == "" {
 		agent.Name = baseName
+	}
+	// For a markdown agent the body IS the inline prompt, so "declared
+	// both" reads as "frontmatter names a Langfuse prompt AND the file has
+	// a body". Reject it here rather than picking one: a file carrying
+	// both is a half-finished migration, and silently running the body
+	// would make the reference look broken on the Langfuse side.
+	if err := config.ValidateAgentPromptSource(baseName, strings.TrimSpace(body) != "",
+		agent.LangfusePromptPath, agent.LangfusePromptLabel); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	agent.Prompt = body
 	agent.Location = path

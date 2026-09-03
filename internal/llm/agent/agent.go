@@ -241,6 +241,7 @@ func newAgent(
 		withInteractive(agentInfo.Interactive),
 		withBoundPeers(agentInfo.BoundPeers),
 		withHasOutputSchema(agentInfo.Output != nil && agentInfo.Output.Schema != nil),
+		withBasePrompt(agentInfo.Prompt),
 	)
 	if err != nil {
 		return nil, err
@@ -2618,6 +2619,13 @@ type providerOptions struct {
 	// it), so — exactly like `interactive` — this presence bit must be
 	// threaded through explicitly.
 	hasOutputSchema bool
+	// basePrompt carries the agent's resolved system prompt when it was
+	// fetched from Langfuse Prompt Management. The registry entry for such
+	// an agent holds only the reference, so — exactly like
+	// `hasOutputSchema` — the resolved text must be threaded through
+	// explicitly or the prompt builder falls back to a built-in default.
+	// Empty for every agent whose prompt is inline or built in.
+	basePrompt string
 }
 
 type providerOption func(*providerOptions)
@@ -2652,6 +2660,16 @@ func withBoundPeers(peers []bridge.PeerRef) providerOption {
 func withHasOutputSchema(b bool) providerOption {
 	return func(o *providerOptions) {
 		o.hasOutputSchema = b
+	}
+}
+
+// withBasePrompt carries a system prompt resolved outside the registry —
+// today, one fetched from Langfuse Prompt Management by
+// AgentFactory.NewAgent — through to prompt.AgentPromptOptions.BasePrompt.
+// Empty is the normal case and changes nothing.
+func withBasePrompt(s string) providerOption {
+	return func(o *providerOptions) {
+		o.basePrompt = s
 	}
 }
 
@@ -2755,6 +2773,7 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 			Interactive:     popts.interactive,
 			BoundPeers:      popts.boundPeers,
 			HasOutputSchema: popts.hasOutputSchema,
+			BasePrompt:      popts.basePrompt,
 		})),
 		provider.WithMaxTokens(maxTokens),
 	}

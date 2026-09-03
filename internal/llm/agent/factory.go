@@ -11,6 +11,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/hooks"
+	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp"
@@ -222,6 +223,27 @@ func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchem
 	}
 
 	infoCopy := info
+	// Resolve a Langfuse-managed system prompt here rather than at registry
+	// load, so an edit made in the Langfuse UI reaches the next agent built
+	// from this definition — bounded by the client's cache TTL — instead of
+	// waiting for a process restart. That is the whole point of managing
+	// the prompt outside the image.
+	//
+	// Deliberately NOT on the caller's ctx: agent construction is
+	// context-free by design (see the doc comment above), so a
+	// request-scoped cancellation cannot half-build an agent. The fetch is
+	// bounded by the prompt client's own timeout.
+	if infoCopy.LangfusePromptPath != "" {
+		resolved, err := langfuse.GetPrompts().Resolve(context.Background(),
+			infoCopy.LangfusePromptPath, infoCopy.LangfusePromptLabel)
+		if err != nil {
+			return nil, fmt.Errorf("agent %q: resolving langfusePromptPath %q: %w",
+				agentID, infoCopy.LangfusePromptPath, err)
+		}
+		infoCopy.Prompt = resolved.Text
+		logging.Debug("Resolved agent prompt from Langfuse",
+			"agent", agentID, "path", resolved.Path, "label", resolved.Label, "version", resolved.Version)
+	}
 	if outputSchema != nil {
 		infoCopy.Output = &agentregistry.Output{Schema: outputSchema}
 	}
