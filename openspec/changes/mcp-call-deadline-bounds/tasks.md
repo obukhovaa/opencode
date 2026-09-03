@@ -103,10 +103,10 @@
 ## 7. Verification against the original incident
 
 - [ ] 7.1 Reproduce the production signature locally with a stub stdio MCP server that
-  completes `Start` but never answers `Initialize`; confirm pre-fix the tool part
-  persists as `status: running` with `started: null` and the call never returns, and
-  post-fix the call fails within the budget with the tool part reaching a terminal
-  state
+  completes `Start` but never answers `Initialize`; confirm pre-fix the call never
+  returns and the child process outlives it, and post-fix the call fails within the
+  budget with the tool part reaching a terminal state. This is also what would settle
+  the blocked frame directly, which the incident evidence could only pin by elimination
 
 - [ ] 7.2 Confirm no MCP server child process and no zombie remains after the
   reproduction run

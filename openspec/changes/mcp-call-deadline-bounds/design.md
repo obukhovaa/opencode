@@ -145,12 +145,19 @@ cheap to bound directly.
 
 The signature of this failure, for whoever hits the next variant:
 
-- A persisted tool part with `status: running` **and `started: null`** means the block
-  is upstream of invocation — so the `callToolTimeoutSeconds` budget was never in play.
-  A slow tool looks different: it has a start timestamp.
-- An MCP child process still alive long after its call proves `runTool` never returned.
+- `status: running` on a persisted tool part means only "the model finished streaming
+  the call and no result has come back" (`resolveToolStatus`, `internal/api/convert_message.go`).
+  It says nothing about whether execution began, so it does not by itself locate the
+  block. Do NOT reach for a `started` / `state.time.start` field to settle that — the API
+  model (`APIToolState`, `internal/api/types.go`) carries no timestamps at all, and a jq
+  path into one returns a null that reads like evidence and is not. This cost a wrong
+  root-cause claim on GENAI-270 before the process evidence below corrected it.
+- An MCP child process still alive long after its call is the load-bearing evidence: it
+  proves `runTool` never returned, because `mcpTool.Run` closes via `defer c.Close()`.
   `ls -l /proc/<pid>/fd` on a mute stdio server shows fd 1 on `/dev/null` with no pipe
-  write-end while opencode still holds the read end.
+  write-end while opencode still holds the read end. From there the block is pinned by
+  elimination — inside `runTool` the only waits are `Initialize` (unbounded) and
+  `CallTool` (bounded, so it would have returned) — not by direct observation.
 - `/debug/pprof` is **not** registered on the opencode API (404 even authenticated), so
   a goroutine dump is unavailable on a live pod and `SIGQUIT` would kill the job. The
   usable substitute is the API itself: Basic auth with `OPENCODE_SERVER_PASSWORD`, then

@@ -22,8 +22,8 @@ Every MCP tool invocation runs `StartClient` (bounded 20s), then `Initialize`
 so a server that accepts a request and never replies parks the calling goroutine for
 the life of the process.
 
-That is exactly what happened. An `mcp-atlassian` child process spawned at 06:07:18
-was still alive 1h50m later — `mcpTool.Run` does `StartClient` with a
+That is what happened, and the attribution is by elimination rather than from a stack.
+An `mcp-atlassian` child process spawned at 06:07:18 was still alive 1h50m later — `mcpTool.Run` does `StartClient` with a
 `defer c.Close()`, so a live child process is proof that `runTool` never returned. The
 process had no writable channel back to opencode: its fd 1 (stdout, the MCP response
 channel) pointed at `/dev/null` with no pipe write-end anywhere in its fd table, while
@@ -33,8 +33,9 @@ opencode still held the read end. The pod had logged
 Two properties turned one wedged call into a multi-hour job hang:
 
 1. **The wedge is invisible to the existing 5-minute budget.** Both tool parts stayed
-   persisted as `status: running` with **`started: null`** — they never reached
-   `CallTool`, so `mcpCallToolTimeout` never applied.
+   persisted as `status: running` — the model had finished streaming the calls and no
+   result ever came back. The block sits upstream of `CallTool`, so
+   `mcpCallToolTimeout` never applied.
 
 2. **The wedge is load-bearing for the whole step.** The wedged calls belonged to an
    async `task` subagent, so the subagent never reached a terminal state, so the

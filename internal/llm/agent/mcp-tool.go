@@ -608,8 +608,7 @@ func runTool(ctx context.Context, c MCPClient, toolName string, input string, ca
 	// work behind it, so a server that has not answered within mcpInitTimeout is
 	// broken rather than slow. Unbounded, a server that starts but never replies
 	// parks the caller for the life of the process, and callTimeout below never
-	// applies because CallTool is never reached — the wedge shows up only as a
-	// tool part stuck at status=running with no start timestamp.
+	// applies because CallTool is never reached.
 	//
 	// cancelInit is called explicitly, not deferred: a defer would hold the timer
 	// across the up-to-callTimeout CallTool that follows.
