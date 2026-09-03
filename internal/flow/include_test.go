@@ -152,7 +152,7 @@ flow:
       maxIterations: 0
       timeout: ""
       agent: ""
-      prompt: ""
+      prompt: "own prompt"
       session:
         fork: false
     - id: inherit-all
@@ -195,8 +195,8 @@ flow:
 		if zero.Agent != "" {
 			t.Errorf("explicit agent: \"\" → Agent = %q, want empty", zero.Agent)
 		}
-		if zero.Prompt != "" {
-			t.Errorf("explicit prompt: \"\" → Prompt = %q, want empty", zero.Prompt)
+		if zero.Prompt != "own prompt" {
+			t.Errorf("explicit prompt → Prompt = %q, want own prompt", zero.Prompt)
 		}
 	})
 
@@ -465,6 +465,19 @@ func TestTemplateKeyRule_TwoPart(t *testing.T) {
 					t.Errorf("Compact = %#v", s.Compact)
 				}
 			}},
+			"langfusePromptPath": {"  langfusePromptPath: flows/x/main\n", func(t *testing.T, s Step) {
+				if s.LangfusePromptPath != "flows/x/main" {
+					t.Errorf("LangfusePromptPath = %q", s.LangfusePromptPath)
+				}
+			}},
+			// The label is only legal alongside a path, so this sample
+			// necessarily declares both — it still proves the label key
+			// itself is inheritable.
+			"langfusePromptLabel": {"  langfusePromptPath: flows/x/main\n  langfusePromptLabel: staging\n", func(t *testing.T, s Step) {
+				if s.LangfusePromptLabel != "staging" {
+					t.Errorf("LangfusePromptLabel = %q", s.LangfusePromptLabel)
+				}
+			}},
 		}
 
 		// Coverage guard: the rule admits every step field, so a field
@@ -487,15 +500,22 @@ func TestTemplateKeyRule_TwoPart(t *testing.T) {
 				root := t.TempDir()
 				setIncludeWorkspace(t, root)
 				writeIncludeFile(t, filepath.Join(root, "steps", "t.yaml"), ".t:\n"+sample.yaml)
+				// Every step needs exactly one prompt source, so `main`
+				// carries an inline one — except when the sample under
+				// test IS the prompt source, where a second one would be
+				// the mutual-exclusivity error (and would override the
+				// template value this subtest is checking).
+				mainStep := "    - id: main\n      extends: [\".t\"]\n"
+				if !strings.HasPrefix(key, "langfusePrompt") && key != "prompt" {
+					mainStep += "      prompt: baseline\n"
+				}
 				flowPath := writeIncludeFile(t, filepath.Join(root, "flows", "x.yaml"), `name: X
 description: d
 include:
   - local: steps/t.yaml
 flow:
   steps:
-    - id: main
-      extends: [".t"]
-    - id: other
+`+mainStep+`    - id: other
       prompt: o
 `)
 				f, err := parseFlowFile(flowPath)
@@ -1117,8 +1137,8 @@ flow:
 func TestParseFlowFile_DuplicateTemplateLastIncludeWins(t *testing.T) {
 	root := t.TempDir()
 	setIncludeWorkspace(t, root)
-	writeIncludeFile(t, filepath.Join(root, "steps", "first.yaml"), ".dup:\n  agent: first-agent\n  prompt: first\n")
-	writeIncludeFile(t, filepath.Join(root, "steps", "second.yaml"), ".dup:\n  agent: second-agent\n")
+	writeIncludeFile(t, filepath.Join(root, "steps", "first.yaml"), ".dup:\n  agent: first-agent\n  prompt: first\n  maxTurns: 9\n")
+	writeIncludeFile(t, filepath.Join(root, "steps", "second.yaml"), ".dup:\n  agent: second-agent\n  prompt: second\n")
 
 	flowPath := writeIncludeFile(t, filepath.Join(root, "flows", "dup.yaml"), `name: Dup
 description: d
@@ -1139,9 +1159,13 @@ flow:
 		t.Errorf("Agent = %q, want second-agent (the LAST include's definition wins)", step.Agent)
 	}
 	// Redefinition replaces the template wholly: the second `.dup`
-	// declares no prompt, so nothing supplies one.
-	if step.Prompt != "" {
-		t.Errorf("Prompt = %q, want empty — the later template redefines `.dup` and declares no prompt", step.Prompt)
+	// declares no maxTurns, so nothing supplies one — the first
+	// definition's 9 must NOT survive.
+	if step.MaxTurns != 0 {
+		t.Errorf("MaxTurns = %d, want 0 — the later template redefines `.dup` and declares no maxTurns", step.MaxTurns)
+	}
+	if step.Prompt != "second" {
+		t.Errorf("Prompt = %q, want second (the LAST include's definition wins)", step.Prompt)
 	}
 }
 
