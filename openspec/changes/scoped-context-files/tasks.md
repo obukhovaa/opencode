@@ -144,7 +144,7 @@
 
 ## 6. Progressive disclosure: wrapper and activation
 
-- [ ] 6.1 Implement `contextDisclosureWrapper` in `internal/llm/agent/tools.go`:
+- [x] 6.1 Implement `contextDisclosureWrapper` in `internal/llm/agent/tools.go`:
   wraps `read`, `write`, `edit`, `multiedit`, `patch`, `grep`, `glob`, `ls` tools
   only when `discoveryResult` is non-empty (`delete` is deliberately not a trigger:
   removing files is not working-within-a-subtree that benefits from its
@@ -154,7 +154,7 @@
   pointer — mirroring the shared `deferSeq` counter (`WrapDeferred`, deferred.go:33);
   delegates all `BaseTool` interface methods to the inner tool
 
-- [ ] 6.2 Extend the existing `tools.ExtractPathsFromCall`
+- [x] 6.2 Extend the existing `tools.ExtractPathsFromCall`
   (`internal/llm/tools/tools.go:167`) rather than writing greenfield helpers — it
   already parses `patch` paths from `patch_text` section headers (via
   `diff.IdentifyFilesNeeded`/`IdentifyFilesAdded`) and the generic `file_path`/`path`
@@ -162,12 +162,12 @@
   `glob` combines `path` and the literal directory prefix of the pattern; file-taking
   tools (`read`/`write`/`edit`/`multiedit`) derive the parent directory of `file_path`
 
-- [ ] 6.3 Implement owner resolution in `contextfile/discovery.go`:
+- [x] 6.3 Implement owner resolution in `contextfile/discovery.go`:
   `OwnersForPath(dir string, discovered []string, workDir string) []string` — walks
   upward from `dir` to (excluding) `workDir`, returns nested files whose owning
   directory is on the path, outermost-first
 
-- [ ] 6.4 Wire the wrapper into `NewToolSet` (`internal/llm/agent/tools.go`): after
+- [x] 6.4 Wire the wrapper into `NewToolSet` (`internal/llm/agent/tools.go`): after
   the discovery walk result is available (cached call), wrap the trigger tools
   INSIDE deferral — `maybeDefer(maybeWrapDisclosure(t))` — so `*tools.DeferredWrapper`
   stays outermost and the four existing type assertions (anthropic.go:588,
@@ -176,7 +176,7 @@
   created once per toolset in `NewToolSet` (per-toolset, not per-wrapper, not a
   global)
 
-- [ ] 6.5 Add unit tests for the wrapper: first read into `services/auth/` triggers
+- [x] 6.5 Add unit tests for the wrapper: first read into `services/auth/` triggers
   injection of `services/auth/AGENTS.md`; second read does not re-inject; cross-tool
   dedup — a `read` fires the injection and a `grep` on the same directory does not
   re-inject (exercises the shared per-toolset state); outermost-

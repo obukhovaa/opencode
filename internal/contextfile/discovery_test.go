@@ -180,3 +180,57 @@ func TestRenderManifest(t *testing.T) {
 		assert.LessOrEqual(t, len(tiny), len(pathsOnly)-1)
 	})
 }
+
+func TestOwnersForPath(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	servicesFile := filepath.Join(root, "services", "AGENTS.md")
+	servicesClaude := filepath.Join(root, "services", "CLAUDE.md")
+	authFile := filepath.Join(root, "services", "auth", "AGENTS.md")
+	billingFile := filepath.Join(root, "services", "billing", "AGENTS.md")
+	discovered := []string{servicesFile, servicesClaude, authFile, billingFile}
+
+	tests := []struct {
+		name string
+		dir  string
+		want []string
+	}{
+		{
+			name: "target dir equal to an owning dir",
+			dir:  filepath.Join(root, "services", "auth"),
+			want: []string{servicesFile, servicesClaude, authFile},
+		},
+		{
+			name: "target dir strictly inside an owning dir, outermost first",
+			dir:  filepath.Join(root, "services", "auth", "internal"),
+			want: []string{servicesFile, servicesClaude, authFile},
+		},
+		{
+			name: "sibling subtree owners are not collected",
+			dir:  filepath.Join(root, "services", "billing"),
+			want: []string{servicesFile, servicesClaude, billingFile},
+		},
+		{
+			name: "workDir itself owns nothing",
+			dir:  root,
+			want: nil,
+		},
+		{
+			name: "dir outside workDir owns nothing",
+			dir:  filepath.Join(filepath.Dir(root), "elsewhere"),
+			want: nil,
+		},
+		{
+			name: "dir on an ownerless path owns nothing",
+			dir:  filepath.Join(root, "docs"),
+			want: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, OwnersForPath(tt.dir, discovered, root))
+		})
+	}
+}

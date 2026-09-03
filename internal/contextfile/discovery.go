@@ -47,9 +47,11 @@ func DefaultDiscoveryConfig() DiscoveryConfig {
 	}
 }
 
-// withDefaults fills unset (zero) caps so a config that sets only
-// `enabled: true` still gets bounded discovery.
-func (c DiscoveryConfig) withDefaults() DiscoveryConfig {
+// WithDefaults fills unset (zero) caps so a config that sets only
+// `enabled: true` still gets bounded discovery. Exported for the
+// progressive-disclosure wrapper, which enforces MaxFileBytes and
+// MaxSessionBytes at activation time.
+func (c DiscoveryConfig) WithDefaults() DiscoveryConfig {
 	if c.MaxFiles <= 0 {
 		c.MaxFiles = DefaultDiscoveryMaxFiles
 	}
@@ -128,7 +130,7 @@ func Discover(workDir string, globalPaths []string, cfg DiscoveryConfig) Discove
 		if cached, ok := discoveryCache.Load(workDir); ok {
 			return cached, nil
 		}
-		res := walkForContextFiles(workDir, globalPaths, cfg.withDefaults())
+		res := walkForContextFiles(workDir, globalPaths, cfg.WithDefaults())
 		discoveryCache.Store(workDir, res)
 		return res, nil
 	})
@@ -220,4 +222,46 @@ func walkForContextFiles(workDir string, globalPaths []string, cfg DiscoveryConf
 		return nil
 	})
 	return res
+}
+
+// OwnersForPath returns the discovered nested context files whose owning
+// directory lies on the upward path from dir to (but excluding) workDir,
+// outermost-first — reproducing Claude Code's additive layering without
+// mutating the system prompt (design D8). A dir equal to workDir (or
+// outside it) owns nothing: the nested set is strictly below the root, so
+// e.g. a grep with no path argument — which resolves to workDir — never
+// activates anything. Files sharing one owning directory keep their
+// discovery (lexical) order.
+func OwnersForPath(dir string, discovered []string, workDir string) []string {
+	root := filepath.Clean(workDir)
+	cur := filepath.Clean(dir)
+	if cur == root || !strings.HasPrefix(cur, root+string(os.PathSeparator)) {
+		return nil
+	}
+	byDir := make(map[string][]string, len(discovered))
+	for _, f := range discovered {
+		d := filepath.Dir(f)
+		byDir[d] = append(byDir[d], f)
+	}
+	// Collected innermost-first while walking up; emitted in reverse so
+	// the outermost layer's files come first.
+	var levels [][]string
+	for cur != root {
+		if files, ok := byDir[cur]; ok {
+			levels = append(levels, files)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// Hit the filesystem root without meeting workDir — the
+			// prefix check above makes this unreachable, but guard
+			// against an infinite loop regardless.
+			return nil
+		}
+		cur = parent
+	}
+	var owners []string
+	for i := len(levels) - 1; i >= 0; i-- {
+		owners = append(owners, levels[i]...)
+	}
+	return owners
 }
