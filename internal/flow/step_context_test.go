@@ -104,6 +104,8 @@ flow:
   steps:
     - id: inherits
       extends: [".runtime"]
+    - id: inherits2
+      extends: [".runtime"]
     - id: overrides
       extends: [".runtime"]
       context:
@@ -133,15 +135,22 @@ flow:
 		t.Fatalf("overriding context = %+v, want paths [AGENTS.custom.md] mode append", overrides.Context)
 	}
 
-	// Inherited values must be deep-copied: mutating one step's inherited
-	// context must not leak into a sibling flow load from the shared cache.
-	inherits.Context.Paths[0] = "MUTATED.md"
-	f2, err := parseFlowFile(flowPath)
-	if err != nil {
-		t.Fatalf("parseFlowFile() second load error: %v", err)
+	// Inherited values must be deep-copied WITHIN one parse: two steps
+	// extending the same template must not share a *StepContext or its
+	// Paths backing array — otherwise a later mutation of one step's
+	// context (template substitution, defaulting) silently rewrites its
+	// sibling's. (A re-parse from disk can never detect this: parseFlowFile
+	// re-decodes the YAML, so cross-load isolation holds trivially.)
+	inherits2 := stepByID(t, f, "inherits2")
+	if inherits2.Context == nil {
+		t.Fatal("second extending step did not inherit the template context")
 	}
-	if got := stepByID(t, f2, "inherits").Context.Paths[0]; got != "AGENTS.runtime.md" {
-		t.Errorf("inherited context shares state across loads: %q", got)
+	if inherits.Context == inherits2.Context {
+		t.Fatal("two steps extending one template share the same *StepContext — mergeTemplates must deep-copy")
+	}
+	inherits.Context.Paths[0] = "MUTATED.md"
+	if got := inherits2.Context.Paths[0]; got != "AGENTS.runtime.md" {
+		t.Errorf("Paths backing array is shared between sibling steps: %q", got)
 	}
 }
 

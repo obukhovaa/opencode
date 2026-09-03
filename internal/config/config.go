@@ -1708,6 +1708,27 @@ func (c *Config) WorkingDirectory() string {
 	return WorkingDirectory()
 }
 
+// EffectiveContextDiscovery returns the contextDiscovery block (or the
+// enabled-with-defaults fallback when none was loaded) with the configured
+// data directory populated into the walk's skip set — so a non-hidden
+// `data.directory` is never scanned for nested context files. BOTH
+// consumers — the prompt manifest builder and the disclosure wrapper
+// state — MUST obtain the discovery config through this accessor so the
+// manifest and the injection always agree on the candidate set. The
+// returned value is a copy; the stored config is never mutated.
+func (c *Config) EffectiveContextDiscovery() contextfile.DiscoveryConfig {
+	discovery := contextfile.DefaultDiscoveryConfig()
+	if c.ContextDiscovery != nil {
+		discovery = *c.ContextDiscovery
+	}
+	if c.Data.Directory != "" {
+		skips := make([]string, 0, len(discovery.SkipDirs)+1)
+		skips = append(skips, discovery.SkipDirs...)
+		discovery.SkipDirs = append(skips, c.Data.Directory)
+	}
+	return discovery
+}
+
 func UpdateAgentModel(agentName AgentName, modelID models.ModelID) error {
 	if cfg == nil {
 		panic("config not loaded")

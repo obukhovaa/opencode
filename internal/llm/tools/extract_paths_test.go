@@ -96,6 +96,11 @@ func TestExtractTargetDirsFromCall(t *testing.T) {
 			want: []string{authDir},
 		},
 		{
+			name: "multiedit derives the parent directory of file_path",
+			call: ToolCall{Name: MultiEditToolName, Input: `{"file_path":"services/auth/handler.go","edits":[{"old_string":"a","new_string":"b"}]}`},
+			want: []string{authDir},
+		},
+		{
 			name: "absolute file_path is used as-is",
 			call: ToolCall{Name: ReadToolName, Input: `{"file_path":"` + authFile + `"}`},
 			want: []string{authDir},

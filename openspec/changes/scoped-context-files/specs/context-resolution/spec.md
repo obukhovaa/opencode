@@ -17,9 +17,12 @@ evaluating three ordered layers from highest to lowest priority:
 3. **Global** — the top-level `contextPaths` list from config (lowest).
 
 Resolution starts at the highest declared layer and works downward. A layer is
-"declared" when it explicitly sets `context.paths`; a layer without `context.paths` is
-skipped. The `mode` of the highest declared layer controls whether layers below it
-contribute:
+"declared" when it explicitly sets `context.paths` — INCLUDING an explicitly empty
+list (`paths: []` / `"paths": []`), which is the natural way to give an agent or step
+zero context files: empty + `replace` yields an empty context block, empty + `append`
+contributes nothing and continues downward. Only an absent (nil) `context.paths` is
+undeclared and skipped. The `mode` of the highest declared layer controls whether
+layers below it contribute:
 
 - `mode: replace` (default when `context.paths` is declared) — discard all layers
   below the declaring layer.
@@ -84,6 +87,16 @@ missing files; dedupe via EvalSymlinks+lowercase).
 - **THEN** a WARN log entry names the agent and the unrecognized value
 - **AND** resolution falls back to `append` — the agent receives `foo.md` content
   concatenated after the global context, not no context at all
+- **AND** the once-only WARN dedupe is keyed on (layer, agent-or-step ID, value), so
+  a second agent with the same typo still produces its own WARN naming that agent
+
+#### Scenario: Explicitly empty declared layer
+
+- **WHEN** an agent declares `context: { paths: [], mode: replace }`
+- **THEN** the agent's `# Project-Specific Context` block is empty (absent) — the
+  empty list is a declaration, not a fall-through to the global `contextPaths`
+- **AND** with `mode: append` instead, the layer contributes nothing and resolution
+  continues downward to the global layer unchanged
 
 ### Requirement: Agent-level `context` is accepted in `.opencode.json` and markdown frontmatter
 

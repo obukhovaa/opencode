@@ -42,10 +42,16 @@ func legacyContextFromPaths(workDir string, paths []string) string {
 // setupContextWorkspace loads a fresh config rooted at a temp dir with an
 // inline-prompt subagent, so the assembled prompt is fully predictable:
 // no skills, no deferred tools, no env info (subagent), no LSP servers —
-// just the base prompt plus the context block.
+// just the base prompt plus the context block. HOME and XDG_CONFIG_HOME
+// are pointed at the sandbox BEFORE config.Load: the loader reads
+// $HOME/.opencode.json as the base config, and a developer's real
+// `contextDiscovery` settings would otherwise leak into these prompts
+// (same isolation the e2e script and langfuse_io_test.go apply).
 func setupContextWorkspace(t *testing.T) (*config.Config, string) {
 	t.Helper()
 	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmpDir, "xdg"))
 	config.Reset()
 	_, err := config.Load(tmpDir, false)
 	require.NoError(t, err)
@@ -141,6 +147,53 @@ func TestGetAgentPrompt_NestedManifest(t *testing.T) {
 
 		got := GetAgentPrompt("ctx-agent", models.ProviderAnthropic)
 		assert.NotContains(t, got, "# Nested Context Files")
+	})
+
+	t.Run("step nested opt-out suppresses the manifest for that step only", func(t *testing.T) {
+		cfg, tmpDir := setupContextWorkspace(t)
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte("root\n"), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "sub"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "sub", "AGENTS.md"), []byte("nested\n"), 0o644))
+		cfg.ContextPaths = []string{"AGENTS.md"}
+
+		nested := false
+		got := GetAgentPromptWithOptions("ctx-agent", models.ProviderAnthropic, AgentPromptOptions{
+			StepContext: &contextfile.StepContext{Nested: &nested},
+		})
+		assert.NotContains(t, got, "# Nested Context Files")
+
+		// A sibling build WITHOUT the step override still gets it.
+		plain := GetAgentPrompt("ctx-agent", models.ProviderAnthropic)
+		assert.Contains(t, plain, "# Nested Context Files")
+	})
+
+	t.Run("file inlined by the agent's scoped layer is not manifest-listed", func(t *testing.T) {
+		cfg, tmpDir := setupContextWorkspace(t)
+		require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "AGENTS.md"), []byte("root\n"), 0o644))
+		for _, rel := range []string{"services/auth", "services/billing"} {
+			require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, rel), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(tmpDir, rel, "AGENTS.md"), []byte("# "+rel+"\nbody\n"), 0o644))
+		}
+		cfg.ContextPaths = []string{"AGENTS.md"}
+		cfg.Agents["ctx-agent"] = config.Agent{
+			Prompt:  "You are the context test agent.",
+			Context: &contextfile.AgentContext{Paths: []string{"services/auth/AGENTS.md"}, Mode: "append"},
+		}
+		cfg.Agents["ctx-plain"] = config.Agent{Prompt: "You are the plain sibling."}
+		agentregistry.InvalidateRegistry()
+
+		got := GetAgentPrompt("ctx-agent", models.ProviderAnthropic)
+		// The auth file is INLINED by the scoped layer...
+		assert.Contains(t, got, "# From:"+filepath.Join(tmpDir, "services", "auth", "AGENTS.md"))
+		// ...so the manifest must not also list it as not-loaded.
+		assert.NotContains(t, got, "- services/auth/AGENTS.md",
+			"a file whose body is already in the prompt must not appear in the manifest")
+		assert.Contains(t, got, "- services/billing/AGENTS.md", "unrelated candidates stay listed")
+
+		// A sibling agent WITHOUT the scoped layer keeps the full manifest.
+		plain := GetAgentPrompt("ctx-plain", models.ProviderAnthropic)
+		assert.Contains(t, plain, "- services/auth/AGENTS.md")
+		assert.Contains(t, plain, "- services/billing/AGENTS.md")
 	})
 }
 

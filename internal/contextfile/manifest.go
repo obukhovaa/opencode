@@ -43,9 +43,11 @@ const manifestExplainer = "The following context files live in subdirectories of
 // listing the discovered nested context files: one line per file with the
 // relative-to-workDir path and a short label. Returns "" when nothing was
 // discovered — zero prompt delta for repos without nested context files.
-// Pure function of its inputs plus file contents, which the process-level
-// discovery cache keeps stable per session (design D3/D7).
-func RenderManifest(discovered []string, workDir string, cfg ManifestConfig) string {
+// Labels are the ones computed at discovery time (DiscoveryResult.Labels);
+// this function never reads the disk, which makes the manifest a pure —
+// and therefore structurally byte-stable — function of the cached
+// discovery result (design D3/D7).
+func RenderManifest(discovered []string, labels map[string]string, workDir string, cfg ManifestConfig) string {
 	if len(discovered) == 0 {
 		return ""
 	}
@@ -73,7 +75,7 @@ func RenderManifest(discovered []string, workDir string, cfg ManifestConfig) str
 	pathsOnly := make([]string, len(discovered))
 	for i, abs := range discovered {
 		pathsOnly[i] = "- " + rels[i]
-		if label := extractLabel(abs); label != "" {
+		if label := labels[abs]; label != "" {
 			labeled[i] = "- " + rels[i] + ": " + label
 		} else {
 			labeled[i] = pathsOnly[i]
@@ -103,8 +105,10 @@ func RenderManifest(discovered []string, workDir string, cfg ManifestConfig) str
 // extractLabel returns a short human label for a context file: the YAML
 // frontmatter `description` value if the file starts with a frontmatter
 // block, else the first markdown heading, else "" (path-only line). Reads
-// at most manifestLabelReadBytes. No YAML library on purpose — this
-// package is a leaf, and a top-of-file line scan is all a label needs.
+// at most manifestLabelReadBytes. Called ONLY from the discovery walk —
+// after the regular-file and symlink-containment checks — never at
+// prompt-build time. No YAML library on purpose — this package is a
+// leaf, and a top-of-file line scan is all a label needs.
 func extractLabel(path string) string {
 	f, err := os.Open(path)
 	if err != nil {

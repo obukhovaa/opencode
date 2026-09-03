@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -438,10 +439,7 @@ func newContextDisclosureState(info *agentregistry.AgentInfo, cfg *config.Config
 	if cfg == nil {
 		return nil
 	}
-	discovery := contextfile.DefaultDiscoveryConfig()
-	if cfg.ContextDiscovery != nil {
-		discovery = *cfg.ContextDiscovery
-	}
+	discovery := cfg.EffectiveContextDiscovery()
 	if !discovery.Enabled {
 		return nil
 	}
@@ -453,12 +451,19 @@ func newContextDisclosureState(info *agentregistry.AgentInfo, cfg *config.Config
 	}
 	discovery = discovery.WithDefaults()
 	result := contextfile.Discover(cfg.WorkingDir, cfg.ContextPaths, discovery)
-	if len(result.Files) == 0 {
+	// Subtract the files this agent's/step's scoped context layers already
+	// inline into the system prompt — injecting them again on first touch
+	// would deliver the same body twice and contradict the manifest, which
+	// applies the SAME filter with the SAME vars in nestedContextManifest.
+	vars := info.ContextVars
+	vars.Agent = info.ID
+	files := contextfile.FilterDiscovered(result.Files, info.Context, info.StepContext, cfg.WorkingDir, vars)
+	if len(files) == 0 {
 		return nil
 	}
 	return &contextDisclosureState{
 		workDir:         cfg.WorkingDir,
-		discovered:      result.Files,
+		discovered:      files,
 		maxFileBytes:    discovery.MaxFileBytes,
 		maxSessionBytes: discovery.MaxSessionBytes,
 		injected:        make(map[string]map[string]bool),
@@ -471,10 +476,10 @@ func newContextDisclosureState(info *agentregistry.AgentInfo, cfg *config.Config
 // returning the rendered <system-reminder> blocks to append (or ""). One
 // mutex covers the dedup check, the file read, and the byte accounting so
 // two parallel tool calls cannot double-inject a file or overrun the
-// budget. Unreadable or oversized files are skipped WITHOUT being marked
-// injected (WARN; a later touch may retry). A body that would exceed the
-// session budget flips the exhausted flag: INFO once, then no further
-// bodies for that session (design D10).
+// budget. Unreadable, oversized, non-regular, or escaping files are
+// skipped WITHOUT being marked injected (WARN; a later touch may retry).
+// A body that would exceed the session budget flips the exhausted flag:
+// INFO once, then no further bodies for that session (design D10).
 func (s *contextDisclosureState) claimAndRead(sessionID string, owners []string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -491,13 +496,8 @@ func (s *contextDisclosureState) claimAndRead(sessionID string, owners []string)
 		if injected[path] {
 			continue
 		}
-		body, err := os.ReadFile(path)
-		if err != nil {
-			logging.Warn("Nested context injection skipped: file unreadable", "file", path, "error", err)
-			continue
-		}
-		if len(body) > s.maxFileBytes {
-			logging.Warn("Nested context injection skipped: file exceeds maxFileBytes", "file", path, "size", len(body), "cap", s.maxFileBytes)
+		body, ok := s.readNestedContextFile(path)
+		if !ok {
 			continue
 		}
 		if s.injectedBytes[sessionID]+len(body) > s.maxSessionBytes {
@@ -507,13 +507,76 @@ func (s *contextDisclosureState) claimAndRead(sessionID string, owners []string)
 		}
 		injected[path] = true
 		s.injectedBytes[sessionID] += len(body)
-		text := string(body)
+		text := sanitizeReminderBody(string(body))
 		if !strings.HasSuffix(text, "\n") {
 			text += "\n"
 		}
 		fmt.Fprintf(&sb, "\n\n<system-reminder>\n# From:%s\n%s</system-reminder>", path, text)
 	}
 	return sb.String()
+}
+
+// readNestedContextFile is the ONLY read path for nested context bodies,
+// and it never trusts the process-lifetime discovery cache: the
+// filesystem can change between discovery and activation, so the
+// regular-file and workDir-containment checks are re-verified here
+// (design D6/D10). The read itself is bounded — Lstat first (never opens,
+// so a FIFO cannot hang the call and a symlink swap is caught before
+// following it), then Stat on the OPENED fd (no TOCTOU window on the
+// size/type), then io.LimitReader at maxFileBytes+1 so even an
+// under-reporting Stat can never smuggle an unbounded read past the cap.
+func (s *contextDisclosureState) readNestedContextFile(path string) ([]byte, bool) {
+	lst, err := os.Lstat(path)
+	if err != nil {
+		logging.Warn("Nested context injection skipped: file unreadable", "file", path, "error", err)
+		return nil, false
+	}
+	if !lst.Mode().IsRegular() {
+		logging.Warn("Nested context injection skipped: not a regular file", "file", path, "mode", lst.Mode().String())
+		return nil, false
+	}
+	if !contextfile.ResolvedWithinRoot(path, s.workDir) {
+		logging.Warn("Nested context injection skipped: file escapes the working directory", "file", path, "workDir", s.workDir)
+		return nil, false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		logging.Warn("Nested context injection skipped: file unreadable", "file", path, "error", err)
+		return nil, false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() {
+		logging.Warn("Nested context injection skipped: not a regular file", "file", path, "error", err)
+		return nil, false
+	}
+	if fi.Size() > int64(s.maxFileBytes) {
+		logging.Warn("Nested context injection skipped: file exceeds maxFileBytes", "file", path, "size", fi.Size(), "cap", s.maxFileBytes)
+		return nil, false
+	}
+	body, err := io.ReadAll(io.LimitReader(f, int64(s.maxFileBytes)+1))
+	if err != nil {
+		logging.Warn("Nested context injection skipped: file unreadable", "file", path, "error", err)
+		return nil, false
+	}
+	if len(body) > s.maxFileBytes {
+		logging.Warn("Nested context injection skipped: file exceeds maxFileBytes", "file", path, "size", len(body), "cap", s.maxFileBytes)
+		return nil, false
+	}
+	return body, true
+}
+
+// sanitizeReminderBody neutralizes literal <system-reminder> framing tags
+// inside a nested context body before it is wrapped: a repo file
+// containing the closing tag would otherwise terminate the reminder block
+// early and let the remainder masquerade as genuine tool output — or open
+// a forged reminder with a fabricated "# From:" header. The tags are
+// defused by inserting a backslash after '<' (content preserved, framing
+// broken); the closing form is replaced first so the second pass cannot
+// touch its output.
+func sanitizeReminderBody(text string) string {
+	text = strings.ReplaceAll(text, "</system-reminder>", `<\/system-reminder>`)
+	return strings.ReplaceAll(text, "<system-reminder>", `<\system-reminder>`)
 }
 
 // contextDisclosureWrapper appends nested context file bodies to the

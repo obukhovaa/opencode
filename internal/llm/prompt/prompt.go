@@ -497,7 +497,7 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 	// Nested-context manifest (progressive disclosure). Absent — zero
 	// prompt delta — when discovery is disabled, the agent/step opted out
 	// via context.nested: false, or the walk found nothing.
-	if manifest := nestedContextManifest(cfg, agentCtx, opts.StepContext); manifest != "" {
+	if manifest := nestedContextManifest(cfg, agentCtx, opts.StepContext, vars); manifest != "" {
 		basePrompt += "\n\n" + manifest
 	}
 	return basePrompt
@@ -506,13 +506,13 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 // nestedContextManifest renders the manifest of discovered nested context
 // files for this agent/step, or "" when discovery is off, the agent or
 // step opted out (context.nested: false), or nothing was discovered. The
-// discovery walk is cached per workDir, so the block is byte-stable
-// across every turn of a session (design D3/D7).
-func nestedContextManifest(cfg *config.Config, agentCtx *contextfile.AgentContext, stepCtx *contextfile.StepContext) string {
-	discovery := contextfile.DefaultDiscoveryConfig()
-	if cfg.ContextDiscovery != nil {
-		discovery = *cfg.ContextDiscovery
-	}
+// discovery walk (paths AND labels) is cached per workDir and files the
+// agent/step scoped layers already inline are subtracted with the same
+// deterministic filter the disclosure wrapper applies — so the block is
+// byte-stable across every turn of a session (design D3/D7) and never
+// lists a file whose body is already in this prompt.
+func nestedContextManifest(cfg *config.Config, agentCtx *contextfile.AgentContext, stepCtx *contextfile.StepContext, vars contextfile.TemplateVars) string {
+	discovery := cfg.EffectiveContextDiscovery()
 	if !discovery.Enabled {
 		return ""
 	}
@@ -523,7 +523,8 @@ func nestedContextManifest(cfg *config.Config, agentCtx *contextfile.AgentContex
 		return ""
 	}
 	result := contextfile.Discover(cfg.WorkingDir, cfg.ContextPaths, discovery)
-	return contextfile.RenderManifest(result.Files, cfg.WorkingDir, contextfile.ManifestConfig{
+	files := contextfile.FilterDiscovered(result.Files, agentCtx, stepCtx, cfg.WorkingDir, vars)
+	return contextfile.RenderManifest(files, result.Labels, cfg.WorkingDir, contextfile.ManifestConfig{
 		WalkTruncated: result.Truncated,
 	})
 }

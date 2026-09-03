@@ -32,6 +32,15 @@ type DiscoveryConfig struct {
 	MaxDepth        int  `json:"maxDepth,omitempty" yaml:"maxDepth,omitempty"`
 	MaxFileBytes    int  `json:"maxFileBytes,omitempty" yaml:"maxFileBytes,omitempty"`
 	MaxSessionBytes int  `json:"maxSessionBytes,omitempty" yaml:"maxSessionBytes,omitempty"`
+
+	// SkipDirs lists extra directories the walk must skip, absolute or
+	// relative to workDir. NOT a user-facing config field (excluded from
+	// the .opencode.json schema on purpose): callers populate it from the
+	// configured data directory via config.EffectiveContextDiscovery so a
+	// non-hidden data dir (`data.directory`) is never walked. Both
+	// consumers — the prompt manifest and the disclosure wrapper — MUST go
+	// through that accessor so manifest and injection agree.
+	SkipDirs []string `json:"-" yaml:"-"`
 }
 
 // DefaultDiscoveryConfig is the enabled-with-default-caps configuration
@@ -69,11 +78,17 @@ func (c DiscoveryConfig) WithDefaults() DiscoveryConfig {
 
 // DiscoveryResult is the outcome of one nested-context walk. Files are
 // absolute paths strictly below workDir (depth >= 1), in deterministic
-// WalkDir (lexical, depth-first) order. Truncated is set when the
-// maxFiles cap cut the walk short — walk order decides which files made
-// the cut, and the manifest header notes the truncation.
+// WalkDir (lexical, depth-first) order. Labels carries each file's
+// manifest label (frontmatter description or first markdown heading),
+// computed ONCE here — at discovery time, after the containment checks —
+// so RenderManifest never touches the disk at prompt-build time and the
+// manifest is structurally byte-stable for the process lifetime.
+// Truncated is set when the maxFiles cap cut the walk short — walk order
+// decides which files made the cut, and the manifest header notes the
+// truncation.
 type DiscoveryResult struct {
 	Files     []string
+	Labels    map[string]string // abs path -> label ("" entries omitted)
 	Truncated bool
 }
 
@@ -159,6 +174,28 @@ func walkForContextFiles(workDir string, globalPaths []string, cfg DiscoveryConf
 
 	var res DiscoveryResult
 	root := filepath.Clean(workDir)
+	// The containment reference for candidates: same Clean → EvalSymlinks
+	// order containedInWorkDir uses. When the root itself cannot be
+	// resolved, fall back to the cleaned root — candidates resolved below
+	// it still compare correctly on lexical prefix.
+	resolvedRoot := root
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		resolvedRoot = r
+	}
+	// Extra skip directories (the configured data directory): compare by
+	// absolute cleaned path so both relative ("opencode-data") and
+	// absolute entries work.
+	skipPaths := make(map[string]struct{}, len(cfg.SkipDirs))
+	for _, dir := range cfg.SkipDirs {
+		if dir == "" {
+			continue
+		}
+		abs := dir
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(root, abs)
+		}
+		skipPaths[filepath.Clean(abs)] = struct{}{}
+	}
 	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// Per-file/dir errors are isolated: log and keep walking
@@ -189,6 +226,9 @@ func walkForContextFiles(workDir string, globalPaths []string, cfg DiscoveryConf
 			if _, skip := discoverySkipDirs[base]; skip {
 				return filepath.SkipDir
 			}
+			if _, skip := skipPaths[path]; skip {
+				return filepath.SkipDir
+			}
 			// Files inside this directory would sit at depth+1.
 			if depth+1 > cfg.MaxDepth {
 				return filepath.SkipDir
@@ -206,6 +246,24 @@ func walkForContextFiles(workDir string, globalPaths []string, cfg DiscoveryConf
 			// not a disclosure candidate.
 			return nil
 		}
+		// Only regular files are candidates. A symlink (IsDir()==false,
+		// so it reaches this branch) is rejected outright: a repo can
+		// commit `docs/AGENTS.md -> ~/.ssh/id_rsa` and both the manifest
+		// label extraction and the activation-time read would otherwise
+		// follow it with no permission prompt.
+		if !d.Type().IsRegular() {
+			logging.Warn("Context discovery skipped non-regular file", "path", path, "type", d.Type().String())
+			return nil
+		}
+		// Defense in depth: even a regular file can sit behind a
+		// symlinked parent directory. Resolve the candidate and require
+		// it stays strictly inside the resolved workDir — the same
+		// order containedInWorkDir uses.
+		resolved, resErr := filepath.EvalSymlinks(path)
+		if resErr != nil || !strings.HasPrefix(resolved, resolvedRoot+string(os.PathSeparator)) {
+			logging.Warn("Context discovery skipped file escaping the working directory", "path", path, "resolved", resolved, "workDir", resolvedRoot, "error", resErr)
+			return nil
+		}
 		if _, matched := rootMatched[path]; matched {
 			return nil
 		}
@@ -219,9 +277,121 @@ func walkForContextFiles(workDir string, globalPaths []string, cfg DiscoveryConf
 			return filepath.SkipAll
 		}
 		res.Files = append(res.Files, path)
+		// Label computed here — once, behind the containment checks —
+		// and cached with the walk result (see DiscoveryResult.Labels).
+		if label := extractLabel(path); label != "" {
+			if res.Labels == nil {
+				res.Labels = make(map[string]string)
+			}
+			res.Labels[path] = label
+		}
 		return nil
 	})
 	return res
+}
+
+// ResolvedWithinRoot reports whether absPath — after symlink resolution —
+// lies strictly inside root (itself symlink-resolved), using the same
+// Clean → EvalSymlinks order containedInWorkDir applies to scoped
+// entries. Fail-closed: a path that cannot be resolved (missing file,
+// broken link) is NOT within the root. The disclosure wrapper re-checks
+// this at activation time because discovery results are cached for the
+// process lifetime and the filesystem can change underneath them.
+func ResolvedWithinRoot(absPath, root string) bool {
+	resolvedRoot := filepath.Clean(root)
+	if r, err := filepath.EvalSymlinks(resolvedRoot); err == nil {
+		resolvedRoot = r
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(absPath))
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(resolved, resolvedRoot+string(os.PathSeparator))
+}
+
+// canonicalDiscoveryPath normalizes a path for owner/exclusion matching
+// with the SAME normalization tryMarkProcessed uses for resolver dedup:
+// EvalSymlinks plus unconditional lowercasing — macOS's default
+// filesystem is case-insensitive, and a model-supplied tool path
+// routinely differs in case from the WalkDir spelling. Paths that do not
+// (fully) exist — a write into a new subdirectory, a differently-cased
+// spelling on a case-sensitive filesystem — resolve their deepest
+// existing ancestor so both sides of a comparison canonicalize
+// consistently (macOS TempDirs live under the /var -> /private/var link).
+func canonicalDiscoveryPath(p string) string {
+	return strings.ToLower(resolveExistingPrefix(filepath.Clean(p)))
+}
+
+// resolveExistingPrefix EvalSymlinks the deepest existing ancestor of
+// path and re-appends the untouched remainder.
+func resolveExistingPrefix(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	dir := filepath.Dir(path)
+	if dir == path {
+		return path
+	}
+	return filepath.Join(resolveExistingPrefix(dir), filepath.Base(path))
+}
+
+// FilterDiscovered subtracts from the discovered set every file the
+// agent/step scoped context layers already inline into the system prompt
+// (exact path entries and trailing-slash subtrees), mirroring the
+// walk-level exclusion of global contextPaths matches. Layer
+// participation follows ResolveForAgent exactly: a step `replace` drops
+// the agent layer, so a file named only there is NOT inlined and stays a
+// disclosure candidate. Both the manifest renderer and the disclosure
+// wrapper MUST apply this filter with the same inputs so listing and
+// injection agree; the result is deterministic per (agentCtx, stepCtx,
+// vars), keeping the manifest byte-stable within a session.
+func FilterDiscovered(discovered []string, agentCtx *AgentContext, stepCtx *StepContext, workDir string, vars TemplateVars) []string {
+	if len(discovered) == 0 || (agentCtx == nil && stepCtx == nil) {
+		return discovered
+	}
+	files := make(map[string]struct{})
+	var prefixes []string
+	add := func(entries []string) {
+		for _, e := range entries {
+			abs := filepath.Clean(filepath.Join(workDir, e))
+			canon := canonicalDiscoveryPath(abs)
+			if strings.HasSuffix(e, "/") {
+				prefixes = append(prefixes, canon+string(os.PathSeparator))
+				continue
+			}
+			files[canon] = struct{}{}
+		}
+	}
+	replaced := false
+	if stepCtx != nil && stepCtx.Paths != nil {
+		add(filterScopedEntries(stepCtx.Paths, vars, workDir))
+		replaced = normalizeMode(stepCtx.Mode, "step", vars.FlowStep) == ModeReplace
+	}
+	if !replaced && agentCtx != nil && agentCtx.Paths != nil {
+		add(filterScopedEntries(agentCtx.Paths, vars, workDir))
+	}
+	if len(files) == 0 && len(prefixes) == 0 {
+		return discovered
+	}
+	out := make([]string, 0, len(discovered))
+	for _, f := range discovered {
+		canon := canonicalDiscoveryPath(f)
+		if _, inlined := files[canon]; inlined {
+			continue
+		}
+		underPrefix := false
+		for _, p := range prefixes {
+			if strings.HasPrefix(canon, p) {
+				underPrefix = true
+				break
+			}
+		}
+		if underPrefix {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // OwnersForPath returns the discovered nested context files whose owning
@@ -232,15 +402,22 @@ func walkForContextFiles(workDir string, globalPaths []string, cfg DiscoveryConf
 // e.g. a grep with no path argument — which resolves to workDir — never
 // activates anything. Files sharing one owning directory keep their
 // discovery (lexical) order.
+//
+// Both sides of the comparison — the discovered owning directories and
+// the model-supplied target dir — are canonicalized with the same
+// EvalSymlinks+lowercase normalization the resolver's dedup uses
+// (tryMarkProcessed): on the default case-insensitive macOS/Windows
+// filesystems, the inner tool call succeeds with a differently-cased
+// path, and a byte-exact comparison would silently miss the injection.
 func OwnersForPath(dir string, discovered []string, workDir string) []string {
-	root := filepath.Clean(workDir)
-	cur := filepath.Clean(dir)
+	root := canonicalDiscoveryPath(workDir)
+	cur := canonicalDiscoveryPath(dir)
 	if cur == root || !strings.HasPrefix(cur, root+string(os.PathSeparator)) {
 		return nil
 	}
 	byDir := make(map[string][]string, len(discovered))
 	for _, f := range discovered {
-		d := filepath.Dir(f)
+		d := canonicalDiscoveryPath(filepath.Dir(f))
 		byDir[d] = append(byDir[d], f)
 	}
 	// Collected innermost-first while walking up; emitted in reverse so

@@ -652,6 +652,15 @@ func (p *baseProvider[C]) Model() models.Model {
 	return p.options.model
 }
 
+// SystemMessage exposes the system prompt this provider was constructed
+// with. Deliberately NOT part of the Provider interface: it exists as a
+// construction-seam for tests — agent-construction tests assert that
+// per-call prompt state (flow-step context, managed prompts) actually
+// reached the provider — via an anonymous-interface assertion.
+func (p *baseProvider[C]) SystemMessage() string {
+	return p.options.systemMessage
+}
+
 func (p *baseProvider[C]) StreamResponse(ctx context.Context, messages []message.Message, tools []tools.BaseTool) <-chan ProviderEvent {
 	messages = p.cleanMessages(messages)
 	messages = p.sanitizeToolPairs(messages)

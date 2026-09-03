@@ -1,9 +1,11 @@
 package contextfile
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"unsafe"
 
@@ -241,6 +243,40 @@ func TestResolveForAgent(t *testing.T) {
 		assert.Contains(t, got, "AGENTS.md: test content", "a typo must not drop the project's root instructions")
 	})
 
+	t.Run("explicitly empty paths with replace yields an empty context block", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := setup(t)
+
+		// paths: [] IS a declaration — the natural way to give an agent
+		// zero context files. Only a nil Paths is undeclared.
+		got := ResolveForAgent(global,
+			&AgentContext{Paths: []string{}, Mode: "replace"},
+			nil, tmpDir, TemplateVars{Agent: "coder"})
+		assert.Empty(t, got, "empty declared replace layer must exclude every layer below")
+	})
+
+	t.Run("explicitly empty paths with append contributes nothing and continues downward", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := setup(t)
+
+		got := ResolveForAgent(global,
+			&AgentContext{Paths: []string{}, Mode: "append"},
+			nil, tmpDir, TemplateVars{Agent: "coder"})
+		want := Resolve(global, tmpDir, ModeAppend)
+		assert.Equal(t, want, got, "empty append layer must fall through to the global resolution")
+	})
+
+	t.Run("empty step replace shields the agent and global layers too", func(t *testing.T) {
+		t.Parallel()
+		tmpDir := setup(t)
+
+		got := ResolveForAgent(global,
+			&AgentContext{Paths: []string{"AGENTS.agent.md"}, Mode: "append"},
+			&StepContext{Paths: []string{}, Mode: "replace"},
+			tmpDir, TemplateVars{Agent: "coder"})
+		assert.Empty(t, got)
+	})
+
 	t.Run("agent token resolves a per-agent file", func(t *testing.T) {
 		t.Parallel()
 		tmpDir := t.TempDir()
@@ -298,4 +334,83 @@ func TestContainedInWorkDir_RejectsTraversal(t *testing.T) {
 		&AgentContext{Paths: []string{"../../../etc/passwd"}},
 		nil, tmpDir, TemplateVars{Agent: "coder"})
 	assert.Empty(t, got)
+}
+
+// TestContainedInWorkDir_RejectsSymlinkEscape pins the design D5 claim
+// that symlink chains cannot bypass containment: the check runs on
+// EvalSymlinks output, so a lexically-inside entry that resolves outside
+// workDir is rejected and never read.
+func TestContainedInWorkDir_RejectsSymlinkEscape(t *testing.T) {
+	t.Parallel()
+	outside := t.TempDir()
+	secret := filepath.Join(outside, "secret.md")
+	require.NoError(t, os.WriteFile(secret, []byte("SECRET CONTENT"), 0o600))
+
+	tmpDir := t.TempDir()
+	require.NoError(t, os.Symlink(secret, filepath.Join(tmpDir, "evil.md")))
+
+	assert.False(t, containedInWorkDir("evil.md", tmpDir),
+		"a symlink resolving outside workDir must fail containment")
+
+	got := ResolveForAgent(nil,
+		&AgentContext{Paths: []string{"evil.md"}},
+		nil, tmpDir, TemplateVars{Agent: "coder"})
+	assert.Empty(t, got, "the escaping symlink must never be resolved into the prompt")
+}
+
+// TestNormalizeMode_WarnNamesOwner pins the spec's "Unrecognized mode
+// fails safe" THEN clause: the WARN names the misconfigured agent (or
+// step) and the raw value, and the once-only dedupe is keyed on that
+// identity — a SECOND agent with the same typo still gets its own line.
+func TestNormalizeMode_WarnNamesOwner(t *testing.T) {
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&syncWriter{w: &buf}, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	tmpDir := t.TempDir()
+	createTestFiles(t, tmpDir, []string{"AGENTS.md"})
+
+	// Unique typo per test run: modeWarned is process-global and another
+	// test using the same (layer, owner, value) would swallow the log.
+	const typo = "xyzzy-warn-owner"
+	ResolveForAgent([]string{"AGENTS.md"},
+		&AgentContext{Paths: []string{"AGENTS.md"}, Mode: typo},
+		nil, tmpDir, TemplateVars{Agent: "first-agent"})
+	logged := buf.String()
+	assert.Contains(t, logged, "first-agent", "the WARN must name the agent")
+	assert.Contains(t, logged, typo, "the WARN must name the unrecognized value")
+
+	ResolveForAgent([]string{"AGENTS.md"},
+		&AgentContext{Paths: []string{"AGENTS.md"}, Mode: typo},
+		nil, tmpDir, TemplateVars{Agent: "second-agent"})
+	assert.Contains(t, buf.String(), "second-agent",
+		"a different agent with the same typo must still be warned about")
+
+	// Same agent again: deduped, exactly one line naming it.
+	before := strings.Count(buf.String(), "first-agent")
+	ResolveForAgent([]string{"AGENTS.md"},
+		&AgentContext{Paths: []string{"AGENTS.md"}, Mode: typo},
+		nil, tmpDir, TemplateVars{Agent: "first-agent"})
+	assert.Equal(t, before, strings.Count(buf.String(), "first-agent"),
+		"the WARN must fire once per (agent, value)")
+
+	// The step layer names the step ID.
+	ResolveForAgent([]string{"AGENTS.md"}, nil,
+		&StepContext{Paths: []string{"AGENTS.md"}, Mode: typo},
+		tmpDir, TemplateVars{Agent: "first-agent", FlowStep: "review-step"})
+	assert.Contains(t, buf.String(), "review-step", "the WARN must name the flow step for a step layer")
+}
+
+// syncWriter guards the capture buffer: resolver internals log from
+// goroutines.
+type syncWriter struct {
+	mu sync.Mutex
+	w  *strings.Builder
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }

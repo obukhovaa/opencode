@@ -80,8 +80,10 @@ var (
 	resolveCache sync.Map // digest string -> resolved string
 	resolveGroup singleflight.Group
 
-	// modeWarned dedupes the unknown-mode WARN per (layer, value) so a
-	// typo logs once, not once per prompt build.
+	// modeWarned dedupes the unknown-mode WARN per (layer, owner, value) —
+	// owner being the agent/step ID — so a typo logs once per misconfigured
+	// agent or step, not once per prompt build and not never for the
+	// second agent sharing the same typo.
 	modeWarned sync.Map
 
 	tokenPattern = regexp.MustCompile(`\$\{([^}]*)\}`)
@@ -107,7 +109,11 @@ func Resolve(paths []string, workDir string, mode Mode) string {
 
 // ResolveForAgent applies the three-layer merge with precedence
 // step > agent > global. A layer is declared when it explicitly sets
-// context.paths; the highest declared layer's mode controls whether the
+// context.paths — a non-nil Paths slice, INCLUDING an explicitly empty
+// one (`paths: []`): empty+replace yields an empty context block (the
+// natural way to give an agent/step zero context files), empty+append
+// contributes nothing and continues downward. Only a nil Paths is
+// undeclared. The highest declared layer's mode controls whether the
 // layers below it contribute (replace discards them, append continues
 // downward). Output concatenates included layers in global → agent → step
 // order, each layer sorted by absolute path internally, deduplicated
@@ -118,13 +124,13 @@ func ResolveForAgent(globalPaths []string, agentCtx *AgentContext, stepCtx *Step
 	// Collected top-down (step, agent, global), then reversed for output.
 	layers := make([]layer, 0, 3)
 	replaced := false
-	if stepCtx != nil && len(stepCtx.Paths) > 0 {
-		mode := normalizeMode(stepCtx.Mode, "step")
+	if stepCtx != nil && stepCtx.Paths != nil {
+		mode := normalizeMode(stepCtx.Mode, "step", vars.FlowStep)
 		layers = append(layers, layer{entries: filterScopedEntries(stepCtx.Paths, vars, workDir), mode: mode})
 		replaced = mode == ModeReplace
 	}
-	if !replaced && agentCtx != nil && len(agentCtx.Paths) > 0 {
-		mode := normalizeMode(agentCtx.Mode, "agent")
+	if !replaced && agentCtx != nil && agentCtx.Paths != nil {
+		mode := normalizeMode(agentCtx.Mode, "agent", vars.Agent)
 		layers = append(layers, layer{entries: filterScopedEntries(agentCtx.Paths, vars, workDir), mode: mode})
 		replaced = mode == ModeReplace
 	}
@@ -295,18 +301,21 @@ func processFile(filePath string) string {
 // normalizeMode maps a declared mode string to a Mode. Empty means the
 // default replace (the field only exists when the user opted in to
 // overriding, and the motivating requirement is exclusion). An
-// unrecognized value warns once per (layer, value) and falls back to
-// append — a typo must never silently drop the project's root
-// instructions (design D4).
-func normalizeMode(raw, layerName string) Mode {
+// unrecognized value warns once per (layer, owner, value) — owner is the
+// agent ID for the agent layer and the flow step ID for the step layer,
+// so the WARN names WHO is misconfigured and a second agent with the
+// same typo still gets its own log line — and falls back to append: a
+// typo must never silently drop the project's root instructions
+// (design D4).
+func normalizeMode(raw, layerName, owner string) Mode {
 	switch raw {
 	case "", string(ModeReplace):
 		return ModeReplace
 	case string(ModeAppend):
 		return ModeAppend
 	default:
-		if _, seen := modeWarned.LoadOrStore(layerName+"\x00"+raw, struct{}{}); !seen {
-			logging.Warn("Unrecognized context mode, falling back to append", "layer", layerName, "mode", raw)
+		if _, seen := modeWarned.LoadOrStore(layerName+"\x00"+owner+"\x00"+raw, struct{}{}); !seen {
+			logging.Warn("Unrecognized context mode, falling back to append", "layer", layerName, layerName, owner, "mode", raw)
 		}
 		return ModeAppend
 	}

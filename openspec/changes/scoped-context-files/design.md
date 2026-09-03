@@ -112,9 +112,14 @@ assembled system prompt for an agent is byte-identical on a simulated second tur
 
 `mode` is an enum `replace | append`, default **`replace`** when an agent or step
 explicitly declares `context.paths` — the motivating requirement is exclusion, and the
-field only exists when the user has opted in to overriding the default. An
-**unrecognized** `mode` value is warned once and falls back to **`append`** (fail-safe:
-a typo must never silently drop the project's root instructions). In `append` mode the
+field only exists when the user has opted in to overriding the default. A layer is
+declared when `context.paths` is non-nil, INCLUDING an explicitly empty list:
+`paths: []` + `replace` yields an empty context block (zero context files), `paths:
+[]` + `append` contributes nothing and continues downward — only an absent field is
+undeclared. An **unrecognized** `mode` value is warned once per (layer, agent/step ID,
+value) — the WARN names the misconfigured agent or flow step — and falls back to
+**`append`** (fail-safe: a typo must never silently drop the project's root
+instructions). In `append` mode the
 layers concatenate in precedence order global → agent → step; within each layer the
 existing sort-by-absolute-path ordering and `# From:<abs-path>` header format are
 preserved. Dedupe (existing `EvalSymlinks` + lowercase canonicalization from
@@ -166,9 +171,22 @@ Caps: `maxDepth` (default 8), `maxFiles` (default 100), `maxFileBytes`
 Files at or below `workDir` matching the basename set but NOT already matched by root
 resolution are the progressive-disclosure candidates.
 
-The walk result is a `map[string]struct{}` of absolute paths, computed once and cached
-by `workDir`. Root-level matches remain the job of scoped resolution (D4); this set
-only contains files STRICTLY below the root (depth ≥ 1).
+Candidates MUST be regular files: any non-regular entry (symlink, FIFO, device) is
+rejected with a WARN. Git preserves symlinks, so a committed
+`docs/AGENTS.md -> ~/.ssh/id_rsa` would otherwise flow into the manifest and the
+injection path with no permission prompt — the exact bypass the scoped-entry
+containment (D5) closes. As defense in depth against symlinked parent directories,
+each accepted candidate is `EvalSymlinks`-resolved and must land strictly inside the
+`EvalSymlinks`-resolved `workDir` (same order as `containedInWorkDir`). Each accepted
+file's manifest label is extracted HERE — once, behind those checks — and stored in
+the cached result (`DiscoveryResult.Labels`), so prompt-build never opens candidate
+files. The configured data directory reaches the walk's skip set via
+`config.EffectiveContextDiscovery()`, the single accessor both discovery call sites
+(manifest and wrapper state) must use.
+
+The walk result is cached once per `workDir` (paths + labels + truncation flag).
+Root-level matches remain the job of scoped resolution (D4); this set only contains
+files STRICTLY below the root (depth ≥ 1).
 
 ### D7. Manifest block
 
@@ -179,10 +197,19 @@ path only if neither exists). The block carries one sentence explaining that bod
 are not loaded and arrive automatically on first directory touch. Absent entirely when
 nothing was discovered — zero prompt delta for repos without nested context files.
 
-The manifest is computed at prompt-build time using the process-level discovery cache
-and is byte-stable (same inputs ⇒ same output), so it satisfies D3 without special
+The manifest is computed at prompt-build time purely from the process-level discovery
+cache — paths AND labels; no disk reads — so byte-stability is structural: editing a
+nested file mid-session cannot change the manifest, satisfying D3 without special
 treatment. A per-manifest line and total-byte cap (overflow: paths-only, then trailing
 "N more" line) prevents adversarially large subtrees from bloating the manifest itself.
+
+Files the agent's/step's own scoped `context.paths` layers already inline (exact
+entries and trailing-slash subtrees, with the same layer-participation rule as
+resolution — a layer dropped by a higher `replace` does NOT subtract) are filtered
+out of BOTH the manifest and the disclosure wrapper state via one shared,
+deterministic helper (`contextfile.FilterDiscovered`), keeping the two surfaces in
+agreement: a body already in the prompt is never listed as "not loaded" and never
+injected a second time.
 
 ### D8. Activation trigger and owner resolution
 
@@ -205,7 +232,12 @@ arg itself for directory-taking tools) must be strictly equal to or inside a nes
 context file's owning directory. Owner resolution: walk from the target directory up
 to (but excluding) `workDir`, collect every nested context file on the upward path,
 inject not-yet-injected ones outermost-first — reproducing Claude Code's additive
-layering without mutating the system prompt.
+layering without mutating the system prompt. Owner matching canonicalizes BOTH sides
+(discovered dirs and the model-supplied target) with the resolver-dedup normalization
+(`EvalSymlinks` on the deepest existing ancestor + lowercase): macOS/Windows default
+filesystems are case-insensitive, so the inner tool call succeeds with a
+differently-cased path while a byte-exact comparison would silently skip the
+injection.
 
 ### D9. Injection mechanism: `contextDisclosureWrapper`
 
@@ -221,7 +253,11 @@ is applied INSIDE deferral — `maybeDefer(maybeWrapDisclosure(t))` — so
 working for a tool that is both deferred and a trigger. The wrapper: extracts the path
 parameter from the serialized tool call, calls the inner tool, and on SUCCESS appends a
 `<system-reminder>`-tagged block to the tool result content carrying the `# From:<abs-path>`
-header and the file body. On failure the tool result is returned unchanged.
+header and the file body. Literal `<system-reminder>` / `</system-reminder>` strings
+inside the body are defused before wrapping (backslash after `<`, content preserved):
+a repo file must not be able to close the reminder early and pass its remainder off
+as genuine tool output, or forge a reminder with a fabricated `# From:` header. On
+failure the tool result is returned unchanged.
 
 Precedent for `<system-reminder>`-wrapped tool results: `toolsearch` (`tools/toolsearch.go`).
 The injection MUST fire only on a successful inner call — injecting directory context
@@ -235,6 +271,16 @@ the tool result is returned as-is. Session byte budget exhaustion at activation 
 log INFO once per session and stop injecting further bodies (the model may still touch
 those directories; only the body injection stops). None of these paths return an error
 to the caller.
+
+The activation read itself is bounded and re-verified — the discovery cache is
+process-lifetime and the filesystem can change under it. Per candidate: `Lstat` first
+(rejects a post-discovery symlink swap, FIFO, or device WITHOUT opening — opening a
+FIFO read-only blocks forever); re-check symlink-resolved workDir containment; then
+`Open` + `Stat` on the opened descriptor (no TOCTOU on size/type) and read through
+`io.LimitReader(f, maxFileBytes+1)` so an under-reporting `Stat` can never smuggle an
+unbounded read past the cap (a link to `/dev/zero` stats as size 0). All of this runs
+under the shared disclosure mutex, so bounding the read also bounds how long
+concurrent trigger tools can be stalled.
 
 ### D11. Per-session activation state
 

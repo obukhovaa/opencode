@@ -17,10 +17,22 @@ effective global `contextPaths` (directory-type entries with a trailing `/` are
 excluded from the basename set). The walk SHALL use `filepath.WalkDir` with a
 hardcoded skip set mirroring `internal/llm/tools/ls.go` `shouldSkip()` (hidden-dot
 prefix, `.git`, `node_modules`, `vendor`, `dist`/`build`/`target` and similar build
-directories) plus the configured data directory. `.gitignore` honoring is a
+directories) plus the configured data directory (`data.directory`, which may be a
+non-hidden name — both discovery call sites obtain the skip set through the same
+config accessor so manifest and injection agree). `.gitignore` honoring is a
 deliberate non-goal for v1 (no gitignore library in `go.mod`; ripgrep is an external
 binary unsuitable for the prompt-build path); the caps bound over-discovery. The walk
 result is cached for the process lifetime.
+
+Candidates MUST be regular files: symlinks (and any other non-regular entry) are
+rejected with a WARN — git preserves symlinks, and a committed
+`docs/AGENTS.md -> ~/.ssh/id_rsa` would otherwise be read with no permission prompt.
+As defense in depth, each accepted candidate is symlink-resolved (`EvalSymlinks`)
+and MUST resolve strictly inside the symlink-resolved `workDir` — the same
+containment order scoped entries get. Each discovered file's manifest label
+(frontmatter `description`, else first markdown heading) is extracted ONCE at
+discovery time, behind these checks, and cached with the walk result; prompt-build
+never reads candidate files from disk.
 
 Discovery is governed by the `contextDiscovery` top-level config object:
 `enabled` (default `true`), `maxFiles` (default 100), `maxDepth` (default 8),
@@ -57,6 +69,20 @@ leaving discovery enabled for other agents.
 - **THEN** the discovery set contains at most `maxFiles` entries (walk order
   determines which files make the cut) and the manifest header notes the truncation
 
+#### Scenario: Symlinked candidate is rejected
+
+- **WHEN** the subtree contains a symlink `docs/AGENTS.md` pointing at a file
+  outside `workDir` (or anywhere — candidates must be regular files)
+- **THEN** the symlink does not enter the discovery set: it is never listed in the
+  manifest and never injected into a tool result
+
+#### Scenario: Non-hidden configured data directory is skipped
+
+- **WHEN** `data.directory` is set to a non-hidden name (e.g. `opencode-data`) and
+  that directory contains a matching basename
+- **THEN** the walk skips the directory and the file is neither manifest-listed nor
+  injected
+
 ### Requirement: Manifest block is present, cache-stable, and well-formed
 
 When ≥1 nested file was discovered and the agent/step has not opted out, the system
@@ -67,13 +93,22 @@ relative path only if neither exists). The section SHALL include a sentence stat
 that the listed file bodies are NOT loaded into this prompt and that they will be
 injected automatically the first time a tool touches the owning directory.
 
-The manifest content MUST be byte-identical across all turns of a session. It is
-computed once from the process-level discovery cache and the current resolution inputs
-(which are themselves byte-stable per session per D3 in design.md). When the manifest
-would exceed a total-byte cap, it degrades to paths-only, then to a
-`"... N more files not shown"` trailing line. The manifest is absent when nothing was
-discovered or the agent/step is opted out — producing no prompt delta for repos without
-nested context files.
+The manifest content MUST be byte-identical across all turns of a session. Stability
+is structural: labels ride the process-level discovery cache (computed once at walk
+time), so rendering never reads the disk and editing a nested file mid-session cannot
+change the manifest bytes. When the manifest would exceed a total-byte cap, it
+degrades to paths-only, then to a `"... N more files not shown"` trailing line. The
+manifest is absent when nothing was discovered or the agent/step is opted out —
+producing no prompt delta for repos without nested context files.
+
+Files that the agent's or step's own scoped `context.paths` layers already inline
+into the system prompt (exact path entries and trailing-slash subtrees, following the
+same layer-participation rule as resolution) MUST be subtracted from that agent's
+manifest AND from its disclosure state — the body is already in the prompt, so
+listing it as "NOT loaded" would be false and injecting it again would deliver it
+twice. The subtraction is computed with the same deterministic filter on both sides,
+so manifest and injection always agree; a different agent without that layer keeps
+the full candidate set.
 
 #### Scenario: Manifest appears for a repo with nested context files
 
@@ -94,6 +129,15 @@ nested context files.
 - **WHEN** the manifest would exceed its total-byte cap due to long labels
 - **THEN** the manifest degrades first to paths-only lines, then to a trailing
   `"... N more files not shown"` summary — never exceeding the cap
+
+#### Scenario: File inlined by a scoped layer is neither listed nor injected
+
+- **WHEN** an agent declares `context: { paths: ["services/auth/AGENTS.md"], mode: append }`
+  and `services/auth/AGENTS.md` is in the discovery set
+- **THEN** that agent's manifest omits `services/auth/AGENTS.md` and its first tool
+  call into `services/auth/` injects nothing for it (the body is already inline)
+- **AND** a different agent without that layer still lists it and still receives the
+  injection on first touch
 
 ### Requirement: Trigger set and the strictly-inside activation rule
 
@@ -123,7 +167,11 @@ of the nested set and none of its owning directories are in the discovery set.
 
 Owner resolution walks upward from the target directory to (but excluding) `workDir`,
 collecting every nested context file whose owning directory is on the path, and
-injecting not-yet-injected ones outermost-first.
+injecting not-yet-injected ones outermost-first. Both sides of the owner comparison —
+the discovered owning directories and the model-supplied target directory — are
+canonicalized with the same EvalSymlinks + lowercase normalization the resolver's
+dedup uses, so a differently-cased path on a case-insensitive filesystem (macOS,
+Windows defaults) still matches its owners.
 
 #### Scenario: First `read` into a subdirectory triggers injection
 
@@ -154,6 +202,11 @@ Nested context bodies SHALL be delivered exclusively by appending to the content
 triggering tool's result, wrapped in `<system-reminder>` tags with the `# From:<abs-path>`
 header preceding the body. The system prompt MUST NOT be mutated between turns.
 
+Any literal `<system-reminder>` / `</system-reminder>` occurrence INSIDE the body is
+neutralized before wrapping (a backslash after `<` defuses the tag while preserving
+the content) — a repo file must not be able to terminate the reminder block early,
+forge tool output, or open a fabricated reminder with a fake `# From:` header.
+
 Activation MUST fire only when the inner tool call SUCCEEDED (non-error result).
 Injecting directory context because a `read` of a nonexistent file returned an error
 is prohibited — it is noise with no useful signal.
@@ -163,6 +216,14 @@ is prohibited — it is noise with no useful signal.
 - **WHEN** `services/auth/AGENTS.md` is injected after a successful `read`
 - **THEN** the appended content includes the text
   `<system-reminder>\n# From:/abs/path/to/services/auth/AGENTS.md\n<body>\n</system-reminder>`
+
+#### Scenario: A body containing literal reminder tags cannot forge framing
+
+- **WHEN** a nested context file's body contains the literal strings
+  `</system-reminder>` and `<system-reminder>`
+- **THEN** the appended tool-result content contains exactly ONE opening and ONE
+  closing `<system-reminder>` tag (the wrapper's own framing); the body's literal
+  tags are defused in place with their content preserved
 
 #### Scenario: System prompt is unchanged after activation
 
@@ -223,6 +284,16 @@ and activation, or exceeding `maxFileBytes`) SHALL be silently skipped: the trig
 tool's result is returned to the model unchanged, with no error propagation. The skip
 is logged at WARN level naming the file and the reason.
 
+The activation-time read is bounded and re-verified: the discovery cache lives for
+the process lifetime and the filesystem can change underneath it, so before reading,
+the file MUST re-pass the regular-file check (Lstat — a FIFO or device is skipped
+without opening, a post-discovery symlink swap is caught before following it) and the
+symlink-resolved workDir containment check; the size is checked via Stat on the
+OPENED descriptor (no TOCTOU window) and the read goes through a limit reader capped
+at `maxFileBytes`+1 bytes, so even an under-reporting Stat can never cause an
+unbounded read. The activation path never loads more than `maxFileBytes`+1 bytes of
+any candidate into memory.
+
 The disclosure wrapper SHALL be entirely absent from the tool chain when discovery is
 disabled (`contextDiscovery.enabled = false`) or when no nested files were found in
 the walk — zero allocation and zero behavior change.
@@ -233,6 +304,14 @@ the walk — zero allocation and zero behavior change.
   activation (e.g., permissions changed), and the model calls `read services/auth/handler.go`
 - **THEN** the `read` result is returned to the model normally
 - **AND** a WARN log records the skipped injection with file path and error
+
+#### Scenario: Post-discovery symlink swap is not followed
+
+- **WHEN** `services/auth/AGENTS.md` was discovered as a regular file and is later
+  replaced by a symlink pointing outside `workDir`, and the model then touches
+  `services/auth/`
+- **THEN** the activation-time re-verification skips the file with a WARN and nothing
+  from outside `workDir` is injected
 
 #### Scenario: Wrapper absent when discovery finds nothing
 

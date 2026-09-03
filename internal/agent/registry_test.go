@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/permission"
 )
 
@@ -558,6 +559,85 @@ func TestMergeMarkdownSkillsNilPreserves(t *testing.T) {
 
 	if len(existing.Skills) != 1 || existing.Skills[0] != "skill-a" {
 		t.Errorf("nil Skills in overlay should preserve existing, got %v", existing.Skills)
+	}
+}
+
+// TestParseAgentMarkdownWithContext pins the context-resolution spec
+// scenario "Markdown-agent frontmatter sets scoped paths": the `context`
+// object round-trips from YAML frontmatter into AgentInfo.Context.
+func TestParseAgentMarkdownWithContext(t *testing.T) {
+	dir := t.TempDir()
+	md := `---
+description: Runtime specialist
+mode: subagent
+context:
+  paths:
+    - RUNTIME.md
+    - AGENTS.${agent}.md
+  mode: replace
+  nested: false
+---
+
+You focus on runtime concerns.
+`
+	path := filepath.Join(dir, "runtime.md")
+	os.WriteFile(path, []byte(md), 0o644)
+
+	agent, err := parseAgentMarkdown(path)
+	if err != nil {
+		t.Fatalf("parseAgentMarkdown() error = %v", err)
+	}
+
+	if agent.Context == nil {
+		t.Fatal("Context frontmatter did not parse")
+	}
+	if len(agent.Context.Paths) != 2 || agent.Context.Paths[0] != "RUNTIME.md" || agent.Context.Paths[1] != "AGENTS.${agent}.md" {
+		t.Errorf("Context.Paths = %v, want [RUNTIME.md AGENTS.${agent}.md]", agent.Context.Paths)
+	}
+	if agent.Context.Mode != "replace" {
+		t.Errorf("Context.Mode = %q, want replace", agent.Context.Mode)
+	}
+	if agent.Context.Nested == nil || *agent.Context.Nested {
+		t.Errorf("Context.Nested = %v, want false", agent.Context.Nested)
+	}
+}
+
+// TestMergeMarkdownContextReplace mirrors the Skills merge cases: a
+// declared markdown `context` replaces the inherited object wholly.
+func TestMergeMarkdownContextReplace(t *testing.T) {
+	existing := AgentInfo{
+		ID:      "myagent",
+		Context: &contextfile.AgentContext{Paths: []string{"OLD.md"}, Mode: "append"},
+	}
+
+	md := AgentInfo{
+		Context: &contextfile.AgentContext{Paths: []string{"NEW.md"}, Mode: "replace"},
+	}
+
+	mergeMarkdownIntoExisting(&existing, &md)
+
+	if existing.Context == nil || len(existing.Context.Paths) != 1 || existing.Context.Paths[0] != "NEW.md" {
+		t.Errorf("Context should be replaced wholly, got %+v", existing.Context)
+	}
+	if existing.Context.Mode != "replace" {
+		t.Errorf("Context.Mode = %q, want replace", existing.Context.Mode)
+	}
+}
+
+// TestMergeMarkdownContextNilPreserves: a markdown file without a
+// `context` block must not clear an inherited one.
+func TestMergeMarkdownContextNilPreserves(t *testing.T) {
+	existing := AgentInfo{
+		ID:      "myagent",
+		Context: &contextfile.AgentContext{Paths: []string{"KEEP.md"}, Mode: "replace"},
+	}
+
+	md := AgentInfo{Description: "just a description override"}
+
+	mergeMarkdownIntoExisting(&existing, &md)
+
+	if existing.Context == nil || len(existing.Context.Paths) != 1 || existing.Context.Paths[0] != "KEEP.md" {
+		t.Errorf("nil Context in overlay should preserve existing, got %+v", existing.Context)
 	}
 }
 
