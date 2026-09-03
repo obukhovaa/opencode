@@ -121,7 +121,10 @@ keys and are not affected by key folding.
   bearing a `context` object, and the config is loaded through viper
 - **THEN** a `viper.Unmarshal` round-trip unit test confirms the `Context.Paths`,
   `Context.Mode`, and `Context.Nested` fields survive, while the agent-map key is
-  folded to lowercase — and the folded key continues to be matched by the registry
+  folded to lowercase — the folded lowercase key is what `applyConfigOverrides`
+  sees, so the override lands as expected for lowercase agent IDs (all built-ins);
+  a mixed-case markdown agent ID does not merge with a JSON override — a
+  pre-existing limitation of every per-agent JSON field, not new to `context`
 
 ### Requirement: Shell-free templating with workDir containment
 

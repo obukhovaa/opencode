@@ -2,9 +2,10 @@
 
 ## 1. `internal/contextfile` package
 
-- [ ] 1.1 Create `internal/contextfile/` package; move `processContextPaths`,
+- [ ] 1.1 Create `internal/contextfile/` package — a true leaf importing only the
+  stdlib and `internal/logging` (never `internal/config`); move `processContextPaths`,
   `processFile`, and `tryMarkProcessed` from `internal/llm/prompt/prompt.go`
-  (L602-688) into `contextfile/resolver.go`; preserve the `# From:<abs-path>\n<body>`,
+  (L617-703) into `contextfile/resolver.go`; preserve the `# From:<abs-path>\n<body>`,
   sort-by-absolute-path, silent-skip-on-missing, and EvalSymlinks+lowercase-dedup
   behaviors exactly
 
@@ -16,7 +17,10 @@
 - [ ] 1.3 Implement the three-layer merge in `ResolveForAgent(globalPaths []string,
   agentCtx *AgentContext, stepCtx *StepContext, workDir string) string` applying
   precedence `step > agent > global` with `replace`/`append` semantics and
-  cross-layer deduplication via the existing `tryMarkProcessed` logic
+  cross-layer deduplication via the existing `tryMarkProcessed` logic; define the
+  `AgentContext`, `StepContext`, and `DiscoveryConfig` types HERE — `config`, the
+  agent registry, and `flow` reference them as `contextfile.*`, so the import edge
+  always points at the leaf
 
 - [ ] 1.4 Implement shell-free templating (`expandTokens(entry string, vars
   TemplateVars) (string, bool)`) for `${agent}`, `${flow.id}`, `${flow.step}`,
@@ -36,8 +40,12 @@
 - [ ] 2.1 Implement `Discover(workDir string, globalPaths []string, cfg
   DiscoveryConfig) DiscoveryResult` in `contextfile/discovery.go`; extract basename
   set from file-type (non-trailing-slash) entries of `globalPaths`; walk subtree with
-  `filepath.WalkDir` honoring `.gitignore` via existing ignore library; hard-skip
-  `.git`, `node_modules`, `vendor`, data directory; apply `maxDepth`, `maxFiles`
+  `filepath.WalkDir` using a hardcoded skip set mirroring `internal/llm/tools/ls.go`
+  `shouldSkip()` (hidden-dot prefix, `.git`, `node_modules`, `vendor`,
+  `dist`/`build`/`target` etc.) plus the configured data directory — `.gitignore`
+  honoring is a deliberate non-goal for v1 (no gitignore library in `go.mod`; ripgrep
+  is an external binary unsuitable for the prompt-build path); the caps bound
+  over-discovery; apply `maxDepth`, `maxFiles`
   caps; cache result by `workDir` in a `sync.Map`; files at depth 0 (root) are
   excluded from the result set
 
@@ -48,8 +56,9 @@
   "... N more"; absent (empty string) when `len(discovered) == 0`
 
 - [ ] 2.3 Add unit tests for `Discover`: finds AGENTS.md in subdirectory but not at
-  root; ignores .git subtree; respects maxDepth and maxFiles; cached on second call
-  (no re-walk); `enabled: false` returns empty result
+  root; skips `.git` / `node_modules` / hidden-dot subtrees via the hardcoded skip
+  set (`.gitignore` is not consulted in v1); respects maxDepth and maxFiles; cached
+  on second call (no re-walk); `enabled: false` returns empty result
 
 - [ ] 2.4 Add unit tests for `RenderManifest`: present when files found; absent when
   none; label extraction from frontmatter vs heading; overflow degradation; byte-stable
@@ -57,25 +66,33 @@
 
 ## 3. Config surface
 
-- [ ] 3.1 Add `AgentContext` struct (`Paths []string`, `Mode string`, `Nested *bool`)
-  and `Agent.Context *AgentContext` to `internal/config/config.go`; add
-  `ContextDiscoveryConfig` struct (`Enabled bool`, `MaxFiles int`, `MaxDepth int`,
-  `MaxFileBytes int`, `MaxSessionBytes int`) and `Config.ContextDiscovery
-  *ContextDiscoveryConfig`; set defaults in `setDefaults()` (L594): `enabled: true`,
+- [ ] 3.1 Reference the `contextfile` types from `internal/config/config.go`: add
+  `Agent.Context *contextfile.AgentContext` (`Paths []string`, `Mode string`,
+  `Nested *bool`) and `Config.ContextDiscovery *contextfile.DiscoveryConfig`
+  (`Enabled bool`, `MaxFiles int`, `MaxDepth int`, `MaxFileBytes int`,
+  `MaxSessionBytes int`) — both types are defined in `internal/contextfile` (task
+  1.3), so `config` imports the leaf, never the reverse; set defaults in
+  `setDefaults()` (config.go:718, next to the `contextPaths` default at :720) via
+  `viper.SetDefault("contextDiscovery.enabled", true)` etc.: `enabled: true`,
   `maxFiles: 100`, `maxDepth: 8`, `maxFileBytes: 32768`, `maxSessionBytes: 131072`
+  — note `viper.SetDefault` makes `Config.ContextDiscovery` always non-nil after
+  `Unmarshal`, which is desired
 
 - [ ] 3.2 Add `AgentInfo.Context *contextfile.AgentContext` to
   `internal/agent/registry.go` (yaml frontmatter parses automatically); add merge in
-  `applyConfigOverrides` (mirror `DeferredTools` `maps.Copy` block, L463-468) and in
-  `mergeMarkdownIntoExisting` (mirror L533-538 block)
+  `applyConfigOverrides` (registry.go:418-516; mirror the `DeferredTools` `maps.Copy`
+  block at 495-501) and in `mergeMarkdownIntoExisting` (registry.go:531-603; mirror
+  the 578-583 block)
 
-- [ ] 3.3 Add `StepContext` struct (`Paths []string`, `Mode string`, `Nested *bool`)
-  and `Step.Context *StepContext yaml:"context,omitempty"` to
-  `internal/flow/flow.go`; no entry in `nonInheritableStepKeys` — confirm this by
+- [ ] 3.3 Add `Step.Context *contextfile.StepContext` (yaml tag
+  `context,omitempty`) to `internal/flow/flow.go` — the `StepContext` struct
+  (`Paths []string`, `Mode string`, `Nested *bool`) is defined in
+  `internal/contextfile` (task 1.3); no entry in `nonInheritableStepKeys` — confirm this by
   reviewing `include.go:182-187` and adding a comment noting it is intentionally absent
 
-- [ ] 3.4 Declare `context` field shape in `cmd/schema/main.go` for both the
-  `agents.*` agent def and the standalone agent schema block; declare
+- [ ] 3.4 Declare the `context` field shape in `cmd/schema/main.go` by adding it to
+  `agentSchema` `additionalProperties.properties` — that one map is shared by
+  `agents.*` and `#/definitions/agent`, so one edit covers both surfaces; declare
   `contextDiscovery` at the top-level schema; regenerate `opencode-schema.json` via
   `go run cmd/schema/main.go > opencode-schema.json`
 
@@ -86,7 +103,7 @@
 
 ## 4. Prompt integration
 
-- [ ] 4.1 Replace `getContextFromPaths()` + `sync.Once` (prompt.go:578-594) with a
+- [ ] 4.1 Replace `getContextFromPaths()` + `sync.Once` (prompt.go:593-611) with a
   call to `contextfile.ResolveForAgent(cfg.ContextPaths, agentInfo.Context,
   nil /*stepCtx*/, cfg.WorkingDir)` in `getAgentPromptInternal`; remove
   `processContextPaths`, `processFile`, `tryMarkProcessed` from `prompt.go` (they now
@@ -97,19 +114,27 @@
   to the system prompt when non-empty; guard on `info.Context.nested != false` (opt-out)
 
 - [ ] 4.3 Update `internal/llm/prompt/prompt_test.go`: update any test that assumed the
-  `sync.Once` global or the old `processContextPaths` signature; add a comment in the
-  base-prompt budget test noting the manifest section is exempt; add the explicit
-  backward-compat scenario ("no agent/step context config ⇒ byte-identical prompt")
+  `sync.Once` global or the old `processContextPaths` signature (they port to
+  `internal/contextfile` per task 1.5); add the explicit backward-compat scenario
+  ("no agent/step context config ⇒ byte-identical prompt"). No budget-test change is
+  required: `TestBasePromptBudgets` (`prompt_budget_test.go:17-36`) measures only the
+  base prompt constructors, so the manifest is exempt by construction — an
+  acknowledging comment there is optional
 
 ## 5. Flow integration
 
-- [ ] 5.1 In `internal/flow/service.go` `runStep` (L396-440 area), read `step.Context`
-  and pass a `contextfile.StepContext` into agent construction; the flow context values
-  `FlowIDContextKey` / `FlowStepIDContextKey` (already set at L558-561) provide
-  `${flow.id}` and `${flow.step}` template tokens
+- [ ] 5.1 In `internal/flow/service.go` `runStep` (service.go:461), read `step.Context`
+  and pass a `contextfile.StepContext` into agent construction (`NewAgent` call at
+  service.go:513); populate the `${flow.id}` / `${flow.step}` template tokens
+  explicitly from `f.ID` and `step.ID`, both in scope at the call site — NOT from
+  `FlowIDContextKey` / `FlowStepIDContextKey`, which are set later (service.go:654-656)
+  on the Run ctx for telemetry and are invisible to the context-free `NewAgent`
+  (factory.go:207-208 discards its ctx)
 
-- [ ] 5.2 Thread `stepCtx *contextfile.StepContext` through `NewAgent` signature in
-  the agent factory and into `getAgentPromptInternal`; use it in
+- [ ] 5.2 Thread `stepCtx *contextfile.StepContext` through the `NewAgent` signature
+  in the agent factory and into `getAgentPromptInternal`; the flow/step template
+  values ride the `StepContext` (or a `contextfile.TemplateVars`) through the
+  signature because `NewAgent` discards its ctx (factory.go:207-208); use it in
   `contextfile.ResolveForAgent` for the step-layer resolution
 
 - [ ] 5.3 Add test: a flow YAML with a step declaring `context: { paths:
@@ -120,17 +145,22 @@
 ## 6. Progressive disclosure: wrapper and activation
 
 - [ ] 6.1 Implement `contextDisclosureWrapper` in `internal/llm/agent/tools.go`:
-  wraps `read`, `write`, `edit`, `patch`, `grep`, `glob`, `ls` tools only when
-  `discoveryResult` is non-empty; recognizable by type assertion (mirrors
-  `DeferredWrapper`); holds per-session activation map (`sessionID → set[absPath]`)
-  and per-session byte-count map; delegates all `BaseTool` interface methods to the
-  inner tool
+  wraps `read`, `write`, `edit`, `multiedit`, `patch`, `grep`, `glob`, `ls` tools
+  only when `discoveryResult` is non-empty (`delete` is deliberately not a trigger:
+  removing files is not working-within-a-subtree that benefits from its
+  instructions); recognizable by type assertion (mirrors `DeferredWrapper`); all
+  wrappers of one toolset share ONE disclosure-state object (mutex + `sessionID →
+  set[absPath]` + `sessionID → injectedBytes`) created in `NewToolSet` and passed by
+  pointer — mirroring the shared `deferSeq` counter (`WrapDeferred`, deferred.go:33);
+  delegates all `BaseTool` interface methods to the inner tool
 
-- [ ] 6.2 Implement path-extraction helpers in `internal/llm/tools/tools.go` (or a
-  new `internal/llm/tools/context_trigger.go`): one function per trigger tool taking
-  the serialized JSON params and returning the resolved target directory; `grep` with
-  no `path` arg returns empty string (activates nothing); `glob` combines `path` and
-  directory prefix of the pattern; all others derive parent directory of `file_path`
+- [ ] 6.2 Extend the existing `tools.ExtractPathsFromCall`
+  (`internal/llm/tools/tools.go:167`) rather than writing greenfield helpers — it
+  already parses `patch` paths from `patch_text` section headers (via
+  `diff.IdentifyFilesNeeded`/`IdentifyFilesAdded`) and the generic `file_path`/`path`
+  params; add on top: `grep` with no `path` arg returns nothing (activates nothing);
+  `glob` combines `path` and the literal directory prefix of the pattern; file-taking
+  tools (`read`/`write`/`edit`/`multiedit`) derive the parent directory of `file_path`
 
 - [ ] 6.3 Implement owner resolution in `contextfile/discovery.go`:
   `OwnersForPath(dir string, discovered []string, workDir string) []string` — walks
@@ -138,18 +168,25 @@
   directory is on the path, outermost-first
 
 - [ ] 6.4 Wire the wrapper into `NewToolSet` (`internal/llm/agent/tools.go`): after
-  the discovery walk result is available (cached call), wrap the trigger tools via
-  `maybeWrapDisclosure(t, discoveryResult, perSessionState)`; install zero wrappers
-  when discovery result is empty; per-session state is a value on the wrapper, not a
-  global
+  the discovery walk result is available (cached call), wrap the trigger tools
+  INSIDE deferral — `maybeDefer(maybeWrapDisclosure(t))` — so `*tools.DeferredWrapper`
+  stays outermost and the four existing type assertions (anthropic.go:588,
+  agent.go:2235, agent.go:2353, agent/tools.go:328) keep working; install zero
+  wrappers when discovery result is empty; the shared disclosure-state object is
+  created once per toolset in `NewToolSet` (per-toolset, not per-wrapper, not a
+  global)
 
 - [ ] 6.5 Add unit tests for the wrapper: first read into `services/auth/` triggers
-  injection of `services/auth/AGENTS.md`; second read does not re-inject; outermost-
+  injection of `services/auth/AGENTS.md`; second read does not re-inject; cross-tool
+  dedup — a `read` fires the injection and a `grep` on the same directory does not
+  re-inject (exercises the shared per-toolset state); outermost-
   first when both `services/AGENTS.md` and `services/auth/AGENTS.md` are discovered;
   whole-tree grep with no `path` activates nothing; failed tool call does not trigger
   injection; unreadable file is skipped (WARN logged, tool result unchanged); budget
   exhaustion logs INFO and stops injecting; two sessions on the same agent instance
-  are isolated (session A's activations not visible to session B)
+  are isolated (session A's activations not visible to session B); a tool that is
+  both deferred and a trigger keeps `*tools.DeferredWrapper` outermost and both
+  behaviors work
 
 ## 7. Docs and e2e
 
@@ -178,7 +215,8 @@
     (verify via log or prompt-dump)
   - runs a second `read` into the same directory and confirms no duplicate injection
 
-- [ ] 7.6 Run `make test` and `make test-e2e` green; correct any budget test failures
-  caused by the manifest section in test workspaces (guard discovery off in unit tests
-  by setting `contextDiscovery.enabled = false` in test configs where the walk would
-  find unexpected files)
+- [ ] 7.6 Run `make test` and `make test-e2e` green; for NEW tests that assert on
+  full assembled prompts (e.g. the byte-identical backward-compat test), guard
+  discovery off by setting `contextDiscovery.enabled = false` in test configs where
+  the walk would find unexpected files (`TestBasePromptBudgets` needs no guard — it
+  measures base prompt constructors only)

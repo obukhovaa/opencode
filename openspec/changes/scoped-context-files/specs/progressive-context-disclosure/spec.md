@@ -14,10 +14,13 @@ opt-out.
 Once per process per `workDir`, the system SHALL walk the subtree strictly below
 `workDir` (depth ≥ 1) to find files whose basename matches any file-type entry in the
 effective global `contextPaths` (directory-type entries with a trailing `/` are
-excluded from the basename set). The walk SHALL honor the project's ignore machinery
-(`.gitignore` files via the existing ignore library) and SHALL hard-skip `.git`,
-`node_modules`, `vendor`, and the configured data directory. The walk result is cached
-for the process lifetime.
+excluded from the basename set). The walk SHALL use `filepath.WalkDir` with a
+hardcoded skip set mirroring `internal/llm/tools/ls.go` `shouldSkip()` (hidden-dot
+prefix, `.git`, `node_modules`, `vendor`, `dist`/`build`/`target` and similar build
+directories) plus the configured data directory. `.gitignore` honoring is a
+deliberate non-goal for v1 (no gitignore library in `go.mod`; ripgrep is an external
+binary unsuitable for the prompt-build path); the caps bound over-discovery. The walk
+result is cached for the process lifetime.
 
 Discovery is governed by the `contextDiscovery` top-level config object:
 `enabled` (default `true`), `maxFiles` (default 100), `maxDepth` (default 8),
@@ -101,14 +104,20 @@ The disclosure wrapper SHALL monitor these built-in tool calls for directory con
 | `read` | `file_path` (parent directory) |
 | `write` | `file_path` (parent directory) |
 | `edit` | `file_path` (parent directory) |
-| `patch` | `file_path` per patch section (parent directory of each) |
+| `multiedit` | `file_path` (parent directory) |
+| `patch` | file paths parsed from `patch_text` section headers (parent directory of each) |
 | `grep` | `path` when set (itself if directory; parent if file) |
 | `glob` | `path` (itself if directory; parent if file) + directory prefix of the pattern |
 | `ls` | `path` |
 
-The `bash` tool is explicitly NOT a trigger. Activation fires only when the tool's
-resolved target directory is **strictly equal to or strictly inside** a nested context
-file's owning directory (the directory containing the discovered file). A tool call
+The `bash` tool is explicitly NOT a trigger. The `delete` tool is also not a trigger:
+removing files is not working-within-a-subtree that benefits from its instructions.
+Path extraction SHALL reuse and extend the existing `tools.ExtractPathsFromCall`
+(`internal/llm/tools/tools.go:167`) for all trigger tools, adding the glob
+pattern-prefix and grep-without-path rules on top of it. Activation fires only when
+the tool's resolved target directory is **strictly equal to or strictly inside** a
+nested context file's owning directory (the directory containing the discovered
+file). A tool call
 whose resolved directory is `workDir` itself activates nothing — `workDir` is the root
 of the nested set and none of its owning directories are in the discovery set.
 
@@ -171,7 +180,10 @@ is prohibited — it is noise with no useful signal.
 
 Each session tracks independently which nested context files it has already received.
 A file SHALL be injected at most once per session regardless of how many tool calls
-touch its directory. Subagent sessions (spawned via the `task` tool) have their own
+touch its directory — including across different trigger tools (a `read` may fire the
+injection and a later `grep` on the same directory must not re-inject), which requires
+the activation state to be ONE shared per-toolset object passed to every trigger-tool
+wrapper rather than independent per-wrapper state. Subagent sessions (spawned via the `task` tool) have their own
 activation set and do NOT inherit the parent session's activations — a subagent that
 never touches a directory must not receive its context.
 
