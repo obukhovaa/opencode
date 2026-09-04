@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/contextfile"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -171,7 +172,7 @@ type scriptedAgentFactory struct {
 	agent agentpkg.Service
 }
 
-func (f *scriptedAgentFactory) NewAgent(context.Context, string, map[string]any, string, bool, []bridge.PeerRef) (agentpkg.Service, error) {
+func (f *scriptedAgentFactory) NewAgent(context.Context, string, map[string]any, string, bool, []bridge.PeerRef, *contextfile.StepContext, contextfile.TemplateVars) (agentpkg.Service, error) {
 	return f.agent, nil
 }
 

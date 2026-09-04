@@ -8,6 +8,33 @@
           "description": "Badge color for subagent display (e.g., 'blue', 'orange', 'primary', 'warning')",
           "type": "string"
         },
+        "context": {
+          "description": "Scoped context files for this agent's system prompt. Declared paths replace (default) or append to the global contextPaths. Path entries support the ${agent}, ${flow.id}, ${flow.step}, and ${env.VAR} template tokens and must resolve inside the working directory. See docs/context.md.",
+          "properties": {
+            "mode": {
+              "default": "replace",
+              "description": "How the declared paths combine with lower-precedence layers: 'replace' discards them, 'append' concatenates after them. An unrecognized value falls back to append with a warning.",
+              "enum": [
+                "replace",
+                "append"
+              ],
+              "type": "string"
+            },
+            "nested": {
+              "default": true,
+              "description": "Opt out of nested-context manifest and body injection for this agent when false.",
+              "type": "boolean"
+            },
+            "paths": {
+              "description": "Context file paths relative to the working directory. A trailing slash recurses into the directory.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
         "deferredTools": {
           "additionalProperties": {
             "description": "Whether tools matching this pattern are deferred",
@@ -207,6 +234,33 @@
           "color": {
             "description": "Badge color for subagent display (e.g., 'blue', 'orange', 'primary', 'warning')",
             "type": "string"
+          },
+          "context": {
+            "description": "Scoped context files for this agent's system prompt. Declared paths replace (default) or append to the global contextPaths. Path entries support the ${agent}, ${flow.id}, ${flow.step}, and ${env.VAR} template tokens and must resolve inside the working directory. See docs/context.md.",
+            "properties": {
+              "mode": {
+                "default": "replace",
+                "description": "How the declared paths combine with lower-precedence layers: 'replace' discards them, 'append' concatenates after them. An unrecognized value falls back to append with a warning.",
+                "enum": [
+                  "replace",
+                  "append"
+                ],
+                "type": "string"
+              },
+              "nested": {
+                "default": true,
+                "description": "Opt out of nested-context manifest and body injection for this agent when false.",
+                "type": "boolean"
+              },
+              "paths": {
+                "description": "Context file paths relative to the working directory. A trailing slash recurses into the directory.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "type": "object"
           },
           "deferredTools": {
             "additionalProperties": {
@@ -426,6 +480,41 @@
           "default": "30m",
           "description": "How long an async subagent task may persist no new message on its own session before the runtime treats it as stalled and kills it, letting the step complete instead of parking until the flow deadline. Go duration string; \"0\" or any non-positive value disables detection. MUST exceed the largest single tool-call budget in the deployment (bash foreground hard cap 10m; MCP per-call budget 5m by default, raisable without limit via mcpServers.\u003cname\u003e.callToolTimeoutSeconds) or healthy subagents are killed mid-call. Applies to subagent tasks only — bash and monitor tasks are process-backed and a monitor is supposed to sit silent until its pattern matches. Defaults to \"30m\".",
           "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "contextDiscovery": {
+      "description": "Nested context file discovery (progressive context disclosure): a bounded walk below the working directory finds context files in subdirectories, lists them in a compact system-prompt manifest, and injects each file's body into the first tool result that touches its directory. See docs/context.md.",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "description": "Enable the discovery walk and manifest injection. Individual agents/steps can opt out with context.nested: false.",
+          "type": "boolean"
+        },
+        "maxDepth": {
+          "default": 8,
+          "description": "Maximum directory depth below the working directory the discovery walk descends into.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "maxFileBytes": {
+          "default": 32768,
+          "description": "Maximum size of a single nested context file eligible for body injection; larger files are skipped.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "maxFiles": {
+          "default": 100,
+          "description": "Maximum number of nested context files collected by the discovery walk (walk order decides which files make the cut).",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "maxSessionBytes": {
+          "default": 131072,
+          "description": "Total byte budget of nested context bodies injected into a single session; further injections are skipped once exhausted.",
+          "minimum": 1,
+          "type": "integer"
         }
       },
       "type": "object"

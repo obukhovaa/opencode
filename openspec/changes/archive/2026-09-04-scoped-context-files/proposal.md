@@ -1,7 +1,7 @@
 ## Why
 
 Context files (`AGENTS.md`, `CLAUDE.md`, everything in `contextPaths`) are loaded
-exactly once per process by a package-level `sync.Once` (`prompt.go:578-594`) and
+exactly once per process by a package-level `sync.Once` (`prompt.go:593-611`) and
 appended verbatim to the end of **every** agent's system prompt. There is no
 per-agent, per-flow-step, per-session, or environment variation. This has two
 consequences:
@@ -54,6 +54,25 @@ consequences:
 - **`contextPaths` is untouched.** Backward-compatible: agents without a `context`
   declaration and a config without `contextDiscovery` produce a byte-identical prompt.
 
+## Non-Goals
+
+- **`bash` is not a disclosure trigger.** Scanning command strings for path tokens
+  produces too many false positives and false negatives; the explicit path-taking
+  tools cover the working-in-a-subtree signal.
+- **No shell markup in context files.** `` !`cmd` `` expansion is explicitly absent
+  from context path entries and context file bodies — executing shell at prompt-build
+  time with no permission prompt is the exact hazard to avoid.
+- **No environment-variable export.** `${env.VAR}` reads a value into a path entry;
+  nothing is exported into the agent's environment and no shell interpretation occurs.
+- **No ancestor walk-up above `workDir`.** Discovery is strictly downward; parent
+  directories are never probed.
+- **No file watching or hot reload.** Editing a context file still requires a restart,
+  exactly as today.
+- **No `.gitignore` honoring in the discovery walk (v1).** There is no gitignore
+  library in `go.mod` and ripgrep is an external binary unsuitable for the
+  prompt-build path; the walk uses the hardcoded skip set (see design.md D6) and the
+  caps bound over-discovery.
+
 ## Capabilities
 
 ### New Capabilities
@@ -85,27 +104,38 @@ consequences:
   resolution-key digest), shell-free templating + containment check, path dedupe
   (reusing `EvalSymlinks`+lowercase canon from `processContextPaths`), discovery walk,
   manifest rendering. Absorbs `processContextPaths` / `processFile` / `tryMarkProcessed`
-  from `internal/llm/prompt/prompt.go` (L602-688).
-- `internal/config/config.go`: `Agent.Context *AgentContext`, new top-level
-  `ContextDiscovery *ContextDiscoveryConfig`; `cmd/schema/main.go` + regenerated
-  `opencode-schema.json`.
-- `internal/agent/registry.go`: `AgentInfo.Context` (yaml frontmatter), merge in
-  `applyConfigOverrides` (L441-483 pattern) and `mergeMarkdownIntoExisting`
-  (L499-557 pattern).
-- `internal/flow/flow.go`: `Step.Context *StepContext` (yaml-tagged, inheritable).
-- `internal/flow/service.go`: read `step.Context` in `runStep` (L396-440 area) and
-  pass into `NewAgent`; resolution uses the flow-context values already set at
-  L558-561 (`FlowIDContextKey`, `FlowStepIDContextKey`).
-- `internal/llm/prompt/prompt.go`: `getContextFromPaths()` + `sync.Once` (L578-594)
+  from `internal/llm/prompt/prompt.go` (L617-703).
+- `internal/config/config.go`: `Agent.Context *contextfile.AgentContext`, new
+  top-level `ContextDiscovery *contextfile.DiscoveryConfig` (both types defined in
+  `internal/contextfile`; `config` imports the leaf, never the reverse);
+  `cmd/schema/main.go` + regenerated `opencode-schema.json`.
+- `internal/agent/registry.go`: `AgentInfo.Context *contextfile.AgentContext` (yaml
+  frontmatter), merge in `applyConfigOverrides` (registry.go:418-516; `DeferredTools`
+  block at 495-501) and `mergeMarkdownIntoExisting` (registry.go:531-603;
+  `DeferredTools` block at 578-583).
+- `internal/flow/flow.go`: `Step.Context *contextfile.StepContext` (yaml-tagged,
+  inheritable).
+- `internal/flow/service.go`: read `step.Context` in `runStep` (service.go:461) and
+  pass into `NewAgent` (call at service.go:513); `${flow.id}` / `${flow.step}` are
+  populated explicitly from `f.ID` and `step.ID` at that call site — `NewAgent` is
+  context-free (factory.go:207-208 discards its ctx), so the `FlowIDContextKey` /
+  `FlowStepIDContextKey` ctx values (set later at service.go:654-656 for Run-time
+  telemetry) are not the token source.
+- `internal/llm/prompt/prompt.go`: `getContextFromPaths()` + `sync.Once` (L593-611)
   replaced by a call to `contextfile.Resolve(agentID, stepContext)`;
   `processContextPaths`/`processFile` removed (moved to `internal/contextfile`);
-  manifest rendering added; deferred-tools `<system-reminder>` budget tests updated.
+  manifest rendering added.
 - `internal/llm/agent/tools.go`: `contextDisclosureWrapper` wrapping trigger tools
-  when discovery found ≥1 nested file; per-session activation map.
-- `internal/llm/tools/tools.go`: trigger-tool parameter extraction helpers (per-tool
-  path derivation for `read`, `write`, `edit`, `patch`, `grep`, `glob`, `ls`).
-- `internal/llm/prompt/prompt_test.go`: new backward-compat scenario; budget tests
-  updated to acknowledge the dynamic manifest block.
+  when discovery found ≥1 nested file; one shared per-toolset disclosure-state object
+  (per-session activation + byte budget), mirroring the shared `deferSeq` pattern.
+- `internal/llm/tools/tools.go`: extend the existing `ExtractPathsFromCall`
+  (tools.go:167) for trigger-tool path derivation (`read`, `write`, `edit`,
+  `multiedit`, `patch`, `grep`, `glob`, `ls`); `patch` paths are parsed from
+  `patch_text` section headers, `glob` adds the pattern's literal directory prefix,
+  and `grep` without `path` activates nothing.
+- `internal/llm/prompt/prompt_test.go`: new backward-compat scenario. No budget-test
+  change: `TestBasePromptBudgets` (`prompt_budget_test.go`) measures only the base
+  prompt constructors, so the manifest is exempt by construction.
 - Docs: `CLAUDE.md` agent-fields entry for `context`, `docs/context.md` (new),
   `docs/flows.md` step-field entry; `flow-creator` skill reference.
 - E2E: `scripts/test/scoped_context.sh` asserting manifest presence, first-touch

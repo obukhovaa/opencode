@@ -8,6 +8,7 @@ import (
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -142,7 +143,7 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 	// Subagents invoked via the task tool never represent an
 	// interactive flow step — that's the parent agent's role. Pass
 	// interactive=false.
-	a, err := b.factory.NewAgent(ctx, subagentType, nil, "", false, nil)
+	a, err := b.factory.NewAgent(ctx, subagentType, nil, "", false, nil, nil, contextfile.TemplateVars{})
 	if err != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error creating agent: %s", err)
 	}

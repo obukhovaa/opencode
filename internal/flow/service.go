@@ -16,6 +16,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/format"
 	"github.com/opencode-ai/opencode/internal/langfuse"
@@ -509,8 +510,13 @@ func (s *service) runStep(
 	// Pass step.Interactive so the agent's system prompt gets the
 	// multi-turn-friendly variant (see prompt.GetAgentPrompt). The
 	// in-memory AgentInfo.Interactive + BoundPeers flow through to
-	// prompt-shape selection.
-	agentSvc, err := s.agents.NewAgent(ctx, agentID, outputSchema, step.ID, step.Interactive, boundPeers)
+	// prompt-shape selection. step.Context and the ${flow.id}/${flow.step}
+	// template values ride the same per-call path — populated explicitly
+	// from f.ID and step.ID because NewAgent is context-free and the
+	// FlowIDContextKey/FlowStepIDContextKey ctx values are set later, on
+	// the Run context, for telemetry only.
+	agentSvc, err := s.agents.NewAgent(ctx, agentID, outputSchema, step.ID, step.Interactive, boundPeers,
+		step.Context, contextfile.TemplateVars{FlowID: f.ID, FlowStep: step.ID})
 	if err != nil {
 		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
 		return

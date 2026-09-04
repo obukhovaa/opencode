@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/hooks"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -116,6 +117,11 @@ type Agent struct {
 	Output              *AgentOutput `json:"output,omitempty"`
 	Skills              []string     `json:"skills,omitempty"`
 	TaskBudget          int64        `json:"taskBudget,omitempty"`
+	// Context scopes which context files feed this agent's system prompt
+	// instead of the global contextPaths (paths, replace/append mode, and
+	// the nested-disclosure opt-out). Defined in internal/contextfile so
+	// the import edge points at the leaf. See docs/context.md.
+	Context *contextfile.AgentContext `json:"context,omitempty"`
 }
 
 // LangfuseConfig defines configuration for Langfuse observability integration.
@@ -501,6 +507,12 @@ type Config struct {
 	// can copy-paste between hosts. See docs/hooks.md and
 	// openspec/specs/hook-runtime/spec.md.
 	Hooks map[string][]hooks.MatcherGroup `json:"hooks,omitempty"`
+	// ContextDiscovery governs nested context file discovery (progressive
+	// context disclosure): the walk below WorkingDir, the manifest, and the
+	// injection byte budgets. Deliberately NOT named `context` — the agent
+	// and flow-step `context` objects have entirely different fields.
+	// Always non-nil after viper.Unmarshal (setDefaults seeds every key).
+	ContextDiscovery *contextfile.DiscoveryConfig `json:"contextDiscovery,omitempty"`
 }
 
 // Application constants
@@ -718,6 +730,15 @@ func configureViper() {
 func setDefaults(debug bool) {
 	viper.SetDefault("data.directory", defaultDataDirectory)
 	viper.SetDefault("contextPaths", defaultContextPaths)
+	// Nested context discovery is on by default: the manifest costs ~1
+	// line per discovered file and repos without nested context files see
+	// a byte-identical prompt. Defaults here keep Config.ContextDiscovery
+	// non-nil after Unmarshal.
+	viper.SetDefault("contextDiscovery.enabled", true)
+	viper.SetDefault("contextDiscovery.maxFiles", contextfile.DefaultDiscoveryMaxFiles)
+	viper.SetDefault("contextDiscovery.maxDepth", contextfile.DefaultDiscoveryMaxDepth)
+	viper.SetDefault("contextDiscovery.maxFileBytes", contextfile.DefaultDiscoveryMaxFileBytes)
+	viper.SetDefault("contextDiscovery.maxSessionBytes", contextfile.DefaultDiscoveryMaxSessionBytes)
 	viper.SetDefault("tui.theme", "opencode")
 	viper.SetDefault("autoCompact", true)
 	// Bounding each description is safe (nothing disappears), so it is on by
@@ -1685,6 +1706,27 @@ func WorkingDirectory() string {
 
 func (c *Config) WorkingDirectory() string {
 	return WorkingDirectory()
+}
+
+// EffectiveContextDiscovery returns the contextDiscovery block (or the
+// enabled-with-defaults fallback when none was loaded) with the configured
+// data directory populated into the walk's skip set — so a non-hidden
+// `data.directory` is never scanned for nested context files. BOTH
+// consumers — the prompt manifest builder and the disclosure wrapper
+// state — MUST obtain the discovery config through this accessor so the
+// manifest and the injection always agree on the candidate set. The
+// returned value is a copy; the stored config is never mutated.
+func (c *Config) EffectiveContextDiscovery() contextfile.DiscoveryConfig {
+	discovery := contextfile.DefaultDiscoveryConfig()
+	if c.ContextDiscovery != nil {
+		discovery = *c.ContextDiscovery
+	}
+	if c.Data.Directory != "" {
+		skips := make([]string, 0, len(discovery.SkipDirs)+1)
+		skips = append(skips, discovery.SkipDirs...)
+		discovery.SkipDirs = append(skips, c.Data.Directory)
+	}
+	return discovery
 }
 
 func UpdateAgentModel(agentName AgentName, modelID models.ModelID) error {

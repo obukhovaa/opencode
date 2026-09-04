@@ -7,7 +7,6 @@ info, and builtin tool descriptions. The intent is a lean surface tuned for
 modern (Claude 4.5+/5-generation, Gemini 3.x) models — interface contracts and
 policy, not tutorials, examples, or restated schemas — with byte budgets
 enforced by unit tests so the surface cannot silently re-bloat.
-
 ## Requirements
 ### Requirement: Builtin tool descriptions are bounded interface contracts
 
@@ -65,6 +64,29 @@ Byte budgets enforced by unit test: `coder` ≤ 6,144; `workhorse` ≤ 4,096;
 `hivemind` ≤ 4,096; `explorer` ≤ 2,048. The `explorer` prompt SHALL keep the
 caller-facing thoroughness contract (`quick` / `medium` / `very thorough`).
 
+Addendum for scoped context resolution and progressive disclosure:
+
+The `# Project-Specific Context` section of the assembled system prompt now renders
+the **scoped-resolved** context block returned by `internal/contextfile.Resolve()`
+rather than the process-global string from `getContextFromPaths()`. The content and
+format of the rendered block are identical when no agent or step override is in effect
+(see `context-resolution` spec, "No config yields byte-identical behavior" scenario).
+
+When `contextDiscovery.enabled` is true and ≥1 nested file was discovered, the system
+prompt additionally contains a **manifest section** (see `progressive-context-disclosure`
+spec, "Manifest block" requirement). The manifest section is dynamic: its content and
+byte count depend on the discovery walk result and the current config, and may be
+empty (zero-byte delta) for repos with no nested context files. The manifest CANNOT
+cause the byte-budget test to fail: `TestBasePromptBudgets`
+(`internal/llm/prompt/prompt_budget_test.go:17-36`) measures only the base prompt
+constructors (`CoderPrompt()`, `WorkhorsePrompt(...)`, `HivemindPrompt(...)`,
+`ExplorerPrompt(...)`), never the assembled prompt, so the manifest — like every other
+appendix, including the deferred-tools `<system-reminder>` block — is exempt by
+construction. No budget-test change is required; an acknowledging comment in
+`prompt_budget_test.go` is optional documentation. Only NEW tests that assert on full
+assembled prompts (e.g. the byte-identical backward-compat test) need to guard
+discovery off when the test workspace could contain nested context files.
+
 #### Scenario: Base prompt budgets are test-enforced
 
 - **WHEN** `go test ./internal/llm/prompt` runs
@@ -74,6 +96,22 @@ caller-facing thoroughness contract (`quick` / `medium` / `very thorough`).
 
 - **WHEN** `CoderPrompt()` is rendered
 - **THEN** it still instructs on memory files, permission-denial handling, conversation compaction, the `!` command prefix, prompt-injection flagging, and never committing without an explicit user request
+
+#### Scenario: Budget tests remain green with discovery enabled
+
+- **WHEN** `go test ./internal/llm/prompt` runs in a workspace that happens to contain
+  nested context files
+- **THEN** the budget tests for `coder`, `workhorse`, `hivemind`, and `explorer` pass
+  because `TestBasePromptBudgets` measures only the base prompt constructors, never
+  the assembled prompt — the discovery-dependent manifest section is exempt by
+  construction
+
+#### Scenario: No-nested-files workspace yields byte-identical prompt
+
+- **WHEN** a workspace has no files strictly below `workDir` matching any `contextPaths`
+  basename (i.e. the discovery walk finds nothing)
+- **THEN** the assembled system prompt is byte-identical to the pre-feature prompt for
+  the same agent and `contextPaths` config, with no manifest section added
 
 ### Requirement: Environment info excludes the project file tree
 

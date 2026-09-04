@@ -4,25 +4,26 @@
 
 Current state (verified against HEAD):
 
-- **Context loading**: `getContextFromPaths()` (`prompt.go:583`) runs once per
-  process under a package-level `sync.Once` (`prompt.go:578-580`). The result
+- **Context loading**: `getContextFromPaths()` (`prompt.go:598`) runs once per
+  process under a package-level `sync.Once` (`prompt.go:593-596`). The result
   (`contextContent`) is appended to every agent's system prompt unconditionally as
   `"# Project-Specific Context\n Make sure to follow the instructions in the context
   below\n"` followed by one `"# From:<abs-path>\n<body>"` block per matched file
-  (`prompt.go:454-458`, `processFile:682-688`).
+  (`prompt.go:469-473`, `processFile:697-703`).
 - **Prompt-cache invariant**: the anthropic client ships the entire system prompt in
-  ONE `TextBlockParam` with `cache_control: ephemeral` (`anthropic.go:742-748`). Any
+  ONE `TextBlockParam` with `cache_control: ephemeral` (`anthropic.go:742-747`). Any
   byte change between turns of the same session invalidates the cached prefix. This is
   the single hardest constraint on this design.
 - **Deferred-tools precedent**: `DeferredWrapper` (`tools/deferred.go`) demonstrates
   per-session activation state on a long-lived, frozen toolset; `toolsearch` result
   delivery via `<system-reminder>` in a tool result establishes the injection
   mechanism the progressive-disclosure wrapper reuses.
-- **Merge precedent**: `applyConfigOverrides` and `mergeMarkdownIntoExisting`
-  (`registry.go:441-557`) already use `maps.Copy` for `Tools` and `DeferredTools`.
-  `Step` fields are inherited through `extends` via reflection over declared YAML keys
-  (`include.go:244`); `nonInheritableStepKeys` (`include.go:182-187`) is the explicit
-  block-list.
+- **Merge precedent**: `applyConfigOverrides` (`registry.go:418-516`) and
+  `mergeMarkdownIntoExisting` (`registry.go:531-603`) already use `maps.Copy` for
+  `Tools` and `DeferredTools` (blocks at 495-501 / 578-583). `Step` fields are
+  inherited through `extends` via reflection over declared YAML keys
+  (`mergeTemplates`, `include.go:259`); `nonInheritableStepKeys` (`include.go:182-187`)
+  is the explicit block-list.
 - **Pending worktree draft**: `spec/20260311T120000-git-worktree-isolation.md` wants a
   `sync.Map` keyed by project root to support per-worktree context. D2 is designed to
   subsume that: the keyed memoization map in `internal/contextfile` uses a richer key
@@ -54,18 +55,25 @@ Current state (verified against HEAD):
 ### D1. New leaf package `internal/contextfile`
 
 Move all context discovery, resolution, reading, templating, and memoization into a
-new package that declares no opencode-internal imports beyond `config`, `logging`, and
-the standard library. Required because the progressive-disclosure injection lives in
-the tool layer (`internal/llm/tools`, `internal/llm/agent/tools.go`) and must inspect
-path parameters from tool calls. `internal/llm/prompt` already imports the agent
-registry, skills, and permission packages; adding a `prompt` → `tools` edge (or a
-`tools` → `prompt` edge in the other direction) would create the same import cycle
-that forced the `internal/bridge` / `internal/bridge/service` split. Both `prompt`
-and the tool layer import the new leaf independently.
+new package that declares no opencode-internal imports beyond `logging` and the
+standard library (`logging` itself imports only `pubsub` — no cycle). It does NOT
+import `internal/config`: the `AgentContext`, `StepContext`, and `DiscoveryConfig`
+types are defined in `internal/contextfile`, and `internal/config` (`Agent.Context
+*contextfile.AgentContext`, `Config.ContextDiscovery *contextfile.DiscoveryConfig`),
+the agent registry (`AgentInfo.Context *contextfile.AgentContext`), and
+`internal/flow` (`Step.Context *contextfile.StepContext`) all import the leaf.
+Required because the progressive-disclosure injection lives in the tool layer
+(`internal/llm/tools`, `internal/llm/agent/tools.go`) and must inspect path
+parameters from tool calls. `internal/llm/prompt` already imports
+`internal/llm/tools` (`prompt.go:17`); exporting resolution from `prompt` would force
+the tools layer to import `prompt`, creating the cycle `tools → prompt → tools` —
+the same class of cycle that forced the `internal/bridge` /
+`internal/bridge/service` split. Both `prompt` and the tool layer import the new
+leaf independently.
 
 Alternative considered — keep resolution in `prompt.go` and export a function the
 tools layer calls: rejected because it creates a direct `tools → prompt` import that
-is exactly the cycle the split avoids, and the resulting export surface would be
+is exactly the cycle described above, and the resulting export surface would be
 underdefined (it mixes prompt-assembly concerns with path resolution).
 
 ### D2. Keyed memoization replaces the process-global `sync.Once`
@@ -104,9 +112,14 @@ assembled system prompt for an agent is byte-identical on a simulated second tur
 
 `mode` is an enum `replace | append`, default **`replace`** when an agent or step
 explicitly declares `context.paths` — the motivating requirement is exclusion, and the
-field only exists when the user has opted in to overriding the default. An
-**unrecognized** `mode` value is warned once and falls back to **`append`** (fail-safe:
-a typo must never silently drop the project's root instructions). In `append` mode the
+field only exists when the user has opted in to overriding the default. A layer is
+declared when `context.paths` is non-nil, INCLUDING an explicitly empty list:
+`paths: []` + `replace` yields an empty context block (zero context files), `paths:
+[]` + `append` contributes nothing and continues downward — only an absent field is
+undeclared. An **unrecognized** `mode` value is warned once per (layer, agent/step ID,
+value) — the WARN names the misconfigured agent or flow step — and falls back to
+**`append`** (fail-safe: a typo must never silently drop the project's root
+instructions). In `append` mode the
 layers concatenate in precedence order global → agent → step; within each layer the
 existing sort-by-absolute-path ordering and `# From:<abs-path>` header format are
 preserved. Dedupe (existing `EvalSymlinks` + lowercase canonicalization from
@@ -148,20 +161,35 @@ is not a candidate for progressive disclosure). Walk the subtree using
 `filepath.WalkDir` with the hardcoded skip list used by `ls`'s fallback walker
 (`shouldSkip()` in `internal/llm/tools/ls.go`: hidden-file prefix, `.git`,
 `node_modules`, `vendor`, and common build directories), plus the configured data
-directory (`.opencode` by default). There is no `go-gitignore` dependency in the
-project — `.gitignore` is honored only via ripgrep's built-in support on the
-`ls`/`glob` primary path, which is unavailable to a custom `WalkDir` call. No
-reusable ignore helper currently exists for direct consumption here; whether to drive
-this walk via ripgrep instead (gaining `.gitignore` support) or to extend the
-hardcoded list is a task-level decision.
+directory (`.opencode` by default). `.gitignore` honoring is a deliberate non-goal
+for v1 (see proposal.md Non-Goals): there is no gitignore library in `go.mod`, and
+ripgrep — the only place `.gitignore` is honored today (the `ls`/`glob` primary
+path) — is an external binary unsuitable for the prompt-build path; the caps below
+bound over-discovery.
 Caps: `maxDepth` (default 8), `maxFiles` (default 100), `maxFileBytes`
 (default 32 KiB per file), `maxSessionBytes` (default 128 KiB per session total).
 Files at or below `workDir` matching the basename set but NOT already matched by root
 resolution are the progressive-disclosure candidates.
 
-The walk result is a `map[string]struct{}` of absolute paths, computed once and cached
-by `workDir`. Root-level matches remain the job of scoped resolution (D4); this set
-only contains files STRICTLY below the root (depth ≥ 1).
+Candidates MUST be regular files: any non-regular entry (symlink, FIFO, device) is
+rejected with a WARN. Git preserves symlinks, so a committed
+`docs/AGENTS.md -> ~/.ssh/id_rsa` would otherwise flow into the manifest and the
+injection path with no permission prompt — the exact bypass the scoped-entry
+containment (D5) closes. As defense in depth against symlinked parent directories,
+each accepted candidate is `EvalSymlinks`-resolved and must land strictly inside the
+`EvalSymlinks`-resolved `workDir` (same order as `containedInWorkDir`). Each accepted
+file's manifest label is extracted HERE — once, behind those checks, through the same
+kernel-enforced beneath-only open the activation path uses (`OpenBeneath`, see D10):
+a candidate raced into a symlink or FIFO between the walk's lstat and the label read
+can neither read outside `workDir` nor hang prompt-build. Labels are stored in the
+cached result (`DiscoveryResult.Labels`), so prompt-build never opens candidate
+files. The configured data directory reaches the walk's skip set via
+`config.EffectiveContextDiscovery()`, the single accessor both discovery call sites
+(manifest and wrapper state) must use.
+
+The walk result is cached once per `workDir` (paths + labels + truncation flag).
+Root-level matches remain the job of scoped resolution (D4); this set only contains
+files STRICTLY below the root (depth ≥ 1).
 
 ### D7. Manifest block
 
@@ -172,36 +200,72 @@ path only if neither exists). The block carries one sentence explaining that bod
 are not loaded and arrive automatically on first directory touch. Absent entirely when
 nothing was discovered — zero prompt delta for repos without nested context files.
 
-The manifest is computed at prompt-build time using the process-level discovery cache
-and is byte-stable (same inputs ⇒ same output), so it satisfies D3 without special
+The manifest is computed at prompt-build time purely from the process-level discovery
+cache — paths AND labels; no disk reads — so byte-stability is structural: editing a
+nested file mid-session cannot change the manifest, satisfying D3 without special
 treatment. A per-manifest line and total-byte cap (overflow: paths-only, then trailing
 "N more" line) prevents adversarially large subtrees from bloating the manifest itself.
 
+Files the agent's/step's own scoped `context.paths` layers already inline (exact
+entries and trailing-slash subtrees, with the same layer-participation rule as
+resolution — a layer dropped by a higher `replace` does NOT subtract) are filtered
+out of BOTH the manifest and the disclosure wrapper state via one shared,
+deterministic helper (`contextfile.FilterDiscovered`), keeping the two surfaces in
+agreement: a body already in the prompt is never listed as "not loaded" and never
+injected a second time.
+
 ### D8. Activation trigger and owner resolution
 
-Trigger tools: `read` / `write` / `edit` / `patch` → `file_path`; `grep` → `path`
-(when set; no `path` in a grep call resolves to `workDir` and activates nothing); `glob`
-→ `path` + literal directory prefix of the pattern; `ls` → `path`. The `bash` tool is
-deliberately excluded (see proposal.md Non-Goals): scanning command strings for path
-tokens produces too many false positives and false negatives.
+Trigger tools: `read` / `write` / `edit` / `multiedit` → `file_path` (parent
+directory); `patch` → file paths parsed from the `*** Add/Update/Delete File:`
+section headers of `patch_text` (the tool has no `file_path` parameter; a single call
+may touch several directories); `grep` → `path` (when set; no `path` in a grep call
+resolves to `workDir` and activates nothing); `glob` → `path` + literal directory
+prefix of the pattern; `ls` → `path`. Path extraction reuses and extends the existing
+`tools.ExtractPathsFromCall` (`internal/llm/tools/tools.go:167`), which already parses
+`patch_text` sections and the generic `file_path`/`path` params; the glob
+pattern-prefix and grep-without-path rules are added on top. The `delete` tool is
+deliberately excluded: removing files is not working-within-a-subtree that benefits
+from its instructions. The `bash` tool is deliberately excluded (see proposal.md
+Non-Goals): scanning command strings for path tokens produces too many false
+positives and false negatives.
 
 Activation criterion: the tool's resolved **directory** (parent of a file arg, or the
 arg itself for directory-taking tools) must be strictly equal to or inside a nested
 context file's owning directory. Owner resolution: walk from the target directory up
 to (but excluding) `workDir`, collect every nested context file on the upward path,
 inject not-yet-injected ones outermost-first — reproducing Claude Code's additive
-layering without mutating the system prompt.
+layering without mutating the system prompt. Owner matching canonicalizes BOTH sides
+(discovered dirs and the model-supplied target) with `EvalSymlinks` on the deepest
+existing ancestor, folding case ONLY when the workDir's filesystem is actually
+case-insensitive — probed once per workDir (stat a case-swapped spelling of the
+workDir path, compare identity via `os.SameFile`) and cached alongside the discovery
+cache. On macOS/Windows defaults the inner tool call succeeds with a
+differently-cased path while a byte-exact comparison would silently skip the
+injection; on case-sensitive filesystems (Linux production) unconditional folding
+would cross-match case-DIFFERING sibling directories — injecting the wrong tree's
+context, or (in `FilterDiscovered`) silently subtracting a file the agent never
+inlined. The same fold flag governs the scoped-layer subtraction (D7).
 
 ### D9. Injection mechanism: `contextDisclosureWrapper`
 
 A `contextDisclosureWrapper` in the toolset assembly (`internal/llm/agent/tools.go`)
 wraps ONLY the trigger tools and ONLY when the discovery set is non-empty — zero
 allocation and zero behavior change otherwise. It mirrors the `DeferredWrapper`
-type-assertion pattern: providers and `toolsearch` recognize the wrapper by type
-assertion without a new `BaseTool` interface method. The wrapper: extracts the path
+pattern only in that recognition (where needed) happens by type assertion and no new
+`BaseTool` interface method is added — providers never see or need the disclosure
+wrapper, since it delegates `Info()`. Wrap order is an invariant: disclosure wrapping
+is applied INSIDE deferral — `maybeDefer(maybeWrapDisclosure(t))` — so
+`*tools.DeferredWrapper` stays outermost and the four existing type assertions
+(`anthropic.go:588`, `agent.go:2235`, `agent.go:2353`, `agent/tools.go:328`) keep
+working for a tool that is both deferred and a trigger. The wrapper: extracts the path
 parameter from the serialized tool call, calls the inner tool, and on SUCCESS appends a
 `<system-reminder>`-tagged block to the tool result content carrying the `# From:<abs-path>`
-header and the file body. On failure the tool result is returned unchanged.
+header and the file body. Literal `<system-reminder>` / `</system-reminder>` strings
+inside the body are defused before wrapping (backslash after `<`, content preserved):
+a repo file must not be able to close the reminder early and pass its remainder off
+as genuine tool output, or forge a reminder with a fabricated `# From:` header. On
+failure the tool result is returned unchanged.
 
 Precedent for `<system-reminder>`-wrapped tool results: `toolsearch` (`tools/toolsearch.go`).
 The injection MUST fire only on a successful inner call — injecting directory context
@@ -216,10 +280,31 @@ log INFO once per session and stop injecting further bodies (the model may still
 those directories; only the body injection stops). None of these paths return an error
 to the caller.
 
+The activation read itself is bounded and race-free — the discovery cache is
+process-lifetime and the filesystem can change under it, and a check-then-open
+sequence (Lstat/EvalSymlinks, then Open) leaves a winnable TOCTOU window: a candidate
+swapped for a symlink between the check and the open would be followed. Per
+candidate: reject a `filepath.Rel` escape (`..` or absolute); `Lstat` first (a cheap,
+precisely-WARNed rejection of FIFOs/symlinks/devices without opening anything); then
+open through `contextfile.OpenBeneath` — `os.Root` (Go 1.25) gives kernel-enforced
+beneath-only resolution, so the lookup CANNOT escape `workDir` no matter what a
+racing writer swaps in mid-lookup, with `O_NOFOLLOW` (a symlink swapped into the
+final component fails instead of being followed) and `O_NONBLOCK` (a swapped-in FIFO
+cannot block the open) on Unix; then `Stat` on the OPENED descriptor (no TOCTOU on
+size/type) and read through `io.LimitReader(f, maxFileBytes+1)` so an
+under-reporting `Stat` can never smuggle an unbounded read past the cap (a link to
+`/dev/zero` stats as size 0). All of this runs under the shared disclosure mutex, so
+bounding the read also bounds how long concurrent trigger tools can be stalled.
+
 ### D11. Per-session activation state
 
-`sessionID → set[absPath]` stored on the `contextDisclosureWrapper` (not the toolset
-slice, which is frozen and shared). Sessions must not observe each other's activations.
+ONE shared per-toolset disclosure-state object (mutex + `sessionID → set[absPath]` +
+`sessionID → injectedBytes`), created once in `NewToolSet` and passed by pointer to
+every trigger-tool wrapper — mirroring how all `DeferredWrapper`s of one toolset share
+a single `deferSeq` counter (`WrapDeferred`, `deferred.go:33`). Per-wrapper state
+would break cross-tool dedup (a `read` fires the injection; a `grep` on the same
+directory must not re-inject) and double-count the byte budget. Sessions must not
+observe each other's activations.
 Subagent sessions get their OWN activation set and do NOT inherit the parent's — a
 subagent that never touches a directory must not pay for its context. After a process
 restart, duplicate injection is accepted (same tradeoff the deferred-tools change
@@ -228,14 +313,15 @@ activation sets).
 
 ### D12. Config surface and naming
 
-New `AgentContext` struct on both `config.Agent` and `AgentInfo` (yaml frontmatter):
+New `AgentContext` type — defined in `internal/contextfile`, referenced as
+`config.Agent.Context` and `AgentInfo.Context` (yaml frontmatter):
 ```
 context:
   paths: ["AGENTS.runtime.md"]
   mode: replace              # replace | append
   nested: false              # bool, default true
 ```
-New top-level `ContextDiscovery *ContextDiscoveryConfig`:
+New top-level `Config.ContextDiscovery *contextfile.DiscoveryConfig`:
 ```
 contextDiscovery:
   enabled: true              # default true
@@ -259,24 +345,33 @@ required per CLAUDE.md.
 ### D13. Interaction with `prompt-surface` lean-prompts budgets
 
 The manifest block is config-gated and dynamic (size depends on how many files the
-discovery walk finds), so it is exempt from the static prompt-budget assertions in
-`prompt_test.go` — identically to how the deferred-tools `<system-reminder>` block is
-treated. The budget tests must be updated to acknowledge the dynamic manifest block
-(comment noting it may add bytes when `contextDiscovery.enabled = true` and nested
-files exist) rather than silently starting to fail the first time a nested context file
-appears in the test's working directory.
+discovery walk finds). The budget test — `TestBasePromptBudgets` in
+`internal/llm/prompt/prompt_budget_test.go:17-36` — measures ONLY the base prompt
+constructors (`CoderPrompt()`, `WorkhorsePrompt(...)`, `HivemindPrompt(...)`,
+`ExplorerPrompt(...)`), never the assembled prompt, so the manifest is exempt by
+construction — the same way every other appendix (including the deferred-tools
+`<system-reminder>` block) already is. No budget-test change is required for
+budget-safety; an acknowledging comment in `prompt_budget_test.go` is optional. Only
+NEW tests that assert on full assembled prompts (e.g. the byte-identical
+backward-compat test) must guard discovery off when the test workspace could contain
+nested context files.
 
 ### D14. Flow-step `context` field is inheritable
 
-Adding `Context *StepContext` to `Step` makes it inheritable through `include`/`extends`
-for free: the merge is reflection-driven over declared raw-YAML keys (`include.go:244`);
-a field added to `Step` needs no code change in `mergeTemplates`. `Context` MUST NOT be
+Adding `Context *contextfile.StepContext` to `Step` makes it inheritable through
+`include`/`extends` for free: the merge is reflection-driven over declared raw-YAML
+keys (`mergeTemplates`, `include.go:259`); a field added to `Step` needs no code
+change in `mergeTemplates`. `Context` MUST NOT be
 added to `nonInheritableStepKeys` — per-flow context is exactly the kind of thing
 template files should be able to supply, and the orchestrator never reads the `context`
 field (it reads `id`, `interactive`, `interaction`, `resume_after`). Resolution reads
-`step.Context` in `runStep` where `FlowIDContextKey`/`FlowStepIDContextKey` are
-already set (service.go:558-561), and passes a `contextfile.StepContext` into agent
-construction.
+`step.Context` in `runStep` (`service.go:461`) and passes a `contextfile.StepContext`
+into agent construction (`NewAgent` call at `service.go:513`). The `${flow.id}` and
+`${flow.step}` template tokens are populated explicitly from `f.ID` and `step.ID` —
+both in scope at the call site — NOT from `FlowIDContextKey`/`FlowStepIDContextKey`:
+those ctx values are set later (`service.go:654-656`) on the Run context for
+telemetry only, and `NewAgent` is context-free (`factory.go:207-208` discards its
+ctx), so they are invisible at prompt-build time.
 
 ## Risks / Trade-offs
 

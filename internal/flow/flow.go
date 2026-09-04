@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/opencode-ai/opencode/internal/contextfile"
 )
 
 var (
@@ -141,6 +143,14 @@ type Step struct {
 	// A Go duration string (`10m`, `1h`). Absent (nil) keeps the step's
 	// failures terminal.
 	ResumeAfter *string `yaml:"resume_after,omitempty"`
+	// Context scopes which context files feed this step's agent system
+	// prompt (paths with ${agent}/${flow.id}/${flow.step}/${env.VAR}
+	// tokens, replace/append mode, nested-disclosure opt-out) — the
+	// highest-precedence layer of step > agent > global. Deliberately
+	// inheritable through include/extends: the orchestrator never reads
+	// this key (it reads id, interactive, interaction, resume_after), so
+	// it is NOT in include.go's nonInheritableStepKeys. See docs/context.md.
+	Context *contextfile.StepContext `yaml:"context,omitempty"`
 }
 
 // StepCompact configures per-step overrides to the auto-compaction

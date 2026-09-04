@@ -1,6 +1,10 @@
 package agent
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -9,6 +13,7 @@ import (
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/format"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
@@ -95,6 +100,27 @@ func NewToolSet(
 			return tools.WrapDeferred(t, deferSeq)
 		}
 		return t
+	}
+
+	// Progressive context disclosure (design D9/D11): ONE state object
+	// shared by every trigger-tool wrapper of this toolset — per-wrapper
+	// state would break cross-tool dedup (a read fires the injection; a
+	// grep on the same directory must not re-inject) and double-count the
+	// session byte budget. nil when discovery is disabled, the agent or
+	// step opted out, or the walk found nothing: then no wrapper is
+	// installed at all — zero allocation, zero behavior change.
+	disclosure := newContextDisclosureState(info, config.Get())
+	// WRAP ORDER INVARIANT: disclosure is applied INSIDE deferral —
+	// maybeDefer(maybeWrapDisclosure(t)) — so *tools.DeferredWrapper stays
+	// the outermost type and the existing type assertions on it (provider
+	// serialization, deferred-delta announcements, toolsearch activation
+	// backfill, resolveTools logging) keep working for a tool that is both
+	// deferred and a disclosure trigger.
+	maybeWrapDisclosure := func(t tools.BaseTool) tools.BaseTool {
+		if t == nil || disclosure == nil || !contextDisclosureTriggers[t.Info().Name] {
+			return t
+		}
+		return &contextDisclosureWrapper{inner: t, state: disclosure}
 	}
 
 	// When adding a case here, also add the tool to
@@ -186,7 +212,7 @@ func NewToolSet(
 	for _, name := range viewerToolNames {
 		if reg.IsToolEnabled(agentID, name) {
 			if t := createTool(name); t != nil {
-				result <- maybeDefer(t)
+				result <- maybeDefer(maybeWrapDisclosure(t))
 			}
 		}
 	}
@@ -204,7 +230,7 @@ func NewToolSet(
 	for _, name := range editorToolNames {
 		if reg.IsToolEnabled(agentID, name) {
 			if t := createTool(name); t != nil {
-				result <- maybeDefer(t)
+				result <- maybeDefer(maybeWrapDisclosure(t))
 			}
 		}
 	}
@@ -367,4 +393,254 @@ func OrderTools(toolSet []tools.BaseTool) []tools.BaseTool {
 		return external[i].Info().Name < external[j].Info().Name
 	})
 	return append(baseline, external...)
+}
+
+// contextDisclosureTriggers is the tool set whose successful calls can
+// activate nested context injection (design D8). bash is deliberately
+// absent — scanning command strings for path tokens produces too many
+// false positives and negatives. delete is deliberately absent — removing
+// files is not working-within-a-subtree that benefits from its
+// instructions.
+var contextDisclosureTriggers = map[string]bool{
+	tools.ReadToolName:      true,
+	tools.WriteToolName:     true,
+	tools.EditToolName:      true,
+	tools.MultiEditToolName: true,
+	tools.PatchToolName:     true,
+	tools.GrepToolName:      true,
+	tools.GlobToolName:      true,
+	tools.LSToolName:        true,
+}
+
+// contextDisclosureState is the per-toolset activation state shared by
+// every contextDisclosureWrapper of one agent — mirroring how all
+// DeferredWrappers of a toolset share one deferSeq counter. Per-session
+// keying isolates sessions from each other; subagent sessions carry their
+// own session ID (taskSession.ID), so they get their own clean activation
+// set and never inherit the parent's (design D11).
+type contextDisclosureState struct {
+	workDir         string
+	discovered      []string // absolute paths, discovery (lexical) order
+	maxFileBytes    int
+	maxSessionBytes int
+
+	mu              sync.Mutex
+	injected        map[string]map[string]bool // sessionID -> abs path -> injected
+	injectedBytes   map[string]int             // sessionID -> total body bytes injected
+	budgetExhausted map[string]bool            // sessionID -> INFO already logged, stop injecting
+}
+
+// newContextDisclosureState builds the shared state for one toolset, or
+// nil when progressive disclosure is off for this agent: discovery
+// disabled, agent or step opted out via context.nested: false, or the
+// (cached) walk found no nested context files. nil means NewToolSet
+// installs zero wrappers.
+func newContextDisclosureState(info *agentregistry.AgentInfo, cfg *config.Config) *contextDisclosureState {
+	if cfg == nil {
+		return nil
+	}
+	discovery := cfg.EffectiveContextDiscovery()
+	if !discovery.Enabled {
+		return nil
+	}
+	if info.Context != nil && info.Context.Nested != nil && !*info.Context.Nested {
+		return nil
+	}
+	if info.StepContext != nil && info.StepContext.Nested != nil && !*info.StepContext.Nested {
+		return nil
+	}
+	discovery = discovery.WithDefaults()
+	result := contextfile.Discover(cfg.WorkingDir, cfg.ContextPaths, discovery)
+	// Subtract the files this agent's/step's scoped context layers already
+	// inline into the system prompt — injecting them again on first touch
+	// would deliver the same body twice and contradict the manifest, which
+	// applies the SAME filter with the SAME vars in nestedContextManifest.
+	vars := info.ContextVars
+	vars.Agent = info.ID
+	files := contextfile.FilterDiscovered(result.Files, info.Context, info.StepContext, cfg.WorkingDir, vars)
+	if len(files) == 0 {
+		return nil
+	}
+	return &contextDisclosureState{
+		workDir:         cfg.WorkingDir,
+		discovered:      files,
+		maxFileBytes:    discovery.MaxFileBytes,
+		maxSessionBytes: discovery.MaxSessionBytes,
+		injected:        make(map[string]map[string]bool),
+		injectedBytes:   make(map[string]int),
+		budgetExhausted: make(map[string]bool),
+	}
+}
+
+// claimAndRead injects the not-yet-injected owner files for a session,
+// returning the rendered <system-reminder> blocks to append (or ""). One
+// mutex covers the dedup check, the file read, and the byte accounting so
+// two parallel tool calls cannot double-inject a file or overrun the
+// budget. Unreadable, oversized, non-regular, or escaping files are
+// skipped WITHOUT being marked injected (WARN; a later touch may retry).
+// A body that would exceed the session budget flips the exhausted flag:
+// INFO once, then no further bodies for that session (design D10).
+func (s *contextDisclosureState) claimAndRead(sessionID string, owners []string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.budgetExhausted[sessionID] {
+		return ""
+	}
+	injected := s.injected[sessionID]
+	if injected == nil {
+		injected = make(map[string]bool)
+		s.injected[sessionID] = injected
+	}
+	var sb strings.Builder
+	for _, path := range owners {
+		if injected[path] {
+			continue
+		}
+		body, ok := s.readNestedContextFile(path)
+		if !ok {
+			continue
+		}
+		// Budget accounting runs on the POST-sanitization length — that is
+		// what actually lands in the tool result (defused tags grow the
+		// body by one byte each).
+		text := sanitizeReminderBody(string(body))
+		if s.injectedBytes[sessionID]+len(text) > s.maxSessionBytes {
+			s.budgetExhausted[sessionID] = true
+			logging.Info("Nested context session byte budget exhausted; no further bodies will be injected", "session", sessionID, "budget", s.maxSessionBytes)
+			break
+		}
+		injected[path] = true
+		s.injectedBytes[sessionID] += len(text)
+		if !strings.HasSuffix(text, "\n") {
+			text += "\n"
+		}
+		fmt.Fprintf(&sb, "\n\n<system-reminder>\n# From:%s\n%s</system-reminder>", path, text)
+	}
+	return sb.String()
+}
+
+// readNestedContextFile is the ONLY read path for nested context bodies,
+// and it never trusts the process-lifetime discovery cache: the
+// filesystem can change between discovery and activation (design D6/D10).
+// The read is bounded and race-free — Lstat first (a cheap, precisely
+// WARNed rejection of FIFOs/symlinks/devices without opening anything),
+// then a kernel-enforced beneath-only open (contextfile.OpenBeneath /
+// os.Root): the lookup cannot escape workDir even if a component is
+// swapped for a symlink AFTER the Lstat — closing the check-then-open
+// TOCTOU a userspace containment re-check cannot close. Then Stat on the
+// OPENED fd (no TOCTOU window on size/type), then io.LimitReader at
+// maxFileBytes+1 so even an under-reporting Stat can never smuggle an
+// unbounded read past the cap.
+func (s *contextDisclosureState) readNestedContextFile(path string) ([]byte, bool) {
+	relPath, err := filepath.Rel(s.workDir, path)
+	if err != nil || filepath.IsAbs(relPath) || relPath == ".." ||
+		strings.HasPrefix(relPath, ".."+string(os.PathSeparator)) {
+		logging.Warn("Nested context injection skipped: path escapes the working directory", "file", path, "workDir", s.workDir, "error", err)
+		return nil, false
+	}
+	lst, err := os.Lstat(path)
+	if err != nil {
+		logging.Warn("Nested context injection skipped: file unreadable", "file", path, "error", err)
+		return nil, false
+	}
+	if !lst.Mode().IsRegular() {
+		logging.Warn("Nested context injection skipped: not a regular file", "file", path, "mode", lst.Mode().String())
+		return nil, false
+	}
+	f, err := contextfile.OpenBeneath(s.workDir, relPath)
+	if err != nil {
+		logging.Warn("Nested context injection skipped: beneath-only open failed", "file", path, "error", err)
+		return nil, false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() {
+		logging.Warn("Nested context injection skipped: not a regular file", "file", path, "error", err)
+		return nil, false
+	}
+	if fi.Size() > int64(s.maxFileBytes) {
+		logging.Warn("Nested context injection skipped: file exceeds maxFileBytes", "file", path, "size", fi.Size(), "cap", s.maxFileBytes)
+		return nil, false
+	}
+	body, err := io.ReadAll(io.LimitReader(f, int64(s.maxFileBytes)+1))
+	if err != nil {
+		logging.Warn("Nested context injection skipped: file unreadable", "file", path, "error", err)
+		return nil, false
+	}
+	if len(body) > s.maxFileBytes {
+		logging.Warn("Nested context injection skipped: file exceeds maxFileBytes", "file", path, "size", len(body), "cap", s.maxFileBytes)
+		return nil, false
+	}
+	return body, true
+}
+
+// sanitizeReminderBody neutralizes literal <system-reminder> framing tags
+// inside a nested context body before it is wrapped: a repo file
+// containing the closing tag would otherwise terminate the reminder block
+// early and let the remainder masquerade as genuine tool output — or open
+// a forged reminder with a fabricated "# From:" header. The tags are
+// defused by inserting a backslash after '<' (content preserved, framing
+// broken); the closing form is replaced first so the second pass cannot
+// touch its output.
+func sanitizeReminderBody(text string) string {
+	text = strings.ReplaceAll(text, "</system-reminder>", `<\/system-reminder>`)
+	return strings.ReplaceAll(text, "<system-reminder>", `<\system-reminder>`)
+}
+
+// contextDisclosureWrapper appends nested context file bodies to the
+// result of the first successful tool call that touches their owning
+// directory — the system prompt is never mutated (design D9; injection
+// precedent: toolsearch's <system-reminder> tool results). It delegates
+// every BaseTool method to the inner tool, so providers never see it; it
+// is applied INSIDE deferral, keeping *tools.DeferredWrapper outermost
+// for the existing type-assertion sites.
+type contextDisclosureWrapper struct {
+	inner tools.BaseTool
+	state *contextDisclosureState
+}
+
+func (w *contextDisclosureWrapper) Info() tools.ToolInfo { return w.inner.Info() }
+
+func (w *contextDisclosureWrapper) AllowParallelism(call tools.ToolCall, allCalls []tools.ToolCall) bool {
+	return w.inner.AllowParallelism(call, allCalls)
+}
+
+func (w *contextDisclosureWrapper) IsBaseline() bool { return w.inner.IsBaseline() }
+
+func (w *contextDisclosureWrapper) Run(ctx context.Context, call tools.ToolCall) (tools.ToolResponse, error) {
+	resp, err := w.inner.Run(ctx, call)
+	// Inject only on a SUCCESSFUL text result: directory context after a
+	// failed call (e.g. read of a nonexistent file) is noise. Disclosure
+	// failure never propagates — the worst case is returning resp as-is.
+	if err != nil || resp.IsError || resp.Type != tools.ToolResponseTypeText {
+		return resp, err
+	}
+	sessionID, _ := tools.GetContextValues(ctx)
+	if sessionID == "" {
+		return resp, err
+	}
+	dirs := tools.ExtractTargetDirsFromCall(call, w.state.workDir)
+	if len(dirs) == 0 {
+		return resp, err
+	}
+	// Union of owners across target dirs (a patch may touch several),
+	// outermost-first within each dir, deduped across dirs.
+	var owners []string
+	seen := make(map[string]struct{})
+	for _, dir := range dirs {
+		for _, f := range contextfile.OwnersForPath(dir, w.state.discovered, w.state.workDir) {
+			if _, dup := seen[f]; dup {
+				continue
+			}
+			seen[f] = struct{}{}
+			owners = append(owners, f)
+		}
+	}
+	if len(owners) == 0 {
+		return resp, err
+	}
+	if blocks := w.state.claimAndRead(sessionID, owners); blocks != "" {
+		resp.Content += blocks
+	}
+	return resp, err
 }

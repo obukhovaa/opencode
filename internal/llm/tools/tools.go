@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -176,7 +178,31 @@ func ExtractPathsFromCall(call ToolCall) []string {
 		paths := diff.IdentifyFilesNeeded(params.PatchText)
 		paths = append(paths, diff.IdentifyFilesAdded(params.PatchText)...)
 		return paths
+	case GlobToolName:
+		// The search path AND the pattern's literal directory prefix: a
+		// glob for services/auth/**/*.go declares intent to work under
+		// services/auth even when no path argument narrows the search.
+		// The pattern is matched relative to the search path, so the
+		// prefix is joined onto it.
+		var params struct {
+			Pattern string `json:"pattern"`
+			Path    string `json:"path"`
+		}
+		if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
+			return nil
+		}
+		var paths []string
+		if params.Path != "" {
+			paths = append(paths, params.Path)
+		}
+		if prefix := globLiteralDirPrefix(params.Pattern); prefix != "" {
+			paths = append(paths, filepath.Join(params.Path, prefix))
+		}
+		return paths
 	default:
+		// A grep call with no path argument returns nothing here — it
+		// searches the whole workspace and declares no directory intent
+		// (the progressive-disclosure activation rule relies on this).
 		var common struct {
 			FilePath string `json:"file_path"`
 			Path     string `json:"path"`
@@ -193,6 +219,65 @@ func ExtractPathsFromCall(call ToolCall) []string {
 		}
 		return paths
 	}
+}
+
+// globLiteralDirPrefix returns the directory portion of a glob pattern
+// that precedes its first metacharacter: "services/auth/**/*.go" yields
+// "services/auth", "*.go" yields "". A pattern with no metacharacters is
+// a literal file path, so its dirname is the prefix.
+func globLiteralDirPrefix(pattern string) string {
+	literal := pattern
+	if i := strings.IndexAny(pattern, "*?[{"); i >= 0 {
+		literal = pattern[:i]
+	}
+	if j := strings.LastIndex(literal, "/"); j > 0 {
+		return literal[:j]
+	}
+	return ""
+}
+
+// ExtractTargetDirsFromCall resolves a trigger tool's call to the absolute
+// directories it works within, per the progressive-context-disclosure
+// activation table (design D8): file-taking tools map file_path to its
+// parent, ls takes its path as-is, and grep/glob take the path itself when
+// it is a directory or its parent when it names an existing file. Relative
+// paths are joined onto workDir. Non-trigger tools return nil.
+func ExtractTargetDirsFromCall(call ToolCall, workDir string) []string {
+	paths := ExtractPathsFromCall(call)
+	if len(paths) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(paths))
+	dirs := make([]string, 0, len(paths))
+	add := func(d string) {
+		if _, dup := seen[d]; dup {
+			return
+		}
+		seen[d] = struct{}{}
+		dirs = append(dirs, d)
+	}
+	for _, p := range paths {
+		abs := p
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(workDir, abs)
+		}
+		abs = filepath.Clean(abs)
+		switch call.Name {
+		case ReadToolName, WriteToolName, EditToolName, MultiEditToolName, PatchToolName:
+			add(filepath.Dir(abs))
+		case LSToolName:
+			add(abs)
+		case GrepToolName, GlobToolName:
+			if info, err := os.Stat(abs); err == nil && !info.IsDir() {
+				add(filepath.Dir(abs))
+			} else {
+				add(abs)
+			}
+		default:
+			return nil
+		}
+	}
+	return dirs
 }
 
 func hasFileConflict(call ToolCall, myPaths []string, allCalls []ToolCall) bool {

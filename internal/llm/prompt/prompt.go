@@ -7,12 +7,12 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -330,6 +330,19 @@ type AgentPromptOptions struct {
 	// Empty means "use the registered prompt", which is what every caller
 	// that does not manage prompts externally passes.
 	BasePrompt string
+
+	// StepContext is the flow step's `context` override for scoped
+	// context resolution. Like Interactive it MUST be plumbed through
+	// opts: it is per-call state injected onto the factory's AgentInfo
+	// copy, invisible to the registry entry this builder re-fetches.
+	// Nil outside flows and for steps without an override.
+	StepContext *contextfile.StepContext
+
+	// ContextVars carries the ${flow.id} / ${flow.step} template token
+	// values for context path expansion (populated by the flow runner;
+	// zero elsewhere). ${agent} is always overwritten here from the
+	// agent name being built.
+	ContextVars contextfile.TemplateVars
 }
 
 // GetAgentPromptWithOptions is GetAgentPrompt + per-call overrides.
@@ -466,11 +479,54 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 		basePrompt += "\n" + lspInformation()
 	}
 
-	contextContent := getContextFromPaths()
+	// Scoped context resolution (step > agent > global). With no agent or
+	// step `context` declared this resolves the global contextPaths
+	// exactly as the retired getContextFromPaths() did — byte-identical
+	// output, including the leading-space header quirk below.
+	var agentCtx *contextfile.AgentContext
+	if info, ok := reg.Get(agentName); ok {
+		agentCtx = info.Context
+	}
+	vars := opts.ContextVars
+	vars.Agent = string(agentName)
+	contextContent := contextfile.ResolveForAgent(cfg.ContextPaths, agentCtx, opts.StepContext, cfg.WorkingDir, vars)
 	if contextContent != "" {
-		return fmt.Sprintf("%s\n\n# Project-Specific Context\n Make sure to follow the instructions in the context below\n%s", basePrompt, contextContent)
+		basePrompt = fmt.Sprintf("%s\n\n# Project-Specific Context\n Make sure to follow the instructions in the context below\n%s", basePrompt, contextContent)
+	}
+
+	// Nested-context manifest (progressive disclosure). Absent — zero
+	// prompt delta — when discovery is disabled, the agent/step opted out
+	// via context.nested: false, or the walk found nothing.
+	if manifest := nestedContextManifest(cfg, agentCtx, opts.StepContext, vars); manifest != "" {
+		basePrompt += "\n\n" + manifest
 	}
 	return basePrompt
+}
+
+// nestedContextManifest renders the manifest of discovered nested context
+// files for this agent/step, or "" when discovery is off, the agent or
+// step opted out (context.nested: false), or nothing was discovered. The
+// discovery walk (paths AND labels) is cached per workDir and files the
+// agent/step scoped layers already inline are subtracted with the same
+// deterministic filter the disclosure wrapper applies — so the block is
+// byte-stable across every turn of a session (design D3/D7) and never
+// lists a file whose body is already in this prompt.
+func nestedContextManifest(cfg *config.Config, agentCtx *contextfile.AgentContext, stepCtx *contextfile.StepContext, vars contextfile.TemplateVars) string {
+	discovery := cfg.EffectiveContextDiscovery()
+	if !discovery.Enabled {
+		return ""
+	}
+	if agentCtx != nil && agentCtx.Nested != nil && !*agentCtx.Nested {
+		return ""
+	}
+	if stepCtx != nil && stepCtx.Nested != nil && !*stepCtx.Nested {
+		return ""
+	}
+	result := contextfile.Discover(cfg.WorkingDir, cfg.ContextPaths, discovery)
+	files := contextfile.FilterDiscovered(result.Files, agentCtx, stepCtx, cfg.WorkingDir, vars)
+	return contextfile.RenderManifest(files, result.Labels, cfg.WorkingDir, contextfile.ManifestConfig{
+		WalkTruncated: result.Truncated,
+	})
 }
 
 // builtinToolNamesForDeferral is the set of builtin tool names checked when
@@ -588,116 +644,4 @@ func appendPreloadedSkills(agentName string, reg agentregistry.Registry) string 
 	}
 
 	return sb.String()
-}
-
-var (
-	onceContext    sync.Once
-	contextContent string
-)
-
-func getContextFromPaths() string {
-	onceContext.Do(func() {
-		var (
-			cfg          = config.Get()
-			workDir      = cfg.WorkingDir
-			contextPaths = cfg.ContextPaths
-		)
-		contextContent = processContextPaths(workDir, contextPaths)
-		logging.Debug("Context content", "context", contextContent)
-	})
-
-	return contextContent
-}
-
-type contextEntry struct {
-	path    string
-	content string
-}
-
-func processContextPaths(workDir string, paths []string) string {
-	var (
-		wg       sync.WaitGroup
-		resultCh = make(chan contextEntry)
-	)
-
-	// Track processed files to avoid duplicates
-	processedFiles := make(map[string]bool)
-	var processedMutex sync.Mutex
-
-	for _, path := range paths {
-		wg.Add(1)
-		go func(p string) {
-			defer wg.Done()
-
-			if strings.HasSuffix(p, "/") {
-				filepath.WalkDir(filepath.Join(workDir, p), func(path string, d os.DirEntry, err error) error {
-					if err != nil {
-						return err
-					}
-					if !d.IsDir() {
-						if tryMarkProcessed(path, processedFiles, &processedMutex) {
-							if content := processFile(path); content != "" {
-								resultCh <- contextEntry{path: path, content: content}
-							}
-						}
-					}
-					return nil
-				})
-			} else {
-				fullPath := filepath.Join(workDir, p)
-				if tryMarkProcessed(fullPath, processedFiles, &processedMutex) {
-					if content := processFile(fullPath); content != "" {
-						resultCh <- contextEntry{path: fullPath, content: content}
-					}
-				}
-			}
-		}(path)
-	}
-
-	go func() {
-		wg.Wait()
-		close(resultCh)
-	}()
-
-	entries := make([]contextEntry, 0)
-	for entry := range resultCh {
-		entries = append(entries, entry)
-	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].path < entries[j].path
-	})
-
-	contents := make([]string, 0, len(entries))
-	for _, e := range entries {
-		contents = append(contents, e.content)
-	}
-	return strings.Join(contents, "\n")
-}
-
-// tryMarkProcessed resolves symlinks to obtain the canonical path and uses it
-// as the dedup key. This ensures that symlinks and different relative paths
-// pointing to the same file are only processed once.
-func tryMarkProcessed(path string, processed map[string]bool, mu *sync.Mutex) bool {
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		resolved = path
-	}
-	key := strings.ToLower(resolved)
-
-	mu.Lock()
-	defer mu.Unlock()
-	if processed[key] {
-		return false
-	}
-	processed[key] = true
-	return true
-}
-
-func processFile(filePath string) string {
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		return ""
-	}
-	return "# From:" + filePath + "\n" + string(content)
 }

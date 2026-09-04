@@ -10,6 +10,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/hooks"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
@@ -271,15 +272,41 @@ type stubAgentFactory struct {
 	// resets counts ResetStepCache calls so a test can assert the flow
 	// runner drops the per-step agent memoisation between runs.
 	resets int
+
+	// newAgentCalls records the per-call arguments so a test can assert
+	// runStep threads the step context + template vars through NewAgent.
+	// Guarded by mu: flow steps dispatch concurrently.
+	mu            sync.Mutex
+	newAgentCalls []stubNewAgentCall
+}
+
+// stubNewAgentCall captures one NewAgent invocation's context-relevant args.
+type stubNewAgentCall struct {
+	agentID string
+	stepID  string
+	stepCtx *contextfile.StepContext
+	vars    contextfile.TemplateVars
 }
 
 func (f *stubAgentFactory) ResetStepCache() { f.resets++ }
 
-func (f *stubAgentFactory) NewAgent(_ context.Context, _ string, _ map[string]any, _ string, _ bool, _ []bridge.PeerRef) (agentpkg.Service, error) {
+func (f *stubAgentFactory) NewAgent(_ context.Context, agentID string, _ map[string]any, stepID string, _ bool, _ []bridge.PeerRef, stepCtx *contextfile.StepContext, flowVars contextfile.TemplateVars) (agentpkg.Service, error) {
+	f.mu.Lock()
+	f.newAgentCalls = append(f.newAgentCalls, stubNewAgentCall{agentID: agentID, stepID: stepID, stepCtx: stepCtx, vars: flowVars})
+	f.mu.Unlock()
 	if f.agent != nil {
 		return f.agent, nil
 	}
 	return newStubAgent(), nil
+}
+
+// snapshotNewAgentCalls copies the recorded calls under the lock.
+func (f *stubAgentFactory) snapshotNewAgentCalls() []stubNewAgentCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]stubNewAgentCall, len(f.newAgentCalls))
+	copy(out, f.newAgentCalls)
+	return out
 }
 
 func (f *stubAgentFactory) InitPrimaryAgents(_ context.Context, _ map[string]any) ([]agentpkg.Service, error) {
