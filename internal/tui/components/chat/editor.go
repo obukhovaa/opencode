@@ -138,18 +138,33 @@ func (m *editorCmp) Init() tea.Cmd {
 }
 
 func (m *editorCmp) send() tea.Cmd {
-	if m.app.ActiveAgent().IsSessionBusy(m.session.ID) {
-		return util.ReportWarn("Agent is working, please wait...")
-	}
-
+	// Always check for empty input first — an empty submit is a no-op
+	// regardless of queue or busy state (task 3.3).
 	value := m.textarea.Value()
-	m.textarea.Reset()
-	attachments := m.attachments
-
-	m.attachments = nil
 	if value == "" {
 		return nil
 	}
+	attachments := m.attachments
+
+	// FIFO routing (Decision 8, task 3.1): enqueue whenever the queue is
+	// non-empty OR the session is busy. Direct dispatch is only permitted
+	// when BOTH are false — queue empty AND session observably idle. Without
+	// the queue-non-empty branch, a submission arriving in the idle window
+	// between two drain deliveries would bypass already-queued messages.
+	if m.app.QueueLen(m.session.ID) > 0 || m.app.ActiveAgent().IsSessionBusy(m.session.ID) {
+		m.app.EnqueueMessage(m.session.ID, app.QueuedMessage{
+			Text:        value,
+			Attachments: attachments,
+		})
+		m.textarea.Reset()
+		m.attachments = nil
+		return nil
+	}
+
+	// Queue empty AND session idle: fall through to the direct dispatch path
+	// (today's behavior, unchanged).
+	m.textarea.Reset()
+	m.attachments = nil
 	return tea.Batch(
 		util.CmdHandler(SendMsg{
 			Text:        value,
@@ -381,7 +396,9 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if key.Matches(msg, editorMaps.OpenEditor) {
-			if m.app.ActiveAgent().IsSessionBusy(m.session.ID) {
+			// Queuing Ctrl+E / external $EDITOR sessions is a future decision;
+			// keep the busy-reject guard unchanged (task 6.1).
+			if m.app.QueueLen(m.session.ID) > 0 || m.app.ActiveAgent().IsSessionBusy(m.session.ID) {
 				return m, util.ReportWarn("Agent is working, please wait...")
 			}
 			return m, m.openEditor()

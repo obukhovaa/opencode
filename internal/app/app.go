@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
@@ -66,6 +67,14 @@ type App struct {
 	activeSessionID atomic.Value // stores string
 
 	cliOutputSchema map[string]any
+
+	// Per-session in-memory message queue and drain-worker lifecycle.
+	ctx          context.Context
+	queues       map[string][]QueuedMessage
+	queueMu      sync.Mutex
+	queueCancels map[string]context.CancelFunc
+	queueWg      sync.WaitGroup
+	drainNotify  func(DrainEvent)
 }
 
 // SetActiveSessionID is called by the TUI whenever the selected session changes.
@@ -203,6 +212,9 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 		Crons:         cronSvc,
 		Todos:         todoStore,
 		Questions:     questionSvc,
+		ctx:           ctx,
+		queues:        make(map[string][]QueuedMessage),
+		queueCancels:  make(map[string]context.CancelFunc),
 	}
 
 	// Install the global background-task registry. EnqueueTaskCompletion
@@ -323,6 +335,7 @@ func (app *App) initTheme() {
 
 // Shutdown performs a clean shutdown of the application
 func (app *App) Shutdown() {
+	app.ShutdownQueues()
 	if app.CronScheduler != nil {
 		app.CronScheduler.Stop()
 	}
