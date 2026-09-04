@@ -156,6 +156,15 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.hasCacheMisses() {
 			cmds = append(cmds, m.renderViewAsync())
 		}
+	case app.DrainEvent:
+		// Queue state changed — re-render the banner (queueBanner queries
+		// app.QueueLen in View, no local state needed).
+		if msg.SessionID == m.session.ID {
+			if m.rendering {
+				m.rendering = false
+			}
+			m.renderViewSync()
+		}
 	case pubsub.Event[session.Session]:
 		if msg.Type == pubsub.UpdatedEvent && msg.Payload.ID == m.session.ID {
 			m.session = msg.Payload
@@ -575,6 +584,7 @@ func (m *messagesCmp) View() tea.View {
 				lipgloss.Top,
 				m.viewport.View(),
 				m.working(),
+				m.queueBanner(),
 				m.help(),
 			),
 		))
@@ -711,6 +721,31 @@ func (m *messagesCmp) help() string {
 	return baseStyle.
 		Width(m.width).
 		Render(text)
+}
+
+// queueBanner renders the in-memory queue affordance when messages are waiting.
+// It is rendered between the working spinner and the help bar, styled
+// distinctly from persisted chat messages (muted colour, no chat bubble).
+// The discard key (ctrl+x) is shown to let the user clear the queue.
+func (m *messagesCmp) queueBanner() string {
+	if m.session.ID == "" {
+		return ""
+	}
+	n := m.app.QueueLen(m.session.ID)
+	if n == 0 {
+		return ""
+	}
+	t := theme.CurrentTheme()
+	baseStyle := styles.BaseStyle()
+	noun := "message"
+	if n != 1 {
+		noun = "messages"
+	}
+	return baseStyle.
+		Width(m.width).
+		Foreground(t.TextMuted()).
+		Italic(true).
+		Render(fmt.Sprintf("%d %s queued — press ctrl+x to discard", n, noun))
 }
 
 func (m *messagesCmp) initialScreen() string {

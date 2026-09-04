@@ -8,7 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/opencode-ai/opencode/internal/app"
+	appPkg "github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/flow"
@@ -174,7 +174,7 @@ to assist developers in writing, debugging, and understanding code directly from
 		// Create main context for the application
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		app, err := app.New(ctx, conn, cliSchema, projectID)
+		app, err := appPkg.New(ctx, conn, cliSchema, projectID)
 		if err != nil {
 			if spinner != nil {
 				spinner.Stop()
@@ -268,6 +268,12 @@ to assist developers in writing, debugging, and understanding code directly from
 		program := tea.NewProgram(
 			tui.New(app),
 		)
+
+		// Wire the drain notifier: drain workers call this to push DrainEvents
+		// (queue count updates and attributed errors) into the TUI event loop.
+		app.SetDrainNotifier(func(e appPkg.DrainEvent) {
+			program.Send(e)
+		})
 
 		// Setup the subscriptions, this will send services events to the TUI
 		ch, permCh, cancelSubs := setupSubscriptions(app, ctx)
@@ -446,7 +452,7 @@ func setupBlockingSubscriber[T any](
 	}()
 }
 
-func setupSubscriptions(app *app.App, parentCtx context.Context) (chan tea.Msg, chan tea.Msg, func()) {
+func setupSubscriptions(app *appPkg.App, parentCtx context.Context) (chan tea.Msg, chan tea.Msg, func()) {
 	ch := make(chan tea.Msg, 100)
 	permCh := make(chan tea.Msg, 10)
 
