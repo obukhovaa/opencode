@@ -49,15 +49,26 @@
 
 - [x] 3.2 Write `TestEditorCmpNoOverflow`: for each width in `{1, 2, 3, 5, 20, 40, 80, 120}`,
   in both normal mode and shell mode, call `editor.SetSize(w, 10)` then
-  `editor.View()` and assert `lipgloss.Width(view.Content) <= w`. Use
-  `t.Run(fmt.Sprintf("w=%d/mode=%s", w, mode), ...)` as subtests.
+  `editor.View()` and assert `lipgloss.Width(view.Content) <= bound` where
+  `bound = max(w, minRender)` and `minRender = promptColumnWidth() + 2` (the
+  bubbles-imposed floor; see `design.md – Discovered Constraint`). For `w >= 4`
+  (the current floor) this reduces to `<= w`; for `w < 4` the floor binds instead.
+  Use `t.Run(fmt.Sprintf("w=%d/mode=%s", w, mode), ...)` as subtests.
+  (The original spec said `<= w` for all widths including 1–3; that was corrected once
+  implementation confirmed the bubbles textarea's `max(w, reservedInner+1)` clamp makes
+  the strict bound unachievable below the floor. The deviation is now folded into the
+  spec rather than standing as an unresolved deviation.)
 
 - [x] 3.3 Within the same test matrix, add a subcase with one attachment present and
   assert `lipgloss.Width(view.Content) <= w` (verifies both the width and height paths).
 
 - [x] 3.4 Write `TestEditorCmpNoPanic`: call `editor.SetSize(1, 10)` and `editor.View()`
   and assert the call does not panic. Width 1 exercises the `max(0, 1-3) == 0` clamping
-  path (prompt 2 cols + right margin 1 col).
+  path (prompt 2 cols + right margin 1 col). The original spec also asserted
+  `lipgloss.Width(view.Content) <= 1`; that claim was corrected — the achievable bound
+  at `w=1` is `<= floor` (4), not `<= 1`. `TestEditorCmpNoPanic` verifies only the
+  no-panic obligation; the bound assertion for degenerate widths is covered by
+  `TestEditorCmpNoOverflow` via the `max(w, minRender)` formulation.
 
 - [x] 3.5 Write `TestEditorCmpHeightSync`: assert that after `SetSize(80, 10)` with no
   attachments, `m.textarea.Height() == 10`; after processing an

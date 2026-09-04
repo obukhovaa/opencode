@@ -97,6 +97,31 @@ should be a plain Go unit test that:
 If `NewEditorCmp` requires a fully initialized `*app.App`, stub out the minimal fields
 or add an unexported constructor for tests. Do not change the production API.
 
+## Discovered Constraint: bubbles textarea minimum-width floor
+
+During implementation it was confirmed that `charm.land/bubbles/v2` `textarea.SetWidth`
+enforces an internal minimum via:
+
+    inputWidth = max(w_requested, reservedInner + reservedOuter + 1)
+
+With the editor's configuration (`Prompt = " "`, no line numbers, no border):
+- `reservedInner = uniseg.StringWidth(" ") = 1`
+- `reservedOuter = 0` (no horizontal frame)
+- minimum `inputWidth = max(w, 2)`, so the textarea always renders at least 2 columns
+
+Combined with the 2-column editor prompt widget this gives a **minimum render floor of
+4 columns** for the full editor view. Widths below 4 cannot satisfy `<= w` regardless
+of how correctly the component is implemented — the floor is imposed by the dependency,
+not by a design choice here.
+
+This constraint is deliberately specified in `specs/chat-editor-layout/spec.md`:
+- For `w >= 4`: the strict `lipgloss.Width(view.Content) <= w` invariant applies.
+- For `w < 4`: no panic, no negative allocation (textarea SetWidth clamped at 0), and
+  rendered width MUST NOT exceed the floor (the component adds no extra overflow).
+
+The regression test implements this with `bound := max(w, minRender)` where
+`minRender = promptColumnWidth() + 2`.
+
 ## Risks / Trade-offs
 
 **[Risk] Derived prompt width adds a non-zero allocation per resize.**  

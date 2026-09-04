@@ -10,15 +10,32 @@ that regression tests must enforce.
 ### Requirement: The editor textarea SHALL NOT exceed the container width
 
 After `SetSize(w, h)` is called on the editor component, the visible width of a
-fully-rendered editor view SHALL be less than or equal to `w` for all values of `w`
-greater than or equal to zero.
+fully-rendered editor view SHALL be less than or equal to `w` for all values of `w` at
+or above the **minimum render floor**.
+
+The minimum render floor is defined as:
+
+    floor = promptColumnWidth() + textarea_minimum
+
+where `promptColumnWidth()` is the column width of the rendered left-side prompt widget
+(currently 2 columns: 1 left-padding + 1 prompt character), and `textarea_minimum` is
+the smallest width the `bubbles` textarea can produce, imposed by the library's internal
+clamp:
+
+    inputWidth = max(w_requested, reservedInner + reservedOuter + 1)
+
+With `Prompt = " "` (1 col) and no border (`reservedOuter = 0`), `textarea_minimum = 2`
+(the 1-column internal prompt plus 1 minimum content column). The **current concrete
+floor is 4 columns**. This value is a dependency-imposed constraint, not a choice this
+component makes; a future change to the prompt string or to the `bubbles` library's
+minimum-width logic MUST re-derive the floor and update the regression tests accordingly.
 
 The editor renders a left-side prompt widget joined horizontally to the textarea. The
 textarea allocation MUST reserve at least the column width of the rendered prompt so
-that the combined render fits within `w` columns. The exact reservation (prompt width
-alone, or prompt width plus an additional margin) is an implementation decision recorded
-in `design.md`; the normative requirement is the no-overflow invariant, not the
-arithmetic used to achieve it.
+that the combined render fits within `w` columns for all `w >= floor`. The exact
+reservation (prompt width alone, or prompt width plus an additional margin) is an
+implementation decision recorded in `design.md`; the normative requirement is the
+no-overflow invariant, not the arithmetic used to achieve it.
 
 The reservation MUST be derived from a single authoritative source shared by `SetSize`
 and `View` — a standalone helper or stored field — so that the two sites cannot diverge
@@ -29,8 +46,16 @@ mode: all three vary the prompt's color but not its column width. Should a futur
 introduce a multi-character prompt the reservation MUST be re-derived and the regression
 test MUST be updated at the same time.
 
-Degenerate widths (w less than the minimum reservation) MUST NOT cause a negative
-allocation or a panic; the textarea width MUST be clamped to zero.
+For widths below the floor, the following obligations apply instead of the `<= w`
+invariant:
+
+- The component MUST NOT panic.
+- The textarea width MUST be clamped to zero (no negative allocation passed to the
+  library).
+- The component MUST NOT add any overflow of its own beyond the unavoidable floor: the
+  rendered width MUST NOT exceed `floor` even when `w < floor`. This keeps the
+  requirement testable — it is what the regression test's `bound := max(w, floor)`
+  assertion checks.
 
 #### Scenario: Editor renders within its container width — normal input
 
@@ -56,13 +81,17 @@ allocation or a panic; the textarea width MUST be clamped to zero.
 
 - **GIVEN** an editor with `SetSize(w, 10)` for each w in {1, 2, 3, 5, 10, 20, 40, 80, 120}
 - **WHEN** the view is rendered at each width
-- **THEN** `lipgloss.Width(view.Content) <= w` for every width tested
+- **THEN** for each `w >= floor` (currently 4): `lipgloss.Width(view.Content) <= w`
+- **AND** for each `w < floor`: `lipgloss.Width(view.Content) <= floor` and no panic
 
 #### Scenario: Degenerate width does not panic
 
 - **GIVEN** an editor with `SetSize(1, 10)` applied
 - **WHEN** the view is rendered
-- **THEN** no panic occurs and `lipgloss.Width(view.Content) <= 1`
+- **THEN** no panic occurs
+- **AND** `lipgloss.Width(view.Content) <= floor` (currently 4 — the bubbles-imposed
+  minimum, not the container width; `<= 1` is unachievable at this width because the
+  prompt widget and textarea each have fixed minimums that sum to `floor`)
 
 #### Scenario: A line of w characters wraps rather than overflows
 
