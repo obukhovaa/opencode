@@ -998,5 +998,59 @@ func generateSchema() map[string]any {
 		},
 	}
 
+	// Add router (chat-bridge) configuration. When updating this schema, also
+	// update internal/bridge/config.go (bridge.Config) and docs/bridge.md.
+	schema["properties"].(map[string]any)["router"] = map[string]any{
+		"type":        "object",
+		"description": "Chat-bridge configuration. The bridge connects opencode to Telegram, Slack, and Mattermost. Set at least one channel identity to enable.",
+		"properties": map[string]any{
+			"questionMode": map[string]any{
+				"type":        "string",
+				"description": "How agent questions are surfaced: 'interactive' renders platform-native UI (buttons/blocks); 'auto-reject' returns the default without prompting; 'disabled' suppresses the question flow.",
+				"enum":        []string{"interactive", "auto-reject", "disabled"},
+			},
+			"permissionMode": map[string]any{
+				"type":        "string",
+				"description": "How permission requests are resolved on bridge-owned sessions: 'allow' auto-approves, 'deny' auto-denies, 'ask' or empty defers to the opencode UI (hangs headless). Unrecognised values fail-safe to deny.",
+				"enum":        []string{"allow", "deny", "ask"},
+			},
+			"toolUpdatesEnabled": map[string]any{
+				"type":        "boolean",
+				"description": "Stream tool-call lifecycle events (pending/running/completed) to the chat surface. Failures always surface regardless of this flag.",
+				"default":     false,
+			},
+			"toolUpdateVerbosity": map[string]any{
+				"type":        "string",
+				"description": "Detail level when toolUpdatesEnabled is true: 'compact' (default) emits one line per call with glyph, name, and elapsed time; 'full' adds argument and result detail.",
+				"enum":        []string{"compact", "full"},
+				"default":     "compact",
+			},
+			"questionNudgeIntervalSeconds": map[string]any{
+				"type":        "integer",
+				"description": "Idle gap (seconds) after which the bridge re-posts a 'still waiting' nudge to a session with an outstanding question. 0 = built-in default (300 s); <0 = disable nudging.",
+			},
+			"questionNudgeMax": map[string]any{
+				"type":        "integer",
+				"description": "Maximum nudges per pending question. 0 = built-in default (3); <0 = unlimited.",
+			},
+			"queueAcknowledgementsEnabled": map[string]any{
+				"type":        "boolean",
+				"description": "When true, the bridge sends an in-place-editable '⏳ queued' acknowledgement to a sender whose message is enqueued behind an in-flight agent run. The ack is updated as the queue drains and resolved to '▶ Processing…' when the run starts. Disabled by default; enable for reviewers who need visibility into queue depth.",
+				"default":     false,
+			},
+			"channels": map[string]any{
+				"type":        "object",
+				"description": "Per-platform channel configuration. See docs/bridge.md for field details.",
+				"properties": map[string]any{
+					"telegram":   map[string]any{"type": "object", "description": "Telegram channel configuration."},
+					"slack":      map[string]any{"type": "object", "description": "Slack channel configuration."},
+					"mattermost": map[string]any{"type": "object", "description": "Mattermost channel configuration."},
+					"external":   map[string]any{"type": "object", "description": "External relay channel configuration."},
+				},
+			},
+		},
+		"additionalProperties": false,
+	}
+
 	return schema
 }

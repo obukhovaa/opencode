@@ -49,6 +49,11 @@ const (
 	busyRetryBackoff = 100 * time.Millisecond
 )
 
+// busyAckThreshold is the minimum duration of ErrSessionBusy retrying before
+// a queued-acknowledgement is sent to the peer (Decision 3: 2-second short-wait
+// threshold). Hardcoded for v1; exported as a variable so tests can override it
+// without an N×100 ms spin wait.
+var busyAckThreshold = 2 * time.Second
 
 // toolErrorPreviewRunes caps the failure reason appended to a ✗ tool
 // line. Tool updates are compact by design (name + id + duration only);
@@ -277,7 +282,17 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	// cannot prevent cross-actor ones. Retry with 100 ms backoff for up
 	// to 5 minutes; on budget expiry, re-queue the message via the
 	// overflow path so content is NEVER discarded.
+	//
+	// Queued-ack lifecycle (Decision 2 + Decision 3):
+	//   - A 2-second short-wait timer arms on the first ErrSessionBusy.
+	//   - If the timer fires while still retrying AND acks are enabled,
+	//     the peer receives a "⏳ queued" message (SendQueuedAck).
+	//   - On each subsequent retry the ack is updated in-place (UpdateQueuedAck).
+	//   - When the loop exits (Run succeeds or returns non-busy error),
+	//     the ack is resolved to "▶ Processing…" (UpdateQueuedAck, position=0).
 	deadline := time.Now().Add(busyRetryBudget)
+	ackThreshold := time.Now().Add(busyAckThreshold)
+	var ackToken bridge.QueueAckToken
 	var runCh <-chan agent.AgentEvent
 	for {
 		var err error
@@ -286,23 +301,31 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 			break
 		}
 		if !errors.Is(err, agent.ErrSessionBusy) {
+			// Non-busy error: resolve any pending ack, then surface the
+			// failure to the peer.
+			d.resolveQueueAck(ctx, in.Peer, ackToken)
 			logging.Warn("bridge: agent.Run failed", "session", d.sessionID, "err", err)
 			d.svc.replyToPeer(ctx, in.Peer, runFailureMessage(err, d.sessionID), false, d.sessionID)
 			return
 		}
-		// ErrSessionBusy from a cross-actor holder. Wait and retry.
+		// ErrSessionBusy from a cross-actor holder. Check budget.
 		if time.Now().After(deadline) {
+			d.resolveQueueAck(ctx, in.Peer, ackToken)
 			logging.Warn("bridge: ErrSessionBusy budget expired; re-queuing inbound",
 				"session", d.sessionID)
 			d.pushInbound(in)
 			return
 		}
+		// Check / send / update the queued-ack.
+		d.tickQueueAck(ctx, in.Peer, &ackToken, &ackThreshold)
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(busyRetryBackoff):
 		}
 	}
+	// Run succeeded — resolve the ack before starting the run.
+	d.resolveQueueAck(ctx, in.Peer, ackToken)
 
 	// Fan part events into d.parts for outbound surface delivery (typing,
 	// tool-update prints). Filter to this session's parts; broker is
@@ -333,6 +356,45 @@ func runFailureMessage(err error, sessionID string) string {
 		"or POST /session/" + sessionID + "/abort to release the busy lock."
 }
 
+// tickQueueAck manages the queued-ack lifecycle on each ErrSessionBusy retry
+// cycle. On first call after the short-wait threshold (busyAckThreshold), it
+// sends the initial "⏳ queued" message if acks are enabled. On subsequent
+// calls with a token, it updates the ack in-place.
+//
+// ackToken is a pointer to the token stored in handleInbound's local state.
+// threshold is a pointer to the firing time; once the threshold is past,
+// it is set to the zero time to avoid redundant after-threshold checks.
+func (d *sessionDispatch) tickQueueAck(ctx context.Context, peer bridge.PeerRef, ackToken *bridge.QueueAckToken, threshold *time.Time) {
+	if d.svc.cfg == nil || !d.svc.cfg.QueueAcknowledgementsEnabled {
+		return
+	}
+	adapter := d.svc.Adapter(peer.Channel, peer.Identity)
+	acker, ok := adapter.(bridge.QueuedAcknowledger)
+	if !ok {
+		return
+	}
+	// Initial send: fires when threshold has elapsed AND we don't yet have a token.
+	if *ackToken == "" {
+		if time.Now().Before(*threshold) {
+			return
+		}
+		// Threshold elapsed; send initial ack. position = 1 (message is
+		// next-in-line once the current cross-actor holder releases the slot).
+		position := 1 + len(d.inbound)
+		tok, err := acker.SendQueuedAck(ctx, peer, position)
+		if err != nil {
+			logging.Info("bridge: SendQueuedAck failed", "session", d.sessionID, "err", err)
+			return
+		}
+		*ackToken = tok
+		return
+	}
+	// Update in-place with current position.
+	position := 1 + len(d.inbound)
+	if err := acker.UpdateQueuedAck(ctx, peer, *ackToken, position); err != nil {
+		logging.Info("bridge: UpdateQueuedAck failed", "session", d.sessionID, "err", err)
+	}
+}
 
 // resolveQueueAck edits the ack message to "▶ Processing…" (position == 0).
 // A no-op when ackToken is empty or acks are disabled.

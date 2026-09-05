@@ -23,6 +23,7 @@ package bridge
 
 import (
 	"context"
+	"fmt"
 	"strings"
 )
 
@@ -361,3 +362,51 @@ type Adapter interface {
 type JobScopedAdapter interface {
 	SetJobID(jobID string)
 }
+
+// QueueAckToken is the platform-native message identifier returned by
+// QueuedAcknowledger.SendQueuedAck. It is an opaque string that is passed
+// back to UpdateQueuedAck to edit the message in-place.
+//
+// Platform conventions:
+//   - Telegram: string-encoded int message ID ("1234")
+//   - Slack:    channelID + "\x00" + ts (both needed to call UpdateMessageContext)
+//   - Mattermost: post ID (26-char string)
+type QueueAckToken = string
+
+// QueuedAcknowledger is an optional interface adapters may implement to
+// send and in-place-edit queued-acknowledgement messages. Callers check
+// with the ok-pattern and skip silently when not satisfied:
+//
+//	if ack, ok := adapter.(bridge.QueuedAcknowledger); ok { ... }
+//
+// UpdateQueuedAck position conventions:
+//   - position > 0: queued; text reflects the ordinal (1 = "you're next")
+//   - position == 0: sentinel for "run has started — resolve the ack"
+//     (edit to "▶ Processing…" or equivalent)
+//
+// All three production adapters implement this interface. Test doubles
+// that do not implement it behave as if QueueAcknowledgementsEnabled == false.
+type QueuedAcknowledger interface {
+	// SendQueuedAck sends the initial queued-ack message to peer and
+	// returns a token for subsequent in-place edits. position is 1-based
+	// (1 = "you're next").
+	SendQueuedAck(ctx context.Context, peer PeerRef, position int) (QueueAckToken, error)
+
+	// UpdateQueuedAck edits the message identified by token in-place.
+	// Pass position == 0 to resolve the ack (run started).
+	UpdateQueuedAck(ctx context.Context, peer PeerRef, token QueueAckToken, position int) error
+}
+
+// QueueAckText returns the chat text for a queued-acknowledgement message.
+// position is 1-based: 1 means the message is next (only the current in-flight
+// run is blocking it). position == 0 is the resolved sentinel; use ResolvedAckText.
+func QueueAckText(position int) string {
+	if position <= 1 {
+		return "⏳ Your message is queued. I'll respond as soon as the current run finishes."
+	}
+	return fmt.Sprintf("⏳ Your message is queued — %d message(s) ahead. I'll respond once they finish.", position-1)
+}
+
+// ResolvedAckText is the text for the final in-place edit when the queued
+// message's agent run begins. Displayed briefly before the agent's reply arrives.
+const ResolvedAckText = "▶ Processing your message now…"
