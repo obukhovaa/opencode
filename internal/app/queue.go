@@ -37,8 +37,14 @@ type DrainEvent struct {
 
 // SetDrainNotifier registers the callback that the drain worker calls to push
 // DrainEvents to the TUI. Must be called once, from the TUI goroutine, before
-// the first EnqueueMessage. The notifier is called from drain-worker goroutines
-// and must be safe for concurrent use (e.g. program.Send).
+// the first EnqueueMessage.
+//
+// The notifier is called synchronously and must be safe for concurrent use AND
+// non-blocking. EnqueueMessage / DiscardQueue are invoked from the Bubble Tea
+// update goroutine, so a notifier that blocks — notably a bare
+// tea.Program.Send, whose channel is only read by the very event loop that is
+// waiting for Update to return — deadlocks the whole TUI unrecoverably. Wrap
+// delivery in a forwarder goroutine instead (see cmd.newDrainForwarder).
 func (app *App) SetDrainNotifier(fn func(DrainEvent)) {
 	app.queueMu.Lock()
 	defer app.queueMu.Unlock()

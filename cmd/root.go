@@ -269,11 +269,13 @@ to assist developers in writing, debugging, and understanding code directly from
 			tui.New(app),
 		)
 
-		// Wire the drain notifier: drain workers call this to push DrainEvents
-		// (queue count updates and attributed errors) into the TUI event loop.
-		app.SetDrainNotifier(func(e appPkg.DrainEvent) {
-			program.Send(e)
-		})
+		// Wire the drain notifier: drain workers and the editor's enqueue path
+		// push DrainEvents (queue count updates and attributed errors) into the
+		// TUI event loop. The forwarder goroutine is mandatory — notifying from
+		// the Bubble Tea update goroutine with a bare program.Send deadlocks the
+		// TUI (see newDrainForwarder).
+		drainNotify, stopDrainForwarder := newDrainForwarder(program.Send)
+		app.SetDrainNotifier(drainNotify)
 
 		// Setup the subscriptions, this will send services events to the TUI
 		ch, permCh, cancelSubs := setupSubscriptions(app, ctx)
@@ -345,6 +347,10 @@ to assist developers in writing, debugging, and understanding code directly from
 				tuiWg.Wait()
 			}()
 			cleanupWg.Wait()
+
+			// Drain workers are stopped by app.Shutdown above, so no further
+			// events can be emitted; release the forwarder goroutine.
+			stopDrainForwarder()
 
 			logging.Info("All goroutines cleaned up")
 		}
