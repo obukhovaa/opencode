@@ -84,6 +84,28 @@ func (app *App) DequeueMessage(sessionID string) (QueuedMessage, bool) {
 	return msg, true
 }
 
+// dequeueOrRelease pops the head of sessionID's queue. When the queue is empty
+// it ALSO deregisters the session's drain worker, atomically under queueMu.
+//
+// The atomicity matters: deciding "queue is empty, so exit" and "deregister the
+// worker" in two separate critical sections is a check-then-act race. An
+// EnqueueMessage landing between the two sees the still-registered cancel,
+// declines to start a worker, and its message is then stranded in the queue
+// with no worker to drain it (a lost wakeup — the message only moves when the
+// user happens to submit again).
+func (app *App) dequeueOrRelease(sessionID string) (QueuedMessage, bool) {
+	app.queueMu.Lock()
+	defer app.queueMu.Unlock()
+	q := app.queues[sessionID]
+	if len(q) == 0 {
+		delete(app.queueCancels, sessionID)
+		return QueuedMessage{}, false
+	}
+	msg := q[0]
+	app.queues[sessionID] = q[1:]
+	return msg, true
+}
+
 // QueueLen returns the current queue depth for sessionID. Goroutine-safe.
 func (app *App) QueueLen(sessionID string) int {
 	app.queueMu.Lock()
@@ -139,12 +161,11 @@ func (app *App) drainLoop(ctx context.Context, sessionID string) {
 		default:
 		}
 
-		msg, ok := app.DequeueMessage(sessionID)
+		// Dequeue-or-deregister is a single critical section: see
+		// dequeueOrRelease for why splitting it strands enqueued messages.
+		msg, ok := app.dequeueOrRelease(sessionID)
 		if !ok {
-			// Queue is empty — exit worker and clean up.
-			app.queueMu.Lock()
-			delete(app.queueCancels, sessionID)
-			app.queueMu.Unlock()
+			// Queue is empty and this worker is now deregistered.
 			app.notify(DrainEvent{SessionID: sessionID, QueueLen: 0})
 			return
 		}

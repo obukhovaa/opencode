@@ -170,8 +170,18 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, p.handleShellResult(msg))
 	case app.DrainEvent:
 		// Drain-worker notification: update queue affordance and surface errors.
-		if msg.Err != nil && msg.SessionID == p.session.ID {
-			cmds = append(cmds, util.ReportError(msg.Err))
+		// The error is surfaced even for a session the user is not currently
+		// viewing: a halted drain is terminal (the worker is gone and the queue
+		// is stalled until ctrl+x or a new submit), the banner looks identical
+		// to a healthy mid-drain queue, and the event is never re-emitted — so
+		// filtering on the active session drops the only signal there is.
+		if msg.Err != nil {
+			if msg.SessionID == p.session.ID {
+				cmds = append(cmds, util.ReportError(msg.Err))
+			} else {
+				cmds = append(cmds, util.ReportError(
+					fmt.Errorf("session %s: %w", msg.SessionID, msg.Err)))
+			}
 		}
 		// Fall through: let the message reach the messages component so it
 		// re-renders the queue banner (list.go queries app.QueueLen in View).
@@ -479,10 +489,18 @@ func (p *chatPage) sendMessage(text string, attachments []message.Attachment) te
 
 	_, err = p.app.ActiveAgent().Run(context.Background(), p.session.ID, text, 0, attachments...)
 	if err != nil {
-		// ErrSessionBusy from the direct idle path is swallowed: the editor
-		// already routes to the queue when busy, so this race is a transient
-		// condition handled by the drain worker's back-off (task 4.1).
+		// ErrSessionBusy on the direct idle path means the editor's
+		// queue-empty + not-busy check lost a race (a drain worker, cron,
+		// flow step or bridge dispatch claimed the slot in between). The
+		// submission is NOT surfaced as an error toast — but it must not be
+		// dropped either: the textarea has already been reset, so returning
+		// here would silently discard the user's text. Hand it to the queue
+		// so the drain worker retries it (task 4.1).
 		if errors.Is(err, agent.ErrSessionBusy) {
+			p.app.EnqueueMessage(p.session.ID, app.QueuedMessage{
+				Text:        text,
+				Attachments: attachments,
+			})
 			return tea.Batch(cmds...)
 		}
 		return util.ReportError(err)

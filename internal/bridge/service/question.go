@@ -486,11 +486,32 @@ func (r *QuestionRouter) BufferInbound(ctx context.Context, sessionID string, in
 	r.mu.Unlock()
 
 	if evicted != nil && r.svc != nil {
-		r.svc.replyToPeer(ctx, evicted.Peer,
-			"bridge: your earlier message was lost because too many messages were buffered "+
-				"while the interactive step had no pending question. "+
-				"Please resend it once the current step completes.",
-			false, sessionID)
+		// Fire-and-forget: BufferInbound runs on the SHARED
+		// orchestrator-inbound-dispatch goroutine (Service.runInboundLoop →
+		// dispatchInbound), so a synchronous platform send here stalls inbound
+		// dispatch for every session and identity for the duration of the call.
+		// That is worst for the orchestrator-mediated external channel, whose
+		// Send is an HTTP round-trip back to the orchestrator (10 s timeout).
+		// Mirrors emitToolUpdate's fire-and-forget posture in dispatch.go.
+		peer := evicted.Peer
+		// WithoutCancel keeps the caller's values (session scope, trace ids)
+		// while detaching the lifetime, so the send is not cancelled the moment
+		// dispatchInbound returns. Deliberately not r.svc.ctx: that is only set
+		// in Service.Start, and a nil ctx here would panic inside replyToPeer.
+		sendCtx := context.WithoutCancel(ctx)
+		go func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					logging.Warn("bridge: buffer-eviction notice panic",
+						"session", sessionID, "panic", rec)
+				}
+			}()
+			r.svc.replyToPeer(sendCtx, peer,
+				"bridge: your earlier message was lost because too many messages were buffered "+
+					"while the interactive step had no pending question. "+
+					"Please resend it once the current step completes.",
+				false, sessionID)
+		}()
 	}
 }
 

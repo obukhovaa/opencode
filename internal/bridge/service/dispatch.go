@@ -37,17 +37,18 @@ const (
 	// already in flight; we only need to give the broker time to push.
 	partsDrainGrace = 100 * time.Millisecond
 
-	// busyRetryBudget is the maximum time handleInbound will retry
-	// agent.Run on ErrSessionBusy before re-queuing the message via
-	// the overflow path. Cross-actor holders (flow steps, cron sentinels,
-	// task auto-resume) can hold a session for several minutes; 5 minutes
-	// gives them a generous window before the message is re-queued for
-	// another attempt. Content is never discarded.
-	busyRetryBudget = 5 * time.Minute
 	// busyRetryBackoff is the sleep between ErrSessionBusy retries.
 	// Matches the TUI drain worker's precedent (app/queue.go busyBackoff).
 	busyRetryBackoff = 100 * time.Millisecond
 )
+
+// busyRetryBudget is the maximum time handleInbound will retry agent.Run on
+// ErrSessionBusy before re-queuing the message via the overflow path.
+// Cross-actor holders (flow steps, cron sentinels, task auto-resume) can hold a
+// session for several minutes; 5 minutes gives them a generous window before
+// the message is re-queued for another attempt. Content is never discarded.
+// A variable rather than a const so tests can shrink it (see busyAckThreshold).
+var busyRetryBudget = 5 * time.Minute
 
 // busyAckThreshold is the minimum duration of ErrSessionBusy retrying before
 // a queued-acknowledgement is sent to the peer (Decision 3: 2-second short-wait
@@ -109,6 +110,16 @@ type sessionDispatch struct {
 	// sweep removes stale entries when a call never produces a paired
 	// result (rare — usually a cancelled cycle).
 	toolCallStart sync.Map // map[string]int64
+
+	// liveAcks remembers the outstanding queued-ack token per peer so it
+	// survives a busy-retry-budget re-queue. handleInbound's ack state is a
+	// local and budget expiry returns from handleInbound — without this the
+	// next 5-minute cycle would SEND a brand-new "⏳ queued" message instead
+	// of editing the existing one, leaving one orphaned, never-resolved ack
+	// per cycle in the reviewer's chat. Keys: peerAckKey(peer); values:
+	// bridge.QueueAckToken. Entries are removed when the ack is resolved
+	// (run started) or when an edit fails (message gone — send a fresh one).
+	liveAcks sync.Map // map[string]bridge.QueueAckToken
 }
 
 // newSessionDispatch constructs and launches the per-session dispatcher
@@ -287,12 +298,22 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	//   - A 2-second short-wait timer arms on the first ErrSessionBusy.
 	//   - If the timer fires while still retrying AND acks are enabled,
 	//     the peer receives a "⏳ queued" message (SendQueuedAck).
-	//   - On each subsequent retry the ack is updated in-place (UpdateQueuedAck).
-	//   - When the loop exits (Run succeeds or returns non-busy error),
-	//     the ack is resolved to "▶ Processing…" (UpdateQueuedAck, position=0).
+	//   - The ack is updated in-place ONLY when the reported position
+	//     actually changes (UpdateQueuedAck). Editing on every 100 ms retry
+	//     would issue thousands of identical edits per queued message, which
+	//     burns the platforms' edit rate limits and makes Telegram reject the
+	//     call outright ("message is not modified").
+	//   - When Run succeeds, the ack is resolved to "▶ Processing…"
+	//     (UpdateQueuedAck, position=0).
 	deadline := time.Now().Add(busyRetryBudget)
 	ackThreshold := time.Now().Add(busyAckThreshold)
-	var ackToken bridge.QueueAckToken
+	ack := queueAckState{lastPosition: -1}
+	if tok, ok := d.liveAcks.Load(peerAckKey(in.Peer)); ok {
+		// A previous retry cycle for this peer already has an ack message in
+		// chat (busy-retry budget expired and the inbound was re-queued).
+		// Reuse it so the peer sees one ack that keeps updating.
+		ack.token, _ = tok.(bridge.QueueAckToken)
+	}
 	var runCh <-chan agent.AgentEvent
 	for {
 		var err error
@@ -301,23 +322,25 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 			break
 		}
 		if !errors.Is(err, agent.ErrSessionBusy) {
-			// Non-busy error: resolve any pending ack, then surface the
-			// failure to the peer.
-			d.resolveQueueAck(ctx, in.Peer, ackToken)
+			// Non-busy error: the run never started, so the ack must NOT be
+			// resolved to "▶ Processing…" — that would contradict the failure
+			// reply sent immediately after. Leave the "⏳ queued" text in place.
 			logging.Warn("bridge: agent.Run failed", "session", d.sessionID, "err", err)
 			d.svc.replyToPeer(ctx, in.Peer, runFailureMessage(err, d.sessionID), false, d.sessionID)
 			return
 		}
 		// ErrSessionBusy from a cross-actor holder. Check budget.
 		if time.Now().After(deadline) {
-			d.resolveQueueAck(ctx, in.Peer, ackToken)
+			// Do NOT resolve the ack here: the message is being re-queued, not
+			// processed. Resolving would tell the peer "▶ Processing your
+			// message now…" while it goes back to the tail of the retry cycle.
 			logging.Warn("bridge: ErrSessionBusy budget expired; re-queuing inbound",
 				"session", d.sessionID)
 			d.pushInbound(in)
 			return
 		}
 		// Check / send / update the queued-ack.
-		d.tickQueueAck(ctx, in.Peer, &ackToken, &ackThreshold)
+		d.tickQueueAck(ctx, in.Peer, &ack, &ackThreshold)
 		select {
 		case <-ctx.Done():
 			return
@@ -325,7 +348,7 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 		}
 	}
 	// Run succeeded — resolve the ack before starting the run.
-	d.resolveQueueAck(ctx, in.Peer, ackToken)
+	d.resolveQueueAck(ctx, in.Peer, ack.token)
 
 	// Fan part events into d.parts for outbound surface delivery (typing,
 	// tool-update prints). Filter to this session's parts; broker is
@@ -356,15 +379,33 @@ func runFailureMessage(err error, sessionID string) string {
 		"or POST /session/" + sessionID + "/abort to release the busy lock."
 }
 
+// peerAckKey is the liveAcks map key for a peer. Channel+identity+peerID is
+// the same tuple bindings are keyed on, so two identities in the same channel
+// never share an ack slot.
+func peerAckKey(p bridge.PeerRef) string {
+	return p.Channel + "|" + p.Identity + "|" + p.PeerID
+}
+
+// queueAckState is handleInbound's local queued-ack bookkeeping: the platform
+// token for in-place edits and the position last rendered into it. lastPosition
+// starts at -1 ("nothing rendered yet") so position 0 can never be mistaken for
+// an already-rendered value.
+type queueAckState struct {
+	token        bridge.QueueAckToken
+	lastPosition int
+}
+
 // tickQueueAck manages the queued-ack lifecycle on each ErrSessionBusy retry
 // cycle. On first call after the short-wait threshold (busyAckThreshold), it
 // sends the initial "⏳ queued" message if acks are enabled. On subsequent
-// calls with a token, it updates the ack in-place.
+// calls it updates the ack in-place ONLY when the position it would render has
+// changed — the retry loop ticks every 100 ms, so editing unconditionally would
+// issue up to 3000 identical edits per queued message (rate-limit exhaustion on
+// Slack/Mattermost, and a hard "message is not modified" error on Telegram).
 //
-// ackToken is a pointer to the token stored in handleInbound's local state.
-// threshold is a pointer to the firing time; once the threshold is past,
-// it is set to the zero time to avoid redundant after-threshold checks.
-func (d *sessionDispatch) tickQueueAck(ctx context.Context, peer bridge.PeerRef, ackToken *bridge.QueueAckToken, threshold *time.Time) {
+// ack is a pointer to handleInbound's local ack state.
+// threshold is a pointer to the firing time.
+func (d *sessionDispatch) tickQueueAck(ctx context.Context, peer bridge.PeerRef, ack *queueAckState, threshold *time.Time) {
 	if d.svc.cfg == nil || !d.svc.cfg.QueueAcknowledgementsEnabled {
 		return
 	}
@@ -373,27 +414,38 @@ func (d *sessionDispatch) tickQueueAck(ctx context.Context, peer bridge.PeerRef,
 	if !ok {
 		return
 	}
+	// position = 1 means the message is next-in-line once the current
+	// cross-actor holder releases the slot.
+	position := 1 + len(d.inbound)
 	// Initial send: fires when threshold has elapsed AND we don't yet have a token.
-	if *ackToken == "" {
+	if ack.token == "" {
 		if time.Now().Before(*threshold) {
 			return
 		}
-		// Threshold elapsed; send initial ack. position = 1 (message is
-		// next-in-line once the current cross-actor holder releases the slot).
-		position := 1 + len(d.inbound)
 		tok, err := acker.SendQueuedAck(ctx, peer, position)
 		if err != nil {
 			logging.Info("bridge: SendQueuedAck failed", "session", d.sessionID, "err", err)
 			return
 		}
-		*ackToken = tok
+		ack.token = tok
+		ack.lastPosition = position
+		d.liveAcks.Store(peerAckKey(peer), tok)
 		return
 	}
-	// Update in-place with current position.
-	position := 1 + len(d.inbound)
-	if err := acker.UpdateQueuedAck(ctx, peer, *ackToken, position); err != nil {
-		logging.Info("bridge: UpdateQueuedAck failed", "session", d.sessionID, "err", err)
+	// Update in-place only when the rendered text would actually change.
+	if position == ack.lastPosition {
+		return
 	}
+	if err := acker.UpdateQueuedAck(ctx, peer, ack.token, position); err != nil {
+		logging.Info("bridge: UpdateQueuedAck failed", "session", d.sessionID, "err", err)
+		// The ack message may be gone (deleted by the user, or a token from a
+		// previous cycle that is no longer editable). Forget it so the next
+		// tick sends a fresh one rather than editing into the void forever.
+		d.liveAcks.Delete(peerAckKey(peer))
+		ack.token = ""
+		return
+	}
+	ack.lastPosition = position
 }
 
 // resolveQueueAck edits the ack message to "▶ Processing…" (position == 0).
@@ -402,6 +454,8 @@ func (d *sessionDispatch) resolveQueueAck(ctx context.Context, peer bridge.PeerR
 	if ackToken == "" {
 		return
 	}
+	// The run is starting: this ack is done, whatever the edit's outcome.
+	d.liveAcks.Delete(peerAckKey(peer))
 	if d.svc.cfg == nil || !d.svc.cfg.QueueAcknowledgementsEnabled {
 		return
 	}
@@ -1043,10 +1097,13 @@ func translateAttachments(in []bridge.Attachment) []message.Attachment {
 // shutdown-loss logging, and closes d.inbound. Caller MUST hold
 // s.dispatchMu.
 //
-// Draining is protected by d.mu to serialize against concurrent
-// drainOverflowToInbound calls in the run() goroutine. Items that
-// run() has already received (one possible item after stop is set)
-// are not logged — that is an accepted race at shutdown per Decision 5.
+// Draining AND the close itself are protected by d.mu so they serialize
+// against concurrent drainOverflowToInbound / pushInbound calls: pushInbound
+// re-checks d.stop under the same mutex, so no send can land on the closed
+// channel (a send on a closed channel panics, taking down the dispatcher
+// goroutine). Items that run() has already received (one possible item after
+// stop is set) are not logged — that is an accepted race at shutdown per
+// Decision 5.
 func (d *sessionDispatch) close() {
 	if !d.stop.CompareAndSwap(false, true) {
 		return
@@ -1065,6 +1122,7 @@ drainLoop:
 			break drainLoop
 		}
 	}
+	close(d.inbound)
 	d.mu.Unlock()
 
 	for _, item := range lost {
@@ -1077,7 +1135,6 @@ drainLoop:
 			"session", d.sessionID,
 			"count", n)
 	}
-	close(d.inbound)
 }
 
 // pushInbound enqueues an inbound message. The push is NON-BLOCKING:
@@ -1089,9 +1146,19 @@ drainLoop:
 // Both the channel send and the overflow append are done under d.mu to
 // serialize with drainOverflowToInbound calls in run(), preserving
 // per-session FIFO order (overflow items are served before new arrivals).
+// The same mutex makes the d.stop re-check safe: close() sets stop and closes
+// d.inbound under d.mu, so a push that observes !stop can never send on a
+// closed channel.
 func (d *sessionDispatch) pushInbound(in bridge.Inbound) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.stop.Load() {
+		// Dispatcher already torn down (unbind or shutdown). Dropping is
+		// audible rather than silent, and never a panic.
+		logging.Warn("bridge: dropped inbound for stopped dispatcher",
+			"session", d.sessionID, "peer", in.Peer.PeerID)
+		return
+	}
 	select {
 	case d.inbound <- in:
 	default:

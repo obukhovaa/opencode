@@ -7,6 +7,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/bridge/store"
 	"github.com/opencode-ai/opencode/internal/config"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
+	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/question"
 )
 
@@ -105,7 +107,10 @@ func newAckDispatchTestSvc(t *testing.T, ag agentpkg.Service, acksEnabled bool) 
 // TestHandleInbound_QueuedAckLifecycle is the end-to-end ack lifecycle test:
 //
 //	(a) SendQueuedAck is called exactly once, after busyAckThreshold elapses
-//	(b) UpdateQueuedAck is called on each subsequent retry (with position >= 1)
+//	(b) UpdateQueuedAck is NOT called again while the reported position is
+//	    unchanged — the retry loop ticks every 100 ms, and re-editing the same
+//	    text thousands of times exhausts platform edit rate limits (Telegram
+//	    rejects an unchanged edit outright with "message is not modified")
 //	(c) UpdateQueuedAck is called once more with position==0 (resolve) when Run succeeds
 //
 // busyAckThreshold is set to 0 so the test runs deterministically without sleeping.
@@ -134,15 +139,11 @@ func TestHandleInbound_QueuedAckLifecycle(t *testing.T) {
 	}
 
 	updates := ad.AckUpdateCalls()
-	// (b) At least N UpdateQueuedAck calls with position > 0.
-	positivePosUpdates := 0
-	for _, u := range updates {
-		if u.Position > 0 {
-			positivePosUpdates++
-		}
-	}
-	if positivePosUpdates == 0 {
-		t.Errorf("no UpdateQueuedAck calls with position>0; got %v", updates)
+	// (b) The position never changes in this scenario (nothing else is queued),
+	// so the only update must be the resolve. No redundant same-position edits.
+	if len(updates) != 1 {
+		t.Errorf("UpdateQueuedAck called %d times, want 1 (resolve only); got %v",
+			len(updates), updates)
 	}
 
 	// (c) Final UpdateQueuedAck must have position==0 (resolve sentinel).
@@ -303,5 +304,170 @@ func TestBufferInbound_NoDrainWithoutQuestion(t *testing.T) {
 	// Question was NOT fanned out to the adapter.
 	if sends := ad.Sends(); len(sends) != 0 {
 		t.Errorf("question fanned out to adapter (%d sends); auto-answer should suppress fan-out", len(sends))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Ack edit economy + honest ack state on the non-delivery paths
+// ---------------------------------------------------------------------------
+
+// ackPositionAgent returns ErrSessionBusy for a preset number of calls and, on
+// the call at index growAt, pushes an extra inbound into the dispatcher so the
+// reported queue position changes mid-retry.
+type ackPositionAgent struct {
+	busyRetryStubAgent
+	d      *sessionDispatch
+	growAt int
+}
+
+func (a *ackPositionAgent) Run(
+	ctx context.Context, sid, content string, mt int, atts ...message.Attachment,
+) (<-chan agentpkg.AgentEvent, error) {
+	a.mu.Lock()
+	idx := a.calls
+	a.mu.Unlock()
+	if idx == a.growAt && a.d != nil {
+		a.d.pushInbound(testInbound("filler"))
+	}
+	return a.busyRetryStubAgent.Run(ctx, sid, content, mt, atts...)
+}
+
+// TestQueuedAck_UpdatesOnlyOnPositionChange proves the ack is edited when the
+// position actually changes, and not on the retries where it does not. Without
+// the position-change gate the 100 ms retry loop issues an identical edit per
+// tick — thousands per queued message against the platform's edit rate limit.
+func TestQueuedAck_UpdatesOnlyOnPositionChange(t *testing.T) {
+	old := busyAckThreshold
+	busyAckThreshold = 0
+	defer func() { busyAckThreshold = old }()
+
+	errs := make([]error, 4)
+	for i := range errs {
+		errs[i] = agentpkg.ErrSessionBusy
+	}
+	ag := &ackPositionAgent{
+		busyRetryStubAgent: busyRetryStubAgent{runErrors: errs},
+		growAt:             2,
+	}
+	svc, ad := newAckDispatchTestSvc(t, ag, true)
+	d := newBareDispatch(svc, "S1")
+	ag.d = d
+
+	d.handleInbound(context.Background(), testInbound("position-change"))
+
+	if got := ad.AckSendCount(); got != 1 {
+		t.Errorf("SendQueuedAck called %d times, want 1", got)
+	}
+	updates := ad.AckUpdateCalls()
+	// Expected: one update for the position change (2), then the resolve (0).
+	if len(updates) != 2 {
+		t.Fatalf("UpdateQueuedAck calls = %v, want exactly 2 (position change + resolve)", updates)
+	}
+	if updates[0].Position != 2 {
+		t.Errorf("first update position = %d, want 2", updates[0].Position)
+	}
+	if updates[1].Position != 0 {
+		t.Errorf("second update position = %d, want 0 (resolve)", updates[1].Position)
+	}
+}
+
+// TestQueuedAck_NotResolvedOnRunFailure asserts the ack is NOT resolved to
+// "▶ Processing your message now…" when the run never starts: resolving would
+// directly contradict the failure reply sent immediately afterwards.
+func TestQueuedAck_NotResolvedOnRunFailure(t *testing.T) {
+	old := busyAckThreshold
+	busyAckThreshold = 0
+	defer func() { busyAckThreshold = old }()
+
+	ag := &busyRetryStubAgent{runErrors: []error{
+		agentpkg.ErrSessionBusy,
+		errors.New("provider exploded"),
+	}}
+	svc, ad := newAckDispatchTestSvc(t, ag, true)
+	d := newBareDispatch(svc, "S1")
+
+	d.handleInbound(context.Background(), testInbound("run-failure"))
+
+	if got := ad.AckSendCount(); got != 1 {
+		t.Fatalf("SendQueuedAck called %d times, want 1", got)
+	}
+	for _, u := range ad.AckUpdateCalls() {
+		if u.Position == 0 {
+			t.Errorf("ack resolved (position 0) even though the run never started: %v", u)
+		}
+	}
+}
+
+// TestQueuedAck_NotResolvedOnBudgetExpiry asserts the ack is NOT resolved when
+// the busy-retry budget expires: the message is re-queued for another attempt,
+// so telling the peer "▶ Processing your message now…" would be false.
+func TestQueuedAck_NotResolvedOnBudgetExpiry(t *testing.T) {
+	oldThreshold := busyAckThreshold
+	busyAckThreshold = 0
+	defer func() { busyAckThreshold = oldThreshold }()
+
+	errs := make([]error, 64)
+	for i := range errs {
+		errs[i] = agentpkg.ErrSessionBusy
+	}
+	ag := &busyRetryStubAgent{runErrors: errs}
+	svc, ad := newAckDispatchTestSvc(t, ag, true)
+	d := newBareDispatch(svc, "S1")
+
+	// Shrink the retry budget so it expires after the ack has been sent but
+	// before Run ever succeeds.
+	oldBudget := busyRetryBudget
+	busyRetryBudget = 150 * time.Millisecond
+	defer func() { busyRetryBudget = oldBudget }()
+
+	d.handleInbound(context.Background(), testInbound("budget-expiry"))
+
+	for _, u := range ad.AckUpdateCalls() {
+		if u.Position == 0 {
+			t.Errorf("ack resolved (position 0) on budget expiry — message was re-queued, not processed: %v", u)
+		}
+	}
+	// The message must be re-queued, never dropped.
+	if len(d.inbound) == 0 && len(d.overflow) == 0 {
+		t.Error("inbound was neither re-queued into d.inbound nor overflow")
+	}
+}
+
+// TestQueuedAck_SurvivesRequeueCycle asserts that when the busy-retry budget
+// expires and the inbound is re-queued, the NEXT cycle edits the ack message
+// that is already in chat instead of sending a second one. Without the
+// dispatcher-level token memo, a session held for hours accumulates one
+// orphaned, never-resolved "⏳ queued" message per 5-minute cycle.
+func TestQueuedAck_SurvivesRequeueCycle(t *testing.T) {
+	oldThreshold := busyAckThreshold
+	busyAckThreshold = 0
+	defer func() { busyAckThreshold = oldThreshold }()
+	oldBudget := busyRetryBudget
+	busyRetryBudget = 150 * time.Millisecond
+	defer func() { busyRetryBudget = oldBudget }()
+
+	errs := make([]error, 64)
+	for i := range errs {
+		errs[i] = agentpkg.ErrSessionBusy
+	}
+	ag := &busyRetryStubAgent{runErrors: errs}
+	svc, ad := newAckDispatchTestSvc(t, ag, true)
+	d := newBareDispatch(svc, "S1")
+
+	in := testInbound("requeue-ack")
+	// Cycle 1: ack sent, budget expires, inbound re-queued.
+	d.handleInbound(context.Background(), in)
+	if got := ad.AckSendCount(); got != 1 {
+		t.Fatalf("cycle 1: SendQueuedAck called %d times, want 1", got)
+	}
+	// Cycle 2: same peer, still busy — must reuse the existing ack.
+	d.handleInbound(context.Background(), in)
+	if got := ad.AckSendCount(); got != 1 {
+		t.Errorf("cycle 2: SendQueuedAck called %d times total, want 1 (ack must be reused, not re-sent)", got)
+	}
+	for _, u := range ad.AckUpdateCalls() {
+		if u.Token != "token-1" {
+			t.Errorf("update used token %q, want the original \"token-1\"", u.Token)
+		}
 	}
 }

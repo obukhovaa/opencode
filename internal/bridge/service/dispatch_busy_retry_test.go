@@ -451,8 +451,16 @@ func TestBufferInbound_DropNotifiesEvictedPeer(t *testing.T) {
 		t.Errorf("buffer len = %d after eviction, want %d", got, interactiveInboundBufferCap)
 	}
 
-	// The evicted peer (D1) must have received a notification.
-	sends := ad.Sends()
+	// The evicted peer (D1) must have received a notification. The notice is
+	// sent on a detached goroutine (BufferInbound runs on the SHARED inbound
+	// loop and must not block on platform I/O), so poll for it.
+	var sends []bridge.Outbound
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		if sends = ad.Sends(); len(sends) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(sends) == 0 {
 		t.Fatal("no notification sent to evicted peer — silent drop is not allowed")
 	}

@@ -397,9 +397,19 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if key.Matches(msg, editorMaps.OpenEditor) {
 			// Queuing Ctrl+E / external $EDITOR sessions is a future decision;
-			// keep the busy-reject guard unchanged (task 6.1).
-			if m.app.QueueLen(m.session.ID) > 0 || m.app.ActiveAgent().IsSessionBusy(m.session.ID) {
+			// keep the busy-reject guard unchanged (task 6.1). The queue-length
+			// arm is what preserves FIFO: openEditor's result is delivered via
+			// SendMsg → chatPage.sendMessage, which dispatches directly and
+			// would jump ahead of already-queued messages.
+			if m.app.ActiveAgent().IsSessionBusy(m.session.ID) {
 				return m, util.ReportWarn("Agent is working, please wait...")
+			}
+			if m.app.QueueLen(m.session.ID) > 0 {
+				// Distinct message: the session is idle here (e.g. the drain
+				// worker halted on an error), so "Agent is working" would be
+				// factually wrong and leave the user with no idea why ctrl+e
+				// is locked.
+				return m, util.ReportWarn("Messages are queued — wait for them to send, or press ctrl+x to discard")
 			}
 			return m, m.openEditor()
 		}

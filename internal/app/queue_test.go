@@ -187,3 +187,65 @@ func TestQueue_ShutdownQueues_cancelsWorkers(t *testing.T) {
 		t.Fatal("ShutdownQueues did not return within 2s (goroutine leak?)")
 	}
 }
+
+// TestQueue_DequeueOrRelease_AtomicDeregistration locks in the invariant that
+// makes the drain worker's exit safe: the worker is deregistered from
+// queueCancels in the SAME critical section that observes the empty queue.
+//
+// Splitting the two (dequeue returns false, then a second lock deletes the
+// cancel) lets an EnqueueMessage land in between: it sees the still-registered
+// worker, declines to start one, and its message is stranded in the queue with
+// nothing to drain it until the user submits again.
+func TestQueue_DequeueOrRelease_AtomicDeregistration(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := newTestApp(ctx)
+
+	a.queueMu.Lock()
+	a.queues["s1"] = []QueuedMessage{{Text: "a"}}
+	a.queueCancels["s1"] = func() {}
+	a.queueMu.Unlock()
+
+	msg, ok := a.dequeueOrRelease("s1")
+	if !ok || msg.Text != "a" {
+		t.Fatalf("dequeueOrRelease = (%q, %v), want (\"a\", true)", msg.Text, ok)
+	}
+	a.queueMu.Lock()
+	_, registered := a.queueCancels["s1"]
+	a.queueMu.Unlock()
+	if !registered {
+		t.Error("worker deregistered while it still holds a message")
+	}
+
+	if _, ok := a.dequeueOrRelease("s1"); ok {
+		t.Fatal("dequeueOrRelease returned a message from an empty queue")
+	}
+	a.queueMu.Lock()
+	_, registered = a.queueCancels["s1"]
+	a.queueMu.Unlock()
+	if registered {
+		t.Error("worker not deregistered after observing an empty queue")
+	}
+}
+
+// TestQueue_EnqueueDuringWorkerExit_AlwaysDelivered stresses the enqueue-while-
+// worker-exiting window: every enqueued message must eventually be delivered,
+// and the queue must never come to rest non-empty with no worker running.
+func TestQueue_EnqueueDuringWorkerExit_AlwaysDelivered(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ag := &countRunAgent{}
+	a := newTestApp(ctx)
+	a.activeAgent = ag
+
+	const total = 300
+	for i := 0; i < total; i++ {
+		a.EnqueueMessage("s1", QueuedMessage{Text: "m"})
+		time.Sleep(50 * time.Microsecond)
+	}
+
+	waitFor(t, "all queued messages delivered", func() bool {
+		return int(ag.count.Load()) == total && a.QueueLen("s1") == 0
+	})
+}
