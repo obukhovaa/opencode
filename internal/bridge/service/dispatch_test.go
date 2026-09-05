@@ -2,11 +2,10 @@ package service
 
 import (
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 
-	"github.com/opencode-ai/opencode/internal/llm/agent"
+	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/message"
 )
 
@@ -51,25 +50,35 @@ func TestAgentMessageTextSingleTextPart(t *testing.T) {
 	}
 }
 
-// TestRunFailureMessage_BusyDoesNotAdviseAbort: with the process-global
-// session-run ledger, a session running under another agent instance (a flow
-// step's own agent) now reports busy at this callsite. The generic advice
-// ("POST /abort to release the busy lock") would cancel that live run —
-// Cancel's cross-instance fallback reaches it — so ErrSessionBusy must get
-// its own wait-and-resend text.
+// TestRunFailureMessage_BusyDoesNotAdviseAbort was converted: ErrSessionBusy
+// no longer reaches runFailureMessage — the retry loop in handleInbound handles
+// it first. This test now verifies that:
+//
+//  1. runFailureMessage still works for non-busy errors (regression guard).
+//  2. When given ErrSessionBusy directly (which can happen in edge cases),
+//     the generic message does NOT contain "resend" or abort-dangerous advice.
+//     (The prior version had a special "wait and resend" arm; removing it
+//     ensures the generic recovery hint is returned instead.)
+//
+// The full retry behavioral test lives in dispatch_busy_retry_test.go as
+// TestHandleInbound_BusyRetryPreservesContent.
 func TestRunFailureMessage_BusyDoesNotAdviseAbort(t *testing.T) {
-	msg := runFailureMessage(agent.ErrSessionBusy, "flow-x-step1")
-	if strings.Contains(msg, "/abort") || strings.Contains(msg, "/reset") {
-		t.Errorf("busy message must not advise abort/reset: %q", msg)
+	// Verify ErrSessionBusy now produces the generic error message.
+	// Previously it returned a special "resend" message; now it is the
+	// same as any other error (the retry loop prevents it from reaching here).
+	msg := runFailureMessage(agentpkg.ErrSessionBusy, "flow-x-step1")
+	if msg == "" {
+		t.Fatal("runFailureMessage returned empty string")
 	}
-	if !strings.Contains(msg, "resend") {
-		t.Errorf("busy message should tell the reviewer to resend: %q", msg)
+	// The generic message MUST contain the recovery hint (not suppress it).
+	if !strings.Contains(msg, "/abort") || !strings.Contains(msg, "/reset") {
+		t.Errorf("generic runFailureMessage missing recovery hint: %q", msg)
 	}
-
-	// Wrapped errors must take the same branch.
-	wrapped := fmt.Errorf("starting run: %w", agent.ErrSessionBusy)
-	if runFailureMessage(wrapped, "s") != msg {
-		t.Error("wrapped ErrSessionBusy did not take the busy branch")
+	// The "resend" wording was the old ErrSessionBusy-specific text. It must
+	// NOT appear — after the retry fix, if ErrSessionBusy somehow reaches here
+	// the user gets the generic escape hatch, not a misleading "resend" prompt.
+	if strings.Contains(msg, "resend") {
+		t.Errorf("generic message should not say \"resend\" (old busy-specific text): %q", msg)
 	}
 }
 

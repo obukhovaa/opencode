@@ -20,9 +20,8 @@ import (
 // Per-session dispatch channel capacities, per the chat-bridge spec:
 //
 //   - inbound: 16, NEVER drop. Reviewers' messages MUST NOT be lost.
-//     Pushers (adapter-side per-peer goroutines) block when the queue
-//     fills — chat platforms have their own buffering that absorbs the
-//     stall.
+//     When the channel is full, messages spill into the per-session
+//     overflow slice so the shared runInboundLoop is never stalled.
 //   - parts:   64, drop-oldest. Part-event transitions can collapse
 //     ("completed" supersedes "running" supersedes "pending"). Drops are
 //     rate-limited to one warn log per session per minute.
@@ -37,7 +36,19 @@ const (
 	// same iteration of the event loop, so the queued events are
 	// already in flight; we only need to give the broker time to push.
 	partsDrainGrace = 100 * time.Millisecond
+
+	// busyRetryBudget is the maximum time handleInbound will retry
+	// agent.Run on ErrSessionBusy before re-queuing the message via
+	// the overflow path. Cross-actor holders (flow steps, cron sentinels,
+	// task auto-resume) can hold a session for several minutes; 5 minutes
+	// gives them a generous window before the message is re-queued for
+	// another attempt. Content is never discarded.
+	busyRetryBudget = 5 * time.Minute
+	// busyRetryBackoff is the sleep between ErrSessionBusy retries.
+	// Matches the TUI drain worker's precedent (app/queue.go busyBackoff).
+	busyRetryBackoff = 100 * time.Millisecond
 )
+
 
 // toolErrorPreviewRunes caps the failure reason appended to a ✗ tool
 // line. Tool updates are compact by design (name + id + duration only);
@@ -65,8 +76,16 @@ type sessionDispatch struct {
 	inbound chan bridge.Inbound
 	parts   chan pubsub.Event[message.PartEvent]
 
+	// mu guards overflowLog, overflow, and the non-blocking push/drain
+	// interlock. MUST NOT be held across I/O or across calls that acquire
+	// another lock.
 	mu          sync.Mutex
 	overflowLog time.Time
+	// overflow holds inbound messages that could not fit into d.inbound
+	// when the channel was full (non-starvation fix — see pushInbound).
+	// Drained back into d.inbound by drainOverflowToInbound after each
+	// handleInbound call. Guarded by mu.
+	overflow []bridge.Inbound
 
 	stop atomic.Bool
 
@@ -121,6 +140,10 @@ func (s *Service) newSessionDispatch(sessionID string) *sessionDispatch {
 // session at a time), so this loop only processes one inbound at a
 // time. Parts events are handled in parallel by runParts so they don't
 // have to wait for the run to finish.
+//
+// After each handleInbound, overflow items are drained back into
+// d.inbound (FIFO) so they are processed before any newly-arriving
+// messages from runInboundLoop.
 func (d *sessionDispatch) run(ctx context.Context) {
 	for {
 		select {
@@ -134,6 +157,33 @@ func (d *sessionDispatch) run(ctx context.Context) {
 				return
 			}
 			d.handleInbound(ctx, in)
+			d.drainOverflowToInbound()
+		}
+	}
+}
+
+// drainOverflowToInbound transfers overflow items into d.inbound under
+// mu so the transfer is atomic with concurrent pushInbound calls from
+// runInboundLoop. Called by run() after each handleInbound.
+//
+// FIFO ordering: overflow items are older than any items that arrive
+// concurrently from runInboundLoop. Transferring them into d.inbound
+// (a FIFO channel) while holding mu ensures new arrivals see the channel
+// full and go to overflow AFTER the existing overflow items — so read
+// order is:
+//
+//	[items already in d.inbound] → [drained overflow] → [new arrivals]
+func (d *sessionDispatch) drainOverflowToInbound() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for len(d.overflow) > 0 {
+		select {
+		case d.inbound <- d.overflow[0]:
+			d.overflow = d.overflow[1:]
+		default:
+			// Channel still full; remaining overflow items stay and
+			// will be drained on the next handleInbound cycle.
+			return
 		}
 	}
 }
@@ -188,11 +238,14 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 		}
 	}()
 
-	// Named `ag`, not `agent`: the local must not shadow the agent package,
-	// which the ErrSessionBusy branch below needs.
+	// Named `ag`, not `agent`: the local must not shadow the agent package.
 	ag := d.svc.app.ActiveAgent()
 	if ag == nil {
 		logging.Warn("bridge: no active agent; dropping inbound", "session", d.sessionID)
+		d.svc.replyToPeer(ctx, in.Peer,
+			"bridge: this session has no active agent — your message could not be processed. "+
+				"Please try again once the agent is available.",
+			false, d.sessionID)
 		return
 	}
 
@@ -215,11 +268,40 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	partsSub := d.svc.app.Messages.SubscribeParts(partsCtx)
 
 	atts := translateAttachments(in.Attachments)
-	runCh, err := ag.Run(ctx, d.sessionID, in.Text, 0, atts...)
-	if err != nil {
-		logging.Warn("bridge: agent.Run failed", "session", d.sessionID, "err", err)
-		d.svc.replyToPeer(ctx, in.Peer, runFailureMessage(err, d.sessionID), false, d.sessionID)
-		return
+
+	// Bounded retry for ErrSessionBusy: the session-run ledger is
+	// process-global (session-run-exclusivity spec). Cross-actor holders
+	// — a flow step's own agent, a cron sentinel, a task auto-resume —
+	// make agent.Run return ErrSessionBusy here. The bridge's single-
+	// dispatcher serialization prevents bridge-vs-bridge collisions but
+	// cannot prevent cross-actor ones. Retry with 100 ms backoff for up
+	// to 5 minutes; on budget expiry, re-queue the message via the
+	// overflow path so content is NEVER discarded.
+	deadline := time.Now().Add(busyRetryBudget)
+	var runCh <-chan agent.AgentEvent
+	for {
+		var err error
+		runCh, err = ag.Run(ctx, d.sessionID, in.Text, 0, atts...)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, agent.ErrSessionBusy) {
+			logging.Warn("bridge: agent.Run failed", "session", d.sessionID, "err", err)
+			d.svc.replyToPeer(ctx, in.Peer, runFailureMessage(err, d.sessionID), false, d.sessionID)
+			return
+		}
+		// ErrSessionBusy from a cross-actor holder. Wait and retry.
+		if time.Now().After(deadline) {
+			logging.Warn("bridge: ErrSessionBusy budget expired; re-queuing inbound",
+				"session", d.sessionID)
+			d.pushInbound(in)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(busyRetryBackoff):
+		}
 	}
 
 	// Fan part events into d.parts for outbound surface delivery (typing,
@@ -242,30 +324,33 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 }
 
 // runFailureMessage builds the chat-surface text for an agent.Run that failed
-// to start. A stuck session must be observable to the reviewer instead of
-// silently swallowing messages, but the advice has to match the cause.
-//
-// ErrSessionBusy is split out deliberately. The per-session dispatch goroutine
-// serializes this package's only Run callsite, so the bridge cannot collide
-// with itself — but the session-run ledger is process-global (see
-// internal/llm/agent/session_locks.go), so a run started elsewhere in the
-// process (a flow step's own agent instance) makes the session read as busy
-// here. Interactive flow steps never reach handleInbound at all — inbound.go
-// buffers inbound for sessions carrying the interactive marker — but if that
-// guard ever regresses, the generic advice would be actively harmful:
-// aborting the session cancels the live step, which Cancel's cross-instance
-// fallback now actually reaches. So busy gets "wait and resend", not "abort".
+// to start with a non-busy error. ErrSessionBusy is handled by the retry
+// loop in handleInbound and never reaches this function.
 func runFailureMessage(err error, sessionID string) string {
-	if errors.Is(err, agent.ErrSessionBusy) {
-		return "bridge: this session already has a run in flight elsewhere " +
-			"(it may be owned by a flow step). Your message was not delivered — " +
-			"please resend once the current run finishes. Do NOT abort the session: " +
-			"that would cancel the in-flight run."
-	}
 	// Cap the detail leaked to chat to the public-facing fields.
 	return "bridge: agent run failed (" + err.Error() + "). " +
 		"If this keeps happening, use /reset in chat to clear the session " +
 		"or POST /session/" + sessionID + "/abort to release the busy lock."
+}
+
+
+// resolveQueueAck edits the ack message to "▶ Processing…" (position == 0).
+// A no-op when ackToken is empty or acks are disabled.
+func (d *sessionDispatch) resolveQueueAck(ctx context.Context, peer bridge.PeerRef, ackToken bridge.QueueAckToken) {
+	if ackToken == "" {
+		return
+	}
+	if d.svc.cfg == nil || !d.svc.cfg.QueueAcknowledgementsEnabled {
+		return
+	}
+	adapter := d.svc.Adapter(peer.Channel, peer.Identity)
+	acker, ok := adapter.(bridge.QueuedAcknowledger)
+	if !ok {
+		return
+	}
+	if err := acker.UpdateQueuedAck(ctx, peer, ackToken, 0); err != nil {
+		logging.Info("bridge: resolveQueueAck failed", "session", d.sessionID, "err", err)
+	}
 }
 
 // drainParts forwards parts for this session AND any of its descendant
@@ -892,24 +977,62 @@ func translateAttachments(in []bridge.Attachment) []message.Attachment {
 	return out
 }
 
-// closeOnce marks the dispatcher as stopped and drains its channels.
-// Caller MUST hold s.dispatchMu.
+// close marks the dispatcher as stopped, drains queued messages for
+// shutdown-loss logging, and closes d.inbound. Caller MUST hold
+// s.dispatchMu.
+//
+// Draining is protected by d.mu to serialize against concurrent
+// drainOverflowToInbound calls in the run() goroutine. Items that
+// run() has already received (one possible item after stop is set)
+// are not logged — that is an accepted race at shutdown per Decision 5.
 func (d *sessionDispatch) close() {
 	if !d.stop.CompareAndSwap(false, true) {
 		return
 	}
+	// Collect any queued inbound messages for WARN logging before closing.
+	d.mu.Lock()
+	lost := make([]bridge.Inbound, 0, len(d.overflow)+len(d.inbound))
+	lost = append(lost, d.overflow...)
+	d.overflow = nil
+drainLoop:
+	for {
+		select {
+		case item := <-d.inbound:
+			lost = append(lost, item)
+		default:
+			break drainLoop
+		}
+	}
+	d.mu.Unlock()
+
+	for _, item := range lost {
+		logging.Warn("bridge: shutdown lost queued inbound",
+			"session", d.sessionID,
+			"peer", item.Peer.PeerID)
+	}
+	if n := len(lost); n > 0 {
+		logging.Warn("bridge: shutdown dropped queued messages",
+			"session", d.sessionID,
+			"count", n)
+	}
 	close(d.inbound)
 }
 
-// pushInbound enqueues an inbound message onto the dispatcher's inbound
-// channel. Blocks when the channel is full (the spec's "back-pressure
-// adapter instead of drop" semantics). Returns ctx.Err() if ctx is
-// cancelled while waiting for capacity.
-func (d *sessionDispatch) pushInbound(ctx context.Context, in bridge.Inbound) error {
+// pushInbound enqueues an inbound message. The push is NON-BLOCKING:
+// if d.inbound is full, the message is appended to the per-session
+// overflow slice instead of blocking the caller. This prevents a single
+// session from stalling the shared runInboundLoop (cross-session
+// non-starvation fix).
+//
+// Both the channel send and the overflow append are done under d.mu to
+// serialize with drainOverflowToInbound calls in run(), preserving
+// per-session FIFO order (overflow items are served before new arrivals).
+func (d *sessionDispatch) pushInbound(in bridge.Inbound) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	select {
 	case d.inbound <- in:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	default:
+		d.overflow = append(d.overflow, in)
 	}
 }

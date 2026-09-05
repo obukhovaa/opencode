@@ -468,17 +468,30 @@ func formatAnswerAck(answers [][]string) string {
 // keeps every reply inside the flow agent's turn.
 //
 // FIFO with a drop-oldest cap so a reviewer firing many messages into
-// the between-questions gap can't grow memory unbounded.
-func (r *QuestionRouter) BufferInbound(sessionID string, in bridge.Inbound) {
+// the between-questions gap can't grow memory unbounded. When eviction
+// occurs, the evicted peer is notified so their message is not silently
+// lost.
+func (r *QuestionRouter) BufferInbound(ctx context.Context, sessionID string, in bridge.Inbound) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	q := r.buffered[sessionID]
+	var evicted *bridge.Inbound
 	if len(q) >= interactiveInboundBufferCap {
 		logging.Warn("bridge: interactive inbound buffer full — dropping oldest",
 			"session", sessionID, "cap", interactiveInboundBufferCap)
+		e := q[0]
+		evicted = &e
 		q = q[1:]
 	}
 	r.buffered[sessionID] = append(q, in)
+	r.mu.Unlock()
+
+	if evicted != nil && r.svc != nil {
+		r.svc.replyToPeer(ctx, evicted.Peer,
+			"bridge: your earlier message was lost because too many messages were buffered "+
+				"while the interactive step had no pending question. "+
+				"Please resend it once the current step completes.",
+			false, sessionID)
+	}
 }
 
 // popBufferedLocked removes and returns the oldest buffered inbound for

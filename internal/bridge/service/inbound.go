@@ -131,7 +131,7 @@ func (s *Service) dispatchInbound(ctx context.Context, in bridge.Inbound) {
 	// daemon agents and non-flow bridge chat.
 	if s.questionRouter != nil && s.app != nil && s.app.Permissions != nil &&
 		s.app.Permissions.IsInteractiveSession(binding.SessionID) {
-		s.questionRouter.BufferInbound(binding.SessionID, in)
+		s.questionRouter.BufferInbound(ctx, binding.SessionID, in)
 		logging.Info("bridge: buffered inbound for interactive session (no pending question)",
 			"session", binding.SessionID, "peer", in.Peer.PeerID)
 		return
@@ -148,9 +148,7 @@ func (s *Service) dispatchInbound(ctx context.Context, in bridge.Inbound) {
 	in.Text = PrependAttributionIfMultiPeer(in.Peer, in.Text, peerCount)
 
 	disp := s.dispatcherFor(binding.SessionID)
-	if err := disp.pushInbound(ctx, in); err != nil {
-		logging.Warn("bridge: pushInbound", "session", binding.SessionID, "err", err)
-	}
+	disp.pushInbound(in)
 }
 
 // resolveBinding returns the binding for the inbound's peer, creating a

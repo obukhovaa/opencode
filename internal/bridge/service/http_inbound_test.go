@@ -128,8 +128,9 @@ func TestRouterInbound_MalformedJSON(t *testing.T) {
 }
 
 // TestRouterInbound_BackpressureReturns429 verifies that when the shared
-// inboundCh is full the handler responds with 429. Phase A.4 scenario
-// "backpressure → 429".
+// inboundCh is full the handler responds with 429, Retry-After: 1 header,
+// and machine-readable body (dispatcherSaturated: true). Phase A.4 scenario
+// "backpressure → 429" + bridge-http-api spec enrichment.
 func TestRouterInbound_BackpressureReturns429(t *testing.T) {
 	svc, _ := newOrchestratorForTest(t)
 	// Replace the channel with a length-1 capacity so we can fill it
@@ -159,6 +160,21 @@ func TestRouterInbound_BackpressureReturns429(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("status %d, want 429", resp.StatusCode)
+	}
+	// Verify Retry-After header (task 5.1)
+	if got := resp.Header.Get("Retry-After"); got != "1" {
+		t.Errorf("Retry-After = %q, want \"1\"", got)
+	}
+	// Verify machine-readable body (task 5.1)
+	var respBody map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+	if sat, ok := respBody["dispatcherSaturated"]; !ok || sat != true {
+		t.Errorf("dispatcherSaturated = %v ok=%v, want true", sat, ok)
+	}
+	if errMsg, ok := respBody["error"]; !ok || errMsg == "" {
+		t.Errorf("error field missing or empty: %v", respBody)
 	}
 }
 
