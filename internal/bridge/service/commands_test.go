@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -164,5 +165,18 @@ func TestCmdHelpRendersChannelSpecificListHint(t *testing.T) {
 	tgReply := s.cmdHelp(nil, bridge.Inbound{Peer: bridge.PeerRef{Channel: "telegram"}})
 	if !strings.Contains(tgReply.Text, "/pair") {
 		t.Error("telegram help text should include /pair")
+	}
+}
+
+// /new is an alias of /reset, mirroring the TUI's /new command.
+func TestCmdNewAliasesReset(t *testing.T) {
+	t.Parallel()
+	s := &Service{}
+	if s.ChatCommands()["new"] == nil {
+		t.Fatal("/new is not registered in ChatCommands")
+	}
+	reply := s.cmdHelp(context.TODO(), bridge.Inbound{Peer: bridge.PeerRef{Channel: "slack"}})
+	if !strings.Contains(reply.Text, "/new") {
+		t.Error("help text should include /new")
 	}
 }

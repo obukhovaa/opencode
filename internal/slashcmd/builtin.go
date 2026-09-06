@@ -56,6 +56,18 @@ func BuiltinCommands() []CommandInfo {
 			Content:     readPrompt("commands/commit.md"),
 		},
 		{
+			ID:          "new",
+			Title:       "New Session",
+			Description: "Start a fresh session (same as ctrl+n)",
+			TUIOnly:     true,
+		},
+		{
+			ID:          "reset",
+			Title:       "Reset Session",
+			Description: "Alias of /new — start a fresh session",
+			TUIOnly:     true,
+		},
+		{
 			ID:          "compact",
 			Title:       "Compact Session",
 			Description: "Summarize the current session and create a new one with the summary",

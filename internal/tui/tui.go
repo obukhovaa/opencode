@@ -1392,6 +1392,13 @@ func buildCommands() []dialog.Command {
 	builtins := slashcmd.BuiltinCommands()
 	commands := make([]dialog.Command, 0, len(builtins))
 
+	// /new and /reset are aliases of the ctrl+n keybinding: chatPage's
+	// chat.SessionClearedMsg handler drops the active session and clears the
+	// sidebar, and the top/status bars pick the same message up.
+	newSession := func(_ dialog.Command) tea.Cmd {
+		return util.CmdHandler(chat.SessionClearedMsg{})
+	}
+
 	// TUI-specific handlers keyed by command ID
 	handlers := map[string]func(dialog.Command) tea.Cmd{
 		"init": func(cmd dialog.Command) tea.Cmd {
@@ -1403,6 +1410,8 @@ func buildCommands() []dialog.Command {
 		"commit": func(cmd dialog.Command) tea.Cmd {
 			return util.CmdHandler(chat.SendMsg{Text: cmd.Content})
 		},
+		"new":   newSession,
+		"reset": newSession,
 		"compact": func(_ dialog.Command) tea.Cmd {
 			return func() tea.Msg { return startCompactSessionMsg{} }
 		},

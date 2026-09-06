@@ -83,6 +83,7 @@ Organize commands in subdirectories — the path becomes part of the command ID 
 | List Agents | `/agents` | List all available agents and their configuration |
 | Initialize Project | `/init` | Creates or updates the `AGENTS.md` memory file |
 | Compact Session | `/compact` | Manually triggers session summarization |
+| New Session | `/new`, `/reset` | Start a fresh session (same as `ctrl+n`) |
 | Review Code | `/review` | Reviews code using a provided commit hash or branch |
 | Commit and Push | `/commit` | Commit changes to git using conventional commits and push |
 | Auto-Approve | `/auto-approve` | Toggle auto-approve mode for the current session (skip permission dialogs) |

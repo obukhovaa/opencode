@@ -278,6 +278,7 @@ Once a peer is bound (manually or via the first inbound), the following commands
 | `/model` | List models grouped by provider (active marked). |
 | `/model <id>` | Switch model on the active agent. |
 | `/reset` | Forget this peer's binding — next message starts a fresh session. |
+| `/new` | Alias of `/reset`. |
 | `/abort` | Cancel an in-flight run on the current session (releases the busy lock — use when an MCP tool hangs). |
 | `/pair <code>` | Pair with a private Telegram bot. |
 | `/skip` | Dismiss a pending agent question. |
