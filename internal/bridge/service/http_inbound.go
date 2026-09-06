@@ -55,6 +55,13 @@ func (s *Service) handleInbound(w http.ResponseWriter, r *http.Request) {
 		// response is moot.
 		return
 	default:
-		writeAPIError(w, http.StatusTooManyRequests, "inbound dispatcher full; retry")
+		// Channel full. Return a machine-readable 429 with Retry-After
+		// so the orchestrator's retry policy is actionable.
+		w.Header().Set("Retry-After", "1")
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error":               "inbound dispatcher full",
+			"retryAfterSeconds":   1,
+			"dispatcherSaturated": true,
+		})
 	}
 }

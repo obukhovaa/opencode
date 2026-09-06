@@ -1118,3 +1118,55 @@ func redactToken(s, token string) string {
 	}
 	return strings.ReplaceAll(s, token, "<redacted>")
 }
+
+// Compile-time assertion: Adapter implements bridge.QueuedAcknowledger.
+var _ bridge.QueuedAcknowledger = (*Adapter)(nil)
+
+// SendQueuedAck sends a queued-acknowledgement message to the peer and returns
+// the message ID (string-encoded) as the token for subsequent in-place edits.
+// position is 1-based (1 = "you're next").
+func (a *Adapter) SendQueuedAck(ctx context.Context, peer bridge.PeerRef, position int) (bridge.QueueAckToken, error) {
+	chatID, err := ParsePeerID(peer.PeerID)
+	if err != nil {
+		return "", err
+	}
+	msg, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{
+		ChatID: chatID,
+		Text:   bridge.QueueAckText(position),
+	})
+	if err != nil {
+		return "", fmt.Errorf("telegram: SendQueuedAck: %w", err)
+	}
+	if msg == nil {
+		return "", fmt.Errorf("telegram: SendQueuedAck: nil response")
+	}
+	return strconv.Itoa(msg.ID), nil
+}
+
+// UpdateQueuedAck edits the queued-ack message identified by token in-place.
+// Pass position == 0 to resolve the ack (run started → "▶ Processing…").
+func (a *Adapter) UpdateQueuedAck(ctx context.Context, peer bridge.PeerRef, token bridge.QueueAckToken, position int) error {
+	chatID, err := ParsePeerID(peer.PeerID)
+	if err != nil {
+		return err
+	}
+	msgID, err := strconv.Atoi(token)
+	if err != nil {
+		return fmt.Errorf("telegram: UpdateQueuedAck: invalid token %q: %w", token, err)
+	}
+	var text string
+	if position == 0 {
+		text = bridge.ResolvedAckText
+	} else {
+		text = bridge.QueueAckText(position)
+	}
+	_, err = a.bot.EditMessageText(ctx, &tgbot.EditMessageTextParams{
+		ChatID:    chatID,
+		MessageID: msgID,
+		Text:      text,
+	})
+	if err != nil {
+		return fmt.Errorf("telegram: UpdateQueuedAck: %w", err)
+	}
+	return nil
+}

@@ -2,6 +2,7 @@ package page
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -16,6 +17,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/completions"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/format"
+	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -57,6 +59,16 @@ type ChatKeyMap struct {
 	ShowCommandCompletionDialog key.Binding
 	NewSession                  key.Binding
 	Cancel                      key.Binding
+	// DiscardQueue clears all queued messages for the active session.
+	// Key chosen: ctrl+x — absent from editorMaps (enter/ctrl+s, ctrl+e),
+	// DeleteKeyMaps (ctrl+r, esc, r), messageKeys (pgdown, pgup, ctrl+u,
+	// ctrl+d), and the bubbles v2 textarea default KeyMap.
+	DiscardQueue key.Binding
+	// ShowQueue toggles the read-only queued-messages viewer.
+	// Key chosen: ctrl+g — free across the app keymap and, unlike ctrl+m
+	// (CR/enter) or ctrl+i (tab), it is not an alias of another key in
+	// terminals without the kitty keyboard protocol.
+	ShowQueue key.Binding
 }
 
 var keyMap = ChatKeyMap{
@@ -75,6 +87,14 @@ var keyMap = ChatKeyMap{
 	Cancel: key.NewBinding(
 		key.WithKeys("esc"),
 		key.WithHelp("esc", "cancel"),
+	),
+	DiscardQueue: key.NewBinding(
+		key.WithKeys("ctrl+x"),
+		key.WithHelp("ctrl+x", "discard queued messages"),
+	),
+	ShowQueue: key.NewBinding(
+		key.WithKeys("ctrl+g"),
+		key.WithHelp("ctrl+g", "view queued messages"),
 	),
 }
 
@@ -157,6 +177,23 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p, nil
 	case chat.ShellResultMsg:
 		cmds = append(cmds, p.handleShellResult(msg))
+	case app.DrainEvent:
+		// Drain-worker notification: update queue affordance and surface errors.
+		// The error is surfaced even for a session the user is not currently
+		// viewing: a halted drain is terminal (the worker is gone and the queue
+		// is stalled until ctrl+x or a new submit), the banner looks identical
+		// to a healthy mid-drain queue, and the event is never re-emitted — so
+		// filtering on the active session drops the only signal there is.
+		if msg.Err != nil {
+			if msg.SessionID == p.session.ID {
+				cmds = append(cmds, util.ReportError(msg.Err))
+			} else {
+				cmds = append(cmds, util.ReportError(
+					fmt.Errorf("session %s: %w", msg.SessionID, msg.Err)))
+			}
+		}
+		// Fall through: let the message reach the messages component so it
+		// re-renders the queue banner (list.go queries app.QueueLen in View).
 	case chat.SendMsg:
 		if resolved := p.resolveInlineSlash(msg.Text); resolved != nil {
 			return p, resolved
@@ -166,6 +203,8 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return p, cmd
 		}
 	case dialog.CommandRunCustomMsg:
+		// Queuing slash-command / custom-command runs is a future decision;
+		// retain the busy-reject guard unchanged (task 6.2).
 		if p.app.ActiveAgent().IsBusy() {
 			return p, util.ReportWarn("Agent is busy, please wait before executing a command...")
 		}
@@ -248,6 +287,19 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p, cmd
 	case tea.KeyPressMsg:
 		switch {
+		case key.Matches(msg, keyMap.ShowQueue):
+			// Toggle the queue viewer. Handled even with an empty queue so the
+			// dialog can explain what the queue is; it closes on esc/ctrl+g.
+			if p.session.ID != "" {
+				return p, util.CmdHandler(dialog.ToggleQueueDialogMsg{SessionID: p.session.ID})
+			}
+		case key.Matches(msg, keyMap.DiscardQueue):
+			// Discard all queued messages for the active session. The queue
+			// survives Esc (which only cancels the in-flight run); this key is
+			// the explicit discard action (Decision 4).
+			if p.session.ID != "" && p.app.QueueLen(p.session.ID) > 0 {
+				p.app.DiscardQueue(p.session.ID)
+			}
 		case key.Matches(msg, keyMap.Cancel):
 			// In shell mode, ESC should exit shell mode (handled by editor)
 			if p.shellMode {
@@ -261,7 +313,8 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if p.vimMode == "INSERT" {
 				break
 			}
-			// In vim NORMAL mode or no vim: cancel running request if agent is busy
+			// In vim NORMAL mode or no vim: cancel running request if agent is busy.
+			// Queued messages survive Esc by design (Decision 4); use ctrl+x to discard.
 			if p.session.ID != "" && p.app.ActiveAgent().IsBusy() {
 				p.app.ActiveAgent().Cancel(p.session.ID)
 				return p, nil
@@ -451,6 +504,20 @@ func (p *chatPage) sendMessage(text string, attachments []message.Attachment) te
 
 	_, err = p.app.ActiveAgent().Run(context.Background(), p.session.ID, text, 0, attachments...)
 	if err != nil {
+		// ErrSessionBusy on the direct idle path means the editor's
+		// queue-empty + not-busy check lost a race (a drain worker, cron,
+		// flow step or bridge dispatch claimed the slot in between). The
+		// submission is NOT surfaced as an error toast — but it must not be
+		// dropped either: the textarea has already been reset, so returning
+		// here would silently discard the user's text. Hand it to the queue
+		// so the drain worker retries it (task 4.1).
+		if errors.Is(err, agent.ErrSessionBusy) {
+			p.app.EnqueueMessage(p.session.ID, app.QueuedMessage{
+				Text:        text,
+				Attachments: attachments,
+			})
+			return tea.Batch(cmds...)
+		}
 		return util.ReportError(err)
 	}
 	return tea.Batch(cmds...)

@@ -160,19 +160,37 @@ func (m *editorCmp) Init() tea.Cmd {
 }
 
 func (m *editorCmp) send() tea.Cmd {
-	if m.app.ActiveAgent().IsSessionBusy(m.session.ID) {
-		return util.ReportWarn("Agent is working, please wait...")
-	}
-
+	// Always check for empty input first — an empty submit is a no-op
+	// regardless of queue or busy state (task 3.3).
 	value := m.textarea.Value()
-	m.textarea.Reset()
-	attachments := m.attachments
-
-	m.attachments = nil
-	m.syncTextareaHeight()
 	if value == "" {
 		return nil
 	}
+	attachments := m.attachments
+
+	// FIFO routing (Decision 8, task 3.1): enqueue whenever the queue is
+	// non-empty OR the session is busy. Direct dispatch is only permitted
+	// when BOTH are false — queue empty AND session observably idle. Without
+	// the queue-non-empty branch, a submission arriving in the idle window
+	// between two drain deliveries would bypass already-queued messages.
+	if m.app.QueueLen(m.session.ID) > 0 || m.app.ActiveAgent().IsSessionBusy(m.session.ID) {
+		m.app.EnqueueMessage(m.session.ID, app.QueuedMessage{
+			Text:        value,
+			Attachments: attachments,
+		})
+		m.textarea.Reset()
+		m.attachments = nil
+		// syncTextareaHeight MUST follow every mutation of m.attachments and
+		// never run from View (chat-editor-layout spec).
+		m.syncTextareaHeight()
+		return nil
+	}
+
+	// Queue empty AND session idle: fall through to the direct dispatch path
+	// (today's behavior, unchanged).
+	m.textarea.Reset()
+	m.attachments = nil
+	m.syncTextareaHeight()
 	return tea.Batch(
 		util.CmdHandler(SendMsg{
 			Text:        value,
@@ -407,8 +425,20 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if key.Matches(msg, editorMaps.OpenEditor) {
+			// Queuing Ctrl+E / external $EDITOR sessions is a future decision;
+			// keep the busy-reject guard unchanged (task 6.1). The queue-length
+			// arm is what preserves FIFO: openEditor's result is delivered via
+			// SendMsg → chatPage.sendMessage, which dispatches directly and
+			// would jump ahead of already-queued messages.
 			if m.app.ActiveAgent().IsSessionBusy(m.session.ID) {
 				return m, util.ReportWarn("Agent is working, please wait...")
+			}
+			if m.app.QueueLen(m.session.ID) > 0 {
+				// Distinct message: the session is idle here (e.g. the drain
+				// worker halted on an error), so "Agent is working" would be
+				// factually wrong and leave the user with no idea why ctrl+e
+				// is locked.
+				return m, util.ReportWarn("Messages are queued — wait for them to send, press ctrl+g to view or ctrl+x to discard")
 			}
 			return m, m.openEditor()
 		}

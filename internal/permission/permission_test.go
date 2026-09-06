@@ -241,3 +241,31 @@ func TestPersistentGrantCoversLinkedSubagents(t *testing.T) {
 		t.Fatal("expected child grant to not cover the parent session")
 	}
 }
+
+// The unattended mark is what licenses the question tool to answer itself.
+// It must resolve through the session-link chain (so a subagent spawned by a
+// flow step is unattended too) and be clearable (a reviewer switching a chat
+// binding onto a former flow session attends it).
+func TestUnattendedSession(t *testing.T) {
+	svc := NewPermissionService()
+
+	if svc.IsUnattendedSession("step") {
+		t.Fatal("expected a fresh session to be attended")
+	}
+
+	svc.MarkUnattendedSession("step")
+	if !svc.IsUnattendedSession("step") {
+		t.Fatal("expected marked session to be unattended")
+	}
+
+	// Subagent of the step (agent-tool.go links it to its caller).
+	svc.LinkSession("subagent", "step")
+	if !svc.IsUnattendedSession("subagent") {
+		t.Fatal("expected subagent session to inherit unattended from its caller")
+	}
+
+	svc.RemoveUnattendedSession("step")
+	if svc.IsUnattendedSession("subagent") {
+		t.Fatal("expected clearing the parent to attend the subagent too")
+	}
+}

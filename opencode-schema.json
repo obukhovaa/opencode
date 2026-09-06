@@ -983,6 +983,80 @@
       "description": "LLM provider configurations",
       "type": "object"
     },
+    "router": {
+      "additionalProperties": false,
+      "description": "Chat-bridge configuration. The bridge connects opencode to Telegram, Slack, and Mattermost. Set at least one channel identity to enable.",
+      "properties": {
+        "channels": {
+          "description": "Per-platform channel configuration. See docs/bridge.md for field details.",
+          "properties": {
+            "external": {
+              "description": "External relay channel configuration.",
+              "type": "object"
+            },
+            "mattermost": {
+              "description": "Mattermost channel configuration.",
+              "type": "object"
+            },
+            "slack": {
+              "description": "Slack channel configuration.",
+              "type": "object"
+            },
+            "telegram": {
+              "description": "Telegram channel configuration.",
+              "type": "object"
+            }
+          },
+          "type": "object"
+        },
+        "permissionMode": {
+          "description": "How permission requests are resolved on bridge-owned sessions: 'allow' auto-approves, 'deny' auto-denies, 'ask' or empty defers to the opencode UI (hangs headless). Unrecognised values fail-safe to deny.",
+          "enum": [
+            "allow",
+            "deny",
+            "ask"
+          ],
+          "type": "string"
+        },
+        "questionMode": {
+          "description": "How agent questions are surfaced: 'interactive' renders platform-native UI (buttons/blocks); 'auto-reject' returns the default without prompting; 'disabled' suppresses the question flow.",
+          "enum": [
+            "interactive",
+            "auto-reject",
+            "disabled"
+          ],
+          "type": "string"
+        },
+        "questionNudgeIntervalSeconds": {
+          "description": "Idle gap (seconds) after which the bridge re-posts a 'still waiting' nudge to a session with an outstanding question. 0 = built-in default (300 s); \u003c0 = disable nudging.",
+          "type": "integer"
+        },
+        "questionNudgeMax": {
+          "description": "Maximum nudges per pending question. 0 = built-in default (3); \u003c0 = unlimited.",
+          "type": "integer"
+        },
+        "queueAcknowledgementsEnabled": {
+          "default": false,
+          "description": "When true, the bridge sends an in-place-editable '⏳ queued' acknowledgement to a sender whose message is enqueued behind an in-flight agent run. The ack is updated as the queue drains and resolved to '▶ Processing…' when the run starts. Disabled by default; enable for reviewers who need visibility into queue depth.",
+          "type": "boolean"
+        },
+        "toolUpdateVerbosity": {
+          "default": "compact",
+          "description": "Detail level when toolUpdatesEnabled is true: 'compact' (default) emits one line per call with glyph, name, and elapsed time; 'full' adds argument and result detail.",
+          "enum": [
+            "compact",
+            "full"
+          ],
+          "type": "string"
+        },
+        "toolUpdatesEnabled": {
+          "default": false,
+          "description": "Stream tool-call lifecycle events (pending/running/completed) to the chat surface. Failures always surface regardless of this flag.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "sessionCleanup": {
       "additionalProperties": false,
       "description": "Session cleanup configuration for removing old sessions",

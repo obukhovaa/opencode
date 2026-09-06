@@ -174,6 +174,8 @@ A cron job lives in a session. If that session isn't the active one in the TUI a
 
 Auto-approved jobs and jobs with explicit `cron: allow` rules run regardless of which session is active.
 
+A job that fires on a session nothing is watching (not the TUI's selected session, not bridge-bound) runs **unattended**: if its agent calls the `question` tool, the tool answers itself with the first (recommended) option instead of blocking on a prompt nobody would see. The verdict is re-evaluated on every fire, so focusing the session in the TUI — or binding chat to it — brings the real prompt back.
+
 ### Session became busy after task ran
 
 The scheduler tries to commit the synthetic `task_call`/`task_result` pair into the parent session atomically — it briefly holds the session-busy slot to prevent the parent agent from inserting a message in between. If a user message arrives during the narrow window between "we ran the task" and "we got the lock", the synthetic write is skipped and the result is preserved only on the cron row (visible via the crons page). The job still advances `next_run_at` correctly; it does not re-fire.

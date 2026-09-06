@@ -70,10 +70,15 @@ type interactivePermissions struct {
 	mu          sync.Mutex
 	interactive map[string]bool
 	autoApprove map[string]bool
+	unattended  map[string]bool
 }
 
 func newInteractivePermissions() *interactivePermissions {
-	return &interactivePermissions{interactive: map[string]bool{}, autoApprove: map[string]bool{}}
+	return &interactivePermissions{
+		interactive: map[string]bool{},
+		autoApprove: map[string]bool{},
+		unattended:  map[string]bool{},
+	}
 }
 
 func (p *interactivePermissions) AutoApproveSession(sessionID string) {
@@ -104,6 +109,18 @@ func (p *interactivePermissions) IsAutoApproveSession(sessionID string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.autoApprove[sessionID]
+}
+
+func (p *interactivePermissions) MarkUnattendedSession(sessionID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.unattended[sessionID] = true
+}
+
+func (p *interactivePermissions) IsUnattendedSession(sessionID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.unattended[sessionID]
 }
 
 // stubMessages is the slice of message.Service the failure-diagnostics path

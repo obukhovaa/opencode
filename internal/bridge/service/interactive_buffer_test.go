@@ -39,7 +39,7 @@ func TestBufferInbound_FIFOAndDropOldest(t *testing.T) {
 	r := newBufferRouter(nil)
 
 	for i := 0; i < interactiveInboundBufferCap+2; i++ {
-		r.BufferInbound("S1", bridge.Inbound{Text: strconv.Itoa(i)})
+		r.BufferInbound(context.Background(), "S1", bridge.Inbound{Text: strconv.Itoa(i)})
 	}
 	if got := r.bufferedLen("S1"); got != interactiveInboundBufferCap {
 		t.Fatalf("buffer len = %d, want cap %d", got, interactiveInboundBufferCap)
@@ -59,7 +59,7 @@ func TestClearSession_DropsPendingAndBuffered(t *testing.T) {
 	t.Parallel()
 	r := newBufferRouter(nil)
 	r.pending["S1"] = &pendingQuestion{requestID: "req-1"}
-	r.BufferInbound("S1", bridge.Inbound{Text: "hi"})
+	r.BufferInbound(context.Background(), "S1", bridge.Inbound{Text: "hi"})
 
 	r.ClearSession("S1")
 
@@ -147,7 +147,7 @@ func TestHandleNewRequest_DrainsBufferedIntoReply(t *testing.T) {
 	}
 
 	// A reviewer message arrived while no question was pending.
-	r.BufferInbound("S1", bridge.Inbound{
+	r.BufferInbound(context.Background(), "S1", bridge.Inbound{
 		Peer: bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "D1"},
 		Text: "Approve",
 	})

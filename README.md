@@ -350,6 +350,7 @@ Auto-approve mode skips interactive permission dialogs for `ask`-resolved permis
 - **Scope**: per-session only — new sessions start without auto-approve
 - **Subagents**: child task sessions inherit auto-approve from the parent
 - **Non-interactive mode**: already auto-approves all permissions, flag is ignored
+- **Questions still ask**: auto-approve covers tool permissions, not decisions — the `question` tool keeps prompting you (TUI dialog, chat bridge, API). It answers itself with the first (recommended) option only where nobody could answer: a headless `opencode -p` run, a flow step, or a cron job firing on an unwatched session
 
 ### Shell
 

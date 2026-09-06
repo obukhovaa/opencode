@@ -491,6 +491,23 @@ func (s *Scheduler) fireJob(ctx context.Context, job CronJob) {
 	}
 
 	logging.Info("Cron job firing", "id", job.ID, "schedule", job.Schedule, "title", job.TaskTitle)
+	// Keep the session's "is anybody watching?" verdict current for the
+	// question tool, using the same predicate as the permission gate
+	// above: the TUI's selected session or a bridge-bound one can answer a
+	// question; anything else (an auto-approved session in a headless
+	// deploy) cannot, and a blocking `question` there would wedge the
+	// session's agent lock and every later run of this job. Re-evaluated on
+	// every fire so the session becomes attended again the moment the TUI
+	// selects it or a reviewer binds chat to it. Subagent sessions — which
+	// is what a cron job actually runs in — inherit the mark through the
+	// permission session-link chain.
+	if s.permissions != nil {
+		if job.SessionID == s.activeSessionID() || s.hasPermissionResolver(ctx, job.SessionID) {
+			s.permissions.RemoveUnattendedSession(job.SessionID)
+		} else {
+			s.permissions.MarkUnattendedSession(job.SessionID)
+		}
+	}
 	// The job is executing again — re-arm the one-shot deferral log so a
 	// future unwatched stretch is reported anew.
 	s.deferLoggedJobs.Delete(job.ID)

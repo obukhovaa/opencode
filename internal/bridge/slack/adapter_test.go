@@ -28,6 +28,7 @@ type mockSlackServer struct {
 	mu       sync.Mutex
 	authTest int
 	posts    []postCall
+	updates  []updateCall
 	uploads  []uploadCall
 	opens    []string
 	files    map[string]string // file ID → body
@@ -44,6 +45,12 @@ type uploadCall struct {
 	Filename  string
 	FileData  []byte
 	ThreadTS  string
+}
+
+type updateCall struct {
+	Channel string
+	TS      string
+	Text    string
 }
 
 func newMockServer(t *testing.T) *mockSlackServer {
@@ -94,6 +101,22 @@ func (m *mockSlackServer) handleAPI(w http.ResponseWriter, r *http.Request) {
 			"ok":      true,
 			"user_id": "UBOT",
 			"team_id": "T1",
+		})
+	case "chat.update":
+		_ = r.ParseForm()
+		call := updateCall{
+			Channel: r.FormValue("channel"),
+			TS:      r.FormValue("ts"),
+			Text:    r.FormValue("text"),
+		}
+		m.mu.Lock()
+		m.updates = append(m.updates, call)
+		m.mu.Unlock()
+		m.respond(w, map[string]any{
+			"ok":      true,
+			"channel": call.Channel,
+			"ts":      call.TS,
+			"text":    call.Text,
 		})
 	case "chat.postMessage":
 		_ = r.ParseForm()

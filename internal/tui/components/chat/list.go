@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -155,6 +156,15 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// if so, kick off another render so they become visible immediately.
 		if m.hasCacheMisses() {
 			cmds = append(cmds, m.renderViewAsync())
+		}
+	case app.DrainEvent:
+		// Queue state changed — re-render the banner (queueBanner queries
+		// app.QueueLen in View, no local state needed).
+		if msg.SessionID == m.session.ID {
+			if m.rendering {
+				m.rendering = false
+			}
+			m.renderViewSync()
 		}
 	case pubsub.Event[session.Session]:
 		if msg.Type == pubsub.UpdatedEvent && msg.Payload.ID == m.session.ID {
@@ -563,7 +573,7 @@ func (m *messagesCmp) View() tea.View {
 					lipgloss.Top,
 					content,
 					"",
-					m.help(),
+					m.footer(),
 				),
 			))
 	}
@@ -575,7 +585,7 @@ func (m *messagesCmp) View() tea.View {
 				lipgloss.Top,
 				m.viewport.View(),
 				m.working(),
-				m.help(),
+				m.footer(),
 			),
 		))
 }
@@ -708,9 +718,61 @@ func (m *messagesCmp) help() string {
 			baseStyle.Foreground(t.TextMuted()).Bold(true).Render(" for shell"),
 		)
 	}
-	return baseStyle.
+	return text
+}
+
+// footer renders the status row below the working spinner: the queue
+// affordance while messages are waiting, otherwise the key help.
+//
+// It MUST render exactly one line. The viewport is sized to m.height-2 (see
+// SetSize), so this component may only emit two further rows — working() and
+// footer(). A third row overflows the container's MaxHeight and the bottom
+// line is silently clipped; that is how the queue banner used to swallow the
+// help bar for the rest of the session. Overlong text is therefore truncated
+// rather than wrapped.
+func (m *messagesCmp) footer() string {
+	text := m.queueBanner()
+	if text == "" {
+		text = m.help()
+	}
+	if m.width > 0 {
+		text = ansi.Truncate(text, m.width, "…")
+	}
+	return styles.BaseStyle().
 		Width(m.width).
+		MaxHeight(1).
 		Render(text)
+}
+
+// queueBanner renders the in-memory queue affordance when messages are
+// waiting, replacing the help bar for as long as the queue is non-empty. It is
+// styled distinctly from persisted chat messages (muted colour, no chat
+// bubble) and advertises both queue keys: ctrl+g to inspect the queued text,
+// ctrl+x to discard it. Returns "" when nothing is queued.
+func (m *messagesCmp) queueBanner() string {
+	if m.session.ID == "" {
+		return ""
+	}
+	n := m.app.QueueLen(m.session.ID)
+	if n == 0 {
+		return ""
+	}
+	t := theme.CurrentTheme()
+	baseStyle := styles.BaseStyle()
+	noun := "message"
+	if n != 1 {
+		noun = "messages"
+	}
+	hints := "ctrl+g to view, ctrl+x to discard"
+	if m.app.ActiveAgent().IsBusy() {
+		// The help bar is hidden while the banner is up, so keep the cancel
+		// hint reachable — a queue almost always means a running request.
+		hints += ", esc to cancel"
+	}
+	return baseStyle.
+		Foreground(t.TextMuted()).
+		Italic(true).
+		Render(fmt.Sprintf("%d %s queued — press %s", n, noun, hints))
 }
 
 func (m *messagesCmp) initialScreen() string {

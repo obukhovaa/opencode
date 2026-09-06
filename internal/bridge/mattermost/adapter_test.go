@@ -58,6 +58,7 @@ type mockServer struct {
 
 	// Captured request bodies for inspection by tests.
 	createPostCalls []CreatePostInput
+	updatePosts     []UpdatePostInput
 	uploadCalls     []FileUpload
 	directCalls     []string
 }
@@ -81,6 +82,7 @@ func newMockServer(t *testing.T, bot User) *mockServer {
 	mux.HandleFunc("/api/v4/users/me", m.handleGetMe)
 	mux.HandleFunc("/api/v4/users/", m.handleUsersTyping)
 	mux.HandleFunc("/api/v4/posts", m.handlePosts)
+	mux.HandleFunc("/api/v4/posts/", m.handlePostsSlash)
 	mux.HandleFunc("/api/v4/files", m.handleFilesUpload)
 	mux.HandleFunc("/api/v4/files/", m.handleFileDownload)
 	mux.HandleFunc("/api/v4/channels/direct", m.handleChannelsDirect)
@@ -137,6 +139,25 @@ func (m *mockServer) handlePosts(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(m.createPostResp(captured))
+}
+
+func (m *mockServer) handlePostsSlash(w http.ResponseWriter, r *http.Request) {
+	// PUT /api/v4/posts/{postID} — used by client.UpdatePost
+	if r.Method != http.MethodPut {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	postID := strings.TrimPrefix(r.URL.Path, "/api/v4/posts/")
+	body, _ := io.ReadAll(r.Body)
+	var raw map[string]any
+	_ = json.Unmarshal(body, &raw)
+	msg, _ := raw["message"].(string)
+	in := UpdatePostInput{PostID: postID, Message: msg}
+	m.mu.Lock()
+	m.updatePosts = append(m.updatePosts, in)
+	m.mu.Unlock()
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(Post{ID: postID, Message: in.Message})
 }
 
 func (m *mockServer) handleFilesUpload(w http.ResponseWriter, r *http.Request) {

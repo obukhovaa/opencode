@@ -180,6 +180,9 @@ type appModel struct {
 	showMissedCronDialog bool
 	missedCronDialog     dialog.MissedCronDialog
 
+	showQueueDialog bool
+	queueDialog     dialog.QueueDialog
+
 	showQuestionDialog bool
 	questionDialog     dialog.QuestionDialogCmp
 
@@ -217,6 +220,8 @@ func (a appModel) Init() tea.Cmd {
 	cmd = a.sessionsCleanupDialog.Init()
 	cmds = append(cmds, cmd)
 	cmd = a.missedCronDialog.Init()
+	cmds = append(cmds, cmd)
+	cmd = a.queueDialog.Init()
 	cmds = append(cmds, cmd)
 	cmd = a.questionDialog.Init()
 	cmds = append(cmds, cmd)
@@ -280,6 +285,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, filepickerCmd)
 
 		a.initDialog.SetSize(msg.Width, msg.Height)
+		a.queueDialog.SetSize(msg.Width, msg.Height)
 
 		if a.showMultiArgumentsDialog {
 			a.multiArgumentsDialog.SetSize(msg.Width, msg.Height)
@@ -465,6 +471,20 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsCleanupFailedMsg:
 		return a, util.ReportError(msg.err)
 
+	case dialog.ToggleQueueDialogMsg:
+		// ctrl+g from the chat page. Toggling here covers the closed→open
+		// direction; while the dialog is open it swallows key presses and
+		// closes itself via CloseQueueDialogMsg.
+		a.showQueueDialog = !a.showQueueDialog
+		if a.showQueueDialog {
+			a.queueDialog.SetSession(msg.SessionID)
+		}
+		return a, nil
+
+	case dialog.CloseQueueDialogMsg:
+		a.showQueueDialog = false
+		return a, nil
+
 	case pubsub.Event[cron.MissedOneShotsEvent]:
 		// Surface missed one-shots as a confirmation dialog. The scheduler
 		// publishes this once at startup; jobs queue up if the dialog is
@@ -631,6 +651,11 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.dismissQuestionDialog()
 		a.selectedSession = msg
 		a.app.SetActiveSessionID(msg.ID)
+		// A human is looking at this session now, so a `question` raised
+		// here must open the dialog rather than be auto-answered — the cron
+		// scheduler marks sessions whose jobs fire unwatched as unattended
+		// (see cron.Scheduler.fireJob).
+		a.app.Permissions.RemoveUnattendedSession(msg.ID)
 		a.sessionDialog.SetSelectedSession(msg.ID)
 		tb, _ := a.topbar.Update(msg)
 		a.topbar = tb.(core.TopBarCmp)
@@ -824,7 +849,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				!a.showSessionDialog && !a.showDeleteSessionDialog && !a.showCommandDialog &&
 				!a.showModelDialog && !a.showFilepicker && !a.showThemeDialog &&
 				!a.showHelp && !a.showInitDialog && !a.showMultiArgumentsDialog &&
-				!a.isCompacting && !a.app.ActiveAgent().IsBusy() &&
+				!a.showQueueDialog && !a.isCompacting && !a.app.ActiveAgent().IsBusy() &&
 				!a.pageHasActiveOverlay() {
 				agentName := a.app.SwitchAgent()
 				return a, tea.Batch(
@@ -838,7 +863,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				!a.showSessionDialog && !a.showDeleteSessionDialog && !a.showCommandDialog &&
 				!a.showModelDialog && !a.showFilepicker && !a.showThemeDialog &&
 				!a.showHelp && !a.showInitDialog && !a.showMultiArgumentsDialog &&
-				!a.isCompacting && !a.app.ActiveAgent().IsBusy() &&
+				!a.showQueueDialog && !a.isCompacting && !a.app.ActiveAgent().IsBusy() &&
 				!a.pageHasActiveOverlay() {
 				agentName := a.app.SwitchAgentReverse()
 				return a, tea.Batch(
@@ -1019,6 +1044,15 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if a.showQueueDialog {
+		d, queueCmd := a.queueDialog.Update(msg)
+		a.queueDialog = d.(dialog.QueueDialog)
+		cmds = append(cmds, queueCmd)
+		if _, ok := msg.(tea.KeyPressMsg); ok {
+			return a, tea.Batch(cmds...)
+		}
+	}
+
 	switch msg.(type) {
 	case pubsub.Event[agent.MCPServerEvent]:
 		chat.InvalidateMcpCache()
@@ -1103,7 +1137,8 @@ func (a *appModel) anyDismissibleDialogOpen() bool {
 		a.showThemeDialog ||
 		a.showInitDialog ||
 		a.showSessionsCleanupDialog ||
-		a.showMissedCronDialog
+		a.showMissedCronDialog ||
+		a.showQueueDialog
 }
 
 // dismissAllDialogs closes every dismissible overlay. Intended for ctrl+c
@@ -1119,6 +1154,7 @@ func (a *appModel) dismissAllDialogs() {
 	a.showInitDialog = false
 	a.showSessionsCleanupDialog = false
 	a.showMissedCronDialog = false
+	a.showQueueDialog = false
 	if a.showFilepicker {
 		a.showFilepicker = false
 		a.filepicker.ToggleFilepicker(a.showFilepicker)
@@ -1289,6 +1325,10 @@ func (a appModel) View() tea.View {
 		centerOverlay(a.missedCronDialog.View().Content)
 	}
 
+	if a.showQueueDialog {
+		centerOverlay(a.queueDialog.View().Content)
+	}
+
 	v := tea.NewView(appView)
 	v.AltScreen = true
 	v.ReportFocus = true
@@ -1327,6 +1367,7 @@ func New(app *app.App) tea.Model {
 		filepicker:            dialog.NewFilepickerCmp(app),
 		sessionsCleanupDialog: dialog.NewSessionsCleanupDialogCmp(),
 		missedCronDialog:      dialog.NewMissedCronDialog(),
+		queueDialog:           dialog.NewQueueDialogCmp(app),
 	}
 
 	// Wire the cron scheduler's active-session view to the TUI's selected session.

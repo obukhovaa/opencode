@@ -196,6 +196,8 @@ func TestQuestionToolRunNoOptionsNoCustom(t *testing.T) {
 
 type mockPermissionService struct {
 	autoApproved map[string]bool
+	unattended   map[string]bool
+	interactive  map[string]bool
 }
 
 func (m *mockPermissionService) Grant(_ permission.PermissionRequest)           {}
@@ -213,20 +215,42 @@ func (m *mockPermissionService) RemoveAutoApproveSession(id string) {
 func (m *mockPermissionService) IsAutoApproveSession(id string) bool {
 	return m.autoApproved[id]
 }
-func (m *mockPermissionService) LinkSession(_, _ string)            {}
-func (m *mockPermissionService) MarkInteractiveSession(_ string)    {}
-func (m *mockPermissionService) RemoveInteractiveSession(_ string)  {}
-func (m *mockPermissionService) IsInteractiveSession(_ string) bool { return false }
+func (m *mockPermissionService) LinkSession(_, _ string) {}
+func (m *mockPermissionService) MarkInteractiveSession(id string) {
+	if m.interactive == nil {
+		m.interactive = map[string]bool{}
+	}
+	m.interactive[id] = true
+}
+func (m *mockPermissionService) RemoveInteractiveSession(id string) {
+	delete(m.interactive, id)
+}
+func (m *mockPermissionService) IsInteractiveSession(id string) bool { return m.interactive[id] }
+func (m *mockPermissionService) MarkUnattendedSession(id string) {
+	if m.unattended == nil {
+		m.unattended = map[string]bool{}
+	}
+	m.unattended[id] = true
+}
+func (m *mockPermissionService) RemoveUnattendedSession(id string) {
+	delete(m.unattended, id)
+}
+func (m *mockPermissionService) IsUnattendedSession(id string) bool { return m.unattended[id] }
 func (m *mockPermissionService) Subscribe(_ context.Context) <-chan pubsub.Event[permission.PermissionRequest] {
 	return nil
 }
 
+// An unattended session (headless `-p` run, flow step) has no surface that
+// could answer, so the tool picks the first (recommended) option itself.
 func TestQuestionToolAutoApprove(t *testing.T) {
 	svc := &mockQuestionService{askFn: func(_ context.Context, _ string, _ []question.Prompt) ([][]string, error) {
-		t.Fatal("Ask should not be called when auto-approve is active")
+		t.Fatal("Ask should not be called for an unattended auto-approved session")
 		return nil, nil
 	}}
-	perms := &mockPermissionService{autoApproved: map[string]bool{"test-session": true}}
+	perms := &mockPermissionService{
+		autoApproved: map[string]bool{"test-session": true},
+		unattended:   map[string]bool{"test-session": true},
+	}
 	tool := NewQuestionTool(svc, perms)
 
 	input, _ := json.Marshal(questionParams{
@@ -252,4 +276,65 @@ func TestQuestionToolAutoApprove(t *testing.T) {
 	if !strings.Contains(resp.Content, "First (Recommended)") {
 		t.Errorf("expected auto-selected first option, got: %s", resp.Content)
 	}
+}
+
+// autoApproveAskProbe drives the two "auto-approve alone must NOT auto-answer"
+// cases: an attended surface (TUI with auto-approve on, chat bridge, API) and
+// an interactive flow step. Both must reach Ask so a human picks the answer.
+func autoApproveAskProbe(t *testing.T, perms *mockPermissionService) {
+	t.Helper()
+	asked := false
+	svc := &mockQuestionService{
+		askFn: func(_ context.Context, _ string, _ []question.Prompt) ([][]string, error) {
+			asked = true
+			return [][]string{{"Second"}}, nil
+		},
+	}
+	tool := NewQuestionTool(svc, perms)
+
+	input, _ := json.Marshal(questionParams{
+		Questions: []question.Prompt{
+			{
+				Question: "Pick one",
+				Options: []question.Option{
+					{Label: "First (Recommended)", Description: "The recommended option"},
+					{Label: "Second", Description: "Another option"},
+				},
+			},
+		},
+	})
+
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	resp, err := tool.Run(ctx, ToolCall{ID: "1", Name: QuestionToolName, Input: string(input)})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.IsError {
+		t.Fatalf("expected success, got error: %s", resp.Content)
+	}
+	if !asked {
+		t.Fatal("expected Ask to be called instead of auto-answering")
+	}
+	if !strings.Contains(resp.Content, "Second") {
+		t.Errorf("expected the user's answer, got: %s", resp.Content)
+	}
+}
+
+// Auto-approve is about tool permissions, not about answering for the user:
+// an attended session (TUI with auto-approve, bridge chat, API client) still
+// gets the real prompt.
+func TestQuestionToolAutoApproveAttendedStillAsks(t *testing.T) {
+	autoApproveAskProbe(t, &mockPermissionService{
+		autoApproved: map[string]bool{"test-session": true},
+	})
+}
+
+// An `interactive: true` flow step is unattended-marked (so its subagents keep
+// auto-answering) but bound to a human reviewer — the step itself must ask.
+func TestQuestionToolUnattendedInteractiveStillAsks(t *testing.T) {
+	autoApproveAskProbe(t, &mockPermissionService{
+		autoApproved: map[string]bool{"test-session": true},
+		unattended:   map[string]bool{"test-session": true},
+		interactive:  map[string]bool{"test-session": true},
+	})
 }

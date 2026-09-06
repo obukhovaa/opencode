@@ -8,7 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/opencode-ai/opencode/internal/app"
+	appPkg "github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/flow"
@@ -174,7 +174,7 @@ to assist developers in writing, debugging, and understanding code directly from
 		// Create main context for the application
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		app, err := app.New(ctx, conn, cliSchema, projectID)
+		app, err := appPkg.New(ctx, conn, cliSchema, projectID)
 		if err != nil {
 			if spinner != nil {
 				spinner.Stop()
@@ -269,6 +269,14 @@ to assist developers in writing, debugging, and understanding code directly from
 			tui.New(app),
 		)
 
+		// Wire the drain notifier: drain workers and the editor's enqueue path
+		// push DrainEvents (queue count updates and attributed errors) into the
+		// TUI event loop. The forwarder goroutine is mandatory — notifying from
+		// the Bubble Tea update goroutine with a bare program.Send deadlocks the
+		// TUI (see newDrainForwarder).
+		drainNotify, stopDrainForwarder := newDrainForwarder(program.Send)
+		app.SetDrainNotifier(drainNotify)
+
 		// Setup the subscriptions, this will send services events to the TUI
 		ch, permCh, cancelSubs := setupSubscriptions(app, ctx)
 
@@ -339,6 +347,10 @@ to assist developers in writing, debugging, and understanding code directly from
 				tuiWg.Wait()
 			}()
 			cleanupWg.Wait()
+
+			// Drain workers are stopped by app.Shutdown above, so no further
+			// events can be emitted; release the forwarder goroutine.
+			stopDrainForwarder()
 
 			logging.Info("All goroutines cleaned up")
 		}
@@ -446,7 +458,7 @@ func setupBlockingSubscriber[T any](
 	}()
 }
 
-func setupSubscriptions(app *app.App, parentCtx context.Context) (chan tea.Msg, chan tea.Msg, func()) {
+func setupSubscriptions(app *appPkg.App, parentCtx context.Context) (chan tea.Msg, chan tea.Msg, func()) {
 	ch := make(chan tea.Msg, 100)
 	permCh := make(chan tea.Msg, 10)
 

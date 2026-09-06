@@ -67,6 +67,15 @@ type Config struct {
 	//   0  → use the built-in default (QuestionNudgeDefaultMax)
 	//   <0 → unlimited (bounded in practice by the job deadline)
 	QuestionNudgeMax int `json:"questionNudgeMax,omitempty"`
+
+	// QueueAcknowledgementsEnabled controls whether the bridge sends an
+	// in-place-editable acknowledgement to a sender whose inbound message
+	// is enqueued behind an in-flight agent run. When true, the sender
+	// receives a "⏳ queued" note that is edited as the queue drains and
+	// resolved to "▶ Processing…" when the run starts. When false (the
+	// default), messages queue silently as before. Adapters that do not
+	// implement bridge.QueuedAcknowledger are silently skipped.
+	QueueAcknowledgementsEnabled bool `json:"queueAcknowledgementsEnabled,omitempty"`
 }
 
 // ChannelsConfig holds per-platform channel sections.
