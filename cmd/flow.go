@@ -73,6 +73,10 @@ func runNonInteractive(ctx context.Context, a *app.App, prompt string, outputFor
 	}
 
 	a.Permissions.AutoApproveSession(sess.ID)
+	// Nobody is watching a headless `-p` run: there is no TUI dialog and no
+	// chat binding, so the question tool must answer itself instead of
+	// blocking forever on a prompt no human will ever see.
+	a.Permissions.MarkUnattendedSession(sess.ID)
 
 	// Headless prompt invocation is non-interactive: hold the turn open
 	// until background tasks (bash run_in_background, task async, monitor)

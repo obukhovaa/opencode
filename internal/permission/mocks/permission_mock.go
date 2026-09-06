@@ -118,6 +118,20 @@ func (mr *MockServiceMockRecorder) IsInteractiveSession(sessionID any) *gomock.C
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsInteractiveSession", reflect.TypeOf((*MockService)(nil).IsInteractiveSession), sessionID)
 }
 
+// IsUnattendedSession mocks base method.
+func (m *MockService) IsUnattendedSession(sessionID string) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IsUnattendedSession", sessionID)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// IsUnattendedSession indicates an expected call of IsUnattendedSession.
+func (mr *MockServiceMockRecorder) IsUnattendedSession(sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsUnattendedSession", reflect.TypeOf((*MockService)(nil).IsUnattendedSession), sessionID)
+}
+
 // LinkSession mocks base method.
 func (m *MockService) LinkSession(sessionID, parentSessionID string) {
 	m.ctrl.T.Helper()
@@ -142,6 +156,18 @@ func (mr *MockServiceMockRecorder) MarkInteractiveSession(sessionID any) *gomock
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkInteractiveSession", reflect.TypeOf((*MockService)(nil).MarkInteractiveSession), sessionID)
 }
 
+// MarkUnattendedSession mocks base method.
+func (m *MockService) MarkUnattendedSession(sessionID string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "MarkUnattendedSession", sessionID)
+}
+
+// MarkUnattendedSession indicates an expected call of MarkUnattendedSession.
+func (mr *MockServiceMockRecorder) MarkUnattendedSession(sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkUnattendedSession", reflect.TypeOf((*MockService)(nil).MarkUnattendedSession), sessionID)
+}
+
 // RemoveAutoApproveSession mocks base method.
 func (m *MockService) RemoveAutoApproveSession(sessionID string) {
 	m.ctrl.T.Helper()
@@ -164,6 +190,18 @@ func (m *MockService) RemoveInteractiveSession(sessionID string) {
 func (mr *MockServiceMockRecorder) RemoveInteractiveSession(sessionID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveInteractiveSession", reflect.TypeOf((*MockService)(nil).RemoveInteractiveSession), sessionID)
+}
+
+// RemoveUnattendedSession mocks base method.
+func (m *MockService) RemoveUnattendedSession(sessionID string) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "RemoveUnattendedSession", sessionID)
+}
+
+// RemoveUnattendedSession indicates an expected call of RemoveUnattendedSession.
+func (mr *MockServiceMockRecorder) RemoveUnattendedSession(sessionID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RemoveUnattendedSession", reflect.TypeOf((*MockService)(nil).RemoveUnattendedSession), sessionID)
 }
 
 // Request mocks base method.

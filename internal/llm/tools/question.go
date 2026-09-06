@@ -104,20 +104,28 @@ func (q *questionTool) Run(ctx context.Context, call ToolCall) (ToolResponse, er
 		return NewTextErrorResponse("No active session"), nil
 	}
 
-	// When auto-approve is active, auto-select the first option for each
-	// question instead of blocking on user input. The tool description
-	// instructs the LLM to put the recommended option first.
+	// Auto-answer (first option — the tool description instructs the LLM
+	// to put the recommended one first) ONLY when nobody can answer:
+	// an unattended session, i.e. a headless `opencode -p` run or a flow
+	// step (permission.Service.MarkUnattendedSession, inherited by
+	// task-tool subagents through the session link chain).
 	//
-	// EXCEPTION: when the session is also marked as interactive (i.e.
-	// it's a `interactive: true` flow step bound to a human reviewer
-	// via the chat bridge), DO NOT auto-approve. The whole point of
-	// the interactive step is that the human picks the answer — the
-	// auto-approve would silently steal that turn and the bridge
-	// roundtrip would never happen. Defer to q.service.Ask which
-	// publishes the request to the broker so the bridge can route it
-	// to Slack/Telegram/Mattermost and wait for the human reply.
+	// Auto-approve alone is NOT enough. An attended surface — the TUI
+	// with auto-approve on, a chat-bridge session, an API client — must
+	// still see the real prompt: auto-approve is about tool permissions,
+	// not about answering the user's questions for them.
+	//
+	// EXCEPTION: when the session is marked as interactive (i.e. it's an
+	// `interactive: true` flow step bound to a human reviewer via the
+	// chat bridge), DO NOT auto-answer. The whole point of the
+	// interactive step is that the human picks the answer — auto-answering
+	// would silently steal that turn and the bridge roundtrip would never
+	// happen. Defer to q.service.Ask which publishes the request to the
+	// broker so the surface (TUI dialog, bridge fan-out to
+	// Slack/Telegram/Mattermost, API SSE) can collect the human reply.
 	if q.permissions != nil &&
 		q.permissions.IsAutoApproveSession(sessionID) &&
+		q.permissions.IsUnattendedSession(sessionID) &&
 		!q.permissions.IsInteractiveSession(sessionID) {
 		answers := make([][]string, len(params.Questions))
 		for i, prompt := range params.Questions {

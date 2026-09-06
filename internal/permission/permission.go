@@ -60,6 +60,29 @@ type Service interface {
 	MarkInteractiveSession(sessionID string)
 	RemoveInteractiveSession(sessionID string)
 	IsInteractiveSession(sessionID string) bool
+
+	// MarkUnattendedSession flags a session as running with no surface
+	// that can answer an agent's `question` call: a headless `opencode -p`
+	// run and flow steps. ONLY these sessions get the question tool's
+	// auto-answer short-circuit — every attended surface (TUI, chat
+	// bridge, API) shows the real prompt even when the session is
+	// auto-approved, so the human picks the answer instead of the agent
+	// silently taking the recommended option.
+	//
+	// Resolves through the LinkSession chain so task-tool subagents
+	// inherit it from their caller: a subagent spawned inside a flow step
+	// is just as unattended as the step itself.
+	//
+	// Interactive flow steps are marked unattended too — their own
+	// session carries the interactive marker, which the question tool
+	// checks first, while their subagents (not bridge-bound, so nobody
+	// could answer them) keep auto-answering.
+	MarkUnattendedSession(sessionID string)
+	// RemoveUnattendedSession clears the mark when a human attaches to
+	// the session after the fact (e.g. the bridge's `/session <prefix>`
+	// switch repoints a reviewer's binding at a former flow session).
+	RemoveUnattendedSession(sessionID string)
+	IsUnattendedSession(sessionID string) bool
 }
 
 type permissionService struct {
@@ -69,6 +92,7 @@ type permissionService struct {
 	pendingRequests      sync.Map
 	autoApproveSessions  sync.Map
 	interactiveSessions  sync.Map
+	unattendedSessions   sync.Map
 	sessionParents       sync.Map // child session ID -> parent session ID
 	serializePermissions sync.Mutex
 }
@@ -214,6 +238,21 @@ func (s *permissionService) RemoveInteractiveSession(sessionID string) {
 func (s *permissionService) IsInteractiveSession(sessionID string) bool {
 	_, ok := s.interactiveSessions.Load(sessionID)
 	return ok
+}
+
+func (s *permissionService) MarkUnattendedSession(sessionID string) {
+	s.unattendedSessions.Store(sessionID, true)
+}
+
+func (s *permissionService) RemoveUnattendedSession(sessionID string) {
+	s.unattendedSessions.Delete(sessionID)
+}
+
+func (s *permissionService) IsUnattendedSession(sessionID string) bool {
+	return s.walkSessionChain(sessionID, func(id string) bool {
+		_, ok := s.unattendedSessions.Load(id)
+		return ok
+	})
 }
 
 func NewPermissionService() Service {

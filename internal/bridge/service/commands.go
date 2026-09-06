@@ -353,6 +353,13 @@ func (s *Service) cmdSession(ctx context.Context, in bridge.Inbound) *bridge.Com
 	// seeing the pre-switch answer and jobs on the re-bound session
 	// deferred 60s/tick forever (until process restart).
 	s.invalidateSessionScopeCaches()
+	// A reviewer is now attached to the target session, so it is no longer
+	// unattended: a `question` raised there must reach this chat instead of
+	// being auto-answered. Matters when the target is a former flow-step
+	// session (flow.Service.runStep marks every step session unattended).
+	if s.app != nil && s.app.Permissions != nil {
+		s.app.Permissions.RemoveUnattendedSession(target.ID)
+	}
 	// Ensure the dispatcher for the new session is up so the next
 	// inbound routes without a cold-start delay. The old session's
 	// dispatcher is left alone — closeDispatcherIfEmpty would tear it

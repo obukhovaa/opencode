@@ -529,6 +529,15 @@ func (s *service) runStep(
 	}
 
 	s.permissions.AutoApproveSession(sess.ID)
+	// A flow step runs unattended: no TUI dialog and — unless it's an
+	// `interactive: true` step — no chat binding either, so the question
+	// tool answers itself rather than blocking on a prompt nobody sees.
+	// Marked for interactive steps too: their own session additionally
+	// carries the interactive marker (below), which the question tool
+	// checks first, while subagents they spawn are NOT bridge-bound and
+	// must keep auto-answering (they inherit this mark through the
+	// permission session-link chain).
+	s.permissions.MarkUnattendedSession(sess.ID)
 
 	status := FlowStatusRunning
 	if prevState != nil && postpone {

@@ -631,6 +631,11 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.dismissQuestionDialog()
 		a.selectedSession = msg
 		a.app.SetActiveSessionID(msg.ID)
+		// A human is looking at this session now, so a `question` raised
+		// here must open the dialog rather than be auto-answered — the cron
+		// scheduler marks sessions whose jobs fire unwatched as unattended
+		// (see cron.Scheduler.fireJob).
+		a.app.Permissions.RemoveUnattendedSession(msg.ID)
 		a.sessionDialog.SetSelectedSession(msg.ID)
 		tb, _ := a.topbar.Update(msg)
 		a.topbar = tb.(core.TopBarCmp)
