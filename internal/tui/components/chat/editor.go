@@ -91,6 +91,28 @@ const (
 	maxAttachments = 5
 )
 
+// promptColumnWidth returns the number of terminal columns occupied by the left-side
+// prompt widget rendered in View. All current modes (normal, shell, vim-normal) vary
+// the prompt's color only — not its column width — so a single derived value is valid
+// for all modes. A future multi-character prompt MUST update this helper so that
+// SetSize and View cannot diverge independently.
+func (m *editorCmp) promptColumnWidth() int {
+	style := lipgloss.NewStyle().Padding(0, 0, 0, 1).Bold(true)
+	return lipgloss.Width(style.Render(">"))
+}
+
+// syncTextareaHeight sets the textarea height based on attachment presence.
+// When attachments are shown, one row is reserved for the attachment bar.
+// This MUST be called from SetSize and from every Update branch that changes m.attachments,
+// never from View.
+func (m *editorCmp) syncTextareaHeight() {
+	if len(m.attachments) > 0 {
+		m.textarea.SetHeight(m.height - 1)
+	} else {
+		m.textarea.SetHeight(m.height)
+	}
+}
+
 func (m *editorCmp) openEditor() tea.Cmd {
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
@@ -158,6 +180,9 @@ func (m *editorCmp) send() tea.Cmd {
 		})
 		m.textarea.Reset()
 		m.attachments = nil
+		// syncTextareaHeight MUST follow every mutation of m.attachments and
+		// never run from View (chat-editor-layout spec).
+		m.syncTextareaHeight()
 		return nil
 	}
 
@@ -165,6 +190,7 @@ func (m *editorCmp) send() tea.Cmd {
 	// (today's behavior, unchanged).
 	m.textarea.Reset()
 	m.attachments = nil
+	m.syncTextareaHeight()
 	return tea.Batch(
 		util.CmdHandler(SendMsg{
 			Text:        value,
@@ -311,6 +337,7 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		m.attachments = append(m.attachments, msg.Attachment)
+		m.syncTextareaHeight()
 	case tea.KeyPressMsg:
 		if m.shellExecuting {
 			return m, nil
@@ -323,6 +350,7 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key.Matches(msg, DeleteKeyMaps.DeleteAllAttachments) && m.deleteMode {
 			m.deleteMode = false
 			m.attachments = nil
+			m.syncTextareaHeight()
 			return m, nil
 		}
 		if m.deleteMode && len(msg.Text) > 0 && unicode.IsDigit(rune(msg.Text[0])) {
@@ -334,6 +362,7 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.attachments = slices.Delete(m.attachments, num, num+1)
 				}
+				m.syncTextareaHeight()
 				return m, nil
 			}
 		}
@@ -464,7 +493,6 @@ func (m *editorCmp) View() tea.View {
 	if len(m.attachments) == 0 {
 		return tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top, style.Render(promptChar), m.textarea.View()))
 	}
-	m.textarea.SetHeight(m.height - 1)
 	return tea.NewView(lipgloss.JoinVertical(lipgloss.Top,
 		m.attachmentsContent(),
 		lipgloss.JoinHorizontal(lipgloss.Top, style.Render(promptChar),
@@ -475,9 +503,11 @@ func (m *editorCmp) View() tea.View {
 func (m *editorCmp) SetSize(width, height int) tea.Cmd {
 	m.width = width
 	m.height = height
-	m.textarea.SetWidth(width - 3) // account for the prompt and padding right
-	m.textarea.SetHeight(height)
-	m.textarea.SetWidth(width)
+	// Reserve promptColumnWidth() columns for the left-side prompt widget plus one
+	// column as a right-margin guard — the cursor never reaches the terminal's final
+	// deferred-wrap column, avoiding inconsistent glyph rendering across emulators.
+	m.textarea.SetWidth(max(0, width-m.promptColumnWidth()-1))
+	m.syncTextareaHeight()
 	return nil
 }
 
