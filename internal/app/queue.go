@@ -119,6 +119,21 @@ func (app *App) QueueLen(sessionID string) int {
 	return len(app.queues[sessionID])
 }
 
+// QueuedMessages returns a snapshot copy of sessionID's queue, head first.
+// The returned slice is detached from the live queue, so the caller may read it
+// while drain workers keep mutating. Goroutine-safe.
+func (app *App) QueuedMessages(sessionID string) []QueuedMessage {
+	app.queueMu.Lock()
+	defer app.queueMu.Unlock()
+	q := app.queues[sessionID]
+	if len(q) == 0 {
+		return nil
+	}
+	out := make([]QueuedMessage, len(q))
+	copy(out, q)
+	return out
+}
+
 // DiscardQueue empties the queue for sessionID and notifies the TUI.
 // Goroutine-safe.
 func (app *App) DiscardQueue(sessionID string) {
@@ -267,6 +282,17 @@ func (app *App) ShutdownQueues() {
 	}
 	app.queueMu.Unlock()
 	app.queueWg.Wait()
+}
+
+// EnqueueForTest appends msg to sessionID's queue WITHOUT starting a drain
+// worker. It is only for use in tests and must not be called in production
+// code: UI tests need a queue that stays put, whereas EnqueueMessage spawns a
+// worker that immediately starts popping (and, with no agent wired,
+// re-prepending) the head.
+func (app *App) EnqueueForTest(sessionID string, msg QueuedMessage) {
+	app.queueMu.Lock()
+	defer app.queueMu.Unlock()
+	app.queues[sessionID] = append(app.queues[sessionID], msg)
 }
 
 // NewForTest creates a minimal App for unit tests. The returned App has the

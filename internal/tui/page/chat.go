@@ -64,6 +64,11 @@ type ChatKeyMap struct {
 	// DeleteKeyMaps (ctrl+r, esc, r), messageKeys (pgdown, pgup, ctrl+u,
 	// ctrl+d), and the bubbles v2 textarea default KeyMap.
 	DiscardQueue key.Binding
+	// ShowQueue toggles the read-only queued-messages viewer.
+	// Key chosen: ctrl+g — free across the app keymap and, unlike ctrl+m
+	// (CR/enter) or ctrl+i (tab), it is not an alias of another key in
+	// terminals without the kitty keyboard protocol.
+	ShowQueue key.Binding
 }
 
 var keyMap = ChatKeyMap{
@@ -86,6 +91,10 @@ var keyMap = ChatKeyMap{
 	DiscardQueue: key.NewBinding(
 		key.WithKeys("ctrl+x"),
 		key.WithHelp("ctrl+x", "discard queued messages"),
+	),
+	ShowQueue: key.NewBinding(
+		key.WithKeys("ctrl+g"),
+		key.WithHelp("ctrl+g", "view queued messages"),
 	),
 }
 
@@ -278,6 +287,12 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p, cmd
 	case tea.KeyPressMsg:
 		switch {
+		case key.Matches(msg, keyMap.ShowQueue):
+			// Toggle the queue viewer. Handled even with an empty queue so the
+			// dialog can explain what the queue is; it closes on esc/ctrl+g.
+			if p.session.ID != "" {
+				return p, util.CmdHandler(dialog.ToggleQueueDialogMsg{SessionID: p.session.ID})
+			}
 		case key.Matches(msg, keyMap.DiscardQueue):
 			// Discard all queued messages for the active session. The queue
 			// survives Esc (which only cancels the in-flight run); this key is

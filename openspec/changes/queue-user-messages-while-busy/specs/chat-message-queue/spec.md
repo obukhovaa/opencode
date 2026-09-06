@@ -152,6 +152,11 @@ key binding that discards all queued messages for the active session in a single
 interaction. The discard key binding MUST be shown in the status or help bar while the
 queue is non-empty.
 
+The indicator MUST NOT add a row to the chat view: it occupies the help bar's row and the
+help bar returns as soon as the queue is empty. The chat view's total height is fixed
+(viewport + working row + one status row), and any extra row is clipped by the container's
+MaxHeight — silently hiding whichever line is rendered last.
+
 #### Scenario: Queue indicator appears when session is busy and a message is queued
 - **GIVEN** session S is busy and has one queued message
 - **WHEN** the chat view renders
@@ -163,11 +168,42 @@ queue is non-empty.
 - **WHEN** the chat view re-renders
 - **THEN** the queue indicator is no longer shown
 
+#### Scenario: Help bar returns when the queue empties
+- **GIVEN** session S had queued messages and the queue is now empty
+- **WHEN** the chat view re-renders
+- **THEN** the key help bar ("press enter to send, …") is visible again, and the rendered
+  chat view is no taller than its assigned height
+
 #### Scenario: Discard key clears the queue
 - **GIVEN** session S has N queued messages
 - **WHEN** the user presses the discard key binding
 - **THEN** all N messages are removed from the queue, the indicator disappears, and no
   messages are delivered to the agent
+
+### Requirement: The queued messages can be inspected before delivery
+
+The TUI SHALL expose a key binding that toggles a viewer listing the queued messages for
+the active session in delivery order. The viewer MUST read the queue at render time so it
+reflects deliveries that happen while it is open, MUST render each message as a bounded
+preview (single line, control sequences stripped) so a large paste cannot break the
+layout, and MUST offer discard-all from inside the viewer since it captures key presses.
+The binding MUST NOT be an alias of another key in terminals without the kitty keyboard
+protocol (ctrl+m is Enter, ctrl+i is Tab).
+
+#### Scenario: Viewer lists queued messages
+- **GIVEN** session S has three queued messages
+- **WHEN** the user presses the view binding
+- **THEN** a viewer opens listing all three previews in delivery order
+
+#### Scenario: Viewer reflects an ongoing drain
+- **GIVEN** the viewer is open with two queued messages
+- **WHEN** the drain worker delivers the first one
+- **THEN** the next render of the viewer lists only the remaining message
+
+#### Scenario: Viewer closes on the same binding
+- **GIVEN** the viewer is open
+- **WHEN** the user presses the view binding again (or Esc)
+- **THEN** the viewer closes and no message is sent to the agent
 
 ### Requirement: Cancel (Esc / Ctrl+C) targets the in-flight run; queued messages survive
 

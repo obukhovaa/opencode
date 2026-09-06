@@ -409,7 +409,7 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// worker halted on an error), so "Agent is working" would be
 				// factually wrong and leave the user with no idea why ctrl+e
 				// is locked.
-				return m, util.ReportWarn("Messages are queued — wait for them to send, or press ctrl+x to discard")
+				return m, util.ReportWarn("Messages are queued — wait for them to send, press ctrl+g to view or ctrl+x to discard")
 			}
 			return m, m.openEditor()
 		}

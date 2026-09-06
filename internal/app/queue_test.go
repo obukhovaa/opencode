@@ -77,6 +77,39 @@ func TestQueue_QueueLen(t *testing.T) {
 	}
 }
 
+// TestQueue_QueuedMessages returns a detached, head-first snapshot.
+func TestQueue_QueuedMessages(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := newTestApp(ctx)
+
+	if got := a.QueuedMessages("s1"); got != nil {
+		t.Fatalf("empty queue snapshot = %v, want nil", got)
+	}
+
+	a.queueMu.Lock()
+	a.queues["s1"] = append(a.queues["s1"],
+		QueuedMessage{Text: "first"},
+		QueuedMessage{Text: "second"},
+	)
+	a.queueMu.Unlock()
+
+	snap := a.QueuedMessages("s1")
+	if len(snap) != 2 || snap[0].Text != "first" || snap[1].Text != "second" {
+		t.Fatalf("snapshot = %+v, want [first second]", snap)
+	}
+
+	// The snapshot must survive further queue mutation — the TUI renders it
+	// while drain workers keep popping the head.
+	a.DequeueMessage("s1")
+	if len(snap) != 2 || snap[0].Text != "first" {
+		t.Errorf("snapshot mutated by dequeue: %+v", snap)
+	}
+	if got := a.QueuedMessages("s1"); len(got) != 1 || got[0].Text != "second" {
+		t.Errorf("snapshot after dequeue = %+v, want [second]", got)
+	}
+}
+
 // TestQueue_DiscardQueue empties the queue for the target session only.
 func TestQueue_DiscardQueue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
