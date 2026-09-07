@@ -21,13 +21,14 @@ import (
 	"github.com/go-telegram/bot/models"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/bridge/markdown"
 	"github.com/opencode-ai/opencode/internal/logging"
 )
 
 // Constants matching the TS bridge.
 const (
-	// MaxTextLength is Telegram's per-message text cap. Longer messages
-	// are chunked at Send time.
+	// MaxTextLength is Telegram's per-message text cap, counted AFTER
+	// entity parsing, not on the raw source text we send.
 	MaxTextLength = 4096
 
 	// MaxCaptionLength is Telegram's per-attachment caption cap.
@@ -36,6 +37,20 @@ const (
 	// MaxFileSize is Telegram's bot-API upload limit (50 MiB). Larger
 	// attachments are rejected pre-upload with an error.
 	MaxFileSize int64 = 50 * 1024 * 1024
+
+	// MarkdownChunkLimit is the conservative SOURCE-markdown chunk size
+	// (in runes) used to split outbound text before HTML conversion.
+	// Telegram's MaxTextLength cap applies to the PARSED, visible text
+	// ("1-4096 characters after entities parsing"), so HTML tag overhead
+	// (<b>, <a href="...">) and "&<>" escaping do NOT count against it:
+	// tags are stripped and &amp; parses back to a single character. Most
+	// constructs shrink ("**bold**" -> "bold", "## H" -> "H"), so a 3,500
+	// rune source chunk normally converts to well under 4,096 parsed
+	// characters. The one construct that GROWS is a horizontal rule, which
+	// becomes 10 em-dashes; text consisting almost entirely of `---` lines
+	// can therefore still breach the cap, and sendTextChunk's plain-text
+	// retry (see isParseError) is what keeps such a message deliverable.
+	MarkdownChunkLimit = 3_500
 )
 
 // AccessMode is the per-identity access policy for a Telegram bot.
@@ -844,8 +859,9 @@ func (a *Adapter) replyText(ctx context.Context, chatID, text string) {
 
 // Send implements bridge.Adapter. The platform's per-part shapes
 // (sendMessage / sendPhoto / sendAudio / sendDocument) are chosen from
-// MIME-type sniffing on attachments; text-only outbound chunks at
-// MaxTextLength.
+// MIME-type sniffing on attachments; text is chunked (at
+// MarkdownChunkLimit, on the SOURCE markdown) and each chunk is
+// converted to Telegram HTML independently before sending.
 func (a *Adapter) Send(ctx context.Context, out bridge.Outbound) bridge.SendResult {
 	chatID, err := ParsePeerID(out.Peer.PeerID)
 	if err != nil {
@@ -860,14 +876,18 @@ func (a *Adapter) Send(ctx context.Context, out bridge.Outbound) bridge.SendResu
 	// attachment, and any leftover text streams as a final sendMessage
 	// in chunks. For simplicity we send text first, then each attachment
 	// with no caption — closer to the multi-platform fan-out semantics.
-	for _, chunk := range chunkText(text, MaxTextLength) {
+	//
+	// maxChunks=0 (unlimited): Telegram has no per-message payload
+	// budget analogous to Slack's 12,000-char block cap — a long agent
+	// reply is allowed to become several messages, same as today's
+	// chunkText behavior. TruncationMarker is passed for interface
+	// symmetry with the Slack chunker but never actually applied here.
+	chunks, _ := markdown.Split(text, MarkdownChunkLimit, 0, markdown.TruncationMarker)
+	for _, chunk := range chunks {
 		if chunk == "" {
 			continue
 		}
-		if _, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{
-			ChatID: chatID,
-			Text:   chunk,
-		}); err != nil {
+		if err := a.sendTextChunk(ctx, chatID, chunk); err != nil {
 			a.recordFailure(err)
 			return bridge.SendResult{Err: fmt.Errorf("telegram sendMessage: %w", err)}
 		}
@@ -881,6 +901,68 @@ func (a *Adapter) Send(ctx context.Context, out bridge.Outbound) bridge.SendResu
 	}
 
 	return bridge.SendResult{Delivered: true}
+}
+
+// sendTextChunk sends one source-markdown chunk converted to Telegram
+// HTML. If the send fails with what looks like an entity/parse error
+// (see isParseError), it retries THIS chunk once, unchanged, with no
+// ParseMode — a plain-text degrade. There is deliberately no sticky
+// latch here (contrast with the Slack blocks latch): an HTML parse
+// failure is specific to this chunk's content (an edge case in the
+// GFM->HTML conversion, or genuinely malformed markup), not a platform
+// capability the bot lacks, so the next chunk/message attempts
+// ParseModeHTML fresh.
+func (a *Adapter) sendTextChunk(ctx context.Context, chatID int64, chunk string) error {
+	html := markdown.ToTelegramHTML(chunk)
+	_, err := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{
+		ChatID:    chatID,
+		Text:      html,
+		ParseMode: models.ParseModeHTML,
+	})
+	if err == nil {
+		return nil
+	}
+	if !isParseError(err) {
+		return err
+	}
+	_, retryErr := a.bot.SendMessage(ctx, &tgbot.SendMessageParams{
+		ChatID: chatID,
+		Text:   chunk,
+	})
+	return retryErr
+}
+
+// isParseError reports whether err looks like Telegram rejecting the
+// message's HTML entities, as opposed to an unrelated failure (e.g.
+// "chat not found"). "message is too long" is included because HTML
+// conversion can grow the parsed length (a horizontal rule becomes 10
+// em-dashes), and the retry sends the shorter raw source chunk, which
+// fits — without this needle such a message would be dropped outright.
+// Matching is deliberately broad — case-insensitive substring checks
+// against known error phrasings — because the only consequence of a
+// false positive is retrying with plain, unformatted text: always safe,
+// never a lost message. A false negative just surfaces the original
+// error, same as today's behavior.
+func isParseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"can't parse entities",
+		"cant parse entities",
+		"unsupported start tag",
+		"unclosed start tag",
+		"wrong end tag",
+		"entity",
+		"bad request: can't parse",
+		"message is too long",
+	} {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // sendAttachment picks the right Telegram method based on the
@@ -923,51 +1005,8 @@ func (a *Adapter) sendAttachment(ctx context.Context, chatID int64, att bridge.A
 	}
 }
 
-// chunkText splits text into chunks of at most max UTF-8 codepoints
-// (NOT bytes). Telegram's MaxTextLength is counted in characters, not
-// bytes — and slicing a UTF-8 string at a byte boundary that lands
-// mid-codepoint produces invalid UTF-8 that the Telegram API rejects
-// outright. We walk the string by rune and split at codepoint
-// boundaries.
-func chunkText(text string, max int) []string {
-	if text == "" {
-		return nil
-	}
-	if max <= 0 {
-		return []string{text}
-	}
-	// Fast path — count runes; if the whole text fits, no split needed.
-	if utf8RuneCount(text) <= max {
-		return []string{text}
-	}
-	var out []string
-	var buf strings.Builder
-	count := 0
-	for _, r := range text {
-		buf.WriteRune(r)
-		count++
-		if count >= max {
-			out = append(out, buf.String())
-			buf.Reset()
-			count = 0
-		}
-	}
-	if buf.Len() > 0 {
-		out = append(out, buf.String())
-	}
-	return out
-}
-
-// utf8RuneCount returns the number of runes (codepoints) in s without
-// allocating. Avoids the standard utf8.RuneCountInString import only to
-// keep the diff narrowly scoped here.
-func utf8RuneCount(s string) int {
-	n := 0
-	for range s {
-		n++
-	}
-	return n
-}
+// Note: the old rune-only chunkText helper (no markdown awareness) was
+// removed in favor of markdown.Split, whose only caller was Send.
 
 // downloadMediaAttachments fetches every media file referenced by the
 // incoming message and returns the resulting bridge.Attachment values.

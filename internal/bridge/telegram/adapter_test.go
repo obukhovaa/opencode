@@ -33,6 +33,12 @@ type mockTelegramServer struct {
 	// fileBody is what the adapter receives when downloading inbound
 	// files (the /file/bot<token>/<path> endpoint).
 	fileBody string
+	// sendMessageErrors, when non-empty, is consulted by call index (0-
+	// based) to decide whether the Nth sendMessage call should fail with
+	// a Telegram Bad Request error carrying the given description
+	// instead of succeeding. Empty string (or index past the slice)
+	// means "succeed". Used by the HTML-parse-error fallback tests.
+	sendMessageErrors []string
 }
 
 type editTextCall struct {
@@ -52,6 +58,9 @@ type sendCall struct {
 	ChatID  any
 	Text    string
 	Caption string
+	// ParseMode is the raw parse_mode form value (empty when the call
+	// carried no ParseMode field — the plain-text fallback path).
+	ParseMode string
 	// Multipart filename when the call is sendPhoto/sendAudio/sendDocument.
 	Filename string
 	// FileData contains the bytes sent in the multipart upload.
@@ -113,8 +122,17 @@ func (m *mockTelegramServer) handleBotMethod(w http.ResponseWriter, r *http.Requ
 	case "sendMessage":
 		call := captureSendMessage(r)
 		m.mu.Lock()
+		idx := len(m.sendMsg)
 		m.sendMsg = append(m.sendMsg, call)
+		var injectedErr string
+		if idx < len(m.sendMessageErrors) {
+			injectedErr = m.sendMessageErrors[idx]
+		}
 		m.mu.Unlock()
+		if injectedErr != "" {
+			m.respondError(w, injectedErr)
+			return
+		}
 		m.respond(w, models.Message{ID: 1})
 	case "sendPhoto":
 		call := captureMultipartCall(r, "photo")
@@ -185,6 +203,20 @@ func (m *mockTelegramServer) respond(w http.ResponseWriter, result any) {
 	})
 }
 
+// respondError writes a Telegram-format API error envelope. The bot
+// library (raw_request.go) switches on the body's error_code field, not
+// the HTTP status, so a plain 200 with ok:false is sufficient to drive
+// its error path.
+func (m *mockTelegramServer) respondError(w http.ResponseWriter, description string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":          false,
+		"error_code":  400,
+		"description": description,
+	})
+}
+
 // captureSendMessage parses sendMessage's multipart form (the bot library
 // uses multipart for every method, not JSON).
 func captureSendMessage(r *http.Request) sendCall {
@@ -200,6 +232,9 @@ func captureSendMessage(r *http.Request) sendCall {
 	}
 	if vals, ok := r.MultipartForm.Value["caption"]; ok && len(vals) > 0 {
 		call.Caption = vals[0]
+	}
+	if vals, ok := r.MultipartForm.Value["parse_mode"]; ok && len(vals) > 0 {
+		call.ParseMode = vals[0]
 	}
 	return call
 }

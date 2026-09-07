@@ -19,6 +19,7 @@ import (
 	"github.com/slack-go/slack/socketmode"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/bridge/markdown"
 	"github.com/opencode-ai/opencode/internal/logging"
 )
 
@@ -30,7 +31,29 @@ const (
 	// MaxFileSize is Slack's files.uploadV2 limit (1 GiB). Larger
 	// attachments are rejected pre-upload.
 	MaxFileSize int64 = 1 * 1024 * 1024 * 1024
+
+	// MarkdownPayloadBudget is Slack's documented cumulative character
+	// cap across ALL `markdown`-type blocks in one chat.postMessage
+	// payload. Exceeding it produces a blocks_too_long-class API error.
+	MarkdownPayloadBudget = 12_000
+
+	// MarkdownBlockTarget is the target size (in runes) of each
+	// individual `markdown` block. Chosen as a sub-limit well under any
+	// theoretical per-block cap, keeping each block a reasonably sized,
+	// independently renderable chunk of markdown.
+	MarkdownBlockTarget = 3_000
+
+	// MaxBlocksPerMessage is Slack's absolute ceiling on blocks per
+	// message (shared across all block types, not just `markdown`).
+	// Enforced defensively here so a future change to the budget/target
+	// constants above can never silently exceed it.
+	MaxBlocksPerMessage = 50
 )
+
+// markdownTruncationMarker is appended to the last emitted `markdown`
+// block when outbound text exceeds MarkdownPayloadBudget. Italic prose so
+// it is visually distinct from agent-authored content.
+const markdownTruncationMarker = markdown.TruncationMarker
 
 // Identity configures one Slack app identity.
 type Identity struct {
@@ -88,6 +111,15 @@ type Adapter struct {
 	lastError     atomic.Value // string
 	lastInboundAt atomic.Int64
 	lastFailureAt atomic.Int64
+
+	// markdownBlocksUnsupported is a sticky, per-Adapter-instance latch:
+	// once a chat.postMessage call rejects `markdown` blocks with a
+	// block-related API error, this identity's workspace/app is treated
+	// as incapable of rendering them for the rest of the adapter's
+	// lifetime, and Send skips straight to the plain-text path. This is
+	// a workspace/app-level capability, not per-message state, so unlike
+	// lastError/lastFailureAt it is never reset.
+	markdownBlocksUnsupported atomic.Bool
 
 	// fileBaseURL overrides the URL prefix for file_private downloads.
 	// Tests set this so the adapter fetches from their mock server.
@@ -888,21 +920,15 @@ func (a *Adapter) Send(ctx context.Context, out bridge.Outbound) bridge.SendResu
 		return bridge.SendResult{Err: ErrInvalidPeerID}
 	}
 
+	// Prepend the mention FIRST so it lands inside the rendered content
+	// (blocks or plain text) rather than being a separate, unstyled
+	// prefix — see the double-mention-prepend regression test.
 	text := bridge.PrependMentionIfMissing(out.Mention, out.Text)
-	// Slack counts MaxTextLength in characters, not bytes. Slicing at a
-	// byte boundary that lands mid-codepoint produces invalid UTF-8 that
-	// the API can reject and renders as the replacement character. Cap
-	// by rune so the cut always lands on a codepoint boundary.
-	text = truncateRunes(text, MaxTextLength)
 
 	// Text part first.
 	resolved := ""
 	if text != "" {
-		opts := []slackgo.MsgOption{slackgo.MsgOptionText(text, false)}
-		if peer.ThreadTS != "" {
-			opts = append(opts, slackgo.MsgOptionTS(peer.ThreadTS))
-		}
-		_, ts, err := a.api.PostMessageContext(ctx, peer.ChannelID, opts...)
+		ts, err := a.sendText(ctx, peer, text)
 		if err != nil {
 			a.recordFailure(err)
 			return bridge.SendResult{Err: fmt.Errorf("slack postMessage: %w", err)}
@@ -944,6 +970,151 @@ func (a *Adapter) Send(ctx context.Context, out bridge.Outbound) bridge.SendResu
 	}
 
 	return bridge.SendResult{Delivered: true, ResolvedPeer: resolved}
+}
+
+// sendText posts the text part of an outbound message. It prefers
+// Block Kit `markdown` blocks — real GFM rendering, chunked to Slack's
+// 12,000-character cumulative budget across all `markdown` blocks in one
+// payload — over the legacy mrkdwn `text` field. The top-level `text`
+// field is still set alongside the blocks: Slack uses it as the
+// notification/accessibility fallback (it is not shown in the message
+// body when `blocks` is present), so it carries the rune-truncated plain
+// text rather than the full markdown content.
+//
+// If blocks are rejected by a block-related Slack API error (see
+// isBlockError), this identity's markdownBlocksUnsupported latch is set
+// and the SAME send is retried once via the plain-text path before
+// returning. Once latched, subsequent calls skip the blocks attempt
+// entirely. A truncation performed by markdown.BuildBlockChunks is
+// expected, user-visible (via the marker) behavior, not an error — it
+// never triggers the plain-text fallback.
+func (a *Adapter) sendText(ctx context.Context, peer Peer, text string) (string, error) {
+	// Slack counts MaxTextLength in characters, not bytes. Slicing at a
+	// byte boundary that lands mid-codepoint produces invalid UTF-8 that
+	// the API can reject and renders as the replacement character. Cap
+	// by rune so the cut always lands on a codepoint boundary.
+	fallback := truncateRunes(text, MaxTextLength)
+
+	if a.markdownBlocksUnsupported.Load() {
+		return a.postPlainText(ctx, peer, fallback)
+	}
+
+	chunks, _ := markdown.BuildBlockChunks(text, MarkdownPayloadBudget, MarkdownBlockTarget, markdownTruncationMarker)
+	if len(chunks) == 0 {
+		return a.postPlainText(ctx, peer, fallback)
+	}
+	if len(chunks) > MaxBlocksPerMessage {
+		chunks = chunks[:MaxBlocksPerMessage]
+	}
+	blocks := make([]slackgo.Block, 0, len(chunks))
+	for _, c := range chunks {
+		blocks = append(blocks, slackgo.NewMarkdownBlock("", c))
+	}
+
+	opts := []slackgo.MsgOption{
+		slackgo.MsgOptionBlocks(blocks...),
+		slackgo.MsgOptionText(fallback, false),
+	}
+	if peer.ThreadTS != "" {
+		opts = append(opts, slackgo.MsgOptionTS(peer.ThreadTS))
+	}
+	_, ts, err := a.api.PostMessageContext(ctx, peer.ChannelID, opts...)
+	if err == nil {
+		return ts, nil
+	}
+	if !isBlockError(err) {
+		return "", err
+	}
+
+	// Only an unambiguous block-capability rejection latches: an
+	// ambiguous error (e.g. invalid_arguments, which Slack also returns
+	// for unrelated reasons like a bad channel or timestamp) self-heals
+	// on its own — the next Send simply tries blocks again, costing at
+	// most one extra API call if it really was block-related. Latching
+	// on an ambiguous error would permanently downgrade formatting for
+	// this identity because of a failure that may have nothing to do
+	// with block support.
+	if isBlockCapabilityError(err) && a.markdownBlocksUnsupported.CompareAndSwap(false, true) {
+		logging.Warn("bridge: slack markdown blocks rejected, falling back to plain text",
+			"identity", a.id.ID, "err", err)
+	}
+	return a.postPlainText(ctx, peer, fallback)
+}
+
+// postPlainText posts text via the legacy mrkdwn `text` field only — no
+// blocks. Used both for the sticky post-latch path and the one-time
+// retry after a block-related API rejection.
+func (a *Adapter) postPlainText(ctx context.Context, peer Peer, text string) (string, error) {
+	opts := []slackgo.MsgOption{slackgo.MsgOptionText(text, false)}
+	if peer.ThreadTS != "" {
+		opts = append(opts, slackgo.MsgOptionTS(peer.ThreadTS))
+	}
+	_, ts, err := a.api.PostMessageContext(ctx, peer.ChannelID, opts...)
+	return ts, err
+}
+
+// isBlockError reports whether err looks like a Slack API rejection of
+// the message's Block Kit blocks, as opposed to an unrelated failure
+// (e.g. channel_not_found). slack-go surfaces API errors as
+// SlackErrorResponse, whose Error() is just the bare API error code, so
+// case-insensitive substring matching against the known block-related
+// codes is sufficient. Matching is deliberately broad — it includes
+// invalid_arguments, which Slack also returns for many non-block
+// reasons (bad channel, bad timestamp, ...) — because this predicate
+// only gates the one-time plain-text RETRY for the current send, not
+// the sticky latch: a false positive here just costs one extra
+// plain-text send this time, which is always safe; a false negative
+// just retries the blocks path again on the next Send. See
+// isBlockCapabilityError for the narrower predicate that gates the
+// sticky latch.
+func isBlockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"invalid_blocks",
+		"invalid_block",
+		"blocks_too_long",
+		"invalid_arguments",
+		"msg_blocks_too_long",
+		"invalid_block_id",
+	} {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// isBlockCapabilityError reports whether err unambiguously indicates
+// that this Slack workspace/app cannot use Block Kit `markdown` blocks
+// at all, as opposed to a merely block-shaped but potentially unrelated
+// error. Deliberately narrower than isBlockError: it excludes
+// invalid_arguments, which Slack also returns for reasons that have
+// nothing to do with block support (bad channel, bad ts, ...) — setting
+// the sticky markdownBlocksUnsupported latch on such an ambiguous error
+// would permanently downgrade formatting for this identity because of
+// an unrelated failure. Only an error code that Slack documents as
+// specifically about block content/shape justifies paying that
+// permanent cost.
+func isBlockCapabilityError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"invalid_blocks",
+		"invalid_block",
+		"blocks_too_long",
+		"msg_blocks_too_long",
+		"invalid_block_id",
+	} {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Adapter) recordFailure(err error) {

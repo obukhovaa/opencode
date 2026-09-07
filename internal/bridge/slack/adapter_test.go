@@ -32,12 +32,23 @@ type mockSlackServer struct {
 	uploads  []uploadCall
 	opens    []string
 	files    map[string]string // file ID → body
+
+	// postMessageErrors, when non-empty, is consulted by call index (0-
+	// based) to decide whether the Nth chat.postMessage call should
+	// fail with a Slack API error instead of succeeding. Used by the
+	// markdown-block fallback/latch tests to simulate a workspace that
+	// rejects `markdown` blocks (or an unrelated failure) on the first
+	// attempt.
+	postMessageErrors []string
 }
 
 type postCall struct {
 	Channel  string
 	Text     string
 	ThreadTS string
+	// Blocks is the raw JSON array from the "blocks" form field, empty
+	// when the call carried no Block Kit blocks (plain-text path).
+	Blocks string
 }
 
 type uploadCall struct {
@@ -124,10 +135,20 @@ func (m *mockSlackServer) handleAPI(w http.ResponseWriter, r *http.Request) {
 			Channel:  r.FormValue("channel"),
 			Text:     r.FormValue("text"),
 			ThreadTS: r.FormValue("thread_ts"),
+			Blocks:   r.FormValue("blocks"),
 		}
 		m.mu.Lock()
+		idx := len(m.posts)
 		m.posts = append(m.posts, call)
+		var injectedErr string
+		if idx < len(m.postMessageErrors) {
+			injectedErr = m.postMessageErrors[idx]
+		}
 		m.mu.Unlock()
+		if injectedErr != "" {
+			m.respond(w, map[string]any{"ok": false, "error": injectedErr})
+			return
+		}
 		m.respond(w, map[string]any{
 			"ok":      true,
 			"channel": call.Channel,
