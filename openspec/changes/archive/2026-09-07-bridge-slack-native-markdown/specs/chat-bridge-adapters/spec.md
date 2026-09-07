@@ -140,18 +140,42 @@ characters).
 
 Before conversion, outbound text SHALL be split at the *source markdown* level using the
 shared fence-aware chunker (`internal/bridge/markdown`) at a conservative ~3,500-character
-limit — not the raw 4,096-character `MaxTextLength` — so that neither the pre-conversion
-chunk nor its HTML-entity-expanded, post-conversion form can exceed Telegram's 4,096-
-character `sendMessage` cap. Each chunk MUST be a self-contained, independently valid
-markdown fragment (any code fence open at a chunk boundary is closed on the outgoing chunk
-and reopened with the same info string on the next), since each chunk is converted to HTML
-independently.
+limit — not the raw 4,096-character `MaxTextLength`. Telegram measures its cap on the
+PARSED text ("1-4096 characters after entities parsing"), so HTML tag overhead and
+`&amp;`-style escaping do not count against it and virtually every GFM construct converts
+to the same length or shorter. The one construct that GROWS is a `---` horizontal rule,
+which becomes 10 em-dashes; text consisting almost entirely of rule lines can therefore
+still breach the cap, and the adapter MUST treat a `message is too long` rejection as a
+degradation trigger (see the retry contract below) rather than a lost message.
+
+Each chunk MUST be a self-contained, independently valid markdown fragment (any code fence
+open at a chunk boundary is closed on the outgoing chunk and reopened with the same info
+string on the next), since each chunk is converted to HTML independently. The chunker MUST
+terminate on every input: because the synthetic reopen delimiter is pushed back onto the
+unconsumed remainder, a fence whose info string rivals the chunk limit would otherwise
+make the chunker consume less than it pushes back and loop forever. The chunker SHALL
+guarantee strict forward progress per pass, dropping the close/reopen fixup for that one
+boundary if that is the only way to make progress — losing the fence's syntax highlighting
+across the split, never its content.
+
+The converter MUST NOT emit a `<code>` or `<pre>` tag nested inside any other entity. The
+Bot API's nesting rules state that bold/italic/underline/strikethrough/spoiler entities
+"can contain and can be part of any other entities, **except pre and code**", and that
+"all other entities can't contain each other"; the sole documented exception is the
+`<pre><code class="language-x">` language-specifier form. A code span appearing inside a
+heading (`## Fix ` + "`foo.go`" + `` — extremely common in agent prose), inside emphasis,
+inside a link label, inside a blockquote, or inside a table cell SHALL therefore be
+emitted as plain escaped text rather than a nested `<code>` tag. URLs interpolated into an
+`href` attribute SHALL additionally escape `"` as `&quot;` so a URL containing a double
+quote cannot terminate the attribute early and inject an unsupported attribute into the
+tag.
 
 If `sendMessage` with `ParseModeHTML` fails with an entity/parse error (e.g. `can't parse
-entities`), the adapter MUST retry that one chunk, unchanged, with no `ParseMode` field and
-the original markdown text — a content-specific retry, not a sticky per-adapter latch (each
-message's chunks attempt HTML conversion fresh). A chunk MUST NEVER be dropped because of an
-HTML conversion or entity-parse failure.
+entities`) or a `message is too long` rejection, the adapter MUST retry that one chunk,
+unchanged, with no `ParseMode` field and the original markdown text — a content-specific
+retry, not a sticky per-adapter latch (each message's chunks attempt HTML conversion
+fresh). A chunk MUST NEVER be dropped because of an HTML conversion or entity-parse
+failure.
 
 #### Scenario: Long-poll loop
 
@@ -196,6 +220,43 @@ HTML conversion or entity-parse failure.
   markdown text, the message is delivered (with visible markdown syntax for that chunk
   only), and no per-adapter latch is set — the next message's chunks attempt
   `ParseModeHTML` normally
+
+#### Scenario: Code spans are never nested inside another entity
+
+- **GIVEN** the agent's outbound text contains a heading with a code span
+  (`## Fix ` + "`foo.go`" + ``), a bold phrase wrapping a code span, a link whose label is a
+  code span, and a table cell containing a code span
+- **WHEN** `ToTelegramHTML` converts this text
+- **THEN** no `<code>` or `<pre>` tag appears inside any other tag (the only permitted
+  nesting is `<pre><code class="language-x">`); each such code span is emitted as plain
+  escaped text inside its wrapper, so Telegram accepts the message instead of rejecting it
+  with `can't parse entities` and stripping the whole chunk's formatting
+
+#### Scenario: A URL containing a double quote cannot break out of the href attribute
+
+- **GIVEN** the agent's outbound text contains `[label](https://x.com" onclick="alert(1))`
+- **WHEN** `ToTelegramHTML` converts this text
+- **THEN** the `"` inside the URL is escaped as `&quot;`, the emitted `<a>` tag carries
+  exactly one `href` attribute and no injected attributes, and the only unescaped double
+  quotes in the output are the two that delimit `href`
+
+#### Scenario: Post-conversion overflow degrades instead of dropping the message
+
+- **GIVEN** a source chunk within the 3,500-character limit whose conversion nonetheless
+  exceeds Telegram's 4,096-character post-parse cap (text made almost entirely of `---`
+  rules, each expanding to 10 em-dashes) and `sendMessage` returns `message is too long`
+- **WHEN** `Send` processes that chunk
+- **THEN** the adapter retries the chunk with no `ParseMode` and the shorter original
+  markdown source, and the message is delivered rather than reported as a failed send
+
+#### Scenario: Chunker terminates on a fence whose info string rivals the chunk limit
+
+- **GIVEN** outbound text opening a code fence whose info string is as long as (or longer
+  than) the chunk limit itself
+- **WHEN** `Send` chunks this text
+- **THEN** the chunker terminates, every chunk stays within the rune limit, and no content
+  is lost — the fence's close/reopen fixup is dropped for that boundary if that is the only
+  way to guarantee forward progress
 
 #### Scenario: Long prose is chunked at the source markdown level, not after conversion
 

@@ -40,12 +40,16 @@ const (
 
 	// MarkdownChunkLimit is the conservative SOURCE-markdown chunk size
 	// (in runes) used to split outbound text before HTML conversion.
-	// Telegram's MaxTextLength cap applies to the PARSED, visible text —
-	// but HTML tag overhead (<b>, <a href="...">, etc.) and "&<>"
-	// escaping only ever grow a chunk's raw byte/rune count relative to
-	// its converted form. Chunking the source at a limit well under
-	// MaxTextLength keeps both the raw markdown chunk and its converted
-	// HTML comfortably inside the 4,096 cap.
+	// Telegram's MaxTextLength cap applies to the PARSED, visible text
+	// ("1-4096 characters after entities parsing"), so HTML tag overhead
+	// (<b>, <a href="...">) and "&<>" escaping do NOT count against it:
+	// tags are stripped and &amp; parses back to a single character. Most
+	// constructs shrink ("**bold**" -> "bold", "## H" -> "H"), so a 3,500
+	// rune source chunk normally converts to well under 4,096 parsed
+	// characters. The one construct that GROWS is a horizontal rule, which
+	// becomes 10 em-dashes; text consisting almost entirely of `---` lines
+	// can therefore still breach the cap, and sendTextChunk's plain-text
+	// retry (see isParseError) is what keeps such a message deliverable.
 	MarkdownChunkLimit = 3_500
 )
 
@@ -930,11 +934,15 @@ func (a *Adapter) sendTextChunk(ctx context.Context, chatID int64, chunk string)
 
 // isParseError reports whether err looks like Telegram rejecting the
 // message's HTML entities, as opposed to an unrelated failure (e.g.
-// "chat not found"). Matching is deliberately broad — case-insensitive
-// substring checks against known entity-parsing error phrasings — because
-// the only consequence of a false positive is retrying with plain,
-// unformatted text: always safe, never a lost message. A false negative
-// just surfaces the original error, same as today's behavior.
+// "chat not found"). "message is too long" is included because HTML
+// conversion can grow the parsed length (a horizontal rule becomes 10
+// em-dashes), and the retry sends the shorter raw source chunk, which
+// fits — without this needle such a message would be dropped outright.
+// Matching is deliberately broad — case-insensitive substring checks
+// against known error phrasings — because the only consequence of a
+// false positive is retrying with plain, unformatted text: always safe,
+// never a lost message. A false negative just surfaces the original
+// error, same as today's behavior.
 func isParseError(err error) bool {
 	if err == nil {
 		return false
@@ -948,6 +956,7 @@ func isParseError(err error) bool {
 		"wrong end tag",
 		"entity",
 		"bad request: can't parse",
+		"message is too long",
 	} {
 		if strings.Contains(s, needle) {
 			return true

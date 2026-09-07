@@ -197,6 +197,23 @@
   adapter tests, including the new `ToTelegramHTML`/`Send` HTML-path coverage, pass as-is).
 - [x] 7.2 `go test -race ./internal/bridge/...` passes (no data race from the new
   per-adapter `atomic.Bool` latch or any shared state in `internal/bridge/markdown`).
+  The latch is exercised under actual contention by
+  `internal/bridge/slack/adapter_concurrency_test.go`, which calls `Send` from 16
+  goroutines on one `Adapter` — without a concurrent-`Send` test a `-race` pass would
+  prove nothing about the latch, since the detector only reports races it observes.
+  Known unrelated flake: `internal/bridge/service`'s
+  `TestInteractiveHook_RegisterFailureDoesNotBlockLocalBind` races on the package-level
+  `remoteRegisterRetryInterval` global that `withFastRetry` mutates and restores in
+  `t.Cleanup`; it reproduces on `main`-plus-this-PR *and* on the PR tree with none of the
+  review fixes applied, and touches no file in this change's diff.
+- [x] 7.6 Regression coverage for the three defects found in review of this change:
+  `internal/bridge/markdown/markdown_progress_test.go` (chunker termination /
+  forward-progress on a fence whose info string rivals the chunk limit),
+  `internal/bridge/markdown/telegram_nesting_test.go` (no `code`/`pre` entity nested
+  inside another entity; `href` attribute quote-escaping), and
+  `TestSendTooLongErrorRetriesAsPlainText` in
+  `internal/bridge/telegram/adapter_markdown_test.go` (`message is too long` degrades
+  instead of dropping).
 - [x] 7.3 `make test` run for this change; see the workhorse report for the verbatim output.
   `opencode-schema.json` and generated mocks are unchanged (`git status --short` confirms —
   this change introduces no `Config` field).

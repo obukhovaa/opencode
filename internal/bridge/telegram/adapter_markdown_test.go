@@ -164,6 +164,40 @@ func TestSendUnrelatedErrorDoesNotRetryAndSurfaces(t *testing.T) {
 	}
 }
 
+// TestSendTooLongErrorRetriesAsPlainText covers the one construct whose
+// HTML conversion GROWS the parsed length: a horizontal rule becomes 10
+// em-dashes, so a source chunk made almost entirely of `---` lines can
+// exceed Telegram's 4,096-character "after entities parsing" cap even
+// though the raw chunk is only 3,500 runes. Without "message is too long"
+// in isParseError's needle list the message was dropped outright instead
+// of degrading to the (shorter) plain-text form.
+func TestSendTooLongErrorRetriesAsPlainText(t *testing.T) {
+	t.Parallel()
+	a, mock, _ := newAdapter(t, Identity{ID: "default", Token: "tg-token"})
+	mock.sendMessageErrors = []string{"Bad Request: message is too long"}
+
+	res := a.Send(context.Background(), bridge.Outbound{
+		Peer: bridge.PeerRef{Channel: "telegram", Identity: "default", PeerID: "12345"},
+		Text: strings.Repeat("---\n", 400),
+	})
+	if !res.Delivered {
+		t.Fatalf("Send err: %v (want delivered via plain-text retry)", res.Err)
+	}
+
+	mock.mu.Lock()
+	calls := append([]sendCall(nil), mock.sendMsg...)
+	mock.mu.Unlock()
+	if len(calls) != 2 {
+		t.Fatalf("sendMessage calls = %d, want 2 (HTML attempt + plain-text retry)", len(calls))
+	}
+	if calls[1].ParseMode != "" {
+		t.Errorf("retry call ParseMode = %q, want empty (no ParseMode)", calls[1].ParseMode)
+	}
+	if !strings.Contains(calls[1].Text, "---") {
+		t.Errorf("retry text = %q, want the original markdown source", calls[1].Text)
+	}
+}
+
 // TestSendParseErrorDoesNotLatchAcrossMessages verifies there is no
 // sticky latch: after a parse-error retry on one Send, the NEXT Send
 // still attempts ParseModeHTML fresh.

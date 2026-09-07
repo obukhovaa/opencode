@@ -1,10 +1,11 @@
 // Package markdown provides shared, stdlib-only markdown utilities used by
-// the chat-bridge adapters (Slack today; Telegram in a follow-up change).
-// It has no dependency on internal/bridge or any platform SDK — mirroring
-// the dependency-free discipline of internal/bridge itself — so it can be
-// imported by every platform adapter package without an import cycle.
+// the chat-bridge adapters (Slack and Telegram). It has no dependency on
+// internal/bridge or any platform SDK — mirroring the dependency-free
+// discipline of internal/bridge itself — so it can be imported by every
+// platform adapter package without an import cycle.
 //
-// Two responsibilities live here:
+// Two responsibilities live here (a third, the GFM -> Telegram-HTML
+// converter, lives in telegram.go):
 //
 //   - NormalizeSlackLinks rewrites Slack mrkdwn's own link syntax
 //     (<https://x|label> / <https://x>) into standard Markdown
@@ -81,6 +82,32 @@ type fenceState struct {
 	info      string
 }
 
+// maxFenceInfoRunes bounds the info string retained for the purpose of
+// REOPENING a fence on the far side of a chunk boundary. A real info string
+// is a language tag ("go", "json", "python"); text far longer than that is
+// not a tag at all, and carrying it verbatim into the synthetic reopen
+// delimiter would let the delimiter rival the chunk limit itself — which
+// made Split spin forever, since the reopen text is pushed back onto the
+// unconsumed remainder. Clamping affects only the synthetic delimiter; the
+// original opening line is always emitted untouched.
+const maxFenceInfoRunes = 64
+
+// clampRunes truncates s to at most n runes, always cutting on a codepoint
+// boundary.
+func clampRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i]
+		}
+		count++
+	}
+	return s
+}
+
 // scanFence walks s line by line, updating fs for every fence-toggling line
 // it finds (a line whose left-trimmed content starts with 3+ backticks).
 // It is meant to be called incrementally, once per emitted chunk, so state
@@ -95,7 +122,7 @@ func scanFence(fs *fenceState, s string) {
 		if !fs.open {
 			fs.open = true
 			fs.markerLen = n
-			fs.info = strings.TrimSpace(trimmed[n:])
+			fs.info = clampRunes(strings.TrimSpace(trimmed[n:]), maxFenceInfoRunes)
 			continue
 		}
 		// Already inside a fence: only a run at least as long as the
@@ -290,6 +317,32 @@ func Split(text string, limit, maxChunks int, marker string) ([]string, bool) {
 
 		cut := findBoundary(remaining, limit)
 		head, newFS, reopen, usedCut := buildChunk(remRunes, cut, limit, 0, fs)
+
+		// Forward-progress guarantee. `reopen` is synthetic text pushed
+		// BACK onto the unconsumed remainder, so this loop only terminates
+		// if every pass consumes strictly more than it pushes back. Two
+		// pathological shapes break that: a cut shrunk all the way to zero
+		// (a limit smaller than the fence delimiter itself), and a reopen
+		// delimiter at least as long as the slice consumed. Either one used
+		// to spin forever while growing `remaining` without bound. Give up
+		// the close/reopen fixup for this one boundary instead: the content
+		// is still emitted verbatim and in full, only the fence's syntax
+		// highlighting is lost across the split.
+		if usedCut <= 0 || utf8.RuneCountInString(reopen) >= usedCut {
+			hardCut := cut
+			if hardCut < 1 {
+				hardCut = 1
+			}
+			if hardCut > len(remRunes) {
+				hardCut = len(remRunes)
+			}
+			head = string(remRunes[:hardCut])
+			newFS = fs
+			scanFence(&newFS, head)
+			reopen = ""
+			usedCut = hardCut
+		}
+
 		chunks = append(chunks, head)
 		fs = newFS
 		remaining = reopen + string(remRunes[usedCut:])

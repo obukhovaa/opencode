@@ -139,6 +139,20 @@ above; Telegram: ~3,500).
    own — e.g. a very long unbroken paragraph or a single long code line — hard-wrap it at
    exactly `limit` runes, walking the string rune-by-rune (never splitting a multi-byte UTF-8
    codepoint), and continue chunking the remainder as a new logical line.
+4b. **Termination invariant.** Step 3's reopen delimiter is *synthetic text pushed back onto
+   the unconsumed remainder*, so the loop only terminates if each pass consumes strictly more
+   than it pushes back. Two shapes break that and must be handled explicitly, or the chunker
+   spins forever while growing the remainder without bound:
+   - the cut shrunk to zero because the closing delimiter alone exceeds `limit`; and
+   - a reopen delimiter at least as long as the slice consumed, which happens when the
+     fence's info string rivals `limit` (a fence whose opening line runs on with no newline —
+     a minified JSON blob or base64 excerpt right after the backticks).
+   Mitigation is two-layered: the info string carried into the *synthetic* reopen delimiter is
+   clamped (`maxFenceInfoRunes`, 64 — long enough for any real language tag; the original
+   opening line is always emitted verbatim), and, as an unconditional backstop, a pass that
+   still cannot make forward progress drops the close/reopen fixup for that one boundary and
+   hard-cuts instead. Content is always preserved in full; only the fence's syntax
+   highlighting is lost across that split.
 5. On the LAST chunk the caller is willing to emit (i.e. the point where the per-message
    budget — Slack's 12,000/4-block cap, or the "no more chunks" decision for Telegram —
    would be exceeded by continuing), the chunker packs content to fill the limit exactly
