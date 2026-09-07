@@ -190,6 +190,16 @@ A relay channel with **no chat platform of its own**. Outbound messages and ques
 - Relay frames are authenticated with HTTP Basic (the credential as password) and `202 Accepted` is the only success status. Attachments relay as **metadata only** (`fileName`, `mimeType`, `size`) — never content.
 - Groups / `@mention` gating don't apply; `POST /router/config/groups` rejects this channel explicitly.
 
+## Outbound prose rendering
+
+Agent replies are authored as GFM (GitHub-flavored Markdown) — headings, bold/italic, links, lists, tables, fenced code. Each adapter's `Send` renders that same `Outbound.Text` into whatever markup dialect its platform actually understands, with automatic degradation to plain text if rendering is rejected. The shared, stdlib-only chunking and conversion helpers live in `internal/bridge/markdown`.
+
+- **Slack**: rendered as Block Kit `markdown` blocks (real GFM parsing, unlike the legacy mrkdwn `text` field, which cannot represent headings, tables, or fenced code with syntax highlighting). Text is chunked to Slack's 12,000-character cumulative budget across all blocks in one payload (`internal/bridge/markdown.BuildBlockChunks`, 3,000-char per-block target). The top-level `text` field is still sent alongside the blocks as the notification/accessibility fallback. If Slack rejects the blocks with an unambiguous block-capability error (`invalid_blocks`, `invalid_block`, `blocks_too_long`, `msg_blocks_too_long`, `invalid_block_id`), the adapter retries as plain text and sets a sticky per-identity latch so subsequent sends skip the blocks attempt entirely. A more ambiguous error (`invalid_arguments`, which Slack also returns for unrelated reasons) still retries as plain text for that one send but does **not** latch — the next send tries blocks again.
+- **Telegram**: rendered as Telegram HTML (`internal/bridge/markdown.ToTelegramHTML`), the restricted tag set Telegram's `ParseMode: HTML` supports (`<b>`, `<i>`, `<a href>`, `<code>`/`<pre>`, `<blockquote>`, etc.) — chosen over MarkdownV2 because it requires escaping only three characters instead of ~18 reserved ones. Source markdown is chunked at 3,500 characters (`MarkdownChunkLimit`) before conversion, conservative headroom under Telegram's 4,096-character post-parse cap to absorb HTML tag overhead and `&amp;`-style escaping. If a chunk's HTML is rejected with a parse/entity error, that one chunk is retried unformatted (no `ParseMode`) — there is no sticky latch, since a parse failure is specific to that chunk's content, not a platform capability.
+- **Mattermost**: unchanged — `Post.Message` is sent as native GFM and Mattermost's own server-side parser already renders it correctly.
+
+The `RichRenderer` tool-card paths (`internal/bridge/slack/render.go`, `internal/bridge/telegram/render.go`) that hand-author Block Kit / legacy Markdown for tool calls, lists, tables, and status previews are separate code paths, untouched by the above — they compose their own markup directly rather than converting agent-authored GFM.
+
 ## HTTP API (`/router/*`)
 
 All endpoints live on the existing opencode API port. Bare paths (`/send`, `/identities/*`, `/config/groups`) return 404 — everything is under `/router/*`.
