@@ -179,6 +179,8 @@ type stubAgent struct {
 	prompts     []string
 	runOpts     []agentpkg.RunOptions // per-call RunOptions (to assert forcing)
 	ctxDeadline []bool                // per-call: did the ctx carry a deadline
+	sessionIDs  []string              // per-call session id (to assert retries reuse one session)
+	maxTurns    []int                 // per-call turn budget (to assert each retry gets a full one)
 }
 
 func newStubAgent() *stubAgent {
@@ -211,6 +213,22 @@ func (a *stubAgent) snapshotRunOpts() []agentpkg.RunOptions {
 	return out
 }
 
+func (a *stubAgent) snapshotSessionIDs() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]string, len(a.sessionIDs))
+	copy(out, a.sessionIDs)
+	return out
+}
+
+func (a *stubAgent) snapshotMaxTurns() []int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]int, len(a.maxTurns))
+	copy(out, a.maxTurns)
+	return out
+}
+
 func (a *stubAgent) snapshotCtxDeadline() []bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -219,10 +237,12 @@ func (a *stubAgent) snapshotCtxDeadline() []bool {
 	return out
 }
 
-func (a *stubAgent) RunWith(ctx context.Context, _ string, prompt string, _ int, opts agentpkg.RunOptions, _ ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
+func (a *stubAgent) RunWith(ctx context.Context, sessionID string, prompt string, maxTurns int, opts agentpkg.RunOptions, _ ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
 	a.mu.Lock()
 	a.prompts = append(a.prompts, prompt)
 	a.runOpts = append(a.runOpts, opts)
+	a.sessionIDs = append(a.sessionIDs, sessionID)
+	a.maxTurns = append(a.maxTurns, maxTurns)
 	_, hasDeadline := ctx.Deadline()
 	a.ctxDeadline = append(a.ctxDeadline, hasDeadline)
 	ch := make(chan agentpkg.AgentEvent, 1)

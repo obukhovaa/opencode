@@ -111,7 +111,7 @@ Because built-in discovery derives IDs from file basenames (which can never cont
 | `langfusePromptLabel` | string | No | Langfuse label to resolve for `langfusePromptPath`. Defaults to `telemetry.langfuse.prompts.label` (itself defaulting to `production`). Only valid alongside `langfusePromptPath`. |
 | `output.schema` | object | No | JSON Schema for structured output |
 | `rules` | array | No | Conditional routing rules |
-| `fallback` | object | No | Retry and error routing |
+| `fallback` | object | No | Retry and error routing. See [Fallback](#fallback) — including `on_turns_exhausted` for steps that must not complete silently when cut off at their turn budget. |
 | `maxTurns` | int | No | Per-step override for the agent's `maxTurns`. `0` (unset) inherits from the agent. |
 | `maxIterations` | int | No | Cap on in-process self-loop iterations. `0` (unset) is unbounded — only the flow timeout applies. When the (N+1)th self-route would exceed the cap, the step fails (and runs its `fallback`). See [Self-Loops](#self-loops). |
 | `timeout` | duration | No | Wall-clock deadline for the step's `agent.RunWith` invocation, including the non-interactive end-of-turn wait for any background tasks (`bash run_in_background`, `task async`, `monitor`) the step's agent spawned. Format is a Go duration string (`5m`, `1h30m`). Unset falls back to `OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT`; if that is also unset, the wait is bounded only by the surrounding orchestrator's ctx. When the deadline trips, the runtime injects a synthetic Assistant `[wait-timeout]` message into the session log enumerating still-pending tasks, then returns the step's pre-wait result. |
@@ -195,6 +195,81 @@ fallback:
 | `retry` | int | Number of retry attempts |
 | `delay` | int | Delay between retries (seconds) |
 | `to` | string | Step ID to route to after all retries fail |
+| `on_turns_exhausted` | string | What a turn-budget exhaustion means for the step: `accept` (default) or `fail`. See [Turn-budget exhaustion](#turn-budget-exhaustion). |
+
+#### Turn-budget exhaustion
+
+When a step's agent hits its turn budget (`maxTurns`), the runtime injects one
+wrap-up turn with `struct_output` forced, and the step **completes** on the
+document that turn produces. Routing rules then evaluate a normal success: no
+field distinguishes "the agent finished" from "the agent was cut off mid-task".
+
+For a read-only step that is the right outcome — the wrap-up summary *is* the
+result. For a step that leaves state behind (a clone, a branch, an uncommitted
+diff on a disposable pod) it is a silent data-loss path: the safety-net step
+wired to `fallback.to` never runs, and the work dies with the pod while the job
+reports green.
+
+`on_turns_exhausted: fail` routes exhaustion through the same fallback
+machinery as an error:
+
+- **Retry first.** Exhaustion consumes the `retry` budget, and each attempt
+  re-enters the **same session** with a **fresh turn budget** — same pod, same
+  working tree. The retry's prompt is reframed as a continuation ("you ran out
+  of tool turns; inspect the working tree, finish only what remains, do not
+  duplicate commits or MRs") with the original task appended beneath it, so the
+  agent picks up where it stopped instead of redoing the task or simply
+  restating its wrap-up summary.
+- **Then route.** Once the retry budget is spent, the step fails and routes to
+  `fallback.to`.
+- **The report survives.** The wrap-up `struct_output`'s top-level fields are
+  merged into the args the `fallback.to` step inherits, so a salvage step knows
+  what the cut-off run already reported rather than starting blind. When the
+  run ended in prose instead of a document, that prose is carried in the step's
+  failure message, which the `fallback.to` step reads as its previous-step
+  output.
+
+`retry: 0` with `on_turns_exhausted: fail` skips straight to `fallback.to`.
+
+```yaml
+- id: implement
+  agent: coder
+  maxTurns: 200
+  fallback:
+    retry: 1
+    to: salvage-implement
+    on_turns_exhausted: fail
+```
+
+Things to know before you set it:
+
+- Turn exhaustion is **never** classified as a transient provider error, so a
+  step with `resume_after` does not park and auto-resume on it. That is
+  deliberate: a resume runs in a fresh workspace, which is exactly where the
+  half-finished working tree no longer exists. The same reasoning covers a step
+  whose *retry* then died on a real rate limit — once any attempt ran out of
+  turns the step will not park, because the tree it left behind is worth more
+  than the timed retry.
+- A schema-bearing run that produced **neither** a document **nor** prose stays
+  on its existing path: a retryable failure reading `expects structured output
+  but agent produced empty response`, which gets its own re-prompt. Every other
+  exhausted shape — a document, prose only, or a step with no `output.schema`
+  at all — becomes a failure under `fail`.
+- **`to` is what makes this useful.** `on_turns_exhausted: fail` without a
+  `fallback.to` fails the step and stops the flow there; nothing is salvaged.
+  Set `to` unless you genuinely only want the exhaustion made visible.
+- **The run still reports failed.** A step that routes to `fallback.to` marks
+  the whole flow run `flow.failed`, even when the salvage step then pushes the
+  branch and opens the MR perfectly. You are trading "green while the work is
+  lost" for "red, with the work recovered" — check what keys off your job
+  status before rolling this out broadly.
+- **Budget the wall clock.** Each attempt gets a full `timeout`, so `timeout:
+  2h` with `retry: 2` means a step that reliably exhausts can occupy ~6h, and
+  each attempt costs another full turn budget. There is no global cost cap.
+- **Careful with `extends`.** `fallback` is merged as one whole key, so a step
+  that inherits a template's `fallback` and then declares its own — even just
+  to change `retry` — silently drops `on_turns_exhausted` along with everything
+  else in the template's block. Repeat the key in the overriding step.
 
 ## Shared step templates (`include` / `extends`)
 

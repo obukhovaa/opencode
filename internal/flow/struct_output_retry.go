@@ -338,6 +338,12 @@ const (
 // structOutputTurnsExhausted reports whether err is the missing-struct_output
 // failure raised because the agent ran out of turns, as opposed to ending a
 // turn without a qualifying tool call. Only the latter is worth a re-prompt.
+//
+// This is now the missingStructOutputError half of errTurnsExhausted (see
+// turns_exhausted.go), which asks the same question across both error types
+// that can carry an exhaustion. Prefer errTurnsExhausted at call sites that
+// mean "did this run have any turn budget left"; reach for this one only when
+// the missing-struct_output shape is specifically what matters.
 func structOutputTurnsExhausted(err error) bool {
 	var mse *missingStructOutputError
 	if errors.As(err, &mse) {

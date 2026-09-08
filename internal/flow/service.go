@@ -766,9 +766,35 @@ func (s *service) runStep(
 	// ONE per step — it is declared outside the fallback-attempt loop on
 	// purpose, so a step with `fallback.retry` cannot multiply it.
 	structOutputRetried := false
+	// exhausted is the LAST turn-exhaustion this step suffered, held outside
+	// the loop because lastErr is not a reliable carrier: every subsequent
+	// attempt overwrites it (a provider error, an ErrSessionBusy lost to the
+	// slot-release race, a step-timeout), and with it would go the only copy
+	// of the cut-off run's report — the thing the fallback step needs most.
+	// Holding it here also makes the two exemptions below ("did this step run
+	// out of turns at any point?") independent of how the final attempt
+	// happened to end, which is the question they actually mean to ask.
+	var exhausted *turnsExhaustedError
+	exhaustedAttempts := 0
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// The prompt a retry re-sends. Identical to the first attempt's
+		// except after a turn exhaustion, where re-sending it verbatim is
+		// actively misleading: the session tail is the forced max-turns
+		// wrap-up ("Call struct_output now, do not reply with prose") plus
+		// the document the agent dutifully produced, so the original prompt
+		// arriving unchanged reads as "do the whole task again" and invites
+		// either a redo or an immediate re-emission of the same document —
+		// which lands as a NON-exhausted success and completes the step with
+		// the same unfinished work, one attempt later. The nudge is what
+		// makes "the agent continues where it stopped" true rather than
+		// merely hoped for; cf. structOutputRetryPrompt, which exists for
+		// the same reason on the re-prompt path.
+		attemptPrompt := prompt
 		if attempt > 0 {
 			logging.Info("Retrying step", "step", step.ID, "attempt", attempt+1, "max", maxAttempts)
+			if exhausted != nil {
+				attemptPrompt = turnsExhaustedRetryPrompt(prompt)
+			}
 			if retryDelay > 0 {
 				select {
 				case <-ctx.Done():
@@ -806,7 +832,7 @@ func (s *service) runStep(
 			if step.Compact != nil && step.Compact.Threshold > 0 {
 				runOpts.CompactionThreshold = step.Compact.Threshold
 			}
-			done, runErr := agentSvc.RunWith(runCtx, sess.ID, prompt, step.MaxTurns, runOpts)
+			done, runErr := agentSvc.RunWith(runCtx, sess.ID, attemptPrompt, step.MaxTurns, runOpts)
 			if runErr != nil {
 				cancelStep()
 				lastErr = runErr
@@ -911,6 +937,46 @@ func (s *service) runStep(
 					"text_length", len(textOutput))
 			}
 
+			// Turn-budget exhaustion as a routable outcome (GENAI-296). The
+			// run produced a usable document, but the agent runtime forced it
+			// at the max-turns gate — the work behind it was cut off, not
+			// finished. Steps that opt in via fallback.on_turns_exhausted
+			// treat that as a failure so it consumes the retry budget (a
+			// retry re-enters THIS session with a fresh turn budget, same pod
+			// and same working tree) and, once spent, routes to fallback.to.
+			// Without the opt-in this stays a completion, as it always was.
+			//
+			// Placed last on purpose: an exhausted run that produced neither a
+			// document nor prose is already handled above as a
+			// missingStructOutputError, which carries its own TurnsExhausted
+			// flag and gets the re-prompt treatment. Everything that reaches
+			// here still has something to show — a document, or prose the
+			// branch above waved through with a "text fallback" warning — and
+			// turnsExhaustedOutcome carries whichever it is onto the error.
+			if te := turnsExhaustedOutcome(step, result, exhaustedAttempts+1); te != nil {
+				exhaustedAttempts++
+				exhausted = te
+				lastErr = te
+				logging.Warn("Step exhausted its turn budget with work left incomplete",
+					"step", step.ID,
+					"attempt", attempt+1,
+					"max_attempts", maxAttempts,
+					"max_turns", step.MaxTurns,
+					"has_struct_output", te.StructOutput != "")
+				// Put the retry on the wire. Without this the step stays
+				// `running` for up to (N+1) full turn budgets with no signal
+				// that anything went wrong — an orchestrator watching the
+				// SSE stream sees dead air between flow.step.started and a
+				// flow.step.failed that arrives hours later. This is the same
+				// in-flight, non-persisted transition the re-prompt paths
+				// publish; only the reason string is new.
+				if attempt+1 < maxAttempts {
+					s.publishStructOutputRetry(sess.ID, rootSessionID, f.ID, step, args, iteration,
+						retryReasonTurnsExhausted, flowStates)
+				}
+				continue
+			}
+
 			lastErr = nil
 			break
 		}
@@ -928,7 +994,20 @@ doneRetry:
 		// priorRow is the pre-write snapshot captured at the entry-time write
 		// (see its declaration in runStep); without it the park would persist
 		// the blanked row and lose the awaited build (GENAI-230).
-		if stepPostponesOnProviderError(step) && isTransientProviderError(lastErr) &&
+		//
+		// A step that ran out of turns at ANY point must not park, even when
+		// the final attempt died on a genuinely transient provider error.
+		// Parking resumes in a fresh workspace, and this step is by
+		// definition one that left a half-finished tree behind — the resume
+		// would come back to find it gone, which is the exact loss
+		// on_turns_exhausted exists to prevent. Note this asymmetry is NEW
+		// with the opt-in and not merely theoretical: under `accept` an
+		// exhausted run completed immediately and made no further provider
+		// calls, so it could never draw a 429; the retries the opt-in buys
+		// are fresh chances to draw one, on the heaviest request of the job.
+		// Better to fail and route to the salvage step, which runs here, in
+		// this process, on this pod, with the tree still on disk.
+		if stepPostponesOnProviderError(step) && exhausted == nil && isTransientProviderError(lastErr) &&
 			s.postponeStepForTransientError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, lastErr, priorRow, flowStates) {
 			return
 		}
@@ -942,15 +1021,24 @@ doneRetry:
 		// for another full Step.Timeout. On success we publish a fresh Response
 		// event so a completed step never carries an error type downstream.
 		//
-		// Turn exhaustion is excluded (structOutputTurnsExhausted): the run is
-		// out of turn budget, so a second forced turn has nothing new to spend
-		// and would just burn a request. On the inner-loop max-turns gate the
-		// agent runtime has already forced struct_output once for a
-		// schema-bearing run; the outer-cycle cap has not, but the budget
-		// argument holds for both. See AgentEvent.TurnsExhausted.
+		// Turn exhaustion is excluded (errTurnsExhausted, plus the `exhausted`
+		// carrier): the run is out of turn budget, so a second forced turn has
+		// nothing new to spend and would just burn a request. On the
+		// inner-loop max-turns gate the agent runtime has already forced
+		// struct_output once for a schema-bearing run; the outer-cycle cap has
+		// not, but the budget argument holds for both. See
+		// AgentEvent.TurnsExhausted.
+		//
+		// The `exhausted == nil` half is load-bearing beyond saving a request,
+		// and testing lastErr alone would not give it: this path sets
+		// lastErr = nil on success, so a step that exhausted on attempt 1 and
+		// then lost attempt 2 to an unrelated error (ErrSessionBusy from the
+		// slot-release race, say) would have its exhaustion forgiven by a
+		// forced wrap-up and COMPLETE — silently green, which is what the
+		// operator opted out of.
 		if !step.Interactive && step.Output != nil && step.Output.Schema != nil &&
 			ctx.Err() == nil && !isTransientProviderError(lastErr) &&
-			!structOutputTurnsExhausted(lastErr) {
+			exhausted == nil && !errTurnsExhausted(lastErr) {
 			boundedCtx, cancelBounded := context.WithTimeout(ctx, forceStructOutputMaxWait)
 			// Same contract as the interactive re-prompt above: the retrying
 			// transition and the "was a re-prompt spent" flag are set from
@@ -968,6 +1056,19 @@ doneRetry:
 				lastErr = nil
 			}
 		}
+	}
+
+	// Report the exhaustion, not whatever the last attempt tripped over on the
+	// way out. A step that exhausted on attempt 1 and then lost attempt 2 to an
+	// ErrSessionBusy or a step-timeout would otherwise be recorded as "session
+	// is currently processing another request" — which tells an operator
+	// nothing about the half-finished checkout, and drops the cut-off run's
+	// report on the floor because the merge below matches on the error type.
+	// Exhaustion is the load-bearing fact of such a step, so it wins.
+	if lastErr != nil && exhausted != nil && !errors.Is(lastErr, exhausted) {
+		logging.Warn("Reporting turn exhaustion over the final attempt's error",
+			"step", step.ID, "final_attempt_error", lastErr.Error())
+		lastErr = exhausted
 	}
 
 	// Surface the agent's own last words in the step error. The failing turn
@@ -1026,8 +1127,29 @@ doneRetry:
 		if step.Fallback != nil && step.Fallback.To != "" {
 			fallbackStep := findStep(f.Spec.Steps, step.Fallback.To)
 			if fallbackStep != nil {
+				// A turn-exhausted run reported a real document before it was
+				// cut off. Merge it into the args the fallback step inherits so
+				// a salvage step knows what the run had already done (which
+				// repos, which links, what it was mid-way through) instead of
+				// starting from the inbound args alone. Other failures have no
+				// document to merge and are unaffected.
+				//
+				// Merged into the fallback step's OWN copy, never into `args`.
+				// `args` is the map failedState above still holds by reference
+				// and already handed to the flowStates channel and the pubsub
+				// broker — mutating it here would be an unsynchronised write
+				// against a value other goroutines can be reading (a fatal
+				// `concurrent map read and map write`, not a recoverable flow
+				// error), and would retroactively change an event already on
+				// the wire to advertise args the step never actually ran with.
+				// The completion path merges BEFORE it builds its state, which
+				// is why it can share the map safely; this one cannot.
+				fallbackArgs := copyArgs(args)
+				if exhausted != nil {
+					mergeStructOutputIntoArgs(fallbackArgs, exhausted.StructOutput)
+				}
 				wg.Add(1)
-				nextSteps <- stepWork{step: *fallbackStep, args: copyArgs(args), prevStep: failedState, iteration: 1}
+				nextSteps <- stepWork{step: *fallbackStep, args: fallbackArgs, prevStep: failedState, iteration: 1}
 			}
 		}
 		return
