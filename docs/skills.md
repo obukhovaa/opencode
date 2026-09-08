@@ -581,9 +581,9 @@ python3 -c "import yaml; yaml.safe_load(open('.opencode/skills/my-skill/SKILL.md
 
 ### Variable Substitution
 
-Skills support string substitution for dynamic values in the skill content. Variable substitution (`$ARGUMENTS`, `$N`, `${SKILL_DIR}`, etc.) happens both when skills are invoked via slash commands (`/skill-name args`) and when agents load them via the skill tool.
+Skills support string substitution for dynamic values in the skill content. Variable substitution (`$ARGUMENTS`, `$N`, `${SKILL_DIR}`, etc.) happens both when skills are invoked via slash commands (`/skill:<name> args`) and when agents load them via the skill tool.
 
-> **Note:** Shell markup (`` !`command` ``) is only expanded when the skill is loaded via the agent skill tool, **not** when invoked via slash commands.
+> **Note:** In the slash-command namespace a skill is addressed with the `skill:` prefix — `/skill:fix-issue 123`. The completion popup inserts that form for you.
 
 | Variable | Description |
 |----------|-------------|
@@ -593,7 +593,9 @@ Skills support string substitution for dynamic values in the skill content. Vari
 | `${SKILL_DIR}` / `${CLAUDE_SKILL_DIR}` | Absolute path to the directory containing the skill's SKILL.md file |
 | `${SESSION_ID}` / `${CLAUDE_SESSION_ID}` | Current session ID |
 
-If `$ARGUMENTS` (or any `$N` shorthand) is not present in the content and arguments are provided, they are appended as `ARGUMENTS: <value>`.
+If `$ARGUMENTS` (or any `$N` shorthand) is not present in the content and arguments are provided, they are appended as `ARGUMENTS: <value>` — so an instruction typed after the skill name is never dropped.
+
+Selecting a skill from the `/` popup **stages** it in the editor rather than sending it: you get `/skill:<name> ` back as editable text, and can add your own instructions or a second skill before pressing Enter. Substitution runs on submit. See [Slash Commands](custom-commands.md#slash-commands) for the composition rules.
 
 **Example — fix a GitHub issue by number:**
 
@@ -612,7 +614,7 @@ Fix GitHub issue $ARGUMENTS following our coding standards.
 4. Create a commit
 ```
 
-When invoked as `/fix-issue 123`, the content becomes "Fix GitHub issue 123 following our coding standards..."
+When invoked as `/skill:fix-issue 123`, the content becomes "Fix GitHub issue 123 following our coding standards..."
 
 **Example — positional arguments:**
 
@@ -627,13 +629,13 @@ Migrate the $0 component from $1 to $2.
 Preserve all existing behavior and tests.
 ```
 
-Running `/migrate-component SearchBar React Vue` replaces `$0` with `SearchBar`, `$1` with `React`, and `$2` with `Vue`.
+Running `/skill:migrate-component SearchBar React Vue` replaces `$0` with `SearchBar`, `$1` with `React`, and `$2` with `Vue`. Arguments are split on whitespace but honour quotes, so `/skill:migrate-component "Search Bar" React Vue` keeps `Search Bar` as one argument.
 
 ### Dynamic Context Injection
 
 The `` !`command` `` syntax runs shell commands before the skill content is sent to the agent. The command output replaces the placeholder, so the agent receives actual data, not the command itself.
 
-> **Note:** Shell markup is only expanded when a skill is loaded via the agent skill tool. It is **not** expanded when a skill is invoked via slash commands (`/skill-name args`) or preloaded into an agent's system prompt.
+> **Note:** Shell markup is expanded when a skill is loaded via the agent skill tool and when it is invoked via a slash command — for a slash command, at the moment you submit the message, not when you select the skill. It is **not** expanded for skills preloaded into an agent's system prompt.
 
 **Output limits:** Each command's output is truncated at 50KB or 2,000 lines (first 500 + last 500 lines with an ellipsis). Errors and non-zero exit codes are inlined as `[command error: ...]` or `[stderr: ...]` text rather than failing the skill load.
 
@@ -981,7 +983,7 @@ Yes! Skills support argument substitution and dynamic context injection. See [Va
 
 ### What is `user-invocable`?
 
-The `user-invocable` frontmatter field controls whether a skill can be invoked via slash commands (e.g., `/my-skill args`). It defaults to `true`. Set it to `false` to make a skill available only to agents via the skill tool, hiding it from the slash command interface:
+The `user-invocable` frontmatter field controls whether a skill can be invoked via slash commands (e.g., `/skill:my-skill args`). It defaults to `true`. Set it to `false` to make a skill available only to agents via the skill tool, hiding it from the slash command interface:
 
 ```yaml
 ---

@@ -20,6 +20,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/session"
+	"github.com/opencode-ai/opencode/internal/slashcmd"
 	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
@@ -35,11 +36,18 @@ const (
 	modeShell  editorMode = "shell"
 )
 
+// SubmissionExpander turns submitted message text into the prompt to send,
+// resolving the slash invocations it contains. It is injected by the chat page,
+// which owns the command registry and the active session; the editor calls it at
+// the single expansion point in send(), before the queue/dispatch fork.
+type SubmissionExpander func(text string) (slashcmd.Expansion, error)
+
 type editorCmp struct {
 	width           int
 	height          int
 	app             *app.App
 	session         session.Session
+	expand          SubmissionExpander
 	textarea        textarea.Model
 	attachments     []message.Attachment
 	deleteMode      bool
@@ -123,6 +131,15 @@ func (m *editorCmp) openEditor() tea.Cmd {
 	if err != nil {
 		return util.ReportError(err)
 	}
+	// Seed the file with the current draft — including any staged invocations —
+	// so $EDITOR opens what the user was writing instead of a blank buffer, and
+	// so the content it returns can safely replace the input.
+	if draft := m.textarea.Value(); draft != "" {
+		if _, err := tmpfile.WriteString(draft); err != nil {
+			tmpfile.Close()
+			return util.ReportError(err)
+		}
+	}
 	tmpfile.Close()
 	c := exec.Command(editor, tmpfile.Name()) //nolint:gosec
 	c.Stdin = os.Stdin
@@ -140,13 +157,24 @@ func (m *editorCmp) openEditor() tea.Cmd {
 			return util.ReportWarn("Message is empty")
 		}
 		os.Remove(tmpfile.Name())
-		attachments := m.attachments
-		m.attachments = nil
-		return SendMsg{
-			Text:        string(content),
-			Attachments: attachments,
-		}
+		// Hand the content back through send() rather than emitting SendMsg
+		// directly: send() is the single point where slash invocations are
+		// expanded and where the queue/dispatch fork happens, and the external
+		// editor's content must go through both.
+		return editorContentMsg{Text: string(content)}
 	})
+}
+
+// stageInvocation inserts a staged invocation at the cursor. It occupies its own
+// line — a submitted invocation is only recognised at column 0 — so a newline is
+// inserted first when the cursor sits mid-line. Existing text and attachments
+// are untouched: staging is additive, so several invocations and the user's own
+// prose accumulate into one message.
+func (m *editorCmp) stageInvocation(text string) {
+	if m.textarea.Column() > 0 {
+		text = "\n" + text
+	}
+	m.textarea.InsertString(text)
 }
 
 func (m *editorCmp) Init() tea.Cmd {
@@ -166,6 +194,24 @@ func (m *editorCmp) send() tea.Cmd {
 	if value == "" {
 		return nil
 	}
+
+	// Expand slash invocations before anything else. On failure the editor is
+	// left exactly as the user typed it: a rejected submission must never eat
+	// the message.
+	expansion, err := m.expandSubmission(value)
+	if err != nil {
+		return util.ReportWarn(err.Error())
+	}
+	if expansion.Action != nil {
+		// The whole message was one action command: it performs a TUI action
+		// instead of being sent, so the input is consumed but no message is
+		// created. Attachments are deliberately left in place — there is no
+		// message to carry them, so they stay staged for the next one.
+		m.textarea.Reset()
+		return util.CmdHandler(RunActionMsg{Command: expansion.Action, Args: expansion.ActionArgs})
+	}
+	value = expansion.Prompt
+
 	attachments := m.attachments
 
 	// FIFO routing (Decision 8, task 3.1): enqueue whenever the queue is
@@ -197,6 +243,15 @@ func (m *editorCmp) send() tea.Cmd {
 			Attachments: attachments,
 		}),
 	)
+}
+
+// expandSubmission applies the injected expander. A nil expander (a bare editor
+// in a test or a non-chat host) passes the text through untouched.
+func (m *editorCmp) expandSubmission(text string) (slashcmd.Expansion, error) {
+	if m.expand == nil {
+		return slashcmd.Expansion{Prompt: text}, nil
+	}
+	return m.expand(text)
 }
 
 func (m *editorCmp) enterShellMode() {
@@ -312,6 +367,15 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		modifiedValue := strings.Replace(existingValue, msg.SearchString, "", 1)
 		m.textarea.SetValue(modifiedValue)
 		return m, nil
+	case dialog.StageInvocationMsg:
+		m.stageInvocation(msg.Text)
+		return m, nil
+	case editorContentMsg:
+		// Content from the external $EDITOR: replace the input and submit it
+		// through the normal path so it is expanded and routed like any other
+		// submission.
+		m.textarea.SetValue(msg.Text)
+		return m, m.send()
 	case SessionClearedMsg:
 		m.session = session.Session{}
 		if m.mode == modeShell {
@@ -577,7 +641,7 @@ func CreateTextArea(existing *textarea.Model) textarea.Model {
 	return ta
 }
 
-func NewEditorCmp(app *app.App) tea.Model {
+func NewEditorCmp(app *app.App, expand SubmissionExpander) tea.Model {
 	ta := CreateTextArea(nil)
 	var vimH *vim.Handler
 	if config.Get().TUI.VimMode {
@@ -585,6 +649,7 @@ func NewEditorCmp(app *app.App) tea.Model {
 	}
 	return &editorCmp{
 		app:        app,
+		expand:     expand,
 		textarea:   ta,
 		mode:       modeNormal,
 		vimHandler: vimH,

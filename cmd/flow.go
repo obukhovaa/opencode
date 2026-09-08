@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -18,12 +17,9 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/session"
-	"github.com/opencode-ai/opencode/internal/skill"
 	"github.com/opencode-ai/opencode/internal/slashcmd"
 	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 )
-
-var namedArgPattern = regexp.MustCompile(`\$([A-Z][A-Z0-9_]*)`)
 
 func runNonInteractive(ctx context.Context, a *app.App, prompt string, outputFormat format.OutputFormat, quiet bool) error {
 	logging.Info("Running in non-interactive mode")
@@ -271,54 +267,20 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 	return nil
 }
 
+// resolveSlashPrompt expands the slash invocations in a non-interactive prompt.
+// It shares the TUI's expander, so a `-p` / `--prompt` value may carry several
+// invocations mixed with prose; text that resolves to nothing is returned
+// unchanged. TUI-only commands are rejected here rather than run.
 func resolveSlashPrompt(prompt string, sessionID string) (string, error) {
-	parsed := slashcmd.Parse(prompt)
-	if parsed == nil {
-		return prompt, nil
-	}
-
-	commands := buildCLICommands()
-	skills := skill.All()
-
-	action, err := slashcmd.Resolve(parsed, commands, skills, false)
+	expansion, err := slashcmd.Expand(prompt, dialog.CommandRegistry(), slashcmd.ExpandOptions{
+		SessionID:   sessionID,
+		Interactive: false,
+		ShellExpand: func(content string) string {
+			return format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
+		},
+	})
 	if err != nil {
 		return "", err
 	}
-
-	switch action.Type {
-	case slashcmd.ActionCommand:
-		content := action.Command.Content
-		if content == "" {
-			return prompt, nil
-		}
-		content = slashcmd.SubstituteArgs(content, action.Args)
-		// Substitute any remaining named placeholders with empty string
-		content = namedArgPattern.ReplaceAllString(content, "")
-		// Expand !`cmd` shell markup
-		content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
-		return content, nil
-
-	case slashcmd.ActionSkill:
-		content := slashcmd.BuildPrompt(action, sessionID)
-		content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
-		return content, nil
-
-	default:
-		return prompt, nil
-	}
-}
-
-func buildCLICommands() []slashcmd.CommandInfo {
-	commands := slashcmd.BuiltinCommands()
-
-	customCommands, err := dialog.LoadCustomCommands()
-	if err != nil {
-		logging.Warn("Failed to load custom commands", "error", err)
-	} else {
-		for _, cmd := range customCommands {
-			commands = append(commands, cmd.CommandInfo)
-		}
-	}
-
-	return commands
+	return expansion.Prompt, nil
 }

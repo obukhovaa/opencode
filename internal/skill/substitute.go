@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // SubstituteParams holds context for skill content substitution.
@@ -13,6 +14,12 @@ type SubstituteParams struct {
 	Args      string
 	SkillDir  string
 	SessionID string
+	// SuppressArgsAppend disables step 6 (appending "ARGUMENTS: <value>" when
+	// the content declared no placeholder). Callers set it when the arguments
+	// were already consumed by a placeholder the caller substituted itself —
+	// named $FOO placeholders in custom commands — so the values are not
+	// restated at the end of the prompt.
+	SuppressArgsAppend bool
 }
 
 var (
@@ -71,7 +78,7 @@ func SubstituteContent(content string, params SubstituteParams) string {
 	content = strings.ReplaceAll(content, "${SESSION_ID}", params.SessionID)
 	content = strings.ReplaceAll(content, "${CLAUDE_SESSION_ID}", params.SessionID)
 
-	positional := splitArgs(params.Args)
+	positional := SplitArgs(params.Args)
 
 	// 3. $ARGUMENTS[N]
 	content = indexedArgPattern.ReplaceAllStringFunc(content, func(match string) string {
@@ -103,18 +110,121 @@ func SubstituteContent(content string, params SubstituteParams) string {
 	})
 
 	// 6. Append if $ARGUMENTS was not present
-	if !hadArguments && params.Args != "" {
+	if !hadArguments && !params.SuppressArgsAppend && params.Args != "" {
 		content = fmt.Sprintf("%s\n\nARGUMENTS: %s", content, params.Args)
 	}
 
 	return content
 }
 
-// splitArgs splits an argument string into positional arguments.
-// Handles simple space-separated values.
-func splitArgs(args string) []string {
+// SplitArgs splits an argument string into positional arguments, honouring
+// single and double quotes so a value containing spaces stays one argument.
+// Inside double quotes a backslash escapes the next character; single quotes are
+// literal throughout. An unbalanced quote is a parse failure and degrades to a
+// plain whitespace split rather than erroring — malformed input must still
+// produce usable positionals.
+//
+// SplitArgs is the inverse of QuoteArg: SplitArgs(QuoteArgs(values))
+// returns values unchanged.
+func SplitArgs(args string) []string {
 	if args == "" {
 		return nil
 	}
-	return strings.Fields(args)
+
+	var (
+		out     []string
+		cur     strings.Builder
+		started bool // cur holds a token, even if it is the empty string ("")
+	)
+
+	flush := func() {
+		if started {
+			out = append(out, cur.String())
+			cur.Reset()
+			started = false
+		}
+	}
+
+	runes := []rune(args)
+	for i := 0; i < len(runes); i++ {
+		c := runes[i]
+		switch {
+		case c == '"':
+			started = true
+			i++
+			closed := false
+			for ; i < len(runes); i++ {
+				if runes[i] == '\\' && i+1 < len(runes) {
+					i++
+					cur.WriteRune(runes[i])
+					continue
+				}
+				if runes[i] == '"' {
+					closed = true
+					break
+				}
+				cur.WriteRune(runes[i])
+			}
+			if !closed {
+				return strings.Fields(args)
+			}
+		case c == '\'':
+			started = true
+			i++
+			closed := false
+			for ; i < len(runes); i++ {
+				if runes[i] == '\'' {
+					closed = true
+					break
+				}
+				cur.WriteRune(runes[i])
+			}
+			if !closed {
+				return strings.Fields(args)
+			}
+		case unicode.IsSpace(c):
+			flush()
+		default:
+			started = true
+			cur.WriteRune(c)
+		}
+	}
+	flush()
+
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// QuoteArg renders one positional value so that SplitArgs recovers it verbatim.
+// Values that are empty or carry whitespace, a quote, or a backslash are wrapped
+// in double quotes with the escapable characters escaped; anything else is
+// returned unchanged so ordinary arguments stay readable in the editor.
+func QuoteArg(value string) string {
+	if value == "" {
+		return `""`
+	}
+	if !strings.ContainsAny(value, " \t\n\r\"'\\") {
+		return value
+	}
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range value {
+		if r == '"' || r == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// QuoteArgs joins values into an argument string that SplitArgs round-trips.
+func QuoteArgs(values []string) string {
+	quoted := make([]string, len(values))
+	for i, v := range values {
+		quoted[i] = QuoteArg(v)
+	}
+	return strings.Join(quoted, " ")
 }

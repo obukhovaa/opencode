@@ -3,14 +3,9 @@ package slashcmd
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
-	"regexp"
-	"strings"
 
 	"github.com/opencode-ai/opencode/internal/skill"
 )
-
-var namedArgPattern = regexp.MustCompile(`\$([A-Z][A-Z0-9_]*)`)
 
 type ActionType int
 
@@ -91,41 +86,4 @@ func resolveSkill(parsed *ParsedCommand, skills []skill.Info) (*ResolvedAction, 
 		}
 	}
 	return &ResolvedAction{Type: ActionNotFound}, nil
-}
-
-func BuildPrompt(action *ResolvedAction, sessionID string) string {
-	switch action.Type {
-	case ActionCommand:
-		return ""
-	case ActionSkill:
-		baseDir := filepath.Dir(action.Skill.Location)
-		content := skill.SubstituteContent(action.Skill.Content, skill.SubstituteParams{
-			Args:      action.Args,
-			SkillDir:  baseDir,
-			SessionID: sessionID,
-		})
-		return fmt.Sprintf("<skill_content name=%q>\n%s\n</skill_content>", action.Skill.Name, content)
-	default:
-		return ""
-	}
-}
-
-func SubstituteArgs(content string, args string) string {
-	return strings.ReplaceAll(content, "$ARGUMENTS", args)
-}
-
-// HasOnlyArgumentsPlaceholder checks if the content has only $ARGUMENTS as the
-// sole named placeholder (no other $FOO, $BAR, etc). Returns false if there
-// are multiple different named placeholders.
-func HasOnlyArgumentsPlaceholder(content string) bool {
-	matches := namedArgPattern.FindAllStringSubmatch(content, -1)
-	if len(matches) == 0 {
-		return false
-	}
-	for _, m := range matches {
-		if m[1] != "ARGUMENTS" {
-			return false
-		}
-	}
-	return true
 }

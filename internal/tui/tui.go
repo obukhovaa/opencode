@@ -519,10 +519,10 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case dialog.CommandRunCustomMsg:
-		if msg.CommandID == "loop" {
+		switch msg.CommandID {
+		case "loop":
 			return a, a.handleLoopCommand(msg.Args)
-		}
-		if msg.CommandID == "rename" {
+		case "rename":
 			return a, a.handleRenameCommand(msg.Args)
 		}
 
@@ -706,24 +706,34 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case dialog.ShowMultiArgumentsDialogMsg:
 		// Show multi-arguments dialog
-		a.multiArgumentsDialog = dialog.NewMultiArgumentsDialogCmp(msg.CommandID, msg.Content, msg.ArgNames, msg.ArgHints)
+		a.multiArgumentsDialog = dialog.NewMultiArgumentsDialogCmp(msg.CommandID, msg.Content, msg.ArgNames, msg.ArgHints, msg.Mode)
 		a.showMultiArgumentsDialog = true
 		return a, a.multiArgumentsDialog.Init()
 
 	case dialog.CloseMultiArgumentsDialogMsg:
 		// Close multi-arguments dialog
 		a.showMultiArgumentsDialog = false
+		if !msg.Submit {
+			return a, nil
+		}
 
-		// If submitted, forward raw content and args to the command handler
-		// which performs substitution and shell markup expansion
-		if msg.Submit {
+		// Action commands that collect their arguments through this dialog
+		// (/rename, /loop) read them by name and act immediately. The check is
+		// derived from the command table rather than a list kept here, so a new
+		// argument-taking action command routes correctly without a second
+		// place to update.
+		if cmd, ok := a.findCommand(msg.CommandID); ok && cmd.IsAction() {
 			return a, util.CmdHandler(dialog.CommandRunCustomMsg{
-				Content:   msg.Content,
 				Args:      msg.Args,
 				CommandID: msg.CommandID,
 			})
 		}
-		return a, nil
+
+		// Everything else is a prompt invocation: stage it as editable text so
+		// the user can add instructions or another invocation before sending.
+		return a, util.CmdHandler(dialog.StageInvocationMsg{
+			Text: dialog.StagedInvocation(msg.CommandID, dialog.StagedArgs(msg.ArgNames, msg.Values, msg.Mode)),
+		})
 
 	case tea.KeyPressMsg:
 		// If multi-arguments dialog is open, let it handle the key press first
@@ -1401,15 +1411,6 @@ func buildCommands() []dialog.Command {
 
 	// TUI-specific handlers keyed by command ID
 	handlers := map[string]func(dialog.Command) tea.Cmd{
-		"init": func(cmd dialog.Command) tea.Cmd {
-			return util.CmdHandler(chat.SendMsg{Text: cmd.Content})
-		},
-		"review": func(cmd dialog.Command) tea.Cmd {
-			return dialog.ParameterizedCommandHandler(cmd.Content, &cmd)
-		},
-		"commit": func(cmd dialog.Command) tea.Cmd {
-			return util.CmdHandler(chat.SendMsg{Text: cmd.Content})
-		},
 		"new":   newSession,
 		"reset": newSession,
 		"compact": func(_ dialog.Command) tea.Cmd {
@@ -1454,8 +1455,13 @@ func buildCommands() []dialog.Command {
 
 	for _, b := range builtins {
 		cmd := dialog.Command{CommandInfo: b}
-		if h, ok := handlers[b.ID]; ok {
+		switch h, ok := handlers[b.ID]; {
+		case ok:
 			cmd.Handler = h
+		case !b.IsAction():
+			// Every prompt command shares one handler: stage the invocation (or
+			// collect its arguments first) instead of sending a message.
+			cmd.Handler = dialog.StageCommandHandler
 		}
 		commands = append(commands, cmd)
 	}

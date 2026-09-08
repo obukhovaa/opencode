@@ -12,14 +12,32 @@ import (
 	"github.com/opencode-ai/opencode/internal/lsp/install"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/session"
+	"github.com/opencode-ai/opencode/internal/slashcmd"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
 	"github.com/opencode-ai/opencode/internal/version"
 )
 
+// SendMsg carries a submission that is ready to go to the agent. Its Text is
+// already expanded — the editor resolves slash invocations in send() before
+// emitting this — so receivers must not re-scan it for commands.
 type SendMsg struct {
 	Text        string
 	Attachments []message.Attachment
+}
+
+// RunActionMsg is emitted instead of SendMsg when the submitted message was
+// exactly one action command. The chat page maps the command to its TUI handler
+// and runs it; nothing is sent to the agent.
+type RunActionMsg struct {
+	Command *slashcmd.CommandInfo
+	Args    string
+}
+
+// editorContentMsg carries text captured from the external $EDITOR back into the
+// editor component so it is submitted through send() like any typed message.
+type editorContentMsg struct {
+	Text string
 }
 
 type SessionSelectedMsg = session.Session

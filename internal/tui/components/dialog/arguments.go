@@ -36,12 +36,29 @@ func (k argumentsDialogKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{k.ShortHelp()}
 }
 
+// ArgsMode says how the values collected by the argument dialog become the
+// argument string of a staged invocation.
+type ArgsMode int
+
+const (
+	// ArgsModePositional quotes each value and joins them with spaces so the
+	// expander recovers them as individual positional arguments. Used for
+	// $0/$ARGUMENTS[N] placeholders and for named $FOO placeholders, which bind
+	// positionally by declaration order.
+	ArgsModePositional ArgsMode = iota
+	// ArgsModeWhole writes the single collected value verbatim: the content
+	// declares only $ARGUMENTS, which binds the whole unsplit argument string,
+	// so quoting it would put the quotes into the prompt.
+	ArgsModeWhole
+)
+
 // ShowMultiArgumentsDialogMsg is a message that is sent to show the multi-arguments dialog.
 type ShowMultiArgumentsDialogMsg struct {
 	CommandID string
 	Content   string
 	ArgNames  []string
 	ArgHints  map[string]string // Optional hints for argument placeholders
+	Mode      ArgsMode
 }
 
 // CloseMultiArgumentsDialogMsg is a message that is sent when the multi-arguments dialog is closed.
@@ -50,6 +67,19 @@ type CloseMultiArgumentsDialogMsg struct {
 	CommandID string
 	Content   string
 	Args      map[string]string
+	// ArgNames and Values are the collected fields in dialog order. Args is the
+	// same data keyed by name, kept for the action commands (/loop, /rename)
+	// that read their arguments by name; staging needs the order.
+	ArgNames []string
+	Values   []string
+	Mode     ArgsMode
+}
+
+// StageInvocationMsg asks the editor to insert Text at the cursor. It is how a
+// resolved slash command reaches the user's message: staged as editable text,
+// not sent.
+type StageInvocationMsg struct {
+	Text string
 }
 
 // MultiArgumentsDialogCmp is a component that asks the user for multiple command arguments.
@@ -61,10 +91,11 @@ type MultiArgumentsDialogCmp struct {
 	commandID     string
 	content       string
 	argNames      []string
+	mode          ArgsMode
 }
 
 // NewMultiArgumentsDialogCmp creates a new MultiArgumentsDialogCmp.
-func NewMultiArgumentsDialogCmp(commandID, content string, argNames []string, argHints map[string]string) MultiArgumentsDialogCmp {
+func NewMultiArgumentsDialogCmp(commandID, content string, argNames []string, argHints map[string]string, mode ArgsMode) MultiArgumentsDialogCmp {
 	t := theme.CurrentTheme()
 	inputs := make([]textinput.Model, len(argNames))
 
@@ -105,6 +136,7 @@ func NewMultiArgumentsDialogCmp(commandID, content string, argNames []string, ar
 		commandID:  commandID,
 		content:    content,
 		argNames:   argNames,
+		mode:       mode,
 		focusIndex: 0,
 	}
 }
@@ -141,15 +173,20 @@ func (m MultiArgumentsDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
 			// If we're on the last input, submit the form
 			if m.focusIndex == len(m.inputs)-1 {
-				args := make(map[string]string)
+				args := make(map[string]string, len(m.argNames))
+				values := make([]string, len(m.argNames))
 				for i, name := range m.argNames {
 					args[name] = m.inputs[i].Value()
+					values[i] = m.inputs[i].Value()
 				}
 				return m, util.CmdHandler(CloseMultiArgumentsDialogMsg{
 					Submit:    true,
 					CommandID: m.commandID,
 					Content:   m.content,
 					Args:      args,
+					ArgNames:  m.argNames,
+					Values:    values,
+					Mode:      m.mode,
 				})
 			}
 			// Otherwise, move to the next input
