@@ -634,7 +634,7 @@ func NewChatPage(app *app.App, commands []dialog.Command) tea.Model {
 	}
 
 	p.editor = layout.NewContainer(
-		chat.NewEditorCmp(app, p.expandSubmission),
+		chat.NewEditorCmp(app, p.expandSubmission, p.scanInvocations),
 		layout.WithBorder(true, false, false, false),
 	)
 	p.layout = layout.NewSplitPane(
@@ -652,21 +652,31 @@ func NewChatPage(app *app.App, commands []dialog.Command) tea.Model {
 // queue carries the real prompt rather than the literal `/command` text, and no
 // text is ever expanded twice.
 func (p *chatPage) expandSubmission(text string) (slashcmd.Expansion, error) {
-	infos := make([]slashcmd.CommandInfo, len(p.commands))
-	for i, c := range p.commands {
-		infos[i] = c.CommandInfo
-	}
-
-	return slashcmd.Expand(text, slashcmd.Registry{
-		Commands: infos,
-		Skills:   skill.All(),
-	}, slashcmd.ExpandOptions{
+	return slashcmd.Expand(text, p.slashRegistry(), slashcmd.ExpandOptions{
 		SessionID:   p.session.ID,
 		Interactive: true,
 		ShellExpand: func(content string) string {
 			return format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
 		},
 	})
+}
+
+// scanInvocations is the editor's InvocationScanner, backing the recognition
+// hint above the input. It resolves against the same registry as
+// expandSubmission, so what the hint promises is what submitting delivers.
+func (p *chatPage) scanInvocations(text string) []slashcmd.Invocation {
+	return slashcmd.Scan(text, p.slashRegistry())
+}
+
+// slashRegistry is the set of commands and skills this page can resolve: its
+// registered commands (so the hint and the expansion can only ever offer what
+// the page can actually run) plus every discovered skill.
+func (p *chatPage) slashRegistry() slashcmd.Registry {
+	infos := make([]slashcmd.CommandInfo, len(p.commands))
+	for i, c := range p.commands {
+		infos[i] = c.CommandInfo
+	}
+	return slashcmd.Registry{Commands: infos, Skills: skill.All()}
 }
 
 // actionCommand resolves an expanded action command to the TUI command whose

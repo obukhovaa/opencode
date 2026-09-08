@@ -42,12 +42,27 @@ const (
 // the single expansion point in send(), before the queue/dispatch fork.
 type SubmissionExpander func(text string) (slashcmd.Expansion, error)
 
+// InvocationScanner reports the slash invocations the current draft contains.
+// It backs the recognition hint drawn above the input, so it runs on every
+// keystroke — unlike SubmissionExpander it must not substitute arguments or run
+// shell markup.
+type InvocationScanner func(text string) []slashcmd.Invocation
+
+// recognizedInvocation is one chip in the recognition hint.
+type recognizedInvocation struct {
+	label  string
+	action bool // performs a TUI action rather than expanding into the message
+}
+
 type editorCmp struct {
 	width           int
 	height          int
 	app             *app.App
 	session         session.Session
 	expand          SubmissionExpander
+	scan            InvocationScanner
+	recognized      []recognizedInvocation
+	scannedDraft    string
 	textarea        textarea.Model
 	attachments     []message.Attachment
 	deleteMode      bool
@@ -109,16 +124,59 @@ func (m *editorCmp) promptColumnWidth() int {
 	return lipgloss.Width(style.Render(">"))
 }
 
-// syncTextareaHeight sets the textarea height based on attachment presence.
-// When attachments are shown, one row is reserved for the attachment bar.
-// This MUST be called from SetSize and from every Update branch that changes m.attachments,
-// never from View.
+// hasAffordanceRow reports whether the single row above the textarea is shown.
+// Attachments and the slash-invocation recognition hint share that one row, so
+// the reservation is 0 or 1 regardless of how many affordances are active.
+func (m *editorCmp) hasAffordanceRow() bool {
+	return len(m.attachments) > 0 || len(m.recognized) > 0
+}
+
+// syncTextareaHeight sets the textarea height based on affordance-row presence.
+// When the row is shown, one line is reserved for it.
+// This MUST be called from SetSize and from every Update branch that changes the
+// affordance row (attachments or recognized invocations), never from View.
 func (m *editorCmp) syncTextareaHeight() {
-	if len(m.attachments) > 0 {
+	if m.hasAffordanceRow() {
 		m.textarea.SetHeight(m.height - 1)
 	} else {
 		m.textarea.SetHeight(m.height)
 	}
+}
+
+// refreshRecognition recomputes the recognition hint when the draft has changed.
+// Called from the Update wrapper so every path that mutates the textarea is
+// covered by one site; never from View, per the chat-editor-layout invariant
+// that height is a function of state computed in Update.
+func (m *editorCmp) refreshRecognition() {
+	if m.scan == nil {
+		return
+	}
+	draft := m.textarea.Value()
+	if draft == m.scannedDraft {
+		return
+	}
+	m.scannedDraft = draft
+
+	var recognized []recognizedInvocation
+	// An invocation must start at column 0, so a draft with no line beginning
+	// in a slash cannot contain one. Checking that first keeps ordinary typing
+	// off the registry-building path entirely.
+	if m.mode == modeNormal && (strings.HasPrefix(draft, "/") || strings.Contains(draft, "\n/")) {
+		for _, inv := range m.scan(draft) {
+			switch inv.Kind {
+			case slashcmd.KindPrompt:
+				recognized = append(recognized, recognizedInvocation{label: "/" + inv.Name})
+			case slashcmd.KindAction:
+				recognized = append(recognized, recognizedInvocation{label: "/" + inv.Name, action: true})
+			}
+		}
+	}
+
+	if len(recognized) == 0 && len(m.recognized) == 0 {
+		return
+	}
+	m.recognized = recognized
+	m.syncTextareaHeight()
 }
 
 func (m *editorCmp) openEditor() tea.Cmd {
@@ -343,7 +401,16 @@ func (m *editorCmp) VimMode() string {
 	return ""
 }
 
+// Update wraps update so the recognition hint is refreshed after every message,
+// whichever branch mutated the textarea. Each branch of update returns m itself,
+// so the wrapper can act on the same instance before returning it.
 func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	model, cmd := m.update(msg)
+	m.refreshRecognition()
+	return model, cmd
+}
+
+func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case ToggleVimModeMsg:
@@ -554,14 +621,100 @@ func (m *editorCmp) View() tea.View {
 		return tea.NewView(spinnerText)
 	}
 
-	if len(m.attachments) == 0 {
+	if !m.hasAffordanceRow() {
 		return tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top, style.Render(promptChar), m.textarea.View()))
 	}
 	return tea.NewView(lipgloss.JoinVertical(lipgloss.Top,
-		m.attachmentsContent(),
+		m.affordanceRow(),
 		lipgloss.JoinHorizontal(lipgloss.Top, style.Render(promptChar),
 			m.textarea.View()),
 	))
+}
+
+// affordanceRow renders the single row above the input: attachment chips first,
+// then one chip per recognized slash invocation, within the container width.
+func (m *editorCmp) affordanceRow() string {
+	attachments := m.attachmentsContent()
+	hint := m.recognitionContent(m.width - lipgloss.Width(attachments))
+	switch {
+	case hint == "":
+		return m.padRow(attachments)
+	case attachments == "":
+		return m.padRow(hint)
+	}
+	return m.padRow(lipgloss.JoinHorizontal(lipgloss.Top, attachments, hint))
+}
+
+// padRow fills the affordance row out to the container width with the theme
+// background. JoinVertical pads shorter lines with unstyled cells, which render
+// as a black gap beside the themed editor (see the background-gap pitfall in
+// CLAUDE.md); padding the row itself avoids that without forcing a background
+// over the textarea's own cursor rendering.
+func (m *editorCmp) padRow(row string) string {
+	if m.width <= 0 {
+		return row
+	}
+	t := theme.CurrentTheme()
+	return styles.BaseStyle().
+		Width(m.width).
+		Background(t.Background()).
+		Render(row)
+}
+
+// recognitionContent renders one chip per invocation the draft will actually
+// expand or run. An unrecognized `/token` produces no chip, which is the whole
+// point: the absence of a chip is how the user learns that what they typed will
+// be sent as plain text rather than resolved.
+//
+// Chips are dropped rather than wrapped once they exceed budget columns — the
+// row is one line, and the editor's no-overflow contract binds it. A dropped
+// chip is accounted for by a trailing count so the hint never under-reports.
+func (m *editorCmp) recognitionContent(budget int) string {
+	if len(m.recognized) == 0 || budget <= 0 {
+		return ""
+	}
+
+	t := theme.CurrentTheme()
+	base := styles.BaseStyle().MarginLeft(1).Background(t.Background())
+	expands := base.Foreground(t.Success())
+	acts := base.Foreground(t.Info())
+	overflow := base.Foreground(t.TextMuted())
+
+	var (
+		chips []string
+		used  int
+	)
+	for i, inv := range m.recognized {
+		style := expands
+		if inv.action {
+			style = acts
+		}
+		chip := style.Render(fmt.Sprintf("%s %s", styles.SkillIcon, inv.label))
+		width := lipgloss.Width(chip)
+
+		// Reserve room for the "+N" marker whenever chips remain after this one.
+		remaining := len(m.recognized) - i - 1
+		reserve := 0
+		if remaining > 0 {
+			reserve = lipgloss.Width(overflow.Render(fmt.Sprintf("+%d", remaining)))
+		}
+		if used+width+reserve > budget {
+			break
+		}
+		chips = append(chips, chip)
+		used += width
+	}
+
+	if dropped := len(m.recognized) - len(chips); dropped > 0 {
+		marker := overflow.Render(fmt.Sprintf("+%d", dropped))
+		if used+lipgloss.Width(marker) <= budget {
+			chips = append(chips, marker)
+		}
+	}
+	if len(chips) == 0 {
+		return ""
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, chips...)
 }
 
 func (m *editorCmp) SetSize(width, height int) tea.Cmd {
@@ -641,7 +794,7 @@ func CreateTextArea(existing *textarea.Model) textarea.Model {
 	return ta
 }
 
-func NewEditorCmp(app *app.App, expand SubmissionExpander) tea.Model {
+func NewEditorCmp(app *app.App, expand SubmissionExpander, scan InvocationScanner) tea.Model {
 	ta := CreateTextArea(nil)
 	var vimH *vim.Handler
 	if config.Get().TUI.VimMode {
@@ -650,6 +803,7 @@ func NewEditorCmp(app *app.App, expand SubmissionExpander) tea.Model {
 	return &editorCmp{
 		app:        app,
 		expand:     expand,
+		scan:       scan,
 		textarea:   ta,
 		mode:       modeNormal,
 		vimHandler: vimH,

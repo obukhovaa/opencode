@@ -76,6 +76,26 @@ becomes one message: the `flow-creator` skill content, then your sentence, then 
 
 **Action commands** (`/new`, `/reset`, `/compact`, `/agents`, `/auto-approve`, `/vim`, `/sessions-cleanup`, `/rename`, `/loop`, `/crons`) do something in the app rather than adding text, so they still run the moment you select them and cannot be combined with other content. Submitting `/new and then look at the diff` is rejected with a warning instead of clearing your session and dropping the sentence.
 
+### Seeing what will be recognized
+
+While you type, a row above the input shows one chip per invocation the draft
+actually resolves:
+
+```
+ ⚡ /skill:flow-creator  ⚡ /review
+> /skill:flow-creator build a review flow
+  make it run on MR events only
+  /review HEAD~3
+```
+
+Chips for commands and skills that will be **expanded into the message** are shown
+in the success colour; an **action command** that will run instead is shown in the
+info colour. A `/…` line that resolves to nothing produces no chip — so if you type
+`/flow-creator` where the namespace needs `/skill:flow-creator`, the missing chip
+tells you before you press Enter that the line will be sent as plain text. When the
+window is too narrow for every chip, the ones that fit are shown followed by a count
+of the rest (`+2`).
+
 ### What counts as an invocation
 
 On submit, a line is expanded only when **all** of the following hold:

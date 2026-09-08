@@ -735,6 +735,18 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Text: dialog.StagedInvocation(msg.CommandID, dialog.StagedArgs(msg.ArgNames, msg.Values, msg.Mode)),
 		})
 
+	case tea.PasteMsg, tea.PasteStartMsg, tea.PasteEndMsg:
+		// Bracketed paste is not a key press, so without this it would fall
+		// through to the page and land in the chat editor underneath the modal
+		// — the text arriving somewhere the user cannot see it while a dialog
+		// holds focus. The argument dialog is routed here because it is not
+		// part of the overlay block below.
+		if a.showMultiArgumentsDialog {
+			args, pasteCmd := a.multiArgumentsDialog.Update(msg)
+			a.multiArgumentsDialog = args.(dialog.MultiArgumentsDialogCmp)
+			return a, pasteCmd
+		}
+
 	case tea.KeyPressMsg:
 		// If multi-arguments dialog is open, let it handle the key press first
 		if a.showMultiArgumentsDialog {
@@ -941,8 +953,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		f, filepickerCmd := a.filepicker.Update(msg)
 		a.filepicker = f.(dialog.FilepickerCmp)
 		cmds = append(cmds, filepickerCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -951,8 +963,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		q, quitCmd := a.quit.Update(msg)
 		a.quit = q.(dialog.QuitDialog)
 		cmds = append(cmds, quitCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -960,8 +972,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, permissionsCmd := a.permissions.Update(msg)
 		a.permissions = d.(dialog.PermissionDialogCmp)
 		cmds = append(cmds, permissionsCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -970,8 +982,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, questionCmd := a.questionDialog.Update(msg)
 		a.questionDialog = d.(dialog.QuestionDialogCmp)
 		cmds = append(cmds, questionCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -980,8 +992,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, sessionCmd := a.sessionDialog.Update(msg)
 		a.sessionDialog = d.(dialog.SessionDialog)
 		cmds = append(cmds, sessionCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -990,8 +1002,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, cmd := a.deleteSessionDialog.Update(msg)
 		a.deleteSessionDialog = d.(dialog.SessionDialog)
 		cmds = append(cmds, cmd)
-		// block other tea.KeyPressMsgs
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// block other input messages
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -1000,8 +1012,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, commandCmd := a.commandDialog.Update(msg)
 		a.commandDialog = d.(dialog.CommandDialog)
 		cmds = append(cmds, commandCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -1010,8 +1022,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, modelCmd := a.modelDialog.Update(msg)
 		a.modelDialog = d.(dialog.ModelDialog)
 		cmds = append(cmds, modelCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -1020,8 +1032,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, initCmd := a.initDialog.Update(msg)
 		a.initDialog = d.(dialog.InitDialogCmp)
 		cmds = append(cmds, initCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -1030,8 +1042,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, themeCmd := a.themeDialog.Update(msg)
 		a.themeDialog = d.(dialog.ThemeDialog)
 		cmds = append(cmds, themeCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -1040,7 +1052,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, cleanupCmd := a.sessionsCleanupDialog.Update(msg)
 		a.sessionsCleanupDialog = d.(dialog.SessionsCleanupDialog)
 		cmds = append(cmds, cleanupCmd)
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -1049,7 +1061,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, missedCmd := a.missedCronDialog.Update(msg)
 		a.missedCronDialog = d.(dialog.MissedCronDialog)
 		cmds = append(cmds, missedCmd)
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -1058,7 +1070,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, queueCmd := a.queueDialog.Update(msg)
 		a.queueDialog = d.(dialog.QueueDialog)
 		cmds = append(cmds, queueCmd)
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -1174,6 +1186,19 @@ func (a *appModel) dismissAllDialogs() {
 // RegisterCommand adds a command to the command dialog
 func (a *appModel) RegisterCommand(cmd dialog.Command) {
 	a.commands = append(a.commands, cmd)
+}
+
+// consumesInput reports whether msg is user input that a focused overlay must
+// consume rather than pass down to the page beneath it. Key presses are the
+// obvious case; bracketed paste is the one that bites, because it arrives as
+// tea.PasteMsg and a modal that ignores it lets the pasted text appear in the
+// chat editor behind the dialog.
+func consumesInput(msg tea.Msg) bool {
+	switch msg.(type) {
+	case tea.KeyPressMsg, tea.PasteMsg, tea.PasteStartMsg, tea.PasteEndMsg:
+		return true
+	}
+	return false
 }
 
 func (a *appModel) findCommand(id string) (dialog.Command, bool) {
