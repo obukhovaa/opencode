@@ -38,11 +38,32 @@ is a load failure rather than a silently-ignored setting.
 ### Requirement: `fail` makes turn exhaustion consume the retry budget on the same session
 
 For a step with `on_turns_exhausted: fail`, a run that ended on its turn budget
-(`AgentEvent.TurnsExhausted`) while producing a usable `struct_output` SHALL be
-treated as a step failure by the attempt loop, consuming one `fallback.retry`
-attempt. Each retry attempt SHALL re-run the step against the SAME session id
-and the same per-step turn budget, so the agent continues on the same pod and
-the same working tree with a fresh budget rather than starting over.
+(`AgentEvent.TurnsExhausted`) SHALL be treated as a step failure by the attempt
+loop, consuming one `fallback.retry` attempt. This SHALL NOT require the run to
+have produced a usable `struct_output`: a run that ended in prose only, and a
+run on a step declaring no `output.schema` at all, each complete the step
+silently today and so are equally in scope. Only the schema-bearing run that
+produced neither a document nor prose is excluded, being already a retryable
+failure on its own path.
+
+Each retry attempt SHALL re-run the step against the SAME session id and the
+same per-step turn budget, so the agent continues on the same pod and the same
+working tree with a fresh budget rather than starting over.
+
+A retry that follows a turn exhaustion SHALL be prompted as a continuation
+rather than re-sent the step's original prompt verbatim. The session it lands
+in ends with the runtime's forced max-turns instruction and the wrap-up
+document the agent produced in reply, so an unchanged prompt invites the agent
+to restate that document — which returns a non-exhausted result and completes
+the step carrying the same unfinished work. The continuation prompt SHALL
+direct the agent to inspect the working tree rather than trust its summary,
+finish only what remains, and avoid duplicating commits, branches or merge
+requests; it SHALL carry the original prompt for the task's goal and arguments.
+
+#### Scenario: The retry arrives framed as a continuation
+- **GIVEN** a step retried after turn exhaustion
+- **WHEN** the retry attempt is issued
+- **THEN** its prompt directs the agent to continue unfinished work rather than restart, and still contains the original step prompt
 
 #### Scenario: One retry rescues a step that was one push short
 - **GIVEN** a step with `maxTurns: 200`, `fallback: {retry: 1, to: salvage, on_turns_exhausted: fail}`
@@ -82,12 +103,31 @@ top-level fields of the exhausted run's `struct_output` document SHALL be merged
 into the args the fallback step receives, using the same shallow merge the
 completion path applies. Merging SHALL be best-effort: a document that is absent,
 unparseable, or not a JSON object SHALL leave the args unchanged. Failures other
-than turn exhaustion carry no document and SHALL be unaffected.
+than turn exhaustion carry no document and SHALL be unaffected. When the
+exhausted run produced prose instead of a document, that prose SHALL be carried
+in the step's recorded failure, which the fallback step receives as its
+previous-step output.
+
+The merge SHALL target the fallback step's own copy of the args, never the map
+already published on the failed step's `FlowState`. That map has been handed to
+the flow-state channel and the pubsub broker by the time the merge occurs, so
+writing to it would be an unsynchronised mutation of a published value and
+would retroactively misreport the args the step ran with.
 
 #### Scenario: Salvage step sees what the cut-off run reported
 - **GIVEN** an exhausted run whose document carries a `summary` naming unpushed commits and one entry in `gitlab_links`
 - **WHEN** the step routes to its fallback step
 - **THEN** that step's args carry both fields, alongside the inbound args
+
+#### Scenario: The failed step's published args are not rewritten by the merge
+- **GIVEN** an exhausted run whose document carries fields absent from the inbound args
+- **WHEN** the step routes to its fallback step
+- **THEN** the `failed` state published for the exhausted step carries only the inbound args
+
+#### Scenario: A prose-only cut-off run is not silently discarded
+- **GIVEN** an exhausted run that produced closing prose but no usable document
+- **WHEN** the step fails
+- **THEN** the recorded failure contains that prose
 
 #### Scenario: Unusable document leaves args untouched
 - **GIVEN** an exhausted run whose captured document is empty, not JSON, or a JSON array
@@ -102,10 +142,35 @@ route on exhaustion rather than parking for timed auto-resume, because a resume
 runs in a fresh workspace where the step's half-finished working tree no longer
 exists.
 
+Further, a step in which ANY attempt ended on its turn budget SHALL NOT park,
+even when its final attempt ended on a genuinely transient provider error. The
+retries the opt-in buys are themselves additional chances to draw such an
+error, so selecting the park from the final attempt's error alone would make
+opting in raise the probability of the fresh-workspace loss it exists to
+prevent.
+
 #### Scenario: A resume_after step does not park on exhaustion
 - **GIVEN** a step with `resume_after: 30m` and `on_turns_exhausted: fail`
 - **WHEN** its final attempt ends on the turn budget
 - **THEN** the step reaches terminal `failed` and routes to `fallback.to`, and is not stored as `postponed`
+
+#### Scenario: A retry's transient error does not resurrect the park
+- **GIVEN** a step with `resume_after: 30m`, `on_turns_exhausted: fail` and `retry: 1`
+- **WHEN** its first attempt ends on the turn budget and its retry fails with a rate-limit error
+- **THEN** the step reaches terminal `failed` and routes to `fallback.to`, and is not stored as `postponed`
+
+### Requirement: The exhaustion outranks a later attempt's incidental error
+
+When a step exhausted its turn budget on one attempt and a subsequent attempt
+ended on an unrelated error, the step SHALL be reported as a turn exhaustion,
+and the exhausted run's report SHALL still be handed to the `fallback.to` step.
+The exhaustion is the load-bearing fact about such a step, and it is the only
+attempt that carries an account of the work left behind.
+
+#### Scenario: A later unrelated error does not mask the exhaustion
+- **GIVEN** a step with `on_turns_exhausted: fail` and `retry: 1` whose first attempt ended on the turn budget with a document
+- **WHEN** the retry fails with an unrelated error
+- **THEN** the step's failure names the exhausted turn budget, and the `fallback.to` step inherits the first attempt's document
 
 ### Requirement: Turn-exhausted runs are exempt from work that needs turn budget
 

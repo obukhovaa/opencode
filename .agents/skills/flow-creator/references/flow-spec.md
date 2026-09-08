@@ -140,14 +140,23 @@ on the pod. `on_turns_exhausted: fail` feeds turn exhaustion into this same
 fallback machinery instead:
 
 - it consumes the `retry` budget, and **each retry re-enters the same session
-  with a fresh turn budget** — same pod, same working tree, so the agent
-  continues where it stopped rather than starting over;
+  with a fresh turn budget** — same pod, same working tree — with the prompt
+  reframed as a continuation so the agent finishes what remains instead of
+  redoing the task or restating its wrap-up summary;
 - once that budget is spent the step **fails** and routes to `to`;
 - the wrap-up document's fields are merged into the args the `to` step
-  inherits, so a salvage step sees what the cut-off run reported.
+  inherits, so a salvage step sees what the cut-off run reported (a run that
+  ended in prose instead carries it in the step's failure message).
 
 `retry: 0` with `on_turns_exhausted: fail` routes straight to `to` without
 paying for a second turn budget.
+
+Four things to know: `fail` without a `to` fails the step and salvages
+nothing; routing to `to` marks the whole run `flow.failed` even when salvage
+succeeds; each attempt gets a full `timeout` and a full turn budget, so
+`retry` multiplies the step's worst-case cost and wall clock; and because
+`extends` merges `fallback` as one whole key, a step that overrides `fallback`
+to tune `retry` silently loses `on_turns_exhausted` unless it repeats it.
 
 ```yaml
 - id: implement

@@ -58,9 +58,13 @@ Two things were missing, both of them cheap:
   successful steps into failures fleet-wide, silently, is not a change anyone
   can review.
 - **Not a `maxTurns` sizing fix.** Budgets remain the flow author's call.
-- **No new signal on the wire.** Exhaustion reuses the existing `failed` status
-  and the existing `flow.step.retrying` transition rather than adding a status.
-- **The empty-run shape is untouched.** An exhausted run that produced no
-  document at all was already a retryable failure
-  (`missingStructOutputError`, which carries the agent's last prose and its own
-  turn-exhaustion flag). Only the has-a-document shape changes.
+- **No new status on the wire.** Exhaustion reuses the existing `failed` status
+  and the existing `flow.step.retrying` transition — the latter published with
+  a new reason string when an exhaustion consumes a fallback attempt, so an
+  orchestrator is not left watching dead air for the length of a turn budget.
+- **The no-output shape is untouched.** A schema-bearing run that produced
+  neither a document nor prose was already a retryable failure
+  (`missingStructOutputError`, which carries its own turn-exhaustion flag and
+  earns a re-prompt). Every other exhausted shape — document, prose-only, or a
+  step with no `output.schema` at all — becomes a failure under the opt-in,
+  because each of those otherwise completes the step silently, which is the bug.
