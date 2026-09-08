@@ -1,8 +1,10 @@
 package chat
 
 import (
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
 	"github.com/opencode-ai/opencode/internal/skill"
@@ -81,6 +83,82 @@ func TestAffordanceRowMatchesInputRowWidth(t *testing.T) {
 			t.Errorf("width %d: affordance row = %d cols, input row = %d cols", width, got, inputRow)
 		}
 	}
+}
+
+// TestEditorViewCellsCarryBackground: shell mode sets a textarea placeholder,
+// which switches the textarea to a render path that leaves the rows below the
+// placeholder padded with unstyled cells — they draw with the terminal's default
+// background, a black rectangle under the `$` prompt (the background-gap pitfall
+// in CLAUDE.md).
+func TestEditorViewCellsCarryBackground(t *testing.T) {
+	tests := []struct {
+		name  string
+		shell bool
+		value string
+	}{
+		{"normal empty", false, ""},
+		{"normal with draft", false, "hello"},
+		{"shell empty", true, ""},
+		{"shell with command", true, "ls -la"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ed := newTestEditor()
+			ed.SetSize(40, 3)
+			if tt.shell {
+				ed.enterShellMode()
+			}
+			ed.textarea.SetValue(tt.value)
+
+			for i, line := range strings.Split(ed.View().Content, "\n") {
+				if col := firstCellOnDefaultBackground(line); col >= 0 {
+					t.Errorf("line %d: cell %d renders with the default background: %q", i, col, line)
+				}
+			}
+		})
+	}
+}
+
+// firstCellOnDefaultBackground returns the index of the first cell in line the
+// terminal draws on its default background, or -1 when none does. A cell drawn
+// before any background is set inherits the one of the container the editor is
+// rendered into, so only a reset (or an explicit 49) after which no background
+// is set again puts a cell on the terminal's own background.
+func firstCellOnDefaultBackground(line string) int {
+	var (
+		bgReset bool
+		cell    int
+	)
+	for i := 0; i < len(line); {
+		if strings.HasPrefix(line[i:], "\x1b[") {
+			end := strings.IndexByte(line[i:], 'm')
+			if end < 0 {
+				break
+			}
+			for _, param := range strings.Split(line[i+2:i+end], ";") {
+				switch param {
+				case "", "0", "49": // reset, or explicit default background
+					bgReset = true
+				case "48": // 48;5;N or 48;2;R;G;B
+					bgReset = false
+				default:
+					if n, err := strconv.Atoi(param); err == nil &&
+						((n >= 40 && n <= 47) || (n >= 100 && n <= 107)) {
+						bgReset = false
+					}
+				}
+			}
+			i += end + 1
+			continue
+		}
+		_, size := utf8.DecodeRuneInString(line[i:])
+		if bgReset {
+			return cell
+		}
+		cell++
+		i += size
+	}
+	return -1
 }
 
 // TestRecognitionChipForRejectedInvocation: a skill that resolves but may not be

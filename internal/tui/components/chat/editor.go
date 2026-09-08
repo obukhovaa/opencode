@@ -668,13 +668,35 @@ func (m *editorCmp) View() tea.View {
 	}
 
 	if !m.hasAffordanceRow() {
-		return tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top, style.Render(promptChar), m.textarea.View()))
+		return tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top, style.Render(promptChar), m.textareaView()))
 	}
 	return tea.NewView(lipgloss.JoinVertical(lipgloss.Top,
 		m.affordanceRow(),
 		lipgloss.JoinHorizontal(lipgloss.Top, style.Render(promptChar),
-			m.textarea.View()),
+			m.textareaView()),
 	))
+}
+
+// textareaView renders the input, repairing the background of the rows below the
+// placeholder.
+//
+// The textarea has two render paths, and only one of them pads a row out to the
+// full width with its own styles. On the placeholder path — empty value with a
+// placeholder set, which is shell mode — the rows past the placeholder are the
+// end-of-buffer character alone, so the padding that fills them comes from the
+// textarea's viewport instead, in unstyled cells that land after the style's
+// reset. They draw with the terminal's default background: the black rectangle
+// under the `$` prompt (the background-gap pitfall in CLAUDE.md).
+//
+// Every background the textarea itself sets is already the theme background, so
+// forcing that background over the rendered view repaints only those unstyled
+// cells.
+func (m *editorCmp) textareaView() string {
+	view := m.textarea.View()
+	if m.textarea.Placeholder == "" || m.textarea.Value() != "" {
+		return view
+	}
+	return styles.ForceReplaceBackgroundWithLipgloss(view, theme.CurrentTheme().Background())
 }
 
 // affordanceRow renders the single row above the input: attachment chips first,
