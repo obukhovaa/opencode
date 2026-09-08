@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"charm.land/bubbles/v2/key"
@@ -52,6 +53,12 @@ type InvocationScanner func(text string) []slashcmd.Invocation
 type recognizedInvocation struct {
 	label  string
 	action bool // performs a TUI action rather than expanding into the message
+	// rejects marks an invocation that resolves to a known name the message may
+	// not be submitted with — a skill without `user-invocable: true`. It gets a
+	// chip because the absence of one means "this line will be sent as plain
+	// text", which is the opposite of what happens: Expand refuses the whole
+	// message.
+	rejects bool
 }
 
 type editorCmp struct {
@@ -163,10 +170,12 @@ func (m *editorCmp) refreshRecognition() {
 	// off the registry-building path entirely.
 	if m.mode == modeNormal && (strings.HasPrefix(draft, "/") || strings.Contains(draft, "\n/")) {
 		for _, inv := range m.scan(draft) {
-			switch inv.Kind {
-			case slashcmd.KindPrompt:
+			switch {
+			case inv.Err != nil:
+				recognized = append(recognized, recognizedInvocation{label: "/" + inv.Name, rejects: true})
+			case inv.Kind == slashcmd.KindPrompt:
 				recognized = append(recognized, recognizedInvocation{label: "/" + inv.Name})
-			case slashcmd.KindAction:
+			case inv.Kind == slashcmd.KindAction:
 				recognized = append(recognized, recognizedInvocation{label: "/" + inv.Name, action: true})
 			}
 		}
@@ -199,6 +208,16 @@ func (m *editorCmp) openEditor() tea.Cmd {
 		}
 	}
 	tmpfile.Close()
+
+	// Seeding the file removes the abort the empty-file check used to provide:
+	// quitting without saving now leaves the draft in the file, which would be
+	// submitted as though the user had asked for it. The modification time
+	// distinguishes the two — an editor that never wrote leaves it untouched —
+	// so an unsaved exit cancels and the draft simply stays in the input.
+	var seededAt time.Time
+	if st, err := os.Stat(tmpfile.Name()); err == nil {
+		seededAt = st.ModTime()
+	}
 	c := exec.Command(editor, tmpfile.Name()) //nolint:gosec
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
@@ -206,6 +225,11 @@ func (m *editorCmp) openEditor() tea.Cmd {
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		if err != nil {
 			return util.ReportError(err)
+		}
+		if st, statErr := os.Stat(tmpfile.Name()); statErr == nil &&
+			!seededAt.IsZero() && st.ModTime().Equal(seededAt) {
+			os.Remove(tmpfile.Name())
+			return util.ReportWarn("Editor closed without saving; message left unchanged")
 		}
 		content, err := os.ReadFile(tmpfile.Name())
 		if err != nil {
@@ -229,10 +253,32 @@ func (m *editorCmp) openEditor() tea.Cmd {
 // are untouched: staging is additive, so several invocations and the user's own
 // prose accumulate into one message.
 func (m *editorCmp) stageInvocation(text string) {
-	if m.textarea.Column() > 0 {
+	lines := strings.Split(m.textarea.Value(), "\n")
+	row, col := m.textarea.Line(), m.textarea.Column()
+
+	// Text sitting to the right of the cursor has to be pushed down as well as
+	// the invocation being moved to a line start: left where it is, it would
+	// share the invocation's line and be parsed as its arguments, so staging
+	// `/commit` mid-sentence would turn the rest of the sentence into an
+	// argument instead of leaving it as prose.
+	trailing := row >= 0 && row < len(lines) && col < len([]rune(lines[row]))
+
+	if col > 0 {
 		text = "\n" + text
 	}
+	if trailing {
+		text += "\n"
+	}
 	m.textarea.InsertString(text)
+	if trailing {
+		// InsertString leaves the cursor after the newline, on the pushed-down
+		// text. Put it back at the end of the invocation so typed arguments
+		// land on its line. CursorUp moves one display line, and CursorEnd
+		// clamps to the end of whatever logical row that lands in, so this is
+		// correct whether or not the staged line soft-wraps.
+		m.textarea.CursorUp()
+		m.textarea.CursorEnd()
+	}
 }
 
 func (m *editorCmp) Init() tea.Cmd {
@@ -635,7 +681,7 @@ func (m *editorCmp) View() tea.View {
 // then one chip per recognized slash invocation, within the container width.
 func (m *editorCmp) affordanceRow() string {
 	attachments := m.attachmentsContent()
-	hint := m.recognitionContent(m.width - lipgloss.Width(attachments))
+	hint := m.recognitionContent(m.rowWidth() - lipgloss.Width(attachments))
 	switch {
 	case hint == "":
 		return m.padRow(attachments)
@@ -645,18 +691,29 @@ func (m *editorCmp) affordanceRow() string {
 	return m.padRow(lipgloss.JoinHorizontal(lipgloss.Top, attachments, hint))
 }
 
-// padRow fills the affordance row out to the container width with the theme
+// rowWidth is the rendered width of the input row this one sits above: the
+// prompt column plus the textarea, which SetSize gives one column less than the
+// container so the cursor never lands in the terminal's deferred-wrap column.
+// The affordance row must match it exactly — a wider row makes JoinVertical pad
+// every input line with an unstyled cell, which is the black gap this alignment
+// exists to avoid.
+func (m *editorCmp) rowWidth() int {
+	return max(0, m.width-1)
+}
+
+// padRow fills the affordance row out to the input row's width with the theme
 // background. JoinVertical pads shorter lines with unstyled cells, which render
 // as a black gap beside the themed editor (see the background-gap pitfall in
 // CLAUDE.md); padding the row itself avoids that without forcing a background
 // over the textarea's own cursor rendering.
 func (m *editorCmp) padRow(row string) string {
-	if m.width <= 0 {
+	width := m.rowWidth()
+	if width <= 0 {
 		return row
 	}
 	t := theme.CurrentTheme()
 	return styles.BaseStyle().
-		Width(m.width).
+		Width(width).
 		Background(t.Background()).
 		Render(row)
 }
@@ -678,6 +735,7 @@ func (m *editorCmp) recognitionContent(budget int) string {
 	base := styles.BaseStyle().MarginLeft(1).Background(t.Background())
 	expands := base.Foreground(t.Success())
 	acts := base.Foreground(t.Info())
+	rejects := base.Foreground(t.Error())
 	overflow := base.Foreground(t.TextMuted())
 
 	var (
@@ -686,7 +744,10 @@ func (m *editorCmp) recognitionContent(budget int) string {
 	)
 	for i, inv := range m.recognized {
 		style := expands
-		if inv.action {
+		switch {
+		case inv.rejects:
+			style = rejects
+		case inv.action:
 			style = acts
 		}
 		chip := style.Render(fmt.Sprintf("%s %s", styles.SkillIcon, inv.label))

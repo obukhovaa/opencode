@@ -268,9 +268,13 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 }
 
 // resolveSlashPrompt expands the slash invocations in a non-interactive prompt.
-// It shares the TUI's expander, so a `-p` / `--prompt` value may carry several
-// invocations mixed with prose; text that resolves to nothing is returned
-// unchanged. TUI-only commands are rejected here rather than run.
+// It shares the TUI's expander, so a `-p` value may carry several invocations
+// mixed with prose; text that resolves to nothing is returned unchanged.
+// TUI-only commands are rejected here rather than run.
+//
+// Only `opencode -p` routes through here. A prompt passed alongside `--flow`
+// goes to runFlowNonInteractive, which hands it to the flow as an argument
+// verbatim — a flow argument is data for the flow, not a message being composed.
 func resolveSlashPrompt(prompt string, sessionID string) (string, error) {
 	expansion, err := slashcmd.Expand(prompt, dialog.CommandRegistry(), slashcmd.ExpandOptions{
 		SessionID:   sessionID,

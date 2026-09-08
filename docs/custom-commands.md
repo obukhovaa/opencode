@@ -74,7 +74,9 @@ Press **Enter** to submit. Every invocation in the message is expanded in place,
 
 becomes one message: the `flow-creator` skill content, then your sentence, then the `/review` prompt.
 
-**Action commands** (`/new`, `/reset`, `/compact`, `/agents`, `/auto-approve`, `/vim`, `/sessions-cleanup`, `/rename`, `/loop`, `/crons`) do something in the app rather than adding text, so they still run the moment you select them and cannot be combined with other content. Submitting `/new and then look at the diff` is rejected with a warning instead of clearing your session and dropping the sentence.
+**Action commands** (`/new`, `/reset`, `/compact`, `/agents`, `/auto-approve`, `/vim`, `/sessions-cleanup`, `/rename`, `/loop`, `/crons`) do something in the app rather than adding text, so they act on selection rather than staging, and cannot be combined with other content. Submitting `/new and then look at the diff` is rejected with a warning instead of clearing your session and dropping the sentence.
+
+The two that take arguments — `/rename` and `/loop` — open a small dialog to collect them rather than acting immediately. Arguments given inline (`/loop 5m check the build`) pre-fill that dialog, so you confirm with Enter instead of retyping.
 
 ### Seeing what will be recognized
 
@@ -113,7 +115,7 @@ If expansion fails for any reason — a rejected action command, a skill that is
 ### Arguments and timing
 
 - Arguments are split on whitespace, honouring quotes: `/review HEAD~3 "src/internal tools"` is two arguments.
-- Argument prompts (see below) write their values back into the staged line, quoting anything that contains spaces, so what you typed in the dialog is what gets bound.
+- Argument prompts (see below) write their values back into the staged line, so what you typed in the dialog is what gets bound. Values that fill a positional or named placeholder are quoted when they contain whitespace or quotes; a command whose only placeholder is `$ARGUMENTS` takes the whole line unsplit, so its value is written verbatim.
 - `` !`command` `` shell markup and `${SESSION_ID}` resolve **at submit time**, inside the expanded content only — never in your own prose. If the message waits in the queue behind a busy agent, the values captured are the ones from when you pressed Enter.
 
 ## Named Arguments

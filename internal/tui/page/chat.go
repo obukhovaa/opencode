@@ -134,26 +134,36 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.showCommandCompletionDialog = false
 			// Remove the /query text from the editor; the staged invocation is
 			// inserted in its place (or, for an action command, nothing is).
-			cmds = append(cmds, util.CmdHandler(dialog.CompletionRemoveTextMsg{
+			//
+			// The two must run in this order, so they are sequenced rather than
+			// batched: tea.Batch dispatches each command on its own goroutine,
+			// and both of these mutate the same textarea. Staging first would
+			// insert the invocation and only then strip the `/query` the user
+			// typed, leaving whatever followed the cursor attached to the
+			// staged line as its arguments.
+			removeTyped := util.CmdHandler(dialog.CompletionRemoveTextMsg{
 				SearchString: msg.SearchString,
-			}))
+			})
 			if skillName, ok := strings.CutPrefix(msg.CompletionValue, slashcmd.SkillPrefix); ok {
 				s, err := skill.Get(skillName)
 				if err != nil {
-					return p, tea.Batch(append(cmds, util.ReportError(err))...)
+					return p, tea.Batch(append(cmds, removeTyped, util.ReportError(err))...)
 				}
 				if !s.IsUserInvocable() {
-					return p, tea.Batch(append(cmds,
+					return p, tea.Batch(append(cmds, removeTyped,
 						util.ReportWarn(fmt.Sprintf("Skill '%s' is not user-invocable", s.Name)))...)
 				}
-				cmds = append(cmds, dialog.StageSkillHandler(s))
+				cmds = append(cmds, tea.Sequence(removeTyped, dialog.StageSkillHandler(s)))
 				return p, tea.Batch(cmds...)
 			}
 			// Commands run through their Handler: action commands act now,
 			// prompt commands stage themselves (dialog.StageCommandHandler).
 			if cmd, ok := p.findCommand(msg.CompletionValue); ok {
-				cmds = append(cmds, util.CmdHandler(dialog.CommandSelectedMsg{Command: cmd}))
+				cmds = append(cmds, tea.Sequence(removeTyped,
+					util.CmdHandler(dialog.CommandSelectedMsg{Command: cmd})))
+				return p, tea.Batch(cmds...)
 			}
+			cmds = append(cmds, removeTyped)
 			return p, tea.Batch(cmds...)
 		}
 	case chat.ShellModeChangedMsg:
@@ -183,7 +193,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// re-renders the queue banner (list.go queries app.QueueLen in View).
 	case chat.RunActionMsg:
 		// The submission was a single action command: run its TUI handler.
-		return p, p.actionCommand(msg.Command)
+		return p, p.actionCommand(msg.Command, msg.Args)
 	case chat.SendMsg:
 		// msg.Text is already expanded: the editor runs expandSubmission before
 		// it forks between dispatch and enqueue, so slash invocations are
@@ -680,11 +690,14 @@ func (p *chatPage) slashRegistry() slashcmd.Registry {
 }
 
 // actionCommand resolves an expanded action command to the TUI command whose
-// Handler performs it.
-func (p *chatPage) actionCommand(info *slashcmd.CommandInfo) tea.Cmd {
+// Handler performs it, passing along the arguments typed on the invocation line
+// so a handler that collects arguments can pre-fill them instead of dropping
+// what the user wrote.
+func (p *chatPage) actionCommand(info *slashcmd.CommandInfo, args string) tea.Cmd {
 	cmd, ok := p.findCommand(info.ID)
 	if !ok || cmd.Handler == nil {
 		return util.ReportWarn(fmt.Sprintf("Command '/%s' has no handler", info.ID))
 	}
+	cmd.InlineArgs = args
 	return cmd.Handler(cmd)
 }

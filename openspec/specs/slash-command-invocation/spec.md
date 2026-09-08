@@ -118,8 +118,15 @@ SHALL be preserved verbatim, in its original position relative to the expanded b
 A line is a prompt invocation if and only if all of the following hold:
 
 - the line's first character is `/` at column 0 (no leading whitespace);
-- the line is not inside a fenced code block (a region delimited by ```` ``` ````);
+- the line is not inside a fenced code block (a region delimited by ```` ``` ```` or
+  `~~~`);
 - the first whitespace-delimited token after `/` resolves to a prompt invocation.
+
+A fence delimiter SHALL be recognised per CommonMark: a backtick fence's info string
+may not itself contain a backtick, so a prose line that merely opens with an inline
+code span — ```` ```/commit``` is a command ```` — SHALL NOT open a fence. Without
+that rule such a line opens a fence that never closes, and every invocation after it
+in the message is silently ignored.
 
 The remainder of that line, trimmed, is the invocation's arguments.
 
@@ -199,6 +206,13 @@ rather than silently discarded.
 - **THEN** the rename action runs, because `/rename` declares an argument hint, and no
   message is sent
 
+#### Scenario: Inline arguments reach an action command that collects them
+
+- **GIVEN** `/loop` collects `interval` and `prompt` through the argument dialog
+- **WHEN** the user submits `/loop 5m check the build`
+- **THEN** the dialog opens with `interval` pre-filled as `5m` and `prompt` as
+  `check the build`, rather than with empty fields and the typed text discarded
+
 ### Requirement: Expansion happens before the message enters the queue
 
 Expansion SHALL be complete before the submitted message is either dispatched to the
@@ -245,10 +259,21 @@ Bindings SHALL be applied as follows:
   indices bind to the empty string.
 - A named placeholder `$FOO` in a custom command's content binds to the positional
   argument at the placeholder's index in first-appearance order within that content —
-  the same order the argument dialog presents its fields.
+  the same order the argument dialog presents its fields. An `$UPPERCASE` occurrence
+  inside `` !`cmd` `` shell markup is NOT a placeholder: it is an environment reference
+  belonging to the command line the author wrote, and SHALL be left untouched and
+  excluded from the argument fields.
 - When the content declares no placeholder at all and the argument string is
   non-empty, `ARGUMENTS: <args>` SHALL be appended to the expanded content, so a
   user's instruction is never silently dropped.
+
+Argument values SHALL be inserted literally: a value that itself reads `$5`,
+`$ARGUMENTS` or `${SESSION_ID}` SHALL appear in the prompt as the user typed it, never
+substituted a second time. Quoting SHALL round-trip — the argument dialog's values
+recover exactly, including values containing non-ASCII whitespace.
+
+An invocation whose expansion leaves the whole message empty SHALL be rejected rather
+than sent, so a command with an empty body cannot create a blank message.
 
 #### Scenario: A quoted argument stays whole
 
@@ -315,13 +340,18 @@ actually resolves to.
 
 For each recognized invocation, in the order it appears, the editor SHALL display a
 chip naming it. Chips SHALL distinguish an invocation that will expand into the
-message from an action command that will run instead. A `/…` line that does not
-resolve SHALL produce no chip: the absence of a chip is how the user learns their
-text will be sent verbatim.
+message, an action command that will run instead, and one that will cause submission
+to be rejected. A `/…` line that does not resolve SHALL produce no chip: the absence
+of a chip is how the user learns their text will be sent verbatim.
+
+An invocation that resolves to a known name the message may not be submitted with — a
+skill without `user-invocable: true` — SHALL therefore get a chip rather than none.
+Omitting it would say the line is sent as prose, when submitting in fact rejects the
+whole message.
 
 The hint SHALL resolve against the same registry as submission, so it cannot promise
 an expansion that submitting would not perform, and SHALL be recomputed whenever the
-draft changes. It SHALL NOT substitute arguments or run ``!`cmd`` shell markup —
+draft changes. It SHALL NOT substitute arguments or run `` !`cmd` `` shell markup —
 only submission does that.
 
 The hint SHALL occupy the single affordance row above the input (see

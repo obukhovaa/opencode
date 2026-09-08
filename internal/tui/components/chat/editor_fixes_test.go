@@ -1,0 +1,121 @@
+package chat
+
+import (
+	"strings"
+	"testing"
+
+	"charm.land/lipgloss/v2"
+	"github.com/opencode-ai/opencode/internal/skill"
+	"github.com/opencode-ai/opencode/internal/slashcmd"
+)
+
+// TestStageInvocationKeepsTrailingTextOnItsOwnLine: staging inserts at the
+// cursor, so text to its right would otherwise share the invocation's line and
+// be parsed as its arguments — turning the rest of a sentence into an argument.
+func TestStageInvocationKeepsTrailingTextOnItsOwnLine(t *testing.T) {
+	ed := newTestEditor()
+	ed.textarea.SetValue("hello world")
+	ed.textarea.SetCursorColumn(5) // between "hello" and " world"
+
+	ed.stageInvocation("/commit ")
+
+	want := "hello\n/commit \n world"
+	if got := ed.textarea.Value(); got != want {
+		t.Fatalf("value = %q, want %q", got, want)
+	}
+	// The cursor must sit at the end of the staged line so typed arguments land
+	// there rather than on the pushed-down text.
+	if got := ed.textarea.Value(); strings.Split(got, "\n")[ed.textarea.Line()] != "/commit " {
+		t.Errorf("cursor on line %d (%q), want the staged line",
+			ed.textarea.Line(), strings.Split(got, "\n")[ed.textarea.Line()])
+	}
+	if got, want := ed.textarea.Column(), len("/commit "); got != want {
+		t.Errorf("cursor column = %d, want %d", got, want)
+	}
+}
+
+// TestStageInvocationAtEndOfLineAddsNoTrailingNewline: the common case — cursor
+// at the end of the draft — must be unchanged by the trailing-text handling.
+func TestStageInvocationAtEndOfLineAddsNoTrailingNewline(t *testing.T) {
+	tests := []struct {
+		name  string
+		draft string
+		col   int
+		want  string
+	}{
+		{"empty editor", "", 0, "/commit "},
+		{"end of a line", "hello", 5, "hello\n/commit "},
+		{"start of an empty line", "hello\n", 0, "hello\n/commit "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ed := newTestEditor()
+			ed.textarea.SetValue(tt.draft)
+			ed.textarea.SetCursorColumn(tt.col)
+
+			ed.stageInvocation("/commit ")
+
+			if got := ed.textarea.Value(); got != tt.want {
+				t.Errorf("value = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAffordanceRowMatchesInputRowWidth: the affordance row and the input row
+// are stacked by JoinVertical, which pads the shorter one with unstyled cells.
+// A row wider than the input leaves a black column down the right edge of the
+// editor — the background-gap pitfall in CLAUDE.md.
+func TestAffordanceRowMatchesInputRowWidth(t *testing.T) {
+	for _, width := range []int{20, 40, 80, 120} {
+		ed := newTestEditor()
+		ed.SetSize(width, 4)
+		ed.recognized = []recognizedInvocation{{label: "/commit"}}
+
+		inputRow := lipgloss.Width(lipgloss.JoinHorizontal(
+			lipgloss.Top,
+			lipgloss.NewStyle().Padding(0, 0, 0, 1).Bold(true).Render(">"),
+			ed.textarea.View(),
+		))
+		if got := lipgloss.Width(ed.affordanceRow()); got != inputRow {
+			t.Errorf("width %d: affordance row = %d cols, input row = %d cols", width, got, inputRow)
+		}
+	}
+}
+
+// TestRecognitionChipForRejectedInvocation: a skill that resolves but may not be
+// invoked rejects the whole submission, so it must not look like a line that
+// will simply be sent as prose — the absence of a chip means exactly that.
+func TestRecognitionChipForRejectedInvocation(t *testing.T) {
+	notInvocable := false
+	reg := slashcmd.Registry{
+		Skills: []skill.Info{
+			{
+				Name:          "internal",
+				Location:      "/skills/internal/SKILL.md",
+				Content:       "Internal only.",
+				UserInvocable: &notInvocable,
+			},
+		},
+	}
+	ed := newTestEditor()
+	ed.SetSize(80, 4)
+	ed.scan = func(text string) []slashcmd.Invocation { return slashcmd.Scan(text, reg) }
+
+	ed.textarea.SetValue("/skill:internal\nplease do the thing")
+	ed.refreshRecognition()
+
+	if len(ed.recognized) != 1 {
+		t.Fatalf("recognized = %#v, want one chip", ed.recognized)
+	}
+	if !ed.recognized[0].rejects {
+		t.Errorf("chip = %#v, want it marked as rejecting", ed.recognized[0])
+	}
+	if ed.recognized[0].label != "/skill:internal" {
+		t.Errorf("label = %q", ed.recognized[0].label)
+	}
+	// And it still renders within budget.
+	if got, want := lipgloss.Width(ed.affordanceRow()), ed.rowWidth(); got != want {
+		t.Errorf("affordance row = %d cols, want %d", got, want)
+	}
+}

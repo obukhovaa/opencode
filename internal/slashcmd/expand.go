@@ -24,6 +24,11 @@ var (
 	// ErrTooManyInvocations is returned when a message exceeds
 	// MaxInvocationsPerMessage.
 	ErrTooManyInvocations = errors.New("too many slash commands in one message")
+	// ErrEmptyExpansion is returned when every invocation in the message
+	// expanded to nothing, leaving no prompt to send. A command whose markdown
+	// body is empty is the usual cause; sending it would create a blank user
+	// message and a session turn with no content.
+	ErrEmptyExpansion = errors.New("command expanded to an empty message")
 )
 
 // Kind classifies a scanned invocation.
@@ -166,9 +171,19 @@ func Scan(text string, reg Registry) []Invocation {
 func fenceMarker(line string) string {
 	trimmed := strings.TrimSpace(line)
 	for _, marker := range []string{"```", "~~~"} {
-		if strings.HasPrefix(trimmed, marker) {
-			return marker
+		if !strings.HasPrefix(trimmed, marker) {
+			continue
 		}
+		// CommonMark forbids a backtick in a backtick fence's info string, which
+		// is what separates an opening fence from a line of prose that merely
+		// begins with an inline code span — "```/commit``` is a command". Without
+		// the rule that line opens a fence that never closes, and every
+		// invocation after it is silently ignored. The leading run of backticks
+		// is skipped first so a four-backtick fence still opens.
+		if marker == "```" && strings.ContainsRune(strings.TrimLeft(trimmed, "`"), '`') {
+			continue
+		}
+		return marker
 	}
 	return ""
 }
@@ -239,7 +254,15 @@ func Expand(text string, reg Registry, opts ExpandOptions) (Expansion, error) {
 		}
 	}
 
-	return Expansion{Prompt: strings.Join(out, "\n"), Count: prompts}, nil
+	prompt := strings.Join(out, "\n")
+	// Only reachable when something was expanded, so a blank result means the
+	// expansion consumed the whole message rather than the user submitting
+	// whitespace — the editor rejects an empty draft before it gets here.
+	if strings.TrimSpace(prompt) == "" {
+		return Expansion{}, ErrEmptyExpansion
+	}
+
+	return Expansion{Prompt: prompt, Count: prompts}, nil
 }
 
 // isBareAction reports whether inv is the whole message, so its action can run
@@ -287,11 +310,16 @@ func expandInvocation(inv Invocation, opts ExpandOptions) string {
 	// any of them the arguments are considered consumed, so SubstituteContent
 	// must not also append an "ARGUMENTS:" line.
 	names := NamedPlaceholders(inv.Command.Content)
-	content := bindNamed(inv.Command.Content, names, skill.SplitArgs(inv.Args))
-	content = skill.SubstituteContent(content, skill.SubstituteParams{
+	content := skill.SubstituteContent(inv.Command.Content, skill.SubstituteParams{
 		Args:               inv.Args,
 		SessionID:          opts.SessionID,
 		SuppressArgsAppend: len(names) > 0,
 	})
+	// Named binding runs last so a user-supplied value is inserted literally.
+	// Binding first would feed it back through SubstituteContent's own passes,
+	// where an argument that happens to read `$5` or `${SESSION_ID}` would be
+	// substituted a second time — `/scope $5 src/` used to bind $TARGET to the
+	// empty string rather than to the text the user typed.
+	content = bindNamed(content, names, skill.SplitArgs(inv.Args))
 	return shell(content)
 }

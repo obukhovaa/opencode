@@ -239,13 +239,12 @@ func typeInto(m tea.Model, value string) tea.Model {
 // staging chain: what the user typed must come back in field order, with the
 // mode that decides how it is quoted.
 func TestMultiArgumentsDialogSubmitCarriesOrderedValues(t *testing.T) {
-	var m tea.Model = NewMultiArgumentsDialogCmp(
-		"project:pos",
-		"From $0 to $1.",
-		[]string{"0", "1"},
-		nil,
-		ArgsModePositional,
-	)
+	var m tea.Model = NewMultiArgumentsDialogCmp(ShowMultiArgumentsDialogMsg{
+		CommandID: "project:pos",
+		Content:   "From $0 to $1.",
+		ArgNames:  []string{"0", "1"},
+		Mode:      ArgsModePositional,
+	})
 
 	m = typeInto(m, "HEAD~3")
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
@@ -278,13 +277,12 @@ func TestMultiArgumentsDialogSubmitCarriesOrderedValues(t *testing.T) {
 // TestMultiArgumentsDialogCancelStagesNothing: esc must not produce a staged
 // invocation, so the editor is left exactly as the user had it.
 func TestMultiArgumentsDialogCancelStagesNothing(t *testing.T) {
-	var m tea.Model = NewMultiArgumentsDialogCmp(
-		"review",
-		"Review $ARGUMENTS carefully.",
-		[]string{"ARGUMENTS"},
-		nil,
-		ArgsModeWhole,
-	)
+	var m tea.Model = NewMultiArgumentsDialogCmp(ShowMultiArgumentsDialogMsg{
+		CommandID: "review",
+		Content:   "Review $ARGUMENTS carefully.",
+		ArgNames:  []string{"ARGUMENTS"},
+		Mode:      ArgsModeWhole,
+	})
 
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if cmd == nil {

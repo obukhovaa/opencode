@@ -59,6 +59,11 @@ type ShowMultiArgumentsDialogMsg struct {
 	ArgNames  []string
 	ArgHints  map[string]string // Optional hints for argument placeholders
 	Mode      ArgsMode
+	// InitialValues pre-fills the fields, parallel to ArgNames. It carries the
+	// arguments an action command was invoked with inline (`/loop 5m check the
+	// build`) so the user reviews what they typed instead of retyping it into
+	// blank inputs. Shorter than ArgNames, or nil, leaves the rest empty.
+	InitialValues []string
 }
 
 // CloseMultiArgumentsDialogMsg is a message that is sent when the multi-arguments dialog is closed.
@@ -94,17 +99,23 @@ type MultiArgumentsDialogCmp struct {
 	mode          ArgsMode
 }
 
-// NewMultiArgumentsDialogCmp creates a new MultiArgumentsDialogCmp.
-func NewMultiArgumentsDialogCmp(commandID, content string, argNames []string, argHints map[string]string, mode ArgsMode) MultiArgumentsDialogCmp {
+// NewMultiArgumentsDialogCmp creates a new MultiArgumentsDialogCmp. It takes
+// the whole request rather than a parameter list so a new field on
+// ShowMultiArgumentsDialogMsg does not ripple through every call site.
+func NewMultiArgumentsDialogCmp(msg ShowMultiArgumentsDialogMsg) MultiArgumentsDialogCmp {
 	t := theme.CurrentTheme()
+	argNames := msg.ArgNames
 	inputs := make([]textinput.Model, len(argNames))
 
 	for i, name := range argNames {
 		ti := textinput.New()
-		if hint, ok := argHints[name]; ok && hint != "" {
+		if hint, ok := msg.ArgHints[name]; ok && hint != "" {
 			ti.Placeholder = hint
 		} else {
 			ti.Placeholder = fmt.Sprintf("Enter value for %s...", name)
+		}
+		if i < len(msg.InitialValues) && msg.InitialValues[i] != "" {
+			ti.SetValue(msg.InitialValues[i])
 		}
 		ti.SetWidth(40)
 		ti.Prompt = ""
@@ -133,10 +144,10 @@ func NewMultiArgumentsDialogCmp(commandID, content string, argNames []string, ar
 	return MultiArgumentsDialogCmp{
 		inputs:     inputs,
 		keys:       argumentsDialogKeyMap{},
-		commandID:  commandID,
-		content:    content,
+		commandID:  msg.CommandID,
+		content:    msg.Content,
 		argNames:   argNames,
-		mode:       mode,
+		mode:       msg.Mode,
 		focusIndex: 0,
 	}
 }

@@ -37,13 +37,12 @@ func TestConsumesInput(t *testing.T) {
 func TestPasteReachesArgumentDialog(t *testing.T) {
 	a := appModel{
 		showMultiArgumentsDialog: true,
-		multiArgumentsDialog: dialog.NewMultiArgumentsDialogCmp(
-			"project:scope",
-			"Look at $TARGET inside $SCOPE.",
-			[]string{"TARGET", "SCOPE"},
-			nil,
-			dialog.ArgsModePositional,
-		),
+		multiArgumentsDialog: dialog.NewMultiArgumentsDialogCmp(dialog.ShowMultiArgumentsDialogMsg{
+			CommandID: "project:scope",
+			Content:   "Look at $TARGET inside $SCOPE.",
+			ArgNames:  []string{"TARGET", "SCOPE"},
+			Mode:      dialog.ArgsModePositional,
+		}),
 	}
 
 	// Paste into the first field, tab, then paste into the second.

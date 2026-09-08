@@ -409,6 +409,11 @@ func positionalSlots(names []string, values []string) []string {
 	return slots
 }
 
+// maxPositionalIndex bounds the $N / $ARGUMENTS[N] index that can size the
+// staged argument list. No dialog can collect this many fields, so anything at
+// or above it is a typo rather than a parameter.
+const maxPositionalIndex = 32
+
 // argumentFields derives the argument-dialog fields declared by content.
 //
 // allowNamed distinguishes the two content dialects: custom commands support
@@ -426,8 +431,22 @@ func argumentFields(content string, argumentHint string, allowNamed bool) (names
 	}
 
 	if indices := skill.ExtractPositionalIndices(content); len(indices) > 0 {
-		names = make([]string, len(indices))
-		for i, idx := range indices {
+		// The highest declared index sizes the staged argument list, and
+		// $ARGUMENTS[N] accepts any number of digits, so a typo'd or hostile
+		// $ARGUMENTS[500000000] would have the staging path allocate a
+		// half-billion-element slice. Indices past the cap are ignored rather
+		// than rejected: they cannot bind to anything a dialog could collect.
+		bounded := make([]int, 0, len(indices))
+		for _, idx := range indices {
+			if idx < maxPositionalIndex {
+				bounded = append(bounded, idx)
+			}
+		}
+		if len(bounded) == 0 {
+			return nil, nil, ArgsModePositional, false
+		}
+		names = make([]string, len(bounded))
+		for i, idx := range bounded {
 			names[i] = strconv.Itoa(idx)
 		}
 		return names, ParseArgumentHints(argumentHint, names), ArgsModePositional, true

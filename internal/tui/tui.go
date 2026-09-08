@@ -620,7 +620,13 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err := config.MarkProjectInitialized(); err != nil {
 						return a, util.ReportError(err)
 					}
-					return a, cmd.Handler(cmd)
+					// Send the prompt directly rather than through cmd.Handler.
+					// /init is a prompt command, so its handler stages `/init `
+					// into the editor for the user to complete — right for the
+					// command popup, wrong here: this dialog asked a yes/no
+					// question, and answering Yes must run the initialization,
+					// not leave text in an input the dialog never mentioned.
+					return a, util.CmdHandler(chat.SendMsg{Text: cmd.Content})
 				}
 			}
 		} else {
@@ -706,7 +712,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case dialog.ShowMultiArgumentsDialogMsg:
 		// Show multi-arguments dialog
-		a.multiArgumentsDialog = dialog.NewMultiArgumentsDialogCmp(msg.CommandID, msg.Content, msg.ArgNames, msg.ArgHints, msg.Mode)
+		a.multiArgumentsDialog = dialog.NewMultiArgumentsDialogCmp(msg)
 		a.showMultiArgumentsDialog = true
 		return a, a.multiArgumentsDialog.Init()
 
@@ -1075,6 +1081,16 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// The help overlay has no component of its own to update, but it covers the
+	// page, so a paste arriving while it is up would land in the chat editor
+	// behind it — the same leak consumesInput closes for the dialogs above.
+	// Only paste is swallowed: key presses are left routing exactly as before,
+	// since the overlay's own dismiss keys are handled further up and the rest
+	// still scroll the transcript underneath.
+	if a.showHelp && isPaste(msg) {
+		return a, tea.Batch(cmds...)
+	}
+
 	switch msg.(type) {
 	case pubsub.Event[agent.MCPServerEvent]:
 		chat.InvalidateMcpCache()
@@ -1194,8 +1210,18 @@ func (a *appModel) RegisterCommand(cmd dialog.Command) {
 // tea.PasteMsg and a modal that ignores it lets the pasted text appear in the
 // chat editor behind the dialog.
 func consumesInput(msg tea.Msg) bool {
+	if _, ok := msg.(tea.KeyPressMsg); ok {
+		return true
+	}
+	return isPaste(msg)
+}
+
+// isPaste reports whether msg is part of a bracketed-paste sequence. The three
+// types are always treated together: an overlay that swallowed a start without
+// its end would leave the terminal mid-paste.
+func isPaste(msg tea.Msg) bool {
 	switch msg.(type) {
-	case tea.KeyPressMsg, tea.PasteMsg, tea.PasteStartMsg, tea.PasteEndMsg:
+	case tea.PasteMsg, tea.PasteStartMsg, tea.PasteEndMsg:
 		return true
 	}
 	return false
@@ -1453,23 +1479,31 @@ func buildCommands() []dialog.Command {
 		"sessions-cleanup": func(_ dialog.Command) tea.Cmd {
 			return func() tea.Msg { return startSessionsCleanupMsg{} }
 		},
-		"rename": func(_ dialog.Command) tea.Cmd {
+		// Both of these collect their arguments through the dialog, and both
+		// accept them inline too (`/loop 5m check the build`). InitialValues
+		// carries what the user already typed into the fields so it is reviewed
+		// rather than silently discarded.
+		"rename": func(cmd dialog.Command) tea.Cmd {
+			argNames := []string{"title"}
 			return func() tea.Msg {
 				return dialog.ShowMultiArgumentsDialogMsg{
-					CommandID: "rename",
-					Content:   "",
-					ArgNames:  []string{"title"},
-					ArgHints:  map[string]string{"title": "New session title"},
+					CommandID:     "rename",
+					Content:       "",
+					ArgNames:      argNames,
+					ArgHints:      map[string]string{"title": "New session title"},
+					InitialValues: dialog.SplitInlineArgs(cmd.InlineArgs, argNames),
 				}
 			}
 		},
-		"loop": func(_ dialog.Command) tea.Cmd {
+		"loop": func(cmd dialog.Command) tea.Cmd {
+			argNames := []string{"interval", "prompt"}
 			return func() tea.Msg {
 				return dialog.ShowMultiArgumentsDialogMsg{
-					CommandID: "loop",
-					Content:   "",
-					ArgNames:  []string{"interval", "prompt"},
-					ArgHints:  map[string]string{"interval": "e.g., 5m, 1h, 30s", "prompt": "Task to run on schedule"},
+					CommandID:     "loop",
+					Content:       "",
+					ArgNames:      argNames,
+					ArgHints:      map[string]string{"interval": "e.g., 5m, 1h, 30s", "prompt": "Task to run on schedule"},
+					InitialValues: dialog.SplitInlineArgs(cmd.InlineArgs, argNames),
 				}
 			}
 		},

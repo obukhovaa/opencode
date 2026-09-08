@@ -28,6 +28,10 @@ var (
 	// $N — shorthand positional, single digit only (0-9), with word boundary
 	// to avoid matching dollar amounts like $50 or $100.
 	shorthandArgPattern = regexp.MustCompile(`\$(\d)\b`)
+	// $ARGUMENTS as a whole token. The word boundary keeps a longer name that
+	// merely starts with it — $ARGUMENTS_DIR, a legitimate named placeholder in
+	// a custom command — from being rewritten into "<args>_DIR".
+	bareArgumentsPattern = regexp.MustCompile(`\$ARGUMENTS\b`)
 )
 
 // HasArgumentPatterns reports whether content contains $ARGUMENTS, $ARGUMENTS[N], or $N patterns.
@@ -68,7 +72,9 @@ func ExtractPositionalIndices(content string) []int {
 //  5. $N — shorthand positional
 //  6. If $ARGUMENTS was absent and args are non-empty, append "ARGUMENTS: <value>"
 func SubstituteContent(content string, params SubstituteParams) string {
-	hadArguments := strings.Contains(content, "$ARGUMENTS") || shorthandArgPattern.MatchString(content)
+	hadArguments := bareArgumentsPattern.MatchString(content) ||
+		indexedArgPattern.MatchString(content) ||
+		shorthandArgPattern.MatchString(content)
 
 	// 1. Skill directory
 	content = strings.ReplaceAll(content, "${SKILL_DIR}", params.SkillDir)
@@ -93,8 +99,10 @@ func SubstituteContent(content string, params SubstituteParams) string {
 		return positional[idx]
 	})
 
-	// 4. $ARGUMENTS (bare, not followed by '[')
-	content = strings.ReplaceAll(content, "$ARGUMENTS", params.Args)
+	// 4. $ARGUMENTS (bare, not followed by '[' — step 3 consumed those)
+	content = bareArgumentsPattern.ReplaceAllStringFunc(content, func(string) string {
+		return params.Args
+	})
 
 	// 5. $N shorthand
 	content = shorthandArgPattern.ReplaceAllStringFunc(content, func(match string) string {
@@ -205,7 +213,12 @@ func QuoteArg(value string) string {
 	if value == "" {
 		return `""`
 	}
-	if !strings.ContainsAny(value, " \t\n\r\"'\\") {
+	// The whitespace test must be the one SplitArgs splits on, not an ASCII
+	// subset of it: a value carrying a non-breaking space or an en quad — the
+	// ordinary result of pasting "Q1 2026" out of a document into the argument
+	// dialog — would otherwise be emitted unquoted and split back into two
+	// arguments, shifting every later positional by one.
+	if strings.IndexFunc(value, unicode.IsSpace) < 0 && !strings.ContainsAny(value, `"'\`) {
 		return value
 	}
 	var b strings.Builder
