@@ -393,6 +393,13 @@ fallback:
   to: error-handler
 ```
 
+Note that hitting `maxTurns` is **not** an error by default: the runtime forces
+a wrap-up `struct_output` turn and the step **completes** on it, so a step cut
+off mid-task reports success and its `to` step never runs. On any step that
+leaves state behind — a clone, a branch, an uncommitted diff — add
+`on_turns_exhausted: fail` to the `fallback` block so exhaustion retries and
+then routes instead. See `references/flow-spec.md`.
+
 ### Shared Step Templates (`include` / `extends`)
 
 Factor a step reused across flows into a template file and pull it in with `extends`, so one source of truth replaces N copy-pasted blocks:

@@ -498,6 +498,15 @@ func validateFlow(f *Flow) error {
 				return fmt.Errorf("%w: step %q fallback references %q", ErrInvalidFallback, step.ID, step.Fallback.To)
 			}
 		}
+		if step.Fallback != nil {
+			switch step.Fallback.OnTurnsExhausted {
+			case "", OnTurnsExhaustedAccept, OnTurnsExhaustedFail:
+			default:
+				return fmt.Errorf("%w: step %q has %q, want %q or %q",
+					ErrInvalidOnTurnsExhausted, step.ID, step.Fallback.OnTurnsExhausted,
+					OnTurnsExhaustedAccept, OnTurnsExhaustedFail)
+			}
+		}
 	}
 
 	// Warn about potential convergence (multiple rules targeting same step)

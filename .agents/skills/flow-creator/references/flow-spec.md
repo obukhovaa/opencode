@@ -36,7 +36,7 @@ flow:               # flow specification (required)
   output:
     schema: object       # JSON Schema for structured output (optional)
   rules: array           # conditional routing rules (optional)
-  fallback: object       # retry and error routing (optional)
+  fallback: object       # retry and error routing; see Fallback for `on_turns_exhausted` (optional)
   maxTurns: int          # per-step override for agent's maxTurns. 0 (unset) inherits from agent. (optional)
   maxIterations: int     # cap on in-process self-loop iterations. 0 (unset) is unbounded — only flow timeout applies. (optional)
   context:               # scoped context override for this step — inheritable via extends; see docs/context.md (optional)
@@ -125,7 +125,52 @@ fallback:
   retry: 3      # number of retry attempts (int)
   delay: 10     # seconds between retries (int)
   to: step-id   # step to route to after all retries fail (string)
+  on_turns_exhausted: fail   # "accept" (default) | "fail" — see below (string)
 ```
+
+### `on_turns_exhausted`
+
+A step whose agent hits its turn budget (`maxTurns`) does not fail: the runtime
+forces one wrap-up `struct_output` turn and the step **completes** on that
+document. The routing rules then see a normal success — indistinguishable from
+a run the model chose to end.
+
+That is correct for a read-only step, and wrong for any step that leaves state
+on the pod. `on_turns_exhausted: fail` feeds turn exhaustion into this same
+fallback machinery instead:
+
+- it consumes the `retry` budget, and **each retry re-enters the same session
+  with a fresh turn budget** — same pod, same working tree — with the prompt
+  reframed as a continuation so the agent finishes what remains instead of
+  redoing the task or restating its wrap-up summary;
+- once that budget is spent the step **fails** and routes to `to`;
+- the wrap-up document's fields are merged into the args the `to` step
+  inherits, so a salvage step sees what the cut-off run reported (a run that
+  ended in prose instead carries it in the step's failure message).
+
+`retry: 0` with `on_turns_exhausted: fail` routes straight to `to` without
+paying for a second turn budget.
+
+Four things to know: `fail` without a `to` fails the step and salvages
+nothing; routing to `to` marks the whole run `flow.failed` even when salvage
+succeeds; each attempt gets a full `timeout` and a full turn budget, so
+`retry` multiplies the step's worst-case cost and wall clock; and because
+`extends` merges `fallback` as one whole key, a step that overrides `fallback`
+to tune `retry` silently loses `on_turns_exhausted` unless it repeats it.
+
+```yaml
+- id: implement
+  maxTurns: 200
+  fallback:
+    retry: 1
+    to: salvage-implement
+    on_turns_exhausted: fail
+```
+
+Reach for it on any step that clones, edits or builds: without it, an agent cut
+off mid-task reports success, the safety-net step never runs, and everything
+uncommitted dies with the pod (GENAI-296). Leave it off (or `accept`) for
+analysis-only steps, where the wrap-up summary genuinely is the result.
 
 ## Shared Step Templates (`include` / `extends`)
 
