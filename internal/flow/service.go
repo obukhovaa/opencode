@@ -911,6 +911,29 @@ func (s *service) runStep(
 					"text_length", len(textOutput))
 			}
 
+			// Turn-budget exhaustion as a routable outcome (GENAI-296). The
+			// run produced a usable document, but the agent runtime forced it
+			// at the max-turns gate — the work behind it was cut off, not
+			// finished. Steps that opt in via fallback.on_turns_exhausted
+			// treat that as a failure so it consumes the retry budget (a
+			// retry re-enters THIS session with a fresh turn budget, same pod
+			// and same working tree) and, once spent, routes to fallback.to.
+			// Without the opt-in this stays a completion, as it always was.
+			//
+			// Placed last on purpose: an exhausted run that produced NO
+			// document is already handled above as a missingStructOutputError,
+			// which carries the agent's last prose and its own TurnsExhausted
+			// flag. This branch is only the has-a-document shape.
+			if te := turnsExhaustedOutcome(step, result, attempt+1); te != nil {
+				lastErr = te
+				logging.Warn("Step exhausted its turn budget with work left incomplete",
+					"step", step.ID,
+					"attempt", attempt+1,
+					"max_attempts", maxAttempts,
+					"max_turns", step.MaxTurns)
+				continue
+			}
+
 			lastErr = nil
 			break
 		}
@@ -950,7 +973,7 @@ doneRetry:
 		// argument holds for both. See AgentEvent.TurnsExhausted.
 		if !step.Interactive && step.Output != nil && step.Output.Schema != nil &&
 			ctx.Err() == nil && !isTransientProviderError(lastErr) &&
-			!structOutputTurnsExhausted(lastErr) {
+			!errTurnsExhausted(lastErr) {
 			boundedCtx, cancelBounded := context.WithTimeout(ctx, forceStructOutputMaxWait)
 			// Same contract as the interactive re-prompt above: the retrying
 			// transition and the "was a re-prompt spent" flag are set from
@@ -1026,6 +1049,16 @@ doneRetry:
 		if step.Fallback != nil && step.Fallback.To != "" {
 			fallbackStep := findStep(f.Spec.Steps, step.Fallback.To)
 			if fallbackStep != nil {
+				// A turn-exhausted run reported a real document before it was
+				// cut off. Merge it into the args the fallback step inherits so
+				// a salvage step knows what the run had already done (which
+				// repos, which links, what it was mid-way through) instead of
+				// starting from the inbound args alone. Other failures have no
+				// document to merge and are unaffected.
+				var te *turnsExhaustedError
+				if errors.As(lastErr, &te) {
+					mergeStructOutputIntoArgs(args, te.StructOutput)
+				}
 				wg.Add(1)
 				nextSteps <- stepWork{step: *fallbackStep, args: copyArgs(args), prevStep: failedState, iteration: 1}
 			}

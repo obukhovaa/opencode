@@ -111,7 +111,7 @@ Because built-in discovery derives IDs from file basenames (which can never cont
 | `langfusePromptLabel` | string | No | Langfuse label to resolve for `langfusePromptPath`. Defaults to `telemetry.langfuse.prompts.label` (itself defaulting to `production`). Only valid alongside `langfusePromptPath`. |
 | `output.schema` | object | No | JSON Schema for structured output |
 | `rules` | array | No | Conditional routing rules |
-| `fallback` | object | No | Retry and error routing |
+| `fallback` | object | No | Retry and error routing. See [Fallback](#fallback) — including `on_turns_exhausted` for steps that must not complete silently when cut off at their turn budget. |
 | `maxTurns` | int | No | Per-step override for the agent's `maxTurns`. `0` (unset) inherits from the agent. |
 | `maxIterations` | int | No | Cap on in-process self-loop iterations. `0` (unset) is unbounded — only the flow timeout applies. When the (N+1)th self-route would exceed the cap, the step fails (and runs its `fallback`). See [Self-Loops](#self-loops). |
 | `timeout` | duration | No | Wall-clock deadline for the step's `agent.RunWith` invocation, including the non-interactive end-of-turn wait for any background tasks (`bash run_in_background`, `task async`, `monitor`) the step's agent spawned. Format is a Go duration string (`5m`, `1h30m`). Unset falls back to `OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT`; if that is also unset, the wait is bounded only by the surrounding orchestrator's ctx. When the deadline trips, the runtime injects a synthetic Assistant `[wait-timeout]` message into the session log enumerating still-pending tasks, then returns the step's pre-wait result. |
@@ -195,6 +195,56 @@ fallback:
 | `retry` | int | Number of retry attempts |
 | `delay` | int | Delay between retries (seconds) |
 | `to` | string | Step ID to route to after all retries fail |
+| `on_turns_exhausted` | string | What a turn-budget exhaustion means for the step: `accept` (default) or `fail`. See [Turn-budget exhaustion](#turn-budget-exhaustion). |
+
+#### Turn-budget exhaustion
+
+When a step's agent hits its turn budget (`maxTurns`), the runtime injects one
+wrap-up turn with `struct_output` forced, and the step **completes** on the
+document that turn produces. Routing rules then evaluate a normal success: no
+field distinguishes "the agent finished" from "the agent was cut off mid-task".
+
+For a read-only step that is the right outcome — the wrap-up summary *is* the
+result. For a step that leaves state behind (a clone, a branch, an uncommitted
+diff on a disposable pod) it is a silent data-loss path: the safety-net step
+wired to `fallback.to` never runs, and the work dies with the pod while the job
+reports green.
+
+`on_turns_exhausted: fail` routes exhaustion through the same fallback
+machinery as an error:
+
+- **Retry first.** Exhaustion consumes the `retry` budget, and each attempt
+  re-enters the **same session** with a **fresh turn budget** — same pod, same
+  working tree. The agent continues from where it stopped instead of starting
+  over, which is usually all it needs to finish (commit, push, open the MR).
+- **Then route.** Once the retry budget is spent, the step fails and routes to
+  `fallback.to`.
+- **The document survives.** The wrap-up `struct_output`'s top-level fields are
+  merged into the args the `fallback.to` step inherits, so a salvage step knows
+  what the cut-off run already reported rather than starting blind.
+
+`retry: 0` with `on_turns_exhausted: fail` skips straight to `fallback.to`.
+
+```yaml
+- id: implement
+  agent: coder
+  maxTurns: 200
+  fallback:
+    retry: 1
+    to: salvage-implement
+    on_turns_exhausted: fail
+```
+
+Two notes:
+
+- Turn exhaustion is **never** classified as a transient provider error, so a
+  step with `resume_after` does not park and auto-resume on it. That is
+  deliberate: a resume runs in a fresh workspace, which is exactly where the
+  half-finished working tree no longer exists.
+- An exhausted run that produced **no** document at all was already a
+  retryable failure (`expects structured output but agent produced empty
+  response`) and is unchanged. `on_turns_exhausted` only governs the shape that
+  used to complete silently — exhausted *with* a usable document.
 
 ## Shared step templates (`include` / `extends`)
 

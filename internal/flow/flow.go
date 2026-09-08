@@ -10,22 +10,23 @@ import (
 )
 
 var (
-	ErrFlowNotFound         = errors.New("flow not found")
-	ErrFlowDisabled         = errors.New("flow is disabled")
-	ErrInvalidFlowName      = errors.New("invalid flow name")
-	ErrInvalidStepID        = errors.New("invalid step ID")
-	ErrDuplicateStepID      = errors.New("duplicate step ID")
-	ErrInvalidRule          = errors.New("rule references non-existent step")
-	ErrInvalidFallback      = errors.New("fallback references non-existent step")
-	ErrNoSteps              = errors.New("flow has no steps")
-	ErrInvalidYAML          = errors.New("invalid flow YAML")
-	ErrInvalidPredicate     = errors.New("invalid predicate")
-	ErrInvalidMaxTurns      = errors.New("invalid maxTurns")
-	ErrInvalidMaxIterations = errors.New("invalid maxIterations")
-	ErrInvalidInclude       = errors.New("invalid flow include")
-	ErrInvalidTemplate      = errors.New("invalid step template")
-	ErrUnknownTemplate      = errors.New("unknown step template")
-	ErrInvalidPromptSource  = errors.New("invalid step prompt source")
+	ErrFlowNotFound            = errors.New("flow not found")
+	ErrFlowDisabled            = errors.New("flow is disabled")
+	ErrInvalidFlowName         = errors.New("invalid flow name")
+	ErrInvalidStepID           = errors.New("invalid step ID")
+	ErrDuplicateStepID         = errors.New("duplicate step ID")
+	ErrInvalidRule             = errors.New("rule references non-existent step")
+	ErrInvalidFallback         = errors.New("fallback references non-existent step")
+	ErrInvalidOnTurnsExhausted = errors.New("invalid fallback.on_turns_exhausted")
+	ErrNoSteps                 = errors.New("flow has no steps")
+	ErrInvalidYAML             = errors.New("invalid flow YAML")
+	ErrInvalidPredicate        = errors.New("invalid predicate")
+	ErrInvalidMaxTurns         = errors.New("invalid maxTurns")
+	ErrInvalidMaxIterations    = errors.New("invalid maxIterations")
+	ErrInvalidInclude          = errors.New("invalid flow include")
+	ErrInvalidTemplate         = errors.New("invalid step template")
+	ErrUnknownTemplate         = errors.New("unknown step template")
+	ErrInvalidPromptSource     = errors.New("invalid step prompt source")
 )
 
 // Flow represents a discovered flow definition.
@@ -221,6 +222,33 @@ type Fallback struct {
 	Retry int    `yaml:"retry"`
 	Delay int    `yaml:"delay,omitempty"`
 	To    string `yaml:"to,omitempty"`
+	// OnTurnsExhausted decides what a run that ended on its turn budget
+	// (AgentEvent.TurnsExhausted) means for the step. See the
+	// OnTurnsExhausted* constants; empty is OnTurnsExhaustedAccept.
+	OnTurnsExhausted string `yaml:"on_turns_exhausted,omitempty"`
+}
+
+// Values for Fallback.OnTurnsExhausted.
+const (
+	// OnTurnsExhaustedAccept (the default) completes the step on the
+	// wrap-up struct_output and routes on its rules — a run that was cut
+	// off at its turn budget is indistinguishable from one the model chose
+	// to end.
+	OnTurnsExhaustedAccept = "accept"
+	// OnTurnsExhaustedFail feeds turn exhaustion into this same fallback
+	// machinery: it consumes the `retry` budget (each retry re-enters the
+	// SAME session with a fresh turn budget, so the agent continues on the
+	// same pod and the same working tree), and once that budget is spent
+	// the step fails and routes to `to`. Use it on steps that leave state
+	// behind — a half-finished checkout is worth another turn budget, or a
+	// salvage step, but never a silent success (GENAI-296).
+	OnTurnsExhaustedFail = "fail"
+)
+
+// FailsOnTurnsExhausted reports whether a turn-budget exhaustion should be
+// treated as a step failure (retry-then-route) rather than a completion.
+func (s Step) FailsOnTurnsExhausted() bool {
+	return s.Fallback != nil && s.Fallback.OnTurnsExhausted == OnTurnsExhaustedFail
 }
 
 // TimeoutDuration parses Step.Timeout as a Go duration string and returns
