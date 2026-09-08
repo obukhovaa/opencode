@@ -1,8 +1,13 @@
 package slashcmd
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
-const skillPrefix = "skill:"
+// SkillPrefix namespaces a skill inside the slash-command namespace:
+// /skill:<name>.
+const SkillPrefix = "skill:"
 
 type ParsedCommand struct {
 	Name    string
@@ -22,13 +27,17 @@ func Parse(input string) *ParsedCommand {
 		return nil
 	}
 
-	name, args, _ := strings.Cut(rest, " ")
-	args = strings.TrimSpace(args)
+	// The name ends at the first whitespace rune, not the first space, so a
+	// tab-separated argument is handled the same as a space-separated one.
+	name, args := rest, ""
+	if idx := strings.IndexFunc(rest, unicode.IsSpace); idx >= 0 {
+		name, args = rest[:idx], strings.TrimSpace(rest[idx:])
+	}
 
 	isSkill := false
-	if strings.HasPrefix(name, skillPrefix) {
+	if strings.HasPrefix(name, SkillPrefix) {
 		isSkill = true
-		name = strings.TrimPrefix(name, skillPrefix)
+		name = strings.TrimPrefix(name, SkillPrefix)
 	}
 
 	if name == "" {

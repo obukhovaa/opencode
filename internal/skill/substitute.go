@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // SubstituteParams holds context for skill content substitution.
@@ -13,6 +14,12 @@ type SubstituteParams struct {
 	Args      string
 	SkillDir  string
 	SessionID string
+	// SuppressArgsAppend disables step 6 (appending "ARGUMENTS: <value>" when
+	// the content declared no placeholder). Callers set it when the arguments
+	// were already consumed by a placeholder the caller substituted itself —
+	// named $FOO placeholders in custom commands — so the values are not
+	// restated at the end of the prompt.
+	SuppressArgsAppend bool
 }
 
 var (
@@ -21,6 +28,10 @@ var (
 	// $N — shorthand positional, single digit only (0-9), with word boundary
 	// to avoid matching dollar amounts like $50 or $100.
 	shorthandArgPattern = regexp.MustCompile(`\$(\d)\b`)
+	// $ARGUMENTS as a whole token. The word boundary keeps a longer name that
+	// merely starts with it — $ARGUMENTS_DIR, a legitimate named placeholder in
+	// a custom command — from being rewritten into "<args>_DIR".
+	bareArgumentsPattern = regexp.MustCompile(`\$ARGUMENTS\b`)
 )
 
 // HasArgumentPatterns reports whether content contains $ARGUMENTS, $ARGUMENTS[N], or $N patterns.
@@ -61,7 +72,9 @@ func ExtractPositionalIndices(content string) []int {
 //  5. $N — shorthand positional
 //  6. If $ARGUMENTS was absent and args are non-empty, append "ARGUMENTS: <value>"
 func SubstituteContent(content string, params SubstituteParams) string {
-	hadArguments := strings.Contains(content, "$ARGUMENTS") || shorthandArgPattern.MatchString(content)
+	hadArguments := bareArgumentsPattern.MatchString(content) ||
+		indexedArgPattern.MatchString(content) ||
+		shorthandArgPattern.MatchString(content)
 
 	// 1. Skill directory
 	content = strings.ReplaceAll(content, "${SKILL_DIR}", params.SkillDir)
@@ -71,7 +84,7 @@ func SubstituteContent(content string, params SubstituteParams) string {
 	content = strings.ReplaceAll(content, "${SESSION_ID}", params.SessionID)
 	content = strings.ReplaceAll(content, "${CLAUDE_SESSION_ID}", params.SessionID)
 
-	positional := splitArgs(params.Args)
+	positional := SplitArgs(params.Args)
 
 	// 3. $ARGUMENTS[N]
 	content = indexedArgPattern.ReplaceAllStringFunc(content, func(match string) string {
@@ -86,8 +99,10 @@ func SubstituteContent(content string, params SubstituteParams) string {
 		return positional[idx]
 	})
 
-	// 4. $ARGUMENTS (bare, not followed by '[')
-	content = strings.ReplaceAll(content, "$ARGUMENTS", params.Args)
+	// 4. $ARGUMENTS (bare, not followed by '[' — step 3 consumed those)
+	content = bareArgumentsPattern.ReplaceAllStringFunc(content, func(string) string {
+		return params.Args
+	})
 
 	// 5. $N shorthand
 	content = shorthandArgPattern.ReplaceAllStringFunc(content, func(match string) string {
@@ -103,18 +118,126 @@ func SubstituteContent(content string, params SubstituteParams) string {
 	})
 
 	// 6. Append if $ARGUMENTS was not present
-	if !hadArguments && params.Args != "" {
+	if !hadArguments && !params.SuppressArgsAppend && params.Args != "" {
 		content = fmt.Sprintf("%s\n\nARGUMENTS: %s", content, params.Args)
 	}
 
 	return content
 }
 
-// splitArgs splits an argument string into positional arguments.
-// Handles simple space-separated values.
-func splitArgs(args string) []string {
+// SplitArgs splits an argument string into positional arguments, honouring
+// single and double quotes so a value containing spaces stays one argument.
+// Inside double quotes a backslash escapes the next character; single quotes are
+// literal throughout. An unbalanced quote is a parse failure and degrades to a
+// plain whitespace split rather than erroring — malformed input must still
+// produce usable positionals.
+//
+// SplitArgs is the inverse of QuoteArg: SplitArgs(QuoteArgs(values))
+// returns values unchanged.
+func SplitArgs(args string) []string {
 	if args == "" {
 		return nil
 	}
-	return strings.Fields(args)
+
+	var (
+		out     []string
+		cur     strings.Builder
+		started bool // cur holds a token, even if it is the empty string ("")
+	)
+
+	flush := func() {
+		if started {
+			out = append(out, cur.String())
+			cur.Reset()
+			started = false
+		}
+	}
+
+	runes := []rune(args)
+	for i := 0; i < len(runes); i++ {
+		c := runes[i]
+		switch {
+		case c == '"':
+			started = true
+			i++
+			closed := false
+			for ; i < len(runes); i++ {
+				if runes[i] == '\\' && i+1 < len(runes) {
+					i++
+					cur.WriteRune(runes[i])
+					continue
+				}
+				if runes[i] == '"' {
+					closed = true
+					break
+				}
+				cur.WriteRune(runes[i])
+			}
+			if !closed {
+				return strings.Fields(args)
+			}
+		case c == '\'':
+			started = true
+			i++
+			closed := false
+			for ; i < len(runes); i++ {
+				if runes[i] == '\'' {
+					closed = true
+					break
+				}
+				cur.WriteRune(runes[i])
+			}
+			if !closed {
+				return strings.Fields(args)
+			}
+		case unicode.IsSpace(c):
+			flush()
+		default:
+			started = true
+			cur.WriteRune(c)
+		}
+	}
+	flush()
+
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// QuoteArg renders one positional value so that SplitArgs recovers it verbatim.
+// Values that are empty or carry whitespace, a quote, or a backslash are wrapped
+// in double quotes with the escapable characters escaped; anything else is
+// returned unchanged so ordinary arguments stay readable in the editor.
+func QuoteArg(value string) string {
+	if value == "" {
+		return `""`
+	}
+	// The whitespace test must be the one SplitArgs splits on, not an ASCII
+	// subset of it: a value carrying a non-breaking space or an en quad — the
+	// ordinary result of pasting "Q1 2026" out of a document into the argument
+	// dialog — would otherwise be emitted unquoted and split back into two
+	// arguments, shifting every later positional by one.
+	if strings.IndexFunc(value, unicode.IsSpace) < 0 && !strings.ContainsAny(value, `"'\`) {
+		return value
+	}
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range value {
+		if r == '"' || r == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// QuoteArgs joins values into an argument string that SplitArgs round-trips.
+func QuoteArgs(values []string) string {
+	quoted := make([]string, len(values))
+	for i, v := range values {
+		quoted[i] = QuoteArg(v)
+	}
+	return strings.Join(quoted, " ")
 }

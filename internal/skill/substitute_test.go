@@ -1,6 +1,9 @@
 package skill
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestSubstituteContent(t *testing.T) {
 	tests := []struct {
@@ -147,19 +150,83 @@ func TestSubstituteContent(t *testing.T) {
 
 func TestSplitArgs(t *testing.T) {
 	tests := []struct {
+		name  string
 		input string
-		want  int
+		want  []string
 	}{
-		{"", 0},
-		{"one", 1},
-		{"one two three", 3},
-		{"  spaced   out  ", 2},
+		{"empty", "", nil},
+		{"single", "one", []string{"one"}},
+		{"three bare words", "one two three", []string{"one", "two", "three"}},
+		{"collapses runs of spaces", "  spaced   out  ", []string{"spaced", "out"}},
+		{"tabs and newlines separate", "a\tb\nc", []string{"a", "b", "c"}},
+		{"double quotes group", `one "two three" four`, []string{"one", "two three", "four"}},
+		{"single quotes group", `one 'two three' four`, []string{"one", "two three", "four"}},
+		{"quotes are literal inside single quotes", `'he said "hi"'`, []string{`he said "hi"`}},
+		{"apostrophe inside double quotes", `"don't"`, []string{"don't"}},
+		{"escaped quote inside double quotes", `"say \"hi\""`, []string{`say "hi"`}},
+		{"escaped backslash inside double quotes", `"a\\b"`, []string{`a\b`}},
+		{"empty quoted value is preserved", `a "" b`, []string{"a", "", "b"}},
+		{"quotes adjacent to bare text join", `pre"quoted arg"post`, []string{"prequoted argpost"}},
+		{"backslash outside quotes is literal", `C:\tmp\x`, []string{`C:\tmp\x`}},
+		// Unbalanced quotes are a parse failure: fall back to a plain whitespace
+		// split so a half-typed argument still yields usable positionals.
+		{"unbalanced double quote falls back", `a "b c`, []string{"a", `"b`, "c"}},
+		{"unbalanced single quote falls back", `a 'b c`, []string{"a", "'b", "c"}},
 	}
 
 	for _, tt := range tests {
-		got := splitArgs(tt.input)
-		if len(got) != tt.want {
-			t.Errorf("splitArgs(%q) = %d items, want %d", tt.input, len(got), tt.want)
+		t.Run(tt.name, func(t *testing.T) {
+			got := SplitArgs(tt.input)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("SplitArgs(%q) = %#v, want %#v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestQuoteArg(t *testing.T) {
+	tests := []struct {
+		value string
+		want  string
+	}{
+		{"plain", "plain"},
+		{"", `""`},
+		{"two words", `"two words"`},
+		{"tab\there", "\"tab\there\""},
+		{`say "hi"`, `"say \"hi\""`},
+		{"don't", `"don't"`},
+		{`a\b`, `"a\\b"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			if got := QuoteArg(tt.value); got != tt.want {
+				t.Errorf("QuoteArg(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestQuoteArgsRoundTrip is the contract the argument dialog relies on: values
+// collected in the dialog are written into the editor as text, re-parsed at
+// submit time, and must come back byte-identical.
+func TestQuoteArgsRoundTrip(t *testing.T) {
+	cases := [][]string{
+		{"one"},
+		{"one", "two", "three"},
+		{"two words", "third"},
+		{"HEAD~3", "src/internal tools"},
+		{`say "hi"`, "don't"},
+		{`C:\tmp\x`, "plain"},
+		{"a", "", "b"},
+		{"trailing space "},
+	}
+
+	for _, values := range cases {
+		joined := QuoteArgs(values)
+		got := SplitArgs(joined)
+		if !reflect.DeepEqual(got, values) {
+			t.Errorf("round trip of %#v via %q = %#v", values, joined, got)
 		}
 	}
 }

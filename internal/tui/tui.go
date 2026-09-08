@@ -519,10 +519,10 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case dialog.CommandRunCustomMsg:
-		if msg.CommandID == "loop" {
+		switch msg.CommandID {
+		case "loop":
 			return a, a.handleLoopCommand(msg.Args)
-		}
-		if msg.CommandID == "rename" {
+		case "rename":
 			return a, a.handleRenameCommand(msg.Args)
 		}
 
@@ -620,7 +620,13 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err := config.MarkProjectInitialized(); err != nil {
 						return a, util.ReportError(err)
 					}
-					return a, cmd.Handler(cmd)
+					// Send the prompt directly rather than through cmd.Handler.
+					// /init is a prompt command, so its handler stages `/init `
+					// into the editor for the user to complete — right for the
+					// command popup, wrong here: this dialog asked a yes/no
+					// question, and answering Yes must run the initialization,
+					// not leave text in an input the dialog never mentioned.
+					return a, util.CmdHandler(chat.SendMsg{Text: cmd.Content})
 				}
 			}
 		} else {
@@ -706,24 +712,46 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case dialog.ShowMultiArgumentsDialogMsg:
 		// Show multi-arguments dialog
-		a.multiArgumentsDialog = dialog.NewMultiArgumentsDialogCmp(msg.CommandID, msg.Content, msg.ArgNames, msg.ArgHints)
+		a.multiArgumentsDialog = dialog.NewMultiArgumentsDialogCmp(msg)
 		a.showMultiArgumentsDialog = true
 		return a, a.multiArgumentsDialog.Init()
 
 	case dialog.CloseMultiArgumentsDialogMsg:
 		// Close multi-arguments dialog
 		a.showMultiArgumentsDialog = false
+		if !msg.Submit {
+			return a, nil
+		}
 
-		// If submitted, forward raw content and args to the command handler
-		// which performs substitution and shell markup expansion
-		if msg.Submit {
+		// Action commands that collect their arguments through this dialog
+		// (/rename, /loop) read them by name and act immediately. The check is
+		// derived from the command table rather than a list kept here, so a new
+		// argument-taking action command routes correctly without a second
+		// place to update.
+		if cmd, ok := a.findCommand(msg.CommandID); ok && cmd.IsAction() {
 			return a, util.CmdHandler(dialog.CommandRunCustomMsg{
-				Content:   msg.Content,
 				Args:      msg.Args,
 				CommandID: msg.CommandID,
 			})
 		}
-		return a, nil
+
+		// Everything else is a prompt invocation: stage it as editable text so
+		// the user can add instructions or another invocation before sending.
+		return a, util.CmdHandler(dialog.StageInvocationMsg{
+			Text: dialog.StagedInvocation(msg.CommandID, dialog.StagedArgs(msg.ArgNames, msg.Values, msg.Mode)),
+		})
+
+	case tea.PasteMsg, tea.PasteStartMsg, tea.PasteEndMsg:
+		// Bracketed paste is not a key press, so without this it would fall
+		// through to the page and land in the chat editor underneath the modal
+		// — the text arriving somewhere the user cannot see it while a dialog
+		// holds focus. The argument dialog is routed here because it is not
+		// part of the overlay block below.
+		if a.showMultiArgumentsDialog {
+			args, pasteCmd := a.multiArgumentsDialog.Update(msg)
+			a.multiArgumentsDialog = args.(dialog.MultiArgumentsDialogCmp)
+			return a, pasteCmd
+		}
 
 	case tea.KeyPressMsg:
 		// If multi-arguments dialog is open, let it handle the key press first
@@ -931,8 +959,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		f, filepickerCmd := a.filepicker.Update(msg)
 		a.filepicker = f.(dialog.FilepickerCmp)
 		cmds = append(cmds, filepickerCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -941,8 +969,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		q, quitCmd := a.quit.Update(msg)
 		a.quit = q.(dialog.QuitDialog)
 		cmds = append(cmds, quitCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -950,8 +978,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, permissionsCmd := a.permissions.Update(msg)
 		a.permissions = d.(dialog.PermissionDialogCmp)
 		cmds = append(cmds, permissionsCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -960,8 +988,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, questionCmd := a.questionDialog.Update(msg)
 		a.questionDialog = d.(dialog.QuestionDialogCmp)
 		cmds = append(cmds, questionCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -970,8 +998,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, sessionCmd := a.sessionDialog.Update(msg)
 		a.sessionDialog = d.(dialog.SessionDialog)
 		cmds = append(cmds, sessionCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -980,8 +1008,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, cmd := a.deleteSessionDialog.Update(msg)
 		a.deleteSessionDialog = d.(dialog.SessionDialog)
 		cmds = append(cmds, cmd)
-		// block other tea.KeyPressMsgs
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// block other input messages
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -990,8 +1018,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, commandCmd := a.commandDialog.Update(msg)
 		a.commandDialog = d.(dialog.CommandDialog)
 		cmds = append(cmds, commandCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -1000,8 +1028,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, modelCmd := a.modelDialog.Update(msg)
 		a.modelDialog = d.(dialog.ModelDialog)
 		cmds = append(cmds, modelCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -1010,8 +1038,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, initCmd := a.initDialog.Update(msg)
 		a.initDialog = d.(dialog.InitDialogCmp)
 		cmds = append(cmds, initCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -1020,8 +1048,8 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, themeCmd := a.themeDialog.Update(msg)
 		a.themeDialog = d.(dialog.ThemeDialog)
 		cmds = append(cmds, themeCmd)
-		// Only block key messages send all other messages down
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		// Block input messages, send everything else down
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -1030,7 +1058,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, cleanupCmd := a.sessionsCleanupDialog.Update(msg)
 		a.sessionsCleanupDialog = d.(dialog.SessionsCleanupDialog)
 		cmds = append(cmds, cleanupCmd)
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -1039,7 +1067,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, missedCmd := a.missedCronDialog.Update(msg)
 		a.missedCronDialog = d.(dialog.MissedCronDialog)
 		cmds = append(cmds, missedCmd)
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
 	}
@@ -1048,9 +1076,19 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d, queueCmd := a.queueDialog.Update(msg)
 		a.queueDialog = d.(dialog.QueueDialog)
 		cmds = append(cmds, queueCmd)
-		if _, ok := msg.(tea.KeyPressMsg); ok {
+		if consumesInput(msg) {
 			return a, tea.Batch(cmds...)
 		}
+	}
+
+	// The help overlay has no component of its own to update, but it covers the
+	// page, so a paste arriving while it is up would land in the chat editor
+	// behind it — the same leak consumesInput closes for the dialogs above.
+	// Only paste is swallowed: key presses are left routing exactly as before,
+	// since the overlay's own dismiss keys are handled further up and the rest
+	// still scroll the transcript underneath.
+	if a.showHelp && isPaste(msg) {
+		return a, tea.Batch(cmds...)
 	}
 
 	switch msg.(type) {
@@ -1164,6 +1202,29 @@ func (a *appModel) dismissAllDialogs() {
 // RegisterCommand adds a command to the command dialog
 func (a *appModel) RegisterCommand(cmd dialog.Command) {
 	a.commands = append(a.commands, cmd)
+}
+
+// consumesInput reports whether msg is user input that a focused overlay must
+// consume rather than pass down to the page beneath it. Key presses are the
+// obvious case; bracketed paste is the one that bites, because it arrives as
+// tea.PasteMsg and a modal that ignores it lets the pasted text appear in the
+// chat editor behind the dialog.
+func consumesInput(msg tea.Msg) bool {
+	if _, ok := msg.(tea.KeyPressMsg); ok {
+		return true
+	}
+	return isPaste(msg)
+}
+
+// isPaste reports whether msg is part of a bracketed-paste sequence. The three
+// types are always treated together: an overlay that swallowed a start without
+// its end would leave the terminal mid-paste.
+func isPaste(msg tea.Msg) bool {
+	switch msg.(type) {
+	case tea.PasteMsg, tea.PasteStartMsg, tea.PasteEndMsg:
+		return true
+	}
+	return false
 }
 
 func (a *appModel) findCommand(id string) (dialog.Command, bool) {
@@ -1401,15 +1462,6 @@ func buildCommands() []dialog.Command {
 
 	// TUI-specific handlers keyed by command ID
 	handlers := map[string]func(dialog.Command) tea.Cmd{
-		"init": func(cmd dialog.Command) tea.Cmd {
-			return util.CmdHandler(chat.SendMsg{Text: cmd.Content})
-		},
-		"review": func(cmd dialog.Command) tea.Cmd {
-			return dialog.ParameterizedCommandHandler(cmd.Content, &cmd)
-		},
-		"commit": func(cmd dialog.Command) tea.Cmd {
-			return util.CmdHandler(chat.SendMsg{Text: cmd.Content})
-		},
 		"new":   newSession,
 		"reset": newSession,
 		"compact": func(_ dialog.Command) tea.Cmd {
@@ -1427,23 +1479,31 @@ func buildCommands() []dialog.Command {
 		"sessions-cleanup": func(_ dialog.Command) tea.Cmd {
 			return func() tea.Msg { return startSessionsCleanupMsg{} }
 		},
-		"rename": func(_ dialog.Command) tea.Cmd {
+		// Both of these collect their arguments through the dialog, and both
+		// accept them inline too (`/loop 5m check the build`). InitialValues
+		// carries what the user already typed into the fields so it is reviewed
+		// rather than silently discarded.
+		"rename": func(cmd dialog.Command) tea.Cmd {
+			argNames := []string{"title"}
 			return func() tea.Msg {
 				return dialog.ShowMultiArgumentsDialogMsg{
-					CommandID: "rename",
-					Content:   "",
-					ArgNames:  []string{"title"},
-					ArgHints:  map[string]string{"title": "New session title"},
+					CommandID:     "rename",
+					Content:       "",
+					ArgNames:      argNames,
+					ArgHints:      map[string]string{"title": "New session title"},
+					InitialValues: dialog.SplitInlineArgs(cmd.InlineArgs, argNames),
 				}
 			}
 		},
-		"loop": func(_ dialog.Command) tea.Cmd {
+		"loop": func(cmd dialog.Command) tea.Cmd {
+			argNames := []string{"interval", "prompt"}
 			return func() tea.Msg {
 				return dialog.ShowMultiArgumentsDialogMsg{
-					CommandID: "loop",
-					Content:   "",
-					ArgNames:  []string{"interval", "prompt"},
-					ArgHints:  map[string]string{"interval": "e.g., 5m, 1h, 30s", "prompt": "Task to run on schedule"},
+					CommandID:     "loop",
+					Content:       "",
+					ArgNames:      argNames,
+					ArgHints:      map[string]string{"interval": "e.g., 5m, 1h, 30s", "prompt": "Task to run on schedule"},
+					InitialValues: dialog.SplitInlineArgs(cmd.InlineArgs, argNames),
 				}
 			}
 		},
@@ -1454,8 +1514,13 @@ func buildCommands() []dialog.Command {
 
 	for _, b := range builtins {
 		cmd := dialog.Command{CommandInfo: b}
-		if h, ok := handlers[b.ID]; ok {
+		switch h, ok := handlers[b.ID]; {
+		case ok:
 			cmd.Handler = h
+		case !b.IsAction():
+			// Every prompt command shares one handler: stage the invocation (or
+			// collect its arguments first) instead of sending a message.
+			cmd.Handler = dialog.StageCommandHandler
 		}
 		commands = append(commands, cmd)
 	}

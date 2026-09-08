@@ -4,9 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -135,38 +132,38 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dialog.CompletionSelectedMsg:
 		if msg.ProviderID == completions.CommandCompletionProviderID {
 			p.showCommandCompletionDialog = false
-			// Remove the /query text from the editor
-			cmds = append(cmds, util.CmdHandler(dialog.CompletionRemoveTextMsg{
+			// Remove the /query text from the editor; the staged invocation is
+			// inserted in its place (or, for an action command, nothing is).
+			//
+			// The two must run in this order, so they are sequenced rather than
+			// batched: tea.Batch dispatches each command on its own goroutine,
+			// and both of these mutate the same textarea. Staging first would
+			// insert the invocation and only then strip the `/query` the user
+			// typed, leaving whatever followed the cursor attached to the
+			// staged line as its arguments.
+			removeTyped := util.CmdHandler(dialog.CompletionRemoveTextMsg{
 				SearchString: msg.SearchString,
-			}))
-			// Check if it's a skill selection (value starts with "skill:")
-			if strings.HasPrefix(msg.CompletionValue, "skill:") {
-				skillName := strings.TrimPrefix(msg.CompletionValue, "skill:")
-				if s, err := skill.Get(skillName); err == nil && s.IsUserInvocable() {
-					// Check if skill content has $PLACEHOLDER patterns — show argument dialog
-					argCmd := dialog.ParameterizedSkillHandler(s)
-					if argCmd != nil {
-						cmds = append(cmds, argCmd)
-					} else {
-						baseDir := filepath.Dir(s.Location)
-						content := skill.SubstituteContent(s.Content, skill.SubstituteParams{
-							SkillDir:  baseDir,
-							SessionID: p.session.ID,
-						})
-						content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
-						content = skill.WrapSkillContent(s.Name, content)
-						cmd := p.sendMessage(content, nil)
-						if cmd != nil {
-							cmds = append(cmds, cmd)
-						}
-					}
+			})
+			if skillName, ok := strings.CutPrefix(msg.CompletionValue, slashcmd.SkillPrefix); ok {
+				s, err := skill.Get(skillName)
+				if err != nil {
+					return p, tea.Batch(append(cmds, removeTyped, util.ReportError(err))...)
 				}
+				if !s.IsUserInvocable() {
+					return p, tea.Batch(append(cmds, removeTyped,
+						util.ReportWarn(fmt.Sprintf("Skill '%s' is not user-invocable", s.Name)))...)
+				}
+				cmds = append(cmds, tea.Sequence(removeTyped, dialog.StageSkillHandler(s)))
 				return p, tea.Batch(cmds...)
 			}
-			// Execute the selected command
+			// Commands run through their Handler: action commands act now,
+			// prompt commands stage themselves (dialog.StageCommandHandler).
 			if cmd, ok := p.findCommand(msg.CompletionValue); ok {
-				cmds = append(cmds, util.CmdHandler(dialog.CommandSelectedMsg{Command: cmd}))
+				cmds = append(cmds, tea.Sequence(removeTyped,
+					util.CmdHandler(dialog.CommandSelectedMsg{Command: cmd})))
+				return p, tea.Batch(cmds...)
 			}
+			cmds = append(cmds, removeTyped)
 			return p, tea.Batch(cmds...)
 		}
 	case chat.ShellModeChangedMsg:
@@ -194,66 +191,14 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Fall through: let the message reach the messages component so it
 		// re-renders the queue banner (list.go queries app.QueueLen in View).
+	case chat.RunActionMsg:
+		// The submission was a single action command: run its TUI handler.
+		return p, p.actionCommand(msg.Command, msg.Args)
 	case chat.SendMsg:
-		if resolved := p.resolveInlineSlash(msg.Text); resolved != nil {
-			return p, resolved
-		}
+		// msg.Text is already expanded: the editor runs expandSubmission before
+		// it forks between dispatch and enqueue, so slash invocations are
+		// resolved exactly once and never re-scanned here.
 		cmd := p.sendMessage(msg.Text, msg.Attachments)
-		if cmd != nil {
-			return p, cmd
-		}
-	case dialog.CommandRunCustomMsg:
-		// Queuing slash-command / custom-command runs is a future decision;
-		// retain the busy-reject guard unchanged (task 6.2).
-		if p.app.ActiveAgent().IsBusy() {
-			return p, util.ReportWarn("Agent is busy, please wait before executing a command...")
-		}
-
-		content := msg.Content
-		if strings.HasPrefix(msg.CommandID, "skill:") {
-			// Skill: use SubstituteContent for proper $0, $ARGUMENTS, ${SKILL_DIR} handling
-			skillName := strings.TrimPrefix(msg.CommandID, "skill:")
-			s, err := skill.Get(skillName)
-			if err != nil {
-				return p, util.ReportError(err)
-			}
-			// Build combined args string from the dialog values
-			args := ""
-			if msg.Args != nil {
-				if v, ok := msg.Args["ARGUMENTS"]; ok {
-					args = v
-				} else if positional := joinPositionalArgs(msg.Args); positional != "" {
-					args = positional
-				} else {
-					for name, value := range msg.Args {
-						placeholder := "$" + name
-						content = strings.ReplaceAll(content, placeholder, value)
-					}
-				}
-			}
-			baseDir := filepath.Dir(s.Location)
-			content = skill.SubstituteContent(content, skill.SubstituteParams{
-				Args:      args,
-				SkillDir:  baseDir,
-				SessionID: p.session.ID,
-			})
-		} else if msg.Args != nil {
-			for name, value := range msg.Args {
-				placeholder := "$" + name
-				content = strings.ReplaceAll(content, placeholder, value)
-			}
-		}
-
-		// Expand !`cmd` shell markup after argument substitution
-		content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
-
-		// Wrap skill content so the LLM won't re-invoke the skill tool
-		if strings.HasPrefix(msg.CommandID, "skill:") {
-			skillName := strings.TrimPrefix(msg.CommandID, "skill:")
-			content = skill.WrapSkillContent(skillName, content)
-		}
-
-		cmd := p.sendMessage(content, nil)
 		if cmd != nil {
 			return p, cmd
 		}
@@ -679,111 +624,80 @@ func NewChatPage(app *app.App, commands []dialog.Command) tea.Model {
 		chat.NewMessagesCmp(app),
 		layout.WithPadding(0, 1, 0, 1),
 	)
-	editorContainer := layout.NewContainer(
-		chat.NewEditorCmp(app),
-		layout.WithBorder(true, false, false, false),
-	)
 
 	var sess session.Session
 	if app.InitialSession != nil {
 		sess = *app.InitialSession
 	}
 
-	return &chatPage{
+	// The page is built before the editor so the editor's expander can close
+	// over it: expandSubmission reads p.commands and the live p.session, and
+	// chatPage is a pointer model (unlike the root appModel, whose value
+	// receiver makes captured pointers go stale — see CLAUDE.md).
+	p := &chatPage{
 		app:                     app,
-		editor:                  editorContainer,
 		messages:                messagesContainer,
 		session:                 sess,
 		completionDialog:        completionDialog,
 		commandCompletionDialog: commandCompletionDialog,
 		commands:                commands,
-		layout: layout.NewSplitPane(
-			layout.WithLeftPanel(messagesContainer),
-			layout.WithBottomPanel(editorContainer),
-		),
 	}
+
+	p.editor = layout.NewContainer(
+		chat.NewEditorCmp(app, p.expandSubmission, p.scanInvocations),
+		layout.WithBorder(true, false, false, false),
+	)
+	p.layout = layout.NewSplitPane(
+		layout.WithLeftPanel(messagesContainer),
+		layout.WithBottomPanel(p.editor),
+	)
+
+	return p
 }
 
-// joinPositionalArgs reconstructs a space-separated args string from
-// per-index dialog values (keys "0", "1", "2", ...). Returns "" if
-// the map doesn't contain numeric keys.
-func joinPositionalArgs(args map[string]string) string {
-	indices := make([]int, 0, len(args))
-	values := make(map[int]string, len(args))
-	for key, val := range args {
-		idx, err := strconv.Atoi(key)
-		if err != nil {
-			return ""
-		}
-		indices = append(indices, idx)
-		values[idx] = val
-	}
-	if len(indices) == 0 {
-		return ""
-	}
-	sort.Ints(indices)
-	parts := make([]string, len(indices))
-	for i, idx := range indices {
-		parts[i] = values[idx]
-	}
-	return strings.Join(parts, " ")
+// expandSubmission is the editor's SubmissionExpander: it turns submitted
+// message text into the prompt that will be sent, resolving every slash
+// invocation in it. It runs at the single expansion point — before the editor
+// forks between direct dispatch and the queue — so a message that waits in the
+// queue carries the real prompt rather than the literal `/command` text, and no
+// text is ever expanded twice.
+func (p *chatPage) expandSubmission(text string) (slashcmd.Expansion, error) {
+	return slashcmd.Expand(text, p.slashRegistry(), slashcmd.ExpandOptions{
+		SessionID:   p.session.ID,
+		Interactive: true,
+		ShellExpand: func(content string) string {
+			return format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
+		},
+	})
 }
 
-func (p *chatPage) resolveInlineSlash(text string) tea.Cmd {
-	parsed := slashcmd.Parse(text)
-	if parsed == nil {
-		return nil
-	}
+// scanInvocations is the editor's InvocationScanner, backing the recognition
+// hint above the input. It resolves against the same registry as
+// expandSubmission, so what the hint promises is what submitting delivers.
+func (p *chatPage) scanInvocations(text string) []slashcmd.Invocation {
+	return slashcmd.Scan(text, p.slashRegistry())
+}
 
-	// Extract CommandInfo for resolve (Handler-free matching)
+// slashRegistry is the set of commands and skills this page can resolve: its
+// registered commands (so the hint and the expansion can only ever offer what
+// the page can actually run) plus every discovered skill.
+func (p *chatPage) slashRegistry() slashcmd.Registry {
 	infos := make([]slashcmd.CommandInfo, len(p.commands))
 	for i, c := range p.commands {
 		infos[i] = c.CommandInfo
 	}
+	return slashcmd.Registry{Commands: infos, Skills: skill.All()}
+}
 
-	skills := skill.All()
-	action, err := slashcmd.Resolve(parsed, infos, skills, true)
-	if err != nil {
-		return util.ReportWarn(err.Error())
+// actionCommand resolves an expanded action command to the TUI command whose
+// Handler performs it, passing along the arguments typed on the invocation line
+// so a handler that collects arguments can pre-fill them instead of dropping
+// what the user wrote.
+func (p *chatPage) actionCommand(info *slashcmd.CommandInfo, args string) tea.Cmd {
+	cmd, ok := p.findCommand(info.ID)
+	if !ok || cmd.Handler == nil {
+		return util.ReportWarn(fmt.Sprintf("Command '/%s' has no handler", info.ID))
 	}
-
-	switch action.Type {
-	case slashcmd.ActionCommand:
-		info := action.Command
-		// Inline args shortcut: only when content has $ARGUMENTS as the sole placeholder
-		if info.Content != "" && parsed.Args != "" && slashcmd.HasOnlyArgumentsPlaceholder(info.Content) {
-			content := slashcmd.SubstituteArgs(info.Content, parsed.Args)
-			content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
-			return util.CmdHandler(dialog.CommandRunCustomMsg{
-				Content: content,
-				Args:    map[string]string{"ARGUMENTS": parsed.Args},
-			})
-		}
-		// No inline args or multiple placeholders — use handler (may show dialog)
-		if cmd, ok := p.findCommand(info.ID); ok && cmd.Handler != nil {
-			return cmd.Handler(cmd)
-		}
-		return nil
-
-	case slashcmd.ActionSkill:
-		s := action.Skill
-		// If no inline args provided, check for named placeholders and show dialog
-		if parsed.Args == "" {
-			if argCmd := dialog.ParameterizedSkillHandler(s); argCmd != nil {
-				return argCmd
-			}
-		}
-		baseDir := filepath.Dir(s.Location)
-		content := skill.SubstituteContent(s.Content, skill.SubstituteParams{
-			Args:      parsed.Args,
-			SkillDir:  baseDir,
-			SessionID: p.session.ID,
-		})
-		content = format.ExpandShellMarkup(context.Background(), content, config.WorkingDirectory())
-		content = skill.WrapSkillContent(s.Name, content)
-		return util.CmdHandler(chat.SendMsg{Text: content})
-
-	default:
-		return nil
-	}
+	cmd.InlineArgs = args
+	return cmd.Handler(cmd)
 }

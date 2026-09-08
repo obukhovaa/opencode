@@ -12,4 +12,5 @@ const (
 	LoadingIcon  string = "⟳"
 	DocumentIcon string = "🖼"
 	CronIcon     string = "⏲"
+	SkillIcon    string = "⚡"
 )

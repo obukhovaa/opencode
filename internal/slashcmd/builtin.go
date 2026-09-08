@@ -20,6 +20,19 @@ type CommandInfo struct {
 	TUIOnly      bool // true for commands that only work in interactive mode
 }
 
+// IsAction reports whether the command performs an application action rather
+// than contributing text to the user's message. Action commands are never
+// staged for editing and cannot be composed with other content; prompt commands
+// (builtins with embedded content, and user:/project: custom commands) are.
+//
+// The classification is derived rather than declared so a newly added builtin
+// cannot forget to set it. Both conditions are required: a custom command whose
+// markdown body happens to be empty stays a prompt command that expands to
+// nothing, instead of becoming an action with no handler behind it.
+func (ci CommandInfo) IsAction() bool {
+	return ci.TUIOnly && ci.Content == ""
+}
+
 const (
 	UserCommandPrefix    = "user:"
 	ProjectCommandPrefix = "project:"

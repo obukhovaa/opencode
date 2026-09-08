@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"time"
 	"unicode"
 
 	"charm.land/bubbles/v2/key"
@@ -20,6 +21,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/session"
+	"github.com/opencode-ai/opencode/internal/slashcmd"
 	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
@@ -35,11 +37,39 @@ const (
 	modeShell  editorMode = "shell"
 )
 
+// SubmissionExpander turns submitted message text into the prompt to send,
+// resolving the slash invocations it contains. It is injected by the chat page,
+// which owns the command registry and the active session; the editor calls it at
+// the single expansion point in send(), before the queue/dispatch fork.
+type SubmissionExpander func(text string) (slashcmd.Expansion, error)
+
+// InvocationScanner reports the slash invocations the current draft contains.
+// It backs the recognition hint drawn above the input, so it runs on every
+// keystroke — unlike SubmissionExpander it must not substitute arguments or run
+// shell markup.
+type InvocationScanner func(text string) []slashcmd.Invocation
+
+// recognizedInvocation is one chip in the recognition hint.
+type recognizedInvocation struct {
+	label  string
+	action bool // performs a TUI action rather than expanding into the message
+	// rejects marks an invocation that resolves to a known name the message may
+	// not be submitted with — a skill without `user-invocable: true`. It gets a
+	// chip because the absence of one means "this line will be sent as plain
+	// text", which is the opposite of what happens: Expand refuses the whole
+	// message.
+	rejects bool
+}
+
 type editorCmp struct {
 	width           int
 	height          int
 	app             *app.App
 	session         session.Session
+	expand          SubmissionExpander
+	scan            InvocationScanner
+	recognized      []recognizedInvocation
+	scannedDraft    string
 	textarea        textarea.Model
 	attachments     []message.Attachment
 	deleteMode      bool
@@ -101,16 +131,61 @@ func (m *editorCmp) promptColumnWidth() int {
 	return lipgloss.Width(style.Render(">"))
 }
 
-// syncTextareaHeight sets the textarea height based on attachment presence.
-// When attachments are shown, one row is reserved for the attachment bar.
-// This MUST be called from SetSize and from every Update branch that changes m.attachments,
-// never from View.
+// hasAffordanceRow reports whether the single row above the textarea is shown.
+// Attachments and the slash-invocation recognition hint share that one row, so
+// the reservation is 0 or 1 regardless of how many affordances are active.
+func (m *editorCmp) hasAffordanceRow() bool {
+	return len(m.attachments) > 0 || len(m.recognized) > 0
+}
+
+// syncTextareaHeight sets the textarea height based on affordance-row presence.
+// When the row is shown, one line is reserved for it.
+// This MUST be called from SetSize and from every Update branch that changes the
+// affordance row (attachments or recognized invocations), never from View.
 func (m *editorCmp) syncTextareaHeight() {
-	if len(m.attachments) > 0 {
+	if m.hasAffordanceRow() {
 		m.textarea.SetHeight(m.height - 1)
 	} else {
 		m.textarea.SetHeight(m.height)
 	}
+}
+
+// refreshRecognition recomputes the recognition hint when the draft has changed.
+// Called from the Update wrapper so every path that mutates the textarea is
+// covered by one site; never from View, per the chat-editor-layout invariant
+// that height is a function of state computed in Update.
+func (m *editorCmp) refreshRecognition() {
+	if m.scan == nil {
+		return
+	}
+	draft := m.textarea.Value()
+	if draft == m.scannedDraft {
+		return
+	}
+	m.scannedDraft = draft
+
+	var recognized []recognizedInvocation
+	// An invocation must start at column 0, so a draft with no line beginning
+	// in a slash cannot contain one. Checking that first keeps ordinary typing
+	// off the registry-building path entirely.
+	if m.mode == modeNormal && (strings.HasPrefix(draft, "/") || strings.Contains(draft, "\n/")) {
+		for _, inv := range m.scan(draft) {
+			switch {
+			case inv.Err != nil:
+				recognized = append(recognized, recognizedInvocation{label: "/" + inv.Name, rejects: true})
+			case inv.Kind == slashcmd.KindPrompt:
+				recognized = append(recognized, recognizedInvocation{label: "/" + inv.Name})
+			case inv.Kind == slashcmd.KindAction:
+				recognized = append(recognized, recognizedInvocation{label: "/" + inv.Name, action: true})
+			}
+		}
+	}
+
+	if len(recognized) == 0 && len(m.recognized) == 0 {
+		return
+	}
+	m.recognized = recognized
+	m.syncTextareaHeight()
 }
 
 func (m *editorCmp) openEditor() tea.Cmd {
@@ -123,7 +198,26 @@ func (m *editorCmp) openEditor() tea.Cmd {
 	if err != nil {
 		return util.ReportError(err)
 	}
+	// Seed the file with the current draft — including any staged invocations —
+	// so $EDITOR opens what the user was writing instead of a blank buffer, and
+	// so the content it returns can safely replace the input.
+	if draft := m.textarea.Value(); draft != "" {
+		if _, err := tmpfile.WriteString(draft); err != nil {
+			tmpfile.Close()
+			return util.ReportError(err)
+		}
+	}
 	tmpfile.Close()
+
+	// Seeding the file removes the abort the empty-file check used to provide:
+	// quitting without saving now leaves the draft in the file, which would be
+	// submitted as though the user had asked for it. The modification time
+	// distinguishes the two — an editor that never wrote leaves it untouched —
+	// so an unsaved exit cancels and the draft simply stays in the input.
+	var seededAt time.Time
+	if st, err := os.Stat(tmpfile.Name()); err == nil {
+		seededAt = st.ModTime()
+	}
 	c := exec.Command(editor, tmpfile.Name()) //nolint:gosec
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
@@ -131,6 +225,11 @@ func (m *editorCmp) openEditor() tea.Cmd {
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		if err != nil {
 			return util.ReportError(err)
+		}
+		if st, statErr := os.Stat(tmpfile.Name()); statErr == nil &&
+			!seededAt.IsZero() && st.ModTime().Equal(seededAt) {
+			os.Remove(tmpfile.Name())
+			return util.ReportWarn("Editor closed without saving; message left unchanged")
 		}
 		content, err := os.ReadFile(tmpfile.Name())
 		if err != nil {
@@ -140,13 +239,46 @@ func (m *editorCmp) openEditor() tea.Cmd {
 			return util.ReportWarn("Message is empty")
 		}
 		os.Remove(tmpfile.Name())
-		attachments := m.attachments
-		m.attachments = nil
-		return SendMsg{
-			Text:        string(content),
-			Attachments: attachments,
-		}
+		// Hand the content back through send() rather than emitting SendMsg
+		// directly: send() is the single point where slash invocations are
+		// expanded and where the queue/dispatch fork happens, and the external
+		// editor's content must go through both.
+		return editorContentMsg{Text: string(content)}
 	})
+}
+
+// stageInvocation inserts a staged invocation at the cursor. It occupies its own
+// line — a submitted invocation is only recognised at column 0 — so a newline is
+// inserted first when the cursor sits mid-line. Existing text and attachments
+// are untouched: staging is additive, so several invocations and the user's own
+// prose accumulate into one message.
+func (m *editorCmp) stageInvocation(text string) {
+	lines := strings.Split(m.textarea.Value(), "\n")
+	row, col := m.textarea.Line(), m.textarea.Column()
+
+	// Text sitting to the right of the cursor has to be pushed down as well as
+	// the invocation being moved to a line start: left where it is, it would
+	// share the invocation's line and be parsed as its arguments, so staging
+	// `/commit` mid-sentence would turn the rest of the sentence into an
+	// argument instead of leaving it as prose.
+	trailing := row >= 0 && row < len(lines) && col < len([]rune(lines[row]))
+
+	if col > 0 {
+		text = "\n" + text
+	}
+	if trailing {
+		text += "\n"
+	}
+	m.textarea.InsertString(text)
+	if trailing {
+		// InsertString leaves the cursor after the newline, on the pushed-down
+		// text. Put it back at the end of the invocation so typed arguments
+		// land on its line. CursorUp moves one display line, and CursorEnd
+		// clamps to the end of whatever logical row that lands in, so this is
+		// correct whether or not the staged line soft-wraps.
+		m.textarea.CursorUp()
+		m.textarea.CursorEnd()
+	}
 }
 
 func (m *editorCmp) Init() tea.Cmd {
@@ -166,6 +298,24 @@ func (m *editorCmp) send() tea.Cmd {
 	if value == "" {
 		return nil
 	}
+
+	// Expand slash invocations before anything else. On failure the editor is
+	// left exactly as the user typed it: a rejected submission must never eat
+	// the message.
+	expansion, err := m.expandSubmission(value)
+	if err != nil {
+		return util.ReportWarn(err.Error())
+	}
+	if expansion.Action != nil {
+		// The whole message was one action command: it performs a TUI action
+		// instead of being sent, so the input is consumed but no message is
+		// created. Attachments are deliberately left in place — there is no
+		// message to carry them, so they stay staged for the next one.
+		m.textarea.Reset()
+		return util.CmdHandler(RunActionMsg{Command: expansion.Action, Args: expansion.ActionArgs})
+	}
+	value = expansion.Prompt
+
 	attachments := m.attachments
 
 	// FIFO routing (Decision 8, task 3.1): enqueue whenever the queue is
@@ -197,6 +347,15 @@ func (m *editorCmp) send() tea.Cmd {
 			Attachments: attachments,
 		}),
 	)
+}
+
+// expandSubmission applies the injected expander. A nil expander (a bare editor
+// in a test or a non-chat host) passes the text through untouched.
+func (m *editorCmp) expandSubmission(text string) (slashcmd.Expansion, error) {
+	if m.expand == nil {
+		return slashcmd.Expansion{Prompt: text}, nil
+	}
+	return m.expand(text)
 }
 
 func (m *editorCmp) enterShellMode() {
@@ -288,7 +447,16 @@ func (m *editorCmp) VimMode() string {
 	return ""
 }
 
+// Update wraps update so the recognition hint is refreshed after every message,
+// whichever branch mutated the textarea. Each branch of update returns m itself,
+// so the wrapper can act on the same instance before returning it.
 func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	model, cmd := m.update(msg)
+	m.refreshRecognition()
+	return model, cmd
+}
+
+func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case ToggleVimModeMsg:
@@ -312,6 +480,15 @@ func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		modifiedValue := strings.Replace(existingValue, msg.SearchString, "", 1)
 		m.textarea.SetValue(modifiedValue)
 		return m, nil
+	case dialog.StageInvocationMsg:
+		m.stageInvocation(msg.Text)
+		return m, nil
+	case editorContentMsg:
+		// Content from the external $EDITOR: replace the input and submit it
+		// through the normal path so it is expanded and routed like any other
+		// submission.
+		m.textarea.SetValue(msg.Text)
+		return m, m.send()
 	case SessionClearedMsg:
 		m.session = session.Session{}
 		if m.mode == modeShell {
@@ -490,14 +667,115 @@ func (m *editorCmp) View() tea.View {
 		return tea.NewView(spinnerText)
 	}
 
-	if len(m.attachments) == 0 {
+	if !m.hasAffordanceRow() {
 		return tea.NewView(lipgloss.JoinHorizontal(lipgloss.Top, style.Render(promptChar), m.textarea.View()))
 	}
 	return tea.NewView(lipgloss.JoinVertical(lipgloss.Top,
-		m.attachmentsContent(),
+		m.affordanceRow(),
 		lipgloss.JoinHorizontal(lipgloss.Top, style.Render(promptChar),
 			m.textarea.View()),
 	))
+}
+
+// affordanceRow renders the single row above the input: attachment chips first,
+// then one chip per recognized slash invocation, within the container width.
+func (m *editorCmp) affordanceRow() string {
+	attachments := m.attachmentsContent()
+	hint := m.recognitionContent(m.rowWidth() - lipgloss.Width(attachments))
+	switch {
+	case hint == "":
+		return m.padRow(attachments)
+	case attachments == "":
+		return m.padRow(hint)
+	}
+	return m.padRow(lipgloss.JoinHorizontal(lipgloss.Top, attachments, hint))
+}
+
+// rowWidth is the rendered width of the input row this one sits above: the
+// prompt column plus the textarea, which SetSize gives one column less than the
+// container so the cursor never lands in the terminal's deferred-wrap column.
+// The affordance row must match it exactly — a wider row makes JoinVertical pad
+// every input line with an unstyled cell, which is the black gap this alignment
+// exists to avoid.
+func (m *editorCmp) rowWidth() int {
+	return max(0, m.width-1)
+}
+
+// padRow fills the affordance row out to the input row's width with the theme
+// background. JoinVertical pads shorter lines with unstyled cells, which render
+// as a black gap beside the themed editor (see the background-gap pitfall in
+// CLAUDE.md); padding the row itself avoids that without forcing a background
+// over the textarea's own cursor rendering.
+func (m *editorCmp) padRow(row string) string {
+	width := m.rowWidth()
+	if width <= 0 {
+		return row
+	}
+	t := theme.CurrentTheme()
+	return styles.BaseStyle().
+		Width(width).
+		Background(t.Background()).
+		Render(row)
+}
+
+// recognitionContent renders one chip per invocation the draft will actually
+// expand or run. An unrecognized `/token` produces no chip, which is the whole
+// point: the absence of a chip is how the user learns that what they typed will
+// be sent as plain text rather than resolved.
+//
+// Chips are dropped rather than wrapped once they exceed budget columns — the
+// row is one line, and the editor's no-overflow contract binds it. A dropped
+// chip is accounted for by a trailing count so the hint never under-reports.
+func (m *editorCmp) recognitionContent(budget int) string {
+	if len(m.recognized) == 0 || budget <= 0 {
+		return ""
+	}
+
+	t := theme.CurrentTheme()
+	base := styles.BaseStyle().MarginLeft(1).Background(t.Background())
+	expands := base.Foreground(t.Success())
+	acts := base.Foreground(t.Info())
+	rejects := base.Foreground(t.Error())
+	overflow := base.Foreground(t.TextMuted())
+
+	var (
+		chips []string
+		used  int
+	)
+	for i, inv := range m.recognized {
+		style := expands
+		switch {
+		case inv.rejects:
+			style = rejects
+		case inv.action:
+			style = acts
+		}
+		chip := style.Render(fmt.Sprintf("%s %s", styles.SkillIcon, inv.label))
+		width := lipgloss.Width(chip)
+
+		// Reserve room for the "+N" marker whenever chips remain after this one.
+		remaining := len(m.recognized) - i - 1
+		reserve := 0
+		if remaining > 0 {
+			reserve = lipgloss.Width(overflow.Render(fmt.Sprintf("+%d", remaining)))
+		}
+		if used+width+reserve > budget {
+			break
+		}
+		chips = append(chips, chip)
+		used += width
+	}
+
+	if dropped := len(m.recognized) - len(chips); dropped > 0 {
+		marker := overflow.Render(fmt.Sprintf("+%d", dropped))
+		if used+lipgloss.Width(marker) <= budget {
+			chips = append(chips, marker)
+		}
+	}
+	if len(chips) == 0 {
+		return ""
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, chips...)
 }
 
 func (m *editorCmp) SetSize(width, height int) tea.Cmd {
@@ -577,7 +855,7 @@ func CreateTextArea(existing *textarea.Model) textarea.Model {
 	return ta
 }
 
-func NewEditorCmp(app *app.App) tea.Model {
+func NewEditorCmp(app *app.App, expand SubmissionExpander, scan InvocationScanner) tea.Model {
 	ta := CreateTextArea(nil)
 	var vimH *vim.Handler
 	if config.Get().TUI.VimMode {
@@ -585,6 +863,8 @@ func NewEditorCmp(app *app.App) tea.Model {
 	}
 	return &editorCmp{
 		app:        app,
+		expand:     expand,
+		scan:       scan,
 		textarea:   ta,
 		mode:       modeNormal,
 		vimHandler: vimH,

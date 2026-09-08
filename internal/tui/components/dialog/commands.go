@@ -1,6 +1,8 @@
 package dialog
 
 import (
+	"strings"
+
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -17,6 +19,37 @@ import (
 type Command struct {
 	slashcmd.CommandInfo
 	Handler func(cmd Command) tea.Cmd
+	// InlineArgs carries the arguments the user typed on the invocation line,
+	// for the action commands that collect arguments through the argument
+	// dialog (/rename, /loop). It is set on the copy passed to Handler, never
+	// stored in the registry, and is empty for every other entry point.
+	InlineArgs string
+}
+
+// SplitInlineArgs distributes InlineArgs across the fields named by argNames:
+// one whitespace-separated token per field, with the last field taking the
+// whole remainder so a trailing free-text argument (/loop's prompt, /rename's
+// title) keeps its spaces. Missing fields come back empty, which the dialog
+// renders as an empty input for the user to fill.
+func SplitInlineArgs(args string, argNames []string) []string {
+	values := make([]string, len(argNames))
+	rest := strings.TrimSpace(args)
+	for i := range argNames {
+		if rest == "" {
+			break
+		}
+		if i == len(argNames)-1 {
+			values[i] = rest
+			break
+		}
+		token, remainder, found := strings.Cut(rest, " ")
+		values[i] = token
+		if !found {
+			break
+		}
+		rest = strings.TrimSpace(remainder)
+	}
+	return values
 }
 
 func (ci Command) Render(selected bool, width int) string {

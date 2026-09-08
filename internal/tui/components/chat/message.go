@@ -86,7 +86,7 @@ func renderMessage(msg string, isUser bool, isFocused bool, width int, info ...s
 }
 
 func renderUserMessage(msg message.Message, isFocused bool, width int, position int) uiMessage {
-	textContent := msg.Content().String()
+	textContent := collapseSkillBlocks(msg.Content().String())
 
 	// Detect shell mode messages by content prefix
 	if isShellCommandMessage(textContent) {
@@ -127,6 +127,61 @@ func renderUserMessage(msg message.Message, isFocused bool, width int, position 
 		content:     content,
 	}
 	return userMsg
+}
+
+// skillBlockOpen matches the opening tag of an expanded skill block. The
+// closing tag is located by search rather than by regex so a skill body that
+// itself contains the literal text cannot terminate the match early.
+var skillBlockOpen = regexp.MustCompile(`<skill_content name="([^"]*)">`)
+
+const skillBlockClose = "</skill_content>"
+
+// collapseSkillBlocks replaces each expanded <skill_content> region with a
+// one-line summary for display. A message that stages two skills would
+// otherwise print hundreds of lines of instructions the user already knows they
+// asked for, burying the prose they wrote around it.
+//
+// This is presentation only: the stored message and the payload sent to the
+// model keep the complete expanded text. An unterminated opening tag is left
+// verbatim — better to show the raw text than to swallow the rest of the
+// message.
+func collapseSkillBlocks(text string) string {
+	if !strings.Contains(text, skillBlockClose) {
+		return text
+	}
+
+	var b strings.Builder
+	rest := text
+	for {
+		loc := skillBlockOpen.FindStringSubmatchIndex(rest)
+		if loc == nil {
+			break
+		}
+		closeAt := strings.Index(rest[loc[1]:], skillBlockClose)
+		if closeAt < 0 {
+			break
+		}
+
+		name := rest[loc[2]:loc[3]]
+		body := strings.Trim(rest[loc[1]:loc[1]+closeAt], "\n")
+		lines := 0
+		if body != "" {
+			lines = strings.Count(body, "\n") + 1
+		}
+
+		b.WriteString(rest[:loc[0]])
+		b.WriteString(fmt.Sprintf("%s skill:%s · %s", styles.SkillIcon, name, pluralLines(lines)))
+		rest = rest[loc[1]+closeAt+len(skillBlockClose):]
+	}
+	b.WriteString(rest)
+	return b.String()
+}
+
+func pluralLines(n int) string {
+	if n == 1 {
+		return "1 line"
+	}
+	return fmt.Sprintf("%d lines", n)
 }
 
 func isShellCommandMessage(text string) bool {
