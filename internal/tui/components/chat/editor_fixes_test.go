@@ -6,9 +6,11 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/opencode-ai/opencode/internal/skill"
 	"github.com/opencode-ai/opencode/internal/slashcmd"
+	"github.com/opencode-ai/opencode/internal/tui/vim"
 )
 
 // TestStageInvocationKeepsTrailingTextOnItsOwnLine: staging inserts at the
@@ -92,23 +94,40 @@ func TestAffordanceRowMatchesInputRowWidth(t *testing.T) {
 // in CLAUDE.md).
 func TestEditorViewCellsCarryBackground(t *testing.T) {
 	tests := []struct {
-		name  string
-		shell bool
-		value string
+		name   string
+		shell  bool
+		visual bool
+		value  string
 	}{
-		{"normal empty", false, ""},
-		{"normal with draft", false, "hello"},
-		{"shell empty", true, ""},
-		{"shell with command", true, "ls -la"},
+		{name: "normal empty"},
+		{name: "normal with draft", value: "hello"},
+		{name: "shell empty", shell: true},
+		{name: "shell with command", shell: true, value: "ls -la"},
+		// The selection overlay rewrites rendered cells, so it has to satisfy
+		// the same background contract as every other render path.
+		{name: "visual selection", visual: true, value: "hello world"},
+		{name: "visual selection wrapping", visual: true, value: "the quick brown fox jumps over the lazy dog"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ed := newTestEditor()
+			ed.selectionLayout = newSelectionLayout()
 			ed.SetSize(40, 3)
 			if tt.shell {
 				ed.enterShellMode()
 			}
 			ed.textarea.SetValue(tt.value)
+			if tt.visual {
+				ed.vimHandler = vim.NewHandler()
+				ed.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+				ed.Update(tea.KeyPressMsg{Code: 'v', Text: "v"})
+				for range 12 {
+					ed.Update(tea.KeyPressMsg{Code: 'h', Text: "h"})
+				}
+				if len(ed.selection) == 0 {
+					t.Fatal("no selection to render")
+				}
+			}
 
 			for i, line := range strings.Split(ed.View().Content, "\n") {
 				if col := firstCellOnDefaultBackground(line); col >= 0 {

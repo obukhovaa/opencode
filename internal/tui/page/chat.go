@@ -25,6 +25,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
 	"github.com/opencode-ai/opencode/internal/tui/util"
+	"github.com/opencode-ai/opencode/internal/tui/vim"
 )
 
 var ChatPage PageID = "chat"
@@ -264,8 +265,9 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if p.showCompletionDialog || p.showCommandCompletionDialog {
 				break // let ESC flow to dialog routing below
 			}
-			// In vim INSERT mode, ESC switches to NORMAL (handled by editor)
-			if p.vimMode == "INSERT" {
+			// In vim INSERT or a visual mode, ESC is the editor's: it leaves
+			// INSERT, or ends a selection. It must not cancel the agent.
+			if p.vimConsumesEscape() {
 				break
 			}
 			// In vim NORMAL mode or no vim: cancel running request if agent is busy.
@@ -556,8 +558,20 @@ func (p *chatPage) IsShellRunning() bool {
 }
 
 func (p *chatPage) ConsumesCtrlC() bool {
-	// Vim INSERT mode should consume Ctrl+C to switch to NORMAL
-	return p.vimMode == "INSERT"
+	// Ctrl+C belongs to the editor wherever ESC does: INSERT (switch to NORMAL)
+	// and the visual modes (end the selection).
+	return p.vimConsumesEscape()
+}
+
+// vimConsumesEscape reports whether the editor's vim mode owns esc / ctrl+c.
+//
+// The mode is compared through the vim package's own type rather than against
+// string literals: the visual modes were added after this routing was written,
+// and a bare `== "INSERT"` check silently sent them down the branch meant for
+// NORMAL — cancelling the agent instead of ending the selection.
+func (p *chatPage) vimConsumesEscape() bool {
+	mode := vim.VimMode(p.vimMode)
+	return mode == vim.ModeInsert || mode.IsVisual()
 }
 
 // CancelActiveAgent cancels the running agent request if one exists.

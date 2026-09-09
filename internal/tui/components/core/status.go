@@ -19,6 +19,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/tui/styles"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
 	"github.com/opencode-ai/opencode/internal/tui/util"
+	"github.com/opencode-ai/opencode/internal/tui/vim"
 )
 
 type StatusCmp interface {
@@ -211,8 +212,13 @@ func (m *statusCmp) View() tea.View {
 	vimWidgetWidth := 0
 	if m.vimMode != "" {
 		bgColor := t.Primary()
-		if m.vimMode == "INSERT" {
+		switch vim.VimMode(m.vimMode) {
+		case vim.ModeInsert:
 			bgColor = t.Secondary()
+		case vim.ModeVisual, vim.ModeVisualLine:
+			// A selection is live and the next keystroke may act on it, so the
+			// visual modes are badged distinctly from both INSERT and NORMAL.
+			bgColor = t.Warning()
 		}
 		vimWidget = styles.Padded().
 			Background(bgColor).

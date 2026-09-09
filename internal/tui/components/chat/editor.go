@@ -85,7 +85,17 @@ type editorCmp struct {
 	shellCancel context.CancelFunc
 	// shellInteractive records which path the in-flight command took.
 	shellInteractive bool
-	vimHandler       *vim.Handler // nil when vim mode is disabled
+	// selection holds the display coordinates of the active vim visual
+	// selection. Computed in Update whenever the draft or the selection
+	// changes, never in View — deriving them interrogates a textarea's layout,
+	// and doing that during render risks moving a scroll position.
+	selection       []selectionSpan
+	selectionLayout selectionLayout
+	// textareaOuterWidth is the width handed to textarea.SetWidth. The probe
+	// that resolves selection coordinates must be given the same value, not the
+	// narrower one Width() reports back after the widget's own reservations.
+	textareaOuterWidth int
+	vimHandler         *vim.Handler // nil when vim mode is disabled
 }
 
 type EditorKeyMaps struct {
@@ -697,7 +707,33 @@ func (m *editorCmp) VimMode() string {
 func (m *editorCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	model, cmd := m.update(msg)
 	m.refreshRecognition()
+	m.refreshSelection()
 	return model, cmd
+}
+
+// refreshSelection recomputes the visual selection's display coordinates. Like
+// refreshRecognition it runs once per message from the Update wrapper, so every
+// path that moves the cursor or edits the draft is covered by one call site —
+// and, per the chat-editor-layout invariant, never from View.
+func (m *editorCmp) refreshSelection() {
+	if m.vimHandler == nil || !m.vimHandler.Mode().IsVisual() {
+		m.selection = nil
+		return
+	}
+
+	from, to, _, active := m.vimHandler.Selection(&m.textarea)
+	if !active {
+		m.selection = nil
+		return
+	}
+
+	m.selectionLayout.sync(m.textarea.Value(), m.textareaOuterWidth, m.textarea.Height())
+	m.selection = m.selectionLayout.spans(
+		from, to,
+		m.textarea.ScrollYOffset(),
+		textareaPromptWidth,
+		m.textarea.Height(),
+	)
 }
 
 func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -958,10 +994,18 @@ func (m *editorCmp) View() tea.View {
 func (m *editorCmp) textareaView() string {
 	view := m.textarea.View()
 	if m.textarea.Placeholder == "" || m.textarea.Value() != "" {
-		return view
+		// applySelection returns the view untouched when there is no selection,
+		// so a non-visual render is byte-identical to what it was before
+		// selection rendering existed.
+		return applySelection(view, m.selection)
 	}
 	return styles.ForceReplaceBackgroundWithLipgloss(view, theme.CurrentTheme().Background())
 }
+
+// textareaPromptWidth is the column the textarea's own prompt occupies on every
+// rendered row. CreateTextArea sets Prompt to a single space; a change there
+// MUST update this constant, or every selection highlight shifts sideways.
+const textareaPromptWidth = 1
 
 // affordanceRow renders the single row above the input: attachment chips first,
 // then one chip per recognized slash invocation, within the container width.
@@ -1070,7 +1114,8 @@ func (m *editorCmp) SetSize(width, height int) tea.Cmd {
 	// Reserve promptColumnWidth() columns for the left-side prompt widget plus one
 	// column as a right-margin guard — the cursor never reaches the terminal's final
 	// deferred-wrap column, avoiding inconsistent glyph rendering across emulators.
-	m.textarea.SetWidth(max(0, width-m.promptColumnWidth()-1))
+	m.textareaOuterWidth = max(0, width-m.promptColumnWidth()-1)
+	m.textarea.SetWidth(m.textareaOuterWidth)
 	m.syncTextareaHeight()
 	return nil
 }
@@ -1148,11 +1193,12 @@ func NewEditorCmp(app *app.App, expand SubmissionExpander, scan InvocationScanne
 		vimH = vim.NewHandler()
 	}
 	return &editorCmp{
-		app:        app,
-		expand:     expand,
-		scan:       scan,
-		textarea:   ta,
-		mode:       modeNormal,
-		vimHandler: vimH,
+		app:             app,
+		expand:          expand,
+		scan:            scan,
+		textarea:        ta,
+		mode:            modeNormal,
+		vimHandler:      vimH,
+		selectionLayout: newSelectionLayout(),
 	}
 }

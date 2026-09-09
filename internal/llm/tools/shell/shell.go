@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -18,12 +19,31 @@ import (
 )
 
 type PersistentShell struct {
-	cmd          *exec.Cmd
-	stdin        *os.File
-	isAlive      bool
+	cmd *exec.Cmd
+	// stdin is the pipe commands are written to. It is never a terminal — see
+	// detachFromTerminal for why that is not sufficient on its own.
+	stdin *os.File
+	// alive is read and written from several goroutines: the cmd.Wait watcher,
+	// the panic-recovery path, Close, and every Exec caller. It is checked
+	// outside mu (Exec must not block behind a running command just to learn
+	// the shell died), so it has to be atomic rather than mutex-guarded.
+	alive atomic.Bool
+	// closeQueue guards the command queue's close. Both the Wait watcher and
+	// the panic-recovery path reach it, and closing a channel twice panics.
+	closeQueue   sync.Once
 	cwd          string
 	mu           sync.Mutex
 	commandQueue chan *commandExecution
+}
+
+// isAlive reports whether the shell process is still usable.
+func (s *PersistentShell) isAlive() bool { return s.alive.Load() }
+
+// markDead records the shell as unusable and releases the command queue. It is
+// safe to call from any goroutine, any number of times.
+func (s *PersistentShell) markDead() {
+	s.alive.Store(false)
+	s.closeQueue.Do(func() { close(s.commandQueue) })
 }
 
 type commandExecution struct {
@@ -50,7 +70,7 @@ func GetPersistentShell(workingDir string) *PersistentShell {
 	shellInstancesMu.Lock()
 	defer shellInstancesMu.Unlock()
 
-	if sh, ok := shellInstances[workingDir]; ok && sh != nil && sh.isAlive {
+	if sh, ok := shellInstances[workingDir]; ok && sh != nil && sh.isAlive() {
 		return sh
 	}
 
@@ -120,17 +140,16 @@ func newPersistentShell(cwd string) *PersistentShell {
 	shell := &PersistentShell{
 		cmd:          cmd,
 		stdin:        stdinPipe.(*os.File),
-		isAlive:      true,
 		cwd:          cwd,
 		commandQueue: make(chan *commandExecution, 10),
 	}
+	shell.alive.Store(true)
 
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				fmt.Fprintf(os.Stderr, "Panic in shell command processor: %v\n", r)
-				shell.isAlive = false
-				close(shell.commandQueue)
+				shell.markDead()
 			}
 		}()
 		shell.processCommands()
@@ -141,8 +160,7 @@ func newPersistentShell(cwd string) *PersistentShell {
 		if err != nil {
 			logging.Error(fmt.Sprintf("Can't complete shell command: %s", err.Error()))
 		}
-		shell.isAlive = false
-		close(shell.commandQueue)
+		shell.markDead()
 	}()
 
 	return shell
@@ -159,7 +177,7 @@ func (s *PersistentShell) execCommand(command string, timeout time.Duration, ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.isAlive {
+	if !s.isAlive() {
 		return commandResult{
 			stderr:   "Shell is not alive",
 			exitCode: 1,
@@ -222,7 +240,7 @@ echo $EXEC_EXIT_CODE > %s
 					return
 				}
 
-				if !s.isAlive {
+				if !s.isAlive() {
 					interrupted = true
 					done <- true
 					return
@@ -383,7 +401,7 @@ func (s *PersistentShell) Cwd() string {
 }
 
 func (s *PersistentShell) Exec(ctx context.Context, command string, timeoutMs int) (string, string, int, bool, error) {
-	if !s.isAlive {
+	if !s.isAlive() {
 		return "", "Shell is not alive", 1, false, errors.New("shell is not alive")
 	}
 
@@ -405,14 +423,18 @@ func (s *PersistentShell) Close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !s.isAlive {
+	if !s.isAlive() {
 		return
 	}
 
 	s.stdin.Write([]byte("exit\n"))
 
 	s.cmd.Process.Kill()
-	s.isAlive = false
+	// The cmd.Wait watcher also calls markDead when the process exits; both
+	// paths are idempotent, and marking it here means a caller that returns
+	// straight from Close never observes a shell that is dead but still
+	// advertising itself as alive.
+	s.markDead()
 }
 
 func shellQuote(s string) string {

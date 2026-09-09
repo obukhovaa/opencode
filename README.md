@@ -360,10 +360,28 @@ Override the default shell (falls back to `$SHELL` or `/bin/bash`):
 {
   "shell": {
     "path": "/bin/zsh",
-    "args": ["-l"]
+    "args": ["-l"],
+    "interactive": ["my-cli", "aws-vault"]
   }
 }
 ```
+
+The shell runs in its own session with no controlling terminal, so nothing it
+runs can read from or write to the terminal OpenCode is drawing on. A command
+that needs a terminal — `sudo`, `ssh`, an editor — therefore fails immediately
+rather than prompting invisibly.
+
+In the TUI's shell mode those commands are detected and handed the real terminal
+instead: OpenCode steps aside for the duration of the run, you answer the prompt,
+and the TUI comes back. `interactive` extends the built-in list (`sudo`, `ssh`,
+`vim`, `less`, `psql`, `docker exec -it`, …) with your own programs; prefixing any
+command with `!!` forces the same handoff without configuring it.
+
+> **Behavior change.** Before terminal isolation, such a command prompted on
+> OpenCode's own terminal — corrupting the TUI, racing it for your keystrokes, and
+> hanging until the tool timeout. It now fails immediately with the program's own
+> diagnostic (`sudo: no tty present …`). If you hit that from the agent's `bash`
+> tool, run the command yourself; from the TUI, re-run it with `!!`.
 
 ### MCP Servers
 
@@ -604,6 +622,33 @@ Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it re
 | `Ctrl+S` / `Enter` | Send message |
 | `Ctrl+E` | Open external editor |
 | `Esc` | Blur editor |
+
+### Shell mode
+
+| Shortcut | Action |
+|----------|--------|
+| `!` | Enter shell mode (also recognised when a `!command` is pasted or submitted) |
+| `!!command` | Run with the terminal handed over — for passwords, SSH, editors |
+| `Enter` | Run the command |
+| `↑` / `↓` | Shell history |
+| `Esc` / `Ctrl+C` | Cancel a running command, or leave shell mode |
+
+### Vim mode
+
+Enabled with `tui.vimMode`, or toggled from the command dialog. The editor starts
+in `INSERT`; `Esc` switches to `NORMAL`.
+
+| Shortcut | Action |
+|----------|--------|
+| `v` / `V` | Charwise / linewise VISUAL mode |
+| motions | Extend the selection (`h j k l w b e 0 ^ $ G gg f t`, with counts) |
+| `o` | Swap which end of the selection the cursor moves |
+| `iw` / `i"` / `ab` … | Extend the selection over a text object |
+| `d` `x` `c` `s` `y` | Delete / change / yank the selection |
+| `~` `u` `U` | Toggle / lower / upper case over the selection |
+| `>` `<` `J` `p` | Indent / unindent / join / replace with the register |
+| `gv` | Restore the last selection |
+| `Esc` / `Ctrl+C` | Back to `NORMAL` |
 
 ### Dialogs
 

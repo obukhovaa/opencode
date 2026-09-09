@@ -204,7 +204,7 @@ func TestTerminateDescendantsSpareTheShell(t *testing.T) {
 
 	sh.terminateDescendants()
 
-	if !sh.isAlive {
+	if !sh.isAlive() {
 		t.Fatal("terminateDescendants killed the persistent shell")
 	}
 	stdout, _, code := exec1(t, sh, "echo still-here")

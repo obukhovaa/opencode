@@ -21,6 +21,9 @@ type Handler struct {
 	state      VimState
 	persistent PersistentState
 	undoStack  []UndoEntry
+	// visualPending holds the first key of a two-key visual command (a find
+	// prefix, `g`, or a text-object scope) while its argument is awaited.
+	visualPending string
 }
 
 // NewHandler creates a new vim handler starting in INSERT mode.
@@ -47,11 +50,35 @@ func (h *Handler) ConsumesCtrlC() bool {
 	if h.state.Mode == ModeInsert {
 		return true
 	}
+	// In a visual mode ctrl+c ends the selection, the same as esc. It must not
+	// fall through to the app's quit dialog.
+	if h.state.Mode.IsVisual() {
+		return true
+	}
 	if h.state.Mode == ModeNormal {
 		_, isIdle := h.state.Command.(CommandIdle)
 		return !isIdle
 	}
 	return false
+}
+
+// Selection reports the byte range the active visual selection covers over the
+// textarea's current contents. active is false in every non-visual mode, in
+// which case the other results are meaningless.
+//
+// The handler resolves the cursor's byte offset itself rather than taking one:
+// the line/column-to-offset conversion is the same one every other handler path
+// uses, and duplicating it in the renderer is how a highlight drifts from the
+// range an operator would actually act on.
+func (h *Handler) Selection(ta *textarea.Model) (from, to int, linewise, active bool) {
+	if !h.state.Mode.IsVisual() {
+		return 0, 0, false, false
+	}
+	text := ta.Value()
+	cursor := lineColToOffset(text, ta.Line(), ta.Column())
+	linewise = h.state.Mode == ModeVisualLine
+	from, to = SelectionRange(text, h.state.Anchor, cursor, linewise)
+	return from, to, linewise, true
 }
 
 // HandleKey processes a key event and applies it to the textarea.
@@ -67,6 +94,12 @@ func (h *Handler) HandleKey(msg tea.KeyPressMsg, ta *textarea.Model) (handled bo
 	// Escape or Ctrl+C in INSERT mode → switch to NORMAL
 	if h.state.Mode == ModeInsert && (keyStr == "esc" || keyStr == "ctrl+c") {
 		h.switchToNormal(ta)
+		return true, nil, true
+	}
+
+	// Escape or Ctrl+C in a visual mode → back to NORMAL, selection remembered
+	if h.state.Mode.IsVisual() && (keyStr == "esc" || keyStr == "ctrl+c") {
+		h.leaveVisual(ta)
 		return true, nil, true
 	}
 
@@ -111,10 +144,43 @@ func (h *Handler) HandleKey(msg tea.KeyPressMsg, ta *textarea.Model) (handled bo
 		return false, nil, false
 	}
 
+	// Visual modes
+	if h.state.Mode.IsVisual() {
+		before := h.state.Mode
+		h.handleVisualInput(h.mapKey(msg), ta)
+		return true, nil, h.state.Mode != before
+	}
+
 	// NORMAL mode
 	if h.state.Mode == ModeNormal {
 		// Map arrow keys
 		vimInput := h.mapKey(msg)
+
+		// Entering a visual mode is a handler-level concern: it changes what
+		// every subsequent key means, which the CommandState machine (built for
+		// operator-pending sub-states within NORMAL) does not model.
+		if _, idle := h.state.Command.(CommandIdle); idle || h.pendingCountOnly() {
+			switch vimInput {
+			case "v", "V":
+				mode := ModeVisual
+				if vimInput == "V" {
+					mode = ModeVisualLine
+				}
+				text := ta.Value()
+				cursor := lineColToOffset(text, ta.Line(), ta.Column())
+				h.enterVisual(mode, ta, cursor, cursor)
+				return true, nil, true
+			}
+		}
+		// `gv` restores the last selection. It is intercepted here rather than
+		// in the g-prefix transition for the same reason as v/V.
+		if _, isG := h.state.Command.(CommandG); isG && vimInput == "v" {
+			h.state.Command = CommandIdle{}
+			if h.restoreVisual(ta) {
+				return true, nil, true
+			}
+			return true, nil, false
+		}
 
 		h.handleNormalInput(vimInput, ta)
 		return true, nil, h.state.Mode != ModeNormal
@@ -156,6 +222,13 @@ func (h *Handler) mapKey(msg tea.KeyPressMsg) string {
 		return msg.Text
 	}
 	return keyStr
+}
+
+// pendingCountOnly reports whether the only pending state is a count, which a
+// visual-mode entry key is allowed to follow (`3v` is valid vim).
+func (h *Handler) pendingCountOnly() bool {
+	_, ok := h.state.Command.(CommandCount)
+	return ok
 }
 
 func (h *Handler) expectsMotion() bool {
@@ -394,6 +467,12 @@ func (h *Handler) replayLastChange(ta *textarea.Model) {
 		ExecuteOperatorFind(change.Op, change.Find, change.Char, change.Count, ctx)
 	case "operatorTextObj":
 		ExecuteOperatorTextObj(change.Op, change.Scope, change.ObjType, change.Count, ctx)
+	case "visual":
+		// The visual replay resolves its own region and applies its own text,
+		// so it returns before this function's shared tail runs. The undo entry
+		// pushed above still covers it.
+		h.replayVisualChange(change, ta)
+		return
 	}
 
 	if newText != text {

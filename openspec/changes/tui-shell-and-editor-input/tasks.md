@@ -96,72 +96,72 @@
 
 ## 7. Vim VISUAL mode state (`internal/tui/vim/`)
 
-- [ ] 7.1 `types.go`: add `ModeVisual VimMode = "VISUAL"` and `ModeVisualLine VimMode = "V-LINE"`;
+- [x] 7.1 `types.go`: add `ModeVisual VimMode = "VISUAL"` and `ModeVisualLine VimMode = "V-LINE"`;
   add `Anchor int` to `VimState` and `LastVisual *VisualRecord` (mode + anchor + cursor) to
   `PersistentState`.
-- [ ] 7.2 Add `visual.go`: `SelectionRange(text string, anchor, cursor int, linewise bool) (from, to int)`
+- [x] 7.2 Add `visual.go`: `SelectionRange(text string, anchor, cursor int, linewise bool) (from, to int)`
   — inclusive charwise, whole-lines linewise.
-- [ ] 7.3 Add `ExecuteVisualOperator(op Operator, from, to int, linewise bool, ctx *OperatorContext)`
+- [x] 7.3 Add `ExecuteVisualOperator(op Operator, from, to int, linewise bool, ctx *OperatorContext)`
   delegating to the existing `applyOperator` (design D10 — do not duplicate operator logic).
-- [ ] 7.4 `handler.go`: `v`/`V` from NORMAL enter the visual modes anchoring at the cursor;
+- [x] 7.4 `handler.go`: `v`/`V` from NORMAL enter the visual modes anchoring at the cursor;
   `v`/`V` within them toggle/exit per the spec; `esc` returns to NORMAL and stores `LastVisual`.
-- [ ] 7.5 Visual-mode motions: route through `ResolveMotion` with counts, moving only the
+- [x] 7.5 Visual-mode motions: route through `ResolveMotion` with counts, moving only the
   cursor; `o` swaps anchor and cursor.
-- [ ] 7.6 Visual-mode operators `d x c s y ~ u U > < J p`, each applying to the selection,
+- [x] 7.6 Visual-mode operators `d x c s y ~ u U > < J p`, each applying to the selection,
   setting the register with the right linewise flag, and landing in NORMAL (INSERT for `c`/`s`).
-- [ ] 7.7 `gv` in NORMAL restores `LastVisual`; a no-op when unset.
-- [ ] 7.8 Undo: push one undo entry per visual operator so `u` reverts it in a single step.
-- [ ] 7.9 Dot-repeat: add `RecordedChange` type `"visual"` carrying `(op, span, linewise)` and
+- [x] 7.7 `gv` in NORMAL restores `LastVisual`; a no-op when unset.
+- [x] 7.8 Undo: push one undo entry per visual operator so `u` reverts it in a single step.
+- [x] 7.9 Dot-repeat: add `RecordedChange` type `"visual"` carrying `(op, span, linewise)` and
   replay it relative to the cursor.
-- [ ] 7.10 `ConsumesCtrlC` returns true in the visual modes.
-- [ ] 7.11 Expose `Selection() (from, to int, linewise, active bool)` for the renderer.
-- [ ] 7.12 Tests in the existing table-driven style: mode transitions, selection extension
+- [x] 7.10 `ConsumesCtrlC` returns true in the visual modes.
+- [x] 7.11 Expose `Selection() (from, to int, linewise, active bool)` for the renderer.
+- [x] 7.12 Tests in the existing table-driven style: mode transitions, selection extension
   (charwise and linewise, with counts), `o`, every operator, `gv`, undo-as-one-step, dot-repeat.
 
 ## 8. Selection rendering (`internal/tui/styles/`, `internal/tui/components/chat/editor.go`)
 
-- [ ] 8.1 Add `styles.RestyleRange(line string, from, to int, style lipgloss.Style) string`
+- [x] 8.1 Add `styles.RestyleRange(line string, from, to int, style lipgloss.Style) string`
   using `x/ansi` `Cut`/`Strip` (design D12). It MUST preserve the line's visible cell width.
-- [ ] 8.2 Tests for `RestyleRange`: width preserved; ranges at line start/end/whole-line;
+- [x] 8.2 Tests for `RestyleRange`: width preserved; ranges at line start/end/whole-line;
   wide (2-column) characters not split; a line already carrying ANSI styling.
-- [ ] 8.3 Add the probe textarea to the editor (`textarea.New()`, own viewport) plus
+- [x] 8.3 Add the probe textarea to the editor (`textarea.New()`, own viewport) plus
   `selectionRows(from, to int) []selectionSpan` computing `(viewRow, colFrom, colTo)` per
   design D11, kept in sync with the real textarea's width/height/value.
-- [ ] 8.4 Compute and store the spans in `Update` whenever the selection or draft changes —
+- [x] 8.4 Compute and store the spans in `Update` whenever the selection or draft changes —
   never in `View` (the `chat-editor-layout` delta requires this).
-- [ ] 8.5 Apply the spans in `textareaView()`; return the view untouched when no visual mode
+- [x] 8.5 Apply the spans in `textareaView()`; return the view untouched when no visual mode
   is active.
-- [ ] 8.6 Conformance test: for a set of values and widths, the probe's `LineInfo` matches the
+- [x] 8.6 Conformance test: for a set of values and widths, the probe's `LineInfo` matches the
   real textarea's at the same cursor positions — this is what pins the highlight to `bubbles`'
   wrap (design D11).
-- [ ] 8.7 Test: a selection spanning a soft wrap highlights every covered display row across
+- [x] 8.7 Test: a selection spanning a soft wrap highlights every covered display row across
   the correct columns and nothing outside the selection.
-- [ ] 8.8 Test: with no visual mode active, `View()` output is byte-identical to a run with
+- [x] 8.8 Test: with no visual mode active, `View()` output is byte-identical to a run with
   the selection code compiled in but inactive (guards the "no change when inactive" clause).
-- [ ] 8.9 Extend the existing no-overflow tests (`TestEditorCmpNoOverflow`) to cover the
+- [x] 8.9 Extend the existing no-overflow tests (`TestEditorCmpNoOverflow`) to cover the
   visual modes at every width, and `TestEditorViewCellsCarryBackground` to cover a highlighted
   view.
 
 ## 9. Mode plumbing outside the editor
 
-- [ ] 9.1 `internal/tui/components/core/status.go`: render `VISUAL` / `V-LINE` badges with a
+- [x] 9.1 `internal/tui/components/core/status.go`: render `VISUAL` / `V-LINE` badges with a
   distinct background from `INSERT`/`NORMAL`.
-- [ ] 9.2 `internal/tui/page/chat.go`: the esc branch (`:258`) and `ConsumesCtrlC` (`:522`)
+- [x] 9.2 `internal/tui/page/chat.go`: the esc branch (`:258`) and `ConsumesCtrlC` (`:522`)
   must treat the visual modes like INSERT — editor-consumed, never agent-cancel or quit.
   Replace the bare `== "INSERT"` string comparisons with a helper so a future mode cannot
   slip through the same gap.
-- [ ] 9.3 The `!`-to-shell-mode guard must exclude the visual modes as well as NORMAL.
-- [ ] 9.4 Tests: esc in VISUAL with a busy agent does not cancel the agent; ctrl+c in VISUAL
+- [x] 9.3 The `!`-to-shell-mode guard must exclude the visual modes as well as NORMAL.
+- [x] 9.4 Tests: esc in VISUAL with a busy agent does not cancel the agent; ctrl+c in VISUAL
   raises no quit dialog; `!` in VISUAL does not enter shell mode.
 
 ## 10. Docs and final checks
 
-- [ ] 10.1 `README.md`: document `shell.interactive` in the Shell config section; add the
+- [x] 10.1 `README.md`: document `shell.interactive` in the Shell config section; add the
   `!` / `!!` shell-mode rows and the vim VISUAL rows to the Editor shortcut table.
-- [ ] 10.2 Add a release note for the behavioral break: commands that silently prompted on the
+- [x] 10.2 Add a release note for the behavioral break: commands that silently prompted on the
   terminal now fail fast, and how to run them (`!!`, or `shell.interactive`).
-- [ ] 10.3 Add an e2e script under `scripts/test/` exercising the isolation invariant end to
+- [x] 10.3 Add an e2e script under `scripts/test/` exercising the isolation invariant end to
   end (a `/dev/tty` write from a shell command must not reach the terminal), per the
   `make test-e2e` convention in `CLAUDE.md`.
-- [ ] 10.4 Run `make test` and fix everything it reports (tests plus formatters).
-- [ ] 10.5 Run `./scripts/check_hidden_chars.sh`.
+- [x] 10.4 Run `make test` and fix everything it reports (tests plus formatters).
+- [x] 10.5 Run `./scripts/check_hidden_chars.sh`.

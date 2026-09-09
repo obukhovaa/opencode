@@ -332,3 +332,44 @@ func TestCancelledRunGetsNoHint(t *testing.T) {
 		t.Error("cancelled run not marked as cancelled")
 	}
 }
+
+// TestBangIsVimInputInCommandModes guards the shell sigil from stealing a key
+// that vim owns. `!` in NORMAL is the start of a filter command and in a visual
+// mode it filters the selection; neither should open shell mode.
+func TestBangIsVimInputInCommandModes(t *testing.T) {
+	tests := []struct {
+		name  string
+		enter []tea.KeyPressMsg
+	}{
+		{
+			name:  "NORMAL",
+			enter: []tea.KeyPressMsg{{Code: tea.KeyEscape}},
+		},
+		{
+			name:  "VISUAL",
+			enter: []tea.KeyPressMsg{{Code: tea.KeyEscape}, {Code: 'v', Text: "v"}},
+		},
+		{
+			name:  "VISUAL LINE",
+			enter: []tea.KeyPressMsg{{Code: tea.KeyEscape}, {Code: 'V', Text: "V"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ed := newTestEditor()
+			ed.selectionLayout = newSelectionLayout()
+			ed.vimHandler = vim.NewHandler()
+			ed.SetSize(40, 3)
+			for _, k := range tt.enter {
+				ed.Update(k)
+			}
+
+			ed.Update(tea.KeyPressMsg{Code: '!', Text: "!"})
+
+			if ed.IsShellMode() {
+				t.Errorf("! in %s entered shell mode", tt.name)
+			}
+		})
+	}
+}
