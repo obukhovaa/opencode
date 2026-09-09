@@ -579,6 +579,13 @@ func generateSchema() map[string]any {
 				},
 				"default": []string{"-l"},
 			},
+			"interactive": map[string]any{
+				"type":        "array",
+				"description": "Additional programs that need a real terminal. A TUI shell-mode (`!`) command leading with one of these is handed the terminal instead of having its output captured, so it can prompt for a password or run full-screen. Extends the built-in list (sudo, ssh, vim, less, psql, ...); matched case-insensitively against the leading program name. Prefix any command with `!!` to force the same handoff without configuring it.",
+				"items": map[string]any{
+					"type": "string",
+				},
+			},
 		},
 	}
 

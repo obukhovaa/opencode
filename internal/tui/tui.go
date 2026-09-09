@@ -780,6 +780,12 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if a.pageIsShellMode() {
 				break
 			}
+			// A command can still be running after shell mode was cleared — a
+			// session switch does that. Ctrl+c has to reach the editor to
+			// cancel it rather than raise the quit dialog.
+			if a.pageIsShellRunning() {
+				break
+			}
 			// In vim INSERT mode, ctrl+c switches to NORMAL instead of showing quit dialog
 			if a.pageConsumesCtrlC() {
 				break
@@ -1139,6 +1145,16 @@ func (a *appModel) dismissQuestionDialog() {
 			_ = a.app.Questions.Reject(reqID)
 		}
 	}
+}
+
+func (a *appModel) pageIsShellRunning() bool {
+	type shellRunner interface {
+		IsShellRunning() bool
+	}
+	if p, ok := a.pages[a.currentPage].(shellRunner); ok {
+		return p.IsShellRunning()
+	}
+	return false
 }
 
 func (a *appModel) pageConsumesCtrlC() bool {

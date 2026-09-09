@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -77,7 +78,14 @@ type editorCmp struct {
 	shellHistory    []string
 	shellHistoryIdx int
 	shellExecuting  bool
-	vimHandler      *vim.Handler // nil when vim mode is disabled
+	// shellCancel stops the captured command currently running. Non-nil only
+	// while a captured command is in flight; an interactive run owns the
+	// terminal, so ctrl+c reaches the command itself and there is nothing here
+	// to cancel.
+	shellCancel context.CancelFunc
+	// shellInteractive records which path the in-flight command took.
+	shellInteractive bool
+	vimHandler       *vim.Handler // nil when vim mode is disabled
 }
 
 type EditorKeyMaps struct {
@@ -299,6 +307,18 @@ func (m *editorCmp) send() tea.Cmd {
 		return nil
 	}
 
+	// The backstop for text that reached the draft by a route that did not
+	// switch modes. It runs BEFORE expansion so a `!` draft is never expanded
+	// into a prompt or queued as a message.
+	if command, ok := shellInvocation(value); ok && m.canEnterShellMode() {
+		m.textarea.SetValue(command)
+		m.enterShellMode()
+		return tea.Batch(
+			util.CmdHandler(ShellModeChangedMsg{ShellMode: true}),
+			m.executeShell(),
+		)
+	}
+
 	// Expand slash invocations before anything else. On failure the editor is
 	// left exactly as the user typed it: a rejected submission must never eat
 	// the message.
@@ -358,6 +378,47 @@ func (m *editorCmp) expandSubmission(text string) (slashcmd.Expansion, error) {
 	return m.expand(text)
 }
 
+// shellInvocation reports whether text is a shell command the editor should run
+// rather than send, and returns the command with the leading `!` stripped.
+//
+// This is the ONLY place the `!` rule lives. It is consulted from all three
+// paths text can reach the draft by — the `!` keypress, a bracketed paste, and
+// submit — because three parallel implementations is exactly how the paste path
+// came to disagree with the typed one in the first place.
+//
+// The `[` and `=` exclusions keep pasted markdown (`![alt](url)`) and prose
+// containing `!=` out of the shell. They are the minimum needed: a longer
+// denylist would trade a rare false positive for a rule nobody can predict, and
+// anything the predicate refuses is still one keystroke from working.
+func shellInvocation(text string) (string, bool) {
+	if !strings.HasPrefix(text, "!") {
+		return "", false
+	}
+	rest := text[1:]
+	if rest == "" {
+		return "", false
+	}
+	switch rest[0] {
+	case '[', '=':
+		return "", false
+	}
+	command := strings.TrimSpace(rest)
+	if command == "" {
+		return "", false
+	}
+	return command, true
+}
+
+// canEnterShellMode reports whether the `!` sigil should switch the editor into
+// shell mode. It must not fire while a vim command mode owns the keyboard:
+// in NORMAL, VISUAL and VISUAL LINE, `!` is vim input.
+func (m *editorCmp) canEnterShellMode() bool {
+	if m.mode != modeNormal {
+		return false
+	}
+	return m.vimHandler == nil || m.vimHandler.Mode() == vim.ModeInsert
+}
+
 func (m *editorCmp) enterShellMode() {
 	m.mode = modeShell
 	m.shellHistoryIdx = len(m.shellHistory)
@@ -365,26 +426,76 @@ func (m *editorCmp) enterShellMode() {
 }
 
 func (m *editorCmp) exitShellMode() {
+	// Leaving shell mode with a command still running — a session switch, for
+	// instance — would orphan it: nothing would be left holding the cancel func
+	// and its output would land in a session the user has moved away from.
+	m.cancelShell()
 	m.mode = modeNormal
 	m.textarea.Placeholder = ""
 	m.textarea.Reset()
 }
 
+// IsShellRunning reports whether a captured shell command is in flight. Key
+// routing above the editor consults it so the cancel keys are never intercepted
+// while a command is running.
+func (m *editorCmp) IsShellRunning() bool {
+	return m.shellExecuting
+}
+
+// executeShell runs the shell-mode draft. It picks between the two execution
+// paths and is the only place that decision is made.
 func (m *editorCmp) executeShell() tea.Cmd {
-	command := strings.TrimSpace(m.textarea.Value())
-	if command == "" {
+	typed := strings.TrimSpace(m.textarea.Value())
+	if typed == "" {
 		return nil
 	}
 
-	m.shellHistory = append(m.shellHistory, command)
+	// History keeps what the user typed, force prefix and all, so pressing up
+	// re-runs the command the same way it ran the first time.
+	m.shellHistory = append(m.shellHistory, typed)
 	m.shellHistoryIdx = len(m.shellHistory)
 	m.textarea.Reset()
+
+	// A leading `!` inside shell mode forces the terminal handoff — `!!command`
+	// as typed from the normal editor. It is a text prefix rather than a key
+	// chord because every convenient ctrl+ chord is already bound (ctrl+o is
+	// model selection), and because a prefix is visible in the draft before the
+	// user commits to it.
+	command, forced := strings.CutPrefix(typed, "!")
+	if forced {
+		command = strings.TrimSpace(command)
+		if command == "" {
+			return nil
+		}
+	}
+
 	m.shellExecuting = true
 
-	workdir := config.WorkingDirectory()
+	var extra []string
+	if cfg := config.Get(); cfg != nil {
+		extra = cfg.Shell.Interactive
+	}
+	var run tea.Cmd
+	m.shellInteractive = forced || shell.ClassifyInteractive(command, extra)
+	if m.shellInteractive {
+		run = m.executeShellInteractive(command)
+	} else {
+		run = m.executeShellCaptured(command)
+	}
+	return tea.Batch(util.CmdHandler(ShellExecutingMsg{Executing: true}), run)
+}
+
+// executeShellCaptured runs a command through the shared persistent shell and
+// collects its output for the chat — the path every command took before the
+// interactive handoff existed.
+func (m *editorCmp) executeShellCaptured(command string) tea.Cmd {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.shellCancel = cancel
 
 	return func() tea.Msg {
-		sh := shell.GetPersistentShell(workdir)
+		defer cancel()
+
+		sh := shell.GetPersistentShell(config.WorkingDirectory())
 		if sh == nil {
 			return ShellResultMsg{
 				Command:  command,
@@ -393,17 +504,150 @@ func (m *editorCmp) executeShell() tea.Cmd {
 			}
 		}
 
-		ctx := context.Background()
-		stdout, stderr, exitCode, _, err := sh.Exec(ctx, command, tools.DefaultTimeout)
-
-		return ShellResultMsg{
-			Command:  command,
-			Stdout:   stdout,
-			Stderr:   stderr,
-			ExitCode: exitCode,
-			Err:      err,
-		}
+		stdout, stderr, exitCode, interrupted, err := sh.Exec(ctx, command, tools.DefaultTimeout)
+		return buildCapturedResult(command, stdout, stderr, exitCode, interrupted && ctx.Err() != nil, err)
 	}
+}
+
+// buildCapturedResult assembles the result of a captured run, including the
+// hint that turns a fast terminal-related failure into an actionable one.
+//
+// Before terminal isolation, a command like `sudo -v` prompted on opencode's
+// own terminal and hung; now it fails immediately with sudo's own diagnostic.
+// Without the hint the user just sees a cryptic refusal and no way forward.
+func buildCapturedResult(command, stdout, stderr string, exitCode int, cancelled bool, err error) ShellResultMsg {
+	msg := ShellResultMsg{
+		Command:   command,
+		Stdout:    stdout,
+		Stderr:    stderr,
+		ExitCode:  exitCode,
+		Err:       err,
+		Cancelled: cancelled,
+	}
+	// A cancelled run must not be blamed on a missing terminal: the user
+	// stopped it, and any half-written diagnostic is incidental.
+	if !cancelled && shell.NeedsTerminal(stderr+"\n"+stdout) {
+		msg.Hint = "This command needs a terminal. Re-run it as `!!" + command +
+			"` to hand it the terminal, or add its program to `shell.interactive` in .opencode.json."
+	}
+	return msg
+}
+
+// executeShellInteractive hands opencode's terminal to the command for the
+// duration of its run, using the same mechanism ctrl+e uses for $EDITOR.
+//
+// The command is a FRESH shell, not the persistent one: the persistent shell's
+// stdin is a pipe and cannot be handed a terminal. Note that this spawn
+// deliberately does NOT go through detachFromTerminal — owning the terminal is
+// the entire point here, which is the exact opposite of the captured path's
+// policy. That opposition is the design, not an oversight.
+//
+// Everything is built inside the returned command rather than around it, so
+// constructing the command spawns no shell and touches no filesystem.
+func (m *editorCmp) executeShellInteractive(command string) tea.Cmd {
+	return func() tea.Msg {
+		fail := func(err error) tea.Msg {
+			return ShellResultMsg{
+				Command:     command,
+				Interactive: true,
+				ExitCode:    1,
+				Err:         err,
+			}
+		}
+
+		sh := shell.GetPersistentShell(config.WorkingDirectory())
+		if sh == nil {
+			return fail(fmt.Errorf("failed to create shell instance"))
+		}
+
+		// Run where the next captured command would run, so `cd` history
+		// applies to both paths. If that directory has since disappeared, fall
+		// back rather than failing the run with a chdir error.
+		workdir := sh.Cwd()
+		if st, err := os.Stat(workdir); workdir == "" || err != nil || !st.IsDir() {
+			workdir = config.WorkingDirectory()
+		}
+
+		statusFile, err := os.CreateTemp("", "opencode-interactive-status-*")
+		if err != nil {
+			return fail(err)
+		}
+		statusFile.Close()
+		cwdFile, err := os.CreateTemp("", "opencode-interactive-cwd-*")
+		if err != nil {
+			os.Remove(statusFile.Name())
+			return fail(err)
+		}
+		cwdFile.Close()
+
+		// The command's own status has to be captured before the wrapper's
+		// trailing bookkeeping overwrites $?; the wrapper's exit status would
+		// otherwise mask it entirely.
+		wrapper := fmt.Sprintf("%s\nprintf %%s $? > %s\npwd > %s\n",
+			command, shellQuoteArg(statusFile.Name()), shellQuoteArg(cwdFile.Name()))
+
+		c := exec.Command(shell.GetShellPath(), "-lc", wrapper) //nolint:gosec
+		c.Dir = workdir
+		c.Stdin = os.Stdin
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+
+		return tea.ExecProcess(c, func(runErr error) tea.Msg {
+			defer os.Remove(statusFile.Name())
+			defer os.Remove(cwdFile.Name())
+
+			msg := ShellResultMsg{Command: command, Interactive: true}
+
+			if raw, readErr := os.ReadFile(statusFile.Name()); readErr == nil {
+				if code, convErr := strconv.Atoi(strings.TrimSpace(string(raw))); convErr == nil {
+					msg.ExitCode = code
+				}
+			} else if runErr != nil {
+				msg.ExitCode = 1
+				msg.Err = runErr
+			}
+
+			// Apply whatever directory the command left behind back to the
+			// persistent shell, so `cd` behaves the same on both paths.
+			if raw, readErr := os.ReadFile(cwdFile.Name()); readErr == nil {
+				if newCwd := strings.TrimSpace(string(raw)); newCwd != "" && newCwd != workdir {
+					// Off the event loop: the resync goes through the persistent
+					// shell's command queue, which may be occupied by a long
+					// agent bash call, and blocking here would freeze the TUI
+					// for its duration. The queue is FIFO, so a command the user
+					// types next still lands after this one.
+					go func() {
+						_, _, _, _, _ = sh.Exec(context.Background(), "cd "+shellQuoteArg(newCwd), tools.DefaultTimeout)
+					}()
+				}
+			}
+
+			return msg
+		})()
+	}
+}
+
+// shellQuoteArg single-quotes a string for safe interpolation into a shell
+// command. Paths come from os.CreateTemp and the shell's own pwd, but they are
+// still interpolated into a command string, so they are quoted rather than
+// trusted.
+func shellQuoteArg(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// cancelShell stops the running captured command. The persistent shell's
+// context watcher turns the cancellation into a descendant-tree terminate, so
+// nothing is left behind.
+//
+// An interactive run is not cancellable from here by design: it owns the
+// terminal, so ctrl+c goes to the command itself, which is what the user means.
+func (m *editorCmp) cancelShell() tea.Cmd {
+	if m.shellCancel == nil {
+		return nil
+	}
+	m.shellCancel()
+	m.shellCancel = nil
+	return nil
 }
 
 func (m *editorCmp) shellHistoryUp() {
@@ -507,6 +751,7 @@ func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case ShellResultMsg:
 		m.shellExecuting = false
+		m.shellCancel = nil
 		return m, nil
 	case dialog.AttachmentAddedMsg:
 		if len(m.attachments) >= maxAttachments {
@@ -515,8 +760,26 @@ func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.attachments = append(m.attachments, msg.Attachment)
 		m.syncTextareaHeight()
+	case tea.PasteMsg:
+		// Bracketed paste is not a key press, so without this branch pasted text
+		// never reaches the `!` check and the same characters behave
+		// differently depending on how they arrived.
+		if command, ok := shellInvocation(msg.Content); ok &&
+			m.canEnterShellMode() && m.textarea.Value() == "" {
+			m.enterShellMode()
+			m.textarea.SetValue(command)
+			return m, util.CmdHandler(ShellModeChangedMsg{ShellMode: true})
+		}
+		m.textarea, cmd = m.textarea.Update(msg)
+		return m, cmd
 	case tea.KeyPressMsg:
 		if m.shellExecuting {
+			// Everything else is swallowed while a command runs, but the cancel
+			// keys must not be: without them a slow command locks the editor
+			// until the two-minute tool timeout expires.
+			if key.Matches(msg, DeleteKeyMaps.Escape) || msg.String() == "ctrl+c" {
+				return m, m.cancelShell()
+			}
 			return m, nil
 		}
 
@@ -548,13 +811,14 @@ func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Shell mode: detect "!" at position 0 on empty input
-		// In vim mode, only trigger shell from INSERT mode
-		if m.mode == modeNormal && msg.Text == "!" && m.textarea.Value() == "" {
-			if m.vimHandler == nil || m.vimHandler.Mode() == vim.ModeInsert {
-				m.enterShellMode()
-				return m, util.CmdHandler(ShellModeChangedMsg{ShellMode: true})
-			}
+		// Shell mode: "!" typed at position 0 on empty input. This path handles
+		// the bare sigil rather than going through shellInvocation, because at
+		// this point there is no command yet — the user is about to type one.
+		// shellInvocation governs the paths where the whole text already exists
+		// (paste and submit).
+		if m.canEnterShellMode() && msg.Text == "!" && m.textarea.Value() == "" {
+			m.enterShellMode()
+			return m, util.CmdHandler(ShellModeChangedMsg{ShellMode: true})
 		}
 
 		// Shell mode key handling

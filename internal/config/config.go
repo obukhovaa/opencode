@@ -283,6 +283,11 @@ type TUIConfig struct {
 type ShellConfig struct {
 	Path string   `json:"path,omitempty"`
 	Args []string `json:"args,omitempty"`
+	// Interactive extends the built-in list of programs that are handed the
+	// real terminal when run from the TUI's shell (`!`) mode instead of having
+	// their output captured into the chat. Entries are matched
+	// case-insensitively against the command's leading program name.
+	Interactive []string `json:"interactive,omitempty"`
 }
 
 // ProviderType defines the type of session storage provider.
