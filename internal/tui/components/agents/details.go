@@ -96,7 +96,21 @@ func (d *detailCmp) updateContent() {
 	content.WriteString(valueStyle.Render(model))
 	content.WriteString("\n")
 
-	if len(d.current.Tools) > 0 {
+	// Allowlist mode gets its own block rather than the Tools list: the
+	// entries are patterns that may match tools nobody has enumerated, and
+	// rendering them as "enabled" would imply everything unlisted merely
+	// defaults — when in fact it is denied.
+	if d.current.UsesToolAllowlist() {
+		content.WriteString(labelStyle.Render("Tools (allowlist — nothing else granted):"))
+		content.WriteString("\n")
+		allowed := make([]string, len(d.current.AllowTools))
+		copy(allowed, d.current.AllowTools)
+		sort.Strings(allowed)
+		for _, name := range allowed {
+			content.WriteString(fmt.Sprintf("  %s\n", valueStyle.Render(name)))
+		}
+		content.WriteString("\n")
+	} else if len(d.current.Tools) > 0 {
 		content.WriteString(labelStyle.Render("Tools:"))
 		content.WriteString("\n")
 		names := make([]string, 0, len(d.current.Tools))
