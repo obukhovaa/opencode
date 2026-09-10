@@ -2,6 +2,7 @@ package flow
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -210,6 +211,65 @@ func TestSubstituteScoped_ObjectValueRendersAsJSON(t *testing.T) {
 	want := `{"email":"u@x.com","name":"U"}`
 	if got != want {
 		t.Errorf("substituteScoped() = %q, want %q", got, want)
+	}
+}
+
+func TestSubstituteScoped_CompositeJSONDoesNotHTMLEscape(t *testing.T) {
+	// json.Marshal would rewrite `>` and `&` as \u003e / \u0026. Those
+	// show up in ordinary struct output (URLs with query strings, prose
+	// comparisons) and are noise in a prompt.
+	args := map[string]any{
+		"cited_figures": []any{
+			map[string]any{"claim": "save rate > 25%", "url": "https://x.io/a?b=1&c=2"},
+		},
+	}
+	got := substituteScoped("${args.cited_figures}", args, nil)
+	want := `[{"claim":"save rate > 25%","url":"https://x.io/a?b=1&c=2"}]`
+	if got != want {
+		t.Errorf("substituteScoped() = %q, want %q", got, want)
+	}
+}
+
+func TestSubstituteScoped_BareArgsDoesNotHTMLEscape(t *testing.T) {
+	args := map[string]any{"url": "https://x.io/a?b=1&c=2"}
+	got := substituteScoped("${args}", args, nil)
+	if containsSubstring(got, `\u0026`) {
+		t.Errorf("bare ${args} HTML-escaped the payload: %q", got)
+	}
+	if !containsSubstring(got, `"url": "https://x.io/a?b=1&c=2"`) {
+		t.Errorf("bare ${args} = %q, want the unescaped URL", got)
+	}
+	if strings.HasSuffix(got, "\n") {
+		t.Errorf("bare ${args} kept the encoder's trailing newline: %q", got)
+	}
+}
+
+func TestSubstituteScoped_FloatScalarsRenderAsPlainDecimal(t *testing.T) {
+	// copyArgs' JSON round-trip makes every args number a float64, and
+	// fmt's %g would emit `1e+06` / `1.7e+12` — while the same number
+	// nested in a composite renders as plain digits. Both paths must agree.
+	args := map[string]any{
+		"count":     float64(1000000),
+		"timestamp": float64(1699999999999),
+		"ratio":     float64(0.25),
+		"whole":     float64(29),
+		"nested":    map[string]any{"count": float64(1000000)},
+	}
+	tests := []struct {
+		template string
+		want     string
+	}{
+		{"${args.count}", "1000000"},
+		{"${args.timestamp}", "1699999999999"},
+		{"${args.ratio}", "0.25"},
+		{"${args.whole}", "29"},
+		{"${args.nested.count}", "1000000"},
+		{"${args.nested}", `{"count":1000000}`},
+	}
+	for _, tt := range tests {
+		if got := substituteScoped(tt.template, args, nil); got != tt.want {
+			t.Errorf("substituteScoped(%q) = %q, want %q", tt.template, got, tt.want)
+		}
 	}
 }
 
