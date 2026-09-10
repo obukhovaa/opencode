@@ -2,6 +2,7 @@ package flow
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -176,6 +177,99 @@ func TestSubstituteScoped_BareArgsStillJSON(t *testing.T) {
 	}
 	if !containsSubstring(got, `"k": "v"`) {
 		t.Errorf("bare ${args} did not emit JSON, got %q", got)
+	}
+}
+
+func TestSubstituteScoped_ArrayOfObjectsRendersAsJSON(t *testing.T) {
+	// A composite value merged into args from a step's struct output
+	// (e.g. cancel-survey-audit's cited_figures) must render as JSON,
+	// not fmt's `[map[k:v] ...]` Go notation (CD-4975).
+	args := map[string]any{
+		"cited_figures": []any{
+			map[string]any{"claim": "Total cancel events", "value": float64(1882), "unit": "count"},
+			map[string]any{"claim": "Client overall save rate", "value": float64(29), "unit": "percent"},
+		},
+	}
+	got := substituteScoped("figures: ${args.cited_figures}", args, nil)
+	want := `figures: [{"claim":"Total cancel events","unit":"count","value":1882},` +
+		`{"claim":"Client overall save rate","unit":"percent","value":29}]`
+	if got != want {
+		t.Errorf("substituteScoped() = %q, want %q", got, want)
+	}
+	if containsSubstring(got, "map[") {
+		t.Errorf("substituteScoped() leaked Go map notation: %q", got)
+	}
+}
+
+func TestSubstituteScoped_ObjectValueRendersAsJSON(t *testing.T) {
+	// Same for a nested object resolved as a whole (not via a dot-path
+	// into a scalar leaf).
+	args := map[string]any{
+		"reviewer": map[string]any{"email": "u@x.com", "name": "U"},
+	}
+	got := substituteScoped("${args.reviewer}", args, nil)
+	want := `{"email":"u@x.com","name":"U"}`
+	if got != want {
+		t.Errorf("substituteScoped() = %q, want %q", got, want)
+	}
+}
+
+func TestSubstituteScoped_CompositeJSONDoesNotHTMLEscape(t *testing.T) {
+	// json.Marshal would rewrite `>` and `&` as \u003e / \u0026. Those
+	// show up in ordinary struct output (URLs with query strings, prose
+	// comparisons) and are noise in a prompt.
+	args := map[string]any{
+		"cited_figures": []any{
+			map[string]any{"claim": "save rate > 25%", "url": "https://x.io/a?b=1&c=2"},
+		},
+	}
+	got := substituteScoped("${args.cited_figures}", args, nil)
+	want := `[{"claim":"save rate > 25%","url":"https://x.io/a?b=1&c=2"}]`
+	if got != want {
+		t.Errorf("substituteScoped() = %q, want %q", got, want)
+	}
+}
+
+func TestSubstituteScoped_BareArgsDoesNotHTMLEscape(t *testing.T) {
+	args := map[string]any{"url": "https://x.io/a?b=1&c=2"}
+	got := substituteScoped("${args}", args, nil)
+	if containsSubstring(got, `\u0026`) {
+		t.Errorf("bare ${args} HTML-escaped the payload: %q", got)
+	}
+	if !containsSubstring(got, `"url": "https://x.io/a?b=1&c=2"`) {
+		t.Errorf("bare ${args} = %q, want the unescaped URL", got)
+	}
+	if strings.HasSuffix(got, "\n") {
+		t.Errorf("bare ${args} kept the encoder's trailing newline: %q", got)
+	}
+}
+
+func TestSubstituteScoped_FloatScalarsRenderAsPlainDecimal(t *testing.T) {
+	// copyArgs' JSON round-trip makes every args number a float64, and
+	// fmt's %g would emit `1e+06` / `1.7e+12` — while the same number
+	// nested in a composite renders as plain digits. Both paths must agree.
+	args := map[string]any{
+		"count":     float64(1000000),
+		"timestamp": float64(1699999999999),
+		"ratio":     float64(0.25),
+		"whole":     float64(29),
+		"nested":    map[string]any{"count": float64(1000000)},
+	}
+	tests := []struct {
+		template string
+		want     string
+	}{
+		{"${args.count}", "1000000"},
+		{"${args.timestamp}", "1699999999999"},
+		{"${args.ratio}", "0.25"},
+		{"${args.whole}", "29"},
+		{"${args.nested.count}", "1000000"},
+		{"${args.nested}", `{"count":1000000}`},
+	}
+	for _, tt := range tests {
+		if got := substituteScoped(tt.template, args, nil); got != tt.want {
+			t.Errorf("substituteScoped(%q) = %q, want %q", tt.template, got, tt.want)
+		}
 	}
 }
 

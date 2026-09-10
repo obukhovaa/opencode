@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1930,11 +1931,11 @@ func substituteScoped(template string, args map[string]any, stepVars map[string]
 	}
 
 	if strings.Contains(template, "${args}") {
-		argsJSON, err := json.MarshalIndent(args, "", "  ")
+		argsJSON, err := marshalPromptJSON(args, "  ")
 		if err != nil {
-			argsJSON = []byte("{}")
+			argsJSON = "{}"
 		}
-		template = strings.ReplaceAll(template, "${args}", string(argsJSON))
+		template = strings.ReplaceAll(template, "${args}", argsJSON)
 	}
 
 	return argsPlaceholderRegex.ReplaceAllStringFunc(template, func(match string) string {
@@ -1947,8 +1948,56 @@ func substituteScoped(template string, args map[string]any, stepVars map[string]
 			// behaviour and lets resolveSessionPrefix detect misses.
 			return match
 		}
-		return fmt.Sprintf("%v", value)
+		return renderTemplateValue(value)
 	})
+}
+
+// renderTemplateValue converts a resolved placeholder value to its prompt
+// representation. Strings substitute verbatim, so `"${args.aid}"` in a
+// prompt stays valid.
+//
+// Composite values — a struct-output array/object merged into args, e.g.
+// cited_figures — render as compact JSON: fmt's `[map[k:v] ...]` notation
+// is lossy (unquoted, ambiguous around spaces) and models mis-read it
+// (CD-4975). Only the JSON-shaped types are matched because every args
+// value passes through json.Unmarshal (flow-state rows, struct output,
+// the /flow/run body) and copyArgs' marshal/unmarshal round-trip, so
+// composites are always map[string]any / []any.
+//
+// That same round-trip makes EVERY args number a float64, and fmt renders
+// those with %g — a round million reaches the prompt as `1e+06` and a
+// millisecond epoch as `1.7e+12`, while the identical number nested inside
+// a composite renders as plain digits through encoding/json. Formatting
+// floats with 'f' keeps the scalar and composite paths agreeing.
+func renderTemplateValue(value any) string {
+	switch v := value.(type) {
+	case map[string]any, []any:
+		if s, err := marshalPromptJSON(v, ""); err == nil {
+			return s
+		}
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	}
+	return fmt.Sprintf("%v", value)
+}
+
+// marshalPromptJSON encodes v as JSON destined for a prompt. HTML escaping
+// is OFF: json.Marshal rewrites `<`, `>` and `&` as \u003c / \u003e /
+// \u0026, which is noise for a model and shows up in ordinary args — URLs
+// with query strings (`?a=1&b=2`), claims like "save rate > 25%". An empty
+// indent yields the compact single-line form. json.Encoder appends a
+// trailing newline that has no place mid-prompt, so strip it.
+func marshalPromptJSON(v any, indent string) (string, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if indent != "" {
+		enc.SetIndent("", indent)
+	}
+	if err := enc.Encode(v); err != nil {
+		return "", err
+	}
+	return strings.TrimRight(buf.String(), "\n"), nil
 }
 
 // resolveArgsPath resolves a dot-path against args. Top-level exact-key
