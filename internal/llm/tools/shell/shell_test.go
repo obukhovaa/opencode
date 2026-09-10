@@ -236,3 +236,118 @@ func processAlive(pid int) bool {
 	}
 	return proc.Signal(syscall.Signal(0)) == nil
 }
+
+// TestCommandEndingTheSessionIsReportedAccurately covers the consequence of
+// eval'ing commands in the persistent shell — the same property that makes `cd`
+// persist also means a command containing `exit` ends the shell.
+//
+// The old behavior reported that as "Command execution timed out or was
+// interrupted" with exit code 143, for a command that ran to completion in
+// milliseconds and asked for a specific status.
+func TestCommandEndingTheSessionIsReportedAccurately(t *testing.T) {
+	sh := newTestShell(t)
+
+	stdout, stderr, exitCode, interrupted, err := sh.Exec(
+		context.Background(), "echo before-exit; exit 3", 30_000)
+	if err != nil {
+		t.Fatalf("Exec returned error: %v", err)
+	}
+
+	if exitCode != 3 {
+		t.Errorf("exit code = %d, want 3 (the status the command asked for)", exitCode)
+	}
+	if interrupted {
+		t.Error("a command that ended the session was reported as interrupted")
+	}
+	if strings.Contains(stderr, "timed out") {
+		t.Errorf("stderr claims a timeout for a command that completed: %q", stderr)
+	}
+	if !strings.Contains(stderr, "ended the shell session") {
+		t.Errorf("stderr does not explain what happened: %q", stderr)
+	}
+	// Output written before the exit must still be reported.
+	if !strings.Contains(stdout, "before-exit") {
+		t.Errorf("stdout = %q, want it to contain output written before the exit", stdout)
+	}
+}
+
+// TestShellRespawnPreservesWorkingDirectory: a shell that died is replaced
+// transparently, and the replacement must start where the old one was.
+// Teleporting back to the project root is a surprise nothing on screen explains.
+func TestShellRespawnPreservesWorkingDirectory(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "nested")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolvedSub, err := filepath.EvalSymlinks(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sh := GetPersistentShell(root)
+	if sh == nil {
+		t.Fatal("failed to start persistent shell")
+	}
+	t.Cleanup(func() {
+		shellInstancesMu.Lock()
+		defer shellInstancesMu.Unlock()
+		if s := shellInstances[root]; s != nil {
+			s.Close()
+		}
+		delete(shellInstances, root)
+	})
+
+	if _, _, code := exec1(t, sh, "cd "+resolvedSub); code != 0 {
+		t.Fatalf("cd failed with exit code %d", code)
+	}
+
+	// End the session the way a user would, by typing `!exit`.
+	if _, _, _, _, err := sh.Exec(context.Background(), "exit 0", 30_000); err != nil {
+		t.Fatalf("Exec returned error: %v", err)
+	}
+	if sh.isAlive() {
+		t.Fatal("the shell survived an exit; this test proves nothing")
+	}
+
+	respawned := GetPersistentShell(root)
+	if respawned == nil {
+		t.Fatal("no replacement shell was created")
+	}
+	if respawned == sh {
+		t.Fatal("the dead shell was handed back")
+	}
+	stdout, _, _ := exec1(t, respawned, "pwd")
+	if got := strings.TrimSpace(stdout); got != resolvedSub {
+		t.Errorf("replacement shell starts in %q, want the directory the old one left off in (%q)", got, resolvedSub)
+	}
+}
+
+// TestCwdDoesNotBlockBehindARunningCommand guards the lock split. Cwd is read by
+// the TUI's interactive handoff from the Bubble Tea event loop; if it were
+// guarded by the mutex a running command holds, the handoff would freeze the UI
+// for up to the tool timeout.
+func TestCwdDoesNotBlockBehindARunningCommand(t *testing.T) {
+	sh := newTestShell(t)
+
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		close(started)
+		_, _, _, _, _ = sh.Exec(context.Background(), "sleep 2", 30_000)
+	}()
+	<-started
+	time.Sleep(200 * time.Millisecond) // let the command take the lock
+
+	done := make(chan string, 1)
+	go func() { done <- sh.Cwd() }()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Cwd() blocked behind a running command")
+	}
+
+	<-finished
+}

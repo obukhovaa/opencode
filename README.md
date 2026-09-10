@@ -383,6 +383,11 @@ command with `!!` forces the same handoff without configuring it.
 > diagnostic (`sudo: no tty present …`). If you hit that from the agent's `bash`
 > tool, run the command yourself; from the TUI, re-run it with `!!`.
 
+Commands are evaluated *in* the shell, which is what makes `cd` persist between
+them. The same property means a command containing `exit` ends the session: the
+exit status is reported as the command's own, a replacement shell starts in the
+same directory, and exported variables and shell functions are lost.
+
 ### MCP Servers
 
 ```json

@@ -165,3 +165,18 @@
   `make test-e2e` convention in `CLAUDE.md`.
 - [x] 10.4 Run `make test` and fix everything it reports (tests plus formatters).
 - [x] 10.5 Run `./scripts/check_hidden_chars.sh`.
+
+## 11. Session-ending commands (`internal/llm/tools/shell/`)
+
+- [x] 11.1 Record the shell process's exit status from `cmd.Wait` before marking it
+  dead, so a command that ended the session can report the status it asked for.
+- [x] 11.2 Distinguish "the session ended" from "interrupted" in `execCommand`: report
+  the recorded status and an explanation, never the bogus "timed out or was
+  interrupted" a completed command used to get.
+- [x] 11.3 Start a replacement shell in the previous one's working directory when that
+  directory still exists; fall back to the configured working directory otherwise.
+- [x] 11.4 Give `cwd` its own `RWMutex` so `Cwd()` never blocks behind a running
+  command — the interactive handoff reads it from the TUI event loop.
+- [x] 11.5 Tests: an `exit 3` command reports code 3, not interrupted, output preserved,
+  with an explanation; a replacement shell starts in the previous directory; `Cwd()`
+  returns promptly while a command runs.

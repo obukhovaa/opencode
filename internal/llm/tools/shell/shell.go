@@ -30,10 +30,29 @@ type PersistentShell struct {
 	alive atomic.Bool
 	// closeQueue guards the command queue's close. Both the Wait watcher and
 	// the panic-recovery path reach it, and closing a channel twice panics.
-	closeQueue   sync.Once
-	cwd          string
+	closeQueue sync.Once
+	// exitStatus is the shell process's own exit code, recorded before the
+	// shell is marked dead. When a command ends the shell session (`exit 3`
+	// runs in the shell itself, because commands are eval'd there), this IS the
+	// status the user asked for — there is no other place to read it from.
+	exitStatus atomic.Int32
+
+	// cwd has its own lock rather than sharing mu. mu is held for the entire
+	// duration of a running command, so a Cwd() guarded by it would block for
+	// up to the tool timeout — and Cwd() is read by the TUI's interactive
+	// handoff, which must not stall the event loop behind an agent's bash call.
+	cwd   string
+	cwdMu sync.RWMutex
+
 	mu           sync.Mutex
 	commandQueue chan *commandExecution
+}
+
+// setCwd records the working directory the last command left behind.
+func (s *PersistentShell) setCwd(dir string) {
+	s.cwdMu.Lock()
+	defer s.cwdMu.Unlock()
+	s.cwd = dir
 }
 
 // isAlive reports whether the shell process is still usable.
@@ -74,7 +93,20 @@ func GetPersistentShell(workingDir string) *PersistentShell {
 		return sh
 	}
 
-	sh := newPersistentShell(workingDir)
+	// A shell that died — most often because a command contained `exit` — is
+	// replaced transparently. Start the replacement where the old one left off:
+	// silently teleporting the user back to the project root after an `!exit`
+	// is a surprise nothing on screen explains.
+	startDir := workingDir
+	if prev, ok := shellInstances[workingDir]; ok && prev != nil {
+		if last := prev.Cwd(); last != "" {
+			if st, err := os.Stat(last); err == nil && st.IsDir() {
+				startDir = last
+			}
+		}
+	}
+
+	sh := newPersistentShell(startDir)
 	if sh == nil {
 		return nil
 	}
@@ -160,6 +192,12 @@ func newPersistentShell(cwd string) *PersistentShell {
 		if err != nil {
 			logging.Error(fmt.Sprintf("Can't complete shell command: %s", err.Error()))
 		}
+		// Record the status BEFORE marking the shell dead: execCommand notices
+		// the death through the alive flag, and the atomic store ordering is
+		// what lets it read a status that is already there.
+		if cmd.ProcessState != nil {
+			shell.exitStatus.Store(int32(cmd.ProcessState.ExitCode()))
+		}
 		shell.markDead()
 	}()
 
@@ -221,6 +259,12 @@ echo $EXEC_EXIT_CODE > %s
 	}
 
 	interrupted := false
+	// sessionEnded is kept separate from interrupted. A command that ends the
+	// shell session (`exit`, `exec`, a fatal shell error) is not an abort: the
+	// command did exactly what it was asked to. Reporting it as an interruption
+	// produced a bogus "timed out or was interrupted" for a command that ran to
+	// completion in a few milliseconds.
+	sessionEnded := false
 
 	startTime := time.Now()
 
@@ -241,7 +285,7 @@ echo $EXEC_EXIT_CODE > %s
 				}
 
 				if !s.isAlive() {
-					interrupted = true
+					sessionEnded = true
 					done <- true
 					return
 				}
@@ -267,15 +311,27 @@ echo $EXEC_EXIT_CODE > %s
 	newCwd := readFileOrEmpty(cwdFile)
 
 	exitCode := 0
-	if exitCodeStr != "" {
+	switch {
+	case exitCodeStr != "":
 		fmt.Sscanf(exitCodeStr, "%d", &exitCode)
-	} else if interrupted {
+	case sessionEnded:
+		// Commands are eval'd in the persistent shell itself — that is what
+		// makes `cd` persist — so a command containing `exit` ends the shell.
+		// The shell's own exit status is the status the command asked for; no
+		// status file was ever written, because the shell never got that far.
+		exitCode = int(s.exitStatus.Load())
+		if stderr != "" && !strings.HasSuffix(stderr, "\n") {
+			stderr += "\n"
+		}
+		stderr += "The command ended the shell session. A new shell starts on the next command, " +
+			"in the same working directory; exported variables and shell functions are lost."
+	case interrupted:
 		exitCode = 143
 		stderr += "\nCommand execution timed out or was interrupted"
 	}
 
 	if newCwd != "" {
-		s.cwd = strings.TrimSpace(newCwd)
+		s.setCwd(strings.TrimSpace(newCwd))
 	}
 
 	return commandResult{
@@ -395,8 +451,8 @@ func childPIDs(pid int) []int {
 // interactive handoff reads it so a command that bypasses the persistent shell
 // still runs where the user expects.
 func (s *PersistentShell) Cwd() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.cwdMu.RLock()
+	defer s.cwdMu.RUnlock()
 	return s.cwd
 }
 
