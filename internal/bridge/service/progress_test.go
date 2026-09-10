@@ -1,0 +1,494 @@
+package service
+
+import (
+	"context"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/opencode-ai/opencode/internal/app"
+	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/bridge/store"
+	"github.com/opencode-ai/opencode/internal/message"
+	"github.com/opencode-ai/opencode/internal/pubsub"
+)
+
+// fixedClock returns a runProgress whose clock is pinned so header text
+// is deterministic.
+func fixedClock(elapsed time.Duration) *runProgress {
+	p := newRunProgress()
+	start := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	p.startedAt = start
+	p.now = func() time.Time { return start.Add(elapsed) }
+	return p
+}
+
+// TestRunProgress_HeaderStates pins the card text at each stage of a run:
+// the reporter asked for "Thinking..." first and the real tool-call
+// count after that, with a terminal line when the run ends.
+func TestRunProgress_HeaderStates(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		setup func(p *runProgress)
+		want  string
+	}{
+		{
+			name:  "fresh run is thinking",
+			setup: func(p *runProgress) {},
+			want:  "⏳ Thinking...",
+		},
+		{
+			name: "first call in flight",
+			setup: func(p *runProgress) {
+				p.toolStarted("toolu_1", "bash")
+			},
+			want: "⏳ 0 tool calls done · running bash · 1m12s",
+		},
+		{
+			name: "one call done",
+			setup: func(p *runProgress) {
+				p.toolStarted("toolu_1", "bash")
+				p.toolDone("toolu_1", "bash", "#toolu_1", false, "")
+			},
+			want: "⏳ 1 tool call done · 1m12s",
+		},
+		{
+			name: "several done, two in flight",
+			setup: func(p *runProgress) {
+				for i := 0; i < 5; i++ {
+					id := "toolu_" + string(rune('a'+i))
+					p.toolStarted(id, "read")
+					p.toolDone(id, "read", "#"+id, false, "")
+				}
+				p.toolStarted("toolu_x", "bash")
+				p.toolStarted("toolu_y", "grep")
+			},
+			want: "⏳ 5 tool calls done · 2 running · 1m12s",
+		},
+		{
+			name: "failure adds a count",
+			setup: func(p *runProgress) {
+				p.toolDone("toolu_1", "read", "#a1b2c3", false, "")
+				p.toolDone("toolu_2", "bash", "#d4e5f6", true, "permission denied exit 1")
+			},
+			want: "⏳ 2 tool calls done · 1 failed · 1m12s",
+		},
+		{
+			name: "finished ok",
+			setup: func(p *runProgress) {
+				for i := 0; i < 8; i++ {
+					p.toolDone("id", "read", "#id", false, "")
+				}
+				p.finish(progressStatusOK)
+			},
+			want: "✓ Done · 8 tool calls · 1m12s",
+		},
+		{
+			name: "finished with agent error",
+			setup: func(p *runProgress) {
+				p.toolDone("id", "read", "#id", false, "")
+				p.toolDone("id2", "bash", "#id2", true, "boom")
+				p.finish(progressStatusError)
+			},
+			want: "✗ Run failed · 2 tool calls · 1 failed · 1m12s",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := fixedClock(72 * time.Second)
+			tt.setup(p)
+			f := p.snapshot()
+			header := strings.SplitN(f.text, "\n", 2)[0]
+			if header != tt.want {
+				t.Errorf("header = %q; want %q", header, tt.want)
+			}
+		})
+	}
+}
+
+// TestRunProgress_FailureLineAndFallback: a failure appears as the card's
+// second line, and exactly one flush carries it as plain text for peers
+// that cannot edit messages.
+func TestRunProgress_FailureLineAndFallback(t *testing.T) {
+	t.Parallel()
+	p := fixedClock(3 * time.Second)
+	p.toolDone("toolu_1", "bash", "#a1b2c3", true, "permission denied exit 1")
+
+	f := p.snapshot()
+	wantLine := "✗ bash#a1b2c3 · permission denied exit 1"
+	if !strings.HasSuffix(f.text, "\n"+wantLine) {
+		t.Errorf("card text = %q; want second line %q", f.text, wantLine)
+	}
+	if f.failureText != wantLine {
+		t.Errorf("failureText = %q; want %q (first flush after a failure carries it)", f.failureText, wantLine)
+	}
+
+	// The next flush still shows the failure on the card but does not
+	// re-send it as text.
+	p.toolDone("toolu_2", "read", "#z", false, "")
+	f2 := p.snapshot()
+	if !strings.Contains(f2.text, wantLine) {
+		t.Errorf("second flush lost the failure line: %q", f2.text)
+	}
+	if f2.failureText != "" {
+		t.Errorf("failureText on second flush = %q; want empty", f2.failureText)
+	}
+}
+
+// TestRunProgress_IgnoresUpdatesAfterFinish: once the terminal snapshot is
+// taken, trailing part events cannot flip the card back to pending.
+func TestRunProgress_IgnoresUpdatesAfterFinish(t *testing.T) {
+	t.Parallel()
+	p := fixedClock(time.Second)
+	p.toolDone("a", "read", "#a", false, "")
+	p.finish(progressStatusOK)
+	final := p.snapshot()
+	if !final.final {
+		t.Fatal("snapshot after finish should be final")
+	}
+	p.toolDone("b", "read", "#b", false, "")
+	p.toolStarted("c", "bash")
+	again := p.snapshot()
+	if again.text != final.text {
+		t.Errorf("post-finish update changed the card: %q → %q", final.text, again.text)
+	}
+}
+
+// TestRunProgress_WorkerOrdersAndCoalesces: the flush worker delivers
+// counts in non-decreasing order, collapses a burst into fewer edits than
+// events, and ends on the terminal state.
+func TestRunProgress_WorkerOrdersAndCoalesces(t *testing.T) {
+	t.Parallel()
+	p := newRunProgress()
+	p.interval = 20 * time.Millisecond
+
+	var mu sync.Mutex
+	var flushes []progressFlush
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.run(ctx, func(f progressFlush) {
+		mu.Lock()
+		flushes = append(flushes, f)
+		mu.Unlock()
+	})
+
+	p.signal() // "Thinking..."
+	time.Sleep(5 * time.Millisecond)
+	const n = 30
+	for i := 0; i < n; i++ {
+		p.toolDone("id", "read", "#id", false, "")
+	}
+	p.finish(progressStatusOK)
+	select {
+	case <-p.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not finish")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(flushes) == 0 {
+		t.Fatal("no flushes")
+	}
+	if len(flushes) >= n {
+		t.Errorf("flushes = %d; want fewer than the %d events (coalescing)", len(flushes), n)
+	}
+	if got := flushes[0].text; got != "⏳ Thinking..." {
+		t.Errorf("first flush = %q; want Thinking...", got)
+	}
+	last := flushes[len(flushes)-1]
+	if !last.final || !strings.HasPrefix(last.text, "✓ Done · 30 tool calls · ") {
+		t.Errorf("last flush = %+v; want final ✓ Done · 30 tool calls", last)
+	}
+	prev := -1
+	for _, f := range flushes {
+		c := countIn(t, f.text)
+		if c < prev {
+			t.Errorf("count went backwards: %d after %d (%q)", c, prev, f.text)
+		}
+		prev = c
+	}
+}
+
+// countIn extracts the tool-call count from a card header.
+func countIn(t *testing.T, text string) int {
+	t.Helper()
+	header := strings.SplitN(text, "\n", 2)[0]
+	fields := strings.Fields(header)
+	for i, f := range fields {
+		if f == "tool" && i > 0 {
+			n := 0
+			for _, r := range fields[i-1] {
+				if r < '0' || r > '9' {
+					return 0
+				}
+				n = n*10 + int(r-'0')
+			}
+			return n
+		}
+	}
+	return 0
+}
+
+func TestFormatElapsed(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "0s"},
+		{12 * time.Second, "12s"},
+		{72 * time.Second, "1m12s"},
+		{3723 * time.Second, "1h02m"},
+	}
+	for _, tt := range tests {
+		if got := formatElapsed(tt.d); got != tt.want {
+			t.Errorf("formatElapsed(%v) = %q; want %q", tt.d, got, tt.want)
+		}
+	}
+}
+
+// TestShouldEmitToolCards is the gate table behind compact vs full: only
+// full posts per-call cards; compact posts nothing per call except a
+// failure that has no progress card to fold into.
+func TestShouldEmitToolCards(t *testing.T) {
+	t.Parallel()
+	if shouldEmitToolCallCard(bridge.ToolUpdateVerbosityCompact) {
+		t.Error("compact must not post per-call pending cards")
+	}
+	if !shouldEmitToolCallCard(bridge.ToolUpdateVerbosityFull) {
+		t.Error("full must post per-call pending cards")
+	}
+	tests := []struct {
+		mode    string
+		hasCard bool
+		isError bool
+		want    bool
+	}{
+		{bridge.ToolUpdateVerbosityFull, true, false, true},
+		{bridge.ToolUpdateVerbosityFull, false, true, true},
+		{bridge.ToolUpdateVerbosityCompact, true, false, false},
+		{bridge.ToolUpdateVerbosityCompact, true, true, false},
+		{bridge.ToolUpdateVerbosityCompact, false, false, false},
+		{bridge.ToolUpdateVerbosityCompact, false, true, true},
+	}
+	for _, tt := range tests {
+		if got := shouldEmitToolResultCard(tt.mode, tt.hasCard, tt.isError); got != tt.want {
+			t.Errorf("shouldEmitToolResultCard(%q, card=%v, err=%v) = %v; want %v",
+				tt.mode, tt.hasCard, tt.isError, got, tt.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Dispatcher-level: the card reaches peers through MessageEditor
+// ---------------------------------------------------------------------------
+
+// editorStubAdapter is a stubAdapter that also edits messages in place.
+type editorStubAdapter struct {
+	stubAdapter
+
+	emu   sync.Mutex
+	posts []string
+	edits []string
+}
+
+func newEditorStubAdapter(channel, identity string) *editorStubAdapter {
+	return &editorStubAdapter{stubAdapter: *newStubAdapter(channel, identity)}
+}
+
+func (a *editorStubAdapter) SendEditable(_ context.Context, _ bridge.PeerRef, text string) (bridge.EditableMessageToken, error) {
+	a.emu.Lock()
+	defer a.emu.Unlock()
+	a.posts = append(a.posts, text)
+	return "tok-1", nil
+}
+
+func (a *editorStubAdapter) EditMessage(_ context.Context, _ bridge.PeerRef, token bridge.EditableMessageToken, text string) error {
+	a.emu.Lock()
+	defer a.emu.Unlock()
+	a.edits = append(a.edits, text)
+	return nil
+}
+
+func (a *editorStubAdapter) Posts() []string {
+	a.emu.Lock()
+	defer a.emu.Unlock()
+	return append([]string(nil), a.posts...)
+}
+
+func (a *editorStubAdapter) Edits() []string {
+	a.emu.Lock()
+	defer a.emu.Unlock()
+	return append([]string(nil), a.edits...)
+}
+
+// newProgressTestSvc wires a service with two peers bound to session S1:
+// a Slack-like adapter that edits in place and a relay-like adapter that
+// only has Send.
+func newProgressTestSvc(t *testing.T, cfg *bridge.Config) (*Service, *editorStubAdapter, *stubAdapter) {
+	t.Helper()
+	svc, conn := newOrchestratorForTest(t)
+	svc.cfg = cfg
+	// emitToolRender fans out on the service context; Start is not
+	// called here, so give it one.
+	svc.ctx = context.Background()
+	// The fixture's database is a shared-cache in-memory SQLite that, in
+	// this build, is only visible through the connection that created
+	// it: a second pooled connection sees an empty database ("no such
+	// table: bridge_sessions"). Tests that only ever query from one
+	// goroutine never open a second connection; these tests fan out
+	// from the progress worker and emitToolRender concurrently with the
+	// test goroutine, so serialise the pool on the one connection.
+	conn.SetMaxOpenConns(1)
+	svc.app = &app.App{Messages: &stubMessageSvc{}}
+	svc.toolVerbosity.Store(cfg.ToolVerbosity())
+	ed := newEditorStubAdapter("slack", "default")
+	relay := newStubAdapter("external", "relay")
+	svc.adapters[adapterKey("slack", "default")] = ed
+	svc.adapters[adapterKey("external", "relay")] = relay
+	for _, b := range []store.Binding{
+		{ProjectID: "proj", Channel: "slack", IdentityID: "default", PeerID: "D1", SessionID: "S1"},
+		{ProjectID: "proj", Channel: "external", IdentityID: "relay", PeerID: "job-1", SessionID: "S1"},
+	} {
+		if _, err := svc.store.UpsertBinding(context.Background(), b); err != nil {
+			t.Fatalf("UpsertBinding: %v", err)
+		}
+	}
+	return svc, ed, relay
+}
+
+func partEvent(sessionID string, part message.ContentPart) pubsub.Event[message.PartEvent] {
+	return pubsub.Event[message.PartEvent]{
+		Type:    pubsub.CreatedEvent,
+		Payload: message.PartEvent{SessionID: sessionID, Part: part},
+	}
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// TestDispatch_ProgressCard_Compact is the change's end-to-end contract at
+// compact verbosity: one message posted, edited as calls complete, no
+// per-call messages, a failure folded into the card and relayed once as
+// text to the peer that cannot edit, and a terminal edit at the end.
+func TestDispatch_ProgressCard_Compact(t *testing.T) {
+	old := progressMinInterval
+	progressMinInterval = 10 * time.Millisecond
+	t.Cleanup(func() { progressMinInterval = old })
+
+	svc, ed, relay := newProgressTestSvc(t, &bridge.Config{ToolUpdatesEnabled: true})
+	d := newBareDispatch(svc, "S1")
+	ctx := context.Background()
+
+	prog := d.progressStart(ctx)
+	if prog == nil {
+		t.Fatal("progressStart returned nil at compact with tool updates on")
+	}
+	waitFor(t, "Thinking... post", func() bool { return len(ed.Posts()) == 1 })
+	if got := ed.Posts()[0]; got != "⏳ Thinking..." {
+		t.Errorf("first post = %q; want ⏳ Thinking...", got)
+	}
+
+	// Three calls: two succeed, one fails.
+	calls := []struct {
+		id, name string
+		fail     bool
+	}{
+		{"toolu_01aaaaaa", "read", false},
+		{"toolu_02bbbbbb", "bash", true},
+		{"toolu_03cccccc", "grep", false},
+	}
+	for _, c := range calls {
+		d.handlePartEvent(partEvent("S1", message.ToolCall{ID: c.id, Name: c.name, Input: "{}", Finished: true}))
+		content := "ok"
+		if c.fail {
+			content = "permission denied\nexit 1"
+		}
+		d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: c.id, Name: c.name, Content: content, IsError: c.fail}))
+	}
+	d.progressFinish(prog, progressStatusOK)
+
+	// One post, then edits only.
+	if got := ed.Posts(); len(got) != 1 {
+		t.Errorf("posts = %v; want exactly one (the card)", got)
+	}
+	edits := ed.Edits()
+	if len(edits) == 0 {
+		t.Fatal("card was never edited")
+	}
+	last := edits[len(edits)-1]
+	if !strings.HasPrefix(last, "✓ Done · 3 tool calls · 1 failed · ") {
+		t.Errorf("terminal edit = %q; want ✓ Done · 3 tool calls · 1 failed · <elapsed>", last)
+	}
+	if !strings.Contains(last, "\n✗ bash#bbbbbb · permission denied exit 1") {
+		t.Errorf("terminal edit lacks the failure line: %q", last)
+	}
+
+	// No per-call messages reached the Slack-like peer.
+	if sends := ed.Sends(); len(sends) != 0 {
+		t.Errorf("per-call Send calls at compact = %d; want 0: %+v", len(sends), sends)
+	}
+	// The relay peer got the failure as text, once, and nothing else.
+	rs := relay.Sends()
+	if len(rs) != 1 {
+		t.Fatalf("relay sends = %d; want exactly 1 (the failure line): %+v", len(rs), rs)
+	}
+	if rs[0].Text != "✗ bash#bbbbbb · permission denied exit 1" {
+		t.Errorf("relay text = %q; want the failure line", rs[0].Text)
+	}
+	if d.progress.Load() != nil {
+		t.Error("progress pointer should be cleared after finish")
+	}
+}
+
+// TestDispatch_ProgressCard_FullPostsPerCall: at full verbosity no card is
+// opened and each call is its own message, as before.
+func TestDispatch_ProgressCard_FullPostsPerCall(t *testing.T) {
+	svc, ed, _ := newProgressTestSvc(t, &bridge.Config{ToolUpdatesEnabled: true, ToolUpdateVerbosity: "full"})
+	d := newBareDispatch(svc, "S1")
+
+	if prog := d.progressStart(context.Background()); prog != nil {
+		t.Fatal("progressStart opened a card at full verbosity")
+	}
+	d.handlePartEvent(partEvent("S1", message.ToolCall{ID: "toolu_01", Name: "read", Input: `{"path":"x"}`, Finished: true}))
+	d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: "toolu_01", Name: "read", Content: "12 lines"}))
+	waitFor(t, "two per-call sends", func() bool { return len(ed.Sends()) == 2 })
+	if got := ed.Posts(); len(got) != 0 {
+		t.Errorf("SendEditable called at full: %v", got)
+	}
+}
+
+// TestDispatch_ProgressCard_DisabledKeepsFailureLine: with tool updates
+// off there is no card, successes are silent and a failure still posts
+// as a fresh ✗ line.
+func TestDispatch_ProgressCard_DisabledKeepsFailureLine(t *testing.T) {
+	svc, ed, _ := newProgressTestSvc(t, &bridge.Config{ToolUpdatesEnabled: false})
+	d := newBareDispatch(svc, "S1")
+
+	if prog := d.progressStart(context.Background()); prog != nil {
+		t.Fatal("progressStart opened a card with tool updates disabled")
+	}
+	d.handlePartEvent(partEvent("S1", message.ToolCall{ID: "toolu_01", Name: "read", Input: "{}", Finished: true}))
+	d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: "toolu_01", Name: "read", Content: "fine"}))
+	d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: "toolu_02", Name: "bash", Content: "nope", IsError: true}))
+	waitFor(t, "failure send", func() bool { return len(ed.Sends()) == 1 })
+	if got := ed.Sends()[0].Text; !strings.HasPrefix(got, "✗ bash") {
+		t.Errorf("send = %q; want a ✗ bash line", got)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if n := len(ed.Sends()); n != 1 {
+		t.Errorf("sends = %d; want 1 (successes stay silent)", n)
+	}
+}

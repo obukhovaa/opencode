@@ -56,11 +56,11 @@ var busyRetryBudget = 5 * time.Minute
 // without an N×100 ms spin wait.
 var busyAckThreshold = 2 * time.Second
 
-// toolErrorPreviewRunes caps the failure reason appended to a ✗ tool
-// line. Tool updates are compact by design (name + id + duration only);
-// a failed call is the one case that carries body text, because an
-// invisible failure is worse than an extra short line. The full result
-// is always in the session store and Langfuse.
+// toolErrorPreviewRunes caps the failure reason shown for a ✗ tool
+// call — on the run's progress card at compact verbosity, or on the
+// per-call line at full. A failed call is the one case that carries
+// body text, because an invisible failure is worse than one short
+// line. The full result is always in the session store and Langfuse.
 const toolErrorPreviewRunes = 200
 
 // toolFullPreviewRunes caps the successful-result body included only
@@ -110,6 +110,12 @@ type sessionDispatch struct {
 	// sweep removes stale entries when a call never produces a paired
 	// result (rare — usually a cancelled cycle).
 	toolCallStart sync.Map // map[string]int64
+
+	// progress is the in-flight run's progress card, nil when no run is
+	// in flight or the run started without one (tool updates off, or
+	// full verbosity). Set by progressStart, cleared by progressFinish;
+	// handlePartEvent feeds it from the parts goroutine.
+	progress atomic.Pointer[runProgress]
 
 	// liveAcks remembers the outstanding queued-ack token per peer so it
 	// survives a busy-retry-budget re-queue. handleInbound's ack state is a
@@ -273,6 +279,11 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	// fire the moment handleInbound returns and drainParts could exit
 	// before the tail events made it through the broker — leading to
 	// stale "running" tool indicators on the chat surface.
+	// The progress card (compact verbosity) is closed after that same
+	// grace window, so the trailing completions are counted before the
+	// terminal edit is rendered.
+	var prog *runProgress
+	runStatus := progressStatusOK
 	partsCtx, partsCancel := context.WithCancel(ctx)
 	defer func() {
 		select {
@@ -280,6 +291,7 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 		case <-ctx.Done():
 		}
 		partsCancel()
+		d.progressFinish(prog, runStatus)
 	}()
 	partsSub := d.svc.app.Messages.SubscribeParts(partsCtx)
 
@@ -349,6 +361,7 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	}
 	// Run succeeded — resolve the ack before starting the run.
 	d.resolveQueueAck(ctx, in.Peer, ack.token)
+	prog = d.progressStart(ctx)
 
 	// Fan part events into d.parts for outbound surface delivery (typing,
 	// tool-update prints). Filter to this session's parts; broker is
@@ -365,6 +378,9 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	// outcome (text + struct-output) on the dispatcher goroutine so all
 	// outbound work for this session remains serialized.
 	for ev := range runCh {
+		if ev.Type == agent.AgentEventTypeError {
+			runStatus = progressStatusError
+		}
 		d.handleTerminalEvent(ctx, ev)
 	}
 }
@@ -640,30 +656,38 @@ func agentMessageText(m message.Message) string {
 }
 
 // handlePartEvent forwards a single part transition to the outbound
-// surface. When cfg.Router.ToolUpdatesEnabled is true, tool-call lifecycle
-// transitions are summarized as short chat messages so the reviewer
-// sees what the agent is doing in real time. Failures (ToolResult with
-// IsError) are ALWAYS surfaced regardless of the flag — silent tool
-// failures are too easy to miss otherwise.
+// surface. When cfg.Router.ToolUpdatesEnabled is true, tool-call
+// lifecycle transitions reach chat in one of two shapes, chosen by the
+// live verbosity (Service.ToolVerbosity):
 //
-// Emission defaults to COMPACT — one line per tool call, carrying only
-// the status glyph, the tool name, the pairing id and (on completion)
-// the elapsed time:
-//   - ToolCall with Finished=true → "🔧 <name>#<id>"
-//   - Successful completion       → "✓ <name>#<id> · <duration>"
-//   - Failed completion           → "✗ <name>#<id> · <duration> · <reason>"
+//   - compact (default): the run's single PROGRESS CARD (progress.go)
+//     is fed — a call start marks the tool in flight, a completion
+//     bumps the count, a failure adds its one-line reason — and the
+//     card is edited in place. No per-call message is posted.
+//   - full: one card per call —
+//     ToolCall with Finished=true → "🔧 <name>#<id> · <args>", then
+//     "✓ <name>#<id> · <duration> · <body>" or
+//     "✗ <name>#<id> · <duration> · <reason>".
 //
-// In compact mode, tool ARGUMENTS and successful result BODIES are NOT
-// sent to chat. A daemon-mode thread is a progress indicator, not a
-// transcript: the full input/output of every call is already durably
-// recorded in the session store (messages.parts) and in Langfuse, which
-// is where an investigation belongs. The single exception is a failure
+// A daemon-mode thread is a progress indicator, not a transcript: at
+// compact, tool ARGUMENTS and successful result BODIES never reach chat.
+// The full input/output of every call is durably recorded in the
+// session store (messages.parts) and in Langfuse, which is where an
+// investigation belongs. The one body that does travel is a failure
 // reason, truncated to toolErrorPreviewRunes — an error the reviewer
 // can't see at all is worse than one extra short line.
 //
-// Under `router.toolUpdateVerbosity: "full"` (or after `/verbosity full`)
-// the argument summary and a truncated result body are included, for
-// reviewers watching a single run closely.
+// Failures (ToolResult with IsError) are ALWAYS surfaced regardless of
+// the flag: folded into the progress card when the run has one, posted
+// as a fresh ✗ line otherwise (tool updates off, or the run started at
+// full and was switched to compact). Silent tool failures are too easy
+// to miss.
+//
+// The card exists only if the run started at compact; it then counts
+// every completion of its run even if /verbosity flips to full mid-run
+// (per-call cards then appear beside it). The start-time map is
+// recorded and consumed on every path so it cannot grow when per-call
+// rendering is suppressed.
 //
 // The #<id> suffix is a short stable hash of the tool_call_id so a
 // reviewer watching parallel tool calls can pair each ✓/✗ result back
@@ -686,7 +710,9 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
 		return
 	}
 	tu := d.svc.cfg.ToolUpdatesEnabled
-	full := d.svc.ToolVerbosity() == bridge.ToolUpdateVerbosityFull
+	mode := d.svc.ToolVerbosity()
+	full := mode == bridge.ToolUpdateVerbosityFull
+	prog := d.progress.Load()
 	switch part := ev.Payload.Part.(type) {
 	case message.ToolCall:
 		// Streaming providers (Anthropic) publish each ToolCall up to
@@ -713,6 +739,12 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
 		// compute DurationMs even when the adapter doesn't track timing
 		// per-call.
 		d.recordToolCallStart(part.ID)
+		if prog != nil {
+			prog.toolStarted(part.ID, part.Name)
+		}
+		if !shouldEmitToolCallCard(mode) {
+			return
+		}
 		hint, fallback := toolCallRender(part.Name, callIDSuffix(part.ID), part.Input, full)
 		d.emitToolRender(hint, fallback)
 	case message.ToolResult:
@@ -721,10 +753,38 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
 			return
 		}
 		durationMs := d.consumeToolCallDuration(part.ToolCallID)
+		if prog != nil {
+			reason := ""
+			if part.IsError {
+				reason = truncateRunes(oneLine(part.Content), toolErrorPreviewRunes)
+			}
+			prog.toolDone(part.ToolCallID, part.Name, callIDSuffix(part.ToolCallID), part.IsError, reason)
+		}
+		if !shouldEmitToolResultCard(mode, prog != nil, part.IsError) {
+			return
+		}
 		hint, fallback := toolResultRender(
 			part.Name, callIDSuffix(part.ToolCallID), part.IsError, part.Content, durationMs, full)
 		d.emitToolRender(hint, fallback)
 	}
+}
+
+// shouldEmitToolCallCard reports whether a tool call's pending card is
+// posted as its own message. Only full verbosity narrates per call; at
+// compact the call is reflected on the run's progress card instead.
+func shouldEmitToolCallCard(mode string) bool {
+	return mode == bridge.ToolUpdateVerbosityFull
+}
+
+// shouldEmitToolResultCard reports whether a tool result is posted as
+// its own message. Full verbosity always does. Compact does so only for
+// a failure the run has no progress card to fold into — the "failures
+// always surface" invariant — and never for a success.
+func shouldEmitToolResultCard(mode string, hasCard, isError bool) bool {
+	if mode == bridge.ToolUpdateVerbosityFull {
+		return true
+	}
+	return isError && !hasCard
 }
 
 // toolCallRender builds the compact pending-call render: a status glyph,
