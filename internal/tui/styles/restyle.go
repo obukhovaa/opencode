@@ -17,6 +17,11 @@ import (
 // that widened a line by a single cell would break the layout contract at every
 // terminal width.
 //
+// Precondition: line is already-rendered terminal output, in which tab expansion
+// has happened. A raw tab has no fixed width and would break the width
+// guarantee. Everything the editor passes here comes from the textarea, which
+// converts tabs to spaces before storing them.
+//
 // Styling inside the span is replaced rather than merged — the span is stripped
 // before being re-rendered. The editor draws draft text in one foreground
 // colour, so there is nothing to preserve; a caller that renders multi-coloured

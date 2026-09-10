@@ -29,9 +29,27 @@ func TestClassifyInteractive(t *testing.T) {
 		{name: "docker exec -ti", command: "docker exec -ti web sh", want: true},
 		{name: "docker run separate flags", command: "docker run -i -t alpine sh", want: true},
 		{name: "docker with long flag", command: "docker exec --interactive web sh", want: true},
-		{name: "docker build is not interactive", command: "docker build --tag x .", want: false},
+		{name: "docker build with long tag flag", command: "docker build --tag x .", want: false},
+		// The trap: on `docker build`, -t is --tag, not --tty. Reading it as a
+		// tty request sends every tagged build down the interactive path and
+		// throws away the output the user was waiting to read.
+		{name: "docker build -t is a tag, not a tty", command: "docker build -t myimage .", want: false},
+		{name: "docker build -t with a colon tag", command: "docker build -t myimage:latest -f Dockerfile .", want: false},
+		{name: "podman build -t is a tag", command: "podman build -t x .", want: false},
+		{name: "docker compose run -it", command: "docker compose run -it web sh", want: true},
+		{name: "docker compose build -t", command: "docker compose build -t x", want: false},
+		{name: "docker attach is interactive", command: "docker attach -i web", want: true},
 		{name: "kubectl get", command: "kubectl get pods", want: false},
 		{name: "kubectl exec -it", command: "kubectl exec -it pod -- sh", want: true},
+
+		// Batch invocations of an interpreter must stay captured: handing the
+		// terminal over would throw away the output the user wanted in the chat.
+		{name: "python script is captured", command: "python3 script.py", want: false},
+		{name: "node app is captured", command: "node app.js", want: false},
+		{name: "ruby script is captured", command: "ruby build.rb", want: false},
+
+		// A real database client session is still detected.
+		{name: "psql session", command: "psql -U postgres", want: true},
 
 		// config extension
 		{name: "user configured program", command: "my-tool --login", extra: []string{"my-tool"}, want: true},
@@ -109,5 +127,15 @@ func TestNeedsTerminal(t *testing.T) {
 				t.Errorf("NeedsTerminal(%q) = %v, want %v", tt.output, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCommandArgs(t *testing.T) {
+	// config.Get() is nil in this package's tests, so this covers the default
+	// shape; the configured cases are covered by the e2e harness, which loads a
+	// real .opencode.json.
+	got := CommandArgs("echo hi")
+	if len(got) != 2 || got[0] != "-c" || got[1] != "echo hi" {
+		t.Errorf("CommandArgs = %q, want [-c \"echo hi\"]", got)
 	}
 }

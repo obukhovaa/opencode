@@ -136,27 +136,47 @@ same result, and `ExecProcess` is already proven in this repo.
 
 ### D5. `cd` continuity is a wrapper plus a replay
 
-The handoff wrapper is:
+The handoff sets the child's working directory through `cmd.Dir` and wraps the command
+only in bookkeeping:
 
 ```
-cd <shell-cwd> && ( <command> ); printf %s $? > <status>; pwd > <cwd>
+<command>
+printf %s $? > <status>
+pwd > <cwd>
 ```
+
+Two things this deliberately does NOT do. It does not prefix a `cd`: `cmd.Dir` achieves
+the same without interpolating a path into a command string. And it does not wrap the
+command in a `( … )` subshell — that would be actively wrong, because a `cd` inside a
+subshell dies with it and the trailing `pwd` would report the old directory, breaking the
+`cd` continuity requirement this design exists to satisfy.
 
 After the child exits, the recorded `pwd` is written back to the persistent shell by
-sending it a `cd <newcwd>` command. So `cd` behaves identically on both paths and the two
-never drift.
+sending it a `cd <newcwd>` command, so `cd` behaves identically on both paths.
 
 The status file is used rather than `cmd.ProcessState` because the wrapper's own exit
 status would otherwise mask the command's.
 
+The argv comes from `shell.CommandArgs`, which honours the user's `shell.args`. Hardcoding
+`-lc` would silently ignore that configuration and break outright on a shell that spells
+the flag differently.
+
 ### D6. Classification promotes; it never demotes, and never retries
 
-`shell.ClassifyInteractive(command) bool` inspects the command's leading program name
-after skipping leading `VAR=value` assignments, and matches it against a built-in set
-(`sudo`, `su`, `ssh`, `scp`, `sftp`, `gpg`, `passwd`, `vi`, `vim`, `nvim`, `nano`, `emacs`,
-`less`, `more`, `man`, `top`, `htop`, `psql`, `mysql`, `sqlite3`, `redis-cli`, `ftp`,
-`telnet`, `tmux`, `screen`, `crontab`, `visudo`) plus `shell.interactive` from config.
-`docker`/`kubectl` are matched only with an explicit `-it`/`-ti` flag.
+`shell.ClassifyInteractive(command, extra) bool` inspects the command's leading program
+name after skipping leading `VAR=value` assignments, and matches it against a built-in set
+(credential prompts, editors, pagers, database clients, multiplexers — see
+`interactive.go` for the authoritative list) plus `shell.interactive` from config.
+
+Two exclusions are deliberate and load-bearing:
+
+- **Language interpreters are not listed.** `python`, `python3`, `node`, `irb` and friends
+  are REPLs only when invoked bare; `python3 script.py` and `node app.js` are ordinary
+  batch commands and far more common. Listing them would hand the terminal over and throw
+  away the output the user was waiting to read in the chat.
+- **Container tools require both a tty-capable subcommand and a tty flag.** `-t` does not
+  mean the same thing everywhere: on `docker build` it is `--tag`. Matching any `-t` sent
+  every tagged build down the interactive path and discarded the build output.
 
 The classifier is deliberately a **first-token** check. It does not parse pipelines,
 `&&` chains, or subshells: a command whose interactivity is buried inside a pipeline is a
@@ -177,10 +197,15 @@ normal editor. This needs no key binding (all convenient `ctrl+` chords are take
 Non-Goals), it is visible in the draft before the user commits, and it survives the shell
 history that already exists.
 
-The `shellInvocation` predicate (D8) explicitly refuses to treat a submitted `!!…` draft
-in the *normal* editor as an invocation of the command `!…` — the double bang only means
-"force" once shell mode is already active, so the meaning of a prefix never depends on how
-the user got there.
+The predicate does NOT special-case `!!`, and must not. A submitted or pasted `!!cmd`
+resolves to the shell-mode draft `!cmd`, which the force check then strips — which is
+exactly what typing `!` followed by `!cmd` produces. Excluding it would make the pasted
+form behave differently from the typed one, reintroducing the very inconsistency this
+change exists to remove.
+
+The cost is that prose beginning `!!` submitted from the normal editor is treated as a
+forced command. That is the same trade the single `!` already makes, and the draft is
+visible before the user commits to it.
 
 ### D8. One predicate, three call sites
 
@@ -193,9 +218,13 @@ ok  ⇔  text starts with '!' (no leading whitespace)
        ∧ text[1] ∉ { '[' , '=' }        // ![alt](…) markdown image, != operator
 ```
 
-Call sites: the existing `!` keypress branch, a new `tea.PasteMsg` branch, and `send()`.
-`send()` runs the check **before** `expandSubmission`, so a `!` draft is never expanded or
-queued.
+Call sites: the new `tea.PasteMsg` branch and `send()`. `send()` runs the check **before**
+`expandSubmission`, so a `!` draft is never expanded or queued.
+
+The `!` keypress branch is deliberately NOT a call site. It handles the bare sigil, at
+which point there is no command yet — the user is about to type one — and the predicate
+correctly rejects a lone `!`. The predicate governs the paths where the whole text already
+exists; routing the keystroke through it would break entering shell mode by typing.
 
 The `'['` and `'='` exclusions are the minimum needed to keep pasted markdown and prose
 out of the shell. A longer denylist would trade a rare false positive for a confusing
@@ -224,9 +253,18 @@ Visual key handling reuses the existing pieces rather than forking them:
 - **Motions** go through `ResolveMotion` unchanged; only the cursor moves, and the
   selection is `[min(anchor,cursor), max(anchor,cursor)]` — extended to whole lines in
   VISUAL LINE.
-- **Operators** resolve the selection to a `(from, to, linewise)` triple and call the
-  existing `applyOperator`, which is the same function `ExecuteOperatorMotion` and
-  `ExecuteOperatorTextObj` already call. No operator logic is duplicated.
+- **Operators** resolve the selection to a `(from, to, linewise)` triple. `d`, `x`, `c`,
+  `s` and `y` call the existing `applyOperator` — the same function
+  `ExecuteOperatorMotion` and `ExecuteOperatorTextObj` use — so register semantics and
+  cursor placement are inherited rather than reimplemented.
+
+  `~`/`u`/`U`, `>`/`<`, `J` and `p` cannot: their NORMAL-mode implementations are driven
+  by a count from the cursor, not by an arbitrary range, so visual versions exist
+  alongside them. That is real duplication and it has already drifted once (visual `<`
+  removed every leading space where `<<` removes one indent unit; visual `J` doubled an
+  existing trailing space). Both are fixed and pinned by tests that assert the visual and
+  NORMAL forms agree; a future change here should prefer refactoring the NORMAL versions
+  onto a shared range-based core over adding a third copy.
 - **Undo and dot-repeat** use the existing `pushUndo` / `RecordedChange` machinery; a new
   `RecordedChange` type `"visual"` records `(op, from, to, linewise)` relative to the
   cursor so `.` repeats the same-sized operation, which is vim's own behavior.
@@ -257,22 +295,29 @@ one's width, height, and value. Its cursor is driven freely; its `LineInfo()` is
 authoritative for the real textarea because both run the same unexported `wrap` at the
 same width.
 
-For an offset `o` at logical line `L`, column `c`:
+The probe is read ONCE per draft into a wrap table — one entry per display row, recording
+which logical line it belongs to and which slice of that line's runes it shows. Mapping an
+offset afterwards is arithmetic over that table plus `ansi.StringWidth`, with no further
+probing.
 
-```
-absoluteRow = Σ(i<L) heightOf(i) + LineInfo(L,c).RowOffset
-displayCol  = LineInfo(L,c).CharOffset + promptWidth
-viewRow     = absoluteRow − realTextarea.ScrollYOffset()
-```
+Two things the first shape got wrong, both worth recording because they are easy to
+reintroduce:
 
-`heightOf(i)` is `LineInfo().Height` with the probe's cursor on line `i`. The draft in a
-chat editor is a handful of lines, so the O(lines) probing is negligible, and it runs in
-`Update` only when the selection or the draft changes (per the `chat-editor-layout`
-delta), never during render.
+- **`CursorDown` moves one DISPLAY row, not one logical line.** Walking "N CursorDowns to
+  reach line N" lands somewhere else entirely once an earlier line soft-wraps, and the
+  highlight then paints blank rows below the text. The table is instead built per logical
+  line — the textarea wraps each line independently — using `LineInfo().Height` as the
+  authority for a line's row count. Deriving that count from the text misses the empty row
+  the wrap appends after a line ending in spaces.
+- **Re-walking from the top per preceding line is quadratic.** Measured at 4.4 s per
+  keystroke on a 200-line draft. The table is built once per draft change (~9 ms at 200
+  lines) and reused; computing spans is ~16 µs.
 
-A conformance test pins the probe to the real widget: for a set of values and widths, the
-probe's `LineInfo` must equal the real textarea's at the same cursor positions. If
-`bubbles` changes its wrap, that test fails rather than the highlight drifting.
+The conformance test compares against the RENDER, not against a cursor walk. Two earlier
+versions were unsound: one drove probe and widget with the same key sequence and was
+tautological; the next derived truth from `CursorDown`-until-`Line()`-matches, which
+shares the display-row bug above. The renderer iterates `wrap()` directly, so its output is
+the only truth that cannot share a defect with the code under test.
 
 ### D12. The highlight is an ANSI-aware cell-range restyle
 

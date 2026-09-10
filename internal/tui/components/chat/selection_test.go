@@ -1,8 +1,10 @@
 package chat
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
@@ -11,60 +13,153 @@ import (
 	"github.com/opencode-ai/opencode/internal/tui/vim"
 )
 
-// TestSelectionLayoutMatchesTheRealTextarea is what pins the highlight to the
-// bubbles textarea's own soft-wrap.
+// realTextarea builds a textarea configured exactly as the editor's is.
+func realTextarea(value string, outerWidth, height int) textarea.Model {
+	ta := textarea.New()
+	ta.ShowLineNumbers = false
+	ta.Prompt = " "
+	ta.CharLimit = -1
+	ta.SetWidth(outerWidth)
+	ta.SetHeight(height)
+	ta.SetValue(value)
+	return ta
+}
+
+// renderedRows returns the textarea's rendered rows with ANSI stripped — the
+// actual cells the terminal will show.
+func renderedRows(ta *textarea.Model) []string {
+	var out []string
+	for _, line := range strings.Split(ta.View(), "\n") {
+		out = append(out, ansi.Strip(line))
+	}
+	return out
+}
+
+// runeAtCell returns the rune occupying a given display CELL of a rendered row.
+// Indexing runes instead would be wrong for wide characters: in " 日本語の ",
+// cell 3 is inside 本 while rune 3 is 語.
+func runeAtCell(row string, cell int) (rune, bool) {
+	col := 0
+	for _, r := range row {
+		w := ansi.StringWidth(string(r))
+		if w == 0 {
+			continue
+		}
+		if cell < col+w {
+			return r, true
+		}
+		col += w
+	}
+	return 0, false
+}
+
+// TestSelectionLayoutMatchesTheRenderedOutput pins the probe's wrap table to
+// what the widget actually draws.
 //
-// The probe reproduces the real widget's layout only because both run the same
-// unexported wrap at the same width. Nothing in the type system enforces that.
-// If a bubbles upgrade changes the wrap algorithm, this test goes red — which
-// is the point. Without it the highlight would quietly drift onto the wrong
-// columns and nobody would learn why.
-func TestSelectionLayoutMatchesTheRealTextarea(t *testing.T) {
+// The truth here is the RENDER, not a cursor walk. Two earlier versions of this
+// test got that wrong: the first drove probe and widget with the same key
+// sequence and was tautological, and the second derived truth from
+// CursorDown-until-Line()-matches, which is itself unreliable — a line ending in
+// spaces makes the wrap emit an extra empty row that the cursor walk skips. The
+// renderer iterates wrap() directly, so comparing against its output is the only
+// check that cannot share a bug with the code under test.
+func TestSelectionLayoutMatchesTheRenderedOutput(t *testing.T) {
 	values := []string{
 		"short",
 		"one two three four five six seven eight nine ten eleven twelve",
+		// A first line that wraps, followed by more lines: the shape where a
+		// per-logical-line row count is not the same as a display-row count.
+		"aaaa bbbb cccc dddd eeee ffff gggg\nSECOND\nTHIRD",
 		"first line\nsecond line that is quite a lot longer than the first one\nthird",
+		"wrapping first line here we go\nb\nc\nd\ne",
 		"a-very-long-unbroken-token-that-cannot-be-word-wrapped-at-all-so-it-must-break-mid-word",
+		// Trailing spaces make the wrap append an empty row.
 		"trailing spaces   \nand another line",
 		"日本語のテキストと English mixed together in one long line that wraps",
+		"日本語のテキスト\nEnglish line\nもう一行の日本語テキストです",
 	}
-	widths := []int{10, 20, 40, 80}
+	widths := []int{10, 20, 23, 40, 80}
 
 	for _, value := range values {
 		for _, width := range widths {
-			real := textarea.New()
-			real.ShowLineNumbers = false
-			real.Prompt = " "
-			real.CharLimit = -1
-			real.SetWidth(width)
-			real.SetHeight(20)
-			real.SetValue(value)
+			ta := realTextarea(value, width, 60)
+			rows := renderedRows(&ta)
 
 			layout := newSelectionLayout()
-			layout.sync(value, width, 20)
+			layout.sync(value, width, 60)
 
-			lines := strings.Split(value, "\n")
-			for line := range lines {
-				for col := 0; col <= len([]rune(lines[line])); col++ {
-					real.MoveToBegin()
-					for range line {
-						real.CursorDown()
-					}
-					real.SetCursorColumn(col)
-					want := real.LineInfo()
-
-					layout.moveProbe(line, col)
-					got := layout.probe.LineInfo()
-
-					if got.RowOffset != want.RowOffset || got.CharOffset != want.CharOffset || got.Height != want.Height {
-						t.Fatalf("probe diverged from the textarea at width=%d line=%d col=%d value=%q\n got RowOffset=%d CharOffset=%d Height=%d\nwant RowOffset=%d CharOffset=%d Height=%d",
-							width, line, col, value,
-							got.RowOffset, got.CharOffset, got.Height,
-							want.RowOffset, want.CharOffset, want.Height)
-					}
+			for offset, r := range value {
+				// Spaces and newlines have no distinctive cell to match against.
+				if r == '\n' || r == ' ' {
+					continue
+				}
+				gotRow, gotCol := layout.position(offset)
+				if gotRow >= len(rows) {
+					t.Fatalf("width=%d offset=%d value=%q: row %d is past the %d rendered rows",
+						width, offset, value, gotRow, len(rows))
+				}
+				got, ok := runeAtCell(rows[gotRow], gotCol+textareaPromptWidth)
+				if !ok {
+					t.Fatalf("width=%d offset=%d value=%q: column %d is past row %q",
+						width, offset, value, gotCol+textareaPromptWidth, rows[gotRow])
+				}
+				if got != r {
+					t.Fatalf("width=%d offset=%d value=%q\n position said (row=%d col=%d), which renders %q\n but the character there is %q\n row: %q",
+						width, offset, value, gotRow, gotCol, string(got), string(r), rows[gotRow])
 				}
 			}
 		}
+	}
+}
+
+// TestSelectionLayoutIsLinear guards the cost of the mapping. The first shape
+// re-walked from the top once per preceding logical line, which measured in
+// seconds per keystroke on a long pasted draft — unusable in a TUI event loop.
+func TestSelectionLayoutIsLinear(t *testing.T) {
+	var b strings.Builder
+	for i := range 200 {
+		fmt.Fprintf(&b, "line %d with enough words on it to wrap at a narrow width\n", i)
+	}
+	value := b.String()
+
+	layout := newSelectionLayout()
+	start := time.Now()
+	layout.sync(value, 83, 10)
+	build := time.Since(start)
+
+	start = time.Now()
+	for range 100 {
+		layout.spans(0, len(value), 0, textareaPromptWidth, 10, false)
+	}
+	perSpan := time.Since(start) / 100
+
+	// Generous bounds: the point is to catch a return to quadratic behaviour,
+	// which was three orders of magnitude worse than this.
+	if build > 500*time.Millisecond {
+		t.Errorf("building the wrap table for a 200-line draft took %v", build)
+	}
+	if perSpan > 5*time.Millisecond {
+		t.Errorf("computing spans took %v per call", perSpan)
+	}
+	t.Logf("200-line draft: table build %v, spans %v/call", build, perSpan)
+}
+
+// A cursor move must not rebuild the wrap table: the editor recomputes the
+// selection on every message it receives, including idle ticks.
+func TestSelectionLayoutReusesTheWrapTable(t *testing.T) {
+	value := "one two three\nfour five six\nseven eight nine"
+	layout := newSelectionLayout()
+	layout.sync(value, 20, 5)
+	first := &layout.rows[0]
+
+	layout.sync(value, 20, 5)
+	if &layout.rows[0] != first {
+		t.Error("sync rebuilt the wrap table for an unchanged draft and width")
+	}
+
+	layout.sync(value+"!", 20, 5)
+	if len(layout.rows) == 0 {
+		t.Error("sync did not rebuild the wrap table after the draft changed")
 	}
 }
 
@@ -100,7 +195,7 @@ func TestSelectionSpansSingleRow(t *testing.T) {
 	layout := newSelectionLayout()
 	layout.sync("hello world", 40, 5)
 
-	spans := layout.spans(6, 11, 0, textareaPromptWidth, 5)
+	spans := layout.spans(6, 11, 0, textareaPromptWidth, 5, false)
 	if len(spans) != 1 {
 		t.Fatalf("spans = %+v, want one row", spans)
 	}
@@ -117,7 +212,7 @@ func TestSelectionSpansAcrossASoftWrap(t *testing.T) {
 	layout.sync(value, width, 6)
 
 	// Select from within the first display row through the last one.
-	spans := layout.spans(2, len(value), 0, textareaPromptWidth, 6)
+	spans := layout.spans(2, len(value), 0, textareaPromptWidth, 6, false)
 	if len(spans) < 2 {
 		t.Fatalf("spans = %+v, want the selection to cover more than one display row", spans)
 	}
@@ -150,7 +245,7 @@ func TestSelectionSpansDropRowsScrolledOutOfView(t *testing.T) {
 	layout.sync(value, 40, 3)
 
 	// Whole buffer selected, but only three rows are visible starting at row 2.
-	spans := layout.spans(0, len(value), 2, textareaPromptWidth, 3)
+	spans := layout.spans(0, len(value), 2, textareaPromptWidth, 3, true)
 	for _, s := range spans {
 		if s.row < 0 || s.row >= 3 {
 			t.Errorf("span %+v falls outside the visible rows [0,3)", s)
@@ -164,7 +259,7 @@ func TestSelectionSpansDropRowsScrolledOutOfView(t *testing.T) {
 func TestSelectionSpansEmptyForEmptyRange(t *testing.T) {
 	layout := newSelectionLayout()
 	layout.sync("hello", 40, 5)
-	if spans := layout.spans(3, 3, 0, textareaPromptWidth, 5); spans != nil {
+	if spans := layout.spans(3, 3, 0, textareaPromptWidth, 5, false); spans != nil {
 		t.Errorf("spans = %+v, want none for an empty range", spans)
 	}
 }

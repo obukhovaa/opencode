@@ -445,13 +445,6 @@ func (m *editorCmp) exitShellMode() {
 	m.textarea.Reset()
 }
 
-// IsShellRunning reports whether a captured shell command is in flight. Key
-// routing above the editor consults it so the cancel keys are never intercepted
-// while a command is running.
-func (m *editorCmp) IsShellRunning() bool {
-	return m.shellExecuting
-}
-
 // executeShell runs the shell-mode draft. It picks between the two execution
 // paths and is the only place that decision is made.
 func (m *editorCmp) executeShell() tea.Cmd {
@@ -460,17 +453,15 @@ func (m *editorCmp) executeShell() tea.Cmd {
 		return nil
 	}
 
-	// History keeps what the user typed, force prefix and all, so pressing up
-	// re-runs the command the same way it ran the first time.
-	m.shellHistory = append(m.shellHistory, typed)
-	m.shellHistoryIdx = len(m.shellHistory)
-	m.textarea.Reset()
-
 	// A leading `!` inside shell mode forces the terminal handoff — `!!command`
 	// as typed from the normal editor. It is a text prefix rather than a key
 	// chord because every convenient ctrl+ chord is already bound (ctrl+o is
 	// model selection), and because a prefix is visible in the draft before the
 	// user commits to it.
+	//
+	// Resolved before anything is consumed: a draft that turns out to be no
+	// command at all (a lone `!`) must leave the history and the draft exactly
+	// as they were, so the user can correct the typo instead of losing it.
 	command, forced := strings.CutPrefix(typed, "!")
 	if forced {
 		command = strings.TrimSpace(command)
@@ -479,6 +470,11 @@ func (m *editorCmp) executeShell() tea.Cmd {
 		}
 	}
 
+	// History keeps what the user typed, force prefix and all, so pressing up
+	// re-runs the command the same way it ran the first time.
+	m.shellHistory = append(m.shellHistory, typed)
+	m.shellHistoryIdx = len(m.shellHistory)
+	m.textarea.Reset()
 	m.shellExecuting = true
 
 	var extra []string
@@ -596,7 +592,7 @@ func (m *editorCmp) executeShellInteractive(command string) tea.Cmd {
 		wrapper := fmt.Sprintf("%s\nprintf %%s $? > %s\npwd > %s\n",
 			command, shellQuoteArg(statusFile.Name()), shellQuoteArg(cwdFile.Name()))
 
-		c := exec.Command(shell.GetShellPath(), "-lc", wrapper) //nolint:gosec
+		c := exec.Command(shell.GetShellPath(), shell.CommandArgs(wrapper)...) //nolint:gosec
 		c.Dir = workdir
 		c.Stdin = os.Stdin
 		c.Stdout = os.Stdout
@@ -721,7 +717,7 @@ func (m *editorCmp) refreshSelection() {
 		return
 	}
 
-	from, to, _, active := m.vimHandler.Selection(&m.textarea)
+	from, to, linewise, active := m.vimHandler.Selection(&m.textarea)
 	if !active {
 		m.selection = nil
 		return
@@ -733,6 +729,7 @@ func (m *editorCmp) refreshSelection() {
 		m.textarea.ScrollYOffset(),
 		textareaPromptWidth,
 		m.textarea.Height(),
+		linewise,
 	)
 }
 
@@ -749,7 +746,22 @@ func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.vimHandler = vim.NewHandler()
 		return m, util.CmdHandler(VimModeChangedMsg{Mode: string(m.vimHandler.Mode())})
 	case dialog.ThemeChangedMsg:
+		// CreateTextArea seeds the replacement with SetValue, which drops the
+		// cursor at the end of the buffer. Left alone that collapses an active
+		// visual selection to a single character, because the anchor survives on
+		// the vim handler while the cursor jumps.
+		line, col := m.textarea.Line(), m.textarea.Column()
 		m.textarea = CreateTextArea(&m.textarea)
+		// CreateTextArea seeds the replacement by feeding the outgoing
+		// textarea's *inner* width back into SetWidth, which subtracts the
+		// prompt reservation a second time — so every theme change narrowed the
+		// editor by one column, permanently. Re-deriving the size from the
+		// container is the fix, and it also keeps the selection probe's width
+		// in sync, since both come from m.width here.
+		if m.width > 0 {
+			m.SetSize(m.width, m.height)
+		}
+		restoreCursor(&m.textarea, line, col)
 	case dialog.CompletionSelectedMsg:
 		existingValue := m.textarea.Value()
 		modifiedValue := strings.Replace(existingValue, msg.SearchString, msg.CompletionValue, 1)
@@ -1000,6 +1012,17 @@ func (m *editorCmp) textareaView() string {
 		return applySelection(view, m.selection)
 	}
 	return styles.ForceReplaceBackgroundWithLipgloss(view, theme.CurrentTheme().Background())
+}
+
+// restoreCursor puts the cursor back on a rebuilt textarea. The widget exposes
+// no absolute row setter, so the row is reached by stepping — which is exactly
+// what the vim handler already does to place the cursor.
+func restoreCursor(ta *textarea.Model, line, col int) {
+	ta.MoveToBegin()
+	for range line {
+		ta.CursorDown()
+	}
+	ta.SetCursorColumn(col)
 }
 
 // textareaPromptWidth is the column the textarea's own prompt occupies on every

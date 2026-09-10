@@ -2,6 +2,7 @@ package vim
 
 import (
 	"testing"
+	"unicode/utf8"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
@@ -434,6 +435,164 @@ func TestSelectionRange(t *testing.T) {
 			from, to := SelectionRange(tt.text, tt.anchor, tt.cursor, tt.linewise)
 			if from != tt.wantFrom || to != tt.wantTo {
 				t.Errorf("SelectionRange = [%d,%d), want [%d,%d)", from, to, tt.wantFrom, tt.wantTo)
+			}
+		})
+	}
+}
+
+// ---- review regressions -----------------------------------------------------
+
+// TestVisualOperatorsOnNonASCII is the regression for a rune/byte confusion that
+// silently destroyed text: the textarea indexes columns by rune, the vim package
+// by byte, and the conversion between them counted bytes. On any non-ASCII draft
+// the cursor landed elsewhere than it was drawn and operators cut mid-character.
+func TestVisualOperatorsOnNonASCII(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		cursor   int
+		keys     []string
+		wantText string
+	}{
+		{
+			name: "case toggle preserves every character", text: "日本語", cursor: 0,
+			keys: []string{"l", "v", "~"}, wantText: "日本語",
+		},
+		{
+			name: "delete removes the character under the cursor", text: "aébc", cursor: 0,
+			keys: []string{"l", "l", "v", "d"}, wantText: "aéc",
+		},
+		{
+			name: "uppercase across a multi-byte run", text: "aébc", cursor: 0,
+			keys: []string{"v", "l", "l", "U"}, wantText: "AÉBc",
+		},
+		{
+			name: "emoji is not split", text: "a🙂b", cursor: 0,
+			keys: []string{"l", "v", "d"}, wantText: "ab",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, ta := newVisualTestHarness(t, tt.text, tt.cursor)
+			press(h, ta, tt.keys...)
+			if got := ta.Value(); got != tt.wantText {
+				t.Errorf("text = %q, want %q", got, tt.wantText)
+			}
+			if !utf8.ValidString(ta.Value()) {
+				t.Errorf("operation produced invalid UTF-8: %q", ta.Value())
+			}
+		})
+	}
+}
+
+func TestVisualYankOnNonASCIIRegisterIsValid(t *testing.T) {
+	h, ta := newVisualTestHarness(t, "日本語です", 0)
+	press(h, ta, "l", "v", "y")
+	if got := h.persistent.Register; !utf8.ValidString(got) || got != "本" {
+		t.Errorf("register = %q, want %q and valid UTF-8", got, "本")
+	}
+}
+
+// A case operator must never alter the bytes of a rune it cannot classify.
+func TestExecuteVisualCaseLeavesInvalidBytesAlone(t *testing.T) {
+	const text = "a\xa9b"
+	got := text
+	ctx := &OperatorContext{
+		Text: text, Offset: 0,
+		SetText: func(s string) { got = s }, SetOffset: func(int) {},
+		EnterInsert: func(int) {},
+		GetRegister: func() (string, bool) { return "", false },
+		SetRegister: func(string, bool) {}, GetLastFind: func() *FindRecord { return nil },
+		SetLastFind: func(FindType, string) {}, RecordChange: func(RecordedChange) {},
+	}
+	ExecuteVisualCase('~', 1, 2, false, ctx)
+	if got != text {
+		t.Errorf("case toggle rewrote an unclassifiable byte: %q -> %q (%d -> %d bytes)",
+			text, got, len(text), len(got))
+	}
+}
+
+func TestVisualLinewiseMatchesNormalMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		cursor   int
+		keys     []string
+		wantText string
+	}{
+		// `Vd` on the last line must not leave a blank line behind, the same
+		// rule `dd` follows.
+		{name: "delete last line", text: "one\ntwo", cursor: 4, keys: []string{"V", "d"}, wantText: "one"},
+		{name: "delete to end", text: "one\ntwo\nthree", cursor: 4, keys: []string{"V", "j", "d"}, wantText: "one"},
+		{name: "delete a middle line", text: "one\ntwo\nthree", cursor: 4, keys: []string{"V", "d"}, wantText: "one\nthree"},
+
+		// `<` must remove at most one indent unit, like `<<`, not every space.
+		{name: "unindent removes one level", text: "      deep", cursor: 0, keys: []string{"V", "<"}, wantText: "    deep"},
+
+		// vim leaves empty lines alone when indenting.
+		{name: "indent skips blank lines", text: "one\n\ntwo", cursor: 0, keys: []string{"V", "j", "j", ">"}, wantText: "  one\n\n  two"},
+
+		// `J` must not double an existing trailing space.
+		{name: "join does not double a space", text: "one \ntwo", cursor: 0, keys: []string{"V", "j", "J"}, wantText: "one two"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h, ta := newVisualTestHarness(t, tt.text, tt.cursor)
+			press(h, ta, tt.keys...)
+			if got := ta.Value(); got != tt.wantText {
+				t.Errorf("text = %q, want %q", got, tt.wantText)
+			}
+		})
+	}
+}
+
+// Linewise change clears the lines rather than removing them: vim leaves an
+// empty line with the cursor on it, so typing replaces the block instead of
+// being prepended to whatever followed.
+func TestVisualLinewiseChangeClearsTheLine(t *testing.T) {
+	h, ta := newVisualTestHarness(t, "one\ntwo\nthree", 4)
+	press(h, ta, "V", "c")
+
+	if got := ta.Value(); got != "one\n\nthree" {
+		t.Errorf("text = %q, want %q", got, "one\n\nthree")
+	}
+	if h.Mode() != ModeInsert {
+		t.Errorf("mode = %s, want INSERT", h.Mode())
+	}
+}
+
+// A non-mutating visual operation must not consume an undo step; otherwise the
+// user's next `u` silently does nothing instead of undoing their last edit.
+func TestNonMutatingVisualOpsDoNotBurnUndo(t *testing.T) {
+	cases := []struct {
+		name string
+		keys []string
+	}{
+		{name: "yank", keys: []string{"v", "l", "l", "y"}},
+		{name: "join on the last line", keys: []string{"V", "J"}},
+		{name: "paste with an empty register", keys: []string{"v", "l", "p"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, ta := newVisualTestHarness(t, "one two three", 0)
+			// Seed one real change with `~` rather than `x`: `x` yanks into the
+			// register, which would make the empty-register paste case mutate
+			// after all and test nothing.
+			press(h, ta, "~")
+			seeded := ta.Value()
+			if seeded == "one two three" {
+				t.Fatalf("seed change had no effect")
+			}
+
+			press(h, ta, tc.keys...)
+			press(h, ta, "u")
+
+			if got := ta.Value(); got != "one two three" {
+				t.Errorf("after %s then u, text = %q, want the original restored; the no-op consumed the undo step (its own snapshot was %q)",
+					tc.name, got, seeded)
 			}
 		})
 	}

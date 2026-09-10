@@ -49,8 +49,9 @@
 
 - [x] 4.1 Add `shellInvocation(text string) (command string, ok bool)` implementing design
   D8 exactly (leading `!` at index 0, non-empty trimmed remainder, `text[1]` not `[` or `=`).
-- [x] 4.2 Rewrite the existing `!`-keypress branch to call `shellInvocation` so there is one
-  rule, not two.
+- [x] 4.2 Route every path that receives *complete* draft text through `shellInvocation`.
+  The `!`-keypress branch is deliberately exempt and says so in a comment: it handles the
+  bare sigil, where no command exists yet, and the predicate correctly rejects a lone `!`.
 - [x] 4.3 Add a `tea.PasteMsg` case to `update`: when `mode == modeNormal`, the draft is
   empty, vim (if enabled) is in INSERT, and `shellInvocation` matches, enter shell mode and
   set the draft to the command; otherwise fall through to the textarea unchanged.
@@ -86,7 +87,10 @@
 - [x] 6.1 Store a `shellCancel context.CancelFunc` on the editor; build the command's context
   with `context.WithCancel` in `executeShell` instead of `context.Background()`.
 - [x] 6.2 In the `shellExecuting` early-return branch, honour `esc` and `ctrl+c`: call
-  `shellCancel`, clear the executing state, stay in shell mode with an empty draft.
+  `shellCancel` and stay in shell mode. The executing flag is cleared when the resulting
+  cancelled `ShellResultMsg` arrives, so there is one owner of that state. Cancellation is
+  scoped to captured runs — an interactive run owns the terminal, so ctrl+c reaches the
+  command itself.
 - [x] 6.3 Ensure `page/chat.go` and `tui.go` do not consume those keys first while a shell
   command is running (the shell-mode branches already exist; extend the running-state check
   alongside `IsShellMode`).
@@ -125,8 +129,8 @@
 - [x] 8.2 Tests for `RestyleRange`: width preserved; ranges at line start/end/whole-line;
   wide (2-column) characters not split; a line already carrying ANSI styling.
 - [x] 8.3 Add the probe textarea to the editor (`textarea.New()`, own viewport) plus
-  `selectionRows(from, to int) []selectionSpan` computing `(viewRow, colFrom, colTo)` per
-  design D11, kept in sync with the real textarea's width/height/value.
+  `(*selectionLayout).spans(...)` computing `(viewRow, colFrom, colTo)` per design D11,
+  from a wrap table built once per draft change.
 - [x] 8.4 Compute and store the spans in `Update` whenever the selection or draft changes —
   never in `View` (the `chat-editor-layout` delta requires this).
 - [x] 8.5 Apply the spans in `textareaView()`; return the view untouched when no visual mode
@@ -180,3 +184,38 @@
 - [x] 11.5 Tests: an `exit 3` command reports code 3, not interrupted, output preserved,
   with an explanation; a replacement shell starts in the previous directory; `Cwd()`
   returns promptly while a command runs.
+
+## 12. Review fixes
+
+- [x] 12.1 Shell: replace the command-queue close with a quit channel. `Exec` checked
+  `isAlive` and then sent on a channel the shell's death closed — a send on a closed
+  channel panics the sender, which in production is an unrecovered crash of opencode.
+- [x] 12.2 Shell: recover from a wedged shell. A timed-out shell BUILTIN has no descendant
+  to signal, so the shell spun forever and every later command in the process returned 143.
+  Kill it after a grace period and let `GetPersistentShell` respawn in the preserved cwd.
+- [x] 12.3 Shell: report a signal-killed shell as 128+N rather than Go's -1 sentinel, and
+  record a failure status when the processor panics instead of leaving it at zero.
+- [x] 12.4 Shell: honour `shell.args` in the interactive handoff via `CommandArgs` instead
+  of hardcoding `-lc`.
+- [x] 12.5 Classifier: drop language interpreters (`python`, `node`, `irb`) — batch runs
+  are far more common than REPL sessions and were losing their output to the terminal.
+  Require a tty-capable subcommand for container tools so `docker build -t` is not read as
+  a tty request.
+- [x] 12.6 Vim: make the offset/column conversion rune-aware. The textarea indexes columns
+  by rune and the vim package by byte, so on any non-ASCII draft the cursor landed
+  elsewhere than it was drawn and operators cut mid-character — a visual `~` on a CJK
+  draft destroyed a character. Fixes NORMAL mode too.
+- [x] 12.7 Vim: guard `ExecuteVisualCase` against unclassifiable bytes; align visual `<`,
+  `J`, linewise `d` and `c`, and `p` with their NORMAL-mode counterparts; stop
+  non-mutating visual operations consuming an undo step.
+- [x] 12.8 Selection: rebuild the mapping as a cached per-line wrap table. `CursorDown`
+  moves a display row, not a logical line, so the highlight drifted on any draft with a
+  wrapped early line; and re-walking per line cost 4.4 s per keystroke at 200 lines.
+- [x] 12.9 Selection: end charwise rows at the text rather than the full row width; keep
+  the cursor (and so the selection) across a theme change; stop the editor shrinking by a
+  column on every theme change (pre-existing).
+- [x] 12.10 Tests: replace the tautological probe conformance test with one that asserts
+  against the RENDER; make the isolation e2e work non-interactively and never all-skip;
+  move POSIX-only tests behind a build tag so `GOOS=windows go vet` passes.
+- [x] 12.11 Docs: correct D5, D6, D7, D8, D10 and D11 where they described behaviour the
+  code does not have.

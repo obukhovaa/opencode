@@ -33,33 +33,6 @@ func exec1(t *testing.T, sh *PersistentShell, command string) (stdout, stderr st
 	return stdout, stderr, exitCode
 }
 
-// TestShellRunsInItsOwnSession is the direct assertion of the isolation
-// invariant: a different session id means no controlling terminal, which is
-// what stops a descendant from writing onto the terminal opencode renders on.
-// Asserting the session id rather than a failed /dev/tty open makes the test
-// meaningful even when the test process itself has no terminal.
-func TestShellRunsInItsOwnSession(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX sessions only")
-	}
-	sh := newTestShell(t)
-
-	ours, err := syscall.Getsid(0)
-	if err != nil {
-		t.Fatalf("Getsid(self): %v", err)
-	}
-	theirs, err := syscall.Getsid(sh.cmd.Process.Pid)
-	if err != nil {
-		t.Fatalf("Getsid(shell): %v", err)
-	}
-	if theirs == ours {
-		t.Fatalf("shell shares our session (%d); it must be detached so /dev/tty cannot resolve", ours)
-	}
-	if theirs != sh.cmd.Process.Pid {
-		t.Errorf("shell session id = %d, want it to be the session leader (%d)", theirs, sh.cmd.Process.Pid)
-	}
-}
-
 // TestShellCannotOpenControllingTerminal exercises the behavior the session
 // isolation buys, but only when there is a terminal to leak in the first place:
 // under a CI runner with no tty the open would fail regardless and the test
@@ -350,4 +323,52 @@ func TestCwdDoesNotBlockBehindARunningCommand(t *testing.T) {
 	}
 
 	<-finished
+}
+
+// TestWedgedShellIsReplaced covers a permanent, unrecoverable failure mode.
+//
+// terminateDescendants signals the shell's children, but a shell BUILTIN
+// (`while :; do :; done`) has no child — so a timeout killed nothing and the
+// shell went on spinning. isAlive stayed true, so GetPersistentShell kept
+// handing back the wedged instance and EVERY later command in the process
+// returned 143 with no output, for good.
+func TestWedgedShellIsReplaced(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pgrep-based process walk is POSIX-only")
+	}
+	dir := t.TempDir()
+	sh := GetPersistentShell(dir)
+	if sh == nil {
+		t.Fatal("failed to start persistent shell")
+	}
+	t.Cleanup(func() {
+		shellInstancesMu.Lock()
+		defer shellInstancesMu.Unlock()
+		if s := shellInstances[dir]; s != nil {
+			s.Close()
+		}
+		delete(shellInstances, dir)
+	})
+
+	// A builtin loop: nothing to signal, so the shell cannot be recovered.
+	_, _, code, _, _ := sh.Exec(context.Background(), "while :; do :; done", 1000)
+	if code != 143 {
+		t.Fatalf("timed-out command exit = %d, want 143", code)
+	}
+	if sh.isAlive() {
+		t.Fatal("the wedged shell was left alive; every later command would return 143")
+	}
+
+	// The next caller gets a working shell rather than the wedged one.
+	replacement := GetPersistentShell(dir)
+	if replacement == nil {
+		t.Fatal("no replacement shell was created")
+	}
+	if replacement == sh {
+		t.Fatal("the wedged shell was handed back")
+	}
+	stdout, _, code := exec1(t, replacement, "echo recovered")
+	if code != 0 || strings.TrimSpace(stdout) != "recovered" {
+		t.Errorf("replacement shell unusable: stdout=%q code=%d", stdout, code)
+	}
 }

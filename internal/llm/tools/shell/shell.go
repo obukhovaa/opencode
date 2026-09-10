@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,9 +29,13 @@ type PersistentShell struct {
 	// outside mu (Exec must not block behind a running command just to learn
 	// the shell died), so it has to be atomic rather than mutex-guarded.
 	alive atomic.Bool
-	// closeQueue guards the command queue's close. Both the Wait watcher and
-	// the panic-recovery path reach it, and closing a channel twice panics.
-	closeQueue sync.Once
+	// quit is closed exactly once when the shell dies. The command queue itself
+	// is NEVER closed: Exec checks isAlive and then sends, and closing a channel
+	// out from under a live sender panics the sender's goroutine — which in
+	// production is an unrecovered crash of the whole process. Signalling
+	// through a separate channel makes the send unconditionally safe.
+	quit      chan struct{}
+	closeQuit sync.Once
 	// exitStatus is the shell process's own exit code, recorded before the
 	// shell is marked dead. When a command ends the shell session (`exit 3`
 	// runs in the shell itself, because commands are eval'd there), this IS the
@@ -58,11 +63,11 @@ func (s *PersistentShell) setCwd(dir string) {
 // isAlive reports whether the shell process is still usable.
 func (s *PersistentShell) isAlive() bool { return s.alive.Load() }
 
-// markDead records the shell as unusable and releases the command queue. It is
-// safe to call from any goroutine, any number of times.
+// markDead records the shell as unusable and wakes everyone waiting on it. It
+// is safe to call from any goroutine, any number of times.
 func (s *PersistentShell) markDead() {
 	s.alive.Store(false)
-	s.closeQueue.Do(func() { close(s.commandQueue) })
+	s.closeQuit.Do(func() { close(s.quit) })
 }
 
 type commandExecution struct {
@@ -112,6 +117,29 @@ func GetPersistentShell(workingDir string) *PersistentShell {
 	}
 	shellInstances[workingDir] = sh
 	return sh
+}
+
+// CommandArgs returns the argv that runs a single command string in the
+// configured shell, honouring shell.args.
+//
+// The captured path feeds commands to a long-lived shell over a pipe, so it
+// only needs shell.args. The interactive handoff spawns a fresh shell per
+// command and needs a "-c"-style flag as well — without this it hardcoded
+// "-lc", which silently ignored a user's configured args and breaks outright on
+// a shell that spells the flag differently.
+func CommandArgs(command string) []string {
+	var args []string
+	if cfg := config.Get(); cfg != nil {
+		args = append(args, cfg.Shell.Args...)
+	}
+	// Drop a configured "-s" (read from stdin): it is meaningful for the
+	// persistent shell's pipe and contradictory here, where the command comes
+	// from argv.
+	args = slices.DeleteFunc(args, func(a string) bool { return a == "-s" })
+	if !slices.ContainsFunc(args, func(a string) bool { return strings.Contains(a, "c") && strings.HasPrefix(a, "-") }) {
+		args = append(args, "-c")
+	}
+	return append(args, command)
 }
 
 // GetShellPath returns the shell path resolved from config, $SHELL, or /bin/bash default.
@@ -174,6 +202,7 @@ func newPersistentShell(cwd string) *PersistentShell {
 		stdin:        stdinPipe.(*os.File),
 		cwd:          cwd,
 		commandQueue: make(chan *commandExecution, 10),
+		quit:         make(chan struct{}),
 	}
 	shell.alive.Store(true)
 
@@ -181,6 +210,10 @@ func newPersistentShell(cwd string) *PersistentShell {
 		defer func() {
 			if r := recover(); r != nil {
 				fmt.Fprintf(os.Stderr, "Panic in shell command processor: %v\n", r)
+				// Record a failure status before the shell is torn down. Left
+				// at its zero value it would report a panicked shell as having
+				// exited successfully.
+				shell.exitStatus.Store(1)
 				shell.markDead()
 			}
 		}()
@@ -195,9 +228,7 @@ func newPersistentShell(cwd string) *PersistentShell {
 		// Record the status BEFORE marking the shell dead: execCommand notices
 		// the death through the alive flag, and the atomic store ordering is
 		// what lets it read a status that is already there.
-		if cmd.ProcessState != nil {
-			shell.exitStatus.Store(int32(cmd.ProcessState.ExitCode()))
-		}
+		shell.exitStatus.Store(int32(exitStatusOf(cmd.ProcessState)))
 		shell.markDead()
 	}()
 
@@ -205,9 +236,13 @@ func newPersistentShell(cwd string) *PersistentShell {
 }
 
 func (s *PersistentShell) processCommands() {
-	for cmd := range s.commandQueue {
-		result := s.execCommand(cmd.command, cmd.timeout, cmd.ctx)
-		cmd.resultChan <- result
+	for {
+		select {
+		case <-s.quit:
+			return
+		case cmd := <-s.commandQueue:
+			cmd.resultChan <- s.execCommand(cmd.command, cmd.timeout, cmd.ctx)
+		}
 	}
 }
 
@@ -279,7 +314,7 @@ echo $EXEC_EXIT_CODE > %s
 				return
 
 			case <-time.After(10 * time.Millisecond):
-				if fileExists(statusFile) && fileSize(statusFile) > 0 {
+				if fileHasContent(statusFile) {
 					done <- true
 					return
 				}
@@ -304,6 +339,28 @@ echo $EXEC_EXIT_CODE > %s
 	}()
 
 	<-done
+
+	// An interrupted command whose wrapper never finished leaves the shell in
+	// one of two states. Usually the command had a child, terminateDescendants
+	// killed it, and the wrapper resumes and writes its status within
+	// milliseconds — the shell is fine. But a shell BUILTIN (`while :; do :;
+	// done`) has no child to signal, so nothing stopped it and the shell will
+	// never accept another command: every later call returns 143 with no
+	// output, for the life of the process, because isAlive stays true and
+	// GetPersistentShell keeps handing back the wedged instance.
+	//
+	// Waiting briefly separates the two, and taking the shell down is the fix
+	// for the second: GetPersistentShell respawns it in the preserved working
+	// directory on the next call.
+	if interrupted && !fileHasContent(statusFile) {
+		deadline := time.Now().Add(wedgeGrace)
+		for time.Now().Before(deadline) && !fileHasContent(statusFile) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if !fileHasContent(statusFile) {
+			s.forceRestart()
+		}
+	}
 
 	stdout := readFileOrEmpty(stdoutFile)
 	stderr := readFileOrEmpty(stderrFile)
@@ -424,6 +481,26 @@ func (s *PersistentShell) terminateDescendants() {
 	}(descendants)
 }
 
+// wedgeGrace is how long a terminated command's wrapper gets to write its
+// status before the shell is assumed stuck. terminateDescendants has already
+// signalled; a live shell resumes in microseconds.
+const wedgeGrace = 500 * time.Millisecond
+
+// fileHasContent reports whether path exists and is non-empty.
+func fileHasContent(path string) bool {
+	return fileExists(path) && fileSize(path) > 0
+}
+
+// forceRestart kills a shell that can no longer make progress. The next
+// GetPersistentShell call replaces it, starting in the directory this one was
+// last in.
+func (s *PersistentShell) forceRestart() {
+	if s.cmd != nil && s.cmd.Process != nil {
+		_ = s.cmd.Process.Kill()
+	}
+	s.markDead()
+}
+
 // childPIDs returns the direct children of pid according to pgrep. A pgrep that
 // is missing or reports nothing yields an empty slice, which ends the walk.
 func childPIDs(pid int) []int {
@@ -446,6 +523,16 @@ func childPIDs(pid int) []int {
 	return pids
 }
 
+// ShellPID returns the persistent shell process's pid, or 0 when it never
+// started. It exists for the isolation e2e harness, which asserts the shell is
+// in a different POSIX session than opencode.
+func (s *PersistentShell) ShellPID() int {
+	if s.cmd == nil || s.cmd.Process == nil {
+		return 0
+	}
+	return s.cmd.Process.Pid
+}
+
 // Cwd returns the working directory the persistent shell is currently in — the
 // directory the next command run through it will start in. The TUI's
 // interactive handoff reads it so a command that bypasses the persistent shell
@@ -463,17 +550,47 @@ func (s *PersistentShell) Exec(ctx context.Context, command string, timeoutMs in
 
 	timeout := time.Duration(timeoutMs) * time.Millisecond
 
-	resultChan := make(chan commandResult)
-	s.commandQueue <- &commandExecution{
+	// Buffered so the processor is never blocked by a caller that has gone away.
+	resultChan := make(chan commandResult, 1)
+	execution := &commandExecution{
 		command:    command,
 		timeout:    timeout,
 		resultChan: resultChan,
 		ctx:        ctx,
 	}
 
-	result := <-resultChan
-	return result.stdout, result.stderr, result.exitCode, result.interrupted, result.err
+	select {
+	case s.commandQueue <- execution:
+	case <-s.quit:
+		// The shell died between the isAlive check above and this send. Nothing
+		// was queued, so no result is coming.
+		return "", "Shell is not alive", 1, false, errors.New("shell is not alive")
+	case <-ctx.Done():
+		return "", "Command was cancelled before it started", 1, true, nil
+	}
+
+	select {
+	case result := <-resultChan:
+		return result.stdout, result.stderr, result.exitCode, result.interrupted, result.err
+	case <-s.quit:
+		// The shell died. A command that had already STARTED still reports for
+		// itself — execCommand's watcher notices the death within a poll and
+		// returns the honest exit status — so prefer that answer and only fall
+		// back once it is clear none is coming. Without this grace a `!exit 3`
+		// would race its own result and report "shell is not alive" instead of 3.
+		select {
+		case result := <-resultChan:
+			return result.stdout, result.stderr, result.exitCode, result.interrupted, result.err
+		case <-time.After(shellDeathGrace):
+			return "", "Shell is not alive", 1, false, errors.New("shell is not alive")
+		}
+	}
 }
+
+// shellDeathGrace bounds how long Exec waits for an in-flight command to report
+// after the shell has died. execCommand's watcher polls every 10ms, so this is
+// several orders of magnitude more than it needs.
+const shellDeathGrace = 2 * time.Second
 
 func (s *PersistentShell) Close() {
 	s.mu.Lock()

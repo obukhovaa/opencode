@@ -3,6 +3,7 @@
 package shell
 
 import (
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -31,4 +32,23 @@ func detachFromTerminal(cmd *exec.Cmd) {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.Setsid = true
+}
+
+// exitStatusOf turns a finished process's state into a shell-style exit code.
+//
+// os.ProcessState.ExitCode reports -1 when the process was terminated by a
+// signal, which is meaningless to surface to a user or an agent ("Exit code
+// -1"). Shells report 128+N for signal N, and that is the number a user
+// comparing against their own terminal expects to see.
+func exitStatusOf(ps *os.ProcessState) int {
+	if ps == nil {
+		return 1
+	}
+	if code := ps.ExitCode(); code >= 0 {
+		return code
+	}
+	if ws, ok := ps.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return 1
 }

@@ -60,7 +60,8 @@ the screen:
   shell invocation, and it is consulted on the `!` keypress, on `tea.PasteMsg`, and once
   more at submit time. Pasting `!ls -la` and pressing enter on a draft that begins with
   `!` both do what typing `!ls -la` does today. A guard keeps markdown image syntax
-  (`![alt](url)`) and operators (`!=`, `!!` at submit) out of the predicate.
+  (`![alt](url)`) and the `!=` operator out of the predicate. `!!` is deliberately NOT
+  excluded: a pasted `!!cmd` must resolve exactly as typing `!` then `!cmd` does.
 - **Cancellation.** `ctrl+c` and `esc` during `$ running...` cancel the in-flight command.
   Today `shellExecuting` swallows every key (`editor.go:519`), so a slow command locks the
   editor until the 2-minute timeout expires.

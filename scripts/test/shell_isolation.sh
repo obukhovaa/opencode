@@ -42,58 +42,87 @@ trap cleanup EXIT
 echo "Building cmd/shell-isolation-e2e …"
 (cd "$ROOT" && go build -o "$DRIVER" ./cmd/shell-isolation-e2e) || { echo "Build failed"; exit 1; }
 
-# Minimal sandbox config. Bash with -c only (no -l) so the test does not source
-# the running user's profile.
+# Minimal sandbox config. `-s` reads commands from stdin without sourcing the
+# running user's profile, keeping the run hermetic (the default is `-l`). `interactive` is here so the
+# driver exercises the real config → viper → classifier path.
 cat > "$WORKDIR/.opencode.json" <<'JSON'
 {
   "shell": {
     "path": "/bin/bash",
-    "args": ["-s"]
+    "args": ["-s"],
+    "interactive": ["configured-tool"]
   }
 }
 JSON
 
 # ── run the driver under a pty ───────────────────────────────────────
-# `script` allocates a real controlling terminal. Its argument order differs
-# between BSD (macOS) and util-linux.
+# `script` allocates a real controlling terminal so the /dev/tty assertions
+# below have something to leak to. Its argument order differs between BSD
+# (macOS) and util-linux.
+#
+# The driver writes its JSON to a FILE, never to stdout: under `script` the
+# stream carries the terminal's own control bytes around the payload (BSD emits
+# a literal ^D plus backspaces when its stdin is not a tty), so anything parsing
+# stdout would be parsing a terminal transcript. The transcript is still
+# captured, but only to grep it for the leak marker.
+RESULT="$WORKDIR/result.json"
 run_under_pty() {
     if script -q /dev/null true >/dev/null 2>&1; then
-        (cd "$WORKDIR" && script -q /dev/null "$DRIVER") # BSD / macOS
+        (cd "$WORKDIR" && script -q /dev/null "$DRIVER" -out "$RESULT") # BSD / macOS
     else
-        (cd "$WORKDIR" && script -q -e -c "$DRIVER" /dev/null) # util-linux
+        (cd "$WORKDIR" && script -q -e -c "$DRIVER -out $RESULT" /dev/null) # util-linux
     fi
 }
 
-RAW="$(run_under_pty || true)"
-# `script` echoes terminal control bytes around the payload; keep the JSON only.
-OUT="$(printf '%s' "$RAW" | tr -d '\r' | sed -n '/^{/,/^}/p')"
+RAW="$(run_under_pty </dev/null 2>&1 || true)"
 
-if ! printf '%s' "$OUT" | jq empty 2>/dev/null; then
-    echo "Driver produced no parseable JSON. Raw output:" >&2
+if [ ! -s "$RESULT" ]; then
+    echo "Driver produced no result file. Transcript:" >&2
     printf '%s\n' "$RAW" >&2
+    exit 1
+fi
+OUT="$(cat "$RESULT")"
+if ! printf '%s' "$OUT" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    # `jq empty` accepts empty input, so it cannot serve as this guard: an empty
+    # payload would sail through and every assertion below would then compare
+    # against "" and could report a vacuous PASS.
+    echo "Driver result is not a JSON object:" >&2
+    printf '%s\n' "$OUT" >&2
     exit 1
 fi
 
 field() { printf '%s' "$OUT" | jq -r "$1"; }
 
 # ── assertions ───────────────────────────────────────────────────────
+# Every check below compares against an expected value rather than against
+# "not the failure value", so a missing field fails instead of passing.
+
+name="shell runs in its own session"
+# The isolation invariant itself, and the reason this script can never degrade
+# to an all-skip green run: it holds whether or not a pty was available.
+if [ "$(field '.session_isolated')" = "true" ]; then
+    log_pass "$name"
+else
+    log_fail "$name" "the shell shares opencode's session; /dev/tty can still resolve"
+fi
 
 name="driver has a controlling terminal"
 if [ "$(field '.has_controlling_terminal')" = "true" ]; then
     log_pass "$name"
     HAS_TTY=true
 else
-    log_skip "$name" "no pty available; the isolation assertions would be vacuous"
+    log_skip "$name" "no pty available; the /dev/tty probes below would be vacuous"
     HAS_TTY=false
 fi
 
 name="shell command cannot write to /dev/tty"
+TTY_WRITE_CODE="$(field '.tty_write_exit_code')"
 if [ "$HAS_TTY" != "true" ]; then
     log_skip "$name" "no controlling terminal to leak to"
-elif [ "$(field '.tty_write_exit_code')" != "0" ]; then
+elif [ -n "$TTY_WRITE_CODE" ] && [ "$TTY_WRITE_CODE" != "0" ]; then
     log_pass "$name"
 else
-    log_fail "$name" "the write succeeded — the shell is still attached to our terminal"
+    log_fail "$name" "exit=$TTY_WRITE_CODE — the write succeeded, so the shell is still attached to our terminal"
 fi
 
 name="leaked text never reached the terminal"
@@ -106,10 +135,11 @@ else
 fi
 
 name="shell streams are not a tty"
-if [ "$(field '.isatty_exit_code')" != "0" ]; then
+ISATTY_CODE="$(field '.isatty_exit_code')"
+if [ -n "$ISATTY_CODE" ] && [ "$ISATTY_CODE" != "0" ]; then
     log_pass "$name"
 else
-    log_fail "$name" "stdin/stdout are a terminal inside the shell"
+    log_fail "$name" "exit=$ISATTY_CODE — stdin/stdout are a terminal inside the shell"
 fi
 
 name="git terminal prompting is disabled"
@@ -137,8 +167,9 @@ name="interactive classification"
 if [ "$(field '.classified["sudo -v"]')" = "true" ] &&
    [ "$(field '.classified["ls -la"]')" = "false" ] &&
    [ "$(field '.classified["docker ps"]')" = "false" ] &&
+   [ "$(field '.classified["docker build -t img ."]')" = "false" ] &&
    [ "$(field '.classified["docker exec -it web sh"]')" = "true" ] &&
-   [ "$(field '.classified["my-tool (configured)"]')" = "true" ]; then
+   [ "$(field '.classified["configured-tool"]')" = "true" ]; then
     log_pass "$name"
 else
     log_fail "$name" "$(field '.classified')"

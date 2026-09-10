@@ -222,6 +222,15 @@ func TestExecuteShellEmptyDraftIsNoOp(t *testing.T) {
 		if ed.shellExecuting {
 			t.Errorf("executeShell(%q) marked the editor as executing", draft)
 		}
+		// A draft that is no command must not be consumed: it stays in the
+		// input so a mistyped force prefix can be corrected, and it never
+		// reaches the history where `up` would recall it.
+		if got := ed.textarea.Value(); got != draft {
+			t.Errorf("executeShell(%q) consumed the draft; textarea = %q", draft, got)
+		}
+		if len(ed.shellHistory) != 0 {
+			t.Errorf("executeShell(%q) polluted the history: %v", draft, ed.shellHistory)
+		}
 	}
 }
 

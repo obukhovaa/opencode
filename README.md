@@ -366,8 +366,8 @@ Override the default shell (falls back to `$SHELL` or `/bin/bash`):
 }
 ```
 
-The shell runs in its own session with no controlling terminal, so nothing it
-runs can read from or write to the terminal OpenCode is drawing on. A command
+On Unix the shell runs in its own session with no controlling terminal, so nothing
+it runs can read from or write to the terminal OpenCode is drawing on. A command
 that needs a terminal — `sudo`, `ssh`, an editor — therefore fails immediately
 rather than prompting invisibly.
 

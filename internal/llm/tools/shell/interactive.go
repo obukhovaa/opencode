@@ -25,9 +25,17 @@ var interactivePrograms = map[string]bool{
 	// Pagers and full-screen viewers
 	"less": true, "more": true, "man": true, "top": true, "htop": true,
 	"btop": true, "watch": true,
-	// REPLs and database clients
-	"psql": true, "mysql": true, "sqlite3": true, "redis-cli": true,
-	"mongosh": true, "irb": true, "python": true, "python3": true, "node": true,
+	// Database clients. These are bare-invocation REPLs whose non-interactive
+	// use always carries an explicit flag (-c/-e/-f), so the plain name is a
+	// reliable interactive signal.
+	"psql": true, "mysql": true, "sqlite3": true, "redis-cli": true, "mongosh": true,
+	//
+	// Deliberately NOT listed: python, python3, node, irb, ruby, ghci. They are
+	// REPLs only when invoked bare — `python3 script.py` and `node app.js` are
+	// ordinary batch commands, and far more common. Classifying them
+	// interactive would hand the terminal over and throw away the output the
+	// user was waiting to read in the chat, which is exactly the false positive
+	// the classifier is built to avoid. A genuine REPL session is one `!!` away.
 	// Multiplexers, remote sessions, and interactive editors of system state
 	"tmux": true, "screen": true, "ftp": true, "telnet": true, "crontab": true,
 }
@@ -93,10 +101,22 @@ func isEnvAssignment(token string) bool {
 	return true
 }
 
-// hasTTYFlag looks for the tty-allocating flags in an argument list: -t, -i,
-// their combined forms (-it, -ti), and the long spellings. Both -i and -t on
-// their own count, since either alone still attaches a stream to the terminal.
+// ttyCapableSubcommands are the container-tool subcommands that can actually
+// attach a terminal. The subcommand has to be checked because `-t` does not
+// mean the same thing everywhere: on `docker build` it is `--tag`, so treating
+// any `-t` as a tty request sent every tagged build down the interactive path
+// and threw away the build output the user was waiting to read.
+var ttyCapableSubcommands = map[string]bool{
+	"exec": true, "run": true, "attach": true, "start": true, "debug": true,
+}
+
+// hasTTYFlag reports whether a container-tool invocation asks for a terminal:
+// a tty-capable subcommand AND one of the tty flags — -t, -i, their combined
+// forms (-it, -ti, -itd), or the long spellings.
 func hasTTYFlag(args []string) bool {
+	if !ttyCapableSubcommand(args) {
+		return false
+	}
 	for _, arg := range args {
 		switch arg {
 		case "--tty", "--interactive", "--stdin":
@@ -109,6 +129,33 @@ func hasTTYFlag(args []string) bool {
 		if strings.ContainsAny(arg[1:], "it") {
 			return true
 		}
+	}
+	return false
+}
+
+// ttyCapableSubcommand finds the subcommand in an argument list and reports
+// whether it can attach a terminal.
+//
+// It looks at the first non-flag token, plus the second when the first is a
+// grouping subcommand like `compose`. It deliberately does not scan the whole
+// argument list: an image named `run` would otherwise make `docker build -t run
+// .` look interactive. Anything this misses still works via the `!!` prefix,
+// which is the right trade — a false negative costs one keystroke, a false
+// positive costs the user their output.
+func ttyCapableSubcommand(args []string) bool {
+	seen := 0
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		if ttyCapableSubcommands[arg] {
+			return true
+		}
+		seen++
+		if seen == 1 && (arg == "compose" || arg == "container") {
+			continue // grouping subcommand: the real one is next
+		}
+		return false
 	}
 	return false
 }

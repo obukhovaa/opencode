@@ -10,6 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/opencode-ai/opencode/internal/skill"
 	"github.com/opencode-ai/opencode/internal/slashcmd"
+	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 	"github.com/opencode-ai/opencode/internal/tui/vim"
 )
 
@@ -214,5 +215,71 @@ func TestRecognitionChipForRejectedInvocation(t *testing.T) {
 	// And it still renders within budget.
 	if got, want := lipgloss.Width(ed.affordanceRow()), ed.rowWidth(); got != want {
 		t.Errorf("affordance row = %d cols, want %d", got, want)
+	}
+}
+
+// TestThemeChangeDoesNotShrinkTheEditor guards a bug that predates the
+// selection work: CreateTextArea seeds a replacement textarea by passing the
+// outgoing one's INNER width into SetWidth, which subtracts the prompt
+// reservation again. Every theme change narrowed the input by a column, and the
+// loss was permanent — switch themes ten times and ten columns are gone.
+//
+// It matters doubly now: the selection probe derives its wrap from the width
+// the editor believes it set, so a silently shrinking textarea would also drift
+// the highlight off the selected cells.
+func TestThemeChangeDoesNotShrinkTheEditor(t *testing.T) {
+	ed := newTestEditor()
+	ed.selectionLayout = newSelectionLayout()
+	ed.SetSize(40, 3)
+
+	want := ed.textarea.Width()
+	wantOuter := ed.textareaOuterWidth
+
+	for i := range 5 {
+		ed.Update(dialog.ThemeChangedMsg{})
+		if got := ed.textarea.Width(); got != want {
+			t.Fatalf("after %d theme change(s) textarea width = %d, want %d", i+1, got, want)
+		}
+		if ed.textareaOuterWidth != wantOuter {
+			t.Fatalf("after %d theme change(s) the probe's width source = %d, want %d",
+				i+1, ed.textareaOuterWidth, wantOuter)
+		}
+	}
+}
+
+// TestThemeChangeKeepsTheSelection: CreateTextArea rebuilds the widget with
+// SetValue, which drops the cursor at the end of the buffer. The vim handler's
+// anchor survives that, so without restoring the cursor a theme change silently
+// collapses an active selection to a single character.
+func TestThemeChangeKeepsTheSelection(t *testing.T) {
+	ed := newTestEditor()
+	ed.selectionLayout = newSelectionLayout()
+	ed.vimHandler = vim.NewHandler()
+	ed.SetSize(40, 3)
+	ed.textarea.SetValue("aaaa bbbb cccc dddd")
+
+	ed.Update(tea.KeyPressMsg{Code: tea.KeyEscape}) // NORMAL
+	for range 30 {
+		ed.Update(tea.KeyPressMsg{Code: 'h', Text: "h"})
+	}
+	ed.Update(tea.KeyPressMsg{Code: 'v', Text: "v"})
+	for range 3 {
+		ed.Update(tea.KeyPressMsg{Code: 'l', Text: "l"})
+	}
+
+	from, to, _, active := ed.vimHandler.Selection(&ed.textarea)
+	if !active {
+		t.Fatal("no selection before the theme change")
+	}
+	want := ed.textarea.Value()[from:to]
+
+	ed.Update(dialog.ThemeChangedMsg{})
+
+	from, to, _, active = ed.vimHandler.Selection(&ed.textarea)
+	if !active {
+		t.Fatal("selection lost across the theme change")
+	}
+	if got := ed.textarea.Value()[from:to]; got != want {
+		t.Errorf("selection = %q after the theme change, want %q", got, want)
 	}
 }

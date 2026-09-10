@@ -171,7 +171,7 @@ func (h *Handler) resolveVisualPending(pending, input string, ta *textarea.Model
 			// `gu` / `gU` are the explicit case operators; plain u/U in visual
 			// mode mean the same thing, so both spellings work.
 			h.runVisualEdit(ta, text, cursor, func(from, to int, linewise bool, ctx *OperatorContext) {
-				ExecuteVisualCase(rune(input[0]), from, to, ctx)
+				ExecuteVisualCase(rune(input[0]), from, to, linewise, ctx)
 			})
 		default:
 			h.state.VisualCount = ""
@@ -213,7 +213,7 @@ func (h *Handler) applyVisualOperator(input string, ta *textarea.Model, text str
 		})
 	case "c", "s":
 		h.runVisualEdit(ta, text, cursor, func(from, to int, linewise bool, ctx *OperatorContext) {
-			ExecuteVisualOperator(OpChange, from, to, linewise, ctx)
+			ExecuteVisualChange(from, to, linewise, ctx)
 		})
 	case "y":
 		h.runVisualEdit(ta, text, cursor, func(from, to int, linewise bool, ctx *OperatorContext) {
@@ -221,7 +221,7 @@ func (h *Handler) applyVisualOperator(input string, ta *textarea.Model, text str
 		})
 	case "~", "u", "U":
 		h.runVisualEdit(ta, text, cursor, func(from, to int, linewise bool, ctx *OperatorContext) {
-			ExecuteVisualCase(rune(input[0]), from, to, ctx)
+			ExecuteVisualCase(rune(input[0]), from, to, linewise, ctx)
 		})
 	case ">", "<":
 		h.runVisualEdit(ta, text, cursor, func(from, to int, linewise bool, ctx *OperatorContext) {
@@ -233,7 +233,7 @@ func (h *Handler) applyVisualOperator(input string, ta *textarea.Model, text str
 		})
 	case "p", "P":
 		h.runVisualEdit(ta, text, cursor, func(from, to int, linewise bool, ctx *OperatorContext) {
-			ExecuteVisualPaste(from, to, ctx)
+			ExecuteVisualPaste(from, to, linewise, ctx)
 		})
 	default:
 		// Unbound key: swallow it (visual mode owns the keyboard) and drop any
@@ -270,8 +270,16 @@ func (h *Handler) runVisualEdit(ta *textarea.Model, text string, cursor int, edi
 		RecordChange: func(change RecordedChange) { h.persistent.LastChange = &change },
 	}
 
+	// Snapshot BEFORE the edit but only keep it if the edit changed something.
+	// A yank, a `J` on the last line, or a `p` with an empty register mutates
+	// nothing, and burning an undo entry on them means the user's next `u`
+	// silently does nothing instead of undoing their last real change.
+	undoDepth := len(h.undoStack)
 	h.pushUndo(text, ta.Line(), ta.Column())
 	edit(from, to, linewise, ctx)
+	if newText == text && len(h.undoStack) == undoDepth+1 {
+		h.undoStack = h.undoStack[:undoDepth]
+	}
 
 	// Remember the selection before leaving: `gv` after an edit should restore
 	// where the user was working.
@@ -352,13 +360,13 @@ func (h *Handler) replayVisualChange(change *RecordedChange, ta *textarea.Model)
 	case op == string(OpDelete), op == string(OpChange), op == string(OpYank):
 		ExecuteVisualOperator(change.Op, from, to, change.Linewise, ctx)
 	case strings.HasPrefix(op, "case-"):
-		ExecuteVisualCase(rune(op[len("case-")]), from, to, ctx)
+		ExecuteVisualCase(rune(op[len("case-")]), from, to, change.Linewise, ctx)
 	case strings.HasPrefix(op, "indent-"):
 		ExecuteVisualIndent(rune(op[len("indent-")]), from, to, ctx)
 	case op == "join":
 		ExecuteVisualJoin(from, to, ctx)
 	case op == "paste":
-		ExecuteVisualPaste(from, to, ctx)
+		ExecuteVisualPaste(from, to, change.Linewise, ctx)
 	default:
 		return
 	}

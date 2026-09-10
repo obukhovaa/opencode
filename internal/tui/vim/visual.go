@@ -55,6 +55,15 @@ func ExecuteVisualOperator(op Operator, from, to int, linewise bool, ctx *Operat
 	if from >= to {
 		return
 	}
+	// A linewise delete that runs to the end of the buffer has no trailing
+	// newline to remove, so it must take the PRECEDING one instead — otherwise
+	// deleting the last line leaves a blank one behind. ExecuteLineOp applies
+	// the same rule, so `dd` and visual `Vd` agree.
+	if linewise && op == OpDelete && to == len(ctx.Text) && from > 0 && ctx.Text[from-1] == '\n' {
+		applyOperator(op, from-1, to, ctx, linewise)
+		ctx.RecordChange(RecordedChange{Type: "visual", Op: op, Span: to - from, Linewise: linewise})
+		return
+	}
 	applyOperator(op, from, to, ctx, linewise)
 	ctx.RecordChange(RecordedChange{
 		Type:     "visual",
@@ -64,15 +73,60 @@ func ExecuteVisualOperator(op Operator, from, to int, linewise bool, ctx *Operat
 	})
 }
 
+// ExecuteVisualChange implements visual `c` / `s`.
+//
+// Charwise it is a delete followed by INSERT at the gap. Linewise it CLEARS the
+// selected lines rather than removing them — vim leaves one empty line with the
+// cursor on it, so typing replaces the block instead of being prepended to
+// whatever followed it.
+func ExecuteVisualChange(from, to int, linewise bool, ctx *OperatorContext) {
+	if from >= to {
+		return
+	}
+	if !linewise {
+		ExecuteVisualOperator(OpChange, from, to, linewise, ctx)
+		return
+	}
+
+	content := ctx.Text[from:to]
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	ctx.SetRegister(content, true)
+
+	// Keep the newline that terminates the block so the following line stays on
+	// its own line; the emptied line is what the cursor lands on.
+	tail := ctx.Text[to:]
+	newText := ctx.Text[:from] + tail
+	if strings.HasSuffix(ctx.Text[from:to], "\n") {
+		newText = ctx.Text[:from] + "\n" + tail
+	}
+	ctx.SetText(newText)
+	ctx.EnterInsert(from)
+	ctx.RecordChange(RecordedChange{Type: "visual", Op: OpChange, Span: to - from, Linewise: true})
+}
+
 // ExecuteVisualCase applies ~ / u / U to a selection. mode is 'u' to lowercase,
 // 'U' to uppercase, and '~' to toggle.
-func ExecuteVisualCase(mode rune, from, to int, ctx *OperatorContext) {
+func ExecuteVisualCase(mode rune, from, to int, linewise bool, ctx *OperatorContext) {
 	if from >= to {
 		return
 	}
 	var b strings.Builder
 	b.Grow(to - from)
-	for _, r := range ctx.Text[from:to] {
+	span := ctx.Text[from:to]
+	for i := 0; i < len(span); {
+		r, size := utf8.DecodeRuneInString(span[i:])
+		// A byte that is not the start of a valid rune must be copied through
+		// untouched. Decoding yields RuneError, and writing that back would
+		// emit U+FFFD — three bytes over a one-byte fragment, corrupting the
+		// text. A case operator must never change the bytes of a rune it
+		// cannot classify; ExecuteToggleCase guards this the same way.
+		if r == utf8.RuneError && size <= 1 {
+			b.WriteByte(span[i])
+			i += size
+			continue
+		}
 		switch mode {
 		case 'u':
 			b.WriteRune(unicode.ToLower(r))
@@ -88,10 +142,11 @@ func ExecuteVisualCase(mode rune, from, to int, ctx *OperatorContext) {
 				b.WriteRune(r)
 			}
 		}
+		i += size
 	}
 	ctx.SetText(ctx.Text[:from] + b.String() + ctx.Text[to:])
 	ctx.SetOffset(from)
-	ctx.RecordChange(RecordedChange{Type: "visual", Op: Operator("case-" + string(mode)), Span: to - from})
+	ctx.RecordChange(RecordedChange{Type: "visual", Op: Operator("case-" + string(mode)), Span: to - from, Linewise: linewise})
 }
 
 // ExecuteVisualIndent applies > or < to every line the selection touches.
@@ -103,6 +158,10 @@ func ExecuteVisualIndent(dir rune, from, to int, ctx *OperatorContext) {
 	lines := strings.Split(text, "\n")
 	const indent = "  "
 	for i := firstLine; i <= lastLine && i < len(lines); i++ {
+		// vim leaves empty lines alone rather than filling them with indent.
+		if strings.TrimSpace(lines[i]) == "" {
+			continue
+		}
 		switch {
 		case dir == '>':
 			lines[i] = indent + lines[i]
@@ -111,7 +170,16 @@ func ExecuteVisualIndent(dir rune, from, to int, ctx *OperatorContext) {
 		case strings.HasPrefix(lines[i], "\t"):
 			lines[i] = lines[i][1:]
 		default:
-			lines[i] = strings.TrimLeft(lines[i], " ")
+			// At most one indent unit, matching NORMAL's `<<`. TrimLeft would
+			// remove ALL leading whitespace, so visual `<` and `<<` disagreed
+			// on the same line.
+			removed := 0
+			idx := 0
+			for idx < len(lines[i]) && removed < len(indent) && isWhitespace(rune(lines[i][idx])) {
+				removed++
+				idx++
+			}
+			lines[i] = lines[i][idx:]
 		}
 	}
 
@@ -146,7 +214,9 @@ func ExecuteVisualJoin(from, to int, ctx *OperatorContext) {
 	joined := lines[firstLine]
 	for i := firstLine + 1; i <= lastLine; i++ {
 		next := strings.TrimLeft(lines[i], " \t")
-		if joined != "" && next != "" {
+		// Do not double a space the line already ends with — the same guard
+		// NORMAL's J applies.
+		if joined != "" && next != "" && !strings.HasSuffix(joined, " ") {
 			joined += " "
 		}
 		joined += next
@@ -165,7 +235,7 @@ func ExecuteVisualJoin(from, to int, ctx *OperatorContext) {
 // ExecuteVisualPaste replaces the selection with the register's contents. The
 // selection's own text becomes the new register content, which is vim's
 // behavior and is what makes a visual paste swappable.
-func ExecuteVisualPaste(from, to int, ctx *OperatorContext) {
+func ExecuteVisualPaste(from, to int, selLinewise bool, ctx *OperatorContext) {
 	if from >= to {
 		return
 	}
@@ -177,13 +247,24 @@ func ExecuteVisualPaste(from, to int, ctx *OperatorContext) {
 		// text the user cannot get back from an empty register.
 		return
 	}
-	if linewise && !strings.HasPrefix(content, "\n") {
-		content = "\n" + strings.TrimSuffix(content, "\n")
+	// A linewise register replaces whole lines: the selection already includes
+	// its trailing newline when it is linewise, and when it is not the register
+	// still has to land on lines of its own.
+	replacedLinewise := selLinewise
+	if linewise {
+		if !strings.HasSuffix(content, "\n") {
+			content += "\n"
+		}
+		if !selLinewise {
+			content = "\n" + content
+		}
 	}
 
 	newText := ctx.Text[:from] + content + ctx.Text[to:]
 	ctx.SetText(newText)
-	ctx.SetRegister(replaced, false)
+	// The swapped-out text keeps the shape it had, so a later `p` pastes it back
+	// the way it came out.
+	ctx.SetRegister(replaced, replacedLinewise)
 	ctx.SetOffset(min(from+len(content)-1, max(0, len(newText)-1)))
 	ctx.RecordChange(RecordedChange{Type: "visual", Op: Operator("paste"), Span: to - from})
 }
