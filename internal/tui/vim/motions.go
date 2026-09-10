@@ -3,6 +3,7 @@ package vim
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // ResolveMotion resolves a motion key to a new cursor offset.
@@ -97,7 +98,7 @@ func moveDown(text string, offset int) int {
 		return offset
 	}
 	nextLine := line + 1
-	nextLineLen := len(lines[nextLine])
+	nextLineLen := utf8.RuneCountInString(lines[nextLine])
 	targetCol := min(col, max(0, nextLineLen-1))
 	if nextLineLen == 0 {
 		targetCol = 0
@@ -113,7 +114,7 @@ func moveUp(text string, offset int) int {
 	}
 	lines := strings.Split(text, "\n")
 	prevLine := line - 1
-	prevLineLen := len(lines[prevLine])
+	prevLineLen := utf8.RuneCountInString(lines[prevLine])
 	targetCol := min(col, max(0, prevLineLen-1))
 	if prevLineLen == 0 {
 		targetCol = 0
@@ -371,6 +372,14 @@ func findCharacter(text string, offset int, char string, findType FindType, coun
 }
 
 // offsetToLineCol converts a byte offset to (line, col) (both 0-indexed).
+// offsetToLineCol converts a byte offset to a (line, column) pair.
+//
+// The column counts RUNES, not bytes, because the only consumers of a column
+// here are the textarea's cursor accessors and they index runes: bubbles stores
+// a line as []rune, so Column() returns a rune index and SetCursorColumn clamps
+// against a rune count. Returning a byte column made every non-ASCII draft
+// misbehave — the cursor landed elsewhere than it was drawn, and a visual
+// operator then acted on the wrong bytes, splitting characters.
 func offsetToLineCol(text string, offset int) (int, int) {
 	if offset <= 0 || len(text) == 0 {
 		return 0, 0
@@ -378,15 +387,18 @@ func offsetToLineCol(text string, offset int) (int, int) {
 	offset = min(offset, len(text))
 	before := text[:offset]
 	line := strings.Count(before, "\n")
-	lastNL := strings.LastIndex(before, "\n")
-	col := offset
-	if lastNL >= 0 {
-		col = offset - lastNL - 1
+	if lastNL := strings.LastIndex(before, "\n"); lastNL >= 0 {
+		before = before[lastNL+1:]
 	}
-	return line, col
+	return line, utf8.RuneCountInString(before)
 }
 
-// lineColToOffset converts (line, col) to a byte offset.
+// lineColToOffset converts a (line, rune column) pair to a byte offset. The
+// column is measured in runes — see offsetToLineCol for why.
+//
+// A column past the end of its line clamps to the line's end rather than
+// spilling into the next one; every caller either takes the column straight
+// from the textarea (which cannot exceed its line) or clamps it first.
 func lineColToOffset(text string, line, col int) int {
 	offset := 0
 	for i := 0; i < line; i++ {
@@ -396,7 +408,20 @@ func lineColToOffset(text string, line, col int) int {
 		}
 		offset += idx + 1
 	}
-	return min(offset+col, len(text))
+
+	rest := text[offset:]
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[:nl]
+	}
+	for range col {
+		if rest == "" {
+			break
+		}
+		_, size := utf8.DecodeRuneInString(rest)
+		rest = rest[size:]
+		offset += size
+	}
+	return min(offset, len(text))
 }
 
 // getLineStartOffset calculates the byte offset of the start of a given line.

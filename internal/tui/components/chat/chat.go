@@ -56,10 +56,27 @@ type ShellResultMsg struct {
 	Stderr   string
 	ExitCode int
 	Err      error
+	// Interactive marks a run that owned the terminal. Its output went to the
+	// terminal rather than being captured, so Stdout/Stderr are empty and the
+	// chat records the exit status plus where the output went.
+	Interactive bool
+	// Cancelled marks a run the user stopped with esc or ctrl+c.
+	Cancelled bool
+	// Hint carries an actionable note appended to the chat output — currently
+	// the "this needs a terminal, re-run with !!" nudge.
+	Hint string
 }
 
 type ShellModeChangedMsg struct {
 	ShellMode bool
+}
+
+// ShellExecutingMsg announces that a shell command started running. The
+// matching "stopped" edge is ShellResultMsg. Key routing above the editor needs
+// the running state, and a session switch can clear shell mode while a command
+// is still in flight — so the two states are tracked separately.
+type ShellExecutingMsg struct {
+	Executing bool
 }
 
 type ScrollStateMsg struct {

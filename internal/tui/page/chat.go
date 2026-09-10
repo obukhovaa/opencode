@@ -25,6 +25,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
 	"github.com/opencode-ai/opencode/internal/tui/util"
+	"github.com/opencode-ai/opencode/internal/tui/vim"
 )
 
 var ChatPage PageID = "chat"
@@ -47,6 +48,7 @@ type chatPage struct {
 	showCommandCompletionDialog bool
 	commands                    []dialog.Command
 	shellMode                   bool
+	shellRunning                bool
 	vimMode                     string // "" when disabled, "INSERT" or "NORMAL" when active
 	lastBlurAt                  time.Time
 }
@@ -169,10 +171,14 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chat.ShellModeChangedMsg:
 		p.shellMode = msg.ShellMode
 		return p, nil
+	case chat.ShellExecutingMsg:
+		p.shellRunning = msg.Executing
+		return p, nil
 	case chat.VimModeChangedMsg:
 		p.vimMode = msg.Mode
 		return p, nil
 	case chat.ShellResultMsg:
+		p.shellRunning = false
 		cmds = append(cmds, p.handleShellResult(msg))
 	case app.DrainEvent:
 		// Drain-worker notification: update queue affordance and surface errors.
@@ -250,12 +256,18 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if p.shellMode {
 				break
 			}
+			// A running command outlives shell mode across a session switch;
+			// ESC must still reach the editor to cancel it.
+			if p.shellRunning {
+				break
+			}
 			// When a completion dialog is open, close it first (dialog takes priority over vim)
 			if p.showCompletionDialog || p.showCommandCompletionDialog {
 				break // let ESC flow to dialog routing below
 			}
-			// In vim INSERT mode, ESC switches to NORMAL (handled by editor)
-			if p.vimMode == "INSERT" {
+			// In vim INSERT or a visual mode, ESC is the editor's: it leaves
+			// INSERT, or ends a selection. It must not cancel the agent.
+			if p.vimConsumesEscape() {
 				break
 			}
 			// In vim NORMAL mode or no vim: cancel running request if agent is busy.
@@ -388,11 +400,36 @@ func (p *chatPage) handleShellResult(msg chat.ShellResultMsg) tea.Cmd {
 		return util.ReportError(err)
 	}
 
-	// Build output text
+	// Create output message
+	outputText := shellResultOutput(msg)
+	_, err = p.app.Messages.Create(ctx, p.session.ID, message.CreateMessageParams{
+		Role:  message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: outputText}},
+	})
+	if err != nil {
+		return util.ReportError(err)
+	}
+
+	return tea.Batch(cmds...)
+}
+
+// shellResultOutput renders a shell run for the chat log. It is a pure function
+// of the result so the four shapes a run can take — errored, cancelled,
+// interactive, captured — are testable without a message store.
+func shellResultOutput(msg chat.ShellResultMsg) string {
 	var output string
-	if msg.Err != nil {
+	switch {
+	case msg.Err != nil:
 		output = fmt.Sprintf("[error: %s]", msg.Err.Error())
-	} else {
+	case msg.Cancelled:
+		output = "[cancelled]"
+	case msg.Interactive:
+		// Nothing was captured: the command owned the terminal, so its output is
+		// in the terminal's scrollback above the TUI, not here. Say that plainly
+		// rather than writing an empty code block the user would read as "the
+		// command produced nothing".
+		output = fmt.Sprintf("[ran interactively — exit code: %d; output was written to your terminal]", msg.ExitCode)
+	default:
 		stdout := msg.Stdout
 		stderr := msg.Stderr
 
@@ -424,17 +461,11 @@ func (p *chatPage) handleShellResult(msg chat.ShellResultMsg) tea.Cmd {
 		}
 	}
 
-	// Create output message
-	outputText := fmt.Sprintf("```\n%s\n```", output)
-	_, err = p.app.Messages.Create(ctx, p.session.ID, message.CreateMessageParams{
-		Role:  message.User,
-		Parts: []message.ContentPart{message.TextContent{Text: outputText}},
-	})
-	if err != nil {
-		return util.ReportError(err)
+	rendered := fmt.Sprintf("```\n%s\n```", output)
+	if msg.Hint != "" {
+		rendered += "\n\n" + msg.Hint
 	}
-
-	return tea.Batch(cmds...)
+	return rendered
 }
 
 func (p *chatPage) sendMessage(text string, attachments []message.Attachment) tea.Cmd {
@@ -517,9 +548,30 @@ func (p *chatPage) IsShellMode() bool {
 	return p.shellMode
 }
 
+// IsShellRunning reports whether a shell command is in flight in the editor.
+// The app-level ctrl+c handler consults it separately from IsShellMode: a
+// session switch exits shell mode without ending the run, and in that window
+// ctrl+c must still reach the editor to cancel rather than raise the quit
+// dialog.
+func (p *chatPage) IsShellRunning() bool {
+	return p.shellRunning
+}
+
 func (p *chatPage) ConsumesCtrlC() bool {
-	// Vim INSERT mode should consume Ctrl+C to switch to NORMAL
-	return p.vimMode == "INSERT"
+	// Ctrl+C belongs to the editor wherever ESC does: INSERT (switch to NORMAL)
+	// and the visual modes (end the selection).
+	return p.vimConsumesEscape()
+}
+
+// vimConsumesEscape reports whether the editor's vim mode owns esc / ctrl+c.
+//
+// The mode is compared through the vim package's own type rather than against
+// string literals: the visual modes were added after this routing was written,
+// and a bare `== "INSERT"` check silently sent them down the branch meant for
+// NORMAL — cancelling the agent instead of ending the selection.
+func (p *chatPage) vimConsumesEscape() bool {
+	mode := vim.VimMode(p.vimMode)
+	return mode == vim.ModeInsert || mode.IsVisual()
 }
 
 // CancelActiveAgent cancels the running agent request if one exists.

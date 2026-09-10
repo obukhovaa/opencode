@@ -4,9 +4,18 @@ package vim
 type VimMode string
 
 const (
-	ModeInsert VimMode = "INSERT"
-	ModeNormal VimMode = "NORMAL"
+	ModeInsert     VimMode = "INSERT"
+	ModeNormal     VimMode = "NORMAL"
+	ModeVisual     VimMode = "VISUAL"
+	ModeVisualLine VimMode = "V-LINE"
 )
+
+// IsVisual reports whether m is one of the selection modes. Call sites that
+// branch on mode use this rather than comparing against a literal, so a mode
+// added later cannot silently fall into the branch meant for NORMAL.
+func (m VimMode) IsVisual() bool {
+	return m == ModeVisual || m == ModeVisualLine
+}
 
 // Operator represents a vim operator (d, c, y).
 type Operator string
@@ -40,6 +49,14 @@ type VimState struct {
 	Mode         VimMode
 	InsertedText string       // tracked in INSERT mode for dot-repeat
 	Command      CommandState // active in NORMAL mode
+	// Anchor is the fixed end of the selection in a visual mode, as a byte
+	// offset into the text. The moving end is the textarea's cursor, so the
+	// selection needs no second copy of a position the widget already owns.
+	Anchor int
+	// VisualCount accumulates a count typed inside a visual mode (the `3` of
+	// `v3l`). Visual mode has no operator-pending sub-states, so a single field
+	// replaces the CommandState machine NORMAL needs.
+	VisualCount string
 }
 
 // CommandState represents the NORMAL mode sub-state machine.
@@ -102,10 +119,18 @@ type FindRecord struct {
 	Char string
 }
 
+// VisualRecord remembers a selection so `gv` can restore it.
+type VisualRecord struct {
+	Mode   VimMode
+	Anchor int
+	Cursor int
+}
+
 // PersistentState survives across commands.
 type PersistentState struct {
 	LastChange *RecordedChange
 	LastFind   *FindRecord
+	LastVisual *VisualRecord
 	Register   string
 	Linewise   bool
 }
@@ -113,7 +138,7 @@ type PersistentState struct {
 // RecordedChange captures a change for dot-repeat.
 // Go lacks discriminated unions, so we use a type tag + fields.
 type RecordedChange struct {
-	Type      string // "insert", "operator", "operatorTextObj", "operatorFind", "replace", "x", "toggleCase", "indent", "openLine", "join"
+	Type      string // "insert", "operator", "operatorTextObj", "operatorFind", "replace", "x", "toggleCase", "indent", "openLine", "join", "visual"
 	Text      string // for insert
 	Op        Operator
 	Motion    string
@@ -124,6 +149,11 @@ type RecordedChange struct {
 	Char      string
 	Dir       rune   // for indent
 	Direction string // for openLine: "above" or "below"
+	// Span is the byte length of a visual-mode selection. Vim repeats a visual
+	// operator over the same-sized region at the new cursor, not over the
+	// original coordinates, so the size is what has to be recorded.
+	Span     int
+	Linewise bool // for visual: whether the recorded operation was linewise
 }
 
 // Key group helpers
