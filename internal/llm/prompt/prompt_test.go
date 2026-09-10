@@ -34,7 +34,7 @@ func (r *mockRegistry) EvaluatePermission(agentID, toolName, input string) permi
 	if !ok {
 		return permission.ActionAsk
 	}
-	if !permission.IsToolEnabled(toolName, a.Tools) {
+	if !a.ToolEnabled(toolName) {
 		return permission.ActionDeny
 	}
 	return permission.EvaluateToolPermission(toolName, input, a.Permission, r.globalPerms)
@@ -45,7 +45,7 @@ func (r *mockRegistry) EvaluateReadPermission(agentID, toolName, input string) p
 	if !ok {
 		return permission.ActionAllow
 	}
-	if !permission.IsToolEnabled(toolName, a.Tools) {
+	if !a.ToolEnabled(toolName) {
 		return permission.ActionDeny
 	}
 	return permission.EvaluateReadToolPermission(toolName, input, a.Permission, r.globalPerms)
@@ -59,12 +59,15 @@ func (r *mockRegistry) ReadDenyPatterns(agentID, toolName string) []string {
 	return permission.ReadDenyPatterns(toolName, a.Permission, r.globalPerms)
 }
 
+// The predicate methods delegate to the same AgentInfo helpers the production
+// registry uses. Re-implementing them here (as this mock once did) makes every
+// test that exercises tool gating pass regardless of the production logic.
 func (r *mockRegistry) IsToolEnabled(agentID, toolName string) bool {
 	a, ok := r.agents[agentID]
 	if !ok {
 		return true
 	}
-	return permission.IsToolEnabled(toolName, a.Tools)
+	return a.ToolEnabled(toolName)
 }
 
 func (r *mockRegistry) IsToolExplicitlyEnabled(agentID, toolName string) bool {
@@ -72,13 +75,16 @@ func (r *mockRegistry) IsToolExplicitlyEnabled(agentID, toolName string) bool {
 	if !ok {
 		return false
 	}
-	if enabled, ok := a.Tools[toolName]; ok {
-		return enabled
-	}
-	return false
+	return a.ToolExplicitlyEnabled(toolName)
 }
 
-func (r *mockRegistry) HasTools(agentID string) bool { return true }
+func (r *mockRegistry) HasTools(agentID string) bool {
+	a, ok := r.agents[agentID]
+	if !ok {
+		return true
+	}
+	return a.HasToolAccess()
+}
 
 func (r *mockRegistry) GlobalPermissions() map[string]any { return r.globalPerms }
 

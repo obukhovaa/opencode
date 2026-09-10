@@ -62,11 +62,11 @@ type AgentInfo struct {
 	// tool added to the harness later is not silently granted. Declaring
 	// both keys in one source is an error (config.ValidateAgentToolsSource);
 	// across sources the later one wins and drops the other, loudly.
-	AllowTools                 []string        `yaml:"allowTools,omitempty"`
-	DeferredTools              map[string]bool `yaml:"deferredTools,omitempty"`
-	Output                     *Output         `yaml:"output,omitempty"`
-	Location                   string          `yaml:"-"`
-	ParallelToolUse            *bool           `yaml:"parallelToolUse,omitempty"`
+	AllowTools      []string        `yaml:"allowTools,omitempty"`
+	DeferredTools   map[string]bool `yaml:"deferredTools,omitempty"`
+	Output          *Output         `yaml:"output,omitempty"`
+	Location        string          `yaml:"-"`
+	ParallelToolUse *bool           `yaml:"parallelToolUse,omitempty"`
 	// Interactive is set in-memory by AgentFactory.NewAgent when the
 	// agent is being constructed for a flow step with `interactive: true`.
 	// NOT persisted via YAML — agent-level interactiveness is derived
