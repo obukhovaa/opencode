@@ -179,6 +179,40 @@ func TestSubstituteScoped_BareArgsStillJSON(t *testing.T) {
 	}
 }
 
+func TestSubstituteScoped_ArrayOfObjectsRendersAsJSON(t *testing.T) {
+	// A composite value merged into args from a step's struct output
+	// (e.g. cancel-survey-audit's cited_figures) must render as JSON,
+	// not fmt's `[map[k:v] ...]` Go notation (CD-4975).
+	args := map[string]any{
+		"cited_figures": []any{
+			map[string]any{"claim": "Total cancel events", "value": float64(1882), "unit": "count"},
+			map[string]any{"claim": "Client overall save rate", "value": float64(29), "unit": "percent"},
+		},
+	}
+	got := substituteScoped("figures: ${args.cited_figures}", args, nil)
+	want := `figures: [{"claim":"Total cancel events","unit":"count","value":1882},` +
+		`{"claim":"Client overall save rate","unit":"percent","value":29}]`
+	if got != want {
+		t.Errorf("substituteScoped() = %q, want %q", got, want)
+	}
+	if containsSubstring(got, "map[") {
+		t.Errorf("substituteScoped() leaked Go map notation: %q", got)
+	}
+}
+
+func TestSubstituteScoped_ObjectValueRendersAsJSON(t *testing.T) {
+	// Same for a nested object resolved as a whole (not via a dot-path
+	// into a scalar leaf).
+	args := map[string]any{
+		"reviewer": map[string]any{"email": "u@x.com", "name": "U"},
+	}
+	got := substituteScoped("${args.reviewer}", args, nil)
+	want := `{"email":"u@x.com","name":"U"}`
+	if got != want {
+		t.Errorf("substituteScoped() = %q, want %q", got, want)
+	}
+}
+
 func TestSubstituteArgs(t *testing.T) {
 	tests := []struct {
 		name     string

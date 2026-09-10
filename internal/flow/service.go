@@ -1947,8 +1947,27 @@ func substituteScoped(template string, args map[string]any, stepVars map[string]
 			// behaviour and lets resolveSessionPrefix detect misses.
 			return match
 		}
-		return fmt.Sprintf("%v", value)
+		return renderTemplateValue(value)
 	})
+}
+
+// renderTemplateValue converts a resolved placeholder value to its prompt
+// representation. Scalars keep their plain string form (a string
+// substitutes verbatim, so `"${args.aid}"` in a prompt stays valid).
+// Composite values — a struct-output array/object merged into args, e.g.
+// cited_figures — render as compact JSON: fmt's `[map[k:v] ...]` notation
+// is lossy (unquoted, ambiguous around spaces) and models mis-read it
+// (CD-4975). Only the JSON-shaped types are matched because every args
+// value passes through json.Unmarshal (flow-state rows, struct output,
+// the /flow/run body), so composites are always map[string]any / []any.
+func renderTemplateValue(value any) string {
+	switch value.(type) {
+	case map[string]any, []any:
+		if b, err := json.Marshal(value); err == nil {
+			return string(b)
+		}
+	}
+	return fmt.Sprintf("%v", value)
 }
 
 // resolveArgsPath resolves a dot-path against args. Top-level exact-key
