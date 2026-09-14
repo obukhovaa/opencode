@@ -121,8 +121,8 @@ func TestRunProgress_FailureLineAndFallback(t *testing.T) {
 	if !strings.HasSuffix(f.text, "\n"+wantLine) {
 		t.Errorf("card text = %q; want second line %q", f.text, wantLine)
 	}
-	if f.failureText != wantLine {
-		t.Errorf("failureText = %q; want %q (first flush after a failure carries it)", f.failureText, wantLine)
+	if len(f.failureTexts) != 1 || f.failureTexts[0] != wantLine {
+		t.Errorf("failureTexts = %q; want exactly [%q] (first flush after a failure carries it)", f.failureTexts, wantLine)
 	}
 
 	// The next flush still shows the failure on the card but does not
@@ -132,8 +132,46 @@ func TestRunProgress_FailureLineAndFallback(t *testing.T) {
 	if !strings.Contains(f2.text, wantLine) {
 		t.Errorf("second flush lost the failure line: %q", f2.text)
 	}
-	if f2.failureText != "" {
-		t.Errorf("failureText on second flush = %q; want empty", f2.failureText)
+	if len(f2.failureTexts) != 0 {
+		t.Errorf("failureTexts on second flush = %q; want empty", f2.failureTexts)
+	}
+}
+
+// TestRunProgress_AllFailuresInOneIntervalSurface: two calls failing between
+// two flushes collapse into ONE card edit (the card names only the most
+// recent reason, by spec) but BOTH lines must be handed to the flush, so a
+// text-only peer — the external relay, which cannot edit a message — still
+// sees every failure. Regression: a single lastFailure slot dropped the
+// first one silently.
+func TestRunProgress_AllFailuresInOneIntervalSurface(t *testing.T) {
+	t.Parallel()
+	p := fixedClock(5 * time.Second)
+	p.toolDone("toolu_1", "curl", "#aaa", true, "connection refused")
+	p.toolDone("toolu_2", "bash", "#bbb", true, "exit status 2")
+
+	f := p.snapshot()
+	want := []string{
+		"✗ curl#aaa · connection refused",
+		"✗ bash#bbb · exit status 2",
+	}
+	if len(f.failureTexts) != len(want) {
+		t.Fatalf("failureTexts = %q; want both failures %q", f.failureTexts, want)
+	}
+	for i, w := range want {
+		if f.failureTexts[i] != w {
+			t.Errorf("failureTexts[%d] = %q; want %q (oldest first)", i, f.failureTexts[i], w)
+		}
+	}
+	// The card itself still names only the most recent failure.
+	if !strings.HasSuffix(f.text, "\n"+want[1]) {
+		t.Errorf("card text = %q; want it to end with the most recent failure %q", f.text, want[1])
+	}
+	if strings.Contains(f.text, want[0]) {
+		t.Errorf("card text = %q; should not carry the superseded failure %q", f.text, want[0])
+	}
+	// Drained: a later flush re-sends nothing.
+	if f2 := p.snapshot(); len(f2.failureTexts) != 0 {
+		t.Errorf("failureTexts on second flush = %q; want empty", f2.failureTexts)
 	}
 }
 
@@ -490,5 +528,77 @@ func TestDispatch_ProgressCard_DisabledKeepsFailureLine(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if n := len(ed.Sends()); n != 1 {
 		t.Errorf("sends = %d; want 1 (successes stay silent)", n)
+	}
+}
+
+// TestDeliverProgress_FollowsPeerIDMutation: sendToOnePeer rewrites a
+// channel-form binding's peer_id to "<channel>|<thread>" on the first
+// outbound that resolves a thread — and the agent's own reply does that
+// before this run's terminal flush. The card's token must follow the
+// rewrite, or the terminal edit posts a SECOND message and strands the
+// "⏳ Thinking..." one. Reachable on every Mattermost binding and on any
+// non-DM Slack channel.
+func TestDeliverProgress_FollowsPeerIDMutation(t *testing.T) {
+	svc, ed, _ := newProgressTestSvc(t, &bridge.Config{ToolUpdatesEnabled: true})
+	d := newBareDispatch(svc, "S1")
+	ctx := context.Background()
+
+	// Re-point the editor binding at a bare channel (the pre-thread form
+	// a router-initiated Mattermost/Slack channel binding starts in).
+	if err := svc.store.UpdateBindingPeerID(ctx, "proj", "slack", "default", "D1", "C1"); err != nil {
+		t.Fatalf("UpdateBindingPeerID (setup): %v", err)
+	}
+
+	p := newRunProgress()
+	d.deliverProgress(ctx, p, progressFlush{text: "⏳ Thinking..."})
+	if got := ed.Posts(); len(got) != 1 {
+		t.Fatalf("posts after first flush = %v; want exactly one", got)
+	}
+
+	// The agent's reply resolves the thread; the binding is rewritten.
+	if err := svc.store.UpdateBindingPeerID(ctx, "proj", "slack", "default", "C1", "C1|1700000000.5"); err != nil {
+		t.Fatalf("UpdateBindingPeerID (mutation): %v", err)
+	}
+
+	want := "✓ Done · 1 tool call · 2s"
+	d.deliverProgress(ctx, p, progressFlush{text: want, final: true})
+
+	if got := ed.Posts(); len(got) != 1 {
+		t.Errorf("posts = %v; want still exactly one — the card was re-posted after the peer_id gained its thread suffix", got)
+	}
+	edits := ed.Edits()
+	if len(edits) != 1 || edits[0] != want {
+		t.Errorf("edits = %v; want exactly [%q] (terminal edit applied to the original card)", edits, want)
+	}
+}
+
+// TestDeliverProgress_SkipsIdenticalEdit: a flush whose text matches what
+// the card already shows must not issue an edit. formatElapsed drops to
+// minute granularity past 1h, so a wake that changes no counter renders
+// byte-identical text; Telegram answers that with 400 "message is not
+// modified", and deliverProgress treats any edit error as a stale token
+// and posts a duplicate card.
+func TestDeliverProgress_SkipsIdenticalEdit(t *testing.T) {
+	svc, ed, _ := newProgressTestSvc(t, &bridge.Config{ToolUpdatesEnabled: true})
+	d := newBareDispatch(svc, "S1")
+	ctx := context.Background()
+
+	same := "⏳ 42 tool calls done · running bash · 1h05m"
+	p := newRunProgress()
+	d.deliverProgress(ctx, p, progressFlush{text: same})
+	d.deliverProgress(ctx, p, progressFlush{text: same})
+
+	if got := ed.Posts(); len(got) != 1 {
+		t.Errorf("posts = %v; want exactly one", got)
+	}
+	if got := ed.Edits(); len(got) != 0 {
+		t.Errorf("edits = %v; want none — the text did not change", got)
+	}
+
+	// A real change still edits.
+	changed := "⏳ 43 tool calls done · 1h05m"
+	d.deliverProgress(ctx, p, progressFlush{text: changed})
+	if got := ed.Edits(); len(got) != 1 || got[0] != changed {
+		t.Errorf("edits after a real change = %v; want [%q]", got, changed)
 	}
 }

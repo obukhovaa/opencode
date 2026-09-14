@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,25 +53,42 @@ type runProgress struct {
 	interval  time.Duration
 	now       func() time.Time
 
-	mu            sync.Mutex
-	toolsDone     int
-	failed        int
-	lastFailure   string
-	failureUnsent bool
-	inflight      map[string]string // raw tool-call ID → tool name
-	inflightOrder []string          // insertion order, for "most recently started"
-	final         string            // "" while running, else progressStatusOK / progressStatusError
-	finished      bool              // final snapshot taken; later updates are ignored
+	mu          sync.Mutex
+	toolsDone   int
+	failed      int
+	lastFailure string
+	// pendingFailures holds every failure line not yet handed to a
+	// flush. It is a QUEUE, not a single slot: two calls failing inside
+	// one pacing interval collapse into one card edit (the card shows
+	// only the most recent reason, by spec), but a text-only peer must
+	// still receive BOTH lines — that is the "failures always surface"
+	// invariant, and before the card existed each failure was its own
+	// message. Drained by snapshot, one line per failure.
+	pendingFailures []string
+	inflight        map[string]string // raw tool-call ID → tool name
+	inflightOrder   []string          // insertion order, for "most recently started"
+	final           string            // "" while running, else progressStatusOK / progressStatusError
+	finished        bool              // final snapshot taken; later updates are ignored
 
-	// tokens maps a bound peer (peerKey) to the message the card lives
-	// in on that platform. Written and read by the worker only.
-	tokens map[string]bridge.EditableMessageToken
+	// tokens maps a bound peer (progressPeerKey) to the message the card
+	// lives in on that platform, plus the text last written to it.
+	// Written and read by the worker only.
+	tokens map[string]progressPeerCard
 
 	// wake has capacity one so a burst of completions coalesces into a
 	// single pending flush. done is closed when the worker exits, after
 	// the terminal flush or on ctx cancellation.
 	wake chan struct{}
 	done chan struct{}
+
+	// finalCh is closed by the first finish() call. The worker selects
+	// on it during the pacing sleep so the TERMINAL flush does not wait
+	// out a full interval: progressFinish blocks the session's inbound
+	// dispatch loop until the card closes, and a run that ends while
+	// the worker is mid-sleep would otherwise add up to one interval of
+	// latency to every turn. Pacing still applies to running updates —
+	// only the one terminal edit skips the wait.
+	finalCh chan struct{}
 }
 
 func newRunProgress() *runProgress {
@@ -79,9 +97,10 @@ func newRunProgress() *runProgress {
 		interval:  progressMinInterval,
 		now:       time.Now,
 		inflight:  map[string]string{},
-		tokens:    map[string]bridge.EditableMessageToken{},
+		tokens:    map[string]progressPeerCard{},
 		wake:      make(chan struct{}, 1),
 		done:      make(chan struct{}),
+		finalCh:   make(chan struct{}),
 	}
 }
 
@@ -137,7 +156,7 @@ func (p *runProgress) toolDone(callID, name, pairing string, isError bool, reaso
 		if reason != "" {
 			p.lastFailure += " · " + reason
 		}
-		p.failureUnsent = true
+		p.pendingFailures = append(p.pendingFailures, p.lastFailure)
 	}
 	p.signal()
 }
@@ -146,11 +165,29 @@ func (p *runProgress) toolDone(callID, name, pairing string, isError bool, reaso
 // progressStatusError. The worker's next flush is the terminal one.
 func (p *runProgress) finish(status string) {
 	p.mu.Lock()
-	if p.final == "" {
+	first := p.final == ""
+	if first {
 		p.final = status
 	}
 	p.mu.Unlock()
+	if first {
+		// Closed once, under the same first-caller guard that sets
+		// p.final, so a repeated finish cannot close a closed channel.
+		close(p.finalCh)
+	}
 	p.signal()
+}
+
+// progressPeerCard is the card's message on one peer's platform, plus
+// the text it currently displays. lastText exists so an edit that would
+// not change anything is skipped: Telegram answers editMessageText with
+// 400 "message is not modified" for a no-op edit, and deliverProgress
+// treats any edit error as a stale token and posts the card fresh —
+// turning a harmless no-op into a duplicate card. The same guard the
+// queued-ack path already applies via its lastPosition check.
+type progressPeerCard struct {
+	token    bridge.EditableMessageToken
+	lastText string
 }
 
 // progressFlush is one rendered state of the card, ready to send.
@@ -158,12 +195,15 @@ type progressFlush struct {
 	// text is the whole card: the header line and, when a call has
 	// failed, the most recent failure on a second line.
 	text string
-	// failureText is set exactly when this flush carries a failure no
-	// earlier flush has delivered. Peers whose adapter cannot edit a
-	// message get nothing else from the card, but they do get this one
-	// line — the invariant that failures always surface.
-	failureText string
-	final       bool
+	// failureTexts carries every failure no earlier flush has delivered,
+	// oldest first. Peers whose adapter cannot edit a message get
+	// nothing else from the card, but they do get these lines — the
+	// invariant that failures always surface. It is a slice because two
+	// failures can land inside one pacing interval and both must reach
+	// a text-only peer, even though the card itself only names the most
+	// recent one.
+	failureTexts []string
+	final        bool
 }
 
 // snapshot renders the current state and marks it consumed: a carried
@@ -178,9 +218,9 @@ func (p *runProgress) snapshot() progressFlush {
 	if p.lastFailure != "" {
 		f.text += "\n" + p.lastFailure
 	}
-	if p.failureUnsent {
-		f.failureText = p.lastFailure
-		p.failureUnsent = false
+	if len(p.pendingFailures) > 0 {
+		f.failureTexts = p.pendingFailures
+		p.pendingFailures = nil
 	}
 	return f
 }
@@ -257,6 +297,11 @@ func (p *runProgress) run(ctx context.Context, deliver func(progressFlush)) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-p.finalCh:
+			// The run ended during the pacing sleep. Loop straight back
+			// so the terminal flush goes out now rather than after the
+			// remaining interval; finish() also signalled wake, so the
+			// next select returns immediately.
 		case <-time.After(p.interval):
 		}
 	}
@@ -322,8 +367,8 @@ func (d *sessionDispatch) deliverProgress(ctx context.Context, p *runProgress, f
 		}
 		editor, ok := adapter.(bridge.MessageEditor)
 		if !ok {
-			if f.failureText != "" {
-				if _, err := d.svc.Send(ctx, peer, f.failureText, "", nil); err != nil {
+			for _, line := range f.failureTexts {
+				if _, err := d.svc.Send(ctx, peer, line, "", nil); err != nil {
 					logging.Warn("bridge: progress card: failure line send failed",
 						"session", d.sessionID, "peer", b.PeerID, "err", err)
 				}
@@ -331,8 +376,32 @@ func (d *sessionDispatch) deliverProgress(ctx context.Context, p *runProgress, f
 			continue
 		}
 		key := progressPeerKey(b)
-		if tok, ok := p.tokens[key]; ok {
-			if err := editor.EditMessage(ctx, peer, tok, f.text); err == nil {
+		card, ok := p.tokens[key]
+		if !ok {
+			// The binding's peer_id may have gained its thread suffix
+			// since the card was posted: sendToOnePeer rewrites a
+			// channel-form peer to "<channel>|<thread>" on the first
+			// outbound that resolves one (Slack thread ts, Mattermost
+			// root post), and the agent's own reply does exactly that
+			// before this run's terminal flush. Re-find the card under
+			// the stable channel part and migrate it, or the terminal
+			// edit posts a second card and strands the first.
+			if base := progressPeerBaseKey(b); base != key {
+				if card, ok = p.tokens[base]; ok {
+					delete(p.tokens, base)
+					p.tokens[key] = card
+				}
+			}
+		}
+		if ok {
+			if card.lastText == f.text {
+				// Nothing changed; editing would be a no-op at best and
+				// a Telegram 400 at worst.
+				continue
+			}
+			if err := editor.EditMessage(ctx, peer, card.token, f.text); err == nil {
+				card.lastText = f.text
+				p.tokens[key] = card
 				continue
 			} else {
 				logging.Warn("bridge: progress card edit failed, posting fresh",
@@ -345,10 +414,22 @@ func (d *sessionDispatch) deliverProgress(ctx context.Context, p *runProgress, f
 				"session", d.sessionID, "peer", b.PeerID, "err", err)
 			continue
 		}
-		p.tokens[key] = tok
+		p.tokens[key] = progressPeerCard{token: tok, lastText: f.text}
 	}
 }
 
 func progressPeerKey(b store.Binding) string {
 	return b.Channel + ":" + b.IdentityID + ":" + b.PeerID
+}
+
+// progressPeerBaseKey is progressPeerKey with any thread/root-post
+// suffix dropped. Slack and Mattermost peer IDs are "<channel>|<thread>"
+// once resolved and a bare channel before that; Telegram peer IDs carry
+// no suffix, so this is identity there.
+func progressPeerBaseKey(b store.Binding) string {
+	peerID := b.PeerID
+	if i := strings.IndexByte(peerID, '|'); i >= 0 {
+		peerID = peerID[:i]
+	}
+	return b.Channel + ":" + b.IdentityID + ":" + peerID
 }

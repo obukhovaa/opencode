@@ -1028,8 +1028,8 @@ func generateSchema() map[string]any {
 			},
 			"toolUpdateVerbosity": map[string]any{
 				"type":        "string",
-				"description": "Detail level when toolUpdatesEnabled is true: 'compact' (default) emits one line per call with glyph, name, and elapsed time; 'full' adds argument and result detail.",
-				"enum":        []string{"compact", "full"},
+				"description": "How tool activity reaches chat when toolUpdatesEnabled is true: 'compact' (default) posts one progress card per agent run and edits it in place (tool calls completed, tool in flight, elapsed time, failure reason); 'full' posts one card per tool call with the argument summary and a truncated result body. 'verbose' and 'debug' are accepted as aliases of 'full'. Unrecognised values fall back to 'compact'.",
+				"enum":        []string{"compact", "full", "verbose", "debug"},
 				"default":     "compact",
 			},
 			"questionNudgeIntervalSeconds": map[string]any{

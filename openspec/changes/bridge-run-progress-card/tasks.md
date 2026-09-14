@@ -58,5 +58,7 @@
 
 - [x] 5.1 `docs/bridge.md`: `toolUpdateVerbosity` row and `/verbosity` rows describe the
   card, the aliases and the text-only-adapter failure behaviour
-- [x] 5.2 Schema: confirmed the `router` block is not declared in `cmd/schema/main.go`;
-  nothing to regenerate
+- [x] 5.2 Schema: `cmd/schema/main.go` declares the `router` block, so
+  `router.toolUpdateVerbosity` needed updating — enum widened to
+  `compact | full | verbose | debug` and the description rewritten for the card;
+  `opencode-schema.json` regenerated via `go run cmd/schema/main.go`
