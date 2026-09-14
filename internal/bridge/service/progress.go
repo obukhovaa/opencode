@@ -20,7 +20,10 @@ import (
 // count. Completions that land inside the interval collapse into one
 // edit (see runProgress.wake), so the card is never more than one
 // interval behind and never edits more often than this. A variable
-// rather than a const so tests can shrink it.
+// rather than a const so tests can shrink it — a test that does so MUST
+// NOT call t.Parallel(), because newRunProgress reads this without
+// synchronisation and a parallel mutator would race every other test
+// that starts a run.
 var progressMinInterval = 2 * time.Second
 
 // progressFinishWait bounds how long the dispatcher waits for the final
@@ -245,7 +248,11 @@ func (p *runProgress) headerLocked() string {
 	running := ""
 	switch n := len(p.inflightOrder); {
 	case n == 1:
-		running = " · running " + p.inflight[p.inflightOrder[0]]
+		// Last element: inflightOrder is insertion-ordered, and the
+		// spec names the MOST RECENTLY started unfinished tool. With
+		// exactly one in flight the two coincide, but indexing from the
+		// front would be wrong the moment this branch widens.
+		running = " · running " + p.inflight[p.inflightOrder[n-1]]
 	case n > 1:
 		running = " · " + strconv.Itoa(n) + " running"
 	}

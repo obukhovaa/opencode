@@ -42,7 +42,7 @@ The card SHALL be created only if the live verbosity is `compact` when the run s
 #### Scenario: Run start posts the card
 
 - **WHEN** a bound peer's message starts an agent run with `toolUpdatesEnabled: true` at `compact`
-- **THEN** one message reading `⏳ Thinking...` is posted to every bound peer before any tool call completes
+- **THEN** one message reading `⏳ Thinking...` is posted to every bound peer whose adapter implements `MessageEditor`, before any tool call completes
 
 #### Scenario: Successful multi-call run updates one message
 

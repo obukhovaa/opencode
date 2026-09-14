@@ -60,8 +60,10 @@ level is a single, live answer to "is it still working, and how far along is it"
 field doc), `internal/bridge/service/{progress.go,dispatch.go,service.go,commands.go}`,
 `internal/bridge/{slack,telegram,mattermost}/adapter.go` (`SendEditable` /
 `EditMessage`, ack methods rebased on them), tests alongside each, `docs/bridge.md`.
-No schema change: the `router` block is not declared in `cmd/schema/main.go` today,
-so there is nothing there to extend.
+Schema: the `router` block IS declared in `cmd/schema/main.go`, so
+`router.toolUpdateVerbosity` is extended there — the enum gains `verbose` and
+`debug`, the description is rewritten for the card — and `opencode-schema.json`
+is regenerated.
 
 Out of scope: removing or merging `toolUpdatesEnabled`; persisting `/verbosity`;
 the queue-acknowledgement cards themselves; the orchestrator's own job

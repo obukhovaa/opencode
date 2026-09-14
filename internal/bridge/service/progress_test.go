@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +12,8 @@ import (
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/bridge/store"
+	"github.com/opencode-ai/opencode/internal/config"
+	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 )
@@ -212,8 +216,16 @@ func TestRunProgress_WorkerOrdersAndCoalesces(t *testing.T) {
 		mu.Unlock()
 	})
 
+	// Wait for the "Thinking..." flush to actually land before the burst.
+	// A bare sleep would race: if the worker is not scheduled in time the
+	// 30 completions and finish() all land first, the single snapshot is
+	// terminal, and the first-flush assertion below fails on a loaded box.
 	p.signal() // "Thinking..."
-	time.Sleep(5 * time.Millisecond)
+	waitFor(t, "the Thinking... flush", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(flushes) > 0
+	})
 	const n = 30
 	for i := 0; i < n; i++ {
 		p.toolDone("id", "read", "#id", false, "")
@@ -328,9 +340,34 @@ func TestShouldEmitToolCards(t *testing.T) {
 type editorStubAdapter struct {
 	stubAdapter
 
-	emu   sync.Mutex
-	posts []string
-	edits []string
+	emu        sync.Mutex
+	posts      []string
+	edits      []string
+	editTokens []string
+	// editErr, when set, is returned by the next EditMessage call and
+	// then cleared — for exercising the fresh-post recovery path.
+	editErr error
+	// postToken is handed back by SendEditable; incremented per post so
+	// a test can tell one peer's card from another's.
+	postToken int
+}
+
+// failNextEdit makes the next EditMessage return err.
+func (a *editorStubAdapter) failNextEdit(err error) {
+	a.emu.Lock()
+	defer a.emu.Unlock()
+	a.editErr = err
+}
+
+// Tokens returns the token handed out for each post, in order.
+func (a *editorStubAdapter) Tokens() []string {
+	a.emu.Lock()
+	defer a.emu.Unlock()
+	out := make([]string, 0, a.postToken)
+	for i := 1; i <= a.postToken; i++ {
+		out = append(out, "tok-"+strconv.Itoa(i))
+	}
+	return out
 }
 
 func newEditorStubAdapter(channel, identity string) *editorStubAdapter {
@@ -341,14 +378,27 @@ func (a *editorStubAdapter) SendEditable(_ context.Context, _ bridge.PeerRef, te
 	a.emu.Lock()
 	defer a.emu.Unlock()
 	a.posts = append(a.posts, text)
-	return "tok-1", nil
+	a.postToken++
+	return bridge.EditableMessageToken("tok-" + strconv.Itoa(a.postToken)), nil
 }
 
 func (a *editorStubAdapter) EditMessage(_ context.Context, _ bridge.PeerRef, token bridge.EditableMessageToken, text string) error {
 	a.emu.Lock()
 	defer a.emu.Unlock()
+	if err := a.editErr; err != nil {
+		a.editErr = nil
+		return err
+	}
 	a.edits = append(a.edits, text)
+	a.editTokens = append(a.editTokens, string(token))
 	return nil
+}
+
+// EditTokens returns the token each successful edit targeted, in order.
+func (a *editorStubAdapter) EditTokens() []string {
+	a.emu.Lock()
+	defer a.emu.Unlock()
+	return append([]string(nil), a.editTokens...)
 }
 
 func (a *editorStubAdapter) Posts() []string {
@@ -600,5 +650,89 @@ func TestDeliverProgress_SkipsIdenticalEdit(t *testing.T) {
 	d.deliverProgress(ctx, p, progressFlush{text: changed})
 	if got := ed.Edits(); len(got) != 1 || got[0] != changed {
 		t.Errorf("edits after a real change = %v; want [%q]", got, changed)
+	}
+}
+
+// TestDeliverProgress_EditFailureRepostsAndContinues covers the spec
+// scenario "Edit failure recovers with a fresh post" (chat-bridge delta),
+// which had no test: when the card's message is gone and the edit fails,
+// the card is posted fresh and every later flush edits the NEW message
+// rather than retrying the dead token.
+func TestDeliverProgress_EditFailureRepostsAndContinues(t *testing.T) {
+	svc, ed, _ := newProgressTestSvc(t, &bridge.Config{ToolUpdatesEnabled: true})
+	d := newBareDispatch(svc, "S1")
+	ctx := context.Background()
+	p := newRunProgress()
+
+	d.deliverProgress(ctx, p, progressFlush{text: "⏳ Thinking..."})
+	if got := ed.Posts(); len(got) != 1 {
+		t.Fatalf("posts after first flush = %v; want one", got)
+	}
+
+	// The message was deleted out from under us.
+	ed.failNextEdit(errors.New("message_not_found"))
+	d.deliverProgress(ctx, p, progressFlush{text: "⏳ 1 tool call done · 1s"})
+
+	if got := ed.Posts(); len(got) != 2 || got[1] != "⏳ 1 tool call done · 1s" {
+		t.Fatalf("posts = %v; want the card re-posted with the current text", got)
+	}
+	if got := ed.Edits(); len(got) != 0 {
+		t.Errorf("edits = %v; want none — the only edit attempt failed", got)
+	}
+
+	// The chain continues from the NEW message, not the dead one.
+	d.deliverProgress(ctx, p, progressFlush{text: "✓ Done · 2 tool calls · 3s", final: true})
+	if got := ed.Posts(); len(got) != 2 {
+		t.Errorf("posts = %v; want no third post — the new token should be reused", got)
+	}
+	edits, tokens := ed.Edits(), ed.EditTokens()
+	if len(edits) != 1 || edits[0] != "✓ Done · 2 tool calls · 3s" {
+		t.Fatalf("edits = %v; want the terminal edit", edits)
+	}
+	if len(tokens) != 1 || tokens[0] != "tok-2" {
+		t.Errorf("edit targeted token %v; want tok-2 (the re-posted message), not the stale tok-1", tokens)
+	}
+}
+
+// errorAgent is an agent.Service whose Run yields a single terminal
+// AgentEventTypeError, so handleInbound takes the failed-run path.
+type errorAgent struct{ agentpkg.Service }
+
+func (a *errorAgent) Run(
+	_ context.Context, _, _ string, _ int, _ ...message.Attachment,
+) (<-chan agentpkg.AgentEvent, error) {
+	ch := make(chan agentpkg.AgentEvent, 1)
+	ch <- agentpkg.AgentEvent{Type: agentpkg.AgentEventTypeError, Error: errors.New("boom")}
+	close(ch)
+	return ch, nil
+}
+
+// TestHandleInbound_AgentErrorClosesCardAsFailed wires the dispatcher's
+// terminal-event handling to the card: an AgentEventTypeError must close
+// the card as "✗ Run failed", not "✓ Done". Covers the spec scenario
+// "Agent error ends the card as failed" end-to-end — the mapping at
+// handleInbound's `ev.Type == AgentEventTypeError` had no test.
+func TestHandleInbound_AgentErrorClosesCardAsFailed(t *testing.T) {
+	old := progressMinInterval
+	progressMinInterval = 10 * time.Millisecond
+	t.Cleanup(func() { progressMinInterval = old })
+
+	svc, ed, _ := newProgressTestSvc(t, &bridge.Config{ToolUpdatesEnabled: true})
+	svc.app.PrimaryAgents = map[config.AgentName]agentpkg.Service{config.AgentCoder: &errorAgent{}}
+	svc.app.PrimaryAgentKeys = []config.AgentName{config.AgentCoder}
+
+	d := newBareDispatch(svc, "S1")
+	d.handleInbound(context.Background(), testInbound("do the thing"))
+
+	edits := ed.Edits()
+	if len(edits) == 0 {
+		t.Fatal("card was never edited to a terminal state")
+	}
+	last := edits[len(edits)-1]
+	if !strings.HasPrefix(last, "✗ Run failed · ") {
+		t.Errorf("terminal edit = %q; want it to start with ✗ Run failed", last)
+	}
+	if strings.HasPrefix(last, "✓ Done") {
+		t.Errorf("terminal edit = %q; a failed run must not close as Done", last)
 	}
 }
