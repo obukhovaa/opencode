@@ -366,6 +366,14 @@ func (d *sessionDispatch) deliverProgress(ctx context.Context, p *runProgress, f
 		logging.Warn("bridge: progress card: list bindings failed", "session", d.sessionID, "err", err)
 		return
 	}
+	// Keys currently owned by a live binding. A token may only be
+	// migrated off a base key that no live binding still answers to —
+	// otherwise a "<channel>|<thread>" peer would steal the card of a
+	// bare-"<channel>" peer bound to the same session in that channel.
+	live := make(map[string]struct{}, len(bindings))
+	for _, b := range bindings {
+		live[progressPeerKey(b)] = struct{}{}
+	}
 	for _, b := range bindings {
 		peer := bridge.PeerRef{Channel: b.Channel, Identity: b.IdentityID, PeerID: b.PeerID}
 		adapter := d.svc.Adapter(b.Channel, b.IdentityID)
@@ -394,9 +402,11 @@ func (d *sessionDispatch) deliverProgress(ctx context.Context, p *runProgress, f
 			// the stable channel part and migrate it, or the terminal
 			// edit posts a second card and strands the first.
 			if base := progressPeerBaseKey(b); base != key {
-				if card, ok = p.tokens[base]; ok {
-					delete(p.tokens, base)
-					p.tokens[key] = card
+				if _, stillOwned := live[base]; !stillOwned {
+					if card, ok = p.tokens[base]; ok {
+						delete(p.tokens, base)
+						p.tokens[key] = card
+					}
 				}
 			}
 		}

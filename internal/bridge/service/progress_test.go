@@ -736,3 +736,51 @@ func TestHandleInbound_AgentErrorClosesCardAsFailed(t *testing.T) {
 		t.Errorf("terminal edit = %q; a failed run must not close as Done", last)
 	}
 }
+
+// TestDeliverProgress_PerPeerTokensAndNoSteal covers the per-peer token
+// fan-out with more than one editor peer, which the single-editor fixture
+// never exercised, and pins the guard on base-key migration: a
+// "<channel>|<thread>" peer must NOT adopt the card of a bare
+// "<channel>" peer that is still bound to the same session.
+func TestDeliverProgress_PerPeerTokensAndNoSteal(t *testing.T) {
+	svc, ed, _ := newProgressTestSvc(t, &bridge.Config{ToolUpdatesEnabled: true})
+	d := newBareDispatch(svc, "S1")
+	ctx := context.Background()
+
+	// Two editor peers in the same channel+identity: the channel itself
+	// and a thread inside it. Both bound to S1.
+	if err := svc.store.UpdateBindingPeerID(ctx, "proj", "slack", "default", "D1", "C1"); err != nil {
+		t.Fatalf("UpdateBindingPeerID: %v", err)
+	}
+	if _, err := svc.store.UpsertBinding(ctx, store.Binding{
+		ProjectID: "proj", Channel: "slack", IdentityID: "default",
+		PeerID: "C1|999.1", SessionID: "S1",
+	}); err != nil {
+		t.Fatalf("UpsertBinding: %v", err)
+	}
+
+	p := newRunProgress()
+	d.deliverProgress(ctx, p, progressFlush{text: "⏳ Thinking..."})
+
+	// Each editor peer got its own card, so its own token.
+	if got := ed.Posts(); len(got) != 2 {
+		t.Fatalf("posts = %v; want one card per editor peer", got)
+	}
+	if len(p.tokens) != 2 {
+		t.Fatalf("tokens = %v; want one per editor peer", p.tokens)
+	}
+	if p.tokens["slack:default:C1"].token == p.tokens["slack:default:C1|999.1"].token {
+		t.Errorf("both peers share token %q; each peer's card must be tracked separately",
+			p.tokens["slack:default:C1"].token)
+	}
+
+	// Second flush: both are edited, neither re-posted, and the thread
+	// peer did not adopt the channel peer's card.
+	d.deliverProgress(ctx, p, progressFlush{text: "✓ Done · 1 tool call · 1s", final: true})
+	if got := ed.Posts(); len(got) != 2 {
+		t.Errorf("posts = %v; want no new post — a live base key must not be migrated away", got)
+	}
+	if got := ed.Edits(); len(got) != 2 {
+		t.Errorf("edits = %v; want one per peer", got)
+	}
+}
