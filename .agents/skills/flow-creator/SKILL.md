@@ -91,6 +91,8 @@ Step IDs and flow filenames must be kebab-case, max 64 characters.
 
 Default agent is `coder` when `agent` is omitted from a step.
 
+**Per-step model / effort override.** A step may set `model:` (a catalog model ID such as `bedrock.eu-claude-sonnet-5`) and `reasoningEffort:` (`low` | `medium` | `high` | `xhigh` | `max`) to run its agent on a different model than the agent type declares. All three of `agent`, `model` and `reasoningEffort` accept `${args.*}` / `${step.*}` placeholders, so a gate step can emit `impl_model` / `impl_effort` in its output and a later step can run `model: ${args.impl_model}`. The fields fail differently when a placeholder does not resolve — an unresolved `agent` **fails the step** (its `fallback` fires), while an unresolved or empty `model` / `reasoningEffort` means **no override** (the agent's own model runs, warn-logged). A value that resolves to an unknown model id, or to an effort the chosen model cannot do, fails the step. Literal values are validated at flow load. Both keys are inheritable through `extends`; keep them on the flow step (not in a shared template) while any consumer of the flow file runs a harness that predates them — a template key the harness does not know fails the whole flow at load, whereas an unknown inline step key is merely ignored. See `references/flow-spec.md` → "Step Fields" and "Template Substitution".
+
 ## Available Agents
 
 The following built-in agents are available for use in flow steps:
