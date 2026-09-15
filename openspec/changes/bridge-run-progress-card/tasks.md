@@ -18,6 +18,9 @@
   `ToolUpdatesEnabled && mode == compact`; `progressFinish(status)` in the deferred tail
   after the parts grace window, waiting on `done` with a short bound; the terminal
   `AgentEventTypeError` selects the failed state
+- [x] 2.6 `handlePartEvent`: track tool-call IDs that got a pending per-call card
+  (`pendingToolCards`) and always emit their result, so a mid-run `/verbosity
+  compact` cannot strand a `🔧` card that never resolves
 - [x] 2.3 `handlePartEvent`: at any mode feed the card when one exists (call start → in
   flight, result → count/failure); emit per-call cards only at `full`; keep recording
   and consuming the start-time map so it cannot grow when cards are suppressed; failures

@@ -37,6 +37,8 @@ Card updates SHALL be serialised so that a later count never overwrites an earli
 
 The card SHALL be created only if the live verbosity is `compact` when the run starts; once created it SHALL track every completion of that run regardless of later verbosity switches.
 
+A run that starts at `full` has no card, so a mid-run switch to `compact` leaves it with neither. For the remainder of such a run the bridge SHALL stay silent about calls STARTED after the switch — the reviewer asked for less noise — but SHALL still emit the result of any call whose pending per-call card was already posted. Adapters pair a result to its call card by tool-call ID and edit it in place, so an unemitted result strands a `🔧` card that reads as a tool still running. Failures surface either way.
+
 `cfg.Router.ToolUpdateVerbosity` selects the level: `compact` (default) or `full`, where `full` posts one card per tool call carrying the argument summary and a rune-capped result body. The values `verbose` and `debug` SHALL be accepted as aliases of `full`. An absent or unrecognised value SHALL resolve to `compact` — the quiet option is the fail-safe — and an unrecognised value SHALL be logged once at WARN.
 
 #### Scenario: Run start posts the card
@@ -68,6 +70,11 @@ The card SHALL be created only if the live verbosity is `compact` when the run s
 
 - **WHEN** `.opencode.json` sets `router.toolUpdatesEnabled: true` and omits `router.toolUpdateVerbosity` (or sets it to an unknown value such as `"chatty"`)
 - **THEN** the bridge renders the progress card; the unknown value additionally produces one WARN naming the configured value and the mode actually used
+
+#### Scenario: Switching to compact mid-run still closes open call cards
+
+- **WHEN** a run starts at `full`, posts a `🔧 <tool>#<id>` card for a call, and a reviewer sends `/verbosity compact` before that call completes
+- **THEN** the call's completion is still emitted, resolving the pending card; a call started after the switch produces no message at all, and any failure still surfaces
 
 #### Scenario: Verbose and debug are aliases of full
 

@@ -111,6 +111,15 @@ type sessionDispatch struct {
 	// result (rare — usually a cancelled cycle).
 	toolCallStart sync.Map // map[string]int64
 
+	// pendingToolCards holds the tool-call IDs for which a per-call
+	// PENDING card was posted (full verbosity). Its result MUST be
+	// emitted even if the live verbosity has since dropped to compact:
+	// the adapters pair a result to its call card by tool-call ID and
+	// edit it in place, so suppressing the result strands a "🔧" card
+	// that reads as a tool still running, forever. Keys are the raw
+	// provider tool-call ID; consumed on the result path.
+	pendingToolCards sync.Map // map[string]struct{}
+
 	// progress is the in-flight run's progress card, nil when no run is
 	// in flight or the run started without one (tool updates off, or
 	// full verbosity). Set by progressStart, cleared by progressFinish;
@@ -745,6 +754,7 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
 		if !shouldEmitToolCallCard(mode) {
 			return
 		}
+		d.pendingToolCards.Store(part.ID, struct{}{})
 		hint, fallback := toolCallRender(part.Name, callIDSuffix(part.ID), part.Input, full)
 		d.emitToolRender(hint, fallback)
 	case message.ToolResult:
@@ -760,7 +770,10 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
 			}
 			prog.toolDone(part.ToolCallID, part.Name, callIDSuffix(part.ToolCallID), part.IsError, reason)
 		}
-		if !shouldEmitToolResultCard(mode, prog != nil, part.IsError) {
+		// Consumed on every path, like the start-time map, so it cannot
+		// grow when per-call rendering is suppressed.
+		_, hadCard := d.pendingToolCards.LoadAndDelete(part.ToolCallID)
+		if !shouldEmitToolResultCard(mode, prog != nil, part.IsError, hadCard) {
 			return
 		}
 		hint, fallback := toolResultRender(
@@ -777,11 +790,26 @@ func shouldEmitToolCallCard(mode string) bool {
 }
 
 // shouldEmitToolResultCard reports whether a tool result is posted as
-// its own message. Full verbosity always does. Compact does so only for
-// a failure the run has no progress card to fold into — the "failures
-// always surface" invariant — and never for a success.
-func shouldEmitToolResultCard(mode string, hasCard, isError bool) bool {
+// its own message.
+//
+// Full verbosity always does. Compact does so in two cases:
+//
+//   - hadCard: this call already has a PENDING per-call card in chat,
+//     posted while the run was at full before a mid-run /verbosity
+//     compact. Adapters pair a result to its call card by tool-call ID
+//     and edit it in place, so dropping the result leaves a "🔧" card
+//     that reads as a tool still running for the rest of the session.
+//     The pairing must always be closed, whatever the live verbosity.
+//   - a failure the run has no progress card to fold into — the
+//     "failures always surface" invariant.
+//
+// Otherwise compact stays silent: a success whose call was never
+// narrated has nothing to close.
+func shouldEmitToolResultCard(mode string, hasCard, isError, hadCard bool) bool {
 	if mode == bridge.ToolUpdateVerbosityFull {
+		return true
+	}
+	if hadCard {
 		return true
 	}
 	return isError && !hasCard

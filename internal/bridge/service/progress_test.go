@@ -315,19 +315,26 @@ func TestShouldEmitToolCards(t *testing.T) {
 		mode    string
 		hasCard bool
 		isError bool
+		hadCard bool
 		want    bool
 	}{
-		{bridge.ToolUpdateVerbosityFull, true, false, true},
-		{bridge.ToolUpdateVerbosityFull, false, true, true},
-		{bridge.ToolUpdateVerbosityCompact, true, false, false},
-		{bridge.ToolUpdateVerbosityCompact, true, true, false},
-		{bridge.ToolUpdateVerbosityCompact, false, false, false},
-		{bridge.ToolUpdateVerbosityCompact, false, true, true},
+		{bridge.ToolUpdateVerbosityFull, true, false, false, true},
+		{bridge.ToolUpdateVerbosityFull, false, true, false, true},
+		{bridge.ToolUpdateVerbosityCompact, true, false, false, false},
+		{bridge.ToolUpdateVerbosityCompact, true, true, false, false},
+		{bridge.ToolUpdateVerbosityCompact, false, false, false, false},
+		{bridge.ToolUpdateVerbosityCompact, false, true, false, true},
+		// A pending per-call card posted before a mid-run switch to
+		// compact must always be closed, success or failure, card or no
+		// card — otherwise it reads as a tool still running forever.
+		{bridge.ToolUpdateVerbosityCompact, false, false, true, true},
+		{bridge.ToolUpdateVerbosityCompact, true, false, true, true},
+		{bridge.ToolUpdateVerbosityCompact, true, true, true, true},
 	}
 	for _, tt := range tests {
-		if got := shouldEmitToolResultCard(tt.mode, tt.hasCard, tt.isError); got != tt.want {
-			t.Errorf("shouldEmitToolResultCard(%q, card=%v, err=%v) = %v; want %v",
-				tt.mode, tt.hasCard, tt.isError, got, tt.want)
+		if got := shouldEmitToolResultCard(tt.mode, tt.hasCard, tt.isError, tt.hadCard); got != tt.want {
+			t.Errorf("shouldEmitToolResultCard(%q, card=%v, err=%v, hadCard=%v) = %v; want %v",
+				tt.mode, tt.hasCard, tt.isError, tt.hadCard, got, tt.want)
 		}
 	}
 }
@@ -782,5 +789,61 @@ func TestDeliverProgress_PerPeerTokensAndNoSteal(t *testing.T) {
 	}
 	if got := ed.Edits(); len(got) != 2 {
 		t.Errorf("edits = %v; want one per peer", got)
+	}
+}
+
+// TestDispatch_FullToCompactMidRun_ResolvesPendingCards: a run that starts
+// at full and is switched to compact mid-run must still close the per-call
+// cards it already posted. Adapters pair a result to its call card by
+// tool-call ID and edit it in place, so a suppressed result leaves a "🔧"
+// card that reads as a tool running forever.
+func TestDispatch_FullToCompactMidRun_ResolvesPendingCards(t *testing.T) {
+	svc, ed, _ := newProgressTestSvc(t, &bridge.Config{
+		ToolUpdatesEnabled: true, ToolUpdateVerbosity: bridge.ToolUpdateVerbosityFull,
+	})
+	d := newBareDispatch(svc, "S1")
+
+	// Run starts at full: no progress card, per-call cards instead.
+	if prog := d.progressStart(context.Background()); prog != nil {
+		t.Fatal("progressStart must return nil at full verbosity")
+	}
+	d.handlePartEvent(partEvent("S1", message.ToolCall{
+		ID: "toolu_01aaaaaa", Name: "bash", Input: `{"cmd":"make"}`, Finished: true,
+	}))
+	waitFor(t, "the pending call card", func() bool { return len(ed.Sends()) == 1 })
+
+	// The reviewer asks for less noise while the call is still running.
+	if _, err := svc.SetToolVerbosity(bridge.ToolUpdateVerbosityCompact); err != nil {
+		t.Fatalf("SetToolVerbosity: %v", err)
+	}
+
+	d.handlePartEvent(partEvent("S1", message.ToolResult{
+		ToolCallID: "toolu_01aaaaaa", Name: "bash", Content: "done",
+	}))
+	waitFor(t, "the completion that closes the pending card", func() bool {
+		return len(ed.Sends()) == 2
+	})
+	if got := ed.Sends()[1].Text; !strings.HasPrefix(got, "✓ bash#aaaaaa") {
+		t.Errorf("completion = %q; want the ✓ that resolves the pending 🔧 card", got)
+	}
+
+	// A call STARTED after the switch stays silent: nothing was narrated,
+	// so there is nothing to close.
+	d.handlePartEvent(partEvent("S1", message.ToolCall{
+		ID: "toolu_02bbbbbb", Name: "read", Input: "{}", Finished: true,
+	}))
+	d.handlePartEvent(partEvent("S1", message.ToolResult{
+		ToolCallID: "toolu_02bbbbbb", Name: "read", Content: "ok",
+	}))
+	time.Sleep(50 * time.Millisecond)
+	if got := ed.Sends(); len(got) != 2 {
+		t.Errorf("sends = %d (%+v); want still 2 — a call started after the switch must stay silent", len(got), got)
+	}
+
+	// The tracking map is consumed on every path.
+	n := 0
+	d.pendingToolCards.Range(func(_, _ any) bool { n++; return true })
+	if n != 0 {
+		t.Errorf("pendingToolCards still holds %d entries; it must be consumed on every result path", n)
 	}
 }
