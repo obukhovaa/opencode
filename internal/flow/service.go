@@ -1162,7 +1162,9 @@ doneRetry:
 					mergeStructOutputIntoArgs(fallbackArgs, exhausted.StructOutput)
 				}
 				wg.Add(1)
-				nextSteps <- stepWork{step: *fallbackStep, args: fallbackArgs, prevStep: failedState, iteration: 1}
+				// cycle: true — see the comment at the handleStepError
+				// fallback site for why a fallback bypasses the guard.
+				nextSteps <- stepWork{step: *fallbackStep, args: fallbackArgs, prevStep: failedState, iteration: 1, cycle: true}
 			}
 		}
 		return
@@ -1562,7 +1564,18 @@ func (s *service) handleStepError(
 			wg.Add(1)
 			// Fallback runs as iteration 1 of the fallback step — distinct
 			// step ID, distinct flow_states row.
-			nextSteps <- stepWork{step: *fallbackStep, args: copyArgs(args), prevStep: failedState, iteration: 1}
+			//
+			// cycle: true so the fallback bypasses the diamond-convergence
+			// guard in Run. A fallback is an escalation the author asked
+			// for, never a racing duplicate schedule — but its target can
+			// legitimately have run before in this invocation (escalated
+			// step → cycle rule back to the standard step → fails again →
+			// same escalated step). Without the bypass the second arrival
+			// is dropped as convergence and the run ends `completed` with
+			// nothing salvaged. The cycle iteration bump in Run then also
+			// gives the fallback step its true ${step.iteration}. See
+			// TestRunStep_FallbackReentersAfterCycle.
+			nextSteps <- stepWork{step: *fallbackStep, args: copyArgs(args), prevStep: failedState, iteration: 1, cycle: true}
 		}
 	}
 }

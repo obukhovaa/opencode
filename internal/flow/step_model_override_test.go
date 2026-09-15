@@ -256,3 +256,66 @@ func TestRunStep_InvalidModelRoutesToFallback(t *testing.T) {
 		t.Errorf("salvage state = %+v, want completed", st)
 	}
 }
+
+// TestRunStep_FallbackReentersAfterCycle proves a fallback target that
+// already ran in this invocation is admitted again. Shape: `implement`
+// fails → fallback `escalated` runs and routes back to `implement` with a
+// cycle rule → `implement` fails again → fallback `escalated` a SECOND
+// time. Before the fallback stepWork carried cycle: true, the diamond
+// convergence guard in Run dropped that second arrival and the run ended
+// `completed` with nothing salvaged.
+func TestRunStep_FallbackReentersAfterCycle(t *testing.T) {
+	testFlow := Flow{
+		ID:   "test-fallback-reenter",
+		Name: "Test Fallback Re-entry",
+		Spec: FlowSpec{
+			Steps: []Step{
+				// A literal unknown model fails resolution deterministically
+				// on every arrival (registerTestFlow bypasses validateFlow).
+				{ID: "implement", Prompt: "work", Model: "bedrock.eu-claude-nope", Fallback: &Fallback{To: "escalated"}},
+				{
+					ID:     "escalated",
+					Prompt: "escalate",
+					Output: &StepOutput{Schema: map[string]any{"type": "object"}},
+					Rules:  []Rule{{If: "${args.again} == true", Then: "implement", Cycle: true}},
+				},
+			},
+		},
+	}
+	// escalated is the only step that reaches the agent: first run asks
+	// for another implement attempt, second run stops the cycle.
+	agent := newStubAgent()
+	agent.responses = []agentpkg.AgentEvent{
+		loopRespond(`{"again": true}`),
+		loopRespond(`{"again": false}`),
+	}
+	factory, states := runOverrideFlow(t, testFlow, map[string]any{}, agent)
+
+	escalatedRuns := 0
+	for _, c := range factory.snapshotNewAgentCalls() {
+		if c.stepID == "escalated" {
+			escalatedRuns++
+		}
+	}
+	if escalatedRuns != 2 {
+		t.Fatalf("escalated ran %d times, want 2 (second fallback arrival must not be dropped as diamond convergence)", escalatedRuns)
+	}
+	if got := agent.callCount(); got != 2 {
+		t.Errorf("agent calls = %d, want 2", got)
+	}
+	if n := countCompletedByStepID(states, "escalated"); n != 2 {
+		t.Errorf("escalated completed %d times, want 2", n)
+	}
+	if st := findLatestByStepID(states, "escalated"); st == nil || st.Iteration != 2 {
+		t.Errorf("second escalated arrival iteration = %+v, want 2 (cycle bump from the prior row)", st)
+	}
+	implementFailures := 0
+	for _, st := range states {
+		if st.StepID == "implement" && st.Status == FlowStatusFailed {
+			implementFailures++
+		}
+	}
+	if implementFailures != 2 {
+		t.Errorf("implement failed %d times, want 2", implementFailures)
+	}
+}
