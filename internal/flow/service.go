@@ -22,6 +22,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/format"
 	"github.com/opencode-ai/opencode/internal/langfuse"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
+	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -480,9 +481,20 @@ func (s *service) runStep(
 	}
 	stepVars := map[string]any{"iteration": iteration}
 
-	agentID := step.Agent
-	if agentID == "" {
-		agentID = "coder"
+	// Agent id and model override both come from the step spec with
+	// ${args.*}/${step.*} substitution, but they fail differently — see
+	// resolveStepAgent / resolveStepModelOverride. Errors go through
+	// handleStepError so the step's `fallback.to` fires like any other
+	// pre-run failure.
+	agentID, err := resolveStepAgent(step, args, stepVars)
+	if err != nil {
+		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
+		return
+	}
+	modelOverride, err := resolveStepModelOverride(step, args, stepVars)
+	if err != nil {
+		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
+		return
 	}
 
 	var outputSchema map[string]any
@@ -517,7 +529,7 @@ func (s *service) runStep(
 	// FlowIDContextKey/FlowStepIDContextKey ctx values are set later, on
 	// the Run context, for telemetry only.
 	agentSvc, err := s.agents.NewAgent(ctx, agentID, outputSchema, step.ID, step.Interactive, boundPeers,
-		step.Context, contextfile.TemplateVars{FlowID: f.ID, FlowStep: step.ID})
+		step.Context, contextfile.TemplateVars{FlowID: f.ID, FlowStep: step.ID}, modelOverride)
 	if err != nil {
 		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
 		return
@@ -1895,6 +1907,80 @@ func resolveSessionPrefix(specPrefix string, args map[string]any) (string, error
 	}
 
 	return result, nil
+}
+
+// resolveStepAgent returns the agent id a step runs as: step.Agent with
+// ${args.*}/${step.*} substituted, or "coder" when empty. A placeholder
+// left unresolved is an error — an agent id is mandatory and there is no
+// sensible default to fall back to when `agent: ${args.impl_agent}` names
+// an arg no earlier step produced. Contrast resolveStepModelOverride.
+func resolveStepAgent(step Step, args map[string]any, stepVars map[string]any) (string, error) {
+	if step.Agent == "" {
+		return "coder", nil
+	}
+	agentID := strings.TrimSpace(substituteScoped(step.Agent, args, stepVars))
+	if strings.Contains(agentID, "${") {
+		return "", fmt.Errorf("step %q agent %q contains unresolved variables", step.ID, agentID)
+	}
+	if agentID == "" {
+		return "", fmt.Errorf("step %q agent %q resolved to an empty id", step.ID, step.Agent)
+	}
+	return agentID, nil
+}
+
+// resolveStepModelOverride returns the per-step model / reasoning-effort
+// override for the step, with ${args.*}/${step.*} substituted.
+//
+// Unlike the agent id, an unresolved or empty value is NOT an error: it
+// yields no override for that field (the agent's own value applies) and is
+// warn-logged. A model override is optional by nature, and restart lanes
+// legitimately reach a step before the step that would have produced the
+// arg has run. What IS an error is a value that resolved to something the
+// catalog does not know (ErrInvalidModel) or an effort the chosen model
+// does not accept (ErrInvalidReasoningEffort) — a typo in a routing table
+// must fail the step, not silently run the default model.
+//
+// The effort is validated against the model the step actually runs on when
+// that is known here (the Model override). With no model override the
+// effort is only shape-checked; createAgentProvider validates it against
+// the agent's own model once that is resolved.
+func resolveStepModelOverride(step Step, args map[string]any, stepVars map[string]any) (agentpkg.ModelOverride, error) {
+	var override agentpkg.ModelOverride
+
+	if step.Model != "" {
+		resolved := strings.TrimSpace(substituteScoped(step.Model, args, stepVars))
+		switch {
+		case strings.Contains(resolved, "${") || resolved == "":
+			logging.Warn("Step model override unresolved, using the agent's own model",
+				"step", step.ID, "model", step.Model, "resolved", resolved)
+		default:
+			if _, ok := models.SupportedModels[models.ModelID(resolved)]; !ok {
+				return agentpkg.ModelOverride{}, fmt.Errorf("%w: step %q model %q is not a supported model", ErrInvalidModel, step.ID, resolved)
+			}
+			override.Model = models.ModelID(resolved)
+		}
+	}
+
+	if step.ReasoningEffort != "" {
+		resolved := strings.ToLower(strings.TrimSpace(substituteScoped(step.ReasoningEffort, args, stepVars)))
+		switch {
+		case strings.Contains(resolved, "${") || resolved == "":
+			logging.Warn("Step reasoningEffort override unresolved, using the agent's own value",
+				"step", step.ID, "reasoningEffort", step.ReasoningEffort, "resolved", resolved)
+		case !models.IsReasoningEffort(resolved):
+			return agentpkg.ModelOverride{}, fmt.Errorf("%w: step %q reasoningEffort %q must be one of low|medium|high|xhigh|max",
+				ErrInvalidReasoningEffort, step.ID, resolved)
+		default:
+			if override.Model != "" {
+				if err := models.ValidateReasoningEffort(models.SupportedModels[override.Model], resolved); err != nil {
+					return agentpkg.ModelOverride{}, fmt.Errorf("%w: step %q: %v", ErrInvalidReasoningEffort, step.ID, err)
+				}
+			}
+			override.ReasoningEffort = resolved
+		}
+	}
+
+	return override, nil
 }
 
 // substituteArgs is a thin wrapper around substituteScoped for callers that

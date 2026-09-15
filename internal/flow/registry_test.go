@@ -177,6 +177,76 @@ func TestValidateFlow(t *testing.T) {
 			},
 			wantErr: ErrInvalidMaxTurns,
 		},
+		{
+			name: "literal model in catalog is valid",
+			flow: Flow{
+				ID: "model-ok",
+				Spec: FlowSpec{
+					Steps: []Step{{ID: "step-a", Prompt: "x", Model: "bedrock.eu-claude-sonnet-5", ReasoningEffort: "high"}},
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "literal model not in catalog rejected",
+			flow: Flow{
+				ID: "model-bad",
+				Spec: FlowSpec{
+					Steps: []Step{{ID: "step-a", Prompt: "x", Model: "bedrock.eu-claude-nope"}},
+				},
+			},
+			wantErr: ErrInvalidModel,
+		},
+		{
+			name: "templated model is not checked at load",
+			flow: Flow{
+				ID: "model-templated",
+				Spec: FlowSpec{
+					Steps: []Step{{ID: "step-a", Prompt: "x", Model: "${args.impl_model}", ReasoningEffort: "${args.impl_effort}"}},
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "literal reasoningEffort must be a known level",
+			flow: Flow{
+				ID: "effort-bad-word",
+				Spec: FlowSpec{
+					Steps: []Step{{ID: "step-a", Prompt: "x", ReasoningEffort: "extreme"}},
+				},
+			},
+			wantErr: ErrInvalidReasoningEffort,
+		},
+		{
+			name: "literal reasoningEffort alone is shape-checked only",
+			flow: Flow{
+				ID: "effort-alone",
+				Spec: FlowSpec{
+					Steps: []Step{{ID: "step-a", Prompt: "x", ReasoningEffort: "xhigh"}},
+				},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "literal effort the literal model rejects",
+			flow: Flow{
+				ID: "effort-model-mismatch",
+				Spec: FlowSpec{
+					Steps: []Step{{ID: "step-a", Prompt: "x", Model: "bedrock.eu-claude-opus-4-6", ReasoningEffort: "xhigh"}},
+				},
+			},
+			wantErr: ErrInvalidReasoningEffort,
+		},
+		{
+			name: "literal effort with templated model is shape-checked only",
+			flow: Flow{
+				ID: "effort-literal-model-templated",
+				Spec: FlowSpec{
+					Steps: []Step{{ID: "step-a", Prompt: "x", Model: "${args.impl_model}", ReasoningEffort: "xhigh"}},
+				},
+			},
+			wantErr: nil,
+		},
 	}
 
 	for _, tt := range tests {

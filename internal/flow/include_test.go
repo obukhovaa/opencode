@@ -119,6 +119,70 @@ flow:
 	}
 }
 
+// TestParseFlowFile_TemplateModelReachesStep pins that `model` and
+// `reasoningEffort` are inheritable through extends — including a
+// templated `${args.*}` value, which validateFlow must let through — and
+// that a literal pair the catalog rejects fails the whole flow at load,
+// exactly as it would inline (merged steps are validated like inline ones).
+func TestParseFlowFile_TemplateModelReachesStep(t *testing.T) {
+	root := t.TempDir()
+	setIncludeWorkspace(t, root)
+
+	writeIncludeFile(t, filepath.Join(root, ".agents", "steps", "implement.yaml"), `.implement:
+  agent: piano-developer
+  model: ${args.impl_model}
+  reasoningEffort: ${args.impl_effort}
+  prompt: implement it
+.pinned:
+  model: bedrock.eu-claude-opus-4-6
+  reasoningEffort: xhigh
+  prompt: pinned
+`)
+	flowPath := writeIncludeFile(t, filepath.Join(root, ".agents", "flows", "tiered.yaml"), `name: Tiered
+description: d
+include:
+  - local: .agents/steps/implement.yaml
+flow:
+  steps:
+    - id: implement
+      extends: [".implement"]
+    - id: escalated
+      extends: [".implement"]
+      model: bedrock.eu-claude-opus-5
+      reasoningEffort: high
+`)
+	f, err := parseFlowFile(flowPath)
+	if err != nil {
+		t.Fatalf("parseFlowFile() error: %v", err)
+	}
+	inherited := stepByID(t, f, "implement")
+	if inherited.Model != "${args.impl_model}" || inherited.ReasoningEffort != "${args.impl_effort}" {
+		t.Errorf("templated model/effort did not reach the step: %q / %q", inherited.Model, inherited.ReasoningEffort)
+	}
+	overridden := stepByID(t, f, "escalated")
+	if overridden.Model != "bedrock.eu-claude-opus-5" || overridden.ReasoningEffort != "high" {
+		t.Errorf("step keys did not override the template: %q / %q", overridden.Model, overridden.ReasoningEffort)
+	}
+	if overridden.Agent != "piano-developer" {
+		t.Errorf("Agent = %q, want the template's piano-developer", overridden.Agent)
+	}
+
+	// The 4.6 opus catalog entry has no xhigh, so this literal pair is a
+	// load error whether it sits on the step or on the template.
+	badPath := writeIncludeFile(t, filepath.Join(root, ".agents", "flows", "bad.yaml"), `name: Bad
+description: d
+include:
+  - local: .agents/steps/implement.yaml
+flow:
+  steps:
+    - id: pinned
+      extends: [".pinned"]
+`)
+	if _, err := parseFlowFile(badPath); !errors.Is(err, ErrInvalidReasoningEffort) {
+		t.Fatalf("parseFlowFile() error = %v, want ErrInvalidReasoningEffort", err)
+	}
+}
+
 // TestParseFlowFile_StepOverridesInheritedKeys covers scenario "The step
 // overrides an inherited key", including the zero-value trap from task
 // 1.7: an explicit `maxTurns: 0` and an omitted `maxTurns` must be
@@ -418,6 +482,16 @@ func TestTemplateKeyRule_TwoPart(t *testing.T) {
 			"agent": {"  agent: tmpl-agent\n", func(t *testing.T, s Step) {
 				if s.Agent != "tmpl-agent" {
 					t.Errorf("Agent = %q", s.Agent)
+				}
+			}},
+			"model": {"  model: bedrock.eu-claude-sonnet-5\n", func(t *testing.T, s Step) {
+				if s.Model != "bedrock.eu-claude-sonnet-5" {
+					t.Errorf("Model = %q", s.Model)
+				}
+			}},
+			"reasoningEffort": {"  reasoningEffort: high\n", func(t *testing.T, s Step) {
+				if s.ReasoningEffort != "high" {
+					t.Errorf("ReasoningEffort = %q", s.ReasoningEffort)
 				}
 			}},
 			"prompt": {"  prompt: tmpl prompt\n", func(t *testing.T, s Step) {

@@ -304,17 +304,18 @@ type stubAgentFactory struct {
 
 // stubNewAgentCall captures one NewAgent invocation's context-relevant args.
 type stubNewAgentCall struct {
-	agentID string
-	stepID  string
-	stepCtx *contextfile.StepContext
-	vars    contextfile.TemplateVars
+	agentID  string
+	stepID   string
+	stepCtx  *contextfile.StepContext
+	vars     contextfile.TemplateVars
+	override agentpkg.ModelOverride
 }
 
 func (f *stubAgentFactory) ResetStepCache() { f.resets++ }
 
-func (f *stubAgentFactory) NewAgent(_ context.Context, agentID string, _ map[string]any, stepID string, _ bool, _ []bridge.PeerRef, stepCtx *contextfile.StepContext, flowVars contextfile.TemplateVars) (agentpkg.Service, error) {
+func (f *stubAgentFactory) NewAgent(_ context.Context, agentID string, _ map[string]any, stepID string, _ bool, _ []bridge.PeerRef, stepCtx *contextfile.StepContext, flowVars contextfile.TemplateVars, override agentpkg.ModelOverride) (agentpkg.Service, error) {
 	f.mu.Lock()
-	f.newAgentCalls = append(f.newAgentCalls, stubNewAgentCall{agentID: agentID, stepID: stepID, stepCtx: stepCtx, vars: flowVars})
+	f.newAgentCalls = append(f.newAgentCalls, stubNewAgentCall{agentID: agentID, stepID: stepID, stepCtx: stepCtx, vars: flowVars, override: override})
 	f.mu.Unlock()
 	if f.agent != nil {
 		return f.agent, nil

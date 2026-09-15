@@ -244,6 +244,7 @@ func newAgent(
 	reg agentregistry.Registry,
 	mcpReg MCPRegistry,
 	factory AgentFactory,
+	override ModelOverride,
 ) (Service, error) {
 	agentTools := NewToolSet(agentInfo, reg, permissions, historyService, lspService, sessions, messages, mcpReg, factory)
 
@@ -255,6 +256,7 @@ func newAgent(
 		withBasePrompt(agentInfo.Prompt),
 		withStepContext(agentInfo.StepContext),
 		withContextVars(agentInfo.ContextVars),
+		withModelOverride(override),
 	)
 	if err != nil {
 		return nil, err
@@ -2870,6 +2872,11 @@ type providerOptions struct {
 	// contextVars carries the ${agent} / ${flow.id} / ${flow.step}
 	// template token values for context path expansion.
 	contextVars contextfile.TemplateVars
+	// modelOverride replaces the model / reasoning effort resolved from
+	// config or the registry for THIS provider instance only. See
+	// ModelOverride; applied in createAgentProvider to the local copy of
+	// the agent config, never to config.Get().
+	modelOverride ModelOverride
 }
 
 type providerOption func(*providerOptions)
@@ -2931,6 +2938,15 @@ func withStepContext(sc *contextfile.StepContext) providerOption {
 func withContextVars(vars contextfile.TemplateVars) providerOption {
 	return func(o *providerOptions) {
 		o.contextVars = vars
+	}
+}
+
+// withModelOverride carries a flow step's per-instance model / reasoning
+// effort override through to createAgentProvider. The zero value is the
+// normal case and changes nothing.
+func withModelOverride(o ModelOverride) providerOption {
+	return func(po *providerOptions) {
+		po.modelOverride = o
 	}
 }
 
@@ -3010,9 +3026,47 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 			return nil, fmt.Errorf("agent %s not found", agentName)
 		}
 	}
+	// Per-instance override (a flow step's `model` / `reasoningEffort`).
+	// Applied to the LOCAL agentConfig copy only: config.Get().Agents is
+	// shared process state and other steps — or the same step, on another
+	// concurrent run — may be building the same agent id with a different
+	// or no override. Never config.UpdateAgentModel here.
+	//
+	// The override arrives already catalog-checked by the flow runner, but
+	// the effort has to be re-validated against the model the agent
+	// actually ends up on: with a model-only override the INHERITED effort
+	// may be illegal for the new model (e.g. an agent pinned to `xhigh`
+	// moved onto a sonnet that lacks it). That case is not the author's
+	// mistake, so it resets to "" (provider default) with a warning; an
+	// EXPLICIT effort that the model rejects is the author's mistake and
+	// fails construction.
+	modelOverride := popts.modelOverride
+	if modelOverride.Model != "" {
+		agentConfig.Model = modelOverride.Model
+	}
+	if modelOverride.ReasoningEffort != "" {
+		agentConfig.ReasoningEffort = modelOverride.ReasoningEffort
+	}
 	model, ok := models.SupportedModels[agentConfig.Model]
 	if !ok {
 		return nil, fmt.Errorf("model %s not supported", agentConfig.Model)
+	}
+	if err := models.ValidateReasoningEffort(model, agentConfig.ReasoningEffort); err != nil {
+		if modelOverride.ReasoningEffort != "" {
+			return nil, fmt.Errorf("agent %s: reasoning effort override: %w", agentName, err)
+		}
+		if modelOverride.Model != "" {
+			logging.Warn("Inherited reasoning effort is not valid for the overriding model, using the provider default",
+				"agent", agentName, "model", model.ID, "reasoning_effort", agentConfig.ReasoningEffort, "error", err)
+			agentConfig.ReasoningEffort = ""
+		}
+		// No override at all: config.validateAgent already coerced the
+		// configured value at load time; leave the historical behaviour
+		// (whatever the provider does with it) untouched.
+	}
+	if !modelOverride.IsZero() {
+		logging.Info("Applying per-step model override", "agent", agentName,
+			"model", agentConfig.Model, "reasoning_effort", agentConfig.ReasoningEffort)
 	}
 
 	providerCfg, ok := cfg.Providers[model.Provider]
@@ -3123,6 +3177,10 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session, i
 	metadata := map[string]any{
 		"agent_id":   string(a.AgentID()),
 		"session_id": sess.ID,
+		// The model this agent instance actually runs on — with a flow
+		// step's model override applied — so traces can be sliced by
+		// model without reading the agent's static config.
+		"model_id": string(a.provider.Model().ID),
 	}
 	if sess.ParentSessionID != "" {
 		metadata["parent_session_id"] = sess.ParentSessionID

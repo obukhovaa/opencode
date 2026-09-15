@@ -14,6 +14,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/hooks"
 	"github.com/opencode-ai/opencode/internal/langfuse"
+	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp"
@@ -23,9 +24,39 @@ import (
 	"github.com/opencode-ai/opencode/internal/session"
 )
 
+// ModelOverride is a per-instance replacement for the model and/or
+// reasoning effort an agent would otherwise take from its registry /
+// config entry. The zero value means "no override". A flow step carries it
+// (Step.Model / Step.ReasoningEffort in internal/flow, resolved per run by
+// resolveStepModelOverride); it is applied to the agent's LOCAL provider
+// config in createAgentProvider and never written back to config, so two
+// steps on the same agent id can run different models concurrently.
+type ModelOverride struct {
+	Model           models.ModelID
+	ReasoningEffort string
+}
+
+// IsZero reports whether the override changes nothing.
+func (o ModelOverride) IsZero() bool {
+	return o.Model == "" && o.ReasoningEffort == ""
+}
+
+// stepCacheKey identifies one memoised flow-step agent. The step ID alone
+// is not enough once a step can be re-entered with a different agent or
+// model override (e.g. `agent: ${args.x}` / `model: ${args.tier}` whose
+// args changed between arrivals): reusing the cached instance would run
+// the wrong model. ResetStepCache semantics are unchanged.
+type stepCacheKey struct {
+	stepID  string
+	agentID string
+	model   models.ModelID
+	effort  string
+}
+
 // AgentFactory creates agent instances with optional output schema overrides.
-// Agents are cached by stepID for flow step reuse. Primary agents (created
-// without a stepID) are tracked for reuse when no schema override is needed.
+// Agents are cached per (step, agent, model override) for flow step reuse.
+// Primary agents (created without a stepID) are tracked for reuse when no
+// schema override is needed.
 type AgentFactory interface {
 	// NewAgent constructs an agent. `interactive` should be true when
 	// the requested agent is for an `interactive: true` flow step —
@@ -49,7 +80,10 @@ type AgentFactory interface {
 	// so the FlowIDContextKey/FlowStepIDContextKey telemetry ctx values
 	// — set later, on the Run context — are invisible at prompt-build
 	// time. The ${agent} token is filled in here from agentID.
-	NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool, boundPeers []bridge.PeerRef, stepCtx *contextfile.StepContext, flowVars contextfile.TemplateVars) (Service, error)
+	//
+	// `override` replaces the agent's model / reasoning effort for this
+	// instance only (see ModelOverride); pass the zero value for none.
+	NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool, boundPeers []bridge.PeerRef, stepCtx *contextfile.StepContext, flowVars contextfile.TemplateVars, override ModelOverride) (Service, error)
 	InitPrimaryAgents(ctx context.Context, outputSchema map[string]any) ([]Service, error)
 	// ResetStepCache drops the per-step agent memoisation. The cache is
 	// keyed on the flow YAML's step ID, which recurs across runs, so a
@@ -105,7 +139,7 @@ type agentFactory struct {
 	hookRegistry *hooks.Registry
 
 	mu        sync.Mutex
-	stepCache map[string]Service
+	stepCache map[stepCacheKey]Service
 }
 
 // SetHookRegistry installs the hook runtime. nil disables hooks. Mirrors
@@ -160,7 +194,7 @@ func NewAgentFactory(
 		lspService:  lspService,
 		registry:    registry,
 		mcpRegistry: mcpRegistry,
-		stepCache:   make(map[string]Service),
+		stepCache:   make(map[stepCacheKey]Service),
 	}
 }
 
@@ -213,11 +247,12 @@ func (f *agentFactory) QuestionService() question.Service {
 // agent construction is context-free: the toolset (incl. MCP loading) is
 // resolved under registry-owned lifetimes, so a caller's request-scoped ctx
 // cannot cancel it (see NewToolSet / mcpRegistry.getTools).
-func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool, boundPeers []bridge.PeerRef, stepCtx *contextfile.StepContext, flowVars contextfile.TemplateVars) (Service, error) {
+func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool, boundPeers []bridge.PeerRef, stepCtx *contextfile.StepContext, flowVars contextfile.TemplateVars, override ModelOverride) (Service, error) {
 	_ = ctx
+	cacheKey := stepCacheKey{stepID: stepID, agentID: agentID, model: override.Model, effort: override.ReasoningEffort}
 	if stepID != "" {
 		f.mu.Lock()
-		if svc, ok := f.stepCache[stepID]; ok {
+		if svc, ok := f.stepCache[cacheKey]; ok {
 			f.mu.Unlock()
 			return svc, nil
 		}
@@ -263,7 +298,7 @@ func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchem
 	flowVars.Agent = agentID
 	infoCopy.ContextVars = flowVars
 
-	svc, err := newAgent(&infoCopy, f.sessions, f.messages, f.permissions, f.history, f.lspService, f.registry, f.mcpRegistry, f)
+	svc, err := newAgent(&infoCopy, f.sessions, f.messages, f.permissions, f.history, f.lspService, f.registry, f.mcpRegistry, f, override)
 	if err != nil {
 		return nil, fmt.Errorf("creating agent %q: %w", agentID, err)
 	}
@@ -271,11 +306,12 @@ func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchem
 	if stepID != "" {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		if existing, ok := f.stepCache[stepID]; ok {
+		if existing, ok := f.stepCache[cacheKey]; ok {
 			return existing, nil
 		}
-		f.stepCache[stepID] = svc
-		logging.Debug("Cached agent for flow step", "agent", agentID, "step", stepID)
+		f.stepCache[cacheKey] = svc
+		logging.Debug("Cached agent for flow step", "agent", agentID, "step", stepID,
+			"model_override", override.Model, "effort_override", override.ReasoningEffort)
 	}
 	return svc, nil
 }
@@ -299,7 +335,7 @@ func (f *agentFactory) ResetStepCache() {
 		return
 	}
 	logging.Debug("Clearing per-step agent cache for a new flow run", "cached", len(f.stepCache))
-	f.stepCache = make(map[string]Service)
+	f.stepCache = make(map[stepCacheKey]Service)
 }
 
 func (f *agentFactory) InitPrimaryAgents(ctx context.Context, outputSchema map[string]any) ([]Service, error) {
@@ -309,7 +345,7 @@ func (f *agentFactory) InitPrimaryAgents(ctx context.Context, outputSchema map[s
 	}
 	res := make([]Service, 0, len(primaryAgents))
 	for _, agentInfo := range primaryAgents {
-		primaryAgent, err := f.NewAgent(ctx, string(agentInfo.ID), outputSchema, "", false, nil, nil, contextfile.TemplateVars{})
+		primaryAgent, err := f.NewAgent(ctx, string(agentInfo.ID), outputSchema, "", false, nil, nil, contextfile.TemplateVars{}, ModelOverride{})
 		if err != nil {
 			logging.Error("Failed to create agent", "agent", agentInfo.ID, "error", err)
 			continue

@@ -13,6 +13,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/format"
+	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/logging"
 )
 
@@ -482,6 +483,9 @@ func validateFlow(f *Flow) error {
 		if _, err := step.ResumeAfterDuration(); err != nil {
 			return fmt.Errorf("%w: %v", ErrInvalidYAML, err)
 		}
+		if err := validateStepModelLiterals(step); err != nil {
+			return err
+		}
 	}
 
 	// Validate rule and fallback references
@@ -517,6 +521,41 @@ func validateFlow(f *Flow) error {
 		}
 	}
 
+	return nil
+}
+
+// validateStepModelLiterals checks a step's `model` / `reasoningEffort`
+// when they are LITERAL values: the model must be a catalog ModelID and the
+// effort a level that model accepts (models.ValidateReasoningEffort). A
+// value carrying a `${` placeholder is skipped — it is resolved per run by
+// resolveStepModelOverride in service.go, which applies the same checks to
+// the resolved text. Catching a literal typo here turns it into a load-time
+// error instead of a step that fails on every run.
+func validateStepModelLiterals(step Step) error {
+	modelLiteral := !strings.Contains(step.Model, "${")
+	effortLiteral := !strings.Contains(step.ReasoningEffort, "${")
+
+	var model models.Model
+	if step.Model != "" && modelLiteral {
+		m, ok := models.SupportedModels[models.ModelID(step.Model)]
+		if !ok {
+			return fmt.Errorf("%w: step %q model %q is not a supported model", ErrInvalidModel, step.ID, step.Model)
+		}
+		model = m
+	}
+	if step.ReasoningEffort != "" && effortLiteral {
+		if !models.IsReasoningEffort(step.ReasoningEffort) {
+			return fmt.Errorf("%w: step %q reasoningEffort %q must be one of low|medium|high|xhigh|max",
+				ErrInvalidReasoningEffort, step.ID, step.ReasoningEffort)
+		}
+		// Only when the model is also literal can the pair be checked; a
+		// templated model is validated against the effort at run time.
+		if step.Model != "" && modelLiteral {
+			if err := models.ValidateReasoningEffort(model, step.ReasoningEffort); err != nil {
+				return fmt.Errorf("%w: step %q: %v", ErrInvalidReasoningEffort, step.ID, err)
+			}
+		}
+	}
 	return nil
 }
 
