@@ -1159,45 +1159,65 @@ func truncateRunes(s string, maxRunes int) string {
 	return s
 }
 
-// Compile-time assertion: Adapter implements bridge.QueuedAcknowledger.
-var _ bridge.QueuedAcknowledger = (*Adapter)(nil)
+// Compile-time assertions: Adapter implements bridge.QueuedAcknowledger
+// and bridge.MessageEditor.
+var (
+	_ bridge.QueuedAcknowledger = (*Adapter)(nil)
+	_ bridge.MessageEditor      = (*Adapter)(nil)
+)
 
-// SendQueuedAck posts a queued-acknowledgement message to the peer and returns
-// a token encoding the channel ID and message ts for subsequent in-place edits.
+// SendEditable posts a plain-text message to the peer and returns a token
+// encoding the channel ID and message ts for subsequent in-place edits.
 // Token format: channelID + "\x00" + ts (null-separated; neither field contains null bytes).
-func (a *Adapter) SendQueuedAck(ctx context.Context, peer bridge.PeerRef, position int) (bridge.QueueAckToken, error) {
+func (a *Adapter) SendEditable(ctx context.Context, peer bridge.PeerRef, text string) (bridge.EditableMessageToken, error) {
 	parsed := ParsePeerID(peer.PeerID)
 	if parsed.ChannelID == "" {
 		return "", ErrInvalidPeerID
 	}
-	opts := []slackgo.MsgOption{slackgo.MsgOptionText(bridge.QueueAckText(position), false)}
+	opts := []slackgo.MsgOption{slackgo.MsgOptionText(text, false)}
 	if parsed.ThreadTS != "" {
 		opts = append(opts, slackgo.MsgOptionTS(parsed.ThreadTS))
 	}
 	_, ts, err := a.api.PostMessageContext(ctx, parsed.ChannelID, opts...)
 	if err != nil {
-		return "", fmt.Errorf("slack: SendQueuedAck: %w", err)
+		a.recordFailure(err)
+		return "", fmt.Errorf("slack: SendEditable: %w", err)
 	}
 	return parsed.ChannelID + "\x00" + ts, nil
 }
 
-// UpdateQueuedAck edits the queued-ack message identified by token in-place.
-// Token must be the value returned by SendQueuedAck (channelID + "\x00" + ts).
-// Pass position == 0 to resolve the ack ("▶ Processing…").
-func (a *Adapter) UpdateQueuedAck(ctx context.Context, _ bridge.PeerRef, token bridge.QueueAckToken, position int) error {
+// EditMessage replaces the text of the message identified by token
+// (the value returned by SendEditable) via chat.update.
+func (a *Adapter) EditMessage(ctx context.Context, _ bridge.PeerRef, token bridge.EditableMessageToken, text string) error {
 	parts := strings.SplitN(token, "\x00", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return fmt.Errorf("slack: UpdateQueuedAck: invalid token %q", token)
+		return fmt.Errorf("slack: EditMessage: invalid token %q", token)
 	}
-	channelID, ts := parts[0], parts[1]
-	var text string
-	if position == 0 {
-		text = bridge.ResolvedAckText
-	} else {
+	_, _, _, err := a.api.UpdateMessageContext(ctx, parts[0], parts[1], slackgo.MsgOptionText(text, false))
+	if err != nil {
+		return fmt.Errorf("slack: EditMessage: %w", err)
+	}
+	return nil
+}
+
+// SendQueuedAck posts a queued-acknowledgement message to the peer and returns
+// a token for subsequent in-place edits. position is 1-based (1 = "you're next").
+func (a *Adapter) SendQueuedAck(ctx context.Context, peer bridge.PeerRef, position int) (bridge.QueueAckToken, error) {
+	tok, err := a.SendEditable(ctx, peer, bridge.QueueAckText(position))
+	if err != nil {
+		return "", fmt.Errorf("slack: SendQueuedAck: %w", err)
+	}
+	return tok, nil
+}
+
+// UpdateQueuedAck edits the queued-ack message identified by token in-place.
+// Pass position == 0 to resolve the ack ("▶ Processing…").
+func (a *Adapter) UpdateQueuedAck(ctx context.Context, peer bridge.PeerRef, token bridge.QueueAckToken, position int) error {
+	text := bridge.ResolvedAckText
+	if position != 0 {
 		text = bridge.QueueAckText(position)
 	}
-	_, _, _, err := a.api.UpdateMessageContext(ctx, channelID, ts, slackgo.MsgOptionText(text, false))
-	if err != nil {
+	if err := a.EditMessage(ctx, peer, token, text); err != nil {
 		return fmt.Errorf("slack: UpdateQueuedAck: %w", err)
 	}
 	return nil

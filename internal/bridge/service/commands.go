@@ -639,11 +639,11 @@ func (s *Service) cmdVerbosity(_ context.Context, in bridge.Inbound) *bridge.Com
 		items := []bridge.ListItem{
 			{
 				Label:    bridge.ToolUpdateVerbosityCompact,
-				Sublabel: "one line per tool call: name, id, duration (default)",
+				Sublabel: "one progress card per run, updated in place: tool calls done, elapsed, failures (default)",
 			},
 			{
 				Label:    bridge.ToolUpdateVerbosityFull,
-				Sublabel: "also include tool arguments and result bodies",
+				Sublabel: "one card per tool call with arguments and result bodies (aliases: verbose, debug)",
 			},
 		}
 		for i := range items {

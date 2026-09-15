@@ -410,3 +410,29 @@ func QueueAckText(position int) string {
 // ResolvedAckText is the text for the final in-place edit when the queued
 // message's agent run begins. Displayed briefly before the agent's reply arrives.
 const ResolvedAckText = "▶ Processing your message now…"
+
+// EditableMessageToken is the platform-native identifier of a message
+// posted through MessageEditor.SendEditable. Opaque to callers; passed
+// back to EditMessage to change the message in place.
+type EditableMessageToken = string
+
+// MessageEditor is an optional interface adapters implement to post a
+// plain-text message and later edit it in place. It is how one chat
+// message can track something that changes over time — the per-run
+// progress card at compact tool-update verbosity (see the chat-bridge
+// spec, "Compact tool updates are one progress card per run, updated in
+// place") — without posting a new message per change. Callers check
+// with the ok-pattern and treat an adapter that lacks it as text-only:
+//
+//	if ed, ok := adapter.(bridge.MessageEditor); ok { ... }
+//
+// All three production adapters implement it; the external relay does
+// not, since a relay frame has no notion of a message to edit.
+type MessageEditor interface {
+	// SendEditable posts text to peer and returns a token for later
+	// in-place edits.
+	SendEditable(ctx context.Context, peer PeerRef, text string) (EditableMessageToken, error)
+
+	// EditMessage replaces the text of the message identified by token.
+	EditMessage(ctx context.Context, peer PeerRef, token EditableMessageToken, text string) error
+}

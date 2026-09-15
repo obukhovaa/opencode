@@ -240,7 +240,10 @@ func TestNormalizeToolUpdateVerbosity(t *testing.T) {
 		{"full", ToolUpdateVerbosityFull, true},
 		{"  FULL  ", ToolUpdateVerbosityFull, true},
 		{"Compact", ToolUpdateVerbosityCompact, true},
-		{"verbose", ToolUpdateVerbosityCompact, false},
+		{"verbose", ToolUpdateVerbosityFull, true},
+		{"debug", ToolUpdateVerbosityFull, true},
+		{" Debug ", ToolUpdateVerbosityFull, true},
+		{"chatty", ToolUpdateVerbosityCompact, false},
 		{"off", ToolUpdateVerbosityCompact, false},
 	}
 	for _, tt := range tests {

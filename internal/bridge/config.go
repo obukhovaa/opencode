@@ -28,16 +28,20 @@ type Config struct {
 	// messages are emitted.
 	ToolUpdatesEnabled bool `json:"toolUpdatesEnabled,omitempty"`
 
-	// ToolUpdateVerbosity selects how much detail each tool update
-	// carries when ToolUpdatesEnabled is true:
+	// ToolUpdateVerbosity selects how tool activity reaches chat when
+	// ToolUpdatesEnabled is true:
 	//
-	//   "compact" (default) — one line per call: glyph, tool name,
-	//       pairing id and elapsed time. Arguments and result bodies
-	//       stay out of chat; they're in the session store and the
+	//   "compact" (default) — one progress card per agent run, edited in
+	//       place: "Thinking..." at run start, then the running count of
+	//       completed tool calls, the tool in flight, elapsed time, and
+	//       any failure's one-line reason; a final edit closes it when
+	//       the run ends. No per-tool-call messages. Arguments and result
+	//       bodies stay out of chat; they're in the session store and the
 	//       telemetry backend.
-	//   "full" — the pre-compact rendering: argument summary on the
+	//   "full" — one card per tool call with the argument summary on the
 	//       call line and a truncated result body on completion. Useful
 	//       when watching a single run closely, noisy in a long thread.
+	//       "verbose" and "debug" are accepted as aliases.
 	//
 	// Unrecognised values resolve to "compact" (fail-safe to the quiet
 	// option). Reviewers can flip this per-process at runtime with the
@@ -205,9 +209,11 @@ const (
 
 // Tool-update verbosity values for Config.ToolUpdateVerbosity.
 const (
-	// ToolUpdateVerbosityCompact emits one line per tool call.
+	// ToolUpdateVerbosityCompact emits one progress card per run,
+	// edited in place.
 	ToolUpdateVerbosityCompact = "compact"
-	// ToolUpdateVerbosityFull adds argument and result detail.
+	// ToolUpdateVerbosityFull emits one card per tool call with
+	// argument and result detail.
 	ToolUpdateVerbosityFull = "full"
 )
 
@@ -222,7 +228,10 @@ func NormalizeToolUpdateVerbosity(v string) (mode string, ok bool) {
 		return ToolUpdateVerbosityCompact, true
 	case ToolUpdateVerbosityCompact:
 		return ToolUpdateVerbosityCompact, true
-	case ToolUpdateVerbosityFull:
+	case ToolUpdateVerbosityFull, "verbose", "debug":
+		// "verbose" and "debug" are the words people reach for when they
+		// mean "show me everything"; accept them rather than WARN and
+		// silently hand back the quiet mode.
 		return ToolUpdateVerbosityFull, true
 	default:
 		return ToolUpdateVerbosityCompact, false
