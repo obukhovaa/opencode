@@ -15,6 +15,7 @@ const (
 	VertexAISonnet5       ModelID = "vertexai.claude-sonnet-5"
 	VertexAIHaiku45       ModelID = "vertexai.claude-haiku-4-5"
 	VertexAIFable5        ModelID = "vertexai.claude-fable-5"
+	VertexAIFable51       ModelID = "vertexai.claude-fable-5-1"
 )
 
 var VertexAIGeminiModels = map[ModelID]Model{
@@ -156,6 +157,25 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsXHighThinking:    AnthropicModels[ClaudeFable5].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[ClaudeFable5].SupportsTaskBudget,
 		SupportsToolSearch:       AnthropicModels[ClaudeFable5].SupportsToolSearch,
+	},
+	VertexAIFable51: {
+		ID:                       VertexAIFable51,
+		Name:                     "VertexAI: Claude Fable 5.1",
+		Provider:                 ProviderVertexAI,
+		APIModel:                 "claude-fable-5-1",
+		CostPer1MIn:              AnthropicModels[ClaudeFable51].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[ClaudeFable51].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[ClaudeFable51].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[ClaudeFable51].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[ClaudeFable51].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[ClaudeFable51].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[ClaudeFable51].SupportsAttachments,
+		CanReason:                AnthropicModels[ClaudeFable51].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[ClaudeFable51].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[ClaudeFable51].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[ClaudeFable51].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[ClaudeFable51].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[ClaudeFable51].SupportsToolSearch,
 	},
 	VertexAISonnet46: {
 		ID:                       VertexAISonnet46,
