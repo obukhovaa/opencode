@@ -18,6 +18,7 @@ SCOPE ?= minor
 .PHONY: init init-hooks clean generate build \
         init-test-bin build-test-bin coverage-report-bin coverage-report \
         test-bin test-it test test-it-debug test-debug init-test lint \
+        schema schema-check \
         dev-build  dev dev-stop build-docker run-docker release version \
         test-e2e test-mysql test-mysql-up test-mysql-down
 
@@ -35,8 +36,38 @@ init-hooks:
 
 generate:
 	@mkdir -p $(TMP_DIR) $(TMP_DIR)/mysql_data
-	@go run cmd/schema/main.go > opencode-schema.json
+	$(MAKE) schema
 	@go generate ./...
+
+# Regenerate the JSON Schema for .opencode.json. Run this whenever a field
+# is added to / renamed on anything that surfaces in .opencode.json, and
+# commit the result alongside the code change.
+schema:
+	@go run cmd/schema/main.go > opencode-schema.json
+
+# Fail if the committed opencode-schema.json no longer matches what the
+# generator produces. The file is consumed by IDEs, vscode-jsonschema and
+# CI validators, so drift is a silent breakage: users get false-positive
+# errors on a valid config, or no validation on an invalid one.
+#
+# NOTE this catches only generator-vs-artifact drift — someone editing
+# cmd/schema/main.go and forgetting to regenerate. It CANNOT catch a
+# generator that is itself stale against internal/config (both sides agree
+# and the diff is empty); that class is covered by the consistency tests in
+# cmd/schema/main_test.go, which assert the schema's enums against the
+# validators that actually accept the values at runtime.
+schema-check:
+	@mkdir -p $(TMP_DIR)
+	@go run cmd/schema/main.go > $(TMP_DIR)/opencode-schema.expected.json
+	@diff -u opencode-schema.json $(TMP_DIR)/opencode-schema.expected.json > $(TMP_DIR)/schema.diff || { \
+		echo "opencode-schema.json is out of date with cmd/schema/main.go:"; \
+		echo ""; \
+		cat $(TMP_DIR)/schema.diff; \
+		echo ""; \
+		echo "Fix: run 'make schema' and commit opencode-schema.json."; \
+		exit 1; \
+	}
+	@echo "opencode-schema.json is up to date."
 
 # Build targets
 build: generate
