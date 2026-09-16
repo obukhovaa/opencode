@@ -1,0 +1,50 @@
+name: schema
+
+# The JSON Schema for .opencode.json is a public contract: IDEs,
+# vscode-jsonschema and config validators consume opencode-schema.json, so
+# drift is a SILENT breakage — users get false-positive errors on a valid
+# config, or no validation at all on an invalid one.
+#
+# Two failure modes, two checks, because they catch different things:
+#
+#   1. `make schema-check` — the committed artifact lags its generator
+#      (someone edited cmd/schema/main.go and did not regenerate).
+#   2. `go test ./cmd/schema/...` — the generator itself is stale against
+#      internal/config. Both sides agree, so regeneration is a no-op and
+#      check 1 passes clean. This shipped once: NormalizeToolUpdateVerbosity
+#      gained "verbose"/"debug" while the enum stayed ["compact","full"].
+#
+# Not path-filtered on purpose. The schema mirrors config structs reachable
+# from many packages, and a path list would have to track every one of them;
+# the job is a single `go run` plus one package's tests, so running it on
+# every PR is cheaper than maintaining the filter.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ">=1.23.2"
+          cache: true
+          cache-dependency-path: go.sum
+
+      - run: go mod download
+
+      - name: opencode-schema.json matches its generator
+        run: make schema-check
+
+      - name: Schema enums match the runtime validators
+        run: go test -count=1 ./cmd/schema/...

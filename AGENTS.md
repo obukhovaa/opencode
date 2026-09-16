@@ -20,6 +20,11 @@
 
 The schema file is consumed by IDEs / `vscode-jsonschema` / Claude Code's own validators — a stale schema means our users see false-positive errors on a valid config or no validation on an invalid one. Schema drift is a silent breakage; treat it as a build failure.
 
+CI enforces this in `.github/workflows/schema.yml` on every PR:
+
+- `make schema-check` fails if `opencode-schema.json` no longer matches `cmd/schema/main.go`. Fix with `make schema` and commit.
+- `go test ./cmd/schema/...` fails if a schema `enum` diverges from the validator that accepts the value at runtime. This is the case regeneration CANNOT catch — generator and artifact agree while both are stale against `internal/config`. When you add a value to a validator (a new alias, a new mode), add it to the enum in `cmd/schema/main.go` AND to the `probe` corpus in `cmd/schema/main_test.go`.
+
 When adding fields that contain hooks, agents, providers, or any map keyed on user-supplied names, ALSO add a unit test under `internal/config/` exercising `viper.Unmarshal` end-to-end. Viper case-folds map keys; pure `json.Unmarshal` tests pass but the loader silently mangles in production (see `TestConfig_HooksViperRoundTripLowercasesEventKeys`).
 
 ## Code Style Guidelines
