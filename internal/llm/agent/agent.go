@@ -260,7 +260,7 @@ func newAgent(
 	factory AgentFactory,
 	override ModelOverride,
 ) (Service, error) {
-	agentTools := NewToolSet(agentInfo, reg, permissions, historyService, lspService, sessions, messages, mcpReg, factory)
+	agentTools := NewToolSet(agentInfo, reg, permissions, historyService, lspService, sessions, messages, mcpReg, factory, override.Model)
 
 	agentProvider, err := createAgentProvider(
 		agentInfo.ID,
@@ -329,7 +329,7 @@ func newAgent(
 	// schema is documented to run with free-form output, and must not be handed
 	// a schema block telling it to call a tool it does not have.
 	if reg.IsToolEnabled(string(agentInfo.ID), tools.StructOutputToolName) {
-		if schema, ok := ResolveOutputSchema(agentInfo); ok && ResolveSchemaDelivery(agentInfo) == tools.SchemaDeliveryMessage {
+		if schema, ok := ResolveOutputSchema(agentInfo); ok && ResolveSchemaDelivery(agentInfo, override.Model) == tools.SchemaDeliveryMessage {
 			agent.structOutputEnvelope = tools.RenderSchemaEnvelope(schema)
 			agent.structOutputFingerprint = tools.SchemaFingerprint(schema)
 		}
