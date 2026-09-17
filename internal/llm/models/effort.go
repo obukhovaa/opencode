@@ -38,8 +38,7 @@ func IsReasoningEffort(s string) bool {
 // (internal/config/config.go), which silently rewrites an unsupported
 // level to a supported one at config load. A flow step's model override is
 // resolved at run time from templated args, where a silent rewrite would
-// hide a routing bug; the rules are therefore the same but the outcome is
-// an error:
+// hide a routing bug, so the outcome here is an error:
 //
 //   - "" is always legal — the provider default applies.
 //   - a model that cannot reason accepts no effort at all.
@@ -47,6 +46,18 @@ func IsReasoningEffort(s string) bool {
 //     SupportsXHighThinking and max only when SupportsMaximumThinking.
 //   - every other reasoning model (OpenAI, Yandex, local endpoints, Gemini)
 //     accepts low|medium|high.
+//
+// This is deliberately STRICTER than config.validateAgent, not a mirror of
+// it. Config only coerces the effort for OpenAI/Local-provider models and
+// for adaptive-thinking models; a reasoning model that is neither (e.g.
+// claude-4.5-opus, gemini-3.0-flash, yandexcloud.*) passes through config
+// with whatever effort string the agent declared, xhigh/max included, and
+// the provider client decides what to do with it. The same value on a flow
+// step override is rejected here, because the catalog flags say the model
+// cannot honour it. Accept that asymmetry rather than loosening this side:
+// the config path is a compatibility shim over hand-written agent config,
+// while a step override is a per-run routing decision that should fail
+// loudly when it names a level the model cannot run.
 //
 // Comparison is case-insensitive; callers that persist the value should
 // lower-case it themselves.
