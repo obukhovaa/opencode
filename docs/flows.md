@@ -96,6 +96,7 @@ Because built-in discovery derives IDs from file basenames (which can never cont
 |-------|------|----------|-------------|
 | `flow.args` | object | No | JSON Schema for expected arguments |
 | `flow.session` | object | No | Session configuration (see [Session Management](#session-management)) |
+| `flow.maxFallbackEntries` | int | No | Per-run cap on how many times any one step may be entered through `fallback.to`. `0` (unset) means `3`; negative is rejected at load. See [Fallback re-entry](#fallback-re-entry). |
 | `flow.steps` | array | Yes | Ordered list of step definitions |
 
 ### Step fields
@@ -104,7 +105,9 @@ Because built-in discovery derives IDs from file basenames (which can never cont
 |-------|------|----------|-------------|
 | `id` | string | Yes | Unique step identifier (kebab-case, max 64 chars) |
 | `extends` | array | No | Step-template names (`.`-prefixed) whose keys seed this step (see [Shared step templates](#shared-step-templates-include--extends)) |
-| `agent` | string | No | Agent ID to use (defaults to `coder`) |
+| `agent` | string | No | Agent ID to use (defaults to `coder`). Accepts `${args.*}` / `${step.*}` placeholders; a placeholder that does not resolve **fails the step** (its `fallback` fires) — see [Placeholders in `agent`, `model` and `reasoningEffort`](#placeholders-in-agent-model-and-reasoningeffort). |
+| `model` | string | No | Per-step override of the agent's model, as a catalog model ID (e.g. `bedrock.eu-claude-sonnet-5`). Accepts `${args.*}` / `${step.*}`. Empty or unresolved means **no override** — the agent's own model runs and the miss is warn-logged. A resolved value the catalog does not know fails the step. Literal values are validated at flow load. Applied to that step's agent instance only — the agent's configuration is never changed. Inheritable via `extends`. |
+| `reasoningEffort` | string | No | Per-step override of the agent's reasoning effort: `low`, `medium`, `high`, `xhigh`, `max`. Same substitution and fallback rules as `model`; validated against the model the step actually runs on (`xhigh` / `max` only on models that support them), so an unsupported level fails the step. This check is stricter than the one applied to an agent's `reasoningEffort` in `.opencode.json`: config only coerces the level for OpenAI/local and adaptive-thinking models and passes it through untouched for other reasoning models (Gemini, Yandex, non-adaptive Claude), whereas a step override of `xhigh` / `max` on such a model fails the step. Inheritable via `extends`. |
 | `session.fork` | bool | No | Fork previous step's session (same agent only) |
 | `prompt` | string | Yes* | Prompt template with `${args.*}` and `${step.*}` placeholders. *Exactly one of `prompt` / `langfusePromptPath` is required — see [Langfuse-managed prompts](#langfuse-managed-prompts). |
 | `langfusePromptPath` | string | Yes* | Path of a prompt in [Langfuse Prompt Management](#langfuse-managed-prompts) to use instead of an inline `prompt`. Mutually exclusive with `prompt`. |
@@ -196,6 +199,41 @@ fallback:
 | `delay` | int | Delay between retries (seconds) |
 | `to` | string | Step ID to route to after all retries fail |
 | `on_turns_exhausted` | string | What a turn-budget exhaustion means for the step: `accept` (default) or `fail`. See [Turn-budget exhaustion](#turn-budget-exhaustion). |
+
+#### Fallback re-entry
+
+A step reached through `fallback.to` bypasses the diamond-convergence guard, so
+an escalation target that already ran earlier in the same invocation (standard
+step fails → escalated step → `cycle: true` rule back to the standard step →
+fails again → escalated step) is admitted again rather than dropped. Two
+limits keep that from becoming an infinite loop:
+
+- **Static fallback cycles are rejected at load.** `fallback.to` is never
+  templated, so the runtime walks the `step → fallback.to` graph when the flow
+  loads and refuses any cycle (`fallback cycle: a -> b -> a`, including
+  `a -> a`). Only fallback edges count — a rule edge (even `cycle: true`)
+  closing a loop back to a fallback source is the intended escalation shape
+  and is allowed.
+- **Fallback entries are capped per step per run.** `flow.maxFallbackEntries`
+  (default `3`) bounds how many times any single step may be *entered via
+  fallback* within one invocation. Entries by rule, initial scheduling,
+  self-loop, postpone-resume or `cycle: true` do not count. When the
+  `(N+1)`th fallback arrival at a step would exceed the cap, the step is not
+  run: the runtime records a `failed` flow state on that step whose error
+  names the limit (`step "b" reached maxFallbackEntries=3: fallback re-entry
+  limit exceeded …`), emits `flow.step.failed`, enqueues nothing further, and
+  the run terminates `flow.failed`. With two steps feeding each other that is
+  at most `1 + 2·N` step runs in total.
+
+Raise the key only for flows whose escalation ladder genuinely needs more
+passes; a step that keeps failing into the same salvage step is a bug in the
+flow, not something to loop on.
+
+```yaml
+flow:
+  maxFallbackEntries: 5
+  steps: [...]
+```
 
 #### Turn-budget exhaustion
 
@@ -657,6 +695,35 @@ Scalar values substitute as plain text (a string verbatim, so quoting in the pro
 Step-scoped variables are substituted first so they cannot be shadowed by args of the same name.
 
 Arguments accumulate as the flow progresses. When a step produces structured output, its fields are merged into the args map for subsequent steps. `${step.*}` values are **not** merged into args — they exist only for rendering/predicates and do not leak into downstream steps.
+
+### Placeholders in `agent`, `model` and `reasoningEffort`
+
+The step's `agent`, `model` and `reasoningEffort` fields accept the same `${args.*}` / `${step.*}` placeholders as prompts, so an earlier step (a complexity gate, say) can pick the agent and model tier a later step runs on:
+
+```yaml
+- id: estimate
+  agent: piano-complexity-gate
+  prompt: "Size the task and pick a tier."
+  output:
+    schema: { type: object, required: [impl_model, impl_effort], properties: { impl_model: { type: string }, impl_effort: { type: string } } }
+  rules:
+    - then: implement
+- id: implement
+  agent: piano-developer
+  model: ${args.impl_model}             # e.g. bedrock.eu-claude-sonnet-5
+  reasoningEffort: ${args.impl_effort}  # low | medium | high | xhigh | max
+  prompt: "Implement it."
+  fallback: { retry: 0, to: implement-escalated }
+```
+
+The three fields deliberately fail differently when a placeholder does not resolve:
+
+- **`agent`** — an unresolved placeholder **fails the step** (and its `fallback.to` fires). An agent id is mandatory; there is no sensible default to run instead.
+- **`model` / `reasoningEffort`** — an unresolved or empty value means **no override**: the step runs on the agent's own model / effort and the miss is logged at `WARN`. An override is optional by nature, and flows legitimately reach a step through lanes (restarts, corrections) where the step that would have produced the arg never ran. What does fail the step is a value that *did* resolve but is wrong: a model id the catalog does not know, or an effort the chosen model does not accept.
+
+Literal (non-templated) `model` / `reasoningEffort` values are validated when the flow loads, like any other step field. The override applies to that step's agent instance only — two steps on the same agent id can run different models in the same run, and the agent's configuration is never rewritten.
+
+A step reached through `fallback.to` bypasses the diamond-convergence guard, so an escalation target that already ran earlier in the same invocation is admitted again rather than dropped; see [Fallback re-entry](#fallback-re-entry) for the load-time cycle check and the per-run `flow.maxFallbackEntries` cap that bound it.
 
 ## Session Management
 

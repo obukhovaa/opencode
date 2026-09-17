@@ -81,12 +81,12 @@ func TestFactoryNewAgent_StepContextReachesProviderSystemPrompt(t *testing.T) {
 		registry:    reg,
 		permissions: perms,
 		mcpRegistry: seamStubMCPRegistry{Broker: pubsub.NewBroker[MCPServerEvent]()},
-		stepCache:   map[string]Service{},
+		stepCache:   map[stepCacheKey]Service{},
 	}
 
 	stepCtx := &contextfile.StepContext{Paths: []string{"STEP.${flow.step}.md"}, Mode: "replace"}
 	svc, err := factory.NewAgent(context.Background(), "ctx-seam", nil, "", false, nil,
-		stepCtx, contextfile.TemplateVars{FlowID: "flow-x", FlowStep: "step-y"})
+		stepCtx, contextfile.TemplateVars{FlowID: "flow-x", FlowStep: "step-y"}, ModelOverride{})
 	require.NoError(t, err)
 
 	built, ok := svc.(*agent)

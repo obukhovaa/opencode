@@ -13,6 +13,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/format"
+	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/logging"
 )
 
@@ -437,6 +438,12 @@ func validateFlow(f *Flow) error {
 	if len(f.Spec.Steps) == 0 {
 		return ErrNoSteps
 	}
+	// MaxFallbackEntries is optional; 0 means the default (see
+	// FlowSpec.EffectiveMaxFallbackEntries). Negative values are invalid.
+	if f.Spec.MaxFallbackEntries < 0 {
+		return fmt.Errorf("%w: flow.maxFallbackEntries must be >= 0 (got %d; 0 means default %d)",
+			ErrInvalidMaxFallbackEntries, f.Spec.MaxFallbackEntries, DefaultMaxFallbackEntries)
+	}
 
 	// Build a set of step IDs for reference validation
 	stepIDs := make(map[string]bool, len(f.Spec.Steps))
@@ -482,6 +489,9 @@ func validateFlow(f *Flow) error {
 		if _, err := step.ResumeAfterDuration(); err != nil {
 			return fmt.Errorf("%w: %v", ErrInvalidYAML, err)
 		}
+		if err := validateStepModelLiterals(step); err != nil {
+			return err
+		}
 	}
 
 	// Validate rule and fallback references
@@ -509,6 +519,10 @@ func validateFlow(f *Flow) error {
 		}
 	}
 
+	if err := validateFallbackGraph(f.Spec.Steps); err != nil {
+		return err
+	}
+
 	// Warn about potential convergence (multiple rules targeting same step)
 	for targetID, count := range thenTargets {
 		if count > 1 {
@@ -517,6 +531,98 @@ func validateFlow(f *Flow) error {
 		}
 	}
 
+	return nil
+}
+
+// validateFallbackGraph rejects any cycle in the static `step →
+// fallback.to` graph (a → b → a, or a → a). Fallback.To is never templated,
+// so the walk is exact. Only fallback edges are in the graph: a rule edge
+// (even `cycle: true`) closing a loop back to a fallback source is the
+// intended escalation shape and is bounded at run time by
+// FlowSpec.MaxFallbackEntries instead. A pure fallback cycle has no
+// predicate anywhere on it, so nothing but the run-time cap could ever stop
+// it — refusing it at load is strictly better than failing a job later.
+//
+// Every step has at most one fallback edge, so the graph is functional: one
+// walk from each unvisited step, marking the current path, finds every
+// cycle. The error names the cycle in walk order, e.g. `a -> b -> a`.
+func validateFallbackGraph(steps []Step) error {
+	next := make(map[string]string, len(steps))
+	for _, step := range steps {
+		if step.Fallback != nil && step.Fallback.To != "" {
+			next[step.ID] = step.Fallback.To
+		}
+	}
+	const (
+		unvisited = iota
+		onPath
+		done
+	)
+	state := make(map[string]int, len(steps))
+	for _, start := range steps {
+		if state[start.ID] != unvisited {
+			continue
+		}
+		var path []string
+		cur := start.ID
+		for {
+			to, ok := next[cur]
+			state[cur] = onPath
+			path = append(path, cur)
+			if !ok || state[to] == done {
+				break
+			}
+			if state[to] == onPath {
+				// Trim the lead-in so the message shows only the loop.
+				for i, id := range path {
+					if id == to {
+						path = path[i:]
+						break
+					}
+				}
+				return fmt.Errorf("%w: %s -> %s", ErrFallbackCycle, strings.Join(path, " -> "), to)
+			}
+			cur = to
+		}
+		for _, id := range path {
+			state[id] = done
+		}
+	}
+	return nil
+}
+
+// validateStepModelLiterals checks a step's `model` / `reasoningEffort`
+// when they are LITERAL values: the model must be a catalog ModelID and the
+// effort a level that model accepts (models.ValidateReasoningEffort). A
+// value carrying a `${` placeholder is skipped — it is resolved per run by
+// resolveStepModelOverride in service.go, which applies the same checks to
+// the resolved text. Catching a literal typo here turns it into a load-time
+// error instead of a step that fails on every run.
+func validateStepModelLiterals(step Step) error {
+	modelLiteral := !strings.Contains(step.Model, "${")
+	effortLiteral := !strings.Contains(step.ReasoningEffort, "${")
+
+	var model models.Model
+	if step.Model != "" && modelLiteral {
+		m, ok := models.SupportedModels[models.ModelID(step.Model)]
+		if !ok {
+			return fmt.Errorf("%w: step %q model %q is not a supported model", ErrInvalidModel, step.ID, step.Model)
+		}
+		model = m
+	}
+	if step.ReasoningEffort != "" && effortLiteral {
+		if !models.IsReasoningEffort(step.ReasoningEffort) {
+			return fmt.Errorf("%w: step %q reasoningEffort %q must be one of low|medium|high|xhigh|max",
+				ErrInvalidReasoningEffort, step.ID, step.ReasoningEffort)
+		}
+		// Only when the model is also literal can the pair be checked; a
+		// templated model is validated against the effort at run time.
+		if step.Model != "" && modelLiteral {
+			if err := models.ValidateReasoningEffort(model, step.ReasoningEffort); err != nil {
+				return fmt.Errorf("%w: step %q: %v", ErrInvalidReasoningEffort, step.ID, err)
+			}
+		}
+	}
 	return nil
 }
 

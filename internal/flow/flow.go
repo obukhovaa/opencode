@@ -10,23 +10,27 @@ import (
 )
 
 var (
-	ErrFlowNotFound            = errors.New("flow not found")
-	ErrFlowDisabled            = errors.New("flow is disabled")
-	ErrInvalidFlowName         = errors.New("invalid flow name")
-	ErrInvalidStepID           = errors.New("invalid step ID")
-	ErrDuplicateStepID         = errors.New("duplicate step ID")
-	ErrInvalidRule             = errors.New("rule references non-existent step")
-	ErrInvalidFallback         = errors.New("fallback references non-existent step")
-	ErrInvalidOnTurnsExhausted = errors.New("invalid fallback.on_turns_exhausted")
-	ErrNoSteps                 = errors.New("flow has no steps")
-	ErrInvalidYAML             = errors.New("invalid flow YAML")
-	ErrInvalidPredicate        = errors.New("invalid predicate")
-	ErrInvalidMaxTurns         = errors.New("invalid maxTurns")
-	ErrInvalidMaxIterations    = errors.New("invalid maxIterations")
-	ErrInvalidInclude          = errors.New("invalid flow include")
-	ErrInvalidTemplate         = errors.New("invalid step template")
-	ErrUnknownTemplate         = errors.New("unknown step template")
-	ErrInvalidPromptSource     = errors.New("invalid step prompt source")
+	ErrFlowNotFound              = errors.New("flow not found")
+	ErrFlowDisabled              = errors.New("flow is disabled")
+	ErrInvalidFlowName           = errors.New("invalid flow name")
+	ErrInvalidStepID             = errors.New("invalid step ID")
+	ErrDuplicateStepID           = errors.New("duplicate step ID")
+	ErrInvalidRule               = errors.New("rule references non-existent step")
+	ErrInvalidFallback           = errors.New("fallback references non-existent step")
+	ErrInvalidOnTurnsExhausted   = errors.New("invalid fallback.on_turns_exhausted")
+	ErrNoSteps                   = errors.New("flow has no steps")
+	ErrInvalidYAML               = errors.New("invalid flow YAML")
+	ErrInvalidPredicate          = errors.New("invalid predicate")
+	ErrInvalidMaxTurns           = errors.New("invalid maxTurns")
+	ErrInvalidMaxIterations      = errors.New("invalid maxIterations")
+	ErrInvalidInclude            = errors.New("invalid flow include")
+	ErrInvalidTemplate           = errors.New("invalid step template")
+	ErrUnknownTemplate           = errors.New("unknown step template")
+	ErrInvalidPromptSource       = errors.New("invalid step prompt source")
+	ErrInvalidModel              = errors.New("invalid step model")
+	ErrInvalidReasoningEffort    = errors.New("invalid step reasoningEffort")
+	ErrInvalidMaxFallbackEntries = errors.New("invalid maxFallbackEntries")
+	ErrFallbackCycle             = errors.New("fallback cycle")
 )
 
 // Flow represents a discovered flow definition.
@@ -51,11 +55,46 @@ type FlowSession struct {
 	ResumeOnFailure bool   `yaml:"resume_on_failure,omitempty"`
 }
 
+// DefaultMaxFallbackEntries is the per-run cap on fallback-origin entries
+// of any one step when FlowSpec.MaxFallbackEntries is unset. Three admits
+// the escalation shapes flows actually use (fail → escalate → cycle back →
+// fail → escalate again) while a step that keeps failing into the same
+// salvage step stops after a handful of attempts instead of running until
+// the flow timeout. See FlowSpec.MaxFallbackEntries.
+const DefaultMaxFallbackEntries = 3
+
 // FlowSpec contains the flow's args schema and step definitions.
 type FlowSpec struct {
 	Args    map[string]any `yaml:"args,omitempty"`
 	Session FlowSession    `yaml:"session,omitempty"`
-	Steps   []Step         `yaml:"steps"`
+	// MaxFallbackEntries caps how many times any single step may be
+	// ENTERED THROUGH `fallback.to` within one flow invocation. Fallback
+	// arrivals bypass the diamond-convergence guard (Run, stepWork.fallback)
+	// so an escalation target can legitimately run more than once; that
+	// bypass is what lets `a --fallback--> b --cycle rule--> a` with an
+	// always-failing `a` re-enter `b` forever, because `maxIterations`
+	// only counts self-routes and the guard no longer stops it. When the
+	// (N+1)th fallback arrival at a step would exceed the cap, the runtime
+	// records a `failed` flow state for that step (its output names this
+	// key) and emits an error event instead of running it — the run ends
+	// failed and visible, never silently dropped. Entries by rule, initial
+	// scheduling, self-loop, postpone-resume or `cycle: true` do not count.
+	// 0 (unset) means DefaultMaxFallbackEntries; validateFlow rejects
+	// negatives. Purely static `fallback.to` cycles (a → b → a) are refused
+	// at load time by validateFallbackGraph; this cap bounds the shapes
+	// validation must admit, where a rule edge closes the loop.
+	MaxFallbackEntries int    `yaml:"maxFallbackEntries,omitempty"`
+	Steps              []Step `yaml:"steps"`
+}
+
+// EffectiveMaxFallbackEntries resolves MaxFallbackEntries with its default:
+// 0 (unset) yields DefaultMaxFallbackEntries; any positive value is used
+// as-is. Negative values never reach here (validateFlow rejects them).
+func (s *FlowSpec) EffectiveMaxFallbackEntries() int {
+	if s.MaxFallbackEntries <= 0 {
+		return DefaultMaxFallbackEntries
+	}
+	return s.MaxFallbackEntries
 }
 
 // Step defines a single step in the flow graph.
@@ -69,10 +108,36 @@ type Step struct {
 	// before validateFlow, so a merged step is validated exactly as an
 	// inline one. See the flow-api spec "Flow files compose shared step
 	// definitions via include and extends".
-	Extends []string    `yaml:"extends,omitempty"`
-	Agent   string      `yaml:"agent,omitempty"`
-	Session StepSession `yaml:"session,omitempty"`
-	Prompt  string      `yaml:"prompt"`
+	Extends []string `yaml:"extends,omitempty"`
+	// Agent names the agent that runs this step; empty means "coder".
+	// `${args.*}` / `${step.*}` placeholders are substituted at run time
+	// (resolveStepAgent in service.go). A placeholder that does not
+	// resolve FAILS the step — an agent id is mandatory, there is nothing
+	// sensible to fall back to — and the step's `fallback.to` fires.
+	Agent string `yaml:"agent,omitempty"`
+	// Model optionally overrides the agent's configured model for this
+	// step only, as a catalog ModelID (models.SupportedModels). Like Agent
+	// it accepts `${args.*}` / `${step.*}` placeholders, but the fallback
+	// rule is the opposite: empty or unresolved means NO override — the
+	// agent's own model runs and the miss is warn-logged. An override is
+	// optional by nature, and flows legitimately reach a step through
+	// lanes where the arg that would have carried it was never produced.
+	// A resolved value that is not in the catalog fails the step. Literal
+	// (non-templated) values are checked at load time by
+	// validateStepModelLiterals; the agent's own config is never mutated
+	// (the override is applied per agent instance in createAgentProvider).
+	// Inheritable through `extends`.
+	Model string `yaml:"model,omitempty"`
+	// ReasoningEffort optionally overrides the agent's reasoning effort
+	// for this step (low|medium|high|xhigh|max). Same substitution and
+	// fallback rules as Model — empty or unresolved means "the agent's
+	// own value". It is validated against the model the step actually
+	// runs on (the Model override when set, else the agent's model), so
+	// e.g. `xhigh` on a model without SupportsXHighThinking fails the
+	// step. Inheritable through `extends`.
+	ReasoningEffort string      `yaml:"reasoningEffort,omitempty"`
+	Session         StepSession `yaml:"session,omitempty"`
+	Prompt          string      `yaml:"prompt"`
 	// LangfusePromptPath names a prompt in Langfuse Prompt Management to
 	// use instead of the inline Prompt, so wording changes ship from the
 	// Langfuse UI with no flow or image deploy. Slashes are part of the

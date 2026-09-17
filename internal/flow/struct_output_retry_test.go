@@ -189,7 +189,7 @@ type scriptedAgentFactory struct {
 	agent agentpkg.Service
 }
 
-func (f *scriptedAgentFactory) NewAgent(context.Context, string, map[string]any, string, bool, []bridge.PeerRef, *contextfile.StepContext, contextfile.TemplateVars) (agentpkg.Service, error) {
+func (f *scriptedAgentFactory) NewAgent(context.Context, string, map[string]any, string, bool, []bridge.PeerRef, *contextfile.StepContext, contextfile.TemplateVars, agentpkg.ModelOverride) (agentpkg.Service, error) {
 	return f.agent, nil
 }
 

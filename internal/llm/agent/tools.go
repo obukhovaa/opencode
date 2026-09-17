@@ -77,6 +77,7 @@ func NewToolSet(
 	messages message.Service,
 	mcpRegistry MCPRegistry,
 	factory AgentFactory,
+	overrideModel models.ModelID,
 ) <-chan tools.BaseTool {
 	agentID := info.ID
 	result := make(chan tools.BaseTool, 100)
@@ -265,7 +266,7 @@ func NewToolSet(
 	// Inject struct_output tool if the agent has an output schema configured
 	if reg.IsToolEnabled(agentID, tools.StructOutputToolName) {
 		if resolved, ok := ResolveOutputSchema(info); ok {
-			delivery := ResolveSchemaDelivery(info)
+			delivery := ResolveSchemaDelivery(info, overrideModel)
 			logging.Info("Using structured output", "agent", agentID, "delivery", string(delivery), "schema", resolved)
 			result <- tools.NewStructOutputToolWithDelivery(resolved, delivery)
 		}
@@ -665,7 +666,11 @@ func ResolveOutputSchema(info *agentregistry.AgentInfo) (map[string]any, bool) {
 // ResolveSchemaDelivery picks the effective schema-delivery mode for an agent:
 // the agent's own setting when it declares one, else the top-level config, else
 // the default.
-func ResolveSchemaDelivery(info *agentregistry.AgentInfo) tools.SchemaDelivery {
+// overrideModel is the flow step's per-instance `model` override (ModelOverride.Model),
+// empty when the agent runs on its configured model. It has to be passed in:
+// the gate below depends on the model the agent ACTUALLY runs, and a step that
+// overrides the model never touches the config the resolution would otherwise read.
+func ResolveSchemaDelivery(info *agentregistry.AgentInfo, overrideModel models.ModelID) tools.SchemaDelivery {
 	agentValue, agentID := "", ""
 	if info != nil {
 		agentValue, agentID = info.StructOutputSchemaDelivery, info.ID
@@ -675,9 +680,9 @@ func ResolveSchemaDelivery(info *agentregistry.AgentInfo) tools.SchemaDelivery {
 		globalValue = cfg.StructOutputSchemaDelivery
 	}
 	mode := resolveSchemaDelivery(agentValue, globalValue, agentID)
-	if mode == tools.SchemaDeliveryMessage && modelRejectsInvariantOutputParam(agentID) {
+	if mode == tools.SchemaDeliveryMessage && modelRejectsInvariantOutputParam(agentID, overrideModel) {
 		logging.Debug("Model cannot express the invariant struct_output parameter; keeping the schema in the tool block",
-			"agent", agentID)
+			"agent", agentID, "override_model", string(overrideModel))
 		return tools.SchemaDeliveryTool
 	}
 	return mode
@@ -696,27 +701,32 @@ func ResolveSchemaDelivery(info *agentregistry.AgentInfo) tools.SchemaDelivery {
 // is Anthropic prompt-cache invalidation. Falling back to tool delivery costs
 // them nothing they had.
 //
-// Resolution mirrors createAgentProvider: the config entry first, then the
-// registry's own model, then coder's. An unresolvable model returns false —
-// provider construction will fail with its own clear error, and guessing here
-// would silently change delivery on a misconfiguration.
-func modelRejectsInvariantOutputParam(agentID string) bool {
-	if agentID == "" {
-		return false
-	}
-	cfg := config.Get()
-	if cfg == nil {
-		return false
-	}
-	name := config.AgentName(agentID)
-	modelID := models.ModelID("")
-	if agentCfg, ok := cfg.Agents[name]; ok {
-		modelID = agentCfg.Model
-	} else if reg := agentregistry.GetRegistry(); reg != nil {
-		if info, found := reg.Get(agentID); found && info.Model != "" {
-			modelID = models.ModelID(info.Model)
-		} else if coderCfg, coderOk := cfg.Agents[config.AgentCoder]; found && coderOk {
-			modelID = coderCfg.Model
+// Resolution mirrors createAgentProvider, override first: a flow step's
+// `model:` replaces the agent's configured model on the local provider config,
+// so a step moving a Claude-configured agent onto Gemini must be gated on
+// Gemini. Without the override the config entry wins, then the registry's own
+// model, then coder's. An unresolvable model returns false — provider
+// construction will fail with its own clear error, and guessing here would
+// silently change delivery on a misconfiguration.
+func modelRejectsInvariantOutputParam(agentID string, overrideModel models.ModelID) bool {
+	modelID := overrideModel
+	if modelID == "" {
+		if agentID == "" {
+			return false
+		}
+		cfg := config.Get()
+		if cfg == nil {
+			return false
+		}
+		name := config.AgentName(agentID)
+		if agentCfg, ok := cfg.Agents[name]; ok {
+			modelID = agentCfg.Model
+		} else if reg := agentregistry.GetRegistry(); reg != nil {
+			if info, found := reg.Get(agentID); found && info.Model != "" {
+				modelID = models.ModelID(info.Model)
+			} else if coderCfg, coderOk := cfg.Agents[config.AgentCoder]; found && coderOk {
+				modelID = coderCfg.Model
+			}
 		}
 	}
 	model, ok := models.SupportedModels[modelID]

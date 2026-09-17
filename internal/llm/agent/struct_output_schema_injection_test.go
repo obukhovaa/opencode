@@ -4,6 +4,9 @@ import (
 	"context"
 	"testing"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
+	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/stretchr/testify/assert"
@@ -210,4 +213,48 @@ func TestWithStructOutputSchemaIsANoopWithoutSchema(t *testing.T) {
 	in := []message.Message{userMsg("hi")}
 	assert.Equal(t, in, a.withStructOutputSchema(context.Background(), "S1", in))
 	assert.Empty(t, msgs.created)
+}
+
+// A flow step's `model:` override replaces the agent's configured model on the
+// local provider config, so the delivery gate has to be evaluated against the
+// model the agent ACTUALLY runs. Reading only the config would let a step that
+// moves a Claude-configured agent onto Gemini keep message delivery — and
+// Gemini rejects the invariant `output` parameter, because its function
+// declarations cannot express an object with no declared properties.
+func TestResolveSchemaDeliveryFollowsTheModelOverride(t *testing.T) {
+	var gemini, anthropic models.ModelID
+	for id, m := range models.SupportedModels {
+		if gemini == "" && m.Provider == models.ProviderGemini {
+			gemini = id
+		}
+		if anthropic == "" && m.Provider == models.ProviderAnthropic {
+			anthropic = id
+		}
+	}
+	require.NotEmpty(t, gemini, "catalogue must have a Gemini model for this test to mean anything")
+	require.NotEmpty(t, anthropic)
+
+	dir := t.TempDir()
+	config.Reset()
+	_, err := config.Load(dir, false)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		config.Reset()
+		agentregistry.InvalidateRegistry()
+	})
+
+	info := &agentregistry.AgentInfo{ID: "prober"}
+
+	config.Get().Agents["prober"] = config.Agent{Model: anthropic}
+	agentregistry.InvalidateRegistry()
+	assert.Equal(t, tools.SchemaDeliveryMessage, ResolveSchemaDelivery(info, ""),
+		"an Anthropic agent on its configured model is the case this feature exists for")
+	assert.Equal(t, tools.SchemaDeliveryTool, ResolveSchemaDelivery(info, gemini),
+		"a step overriding onto Gemini must fall back, even though the config still says Anthropic")
+
+	config.Get().Agents["prober"] = config.Agent{Model: gemini}
+	agentregistry.InvalidateRegistry()
+	assert.Equal(t, tools.SchemaDeliveryTool, ResolveSchemaDelivery(info, ""))
+	assert.Equal(t, tools.SchemaDeliveryMessage, ResolveSchemaDelivery(info, anthropic),
+		"and a step overriding a Gemini agent onto Anthropic should get the caching back")
 }

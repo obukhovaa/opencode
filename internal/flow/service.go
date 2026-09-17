@@ -22,6 +22,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/format"
 	"github.com/opencode-ai/opencode/internal/langfuse"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
+	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -212,7 +213,17 @@ type stepWork struct {
 	// declared `cycle: true`. It bypasses the diamond-convergence guard so
 	// legitimate re-entries (e.g. verify → implement → verify) admit the
 	// second implement schedule instead of dropping it as convergence.
-	cycle     bool
+	cycle bool
+	// fallback set to true when this stepWork was enqueued by a failing
+	// step's `fallback.to`. Like cycle it bypasses the convergence guard
+	// (an escalation target may legitimately have run before in this
+	// invocation) and gets the cycle iteration bump, but it is tracked
+	// separately so Run can bound it: rule cycles are bounded by the
+	// author's own `${step.iteration}` / `maxIterations` predicates,
+	// whereas a fallback edge has no predicate — the only thing that stops
+	// `a --fallback--> b --cycle--> a` with an always-failing `a` is the
+	// per-run FlowSpec.MaxFallbackEntries cap enforced in Run.
+	fallback  bool
 	iteration int
 }
 
@@ -394,6 +405,13 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 		nextSteps <- w
 	}
 
+	// Per-run count of fallback-origin arrivals per target step id, read
+	// and written only by the scheduler goroutine below (the single
+	// consumer of nextSteps), so no locking is needed — unlike
+	// startedSteps, nothing touches it before that goroutine starts.
+	fallbackEntries := make(map[string]int, len(f.Spec.Steps))
+	maxFallbackEntries := f.Spec.EffectiveMaxFallbackEntries()
+
 	go func() {
 		for work := range nextSteps {
 			stepSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, sessionFlowID, work.step.ID)
@@ -412,8 +430,14 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 			//      (pre-fix bug: CD-4497 openspec-verify emitted verified=false,
 			//      routed back to implement, engine dropped it → flow closed
 			//      with drift unhealed; see openspec/specs/flow-runtime-cycles).
+			//   4. Fallback arrivals (stepWork.fallback): an escalation the
+			//      author asked for, never a racing duplicate — but its
+			//      target can have run before in this invocation. Bounded
+			//      separately by the maxFallbackEntries cap below, because
+			//      unlike a cycle rule a fallback edge carries no predicate
+			//      that could ever stop it.
 			isSelfLoop := work.prevStep != nil && work.prevStep.StepID == work.step.ID
-			bypass := isSelfLoop || work.postpone || work.cycle
+			bypass := isSelfLoop || work.postpone || work.cycle || work.fallback
 			if !bypass {
 				if _, loaded := startedSteps.LoadOrStore(work.step.ID, true); loaded {
 					logging.Debug("Step already started, skipping (diamond convergence)", "step", work.step.ID)
@@ -437,9 +461,32 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 			// stays at whatever the sender set (typically 1). See
 			// TestMultiStepCycle_IterationIncrements + the CD-4497
 			// verify-loop postmortem in openspec/specs/flow-runtime-cycles.
-			if work.cycle {
+			//
+			// Fallback arrivals get the same bump: a fallback target that
+			// already ran is being re-entered exactly like a cycle target,
+			// and its own `${step.iteration}` predicates should see the true
+			// depth (TestRunStep_FallbackReentersAfterCycle pins iteration 2
+			// on the second escalation). A first-ever fallback entry still
+			// starts at 1 because there is no prior row.
+			if work.cycle || work.fallback {
 				if fs, dbErr := s.querier.GetFlowState(ctx, stepSessionID); dbErr == nil && fs.Iteration >= 1 {
 					work.iteration = int(fs.Iteration) + 1
+				}
+			}
+
+			// Fallback re-entry cap — see FlowSpec.MaxFallbackEntries for the
+			// contract. Counted per target step, per run, for fallback-origin
+			// arrivals only; an admitted arrival counts, so with cap N the
+			// step runs via fallback at most N times and the (N+1)th arrival
+			// is refused here. The refusal is a real step failure (failed
+			// flow state + error event), not a debug-log drop, and it never
+			// enqueues more work — that is what terminates the loop.
+			if work.fallback {
+				fallbackEntries[work.step.ID]++
+				if n := fallbackEntries[work.step.ID]; n > maxFallbackEntries {
+					s.refuseFallbackEntry(ctx, f, work, stepSessionID, rootSessionID, n, maxFallbackEntries, agentEvents, flowStates)
+					wg.Done() // balance the Add from sender
+					continue
 				}
 			}
 
@@ -480,9 +527,20 @@ func (s *service) runStep(
 	}
 	stepVars := map[string]any{"iteration": iteration}
 
-	agentID := step.Agent
-	if agentID == "" {
-		agentID = "coder"
+	// Agent id and model override both come from the step spec with
+	// ${args.*}/${step.*} substitution, but they fail differently — see
+	// resolveStepAgent / resolveStepModelOverride. Errors go through
+	// handleStepError so the step's `fallback.to` fires like any other
+	// pre-run failure.
+	agentID, err := resolveStepAgent(step, args, stepVars)
+	if err != nil {
+		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
+		return
+	}
+	modelOverride, err := resolveStepModelOverride(step, args, stepVars)
+	if err != nil {
+		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
+		return
 	}
 
 	var outputSchema map[string]any
@@ -517,7 +575,7 @@ func (s *service) runStep(
 	// FlowIDContextKey/FlowStepIDContextKey ctx values are set later, on
 	// the Run context, for telemetry only.
 	agentSvc, err := s.agents.NewAgent(ctx, agentID, outputSchema, step.ID, step.Interactive, boundPeers,
-		step.Context, contextfile.TemplateVars{FlowID: f.ID, FlowStep: step.ID})
+		step.Context, contextfile.TemplateVars{FlowID: f.ID, FlowStep: step.ID}, modelOverride)
 	if err != nil {
 		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
 		return
@@ -1150,7 +1208,10 @@ doneRetry:
 					mergeStructOutputIntoArgs(fallbackArgs, exhausted.StructOutput)
 				}
 				wg.Add(1)
-				nextSteps <- stepWork{step: *fallbackStep, args: fallbackArgs, prevStep: failedState, iteration: 1}
+				// fallback: true — see the comment at the handleStepError
+				// fallback site for why a fallback bypasses the guard and
+				// how Run bounds it.
+				nextSteps <- stepWork{step: *fallbackStep, args: fallbackArgs, prevStep: failedState, iteration: 1, fallback: true}
 			}
 		}
 		return
@@ -1524,7 +1585,7 @@ func (s *service) handleStepError(
 		updatedAt = state.UpdatedAt
 	}
 
-	failedState := &FlowState{
+	failedState := s.publishStepFailure(&FlowState{
 		SessionID:     sessionID,
 		RootSessionID: rootSessionID,
 		FlowID:        flowID,
@@ -1534,15 +1595,7 @@ func (s *service) handleStepError(
 		Output:        err.Error(),
 		Iteration:     iteration,
 		UpdatedAt:     updatedAt,
-	}
-	flowStates <- failedState
-	s.Publish(pubsub.UpdatedEvent, *failedState)
-
-	agentEvents <- agentpkg.AgentEvent{
-		Type:       agentpkg.AgentEventTypeError,
-		Error:      err,
-		FlowStepID: step.ID,
-	}
+	}, err, agentEvents, flowStates)
 
 	if step.Fallback != nil && step.Fallback.To != "" {
 		fallbackStep := findStep(f.Spec.Steps, step.Fallback.To)
@@ -1550,9 +1603,122 @@ func (s *service) handleStepError(
 			wg.Add(1)
 			// Fallback runs as iteration 1 of the fallback step — distinct
 			// step ID, distinct flow_states row.
-			nextSteps <- stepWork{step: *fallbackStep, args: copyArgs(args), prevStep: failedState, iteration: 1}
+			//
+			// fallback: true so the fallback bypasses the diamond-convergence
+			// guard in Run. A fallback is an escalation the author asked
+			// for, never a racing duplicate schedule — but its target can
+			// legitimately have run before in this invocation (escalated
+			// step → cycle rule back to the standard step → fails again →
+			// same escalated step). Without the bypass the second arrival
+			// is dropped as convergence and the run ends `completed` with
+			// nothing salvaged. The cycle iteration bump in Run then also
+			// gives the fallback step its true ${step.iteration}. See
+			// TestRunStep_FallbackReentersAfterCycle. The flag is distinct
+			// from cycle so Run can cap fallback re-entries per step
+			// (FlowSpec.MaxFallbackEntries) — see TestRun_MutualFallbackTerminates.
+			nextSteps <- stepWork{step: *fallbackStep, args: copyArgs(args), prevStep: failedState, iteration: 1, fallback: true}
 		}
 	}
+}
+
+// publishStepFailure fans a terminal step failure out to every consumer
+// the orchestrator relies on: the flowStates channel, the pubsub broker
+// and an error AgentEvent tagged with the step id. The caller has already
+// persisted the row; this only publishes. Returns the state so callers can
+// hand it on as the fallback step's prevStep.
+func (s *service) publishStepFailure(failed *FlowState, err error, agentEvents chan<- agentpkg.AgentEvent, flowStates chan<- *FlowState) *FlowState {
+	flowStates <- failed
+	s.Publish(pubsub.UpdatedEvent, *failed)
+	agentEvents <- agentpkg.AgentEvent{
+		Type:       agentpkg.AgentEventTypeError,
+		Error:      err,
+		FlowStepID: failed.StepID,
+	}
+	return failed
+}
+
+// refuseFallbackEntry is Run's response to a fallback arrival that would
+// exceed FlowSpec.MaxFallbackEntries: the target step is NOT run and no
+// further fallback is enqueued, but the refusal is recorded as a failed flow
+// state on the target step's own row (created if this is the step's first
+// arrival, i.e. maxFallbackEntries is 0) and published like any other step
+// failure, so the run terminates `failed` with the limit named in the error.
+func (s *service) refuseFallbackEntry(
+	ctx context.Context,
+	f *Flow,
+	work stepWork,
+	sessionID string,
+	rootSessionID string,
+	entries int,
+	limit int,
+	agentEvents chan<- agentpkg.AgentEvent,
+	flowStates chan<- *FlowState,
+) {
+	from := ""
+	if work.prevStep != nil {
+		from = work.prevStep.StepID
+	}
+	err := fmt.Errorf("step %q reached maxFallbackEntries=%d: fallback re-entry limit exceeded (arrival %d via fallback from step %q)",
+		work.step.ID, limit, entries, from)
+	logging.Error("Flow step fallback re-entry refused", "step", work.step.ID, "from", from, "entries", entries, "limit", limit)
+
+	iteration := work.iteration
+	if iteration < 1 {
+		iteration = 1
+	}
+	argsJSON, _ := json.Marshal(work.args)
+	// Same terminal-write rule as the failure path in runStep: land the row
+	// even while the parent ctx is unwinding, so inspection never finds the
+	// target stuck on its previous status.
+	writeCtx := ctx
+	if ctx.Err() != nil {
+		var cancelWrite context.CancelFunc
+		writeCtx, cancelWrite = context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelWrite()
+	}
+	var updatedAt int64
+	var state db.FlowState
+	var writeErr error
+	if _, getErr := s.querier.GetFlowState(writeCtx, sessionID); getErr == nil {
+		state, writeErr = s.querier.UpdateFlowState(writeCtx, db.UpdateFlowStateParams{
+			Status:         string(FlowStatusFailed),
+			Args:           sql.NullString{String: string(argsJSON), Valid: true},
+			Output:         sql.NullString{String: err.Error(), Valid: true},
+			IsStructOutput: false,
+			Iteration:      int64(iteration),
+			SessionID:      sessionID,
+		})
+	} else {
+		state, writeErr = s.querier.CreateFlowState(writeCtx, db.CreateFlowStateParams{
+			SessionID:      sessionID,
+			RootSessionID:  rootSessionID,
+			FlowID:         f.ID,
+			StepID:         work.step.ID,
+			Status:         string(FlowStatusFailed),
+			Args:           sql.NullString{String: string(argsJSON), Valid: true},
+			Output:         sql.NullString{String: err.Error(), Valid: true},
+			IsStructOutput: false,
+			Iteration:      int64(iteration),
+		})
+	}
+	if writeErr != nil {
+		logging.Warn("Failed to persist fallback refusal state", "session_id", sessionID, "error", writeErr)
+		updatedAt = time.Now().Unix()
+	} else {
+		updatedAt = state.UpdatedAt
+	}
+
+	s.publishStepFailure(&FlowState{
+		SessionID:     sessionID,
+		RootSessionID: rootSessionID,
+		FlowID:        f.ID,
+		StepID:        work.step.ID,
+		Status:        FlowStatusFailed,
+		Args:          work.args,
+		Output:        err.Error(),
+		Iteration:     iteration,
+		UpdatedAt:     updatedAt,
+	}, err, agentEvents, flowStates)
 }
 
 // hasResumableWork reports whether Run should enter the resume path
@@ -1895,6 +2061,80 @@ func resolveSessionPrefix(specPrefix string, args map[string]any) (string, error
 	}
 
 	return result, nil
+}
+
+// resolveStepAgent returns the agent id a step runs as: step.Agent with
+// ${args.*}/${step.*} substituted, or "coder" when empty. A placeholder
+// left unresolved is an error — an agent id is mandatory and there is no
+// sensible default to fall back to when `agent: ${args.impl_agent}` names
+// an arg no earlier step produced. Contrast resolveStepModelOverride.
+func resolveStepAgent(step Step, args map[string]any, stepVars map[string]any) (string, error) {
+	if step.Agent == "" {
+		return "coder", nil
+	}
+	agentID := strings.TrimSpace(substituteScoped(step.Agent, args, stepVars))
+	if strings.Contains(agentID, "${") {
+		return "", fmt.Errorf("step %q agent %q contains unresolved variables", step.ID, agentID)
+	}
+	if agentID == "" {
+		return "", fmt.Errorf("step %q agent %q resolved to an empty id", step.ID, step.Agent)
+	}
+	return agentID, nil
+}
+
+// resolveStepModelOverride returns the per-step model / reasoning-effort
+// override for the step, with ${args.*}/${step.*} substituted.
+//
+// Unlike the agent id, an unresolved or empty value is NOT an error: it
+// yields no override for that field (the agent's own value applies) and is
+// warn-logged. A model override is optional by nature, and restart lanes
+// legitimately reach a step before the step that would have produced the
+// arg has run. What IS an error is a value that resolved to something the
+// catalog does not know (ErrInvalidModel) or an effort the chosen model
+// does not accept (ErrInvalidReasoningEffort) — a typo in a routing table
+// must fail the step, not silently run the default model.
+//
+// The effort is validated against the model the step actually runs on when
+// that is known here (the Model override). With no model override the
+// effort is only shape-checked; createAgentProvider validates it against
+// the agent's own model once that is resolved.
+func resolveStepModelOverride(step Step, args map[string]any, stepVars map[string]any) (agentpkg.ModelOverride, error) {
+	var override agentpkg.ModelOverride
+
+	if step.Model != "" {
+		resolved := strings.TrimSpace(substituteScoped(step.Model, args, stepVars))
+		switch {
+		case strings.Contains(resolved, "${") || resolved == "":
+			logging.Warn("Step model override unresolved, using the agent's own model",
+				"step", step.ID, "model", step.Model, "resolved", resolved)
+		default:
+			if _, ok := models.SupportedModels[models.ModelID(resolved)]; !ok {
+				return agentpkg.ModelOverride{}, fmt.Errorf("%w: step %q model %q is not a supported model", ErrInvalidModel, step.ID, resolved)
+			}
+			override.Model = models.ModelID(resolved)
+		}
+	}
+
+	if step.ReasoningEffort != "" {
+		resolved := strings.ToLower(strings.TrimSpace(substituteScoped(step.ReasoningEffort, args, stepVars)))
+		switch {
+		case strings.Contains(resolved, "${") || resolved == "":
+			logging.Warn("Step reasoningEffort override unresolved, using the agent's own value",
+				"step", step.ID, "reasoningEffort", step.ReasoningEffort, "resolved", resolved)
+		case !models.IsReasoningEffort(resolved):
+			return agentpkg.ModelOverride{}, fmt.Errorf("%w: step %q reasoningEffort %q must be one of low|medium|high|xhigh|max",
+				ErrInvalidReasoningEffort, step.ID, resolved)
+		default:
+			if override.Model != "" {
+				if err := models.ValidateReasoningEffort(models.SupportedModels[override.Model], resolved); err != nil {
+					return agentpkg.ModelOverride{}, fmt.Errorf("%w: step %q: %v", ErrInvalidReasoningEffort, step.ID, err)
+				}
+			}
+			override.ReasoningEffort = resolved
+		}
+	}
+
+	return override, nil
 }
 
 // substituteArgs is a thin wrapper around substituteScoped for callers that

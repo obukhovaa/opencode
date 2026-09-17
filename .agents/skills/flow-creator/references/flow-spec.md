@@ -21,6 +21,7 @@ flow:               # flow specification (required)
   session:          # session configuration (optional, see Session Management)
     prefix: string            # ${args.*} expression or literal (optional)
     resume_on_failure: bool   # treat `failed` as resumable on re-trigger (optional, default false)
+  maxFallbackEntries: int     # per-run cap on fallback.to entries of any one step; 0 = default 3, negative rejected (optional, see Fallback)
   steps: array      # ordered list of step definitions (required)
 ```
 
@@ -29,7 +30,9 @@ flow:               # flow specification (required)
 ```yaml
 - id: string             # unique, kebab-case, max 64 chars (required)
   extends: array         # step-template names (".name") whose keys seed this step (see Shared Step Templates) (optional)
-  agent: string          # agent ID, defaults to "coder" (optional)
+  agent: string          # agent ID, defaults to "coder"; ${args.*}/${step.*} allowed — unresolved FAILS the step (optional)
+  model: string          # per-step model override, catalog model ID; ${args.*} allowed — empty/unresolved = no override (optional)
+  reasoningEffort: string # per-step effort override: low|medium|high|xhigh|max, validated against the model the step runs on (optional)
   session:
     fork: bool           # copy message history from previous step, same agent only (optional)
   prompt: string         # prompt template with ${args.*} and ${step.*} placeholders (required)
@@ -127,6 +130,22 @@ fallback:
   to: step-id   # step to route to after all retries fail (string)
   on_turns_exhausted: fail   # "accept" (default) | "fail" — see below (string)
 ```
+
+### Fallback re-entry and cycles
+
+- `fallback.to` edges are validated as a graph at load: any cycle made of
+  fallback edges alone (`a → b → a`, `a → a`) fails the load with
+  `fallback cycle: a -> b -> a`. Rule edges — including `cycle: true` — are not
+  part of that graph, so `implement --fallback--> escalated --cycle rule-->
+  implement` is accepted.
+- A step entered via `fallback.to` bypasses the diamond-convergence guard and
+  gets the `cycle: true` iteration bump, so the escalation shape above re-runs
+  `escalated` instead of dropping it. To keep that finite, each step may be
+  entered via fallback at most `flow.maxFallbackEntries` times per run
+  (default 3). The `(N+1)`th fallback arrival is not run: the target step gets a
+  `failed` flow state naming the limit, a `flow.step.failed` event fires, and
+  the run ends `flow.failed`. Entries by rule, self-loop, postpone-resume or
+  `cycle: true` do not count against it.
 
 ### `on_turns_exhausted`
 
@@ -241,6 +260,9 @@ Every error above is raised at flow load; the registry logs it at `WARN` and **s
 - `${step.iteration}` expands to the step's current iteration (1-based). Always available; equals `1` for non-looping steps. Step-scoped — never merged into args, never persisted. `step.*` does not support dot-path traversal.
 - Arguments accumulate: structured output fields merge into args for subsequent steps. `${step.*}` does NOT accumulate or leak into downstream steps.
 - Step-scoped variables are substituted before args, so they cannot be shadowed by an args key of the same name.
+- `agent`, `model` and `reasoningEffort` accept the same placeholders as prompts. The fallback rule differs on purpose: an unresolved `agent` fails the step (its `fallback.to` fires — an agent id is mandatory); an unresolved or empty `model` / `reasoningEffort` means no override (the agent's own value runs, logged at WARN — restart lanes legitimately reach a step before the step that produces the arg). A `model` that resolves to an id the catalog does not know, or a `reasoningEffort` the resolved model cannot do (`xhigh` / `max` on a model without them), fails the step. Literal values are validated at flow load.
+- The override is applied per agent instance — the agent's configuration is never rewritten, and two steps on the same agent id may run different models in one run.
+- A step entered via `fallback.to` bypasses the diamond-convergence guard, so an escalation step that already ran in this invocation (standard fails → escalated → `cycle: true` back to standard → fails again → escalated) runs again instead of being dropped — bounded by `flow.maxFallbackEntries`; see "Fallback re-entry and cycles".
 
 ## Session Management
 

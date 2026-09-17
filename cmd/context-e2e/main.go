@@ -236,7 +236,7 @@ func runDisclosure(r *result, cfg *config.Config) {
 	// (history, sessions, messages, factory) are never touched.
 	lspSvc := noopLsp{Broker: pubsub.NewBroker[lsp.LSPServerEvent]()}
 	var readTool tools.BaseTool
-	for t := range llmagent.NewToolSet(&info, reg, perms, nil, lspSvc, nil, nil, mcpReg, nil) {
+	for t := range llmagent.NewToolSet(&info, reg, perms, nil, lspSvc, nil, nil, mcpReg, nil, "") {
 		if t.Info().Name == tools.ReadToolName {
 			readTool = t
 		}
