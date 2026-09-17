@@ -1135,6 +1135,83 @@ func TestAllowToolsDropsInheritedTools(t *testing.T) {
 	})
 }
 
+// An explicit empty declaration (`allowTools: []` / `"tools": {}`) unmarshals to
+// a non-nil zero-length collection, so a `!= nil` gate would treat it as a real
+// declaration: it would drop the inherited gate of the other kind and leave the
+// agent with neither, i.e. every tool granted.
+func TestEmptyToolDeclarationKeepsInheritedGate(t *testing.T) {
+	t.Run("markdown empty allowTools keeps inherited tools", func(t *testing.T) {
+		existing := AgentInfo{ID: "narrow", Tools: map[string]bool{"bash": false}}
+		md := AgentInfo{ID: "narrow", AllowTools: []string{}, Location: "/tmp/narrow.md"}
+		mergeMarkdownIntoExisting(&existing, &md)
+
+		if existing.UsesToolAllowlist() {
+			t.Error("an empty allowTools must not switch the agent into allowlist mode")
+		}
+		if len(existing.Tools) != 1 {
+			t.Fatalf("inherited Tools should survive, got %v", existing.Tools)
+		}
+		if existing.ToolEnabled("bash") {
+			t.Error("inherited deny of bash should still apply")
+		}
+	})
+
+	t.Run("markdown empty tools keeps inherited allowlist", func(t *testing.T) {
+		existing := AgentInfo{ID: "narrow", AllowTools: []string{"read"}}
+		md := AgentInfo{ID: "narrow", Tools: map[string]bool{}, Location: "/tmp/narrow.md"}
+		mergeMarkdownIntoExisting(&existing, &md)
+
+		if !existing.UsesToolAllowlist() {
+			t.Fatalf("an empty tools map must not drop the inherited allowlist, got %v", existing.AllowTools)
+		}
+		if existing.ToolEnabled("bash") {
+			t.Error("bash should still be denied by the inherited allowlist")
+		}
+	})
+
+	t.Run("config empty allowTools keeps inherited tools", func(t *testing.T) {
+		agents := make(map[string]AgentInfo)
+		registerBuiltins(agents, &config.Config{Agents: make(map[config.AgentName]config.Agent)})
+		inherited := len(agents[config.AgentExplorer].Tools)
+		if inherited == 0 {
+			t.Fatal("precondition: explorer should ship a Tools map")
+		}
+
+		applyConfigOverrides(agents, &config.Config{
+			Agents: map[config.AgentName]config.Agent{
+				config.AgentExplorer: {AllowTools: []string{}},
+			},
+		})
+
+		explorer := agents[config.AgentExplorer]
+		if explorer.UsesToolAllowlist() {
+			t.Error("an empty allowTools must not switch the agent into allowlist mode")
+		}
+		if len(explorer.Tools) != inherited {
+			t.Errorf("inherited Tools should survive, got %v", explorer.Tools)
+		}
+	})
+
+	t.Run("config empty tools keeps inherited allowlist", func(t *testing.T) {
+		agents := map[string]AgentInfo{
+			config.AgentExplorer: {ID: config.AgentExplorer, AllowTools: []string{"read"}},
+		}
+		applyConfigOverrides(agents, &config.Config{
+			Agents: map[config.AgentName]config.Agent{
+				config.AgentExplorer: {Tools: map[string]bool{}},
+			},
+		})
+
+		explorer := agents[config.AgentExplorer]
+		if !explorer.UsesToolAllowlist() {
+			t.Fatalf("an empty tools map must not drop the inherited allowlist, got %v", explorer.AllowTools)
+		}
+		if explorer.ToolEnabled("bash") {
+			t.Error("bash should still be denied by the inherited allowlist")
+		}
+	})
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr))
 }

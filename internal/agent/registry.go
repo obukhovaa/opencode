@@ -579,11 +579,15 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 		if agentCfg.Permission != nil {
 			existing.Permission = mergePermissions(existing.Permission, agentCfg.Permission)
 		}
-		if agentCfg.AllowTools != nil {
+		// len, not != nil: encoding/json unmarshals `"allowTools": []` into a
+		// non-nil empty slice, and an empty declaration grants nothing — it must
+		// not switch the agent into allowlist mode nor drop the inherited tools
+		// map, or the agent ends up with no gate at all. Same for tools below.
+		if len(agentCfg.AllowTools) > 0 {
 			dropInheritedTools(&existing, "config")
 			existing.AllowTools = deduplicateAllowTools(agentCfg.AllowTools, name)
 		}
-		if agentCfg.Tools != nil {
+		if len(agentCfg.Tools) > 0 {
 			dropInheritedAllowTools(&existing, "config")
 			if existing.Tools == nil {
 				existing.Tools = make(map[string]bool)
@@ -675,11 +679,13 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 	if md.Permission != nil {
 		existing.Permission = mergePermissions(existing.Permission, md.Permission)
 	}
-	if md.AllowTools != nil {
+	// len, not != nil: yaml.v3 unmarshals an empty `allowTools: []` sequence
+	// into a non-nil empty slice. See applyConfigOverrides.
+	if len(md.AllowTools) > 0 {
 		dropInheritedTools(existing, md.Location)
 		existing.AllowTools = deduplicateAllowTools(md.AllowTools, existing.ID)
 	}
-	if md.Tools != nil {
+	if len(md.Tools) > 0 {
 		dropInheritedAllowTools(existing, md.Location)
 		if existing.Tools == nil {
 			existing.Tools = make(map[string]bool)
