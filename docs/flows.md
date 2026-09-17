@@ -109,7 +109,7 @@ Because built-in discovery derives IDs from file basenames (which can never cont
 | `prompt` | string | Yes* | Prompt template with `${args.*}` and `${step.*}` placeholders. *Exactly one of `prompt` / `langfusePromptPath` is required — see [Langfuse-managed prompts](#langfuse-managed-prompts). |
 | `langfusePromptPath` | string | Yes* | Path of a prompt in [Langfuse Prompt Management](#langfuse-managed-prompts) to use instead of an inline `prompt`. Mutually exclusive with `prompt`. |
 | `langfusePromptLabel` | string | No | Langfuse label to resolve for `langfusePromptPath`. Defaults to `telemetry.langfuse.prompts.label` (itself defaulting to `production`). Only valid alongside `langfusePromptPath`. |
-| `output.schema` | object | No | JSON Schema for structured output |
+| `output.schema` | object | No | JSON Schema for structured output. Delivered to the model in the message tail, not in the `struct_output` tool definition, so consecutive steps of one agent share a cached prompt prefix — see [Structured Output](structured-output.md#where-the-schema-is-placed). |
 | `rules` | array | No | Conditional routing rules |
 | `fallback` | object | No | Retry and error routing. See [Fallback](#fallback) — including `on_turns_exhausted` for steps that must not complete silently when cut off at their turn budget. |
 | `maxTurns` | int | No | Per-step override for the agent's `maxTurns`. `0` (unset) inherits from the agent. |

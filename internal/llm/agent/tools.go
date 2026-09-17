@@ -262,20 +262,11 @@ func NewToolSet(
 	}
 
 	// Inject struct_output tool if the agent has an output schema configured
-	if info.Output != nil && info.Output.Schema != nil {
+	if resolved, ok := ResolveOutputSchema(info); ok {
 		if reg.IsToolEnabled(agentID, tools.StructOutputToolName) {
-			schema := info.Output.Schema
-			baseDir := ""
-			if info.Location != "" {
-				baseDir = filepath.Dir(info.Location)
-			}
-			resolved, err := format.ResolveSchemaRef(schema, baseDir)
-			if err != nil {
-				logging.Error("Failed to resolve output schema $ref", "agent", agentID, "error", err)
-			} else {
-				logging.Info("Using structured output", "agent", agentID, "schema", resolved)
-				result <- tools.NewStructOutputTool(resolved)
-			}
+			delivery := ResolveSchemaDelivery(info)
+			logging.Info("Using structured output", "agent", agentID, "delivery", string(delivery), "schema", resolved)
+			result <- tools.NewStructOutputToolWithDelivery(resolved, delivery)
 		}
 	}
 
@@ -643,4 +634,63 @@ func (w *contextDisclosureWrapper) Run(ctx context.Context, call tools.ToolCall)
 		resp.Content += blocks
 	}
 	return resp, err
+}
+
+// ResolveOutputSchema returns an agent's output schema with any `$ref` resolved
+// relative to the agent definition's own directory. ok is false when the agent
+// declares no schema, or when resolution failed — in which case the agent runs
+// without struct_output rather than with a half-resolved schema.
+//
+// Shared by the tool constructor and by the agent's schema-envelope injection so
+// both see byte-identical schemas. They must: the envelope's fingerprint is
+// computed from this value, and a divergence would make the dedup check compare
+// a schema against a different rendering of itself and re-inject every turn.
+func ResolveOutputSchema(info *agentregistry.AgentInfo) (map[string]any, bool) {
+	if info == nil || info.Output == nil || info.Output.Schema == nil {
+		return nil, false
+	}
+	baseDir := ""
+	if info.Location != "" {
+		baseDir = filepath.Dir(info.Location)
+	}
+	resolved, err := format.ResolveSchemaRef(info.Output.Schema, baseDir)
+	if err != nil {
+		logging.Error("Failed to resolve output schema $ref", "agent", info.ID, "error", err)
+		return nil, false
+	}
+	return resolved, true
+}
+
+// ResolveSchemaDelivery picks the effective schema-delivery mode for an agent:
+// the agent's own setting when it declares one, else the top-level config, else
+// the default.
+func ResolveSchemaDelivery(info *agentregistry.AgentInfo) tools.SchemaDelivery {
+	agentValue, agentID := "", ""
+	if info != nil {
+		agentValue, agentID = info.StructOutputSchemaDelivery, info.ID
+	}
+	globalValue := ""
+	if cfg := config.Get(); cfg != nil {
+		globalValue = cfg.StructOutputSchemaDelivery
+	}
+	return resolveSchemaDelivery(agentValue, globalValue, agentID)
+}
+
+// resolveSchemaDelivery is the precedence rule, split from the config lookup so
+// it is testable without the process-global config.
+//
+// An unrecognized value at either level fails safe to the default and warns: a
+// typo in a prompt-caching knob must not take a flow down, and the warning is
+// what tells the operator their escape hatch is not actually engaged.
+func resolveSchemaDelivery(agentValue, globalValue, agentID string) tools.SchemaDelivery {
+	raw, scope := agentValue, "agent"
+	if raw == "" {
+		raw, scope = globalValue, "global"
+	}
+	mode, ok := tools.ParseSchemaDelivery(raw)
+	if !ok {
+		logging.Warn("Unrecognized structOutputSchemaDelivery, falling back to default",
+			"agent", agentID, "scope", scope, "value", raw, "using", string(mode))
+	}
+	return mode
 }

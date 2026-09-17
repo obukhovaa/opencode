@@ -400,6 +400,11 @@ func generateSchema() map[string]any {
 					"description": "Maximum number of tool-use turns per request for this agent. Default is 100.",
 					"minimum":     1,
 				},
+				"structOutputSchemaDelivery": map[string]any{
+					"type":        "string",
+					"description": "Where this agent's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overrides the top-level setting.",
+					"enum":        []string{"message", "tool"},
+				},
 				"tools": map[string]any{
 					"type":        "object",
 					"description": "Tool enable/disable configuration",
@@ -747,6 +752,13 @@ func generateSchema() map[string]any {
 		"type":        "integer",
 		"description": "Global maximum number of agent tool-use turns per request. When set, overrides per-agent maxTurns. Also settable via --max-turns CLI flag.",
 		"minimum":     1,
+	}
+
+	// Add structOutputSchemaDelivery at the top level (per-agent overrides it)
+	schema["properties"].(map[string]any)["structOutputSchemaDelivery"] = map[string]any{
+		"type":        "string",
+		"description": "Where a flow step's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overridable per agent.",
+		"enum":        []string{"message", "tool"},
 	}
 
 	// Add telemetry configuration
