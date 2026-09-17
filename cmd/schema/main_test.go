@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 )
 
 // schemaPath is the committed artifact this generator produces. Tests read
@@ -34,6 +35,17 @@ func enumAt(t *testing.T, doc map[string]any, path ...string) []string {
 	t.Helper()
 	node := doc
 	for i, seg := range path {
+		// "*" descends through a map-valued node (agents, providers, lsp …)
+		// into the schema of its values, which live under
+		// additionalProperties rather than properties.
+		if seg == "*" {
+			child, ok := node["additionalProperties"].(map[string]any)
+			if !ok {
+				t.Fatalf("no additionalProperties at %v", path[:i])
+			}
+			node = child
+			continue
+		}
 		props, ok := node["properties"].(map[string]any)
 		if !ok {
 			t.Fatalf("no properties at %v", path[:i])
@@ -102,6 +114,47 @@ func TestSchemaEnumsMatchRuntimeValidators(t *testing.T) {
 				"verbose", "debug", "quiet", "silent", "off", "on",
 				"all", "none", "minimal", "detailed", "compact", "full",
 				"chatty", "trace", "info", "brief", "terse",
+			},
+		},
+		{
+			name: "structOutputSchemaDelivery",
+			path: []string{"structOutputSchemaDelivery"},
+			accepts: func(v string) bool {
+				// The empty string is "unset / inherit", not a value a user
+				// writes, so it is deliberately not part of the accepted set:
+				// the enum should flag an explicitly empty string.
+				if v == "" {
+					return false
+				}
+				_, ok := tools.ParseSchemaDelivery(v)
+				return ok
+			},
+			probe: []string{
+				"message", "tool", "Message", "Tool", "MESSAGE",
+				"messages", "tools", "inline", "prompt", "system",
+				"auto", "default", "none", "off", "on",
+				// Whitespace variants: the parser must not trim, or the
+				// runtime would accept a value the published enum rejects.
+				" message", "message ", " message ", "\tmessage", "tool ",
+			},
+		},
+		{
+			name: "agents.*.structOutputSchemaDelivery",
+			path: []string{"agents", "*", "structOutputSchemaDelivery"},
+			accepts: func(v string) bool {
+				if v == "" {
+					return false
+				}
+				_, ok := tools.ParseSchemaDelivery(v)
+				return ok
+			},
+			probe: []string{
+				"message", "tool", "Message", "Tool", "MESSAGE",
+				"messages", "tools", "inline", "prompt", "system",
+				"auto", "default", "none", "off", "on",
+				// Whitespace variants: the parser must not trim, or the
+				// runtime would accept a value the published enum rejects.
+				" message", "message ", " message ", "\tmessage", "tool ",
 			},
 		},
 	}

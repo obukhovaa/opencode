@@ -202,6 +202,14 @@
           },
           "type": "array"
         },
+        "structOutputSchemaDelivery": {
+          "description": "Where this agent's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overrides the top-level setting.",
+          "enum": [
+            "message",
+            "tool"
+          ],
+          "type": "string"
+        },
         "taskBudget": {
           "description": "Advisory token budget for the full agentic loop (minimum 20000). Only supported by models with SupportsTaskBudget. The budget is carried across compaction via the remaining field.",
           "minimum": 20000,
@@ -432,6 +440,14 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "structOutputSchemaDelivery": {
+            "description": "Where this agent's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overrides the top-level setting.",
+            "enum": [
+              "message",
+              "tool"
+            ],
+            "type": "string"
           },
           "taskBudget": {
             "description": "Advisory token budget for the full agentic loop (minimum 20000). Only supported by models with SupportsTaskBudget. The budget is carried across compaction via the remaining field.",
@@ -1191,6 +1207,14 @@
         }
       },
       "type": "object"
+    },
+    "structOutputSchemaDelivery": {
+      "description": "Where a flow step's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overridable per agent.",
+      "enum": [
+        "message",
+        "tool"
+      ],
+      "type": "string"
     },
     "telemetry": {
       "additionalProperties": false,
