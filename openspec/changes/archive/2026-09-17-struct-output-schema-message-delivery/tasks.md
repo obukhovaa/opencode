@@ -44,3 +44,18 @@
 
 - [x] 5.1 `docs/flows.md`, `docs/agents.md`, `AGENTS.md`
 - [x] 5.2 `make test`
+
+## 6. Review corrections
+
+- [x] 6.1 `SupportsMessageDelivery`: non-object roots and schemas declaring their
+  own `output` property fall back to tool delivery
+- [x] 6.2 Gemini-served models fall back to tool delivery
+  (`modelRejectsInvariantOutputParam`)
+- [x] 6.3 `withStructOutputSchema` re-injects after the mid-run compaction rebuild
+- [x] 6.4 Envelope created before the user turn (extended-thinking probe, seq order)
+- [x] 6.5 Lossless half-wrap recovery; `{}` resolved by defaults + required in both
+  modes
+- [x] 6.6 Envelope gated on `IsToolEnabled`; `SetEscapeHTML(false)`
+- [x] 6.7 `ParseSchemaDelivery` exact-match; whitespace probes in the enum corpus
+- [x] 6.8 Pre-existing: nil-map panic on `null` input; swallowed `errMsg` on the
+  post-compaction reload

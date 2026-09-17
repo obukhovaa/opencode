@@ -182,6 +182,58 @@ cheap and removes the sharpest edge of the change.
 | Compaction drops the envelope | Presence check runs post-summary, so the next run re-injects |
 | Envelope re-injected every turn, wasting tokens | Fingerprint dedup; injected once per session per distinct schema |
 
+## Corrections found in review
+
+Three regressions and three defects surfaced reviewing the first implementation.
+They are recorded here because each one is a property the design has to hold, not
+just a bug that was fixed.
+
+**C1 — Delivery is conditional, not universal (D6).** The invariant
+`{"output": {"type": "object"}}` surface cannot represent every schema or reach
+every provider. Three cases fall back to `tool` delivery: a non-object root
+schema (the tool block would contradict the envelope and no payload could satisfy
+both — this made such steps unanswerable), a schema declaring its own `output`
+property (the wrapper key would be ambiguous with a real field), and a
+Gemini-served model (its function declarations reject an object-typed parameter
+with no declared properties). None of the three is a case the cache problem
+applies to.
+
+**C2 — The envelope must survive mid-run compaction.** The tool-use loop rebuilds
+its history from the summary boundary, which discards the envelope. Under `tool`
+delivery the schema was in the tool block and compaction could not reach it, so
+"re-inject after compaction" is not an optimization but a requirement of parity.
+Every rebuild site routes through one helper whose dedup scan makes a repeat call
+free.
+
+**C3 — The envelope precedes the user turn.** The Anthropic builder derives its
+extended-thinking probe from the last text block of the last message. An envelope
+appended after the step prompt masked a "think ..." instruction on the first turn
+of every schema-bearing step, and a schema containing the word would switch
+thinking on. Creating it before the user message also keeps persisted seq order
+equal to in-memory order, so a later reload sees the same sequence.
+
+**C4 — Unwrapping must be lossless, not merely lenient (refines D5).** A
+half-wrapped payload (`{"output": {...}, "blockers": [...]}`) returned only the
+wrapped half — and `applyDefaults` then refilled the dropped key with its
+default, so a flow routing on `${args.blockers}` would read "no blockers" from a
+run that reported one. That is precisely the failure the defaults logic exists to
+prevent. Siblings the schema declares are folded in; unknown siblings are
+dropped.
+
+**C5 — The envelope follows the tool's enablement.** An agent with an output
+schema and `tools: {"struct_output": false}` is documented to run with free-form
+output; it was being handed a block telling it to call a tool it did not have.
+
+**C6 — The envelope is text, so it must not be HTML-escaped.** `MarshalIndent`
+rewrites `<`, `>` and `&` as `\u003c` and friends. In the tool block the API
+decoded those before the model saw them; as message text nothing does.
+
+A seventh point is worth stating as a non-decision: the retry and max-turns
+wrap-up prompts describe the document, not the argument, and are deliberately
+left delivery-agnostic — naming the `output` argument there would be wrong under
+`tool` delivery, and the lenient unwrapping in C4 makes the flat shape they
+encourage safe.
+
 ## Verification
 
 Cache behavior is verified structurally rather than by hitting the API: a test
