@@ -273,6 +273,73 @@ func TestSubstituteScoped_FloatScalarsRenderAsPlainDecimal(t *testing.T) {
 	}
 }
 
+func TestSubstituteScoped_KebabCaseDotPathSegment(t *testing.T) {
+	// C3 injects a scenario's per-step draft vocabulary as
+	// ${args.scenario.ui.draft.<step>}, and flow step ids are kebab-case
+	// ("cancel-reasons", "save-offers", "preview-and-approve"). A dot-path
+	// segment carrying a hyphen must resolve like any other key: the
+	// placeholder regex takes any non-brace run and the resolver splits on
+	// "." only, so nothing special is needed — this pins that it stays true.
+	args := map[string]any{
+		"scenario": map[string]any{
+			"key":              "acp",
+			"baseline_version": float64(3),
+			"ui": map[string]any{
+				"draft": map[string]any{
+					"cancel-reasons":      `{"askReasons":{"source":"agent","type":"boolean"}}`,
+					"preview-and-approve": `{"valueReminderOn":{"source":"both","type":"boolean"}}`,
+				},
+			},
+		},
+	}
+	tests := []struct {
+		template string
+		want     string
+	}{
+		{"${args.scenario.key}", "acp"},
+		{"${args.scenario.baseline_version}", "3"},
+		{"${args.scenario.ui.draft.cancel-reasons}", `{"askReasons":{"source":"agent","type":"boolean"}}`},
+		{"${args.scenario.ui.draft.preview-and-approve}", `{"valueReminderOn":{"source":"both","type":"boolean"}}`},
+	}
+	for _, tt := range tests {
+		if got := substituteScoped(tt.template, args, nil); got != tt.want {
+			t.Errorf("substituteScoped(%q) = %q, want %q", tt.template, got, tt.want)
+		}
+	}
+}
+
+func TestSubstituteScoped_ScenarioLeafIsVerbatimString(t *testing.T) {
+	// The leaf is a compact JSON *string*, not a nested map: C3 serializes it
+	// that way precisely so this path renders it verbatim instead of through
+	// fmt's map syntax (the CD-4975 lesson). Braces, quotes and `$` inside the
+	// value must survive untouched — ReplaceAllStringFunc does no `$` expansion,
+	// and a string leaf never re-enters the encoder.
+	leaf := `{"a":{"type":"string"},"b":{"note":"$1 & <x> \"q\""}}`
+	args := map[string]any{
+		"scenario": map[string]any{
+			"ui": map[string]any{"draft": map[string]any{"save-offers": leaf}},
+		},
+	}
+	got := substituteScoped("schema: ${args.scenario.ui.draft.save-offers}", args, nil)
+	if want := "schema: " + leaf; got != want {
+		t.Errorf("substituteScoped() = %q, want %q", got, want)
+	}
+}
+
+func TestSubstituteScoped_AbsentScenarioArgumentPreservesPlaceholder(t *testing.T) {
+	// C3 omits the whole `scenario` argument when the vocabulary is
+	// unavailable (inmem provider, manifest lookup failure) rather than
+	// sending a partial object. The citation must then survive verbatim, so
+	// the miss is grep-able in the rendered prompt instead of rendering as
+	// an empty string that reads like a deliberately empty schema.
+	args := map[string]any{"aid": "ABC123"}
+	got := substituteScoped("schema: ${args.scenario.ui.draft.cancel-reasons}", args, nil)
+	want := "schema: ${args.scenario.ui.draft.cancel-reasons}"
+	if got != want {
+		t.Errorf("substituteScoped() = %q, want %q", got, want)
+	}
+}
+
 func TestSubstituteArgs(t *testing.T) {
 	tests := []struct {
 		name     string
