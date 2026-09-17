@@ -205,9 +205,15 @@ fallback:
 A step reached through `fallback.to` bypasses the diamond-convergence guard, so
 an escalation target that already ran earlier in the same invocation (standard
 step fails → escalated step → `cycle: true` rule back to the standard step →
-fails again → escalated step) is admitted again rather than dropped. A cap
-keeps that from becoming an infinite loop:
+fails again → escalated step) is admitted again rather than dropped. Two
+limits keep that from becoming an infinite loop:
 
+- **Static fallback cycles are rejected at load.** `fallback.to` is never
+  templated, so the runtime walks the `step → fallback.to` graph when the flow
+  loads and refuses any cycle (`fallback cycle: a -> b -> a`, including
+  `a -> a`). Only fallback edges count — a rule edge (even `cycle: true`)
+  closing a loop back to a fallback source is the intended escalation shape
+  and is allowed.
 - **Fallback entries are capped per step per run.** `flow.maxFallbackEntries`
   (default `3`) bounds how many times any single step may be *entered via
   fallback* within one invocation. Entries by rule, initial scheduling,
@@ -717,7 +723,7 @@ The three fields deliberately fail differently when a placeholder does not resol
 
 Literal (non-templated) `model` / `reasoningEffort` values are validated when the flow loads, like any other step field. The override applies to that step's agent instance only — two steps on the same agent id can run different models in the same run, and the agent's configuration is never rewritten.
 
-A step reached through `fallback.to` bypasses the diamond-convergence guard, so an escalation target that already ran earlier in the same invocation is admitted again rather than dropped; see [Fallback re-entry](#fallback-re-entry) for the per-run `flow.maxFallbackEntries` cap that bounds it.
+A step reached through `fallback.to` bypasses the diamond-convergence guard, so an escalation target that already ran earlier in the same invocation is admitted again rather than dropped; see [Fallback re-entry](#fallback-re-entry) for the load-time cycle check and the per-run `flow.maxFallbackEntries` cap that bound it.
 
 ## Session Management
 

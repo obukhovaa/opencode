@@ -12,8 +12,9 @@ import (
 // steps whose failures keep feeding each other must terminate, and must
 // terminate as a visible failure. Both loop shapes are covered:
 //
-//   - pure mutual fallback (a --fallback--> b --fallback--> a);
-//   - a fallback edge closed by a rule (a --fallback--> b --rule cycle--> a),
+//   - pure mutual fallback (a --fallback--> b --fallback--> a), which
+//     validateFlow now rejects at load but a hand-registered flow bypasses;
+//   - the shape validation must admit (a --fallback--> b --rule cycle--> a),
 //     where `b` completes and its cycle rule sends `a` back to fail again.
 //
 // Bound: with N = maxFallbackEntries, each step is entered via fallback at
@@ -41,7 +42,7 @@ func TestRun_MutualFallbackTerminates(t *testing.T) {
 		wantRuns map[string]int
 	}{
 		{
-			name: "pure mutual fallback",
+			name: "pure mutual fallback (bypasses load validation)",
 			flow: Flow{
 				ID:   "test-mutual-fallback",
 				Name: "Mutual Fallback",
@@ -57,7 +58,7 @@ func TestRun_MutualFallbackTerminates(t *testing.T) {
 			wantRuns:       map[string]int{"a": 1 + n, "b": n},
 		},
 		{
-			name: "fallback edge closed by a cycle rule",
+			name: "fallback edge closed by a cycle rule (passes load validation)",
 			flow: Flow{
 				ID:   "test-fallback-cycle-rule",
 				Name: "Fallback + Cycle Rule",
@@ -86,6 +87,11 @@ func TestRun_MutualFallbackTerminates(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == tests[1].name {
+				if err := validateFlow(&tt.flow); err != nil {
+					t.Fatalf("validateFlow() must admit the fallback+cycle-rule shape, got %v", err)
+				}
+			}
 			agent := newStubAgent()
 			agent.responses = tt.responses
 			factory, states := runOverrideFlow(t, tt.flow, tt.args, agent)
@@ -156,6 +162,88 @@ func TestRun_MutualFallbackTerminates_RespectsFlowKey(t *testing.T) {
 	last := states[len(states)-1]
 	if last.Status != FlowStatusFailed || !strings.Contains(last.Output, "maxFallbackEntries=1") {
 		t.Errorf("final state = %+v, want failed naming maxFallbackEntries=1", last)
+	}
+}
+
+func TestValidateFlow_RejectsFallbackCycle(t *testing.T) {
+	tests := []struct {
+		name      string
+		steps     []Step
+		wantErr   error
+		wantCycle string // substring of the error naming the cycle
+	}{
+		{
+			name: "a -> b -> a rejected",
+			steps: []Step{
+				{ID: "a", Prompt: "x", Fallback: &Fallback{To: "b"}},
+				{ID: "b", Prompt: "x", Fallback: &Fallback{To: "a"}},
+			},
+			wantErr:   ErrFallbackCycle,
+			wantCycle: "a -> b -> a",
+		},
+		{
+			name: "a -> a rejected",
+			steps: []Step{
+				{ID: "a", Prompt: "x", Fallback: &Fallback{To: "a"}},
+			},
+			wantErr:   ErrFallbackCycle,
+			wantCycle: "a -> a",
+		},
+		{
+			name: "cycle reached through a lead-in names only the loop",
+			steps: []Step{
+				{ID: "entry", Prompt: "x", Fallback: &Fallback{To: "a"}},
+				{ID: "a", Prompt: "x", Fallback: &Fallback{To: "b"}},
+				{ID: "b", Prompt: "x", Fallback: &Fallback{To: "a"}},
+			},
+			wantErr:   ErrFallbackCycle,
+			wantCycle: "a -> b -> a",
+		},
+		{
+			name: "a -> b -> c chain accepted",
+			steps: []Step{
+				{ID: "a", Prompt: "x", Fallback: &Fallback{To: "b"}},
+				{ID: "b", Prompt: "x", Fallback: &Fallback{To: "c"}},
+				{ID: "c", Prompt: "x"},
+			},
+		},
+		{
+			name: "escalation shape with a rule cycle back accepted",
+			steps: []Step{
+				{ID: "implement", Prompt: "x", Fallback: &Fallback{To: "escalated"}},
+				{
+					ID: "escalated", Prompt: "x",
+					Fallback: &Fallback{To: "salvage"},
+					Rules:    []Rule{{If: "${args.again} == true", Then: "implement", Cycle: true}},
+				},
+				{ID: "salvage", Prompt: "x"},
+			},
+		},
+		{
+			name: "two steps sharing one fallback target accepted",
+			steps: []Step{
+				{ID: "a", Prompt: "x", Fallback: &Fallback{To: "handler"}},
+				{ID: "b", Prompt: "x", Fallback: &Fallback{To: "handler"}},
+				{ID: "handler", Prompt: "x"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateFlow(&Flow{ID: "cycle-check", Spec: FlowSpec{Steps: tt.steps}})
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("validateFlow() = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("validateFlow() = %v, want %v", err, tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantCycle) {
+				t.Errorf("error %q does not name the cycle %q", err, tt.wantCycle)
+			}
+		})
 	}
 }
 

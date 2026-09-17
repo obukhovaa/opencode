@@ -30,6 +30,7 @@ var (
 	ErrInvalidModel              = errors.New("invalid step model")
 	ErrInvalidReasoningEffort    = errors.New("invalid step reasoningEffort")
 	ErrInvalidMaxFallbackEntries = errors.New("invalid maxFallbackEntries")
+	ErrFallbackCycle             = errors.New("fallback cycle")
 )
 
 // Flow represents a discovered flow definition.
@@ -79,7 +80,9 @@ type FlowSpec struct {
 	// failed and visible, never silently dropped. Entries by rule, initial
 	// scheduling, self-loop, postpone-resume or `cycle: true` do not count.
 	// 0 (unset) means DefaultMaxFallbackEntries; validateFlow rejects
-	// negatives.
+	// negatives. Purely static `fallback.to` cycles (a → b → a) are refused
+	// at load time by validateFallbackGraph; this cap bounds the shapes
+	// validation must admit, where a rule edge closes the loop.
 	MaxFallbackEntries int    `yaml:"maxFallbackEntries,omitempty"`
 	Steps              []Step `yaml:"steps"`
 }

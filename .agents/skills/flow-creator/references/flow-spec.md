@@ -131,8 +131,13 @@ fallback:
   on_turns_exhausted: fail   # "accept" (default) | "fail" — see below (string)
 ```
 
-### Fallback re-entry
+### Fallback re-entry and cycles
 
+- `fallback.to` edges are validated as a graph at load: any cycle made of
+  fallback edges alone (`a → b → a`, `a → a`) fails the load with
+  `fallback cycle: a -> b -> a`. Rule edges — including `cycle: true` — are not
+  part of that graph, so `implement --fallback--> escalated --cycle rule-->
+  implement` is accepted.
 - A step entered via `fallback.to` bypasses the diamond-convergence guard and
   gets the `cycle: true` iteration bump, so the escalation shape above re-runs
   `escalated` instead of dropping it. To keep that finite, each step may be
@@ -257,7 +262,7 @@ Every error above is raised at flow load; the registry logs it at `WARN` and **s
 - Step-scoped variables are substituted before args, so they cannot be shadowed by an args key of the same name.
 - `agent`, `model` and `reasoningEffort` accept the same placeholders as prompts. The fallback rule differs on purpose: an unresolved `agent` fails the step (its `fallback.to` fires — an agent id is mandatory); an unresolved or empty `model` / `reasoningEffort` means no override (the agent's own value runs, logged at WARN — restart lanes legitimately reach a step before the step that produces the arg). A `model` that resolves to an id the catalog does not know, or a `reasoningEffort` the resolved model cannot do (`xhigh` / `max` on a model without them), fails the step. Literal values are validated at flow load.
 - The override is applied per agent instance — the agent's configuration is never rewritten, and two steps on the same agent id may run different models in one run.
-- A step entered via `fallback.to` bypasses the diamond-convergence guard, so an escalation step that already ran in this invocation (standard fails → escalated → `cycle: true` back to standard → fails again → escalated) runs again instead of being dropped — bounded by `flow.maxFallbackEntries`; see "Fallback re-entry".
+- A step entered via `fallback.to` bypasses the diamond-convergence guard, so an escalation step that already ran in this invocation (standard fails → escalated → `cycle: true` back to standard → fails again → escalated) runs again instead of being dropped — bounded by `flow.maxFallbackEntries`; see "Fallback re-entry and cycles".
 
 ## Session Management
 
