@@ -6,10 +6,85 @@ OpenCode supports structured output, allowing you to force an agent's final resp
 
 When a JSON schema is provided, OpenCode:
 
-1. Injects a `struct_output` tool whose parameters match the schema
-2. Appends an instruction to the system prompt telling the agent to call the tool
-3. The agent performs its work normally, then calls `struct_output` with the result
-4. The tool parses the input as JSON, makes it schema-conformant, and returns it as plain text
+1. Injects a `struct_output` tool with a single `output` object parameter
+2. Injects the schema itself as a `<struct_output_schema>` block in the message history
+3. Appends an instruction to the system prompt telling the agent to call the tool
+4. The agent performs its work normally, then calls `struct_output` with the result
+5. The tool parses the input as JSON, makes it schema-conformant, and returns it as plain text
+
+## Where the schema is placed
+
+The schema is delivered in the **message history**, not in the tool definition. This
+is a prompt-caching decision.
+
+Anthropic renders the cacheable prefix as `tools` → `system` → `messages` and
+invalidates everything after the first changed byte. A `struct_output` tool whose
+parameters were built from the step's schema therefore put a per-step payload at
+position 0 of that prefix: two consecutive flow steps of the same agent shared no
+cache at all — not the tool list, not the system prompt, and not even the message
+history a `session.fork: true` step had just copied verbatim. The symptom was that
+the first LLM call of every flow step was a cache miss.
+
+Keeping the tool definition byte-identical across steps and shipping the schema
+after the last cache breakpoint fixes that. The schema block is injected once per
+session per schema — a second turn of the same step re-sends nothing, a forked step
+with a different schema gets its own block (the block says it supersedes any earlier
+one), and a session that compacts past the block has it re-injected.
+
+Nothing about the emitted document changes: the tool result is the bare
+schema-conformant object, so flow routing (`${args.<field>}`), the TUI renderer, and
+downstream consumers are unaffected.
+
+### Reverting to schema-in-the-tool
+
+`structOutputSchemaDelivery` restores the previous behavior, globally or per agent:
+
+```json
+{
+  "structOutputSchemaDelivery": "message",
+  "agents": {
+    "analyzer": { "structOutputSchemaDelivery": "tool" }
+  }
+}
+```
+
+| Value | Behavior |
+|-------|----------|
+| `message` (default) | Invariant tool definition; schema in the message tail. Consecutive steps share a cached prefix. |
+| `tool` | Schema splayed into the tool's parameters. Every step writes a fresh cache entry. |
+
+A per-agent value wins over the top-level one. The values are case-sensitive; an
+unrecognized value logs a warning and falls back to `message`.
+
+### When message delivery does not apply
+
+Message delivery is used only where the invariant `output` parameter can
+faithfully represent the schema. These cases fall back to `tool` delivery
+automatically, behaving exactly as they did before this feature existed:
+
+| Case | Why |
+|------|-----|
+| A non-object root schema (`{"type": "array"}`, `{"type": "string"}`, …) | The invariant parameter declares an object, so the tool block and the schema would contradict each other and no payload could satisfy both. |
+| A schema that declares its own property named `output` | The wrapper key would be ambiguous with a real field. |
+| An agent whose model is served by the Gemini request builder | Its function declarations cannot express an object-typed parameter with no declared properties. |
+
+### Accepted call shapes
+
+In `message` mode the declared parameter is `output`, so the expected call is
+`{"output": { ...document... }}`. Two other shapes are accepted, because the
+model is shown the document's schema rather than the wrapper's:
+
+- **Flat** — the document at the top level, no wrapper.
+- **Half wrapped** — some fields inside `output`, others beside it. The siblings
+  the schema declares are folded in; the wrapped value wins a conflict. Nothing
+  is dropped, so a field the model reported cannot be silently replaced by its
+  declared default.
+
+Only a payload matching none of these is rejected, with an error result that
+re-enters the agent loop for a retry.
+
+Validation is identical in both delivery modes: the tool retains the full schema
+and enforces it regardless of how the model was shown it.
 
 ### Schema conformance
 

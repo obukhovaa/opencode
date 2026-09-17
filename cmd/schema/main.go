@@ -400,6 +400,11 @@ func generateSchema() map[string]any {
 					"description": "Maximum number of tool-use turns per request for this agent. Default is 100.",
 					"minimum":     1,
 				},
+				"structOutputSchemaDelivery": map[string]any{
+					"type":        "string",
+					"description": "Where this agent's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overrides the top-level setting.",
+					"enum":        []string{"message", "tool"},
+				},
 				"tools": map[string]any{
 					"type":        "object",
 					"description": "Tool enable/disable configuration",
@@ -749,6 +754,13 @@ func generateSchema() map[string]any {
 		"minimum":     1,
 	}
 
+	// Add structOutputSchemaDelivery at the top level (per-agent overrides it)
+	schema["properties"].(map[string]any)["structOutputSchemaDelivery"] = map[string]any{
+		"type":        "string",
+		"description": "Where a flow step's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overridable per agent.",
+		"enum":        []string{"message", "tool"},
+	}
+
 	// Add telemetry configuration
 	schema["properties"].(map[string]any)["telemetry"] = map[string]any{
 		"type":        "object",
@@ -1028,8 +1040,8 @@ func generateSchema() map[string]any {
 			},
 			"toolUpdateVerbosity": map[string]any{
 				"type":        "string",
-				"description": "Detail level when toolUpdatesEnabled is true: 'compact' (default) emits one line per call with glyph, name, and elapsed time; 'full' adds argument and result detail.",
-				"enum":        []string{"compact", "full"},
+				"description": "How tool activity reaches chat when toolUpdatesEnabled is true: 'compact' (default) posts one progress card per agent run and edits it in place (tool calls completed, tool in flight, elapsed time, failure reason); 'full' posts one card per tool call with the argument summary and a truncated result body. 'verbose' and 'debug' are accepted as aliases of 'full'. Unrecognised values fall back to 'compact'.",
+				"enum":        []string{"compact", "full", "verbose", "debug"},
 				"default":     "compact",
 			},
 			"questionNudgeIntervalSeconds": map[string]any{

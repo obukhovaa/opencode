@@ -254,7 +254,7 @@ func (s *Service) ToolVerbosity() string {
 func (s *Service) SetToolVerbosity(v string) (string, error) {
 	mode, ok := bridge.NormalizeToolUpdateVerbosity(v)
 	if !ok {
-		return s.ToolVerbosity(), fmt.Errorf("unknown verbosity %q (want %q or %q)",
+		return s.ToolVerbosity(), fmt.Errorf("unknown verbosity %q (want %q or %q; verbose and debug mean %[3]q)",
 			v, bridge.ToolUpdateVerbosityCompact, bridge.ToolUpdateVerbosityFull)
 	}
 	s.toolVerbosity.Store(mode)

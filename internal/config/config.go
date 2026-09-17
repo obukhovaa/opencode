@@ -116,7 +116,10 @@ type Agent struct {
 	ParallelToolUse     *bool        `json:"parallelToolUse,omitempty"`
 	Output              *AgentOutput `json:"output,omitempty"`
 	Skills              []string     `json:"skills,omitempty"`
-	TaskBudget          int64        `json:"taskBudget,omitempty"`
+	// StructOutputSchemaDelivery overrides the top-level setting of the same
+	// name for this agent. Empty inherits.
+	StructOutputSchemaDelivery string `json:"structOutputSchemaDelivery,omitempty"`
+	TaskBudget                 int64  `json:"taskBudget,omitempty"`
 	// Context scopes which context files feed this agent's system prompt
 	// instead of the global contextPaths (paths, replace/append mode, and
 	// the nested-disclosure opt-out). Defined in internal/contextfile so
@@ -489,20 +492,28 @@ type Config struct {
 	// /workspace/id/flows/fix-failing-tests.yaml → `id/fix-failing-tests`
 	// — so they can never collide with or shadow a built-in (slash-free)
 	// flow ID. See internal/flow/registry.go.
-	FlowPaths          []string               `json:"flowPaths,omitempty"`
-	TUI                TUIConfig              `json:"tui"`
-	Shell              ShellConfig            `json:"shell,omitempty"`
-	AutoCompact        bool                   `json:"autoCompact,omitempty"`
-	DisableLSPDownload bool                   `json:"disableLSPDownload,omitempty"`
-	SessionProvider    SessionProviderConfig  `json:"sessionProvider,omitempty"`
-	Skills             *SkillsConfig          `json:"skills,omitempty"`
-	Permission         *PermissionConfig      `json:"permission,omitempty"`
-	WebSearch          *WebSearchConfig       `json:"webSearch,omitempty"`
-	MaxTurns           int                    `json:"maxTurns,omitempty"`
-	Telemetry          *TelemetryConfig       `json:"telemetry,omitempty"`
-	SessionCleanup     *SessionCleanupConfig  `json:"sessionCleanup,omitempty"`
-	BackgroundTasks    *BackgroundTasksConfig `json:"backgroundTasks,omitempty"`
-	Router             *bridge.Config         `json:"router,omitempty"`
+	FlowPaths          []string              `json:"flowPaths,omitempty"`
+	TUI                TUIConfig             `json:"tui"`
+	Shell              ShellConfig           `json:"shell,omitempty"`
+	AutoCompact        bool                  `json:"autoCompact,omitempty"`
+	DisableLSPDownload bool                  `json:"disableLSPDownload,omitempty"`
+	SessionProvider    SessionProviderConfig `json:"sessionProvider,omitempty"`
+	Skills             *SkillsConfig         `json:"skills,omitempty"`
+	Permission         *PermissionConfig     `json:"permission,omitempty"`
+	WebSearch          *WebSearchConfig      `json:"webSearch,omitempty"`
+	MaxTurns           int                   `json:"maxTurns,omitempty"`
+	// StructOutputSchemaDelivery selects where a flow step's output JSON
+	// Schema is placed in the request: "message" (default) keeps the
+	// struct_output tool definition invariant and ships the schema in the
+	// message tail, so consecutive steps of one agent share a cached prefix;
+	// "tool" restores the pre-GENAI-325 behavior of splaying the schema into
+	// the tool's parameters. Overridable per agent. See
+	// openspec/specs/struct-output-schema-delivery/spec.md.
+	StructOutputSchemaDelivery string                 `json:"structOutputSchemaDelivery,omitempty"`
+	Telemetry                  *TelemetryConfig       `json:"telemetry,omitempty"`
+	SessionCleanup             *SessionCleanupConfig  `json:"sessionCleanup,omitempty"`
+	BackgroundTasks            *BackgroundTasksConfig `json:"backgroundTasks,omitempty"`
+	Router                     *bridge.Config         `json:"router,omitempty"`
 	// Hooks is the Claude-Code-compatible PreToolUse / PostToolUse
 	// subprocess hook map. Keys are event names (`PreToolUse`,
 	// `PostToolUse`); values are matcher groups whose entries fire as

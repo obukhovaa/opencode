@@ -20,6 +20,11 @@
 
 The schema file is consumed by IDEs / `vscode-jsonschema` / Claude Code's own validators — a stale schema means our users see false-positive errors on a valid config or no validation on an invalid one. Schema drift is a silent breakage; treat it as a build failure.
 
+CI enforces this in `.github/workflows/schema.yml` on every PR:
+
+- `make schema-check` fails if `opencode-schema.json` no longer matches `cmd/schema/main.go`. Fix with `make schema` and commit.
+- `go test ./cmd/schema/...` fails if a schema `enum` diverges from the validator that accepts the value at runtime. This is the case regeneration CANNOT catch — generator and artifact agree while both are stale against `internal/config`. When you add a value to a validator (a new alias, a new mode), add it to the enum in `cmd/schema/main.go` AND to the `probe` corpus in `cmd/schema/main_test.go`.
+
 When adding fields that contain hooks, agents, providers, or any map keyed on user-supplied names, ALSO add a unit test under `internal/config/` exercising `viper.Unmarshal` end-to-end. Viper case-folds map keys; pure `json.Unmarshal` tests pass but the loader silently mangles in production (see `TestConfig_HooksViperRoundTripLowercasesEventKeys`).
 
 ## Code Style Guidelines
@@ -94,6 +99,7 @@ Agents can be configured in `.opencode.json`:
 - `hidden`: If true, agent is not shown in TUI switcher or subagent lists
 - `native`: Whether this is a built-in agent (set automatically, not user-configurable)
 - `skills`: List of skill names to preload into the agent's system prompt at startup (e.g., `["review", "domain-knowledge"]`). Skills are injected as `<skill_content>` blocks — the agent gets the knowledge without needing to invoke the skill tool. Only skills with `allow` or default (no explicit deny) permission are injected. Preloaded skills are independent of the skill tool — `tools: {"skill": false}` disables runtime loading but preloaded skills are still injected. Variable substitution (`$ARGUMENTS`, `${SKILL_DIR}`) and shell markup (`!`command``) are not expanded for preloaded skills.
+- `structOutputSchemaDelivery`: Where this agent's `struct_output` JSON Schema is placed in the request — `message` (default) or `tool`. In `message` mode the `struct_output` tool definition is byte-identical for every agent, step and schema, and the schema ships as a `<struct_output_schema>` block in the message tail; that keeps the provider's cached prefix (`tools` → `system` → `messages`) stable, so consecutive flow steps of one agent hit the cache instead of each writing a fresh entry. `tool` restores the pre-GENAI-325 behavior of splaying the schema into the tool's parameters. Also settable at the top level of `.opencode.json`; the per-agent value wins. Matched exactly (case-sensitive, no whitespace trimming) so the accepted set equals the published JSON-Schema enum; an unrecognized value warns and falls back to `message`. Message delivery is skipped automatically — falling back to `tool` — for non-object root schemas, schemas declaring their own `output` property, and Gemini-served models. Full docs: [docs/structured-output.md](docs/structured-output.md#where-the-schema-is-placed).
 - `taskBudget`: Advisory token budget for the full agentic loop (min 20,000). Only supported by models with `SupportsTaskBudget` (currently Claude Opus 4.7). Uses the `task-budgets-2026-03-13` beta header. The budget is carried across compaction via the `remaining` field.
 - `permission`: Agent-specific permission overrides (supports granular glob patterns per tool)
 - `tools`: Enable/disable specific tools (e.g., `{"skill": false, "bash": false}`)

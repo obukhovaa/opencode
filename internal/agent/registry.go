@@ -48,14 +48,18 @@ type AgentInfo struct {
 	// LangfusePromptLabel selects which labelled version of
 	// LangfusePromptPath to resolve. Empty means the configured default
 	// ("production"). Only legal alongside LangfusePromptPath.
-	LangfusePromptLabel string          `yaml:"langfusePromptLabel,omitempty"`
-	Skills              []string        `yaml:"skills,omitempty"`
-	Permission          map[string]any  `yaml:"permission,omitempty"`
-	Tools               map[string]bool `yaml:"tools,omitempty"`
-	DeferredTools       map[string]bool `yaml:"deferredTools,omitempty"`
-	Output              *Output         `yaml:"output,omitempty"`
-	Location            string          `yaml:"-"`
-	ParallelToolUse     *bool           `yaml:"parallelToolUse,omitempty"`
+	LangfusePromptLabel string   `yaml:"langfusePromptLabel,omitempty"`
+	Skills              []string `yaml:"skills,omitempty"`
+	// StructOutputSchemaDelivery overrides the global
+	// structOutputSchemaDelivery for this agent ("message" / "tool"). Empty
+	// inherits. See openspec/specs/struct-output-schema-delivery/spec.md.
+	StructOutputSchemaDelivery string          `yaml:"structOutputSchemaDelivery,omitempty"`
+	Permission                 map[string]any  `yaml:"permission,omitempty"`
+	Tools                      map[string]bool `yaml:"tools,omitempty"`
+	DeferredTools              map[string]bool `yaml:"deferredTools,omitempty"`
+	Output                     *Output         `yaml:"output,omitempty"`
+	Location                   string          `yaml:"-"`
+	ParallelToolUse            *bool           `yaml:"parallelToolUse,omitempty"`
 	// Interactive is set in-memory by AgentFactory.NewAgent when the
 	// agent is being constructed for a flow step with `interactive: true`.
 	// NOT persisted via YAML — agent-level interactiveness is derived
@@ -525,6 +529,9 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 		if agentCfg.Skills != nil {
 			existing.Skills = deduplicateSkills(agentCfg.Skills, name)
 		}
+		if agentCfg.StructOutputSchemaDelivery != "" {
+			existing.StructOutputSchemaDelivery = agentCfg.StructOutputSchemaDelivery
+		}
 		// Like Output: a declared context object replaces the whole
 		// inherited one — paths/mode/nested travel together.
 		if agentCfg.Context != nil {
@@ -618,6 +625,9 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 	}
 	if md.Skills != nil {
 		existing.Skills = deduplicateSkills(md.Skills, existing.ID)
+	}
+	if md.StructOutputSchemaDelivery != "" {
+		existing.StructOutputSchemaDelivery = md.StructOutputSchemaDelivery
 	}
 	// As in applyConfigOverrides: a declared context replaces the whole
 	// inherited object.

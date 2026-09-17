@@ -232,6 +232,20 @@ type agent struct {
 	// two Run calls for one session can briefly overlap).
 	deferredAnnounced   sync.Map
 	deferredAnnouncedMu sync.Mutex
+
+	// structOutputEnvelope is the pre-rendered <struct_output_schema> block
+	// this agent injects into the message tail, and structOutputFingerprint
+	// is the digest a history scan looks for to decide it has already been
+	// injected. Both empty when the agent has no output schema, or when it
+	// runs in `tool` delivery mode — there the schema rides in the tool
+	// parameters and there is nothing to inject.
+	//
+	// Rendered once at construction rather than per run: the schema is fixed
+	// for the agent's lifetime (a flow step gets its own agent instance), and
+	// re-rendering per turn would burn a JSON marshal and a sha256 on the hot
+	// path for a value that cannot change.
+	structOutputEnvelope    string
+	structOutputFingerprint string
 }
 
 func newAgent(
@@ -302,6 +316,23 @@ func newAgent(
 		allowParallelism:  agentInfo.AllowsParallelToolUse(),
 		factory:           factory,
 		basePrompt:        agentInfo.Prompt,
+	}
+
+	// Message-delivery mode moves the output schema out of the tool block (which
+	// sits in the provider's cached prefix, ahead of the system prompt and every
+	// message) and into a message at the tail. Without this the tool definition
+	// differs per step, and two consecutive steps of one agent share no cache at
+	// all — see openspec/specs/struct-output-schema-delivery/spec.md.
+	//
+	// Gated on IsToolEnabled for the same reason NewToolSet and the prompt
+	// builder are: an agent with `tools: {"struct_output": false}` and an output
+	// schema is documented to run with free-form output, and must not be handed
+	// a schema block telling it to call a tool it does not have.
+	if reg.IsToolEnabled(string(agentInfo.ID), tools.StructOutputToolName) {
+		if schema, ok := ResolveOutputSchema(agentInfo); ok && ResolveSchemaDelivery(agentInfo) == tools.SchemaDeliveryMessage {
+			agent.structOutputEnvelope = tools.RenderSchemaEnvelope(schema)
+			agent.structOutputFingerprint = tools.SchemaFingerprint(schema)
+		}
 	}
 
 	// Resolve tools in background so they're ready before first Run() call
@@ -851,6 +882,17 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		a.setTraceOutput(ctx, func() any { return traceOutputFromEvent(result) })
 	}()
 
+	// The output schema rides in the message tail rather than the tool block, so
+	// it stays behind the provider's last cache breakpoint. It goes in BEFORE the
+	// step's own prompt: the Anthropic builder derives its extended-thinking
+	// probe from the last text block of the last message (preparedMessages ->
+	// shouldThink), so an envelope appended after the prompt would mask a
+	// "think ..." instruction on every schema-bearing step's first turn — and a
+	// schema that happens to contain the word would switch thinking on.
+	// Creating it first also keeps the persisted seq order equal to the
+	// in-memory order, so a later reload sees the same sequence.
+	msgs = a.withStructOutputSchema(ctx, sessionID, msgs)
+
 	var userMsg message.Message
 	msgHistory := msgs
 	if hasUserTurn {
@@ -945,7 +987,7 @@ OuterLoop:
 				} else {
 					// After successful compaction, reload messages and rebuild msgHistory
 					msgs, errMsg := a.messages.List(ctx, sessionID)
-					if err != nil {
+					if errMsg != nil {
 						return a.err(fmt.Errorf("failed to reload messages after compaction: %w", errMsg))
 					}
 
@@ -954,6 +996,13 @@ OuterLoop:
 						return a.err(fmt.Errorf("failed to get session after compaction: %w", errMsg))
 					}
 					msgs = a.filterMessagesFromSummary(msgs, session.SummaryMessageID)
+					// The summary boundary sits after the schema envelope, so
+					// filterMessagesFromSummary just dropped it. Under tool
+					// delivery the schema was in the tool block and survived
+					// compaction untouched; re-inject here so it still does,
+					// and so the forced struct_output wrap-up below is not asked
+					// to produce a document whose shape left the conversation.
+					msgs = a.withStructOutputSchema(ctx, sessionID, msgs)
 
 					// Carry task budget across compaction: tell provider how much budget remains
 					if agentCfg, hasCfg := config.Get().Agents[a.agentID]; hasCfg && agentCfg.TaskBudget > 0 {
@@ -3335,4 +3384,68 @@ func truncateStr(s string, max int) string {
 		return s[:max]
 	}
 	return s[:max-3] + "..."
+}
+
+// injectStructOutputSchema returns the synthetic user message carrying this
+// agent's <struct_output_schema> envelope, when the history about to be sent
+// upstream does not already contain it.
+//
+// Mirrors injectDeferredDelta: a synthetic User message appended to msgHistory
+// after the run's own user turn, so the schema sits at the very tail of the
+// request — past the last cache breakpoint, where per-step bytes belong.
+// Putting it in the tool block or the system prompt (both ahead of the whole
+// conversation in the cached prefix) is the bug this exists to fix.
+//
+// The presence check runs against msgHistory — the messages ACTUALLY being
+// sent — not the session's full row set, and that distinction does two jobs:
+//
+//   - A forked step's copied history carries the PREVIOUS step's envelope under
+//     a different fingerprint, so this step's schema is injected and the model
+//     is told (in the envelope text) that it supersedes the earlier one.
+//   - After compaction, filterMessagesFromSummary has already dropped the
+//     envelope from msgHistory, so it is re-injected. A schema-bearing step that
+//     compacts must not silently lose the shape it is being graded against.
+//
+// Returns ok=false for agents with no schema, for `tool` delivery mode, and
+// whenever the fingerprint is already present.
+// withStructOutputSchema returns msgs with this agent's schema envelope
+// appended when the history does not already carry it. The one call site that
+// matters beyond run entry is the mid-run auto-compaction rebuild: the dedup
+// scan makes a repeat call free when the envelope survived, so every site that
+// rebuilds msgHistory can route through here unconditionally.
+func (a *agent) withStructOutputSchema(ctx context.Context, sessionID string, msgs []message.Message) []message.Message {
+	schemaMsg, ok := a.injectStructOutputSchema(ctx, sessionID, msgs)
+	if !ok {
+		return msgs
+	}
+	return append(msgs, schemaMsg)
+}
+
+func (a *agent) injectStructOutputSchema(ctx context.Context, sessionID string, msgHistory []message.Message) (message.Message, bool) {
+	if a.structOutputEnvelope == "" || a.structOutputFingerprint == "" {
+		return message.Message{}, false
+	}
+	token := tools.EnvelopeFingerprintToken(a.structOutputFingerprint)
+	for _, msg := range msgHistory {
+		if msg.Role != message.User {
+			continue
+		}
+		if strings.Contains(msg.Content().String(), token) {
+			return message.Message{}, false
+		}
+	}
+	schemaMsg, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:      message.User,
+		Parts:     []message.ContentPart{message.TextContent{Text: a.structOutputEnvelope}},
+		Synthetic: true,
+	})
+	if err != nil {
+		// Non-fatal on purpose. The run can still succeed — the model has the
+		// struct_output tool and, on a resumed session, very likely the schema
+		// from an earlier turn. Failing the run here would turn a message-store
+		// hiccup into a dead flow step.
+		logging.Warn("Failed to create struct_output schema message", "error", err, "session_id", sessionID)
+		return message.Message{}, false
+	}
+	return schemaMsg, true
 }

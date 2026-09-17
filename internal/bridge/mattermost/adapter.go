@@ -740,45 +740,67 @@ func truncateRunes(s string, maxRunes int) string {
 	return s
 }
 
-// Compile-time assertion: Adapter implements bridge.QueuedAcknowledger.
-var _ bridge.QueuedAcknowledger = (*Adapter)(nil)
+// Compile-time assertions: Adapter implements bridge.QueuedAcknowledger
+// and bridge.MessageEditor.
+var (
+	_ bridge.QueuedAcknowledger = (*Adapter)(nil)
+	_ bridge.MessageEditor      = (*Adapter)(nil)
+)
 
-// SendQueuedAck creates a queued-acknowledgement post in the peer's channel
-// and returns the post ID as the token for subsequent in-place edits.
-func (a *Adapter) SendQueuedAck(ctx context.Context, peer bridge.PeerRef, position int) (bridge.QueueAckToken, error) {
+// SendEditable creates a plain-text post in the peer's channel (threaded
+// under the peer's root post when it has one) and returns the post ID as
+// the token for subsequent in-place edits.
+func (a *Adapter) SendEditable(ctx context.Context, peer bridge.PeerRef, text string) (bridge.EditableMessageToken, error) {
 	parsed := ParsePeerID(peer.PeerID)
 	if parsed.ChannelID == "" {
-		return "", fmt.Errorf("mattermost: SendQueuedAck: invalid peer %q", peer.PeerID)
+		return "", fmt.Errorf("mattermost: SendEditable: invalid peer %q", peer.PeerID)
 	}
 	post, err := a.client.CreatePost(ctx, CreatePostInput{
 		ChannelID: parsed.ChannelID,
-		Message:   bridge.QueueAckText(position),
+		Message:   text,
 		RootID:    parsed.RootPostID,
 	})
 	if err != nil {
-		return "", fmt.Errorf("mattermost: SendQueuedAck: %w", err)
+		a.recordFailure(err)
+		return "", fmt.Errorf("mattermost: SendEditable: %w", err)
 	}
 	return post.ID, nil
 }
 
-// UpdateQueuedAck edits the queued-ack post identified by token in-place.
-// token is the post ID returned by SendQueuedAck. Pass position == 0 to
-// resolve the ack ("▶ Processing…").
-func (a *Adapter) UpdateQueuedAck(ctx context.Context, _ bridge.PeerRef, token bridge.QueueAckToken, position int) error {
+// EditMessage replaces the text of the post identified by token (the post
+// ID returned by SendEditable).
+func (a *Adapter) EditMessage(ctx context.Context, _ bridge.PeerRef, token bridge.EditableMessageToken, text string) error {
 	if token == "" {
-		return fmt.Errorf("mattermost: UpdateQueuedAck: empty token")
-	}
-	var text string
-	if position == 0 {
-		text = bridge.ResolvedAckText
-	} else {
-		text = bridge.QueueAckText(position)
+		return fmt.Errorf("mattermost: EditMessage: empty token")
 	}
 	_, err := a.client.UpdatePost(ctx, UpdatePostInput{
 		PostID:  token,
 		Message: text,
 	})
 	if err != nil {
+		return fmt.Errorf("mattermost: EditMessage: %w", err)
+	}
+	return nil
+}
+
+// SendQueuedAck creates a queued-acknowledgement post in the peer's channel
+// and returns the post ID as the token for subsequent in-place edits.
+func (a *Adapter) SendQueuedAck(ctx context.Context, peer bridge.PeerRef, position int) (bridge.QueueAckToken, error) {
+	tok, err := a.SendEditable(ctx, peer, bridge.QueueAckText(position))
+	if err != nil {
+		return "", fmt.Errorf("mattermost: SendQueuedAck: %w", err)
+	}
+	return tok, nil
+}
+
+// UpdateQueuedAck edits the queued-ack post identified by token in-place.
+// Pass position == 0 to resolve the ack ("▶ Processing…").
+func (a *Adapter) UpdateQueuedAck(ctx context.Context, peer bridge.PeerRef, token bridge.QueueAckToken, position int) error {
+	text := bridge.ResolvedAckText
+	if position != 0 {
+		text = bridge.QueueAckText(position)
+	}
+	if err := a.EditMessage(ctx, peer, token, text); err != nil {
 		return fmt.Errorf("mattermost: UpdateQueuedAck: %w", err)
 	}
 	return nil

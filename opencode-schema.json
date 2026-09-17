@@ -95,6 +95,7 @@
             "claude-5-opus",
             "claude-5-sonnet",
             "claude-fable-5",
+            "claude-fable-5-1",
             "bedrock.eu-claude-haiku-4-5",
             "bedrock.eu-claude-opus-4-6",
             "bedrock.eu-claude-sonnet-4-6",
@@ -103,6 +104,7 @@
             "bedrock.eu-claude-opus-5",
             "bedrock.eu-claude-sonnet-5",
             "bedrock.eu-claude-fable-5",
+            "bedrock.eu-claude-fable-5-1",
             "bedrock.claude-haiku-4-5",
             "bedrock.claude-opus-4-6",
             "bedrock.claude-sonnet-4-6",
@@ -111,6 +113,7 @@
             "bedrock.claude-opus-5",
             "bedrock.claude-sonnet-5",
             "bedrock.claude-fable-5",
+            "bedrock.claude-fable-5-1",
             "gemini-3.0-flash",
             "gemini-3.0-pro",
             "kimi.kimi-k3",
@@ -118,6 +121,7 @@
             "o3",
             "o4-mini",
             "vertexai.claude-fable-5",
+            "vertexai.claude-fable-5-1",
             "vertexai.claude-haiku-4-5",
             "vertexai.claude-opus-4-5",
             "vertexai.claude-opus-4-6",
@@ -197,6 +201,14 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "structOutputSchemaDelivery": {
+          "description": "Where this agent's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overrides the top-level setting.",
+          "enum": [
+            "message",
+            "tool"
+          ],
+          "type": "string"
         },
         "taskBudget": {
           "description": "Advisory token budget for the full agentic loop (minimum 20000). Only supported by models with SupportsTaskBudget. The budget is carried across compaction via the remaining field.",
@@ -322,6 +334,7 @@
               "claude-5-opus",
               "claude-5-sonnet",
               "claude-fable-5",
+              "claude-fable-5-1",
               "bedrock.eu-claude-haiku-4-5",
               "bedrock.eu-claude-opus-4-6",
               "bedrock.eu-claude-sonnet-4-6",
@@ -330,6 +343,7 @@
               "bedrock.eu-claude-opus-5",
               "bedrock.eu-claude-sonnet-5",
               "bedrock.eu-claude-fable-5",
+              "bedrock.eu-claude-fable-5-1",
               "bedrock.claude-haiku-4-5",
               "bedrock.claude-opus-4-6",
               "bedrock.claude-sonnet-4-6",
@@ -338,6 +352,7 @@
               "bedrock.claude-opus-5",
               "bedrock.claude-sonnet-5",
               "bedrock.claude-fable-5",
+              "bedrock.claude-fable-5-1",
               "gemini-3.0-flash",
               "gemini-3.0-pro",
               "kimi.kimi-k3",
@@ -345,6 +360,7 @@
               "o3",
               "o4-mini",
               "vertexai.claude-fable-5",
+              "vertexai.claude-fable-5-1",
               "vertexai.claude-haiku-4-5",
               "vertexai.claude-opus-4-5",
               "vertexai.claude-opus-4-6",
@@ -424,6 +440,14 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "structOutputSchemaDelivery": {
+            "description": "Where this agent's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overrides the top-level setting.",
+            "enum": [
+              "message",
+              "tool"
+            ],
+            "type": "string"
           },
           "taskBudget": {
             "description": "Advisory token budget for the full agentic loop (minimum 20000). Only supported by models with SupportsTaskBudget. The budget is carried across compaction via the remaining field.",
@@ -1042,10 +1066,12 @@
         },
         "toolUpdateVerbosity": {
           "default": "compact",
-          "description": "Detail level when toolUpdatesEnabled is true: 'compact' (default) emits one line per call with glyph, name, and elapsed time; 'full' adds argument and result detail.",
+          "description": "How tool activity reaches chat when toolUpdatesEnabled is true: 'compact' (default) posts one progress card per agent run and edits it in place (tool calls completed, tool in flight, elapsed time, failure reason); 'full' posts one card per tool call with the argument summary and a truncated result body. 'verbose' and 'debug' are accepted as aliases of 'full'. Unrecognised values fall back to 'compact'.",
           "enum": [
             "compact",
-            "full"
+            "full",
+            "verbose",
+            "debug"
           ],
           "type": "string"
         },
@@ -1181,6 +1207,14 @@
         }
       },
       "type": "object"
+    },
+    "structOutputSchemaDelivery": {
+      "description": "Where a flow step's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overridable per agent.",
+      "enum": [
+        "message",
+        "tool"
+      ],
+      "type": "string"
     },
     "telemetry": {
       "additionalProperties": false,
