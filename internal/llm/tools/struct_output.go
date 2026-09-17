@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -36,13 +37,12 @@ const (
 // ParseSchemaDelivery maps a config string onto a delivery mode, failing safe
 // to the default for anything unrecognized. ok=false signals the caller to warn.
 //
-// Deliberately case-SENSITIVE. Accepting "Message" would make the runtime take
-// a value the published JSON Schema's enum rejects, which is the exact
-// divergence cmd/schema's enum test exists to prevent: the config works, and
-// every IDE reports it as an error. Surrounding whitespace is still forgiven —
-// that is an invisible typo, not an alias.
+// Deliberately exact — case-sensitive, no whitespace trimming. Any leniency
+// here makes the runtime accept a value the published JSON Schema's enum
+// rejects, which is the precise divergence cmd/schema's enum test exists to
+// catch: the config works and every IDE reports it as an error.
 func ParseSchemaDelivery(s string) (mode SchemaDelivery, ok bool) {
-	switch SchemaDelivery(strings.TrimSpace(s)) {
+	switch SchemaDelivery(s) {
 	case "":
 		return SchemaDeliveryMessage, true
 	case SchemaDeliveryMessage:
@@ -104,7 +104,7 @@ func NewStructOutputTool(schema map[string]any) BaseTool {
 // The full schema is retained in both modes — validation in Run never depends
 // on how the model was shown the schema.
 func NewStructOutputToolWithDelivery(schema map[string]any, delivery SchemaDelivery) BaseTool {
-	if delivery == SchemaDeliveryMessage {
+	if delivery == SchemaDeliveryMessage && SupportsMessageDelivery(schema) {
 		return &structOutputTool{
 			schema:   schema,
 			delivery: SchemaDeliveryMessage,
@@ -141,6 +141,12 @@ func (s *structOutputTool) Run(ctx context.Context, call ToolCall) (ToolResponse
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(call.Input), &payload); err != nil {
 		return NewTextErrorResponse(fmt.Sprintf("Invalid JSON: %s", err.Error())), nil
+	}
+	// A literal `null` input unmarshals into a nil map without erroring, and a
+	// nil map panics on the first write in applyDefaults. Normalize it to an
+	// empty document and let the required-field check reject it properly.
+	if payload == nil {
+		payload = map[string]any{}
 	}
 
 	result, unwrapErr := s.unwrap(payload)
@@ -182,55 +188,95 @@ func (s *structOutputTool) Run(ctx context.Context, call ToolCall) (ToolResponse
 
 // unwrap extracts the emitted document from the raw tool input. In
 // message-delivery mode the declared shape is {"output": {...}}, but the model
-// is shown the document's schema rather than the wrapper's, so it sometimes
-// emits the document flat instead. Accepting both is deliberate: the wrapper is
-// a transport detail we introduced for cache stability, and failing a
-// well-formed answer over it would be the change paying for itself with the
-// very regression it exists to avoid. Only a payload that is neither shape is
-// rejected — with an error result, which re-enters the agent loop for a retry
-// rather than ending the step.
+// is shown the document's schema rather than the wrapper's, so it does not
+// always wrap. Three shapes are handled, and none of them loses data:
+//
+//   - fully wrapped — the common case; the inner object is the document.
+//   - flat — the document at the top level, no wrapper. Accepted: the wrapper
+//     is a transport detail we introduced for cache stability, and failing a
+//     well-formed answer over it would be the change causing the very
+//     regression it exists to avoid.
+//   - half wrapped — some fields inside `output`, others beside it. The
+//     siblings the schema recognizes are folded in (the wrapped value wins a
+//     conflict, being the declared location). Returning only the wrapped half
+//     would silently drop real content and, worse, let applyDefaults refill the
+//     dropped key with its default — a flow routing on `${args.blockers}` would
+//     then read "no blockers" from a run that reported one.
+//
+// Only a payload matching none of these is rejected, with an error result that
+// re-enters the agent loop for a retry rather than ending the step.
 //
 // Tool-delivery mode passes the payload through: the declared parameters ARE
-// the document's properties there, so there is no wrapper to remove.
+// the document's properties there, so there is no wrapper to remove. Schemas
+// that declare an `output` property of their own never reach message delivery
+// at all (see SupportsMessageDelivery), which is what makes the wrapper key
+// unambiguous here.
 func (s *structOutputTool) unwrap(payload map[string]any) (map[string]any, string) {
 	if s.delivery != SchemaDeliveryMessage {
 		return payload, ""
 	}
-	if raw, present := payload[structOutputWrapperKey]; present {
-		if doc, ok := raw.(map[string]any); ok {
-			return doc, ""
+	raw, wrapped := payload[structOutputWrapperKey]
+	if !wrapped {
+		if s.looksLikeDocument(payload) {
+			return payload, ""
 		}
-		// A non-object `output` alongside nothing else is unusable; alongside
-		// other keys it is more likely a real property of a flat document that
-		// happens to be named "output", so fall through to the flat reading.
-		if len(payload) == 1 {
-			return nil, fmt.Sprintf(
-				"struct_output expects %q to be a JSON object matching the schema in the <struct_output_schema> block, but received %T. Call struct_output again with the complete document as the value of %q.",
-				structOutputWrapperKey, raw, structOutputWrapperKey,
-			)
+		return nil, s.shapeError()
+	}
+
+	doc, isObject := raw.(map[string]any)
+	if !isObject {
+		// A non-object `output` beside other keys is more likely a stray field
+		// in a flat document than a malformed wrapper; alone, it is unusable.
+		if len(payload) > 1 && s.looksLikeDocument(payload) {
+			return payload, ""
+		}
+		return nil, fmt.Sprintf(
+			"struct_output expects %q to be a JSON object matching the schema in the %s> block, but received %T. Call struct_output again with the complete document as the value of %q.",
+			structOutputWrapperKey, SchemaEnvelopeOpenTag, raw, structOutputWrapperKey,
+		)
+	}
+
+	// Half-wrapped: recover the siblings the schema knows about. Unknown
+	// siblings are dropped — they are hallucinated keys, not lost content, and
+	// carrying them would defeat the schema.
+	if len(payload) > 1 {
+		if props, ok := objectProperties(s.schema); ok {
+			for key, value := range payload {
+				if key == structOutputWrapperKey {
+					continue
+				}
+				if _, known := props[key]; !known {
+					continue
+				}
+				if _, present := doc[key]; !present {
+					doc[key] = value
+				}
+			}
 		}
 	}
-	// No wrapper: treat the payload as the document itself when it looks like
-	// one — it declares at least one property the schema knows about, or the
-	// schema declares no properties for us to check against.
-	if s.looksLikeDocument(payload) {
-		return payload, ""
-	}
-	return nil, fmt.Sprintf(
-		"struct_output received a payload matching neither the expected shape nor the schema. Put the complete JSON document — conforming to the schema in the <struct_output_schema> block — in the %q argument and call struct_output again.",
-		structOutputWrapperKey,
+	return doc, ""
+}
+
+func (s *structOutputTool) shapeError() string {
+	return fmt.Sprintf(
+		"struct_output received a payload matching neither the expected shape nor the schema. Put the complete JSON document — conforming to the schema in the %s> block — in the %q argument and call struct_output again.",
+		SchemaEnvelopeOpenTag, structOutputWrapperKey,
 	)
 }
 
 // looksLikeDocument reports whether a wrapper-less payload can be read as the
-// document. An empty payload never qualifies: it carries no answer, and letting
-// it through would trade a retryable error for a silently empty step output.
+// document: it declares at least one property the schema knows about, or the
+// schema declares no properties to check against.
+//
+// An empty payload qualifies. In tool-delivery mode `{}` is accepted and
+// resolved by applyDefaults + the required check; message delivery must behave
+// identically, so the emptiness judgement belongs to that check and not here.
 func (s *structOutputTool) looksLikeDocument(payload map[string]any) bool {
-	if len(payload) == 0 {
-		return false
-	}
 	props, ok := objectProperties(s.schema)
 	if !ok || len(props) == 0 {
+		return true
+	}
+	if len(payload) == 0 {
 		return true
 	}
 	for key := range payload {
@@ -239,6 +285,31 @@ func (s *structOutputTool) looksLikeDocument(payload map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// SupportsMessageDelivery reports whether a schema can be delivered in a
+// message while the tool keeps its invariant `{"output": {"type":"object"}}`
+// surface.
+//
+// Two shapes cannot, and fall back to tool delivery rather than being served
+// badly:
+//
+//   - A non-object root (`{"type":"array"}`, `{"type":"string"}`, …). The
+//     invariant parameter declares an object, so the tool block and the
+//     envelope would contradict each other and no payload could satisfy both.
+//   - A schema that declares a property named `output`. The wrapper key would
+//     then be ambiguous with a real field, and unwrapping would silently return
+//     that field's value as the whole document.
+//
+// Both are rare — every output schema in this repo is an object without an
+// `output` property — and neither is worth a cache entry.
+func SupportsMessageDelivery(schema map[string]any) bool {
+	props, ok := objectProperties(schema)
+	if !ok {
+		return false
+	}
+	_, collides := props[structOutputWrapperKey]
+	return !collides
 }
 
 // schemaRequired returns the schema's own required list. In tool-delivery mode
@@ -401,10 +472,19 @@ func SchemaFingerprint(schema map[string]any) string {
 // carries the PREVIOUS step's envelope, and the model has to know which one
 // governs.
 func RenderSchemaEnvelope(schema map[string]any) string {
-	pretty, err := json.MarshalIndent(schema, "", "  ")
-	if err != nil {
+	// NOT json.MarshalIndent: its default HTML escaping rewrites <, > and & as
+	// \u003c, \u003e and \u0026. In the tool block those escapes were decoded by
+	// the API before the model ever saw them; here the schema is plain text, so
+	// the model would read the escape sequences verbatim and a description like
+	// "MR <id>" or "a && b" would reach it mangled.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(schema); err != nil {
 		return ""
 	}
+	pretty := bytes.TrimRight(buf.Bytes(), "\n")
 	var sb strings.Builder
 	sb.WriteString("<system-reminder>\n")
 	fmt.Fprintf(&sb, "%s fingerprint=%q>\n", SchemaEnvelopeOpenTag, SchemaFingerprint(schema))

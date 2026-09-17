@@ -133,6 +133,9 @@ func TestSchemaEnumsMatchRuntimeValidators(t *testing.T) {
 				"message", "tool", "Message", "Tool", "MESSAGE",
 				"messages", "tools", "inline", "prompt", "system",
 				"auto", "default", "none", "off", "on",
+				// Whitespace variants: the parser must not trim, or the
+				// runtime would accept a value the published enum rejects.
+				" message", "message ", " message ", "\tmessage", "tool ",
 			},
 		},
 		{
@@ -149,6 +152,9 @@ func TestSchemaEnumsMatchRuntimeValidators(t *testing.T) {
 				"message", "tool", "Message", "Tool", "MESSAGE",
 				"messages", "tools", "inline", "prompt", "system",
 				"auto", "default", "none", "off", "on",
+				// Whitespace variants: the parser must not trim, or the
+				// runtime would accept a value the published enum rejects.
+				" message", "message ", " message ", "\tmessage", "tool ",
 			},
 		},
 	}

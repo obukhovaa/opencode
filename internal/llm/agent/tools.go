@@ -16,6 +16,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/format"
 	"github.com/opencode-ai/opencode/internal/history"
+	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp"
@@ -262,8 +263,8 @@ func NewToolSet(
 	}
 
 	// Inject struct_output tool if the agent has an output schema configured
-	if resolved, ok := ResolveOutputSchema(info); ok {
-		if reg.IsToolEnabled(agentID, tools.StructOutputToolName) {
+	if reg.IsToolEnabled(agentID, tools.StructOutputToolName) {
+		if resolved, ok := ResolveOutputSchema(info); ok {
 			delivery := ResolveSchemaDelivery(info)
 			logging.Info("Using structured output", "agent", agentID, "delivery", string(delivery), "schema", resolved)
 			result <- tools.NewStructOutputToolWithDelivery(resolved, delivery)
@@ -673,7 +674,66 @@ func ResolveSchemaDelivery(info *agentregistry.AgentInfo) tools.SchemaDelivery {
 	if cfg := config.Get(); cfg != nil {
 		globalValue = cfg.StructOutputSchemaDelivery
 	}
-	return resolveSchemaDelivery(agentValue, globalValue, agentID)
+	mode := resolveSchemaDelivery(agentValue, globalValue, agentID)
+	if mode == tools.SchemaDeliveryMessage && modelRejectsInvariantOutputParam(agentID) {
+		logging.Debug("Model cannot express the invariant struct_output parameter; keeping the schema in the tool block",
+			"agent", agentID)
+		return tools.SchemaDeliveryTool
+	}
+	return mode
+}
+
+// modelRejectsInvariantOutputParam reports whether the agent's model is served
+// by the genai (Gemini) request builder, whose function declarations cannot
+// express the invariant struct_output surface: `convertToSchema` turns
+// `{"type":"object"}` with no declared `properties` into
+// `genai.Schema{Type: OBJECT, Properties: nil}`, and the API rejects that with
+// "should be non-empty for OBJECT type". Every other object-typed tool
+// parameter in this repo declares properties, so nothing else exercises the
+// shape — message delivery would 400 every request for such an agent.
+//
+// Those models are also not the ones this feature is for: the reported symptom
+// is Anthropic prompt-cache invalidation. Falling back to tool delivery costs
+// them nothing they had.
+//
+// Resolution mirrors createAgentProvider: the config entry first, then the
+// registry's own model, then coder's. An unresolvable model returns false —
+// provider construction will fail with its own clear error, and guessing here
+// would silently change delivery on a misconfiguration.
+func modelRejectsInvariantOutputParam(agentID string) bool {
+	if agentID == "" {
+		return false
+	}
+	cfg := config.Get()
+	if cfg == nil {
+		return false
+	}
+	name := config.AgentName(agentID)
+	modelID := models.ModelID("")
+	if agentCfg, ok := cfg.Agents[name]; ok {
+		modelID = agentCfg.Model
+	} else if reg := agentregistry.GetRegistry(); reg != nil {
+		if info, found := reg.Get(agentID); found && info.Model != "" {
+			modelID = models.ModelID(info.Model)
+		} else if coderCfg, coderOk := cfg.Agents[config.AgentCoder]; found && coderOk {
+			modelID = coderCfg.Model
+		}
+	}
+	model, ok := models.SupportedModels[modelID]
+	if !ok {
+		return false
+	}
+	switch model.Provider {
+	case models.ProviderGemini:
+		return true
+	case models.ProviderVertexAI:
+		// VertexAI serves Anthropic models through the Anthropic builder and
+		// everything else through genai — see newVertexAIClient.
+		_, isAnthropic := models.VertexAIAnthropicModels[model.ID]
+		return !isAnthropic
+	default:
+		return false
+	}
 }
 
 // resolveSchemaDelivery is the precedence rule, split from the config lookup so

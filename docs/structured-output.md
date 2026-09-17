@@ -56,13 +56,32 @@ downstream consumers are unaffected.
 A per-agent value wins over the top-level one. The values are case-sensitive; an
 unrecognized value logs a warning and falls back to `message`.
 
+### When message delivery does not apply
+
+Message delivery is used only where the invariant `output` parameter can
+faithfully represent the schema. These cases fall back to `tool` delivery
+automatically, behaving exactly as they did before this feature existed:
+
+| Case | Why |
+|------|-----|
+| A non-object root schema (`{"type": "array"}`, `{"type": "string"}`, …) | The invariant parameter declares an object, so the tool block and the schema would contradict each other and no payload could satisfy both. |
+| A schema that declares its own property named `output` | The wrapper key would be ambiguous with a real field. |
+| An agent whose model is served by the Gemini request builder | Its function declarations cannot express an object-typed parameter with no declared properties. |
+
 ### Accepted call shapes
 
 In `message` mode the declared parameter is `output`, so the expected call is
-`{"output": { ...document... }}`. A model that emits the document flat — without
-the wrapper — is accepted too, since it was shown the document's schema rather
-than the wrapper's. Only a payload matching neither shape is rejected, with an
-error result that re-enters the agent loop for a retry.
+`{"output": { ...document... }}`. Two other shapes are accepted, because the
+model is shown the document's schema rather than the wrapper's:
+
+- **Flat** — the document at the top level, no wrapper.
+- **Half wrapped** — some fields inside `output`, others beside it. The siblings
+  the schema declares are folded in; the wrapped value wins a conflict. Nothing
+  is dropped, so a field the model reported cannot be silently replaced by its
+  declared default.
+
+Only a payload matching none of these is rejected, with an error result that
+re-enters the agent loop for a retry.
 
 Validation is identical in both delivery modes: the tool retains the full schema
 and enforces it regardless of how the model was shown it.

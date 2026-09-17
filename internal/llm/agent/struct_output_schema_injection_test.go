@@ -180,3 +180,34 @@ func TestResolveSchemaDeliveryPrecedence(t *testing.T) {
 		})
 	}
 }
+
+// withStructOutputSchema is what every rebuild site routes through: it appends
+// when the envelope is missing and is free when it is not. The mid-run
+// auto-compaction rebuild depends on both halves — it drops the envelope with
+// filterMessagesFromSummary and must get it back, without duplicating it on the
+// compactions that did not.
+func TestWithStructOutputSchemaAppendsOnlyWhenMissing(t *testing.T) {
+	msgs := &recordingMsgService{}
+	a := agentWithSchema(msgs, schemaFor("summary"))
+
+	// What a post-compaction rebuild looks like: summary onwards, envelope gone.
+	postCompaction := []message.Message{userMsg("summary of the conversation so far")}
+	rebuilt := a.withStructOutputSchema(context.Background(), "S1", postCompaction)
+
+	require.Len(t, rebuilt, 2, "the envelope must come back after compaction drops it")
+	assert.Len(t, msgs.created, 1)
+
+	// Idempotent: a second pass over a history that already has it writes nothing.
+	again := a.withStructOutputSchema(context.Background(), "S1", rebuilt)
+	assert.Len(t, again, 2)
+	assert.Len(t, msgs.created, 1, "re-running over an intact history must not duplicate the envelope")
+}
+
+func TestWithStructOutputSchemaIsANoopWithoutSchema(t *testing.T) {
+	msgs := &recordingMsgService{}
+	a := &agent{messages: msgs}
+
+	in := []message.Message{userMsg("hi")}
+	assert.Equal(t, in, a.withStructOutputSchema(context.Background(), "S1", in))
+	assert.Empty(t, msgs.created)
+}

@@ -196,7 +196,7 @@ func TestParseSchemaDeliveryFailsSafe(t *testing.T) {
 	}{
 		{"", SchemaDeliveryMessage, true},
 		{"message", SchemaDeliveryMessage, true},
-		{"  message ", SchemaDeliveryMessage, true},
+		{"  message ", SchemaDeliveryMessage, false},
 		{"Message", SchemaDeliveryMessage, false},
 		{"tool", SchemaDeliveryTool, true},
 		{"Tool", SchemaDeliveryMessage, false},
@@ -205,5 +205,138 @@ func TestParseSchemaDeliveryFailsSafe(t *testing.T) {
 		got, ok := ParseSchemaDelivery(tc.in)
 		assert.Equal(t, tc.want, got, "input %q", tc.in)
 		assert.Equal(t, tc.ok, ok, "input %q", tc.in)
+	}
+}
+
+// Message delivery declares `output` as an object. A schema whose root is not
+// an object cannot be satisfied under that declaration — the tool block and the
+// envelope would contradict each other — so it keeps the legacy surface rather
+// than becoming unanswerable.
+func TestStructOutputNonObjectSchemaFallsBackToToolDelivery(t *testing.T) {
+	for name, schema := range map[string]map[string]any{
+		"array":  {"type": "array", "items": map[string]any{"type": "string"}},
+		"string": {"type": "string"},
+		"number": {"type": "number"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.False(t, SupportsMessageDelivery(schema))
+
+			tool := NewStructOutputToolWithDelivery(schema, SchemaDeliveryMessage)
+			assert.Equal(t, NewStructOutputToolWithDelivery(schema, SchemaDeliveryTool).Info(), tool.Info(),
+				"a schema message delivery cannot express must keep the legacy tool surface")
+
+			// And the payload the legacy surface asks for still round-trips.
+			resp := runDeliveryTool(t, tool, `{"output":["a","b"]}`)
+			assert.False(t, resp.IsError, resp.Content)
+		})
+	}
+}
+
+// A schema that declares its own `output` property makes the wrapper key
+// ambiguous with a real field; unwrapping would return that field's value as
+// the whole document and silently drop its siblings.
+func TestStructOutputSchemaDeclaringOutputFallsBackToToolDelivery(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"output": map[string]any{"type": "object"},
+			"status": map[string]any{"type": "string"},
+		},
+		"required": []any{"output", "status"},
+	}
+	assert.False(t, SupportsMessageDelivery(schema))
+
+	tool := NewStructOutputToolWithDelivery(schema, SchemaDeliveryMessage)
+	resp := runDeliveryTool(t, tool, `{"output":{"body":"hi"},"status":"ok"}`)
+	require.False(t, resp.IsError, resp.Content)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal([]byte(resp.Content), &doc))
+	assert.Equal(t, "ok", doc["status"], "sibling fields must not be dropped")
+	assert.Equal(t, map[string]any{"body": "hi"}, doc["output"])
+}
+
+// A model that wraps only part of the document must not lose the rest. Silently
+// dropping `blockers` here would let applyDefaults refill it with its default —
+// a flow routing on ${args.blockers} would read "no blockers" from a run that
+// reported one, which is the exact failure the defaults logic exists to prevent.
+func TestStructOutputRecoversHalfWrappedPayload(t *testing.T) {
+	tool := NewStructOutputToolWithDelivery(planSchema(), SchemaDeliveryMessage)
+
+	resp := runDeliveryTool(t, tool, `{"output":{"summary":"x"},"blockers":["db migration"]}`)
+	require.False(t, resp.IsError, resp.Content)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal([]byte(resp.Content), &doc))
+	assert.Equal(t, "x", doc["summary"])
+	assert.Equal(t, []any{"db migration"}, doc["blockers"],
+		"a sibling the schema declares must survive, not be replaced by its default")
+}
+
+func TestStructOutputHalfWrapDropsUnknownSiblings(t *testing.T) {
+	tool := NewStructOutputToolWithDelivery(planSchema(), SchemaDeliveryMessage)
+
+	resp := runDeliveryTool(t, tool, `{"output":{"summary":"x","blockers":[]},"chatter":"hi"}`)
+	require.False(t, resp.IsError, resp.Content)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal([]byte(resp.Content), &doc))
+	assert.NotContains(t, doc, "chatter", "keys the schema does not declare are noise, not content")
+}
+
+// `{}` is resolved by defaults + the required check in tool delivery; message
+// delivery must reach the same verdict, or "validation is delivery-independent"
+// is not true.
+func TestStructOutputEmptyPayloadIsDeliveryIndependent(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"blockers": map[string]any{"type": "array", "default": []any{}},
+		},
+		"required": []any{"blockers"},
+	}
+
+	for _, delivery := range []SchemaDelivery{SchemaDeliveryMessage, SchemaDeliveryTool} {
+		t.Run(string(delivery), func(t *testing.T) {
+			resp := runDeliveryTool(t, NewStructOutputToolWithDelivery(schema, delivery), `{}`)
+			require.False(t, resp.IsError, resp.Content)
+
+			var doc map[string]any
+			require.NoError(t, json.Unmarshal([]byte(resp.Content), &doc))
+			assert.Equal(t, []any{}, doc["blockers"])
+		})
+	}
+}
+
+// A literal `null` input decodes to a nil map, which panics on the first write
+// in applyDefaults.
+func TestStructOutputNullInputIsRejectedNotPanicking(t *testing.T) {
+	for _, delivery := range []SchemaDelivery{SchemaDeliveryMessage, SchemaDeliveryTool} {
+		t.Run(string(delivery), func(t *testing.T) {
+			resp := runDeliveryTool(t, NewStructOutputToolWithDelivery(planSchema(), delivery), `null`)
+			assert.True(t, resp.IsError)
+			assert.Contains(t, resp.Content, "summary")
+		})
+	}
+}
+
+// The envelope is plain text the model reads verbatim, so Go's default HTML
+// escaping would show it < instead of <. In the tool block the API decoded
+// those escapes before the model saw them; here nothing does.
+func TestRenderSchemaEnvelopeDoesNotHTMLEscape(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"note": map[string]any{"type": "string", "description": "MR <id>, a && b, x > 0"},
+		},
+	}
+	env := RenderSchemaEnvelope(schema)
+
+	assert.Contains(t, env, "MR <id>, a && b, x > 0",
+		"the model must read the description as written, not as escape sequences")
+	// Match on the escape token rather than the backslash form so the assertion
+	// cannot itself be mangled by an escaping layer.
+	for _, escaped := range []string{"u003c", "u003e", "u0026"} {
+		assert.NotContains(t, env, escaped, "schema text must not be HTML-escaped")
 	}
 }
