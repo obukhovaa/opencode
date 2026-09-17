@@ -21,6 +21,7 @@ flow:               # flow specification (required)
   session:          # session configuration (optional, see Session Management)
     prefix: string            # ${args.*} expression or literal (optional)
     resume_on_failure: bool   # treat `failed` as resumable on re-trigger (optional, default false)
+  maxFallbackEntries: int     # per-run cap on fallback.to entries of any one step; 0 = default 3, negative rejected (optional, see Fallback)
   steps: array      # ordered list of step definitions (required)
 ```
 
@@ -129,6 +130,17 @@ fallback:
   to: step-id   # step to route to after all retries fail (string)
   on_turns_exhausted: fail   # "accept" (default) | "fail" — see below (string)
 ```
+
+### Fallback re-entry
+
+- A step entered via `fallback.to` bypasses the diamond-convergence guard and
+  gets the `cycle: true` iteration bump, so the escalation shape above re-runs
+  `escalated` instead of dropping it. To keep that finite, each step may be
+  entered via fallback at most `flow.maxFallbackEntries` times per run
+  (default 3). The `(N+1)`th fallback arrival is not run: the target step gets a
+  `failed` flow state naming the limit, a `flow.step.failed` event fires, and
+  the run ends `flow.failed`. Entries by rule, self-loop, postpone-resume or
+  `cycle: true` do not count against it.
 
 ### `on_turns_exhausted`
 
@@ -245,7 +257,7 @@ Every error above is raised at flow load; the registry logs it at `WARN` and **s
 - Step-scoped variables are substituted before args, so they cannot be shadowed by an args key of the same name.
 - `agent`, `model` and `reasoningEffort` accept the same placeholders as prompts. The fallback rule differs on purpose: an unresolved `agent` fails the step (its `fallback.to` fires — an agent id is mandatory); an unresolved or empty `model` / `reasoningEffort` means no override (the agent's own value runs, logged at WARN — restart lanes legitimately reach a step before the step that produces the arg). A `model` that resolves to an id the catalog does not know, or a `reasoningEffort` the resolved model cannot do (`xhigh` / `max` on a model without them), fails the step. Literal values are validated at flow load.
 - The override is applied per agent instance — the agent's configuration is never rewritten, and two steps on the same agent id may run different models in one run.
-- A step entered via `fallback.to` bypasses the diamond-convergence guard, so an escalation step that already ran in this invocation (standard fails → escalated → `cycle: true` back to standard → fails again → escalated) runs again instead of being dropped.
+- A step entered via `fallback.to` bypasses the diamond-convergence guard, so an escalation step that already ran in this invocation (standard fails → escalated → `cycle: true` back to standard → fails again → escalated) runs again instead of being dropped — bounded by `flow.maxFallbackEntries`; see "Fallback re-entry".
 
 ## Session Management
 

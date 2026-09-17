@@ -96,6 +96,7 @@ Because built-in discovery derives IDs from file basenames (which can never cont
 |-------|------|----------|-------------|
 | `flow.args` | object | No | JSON Schema for expected arguments |
 | `flow.session` | object | No | Session configuration (see [Session Management](#session-management)) |
+| `flow.maxFallbackEntries` | int | No | Per-run cap on how many times any one step may be entered through `fallback.to`. `0` (unset) means `3`; negative is rejected at load. See [Fallback re-entry](#fallback-re-entry). |
 | `flow.steps` | array | Yes | Ordered list of step definitions |
 
 ### Step fields
@@ -198,6 +199,35 @@ fallback:
 | `delay` | int | Delay between retries (seconds) |
 | `to` | string | Step ID to route to after all retries fail |
 | `on_turns_exhausted` | string | What a turn-budget exhaustion means for the step: `accept` (default) or `fail`. See [Turn-budget exhaustion](#turn-budget-exhaustion). |
+
+#### Fallback re-entry
+
+A step reached through `fallback.to` bypasses the diamond-convergence guard, so
+an escalation target that already ran earlier in the same invocation (standard
+step fails → escalated step → `cycle: true` rule back to the standard step →
+fails again → escalated step) is admitted again rather than dropped. A cap
+keeps that from becoming an infinite loop:
+
+- **Fallback entries are capped per step per run.** `flow.maxFallbackEntries`
+  (default `3`) bounds how many times any single step may be *entered via
+  fallback* within one invocation. Entries by rule, initial scheduling,
+  self-loop, postpone-resume or `cycle: true` do not count. When the
+  `(N+1)`th fallback arrival at a step would exceed the cap, the step is not
+  run: the runtime records a `failed` flow state on that step whose error
+  names the limit (`step "b" reached maxFallbackEntries=3: fallback re-entry
+  limit exceeded …`), emits `flow.step.failed`, enqueues nothing further, and
+  the run terminates `flow.failed`. With two steps feeding each other that is
+  at most `1 + 2·N` step runs in total.
+
+Raise the key only for flows whose escalation ladder genuinely needs more
+passes; a step that keeps failing into the same salvage step is a bug in the
+flow, not something to loop on.
+
+```yaml
+flow:
+  maxFallbackEntries: 5
+  steps: [...]
+```
 
 #### Turn-budget exhaustion
 
@@ -687,7 +717,7 @@ The three fields deliberately fail differently when a placeholder does not resol
 
 Literal (non-templated) `model` / `reasoningEffort` values are validated when the flow loads, like any other step field. The override applies to that step's agent instance only — two steps on the same agent id can run different models in the same run, and the agent's configuration is never rewritten.
 
-A step reached through `fallback.to` bypasses the diamond-convergence guard, so an escalation target that already ran earlier in the same invocation (standard step fails → escalated step → cycle rule back to the standard step → fails again → escalated step) is admitted again rather than dropped.
+A step reached through `fallback.to` bypasses the diamond-convergence guard, so an escalation target that already ran earlier in the same invocation is admitted again rather than dropped; see [Fallback re-entry](#fallback-re-entry) for the per-run `flow.maxFallbackEntries` cap that bounds it.
 
 ## Session Management
 

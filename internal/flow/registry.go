@@ -438,6 +438,12 @@ func validateFlow(f *Flow) error {
 	if len(f.Spec.Steps) == 0 {
 		return ErrNoSteps
 	}
+	// MaxFallbackEntries is optional; 0 means the default (see
+	// FlowSpec.EffectiveMaxFallbackEntries). Negative values are invalid.
+	if f.Spec.MaxFallbackEntries < 0 {
+		return fmt.Errorf("%w: flow.maxFallbackEntries must be >= 0 (got %d; 0 means default %d)",
+			ErrInvalidMaxFallbackEntries, f.Spec.MaxFallbackEntries, DefaultMaxFallbackEntries)
+	}
 
 	// Build a set of step IDs for reference validation
 	stepIDs := make(map[string]bool, len(f.Spec.Steps))

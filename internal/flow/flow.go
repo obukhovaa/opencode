@@ -10,25 +10,26 @@ import (
 )
 
 var (
-	ErrFlowNotFound            = errors.New("flow not found")
-	ErrFlowDisabled            = errors.New("flow is disabled")
-	ErrInvalidFlowName         = errors.New("invalid flow name")
-	ErrInvalidStepID           = errors.New("invalid step ID")
-	ErrDuplicateStepID         = errors.New("duplicate step ID")
-	ErrInvalidRule             = errors.New("rule references non-existent step")
-	ErrInvalidFallback         = errors.New("fallback references non-existent step")
-	ErrInvalidOnTurnsExhausted = errors.New("invalid fallback.on_turns_exhausted")
-	ErrNoSteps                 = errors.New("flow has no steps")
-	ErrInvalidYAML             = errors.New("invalid flow YAML")
-	ErrInvalidPredicate        = errors.New("invalid predicate")
-	ErrInvalidMaxTurns         = errors.New("invalid maxTurns")
-	ErrInvalidMaxIterations    = errors.New("invalid maxIterations")
-	ErrInvalidInclude          = errors.New("invalid flow include")
-	ErrInvalidTemplate         = errors.New("invalid step template")
-	ErrUnknownTemplate         = errors.New("unknown step template")
-	ErrInvalidPromptSource     = errors.New("invalid step prompt source")
-	ErrInvalidModel            = errors.New("invalid step model")
-	ErrInvalidReasoningEffort  = errors.New("invalid step reasoningEffort")
+	ErrFlowNotFound              = errors.New("flow not found")
+	ErrFlowDisabled              = errors.New("flow is disabled")
+	ErrInvalidFlowName           = errors.New("invalid flow name")
+	ErrInvalidStepID             = errors.New("invalid step ID")
+	ErrDuplicateStepID           = errors.New("duplicate step ID")
+	ErrInvalidRule               = errors.New("rule references non-existent step")
+	ErrInvalidFallback           = errors.New("fallback references non-existent step")
+	ErrInvalidOnTurnsExhausted   = errors.New("invalid fallback.on_turns_exhausted")
+	ErrNoSteps                   = errors.New("flow has no steps")
+	ErrInvalidYAML               = errors.New("invalid flow YAML")
+	ErrInvalidPredicate          = errors.New("invalid predicate")
+	ErrInvalidMaxTurns           = errors.New("invalid maxTurns")
+	ErrInvalidMaxIterations      = errors.New("invalid maxIterations")
+	ErrInvalidInclude            = errors.New("invalid flow include")
+	ErrInvalidTemplate           = errors.New("invalid step template")
+	ErrUnknownTemplate           = errors.New("unknown step template")
+	ErrInvalidPromptSource       = errors.New("invalid step prompt source")
+	ErrInvalidModel              = errors.New("invalid step model")
+	ErrInvalidReasoningEffort    = errors.New("invalid step reasoningEffort")
+	ErrInvalidMaxFallbackEntries = errors.New("invalid maxFallbackEntries")
 )
 
 // Flow represents a discovered flow definition.
@@ -53,11 +54,44 @@ type FlowSession struct {
 	ResumeOnFailure bool   `yaml:"resume_on_failure,omitempty"`
 }
 
+// DefaultMaxFallbackEntries is the per-run cap on fallback-origin entries
+// of any one step when FlowSpec.MaxFallbackEntries is unset. Three admits
+// the escalation shapes flows actually use (fail → escalate → cycle back →
+// fail → escalate again) while a step that keeps failing into the same
+// salvage step stops after a handful of attempts instead of running until
+// the flow timeout. See FlowSpec.MaxFallbackEntries.
+const DefaultMaxFallbackEntries = 3
+
 // FlowSpec contains the flow's args schema and step definitions.
 type FlowSpec struct {
 	Args    map[string]any `yaml:"args,omitempty"`
 	Session FlowSession    `yaml:"session,omitempty"`
-	Steps   []Step         `yaml:"steps"`
+	// MaxFallbackEntries caps how many times any single step may be
+	// ENTERED THROUGH `fallback.to` within one flow invocation. Fallback
+	// arrivals bypass the diamond-convergence guard (Run, stepWork.fallback)
+	// so an escalation target can legitimately run more than once; that
+	// bypass is what lets `a --fallback--> b --cycle rule--> a` with an
+	// always-failing `a` re-enter `b` forever, because `maxIterations`
+	// only counts self-routes and the guard no longer stops it. When the
+	// (N+1)th fallback arrival at a step would exceed the cap, the runtime
+	// records a `failed` flow state for that step (its output names this
+	// key) and emits an error event instead of running it — the run ends
+	// failed and visible, never silently dropped. Entries by rule, initial
+	// scheduling, self-loop, postpone-resume or `cycle: true` do not count.
+	// 0 (unset) means DefaultMaxFallbackEntries; validateFlow rejects
+	// negatives.
+	MaxFallbackEntries int    `yaml:"maxFallbackEntries,omitempty"`
+	Steps              []Step `yaml:"steps"`
+}
+
+// EffectiveMaxFallbackEntries resolves MaxFallbackEntries with its default:
+// 0 (unset) yields DefaultMaxFallbackEntries; any positive value is used
+// as-is. Negative values never reach here (validateFlow rejects them).
+func (s *FlowSpec) EffectiveMaxFallbackEntries() int {
+	if s.MaxFallbackEntries <= 0 {
+		return DefaultMaxFallbackEntries
+	}
+	return s.MaxFallbackEntries
 }
 
 // Step defines a single step in the flow graph.
