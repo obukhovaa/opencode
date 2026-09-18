@@ -146,13 +146,23 @@ func (t *tableCmp) setRows() {
 			string(a.Mode),
 			a.Name,
 			model,
-			formatTools(a.Tools),
+			formatTools(a),
 		})
 	}
 	t.table.SetRows(rows)
 }
 
-func formatTools(tools map[string]bool) string {
+// formatTools renders the agent's effective tool gating. An allowlisted agent
+// must never fall through to the deny-list rendering: an empty Tools map reads
+// as "default", i.e. all tools enabled, which is the opposite of the truth.
+func formatTools(a agentregistry.AgentInfo) string {
+	if a.UsesToolAllowlist() {
+		return fmt.Sprintf("only: %s", strings.Join(a.AllowTools, ", "))
+	}
+	return formatDenyTools(a.Tools)
+}
+
+func formatDenyTools(tools map[string]bool) string {
 	if len(tools) == 0 {
 		return "default"
 	}

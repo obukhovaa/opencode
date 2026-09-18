@@ -809,6 +809,409 @@ func TestCustomPathAgentsLowestPrecedence(t *testing.T) {
 	}
 }
 
+func TestParseAgentMarkdownAllowTools(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("allowTools alone", func(t *testing.T) {
+		md := `---
+description: Narrow runner
+mode: subagent
+allowTools:
+  - struct_output
+  - scenario-run_*
+---
+
+Body.
+`
+		path := filepath.Join(dir, "runner.md")
+		os.WriteFile(path, []byte(md), 0o644)
+
+		agent, err := parseAgentMarkdown(path)
+		if err != nil {
+			t.Fatalf("parseAgentMarkdown() error = %v", err)
+		}
+		if !agent.UsesToolAllowlist() {
+			t.Fatal("agent should be in allowlist mode")
+		}
+		if len(agent.AllowTools) != 2 || agent.AllowTools[0] != "struct_output" {
+			t.Errorf("AllowTools = %v, want [struct_output scenario-run_*]", agent.AllowTools)
+		}
+		if agent.Tools != nil {
+			t.Errorf("Tools should stay nil, got %v", agent.Tools)
+		}
+	})
+
+	t.Run("tools alone", func(t *testing.T) {
+		md := `---
+description: Deny-list agent
+tools:
+  bash: false
+---
+
+Body.
+`
+		path := filepath.Join(dir, "denylist.md")
+		os.WriteFile(path, []byte(md), 0o644)
+
+		agent, err := parseAgentMarkdown(path)
+		if err != nil {
+			t.Fatalf("parseAgentMarkdown() error = %v", err)
+		}
+		if agent.UsesToolAllowlist() {
+			t.Error("agent should not be in allowlist mode")
+		}
+	})
+
+	t.Run("both keys rejected, error names the file", func(t *testing.T) {
+		md := `---
+description: Confused agent
+tools:
+  bash: false
+allowTools:
+  - read
+---
+
+Body.
+`
+		path := filepath.Join(dir, "confused.md")
+		os.WriteFile(path, []byte(md), 0o644)
+
+		_, err := parseAgentMarkdown(path)
+		if err == nil {
+			t.Fatal("parseAgentMarkdown() should reject tools + allowTools in one file")
+		}
+		if !contains(err.Error(), path) {
+			t.Errorf("error = %q, should name the file path %q", err.Error(), path)
+		}
+		if !contains(err.Error(), "allowTools") {
+			t.Errorf("error = %q, should mention allowTools", err.Error())
+		}
+	})
+}
+
+// The predicate table is the security boundary: all five gates must agree on
+// what an allowlist grants, and a deny-list agent must be unaffected.
+func TestRegistryAllowlistGates(t *testing.T) {
+	r := &registry{
+		agents: map[string]AgentInfo{
+			"narrow": {
+				ID:   "narrow",
+				Mode: config.AgentModeSubagent,
+				AllowTools: []string{
+					"read",
+					"struct_output",
+					"gitlab_*",
+				},
+			},
+			"cron-user": {
+				ID:         "cron-user",
+				Mode:       config.AgentModeAgent,
+				AllowTools: []string{"croncreate"},
+			},
+			"star": {
+				ID:         "star",
+				Mode:       config.AgentModeAgent,
+				AllowTools: []string{"*"},
+			},
+			"denylist": {
+				ID:   "denylist",
+				Mode: config.AgentModeSubagent,
+				Tools: map[string]bool{
+					"bash":       false,
+					"croncreate": true,
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name              string
+		agent             string
+		tool              string
+		wantEnabled       bool
+		wantExplicit      bool
+		wantPermission    permission.Action
+		wantReadPermision permission.Action
+	}{
+		{"listed exact", "narrow", "read", true, true, permission.ActionAsk, permission.ActionAllow},
+		{"listed engine tool", "narrow", "struct_output", true, true, permission.ActionAsk, permission.ActionAllow},
+		{"listed MCP wildcard", "narrow", "gitlab_list_issues", true, true, permission.ActionAsk, permission.ActionAllow},
+		{"unlisted tool", "narrow", "bash", false, false, permission.ActionDeny, permission.ActionDeny},
+		{"unlisted grep is denied too", "narrow", "grep", false, false, permission.ActionDeny, permission.ActionDeny},
+		{"cron needs listing", "narrow", "croncreate", false, false, permission.ActionDeny, permission.ActionDeny},
+		{"cron listed is explicit", "cron-user", "croncreate", true, true, permission.ActionAsk, permission.ActionAllow},
+		// A bare "*" is "everything the deny-list default would give me", and
+		// that default never included cron: allowed, but not an opt-in.
+		{"star allows everything", "star", "bash", true, false, permission.ActionAsk, permission.ActionAllow},
+		{"star does not opt in to cron", "star", "croncreate", true, false, permission.ActionAsk, permission.ActionAllow},
+		// Deny-list agents keep their existing semantics.
+		{"deny-list unmentioned stays enabled", "denylist", "write", true, false, permission.ActionAsk, permission.ActionAllow},
+		{"deny-list explicit false", "denylist", "bash", false, false, permission.ActionDeny, permission.ActionDeny},
+		{"deny-list explicit true", "denylist", "croncreate", true, true, permission.ActionAsk, permission.ActionAllow},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := r.IsToolEnabled(tt.agent, tt.tool); got != tt.wantEnabled {
+				t.Errorf("IsToolEnabled(%q, %q) = %v, want %v", tt.agent, tt.tool, got, tt.wantEnabled)
+			}
+			if got := r.IsToolExplicitlyEnabled(tt.agent, tt.tool); got != tt.wantExplicit {
+				t.Errorf("IsToolExplicitlyEnabled(%q, %q) = %v, want %v", tt.agent, tt.tool, got, tt.wantExplicit)
+			}
+			if got := r.EvaluatePermission(tt.agent, tt.tool, ""); got != tt.wantPermission {
+				t.Errorf("EvaluatePermission(%q, %q) = %v, want %v", tt.agent, tt.tool, got, tt.wantPermission)
+			}
+			if got := r.EvaluateReadPermission(tt.agent, tt.tool, ""); got != tt.wantReadPermision {
+				t.Errorf("EvaluateReadPermission(%q, %q) = %v, want %v", tt.agent, tt.tool, got, tt.wantReadPermision)
+			}
+		})
+	}
+
+	// A non-empty allowlist means the agent has tools, so it keeps the
+	// parallel-tool-use and background-task prompt sections.
+	for _, id := range []string{"narrow", "cron-user", "star"} {
+		if !r.HasTools(id) {
+			t.Errorf("HasTools(%q) = false, want true for an allowlisted agent", id)
+		}
+	}
+}
+
+func TestRegistryHasTools(t *testing.T) {
+	tests := []struct {
+		name  string
+		tools map[string]bool
+		want  bool
+	}{
+		{"nil tools", nil, true},
+		{"deny-list without star", map[string]bool{"bash": false}, true},
+		{"star false alone means tool-less", map[string]bool{"*": false}, false},
+		// The pre-allowTools workaround: "*": false plus explicit grants. Read
+		// as tool-less, it withheld the parallel-tool-use and background-task
+		// prompt sections from agents that were using tools all along.
+		{"star false with a grant has tools", map[string]bool{"*": false, "read": true}, true},
+		{"star false with only denials is tool-less", map[string]bool{"*": false, "read": false}, false},
+		{"star true", map[string]bool{"*": true}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &registry{agents: map[string]AgentInfo{"a": {ID: "a", Tools: tt.tools}}}
+			if got := r.HasTools("a"); got != tt.want {
+				t.Errorf("HasTools() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+	r := &registry{agents: map[string]AgentInfo{}}
+	if !r.HasTools("unknown") {
+		t.Error("unknown agent should be treated as having tools")
+	}
+}
+
+// Built-in deny-list goldens: the gates must be bit-identical to pre-allowTools
+// behaviour for every agent that does not use the new key. Cron is the one to
+// watch — hivemind opts in, everyone else must not.
+func TestBuiltinToolGatesUnchanged(t *testing.T) {
+	agents := make(map[string]AgentInfo)
+	registerBuiltins(agents, &config.Config{Agents: make(map[config.AgentName]config.Agent)})
+	r := &registry{agents: agents}
+
+	for _, id := range []string{
+		config.AgentCoder, config.AgentHivemind, config.AgentExplorer,
+		config.AgentWorkhorse, config.AgentSummarizer, config.AgentDescriptor,
+	} {
+		if agents[id].UsesToolAllowlist() {
+			t.Errorf("builtin %q should not use an allowlist", id)
+		}
+	}
+
+	tests := []struct {
+		agent, tool string
+		want        bool
+	}{
+		{config.AgentCoder, "bash", true},
+		{config.AgentCoder, "read", true},
+		{config.AgentHivemind, "bash", false},
+		{config.AgentHivemind, "lsp", false},
+		{config.AgentHivemind, "read", true},
+		{config.AgentExplorer, "bash", false},
+		{config.AgentExplorer, "grep", true},
+		{config.AgentWorkhorse, "task", false},
+		{config.AgentWorkhorse, "bash", true},
+		{config.AgentSummarizer, "read", false},
+		{config.AgentDescriptor, "read", false},
+	}
+	for _, tt := range tests {
+		if got := r.IsToolEnabled(tt.agent, tt.tool); got != tt.want {
+			t.Errorf("IsToolEnabled(%q, %q) = %v, want %v", tt.agent, tt.tool, got, tt.want)
+		}
+	}
+
+	if !r.IsToolExplicitlyEnabled(config.AgentHivemind, "croncreate") {
+		t.Error("hivemind should keep its explicit cron opt-in")
+	}
+	if r.IsToolExplicitlyEnabled(config.AgentCoder, "croncreate") {
+		t.Error("coder must not get cron: default-deny needs an explicit opt-in")
+	}
+	// Tool-less builtins stay tool-less: the HasTools fix must not hand the
+	// summarizer and descriptor prompt sections they cannot use.
+	if r.HasTools(config.AgentSummarizer) || r.HasTools(config.AgentDescriptor) {
+		t.Error("summarizer/descriptor should still report no tools")
+	}
+	if !r.HasTools(config.AgentHivemind) {
+		t.Error("hivemind should report tools")
+	}
+}
+
+func TestAllowToolsDropsInheritedTools(t *testing.T) {
+	t.Run("markdown over builtin", func(t *testing.T) {
+		agents := make(map[string]AgentInfo)
+		registerBuiltins(agents, &config.Config{Agents: make(map[config.AgentName]config.Agent)})
+		existing := agents[config.AgentExplorer]
+		if len(existing.Tools) == 0 {
+			t.Fatal("precondition: explorer should ship a Tools map")
+		}
+
+		md := AgentInfo{
+			ID:         config.AgentExplorer,
+			AllowTools: []string{"read", "grep", "read"},
+			Location:   "/tmp/explorer.md",
+		}
+		mergeMarkdownIntoExisting(&existing, &md)
+
+		if existing.Tools != nil {
+			t.Errorf("inherited Tools should be dropped, got %v", existing.Tools)
+		}
+		if len(existing.AllowTools) != 2 {
+			t.Errorf("AllowTools = %v, want the duplicate dropped", existing.AllowTools)
+		}
+		if !existing.UsesToolAllowlist() {
+			t.Error("explorer should be in allowlist mode")
+		}
+		if existing.ToolEnabled("bash") {
+			t.Error("bash should be denied under the allowlist")
+		}
+		if !existing.ToolEnabled("grep") {
+			t.Error("grep should be allowed")
+		}
+	})
+
+	t.Run("config over builtin", func(t *testing.T) {
+		agents := make(map[string]AgentInfo)
+		registerBuiltins(agents, &config.Config{Agents: make(map[config.AgentName]config.Agent)})
+		cfg := &config.Config{
+			Agents: map[config.AgentName]config.Agent{
+				config.AgentHivemind: {AllowTools: []string{"read", "task"}},
+			},
+		}
+		applyConfigOverrides(agents, cfg)
+
+		hivemind := agents[config.AgentHivemind]
+		if hivemind.Tools != nil {
+			t.Errorf("inherited Tools should be dropped, got %v", hivemind.Tools)
+		}
+		// The dropped map carried hivemind's cron opt-in — hence the warning
+		// the registry logs. The allowlist has to restate it to keep it.
+		if hivemind.ToolExplicitlyEnabled("croncreate") {
+			t.Error("croncreate should be gone with the dropped Tools map")
+		}
+		if !hivemind.ToolEnabled("task") {
+			t.Error("task should be allowed")
+		}
+	})
+
+	t.Run("tools over an inherited allowlist", func(t *testing.T) {
+		existing := AgentInfo{ID: "narrow", AllowTools: []string{"read"}}
+		md := AgentInfo{ID: "narrow", Tools: map[string]bool{"bash": false}, Location: "/tmp/narrow.md"}
+		mergeMarkdownIntoExisting(&existing, &md)
+
+		if existing.AllowTools != nil {
+			t.Errorf("inherited AllowTools should be dropped, got %v", existing.AllowTools)
+		}
+		if existing.UsesToolAllowlist() {
+			t.Error("agent should be back in deny-list mode")
+		}
+		if !existing.ToolEnabled("write") {
+			t.Error("deny-list mode should re-enable unmentioned tools")
+		}
+	})
+}
+
+// An explicit empty declaration (`allowTools: []` / `"tools": {}`) unmarshals to
+// a non-nil zero-length collection, so a `!= nil` gate would treat it as a real
+// declaration: it would drop the inherited gate of the other kind and leave the
+// agent with neither, i.e. every tool granted.
+func TestEmptyToolDeclarationKeepsInheritedGate(t *testing.T) {
+	t.Run("markdown empty allowTools keeps inherited tools", func(t *testing.T) {
+		existing := AgentInfo{ID: "narrow", Tools: map[string]bool{"bash": false}}
+		md := AgentInfo{ID: "narrow", AllowTools: []string{}, Location: "/tmp/narrow.md"}
+		mergeMarkdownIntoExisting(&existing, &md)
+
+		if existing.UsesToolAllowlist() {
+			t.Error("an empty allowTools must not switch the agent into allowlist mode")
+		}
+		if len(existing.Tools) != 1 {
+			t.Fatalf("inherited Tools should survive, got %v", existing.Tools)
+		}
+		if existing.ToolEnabled("bash") {
+			t.Error("inherited deny of bash should still apply")
+		}
+	})
+
+	t.Run("markdown empty tools keeps inherited allowlist", func(t *testing.T) {
+		existing := AgentInfo{ID: "narrow", AllowTools: []string{"read"}}
+		md := AgentInfo{ID: "narrow", Tools: map[string]bool{}, Location: "/tmp/narrow.md"}
+		mergeMarkdownIntoExisting(&existing, &md)
+
+		if !existing.UsesToolAllowlist() {
+			t.Fatalf("an empty tools map must not drop the inherited allowlist, got %v", existing.AllowTools)
+		}
+		if existing.ToolEnabled("bash") {
+			t.Error("bash should still be denied by the inherited allowlist")
+		}
+	})
+
+	t.Run("config empty allowTools keeps inherited tools", func(t *testing.T) {
+		agents := make(map[string]AgentInfo)
+		registerBuiltins(agents, &config.Config{Agents: make(map[config.AgentName]config.Agent)})
+		inherited := len(agents[config.AgentExplorer].Tools)
+		if inherited == 0 {
+			t.Fatal("precondition: explorer should ship a Tools map")
+		}
+
+		applyConfigOverrides(agents, &config.Config{
+			Agents: map[config.AgentName]config.Agent{
+				config.AgentExplorer: {AllowTools: []string{}},
+			},
+		})
+
+		explorer := agents[config.AgentExplorer]
+		if explorer.UsesToolAllowlist() {
+			t.Error("an empty allowTools must not switch the agent into allowlist mode")
+		}
+		if len(explorer.Tools) != inherited {
+			t.Errorf("inherited Tools should survive, got %v", explorer.Tools)
+		}
+	})
+
+	t.Run("config empty tools keeps inherited allowlist", func(t *testing.T) {
+		agents := map[string]AgentInfo{
+			config.AgentExplorer: {ID: config.AgentExplorer, AllowTools: []string{"read"}},
+		}
+		applyConfigOverrides(agents, &config.Config{
+			Agents: map[config.AgentName]config.Agent{
+				config.AgentExplorer: {Tools: map[string]bool{}},
+			},
+		})
+
+		explorer := agents[config.AgentExplorer]
+		if !explorer.UsesToolAllowlist() {
+			t.Fatalf("an empty tools map must not drop the inherited allowlist, got %v", explorer.AllowTools)
+		}
+		if explorer.ToolEnabled("bash") {
+			t.Error("bash should still be denied by the inherited allowlist")
+		}
+	})
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr))
 }

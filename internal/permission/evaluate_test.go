@@ -411,6 +411,38 @@ func TestIsToolEnabled(t *testing.T) {
 	}
 }
 
+func TestIsToolAllowlisted(t *testing.T) {
+	tests := []struct {
+		name  string
+		tool  string
+		allow []string
+		want  bool
+	}{
+		{"nil list grants nothing", "bash", nil, false},
+		{"empty list grants nothing", "bash", []string{}, false},
+		{"exact match", "bash", []string{"read", "bash"}, true},
+		{"unlisted tool", "bash", []string{"read", "grep"}, false},
+		{"prefix wildcard", "gitlab_list_issues", []string{"gitlab_*"}, true},
+		{"prefix wildcard misses other prefix", "jira_get_issue", []string{"gitlab_*"}, false},
+		{"bare star allows everything", "anything", []string{"*"}, true},
+		{"suffix wildcard", "scenario-run_start", []string{"*_start"}, true},
+		{"matched only by wildcard", "struct_output", []string{"struct_*"}, true},
+		// MatchWildcard is case-sensitive, and an allowlist inherits that:
+		// an MCP tool whose real name is mixed-case must be listed as it is
+		// spelled (unlike deferredTools, which folds case deliberately).
+		{"case sensitive exact", "Bash", []string{"bash"}, false},
+		{"case sensitive wildcard", "GitLab_list", []string{"gitlab_*"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsToolAllowlisted(tt.tool, tt.allow)
+			if got != tt.want {
+				t.Errorf("IsToolAllowlisted(%q, %v) = %v, want %v", tt.tool, tt.allow, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestReadDenyPatterns(t *testing.T) {
 	tests := []struct {
 		name        string

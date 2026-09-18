@@ -407,10 +407,17 @@ func generateSchema() map[string]any {
 				},
 				"tools": map[string]any{
 					"type":        "object",
-					"description": "Tool enable/disable configuration",
+					"description": "Tool deny-list: keys are tool names or wildcard patterns, values enable/disable them. Unmentioned tools stay ENABLED, so a tool added later is granted automatically. Mutually exclusive with 'allowTools'.",
 					"additionalProperties": map[string]any{
 						"type":        "boolean",
 						"description": "Whether the tool is enabled for this agent",
+					},
+				},
+				"allowTools": map[string]any{
+					"type":        "array",
+					"description": "Tool allow-list: the agent gets exactly these tools and nothing else, so a tool added to the harness later is not granted until it is listed. Entries are exact tool names or wildcard patterns using the same case-sensitive matching as 'tools' keys (e.g. \"gitlab_*\"); a single \"*\" entry allows everything. Engine-injected tools are not implicit — list 'struct_output' if the agent has an output schema and 'toolsearch' if it sets deferredTools. A bare \"*\" does not opt in to default-deny tools (croncreate/crondelete/cronlist); name those explicitly. Mutually exclusive with 'tools'.",
+					"items": map[string]any{
+						"type": "string",
 					},
 				},
 				"deferredTools": map[string]any{
@@ -464,6 +471,12 @@ func generateSchema() map[string]any {
 				},
 			},
 			"required": []string{"model"},
+			// tools and allowTools are two gating models, not a refinement of
+			// one another, so a config naming both is rejected here as well as
+			// at load time — the editor catches it before the boot does.
+			"not": map[string]any{
+				"required": []string{"tools", "allowTools"},
+			},
 		},
 	}
 

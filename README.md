@@ -21,6 +21,7 @@ OpenCode is a CLI tool that brings AI assistance to your terminal. It provides a
 - **Structured output**: enforce final agent's output with json schema, perfect for automated pipelines
 - **MCP support**: extend capabilities via Model Context Protocol servers
 - **Deferred tools**: keep large MCP fleets out of context until needed — matching tools are loaded on demand via `toolsearch` (Anthropic server-side tool search on capable models, cache-preserving; a client-side fallback elsewhere) ([guide](docs/deferred-tools.md))
+- **Tool allow-lists**: scope an agent to exactly the tools it needs with `allowTools`, so tools added to the harness later are not granted retroactively ([guide](docs/tool-permissions.md))
 - **Agent skills**: reusable instruction sets with argument substitution and dynamic shell expansion ([guide](docs/skills.md))
 - **Custom commands**: predefined prompts with named arguments ([guide](docs/custom-commands.md))
 - **Langfuse observability**: built-in tracing for LLM calls, tool executions, token usage, and cost ([guide](docs/telemetry.md))
@@ -234,7 +235,8 @@ Each built-in agent can be customized:
 | `name` | Display name for the agent |
 | `description` | Short description of agent's purpose |
 | `permission` | Agent-specific permission overrides (supports granular glob patterns) |
-| `tools` | Enable/disable specific tools (e.g., `{"skill": false}`) |
+| `tools` | Tool deny-list — unmentioned tools stay enabled (e.g., `{"skill": false}`) |
+| `allowTools` | Tool allow-list — the agent gets exactly these, nothing else (e.g., `["read", "gitlab_*"]`, [guide](docs/tool-permissions.md)). Mutually exclusive with `tools` |
 | `deferredTools` | On-demand tool loading — matching tools stay out of context until discovered via `toolsearch` (e.g., `{"jira_*": true}`, [guide](docs/deferred-tools.md)) |
 | `parallelToolUse` | Enable/disable parallel tool invocation if tool allows it |
 | `color` | Badge color for subagent indication in TUI |
@@ -279,6 +281,36 @@ You are a code review specialist...
 ```
 
 The file basename (without `.md`) becomes the agent ID. Custom agents default to `subagent` mode.
+
+#### Deny-list (`tools`) vs allow-list (`allowTools`)
+
+`tools` is a **deny-list**: keys enable or disable named tools (wildcards
+allowed), and anything unmentioned stays *enabled*. Convenient for a
+general-purpose agent, but it means every tool added to the harness later is
+granted to every existing agent retroactively.
+
+`allowTools` is an **allow-list**: the agent gets exactly the tools it names
+and nothing else.
+
+```markdown
+---
+name: Scenario Runner
+mode: subagent
+allowTools:
+  - struct_output
+  - question
+  - scenario-run_*
+---
+```
+
+The two keys are mutually exclusive within one definition source (declaring
+both fails the markdown parse, or the boot for `.opencode.json`); across
+sources the higher-precedence one replaces the other, with a warning naming
+what it dropped. Allow-list mode has no implicit grants — `struct_output`,
+`toolsearch` and the `cron*` tools must be listed by name — and a single `"*"`
+entry is the allow-everything escape hatch. Full semantics, the migration
+checklist and the version footgun (older builds ignore the key silently) are
+in [docs/tool-permissions.md](docs/tool-permissions.md).
 
 #### Langfuse-managed system prompts
 
@@ -669,6 +701,7 @@ in `INSERT`; `Esc` switches to `NORMAL`.
 | Topic | Link |
 |-------|------|
 | Skills | [docs/skills.md](docs/skills.md) |
+| Tool Permissions (`tools` vs `allowTools`) | [docs/tool-permissions.md](docs/tool-permissions.md) |
 | Context Files (scoped resolution + progressive disclosure) | [docs/context.md](docs/context.md) |
 | Flows | [docs/flows.md](docs/flows.md) |
 | Hooks (Claude-Code-compatible) | [docs/hooks.md](docs/hooks.md) |

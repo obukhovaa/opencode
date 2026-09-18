@@ -92,15 +92,21 @@ type Agent struct {
 	Model           models.ModelID  `json:"model"`
 	MaxTokens       int64           `json:"maxTokens"`
 	MaxTurns        int             `json:"maxTurns,omitempty"`
-	ReasoningEffort string          `json:"reasoningEffort"`         // For openai models low,medium,high
-	Permission      map[string]any  `json:"permission,omitempty"`    // tool name -> "allow" | {"pattern": "action"}
-	Tools           map[string]bool `json:"tools,omitempty"`         // e.g., {"skill": false}
-	DeferredTools   map[string]bool `json:"deferredTools,omitempty"` // e.g., {"jira_*": true} — schemas loaded on demand via toolsearch
-	Mode            AgentMode       `json:"mode,omitempty"`          // "agent" or "subagent"
-	Name            string          `json:"name,omitempty"`
-	Native          bool            `json:"native,omitempty"`
-	Description     string          `json:"description,omitempty"`
-	Prompt          string          `json:"prompt,omitempty"`
+	ReasoningEffort string          `json:"reasoningEffort"`      // For openai models low,medium,high
+	Permission      map[string]any  `json:"permission,omitempty"` // tool name -> "allow" | {"pattern": "action"}
+	Tools           map[string]bool `json:"tools,omitempty"`      // e.g., {"skill": false}
+	// AllowTools is the allow-list counterpart of Tools: when non-empty the
+	// agent gets exactly the tools it names (exact names or wildcards) and
+	// nothing else, so a tool added to the harness later is not silently
+	// granted. Mutually exclusive with Tools within one definition source —
+	// see ValidateAgentToolsSource.
+	AllowTools    []string        `json:"allowTools,omitempty"`    // e.g., ["read", "gitlab_*"]
+	DeferredTools map[string]bool `json:"deferredTools,omitempty"` // e.g., {"jira_*": true} — schemas loaded on demand via toolsearch
+	Mode          AgentMode       `json:"mode,omitempty"`          // "agent" or "subagent"
+	Name          string          `json:"name,omitempty"`
+	Native        bool            `json:"native,omitempty"`
+	Description   string          `json:"description,omitempty"`
+	Prompt        string          `json:"prompt,omitempty"`
 	// LangfusePromptPath references a prompt stored in Langfuse Prompt
 	// Management instead of inlining its text in Prompt. Mutually
 	// exclusive with Prompt — see validateAgentPromptSource. Slashes are
@@ -1021,6 +1027,9 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 	if err := ValidateAgentPromptSource(string(name), agent.Prompt != "", agent.LangfusePromptPath); err != nil {
 		return err
 	}
+	if err := ValidateAgentToolsSource(string(name), len(agent.Tools) > 0, len(agent.AllowTools) > 0); err != nil {
+		return err
+	}
 
 	// Check if model exists
 	model, modelExists := models.SupportedModels[agent.Model]
@@ -1351,6 +1360,29 @@ func validateProviderMetadata(provider models.ModelProvider, meta *ProviderMetad
 func ValidateAgentPromptSource(id string, hasInlinePrompt bool, langfusePath string) error {
 	if hasInlinePrompt && strings.TrimSpace(langfusePath) != "" {
 		return fmt.Errorf("agent %q: prompt and langfusePromptPath are mutually exclusive — declare exactly one", id)
+	}
+	return nil
+}
+
+// ValidateAgentToolsSource enforces that one definition source picks a single
+// tool-gating model: `tools` (a deny-list, everything unmentioned allowed) or
+// `allowTools` (an allow-list, nothing unmentioned allowed) — never both.
+// Together they are not a refinement of each other but two answers to the
+// same question, and the map's true/false values are meaningless once the
+// allow-list decides membership.
+//
+// Presence bits rather than the values themselves, for the same reason as
+// ValidateAgentPromptSource: markdown frontmatter and `.opencode.json`
+// disagree on where each field lives, and both funnel here so the rule reads
+// identically in either form's error.
+//
+// Scope is deliberately one source. Across sources the fields are a legal
+// override — allow-listing a built-in agent that carries a Tools map in Go
+// code would be impossible otherwise — and the agent registry resolves that
+// as last-writer-wins with a warning naming the dropped keys.
+func ValidateAgentToolsSource(id string, hasTools, hasAllowTools bool) error {
+	if hasTools && hasAllowTools {
+		return fmt.Errorf("agent %q: tools and allowTools are mutually exclusive — declare exactly one", id)
 	}
 	return nil
 }

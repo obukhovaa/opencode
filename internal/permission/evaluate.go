@@ -194,6 +194,34 @@ func IsToolEnabled(toolName string, toolsConfig map[string]bool) bool {
 	return true
 }
 
+// IsToolAllowlisted reports whether toolName is permitted by an agent's
+// allowTools list.
+//
+// This is the inverse default of IsToolEnabled: nothing is granted unless it
+// is listed, so a tool added to the harness later reaches an allowlisted
+// agent only once its author says so. Entries are exact tool names or
+// wildcard patterns, matched with the same MatchWildcard syntax — and the
+// same case sensitivity — as the keys of a tools map.
+//
+// A bare "*" entry allows everything, the escape hatch for an agent that
+// wants today's allow-by-default breadth while still spelling its intent in
+// the new key. An empty or nil list is not an allowlist at all and returns
+// false for every tool; callers decide whether the agent is in allowlist
+// mode (see agent.AgentInfo.UsesToolAllowlist).
+func IsToolAllowlisted(toolName string, allow []string) bool {
+	for _, entry := range allow {
+		if entry == toolName {
+			return true
+		}
+	}
+	for _, entry := range allow {
+		if MatchWildcard(entry, toolName) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsToolDeferred reports whether a tool's schema should be deferred (loaded
 // on demand via toolsearch) for an agent with the given deferredTools config.
 // Semantics mirror IsToolEnabled with three deliberate differences:

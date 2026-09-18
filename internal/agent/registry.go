@@ -56,10 +56,17 @@ type AgentInfo struct {
 	StructOutputSchemaDelivery string          `yaml:"structOutputSchemaDelivery,omitempty"`
 	Permission                 map[string]any  `yaml:"permission,omitempty"`
 	Tools                      map[string]bool `yaml:"tools,omitempty"`
-	DeferredTools              map[string]bool `yaml:"deferredTools,omitempty"`
-	Output                     *Output         `yaml:"output,omitempty"`
-	Location                   string          `yaml:"-"`
-	ParallelToolUse            *bool           `yaml:"parallelToolUse,omitempty"`
+	// AllowTools is the allow-list counterpart of Tools. A non-empty value
+	// puts the agent in allowlist mode: it gets exactly the tools listed
+	// here (exact names or wildcards) and Tools is never consulted, so a
+	// tool added to the harness later is not silently granted. Declaring
+	// both keys in one source is an error (config.ValidateAgentToolsSource);
+	// across sources the later one wins and drops the other, loudly.
+	AllowTools      []string        `yaml:"allowTools,omitempty"`
+	DeferredTools   map[string]bool `yaml:"deferredTools,omitempty"`
+	Output          *Output         `yaml:"output,omitempty"`
+	Location        string          `yaml:"-"`
+	ParallelToolUse *bool           `yaml:"parallelToolUse,omitempty"`
 	// Interactive is set in-memory by AgentFactory.NewAgent when the
 	// agent is being constructed for a flow step with `interactive: true`.
 	// NOT persisted via YAML — agent-level interactiveness is derived
@@ -150,6 +157,7 @@ func newRegistry() Registry {
 	discoverMarkdownAgents(agents, cfg)
 	applyConfigOverrides(agents, cfg)
 	normalisePromptSources(agents)
+	warnAllowlistOmissions(agents)
 	removeDisabledAgents(agents)
 
 	globalPerms := buildGlobalPerms(cfg)
@@ -159,10 +167,16 @@ func newRegistry() Registry {
 		if a.Location != "" {
 			path = a.Location
 		}
+		// The effective gating model is worth a word in the boot summary: an
+		// allowlisted agent and one with no tools config at all are opposite
+		// extremes that would otherwise both print as something bland.
 		var tools any
-		if len(a.Tools) == 0 {
+		switch {
+		case a.UsesToolAllowlist():
+			tools = fmt.Sprintf("allowlist: %s", strings.Join(a.AllowTools, ", "))
+		case len(a.Tools) == 0:
 			tools = "default"
-		} else {
+		default:
 			tools = a.Tools
 		}
 		var permissions any
@@ -224,7 +238,7 @@ func (r *registry) EvaluatePermission(agentID, toolName, input string) permissio
 		return permission.EvaluateToolPermission(toolName, input, nil, r.globalPerms)
 	}
 
-	if !permission.IsToolEnabled(toolName, a.Tools) {
+	if !a.ToolEnabled(toolName) {
 		return permission.ActionDeny
 	}
 
@@ -237,7 +251,7 @@ func (r *registry) EvaluateReadPermission(agentID, toolName, input string) permi
 		return permission.EvaluateReadToolPermission(toolName, input, nil, r.globalPerms)
 	}
 
-	if !permission.IsToolEnabled(toolName, a.Tools) {
+	if !a.ToolEnabled(toolName) {
 		return permission.ActionDeny
 	}
 
@@ -257,7 +271,7 @@ func (r *registry) IsToolEnabled(agentID, toolName string) bool {
 	if !ok {
 		return true
 	}
-	return permission.IsToolEnabled(toolName, a.Tools)
+	return a.ToolEnabled(toolName)
 }
 
 // IsToolExplicitlyEnabled returns true only when the agent's tools map
@@ -270,10 +284,61 @@ func (r *registry) IsToolExplicitlyEnabled(agentID, toolName string) bool {
 	if !ok {
 		return false
 	}
-	if enabled, ok := a.Tools[toolName]; ok {
+	return a.ToolExplicitlyEnabled(toolName)
+}
+
+func (r *registry) HasTools(agentID string) bool {
+	a, ok := r.agents[agentID]
+	if !ok {
+		return true
+	}
+	return a.HasToolAccess()
+}
+
+func (r *registry) GlobalPermissions() map[string]any {
+	return r.globalPerms
+}
+
+// UsesToolAllowlist reports whether this agent gates tools with allowTools
+// rather than tools. The two are never both in effect on one entry.
+func (info AgentInfo) UsesToolAllowlist() bool {
+	return len(info.AllowTools) > 0
+}
+
+// ToolEnabled reports whether the named tool is available to this agent.
+//
+// It is the single place the two gating models are chosen between, so that
+// every caller — the construction gate in NewToolSet, the permission gates,
+// and the prompt builder — agrees. Allowlist mode grants only what it lists;
+// deny-list mode keeps its allow-by-default behaviour unchanged.
+func (info AgentInfo) ToolEnabled(toolName string) bool {
+	if info.UsesToolAllowlist() {
+		return permission.IsToolAllowlisted(toolName, info.AllowTools)
+	}
+	return permission.IsToolEnabled(toolName, info.Tools)
+}
+
+// ToolExplicitlyEnabled reports whether the agent opted this tool in by name,
+// as default-deny tools (cron*) require. In allowlist mode listing a tool IS
+// the opt-in — with one exception: a bare "*" entry is the "everything the
+// deny-list default would have given me" escape hatch, and that default never
+// included the cron tools, so "*" alone must not grant them either.
+func (info AgentInfo) ToolExplicitlyEnabled(toolName string) bool {
+	if info.UsesToolAllowlist() {
+		for _, entry := range info.AllowTools {
+			if entry == "*" {
+				continue
+			}
+			if entry == toolName || permission.MatchWildcard(entry, toolName) {
+				return true
+			}
+		}
+		return false
+	}
+	if enabled, ok := info.Tools[toolName]; ok {
 		return enabled
 	}
-	for pattern, enabled := range a.Tools {
+	for pattern, enabled := range info.Tools {
 		if pattern == "*" {
 			continue // wildcard "*" doesn't count as explicit opt-in
 		}
@@ -284,19 +349,28 @@ func (r *registry) IsToolExplicitlyEnabled(agentID, toolName string) bool {
 	return false
 }
 
-func (r *registry) HasTools(agentID string) bool {
-	a, ok := r.agents[agentID]
-	if !ok {
+// HasToolAccess reports whether the agent has any tools at all. It drives the
+// parallel-tool-use and background-task prompt sections, which are noise for
+// a genuinely tool-less agent (summarizer, descriptor) and correct for
+// everyone else.
+//
+// "*": false alone means tool-less. "*": false alongside any explicit grant
+// does not: that combination is how an agent narrowed itself down to a
+// handful of tools before allowTools existed, and reading it as tool-less
+// withheld both sections from agents that were using tools all along.
+func (info AgentInfo) HasToolAccess() bool {
+	if info.UsesToolAllowlist() {
 		return true
 	}
-	if v, exists := a.Tools["*"]; exists && !v {
+	if v, exists := info.Tools["*"]; exists && !v {
+		for name, enabled := range info.Tools {
+			if name != "*" && enabled {
+				return true
+			}
+		}
 		return false
 	}
 	return true
-}
-
-func (r *registry) GlobalPermissions() map[string]any {
-	return r.globalPerms
 }
 
 func (info *AgentInfo) AllowsParallelToolUse() bool {
@@ -505,7 +579,16 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 		if agentCfg.Permission != nil {
 			existing.Permission = mergePermissions(existing.Permission, agentCfg.Permission)
 		}
-		if agentCfg.Tools != nil {
+		// len, not != nil: encoding/json unmarshals `"allowTools": []` into a
+		// non-nil empty slice, and an empty declaration grants nothing — it must
+		// not switch the agent into allowlist mode nor drop the inherited tools
+		// map, or the agent ends up with no gate at all. Same for tools below.
+		if len(agentCfg.AllowTools) > 0 {
+			dropInheritedTools(&existing, "config")
+			existing.AllowTools = deduplicateAllowTools(agentCfg.AllowTools, name)
+		}
+		if len(agentCfg.Tools) > 0 {
+			dropInheritedAllowTools(&existing, "config")
 			if existing.Tools == nil {
 				existing.Tools = make(map[string]bool)
 			}
@@ -596,7 +679,14 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 	if md.Permission != nil {
 		existing.Permission = mergePermissions(existing.Permission, md.Permission)
 	}
-	if md.Tools != nil {
+	// len, not != nil: yaml.v3 unmarshals an empty `allowTools: []` sequence
+	// into a non-nil empty slice. See applyConfigOverrides.
+	if len(md.AllowTools) > 0 {
+		dropInheritedTools(existing, md.Location)
+		existing.AllowTools = deduplicateAllowTools(md.AllowTools, existing.ID)
+	}
+	if len(md.Tools) > 0 {
+		dropInheritedAllowTools(existing, md.Location)
 		if existing.Tools == nil {
 			existing.Tools = make(map[string]bool)
 		}
@@ -635,6 +725,101 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 		existing.Context = md.Context
 	}
 	existing.Location = md.Location
+}
+
+// dropInheritedTools clears a deny-list inherited from a lower-precedence
+// definition tier because a higher one switched the agent to an allowlist.
+// The two models cannot be in effect at once, and keeping the map would make
+// the allowlist look like it had been ignored.
+//
+// It warns with the dropped keys rather than dropping them quietly: a
+// built-in's `croncreate: true` opt-in is among them, so an operator moving
+// e.g. hivemind to an allowlist has to be able to see what they gave up.
+func dropInheritedTools(existing *AgentInfo, source string) {
+	if len(existing.Tools) == 0 {
+		existing.Tools = nil
+		return
+	}
+	dropped := make([]string, 0, len(existing.Tools))
+	for name := range existing.Tools {
+		dropped = append(dropped, name)
+	}
+	sort.Strings(dropped)
+	logging.Warn("Agent switched to allowTools — inherited tools map dropped",
+		"agent", existing.ID, "source", sourceLabel(source), "dropped", dropped)
+	existing.Tools = nil
+}
+
+// dropInheritedAllowTools is the mirror image: a higher tier declaring a
+// deny-list discards an allowlist inherited from below.
+func dropInheritedAllowTools(existing *AgentInfo, source string) {
+	if len(existing.AllowTools) == 0 {
+		existing.AllowTools = nil
+		return
+	}
+	logging.Warn("Agent switched to tools — inherited allowTools dropped",
+		"agent", existing.ID, "source", sourceLabel(source), "dropped", existing.AllowTools)
+	existing.AllowTools = nil
+}
+
+func sourceLabel(source string) string {
+	if source == "" {
+		return "unknown"
+	}
+	return source
+}
+
+// deduplicateAllowTools returns a new slice with duplicate entries removed,
+// preserving the order of first occurrence. Mirrors deduplicateSkills: the
+// whole slice replaces the inherited one, so a repeated entry is an authoring
+// slip worth naming rather than a merge artefact.
+func deduplicateAllowTools(entries []string, agentID string) []string {
+	if len(entries) == 0 {
+		return entries
+	}
+	seen := make(map[string]bool, len(entries))
+	result := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if seen[entry] {
+			logging.Warn("Duplicate allowTools entry in agent definition, ignoring", "agentID", agentID, "tool", entry)
+			continue
+		}
+		seen[entry] = true
+		result = append(result, entry)
+	}
+	return result
+}
+
+// Tool names the engine injects on the agent's behalf rather than the author
+// calling them. Duplicated here instead of imported from internal/llm/tools,
+// which imports this package — same reason internal/llm/prompt keeps its own
+// copies of taskToolName and cronCreateToolName.
+const (
+	structOutputToolName = "struct_output"
+	toolSearchToolName   = "toolsearch"
+)
+
+// warnAllowlistOmissions flags allowlisted agents whose declaration needs a
+// tool they did not list. Allowlist mode deliberately has no implicit grants:
+// an output schema does not conjure struct_output, and deferredTools does not
+// conjure toolsearch (NewToolSet already fails open on the latter). Both are
+// warnings rather than errors because either combination can be legitimate
+// mid-migration, and refusing the boot over one is worse than the agent
+// running one tool short of what its author expected.
+func warnAllowlistOmissions(agents map[string]AgentInfo) {
+	for id, a := range agents {
+		if !a.UsesToolAllowlist() {
+			continue
+		}
+		if a.Output != nil && a.Output.Schema != nil && !a.ToolEnabled(structOutputToolName) {
+			logging.Warn("Agent declares an output schema but allowTools omits struct_output — structured output will not be available",
+				"agent", id, "allowTools", a.AllowTools)
+		}
+		if len(a.DeferredTools) > 0 && !a.ToolEnabled(toolSearchToolName) {
+			logging.Warn("Agent declares deferredTools but allowTools omits toolsearch — deferral will be ignored",
+				"agent", id, "allowTools", a.AllowTools)
+		}
+	}
 }
 
 // deduplicateSkills returns a new slice with duplicate skill names removed,
@@ -835,6 +1020,12 @@ func parseAgentMarkdown(path string) (*AgentInfo, error) {
 	// both is a half-finished migration, and silently running the body
 	// would make the reference look broken on the Langfuse side.
 	if err := config.ValidateAgentPromptSource(baseName, strings.TrimSpace(body) != "", agent.LangfusePromptPath); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// One file picks one tool-gating model. Cross-source overrides are still
+	// legal (that is how a builtin's Go-declared Tools map can be replaced by
+	// an allowlist), so this is deliberately a per-file check.
+	if err := config.ValidateAgentToolsSource(baseName, len(agent.Tools) > 0, len(agent.AllowTools) > 0); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	agent.Prompt = body
