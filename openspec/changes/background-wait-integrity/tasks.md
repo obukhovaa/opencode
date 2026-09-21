@@ -102,6 +102,8 @@
 
 - `UntilFirstEvent` / waking a monitors-only wait on the next monitor event. Cut — see proposal.
 - Making subagents drain (`agent-tool.go:191` → `a.Run` → `RunOptions{}` → `agent.go:1254`).
+  Tracked as GENAI-140. Not covered by GENAI-270 stall detection — that infers death from
+  silence, and a spinning subagent looks maximally alive.
   This is the deeper root cause and changes turn semantics for every subagent in the product.
 - Registry entry eviction. Entries are never deleted and monitors use `exec.Command` rather
   than `CommandContext` (`monitor.go:185`), so leaked monitors persist for the process

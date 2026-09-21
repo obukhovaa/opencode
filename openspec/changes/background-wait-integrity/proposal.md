@@ -74,10 +74,10 @@ the mitigation for the monitors-only case.
 - Time-bounding monitors. `max_events` stays an event count, not a timeout.
 - Interactive runs. Every behavior here remains gated on `IsNonInteractive(ctx)`.
 - Reparenting orphaned processes. A rejected command is not silently rewritten.
-- **Making subagents drain.** See the follow-up below — it is the larger root cause and
+- **Making subagents drain** (GENAI-140). See the follow-up below — it is the larger root cause and
   deserves its own change.
 
-## Follow-up: subagents never drain
+## Follow-up: subagents never drain (GENAI-140)
 
 Both reviews surfaced a defect one level below this change. `agent-tool.go:191` and
 `agent-tool-async.go:68` launch subagents through `a.Run(...)`, the shim that passes
@@ -89,4 +89,9 @@ So **no subagent has ever drained, and no subagent's `sleep` has ever been redir
 the trace, coder #1 would have returned in 3 seconds even with the gradle task tracked
 correctly, and the leaked `monitor_GUU6VTD4…` leaked because no drain ran — not because
 `taskstop` was missed. Fixing that changes turn semantics for every subagent in the
-product and must not ride along here.
+product and must not ride along here. Tracked as GENAI-140, re-scoped around this
+root cause on 2026-09-21; the infra half of that ticket split out to GENAI-352.
+
+Note that GENAI-270's subagent stall detection does NOT cover it: `killStalled` infers
+death from silence, and a subagent polling `tasklist` emits constant progress signals. It
+catches a wedged subagent, not a spinning one.
