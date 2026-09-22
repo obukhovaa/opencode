@@ -70,8 +70,9 @@ func (d *bedrockEventStreamDecoder) Next() bool {
 
 	msg, err := d.Decoder.Decode(d.rc, nil)
 	if err != nil {
-		// io.EOF ends the stream normally; ssestream.Stream treats a false
-		// Next() with a nil Err() as a clean end.
+		// io.EOF ends the stream normally. It surfaces through Err() as-is,
+		// like the SDK's pre-v1.75 decoder; the stream consumer in
+		// anthropic.go treats io.EOF as a clean end.
 		d.err = err
 		return false
 	}

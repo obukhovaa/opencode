@@ -126,6 +126,7 @@ var AnthropicModels = map[ModelID]Model{
 		SupportsTaskBudget:       true,
 		SupportsToolSearch:       true,
 		SupportsAttachments:      true,
+		RejectsForcedToolChoice:  true,
 	},
 	ClaudeFable5: {
 		ID:                       ClaudeFable5,

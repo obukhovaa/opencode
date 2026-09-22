@@ -117,6 +117,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsXHighThinking:    AnthropicModels[Claude55Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude55Opus].SupportsTaskBudget,
 		SupportsToolSearch:       AnthropicModels[Claude55Opus].SupportsToolSearch,
+		RejectsForcedToolChoice:  AnthropicModels[Claude55Opus].RejectsForcedToolChoice,
 	},
 	BedrockEUFable5: {
 		ID:                       BedrockEUFable5,
@@ -283,6 +284,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsXHighThinking:    AnthropicModels[Claude55Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude55Opus].SupportsTaskBudget,
 		SupportsToolSearch:       AnthropicModels[Claude55Opus].SupportsToolSearch,
+		RejectsForcedToolChoice:  AnthropicModels[Claude55Opus].RejectsForcedToolChoice,
 	},
 	BedrockFable5: {
 		ID:                       BedrockFable5,

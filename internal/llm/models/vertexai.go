@@ -158,6 +158,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsXHighThinking:    AnthropicModels[Claude55Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude55Opus].SupportsTaskBudget,
 		SupportsToolSearch:       AnthropicModels[Claude55Opus].SupportsToolSearch,
+		RejectsForcedToolChoice:  AnthropicModels[Claude55Opus].RejectsForcedToolChoice,
 	},
 	VertexAIFable5: {
 		ID:                       VertexAIFable5,

@@ -64,3 +64,43 @@ func TestPreparedMessages_ForceStructOutput(t *testing.T) {
 		}
 	})
 }
+
+// TestPreparedMessages_ForceStructOutputRejectedByModel: Claude Opus 5.5
+// answers tool_choice "tool"/"any" with a 400, so the forcing signal must
+// degrade to a normal auto turn on every provider that serves it rather than
+// guarantee a failed request.
+func TestPreparedMessages_ForceStructOutputRejectedByModel(t *testing.T) {
+	for _, id := range []models.ModelID{
+		models.Claude55Opus,
+		models.BedrockOpus55,
+		models.BedrockEUOpus55,
+		models.VertexAIOpus55,
+	} {
+		t.Run(string(id), func(t *testing.T) {
+			a, ok := newAnthropicClient(providerClientOptions{
+				apiKey: "test-key",
+				model:  models.SupportedModels[id],
+			}).(*anthropicClient)
+			if !ok {
+				t.Fatal("newAnthropicClient did not return *anthropicClient")
+			}
+			msgs := a.convertMessages([]message.Message{{
+				Role:  message.User,
+				Parts: []message.ContentPart{message.TextContent{Text: "do it"}},
+			}})
+
+			ctx := WithForcedTool(context.Background(), tools.StructOutputToolName)
+			p := a.preparedMessages(ctx, msgs, nil)
+
+			if p.ToolChoice.OfTool != nil || p.ToolChoice.OfAny != nil {
+				t.Fatalf("forced tool_choice must be dropped for %s, got %+v", id, p.ToolChoice)
+			}
+			if p.Thinking.OfAdaptive == nil {
+				t.Fatalf("degraded forcing turn must match a normal turn (adaptive thinking), got %+v", p.Thinking)
+			}
+			if p.OutputConfig.Effort == "" {
+				t.Fatalf("degraded forcing turn must keep the effort setting")
+			}
+		})
+	}
+}
