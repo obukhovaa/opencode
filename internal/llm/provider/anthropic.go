@@ -691,8 +691,19 @@ func (a *anthropicClient) preparedMessages(ctx context.Context, messages []anthr
 		// This model 400s any forced tool_choice. Build a normal auto turn
 		// instead: the wrap-up prompt still asks for the tool, and callers
 		// already treat a turn that skips it as best-effort degradation.
+		//
+		// Logged at Warn because it downgrades a hard API guarantee to a
+		// prompt-shaped one: the caller's own "keeping text fallback" warning
+		// cannot otherwise distinguish "forcing was applied and the model
+		// still refused" from "forcing was never applied at all". Bounded —
+		// only the flow runner's struct_output rescue turn and the max-turns
+		// wrap-up ever set the signal, so this fires at most once per rescued
+		// step, never per request.
+		logging.Warn("Model rejects forced tool_choice; running the turn unforced",
+			"model", a.providerOptions.model.ID, "tool", forced)
 		forced = ""
 	}
+
 	// TODO: parameterise temperature via agent config
 	// Opus 4.7+ rejects non-default temperature values; omit to let the API use its default (1.0).
 	temperature := anthropic.Float(0)
