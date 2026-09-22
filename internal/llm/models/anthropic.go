@@ -9,6 +9,7 @@ const (
 	Claude47Opus   ModelID = "claude-4.7-opus"
 	Claude48Opus   ModelID = "claude-4.8-opus"
 	Claude5Opus    ModelID = "claude-5-opus"
+	Claude55Opus   ModelID = "claude-5.5-opus"
 	Claude46Sonnet ModelID = "claude-4.6-sonnet"
 	Claude5Sonnet  ModelID = "claude-5-sonnet"
 	Claude45Haiku  ModelID = "claude-4.5-haiku"
@@ -107,6 +108,26 @@ var AnthropicModels = map[ModelID]Model{
 		SupportsToolSearch:       true,
 		SupportsAttachments:      true,
 	},
+	Claude55Opus: {
+		ID:                       Claude55Opus,
+		Name:                     "Claude 5.5 Opus",
+		Provider:                 ProviderAnthropic,
+		APIModel:                 "claude-opus-5-5",
+		CostPer1MIn:              4.0,
+		CostPer1MInCached:        5.00,
+		CostPer1MOutCached:       0.20,
+		CostPer1MOut:             20.0,
+		ContextWindow:            1000000,
+		DefaultMaxTokens:         128000,
+		CanReason:                true,
+		SupportsAdaptiveThinking: true,
+		SupportsMaximumThinking:  true,
+		SupportsXHighThinking:    true,
+		SupportsTaskBudget:       true,
+		SupportsToolSearch:       true,
+		SupportsAttachments:      true,
+		RejectsForcedToolChoice:  true,
+	},
 	ClaudeFable5: {
 		ID:                       ClaudeFable5,
 		Name:                     "Claude Fable 5",
@@ -144,6 +165,7 @@ var AnthropicModels = map[ModelID]Model{
 		SupportsTaskBudget:       true,
 		SupportsToolSearch:       true,
 		SupportsAttachments:      true,
+		RejectsForcedToolChoice:  true,
 	},
 	Claude46Sonnet: {
 		ID:                       Claude46Sonnet,

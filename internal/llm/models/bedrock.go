@@ -6,6 +6,7 @@ const (
 	BedrockEUOpus47   ModelID       = "bedrock.eu-claude-opus-4-7"
 	BedrockEUOpus48   ModelID       = "bedrock.eu-claude-opus-4-8"
 	BedrockEUOpus5    ModelID       = "bedrock.eu-claude-opus-5"
+	BedrockEUOpus55   ModelID       = "bedrock.eu-claude-opus-5-5"
 	BedrockEUSonnet46 ModelID       = "bedrock.eu-claude-sonnet-4-6"
 	BedrockEUSonnet5  ModelID       = "bedrock.eu-claude-sonnet-5"
 	BedrockEUFable5   ModelID       = "bedrock.eu-claude-fable-5"
@@ -14,6 +15,7 @@ const (
 	BedrockOpus47     ModelID       = "bedrock.claude-opus-4-7"
 	BedrockOpus48     ModelID       = "bedrock.claude-opus-4-8"
 	BedrockOpus5      ModelID       = "bedrock.claude-opus-5"
+	BedrockOpus55     ModelID       = "bedrock.claude-opus-5-5"
 	BedrockSonnet46   ModelID       = "bedrock.claude-sonnet-4-6"
 	BedrockSonnet5    ModelID       = "bedrock.claude-sonnet-5"
 	BedrockFable5     ModelID       = "bedrock.claude-fable-5"
@@ -97,6 +99,26 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsTaskBudget:       AnthropicModels[Claude5Opus].SupportsTaskBudget,
 		SupportsToolSearch:       AnthropicModels[Claude5Opus].SupportsToolSearch,
 	},
+	BedrockEUOpus55: {
+		ID:                       BedrockEUOpus55,
+		Name:                     "Bedrock EU: Claude 5.5 Opus",
+		Provider:                 ProviderBedrock,
+		APIModel:                 "eu-claude-opus-5-5",
+		CostPer1MIn:              AnthropicModels[Claude55Opus].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[Claude55Opus].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[Claude55Opus].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[Claude55Opus].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[Claude55Opus].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[Claude55Opus].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[Claude55Opus].SupportsAttachments,
+		CanReason:                AnthropicModels[Claude55Opus].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[Claude55Opus].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[Claude55Opus].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[Claude55Opus].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[Claude55Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude55Opus].SupportsToolSearch,
+		RejectsForcedToolChoice:  AnthropicModels[Claude55Opus].RejectsForcedToolChoice,
+	},
 	BedrockEUFable5: {
 		ID:                       BedrockEUFable5,
 		Name:                     "Bedrock EU: Claude Fable 5",
@@ -134,6 +156,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsXHighThinking:    AnthropicModels[ClaudeFable51].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[ClaudeFable51].SupportsTaskBudget,
 		SupportsToolSearch:       AnthropicModels[ClaudeFable51].SupportsToolSearch,
+		RejectsForcedToolChoice:  AnthropicModels[ClaudeFable51].RejectsForcedToolChoice,
 	},
 	BedrockEUSonnet46: {
 		ID:                       BedrockEUSonnet46,
@@ -244,6 +267,26 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsTaskBudget:       AnthropicModels[Claude5Opus].SupportsTaskBudget,
 		SupportsToolSearch:       AnthropicModels[Claude5Opus].SupportsToolSearch,
 	},
+	BedrockOpus55: {
+		ID:                       BedrockOpus55,
+		Name:                     "Bedrock: Claude 5.5 Opus",
+		Provider:                 ProviderBedrock,
+		APIModel:                 "claude-opus-5-5",
+		CostPer1MIn:              AnthropicModels[Claude55Opus].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[Claude55Opus].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[Claude55Opus].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[Claude55Opus].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[Claude55Opus].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[Claude55Opus].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[Claude55Opus].SupportsAttachments,
+		CanReason:                AnthropicModels[Claude55Opus].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[Claude55Opus].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[Claude55Opus].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[Claude55Opus].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[Claude55Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude55Opus].SupportsToolSearch,
+		RejectsForcedToolChoice:  AnthropicModels[Claude55Opus].RejectsForcedToolChoice,
+	},
 	BedrockFable5: {
 		ID:                       BedrockFable5,
 		Name:                     "Bedrock: Claude Fable 5",
@@ -281,6 +324,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsXHighThinking:    AnthropicModels[ClaudeFable51].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[ClaudeFable51].SupportsTaskBudget,
 		SupportsToolSearch:       AnthropicModels[ClaudeFable51].SupportsToolSearch,
+		RejectsForcedToolChoice:  AnthropicModels[ClaudeFable51].RejectsForcedToolChoice,
 	},
 	BedrockSonnet46: {
 		ID:                       BedrockSonnet46,

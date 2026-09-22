@@ -687,6 +687,22 @@ func (a *anthropicClient) preparedMessages(ctx context.Context, messages []anthr
 	// would set temperature=1, and a leftover Float(0) is a non-default value
 	// Opus 4.7+ rejects. Omitting lets the API use its own default.
 	forced := forcedTool(ctx)
+	if forced != "" && a.providerOptions.model.RejectsForcedToolChoice {
+		// This model 400s any forced tool_choice. Build a normal auto turn
+		// instead: the wrap-up prompt still asks for the tool, and callers
+		// already treat a turn that skips it as best-effort degradation.
+		//
+		// Logged at Warn because it downgrades a hard API guarantee to a
+		// prompt-shaped one: the caller's own "keeping text fallback" warning
+		// cannot otherwise distinguish "forcing was applied and the model
+		// still refused" from "forcing was never applied at all". Bounded —
+		// only the flow runner's struct_output rescue turn and the max-turns
+		// wrap-up ever set the signal, so this fires at most once per rescued
+		// step, never per request.
+		logging.Warn("Model rejects forced tool_choice; running the turn unforced",
+			"model", a.providerOptions.model.ID, "tool", forced)
+		forced = ""
+	}
 
 	// TODO: parameterise temperature via agent config
 	// Opus 4.7+ rejects non-default temperature values; omit to let the API use its default (1.0).
@@ -1371,7 +1387,8 @@ type forceStructOutputToolKeyType struct{}
 // Moonshot/Kimi — all share preparedMessages) forces that tool AND disables
 // extended thinking + omits temperature for the request (the Anthropic API
 // rejects a forced tool_choice while thinking is enabled). Best-effort:
-// providers outside that family do not read the key and simply ignore it.
+// providers outside that family do not read the key and simply ignore it, and
+// models marked RejectsForcedToolChoice get an ordinary unforced request.
 // Set by the flow runner's forcing wrap-up turn (via agent RunOptions).
 var ForceStructOutputToolKey = forceStructOutputToolKeyType{}
 
