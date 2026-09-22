@@ -205,6 +205,7 @@ OpenCode looks for `.opencode.json` in:
       }
     }
   },
+  "webFetch": { "maxOutputBytes": 51200 },
   "autoCompact": true,
   "debug": false
 }
@@ -420,6 +421,22 @@ them. The same property means a command containing `exit` ends the session: the
 exit status is reported as the command's own, a replacement shell starts in the
 same directory, and exported variables and shell functions are lost.
 
+### Web Fetch Output Cap
+
+```json
+{
+  "webFetch": { "maxOutputBytes": 51200 }
+}
+```
+
+`webfetch` converts a page (HTML → markdown by default) and returns it to the model, and a single documentation page routinely converts to hundreds of KB — enough for two or three fetches to fill a context window, and every one of them is re-sent on each later turn.
+
+`maxOutputBytes` caps what a single fetch keeps in context (default `51200`, i.e. 50KB — the same number as the bash and MCP caps). The cap is measured after conversion, on the text that actually enters the context. Beyond it, the full converted page is written to a temp file and replaced with a head+tail preview whose header names the file, so the agent searches it with `grep` (or `sed` in bash) instead of carrying the page or re-fetching the URL. Note the `read` tool declines files over 250KB outright, so `grep`/`sed` are the recovery path for a large page.
+
+Set a higher value to keep more inline, or a negative value to disable the cap entirely (unbounded — a few fetches can then overflow the context). Responses at or below the cap are returned unchanged and no file is written.
+
+A response body over the 5MB read limit is truncated before conversion, and the reply says so rather than presenting a torn document as a complete one.
+
 ### MCP Servers
 
 ```json
@@ -623,7 +640,7 @@ Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it re
 | Tool | Description |
 |------|-------------|
 | `bash` | Execute shell commands |
-| `webfetch` | Fetch data from URLs |
+| `webfetch` | Fetch data from URLs (large pages are capped and saved to a temp file — see [Web fetch output cap](#web-fetch-output-cap)) |
 | `websearch` | Search internet via configured WebSearch providers |
 | `sourcegraph` | Search public repositories |
 | `task` | Run sub-tasks with a subagent (supports `subagent_type` and `task_id` for resumption) |

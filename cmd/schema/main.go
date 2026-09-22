@@ -760,6 +760,19 @@ func generateSchema() map[string]any {
 		},
 	}
 
+	// Add web fetch configuration
+	schema["properties"].(map[string]any)["webFetch"] = map[string]any{
+		"type":        "object",
+		"description": "Web fetch tool configuration",
+		"properties": map[string]any{
+			"maxOutputBytes": map[string]any{
+				"type":        "integer",
+				"description": "Cap, in bytes, on the content a single webfetch call keeps in the model context. Content over the cap is saved in full to a temp file and replaced by a head+tail preview naming that file, which the agent explores with grep/read. A positive value sets the cap; a negative value disables it (unbounded); 0 or omitted uses the built-in default of 51200 (50KB).",
+				"default":     51200,
+			},
+		},
+	}
+
 	// Add maxTurns at the top level (CLI override)
 	schema["properties"].(map[string]any)["maxTurns"] = map[string]any{
 		"type":        "integer",

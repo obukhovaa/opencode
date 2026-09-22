@@ -50,10 +50,16 @@ When a `webfetch` call's content exceeds the resolved cap, the system SHALL writ
 - **AND** the tool result contains a head fragment and a tail fragment separated by an elided-bytes marker
 - **AND** the tool result is smaller than the original content and is not marked as an error
 
-#### Scenario: Spill file is readable by the agent's file tools
+#### Scenario: Spill file is reachable by the agent's own tools
 
 - **WHEN** a `webfetch` call spills its content to a temp file
-- **THEN** the named path is absolute and readable by the `read` tool without further configuration
+- **THEN** the named path is absolute and the `grep` tool finds content in it that the preview omitted, with no further configuration
+- **AND** a spill within the `read` tool's own size ceiling opens with the `read` tool
+
+#### Scenario: Recovery guidance matches what the tools can do
+
+- **WHEN** the overflow header names a spill file
+- **THEN** it directs the agent to tools that work at that file's size (the `grep` tool and `sed`, neither of which has a size ceiling) and states the size limit above which the `read` tool declines a file
 
 ### Requirement: The cap is measured and spilled after format conversion
 

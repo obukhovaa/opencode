@@ -140,7 +140,7 @@ func NewToolSet(
 		case tools.ViewImageToolName:
 			return tools.NewViewImageTool()
 		case tools.WebFetchToolName:
-			return tools.NewFetchTool(reg, permissions)
+			return tools.NewFetchTool(config.Get(), reg, permissions)
 		case tools.SkillToolName:
 			return tools.NewSkillTool(permissions, reg, agentID)
 		case tools.SourcegraphToolName:

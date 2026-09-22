@@ -45,6 +45,14 @@ A **new object** rather than a bare `webFetchMaxOutputBytes` scalar keeps room f
 
 Log each spill (`logging.Info`: url, format, totalBytes, cap, file), mirroring the MCP spill log, so context-pressure incidents like the one that motivated this are greppable in agent-container logs rather than reconstructed from Langfuse token deltas.
 
+### 6. The read tool's size ceiling shapes the guidance
+
+`read` rejects any file larger than `MaxReadSize` (250KB) on size alone, *before* it looks at `offset`/`limit`, so the pre-existing overflow header — "read specific ranges with the read tool (offset/limit)" — is false for exactly the spills this change creates: a page big enough to trip a 50KB cap is frequently bigger than 250KB. The e2e caught this on its first run against a 423KB spill.
+
+`buildOutputOverflowHeader` is therefore corrected to lead with the tools that have no size ceiling (`grep`, and `sed` in bash) and to name `MaxReadSize` as the limit above which `read` declines. `grep` with its context options is a complete recovery path even for a read-only agent with no bash, which is what makes the capped result usable rather than merely small. The header is shared with the MCP spill path, which has the same defect for multi-MB build logs, so the correction lands there too.
+
+Raising or windowing `MaxReadSize` would be the more ambitious fix and is deliberately **out of scope**: `read` is used by every agent, and letting a windowed read escape the size guard raises its worst-case output from 250KB to ~4MB (2000 lines × 2000 chars), which is a context-budget decision with its own spec and tests. Tracked as a follow-up rather than smuggled in here.
+
 ## Risks / mitigations
 
 - **An agent stops at the preview and answers from partial content.** Mitigation: the header explicitly names the file and instructs grep/read/sed, wording already proven with bash and MCP output; and the truncation notice is inside the returned text, not out-of-band.

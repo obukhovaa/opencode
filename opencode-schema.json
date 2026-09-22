@@ -1420,6 +1420,17 @@
       "description": "Working directory for the application",
       "type": "string"
     },
+    "webFetch": {
+      "description": "Web fetch tool configuration",
+      "properties": {
+        "maxOutputBytes": {
+          "default": 51200,
+          "description": "Cap, in bytes, on the content a single webfetch call keeps in the model context. Content over the cap is saved in full to a temp file and replaced by a head+tail preview naming that file, which the agent explores with grep/read. A positive value sets the cap; a negative value disables it (unbounded); 0 or omitted uses the built-in default of 51200 (50KB).",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "webSearch": {
       "description": "Web search provider configuration",
       "properties": {
