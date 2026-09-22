@@ -197,6 +197,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsXHighThinking:    AnthropicModels[ClaudeFable51].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[ClaudeFable51].SupportsTaskBudget,
 		SupportsToolSearch:       AnthropicModels[ClaudeFable51].SupportsToolSearch,
+		RejectsForcedToolChoice:  AnthropicModels[ClaudeFable51].RejectsForcedToolChoice,
 	},
 	VertexAISonnet46: {
 		ID:                       VertexAISonnet46,

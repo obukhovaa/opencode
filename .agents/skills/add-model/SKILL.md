@@ -32,7 +32,7 @@ Model{
     SupportsXHighThinking:    bool,          // Whether model supports "xhigh" reasoning effort (Opus 4.7+)
     SupportsTaskBudget:       bool,          // Whether model supports task_budget (beta, Opus 4.7+)
     SupportsAttachments:      bool,          // Whether model supports file attachments
-    RejectsForcedToolChoice:  bool,          // API 400s tool_choice "tool"/"any" (Opus 5.5) — check the model's breaking changes
+    RejectsForcedToolChoice:  bool,          // API 400s tool_choice "tool"/"any" (Opus 5.5, Fable 5.1) — check the model's breaking changes
 }
 ```
 

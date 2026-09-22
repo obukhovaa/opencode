@@ -65,16 +65,20 @@ func TestPreparedMessages_ForceStructOutput(t *testing.T) {
 	})
 }
 
-// TestPreparedMessages_ForceStructOutputRejectedByModel: Claude Opus 5.5
-// answers tool_choice "tool"/"any" with a 400, so the forcing signal must
-// degrade to a normal auto turn on every provider that serves it rather than
-// guarantee a failed request.
+// TestPreparedMessages_ForceStructOutputRejectedByModel: Claude Opus 5.5 and
+// Claude Fable 5.1 answer tool_choice "tool"/"any" with a 400, so the forcing
+// signal must degrade to a normal auto turn on every provider that serves
+// them rather than guarantee a failed request.
 func TestPreparedMessages_ForceStructOutputRejectedByModel(t *testing.T) {
 	for _, id := range []models.ModelID{
 		models.Claude55Opus,
 		models.BedrockOpus55,
 		models.BedrockEUOpus55,
 		models.VertexAIOpus55,
+		models.ClaudeFable51,
+		models.BedrockFable51,
+		models.BedrockEUFable51,
+		models.VertexAIFable51,
 	} {
 		t.Run(string(id), func(t *testing.T) {
 			a, ok := newAnthropicClient(providerClientOptions{

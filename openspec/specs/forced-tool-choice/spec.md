@@ -9,7 +9,7 @@ The Anthropic client family request builder — native Anthropic, AWS Bedrock, G
 
 Providers outside the Anthropic client family (e.g. OpenAI, Gemini) are NOT required to honor the signal; they MUST ignore it without erroring, leaving their request unchanged. Callers that rely on forced output MUST therefore treat forcing as best-effort.
 
-Models whose API rejects a forced `tool_choice` outright (Claude Opus 5.5 answers `tool` / `any` with a 400, marked `RejectsForcedToolChoice`) are the exception inside the family: the builder MUST NOT force the tool for them and MUST build the request as an ordinary unforced turn, so the forcing turn degrades instead of failing.
+Models whose API rejects a forced `tool_choice` outright (Claude Opus 5.5 and Claude Fable 5.1 answer `tool` / `any` with a 400, marked `RejectsForcedToolChoice`) are the exception inside the family: the builder MUST NOT force the tool for them and MUST build the request as an ordinary unforced turn, so the forcing turn degrades instead of failing.
 
 #### Scenario: Anthropic request forces the named tool
 
