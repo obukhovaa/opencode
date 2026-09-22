@@ -11,6 +11,7 @@ const (
 	VertexAIOpus47        ModelID = "vertexai.claude-opus-4-7"
 	VertexAIOpus48        ModelID = "vertexai.claude-opus-4-8"
 	VertexAIOpus5         ModelID = "vertexai.claude-opus-5"
+	VertexAIOpus55        ModelID = "vertexai.claude-opus-5-5"
 	VertexAISonnet46      ModelID = "vertexai.claude-sonnet-4-6"
 	VertexAISonnet5       ModelID = "vertexai.claude-sonnet-5"
 	VertexAIHaiku45       ModelID = "vertexai.claude-haiku-4-5"
@@ -138,6 +139,25 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsXHighThinking:    AnthropicModels[Claude5Opus].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude5Opus].SupportsTaskBudget,
 		SupportsToolSearch:       AnthropicModels[Claude5Opus].SupportsToolSearch,
+	},
+	VertexAIOpus55: {
+		ID:                       VertexAIOpus55,
+		Name:                     "VertexAI: Claude Opus 5.5",
+		Provider:                 ProviderVertexAI,
+		APIModel:                 "claude-opus-5-5",
+		CostPer1MIn:              AnthropicModels[Claude55Opus].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[Claude55Opus].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[Claude55Opus].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[Claude55Opus].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[Claude55Opus].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[Claude55Opus].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[Claude55Opus].SupportsAttachments,
+		CanReason:                AnthropicModels[Claude55Opus].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[Claude55Opus].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[Claude55Opus].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[Claude55Opus].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[Claude55Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude55Opus].SupportsToolSearch,
 	},
 	VertexAIFable5: {
 		ID:                       VertexAIFable5,
