@@ -465,6 +465,18 @@ type WebSearchConfig struct {
 	Providers map[string]WebSearchProvider `json:"providers"`
 }
 
+// WebFetchConfig defines configuration for the webfetch tool.
+type WebFetchConfig struct {
+	// MaxOutputBytes caps the size, in bytes, of a single webfetch call's
+	// content kept in the model context. A positive value is used as the
+	// cap; a negative value disables the cap entirely (unbounded output);
+	// zero or omitted falls back to the built-in default (50KB). Content
+	// over the cap is spilled to the process scratch directory and replaced
+	// by a head+tail preview naming the file — see
+	// openspec/specs/webfetch-output-limit/spec.md.
+	MaxOutputBytes int `json:"maxOutputBytes,omitempty"`
+}
+
 // PermissionConfig defines permission configuration.
 // Each tool key maps to either a simple string ("allow"/"deny"/"ask")
 // or an object with glob pattern keys (e.g., {"*": "ask", "git *": "allow"}).
@@ -507,6 +519,7 @@ type Config struct {
 	Skills             *SkillsConfig         `json:"skills,omitempty"`
 	Permission         *PermissionConfig     `json:"permission,omitempty"`
 	WebSearch          *WebSearchConfig      `json:"webSearch,omitempty"`
+	WebFetch           *WebFetchConfig       `json:"webFetch,omitempty"`
 	MaxTurns           int                   `json:"maxTurns,omitempty"`
 	// StructOutputSchemaDelivery selects where a flow step's output JSON
 	// Schema is placed in the request: "message" (default) keeps the
