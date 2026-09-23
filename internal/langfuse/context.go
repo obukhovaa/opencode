@@ -48,6 +48,6 @@ func SetTraceOutput(ctx context.Context, output any) {
 		key = "langfuse.observation.output"
 	}
 	v.span.SetAttributes(
-		attribute.String(key, truncate(marshalAny(output), maxGenIOSize)),
+		attribute.String(key, payload(output, maxGenIOSize)),
 	)
 }
