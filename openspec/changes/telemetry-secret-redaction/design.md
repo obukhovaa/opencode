@@ -214,10 +214,11 @@ Two findings, both measured rather than reasoned:
 
 The fix is not a better regex. Detectors declare the literals a match always **starts** with; those are located with `strings.Index` (SIMD, GB/s) and the pattern is applied only at those offsets, anchored. Same work, 1.8ms instead of 51ms.
 
-Three consequences worth knowing:
+Four consequences worth knowing:
 
 - A leading `\b` must be **stripped** from the anchored variant and checked by hand against the original string. `\b` is evaluated relative to the slice it is applied to, so at a candidate offset it would always look satisfied, and `XAKIAIOSFODNN7EXAMPLE` would match. There is a test for exactly this.
 - Detectors whose literal sits *inside* the match rather than at its head (`private-key` is found by "PRIVATE KEY" but starts at `-----BEGIN`; `email` by "@") keep a presence-gate only and scan full-width. They are cheap.
+- **The folded copy used to locate case-insensitive candidates must be ASCII-folded, not `strings.ToLower`d.** `strings.ToLower` is not length-preserving — `unicode.ToLower` maps `\u0130` (2 bytes) to `i` (1) and `\u212A` (3) to `k` (1) — and the offsets found in it are applied to the *original* string. One such rune anywhere ahead of a credential shifts every later offset, the anchored pattern is applied at the wrong position and finds nothing, and `auth-header` and `secret-assignment` — the two detectors that catch shapes we have never seen — silently stop firing for the rest of the payload. A filter that fails open on a Turkish log line is worse than one that is known not to run. `asciiLower` folds `A-Z` only, which is sufficient because every gate literal is ASCII; there is a test for exactly this.
 - **Candidate scanning finds a superset of `FindAll`'s matches**, because `FindAll` returns leftmost *non-overlapping* results. This is a safety improvement, not a regression: the differential test's first run caught the full scan leaving `abcdefghijk` in the clear, from a `my_api_key:` assignment nested inside a longer match that `FindAll` had already consumed. The invariant asserted is therefore *coverage containment* — candidate scanning never redacts less — not output equality.
 
 ### D11. On by default

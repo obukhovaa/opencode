@@ -158,6 +158,60 @@ func TestNewlineTolerance(t *testing.T) {
 	}
 }
 
+// Candidate scanning locates fold-gated detectors by byte offset in a folded
+// copy of the payload. strings.ToLower would have made those offsets lie:
+// 'İ' (2 bytes) folds to 'i' (1) and 'K' (3) to 'k' (1), so one such rune
+// anywhere ahead of a credential shifted every later offset and the anchored
+// pattern found nothing — auth-header and secret-assignment silently stopped
+// firing for the rest of the payload. asciiLower preserves length.
+func TestFoldedOffsetsSurviveNonASCII(t *testing.T) {
+	r := New(Options{})
+	const secret = "AbCdEfGhIjKlMnOpQrStUvWx"
+
+	// Every prefix below contains a rune whose Unicode lowercase is SHORTER
+	// in UTF-8 than the original, which is what skewed the offsets.
+	prefixes := map[string]string{
+		"dotted-capital-I": "\u0130stanbul deploy log\n",
+		"kelvin-sign":      "core temp 100\u212A\n",
+		"capital-sharp-s":  "STRA\u1e9eE gateway\n",
+		"plain-ascii":      "Istanbul deploy log\n",
+	}
+	carriers := map[string]string{
+		"auth-header":       "Authorization: Bearer " + secret,
+		"secret-assignment": "API_KEY=" + secret,
+	}
+
+	for pname, prefix := range prefixes {
+		for cname, carrier := range carriers {
+			t.Run(pname+"/"+cname, func(t *testing.T) {
+				got := r.String(prefix + carrier)
+				if strings.Contains(got, secret) {
+					t.Errorf("credential survived after a non-ASCII prefix: %q", got)
+				}
+				if !strings.Contains(got, "[REDACTED:") {
+					t.Errorf("no marker emitted: %q", got)
+				}
+				if !strings.HasPrefix(got, prefix) {
+					t.Errorf("prefix text was altered: %q", got)
+				}
+			})
+		}
+	}
+}
+
+func TestAsciiLowerPreservesByteLength(t *testing.T) {
+	for _, s := range []string{
+		"Authorization", "\u0130stanbul", "100\u212A", "STRA\u1e9eE", "", "\u00e9\u00c9",
+	} {
+		if got := asciiLower(s); len(got) != len(s) {
+			t.Errorf("asciiLower(%q) changed length: %d -> %d", s, len(s), len(got))
+		}
+	}
+	if got := asciiLower("AUTHORIZATION"); got != "authorization" {
+		t.Errorf("asciiLower did not fold ASCII: %q", got)
+	}
+}
+
 func TestModes(t *testing.T) {
 	const secret = "AKIAIOSFODNN7EXAMPLE"
 	tests := []struct {

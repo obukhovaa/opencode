@@ -90,6 +90,12 @@ The system SHALL ship a built-in detector set, enabled by default, that detects 
 - **THEN** the assigned value is replaced and the name is preserved
 - **AND** this holds for a credential whose own shape matches no other detector
 
+#### Scenario: Credential preceded by non-ASCII text
+
+- **WHEN** a payload contains a credential that is detected by its surrounding context, and any text earlier in the same payload contains a non-ASCII character
+- **THEN** the credential is still replaced, regardless of where the non-ASCII character sits relative to it
+- **AND** the non-ASCII text itself is exported unchanged
+
 #### Scenario: Credential inside nested JSON and escaped strings
 
 - **WHEN** a payload contains a credential inside a JSON string value, including one that is backslash-escaped inside another JSON string

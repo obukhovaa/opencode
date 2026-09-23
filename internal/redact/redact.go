@@ -192,6 +192,40 @@ func isWordByte(b byte) bool {
 	return b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
+// asciiLower lowercases A-Z and leaves every other byte alone. It exists
+// instead of strings.ToLower because the folded copy is used to compute BYTE
+// OFFSETS into the original string, and strings.ToLower does not preserve
+// length: unicode.ToLower maps '\u0130' (2 bytes) to 'i' (1) and '\u212A'
+// (3 bytes) to 'k' (1). One such rune anywhere in a payload shifts every later
+// offset, the anchored pattern is then applied at the wrong position and finds
+// nothing, and every fold-gated detector — auth-header and secret-assignment,
+// the two that catch credentials of unknown shape — silently stops firing for
+// the rest of the payload. A security filter must not fail open on a Turkish
+// log line.
+//
+// Every starts/prefilter literal is ASCII, so ASCII folding is sufficient for
+// the gate. The trade is that a keyword spelled with a non-ASCII homoglyph
+// that RE2's (?i) would still fold ("to\u212Aen=") no longer produces a
+// candidate; that is not a shape credentials arrive in, and the previous
+// behaviour did not actually match it either — it only skewed the offsets.
+func asciiLower(s string) string {
+	var b []byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 'A' || c > 'Z' {
+			continue
+		}
+		if b == nil {
+			b = []byte(s)
+		}
+		b[i] = c + ('a' - 'A')
+	}
+	if b == nil {
+		return s
+	}
+	return string(b)
+}
+
 // compileAnchored builds the ^-anchored variant used for candidate scanning.
 // A leading \b is stripped and recorded, because at a candidate offset it
 // would be evaluated against the slice rather than the whole payload.
@@ -319,7 +353,7 @@ func (r *Redactor) String(s string) string {
 func (r *Redactor) coveredSpans(s string) []span {
 	var lower string
 	if r.needsFold {
-		lower = strings.ToLower(s)
+		lower = asciiLower(s)
 	}
 
 	// Markers already in the input are protected: re-wrapping one would

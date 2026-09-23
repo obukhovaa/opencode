@@ -165,7 +165,7 @@ It exists because it had to: a 90-day scan of a production Langfuse project foun
 | `secret-assignment` | The value in `ANYTHING_TOKEN=…`, `*_SECRET=…`, `*_PASSWORD=…`, `*_API_KEY=…` |
 | `generic-sk` | `sk-`/`pk-` keys of unknown provider (gated, see below) |
 
-The last three are the ones that earn their keep. They match on *position*, not shape, so they catch a credential whose format nobody has seen yet — `url-userinfo` alone covers the single largest finding in the incident, a PAT embedded in a fetched URL 300 times over.
+The three positional detectors — `url-userinfo`, `auth-header`, `secret-assignment` — are the ones that earn their keep. They match on *position*, not shape, so they catch a credential whose format nobody has seen yet — `url-userinfo` alone covers the single largest finding in the incident, a PAT embedded in a fetched URL 300 times over.
 
 #### Why `sk-` is special-cased
 

@@ -110,9 +110,9 @@ func (s *Span) setOutput(output any, max int) {
 //
 // The ordering is load-bearing. Truncating first can cut a credential in half,
 // and the surviving prefix no longer matches its detector, so a capped payload
-// would ship a high-entropy fragment in the clear at the cut point. Redacting
-// first also only ever shrinks the string, so it cannot push a payload over
-// its cap.
+// would ship a high-entropy fragment in the clear at the cut point. Redaction
+// can grow a string — a marker is longer than a short secret — which is
+// exactly why truncate runs last and the cap still holds.
 //
 // Every content attribute in this package goes through here. Nothing outside
 // the package can write one, so this is the single choke point — keep it that
