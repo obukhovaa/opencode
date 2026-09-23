@@ -9,6 +9,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
+	"github.com/opencode-ai/opencode/internal/redact"
 )
 
 // schemaPath is the committed artifact this generator produces. Tests read
@@ -30,7 +31,8 @@ func loadSchema(t *testing.T) map[string]any {
 }
 
 // enumAt walks properties.<seg>.properties.<seg>... and returns the enum
-// declared at the leaf.
+// declared at the leaf. "*" descends through a map-valued node's
+// additionalProperties; "items" descends into an array's element schema.
 func enumAt(t *testing.T, doc map[string]any, path ...string) []string {
 	t.Helper()
 	node := doc
@@ -42,6 +44,16 @@ func enumAt(t *testing.T, doc map[string]any, path ...string) []string {
 			child, ok := node["additionalProperties"].(map[string]any)
 			if !ok {
 				t.Fatalf("no additionalProperties at %v", path[:i])
+			}
+			node = child
+			continue
+		}
+		// "items" descends into an array's element schema, where an enum on
+		// the element (not the array) lives.
+		if seg == "items" {
+			child, ok := node["items"].(map[string]any)
+			if !ok {
+				t.Fatalf("no items at %v", path[:i])
 			}
 			node = child
 			continue
@@ -155,6 +167,41 @@ func TestSchemaEnumsMatchRuntimeValidators(t *testing.T) {
 				// Whitespace variants: the parser must not trim, or the
 				// runtime would accept a value the published enum rejects.
 				" message", "message ", " message ", "\tmessage", "tool ",
+			},
+		},
+		{
+			name: "telemetry.redaction.mode",
+			path: []string{"telemetry", "redaction", "mode"},
+			accepts: func(v string) bool {
+				// Empty means "unset / use the default", not something a user
+				// writes, so the enum should flag an explicitly empty string.
+				if v == "" {
+					return false
+				}
+				return redact.ValidMode(redact.Mode(v))
+			},
+			probe: []string{
+				"fingerprint", "strict", "remove", "Fingerprint", "STRICT",
+				"hash", "mask", "drop", "delete", "erase", "redact", "obfuscate",
+				"full", "partial", "none", "off", "on", "default",
+				" strict", "strict ", "\tremove",
+			},
+		},
+		{
+			name: "telemetry.redaction.disableBuiltins",
+			path: []string{"telemetry", "redaction", "disableBuiltins", "items"},
+			accepts: func(v string) bool {
+				for _, n := range redact.BuiltinNames() {
+					if n == v {
+						return true
+					}
+				}
+				return false
+			},
+			probe: []string{
+				"gitlab", "gitlab_pat", "GitLab-PAT", "aws", "aws-secret-access-key",
+				"slack", "openai-key", "sk", "generic", "pii", "all", "*",
+				" gitlab-pat", "gitlab-pat ",
 			},
 		},
 	}

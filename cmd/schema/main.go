@@ -8,6 +8,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	"github.com/opencode-ai/opencode/internal/redact"
 )
 
 // JSONSchemaType represents a JSON Schema type
@@ -23,6 +24,18 @@ type JSONSchemaType struct {
 	AnyOf                []map[string]any `json:"anyOf,omitempty"`
 	Default              any              `json:"default,omitempty"`
 }
+
+// redactionModes and redactionBuiltins read the published enums straight off
+// the redact package, so the schema cannot drift from what the loader accepts.
+func redactionModes() []string {
+	out := make([]string, 0, len(redact.Modes))
+	for _, m := range redact.Modes {
+		out = append(out, string(m))
+	}
+	return out
+}
+
+func redactionBuiltins() []string { return redact.BuiltinNames() }
 
 func main() {
 	schema := generateSchema()
@@ -863,6 +876,80 @@ func generateSchema() map[string]any {
 							},
 						},
 						"additionalProperties": false,
+					},
+				},
+				"additionalProperties": false,
+			},
+			"redaction": map[string]any{
+				"type": "object",
+				"description": "Client-side removal of secrets from telemetry payloads before they are exported. " +
+					"Applies to tool input/output, LLM request/response, trace input/output, span metadata and error messages. " +
+					"Enabled by default; built-in detectors cover GitLab/Slack/AWS/Langfuse/Anthropic/GitHub credentials, JWTs, " +
+					"PEM private keys, credentials in URLs and authorization headers, and secret-shaped environment assignments.",
+				"properties": map[string]any{
+					"enabled": map[string]any{
+						"type":        "boolean",
+						"description": "Enable secret redaction. Defaults to true. Set false to export payloads unredacted (pre-1.0 behavior).",
+						"default":     true,
+					},
+					"mode": map[string]any{
+						"type": "string",
+						"description": "Replacement marker form. 'fingerprint' (default) emits [REDACTED:<detector>:<6 hex of SHA-256>], " +
+							"which lets you tell one recurring secret from many distinct ones without exposing either; " +
+							"'strict' omits the fingerprint; 'remove' deletes the value entirely.",
+						"enum":    redactionModes(),
+						"default": string(redact.ModeFingerprint),
+					},
+					"disableBuiltins": map[string]any{
+						"type":        "array",
+						"description": "Names of built-in detectors to switch off (e.g. 'generic-sk'). An unknown name fails config loading.",
+						"items": map[string]any{
+							"type": "string",
+							"enum": redactionBuiltins(),
+						},
+					},
+					"pii": map[string]any{
+						"type": "boolean",
+						"description": "Enable the personal-data detector group (email, IPv4, IPv6, phone). Off by default: agent telemetry " +
+							"legitimately carries emails (Jira assignees, git authors) and IPs (pod addresses), so redacting them by default " +
+							"would mangle ordinary output.",
+						"default": false,
+					},
+					"rules": map[string]any{
+						"type":        "array",
+						"description": "Operator-supplied detectors, applied after all built-ins. An array (not an object) so rule names and patterns keep their case through config loading.",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"name": map[string]any{
+									"type":        "string",
+									"description": "Detector name; appears in the replacement marker. Must be unique.",
+								},
+								"pattern": map[string]any{
+									"type": "string",
+									"description": "Go (RE2) regular expression. Lookahead and lookbehind are NOT supported — " +
+										"match the surrounding text and put the secret in a capture group, then set 'group'.",
+								},
+								"group": map[string]any{
+									"type":        "integer",
+									"description": "Capture group to replace. 0 (default) replaces the whole match.",
+									"default":     0,
+								},
+								"replacement": map[string]any{
+									"type":        "string",
+									"description": "Literal replacement text. When empty, the standard marker is used.",
+								},
+							},
+							"required":             []string{"name", "pattern"},
+							"additionalProperties": false,
+						},
+					},
+					"allowlist": map[string]any{
+						"type":        "array",
+						"description": "Literal values never to redact, even when a detector matches them.",
+						"items": map[string]any{
+							"type": "string",
+						},
 					},
 				},
 				"additionalProperties": false,

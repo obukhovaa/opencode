@@ -17,6 +17,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/hooks"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/redact"
 	"github.com/spf13/viper"
 )
 
@@ -237,12 +238,51 @@ type ToolTelemetryConfig = CaptureTelemetryConfig
 // far the largest payload OpenCode handles, so capturing them is opt-in.
 type GenerationTelemetryConfig = CaptureTelemetryConfig
 
+// RedactionRule is an operator-supplied redaction detector.
+//
+// Declared as an array element rather than a map entry on purpose: viper
+// case-folds map keys, so a rule keyed by name would have its name lowercased
+// and a rule keyed by pattern would have the pattern itself corrupted
+// ("[A-Z]" -> "[a-z]"). Keeping every operator string in a value position is
+// what makes the loader safe. See TestConfig_RedactionRulesSurviveViper.
+type RedactionRule struct {
+	Name        string `json:"name"`
+	Pattern     string `json:"pattern"`
+	Group       int    `json:"group,omitempty"`
+	Replacement string `json:"replacement,omitempty"`
+}
+
+// RedactionConfig controls client-side removal of secrets from telemetry
+// payloads before they are exported.
+//
+// Enabled is a *bool so "unset" is distinguishable from an explicit false:
+// redaction defaults to ON, and a security control that silently defaults off
+// when the section is present but partially filled would be a trap.
+type RedactionConfig struct {
+	Enabled         *bool           `json:"enabled,omitempty"`
+	Mode            string          `json:"mode,omitempty"`
+	DisableBuiltins []string        `json:"disableBuiltins,omitempty"`
+	PII             bool            `json:"pii,omitempty"`
+	Rules           []RedactionRule `json:"rules,omitempty"`
+	Allowlist       []string        `json:"allowlist,omitempty"`
+}
+
+// IsEnabled reports whether redaction should run. Nil config or unset Enabled
+// both mean on.
+func (r *RedactionConfig) IsEnabled() bool {
+	if r == nil || r.Enabled == nil {
+		return true
+	}
+	return *r.Enabled
+}
+
 // TelemetryConfig defines telemetry configuration for identifying requests.
 type TelemetryConfig struct {
 	UserID            string                     `json:"userId,omitempty"`
 	Tags              []string                   `json:"tags,omitempty"`
 	DefaultTags       []string                   `json:"defaultTags,omitempty"`
 	Langfuse          *LangfuseConfig            `json:"langfuse,omitempty"`
+	Redaction         *RedactionConfig           `json:"redaction,omitempty"`
 	Tools             *ToolTelemetryConfig       `json:"tools,omitempty"`
 	Generations       *GenerationTelemetryConfig `json:"generations,omitempty"`
 	FlowArgs          []string                   `json:"flowArgs,omitempty"`          // Top-level flow arg names (wildcards supported) to extract into trace metadata
@@ -1400,6 +1440,41 @@ func ValidateAgentToolsSource(id string, hasTools, hasAllowTools bool) error {
 	return nil
 }
 
+// validateRedactionConfig validates telemetry redaction settings. Every failure
+// here is fatal on purpose: a filter that silently drops a mistyped rule is
+// worse than no filter, because the operator believes they are covered.
+func validateRedactionConfig(rc *RedactionConfig) error {
+	if rc == nil {
+		return nil
+	}
+	if rc.Mode != "" && !redact.ValidMode(redact.Mode(rc.Mode)) {
+		return fmt.Errorf("telemetry.redaction: unsupported mode %q (supported: %v)", rc.Mode, redact.Modes)
+	}
+	known := make(map[string]bool, len(redact.BuiltinNames()))
+	for _, n := range redact.BuiltinNames() {
+		known[n] = true
+	}
+	for _, n := range rc.DisableBuiltins {
+		if !known[strings.ToLower(strings.TrimSpace(n))] {
+			return fmt.Errorf("telemetry.redaction: disableBuiltins names unknown detector %q (known: %v)",
+				n, redact.BuiltinNames())
+		}
+	}
+	seen := make(map[string]bool, len(rc.Rules))
+	for _, r := range rc.Rules {
+		if err := redact.ValidateRule(redact.Rule{
+			Name: r.Name, Pattern: r.Pattern, Group: r.Group, Replacement: r.Replacement,
+		}); err != nil {
+			return fmt.Errorf("telemetry.redaction: %w", err)
+		}
+		if seen[r.Name] {
+			return fmt.Errorf("telemetry.redaction: duplicate rule name %q", r.Name)
+		}
+		seen[r.Name] = true
+	}
+	return nil
+}
+
 // validateTelemetryConfig validates telemetry configuration.
 func validateTelemetryConfig(telemetry *TelemetryConfig) error {
 	if telemetry == nil {
@@ -1420,6 +1495,9 @@ func validateTelemetryConfig(telemetry *TelemetryConfig) error {
 				return fmt.Errorf("telemetry: metadataNamespace %q contains invalid character %q (only alphanumeric and underscore allowed)", ns, string(r))
 			}
 		}
+	}
+	if err := validateRedactionConfig(telemetry.Redaction); err != nil {
+		return err
 	}
 	if lf := telemetry.Langfuse; lf != nil && lf.Enabled {
 		pk := resolveEnvValue(lf.PublicKey, "LANGFUSE_PUBLIC_KEY")

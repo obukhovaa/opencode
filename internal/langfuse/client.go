@@ -137,7 +137,7 @@ func (c *Client) TraceStart(ctx context.Context, params TraceParams) context.Con
 		attrs = append(attrs, attribute.String("langfuse.release", params.Release))
 	}
 	for k, v := range params.Metadata {
-		attrs = append(attrs, attribute.String("langfuse.trace.metadata."+k, fmt.Sprint(v)))
+		attrs = append(attrs, attribute.String("langfuse.trace.metadata."+k, redactString(fmt.Sprint(v))))
 	}
 	if params.Input != nil {
 		// On a child trace the trace-level input belongs to the parent;
@@ -146,7 +146,7 @@ func (c *Client) TraceStart(ctx context.Context, params TraceParams) context.Con
 		if params.IsChild {
 			inputKey = "langfuse.observation.input"
 		}
-		attrs = append(attrs, attribute.String(inputKey, truncate(marshalAny(params.Input), maxGenIOSize)))
+		attrs = append(attrs, attribute.String(inputKey, payload(params.Input, maxGenIOSize)))
 	}
 
 	opts := []trace.SpanStartOption{trace.WithAttributes(attrs...)}
@@ -186,10 +186,10 @@ func (c *Client) GenerationStart(ctx context.Context, params GenerationParams) *
 		attrs = append(attrs, attribute.String("gen_ai.request.model", params.Model))
 	}
 	if params.Input != nil {
-		attrs = append(attrs, attribute.String("langfuse.observation.input", truncate(marshalAny(params.Input), maxGenIOSize)))
+		attrs = append(attrs, attribute.String("langfuse.observation.input", payload(params.Input, maxGenIOSize)))
 	}
 	for k, v := range params.Metadata {
-		attrs = append(attrs, attribute.String("langfuse.observation.metadata."+k, fmt.Sprint(v)))
+		attrs = append(attrs, attribute.String("langfuse.observation.metadata."+k, redactString(fmt.Sprint(v))))
 	}
 
 	_, span := c.tracer.Start(parentCtx, params.Name, trace.WithAttributes(attrs...))
@@ -212,8 +212,7 @@ func (c *Client) ToolStart(ctx context.Context, params ToolParams) *Span {
 		attribute.String("langfuse.observation.type", "tool"),
 	}
 	if params.Input != nil {
-		inputStr := marshalAny(params.Input)
-		attrs = append(attrs, attribute.String("langfuse.observation.input", truncate(inputStr, maxIOSize)))
+		attrs = append(attrs, attribute.String("langfuse.observation.input", payload(params.Input, maxIOSize)))
 	}
 
 	_, span := c.tracer.Start(parentCtx, params.Name, trace.WithAttributes(attrs...))

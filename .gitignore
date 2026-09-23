@@ -53,3 +53,4 @@ DEBUG.md
 .claude/scheduled*
 deferred-e2e
 /webfetch-e2e
+/redaction-e2e

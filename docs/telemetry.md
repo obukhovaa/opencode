@@ -116,6 +116,83 @@ The `telemetry` section in `.opencode.json` controls all telemetry behavior:
 | `flowArgs` | string[] | Flow argument names to extract into Langfuse trace metadata. Supports wildcards (e.g., `"ticket_id"`, `"project*"`, `"*"`). |
 | `metadataNamespace` | string | Prefix for custom metadata keys. When set, keys like `flow_id` become `namespace.flow_id` — grouping them in the Langfuse UI while keeping each independently filterable. Empty (default) preserves flat keys. |
 
+### Secret Redaction
+
+Everything captured below — tool input/output, LLM request/response, trace input/output, span metadata and error messages — is scanned for credentials and rewritten **before** the span is exported. This is on by default.
+
+It exists because it had to: a 90-day scan of a production Langfuse project found 13 distinct live credentials sitting in plaintext tool spans (GitLab PATs, Slack bot tokens, AWS access keys, and the Langfuse key the exporter itself writes with). The original design treated the 10KB truncation cap as the mitigation for sensitivity, but a `.env` file or an `aws configure` dump is far under 10KB and passed through whole. Langfuse offers no way to restrict who can see input/output within a project, so the only control that holds is client-side, before the data leaves the process.
+
+```json
+{
+  "telemetry": {
+    "redaction": {
+      "enabled": true,
+      "mode": "fingerprint",
+      "pii": false,
+      "disableBuiltins": [],
+      "rules": [
+        { "name": "piano-internal-id", "pattern": "PI-[0-9]{12}" }
+      ],
+      "allowlist": []
+    }
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `enabled` | bool | Master switch, default `true`. Set `false` to export payloads unredacted. |
+| `mode` | string | Marker form: `fingerprint` (default), `strict`, or `remove`. See below. |
+| `pii` | bool | Enable the personal-data group (email, IPv4, IPv6, phone). Default `false`. |
+| `disableBuiltins` | string[] | Built-in detector names to switch off. An unknown name fails config loading. |
+| `rules` | object[] | Your own detectors: `{name, pattern, group?, replacement?}`. |
+| `allowlist` | string[] | Literal values never to redact, even when a detector matches. |
+
+#### Built-in detectors
+
+| Name | Catches |
+|---|---|
+| `gitlab-pat` | `glpat-…` (body ≥16 chars — the short legacy shape is real and a `{20,}` pattern misses it) |
+| `slack-token` | `xoxb-`/`xoxp-`/`xoxa-`… |
+| `aws-access-key-id` | `AKIA`/`ASIA`/`AROA`… + 16 |
+| `langfuse-key` | `sk-lf-…` / `pk-lf-…` |
+| `anthropic-key` | `sk-ant-…` |
+| `github-token` | `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` |
+| `jwt` | Three-segment JWTs |
+| `private-key` | `-----BEGIN … PRIVATE KEY-----` blocks |
+| `url-userinfo` | The password in `https://user:secret@host` |
+| `auth-header` | The credential after `Authorization: Bearer/Basic/Token` |
+| `secret-assignment` | The value in `ANYTHING_TOKEN=…`, `*_SECRET=…`, `*_PASSWORD=…`, `*_API_KEY=…` |
+| `generic-sk` | `sk-`/`pk-` keys of unknown provider (gated, see below) |
+
+The last three are the ones that earn their keep. They match on *position*, not shape, so they catch a credential whose format nobody has seen yet — `url-userinfo` alone covers the single largest finding in the incident, a PAT embedded in a fetched URL 300 times over.
+
+#### Why `sk-` is special-cased
+
+A naive `sk-[A-Za-z0-9_-]{20,}` is badly polluted in practice. Real strings from the production corpus that it matches: `sk-clusters-fork-ebs-csi-metrics`, `sk-id-token-refresh-fails`, `sk-mitigation-plan-scan` — these are fragments of `task-`, `risk-` and `disk-` followed by ordinary hyphenated English.
+
+Entropy does not separate them. Measured over the corpus, the real key `glpat-7Fq2MxVn8KpLdR4T` and the false positive `sk-for-sync-with-upstream-id` both score exactly 4.00 bits/char. `generic-sk` therefore accepts a candidate only when its body is ≥40 characters, **or** contains an uppercase letter and no lowercase-alphabetic word segment. Prefix-specific detectors are not subject to this gate.
+
+#### Markers and fingerprints
+
+In the default `fingerprint` mode a match becomes `[REDACTED:gitlab-pat:38e77b]`, where the suffix is the first 6 hex of the SHA-256 of the value. That answers the question incident response actually asks — "is this the same token in all 600 spans, or 600 different ones?" — without exposing anything. `strict` drops the fingerprint; `remove` deletes the value outright.
+
+Redaction is re-entrant: a marker already present in a payload is left alone, so a subagent's redacted output keeps its original detector name and fingerprint when it is nested into a parent span.
+
+#### Writing your own rule
+
+`pattern` is a Go (RE2) regular expression. **RE2 has no lookahead or lookbehind** — this is the most common first mistake, and config loading will tell you so by name. Match the surrounding text instead and point `group` at the capture group holding the secret:
+
+```json
+{ "name": "internal-header", "pattern": "X-Internal-Key:\\s*(\\S+)", "group": 1 }
+```
+
+A malformed pattern, an unknown `disableBuiltins` name, a duplicate rule name or an out-of-range group **fails startup** rather than being skipped — a filter that silently drops a mistyped rule is worse than no filter, because you believe you are covered.
+
+#### What is deliberately not redacted
+
+Span names, tool names, timings, token usage, cost, model name, session and user ids. These carry most of the diagnostic value and none of the risk.
+
 ### Tool I/O Logging
 
 By default, tool spans record only the tool name and timing. To include input/output content in traces, enable tool logging:
@@ -138,7 +215,7 @@ By default, tool spans record only the tool name and timing. To include input/ou
 | `logInput` | string[] | Tool name patterns whose input should be logged. Supports wildcards (`"*"` = all tools, `"datadog*"` = prefix match), matched case-insensitively. If empty, no inputs are logged. |
 | `logOutput` | string[] | Tool name patterns whose output should be logged. Same wildcard support. If empty, no outputs are logged. |
 
-Tool input/output is truncated to 10KB. Error output is always logged regardless of `logOutput` patterns — errors are diagnostic, not sensitive content.
+Tool input/output is truncated to 10KB, after redaction has run over it (see [Secret Redaction](#secret-redaction)). Error output is always logged regardless of `logOutput` patterns — errors are diagnostic, and they are redacted too.
 
 ### LLM Request / Response Logging
 

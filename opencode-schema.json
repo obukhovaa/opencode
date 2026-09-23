@@ -1357,6 +1357,96 @@
           "description": "Prefix for custom (non-Langfuse-standard) metadata keys on traces and generations. When set, keys like flow_id and agent_id become namespace.flow_id, namespace.agent_id — grouping them visually in the Langfuse UI while keeping each value independently filterable. Empty (default) preserves flat keys.",
           "type": "string"
         },
+        "redaction": {
+          "additionalProperties": false,
+          "description": "Client-side removal of secrets from telemetry payloads before they are exported. Applies to tool input/output, LLM request/response, trace input/output, span metadata and error messages. Enabled by default; built-in detectors cover GitLab/Slack/AWS/Langfuse/Anthropic/GitHub credentials, JWTs, PEM private keys, credentials in URLs and authorization headers, and secret-shaped environment assignments.",
+          "properties": {
+            "allowlist": {
+              "description": "Literal values never to redact, even when a detector matches them.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "disableBuiltins": {
+              "description": "Names of built-in detectors to switch off (e.g. 'generic-sk'). An unknown name fails config loading.",
+              "items": {
+                "enum": [
+                  "gitlab-pat",
+                  "slack-token",
+                  "aws-access-key-id",
+                  "langfuse-key",
+                  "anthropic-key",
+                  "github-token",
+                  "jwt",
+                  "private-key",
+                  "url-userinfo",
+                  "auth-header",
+                  "secret-assignment",
+                  "generic-sk",
+                  "email",
+                  "ipv4",
+                  "ipv6",
+                  "phone"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "enabled": {
+              "default": true,
+              "description": "Enable secret redaction. Defaults to true. Set false to export payloads unredacted (pre-1.0 behavior).",
+              "type": "boolean"
+            },
+            "mode": {
+              "default": "fingerprint",
+              "description": "Replacement marker form. 'fingerprint' (default) emits [REDACTED:\u003cdetector\u003e:\u003c6 hex of SHA-256\u003e], which lets you tell one recurring secret from many distinct ones without exposing either; 'strict' omits the fingerprint; 'remove' deletes the value entirely.",
+              "enum": [
+                "fingerprint",
+                "strict",
+                "remove"
+              ],
+              "type": "string"
+            },
+            "pii": {
+              "default": false,
+              "description": "Enable the personal-data detector group (email, IPv4, IPv6, phone). Off by default: agent telemetry legitimately carries emails (Jira assignees, git authors) and IPs (pod addresses), so redacting them by default would mangle ordinary output.",
+              "type": "boolean"
+            },
+            "rules": {
+              "description": "Operator-supplied detectors, applied after all built-ins. An array (not an object) so rule names and patterns keep their case through config loading.",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "group": {
+                    "default": 0,
+                    "description": "Capture group to replace. 0 (default) replaces the whole match.",
+                    "type": "integer"
+                  },
+                  "name": {
+                    "description": "Detector name; appears in the replacement marker. Must be unique.",
+                    "type": "string"
+                  },
+                  "pattern": {
+                    "description": "Go (RE2) regular expression. Lookahead and lookbehind are NOT supported — match the surrounding text and put the secret in a capture group, then set 'group'.",
+                    "type": "string"
+                  },
+                  "replacement": {
+                    "description": "Literal replacement text. When empty, the standard marker is used.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "pattern"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
         "tags": {
           "description": "Static tags attached to every LLM request when the provider metadata has a tags field configured. Useful for environment labels (e.g., 'prod', 'dev', 'team-a').",
           "items": {
