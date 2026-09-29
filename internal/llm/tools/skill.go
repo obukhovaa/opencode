@@ -59,7 +59,7 @@ func (s *skillTool) Info() ToolInfo {
 			},
 			"args": map[string]any{
 				"type":        "string",
-				"description": "Optional arguments to pass to the skill. Substituted into $ARGUMENTS, $ARGUMENTS[N], $0, $1, etc. in the skill content. Shell markup !`command` in the skill is expanded after substitution.",
+				"description": "Optional arguments to pass to the skill. Substituted into $ARGUMENTS, $ARGUMENTS[N], $0, $1, etc. in the skill content. Shell markup !`command` in the skill runs before substitution; arguments are never executed.",
 			},
 		},
 		Required: []string{"name"},
@@ -104,13 +104,11 @@ func (s *skillTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	baseDir := filepath.Dir(skillInfo.Location)
 	files := sampleSkillFiles(baseDir, skillFileSampleLimit)
 
-	// Apply argument substitution and shell markup expansion
-	processedContent := skill.SubstituteContent(strings.TrimSpace(skillInfo.Content), skill.SubstituteParams{
+	processedContent := renderSkillContent(ctx, strings.TrimSpace(skillInfo.Content), skill.SubstituteParams{
 		Args:      params.Args,
 		SkillDir:  baseDir,
 		SessionID: sessionID,
 	})
-	processedContent = shell.ExpandMarkup(ctx, processedContent, config.WorkingDirectory())
 
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "<skill_content name=%q>\n", skillInfo.Name)
@@ -132,6 +130,25 @@ func (s *skillTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 		"dir":  baseDir,
 	}
 	return WithResponseMetadata(NewTextResponse(sb.String()), metadata), nil
+}
+
+// renderSkillContent runs the body's own !`cmd` spans and substitutes arguments
+// only into the text around them, so neither arguments nor output are rescanned.
+func renderSkillContent(ctx context.Context, content string, params skill.SubstituteParams) string {
+	if !strings.Contains(content, "!`") {
+		return skill.SubstituteContent(content, params)
+	}
+	perSegment := params
+	perSegment.SuppressArgsAppend = true
+	var template []string
+	rendered := shell.ExpandMarkupAround(ctx, content, config.WorkingDirectory(), func(text string) string {
+		template = append(template, text)
+		return skill.SubstituteContent(text, perSegment)
+	})
+	// The "ARGUMENTS: <args>" suffix depends on the template text alone, never on command output.
+	joined := strings.Join(template, "\n")
+	suffix := strings.TrimPrefix(skill.SubstituteContent(joined, params), skill.SubstituteContent(joined, perSegment))
+	return rendered + suffix
 }
 
 func (s *skillTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
