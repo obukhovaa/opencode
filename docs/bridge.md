@@ -245,6 +245,12 @@ curl -X POST http://127.0.0.1:3456/router/bind \
 
 `POST /router/unbind` with empty `peers` drops every binding for the session and tears down the dispatcher. With non-empty `peers`, removes only those rows — dispatcher stays alive if any binding remains.
 
+### `POST /router/inbound`
+
+The orchestrator forwards chat replies here in mediated-inbound mode. `202 Accepted` means the inbound was enqueued. `429` with `Retry-After` means the queue is full, so retry.
+
+Under `opencode serve --pool-mode`, the endpoint accepts an inbound only when a live interactive flow step in this process owns the peer's session. Otherwise it returns `409 {"sessionNotOwned": true}` and drops the message. This covers a container that restarted mid-step while its binding survived. Retrying cannot succeed, so orchestrators should not retry a `409`. Pool pods never pass an inbound to the workspace default agent. Without `--pool-mode`, behavior is unchanged.
+
 ### Identity CRUD — `/router/identities/{channel}[/{id}]`
 
 ```bash
