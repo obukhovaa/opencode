@@ -658,7 +658,7 @@ When this skill runs, each `` !`command` `` executes immediately and its output 
 
 **Combining substitution with shell commands:**
 
-Use `${SKILL_DIR}` and `$ARGUMENTS` inside shell commands for powerful dynamic loading:
+With a slash command, `${SKILL_DIR}` and `$ARGUMENTS` can be used inside shell commands for dynamic loading. When the skill tool loads a skill, commands run before substitution and see these placeholders literally; arguments are substituted only into the text around them, and command output is inserted as-is.
 
 ```yaml
 ---
