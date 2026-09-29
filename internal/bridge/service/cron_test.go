@@ -53,3 +53,19 @@ func TestCronOutputRouterSkipsEmptyAndUnbound(t *testing.T) {
 		})
 	}
 }
+
+func TestStripTaskTrailer(t *testing.T) {
+	t.Parallel()
+	trailer := "\n\n<task_id>toolu_abc</task_id>\n<task_resume_hint>To continue this same subagent session later, call the task tool again with task_id=\"toolu_abc\". Mention this task_id (alongside a short description of what was done) in your reply so the user can reference or resume it.</task_resume_hint>"
+	cases := []struct{ name, in, want string }{
+		{"trailer stripped", "Nothing new, 3 pipelines green." + trailer, "Nothing new, 3 pipelines green."},
+		{"multi-line body kept", "**Waiting on you**\n- item one\n- item two" + trailer, "**Waiting on you**\n- item one\n- item two"},
+		{"no trailer unchanged", "plain result", "plain result"},
+		{"task_id alone is not a trailer", "see <task_id>x</task_id> above", "see <task_id>x</task_id> above"},
+	}
+	for _, tc := range cases {
+		if got := stripTaskTrailer(tc.in); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
