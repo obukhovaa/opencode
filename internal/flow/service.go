@@ -748,11 +748,23 @@ func (s *service) runStep(
 	// InteractiveHook BEFORE agent.Run. Failure here fails the step fast.
 	// The bind is automatically reversed in deferred Unbind below.
 	if step.Interactive {
+		// Mark the session as interactively bound so the question tool
+		// won't auto-approve away the human's chance to answer (see
+		// permission.Service.MarkInteractiveSession + question tool's
+		// auto-approve short-circuit guard).
+		//
+		// The mark MUST precede the bind and outlive the unbind: a pool
+		// pod's bridge refuses any inbound for a bound session that is not
+		// marked, and the bind is what makes the orchestrator
+		// start forwarding. Binding first would refuse the step's first
+		// legitimate reply.
+		s.permissions.MarkInteractiveSession(sess.ID)
 		// boundPeers was already resolved above (before NewAgent) so the
 		// system prompt could include the "## Reviewer details" section.
 		// Re-using the slice here keeps the bind call wire-compatible
 		// without paying the resolve cost twice.
 		if err := s.interactiveHookOrNop().OnInteractiveStepStart(ctx, sess.ID, boundPeers); err != nil {
+			s.permissions.RemoveInteractiveSession(sess.ID)
 			bindErr := fmt.Errorf("interactive step %q bind: %w", step.ID, err)
 			// Park here rather than leaving it to handleStepError, which passes
 			// priorRow=nil. That is correct only for call sites BEFORE the
@@ -775,22 +787,17 @@ func (s *service) runStep(
 				bindErr, wg, agentEvents, flowStates, nextSteps, f)
 			return
 		}
-		// Mark the session as interactively bound so the question tool
-		// won't auto-approve away the human's chance to answer (see
-		// permission.Service.MarkInteractiveSession + question tool's
-		// auto-approve short-circuit guard). Cleared in the deferred
-		// unbind below.
-		s.permissions.MarkInteractiveSession(sess.ID)
 		// Defer unbind so any return path (success, error, panic) unwinds
 		// the binding. Use a fresh ctx so a cancelled parent doesn't
-		// short-circuit the Unbind call.
+		// short-circuit the Unbind call. The marker is cleared only after
+		// the unbind, mirroring the mark-before-bind order above.
 		defer func() {
-			s.permissions.RemoveInteractiveSession(sess.ID)
 			unbindCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := s.interactiveHookOrNop().OnInteractiveStepComplete(unbindCtx, sess.ID); err != nil {
 				logging.Warn("interactive step unbind failed", "step", step.ID, "err", err)
 			}
+			s.permissions.RemoveInteractiveSession(sess.ID)
 		}()
 		// Per the flow-api spec, emit the waiting_for_input transition
 		// AFTER the bind succeeds and BEFORE agent.Run. The API runner

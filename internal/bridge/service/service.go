@@ -148,6 +148,11 @@ type Service struct {
 	// goroutine writes it.
 	remoteJobID     atomic.Value // string
 	remoteProjectID string
+
+	// poolMode mirrors `opencode serve --pool-mode`. A pool pod runs only
+	// flow steps, so an inbound whose session no live interactive step in
+	// this process owns is refused instead of handed to app.ActiveAgent().
+	poolMode bool
 }
 
 // Dependencies bundles the inputs Service needs at construction time.
@@ -186,6 +191,9 @@ type Dependencies struct {
 	RemoteSelfPort  int
 	RemoteJobID     string
 	RemoteProjectID string
+
+	// PoolMode mirrors `opencode serve --pool-mode`; see Service.poolMode.
+	PoolMode bool
 }
 
 // New constructs a Service from the given dependencies. It does NOT start
@@ -227,6 +235,7 @@ func New(deps Dependencies) (*Service, error) {
 		remoteSelfHost:  deps.RemoteSelfHost,
 		remoteSelfPort:  deps.RemoteSelfPort,
 		remoteProjectID: projectID,
+		poolMode:        deps.PoolMode,
 	}
 	svc.remoteJobID.Store(deps.RemoteJobID)
 	mode, ok := bridge.NormalizeToolUpdateVerbosity(deps.RouterCfg.ToolUpdateVerbosity)
