@@ -33,40 +33,56 @@ func ExpandMarkup(ctx context.Context, template string, cwd string) string {
 		if len(submatches) < 2 {
 			return match
 		}
-		command := submatches[1]
-
-		sh := GetPersistentShell(cwd)
-		if sh == nil {
-			logging.Warn("ExpandMarkup: failed to get shell", "command", command)
-			return fmt.Sprintf("[shell unavailable: %s]", command)
-		}
-
-		stdout, stderr, exitCode, _, err := sh.Exec(ctx, command, MarkupDefaultTimeout)
-		if err != nil {
-			logging.Warn("ExpandMarkup: exec error", "command", command, "error", err)
-			return fmt.Sprintf("[command error: %s]\n%s", command, err.Error())
-		}
-
-		stdout = truncateMarkupOutput(stdout)
-		stderr = truncateMarkupOutput(stderr)
-
-		if exitCode != 0 {
-			var parts []string
-			if stdout != "" {
-				parts = append(parts, stdout)
-			}
-			if stderr != "" {
-				parts = append(parts, fmt.Sprintf("[stderr: %s]", stderr))
-			}
-			result := strings.Join(parts, "\n")
-			if result == "" {
-				return fmt.Sprintf("[command failed: exit %d]", exitCode)
-			}
-			return result
-		}
-
-		return stdout
+		return runMarkupCommand(ctx, submatches[1], cwd)
 	})
+}
+
+// ExpandMarkupAround applies render to the text between !`command` spans only
+// and inserts each span's command output verbatim, never passing it to render.
+func ExpandMarkupAround(ctx context.Context, template string, cwd string, render func(string) string) string {
+	var sb strings.Builder
+	last := 0
+	for _, loc := range shellMarkupRegex.FindAllStringSubmatchIndex(template, -1) {
+		sb.WriteString(render(template[last:loc[0]]))
+		sb.WriteString(runMarkupCommand(ctx, template[loc[2]:loc[3]], cwd))
+		last = loc[1]
+	}
+	sb.WriteString(render(template[last:]))
+	return sb.String()
+}
+
+func runMarkupCommand(ctx context.Context, command string, cwd string) string {
+	sh := GetPersistentShell(cwd)
+	if sh == nil {
+		logging.Warn("ExpandMarkup: failed to get shell", "command", command)
+		return fmt.Sprintf("[shell unavailable: %s]", command)
+	}
+
+	stdout, stderr, exitCode, _, err := sh.Exec(ctx, command, MarkupDefaultTimeout)
+	if err != nil {
+		logging.Warn("ExpandMarkup: exec error", "command", command, "error", err)
+		return fmt.Sprintf("[command error: %s]\n%s", command, err.Error())
+	}
+
+	stdout = truncateMarkupOutput(stdout)
+	stderr = truncateMarkupOutput(stderr)
+
+	if exitCode != 0 {
+		var parts []string
+		if stdout != "" {
+			parts = append(parts, stdout)
+		}
+		if stderr != "" {
+			parts = append(parts, fmt.Sprintf("[stderr: %s]", stderr))
+		}
+		result := strings.Join(parts, "\n")
+		if result == "" {
+			return fmt.Sprintf("[command failed: exit %d]", exitCode)
+		}
+		return result
+	}
+
+	return stdout
 }
 
 func truncateMarkupOutput(content string) string {

@@ -19,11 +19,11 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/db"
-	"github.com/opencode-ai/opencode/internal/format"
 	"github.com/opencode-ai/opencode/internal/langfuse"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
+	"github.com/opencode-ai/opencode/internal/llm/tools/shell"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
@@ -622,12 +622,16 @@ func (s *service) runStep(
 		stepPrompt = resolved
 	}
 
-	prompt := substituteScoped(stepPrompt, args, stepVars)
-	// Expand !`cmd` shell markup in flow prompts (after args substitution so args can parameterize commands)
-	if strings.Contains(prompt, "!`") {
-		cwd := config.WorkingDirectory()
-		prompt = format.ExpandShellMarkup(ctx, prompt, cwd)
+	// Only the template's own !`cmd` spans run; substituted values and command
+	// output are never rescanned, so args can neither form nor alter a command.
+	var prompt string
+	if strings.Contains(stepPrompt, "!`") {
+		prompt = shell.ExpandMarkupAround(ctx, stepPrompt, config.WorkingDirectory(), func(text string) string {
+			return substituteScoped(text, args, stepVars)
+		})
 		logging.Debug("Flow step prompt after shell markup expansion", "step", step.ID, "prompt_length", len(prompt))
+	} else {
+		prompt = substituteScoped(stepPrompt, args, stepVars)
 	}
 	// NOTE: Structured output referenced via template variables if needed
 	if prevState != nil && prevState.Output != "" && !prevState.IsStructOutput {

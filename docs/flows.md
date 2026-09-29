@@ -477,8 +477,9 @@ a real conflict with no author intent to honour, and the error says to check
 your `extends` list.
 
 **Nothing else changes.** The resolved text goes through exactly the same
-pipeline as an inline prompt: `${args.*}` / `${step.*}` substitution,
-`` !`shell` `` markup expansion, previous-step-output prefixing and
+pipeline as an inline prompt: `` !`shell` `` markup expansion, `${args.*}` /
+`${step.*}` substitution (applied only to the text around markup, so neither
+values nor command output are rescanned), previous-step-output prefixing and
 structured output all behave identically. Write `${args.*}` placeholders in
 the Langfuse prompt body — opencode's own dialect, not Langfuse's
 `{{variable}}` syntax, which passes through verbatim. The trade-off is that
