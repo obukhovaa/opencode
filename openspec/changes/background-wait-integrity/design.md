@@ -45,6 +45,17 @@ permission block at `bash.go:167,173`. A model told only "drop the `&`" may inst
 `run_in_background`, trading a tracked-but-lying task for an untracked, unprompted orphan.
 Removing `nohup` from that list is part of this change, not a follow-up.
 
+Removing `nohup` is necessary but not sufficient. `IsSafeReadOnlyCommand` tests only that
+the *whole string* starts with a listed word followed by a space or `-`, so any command
+led by `echo`, `ls`, `date`, … is exempt regardless of what follows: `echo go; ./gradlew
+build &`, `ls && rm -rf build`, `echo x > ~/.bashrc`. The model's natural rewrite after a
+rejection ("print a marker, then start the build") lands exactly there. The check
+therefore MUST return false for any command containing a top-level control operator
+(`;`, `&`, `&&`, `||`, `|`, newline), a redirect (`>`, `>>`, `<`), or a command
+substitution (`$(…)`, backticks). It reuses the quote-aware scanner from the detach gate,
+and ambiguity resolves to *not safe* — the opposite polarity to the detach gate, because
+here a false "unsafe" costs one permission evaluation while a false "safe" skips it.
+
 Ordering note: the `if params.RunInBackground` branch sits at `bash.go:200`, *after* the
 permission block. The detach check must be hoisted to ~`:166`.
 
@@ -68,14 +79,18 @@ the hole it leaves is strictly smaller than the one being closed.
 
 Two implementation consequences the first draft missed:
 
-- **The registry cannot resolve the caller's identity on its own.** Carrying a parent id on
-  `task.Task` lets the registry *bucket* tasks, but `PendingForSessionTree(callerID)` still
-  needs to know who the caller's children are. `internal/llm/tools` does not import
+- **Registration sites cannot see the owning session's parent.** With a
+  `ParentSessionID` carried on `task.Task`, `PendingForSessionTree(callerID)` is a pure
+  registry filter (`SessionID == caller || ParentSessionID == caller`) — the caller's own
+  ID is already on ctx. The gap is at *registration*: `internal/llm/tools` does not import
   `internal/session` (`bashTool` holds only `{permissions, registry}`, `bash.go:48-51`), so
-  the seam is a `RootSessionIDContextKey` set in `agent.go` beside `SessionIDContextKey`
-  (`:847`), where the session row is already loaded. Without it the lookup silently
-  degrades to exact scope and the whole fix becomes a no-op that no registry-level test
-  would catch.
+  the bash/monitor sites cannot stamp the parent. The seam is a `ParentSessionIDContextKey`
+  set in `agent.go` beside `SessionIDContextKey` (`:847`) from `session.ParentSessionID`,
+  where the row is already loaded (`:844`). **Not `RootSessionID`**: `session.go:116-125`
+  copies the parent's root onto every descendant, so a flow step's subagent carries the
+  flow-wide root — stamping it would silently rebuild the root scope rejected above.
+  Without the key the lookup degrades to exact scope and the fix becomes a no-op that no
+  registry-level test would catch.
 - **The wait must be widened too, not just the pre-check.** `WaitForActiveTasks` takes a
   bare `sessionID` and re-snapshots exact scope internally (`registry.go:138` → `:113`).
   Widening only the pre-check at `bash_wait.go:80` opens the gate and then returns in
@@ -148,12 +163,24 @@ exported atomic on `task.Task` with a `ScannedLines()` reader, bumped from `scan
 - **Rejecting `&` breaks an existing working flow.** A repo-wide sweep found nothing pairing
   `nohup`/`setsid`/`disown`/trailing-`&` with `run_in_background: true`. Detection is
   conservative and the message names the fix.
+- **Compound read-only commands lose their exemption.** `ls | grep foo`, `git log | head`
+  now go through `EvaluatePermission` instead of short-circuiting. Where config says
+  `allow` for bash (typical for flows) nothing changes; under `ask` they prompt. That is
+  the intended price: the exemption was never sound for compound commands.
 - **One level of descent is arbitrary.** It is. It is chosen because it closes the observed
   hole at a cost that is auditable, where root scope is not.
 - **Trailer reordering.** Plain `&&` short-circuit is preserved. The shape that genuinely
   inverts is the watchdog idiom `sleep 300 && kill $(cat /tmp/pid)`, which now fires after
   the task it was meant to bound. Rare, but the blanket "strictly safer" claim in the first
   draft was wrong and is withdrawn.
+- **Redirect and drain disagree on child tasks (open).** A parent's foreground `sleep` now
+  waits on a child's bash task, but its end-of-turn drain does not (exact scope, a non-goal
+  here). The monitor ack tells the model that ending its turn is how it waits — true for its
+  own tasks only. With GENAI-140 unfixed, no subagent drains either, so a child-owned task
+  that outlives its subagent is awaited by nobody at step end, and its completion is
+  enqueued on a session that never runs again. This change narrows the hole (a `sleep` now
+  catches it); closing it belongs with GENAI-140, where the drain's scope and subagent
+  turn semantics are decided together.
 - **Leaked monitors persist.** Registry entries are never deleted and monitors use
   `exec.Command`, not `CommandContext` (`monitor.go:185`), so a leaked `tail -F` stays
   `StateRunning` for the process lifetime. Under any widened scope that is a growing

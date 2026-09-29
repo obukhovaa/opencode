@@ -35,7 +35,10 @@ twice against the "do NOT poll" instruction, then slept.
   with guidance. The rejection text MUST also foreclose the foreground fallback, because
   that route is *worse*: `nohup` sits in `safeReadOnlyCommands` (`bash.go:64`) behind a
   prefix match, so foreground `nohup … &` runs with no permission prompt and no task record
-  at all. This change removes `nohup` from that list as part of the same fix.
+  at all. This change removes `nohup` from that list as part of the same fix — **and makes
+  the safe-list check refuse compound commands**, because the prefix match is on the whole
+  string: `echo start; ./gradlew build &` or `echo x > ~/.bashrc` is exempt today via
+  `echo`, so dropping `nohup` alone would not close the route.
 - **Scope the foreground-wait redirect to the caller's session and its direct children.**
   Deliberately *not* `root_session_id`: a flow assigns one root to every step
   (`internal/flow/service.go:256`) and steps run concurrently, so root scope would make a

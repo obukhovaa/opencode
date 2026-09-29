@@ -19,13 +19,16 @@ Two lookups exist with distinct, non-interchangeable callers:
 | End-of-turn drain (`agent.Run` non-interactive hold) | exact session | A parent MUST NOT block at end of turn on a child's tasks. |
 | Foreground-wait redirect (`bash` sleep interception) | session + direct children | The model explicitly asked to wait; its own children's pending work is what it is waiting for. |
 
-Resolving "children of the caller" requires the caller's session identity, which the tool
-layer cannot derive from a session ID alone — `internal/llm/tools` holds no session
-service. The runtime SHALL therefore place the caller's session identity on the
-tool-execution context alongside the non-interactive marker, at the same site where the
-session row is already loaded. An implementation that omits this plumbing degrades the
-lookup to exact scope silently; a test MUST cover the plumbing, not only the registry
-method.
+Each task SHALL record the parent of its owning session at registration, and the lookup
+matches `SessionID == S || ParentSessionID == S`. The caller's own ID is already on the
+tool-execution context; what the tool layer cannot derive is the owning session's
+*parent*, because `internal/llm/tools` holds no session service. The runtime SHALL
+therefore place the owning session's `ParentSessionID` on the tool-execution context
+alongside the non-interactive marker, at the same site where the session row is already
+loaded. It MUST be the session's parent, NOT its `RootSessionID`: for a flow step's
+subagent the two differ, and stamping the root would reintroduce the flow-wide scope this
+requirement rejects. An implementation that omits this plumbing degrades the lookup to
+exact scope silently; a test MUST cover the plumbing, not only the registry method.
 
 Introducing this lookup MUST NOT change the drain's scope or behavior.
 

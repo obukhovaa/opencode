@@ -13,18 +13,26 @@
 - [ ] 1.4 **Remove `nohup` from `safeReadOnlyCommands` (`bash.go:62-64`).** `IsSafeReadOnlyCommand`
   is a prefix match (`tools.go:301-311`), so foreground `nohup … &` currently skips the whole
   permission gate. This is the trace's exact command; it belongs in this change.
+- [ ] 1.4a Make `IsSafeReadOnlyCommand` return false when the command contains a top-level
+  control operator (`;` `&` `&&` `||` `|` newline), a redirect (`>` `>>` `<`), or a command
+  substitution (`$(…)`, backticks), reusing the 1.1 scanner. Ambiguity → not safe. Without
+  this, `echo go; ./gradlew build &` is exempt via `echo` and 1.4 closes nothing.
 - [ ] 1.5 Table-driven `bash_detach_test.go`: positives (`nohup x &`, `x &`, `x & echo $!`,
   `setsid x`, `disown`), negatives (`a && b`, `echo 'a & b'`, `x 2>&1`, `x &>log`, `&` inside
   a subshell), plus the synchronous-call passthrough.
+- [ ] 1.5a Table-driven `IsSafeReadOnlyCommand` cases: still safe (`ls -la`, `git status`,
+  `echo 'a; b'`); no longer safe (`nohup x`, `echo a; rm b`, `ls && rm b`, `echo x > f`,
+  `ls | xargs rm`, `echo $(rm b)`).
 - [ ] 1.6 Extend `bash_background_test.go`: a rejected command registers no task, creates no
   output file, and returns an error ToolResult rather than an ack.
 
 ## 2. Session-and-children scoping
 
-- [ ] 2.1 Add `RootSessionIDContextKey` (caller session identity) in `internal/llm/tools`, and set
-  it in `agent.go` beside `SessionIDContextKey` at ~`:847`, where the session row is already
-  loaded. **Without this the registry cannot resolve who the caller's children are and the
-  whole fix degrades to exact scope silently.**
+- [ ] 2.1 Add `ParentSessionIDContextKey` in `internal/llm/tools`, and set it in `agent.go` beside
+  `SessionIDContextKey` at ~`:847` from `session.ParentSessionID` (row loaded at `:844`).
+  **Use the parent, never `session.RootSessionID`** — descendants inherit the flow-wide root
+  (`session/session.go:116-125`), which would rebuild the rejected root scope. Without this
+  key registration sites cannot stamp the parent and the fix degrades to exact scope silently.
 - [ ] 2.2 Carry the owning session's parent on `task.Task` at registration. Sites:
   `bash_background.go:49`, `monitor.go:202`, `agent-tool-async.go:76`, and
   `cron/scheduler.go:528` (the fourth site, previously unlisted). Only the agent-tool site has

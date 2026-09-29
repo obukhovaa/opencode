@@ -46,6 +46,34 @@ unaffected — backgrounding inside a synchronous call is the caller's own busin
 - **WHEN** the agent invokes `{command: "sleep 1 &"}` with `run_in_background` omitted
 - **THEN** the command runs verbatim, exactly as today
 
+### Requirement: The permission-exempt safe list covers only simple commands
+
+The bash tool's read-only exemption (commands that skip `EvaluatePermission` and the
+interactive prompt) SHALL NOT include `nohup`, and SHALL NOT apply to any command that
+contains, at its top level, a control operator (`;`, `&`, `&&`, `||`, `|`, newline), a
+redirect (`>`, `>>`, `<`), or a command substitution (`$(…)` or backticks). Operators inside
+single or double quotes do not count. When the scan is ambiguous the command SHALL be
+treated as not exempt.
+
+Without this, a model refused under `run_in_background` can drop the flag and prefix the
+same detaching command with an exempt word (`echo go; ./gradlew build &`), producing an
+untracked process that no permission rule saw.
+
+#### Scenario: nohup is no longer exempt
+
+- **WHEN** the agent runs foreground `nohup ./gradlew build > /tmp/log 2>&1 &`
+- **THEN** the command goes through `EvaluatePermission` like any non-exempt command
+
+#### Scenario: A compound command led by a safe word is not exempt
+
+- **WHEN** the agent runs foreground `echo start; ./gradlew build &`
+- **THEN** the command goes through `EvaluatePermission`
+
+#### Scenario: A quoted operator does not remove the exemption
+
+- **WHEN** the agent runs foreground `echo 'a; b | c'`
+- **THEN** the command remains exempt
+
 ## MODIFIED Requirements
 
 ### Requirement: `run_in_background` parameter on bash tool
