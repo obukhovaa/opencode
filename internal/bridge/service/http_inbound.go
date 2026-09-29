@@ -29,6 +29,10 @@ import (
 // channel, instructing the orchestrator to retry. The orchestrator's
 // forward path (Phase E) handles 5xx + 4xx + 429 uniformly with its
 // single-retry policy.
+//
+// Pool mode: an inbound for a session no live interactive step in this
+// process owns gets 409 {sessionNotOwned: true} and is not enqueued.
+// Retrying cannot succeed, so the orchestrator should not retry it.
 func (s *Service) handleInbound(w http.ResponseWriter, r *http.Request) {
 	var in bridge.Inbound
 	if err := readJSON(r, &in); err != nil {
@@ -45,6 +49,21 @@ func (s *Service) handleInbound(w http.ResponseWriter, r *http.Request) {
 	}
 	if in.ReceivedAt == 0 {
 		in.ReceivedAt = time.Now().UnixMilli()
+	}
+
+	if s.poolMode {
+		owned, err := s.ownsInboundSession(r.Context(), in.Peer)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "inbound ownership check failed: "+err.Error())
+			return
+		}
+		if !owned {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":           "no live interactive flow step owns this peer's session",
+				"sessionNotOwned": true,
+			})
+			return
+		}
 	}
 
 	select {

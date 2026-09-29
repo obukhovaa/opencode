@@ -243,6 +243,7 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 				RemoteSelfPort:  selfPort,
 				RemoteJobID:     remoteJobID,
 				RemoteProjectID: remoteProj,
+				PoolMode:        poolMode,
 			})
 			if err != nil {
 				logging.Error("Bridge orchestrator init failed", "error", err)

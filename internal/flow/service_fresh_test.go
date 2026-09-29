@@ -166,6 +166,10 @@ func (p *stubPermissions) AutoApproveSession(_ string) {}
 
 func (p *stubPermissions) MarkUnattendedSession(_ string) {}
 
+func (p *stubPermissions) MarkInteractiveSession(_ string) {}
+
+func (p *stubPermissions) RemoveInteractiveSession(_ string) {}
+
 // stubAgent returns a response event immediately. If responses is non-empty,
 // successive Run calls return the scripted events in order; otherwise a default
 // "done" text response is returned. Prompts received are captured into
