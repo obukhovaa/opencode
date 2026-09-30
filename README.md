@@ -374,6 +374,16 @@ When enabled (default), automatically summarizes conversations approaching the c
 { "autoCompact": true }
 ```
 
+The check runs before every model call, including a turn's first one, so a long-lived session (chat bridge, `opencode serve`, cron heartbeats) compacts before the turn that would overflow it. The context size is the larger of the provider's token estimate and the usage the provider reported for the session's last call, plus the messages added since. The summarizer only sees the history since the previous summary; if that still does not fit its window, the oldest messages are dropped (with a warning) rather than failing the compaction.
+
+The threshold can be lowered per agent — useful when a proxy resets streams well before the model's nominal window:
+
+```json
+{ "agents": { "neo": { "compactionThreshold": 0.4 } } }
+```
+
+`compactionThreshold` is a fraction in (0, 1]; out-of-range values are ignored with a warning. It is also accepted in agent markdown frontmatter. A flow step's `compact.threshold` wins over it, and it never enables compaction when `autoCompact` is off.
+
 ### Auto Approve
 
 Auto-approve mode skips interactive permission dialogs for `ask`-resolved permissions during a session. `deny` rules and disabled tools are still enforced — auto-approve only promotes `ask` decisions to `allow`.
