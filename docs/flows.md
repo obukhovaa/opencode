@@ -746,7 +746,7 @@ The session prefix is chosen using the following priority (highest first):
 
 1. **CLI flag** `--session` / `-s` — always wins when provided
 2. **Flow spec** `flow.session.prefix` — used when no CLI flag is given
-3. **Fallback** — a Unix timestamp, making each invocation independent
+3. **Fallback** — `<unix-seconds>-<6 hex>` (e.g. `1790751082-3f9a1c`), making each invocation independent. The random suffix keeps two runs started in the same second (e.g. on different processes sharing one database) from deriving the same session IDs; the leading unix second keeps IDs sortable, so look them up by timestamp with a prefix match
 
 The `flow.session.prefix` field accepts either a literal string or an `${args.*}` reference:
 

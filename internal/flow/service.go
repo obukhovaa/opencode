@@ -3,7 +3,9 @@ package flow
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -702,6 +704,15 @@ func (s *service) runStep(
 		}
 	}
 	if err != nil {
+		if db.IsForeignKeyViolation(err, "fk_flow_states_session") {
+			// The step session was created moments ago in resolveSession, so a
+			// missing parent row means something deleted it in between — in
+			// practice a concurrent run sharing this session ID whose fresh
+			// start wiped the tree. Name that instead of surfacing a raw FK
+			// error; do not re-create and retry, which would hide a collision
+			// that is still corrupting the other run's state.
+			err = fmt.Errorf("session %s no longer exists (deleted by a concurrent run sharing this session id?): %w", sessionID, err)
+		}
 		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, fmt.Errorf("persisting flow state: %w", err), wg, agentEvents, flowStates, nextSteps, f)
 		return
 	}
@@ -2061,9 +2072,18 @@ func sessionSafeFlowID(flowID string) string {
 }
 
 // resolveSessionPrefix determines the session prefix from the flow spec, CLI flag, or timestamp.
+//
+// A flow without `session.prefix` gets `<unix-seconds>-<6 hex>`. The unix
+// second alone is not unique: two runs of the same flow started within one
+// second (batched webhook dispatch, several pods sharing one MySQL schema)
+// would derive identical root/step session IDs, and a fresh start's
+// DeleteTree would wipe the other run's sessions mid-flight. The random
+// suffix makes that collision negligible while keeping the leading second
+// so IDs still sort by start time and can be looked up by timestamp prefix.
+// Explicit prefixes stay deterministic — re-trigger and resume rely on it.
 func resolveSessionPrefix(specPrefix string, args map[string]any) (string, error) {
 	if specPrefix == "" {
-		return fmt.Sprintf("%d", time.Now().Unix()), nil
+		return fmt.Sprintf("%d-%s", time.Now().Unix(), randomSessionSuffix()), nil
 	}
 
 	result := substituteArgs(specPrefix, args)
@@ -2072,6 +2092,18 @@ func resolveSessionPrefix(specPrefix string, args map[string]any) (string, error
 	}
 
 	return result, nil
+}
+
+// randomSessionSuffix returns 6 lowercase hex characters (24 bits) from
+// crypto/rand. The alphabet is URL-path-segment safe. If crypto/rand fails
+// it falls back to the low 24 bits of the nanosecond clock so the default
+// prefix path never errors.
+func randomSessionSuffix() string {
+	var buf [3]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return fmt.Sprintf("%06x", time.Now().UnixNano()&0xffffff)
+	}
+	return hex.EncodeToString(buf[:])
 }
 
 // resolveStepAgent returns the agent id a step runs as: step.Agent with

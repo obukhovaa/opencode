@@ -271,13 +271,13 @@ Each step creates a session with deterministic ID: `<prefix>-<flow-id>-<step-id>
 Session prefix resolution (highest priority first):
 1. CLI flag `--session` / `-s`
 2. `flow.session.prefix` (literal or `${args.*}` reference)
-3. Unix timestamp fallback
+3. `<unix-seconds>-<6 hex>` fallback (random suffix avoids same-second collisions)
 
 ### `flow.session` fields
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `prefix` | string | (timestamp) | Session prefix expression. Literal string or `${args.*}` reference. Defines the identity of a re-triggerable flow run. |
+| `prefix` | string | (`<unix>-<6 hex>`) | Session prefix expression. Literal string or `${args.*}` reference. Defines the identity of a re-triggerable flow run. |
 | `resume_on_failure` | bool | `false` | When `true`, a re-trigger of a flow whose latest row is `failed` resumes from the failed step (with its persisted args restored). When `false` (default), `failed` is terminal — the re-trigger restarts from step 0. See [Re-trigger Semantics](#re-trigger-semantics). |
 
 Unknown keys under `session:` are rejected at flow-load time with `ErrInvalidYAML` naming the offending key — a typo (e.g. `resume_on_fail` missing the trailing `ure`) fails fast rather than silently falling back to defaults.

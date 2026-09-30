@@ -31,6 +31,31 @@ func TestIsRetryableTxError(t *testing.T) {
 	}
 }
 
+func TestIsForeignKeyViolation(t *testing.T) {
+	fk := &mysql.MySQLError{Number: mysqlErrNoReferencedRow, Message: "Cannot add or update a child row: a foreign key constraint fails (`opencode`.`flow_states`, CONSTRAINT `fk_flow_states_session` FOREIGN KEY (`session_id`) REFERENCES `sessions` (`id`) ON DELETE CASCADE)"}
+	tests := []struct {
+		name       string
+		err        error
+		constraint string
+		want       bool
+	}{
+		{"nil", nil, "", false},
+		{"1452 any constraint", fk, "", true},
+		{"1452 matching constraint", fk, "fk_flow_states_session", true},
+		{"1452 other constraint", fk, "fk_messages_session", false},
+		{"wrapped 1452", fmt.Errorf("persisting flow state: %w", fk), "fk_flow_states_session", true},
+		{"other mysql error", &mysql.MySQLError{Number: 1062, Message: "fk_flow_states_session"}, "fk_flow_states_session", false},
+		{"plain text only", errors.New("Error 1452: fk_flow_states_session"), "fk_flow_states_session", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsForeignKeyViolation(tt.err, tt.constraint); got != tt.want {
+				t.Fatalf("IsForeignKeyViolation(%v, %q) = %v, want %v", tt.err, tt.constraint, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWithTxRetry(t *testing.T) {
 	deadlock := &mysql.MySQLError{Number: mysqlErrLockDeadlock, Message: "Deadlock found"}
 

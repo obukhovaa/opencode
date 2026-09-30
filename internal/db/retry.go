@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
+	"strings"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -15,6 +16,7 @@ import (
 const (
 	mysqlErrLockDeadlock    = 1213 // ER_LOCK_DEADLOCK
 	mysqlErrLockWaitTimeout = 1205 // ER_LOCK_WAIT_TIMEOUT
+	mysqlErrNoReferencedRow = 1452 // ER_NO_REFERENCED_ROW_2
 )
 
 // Transaction-retry policy. A deadlock clears the instant InnoDB rolls the
@@ -36,6 +38,19 @@ func IsRetryableTxError(err error) bool {
 		return myErr.Number == mysqlErrLockDeadlock || myErr.Number == mysqlErrLockWaitTimeout
 	}
 	return false
+}
+
+// IsForeignKeyViolation reports whether err is a MySQL "cannot add or update a
+// child row" error (1452). When constraint is non-empty the error message must
+// also name it, so callers can tell which parent row went missing. Matching is
+// on the driver error number, never on the English text alone. It unwraps err;
+// SQLite errors return false.
+func IsForeignKeyViolation(err error, constraint string) bool {
+	var myErr *mysql.MySQLError
+	if !errors.As(err, &myErr) || myErr.Number != mysqlErrNoReferencedRow {
+		return false
+	}
+	return constraint == "" || strings.Contains(myErr.Message, constraint)
 }
 
 // WithTxRetry runs fn, retrying while it returns a retryable transaction
