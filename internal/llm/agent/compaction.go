@@ -1,0 +1,234 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"slices"
+
+	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/llm/provider"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
+	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/message"
+	"github.com/opencode-ai/opencode/internal/session"
+)
+
+// resolveCompactionThreshold picks the threshold for one Run. Precedence:
+// the flow step's compact.threshold (RunOptions) > the agent's own
+// compactionThreshold > AutoCompactionThreshold. The agent value is read from
+// the registry-merged field first; the config lookup covers agents built
+// without registry info.
+func (a *agent) resolveCompactionThreshold(opts RunOptions) float64 {
+	if opts.CompactionThreshold > 0 {
+		return effectiveCompactionThreshold(opts.CompactionThreshold)
+	}
+	if a.compactionThreshold > 0 {
+		return effectiveCompactionThreshold(a.compactionThreshold)
+	}
+	if cfg := config.Get(); cfg != nil {
+		if agentCfg, ok := cfg.Agents[a.agentID]; ok && agentCfg.CompactionThreshold > 0 {
+			return effectiveCompactionThreshold(agentCfg.CompactionThreshold)
+		}
+	}
+	return AutoCompactionThreshold
+}
+
+// countContextTokens is the context size every auto-compaction decision uses:
+// the provider estimate, floored by what the provider actually reported for
+// the session's last call. PromptTokens+CompletionTokens (see TrackUsage) is
+// that call's full prompt plus output, i.e. the history up to and including
+// the last assistant message; only the messages after it still need a local
+// estimate. The provider's own hit flag is recomputed against the floored
+// value.
+func (a *agent) countContextTokens(ctx context.Context, sessionID string, threshold float64, msgs []message.Message, toolSet []tools.BaseTool) (int64, bool) {
+	estimated, providerHit := a.provider.CountTokens(ctx, threshold, msgs, toolSet)
+	sess, err := a.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return estimated, providerHit
+	}
+	final := estimated
+	if lastAssistant := lastAssistantIndex(msgs); lastAssistant >= 0 {
+		reported := sess.PromptTokens + sess.CompletionTokens
+		tail := message.EstimateTokens(msgs[lastAssistant+1:], nil, message.BytesPerTokenEta)
+		floor := reported + tail
+		if floor > final {
+			if float64(floor) > float64(estimated)*1.1 {
+				logging.Info("token estimate corrected by reported usage",
+					"session_id", sessionID,
+					"estimate", estimated,
+					"reported", reported,
+					"tail", tail,
+				)
+			}
+			final = floor
+		}
+	}
+	window := a.provider.Model().ContextWindow
+	hit := window > 0 && final >= int64(float64(window)*threshold)
+	return final, hit
+}
+
+func lastAssistantIndex(msgs []message.Message) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == message.Assistant {
+			return i
+		}
+	}
+	return -1
+}
+
+// pendingUserMessage mirrors what createUserMessage persists, without
+// persisting it, so the pre-turn gate can count the incoming turn.
+func pendingUserMessage(content string, attachmentParts []message.ContentPart) message.Message {
+	parts := []message.ContentPart{message.TextContent{Text: content}}
+	parts = append(parts, attachmentParts...)
+	return message.Message{Role: message.User, Parts: parts}
+}
+
+// historyAfterCompaction reloads the session and its history from the new
+// summary onwards. Callers still re-inject the struct_output schema envelope
+// and the task-budget ctx.
+func (a *agent) historyAfterCompaction(ctx context.Context, sessionID string) ([]message.Message, session.Session, error) {
+	msgs, err := a.messages.List(ctx, sessionID)
+	if err != nil {
+		return nil, session.Session{}, fmt.Errorf("failed to reload messages after compaction: %w", err)
+	}
+	sess, err := a.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return nil, session.Session{}, fmt.Errorf("failed to get session after compaction: %w", err)
+	}
+	msgs = a.filterMessagesFromSummary(msgs, sess.SummaryMessageID)
+	msgs = filterEmptyUserMessages(msgs)
+	return msgs, sess, nil
+}
+
+// withTaskBudgetRemaining carries the task budget across compaction: the
+// provider is told how much of it remains.
+func (a *agent) withTaskBudgetRemaining(ctx context.Context, sess session.Session) context.Context {
+	cfg := config.Get()
+	if cfg == nil {
+		return ctx
+	}
+	agentCfg, ok := cfg.Agents[a.agentID]
+	if !ok || agentCfg.TaskBudget <= 0 {
+		return ctx
+	}
+	remaining := max(agentCfg.TaskBudget-sess.TotalCompletionTokens, 0)
+	return provider.TaskBudgetRemainingContext(ctx, remaining)
+}
+
+// summarizerInput builds what the summarizer is sent: the history since the
+// previous summary (kept as the head, so its knowledge carries forward), cut
+// from the oldest end until it fits the summarizer's window, then the
+// compaction prompt. Sending the raw message log instead grows without bound
+// across compactions, and a session that already overflowed could never
+// compact its way out.
+func (a *agent) summarizerInput(ctx context.Context, sessionID string, prompt message.Message) ([]message.Message, error) {
+	msgs, err := a.messages.List(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list messages: %w", err)
+	}
+	sess, err := a.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session: %w", err)
+	}
+	msgs = a.filterMessagesFromSummary(msgs, sess.SummaryMessageID)
+	msgs = filterEmptyUserMessages(msgs)
+	if len(msgs) == 0 {
+		return nil, errNoMessagesToSummarize
+	}
+
+	window := a.summarizeProvider.Model().ContextWindow
+	if window > 0 {
+		fixed := message.EstimateTokens([]message.Message{prompt}, nil, message.BytesPerTokenEta)
+		if sp, ok := a.summarizeProvider.(interface{ SystemMessage() string }); ok {
+			fixed += int64(len(sp.SystemMessage()) / message.BytesPerTokenEta)
+		}
+		budget := int64(float64(window) * summarizerWindowFraction)
+		keepHead := sess.SummaryMessageID != "" && msgs[0].ID == sess.SummaryMessageID
+		kept, dropped, estimated := trimSummarizerInput(msgs, keepHead, fixed, budget)
+		if dropped > 0 {
+			logging.Warn("compaction input exceeded summarizer window; dropped oldest messages",
+				"session_id", sessionID,
+				"dropped", dropped,
+				"kept", len(kept),
+				"estimated_tokens", estimated,
+				"window", window,
+			)
+			msgs = kept
+		}
+	}
+	return append(slices.Clip(msgs), prompt), nil
+}
+
+// trimSummarizerInput drops messages from the oldest end until the estimate
+// plus fixed (system prompt, compaction prompt) is under budget. keepHead
+// protects msgs[0] — the previous summary — while anything else remains to
+// drop. A cut never leaves a tool result at the front without the assistant
+// tool call it answers: dropping only removes a prefix, so the one way to
+// split a pair is an orphaned Tool message right after the cut, and those go
+// too. When anything was dropped, a note saying so is inserted where the cut
+// is, which also keeps the input from starting on an assistant turn. Returns
+// the kept messages, the number dropped, and the final estimate.
+func trimSummarizerInput(msgs []message.Message, keepHead bool, fixed, budget int64) ([]message.Message, int, int64) {
+	sizes := make([]int64, len(msgs))
+	var total int64
+	for i := range msgs {
+		sizes[i] = message.EstimateTokens(msgs[i:i+1], nil, message.BytesPerTokenEta)
+		total += sizes[i]
+	}
+	if total+fixed < budget {
+		return msgs, 0, total + fixed
+	}
+
+	start := 0
+	if keepHead {
+		start = 1
+	}
+	cut := start
+	for cut < len(msgs)-1 && total+fixed >= budget {
+		total -= sizes[cut]
+		cut++
+	}
+	for cut < len(msgs) && msgs[cut].Role == message.Tool {
+		total -= sizes[cut]
+		cut++
+	}
+	dropped := cut - start
+	if dropped == 0 {
+		return msgs, 0, total + fixed
+	}
+
+	note := message.Message{
+		Role: message.User,
+		Parts: []message.ContentPart{message.TextContent{Text: fmt.Sprintf(
+			"[%d earlier messages were omitted from this compaction input to fit the summarizer's context window.]", dropped)}},
+	}
+	kept := make([]message.Message, 0, start+1+len(msgs)-cut)
+	kept = append(kept, msgs[:start]...)
+	kept = append(kept, note)
+	kept = append(kept, msgs[cut:]...)
+	total += message.EstimateTokens([]message.Message{note}, nil, message.BytesPerTokenEta)
+	return kept, dropped, total + fixed
+}
+
+// likelyContextOverflow reports whether a failed model call was sent with a
+// context close enough to the window that the failure is probably an overflow.
+func likelyContextOverflow(estimated, window int64) bool {
+	return window > 0 && float64(estimated) >= contextOverflowWarnRatio*float64(window)
+}
+
+func (a *agent) warnIfLikelyContextOverflow(sessionID string, estimated int64, err error) {
+	window := a.provider.Model().ContextWindow
+	if !likelyContextOverflow(estimated, window) {
+		return
+	}
+	logging.Warn("model call failed with context near the window; likely context overflow — compact or reset the session",
+		"session_id", sessionID,
+		"agent", a.agentID,
+		"estimated_tokens", estimated,
+		"context_window", window,
+		"ratio", float64(estimated)/float64(window),
+		"error", err,
+	)
+}
