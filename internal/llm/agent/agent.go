@@ -913,27 +913,30 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// put the user turn ahead of the summary, and filterMessagesFromSummary
 	// would drop it on every later reload. It also runs before the schema
 	// envelope is injected, so a compaction here costs no duplicate envelope.
-	countInput := msgs
-	if hasUserTurn {
-		countInput = append(slices.Clip(msgs), pendingUserMessage(content, attachmentParts))
-	}
-	if preTurnTokens, overThreshold := a.countContextTokens(ctx, sessionID, compactionThreshold, countInput, toolSet); cfg.AutoCompact && overThreshold {
-		logging.Info(
-			"Auto-compaction triggered before turn",
-			"session_id", sessionID,
-			"token_count", preTurnTokens,
-			"threshold", compactionThreshold,
-			"context_window", a.provider.Model().ContextWindow,
-		)
-		if errSync := a.performSynchronousCompaction(ctx, sessionID); errSync != nil {
-			logging.Warn("Failed to perform auto-compaction before turn", "session_id", sessionID, "error", errSync)
-		} else {
-			reloaded, compacted, errReload := a.historyAfterCompaction(ctx, sessionID)
-			if errReload != nil {
-				return a.err(errReload)
+	// An empty history has nothing to compact, so it is not even counted.
+	if cfg.AutoCompact && len(msgs) > 0 {
+		countInput := msgs
+		if hasUserTurn {
+			countInput = append(slices.Clip(msgs), pendingUserMessage(content, attachmentParts))
+		}
+		if preTurnTokens, overThreshold := a.countContextTokens(ctx, sessionID, compactionThreshold, countInput, toolSet); overThreshold {
+			logging.Info(
+				"Auto-compaction triggered before turn",
+				"session_id", sessionID,
+				"token_count", preTurnTokens,
+				"threshold", compactionThreshold,
+				"context_window", a.provider.Model().ContextWindow,
+			)
+			if errSync := a.performSynchronousCompaction(ctx, sessionID); errSync != nil {
+				logging.Warn("Failed to perform auto-compaction before turn", "session_id", sessionID, "error", errSync)
+			} else {
+				reloaded, compacted, errReload := a.historyAfterCompaction(ctx, sessionID)
+				if errReload != nil {
+					return a.err(errReload)
+				}
+				msgs, session = reloaded, compacted
+				ctx = a.withTaskBudgetRemaining(ctx, session)
 			}
-			msgs, session = reloaded, compacted
-			ctx = a.withTaskBudgetRemaining(ctx, session)
 		}
 	}
 
