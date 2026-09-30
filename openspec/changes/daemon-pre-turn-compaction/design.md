@@ -50,4 +50,5 @@ The floor overcounts slightly after a model switch or when messages were filtere
 ## Risks
 
 - Double summarization: prevented by the `cycles != 1` guard.
-- A stale outer-loop `session` after a gate compaction would re-include pre-summary messages on the non-interactive re-entry reload; the gate updates the outer `session`, and the re-entry reload re-reads the session.
+- A stale outer-loop `session` after a compaction would re-include pre-summary messages on the non-interactive re-entry reload (the in-loop path used to shadow it). Both compaction sites now assign the outer `msgs` and `session`.
+- `message.EstimateTokens` counted only text parts, so tool calls, tool results and reasoning were ~100 B each regardless of size — in an agentic session most of the history. It now counts their payloads. This raises the local estimate (compaction fires earlier, the safe direction) and is what makes the summarizer trim and the usage-floor tail meaningful for tool-heavy sessions.

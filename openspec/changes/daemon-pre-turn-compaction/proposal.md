@@ -17,6 +17,7 @@ Four defects combine:
 - **Token floor from reported usage.** A new agent-level `countContextTokens` floors the provider estimate by `sess.PromptTokens + sess.CompletionTokens` plus a local estimate of the messages after the last assistant message. Used at the pre-turn gate, the in-loop check and the post-compaction recount.
 - **Per-agent `compactionThreshold`.** `agents.<name>.compactionThreshold` (and markdown frontmatter `compactionThreshold`), in (0, 1]. Precedence: flow step `compact.threshold` > agent `compactionThreshold` > 0.95. `autoCompact` still gates whether compaction runs at all.
 - **Bounded summarizer input.** Both compaction paths start from the history after `SummaryMessageID` (the prior summary carries knowledge forward) and drop the oldest messages — never splitting a tool_use / tool_result pair — until the input fits in 90% of the summarizer's window, with a WARN naming how many were dropped.
+- **Tool payloads count.** `message.EstimateTokens` also counts tool-call input, tool-result content and reasoning text; it used to count text parts only, so a tool-heavy history was estimated at a fraction of its size.
 - **Diagnosable overflow.** When a model call fails and the last estimate was >= 90% of the window, a WARN names the likely context overflow, so a proxy stream reset is no longer an opaque error.
 
 ## Capabilities
@@ -31,6 +32,6 @@ Four defects combine:
 
 ## Impact
 
-- Modified: `internal/llm/agent/agent.go` (gate, `countContextTokens`, `resolveCompactionThreshold`, `summarizerInput`, `likelyContextOverflow`), `internal/config/config.go` (`Agent.CompactionThreshold`, validation), `internal/agent/registry.go` (frontmatter + merge), `cmd/schema/main.go` + regenerated `opencode-schema.json`, `AGENTS.md`, `README.md`.
+- Modified: `internal/llm/agent/agent.go` (gate, `countContextTokens`, `resolveCompactionThreshold`, `summarizerInput`, `likelyContextOverflow`), `internal/config/config.go` (`Agent.CompactionThreshold`, validation), `internal/agent/registry.go` (frontmatter + merge), `cmd/schema/main.go` + regenerated `opencode-schema.json`, `AGENTS.md`, `internal/message/message.go` (`EstimateTokens`), `README.md`.
 - `.opencode.json` public contract: additive `agents.<name>.compactionThreshold`.
 - No change to `provider.Provider` (`CountTokens` signature unchanged), to the flow YAML schema, or to the TUI's post-turn check.
