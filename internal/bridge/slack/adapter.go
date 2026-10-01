@@ -474,9 +474,10 @@ func (a *Adapter) ResolveUserToDM(ctx context.Context, peerID string) (string, e
 // ResolveUserEmail implements bridge.UserEmailResolver via users.info. The
 // email is only returned when the app holds the users:read.email scope;
 // without it Slack answers the profile with an empty email and this
-// returns ("", nil).
+// returns ("", nil). Both workspace (U) and Enterprise Grid (W) user IDs
+// are looked up; anything else (bot ids, junk) is not.
 func (a *Adapter) ResolveUserEmail(ctx context.Context, userID string) (string, error) {
-	if !LooksLikeUserID(userID) {
+	if !authorIDPattern.MatchString(userID) {
 		return "", nil
 	}
 	u, err := a.api.GetUserInfoContext(ctx, userID)

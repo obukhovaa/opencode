@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,6 +63,11 @@ func createJob(t *testing.T, svc *service, ctx context.Context, explicit string)
 func TestCreateStoresRequester(t *testing.T) {
 	svc := newRequesterTestService(t)
 	turnCtx := tools.WithRequester(context.Background(), "author@example.com")
+	withFlowArg := func(ctx context.Context, v string) context.Context {
+		return context.WithValue(ctx, tools.FlowArgsContextKey, map[string]string{"requester": v})
+	}
+	// 319 ASCII bytes then a 2-byte rune straddling the 320-byte limit.
+	straddling := strings.Repeat("a", maxRequesterLen-1) + "é" + "tail"
 
 	tests := []struct {
 		name     string
@@ -72,6 +78,12 @@ func TestCreateStoresRequester(t *testing.T) {
 		{name: "taken from the creating turn's ctx", ctx: turnCtx, want: "author@example.com"},
 		{name: "explicit param wins over ctx", ctx: turnCtx, explicit: "other@example.com", want: "other@example.com"},
 		{name: "none known stores empty", ctx: context.Background(), want: ""},
+		{name: "flow step without a per-turn requester takes the flow arg", ctx: withFlowArg(context.Background(), "flow@example.com"), want: "flow@example.com"},
+		{name: "flow arg beats the per-turn requester, as on the trace", ctx: withFlowArg(turnCtx, "flow@example.com"), want: "flow@example.com"},
+		{name: "blank flow arg falls through to the per-turn requester", ctx: withFlowArg(turnCtx, " "), want: "author@example.com"},
+		{name: "explicit param wins over flow arg", ctx: withFlowArg(turnCtx, "flow@example.com"), explicit: "other@example.com", want: "other@example.com"},
+		{name: "overlong requester is clamped to the column width", ctx: context.Background(), explicit: strings.Repeat("x", 400), want: strings.Repeat("x", maxRequesterLen)},
+		{name: "clamp does not split a multi-byte rune", ctx: context.Background(), explicit: straddling, want: strings.Repeat("a", maxRequesterLen-1)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

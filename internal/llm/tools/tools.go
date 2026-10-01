@@ -71,7 +71,8 @@ const (
 	// RequesterContextKey carries the identity of the human a run is
 	// working for (an email when it could be resolved, else the platform
 	// user id). Set per turn by the chat bridge from the inbound message's
-	// author and by the cron scheduler from the job's stored requester;
+	// author, by the cron scheduler from the job's stored requester, and
+	// on an auto-resumed turn from the completed task's Task.Requester;
 	// read by telemetry to stamp the trace's `requester` metadata. Use
 	// WithRequester / RequesterFromContext.
 	RequesterContextKey requesterContextKey = "requester"

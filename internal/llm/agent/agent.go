@@ -816,11 +816,14 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	}
 	if len(msgs) == 0 {
 		titleContent := content
+		// Detached from the turn so it outlives it, but the title trace is
+		// still attributed to the turn's requester.
+		titleCtx := tools.WithRequester(context.Background(), tools.RequesterFromContext(ctx))
 		go func() {
 			defer logging.RecoverPanic("agent.Run", func() {
 				logging.ErrorPersist("panic while generating title")
 			})
-			titleErr := a.generateTitle(context.Background(), sessionID, titleContent)
+			titleErr := a.generateTitle(titleCtx, sessionID, titleContent)
 			if titleErr != nil {
 				logging.ErrorPersist(fmt.Sprintf("failed to generate title: %v", titleErr))
 			}
@@ -3295,10 +3298,11 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session, i
 // stampRequester sets the trace's `requester` metadata, first match wins:
 // a `requester` flow arg already in metadata, the per-turn requester on ctx
 // (the chat message's author, or a cron job's stored requester), then the
-// configured telemetry.requester. Leaves metadata untouched when none is
-// known.
+// configured telemetry.requester. An empty or whitespace-only flow arg
+// counts as absent, so it neither masks the fallbacks nor emits a blank
+// field; with nothing known the key is left unset.
 func stampRequester(ctx context.Context, metadata map[string]any) {
-	if _, ok := metadata["requester"]; ok {
+	if v, _ := metadata["requester"].(string); strings.TrimSpace(v) != "" {
 		return
 	}
 	r := tools.RequesterFromContext(ctx)
@@ -3307,9 +3311,11 @@ func stampRequester(ctx context.Context, metadata map[string]any) {
 			r = cfg.Telemetry.Requester
 		}
 	}
-	if r != "" {
-		metadata["requester"] = truncateStr(r, maxMetadataValueLen)
+	if r == "" {
+		delete(metadata, "requester")
+		return
 	}
+	metadata["requester"] = truncateStr(r, maxMetadataValueLen)
 }
 
 // telemetryAgentID resolves the agent ID that telemetry policy is keyed on:

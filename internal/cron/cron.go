@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
@@ -76,9 +77,39 @@ type CreateParams struct {
 	// normally. Used by /loop to match user mental model: "every 5 min check
 	// the deploy" should check now AND every 5 min.
 	FireImmediately bool
-	// Requester overrides who the job is attributed to. Empty takes the
-	// requester carried by the Create ctx (tools.RequesterFromContext).
+	// Requester overrides who the job is attributed to. Empty resolves it
+	// from the Create ctx (see jobRequester).
 	Requester string
+}
+
+// maxRequesterLen is the width of cron_jobs.requester on MySQL
+// (VARCHAR(320)): a longer value is rejected there, while SQLite would
+// store it, so Create clamps to it on both.
+const maxRequesterLen = 320
+
+// jobRequester resolves who a new job is attributed to, in the same order
+// as the creating turn's trace metadata: the explicit param, a non-blank
+// `requester` flow arg (on the ctx of a flow step when telemetry.flowArgs
+// extracts it), then the per-turn requester. Clamped to maxRequesterLen
+// bytes without splitting a UTF-8 sequence, so it also fits in characters.
+func jobRequester(ctx context.Context, explicit string) string {
+	r := explicit
+	if r == "" {
+		if args, ok := ctx.Value(tools.FlowArgsContextKey).(map[string]string); ok && strings.TrimSpace(args["requester"]) != "" {
+			r = args["requester"]
+		}
+	}
+	if r == "" {
+		r = tools.RequesterFromContext(ctx)
+	}
+	if len(r) <= maxRequesterLen {
+		return r
+	}
+	cut := maxRequesterLen
+	for cut > 0 && !utf8.RuneStart(r[cut]) {
+		cut--
+	}
+	return r[:cut]
 }
 
 type MissedOneShotsEvent struct {
@@ -166,10 +197,7 @@ func (s *service) Create(ctx context.Context, params CreateParams) (CronJob, err
 	id := generateID()
 	taskID := generateTaskID()
 
-	requester := params.Requester
-	if requester == "" {
-		requester = tools.RequesterFromContext(ctx)
-	}
+	requester := jobRequester(ctx, params.Requester)
 
 	firstFire := nextFire
 	if params.FireImmediately {

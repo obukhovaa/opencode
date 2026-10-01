@@ -101,16 +101,28 @@ func TestRequesterFor(t *testing.T) {
 		}
 	})
 
-	t.Run("lookup error falls back to author id and is retried", func(t *testing.T) {
-		a := &emailResolvingAdapter{stubAdapter: newStubAdapter("slack", "bot"), err: errors.New("rate limited")}
+	t.Run("lookup error falls back to author id and is retried only after the failure TTL", func(t *testing.T) {
+		a := &emailResolvingAdapter{stubAdapter: newStubAdapter("slack", "bot"), err: errors.New("missing_scope")}
 		s := newRequesterTestService(a)
-		for i := 0; i < 2; i++ {
+		now := time.Unix(1_700_000_000, 0)
+		s.requesters.now = func() time.Time { return now }
+
+		for i := 0; i < 3; i++ {
 			if got := s.requesterFor(ctx, inboundFrom("U1")); got != "U1" {
 				t.Fatalf("requester = %q, want U1", got)
 			}
 		}
+		if a.calls != 1 {
+			t.Fatalf("lookups = %d, want 1 (a failure is cached for requesterFailureTTL)", a.calls)
+		}
+
+		// Well short of the success TTL: a failure must not stick that long.
+		now = now.Add(requesterFailureTTL + time.Second)
+		if got := s.requesterFor(ctx, inboundFrom("U1")); got != "U1" {
+			t.Fatalf("requester = %q, want U1", got)
+		}
 		if a.calls != 2 {
-			t.Fatalf("lookups = %d, want 2 (errors are not cached)", a.calls)
+			t.Fatalf("lookups = %d, want 2 (retried once the failure TTL elapsed)", a.calls)
 		}
 	})
 
@@ -127,7 +139,7 @@ func TestRequesterCacheExpires(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	c := newRequesterCache()
 	c.now = func() time.Time { return now }
-	c.put("k", "one@example.com")
+	c.put("k", "one@example.com", requesterCacheTTL)
 	if got, ok := c.get("k"); !ok || got != "one@example.com" {
 		t.Fatalf("get = %q, %v; want hit", got, ok)
 	}

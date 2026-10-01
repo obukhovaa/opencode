@@ -132,7 +132,7 @@ Health snapshot: `curl http://127.0.0.1:3456/router/health` (per-adapter `status
 ```
 
 - Uses Socket Mode (no public webhook URL needed).
-- Required Slack app scopes: `chat:write`, `app_mentions:read`, `im:history`, `files:read`, `files:write`. Event subscriptions: `app_mention`, `message.im`.
+- Required Slack app scopes: `chat:write`, `app_mentions:read`, `im:history`, `files:read`, `files:write`, `users:read` (each message's author is looked up via `users.info`; without the scope the lookup fails, is logged, and is retried every 5 minutes per author). Add `users:read.email` to attribute each turn's telemetry to the author's email address; without it traces carry the Slack user id (see [Requester](telemetry.md#requester)). Event subscriptions: `app_mention`, `message.im`.
 - Peer ID formats: `D<id>` (DM), `C<id>` (channel — auto-mutates to `C<id>|<thread_ts>` after first outbound), `C<id>|<thread_ts>` (existing thread), `U<id>` (user — auto-resolved to DM via `conversations.open` before persistence).
 
 ### Mattermost

@@ -117,28 +117,38 @@ func EnqueueTaskCompletion(ctx context.Context, in CompletionInput) error {
 	// start a zombie turn on a session whose step already routed — and,
 	// resolved through the active/primary agent, it would not even run
 	// under the step's agent (GENAI-239).
-	if flowOwnedTask(in.TaskID) {
+	tk := registeredTask(in.TaskID)
+	if tk != nil && tk.FlowOwned {
 		return nil
 	}
 	if !deps.IsSessionBusy(in.SessionID) {
-		deps.ResumeSession(in.SessionID)
+		// The resumed turn works for whoever spawned the task, so its
+		// telemetry keeps that turn's requester.
+		requester := ""
+		if tk != nil {
+			requester = tk.Requester
+		}
+		deps.ResumeSession(in.SessionID, requester)
 	}
 	return nil
 }
 
-// flowOwnedTask reports whether the task was spawned under a flow step's
-// step-scoped context. Unknown / unregistered task IDs (e.g. cron's empty
-// TaskID) are not flow-owned.
-func flowOwnedTask(taskID string) bool {
+// registeredTask returns the registry entry for taskID, or nil for an
+// unknown / unregistered ID (e.g. cron's job ID, which is never
+// registered). A nil task is not flow-owned and carries no requester.
+func registeredTask(taskID string) *Task {
 	if taskID == "" {
-		return false
+		return nil
 	}
 	reg := GlobalRegistry()
 	if reg == nil {
-		return false
+		return nil
 	}
 	t, ok := reg.Get(taskID)
-	return ok && t.FlowOwned
+	if !ok {
+		return nil
+	}
+	return t
 }
 
 func stateFromStatus(s Status) State {

@@ -266,12 +266,12 @@ Each matched arg appears as a dedicated metadata field (e.g., `ticket_id`). Valu
 
 Every trace carries a `requester` metadata field naming the person the run is working for, so traces can be filtered by who asked for the work even when many people share one agent. The value is chosen per trace, first match wins:
 
-1. A flow arg named `requester` listed in `flowArgs` — set by whatever launched the flow.
-2. The author of the chat message that started the turn, when the agent runs behind the chat bridge. Each turn is attributed separately, so a thread several people post in records each message's author. Where the platform allows, the author's user id is resolved to an email address (Slack: `users.info`, which needs the `users:read` and `users:read.email` scopes); otherwise the raw platform user id is used. Lookups are cached for an hour, and a failed lookup falls back to the user id without delaying the turn.
-3. For a scheduled job (the `cron` tool), the requester of the turn that created the job. It is stored with the job and replayed on every run.
+1. A flow arg named `requester` listed in `flowArgs` — set by whatever launched the flow. An empty or whitespace-only value counts as absent.
+2. The author of the chat message that started the turn, when the agent runs behind the chat bridge. Each turn is attributed separately, so a thread several people post in records each message's author. Slack resolves the author's user id (workspace `U…` or Enterprise Grid `W…`) to an email address via `users.info`, which needs the `users:read` and `users:read.email` scopes; a profile without an email falls back to the Slack user id. Telegram and Mattermost turns carry the raw platform user id (Telegram's numeric user id, Mattermost's user id), and inbound forwarded to `/router/inbound` carries the `authorId` the forwarder sets. A resolved author is cached for an hour. A lookup is bounded by a 3 s timeout, so it delays an author's turn by at most that; a failed lookup falls back to the user id and is cached for 5 minutes, so a missing scope or an unknown user costs one `users.info` call and one warning per author every 5 minutes rather than on every message.
+3. For a scheduled job (the `cron` tool), the requester of the turn that created the job, resolved as for that turn's trace: a `requester` flow arg when the job is created inside a flow step, else the turn's per-turn requester. It is stored with the job (clamped to 320 bytes) and replayed on every run.
 4. The static `telemetry.requester` from config.
 
-When none applies, the field is omitted. Subagents spawned during a turn — synchronous or async — inherit the turn's requester.
+When none applies, the field is omitted. Subagents spawned during a turn — synchronous or async — inherit the turn's requester, as do the turn's session-title generation and the turn that a background task's completion (async `task`, `bash` with `run_in_background`, `monitor`) auto-resumes.
 
 ```json
 {

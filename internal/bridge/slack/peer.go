@@ -62,6 +62,11 @@ var userIDPattern = regexp.MustCompile(`^U[A-Z0-9]+$`)
 // conversations.open.
 func LooksLikeUserID(s string) bool { return userIDPattern.MatchString(s) }
 
+// authorIDPattern widens userIDPattern with Enterprise Grid user IDs
+// (W-prefix), which inbound events carry for org-level members. Only
+// ResolveUserEmail uses it; ResolveUserToDM's routing stays U-only.
+var authorIDPattern = regexp.MustCompile(`^[UW][A-Z0-9]+$`)
+
 // mentionPattern matches "<@UXXX>" (Slack's canonical bot-mention format).
 // We allow trailing punctuation after the closing > so the leading-mention
 // strip pulls "<@UBOT>: hello" down to "hello".
