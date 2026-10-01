@@ -11,6 +11,12 @@ import (
 
 func TestHeartbeatRoundTrip(t *testing.T) {
 	s, _ := newTestStore(t)
+	heartbeatRoundTrip(t, s)
+}
+
+// heartbeatRoundTrip is shared with the MySQL integration test.
+func heartbeatRoundTrip(t *testing.T, s Store) {
+	t.Helper()
 	ctx := context.Background()
 
 	if _, err := s.GetHeartbeat(ctx, "p", "slack", "app", "D1"); !errors.Is(err, ErrNotFound) {

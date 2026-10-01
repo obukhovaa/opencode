@@ -50,6 +50,7 @@ func newMySQLTestStore(t *testing.T) (Store, *sql.DB) {
 		t.Fatalf("disable fk: %v", err)
 	}
 	for _, tbl := range []string{
+		"bridge_heartbeats",
 		"bridge_allowlist",
 		"bridge_sessions",
 		"cron_jobs",
@@ -113,6 +114,11 @@ func TestMySQLUpsertAndGetBinding(t *testing.T) {
 	if got.SessionID != "S1" {
 		t.Errorf("SessionID = %q, want S1", got.SessionID)
 	}
+}
+
+func TestMySQLHeartbeatRoundTrip(t *testing.T) {
+	s, _ := newMySQLTestStore(t)
+	heartbeatRoundTrip(t, s)
 }
 
 func TestMySQLNotFoundReturnsErrNotFound(t *testing.T) {

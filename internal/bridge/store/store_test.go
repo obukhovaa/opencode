@@ -14,30 +14,12 @@ import (
 	opencodedb "github.com/opencode-ai/opencode/internal/db"
 )
 
-// goose.SetBaseFS and goose.SetDialect both write to package-global state
-// in pressly/goose. Parallel tests calling them concurrently trigger
-// -race. Serialize the setup via gooseInit so the globals are written
-// exactly once, then reuse for every test.
-var (
-	gooseInitOnce sync.Once
-	gooseInitErr  error
-)
-
-func ensureGooseGlobals() error {
-	gooseInitOnce.Do(func() {
-		goose.SetBaseFS(opencodedb.FS)
-		gooseInitErr = goose.SetDialect("sqlite3")
-	})
-	return gooseInitErr
-}
-
-// gooseMu serializes goose.Up calls. goose holds a per-DB lock internally
-// (via the goose_db_version table) but with `cache=shared` SQLite memory
-// DSNs, multiple tests share the same underlying database file in the
-// in-memory FS — without serialization, two t.Parallel() tests would
-// hammer the same goose_db_version table concurrently. We use a unique
-// dsn per t.Name() so each test has its own DB; but the global goose
-// dialect state still must not race.
+// gooseMu serializes goose setup and goose.Up. goose.SetBaseFS and
+// goose.SetDialect write package-global state, and parallel tests calling
+// them concurrently trip -race. The dialect is set on EVERY call, not once:
+// with -tags=mysql_integration this package also runs the MySQL tests,
+// which switch the global dialect to "mysql", and a sqlite test running
+// after them must switch it back.
 var gooseMu sync.Mutex
 
 // newTestStore spins up an in-memory SQLite database, runs every opencode
@@ -61,11 +43,12 @@ func newTestStore(t *testing.T) (Store, *sql.DB) {
 		t.Fatalf("pragma: %v", err)
 	}
 
-	if err := ensureGooseGlobals(); err != nil {
-		t.Fatalf("ensureGooseGlobals: %v", err)
-	}
 	gooseMu.Lock()
-	err = goose.Up(conn, "migrations/sqlite")
+	goose.SetBaseFS(opencodedb.FS)
+	err = goose.SetDialect("sqlite3")
+	if err == nil {
+		err = goose.Up(conn, "migrations/sqlite")
+	}
 	gooseMu.Unlock()
 	if err != nil {
 		t.Fatalf("goose up: %v", err)
