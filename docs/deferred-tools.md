@@ -58,13 +58,14 @@ The model sees a `<system-reminder>` block naming the deferred builtin tools and
 explaining that their schemas must be loaded via tool search before use.
 Deferred **MCP** tools resolve asynchronously, so they are announced through a
 follow-up `<system-reminder>` message once they become available (per session,
-only when the set changes).
+only when the set changes, and once more after each compaction — see
+[Scope & lifecycle](#scope--lifecycle)).
 
 Neither reminder names a specific tool-search tool — they say "the available
 tool-search tool". Which one the model actually holds a schema for is decided
 per request by the provider (native `tool_search_tool_regex_20251119` vs the
-client-side `toolsearch`), while the MCP delta is persisted once and outlives a
-mid-session model switch. Naming `toolsearch` there made native-path models
+client-side `toolsearch`), while the MCP delta is persisted (once per summary)
+and outlives a mid-session model switch. Naming `toolsearch` there made native-path models
 emit a `toolsearch` call carrying the *server* tool's `pattern` argument.
 
 Two activation paths exist, chosen automatically per the resolved model's
@@ -150,6 +151,13 @@ deferring. Exact-name and `select:` hits are exempt — the model named those.
 - **Survives compaction** within a running process. After a process restart,
   native sessions restore activation from the replayed tool-search blocks;
   fallback sessions re-discover via `toolsearch` (one self-correcting turn).
+- **MCP announcement repeated after compaction.** A compaction leaves the MCP
+  announcement before the summary, out of the model's view, so it is repeated
+  once in the first model request that runs from the new summary: inside the
+  compacting turn when a turn compacted (before its first call or between
+  two), in the next turn after `/compact` or a TUI summarize. The history
+  dedup that stops a restarted process from announcing twice counts only
+  announcements made after the summary.
 - **Model switches mid-session** are safe: `toolsearch` stays registered
   regardless of model, so switching from a native to a fallback model never
   strands deferred tools.

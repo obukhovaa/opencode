@@ -92,12 +92,17 @@ The system SHALL accept `agents.<name>.compactionThreshold` in `.opencode.json` 
 
 ### Requirement: Summarizer input is bounded
 
-The system SHALL build the summarizer's input from the history starting at the session's current summary message (the prior summary kept as the head), not from the full message log. When that input plus the compaction prompt and the summarizer's system prompt reaches 90% of the summarizer model's context window, the system SHALL drop the oldest messages until it fits, SHALL NOT leave a tool result without its tool call at the head of the input, and SHALL log a warning with the number of dropped messages. The size SHALL be the local estimate, scaled by the session's reported usage when that usage exceeds the local estimate of the same history. A summarizer context window of 0 SHALL disable trimming.
+The system SHALL build the summarizer's input from the history starting at the session's current summary message (the prior summary kept as the head), not from the full message log. When that input plus the compaction prompt and the summarizer's system prompt reaches 90% of the summarizer model's context window, the system SHALL drop the oldest messages until it fits, SHALL NOT leave a tool result without its tool call at the head of the input, and SHALL log a warning with the number of dropped messages. The size SHALL be the local estimate, scaled by the session's reported usage when that usage exceeds the local estimate of the same history. When the dropped messages would include the turn's prompt (the latest user message that is not synthetic and has text), the system SHALL keep that message, after the prior summary and before the note that reports the dropped messages, and SHALL count it in the budget, unless it alone exceeds half the budget. A summarizer context window of 0 SHALL disable trimming.
 
 #### Scenario: Already-overflowed session recovers
 
 - **WHEN** a session's post-summary history exceeds the summarizer's window
 - **THEN** the oldest messages are dropped, the summary is produced, and the next model call starts from the new summary
+
+#### Scenario: The turn's prompt survives a trim
+
+- **WHEN** the oldest messages are dropped and the cut passes the turn's prompt, such as a flow step's task
+- **THEN** the summarizer input still carries that prompt, after the prior summary when there is one, followed by the note that reports the dropped messages
 
 #### Scenario: Undercounting estimate is calibrated
 
@@ -106,7 +111,7 @@ The system SHALL build the summarizer's input from the history starting at the s
 
 ### Requirement: Compaction leaves turn state intact
 
-The system SHALL NOT send a forced tool choice to the summarizer, even when the turn that compacts forces one. A compaction before a turn's first model call SHALL NOT reduce the turn's task budget. After a compaction, the system SHALL announce the session's deferred external tools again, once, in the first turn that runs from the new summary (the compacting turn itself when it compacted before its first model call), and SHALL NOT count an announcement made before the summary as already made.
+The system SHALL NOT send a forced tool choice to the summarizer, even when the turn that compacts forces one. A compaction before a turn's first model call SHALL NOT reduce the turn's task budget. After a compaction, the system SHALL announce the session's deferred external tools again, once, in the first model request that runs from the new summary (inside the compacting turn when a turn compacted, before its first model call or between two of them; in the next turn after a compaction outside a turn), and SHALL NOT count an announcement made before the summary as already made.
 
 #### Scenario: Forced struct_output turn compacts
 
@@ -117,6 +122,11 @@ The system SHALL NOT send a forced tool choice to the summarizer, even when the 
 
 - **WHEN** a session whose deferred external tools were announced earlier is compacted before a turn's first model call
 - **THEN** one new announcement follows the summary in that turn, and later turns add none
+
+#### Scenario: Deferred tools after a compaction between model calls
+
+- **WHEN** a turn whose deferred external tools were announced compacts the session between two of its model calls
+- **THEN** the turn's next model request carries one announcement after the summary, and later turns add none
 
 ### Requirement: Call failures near the window are diagnosable
 

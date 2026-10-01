@@ -30,6 +30,8 @@
 - [x] 4.5 Clear the forced-tool signal on the summarizer ctx.
 - [x] 4.6 After a compaction, forget the session's announced deferred tools; the delta dedup scans only the history from `SummaryMessageID`.
 - [x] 4.7 `geminiClient.usage`: `InputTokens = max(PromptTokenCount - CachedContentTokenCount, 0)`.
+- [x] 4.8 The summarizer trim keeps the turn's prompt (`turnPromptIndex`: latest non-synthetic user message with text) after the head, unless it alone exceeds half the budget.
+- [x] 4.9 The in-loop compaction rebuild re-announces deferred MCP tools (`injectDeferredDelta` after the schema envelope); document it in `docs/deferred-tools.md`.
 
 ## 5. Overflow diagnostic
 
@@ -47,3 +49,4 @@
 - [x] 6.8 `make schema-check`, `go test ./cmd/schema/...`, `make test`.
 - [x] 6.9 Auto-resume compaction keeps the pair; re-entry after a drain is gated; in-flight `Summarize` is awaited; the summarizer sees no forced tool; the gate leaves the task budget unset; deferred tools are re-announced once.
 - [x] 6.10 Gemini usage parts add up to the real prompt + output; a Gemini-shaped usage at 52% does not hit; reported usage calibrates the summarizer trim.
+- [x] 6.11 The turn's prompt survives a summarizer trim, with and without a summary head; an in-loop compaction leaves one deferred-tools delta in the next request and none on later turns.
