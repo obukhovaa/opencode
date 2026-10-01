@@ -428,7 +428,7 @@ func generateSchema() map[string]any {
 				},
 				"allowTools": map[string]any{
 					"type":        "array",
-					"description": "Tool allow-list: the agent gets exactly these tools and nothing else, so a tool added to the harness later is not granted until it is listed. Entries are exact tool names or wildcard patterns using the same case-sensitive matching as 'tools' keys (e.g. \"gitlab_*\"); a single \"*\" entry allows everything. Engine-injected tools are not implicit — list 'struct_output' if the agent has an output schema and 'toolsearch' if it sets deferredTools. A bare \"*\" does not opt in to default-deny tools (croncreate/crondelete/cronlist); name those explicitly. Mutually exclusive with 'tools'.",
+					"description": "Tool allow-list: the agent gets exactly these tools and nothing else, so a tool added to the harness later is not granted until it is listed. Entries are exact tool names or wildcard patterns using the same case-sensitive matching as 'tools' keys (e.g. \"gitlab_*\"); a single \"*\" entry allows everything. Engine-injected tools are not implicit — list 'struct_output' if the agent has an output schema and 'toolsearch' if it sets deferredTools. A bare \"*\" does not opt in to default-deny tools (croncreate/crondelete/cronlist/heartbeat); name those explicitly. Mutually exclusive with 'tools'.",
 					"items": map[string]any{
 						"type": "string",
 					},
