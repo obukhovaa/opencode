@@ -33,7 +33,7 @@
   reply once, dedup both orders, text before the full 🔧 card, every verbosity, subagent /
   synthetic / streaming parts skipped, nil guard, question flush and its wait
 - [x] 4.2 Doc comments on `handlePartEvent` and `handleTerminalEvent`
-- [ ] 4.3 Sync the delta into `openspec/specs/chat-bridge/spec.md` and archive after delivery
+- [x] 4.3 Sync the delta into `openspec/specs/chat-bridge/spec.md` and archive after delivery
 
 ## 5. Review fixes
 
