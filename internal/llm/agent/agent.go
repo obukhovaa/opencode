@@ -3268,6 +3268,8 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session, i
 		}
 	}
 
+	stampRequester(ctx, metadata)
+
 	// Apply metadata namespace prefix when configured so custom keys are
 	// grouped under a common prefix in Langfuse (e.g. "app.flow_id").
 	if cfg := config.Get(); cfg.Telemetry != nil && cfg.Telemetry.MetadataNamespace != "" {
@@ -3288,6 +3290,26 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session, i
 		Input:     input,
 		IsChild:   sess.ParentSessionID != "",
 	})
+}
+
+// stampRequester sets the trace's `requester` metadata, first match wins:
+// a `requester` flow arg already in metadata, the per-turn requester on ctx
+// (the chat message's author, or a cron job's stored requester), then the
+// configured telemetry.requester. Leaves metadata untouched when none is
+// known.
+func stampRequester(ctx context.Context, metadata map[string]any) {
+	if _, ok := metadata["requester"]; ok {
+		return
+	}
+	r := tools.RequesterFromContext(ctx)
+	if r == "" {
+		if cfg := config.Get(); cfg != nil && cfg.Telemetry != nil {
+			r = cfg.Telemetry.Requester
+		}
+	}
+	if r != "" {
+		metadata["requester"] = truncateStr(r, maxMetadataValueLen)
+	}
 }
 
 // telemetryAgentID resolves the agent ID that telemetry policy is keyed on:

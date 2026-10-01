@@ -65,6 +65,10 @@ type Service struct {
 	// (Mattermost), Phase 4 (Telegram), and Phase 5 (Slack) land.
 	adapters map[string]bridge.Adapter
 
+	// requesters caches inbound authors resolved to email for telemetry
+	// attribution (see requester.go). Nil-safe: a zero Service skips it.
+	requesters *requesterCache
+
 	// toolVerbosity is the LIVE tool-update verbosity, seeded from
 	// cfg.ToolUpdateVerbosity at New and flipped at runtime by the
 	// `/verbosity` chat command. Held in an atomic (never read under
@@ -229,6 +233,7 @@ func New(deps Dependencies) (*Service, error) {
 		projectID:       deps.ProjectID,
 		dataDir:         deps.DataDir,
 		adapters:        make(map[string]bridge.Adapter),
+		requesters:      newRequesterCache(),
 		inboundCh:       make(chan bridge.Inbound, 64),
 		dispatchers:     make(map[string]*sessionDispatch),
 		remoteRegistrar: deps.RemoteRegistrar,

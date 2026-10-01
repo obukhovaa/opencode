@@ -72,7 +72,8 @@ INSERT INTO cron_jobs (
     next_run_at,
     run_count,
     created_at,
-    updated_at
+    updated_at,
+    requester
 ) VALUES (
     ?,
     ?,
@@ -88,8 +89,9 @@ INSERT INTO cron_jobs (
     ?,
     0,
     strftime('%s', 'now'),
-    strftime('%s', 'now')
-) RETURNING id, session_id, schedule, prompt, subagent_type, task_title, task_id, is_recurring, source, status, firing, last_run_at, next_run_at, run_count, last_result, error, created_at, updated_at
+    strftime('%s', 'now'),
+    ?
+) RETURNING id, session_id, schedule, prompt, subagent_type, task_title, task_id, is_recurring, source, status, firing, last_run_at, next_run_at, run_count, last_result, error, created_at, updated_at, requester
 `
 
 type CreateCronJobParams struct {
@@ -104,6 +106,7 @@ type CreateCronJobParams struct {
 	Source       string        `json:"source"`
 	Status       string        `json:"status"`
 	NextRunAt    sql.NullInt64 `json:"next_run_at"`
+	Requester    string        `json:"requester"`
 }
 
 func (q *Queries) CreateCronJob(ctx context.Context, arg CreateCronJobParams) (CronJob, error) {
@@ -119,6 +122,7 @@ func (q *Queries) CreateCronJob(ctx context.Context, arg CreateCronJobParams) (C
 		arg.Source,
 		arg.Status,
 		arg.NextRunAt,
+		arg.Requester,
 	)
 	var i CronJob
 	err := row.Scan(
@@ -140,6 +144,7 @@ func (q *Queries) CreateCronJob(ctx context.Context, arg CreateCronJobParams) (C
 		&i.Error,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Requester,
 	)
 	return i, err
 }
@@ -154,7 +159,7 @@ func (q *Queries) DeleteCronJob(ctx context.Context, id string) error {
 }
 
 const getCronJob = `-- name: GetCronJob :one
-SELECT id, session_id, schedule, prompt, subagent_type, task_title, task_id, is_recurring, source, status, firing, last_run_at, next_run_at, run_count, last_result, error, created_at, updated_at FROM cron_jobs WHERE id = ? LIMIT 1
+SELECT id, session_id, schedule, prompt, subagent_type, task_title, task_id, is_recurring, source, status, firing, last_run_at, next_run_at, run_count, last_result, error, created_at, updated_at, requester FROM cron_jobs WHERE id = ? LIMIT 1
 `
 
 func (q *Queries) GetCronJob(ctx context.Context, id string) (CronJob, error) {
@@ -179,12 +184,13 @@ func (q *Queries) GetCronJob(ctx context.Context, id string) (CronJob, error) {
 		&i.Error,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Requester,
 	)
 	return i, err
 }
 
 const listActiveCronJobs = `-- name: ListActiveCronJobs :many
-SELECT id, session_id, schedule, prompt, subagent_type, task_title, task_id, is_recurring, source, status, firing, last_run_at, next_run_at, run_count, last_result, error, created_at, updated_at FROM cron_jobs WHERE status = 'active' ORDER BY created_at ASC
+SELECT id, session_id, schedule, prompt, subagent_type, task_title, task_id, is_recurring, source, status, firing, last_run_at, next_run_at, run_count, last_result, error, created_at, updated_at, requester FROM cron_jobs WHERE status = 'active' ORDER BY created_at ASC
 `
 
 func (q *Queries) ListActiveCronJobs(ctx context.Context) ([]CronJob, error) {
@@ -215,6 +221,7 @@ func (q *Queries) ListActiveCronJobs(ctx context.Context) ([]CronJob, error) {
 			&i.Error,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Requester,
 		); err != nil {
 			return nil, err
 		}
@@ -230,7 +237,7 @@ func (q *Queries) ListActiveCronJobs(ctx context.Context) ([]CronJob, error) {
 }
 
 const listCronJobsBySession = `-- name: ListCronJobsBySession :many
-SELECT id, session_id, schedule, prompt, subagent_type, task_title, task_id, is_recurring, source, status, firing, last_run_at, next_run_at, run_count, last_result, error, created_at, updated_at FROM cron_jobs WHERE session_id = ? ORDER BY created_at DESC
+SELECT id, session_id, schedule, prompt, subagent_type, task_title, task_id, is_recurring, source, status, firing, last_run_at, next_run_at, run_count, last_result, error, created_at, updated_at, requester FROM cron_jobs WHERE session_id = ? ORDER BY created_at DESC
 `
 
 func (q *Queries) ListCronJobsBySession(ctx context.Context, sessionID string) ([]CronJob, error) {
@@ -261,6 +268,7 @@ func (q *Queries) ListCronJobsBySession(ctx context.Context, sessionID string) (
 			&i.Error,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Requester,
 		); err != nil {
 			return nil, err
 		}
@@ -276,7 +284,7 @@ func (q *Queries) ListCronJobsBySession(ctx context.Context, sessionID string) (
 }
 
 const listDueCronJobs = `-- name: ListDueCronJobs :many
-SELECT id, session_id, schedule, prompt, subagent_type, task_title, task_id, is_recurring, source, status, firing, last_run_at, next_run_at, run_count, last_result, error, created_at, updated_at FROM cron_jobs
+SELECT id, session_id, schedule, prompt, subagent_type, task_title, task_id, is_recurring, source, status, firing, last_run_at, next_run_at, run_count, last_result, error, created_at, updated_at, requester FROM cron_jobs
 WHERE status = 'active'
   AND firing = FALSE
   AND next_run_at IS NOT NULL
@@ -312,6 +320,7 @@ func (q *Queries) ListDueCronJobs(ctx context.Context, nextRunAt sql.NullInt64) 
 			&i.Error,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Requester,
 		); err != nil {
 			return nil, err
 		}
@@ -327,7 +336,7 @@ func (q *Queries) ListDueCronJobs(ctx context.Context, nextRunAt sql.NullInt64) 
 }
 
 const listMissedOneShots = `-- name: ListMissedOneShots :many
-SELECT id, session_id, schedule, prompt, subagent_type, task_title, task_id, is_recurring, source, status, firing, last_run_at, next_run_at, run_count, last_result, error, created_at, updated_at FROM cron_jobs
+SELECT id, session_id, schedule, prompt, subagent_type, task_title, task_id, is_recurring, source, status, firing, last_run_at, next_run_at, run_count, last_result, error, created_at, updated_at, requester FROM cron_jobs
 WHERE status = 'active'
   AND is_recurring = FALSE
   AND next_run_at IS NOT NULL
@@ -363,6 +372,7 @@ func (q *Queries) ListMissedOneShots(ctx context.Context, nextRunAt sql.NullInt6
 			&i.Error,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Requester,
 		); err != nil {
 			return nil, err
 		}
@@ -401,7 +411,7 @@ SET last_run_at = ?,
     firing = FALSE,
     error = NULL
 WHERE id = ?
-RETURNING id, session_id, schedule, prompt, subagent_type, task_title, task_id, is_recurring, source, status, firing, last_run_at, next_run_at, run_count, last_result, error, created_at, updated_at
+RETURNING id, session_id, schedule, prompt, subagent_type, task_title, task_id, is_recurring, source, status, firing, last_run_at, next_run_at, run_count, last_result, error, created_at, updated_at, requester
 `
 
 type UpdateCronJobAfterRunParams struct {
@@ -440,6 +450,7 @@ func (q *Queries) UpdateCronJobAfterRun(ctx context.Context, arg UpdateCronJobAf
 		&i.Error,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Requester,
 	)
 	return i, err
 }

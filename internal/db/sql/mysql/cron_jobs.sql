@@ -14,7 +14,8 @@ INSERT INTO cron_jobs (
     next_run_at,
     run_count,
     created_at,
-    updated_at
+    updated_at,
+    requester
 ) VALUES (
     ?,
     ?,
@@ -30,7 +31,8 @@ INSERT INTO cron_jobs (
     ?,
     0,
     UNIX_TIMESTAMP(),
-    UNIX_TIMESTAMP()
+    UNIX_TIMESTAMP(),
+    ?
 );
 
 -- name: GetCronJob :one

@@ -115,6 +115,7 @@ The `telemetry` section in `.opencode.json` controls all telemetry behavior:
 | `generations` | object | Controls LLM request/response logging (see [below](#llm-request--response-logging)). |
 | `flowArgs` | string[] | Flow argument names to extract into Langfuse trace metadata. Supports wildcards (e.g., `"ticket_id"`, `"project*"`, `"*"`). |
 | `metadataNamespace` | string | Prefix for custom metadata keys. When set, keys like `flow_id` become `namespace.flow_id` — grouping them in the Langfuse UI while keeping each independently filterable. Empty (default) preserves flat keys. |
+| `requester` | string | Fallback value for the trace's `requester` metadata — the person a run works for. Used only when no per-turn requester is known (see [Requester](#requester)). Set it on a single-user deployment; leave it empty when several people share the agent. |
 
 ### Secret Redaction
 
@@ -260,6 +261,28 @@ When using flows, you can extract business-critical arguments into Langfuse trac
 ```
 
 Each matched arg appears as a dedicated metadata field (e.g., `ticket_id`). Values are truncated to 200 characters. Only top-level args are checked.
+
+### Requester
+
+Every trace carries a `requester` metadata field naming the person the run is working for, so traces can be filtered by who asked for the work even when many people share one agent. The value is chosen per trace, first match wins:
+
+1. A flow arg named `requester` listed in `flowArgs` — set by whatever launched the flow.
+2. The author of the chat message that started the turn, when the agent runs behind the chat bridge. Each turn is attributed separately, so a thread several people post in records each message's author. Where the platform allows, the author's user id is resolved to an email address (Slack: `users.info`, which needs the `users:read` and `users:read.email` scopes); otherwise the raw platform user id is used. Lookups are cached for an hour, and a failed lookup falls back to the user id without delaying the turn.
+3. For a scheduled job (the `cron` tool), the requester of the turn that created the job. It is stored with the job and replayed on every run.
+4. The static `telemetry.requester` from config.
+
+When none applies, the field is omitted. Subagents spawned during a turn — synchronous or async — inherit the turn's requester.
+
+```json
+{
+  "telemetry": {
+    "metadataNamespace": "app",
+    "requester": "owner@example.com"
+  }
+}
+```
+
+With a namespace configured the key is `app.requester`, like every other custom key.
 
 ### Metadata Namespace
 

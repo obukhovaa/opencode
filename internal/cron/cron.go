@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/db"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	cronparser "github.com/robfig/cron/v3"
@@ -55,6 +56,11 @@ type CronJob struct {
 	Error        string
 	CreatedAt    int64
 	UpdatedAt    int64
+	// Requester is who the job runs on behalf of: the requester of the turn
+	// that created it. Replayed onto every run's context so its telemetry
+	// is attributed to that person. Empty for jobs created before the
+	// column existed, or by a turn with no known requester.
+	Requester string
 }
 
 type CreateParams struct {
@@ -70,6 +76,9 @@ type CreateParams struct {
 	// normally. Used by /loop to match user mental model: "every 5 min check
 	// the deploy" should check now AND every 5 min.
 	FireImmediately bool
+	// Requester overrides who the job is attributed to. Empty takes the
+	// requester carried by the Create ctx (tools.RequesterFromContext).
+	Requester string
 }
 
 type MissedOneShotsEvent struct {
@@ -157,6 +166,11 @@ func (s *service) Create(ctx context.Context, params CreateParams) (CronJob, err
 	id := generateID()
 	taskID := generateTaskID()
 
+	requester := params.Requester
+	if requester == "" {
+		requester = tools.RequesterFromContext(ctx)
+	}
+
 	firstFire := nextFire
 	if params.FireImmediately {
 		firstFire = time.Now()
@@ -174,6 +188,7 @@ func (s *service) Create(ctx context.Context, params CreateParams) (CronJob, err
 		Source:       params.Source,
 		Status:       StatusActive,
 		NextRunAt:    sql.NullInt64{Int64: firstFire.Unix(), Valid: true},
+		Requester:    requester,
 	})
 	if err != nil {
 		return CronJob{}, fmt.Errorf("failed to create cron job: %w", err)
@@ -587,6 +602,7 @@ func fromDBItem(item db.CronJob) CronJob {
 		Error:        item.Error.String,
 		CreatedAt:    item.CreatedAt,
 		UpdatedAt:    item.UpdatedAt,
+		Requester:    item.Requester,
 	}
 }
 

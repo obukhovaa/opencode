@@ -649,6 +649,7 @@ func (q *MySQLQuerier) CreateCronJob(ctx context.Context, arg CreateCronJobParam
 		Source:       arg.Source,
 		Status:       arg.Status,
 		NextRunAt:    arg.NextRunAt,
+		Requester:    arg.Requester,
 	})
 	if err != nil {
 		return CronJob{}, err
@@ -807,6 +808,7 @@ func mysqlCronJobToCronJob(j mysqldb.CronJob) CronJob {
 		Error:        j.Error,
 		CreatedAt:    j.CreatedAt,
 		UpdatedAt:    j.UpdatedAt,
+		Requester:    j.Requester,
 	}
 }
 

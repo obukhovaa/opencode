@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
   error LONGTEXT,
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
+  requester VARCHAR(320) NOT NULL DEFAULT '',
   KEY idx_cron_jobs_session_id (session_id),
   KEY idx_cron_jobs_due (status, firing, next_run_at),
   CONSTRAINT fk_cron_jobs_session FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE

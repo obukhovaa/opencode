@@ -471,6 +471,24 @@ func (a *Adapter) ResolveUserToDM(ctx context.Context, peerID string) (string, e
 	return ch.ID, nil
 }
 
+// ResolveUserEmail implements bridge.UserEmailResolver via users.info. The
+// email is only returned when the app holds the users:read.email scope;
+// without it Slack answers the profile with an empty email and this
+// returns ("", nil).
+func (a *Adapter) ResolveUserEmail(ctx context.Context, userID string) (string, error) {
+	if !LooksLikeUserID(userID) {
+		return "", nil
+	}
+	u, err := a.api.GetUserInfoContext(ctx, userID)
+	if err != nil {
+		return "", fmt.Errorf("slack: users.info: %w", err)
+	}
+	if u == nil {
+		return "", nil
+	}
+	return u.Profile.Email, nil
+}
+
 // dispatchSocketModeEvent handles one Socket Mode envelope. ack is always
 // called (per the lib's contract); the inner Events API event is then
 // classified into message / app_mention / other.

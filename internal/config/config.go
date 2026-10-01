@@ -287,6 +287,11 @@ type TelemetryConfig struct {
 	Generations       *GenerationTelemetryConfig `json:"generations,omitempty"`
 	FlowArgs          []string                   `json:"flowArgs,omitempty"`          // Top-level flow arg names (wildcards supported) to extract into trace metadata
 	MetadataNamespace string                     `json:"metadataNamespace,omitempty"` // Prefix for custom (non-Langfuse-standard) metadata keys; empty = flat keys (default)
+	// Requester is the fallback value for the trace's `requester` metadata,
+	// used when neither a `requester` flow arg nor a per-turn requester (the
+	// chat message's author, or a cron job's stored requester) is known.
+	// Suits a single-user deployment; leave empty on a shared one.
+	Requester string `json:"requester,omitempty"`
 }
 
 // ProviderMetadata defines metadata key-value pairs attached to every LLM API request.

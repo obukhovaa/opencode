@@ -346,6 +346,16 @@ type Adapter interface {
 	Status() AdapterStatus
 }
 
+// UserEmailResolver is the optional capability an Adapter implements when
+// the platform can map an inbound message's AuthorID to the author's email
+// address (Slack users.info). The bridge uses it to attribute each turn's
+// telemetry to the person who sent the message; adapters without it leave
+// the raw AuthorID as the requester. Implementations return ("", nil) when
+// the user exists but exposes no email (bots, missing scope on the profile).
+type UserEmailResolver interface {
+	ResolveUserEmail(ctx context.Context, userID string) (string, error)
+}
+
 // JobScopedAdapter is the optional capability an Adapter implements when
 // its outbound frames carry the orchestrator's job identity, so the
 // identity has to be rebound whenever the pod switches jobs.

@@ -47,6 +47,7 @@ type CronJob struct {
 	Error        sql.NullString `json:"error"`
 	CreatedAt    int64          `json:"created_at"`
 	UpdatedAt    int64          `json:"updated_at"`
+	Requester    string         `json:"requester"`
 }
 
 type File struct {
