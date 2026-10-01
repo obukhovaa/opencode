@@ -74,6 +74,7 @@ func (s *poolStubFlowService) capturedCtx(t *testing.T, i int) context.Context {
 type poolTestOpts struct {
 	svc            flow.Service
 	bound          string // raw bound-workspace URL ("" = unbound)
+	boundRef       string // ref the bound workspace was cloned at ("" = default branch)
 	allowlist      string // raw CSV
 	sentinelPath   string
 	bindExitGrace  time.Duration
@@ -93,6 +94,7 @@ func newPoolTestServer(t *testing.T, o poolTestOpts) (*Server, *httptest.Server)
 	s.poolBoundWorkspace = normalizeWorkspaceURL(o.bound)
 	if s.poolBoundWorkspace != "" {
 		s.poolBoundSince = time.Now().UnixMilli()
+		s.poolBoundRef = o.boundRef
 	}
 	s.poolAllowlist = parseWorkspaceAllowlist(o.allowlist)
 	s.poolSentinelPath = o.sentinelPath
@@ -1211,4 +1213,289 @@ func TestPoolRoutesNotRegisteredWithoutPoolMode(t *testing.T) {
 			t.Errorf("%s %s = %d, want 404 (pool routes must not exist without --pool-mode)", tc.method, tc.path, resp.StatusCode)
 		}
 	}
+}
+
+// --- ref-pinned bindings (GENAI-255) ---
+//
+// A workspace pinned to a branch or tag (the orchestrator's `<url>#<ref>`
+// WORKSPACE_GIT_URLS form) carries the ref through the bind: it lands in the
+// sentinel next to the URL, the entrypoint clones at it and exports it, and
+// the pod reports it back so a mismatch is visible before a run starts.
+
+func TestPoolBindWithRefWritesTheRefIntoTheSentinel(t *testing.T) {
+	t.Parallel()
+	sentinel := filepath.Join(t.TempDir(), ".pool-bind")
+	exitCh := make(chan int, 1)
+	_, server := newPoolTestServer(t, poolTestOpts{
+		svc:           newPoolStubFlowService(false),
+		allowlist:     testWorkspace,
+		sentinelPath:  sentinel,
+		bindExitGrace: 10 * time.Millisecond,
+		exitFunc:      func(code int) { exitCh <- code },
+	})
+
+	resp := postJSON(t, server.Client(), server.URL+"/pool/bind",
+		`{"workspace":"`+testWorkspace+`.git","ref":"dev/composer"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+	body := decodeBody(t, resp)
+	if body["binding"] != testWorkspace || body["ref"] != "dev/composer" {
+		t.Errorf("response = %v, want binding %s at ref dev/composer", body, testWorkspace)
+	}
+	data, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatalf("sentinel not written: %v", err)
+	}
+	// The `<url>#<ref>` form is the orchestrator's own WORKSPACE_GIT_URLS
+	// syntax, so the entrypoint splits it exactly as the orchestrator does.
+	if string(data) != testWorkspace+"#dev/composer" {
+		t.Errorf("sentinel content = %q, want %q", string(data), testWorkspace+"#dev/composer")
+	}
+	select {
+	case <-exitCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("exit not scheduled after a ref-pinned bind")
+	}
+}
+
+func TestPoolBindWithoutRefKeepsTheBareSentinel(t *testing.T) {
+	t.Parallel()
+	sentinel := filepath.Join(t.TempDir(), ".pool-bind")
+	_, server := newPoolTestServer(t, poolTestOpts{
+		svc:           newPoolStubFlowService(false),
+		allowlist:     testWorkspace,
+		sentinelPath:  sentinel,
+		bindExitGrace: time.Hour, // never fires inside the test
+	})
+	resp := postJSON(t, server.Client(), server.URL+"/pool/bind", `{"workspace":"`+testWorkspace+`","ref":""}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+	resp.Body.Close()
+	data, _ := os.ReadFile(sentinel)
+	if string(data) != testWorkspace {
+		t.Errorf("sentinel = %q, want the bare URL — an empty ref must not leave a trailing '#'", string(data))
+	}
+}
+
+func TestPoolBindRejectsAnInvalidRef(t *testing.T) {
+	t.Parallel()
+	sentinel := filepath.Join(t.TempDir(), ".pool-bind")
+	_, server := newPoolTestServer(t, poolTestOpts{
+		svc:          newPoolStubFlowService(false),
+		allowlist:    testWorkspace,
+		sentinelPath: sentinel,
+	})
+	for _, ref := range []string{"-dangerous", "a..b", "feat/x.lock", "has space", "a#b", "ends/", "/leads", "x@{1}"} {
+		resp := postJSON(t, server.Client(), server.URL+"/pool/bind",
+			`{"workspace":"`+testWorkspace+`","ref":"`+ref+`"}`)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("ref %q: status = %d, want 400", ref, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Error("a rejected ref wrote a sentinel")
+	}
+}
+
+func TestValidWorkspaceRef(t *testing.T) {
+	t.Parallel()
+	for _, ok := range []string{"main", "dev/composer", "release-1.2", "v0.20.0", "feat_x", "a/b/c"} {
+		if !validWorkspaceRef(ok) {
+			t.Errorf("%q rejected, want accepted", ok)
+		}
+	}
+	for _, bad := range []string{"", "-x", "a..b", "x.lock", "x.", "a//b", "a b", "a~b", "a^b", "a:b", "a?b", "a*b", "a[b", "a\\b", "a@{b", "ref#x"} {
+		if validWorkspaceRef(bad) {
+			t.Errorf("%q accepted, want rejected", bad)
+		}
+	}
+}
+
+// Same URL, same ref: the idempotent 200 the orchestrator's bind retry
+// relies on. Same URL, DIFFERENT ref: a different binding — the clone on
+// disk is at the wrong ref — so it is a fresh bind, never a silent 200.
+func TestPoolBindSameURLDifferentRefRebinds(t *testing.T) {
+	t.Parallel()
+	sentinel := filepath.Join(t.TempDir(), ".pool-bind")
+	exitCh := make(chan int, 1)
+	_, server := newPoolTestServer(t, poolTestOpts{
+		svc:           newPoolStubFlowService(false),
+		bound:         testWorkspace,
+		boundRef:      "dev/composer",
+		allowlist:     testWorkspace,
+		sentinelPath:  sentinel,
+		bindExitGrace: 10 * time.Millisecond,
+		exitFunc:      func(code int) { exitCh <- code },
+	})
+
+	// Same ref → idempotent.
+	resp := postJSON(t, server.Client(), server.URL+"/pool/bind",
+		`{"workspace":"`+testWorkspace+`","ref":"dev/composer"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("same ref: status = %d, want 200", resp.StatusCode)
+	}
+	body := decodeBody(t, resp)
+	if body["alreadyBound"] != true || body["ref"] != "dev/composer" {
+		t.Errorf("same ref: body = %v", body)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Error("idempotent bind wrote a sentinel")
+	}
+
+	// Different ref → rebind: sentinel carries the NEW ref, exit scheduled.
+	resp = postJSON(t, server.Client(), server.URL+"/pool/bind",
+		`{"workspace":"`+testWorkspace+`","ref":"dev/other"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("different ref: status = %d, want 202 (a rebind), got body %v", resp.StatusCode, decodeBody(t, resp))
+	}
+	resp.Body.Close()
+	data, err := os.ReadFile(sentinel)
+	if err != nil || string(data) != testWorkspace+"#dev/other" {
+		t.Errorf("sentinel = %q (err %v), want %q", string(data), err, testWorkspace+"#dev/other")
+	}
+	select {
+	case <-exitCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("exit not scheduled after a different-ref rebind")
+	}
+}
+
+// A pod bound at the default branch asked for a ref is the same transition
+// in the other direction, and a pod bound at a ref asked for the default
+// branch (no ref) must rebind too — "" is a ref value, not a wildcard.
+func TestPoolBindRefToDefaultBranchRebinds(t *testing.T) {
+	t.Parallel()
+	sentinel := filepath.Join(t.TempDir(), ".pool-bind")
+	_, server := newPoolTestServer(t, poolTestOpts{
+		svc:           newPoolStubFlowService(false),
+		bound:         testWorkspace,
+		boundRef:      "dev/composer",
+		allowlist:     testWorkspace,
+		sentinelPath:  sentinel,
+		bindExitGrace: time.Hour,
+	})
+	resp := postJSON(t, server.Client(), server.URL+"/pool/bind", `{"workspace":"`+testWorkspace+`"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 — dropping the pin is a rebind", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if data, _ := os.ReadFile(sentinel); string(data) != testWorkspace {
+		t.Errorf("sentinel = %q, want the bare URL", string(data))
+	}
+}
+
+func TestPoolBindGetAndHealthReportTheRef(t *testing.T) {
+	t.Parallel()
+	_, server := newPoolTestServer(t, poolTestOpts{
+		svc:      newPoolStubFlowService(false),
+		bound:    testWorkspace,
+		boundRef: "dev/composer",
+	})
+	resp, err := server.Client().Get(server.URL + "/pool/bind")
+	if err != nil {
+		t.Fatalf("GET /pool/bind: %v", err)
+	}
+	body := decodeBody(t, resp)
+	if body["boundWorkspace"] != testWorkspace || body["boundRef"] != "dev/composer" {
+		t.Errorf("GET /pool/bind = %v", body)
+	}
+	resp, err = server.Client().Get(server.URL + "/global/health")
+	if err != nil {
+		t.Fatalf("GET health: %v", err)
+	}
+	pool := decodeBody(t, resp)["pool"].(map[string]any)
+	if pool["boundRef"] != "dev/composer" {
+		t.Errorf("pool.boundRef = %v, want dev/composer", pool["boundRef"])
+	}
+	// The capability flag is what lets an orchestrator tell this image from
+	// one that would silently clone the default branch for a pinned bind.
+	if pool["refBinding"] != true {
+		t.Errorf("pool.refBinding = %v, want true", pool["refBinding"])
+	}
+}
+
+func TestHealthPoolBlockReportsRefBindingWhenUnboundAndNullRefOnDefaultBranch(t *testing.T) {
+	t.Parallel()
+	_, server := newPoolTestServer(t, poolTestOpts{svc: newPoolStubFlowService(false)})
+	resp, err := server.Client().Get(server.URL + "/global/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := decodeBody(t, resp)["pool"].(map[string]any)
+	if pool["refBinding"] != true {
+		t.Errorf("unbound pod: refBinding = %v, want true (a capability, not a binding state)", pool["refBinding"])
+	}
+	if pool["boundRef"] != nil {
+		t.Errorf("unbound pod: boundRef = %v, want null", pool["boundRef"])
+	}
+
+	_, bound := newPoolTestServer(t, poolTestOpts{svc: newPoolStubFlowService(false), bound: testWorkspace})
+	resp, err = bound.Client().Get(bound.URL + "/global/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool = decodeBody(t, resp)["pool"].(map[string]any)
+	if pool["boundRef"] != nil {
+		t.Errorf("default-branch pod: boundRef = %v, want null", pool["boundRef"])
+	}
+}
+
+func TestFlowStartWorkspaceRefGate(t *testing.T) {
+	t.Parallel()
+	t.Run("mismatch is refused with the bound ref in the body", func(t *testing.T) {
+		t.Parallel()
+		_, server := newPoolTestServer(t, poolTestOpts{
+			svc:      newPoolStubFlowService(false),
+			bound:    testWorkspace,
+			boundRef: "dev/composer",
+		})
+		resp := postJSON(t, server.Client(), server.URL+"/flow",
+			`{"flowID":"x","workspace":"`+testWorkspace+`","workspaceRef":"main"}`)
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("status = %d, want 409", resp.StatusCode)
+		}
+		body := decodeBody(t, resp)
+		if body["boundRef"] != "dev/composer" || body["boundWorkspace"] != testWorkspace {
+			t.Errorf("body = %v", body)
+		}
+	})
+	t.Run("a pinned run on a default-branch pod is refused", func(t *testing.T) {
+		t.Parallel()
+		_, server := newPoolTestServer(t, poolTestOpts{svc: newPoolStubFlowService(false), bound: testWorkspace})
+		resp := postJSON(t, server.Client(), server.URL+"/flow", `{"flowID":"x","workspaceRef":"dev/composer"}`)
+		if resp.StatusCode != http.StatusConflict {
+			t.Fatalf("status = %d, want 409", resp.StatusCode)
+		}
+		resp.Body.Close()
+	})
+	t.Run("matching ref passes the gate", func(t *testing.T) {
+		t.Parallel()
+		_, server := newPoolTestServer(t, poolTestOpts{
+			svc:      newPoolStubFlowService(false, flow.FlowState{StepID: "s1", Status: flow.FlowStatusCompleted}),
+			bound:    testWorkspace,
+			boundRef: "dev/composer",
+		})
+		resp := postJSON(t, server.Client(), server.URL+"/flow",
+			`{"flowID":"x","workspace":"`+testWorkspace+`","workspaceRef":"dev/composer"}`)
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202", resp.StatusCode)
+		}
+		resp.Body.Close()
+	})
+	t.Run("no ref asserted keeps the old contract", func(t *testing.T) {
+		t.Parallel()
+		_, server := newPoolTestServer(t, poolTestOpts{
+			svc:      newPoolStubFlowService(false, flow.FlowState{StepID: "s1", Status: flow.FlowStatusCompleted}),
+			bound:    testWorkspace,
+			boundRef: "dev/composer",
+		})
+		resp := postJSON(t, server.Client(), server.URL+"/flow", `{"flowID":"x","workspace":"`+testWorkspace+`"}`)
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("status = %d, want 202 — an orchestrator that predates workspaceRef must still be served", resp.StatusCode)
+		}
+		resp.Body.Close()
+	})
 }

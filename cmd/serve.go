@@ -308,8 +308,10 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			// application.Shutdown() + bridge Stop() above run before exit —
 			// the same convergence the SIGTERM handler below uses.
 			boundWorkspace := derivePoolBoundWorkspace(cwd)
+			boundRef := derivePoolBoundRef()
 			serverOpts.PoolMode = true
 			serverOpts.PoolBoundWorkspace = boundWorkspace
+			serverOpts.PoolBoundRef = boundRef
 			serverOpts.PoolBoundSince = time.Now().UnixMilli()
 			serverOpts.PoolAllowlist = os.Getenv("WORKSPACE_GIT_URLS_ALLOWLIST")
 			serverOpts.PoolSentinelPath = poolBindSentinelPath
@@ -319,6 +321,7 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			serverOpts.PoolShutdownFunc = cancel
 			logging.Info("pool mode enabled",
 				"boundWorkspace", boundWorkspace,
+				"boundRef", boundRef,
 				"sentinelPath", poolBindSentinelPath,
 				"idleResetGrace", flowIdleResetGrace,
 				"drainGrace", poolDrainGrace,

@@ -78,6 +78,10 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME"
 
 WORKSPACE_URL="https://git.example.com/acme/agents/developer"
 OTHER_URL="https://git.example.com/acme/agents/other"
+# The workspace is bound at a PINNED ref (GENAI-255): the ref rides in the
+# bind body, lands in the sentinel as `<url>#<ref>`, is exported by the
+# entrypoint as AGENT_WORKSPACE_GIT_REF, and is reported back by the pod.
+WORKSPACE_REF="dev/e2e"
 export WORKSPACE_GIT_URLS_ALLOWLIST="$WORKSPACE_URL,$OTHER_URL"
 
 # A provider key is required for any agent to be constructed at all, and
@@ -235,18 +239,29 @@ else
     log_pass "$name"
 fi
 
-# ── 2. bind → exit for respawn ──────────────────────────────────────
-name="POST /pool/bind accepts an allowlisted workspace"
-resp=$(body_of POST /pool/bind "{\"workspace\":\"$WORKSPACE_URL.git\"}")
-code=$(status_of POST /pool/bind "{\"workspace\":\"$WORKSPACE_URL\"}" || true)
-if [ "$(echo "$resp" | jq -r '.binding')" = "$WORKSPACE_URL" ]; then
-    log_pass "$name (trailing .git normalised away)"
+name="unbound pod advertises ref binding"
+resp=$(body_of GET /global/health)
+if [ "$(echo "$resp" | jq -r '.pool.refBinding')" = "true" ]; then
+    log_pass "$name"
 else
     log_fail "$name" "$resp"
 fi
 
-name="bind writes the sentinel for the next boot"
-if [ -f "$SENTINEL" ] && [ "$(cat "$SENTINEL")" = "$WORKSPACE_URL" ]; then
+expect_status "POST /pool/bind rejects a malformed ref" 400 \
+    "$(status_of POST /pool/bind "{\"workspace\":\"$WORKSPACE_URL\",\"ref\":\"-not-a-ref\"}")"
+
+# ── 2. bind → exit for respawn ──────────────────────────────────────
+name="POST /pool/bind accepts an allowlisted workspace at a pinned ref"
+resp=$(body_of POST /pool/bind "{\"workspace\":\"$WORKSPACE_URL.git\",\"ref\":\"$WORKSPACE_REF\"}")
+code=$(status_of POST /pool/bind "{\"workspace\":\"$WORKSPACE_URL\",\"ref\":\"$WORKSPACE_REF\"}" || true)
+if [ "$(echo "$resp" | jq -r '.binding')" = "$WORKSPACE_URL" ] && [ "$(echo "$resp" | jq -r '.ref')" = "$WORKSPACE_REF" ]; then
+    log_pass "$name (trailing .git normalised away, ref echoed)"
+else
+    log_fail "$name" "$resp"
+fi
+
+name="bind writes the sentinel as <url>#<ref> for the next boot"
+if [ -f "$SENTINEL" ] && [ "$(cat "$SENTINEL")" = "$WORKSPACE_URL#$WORKSPACE_REF" ]; then
     log_pass "$name"
 else
     log_fail "$name" "sentinel=$( [ -f "$SENTINEL" ] && cat "$SENTINEL" || echo MISSING)"
@@ -281,13 +296,26 @@ fi
 # AGENT_WORKSPACE_GIT_URL. Deriving the binding from a `.git` in the
 # working directory alone is what made every pool pod boot unbound
 # forever, so this is the shape the derivation has to survive.
-BIND_URL="$(cat "$SENTINEL")"
+# The sentinel is `<url>#<ref>`; the entrypoint splits on the LAST `#`
+# (a clone URL cannot contain one) and exports both halves.
+BIND_RECORD="$(cat "$SENTINEL")"
+BIND_URL="${BIND_RECORD%#*}"
+BIND_REF="${BIND_RECORD##*#}"
+[ "$BIND_REF" = "$BIND_RECORD" ] && BIND_REF=""
 CLONE_SRC="$WORKDIR/clone-src"
 mkdir -p "$CLONE_SRC/.agents"
 echo "# workspace" > "$CLONE_SRC/AGENTS.md"
 cp -R "$CLONE_SRC/.agents" "$POD_CWD/.agents"
 cp "$CLONE_SRC/AGENTS.md" "$POD_CWD/AGENTS.md"
 export AGENT_WORKSPACE_GIT_URL="$BIND_URL"
+export AGENT_WORKSPACE_GIT_REF="$BIND_REF"
+
+name="the sentinel split yields the URL and the pinned ref"
+if [ "$BIND_URL" = "$WORKSPACE_URL" ] && [ "$BIND_REF" = "$WORKSPACE_REF" ]; then
+    log_pass "$name"
+else
+    log_fail "$name" "url=$BIND_URL ref=$BIND_REF"
+fi
 
 name="working directory is deliberately NOT a git checkout"
 if [ -d "$POD_CWD/.git" ]; then
@@ -298,32 +326,41 @@ fi
 
 start_pod || exit 1
 
-name="respawned pod reports the bound workspace"
+name="respawned pod reports the bound workspace and its ref"
 resp=$(body_of GET /global/health)
 bound=$(echo "$resp" | jq -r '.pool.boundWorkspace')
-if [ "$bound" = "$WORKSPACE_URL" ]; then
-    log_pass "$name ($bound)"
+bound_ref=$(echo "$resp" | jq -r '.pool.boundRef')
+if [ "$bound" = "$WORKSPACE_URL" ] && [ "$bound_ref" = "$WORKSPACE_REF" ]; then
+    log_pass "$name ($bound @ $bound_ref)"
 else
-    log_fail "$name" "boundWorkspace=$bound — $resp"
+    log_fail "$name" "boundWorkspace=$bound boundRef=$bound_ref — $resp"
 fi
 
-name="GET /pool/bind reports the binding with a since timestamp"
+name="GET /pool/bind reports the binding, its ref and a since timestamp"
 resp=$(body_of GET /pool/bind)
 if [ "$(echo "$resp" | jq -r '.boundWorkspace')" = "$WORKSPACE_URL" ] \
+    && [ "$(echo "$resp" | jq -r '.boundRef')" = "$WORKSPACE_REF" ] \
     && [ "$(echo "$resp" | jq -r '.since')" != "null" ]; then
     log_pass "$name"
 else
     log_fail "$name" "$resp"
 fi
 
-name="re-binding the same workspace is an idempotent 200"
-resp=$(body_of POST /pool/bind "{\"workspace\":\"$WORKSPACE_URL\"}")
-code=$(status_of POST /pool/bind "{\"workspace\":\"$WORKSPACE_URL\"}")
+name="re-binding the same workspace at the same ref is an idempotent 200"
+resp=$(body_of POST /pool/bind "{\"workspace\":\"$WORKSPACE_URL\",\"ref\":\"$WORKSPACE_REF\"}")
+code=$(status_of POST /pool/bind "{\"workspace\":\"$WORKSPACE_URL\",\"ref\":\"$WORKSPACE_REF\"}")
 if [ "$code" = "200" ] && [ "$(echo "$resp" | jq -r '.alreadyBound')" = "true" ]; then
     log_pass "$name"
 else
     log_fail "$name" "status=$code body=$resp"
 fi
+
+expect_status "POST /flow asserting a mismatched workspaceRef is refused" 409 \
+    "$(status_of POST /flow "{\"flowID\":\"x\",\"workspace\":\"$WORKSPACE_URL\",\"workspaceRef\":\"main\"}")"
+
+# The flow does not exist, so 404 is the proof the ref gate passed.
+expect_status "a matching workspaceRef passes the pool gates" 404 \
+    "$(status_of POST /flow "{\"flowID\":\"no-such-flow\",\"workspace\":\"$WORKSPACE_URL\",\"workspaceRef\":\"$WORKSPACE_REF\"}")"
 
 expect_status "binding to a different workspace is refused" 409 \
     "$(status_of POST /pool/bind "{\"workspace\":\"$OTHER_URL\"}")"
