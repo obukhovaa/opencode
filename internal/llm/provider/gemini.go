@@ -614,11 +614,16 @@ func (g *geminiClient) usage(resp *genai.GenerateContentResponse) TokenUsage {
 		return TokenUsage{}
 	}
 
+	// PromptTokenCount already includes CachedContentTokenCount. Split them
+	// as openai.go does, so InputTokens is the uncached part only: otherwise
+	// the cached prefix is billed twice and TrackUsage's session total (the
+	// compaction floor) counts it twice.
+	cached := int64(resp.UsageMetadata.CachedContentTokenCount)
 	return TokenUsage{
-		InputTokens:         int64(resp.UsageMetadata.PromptTokenCount),
+		InputTokens:         max(int64(resp.UsageMetadata.PromptTokenCount)-cached, 0),
 		OutputTokens:        int64(resp.UsageMetadata.CandidatesTokenCount),
 		CacheCreationTokens: 0, // Not directly provided by Gemini
-		CacheReadTokens:     int64(resp.UsageMetadata.CachedContentTokenCount),
+		CacheReadTokens:     cached,
 	}
 }
 

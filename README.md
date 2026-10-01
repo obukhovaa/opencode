@@ -374,6 +374,27 @@ When enabled (default), automatically summarizes conversations approaching the c
 { "autoCompact": true }
 ```
 
+The check runs before every model call: before a turn's first one, before each later call of its tool-use loop, and before the first call after a non-interactive run re-enters the loop for drained background tasks. A long-lived session (chat bridge, `opencode serve`, cron heartbeats) therefore compacts before the turn that would overflow it. On an auto-resume turn the background-task completion it reacts to is kept after the summary. The context size is the larger of the provider's token estimate and the usage the provider reported for the session's last call, plus the messages added since.
+
+The summarizer only sees the history since the previous summary. If that does not fit 90% of its window, the oldest messages are dropped (with a warning) rather than failing the compaction. The turn's own prompt, such as a flow step's task, is kept unless it alone takes more than half of the space left, or keeping it would leave no recent history or the input over budget. The fit is judged on the local 4 bytes/token estimate, scaled up by the session's last reported usage when that is larger, so an overflowed session whose size the estimate undercounts is still trimmed. It remains an estimate: a summarizer whose tokenizer counts far more than the main model's can still reject its input.
+
+The threshold can be lowered per agent — useful when a proxy resets streams well before the model's nominal window. For an agent defined in markdown, set it in the frontmatter:
+
+```markdown
+---
+model: bedrock.claude-opus-4-6
+compactionThreshold: 0.4
+---
+```
+
+For a JSON-only agent, set `agents.<id>.compactionThreshold` in `.opencode.json`. Do not add a JSON `agents.<id>` entry just for the threshold when the agent is defined in markdown: an entry without `model` is given the default model and its default `maxTokens`, and those replace the frontmatter values. If you need the JSON entry, repeat the agent's `model` (and `maxTokens`, if set) in it:
+
+```json
+{ "agents": { "neo": { "model": "bedrock.claude-opus-4-6", "compactionThreshold": 0.4 } } }
+```
+
+`compactionThreshold` is a fraction in (0, 1]; out-of-range values are ignored with a warning. A flow step's `compact.threshold` wins over it, and it never enables compaction when `autoCompact` is off.
+
 ### Auto Approve
 
 Auto-approve mode skips interactive permission dialogs for `ask`-resolved permissions during a session. `deny` rules and disabled tools are still enforced — auto-approve only promotes `ask` decisions to `allow`.

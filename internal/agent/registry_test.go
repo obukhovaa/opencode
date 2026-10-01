@@ -1224,3 +1224,68 @@ func containsAt(s, substr string) bool {
 	}
 	return false
 }
+
+func TestCompactionThresholdMerge(t *testing.T) {
+	t.Run("frontmatter parses and invalid values are dropped", func(t *testing.T) {
+		cases := []struct {
+			name  string
+			value string
+			want  float64
+		}{
+			{"in range", "0.4", 0.4},
+			{"upper bound", "1", 1},
+			{"above one", "1.5", 0},
+			{"negative", "-0.1", 0},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "neo.md")
+				md := "---\nmode: agent\ncompactionThreshold: " + tc.value + "\n---\n\nBody.\n"
+				if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				a, err := parseAgentMarkdown(path)
+				if err != nil {
+					t.Fatalf("parseAgentMarkdown() error = %v", err)
+				}
+				if a.CompactionThreshold != tc.want {
+					t.Errorf("CompactionThreshold = %v, want %v", a.CompactionThreshold, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("markdown overrides builtin, unset keeps it", func(t *testing.T) {
+		existing := AgentInfo{ID: "coder", Native: true, CompactionThreshold: 0.8}
+		mergeMarkdownIntoExisting(&existing, &AgentInfo{CompactionThreshold: 0.4})
+		if existing.CompactionThreshold != 0.4 {
+			t.Errorf("CompactionThreshold = %v, want 0.4", existing.CompactionThreshold)
+		}
+		mergeMarkdownIntoExisting(&existing, &AgentInfo{})
+		if existing.CompactionThreshold != 0.4 {
+			t.Errorf("unset markdown value overwrote the threshold: %v", existing.CompactionThreshold)
+		}
+	})
+
+	t.Run("config overlay wins over markdown and creates new agents with it", func(t *testing.T) {
+		agents := map[string]AgentInfo{
+			"neo":   {ID: "neo", Mode: config.AgentModeAgent, CompactionThreshold: 0.6},
+			"coder": {ID: "coder", Mode: config.AgentModeAgent, CompactionThreshold: 0.5},
+		}
+		cfg := &config.Config{Agents: map[config.AgentName]config.Agent{
+			"neo":    {CompactionThreshold: 0.4},
+			"coder":  {},
+			"helper": {CompactionThreshold: 0.7},
+		}}
+		applyConfigOverrides(agents, cfg)
+		if got := agents["neo"].CompactionThreshold; got != 0.4 {
+			t.Errorf("neo = %v, want 0.4", got)
+		}
+		if got := agents["coder"].CompactionThreshold; got != 0.5 {
+			t.Errorf("coder = %v, want 0.5 (unset config keeps the markdown value)", got)
+		}
+		if got := agents["helper"].CompactionThreshold; got != 0.7 {
+			t.Errorf("helper = %v, want 0.7", got)
+		}
+	})
+}
