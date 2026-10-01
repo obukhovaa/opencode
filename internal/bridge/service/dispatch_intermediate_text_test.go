@@ -551,6 +551,56 @@ func TestHandleInbound_RelaysIntermediateText(t *testing.T) {
 	}
 }
 
+// TestHandleInbound_RunEndingOnToolUsePostsTextOnce drives a whole bridge
+// run that ends on its own tool_use message (its turn limit, say). The
+// parts path relays the message under its header, then the terminal event
+// carries the same message: the terminal path must find the run's guard
+// and not post the text again without a header.
+func TestHandleInbound_RunEndingOnToolUsePostsTextOnce(t *testing.T) {
+	const text = "Out of turns, here is where I got."
+	svc, ed, _ := newProgressTestSvc(t, &bridge.Config{})
+	msgs := newLiveMessageSvc()
+	m1 := toolUseMessage("M1", text, finishedCall("toolu_01aaaaaa", "bash"))
+	ag := &scriptedAgent{script: func(int) (<-chan agentpkg.AgentEvent, error) {
+		msgs.completeToolUse(m1)
+		ch := make(chan agentpkg.AgentEvent)
+		go func() {
+			defer close(ch)
+			// Hold the terminal event until the intermediate post is out,
+			// so the terminal path is the one that must skip the message.
+			deadline := time.Now().Add(3 * time.Second)
+			for countTextPosts(ed.Sends(), "⌛ bash\n"+text) == 0 && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			ch <- agentpkg.AgentEvent{Type: agentpkg.AgentEventTypeResponse, Message: m1}
+		}()
+		return ch, nil
+	}}
+	svc.app = &app.App{
+		Messages:         msgs,
+		PrimaryAgents:    map[config.AgentName]agentpkg.Service{config.AgentCoder: ag},
+		PrimaryAgentKeys: []config.AgentName{config.AgentCoder},
+	}
+	d := newBareDispatch(svc, "S1")
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); d.runParts(ctx) }()
+	defer func() { cancel(); wg.Wait() }()
+
+	d.handleInbound(context.Background(), testInbound("look at the logs"))
+
+	var posts []string
+	for _, s := range ed.Sends() {
+		if strings.Contains(s.Text, text) {
+			posts = append(posts, s.Text)
+		}
+	}
+	if len(posts) != 1 || posts[0] != "⌛ bash\n"+text {
+		t.Errorf("posts of the text = %q; want exactly [%q]", posts, "⌛ bash\n"+text)
+	}
+}
+
 // TestIntermediateText_LatePartKeepsItsRunsGuard: d.parts is shared by
 // the session's runs and runParts can lag, so a part of run N can be
 // handled after run N ended. It must be checked against run N's guard:

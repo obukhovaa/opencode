@@ -50,6 +50,6 @@
   intermediate posts before the final reply
 - [x] 5.6 MODIFIED delta for "Per-session typing/reporting indicators" (intermediate text is
   relayed with tool updates off)
-- [x] 5.7 Tests: `handleInbound` end to end (own run; another actor's buffered part), late part
-  of a finished run, slow flush send delivered once, bounded parts-path send, final reply
-  waits for in-flight text
+- [x] 5.7 Tests: `handleInbound` end to end (own run; another actor's buffered part; a run
+  ending on its own `tool_use` message posted once), late part of a finished run, slow flush
+  send delivered once, bounded parts-path send, final reply waits for in-flight text

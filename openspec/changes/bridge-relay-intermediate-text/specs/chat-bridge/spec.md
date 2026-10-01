@@ -76,7 +76,7 @@ rendered.
 
 #### Scenario: No bridge run in flight
 
-- **WHEN** no bridge-dispatched run is in flight for the session
+- **WHEN** a part was not received by a bridge-dispatched run (e.g. a self-started turn), or a question arrives while no bridge-dispatched run is in flight
 - **THEN** nothing is posted
 
 #### Scenario: Another actor's run held the session
