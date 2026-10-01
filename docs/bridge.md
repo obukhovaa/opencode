@@ -308,10 +308,42 @@ Once a peer is bound (manually or via the first inbound), the following commands
 | `/skip` | Dismiss a pending agent question. |
 | `/verbosity` | Show the live tool-update level: `compact` (one progress card per run) or `full` (one card per tool call). |
 | `/verbosity compact\|full` | Switch it for this process (not persisted; restart restores `router.toolUpdateVerbosity`). `verbose` and `debug` mean `full`. |
+| `/heartbeat …` | Show or configure this chat's heartbeat (daemon mode only). See [Heartbeat](#heartbeat). |
 | `/help` | List commands. |
 | `/dir` | Unsupported — one opencode process is pinned to one workspace (returns an explanatory message). |
 
 Any non-command message is forwarded as a prompt.
+
+## Heartbeat
+
+In daemon mode (`opencode serve` without `--flow` or `--pool-mode`) a chat can give its agent a heartbeat: on a schedule the bridge wakes the bound session with a heartbeat turn, the agent works through its agenda file, and only what is new reaches the chat.
+
+**It is off until someone in the chat turns it on.** When a daemon starts and a chat has never chosen, the bridge posts a short setup reminder there, at most once every seven days. `/heartbeat on` or `/heartbeat off` ends the reminders.
+
+| Command | Effect |
+|---|---|
+| `/heartbeat` or `/heartbeat status` | State, schedule, model, agenda file, last and next beat. |
+| `/heartbeat on` / `off` | Start or stop the heartbeat. |
+| `/heartbeat now` | Run one beat now, without moving the schedule. |
+| `/heartbeat every <duration>` | Interval, 10m to 24h. Default `1h`. |
+| `/heartbeat hours <HH-HH>` / `hours all` | Active hours in UTC, start inclusive, end exclusive; `22-06` wraps midnight. Default all day. |
+| `/heartbeat days weekdays` / `days all` | Skip Saturday and Sunday (UTC). Default every day. |
+| `/heartbeat model <id>` / `model default` | Run beats on another model. A different model cannot reuse the session's prompt cache. |
+| `/heartbeat file <path>` / `file default` | Agenda file, relative to the working directory. Default `HEARTBEAT.md`. |
+
+Settings combine in one command: `/heartbeat on every 30m hours 05-21 days weekdays`. They are stored in the database, so they survive restarts, redeploys and `/reset`.
+
+How a beat runs:
+
+- **In the bound session**, through the same dispatcher as a human message, so it never overlaps another run and a reply to its report lands in the same conversation.
+- **On a UTC grid.** `every 1h` beats on the hour, `every 30m` on :00 and :30, within the active hours and days.
+- **Busy sessions defer.** A beat that comes due while the agent is working waits until the session is idle. Beats missed while the process was down collapse into one catch-up beat.
+- **An empty agenda skips the beat.** If the agenda file is missing or holds only headings and empty list items, no model call is made.
+- **Quiet.** A heartbeat turn posts no queued-ack, progress card or tool-call cards. If the agent replies `HEARTBEAT_OK`, nothing is posted. Otherwise the reply is posted under a `💓 Heartbeat HH:MMZ` header, and a failed beat posts one line with the reason.
+
+The agenda file is the agent's standing instructions for heartbeats: what to check and how to report it. The agent can edit it when its human gives it a new standing instruction.
+
+Each beat is a turn in the main session, so it adds to the session's context. The empty-agenda skip, the silent reply and the active hours are what keep that cost down.
 
 ## In-process agent tool: `router_send`
 
@@ -397,10 +429,11 @@ Its other identities continue running normally — the lock is per-identity, not
 
 ## Storage
 
-Two new tables on both providers (SQLite + MySQL), keyed by `(project_id, channel, identity_id, peer_id)`:
+Bridge tables on both providers (SQLite + MySQL), keyed by `(project_id, channel, identity_id, peer_id)`:
 
 - `bridge_sessions` — many-to-one peer→session mapping with `session_id` FK to `sessions(id) ON DELETE SET NULL`, plus `mention_handle` (per-peer ping handle for first-message attribution) and `mention_consumed_at` (timestamp set after first delivery; reset on re-bind).
 - `bridge_allowlist` — per-identity peer allowlist (Telegram private-mode pairing).
+- `bridge_heartbeats` — per-binding heartbeat state, schedule settings, next/last beat and the last setup reminder (`20261001130000_add_bridge_heartbeats.sql`).
 
 Migrations live in `internal/db/migrations/{sqlite,mysql}/20260609120000_add_bridge_tables.sql`. MySQL column widths are sized so the compound PK fits within InnoDB's 3072-byte key-length cap under utf8mb4.
 
