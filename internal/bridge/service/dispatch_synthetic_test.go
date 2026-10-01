@@ -42,7 +42,7 @@ func TestHandlePartEvent_SyntheticToolCallSkipped(t *testing.T) {
 			Time:      time.Now().UnixMilli(),
 		},
 	}
-	d.handlePartEvent(syntheticEv)
+	d.handlePartEvent(syntheticEv, nil)
 	if _, ok := d.toolCallStart.Load("tcall-syn"); ok {
 		t.Error("synthetic ToolCall should not record toolCallStart (guard bypassed)")
 	}
@@ -65,7 +65,7 @@ func TestHandlePartEvent_SyntheticToolCallSkipped(t *testing.T) {
 			Synthetic: false,
 			Time:      time.Now().UnixMilli(),
 		},
-	})
+	}, nil)
 	if _, ok := d.toolCallStart.Load("tcall-real"); !ok {
 		t.Error("real ToolCall should record toolCallStart (guard mis-fired)")
 	}

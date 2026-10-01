@@ -80,7 +80,7 @@ type sessionDispatch struct {
 	sessionID string
 
 	inbound chan bridge.Inbound
-	parts   chan pubsub.Event[message.PartEvent]
+	parts   chan partItem
 
 	// mu guards overflowLog, overflow, and the non-blocking push/drain
 	// interlock. MUST NOT be held across I/O or across calls that acquire
@@ -126,6 +126,15 @@ type sessionDispatch struct {
 	// handlePartEvent feeds it from the parts goroutine.
 	progress atomic.Pointer[runProgress]
 
+	// textGuard records which assistant messages of the in-flight run
+	// have already been relayed to chat, so the terminal path, the
+	// intermediate-text path and the question flush post each message at
+	// most once. Nil when no bridge-dispatched run is in flight. Set in
+	// handleInbound once Run has started, cleared after partsDrainGrace.
+	// The terminal path and the flush read it; the parts path uses the
+	// guard bound to each partItem instead.
+	textGuard atomic.Pointer[runTextGuard]
+
 	// liveAcks remembers the outstanding queued-ack token per peer so it
 	// survives a busy-retry-budget re-queue. handleInbound's ack state is a
 	// local and budget expiry returns from handleInbound — without this the
@@ -135,6 +144,18 @@ type sessionDispatch struct {
 	// bridge.QueueAckToken. Entries are removed when the ack is resolved
 	// (run started) or when an edit fails (message gone — send a fresh one).
 	liveAcks sync.Map // map[string]bridge.QueueAckToken
+}
+
+// partItem is one part event on d.parts, bound to the text guard of the
+// run whose subscription forwarded it. d.parts is shared by every run of
+// the session and runParts can lag behind (the intermediate-text post is
+// a blocking send), so the guard is bound when the event is forwarded,
+// not loaded when it is handled: a late event of run N must be checked
+// against run N's guard, not against nil (lost) or run N+1's (posted
+// twice).
+type partItem struct {
+	ev    pubsub.Event[message.PartEvent]
+	guard *runTextGuard
 }
 
 // newSessionDispatch constructs and launches the per-session dispatcher
@@ -158,7 +179,7 @@ func (s *Service) newSessionDispatch(sessionID string) *sessionDispatch {
 		svc:       s,
 		sessionID: sessionID,
 		inbound:   make(chan bridge.Inbound, dispatchInboundCap),
-		parts:     make(chan pubsub.Event[message.PartEvent], dispatchPartsCap),
+		parts:     make(chan partItem, dispatchPartsCap),
 	}
 	s.launchSupervised("session-dispatch/"+sessionID, d.run)
 	s.launchSupervised("session-dispatch-parts/"+sessionID, d.runParts)
@@ -234,14 +255,14 @@ func (d *sessionDispatch) runParts(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case ev, ok := <-d.parts:
+		case it, ok := <-d.parts:
 			if !ok {
 				return
 			}
 			if d.stop.Load() {
 				return
 			}
-			d.handlePartEvent(ev)
+			d.handlePartEvent(it.ev, it.guard)
 		}
 	}
 }
@@ -292,6 +313,7 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	// grace window, so the trailing completions are counted before the
 	// terminal edit is rendered.
 	var prog *runProgress
+	var guard *runTextGuard
 	runStatus := progressStatusOK
 	partsCtx, partsCancel := context.WithCancel(ctx)
 	defer func() {
@@ -301,6 +323,9 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 		}
 		partsCancel()
 		d.progressFinish(prog, runStatus)
+		if guard != nil {
+			d.textGuard.CompareAndSwap(guard, nil)
+		}
 	}()
 	partsSub := d.svc.app.Messages.SubscribeParts(partsCtx)
 
@@ -336,8 +361,12 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 		ack.token, _ = tok.(bridge.QueueAckToken)
 	}
 	var runCh <-chan agent.AgentEvent
+	// runStartMs is taken before every attempt; the one before the attempt
+	// that succeeds marks where this run's parts begin (runTextGuard.sinceMs).
+	var runStartMs int64
 	for {
 		var err error
+		runStartMs = time.Now().UnixMilli()
 		runCh, err = ag.Run(ctx, d.sessionID, in.Text, 0, atts...)
 		if err == nil {
 			break
@@ -371,15 +400,18 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	// Run succeeded — resolve the ack before starting the run.
 	d.resolveQueueAck(ctx, in.Peer, ack.token)
 	prog = d.progressStart(ctx)
+	guard = newRunTextGuard(runStartMs)
+	d.textGuard.Store(guard)
 
 	// Fan part events into d.parts for outbound surface delivery (typing,
 	// tool-update prints). Filter to this session's parts; broker is
 	// process-wide and carries every session's events. The drainParts
 	// goroutine runs under the supervised launcher so a panic inside
 	// (e.g. a malformed PartEvent) cannot crash the orchestrator, and
-	// s.wg tracks it across Service.Stop.
+	// s.wg tracks it across Service.Stop. Each forwarded event carries
+	// this run's text guard (see partItem).
 	d.svc.launchSupervisedCtx("dispatch-parts/"+d.sessionID, partsCtx, func(ctx context.Context) {
-		d.drainParts(ctx, partsSub)
+		d.drainParts(ctx, partsSub, guard)
 	})
 
 	// Drain the agent's terminal event. The channel delivers exactly one
@@ -514,7 +546,10 @@ func (d *sessionDispatch) resolveQueueAck(ctx context.Context, peer bridge.PeerR
 // Drop-oldest semantics are preserved — the consumer (runParts) drains
 // d.parts in parallel with handleInbound, so backlog is rare; when it
 // does happen, the oldest event is dropped first.
-func (d *sessionDispatch) drainParts(partsCtx context.Context, sub <-chan pubsub.Event[message.PartEvent]) {
+//
+// guard is the text guard of the run that owns sub; it travels with
+// every forwarded event (see partItem).
+func (d *sessionDispatch) drainParts(partsCtx context.Context, sub <-chan pubsub.Event[message.PartEvent], guard *runTextGuard) {
 	for {
 		select {
 		case <-partsCtx.Done():
@@ -526,8 +561,9 @@ func (d *sessionDispatch) drainParts(partsCtx context.Context, sub <-chan pubsub
 			if !d.isOwnedSession(partsCtx, ev.Payload.SessionID) {
 				continue
 			}
+			it := partItem{ev: ev, guard: guard}
 			select {
-			case d.parts <- ev:
+			case d.parts <- it:
 			default:
 				d.logOverflow()
 				// Drop oldest: try once more (non-blocking). The
@@ -539,7 +575,7 @@ func (d *sessionDispatch) drainParts(partsCtx context.Context, sub <-chan pubsub
 				default:
 				}
 				select {
-				case d.parts <- ev:
+				case d.parts <- it:
 				default:
 					// Still full — the consumer is wedged; surrender.
 				}
@@ -603,6 +639,14 @@ func (d *sessionDispatch) logOverflow() {
 // any text the agent had produced; struct-output events skip fan-out
 // (the flow engine drains the structured result separately).
 //
+// The terminal message is posted without a header. Earlier assistant
+// messages of the run that ended in tool_use are relayed by
+// postIntermediateText; the run's text guard makes sure a message that
+// path already posted (e.g. a run that ended on its turn limit) is not
+// posted a second time here. Intermediate posts still in flight are
+// waited for first (at most intermediateFlushWait), so the final reply
+// does not land above them.
+//
 // Implementation note: fan-out to bound peers happens through
 // Service.SendBySessionID which queries the store + dispatches to adapters
 // in a bounded worker pool — this dispatcher does NOT do outbound IO
@@ -617,6 +661,15 @@ func (d *sessionDispatch) handleTerminalEvent(ctx context.Context, ev agent.Agen
 	case agent.AgentEventTypeSummarize:
 		// Summarization is internal — no chat-surface delivery.
 		return
+	}
+
+	if g := d.textGuard.Load(); g != nil && ev.Message.ID != "" {
+		g.waitInFlight(ctx, intermediateFlushWait)
+		c, won := g.claim(ev.Message.ID)
+		if !won {
+			return
+		}
+		defer close(c.done)
 	}
 
 	text := agentMessageText(ev.Message)
@@ -703,10 +756,18 @@ func agentMessageText(m message.Message) string {
 // to the originating 🔧 call. Without it, two concurrent `bash` calls
 // would render as indistinguishable "🔧 bash" / "✓ bash" pairs.
 //
+// Intermediate assistant text: when the ToolCall that completes an
+// assistant message arrives (Finished, Input merged), the message's text
+// is read from the store and posted under a "⌛ <tools>" header before
+// anything else is emitted for that call, so it lands above the call's
+// card. This runs whatever the tool-update flag and verbosity are; see
+// relayIntermediateTextForPart. guard is the text guard of the run that
+// forwarded ev (nil: no bridge run, nothing is relayed).
+//
 // Per the chat-bridge spec the dispatcher MUST consume from d.parts
 // even when the outbound is suppressed — otherwise drainParts back-
 // pressures the broker subscription and stalls every other session.
-func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
+func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent], guard *runTextGuard) {
 	if d.svc.cfg == nil {
 		return
 	}
@@ -741,6 +802,10 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
 		//   - #3 (the only useful one)           → emit
 		// A genuinely-no-args tool (e.g. get_all_projects → "{}")
 		// still passes because its Input is the literal "{}", not "".
+		//
+		// The text relay runs first and synchronously so its message is
+		// sent before the call card below.
+		d.relayIntermediateTextForPart(ev.Payload, part, guard)
 		if !tu || !part.Finished || part.Input == "" {
 			return
 		}
