@@ -30,7 +30,7 @@
 - [x] 4.5 Clear the forced-tool signal on the summarizer ctx.
 - [x] 4.6 After a compaction, forget the session's announced deferred tools; the delta dedup scans only the history from `SummaryMessageID`.
 - [x] 4.7 `geminiClient.usage`: `InputTokens = max(PromptTokenCount - CachedContentTokenCount, 0)`.
-- [x] 4.8 The summarizer trim keeps the turn's prompt (`turnPromptIndex`: latest non-synthetic user message with text) after the head, unless it alone exceeds half the budget.
+- [x] 4.8 The summarizer trim keeps the turn's prompt (`turnPromptIndex`: latest non-synthetic user message with text) after the head, unless it alone exceeds half of the space left after the head and fixed parts, or keeping it would leave no recent history or the input over budget (then the trim is redone unprotected).
 - [x] 4.9 The in-loop compaction rebuild re-announces deferred MCP tools (`injectDeferredDelta` after the schema envelope); document it in `docs/deferred-tools.md`.
 
 ## 5. Overflow diagnostic

@@ -919,6 +919,57 @@ func TestTrimSummarizerInput_KeepsPairsTogether(t *testing.T) {
 	}
 }
 
+// A kept prompt must not cost the recent history or the budget: when keeping
+// it leaves nothing after the cut, or the input still over budget, the trim
+// falls back to treating it like any other message. EstimateTokens counts
+// (bytes + 100 per part) / 4, so the sizes below are 1300, 1000, 1000, 30,
+// 1400 and 1500 tokens.
+func TestTrimSummarizerInput_KeptPromptDoesNotCrowdOutHistory(t *testing.T) {
+	sized := func(role message.MessageRole, tokens int) message.Message {
+		text := strings.Repeat("p", tokens*4-100)
+		if role == message.Tool {
+			return message.Message{Role: role, Parts: []message.ContentPart{message.ToolResult{ToolCallID: "c", Content: text}}}
+		}
+		return textMsg(role, text)
+	}
+	toolUse := message.Message{Role: message.Assistant, Parts: []message.ContentPart{message.ToolCall{ID: "c", Name: "bash", Input: `{"cmd":"ls -la"}`}}}
+
+	cases := []struct {
+		name      string
+		msgs      []message.Message
+		wantRoles []message.MessageRole
+	}{
+		{
+			name:      "keeping the prompt would orphan the last tool pair",
+			msgs:      []message.Message{sized(message.User, 1300), sized(message.Assistant, 1000), sized(message.Tool, 1000), toolUse, sized(message.Tool, 1400)},
+			wantRoles: []message.MessageRole{message.User, message.Assistant, message.Tool},
+		},
+		{
+			name:      "keeping the prompt would leave the input over budget",
+			msgs:      []message.Message{sized(message.User, 1300), sized(message.Assistant, 1000), sized(message.Tool, 1000), sized(message.Assistant, 1500)},
+			wantRoles: []message.MessageRole{message.User, message.Assistant},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const fixed, budget = 27, 2700
+			kept, dropped, estimated := trimSummarizerInput(tc.msgs, false, 0, fixed, budget)
+			if dropped == 0 {
+				t.Fatalf("nothing dropped, want a trim")
+			}
+			if estimated >= budget {
+				t.Errorf("estimated = %d, want under the budget %d", estimated, budget)
+			}
+			if got := roles(kept); !slices.Equal(got, tc.wantRoles) {
+				t.Fatalf("kept roles = %v (%v), want %v: the note, then the recent history", got, texts(kept), tc.wantRoles)
+			}
+			if !strings.Contains(firstText(kept[0]), "omitted") {
+				t.Errorf("kept[0] = %q, want the omission note (the prompt is not kept)", firstText(kept[0]))
+			}
+		})
+	}
+}
+
 func TestLikelyContextOverflow(t *testing.T) {
 	cases := []struct {
 		name      string

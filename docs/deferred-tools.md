@@ -64,8 +64,8 @@ only when the set changes, and once more after each compaction — see
 Neither reminder names a specific tool-search tool — they say "the available
 tool-search tool". Which one the model actually holds a schema for is decided
 per request by the provider (native `tool_search_tool_regex_20251119` vs the
-client-side `toolsearch`), while the MCP delta is persisted (once per summary)
-and outlives a mid-session model switch. Naming `toolsearch` there made native-path models
+client-side `toolsearch`), while the MCP delta is persisted (and persisted
+again after each compaction) and outlives a mid-session model switch. Naming `toolsearch` there made native-path models
 emit a `toolsearch` call carrying the *server* tool's `pattern` argument.
 
 Two activation paths exist, chosen automatically per the resolved model's

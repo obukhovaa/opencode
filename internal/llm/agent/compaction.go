@@ -262,8 +262,9 @@ func turnPromptIndex(msgs []message.Message) int {
 // protects msgs[0] — the previous summary — while anything else remains to
 // drop. prompt is the index of the turn's prompt, or -1: a cut that passes it
 // keeps it, right after the head, and it stays counted in the budget. A
-// prompt that alone takes more than half the budget is dropped like any other
-// message. A cut never leaves a tool result at the front without the
+// prompt that alone takes more than half the space left after the head and
+// fixed is dropped like any other message, and so is one whose keeping would
+// leave nothing after the cut or the input over budget. A cut never leaves a tool result at the front without the
 // assistant tool call it answers: dropping only removes a prefix, so the one
 // way to split a pair is an orphaned Tool message right after the cut, and
 // those go too. When anything was dropped, a note saying so is inserted where
@@ -284,7 +285,11 @@ func trimSummarizerInput(msgs []message.Message, keepHead bool, prompt int, fixe
 	if keepHead {
 		start = 1
 	}
-	if prompt < start || prompt >= len(msgs) || sizes[prompt] > budget/2 {
+	avail := budget - fixed
+	if keepHead {
+		avail -= sizes[0]
+	}
+	if prompt < start || prompt >= len(msgs) || sizes[prompt] > avail/2 {
 		prompt = -1
 	}
 	cut := start
@@ -299,6 +304,11 @@ func trimSummarizerInput(msgs []message.Message, keepHead bool, prompt int, fixe
 		cut++
 	}
 	keptPrompt := prompt >= 0 && prompt < cut
+	if keptPrompt && (total+fixed >= budget || cut >= len(msgs)) {
+		// Keeping the prompt left nothing of the recent history, or still
+		// does not fit: trim as if it were any other message.
+		return trimSummarizerInput(msgs, keepHead, -1, fixed, budget)
+	}
 	dropped := cut - start
 	if keptPrompt {
 		dropped--
