@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/opencode-ai/opencode/internal/logging"
 )
@@ -169,12 +171,15 @@ func bindSentinelContent(normalizedURL, ref string) string {
 	return normalizedURL + "#" + ref
 }
 
-// validWorkspaceRef is a conservative subset of `git check-ref-format`:
-// the ref is handed to `git clone --branch` by the entrypoint and lands in
-// the sentinel next to a `#` separator, so anything that could be read as
-// an option, a path escape or a second separator is refused up front.
+// validWorkspaceRef follows `git check-ref-format --branch` closely enough
+// to accept the refs operators actually pin (`v1.2.3+build.5`,
+// `renovate/@types-node`, non-ASCII names): the orchestrator does not
+// validate refs, and a 400 here fails the bind. It still refuses anything
+// unsafe where the ref goes: it is handed to `git clone --branch` by the
+// entrypoint and lands in the sentinel next to a `#` separator, so an
+// option, a path escape or a second separator is refused up front.
 func validWorkspaceRef(ref string) bool {
-	if ref == "" || len(ref) > 255 {
+	if ref == "" || ref == "@" || len(ref) > 255 {
 		return false
 	}
 	if strings.HasPrefix(ref, "-") || strings.HasPrefix(ref, "/") || strings.HasSuffix(ref, "/") ||
@@ -185,7 +190,8 @@ func validWorkspaceRef(ref string) bool {
 	for _, r := range ref {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case r == '/', r == '-', r == '_', r == '.':
+		case r == '/', r == '-', r == '_', r == '.', r == '+', r == '@':
+		case r >= utf8.RuneSelf && (unicode.IsLetter(r) || unicode.IsDigit(r)):
 		default:
 			return false
 		}

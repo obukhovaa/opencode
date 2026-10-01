@@ -1302,12 +1302,12 @@ func TestPoolBindRejectsAnInvalidRef(t *testing.T) {
 
 func TestValidWorkspaceRef(t *testing.T) {
 	t.Parallel()
-	for _, ok := range []string{"main", "dev/composer", "release-1.2", "v0.20.0", "feat_x", "a/b/c"} {
+	for _, ok := range []string{"main", "dev/composer", "release-1.2", "v0.20.0", "feat_x", "a/b/c", "v1.2.3+build.5", "renovate/@types-node-20.x", "user@feat", "feat/über"} {
 		if !validWorkspaceRef(ok) {
 			t.Errorf("%q rejected, want accepted", ok)
 		}
 	}
-	for _, bad := range []string{"", "-x", "a..b", "x.lock", "x.", "a//b", "a b", "a~b", "a^b", "a:b", "a?b", "a*b", "a[b", "a\\b", "a@{b", "ref#x"} {
+	for _, bad := range []string{"", "-x", "a..b", "x.lock", "x.", "a//b", "a b", "a~b", "a^b", "a:b", "a?b", "a*b", "a[b", "a\\b", "a@{b", "ref#x", "@", "a\tb", "a\nb", "a\x7fb", "--upload-pack=x", "a\u00a0b"} {
 		if validWorkspaceRef(bad) {
 			t.Errorf("%q accepted, want rejected", bad)
 		}
