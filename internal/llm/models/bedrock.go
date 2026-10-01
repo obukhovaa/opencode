@@ -9,6 +9,7 @@ const (
 	BedrockEUOpus55   ModelID       = "bedrock.eu-claude-opus-5-5"
 	BedrockEUSonnet46 ModelID       = "bedrock.eu-claude-sonnet-4-6"
 	BedrockEUSonnet5  ModelID       = "bedrock.eu-claude-sonnet-5"
+	BedrockEUSonnet55 ModelID       = "bedrock.eu-claude-sonnet-5-5"
 	BedrockEUFable5   ModelID       = "bedrock.eu-claude-fable-5"
 	BedrockEUFable51  ModelID       = "bedrock.eu-claude-fable-5-1"
 	BedrockOpus46     ModelID       = "bedrock.claude-opus-4-6"
@@ -18,11 +19,17 @@ const (
 	BedrockOpus55     ModelID       = "bedrock.claude-opus-5-5"
 	BedrockSonnet46   ModelID       = "bedrock.claude-sonnet-4-6"
 	BedrockSonnet5    ModelID       = "bedrock.claude-sonnet-5"
+	BedrockSonnet55   ModelID       = "bedrock.claude-sonnet-5-5"
 	BedrockFable5     ModelID       = "bedrock.claude-fable-5"
 	BedrockFable51    ModelID       = "bedrock.claude-fable-5-1"
 	BedrockEUHaiku45  ModelID       = "bedrock.eu-claude-haiku-4-5"
 	BedrockHaiku45    ModelID       = "bedrock.claude-haiku-4-5"
 )
+
+// bedrockRegionalPremium is the 10% surcharge Bedrock applies to regional
+// (geo-pinned, e.g. EU) endpoints over the global endpoint, for Claude 4.5
+// and later models. Global entries carry the base Anthropic rates.
+const bedrockRegionalPremium = 1.1
 
 var BedrockAnthropicModels = map[ModelID]Model{
 	BedrockEUOpus46: {
@@ -193,6 +200,26 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsTaskBudget:       AnthropicModels[Claude5Sonnet].SupportsTaskBudget,
 		SupportsToolSearch:       AnthropicModels[Claude5Sonnet].SupportsToolSearch,
 	},
+	BedrockEUSonnet55: {
+		ID:                       BedrockEUSonnet55,
+		Name:                     "Bedrock EU: Claude 5.5 Sonnet",
+		Provider:                 ProviderBedrock,
+		APIModel:                 "eu-claude-sonnet-5-5",
+		CostPer1MIn:              AnthropicModels[Claude55Sonnet].CostPer1MIn * bedrockRegionalPremium,
+		CostPer1MInCached:        AnthropicModels[Claude55Sonnet].CostPer1MInCached * bedrockRegionalPremium,
+		CostPer1MOut:             AnthropicModels[Claude55Sonnet].CostPer1MOut * bedrockRegionalPremium,
+		CostPer1MOutCached:       AnthropicModels[Claude55Sonnet].CostPer1MOutCached * bedrockRegionalPremium,
+		ContextWindow:            AnthropicModels[Claude55Sonnet].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[Claude55Sonnet].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[Claude55Sonnet].SupportsAttachments,
+		CanReason:                AnthropicModels[Claude55Sonnet].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[Claude55Sonnet].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[Claude55Sonnet].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[Claude55Sonnet].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[Claude55Sonnet].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude55Sonnet].SupportsToolSearch,
+		RejectsForcedToolChoice:  AnthropicModels[Claude55Sonnet].RejectsForcedToolChoice,
+	},
 	BedrockOpus46: {
 		ID:                       BedrockOpus46,
 		Name:                     "Bedrock: Claude 4.6 Opus",
@@ -360,6 +387,26 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsXHighThinking:    AnthropicModels[Claude5Sonnet].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude5Sonnet].SupportsTaskBudget,
 		SupportsToolSearch:       AnthropicModels[Claude5Sonnet].SupportsToolSearch,
+	},
+	BedrockSonnet55: {
+		ID:                       BedrockSonnet55,
+		Name:                     "Bedrock: Claude 5.5 Sonnet",
+		Provider:                 ProviderBedrock,
+		APIModel:                 "claude-sonnet-5-5",
+		CostPer1MIn:              AnthropicModels[Claude55Sonnet].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[Claude55Sonnet].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[Claude55Sonnet].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[Claude55Sonnet].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[Claude55Sonnet].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[Claude55Sonnet].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[Claude55Sonnet].SupportsAttachments,
+		CanReason:                AnthropicModels[Claude55Sonnet].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[Claude55Sonnet].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[Claude55Sonnet].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[Claude55Sonnet].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[Claude55Sonnet].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude55Sonnet].SupportsToolSearch,
+		RejectsForcedToolChoice:  AnthropicModels[Claude55Sonnet].RejectsForcedToolChoice,
 	},
 	BedrockEUHaiku45: {
 		ID:                  BedrockEUHaiku45,

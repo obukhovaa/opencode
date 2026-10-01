@@ -25,9 +25,9 @@ type Model struct {
 	SupportsAttachments      bool          `json:"supports_attachments"`
 	UseLegacyMaxTokens       bool          `json:"use_legacy_max_tokens,omitempty"`
 	// RejectsForcedToolChoice marks models whose API answers a forced
-	// tool_choice ("tool"/"any") with a 400 (Claude Opus 5.5, Claude Fable
-	// 5.1). The Anthropic request builder runs a forced-tool request as a
-	// normal auto turn instead.
+	// tool_choice ("tool"/"any") with a 400 (Claude Opus 5.5, Claude Sonnet
+	// 5.5, Claude Fable 5.1). The Anthropic request builder runs a forced-tool
+	// request as a normal auto turn instead.
 	//
 	// The polarity is a deliberate tradeoff, and it is the risky one. Anthropic
 	// removed forced tool use because these models think unconditionally and a
