@@ -134,7 +134,7 @@ func newBareDispatch(svc *Service, sessionID string) *sessionDispatch {
 		svc:       svc,
 		sessionID: sessionID,
 		inbound:   make(chan bridge.Inbound, dispatchInboundCap),
-		parts:     make(chan pubsub.Event[message.PartEvent], dispatchPartsCap),
+		parts:     make(chan partItem, dispatchPartsCap),
 	}
 }
 

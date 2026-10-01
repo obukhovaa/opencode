@@ -5,11 +5,13 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/config"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/pubsub"
@@ -73,7 +75,7 @@ func newIntermediateTestSvc(t *testing.T, cfg *bridge.Config) (*Service, *sessio
 	msgs := &storeMessageSvc{}
 	svc.app = &app.App{Messages: msgs}
 	d := newBareDispatch(svc, "S1")
-	d.textGuard.Store(newRunTextGuard())
+	d.textGuard.Store(newRunTextGuard(0))
 	return svc, d, msgs, ed
 }
 
@@ -152,7 +154,7 @@ func TestIntermediateText_PostsHeaderAndText(t *testing.T) {
 			msgs.add(toolUseMessage("M1", "Let me check the logs.", tt.calls...))
 
 			for _, c := range tt.calls {
-				d.handlePartEvent(callPart("S1", "M1", c))
+				d.handlePartEvent(callPart("S1", "M1", c), d.textGuard.Load())
 			}
 
 			sends := ed.Sends()
@@ -175,8 +177,8 @@ func TestIntermediateText_NoTextPostsNothing(t *testing.T) {
 	second := finishedCall("toolu_02bbbbbb", "read")
 	msgs.add(toolUseMessage("M1", "", first, second))
 
-	d.handlePartEvent(callPart("S1", "M1", first))
-	d.handlePartEvent(callPart("S1", "M1", second))
+	d.handlePartEvent(callPart("S1", "M1", first), d.textGuard.Load())
+	d.handlePartEvent(callPart("S1", "M1", second), d.textGuard.Load())
 
 	if sends := ed.Sends(); len(sends) != 0 {
 		t.Errorf("sends = %q; want none", sendTexts(sends))
@@ -221,7 +223,7 @@ func TestIntermediateText_DedupWithTerminal(t *testing.T) {
 	t.Run("intermediate first", func(t *testing.T) {
 		_, d, msgs, ed := newIntermediateTestSvc(t, &bridge.Config{})
 		msgs.add(msg)
-		d.handlePartEvent(callPart("S1", "M1", call))
+		d.handlePartEvent(callPart("S1", "M1", call), d.textGuard.Load())
 		d.handleTerminalEvent(context.Background(), agentpkg.AgentEvent{Type: agentpkg.AgentEventTypeResponse, Message: msg})
 
 		sends := ed.Sends()
@@ -233,7 +235,7 @@ func TestIntermediateText_DedupWithTerminal(t *testing.T) {
 		_, d, msgs, ed := newIntermediateTestSvc(t, &bridge.Config{})
 		msgs.add(msg)
 		d.handleTerminalEvent(context.Background(), agentpkg.AgentEvent{Type: agentpkg.AgentEventTypeResponse, Message: msg})
-		d.handlePartEvent(callPart("S1", "M1", call))
+		d.handlePartEvent(callPart("S1", "M1", call), d.textGuard.Load())
 
 		sends := ed.Sends()
 		if len(sends) != 1 || sends[0].Text != "Out of turns, here is where I got." {
@@ -250,7 +252,7 @@ func TestIntermediateText_PrecedesFullCallCard(t *testing.T) {
 	call := message.ToolCall{ID: "toolu_01aaaaaa", Name: "bash", Input: `{"command":"ls"}`, Finished: true}
 	msgs.add(toolUseMessage("M1", "Listing files.", call))
 
-	d.handlePartEvent(callPart("S1", "M1", call))
+	d.handlePartEvent(callPart("S1", "M1", call), d.textGuard.Load())
 	waitFor(t, "text and call card", func() bool { return len(ed.Sends()) == 2 })
 
 	sends := ed.Sends()
@@ -277,7 +279,7 @@ func TestIntermediateText_PostedAtEveryVerbosity(t *testing.T) {
 			call := finishedCall("toolu_01aaaaaa", "read")
 			msgs.add(toolUseMessage("M1", "Reading config.", call))
 
-			d.handlePartEvent(callPart("S1", "M1", call))
+			d.handlePartEvent(callPart("S1", "M1", call), d.textGuard.Load())
 
 			if n := countTextPosts(ed.Sends(), "⌛ read\nReading config."); n != 1 {
 				t.Errorf("intermediate posts = %d; want 1 (sends %q)", n, sendTexts(ed.Sends()))
@@ -306,7 +308,7 @@ func TestIntermediateText_SkippedParts(t *testing.T) {
 			_, d, msgs, ed := newIntermediateTestSvc(t, &bridge.Config{})
 			msgs.add(toolUseMessage("M1", "Some text.", call))
 
-			d.handlePartEvent(tt.ev)
+			d.handlePartEvent(tt.ev, d.textGuard.Load())
 
 			if sends := ed.Sends(); len(sends) != 0 {
 				t.Errorf("sends = %q; want none", sendTexts(sends))
@@ -324,7 +326,7 @@ func TestIntermediateText_NoRunInFlight(t *testing.T) {
 	call := finishedCall("toolu_01aaaaaa", "bash")
 	msgs.add(toolUseMessage("M1", "Some text.", call))
 
-	d.handlePartEvent(callPart("S1", "M1", call))
+	d.handlePartEvent(callPart("S1", "M1", call), d.textGuard.Load())
 
 	if sends := ed.Sends(); len(sends) != 0 {
 		t.Errorf("sends = %q; want none", sendTexts(sends))
@@ -349,7 +351,7 @@ func TestIntermediateText_FlushedBeforeQuestion(t *testing.T) {
 		Questions: []question.Prompt{{Question: "ship?"}},
 	})
 	// The parts path arrives later and must not post the text again.
-	d.handlePartEvent(callPart("S1", "M1", call))
+	d.handlePartEvent(callPart("S1", "M1", call), d.textGuard.Load())
 
 	sends := ed.Sends()
 	if len(sends) != 2 {
@@ -409,5 +411,300 @@ func TestFlushIntermediateText_NoDispatcherOrRun(t *testing.T) {
 
 	if sends := ed.Sends(); len(sends) != 0 {
 		t.Errorf("sends = %q; want none", sendTexts(sends))
+	}
+}
+
+// slowAdapter delays every Send by delay unless the send's context ends
+// first, in which case nothing is delivered — what a slow or hung chat
+// API looks like to a caller that bounds the send.
+type slowAdapter struct {
+	*stubAdapter
+	delay time.Duration
+}
+
+func (a *slowAdapter) Send(ctx context.Context, out bridge.Outbound) bridge.SendResult {
+	select {
+	case <-time.After(a.delay):
+		return a.stubAdapter.Send(ctx, out)
+	case <-ctx.Done():
+		return bridge.SendResult{Err: ctx.Err()}
+	}
+}
+
+// useSlowSlack replaces the fixture's Slack adapter with a slowAdapter.
+func useSlowSlack(svc *Service, delay time.Duration) *slowAdapter {
+	slow := &slowAdapter{stubAdapter: newStubAdapter("slack", "default"), delay: delay}
+	svc.mu.Lock()
+	svc.adapters[adapterKey("slack", "default")] = slow
+	svc.mu.Unlock()
+	return slow
+}
+
+// liveMessageSvc adds a parts broker to storeMessageSvc, so a stub agent
+// can store a message and republish its tool calls the way processEvent
+// does at EventComplete.
+type liveMessageSvc struct {
+	storeMessageSvc
+	broker *pubsub.Broker[message.PartEvent]
+}
+
+func newLiveMessageSvc() *liveMessageSvc {
+	return &liveMessageSvc{broker: pubsub.NewBroker[message.PartEvent]()}
+}
+
+func (s *liveMessageSvc) SubscribeParts(ctx context.Context) <-chan pubsub.Event[message.PartEvent] {
+	return s.broker.Subscribe(ctx)
+}
+
+func (s *liveMessageSvc) completeToolUse(msg message.Message) {
+	s.add(msg)
+	for _, c := range msg.ToolCalls() {
+		s.broker.Publish(pubsub.UpdatedEvent, message.PartEvent{
+			SessionID: msg.SessionID,
+			MessageID: msg.ID,
+			Part:      c,
+			Time:      time.Now().UnixMilli(),
+		})
+	}
+}
+
+// scriptedAgent is an agent.Service whose Run hands each attempt (1-based)
+// to script.
+type scriptedAgent struct {
+	agentpkg.Service
+
+	attempts atomic.Int32
+	script   func(attempt int) (<-chan agentpkg.AgentEvent, error)
+}
+
+func (a *scriptedAgent) Run(_ context.Context, _, _ string, _ int, _ ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
+	return a.script(int(a.attempts.Add(1)))
+}
+
+func finalReply(id, text string) agentpkg.AgentEvent {
+	return agentpkg.AgentEvent{
+		Type: agentpkg.AgentEventTypeResponse,
+		Message: message.Message{
+			ID: id, Role: message.Assistant, SessionID: "S1",
+			Parts: []message.ContentPart{
+				message.TextContent{Text: text},
+				message.Finish{Reason: message.FinishReasonEndTurn},
+			},
+		},
+	}
+}
+
+// TestHandleInbound_RelaysIntermediateText drives a whole bridge run: the
+// agent stores a tool_use message with text and republishes its call, and
+// the text must reach chat under its header. otherActorFirst adds a busy
+// first attempt during which another actor's run on the session completes
+// a tool_use message of its own; the parts subscription is already open,
+// so that part is buffered, but it is not this run's and is not relayed.
+func TestHandleInbound_RelaysIntermediateText(t *testing.T) {
+	tests := []struct {
+		name            string
+		otherActorFirst bool
+	}{
+		{"own run", false},
+		{"another actor held the session first", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, ed, _ := newProgressTestSvc(t, &bridge.Config{})
+			msgs := newLiveMessageSvc()
+			ag := &scriptedAgent{script: func(attempt int) (<-chan agentpkg.AgentEvent, error) {
+				if tt.otherActorFirst && attempt == 1 {
+					msgs.completeToolUse(toolUseMessage("M0", "Another run's text.", finishedCall("toolu_00zzzzzz", "bash")))
+					return nil, agentpkg.ErrSessionBusy
+				}
+				msgs.completeToolUse(toolUseMessage("M1", "Checking the logs.", finishedCall("toolu_01aaaaaa", "bash")))
+				ch := make(chan agentpkg.AgentEvent, 1)
+				ch <- finalReply("M2", "Done.")
+				close(ch)
+				return ch, nil
+			}}
+			svc.app = &app.App{
+				Messages:         msgs,
+				PrimaryAgents:    map[config.AgentName]agentpkg.Service{config.AgentCoder: ag},
+				PrimaryAgentKeys: []config.AgentName{config.AgentCoder},
+			}
+			d := newBareDispatch(svc, "S1")
+			ctx, cancel := context.WithCancel(context.Background())
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() { defer wg.Done(); d.runParts(ctx) }()
+			defer func() { cancel(); wg.Wait() }()
+
+			d.handleInbound(context.Background(), testInbound("look at the logs"))
+
+			waitFor(t, "the intermediate text", func() bool {
+				return countTextPosts(ed.Sends(), "⌛ bash\nChecking the logs.") == 1
+			})
+			// M0's part was forwarded ahead of M1's, so it has been handled.
+			if n := countTextPosts(ed.Sends(), "⌛ bash\nAnother run's text."); n != 0 {
+				t.Errorf("another actor's text posted %d times; want 0 (sends %q)", n, sendTexts(ed.Sends()))
+			}
+			if n := countTextPosts(ed.Sends(), "Done."); n != 1 {
+				t.Errorf("final reply posted %d times; want 1 (sends %q)", n, sendTexts(ed.Sends()))
+			}
+		})
+	}
+}
+
+// TestIntermediateText_LatePartKeepsItsRunsGuard: d.parts is shared by
+// the session's runs and runParts can lag, so a part of run N can be
+// handled after run N ended. It must be checked against run N's guard:
+// against run N+1's it would post run N's message a second time, against
+// none (no run in flight) its message would be lost.
+func TestIntermediateText_LatePartKeepsItsRunsGuard(t *testing.T) {
+	tests := []struct {
+		name string
+		next *runTextGuard
+	}{
+		{"next run started", newRunTextGuard(0)},
+		{"no run in flight", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, d, msgs, ed := newIntermediateTestSvc(t, &bridge.Config{})
+			first := finishedCall("toolu_01aaaaaa", "bash")
+			second := finishedCall("toolu_02bbbbbb", "read")
+			msgs.add(toolUseMessage("M1", "Checking two things.", first, second))
+			last := finishedCall("toolu_03cccccc", "grep")
+			msgs.add(toolUseMessage("M3", "One more look.", last))
+			runN := d.textGuard.Load()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			sub := make(chan pubsub.Event[message.PartEvent], 4)
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() { defer wg.Done(); d.drainParts(ctx, sub, runN) }()
+			go func() { defer wg.Done(); d.runParts(ctx) }()
+			defer func() { cancel(); wg.Wait() }()
+
+			sub <- callPart("S1", "M1", first)
+			waitFor(t, "run N's first text", func() bool { return len(ed.Sends()) == 1 })
+
+			// Run N ends; its last parts are handled only now.
+			d.textGuard.Store(tt.next)
+			sub <- callPart("S1", "M1", second)
+			sub <- callPart("S1", "M3", last)
+			waitFor(t, "run N's last text", func() bool {
+				return countTextPosts(ed.Sends(), "⌛ grep\nOne more look.") == 1
+			})
+
+			if n := countTextPosts(ed.Sends(), "⌛ bash, read\n"); n != 1 {
+				t.Errorf("M1 posted %d times; want 1 (sends %q)", n, sendTexts(ed.Sends()))
+			}
+		})
+	}
+}
+
+// TestFlushIntermediateText_SlowSendNotCancelled: the question router
+// stops waiting after intermediateFlushWait, but the text it claimed is
+// still delivered, once. Cancelling the send at the wait bound would lose
+// the text: the claim stays, so the parts path skips the message.
+func TestFlushIntermediateText_SlowSendNotCancelled(t *testing.T) {
+	oldWait := intermediateFlushWait
+	intermediateFlushWait = 20 * time.Millisecond
+	defer func() { intermediateFlushWait = oldWait }()
+
+	svc, d, msgs, _ := newIntermediateTestSvc(t, &bridge.Config{})
+	const delay = 300 * time.Millisecond
+	slow := useSlowSlack(svc, delay)
+	svc.dispatchMu.Lock()
+	svc.dispatchers["S1"] = d
+	svc.dispatchMu.Unlock()
+	call := finishedCall("toolu_01aaaaaa", "question")
+	msgs.add(toolUseMessage("M1", "Before I go on, one question.", call))
+
+	start := time.Now()
+	svc.flushIntermediateText(context.Background(), "S1")
+	if elapsed := time.Since(start); elapsed >= delay {
+		t.Errorf("flush returned after %v; want it bounded by the wait (%v), not the send (%v)",
+			elapsed, intermediateFlushWait, delay)
+	}
+
+	c, ok := d.textGuard.Load().lookup("M1")
+	if !ok {
+		t.Fatal("the flush must claim the message")
+	}
+	select {
+	case <-c.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the flush's send never finished")
+	}
+	// The parts path arrives later and must not post the text again.
+	d.handlePartEvent(callPart("S1", "M1", call), d.textGuard.Load())
+
+	if n := countTextPosts(slow.Sends(), "⌛ question\nBefore I go on, one question."); n != 1 {
+		t.Errorf("pre-question text delivered %d times; want 1 (sends %q)", n, sendTexts(slow.Sends()))
+	}
+}
+
+// TestIntermediateText_PartsPathSendIsBounded: the parts-path post is
+// synchronous on runParts, so a chat API that never answers must not
+// hold it past intermediateSendTimeout.
+func TestIntermediateText_PartsPathSendIsBounded(t *testing.T) {
+	oldTimeout := intermediateSendTimeout
+	intermediateSendTimeout = 20 * time.Millisecond
+	defer func() { intermediateSendTimeout = oldTimeout }()
+
+	svc, d, msgs, _ := newIntermediateTestSvc(t, &bridge.Config{})
+	useSlowSlack(svc, time.Hour)
+	call := finishedCall("toolu_01aaaaaa", "bash")
+	msgs.add(toolUseMessage("M1", "Checking the logs.", call))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.handlePartEvent(callPart("S1", "M1", call), d.textGuard.Load())
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the parts path stayed blocked on a hung chat API")
+	}
+}
+
+// TestIntermediateText_FinalReplyWaitsForInFlightText: the final reply
+// waits for an intermediate post of its run that is still in flight, so it
+// does not land above it, but for at most intermediateFlushWait.
+func TestIntermediateText_FinalReplyWaitsForInFlightText(t *testing.T) {
+	oldWait := intermediateFlushWait
+	intermediateFlushWait = 200 * time.Millisecond
+	defer func() { intermediateFlushWait = oldWait }()
+
+	const hold = 50 * time.Millisecond
+	tests := []struct {
+		name    string
+		release bool
+		minWait time.Duration
+	}{
+		{"released", true, hold},
+		{"never released", false, 200 * time.Millisecond},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, d, _, ed := newIntermediateTestSvc(t, &bridge.Config{})
+			c, _ := d.textGuard.Load().claim("M1")
+			if tt.release {
+				time.AfterFunc(hold, func() { close(c.done) })
+			}
+
+			start := time.Now()
+			d.handleTerminalEvent(context.Background(), finalReply("M2", "All done."))
+			elapsed := time.Since(start)
+
+			if elapsed < tt.minWait {
+				t.Errorf("final reply posted after %v; want it to wait at least %v", elapsed, tt.minWait)
+			}
+			if elapsed >= 3*time.Second {
+				t.Errorf("final reply posted after %v; want the wait bounded", elapsed)
+			}
+			if sends := ed.Sends(); len(sends) != 1 || sends[0].Text != "All done." {
+				t.Errorf("sends = %q; want exactly [\"All done.\"]", sendTexts(sends))
+			}
+		})
 	}
 }
