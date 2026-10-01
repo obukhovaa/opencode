@@ -50,18 +50,28 @@ beats coalesced into one). This change does the same for opencode's daemon mode.
   file (default `HEARTBEAT.md` in the working directory). A missing or empty
   file skips the beat without a model call.
 - **Silent beats stay silent.** A beat whose reply is `HEARTBEAT_OK` posts
-  nothing. Heartbeat turns post no queued-ack, no progress card and no tool-call
-  cards; only the final reply (with a short `💓 Heartbeat HH:MMZ` header) or a
-  one-line failure reaches the chat.
+  nothing. Heartbeat turns post no queued-ack, no progress card, no tool-call
+  cards and no intermediate text; only the final reply (with a short
+  `💓 Heartbeat HH:MMZ` header) or a one-line failure reaches the chat. A beat
+  that starts being skipped for a missing agenda says so once.
+- **Messages come first.** A human message that arrives while a beat runs
+  cancels the beat; the cancelled beat posts nothing.
 - **Busy sessions defer, missed beats coalesce.** A beat that comes due while the
   session is running waits until it is idle. Beats missed while the process was
-  down become a single catch-up beat.
+  down become a single catch-up beat, which fires only inside the active hours.
+  A session bound to several chats gets one beat per slot. `/heartbeat now`
+  during a turn runs when the turn ends.
 - **A once-a-week setup reminder.** When a daemon starts and a binding has never
   had its heartbeat turned on or off, the bridge posts a short message explaining
   `/heartbeat on` and `/heartbeat off`. It is repeated at most once every seven
-  days, and never again once the human has chosen either.
-- **Daemon mode only.** Flow runners and pool pods, which also run the bridge,
-  get no heartbeat and no reminder.
+  days, and never again once the human has chosen either. It reaches only the
+  daemon's own top-level direct messages, never channels, threads, flow sessions,
+  the external relay or a mediated bot's chats, and `router.heartbeatReminder:
+  false` turns it off.
+- **Daemon mode only, and only for bots the process owns.** Flow runners and pool
+  pods, which also run the bridge, get no heartbeat and no reminder. A daemon
+  schedules beats only for an adapter that is inbound-active in its process; a
+  daemon whose bots are mediated by the orchestrator gets no scheduled beats.
 
 ## Capabilities
 
@@ -88,3 +98,8 @@ beats coalesced into one). This change does the same for opencode's daemon mode.
 - `internal/bridge/store` and `internal/db`: `bridge_heartbeats` table (SQLite and
   MySQL migrations, sqlc queries).
 - `cmd/serve.go`: enables the heartbeat only for daemon mode.
+- `internal/bridge`: optional `DirectPeerChecker` adapter contract (Slack,
+  Mattermost, Telegram implement it); `router.heartbeatReminder` in
+  `bridge.Config`, `cmd/schema` and `opencode-schema.json`.
+- `chat-bridge` spec: heartbeat exceptions to tool-transition status and the
+  intermediate text relay.

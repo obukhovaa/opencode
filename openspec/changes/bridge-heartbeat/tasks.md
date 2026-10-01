@@ -37,3 +37,26 @@
 ## 5. Docs
 
 - [x] 5.1 Document the heartbeat in the bridge docs
+
+## 6. Review fixes
+
+- [x] 6.1 Reminder only to top-level DMs of inbound-active adapters
+  (`bridge.DirectPeerChecker` for Slack, Mattermost, Telegram); never external,
+  threads, flow/subagent or interactive sessions
+- [x] 6.2 `router.heartbeatReminder` switch (default on): `bridge.Config`,
+  `cmd/schema`, `opencode-schema.json`, viper round-trip test, docs
+- [x] 6.3 Scheduler only for inbound-active adapters; `/heartbeat on` notes
+  when scheduled beats will not run
+- [x] 6.4 `/heartbeat now` and the tool's `now` queue behind the current turn;
+  a manual beat waits out another actor instead of being dropped
+- [x] 6.5 Late (catch-up, held-back) beats fire only inside the active window
+- [x] 6.6 A human message preempts a running beat; cancellations post nothing
+- [x] 6.7 Quietness per run (text guard) only; no dispatcher-wide flag
+- [x] 6.8 One notice when scheduled beats start being skipped for an agenda
+- [x] 6.9 Compare-and-swap claim of the dispatcher's beat
+- [x] 6.10 Scheduler writes re-read the row and never undo a `/heartbeat` change
+- [x] 6.11 No beat on a session an interactive flow step owns
+- [x] 6.12 One beat per session per slot
+- [x] 6.13 `/heartbeat model` requires a configured, enabled provider
+- [x] 6.14 `chat-bridge` delta: heartbeat exceptions to tool-transition status
+  and the intermediate text relay; cost and DST notes in the docs

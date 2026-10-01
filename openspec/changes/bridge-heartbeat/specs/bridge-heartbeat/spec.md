@@ -22,14 +22,14 @@ The bridge SHALL handle `/heartbeat` as a chat command, without starting an agen
 
 - no argument or `status`: report the state, interval, active hours, days, model, agenda file, last beat (time and outcome) and next beat;
 - `on` and `off`;
-- `now`: queue one beat immediately without changing the schedule;
+- `now`: queue one beat without changing the schedule. When the session is busy, including when the `heartbeat` tool's `now` is used inside the session's own turn, the beat SHALL be queued behind the current turn and the reply SHALL say that it runs when the current turn ends. A manual beat that then finds the session held by another actor SHALL wait for it like a message, and SHALL NOT be dropped;
 - `every <duration>` with a duration between 10 minutes and 24 hours (`30m`, `1h`, `2h30m`);
 - `hours <HH>-<HH>` or `hours <HH:MM>-<HH:MM>` in UTC, start inclusive and end exclusive, wrapping midnight when the end is before the start, or `hours all`;
 - `days weekdays` or `days all`;
-- `model <id>` for a supported model, or `model default`;
+- `model <id>` for a supported model whose provider is configured and enabled, or `model default`;
 - `file <path>` relative to the working directory, or `file default`.
 
-Several of these MAY be combined in one command (`/heartbeat on every 30m hours 05-21 days weekdays`). An invalid argument SHALL leave every setting unchanged and reply with the reason and a usage line. Every successful change SHALL reply with the resulting status. Times SHALL be shown in UTC with a `Z` suffix.
+Several of these MAY be combined in one command (`/heartbeat on every 30m hours 05-21 days weekdays`). An invalid argument SHALL leave every setting unchanged and reply with the reason and a usage line. Every successful change SHALL reply with the resulting status. Times SHALL be shown in UTC with a `Z` suffix. A change SHALL NOT be undone by a scheduler pass or a beat that read the binding's row before the change: those write only the fields they own, and nothing when the state or settings changed since they read it.
 
 #### Scenario: Turn on with a schedule
 
@@ -45,6 +45,16 @@ Several of these MAY be combined in one command (`/heartbeat on every 30m hours 
 
 - **WHEN** the state is `unset` and a peer runs `/heartbeat every 2h`
 - **THEN** the interval is stored, the state stays `unset`, and no beat is scheduled
+
+#### Scenario: Beat now while the agent is working
+
+- **WHEN** a peer runs `/heartbeat now` while the agent is answering a message, or the agent calls the `heartbeat` tool with `now`
+- **THEN** the reply says the beat is queued and runs when the current turn ends, and it does
+
+#### Scenario: Model of an unconfigured provider
+
+- **WHEN** a peer runs `/heartbeat model <id>` for a supported model whose provider is not configured or is disabled
+- **THEN** the model is not stored and the reply names the provider
 
 ### Requirement: /heartbeat accepts natural language through the agent
 
@@ -78,7 +88,7 @@ A heartbeat turn SHALL run in the binding's session through that session's dispa
 
 ### Requirement: Beats follow the schedule, defer when busy and coalesce missed beats
 
-A beat SHALL become due at `next_beat_at`. Each day's slots SHALL start at the start of the active hours (00:00 UTC without them) and repeat every interval while inside them, on active days only. When a beat fires, the next slot SHALL be computed from the current time, so that beats missed while the process was down or the session was busy collapse into one. A due beat SHALL wait, without being queued, while the session is running or another beat for the session is queued or running.
+A beat SHALL become due at `next_beat_at`. Each day's slots SHALL start at the start of the active hours (00:00 UTC without them) and repeat every interval while inside them, on active days only. Active hours and days SHALL be UTC and SHALL NOT follow daylight saving time. When a beat fires, the next slot SHALL be computed from the current time, so that beats missed while the process was down or the session was busy collapse into one. A due beat SHALL fire only while the current time is inside the active hours of an active day; a beat that comes due late outside them (a catch-up after downtime, or one a busy session held back) SHALL move to the next allowed slot without firing. A due beat SHALL wait, without being queued, while the session is running, a message is queued for it, an interactive flow step owns it, or another beat for the session is queued or running. A session bound to several chats SHALL get at most one beat per slot: when one of its bindings' beats fires or is skipped, the other due bindings of that session SHALL move to their next slot, and the report SHALL reach every bound chat like any reply.
 
 #### Scenario: Busy session
 
@@ -100,18 +110,40 @@ A beat SHALL become due at `next_beat_at`. Each day's slots SHALL start at the s
 - **WHEN** the active hours are `05-21` and the current time is 22:30Z
 - **THEN** the next beat is 05:00Z on the next active day
 
+#### Scenario: Catch-up outside active hours
+
+- **WHEN** the active hours are `07-23`, a beat was due at 22:00Z, and the daemon starts again at 03:00Z after an overnight redeploy
+- **THEN** no beat fires at 03:00Z and the next beat is 07:00Z
+
+#### Scenario: Interactive flow step
+
+- **WHEN** a beat comes due on a session an interactive flow step owns
+- **THEN** no beat is queued and the beat keeps its due time
+
+#### Scenario: Session bound to two chats
+
+- **WHEN** a session is bound to two chats that both have the heartbeat on with the same schedule
+- **THEN** one beat runs per slot, its report reaches both chats, and both bindings move to the next slot
+
 ### Requirement: An empty agenda skips the beat
 
 Each beat's prompt SHALL name the agenda file (default `HEARTBEAT.md` in the working directory) and the current UTC time, and SHALL tell the agent to reply exactly `HEARTBEAT_OK` when nothing needs the human's attention. If the agenda file is missing, or holds only whitespace, markdown headings and empty list items, the beat SHALL be skipped without a model call and recorded as `skipped`.
 
+When scheduled beats start being skipped for a reason (the binding's last outcome was not a skip for the same reason), the bridge SHALL post one notice to that binding naming the reason and how to fix it or turn the heartbeat off. Later skips for the same reason SHALL post nothing.
+
 #### Scenario: No agenda file
 
 - **WHEN** a beat comes due and `HEARTBEAT.md` does not exist
-- **THEN** no agent run starts, nothing is posted, and `/heartbeat status` shows the last beat as skipped
+- **THEN** no agent run starts, `/heartbeat status` shows the last beat as skipped, and the chat gets one `💓 Heartbeat HH:MMZ skipped: HEARTBEAT.md does not exist. …` notice
+
+#### Scenario: Still no agenda file
+
+- **WHEN** the next beat comes due and `HEARTBEAT.md` still does not exist
+- **THEN** the beat is skipped and nothing is posted
 
 ### Requirement: Heartbeat turns are quiet unless there is something to say
 
-While a heartbeat turn runs, the bridge SHALL NOT post a queued acknowledgement, a progress card or tool-call cards for it. If the final reply is `HEARTBEAT_OK`, or a reply of at most 300 characters whose first or last line is `HEARTBEAT_OK`, nothing SHALL be posted and the beat SHALL be recorded as `silent`. Any other reply SHALL be posted with a header line `💓 Heartbeat HH:MMZ`. A terminal error SHALL post one line naming the failure and record it as `error` with the reason.
+While a heartbeat turn runs, the bridge SHALL NOT post a queued acknowledgement, a progress card, tool-call cards or intermediate assistant text for it. Quietness SHALL belong to the heartbeat run itself: a part event of the heartbeat run SHALL stay quiet when it is handled after the run ended, and a part event of the run before the beat SHALL be rendered as usual when it is handled while the beat runs. If the final reply is `HEARTBEAT_OK`, or a reply of at most 300 characters whose first or last line is `HEARTBEAT_OK`, nothing SHALL be posted and the beat SHALL be recorded as `silent`. Any other reply SHALL be posted with a header line `💓 Heartbeat HH:MMZ`. A terminal error other than a cancellation SHALL post one line naming the failure and record it as `error` with the reason.
 
 #### Scenario: Nothing new
 
@@ -122,6 +154,20 @@ While a heartbeat turn runs, the bridge SHALL NOT post a queued acknowledgement,
 
 - **WHEN** the agent ends a beat with a two-line report
 - **THEN** the chat shows the header `💓 Heartbeat 14:00Z` followed by the report, and no progress card or tool cards were posted during the beat
+
+#### Scenario: Late tool event of the previous turn
+
+- **WHEN** a tool event of the human turn before a beat is handled while the beat runs
+- **THEN** its tool card is posted as usual
+
+### Requirement: A message preempts a running beat
+
+When a human message is queued on a session whose heartbeat turn is in flight, the bridge SHALL cancel the beat's run, on the agent instance the beat runs on, so the message is handled without waiting for the beat. A beat that has not started its run yet SHALL NOT start. A beat cancelled this way SHALL post nothing and SHALL be recorded as `skipped` with the reason `preempted by a message`, and its `next_beat_at` SHALL NOT move back. A beat cancelled in any other way (for example `/abort`) SHALL NOT post the failure line either. Cancelling SHALL NOT stop another actor's run on the session.
+
+#### Scenario: Message during a beat
+
+- **WHEN** a human sends a message while a beat is running
+- **THEN** the beat is cancelled, nothing is posted for it, the message is answered, and `/heartbeat status` shows the last beat as skipped, preempted by a message
 
 ### Requirement: A model override is optional
 
@@ -136,6 +182,8 @@ When a heartbeat `model` is set, beats SHALL run on the primary agent with that 
 
 When a daemon's adapter for an identity is registered, the bridge SHALL post a setup reminder to each binding of that identity whose heartbeat state is `unset` and whose last reminder is absent or at least seven days old, explaining `/heartbeat on` and `/heartbeat off`. It SHALL record the reminder time before posting. Bindings whose session has no messages SHALL be skipped. A binding whose state is `on` or `off` SHALL never be reminded.
 
+The reminder SHALL reach only conversations this daemon serves: top-level direct messages with one person, as the adapter reports them, of an adapter that is inbound-active in this process. It SHALL NOT be posted to a thread peer, a channel or group chat, the `external` relay, any binding of an adapter whose inbound is disabled (mediated), a session whose root is another session (a flow step's or a subagent's), or a session an interactive flow step owns. An adapter that cannot tell a direct message SHALL get no reminder. `router.heartbeatReminder: false` SHALL turn the reminder off for the whole process; it defaults to on.
+
 #### Scenario: Weekly, not on every restart
 
 - **WHEN** a daemon with an unset heartbeat is redeployed twice in one day
@@ -145,6 +193,25 @@ When a daemon's adapter for an identity is registered, the bridge SHALL post a s
 
 - **WHEN** the human runs `/heartbeat off`
 - **THEN** no reminder is ever posted for that binding again
+
+#### Scenario: Shared project
+
+- **WHEN** a daemon shares its database project with flow and pool pods, and its identity's bindings include channel threads, @-mention threads, other pods' review threads and a mediated bot's chats
+- **THEN** only the daemon's own top-level direct messages are reminded
+
+#### Scenario: Switched off
+
+- **WHEN** `.opencode.json` sets `router.heartbeatReminder: false`
+- **THEN** no reminder is posted, and `/heartbeat` still works
+
+### Requirement: Only the process that owns a bot schedules its beats
+
+The scheduler SHALL queue beats only for bindings of an adapter that is registered and inbound-active in this process, so the identity lock that admits one such adapter per identity also admits one scheduler per heartbeat. Bindings of a mediated adapter (inbound disabled, which takes no identity lock and may be held by several processes) and of the `external` relay SHALL NOT be scheduled. Turning such a binding's heartbeat on SHALL reply that scheduled beats do not run for it; `/heartbeat now` SHALL still run a beat.
+
+#### Scenario: Mediated daemon
+
+- **WHEN** a daemon's only bot is mediated by the orchestrator and a peer runs `/heartbeat on`
+- **THEN** the reply says scheduled beats do not run for this chat, and no scheduled beat is ever queued for it
 
 ### Requirement: Heartbeats exist only in daemon mode
 
