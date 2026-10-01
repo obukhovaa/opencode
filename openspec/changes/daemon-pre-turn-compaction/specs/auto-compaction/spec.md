@@ -10,7 +10,7 @@ Defines when a session's history is compacted automatically, how the context siz
 
 ### Requirement: A turn is checked before its first model call
 
-The system SHALL, when `autoCompact` is enabled, count a session's history plus the incoming user message before the user message is persisted and before the turn's first model call, and SHALL compact the session synchronously when the count reaches the effective threshold. When it compacts, the system SHALL persist the user message after the summary message. The check SHALL apply to every agent run, regardless of entry point (chat bridge, daemon, ACP, CLI, TUI, flow step). A compaction failure SHALL be logged as a warning and the turn SHALL continue.
+The system SHALL, when `autoCompact` is enabled, count a session's history plus the incoming user message before the user message is persisted and before the turn's first model call, and SHALL compact the session synchronously when the count reaches the effective threshold. When it compacts, the system SHALL persist the user message after the summary message. The check SHALL apply to every agent run, regardless of entry point (chat bridge, daemon, ACP, CLI, TUI, flow step). A compaction failure SHALL be logged as a warning and the turn SHALL continue. On an auto-resume turn the system SHALL keep the trailing synthetic completion messages after the summary in the turn's history. When an asynchronous summarization of the session is in flight on the same agent, the system SHALL wait for it (bounded) and count the history it leaves before deciding. The system SHALL also check the first model call after a non-interactive run re-enters its loop for drained background tasks.
 
 #### Scenario: Session over the threshold compacts before the first call
 
@@ -28,6 +28,24 @@ The system SHALL, when `autoCompact` is enabled, count a session's history plus 
 
 - **WHEN** a turn has no user content and no attachments (auto-resume)
 - **THEN** only the existing history is counted, and no user message is persisted
+
+#### Scenario: Auto-resume turn compacts
+
+- **WHEN** an auto-resume turn's history, ending with a synthetic tool call and tool result for a finished background task, is over the effective threshold
+- **THEN** the session is compacted before the first model call
+- **AND** the first model request is the summary followed by that tool call and tool result
+
+#### Scenario: Summarization already in flight
+
+- **WHEN** a turn starts while an asynchronous summarization of the same session is running on the agent
+- **THEN** the turn waits for it to finish before counting
+- **AND** counts the history from the new summary, without starting a second summarization
+
+#### Scenario: Non-interactive re-entry over the threshold
+
+- **WHEN** a non-interactive run waits for its background tasks and their completions push the history over the effective threshold
+- **THEN** the session is compacted before the model call that reacts to them
+- **AND** that call's request is the summary followed by the completions' tool calls and tool results
 
 #### Scenario: Cycle one is not compacted twice
 
@@ -47,6 +65,11 @@ The system SHALL compute the context size for compaction decisions as the maximu
 
 - **WHEN** the session's reported prompt usage is 0 after a compaction
 - **THEN** the floor reflects only the summary size and the provider estimate is used
+
+#### Scenario: Cached prompt tokens are counted once
+
+- **WHEN** a provider reports a prompt of which part was served from cache (Gemini `PromptTokenCount` includes `CachedContentTokenCount`)
+- **THEN** the recorded usage counts the cached part once, as cache-read tokens, and the floor equals the real prompt plus output
 
 ### Requirement: Compaction threshold is configurable per agent
 
@@ -69,12 +92,31 @@ The system SHALL accept `agents.<name>.compactionThreshold` in `.opencode.json` 
 
 ### Requirement: Summarizer input is bounded
 
-The system SHALL build the summarizer's input from the history starting at the session's current summary message (the prior summary kept as the head), not from the full message log. When that input plus the compaction prompt and the summarizer's system prompt reaches 90% of the summarizer model's context window, the system SHALL drop the oldest messages until it fits, SHALL NOT leave a tool result without its tool call at the head of the input, and SHALL log a warning with the number of dropped messages. A summarizer context window of 0 SHALL disable trimming.
+The system SHALL build the summarizer's input from the history starting at the session's current summary message (the prior summary kept as the head), not from the full message log. When that input plus the compaction prompt and the summarizer's system prompt reaches 90% of the summarizer model's context window, the system SHALL drop the oldest messages until it fits, SHALL NOT leave a tool result without its tool call at the head of the input, and SHALL log a warning with the number of dropped messages. The size SHALL be the local estimate, scaled by the session's reported usage when that usage exceeds the local estimate of the same history. A summarizer context window of 0 SHALL disable trimming.
 
 #### Scenario: Already-overflowed session recovers
 
 - **WHEN** a session's post-summary history exceeds the summarizer's window
 - **THEN** the oldest messages are dropped, the summary is produced, and the next model call starts from the new summary
+
+#### Scenario: Undercounting estimate is calibrated
+
+- **WHEN** the local estimate of the history fits the summarizer's window but the session's reported usage for the same history does not
+- **THEN** the oldest messages are dropped as if the history were the reported size
+
+### Requirement: Compaction leaves turn state intact
+
+The system SHALL NOT send a forced tool choice to the summarizer, even when the turn that compacts forces one. A compaction before a turn's first model call SHALL NOT reduce the turn's task budget. After a compaction, the system SHALL announce the session's deferred external tools again, once, in the first turn that runs from the new summary (the compacting turn itself when it compacted before its first model call), and SHALL NOT count an announcement made before the summary as already made.
+
+#### Scenario: Forced struct_output turn compacts
+
+- **WHEN** a turn that forces the struct_output tool compacts the session
+- **THEN** the summarizer request carries no forced tool choice
+
+#### Scenario: Deferred tools after compaction
+
+- **WHEN** a session whose deferred external tools were announced earlier is compacted before a turn's first model call
+- **THEN** one new announcement follows the summary in that turn, and later turns add none
 
 ### Requirement: Call failures near the window are diagnosable
 

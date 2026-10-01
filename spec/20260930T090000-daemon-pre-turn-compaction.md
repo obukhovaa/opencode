@@ -23,9 +23,9 @@ In `processGeneration`, BEFORE the user message is persisted:
 1. Resolve `toolSet` earlier (move `a.resolveTools()` above `createUserMessage`). Deferred-delta injection stays after the gate.
 2. Build the count input: current filtered `msgs`, plus a transient unpersisted `message.Message{Role: User, Parts: text + attachment parts}` when `hasUserTurn`. Auto-resume turns (no content) count `msgs` only.
 3. `eta, hit := a.countContextTokens(ctx, sessionID, a.resolveCompactionThreshold(opts), countInput, toolSet)`.
-4. If `cfg.AutoCompact && hit`: log Info `"Auto-compaction triggered before turn"` (session_id, token_count, threshold, context_window) and call `performSynchronousCompaction`. On success: reload `msgs`, `filterMessagesFromSummary`, `filterEmptyUserMessages`, `withStructOutputSchema`, and re-apply the TaskBudget-remaining ctx as the in-loop path does (factor that block into a helper shared by both paths). On failure: WARN and continue, the same contract as the in-loop path.
+4. If `cfg.AutoCompact && hit`: log Info `"Auto-compaction triggered before turn"` (session_id, token_count, threshold, context_window) and call `performSynchronousCompaction`. On success: reload `msgs`, `filterMessagesFromSummary`, `filterEmptyUserMessages`; `withStructOutputSchema` runs after the gate anyway. Do NOT apply the TaskBudget-remaining ctx here: the turn has not started, so its budget is the full one (the in-loop path keeps it, via a `withTaskBudgetRemaining` helper). On an auto-resume turn, carry the trailing synthetic completion pair past the summary in memory. If a `Summarize` of the session is in flight on the agent, wait for it (bounded) and reload before counting. On failure: WARN and continue, the same contract as the in-loop path.
 5. Only then persist the user message, so seq order is `summary → user message` and the user turn survives later reloads.
-6. The in-loop check keeps `cycles != 1`: cycle 1 is covered by the gate, and this avoids summarizing twice in a row.
+6. The in-loop check becomes `cycles != 1 || outerCycles > 1`: cycle 1 of the first outer cycle is covered by the gate (no double summarization), while a non-interactive re-entry's first call has no gate in front of it and is checked.
 
 Applies to every `Run`/`RunWith` caller: bridge, daemon, ACP, CLI, TUI, flow steps. For the TUI it is additive: its post-turn check stays.
 
@@ -57,7 +57,7 @@ Shared helper `func (a *agent) summarizerInput(ctx, sessionID string, prompt mes
 3. WARN `"compaction input exceeded summarizer window; dropped oldest messages"` (session_id, dropped, kept, estimated_tokens, window).
 4. Append the compaction prompt.
 
-This lets an already-overflowed session (Neo) recover on its next turn once R1 fires.
+Calibrate step 2 by the session's reported usage: when `PromptTokens + CompletionTokens` exceeds the local estimate of the history up to the last assistant message, scale the budget by `local / reported`, so an overflowed session that the 4 B/token estimate undercounts is still trimmed. This lets an already-overflowed session (Neo) recover on its next turn once R1 fires; it remains estimate-based if the summarizer's tokenizer differs a lot.
 
 ### R5: Diagnosable overflow failures
 Pure helper `likelyContextOverflow(estimated, window int64) bool` returns `window > 0 && estimated >= 0.9*window`. In the non-cancel error branches after `streamAndHandleEvents` (main call, max-turns final call), when it returns true, log WARN `"model call failed with context near the window; likely context overflow — compact or reset the session"` with session_id, agent, estimated_tokens, context_window, ratio, error. Keep `etaTokens` in scope from the last count.

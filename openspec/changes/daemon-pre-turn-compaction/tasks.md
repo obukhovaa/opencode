@@ -15,7 +15,10 @@
 
 - [x] 3.1 Move `resolveTools()` above `createUserMessage`.
 - [x] 3.2 Count history + transient user message; compact when over threshold and `autoCompact`; rebuild history; persist the user message after the summary.
-- [x] 3.3 Factor the task-budget-remaining block into a helper shared by the gate and the in-loop path.
+- [x] 3.3 Factor the task-budget-remaining block into a helper (`withTaskBudgetRemaining`); used by the in-loop path only — the gate leaves the turn's budget full.
+- [x] 3.4 Auto-resume turn: carry the trailing synthetic completion pair past the summary (`syntheticTail`).
+- [x] 3.5 Wait (bounded, ctx-aware) for an in-flight `Summarize` of the session, then reload and count.
+- [x] 3.6 In-loop guard `cycles != 1 || outerCycles > 1`: a non-interactive re-entry's first call is checked; its drained pairs survive a compaction there too.
 
 ## 4. Summarizer input
 
@@ -23,6 +26,10 @@
 - [x] 4.2 Use it from `performSynchronousCompaction` and `Summarize`.
 
 - [x] 4.3 `message.EstimateTokens` counts tool-call input, tool-result content and reasoning text, not only text parts.
+- [x] 4.4 Calibrate the trim budget by the session's reported usage when it exceeds the local estimate.
+- [x] 4.5 Clear the forced-tool signal on the summarizer ctx.
+- [x] 4.6 After a compaction, forget the session's announced deferred tools; the delta dedup scans only the history from `SummaryMessageID`.
+- [x] 4.7 `geminiClient.usage`: `InputTokens = max(PromptTokenCount - CachedContentTokenCount, 0)`.
 
 ## 5. Overflow diagnostic
 
@@ -38,3 +45,5 @@
 - [x] 6.6 `summarizerInput` starts at the summary, trims oldest, never orphans tool results.
 - [x] 6.7 `likelyContextOverflow` boundaries.
 - [x] 6.8 `make schema-check`, `go test ./cmd/schema/...`, `make test`.
+- [x] 6.9 Auto-resume compaction keeps the pair; re-entry after a drain is gated; in-flight `Summarize` is awaited; the summarizer sees no forced tool; the gate leaves the task budget unset; deferred tools are re-announced once.
+- [x] 6.10 Gemini usage parts add up to the real prompt + output; a Gemini-shaped usage at 52% does not hit; reported usage calibrates the summarizer trim.
