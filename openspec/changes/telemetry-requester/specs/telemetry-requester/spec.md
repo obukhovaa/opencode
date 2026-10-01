@@ -74,7 +74,7 @@ A cron job SHALL store a requester when created: the explicit `CreateParams.Requ
 
 ### Requirement: Detached work inherits the requester
 
-Work that outlives or is detached from the turn that started it SHALL keep that turn's requester: a detached async subagent SHALL run with the requester of the turn that spawned it; the first turn's session-title generation SHALL carry the turn's requester; and a background task (async `task`, `bash` with `run_in_background`, `monitor`) SHALL record its spawning turn's requester so the turn its completion auto-resumes runs with it.
+Work that outlives or is detached from the turn that started it SHALL keep that turn's requester: a detached async subagent SHALL run with the requester of the turn that spawned it; the first turn's session-title generation SHALL carry the turn's requester, resolved as the turn's own trace resolves it (a non-blank `requester` flow arg, else the run context's requester); a chat-bridge `/compact` SHALL run its compaction with the command author's requester, resolved as for a chat turn; and a background task (async `task`, `bash` with `run_in_background`, `monitor`) SHALL record its spawning turn's requester so the turn its completion auto-resumes runs with it.
 
 #### Scenario: Background task
 
@@ -90,3 +90,13 @@ Work that outlives or is detached from the turn that started it SHALL keep that 
 
 - **WHEN** the first turn of a session is attributed to a person
 - **THEN** the title-generation trace carries that person as requester
+
+#### Scenario: Title generation in a flow step
+
+- **WHEN** the first turn of a session is a flow step with a non-blank `requester` flow arg
+- **THEN** the title-generation trace carries the flow arg value as requester
+
+#### Scenario: Bridge compaction
+
+- **WHEN** a person runs `/compact` in a bound chat
+- **THEN** the compaction's summarizer trace carries that person as requester

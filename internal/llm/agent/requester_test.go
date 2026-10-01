@@ -204,24 +204,42 @@ func (s *titleRequesterSpy) SendMessages(ctx context.Context, _ []message.Messag
 }
 
 // The first turn's title is generated on a ctx detached from the turn; its
-// trace must still be attributed to the turn's requester.
+// trace must still be attributed to the turn's requester, including a flow
+// step's `requester` arg, which the detached ctx would otherwise drop.
 func TestTitleGenerationCarriesRequester(t *testing.T) {
-	withFreshTaskRegistry(t)
-	a := newLoopAgent(t, &scriptedProvider{respond: func(int, bool) *provider.ProviderResponse { return endTurn() }})
-	spy := &titleRequesterSpy{stubProvider: &stubProvider{}, got: make(chan string, 1)}
-	a.titleProvider = spy
-
-	ctx := tools.WithRequester(context.Background(), "alice@")
-	if res := a.processGeneration(ctx, "sess-title", "first message", 0, nil, RunOptions{NonInteractive: true}); res.Error != nil {
-		t.Fatalf("processGeneration: %v", res.Error)
+	withFlowArg := func(ctx context.Context, v string) context.Context {
+		return context.WithValue(ctx, tools.FlowArgsContextKey, map[string]string{"requester": v})
 	}
+	turnCtx := tools.WithRequester(context.Background(), "alice@")
+	tests := []struct {
+		name string
+		ctx  context.Context
+		want string
+	}{
+		{name: "per-turn requester", ctx: turnCtx, want: "alice@"},
+		{name: "flow step's requester arg", ctx: withFlowArg(context.Background(), "flow@"), want: "flow@"},
+		{name: "flow arg beats the per-turn requester, as on the trace", ctx: withFlowArg(turnCtx, "flow@"), want: "flow@"},
+		{name: "blank flow arg falls through to the per-turn requester", ctx: withFlowArg(turnCtx, " "), want: "alice@"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withFreshTaskRegistry(t)
+			a := newLoopAgent(t, &scriptedProvider{respond: func(int, bool) *provider.ProviderResponse { return endTurn() }})
+			spy := &titleRequesterSpy{stubProvider: &stubProvider{}, got: make(chan string, 1)}
+			a.titleProvider = spy
 
-	select {
-	case got := <-spy.got:
-		if got != "alice@" {
-			t.Fatalf("title generation requester = %q, want alice@", got)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("title generation never ran")
+			if res := a.processGeneration(tt.ctx, "sess-title", "first message", 0, nil, RunOptions{NonInteractive: true}); res.Error != nil {
+				t.Fatalf("processGeneration: %v", res.Error)
+			}
+
+			select {
+			case got := <-spy.got:
+				if got != tt.want {
+					t.Fatalf("title generation requester = %q, want %q", got, tt.want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("title generation never ran")
+			}
+		})
 	}
 }

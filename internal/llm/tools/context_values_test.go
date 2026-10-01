@@ -111,3 +111,33 @@ func TestStepScopedContext(t *testing.T) {
 		}
 	})
 }
+
+// TestTurnRequester pins the order detached work (title generation, cron
+// jobs) inherits a turn's requester in: a non-blank `requester` flow arg,
+// then the per-turn requester.
+func TestTurnRequester(t *testing.T) {
+	withFlowArgs := func(ctx context.Context, args map[string]string) context.Context {
+		return context.WithValue(ctx, FlowArgsContextKey, args)
+	}
+	turnCtx := WithRequester(context.Background(), "author@example.com")
+	tests := []struct {
+		name string
+		ctx  context.Context
+		want string
+	}{
+		{name: "nil ctx", ctx: nil, want: ""},
+		{name: "nothing known", ctx: context.Background(), want: ""},
+		{name: "per-turn requester", ctx: turnCtx, want: "author@example.com"},
+		{name: "flow arg without a per-turn requester", ctx: withFlowArgs(context.Background(), map[string]string{"requester": "flow@example.com"}), want: "flow@example.com"},
+		{name: "flow arg beats the per-turn requester", ctx: withFlowArgs(turnCtx, map[string]string{"requester": "flow@example.com"}), want: "flow@example.com"},
+		{name: "blank flow arg falls through", ctx: withFlowArgs(turnCtx, map[string]string{"requester": " \t"}), want: "author@example.com"},
+		{name: "flow args without requester fall through", ctx: withFlowArgs(turnCtx, map[string]string{"ticket": "X-1"}), want: "author@example.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := TurnRequester(tt.ctx); got != tt.want {
+				t.Errorf("TurnRequester() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

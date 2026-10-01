@@ -6,6 +6,7 @@
 - [x] 1.4 Async subagents copy the requester onto their detached run ctx
 - [x] 1.5 A blank `requester` flow arg counts as absent
 - [x] 1.6 Title generation runs with the turn's requester
+- [x] 1.7 Shared `tools.TurnRequester` (non-blank `requester` flow arg, else ctx); title generation and cron `Create` resolve through it
 
 ## 2. Chat bridge
 
@@ -13,6 +14,7 @@
 - [x] 2.2 Per-author cache with TTL; error path falls back to the author id, negative-cached for 5 minutes
 - [x] 2.3 `handleInbound` runs the turn with the resolved requester
 - [x] 2.4 Slack scope docs list `users:read` / `users:read.email`
+- [x] 2.5 `/compact` runs the summarizer with the command author's requester
 
 ## 3. Scheduled jobs
 
@@ -28,4 +30,4 @@
 ## 5. Verification
 
 - [x] 5.1 Unit tests for precedence, resolver cache, per-turn ctx, cron store and replay
-- [x] 5.2 Tests driving `runAsync`, `createLangfuseTrace` (namespaced key), auto-resume, title generation, failure caching, W ids, cron clamp and flow-arg fallback
+- [x] 5.2 Tests driving `runAsync`, `createLangfuseTrace` (namespaced key), auto-resume, title generation (flow-arg case included), `/compact`, failure caching, W ids, cron clamp and flow-arg fallback

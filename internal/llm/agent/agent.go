@@ -817,8 +817,9 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	if len(msgs) == 0 {
 		titleContent := content
 		// Detached from the turn so it outlives it, but the title trace is
-		// still attributed to the turn's requester.
-		titleCtx := tools.WithRequester(context.Background(), tools.RequesterFromContext(ctx))
+		// still attributed to the turn's requester (a flow step's
+		// `requester` arg included, which the detached ctx would drop).
+		titleCtx := tools.WithRequester(context.Background(), tools.TurnRequester(ctx))
 		go func() {
 			defer logging.RecoverPanic("agent.Run", func() {
 				logging.ErrorPersist("panic while generating title")

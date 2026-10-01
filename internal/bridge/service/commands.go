@@ -11,6 +11,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/cron"
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 )
 
 // CommandHandler is the contract chat-command implementations satisfy.
@@ -453,7 +454,10 @@ func (s *Service) cmdCompact(ctx context.Context, in bridge.Inbound) *bridge.Com
 		// Detached from the inbound ctx: compaction outlives the command turn,
 		// and the inbound ctx may be cancelled once we return the ack below.
 		bg := context.Background()
-		if err := activeAgent.SummarizeSync(bg, sessionID); err != nil {
+		// Attribute the summarizer trace to the command's author, as a chat
+		// turn is. Resolved here so a slow lookup never delays the ack.
+		summarizeCtx := tools.WithRequester(bg, s.requesterFor(bg, in))
+		if err := activeAgent.SummarizeSync(summarizeCtx, sessionID); err != nil {
 			s.replyToPeerWithHint(bg, peer, replyText(fmt.Sprintf(
 				"Compaction failed for session %s: %s", shortSessionID(sessionID), err.Error())))
 			return

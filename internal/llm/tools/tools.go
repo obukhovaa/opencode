@@ -101,6 +101,22 @@ func RequesterFromContext(ctx context.Context) string {
 	return r
 }
 
+// TurnRequester returns who the turn on ctx works for, in the order its
+// trace metadata resolves it: a non-blank `requester` flow arg (on a flow
+// step's ctx when telemetry.flowArgs extracts it), else the per-turn
+// requester. Use it to carry attribution onto work that outlives the turn
+// (title generation, a cron job) and so loses the flow args. Does not
+// apply the telemetry.requester fallback; the trace does that itself.
+func TurnRequester(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if args, ok := ctx.Value(FlowArgsContextKey).(map[string]string); ok && strings.TrimSpace(args["requester"]) != "" {
+		return args["requester"]
+	}
+	return RequesterFromContext(ctx)
+}
+
 type toolResponse struct {
 	Type     toolResponseType `json:"type"`
 	Content  string           `json:"content"`

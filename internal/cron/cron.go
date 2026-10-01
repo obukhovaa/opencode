@@ -87,20 +87,15 @@ type CreateParams struct {
 // store it, so Create clamps to it on both.
 const maxRequesterLen = 320
 
-// jobRequester resolves who a new job is attributed to, in the same order
-// as the creating turn's trace metadata: the explicit param, a non-blank
-// `requester` flow arg (on the ctx of a flow step when telemetry.flowArgs
-// extracts it), then the per-turn requester. Clamped to maxRequesterLen
-// bytes without splitting a UTF-8 sequence, so it also fits in characters.
+// jobRequester resolves who a new job is attributed to: the explicit
+// param, else the creating turn's requester (tools.TurnRequester — a
+// non-blank `requester` flow arg, then the per-turn requester, the same
+// order as the turn's trace metadata). Clamped to maxRequesterLen bytes
+// without splitting a UTF-8 sequence, so it also fits in characters.
 func jobRequester(ctx context.Context, explicit string) string {
 	r := explicit
 	if r == "" {
-		if args, ok := ctx.Value(tools.FlowArgsContextKey).(map[string]string); ok && strings.TrimSpace(args["requester"]) != "" {
-			r = args["requester"]
-		}
-	}
-	if r == "" {
-		r = tools.RequesterFromContext(ctx)
+		r = tools.TurnRequester(ctx)
 	}
 	if len(r) <= maxRequesterLen {
 		return r
