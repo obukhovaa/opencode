@@ -458,6 +458,12 @@ func generateSchema() map[string]any {
 					"description": "Advisory token budget for the full agentic loop (minimum 20000). Only supported by models with SupportsTaskBudget. The budget is carried across compaction via the remaining field.",
 					"minimum":     20000,
 				},
+				"compactionThreshold": map[string]any{
+					"type":             "number",
+					"description":      "Fraction of the model's context window, in (0, 1], at which this agent's sessions auto-compact (default 0.95). A flow step's compact.threshold overrides it; the top-level autoCompact flag still decides whether compaction runs at all. Out-of-range values are ignored with a warning.",
+					"exclusiveMinimum": 0,
+					"maximum":          1,
+				},
 				"context": map[string]any{
 					"type":        "object",
 					"description": "Scoped context files for this agent's system prompt. Declared paths replace (default) or append to the global contextPaths. Path entries support the ${agent}, ${flow.id}, ${flow.step}, and ${env.VAR} template tokens and must resolve inside the working directory. See docs/context.md.",

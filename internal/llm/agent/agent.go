@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -58,7 +59,19 @@ const (
 
 const (
 	AutoCompactionThreshold = 0.95
+
+	// summarizerWindowFraction caps the summarizer's input at this share of
+	// its own context window, leaving room for the summary it writes back.
+	summarizerWindowFraction = 0.9
+
+	// contextOverflowWarnRatio is the estimate-to-window ratio above which a
+	// failed model call is reported as a likely context overflow. Proxies
+	// (LiteLLM → Bedrock) reset the stream instead of returning "prompt too
+	// long", so without this the failure reads as a transport error.
+	contextOverflowWarnRatio = 0.9
 )
+
+var errNoMessagesToSummarize = errors.New("no messages to summarize")
 
 // effectiveCompactionThreshold applies RunOptions.CompactionThreshold as an
 // override to the global AutoCompactionThreshold. A zero override means
@@ -132,14 +145,15 @@ type RunOptions struct {
 	// auto-resume behaviour where ResumeSession kicks a fresh agent.Run.
 	NonInteractive bool
 
-	// CompactionThreshold overrides the global AutoCompactionThreshold
-	// (default 0.95) for this Run only. Set to a value in (0, 1] to trigger
-	// synchronous compaction earlier — e.g. a flow step processing a lot of
-	// tool output can set 0.7 to compact well before the hard limit. Zero
-	// means "use the global default"; values outside (0, 1] are clamped to
-	// the closest valid endpoint and a warn is logged. Only the tool-use
-	// loop's pre-model-call check consults this override; unrelated paths
-	// (final-turn checks, provider-side hard limits) remain unchanged.
+	// CompactionThreshold overrides the compaction threshold for this Run
+	// only. Set to a value in (0, 1] to trigger synchronous compaction
+	// earlier — e.g. a flow step processing a lot of tool output can set 0.7
+	// to compact well before the hard limit. Zero means "not set": the
+	// agent's own compactionThreshold applies, else AutoCompactionThreshold
+	// (0.95) — see resolveCompactionThreshold. Values outside (0, 1] are
+	// clamped to the closest valid endpoint and a warn is logged. Consulted
+	// by the pre-turn gate and the tool-use loop's pre-model-call check;
+	// provider-side hard limits remain unchanged.
 	CompactionThreshold float64
 
 	// ForceStructOutput, when true, forces the model to call the
@@ -210,6 +224,10 @@ type agent struct {
 	// for the rest of the process. Empty for agents with no prompt of their
 	// own, which is what the builder expects.
 	basePrompt string
+
+	// compactionThreshold is the registry-merged per-agent threshold
+	// (config overlay and markdown frontmatter), zero when unset.
+	compactionThreshold float64
 
 	titleProvider     provider.Provider
 	summarizeProvider provider.Provider
@@ -316,6 +334,8 @@ func newAgent(
 		allowParallelism:  agentInfo.AllowsParallelToolUse(),
 		factory:           factory,
 		basePrompt:        agentInfo.Prompt,
+
+		compactionThreshold: agentInfo.CompactionThreshold,
 	}
 
 	// Message-delivery mode moves the output schema out of the tool block (which
@@ -886,6 +906,61 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		a.setTraceOutput(ctx, func() any { return traceOutputFromEvent(result) })
 	}()
 
+	// Susped to get lazy tools
+	toolSet := a.resolveTools()
+	compactionThreshold := a.resolveCompactionThreshold(opts)
+
+	// Pre-turn gate. The in-loop check below skips cycle 1, so without this a
+	// turn that is a single model call (a chat reply, a cron heartbeat) is
+	// never checked, and a long-lived session grows until the provider rejects
+	// it. Runs BEFORE the user message is persisted: compacting after it would
+	// put the user turn ahead of the summary, and filterMessagesFromSummary
+	// would drop it on every later reload. It also runs before the schema
+	// envelope is injected, so a compaction here costs no duplicate envelope.
+	// An empty history has nothing to compact, so it is not even counted.
+	// No task-budget ctx is applied here: the turn has not started, so its
+	// budget is the full one, as on a turn that does not compact.
+	if cfg.AutoCompact && len(msgs) > 0 {
+		// A Summarize still running (the TUI's post-turn compaction) is
+		// about to move the summary boundary; wait for it and count the
+		// history it leaves.
+		if a.waitForSummarize(ctx, sessionID) {
+			reloaded, current, errReload := a.historyAfterCompaction(ctx, sessionID)
+			if errReload != nil {
+				return a.err(errReload)
+			}
+			msgs, session = reloaded, current
+		}
+		countInput := msgs
+		if hasUserTurn {
+			countInput = append(slices.Clip(msgs), pendingUserMessage(content, attachmentParts))
+		}
+		if preTurnTokens, overThreshold := a.countContextTokens(ctx, sessionID, compactionThreshold, countInput, toolSet); overThreshold {
+			logging.Info(
+				"Auto-compaction triggered before turn",
+				"session_id", sessionID,
+				"token_count", preTurnTokens,
+				"threshold", compactionThreshold,
+				"context_window", a.provider.Model().ContextWindow,
+			)
+			// An auto-resume turn's input is the synthetic completion pair
+			// at the end of the history; keep it past the summary.
+			var resumeTail []message.Message
+			if !hasUserTurn {
+				resumeTail = syntheticTail(msgs)
+			}
+			if errSync := a.performSynchronousCompaction(ctx, sessionID); errSync != nil {
+				logging.Warn("Failed to perform auto-compaction before turn", "session_id", sessionID, "error", errSync)
+			} else {
+				reloaded, compacted, errReload := a.historyAfterCompaction(ctx, sessionID)
+				if errReload != nil {
+					return a.err(errReload)
+				}
+				msgs, session = append(reloaded, resumeTail...), compacted
+			}
+		}
+	}
+
 	// The output schema rides in the message tail rather than the tool block, so
 	// it stays behind the provider's last cache breakpoint. It goes in BEFORE the
 	// step's own prompt: the Anthropic builder derives its extended-thinking
@@ -914,16 +989,13 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	cycles := 0
 	preserveTail := false
 
-	// Susped to get lazy tools
-	toolSet := a.resolveTools()
-
 	// Deferred tools: backfill session activation from replayed tool-search
 	// parts (native-path sessions resumed after a process restart), then
 	// announce any deferred MCP tools this session hasn't been told about.
 	// The delta message is per-session and injected only when the deferred
-	// pool changes — never on every turn.
+	// pool changes or a compaction hid the last one — never on every turn.
 	a.backfillDeferredActivations(sessionID, msgHistory)
-	if deltaMsg, ok := a.injectDeferredDelta(ctx, sessionID, toolSet); ok {
+	if deltaMsg, ok := a.injectDeferredDelta(ctx, sessionID, session.SummaryMessageID, toolSet); ok {
 		msgHistory = append(msgHistory, deltaMsg)
 	}
 
@@ -969,13 +1041,16 @@ OuterLoop:
 				// Continue processing
 			}
 
-			etaTokens, shouldTriggerAutoCompaction := a.provider.CountTokens(ctx, effectiveCompactionThreshold(opts.CompactionThreshold), msgHistory, toolSet)
+			etaTokens, shouldTriggerAutoCompaction := a.countContextTokens(ctx, sessionID, compactionThreshold, msgHistory, toolSet)
 			// Check if auto-compaction should be triggered before each model call
 			// This is crucial for long tool use loops that can exceed context limits
 			// NOTE: since tool may provide output exceeding context limit when combined with existing history,
 			// we have to do summary, which would "lossy compress" it, providing less context to the following LLM call,
 			// but alternative is to fail with context limit, so we do it anyway.
-			if cfg.AutoCompact && cycles != 1 && shouldTriggerAutoCompaction {
+			// The first call of the first outer cycle is skipped: the pre-turn
+			// gate just checked it. A non-interactive re-entry's first call is
+			// not: the drained completions may have pushed the history over.
+			if cfg.AutoCompact && (cycles != 1 || outerCycles > 1) && shouldTriggerAutoCompaction {
 				logging.Info(
 					"Auto-compaction triggered during tool use loop",
 					"session_id", sessionID,
@@ -984,22 +1059,27 @@ OuterLoop:
 					"cycle", cycles,
 				)
 
+				// With no tail or user turn to re-append (a re-entry's first
+				// call), the drained completion pairs are the model's input.
+				var resumeTail []message.Message
+				if !preserveTail && !hasUserTurn {
+					resumeTail = syntheticTail(msgHistory)
+				}
+
 				// Perform synchronous compaction to shrink context
 				if errSync := a.performSynchronousCompaction(ctx, sessionID); errSync != nil {
 					logging.Warn("Failed to perform auto-compaction during tool use", "error", errSync)
 					// Continue anyway - better to risk context overflow than stop completely
 				} else {
-					// After successful compaction, reload messages and rebuild msgHistory
-					msgs, errMsg := a.messages.List(ctx, sessionID)
-					if errMsg != nil {
-						return a.err(fmt.Errorf("failed to reload messages after compaction: %w", errMsg))
+					// After successful compaction, reload messages and rebuild msgHistory.
+					// Assigns the OUTER msgs/session: the non-interactive re-entry
+					// reload below filters by session.SummaryMessageID, and a stale
+					// one would bring the pre-summary history back.
+					reloaded, compacted, errReload := a.historyAfterCompaction(ctx, sessionID)
+					if errReload != nil {
+						return a.err(errReload)
 					}
-
-					session, errMsg := a.sessions.Get(ctx, sessionID)
-					if errMsg != nil {
-						return a.err(fmt.Errorf("failed to get session after compaction: %w", errMsg))
-					}
-					msgs = a.filterMessagesFromSummary(msgs, session.SummaryMessageID)
+					msgs, session = reloaded, compacted
 					// The summary boundary sits after the schema envelope, so
 					// filterMessagesFromSummary just dropped it. Under tool
 					// delivery the schema was in the tool block and survived
@@ -1007,16 +1087,16 @@ OuterLoop:
 					// and so the forced struct_output wrap-up below is not asked
 					// to produce a document whose shape left the conversation.
 					msgs = a.withStructOutputSchema(ctx, sessionID, msgs)
-
-					// Carry task budget across compaction: tell provider how much budget remains
-					if agentCfg, hasCfg := config.Get().Agents[a.agentID]; hasCfg && agentCfg.TaskBudget > 0 {
-						spent := session.TotalCompletionTokens
-						remaining := agentCfg.TaskBudget - spent
-						if remaining < 0 {
-							remaining = 0
-						}
-						ctx = provider.TaskBudgetRemainingContext(ctx, remaining)
+					// The deferred-tools delta sat before the summary too, and the
+					// compaction forgot it was announced. A flow step or a task
+					// subagent is usually one turn, so waiting for the next turn's
+					// injection would leave the deferred MCP tools out of view for
+					// the rest of the run.
+					if deltaMsg, ok := a.injectDeferredDelta(ctx, sessionID, session.SummaryMessageID, toolSet); ok {
+						msgs = append(msgs, deltaMsg)
 					}
+
+					ctx = a.withTaskBudgetRemaining(ctx, session)
 
 					// Preserve original problem and result from the last tool iteration to ensure no dead-loop
 					if preserveTail {
@@ -1025,14 +1105,15 @@ OuterLoop:
 					} else if hasUserTurn {
 						msgHistory = append(msgs, userMsg)
 					} else {
-						// Auto-resume turn — no user message to re-append.
-						msgHistory = msgs
+						// Auto-resume turn or non-interactive re-entry — no
+						// user message to re-append.
+						msgHistory = append(msgs, resumeTail...)
 					}
 
 					// Re-count against the same effective threshold that triggered
 					// this compaction so the log reflects the step's configured
 					// gate, not the global default.
-					etaTokens, shouldTriggerAutoCompaction = a.provider.CountTokens(ctx, effectiveCompactionThreshold(opts.CompactionThreshold), msgHistory, toolSet)
+					etaTokens, shouldTriggerAutoCompaction = a.countContextTokens(ctx, sessionID, compactionThreshold, msgHistory, toolSet)
 					if shouldTriggerAutoCompaction {
 						logging.Warn(
 							"Context compacted, but still exceed context threshold",
@@ -1109,6 +1190,9 @@ OuterLoop:
 				}
 				finalMsg, finalToolResults, finalErr := a.streamAndHandleEvents(finalCtx, sessionID, msgHistory, toolSet, tracker)
 				if finalErr != nil {
+					if !errors.Is(finalErr, context.Canceled) {
+						a.warnIfLikelyContextOverflow(sessionID, etaTokens, finalErr)
+					}
 					logging.Warn("Failed to get final response after max turns", "error", finalErr)
 					return AgentEvent{
 						Type:           AgentEventTypeResponse,
@@ -1166,6 +1250,7 @@ OuterLoop:
 					a.finishMessage(ctx, &agentMessage, message.FinishReasonCanceled)
 					return a.err(ErrRequestCancelled)
 				}
+				a.warnIfLikelyContextOverflow(sessionID, etaTokens, err)
 				a.finishMessage(ctx, &agentMessage, message.FinishReasonError)
 				return a.err(fmt.Errorf("failed to process events: %w", err))
 			}
@@ -2276,8 +2361,11 @@ func (a *agent) backfillDeferredActivations(sessionID string, history []message.
 // at prompt-build time, so they arrive as a persisted user-role delta
 // message — injected only when this session's announced-set changes.
 // History is scanned as a secondary source so resumed sessions don't
-// receive duplicate deltas after a restart.
-func (a *agent) injectDeferredDelta(ctx context.Context, sessionID string, toolSet []tools.BaseTool) (message.Message, bool) {
+// receive duplicate deltas after a restart. Only the history from
+// summaryMessageID on counts: a delta before the summary is out of the
+// model's view, and a compaction clears the announced-set for the same
+// reason (forgetDeferredAnnouncements).
+func (a *agent) injectDeferredDelta(ctx context.Context, sessionID, summaryMessageID string, toolSet []tools.BaseTool) (message.Message, bool) {
 	// The per-session announced-set is a plain map; guard every read/write
 	// with the agent mutex. Two Run calls for one session can overlap (the
 	// IsSessionBusy check and activeRequests.Store are not atomic), and
@@ -2319,7 +2407,7 @@ func (a *agent) injectDeferredDelta(ctx context.Context, sessionID string, toolS
 	// announced because it is contained in `get_issue_link`.
 	alreadyAnnounced := map[string]bool{}
 	if msgs, err := a.messages.List(ctx, sessionID); err == nil {
-		for _, msg := range msgs {
+		for _, msg := range a.filterMessagesFromSummary(msgs, summaryMessageID) {
 			if msg.Role != message.User {
 				continue
 			}
@@ -2598,39 +2686,38 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 		return fmt.Errorf("summarize provider not available")
 	}
 
-	msgs, err := a.messages.List(ctx, sessionID)
-	if err != nil {
-		return fmt.Errorf("failed to list messages: %w", err)
-	}
-
-	// NOTE: We don't check IsSessionBusy here because this is called from within
-	logging.Info("Starting synchronous compaction", "session_id", sessionID, "message_count", len(msgs))
-
-	if len(msgs) == 0 {
-		return fmt.Errorf("no messages to summarize")
-	}
-
-	summarizeCtx := context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
-	summarizeCtx = context.WithValue(summarizeCtx, tools.AgentIDContextKey, config.AgentName("summarizer"))
-	if lf := langfuse.Get(); lf != nil && lf.Enabled() {
-		sess, sessErr := a.sessions.Get(ctx, sessionID)
-		if sessErr == nil {
-			summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess,
-				fmt.Sprintf("auto-compaction over %d messages", len(msgs)))
-		}
-	}
-	defer langfuse.EndTrace(summarizeCtx)
 	summarizePrompt, err := AgentPrompts.ReadFile("prompts/compaction.md")
 	if err != nil {
 		return fmt.Errorf("failed to load summary prompt: %w", err)
 	}
-
 	promptMsg := message.Message{
 		Role:  message.User,
 		Parts: []message.ContentPart{message.TextContent{Text: string(summarizePrompt)}},
 	}
 
-	msgsWithPrompt := append(msgs, promptMsg)
+	// NOTE: We don't check IsSessionBusy here because this is called from within
+	msgsWithPrompt, err := a.summarizerInput(ctx, sessionID, promptMsg)
+	if err != nil {
+		return err
+	}
+	messageCount := len(msgsWithPrompt) - 1
+	logging.Info("Starting synchronous compaction", "session_id", sessionID, "message_count", messageCount)
+
+	summarizeCtx := context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
+	summarizeCtx = context.WithValue(summarizeCtx, tools.AgentIDContextKey, config.AgentName("summarizer"))
+	// The turn's ctx may force struct_output (the flow runner's rescue run).
+	// The summarizer is sent no tools, so a forced tool_choice would make
+	// its request invalid; an empty name reads as unset.
+	summarizeCtx = context.WithValue(summarizeCtx, provider.ForceStructOutputToolKey, "")
+	if lf := langfuse.Get(); lf != nil && lf.Enabled() {
+		sess, sessErr := a.sessions.Get(ctx, sessionID)
+		if sessErr == nil {
+			summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess,
+				fmt.Sprintf("auto-compaction over %d messages", messageCount))
+		}
+	}
+	defer langfuse.EndTrace(summarizeCtx)
+
 	events := a.summarizeProvider.StreamResponse(
 		summarizeCtx,
 		msgsWithPrompt,
@@ -2675,6 +2762,7 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
 	}
+	a.forgetDeferredAnnouncements(sessionID)
 
 	logging.Info("Synchronous compaction completed successfully", "session_id", sessionID)
 	return nil
@@ -2705,47 +2793,6 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 		}
 
 		a.Publish(pubsub.CreatedEvent, event)
-		// Get all messages from the session
-		msgs, err := a.messages.List(summarizeCtx, sessionID)
-		if err != nil {
-			event = AgentEvent{
-				Type:  AgentEventTypeError,
-				Error: fmt.Errorf("failed to list messages: %w", err),
-				Done:  true,
-			}
-			a.Publish(pubsub.CreatedEvent, event)
-			return
-		}
-		summarizeCtx = context.WithValue(summarizeCtx, tools.SessionIDContextKey, sessionID)
-		summarizeCtx = context.WithValue(summarizeCtx, tools.AgentIDContextKey, config.AgentName("summarizer"))
-
-		// Guard before the trace starts: an empty session would otherwise emit
-		// a trace with no generation and no output, indistinguishable from a
-		// summarizer that hung.
-		if len(msgs) == 0 {
-			event = AgentEvent{
-				Type:  AgentEventTypeError,
-				Error: fmt.Errorf("no messages to summarize"),
-				Done:  true,
-			}
-			a.Publish(pubsub.CreatedEvent, event)
-			return
-		}
-
-		if lf := langfuse.Get(); lf != nil && lf.Enabled() {
-			sess, sessErr := a.sessions.Get(summarizeCtx, sessionID)
-			if sessErr == nil {
-				summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess,
-					fmt.Sprintf("summarize session over %d messages", len(msgs)))
-			}
-		}
-		defer langfuse.EndTrace(summarizeCtx)
-
-		event = AgentEvent{
-			Type:     AgentEventTypeSummarize,
-			Progress: "Analyzing conversation...",
-		}
-		a.Publish(pubsub.CreatedEvent, event)
 
 		summarizePrompt, err := AgentPrompts.ReadFile("prompts/compaction.md")
 		if err != nil {
@@ -2757,15 +2804,41 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 			a.Publish(pubsub.CreatedEvent, event)
 			return
 		}
-
-		// Create a new message with the summarize prompt
 		promptMsg := message.Message{
 			Role:  message.User,
 			Parts: []message.ContentPart{message.TextContent{Text: string(summarizePrompt)}},
 		}
 
-		// Append the prompt to the messages
-		msgsWithPrompt := append(msgs, promptMsg)
+		// Guard before the trace starts: an empty session would otherwise emit
+		// a trace with no generation and no output, indistinguishable from a
+		// summarizer that hung.
+		msgsWithPrompt, err := a.summarizerInput(summarizeCtx, sessionID, promptMsg)
+		if err != nil {
+			event = AgentEvent{
+				Type:  AgentEventTypeError,
+				Error: err,
+				Done:  true,
+			}
+			a.Publish(pubsub.CreatedEvent, event)
+			return
+		}
+		summarizeCtx = context.WithValue(summarizeCtx, tools.SessionIDContextKey, sessionID)
+		summarizeCtx = context.WithValue(summarizeCtx, tools.AgentIDContextKey, config.AgentName("summarizer"))
+
+		if lf := langfuse.Get(); lf != nil && lf.Enabled() {
+			sess, sessErr := a.sessions.Get(summarizeCtx, sessionID)
+			if sessErr == nil {
+				summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess,
+					fmt.Sprintf("summarize session over %d messages", len(msgsWithPrompt)-1))
+			}
+		}
+		defer langfuse.EndTrace(summarizeCtx)
+
+		event = AgentEvent{
+			Type:     AgentEventTypeSummarize,
+			Progress: "Analyzing conversation...",
+		}
+		a.Publish(pubsub.CreatedEvent, event)
 
 		event = AgentEvent{
 			Type:     AgentEventTypeSummarize,
@@ -2858,6 +2931,7 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 			}
 			a.Publish(pubsub.CreatedEvent, event)
 		}
+		a.forgetDeferredAnnouncements(sessionID)
 
 		event = AgentEvent{
 			Type:      AgentEventTypeSummarize,

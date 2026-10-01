@@ -21,6 +21,12 @@
           "description": "Badge color for subagent display (e.g., 'blue', 'orange', 'primary', 'warning')",
           "type": "string"
         },
+        "compactionThreshold": {
+          "description": "Fraction of the model's context window, in (0, 1], at which this agent's sessions auto-compact (default 0.95). A flow step's compact.threshold overrides it; the top-level autoCompact flag still decides whether compaction runs at all. Out-of-range values are ignored with a warning.",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "type": "number"
+        },
         "context": {
           "description": "Scoped context files for this agent's system prompt. Declared paths replace (default) or append to the global contextPaths. Path entries support the ${agent}, ${flow.id}, ${flow.step}, and ${env.VAR} template tokens and must resolve inside the working directory. See docs/context.md.",
           "properties": {
@@ -108,6 +114,7 @@
             "claude-5-opus",
             "claude-5-sonnet",
             "claude-5.5-opus",
+            "claude-5.5-sonnet",
             "claude-fable-5",
             "claude-fable-5-1",
             "bedrock.eu-claude-haiku-4-5",
@@ -118,6 +125,7 @@
             "bedrock.eu-claude-opus-5",
             "bedrock.eu-claude-sonnet-5",
             "bedrock.eu-claude-opus-5-5",
+            "bedrock.eu-claude-sonnet-5-5",
             "bedrock.eu-claude-fable-5",
             "bedrock.eu-claude-fable-5-1",
             "bedrock.claude-haiku-4-5",
@@ -128,6 +136,7 @@
             "bedrock.claude-opus-5",
             "bedrock.claude-sonnet-5",
             "bedrock.claude-opus-5-5",
+            "bedrock.claude-sonnet-5-5",
             "bedrock.claude-fable-5",
             "bedrock.claude-fable-5-1",
             "gemini-3.0-flash",
@@ -147,6 +156,7 @@
             "vertexai.claude-opus-5-5",
             "vertexai.claude-sonnet-4-6",
             "vertexai.claude-sonnet-5",
+            "vertexai.claude-sonnet-5-5",
             "vertexai.gemini-3.0-flash",
             "vertexai.gemini-3.0-pro",
             "yandexcloud.aliceai-llm",
@@ -277,6 +287,12 @@
             "description": "Badge color for subagent display (e.g., 'blue', 'orange', 'primary', 'warning')",
             "type": "string"
           },
+          "compactionThreshold": {
+            "description": "Fraction of the model's context window, in (0, 1], at which this agent's sessions auto-compact (default 0.95). A flow step's compact.threshold overrides it; the top-level autoCompact flag still decides whether compaction runs at all. Out-of-range values are ignored with a warning.",
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "type": "number"
+          },
           "context": {
             "description": "Scoped context files for this agent's system prompt. Declared paths replace (default) or append to the global contextPaths. Path entries support the ${agent}, ${flow.id}, ${flow.step}, and ${env.VAR} template tokens and must resolve inside the working directory. See docs/context.md.",
             "properties": {
@@ -364,6 +380,7 @@
               "claude-5-opus",
               "claude-5-sonnet",
               "claude-5.5-opus",
+              "claude-5.5-sonnet",
               "claude-fable-5",
               "claude-fable-5-1",
               "bedrock.eu-claude-haiku-4-5",
@@ -374,6 +391,7 @@
               "bedrock.eu-claude-opus-5",
               "bedrock.eu-claude-sonnet-5",
               "bedrock.eu-claude-opus-5-5",
+              "bedrock.eu-claude-sonnet-5-5",
               "bedrock.eu-claude-fable-5",
               "bedrock.eu-claude-fable-5-1",
               "bedrock.claude-haiku-4-5",
@@ -384,6 +402,7 @@
               "bedrock.claude-opus-5",
               "bedrock.claude-sonnet-5",
               "bedrock.claude-opus-5-5",
+              "bedrock.claude-sonnet-5-5",
               "bedrock.claude-fable-5",
               "bedrock.claude-fable-5-1",
               "gemini-3.0-flash",
@@ -403,6 +422,7 @@
               "vertexai.claude-opus-5-5",
               "vertexai.claude-sonnet-4-6",
               "vertexai.claude-sonnet-5",
+              "vertexai.claude-sonnet-5-5",
               "vertexai.gemini-3.0-flash",
               "vertexai.gemini-3.0-pro",
               "yandexcloud.aliceai-llm",

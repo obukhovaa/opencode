@@ -734,7 +734,7 @@ func (a *anthropicClient) preparedMessages(ctx context.Context, messages []anthr
 					"type":  "tokens",
 					"total": a.options.taskBudget,
 				}
-				if remaining, ok := ctx.Value(taskBudgetRemainingKey).(int64); ok && remaining > 0 {
+				if remaining, ok := TaskBudgetRemaining(ctx); ok && remaining > 0 {
 					budget["remaining"] = remaining
 				}
 				outputConfig.SetExtraFields(map[string]any{
@@ -1377,6 +1377,14 @@ var taskBudgetRemainingKey = taskBudgetRemainingKeyType{}
 // Used after compaction to carry the budget across context resets.
 func TaskBudgetRemainingContext(ctx context.Context, remaining int64) context.Context {
 	return context.WithValue(ctx, taskBudgetRemainingKey, remaining)
+}
+
+// TaskBudgetRemaining reports the remaining budget carried on ctx (set by
+// TaskBudgetRemainingContext). Exported, like ForcedTool, so callers and
+// tests outside this package can observe the signal.
+func TaskBudgetRemaining(ctx context.Context) (int64, bool) {
+	remaining, ok := ctx.Value(taskBudgetRemainingKey).(int64)
+	return remaining, ok
 }
 
 type forceStructOutputToolKeyType struct{}

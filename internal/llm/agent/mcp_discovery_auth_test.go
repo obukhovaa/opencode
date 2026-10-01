@@ -189,6 +189,10 @@ func TestConfigLoadLowercasesHeaderKeys(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 	t.Setenv("HOME", dir)
+	// Load is a no-op once the singleton is populated, and earlier tests in
+	// this package populate it — reset so this test reads its own config.
+	config.Reset()
+	t.Cleanup(config.Reset)
 	if _, err := config.Load(dir, false); err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}

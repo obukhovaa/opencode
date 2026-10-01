@@ -567,8 +567,17 @@ func EstimateTokens(messages []Message, tools []tools.BaseTool, bytesPerToken in
 	totalChars := 0
 	for _, msg := range messages {
 		for _, part := range msg.Parts {
-			if textPart, ok := part.(TextContent); ok {
-				totalChars += len(textPart.Text)
+			switch p := part.(type) {
+			case TextContent:
+				totalChars += len(p.Text)
+			case ToolCall:
+				// Tool payloads dominate agentic sessions; counting only
+				// text parts undercounts them by most of their size.
+				totalChars += len(p.Name) + len(p.Input)
+			case ToolResult:
+				totalChars += len(p.Content)
+			case ReasoningContent:
+				totalChars += len(p.Thinking)
 			}
 			// For tool calls and other content types, add some overhead
 			totalChars += 100 // rough estimate for metadata

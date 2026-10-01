@@ -200,6 +200,14 @@ Agent replies are authored as GFM (GitHub-flavored Markdown) — headings, bold/
 
 The `RichRenderer` tool-card paths (`internal/bridge/slack/render.go`, `internal/bridge/telegram/render.go`) that hand-author Block Kit / legacy Markdown for tool calls, lists, tables, and status previews are separate code paths, untouched by the above — they compose their own markup directly rather than converting agent-authored GFM.
 
+### Intermediate assistant text
+
+A run usually has several assistant messages: each one that ends in `tool_use` is followed by the tool results and the next model call. For runs the bridge dispatches itself (an inbound chat message), each such message's text is relayed too, not only the final reply. It is posted as `⌛ <tool names>` (the message's tool calls in call order) on the first line, then the text, and is sent before that message's 🔧 call card at `full` verbosity. Messages without text post nothing. The final reply has no header, and no message is posted twice. Before a `question` widget goes out, the router makes sure the text that introduces it has been posted. This works at every `toolUpdateVerbosity` and with tool updates off. Subagent text and self-started turns are not relayed.
+
+Only the bridge's own run is relayed. If another run held the session while the inbound waited (`ErrSessionBusy`), such as a task auto-resume or an API run, that run's text is not posted into the thread. Interactive flow steps bound to chat are not covered yet: the flow engine runs those agents itself, so their intermediate text is not relayed. That is a follow-up.
+
+Timing: each intermediate post is bounded to 10 s (60 s with `FILE:` attachments). The question widget and the final reply each wait at most 5 s for text still being posted, then go out anyway. A post that is still running at that point is not cancelled, so the text arrives once, possibly below the widget.
+
 ## HTTP API (`/router/*`)
 
 All endpoints live on the existing opencode API port. Bare paths (`/send`, `/identities/*`, `/config/groups`) return 404 — everything is under `/router/*`.

@@ -127,6 +127,11 @@ type Agent struct {
 	// name for this agent. Empty inherits.
 	StructOutputSchemaDelivery string `json:"structOutputSchemaDelivery,omitempty"`
 	TaskBudget                 int64  `json:"taskBudget,omitempty"`
+	// CompactionThreshold is the fraction of the model's context window, in
+	// (0, 1], at which this agent's session auto-compacts. Zero inherits the
+	// default (0.95). A flow step's compact.threshold still wins, and the
+	// global autoCompact flag still decides whether compaction runs at all.
+	CompactionThreshold float64 `json:"compactionThreshold,omitempty"`
 	// Context scopes which context files feed this agent's system prompt
 	// instead of the global contextPaths (paths, replace/append mode, and
 	// the nested-disclosure opt-out). Defined in internal/contextfile so
@@ -1080,6 +1085,12 @@ func applyDefaultValues() {
 	}
 }
 
+// ValidCompactionThreshold reports whether v is a usable per-agent
+// compactionThreshold: a fraction of the context window in (0, 1].
+func ValidCompactionThreshold(v float64) bool {
+	return v > 0 && v <= 1
+}
+
 // It validates model IDs and providers, ensuring they are supported.
 func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 	if err := ValidateAgentPromptSource(string(name), agent.Prompt != "", agent.LangfusePromptPath); err != nil {
@@ -1087,6 +1098,16 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 	}
 	if err := ValidateAgentToolsSource(string(name), len(agent.Tools) > 0, len(agent.AllowTools) > 0); err != nil {
 		return err
+	}
+	// Checked before the model checks below: several of them return early,
+	// and an out-of-range threshold must never reach the agent loop.
+	if agent.CompactionThreshold != 0 && !ValidCompactionThreshold(agent.CompactionThreshold) {
+		logging.Warn("invalid compactionThreshold, must be in (0, 1]; using the default",
+			"agent", name,
+			"compaction_threshold", agent.CompactionThreshold)
+		updatedAgent := cfg.Agents[name]
+		updatedAgent.CompactionThreshold = 0
+		cfg.Agents[name] = updatedAgent
 	}
 
 	// Check if model exists

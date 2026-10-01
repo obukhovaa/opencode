@@ -37,6 +37,10 @@ type AgentInfo struct {
 	ReasoningEffort string           `yaml:"reasoningEffort,omitempty"`
 	TaskBudget      int64            `yaml:"taskBudget,omitempty"`
 	Prompt          string           `yaml:"-"`
+	// CompactionThreshold mirrors config.Agent.CompactionThreshold: the
+	// context-window fraction in (0, 1] at which this agent's sessions
+	// auto-compact. Zero inherits the default.
+	CompactionThreshold float64 `yaml:"compactionThreshold,omitempty"`
 	// LangfusePromptPath references this agent's system prompt in Langfuse
 	// Prompt Management instead of carrying its text. For a markdown agent
 	// it is a frontmatter key and the body must be empty — the body IS the
@@ -191,6 +195,9 @@ func newRegistry() Registry {
 		}
 		if a.TaskBudget > 0 {
 			args = append(args, "taskBudget", a.TaskBudget)
+		}
+		if a.CompactionThreshold > 0 {
+			args = append(args, "compactionThreshold", a.CompactionThreshold)
 		}
 		logging.Info("Agent discovered", args...)
 	}
@@ -468,6 +475,7 @@ func registerBuiltins(agents map[string]AgentInfo, cfg *config.Config) {
 			b.MaxTokens = agentCfg.MaxTokens
 			b.ReasoningEffort = agentCfg.ReasoningEffort
 			b.TaskBudget = agentCfg.TaskBudget
+			b.CompactionThreshold = agentCfg.CompactionThreshold
 		}
 		agents[b.ID] = b
 	}
@@ -535,6 +543,9 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 		}
 		if agentCfg.TaskBudget > 0 {
 			existing.TaskBudget = agentCfg.TaskBudget
+		}
+		if agentCfg.CompactionThreshold > 0 {
+			existing.CompactionThreshold = agentCfg.CompactionThreshold
 		}
 		if agentCfg.Name != "" {
 			existing.Name = agentCfg.Name
@@ -659,6 +670,9 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 	}
 	if md.TaskBudget > 0 {
 		existing.TaskBudget = md.TaskBudget
+	}
+	if md.CompactionThreshold > 0 {
+		existing.CompactionThreshold = md.CompactionThreshold
 	}
 	// As in applyConfigOverrides: a prompt source replaces the source, so
 	// the two can never both be set on one registry entry.
@@ -1027,6 +1041,11 @@ func parseAgentMarkdown(path string) (*AgentInfo, error) {
 	// an allowlist), so this is deliberately a per-file check.
 	if err := config.ValidateAgentToolsSource(baseName, len(agent.Tools) > 0, len(agent.AllowTools) > 0); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if agent.CompactionThreshold != 0 && !config.ValidCompactionThreshold(agent.CompactionThreshold) {
+		logging.Warn("invalid compactionThreshold in agent frontmatter, must be in (0, 1]; using the default",
+			"agent", baseName, "path", path, "compaction_threshold", agent.CompactionThreshold)
+		agent.CompactionThreshold = 0
 	}
 	agent.Prompt = body
 	agent.Location = path
