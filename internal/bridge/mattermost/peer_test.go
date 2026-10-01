@@ -1,6 +1,64 @@
 package mattermost
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/opencode-ai/opencode/internal/bridge"
+)
+
+// TestAdapterIsDirectPeer: Mattermost channel IDs do not encode the
+// channel type, so a bare peer is a direct message only when the server
+// says its channel is one ("D"); a thread peer never is, and is not
+// looked up.
+func TestAdapterIsDirectPeer(t *testing.T) {
+	t.Parallel()
+	types := map[string]string{"dmchannel": "D", "groupdm": "G", "townsquare": "O", "secret": "P"}
+	var lookups atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v4/channels/", func(w http.ResponseWriter, r *http.Request) {
+		lookups.Add(1)
+		kind, ok := types[strings.TrimPrefix(r.URL.Path, "/api/v4/channels/")]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"type": kind})
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	a, err := New(Identity{ID: "default", ServerURL: server.URL, AccessToken: "tok", Inbound: bridge.InboundDisabled},
+		Options{MediaDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	tests := []struct {
+		peer string
+		want bool
+	}{
+		{"dmchannel", true},
+		{"dmchannel|rootpost", false},
+		{"groupdm", false},
+		{"townsquare", false},
+		{"secret", false},
+		{"missing", false},
+		{"", false},
+	}
+	for _, tc := range tests {
+		if got := a.IsDirectPeer(context.Background(), tc.peer); got != tc.want {
+			t.Errorf("IsDirectPeer(%q) = %v, want %v", tc.peer, got, tc.want)
+		}
+	}
+	if n := lookups.Load(); n != 5 {
+		t.Errorf("%d channel lookups, want 5 (none for a thread or an empty peer)", n)
+	}
+}
 
 func TestPeerIDEncodingDM(t *testing.T) {
 	t.Parallel()

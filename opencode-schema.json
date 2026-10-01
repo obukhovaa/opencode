@@ -1087,6 +1087,11 @@
           },
           "type": "object"
         },
+        "heartbeatReminder": {
+          "default": true,
+          "description": "Daemon mode: post the weekly heartbeat setup reminder to direct-message chats whose heartbeat was never turned on or off. Only top-level DMs of a bot this process owns (inbound not mediated) are reminded. Set false to stop the reminder for every chat; /heartbeat and scheduled beats are unaffected.",
+          "type": "boolean"
+        },
         "permissionMode": {
           "description": "How permission requests are resolved on bridge-owned sessions: 'allow' auto-approves, 'deny' auto-denies, 'ask' or empty defers to the opencode UI (hangs headless). Unrecognised values fail-safe to deny.",
           "enum": [

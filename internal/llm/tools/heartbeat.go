@@ -97,7 +97,7 @@ Use it when your human asks to turn the heartbeat on or off, change how often or
 - days: "weekdays" or "all".
 - model: a model ID for beats, or "default" for your own. Warn that another model cannot reuse this session's prompt cache.
 - file: agenda path relative to the working directory, or "default" (HEARTBEAT.md).
-- now: true to run one beat right away.
+- now: true to queue one beat. It runs as soon as this turn ends.
 
 Omit what your human did not ask to change. A daily beat at a fixed time is every "24h" with hours starting at that time (e.g. hours "07-08"). What the heartbeat should check is not a setting: write it into the agenda file with your file tools. A beat with an empty agenda is skipped.
 
@@ -114,7 +114,7 @@ Returns the resulting status.`,
 			"days":  map[string]any{"type": "string", "enum": []string{"weekdays", "all"}, "description": "Weekdays only, or every day"},
 			"model": map[string]any{"type": "string", "description": `Model ID for beats, or "default"`},
 			"file":  map[string]any{"type": "string", "description": `Agenda file relative to the working directory, or "default"`},
-			"now":   map[string]any{"type": "boolean", "description": "Run one beat right away"},
+			"now":   map[string]any{"type": "boolean", "description": "Queue one beat; it runs when this turn ends"},
 		},
 	}
 }

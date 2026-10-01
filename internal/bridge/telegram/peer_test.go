@@ -1,6 +1,31 @@
 package telegram
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
+
+func TestAdapterIsDirectPeer(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		peer string
+		want bool
+	}{
+		{"12345", true},
+		{"-100123", false}, // supergroup
+		{"-4567", false},   // group
+		{"0", false},
+		{"@username", false},
+	}
+	var a Adapter
+	for _, tc := range tests {
+		t.Run(tc.peer, func(t *testing.T) {
+			if got := a.IsDirectPeer(context.Background(), tc.peer); got != tc.want {
+				t.Fatalf("IsDirectPeer(%q) = %v, want %v", tc.peer, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestIsPeerID(t *testing.T) {
 	t.Parallel()

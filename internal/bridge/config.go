@@ -80,6 +80,19 @@ type Config struct {
 	// default), messages queue silently as before. Adapters that do not
 	// implement bridge.QueuedAcknowledger are silently skipped.
 	QueueAcknowledgementsEnabled bool `json:"queueAcknowledgementsEnabled,omitempty"`
+
+	// HeartbeatReminder controls the weekly heartbeat setup reminder a
+	// daemon posts to direct-message chats whose heartbeat was never
+	// turned on or off (openspec capability bridge-heartbeat). A *bool so
+	// unset means on; false turns the reminder off for every chat of this
+	// process. /heartbeat and scheduled beats are unaffected.
+	HeartbeatReminder *bool `json:"heartbeatReminder,omitempty"`
+}
+
+// HeartbeatReminderEnabled reports whether the heartbeat setup reminder
+// is posted. A nil config or an unset field both mean on.
+func (c *Config) HeartbeatReminderEnabled() bool {
+	return c == nil || c.HeartbeatReminder == nil || *c.HeartbeatReminder
 }
 
 // ChannelsConfig holds per-platform channel sections.

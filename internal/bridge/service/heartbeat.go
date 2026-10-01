@@ -31,9 +31,12 @@ import (
 // (see dispatch.go) and reports the outcome back through
 // recordHeartbeatOutcome.
 //
-// Only identities with an adapter registered in THIS process are
-// scheduled: the identity lock that guarantees one adapter per identity
-// across processes therefore also guarantees one scheduler per heartbeat.
+// Only identities whose adapter is registered in THIS process and owns
+// the bot's platform connection are scheduled (see servesHeartbeats):
+// the identity lock that guarantees one such adapter per identity across
+// processes therefore also guarantees one scheduler per heartbeat. A
+// mediated adapter (inbound disabled) takes no lock, so several processes
+// can hold it at once; none of them schedules its beats.
 
 var (
 	// heartbeatTickInterval is how often the scheduler looks for due beats.
@@ -47,6 +50,10 @@ var (
 	// heartbeatWorkDir resolves agenda paths; tests override it.
 	heartbeatWorkDir = config.WorkingDirectory
 )
+
+// heartbeatPreemptedReason is the recorded outcome of a beat a human
+// message cancelled.
+const heartbeatPreemptedReason = "preempted by a message"
 
 // heartbeatState is the Service's heartbeat bookkeeping.
 type heartbeatState struct {
@@ -62,6 +69,20 @@ type heartbeatState struct {
 // mode only).
 func (s *Service) HeartbeatsEnabled() bool {
 	return s.heartbeat != nil
+}
+
+// servesHeartbeats reports whether this process schedules beats and posts
+// the setup reminder for the chats of adapter a: a chat platform adapter
+// (not the external relay) that is inbound-active, i.e. owns the bot's
+// own connection and its identity lock (see RegisterAdapter).
+func servesHeartbeats(a bridge.Adapter) bool {
+	if a == nil || a.Channel() == "external" {
+		return false
+	}
+	if ia, ok := a.(bridge.AdapterInboundActiver); ok && !ia.InboundActive() {
+		return false
+	}
+	return true
 }
 
 // runHeartbeats is the scheduler loop.
@@ -84,7 +105,11 @@ func (s *Service) runHeartbeats(ctx context.Context) {
 }
 
 // heartbeatTick runs one scheduler pass: the setup reminder for newly
-// registered identities, then every due beat.
+// registered identities, then every due beat. A beat that comes due
+// outside the active hours or days (a catch-up after downtime, or one a
+// busy session held back) is moved to the next allowed slot instead of
+// firing. A session bound to several chats gets one beat per slot: once
+// one of its rows has used the slot, its other due rows move on with it.
 func (s *Service) heartbeatTick(ctx context.Context) {
 	now := heartbeatNow().UTC()
 	s.remindNewIdentities(ctx, now)
@@ -94,70 +119,158 @@ func (s *Service) heartbeatTick(ctx context.Context) {
 		logging.Warn("bridge: heartbeat list failed", "err", err)
 		return
 	}
+	beaten := map[string]bool{}
 	for _, row := range rows {
-		if row.State != heartbeat.StateOn || s.Adapter(row.Channel, row.IdentityID) == nil {
+		if row.State != heartbeat.StateOn || !servesHeartbeats(s.Adapter(row.Channel, row.IdentityID)) {
 			continue
 		}
 		if row.NextBeatAt.IsZero() {
-			row.NextBeatAt = heartbeat.NextBeat(now, row.Settings)
-			if err := s.store.PutHeartbeat(ctx, row); err != nil {
-				logging.Warn("bridge: heartbeat schedule write failed", "peer", row.PeerID, "err", err)
-			}
+			s.rescheduleHeartbeat(ctx, row, heartbeat.NextBeat(now, row.Settings))
 			continue
 		}
 		if row.NextBeatAt.After(now) {
 			continue
 		}
-		s.fireHeartbeat(ctx, row, now, false)
+		if !heartbeat.InWindow(now, row.Settings) {
+			s.rescheduleHeartbeat(ctx, row, heartbeat.NextBeat(now, row.Settings))
+			continue
+		}
+		binding, err := s.store.GetBinding(ctx, s.projectID, row.Channel, row.IdentityID, row.PeerID)
+		if err != nil || binding.SessionID == "" {
+			continue
+		}
+		if beaten[binding.SessionID] {
+			s.rescheduleHeartbeat(ctx, row, nextSlot(now, row.Settings))
+			continue
+		}
+		if used, _ := s.fireHeartbeat(ctx, row, binding, now, false); used {
+			beaten[binding.SessionID] = true
+		}
 	}
 }
 
-// fireHeartbeat queues one beat for row's binding, unless the session is
-// busy (the beat then waits for a later tick, schedule unchanged) or the
-// agenda is empty (recorded as skipped, no model call). A scheduled beat
+// nextSlot is the slot after a beat that fires at now. Computing it from
+// now, not from the missed due time, is what coalesces missed beats.
+func nextSlot(now time.Time, s heartbeat.Settings) time.Time {
+	return heartbeat.NextBeat(now.Truncate(time.Minute).Add(time.Minute), s)
+}
+
+// updateHeartbeat re-reads the row of snapshot's binding and applies set
+// to that fresh copy, so a scheduler write changes only the fields its
+// path owns. It writes nothing and returns false when the row's state or
+// settings differ from snapshot: a /heartbeat change made since the
+// snapshot was read (off, a new interval) wins over a write computed from
+// the old settings. A missing row is created from snapshot.
+func (s *Service) updateHeartbeat(ctx context.Context, snapshot store.Heartbeat, set func(*store.Heartbeat)) (bool, error) {
+	cur, err := s.store.GetHeartbeat(ctx, s.projectID, snapshot.Channel, snapshot.IdentityID, snapshot.PeerID)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		cur = snapshot
+	case err != nil:
+		return false, err
+	}
+	if !cur.Settings.Equal(snapshot.Settings) {
+		return false, nil
+	}
+	set(&cur)
+	return true, s.store.PutHeartbeat(ctx, cur)
+}
+
+// rescheduleHeartbeat moves row's next beat to next without firing.
+func (s *Service) rescheduleHeartbeat(ctx context.Context, row store.Heartbeat, next time.Time) {
+	if _, err := s.updateHeartbeat(ctx, row, func(h *store.Heartbeat) { h.NextBeatAt = next }); err != nil {
+		logging.Warn("bridge: heartbeat schedule write failed", "peer", row.PeerID, "err", err)
+	}
+}
+
+// fireHeartbeat queues one beat for row's binding.
+//
+// A scheduled beat waits, schedule unchanged, while the session is busy,
+// a message is queued or an interactive flow step owns the session. It
 // advances next_beat_at BEFORE it is queued, so a crash can never re-fire
-// it in a loop; computing the next slot from now coalesces missed beats.
-// manual beats (/heartbeat now) leave the schedule alone. Returns a short
-// reason when nothing was queued.
-func (s *Service) fireHeartbeat(ctx context.Context, row store.Heartbeat, now time.Time, manual bool) string {
-	binding, err := s.store.GetBinding(ctx, s.projectID, row.Channel, row.IdentityID, row.PeerID)
-	if err != nil || binding.SessionID == "" {
-		return "this chat has no session yet"
-	}
+// it in a loop. A manual beat (/heartbeat now, or the heartbeat tool's
+// now, which runs inside the session's own turn) instead waits in line
+// behind the current turn, and leaves the schedule alone. An empty agenda
+// skips either kind with no model call; the first scheduled skip for a
+// reason posts one notice to the chat.
+//
+// used reports whether the beat's slot was spent (queued or skipped);
+// note says what happened, for the /heartbeat reply.
+func (s *Service) fireHeartbeat(ctx context.Context, row store.Heartbeat, binding store.Binding, now time.Time, manual bool) (used bool, note string) {
 	disp := s.dispatcherFor(binding.SessionID)
-	if disp.heartbeatQueued.Load() {
-		return "a heartbeat is already running"
+	// Claim the dispatcher's one beat before any check or write, so a
+	// tick and a /heartbeat now racing here cannot both queue a beat.
+	if !disp.heartbeatQueued.CompareAndSwap(false, true) {
+		return false, "a heartbeat is already running"
 	}
-	if ag := s.app.ActiveAgent(); (ag != nil && ag.IsSessionBusy(binding.SessionID)) || disp.hasQueuedInbound() {
-		return "the session is busy; the beat will run when it is idle"
+	queued := false
+	defer func() {
+		if !queued {
+			disp.heartbeatQueued.Store(false)
+		}
+	}()
+
+	// An interactive flow step owns its session (see dispatchInbound): a
+	// beat there would run the default agent on the step's session.
+	if s.app.Permissions != nil && s.app.Permissions.IsInteractiveSession(binding.SessionID) {
+		return false, "an interactive flow step owns this session"
+	}
+	ag := s.app.ActiveAgent()
+	busy := (ag != nil && ag.IsSessionBusy(binding.SessionID)) || disp.hasQueuedInbound()
+	if busy && !manual {
+		return false, "the session is busy; the beat will run when it is idle"
 	}
 
+	next := row.NextBeatAt
 	if !manual {
-		row.NextBeatAt = heartbeat.NextBeat(now.Truncate(time.Minute).Add(time.Minute), row.Settings)
+		next = nextSlot(now, row.Settings)
 	}
 	agenda := row.EffectiveAgendaFile()
 	if empty, why := agendaEmpty(agenda); empty {
-		row.LastBeatAt, row.LastStatus, row.LastError = now, heartbeat.OutcomeSkipped, why
-		if err := s.store.PutHeartbeat(ctx, row); err != nil {
+		notify := false
+		ok, err := s.updateHeartbeat(ctx, row, func(h *store.Heartbeat) {
+			// Notify when scheduled beats start being skipped for this
+			// reason, not on every skip.
+			notify = !manual && !(h.LastStatus == heartbeat.OutcomeSkipped && h.LastError == why)
+			if !manual {
+				h.NextBeatAt = next
+			}
+			h.LastBeatAt, h.LastStatus, h.LastError = now, heartbeat.OutcomeSkipped, why
+		})
+		switch {
+		case err != nil:
 			logging.Warn("bridge: heartbeat write failed", "peer", row.PeerID, "err", err)
+		case !ok:
+			return false, "the heartbeat changed meanwhile; not firing"
+		case notify:
+			s.replyToPeer(ctx, binding.AsPeerRef(), heartbeat.SkipNotice(now, why), false, binding.SessionID)
 		}
 		logging.Info("bridge: heartbeat skipped", "session", binding.SessionID, "reason", why)
-		return "skipped: " + why
+		return true, "skipped: " + why
 	}
-	if err := s.store.PutHeartbeat(ctx, row); err != nil {
-		logging.Warn("bridge: heartbeat write failed; not firing", "peer", row.PeerID, "err", err)
-		return "could not save the schedule"
+	if !manual {
+		ok, err := s.updateHeartbeat(ctx, row, func(h *store.Heartbeat) { h.NextBeatAt = next })
+		if err != nil {
+			logging.Warn("bridge: heartbeat write failed; not firing", "peer", row.PeerID, "err", err)
+			return false, "could not save the schedule"
+		}
+		if !ok {
+			return false, "the heartbeat changed meanwhile; not firing"
+		}
 	}
-	disp.heartbeatQueued.Store(true)
+	queued = true
 	disp.pushInbound(bridge.Inbound{
 		Peer:       binding.AsPeerRef(),
 		Text:       heartbeat.Prompt(now, agenda),
 		ReceivedAt: now.UnixMilli(),
-		Heartbeat:  &bridge.HeartbeatTurn{At: now, Model: row.Model},
+		Heartbeat:  &bridge.HeartbeatTurn{At: now, Model: row.Model, Manual: manual, Next: next},
 	})
 	logging.Info("bridge: heartbeat queued", "session", binding.SessionID, "manual", manual,
-		"next", row.NextBeatAt.Format(time.RFC3339))
-	return ""
+		"next", next.Format(time.RFC3339))
+	if busy {
+		return true, "queued; it runs when the current turn ends"
+	}
+	return true, "queued"
 }
 
 // agendaEmpty reports whether the agenda file gives a beat nothing to do.
@@ -175,9 +288,11 @@ func agendaEmpty(rel string) (bool, string) {
 	return false, ""
 }
 
-// recordHeartbeatOutcome writes a finished beat's outcome to its row.
+// recordHeartbeatOutcome writes a finished beat's outcome to its row,
+// re-read here so only the outcome fields change. A manual beat of a
+// chat that never set its heartbeat up creates the (unset) row.
 func (s *Service) recordHeartbeatOutcome(ctx context.Context, peer bridge.PeerRef, at time.Time, outcome, reason string) {
-	row, err := s.store.GetHeartbeat(ctx, s.projectID, peer.Channel, peer.Identity, peer.PeerID)
+	row, err := s.loadHeartbeat(ctx, peer)
 	if err != nil {
 		logging.Warn("bridge: heartbeat outcome lookup failed", "peer", peer.PeerID, "err", err)
 		return
@@ -188,15 +303,17 @@ func (s *Service) recordHeartbeatOutcome(ctx context.Context, peer bridge.PeerRe
 	}
 }
 
-// heartbeatDeferred puts a beat that lost the race for its session back
-// on the schedule: due now, so the next tick tries again once the session
-// is idle.
-func (s *Service) heartbeatDeferred(ctx context.Context, peer bridge.PeerRef, at time.Time) {
+// heartbeatDeferred puts a scheduled beat that lost the race for its
+// session back on the schedule: due now, so a later tick tries again once
+// the session is idle. Only while the row is as the scheduler left it
+// (on, next_beat_at unchanged): a /heartbeat change since then
+// recomputed the schedule, and wins.
+func (s *Service) heartbeatDeferred(ctx context.Context, peer bridge.PeerRef, hb *bridge.HeartbeatTurn) {
 	row, err := s.store.GetHeartbeat(ctx, s.projectID, peer.Channel, peer.Identity, peer.PeerID)
-	if err != nil {
+	if err != nil || row.State != heartbeat.StateOn || !row.NextBeatAt.Equal(hb.Next) {
 		return
 	}
-	row.NextBeatAt = at
+	row.NextBeatAt = hb.At
 	if err := s.store.PutHeartbeat(ctx, row); err != nil {
 		logging.Warn("bridge: heartbeat reschedule failed", "peer", peer.PeerID, "err", err)
 	}
@@ -228,25 +345,33 @@ func (s *Service) heartbeatAgent(ctx context.Context, model string) (agent.Servi
 }
 
 // remindNewIdentities posts the setup reminder, once per process start of
-// an identity's adapter, to that identity's bindings whose heartbeat is
-// unset and whose last reminder is absent or older than ReminderInterval.
-// reminded_at is written before the post so a failed or crashed post can
-// never turn into a burst of repeats.
+// an identity's adapter, to that identity's top-level direct-message
+// bindings whose heartbeat is unset and whose last reminder is absent or
+// older than ReminderInterval. Only conversations this daemon serves are
+// reminded: never the external relay, an adapter whose inbound is
+// mediated (it may hold other processes' bindings in a shared project),
+// a channel or a thread, or a flow step's session. An adapter that cannot
+// tell a direct message (no bridge.DirectPeerChecker) gets no reminder.
+// router.heartbeatReminder: false turns the reminder off.
 func (s *Service) remindNewIdentities(ctx context.Context, now time.Time) {
+	if !s.cfg.HeartbeatReminderEnabled() {
+		return
+	}
 	s.mu.Lock()
-	keys := make([][2]string, 0, len(s.adapters))
+	adapters := make([]bridge.Adapter, 0, len(s.adapters))
 	for _, a := range s.adapters {
-		keys = append(keys, [2]string{a.Channel(), a.Identity()})
+		adapters = append(adapters, a)
 	}
 	s.mu.Unlock()
 
-	for _, k := range keys {
-		channel, identity := k[0], k[1]
+	for _, a := range adapters {
+		channel, identity := a.Channel(), a.Identity()
 		s.heartbeat.mu.Lock()
 		done := s.heartbeat.reminded[adapterKey(channel, identity)]
 		s.heartbeat.reminded[adapterKey(channel, identity)] = true
 		s.heartbeat.mu.Unlock()
-		if done {
+		direct, ok := a.(bridge.DirectPeerChecker)
+		if done || !ok || !servesHeartbeats(a) {
 			continue
 		}
 		bindings, err := s.store.ListBindingsByIdentity(ctx, s.projectID, channel, identity)
@@ -255,13 +380,16 @@ func (s *Service) remindNewIdentities(ctx context.Context, now time.Time) {
 			continue
 		}
 		for _, b := range bindings {
-			s.remindBinding(ctx, b, now)
+			s.remindBinding(ctx, direct, b, now)
 		}
 	}
 }
 
-func (s *Service) remindBinding(ctx context.Context, b store.Binding, now time.Time) {
-	if b.SessionID == "" || !s.sessionHasMessages(ctx, b.SessionID) {
+// remindBinding posts the setup reminder to one binding if it is due.
+// reminded_at is written before the post so a failed or crashed post can
+// never turn into a burst of repeats.
+func (s *Service) remindBinding(ctx context.Context, direct bridge.DirectPeerChecker, b store.Binding, now time.Time) {
+	if b.SessionID == "" || strings.Contains(b.PeerID, "|") || !s.remindableSession(ctx, b.SessionID) {
 		return
 	}
 	row, err := s.store.GetHeartbeat(ctx, s.projectID, b.Channel, b.IdentityID, b.PeerID)
@@ -279,6 +407,10 @@ func (s *Service) remindBinding(ctx context.Context, b store.Binding, now time.T
 	if !row.RemindedAt.IsZero() && now.Sub(row.RemindedAt) < heartbeat.ReminderInterval {
 		return
 	}
+	// Last, as it may ask the platform.
+	if !direct.IsDirectPeer(ctx, b.PeerID) {
+		return
+	}
 	row.RemindedAt = now
 	if err := s.store.PutHeartbeat(ctx, row); err != nil {
 		logging.Warn("bridge: heartbeat reminder write failed; not posting", "peer", b.PeerID, "err", err)
@@ -288,12 +420,22 @@ func (s *Service) remindBinding(ctx context.Context, b store.Binding, now time.T
 	logging.Info("bridge: heartbeat setup reminder posted", "session", b.SessionID, "peer", b.PeerID)
 }
 
-func (s *Service) sessionHasMessages(ctx context.Context, sessionID string) bool {
+// remindableSession reports whether a bound session is a daemon
+// conversation the setup reminder is for: it has messages, it is not a
+// flow step's or subagent's session (whose root is another session), and
+// no interactive flow step owns it.
+func (s *Service) remindableSession(ctx context.Context, sessionID string) bool {
 	if s.app == nil || s.app.Sessions == nil {
 		return false
 	}
 	sess, err := s.app.Sessions.Get(ctx, sessionID)
-	return err == nil && sess.MessageCount > 0
+	if err != nil || sess.MessageCount == 0 {
+		return false
+	}
+	if sess.RootSessionID != "" && sess.RootSessionID != sess.ID {
+		return false
+	}
+	return s.app.Permissions == nil || !s.app.Permissions.IsInteractiveSession(sessionID)
 }
 
 // cmdHeartbeat implements /heartbeat. The exact grammar (see
@@ -423,8 +565,8 @@ func (s *Service) activeModelID() string {
 // returns the resulting status, with notes for anything worth knowing.
 func (s *Service) applyHeartbeat(ctx context.Context, peer bridge.PeerRef, cmd heartbeat.Command) (string, error) {
 	if cmd.Model != nil && *cmd.Model != "" {
-		if _, ok := models.SupportedModels[models.ModelID(*cmd.Model)]; !ok {
-			return "", fmt.Errorf("unknown model %q (/model lists the supported ones)", *cmd.Model)
+		if err := checkHeartbeatModel(*cmd.Model); err != nil {
+			return "", err
 		}
 	}
 	row, err := s.loadHeartbeat(ctx, peer)
@@ -451,14 +593,17 @@ func (s *Service) applyHeartbeat(ctx context.Context, peer bridge.PeerRef, cmd h
 			if empty, why := agendaEmpty(row.EffectiveAgendaFile()); empty {
 				notes = append(notes, fmt.Sprintf("Beats are skipped until the agenda has something in it (%s).", why))
 			}
+			if !servesHeartbeats(s.Adapter(peer.Channel, peer.Identity)) {
+				notes = append(notes, "Scheduled beats do not run for this chat: this process does not own the bot's connection (its inbound is mediated), and only the owner schedules beats. /heartbeat now still works.")
+			}
 		}
 	}
 	if cmd.Now {
-		if reason := s.fireHeartbeat(ctx, row, now, true); reason != "" {
-			notes = append(notes, "Beat now: "+reason+".")
-		} else {
-			notes = append(notes, "Beat now: queued.")
+		note := "this chat has no session yet"
+		if b, err := s.store.GetBinding(ctx, s.projectID, peer.Channel, peer.Identity, peer.PeerID); err == nil && b.SessionID != "" {
+			_, note = s.fireHeartbeat(ctx, row, b, now, true)
 		}
+		notes = append(notes, "Beat now: "+note+".")
 	}
 
 	text := heartbeat.Describe(row.Record, s.activeModelID())
@@ -466,4 +611,20 @@ func (s *Service) applyHeartbeat(ctx context.Context, peer bridge.PeerRef, cmd h
 		text += "\n" + strings.Join(notes, "\n")
 	}
 	return text, nil
+}
+
+// checkHeartbeatModel validates a `/heartbeat model <id>`: a supported
+// model whose provider is configured and enabled, as the agent factory
+// requires when it builds the beat's model-override agent.
+func checkHeartbeatModel(id string) error {
+	m, ok := models.SupportedModels[models.ModelID(id)]
+	if !ok {
+		return fmt.Errorf("unknown model %q (/model lists the supported ones)", id)
+	}
+	if cfg := config.Get(); cfg != nil {
+		if p, ok := cfg.Providers[m.Provider]; !ok || p.Disabled {
+			return fmt.Errorf("model %q needs the %s provider, which is not configured", id, m.Provider)
+		}
+	}
+	return nil
 }

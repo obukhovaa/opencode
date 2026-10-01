@@ -201,6 +201,22 @@ func (a *Adapter) InboundActive() bool {
 	return !bridge.IsInboundDisabled(a.inboundMode)
 }
 
+// IsDirectPeer implements bridge.DirectPeerChecker: a bare (non-thread)
+// peer whose channel is a direct message. The channel type is looked up
+// on the server, since Mattermost channel IDs do not encode it.
+func (a *Adapter) IsDirectPeer(ctx context.Context, peerID string) bool {
+	p := ParsePeerID(peerID)
+	if p.ChannelID == "" || p.IsThread() {
+		return false
+	}
+	kind, err := a.client.ChannelType(ctx, p.ChannelID)
+	if err != nil {
+		logging.Debug("mattermost: channel type lookup failed", "identity", a.identityID, "channel", p.ChannelID, "err", err)
+		return false
+	}
+	return kind == "D"
+}
+
 // Client exposes the underlying REST client for tests and the
 // router_send agent tool wiring.
 func (a *Adapter) Client() *Client { return a.client }

@@ -51,6 +51,60 @@ func TestNextBeat(t *testing.T) {
 	}
 }
 
+func TestInWindow(t *testing.T) {
+	// 2026-10-01 is a Thursday.
+	window := &Window{Start: 7 * 60, End: 23 * 60}
+	night := &Window{Start: 22 * 60, End: 6 * 60}
+	tests := []struct {
+		name string
+		at   string
+		s    Settings
+		want bool
+	}{
+		{"no window, any time", "2026-10-01 03:00", Settings{}, true},
+		{"before the window", "2026-10-01 03:00", Settings{Window: window}, false},
+		{"at the window start", "2026-10-01 07:00", Settings{Window: window}, true},
+		{"window end is exclusive", "2026-10-01 23:00", Settings{Window: window}, false},
+		{"wrapping window after midnight", "2026-10-02 01:00", Settings{Window: night}, true},
+		{"wrapping window daytime", "2026-10-01 12:00", Settings{Window: night}, false},
+		{"saturday with weekdays", "2026-10-03 12:00", Settings{WeekdaysOnly: true}, false},
+		{"monday with weekdays", "2026-10-05 12:00", Settings{WeekdaysOnly: true}, true},
+		{"friday's night window runs into saturday", "2026-10-03 01:00", Settings{Window: night, WeekdaysOnly: true}, true},
+		{"saturday's night window is off", "2026-10-03 23:00", Settings{Window: night, WeekdaysOnly: true}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := InWindow(utc(tc.at), tc.s); got != tc.want {
+				t.Fatalf("InWindow(%s) = %v, want %v", tc.at, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSettingsEqual(t *testing.T) {
+	base := Settings{State: StateOn, Every: time.Hour, Window: &Window{Start: 60, End: 120}}
+	same := base
+	same.Window = &Window{Start: 60, End: 120}
+	tests := []struct {
+		name string
+		o    Settings
+		want bool
+	}{
+		{"same values, different window pointer", same, true},
+		{"state", Settings{State: StateOff, Every: time.Hour, Window: base.Window}, false},
+		{"window", Settings{State: StateOn, Every: time.Hour, Window: &Window{Start: 60, End: 180}}, false},
+		{"window removed", Settings{State: StateOn, Every: time.Hour}, false},
+		{"model", Settings{State: StateOn, Every: time.Hour, Window: base.Window, Model: "m"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := base.Equal(tc.o); got != tc.want {
+				t.Fatalf("Equal = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseCommand(t *testing.T) {
 	c, err := ParseCommand("on every 30m hours 05-21 days weekdays model claude-x file notes/agenda.md")
 	if err != nil {

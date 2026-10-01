@@ -78,6 +78,15 @@ type Settings struct {
 	AgendaFile   string
 }
 
+// Equal reports whether s and o hold the same state and settings.
+func (s Settings) Equal(o Settings) bool {
+	if (s.Window == nil) != (o.Window == nil) || (s.Window != nil && *s.Window != *o.Window) {
+		return false
+	}
+	return s.State == o.State && s.Every == o.Every && s.WeekdaysOnly == o.WeekdaysOnly &&
+		s.Model == o.Model && s.AgendaFile == o.AgendaFile
+}
+
 // EffectiveEvery returns the interval in force.
 func (s Settings) EffectiveEvery() time.Duration {
 	if s.Every <= 0 {
@@ -104,11 +113,7 @@ func (s Settings) EffectiveAgendaFile() string {
 func NextBeat(after time.Time, s Settings) time.Time {
 	after = after.UTC()
 	every := s.EffectiveEvery()
-	start, span := 0, 24*time.Hour
-	if s.Window != nil {
-		start = s.Window.Start
-		span = time.Duration((s.Window.End-s.Window.Start+24*60)%(24*60)) * time.Minute
-	}
+	start, span := s.window()
 	today := time.Date(after.Year(), after.Month(), after.Day(), 0, 0, 0, 0, time.UTC)
 	// Start a day early: a window that wraps midnight began yesterday.
 	// Nine days covers a weekend either side of any window.
@@ -125,6 +130,36 @@ func NextBeat(after time.Time, s Settings) time.Time {
 		}
 	}
 	return after.Add(every)
+}
+
+// InWindow reports whether t falls inside the active hours of an active
+// day, with days counted as in NextBeat (a window belongs to the day it
+// starts on). A beat that comes due late — a catch-up after downtime, or
+// one a busy session held back — fires only while this holds.
+func InWindow(t time.Time, s Settings) bool {
+	t = t.UTC()
+	start, span := s.window()
+	today := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	for d := -1; d <= 0; d++ {
+		day := today.AddDate(0, 0, d)
+		if s.WeekdaysOnly && isWeekend(day.Weekday()) {
+			continue
+		}
+		anchor := day.Add(time.Duration(start) * time.Minute)
+		if !t.Before(anchor) && t.Before(anchor.Add(span)) {
+			return true
+		}
+	}
+	return false
+}
+
+// window returns the active window's start (minutes after 00:00 UTC) and
+// length: the whole day without one.
+func (s Settings) window() (int, time.Duration) {
+	if s.Window == nil {
+		return 0, 24 * time.Hour
+	}
+	return s.Window.Start, time.Duration((s.Window.End-s.Window.Start+24*60)%(24*60)) * time.Minute
 }
 
 func isWeekend(d time.Weekday) bool {
@@ -399,6 +434,14 @@ If nothing needs your human's attention, reply with exactly %s and nothing else.
 // Header is the line prefixed to a posted beat report.
 func Header(now time.Time) string {
 	return "💓 Heartbeat " + now.UTC().Format("15:04Z")
+}
+
+// SkipNotice is posted once when scheduled beats start being skipped for
+// an empty or missing agenda, so a heartbeat that is on but has nothing
+// to do does not go quiet unnoticed (e.g. after a redeploy wiped the
+// working directory).
+func SkipNotice(now time.Time, why string) string {
+	return Header(now) + " skipped: " + why + ". Tell me what to check (/heartbeat <request>) or run /heartbeat off."
 }
 
 // Outcome of one beat, as recorded on the binding's row.

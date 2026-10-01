@@ -1,6 +1,32 @@
 package slack
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
+
+func TestAdapterIsDirectPeer(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		peer string
+		want bool
+	}{
+		{"D123", true},
+		{"D123|1700000000.000100", false},
+		{"C123", false},
+		{"C123|1700000000.000100", false},
+		{"G123", false},
+		{"", false},
+	}
+	var a Adapter
+	for _, tc := range tests {
+		t.Run(tc.peer, func(t *testing.T) {
+			if got := a.IsDirectPeer(context.Background(), tc.peer); got != tc.want {
+				t.Fatalf("IsDirectPeer(%q) = %v, want %v", tc.peer, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestPeerIDEncodingDM(t *testing.T) {
 	t.Parallel()

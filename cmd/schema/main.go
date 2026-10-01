@@ -1180,6 +1180,11 @@ func generateSchema() map[string]any {
 				"description": "When true, the bridge sends an in-place-editable '⏳ queued' acknowledgement to a sender whose message is enqueued behind an in-flight agent run. The ack is updated as the queue drains and resolved to '▶ Processing…' when the run starts. Disabled by default; enable for reviewers who need visibility into queue depth.",
 				"default":     false,
 			},
+			"heartbeatReminder": map[string]any{
+				"type":        "boolean",
+				"description": "Daemon mode: post the weekly heartbeat setup reminder to direct-message chats whose heartbeat was never turned on or off. Only top-level DMs of a bot this process owns (inbound not mediated) are reminded. Set false to stop the reminder for every chat; /heartbeat and scheduled beats are unaffected.",
+				"default":     true,
+			},
 			"channels": map[string]any{
 				"type":        "object",
 				"description": "Per-platform channel configuration. See docs/bridge.md for field details.",

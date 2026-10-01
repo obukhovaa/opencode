@@ -164,6 +164,9 @@ func (s *Service) dispatchInbound(ctx context.Context, in bridge.Inbound) {
 
 	disp := s.dispatcherFor(binding.SessionID)
 	disp.pushInbound(in)
+	// A human message never waits silently behind a heartbeat: the beat
+	// in flight, if any, is cancelled (bridge-heartbeat).
+	disp.preemptHeartbeat()
 }
 
 // resolveBinding returns the binding for the inbound's peer, creating a
