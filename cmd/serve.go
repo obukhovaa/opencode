@@ -193,6 +193,10 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 		// loaded and /router/* routes return 404 (per the
 		// chat-bridge-http-api spec).
 		var bridgeSvc *bridgesvc.Service
+		// Daemon mode: neither a flow runner nor a pool pod. Only a daemon
+		// schedules chat heartbeats (bridge-heartbeat).
+		flowFlag, _ := cmd.Flags().GetString("flow")
+		daemonMode := !poolMode && flowFlag == ""
 		if cfg.Router != nil && cfg.Router.AnyChannelEnabled() {
 			// Orchestrator-mediated-inbound (openspec Phase F): when
 			// OPENCODE_BRIDGE_REGISTRAR_URL is set, mirror local
@@ -244,6 +248,7 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 				RemoteJobID:     remoteJobID,
 				RemoteProjectID: remoteProj,
 				PoolMode:        poolMode,
+				Heartbeat:       daemonMode,
 			})
 			if err != nil {
 				logging.Error("Bridge orchestrator init failed", "error", err)

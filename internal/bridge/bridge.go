@@ -25,6 +25,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // PrependMentionIfMissing returns `mention + " " + text` UNLESS text
@@ -132,6 +133,20 @@ type Inbound struct {
 	// didn't set it; treated as "unknown", which SUPPRESSES the extra ack
 	// so an unstamped button click is never double-acknowledged.
 	Source string `json:"source,omitempty"`
+	// Heartbeat marks a scheduled heartbeat turn the bridge queued itself
+	// (openspec capability bridge-heartbeat). It is set only in-process by
+	// the heartbeat scheduler and is never decoded from /router/inbound.
+	Heartbeat *HeartbeatTurn `json:"-"`
+}
+
+// HeartbeatTurn carries what the dispatcher needs to run a heartbeat turn
+// quietly and record its outcome.
+type HeartbeatTurn struct {
+	// At is the beat's wall-clock time, shown in the report header.
+	At time.Time
+	// Model, when set, runs the beat on that model instead of the agent's
+	// own.
+	Model string
 }
 
 // InboundSource classifies how a reviewer's inbound was produced. It rides

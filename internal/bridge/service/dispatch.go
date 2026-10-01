@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/heartbeat"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -145,6 +146,22 @@ type sessionDispatch struct {
 	// bridge.QueueAckToken. Entries are removed when the ack is resolved
 	// (run started) or when an edit fails (message gone — send a fresh one).
 	liveAcks sync.Map // map[string]bridge.QueueAckToken
+
+	// heartbeatQueued is true from the moment the heartbeat scheduler
+	// queues a beat until that beat's run has finished, so a slow beat is
+	// never queued twice (bridge-heartbeat).
+	heartbeatQueued atomic.Bool
+	// quiet is true while a heartbeat turn runs: no progress card and no
+	// tool-call cards reach the chat for it.
+	quiet atomic.Bool
+}
+
+// hasQueuedInbound reports whether messages are waiting behind the
+// in-flight run. The heartbeat scheduler defers to them.
+func (d *sessionDispatch) hasQueuedInbound() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.inbound) > 0 || len(d.overflow) > 0
 }
 
 // partItem is one part event on d.parts, bound to the text guard of the
@@ -291,8 +308,29 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 		}
 	}()
 
+	hb := in.Heartbeat
+	if hb != nil {
+		// Heartbeat turns render quietly and report their outcome. The
+		// flags are cleared by the deferred tail registered first, so it
+		// runs LAST — after the parts grace window below — and no trailing
+		// tool transition of the beat leaks out as a card.
+		d.quiet.Store(true)
+		defer func() {
+			d.quiet.Store(false)
+			d.heartbeatQueued.Store(false)
+		}()
+	}
+
 	// Named `ag`, not `agent`: the local must not shadow the agent package.
 	ag := d.svc.app.ActiveAgent()
+	if hb != nil {
+		var err error
+		if ag, err = d.svc.heartbeatAgent(ctx, hb.Model); err != nil {
+			logging.Warn("bridge: heartbeat agent unavailable", "session", d.sessionID, "err", err)
+			d.finishHeartbeat(ctx, in.Peer, hb, "", err)
+			return
+		}
+	}
 	if ag == nil {
 		logging.Warn("bridge: no active agent; dropping inbound", "session", d.sessionID)
 		d.svc.replyToPeer(ctx, in.Peer,
@@ -381,7 +419,18 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 			// resolved to "▶ Processing…" — that would contradict the failure
 			// reply sent immediately after. Leave the "⏳ queued" text in place.
 			logging.Warn("bridge: agent.Run failed", "session", d.sessionID, "err", err)
+			if hb != nil {
+				d.finishHeartbeat(ctx, in.Peer, hb, "", err)
+				return
+			}
 			d.svc.replyToPeer(ctx, in.Peer, runFailureMessage(err, d.sessionID), false, d.sessionID)
+			return
+		}
+		if hb != nil {
+			// Another actor took the session between the scheduler's
+			// idle check and this run. A beat never waits in line: hand
+			// it back to the scheduler, due now, for its next tick.
+			d.svc.heartbeatDeferred(ctx, in.Peer, hb.At)
 			return
 		}
 		// ErrSessionBusy from a cross-actor holder. Check budget.
@@ -404,8 +453,11 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	}
 	// Run succeeded — resolve the ack before starting the run.
 	d.resolveQueueAck(ctx, in.Peer, ack.token)
-	prog = d.progressStart(ctx)
+	if hb == nil {
+		prog = d.progressStart(ctx)
+	}
 	guard = newRunTextGuard(runStartMs)
+	guard.quiet = hb != nil
 	d.textGuard.Store(guard)
 
 	// Fan part events into d.parts for outbound surface delivery (typing,
@@ -427,7 +479,48 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 		if ev.Type == agent.AgentEventTypeError {
 			runStatus = progressStatusError
 		}
+		if hb != nil {
+			d.handleHeartbeatTerminal(ctx, in.Peer, hb, ev)
+			continue
+		}
 		d.handleTerminalEvent(ctx, ev)
+	}
+}
+
+// handleHeartbeatTerminal delivers a heartbeat turn's outcome: nothing for
+// a silent acknowledgement, the reply under a heartbeat header otherwise,
+// one failure line for an error.
+func (d *sessionDispatch) handleHeartbeatTerminal(ctx context.Context, peer bridge.PeerRef, hb *bridge.HeartbeatTurn, ev agent.AgentEvent) {
+	switch ev.Type {
+	case agent.AgentEventTypeSummarize:
+		return
+	case agent.AgentEventTypeError:
+		err := ev.Error
+		if err == nil {
+			err = errors.New("the run ended with an error")
+		}
+		d.finishHeartbeat(ctx, peer, hb, "", err)
+		return
+	}
+	d.finishHeartbeat(ctx, peer, hb, agentMessageText(ev.Message), nil)
+}
+
+// finishHeartbeat posts and records a beat's outcome.
+func (d *sessionDispatch) finishHeartbeat(ctx context.Context, peer bridge.PeerRef, hb *bridge.HeartbeatTurn, reply string, runErr error) {
+	header := heartbeat.Header(hb.At)
+	switch {
+	case runErr != nil:
+		reason := truncateOneLine(runErr.Error(), toolErrorPreviewRunes)
+		d.svc.replyToPeer(ctx, peer, header+" failed: "+reason, false, d.sessionID)
+		d.svc.recordHeartbeatOutcome(ctx, peer, hb.At, heartbeat.OutcomeError, reason)
+	case strings.TrimSpace(reply) == "" || heartbeat.IsSilentAck(reply):
+		d.svc.recordHeartbeatOutcome(ctx, peer, hb.At, heartbeat.OutcomeSilent, "")
+	default:
+		d.handleTerminalEvent(ctx, agent.AgentEvent{
+			Type:    agent.AgentEventTypeResponse,
+			Message: message.Message{Parts: []message.ContentPart{message.TextContent{Text: header + "\n\n" + reply}}},
+		})
+		d.svc.recordHeartbeatOutcome(ctx, peer, hb.At, heartbeat.OutcomeOK, "")
 	}
 }
 
@@ -782,6 +875,12 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent], gu
 	// assistant message — its human-readable reaction to the synthetic
 	// ToolResult — still flows to chat through the normal text path.
 	if ev.Payload.Synthetic {
+		return
+	}
+	// Heartbeat turns post no tool-call cards and no intermediate text;
+	// their outcome is reported once, at the end (bridge-heartbeat). The
+	// run's guard carries the flag for events handled after it ended.
+	if d.quiet.Load() || (guard != nil && guard.quiet) {
 		return
 	}
 	tu := d.svc.cfg.ToolUpdatesEnabled
