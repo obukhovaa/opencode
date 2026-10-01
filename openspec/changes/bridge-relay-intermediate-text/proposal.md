@@ -28,10 +28,16 @@ message from the store.
 - **Each message is posted once per run.** A per-run text guard (claim by message ID)
   is shared by the terminal path, the intermediate path and the question flush. A
   run that ends on a `tool_use` message (turn limit) posts it through whichever path
-  claims first.
+  claims first. Each part is checked against the guard of the run that received it,
+  and parts published before the run started (another actor's run that held the
+  session while the bridge retried `ErrSessionBusy`) are not relayed.
 - **The question widget waits for its text.** `QuestionRouter.handleNewRequest`
-  flushes the session's latest assistant message before fanning out the widget. If
-  another path is already posting it, the router waits up to 5 s.
+  flushes the session's latest assistant message before fanning out the widget: it
+  claims the message, sends it on a background goroutine and waits up to 5 s. A slower
+  send is not cancelled, so the text still arrives, once.
+- **The final reply waits for in-flight text.** Before posting the terminal message the
+  bridge waits up to 5 s for intermediate posts of the run that are still being sent.
+- **Every intermediate post is bounded**: 10 s, or 60 s with attachments.
 - **Unchanged**: the final reply (no header), tool-call and tool-result rendering,
   the progress card, `router.toolUpdateVerbosity`. The relay runs at every verbosity
   and with tool updates off.
@@ -39,14 +45,16 @@ message from the store.
 ## Out of scope
 
 Streaming deltas and in-place edits of the relayed text; self-started turns and
-`router_send`; flow-step sessions not run by the bridge dispatcher;
-subagent text (parts from descendant sessions are skipped).
+`router_send`; flow-step sessions not run by the bridge dispatcher, including
+interactive flow steps bound to chat (a follow-up); subagent text (parts from
+descendant sessions are skipped).
 
 ## Impact
 
 - `internal/bridge/service/intermediate_text.go` (new): guard, header, relay and
   question flush.
 - `internal/bridge/service/dispatch.go`: guard lifecycle in `handleInbound`, the
-  trigger in `handlePartEvent`, the claim in `handleTerminalEvent`.
+  guard bound to each `d.parts` item (`partItem`), the trigger in `handlePartEvent`,
+  the wait and claim in `handleTerminalEvent`.
 - `internal/bridge/service/question.go`: flush before the widget fan-out.
 - No config or schema change.
