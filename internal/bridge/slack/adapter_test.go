@@ -31,6 +31,7 @@ type mockSlackServer struct {
 	updates  []updateCall
 	uploads  []uploadCall
 	opens    []string
+	infos    []string          // users.info "user" params
 	files    map[string]string // file ID → body
 
 	// postMessageErrors, when non-empty, is consulted by call index (0-
@@ -206,6 +207,19 @@ func (m *mockSlackServer) handleAPI(w http.ResponseWriter, r *http.Request) {
 		m.respond(w, map[string]any{
 			"ok":      true,
 			"channel": map[string]any{"id": "D012345"},
+		})
+	case "users.info":
+		_ = r.ParseForm()
+		user := r.FormValue("user")
+		m.mu.Lock()
+		m.infos = append(m.infos, user)
+		m.mu.Unlock()
+		m.respond(w, map[string]any{
+			"ok": true,
+			"user": map[string]any{
+				"id":      user,
+				"profile": map[string]any{"email": strings.ToLower(user) + "@example.com"},
+			},
 		})
 	default:
 		// apps.connections.open is what Socket Mode calls to get a
@@ -535,6 +549,42 @@ func TestResolveUserToDMOpensConversation(t *testing.T) {
 	got, err = a.ResolveUserToDM(context.Background(), "D012345")
 	if err != nil || got != "D012345" {
 		t.Errorf("got %q/%v", got, err)
+	}
+}
+
+// Workspace (U) and Enterprise Grid (W) authors are both looked up via
+// users.info; anything else never reaches the API.
+func TestResolveUserEmail(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		userID     string
+		want       string
+		wantLookup bool
+	}{
+		{name: "workspace user id", userID: "U01ABC", want: "u01abc@example.com", wantLookup: true},
+		{name: "enterprise grid user id", userID: "W01ABC", want: "w01abc@example.com", wantLookup: true},
+		{name: "bot id is skipped", userID: "B01ABC"},
+		{name: "empty id is skipped", userID: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			a, mock, _ := newAdapter(t, Identity{ID: "default", BotToken: "xoxb-test", AppToken: "xapp-test"})
+			got, err := a.ResolveUserEmail(context.Background(), tt.userID)
+			if err != nil {
+				t.Fatalf("ResolveUserEmail: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("email = %q, want %q", got, tt.want)
+			}
+			mock.mu.Lock()
+			lookups := len(mock.infos)
+			mock.mu.Unlock()
+			if looked := lookups > 0; looked != tt.wantLookup {
+				t.Errorf("users.info called = %v, want %v", looked, tt.wantLookup)
+			}
+		})
 	}
 }
 

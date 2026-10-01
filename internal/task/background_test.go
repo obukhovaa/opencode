@@ -12,6 +12,7 @@ type fakeDeps struct {
 	pairs       []recordedPair
 	busyOn      map[string]bool
 	resumeCalls atomic.Int32
+	requesters  []string
 }
 
 type recordedPair struct {
@@ -32,8 +33,11 @@ func (f *fakeDeps) IsSessionBusy(sessionID string) bool {
 	return f.busyOn[sessionID]
 }
 
-func (f *fakeDeps) ResumeSession(sessionID string) {
+func (f *fakeDeps) ResumeSession(sessionID, requester string) {
 	f.resumeCalls.Add(1)
+	f.mu.Lock()
+	f.requesters = append(f.requesters, requester)
+	f.mu.Unlock()
 }
 
 func (f *fakeDeps) snapshot() []recordedPair {
@@ -102,6 +106,49 @@ func TestEnqueue_IdleTriggersResume(t *testing.T) {
 	}
 	if tk.State() != StateCompleted {
 		t.Errorf("state: want completed got %v", tk.State())
+	}
+}
+
+// The auto-resumed turn works for whoever spawned the task, so the resume
+// carries the task's requester; an unregistered task ID has none.
+func TestEnqueue_ResumeCarriesTaskRequester(t *testing.T) {
+	tests := []struct {
+		name       string
+		requester  string
+		unregister bool
+		want       string
+	}{
+		{name: "task requester is passed through", requester: "alice@", want: "alice@"},
+		{name: "task without requester resumes without one", want: ""},
+		{name: "unregistered task id resumes without one", requester: "alice@", unregister: true, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps, _, tk, cleanup := setupTaskFixture(t, false)
+			defer cleanup()
+			tk.Requester = tt.requester
+			taskID := tk.ID
+			if tt.unregister {
+				taskID = NewTaskID(KindBash)
+			}
+			err := EnqueueTaskCompletion(context.Background(), CompletionInput{
+				SessionID:           "s1",
+				OriginatingToolName: "bash",
+				TaskID:              taskID,
+				Kind:                KindBash,
+				Status:              StatusCompleted,
+				Content:             "ok",
+				SuppressIfNotified:  true,
+			})
+			if err != nil {
+				t.Fatalf("enqueue: %v", err)
+			}
+			deps.mu.Lock()
+			defer deps.mu.Unlock()
+			if len(deps.requesters) != 1 || deps.requesters[0] != tt.want {
+				t.Fatalf("resume requesters = %q, want [%q]", deps.requesters, tt.want)
+			}
+		})
 	}
 }
 

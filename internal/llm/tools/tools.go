@@ -38,6 +38,7 @@ type (
 	flowArgsContextKey          string
 	nonInteractiveContextKey    string
 	stepScopedContextKey        string
+	requesterContextKey         string
 )
 
 const (
@@ -67,11 +68,54 @@ const (
 	// instead of context.Background() so a timed-out step cancels them
 	// (see openspec flow-runtime-resume / task-async-mode specs).
 	StepScopedContextKey stepScopedContextKey = "step_scoped_ctx"
+	// RequesterContextKey carries the identity of the human a run is
+	// working for (an email when it could be resolved, else the platform
+	// user id). Set per turn by the chat bridge from the inbound message's
+	// author, by the cron scheduler from the job's stored requester, and
+	// on an auto-resumed turn from the completed task's Task.Requester;
+	// read by telemetry to stamp the trace's `requester` metadata. Use
+	// WithRequester / RequesterFromContext.
+	RequesterContextKey requesterContextKey = "requester"
 
 	// MaxToolResponseTokens is the maximum number of tokens allowed in a tool response
 	// to prevent context overflow. ~1200KB of text content.
 	MaxToolResponseTokens = 300_000
 )
+
+// WithRequester returns ctx carrying requester under RequesterContextKey.
+// An empty requester returns ctx unchanged, so an unresolvable author never
+// masks a requester already on the context.
+func WithRequester(ctx context.Context, requester string) context.Context {
+	if requester == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, RequesterContextKey, requester)
+}
+
+// RequesterFromContext returns the requester carried by ctx, or "".
+func RequesterFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	r, _ := ctx.Value(RequesterContextKey).(string)
+	return r
+}
+
+// TurnRequester returns who the turn on ctx works for, in the order its
+// trace metadata resolves it: a non-blank `requester` flow arg (on a flow
+// step's ctx when telemetry.flowArgs extracts it), else the per-turn
+// requester. Use it to carry attribution onto work that outlives the turn
+// (title generation, a cron job) and so loses the flow args. Does not
+// apply the telemetry.requester fallback; the trace does that itself.
+func TurnRequester(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if args, ok := ctx.Value(FlowArgsContextKey).(map[string]string); ok && strings.TrimSpace(args["requester"]) != "" {
+		return args["requester"]
+	}
+	return RequesterFromContext(ctx)
+}
 
 type toolResponse struct {
 	Type     toolResponseType `json:"type"`

@@ -128,6 +128,11 @@ type Task struct {
 	// already routed — under the active/primary agent rather than the
 	// step's own agent (GENAI-239).
 	FlowOwned bool
+	// Requester is the requester of the turn that spawned the task
+	// (tools.RequesterFromContext at spawn time). EnqueueTaskCompletion
+	// hands it to Deps.ResumeSession so the auto-resumed turn's telemetry
+	// stays attributed to the same person. Empty when none was known.
+	Requester string
 	// Notified is the per-task dedupe flag. EnqueueTaskCompletion CAS-flips
 	// this from false → true before writing a TERMINAL synthetic pair; a
 	// losing CAS means another path already notified the parent session and

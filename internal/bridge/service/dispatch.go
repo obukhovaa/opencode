@@ -12,6 +12,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/pubsub"
@@ -331,6 +332,10 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 
 	atts := translateAttachments(in.Attachments)
 
+	// Attribute this turn's traces to the message author, so a daemon
+	// shared by several people records who each request came from.
+	runCtx := tools.WithRequester(ctx, d.svc.requesterFor(ctx, in))
+
 	// Bounded retry for ErrSessionBusy: the session-run ledger is
 	// process-global (session-run-exclusivity spec). Cross-actor holders
 	// — a flow step's own agent, a cron sentinel, a task auto-resume —
@@ -367,7 +372,7 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	for {
 		var err error
 		runStartMs = time.Now().UnixMilli()
-		runCh, err = ag.Run(ctx, d.sessionID, in.Text, 0, atts...)
+		runCh, err = ag.Run(runCtx, d.sessionID, in.Text, 0, atts...)
 		if err == nil {
 			break
 		}

@@ -98,7 +98,7 @@ func (d *testDeps) WritePair(ctx context.Context, sessionID string, p task.Synth
 }
 
 func (d *testDeps) IsSessionBusy(string) bool { return false }
-func (d *testDeps) ResumeSession(string) {
+func (d *testDeps) ResumeSession(string, string) {
 	d.mu.Lock()
 	d.resumeCalls++
 	d.mu.Unlock()

@@ -27,7 +27,11 @@ func (p *passthroughDeps) WritePair(_ context.Context, _ string, _ task.Syntheti
 	return nil
 }
 func (p *passthroughDeps) IsSessionBusy(string) bool { return false }
-func (p *passthroughDeps) ResumeSession(string)      { p.mu.Lock(); p.resumed++; p.mu.Unlock() }
+func (p *passthroughDeps) ResumeSession(string, string) {
+	p.mu.Lock()
+	p.resumed++
+	p.mu.Unlock()
+}
 
 func setupForToolTest(t *testing.T) (*passthroughDeps, func()) {
 	t.Helper()

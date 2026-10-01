@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +17,7 @@ type captureDeps struct {
 	mu          sync.Mutex
 	pairs       []task.SyntheticPair
 	resumes     int
+	requesters  []string // requester passed to each ResumeSession
 	notifyReady chan struct{}
 }
 
@@ -30,7 +33,31 @@ func (c *captureDeps) WritePair(ctx context.Context, sessionID string, p task.Sy
 }
 
 func (c *captureDeps) IsSessionBusy(string) bool { return false }
-func (c *captureDeps) ResumeSession(string)      { c.mu.Lock(); c.resumes++; c.mu.Unlock() }
+func (c *captureDeps) ResumeSession(_, requester string) {
+	c.mu.Lock()
+	c.resumes++
+	c.requesters = append(c.requesters, requester)
+	c.mu.Unlock()
+}
+
+// waitForResume returns the requester of the first ResumeSession call. The
+// resume follows the pair write, so waitForPair alone does not cover it.
+func waitForResume(t *testing.T, deps *captureDeps, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		deps.mu.Lock()
+		if len(deps.requesters) > 0 {
+			r := deps.requesters[0]
+			deps.mu.Unlock()
+			return r
+		}
+		deps.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no ResumeSession call after %v", timeout)
+	return ""
+}
 
 func (c *captureDeps) collect() []task.SyntheticPair {
 	c.mu.Lock()
@@ -142,6 +169,57 @@ func TestBashBackground_NonZeroExit(t *testing.T) {
 	}
 	if !strings.Contains(pairs[0].ToolContent, "Exit code 2") {
 		t.Errorf("tool content missing exit code marker: %q", pairs[0].ToolContent)
+	}
+}
+
+// A background task's completion auto-resumes the idle session; that turn
+// works for whoever spawned the task, so the resume must carry the
+// spawning turn's requester (the resumed run has no other source for it).
+func TestBackgroundTaskResumeCarriesRequester(t *testing.T) {
+	tests := []struct {
+		name  string
+		spawn func(ctx context.Context, dir string) error
+	}{
+		{
+			name: "bash run_in_background",
+			spawn: func(ctx context.Context, dir string) error {
+				_, err := (&bashTool{}).runBackground(ctx, ToolCall{ID: "call-req"}, BashParams{
+					Command:         "echo done",
+					Description:     "bg requester",
+					RunInBackground: true,
+				}, dir, "s-req")
+				return err
+			},
+		},
+		{
+			name: "monitor",
+			spawn: func(ctx context.Context, dir string) error {
+				resp, err := NewMonitorToolForTest(nil, &stubRegistry{}).Run(ctx, ToolCall{
+					ID:    "call-req",
+					Input: fmt.Sprintf(`{"cmd":"bash","args":["-c","echo done"],"pattern":"NEVER","cwd":%q}`, dir),
+				})
+				if err == nil && resp.IsError {
+					err = errors.New(resp.Content)
+				}
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps, cleanup := setupBashBgFixture(t)
+			defer cleanup()
+
+			ctx := context.WithValue(context.Background(), SessionIDContextKey, "s-req")
+			ctx = context.WithValue(ctx, MessageIDContextKey, "msg-req")
+			ctx = WithRequester(ctx, "alice@")
+			if err := tt.spawn(ctx, t.TempDir()); err != nil {
+				t.Fatalf("spawn: %v", err)
+			}
+			if got := waitForResume(t, deps, 5*time.Second); got != "alice@" {
+				t.Fatalf("resume requester = %q, want alice@", got)
+			}
+		})
 	}
 }
 

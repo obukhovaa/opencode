@@ -1467,6 +1467,10 @@
           },
           "type": "object"
         },
+        "requester": {
+          "description": "Fallback value for the trace's requester metadata (the person a run works for). Used only when neither a 'requester' flow arg nor a per-turn requester is known — the per-turn one is the chat message's author (resolved to an email where the platform allows) or, for a scheduled job, the requester of the turn that created it. Suits a single-user deployment; leave empty when several people share the agent.",
+          "type": "string"
+        },
         "tags": {
           "description": "Static tags attached to every LLM request when the provider metadata has a tags field configured. Useful for environment labels (e.g., 'prod', 'dev', 'team-a').",
           "items": {

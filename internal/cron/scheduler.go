@@ -527,6 +527,9 @@ func (s *Scheduler) fireJob(ctx context.Context, job CronJob) {
 	// Build context with session ID and sentinel message ID
 	taskCtx := context.WithValue(ctx, tools.SessionIDContextKey, job.SessionID)
 	taskCtx = context.WithValue(taskCtx, tools.MessageIDContextKey, fmt.Sprintf("cron:%s:%d", job.ID, job.RunCount))
+	// Attribute the run to whoever scheduled the job; the scheduler's own
+	// ctx has no requester.
+	taskCtx = tools.WithRequester(taskCtx, job.Requester)
 
 	// Execute the task
 	var result tools.ToolResponse

@@ -1023,6 +1023,10 @@ func generateSchema() map[string]any {
 				"type":        "string",
 				"description": "Prefix for custom (non-Langfuse-standard) metadata keys on traces and generations. When set, keys like flow_id and agent_id become namespace.flow_id, namespace.agent_id — grouping them visually in the Langfuse UI while keeping each value independently filterable. Empty (default) preserves flat keys.",
 			},
+			"requester": map[string]any{
+				"type":        "string",
+				"description": "Fallback value for the trace's requester metadata (the person a run works for). Used only when neither a 'requester' flow arg nor a per-turn requester is known — the per-turn one is the chat message's author (resolved to an email where the platform allows) or, for a scheduled job, the requester of the turn that created it. Suits a single-user deployment; leave empty when several people share the agent.",
+			},
 		},
 		"additionalProperties": false,
 	}

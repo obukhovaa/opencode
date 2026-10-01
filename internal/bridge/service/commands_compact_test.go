@@ -14,6 +14,7 @@ import (
 	opencodedb "github.com/opencode-ai/opencode/internal/db"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/session"
 )
@@ -29,12 +30,16 @@ type compactStubAgent struct {
 	summarizeCalls int
 	summarizeErr   error
 	onSummarize    func(sessionID string)
+	// requester is tools.RequesterFromContext of the last SummarizeSync
+	// ctx, so tests can assert the summarizer trace's attribution.
+	requester string
 }
 
 func (a *compactStubAgent) IsSessionBusy(string) bool { return a.busy }
 func (a *compactStubAgent) Model() models.Model       { return a.model }
-func (a *compactStubAgent) SummarizeSync(_ context.Context, sessionID string) error {
+func (a *compactStubAgent) SummarizeSync(ctx context.Context, sessionID string) error {
 	a.summarizeCalls++
+	a.requester = tools.RequesterFromContext(ctx)
 	if a.summarizeErr != nil {
 		return a.summarizeErr
 	}
@@ -128,6 +133,31 @@ func TestCmdCompactTwoPhase(t *testing.T) {
 	}
 	if ag.summarizeCalls != 1 {
 		t.Errorf("SummarizeSync called %d times, want 1", ag.summarizeCalls)
+	}
+}
+
+// The compaction runs detached from the inbound ctx; the summarizer trace
+// must still be attributed to the command's author, as a chat turn is.
+func TestCmdCompactAttributesSummarizerToAuthor(t *testing.T) {
+	ag := &compactStubAgent{}
+	svc, _, ad := newCompactTestService(t, ag, &stubMessages{})
+	svc.adapters[adapterKey("slack", "default")] = &emailResolvingAdapter{
+		stubAdapter: ad,
+		emails:      map[string]string{"U1": "one@example.com"},
+	}
+
+	svc.cmdCompact(context.Background(), bridge.Inbound{
+		Peer:     bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "D1"},
+		AuthorID: "U1",
+	})
+
+	// The completion reply is sent only after SummarizeSync returns.
+	waitForSend(t, ad, 2*time.Second)
+	if ag.summarizeCalls != 1 {
+		t.Fatalf("SummarizeSync called %d times, want 1", ag.summarizeCalls)
+	}
+	if ag.requester != "one@example.com" {
+		t.Errorf("summarizer requester = %q, want one@example.com", ag.requester)
 	}
 }
 

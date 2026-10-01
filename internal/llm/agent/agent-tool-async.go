@@ -65,6 +65,9 @@ func (b *agentTool) runAsync(
 	if stepScope := tools.StepScopedContext(ctx); stepScope != nil {
 		runCtx = context.WithValue(runCtx, tools.StepScopedContextKey, stepScope)
 	}
+	// The detached base drops the parent turn's values; carry the requester
+	// across so the subagent's traces stay attributed to the same person.
+	runCtx = tools.WithRequester(runCtx, tools.RequesterFromContext(ctx))
 	done, err := a.Run(runCtx, taskSession.ID, prompt, 0)
 	if err != nil {
 		cancel()
@@ -83,6 +86,7 @@ func (b *agentTool) runAsync(
 		OriginatingToolName:   TaskToolName,
 		Description:           params.TaskTitle,
 		FlowOwned:             tools.StepScopedContext(ctx) != nil,
+		Requester:             tools.RequesterFromContext(ctx),
 		Cancel:                cancel,
 	}
 	if err := reg.Register(tk); err != nil {

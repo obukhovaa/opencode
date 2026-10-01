@@ -416,15 +416,16 @@ func (d *taskDeps) IsSessionBusy(sessionID string) bool {
 // session. The empty content signals the agent that the next turn's input is
 // the just-written synthetic ToolResult. The call is fire-and-forget — we
 // drain the events channel in a goroutine so the agent's panic-recover path
-// can complete and release the busy lock.
-func (d *taskDeps) ResumeSession(sessionID string) {
+// can complete and release the busy lock. requester (the spawning turn's,
+// carried on the task) keeps the resumed turn's telemetry attributed.
+func (d *taskDeps) ResumeSession(sessionID, requester string) {
 	ag := d.app.ActiveAgent()
 	if ag == nil {
 		return
 	}
 	go func() {
 		defer logging.RecoverPanic("task.ResumeSession", nil)
-		ctx := context.Background()
+		ctx := tools.WithRequester(context.Background(), requester)
 		events, err := ag.Run(ctx, sessionID, "", 0)
 		if err != nil {
 			logging.Warn("task: auto-resume run failed", "session", sessionID, "err", err)

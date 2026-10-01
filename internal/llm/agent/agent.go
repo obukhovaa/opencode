@@ -836,11 +836,15 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	}
 	if len(msgs) == 0 {
 		titleContent := content
+		// Detached from the turn so it outlives it, but the title trace is
+		// still attributed to the turn's requester (a flow step's
+		// `requester` arg included, which the detached ctx would drop).
+		titleCtx := tools.WithRequester(context.Background(), tools.TurnRequester(ctx))
 		go func() {
 			defer logging.RecoverPanic("agent.Run", func() {
 				logging.ErrorPersist("panic while generating title")
 			})
-			titleErr := a.generateTitle(context.Background(), sessionID, titleContent)
+			titleErr := a.generateTitle(titleCtx, sessionID, titleContent)
 			if titleErr != nil {
 				logging.ErrorPersist(fmt.Sprintf("failed to generate title: %v", titleErr))
 			}
@@ -3342,6 +3346,8 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session, i
 		}
 	}
 
+	stampRequester(ctx, metadata)
+
 	// Apply metadata namespace prefix when configured so custom keys are
 	// grouped under a common prefix in Langfuse (e.g. "app.flow_id").
 	if cfg := config.Get(); cfg.Telemetry != nil && cfg.Telemetry.MetadataNamespace != "" {
@@ -3362,6 +3368,29 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session, i
 		Input:     input,
 		IsChild:   sess.ParentSessionID != "",
 	})
+}
+
+// stampRequester sets the trace's `requester` metadata, first match wins:
+// a `requester` flow arg already in metadata, the per-turn requester on ctx
+// (the chat message's author, or a cron job's stored requester), then the
+// configured telemetry.requester. An empty or whitespace-only flow arg
+// counts as absent, so it neither masks the fallbacks nor emits a blank
+// field; with nothing known the key is left unset.
+func stampRequester(ctx context.Context, metadata map[string]any) {
+	if v, _ := metadata["requester"].(string); strings.TrimSpace(v) != "" {
+		return
+	}
+	r := tools.RequesterFromContext(ctx)
+	if r == "" {
+		if cfg := config.Get(); cfg != nil && cfg.Telemetry != nil {
+			r = cfg.Telemetry.Requester
+		}
+	}
+	if r == "" {
+		delete(metadata, "requester")
+		return
+	}
+	metadata["requester"] = truncateStr(r, maxMetadataValueLen)
 }
 
 // telemetryAgentID resolves the agent ID that telemetry policy is keyed on:

@@ -39,9 +39,11 @@ type Deps interface {
 	IsSessionBusy(sessionID string) bool
 	// ResumeSession kicks off a fresh agent.Run with empty content against
 	// the session. The empty content signals the agent that the next turn's
-	// input comes from the just-written synthetic ToolResult. Implementations
-	// MUST NOT block — the resume is fire-and-forget.
-	ResumeSession(sessionID string)
+	// input comes from the just-written synthetic ToolResult. requester is
+	// the completed task's Task.Requester ("" when unknown); the resumed
+	// run carries it on its context. Implementations MUST NOT block — the
+	// resume is fire-and-forget.
+	ResumeSession(sessionID, requester string)
 }
 
 var depsHolder Deps
