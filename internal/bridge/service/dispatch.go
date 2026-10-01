@@ -126,6 +126,13 @@ type sessionDispatch struct {
 	// handlePartEvent feeds it from the parts goroutine.
 	progress atomic.Pointer[runProgress]
 
+	// textGuard records which assistant messages of the in-flight run
+	// have already been relayed to chat, so the terminal path, the
+	// intermediate-text path and the question flush post each message at
+	// most once. Nil when no bridge-dispatched run is in flight. Set in
+	// handleInbound once Run has started, cleared after partsDrainGrace.
+	textGuard atomic.Pointer[runTextGuard]
+
 	// liveAcks remembers the outstanding queued-ack token per peer so it
 	// survives a busy-retry-budget re-queue. handleInbound's ack state is a
 	// local and budget expiry returns from handleInbound — without this the
@@ -292,6 +299,7 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	// grace window, so the trailing completions are counted before the
 	// terminal edit is rendered.
 	var prog *runProgress
+	var guard *runTextGuard
 	runStatus := progressStatusOK
 	partsCtx, partsCancel := context.WithCancel(ctx)
 	defer func() {
@@ -301,6 +309,9 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 		}
 		partsCancel()
 		d.progressFinish(prog, runStatus)
+		if guard != nil {
+			d.textGuard.CompareAndSwap(guard, nil)
+		}
 	}()
 	partsSub := d.svc.app.Messages.SubscribeParts(partsCtx)
 
@@ -371,6 +382,8 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	// Run succeeded — resolve the ack before starting the run.
 	d.resolveQueueAck(ctx, in.Peer, ack.token)
 	prog = d.progressStart(ctx)
+	guard = newRunTextGuard()
+	d.textGuard.Store(guard)
 
 	// Fan part events into d.parts for outbound surface delivery (typing,
 	// tool-update prints). Filter to this session's parts; broker is
@@ -603,6 +616,12 @@ func (d *sessionDispatch) logOverflow() {
 // any text the agent had produced; struct-output events skip fan-out
 // (the flow engine drains the structured result separately).
 //
+// The terminal message is posted without a header. Earlier assistant
+// messages of the run that ended in tool_use are relayed by
+// postIntermediateText; the run's text guard makes sure a message that
+// path already posted (e.g. a run that ended on its turn limit) is not
+// posted a second time here.
+//
 // Implementation note: fan-out to bound peers happens through
 // Service.SendBySessionID which queries the store + dispatches to adapters
 // in a bounded worker pool — this dispatcher does NOT do outbound IO
@@ -617,6 +636,14 @@ func (d *sessionDispatch) handleTerminalEvent(ctx context.Context, ev agent.Agen
 	case agent.AgentEventTypeSummarize:
 		// Summarization is internal — no chat-surface delivery.
 		return
+	}
+
+	if g := d.textGuard.Load(); g != nil && ev.Message.ID != "" {
+		c, won := g.claim(ev.Message.ID)
+		if !won {
+			return
+		}
+		defer close(c.done)
 	}
 
 	text := agentMessageText(ev.Message)
@@ -703,6 +730,13 @@ func agentMessageText(m message.Message) string {
 // to the originating 🔧 call. Without it, two concurrent `bash` calls
 // would render as indistinguishable "🔧 bash" / "✓ bash" pairs.
 //
+// Intermediate assistant text: when the ToolCall that completes an
+// assistant message arrives (Finished, Input merged), the message's text
+// is read from the store and posted under a "⌛ <tools>" header before
+// anything else is emitted for that call, so it lands above the call's
+// card. This runs whatever the tool-update flag and verbosity are; see
+// relayIntermediateTextForPart.
+//
 // Per the chat-bridge spec the dispatcher MUST consume from d.parts
 // even when the outbound is suppressed — otherwise drainParts back-
 // pressures the broker subscription and stalls every other session.
@@ -741,6 +775,10 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
 		//   - #3 (the only useful one)           → emit
 		// A genuinely-no-args tool (e.g. get_all_projects → "{}")
 		// still passes because its Input is the literal "{}", not "".
+		//
+		// The text relay runs first and synchronously so its message is
+		// sent before the call card below.
+		d.relayIntermediateTextForPart(ev.Payload, part)
 		if !tu || !part.Finished || part.Input == "" {
 			return
 		}

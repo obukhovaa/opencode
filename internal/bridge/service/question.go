@@ -264,6 +264,10 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 		}
 	}
 
+	// The text the agent wrote before calling question must reach chat
+	// before the widget does.
+	r.svc.flushIntermediateText(ctx, req.SessionID)
+
 	interactiveOK := r.shouldUseInteractive(req.Questions)
 	text := renderQuestionPrompt(req.Questions)
 
