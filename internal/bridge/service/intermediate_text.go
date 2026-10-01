@@ -72,8 +72,9 @@ func intermediateTextHeader(calls []message.ToolCall) string {
 // postIntermediateText relays the text of an assistant message that ended
 // in tool_use, under a header naming the tools it called. The send is
 // synchronous so a caller on the parts goroutine gets the text into chat
-// before the tool card it emits next. A message with no text is neither
-// posted nor claimed. No-op when no bridge run is in flight.
+// before the tool card it emits next. A message with no text is claimed
+// but not posted, so its remaining ToolCall parts skip the store read.
+// No-op when no bridge run is in flight.
 func (d *sessionDispatch) postIntermediateText(ctx context.Context, msg message.Message) {
 	g := d.textGuard.Load()
 	if g == nil {
@@ -82,16 +83,16 @@ func (d *sessionDispatch) postIntermediateText(ctx context.Context, msg message.
 	if msg.Role != message.Assistant || msg.FinishReason() != message.FinishReasonToolUse {
 		return
 	}
-	mediaRoot, _ := d.svc.MediaDir()
-	clean, atts, unsafe := ParseFileTokens(agentMessageText(msg), mediaRoot)
-	if clean == "" && len(atts) == 0 {
-		return
-	}
 	c, won := g.claim(msg.ID)
 	if !won {
 		return
 	}
 	defer close(c.done)
+	mediaRoot, _ := d.svc.MediaDir()
+	clean, atts, unsafe := ParseFileTokens(agentMessageText(msg), mediaRoot)
+	if clean == "" && len(atts) == 0 {
+		return
+	}
 	if len(unsafe) > 0 {
 		logging.Warn("bridge: dropped unsafe FILE: paths from agent output",
 			"session", d.sessionID, "paths", unsafe)
@@ -192,7 +193,12 @@ func (s *Service) flushIntermediateText(ctx context.Context, sessionID string) {
 			}
 			return
 		}
-		d.postIntermediateText(ctx, msg)
+		// This runs on the question router, the one goroutine that serves
+		// every session's questions: bound the send like the wait above, so
+		// a slow chat API delays only this session's widget.
+		postCtx, cancel := context.WithTimeout(ctx, intermediateFlushWait)
+		d.postIntermediateText(postCtx, msg)
+		cancel()
 		return
 	}
 }

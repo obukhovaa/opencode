@@ -74,8 +74,8 @@ rendered.
 Before posting a `question` prompt for a session with a bridge-dispatched run in
 flight, the bridge SHALL make sure the text of the session's latest assistant message
 has been relayed. If no path has posted it yet, the question router SHALL post it
-itself. If another path is posting it, the router SHALL wait for that post to finish,
-for at most 5 seconds. The router SHALL NOT create a dispatcher to do so.
+itself, bounding that send to 5 seconds. If another path is posting it, the router SHALL
+wait for that post to finish, for at most 5 seconds. The router SHALL NOT create a dispatcher to do so.
 
 #### Scenario: Text then widget
 

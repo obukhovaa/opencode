@@ -27,8 +27,8 @@ func (g *runTextGuard) claim(id string) (c *textClaim, won bool)
 ### Intermediate post
 `func (d *sessionDispatch) postIntermediateText(ctx context.Context, msg message.Message)`
 1. Return unless `msg.Role == message.Assistant && msg.FinishReason() == message.FinishReasonToolUse`.
-2. `ParseFileTokens(agentMessageText(msg), mediaRoot)`; return if there is no text and no attachment. Such a message is not claimed.
-3. Claim `msg.ID`; return if not won, otherwise `defer close(c.done)`.
+2. Claim `msg.ID`; return if not won, otherwise `defer close(c.done)`.
+3. `ParseFileTokens(agentMessageText(msg), mediaRoot)`; return if there is no text and no attachment. The claim stays, so the message's later ToolCall parts skip the store read.
 4. Body: `"⌛ " + strings.Join(toolCallNames, ", ") + "\n" + clean`, names in call order, duplicates kept.
 5. `SendBySessionID` synchronously; log per-peer failures like the terminal path.
 
@@ -41,7 +41,7 @@ In `case message.ToolCall:`, before the tool-update gate, `relayIntermediateText
 After the `Summarize` return, claim `ev.Message.ID` when a guard exists; if not won, return. The final reply keeps having no header.
 
 ### Question ordering
-`func (s *Service) flushIntermediateText(ctx, sessionID)` looks the dispatcher up under `dispatchMu` without creating one, returns if it or its guard is nil, reads `ListLatest(ctx, sessionID, 2)` and takes the newest assistant message. Claimed: wait on `done` for at most `intermediateFlushWait` (5 s). Unclaimed: `postIntermediateText`. Called in `QuestionRouter.handleNewRequest` after the buffered auto-answer block and before the widget fan-out.
+`func (s *Service) flushIntermediateText(ctx, sessionID)` looks the dispatcher up under `dispatchMu` without creating one, returns if it or its guard is nil, reads `ListLatest(ctx, sessionID, 2)` and takes the newest assistant message. Claimed: wait on `done` for at most `intermediateFlushWait` (5 s). Unclaimed: `postIntermediateText` under `context.WithTimeout(ctx, intermediateFlushWait)`, because the question router is one goroutine for every session. Called in `QuestionRouter.handleNewRequest` after the buffered auto-answer block and before the widget fan-out.
 
 ## Out of scope
 Streaming deltas and in-place edits; tool-call and tool-result rendering, the progress card and `router.toolUpdateVerbosity`; self-started turns and `router_send`; flow-step sessions not run by the bridge dispatcher.

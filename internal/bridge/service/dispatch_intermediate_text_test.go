@@ -171,16 +171,27 @@ func TestIntermediateText_PostsHeaderAndText(t *testing.T) {
 
 func TestIntermediateText_NoTextPostsNothing(t *testing.T) {
 	_, d, msgs, ed := newIntermediateTestSvc(t, &bridge.Config{ToolUpdatesEnabled: false})
-	call := finishedCall("toolu_01aaaaaa", "bash")
-	msgs.add(toolUseMessage("M1", "", call))
+	first := finishedCall("toolu_01aaaaaa", "bash")
+	second := finishedCall("toolu_02bbbbbb", "read")
+	msgs.add(toolUseMessage("M1", "", first, second))
 
-	d.handlePartEvent(callPart("S1", "M1", call))
+	d.handlePartEvent(callPart("S1", "M1", first))
+	d.handlePartEvent(callPart("S1", "M1", second))
 
 	if sends := ed.Sends(); len(sends) != 0 {
 		t.Errorf("sends = %q; want none", sendTexts(sends))
 	}
-	if d.textGuard.Load().has("M1") {
-		t.Error("a message without text must not be claimed")
+	if got := msgs.Gets(); got != 1 {
+		t.Errorf("store reads = %d; want 1 (a text-less message is claimed after the first read)", got)
+	}
+	c, ok := d.textGuard.Load().lookup("M1")
+	if !ok {
+		t.Fatal("a text-less tool_use message must be claimed")
+	}
+	select {
+	case <-c.done:
+	default:
+		t.Error("the claim of a text-less message must be released")
 	}
 }
 
