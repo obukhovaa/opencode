@@ -376,31 +376,102 @@ func TestProcessGeneration_ReannouncesDeferredToolsAfterCompaction(t *testing.T)
 		}
 	}
 
-	deltas := func(msgs []message.Message) (seqs []int64) {
-		for _, m := range msgs {
-			if m.Role == message.User && strings.Contains(firstText(m), deferredDeltaMarker) {
-				seqs = append(seqs, m.Seq)
+	got, summarySeq := persistedDeltas(t, a, sess)
+	if summarySeq == 0 || len(got) != 2 || got[1] <= summarySeq {
+		t.Fatalf("delta seqs = %v, summary seq %d; want one delta before the summary and one after", got, summarySeq)
+	}
+	for i, req := range main.requests[1:] {
+		if n := len(deltaSeqs(req)); n != 1 {
+			t.Errorf("request after the compaction #%d carries %d deltas, want 1", i+1, n)
+		}
+	}
+}
+
+// A compaction between two model calls of a turn hides the delta behind the
+// summary as well. A flow step or a task subagent is usually that one turn,
+// so the turn's next request must announce the tools again, once, and a later
+// turn must not add another.
+func TestProcessGeneration_InLoopCompactionReannouncesDeferredTools(t *testing.T) {
+	withFreshTaskRegistry(t)
+	withAutoCompact(t, true)
+	log := &[]string{}
+	main := &compactionProvider{name: "main", window: 1000, log: log}
+	main.count = func(msgs []message.Message) int64 {
+		switch {
+		case len(msgs) > 0 && firstText(msgs[0]) == testSummaryText:
+			return 50
+		case hasToolResult(msgs, "ok"):
+			return 960
+		default:
+			return 100
+		}
+	}
+	calls := 0
+	main.respond = func([]message.Message) *provider.ProviderResponse {
+		calls++
+		if calls == 1 {
+			return &provider.ProviderResponse{
+				ToolCalls:    []message.ToolCall{{ID: "call-1", Name: "noop", Input: "{}", Finished: true}},
+				FinishReason: message.FinishReasonToolUse,
 			}
 		}
-		return seqs
+		return &provider.ProviderResponse{Content: "done", FinishReason: message.FinishReasonEndTurn}
 	}
-	persisted, _ := a.messages.List(ctx, sess)
-	sessRow, _ := a.sessions.Get(ctx, sess)
+	summarizer := &compactionProvider{name: "summarizer", log: log,
+		respond: func([]message.Message) *provider.ProviderResponse {
+			return &provider.ProviderResponse{Content: testSummaryText, FinishReason: message.FinishReasonEndTurn}
+		}}
+	deferred := tools.WrapDeferred(newMock("mcp_jira_get_issue", false), &atomic.Int64{})
+	a := newLoopAgentWithTools(t, main, []tools.BaseTool{noopTool{}, deferred})
+	a.summarizeProvider = summarizer
+	ctx := context.Background()
+	const sess = "sess-deferred-loop"
+
+	for _, content := range []string{"do the task", "next"} {
+		if res := a.processGeneration(ctx, sess, content, 0, nil, RunOptions{}); res.Error != nil {
+			t.Fatalf("processGeneration(%q) error: %v", content, res.Error)
+		}
+	}
+	if want := []string{"main", "summarizer", "main", "main"}; !slices.Equal(*log, want) {
+		t.Fatalf("call order = %v, want %v — one compaction between the turn's two calls", *log, want)
+	}
+	for i, req := range main.requests {
+		if n := len(deltaSeqs(req)); n != 1 {
+			t.Errorf("model request #%d carries %d deltas, want 1", i+1, n)
+		}
+	}
+	got, summarySeq := persistedDeltas(t, a, sess)
+	if summarySeq == 0 || len(got) != 2 || got[1] <= summarySeq {
+		t.Fatalf("delta seqs = %v, summary seq %d; want one delta before the summary and one after", got, summarySeq)
+	}
+}
+
+// deltaSeqs returns the seqs of the deferred-tools delta messages in msgs.
+func deltaSeqs(msgs []message.Message) (seqs []int64) {
+	for _, m := range msgs {
+		if m.Role == message.User && strings.Contains(firstText(m), deferredDeltaMarker) {
+			seqs = append(seqs, m.Seq)
+		}
+	}
+	return seqs
+}
+
+// persistedDeltas returns the seqs of the session's persisted delta messages
+// and the seq of its current summary message (0 when there is none).
+func persistedDeltas(t *testing.T, a *agent, sessionID string) ([]int64, int64) {
+	t.Helper()
+	persisted, err := a.messages.List(context.Background(), sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessRow, _ := a.sessions.Get(context.Background(), sessionID)
 	var summarySeq int64
 	for _, m := range persisted {
 		if m.ID == sessRow.SummaryMessageID {
 			summarySeq = m.Seq
 		}
 	}
-	got := deltas(persisted)
-	if summarySeq == 0 || len(got) != 2 || got[1] <= summarySeq {
-		t.Fatalf("delta seqs = %v, summary seq %d; want one delta before the summary and one after", got, summarySeq)
-	}
-	for i, req := range main.requests[1:] {
-		if n := len(deltas(req)); n != 1 {
-			t.Errorf("request after the compaction #%d carries %d deltas, want 1", i+1, n)
-		}
-	}
+	return deltaSeqs(persisted), summarySeq
 }
 
 func TestProcessGeneration_CompactsBeforeFirstCall(t *testing.T) {
@@ -632,7 +703,7 @@ func TestSummarizerInput(t *testing.T) {
 		ctx := context.Background()
 		var summaryID string
 		for i, m := range history {
-			created, err := a.messages.Create(ctx, sess, message.CreateMessageParams{Role: m.Role, Parts: m.Parts})
+			created, err := a.messages.Create(ctx, sess, message.CreateMessageParams{Role: m.Role, Parts: m.Parts, Synthetic: m.Synthetic})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -726,10 +797,79 @@ func TestSummarizerInput(t *testing.T) {
 		}
 	})
 
+	t.Run("keeps the turn's prompt through the cut", func(t *testing.T) {
+		toolUse2 := message.Message{Role: message.Assistant, Parts: []message.ContentPart{
+			message.TextContent{Text: big},
+			message.ToolCall{ID: "call-2", Name: "bash", Input: "{}", Finished: true},
+		}}
+		toolResult2 := message.Message{Role: message.Tool, Parts: []message.ContentPart{
+			message.ToolResult{ToolCallID: "call-2", Content: big},
+		}}
+		// The schema envelope is a later user message, but synthetic: it is
+		// not the prompt.
+		envelope := message.Message{Role: message.User, Synthetic: true, Parts: []message.ContentPart{
+			message.TextContent{Text: "SCHEMA ENVELOPE"},
+		}}
+		turn := []message.Message{
+			textMsg(message.User, "TASK PROMPT"),
+			toolUse, toolResult,
+			envelope,
+			toolUse2, toolResult2,
+			textMsg(message.Assistant, "latest"),
+		}
+		cases := []struct {
+			name    string
+			history []message.Message
+			head    []string
+		}{
+			{"no previous summary", turn, nil},
+			{"after the previous summary", append([]message.Message{textMsg(message.User, "PREVIOUS SUMMARY")}, turn...), []string{"PREVIOUS SUMMARY"}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				summaryAt := -1
+				if len(tc.head) > 0 {
+					summaryAt = 0
+				}
+				// Window 3000 → budget 2700: the first tool pair has to go,
+				// and the prompt, oldest of the turn, with it unless kept.
+				a, sess := build(t, 3000, tc.history, summaryAt)
+				got, err := a.summarizerInput(context.Background(), sess, prompt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				h := len(tc.head)
+				if len(got) < h+3 || (h > 0 && firstText(got[0]) != tc.head[0]) {
+					t.Fatalf("input = %v, want it to start with %v", texts(got), tc.head)
+				}
+				if firstText(got[h]) != "TASK PROMPT" {
+					t.Errorf("input = %v, want the turn's prompt kept after the head", texts(got))
+				}
+				// The note right after the prompt means the cut passed it.
+				if !strings.Contains(firstText(got[h+1]), "earlier messages were omitted") {
+					t.Errorf("input = %v, want the omission note after the prompt", texts(got))
+				}
+				for i, m := range got {
+					if m.Role == message.Tool && (i == 0 || got[i-1].Role != message.Assistant) {
+						t.Fatalf("tool result at %d without its tool call; input roles %v", i, roles(got))
+					}
+				}
+				if firstText(got[len(got)-2]) != "latest" || firstText(got[len(got)-1]) != "summarize" {
+					t.Errorf("tail = %v, want [..., latest, summarize]", texts(got))
+				}
+				if est := message.EstimateTokens(got, nil, message.BytesPerTokenEta); est >= 2700 {
+					t.Errorf("trimmed estimate %d still reaches the 2700-token budget", est)
+				}
+			})
+		}
+	})
+
 	t.Run("never leaves an orphaned tool result at the cut", func(t *testing.T) {
 		// Window 2000 → budget 1800. Dropping the first message leaves the
 		// tool_use + tool_result pair (~2000) plus the tail, still over; the
-		// next drop takes the tool_use, so its tool_result must go too.
+		// next drop takes the tool_use, so its tool_result must go too. The
+		// first message is the turn's prompt, but it alone is over half the
+		// budget, so it is not kept.
 		a, sess := build(t, 2000, []message.Message{
 			textMsg(message.User, big),
 			toolUse,
@@ -770,7 +910,7 @@ func TestTrimSummarizerInput_KeepsPairsTogether(t *testing.T) {
 		{Role: message.Tool, Parts: []message.ContentPart{message.ToolResult{ToolCallID: "d", Content: big}}},
 		textMsg(message.User, "tail"),
 	}
-	kept, dropped, _ := trimSummarizerInput(msgs, false, 0, 2500)
+	kept, dropped, _ := trimSummarizerInput(msgs, false, -1, 0, 2500)
 	if dropped != 4 {
 		t.Fatalf("dropped = %d, want 4 (the assistant and both its tool results go together)", dropped)
 	}

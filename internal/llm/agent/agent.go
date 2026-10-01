@@ -989,7 +989,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// parts (native-path sessions resumed after a process restart), then
 	// announce any deferred MCP tools this session hasn't been told about.
 	// The delta message is per-session and injected only when the deferred
-	// pool changes — never on every turn.
+	// pool changes or a compaction hid the last one — never on every turn.
 	a.backfillDeferredActivations(sessionID, msgHistory)
 	if deltaMsg, ok := a.injectDeferredDelta(ctx, sessionID, session.SummaryMessageID, toolSet); ok {
 		msgHistory = append(msgHistory, deltaMsg)
@@ -1083,6 +1083,14 @@ OuterLoop:
 					// and so the forced struct_output wrap-up below is not asked
 					// to produce a document whose shape left the conversation.
 					msgs = a.withStructOutputSchema(ctx, sessionID, msgs)
+					// The deferred-tools delta sat before the summary too, and the
+					// compaction forgot it was announced. A flow step or a task
+					// subagent is usually one turn, so waiting for the next turn's
+					// injection would leave the deferred MCP tools out of view for
+					// the rest of the run.
+					if deltaMsg, ok := a.injectDeferredDelta(ctx, sessionID, session.SummaryMessageID, toolSet); ok {
+						msgs = append(msgs, deltaMsg)
+					}
 
 					ctx = a.withTaskBudgetRemaining(ctx, session)
 

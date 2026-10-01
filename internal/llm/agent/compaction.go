@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/config"
@@ -186,9 +187,12 @@ func (a *agent) withTaskBudgetRemaining(ctx context.Context, sess session.Sessio
 // summarizerInput builds what the summarizer is sent: the history since the
 // previous summary (kept as the head, so its knowledge carries forward), cut
 // from the oldest end until it fits the summarizer's window, then the
-// compaction prompt. Sending the raw message log instead grows without bound
-// across compactions, and a session that already overflowed could never
-// compact its way out.
+// compaction prompt. The cut keeps the turn's prompt (turnPromptIndex): a
+// flow step's task is the oldest message of its turn, so it would go first,
+// and the in-loop rebuild does not re-append it, so a summary written without
+// it loses the task for the rest of the step. Sending the raw message log
+// instead grows without bound across compactions, and a session that already
+// overflowed could never compact its way out.
 func (a *agent) summarizerInput(ctx context.Context, sessionID string, prompt message.Message) ([]message.Message, error) {
 	msgs, err := a.messages.List(ctx, sessionID)
 	if err != nil {
@@ -224,7 +228,7 @@ func (a *agent) summarizerInput(ctx context.Context, sessionID string, prompt me
 			}
 		}
 		keepHead := sess.SummaryMessageID != "" && msgs[0].ID == sess.SummaryMessageID
-		kept, dropped, estimated := trimSummarizerInput(msgs, keepHead, fixed, budget)
+		kept, dropped, estimated := trimSummarizerInput(msgs, keepHead, turnPromptIndex(msgs), fixed, budget)
 		if dropped > 0 {
 			logging.Warn("compaction input exceeded summarizer window; dropped oldest messages",
 				"session_id", sessionID,
@@ -240,16 +244,32 @@ func (a *agent) summarizerInput(ctx context.Context, sessionID string, prompt me
 	return append(slices.Clip(msgs), prompt), nil
 }
 
+// turnPromptIndex returns the index of the latest user message that is not
+// synthetic and has text, or -1: the turn's prompt, or on an auto-resume turn
+// the last one before it. Synthetic user messages (the schema envelope, the
+// deferred-tools delta) are skipped.
+func turnPromptIndex(msgs []message.Message) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if m := msgs[i]; m.Role == message.User && !m.Synthetic && strings.TrimSpace(m.Content().Text) != "" {
+			return i
+		}
+	}
+	return -1
+}
+
 // trimSummarizerInput drops messages from the oldest end until the estimate
 // plus fixed (system prompt, compaction prompt) is under budget. keepHead
 // protects msgs[0] — the previous summary — while anything else remains to
-// drop. A cut never leaves a tool result at the front without the assistant
-// tool call it answers: dropping only removes a prefix, so the one way to
-// split a pair is an orphaned Tool message right after the cut, and those go
-// too. When anything was dropped, a note saying so is inserted where the cut
-// is, which also keeps the input from starting on an assistant turn. Returns
-// the kept messages, the number dropped, and the final estimate.
-func trimSummarizerInput(msgs []message.Message, keepHead bool, fixed, budget int64) ([]message.Message, int, int64) {
+// drop. prompt is the index of the turn's prompt, or -1: a cut that passes it
+// keeps it, right after the head, and it stays counted in the budget. A
+// prompt that alone takes more than half the budget is dropped like any other
+// message. A cut never leaves a tool result at the front without the
+// assistant tool call it answers: dropping only removes a prefix, so the one
+// way to split a pair is an orphaned Tool message right after the cut, and
+// those go too. When anything was dropped, a note saying so is inserted where
+// the cut is, which also keeps the input from starting on an assistant turn.
+// Returns the kept messages, the number dropped, and the final estimate.
+func trimSummarizerInput(msgs []message.Message, keepHead bool, prompt int, fixed, budget int64) ([]message.Message, int, int64) {
 	sizes := make([]int64, len(msgs))
 	var total int64
 	for i := range msgs {
@@ -264,16 +284,25 @@ func trimSummarizerInput(msgs []message.Message, keepHead bool, fixed, budget in
 	if keepHead {
 		start = 1
 	}
+	if prompt < start || prompt >= len(msgs) || sizes[prompt] > budget/2 {
+		prompt = -1
+	}
 	cut := start
 	for cut < len(msgs)-1 && total+fixed >= budget {
-		total -= sizes[cut]
+		if cut != prompt {
+			total -= sizes[cut]
+		}
 		cut++
 	}
 	for cut < len(msgs) && msgs[cut].Role == message.Tool {
 		total -= sizes[cut]
 		cut++
 	}
+	keptPrompt := prompt >= 0 && prompt < cut
 	dropped := cut - start
+	if keptPrompt {
+		dropped--
+	}
 	if dropped == 0 {
 		return msgs, 0, total + fixed
 	}
@@ -283,8 +312,11 @@ func trimSummarizerInput(msgs []message.Message, keepHead bool, fixed, budget in
 		Parts: []message.ContentPart{message.TextContent{Text: fmt.Sprintf(
 			"[%d earlier messages were omitted from this compaction input to fit the summarizer's context window.]", dropped)}},
 	}
-	kept := make([]message.Message, 0, start+1+len(msgs)-cut)
+	kept := make([]message.Message, 0, start+2+len(msgs)-cut)
 	kept = append(kept, msgs[:start]...)
+	if keptPrompt {
+		kept = append(kept, msgs[prompt])
+	}
 	kept = append(kept, note)
 	kept = append(kept, msgs[cut:]...)
 	total += message.EstimateTokens([]message.Message{note}, nil, message.BytesPerTokenEta)
