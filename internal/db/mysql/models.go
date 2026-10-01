@@ -16,6 +16,26 @@ type BridgeAllowlist struct {
 	CreatedAt  int64  `json:"created_at"`
 }
 
+type BridgeHeartbeat struct {
+	ProjectID    string         `json:"project_id"`
+	Channel      string         `json:"channel"`
+	IdentityID   string         `json:"identity_id"`
+	PeerID       string         `json:"peer_id"`
+	State        string         `json:"state"`
+	EverySeconds sql.NullInt32  `json:"every_seconds"`
+	WindowStart  sql.NullInt32  `json:"window_start"`
+	WindowEnd    sql.NullInt32  `json:"window_end"`
+	WeekdaysOnly bool           `json:"weekdays_only"`
+	Model        sql.NullString `json:"model"`
+	AgendaFile   sql.NullString `json:"agenda_file"`
+	NextBeatAt   sql.NullInt64  `json:"next_beat_at"`
+	LastBeatAt   sql.NullInt64  `json:"last_beat_at"`
+	LastStatus   sql.NullString `json:"last_status"`
+	LastError    sql.NullString `json:"last_error"`
+	RemindedAt   sql.NullInt64  `json:"reminded_at"`
+	UpdatedAt    int64          `json:"updated_at"`
+}
+
 type BridgeSession struct {
 	ProjectID         string         `json:"project_id"`
 	Channel           string         `json:"channel"`

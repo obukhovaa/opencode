@@ -35,6 +35,7 @@ type Querier interface {
 	DeleteSessionFiles(ctx context.Context, sessionID string) error
 	DeleteSessionMessages(ctx context.Context, sessionID string) error
 	DeleteSessionTree(ctx context.Context, arg DeleteSessionTreeParams) error
+	GetBridgeHeartbeat(ctx context.Context, arg GetBridgeHeartbeatParams) (BridgeHeartbeat, error)
 	GetBridgeSession(ctx context.Context, arg GetBridgeSessionParams) (BridgeSession, error)
 	GetCronJob(ctx context.Context, id string) (CronJob, error)
 	GetFile(ctx context.Context, id string) (File, error)
@@ -47,6 +48,7 @@ type Querier interface {
 	IsBridgeAllowlisted(ctx context.Context, arg IsBridgeAllowlistedParams) (int64, error)
 	ListActiveCronJobs(ctx context.Context) ([]CronJob, error)
 	ListBridgeAllowlist(ctx context.Context, arg ListBridgeAllowlistParams) ([]BridgeAllowlist, error)
+	ListBridgeHeartbeats(ctx context.Context, projectID string) ([]BridgeHeartbeat, error)
 	ListBridgeSessionsByIdentity(ctx context.Context, arg ListBridgeSessionsByIdentityParams) ([]BridgeSession, error)
 	ListBridgeSessionsBySession(ctx context.Context, arg ListBridgeSessionsBySessionParams) ([]BridgeSession, error)
 	ListChildSessions(ctx context.Context, rootSessionID sql.NullString) ([]Session, error)
@@ -78,6 +80,7 @@ type Querier interface {
 	UpdateFlowState(ctx context.Context, arg UpdateFlowStateParams) (FlowState, error)
 	UpdateMessage(ctx context.Context, arg UpdateMessageParams) error
 	UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error)
+	UpsertBridgeHeartbeat(ctx context.Context, arg UpsertBridgeHeartbeatParams) error
 	UpsertBridgeSession(ctx context.Context, arg UpsertBridgeSessionParams) (BridgeSession, error)
 	UpsertRecap(ctx context.Context, arg UpsertRecapParams) (SessionRecap, error)
 }

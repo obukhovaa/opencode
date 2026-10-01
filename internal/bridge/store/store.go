@@ -140,6 +140,17 @@ type Store interface {
 
 	// RemoveAllowlistEntry removes a single peer from the allowlist.
 	RemoveAllowlistEntry(ctx context.Context, projectID, channel, identityID, peerID string) error
+
+	// GetHeartbeat fetches a binding's heartbeat row. Returns ErrNotFound
+	// when the binding has never had one (state unset, defaults apply).
+	GetHeartbeat(ctx context.Context, projectID, channel, identityID, peerID string) (Heartbeat, error)
+
+	// PutHeartbeat writes the whole heartbeat row for its binding key,
+	// creating it when absent.
+	PutHeartbeat(ctx context.Context, h Heartbeat) error
+
+	// ListHeartbeats returns every heartbeat row of a project.
+	ListHeartbeats(ctx context.Context, projectID string) ([]Heartbeat, error)
 }
 
 // New constructs a Store appropriate for the running session provider. The
