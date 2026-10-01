@@ -19,6 +19,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
+	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/session"
 )
 
@@ -492,5 +493,33 @@ func TestHeartbeatConfigurerAppliesToTheSessionsChat(t *testing.T) {
 	h.svc.heartbeat = nil
 	if _, err := h.svc.HeartbeatStatus(ctx, "S1"); !errors.Is(err, tools.ErrHeartbeatUnavailable) {
 		t.Fatalf("outside daemon mode: %v", err)
+	}
+}
+
+// TestHeartbeatLatePartEventStaysQuiet: runParts can lag behind the run,
+// so a heartbeat run's tool event may be handled after the dispatcher's
+// quiet flag is cleared. The run's guard still marks it quiet.
+func TestHeartbeatLatePartEventStaysQuiet(t *testing.T) {
+	h := newHeartbeatHarness(t)
+	h.svc.cfg.ToolUpdatesEnabled = true
+	if _, err := h.svc.SetToolVerbosity("full"); err != nil {
+		t.Fatal(err)
+	}
+	ev := pubsub.Event[message.PartEvent]{Payload: message.PartEvent{
+		SessionID: "S1",
+		Part:      message.ToolCall{ID: "toolu_01late", Name: "bash", Input: `{"command":"ls"}`, Finished: true},
+	}}
+
+	quiet := newRunTextGuard(0)
+	quiet.quiet = true
+	h.disp.handlePartEvent(ev, quiet)
+	// Control: the same event from a human run posts its card. Cards are
+	// sent asynchronously, so wait for the control's and then make sure
+	// it is the only one.
+	h.disp.handlePartEvent(ev, newRunTextGuard(0))
+	waitFor(t, "tool card", func() bool { return len(h.ad.Sends()) >= 1 })
+	time.Sleep(200 * time.Millisecond)
+	if n := len(h.ad.Sends()); n != 1 {
+		t.Fatalf("%d tool cards posted, want only the human run's", n)
 	}
 }
