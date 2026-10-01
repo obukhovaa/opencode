@@ -914,7 +914,19 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// would drop it on every later reload. It also runs before the schema
 	// envelope is injected, so a compaction here costs no duplicate envelope.
 	// An empty history has nothing to compact, so it is not even counted.
+	// No task-budget ctx is applied here: the turn has not started, so its
+	// budget is the full one, as on a turn that does not compact.
 	if cfg.AutoCompact && len(msgs) > 0 {
+		// A Summarize still running (the TUI's post-turn compaction) is
+		// about to move the summary boundary; wait for it and count the
+		// history it leaves.
+		if a.waitForSummarize(ctx, sessionID) {
+			reloaded, current, errReload := a.historyAfterCompaction(ctx, sessionID)
+			if errReload != nil {
+				return a.err(errReload)
+			}
+			msgs, session = reloaded, current
+		}
 		countInput := msgs
 		if hasUserTurn {
 			countInput = append(slices.Clip(msgs), pendingUserMessage(content, attachmentParts))
@@ -927,6 +939,12 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 				"threshold", compactionThreshold,
 				"context_window", a.provider.Model().ContextWindow,
 			)
+			// An auto-resume turn's input is the synthetic completion pair
+			// at the end of the history; keep it past the summary.
+			var resumeTail []message.Message
+			if !hasUserTurn {
+				resumeTail = syntheticTail(msgs)
+			}
 			if errSync := a.performSynchronousCompaction(ctx, sessionID); errSync != nil {
 				logging.Warn("Failed to perform auto-compaction before turn", "session_id", sessionID, "error", errSync)
 			} else {
@@ -934,8 +952,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 				if errReload != nil {
 					return a.err(errReload)
 				}
-				msgs, session = reloaded, compacted
-				ctx = a.withTaskBudgetRemaining(ctx, session)
+				msgs, session = append(reloaded, resumeTail...), compacted
 			}
 		}
 	}
@@ -974,7 +991,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// The delta message is per-session and injected only when the deferred
 	// pool changes — never on every turn.
 	a.backfillDeferredActivations(sessionID, msgHistory)
-	if deltaMsg, ok := a.injectDeferredDelta(ctx, sessionID, toolSet); ok {
+	if deltaMsg, ok := a.injectDeferredDelta(ctx, sessionID, session.SummaryMessageID, toolSet); ok {
 		msgHistory = append(msgHistory, deltaMsg)
 	}
 
@@ -1026,7 +1043,10 @@ OuterLoop:
 			// NOTE: since tool may provide output exceeding context limit when combined with existing history,
 			// we have to do summary, which would "lossy compress" it, providing less context to the following LLM call,
 			// but alternative is to fail with context limit, so we do it anyway.
-			if cfg.AutoCompact && cycles != 1 && shouldTriggerAutoCompaction {
+			// The first call of the first outer cycle is skipped: the pre-turn
+			// gate just checked it. A non-interactive re-entry's first call is
+			// not: the drained completions may have pushed the history over.
+			if cfg.AutoCompact && (cycles != 1 || outerCycles > 1) && shouldTriggerAutoCompaction {
 				logging.Info(
 					"Auto-compaction triggered during tool use loop",
 					"session_id", sessionID,
@@ -1034,6 +1054,13 @@ OuterLoop:
 					"token_count", etaTokens,
 					"cycle", cycles,
 				)
+
+				// With no tail or user turn to re-append (a re-entry's first
+				// call), the drained completion pairs are the model's input.
+				var resumeTail []message.Message
+				if !preserveTail && !hasUserTurn {
+					resumeTail = syntheticTail(msgHistory)
+				}
 
 				// Perform synchronous compaction to shrink context
 				if errSync := a.performSynchronousCompaction(ctx, sessionID); errSync != nil {
@@ -1066,8 +1093,9 @@ OuterLoop:
 					} else if hasUserTurn {
 						msgHistory = append(msgs, userMsg)
 					} else {
-						// Auto-resume turn — no user message to re-append.
-						msgHistory = msgs
+						// Auto-resume turn or non-interactive re-entry — no
+						// user message to re-append.
+						msgHistory = append(msgs, resumeTail...)
 					}
 
 					// Re-count against the same effective threshold that triggered
@@ -2321,8 +2349,11 @@ func (a *agent) backfillDeferredActivations(sessionID string, history []message.
 // at prompt-build time, so they arrive as a persisted user-role delta
 // message — injected only when this session's announced-set changes.
 // History is scanned as a secondary source so resumed sessions don't
-// receive duplicate deltas after a restart.
-func (a *agent) injectDeferredDelta(ctx context.Context, sessionID string, toolSet []tools.BaseTool) (message.Message, bool) {
+// receive duplicate deltas after a restart. Only the history from
+// summaryMessageID on counts: a delta before the summary is out of the
+// model's view, and a compaction clears the announced-set for the same
+// reason (forgetDeferredAnnouncements).
+func (a *agent) injectDeferredDelta(ctx context.Context, sessionID, summaryMessageID string, toolSet []tools.BaseTool) (message.Message, bool) {
 	// The per-session announced-set is a plain map; guard every read/write
 	// with the agent mutex. Two Run calls for one session can overlap (the
 	// IsSessionBusy check and activeRequests.Store are not atomic), and
@@ -2364,7 +2395,7 @@ func (a *agent) injectDeferredDelta(ctx context.Context, sessionID string, toolS
 	// announced because it is contained in `get_issue_link`.
 	alreadyAnnounced := map[string]bool{}
 	if msgs, err := a.messages.List(ctx, sessionID); err == nil {
-		for _, msg := range msgs {
+		for _, msg := range a.filterMessagesFromSummary(msgs, summaryMessageID) {
 			if msg.Role != message.User {
 				continue
 			}
@@ -2662,6 +2693,10 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 
 	summarizeCtx := context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
 	summarizeCtx = context.WithValue(summarizeCtx, tools.AgentIDContextKey, config.AgentName("summarizer"))
+	// The turn's ctx may force struct_output (the flow runner's rescue run).
+	// The summarizer is sent no tools, so a forced tool_choice would make
+	// its request invalid; an empty name reads as unset.
+	summarizeCtx = context.WithValue(summarizeCtx, provider.ForceStructOutputToolKey, "")
 	if lf := langfuse.Get(); lf != nil && lf.Enabled() {
 		sess, sessErr := a.sessions.Get(ctx, sessionID)
 		if sessErr == nil {
@@ -2715,6 +2750,7 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
 	}
+	a.forgetDeferredAnnouncements(sessionID)
 
 	logging.Info("Synchronous compaction completed successfully", "session_id", sessionID)
 	return nil
@@ -2883,6 +2919,7 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 			}
 			a.Publish(pubsub.CreatedEvent, event)
 		}
+		a.forgetDeferredAnnouncements(sessionID)
 
 		event = AgentEvent{
 			Type:      AgentEventTypeSummarize,

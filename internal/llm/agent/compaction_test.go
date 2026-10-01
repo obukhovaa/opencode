@@ -3,9 +3,12 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
@@ -13,6 +16,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/session"
+	"github.com/opencode-ai/opencode/internal/task"
 )
 
 // compactionProvider records every request it is sent into a log shared with
@@ -28,12 +32,20 @@ type compactionProvider struct {
 	mu       sync.Mutex
 	log      *[]string
 	requests [][]message.Message
+	forced   []string // provider.ForcedTool on each request's ctx
+	budgets  []int64  // task budget remaining on each request's ctx, -1 when unset
 }
 
-func (p *compactionProvider) StreamResponse(_ context.Context, msgs []message.Message, _ []tools.BaseTool) <-chan provider.ProviderEvent {
+func (p *compactionProvider) StreamResponse(ctx context.Context, msgs []message.Message, _ []tools.BaseTool) <-chan provider.ProviderEvent {
+	budget, ok := provider.TaskBudgetRemaining(ctx)
+	if !ok {
+		budget = -1
+	}
 	p.mu.Lock()
 	*p.log = append(*p.log, p.name)
 	p.requests = append(p.requests, append([]message.Message(nil), msgs...))
+	p.forced = append(p.forced, provider.ForcedTool(ctx))
+	p.budgets = append(p.budgets, budget)
 	p.mu.Unlock()
 	resp := &provider.ProviderResponse{Content: "done", FinishReason: message.FinishReasonEndTurn}
 	if p.respond != nil {
@@ -82,6 +94,313 @@ func withAutoCompact(t *testing.T, on bool) {
 	t.Helper()
 	loadConfigIn(t, t.TempDir())
 	config.Get().AutoCompact = on
+}
+
+const testSummaryText = "SUMMARY OF EARLIER WORK"
+
+// newCompactingAgent wires a main provider with a 1000-token window that
+// reports overTokens for any history not headed by the summary (50 for one
+// that is), and a summarizer that answers with testSummaryText.
+func newCompactingAgent(t *testing.T, overTokens int64, ts []tools.BaseTool) (*agent, *compactionProvider, *compactionProvider, *[]string) {
+	t.Helper()
+	log := &[]string{}
+	main := &compactionProvider{name: "main", window: 1000, log: log}
+	main.count = func(msgs []message.Message) int64 {
+		if len(msgs) > 0 && firstText(msgs[0]) == testSummaryText {
+			return 50
+		}
+		return overTokens
+	}
+	summarizer := &compactionProvider{name: "summarizer", log: log,
+		respond: func([]message.Message) *provider.ProviderResponse {
+			return &provider.ProviderResponse{Content: testSummaryText, FinishReason: message.FinishReasonEndTurn}
+		}}
+	a := newLoopAgentWithTools(t, main, ts)
+	a.summarizeProvider = summarizer
+	return a, main, summarizer, log
+}
+
+func seedHistory(t *testing.T, a *agent, sessionID string, msgs ...message.Message) {
+	t.Helper()
+	for _, m := range msgs {
+		if _, err := a.messages.Create(context.Background(), sessionID, message.CreateMessageParams{Role: m.Role, Parts: m.Parts, Synthetic: m.Synthetic}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// completionPair is what task.EnqueueTaskCompletion writes for a finished
+// background task: a synthetic tool call and its result.
+func completionPair(callID, content string) []message.Message {
+	return []message.Message{
+		{Role: message.Assistant, Synthetic: true, Parts: []message.ContentPart{
+			message.ToolCall{ID: callID, Name: "bash", Input: "{}", Finished: true},
+		}},
+		{Role: message.Tool, Synthetic: true, Parts: []message.ContentPart{
+			message.ToolResult{ToolCallID: callID, Content: content},
+		}},
+	}
+}
+
+func hasToolResult(msgs []message.Message, content string) bool {
+	for _, m := range msgs {
+		for _, p := range m.Parts {
+			if r, ok := p.(message.ToolResult); ok && r.Content == content {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// assertSummaryThenPair checks a request is [summary, tool call, tool result].
+func assertSummaryThenPair(t *testing.T, req []message.Message, callID, content string) {
+	t.Helper()
+	if len(req) != 3 || firstText(req[0]) != testSummaryText || req[1].Role != message.Assistant || req[2].Role != message.Tool {
+		t.Fatalf("request = %v (roles %v), want [summary, assistant tool call, tool result]", texts(req), roles(req))
+	}
+	if calls := req[1].ToolCalls(); len(calls) != 1 || calls[0].ID != callID {
+		t.Errorf("assistant message tool calls = %+v, want the completion's call %q", calls, callID)
+	}
+	if !hasToolResult(req[2:], content) {
+		t.Errorf("tool message does not carry the completion result %q", content)
+	}
+}
+
+// An auto-resume turn (no content) is driven by the synthetic completion pair
+// at the end of the history. Compacting before it must not drop that pair:
+// the summary lands after it, so the reload alone would leave the model only
+// the summary to react to.
+func TestProcessGeneration_PreTurnCompactionKeepsResumeTail(t *testing.T) {
+	withFreshTaskRegistry(t)
+	withAutoCompact(t, true)
+	a, main, _, log := newCompactingAgent(t, 960, nil)
+
+	const sess = "sess-resume"
+	seedHistory(t, a, sess, textMsg(message.User, "start the build"), textMsg(message.Assistant, "started in the background"))
+	seedHistory(t, a, sess, completionPair("bg-1", "BUILD OK")...)
+
+	res := a.processGeneration(context.Background(), sess, "", 0, nil, RunOptions{})
+	if res.Error != nil {
+		t.Fatalf("processGeneration error: %v", res.Error)
+	}
+	if len(*log) < 2 || (*log)[0] != "summarizer" || (*log)[1] != "main" {
+		t.Fatalf("call order = %v, want the summarizer before the first model call", *log)
+	}
+	assertSummaryThenPair(t, main.requests[0], "bg-1", "BUILD OK")
+}
+
+// completingRegistry finishes the session's background task the moment the
+// non-interactive drain starts waiting on it, writing the completion pair
+// first — what EnqueueTaskCompletion does — so the re-entry is deterministic.
+type completingRegistry struct {
+	task.Registry
+	once     sync.Once
+	complete func()
+}
+
+func (r *completingRegistry) WaitForActiveTasks(ctx context.Context, sessionID string, opts task.WaitOptions) error {
+	r.once.Do(r.complete)
+	return r.Registry.WaitForActiveTasks(ctx, sessionID, opts)
+}
+
+// A non-interactive re-entry resets cycles to 0, so its first call used to
+// skip the in-loop check like a turn's first call does, with no pre-turn gate
+// in front of it. A drained completion that pushes the history over must be
+// compacted before the model sees it, and the completion must survive.
+func TestProcessGeneration_ReentryAfterDrainIsGated(t *testing.T) {
+	withAutoCompact(t, true)
+	const sess = "sess-reentry"
+	log := &[]string{}
+	main := &compactionProvider{name: "main", window: 1000, log: log}
+	main.count = func(msgs []message.Message) int64 {
+		switch {
+		case len(msgs) > 0 && firstText(msgs[0]) == testSummaryText:
+			return 50
+		case hasToolResult(msgs, "BIG OUTPUT"):
+			return 960
+		default:
+			return 100
+		}
+	}
+	summarizer := &compactionProvider{name: "summarizer", log: log,
+		respond: func([]message.Message) *provider.ProviderResponse {
+			return &provider.ProviderResponse{Content: testSummaryText, FinishReason: message.FinishReasonEndTurn}
+		}}
+	a := newLoopAgentWithTools(t, main, nil)
+	a.summarizeProvider = summarizer
+
+	dir := t.TempDir()
+	inner := task.NewRegistry(func() string { return dir })
+	taskID := task.NewTaskID(task.KindTask)
+	if err := inner.Register(&task.Task{ID: taskID, SessionID: sess, Kind: task.KindTask}); err != nil {
+		t.Fatalf("register task: %v", err)
+	}
+	reg := &completingRegistry{Registry: inner, complete: func() {
+		seedHistory(t, a, sess, completionPair("bg-1", "BIG OUTPUT")...)
+		inner.MarkFinished(taskID, task.StateCompleted, nil)
+	}}
+	task.ResetGlobalRegistry()
+	task.SetGlobalRegistry(reg)
+	t.Cleanup(task.ResetGlobalRegistry)
+
+	res := a.processGeneration(context.Background(), sess, "run the job", 0, nil, RunOptions{NonInteractive: true})
+	if res.Error != nil {
+		t.Fatalf("processGeneration error: %v", res.Error)
+	}
+	if want := []string{"main", "summarizer", "main"}; !slices.Equal(*log, want) {
+		t.Fatalf("call order = %v, want %v — the re-entry's first call must be checked", *log, want)
+	}
+	assertSummaryThenPair(t, main.requests[1], "bg-1", "BIG OUTPUT")
+}
+
+// The flow runner's struct_output rescue run forces tool_choice on the turn's
+// ctx. The summarizer is sent no tools, so the forced choice must not reach it
+// (Anthropic rejects a forced tool that is not in the request).
+func TestProcessGeneration_CompactionDoesNotForceSummarizerTool(t *testing.T) {
+	withFreshTaskRegistry(t)
+	withAutoCompact(t, true)
+	a, main, summarizer, _ := newCompactingAgent(t, 960, nil)
+
+	const sess = "sess-forced"
+	seedHistory(t, a, sess, textMsg(message.User, "q"), textMsg(message.Assistant, "a"))
+
+	ctx := provider.WithForcedTool(context.Background(), tools.StructOutputToolName)
+	res := a.processGeneration(ctx, sess, "next question", 0, nil, RunOptions{})
+	if res.Error != nil {
+		t.Fatalf("processGeneration error: %v", res.Error)
+	}
+	if len(summarizer.forced) != 1 || summarizer.forced[0] != "" {
+		t.Fatalf("summarizer forced tools = %q, want one request with none", summarizer.forced)
+	}
+	if len(main.forced) == 0 || main.forced[0] != tools.StructOutputToolName {
+		t.Errorf("main forced tools = %q, want the turn's own call still forced", main.forced)
+	}
+}
+
+// listHookMessages runs onList once, after the first List call returns.
+type listHookMessages struct {
+	*memMessages
+	once   sync.Once
+	onList func()
+}
+
+func (m *listHookMessages) List(ctx context.Context, sessionID string) ([]message.Message, error) {
+	msgs, err := m.memMessages.List(ctx, sessionID)
+	m.once.Do(m.onList)
+	return msgs, err
+}
+
+// The TUI starts an async Summarize after a turn that ended near the window,
+// and it does not hold the session slot. A turn that starts meanwhile must
+// wait for it and count what it leaves, not compact the stale history a
+// second time.
+func TestProcessGeneration_WaitsForInFlightSummarize(t *testing.T) {
+	withFreshTaskRegistry(t)
+	withAutoCompact(t, true)
+	prevPoll := summarizeWaitPoll
+	summarizeWaitPoll = 5 * time.Millisecond
+	t.Cleanup(func() { summarizeWaitPoll = prevPoll })
+
+	a, main, summarizer, _ := newCompactingAgent(t, 960, nil)
+	const sess = "sess-tui"
+	seedHistory(t, a, sess, textMsg(message.User, "q"), textMsg(message.Assistant, "a"))
+
+	key := sess + "-summarize"
+	a.activeRequests.Store(key, context.CancelFunc(func() {}))
+	done := make(chan struct{})
+	// The in-flight Summarize finishes only after the turn has listed the
+	// pre-summary history, as it would in the TUI.
+	a.messages = &listHookMessages{memMessages: a.messages.(*memMessages), onList: func() {
+		go func() {
+			defer close(done)
+			time.Sleep(20 * time.Millisecond)
+			created, err := a.messages.Create(context.Background(), sess, message.CreateMessageParams{
+				Role:  message.Assistant,
+				Parts: []message.ContentPart{message.TextContent{Text: testSummaryText}},
+			})
+			if err != nil {
+				t.Error(err)
+			}
+			_, _ = a.sessions.Save(context.Background(), session.Session{ID: sess, SummaryMessageID: created.ID})
+			a.activeRequests.Delete(key)
+		}()
+	}}
+
+	res := a.processGeneration(context.Background(), sess, "next question", 0, nil, RunOptions{})
+	<-done
+	if res.Error != nil {
+		t.Fatalf("processGeneration error: %v", res.Error)
+	}
+	if len(summarizer.requests) != 0 {
+		t.Fatalf("summarizer called %d time(s) by the turn, want 0 — it must wait for the in-flight one", len(summarizer.requests))
+	}
+	if got := firstText(main.requests[0][0]); got != testSummaryText {
+		t.Errorf("first model request starts with %q, want the in-flight summary", got)
+	}
+}
+
+// A compaction before the turn starts must not shrink the turn's task budget:
+// the turn has spent nothing yet, as on a turn that does not compact.
+func TestProcessGeneration_PreTurnCompactionKeepsFullTaskBudget(t *testing.T) {
+	withFreshTaskRegistry(t)
+	withAutoCompact(t, true)
+	config.Get().Agents[config.AgentName("coder")] = config.Agent{TaskBudget: 50_000}
+	a, main, _, _ := newCompactingAgent(t, 960, nil)
+
+	const sess = "sess-budget"
+	_, _ = a.sessions.Save(context.Background(), session.Session{ID: sess, TotalCompletionTokens: 30_000})
+	seedHistory(t, a, sess, textMsg(message.User, "q"), textMsg(message.Assistant, "a"))
+
+	res := a.processGeneration(context.Background(), sess, "next question", 0, nil, RunOptions{})
+	if res.Error != nil {
+		t.Fatalf("processGeneration error: %v", res.Error)
+	}
+	if len(main.budgets) == 0 || main.budgets[0] != -1 {
+		t.Fatalf("first model request task budget remaining = %v, want unset", main.budgets)
+	}
+}
+
+// After a compaction the deferred-tools delta sits before the summary, out of
+// the model's view. The next turn must announce the tools again, once.
+func TestProcessGeneration_ReannouncesDeferredToolsAfterCompaction(t *testing.T) {
+	withFreshTaskRegistry(t)
+	withAutoCompact(t, true)
+	a, main, _, _ := newCompactingAgent(t, 960, []tools.BaseTool{tools.WrapDeferred(noopTool{}, &atomic.Int64{})})
+	ctx := context.Background()
+	const sess = "sess-deferred"
+
+	for _, content := range []string{"first", "second compacts", "third"} {
+		if res := a.processGeneration(ctx, sess, content, 0, nil, RunOptions{}); res.Error != nil {
+			t.Fatalf("processGeneration(%q) error: %v", content, res.Error)
+		}
+	}
+
+	deltas := func(msgs []message.Message) (seqs []int64) {
+		for _, m := range msgs {
+			if m.Role == message.User && strings.Contains(firstText(m), deferredDeltaMarker) {
+				seqs = append(seqs, m.Seq)
+			}
+		}
+		return seqs
+	}
+	persisted, _ := a.messages.List(ctx, sess)
+	sessRow, _ := a.sessions.Get(ctx, sess)
+	var summarySeq int64
+	for _, m := range persisted {
+		if m.ID == sessRow.SummaryMessageID {
+			summarySeq = m.Seq
+		}
+	}
+	got := deltas(persisted)
+	if summarySeq == 0 || len(got) != 2 || got[1] <= summarySeq {
+		t.Fatalf("delta seqs = %v, summary seq %d; want one delta before the summary and one after", got, summarySeq)
+	}
+	for i, req := range main.requests[1:] {
+		if n := len(deltas(req)); n != 1 {
+			t.Errorf("request after the compaction #%d carries %d deltas, want 1", i+1, n)
+		}
+	}
 }
 
 func TestProcessGeneration_CompactsBeforeFirstCall(t *testing.T) {
@@ -182,6 +501,7 @@ func TestCountContextTokens(t *testing.T) {
 		window    int64
 		estimate  int64
 		sess      session.Session
+		usage     *provider.TokenUsage // recorded through TrackUsage when set
 		msgs      []message.Message
 		wantCount int64
 		wantHit   bool
@@ -222,6 +542,18 @@ func TestCountContextTokens(t *testing.T) {
 			wantCount: 900 + tailTokens,
 			wantHit:   false,
 		},
+		{
+			// A Gemini call with a 500-token prompt, 480 of it cached, and 20
+			// output tokens: 52% of the window. The cached part is reported
+			// once, as CacheReadTokens, so the floor does not double it to 100%.
+			name:      "gemini usage with a cached prompt is not double counted",
+			window:    1000,
+			estimate:  100,
+			usage:     &provider.TokenUsage{InputTokens: 20, CacheReadTokens: 480, OutputTokens: 20},
+			msgs:      withAssistant[:2],
+			wantCount: 520,
+			wantHit:   false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -233,6 +565,11 @@ func TestCountContextTokens(t *testing.T) {
 			tc.sess.ID = "s"
 			_, _ = sessions.Save(context.Background(), tc.sess)
 			a := &agent{provider: p, sessions: sessions}
+			if tc.usage != nil {
+				if err := a.TrackUsage(context.Background(), "s", p.Model(), *tc.usage); err != nil {
+					t.Fatal(err)
+				}
+			}
 
 			got, hit := a.countContextTokens(context.Background(), "s", 0.95, tc.msgs, nil)
 			if got != tc.wantCount || hit != tc.wantHit {
@@ -363,6 +700,29 @@ func TestSummarizerInput(t *testing.T) {
 		}
 		if est := message.EstimateTokens(got, nil, message.BytesPerTokenEta); est >= 2700 {
 			t.Errorf("trimmed estimate %d still reaches the 2700-token budget", est)
+		}
+	})
+
+	t.Run("reported usage calibrates an undercounting estimate", func(t *testing.T) {
+		// Window 10000 → budget 9000. The local estimate (~3050) fits, but the
+		// provider reported 9500 for the same history: the real input would
+		// not, so the trim has to run in real-token terms.
+		a, sess := build(t, 10_000, []message.Message{
+			textMsg(message.User, big),
+			textMsg(message.Assistant, big),
+			textMsg(message.User, big),
+			textMsg(message.Assistant, "latest"),
+		}, -1)
+		_, _ = a.sessions.Save(context.Background(), session.Session{ID: sess, PromptTokens: 9000, CompletionTokens: 500})
+		got, err := a.summarizerInput(context.Background(), sess, prompt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(firstText(got[0]), "earlier messages were omitted") {
+			t.Fatalf("input = %v, want the oldest messages dropped", texts(got))
+		}
+		if firstText(got[len(got)-2]) != "latest" {
+			t.Errorf("tail = %v, want [..., latest, summarize]", texts(got))
 		}
 	})
 

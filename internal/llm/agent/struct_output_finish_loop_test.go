@@ -46,6 +46,7 @@ func (m *memMessages) Create(_ context.Context, sessionID string, params message
 		Parts:     params.Parts,
 		Model:     params.Model,
 		Seq:       int64(m.seq),
+		Synthetic: params.Synthetic,
 	}
 	m.byID[msg.ID] = msg
 	m.bySession[sessionID] = append(m.bySession[sessionID], msg.ID)

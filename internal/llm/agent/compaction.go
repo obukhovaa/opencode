@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/provider"
@@ -77,6 +78,71 @@ func lastAssistantIndex(msgs []message.Message) int {
 	return -1
 }
 
+// syntheticTail returns a copy of the run of synthetic messages that ends the
+// history, starting on an assistant message so no tool result is carried
+// without its tool call. On an auto-resume turn that run is the completion
+// pair(s) task.EnqueueTaskCompletion wrote: the input the model has to react
+// to. A compaction lands its summary after them, so the reload drops them;
+// callers re-append this tail in memory, as preserveTail does in the loop.
+func syntheticTail(msgs []message.Message) []message.Message {
+	start := len(msgs)
+	for start > 0 && msgs[start-1].Synthetic {
+		start--
+	}
+	for start < len(msgs) && msgs[start].Role != message.Assistant {
+		start++
+	}
+	return slices.Clone(msgs[start:])
+}
+
+// Bounds on how long a turn waits for an in-flight Summarize of its session.
+// Vars so tests can shorten them.
+var (
+	summarizeWaitTimeout = 2 * time.Minute
+	summarizeWaitPoll    = 100 * time.Millisecond
+)
+
+// waitForSummarize blocks while an async Summarize of the session runs on
+// this agent (the TUI starts one after a turn that ended near the window). It
+// does not take the session slot, so without the wait the pre-turn gate would
+// compact the same history concurrently and write a second summary. Returns
+// true when it waited and the history must be reloaded; false when nothing
+// was in flight or ctx ended first.
+func (a *agent) waitForSummarize(ctx context.Context, sessionID string) bool {
+	key := sessionID + "-summarize"
+	if _, busy := a.activeRequests.Load(key); !busy {
+		return false
+	}
+	logging.Info("Waiting for in-flight summarization before turn", "session_id", sessionID)
+	deadline := time.NewTimer(summarizeWaitTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(summarizeWaitPoll)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			logging.Warn("In-flight summarization still running; continuing the turn", "session_id", sessionID, "waited", summarizeWaitTimeout)
+			return true
+		case <-ticker.C:
+			if _, busy := a.activeRequests.Load(key); !busy {
+				return true
+			}
+		}
+	}
+}
+
+// forgetDeferredAnnouncements clears the session's in-memory set of announced
+// deferred tools. Called after a compaction: the delta message that announced
+// them now sits before the summary, out of the model's view, so the next turn
+// has to announce them again.
+func (a *agent) forgetDeferredAnnouncements(sessionID string) {
+	a.deferredAnnouncedMu.Lock()
+	defer a.deferredAnnouncedMu.Unlock()
+	a.deferredAnnounced.Delete(sessionID)
+}
+
 // pendingUserMessage mirrors what createUserMessage persists, without
 // persisting it, so the pre-turn gate can count the incoming turn.
 func pendingUserMessage(content string, attachmentParts []message.ContentPart) message.Message {
@@ -86,8 +152,8 @@ func pendingUserMessage(content string, attachmentParts []message.ContentPart) m
 }
 
 // historyAfterCompaction reloads the session and its history from the new
-// summary onwards. Callers still re-inject the struct_output schema envelope
-// and the task-budget ctx.
+// summary onwards. The in-loop caller still re-injects the struct_output
+// schema envelope and the task-budget ctx.
 func (a *agent) historyAfterCompaction(ctx context.Context, sessionID string) ([]message.Message, session.Session, error) {
 	msgs, err := a.messages.List(ctx, sessionID)
 	if err != nil {
@@ -145,6 +211,18 @@ func (a *agent) summarizerInput(ctx context.Context, sessionID string, prompt me
 			fixed += int64(len(sp.SystemMessage()) / message.BytesPerTokenEta)
 		}
 		budget := int64(float64(window) * summarizerWindowFraction)
+		// The trim works in local-estimate units, and the 4 B/token estimate
+		// can undercount a session badly. When the provider reported more for
+		// the history up to the last assistant message than the estimate
+		// gives, shrink the budget by the same ratio. The reported value also
+		// covers the main agent's system prompt and tools, so this errs
+		// toward trimming more.
+		if la := lastAssistantIndex(msgs); la >= 0 {
+			reported := sess.PromptTokens + sess.CompletionTokens
+			if local := message.EstimateTokens(msgs[:la+1], nil, message.BytesPerTokenEta); local > 0 && reported > local {
+				budget = budget * local / reported
+			}
+		}
 		keepHead := sess.SummaryMessageID != "" && msgs[0].ID == sess.SummaryMessageID
 		kept, dropped, estimated := trimSummarizerInput(msgs, keepHead, fixed, budget)
 		if dropped > 0 {
@@ -153,6 +231,7 @@ func (a *agent) summarizerInput(ctx context.Context, sessionID string, prompt me
 				"dropped", dropped,
 				"kept", len(kept),
 				"estimated_tokens", estimated,
+				"budget", budget,
 				"window", window,
 			)
 			msgs = kept
