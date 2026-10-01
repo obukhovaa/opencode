@@ -179,23 +179,24 @@ func (h *interactiveBridge) scheduleRemoteRetry(sessionID string, pending []brid
 	h.retryCancels[sessionID] = cancel
 	h.retryMu.Unlock()
 
-	go h.runRemoteRetryLoop(ctx, sessionID, cancel, pending)
+	go h.runRemoteRetryLoop(ctx, sessionID, cancel, pending, remoteRegisterRetryInterval)
 }
 
 // runRemoteRetryLoop is the per-session retry goroutine. Recovers
 // from panics so a bug in the orchestrator's response handling
 // doesn't take down the bridge.
 //
-// The retry interval is snapshotted at goroutine start so that
-// tests using `withFastRetry` to temporarily shorten the global var
-// can't race the goroutine's reads.
+// The retry interval is read by scheduleRemoteRetry, on the caller's
+// goroutine, and passed in. Reading the global here instead raced with
+// tests using `withFastRetry`: a test that ends right after scheduling
+// restores the var in t.Cleanup, and nothing orders that write before
+// this goroutine's first statement.
 //
 // ownCancel is the cancel func this goroutine was launched with — used
 // at teardown to ensure we only delete OUR entry from retryCancels.
 // A racing scheduleRemoteRetry that already replaced the entry stays
 // untouched, so subsequent cancelRemoteRetry calls still see it.
-func (h *interactiveBridge) runRemoteRetryLoop(ctx context.Context, sessionID string, ownCancel context.CancelFunc, pending []bridge.RemoteBinding) {
-	interval := remoteRegisterRetryInterval
+func (h *interactiveBridge) runRemoteRetryLoop(ctx context.Context, sessionID string, ownCancel context.CancelFunc, pending []bridge.RemoteBinding, interval time.Duration) {
 	defer func() {
 		if r := recover(); r != nil {
 			logging.Error("bridge: remote-register retry panicked",
