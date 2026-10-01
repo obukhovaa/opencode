@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -39,6 +40,14 @@ type ServerOptions struct {
 	// to (derived from the working directory's git origin), or "" when
 	// unbound. Normalised internally.
 	PoolBoundWorkspace string
+	// PoolBoundRef is the git ref (branch or tag) the bound workspace was
+	// cloned at, or "" for the remote's default branch. It arrives through
+	// the bind sentinel (`<url>#<ref>`) → the entrypoint's
+	// AGENT_WORKSPACE_GIT_REF export, and is tracked BESIDE the normalised
+	// URL rather than folded into it: the URL is an identity used for
+	// equality everywhere (allowlist, POST /flow assertion, rebind), and
+	// those comparisons must not change meaning because a ref is present.
+	PoolBoundRef string
 	// PoolBoundSince is the unix-ms timestamp the binding was observed
 	// (process boot time). Surfaced by GET /pool/bind.
 	PoolBoundSince int64
@@ -100,6 +109,7 @@ type Server struct {
 	// workspace-clone respawn.
 	poolBinding        atomic.Bool
 	poolBoundWorkspace string // normalised; "" when unbound
+	poolBoundRef       string // "" = default branch; only meaningful when bound
 	poolBoundSince     int64
 	poolAllowlist      []string // normalised entries
 	poolSentinelPath   string
@@ -123,6 +133,7 @@ func NewServer(application *app.App, opts ServerOptions) *Server {
 		s.poolBoundWorkspace = normalizeWorkspaceURL(opts.PoolBoundWorkspace)
 		if s.poolBoundWorkspace != "" {
 			s.poolBoundSince = opts.PoolBoundSince
+			s.poolBoundRef = strings.TrimSpace(opts.PoolBoundRef)
 		}
 		s.poolAllowlist = parseWorkspaceAllowlist(opts.PoolAllowlist)
 		s.poolSentinelPath = opts.PoolSentinelPath

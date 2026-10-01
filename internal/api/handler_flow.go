@@ -370,6 +370,12 @@ func (s *Server) handleFlowStart(w http.ResponseWriter, r *http.Request) {
 		// Workspace is an optional defence-in-depth assertion of the git
 		// URL the caller believes this pod is bound to (pool mode only).
 		Workspace string `json:"workspace"`
+		// WorkspaceRef is the same assertion for the git ref the caller
+		// believes the workspace is cloned at (pool mode only). A pod bound
+		// at a different ref holds different flow definitions, so a run
+		// there would execute the wrong flow silently; refusing it is the
+		// backstop behind the orchestrator's own pre-start check.
+		WorkspaceRef string `json:"workspaceRef"`
 		// BridgeJobID is the orchestrator job identity this run's bridge
 		// registrations and outbound relay frames are stamped with
 		// (design D9). Per-Job pods omit it and keep using the boot-time
@@ -408,6 +414,12 @@ func (s *Server) handleFlowStart(w http.ResponseWriter, r *http.Request) {
 			writePoolError(w, http.StatusConflict,
 				fmt.Sprintf("pod bound to %s; workspace param doesn't match", s.poolBoundWorkspace),
 				map[string]any{"boundWorkspace": s.poolBoundWorkspace})
+			return
+		}
+		if ref := strings.TrimSpace(body.WorkspaceRef); ref != "" && ref != s.poolBoundRef {
+			writePoolError(w, http.StatusConflict,
+				fmt.Sprintf("pod bound to %s at ref %q; workspaceRef param %q doesn't match", s.poolBoundWorkspace, s.poolBoundRef, ref),
+				map[string]any{"boundWorkspace": s.poolBoundWorkspace, "boundRef": s.poolBoundRef})
 			return
 		}
 	}

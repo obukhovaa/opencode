@@ -84,6 +84,21 @@ func validatePoolModeInbound(router *bridge.Config) error {
 // is bound.
 const poolWorkspaceURLEnv = "AGENT_WORKSPACE_GIT_URL"
 
+// poolWorkspaceRefEnv is the entrypoint's export of the git ref the
+// workspace was cloned at — the `<ref>` half of a `<url>#<ref>` bind
+// sentinel, handed to `git clone --branch`. Unset or empty means the
+// remote's default branch. There is no `.git`-derived source for it: the
+// entrypoint's overlay bootstrap leaves no checkout in the working
+// directory, and a detached shallow clone would not name its branch anyway.
+const poolWorkspaceRefEnv = "AGENT_WORKSPACE_GIT_REF"
+
+// derivePoolBoundRef reports the ref the bound workspace was cloned at,
+// or "" for the default branch. Only meaningful alongside a non-empty
+// derivePoolBoundWorkspace.
+func derivePoolBoundRef() string {
+	return strings.TrimSpace(os.Getenv(poolWorkspaceRefEnv))
+}
+
 // derivePoolBoundWorkspace reports the workspace git URL the pod booted
 // bound to, or "" when the pod is unbound (first-ever boot, or a
 // post-recycle clean state).
