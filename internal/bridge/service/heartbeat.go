@@ -17,6 +17,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/heartbeat"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 )
 
@@ -295,29 +296,140 @@ func (s *Service) sessionHasMessages(ctx context.Context, sessionID string) bool
 	return err == nil && sess.MessageCount > 0
 }
 
-// cmdHeartbeat implements /heartbeat. See heartbeat.ParseCommand for the
-// grammar.
+// cmdHeartbeat implements /heartbeat. The exact grammar (see
+// heartbeat.ParseCommand), including a bare /heartbeat, is applied here
+// without a model call. Anything else is natural language: the handler
+// returns nil and dispatchInbound hands the request to the agent (see
+// heartbeatAgentRequest), which applies it with the heartbeat tool.
 func (s *Service) cmdHeartbeat(ctx context.Context, in bridge.Inbound) *bridge.CommandReply {
 	if !s.HeartbeatsEnabled() {
 		return replyText("Heartbeats are only available when opencode runs as a daemon.")
 	}
 	cmd, err := heartbeat.ParseCommand(in.CommandArgs)
-	if err != nil {
-		return replyText(fmt.Sprintf("%v\n%s", err, heartbeat.Usage))
+	if err == nil {
+		text, err := s.applyHeartbeat(ctx, in.Peer, cmd)
+		if err != nil {
+			return replyText(err.Error() + "\n" + heartbeat.Usage)
+		}
+		return replyText(text)
 	}
-	if cmd.Model != nil && *cmd.Model != "" {
-		if _, ok := models.SupportedModels[models.ModelID(*cmd.Model)]; !ok {
-			return replyText(fmt.Sprintf("Unknown model %q. /model lists the supported ones.\n%s", *cmd.Model, heartbeat.Usage))
+	if !s.agentHasHeartbeatTool() {
+		return replyText(fmt.Sprintf("%v\n%s\nTo describe the heartbeat in your own words, enable the %q tool for the agent.",
+			err, heartbeat.Usage, tools.HeartbeatToolName))
+	}
+	return nil
+}
+
+// heartbeatAgentRequest is the prompt a natural-language /heartbeat
+// becomes. It carries the current status so the agent can apply a
+// relative change ("twice as often") without a read first.
+func (s *Service) heartbeatAgentRequest(ctx context.Context, in bridge.Inbound) string {
+	status, err := s.heartbeatStatus(ctx, in.Peer)
+	if err != nil {
+		status = "(status unavailable: " + err.Error() + ")"
+	}
+	return heartbeat.AgentRequest(in.CommandArgs, status)
+}
+
+// agentHasHeartbeatTool reports whether the active agent can carry out a
+// natural-language /heartbeat. A tool set still loading counts as yes.
+func (s *Service) agentHasHeartbeatTool() bool {
+	ag := s.app.ActiveAgent()
+	if ag == nil {
+		return false
+	}
+	ts, ready := ag.ResolvedTools()
+	if !ready {
+		return true
+	}
+	for _, t := range ts {
+		if t.Info().Name == tools.HeartbeatToolName {
+			return true
 		}
 	}
+	return false
+}
 
-	row, err := s.store.GetHeartbeat(ctx, s.projectID, in.Peer.Channel, in.Peer.Identity, in.Peer.PeerID)
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		row = store.Heartbeat{ProjectID: s.projectID, Channel: in.Peer.Channel, IdentityID: in.Peer.Identity, PeerID: in.Peer.PeerID}
+// HeartbeatStatus implements tools.HeartbeatConfigurer: the status of
+// every chat binding of the session.
+func (s *Service) HeartbeatStatus(ctx context.Context, sessionID string) (string, error) {
+	return s.forSessionBindings(ctx, sessionID, func(peer bridge.PeerRef) (string, error) {
+		return s.heartbeatStatus(ctx, peer)
+	})
+}
+
+// ApplyHeartbeat implements tools.HeartbeatConfigurer: applies cmd to
+// every chat binding of the session.
+func (s *Service) ApplyHeartbeat(ctx context.Context, sessionID string, cmd heartbeat.Command) (string, error) {
+	return s.forSessionBindings(ctx, sessionID, func(peer bridge.PeerRef) (string, error) {
+		return s.applyHeartbeat(ctx, peer, cmd)
+	})
+}
+
+func (s *Service) forSessionBindings(ctx context.Context, sessionID string, fn func(bridge.PeerRef) (string, error)) (string, error) {
+	if !s.HeartbeatsEnabled() {
+		return "", tools.ErrHeartbeatUnavailable
+	}
+	bindings, err := s.store.ListBindingsBySession(ctx, s.projectID, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if len(bindings) == 0 {
+		return "", errors.New("this session is not bound to a chat, so it has no heartbeat")
+	}
+	parts := make([]string, 0, len(bindings))
+	for _, b := range bindings {
+		text, err := fn(b.AsPeerRef())
+		if err != nil {
+			return "", err
+		}
+		if len(bindings) > 1 {
+			text = fmt.Sprintf("[%s %s]\n%s", b.Channel, b.PeerID, text)
+		}
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, "\n\n"), nil
+}
+
+func (s *Service) loadHeartbeat(ctx context.Context, peer bridge.PeerRef) (store.Heartbeat, error) {
+	row, err := s.store.GetHeartbeat(ctx, s.projectID, peer.Channel, peer.Identity, peer.PeerID)
+	if errors.Is(err, store.ErrNotFound) {
+		row = store.Heartbeat{ProjectID: s.projectID, Channel: peer.Channel, IdentityID: peer.Identity, PeerID: peer.PeerID}
 		row.State = heartbeat.StateUnset
-	case err != nil:
-		return replyText("Failed to read the heartbeat: " + err.Error())
+		return row, nil
+	}
+	if err != nil {
+		return store.Heartbeat{}, fmt.Errorf("failed to read the heartbeat: %w", err)
+	}
+	return row, nil
+}
+
+func (s *Service) heartbeatStatus(ctx context.Context, peer bridge.PeerRef) (string, error) {
+	row, err := s.loadHeartbeat(ctx, peer)
+	if err != nil {
+		return "", err
+	}
+	return heartbeat.Describe(row.Record, s.activeModelID()), nil
+}
+
+func (s *Service) activeModelID() string {
+	if ag := s.app.ActiveAgent(); ag != nil {
+		return string(ag.Model().ID)
+	}
+	return ""
+}
+
+// applyHeartbeat applies a parsed /heartbeat command to one binding and
+// returns the resulting status, with notes for anything worth knowing.
+func (s *Service) applyHeartbeat(ctx context.Context, peer bridge.PeerRef, cmd heartbeat.Command) (string, error) {
+	if cmd.Model != nil && *cmd.Model != "" {
+		if _, ok := models.SupportedModels[models.ModelID(*cmd.Model)]; !ok {
+			return "", fmt.Errorf("unknown model %q (/model lists the supported ones)", *cmd.Model)
+		}
+	}
+	row, err := s.loadHeartbeat(ctx, peer)
+	if err != nil {
+		return "", err
 	}
 
 	now := heartbeatNow().UTC()
@@ -330,7 +442,7 @@ func (s *Service) cmdHeartbeat(ctx context.Context, in bridge.Inbound) *bridge.C
 			row.NextBeatAt = time.Time{}
 		}
 		if err := s.store.PutHeartbeat(ctx, row); err != nil {
-			return replyText("Failed to save the heartbeat: " + err.Error())
+			return "", fmt.Errorf("failed to save the heartbeat: %w", err)
 		}
 		if cmd.Model != nil && *cmd.Model != "" {
 			notes = append(notes, "A different model than the session's cannot reuse its prompt cache, so each beat re-reads the whole conversation at full price.")
@@ -349,13 +461,9 @@ func (s *Service) cmdHeartbeat(ctx context.Context, in bridge.Inbound) *bridge.C
 		}
 	}
 
-	defaultModel := ""
-	if ag := s.app.ActiveAgent(); ag != nil {
-		defaultModel = string(ag.Model().ID)
-	}
-	text := heartbeat.Describe(row.Record, defaultModel)
+	text := heartbeat.Describe(row.Record, s.activeModelID())
 	if len(notes) > 0 {
 		text += "\n" + strings.Join(notes, "\n")
 	}
-	return replyText(text)
+	return text, nil
 }

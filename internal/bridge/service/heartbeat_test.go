@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/heartbeat"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/session"
 )
@@ -33,6 +35,15 @@ type heartbeatStubAgent struct {
 	busy    bool
 	// delay holds the run open so a progress card has time to post.
 	delay time.Duration
+	// noHeartbeatTool hides the heartbeat tool from ResolvedTools.
+	noHeartbeatTool bool
+}
+
+func (a *heartbeatStubAgent) ResolvedTools() ([]tools.BaseTool, bool) {
+	if a.noHeartbeatTool {
+		return nil, true
+	}
+	return []tools.BaseTool{tools.NewHeartbeatTool(nil)}, true
 }
 
 func (a *heartbeatStubAgent) Run(_ context.Context, _, content string, _ int, _ ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
@@ -190,14 +201,25 @@ func TestHeartbeatCommandConfiguresAndReports(t *testing.T) {
 		t.Fatalf("row not stored: %+v", r)
 	}
 
-	if got := h.command(t, "every 2m"); !strings.Contains(got, "between 10m and 24h") || !strings.Contains(got, "usage:") {
-		t.Fatalf("invalid interval reply: %q", got)
-	}
-	if h.row(t).Every != 30*time.Minute {
-		t.Fatal("an invalid command changed the stored interval")
-	}
-	if got := h.command(t, "model no-such-model"); !strings.Contains(got, "Unknown model") {
+	if got := h.command(t, "model no-such-model"); !strings.Contains(got, "unknown model") {
 		t.Fatalf("unknown model reply: %q", got)
+	}
+	if h.row(t).Model != "" {
+		t.Fatal("an invalid model was stored")
+	}
+
+	// Not the exact grammar: left to the agent (nil reply) when it has the
+	// tool, refused with the grammar when it does not.
+	if reply := h.svc.cmdHeartbeat(context.Background(), bridge.Inbound{Peer: h.peer, Command: "heartbeat", CommandArgs: "every 2m"}); !reply.IsEmpty() {
+		t.Fatalf("natural language should go to the agent, got %q", reply.Text)
+	}
+	h.ag.noHeartbeatTool = true
+	if got := h.command(t, "every 2m"); !strings.Contains(got, "between 10m and 24h") || !strings.Contains(got, "usage:") || !strings.Contains(got, `"heartbeat" tool`) {
+		t.Fatalf("reply without the tool: %q", got)
+	}
+	h.ag.noHeartbeatTool = false
+	if h.row(t).Every != 30*time.Minute {
+		t.Fatal("an unparsed command changed the stored interval")
 	}
 
 	h.command(t, "off")
@@ -409,5 +431,66 @@ func TestHeartbeatTurnPostsNoProgressCard(t *testing.T) {
 	sends := ed.Sends()
 	if last := sends[len(sends)-1].Text; !strings.HasPrefix(last, "💓 Heartbeat") {
 		t.Fatalf("last post %q, want the heartbeat report", last)
+	}
+}
+
+func TestHeartbeatNaturalLanguageGoesToTheAgent(t *testing.T) {
+	h := newHeartbeatHarness(t)
+	h.command(t, "on")
+
+	h.svc.dispatchInbound(context.Background(), bridge.Inbound{
+		Peer: h.peer,
+		Text: "/heartbeat every half hour on weekdays, 7 to 23 Oslo time, and watch my merge requests",
+	})
+	if sent := h.sentTexts(); len(sent) != 0 {
+		t.Fatalf("the bridge answered itself: %q", sent)
+	}
+	select {
+	case in := <-h.disp.inbound:
+		for _, want := range []string{
+			"every half hour on weekdays, 7 to 23 Oslo time, and watch my merge requests",
+			"heartbeat tool", "UTC", "agenda file", "Current heartbeat:", "Heartbeat is on",
+		} {
+			if !strings.Contains(in.Text, want) {
+				t.Errorf("agent prompt missing %q:\n%s", want, in.Text)
+			}
+		}
+		if in.Heartbeat != nil {
+			t.Error("a /heartbeat request is a human turn, not a heartbeat turn")
+		}
+	default:
+		t.Fatal("nothing was queued for the agent")
+	}
+}
+
+func TestHeartbeatConfigurerAppliesToTheSessionsChat(t *testing.T) {
+	h := newHeartbeatHarness(t)
+	ctx := context.Background()
+
+	cmd, err := heartbeat.ParseCommand("on every 2h hours 07:30-21 days weekdays")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := h.svc.ApplyHeartbeat(ctx, "S1", cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "is on") || !strings.Contains(text, "07:30-21:00 UTC") {
+		t.Fatalf("status: %q", text)
+	}
+	r := h.row(t)
+	if r.State != heartbeat.StateOn || r.Every != 2*time.Hour || !r.WeekdaysOnly {
+		t.Fatalf("row: %+v", r)
+	}
+	if want := time.Date(2026, 10, 1, 11, 30, 0, 0, time.UTC); !r.NextBeatAt.Equal(want) {
+		t.Fatalf("next beat %s, want %s (slots start at the window start)", r.NextBeatAt, want)
+	}
+
+	if _, err := h.svc.ApplyHeartbeat(ctx, "no-such-session", cmd); err == nil {
+		t.Fatal("an unbound session must be refused")
+	}
+	h.svc.heartbeat = nil
+	if _, err := h.svc.HeartbeatStatus(ctx, "S1"); !errors.Is(err, tools.ErrHeartbeatUnavailable) {
+		t.Fatalf("outside daemon mode: %v", err)
 	}
 }

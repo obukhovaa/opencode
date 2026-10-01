@@ -36,6 +36,10 @@ func TestNextBeat(t *testing.T) {
 		{"friday evening skips the weekend", "2026-10-02 21:30", Settings{Window: window, WeekdaysOnly: weekdays}, "2026-10-05 05:00"},
 		{"saturday", "2026-10-03 12:00", Settings{WeekdaysOnly: weekdays}, "2026-10-05 00:00"},
 		{"interval that does not divide a day restarts at midnight", "2026-10-01 22:00", Settings{Every: 7 * time.Hour}, "2026-10-02 00:00"},
+		{"daily at a fixed time", "2026-10-01 07:30", Settings{Every: 24 * time.Hour, Window: &Window{Start: 7 * 60, End: 8 * 60}}, "2026-10-02 07:00"},
+		{"slots start at the window start", "2026-10-01 05:10", Settings{Every: 2 * time.Hour, Window: &Window{Start: 5*60 + 30, End: 21 * 60}}, "2026-10-01 05:30"},
+		{"two-hour slots inside the window", "2026-10-01 06:00", Settings{Every: 2 * time.Hour, Window: &Window{Start: 5*60 + 30, End: 21 * 60}}, "2026-10-01 07:30"},
+		{"wrapping window on a friday night with weekdays", "2026-10-03 01:00", Settings{Window: night, WeekdaysOnly: weekdays}, "2026-10-03 01:00"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

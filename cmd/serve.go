@@ -283,6 +283,11 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			if application.AgentFactory != nil {
 				mediaRoot := filepathJoin(cfg.Data.Directory, "bridge", "media")
 				application.AgentFactory.SetBridgeSender(bridgeSvc, cfg.Router, mediaRoot)
+				// The heartbeat tool resolves this handle at call time,
+				// so the already-built primary agents reach it too.
+				if daemonMode {
+					application.AgentFactory.SetHeartbeatConfigurer(bridgeSvc)
+				}
 			}
 
 			// Wire the bridge into the cron scheduler so jobs created in

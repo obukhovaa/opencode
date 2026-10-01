@@ -46,6 +46,27 @@ Several of these MAY be combined in one command (`/heartbeat on every 30m hours 
 - **WHEN** the state is `unset` and a peer runs `/heartbeat every 2h`
 - **THEN** the interval is stored, the state stays `unset`, and no beat is scheduled
 
+### Requirement: /heartbeat accepts natural language through the agent
+
+When the arguments of `/heartbeat` are not the exact form, and the active agent has the `heartbeat` tool, the bridge SHALL hand the request to the agent as an ordinary turn whose prompt carries the request and the current heartbeat status. The agent SHALL apply it with the `heartbeat` tool, whose typed settings (`state`, `every`, `hours`, `days`, `model`, `file`, `now`) SHALL be validated exactly like the exact form and SHALL apply to every chat binding of the calling session. When the active agent lacks the tool, the bridge SHALL reply with the parse error and the exact grammar instead.
+
+The `heartbeat` tool SHALL be registered only for agents that explicitly enable it, and SHALL reach the bridge even when the agent's tool set was built before the bridge started.
+
+#### Scenario: Schedule in the human's words
+
+- **WHEN** a peer runs `/heartbeat every half hour on weekdays, 7 to 23 Oslo time` and the agent has the tool
+- **THEN** the agent receives the request with the current status, sets `every 30m`, the matching UTC hours and `days weekdays` with the tool, and replies with the resulting schedule
+
+#### Scenario: Checks in the human's words
+
+- **WHEN** the request also says "keep an eye on my open merge requests"
+- **THEN** the agent writes that item into the agenda file, so the next beat is not skipped
+
+#### Scenario: Agent without the tool
+
+- **WHEN** the active agent does not enable the `heartbeat` tool and a peer runs `/heartbeat every half hour`
+- **THEN** the bridge replies with the parse error and the exact grammar, and no agent run starts
+
 ### Requirement: Beats run in the bound session through the session dispatcher
 
 A heartbeat turn SHALL run in the binding's session through that session's dispatcher, as a synthetic inbound marked as a heartbeat, so that it never overlaps another run on the session and its final reply reaches the bound peers. The heartbeat marker SHALL NOT be settable through `/router/inbound`.
@@ -57,7 +78,7 @@ A heartbeat turn SHALL run in the binding's session through that session's dispa
 
 ### Requirement: Beats follow the schedule, defer when busy and coalesce missed beats
 
-A beat SHALL become due at `next_beat_at`. Slots SHALL lie on a grid of the interval anchored at 00:00 UTC, restricted to the active hours and days. When a beat fires, the next slot SHALL be computed from the current time, so that beats missed while the process was down or the session was busy collapse into one. A due beat SHALL wait, without being queued, while the session is running or another beat for the session is queued or running.
+A beat SHALL become due at `next_beat_at`. Each day's slots SHALL start at the start of the active hours (00:00 UTC without them) and repeat every interval while inside them, on active days only. When a beat fires, the next slot SHALL be computed from the current time, so that beats missed while the process was down or the session was busy collapse into one. A due beat SHALL wait, without being queued, while the session is running or another beat for the session is queued or running.
 
 #### Scenario: Busy session
 
@@ -68,6 +89,11 @@ A beat SHALL become due at `next_beat_at`. Slots SHALL lie on a grid of the inte
 
 - **WHEN** the daemon was down for three hours with an hourly heartbeat and starts again inside the active hours
 - **THEN** exactly one catch-up beat runs, and the next beat after it is the next slot on the grid
+
+#### Scenario: Daily beat at a fixed time
+
+- **WHEN** the settings are `every 24h hours 07-08`
+- **THEN** the heartbeat beats once a day at 07:00Z
 
 #### Scenario: Outside active hours
 

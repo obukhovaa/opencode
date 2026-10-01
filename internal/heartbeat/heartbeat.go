@@ -95,28 +95,33 @@ func (s Settings) EffectiveAgendaFile() string {
 }
 
 // NextBeat returns the first slot at or after `after` that the settings
-// allow. Slots lie on a grid of the interval anchored at 00:00 UTC of each
-// day, restricted to the active window and days. Computing from "now"
-// rather than from a missed due time is what coalesces missed beats.
+// allow. Each day's slots start at the beginning of the active window
+// (00:00 UTC without one) and repeat every interval while inside the
+// window, so `every 24h` with `hours 07-08` is a daily 07:00 beat. Days
+// are the window's start day; weekdays-only drops Saturday and Sunday
+// starts. Computing from "now" rather than from a missed due time is what
+// coalesces missed beats.
 func NextBeat(after time.Time, s Settings) time.Time {
 	after = after.UTC()
 	every := s.EffectiveEvery()
-	day := time.Date(after.Year(), after.Month(), after.Day(), 0, 0, 0, 0, time.UTC)
-	// Eight days covers a weekend plus any window; the loop always finds a
-	// slot because a window is never empty.
-	for d := 0; d < 8; d++ {
-		midnight := day.AddDate(0, 0, d)
-		if s.WeekdaysOnly && isWeekend(midnight.Weekday()) {
+	start, span := 0, 24*time.Hour
+	if s.Window != nil {
+		start = s.Window.Start
+		span = time.Duration((s.Window.End-s.Window.Start+24*60)%(24*60)) * time.Minute
+	}
+	today := time.Date(after.Year(), after.Month(), after.Day(), 0, 0, 0, 0, time.UTC)
+	// Start a day early: a window that wraps midnight began yesterday.
+	// Nine days covers a weekend either side of any window.
+	for d := -1; d < 8; d++ {
+		day := today.AddDate(0, 0, d)
+		if s.WeekdaysOnly && isWeekend(day.Weekday()) {
 			continue
 		}
-		for slot := midnight; slot.Before(midnight.Add(24 * time.Hour)); slot = slot.Add(every) {
-			if slot.Before(after) {
-				continue
+		anchor := day.Add(time.Duration(start) * time.Minute)
+		for slot := anchor; slot.Before(anchor.Add(span)); slot = slot.Add(every) {
+			if !slot.Before(after) {
+				return slot
 			}
-			if s.Window != nil && !s.Window.contains(int(slot.Sub(midnight)/time.Minute)) {
-				continue
-			}
-			return slot
 		}
 	}
 	return after.Add(every)
@@ -456,11 +461,24 @@ func Describe(r Record, defaultModel string) string {
 
 // Reminder is the setup message posted to an unset binding.
 func Reminder() string {
-	return "💓 I can check in on my own with a heartbeat: on a schedule I read my agenda (" + DefaultAgendaFile + ") and tell you only what's new.\n" +
+	return "💓 I can check in on my own with a heartbeat: on a schedule I go through my agenda (" + DefaultAgendaFile + ") and tell you only what's new.\n" +
 		"• /heartbeat on starts hourly beats.\n" +
-		"• /heartbeat on every 30m hours 05-21 days weekdays sets a schedule (UTC).\n" +
+		"• Or describe it: /heartbeat every half hour on weekdays, 7 to 23 Oslo time, and keep an eye on my open merge requests\n" +
 		"• /heartbeat off turns it off and stops this reminder.\n" +
 		"I'll ask again in a week if you don't choose."
+}
+
+// AgentRequest is the prompt a natural-language `/heartbeat <request>`
+// becomes: the agent interprets it and applies it with the heartbeat tool.
+func AgentRequest(request, status string) string {
+	return fmt.Sprintf(`Your human ran /heartbeat with a request in their own words:
+
+%s
+
+Set up the heartbeat to match it with the heartbeat tool. Change only what they asked for. Times in the tool are UTC: convert any other time zone they name, and ask if you can't tell which one they mean. If they say what the heartbeat should check or do, put that in the agenda file (create it if it doesn't exist); beats with an empty agenda are skipped. Then reply in a few lines with the resulting schedule, in their time zone as well as UTC when they used one, and what's on the agenda.
+
+Current heartbeat:
+%s`, strings.TrimSpace(request), status)
 }
 
 func shortDuration(d time.Duration) string {

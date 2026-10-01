@@ -39,7 +39,7 @@ registered in this process. The identity lock that already guarantees one
 adapter per identity across processes therefore also guarantees one scheduler
 per heartbeat, with no second leader election.
 
-### D3. State lives in the database; `/heartbeat` is the only writer
+### D3. State lives in the database; the bridge is the only writer
 
 A `bridge_heartbeats` row holds the state (`unset` | `on` | `off`), the tuning
 (`every_seconds`, active window as minutes after UTC midnight, `weekdays_only`,
@@ -47,7 +47,9 @@ A `bridge_heartbeats` row holds the state (`unset` | `on` | `off`), the tuning
 `last_status`, `last_error`, `reminded_at`). Defaults (hourly, all hours, every
 day, the agent's own model, `HEARTBEAT.md`) are code constants, applied when a
 column is NULL. There is no `.opencode.json` block: the human configures the
-heartbeat from the chat, and the setting survives redeploys.
+heartbeat from the chat, and the setting survives redeploys. Both the exact
+`/heartbeat` form and the agent's `heartbeat` tool go through the same
+`applyHeartbeat`, so validation lives in one place (`heartbeat.ParseCommand`).
 
 ### D4. Scheduling
 
@@ -59,11 +61,12 @@ heartbeat from the chat, and the setting survives redeploys.
   first, and a beat never waits in the queue behind one.
 - **Coalescing.** When a beat fires, `next_beat_at` is computed from *now*, not
   from the missed due time, so any number of missed beats becomes exactly one.
-- **Active window.** `next_beat_at` is the first slot on the interval grid at
-  or after now that falls inside the window. The grid is anchored at 00:00 UTC
-  (so `every 1h` beats on the hour, `every 30m` on :00 and :30). Hours are
+- **Active window.** `next_beat_at` is the first slot at or after now. Each
+  day's slots start at the window start (00:00 UTC without a window) and repeat
+  every interval while inside it, so `every 24h hours 07-08` is a daily 07:00
+  beat and `every 2h hours 07:30-21` beats at 07:30, 09:30, …. Hours are
   `[start, end)` in UTC and may wrap midnight (`hours 22-06`). `days weekdays`
-  excludes Saturday and Sunday (UTC).
+  excludes windows that start on Saturday or Sunday (UTC).
 - **On `on`** the first beat is the next slot. `/heartbeat now` fires one beat
   immediately (still deferring when busy) without changing the schedule.
 
@@ -107,7 +110,33 @@ of repeats. Placeholder bindings with an empty session (bound but never talked
 to) are skipped. `on` and `off` both end the reminders for good; tuning settings
 alone does not.
 
-### D8. Daemon mode only
+### D8. Natural language through the agent
+
+People describe schedules ("every half hour on weekdays, 7 to 23 Oslo time")
+and checks ("keep an eye on my merge requests") in their own words, so a rigid
+grammar fails them. `/heartbeat <args>` is therefore handled in two tiers:
+
+- **Exact form.** If `heartbeat.ParseCommand` accepts the arguments, the bridge
+  applies them itself. A bare `/heartbeat`, `on` and `off` stay instant and cost
+  no model call, which matters on a large session.
+- **Natural language.** Otherwise the command handler returns nothing and the
+  inbound is rewritten to a prompt (`heartbeat.AgentRequest`) carrying the
+  request and the current status. It runs as an ordinary human turn. The agent
+  maps it to the `heartbeat` tool's typed settings, converting times to UTC
+  (and asking when the zone is unclear), and writes any checks into the agenda
+  file with its file tools.
+
+The `heartbeat` tool takes typed, optional fields (`state`, `every`, `hours`,
+`days`, `model`, `file`, `now`) and renders them into the exact grammar, so the
+tool and the command share one parser. It acts on every chat binding of the
+calling session. It is a manager tool and default-deny like the cron tools:
+an agent opts in with `"heartbeat": true`. The bridge handle is resolved at
+call time, because `serve` installs it after the primary agents' tool sets are
+built. If the active agent does not have the tool, a natural-language request
+is refused with the exact grammar instead of being sent to an agent that
+cannot carry it out.
+
+### D9. Daemon mode only
 
 `Dependencies.Heartbeat` is set by `serve` only when it runs neither `--flow`
 nor `--pool-mode`. With it unset there is no scheduler, no reminder, and

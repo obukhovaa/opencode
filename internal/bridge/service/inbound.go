@@ -99,6 +99,11 @@ func (s *Service) dispatchInbound(ctx context.Context, in bridge.Inbound) {
 			s.replyToPeerWithHint(ctx, in.Peer, reply)
 			return
 		}
+		// A /heartbeat the exact grammar could not parse is natural
+		// language: the agent carries it out with the heartbeat tool.
+		if in.Command == "heartbeat" && s.HeartbeatsEnabled() {
+			in.Text = s.heartbeatAgentRequest(ctx, in)
+		}
 	}
 
 	binding, err := s.resolveBinding(ctx, in.Peer)

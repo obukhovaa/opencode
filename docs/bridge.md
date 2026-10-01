@@ -318,7 +318,19 @@ Any non-command message is forwarded as a prompt.
 
 In daemon mode (`opencode serve` without `--flow` or `--pool-mode`) a chat can give its agent a heartbeat: on a schedule the bridge wakes the bound session with a heartbeat turn, the agent works through its agenda file, and only what is new reaches the chat.
 
-**It is off until someone in the chat turns it on.** When a daemon starts and a chat has never chosen, the bridge posts a short setup reminder there, at most once every seven days. `/heartbeat on` or `/heartbeat off` ends the reminders.
+**It is off until someone in the chat turns it on.** When a daemon starts and a chat has never chosen, the bridge posts a short setup reminder there, at most once every seven days. Turning it on or off ends the reminders.
+
+**Describe it in your own words.** Anything after `/heartbeat` that is not the exact form below goes to the agent, which sets it up with the `heartbeat` tool and writes what to check into the agenda file:
+
+```
+/heartbeat every half hour on weekdays, 7 to 23 Oslo time, and keep an eye on my open merge requests
+/heartbeat once a day at 9 my time, summarise what changed in my tickets
+/heartbeat skip weekends from now on
+```
+
+The agent converts times to UTC and replies with the resulting schedule. This needs the `heartbeat` tool, which is opt-in per agent (`"heartbeat": true` in the agent's `tools`). Without it, only the exact form works.
+
+**The exact form** is handled by the bridge itself, without a model call:
 
 | Command | Effect |
 |---|---|
@@ -336,7 +348,7 @@ Settings combine in one command: `/heartbeat on every 30m hours 05-21 days weekd
 How a beat runs:
 
 - **In the bound session**, through the same dispatcher as a human message, so it never overlaps another run and a reply to its report lands in the same conversation.
-- **On a UTC grid.** `every 1h` beats on the hour, `every 30m` on :00 and :30, within the active hours and days.
+- **On a UTC grid that starts at the active hours.** Each day's beats start at the beginning of the active hours (00:00 UTC without them) and repeat every interval inside them: `every 2h hours 07:30-21` beats at 07:30, 09:30, …; `every 24h hours 07-08` is a daily 07:00 beat.
 - **Busy sessions defer.** A beat that comes due while the agent is working waits until the session is idle. Beats missed while the process was down collapse into one catch-up beat.
 - **An empty agenda skips the beat.** If the agenda file is missing or holds only headings and empty list items, no model call is made.
 - **Quiet.** A heartbeat turn posts no queued-ack, progress card or tool-call cards. If the agent replies `HEARTBEAT_OK`, nothing is posted. Otherwise the reply is posted under a `💓 Heartbeat HH:MMZ` header, and a failed beat posts one line with the reason.

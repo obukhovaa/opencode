@@ -24,6 +24,16 @@
 - [x] 3.6 Weekly setup reminder
 - [x] 3.7 `Dependencies.Heartbeat`, set by `serve` in daemon mode only
 
-## 4. Docs
+## 4. Natural language
 
-- [x] 4.1 Document the heartbeat in the bridge docs
+- [x] 4.1 `heartbeat` tool (`internal/llm/tools`), opt-in manager tool with a
+  late-bound configurer; registration test
+- [x] 4.2 Bridge configurer (`HeartbeatStatus` / `ApplyHeartbeat` per session)
+  sharing `applyHeartbeat` with the command
+- [x] 4.3 `/heartbeat` falls through to the agent when the exact form does not
+  parse; refused with the grammar when the agent lacks the tool
+- [x] 4.4 Slots start at the window start (daily beats at a fixed time)
+
+## 5. Docs
+
+- [x] 5.1 Document the heartbeat in the bridge docs

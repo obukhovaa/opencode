@@ -38,10 +38,14 @@ beats coalesced into one). This change does the same for opencode's daemon mode.
 - **Off until the human turns it on.** Nothing beats until someone in the chat
   runs `/heartbeat on`. The schedule is stored in a new `bridge_heartbeats`
   table, so it survives restarts, redeploys and `/reset`.
-- **`/heartbeat` chat command**, handled by the bridge without a model call:
-  `status` (default), `on`, `off`, `now`, and tuning: `every <duration>`,
-  `hours <HH-HH>|all` (UTC), `days weekdays|all`, `model <id>|default`,
-  `file <path>|default`. Several settings can be given in one command.
+- **`/heartbeat` in natural language.** `/heartbeat every half hour on weekdays,
+  7 to 23 Oslo time, and watch my merge requests` goes to the agent, which applies
+  it with a new opt-in `heartbeat` tool (typed settings, UTC) and writes what to
+  check into the agenda file.
+- **An exact form, without a model call:** `status` (default), `on`, `off`, `now`,
+  and tuning: `every <duration>`, `hours <HH-HH>|all` (UTC), `days weekdays|all`,
+  `model <id>|default`, `file <path>|default`. Several settings can be given in one
+  command. Anything that does not parse as the exact form is natural language.
 - **A checklist file.** Each beat's prompt tells the agent to read its heartbeat
   file (default `HEARTBEAT.md` in the working directory). A missing or empty
   file skips the beat without a model call.
@@ -78,7 +82,9 @@ beats coalesced into one). This change does the same for opencode's daemon mode.
 
 - New package `internal/heartbeat` (settings, schedule, command parsing, prompt).
 - `internal/bridge/service`: heartbeat scheduler, `/heartbeat` command, reminder,
-  quiet rendering for heartbeat turns.
+  quiet rendering for heartbeat turns, the configurer behind the tool.
+- `internal/llm/tools` and `internal/llm/agent`: the `heartbeat` tool, opt-in like
+  the cron tools, with a late-bound bridge handle.
 - `internal/bridge/store` and `internal/db`: `bridge_heartbeats` table (SQLite and
   MySQL migrations, sqlc queries).
 - `cmd/serve.go`: enables the heartbeat only for daemon mode.

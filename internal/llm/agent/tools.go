@@ -59,6 +59,7 @@ var (
 		tools.CronListToolName,
 		tools.TodoWriteToolName,
 		tools.RouterSendToolName,
+		tools.HeartbeatToolName,
 	}
 )
 
@@ -206,6 +207,10 @@ func NewToolSet(
 				Cfg:       cfg,
 				MediaRoot: mediaRoot,
 			})
+		case tools.HeartbeatToolName:
+			// Late-bound: the bridge installs the configurer after the
+			// primary agents' tool sets are built.
+			return tools.NewHeartbeatTool(factory.HeartbeatConfigurer)
 		default:
 			return nil
 		}
@@ -241,9 +246,12 @@ func NewToolSet(
 		// Cron tools are default-deny: an agent must opt in by setting the
 		// tool to true in its config. Without this hivemind would inherit
 		// "enabled" for any tool not explicitly listed in its Tools map.
+		// The heartbeat tool changes a chat's schedule, so it is opt-in
+		// the same way.
 		isCronTool := name == tools.CronCreateToolName ||
 			name == tools.CronDeleteToolName ||
-			name == tools.CronListToolName
+			name == tools.CronListToolName ||
+			name == tools.HeartbeatToolName
 
 		var enabled bool
 		if isCronTool {
