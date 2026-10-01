@@ -44,11 +44,34 @@ type heartbeatStubAgent struct {
 	// as when another actor holds the session.
 	busyRuns int
 	// holdBeats holds every heartbeat run open until Cancel, which ends
-	// it the way the agent ends a cancelled run.
+	// it with cancelled: one of the ways the agent ends a cancelled run
+	// (heldBeatCancels), streamCancelled when unset.
 	holdBeats bool
+	cancelled agentpkg.AgentEvent
 	held      chan struct{}
 	cancels   int
 }
+
+// The agent ends a run cancelled while the model streams with an error,
+// and one cancelled while a tool runs with a response that carries the
+// text the model wrote before the tool call and a canceled finish.
+var (
+	streamCancelled = agentpkg.AgentEvent{Type: agentpkg.AgentEventTypeError, Error: agentpkg.ErrRequestCancelled}
+	toolCancelled   = agentpkg.AgentEvent{
+		Type: agentpkg.AgentEventTypeResponse,
+		Message: message.Message{Parts: []message.ContentPart{
+			message.TextContent{Text: "Let me check CI."},
+			message.Finish{Reason: message.FinishReasonCanceled},
+		}},
+	}
+	heldBeatCancels = []struct {
+		name string
+		ev   agentpkg.AgentEvent
+	}{
+		{"while the model streams", streamCancelled},
+		{"while a tool runs", toolCancelled},
+	}
+)
 
 func (a *heartbeatStubAgent) ResolvedTools() ([]tools.BaseTool, bool) {
 	if a.noHeartbeatTool {
@@ -67,6 +90,10 @@ func (a *heartbeatStubAgent) Run(_ context.Context, _, content string, _ int, _ 
 	a.prompts = append(a.prompts, content)
 	reply, runErr, delay := a.reply, a.runErr, a.delay
 	var held chan struct{}
+	cancelled := a.cancelled
+	if cancelled.Type == "" {
+		cancelled = streamCancelled
+	}
 	if a.holdBeats && strings.HasPrefix(content, "[Heartbeat") {
 		a.held = make(chan struct{})
 		held = a.held
@@ -76,7 +103,7 @@ func (a *heartbeatStubAgent) Run(_ context.Context, _, content string, _ int, _ 
 	if held != nil {
 		go func() {
 			<-held
-			ch <- agentpkg.AgentEvent{Type: agentpkg.AgentEventTypeError, Error: agentpkg.ErrRequestCancelled}
+			ch <- cancelled
 			close(ch)
 		}()
 		return ch, nil
@@ -786,32 +813,72 @@ func TestHeartbeatLateBeatOutsideActiveHoursMovesOn(t *testing.T) {
 // TestHeartbeatMessagePreemptsBeat: a human message that arrives while a
 // beat runs cancels the beat, so the human is answered right away. The
 // cancelled beat posts nothing, no failure line, and its slot is not
-// handed back.
+// handed back. The beat may be cancelled while the model streams or while
+// a tool runs.
 func TestHeartbeatMessagePreemptsBeat(t *testing.T) {
-	h := newHeartbeatHarness(t)
-	h.useRunLoop(t)
-	h.writeAgenda(t, "- Check CI\n")
-	h.ag.holdBeats = true
-	h.ag.reply = "hello back"
-	h.command(t, "on")
-	ctx := context.Background()
+	for _, tc := range heldBeatCancels {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHeartbeatHarness(t)
+			h.useRunLoop(t)
+			h.writeAgenda(t, "- Check CI\n")
+			h.ag.holdBeats = true
+			h.ag.cancelled = tc.ev
+			h.ag.reply = "hello back"
+			h.command(t, "on")
+			ctx := context.Background()
 
-	h.svc.heartbeatTick(ctx)
-	next := h.row(t).NextBeatAt
-	waitFor(t, "the beat's run", func() bool { return len(h.ag.runs()) == 1 })
+			h.svc.heartbeatTick(ctx)
+			next := h.row(t).NextBeatAt
+			waitFor(t, "the beat's run", func() bool { return len(h.ag.runs()) == 1 })
 
-	h.svc.dispatchInbound(ctx, bridge.Inbound{Peer: h.peer, Text: "are you there?"})
-	waitFor(t, "the reply to the message", func() bool { return len(h.sentTexts()) > 0 })
-	time.Sleep(50 * time.Millisecond)
-	if sent := h.sentTexts(); len(sent) != 1 || sent[0] != "hello back" {
-		t.Fatalf("posts %q, want only the reply to the message", sent)
+			h.svc.dispatchInbound(ctx, bridge.Inbound{Peer: h.peer, Text: "are you there?"})
+			waitFor(t, "the reply to the message", func() bool { return len(h.sentTexts()) > 0 })
+			time.Sleep(50 * time.Millisecond)
+			if sent := h.sentTexts(); len(sent) != 1 || sent[0] != "hello back" {
+				t.Fatalf("posts %q, want only the reply to the message", sent)
+			}
+			r := h.row(t)
+			if r.LastStatus != heartbeat.OutcomeSkipped || r.LastError != heartbeatPreemptedReason {
+				t.Fatalf("beat outcome %q (%q)", r.LastStatus, r.LastError)
+			}
+			if !r.NextBeatAt.Equal(next) {
+				t.Fatalf("next beat moved from %s to %s", next, r.NextBeatAt)
+			}
+		})
 	}
-	r := h.row(t)
-	if r.LastStatus != heartbeat.OutcomeSkipped || r.LastError != heartbeatPreemptedReason {
-		t.Fatalf("beat outcome %q (%q)", r.LastStatus, r.LastError)
-	}
-	if !r.NextBeatAt.Equal(next) {
-		t.Fatalf("next beat moved from %s to %s", next, r.NextBeatAt)
+}
+
+// TestHeartbeatAbortedBeatPostsNothing: a beat cancelled by /abort, with
+// no message waiting, posts nothing and is recorded as skipped, not as a
+// failure.
+func TestHeartbeatAbortedBeatPostsNothing(t *testing.T) {
+	for _, tc := range heldBeatCancels {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHeartbeatHarness(t)
+			h.writeAgenda(t, "- Check CI\n")
+			h.ag.holdBeats = true
+			h.ag.cancelled = tc.ev
+			h.command(t, "on")
+			ctx := context.Background()
+
+			h.svc.heartbeatTick(ctx)
+			in := <-h.disp.inbound
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				h.disp.handleInbound(ctx, in)
+			}()
+			waitFor(t, "the beat's run", func() bool { return len(h.ag.runs()) == 1 })
+
+			h.ag.Cancel("S1")
+			<-done
+			if sent := h.sentTexts(); len(sent) != 0 {
+				t.Fatalf("an aborted beat posted %q", sent)
+			}
+			if r := h.row(t); r.LastStatus != heartbeat.OutcomeSkipped || r.LastError != "cancelled" {
+				t.Fatalf("beat outcome %q (%q)", r.LastStatus, r.LastError)
+			}
+		})
 	}
 }
 

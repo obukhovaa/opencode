@@ -60,3 +60,5 @@
 - [x] 6.13 `/heartbeat model` requires a configured, enabled provider
 - [x] 6.14 `chat-bridge` delta: heartbeat exceptions to tool-transition status
   and the intermediate text relay; cost and DST notes in the docs
+- [x] 6.15 A beat the agent ends with a `canceled` finish (cancelled while a
+  tool runs) is a cancellation: it posts nothing and is recorded as skipped

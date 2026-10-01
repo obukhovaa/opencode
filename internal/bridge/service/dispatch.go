@@ -589,6 +589,13 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 // a silent acknowledgement, the reply under a heartbeat header otherwise,
 // one failure line for an error.
 func (d *sessionDispatch) handleHeartbeatTerminal(ctx context.Context, peer bridge.PeerRef, hb *bridge.HeartbeatTurn, ev agent.AgentEvent) {
+	if ev.Type == agent.AgentEventTypeResponse && ev.Message.FinishReason() == message.FinishReasonCanceled {
+		// Cancelled while a tool ran: the agent ends the run with a
+		// response, not an error, carrying the text the model wrote
+		// before the tool call. It is a cancellation all the same.
+		d.finishHeartbeat(ctx, peer, hb, "", agent.ErrRequestCancelled)
+		return
+	}
 	switch ev.Type {
 	case agent.AgentEventTypeSummarize:
 		return

@@ -162,12 +162,22 @@ While a heartbeat turn runs, the bridge SHALL NOT post a queued acknowledgement,
 
 ### Requirement: A message preempts a running beat
 
-When a human message is queued on a session whose heartbeat turn is in flight, the bridge SHALL cancel the beat's run, on the agent instance the beat runs on, so the message is handled without waiting for the beat. A beat that has not started its run yet SHALL NOT start. A beat cancelled this way SHALL post nothing and SHALL be recorded as `skipped` with the reason `preempted by a message`, and its `next_beat_at` SHALL NOT move back. A beat cancelled in any other way (for example `/abort`) SHALL NOT post the failure line either. Cancelling SHALL NOT stop another actor's run on the session.
+When a human message is queued on a session whose heartbeat turn is in flight, the bridge SHALL cancel the beat's run, on the agent instance the beat runs on, so the message is handled without waiting for the beat. A beat that has not started its run yet SHALL NOT start. A beat cancelled this way SHALL post nothing and SHALL be recorded as `skipped` with the reason `preempted by a message`, and its `next_beat_at` SHALL NOT move back. A beat cancelled in any other way (for example `/abort`) SHALL NOT post the failure line either, and SHALL be recorded as `skipped` with the reason `cancelled`. A run the agent ends with a `canceled` finish SHALL count as cancelled even when it ends with a response carrying text, as a run cancelled while a tool runs does, and that text SHALL NOT be posted. Cancelling SHALL NOT stop another actor's run on the session.
 
 #### Scenario: Message during a beat
 
 - **WHEN** a human sends a message while a beat is running
 - **THEN** the beat is cancelled, nothing is posted for it, the message is answered, and `/heartbeat status` shows the last beat as skipped, preempted by a message
+
+#### Scenario: Message while a beat's tool runs
+
+- **WHEN** a human sends a message while a beat's tool call runs, after the model wrote "Let me check CI."
+- **THEN** the beat ends with a `canceled` finish, "Let me check CI." is not posted, and the beat is recorded as skipped, preempted by a message
+
+#### Scenario: Beat aborted
+
+- **WHEN** a peer runs `/abort` while a beat is running
+- **THEN** nothing is posted for the beat and it is recorded as skipped, cancelled
 
 ### Requirement: A model override is optional
 

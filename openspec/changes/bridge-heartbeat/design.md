@@ -143,7 +143,10 @@ beat must still render, and a late event of the beat must stay quiet after it.
 - a terminal error posts one line, `💓 Heartbeat HH:MMZ failed: <reason>`
   (`last_status = error`, `last_error` set). Unlike cron, a failed beat is not
   silent. A cancellation is not a failure: it posts nothing and is recorded as
-  `skipped`.
+  `skipped`. The agent ends a run cancelled while the model streams with an
+  error, but one cancelled while a tool runs with a response: the text the
+  model wrote before the tool call and a `canceled` finish. That response is a
+  cancellation too, and its text is not posted.
 
 ### D6a. A message preempts a beat
 
