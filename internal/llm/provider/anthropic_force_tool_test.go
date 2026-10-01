@@ -65,8 +65,8 @@ func TestPreparedMessages_ForceStructOutput(t *testing.T) {
 	})
 }
 
-// TestPreparedMessages_ForceStructOutputRejectedByModel: Claude Opus 5.5 and
-// Claude Fable 5.1 answer tool_choice "tool"/"any" with a 400, so the forcing
+// TestPreparedMessages_ForceStructOutputRejectedByModel: Claude Opus 5.5,
+// Claude Sonnet 5.5 and Claude Fable 5.1 answer tool_choice "tool"/"any" with a 400, so the forcing
 // signal must degrade to a normal auto turn on every provider that serves
 // them rather than guarantee a failed request.
 func TestPreparedMessages_ForceStructOutputRejectedByModel(t *testing.T) {
@@ -75,6 +75,10 @@ func TestPreparedMessages_ForceStructOutputRejectedByModel(t *testing.T) {
 		models.BedrockOpus55,
 		models.BedrockEUOpus55,
 		models.VertexAIOpus55,
+		models.Claude55Sonnet,
+		models.BedrockSonnet55,
+		models.BedrockEUSonnet55,
+		models.VertexAISonnet55,
 		models.ClaudeFable51,
 		models.BedrockFable51,
 		models.BedrockEUFable51,
