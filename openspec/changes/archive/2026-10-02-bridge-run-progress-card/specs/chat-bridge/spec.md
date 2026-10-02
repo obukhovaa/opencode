@@ -4,11 +4,25 @@ Delta spec for the `bridge-run-progress-card` change. Restates only the requirem
 that change; unchanged requirements are not repeated. For the full specification see
 `openspec/specs/chat-bridge/spec.md`.
 
+"Per-session typing/reporting indicators" is rebased on the main spec as it stands after
+the `bridge-relay-intermediate-text` and `bridge-heartbeat` changes were archived: it keeps
+their intermediate-text clause and heartbeat exception, and adds this change's progress
+card. The per-call "Tool updates are compact by default, one line per call" requirement is
+REMOVED and replaced by the ADDED progress-card requirement, because its one-line-per-call
+scenarios no longer hold at `compact`.
+
 ## MODIFIED Requirements
 
 ### Requirement: Per-session typing/reporting indicators
 
 The bridge SHALL emit platform-appropriate typing indicators while a run is in flight for a session, and SHALL surface tool-call activity to the chat surface when `cfg.Router.ToolUpdatesEnabled` is true — as one progress card per run at `compact` verbosity, or as one card per tool call at `full`. Indicator emission MUST NOT block the inbound dispatch loop.
+
+A heartbeat turn (see the `bridge-heartbeat` capability) is the exception: the bridge SHALL NOT surface tool-call activity for it — no progress card and no per-call cards — whatever `cfg.Router.ToolUpdatesEnabled` and the verbosity are. Whether a part event belongs to a heartbeat turn SHALL be decided by the run that received it, so a heartbeat run's late event stays quiet and a human run's late event handled while a beat runs is surfaced.
+
+#### Scenario: Tool updates enabled
+
+- **WHEN** `cfg.Router.ToolUpdatesEnabled == true` and a tool transitions from `pending` to `running`
+- **THEN** the bridge reflects the transition on the chat surface — on the run's progress card at `compact`, which names the most recently started unfinished tool, or as a `🔧 <tool>#<id>` per-call card at `full`
 
 #### Scenario: Tool updates enabled at compact
 
@@ -23,7 +37,44 @@ The bridge SHALL emit platform-appropriate typing indicators while a run is in f
 #### Scenario: Tool updates disabled
 
 - **WHEN** `cfg.Router.ToolUpdatesEnabled == false`
-- **THEN** the bridge posts no progress card and no per-call cards, but still emits typing indicators, the final agent reply, and a one-line reason for any failed tool call
+- **THEN** the bridge posts no progress card and no per-call cards, but still emits typing indicators, the intermediate assistant text of a bridge-dispatched run (see "Intermediate assistant text relay"), the final agent reply, and a one-line reason for any failed tool call
+
+#### Scenario: Heartbeat turn
+
+- **WHEN** `cfg.Router.ToolUpdatesEnabled == true` and a tool of a heartbeat turn transitions
+- **THEN** nothing is sent for the transition
+
+### Requirement: Reviewers can switch tool-update verbosity at runtime
+
+The bridge SHALL expose a `/verbosity` chat command that reports the live verbosity and switches it between `compact` and `full`, accepting `verbose` and `debug` as aliases of `full`. The switch SHALL take effect for every bound session without a restart, and SHALL NOT be written back to `.opencode.json` — a reviewer enabling detail to watch one run MUST NOT silently reconfigure the deployment. A restart therefore returns to the configured value. An unknown mode SHALL be rejected with a usage reply and leave the live value unchanged.
+
+#### Scenario: Reviewer asks for detail mid-run
+
+- **WHEN** a reviewer sends `/verbosity full` on a bound peer while a run is in flight
+- **THEN** the bridge replies with the applied mode, and every subsequent tool call in that process — including on other bound sessions — renders a per-call card with argument and result detail until the mode is switched back or the process restarts; a progress card already open for the run keeps counting to its terminal state
+
+#### Scenario: Reviewer lists the modes
+
+- **WHEN** a reviewer sends `/verbosity` with no argument
+- **THEN** the bridge lists `compact` and `full` with one-line descriptions and marks the live one active
+
+#### Scenario: Unknown mode is rejected
+
+- **WHEN** a reviewer sends `/verbosity chatty`
+- **THEN** the bridge replies with the accepted values and the live verbosity is unchanged
+
+## REMOVED Requirements
+
+### Requirement: Tool updates are compact by default, one line per call
+
+**Reason**: At `compact` the bridge no longer posts one line per tool call; it posts one
+progress card per run and edits it in place. The per-call line survives only at `full`.
+
+**Migration**: Replaced by "Compact tool updates are one progress card per run, updated in
+place" (ADDED below), which keeps the rules on arguments, result bodies, failure reasons
+and verbosity resolution, and adds the `verbose` / `debug` aliases of `full`.
+
+## ADDED Requirements
 
 ### Requirement: Compact tool updates are one progress card per run, updated in place
 
@@ -80,27 +131,6 @@ A run that starts at `full` has no card, so a mid-run switch to `compact` leaves
 
 - **WHEN** `router.toolUpdateVerbosity` is `"verbose"` or `"debug"`
 - **THEN** the bridge renders per-call cards with arguments and result bodies, and reports the live level as `full`
-
-### Requirement: Reviewers can switch tool-update verbosity at runtime
-
-The bridge SHALL expose a `/verbosity` chat command that reports the live verbosity and switches it between `compact` and `full`, accepting `verbose` and `debug` as aliases of `full`. The switch SHALL take effect for every bound session without a restart, and SHALL NOT be written back to `.opencode.json` — a reviewer enabling detail to watch one run MUST NOT silently reconfigure the deployment. A restart therefore returns to the configured value. An unknown mode SHALL be rejected with a usage reply and leave the live value unchanged.
-
-#### Scenario: Reviewer asks for detail mid-run
-
-- **WHEN** a reviewer sends `/verbosity full` on a bound peer while a run is in flight
-- **THEN** the bridge replies with the applied mode, and every subsequent tool call in that process — including on other bound sessions — renders a per-call card with argument and result detail until the mode is switched back or the process restarts; a progress card already open for the run keeps counting to its terminal state
-
-#### Scenario: Reviewer lists the modes
-
-- **WHEN** a reviewer sends `/verbosity` with no argument
-- **THEN** the bridge lists `compact` and `full` with one-line descriptions and marks the live one active
-
-#### Scenario: Unknown mode is rejected
-
-- **WHEN** a reviewer sends `/verbosity chatty`
-- **THEN** the bridge replies with the accepted values and the live verbosity is unchanged
-
-## ADDED Requirements
 
 ### Requirement: Optional MessageEditor per-adapter capability
 
