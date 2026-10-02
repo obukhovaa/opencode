@@ -84,6 +84,7 @@ Health snapshot: `curl http://127.0.0.1:3456/router/health` (per-adapter `status
 | `toolUpdatesEnabled` | `bool` | Show tool-call progress in chat. The shape is set by `toolUpdateVerbosity`. Failures surface regardless of this flag. |
 | `toolUpdateVerbosity` | `"compact"` (default) \| `"full"` | `compact` posts **one progress message per run and edits it in place**: `⏳ Thinking...` when the run starts, then `⏳ 5 tool calls done · running bash · 1m12s` as calls complete (real counts, the tool in flight, elapsed time), and a final `✓ Done · 12 tool calls · 3m40s` (or `✗ Run failed · …`) when the run ends. A failed call adds `· 1 failed` and a second line `✗ <tool>#<id> · <reason>`. No per-tool-call messages; arguments and result bodies stay out of chat (they're in the session store and Langfuse). Edits are paced to one every 2s and coalesced. `full` posts one card per tool call — `🔧 <tool>#<id> · <args>` updated in place to `✓ <tool>#<id> · <duration> · <body>` — with the argument summary and a truncated result body; `verbose` and `debug` are accepted as aliases. Unrecognised values fall back to `compact` with a one-shot WARN. Flip it live with `/verbosity`; switching a run from `full` to `compact` mid-run silences calls started after the switch but still closes any tool card already posted. Peers on the `external` relay channel receive no progress card; they still get a failed call's one-line reason as text. |
 | `queueAcknowledgementsEnabled` | `bool` | When `true`, sends an in-place-editable `⏳ queued` acknowledgement to a sender whose message is enqueued behind an in-flight agent run. The ack is edited as the queue drains and resolved to `▶ Processing your message now…` the moment the run starts. Requires 2 seconds of queuing before sending, to avoid a pointless flash for sub-second waits. Default: `false`. All three production adapters (Telegram, Slack, Mattermost) support in-place edit; the external adapter silently skips acks. |
+| `heartbeatReminder` | `bool` | Daemon mode only. When `true` (the default), the bridge posts the weekly [heartbeat](#heartbeat) setup reminder to direct-message chats whose heartbeat was never turned on or off. `false` stops the reminder for every chat of this process; `/heartbeat` and scheduled beats are unaffected. |
 | `channels.{telegram,slack,mattermost,external}` | object | Per-platform configuration; see below. |
 
 ## Per-channel configuration
@@ -308,10 +309,61 @@ Once a peer is bound (manually or via the first inbound), the following commands
 | `/skip` | Dismiss a pending agent question. |
 | `/verbosity` | Show the live tool-update level: `compact` (one progress card per run) or `full` (one card per tool call). |
 | `/verbosity compact\|full` | Switch it for this process (not persisted; restart restores `router.toolUpdateVerbosity`). `verbose` and `debug` mean `full`. |
+| `/heartbeat …` | Show or configure this chat's heartbeat (daemon mode only). See [Heartbeat](#heartbeat). |
 | `/help` | List commands. |
 | `/dir` | Unsupported — one opencode process is pinned to one workspace (returns an explanatory message). |
 
 Any non-command message is forwarded as a prompt.
+
+## Heartbeat
+
+In daemon mode (`opencode serve` without `--flow` or `--pool-mode`) a chat can give its agent a heartbeat: on a schedule the bridge wakes the bound session with a heartbeat turn, the agent works through its agenda file, and only what is new reaches the chat.
+
+**It is off until someone in the chat turns it on.** When a daemon starts and a chat has never chosen, the bridge posts a short setup reminder there, at most once every seven days. Turning it on or off ends the reminders. Only conversations the daemon serves itself are reminded: top-level direct messages (a Slack `D…` channel, a Mattermost DM channel, a private Telegram chat) of a bot whose connection this process owns. Channels, threads (including @-mention threads), flow step and subagent sessions, the `external` relay, and every chat of a bot whose inbound is mediated by the orchestrator (`"inbound": "disabled"`) are never reminded; their bindings can belong to other pods sharing the database. Set `router.heartbeatReminder: false` to turn the reminder off.
+
+**Describe it in your own words.** Anything after `/heartbeat` that is not the exact form below goes to the agent, which sets it up with the `heartbeat` tool and writes what to check into the agenda file:
+
+```
+/heartbeat every half hour on weekdays, 7 to 23 Oslo time, and keep an eye on my open merge requests
+/heartbeat once a day at 9 my time, summarise what changed in my tickets
+/heartbeat skip weekends from now on
+```
+
+The agent converts times to UTC and replies with the resulting schedule. This needs the `heartbeat` tool, which is opt-in per agent (`"heartbeat": true` in the agent's `tools`). Without it, only the exact form works.
+
+**The exact form** is handled by the bridge itself, without a model call:
+
+| Command | Effect |
+|---|---|
+| `/heartbeat` or `/heartbeat status` | State, schedule, model, agenda file, last and next beat. |
+| `/heartbeat on` / `off` | Start or stop the heartbeat. |
+| `/heartbeat now` | Run one beat now, without moving the schedule. Sent while the agent is working (or asked of the `heartbeat` tool, which always runs inside a turn), the beat is queued and runs when the current turn ends. |
+| `/heartbeat every <duration>` | Interval, 10m to 24h. Default `1h`. |
+| `/heartbeat hours <HH-HH>` / `hours all` | Active hours in UTC, start inclusive, end exclusive; `22-06` wraps midnight. Default all day. |
+| `/heartbeat days weekdays` / `days all` | Skip Saturday and Sunday (UTC). Default every day. |
+| `/heartbeat model <id>` / `model default` | Run beats on another model: a supported model whose provider is configured and enabled. A different model cannot reuse the session's prompt cache. |
+| `/heartbeat file <path>` / `file default` | Agenda file, relative to the working directory. Default `HEARTBEAT.md`. |
+
+Settings combine in one command: `/heartbeat on every 30m hours 05-21 days weekdays`. They are stored in the database, so they survive restarts, redeploys and `/reset`.
+
+How a beat runs:
+
+- **In the bound session**, through the same dispatcher as a human message, so it never overlaps another run and a reply to its report lands in the same conversation.
+- **On a UTC grid that starts at the active hours.** Each day's beats start at the beginning of the active hours (00:00 UTC without them) and repeat every interval inside them: `every 2h hours 07:30-21` beats at 07:30, 09:30, …; `every 24h hours 07-08` is a daily 07:00 beat.
+- **Busy sessions defer.** A beat that comes due while the agent is working, while a message is queued, or while an interactive flow step owns the session waits until the session is idle. Beats missed while the process was down collapse into one catch-up beat.
+- **Late beats respect the active hours.** A catch-up or held-back beat fires only inside the active hours on an active day. Otherwise it moves to the next allowed slot: after an overnight redeploy with `hours 07-23`, the next beat is at 07:00Z, not at 03:00Z.
+- **Messages come first.** A message that arrives while a beat runs cancels the beat, so the human is answered right away. The cancelled beat posts nothing, not even text the agent wrote before the cancel landed (mid tool call, say), and is recorded as skipped (`preempted by a message`); the next beat stays on schedule. A beat cancelled by `/abort` posts nothing either and is recorded as skipped (`cancelled`), not as a failure.
+- **An empty agenda skips the beat.** If the agenda file is missing or holds only headings and empty list items, no model call is made. When scheduled beats start being skipped for a reason (for example a redeploy wiped the working directory and `HEARTBEAT.md` with it), the chat gets one `💓 Heartbeat HH:MMZ skipped: <why>` notice; later skips for the same reason stay silent.
+- **One beat per session.** A session bound to several chats gets one beat per slot, and its report reaches every bound chat, like any reply.
+- **Quiet.** A heartbeat turn posts no queued-ack, progress card, tool-call cards or intermediate text. If the agent replies `HEARTBEAT_OK`, nothing is posted. Otherwise the reply is posted under a `💓 Heartbeat HH:MMZ` header, and a failed beat posts one line with the reason. A late tool event of the human turn before a beat still reaches the chat.
+
+**Only the process that owns the bot schedules beats.** Scheduled beats run only for chats of an adapter that is inbound-active in this process, i.e. that holds the bot's own connection and its identity lock. A daemon whose bots are all mediated by the orchestrator (`"inbound": "disabled"`, as c2-agent's default Slack and Mattermost apps are) gets no scheduled beats and no reminder; `/heartbeat on` there says so, and `/heartbeat now` still works. Several processes can hold a mediated identity at once, so none of them may fire its rows.
+
+**Windows are UTC and do not follow daylight saving time.** `hours 07-23` is 07:00 to 23:00 UTC all year, so in a zone with DST the local times move by an hour twice a year. Ask the agent to shift the hours (`/heartbeat move the hours an hour earlier`) when the clocks change.
+
+The agenda file is the agent's standing instructions for heartbeats: what to check and how to report it. The agent can edit it when its human gives it a new standing instruction. On a daemon whose working directory is not persisted, a redeploy removes it; the skip notice above is the cue to set it up again.
+
+**Cost.** Each beat is a turn in the main session: it re-reads the whole conversation (from the prompt cache when the beat uses the session's own model and the cache is still warm; at full price on another model), and adds its turn to the context. Auto-compaction (when `autoCompact` is on) applies to beats as to any turn. The empty-agenda skip, the silent reply and the active hours are what keep that cost down.
 
 ## In-process agent tool: `router_send`
 
@@ -397,10 +449,11 @@ Its other identities continue running normally — the lock is per-identity, not
 
 ## Storage
 
-Two new tables on both providers (SQLite + MySQL), keyed by `(project_id, channel, identity_id, peer_id)`:
+Bridge tables on both providers (SQLite + MySQL), keyed by `(project_id, channel, identity_id, peer_id)`:
 
 - `bridge_sessions` — many-to-one peer→session mapping with `session_id` FK to `sessions(id) ON DELETE SET NULL`, plus `mention_handle` (per-peer ping handle for first-message attribution) and `mention_consumed_at` (timestamp set after first delivery; reset on re-bind).
 - `bridge_allowlist` — per-identity peer allowlist (Telegram private-mode pairing).
+- `bridge_heartbeats` — per-binding heartbeat state, schedule settings, next/last beat and the last setup reminder (`20261001130000_add_bridge_heartbeats.sql`).
 
 Migrations live in `internal/db/migrations/{sqlite,mysql}/20260609120000_add_bridge_tables.sql`. MySQL column widths are sized so the compound PK fits within InnoDB's 3072-byte key-length cap under utf8mb4.
 

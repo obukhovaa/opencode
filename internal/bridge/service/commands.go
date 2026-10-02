@@ -50,6 +50,7 @@ func (s *Service) ChatCommands() map[string]CommandHandler {
 		"rename":    s.cmdRename,
 		"compact":   s.cmdCompact,
 		"crons":     s.cmdCrons,
+		"heartbeat": s.cmdHeartbeat,
 		"reset":     s.cmdReset,
 		"new":       s.cmdReset, // alias of /reset, matching the TUI's /new
 		"abort":     s.cmdAbort,
@@ -696,6 +697,7 @@ func (s *Service) helpEntriesForChannel(channel string) []helpEntry {
 		{Cmd: "/rename <new title>", Desc: "rename the current session"},
 		{Cmd: "/compact", Desc: "summarize the current session to shrink its context"},
 		{Cmd: "/crons", Desc: "list active scheduled cron jobs (★ = current session)"},
+		{Cmd: "/heartbeat [on|off|now|…]", Desc: "show or set this chat's heartbeat (scheduled check-ins)"},
 		{Cmd: "/reset", Desc: "forget this binding; next message starts fresh"},
 		{Cmd: "/new", Desc: "alias of /reset"},
 		{Cmd: "/abort", Desc: "cancel an in-flight run on the current session"},

@@ -364,6 +364,10 @@ func (f *stubAgentFactory) BridgeSender() (tools.BridgeSender, *bridge.Config, s
 	return nil, nil, ""
 }
 
+func (f *stubAgentFactory) SetHeartbeatConfigurer(_ tools.HeartbeatConfigurer) {}
+
+func (f *stubAgentFactory) HeartbeatConfigurer() tools.HeartbeatConfigurer { return nil }
+
 func (f *stubAgentFactory) SetHookRegistry(_ *hooks.Registry) {}
 
 func (f *stubAgentFactory) HookRegistry() *hooks.Registry { return nil }

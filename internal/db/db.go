@@ -90,6 +90,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.deleteSessionTreeStmt, err = db.PrepareContext(ctx, deleteSessionTree); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteSessionTree: %w", err)
 	}
+	if q.getBridgeHeartbeatStmt, err = db.PrepareContext(ctx, getBridgeHeartbeat); err != nil {
+		return nil, fmt.Errorf("error preparing query GetBridgeHeartbeat: %w", err)
+	}
 	if q.getBridgeSessionStmt, err = db.PrepareContext(ctx, getBridgeSession); err != nil {
 		return nil, fmt.Errorf("error preparing query GetBridgeSession: %w", err)
 	}
@@ -125,6 +128,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.listBridgeAllowlistStmt, err = db.PrepareContext(ctx, listBridgeAllowlist); err != nil {
 		return nil, fmt.Errorf("error preparing query ListBridgeAllowlist: %w", err)
+	}
+	if q.listBridgeHeartbeatsStmt, err = db.PrepareContext(ctx, listBridgeHeartbeats); err != nil {
+		return nil, fmt.Errorf("error preparing query ListBridgeHeartbeats: %w", err)
 	}
 	if q.listBridgeSessionsByIdentityStmt, err = db.PrepareContext(ctx, listBridgeSessionsByIdentity); err != nil {
 		return nil, fmt.Errorf("error preparing query ListBridgeSessionsByIdentity: %w", err)
@@ -218,6 +224,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.updateSessionStmt, err = db.PrepareContext(ctx, updateSession); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateSession: %w", err)
+	}
+	if q.upsertBridgeHeartbeatStmt, err = db.PrepareContext(ctx, upsertBridgeHeartbeat); err != nil {
+		return nil, fmt.Errorf("error preparing query UpsertBridgeHeartbeat: %w", err)
 	}
 	if q.upsertBridgeSessionStmt, err = db.PrepareContext(ctx, upsertBridgeSession); err != nil {
 		return nil, fmt.Errorf("error preparing query UpsertBridgeSession: %w", err)
@@ -340,6 +349,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing deleteSessionTreeStmt: %w", cerr)
 		}
 	}
+	if q.getBridgeHeartbeatStmt != nil {
+		if cerr := q.getBridgeHeartbeatStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getBridgeHeartbeatStmt: %w", cerr)
+		}
+	}
 	if q.getBridgeSessionStmt != nil {
 		if cerr := q.getBridgeSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getBridgeSessionStmt: %w", cerr)
@@ -398,6 +412,11 @@ func (q *Queries) Close() error {
 	if q.listBridgeAllowlistStmt != nil {
 		if cerr := q.listBridgeAllowlistStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listBridgeAllowlistStmt: %w", cerr)
+		}
+	}
+	if q.listBridgeHeartbeatsStmt != nil {
+		if cerr := q.listBridgeHeartbeatsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listBridgeHeartbeatsStmt: %w", cerr)
 		}
 	}
 	if q.listBridgeSessionsByIdentityStmt != nil {
@@ -555,6 +574,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing updateSessionStmt: %w", cerr)
 		}
 	}
+	if q.upsertBridgeHeartbeatStmt != nil {
+		if cerr := q.upsertBridgeHeartbeatStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing upsertBridgeHeartbeatStmt: %w", cerr)
+		}
+	}
 	if q.upsertBridgeSessionStmt != nil {
 		if cerr := q.upsertBridgeSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing upsertBridgeSessionStmt: %w", cerr)
@@ -626,6 +650,7 @@ type Queries struct {
 	deleteSessionFilesStmt               *sql.Stmt
 	deleteSessionMessagesStmt            *sql.Stmt
 	deleteSessionTreeStmt                *sql.Stmt
+	getBridgeHeartbeatStmt               *sql.Stmt
 	getBridgeSessionStmt                 *sql.Stmt
 	getCronJobStmt                       *sql.Stmt
 	getFileStmt                          *sql.Stmt
@@ -638,6 +663,7 @@ type Queries struct {
 	isBridgeAllowlistedStmt              *sql.Stmt
 	listActiveCronJobsStmt               *sql.Stmt
 	listBridgeAllowlistStmt              *sql.Stmt
+	listBridgeHeartbeatsStmt             *sql.Stmt
 	listBridgeSessionsByIdentityStmt     *sql.Stmt
 	listBridgeSessionsBySessionStmt      *sql.Stmt
 	listChildSessionsStmt                *sql.Stmt
@@ -669,6 +695,7 @@ type Queries struct {
 	updateFlowStateStmt                  *sql.Stmt
 	updateMessageStmt                    *sql.Stmt
 	updateSessionStmt                    *sql.Stmt
+	upsertBridgeHeartbeatStmt            *sql.Stmt
 	upsertBridgeSessionStmt              *sql.Stmt
 	upsertRecapStmt                      *sql.Stmt
 }
@@ -699,6 +726,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		deleteSessionFilesStmt:               q.deleteSessionFilesStmt,
 		deleteSessionMessagesStmt:            q.deleteSessionMessagesStmt,
 		deleteSessionTreeStmt:                q.deleteSessionTreeStmt,
+		getBridgeHeartbeatStmt:               q.getBridgeHeartbeatStmt,
 		getBridgeSessionStmt:                 q.getBridgeSessionStmt,
 		getCronJobStmt:                       q.getCronJobStmt,
 		getFileStmt:                          q.getFileStmt,
@@ -711,6 +739,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		isBridgeAllowlistedStmt:              q.isBridgeAllowlistedStmt,
 		listActiveCronJobsStmt:               q.listActiveCronJobsStmt,
 		listBridgeAllowlistStmt:              q.listBridgeAllowlistStmt,
+		listBridgeHeartbeatsStmt:             q.listBridgeHeartbeatsStmt,
 		listBridgeSessionsByIdentityStmt:     q.listBridgeSessionsByIdentityStmt,
 		listBridgeSessionsBySessionStmt:      q.listBridgeSessionsBySessionStmt,
 		listChildSessionsStmt:                q.listChildSessionsStmt,
@@ -742,6 +771,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		updateFlowStateStmt:                  q.updateFlowStateStmt,
 		updateMessageStmt:                    q.updateMessageStmt,
 		updateSessionStmt:                    q.updateSessionStmt,
+		upsertBridgeHeartbeatStmt:            q.upsertBridgeHeartbeatStmt,
 		upsertBridgeSessionStmt:              q.upsertBridgeSessionStmt,
 		upsertRecapStmt:                      q.upsertRecapStmt,
 	}

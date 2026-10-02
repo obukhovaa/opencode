@@ -106,6 +106,14 @@ type AgentFactory interface {
 	// registration.
 	BridgeSender() (tools.BridgeSender, *bridge.Config, string)
 
+	// SetHeartbeatConfigurer installs the chat-bridge handle the heartbeat
+	// tool calls into (daemon mode only). The tool resolves it at call
+	// time, so agents built before this call — the primary agents — still
+	// reach it.
+	SetHeartbeatConfigurer(c tools.HeartbeatConfigurer)
+	// HeartbeatConfigurer returns the installed handle, or nil.
+	HeartbeatConfigurer() tools.HeartbeatConfigurer
+
 	// SetHookRegistry installs the hook runtime that fires PreToolUse /
 	// PostToolUse subprocess hooks around tool dispatch. nil disables
 	// hooks entirely (the agent loop behaves as if hooks were absent).
@@ -135,6 +143,8 @@ type agentFactory struct {
 	bridgeSender    tools.BridgeSender
 	bridgeCfg       *bridge.Config
 	bridgeMediaRoot string
+
+	heartbeatConfigurer tools.HeartbeatConfigurer
 
 	hookRegistry *hooks.Registry
 
@@ -175,6 +185,20 @@ func (f *agentFactory) BridgeSender() (tools.BridgeSender, *bridge.Config, strin
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.bridgeSender, f.bridgeCfg, f.bridgeMediaRoot
+}
+
+// SetHeartbeatConfigurer installs the heartbeat tool's bridge handle.
+func (f *agentFactory) SetHeartbeatConfigurer(c tools.HeartbeatConfigurer) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.heartbeatConfigurer = c
+}
+
+// HeartbeatConfigurer returns the heartbeat tool's bridge handle, or nil.
+func (f *agentFactory) HeartbeatConfigurer() tools.HeartbeatConfigurer {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.heartbeatConfigurer
 }
 
 func NewAgentFactory(

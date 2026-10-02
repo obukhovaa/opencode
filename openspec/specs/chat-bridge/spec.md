@@ -250,6 +250,8 @@ The bridge SHALL recognize the FILE: outbound convention in agent messages and r
 
 The bridge SHALL emit platform-appropriate typing indicators while a run is in flight for a session, and SHALL surface tool-transition status (`[tool] pending|running|completed`) to the chat surface when `cfg.Router.ToolUpdatesEnabled` is true. Indicator emission MUST NOT block the inbound dispatch loop.
 
+A heartbeat turn (see the `bridge-heartbeat` capability) is the exception: the bridge SHALL NOT surface tool-transition status for it, whatever `cfg.Router.ToolUpdatesEnabled` and the verbosity are. Whether a part event belongs to a heartbeat turn SHALL be decided by the run that received it, so a heartbeat run's late event stays quiet and a human run's late event handled while a beat runs is surfaced.
+
 #### Scenario: Tool updates enabled
 
 - **WHEN** `cfg.Router.ToolUpdatesEnabled == true` and a tool transitions from `pending` to `running`
@@ -259,6 +261,11 @@ The bridge SHALL emit platform-appropriate typing indicators while a run is in f
 
 - **WHEN** `cfg.Router.ToolUpdatesEnabled == false`
 - **THEN** the bridge suppresses per-tool transition messages but still emits typing indicators, the intermediate assistant text of a bridge-dispatched run (see "Intermediate assistant text relay") and the final agent reply
+
+#### Scenario: Heartbeat turn
+
+- **WHEN** `cfg.Router.ToolUpdatesEnabled == true` and a tool of a heartbeat turn transitions
+- **THEN** nothing is sent for the transition
 
 ### Requirement: Tool updates are compact by default, one line per call
 
@@ -377,6 +384,11 @@ the run started — by another actor's run that held the session while the bridg
 waited for it — SHALL NOT be relayed. A part SHALL be checked against the run that
 received it, even when it is handled after that run ended.
 
+A heartbeat turn (see the `bridge-heartbeat` capability) SHALL NOT have its
+intermediate text relayed: only its final reply, under the heartbeat header, or its
+one-line failure reaches the chat. As above, a part SHALL be checked against the run
+that received it.
+
 Each assistant message SHALL be posted at most once per run, whichever of the
 terminal path, the intermediate path or the question flush reaches it first. The
 terminal reply SHALL carry no header. Before posting it, the bridge SHALL wait for
@@ -444,6 +456,11 @@ rendered.
 
 - **WHEN** the terminal reply is ready while an intermediate post of the same run is still being sent
 - **THEN** the terminal reply is posted after that post returns, or after 5 seconds
+
+#### Scenario: Heartbeat turn
+
+- **WHEN** an assistant message of a heartbeat turn ends in `tool_use` with text
+- **THEN** nothing is posted for it
 
 ### Requirement: Question widget follows its text
 

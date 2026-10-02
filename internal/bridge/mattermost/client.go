@@ -252,6 +252,20 @@ func (c *Client) CreateDirectChannel(ctx context.Context, botUserID, userID stri
 	return ch.ID, nil
 }
 
+// ChannelType calls GET /api/v4/channels/{id} and returns the channel's
+// type: "D" (direct message), "G" (group DM), "O" (public) or "P"
+// (private). Mattermost channel IDs do not encode the type, so this is
+// the only way to tell a DM from a channel.
+func (c *Client) ChannelType(ctx context.Context, channelID string) (string, error) {
+	var ch struct {
+		Type string `json:"type"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v4/channels/"+url.PathEscape(channelID), nil, &ch); err != nil {
+		return "", err
+	}
+	return ch.Type, nil
+}
+
 // IsUser reports whether the given 26-char base32 ID corresponds to a
 // real Mattermost user. Used to distinguish a user ID (which needs
 // channels/direct resolution) from a channel ID (which is already in

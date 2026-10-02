@@ -232,6 +232,13 @@ func (a *Adapter) InboundActive() bool {
 	return !bridge.IsInboundDisabled(a.id.Inbound)
 }
 
+// IsDirectPeer implements bridge.DirectPeerChecker: a private chat, whose
+// chat_id is positive (groups, supergroups and channels are negative).
+func (a *Adapter) IsDirectPeer(_ context.Context, peerID string) bool {
+	id, err := ParsePeerID(peerID)
+	return err == nil && id > 0
+}
+
 // Status implements bridge.Adapter.
 func (a *Adapter) Status() bridge.AdapterStatus {
 	return bridge.AdapterStatus{

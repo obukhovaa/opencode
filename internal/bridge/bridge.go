@@ -25,6 +25,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // PrependMentionIfMissing returns `mention + " " + text` UNLESS text
@@ -132,6 +133,29 @@ type Inbound struct {
 	// didn't set it; treated as "unknown", which SUPPRESSES the extra ack
 	// so an unstamped button click is never double-acknowledged.
 	Source string `json:"source,omitempty"`
+	// Heartbeat marks a scheduled heartbeat turn the bridge queued itself
+	// (openspec capability bridge-heartbeat). It is set only in-process by
+	// the heartbeat scheduler and is never decoded from /router/inbound.
+	Heartbeat *HeartbeatTurn `json:"-"`
+}
+
+// HeartbeatTurn carries what the dispatcher needs to run a heartbeat turn
+// quietly and record its outcome.
+type HeartbeatTurn struct {
+	// At is the beat's wall-clock time, shown in the report header.
+	At time.Time
+	// Model, when set, runs the beat on that model instead of the agent's
+	// own.
+	Model string
+	// Manual marks a beat a person asked for (/heartbeat now, or the
+	// heartbeat tool's now). It waits behind a busy session like a
+	// message does; a scheduled beat goes back to the scheduler instead.
+	Manual bool
+	// Next is the next_beat_at the scheduler stored when it queued this
+	// beat. A scheduled beat that loses its session puts the row back on
+	// the schedule only while next_beat_at still holds this value, so a
+	// concurrent /heartbeat change is never undone.
+	Next time.Time
 }
 
 // InboundSource classifies how a reviewer's inbound was produced. It rides
@@ -307,6 +331,21 @@ type AdapterInboundActiver interface {
 	// skips the per-identity GET_LOCK that prevents multi-process
 	// Socket Mode collisions — moot when no listener opens.
 	InboundActive() bool
+}
+
+// DirectPeerChecker is an OPTIONAL contract per-platform adapters MAY
+// implement to report whether a binding's peer ID is a top-level direct
+// message with one person: not a thread, not a channel, not a group
+// chat. The heartbeat setup reminder (openspec capability
+// bridge-heartbeat) is posted only to such peers, so it never lands in a
+// shared channel or a thread the daemon was only @-mentioned in.
+//
+// Adapters that don't implement it get no reminder: the check fails
+// closed. Slack, Mattermost and Telegram implement it.
+type DirectPeerChecker interface {
+	// IsDirectPeer reports whether peerID is a direct-message peer.
+	// Implementations that must ask the platform return false on error.
+	IsDirectPeer(ctx context.Context, peerID string) bool
 }
 
 // Adapter is the contract every per-platform implementation satisfies.

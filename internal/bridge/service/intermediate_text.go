@@ -53,6 +53,10 @@ type runTextGuard struct {
 	// earlier and are not relayed.
 	sinceMs int64
 	m       sync.Map // messageID -> *textClaim
+	// quiet marks a heartbeat run (bridge-heartbeat). It travels with the
+	// run's part events, so a late event of a heartbeat run is still
+	// suppressed after the dispatcher has moved on to the next run.
+	quiet bool
 }
 
 func newRunTextGuard(sinceMs int64) *runTextGuard { return &runTextGuard{sinceMs: sinceMs} }

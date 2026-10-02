@@ -99,6 +99,11 @@ func (s *Service) dispatchInbound(ctx context.Context, in bridge.Inbound) {
 			s.replyToPeerWithHint(ctx, in.Peer, reply)
 			return
 		}
+		// A /heartbeat the exact grammar could not parse is natural
+		// language: the agent carries it out with the heartbeat tool.
+		if in.Command == "heartbeat" && s.HeartbeatsEnabled() {
+			in.Text = s.heartbeatAgentRequest(ctx, in)
+		}
 	}
 
 	binding, err := s.resolveBinding(ctx, in.Peer)
@@ -159,6 +164,9 @@ func (s *Service) dispatchInbound(ctx context.Context, in bridge.Inbound) {
 
 	disp := s.dispatcherFor(binding.SessionID)
 	disp.pushInbound(in)
+	// A human message never waits silently behind a heartbeat: the beat
+	// in flight, if any, is cancelled (bridge-heartbeat).
+	disp.preemptHeartbeat()
 }
 
 // resolveBinding returns the binding for the inbound's peer, creating a

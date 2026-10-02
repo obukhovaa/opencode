@@ -201,6 +201,13 @@ func (a *Adapter) InboundActive() bool {
 	return !bridge.IsInboundDisabled(a.id.Inbound)
 }
 
+// IsDirectPeer implements bridge.DirectPeerChecker: a DM channel
+// (D-prefix) without a thread ts.
+func (a *Adapter) IsDirectPeer(_ context.Context, peerID string) bool {
+	p := ParsePeerID(peerID)
+	return p.ThreadTS == "" && IsDM(p.ChannelID)
+}
+
 // Status implements bridge.Adapter.
 func (a *Adapter) Status() bridge.AdapterStatus {
 	return bridge.AdapterStatus{
