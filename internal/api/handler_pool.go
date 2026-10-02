@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/opencode-ai/opencode/internal/logging"
 )
@@ -34,6 +36,16 @@ type poolHealth struct {
 	// flight), or "draining" (recycle accepted; pod exits shortly).
 	Mode           string  `json:"mode"`
 	BoundWorkspace *string `json:"boundWorkspace"`
+	// BoundRef is the git ref the bound workspace was cloned at; null when
+	// unbound or when the clone tracks the remote's default branch.
+	BoundRef *string `json:"boundRef"`
+	// RefBinding is always true on a pod that understands the `ref` field
+	// of POST /pool/bind. It is a capability flag, not state: the
+	// orchestrator reads its ABSENCE as "this image predates ref binding"
+	// and keeps ref-pinned workspaces off such a pod rather than letting
+	// them clone the default branch. A boolean rather than a version
+	// string so the check survives dev builds that report no version.
+	RefBinding     bool    `json:"refBinding"`
 	RunCount       int64   `json:"runCount"`
 	LastTerminalAt *int64  `json:"lastTerminalAt"`
 	CurrentRunID   *string `json:"currentRunID"`
@@ -53,12 +65,17 @@ type poolHealth struct {
 // state and the flow runner's counters.
 func (s *Server) buildPoolHealth() poolHealth {
 	ph := poolHealth{
-		Mode:     "available",
-		Draining: s.poolDraining.Load(),
+		Mode:       "available",
+		Draining:   s.poolDraining.Load(),
+		RefBinding: true,
 	}
 	if s.poolBoundWorkspace != "" {
 		bound := s.poolBoundWorkspace
 		ph.BoundWorkspace = &bound
+		if s.poolBoundRef != "" {
+			ref := s.poolBoundRef
+			ph.BoundRef = &ref
+		}
 	}
 	if s.flowRunner != nil {
 		ph.RunCount = s.flowRunner.RunCount()
@@ -141,6 +158,47 @@ func (s *Server) poolAllowlisted(normalizedURL string) bool {
 	return false
 }
 
+// bindSentinelContent renders what POST /pool/bind writes for the
+// entrypoint's next boot: the normalised URL, with the ref appended after
+// `#` when one was requested. The `<url>#<ref>` syntax is the one the
+// orchestrator's WORKSPACE_GIT_URLS already uses, so the entrypoint and
+// the orchestrator split it identically (last `#`; a clone URL cannot
+// contain one).
+func bindSentinelContent(normalizedURL, ref string) string {
+	if ref == "" {
+		return normalizedURL
+	}
+	return normalizedURL + "#" + ref
+}
+
+// validWorkspaceRef follows `git check-ref-format --branch` closely enough
+// to accept the refs operators actually pin (`v1.2.3+build.5`,
+// `renovate/@types-node`, non-ASCII names): the orchestrator does not
+// validate refs, and a 400 here fails the bind. It still refuses anything
+// unsafe where the ref goes: it is handed to `git clone --branch` by the
+// entrypoint and lands in the sentinel next to a `#` separator, so an
+// option, a path escape or a second separator is refused up front.
+func validWorkspaceRef(ref string) bool {
+	if ref == "" || ref == "@" || len(ref) > 255 {
+		return false
+	}
+	if strings.HasPrefix(ref, "-") || strings.HasPrefix(ref, "/") || strings.HasSuffix(ref, "/") ||
+		strings.HasSuffix(ref, ".") || strings.HasSuffix(ref, ".lock") ||
+		strings.Contains(ref, "..") || strings.Contains(ref, "@{") || strings.Contains(ref, "//") {
+		return false
+	}
+	for _, r := range ref {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '/', r == '-', r == '_', r == '.', r == '+', r == '@':
+		case r >= utf8.RuneSelf && (unicode.IsLetter(r) || unicode.IsDigit(r)):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // writeSentinelAtomic writes the bind sentinel via tmp-file + rename so
 // the pod entrypoint can never observe a half-written URL.
 func writeSentinelAtomic(path, content string) error {
@@ -189,6 +247,10 @@ func (s *Server) handlePoolBindPost(w http.ResponseWriter, r *http.Request) {
 	}
 	var body struct {
 		Workspace string `json:"workspace"`
+		// Ref pins the clone to a branch or tag (the orchestrator's
+		// `<url>#<ref>` WORKSPACE_GIT_URLS form). Optional; "" is the
+		// remote's default branch, exactly as before the field existed.
+		Ref string `json:"ref"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writePoolError(w, http.StatusBadRequest, err.Error(), nil)
@@ -197,6 +259,11 @@ func (s *Server) handlePoolBindPost(w http.ResponseWriter, r *http.Request) {
 	norm := normalizeWorkspaceURL(body.Workspace)
 	if norm == "" {
 		writePoolError(w, http.StatusBadRequest, "workspace is required", nil)
+		return
+	}
+	ref := strings.TrimSpace(body.Ref)
+	if ref != "" && !validWorkspaceRef(ref) {
+		writePoolError(w, http.StatusBadRequest, "ref is not a valid git branch or tag name", nil)
 		return
 	}
 	if s.poolBoundWorkspace != "" && s.poolBoundWorkspace != norm {
@@ -210,8 +277,18 @@ func (s *Server) handlePoolBindPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.poolBoundWorkspace == norm {
-		writeJSON(w, http.StatusOK, map[string]any{"binding": norm, "alreadyBound": true})
-		return
+		if s.poolBoundRef == ref {
+			writeJSON(w, http.StatusOK, map[string]any{"binding": norm, "ref": ref, "alreadyBound": true})
+			return
+		}
+		// Same URL at a DIFFERENT ref is a different binding, not the
+		// idempotent no-op: the clone on disk is at the old ref, and the
+		// flow definitions, teams.yaml and agents a run would execute live
+		// in it. Treat it as a fresh bind — the sentinel below carries the
+		// new ref and the respawn re-clones at it. The flow-in-flight guard
+		// above has already ruled out interrupting a run.
+		logging.Info("pool bind: same workspace at a different ref — rebinding",
+			"workspace", norm, "boundRef", s.poolBoundRef, "ref", ref)
 	}
 	// Latch BEFORE the sentinel write, and under the runner's lock, so a
 	// POST /flow that raced the in-flight check above either was already
@@ -226,14 +303,14 @@ func (s *Server) handlePoolBindPost(w http.ResponseWriter, r *http.Request) {
 		writePoolError(w, http.StatusBadRequest, "flow in progress; cannot rebind", nil)
 		return
 	}
-	if err := writeSentinelAtomic(s.poolSentinelPath, norm); err != nil {
+	if err := writeSentinelAtomic(s.poolSentinelPath, bindSentinelContent(norm, ref)); err != nil {
 		s.flowRunnerUnlatch(&s.poolBinding)
 		logging.Error("pool bind: sentinel write failed", "path", s.poolSentinelPath, "error", err)
 		writePoolError(w, http.StatusInternalServerError, fmt.Sprintf("sentinel write failed: %v", err), nil)
 		return
 	}
 	logging.Info("pool bind accepted — exiting for workspace clone on respawn",
-		"workspace", norm, "sentinel", s.poolSentinelPath, "exitGrace", s.poolBindExitGrace)
+		"workspace", norm, "ref", ref, "sentinel", s.poolSentinelPath, "exitGrace", s.poolBindExitGrace)
 	exit := s.poolExit
 	time.AfterFunc(s.poolBindExitGrace, func() {
 		logging.Info("pool bind exit grace elapsed — exiting for respawn")
@@ -241,18 +318,22 @@ func (s *Server) handlePoolBindPost(w http.ResponseWriter, r *http.Request) {
 	})
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"binding":     norm,
+		"ref":         ref,
 		"exitGraceMs": s.poolBindExitGrace.Milliseconds(),
 	})
 }
 
 // handlePoolBindGet implements GET /pool/bind.
 func (s *Server) handlePoolBindGet(w http.ResponseWriter, _ *http.Request) {
-	var bound, since any
+	var bound, boundRef, since any
 	if s.poolBoundWorkspace != "" {
 		bound = s.poolBoundWorkspace
 		since = s.poolBoundSince
+		if s.poolBoundRef != "" {
+			boundRef = s.poolBoundRef
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"boundWorkspace": bound, "since": since})
+	writeJSON(w, http.StatusOK, map[string]any{"boundWorkspace": bound, "boundRef": boundRef, "since": since})
 }
 
 // handleFlowRecycle implements POST /flow/recycle (design D4): a clean
