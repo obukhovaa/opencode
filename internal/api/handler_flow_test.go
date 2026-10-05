@@ -35,6 +35,10 @@ func newStubFlowService(steps []flow.FlowState) *stubFlowService {
 	}
 }
 
+func (s *stubFlowService) RunWithOptions(ctx context.Context, sessionPrefix string, flowID string, args map[string]any, opts flow.RunOptions) (<-chan agentpkg.AgentEvent, <-chan *flow.FlowState, error) {
+	return s.Run(ctx, sessionPrefix, flowID, args, opts.Fresh)
+}
+
 func (s *stubFlowService) Run(ctx context.Context, _ string, flowID string, _ map[string]any, _ bool) (<-chan agentpkg.AgentEvent, <-chan *flow.FlowState, error) {
 	if s.runErr != nil {
 		return nil, nil, s.runErr

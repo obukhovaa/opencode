@@ -1548,11 +1548,13 @@ func newFlowRunnerWithSessions(svc flow.Service, sessions session.Service) *flow
 // StartFlow programmatically starts a flow without going through HTTP.
 // Used by cmd/serve.go's --flow auto-start path. Returns the runID on
 // success.
-func (s *Server) StartFlow(flowID string, args map[string]any, fresh bool) (string, error) {
+func (s *Server) StartFlow(flowID string, args map[string]any, fresh, recoverRunning bool) (string, error) {
 	if s.flowRunner == nil {
 		return "", errors.New("flow runner not configured")
 	}
-	result, err := s.flowRunner.Start(context.Background(), flowID, args, fresh)
+	// recoverRunning is the --flow-recover-running serve flag: the per-Job
+	// pod's spelling of POST /flow's `recoverRunning` (see flow.RunOptions).
+	result, err := s.flowRunner.StartWithOptions(context.Background(), flowID, args, fresh, flowStartOptions{recoverRunning: recoverRunning})
 	if err != nil {
 		return "", err
 	}

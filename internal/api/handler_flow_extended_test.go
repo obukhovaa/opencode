@@ -487,7 +487,7 @@ func TestWaitFlowTerminalGraceHoldsThenExits(t *testing.T) {
 	_, fr := newFlowTestServerWithSessions(t, svc, &stubSessions{byID: map[string]session.Session{"sess-1": {ID: "sess-1"}}})
 
 	apiServer := &Server{flowRunner: fr}
-	runID, err := apiServer.StartFlow("x", nil, false)
+	runID, err := apiServer.StartFlow("x", nil, false, false)
 	if err != nil {
 		t.Fatalf("StartFlow: %v", err)
 	}
@@ -540,7 +540,7 @@ func TestWaitFlowTerminalCtxCancelShortCircuitsGrace(t *testing.T) {
 	_, fr := newFlowTestServerWithSessions(t, svc, &stubSessions{byID: map[string]session.Session{"sess-1": {ID: "sess-1"}}})
 
 	apiServer := &Server{flowRunner: fr}
-	runID, err := apiServer.StartFlow("x", nil, false)
+	runID, err := apiServer.StartFlow("x", nil, false, false)
 	if err != nil {
 		t.Fatalf("StartFlow: %v", err)
 	}

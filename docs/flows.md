@@ -578,6 +578,7 @@ These are honored by `opencode serve` only:
 | `--flow` | _(unset)_ | Auto-start the named flow once the server is healthy (k8s Job entrypoint pattern). |
 | `--flow-args` | _(unset)_ | Path to a JSON file with flow arguments (e.g. reviewers, ticket IDs). Read once at start. |
 | `--flow-fresh` | `false` | Discard any existing per-step session state when auto-starting (equivalent to `-D` in direct mode). |
+| `--flow-recover-running` | `false` | Treat `running` `flow_states` rows as crash-recovery work: the process that left them is known to be dead, so their steps are resumed in their own sessions instead of replayed. The per-Job pod's spelling of `recoverRunning` on `POST /flow`; only an orchestrator that watched the previous pod die should set it. |
 | `--flow-exit` | `false` | Cancel the parent context (shutting the server down) once the auto-started flow terminates. |
 | `--flow-exit-grace` | `5s` | Hold the HTTP server up this long after the flow terminates so an external reconciler (`GET /flow/status`) can land before shutdown. Capped at 60 s. Only honored with `--flow-exit`. Set to `0s` to exit immediately. |
 

@@ -39,6 +39,10 @@ func newPoolStubFlowService(hold bool, steps ...flow.FlowState) *poolStubFlowSer
 	}
 }
 
+func (s *poolStubFlowService) RunWithOptions(ctx context.Context, sessionPrefix string, flowID string, args map[string]any, opts flow.RunOptions) (<-chan agentpkg.AgentEvent, <-chan *flow.FlowState, error) {
+	return s.Run(ctx, sessionPrefix, flowID, args, opts.Fresh)
+}
+
 func (s *poolStubFlowService) Run(ctx context.Context, _ string, flowID string, _ map[string]any, _ bool) (<-chan agentpkg.AgentEvent, <-chan *flow.FlowState, error) {
 	s.mu.Lock()
 	s.ctxs = append(s.ctxs, ctx)
@@ -869,6 +873,10 @@ type switchingFlowService struct {
 
 	mu sync.Mutex
 	n  int
+}
+
+func (s *switchingFlowService) RunWithOptions(ctx context.Context, sessionPrefix string, flowID string, args map[string]any, opts flow.RunOptions) (<-chan agentpkg.AgentEvent, <-chan *flow.FlowState, error) {
+	return s.Run(ctx, sessionPrefix, flowID, args, opts.Fresh)
 }
 
 func (s *switchingFlowService) Run(ctx context.Context, _ string, flowID string, _ map[string]any, _ bool) (<-chan agentpkg.AgentEvent, <-chan *flow.FlowState, error) {

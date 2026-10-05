@@ -110,6 +110,7 @@ The `opencode serve` command SHALL accept three new flags supporting the k8s Job
 | `--flow <id>` | Auto-start this flow when the server boots; the server becomes healthy first, then begins flow execution |
 | `--flow-args <path>` | Path to JSON file with flow arguments (e.g., `/workspace/flow-args.json`) |
 | `--flow-exit` | Exit the process after the flow completes (success OR failure); default behavior when `--flow` is set; only applies to `--flow`-triggered flows (not `POST /flow`-triggered ones) |
+| `--flow-recover-running` | Start the auto-run with `flow.RunOptions.RecoverRunning`: `running` `flow_states` rows left by a process the orchestrator knows to be dead are resumed, not replayed — the serve-mode spelling of `recoverRunning` on `POST /flow` (see `flow-runtime-resume`) |
 
 #### Scenario: Server boots, becomes healthy, then auto-starts flow
 
