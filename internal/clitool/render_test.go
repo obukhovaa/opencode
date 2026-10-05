@@ -152,4 +152,3 @@ argv: ["sql", ["--format", "{format}"], "-q", "{query}"]
 		t.Errorf("explicit value should override the default: %q %v", got, err)
 	}
 }
-

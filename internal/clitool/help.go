@@ -6,6 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
+
+	"github.com/opencode-ai/opencode/internal/task"
 )
 
 // CaptureHelp runs the manifest's `help.args` once (bounded by
@@ -27,6 +30,16 @@ func (m *Manifest) CaptureHelp(ctx context.Context) {
 	out := &limitedBuffer{limit: limit}
 	cmd.Stdout = out
 	cmd.Stderr = out
+	// Same containment as Exec: an own process group so the deadline kills a
+	// wrapper script's children too, and a bounded wait so a grandchild that
+	// inherited the pipe cannot stall discovery (this runs on the toolset
+	// build path, before the agent can answer).
+	task.SetProcessGroupAttr(cmd)
+	cmd.Cancel = func() error {
+		task.SignalProcessGroup(cmd.Process, task.KillSignal())
+		return nil
+	}
+	cmd.WaitDelay = 2 * time.Second
 	_ = cmd.Run() // a non-zero exit still yields usable text (many CLIs exit 1 on --help)
 	text := strings.TrimRight(out.String(), "\n")
 	if text == "" {

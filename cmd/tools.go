@@ -169,13 +169,14 @@ func loadToolsConfig(cmd *cobra.Command) (*config.Config, error) {
 			return nil, fmt.Errorf("failed to change directory: %w", err)
 		}
 	}
-	if cwd == "" {
-		c, err := os.Getwd()
-		if err != nil {
-			return nil, err
-		}
-		cwd = c
+	// Always resolve to the absolute path: `--cwd .` (the .mcp.json recipe
+	// in docs/cli-tools.md) must not leave config.WorkingDir — and with it
+	// every manifest location and the cwd-confinement root — relative.
+	c, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current working directory: %w", err)
 	}
+	cwd = c
 	cfg, err := config.Load(cwd, debug)
 	if err != nil {
 		return nil, err

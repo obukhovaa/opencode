@@ -10,7 +10,16 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 )
 
+// isolateHome points the global manifest directories (~/.config/opencode/tools,
+// ~/.agents/tools) at an empty home so a developer's own manifests cannot leak
+// into the discovery assertions.
+func isolateHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+}
+
 func TestDiscover_PrecedenceShadowingAndDiagnostics(t *testing.T) {
+	isolateHome(t)
 	wd := t.TempDir()
 	// The working dir is its own worktree root so the walk stops here.
 	if err := os.Mkdir(filepath.Join(wd, ".git"), 0o755); err != nil {
@@ -54,6 +63,7 @@ func TestDiscover_PrecedenceShadowingAndDiagnostics(t *testing.T) {
 }
 
 func TestDiscover_Disabled(t *testing.T) {
+	isolateHome(t)
 	wd := t.TempDir()
 	writeManifest(t, wd, ".agents/tools/say.yaml", echoManifest)
 	set := Discover(context.Background(), wd, &config.CLIToolsConfig{Disabled: true})
@@ -68,6 +78,7 @@ func TestDiscover_Disabled(t *testing.T) {
 }
 
 func TestDiscover_HelpCapture(t *testing.T) {
+	isolateHome(t)
 	wd := t.TempDir()
 	script := writeScript(t, wd, "h.sh", `echo "usage: h [--flag]"; exit 1`)
 	writeManifest(t, wd, ".agents/tools/h.yaml", "name: h\ndescription: d\ncommand: "+script+"\nhelp:\n  args: [\"--help\"]\n  maxBytes: 12\n")
@@ -85,6 +96,7 @@ func TestDiscover_HelpCapture(t *testing.T) {
 }
 
 func TestDiscover_WalksUpToWorktreeRoot(t *testing.T) {
+	isolateHome(t)
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
 		t.Fatal(err)
@@ -97,5 +109,36 @@ func TestDiscover_WalksUpToWorktreeRoot(t *testing.T) {
 	set := Discover(context.Background(), nested, nil)
 	if len(set.Manifests) != 1 || set.Manifests[0].Name != "up" {
 		t.Errorf("expected the root manifest from a nested working dir, got %+v", set.Manifests)
+	}
+}
+
+// A relative working directory (`opencode tools serve --cwd .`, the form the
+// docs' .mcp.json example uses) must neither break cwd confinement nor leave
+// relative paths in the result.
+func TestDiscover_RelativeWorkingDir(t *testing.T) {
+	isolateHome(t)
+	wd := t.TempDir()
+	for _, d := range []string{".git", "sub"} {
+		if err := os.Mkdir(filepath.Join(wd, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeManifest(t, wd, ".agents/tools/say.yaml", "name: say\ndescription: d\ncommand: /bin/echo\ncwd: sub\n")
+	t.Chdir(wd)
+	set := Discover(context.Background(), ".", nil)
+	if len(set.Manifests) != 1 {
+		t.Fatalf("tools = %d (%+v)", len(set.Manifests), set.Diagnostics)
+	}
+	m := set.Manifests[0]
+	if !filepath.IsAbs(m.WorkingDir) || !filepath.IsAbs(m.Location) || !filepath.IsAbs(m.ResolvedCwd) {
+		t.Errorf("paths must be absolute: workingDir=%q location=%q cwd=%q", m.WorkingDir, m.Location, m.ResolvedCwd)
+	}
+	if filepath.Base(m.ResolvedCwd) != "sub" {
+		t.Errorf("ResolvedCwd = %q, want .../sub", m.ResolvedCwd)
+	}
+	for _, d := range set.Dirs {
+		if !filepath.IsAbs(d) {
+			t.Errorf("scanned dir %q is not absolute", d)
+		}
 	}
 }

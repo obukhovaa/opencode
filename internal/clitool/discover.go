@@ -107,6 +107,13 @@ func Discover(ctx context.Context, workingDir string, cfg *config.CLIToolsConfig
 		set.Disabled = true
 		return set
 	}
+	// A relative working directory (`opencode tools serve --cwd .`) would
+	// leave every Location, ResolvedCwd and the cwd-confinement root
+	// relative — and the confinement check then rejects any manifest `cwd`
+	// as "outside the working directory". Anchor it once, here.
+	if abs, err := filepath.Abs(workingDir); err == nil {
+		workingDir = abs
+	}
 	byName := map[string]*Manifest{}
 	add := func(m *Manifest) {
 		if existing, ok := byName[m.Name]; ok {
