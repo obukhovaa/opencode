@@ -506,12 +506,12 @@ func TestDispatch_ProgressCard_Compact(t *testing.T) {
 		{"toolu_03cccccc", "grep", false},
 	}
 	for _, c := range calls {
-		d.handlePartEvent(partEvent("S1", message.ToolCall{ID: c.id, Name: c.name, Input: "{}", Finished: true}))
+		d.handlePartEvent(partEvent("S1", message.ToolCall{ID: c.id, Name: c.name, Input: "{}", Finished: true}), nil)
 		content := "ok"
 		if c.fail {
 			content = "permission denied\nexit 1"
 		}
-		d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: c.id, Name: c.name, Content: content, IsError: c.fail}))
+		d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: c.id, Name: c.name, Content: content, IsError: c.fail}), nil)
 	}
 	d.progressFinish(prog, progressStatusOK)
 
@@ -557,8 +557,8 @@ func TestDispatch_ProgressCard_FullPostsPerCall(t *testing.T) {
 	if prog := d.progressStart(context.Background()); prog != nil {
 		t.Fatal("progressStart opened a card at full verbosity")
 	}
-	d.handlePartEvent(partEvent("S1", message.ToolCall{ID: "toolu_01", Name: "read", Input: `{"path":"x"}`, Finished: true}))
-	d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: "toolu_01", Name: "read", Content: "12 lines"}))
+	d.handlePartEvent(partEvent("S1", message.ToolCall{ID: "toolu_01", Name: "read", Input: `{"path":"x"}`, Finished: true}), nil)
+	d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: "toolu_01", Name: "read", Content: "12 lines"}), nil)
 	waitFor(t, "two per-call sends", func() bool { return len(ed.Sends()) == 2 })
 	if got := ed.Posts(); len(got) != 0 {
 		t.Errorf("SendEditable called at full: %v", got)
@@ -575,9 +575,9 @@ func TestDispatch_ProgressCard_DisabledKeepsFailureLine(t *testing.T) {
 	if prog := d.progressStart(context.Background()); prog != nil {
 		t.Fatal("progressStart opened a card with tool updates disabled")
 	}
-	d.handlePartEvent(partEvent("S1", message.ToolCall{ID: "toolu_01", Name: "read", Input: "{}", Finished: true}))
-	d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: "toolu_01", Name: "read", Content: "fine"}))
-	d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: "toolu_02", Name: "bash", Content: "nope", IsError: true}))
+	d.handlePartEvent(partEvent("S1", message.ToolCall{ID: "toolu_01", Name: "read", Input: "{}", Finished: true}), nil)
+	d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: "toolu_01", Name: "read", Content: "fine"}), nil)
+	d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: "toolu_02", Name: "bash", Content: "nope", IsError: true}), nil)
 	waitFor(t, "failure send", func() bool { return len(ed.Sends()) == 1 })
 	if got := ed.Sends()[0].Text; !strings.HasPrefix(got, "✗ bash") {
 		t.Errorf("send = %q; want a ✗ bash line", got)
@@ -809,7 +809,7 @@ func TestDispatch_FullToCompactMidRun_ResolvesPendingCards(t *testing.T) {
 	}
 	d.handlePartEvent(partEvent("S1", message.ToolCall{
 		ID: "toolu_01aaaaaa", Name: "bash", Input: `{"cmd":"make"}`, Finished: true,
-	}))
+	}), nil)
 	waitFor(t, "the pending call card", func() bool { return len(ed.Sends()) == 1 })
 
 	// The reviewer asks for less noise while the call is still running.
@@ -819,7 +819,7 @@ func TestDispatch_FullToCompactMidRun_ResolvesPendingCards(t *testing.T) {
 
 	d.handlePartEvent(partEvent("S1", message.ToolResult{
 		ToolCallID: "toolu_01aaaaaa", Name: "bash", Content: "done",
-	}))
+	}), nil)
 	waitFor(t, "the completion that closes the pending card", func() bool {
 		return len(ed.Sends()) == 2
 	})
@@ -831,10 +831,10 @@ func TestDispatch_FullToCompactMidRun_ResolvesPendingCards(t *testing.T) {
 	// so there is nothing to close.
 	d.handlePartEvent(partEvent("S1", message.ToolCall{
 		ID: "toolu_02bbbbbb", Name: "read", Input: "{}", Finished: true,
-	}))
+	}), nil)
 	d.handlePartEvent(partEvent("S1", message.ToolResult{
 		ToolCallID: "toolu_02bbbbbb", Name: "read", Content: "ok",
-	}))
+	}), nil)
 	time.Sleep(50 * time.Millisecond)
 	if got := ed.Sends(); len(got) != 2 {
 		t.Errorf("sends = %d (%+v); want still 2 — a call started after the switch must stay silent", len(got), got)

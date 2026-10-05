@@ -201,6 +201,13 @@ func (a *Adapter) InboundActive() bool {
 	return !bridge.IsInboundDisabled(a.id.Inbound)
 }
 
+// IsDirectPeer implements bridge.DirectPeerChecker: a DM channel
+// (D-prefix) without a thread ts.
+func (a *Adapter) IsDirectPeer(_ context.Context, peerID string) bool {
+	p := ParsePeerID(peerID)
+	return p.ThreadTS == "" && IsDM(p.ChannelID)
+}
+
 // Status implements bridge.Adapter.
 func (a *Adapter) Status() bridge.AdapterStatus {
 	return bridge.AdapterStatus{
@@ -469,6 +476,25 @@ func (a *Adapter) ResolveUserToDM(ctx context.Context, peerID string) (string, e
 		return "", errors.New("slack: conversations.open returned empty channel")
 	}
 	return ch.ID, nil
+}
+
+// ResolveUserEmail implements bridge.UserEmailResolver via users.info. The
+// email is only returned when the app holds the users:read.email scope;
+// without it Slack answers the profile with an empty email and this
+// returns ("", nil). Both workspace (U) and Enterprise Grid (W) user IDs
+// are looked up; anything else (bot ids, junk) is not.
+func (a *Adapter) ResolveUserEmail(ctx context.Context, userID string) (string, error) {
+	if !authorIDPattern.MatchString(userID) {
+		return "", nil
+	}
+	u, err := a.api.GetUserInfoContext(ctx, userID)
+	if err != nil {
+		return "", fmt.Errorf("slack: users.info: %w", err)
+	}
+	if u == nil {
+		return "", nil
+	}
+	return u.Profile.Email, nil
 }
 
 // dispatchSocketModeEvent handles one Socket Mode envelope. ack is always

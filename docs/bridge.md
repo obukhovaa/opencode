@@ -84,6 +84,7 @@ Health snapshot: `curl http://127.0.0.1:3456/router/health` (per-adapter `status
 | `toolUpdatesEnabled` | `bool` | Show tool-call progress in chat. The shape is set by `toolUpdateVerbosity`. Failures surface regardless of this flag. |
 | `toolUpdateVerbosity` | `"compact"` (default) \| `"full"` | `compact` posts **one progress message per run and edits it in place**: `⏳ Thinking...` when the run starts, then `⏳ 5 tool calls done · running bash · 1m12s` as calls complete (real counts, the tool in flight, elapsed time), and a final `✓ Done · 12 tool calls · 3m40s` (or `✗ Run failed · …`) when the run ends. A failed call adds `· 1 failed` and a second line `✗ <tool>#<id> · <reason>`. No per-tool-call messages; arguments and result bodies stay out of chat (they're in the session store and Langfuse). Edits are paced to one every 2s and coalesced. `full` posts one card per tool call — `🔧 <tool>#<id> · <args>` updated in place to `✓ <tool>#<id> · <duration> · <body>` — with the argument summary and a truncated result body; `verbose` and `debug` are accepted as aliases. Unrecognised values fall back to `compact` with a one-shot WARN. Flip it live with `/verbosity`; switching a run from `full` to `compact` mid-run silences calls started after the switch but still closes any tool card already posted. Peers on the `external` relay channel receive no progress card; they still get a failed call's one-line reason as text. |
 | `queueAcknowledgementsEnabled` | `bool` | When `true`, sends an in-place-editable `⏳ queued` acknowledgement to a sender whose message is enqueued behind an in-flight agent run. The ack is edited as the queue drains and resolved to `▶ Processing your message now…` the moment the run starts. Requires 2 seconds of queuing before sending, to avoid a pointless flash for sub-second waits. Default: `false`. All three production adapters (Telegram, Slack, Mattermost) support in-place edit; the external adapter silently skips acks. |
+| `heartbeatReminder` | `bool` | Daemon mode only. When `true` (the default), the bridge posts the weekly [heartbeat](./cron-and-heartbeat.md#setup-reminder) setup reminder to direct-message chats whose heartbeat was never turned on or off. `false` stops the reminder for every chat of this process; `/heartbeat` and scheduled beats are unaffected. |
 | `channels.{telegram,slack,mattermost,external}` | object | Per-platform configuration; see below. |
 
 ## Per-channel configuration
@@ -132,7 +133,7 @@ Health snapshot: `curl http://127.0.0.1:3456/router/health` (per-adapter `status
 ```
 
 - Uses Socket Mode (no public webhook URL needed).
-- Required Slack app scopes: `chat:write`, `app_mentions:read`, `im:history`, `files:read`, `files:write`. Event subscriptions: `app_mention`, `message.im`.
+- Required Slack app scopes: `chat:write`, `app_mentions:read`, `im:history`, `files:read`, `files:write`, `users:read` (each message's author is looked up via `users.info`; without the scope the lookup fails, is logged, and is retried every 5 minutes per author). Add `users:read.email` to attribute each turn's telemetry to the author's email address; without it traces carry the Slack user id (see [Requester](telemetry.md#requester)). Event subscriptions: `app_mention`, `message.im`.
 - Peer ID formats: `D<id>` (DM), `C<id>` (channel — auto-mutates to `C<id>|<thread_ts>` after first outbound), `C<id>|<thread_ts>` (existing thread), `U<id>` (user — auto-resolved to DM via `conversations.open` before persistence).
 
 ### Mattermost
@@ -200,6 +201,14 @@ Agent replies are authored as GFM (GitHub-flavored Markdown) — headings, bold/
 
 The `RichRenderer` tool-card paths (`internal/bridge/slack/render.go`, `internal/bridge/telegram/render.go`) that hand-author Block Kit / legacy Markdown for tool calls, lists, tables, and status previews are separate code paths, untouched by the above — they compose their own markup directly rather than converting agent-authored GFM.
 
+### Intermediate assistant text
+
+A run usually has several assistant messages: each one that ends in `tool_use` is followed by the tool results and the next model call. For runs the bridge dispatches itself (an inbound chat message), each such message's text is relayed too, not only the final reply. It is posted as `⌛ <tool names>` (the message's tool calls in call order) on the first line, then the text, and is sent before that message's 🔧 call card at `full` verbosity. Messages without text post nothing. The final reply has no header, and no message is posted twice. Before a `question` widget goes out, the router makes sure the text that introduces it has been posted. This works at every `toolUpdateVerbosity` and with tool updates off. Subagent text and self-started turns are not relayed.
+
+Only the bridge's own run is relayed. If another run held the session while the inbound waited (`ErrSessionBusy`), such as a task auto-resume or an API run, that run's text is not posted into the thread. Interactive flow steps bound to chat are not covered yet: the flow engine runs those agents itself, so their intermediate text is not relayed. That is a follow-up.
+
+Timing: each intermediate post is bounded to 10 s (60 s with `FILE:` attachments). The question widget and the final reply each wait at most 5 s for text still being posted, then go out anyway. A post that is still running at that point is not cancelled, so the text arrives once, possibly below the widget.
+
 ## HTTP API (`/router/*`)
 
 All endpoints live on the existing opencode API port. Bare paths (`/send`, `/identities/*`, `/config/groups`) return 404 — everything is under `/router/*`.
@@ -244,6 +253,12 @@ curl -X POST http://127.0.0.1:3456/router/bind \
 - If the session doesn't exist, `Bind` auto-creates it (so router-initiated callers can bind a fresh sessionID without pre-creating).
 
 `POST /router/unbind` with empty `peers` drops every binding for the session and tears down the dispatcher. With non-empty `peers`, removes only those rows — dispatcher stays alive if any binding remains.
+
+### `POST /router/inbound`
+
+The orchestrator forwards chat replies here in mediated-inbound mode. `202 Accepted` means the inbound was enqueued. `429` with `Retry-After` means the queue is full, so retry.
+
+Under `opencode serve --pool-mode`, the endpoint accepts an inbound only when a live interactive flow step in this process owns the peer's session. Otherwise it returns `409 {"sessionNotOwned": true}` and drops the message. This covers a container that restarted mid-step while its binding survived. Retrying cannot succeed, so orchestrators should not retry a `409`. Pool pods never pass an inbound to the workspace default agent. Without `--pool-mode`, behavior is unchanged.
 
 ### Identity CRUD — `/router/identities/{channel}[/{id}]`
 
@@ -294,10 +309,15 @@ Once a peer is bound (manually or via the first inbound), the following commands
 | `/skip` | Dismiss a pending agent question. |
 | `/verbosity` | Show the live tool-update level: `compact` (one progress card per run) or `full` (one card per tool call). |
 | `/verbosity compact\|full` | Switch it for this process (not persisted; restart restores `router.toolUpdateVerbosity`). `verbose` and `debug` mean `full`. |
+| `/heartbeat …` | Show or configure this chat's heartbeat (daemon mode only). See [Cron and heartbeat](./cron-and-heartbeat.md#heartbeat). |
 | `/help` | List commands. |
 | `/dir` | Unsupported — one opencode process is pinned to one workspace (returns an explanatory message). |
 
 Any non-command message is forwarded as a prompt.
+
+## Heartbeat
+
+In daemon mode a chat can give its agent a heartbeat: on a schedule the bridge wakes the bound session, the agent works through its agenda file (`HEARTBEAT.md`), and only what is new is posted, under `💓 Heartbeat HH:MMZ`. Off per chat until `/heartbeat on`; beats run only for bots this process serves inbound (not `"inbound": "disabled"`). Commands, scheduling rules, the setup reminder and `router.heartbeatReminder`: [Cron and heartbeat](./cron-and-heartbeat.md#heartbeat).
 
 ## In-process agent tool: `router_send`
 
@@ -383,10 +403,11 @@ Its other identities continue running normally — the lock is per-identity, not
 
 ## Storage
 
-Two new tables on both providers (SQLite + MySQL), keyed by `(project_id, channel, identity_id, peer_id)`:
+Bridge tables on both providers (SQLite + MySQL), keyed by `(project_id, channel, identity_id, peer_id)`:
 
 - `bridge_sessions` — many-to-one peer→session mapping with `session_id` FK to `sessions(id) ON DELETE SET NULL`, plus `mention_handle` (per-peer ping handle for first-message attribution) and `mention_consumed_at` (timestamp set after first delivery; reset on re-bind).
 - `bridge_allowlist` — per-identity peer allowlist (Telegram private-mode pairing).
+- `bridge_heartbeats` — per-binding heartbeat state, schedule settings, next/last beat and the last setup reminder (`20261001130000_add_bridge_heartbeats.sql`).
 
 Migrations live in `internal/db/migrations/{sqlite,mysql}/20260609120000_add_bridge_tables.sql`. MySQL column widths are sized so the compound PK fits within InnoDB's 3072-byte key-length cap under utf8mb4.
 

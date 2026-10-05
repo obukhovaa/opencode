@@ -118,7 +118,7 @@ Because built-in discovery derives IDs from file basenames (which can never cont
 | `maxTurns` | int | No | Per-step override for the agent's `maxTurns`. `0` (unset) inherits from the agent. |
 | `maxIterations` | int | No | Cap on in-process self-loop iterations. `0` (unset) is unbounded — only the flow timeout applies. When the (N+1)th self-route would exceed the cap, the step fails (and runs its `fallback`). See [Self-Loops](#self-loops). |
 | `timeout` | duration | No | Wall-clock deadline for the step's `agent.RunWith` invocation, including the non-interactive end-of-turn wait for any background tasks (`bash run_in_background`, `task async`, `monitor`) the step's agent spawned. Format is a Go duration string (`5m`, `1h30m`). Unset falls back to `OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT`; if that is also unset, the wait is bounded only by the surrounding orchestrator's ctx. When the deadline trips, the runtime injects a synthetic Assistant `[wait-timeout]` message into the session log enumerating still-pending tasks, then returns the step's pre-wait result. |
-| `compact.threshold` | float | No | Per-step override for the auto-compaction trigger (tokens-used / context-window ratio). Must be in `(0, 1]`; out-of-range values are clamped (`< 0` → default, `> 1` → 1) with a warn. `0` (unset) inherits the global default (`~0.95`), so this is strictly opt-in. Set lower (e.g. `0.7`) for context-heavy steps that should compact earlier. Only the tool-use-loop compaction check honours the override. |
+| `compact.threshold` | float | No | Per-step override for the auto-compaction trigger (tokens-used / context-window ratio). Must be in `(0, 1]`; out-of-range values are clamped (`< 0` → default, `> 1` → 1) with a warn. `0` (unset) inherits the agent's `compactionThreshold`, else the global default (`0.95`), so this is strictly opt-in. Precedence: step `compact.threshold` > agent `compactionThreshold` > `0.95`. Set lower (e.g. `0.7`) for context-heavy steps that should compact earlier. The effective threshold drives both the pre-turn check (before the step's first model call) and the tool-use-loop check before each later call. |
 | `context` | object | No | Scoped context override for this step: `{ paths, mode, nested }` — see [Context Files](context.md). `paths` lists context files (relative to the working directory; `${agent}`, `${flow.id}`, `${flow.step}`, `${env.VAR}` tokens supported) that `replace` (default when `paths` is set) or `append` to the agent/global context layers; `nested: false` opts the step out of nested-context disclosure. Inheritable via `extends` — deliberately absent from the non-inheritable key set (`id`, `interactive`, `interaction`, `resume_after`), because the orchestrator never reads it and a template supplying a shared per-step context override is exactly what templates are for. |
 
 ### Rules
@@ -477,8 +477,9 @@ a real conflict with no author intent to honour, and the error says to check
 your `extends` list.
 
 **Nothing else changes.** The resolved text goes through exactly the same
-pipeline as an inline prompt: `${args.*}` / `${step.*}` substitution,
-`` !`shell` `` markup expansion, previous-step-output prefixing and
+pipeline as an inline prompt: `` !`shell` `` markup expansion, `${args.*}` /
+`${step.*}` substitution (applied only to the text around markup, so neither
+values nor command output are rescanned), previous-step-output prefixing and
 structured output all behave identically. Write `${args.*}` placeholders in
 the Langfuse prompt body — opencode's own dialect, not Langfuse's
 `{{variable}}` syntax, which passes through verbatim. The trade-off is that
@@ -745,7 +746,7 @@ The session prefix is chosen using the following priority (highest first):
 
 1. **CLI flag** `--session` / `-s` — always wins when provided
 2. **Flow spec** `flow.session.prefix` — used when no CLI flag is given
-3. **Fallback** — a Unix timestamp, making each invocation independent
+3. **Fallback** — `<unix-seconds>-<6 hex>` (e.g. `1790751082-3f9a1c`), making each invocation independent. The random suffix keeps two runs started in the same second (e.g. on different processes sharing one database) from deriving the same session IDs; the leading unix second keeps IDs sortable, so look them up by timestamp with a prefix match
 
 The `flow.session.prefix` field accepts either a literal string or an `${args.*}` reference:
 

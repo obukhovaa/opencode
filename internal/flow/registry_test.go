@@ -461,7 +461,7 @@ flow:
 
 	t.Run("no session block is accepted", func(t *testing.T) {
 		// Flows without a session block are valid — the runtime
-		// derives a Unix-timestamp prefix in resolveSessionPrefix.
+		// derives a `<unix>-<6 hex>` prefix in resolveSessionPrefix.
 		// The validation only fires on keys WITHIN session, so an
 		// absent block must not trip it.
 		dir := t.TempDir()

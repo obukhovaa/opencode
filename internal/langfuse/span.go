@@ -74,11 +74,15 @@ func (s *Span) SetError(err error) {
 	if s == nil || err == nil {
 		return
 	}
+	// Error text is caller-supplied content, not just a diagnostic label: a
+	// failed clone reports the PAT-bearing URL it tried, and a failed API call
+	// echoes the Authorization header. Redact it like any other payload.
+	msg := redactString(err.Error())
 	s.span.SetAttributes(
 		attribute.String("langfuse.observation.level", "ERROR"),
-		attribute.String("langfuse.observation.status_message", err.Error()),
+		attribute.String("langfuse.observation.status_message", msg),
 	)
-	s.span.SetStatus(codes.Error, err.Error())
+	s.span.SetStatus(codes.Error, msg)
 }
 
 // SetOutput records the output on the span (truncated to maxIOSize).
@@ -97,8 +101,31 @@ func (s *Span) setOutput(output any, max int) {
 		return
 	}
 	s.span.SetAttributes(
-		attribute.String("langfuse.observation.output", truncate(marshalAny(output), max)),
+		attribute.String("langfuse.observation.output", payload(output, max)),
 	)
+}
+
+// payload prepares a value for a content-bearing span attribute: marshal,
+// redact, then truncate — in that order.
+//
+// The ordering is load-bearing. Truncating first can cut a credential in half,
+// and the surviving prefix no longer matches its detector, so a capped payload
+// would ship a high-entropy fragment in the clear at the cut point. Redaction
+// can grow a string — a marker is longer than a short secret — which is
+// exactly why truncate runs last and the cap still holds.
+//
+// Every content attribute in this package goes through here. Nothing outside
+// the package can write one, so this is the single choke point — keep it that
+// way rather than redacting at call sites.
+func payload(v any, max int) string {
+	return truncate(redactString(marshalAny(v)), max)
+}
+
+// redactString removes credentials from an already-marshalled string. Used for
+// values that are not payloads but still carry caller-supplied text: metadata
+// values and error messages.
+func redactString(s string) string {
+	return redactor().String(s)
 }
 
 func marshalAny(v any) string {

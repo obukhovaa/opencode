@@ -193,6 +193,10 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 		// loaded and /router/* routes return 404 (per the
 		// chat-bridge-http-api spec).
 		var bridgeSvc *bridgesvc.Service
+		// Daemon mode: neither a flow runner nor a pool pod. Only a daemon
+		// schedules chat heartbeats (bridge-heartbeat).
+		flowFlag, _ := cmd.Flags().GetString("flow")
+		daemonMode := !poolMode && flowFlag == ""
 		if cfg.Router != nil && cfg.Router.AnyChannelEnabled() {
 			// Orchestrator-mediated-inbound (openspec Phase F): when
 			// OPENCODE_BRIDGE_REGISTRAR_URL is set, mirror local
@@ -243,6 +247,8 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 				RemoteSelfPort:  selfPort,
 				RemoteJobID:     remoteJobID,
 				RemoteProjectID: remoteProj,
+				PoolMode:        poolMode,
+				Heartbeat:       daemonMode,
 			})
 			if err != nil {
 				logging.Error("Bridge orchestrator init failed", "error", err)
@@ -277,6 +283,11 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			if application.AgentFactory != nil {
 				mediaRoot := filepathJoin(cfg.Data.Directory, "bridge", "media")
 				application.AgentFactory.SetBridgeSender(bridgeSvc, cfg.Router, mediaRoot)
+				// The heartbeat tool resolves this handle at call time,
+				// so the already-built primary agents reach it too.
+				if daemonMode {
+					application.AgentFactory.SetHeartbeatConfigurer(bridgeSvc)
+				}
 			}
 
 			// Wire the bridge into the cron scheduler so jobs created in
@@ -307,8 +318,10 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			// application.Shutdown() + bridge Stop() above run before exit —
 			// the same convergence the SIGTERM handler below uses.
 			boundWorkspace := derivePoolBoundWorkspace(cwd)
+			boundRef := derivePoolBoundRef()
 			serverOpts.PoolMode = true
 			serverOpts.PoolBoundWorkspace = boundWorkspace
+			serverOpts.PoolBoundRef = boundRef
 			serverOpts.PoolBoundSince = time.Now().UnixMilli()
 			serverOpts.PoolAllowlist = os.Getenv("WORKSPACE_GIT_URLS_ALLOWLIST")
 			serverOpts.PoolSentinelPath = poolBindSentinelPath
@@ -318,6 +331,7 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			serverOpts.PoolShutdownFunc = cancel
 			logging.Info("pool mode enabled",
 				"boundWorkspace", boundWorkspace,
+				"boundRef", boundRef,
 				"sentinelPath", poolBindSentinelPath,
 				"idleResetGrace", flowIdleResetGrace,
 				"drainGrace", poolDrainGrace,

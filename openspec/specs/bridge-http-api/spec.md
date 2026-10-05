@@ -3,9 +3,7 @@
 ## Purpose
 
 Defines the HTTP surface for the chat bridge: routes mounted under `/router/*` on opencode's existing API mux, covering proactive send (`/router/send`), explicit session binding (`/router/bind`, `/router/unbind`), per-platform identity CRUD, per-identity groups toggle, and the bridge sub-tree of `/health`. All mutating endpoints persist via `config.UpdateCfgFile` and mutate `cfg.Router` in memory so the running bridge sees changes without a restart. Bare TS-bridge-era paths are intentionally not aliased.
-
 ## Requirements
-
 ### Requirement: HTTP surface mounted on existing opencode mux under `/router/*`
 
 The bridge SHALL mount all HTTP routes on opencode's existing API mux (`internal/api/server.go`). The bridge MUST NOT start a second HTTP server, and MUST reuse opencode's existing auth middleware and the localhost-only default network posture. All bridge routes MUST live under the `/router/*` namespace. The bridge MUST NOT expose bare `/send`, `/identities/*`, or `/config/groups` paths — the only published external consumer (the `openrouter-communication` skill) is updated in lockstep with this change.
@@ -201,3 +199,72 @@ The bridge endpoints MUST use opencode's existing API middleware for authenticat
 
 - **WHEN** an unauthenticated request reaches `POST /router/identities/slack`
 - **THEN** opencode's existing API middleware rejects it with the same status code as other authenticated endpoints
+
+### Requirement: Pool-mode inbound is delivered only to an owned interactive session
+
+When `opencode serve` runs with `--pool-mode`, `POST /router/inbound` SHALL accept an inbound only when the peer has a binding whose session the flow engine has marked interactive in the current process. Otherwise it SHALL respond `409` with a JSON body carrying `sessionNotOwned: true` and SHALL NOT enqueue the inbound. In pool mode, the inbound dispatcher SHALL NOT hand an inbound to the workspace default agent. The flow engine SHALL set the interactive marker before it binds a step's peers and clear it only after they are unbound. Without `--pool-mode`, behaviour is unchanged.
+
+#### Scenario: Container restarted mid-step
+
+- **WHEN** a pool pod's process restarts while an interactive step was waiting, the peer's binding survives, and the orchestrator forwards a reply
+- **THEN** the endpoint responds `409` with `sessionNotOwned: true` and no agent runs
+
+#### Scenario: Owned interactive session
+
+- **WHEN** an interactive flow step in this process has bound the peer
+- **THEN** the endpoint responds `202`, including for a reply forwarded the instant the binding is registered
+
+#### Scenario: Step ends between accept and dispatch
+
+- **WHEN** an inbound is accepted but the step completes before the inbound is dispatched
+- **THEN** the inbound is dropped and the default agent does not run
+
+#### Scenario: Non-pool pod
+
+- **WHEN** `opencode serve` runs without `--pool-mode` and the peer has no binding
+- **THEN** the endpoint responds `202` and a session is allocated as before
+
+### Requirement: POST /router/inbound 429 carries Retry-After and saturation body
+
+When `POST /router/inbound` returns `429 Too Many Requests` because the shared inbound
+channel is full (`default:` branch in the non-blocking select), the response SHALL include:
+
+1. A `Retry-After` header with an integer value (seconds) indicating the minimum wait
+   before retrying. The value SHALL be derived from the expected drain rate; a value of
+   `1` (one second) is a safe conservative default for v1.
+2. A JSON response body of the form:
+   ```json
+   {
+     "error": "inbound dispatcher full",
+     "retryAfterSeconds": <N>,
+     "dispatcherSaturated": true
+   }
+   ```
+   The `dispatcherSaturated: true` field is a stable machine-readable signal that allows
+   mediators to distinguish a capacity-related 429 from a rate-limiting 429 that might
+   originate from other middleware.
+
+The existing `"inbound dispatcher full; retry"` string is replaced by the structured body
+above. Callers that parse only the status code are unaffected (they still receive 429).
+
+#### Scenario: Channel full returns enriched 429
+
+- **GIVEN** the shared `inboundCh` (cap 64) is full when `POST /router/inbound` arrives
+- **WHEN** the non-blocking select takes the `default:` branch
+- **THEN** the response is `429 Too Many Requests` with:
+  - `Retry-After: 1` (or the computed value) in the response header
+  - JSON body `{"error":"inbound dispatcher full","retryAfterSeconds":1,"dispatcherSaturated":true}`
+
+#### Scenario: Normal enqueue returns 202 Accepted unchanged
+
+- **GIVEN** the shared `inboundCh` has capacity
+- **WHEN** `POST /router/inbound` arrives with a valid body
+- **THEN** the response is `202 Accepted` with `{"ok":true}`; no behavior change
+
+#### Scenario: Mediator observes dispatcherSaturated to distinguish from rate-limit
+
+- **GIVEN** an orchestrator mediator receives a 429 from `POST /router/inbound`
+- **WHEN** the mediator inspects `dispatcherSaturated` in the response body
+- **THEN** `true` indicates a capacity constraint (retry after the header-specified delay);
+  absent or `false` would indicate a different 429 origin (distinguishing future cases)
+

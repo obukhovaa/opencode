@@ -189,7 +189,12 @@ func buildOutputOverflowHeader(label string, totalBytes int, filePath string) st
 		} else {
 			fmt.Fprintf(&sb, "Full output saved to: %s\n", filePath)
 		}
-		sb.WriteString("Explore it with the grep tool, read specific ranges with the read tool (offset/limit), or use sed in bash. Do not re-run the tool just to get the full output.\n")
+		// Ordered by what actually works at this size: grep has no size
+		// ceiling, sed neither, but the read tool refuses any file over
+		// MaxReadSize outright — before it looks at offset/limit — so a
+		// spill larger than that is grep/sed territory and the header must
+		// not promise otherwise.
+		fmt.Fprintf(&sb, "Search it with the grep tool (any size) or read ranges with sed in bash; the read tool works on files up to %dKB. Do not re-run the tool just to get the full output.\n", MaxReadSize/1024)
 	}
 	sb.WriteString("\n")
 	return sb.String()

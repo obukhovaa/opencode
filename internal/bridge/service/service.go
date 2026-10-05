@@ -22,6 +22,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/bridge/store"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
+	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/logging"
 )
 
@@ -64,6 +65,10 @@ type Service struct {
 	// adapters keyed by "channel:identity" — populated lazily as Phase 2
 	// (Mattermost), Phase 4 (Telegram), and Phase 5 (Slack) land.
 	adapters map[string]bridge.Adapter
+
+	// requesters caches inbound authors resolved to email for telemetry
+	// attribution (see requester.go). Nil-safe: a zero Service skips it.
+	requesters *requesterCache
 
 	// toolVerbosity is the LIVE tool-update verbosity, seeded from
 	// cfg.ToolUpdateVerbosity at New and flipped at runtime by the
@@ -148,6 +153,15 @@ type Service struct {
 	// goroutine writes it.
 	remoteJobID     atomic.Value // string
 	remoteProjectID string
+
+	// poolMode mirrors `opencode serve --pool-mode`. A pool pod runs only
+	// flow steps, so an inbound whose session no live interactive step in
+	// this process owns is refused instead of handed to app.ActiveAgent().
+	poolMode bool
+
+	// heartbeat is non-nil when this process schedules heartbeats (daemon
+	// mode only — see Dependencies.Heartbeat and heartbeat.go).
+	heartbeat *heartbeatState
 }
 
 // Dependencies bundles the inputs Service needs at construction time.
@@ -186,6 +200,15 @@ type Dependencies struct {
 	RemoteSelfPort  int
 	RemoteJobID     string
 	RemoteProjectID string
+
+	// PoolMode mirrors `opencode serve --pool-mode`; see Service.poolMode.
+	PoolMode bool
+
+	// Heartbeat enables scheduled heartbeat turns and the setup reminder
+	// (openspec capability bridge-heartbeat). serve sets it only in daemon
+	// mode: flow runners and pool pods also run the bridge, but a
+	// heartbeat there would run the default agent on a flow's session.
+	Heartbeat bool
 }
 
 // New constructs a Service from the given dependencies. It does NOT start
@@ -221,14 +244,19 @@ func New(deps Dependencies) (*Service, error) {
 		projectID:       deps.ProjectID,
 		dataDir:         deps.DataDir,
 		adapters:        make(map[string]bridge.Adapter),
+		requesters:      newRequesterCache(),
 		inboundCh:       make(chan bridge.Inbound, 64),
 		dispatchers:     make(map[string]*sessionDispatch),
 		remoteRegistrar: deps.RemoteRegistrar,
 		remoteSelfHost:  deps.RemoteSelfHost,
 		remoteSelfPort:  deps.RemoteSelfPort,
 		remoteProjectID: projectID,
+		poolMode:        deps.PoolMode,
 	}
 	svc.remoteJobID.Store(deps.RemoteJobID)
+	if deps.Heartbeat {
+		svc.heartbeat = &heartbeatState{reminded: map[string]bool{}, agents: map[string]agent.Service{}}
+	}
 	mode, ok := bridge.NormalizeToolUpdateVerbosity(deps.RouterCfg.ToolUpdateVerbosity)
 	if !ok {
 		logging.Warn("bridge: unrecognised router.toolUpdateVerbosity, falling back to compact",
@@ -321,6 +349,10 @@ func (s *Service) Start(ctx context.Context) error {
 	// to the cron's session. Without it the synthetic messages the
 	// scheduler writes are only visible in the TUI / cron-jobs page.
 	s.cronOutputRouter = s.newCronOutputRouter()
+
+	if s.heartbeat != nil {
+		s.launchSupervised("heartbeat-scheduler", s.runHeartbeats)
+	}
 
 	// Boot-time adapter launch: iterate every enabled identity in the
 	// router config and call LaunchAdapter. Per-identity failures are

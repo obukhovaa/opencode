@@ -2,6 +2,7 @@ package flow
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -445,13 +446,40 @@ func TestResolveSessionPrefix(t *testing.T) {
 				return
 			}
 			if tt.specPrefix == "" {
-				if got == "" {
-					t.Error("resolveSessionPrefix() returned empty string for timestamp fallback")
+				if !defaultSessionPrefixRe.MatchString(got) {
+					t.Errorf("resolveSessionPrefix() = %q, want match %s", got, defaultSessionPrefixRe)
 				}
 			} else if got != tt.want {
 				t.Errorf("resolveSessionPrefix() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// defaultSessionPrefixRe is the shape of the prefix a flow without
+// `session.prefix` gets: unix seconds plus a random 6-hex suffix.
+var defaultSessionPrefixRe = regexp.MustCompile(`^\d{10}-[0-9a-f]{6}$`)
+
+// TestResolveSessionPrefixDefaultIsUniqueWithinSecond guards against two runs
+// of a stateless flow started in the same second deriving identical session
+// IDs (the fresh-start wipe of one would then delete the other's sessions).
+func TestResolveSessionPrefixDefaultIsUniqueWithinSecond(t *testing.T) {
+	const n = 1000
+	seen := make(map[string]struct{}, n)
+	for range n {
+		got, err := resolveSessionPrefix("", nil)
+		if err != nil {
+			t.Fatalf("resolveSessionPrefix() error: %v", err)
+		}
+		if !defaultSessionPrefixRe.MatchString(got) {
+			t.Fatalf("resolveSessionPrefix() = %q, want match %s", got, defaultSessionPrefixRe)
+		}
+		seen[got] = struct{}{}
+	}
+	// 24 random bits: a birthday collision among 1000 draws is ~3%, so allow
+	// a couple rather than flake; a regression to the bare second yields ~1.
+	if len(seen) < n-5 {
+		t.Errorf("got %d distinct prefixes out of %d calls, want ~%d", len(seen), n, n)
 	}
 }
 

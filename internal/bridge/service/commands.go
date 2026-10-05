@@ -11,6 +11,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/cron"
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 )
 
 // CommandHandler is the contract chat-command implementations satisfy.
@@ -49,6 +50,7 @@ func (s *Service) ChatCommands() map[string]CommandHandler {
 		"rename":    s.cmdRename,
 		"compact":   s.cmdCompact,
 		"crons":     s.cmdCrons,
+		"heartbeat": s.cmdHeartbeat,
 		"reset":     s.cmdReset,
 		"new":       s.cmdReset, // alias of /reset, matching the TUI's /new
 		"abort":     s.cmdAbort,
@@ -453,7 +455,10 @@ func (s *Service) cmdCompact(ctx context.Context, in bridge.Inbound) *bridge.Com
 		// Detached from the inbound ctx: compaction outlives the command turn,
 		// and the inbound ctx may be cancelled once we return the ack below.
 		bg := context.Background()
-		if err := activeAgent.SummarizeSync(bg, sessionID); err != nil {
+		// Attribute the summarizer trace to the command's author, as a chat
+		// turn is. Resolved here so a slow lookup never delays the ack.
+		summarizeCtx := tools.WithRequester(bg, s.requesterFor(bg, in))
+		if err := activeAgent.SummarizeSync(summarizeCtx, sessionID); err != nil {
 			s.replyToPeerWithHint(bg, peer, replyText(fmt.Sprintf(
 				"Compaction failed for session %s: %s", shortSessionID(sessionID), err.Error())))
 			return
@@ -692,6 +697,7 @@ func (s *Service) helpEntriesForChannel(channel string) []helpEntry {
 		{Cmd: "/rename <new title>", Desc: "rename the current session"},
 		{Cmd: "/compact", Desc: "summarize the current session to shrink its context"},
 		{Cmd: "/crons", Desc: "list active scheduled cron jobs (★ = current session)"},
+		{Cmd: "/heartbeat [on|off|now|…]", Desc: "show or set this chat's heartbeat (scheduled check-ins)"},
 		{Cmd: "/reset", Desc: "forget this binding; next message starts fresh"},
 		{Cmd: "/new", Desc: "alias of /reset"},
 		{Cmd: "/abort", Desc: "cancel an in-flight run on the current session"},

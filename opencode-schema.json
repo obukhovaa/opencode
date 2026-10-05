@@ -11,7 +11,7 @@
       },
       "properties": {
         "allowTools": {
-          "description": "Tool allow-list: the agent gets exactly these tools and nothing else, so a tool added to the harness later is not granted until it is listed. Entries are exact tool names or wildcard patterns using the same case-sensitive matching as 'tools' keys (e.g. \"gitlab_*\"); a single \"*\" entry allows everything. Engine-injected tools are not implicit — list 'struct_output' if the agent has an output schema and 'toolsearch' if it sets deferredTools. A bare \"*\" does not opt in to default-deny tools (croncreate/crondelete/cronlist); name those explicitly. Mutually exclusive with 'tools'.",
+          "description": "Tool allow-list: the agent gets exactly these tools and nothing else, so a tool added to the harness later is not granted until it is listed. Entries are exact tool names or wildcard patterns using the same case-sensitive matching as 'tools' keys (e.g. \"gitlab_*\"); a single \"*\" entry allows everything. Engine-injected tools are not implicit — list 'struct_output' if the agent has an output schema and 'toolsearch' if it sets deferredTools. A bare \"*\" does not opt in to default-deny tools (croncreate/crondelete/cronlist/heartbeat); name those explicitly. Mutually exclusive with 'tools'.",
           "items": {
             "type": "string"
           },
@@ -20,6 +20,12 @@
         "color": {
           "description": "Badge color for subagent display (e.g., 'blue', 'orange', 'primary', 'warning')",
           "type": "string"
+        },
+        "compactionThreshold": {
+          "description": "Fraction of the model's context window, in (0, 1], at which this agent's sessions auto-compact (default 0.95). A flow step's compact.threshold overrides it; the top-level autoCompact flag still decides whether compaction runs at all. Out-of-range values are ignored with a warning.",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "type": "number"
         },
         "context": {
           "description": "Scoped context files for this agent's system prompt. Declared paths replace (default) or append to the global contextPaths. Path entries support the ${agent}, ${flow.id}, ${flow.step}, and ${env.VAR} template tokens and must resolve inside the working directory. See docs/context.md.",
@@ -107,6 +113,8 @@
             "claude-4.8-opus",
             "claude-5-opus",
             "claude-5-sonnet",
+            "claude-5.5-opus",
+            "claude-5.5-sonnet",
             "claude-fable-5",
             "claude-fable-5-1",
             "bedrock.eu-claude-haiku-4-5",
@@ -116,6 +124,8 @@
             "bedrock.eu-claude-opus-4-8",
             "bedrock.eu-claude-opus-5",
             "bedrock.eu-claude-sonnet-5",
+            "bedrock.eu-claude-opus-5-5",
+            "bedrock.eu-claude-sonnet-5-5",
             "bedrock.eu-claude-fable-5",
             "bedrock.eu-claude-fable-5-1",
             "bedrock.claude-haiku-4-5",
@@ -125,6 +135,8 @@
             "bedrock.claude-opus-4-8",
             "bedrock.claude-opus-5",
             "bedrock.claude-sonnet-5",
+            "bedrock.claude-opus-5-5",
+            "bedrock.claude-sonnet-5-5",
             "bedrock.claude-fable-5",
             "bedrock.claude-fable-5-1",
             "gemini-3.0-flash",
@@ -141,8 +153,10 @@
             "vertexai.claude-opus-4-7",
             "vertexai.claude-opus-4-8",
             "vertexai.claude-opus-5",
+            "vertexai.claude-opus-5-5",
             "vertexai.claude-sonnet-4-6",
             "vertexai.claude-sonnet-5",
+            "vertexai.claude-sonnet-5-5",
             "vertexai.gemini-3.0-flash",
             "vertexai.gemini-3.0-pro",
             "yandexcloud.aliceai-llm",
@@ -263,7 +277,7 @@
         },
         "properties": {
           "allowTools": {
-            "description": "Tool allow-list: the agent gets exactly these tools and nothing else, so a tool added to the harness later is not granted until it is listed. Entries are exact tool names or wildcard patterns using the same case-sensitive matching as 'tools' keys (e.g. \"gitlab_*\"); a single \"*\" entry allows everything. Engine-injected tools are not implicit — list 'struct_output' if the agent has an output schema and 'toolsearch' if it sets deferredTools. A bare \"*\" does not opt in to default-deny tools (croncreate/crondelete/cronlist); name those explicitly. Mutually exclusive with 'tools'.",
+            "description": "Tool allow-list: the agent gets exactly these tools and nothing else, so a tool added to the harness later is not granted until it is listed. Entries are exact tool names or wildcard patterns using the same case-sensitive matching as 'tools' keys (e.g. \"gitlab_*\"); a single \"*\" entry allows everything. Engine-injected tools are not implicit — list 'struct_output' if the agent has an output schema and 'toolsearch' if it sets deferredTools. A bare \"*\" does not opt in to default-deny tools (croncreate/crondelete/cronlist/heartbeat); name those explicitly. Mutually exclusive with 'tools'.",
             "items": {
               "type": "string"
             },
@@ -272,6 +286,12 @@
           "color": {
             "description": "Badge color for subagent display (e.g., 'blue', 'orange', 'primary', 'warning')",
             "type": "string"
+          },
+          "compactionThreshold": {
+            "description": "Fraction of the model's context window, in (0, 1], at which this agent's sessions auto-compact (default 0.95). A flow step's compact.threshold overrides it; the top-level autoCompact flag still decides whether compaction runs at all. Out-of-range values are ignored with a warning.",
+            "exclusiveMinimum": 0,
+            "maximum": 1,
+            "type": "number"
           },
           "context": {
             "description": "Scoped context files for this agent's system prompt. Declared paths replace (default) or append to the global contextPaths. Path entries support the ${agent}, ${flow.id}, ${flow.step}, and ${env.VAR} template tokens and must resolve inside the working directory. See docs/context.md.",
@@ -359,6 +379,8 @@
               "claude-4.8-opus",
               "claude-5-opus",
               "claude-5-sonnet",
+              "claude-5.5-opus",
+              "claude-5.5-sonnet",
               "claude-fable-5",
               "claude-fable-5-1",
               "bedrock.eu-claude-haiku-4-5",
@@ -368,6 +390,8 @@
               "bedrock.eu-claude-opus-4-8",
               "bedrock.eu-claude-opus-5",
               "bedrock.eu-claude-sonnet-5",
+              "bedrock.eu-claude-opus-5-5",
+              "bedrock.eu-claude-sonnet-5-5",
               "bedrock.eu-claude-fable-5",
               "bedrock.eu-claude-fable-5-1",
               "bedrock.claude-haiku-4-5",
@@ -377,6 +401,8 @@
               "bedrock.claude-opus-4-8",
               "bedrock.claude-opus-5",
               "bedrock.claude-sonnet-5",
+              "bedrock.claude-opus-5-5",
+              "bedrock.claude-sonnet-5-5",
               "bedrock.claude-fable-5",
               "bedrock.claude-fable-5-1",
               "gemini-3.0-flash",
@@ -393,8 +419,10 @@
               "vertexai.claude-opus-4-7",
               "vertexai.claude-opus-4-8",
               "vertexai.claude-opus-5",
+              "vertexai.claude-opus-5-5",
               "vertexai.claude-sonnet-4-6",
               "vertexai.claude-sonnet-5",
+              "vertexai.claude-sonnet-5-5",
               "vertexai.gemini-3.0-flash",
               "vertexai.gemini-3.0-pro",
               "yandexcloud.aliceai-llm",
@@ -530,6 +558,43 @@
           "default": "30m",
           "description": "How long an async subagent task may persist no new message on its own session before the runtime treats it as stalled and kills it, letting the step complete instead of parking until the flow deadline. Go duration string; \"0\" or any non-positive value disables detection. MUST exceed the largest single tool-call budget in the deployment (bash foreground hard cap 10m; MCP per-call budget 5m by default, raisable without limit via mcpServers.\u003cname\u003e.callToolTimeoutSeconds) or healthy subagents are killed mid-call. Applies to subagent tasks only — bash and monitor tasks are process-backed and a monitor is supposed to sit silent until its pattern matches. Defaults to \"30m\".",
           "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "cliTools": {
+      "additionalProperties": false,
+      "description": "Workspace-defined CLI tools: declarative manifests (.agents/tools/\u003cname\u003e.yaml, .opencode/tools/, ~/.config/opencode/tools, ~/.agents/tools) that wrap a host binary as a first-class tool executed argv-only (no shell). Agents receive a tool only when they name it in `tools`/`allowTools` (manifest `grant: explicit`, the default). See docs/cli-tools.md.",
+      "properties": {
+        "disabled": {
+          "default": false,
+          "description": "Turn the feature off: no manifest is read and no CLI tool is built. OPENCODE_DISABLE_CLI_TOOLS=true is the environment equivalent.",
+          "type": "boolean"
+        },
+        "maxOutputBytes": {
+          "description": "Output cap a manifest inherits when it sets no `maxOutputBytes`: a positive value caps the bytes kept in the model context (the rest is spilled to a file and replaced by a head+tail preview, as for webFetch.maxOutputBytes and an MCP server's callToolMaxOutputBytes); a negative value disables the cap; zero or omitted keeps the built-in 51200. OPENCODE_CLI_TOOLS_MAX_OUTPUT_BYTES overrides it.",
+          "type": "integer"
+        },
+        "maxTimeout": {
+          "description": "Cap on the per-call `timeout` parameter for manifests that set no `maxTimeout`; same format. Built-in default 10m, never below `timeout`. OPENCODE_CLI_TOOLS_MAX_TIMEOUT overrides it.",
+          "type": [
+            "string",
+            "integer"
+          ]
+        },
+        "paths": {
+          "description": "Extra directories scanned (non-recursively) for *.yaml / *.yml / *.json manifests after the project and global locations. Supports ~ for the home directory and relative paths (resolved against the working directory).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "timeout": {
+          "description": "Per-call timeout a manifest inherits when it sets no `timeout`: a Go duration (\"90s\", \"2m\") or a number of seconds. Built-in default 2m. OPENCODE_CLI_TOOLS_TIMEOUT overrides it. Applied identically by the native tools and by `opencode tools serve`.",
+          "type": [
+            "string",
+            "integer"
+          ]
         }
       },
       "type": "object"
@@ -1059,6 +1124,11 @@
           },
           "type": "object"
         },
+        "heartbeatReminder": {
+          "default": true,
+          "description": "Daemon mode: post the weekly heartbeat setup reminder to direct-message chats whose heartbeat was never turned on or off. Only top-level DMs of a bot this process owns (inbound not mediated) are reminded. Set false to stop the reminder for every chat; /heartbeat and scheduled beats are unaffected.",
+          "type": "boolean"
+        },
         "permissionMode": {
           "description": "How permission requests are resolved on bridge-owned sessions: 'allow' auto-approves, 'deny' auto-denies, 'ask' or empty defers to the opencode UI (hangs headless). Unrecognised values fail-safe to deny.",
           "enum": [
@@ -1349,6 +1419,100 @@
           "description": "Prefix for custom (non-Langfuse-standard) metadata keys on traces and generations. When set, keys like flow_id and agent_id become namespace.flow_id, namespace.agent_id — grouping them visually in the Langfuse UI while keeping each value independently filterable. Empty (default) preserves flat keys.",
           "type": "string"
         },
+        "redaction": {
+          "additionalProperties": false,
+          "description": "Client-side removal of secrets from telemetry payloads before they are exported. Applies to tool input/output, LLM request/response, trace input/output, span metadata and error messages. Enabled by default; built-in detectors cover GitLab/Slack/AWS/Langfuse/Anthropic/GitHub credentials, JWTs, PEM private keys, credentials in URLs and authorization headers, and secret-shaped environment assignments.",
+          "properties": {
+            "allowlist": {
+              "description": "Literal values never to redact, even when a detector matches them.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "disableBuiltins": {
+              "description": "Names of built-in detectors to switch off (e.g. 'generic-sk'). An unknown name fails config loading.",
+              "items": {
+                "enum": [
+                  "gitlab-pat",
+                  "slack-token",
+                  "aws-access-key-id",
+                  "langfuse-key",
+                  "anthropic-key",
+                  "github-token",
+                  "jwt",
+                  "private-key",
+                  "url-userinfo",
+                  "auth-header",
+                  "secret-assignment",
+                  "generic-sk",
+                  "email",
+                  "ipv4",
+                  "ipv6",
+                  "phone"
+                ],
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "enabled": {
+              "default": true,
+              "description": "Enable secret redaction. Defaults to true. Set false to export payloads unredacted (pre-1.0 behavior).",
+              "type": "boolean"
+            },
+            "mode": {
+              "default": "fingerprint",
+              "description": "Replacement marker form. 'fingerprint' (default) emits [REDACTED:\u003cdetector\u003e:\u003c6 hex of SHA-256\u003e], which lets you tell one recurring secret from many distinct ones without exposing either; 'strict' omits the fingerprint; 'remove' deletes the value entirely.",
+              "enum": [
+                "fingerprint",
+                "strict",
+                "remove"
+              ],
+              "type": "string"
+            },
+            "pii": {
+              "default": false,
+              "description": "Enable the personal-data detector group (email, IPv4, IPv6, phone). Off by default: agent telemetry legitimately carries emails (Jira assignees, git authors) and IPs (pod addresses), so redacting them by default would mangle ordinary output.",
+              "type": "boolean"
+            },
+            "rules": {
+              "description": "Operator-supplied detectors, applied after all built-ins. An array (not an object) so rule names and patterns keep their case through config loading.",
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "group": {
+                    "default": 0,
+                    "description": "Capture group to replace. 0 (default) replaces the whole match.",
+                    "type": "integer"
+                  },
+                  "name": {
+                    "description": "Detector name; appears in the replacement marker. Must be unique.",
+                    "type": "string"
+                  },
+                  "pattern": {
+                    "description": "Go (RE2) regular expression. Lookahead and lookbehind are NOT supported — match the surrounding text and put the secret in a capture group, then set 'group'.",
+                    "type": "string"
+                  },
+                  "replacement": {
+                    "description": "Literal replacement text. When empty, the standard marker is used.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "pattern"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "requester": {
+          "description": "Fallback value for the trace's requester metadata (the person a run works for). Used only when neither a 'requester' flow arg nor a per-turn requester is known — the per-turn one is the chat message's author (resolved to an email where the platform allows) or, for a scheduled job, the requester of the turn that created it. Suits a single-user deployment; leave empty when several people share the agent.",
+          "type": "string"
+        },
         "tags": {
           "description": "Static tags attached to every LLM request when the provider metadata has a tags field configured. Useful for environment labels (e.g., 'prod', 'dev', 'team-a').",
           "items": {
@@ -1419,6 +1583,17 @@
     "wd": {
       "description": "Working directory for the application",
       "type": "string"
+    },
+    "webFetch": {
+      "description": "Web fetch tool configuration",
+      "properties": {
+        "maxOutputBytes": {
+          "default": 51200,
+          "description": "Cap, in bytes, on the content a single webfetch call keeps in the model context. Content over the cap is saved in full to a temp file and replaced by a head+tail preview naming that file, which the agent explores with grep/read. A positive value sets the cap; a negative value disables it (unbounded); 0 or omitted uses the built-in default of 51200 (50KB).",
+          "type": "integer"
+        }
+      },
+      "type": "object"
     },
     "webSearch": {
       "description": "Web search provider configuration",

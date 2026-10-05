@@ -8,6 +8,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	"github.com/opencode-ai/opencode/internal/redact"
 )
 
 // JSONSchemaType represents a JSON Schema type
@@ -23,6 +24,18 @@ type JSONSchemaType struct {
 	AnyOf                []map[string]any `json:"anyOf,omitempty"`
 	Default              any              `json:"default,omitempty"`
 }
+
+// redactionModes and redactionBuiltins read the published enums straight off
+// the redact package, so the schema cannot drift from what the loader accepts.
+func redactionModes() []string {
+	out := make([]string, 0, len(redact.Modes))
+	for _, m := range redact.Modes {
+		out = append(out, string(m))
+	}
+	return out
+}
+
+func redactionBuiltins() []string { return redact.BuiltinNames() }
 
 func main() {
 	schema := generateSchema()
@@ -415,7 +428,7 @@ func generateSchema() map[string]any {
 				},
 				"allowTools": map[string]any{
 					"type":        "array",
-					"description": "Tool allow-list: the agent gets exactly these tools and nothing else, so a tool added to the harness later is not granted until it is listed. Entries are exact tool names or wildcard patterns using the same case-sensitive matching as 'tools' keys (e.g. \"gitlab_*\"); a single \"*\" entry allows everything. Engine-injected tools are not implicit — list 'struct_output' if the agent has an output schema and 'toolsearch' if it sets deferredTools. A bare \"*\" does not opt in to default-deny tools (croncreate/crondelete/cronlist); name those explicitly. Mutually exclusive with 'tools'.",
+					"description": "Tool allow-list: the agent gets exactly these tools and nothing else, so a tool added to the harness later is not granted until it is listed. Entries are exact tool names or wildcard patterns using the same case-sensitive matching as 'tools' keys (e.g. \"gitlab_*\"); a single \"*\" entry allows everything. Engine-injected tools are not implicit — list 'struct_output' if the agent has an output schema and 'toolsearch' if it sets deferredTools. A bare \"*\" does not opt in to default-deny tools (croncreate/crondelete/cronlist/heartbeat); name those explicitly. Mutually exclusive with 'tools'.",
 					"items": map[string]any{
 						"type": "string",
 					},
@@ -444,6 +457,12 @@ func generateSchema() map[string]any {
 					"type":        "integer",
 					"description": "Advisory token budget for the full agentic loop (minimum 20000). Only supported by models with SupportsTaskBudget. The budget is carried across compaction via the remaining field.",
 					"minimum":     20000,
+				},
+				"compactionThreshold": map[string]any{
+					"type":             "number",
+					"description":      "Fraction of the model's context window, in (0, 1], at which this agent's sessions auto-compact (default 0.95). A flow step's compact.threshold overrides it; the top-level autoCompact flag still decides whether compaction runs at all. Out-of-range values are ignored with a warning.",
+					"exclusiveMinimum": 0,
+					"maximum":          1,
 				},
 				"context": map[string]any{
 					"type":        "object",
@@ -729,6 +748,39 @@ func generateSchema() map[string]any {
 		},
 	}
 
+	// Add workspace CLI tools configuration (docs/cli-tools.md)
+	schema["properties"].(map[string]any)["cliTools"] = map[string]any{
+		"type":        "object",
+		"description": "Workspace-defined CLI tools: declarative manifests (.agents/tools/<name>.yaml, .opencode/tools/, ~/.config/opencode/tools, ~/.agents/tools) that wrap a host binary as a first-class tool executed argv-only (no shell). Agents receive a tool only when they name it in `tools`/`allowTools` (manifest `grant: explicit`, the default). See docs/cli-tools.md.",
+		"properties": map[string]any{
+			"paths": map[string]any{
+				"type":        "array",
+				"description": "Extra directories scanned (non-recursively) for *.yaml / *.yml / *.json manifests after the project and global locations. Supports ~ for the home directory and relative paths (resolved against the working directory).",
+				"items": map[string]any{
+					"type": "string",
+				},
+			},
+			"disabled": map[string]any{
+				"type":        "boolean",
+				"description": "Turn the feature off: no manifest is read and no CLI tool is built. OPENCODE_DISABLE_CLI_TOOLS=true is the environment equivalent.",
+				"default":     false,
+			},
+			"timeout": map[string]any{
+				"type":        []string{"string", "integer"},
+				"description": "Per-call timeout a manifest inherits when it sets no `timeout`: a Go duration (\"90s\", \"2m\") or a number of seconds. Built-in default 2m. OPENCODE_CLI_TOOLS_TIMEOUT overrides it. Applied identically by the native tools and by `opencode tools serve`.",
+			},
+			"maxTimeout": map[string]any{
+				"type":        []string{"string", "integer"},
+				"description": "Cap on the per-call `timeout` parameter for manifests that set no `maxTimeout`; same format. Built-in default 10m, never below `timeout`. OPENCODE_CLI_TOOLS_MAX_TIMEOUT overrides it.",
+			},
+			"maxOutputBytes": map[string]any{
+				"type":        "integer",
+				"description": "Output cap a manifest inherits when it sets no `maxOutputBytes`: a positive value caps the bytes kept in the model context (the rest is spilled to a file and replaced by a head+tail preview, as for webFetch.maxOutputBytes and an MCP server's callToolMaxOutputBytes); a negative value disables the cap; zero or omitted keeps the built-in 51200. OPENCODE_CLI_TOOLS_MAX_OUTPUT_BYTES overrides it.",
+			},
+		},
+		"additionalProperties": false,
+	}
+
 	// Add web search configuration
 	schema["properties"].(map[string]any)["webSearch"] = map[string]any{
 		"type":        "object",
@@ -756,6 +808,19 @@ func generateSchema() map[string]any {
 					},
 					"required": []string{"baseUrl"},
 				},
+			},
+		},
+	}
+
+	// Add web fetch configuration
+	schema["properties"].(map[string]any)["webFetch"] = map[string]any{
+		"type":        "object",
+		"description": "Web fetch tool configuration",
+		"properties": map[string]any{
+			"maxOutputBytes": map[string]any{
+				"type":        "integer",
+				"description": "Cap, in bytes, on the content a single webfetch call keeps in the model context. Content over the cap is saved in full to a temp file and replaced by a head+tail preview naming that file, which the agent explores with grep/read. A positive value sets the cap; a negative value disables it (unbounded); 0 or omitted uses the built-in default of 51200 (50KB).",
+				"default":     51200,
 			},
 		},
 	}
@@ -854,6 +919,80 @@ func generateSchema() map[string]any {
 				},
 				"additionalProperties": false,
 			},
+			"redaction": map[string]any{
+				"type": "object",
+				"description": "Client-side removal of secrets from telemetry payloads before they are exported. " +
+					"Applies to tool input/output, LLM request/response, trace input/output, span metadata and error messages. " +
+					"Enabled by default; built-in detectors cover GitLab/Slack/AWS/Langfuse/Anthropic/GitHub credentials, JWTs, " +
+					"PEM private keys, credentials in URLs and authorization headers, and secret-shaped environment assignments.",
+				"properties": map[string]any{
+					"enabled": map[string]any{
+						"type":        "boolean",
+						"description": "Enable secret redaction. Defaults to true. Set false to export payloads unredacted (pre-1.0 behavior).",
+						"default":     true,
+					},
+					"mode": map[string]any{
+						"type": "string",
+						"description": "Replacement marker form. 'fingerprint' (default) emits [REDACTED:<detector>:<6 hex of SHA-256>], " +
+							"which lets you tell one recurring secret from many distinct ones without exposing either; " +
+							"'strict' omits the fingerprint; 'remove' deletes the value entirely.",
+						"enum":    redactionModes(),
+						"default": string(redact.ModeFingerprint),
+					},
+					"disableBuiltins": map[string]any{
+						"type":        "array",
+						"description": "Names of built-in detectors to switch off (e.g. 'generic-sk'). An unknown name fails config loading.",
+						"items": map[string]any{
+							"type": "string",
+							"enum": redactionBuiltins(),
+						},
+					},
+					"pii": map[string]any{
+						"type": "boolean",
+						"description": "Enable the personal-data detector group (email, IPv4, IPv6, phone). Off by default: agent telemetry " +
+							"legitimately carries emails (Jira assignees, git authors) and IPs (pod addresses), so redacting them by default " +
+							"would mangle ordinary output.",
+						"default": false,
+					},
+					"rules": map[string]any{
+						"type":        "array",
+						"description": "Operator-supplied detectors, applied after all built-ins. An array (not an object) so rule names and patterns keep their case through config loading.",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"name": map[string]any{
+									"type":        "string",
+									"description": "Detector name; appears in the replacement marker. Must be unique.",
+								},
+								"pattern": map[string]any{
+									"type": "string",
+									"description": "Go (RE2) regular expression. Lookahead and lookbehind are NOT supported — " +
+										"match the surrounding text and put the secret in a capture group, then set 'group'.",
+								},
+								"group": map[string]any{
+									"type":        "integer",
+									"description": "Capture group to replace. 0 (default) replaces the whole match.",
+									"default":     0,
+								},
+								"replacement": map[string]any{
+									"type":        "string",
+									"description": "Literal replacement text. When empty, the standard marker is used.",
+								},
+							},
+							"required":             []string{"name", "pattern"},
+							"additionalProperties": false,
+						},
+					},
+					"allowlist": map[string]any{
+						"type":        "array",
+						"description": "Literal values never to redact, even when a detector matches them.",
+						"items": map[string]any{
+							"type": "string",
+						},
+					},
+				},
+				"additionalProperties": false,
+			},
 			"tools": map[string]any{
 				"type":        "object",
 				"description": "Controls what tool call data is logged to the telemetry backend. When enabled is false, no tool input/output is logged.",
@@ -916,6 +1055,10 @@ func generateSchema() map[string]any {
 			"metadataNamespace": map[string]any{
 				"type":        "string",
 				"description": "Prefix for custom (non-Langfuse-standard) metadata keys on traces and generations. When set, keys like flow_id and agent_id become namespace.flow_id, namespace.agent_id — grouping them visually in the Langfuse UI while keeping each value independently filterable. Empty (default) preserves flat keys.",
+			},
+			"requester": map[string]any{
+				"type":        "string",
+				"description": "Fallback value for the trace's requester metadata (the person a run works for). Used only when neither a 'requester' flow arg nor a per-turn requester is known — the per-turn one is the chat message's author (resolved to an email where the platform allows) or, for a scheduled job, the requester of the turn that created it. Suits a single-user deployment; leave empty when several people share the agent.",
 			},
 		},
 		"additionalProperties": false,
@@ -1069,6 +1212,11 @@ func generateSchema() map[string]any {
 				"type":        "boolean",
 				"description": "When true, the bridge sends an in-place-editable '⏳ queued' acknowledgement to a sender whose message is enqueued behind an in-flight agent run. The ack is updated as the queue drains and resolved to '▶ Processing…' when the run starts. Disabled by default; enable for reviewers who need visibility into queue depth.",
 				"default":     false,
+			},
+			"heartbeatReminder": map[string]any{
+				"type":        "boolean",
+				"description": "Daemon mode: post the weekly heartbeat setup reminder to direct-message chats whose heartbeat was never turned on or off. Only top-level DMs of a bot this process owns (inbound not mediated) are reminded. Set false to stop the reminder for every chat; /heartbeat and scheduled beats are unaffected.",
+				"default":     true,
 			},
 			"channels": map[string]any{
 				"type":        "object",

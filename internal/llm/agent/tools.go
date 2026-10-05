@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
+	"github.com/opencode-ai/opencode/internal/clitool"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/format"
@@ -59,6 +60,7 @@ var (
 		tools.CronListToolName,
 		tools.TodoWriteToolName,
 		tools.RouterSendToolName,
+		tools.HeartbeatToolName,
 	}
 )
 
@@ -140,7 +142,7 @@ func NewToolSet(
 		case tools.ViewImageToolName:
 			return tools.NewViewImageTool()
 		case tools.WebFetchToolName:
-			return tools.NewFetchTool(reg, permissions)
+			return tools.NewFetchTool(config.Get(), reg, permissions)
 		case tools.SkillToolName:
 			return tools.NewSkillTool(permissions, reg, agentID)
 		case tools.SourcegraphToolName:
@@ -206,6 +208,10 @@ func NewToolSet(
 				Cfg:       cfg,
 				MediaRoot: mediaRoot,
 			})
+		case tools.HeartbeatToolName:
+			// Late-bound: the bridge installs the configurer after the
+			// primary agents' tool sets are built.
+			return tools.NewHeartbeatTool(factory.HeartbeatConfigurer)
 		default:
 			return nil
 		}
@@ -241,9 +247,12 @@ func NewToolSet(
 		// Cron tools are default-deny: an agent must opt in by setting the
 		// tool to true in its config. Without this hivemind would inherit
 		// "enabled" for any tool not explicitly listed in its Tools map.
+		// The heartbeat tool changes a chat's schedule, so it is opt-in
+		// the same way.
 		isCronTool := name == tools.CronCreateToolName ||
 			name == tools.CronDeleteToolName ||
-			name == tools.CronListToolName
+			name == tools.CronListToolName ||
+			name == tools.HeartbeatToolName
 
 		var enabled bool
 		if isCronTool {
@@ -269,6 +278,23 @@ func NewToolSet(
 			delivery := ResolveSchemaDelivery(info, overrideModel)
 			logging.Info("Using structured output", "agent", agentID, "delivery", string(delivery), "schema", resolved)
 			result <- tools.NewStructOutputToolWithDelivery(resolved, delivery)
+		}
+	}
+
+	// Workspace-defined CLI tools (docs/cli-tools.md): one native tool per
+	// valid manifest. `grant: explicit` (the default) needs the agent to
+	// name the tool — a bare "*" does not count, exactly like the cron
+	// tools — so no type has to carry a deny line for a tool it never
+	// asked for; `grant: implicit` follows the deny-list default like MCP.
+	for _, m := range clitool.Tools() {
+		var enabled bool
+		if m.Grant == clitool.GrantImplicit {
+			enabled = reg.IsToolEnabled(agentID, m.Name)
+		} else {
+			enabled = reg.IsToolExplicitlyEnabled(agentID, m.Name)
+		}
+		if enabled {
+			result <- maybeDefer(tools.NewCLITool(m, permissions, reg))
 		}
 	}
 
@@ -349,6 +375,17 @@ func (a *agent) resolveTools() []tools.BaseTool {
 			} else {
 				toolNames = append(toolNames, t.Info().Name)
 			}
+		}
+		// A workspace CLI tool and an MCP tool may end up with the same
+		// name (MCP names are <server>_<tool>); dispatch is by first exact
+		// match, so say so instead of letting one silently shadow the other.
+		seen := make(map[string]bool, len(toolSet))
+		for _, t := range toolSet {
+			n := t.Info().Name
+			if seen[n] {
+				logging.Warn("Duplicate tool name in toolset; the first registered wins at dispatch", "agent", a.AgentID(), "tool", n)
+			}
+			seen[n] = true
 		}
 		a.tools = toolSet
 		a.toolsResolved.Store(true)

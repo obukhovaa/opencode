@@ -15,6 +15,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/permission"
 )
 
@@ -34,26 +35,58 @@ type fetchTool struct {
 	agentRegistry agentregistry.Registry
 	client        *http.Client
 	permissions   permission.Service
+	// maxOutputBytes caps the content this tool keeps in the model context;
+	// -1 means unbounded. Resolved once at construction from webFetch
+	// .maxOutputBytes — see resolveWebFetchMaxOutputBytes.
+	maxOutputBytes int
 }
 
 const (
-	WebFetchToolName     = "webfetch"
-	browserUserAgent     = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-	fetchToolDescription = `Fetches text-based content (HTML, JSON, plain text, XML) from an HTTP/HTTPS URL and returns it as text, markdown (default), or html.
+	WebFetchToolName = "webfetch"
+	browserUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	// webFetchMaxOutputBytes is the default cap on the content a single
+	// webfetch call keeps in the model context. Matches the bash tool's
+	// MaxOutputBytes and the MCP default (mcpCallToolMaxOutputBytes) so
+	// operators learn one number. Overridable via webFetch.maxOutputBytes.
+	webFetchMaxOutputBytes = 50 * 1024 // 50KB
+	fetchToolDescription   = `Fetches text-based content (HTML, JSON, plain text, XML) from an HTTP/HTTPS URL and returns it as text, markdown (default), or html.
 
 - Max response size 5MB; no authentication or cookies; binary content (archives, PDFs, images, executables) is rejected — use bash with curl for downloads.
+- Large pages are truncated in the reply and saved in full to a temp file named in the output: search that file with grep (or sed in bash) for what you need instead of re-fetching the URL.
 - Retries with a browser User-Agent when Cloudflare bot protection is detected.
 - If another available tool offers better fetching for the target (e.g. an MCP tool), prefer it.`
+	// bodyTruncationNotice is prepended to the returned content when the
+	// response body hit the 5MB read limit, so the agent never treats a
+	// torn document as a complete one.
+	bodyTruncationNotice = "<webfetch: response exceeded the %d-byte limit and was truncated before conversion; the end of the page is missing>\n\n"
 )
 
-func NewFetchTool(agents agentregistry.Registry, permissions permission.Service) BaseTool {
+func NewFetchTool(cfg *config.Config, agents agentregistry.Registry, permissions permission.Service) BaseTool {
 	return &fetchTool{
 		agentRegistry: agents,
 		client: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		permissions: permissions,
+		permissions:    permissions,
+		maxOutputBytes: resolveWebFetchMaxOutputBytes(cfg),
 	}
+}
+
+// resolveWebFetchMaxOutputBytes returns the per-call output-size cap (bytes).
+// A positive webFetch.maxOutputBytes overrides the default; a negative value
+// disables the cap (-1, "unlimited"); zero or an absent config falls back to
+// webFetchMaxOutputBytes. Mirrors resolveCallToolMaxOutputBytes for MCP.
+func resolveWebFetchMaxOutputBytes(cfg *config.Config) int {
+	if cfg == nil || cfg.WebFetch == nil {
+		return webFetchMaxOutputBytes
+	}
+	switch {
+	case cfg.WebFetch.MaxOutputBytes < 0:
+		return -1
+	case cfg.WebFetch.MaxOutputBytes > 0:
+		return cfg.WebFetch.MaxOutputBytes
+	}
+	return webFetchMaxOutputBytes
 }
 
 func (t *fetchTool) Info() ToolInfo {
@@ -202,9 +235,23 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 		}
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSize))
+	// Read one byte past the limit so an oversized body is detectable: a
+	// chunked or compressed response carries no Content-Length, so the check
+	// above cannot catch it and the read would otherwise stop silently
+	// mid-document and be converted as though complete.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSize+1))
 	if err != nil {
 		return NewTextErrorResponse("Failed to read response body: " + err.Error()), nil
+	}
+	bodyTruncated := int64(len(body)) > maxSize
+	if bodyTruncated {
+		// Cut back to the limit, snapped to a rune boundary so the tail of
+		// the body is never a split UTF-8 character.
+		cut := int(maxSize)
+		for cut > 0 && !utf8.RuneStart(body[cut]) {
+			cut--
+		}
+		body = body[:cut]
 	}
 
 	if isBinaryContent(resp.Header.Get("Content-Type"), body) {
@@ -219,6 +266,13 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	content := string(body)
 	contentType := resp.Header.Get("Content-Type")
 
+	// Each branch formats the body; the cap is applied once below, on the
+	// formatted result. Measuring post-conversion is deliberate: it is the
+	// converted text that enters the context (a 433KB HTML page becomes
+	// 374KB of markdown), and it keeps the spilled file byte-identical to
+	// what the preview shows, so grepping the file and reading the preview
+	// see the same document.
+	var out string
 	switch format {
 	case "text":
 		if strings.Contains(contentType, "text/html") {
@@ -226,9 +280,10 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 			if err != nil {
 				return NewTextErrorResponse("Failed to extract text from HTML: " + err.Error()), nil
 			}
-			return NewTextResponse(text), nil
+			out = text
+		} else {
+			out = content
 		}
-		return NewTextResponse(content), nil
 
 	case "markdown":
 		if strings.Contains(contentType, "text/html") {
@@ -236,17 +291,28 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 			if err != nil {
 				return NewTextErrorResponse("Failed to convert HTML to Markdown: " + err.Error()), nil
 			}
-			return NewTextResponse(markdown), nil
+			out = markdown
+		} else {
+			out = "```\n" + content + "\n```"
 		}
 
-		return NewTextResponse("```\n" + content + "\n```"), nil
-
-	case "html":
-		return NewTextResponse(content), nil
-
-	default:
-		return NewTextResponse(content), nil
+	default: // "html" and any future format: return the body as fetched
+		out = content
 	}
+
+	preview, filePath := PersistLargeOutput(out, "webfetch", WebFetchToolName, t.maxOutputBytes)
+	if filePath != "" {
+		logging.Info("webfetch output capped",
+			"url", params.URL, "format", format, "totalBytes", len(out),
+			"maxOutputBytes", t.maxOutputBytes, "file", filePath)
+	}
+	// The notice goes on after capping: it describes the fetch, not the
+	// document, so it stays out of the spilled file and always sits at the
+	// top of what the model reads.
+	if bodyTruncated {
+		preview = fmt.Sprintf(bodyTruncationNotice, maxSize) + preview
+	}
+	return NewTextResponse(preview), nil
 }
 
 func (t *fetchTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {

@@ -17,6 +17,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/hooks"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/redact"
 	"github.com/spf13/viper"
 )
 
@@ -126,6 +127,11 @@ type Agent struct {
 	// name for this agent. Empty inherits.
 	StructOutputSchemaDelivery string `json:"structOutputSchemaDelivery,omitempty"`
 	TaskBudget                 int64  `json:"taskBudget,omitempty"`
+	// CompactionThreshold is the fraction of the model's context window, in
+	// (0, 1], at which this agent's session auto-compacts. Zero inherits the
+	// default (0.95). A flow step's compact.threshold still wins, and the
+	// global autoCompact flag still decides whether compaction runs at all.
+	CompactionThreshold float64 `json:"compactionThreshold,omitempty"`
 	// Context scopes which context files feed this agent's system prompt
 	// instead of the global contextPaths (paths, replace/append mode, and
 	// the nested-disclosure opt-out). Defined in internal/contextfile so
@@ -237,16 +243,60 @@ type ToolTelemetryConfig = CaptureTelemetryConfig
 // far the largest payload OpenCode handles, so capturing them is opt-in.
 type GenerationTelemetryConfig = CaptureTelemetryConfig
 
+// RedactionRule is an operator-supplied redaction detector.
+//
+// Declared as an array element rather than a map entry on purpose: viper
+// case-folds map keys, so a rule keyed by name would have its name lowercased
+// and a rule keyed by pattern would have the pattern itself corrupted
+// ("[A-Z]" -> "[a-z]"). Keeping every operator string in a value position is
+// what makes the loader safe. See TestConfig_RedactionRulesSurviveViper.
+type RedactionRule struct {
+	Name        string `json:"name"`
+	Pattern     string `json:"pattern"`
+	Group       int    `json:"group,omitempty"`
+	Replacement string `json:"replacement,omitempty"`
+}
+
+// RedactionConfig controls client-side removal of secrets from telemetry
+// payloads before they are exported.
+//
+// Enabled is a *bool so "unset" is distinguishable from an explicit false:
+// redaction defaults to ON, and a security control that silently defaults off
+// when the section is present but partially filled would be a trap.
+type RedactionConfig struct {
+	Enabled         *bool           `json:"enabled,omitempty"`
+	Mode            string          `json:"mode,omitempty"`
+	DisableBuiltins []string        `json:"disableBuiltins,omitempty"`
+	PII             bool            `json:"pii,omitempty"`
+	Rules           []RedactionRule `json:"rules,omitempty"`
+	Allowlist       []string        `json:"allowlist,omitempty"`
+}
+
+// IsEnabled reports whether redaction should run. Nil config or unset Enabled
+// both mean on.
+func (r *RedactionConfig) IsEnabled() bool {
+	if r == nil || r.Enabled == nil {
+		return true
+	}
+	return *r.Enabled
+}
+
 // TelemetryConfig defines telemetry configuration for identifying requests.
 type TelemetryConfig struct {
 	UserID            string                     `json:"userId,omitempty"`
 	Tags              []string                   `json:"tags,omitempty"`
 	DefaultTags       []string                   `json:"defaultTags,omitempty"`
 	Langfuse          *LangfuseConfig            `json:"langfuse,omitempty"`
+	Redaction         *RedactionConfig           `json:"redaction,omitempty"`
 	Tools             *ToolTelemetryConfig       `json:"tools,omitempty"`
 	Generations       *GenerationTelemetryConfig `json:"generations,omitempty"`
 	FlowArgs          []string                   `json:"flowArgs,omitempty"`          // Top-level flow arg names (wildcards supported) to extract into trace metadata
 	MetadataNamespace string                     `json:"metadataNamespace,omitempty"` // Prefix for custom (non-Langfuse-standard) metadata keys; empty = flat keys (default)
+	// Requester is the fallback value for the trace's `requester` metadata,
+	// used when neither a `requester` flow arg nor a per-turn requester (the
+	// chat message's author, or a cron job's stored requester) is known.
+	// Suits a single-user deployment; leave empty on a shared one.
+	Requester string `json:"requester,omitempty"`
 }
 
 // ProviderMetadata defines metadata key-value pairs attached to every LLM API request.
@@ -453,6 +503,39 @@ type SkillsConfig struct {
 	MaxListingChars int `json:"maxListingChars,omitempty"`
 }
 
+// CLIToolsConfig governs workspace-defined CLI tools: declarative manifests
+// (`.agents/tools/<name>.yaml`) that wrap a host binary as a first-class tool
+// with argv-only execution. Manifests are discovered from the project, the
+// user's global directories and Paths; see docs/cli-tools.md.
+type CLIToolsConfig struct {
+	// Paths lists extra directories scanned (non-recursively) for manifests
+	// after the project and global locations. Supports "~" and relative
+	// paths (resolved against the working directory), as Skills.Paths does.
+	Paths []string `json:"paths,omitempty"`
+	// Disabled turns the feature off: no manifest is read and no CLI tool is
+	// built, so agent toolsets are identical to a workspace without
+	// manifests. OPENCODE_DISABLE_CLI_TOOLS=true is the environment
+	// equivalent.
+	Disabled bool `json:"disabled,omitempty"`
+	// Timeout is the per-call timeout a manifest inherits when it sets no
+	// `timeout`: a Go duration ("90s", "2m") or a number of seconds. The
+	// built-in default is 2m. OPENCODE_CLI_TOOLS_TIMEOUT overrides it. The
+	// same value applies to the native tools and to `opencode tools serve`.
+	Timeout string `json:"timeout,omitempty"`
+	// MaxTimeout caps the per-call `timeout` parameter for manifests that
+	// set no `maxTimeout`; same format, built-in default 10m, never below
+	// Timeout. OPENCODE_CLI_TOOLS_MAX_TIMEOUT overrides it.
+	MaxTimeout string `json:"maxTimeout,omitempty"`
+	// MaxOutputBytes is the output cap a manifest inherits when it sets no
+	// `maxOutputBytes`. A positive value caps the output kept in the model
+	// context (the rest is spilled to a file and replaced by a head+tail
+	// preview, as for webFetch.maxOutputBytes and the MCP
+	// callToolMaxOutputBytes); a negative value disables the cap; zero or
+	// omitted keeps the built-in 50KB. OPENCODE_CLI_TOOLS_MAX_OUTPUT_BYTES
+	// overrides it.
+	MaxOutputBytes int `json:"maxOutputBytes,omitempty"`
+}
+
 // WebSearchProvider defines configuration for a single web search provider.
 type WebSearchProvider struct {
 	BaseURL     string `json:"baseUrl"`               // Full URL to POST search queries to (required)
@@ -463,6 +546,18 @@ type WebSearchProvider struct {
 // WebSearchConfig defines configuration for web search providers.
 type WebSearchConfig struct {
 	Providers map[string]WebSearchProvider `json:"providers"`
+}
+
+// WebFetchConfig defines configuration for the webfetch tool.
+type WebFetchConfig struct {
+	// MaxOutputBytes caps the size, in bytes, of a single webfetch call's
+	// content kept in the model context. A positive value is used as the
+	// cap; a negative value disables the cap entirely (unbounded output);
+	// zero or omitted falls back to the built-in default (50KB). Content
+	// over the cap is spilled to the process scratch directory and replaced
+	// by a head+tail preview naming the file — see
+	// openspec/specs/webfetch-output-limit/spec.md.
+	MaxOutputBytes int `json:"maxOutputBytes,omitempty"`
 }
 
 // PermissionConfig defines permission configuration.
@@ -505,9 +600,12 @@ type Config struct {
 	DisableLSPDownload bool                  `json:"disableLSPDownload,omitempty"`
 	SessionProvider    SessionProviderConfig `json:"sessionProvider,omitempty"`
 	Skills             *SkillsConfig         `json:"skills,omitempty"`
-	Permission         *PermissionConfig     `json:"permission,omitempty"`
-	WebSearch          *WebSearchConfig      `json:"webSearch,omitempty"`
-	MaxTurns           int                   `json:"maxTurns,omitempty"`
+	// CLITools configures workspace-defined CLI tools (docs/cli-tools.md).
+	CLITools   *CLIToolsConfig   `json:"cliTools,omitempty"`
+	Permission *PermissionConfig `json:"permission,omitempty"`
+	WebSearch  *WebSearchConfig  `json:"webSearch,omitempty"`
+	WebFetch   *WebFetchConfig   `json:"webFetch,omitempty"`
+	MaxTurns   int               `json:"maxTurns,omitempty"`
 	// StructOutputSchemaDelivery selects where a flow step's output JSON
 	// Schema is placed in the request: "message" (default) keeps the
 	// struct_output tool definition invariant and ships the schema in the
@@ -1022,6 +1120,12 @@ func applyDefaultValues() {
 	}
 }
 
+// ValidCompactionThreshold reports whether v is a usable per-agent
+// compactionThreshold: a fraction of the context window in (0, 1].
+func ValidCompactionThreshold(v float64) bool {
+	return v > 0 && v <= 1
+}
+
 // It validates model IDs and providers, ensuring they are supported.
 func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 	if err := ValidateAgentPromptSource(string(name), agent.Prompt != "", agent.LangfusePromptPath); err != nil {
@@ -1029,6 +1133,16 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 	}
 	if err := ValidateAgentToolsSource(string(name), len(agent.Tools) > 0, len(agent.AllowTools) > 0); err != nil {
 		return err
+	}
+	// Checked before the model checks below: several of them return early,
+	// and an out-of-range threshold must never reach the agent loop.
+	if agent.CompactionThreshold != 0 && !ValidCompactionThreshold(agent.CompactionThreshold) {
+		logging.Warn("invalid compactionThreshold, must be in (0, 1]; using the default",
+			"agent", name,
+			"compaction_threshold", agent.CompactionThreshold)
+		updatedAgent := cfg.Agents[name]
+		updatedAgent.CompactionThreshold = 0
+		cfg.Agents[name] = updatedAgent
 	}
 
 	// Check if model exists
@@ -1387,6 +1501,41 @@ func ValidateAgentToolsSource(id string, hasTools, hasAllowTools bool) error {
 	return nil
 }
 
+// validateRedactionConfig validates telemetry redaction settings. Every failure
+// here is fatal on purpose: a filter that silently drops a mistyped rule is
+// worse than no filter, because the operator believes they are covered.
+func validateRedactionConfig(rc *RedactionConfig) error {
+	if rc == nil {
+		return nil
+	}
+	if rc.Mode != "" && !redact.ValidMode(redact.Mode(rc.Mode)) {
+		return fmt.Errorf("telemetry.redaction: unsupported mode %q (supported: %v)", rc.Mode, redact.Modes)
+	}
+	known := make(map[string]bool, len(redact.BuiltinNames()))
+	for _, n := range redact.BuiltinNames() {
+		known[n] = true
+	}
+	for _, n := range rc.DisableBuiltins {
+		if !known[strings.ToLower(strings.TrimSpace(n))] {
+			return fmt.Errorf("telemetry.redaction: disableBuiltins names unknown detector %q (known: %v)",
+				n, redact.BuiltinNames())
+		}
+	}
+	seen := make(map[string]bool, len(rc.Rules))
+	for _, r := range rc.Rules {
+		if err := redact.ValidateRule(redact.Rule{
+			Name: r.Name, Pattern: r.Pattern, Group: r.Group, Replacement: r.Replacement,
+		}); err != nil {
+			return fmt.Errorf("telemetry.redaction: %w", err)
+		}
+		if seen[r.Name] {
+			return fmt.Errorf("telemetry.redaction: duplicate rule name %q", r.Name)
+		}
+		seen[r.Name] = true
+	}
+	return nil
+}
+
 // validateTelemetryConfig validates telemetry configuration.
 func validateTelemetryConfig(telemetry *TelemetryConfig) error {
 	if telemetry == nil {
@@ -1407,6 +1556,9 @@ func validateTelemetryConfig(telemetry *TelemetryConfig) error {
 				return fmt.Errorf("telemetry: metadataNamespace %q contains invalid character %q (only alphanumeric and underscore allowed)", ns, string(r))
 			}
 		}
+	}
+	if err := validateRedactionConfig(telemetry.Redaction); err != nil {
+		return err
 	}
 	if lf := telemetry.Langfuse; lf != nil && lf.Enabled {
 		pk := resolveEnvValue(lf.PublicKey, "LANGFUSE_PUBLIC_KEY")

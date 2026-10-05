@@ -52,7 +52,7 @@ func TestToolDescriptionBudgets(t *testing.T) {
 		{NewDeleteTool(nil, nil, nil), defaultDescriptionBudget},
 		{NewPatchTool(nil, nil, nil, nil), defaultDescriptionBudget},
 		{NewViewImageTool(), defaultDescriptionBudget},
-		{NewFetchTool(nil, nil), defaultDescriptionBudget},
+		{NewFetchTool(nil, nil, nil), defaultDescriptionBudget},
 		{NewSourcegraphTool(), defaultDescriptionBudget},
 		{NewLspTool(nil), defaultDescriptionBudget},
 		{NewStructOutputTool(map[string]any{}), defaultDescriptionBudget},

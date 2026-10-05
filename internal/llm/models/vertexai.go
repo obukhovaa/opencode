@@ -11,8 +11,10 @@ const (
 	VertexAIOpus47        ModelID = "vertexai.claude-opus-4-7"
 	VertexAIOpus48        ModelID = "vertexai.claude-opus-4-8"
 	VertexAIOpus5         ModelID = "vertexai.claude-opus-5"
+	VertexAIOpus55        ModelID = "vertexai.claude-opus-5-5"
 	VertexAISonnet46      ModelID = "vertexai.claude-sonnet-4-6"
 	VertexAISonnet5       ModelID = "vertexai.claude-sonnet-5"
+	VertexAISonnet55      ModelID = "vertexai.claude-sonnet-5-5"
 	VertexAIHaiku45       ModelID = "vertexai.claude-haiku-4-5"
 	VertexAIFable5        ModelID = "vertexai.claude-fable-5"
 	VertexAIFable51       ModelID = "vertexai.claude-fable-5-1"
@@ -139,6 +141,26 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsTaskBudget:       AnthropicModels[Claude5Opus].SupportsTaskBudget,
 		SupportsToolSearch:       AnthropicModels[Claude5Opus].SupportsToolSearch,
 	},
+	VertexAIOpus55: {
+		ID:                       VertexAIOpus55,
+		Name:                     "VertexAI: Claude Opus 5.5",
+		Provider:                 ProviderVertexAI,
+		APIModel:                 "claude-opus-5-5",
+		CostPer1MIn:              AnthropicModels[Claude55Opus].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[Claude55Opus].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[Claude55Opus].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[Claude55Opus].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[Claude55Opus].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[Claude55Opus].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[Claude55Opus].SupportsAttachments,
+		CanReason:                AnthropicModels[Claude55Opus].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[Claude55Opus].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[Claude55Opus].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[Claude55Opus].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[Claude55Opus].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude55Opus].SupportsToolSearch,
+		RejectsForcedToolChoice:  AnthropicModels[Claude55Opus].RejectsForcedToolChoice,
+	},
 	VertexAIFable5: {
 		ID:                       VertexAIFable5,
 		Name:                     "VertexAI: Claude Fable 5",
@@ -176,6 +198,7 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsXHighThinking:    AnthropicModels[ClaudeFable51].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[ClaudeFable51].SupportsTaskBudget,
 		SupportsToolSearch:       AnthropicModels[ClaudeFable51].SupportsToolSearch,
+		RejectsForcedToolChoice:  AnthropicModels[ClaudeFable51].RejectsForcedToolChoice,
 	},
 	VertexAISonnet46: {
 		ID:                       VertexAISonnet46,
@@ -211,6 +234,26 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsXHighThinking:    AnthropicModels[Claude5Sonnet].SupportsXHighThinking,
 		SupportsTaskBudget:       AnthropicModels[Claude5Sonnet].SupportsTaskBudget,
 		SupportsToolSearch:       AnthropicModels[Claude5Sonnet].SupportsToolSearch,
+	},
+	VertexAISonnet55: {
+		ID:                       VertexAISonnet55,
+		Name:                     "VertexAI: Claude Sonnet 5.5",
+		Provider:                 ProviderVertexAI,
+		APIModel:                 "claude-sonnet-5-5",
+		CostPer1MIn:              AnthropicModels[Claude55Sonnet].CostPer1MIn,
+		CostPer1MInCached:        AnthropicModels[Claude55Sonnet].CostPer1MInCached,
+		CostPer1MOut:             AnthropicModels[Claude55Sonnet].CostPer1MOut,
+		CostPer1MOutCached:       AnthropicModels[Claude55Sonnet].CostPer1MOutCached,
+		ContextWindow:            AnthropicModels[Claude55Sonnet].ContextWindow,
+		DefaultMaxTokens:         AnthropicModels[Claude55Sonnet].DefaultMaxTokens,
+		SupportsAttachments:      AnthropicModels[Claude55Sonnet].SupportsAttachments,
+		CanReason:                AnthropicModels[Claude55Sonnet].CanReason,
+		SupportsAdaptiveThinking: AnthropicModels[Claude55Sonnet].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:  AnthropicModels[Claude55Sonnet].SupportsMaximumThinking,
+		SupportsXHighThinking:    AnthropicModels[Claude55Sonnet].SupportsXHighThinking,
+		SupportsTaskBudget:       AnthropicModels[Claude55Sonnet].SupportsTaskBudget,
+		SupportsToolSearch:       AnthropicModels[Claude55Sonnet].SupportsToolSearch,
+		RejectsForcedToolChoice:  AnthropicModels[Claude55Sonnet].RejectsForcedToolChoice,
 	},
 	VertexAIHaiku45: {
 		ID:                  VertexAIHaiku45,

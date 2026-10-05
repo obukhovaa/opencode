@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/heartbeat"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/pubsub"
@@ -80,7 +82,7 @@ type sessionDispatch struct {
 	sessionID string
 
 	inbound chan bridge.Inbound
-	parts   chan pubsub.Event[message.PartEvent]
+	parts   chan partItem
 
 	// mu guards overflowLog, overflow, and the non-blocking push/drain
 	// interlock. MUST NOT be held across I/O or across calls that acquire
@@ -126,6 +128,15 @@ type sessionDispatch struct {
 	// handlePartEvent feeds it from the parts goroutine.
 	progress atomic.Pointer[runProgress]
 
+	// textGuard records which assistant messages of the in-flight run
+	// have already been relayed to chat, so the terminal path, the
+	// intermediate-text path and the question flush post each message at
+	// most once. Nil when no bridge-dispatched run is in flight. Set in
+	// handleInbound once Run has started, cleared after partsDrainGrace.
+	// The terminal path and the flush read it; the parts path uses the
+	// guard bound to each partItem instead.
+	textGuard atomic.Pointer[runTextGuard]
+
 	// liveAcks remembers the outstanding queued-ack token per peer so it
 	// survives a busy-retry-budget re-queue. handleInbound's ack state is a
 	// local and budget expiry returns from handleInbound — without this the
@@ -135,6 +146,109 @@ type sessionDispatch struct {
 	// bridge.QueueAckToken. Entries are removed when the ack is resolved
 	// (run started) or when an edit fails (message gone — send a fresh one).
 	liveAcks sync.Map // map[string]bridge.QueueAckToken
+
+	// heartbeatQueued is true from the moment a beat is queued until that
+	// beat's run has finished, so a slow beat is never queued twice
+	// (bridge-heartbeat). fireHeartbeat claims it with CompareAndSwap.
+	// Whether a run's part events are quiet travels with the run's text
+	// guard (runTextGuard.quiet), never with the dispatcher: a late event
+	// of the human run before a beat must still reach the chat.
+	heartbeatQueued atomic.Bool
+
+	// beatActive is true while handleInbound handles a heartbeat turn.
+	// beat is the agent instance running that turn's Run (a model-override
+	// beat runs on its own instance), set only while the Run is in flight,
+	// so a preemption never cancels another actor's run on the session.
+	// beatPreempted is set when a human message is queued during the
+	// beat (see preemptHeartbeat). Guarded by mu.
+	beatActive    bool
+	beat          agent.Service
+	beatPreempted bool
+}
+
+// startHeartbeat marks a heartbeat turn as handled. It marks nothing and
+// returns false when a message is already queued: the beat yields to it.
+func (d *sessionDispatch) startHeartbeat() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.inbound) > 0 || len(d.overflow) > 0 {
+		return false
+	}
+	d.beatActive, d.beatPreempted = true, false
+	return true
+}
+
+// heartbeatRunStarted records ag as running the beat's Run. It reports
+// whether the beat was preempted meanwhile, in which case the caller
+// cancels the run it just started.
+func (d *sessionDispatch) heartbeatRunStarted(ag agent.Service) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.beat = ag
+	return d.beatPreempted
+}
+
+// heartbeatRunEnded records that the beat's Run has ended.
+func (d *sessionDispatch) heartbeatRunEnded() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.beat = nil
+}
+
+// endHeartbeat clears the heartbeat turn.
+func (d *sessionDispatch) endHeartbeat() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.beatActive, d.beat, d.beatPreempted = false, nil, false
+}
+
+// heartbeatPreempted reports whether a human message cancelled the
+// in-flight beat.
+func (d *sessionDispatch) heartbeatPreempted() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.beatPreempted
+}
+
+// preemptHeartbeat cancels the heartbeat turn in flight, if any, so the
+// human message just queued does not wait silently behind it. The beat
+// posts nothing and is recorded as skipped. A beat whose Run has not
+// started yet (or is waiting out another actor's run) sees the flag in
+// handleInbound and does not start, or cancels itself right after Run
+// returns.
+func (d *sessionDispatch) preemptHeartbeat() {
+	d.mu.Lock()
+	if !d.beatActive {
+		d.mu.Unlock()
+		return
+	}
+	d.beatPreempted = true
+	ag := d.beat
+	d.mu.Unlock()
+	if ag != nil {
+		logging.Info("bridge: message preempts the heartbeat run", "session", d.sessionID)
+		ag.Cancel(d.sessionID)
+	}
+}
+
+// hasQueuedInbound reports whether messages are waiting behind the
+// in-flight run. The heartbeat scheduler defers to them.
+func (d *sessionDispatch) hasQueuedInbound() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.inbound) > 0 || len(d.overflow) > 0
+}
+
+// partItem is one part event on d.parts, bound to the text guard of the
+// run whose subscription forwarded it. d.parts is shared by every run of
+// the session and runParts can lag behind (the intermediate-text post is
+// a blocking send), so the guard is bound when the event is forwarded,
+// not loaded when it is handled: a late event of run N must be checked
+// against run N's guard, not against nil (lost) or run N+1's (posted
+// twice).
+type partItem struct {
+	ev    pubsub.Event[message.PartEvent]
+	guard *runTextGuard
 }
 
 // newSessionDispatch constructs and launches the per-session dispatcher
@@ -158,7 +272,7 @@ func (s *Service) newSessionDispatch(sessionID string) *sessionDispatch {
 		svc:       s,
 		sessionID: sessionID,
 		inbound:   make(chan bridge.Inbound, dispatchInboundCap),
-		parts:     make(chan pubsub.Event[message.PartEvent], dispatchPartsCap),
+		parts:     make(chan partItem, dispatchPartsCap),
 	}
 	s.launchSupervised("session-dispatch/"+sessionID, d.run)
 	s.launchSupervised("session-dispatch-parts/"+sessionID, d.runParts)
@@ -234,14 +348,14 @@ func (d *sessionDispatch) runParts(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case ev, ok := <-d.parts:
+		case it, ok := <-d.parts:
 			if !ok {
 				return
 			}
 			if d.stop.Load() {
 				return
 			}
-			d.handlePartEvent(ev)
+			d.handlePartEvent(it.ev, it.guard)
 		}
 	}
 }
@@ -269,8 +383,31 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 		}
 	}()
 
+	hb := in.Heartbeat
+	if hb != nil {
+		// Heartbeat turns render quietly (the run's guard, below) and
+		// report their outcome. The claim is released by the deferred
+		// tail registered first, so it runs LAST — after the parts grace
+		// window below — and no second beat is queued before this one's
+		// trailing events are through.
+		defer d.heartbeatQueued.Store(false)
+	}
+
 	// Named `ag`, not `agent`: the local must not shadow the agent package.
 	ag := d.svc.app.ActiveAgent()
+	if hb != nil {
+		var err error
+		if ag, err = d.svc.heartbeatAgent(ctx, hb.Model); err != nil {
+			logging.Warn("bridge: heartbeat agent unavailable", "session", d.sessionID, "err", err)
+			d.finishHeartbeat(ctx, in.Peer, hb, "", err)
+			return
+		}
+		if !d.startHeartbeat() {
+			d.svc.recordHeartbeatOutcome(ctx, in.Peer, hb.At, heartbeat.OutcomeSkipped, heartbeatPreemptedReason)
+			return
+		}
+		defer d.endHeartbeat()
+	}
 	if ag == nil {
 		logging.Warn("bridge: no active agent; dropping inbound", "session", d.sessionID)
 		d.svc.replyToPeer(ctx, in.Peer,
@@ -292,6 +429,7 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	// grace window, so the trailing completions are counted before the
 	// terminal edit is rendered.
 	var prog *runProgress
+	var guard *runTextGuard
 	runStatus := progressStatusOK
 	partsCtx, partsCancel := context.WithCancel(ctx)
 	defer func() {
@@ -301,10 +439,17 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 		}
 		partsCancel()
 		d.progressFinish(prog, runStatus)
+		if guard != nil {
+			d.textGuard.CompareAndSwap(guard, nil)
+		}
 	}()
 	partsSub := d.svc.app.Messages.SubscribeParts(partsCtx)
 
 	atts := translateAttachments(in.Attachments)
+
+	// Attribute this turn's traces to the message author, so a daemon
+	// shared by several people records who each request came from.
+	runCtx := tools.WithRequester(ctx, d.svc.requesterFor(ctx, in))
 
 	// Bounded retry for ErrSessionBusy: the session-run ledger is
 	// process-global (session-run-exclusivity spec). Cross-actor holders
@@ -329,16 +474,26 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	deadline := time.Now().Add(busyRetryBudget)
 	ackThreshold := time.Now().Add(busyAckThreshold)
 	ack := queueAckState{lastPosition: -1}
-	if tok, ok := d.liveAcks.Load(peerAckKey(in.Peer)); ok {
+	if tok, ok := d.liveAcks.Load(peerAckKey(in.Peer)); ok && hb == nil {
 		// A previous retry cycle for this peer already has an ack message in
 		// chat (busy-retry budget expired and the inbound was re-queued).
-		// Reuse it so the peer sees one ack that keeps updating.
+		// Reuse it so the peer sees one ack that keeps updating. A beat
+		// has no ack and leaves a human message's ack alone.
 		ack.token, _ = tok.(bridge.QueueAckToken)
 	}
 	var runCh <-chan agent.AgentEvent
+	// runStartMs is taken before every attempt; the one before the attempt
+	// that succeeds marks where this run's parts begin (runTextGuard.sinceMs).
+	var runStartMs int64
 	for {
+		if hb != nil && d.heartbeatPreempted() {
+			// A message arrived before the beat's run started.
+			d.svc.recordHeartbeatOutcome(ctx, in.Peer, hb.At, heartbeat.OutcomeSkipped, heartbeatPreemptedReason)
+			return
+		}
 		var err error
-		runCh, err = ag.Run(ctx, d.sessionID, in.Text, 0, atts...)
+		runStartMs = time.Now().UnixMilli()
+		runCh, err = ag.Run(runCtx, d.sessionID, in.Text, 0, atts...)
 		if err == nil {
 			break
 		}
@@ -347,11 +502,29 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 			// resolved to "▶ Processing…" — that would contradict the failure
 			// reply sent immediately after. Leave the "⏳ queued" text in place.
 			logging.Warn("bridge: agent.Run failed", "session", d.sessionID, "err", err)
+			if hb != nil {
+				d.finishHeartbeat(ctx, in.Peer, hb, "", err)
+				return
+			}
 			d.svc.replyToPeer(ctx, in.Peer, runFailureMessage(err, d.sessionID), false, d.sessionID)
+			return
+		}
+		if hb != nil && !hb.Manual {
+			// Another actor took the session between the scheduler's
+			// idle check and this run. A scheduled beat never waits in
+			// line: hand it back to the scheduler, due now, for its next
+			// tick. A manual beat waits below, like a message.
+			d.svc.heartbeatDeferred(ctx, in.Peer, hb)
 			return
 		}
 		// ErrSessionBusy from a cross-actor holder. Check budget.
 		if time.Now().After(deadline) {
+			if hb != nil {
+				// A manual beat is not re-queued: say once that it
+				// could not run.
+				d.finishHeartbeat(ctx, in.Peer, hb, "", fmt.Errorf("the session stayed busy for %s", busyRetryBudget))
+				return
+			}
 			// Do NOT resolve the ack here: the message is being re-queued, not
 			// processed. Resolving would tell the peer "▶ Processing your
 			// message now…" while it goes back to the tail of the retry cycle.
@@ -360,26 +533,39 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 			d.pushInbound(in)
 			return
 		}
-		// Check / send / update the queued-ack.
-		d.tickQueueAck(ctx, in.Peer, &ack, &ackThreshold)
+		// Check / send / update the queued-ack. Heartbeat turns get none.
+		if hb == nil {
+			d.tickQueueAck(ctx, in.Peer, &ack, &ackThreshold)
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(busyRetryBackoff):
 		}
 	}
+	if hb != nil && d.heartbeatRunStarted(ag) {
+		// Preempted while Run was starting: the cancel found no run of
+		// the beat to stop yet.
+		ag.Cancel(d.sessionID)
+	}
 	// Run succeeded — resolve the ack before starting the run.
 	d.resolveQueueAck(ctx, in.Peer, ack.token)
-	prog = d.progressStart(ctx)
+	if hb == nil {
+		prog = d.progressStart(ctx)
+	}
+	guard = newRunTextGuard(runStartMs)
+	guard.quiet = hb != nil
+	d.textGuard.Store(guard)
 
 	// Fan part events into d.parts for outbound surface delivery (typing,
 	// tool-update prints). Filter to this session's parts; broker is
 	// process-wide and carries every session's events. The drainParts
 	// goroutine runs under the supervised launcher so a panic inside
 	// (e.g. a malformed PartEvent) cannot crash the orchestrator, and
-	// s.wg tracks it across Service.Stop.
+	// s.wg tracks it across Service.Stop. Each forwarded event carries
+	// this run's text guard (see partItem).
 	d.svc.launchSupervisedCtx("dispatch-parts/"+d.sessionID, partsCtx, func(ctx context.Context) {
-		d.drainParts(ctx, partsSub)
+		d.drainParts(ctx, partsSub, guard)
 	})
 
 	// Drain the agent's terminal event. The channel delivers exactly one
@@ -390,7 +576,67 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 		if ev.Type == agent.AgentEventTypeError {
 			runStatus = progressStatusError
 		}
+		if hb != nil {
+			d.heartbeatRunEnded()
+			d.handleHeartbeatTerminal(ctx, in.Peer, hb, ev)
+			continue
+		}
 		d.handleTerminalEvent(ctx, ev)
+	}
+}
+
+// handleHeartbeatTerminal delivers a heartbeat turn's outcome: nothing for
+// a silent acknowledgement, the reply under a heartbeat header otherwise,
+// one failure line for an error.
+func (d *sessionDispatch) handleHeartbeatTerminal(ctx context.Context, peer bridge.PeerRef, hb *bridge.HeartbeatTurn, ev agent.AgentEvent) {
+	if ev.Type == agent.AgentEventTypeResponse && ev.Message.FinishReason() == message.FinishReasonCanceled {
+		// Cancelled while a tool ran: the agent ends the run with a
+		// response, not an error, carrying the text the model wrote
+		// before the tool call. It is a cancellation all the same.
+		d.finishHeartbeat(ctx, peer, hb, "", agent.ErrRequestCancelled)
+		return
+	}
+	switch ev.Type {
+	case agent.AgentEventTypeSummarize:
+		return
+	case agent.AgentEventTypeError:
+		err := ev.Error
+		if err == nil {
+			err = errors.New("the run ended with an error")
+		}
+		d.finishHeartbeat(ctx, peer, hb, "", err)
+		return
+	}
+	d.finishHeartbeat(ctx, peer, hb, agentMessageText(ev.Message), nil)
+}
+
+// finishHeartbeat posts and records a beat's outcome. A beat cancelled
+// by a human message (preemptHeartbeat), /abort or shutdown posts
+// nothing and is recorded as skipped: a cancellation is not a failure. A
+// beat that completed before a preemption could stop it is reported as
+// usual.
+func (d *sessionDispatch) finishHeartbeat(ctx context.Context, peer bridge.PeerRef, hb *bridge.HeartbeatTurn, reply string, runErr error) {
+	header := heartbeat.Header(hb.At)
+	preempted := d.heartbeatPreempted()
+	switch {
+	case runErr != nil && (preempted || errors.Is(runErr, agent.ErrRequestCancelled) || errors.Is(runErr, context.Canceled)):
+		reason := "cancelled"
+		if preempted {
+			reason = heartbeatPreemptedReason
+		}
+		d.svc.recordHeartbeatOutcome(ctx, peer, hb.At, heartbeat.OutcomeSkipped, reason)
+	case runErr != nil:
+		reason := truncateOneLine(runErr.Error(), toolErrorPreviewRunes)
+		d.svc.replyToPeer(ctx, peer, header+" failed: "+reason, false, d.sessionID)
+		d.svc.recordHeartbeatOutcome(ctx, peer, hb.At, heartbeat.OutcomeError, reason)
+	case strings.TrimSpace(reply) == "" || heartbeat.IsSilentAck(reply):
+		d.svc.recordHeartbeatOutcome(ctx, peer, hb.At, heartbeat.OutcomeSilent, "")
+	default:
+		d.handleTerminalEvent(ctx, agent.AgentEvent{
+			Type:    agent.AgentEventTypeResponse,
+			Message: message.Message{Parts: []message.ContentPart{message.TextContent{Text: header + "\n\n" + reply}}},
+		})
+		d.svc.recordHeartbeatOutcome(ctx, peer, hb.At, heartbeat.OutcomeOK, "")
 	}
 }
 
@@ -514,7 +760,10 @@ func (d *sessionDispatch) resolveQueueAck(ctx context.Context, peer bridge.PeerR
 // Drop-oldest semantics are preserved — the consumer (runParts) drains
 // d.parts in parallel with handleInbound, so backlog is rare; when it
 // does happen, the oldest event is dropped first.
-func (d *sessionDispatch) drainParts(partsCtx context.Context, sub <-chan pubsub.Event[message.PartEvent]) {
+//
+// guard is the text guard of the run that owns sub; it travels with
+// every forwarded event (see partItem).
+func (d *sessionDispatch) drainParts(partsCtx context.Context, sub <-chan pubsub.Event[message.PartEvent], guard *runTextGuard) {
 	for {
 		select {
 		case <-partsCtx.Done():
@@ -526,8 +775,9 @@ func (d *sessionDispatch) drainParts(partsCtx context.Context, sub <-chan pubsub
 			if !d.isOwnedSession(partsCtx, ev.Payload.SessionID) {
 				continue
 			}
+			it := partItem{ev: ev, guard: guard}
 			select {
-			case d.parts <- ev:
+			case d.parts <- it:
 			default:
 				d.logOverflow()
 				// Drop oldest: try once more (non-blocking). The
@@ -539,7 +789,7 @@ func (d *sessionDispatch) drainParts(partsCtx context.Context, sub <-chan pubsub
 				default:
 				}
 				select {
-				case d.parts <- ev:
+				case d.parts <- it:
 				default:
 					// Still full — the consumer is wedged; surrender.
 				}
@@ -603,6 +853,14 @@ func (d *sessionDispatch) logOverflow() {
 // any text the agent had produced; struct-output events skip fan-out
 // (the flow engine drains the structured result separately).
 //
+// The terminal message is posted without a header. Earlier assistant
+// messages of the run that ended in tool_use are relayed by
+// postIntermediateText; the run's text guard makes sure a message that
+// path already posted (e.g. a run that ended on its turn limit) is not
+// posted a second time here. Intermediate posts still in flight are
+// waited for first (at most intermediateFlushWait), so the final reply
+// does not land above them.
+//
 // Implementation note: fan-out to bound peers happens through
 // Service.SendBySessionID which queries the store + dispatches to adapters
 // in a bounded worker pool — this dispatcher does NOT do outbound IO
@@ -617,6 +875,15 @@ func (d *sessionDispatch) handleTerminalEvent(ctx context.Context, ev agent.Agen
 	case agent.AgentEventTypeSummarize:
 		// Summarization is internal — no chat-surface delivery.
 		return
+	}
+
+	if g := d.textGuard.Load(); g != nil && ev.Message.ID != "" {
+		g.waitInFlight(ctx, intermediateFlushWait)
+		c, won := g.claim(ev.Message.ID)
+		if !won {
+			return
+		}
+		defer close(c.done)
 	}
 
 	text := agentMessageText(ev.Message)
@@ -703,10 +970,18 @@ func agentMessageText(m message.Message) string {
 // to the originating 🔧 call. Without it, two concurrent `bash` calls
 // would render as indistinguishable "🔧 bash" / "✓ bash" pairs.
 //
+// Intermediate assistant text: when the ToolCall that completes an
+// assistant message arrives (Finished, Input merged), the message's text
+// is read from the store and posted under a "⌛ <tools>" header before
+// anything else is emitted for that call, so it lands above the call's
+// card. This runs whatever the tool-update flag and verbosity are; see
+// relayIntermediateTextForPart. guard is the text guard of the run that
+// forwarded ev (nil: no bridge run, nothing is relayed).
+//
 // Per the chat-bridge spec the dispatcher MUST consume from d.parts
 // even when the outbound is suppressed — otherwise drainParts back-
 // pressures the broker subscription and stalls every other session.
-func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
+func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent], guard *runTextGuard) {
 	if d.svc.cfg == nil {
 		return
 	}
@@ -716,6 +991,14 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
 	// assistant message — its human-readable reaction to the synthetic
 	// ToolResult — still flows to chat through the normal text path.
 	if ev.Payload.Synthetic {
+		return
+	}
+	// Heartbeat turns post no tool-call cards and no intermediate text;
+	// their outcome is reported once, at the end (bridge-heartbeat). The
+	// flag is the run's own, carried by its guard, so it holds for an
+	// event handled after the beat ended and never touches a late event
+	// of the human run before the beat.
+	if guard != nil && guard.quiet {
 		return
 	}
 	tu := d.svc.cfg.ToolUpdatesEnabled
@@ -741,6 +1024,10 @@ func (d *sessionDispatch) handlePartEvent(ev pubsub.Event[message.PartEvent]) {
 		//   - #3 (the only useful one)           → emit
 		// A genuinely-no-args tool (e.g. get_all_projects → "{}")
 		// still passes because its Input is the literal "{}", not "".
+		//
+		// The text relay runs first and synchronously so its message is
+		// sent before the call card below.
+		d.relayIntermediateTextForPart(ev.Payload, part, guard)
 		if !tu || !part.Finished || part.Input == "" {
 			return
 		}

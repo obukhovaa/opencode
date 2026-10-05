@@ -71,3 +71,43 @@ func TestConfig_RouterQueueAcksDefaultFalse(t *testing.T) {
 		t.Errorf("QueueAcknowledgementsEnabled = true when omitted, want false (default)")
 	}
 }
+
+// TestConfig_RouterHeartbeatReminderViperRoundTrip locks in that
+// `router.heartbeatReminder` survives the real loader path and defaults to
+// on when omitted: only an explicit false turns the reminder off.
+func TestConfig_RouterHeartbeatReminderViperRoundTrip(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"omitted", `{"router": {"toolUpdatesEnabled": true}}`, true},
+		{"true", `{"router": {"heartbeatReminder": true}}`, true},
+		{"false", `{"router": {"heartbeatReminder": false}}`, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, ".opencode.json"), []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			v := viper.New()
+			v.SetConfigName(".opencode")
+			v.SetConfigType("json")
+			v.AddConfigPath(dir)
+			if err := v.ReadInConfig(); err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			var cfg Config
+			if err := v.Unmarshal(&cfg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if cfg.Router == nil {
+				t.Fatal("router config was dropped by the loader")
+			}
+			if got := cfg.Router.HeartbeatReminderEnabled(); got != tc.want {
+				t.Errorf("HeartbeatReminderEnabled() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

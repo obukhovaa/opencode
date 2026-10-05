@@ -608,3 +608,33 @@ func TestReadDenyPatterns(t *testing.T) {
 		})
 	}
 }
+
+// TestEvaluateToolPermissionWithDefault pins the layer order a workspace CLI
+// tool's manifest default occupies: below the tool-specific agent/global
+// rules, above the "*" wildcards.
+func TestEvaluateToolPermissionWithDefault(t *testing.T) {
+	def := map[string]any{"*": "ask", "sql *": "allow"}
+	cases := []struct {
+		name   string
+		agent  map[string]any
+		global map[string]any
+		def    map[string]any
+		input  string
+		want   Action
+	}{
+		{"default allows matching input", nil, nil, def, "sql -q 1", ActionAllow},
+		{"default base is ask", nil, nil, def, "connection list", ActionAsk},
+		{"agent tool rule beats default", map[string]any{"snow": map[string]any{"*": "ask"}}, nil, map[string]any{"*": "allow"}, "sql -q 1", ActionAsk},
+		{"global tool rule beats default", nil, map[string]any{"snow": "deny"}, map[string]any{"*": "allow"}, "sql -q 1", ActionDeny},
+		{"default beats agent wildcard", map[string]any{"*": "deny"}, nil, def, "sql -q 1", ActionAllow},
+		{"agent wildcard applies when default has no base", map[string]any{"*": "deny"}, nil, map[string]any{"sql *": "allow"}, "connection list", ActionDeny},
+		{"no rules at all is ask", nil, nil, nil, "x", ActionAsk},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := EvaluateToolPermissionWithDefault("snow", tc.input, tc.agent, tc.global, tc.def); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -33,3 +33,24 @@ func TestAnthropicCountTokens(t *testing.T) {
 		t.Errorf("Expect 12 tokens, actual %d", tokens)
 	}
 }
+
+func TestEstimateTokensCountsToolAndReasoningPayloads(t *testing.T) {
+	cases := []struct {
+		name string
+		part ContentPart
+		want int64
+	}{
+		{"text", TextContent{Text: "abcdefgh"}, (8 + 100) / BytesPerTokenEta},
+		{"tool call", ToolCall{Name: "bash", Input: `{"cmd":"ls"}`}, (4 + 12 + 100) / BytesPerTokenEta},
+		{"tool result", ToolResult{Content: "0123456789012345"}, (16 + 100) / BytesPerTokenEta},
+		{"reasoning", ReasoningContent{Thinking: "thinking"}, (8 + 100) / BytesPerTokenEta},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EstimateTokens([]Message{{Role: Assistant, Parts: []ContentPart{tc.part}}}, nil, BytesPerTokenEta)
+			if got != tc.want {
+				t.Errorf("EstimateTokens = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

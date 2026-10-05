@@ -27,6 +27,31 @@ CI enforces this in `.github/workflows/schema.yml` on every PR:
 
 When adding fields that contain hooks, agents, providers, or any map keyed on user-supplied names, ALSO add a unit test under `internal/config/` exercising `viper.Unmarshal` end-to-end. Viper case-folds map keys; pure `json.Unmarshal` tests pass but the loader silently mangles in production (see `TestConfig_HooksViperRoundTripLowercasesEventKeys`).
 
+## Docs index — read on demand
+
+Load the doc for the area you are changing; each is the reference for its feature's user-facing behaviour.
+
+| Doc | Read when |
+|---|---|
+| [`docs/flows.md`](docs/flows.md) | Touching `internal/flow` or authoring flow YAML: steps, routing, sessions, interactive steps, `include`/`extends` (also use the `flow-creator` skill) |
+| [`docs/bridge.md`](docs/bridge.md) | Touching `internal/bridge`: `router` config, Slack/Telegram/Mattermost/external adapters, `/router/*` API, chat commands, `router_send`, question UI |
+| [`docs/cron-and-heartbeat.md`](docs/cron-and-heartbeat.md) | Touching `internal/cron`, `internal/heartbeat`, the cron or `heartbeat` tools, or the bridge's heartbeat scheduler |
+| [`docs/background-tasks.md`](docs/background-tasks.md) | Touching `internal/task` or `bash run_in_background`, `task async`, `monitor`, `tasklist`, `taskstop`, and how they drain per mode |
+| [`docs/server.md`](docs/server.md) | Touching `opencode serve` (HTTP API, `internal/api`) or ACP mode |
+| [`docs/context.md`](docs/context.md) | Changing how `AGENTS.md`/`CLAUDE.md` context files are resolved, the agent/step `context` field, or nested discovery |
+| [`docs/skills.md`](docs/skills.md) | Touching `internal/skill`: skill discovery, permissions, preloading, substitution |
+| [`docs/custom-commands.md`](docs/custom-commands.md) | Touching markdown slash commands / the command palette |
+| [`docs/hooks.md`](docs/hooks.md) | Touching `internal/hooks` (Claude-Code-compatible hooks) |
+| [`docs/tool-permissions.md`](docs/tool-permissions.md) | Changing how an agent's `tools` / `allowTools` gate tools |
+| [`docs/cli-tools.md`](docs/cli-tools.md) | Touching `internal/clitool`, `opencode tools list\|serve`, or authoring `.agents/tools/*.yaml` manifests that wrap a host CLI as a first-class tool |
+| [`docs/deferred-tools.md`](docs/deferred-tools.md) | Touching `deferredTools`, `toolsearch` or server-side tool search |
+| [`docs/structured-output.md`](docs/structured-output.md) | Touching `struct_output` or `structOutputSchemaDelivery` |
+| [`docs/telemetry.md`](docs/telemetry.md) | Touching `internal/langfuse`, `internal/redact` or the `telemetry` config: traces, metadata, redaction, requester |
+| [`docs/session-providers.md`](docs/session-providers.md) | Configuring SQLite/MySQL session storage (writing migrations: sqlc in `internal/db/sql`, goose files in `internal/db/migrations`) |
+| [`docs/lsp.md`](docs/lsp.md) | Touching `internal/lsp` or the `lsp` tool |
+| [`README.md`](README.md) | Needing the user-facing overview, full config reference or environment variables |
+| `openspec/specs/<capability>/spec.md` | Before changing a feature's behaviour: its requirements and scenarios. In-flight changes live in `openspec/changes/` |
+
 ## Code Style Guidelines
 
 ### Imports
@@ -101,6 +126,7 @@ Agents can be configured in `.opencode.json`:
 - `skills`: List of skill names to preload into the agent's system prompt at startup (e.g., `["review", "domain-knowledge"]`). Skills are injected as `<skill_content>` blocks — the agent gets the knowledge without needing to invoke the skill tool. Only skills with `allow` or default (no explicit deny) permission are injected. Preloaded skills are independent of the skill tool — `tools: {"skill": false}` disables runtime loading but preloaded skills are still injected. Variable substitution (`$ARGUMENTS`, `${SKILL_DIR}`) and shell markup (`!`command``) are not expanded for preloaded skills.
 - `structOutputSchemaDelivery`: Where this agent's `struct_output` JSON Schema is placed in the request — `message` (default) or `tool`. In `message` mode the `struct_output` tool definition is byte-identical for every agent, step and schema, and the schema ships as a `<struct_output_schema>` block in the message tail; that keeps the provider's cached prefix (`tools` → `system` → `messages`) stable, so consecutive flow steps of one agent hit the cache instead of each writing a fresh entry. `tool` restores the pre-GENAI-325 behavior of splaying the schema into the tool's parameters. Also settable at the top level of `.opencode.json`; the per-agent value wins. Matched exactly (case-sensitive, no whitespace trimming) so the accepted set equals the published JSON-Schema enum; an unrecognized value warns and falls back to `message`. Message delivery is skipped automatically — falling back to `tool` — for non-object root schemas, schemas declaring their own `output` property, and Gemini-served models. Full docs: [docs/structured-output.md](docs/structured-output.md#where-the-schema-is-placed).
 - `taskBudget`: Advisory token budget for the full agentic loop (min 20,000). Only supported by models with `SupportsTaskBudget` (currently Claude Opus 4.7). Uses the `task-budgets-2026-03-13` beta header. The budget is carried across compaction via the `remaining` field.
+- `compactionThreshold`: Fraction of the model's context window, in (0, 1], at which this agent's sessions auto-compact (default 0.95). Precedence: flow step `compact.threshold` > agent `compactionThreshold` > 0.95. Gated by the top-level `autoCompact` — it never enables compaction on its own. Out-of-range values warn and fall back to the default. Also settable in markdown frontmatter — the place to set it for a markdown-defined agent: a JSON `agents.<id>` entry without `model` is given the default model and `maxTokens`, which replace the frontmatter values, so such an entry must repeat them. The check runs before a turn's first model call too (`processGeneration`'s pre-turn gate), and the count is floored by the session's last reported usage — see `openspec/specs/auto-compaction/spec.md`.
 - `permission`: Agent-specific permission overrides (supports granular glob patterns per tool)
 - `tools`: Enable/disable specific tools (e.g., `{"skill": false, "bash": false}`)
 - `deferredTools`: Opt-in on-demand tool loading (e.g., `{"jira_*": true}`). Matching enabled tools keep only their name in context until discovered via tool search: on models with `SupportsToolSearch` (Claude on anthropic/vertexai/bedrock) Anthropic's GA server-side tool search gives single-turn discovery with the prompt-cache prefix untouched; elsewhere (OpenAI-compatible, Gemini, Kimi) a client-side `toolsearch` tool loads schemas with two-turn activation. Patterns use the same wildcards as `tools`, matched case-insensitively (viper lowercases JSON keys). `toolsearch` and `struct_output` are never deferrable; disabling `toolsearch` while declaring deferrals ignores the deferral entirely (fail-open). Activation state is per session.
@@ -172,6 +198,10 @@ Skills are reusable instruction sets that agents can load on-demand. See [Skills
 - Wildcards: `internal-*: deny`, `*-test: ask`
 - Global: `*: ask`
 
+### Workspace CLI Tools
+
+A workspace wraps a host CLI as a first-class tool with one manifest under `.agents/tools/<name>.yaml` (also `.opencode/tools/`, `~/.config/opencode/tools`, `~/.agents/tools`, `cliTools.paths`). The binary runs **argv-only, no shell**, under the manifest's `args.deny` / `args.allow` globs, env / cwd / timeout / output confinement; policy rejections come back to the model as tool errors (the run continues). `mode: argv` (default) exposes `args: string[]` and never describes the CLI's subcommands — `--help` and skills do; `mode: structured` renders declared parameters onto a fixed argv template for lock-down (per-tenant tools such as `snow_dcs`). `grant: explicit` (default) means an agent receives the tool only by naming it in `tools:` / `allowTools` (a bare `"*"` does not count); `permission.<name>` globs on the argument string layer above the manifest's `permission` default; `deferredTools` applies by name. Limits a manifest leaves unset (`timeout`, `maxTimeout`, `maxOutputBytes`) come from `OPENCODE_CLI_TOOLS_*` over the `cliTools` config block over the built-ins, identically for the native tools and `opencode tools serve`. `opencode tools list [--strict] [--agent id]` audits the resolved set; `opencode tools serve` exposes the same manifests over stdio MCP for Claude Code (`.mcp.json`). Full reference: [docs/cli-tools.md](docs/cli-tools.md).
+
 ### Permission System
 
 Permissions use pattern matching with priority:
@@ -211,6 +241,7 @@ Permissions use pattern matching with priority:
 | `edit` | File path glob | `{"*": "deny", "src/**/*.go": "allow"}` |
 | `read` | File path glob | `{"*": "allow", "*.env": "deny"}` |
 | `task` | Subagent name glob | `{"*": "allow", "explorer": "allow"}` |
+| `<cli tool name>` | Argument-string glob (workspace CLI tool, e.g. `snow`) | `{"*": "ask", "sql *": "allow"}` |
 
 ### TUI Agent Switching
 
@@ -218,7 +249,7 @@ Press `tab` to cycle through primary agents (mode=`agent`, hidden=false) in the 
 
 ### Flow step templates (`include` / `extends`)
 
-Flow files can share step definitions: a top-level `include:` lists files of `.`-prefixed step templates that steps pull in via `extends:`. See [`docs/flows.md`](docs/flows.md#shared-step-templates-include--extends) and the `flow-creator` skill (`.agents/skills/flow-creator/`) for authoring; the implementation and its load-order / merge / reflection invariants live in `internal/flow/include.go` (heavily commented) and `openspec/changes/flow-step-includes/design.md`.
+Flow files can share step definitions: a top-level `include:` lists files of `.`-prefixed step templates that steps pull in via `extends:`. See [`docs/flows.md`](docs/flows.md#shared-step-templates-include--extends) and the `flow-creator` skill (`.agents/skills/flow-creator/`) for authoring; the implementation and its load-order / merge / reflection invariants live in `internal/flow/include.go` (heavily commented) and `openspec/changes/archive/2026-08-04-flow-step-includes/design.md`.
 
 ### Chat Bridge
 

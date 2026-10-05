@@ -99,6 +99,11 @@ func (s *Service) dispatchInbound(ctx context.Context, in bridge.Inbound) {
 			s.replyToPeerWithHint(ctx, in.Peer, reply)
 			return
 		}
+		// A /heartbeat the exact grammar could not parse is natural
+		// language: the agent carries it out with the heartbeat tool.
+		if in.Command == "heartbeat" && s.HeartbeatsEnabled() {
+			in.Text = s.heartbeatAgentRequest(ctx, in)
+		}
 	}
 
 	binding, err := s.resolveBinding(ctx, in.Peer)
@@ -137,6 +142,16 @@ func (s *Service) dispatchInbound(ctx context.Context, in bridge.Inbound) {
 		return
 	}
 
+	// A pool pod's only agent runs are flow steps, and an owned session was
+	// buffered above. Reaching the dispatcher here means no live step owns
+	// the session (e.g. the container restarted mid-step), and the default
+	// agent would run on it and orphan the reply.
+	if s.poolMode {
+		logging.Warn("bridge: dropping inbound for a session no live interactive step owns",
+			"session", binding.SessionID, "peer", in.Peer.PeerID)
+		return
+	}
+
 	// For multi-peer sessions, prepend the attribution envelope so the
 	// agent knows which reviewer spoke. Lookup once per inbound — the
 	// peerCount drives both the envelope decision and the fan-out cardinality.
@@ -149,6 +164,9 @@ func (s *Service) dispatchInbound(ctx context.Context, in bridge.Inbound) {
 
 	disp := s.dispatcherFor(binding.SessionID)
 	disp.pushInbound(in)
+	// A human message never waits silently behind a heartbeat: the beat
+	// in flight, if any, is cancelled (bridge-heartbeat).
+	disp.preemptHeartbeat()
 }
 
 // resolveBinding returns the binding for the inbound's peer, creating a
@@ -385,4 +403,20 @@ func splitChatCommand(text string) (cmd, args string) {
 		return rest, ""
 	}
 	return rest[:idx], strings.TrimSpace(rest[idx:])
+}
+
+// ownsInboundSession reports whether peer is bound to a session that a live
+// interactive flow step in this process owns. The binding row can outlive
+// the process (MySQL session provider); the interactive marker cannot, so a
+// restarted container reads as not owning it.
+func (s *Service) ownsInboundSession(ctx context.Context, peer bridge.PeerRef) (bool, error) {
+	b, err := s.store.GetBinding(ctx, s.projectID, peer.Channel, peer.Identity, peer.PeerID)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return b.SessionID != "" && s.app != nil && s.app.Permissions != nil &&
+		s.app.Permissions.IsInteractiveSession(b.SessionID), nil
 }

@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/opencode-ai/opencode/internal/cron"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -90,10 +92,25 @@ func (r *CronOutputRouter) handleUpdate(ctx context.Context, job cron.CronJob) {
 	if title == "" {
 		title = job.ID
 	}
-	body := fmt.Sprintf("⏲ %s\n\n%s", title, job.LastResult)
+	body := fmt.Sprintf("⏲ %s\n\n%s", title, stripTaskTrailer(job.LastResult))
 	for _, b := range bindings {
 		r.svc.replyToPeer(ctx, b.AsPeerRef(), body, false, job.SessionID)
 	}
 	logging.Info("bridge: cron output forwarded",
 		"session", job.SessionID, "id", job.ID, "peers", len(bindings))
+}
+
+// taskTrailerRegex matches the task_id / task_resume_hint trailer that the
+// task tool appends to a subagent's answer for the calling LLM (see
+// llm/agent/agent-tool.go buildTaskResponseContent). A cron run's LastResult
+// is that task tool result verbatim. The trailer is an instruction to the
+// parent agent, not part of the answer, so it is stripped before the result
+// is forwarded to chat. The session history keeps it: the scheduler writes
+// the unstripped result as a synthetic tool_result, which is where the parent
+// agent reads the task_id from. Same pattern as the TUI's copy in
+// tui/components/chat/message.go.
+var taskTrailerRegex = regexp.MustCompile(`(?s)\s*<task_id>[^<]*</task_id>\s*<task_resume_hint>.*?</task_resume_hint>\s*`)
+
+func stripTaskTrailer(s string) string {
+	return strings.TrimSpace(taskTrailerRegex.ReplaceAllString(s, ""))
 }

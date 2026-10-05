@@ -15,7 +15,7 @@ OpenCode is a CLI tool that brings AI assistance to your terminal. It provides a
 - **Chat bridge**: in-process Telegram / Slack / Mattermost adapters with multi-reviewer fan-out, router-initiated conversations, interactive question UI (buttons + inline keyboards), `router_send` agent tool, single-writer election, and per-identity health reporting ([guide](docs/bridge.md))
 - **Flows**: deterministic multi-step agent workflows defined in YAML ([guide](docs/flows.md))
 - **Subagents**: highly customizable agents calling another agents to do work [[#Agents]]
-- **Cron jobs**: schedule prompts to run once or recurringly via subagents, with `/loop` and the `croncreate`/`crondelete`/`cronlist` tools ([guide](docs/crons.md))
+- **Cron jobs**: schedule prompts to run once or recurringly via subagents, with `/loop` and the `croncreate`/`crondelete`/`cronlist` tools ([guide](docs/cron-and-heartbeat.md))
 - **Multiple AI providers**: Anthropic, OpenAI, Google Gemini, AWS Bedrock, VertexAI, YandexCloud, Kimi (Moonshot), and self-hosted
 - **Tool integration**: file operations, shell commands, code search, LSP code intelligence
 - **Structured output**: enforce final agent's output with json schema, perfect for automated pipelines
@@ -205,6 +205,7 @@ OpenCode looks for `.opencode.json` in:
       }
     }
   },
+  "webFetch": { "maxOutputBytes": 51200 },
   "autoCompact": true,
   "debug": false
 }
@@ -373,6 +374,27 @@ When enabled (default), automatically summarizes conversations approaching the c
 { "autoCompact": true }
 ```
 
+The check runs before every model call: before a turn's first one, before each later call of its tool-use loop, and before the first call after a non-interactive run re-enters the loop for drained background tasks. A long-lived session (chat bridge, `opencode serve`, cron heartbeats) therefore compacts before the turn that would overflow it. On an auto-resume turn the background-task completion it reacts to is kept after the summary. The context size is the larger of the provider's token estimate and the usage the provider reported for the session's last call, plus the messages added since.
+
+The summarizer only sees the history since the previous summary. If that does not fit 90% of its window, the oldest messages are dropped (with a warning) rather than failing the compaction. The turn's own prompt, such as a flow step's task, is kept unless it alone takes more than half of the space left, or keeping it would leave no recent history or the input over budget. The fit is judged on the local 4 bytes/token estimate, scaled up by the session's last reported usage when that is larger, so an overflowed session whose size the estimate undercounts is still trimmed. It remains an estimate: a summarizer whose tokenizer counts far more than the main model's can still reject its input.
+
+The threshold can be lowered per agent — useful when a proxy resets streams well before the model's nominal window. For an agent defined in markdown, set it in the frontmatter:
+
+```markdown
+---
+model: bedrock.claude-opus-4-6
+compactionThreshold: 0.4
+---
+```
+
+For a JSON-only agent, set `agents.<id>.compactionThreshold` in `.opencode.json`. Do not add a JSON `agents.<id>` entry just for the threshold when the agent is defined in markdown: an entry without `model` is given the default model and its default `maxTokens`, and those replace the frontmatter values. If you need the JSON entry, repeat the agent's `model` (and `maxTokens`, if set) in it:
+
+```json
+{ "agents": { "neo": { "model": "bedrock.claude-opus-4-6", "compactionThreshold": 0.4 } } }
+```
+
+`compactionThreshold` is a fraction in (0, 1]; out-of-range values are ignored with a warning. A flow step's `compact.threshold` wins over it, and it never enables compaction when `autoCompact` is off.
+
 ### Auto Approve
 
 Auto-approve mode skips interactive permission dialogs for `ask`-resolved permissions during a session. `deny` rules and disabled tools are still enforced — auto-approve only promotes `ask` decisions to `allow`.
@@ -420,6 +442,22 @@ them. The same property means a command containing `exit` ends the session: the
 exit status is reported as the command's own, a replacement shell starts in the
 same directory, and exported variables and shell functions are lost.
 
+### Web Fetch Output Cap
+
+```json
+{
+  "webFetch": { "maxOutputBytes": 51200 }
+}
+```
+
+`webfetch` converts a page (HTML → markdown by default) and returns it to the model, and a single documentation page routinely converts to hundreds of KB — enough for two or three fetches to fill a context window, and every one of them is re-sent on each later turn.
+
+`maxOutputBytes` caps what a single fetch keeps in context (default `51200`, i.e. 50KB — the same number as the bash and MCP caps). The cap is measured after conversion, on the text that actually enters the context. Beyond it, the full converted page is written to a temp file and replaced with a head+tail preview whose header names the file, so the agent searches it with `grep` (or `sed` in bash) instead of carrying the page or re-fetching the URL. Note the `read` tool declines files over 250KB outright, so `grep`/`sed` are the recovery path for a large page.
+
+Set a higher value to keep more inline, or a negative value to disable the cap entirely (unbounded — a few fetches can then overflow the context). Responses at or below the cap are returned unchanged and no file is written.
+
+A response body over the 5MB read limit is truncated before conversion, and the reply says so rather than presenting a torn document as a complete one.
+
 ### MCP Servers
 
 ```json
@@ -463,6 +501,23 @@ Every wait on an MCP server is bounded, so a server that starts but never answer
 The handshake and cache budgets are deliberately not per-server tunable: `initialize` is one request/response with no work behind it, so a server that misses the budget is broken rather than slow. Only tool latency is genuinely server-specific. A blown budget surfaces as a normal tool error, so the agent can try another approach instead of hanging.
 
 The close budget matters because a stdio transport's `Close` blocks in `cmd.Wait()` honouring no context: a child that ignores stdin EOF would otherwise hold the agent turn immediately after its tool call had correctly timed out. On timeout the close is abandoned rather than the caller blocked, which leaks one goroutine and one child process per wedged server for the life of the process — deliberately, since leaking the turn is worse and the transport exposes no handle to signal the child.
+
+### Workspace CLI Tools
+
+Wrap a host CLI as a first-class tool with a manifest instead of giving an agent `bash`:
+
+```yaml
+# .agents/tools/snow.yaml
+name: snow
+description: Snowflake CLI — `sql -c <connection> --format JSON -q "<sql>"`.
+command: snow
+args:
+  allow: ["sql *", "--help"]
+  deny: ["-x", "-f", "--filename*", "--config-file*", "--password*"]
+permission: { "*": ask, "sql *": allow }
+```
+
+The binary runs argv-only (no shell) under the manifest's argument, environment, cwd, timeout and output policy; agents receive the tool by naming it (`tools: {snow: true}`), `permission.snow` globs on the argument string, and `deferredTools` works by name. `opencode tools list --strict` audits a workspace; `opencode tools serve` exposes the same manifests over stdio MCP for Claude Code. Config: `cliTools.paths`, `cliTools.disabled`, and the limits every manifest inherits for fields it leaves unset — `cliTools.timeout`, `cliTools.maxTimeout`, `cliTools.maxOutputBytes`, overridable with `OPENCODE_CLI_TOOLS_TIMEOUT` / `_MAX_TIMEOUT` / `_MAX_OUTPUT_BYTES` — applied identically by the native tools and by `opencode tools serve`. See [docs/cli-tools.md](docs/cli-tools.md).
 
 ### LSP
 
@@ -585,17 +640,17 @@ Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it re
 | `OPENCODE_DEV_DEBUG` | `false` | Enable development debug logging |
 | `OPENCODE_DISABLE_LSP_DOWNLOAD` | `false` | Disable automatic LSP binary downloads |
 | `OPENCODE_DISABLE_CLAUDE_SKILLS` | `false` | Disable `.claude/skills/` discovery |
-| `OPENCODE_DISABLE_CRON` | | Disable cron scheduling entirely ([guide](docs/crons.md)) |
+| `OPENCODE_DISABLE_CRON` | | Disable cron scheduling entirely ([guide](docs/cron-and-heartbeat.md)) |
 
 ## Supported Models
 
 | Provider | Models |
 |----------|--------|
 | **OpenAI** | GPT-5, O3 Mini, O4 Mini |
-| **Anthropic** | Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 4.5 Haiku |
+| **Anthropic** | Claude 5.5 Opus (1M), Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5.5 Sonnet (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 4.5 Haiku |
 | **Google Gemini** | Gemini 3.0 Pro, Gemini 3.0 Flash |
-| **AWS Bedrock** | Claude 5 Opus (1M)(EU/Global), Claude Fable 5.1 (1M)(EU/Global), Claude Fable 5 (1M)(EU/Global), Claude 4.8 Opus (1M)(EU/Global), Claude 4.7 Opus (1M)(EU/Global), Claude 5 Sonnet (1M)(EU/Global), Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global), Claude 4.5 Haiku (EU/Global) |
-| **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 4.5 Haiku |
+| **AWS Bedrock** | Claude 5.5 Opus (1M)(EU/Global), Claude 5 Opus (1M)(EU/Global), Claude Fable 5.1 (1M)(EU/Global), Claude Fable 5 (1M)(EU/Global), Claude 4.8 Opus (1M)(EU/Global), Claude 4.7 Opus (1M)(EU/Global), Claude 5.5 Sonnet (1M)(EU/Global), Claude 5 Sonnet (1M)(EU/Global), Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global), Claude 4.5 Haiku (EU/Global) |
+| **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude 5.5 Opus (1M), Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5.5 Sonnet (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 4.5 Haiku |
 | **YandexCloud** | Alice AI LLM, YandexGPT Pro 5.1, YandexGPT Pro 5, YandexGPT Lite 5, DeepSeek V3.2, Qwen3 235B, Qwen3.5 35B, gpt-oss-120b |
 | **Kimi (Moonshot)** | Kimi K3 (1M) |
 | **Local** | Any OpenAI-compatible API |
@@ -623,7 +678,7 @@ Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it re
 | Tool | Description |
 |------|-------------|
 | `bash` | Execute shell commands |
-| `webfetch` | Fetch data from URLs |
+| `webfetch` | Fetch data from URLs (large pages are capped and saved to a temp file — see [Web fetch output cap](#web-fetch-output-cap)) |
 | `websearch` | Search internet via configured WebSearch providers |
 | `sourcegraph` | Search public repositories |
 | `task` | Run sub-tasks with a subagent (supports `subagent_type` and `task_id` for resumption) |
@@ -631,7 +686,7 @@ Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it re
 | `struct_output` | Emit structured JSON conforming to a user-supplied schema |
 | `toolsearch` | Discover and load deferred tools on demand (auto-registered only when an agent declares `deferredTools`, [guide](docs/deferred-tools.md)) |
 | `todowrite` | Create and maintain a structured task list for multi-step sessions (progress tracking for external UIs) |
-| `croncreate` / `crondelete` / `cronlist` | Schedule, cancel, and list cron jobs that fire prompts via subagents ([guide](docs/crons.md)) |
+| `croncreate` / `crondelete` / `cronlist` | Schedule, cancel, and list cron jobs that fire prompts via subagents ([guide](docs/cron-and-heartbeat.md)) |
 
 ## Keyboard Shortcuts
 
@@ -705,7 +760,7 @@ in `INSERT`; `Esc` switches to `NORMAL`.
 | Context Files (scoped resolution + progressive disclosure) | [docs/context.md](docs/context.md) |
 | Flows | [docs/flows.md](docs/flows.md) |
 | Hooks (Claude-Code-compatible) | [docs/hooks.md](docs/hooks.md) |
-| Crons | [docs/crons.md](docs/crons.md) |
+| Cron & heartbeat | [docs/cron-and-heartbeat.md](docs/cron-and-heartbeat.md) |
 | Custom Commands | [docs/custom-commands.md](docs/custom-commands.md) |
 | Telemetry & Langfuse | [docs/telemetry.md](docs/telemetry.md) |
 | Session Providers | [docs/session-providers.md](docs/session-providers.md) |

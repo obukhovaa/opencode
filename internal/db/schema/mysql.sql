@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
   error LONGTEXT,
   created_at BIGINT NOT NULL,
   updated_at BIGINT NOT NULL,
+  requester VARCHAR(320) NOT NULL DEFAULT '',
   KEY idx_cron_jobs_session_id (session_id),
   KEY idx_cron_jobs_due (status, firing, next_run_at),
   CONSTRAINT fk_cron_jobs_session FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE CASCADE
@@ -125,5 +126,26 @@ CREATE TABLE IF NOT EXISTS bridge_allowlist (
   identity_id VARCHAR(64) NOT NULL,
   peer_id VARCHAR(128) NOT NULL,
   created_at BIGINT NOT NULL,
+  PRIMARY KEY (project_id, channel, identity_id, peer_id)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS bridge_heartbeats (
+  project_id VARCHAR(255) NOT NULL,
+  channel VARCHAR(32) NOT NULL,
+  identity_id VARCHAR(64) NOT NULL,
+  peer_id VARCHAR(128) NOT NULL,
+  state VARCHAR(16) NOT NULL DEFAULT 'unset',
+  every_seconds INT NULL,
+  window_start INT NULL,
+  window_end INT NULL,
+  weekdays_only TINYINT(1) NOT NULL DEFAULT 0,
+  model VARCHAR(255) NULL,
+  agenda_file VARCHAR(1024) NULL,
+  next_beat_at BIGINT NULL,
+  last_beat_at BIGINT NULL,
+  last_status VARCHAR(16) NULL,
+  last_error TEXT NULL,
+  reminded_at BIGINT NULL,
+  updated_at BIGINT NOT NULL,
   PRIMARY KEY (project_id, channel, identity_id, peer_id)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;

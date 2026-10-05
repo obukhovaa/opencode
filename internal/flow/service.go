@@ -3,7 +3,9 @@ package flow
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,11 +21,11 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/db"
-	"github.com/opencode-ai/opencode/internal/format"
 	"github.com/opencode-ai/opencode/internal/langfuse"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
+	"github.com/opencode-ai/opencode/internal/llm/tools/shell"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
@@ -622,12 +624,16 @@ func (s *service) runStep(
 		stepPrompt = resolved
 	}
 
-	prompt := substituteScoped(stepPrompt, args, stepVars)
-	// Expand !`cmd` shell markup in flow prompts (after args substitution so args can parameterize commands)
-	if strings.Contains(prompt, "!`") {
-		cwd := config.WorkingDirectory()
-		prompt = format.ExpandShellMarkup(ctx, prompt, cwd)
+	// Only the template's own !`cmd` spans run; substituted values and command
+	// output are never rescanned, so args can neither form nor alter a command.
+	var prompt string
+	if strings.Contains(stepPrompt, "!`") {
+		prompt = shell.ExpandMarkupAround(ctx, stepPrompt, config.WorkingDirectory(), func(text string) string {
+			return substituteScoped(text, args, stepVars)
+		})
 		logging.Debug("Flow step prompt after shell markup expansion", "step", step.ID, "prompt_length", len(prompt))
+	} else {
+		prompt = substituteScoped(stepPrompt, args, stepVars)
 	}
 	// NOTE: Structured output referenced via template variables if needed
 	if prevState != nil && prevState.Output != "" && !prevState.IsStructOutput {
@@ -698,6 +704,15 @@ func (s *service) runStep(
 		}
 	}
 	if err != nil {
+		if db.IsForeignKeyViolation(err, "fk_flow_states_session") {
+			// The step session was created moments ago in resolveSession, so a
+			// missing parent row means something deleted it in between — in
+			// practice a concurrent run sharing this session ID whose fresh
+			// start wiped the tree. Name that instead of surfacing a raw FK
+			// error; do not re-create and retry, which would hide a collision
+			// that is still corrupting the other run's state.
+			err = fmt.Errorf("session %s no longer exists (deleted by a concurrent run sharing this session id?): %w", sessionID, err)
+		}
 		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, fmt.Errorf("persisting flow state: %w", err), wg, agentEvents, flowStates, nextSteps, f)
 		return
 	}
@@ -748,11 +763,23 @@ func (s *service) runStep(
 	// InteractiveHook BEFORE agent.Run. Failure here fails the step fast.
 	// The bind is automatically reversed in deferred Unbind below.
 	if step.Interactive {
+		// Mark the session as interactively bound so the question tool
+		// won't auto-approve away the human's chance to answer (see
+		// permission.Service.MarkInteractiveSession + question tool's
+		// auto-approve short-circuit guard).
+		//
+		// The mark MUST precede the bind and outlive the unbind: a pool
+		// pod's bridge refuses any inbound for a bound session that is not
+		// marked, and the bind is what makes the orchestrator
+		// start forwarding. Binding first would refuse the step's first
+		// legitimate reply.
+		s.permissions.MarkInteractiveSession(sess.ID)
 		// boundPeers was already resolved above (before NewAgent) so the
 		// system prompt could include the "## Reviewer details" section.
 		// Re-using the slice here keeps the bind call wire-compatible
 		// without paying the resolve cost twice.
 		if err := s.interactiveHookOrNop().OnInteractiveStepStart(ctx, sess.ID, boundPeers); err != nil {
+			s.permissions.RemoveInteractiveSession(sess.ID)
 			bindErr := fmt.Errorf("interactive step %q bind: %w", step.ID, err)
 			// Park here rather than leaving it to handleStepError, which passes
 			// priorRow=nil. That is correct only for call sites BEFORE the
@@ -775,22 +802,17 @@ func (s *service) runStep(
 				bindErr, wg, agentEvents, flowStates, nextSteps, f)
 			return
 		}
-		// Mark the session as interactively bound so the question tool
-		// won't auto-approve away the human's chance to answer (see
-		// permission.Service.MarkInteractiveSession + question tool's
-		// auto-approve short-circuit guard). Cleared in the deferred
-		// unbind below.
-		s.permissions.MarkInteractiveSession(sess.ID)
 		// Defer unbind so any return path (success, error, panic) unwinds
 		// the binding. Use a fresh ctx so a cancelled parent doesn't
-		// short-circuit the Unbind call.
+		// short-circuit the Unbind call. The marker is cleared only after
+		// the unbind, mirroring the mark-before-bind order above.
 		defer func() {
-			s.permissions.RemoveInteractiveSession(sess.ID)
 			unbindCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := s.interactiveHookOrNop().OnInteractiveStepComplete(unbindCtx, sess.ID); err != nil {
 				logging.Warn("interactive step unbind failed", "step", step.ID, "err", err)
 			}
+			s.permissions.RemoveInteractiveSession(sess.ID)
 		}()
 		// Per the flow-api spec, emit the waiting_for_input transition
 		// AFTER the bind succeeds and BEFORE agent.Run. The API runner
@@ -2050,9 +2072,18 @@ func sessionSafeFlowID(flowID string) string {
 }
 
 // resolveSessionPrefix determines the session prefix from the flow spec, CLI flag, or timestamp.
+//
+// A flow without `session.prefix` gets `<unix-seconds>-<6 hex>`. The unix
+// second alone is not unique: two runs of the same flow started within one
+// second (batched webhook dispatch, several pods sharing one MySQL schema)
+// would derive identical root/step session IDs, and a fresh start's
+// DeleteTree would wipe the other run's sessions mid-flight. The random
+// suffix makes that collision negligible while keeping the leading second
+// so IDs still sort by start time and can be looked up by timestamp prefix.
+// Explicit prefixes stay deterministic — re-trigger and resume rely on it.
 func resolveSessionPrefix(specPrefix string, args map[string]any) (string, error) {
 	if specPrefix == "" {
-		return fmt.Sprintf("%d", time.Now().Unix()), nil
+		return fmt.Sprintf("%d-%s", time.Now().Unix(), randomSessionSuffix()), nil
 	}
 
 	result := substituteArgs(specPrefix, args)
@@ -2061,6 +2092,18 @@ func resolveSessionPrefix(specPrefix string, args map[string]any) (string, error
 	}
 
 	return result, nil
+}
+
+// randomSessionSuffix returns 6 lowercase hex characters (24 bits) from
+// crypto/rand. The alphabet is URL-path-segment safe. If crypto/rand fails
+// it falls back to the low 24 bits of the nanosecond clock so the default
+// prefix path never errors.
+func randomSessionSuffix() string {
+	var buf [3]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return fmt.Sprintf("%06x", time.Now().UnixNano()&0xffffff)
+	}
+	return hex.EncodeToString(buf[:])
 }
 
 // resolveStepAgent returns the agent id a step runs as: step.Agent with
