@@ -6,7 +6,9 @@ orchestrator mediator can back off intelligently rather than guessing. The exist
 single-retry policy of the c2-agent orchestrator makes a blind 429 a real message-loss
 risk when the channel is transiently saturated.
 
-## MODIFIED Requirements
+The main spec has no requirement for the 429 response yet, so the requirement is ADDED.
+
+## ADDED Requirements
 
 ### Requirement: POST /router/inbound 429 carries Retry-After and saturation body
 

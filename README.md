@@ -15,7 +15,7 @@ OpenCode is a CLI tool that brings AI assistance to your terminal. It provides a
 - **Chat bridge**: in-process Telegram / Slack / Mattermost adapters with multi-reviewer fan-out, router-initiated conversations, interactive question UI (buttons + inline keyboards), `router_send` agent tool, single-writer election, and per-identity health reporting ([guide](docs/bridge.md))
 - **Flows**: deterministic multi-step agent workflows defined in YAML ([guide](docs/flows.md))
 - **Subagents**: highly customizable agents calling another agents to do work [[#Agents]]
-- **Cron jobs**: schedule prompts to run once or recurringly via subagents, with `/loop` and the `croncreate`/`crondelete`/`cronlist` tools ([guide](docs/crons.md))
+- **Cron jobs**: schedule prompts to run once or recurringly via subagents, with `/loop` and the `croncreate`/`crondelete`/`cronlist` tools ([guide](docs/cron-and-heartbeat.md))
 - **Multiple AI providers**: Anthropic, OpenAI, Google Gemini, AWS Bedrock, VertexAI, YandexCloud, Kimi (Moonshot), and self-hosted
 - **Tool integration**: file operations, shell commands, code search, LSP code intelligence
 - **Structured output**: enforce final agent's output with json schema, perfect for automated pipelines
@@ -623,7 +623,7 @@ Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it re
 | `OPENCODE_DEV_DEBUG` | `false` | Enable development debug logging |
 | `OPENCODE_DISABLE_LSP_DOWNLOAD` | `false` | Disable automatic LSP binary downloads |
 | `OPENCODE_DISABLE_CLAUDE_SKILLS` | `false` | Disable `.claude/skills/` discovery |
-| `OPENCODE_DISABLE_CRON` | | Disable cron scheduling entirely ([guide](docs/crons.md)) |
+| `OPENCODE_DISABLE_CRON` | | Disable cron scheduling entirely ([guide](docs/cron-and-heartbeat.md)) |
 
 ## Supported Models
 
@@ -669,7 +669,7 @@ Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it re
 | `struct_output` | Emit structured JSON conforming to a user-supplied schema |
 | `toolsearch` | Discover and load deferred tools on demand (auto-registered only when an agent declares `deferredTools`, [guide](docs/deferred-tools.md)) |
 | `todowrite` | Create and maintain a structured task list for multi-step sessions (progress tracking for external UIs) |
-| `croncreate` / `crondelete` / `cronlist` | Schedule, cancel, and list cron jobs that fire prompts via subagents ([guide](docs/crons.md)) |
+| `croncreate` / `crondelete` / `cronlist` | Schedule, cancel, and list cron jobs that fire prompts via subagents ([guide](docs/cron-and-heartbeat.md)) |
 
 ## Keyboard Shortcuts
 
@@ -743,7 +743,7 @@ in `INSERT`; `Esc` switches to `NORMAL`.
 | Context Files (scoped resolution + progressive disclosure) | [docs/context.md](docs/context.md) |
 | Flows | [docs/flows.md](docs/flows.md) |
 | Hooks (Claude-Code-compatible) | [docs/hooks.md](docs/hooks.md) |
-| Crons | [docs/crons.md](docs/crons.md) |
+| Cron & heartbeat | [docs/cron-and-heartbeat.md](docs/cron-and-heartbeat.md) |
 | Custom Commands | [docs/custom-commands.md](docs/custom-commands.md) |
 | Telemetry & Langfuse | [docs/telemetry.md](docs/telemetry.md) |
 | Session Providers | [docs/session-providers.md](docs/session-providers.md) |

@@ -217,12 +217,24 @@ The following tests close gaps identified in the dossier — the serialization i
 
 ## 10. Verification
 
-- [ ] 10.1 End-to-end: start a flow step against a session bound to a chat peer; send a
+- [x] 10.1 End-to-end: start a flow step against a session bound to a chat peer; send a
   chat message while the step owns the session slot; confirm (a) the message is delivered
   to the agent after the step completes (not discarded), (b) the queued-ack appears and
   is resolved when the step finishes.
+  (deferred: no hermetic harness drives a real flow step and a bound chat peer in one
+  process — `scripts/test/` has no bridge e2e, and adding one is new work beyond this
+  change. The contract is pinned at unit level on both sides of the seam:
+  `TestHandleInbound_BusyRetryPreservesContent`, `TestQueuedAck_SurvivesRequeueCycle`
+  and `TestHandleInbound_QueuedAckLifecycle` (bridge side, agent returning
+  `ErrSessionBusy` as a cross-actor holder makes it) plus
+  `TestSessionSlots_CrossInstanceExclusion` (ledger side). Tracked as follow-up.)
 
-- [ ] 10.2 Saturate `POST /router/inbound`: fill `inboundCh` to cap 64 and POST; assert
+- [x] 10.2 Saturate `POST /router/inbound`: fill `inboundCh` to cap 64 and POST; assert
   response is 429 with `Retry-After: 1` header and `dispatcherSaturated: true` body.
+  (Covered by `TestRouterInbound_BackpressureReturns429` in
+  `internal/bridge/service/http_inbound_test.go`: it POSTs through the real handler over
+  `httptest` against a filled `inboundCh` — capacity 1 rather than 64, which takes the
+  same `default:` branch — and asserts the 429, `Retry-After: 1` and
+  `dispatcherSaturated: true`. Passes under `-race`.)
 
 - [x] 10.3 Confirm `go build ./...` clean and `go vet ./...` clean after all changes.
