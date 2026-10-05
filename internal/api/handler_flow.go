@@ -360,6 +360,11 @@ func (s *Server) handleFlowStart(w http.ResponseWriter, r *http.Request) {
 		FlowID string         `json:"flowID"`
 		Args   map[string]any `json:"args"`
 		Fresh  bool           `json:"fresh"`
+		// RecoverRunning asserts that the process which left this flow's
+		// `running` flow_states rows is dead (the orchestrator saw its pod
+		// killed mid-step), so the runtime resumes those steps instead of
+		// treating them as another process's live run (GENAI-352).
+		RecoverRunning bool `json:"recoverRunning"`
 		// MCPAuth carries a job-scoped bearer token applied to the named
 		// MCP server's calls for the duration of this run only (design D1).
 		MCPAuth string `json:"mcpAuth"`
@@ -428,6 +433,7 @@ func (s *Server) handleFlowStart(w http.ResponseWriter, r *http.Request) {
 		mcpAuth:         body.MCPAuth,
 		mcpAuthServer:   body.MCPAuthServer,
 		bridgeJobID:     body.BridgeJobID,
+		recoverRunning:  body.RecoverRunning,
 		llmAPIKey:       body.LLMAPIKey,
 		telemetryUserID: body.TelemetryUserID,
 		telemetryTeam:   body.TelemetryTeam,
@@ -551,6 +557,9 @@ var errPodBinding = errors.New("flow: pod binding")
 // accepts in pool deployments (agent-pod-pool-runtime, design D1).
 // Zero value = today's behaviour exactly.
 type flowStartOptions struct {
+	// recoverRunning is forwarded to flow.RunOptions.RecoverRunning: the
+	// caller asserts the owner of this flow's `running` rows is dead.
+	recoverRunning bool
 	// mcpAuth is the job-scoped bearer token; empty means no override.
 	mcpAuth string
 	// mcpAuthServer names the MCP server the override applies to. The
@@ -761,7 +770,7 @@ func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, ar
 
 	// Kick off the run in the background; SSE consumers see progress
 	// via fr.broker.
-	go fr.run(runCtx, state, flowID, args, fresh)
+	go fr.run(runCtx, state, flowID, args, flow.RunOptions{Fresh: fresh, RecoverRunning: opts.recoverRunning})
 	return result, nil
 }
 
@@ -855,7 +864,7 @@ func (fr *flowRunner) clearRunScopedIdentity(state *flowRunState) {
 
 // run drives the flow.Service.Run lifecycle, fanning AgentEvent + FlowState
 // into the FlowEvent broker so /event subscribers see step transitions.
-func (fr *flowRunner) run(ctx context.Context, state *flowRunState, flowID string, args map[string]any, fresh bool) {
+func (fr *flowRunner) run(ctx context.Context, state *flowRunState, flowID string, args map[string]any, opts flow.RunOptions) {
 	defer func() {
 		if r := recover(); r != nil {
 			logging.Error("flow runner panic", "run", state.RunID, "panic", r)
@@ -868,7 +877,7 @@ func (fr *flowRunner) run(ctx context.Context, state *flowRunState, flowID strin
 		return
 	}
 
-	_, flowStates, err := svc.Run(ctx, "", flowID, args, fresh)
+	_, flowStates, err := svc.RunWithOptions(ctx, "", flowID, args, opts)
 	if err != nil {
 		fr.finish(state, flowRunFailed, err.Error())
 		return
@@ -1539,11 +1548,13 @@ func newFlowRunnerWithSessions(svc flow.Service, sessions session.Service) *flow
 // StartFlow programmatically starts a flow without going through HTTP.
 // Used by cmd/serve.go's --flow auto-start path. Returns the runID on
 // success.
-func (s *Server) StartFlow(flowID string, args map[string]any, fresh bool) (string, error) {
+func (s *Server) StartFlow(flowID string, args map[string]any, fresh, recoverRunning bool) (string, error) {
 	if s.flowRunner == nil {
 		return "", errors.New("flow runner not configured")
 	}
-	result, err := s.flowRunner.Start(context.Background(), flowID, args, fresh)
+	// recoverRunning is the --flow-recover-running serve flag: the per-Job
+	// pod's spelling of POST /flow's `recoverRunning` (see flow.RunOptions).
+	result, err := s.flowRunner.StartWithOptions(context.Background(), flowID, args, fresh, flowStartOptions{recoverRunning: recoverRunning})
 	if err != nil {
 		return "", err
 	}

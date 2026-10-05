@@ -188,7 +188,13 @@ func (b *agentTool) Run(ctx context.Context, call tools.ToolCall) (tools.ToolRes
 		return b.runAsync(ctx, call, params, sessionID, subagentType, subagentInfo, taskSession, isResumed, a, prompt)
 	}
 
-	done, err := a.Run(ctx, taskSession.ID, prompt, 0)
+	// The subagent inherits the caller's NonInteractive marker (GENAI-140).
+	// Under a flow step that means the subagent drains its own background
+	// tasks before it answers and has its foreground sleeps redirected,
+	// exactly like the step's primary agent; in the TUI the marker is
+	// false and nothing changes. Launching through the zero-value Run shim
+	// switched both halves of the no-poll contract off for every subagent.
+	done, err := a.RunWith(ctx, taskSession.ID, prompt, 0, subagentRunOptions(ctx))
 	if err != nil {
 		return tools.ToolResponse{}, fmt.Errorf("error while running task agent: %s", err)
 	}

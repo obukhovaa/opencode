@@ -40,7 +40,7 @@ Use sparingly — most background tasks finish on their own. Common reasons to u
 - An async task that's gone off-track and should be abandoned
 - A bash subprocess that's taking longer than expected and isn't worth waiting for
 
-Refuses to kill tasks from other sessions.`,
+Refuses to kill tasks from other sessions, except tasks spawned by a subagent you launched (one level down) — the same scope tasklist shows and the foreground-wait redirect blocks on.`,
 		Parameters: map[string]any{
 			"task_id": map[string]any{
 				"type":        "string",
@@ -77,7 +77,10 @@ func (t *taskstopTool) Run(ctx context.Context, call ToolCall) (ToolResponse, er
 	if !ok {
 		return NewTextErrorResponse(fmt.Sprintf("No task found with ID: %s", params.TaskID)), nil
 	}
-	if tk.SessionID != sessionID {
+	// Session-and-children scope, mirroring tasklist and the wait
+	// redirect: the redirect can block the caller on a child-owned task,
+	// so the caller must be able to cancel it. Siblings stay refused.
+	if tk.SessionID != sessionID && (tk.ParentSessionID == "" || tk.ParentSessionID != sessionID) {
 		return NewTextErrorResponse(fmt.Sprintf("Task %s does not belong to this session", params.TaskID)), nil
 	}
 	if tk.State() != task.StateRunning {

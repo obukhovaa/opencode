@@ -17,6 +17,8 @@ The HTTP server SHALL expose four flow-execution endpoints under `/flow/*`:
 
 The endpoints MUST be mounted on opencode's existing API mux. Auth and localhost-only posture are inherited from the API server.
 
+The `POST /flow` body SHALL accept, besides `flowID`, `args` and `fresh`, an optional boolean `recoverRunning`. When true it is forwarded as `flow.RunOptions.RecoverRunning`: the caller asserts that the process which left this flow's `running` `flow_states` rows is dead, so the runtime resumes those steps instead of replaying them as another process's live run (see `flow-runtime-resume`). It defaults to false; a caller that cannot vouch for the owner's death MUST NOT send it.
+
 The endpoints from the prior `spec/20260518T010000-flow-api-and-orchestrator.md` that are explicitly **not** included in this change:
 
 - `POST /flow/input` — reviewer replies come in via chat platforms through the normal bridge inbound path; no second HTTP input mechanism.
@@ -31,6 +33,11 @@ The endpoints from the prior `spec/20260518T010000-flow-api-and-orchestrator.md`
 
 - **WHEN** `POST /flow` is called with `{flowID: "review", args: {hash: "abc123"}}` and no flow is currently running
 - **THEN** the response is 202 with `{runID, flowID, status: "running", currentStep}`; the flow begins executing
+
+#### Scenario: POST /flow with recoverRunning resumes a dead owner's step
+
+- **WHEN** `POST /flow` is called with `{flowID: "review", args: {…}, recoverRunning: true}` and the flow's `flow_states` hold a `running` row left by a pod that was killed
+- **THEN** the run is accepted and the running step is re-entered in its own session rather than replayed
 
 #### Scenario: Only one flow at a time
 
@@ -103,6 +110,7 @@ The `opencode serve` command SHALL accept three new flags supporting the k8s Job
 | `--flow <id>` | Auto-start this flow when the server boots; the server becomes healthy first, then begins flow execution |
 | `--flow-args <path>` | Path to JSON file with flow arguments (e.g., `/workspace/flow-args.json`) |
 | `--flow-exit` | Exit the process after the flow completes (success OR failure); default behavior when `--flow` is set; only applies to `--flow`-triggered flows (not `POST /flow`-triggered ones) |
+| `--flow-recover-running` | Start the auto-run with `flow.RunOptions.RecoverRunning`: `running` `flow_states` rows left by a process the orchestrator knows to be dead are resumed, not replayed — the serve-mode spelling of `recoverRunning` on `POST /flow` (see `flow-runtime-resume`) |
 
 #### Scenario: Server boots, becomes healthy, then auto-starts flow
 

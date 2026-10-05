@@ -29,6 +29,8 @@ When the gate decides "resume" but the resume planner produces no work — possi
 
 The runtime MUST call `collectResumableSteps` iff the predicate is true AND the caller did not pass `fresh = true`. Otherwise the runtime MUST construct initial work as a single `stepWork{step: f.Spec.Steps[0], args: copyArgs(args), iteration: 1}`.
 
+**Crash recovery (`RunOptions.RecoverRunning`).** A `running` row is normally taken to mean another process is executing the flow right now, so the runtime fans the existing rows out to the `flowStates` channel without scheduling work (the `hasRunning` early return below). `Service.RunWithOptions(…, RunOptions{RecoverRunning: true})` is the caller's assertion that the owner of those rows is dead — an orchestrator has observed the pod executing the step get OOM-killed, evicted or deadline-killed. With it the runtime MUST skip the early return and let the running rows reach the predicate above, which treats them as in-flight; `collectResumableSteps` then MUST re-enter each running step in its own session with the row's persisted args and iteration, completed rows keep their cached outputs, and the runtime MUST delete nothing. `Run(…, fresh)` is the back-compat shim for `RunWithOptions(…, RunOptions{Fresh: fresh})`. A caller that cannot vouch for the owner's death MUST NOT set `RecoverRunning`: two live processes would execute the same step.
+
 The runtime MUST NOT delete per-step sessions (`s.sessions.DeleteTree` or `s.sessions.Delete`) on the restart-from-step-0 path. Per-step sessions are deleted ONLY when the caller passes `fresh = true`.
 
 The `fresh = true` path is unchanged from the prior contract: existing `flow_states` rows are deleted via `DeleteFlowStatesByRootSession`, the session tree is deleted via `s.sessions.DeleteTree(rootSessionID)`, `existingStates` is set to nil, and initial work is routed to step 0.
@@ -57,7 +59,13 @@ The existing `hasRunning` early-return path (where `Run` fans the existing in-pr
 
 - **GIVEN** rows `[s0=completed, s1=running]` (opencode pod crashed mid-step-1)
 - **WHEN** `Run(…, fresh=false)` is invoked
-- **THEN** the runtime MUST take the `hasRunning` early-return path and fan the existing rows out to the `flowStates` channel; the caller is expected to either let the existing process complete or call `Abort` and retry — this scenario does NOT route to restart, because the in-progress row represents work that may still be active
+- **THEN** the runtime MUST take the `hasRunning` early-return path and fan the existing rows out to the `flowStates` channel; the caller is expected to either let the existing process complete, call `Abort` and retry, or — when it knows the owning process is dead — re-run with `RecoverRunning: true` (next scenario). This scenario does NOT route to restart, because the in-progress row may represent work that is still active
+
+#### Scenario: Orchestrator recovers a step whose pod was killed
+
+- **GIVEN** rows `[s0=completed, s1=running]` and the orchestrator has observed the pod executing `s1` terminate (OOMKilled, evicted or deadline-killed)
+- **WHEN** `RunWithOptions(…, RunOptions{RecoverRunning: true})` is invoked with the same session prefix
+- **THEN** the runtime MUST NOT take the `hasRunning` early return; it MUST enter `collectResumableSteps`, skip `s0` via the completed path, and schedule `s1` as initial work with the args and iteration persisted on its `running` row, in `s1`'s existing session; it MUST NOT delete any flow state or session; `s1` runs to a terminal state
 
 #### Scenario: Re-trigger wakes a postponed step
 
@@ -422,3 +430,4 @@ The failing turn says nothing by construction, so the lookup MUST scan backwards
 - **THEN** the runner retries over its short bounded budget and the call succeeds
 - **WHEN** instead the slot is held by a run the step does not own (cron, bridge, auto-resume)
 - **THEN** the runner exhausts that same short budget and gives up, leaving the re-prompt unspent and emitting no `retrying` transition
+

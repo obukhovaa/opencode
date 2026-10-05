@@ -61,7 +61,7 @@ const (
 
 var safeReadOnlyCommands = []string{
 	"ls", "echo", "pwd", "date", "cal", "uptime", "whoami", "id", "groups", "env", "printenv", "set", "unset", "which", "type", "whereis",
-	"whatis", "uname", "hostname", "df", "du", "free", "top", "ps", "kill", "killall", "nice", "nohup", "time", "timeout",
+	"whatis", "uname", "hostname", "df", "du", "free", "top", "ps", "kill", "killall", "nice", "time", "timeout",
 
 	"git status", "git log", "git diff", "git show", "git branch", "git tag", "git remote", "git ls-files", "git ls-remote",
 	"git rev-parse", "git config --get", "git config --list", "git describe", "git blame", "git grep", "git shortlog",
@@ -164,6 +164,17 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		workdir = config.WorkingDirectory()
 	}
 
+	// Background-mode detach gate, BEFORE the permission block: a command
+	// that detaches its own work (`nohup … &`) would make the task's
+	// terminal state meaningless, and a prompt for it would be a prompt
+	// for nothing. Synchronous calls are not gated — backgrounding inside
+	// a foreground command is the caller's own business.
+	if params.RunInBackground {
+		if construct, detaches := detectSelfDetach(params.Command); detaches {
+			return NewTextErrorResponse(selfDetachRejection(construct)), nil
+		}
+	}
+
 	isSafeReadOnly := IsSafeReadOnlyCommand(params.Command)
 
 	sessionID, messageID := GetContextValues(ctx)
@@ -201,20 +212,46 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		return b.runBackground(ctx, call, params, workdir, sessionID)
 	}
 	// Anti-spin: in a non-interactive run with pending non-monitor
-	// background tasks, a foreground command whose sole effect is a
-	// wall-clock wait is redirected to the deterministic background-task
-	// wait instead of executing the sleep (see bash_wait.go).
-	if resp, intercepted := interceptForegroundWait(ctx, params.Command, sessionID); intercepted {
+	// background tasks in the session or its direct children, a foreground
+	// command that BEGINS with a wall-clock wait is redirected to the
+	// deterministic background-task wait instead of executing the sleep;
+	// any trailer runs after the wait (see bash_wait.go). The permission
+	// gate above already evaluated the full command string.
+	if resp, intercepted := interceptForegroundWait(ctx, params, workdir, sessionID); intercepted {
 		return resp, nil
 	}
 	startTime := time.Now()
+	output, exitCode, tempPath, err := runForeground(ctx, params.Command, workdir, params.Timeout)
+	if err != nil {
+		return NewEmptyResponse(), err
+	}
+	metadata := BashResponseMetadata{
+		StartTime:    startTime.UnixMilli(),
+		EndTime:      time.Now().UnixMilli(),
+		Description:  params.Description,
+		ExitCode:     exitCode,
+		TempFilePath: tempPath,
+	}
+	if output == "" {
+		return WithResponseMetadata(NewTextResponse("no output"), metadata), nil
+	}
+	return WithResponseMetadata(NewTextResponse(output), metadata), nil
+}
+
+// runForeground runs command through the persistent shell and composes the
+// synchronous bash result the way the tool always has: truncated stdout,
+// then a stderr / interrupted / exit-code block, plus the spill file path
+// when a stream was truncated. Shared by the ordinary synchronous path and
+// by the foreground-wait redirect, which runs an intercepted command's
+// trailer through it after the wait.
+func runForeground(ctx context.Context, command, workdir string, timeoutMs int) (output string, exitCode int, tempPath string, err error) {
 	sh := shell.GetPersistentShell(workdir)
 	if sh == nil {
-		return NewEmptyResponse(), fmt.Errorf("failed to create shell instance")
+		return "", 0, "", fmt.Errorf("failed to create shell instance")
 	}
-	stdout, stderr, exitCode, interrupted, err := sh.Exec(ctx, params.Command, params.Timeout)
+	stdout, stderr, exitCode, interrupted, err := sh.Exec(ctx, command, timeoutMs)
 	if err != nil {
-		return NewEmptyResponse(), fmt.Errorf("error executing command: %w", err)
+		return "", 0, "", fmt.Errorf("error executing command: %w", err)
 	}
 
 	stdoutResult := persistAndTruncate(stdout, "stdout", BashToolName)
@@ -233,7 +270,7 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		errorMessage += fmt.Sprintf("Exit code %d", exitCode)
 	}
 
-	output := stdoutResult.content
+	output = stdoutResult.content
 	hasBothOutputs := output != "" && errorMessage != ""
 
 	if hasBothOutputs {
@@ -244,22 +281,11 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		output += "\n" + errorMessage
 	}
 
-	tempPath := stdoutResult.filePath
+	tempPath = stdoutResult.filePath
 	if tempPath == "" {
 		tempPath = stderrResult.filePath
 	}
-
-	metadata := BashResponseMetadata{
-		StartTime:    startTime.UnixMilli(),
-		EndTime:      time.Now().UnixMilli(),
-		Description:  params.Description,
-		ExitCode:     exitCode,
-		TempFilePath: tempPath,
-	}
-	if output == "" {
-		return WithResponseMetadata(NewTextResponse("no output"), metadata), nil
-	}
-	return WithResponseMetadata(NewTextResponse(output), metadata), nil
+	return output, exitCode, tempPath, nil
 }
 
 func (b *bashTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {

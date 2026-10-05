@@ -129,9 +129,25 @@ type result struct {
 	// are redirected ..." requirement).
 	SleepInterceptOK              bool `json:"sleep_intercept_ok"`
 	SleepInterceptFast            bool `json:"sleep_intercept_fast"`
-	SleepInterceptNoEcho          bool `json:"sleep_intercept_no_echo"`
+	SleepInterceptTrailerRan      bool `json:"sleep_intercept_trailer_ran"`
 	SleepPassthroughInteractiveOK bool `json:"sleep_passthrough_interactive_ok"`
 	SleepPassthroughNoPendingOK   bool `json:"sleep_passthrough_no_pending_ok"`
+	// background-wait-integrity: the parent's sleep is redirected onto a
+	// task its direct subagent registered, within a few hundred ms of the
+	// task finishing (no wall-clock sleep), and the note names the owner.
+	ChildScopeInterceptOK   bool `json:"child_scope_intercept_ok"`
+	ChildScopeInterceptFast bool `json:"child_scope_intercept_fast"`
+	ChildScopeOwnerMarked   bool `json:"child_scope_owner_marked"`
+	// tasklist/taskstop share that scope: the child's task is listed with an
+	// owner marker and can be killed from the parent; a sibling's is hidden.
+	TaskListChildMarked   bool `json:"tasklist_child_marked"`
+	TaskListSiblingHidden bool `json:"tasklist_sibling_hidden"`
+	TaskStopChildKilled   bool `json:"taskstop_child_killed"`
+	// A self-detaching run_in_background command is refused before spawn.
+	DetachRejected      bool `json:"detach_rejected"`
+	DetachNoTaskCreated bool `json:"detach_no_task_created"`
+	// The monitor ack carries the no-sleep yield contract.
+	MonitorAckNoSleep bool `json:"monitor_ack_no_sleep"`
 	// Flow-owned auto-resume suppression (session-run-exclusivity spec):
 	// a task spawned under a step-scoped ctx must NOT auto-resume its idle
 	// session on completion, while a plain spawn still must.
@@ -319,6 +335,7 @@ func main() {
 	if mErr != nil {
 		res.Errors = append(res.Errors, fmt.Sprintf("monitor: %v", mErr))
 	}
+	res.MonitorAckNoSleep = strings.Contains(mResp.Content, "do NOT sleep")
 	res.MonitorAck = strings.TrimSpace(mResp.Content)
 	monitorTaskID := extractTaskID(mResp.Content)
 
@@ -479,7 +496,7 @@ func main() {
 		interceptStart := time.Now()
 		iResp, iErr := fullBash.Run(niCtx, tools.ToolCall{
 			ID:    "sleep-intercept-call",
-			Input: `{"command":"sleep 30; echo intercept-should-not-run","description":"e2e sleep intercept"}`,
+			Input: `{"command":"sleep 30; echo intercept-should-not-run; echo trailer-exit","description":"e2e sleep intercept"}`,
 		})
 		interceptElapsed := time.Since(interceptStart)
 		if iErr != nil {
@@ -489,7 +506,10 @@ func main() {
 			strings.Contains(iResp.Content, "[non-interactive wait]") &&
 			strings.Contains(iResp.Content, pendID)
 		res.SleepInterceptFast = interceptElapsed < 10*time.Second
-		res.SleepInterceptNoEcho = !strings.Contains(iResp.Content, "intercept-should-not-run")
+		// The trailer runs AFTER the wait (background-wait-integrity): its
+		// output follows the interception note instead of being dropped.
+		res.SleepInterceptTrailerRan = strings.Contains(iResp.Content, "intercept-should-not-run") &&
+			strings.Index(iResp.Content, "intercept-should-not-run") > strings.Index(iResp.Content, "[non-interactive wait]")
 		if !res.SleepInterceptOK {
 			res.Errors = append(res.Errors, fmt.Sprintf("intercept content (elapsed=%v): %.300s", interceptElapsed, iResp.Content))
 		}
@@ -513,6 +533,63 @@ func main() {
 			res.Errors = append(res.Errors, fmt.Sprintf("no-pending run: %v", nErr))
 		}
 		res.SleepPassthroughNoPendingOK = nErr == nil && strings.Contains(nResp.Content, "no-pending-ok")
+
+		// 8d. Session-and-children scope: a task registered by a SUBAGENT
+		// of SESS (owning session CHILD, parent SESS) redirects the
+		// parent's sleep too, and the note names the owner.
+		childID := task.NewTaskID(task.KindBash)
+		if err := ireg.Register(&task.Task{ID: childID, SessionID: "SESS_CHILD", ParentSessionID: "SESS", Kind: task.KindBash, Description: "child build"}); err != nil {
+			res.Errors = append(res.Errors, fmt.Sprintf("child register: %v", err))
+		}
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			ireg.MarkFinished(childID, task.StateCompleted, nil)
+		}()
+		childStart := time.Now()
+		cResp, cErr := fullBash.Run(niCtx, tools.ToolCall{
+			ID:    "sleep-child-scope-call",
+			Input: `{"command":"sleep 120","description":"e2e child-scope intercept"}`,
+		})
+		childElapsed := time.Since(childStart)
+		if cErr != nil {
+			res.Errors = append(res.Errors, fmt.Sprintf("child-scope run: %v", cErr))
+		}
+		res.ChildScopeInterceptOK = cErr == nil && strings.Contains(cResp.Content, "[non-interactive wait]") && strings.Contains(cResp.Content, childID)
+		res.ChildScopeInterceptFast = childElapsed < 10*time.Second
+		res.ChildScopeOwnerMarked = strings.Contains(cResp.Content, "owner=SESS_CHILD")
+		if !res.ChildScopeInterceptOK {
+			res.Errors = append(res.Errors, fmt.Sprintf("child-scope content (elapsed=%v): %.300s", childElapsed, cResp.Content))
+		}
+
+		// 8e. tasklist / taskstop share the scope.
+		childRunning := task.NewTaskID(task.KindBash)
+		_ = ireg.Register(&task.Task{ID: childRunning, SessionID: "SESS_CHILD", ParentSessionID: "SESS", Kind: task.KindBash, Description: "child long"})
+		siblingID := task.NewTaskID(task.KindBash)
+		_ = ireg.Register(&task.Task{ID: siblingID, SessionID: "SESS_SIBLING", ParentSessionID: "FLOW_ROOT", Kind: task.KindBash, Description: "sibling"})
+		if tk, ok := ireg.Get(childRunning); ok {
+			tk.Notified.Store(true) // no process behind the fixture: let taskstop return at once
+		}
+		scopedList, _ := tools.NewTaskListTool().Run(niCtx, tools.ToolCall{Input: `{"state":"all"}`})
+		res.TaskListChildMarked = strings.Contains(scopedList.Content, childRunning) && strings.Contains(scopedList.Content, "owner=SESS_CHILD")
+		res.TaskListSiblingHidden = !strings.Contains(scopedList.Content, siblingID)
+		scopedStop := tools.NewTaskStopToolForTest(perm, agentReg)
+		sResp, _ := scopedStop.Run(niCtx, tools.ToolCall{Input: fmt.Sprintf(`{"task_id":%q}`, childRunning)})
+		if tk, ok := ireg.Get(childRunning); ok {
+			res.TaskStopChildKilled = tk.State() == task.StateKilled && strings.Contains(sResp.Content, "killed")
+		}
+		ireg.MarkFinished(siblingID, task.StateKilled, nil)
+
+		// 8f. Self-detaching background command is refused before spawn.
+		before := len(ireg.ListBySession("SESS"))
+		dResp, dErr := fullBash.Run(ctx, tools.ToolCall{
+			ID:    "detach-call",
+			Input: `{"command":"nohup sleep 30 > /dev/null 2>&1 &","description":"e2e detach","run_in_background":true}`,
+		})
+		res.DetachRejected = dErr == nil && dResp.IsError && strings.Contains(dResp.Content, "run_in_background")
+		res.DetachNoTaskCreated = len(ireg.ListBySession("SESS")) == before
+		if !res.DetachRejected {
+			res.Errors = append(res.Errors, fmt.Sprintf("detach: err=%v isError=%v %.200s", dErr, dResp.IsError, dResp.Content))
+		}
 	}
 
 	// ── 9. Flow-owned completions never auto-resume ───────────────────

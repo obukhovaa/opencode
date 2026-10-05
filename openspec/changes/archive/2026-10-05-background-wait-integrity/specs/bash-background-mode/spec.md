@@ -1,9 +1,87 @@
-# Bash Background Mode
+## ADDED Requirements
 
-## Purpose
+### Requirement: Self-detaching commands are rejected in background mode
 
-Extends the existing `bash` tool with a `run_in_background: true` parameter that detaches the subprocess from the synchronous tool-result return path. The tool returns an immediate ack containing a `task_id` and an `output_file` path; on subprocess exit, a synthetic completion notification is injected into the bound session via the task-notifications primitive. The 600s synchronous timeout cap does not apply in background mode — the subprocess can run until natural exit, `taskstop`, opencode shutdown, or the pod's `activeDeadlineSeconds`. Permission gating reuses the existing `bash` rule key; no separate `bash-background` rule.
-## Requirements
+When `run_in_background: true`, the bash tool SHALL refuse a command that detaches its own
+work from the tracked subprocess, because such a command makes the task's terminal state
+meaningless: the wrapper shell exits immediately while the real work continues untracked,
+and every downstream guarantee (completion notification content, end-of-turn drain,
+foreground-wait redirect) silently reads that as "work finished".
+
+Detection SHALL be conservative — it MUST flag only:
+- a top-level `&` control operator — one that backgrounds the pipeline before it, whether it
+  ends the command or is followed by further commands (NOT `&&`, NOT a redirect such as
+  `2>&1` or `&>`, NOT a `&` inside quotes, a subshell, or a command substitution), or
+- `nohup`, `setsid`, or `disown` appearing at command position at the command's top level.
+
+Anything ambiguous MUST be allowed through. A false rejection blocks legitimate work; a
+false accept only reproduces current behavior.
+
+On rejection the tool SHALL return an error ToolResult (not a Go error) that names the
+offending construct and states that `run_in_background` already detaches the subprocess,
+so the trailing `&` / `nohup` must be dropped. The subprocess MUST NOT be spawned, no task
+ID is allocated, and no output file is created.
+
+This gate applies ONLY when `run_in_background: true`. Synchronous bash calls are
+unaffected — backgrounding inside a synchronous call is the caller's own business.
+
+#### Scenario: Trailing `&` with run_in_background is refused
+
+- **WHEN** the agent invokes `{command: "nohup ./gradlew test > /tmp/log 2>&1 &\necho $!", run_in_background: true}`
+- **THEN** the tool returns an error ToolResult naming `nohup` and/or the trailing `&`
+- **AND** no task is registered and no subprocess is spawned
+- **AND** the error text instructs dropping the detachment because `run_in_background` already detaches
+
+#### Scenario: `&` followed by more commands is also refused
+
+- **WHEN** the agent invokes `{command: "./gradlew test > /tmp/log 2>&1 & echo $!", run_in_background: true}`
+- **THEN** the command is refused: the `&` backgrounds the build and the wrapper exits after the `echo`
+
+#### Scenario: `&&` is not mistaken for detachment
+
+- **WHEN** the agent invokes `{command: "go build ./... && go test ./...", run_in_background: true}`
+- **THEN** the command is accepted and spawned normally
+
+#### Scenario: Quoted ampersand is not mistaken for detachment
+
+- **WHEN** the agent invokes `{command: "echo 'a & b' > /tmp/f", run_in_background: true}`
+- **THEN** the command is accepted and spawned normally
+
+#### Scenario: Synchronous calls are unaffected
+
+- **WHEN** the agent invokes `{command: "sleep 1 &"}` with `run_in_background` omitted
+- **THEN** the command runs verbatim, exactly as today
+
+### Requirement: The permission-exempt safe list covers only simple commands
+
+The bash tool's read-only exemption (commands that skip `EvaluatePermission` and the
+interactive prompt) SHALL NOT include `nohup`, and SHALL NOT apply to any command that
+contains, at its top level, a control operator (`;`, `&`, `&&`, `||`, `|`, newline), a
+redirect (`>`, `>>`, `<`), or a command substitution (`$(…)` or backticks). Operators inside
+single or double quotes do not count. When the scan is ambiguous the command SHALL be
+treated as not exempt.
+
+Without this, a model refused under `run_in_background` can drop the flag and prefix the
+same detaching command with an exempt word (`echo go; ./gradlew build &`), producing an
+untracked process that no permission rule saw.
+
+#### Scenario: nohup is no longer exempt
+
+- **WHEN** the agent runs foreground `nohup ./gradlew build > /tmp/log 2>&1 &`
+- **THEN** the command goes through `EvaluatePermission` like any non-exempt command
+
+#### Scenario: A compound command led by a safe word is not exempt
+
+- **WHEN** the agent runs foreground `echo start; ./gradlew build &`
+- **THEN** the command goes through `EvaluatePermission`
+
+#### Scenario: A quoted operator does not remove the exemption
+
+- **WHEN** the agent runs foreground `echo 'a; b | c'`
+- **THEN** the command remains exempt
+
+## MODIFIED Requirements
+
 ### Requirement: `run_in_background` parameter on bash tool
 The existing `bash` tool's input schema SHALL gain a new optional boolean parameter `run_in_background` (default `false`). When omitted or `false`, the tool MUST behave exactly as it does today (synchronous, 600s timeout cap, captured stdout/stderr returned in the tool result). When `true`, the tool SHALL spawn the subprocess in the background and return immediately with an ack — UNLESS the command is refused by the self-detach gate below, in which case nothing is spawned, no task ID is allocated, no output file is created, and an error ToolResult is returned instead.
 
@@ -59,81 +137,6 @@ What changes is **what happens after the model's terminal turn** in non-interact
 - **WHEN** the agent invokes bash with `{command: "nohup ./x &", run_in_background: true}`
 - **THEN** the tool returns an error ToolResult, not an ack
 - **AND** no task_id is allocated and no output file is created
-
-### Requirement: Background spawn ack format
-
-When `run_in_background: true`, the tool's ack ToolResult SHALL contain at minimum:
-- The literal phrase "Background task started"
-- A `task_id:` line with the task ID assigned by the background-tasks registry
-- An `output_file:` line with the absolute path to `<data.dir>/tasks/<task_id>.out`
-- A `command:` line with the (possibly truncated) command string
-- Guidance text that: (a) a synthetic completion notification will arrive automatically when the subprocess exits; (b) the agent MUST NOT `sleep` or poll while waiting — in a non-interactive step the runtime holds the turn until the task reaches a terminal state.
-
-The ack MUST NOT frame the output file as a progress-polling target and MUST NOT instruct the agent to read it mid-flight "to inspect progress". (The path remains in the ack for post-completion inspection; the synthetic completion carries the output either way.)
-
-#### Scenario: Ack content
-
-- **WHEN** the agent invokes `{command: "go test ./...", run_in_background: true}`
-- **THEN** the ack contains lines matching `^task_id: shell_[A-Z2-7]+$`, `^output_file: .+/tasks/shell_[A-Z2-7]+\.out$`, and `^command: go test \./\.\.\.$` (with reasonable command truncation if longer than 200 chars)
-
-#### Scenario: Ack does not invite polling
-
-- **WHEN** the background spawn ack guidance text is produced
-- **THEN** it MUST contain a "do NOT poll / do NOT sleep" instruction
-- **AND** it MUST NOT present reading the output file mid-flight as a way to inspect progress
-
-### Requirement: Subprocess lifecycle in background mode
-The background spawn SHALL:
-1. Allocate the task ID and output file via the background-tasks registry.
-2. Open the output file write-only (mode 0o600), set `cmd.Stdout` and `cmd.Stderr` to it.
-3. Start the subprocess (`cmd.Start()`); on start-failure, return a tool-execution error and do NOT register the task.
-4. Register the task with `Kind: KindBash` and the running `*os.Process`.
-5. Launch a monitor goroutine that calls `cmd.Wait()`, then on exit:
-   - `Sync()` the output file (see background-tasks spec).
-   - Read the file content (capped at the existing bash output-size budget).
-   - Invoke `task.EnqueueTaskCompletion` with `Kind: KindBash`, `OriginatingToolName: "bash"`, `Status: StatusCompleted` (exit 0) or `StatusFailed` (exit != 0), `ExitCode`, and `Content` set to the captured output.
-6. Return the ack ToolResult to the original tool call.
-
-#### Scenario: Subprocess succeeds
-- **WHEN** a background bash subprocess exits with code 0 after 30 seconds
-- **THEN** at the 30s mark a synthetic Assistant(ToolCall name=bash, synthetic=true) + Tool(ToolResult) pair appears in the session log; the ToolResult content matches what a synchronous bash with the same command would have produced; an `agent.Run` is started on the session if it was idle
-
-#### Scenario: Subprocess fails
-- **WHEN** a background bash subprocess exits with code 2 after 5 seconds
-- **THEN** a synthetic pair appears with `Status: StatusFailed`, the captured output is in the ToolResult content, and exit code 2 is recorded in the registry
-
-#### Scenario: Subprocess start fails
-- **WHEN** a background bash is invoked with a command not on PATH (e.g., `{command: "nonexistent-cmd", run_in_background: true}`)
-- **THEN** the tool returns a regular synchronous tool error (no ack); no task is registered; no output file is created
-
-### Requirement: No 600s timeout in background mode
-When `run_in_background: true`, the existing 600s synchronous timeout cap SHALL NOT apply. The subprocess may run indefinitely (until natural exit, `taskstop`, opencode shutdown, or the K8s pod's `activeDeadlineSeconds`). The `timeout` parameter MUST be silently ignored when `run_in_background: true`; the tool MAY emit an informational note in the ack but MUST NOT error.
-
-#### Scenario: Long-running background subprocess
-- **WHEN** the agent invokes `{command: "sleep 7200", run_in_background: true}` (2 hours)
-- **THEN** the spawn succeeds; the subprocess runs for the full duration; no synchronous-timeout error is produced
-
-#### Scenario: timeout parameter is ignored in background mode
-- **WHEN** the agent invokes `{command: "sleep 60", run_in_background: true, timeout: 5000}`
-- **THEN** the subprocess runs for 60 seconds (not 5); the `timeout` parameter has no effect
-
-### Requirement: Permission gate uses existing `bash` rule
-The spawn-time permission check for `run_in_background: true` SHALL use the existing `bash` permission rule key. There is no separate `bash-background` rule. Once spawn is approved, the background completion notification MUST NOT trigger a fresh permission check.
-
-#### Scenario: bash rule allows
-- **WHEN** `permission.rules.bash: {"*": "allow"}` and the agent invokes a background bash
-- **THEN** spawn succeeds without a prompt; completion notification fires without a prompt
-
-#### Scenario: bash rule denies
-- **WHEN** `permission.rules.bash: {"*": "deny"}` and the agent invokes a background bash
-- **THEN** spawn is denied with the same tool-permission error a synchronous bash would produce; no task is registered
-
-### Requirement: Synthetic ToolCall input mirrors the spawn input
-The synthetic Assistant(ToolCall) written by the bash background completion path SHALL set its `Input` JSON to the same `BashParams` shape the agent originally sent, with `run_in_background` STRIPPED. This means the renderer formats the synthetic completion as if it were a synchronous bash result of the same command.
-
-#### Scenario: Synthetic input reformatted
-- **WHEN** the agent invoked `{command: "go test ./...", run_in_background: true}` and completion fires
-- **THEN** the synthetic Assistant ToolCall's input JSON is `{"command": "go test ./..."}` (no `run_in_background` field), and renders identically to a synchronous bash call's input
 
 ### Requirement: Foreground wall-clock waits are redirected to the task wait in non-interactive mode
 
@@ -231,84 +234,3 @@ Because a child-owned task's synthetic completion is enqueued on the child's ses
 - **GIVEN** a non-interactive run with pending background tasks
 - **WHEN** the model calls `bash` (foreground) with `echo first; sleep 5`
 - **THEN** the tool MUST execute the command normally with no redirection
-
-### Requirement: Self-detaching commands are rejected in background mode
-
-When `run_in_background: true`, the bash tool SHALL refuse a command that detaches its own
-work from the tracked subprocess, because such a command makes the task's terminal state
-meaningless: the wrapper shell exits immediately while the real work continues untracked,
-and every downstream guarantee (completion notification content, end-of-turn drain,
-foreground-wait redirect) silently reads that as "work finished".
-
-Detection SHALL be conservative — it MUST flag only:
-- a top-level `&` control operator — one that backgrounds the pipeline before it, whether it
-  ends the command or is followed by further commands (NOT `&&`, NOT a redirect such as
-  `2>&1` or `&>`, NOT a `&` inside quotes, a subshell, or a command substitution), or
-- `nohup`, `setsid`, or `disown` appearing at command position at the command's top level.
-
-Anything ambiguous MUST be allowed through. A false rejection blocks legitimate work; a
-false accept only reproduces current behavior.
-
-On rejection the tool SHALL return an error ToolResult (not a Go error) that names the
-offending construct and states that `run_in_background` already detaches the subprocess,
-so the trailing `&` / `nohup` must be dropped. The subprocess MUST NOT be spawned, no task
-ID is allocated, and no output file is created.
-
-This gate applies ONLY when `run_in_background: true`. Synchronous bash calls are
-unaffected — backgrounding inside a synchronous call is the caller's own business.
-
-#### Scenario: Trailing `&` with run_in_background is refused
-
-- **WHEN** the agent invokes `{command: "nohup ./gradlew test > /tmp/log 2>&1 &\necho $!", run_in_background: true}`
-- **THEN** the tool returns an error ToolResult naming `nohup` and/or the trailing `&`
-- **AND** no task is registered and no subprocess is spawned
-- **AND** the error text instructs dropping the detachment because `run_in_background` already detaches
-
-#### Scenario: `&` followed by more commands is also refused
-
-- **WHEN** the agent invokes `{command: "./gradlew test > /tmp/log 2>&1 & echo $!", run_in_background: true}`
-- **THEN** the command is refused: the `&` backgrounds the build and the wrapper exits after the `echo`
-
-#### Scenario: `&&` is not mistaken for detachment
-
-- **WHEN** the agent invokes `{command: "go build ./... && go test ./...", run_in_background: true}`
-- **THEN** the command is accepted and spawned normally
-
-#### Scenario: Quoted ampersand is not mistaken for detachment
-
-- **WHEN** the agent invokes `{command: "echo 'a & b' > /tmp/f", run_in_background: true}`
-- **THEN** the command is accepted and spawned normally
-
-#### Scenario: Synchronous calls are unaffected
-
-- **WHEN** the agent invokes `{command: "sleep 1 &"}` with `run_in_background` omitted
-- **THEN** the command runs verbatim, exactly as today
-
-### Requirement: The permission-exempt safe list covers only simple commands
-
-The bash tool's read-only exemption (commands that skip `EvaluatePermission` and the
-interactive prompt) SHALL NOT include `nohup`, and SHALL NOT apply to any command that
-contains, at its top level, a control operator (`;`, `&`, `&&`, `||`, `|`, newline), a
-redirect (`>`, `>>`, `<`), or a command substitution (`$(…)` or backticks). Operators inside
-single or double quotes do not count. When the scan is ambiguous the command SHALL be
-treated as not exempt.
-
-Without this, a model refused under `run_in_background` can drop the flag and prefix the
-same detaching command with an exempt word (`echo go; ./gradlew build &`), producing an
-untracked process that no permission rule saw.
-
-#### Scenario: nohup is no longer exempt
-
-- **WHEN** the agent runs foreground `nohup ./gradlew build > /tmp/log 2>&1 &`
-- **THEN** the command goes through `EvaluatePermission` like any non-exempt command
-
-#### Scenario: A compound command led by a safe word is not exempt
-
-- **WHEN** the agent runs foreground `echo start; ./gradlew build &`
-- **THEN** the command goes through `EvaluatePermission`
-
-#### Scenario: A quoted operator does not remove the exemption
-
-- **WHEN** the agent runs foreground `echo 'a; b | c'`
-- **THEN** the command remains exempt
-

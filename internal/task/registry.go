@@ -31,11 +31,21 @@ type Registry interface {
 	Register(t *Task) error
 	Get(taskID string) (*Task, bool)
 	ListBySession(sessionID string) []*Task
+	// ListBySessionTree is ListBySession widened to the session-and-
+	// children scope: tasks owned by sessionID plus tasks owned by sessions
+	// whose parent is sessionID (one level of descent; see WaitScope).
+	ListBySessionTree(sessionID string) []*Task
 	// PendingForSession returns a snapshot of currently-running tasks for
 	// the session, optionally filtered. Pass nil filter to include every
 	// running task. Tasks that have transitioned to a terminal state are
 	// excluded regardless of filter.
 	PendingForSession(sessionID string, filter func(*Task) bool) []*Task
+	// PendingForSessionTree is PendingForSession widened to the session-
+	// and-children scope (see WaitScope). The end-of-turn drain keeps the
+	// exact scope — a parent must not block at end of turn on a child's
+	// tasks; the foreground-wait redirect, tasklist and taskstop use this
+	// one — a parent that explicitly waits does mean its own children.
+	PendingForSessionTree(sessionID string, filter func(*Task) bool) []*Task
 	// WaitForActiveTasks blocks until every pending task in the
 	// snapshot-at-call-start transitions to terminal state, or until ctx
 	// is cancelled. Returns ctx.Err() on cancellation, nil on clean
@@ -48,6 +58,21 @@ type Registry interface {
 	SweepOrphans(dataDir string)
 }
 
+// WaitScope selects which sessions' tasks a lookup or wait covers.
+type WaitScope int
+
+const (
+	// ScopeExactSession (the zero value, and so every existing caller's
+	// behavior) covers tasks whose owning session equals the queried one.
+	ScopeExactSession WaitScope = iota
+	// ScopeSessionAndChildren additionally covers tasks owned by sessions
+	// whose ParentSessionID is the queried session — one level of descent.
+	// Deliberately NOT the flow RootSessionID: a flow assigns one root to
+	// every step and steps run concurrently, so root scope would let a
+	// wait in one parallel branch block on an unrelated branch's work.
+	ScopeSessionAndChildren
+)
+
 // WaitOptions configures Registry.WaitForActiveTasks.
 type WaitOptions struct {
 	// IncludeMonitor: include KindMonitor tasks in the wait set. The
@@ -58,6 +83,20 @@ type WaitOptions struct {
 	// the wait set and the function may return before they reach a
 	// terminal state.
 	IncludeMonitor bool
+	// Scope selects the sessions whose tasks are waited on. It is honored
+	// by the snapshot taken inside WaitForActiveTasks, so a caller that
+	// pre-checks with PendingForSessionTree MUST pass
+	// ScopeSessionAndChildren here too — a widened pre-check over an exact
+	// wait would return in microseconds having waited for nothing.
+	Scope WaitScope
+}
+
+// inScope reports whether t belongs to sessionID under scope.
+func inScope(t *Task, sessionID string, scope WaitScope) bool {
+	if t.SessionID == sessionID {
+		return true
+	}
+	return scope == ScopeSessionAndChildren && t.ParentSessionID != "" && t.ParentSessionID == sessionID
 }
 
 type registry struct {
@@ -106,11 +145,21 @@ func (r *registry) Get(taskID string) (*Task, bool) {
 // PendingForSession returns a snapshot of running tasks for the session
 // that pass the optional filter. Terminal tasks are never included.
 func (r *registry) PendingForSession(sessionID string, filter func(*Task) bool) []*Task {
+	return r.pendingScoped(sessionID, filter, ScopeExactSession)
+}
+
+// PendingForSessionTree is PendingForSession over the session-and-children
+// scope.
+func (r *registry) PendingForSessionTree(sessionID string, filter func(*Task) bool) []*Task {
+	return r.pendingScoped(sessionID, filter, ScopeSessionAndChildren)
+}
+
+func (r *registry) pendingScoped(sessionID string, filter func(*Task) bool, scope WaitScope) []*Task {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]*Task, 0)
 	for _, t := range r.tasks {
-		if t.SessionID != sessionID {
+		if !inScope(t, sessionID, scope) {
 			continue
 		}
 		if t.State() != StateRunning {
@@ -135,7 +184,7 @@ func (r *registry) WaitForActiveTasks(ctx context.Context, sessionID string, opt
 		}
 		return true
 	}
-	snapshot := r.PendingForSession(sessionID, filter)
+	snapshot := r.pendingScoped(sessionID, filter, opts.Scope)
 	if len(snapshot) == 0 {
 		return nil
 	}
@@ -153,11 +202,20 @@ func (r *registry) WaitForActiveTasks(ctx context.Context, sessionID string, opt
 }
 
 func (r *registry) ListBySession(sessionID string) []*Task {
+	return r.listScoped(sessionID, ScopeExactSession)
+}
+
+// ListBySessionTree is ListBySession over the session-and-children scope.
+func (r *registry) ListBySessionTree(sessionID string) []*Task {
+	return r.listScoped(sessionID, ScopeSessionAndChildren)
+}
+
+func (r *registry) listScoped(sessionID string, scope WaitScope) []*Task {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]*Task, 0)
 	for _, t := range r.tasks {
-		if t.SessionID == sessionID {
+		if inScope(t, sessionID, scope) {
 			out = append(out, t)
 		}
 	}

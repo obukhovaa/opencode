@@ -26,9 +26,9 @@ func NewTaskListTool() BaseTool { return &tasklistTool{} }
 func (t *tasklistTool) Info() ToolInfo {
 	return ToolInfo{
 		Name: TaskListToolName,
-		Description: `List background tasks belonging to the current session (bash run_in_background, task async, monitor).
+		Description: `List background tasks belonging to the current session (bash run_in_background, task async, monitor), plus those spawned by subagents you launched (one level down; such rows carry owner=<subagent session>).
 
-Each row shows task_id, kind, state, started_at, finished_at, exit_code, and a short description. Filter by state with the state parameter ("running" / "completed" / "failed" / "killed" / "all", default "all"). Limit results with limit (max 200, default 50).
+Each row shows task_id, kind, state, started_at, finished_at, exit_code, and a short description; a monitor row also shows scanned_lines, the input lines it has consumed so far — a silent monitor with a growing count is healthy, its pattern just has not matched yet. Filter by state with the state parameter ("running" / "completed" / "failed" / "killed" / "all", default "all"). Limit results with limit (max 200, default 50).
 
 This tool is for ONE-SHOT inventory queries — confirming a task is still running, listing your spawn fan-out, etc. Do NOT use it as a polling loop: completion notifications arrive automatically when a background task finishes. Each tool call costs tokens and invalidates the prompt cache; one-shot uses are cheap, polling is expensive.
 
@@ -72,7 +72,10 @@ func (t *tasklistTool) Run(ctx context.Context, call ToolCall) (ToolResponse, er
 	if reg == nil {
 		return NewTextErrorResponse("background tasks not available: task registry not initialized"), nil
 	}
-	all := reg.ListBySession(sessionID)
+	// Session-and-children scope: the same scope the foreground-wait
+	// redirect blocks on, so the model can see whatever it may be waiting
+	// for. Parallel sibling steps of a flow are NOT included.
+	all := reg.ListBySessionTree(sessionID)
 	// Sort newest-first.
 	sort.Slice(all, func(i, j int) bool {
 		return all[i].StartedAt.After(all[j].StartedAt)
@@ -105,6 +108,12 @@ func (t *tasklistTool) Run(ctx context.Context, call ToolCall) (ToolResponse, er
 		}
 		if ec, ok := tk.ExitCode(); ok {
 			b.WriteString(fmt.Sprintf("\texit=%d", ec))
+		}
+		if tk.Kind == task.KindMonitor {
+			b.WriteString(fmt.Sprintf("\tscanned_lines=%d", tk.ScannedLines()))
+		}
+		if tk.SessionID != sessionID {
+			b.WriteString(fmt.Sprintf("\towner=%s", tk.SessionID))
 		}
 		if tk.Description != "" {
 			b.WriteString(fmt.Sprintf("\tdesc=%q", tk.Description))

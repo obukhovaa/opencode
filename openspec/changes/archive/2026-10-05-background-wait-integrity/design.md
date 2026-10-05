@@ -1,0 +1,225 @@
+# Design
+
+## Evidence: trace 81aca169553f1c1d5f983ac6a665b742
+
+Session `1789550842-developer-review-apply-changes-resolve-team`, step span 379.1s.
+The session column is which agent's registry the task landed in — it is the crux.
+
+| Time (UTC) | Session | Event |
+|---|---|---|
+| 09:30:04 | parent → `piano-coder` #1 | subagent span opens (29.7s) |
+| 09:30:31.366 | coder #1 | `bash run_in_background:true` → `nohup … ./gradlew … &` → `shell_43PXMJMQ…` |
+| 09:30:31 | coder #1 | **task already terminal**: `state=completed finished=09:30:31Z exit=0` |
+| 09:30:34 | — | coder #1 returns after 3s. gradle still running. |
+| 09:30:42 | parent → `piano-coder` #2 | subagent span opens (58.6s) |
+| 09:31:05 | coder #2 | `tasklist{state:all}` → the completed shell task (poll #1) |
+| 09:31:34.154 | coder #2 | `monitor` #1 `tail -F /tmp/tmp.cMcghk` → `monitor_GUU6VTD4…` |
+| 09:31:36.908 | coder #2 | `tasklist{state:running}` → only the monitor (poll #2) |
+| 09:31:41 | — | coder #2 returns; `monitor_GUU6VTD4…` never stopped |
+| 09:31:50.568 | **parent** | `monitor` #2 on the same file → `monitor_5PHPNRPT…` |
+| 09:31:56.732 | **parent** | `bash sleep 120; grep …` → **lat 120.1s, ran verbatim** |
+| 09:34:00 | parent | `taskstop monitor_5PHPNRPT…` only |
+
+`BUILD SUCCESSFUL in 3m 11s`: the real work outlived its "completed" task by ~3 minutes.
+
+## Why each gate failed, and the fix
+
+### 1. Detachment (`bash_background.go`)
+
+`cmd.Wait()` tracks the wrapper shell. `nohup … &` forks and the shell exits, so the task
+is terminal in milliseconds. Every guarantee downstream reads that terminal state as "work
+done": the completion notification fires early with wrong content, the drain declines to
+hold, and the pending lookup returns empty.
+
+Fix is a pre-spawn input gate, not a runtime heuristic — a command that detaches its own
+work is unanswerable at the process level, and rewriting it silently would be worse than
+refusing it. Detection is deliberately conservative: a top-level trailing `&` (not `&&`,
+not `&` inside quotes or a subshell) or a `nohup`/`setsid`/`disown` word at command
+position. Anything ambiguous is allowed through, because a false rejection blocks
+legitimate work while a false accept only reproduces today's behavior.
+
+**The gate must close the foreground route in the same breath.** `nohup` is in
+`safeReadOnlyCommands` (`bash.go:62-64`) and `IsSafeReadOnlyCommand` is a prefix match
+(`tools.go:301-311`), so foreground `nohup ./gradlew … &` short-circuits the entire
+permission block at `bash.go:167,173`. A model told only "drop the `&`" may instead drop
+`run_in_background`, trading a tracked-but-lying task for an untracked, unprompted orphan.
+Removing `nohup` from that list is part of this change, not a follow-up.
+
+Removing `nohup` is necessary but not sufficient. `IsSafeReadOnlyCommand` tests only that
+the *whole string* starts with a listed word followed by a space or `-`, so any command
+led by `echo`, `ls`, `date`, … is exempt regardless of what follows: `echo go; ./gradlew
+build &`, `ls && rm -rf build`, `echo x > ~/.bashrc`. The model's natural rewrite after a
+rejection ("print a marker, then start the build") lands exactly there. The check
+therefore MUST return false for any command containing a top-level control operator
+(`;`, `&`, `&&`, `||`, `|`, newline), a redirect (`>`, `>>`, `<`), or a command
+substitution (`$(…)`, backticks). It reuses the quote-aware scanner from the detach gate,
+and ambiguity resolves to *not safe* — the opposite polarity to the detach gate, because
+here a false "unsafe" costs one permission evaluation while a false "safe" skips it.
+
+Ordering note: the `if params.RunInBackground` branch sat *after* the permission block.
+The detach check is hoisted ahead of it (`bash.go:173`, permission block at `:184`).
+
+### 2. Scope: caller session + direct children — NOT the flow root
+
+`PendingForSession` is exact-match (`registry.go:113`). The naive fix is `root_session_id`,
+and it is wrong. A flow assigns **one** root to every step:
+
+```go
+rootSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, sessionFlowID, f.Spec.Steps[0].ID)  // flow/service.go:256
+```
+
+and steps run concurrently (`service.go:493`). Root scope would therefore make a `sleep` in
+parallel branch A block on branch B's unrelated background work. The trace's own session
+name matches that root pattern exactly, so this is not hypothetical.
+
+Scope is instead **the calling session plus its direct children** — one level of descent.
+That covers the parent→subagent case that produced the incident without reaching sideways
+into sibling branches. Deeper nesting degrades to today's behavior, which is acceptable:
+the hole it leaves is strictly smaller than the one being closed.
+
+Two implementation consequences the first draft missed:
+
+- **Registration sites cannot see the owning session's parent.** With a
+  `ParentSessionID` carried on `task.Task`, `PendingForSessionTree(callerID)` is a pure
+  registry filter (`SessionID == caller || ParentSessionID == caller`) — the caller's own
+  ID is already on ctx. The gap is at *registration*: `internal/llm/tools` does not import
+  `internal/session` (`bashTool` holds only `{permissions, registry}`), so the bash/monitor
+  sites cannot stamp the parent. The seam is `tools.ParentSessionIDContextKey`, set in
+  `agent.RunWith` beside `IsTaskAgentContextKey` (`agent.go:875`) from
+  `session.ParentSessionID`, where the row is already loaded. Three sites stamp it:
+  `bash_background.go`, `monitor.go`, `agent-tool-async.go`. The proposal's fourth site,
+  `cron/scheduler.go`, registers no `task.Task` at all — it only enqueues a completion —
+  so there is nothing to stamp there. **Not `RootSessionID`**: `session.go:116-125`
+  copies the parent's root onto every descendant, so a flow step's subagent carries the
+  flow-wide root — stamping it would silently rebuild the root scope rejected above.
+  Without the key the lookup degrades to exact scope and the fix becomes a no-op that no
+  registry-level test would catch.
+- **The wait must be widened too, not just the pre-check.** `WaitForActiveTasks` takes a
+  bare `sessionID` and re-snapshots exact scope internally (`registry.go:138` → `:113`).
+  Widening only the pre-check at `bash_wait.go:80` opens the gate and then returns in
+  microseconds having waited for nothing — and, combined with fix 4, runs the trailer
+  against pre-completion state. Slow-and-correct becomes fast-and-wrong. Scope therefore
+  becomes a field on `WaitOptions`, honored at both sites.
+
+**The management surface moves with it.** `tasklist` (`tasklist.go:78`) and `taskstop`
+(`taskstop.go:83`, *"Task %s does not belong to this session"*) were exact-scoped. Left
+alone, the redirect would block the parent on a `task_id` it can neither list nor kill,
+with `killStalled` not applying (`KindTask`-only, `agent.go:1425-1432`) and `stepCtx`
+frequently carrying no deadline at all (`flow/service.go:2602-2615`). Both tools move to
+the same scope in this change.
+
+One honest caveat: the synthetic completion is enqueued on the **task's owning session**
+(`bash_background.go:137`). For a child-owned task the parent will not receive it, so the
+redirect's note must point at `output_file` rather than promise a completion in the
+conversation.
+
+### 3. Regex narrowness (`bash_wait.go:21`)
+
+`pureWaitRe` was fitted to the CD-4761 samples. The observed shape is the more natural one
+— sleep, then probe. Widening the matcher to enumerate safe trailers is a losing game.
+
+Instead, split: match a leading `^sleep <n>[smhd]?` **anchored to a following `;` or `&&`**
+and treat the remainder as a trailer. The anchor matters: `sleep 5 & echo bg` must keep
+failing, since `&` is neither separator (`bash_wait_test.go:42`).
+
+Three guards the first draft lacked:
+
+- **Self-bypass.** If the trailer is itself a wait (`sleep 0; sleep 300`), executing it
+  verbatim sleeps 300s under a result that reads *"Do NOT sleep or poll"*. The trailer is
+  re-checked and a leading wait in it is dropped.
+- **Cancelled ctx.** When the wait ends on `ctx.Err()`, the trailer is NOT executed —
+  `sh.Exec` on a dead ctx yields "Command was aborted before completion" appended under a
+  deadline note, which explains nothing.
+- **Exit code.** `bash_wait.go:129-133` sets no `ExitCode`/`TempFilePath`, so a failing
+  trailer would report success. The trailer's result must carry real metadata.
+
+Execution reuses the synchronous path through `runForeground` (`bash.go:247`), extracted
+from `Run` (truncation via `persistAndTruncate`, stderr composition, exit code, temp-file
+metadata). `interceptForegroundWait(ctx, params, workdir, sessionID)` carries the timeout
+and workdir the trailer needs.
+
+**Permission is already covered and this is load-bearing:** interception sits at
+`bash.go:220`, *after* the permission block at `:184`, which evaluated the full
+`params.Command` string — trailer included. The trailer needs no second check, and
+re-checking it would double-prompt. This is the opposite of the ordering the detach gate
+needs, so both are stated explicitly in the spec.
+
+### 4. Monitor legibility (`monitor.go:239`, `tasklist.go`)
+
+The monitor ack says "Do NOT poll" but never states the yield contract that
+`bash_background.go:79` spells out. A model told only what not to do, with no feedback and
+no events arriving, has one primitive left. That is the observed sequence: second monitor,
+two `tasklist` polls, then sleep.
+
+With `UntilFirstEvent` cut, this is now the *entire* answer for the monitors-only case, so
+it carries more weight than it did in the first draft. The ack must say plainly that
+ending the turn without a tool call is how you wait.
+
+The scanned-line counter cannot live in `monitorState`: that struct is unexported, owned by
+its three goroutines, and reachable from nothing else, while `tasklist` reads only
+`task.Task` via the registry. It is an atomic on `task.Task` (`AddScannedLines` /
+`ScannedLines`), bumped from `scanLoop` (`monitor.go:286`) through `monitorState.tk`.
+
+## Risks
+
+- **Rejecting `&` breaks an existing working flow.** A repo-wide sweep found nothing pairing
+  `nohup`/`setsid`/`disown`/trailing-`&` with `run_in_background: true`. Detection is
+  conservative and the message names the fix.
+- **Compound read-only commands lose their exemption.** `ls | grep foo`, `git log | head`
+  now go through `EvaluatePermission` instead of short-circuiting. Where config says
+  `allow` for bash (typical for flows) nothing changes; under `ask` they prompt. That is
+  the intended price: the exemption was never sound for compound commands.
+- **One level of descent is arbitrary.** It is. It is chosen because it closes the observed
+  hole at a cost that is auditable, where root scope is not.
+- **Trailer reordering.** Plain `&&` short-circuit is preserved. The shape that genuinely
+  inverts is the watchdog idiom `sleep 300 && kill $(cat /tmp/pid)`, which now fires after
+  the task it was meant to bound. Rare, but the blanket "strictly safer" claim in the first
+  draft was wrong and is withdrawn.
+- **Redirect and drain disagree on child tasks — closed by §5.** A parent's foreground
+  `sleep` waits on a child's bash task, but its end-of-turn drain does not (exact scope, by
+  design). That would leave a child-owned task that outlives its subagent awaited by nobody
+  at step end. With §5 every flow-step subagent drains its own tasks before it answers, so
+  by the time the parent's turn can end its children's tasks are terminal (or the step's
+  deadline cancelled the tree). The exact-scoped drain is therefore sufficient, and a
+  parent never blocks at end of turn on work it did not spawn.
+- **Leaked monitors persist.** Registry entries are never deleted and monitors use
+  `exec.Command`, not `CommandContext` (`monitor.go:185`), so a leaked `tail -F` stays
+  `StateRunning` for the process lifetime. Under any widened scope that is a growing
+  hazard; it is bounded here only because monitors stay excluded from the redirect.
+
+## 5. Subagents inherit the non-interactive marker (GENAI-140)
+
+Both `task`-tool launch paths went through `a.Run(...)`, the back-compat shim that passes
+zero-value `RunOptions` (`agent.go:738`, *"interactive mode, no end-of-turn wait"*). The
+outer loop then breaks when `!opts.NonInteractive` (`agent.go:1349`) and the tool ctx gets
+`NonInteractiveContextKey = false` (`agent.go:883`), so a subagent neither drained nor had
+its sleeps redirected — ever. Both paths now call
+`a.RunWith(…, subagentRunOptions(callerCtx))` (`agent-tool.go:197`, `agent-tool-async.go:84`),
+where `subagentRunOptions` returns `RunOptions{NonInteractive: tools.IsNonInteractive(callerCtx)}`
+and nothing else. Two details matter:
+
+- The async path derives its run ctx from the step scope or `context.Background()`, which
+  carry no values, so the marker MUST be read from the caller's turn ctx, not the derived
+  one — `TestSubagentRunOptions_InheritsNonInteractive` pins that.
+- Consequences for a flow-step subagent: its `RunWith` holds until its background tasks are
+  terminal (the exact-scoped drain, stall detection included) and re-enters so it can react
+  to completions; the parent's `task` call therefore returns the post-completion answer. An
+  unbounded `monitor` started by a subagent now holds the subagent until the step deadline,
+  the same contract the step's primary agent already lives under; the monitor ack's yield
+  text applies to it too. TUI subagents carry no marker and are unchanged.
+
+## 6. Crash recovery of a killed step (GENAI-352, opencode half)
+
+`flow.Service.Run` sees a `running` `flow_states` row and takes the replay-only
+`hasRunning` path (`flow/service.go:325`): the row is assumed to belong to a live process.
+`collectResumableSteps` already knows how to re-enter a non-completed step with its
+persisted args and iteration — only the gate stands in the way. `RunOptions.RecoverRunning`
+(`Service.RunWithOptions`; `Run` is the shim) is the caller's assertion that the owner is
+dead: with it the running rows fall through to `hasResumableWork`, which treats them as
+in-flight, and the planner resumes each in its own session; nothing is deleted. The HTTP
+surface is `recoverRunning` on `POST /flow/run` (`handler_flow.go:367`), threaded through
+`flowStartOptions` into `flowRunner.run`. Only an orchestrator that has observed the pod's
+death may send it — two live processes on one step is the failure the replay path exists to
+prevent — so the CLI gains no flag. The orchestrator side (job `activeDeadlineSeconds`,
+detecting a kill verdict with a step in flight, one bounded continuation job) is c2-agent's
+`killed-step-resume` change.

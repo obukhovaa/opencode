@@ -197,7 +197,7 @@ fi
 # ── 11. anti-spin: foreground sleep interception ────────────────────
 sleep_intercept_ok=$(echo "$OUTPUT" | jq -r '.sleep_intercept_ok')
 sleep_intercept_fast=$(echo "$OUTPUT" | jq -r '.sleep_intercept_fast')
-sleep_intercept_no_echo=$(echo "$OUTPUT" | jq -r '.sleep_intercept_no_echo')
+sleep_intercept_trailer_ran=$(echo "$OUTPUT" | jq -r '.sleep_intercept_trailer_ran')
 sleep_passthrough_interactive=$(echo "$OUTPUT" | jq -r '.sleep_passthrough_interactive_ok')
 sleep_passthrough_no_pending=$(echo "$OUTPUT" | jq -r '.sleep_passthrough_no_pending_ok')
 
@@ -211,10 +211,10 @@ if [ "$sleep_intercept_fast" = "true" ]; then
 else
     log_fail "intercepted sleep returns when tasks finish (not after 30s)" "wall-clock sleep executed"
 fi
-if [ "$sleep_intercept_no_echo" = "true" ]; then
-    log_pass "intercepted command's echo never executed"
+if [ "$sleep_intercept_trailer_ran" = "true" ]; then
+    log_pass "intercepted command's trailer runs after the wait"
 else
-    log_fail "intercepted command's echo never executed" "echo output leaked into result"
+    log_fail "intercepted command's trailer runs after the wait" "trailer output missing or before the note"
 fi
 if [ "$sleep_passthrough_interactive" = "true" ]; then
     log_pass "interactive foreground sleep still executes verbatim"
@@ -226,6 +226,25 @@ if [ "$sleep_passthrough_no_pending" = "true" ]; then
 else
     log_fail "non-interactive sleep with no pending tasks executes verbatim" "over-eager interception"
 fi
+
+# ── 11b. background-wait-integrity: scope, detach gate, monitor ack ──
+for pair in \
+  "child_scope_intercept_ok|parent's sleep redirected onto a direct subagent's task" \
+  "child_scope_intercept_fast|child-scope wait returns when the child's task finishes" \
+  "child_scope_owner_marked|interception note marks the child-owned task's owner" \
+  "tasklist_child_marked|tasklist lists a child-owned task with owner marker" \
+  "tasklist_sibling_hidden|tasklist hides a sibling step's task" \
+  "taskstop_child_killed|taskstop can kill a child-owned task" \
+  "detach_rejected|self-detaching run_in_background command is refused" \
+  "detach_no_task_created|refused detach registers no task" \
+  "monitor_ack_no_sleep|monitor ack states the no-sleep yield contract"; do
+    key="${pair%%|*}"; label="${pair#*|}"
+    if [ "$(echo "$OUTPUT" | jq -r ".${key}")" = "true" ]; then
+        log_pass "$label"
+    else
+        log_fail "$label" "$key=false"
+    fi
+done
 
 # ── 12. flow-owned auto-resume suppression ──────────────────────────
 non_flow_resume=$(echo "$OUTPUT" | jq -r '.non_flow_resume_fired')

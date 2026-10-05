@@ -578,6 +578,7 @@ These are honored by `opencode serve` only:
 | `--flow` | _(unset)_ | Auto-start the named flow once the server is healthy (k8s Job entrypoint pattern). |
 | `--flow-args` | _(unset)_ | Path to a JSON file with flow arguments (e.g. reviewers, ticket IDs). Read once at start. |
 | `--flow-fresh` | `false` | Discard any existing per-step session state when auto-starting (equivalent to `-D` in direct mode). |
+| `--flow-recover-running` | `false` | Treat `running` `flow_states` rows as crash-recovery work: the process that left them is known to be dead, so their steps are resumed in their own sessions instead of replayed. The per-Job pod's spelling of `recoverRunning` on `POST /flow`; only an orchestrator that watched the previous pod die should set it. |
 | `--flow-exit` | `false` | Cancel the parent context (shutting the server down) once the auto-started flow terminates. |
 | `--flow-exit-grace` | `5s` | Hold the HTTP server up this long after the flow terminates so an external reconciler (`GET /flow/status`) can land before shutdown. Capped at 60 s. Only honored with `--flow-exit`. Set to `0s` to exit immediately. |
 
@@ -590,7 +591,7 @@ These are honored by `opencode serve` only:
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/flow` | List every discovered flow YAML (`{id, name, description, disabled, args}`). |
-| POST | `/flow` | Start a new run. Body: `{flowID, args, fresh}`. Returns `202 Accepted` with `{runID, flowID, status, currentStep}`, or `409` if another run is in flight, or `404` for an unknown flow ID. |
+| POST | `/flow` | Start a new run. Body: `{flowID, args, fresh, recoverRunning}`. Returns `202 Accepted` with `{runID, flowID, status, currentStep}`, or `409` if another run is in flight, or `404` for an unknown flow ID. |
 | GET | `/flow/status` | Snapshot of the latest run: `{runID, flowID, status, startedAt, completedAt, currentStep, completedSteps, waitingTarget, error}`, or `{"status":"idle"}` if no run has been started in this process. |
 | DELETE | `/flow` | Abort the in-flight run. `409` if no run is active. |
 
@@ -783,6 +784,8 @@ When `Run` is invoked for a `(prefix, flow_id)` pair that already has `flow_stat
 If neither check fires, the prior run terminated cleanly and the runtime **restarts** from step 0. Per-step sessions are preserved on restart, so the agent retains cumulative LLM history across re-triggers. This is the "react on external event" case — a flow keyed by `${args.jira_issue_id}` re-fires when the Jira issue changes and the new comment must be re-evaluated, with the prior conversation still visible.
 
 `--flow-fresh` / `-D` / `{fresh: true}` is the hard reset: deletes both `flow_states` rows AND the per-step session tree, then runs from step 0 with empty LLM history. This is the only path that touches per-step sessions.
+
+`{recoverRunning: true}` on `POST /flow/run` is the **crash-recovery switch**. A `running` `flow_states` row normally means another process is executing the flow right now, so a new run only replays the rows and lets that process finish. An orchestrator that has just watched the pod executing a step get OOM-killed, evicted or deadline-killed knows that owner is dead; sending `recoverRunning: true` with the same session prefix makes the runtime treat the running rows as crash-recovery work instead — each running step is re-entered in its own session with its persisted args and iteration, completed steps keep their cached outputs, and nothing is deleted — so pushed-but-unfinished work is continued rather than lost (GENAI-352). Never send it for a flow whose process may still be alive: two processes would then execute the same step.
 
 > Full contract in [`openspec/specs/flow-runtime-resume/spec.md`](../openspec/specs/flow-runtime-resume/spec.md).
 

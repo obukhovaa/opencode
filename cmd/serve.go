@@ -358,6 +358,7 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			flowExit, _ := cmd.Flags().GetBool("flow-exit")
 			flowExitGrace, _ := cmd.Flags().GetDuration("flow-exit-grace")
 			flowFresh, _ := cmd.Flags().GetBool("flow-fresh")
+			flowRecoverRunning, _ := cmd.Flags().GetBool("flow-recover-running")
 			flowStartDelay, _ := cmd.Flags().GetDuration("flow-start-delay")
 			if flowExit {
 				if flowExitGrace < 0 {
@@ -373,7 +374,7 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			if flowStartDelay > 30*time.Second {
 				return fmt.Errorf("--flow-start-delay must be ≤ 30s (got %s)", flowStartDelay)
 			}
-			if err := scheduleAutoFlow(ctx, cancel, server, flowID, flowArgsPath, flowExit, flowExitGrace, flowFresh, flowStartDelay, &autoFlowStartErr); err != nil {
+			if err := scheduleAutoFlow(ctx, cancel, server, flowID, flowArgsPath, flowExit, flowExitGrace, flowFresh, flowRecoverRunning, flowStartDelay, &autoFlowStartErr); err != nil {
 				return err
 			}
 		}
@@ -619,7 +620,7 @@ func filepathJoin(parts ...string) string {
 //
 // flowExit, when true, cancels the parent context (triggering server
 // shutdown) once the flow terminates.
-func scheduleAutoFlow(ctx context.Context, cancel context.CancelFunc, server *api.Server, flowID, flowArgsPath string, flowExit bool, flowExitGrace time.Duration, flowFresh bool, flowStartDelay time.Duration, startErr *atomic.Pointer[error]) error {
+func scheduleAutoFlow(ctx context.Context, cancel context.CancelFunc, server *api.Server, flowID, flowArgsPath string, flowExit bool, flowExitGrace time.Duration, flowFresh, flowRecoverRunning bool, flowStartDelay time.Duration, startErr *atomic.Pointer[error]) error {
 	args := map[string]any{}
 	if flowArgsPath != "" {
 		data, err := os.ReadFile(flowArgsPath)
@@ -652,7 +653,7 @@ func scheduleAutoFlow(ctx context.Context, cancel context.CancelFunc, server *ap
 		case <-time.After(startWait):
 		}
 
-		runID, err := server.StartFlow(flowID, args, flowFresh)
+		runID, err := server.StartFlow(flowID, args, flowFresh, flowRecoverRunning)
 		if err != nil {
 			logging.Error("auto-flow start failed", "flow", flowID, "err", err)
 			// Record the error so RunE can return it after server.Start
@@ -697,6 +698,7 @@ func init() {
 	serveCmd.Flags().Bool("flow-exit", false, "Exit the process when the auto-started flow completes (only honored with --flow)")
 	serveCmd.Flags().Duration("flow-exit-grace", 5*time.Second, "Hold the HTTP server up this long after the auto-flow terminates so an external reconciler (e.g. orchestrator GET /flow/status) can land before shutdown. Capped at 60s. Only honored with --flow-exit. Default 5s.")
 	serveCmd.Flags().Bool("flow-fresh", false, "Discard any existing per-step session state when auto-starting the flow (equivalent to `opencode -F <flow> -D`).")
+	serveCmd.Flags().Bool("flow-recover-running", false, "Treat `running` flow_states rows as crash-recovery work when auto-starting the flow: the process that left them is known to be dead (an orchestrator saw its pod killed), so their steps are resumed instead of replayed (same as `recoverRunning` on POST /flow).")
 	serveCmd.Flags().Duration("flow-start-delay", 0, "Wait this long after the HTTP server is healthy BEFORE auto-starting the flow. Gives external SSE subscribers (e.g. orchestrators) time to connect and start consuming flow.* events from the very first one. Capped at 30s. Default 0 (no extra delay beyond the 250ms boot wait).")
 
 	// Pool-mode flags (openspec change agent-pod-pool-runtime). A pool

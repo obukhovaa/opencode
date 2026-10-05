@@ -102,9 +102,18 @@ func (s Status) IsTerminal() bool {
 // Registry — the registry owns the lifetime.
 type Task struct {
 	ID string
-	// SessionID is the PARENT session — the one that spawned this task and
-	// the key PendingForSession/ListBySession match on.
+	// SessionID is the OWNING session — the one that spawned this task and
+	// the key the exact-session lookups match on.
 	SessionID string
+	// ParentSessionID is the parent of the owning session when that
+	// session is itself a subagent / task session (""
+	// for a top-level session). Stamped at registration from
+	// tools.ParentSessionIDFromContext. It is what the session-and-children
+	// scope matches on, so a parent agent's foreground-wait redirect,
+	// tasklist and taskstop see the tasks its direct subagents spawned. It
+	// is the parent, never the flow-wide RootSessionID, which parallel
+	// steps of one flow share (openspec background-tasks).
+	ParentSessionID string
 	// AgentSessionID is the subagent's OWN session, set for KindTask only.
 	// It is the progress signal for stall detection: nothing else observes
 	// a subagent's LLM loop, so "has this session persisted a message
@@ -150,6 +159,12 @@ type Task struct {
 	// KindMonitor — subagents do not surface OS exit codes).
 	exitCode atomic.Int32
 	hasExit  atomic.Bool
+	// scannedLines counts the input lines a KindMonitor task has consumed
+	// since spawn, matched or not. Observability only (tasklist shows it so
+	// a healthy silent monitor is distinguishable from a dead one); it
+	// never affects stall detection, the monitor's lifetime or any
+	// notification (openspec monitor-tool).
+	scannedLines atomic.Int64
 
 	// Lifecycle hooks. Exactly one of these is non-nil depending on Kind.
 	// Cancel is set for KindTask (subagent context cancellation).
@@ -204,3 +219,10 @@ func (t *Task) ExitCode() (int, bool) {
 	}
 	return int(t.exitCode.Load()), true
 }
+
+// AddScannedLines records n more input lines consumed by a monitor.
+func (t *Task) AddScannedLines(n int64) { t.scannedLines.Add(n) }
+
+// ScannedLines returns how many input lines a monitor has consumed since
+// spawn (0 for every other kind).
+func (t *Task) ScannedLines() int64 { return t.scannedLines.Load() }

@@ -119,3 +119,36 @@ func TestSubagentCtx_TaskstopCancelIsScoped(t *testing.T) {
 		t.Fatal("taskstop on one subagent must not cancel a sibling")
 	}
 }
+
+// TestSubagentRunOptions_InheritsNonInteractive pins the GENAI-140 fix: a
+// subagent launched from a non-interactive (flow step) turn runs
+// non-interactive too — it drains its own background tasks and has its
+// sleeps redirected — while an interactive caller's subagent stays
+// interactive. The zero-value Run shim switched both off for every
+// subagent, which is how a subagent came to busy-wait for 18 minutes.
+func TestSubagentRunOptions_InheritsNonInteractive(t *testing.T) {
+	flowCtx := context.WithValue(context.Background(), tools.NonInteractiveContextKey, true)
+	if !subagentRunOptions(flowCtx).NonInteractive {
+		t.Fatal("a flow step's subagent must inherit NonInteractive: true")
+	}
+	tuiCtx := context.WithValue(context.Background(), tools.NonInteractiveContextKey, false)
+	if subagentRunOptions(tuiCtx).NonInteractive {
+		t.Fatal("an interactive caller's subagent must stay interactive")
+	}
+	if subagentRunOptions(context.Background()).NonInteractive {
+		t.Fatal("no marker means interactive")
+	}
+	// The async path reads the marker from the PARENT turn ctx; the detached
+	// run ctx carries no values, so deriving from it would always be false.
+	stepCtx := context.Background()
+	toolCtx, cancel := buildStepToolCtx(stepCtx)
+	defer cancel()
+	toolCtx = context.WithValue(toolCtx, tools.NonInteractiveContextKey, true)
+	runCtx := subagentBaseContext(toolCtx)
+	if tools.IsNonInteractive(runCtx) {
+		t.Fatal("precondition: the detached base must not carry the marker")
+	}
+	if !subagentRunOptions(toolCtx).NonInteractive {
+		t.Fatal("options must be derived from the caller ctx, not the detached base")
+	}
+}
