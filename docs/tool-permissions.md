@@ -161,3 +161,13 @@ early runs with *no* restriction at all rather than a narrow one. Do not adopt
 `allowTools` in a workspace until every runtime that loads it is new enough to
 understand it. The same applies to `.opencode.json`, where an older build's
 schema validation and its `tools`-only loader will not object either.
+
+## Workspace CLI tools: two boundaries
+
+A workspace CLI tool (`.agents/tools/<name>.yaml`, see [cli-tools.md](cli-tools.md)) is gated like any other tool name — `tools: {snow: true}` or an `allowTools` entry — with one difference: a manifest with `grant: explicit` (the default) is **not** granted by a bare `"*": true`, exactly as the cron tools are not. Name it, or use `grant: implicit` in the manifest.
+
+Keep the two boundaries apart when reasoning about such a tool:
+
+- **What the process can do** is the manifest's hard policy (`args.deny` / `args.allow` on the argument vector, `env`, `cwd`, `timeout`, argv-only exec). No agent configuration loosens it; a violation is a tool error the model sees, and the run continues.
+- **What the model may ask for** is the permission chain: `agent.permission.<name>` → `permission.rules.<name>` → the manifest's `permission` default → `agent.permission["*"]` → `rules["*"]` → `ask`, with the space-joined argument string as the pattern input. `deny` here ends the run like every other permission denial.
+

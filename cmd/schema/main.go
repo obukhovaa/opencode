@@ -748,6 +748,27 @@ func generateSchema() map[string]any {
 		},
 	}
 
+	// Add workspace CLI tools configuration (docs/cli-tools.md)
+	schema["properties"].(map[string]any)["cliTools"] = map[string]any{
+		"type":        "object",
+		"description": "Workspace-defined CLI tools: declarative manifests (.agents/tools/<name>.yaml, .opencode/tools/, ~/.config/opencode/tools, ~/.agents/tools) that wrap a host binary as a first-class tool executed argv-only (no shell). Agents receive a tool only when they name it in `tools`/`allowTools` (manifest `grant: explicit`, the default). See docs/cli-tools.md.",
+		"properties": map[string]any{
+			"paths": map[string]any{
+				"type":        "array",
+				"description": "Extra directories scanned (non-recursively) for *.yaml / *.yml / *.json manifests after the project and global locations. Supports ~ for the home directory and relative paths (resolved against the working directory).",
+				"items": map[string]any{
+					"type": "string",
+				},
+			},
+			"disabled": map[string]any{
+				"type":        "boolean",
+				"description": "Turn the feature off: no manifest is read and no CLI tool is built. OPENCODE_DISABLE_CLI_TOOLS=true is the environment equivalent.",
+				"default":     false,
+			},
+		},
+		"additionalProperties": false,
+	}
+
 	// Add web search configuration
 	schema["properties"].(map[string]any)["webSearch"] = map[string]any{
 		"type":        "object",

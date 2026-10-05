@@ -502,6 +502,23 @@ The handshake and cache budgets are deliberately not per-server tunable: `initia
 
 The close budget matters because a stdio transport's `Close` blocks in `cmd.Wait()` honouring no context: a child that ignores stdin EOF would otherwise hold the agent turn immediately after its tool call had correctly timed out. On timeout the close is abandoned rather than the caller blocked, which leaks one goroutine and one child process per wedged server for the life of the process — deliberately, since leaking the turn is worse and the transport exposes no handle to signal the child.
 
+### Workspace CLI Tools
+
+Wrap a host CLI as a first-class tool with a manifest instead of giving an agent `bash`:
+
+```yaml
+# .agents/tools/snow.yaml
+name: snow
+description: Snowflake CLI — `sql -c <connection> --format JSON -q "<sql>"`.
+command: snow
+args:
+  allow: ["sql *", "--help"]
+  deny: ["-x", "-f", "--filename*", "--config-file*", "--password*"]
+permission: { "*": ask, "sql *": allow }
+```
+
+The binary runs argv-only (no shell) under the manifest's argument, environment, cwd, timeout and output policy; agents receive the tool by naming it (`tools: {snow: true}`), `permission.snow` globs on the argument string, and `deferredTools` works by name. `opencode tools list --strict` audits a workspace; `opencode tools serve` exposes the same manifests over stdio MCP for Claude Code. Config: `cliTools.paths`, `cliTools.disabled`. See [docs/cli-tools.md](docs/cli-tools.md).
+
 ### LSP
 
 OpenCode auto-detects and starts LSP servers for your project's languages. Over 30 servers are built-in with auto-install support. See the [full LSP guide](docs/lsp.md) for details.
