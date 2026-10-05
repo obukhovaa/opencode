@@ -95,7 +95,7 @@ The system SHALL start the manifest's `command` directly with an argument vector
 
 ### Requirement: Argument policy is enforced before any process starts, and violations are model-visible
 
-Before starting the process, the system SHALL evaluate the manifest's `args.deny` patterns against every single model-influenced argument and against the space-joined argument string, then, when `args.allow` is non-empty, require the joined string to match at least one allow pattern. Patterns use the same `*` wildcard syntax as tool permissions. A violation SHALL return an error response naming the offending argument and pattern, SHALL NOT start the process, and SHALL NOT end the agent's run. Arguments containing a NUL byte SHALL be rejected the same way.
+Before starting the process, the system SHALL evaluate the manifest's `args.deny` patterns against every single model-influenced argument and against the space-joined argument string, then, when `args.allow` is non-empty, require the joined string to match at least one allow pattern. Patterns use the same `*` wildcard syntax as tool permissions and SHALL be matched case-insensitively. A violation SHALL return an error response naming the offending argument and pattern, SHALL NOT start the process, and SHALL NOT end the agent's run. Arguments containing a NUL byte SHALL be rejected the same way.
 
 #### Scenario: Escape hatch denied anywhere in the vector
 

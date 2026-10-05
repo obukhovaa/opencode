@@ -180,6 +180,7 @@ The process is started directly with `prefixArgs + args` — `exec`, no `sh -c`.
 
 - `args.deny` is checked first, every pattern against every single argument *and* against the space-joined vector; one hit rejects the call. Per-argument form is the robust one for escape hatches (`-x`, `-f`, `--config-file*`): it does not care about ordering. The joined form expresses ordering (`sql -c dcs *`) and can be fooled by argument *content* (a SQL text containing ` -f `), so it fails closed — prefer per-argument patterns, or structured mode.
 - `args.allow`, when non-empty, must match the joined vector.
+- Both lists are matched **case-insensitively** (`*!source*` also catches `!SOURCE`); permission globs keep the permission system's case-sensitive matching.
 - Arguments containing NUL are rejected.
 - `env`: inherited by default (as MCP servers do); `inherit: false` keeps PATH, HOME, TMPDIR plus `pass`; `set` adds literals last.
 - `cwd` is confined to the working directory; `timeout` kills the whole process group on expiry.
@@ -249,8 +250,11 @@ The tools appear as `mcp__cli__snow` etc., so Claude Code's own `permissions.all
 
 ## Writing a good manifest
 
-- Name the escape hatches in `args.deny` first: inline credentials (`-x`, `--password*`, `--token*`), file execution (`-f`, `--filename*`, `-i`), alternate config (`--config-file*`), and administrative subcommands (`connection add*`, `auth *`).
+- Name the escape hatches in `args.deny` first: inline credentials (`--password*`, `--token*`, `--private-key*`), endpoint and tenant overrides (`--host*`, `--port*`, `--account*`, `--role*`), file execution (`--filename*`, `--stdin*`), alternate config (`--config-file*`), diagnostics that read or write paths (`--diag*`), and administrative subcommands (`connection add*`, `auth *`). Read the CLI's full `--help` when writing the list; the dangerous flags are rarely the obvious ones.
+- **Short options need a glob, not a literal.** Click, argparse and Cobra cluster flags and attach values: `-xh`, `-vx`, `-fFILE`, `-Dk=v` all parse, and a literal `-x` entry matches none of them. Write `-x*`, `-f*`, `-D*` (the long form `--format` starts with `--`, so `-f*` cannot hit it).
+- **In-band commands and templating are arguments too.** A SQL client that executes `!source FILE` from the query text, or renders `<% ctx.env.VAR %>` from the process environment before sending, is a file-execution or secret-exfiltration path that no flag deny stops. Deny the markers as argument content (`*!source*`, `*<%*`), require the flag that disables templating through the allow list (`sql * --enable-templating NONE *`), and set `env.inherit: false` so a rendered template finds nothing.
+- Structured mode avoids all of the above for the hot path: the model never writes a flag, and the only free text is the parameter you declared.
 - Keep `description` about *when and how* to use the tool; put conduct (flags to always pass, limits, cancellation) in a skill and name the skill in the description.
 - Use structured mode for anything a customer-facing or unattended agent runs; use argv mode for an explorer that needs the whole CLI.
-- `env.inherit: false` for binaries you do not fully trust; list exactly what they need in `pass`.
+- `env.inherit: false` by default for anything that talks to the network or reads its own templating language; list exactly what the binary needs in `pass` (`PATH`, `HOME` and `TMPDIR` are always kept). Secrets that reach the child through the environment are one template or one `--debug` away from the model's context.
 - Run `opencode tools list --strict` in CI, and `opencode tools list --agent <type>` when you change a type's grants.

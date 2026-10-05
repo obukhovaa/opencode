@@ -25,12 +25,22 @@ func (e *PolicyError) Error() string {
 // joined-string patterns and the per-call permission globs.
 func JoinArgs(args []string) string { return strings.Join(args, " ") }
 
+// matchArg matches a policy pattern case-insensitively. A deny list must fail
+// closed against the spellings a CLI happens to accept (`!SOURCE`, `-X`,
+// `--Host`), and no argument policy legitimately depends on case — unlike file
+// paths in permission globs, which keep the permission system's matching.
+func matchArg(pattern, s string) bool {
+	return permission.MatchWildcard(strings.ToLower(pattern), strings.ToLower(s))
+}
+
 // CheckArgs enforces the manifest's argument policy on the model-influenced
 // vector (after structured rendering, before prefixArgs are prepended):
 //  1. any argument containing NUL is rejected;
 //  2. every deny pattern is matched against each single argument and
 //     against the joined string — one hit rejects the call;
 //  3. when allow patterns exist, the joined string must match one of them.
+//
+// Patterns are matched case-insensitively (see matchArg).
 func (m *Manifest) CheckArgs(args []string) error {
 	for _, a := range args {
 		if strings.ContainsRune(a, 0) {
@@ -40,19 +50,19 @@ func (m *Manifest) CheckArgs(args []string) error {
 	joined := JoinArgs(args)
 	for _, pattern := range m.Args.Deny {
 		for _, a := range args {
-			if permission.MatchWildcard(pattern, a) {
+			if matchArg(pattern, a) {
 				return &PolicyError{Arg: a, Pattern: pattern,
 					Reason: fmt.Sprintf("argument %q matches deny pattern %q", a, pattern)}
 			}
 		}
-		if permission.MatchWildcard(pattern, joined) {
+		if matchArg(pattern, joined) {
 			return &PolicyError{Arg: joined, Pattern: pattern,
 				Reason: fmt.Sprintf("arguments %q match deny pattern %q", joined, pattern)}
 		}
 	}
 	if len(m.Args.Allow) > 0 {
 		for _, pattern := range m.Args.Allow {
-			if permission.MatchWildcard(pattern, joined) {
+			if matchArg(pattern, joined) {
 				return nil
 			}
 		}

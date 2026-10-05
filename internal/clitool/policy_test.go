@@ -39,6 +39,9 @@ args:
 		{[]string{"sql", "a\x00b"}, "NUL"},
 		// Shell operators are plain bytes: the policy sees one argument.
 		{[]string{"sql", "-q", "select 1; -x"}, ""},
+		// Case-insensitive: a CLI's own spelling tolerance must not open a path.
+		{[]string{"SQL", "-X"}, `argument "-X" matches deny pattern "-x"`},
+		{[]string{"Sql", "-q", "!SOURCE /etc/passwd"}, ""},
 	}
 	for _, tc := range cases {
 		err := m.CheckArgs(tc.args)
@@ -55,6 +58,19 @@ args:
 		if err != nil && !errors.As(err, &pe) {
 			t.Errorf("%v: error should be a *PolicyError", tc.args)
 		}
+	}
+}
+
+func TestCheckArgs_ContentDenyIsCaseInsensitive(t *testing.T) {
+	wd := t.TempDir()
+	m := mustParse(t, wd, "snow.yaml", "name: snow\ndescription: d\ncommand: /bin/echo\nargs:\n  deny: [\"*!source*\", \"-x*\"]\n")
+	for _, args := range [][]string{{"sql", "-q", "!SOURCE /x"}, {"sql", "-q", "select 1; !Source a.sql"}, {"sql", "-Xh"}, {"sql", "-xh"}} {
+		if err := m.CheckArgs(args); err == nil {
+			t.Errorf("%v: expected rejection", args)
+		}
+	}
+	if err := m.CheckArgs([]string{"sql", "-q", "select 'resource'"}); err != nil {
+		t.Errorf("'resource' must not trip *!source*: %v", err)
 	}
 }
 
