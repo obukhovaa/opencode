@@ -31,8 +31,8 @@ twice against the "do NOT poll" instruction, then slept.
 ## What Changes
 
 - **Reject self-detaching background commands.** When `run_in_background: true`, a command
-  whose effective top level ends in `&` or invokes `nohup`/`setsid`/`disown` is refused
-  with guidance. The rejection text MUST also foreclose the foreground fallback, because
+  that backgrounds a pipeline with a top-level `&` (trailing, or followed by more commands)
+  or invokes `nohup`/`setsid`/`disown` at command position is refused with guidance. The rejection text MUST also foreclose the foreground fallback, because
   that route is *worse*: `nohup` sits in `safeReadOnlyCommands` (`bash.go:64`) behind a
   prefix match, so foreground `nohup … &` runs with no permission prompt and no task record
   at all. This change removes `nohup` from that list as part of the same fix — **and makes
@@ -77,10 +77,8 @@ the mitigation for the monitors-only case.
 - Time-bounding monitors. `max_events` stays an event count, not a timeout.
 - Interactive runs. Every behavior here remains gated on `IsNonInteractive(ctx)`.
 - Reparenting orphaned processes. A rejected command is not silently rewritten.
-- **Making subagents drain** (GENAI-140). See the follow-up below — it is the larger root cause and
-  deserves its own change.
 
-## Follow-up: subagents never drain (GENAI-140)
+## Also in this change: subagents inherit the no-poll contract (GENAI-140)
 
 Both reviews surfaced a defect one level below this change. `agent-tool.go:191` and
 `agent-tool-async.go:68` launch subagents through `a.Run(...)`, the shim that passes
@@ -91,10 +89,37 @@ and `agent.go:853` overwrites the inherited non-interactive marker with `false`.
 So **no subagent has ever drained, and no subagent's `sleep` has ever been redirected.** In
 the trace, coder #1 would have returned in 3 seconds even with the gradle task tracked
 correctly, and the leaked `monitor_GUU6VTD4…` leaked because no drain ran — not because
-`taskstop` was missed. Fixing that changes turn semantics for every subagent in the
-product and must not ride along here. Tracked as GENAI-140, re-scoped around this
-root cause on 2026-09-21; the infra half of that ticket split out to GENAI-352.
+`taskstop` was missed. GENAI-140 (filed off `TPWEBAPP-62730`, where a subagent sat ~18 min
+in a `sleep 1` / `tasklist` loop) was re-scoped around this root cause on 2026-09-21.
 
-Note that GENAI-270's subagent stall detection does NOT cover it: `killStalled` infers
-death from silence, and a subagent polling `tasklist` emits constant progress signals. It
-catches a wedged subagent, not a spinning one.
+An earlier draft deferred the fix to its own change because it alters turn semantics for
+every flow-step subagent. On actualisation (2026-10-05) it is folded in: the fix is one
+call-site change — both `task`-tool launch paths pass
+`RunOptions{NonInteractive: tools.IsNonInteractive(callerCtx)}` instead of the zero value —
+and shipping the parent-side scoping without it would leave the design's "redirect and
+drain disagree on child tasks" hole open. With it, a flow-step subagent drains its own
+tasks (stall detection included) and has its sleeps redirected; a TUI subagent carries no
+marker and is unchanged. The step's deadline bounds the whole tree, as before.
+
+Note that GENAI-270's subagent stall detection does NOT cover the spinning case: `killStalled`
+infers death from silence, and a subagent polling `tasklist` emits constant progress
+signals. It catches a wedged subagent, not a spinning one.
+
+## Also in this change: crash recovery of a killed step (GENAI-352)
+
+GENAI-352 is the infra half split out of GENAI-140: a hard pod kill mid-step (OOMKilled,
+eviction, deadline) returns control to no in-process guard, and the orchestrator records
+the step as a terminal failure, losing pushed-but-unfinished work. Resuming it needs one
+opencode change and the rest in the orchestrator:
+
+- **opencode (here):** the flow runtime treats a `running` `flow_states` row as another
+  process's live run and only replays it (`flow-runtime-resume`, the `hasRunning` path). An
+  orchestrator that has just watched that process die knows better. `POST /flow/run` gains
+  `recoverRunning: true` (`flow.RunOptions.RecoverRunning`): the gate then lets running rows
+  fall through to the resume planner, which already re-enters a non-completed step in its
+  own session with its persisted args and iteration. Nothing is deleted.
+- **c2-agent (its own change, `killed-step-resume`):** `activeDeadlineSeconds` on the agent
+  Job derived from the startup and job budgets, and — when `Job.Status.Failed` carries a
+  kill verdict while the SSE-derived flow state shows a step in flight — one bounded
+  continuation job with `recoverRunning: true` and the same session prefix, instead of a
+  terminal failure card.

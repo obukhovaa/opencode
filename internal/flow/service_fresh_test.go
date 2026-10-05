@@ -737,3 +737,72 @@ func TestRunStepStructOutputValidationSkippedWithoutSchema(t *testing.T) {
 		t.Errorf("terminal status = %q, want %q", terminal.Status, FlowStatusCompleted)
 	}
 }
+
+// TestRunRecoverRunningResumesRunningStep (GENAI-352): a `running` row
+// normally means a live process owns the flow, so Run only replays it (see
+// TestRunWithoutFreshReturnsRunningStates). With RecoverRunning the caller
+// asserts that owner is dead — the orchestrator watched its pod get killed
+// mid-step — and the runtime must re-enter the step with its persisted
+// args in its own session, deleting nothing, so the step actually runs to
+// a terminal state instead of being echoed back as "running" forever.
+func TestRunRecoverRunningResumesRunningStep(t *testing.T) {
+	testFlow := Flow{
+		ID:   "test-recover",
+		Name: "Test Recover",
+		Spec: FlowSpec{
+			Steps: []Step{
+				{ID: "step-one", Prompt: "do something"},
+			},
+		},
+	}
+	registerTestFlow(t, testFlow)
+
+	rootSessionID := "prefix-test-recover-step-one"
+	q := &stubQuerier{
+		flowStates: []db.FlowState{
+			{
+				SessionID:     rootSessionID,
+				RootSessionID: rootSessionID,
+				FlowID:        "test-recover",
+				StepID:        "step-one",
+				Status:        string(FlowStatusRunning),
+				Args:          sql.NullString{String: `{"k":"persisted"}`, Valid: true},
+				CreatedAt:     time.Now().Unix(),
+				UpdatedAt:     time.Now().Unix(),
+			},
+		},
+	}
+	sessions := &stubSessions{}
+	svc := NewService(sessions, nil, q, &stubPermissions{}, &stubAgentFactory{})
+
+	agentEvents, flowStates, err := svc.RunWithOptions(context.Background(), "prefix", "test-recover", map[string]any{}, RunOptions{RecoverRunning: true})
+	if err != nil {
+		t.Fatalf("RunWithOptions() error: %v", err)
+	}
+	var states []*FlowState
+	for s := range flowStates {
+		states = append(states, s)
+	}
+	for range agentEvents {
+	}
+
+	if len(q.deletedFlowRootSessions) != 0 || len(sessions.deletedTreeIDs) != 0 || len(sessions.deletedIDs) != 0 {
+		t.Errorf("recovery must delete nothing: flow states %v, trees %v, sessions %v", q.deletedFlowRootSessions, sessions.deletedTreeIDs, sessions.deletedIDs)
+	}
+	terminal := false
+	for _, st := range states {
+		if st.StepID == "step-one" && (st.Status == FlowStatusCompleted || st.Status == FlowStatusFailed) {
+			terminal = true
+		}
+	}
+	if !terminal {
+		var got []string
+		for _, st := range states {
+			got = append(got, string(st.Status))
+		}
+		t.Fatalf("the running step must be re-executed to a terminal state, got states %v", got)
+	}
+	if len(q.createdFlowStates) != 0 {
+		t.Errorf("recovery re-enters the existing row; it must not create a new flow state (got %d)", len(q.createdFlowStates))
+	}
+}

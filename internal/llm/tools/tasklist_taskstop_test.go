@@ -132,3 +132,70 @@ func TestTaskStop_AlreadyTerminal(t *testing.T) {
 		t.Errorf("expected already-terminal response, got: %q", resp.Content)
 	}
 }
+
+// Session-and-children scope (background-wait-integrity): a child's task is
+// listed with an owner marker and may be killed; a sibling step's is neither.
+func TestTaskList_ChildOwnedListedAndMarked_SiblingsHidden(t *testing.T) {
+	_, cleanup := setupForToolTest(t)
+	defer cleanup()
+	reg := task.GlobalRegistry()
+	child := task.NewTaskID(task.KindBash)
+	_ = reg.Register(&task.Task{ID: child, SessionID: "child", ParentSessionID: "s1", Kind: task.KindBash, Description: "child-work"})
+	_ = reg.Register(&task.Task{ID: task.NewTaskID(task.KindBash), SessionID: "s2", ParentSessionID: "root", Kind: task.KindBash, Description: "sibling-work"})
+	mon := task.NewTaskID(task.KindMonitor)
+	_ = reg.Register(&task.Task{ID: mon, SessionID: "s1", Kind: task.KindMonitor, Description: "watch"})
+	tk, _ := reg.Get(mon)
+	tk.AddScannedLines(42)
+
+	tool := NewTaskListTool()
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "s1")
+	resp, err := tool.Run(ctx, ToolCall{Input: "{}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp.Content, child) || !strings.Contains(resp.Content, "owner=child") {
+		t.Errorf("child-owned task must be listed with its owner: %q", resp.Content)
+	}
+	if strings.Contains(resp.Content, "sibling-work") {
+		t.Errorf("sibling step's task leaked: %q", resp.Content)
+	}
+	if !strings.Contains(resp.Content, "scanned_lines=42") {
+		t.Errorf("monitor row must carry the scanned-line count: %q", resp.Content)
+	}
+}
+
+func TestTaskStop_ChildOwnedAllowed_SiblingRefused(t *testing.T) {
+	_, cleanup := setupForToolTest(t)
+	defer cleanup()
+	reg := task.GlobalRegistry()
+	child := task.NewTaskID(task.KindBash)
+	_ = reg.Register(&task.Task{ID: child, SessionID: "child", ParentSessionID: "s1", Kind: task.KindBash})
+	sibling := task.NewTaskID(task.KindBash)
+	_ = reg.Register(&task.Task{ID: sibling, SessionID: "s2", ParentSessionID: "root", Kind: task.KindBash})
+	// No process behind the fixture task: mark it notified so the kill's
+	// completion wait returns at once (the kill path itself is covered by
+	// the taskstop tests above).
+	if tk, ok := reg.Get(child); ok {
+		tk.Notified.Store(true)
+	}
+
+	tool := &taskstopTool{permissions: &allowAllPerms{}, registry: allowAllAgentRegistry{}}
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "s1")
+	resp, err := tool.Run(ctx, ToolCall{Input: `{"task_id":"` + sibling + `"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp.Content, "does not belong to this session") {
+		t.Errorf("sibling kill must be refused: %q", resp.Content)
+	}
+	resp, err = tool.Run(ctx, ToolCall{Input: `{"task_id":"` + child + `"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp.Content, "killed") {
+		t.Errorf("child-owned kill must proceed: %q", resp.Content)
+	}
+	if tk, _ := reg.Get(child); tk.State() != task.StateKilled {
+		t.Errorf("child task state = %v, want killed", tk.State())
+	}
+}

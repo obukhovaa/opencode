@@ -867,6 +867,12 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	msgs = filterEmptyUserMessages(msgs)
 	if session.ParentSessionID != "" {
 		ctx = context.WithValue(ctx, tools.IsTaskAgentContextKey, true)
+		// The PARENT, never session.RootSessionID: descendants inherit the
+		// flow-wide root, which every parallel step shares. Registration
+		// sites stamp this onto task.Task so the parent agent's wait
+		// redirect / tasklist / taskstop can see this session's tasks
+		// (openspec background-tasks: session-and-children scope).
+		ctx = context.WithValue(ctx, tools.ParentSessionIDContextKey, session.ParentSessionID)
 	}
 	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
 	ctx = context.WithValue(ctx, tools.AgentIDContextKey, a.AgentID())

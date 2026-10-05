@@ -55,6 +55,28 @@ Introducing this lookup MUST NOT change the drain's scope or behavior.
 - **WHEN** a parent session's turn ends while only a child session's task is running
 - **THEN** the parent's end-of-turn drain does NOT wait on it
 
+### Requirement: Subagents inherit the caller's non-interactive marker
+
+A subagent launched by the `task` tool — synchronously or with `async: true` — SHALL run with `RunOptions{NonInteractive: m}` where `m` is the non-interactive marker on the tool-execution context of the turn that invoked the tool. The async path SHALL read `m` from that caller context, not from the detached run context it derives for the subagent (which carries no values). No other run option is inherited. Under a non-interactive run the subagent therefore holds its own turn open until its background tasks reach a terminal state (the end-of-turn drain of this spec, exact-session scope, stall detection included) and has its foreground wall-clock waits redirected (`bash-background-mode`); under an interactive run its behaviour is unchanged.
+
+#### Scenario: Flow-step subagent drains before answering
+
+- **GIVEN** a flow step (non-interactive) whose agent calls the `task` tool
+- **AND** the subagent starts a `bash run_in_background` task that takes 3 minutes and emits its terminal turn after 3 seconds
+- **THEN** the subagent's run does not return until that task reaches a terminal state and the subagent has reacted to the completion
+- **AND** the parent's `task` call returns the subagent's post-completion answer
+
+#### Scenario: Flow-step subagent's sleep is redirected
+
+- **GIVEN** the same step, and the subagent has a pending `bash run_in_background` task
+- **WHEN** the subagent calls `bash` (foreground) with `sleep 60; cat /tmp/log`
+- **THEN** the sleep is redirected to the task wait exactly as for the step's primary agent
+
+#### Scenario: Interactive subagent is unchanged
+
+- **GIVEN** an interactive TUI turn (no non-interactive marker) that spawns a subagent
+- **THEN** the subagent runs interactive: its turn ends immediately after a background spawn and its foreground sleeps run verbatim
+
 ## MODIFIED Requirements
 
 ### Requirement: Task registry exposes a wait primitive

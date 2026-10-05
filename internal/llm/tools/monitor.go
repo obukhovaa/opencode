@@ -202,6 +202,7 @@ func (m *monitorTool) Run(ctx context.Context, call ToolCall) (ToolResponse, err
 	tk := &task.Task{
 		ID:                    taskID,
 		SessionID:             sessionID,
+		ParentSessionID:       ParentSessionIDFromContext(ctx),
 		Kind:                  task.KindMonitor,
 		OutputPath:            outputPath,
 		OriginatingToolCallID: call.ID,
@@ -220,6 +221,7 @@ func (m *monitorTool) Run(ctx context.Context, call ToolCall) (ToolResponse, err
 	}
 
 	state := &monitorState{
+		tk:          tk,
 		taskID:      taskID,
 		sessionID:   sessionID,
 		callID:      call.ID,
@@ -237,7 +239,7 @@ func (m *monitorTool) Run(ctx context.Context, call ToolCall) (ToolResponse, err
 	go state.waitAndFinalize(cmd, pw, syntheticInput)
 
 	ack := fmt.Sprintf(
-		"Monitor started.\ntask_id: %s\noutput_file: %s\ncmd: %s\npattern: %s\nmin_interval_ms: %d\nmax_events: %d\n\nMatching lines will arrive as synthetic monitor-event notifications. A terminal notification (completed / failed / killed) fires when the subprocess exits, max_events is reached, or you call taskstop. Do NOT poll — the events arrive automatically.",
+		"Monitor started.\ntask_id: %s\noutput_file: %s\ncmd: %s\npattern: %s\nmin_interval_ms: %d\nmax_events: %d\n\nMatching lines will arrive as synthetic monitor-event notifications. A terminal notification (completed / failed / killed) fires when the subprocess exits, max_events is reached, or you call taskstop. Do NOT poll and do NOT sleep while waiting — the events arrive automatically, and sleeping cannot observe one sooner. In a non-interactive (flow) step the runtime holds the turn open until an event or the terminal notification arrives, so ending your turn without a tool call is how you wait. A silent monitor is usually a healthy one whose pattern has not matched yet; `tasklist` shows how many lines it has scanned.",
 		taskID, outputPath, joinCommand(params.Cmd, params.Args), params.Pattern, params.MinIntervalMs, params.MaxEvents,
 	)
 	return WithResponseMetadata(NewTextResponse(ack), MonitorResponseMetadata{
@@ -261,6 +263,10 @@ func (m *monitorTool) Run(ctx context.Context, call ToolCall) (ToolResponse, err
 // can race on these — the lock keeps the counter monotonic and the buffer
 // non-corrupting.
 type monitorState struct {
+	// tk is the registry entry; scanLoop bumps its scanned-line counter so
+	// tasklist can show a silent monitor is alive (the counter lives on
+	// task.Task because tasklist reads only task.Task).
+	tk                        *task.Task
 	taskID, sessionID, callID string
 	params                    MonitorParams
 	re                        *regexp.Regexp
@@ -285,6 +291,9 @@ func (s *monitorState) scanLoop(pr io.Reader) {
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
+		if s.tk != nil {
+			s.tk.AddScannedLines(1)
+		}
 		// Write the FULL line to the output file unconditionally.
 		_, _ = s.outputFile.WriteString(line + "\n")
 		if s.re.MatchString(line) {

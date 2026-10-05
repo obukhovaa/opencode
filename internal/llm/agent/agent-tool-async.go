@@ -25,6 +25,17 @@ func subagentBaseContext(ctx context.Context) context.Context {
 	return context.Background()
 }
 
+// subagentRunOptions derives a subagent's RunOptions from the caller's
+// tool-execution ctx: the NonInteractive marker is inherited, nothing
+// else. A flow step's subagent therefore holds its turn open until its
+// own background tasks finish and has its foreground sleeps redirected,
+// the two halves of the no-poll contract that the zero-value Run shim
+// had switched off for every subagent (GENAI-140). Interactive callers
+// carry no marker, so their subagents are unchanged.
+func subagentRunOptions(callerCtx context.Context) RunOptions {
+	return RunOptions{NonInteractive: tools.IsNonInteractive(callerCtx)}
+}
+
 // runAsync spawns the subagent in the background and returns an immediate
 // ack ToolResult. A goroutine waits on the subagent's `done` channel; when
 // it fires, cost is rolled up to the parent session and the final response
@@ -68,7 +79,9 @@ func (b *agentTool) runAsync(
 	// The detached base drops the parent turn's values; carry the requester
 	// across so the subagent's traces stay attributed to the same person.
 	runCtx = tools.WithRequester(runCtx, tools.RequesterFromContext(ctx))
-	done, err := a.Run(runCtx, taskSession.ID, prompt, 0)
+	// Inherit the caller's NonInteractive marker from the PARENT turn ctx
+	// (runCtx is detached and carries no values) — see subagentRunOptions.
+	done, err := a.RunWith(runCtx, taskSession.ID, prompt, 0, subagentRunOptions(ctx))
 	if err != nil {
 		cancel()
 		_ = outputFile.Close()
@@ -79,6 +92,7 @@ func (b *agentTool) runAsync(
 	tk := &task.Task{
 		ID:                    taskID,
 		SessionID:             sessionID,
+		ParentSessionID:       tools.ParentSessionIDFromContext(ctx),
 		AgentSessionID:        taskSession.ID,
 		Kind:                  task.KindTask,
 		OutputPath:            outputPath,

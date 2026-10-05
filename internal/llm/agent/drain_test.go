@@ -614,3 +614,31 @@ func TestWarnUnsafeStallThreshold(t *testing.T) {
 		t.Errorf("a default-budget server was reported:\n%s", out)
 	}
 }
+
+// TestDrainSessionTasks_IgnoresChildTasks pins the scope asymmetry of
+// background-wait-integrity: the end-of-turn drain stays EXACT-session. A
+// parent must not block at end of turn on a task its subagent registered;
+// only the explicit foreground-wait redirect (and tasklist/taskstop) widen
+// to the session's direct children.
+func TestDrainSessionTasks_IgnoresChildTasks(t *testing.T) {
+	reg := newDrainRegistry(t)
+	id := task.NewTaskID(task.KindBash)
+	if err := reg.Register(&task.Task{ID: id, SessionID: "CHILD", ParentSessionID: "S", Kind: task.KindBash}); err != nil {
+		t.Fatal(err)
+	}
+	defer reg.MarkFinished(id, task.StateKilled, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	if err := drainSessionTasks(ctx, reg, "S", stallPolicy{}); err != nil {
+		t.Fatalf("drain returned error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("drain waited %v on a child-owned task; its scope must stay exact", elapsed)
+	}
+	// The redirect's scope does see it.
+	if got := reg.PendingForSessionTree("S", nil); len(got) != 1 {
+		t.Fatalf("children scope should see the child's task, got %d", len(got))
+	}
+}

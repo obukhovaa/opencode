@@ -9,8 +9,9 @@ and every downstream guarantee (completion notification content, end-of-turn dra
 foreground-wait redirect) silently reads that as "work finished".
 
 Detection SHALL be conservative — it MUST flag only:
-- a top-level trailing `&` (a `&` that terminates the final pipeline; NOT `&&`, NOT a `&`
-  inside quotes, a subshell, or a command substitution), or
+- a top-level `&` control operator — one that backgrounds the pipeline before it, whether it
+  ends the command or is followed by further commands (NOT `&&`, NOT a redirect such as
+  `2>&1` or `&>`, NOT a `&` inside quotes, a subshell, or a command substitution), or
 - `nohup`, `setsid`, or `disown` appearing at command position at the command's top level.
 
 Anything ambiguous MUST be allowed through. A false rejection blocks legitimate work; a
@@ -30,6 +31,11 @@ unaffected — backgrounding inside a synchronous call is the caller's own busin
 - **THEN** the tool returns an error ToolResult naming `nohup` and/or the trailing `&`
 - **AND** no task is registered and no subprocess is spawned
 - **AND** the error text instructs dropping the detachment because `run_in_background` already detaches
+
+#### Scenario: `&` followed by more commands is also refused
+
+- **WHEN** the agent invokes `{command: "./gradlew test > /tmp/log 2>&1 & echo $!", run_in_background: true}`
+- **THEN** the command is refused: the `&` backgrounds the build and the wrapper exits after the `echo`
 
 #### Scenario: `&&` is not mistaken for detachment
 

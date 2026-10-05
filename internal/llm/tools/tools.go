@@ -39,6 +39,7 @@ type (
 	nonInteractiveContextKey    string
 	stepScopedContextKey        string
 	requesterContextKey         string
+	parentSessionIDContextKey   string
 )
 
 const (
@@ -76,6 +77,15 @@ const (
 	// read by telemetry to stamp the trace's `requester` metadata. Use
 	// WithRequester / RequesterFromContext.
 	RequesterContextKey requesterContextKey = "requester"
+	// ParentSessionIDContextKey carries the PARENT of the session a tool
+	// runs in — set by agent.RunWith from session.ParentSessionID when the
+	// run's session is itself a subagent / task session, absent for a
+	// top-level session. Registration sites stamp it onto task.Task so the
+	// registry's session-and-children scope (the foreground-wait redirect,
+	// tasklist, taskstop) can match a child's task from the parent. It is
+	// the parent, never RootSessionID: a flow shares one root across every
+	// step, including parallel siblings (openspec background-tasks).
+	ParentSessionIDContextKey parentSessionIDContextKey = "parent_session_id"
 
 	// MaxToolResponseTokens is the maximum number of tokens allowed in a tool response
 	// to prevent context overflow. ~1200KB of text content.
@@ -99,6 +109,16 @@ func RequesterFromContext(ctx context.Context) string {
 	}
 	r, _ := ctx.Value(RequesterContextKey).(string)
 	return r
+}
+
+// ParentSessionIDFromContext returns the parent of the current session
+// (see ParentSessionIDContextKey), or "" for a top-level session.
+func ParentSessionIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	p, _ := ctx.Value(ParentSessionIDContextKey).(string)
+	return p
 }
 
 // TurnRequester returns who the turn on ctx works for, in the order its
@@ -342,7 +362,18 @@ func hasFileConflict(call ToolCall, myPaths []string, allCalls []ToolCall) bool 
 	return false
 }
 
+// IsSafeReadOnlyCommand reports whether command may skip the bash
+// permission gate. The exemption covers only a SIMPLE command led by a
+// listed word: anything with a top-level control operator, redirect,
+// command substitution or subshell is evaluated like every other command,
+// because the prefix match alone would exempt `echo go; ./gradlew build &`
+// or `ls && rm -rf build` on the strength of their first word (openspec
+// bash-background-mode: "The permission-exempt safe list covers only
+// simple commands").
 func IsSafeReadOnlyCommand(command string) bool {
+	if hasTopLevelCompound(command) {
+		return false
+	}
 	cmdLower := strings.ToLower(command)
 	for _, safe := range safeReadOnlyCommands {
 		if strings.HasPrefix(cmdLower, strings.ToLower(safe)) {

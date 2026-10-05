@@ -49,6 +49,7 @@ func (b *bashTool) runBackground(ctx context.Context, call ToolCall, params Bash
 	tk := &task.Task{
 		ID:                    taskID,
 		SessionID:             sessionID,
+		ParentSessionID:       ParentSessionIDFromContext(ctx),
 		Kind:                  task.KindBash,
 		OutputPath:            outputPath,
 		OriginatingToolCallID: call.ID,

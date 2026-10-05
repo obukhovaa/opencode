@@ -590,7 +590,7 @@ These are honored by `opencode serve` only:
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/flow` | List every discovered flow YAML (`{id, name, description, disabled, args}`). |
-| POST | `/flow` | Start a new run. Body: `{flowID, args, fresh}`. Returns `202 Accepted` with `{runID, flowID, status, currentStep}`, or `409` if another run is in flight, or `404` for an unknown flow ID. |
+| POST | `/flow` | Start a new run. Body: `{flowID, args, fresh, recoverRunning}`. Returns `202 Accepted` with `{runID, flowID, status, currentStep}`, or `409` if another run is in flight, or `404` for an unknown flow ID. |
 | GET | `/flow/status` | Snapshot of the latest run: `{runID, flowID, status, startedAt, completedAt, currentStep, completedSteps, waitingTarget, error}`, or `{"status":"idle"}` if no run has been started in this process. |
 | DELETE | `/flow` | Abort the in-flight run. `409` if no run is active. |
 
@@ -783,6 +783,8 @@ When `Run` is invoked for a `(prefix, flow_id)` pair that already has `flow_stat
 If neither check fires, the prior run terminated cleanly and the runtime **restarts** from step 0. Per-step sessions are preserved on restart, so the agent retains cumulative LLM history across re-triggers. This is the "react on external event" case — a flow keyed by `${args.jira_issue_id}` re-fires when the Jira issue changes and the new comment must be re-evaluated, with the prior conversation still visible.
 
 `--flow-fresh` / `-D` / `{fresh: true}` is the hard reset: deletes both `flow_states` rows AND the per-step session tree, then runs from step 0 with empty LLM history. This is the only path that touches per-step sessions.
+
+`{recoverRunning: true}` on `POST /flow/run` is the **crash-recovery switch**. A `running` `flow_states` row normally means another process is executing the flow right now, so a new run only replays the rows and lets that process finish. An orchestrator that has just watched the pod executing a step get OOM-killed, evicted or deadline-killed knows that owner is dead; sending `recoverRunning: true` with the same session prefix makes the runtime treat the running rows as crash-recovery work instead — each running step is re-entered in its own session with its persisted args and iteration, completed steps keep their cached outputs, and nothing is deleted — so pushed-but-unfinished work is continued rather than lost (GENAI-352). Never send it for a flow whose process may still be alive: two processes would then execute the same step.
 
 > Full contract in [`openspec/specs/flow-runtime-resume/spec.md`](../openspec/specs/flow-runtime-resume/spec.md).
 

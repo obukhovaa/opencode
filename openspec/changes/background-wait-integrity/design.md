@@ -56,8 +56,8 @@ substitution (`$(…)`, backticks). It reuses the quote-aware scanner from the d
 and ambiguity resolves to *not safe* — the opposite polarity to the detach gate, because
 here a false "unsafe" costs one permission evaluation while a false "safe" skips it.
 
-Ordering note: the `if params.RunInBackground` branch sits at `bash.go:200`, *after* the
-permission block. The detach check must be hoisted to ~`:166`.
+Ordering note: the `if params.RunInBackground` branch sat *after* the permission block.
+The detach check is hoisted ahead of it (`bash.go:173`, permission block at `:184`).
 
 ### 2. Scope: caller session + direct children — NOT the flow root
 
@@ -83,10 +83,13 @@ Two implementation consequences the first draft missed:
   `ParentSessionID` carried on `task.Task`, `PendingForSessionTree(callerID)` is a pure
   registry filter (`SessionID == caller || ParentSessionID == caller`) — the caller's own
   ID is already on ctx. The gap is at *registration*: `internal/llm/tools` does not import
-  `internal/session` (`bashTool` holds only `{permissions, registry}`, `bash.go:48-51`), so
-  the bash/monitor sites cannot stamp the parent. The seam is a `ParentSessionIDContextKey`
-  set in `agent.go` beside `SessionIDContextKey` (`:847`) from `session.ParentSessionID`,
-  where the row is already loaded (`:844`). **Not `RootSessionID`**: `session.go:116-125`
+  `internal/session` (`bashTool` holds only `{permissions, registry}`), so the bash/monitor
+  sites cannot stamp the parent. The seam is `tools.ParentSessionIDContextKey`, set in
+  `agent.RunWith` beside `IsTaskAgentContextKey` (`agent.go:875`) from
+  `session.ParentSessionID`, where the row is already loaded. Three sites stamp it:
+  `bash_background.go`, `monitor.go`, `agent-tool-async.go`. The proposal's fourth site,
+  `cron/scheduler.go`, registers no `task.Task` at all — it only enqueues a completion —
+  so there is nothing to stamp there. **Not `RootSessionID`**: `session.go:116-125`
   copies the parent's root onto every descendant, so a flow step's subagent carries the
   flow-wide root — stamping it would silently rebuild the root scope rejected above.
   Without the key the lookup degrades to exact scope and the fix becomes a no-op that no
@@ -98,8 +101,8 @@ Two implementation consequences the first draft missed:
   against pre-completion state. Slow-and-correct becomes fast-and-wrong. Scope therefore
   becomes a field on `WaitOptions`, honored at both sites.
 
-**The management surface moves with it.** `tasklist` (`tasklist.go:75`) and `taskstop`
-(`taskstop.go:80-81`, *"Task %s does not belong to this session"*) are exact-scoped. Left
+**The management surface moves with it.** `tasklist` (`tasklist.go:78`) and `taskstop`
+(`taskstop.go:83`, *"Task %s does not belong to this session"*) were exact-scoped. Left
 alone, the redirect would block the parent on a `task_id` it can neither list nor kill,
 with `killStalled` not applying (`KindTask`-only, `agent.go:1425-1432`) and `stepCtx`
 frequently carrying no deadline at all (`flow/service.go:2602-2615`). Both tools move to
@@ -130,14 +133,13 @@ Three guards the first draft lacked:
 - **Exit code.** `bash_wait.go:129-133` sets no `ExitCode`/`TempFilePath`, so a failing
   trailer would report success. The trailer's result must carry real metadata.
 
-Execution reuses the synchronous path, but there is no helper to call: `bash.go:220-261`
-(truncation via `persistAndTruncate`, stderr composition, exit code, temp-file metadata,
-the empty-output case) is inline in `Run`. It must be extracted. `interceptForegroundWait`
-also needs `workdir` and `timeout` threaded into its signature — today it takes only
-`(ctx, command, sessionID)`.
+Execution reuses the synchronous path through `runForeground` (`bash.go:247`), extracted
+from `Run` (truncation via `persistAndTruncate`, stderr composition, exit code, temp-file
+metadata). `interceptForegroundWait(ctx, params, workdir, sessionID)` carries the timeout
+and workdir the trailer needs.
 
 **Permission is already covered and this is load-bearing:** interception sits at
-`bash.go:207`, *after* the permission block at `:173-199`, which evaluated the full
+`bash.go:220`, *after* the permission block at `:184`, which evaluated the full
 `params.Command` string — trailer included. The trailer needs no second check, and
 re-checking it would double-prompt. This is the opposite of the ordering the detach gate
 needs, so both are stated explicitly in the spec.
@@ -154,9 +156,9 @@ it carries more weight than it did in the first draft. The ack must say plainly 
 ending the turn without a tool call is how you wait.
 
 The scanned-line counter cannot live in `monitorState`: that struct is unexported, owned by
-its three goroutines, and reachable from nothing else (`monitor.go:262-277`), while
-`tasklist` reads only `task.Task` via `reg.ListBySession` (`tasklist.go:75`). It must be an
-exported atomic on `task.Task` with a `ScannedLines()` reader, bumped from `scanLoop`.
+its three goroutines, and reachable from nothing else, while `tasklist` reads only
+`task.Task` via the registry. It is an atomic on `task.Task` (`AddScannedLines` /
+`ScannedLines`), bumped from `scanLoop` (`monitor.go:286`) through `monitorState.tk`.
 
 ## Risks
 
@@ -173,15 +175,51 @@ exported atomic on `task.Task` with a `ScannedLines()` reader, bumped from `scan
   inverts is the watchdog idiom `sleep 300 && kill $(cat /tmp/pid)`, which now fires after
   the task it was meant to bound. Rare, but the blanket "strictly safer" claim in the first
   draft was wrong and is withdrawn.
-- **Redirect and drain disagree on child tasks (open).** A parent's foreground `sleep` now
-  waits on a child's bash task, but its end-of-turn drain does not (exact scope, a non-goal
-  here). The monitor ack tells the model that ending its turn is how it waits — true for its
-  own tasks only. With GENAI-140 unfixed, no subagent drains either, so a child-owned task
-  that outlives its subagent is awaited by nobody at step end, and its completion is
-  enqueued on a session that never runs again. This change narrows the hole (a `sleep` now
-  catches it); closing it belongs with GENAI-140, where the drain's scope and subagent
-  turn semantics are decided together.
+- **Redirect and drain disagree on child tasks — closed by §5.** A parent's foreground
+  `sleep` waits on a child's bash task, but its end-of-turn drain does not (exact scope, by
+  design). That would leave a child-owned task that outlives its subagent awaited by nobody
+  at step end. With §5 every flow-step subagent drains its own tasks before it answers, so
+  by the time the parent's turn can end its children's tasks are terminal (or the step's
+  deadline cancelled the tree). The exact-scoped drain is therefore sufficient, and a
+  parent never blocks at end of turn on work it did not spawn.
 - **Leaked monitors persist.** Registry entries are never deleted and monitors use
   `exec.Command`, not `CommandContext` (`monitor.go:185`), so a leaked `tail -F` stays
   `StateRunning` for the process lifetime. Under any widened scope that is a growing
   hazard; it is bounded here only because monitors stay excluded from the redirect.
+
+## 5. Subagents inherit the non-interactive marker (GENAI-140)
+
+Both `task`-tool launch paths went through `a.Run(...)`, the back-compat shim that passes
+zero-value `RunOptions` (`agent.go:738`, *"interactive mode, no end-of-turn wait"*). The
+outer loop then breaks when `!opts.NonInteractive` (`agent.go:1349`) and the tool ctx gets
+`NonInteractiveContextKey = false` (`agent.go:883`), so a subagent neither drained nor had
+its sleeps redirected — ever. Both paths now call
+`a.RunWith(…, subagentRunOptions(callerCtx))` (`agent-tool.go:197`, `agent-tool-async.go:84`),
+where `subagentRunOptions` returns `RunOptions{NonInteractive: tools.IsNonInteractive(callerCtx)}`
+and nothing else. Two details matter:
+
+- The async path derives its run ctx from the step scope or `context.Background()`, which
+  carry no values, so the marker MUST be read from the caller's turn ctx, not the derived
+  one — `TestSubagentRunOptions_InheritsNonInteractive` pins that.
+- Consequences for a flow-step subagent: its `RunWith` holds until its background tasks are
+  terminal (the exact-scoped drain, stall detection included) and re-enters so it can react
+  to completions; the parent's `task` call therefore returns the post-completion answer. An
+  unbounded `monitor` started by a subagent now holds the subagent until the step deadline,
+  the same contract the step's primary agent already lives under; the monitor ack's yield
+  text applies to it too. TUI subagents carry no marker and are unchanged.
+
+## 6. Crash recovery of a killed step (GENAI-352, opencode half)
+
+`flow.Service.Run` sees a `running` `flow_states` row and takes the replay-only
+`hasRunning` path (`flow/service.go:325`): the row is assumed to belong to a live process.
+`collectResumableSteps` already knows how to re-enter a non-completed step with its
+persisted args and iteration — only the gate stands in the way. `RunOptions.RecoverRunning`
+(`Service.RunWithOptions`; `Run` is the shim) is the caller's assertion that the owner is
+dead: with it the running rows fall through to `hasResumableWork`, which treats them as
+in-flight, and the planner resumes each in its own session; nothing is deleted. The HTTP
+surface is `recoverRunning` on `POST /flow/run` (`handler_flow.go:367`), threaded through
+`flowStartOptions` into `flowRunner.run`. Only an orchestrator that has observed the pod's
+death may send it — two live processes on one step is the failure the replay path exists to
+prevent — so the CLI gains no flag. The orchestrator side (job `activeDeadlineSeconds`,
+detecting a kill verdict with a step in flight, one bounded continuation job) is c2-agent's
+`killed-step-resume` change.

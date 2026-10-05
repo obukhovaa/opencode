@@ -72,9 +72,30 @@ type FlowState struct {
 
 // AgentProvider interface removed — use agentpkg.AgentFactory directly.
 
+// RunOptions configures one Service.RunWithOptions call.
+type RunOptions struct {
+	// Fresh is the hard reset: every flow_states row and the whole session
+	// tree are deleted before the flow starts from step 0 (`fresh` on
+	// POST /flow/run, `-D` on the CLI).
+	Fresh bool
+	// RecoverRunning tells the runtime that no other process owns this
+	// flow's `running` rows: the process that was executing them is dead —
+	// an orchestrator watched its pod get OOM-killed, evicted or deadline-
+	// killed mid-step — so they are crash-recovery work. The gate then
+	// skips the replay-only path it takes for a `running` row (which
+	// assumes a live owner) and resumes each running step in its own
+	// session, with its persisted args and iteration, so pushed-but-
+	// unfinished work is continued rather than lost (GENAI-352; openspec
+	// flow-runtime-resume).
+	RecoverRunning bool
+}
+
 type Service interface {
 	pubsub.Suscriber[FlowState]
 	Run(ctx context.Context, sessionPrefix string, flowID string, args map[string]any, fresh bool) (<-chan agentpkg.AgentEvent, <-chan *FlowState, error)
+	// RunWithOptions is Run with the full option set; Run is the
+	// back-compat shim passing RunOptions{Fresh: fresh}.
+	RunWithOptions(ctx context.Context, sessionPrefix string, flowID string, args map[string]any, opts RunOptions) (<-chan agentpkg.AgentEvent, <-chan *FlowState, error)
 }
 
 type service struct {
@@ -230,6 +251,12 @@ type stepWork struct {
 }
 
 func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, args map[string]any, fresh bool) (<-chan agentpkg.AgentEvent, <-chan *FlowState, error) {
+	return s.RunWithOptions(ctx, sessionPrefix, flowID, args, RunOptions{Fresh: fresh})
+}
+
+// RunWithOptions executes flowID for sessionPrefix. See RunOptions.
+func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flowID string, args map[string]any, opts RunOptions) (<-chan agentpkg.AgentEvent, <-chan *FlowState, error) {
+	fresh := opts.Fresh
 	f, err := Get(flowID)
 	if err != nil {
 		return nil, nil, err
@@ -285,7 +312,17 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 			break
 		}
 	}
-	if hasRunning {
+	// A `running` row normally means another process is executing the flow
+	// right now (cross-process replay): fan the rows out and let it finish.
+	// RecoverRunning is the caller asserting that owner is dead, so the
+	// rows fall through to the resume gate below, where hasResumableWork
+	// treats them as in-flight and the planner re-enters each running step
+	// with its persisted args and iteration in its own session.
+	if hasRunning && opts.RecoverRunning {
+		logging.Info("Recovering running step(s) left by a dead process",
+			"flow", flowID, "existing_steps", len(existingStates))
+	}
+	if hasRunning && !opts.RecoverRunning {
 		go func() {
 			defer close(agentEvents)
 			defer close(flowStates)
