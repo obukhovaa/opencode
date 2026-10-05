@@ -125,6 +125,6 @@ Anything else after `/heartbeat` goes to the agent ("every half hour on weekdays
 
 ### Setup reminder
 
-When a daemon starts, a chat that never chose on or off gets a short setup reminder, at most once a week. Only top-level direct messages of an inbound-active bot are reminded: never channels, threads, flow-step or subagent sessions, `external`, or mediated bots. `router.heartbeatReminder: false` turns it off ([bridge config](./bridge.md#top-level-router-fields)).
+When a daemon starts, a chat that never chose on or off gets a short setup reminder, at most once a week, but only if the agent holds the `heartbeat` tool (the reminder offers natural-language setup, which needs it). Only top-level direct messages of an inbound-active bot are reminded: never channels, threads, flow-step or subagent sessions, `external`, or mediated bots. `router.heartbeatReminder: false` turns it off ([bridge config](./bridge.md#top-level-router-fields)).
 
 Schema: `internal/db/migrations/{sqlite,mysql}/*bridge_heartbeats*.sql`, one row per chat binding; spec: `openspec/specs/bridge-heartbeat/spec.md`.

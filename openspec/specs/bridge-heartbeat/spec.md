@@ -193,7 +193,7 @@ When a heartbeat `model` is set, beats SHALL run on the primary agent with that 
 
 When a daemon's adapter for an identity is registered, the bridge SHALL post a setup reminder to each binding of that identity whose heartbeat state is `unset` and whose last reminder is absent or at least seven days old, explaining `/heartbeat on` and `/heartbeat off`. It SHALL record the reminder time before posting. Bindings whose session has no messages SHALL be skipped. A binding whose state is `on` or `off` SHALL never be reminded.
 
-The reminder SHALL reach only conversations this daemon serves: top-level direct messages with one person, as the adapter reports them, of an adapter that is inbound-active in this process. It SHALL NOT be posted to a thread peer, a channel or group chat, the `external` relay, any binding of an adapter whose inbound is disabled (mediated), a session whose root is another session (a flow step's or a subagent's), or a session an interactive flow step owns. An adapter that cannot tell a direct message SHALL get no reminder. `router.heartbeatReminder: false` SHALL turn the reminder off for the whole process; it defaults to on.
+The reminder SHALL reach only conversations this daemon serves: top-level direct messages with one person, as the adapter reports them, of an adapter that is inbound-active in this process. It SHALL NOT be posted to a thread peer, a channel or group chat, the `external` relay, any binding of an adapter whose inbound is disabled (mediated), a session whose root is another session (a flow step's or a subagent's), or a session an interactive flow step owns. An adapter that cannot tell a direct message SHALL get no reminder. `router.heartbeatReminder: false` SHALL turn the reminder off for the whole process; it defaults to on. The reminder SHALL NOT be posted when the active agent does not hold the `heartbeat` tool, because it offers describing the heartbeat in your own words, which only that tool carries out. While the agent's tool set is still loading, the bridge SHALL defer the decision to a later scheduler pass rather than post or use up the pass.
 
 #### Scenario: Weekly, not on every restart
 
@@ -209,6 +209,11 @@ The reminder SHALL reach only conversations this daemon serves: top-level direct
 
 - **WHEN** a daemon shares its database project with flow and pool pods, and its identity's bindings include channel threads, @-mention threads, other pods' review threads and a mediated bot's chats
 - **THEN** only the daemon's own top-level direct messages are reminded
+
+#### Scenario: Agent without the heartbeat tool
+
+- **WHEN** a daemon's agent type does not grant the `heartbeat` tool
+- **THEN** no setup reminder is posted, and `/heartbeat` in the exact form still works
 
 #### Scenario: Switched off
 

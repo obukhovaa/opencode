@@ -352,9 +352,16 @@ func (s *Service) heartbeatAgent(ctx context.Context, model string) (agent.Servi
 // mediated (it may hold other processes' bindings in a shared project),
 // a channel or a thread, or a flow step's session. An adapter that cannot
 // tell a direct message (no bridge.DirectPeerChecker) gets no reminder.
-// router.heartbeatReminder: false turns the reminder off.
+// router.heartbeatReminder: false turns the reminder off, and so does an
+// agent without the heartbeat tool: the reminder advertises describing
+// the heartbeat in your own words, which only that tool can carry out.
+// While the agent's tool set is still loading the pass is skipped without
+// marking anything, so a later tick decides once the tools are known.
 func (s *Service) remindNewIdentities(ctx context.Context, now time.Time) {
 	if !s.cfg.HeartbeatReminderEnabled() {
+		return
+	}
+	if has, known := s.heartbeatToolState(); !known || !has {
 		return
 	}
 	s.mu.Lock()
@@ -476,20 +483,31 @@ func (s *Service) heartbeatAgentRequest(ctx context.Context, in bridge.Inbound) 
 // agentHasHeartbeatTool reports whether the active agent can carry out a
 // natural-language /heartbeat. A tool set still loading counts as yes.
 func (s *Service) agentHasHeartbeatTool() bool {
+	has, known := s.heartbeatToolState()
+	return has || !known
+}
+
+// heartbeatToolState reports whether the active agent holds the heartbeat
+// tool. known is false while its tool set is still loading; with no active
+// agent the answer is a known no.
+func (s *Service) heartbeatToolState() (has, known bool) {
+	if s.app == nil {
+		return false, true
+	}
 	ag := s.app.ActiveAgent()
 	if ag == nil {
-		return false
+		return false, true
 	}
 	ts, ready := ag.ResolvedTools()
 	if !ready {
-		return true
+		return false, false
 	}
 	for _, t := range ts {
 		if t.Info().Name == tools.HeartbeatToolName {
-			return true
+			return true, true
 		}
 	}
-	return false
+	return false, true
 }
 
 // HeartbeatStatus implements tools.HeartbeatConfigurer: the status of

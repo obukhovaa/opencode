@@ -40,6 +40,8 @@ type heartbeatStubAgent struct {
 	delay time.Duration
 	// noHeartbeatTool hides the heartbeat tool from ResolvedTools.
 	noHeartbeatTool bool
+	// toolsLoading makes ResolvedTools report a tool set still loading.
+	toolsLoading bool
 	// busyRuns makes that many Run calls fail with ErrSessionBusy first,
 	// as when another actor holds the session.
 	busyRuns int
@@ -74,6 +76,9 @@ var (
 )
 
 func (a *heartbeatStubAgent) ResolvedTools() ([]tools.BaseTool, bool) {
+	if a.toolsLoading {
+		return nil, false
+	}
 	if a.noHeartbeatTool {
 		return nil, true
 	}
@@ -519,6 +524,35 @@ func TestHeartbeatReminderSkipsEmptySessions(t *testing.T) {
 	h.svc.remindNewIdentities(context.Background(), h.clock)
 	if sent := h.sentTexts(); len(sent) != 0 {
 		t.Fatalf("reminded a never-used binding: %q", sent)
+	}
+}
+
+// TestHeartbeatReminderNeedsTheHeartbeatTool: the reminder advertises
+// describing the heartbeat in your own words, which only the heartbeat
+// tool can carry out, so an agent without it gets no reminder. A tool set
+// still loading defers the decision to a later tick instead of using it up.
+func TestHeartbeatReminderNeedsTheHeartbeatTool(t *testing.T) {
+	h := newHeartbeatHarness(t)
+	ctx := context.Background()
+
+	h.ag.noHeartbeatTool = true
+	h.svc.remindNewIdentities(ctx, h.clock)
+	if sent := h.sentTexts(); len(sent) != 0 {
+		t.Fatalf("reminded although the agent has no heartbeat tool: %q", sent)
+	}
+
+	h.ag.noHeartbeatTool = false
+	h.ag.toolsLoading = true
+	h.svc.remindNewIdentities(ctx, h.clock)
+	if sent := h.sentTexts(); len(sent) != 0 {
+		t.Fatalf("reminded while the tool set was still loading: %q", sent)
+	}
+
+	// Once the tools are known (same process, so the pass was not used up).
+	h.ag.toolsLoading = false
+	h.svc.remindNewIdentities(ctx, h.clock)
+	if sent := h.sentTexts(); len(sent) != 1 {
+		t.Fatalf("no reminder once the heartbeat tool is known: %q", sent)
 	}
 }
 
