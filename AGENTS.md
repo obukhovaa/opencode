@@ -43,6 +43,7 @@ Load the doc for the area you are changing; each is the reference for its featur
 | [`docs/custom-commands.md`](docs/custom-commands.md) | Touching markdown slash commands / the command palette |
 | [`docs/hooks.md`](docs/hooks.md) | Touching `internal/hooks` (Claude-Code-compatible hooks) |
 | [`docs/tool-permissions.md`](docs/tool-permissions.md) | Changing how an agent's `tools` / `allowTools` gate tools |
+| [`docs/cli-tools.md`](docs/cli-tools.md) | Touching `internal/clitool`, `opencode tools list\|serve`, or authoring `.agents/tools/*.yaml` manifests that wrap a host CLI as a first-class tool |
 | [`docs/deferred-tools.md`](docs/deferred-tools.md) | Touching `deferredTools`, `toolsearch` or server-side tool search |
 | [`docs/structured-output.md`](docs/structured-output.md) | Touching `struct_output` or `structOutputSchemaDelivery` |
 | [`docs/telemetry.md`](docs/telemetry.md) | Touching `internal/langfuse`, `internal/redact` or the `telemetry` config: traces, metadata, redaction, requester |
@@ -197,6 +198,10 @@ Skills are reusable instruction sets that agents can load on-demand. See [Skills
 - Wildcards: `internal-*: deny`, `*-test: ask`
 - Global: `*: ask`
 
+### Workspace CLI Tools
+
+A workspace wraps a host CLI as a first-class tool with one manifest under `.agents/tools/<name>.yaml` (also `.opencode/tools/`, `~/.config/opencode/tools`, `~/.agents/tools`, `cliTools.paths`). The binary runs **argv-only, no shell**, under the manifest's `args.deny` / `args.allow` globs, env / cwd / timeout / output confinement; policy rejections come back to the model as tool errors (the run continues). `mode: argv` (default) exposes `args: string[]` and never describes the CLI's subcommands — `--help` and skills do; `mode: structured` renders declared parameters onto a fixed argv template for lock-down (per-tenant tools such as `snow_dcs`). `grant: explicit` (default) means an agent receives the tool only by naming it in `tools:` / `allowTools` (a bare `"*"` does not count); `permission.<name>` globs on the argument string layer above the manifest's `permission` default; `deferredTools` applies by name. Limits a manifest leaves unset (`timeout`, `maxTimeout`, `maxOutputBytes`) come from `OPENCODE_CLI_TOOLS_*` over the `cliTools` config block over the built-ins, identically for the native tools and `opencode tools serve`. `opencode tools list [--strict] [--agent id]` audits the resolved set; `opencode tools serve` exposes the same manifests over stdio MCP for Claude Code (`.mcp.json`). Full reference: [docs/cli-tools.md](docs/cli-tools.md).
+
 ### Permission System
 
 Permissions use pattern matching with priority:
@@ -236,6 +241,7 @@ Permissions use pattern matching with priority:
 | `edit` | File path glob | `{"*": "deny", "src/**/*.go": "allow"}` |
 | `read` | File path glob | `{"*": "allow", "*.env": "deny"}` |
 | `task` | Subagent name glob | `{"*": "allow", "explorer": "allow"}` |
+| `<cli tool name>` | Argument-string glob (workspace CLI tool, e.g. `snow`) | `{"*": "ask", "sql *": "allow"}` |
 
 ### TUI Agent Switching
 

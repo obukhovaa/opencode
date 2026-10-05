@@ -52,6 +52,8 @@ no way to discover them would strand them.
 > load, while MCP tool names (`<server>_<toolName>`) can contain uppercase.
 > A pattern like `{"mcp_Slack_*": true}` still matches `mcp_Slack_send_message`.
 
+Workspace CLI tools ([cli-tools.md](cli-tools.md)) are deferrable by name like MCP tools — `deferredTools: {"snow": true}` — and are announced through the same runtime delta as MCP tools. Pair deferral with a manifest `help:` capture: the captured `--help` text lives in the tool description and is paid on every request otherwise.
+
 ## How discovery works
 
 The model sees a `<system-reminder>` block naming the deferred builtin tools and

@@ -503,6 +503,39 @@ type SkillsConfig struct {
 	MaxListingChars int `json:"maxListingChars,omitempty"`
 }
 
+// CLIToolsConfig governs workspace-defined CLI tools: declarative manifests
+// (`.agents/tools/<name>.yaml`) that wrap a host binary as a first-class tool
+// with argv-only execution. Manifests are discovered from the project, the
+// user's global directories and Paths; see docs/cli-tools.md.
+type CLIToolsConfig struct {
+	// Paths lists extra directories scanned (non-recursively) for manifests
+	// after the project and global locations. Supports "~" and relative
+	// paths (resolved against the working directory), as Skills.Paths does.
+	Paths []string `json:"paths,omitempty"`
+	// Disabled turns the feature off: no manifest is read and no CLI tool is
+	// built, so agent toolsets are identical to a workspace without
+	// manifests. OPENCODE_DISABLE_CLI_TOOLS=true is the environment
+	// equivalent.
+	Disabled bool `json:"disabled,omitempty"`
+	// Timeout is the per-call timeout a manifest inherits when it sets no
+	// `timeout`: a Go duration ("90s", "2m") or a number of seconds. The
+	// built-in default is 2m. OPENCODE_CLI_TOOLS_TIMEOUT overrides it. The
+	// same value applies to the native tools and to `opencode tools serve`.
+	Timeout string `json:"timeout,omitempty"`
+	// MaxTimeout caps the per-call `timeout` parameter for manifests that
+	// set no `maxTimeout`; same format, built-in default 10m, never below
+	// Timeout. OPENCODE_CLI_TOOLS_MAX_TIMEOUT overrides it.
+	MaxTimeout string `json:"maxTimeout,omitempty"`
+	// MaxOutputBytes is the output cap a manifest inherits when it sets no
+	// `maxOutputBytes`. A positive value caps the output kept in the model
+	// context (the rest is spilled to a file and replaced by a head+tail
+	// preview, as for webFetch.maxOutputBytes and the MCP
+	// callToolMaxOutputBytes); a negative value disables the cap; zero or
+	// omitted keeps the built-in 50KB. OPENCODE_CLI_TOOLS_MAX_OUTPUT_BYTES
+	// overrides it.
+	MaxOutputBytes int `json:"maxOutputBytes,omitempty"`
+}
+
 // WebSearchProvider defines configuration for a single web search provider.
 type WebSearchProvider struct {
 	BaseURL     string `json:"baseUrl"`               // Full URL to POST search queries to (required)
@@ -567,10 +600,12 @@ type Config struct {
 	DisableLSPDownload bool                  `json:"disableLSPDownload,omitempty"`
 	SessionProvider    SessionProviderConfig `json:"sessionProvider,omitempty"`
 	Skills             *SkillsConfig         `json:"skills,omitempty"`
-	Permission         *PermissionConfig     `json:"permission,omitempty"`
-	WebSearch          *WebSearchConfig      `json:"webSearch,omitempty"`
-	WebFetch           *WebFetchConfig       `json:"webFetch,omitempty"`
-	MaxTurns           int                   `json:"maxTurns,omitempty"`
+	// CLITools configures workspace-defined CLI tools (docs/cli-tools.md).
+	CLITools   *CLIToolsConfig   `json:"cliTools,omitempty"`
+	Permission *PermissionConfig `json:"permission,omitempty"`
+	WebSearch  *WebSearchConfig  `json:"webSearch,omitempty"`
+	WebFetch   *WebFetchConfig   `json:"webFetch,omitempty"`
+	MaxTurns   int               `json:"maxTurns,omitempty"`
 	// StructOutputSchemaDelivery selects where a flow step's output JSON
 	// Schema is placed in the request: "message" (default) keeps the
 	// struct_output tool definition invariant and ships the schema in the

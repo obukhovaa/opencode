@@ -51,6 +51,29 @@ func EvaluateToolPermission(toolName, input string, agentPerms, globalPerms map[
 	return ActionAsk
 }
 
+// EvaluateToolPermissionWithDefault is EvaluateToolPermission with one more
+// layer: toolDefault, a pattern map (or {"*": action}) supplied by the tool
+// itself — a workspace CLI tool's manifest `permission`. The chain is
+//
+//	agent[tool] → global[tool] → toolDefault → agent["*"] → global["*"] → ask
+//
+// so a default declared by the tool is more specific than an agent's blanket
+// "*" rule but can never beat a rule written for that tool.
+func EvaluateToolPermissionWithDefault(toolName, input string, agentPerms, globalPerms, toolDefault map[string]any) Action {
+	if act := lookupToolAction(toolName, input, agentPerms, globalPerms); act != "" {
+		return act
+	}
+	if toolDefault != nil {
+		if act := resolvePermissionValue(input, toolDefault); act != "" {
+			return act
+		}
+	}
+	if act := lookupToolAction("*", input, agentPerms, globalPerms); act != "" {
+		return act
+	}
+	return ActionAsk
+}
+
 // EvaluateReadToolPermission evaluates permission for read-category tools
 // (read, grep, glob, ls). The lookup chain is:
 //  1. Specific tool name (e.g., "grep") in agent perms, then global perms

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
+	"github.com/opencode-ai/opencode/internal/clitool"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/format"
@@ -280,6 +281,23 @@ func NewToolSet(
 		}
 	}
 
+	// Workspace-defined CLI tools (docs/cli-tools.md): one native tool per
+	// valid manifest. `grant: explicit` (the default) needs the agent to
+	// name the tool — a bare "*" does not count, exactly like the cron
+	// tools — so no type has to carry a deny line for a tool it never
+	// asked for; `grant: implicit` follows the deny-list default like MCP.
+	for _, m := range clitool.Tools() {
+		var enabled bool
+		if m.Grant == clitool.GrantImplicit {
+			enabled = reg.IsToolEnabled(agentID, m.Name)
+		} else {
+			enabled = reg.IsToolExplicitlyEnabled(agentID, m.Name)
+		}
+		if enabled {
+			result <- maybeDefer(tools.NewCLITool(m, permissions, reg))
+		}
+	}
+
 	if len(deferredCfg) > 0 {
 		// Registered whenever deferral is in effect — regardless of model
 		// (mid-session model switches must not strand deferred tools) and
@@ -357,6 +375,17 @@ func (a *agent) resolveTools() []tools.BaseTool {
 			} else {
 				toolNames = append(toolNames, t.Info().Name)
 			}
+		}
+		// A workspace CLI tool and an MCP tool may end up with the same
+		// name (MCP names are <server>_<tool>); dispatch is by first exact
+		// match, so say so instead of letting one silently shadow the other.
+		seen := make(map[string]bool, len(toolSet))
+		for _, t := range toolSet {
+			n := t.Info().Name
+			if seen[n] {
+				logging.Warn("Duplicate tool name in toolset; the first registered wins at dispatch", "agent", a.AgentID(), "tool", n)
+			}
+			seen[n] = true
 		}
 		a.tools = toolSet
 		a.toolsResolved.Store(true)
