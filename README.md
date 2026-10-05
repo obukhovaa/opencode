@@ -517,7 +517,7 @@ args:
 permission: { "*": ask, "sql *": allow }
 ```
 
-The binary runs argv-only (no shell) under the manifest's argument, environment, cwd, timeout and output policy; agents receive the tool by naming it (`tools: {snow: true}`), `permission.snow` globs on the argument string, and `deferredTools` works by name. `opencode tools list --strict` audits a workspace; `opencode tools serve` exposes the same manifests over stdio MCP for Claude Code. Config: `cliTools.paths`, `cliTools.disabled`. See [docs/cli-tools.md](docs/cli-tools.md).
+The binary runs argv-only (no shell) under the manifest's argument, environment, cwd, timeout and output policy; agents receive the tool by naming it (`tools: {snow: true}`), `permission.snow` globs on the argument string, and `deferredTools` works by name. `opencode tools list --strict` audits a workspace; `opencode tools serve` exposes the same manifests over stdio MCP for Claude Code. Config: `cliTools.paths`, `cliTools.disabled`, and the limits every manifest inherits for fields it leaves unset — `cliTools.timeout`, `cliTools.maxTimeout`, `cliTools.maxOutputBytes`, overridable with `OPENCODE_CLI_TOOLS_TIMEOUT` / `_MAX_TIMEOUT` / `_MAX_OUTPUT_BYTES` — applied identically by the native tools and by `opencode tools serve`. See [docs/cli-tools.md](docs/cli-tools.md).
 
 ### LSP
 

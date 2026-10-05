@@ -153,6 +153,7 @@ type Manifest struct {
 	timeout    time.Duration
 	maxTimeout time.Duration
 	maxOutput  int
+	defaults   Defaults
 	permission map[string]any
 	template   []templateEntry
 	paramTypes map[string]string
@@ -166,20 +167,34 @@ type templateEntry struct {
 	refs    []string // placeholders referenced by this entry (or group)
 }
 
-// Load reads, decodes and validates one manifest. workingDir is the opencode
-// working directory. The returned error names every problem found.
+// Load reads, decodes and validates one manifest with the built-in limits
+// for the fields it leaves unset. workingDir is the opencode working
+// directory. The returned error names every problem found.
 func Load(path, workingDir string) (*Manifest, error) {
+	return LoadWithDefaults(path, workingDir, BuiltinDefaults())
+}
+
+// LoadWithDefaults is Load with the limits unset manifest fields inherit
+// (the resolved `cliTools` / environment knobs, see ResolveDefaults).
+func LoadWithDefaults(path, workingDir string, d Defaults) (*Manifest, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return Parse(raw, path, workingDir)
+	return ParseWithDefaults(raw, path, workingDir, d)
 }
 
-// Parse decodes and validates manifest bytes. location is recorded for
-// diagnostics and the basename check.
+// Parse decodes and validates manifest bytes with the built-in limits.
+// location is recorded for diagnostics and the basename check.
 func Parse(raw []byte, location, workingDir string) (*Manifest, error) {
-	m := &Manifest{Location: location, WorkingDir: workingDir}
+	return ParseWithDefaults(raw, location, workingDir, BuiltinDefaults())
+}
+
+// ParseWithDefaults is Parse with the limits unset manifest fields inherit.
+// A manifest's own `timeout`, `maxTimeout` and `maxOutputBytes` always win
+// over d; d only fills what the manifest leaves out.
+func ParseWithDefaults(raw []byte, location, workingDir string, d Defaults) (*Manifest, error) {
+	m := &Manifest{Location: location, WorkingDir: workingDir, defaults: d.normalized()}
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	// Strict: a misspelt security field (`alow:`) must fail, not be ignored.
 	dec.KnownFields(true)
@@ -258,22 +273,40 @@ func (m *Manifest) resolve() error {
 	}
 
 	// --- durations and caps -------------------------------------------------
+	// Unset fields inherit m.defaults (the resolved `cliTools` / environment
+	// knobs, or the built-ins); a field the manifest sets always wins.
 	var err error
-	if m.timeout, err = parseDuration(m.Timeout, DefaultTimeout); err != nil {
+	explicitTimeout := strings.TrimSpace(m.Timeout) != ""
+	explicitMaxTimeout := strings.TrimSpace(m.MaxTimeout) != ""
+	if m.timeout, err = parseDuration(m.Timeout, m.defaults.Timeout); err != nil {
 		fail("timeout: %v", err)
 	}
-	if m.maxTimeout, err = parseDuration(m.MaxTimeout, DefaultMaxTimeout); err != nil {
+	if m.maxTimeout, err = parseDuration(m.MaxTimeout, m.defaults.MaxTimeout); err != nil {
 		fail("maxTimeout: %v", err)
 	}
 	if m.timeout <= 0 {
 		fail("timeout must be positive")
 	}
-	if m.maxTimeout < m.timeout {
-		fail("maxTimeout (%s) must not be smaller than timeout (%s)", m.maxTimeout, m.timeout)
+	if m.maxTimeout <= 0 {
+		fail("maxTimeout must be positive")
+	}
+	if m.timeout > 0 && m.maxTimeout > 0 && m.maxTimeout < m.timeout {
+		switch {
+		case explicitTimeout && explicitMaxTimeout:
+			fail("maxTimeout (%s) must not be smaller than timeout (%s)", m.maxTimeout, m.timeout)
+		case explicitMaxTimeout:
+			// The manifest caps calls below the inherited default timeout:
+			// the cap is the default too, not an error in the manifest.
+			m.timeout = m.maxTimeout
+		default:
+			// The manifest asks for a timeout above the inherited cap: its
+			// own timeout is the cap, so a global knob cannot break it.
+			m.maxTimeout = m.timeout
+		}
 	}
 	switch {
 	case m.MaxOutputBytes == nil || *m.MaxOutputBytes == 0:
-		m.maxOutput = DefaultMaxOutputBytes
+		m.maxOutput = m.defaults.MaxOutputBytes
 	case *m.MaxOutputBytes < 0:
 		m.maxOutput = -1
 	default:
@@ -500,6 +533,10 @@ func (m *Manifest) TimeoutMax() time.Duration { return m.maxTimeout }
 
 // MaxOutput is the context cap in bytes; -1 means unbounded.
 func (m *Manifest) MaxOutput() int { return m.maxOutput }
+
+// Defaults are the limits this manifest inherited for the fields it did not
+// set (see ResolveDefaults).
+func (m *Manifest) Defaults() Defaults { return m.defaults }
 
 // PermissionDefault is the manifest's default permission layer (nil when
 // unset), in the pattern-map shape of agent permission values.

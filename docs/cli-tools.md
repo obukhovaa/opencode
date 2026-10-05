@@ -70,8 +70,18 @@ Scanned non-recursively for `*.yaml`, `*.yml`, `*.json` (JSON is a YAML subset),
 The file basename must equal the manifest's `name`, so a grep for the tool name finds its definition. The set is loaded once per process (restart to pick up edits).
 
 ```json
-{ "cliTools": { "paths": ["./team/tools"], "disabled": false } }
+{
+  "cliTools": {
+    "paths": ["./team/tools"],
+    "disabled": false,
+    "timeout": "2m",
+    "maxTimeout": "10m",
+    "maxOutputBytes": 51200
+  }
+}
 ```
+
+`timeout`, `maxTimeout` and `maxOutputBytes` are the limits every manifest inherits for the fields it leaves unset — see [Limits](#limits-one-set-of-knobs-for-both-surfaces).
 
 `cliTools.disabled: true` or `OPENCODE_DISABLE_CLI_TOOLS=true` turns the feature off entirely. A workspace without manifests is unaffected: agent toolsets are byte-identical to the behaviour before this feature existed.
 
@@ -94,9 +104,9 @@ env:
   pass: []                        # names kept when inherit is false
   set: {}                         # KEY: value added last; `${env.NAME}` expands from the parent env
 cwd: ""                           # relative to the working directory; must stay inside it
-timeout: 2m                       # per-call default (Go duration or seconds)
-maxTimeout: 10m                   # cap for the per-call `timeout` parameter
-maxOutputBytes: 51200             # context cap; -1 = unbounded
+timeout: 2m                       # per-call default (Go duration or seconds); unset = inherited (see Limits)
+maxTimeout: 10m                   # cap for the per-call `timeout` parameter; unset = inherited
+maxOutputBytes: 51200             # context cap; -1 = unbounded; unset = inherited
 help:                             # optional one-off capture appended to the description
   args: ["--help"]
   maxBytes: 4096
@@ -185,9 +195,26 @@ agent.permission.<tool>  →  global permission.rules.<tool>  →  manifest `per
 
 The manifest's default sits below rules written for the tool and above the blanket wildcards. The pattern input is the space-joined argument string (what the TUI shows), so `permission.snow: {"sql *": allow}` reads naturally. On `--auto-approve` pods `ask` resolves to allow, so **the hard policy is what protects a pod**; `permission` matters for the TUI, daemons and the MCP bridge.
 
+## Limits: one set of knobs for both surfaces
+
+Three limits bound every call: the per-call **timeout** (built-in 2 m), the **maxTimeout** cap on the call's `timeout` parameter (built-in 10 m) and the **maxOutputBytes** context cap (built-in 50 KiB). A manifest may set each one; for the fields it leaves out, every manifest inherits one resolved value, in this precedence:
+
+| Layer | Where | Example |
+|---|---|---|
+| 1. manifest field | `timeout`, `maxTimeout`, `maxOutputBytes` in the YAML | `timeout: 5m` |
+| 2. environment | `OPENCODE_CLI_TOOLS_TIMEOUT`, `OPENCODE_CLI_TOOLS_MAX_TIMEOUT`, `OPENCODE_CLI_TOOLS_MAX_OUTPUT_BYTES` | `OPENCODE_CLI_TOOLS_MAX_OUTPUT_BYTES=-1` |
+| 3. config | `cliTools.timeout`, `cliTools.maxTimeout`, `cliTools.maxOutputBytes` in `.opencode.json` | `"timeout": "90s"` |
+| 4. built-in | compiled defaults | 2m / 10m / 51200 |
+
+Durations are Go durations (`"90s"`, `"2m"`) or a number of seconds; `maxOutputBytes` is bytes, with a negative value meaning unbounded (the same convention as `webFetch.maxOutputBytes` and an MCP server's `callToolMaxOutputBytes`). The knobs are resolved once wherever manifests are loaded, so the native tools in an agent's toolset and `opencode tools serve` (which loads the `.opencode.json` of its `--cwd` and sees the same environment) apply identical limits: tune a pod with one environment variable, a laptop with one config line, and the two surfaces agree.
+
+- A manifest field always wins: a manifest that says `timeout: 5m` keeps it under `cliTools.timeout: "30s"`.
+- A manifest `timeout` above the inherited `maxTimeout` raises the cap to the manifest's value, and a manifest `maxTimeout` below the inherited `timeout` lowers the timeout to it, so a global knob can never make a valid manifest fail to load. Only a manifest whose own `timeout` and `maxTimeout` contradict each other is rejected.
+- A knob that does not parse or is not positive is ignored with a warning and the next layer applies; a resolved `maxTimeout` below the resolved `timeout` is raised to it. `opencode tools list` prints the warnings and the resolved `defaults` with the layer each came from (`builtin`, `config`, `env`); `--strict` exits 1 on a warning.
+
 ## Output
 
-Standard output, then a `--- stderr ---` block when non-empty, then `exit status N`. Over `maxOutputBytes` (default 50 KiB) the text is spilled to the scratch directory and replaced by a head+tail preview naming the file, exactly like bash, MCP and webfetch output. A non-zero exit, a timeout and a missing binary are error results that still carry the captured output; the exit code and duration ride in the response metadata.
+Standard output, then a `--- stderr ---` block when non-empty, then `exit status N`. Over the tool's effective `maxOutputBytes` (see Limits; built-in 50 KiB) the text is spilled to the scratch directory and replaced by a head+tail preview naming the file, exactly like bash, MCP and webfetch output. A non-zero exit, a timeout and a missing binary are error results that still carry the captured output; the exit code and duration ride in the response metadata.
 
 ## Granting and deferral
 
@@ -204,9 +231,9 @@ opencode tools list [--cwd DIR] [--json] [--agent ID] [--strict]
 opencode tools serve [--cwd DIR] [--only a,b]
 ```
 
-`list` prints every resolved manifest (file, binary or `NOT FOUND`, mode, grant, policy counts, env mode, limits, default permission, structured parameters) and the diagnostics (invalid and shadowed files). `--agent` adds whether that agent holds each tool and whether it is deferred. `--strict` exits 1 on any invalid manifest — put it in the workspace CI next to the skill-frontmatter lint.
+`list` prints the resolved default limits with the layer each came from, any ignored limit setting, every resolved manifest (file, binary or `NOT FOUND`, mode, grant, policy counts, env mode, effective limits, default permission, structured parameters) and the diagnostics (invalid and shadowed files). `--agent` adds whether that agent holds each tool and whether it is deferred. `--strict` exits 1 on any invalid manifest or ignored limit setting — put it in the workspace CI next to the skill-frontmatter lint.
 
-`serve` runs a stdio MCP server whose tools are the manifests, with identical names, descriptions and schemas. Each call goes through the same `Prepare → policy → exec` path. There is no agent and no human loop in this mode: the hard policy is enforced; a manifest `permission` that resolves to `deny` returns an error result; `ask` and `allow` execute, because the MCP client owns the prompt. `grant` does not apply. Logs go to stderr.
+`serve` runs a stdio MCP server whose tools are the manifests, with identical names, descriptions and schemas. Each call goes through the same `Prepare → policy → exec` path under the same limits (the manifest's fields, then `OPENCODE_CLI_TOOLS_*`, then the `cliTools` block of the `--cwd` workspace's `.opencode.json`). There is no agent and no human loop in this mode: the hard policy is enforced; a manifest `permission` that resolves to `deny` returns an error result; `ask` and `allow` execute, because the MCP client owns the prompt. `grant` does not apply. Logs go to stderr.
 
 Claude Code, `.mcp.json`:
 

@@ -517,6 +517,23 @@ type CLIToolsConfig struct {
 	// manifests. OPENCODE_DISABLE_CLI_TOOLS=true is the environment
 	// equivalent.
 	Disabled bool `json:"disabled,omitempty"`
+	// Timeout is the per-call timeout a manifest inherits when it sets no
+	// `timeout`: a Go duration ("90s", "2m") or a number of seconds. The
+	// built-in default is 2m. OPENCODE_CLI_TOOLS_TIMEOUT overrides it. The
+	// same value applies to the native tools and to `opencode tools serve`.
+	Timeout string `json:"timeout,omitempty"`
+	// MaxTimeout caps the per-call `timeout` parameter for manifests that
+	// set no `maxTimeout`; same format, built-in default 10m, never below
+	// Timeout. OPENCODE_CLI_TOOLS_MAX_TIMEOUT overrides it.
+	MaxTimeout string `json:"maxTimeout,omitempty"`
+	// MaxOutputBytes is the output cap a manifest inherits when it sets no
+	// `maxOutputBytes`. A positive value caps the output kept in the model
+	// context (the rest is spilled to a file and replaced by a head+tail
+	// preview, as for webFetch.maxOutputBytes and the MCP
+	// callToolMaxOutputBytes); a negative value disables the cap; zero or
+	// omitted keeps the built-in 50KB. OPENCODE_CLI_TOOLS_MAX_OUTPUT_BYTES
+	// overrides it.
+	MaxOutputBytes int `json:"maxOutputBytes,omitempty"`
 }
 
 // WebSearchProvider defines configuration for a single web search provider.

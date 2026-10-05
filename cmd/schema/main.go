@@ -765,6 +765,18 @@ func generateSchema() map[string]any {
 				"description": "Turn the feature off: no manifest is read and no CLI tool is built. OPENCODE_DISABLE_CLI_TOOLS=true is the environment equivalent.",
 				"default":     false,
 			},
+			"timeout": map[string]any{
+				"type":        []string{"string", "integer"},
+				"description": "Per-call timeout a manifest inherits when it sets no `timeout`: a Go duration (\"90s\", \"2m\") or a number of seconds. Built-in default 2m. OPENCODE_CLI_TOOLS_TIMEOUT overrides it. Applied identically by the native tools and by `opencode tools serve`.",
+			},
+			"maxTimeout": map[string]any{
+				"type":        []string{"string", "integer"},
+				"description": "Cap on the per-call `timeout` parameter for manifests that set no `maxTimeout`; same format. Built-in default 10m, never below `timeout`. OPENCODE_CLI_TOOLS_MAX_TIMEOUT overrides it.",
+			},
+			"maxOutputBytes": map[string]any{
+				"type":        "integer",
+				"description": "Output cap a manifest inherits when it sets no `maxOutputBytes`: a positive value caps the bytes kept in the model context (the rest is spilled to a file and replaced by a head+tail preview, as for webFetch.maxOutputBytes and an MCP server's callToolMaxOutputBytes); a negative value disables the cap; zero or omitted keeps the built-in 51200. OPENCODE_CLI_TOOLS_MAX_OUTPUT_BYTES overrides it.",
+			},
 		},
 		"additionalProperties": false,
 	}

@@ -13,7 +13,8 @@ import (
 // key folding is what the pure json.Unmarshal tests cannot exercise.
 func TestConfig_CLIToolsViperRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	body := `{"cliTools": {"paths": ["~/tools", "./team/tools"], "disabled": true}}`
+	body := `{"cliTools": {"paths": ["~/tools", "./team/tools"], "disabled": true,
+		"timeout": "90s", "maxTimeout": 300, "maxOutputBytes": -1}}`
 	if err := os.WriteFile(filepath.Join(dir, ".opencode.json"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -33,6 +34,11 @@ func TestConfig_CLIToolsViperRoundTrip(t *testing.T) {
 	}
 	if len(cfg.CLITools.Paths) != 2 || cfg.CLITools.Paths[0] != "~/tools" || !cfg.CLITools.Disabled {
 		t.Errorf("cliTools = %+v", cfg.CLITools)
+	}
+	// Durations arrive as strings; a bare JSON number (seconds) is weakly
+	// typed into the string the manifest-style parser understands.
+	if cfg.CLITools.Timeout != "90s" || cfg.CLITools.MaxTimeout != "300" || cfg.CLITools.MaxOutputBytes != -1 {
+		t.Errorf("cliTools limits = %+v", cfg.CLITools)
 	}
 }
 

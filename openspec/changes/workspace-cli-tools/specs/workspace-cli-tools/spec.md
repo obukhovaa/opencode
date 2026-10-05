@@ -81,7 +81,7 @@ A manifest in `structured` mode SHALL expose its `parameters` (JSON-Schema prope
 
 ### Requirement: The process is executed without a shell under the manifest's confinement
 
-The system SHALL start the manifest's `command` directly with an argument vector consisting of `prefixArgs` followed by the model-influenced arguments; no shell SHALL interpret the vector. The working directory SHALL be the manifest `cwd` resolved inside the working directory (default: the working directory). The child environment SHALL be the parent environment when `env.inherit` is true; otherwise only `PATH`, `HOME`, `TMPDIR` and the names in `env.pass`; `env.set` entries SHALL be added last, with `${env.NAME}` tokens expanded from the parent environment. The call SHALL be bounded by the call's `timeout` clamped to `maxTimeout` (defaults 2 and 10 minutes); on expiry the process group SHALL be killed and the result SHALL be an error naming the timeout.
+The system SHALL start the manifest's `command` directly with an argument vector consisting of `prefixArgs` followed by the model-influenced arguments; no shell SHALL interpret the vector. The working directory SHALL be the manifest `cwd` resolved inside the working directory (default: the working directory). The child environment SHALL be the parent environment when `env.inherit` is true; otherwise only `PATH`, `HOME`, `TMPDIR` and the names in `env.pass`; `env.set` entries SHALL be added last, with `${env.NAME}` tokens expanded from the parent environment. The call SHALL be bounded by the call's `timeout` clamped to `maxTimeout` (built-in defaults 2 and 10 minutes, inherited as the limits requirement describes when the manifest sets neither); on expiry the process group SHALL be killed and the result SHALL be an error naming the timeout.
 
 #### Scenario: Shell operators are inert
 
@@ -119,7 +119,7 @@ Before starting the process, the system SHALL evaluate the manifest's `args.deny
 
 ### Requirement: Output is captured, capped and reported with the exit status
 
-The result SHALL contain the process's standard output, followed by a labelled standard-error block when non-empty, followed by a line stating the exit status. Content beyond `maxOutputBytes` (default 51200; negative disables) SHALL be spilled to the scratch directory and replaced by a head+tail preview naming the file, using the same mechanism as bash and MCP tools. A non-zero exit, a failure to start the process (including a binary that cannot be found) and a timeout SHALL be returned as error responses that still carry the captured output; the exit code SHALL be present in the response metadata.
+The result SHALL contain the process's standard output, followed by a labelled standard-error block when non-empty, followed by a line stating the exit status. Content beyond the tool's effective `maxOutputBytes` (built-in default 51200, inherited as the limits requirement describes; negative disables) SHALL be spilled to the scratch directory and replaced by a head+tail preview naming the file, using the same mechanism as bash and MCP tools. A non-zero exit, a failure to start the process (including a binary that cannot be found) and a timeout SHALL be returned as error responses that still carry the captured output; the exit code SHALL be present in the response metadata.
 
 #### Scenario: Non-zero exit is an error with output
 
@@ -135,6 +135,30 @@ The result SHALL contain the process's standard output, followed by a labelled s
 
 - **WHEN** the manifest's `command` cannot be resolved at call time
 - **THEN** the tool exists, the call returns an error naming the missing command, and no run-ending permission error is raised
+
+### Requirement: Limits are configured once and applied by both surfaces
+
+The limits a manifest leaves unset — `timeout`, `maxTimeout` and `maxOutputBytes` — SHALL be inherited from one resolved set of defaults, layered as: the environment variables `OPENCODE_CLI_TOOLS_TIMEOUT`, `OPENCODE_CLI_TOOLS_MAX_TIMEOUT` and `OPENCODE_CLI_TOOLS_MAX_OUTPUT_BYTES`, over the `cliTools.timeout`, `cliTools.maxTimeout` and `cliTools.maxOutputBytes` keys of `.opencode.json`, over the built-in values (2 minutes, 10 minutes, 51200 bytes). Durations SHALL accept a Go duration or a number of seconds; a negative output cap SHALL mean unbounded. A field the manifest sets SHALL always win. A manifest `timeout` above the inherited `maxTimeout` SHALL raise the cap to it, and a manifest `maxTimeout` below the inherited `timeout` SHALL lower the timeout to it, so that a global knob cannot invalidate a manifest; only a manifest whose own `timeout` and `maxTimeout` contradict SHALL be rejected. A knob value that does not parse or is not positive SHALL be ignored with a warning and the next layer SHALL apply; a resolved `maxTimeout` below the resolved `timeout` SHALL be raised to it with a warning. The resolved defaults SHALL be applied identically wherever manifests are loaded: an agent's native toolset and `opencode tools serve`. The three keys SHALL appear in the generated configuration JSON schema.
+
+#### Scenario: Config knob reaches both surfaces
+
+- **WHEN** `.opencode.json` sets `cliTools.maxOutputBytes: 1024` and a manifest sets no `maxOutputBytes`
+- **THEN** a native call and a served `tools/call` of that tool both cap the output at 1024 bytes and spill the rest to a file
+
+#### Scenario: Environment overrides config
+
+- **WHEN** `cliTools.timeout` is `"1s"` and `OPENCODE_CLI_TOOLS_TIMEOUT=2s` is set
+- **THEN** a call that runs longer is killed after 2 seconds, and `opencode tools list` reports the timeout default as `2s` from `env`
+
+#### Scenario: Manifest field wins
+
+- **WHEN** `cliTools.timeout` is `"1s"` and a manifest sets `timeout: 10s`
+- **THEN** a 2-second call of that tool completes normally
+
+#### Scenario: Invalid knob is ignored, not fatal
+
+- **WHEN** `OPENCODE_CLI_TOOLS_TIMEOUT=soon` is set
+- **THEN** every manifest still loads with the next layer's timeout, `opencode tools list` prints a warning naming the variable, and `--strict` exits 1
 
 ### Requirement: CLI tools are gated like built-in tools, explicit by default
 
@@ -190,7 +214,7 @@ When a manifest declares `help` (`args`, `maxBytes` default 4096), the system SH
 
 ### Requirement: `opencode tools list` audits the resolved manifests
 
-The command `opencode tools list` SHALL print, for every manifest found, its name, source file, mode, command and resolved path (or NOT FOUND), grant mode, counts of deny and allow patterns, environment mode, timeouts and output cap; then the diagnostics for invalid and shadowed manifests with their reasons. `--json` SHALL emit the same as JSON; `--agent <id>` SHALL add whether that agent holds each tool and whether it is deferred; `--strict` SHALL exit with status 1 when any manifest is invalid.
+The command `opencode tools list` SHALL print the resolved default limits with the layer each came from (`builtin`, `config`, `env`) and any ignored limit setting; then, for every manifest found, its name, source file, mode, command and resolved path (or NOT FOUND), grant mode, counts of deny and allow patterns, environment mode, effective timeouts and output cap; then the diagnostics for invalid and shadowed manifests with their reasons. `--json` SHALL emit the same as JSON; `--agent <id>` SHALL add whether that agent holds each tool and whether it is deferred; `--strict` SHALL exit with status 1 when any manifest is invalid or a limit setting was ignored.
 
 #### Scenario: Strict listing fails CI on a bad manifest
 
@@ -204,7 +228,7 @@ The command `opencode tools list` SHALL print, for every manifest found, its nam
 
 ### Requirement: `opencode tools serve` exposes the manifests over stdio MCP
 
-The command `opencode tools serve` SHALL run a Model Context Protocol server over standard input/output whose tools are the valid manifests of the working directory (optionally narrowed by `--only name,…`), each with the same name, description and input schema as the native tool. A `tools/call` SHALL run the same policy and execution path as the native tool; argument-policy violations and a manifest default permission of `deny` SHALL return an error result; `ask` and `allow` SHALL execute. Agent gating (`grant`) SHALL not apply. Standard output SHALL carry only protocol messages; logs SHALL go to standard error.
+The command `opencode tools serve` SHALL run a Model Context Protocol server over standard input/output whose tools are the valid manifests of the working directory (optionally narrowed by `--only name,…`), each with the same name, description and input schema as the native tool. A `tools/call` SHALL run the same policy and execution path as the native tool, under the same inherited limits (see the limits requirement); argument-policy violations and a manifest default permission of `deny` SHALL return an error result; `ask` and `allow` SHALL execute. Agent gating (`grant`) SHALL not apply. Standard output SHALL carry only protocol messages; logs SHALL go to standard error.
 
 #### Scenario: Claude Code lists and calls a tool
 

@@ -34,6 +34,12 @@ type Set struct {
 	Disabled bool
 	// Dirs lists the directories that were scanned, in precedence order.
 	Dirs []string
+	// Defaults are the limits every manifest inherited for unset fields:
+	// built-ins, `cliTools` config and OPENCODE_CLI_TOOLS_* environment
+	// resolved once per pass (see ResolveDefaults).
+	Defaults Defaults
+	// Warnings lists limit settings that were ignored as invalid.
+	Warnings []string
 }
 
 var (
@@ -114,6 +120,10 @@ func Discover(ctx context.Context, workingDir string, cfg *config.CLIToolsConfig
 	if abs, err := filepath.Abs(workingDir); err == nil {
 		workingDir = abs
 	}
+	// One resolution of the shared limits per pass: the same values reach
+	// every manifest here, whether this pass feeds agent toolsets or
+	// `opencode tools serve`.
+	set.Defaults, set.Warnings = ResolveDefaults(cfg)
 	byName := map[string]*Manifest{}
 	add := func(m *Manifest) {
 		if existing, ok := byName[m.Name]; ok {
@@ -128,7 +138,7 @@ func Discover(ctx context.Context, workingDir string, cfg *config.CLIToolsConfig
 	}
 	for _, dir := range Dirs(workingDir, cfg) {
 		set.Dirs = append(set.Dirs, dir)
-		found, bad := scanDir(dir, workingDir)
+		found, bad := scanDir(dir, workingDir, set.Defaults)
 		set.Diagnostics = append(set.Diagnostics, bad...)
 		for _, m := range found {
 			add(m)
@@ -204,8 +214,9 @@ func Dirs(workingDir string, cfg *config.CLIToolsConfig) []string {
 	return dirs
 }
 
-// scanDir loads every *.yaml / *.yml / *.json manifest directly inside dir.
-func scanDir(dir, workingDir string) ([]*Manifest, []Diagnostic) {
+// scanDir loads every *.yaml / *.yml / *.json manifest directly inside dir,
+// with d as the limits unset fields inherit.
+func scanDir(dir, workingDir string, d Defaults) ([]*Manifest, []Diagnostic) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, nil
@@ -225,7 +236,7 @@ func scanDir(dir, workingDir string) ([]*Manifest, []Diagnostic) {
 	sort.Strings(names)
 	for _, name := range names {
 		path := filepath.Join(dir, name)
-		m, err := Load(path, workingDir)
+		m, err := LoadWithDefaults(path, workingDir, d)
 		if err != nil {
 			bad = append(bad, Diagnostic{Path: path, Reason: err.Error()})
 			continue
@@ -259,6 +270,9 @@ func (s *Set) logSummary() {
 		logging.Debug("CLI tools disabled by config or environment")
 		return
 	}
+	for _, w := range s.Warnings {
+		logging.Warn("CLI tool limit setting ignored", "detail", w)
+	}
 	var invalid []Diagnostic
 	shadowed := 0
 	for _, d := range s.Diagnostics {
@@ -273,7 +287,9 @@ func (s *Set) logSummary() {
 		for _, m := range s.Manifests {
 			names = append(names, m.Name)
 		}
-		logging.Info("Discovered CLI tools", "count", len(names), "tools", strings.Join(names, ", "))
+		logging.Info("Discovered CLI tools", "count", len(names), "tools", strings.Join(names, ", "),
+			"timeout", s.Defaults.Timeout.String(), "maxTimeout", s.Defaults.MaxTimeout.String(),
+			"maxOutputBytes", s.Defaults.MaxOutputBytes)
 	}
 	if shadowed > 0 {
 		logging.Debug("CLI tool manifests shadowed by a higher-precedence file", "count", shadowed)
@@ -304,7 +320,7 @@ func OverrideForTest(manifests []*Manifest) (restore func()) {
 	Invalidate()
 	cacheOnce.Do(func() {})
 	cacheLock.Lock()
-	cached = &Set{Manifests: manifests}
+	cached = &Set{Manifests: manifests, Defaults: BuiltinDefaults()}
 	cacheLock.Unlock()
 	return Invalidate
 }

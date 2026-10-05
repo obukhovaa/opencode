@@ -16,6 +16,7 @@ import (
 func isolateHome(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	clearLimitEnv(t)
 }
 
 func TestDiscover_PrecedenceShadowingAndDiagnostics(t *testing.T) {

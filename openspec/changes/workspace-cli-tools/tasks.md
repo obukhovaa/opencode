@@ -40,8 +40,16 @@
 - [x] 6.2 Manual proving run with the real `snow` 3.28.0 and the local `dcs` connection: `snow.yaml` (argv) and `snow_dcs.yaml` (structured) in a scratch workspace; `opencode tools list`, a served `tools/call` running `select 1`, a denied `-x`, and a structured call with an invalid `format`; record the transcript in the GENAI-411 issue.
 - [x] 6.3 `make test` green (53 packages, race); `make schema-check` green; `./scripts/check_hidden_chars.sh` flags only the pre-existing generated `internal/lsp/protocol/tsprotocol.go`.
 
-## 7. Downstream follow-ups (outside this repository, tracked in GENAI-411)
+## 7. Shared limit knobs (review follow-up)
 
-- [ ] 7.1 piano-developer MR: `.agents/tools/snow.yaml`, `snow_dcs.yaml`, `snow_logging.yaml`; `.gitignore` re-include; CI `yaml-configs-parse` + `opencode tools list --strict` job; `piano-snowflake-explorer` / `piano-incident-investigator` switched to the tools with `bash` withheld; `.agents/mcp/servers.json` `cli-tools` entry (`opencode tools serve`) and `docs/LOCAL-MCP.md`; `sync_claude_agents.py` mapping of granted CLI tools to `mcpServers: [cli-tools]`; `piano-snowflake-cli` skill updated to name the tools.
-- [ ] 7.2 c2-agent: bump the opencode pin to the release carrying this change.
-- [ ] 7.3 scenario-builder: follow-up to !180 replacing `"snow *": allow` bash maps with the structured tools once 7.2 is live.
+- [x] 7.1 `cliTools.timeout`, `cliTools.maxTimeout`, `cliTools.maxOutputBytes` on `CLIToolsConfig`; schema declaration + regeneration; viper round-trip test (string and bare-number durations).
+- [x] 7.2 `clitool.ResolveDefaults` (env `OPENCODE_CLI_TOOLS_*` > config > built-in, warnings for ignored values, `maxTimeout` raised to `timeout`), `ParseWithDefaults` / `LoadWithDefaults`; manifest fields win; raise/lower rules so a knob cannot invalidate a manifest; `Set.Defaults` / `Set.Warnings`.
+- [x] 7.3 `opencode tools list` reports `defaults` (with source) and `warnings`, `--strict` fails on a warning; `serve` logs both and applies the same `Set`.
+- [x] 7.4 Unit tests (`defaults_test.go`, `TestDiscover_AppliesSharedLimits`, `TestServe_AppliesInheritedLimits`) and e2e `scripts/test/cli_tools_limits.sh` with the `cmd/clitool-e2e` driver (config cap and timeout on both surfaces, manifest wins, env beats config, list/strict, schema).
+- [x] 7.5 Docs: `docs/cli-tools.md` "Limits", README, AGENTS.md; spec requirement + scenarios.
+
+## 8. Downstream follow-ups (outside this repository, tracked in GENAI-411)
+
+- [ ] 8.1 piano-developer MR: `.agents/tools/snow.yaml`, `snow_dcs.yaml`, `snow_logging.yaml`; `.gitignore` re-include; CI `yaml-configs-parse` + `opencode tools list --strict` job; `piano-snowflake-explorer` / `piano-incident-investigator` switched to the tools with `bash` withheld; `.agents/mcp/servers.json` `cli-tools` entry (`opencode tools serve`) and `docs/LOCAL-MCP.md`; `sync_claude_agents.py` mapping of granted CLI tools to `mcpServers: [cli-tools]`; `piano-snowflake-cli` skill updated to name the tools.
+- [ ] 8.2 c2-agent: bump the opencode pin to the release carrying this change.
+- [ ] 8.3 scenario-builder: follow-up to !180 replacing `"snow *": allow` bash maps with the structured tools once 7.2 is live.

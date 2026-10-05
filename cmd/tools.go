@@ -43,7 +43,8 @@ var toolsListCmd = &cobra.Command{
   # Human-readable audit of every manifest, with invalid and shadowed files
   opencode tools list
 
-  # Fail (exit 1) when any manifest is invalid — for a workspace CI job
+  # Fail (exit 1) when any manifest is invalid or a cliTools limit setting
+  # (config or OPENCODE_CLI_TOOLS_*) was ignored — for a workspace CI job
   opencode tools list --strict
 
   # Which tools a given agent holds, and whether they are deferred
@@ -81,8 +82,8 @@ var toolsListCmd = &cobra.Command{
 		} else {
 			printToolsReport(cmd, report)
 		}
-		if strict && report.Invalid > 0 {
-			return fmt.Errorf("%d invalid CLI tool manifest(s)", report.Invalid)
+		if strict && (report.Invalid > 0 || len(report.Warnings) > 0) {
+			return fmt.Errorf("%d invalid CLI tool manifest(s), %d ignored limit setting(s)", report.Invalid, len(report.Warnings))
 		}
 		return nil
 	},
@@ -96,8 +97,11 @@ valid manifests of the working directory. Each call runs the same argument
 policy and executor as the native opencode tool. Without an agent there is no
 tools: gating and no human in the loop: a manifest default permission of
 "deny" refuses the call, "ask" and "allow" run it — the MCP client (e.g.
-Claude Code's mcp__<server>__<tool> rules) owns the prompt. Logs go to
-stderr; stdout carries only protocol messages.`,
+Claude Code's mcp__<server>__<tool> rules) owns the prompt. The limits a
+manifest leaves unset (timeout, maxTimeout, maxOutputBytes) come from the
+same cliTools config block and OPENCODE_CLI_TOOLS_* variables the native
+tools use, so both surfaces agree. Logs go to stderr; stdout carries only
+protocol messages.`,
 	Example: `
   # .mcp.json for Claude Code
   {"mcpServers": {"cli": {"command": "opencode", "args": ["tools", "serve", "--cwd", "/path/to/workspace"]}}}
@@ -136,11 +140,18 @@ stderr; stdout carries only protocol messages.`,
 				logging.Warn("CLI tool manifest not served", "path", d.Path, "reason", d.Reason)
 			}
 		}
+		for _, w := range set.Warnings {
+			logging.Warn("CLI tool limit setting ignored", "detail", w)
+		}
 		names := make([]string, 0, len(manifests))
 		for _, m := range manifests {
 			names = append(names, m.Name)
 		}
-		logging.Info("Serving CLI tools over stdio MCP", "tools", strings.Join(names, ", "), "cwd", cfg.WorkingDir)
+		// The limits are the same ones an agent's native toolset applies:
+		// resolved from this --cwd's .opencode.json and the environment.
+		logging.Info("Serving CLI tools over stdio MCP", "tools", strings.Join(names, ", "), "cwd", cfg.WorkingDir,
+			"timeout", set.Defaults.Timeout.String(), "maxTimeout", set.Defaults.MaxTimeout.String(),
+			"maxOutputBytes", set.Defaults.MaxOutputBytes)
 
 		ctx, cancel := context.WithCancel(cmd.Context())
 		defer cancel()
@@ -193,10 +204,24 @@ func loadToolsConfig(cmd *cobra.Command) (*config.Config, error) {
 type toolsReport struct {
 	Disabled    bool               `json:"disabled"`
 	Dirs        []string           `json:"dirs"`
+	Defaults    defaultsReport     `json:"defaults"`
+	Warnings    []string           `json:"warnings"`
 	Tools       []toolReport       `json:"tools"`
 	Diagnostics []diagnosticReport `json:"diagnostics"`
 	Invalid     int                `json:"invalid"`
 	Shadowed    int                `json:"shadowed"`
+}
+
+// defaultsReport is the resolved shared-limit layer (docs/cli-tools.md,
+// "Limits"): what every manifest inherits for the fields it leaves unset,
+// and which layer — builtin, config or env — supplied each value.
+type defaultsReport struct {
+	Timeout              string `json:"timeout"`
+	TimeoutSource        string `json:"timeoutSource"`
+	MaxTimeout           string `json:"maxTimeout"`
+	MaxTimeoutSource     string `json:"maxTimeoutSource"`
+	MaxOutputBytes       int    `json:"maxOutputBytes"`
+	MaxOutputBytesSource string `json:"maxOutputBytesSource"`
 }
 
 type toolReport struct {
@@ -241,9 +266,18 @@ type diagnosticReport struct {
 }
 
 func buildToolsReport(set *clitool.Set, info *agentregistry.AgentInfo) toolsReport {
-	r := toolsReport{Disabled: set.Disabled, Dirs: set.Dirs, Tools: []toolReport{}, Diagnostics: []diagnosticReport{}}
+	r := toolsReport{Disabled: set.Disabled, Dirs: set.Dirs, Warnings: orEmpty(set.Warnings),
+		Tools: []toolReport{}, Diagnostics: []diagnosticReport{}}
 	if r.Dirs == nil {
 		r.Dirs = []string{}
+	}
+	if !set.Disabled {
+		d := set.Defaults
+		r.Defaults = defaultsReport{
+			Timeout: d.Timeout.String(), TimeoutSource: d.TimeoutSource,
+			MaxTimeout: d.MaxTimeout.String(), MaxTimeoutSource: d.MaxTimeoutSource,
+			MaxOutputBytes: d.MaxOutputBytes, MaxOutputBytesSource: d.MaxOutputBytesSource,
+		}
 	}
 	for _, m := range set.Manifests {
 		tr := toolReport{
@@ -309,6 +343,12 @@ func printToolsReport(cmd *cobra.Command, r toolsReport) {
 		fmt.Fprintln(w, "No CLI tool directories found (.agents/tools, .opencode/tools, ~/.config/opencode/tools, ~/.agents/tools, cliTools.paths).")
 	} else {
 		fmt.Fprintf(w, "Scanned: %s\n", strings.Join(r.Dirs, ", "))
+	}
+	fmt.Fprintf(w, "Limits:  timeout %s (%s); max timeout %s (%s); output cap %d bytes (%s)\n",
+		r.Defaults.Timeout, r.Defaults.TimeoutSource, r.Defaults.MaxTimeout, r.Defaults.MaxTimeoutSource,
+		r.Defaults.MaxOutputBytes, r.Defaults.MaxOutputBytesSource)
+	for _, msg := range r.Warnings {
+		fmt.Fprintf(w, "WARNING: %s\n", msg)
 	}
 	if len(r.Tools) == 0 {
 		fmt.Fprintln(w, "No CLI tools.")
