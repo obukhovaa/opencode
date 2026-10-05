@@ -109,7 +109,7 @@ This guarantee MUST NOT be bypassable by model behavior. It is enforced through 
 
 1. **End-of-turn drain.** After the model emits a terminal turn (`end_turn` or `struct_output`) for the current agentic cycle, and BEFORE the `AgentEvent` is delivered to the caller, the runtime calls `WaitForActiveTasks`. On a `nil` return the runtime re-reads the session's pending tasks and, if any remain (e.g. tasks spawned in a later cycle after an earlier wait's snapshot), waits again — looping until the session has zero pending tasks or `ctx` is cancelled. After each successful wait the runtime reloads the session's message history and re-enters the agentic loop for at least one additional cycle so the model can react to the just-arrived synthetic completion(s). The `WaitForActiveTasks` primitive keeps its snapshot-at-start semantics; the drain loop lives in the agent.
 
-2. **Anti-spin.** While the session has pending non-monitor background tasks (bash or task), the runtime SHALL NOT allow the model to consume wall-clock time in a foreground self-wait. The canonical case — a foreground `bash` command whose sole effect is to sleep — MUST be redirected to `WaitForActiveTasks` rather than executed as a sleep (see `bash-background-mode`). This ensures the guarantee holds even when the model never voluntarily emits a terminal turn but instead attempts to poll. (Long-lived monitors are excluded from the redirect; they are bounded by the end-of-turn drain above, not by a mid-turn sleep.)
+2. **Anti-spin.** While the session OR ITS DIRECT CHILD SESSIONS have pending non-monitor background tasks (bash or task), the runtime SHALL NOT allow the model to consume wall-clock time in a foreground self-wait. The canonical case — a foreground `bash` command whose sole effect is to sleep — MUST be redirected to `WaitForActiveTasks` — called with `Scope: ScopeSessionAndChildren` — rather than executed as a sleep (see `bash-background-mode`). The redirect's scope is deliberately wider than the end-of-turn drain's, which stays exact-session: a parent must not block at end of turn on a child's tasks, but a parent that explicitly asks to wait does mean its own children. Because the redirect can now block on a child-owned task, `tasklist` and `taskstop` move to the same scope (see `tasklist-taskstop-tools`) so the model can observe and cancel whatever it is blocked on. This ensures the guarantee holds even when the model never voluntarily emits a terminal turn but instead attempts to poll. (Long-lived monitors are excluded from the redirect; they are bounded by the end-of-turn drain above, not by a mid-turn sleep.)
 
 The wait MUST NOT impose its own timeout: it never returns early on a task that is still pending, and the surrounding `ctx` is the only deadline it applies. See `flow-runtime-resume` for how callers derive the ctx deadline from `Step.Timeout` and the `OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT` env var.
 
@@ -124,7 +124,6 @@ NOT be emitted when the drain returns without waiting (zero pending tasks).
 The progress log is observability only. It MUST NOT terminate, shorten, or otherwise
 influence the wait, and a future reader MUST NOT mistake the interval timer for a
 deadline.
-
 
 #### Scenario: Flow step waits for background bash before returning struct_output
 
@@ -224,10 +223,11 @@ deadline.
 
 ### Requirement: Task registry exposes a wait primitive
 
-The `task.Registry` interface SHALL expose two new methods:
+The `task.Registry` interface SHALL expose these methods:
 
 ```
 PendingForSession(sessionID string, filter func(*Task) bool) []*Task
+PendingForSessionTree(sessionID string, filter func(*Task) bool) []*Task
 WaitForActiveTasks(ctx context.Context, sessionID string, opts WaitOptions) error
 ```
 
@@ -236,8 +236,13 @@ Where `WaitOptions` is:
 ```
 type WaitOptions struct {
     IncludeMonitor bool // default true in non-interactive mode (see monitor-tool spec)
+    Scope          WaitScope // ScopeExactSession (zero value) | ScopeSessionAndChildren
 }
 ```
+
+`Scope` selects which tasks the snapshot contains. `ScopeExactSession` — the zero value, and therefore the behavior of every existing caller — includes only tasks whose owning session equals `sessionID`. `ScopeSessionAndChildren` additionally includes tasks owned by sessions whose parent is `sessionID` (one level of descent; NOT the flow `root_session_id`, which is shared by every step of a flow including parallel siblings).
+
+`Scope` MUST be honored by BOTH the pending lookup and the internal re-snapshot inside `WaitForActiveTasks`. A caller that widens its pre-check without widening the wait would return immediately having waited for nothing, while reporting tasks it never observed.
 
 `WaitForActiveTasks` MUST block until every task included in the snapshot transitions to a terminal state, OR until ctx is cancelled. The implementation MUST signal completion via a per-task `done chan struct{}` closed exactly once in `Registry.MarkFinished` and `Registry.Kill`.
 
@@ -257,6 +262,24 @@ The wait MUST use snapshot-at-start semantics: tasks registered AFTER the wait b
 - **AND** the first task completes 100ms after the wait began
 - **THEN** `WaitForActiveTasks` MUST return `nil` at the 100ms mark
 - **AND** the second task's lifecycle MUST NOT be observed by this wait call
+
+#### Scenario: Scope defaults to exact session
+
+- **WHEN** `WaitForActiveTasks` is called with a zero-value `WaitOptions`
+- **THEN** only tasks owned by `sessionID` itself are included, identical to prior behavior
+
+#### Scenario: Child-owned tasks are included under ScopeSessionAndChildren
+
+- **GIVEN** a subagent session whose parent is `S` has one running bash task
+- **WHEN** `WaitForActiveTasks(ctx, "S", WaitOptions{Scope: ScopeSessionAndChildren})` is called
+- **THEN** the wait blocks on the child's task
+
+#### Scenario: Parallel sibling sessions are NOT included
+
+- **GIVEN** sessions `A` and `B` are sibling steps of one flow, sharing a `root_session_id`
+- **AND** `B` has a running bash task
+- **WHEN** `WaitForActiveTasks(ctx, "A", WaitOptions{Scope: ScopeSessionAndChildren})` is called
+- **THEN** `B`'s task MUST NOT be included in the wait set
 
 ### Requirement: Synthetic Assistant timeout note on wait cancellation
 
@@ -294,4 +317,81 @@ This is defense-in-depth: the anti-spin enforcement (see the hold-the-turn requi
 - **THEN** the ack MAY include the `output_file` path for resume/inspection semantics
 - **AND** the ack MUST NOT instruct or imply that the agent should read the output file to poll for progress
 - **AND** the ack MUST state that in a non-interactive step the runtime holds the turn until the subagent completes
+
+### Requirement: Registry exposes a session-and-children scoped pending lookup
+
+The task registry SHALL expose a pending-task lookup covering the queried session **plus
+sessions whose parent is that session** (one level of descent), alongside the existing
+exact-session lookup.
+
+The scope is deliberately NOT the flow `root_session_id`. A flow assigns one root to every
+step and steps run concurrently, so root scope would let a `sleep` in one parallel branch
+block on an unrelated branch's background work. One level of descent covers the
+parent-agent → subagent case without that blast radius; deeper nesting degrades to
+exact-session behavior, which is the pre-existing behavior and therefore not a regression.
+
+Two lookups exist with distinct, non-interchangeable callers:
+
+| Caller | Scope | Rationale |
+|---|---|---|
+| End-of-turn drain (`agent.Run` non-interactive hold) | exact session | A parent MUST NOT block at end of turn on a child's tasks. |
+| Foreground-wait redirect (`bash` sleep interception) | session + direct children | The model explicitly asked to wait; its own children's pending work is what it is waiting for. |
+
+Each task SHALL record the parent of its owning session at registration, and the lookup
+matches `SessionID == S || ParentSessionID == S`. The caller's own ID is already on the
+tool-execution context; what the tool layer cannot derive is the owning session's
+*parent*, because `internal/llm/tools` holds no session service. The runtime SHALL
+therefore place the owning session's `ParentSessionID` on the tool-execution context
+alongside the non-interactive marker, at the same site where the session row is already
+loaded. It MUST be the session's parent, NOT its `RootSessionID`: for a flow step's
+subagent the two differ, and stamping the root would reintroduce the flow-wide scope this
+requirement rejects. An implementation that omits this plumbing degrades the lookup to
+exact scope silently; a test MUST cover the plumbing, not only the registry method.
+
+Introducing this lookup MUST NOT change the drain's scope or behavior.
+
+#### Scenario: Lookup spans parent and its direct child sessions
+
+- **WHEN** a subagent session whose parent is `S` has one running bash task
+- **AND** the lookup is called with `S`
+- **THEN** the subagent's task is returned
+
+#### Scenario: Parallel sibling sessions are excluded
+
+- **GIVEN** sessions `A` and `B` are sibling steps of one flow sharing a `root_session_id`
+- **AND** `B` has a running bash task
+- **WHEN** the lookup is called with `A`
+- **THEN** `B`'s task is NOT returned
+
+#### Scenario: A session with no children degrades to exact scope
+
+- **WHEN** the lookup is called with a session that has no child sessions
+- **THEN** it returns exactly what the exact-session lookup returns
+
+#### Scenario: Drain scope is unchanged
+
+- **WHEN** a parent session's turn ends while only a child session's task is running
+- **THEN** the parent's end-of-turn drain does NOT wait on it
+
+### Requirement: Subagents inherit the caller's non-interactive marker
+
+A subagent launched by the `task` tool — synchronously or with `async: true` — SHALL run with `RunOptions{NonInteractive: m}` where `m` is the non-interactive marker on the tool-execution context of the turn that invoked the tool. The async path SHALL read `m` from that caller context, not from the detached run context it derives for the subagent (which carries no values). No other run option is inherited. Under a non-interactive run the subagent therefore holds its own turn open until its background tasks reach a terminal state (the end-of-turn drain of this spec, exact-session scope, stall detection included) and has its foreground wall-clock waits redirected (`bash-background-mode`); under an interactive run its behaviour is unchanged.
+
+#### Scenario: Flow-step subagent drains before answering
+
+- **GIVEN** a flow step (non-interactive) whose agent calls the `task` tool
+- **AND** the subagent starts a `bash run_in_background` task that takes 3 minutes and emits its terminal turn after 3 seconds
+- **THEN** the subagent's run does not return until that task reaches a terminal state and the subagent has reacted to the completion
+- **AND** the parent's `task` call returns the subagent's post-completion answer
+
+#### Scenario: Flow-step subagent's sleep is redirected
+
+- **GIVEN** the same step, and the subagent has a pending `bash run_in_background` task
+- **WHEN** the subagent calls `bash` (foreground) with `sleep 60; cat /tmp/log`
+- **THEN** the sleep is redirected to the task wait exactly as for the step's primary agent
+
+#### Scenario: Interactive subagent is unchanged
+
+- **GIVEN** an interactive TUI turn (no non-interactive marker) that spawns a subagent
+- **THEN** the subagent runs interactive: its turn ends immediately after a background spawn and its foreground sleeps run verbatim
 

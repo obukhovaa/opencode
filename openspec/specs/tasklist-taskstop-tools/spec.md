@@ -3,12 +3,9 @@
 ## Purpose
 
 Defines two control-plane tools for the background-tasks system: the read-only `tasklist` and the synchronous-kill `taskstop`. Both are session-scoped: `tasklist` returns only tasks belonging to the caller's session, and `taskstop` refuses cross-session kills. The descriptions registered with the tool registry explicitly direct the agent NOT to use `tasklist` as a polling loop — completion notifications arrive automatically when a background task finishes. `taskstop` is synchronous: it blocks until the SIGTERM (or context cancel for subagent tasks) has been sent, the process has exited (with a 5s SIGTERM→SIGKILL escalation), AND the synthetic `killed` completion has been written. Permission keys: `tasklist` defaults to `allow` (read-only observability), `taskstop` defaults to `ask`.
-
 ## Requirements
-
-
 ### Requirement: `tasklist` tool registration and behavior
-The system SHALL register a new top-level tool named `tasklist`. The tool MUST be read-only and MUST list the background tasks belonging to the CURRENT session only. Its input schema accepts an optional `state` filter (`running` | `completed` | `failed` | `killed` | `all`, default `all`) and an optional `limit` (int, default 50, max 200).
+The system SHALL register a new top-level tool named `tasklist`. The tool MUST be read-only and MUST list the background tasks belonging to the current session AND to sessions whose parent is the current session (one level of descent) — the same scope the foreground-wait redirect uses. Child-owned rows MUST be marked as such so the model can tell them apart. Tasks belonging to any other session, including parallel sibling steps of the same flow, MUST NOT be listed. Its input schema accepts an optional `state` filter (`running` | `completed` | `failed` | `killed` | `all`, default `all`) and an optional `limit` (int, default 50, max 200).
 
 #### Scenario: Empty session
 - **WHEN** the agent invokes `tasklist` in a session with no background tasks
@@ -16,15 +13,24 @@ The system SHALL register a new top-level tool named `tasklist`. The tool MUST b
 
 #### Scenario: Active background tasks
 - **WHEN** the agent invokes `tasklist` in a session that has 3 background tasks (2 running, 1 completed)
-- **THEN** the tool returns a ToolResult containing one line per task with task_id, kind, state, started_at (ISO 8601), and (if not running) finished_at and exit_code (if applicable); sorted newest-first
+- **THEN** the tool returns a ToolResult containing one line per task with task_id, kind, state, started_at (ISO 8601), and (if not running) finished_at and exit_code (if applicable); a `kind=monitor` row additionally carries a scanned-line count; a child-owned row carries an owning-session marker; sorted newest-first
 
 #### Scenario: State filter
 - **WHEN** the agent invokes `tasklist` with `state: "running"` against a session with 5 tasks (3 running, 2 completed)
 - **THEN** the tool returns only the 3 running tasks
 
 #### Scenario: Tasks from other sessions are not exposed
-- **WHEN** another session has 10 background tasks and the agent invokes `tasklist` in this session
-- **THEN** none of the other session's tasks appear; the tool's view is strictly scoped to the caller's session_id
+- **WHEN** an UNRELATED session (not a child of the caller) has 10 background tasks and the agent invokes `tasklist` in this session
+- **THEN** none of that session's tasks appear
+
+#### Scenario: Child-owned tasks are listed and marked
+- **WHEN** a subagent whose parent is the caller has a running background task
+- **THEN** the task appears in the caller's `tasklist` output, marked as owned by the child session
+
+#### Scenario: Sibling-step tasks are not exposed
+- **GIVEN** a parallel sibling step of the same flow has background tasks
+- **WHEN** the agent invokes `tasklist`
+- **THEN** none of the sibling's tasks appear
 
 ### Requirement: `tasklist` is concurrency-safe and snapshot-consistent
 The `tasklist` tool SHALL read the registry under its `RLock`. The returned list MUST represent a consistent snapshot of the registry at one moment; in-flight transitions during the call MAY appear or not appear, but no task may appear in a contradictory state (e.g., `running` with a `finished_at`).
@@ -34,15 +40,19 @@ The `tasklist` tool SHALL read the registry under its `RLock`. The returned list
 - **THEN** the returned snapshot shows the task as either `running` (transition not yet visible) or `completed` (transition visible) — never both
 
 ### Requirement: `taskstop` tool registration and behavior
-The system SHALL register a new top-level tool named `taskstop`. Its input schema requires `task_id` (string). The tool MUST verify that the task's `session_id` matches the caller's session before proceeding; cross-session kill MUST be refused.
+The system SHALL register a new top-level tool named `taskstop`. Its input schema requires `task_id` (string). The tool MUST verify that the task is owned by the caller's session or by a session whose parent is the caller (one level of descent) before proceeding; a kill targeting any other session MUST be refused. This mirrors the foreground-wait redirect's scope: the redirect can block the caller on a child-owned task, so the caller MUST be able to observe and cancel that task — otherwise it is blocked on work it has no way to escape.
 
 #### Scenario: Successful kill of a running task
 - **WHEN** the agent invokes `taskstop` with the `task_id` of a running bash background task in its own session
 - **THEN** the registry's `Kill(taskID)` is invoked, the subprocess receives SIGTERM, a synthetic `Status: StatusKilled` completion notification is injected, and the tool returns a ToolResult confirming "Task <id> killed"
 
 #### Scenario: Cross-session kill refused
-- **WHEN** the agent invokes `taskstop` against a `task_id` belonging to a different session
+- **WHEN** the agent invokes `taskstop` against a `task_id` belonging to a session that is neither the caller nor a direct child (including a parallel sibling step of the same flow)
 - **THEN** the tool returns a tool error "Task <id> does not belong to this session"; no kill is performed
+
+#### Scenario: Child-owned task can be killed
+- **WHEN** the agent invokes `taskstop` against a `task_id` owned by a session whose parent is the caller
+- **THEN** the kill proceeds exactly as for a task in the caller's own session
 
 #### Scenario: Already-terminal task
 - **WHEN** the agent invokes `taskstop` against a `task_id` that has already completed (or was already killed)
@@ -89,3 +99,4 @@ The tool descriptions registered with the tool registry SHALL include guidance d
 #### Scenario: Anti-polling guidance
 - **WHEN** the tool description for `tasklist` is rendered to the agent
 - **THEN** it includes language similar to "do NOT use tasklist as a polling loop — completion notifications arrive automatically when a task finishes; tasklist is for one-shot inventory queries"
+
