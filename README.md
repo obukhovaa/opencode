@@ -374,9 +374,11 @@ When enabled (default), automatically summarizes conversations approaching the c
 { "autoCompact": true }
 ```
 
-The check runs before every model call: before a turn's first one, before each later call of its tool-use loop, and before the first call after a non-interactive run re-enters the loop for drained background tasks. A long-lived session (chat bridge, `opencode serve`, cron heartbeats) therefore compacts before the turn that would overflow it. On an auto-resume turn the background-task completion it reacts to is kept after the summary. The context size is the larger of the provider's token estimate and the usage the provider reported for the session's last call, plus the messages added since.
+The check runs before every model call: before a turn's first one, before each later call of its tool-use loop, and before the first call after a non-interactive run re-enters the loop for drained background tasks. A long-lived session (chat bridge, `opencode serve`, cron heartbeats) therefore compacts before the turn that would overflow it. On an auto-resume turn the background-task completion it reacts to is kept after the summary. The context size is the larger of the provider's token estimate and the usage the provider reported for the session's last call, plus the messages added since. A reported usage above the window, or more than 1.5x the estimate, is ignored with a warning: an upstream that sums two attempts of one call reports about twice the real prompt.
 
-The summarizer only sees the history since the previous summary. If that does not fit 90% of its window, the oldest messages are dropped (with a warning) rather than failing the compaction. The turn's own prompt, such as a flow step's task, is kept unless it alone takes more than half of the space left, or keeping it would leave no recent history or the input over budget. The fit is judged on the local 4 bytes/token estimate, scaled up by the session's last reported usage when that is larger, so an overflowed session whose size the estimate undercounts is still trimmed. It remains an estimate: a summarizer whose tokenizer counts far more than the main model's can still reject its input.
+When a compaction fails, the session does not retry for the rest of that turn, and then waits 1 minute, doubling per consecutive failure up to 30 minutes. Growth of 10% of the window since the failure overrides the wait, so a session heading for overflow still gets another try. A manual `/compact` ignores the wait. Summarizer generations carry `compaction.*` metadata (trigger, estimated input tokens, messages, trimmed messages, truncated tool payloads, failures) without logging the input.
+
+The summarizer only sees the history since the previous summary, as one text transcript: tool calls and results become tagged lines, tool searches one line naming the tools found, reasoning is dropped, and each tool input or result over 2,000 estimated tokens keeps only its head and tail. It is sent no tool or thinking blocks, which a request with no tools declared can be rejected for. If the transcript does not fit 90% of the summarizer's window (or the agent's `summarizerMaxInputTokens`, when set and smaller), the oldest messages are dropped (with a warning) rather than failing the compaction. The turn's own prompt, such as a flow step's task, is kept unless it alone takes more than half of the space left, or keeping it would leave no recent history or the input over budget. The fit is judged on the local 4 bytes/token estimate, scaled up by the session's last reported usage when that is larger, so an overflowed session whose size the estimate undercounts is still trimmed. It remains an estimate: a summarizer whose tokenizer counts far more than the main model's can still reject its input.
 
 The threshold can be lowered per agent — useful when a proxy resets streams well before the model's nominal window. For an agent defined in markdown, set it in the frontmatter:
 
@@ -394,6 +396,8 @@ For a JSON-only agent, set `agents.<id>.compactionThreshold` in `.opencode.json`
 ```
 
 `compactionThreshold` is a fraction in (0, 1]; out-of-range values are ignored with a warning. A flow step's `compact.threshold` wins over it, and it never enables compaction when `autoCompact` is off.
+
+`summarizerMaxInputTokens` (frontmatter or `agents.<id>`, same caveat) caps what the agent's compactions send the summarizer, in estimated tokens. Set it when the summarizer's route rejects large inputs below its nominal window.
 
 ### Auto Approve
 
