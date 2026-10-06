@@ -28,19 +28,21 @@ type compactionBackoff struct {
 	failures      int
 	lastFailureAt time.Time
 	tokensAtFail  int64
-	// failTurn is the turn the last failure happened in. A turn that saw a
-	// failure does not retry, however short the wait: the backoff is in
-	// minutes, and a daemon turn rarely lasts one.
-	failTurn uint64
+	// turn counts the session's turns since this state was created, and
+	// failTurn is the turn of the last failure. A turn that saw a failure
+	// does not retry, however short the wait: the backoff is in minutes, and
+	// a daemon turn rarely lasts one.
+	turn, failTurn uint64
 }
 
 // compactionBackoffs holds the per-session state in memory. A long-lived
 // process (daemon, server) keeps it across turns; a restart starts clean,
-// which costs at most one extra attempt.
+// which costs at most one extra attempt. Only sessions with a failure on
+// record have an entry: a success deletes it, so the map is bounded by the
+// sessions currently backing off, not by every session the process saw.
 type compactionBackoffs struct {
 	mu       sync.Mutex
 	sessions map[string]*compactionBackoff
-	turns    map[string]uint64
 	now      func() time.Time
 }
 
@@ -51,45 +53,33 @@ func (b *compactionBackoffs) clock() time.Time {
 	return time.Now()
 }
 
-func (b *compactionBackoffs) state(sessionID string) *compactionBackoff {
-	if b.sessions == nil {
-		b.sessions = map[string]*compactionBackoff{}
-	}
-	st, ok := b.sessions[sessionID]
-	if !ok {
-		st = &compactionBackoff{}
-		b.sessions[sessionID] = st
-	}
-	return st
-}
-
 // startTurn marks the start of a turn for the session.
 func (b *compactionBackoffs) startTurn(sessionID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.turns == nil {
-		b.turns = map[string]uint64{}
+	if st, ok := b.sessions[sessionID]; ok {
+		st.turn++
 	}
-	b.turns[sessionID]++
 }
 
 // allow reports whether an auto-compaction may run now, and when not, why
 // and when the next one may. tokens is the session's current context count
-// and window the main model's context window.
+// and window the main model's context window. Growth beats every wait,
+// including the same-turn rule: a session heading for its window has to get
+// another try before it overflows, and a turn that grows by a tenth of the
+// window is the long tool loop that can overflow inside one turn.
 func (b *compactionBackoffs) allow(sessionID string, tokens, window int64) (ok bool, reason string, retryAt time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	st := b.state(sessionID)
-	if st.failures == 0 {
+	st, found := b.sessions[sessionID]
+	if !found || st.failures == 0 {
 		return true, "", time.Time{}
 	}
-	// Growth beats every wait: a session heading for its window has to get
-	// another try before it overflows.
 	if window > 0 && tokens-st.tokensAtFail >= int64(float64(window)*compactionBackoffGrowth) {
 		return true, "", time.Time{}
 	}
 	retryAt = st.lastFailureAt.Add(compactionBackoffDelay(st.failures))
-	if st.failTurn == b.turns[sessionID] {
+	if st.failTurn == st.turn {
 		return false, "compaction already failed this turn", retryAt
 	}
 	if b.clock().Before(retryAt) {
@@ -103,29 +93,36 @@ func (b *compactionBackoffs) allow(sessionID string, tokens, window int64) (ok b
 func (b *compactionBackoffs) failed(sessionID string, tokens int64) (int, time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	st := b.state(sessionID)
+	if b.sessions == nil {
+		b.sessions = map[string]*compactionBackoff{}
+	}
+	st, ok := b.sessions[sessionID]
+	if !ok {
+		st = &compactionBackoff{}
+		b.sessions[sessionID] = st
+	}
 	st.failures++
 	st.lastFailureAt = b.clock()
 	st.tokensAtFail = tokens
-	st.failTurn = b.turns[sessionID]
+	st.failTurn = st.turn
 	return st.failures, st.lastFailureAt.Add(compactionBackoffDelay(st.failures))
 }
 
-// succeeded clears the failure state.
+// succeeded clears the session's failure state.
 func (b *compactionBackoffs) succeeded(sessionID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	st := b.state(sessionID)
-	st.failures = 0
-	st.lastFailureAt = time.Time{}
-	st.tokensAtFail = 0
+	delete(b.sessions, sessionID)
 }
 
 // failureCount returns the session's current consecutive failure count.
 func (b *compactionBackoffs) failureCount(sessionID string) int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.state(sessionID).failures
+	if st, ok := b.sessions[sessionID]; ok {
+		return st.failures
+	}
+	return 0
 }
 
 func compactionBackoffDelay(failures int) time.Duration {
@@ -157,6 +154,7 @@ func (a *agent) compactionAllowed(sessionID string, tokens int64) bool {
 			"session_id", sessionID,
 			"reason", reason,
 			"token_count", tokens,
+			"failures", a.compactionBackoff.failureCount(sessionID),
 			"retry_at", retryAt,
 		)
 	}
@@ -166,14 +164,22 @@ func (a *agent) compactionAllowed(sessionID string, tokens int64) bool {
 // autoCompact runs one auto-compaction and records its outcome in the
 // session's backoff. Callers check compactionAllowed first.
 func (a *agent) autoCompact(ctx context.Context, sessionID, trigger string, tokens int64) error {
-	if err := a.performSynchronousCompaction(ctx, sessionID, trigger); err != nil {
+	stats, err := a.performSynchronousCompaction(ctx, sessionID, trigger)
+	if err != nil {
 		failures, retryAt := a.compactionBackoff.failed(sessionID, tokens)
+		var summarizerWindow int64
+		if a.summarizeProvider != nil {
+			summarizerWindow = a.summarizeProvider.Model().ContextWindow
+		}
 		logging.Warn("auto-compaction failed; backing off",
 			"session_id", sessionID,
+			"agent", a.agentID,
 			"trigger", trigger,
 			"failures", failures,
 			"next_attempt_after", retryAt,
 			"token_count", tokens,
+			"estimated_input_tokens", stats.estimatedTokens,
+			"likely_context_overflow", likelyContextOverflow(stats.estimatedTokens, summarizerWindow),
 			"error", err,
 		)
 		return err
@@ -193,4 +199,21 @@ func (a *agent) compactionMetadata(sessionID, trigger string, stats compactionIn
 		"compaction.truncated_tool_payloads": stats.truncatedToolPayloads,
 		"compaction.failures":                a.compactionBackoff.failureCount(sessionID),
 	}
+}
+
+// warnIfSummarizerOverflow logs a failed summarizer call whose input was
+// close to the summarizer's own window: the failure is then probably an
+// overflow, and summarizerMaxInputTokens is the lever.
+func (a *agent) warnIfSummarizerOverflow(sessionID string, stats compactionInputStats, err error) {
+	window := a.summarizeProvider.Model().ContextWindow
+	if !likelyContextOverflow(stats.estimatedTokens, window) {
+		return
+	}
+	logging.Warn("summarizer call failed with its input near its window; likely context overflow — set summarizerMaxInputTokens or use a summarizer with a larger window",
+		"session_id", sessionID,
+		"agent", a.agentID,
+		"estimated_input_tokens", stats.estimatedTokens,
+		"context_window", window,
+		"error", err,
+	)
 }

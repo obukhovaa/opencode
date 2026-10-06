@@ -654,6 +654,17 @@ func TestCountContextTokens(t *testing.T) {
 			wantCount: 900,
 			wantHit:   false,
 		},
+		{
+			// The guard leaves room for the undercount it exists to correct:
+			// a report within 1.5x of the estimate still floors it.
+			name:      "report within the ratio still floors",
+			window:    1_000_000,
+			estimate:  300_000,
+			sess:      session.Session{PromptTokens: 20_000, CompletionTokens: 400_000},
+			msgs:      withAssistant[:2],
+			wantCount: 420_000,
+			wantHit:   false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -2692,15 +2692,18 @@ func (a *agent) filterMessagesFromSummary(msgs []message.Message, summaryMessage
 
 // performSynchronousCompaction performs summarization synchronously and waits for completion
 // This is used for auto-compaction in non-interactive mode to shrink context before continuing.
-// trigger (compactionTrigger*) is recorded on the summarizer generation.
-func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID, trigger string) error {
+// trigger (compactionTrigger*) is recorded on the summarizer generation. The
+// returned stats describe the input that was (or would have been) sent, so a
+// failure can be logged with its size.
+func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID, trigger string) (compactionInputStats, error) {
+	var stats compactionInputStats
 	if a.summarizeProvider == nil {
-		return fmt.Errorf("summarize provider not available")
+		return stats, fmt.Errorf("summarize provider not available")
 	}
 
 	summarizePrompt, err := AgentPrompts.ReadFile("prompts/compaction.md")
 	if err != nil {
-		return fmt.Errorf("failed to load summary prompt: %w", err)
+		return stats, fmt.Errorf("failed to load summary prompt: %w", err)
 	}
 	promptMsg := message.Message{
 		Role:  message.User,
@@ -2710,7 +2713,7 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID, tri
 	// NOTE: We don't check IsSessionBusy here because this is called from within
 	msgsWithPrompt, stats, err := a.summarizerInputWithStats(ctx, sessionID, promptMsg)
 	if err != nil {
-		return err
+		return stats, err
 	}
 	messageCount := len(msgsWithPrompt) - 1
 	logging.Info("Starting synchronous compaction",
@@ -2745,27 +2748,20 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID, tri
 	)
 	response, err := provider.StreamToResponse(events)
 	if err != nil {
-		if likelyContextOverflow(stats.estimatedTokens, a.summarizeProvider.Model().ContextWindow) {
-			logging.Warn("summarizer call failed with its input near its window; likely context overflow — set summarizerMaxInputTokens or use a summarizer with a larger window",
-				"session_id", sessionID,
-				"estimated_input_tokens", stats.estimatedTokens,
-				"context_window", a.summarizeProvider.Model().ContextWindow,
-				"error", err,
-			)
-		}
-		return fmt.Errorf("failed to summarize: %w", err)
+		a.warnIfSummarizerOverflow(sessionID, stats, err)
+		return stats, fmt.Errorf("failed to summarize: %w", err)
 	}
 
 	summary := strings.TrimSpace(response.Content)
 	a.setTraceOutput(summarizeCtx, func() any { return summary })
 	if summary == "" {
-		return fmt.Errorf("empty summary returned")
+		return stats, fmt.Errorf("empty summary returned")
 	}
 
 	// Get the session to update
 	oldSession, err := a.sessions.Get(summarizeCtx, sessionID)
 	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
+		return stats, fmt.Errorf("failed to get session: %w", err)
 	}
 
 	// Create a new message with the summary
@@ -2775,7 +2771,7 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID, tri
 		Model: a.summarizeProvider.Model().ID,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create summary message: %w", err)
+		return stats, fmt.Errorf("failed to create summary message: %w", err)
 	}
 
 	oldSession.SummaryMessageID = msg.ID
@@ -2788,12 +2784,12 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID, tri
 
 	_, err = a.sessions.Save(summarizeCtx, oldSession)
 	if err != nil {
-		return fmt.Errorf("failed to save session: %w", err)
+		return stats, fmt.Errorf("failed to save session: %w", err)
 	}
 	a.forgetDeferredAnnouncements(sessionID)
 
-	logging.Info("Synchronous compaction completed successfully", "session_id", sessionID)
-	return nil
+	logging.Info("Synchronous compaction completed successfully", "session_id", sessionID, "trigger", trigger)
+	return stats, nil
 }
 
 func (a *agent) Summarize(ctx context.Context, sessionID string) error {
@@ -2885,6 +2881,7 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 		)
 		response, err := provider.StreamToResponse(events)
 		if err != nil {
+			a.warnIfSummarizerOverflow(sessionID, stats, err)
 			event = AgentEvent{
 				Type:  AgentEventTypeError,
 				Error: fmt.Errorf("failed to summarize: %w", err),
@@ -2991,7 +2988,7 @@ func (a *agent) SummarizeSync(ctx context.Context, sessionID string) error {
 		return ErrSessionBusy
 	}
 	defer a.UnlockSession(sessionID)
-	if err := a.performSynchronousCompaction(ctx, sessionID, compactionTriggerManual); err != nil {
+	if _, err := a.performSynchronousCompaction(ctx, sessionID, compactionTriggerManual); err != nil {
 		return err
 	}
 	a.compactionBackoff.succeeded(sessionID)

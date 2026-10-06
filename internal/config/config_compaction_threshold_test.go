@@ -77,7 +77,7 @@ func TestValidateAgentCompactionThreshold(t *testing.T) {
 
 func TestConfig_SummarizerMaxInputTokens(t *testing.T) {
 	dir := t.TempDir()
-	body := `{"agents":{"Neo":{"model":"claude-4-sonnet","summarizerMaxInputTokens":300000}}}`
+	body := `{"agents":{"Neo":{"model":"claude-4-sonnet","summarizerMaxInputTokens":300000},"summarizer":{"model":"claude-4-sonnet","summarizerMaxInputTokens":200000},"coder":{"model":"claude-4-sonnet"}}}`
 	if err := os.WriteFile(filepath.Join(dir, ".opencode.json"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +94,12 @@ func TestConfig_SummarizerMaxInputTokens(t *testing.T) {
 	}
 	if got := cfg.Agents["neo"].SummarizerMaxInputTokens; got != 300_000 {
 		t.Errorf("neo summarizerMaxInputTokens = %v, want 300000", got)
+	}
+	if got := cfg.Agents[AgentSummarizer].SummarizerMaxInputTokens; got != 200_000 {
+		t.Errorf("summarizer summarizerMaxInputTokens = %v, want 200000", got)
+	}
+	if got := cfg.Agents[AgentCoder].SummarizerMaxInputTokens; got != 0 {
+		t.Errorf("coder summarizerMaxInputTokens = %v, want 0 (unset: no cap of its own)", got)
 	}
 
 	for _, tc := range []struct {

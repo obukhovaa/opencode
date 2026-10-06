@@ -1314,4 +1314,23 @@ func TestSummarizerMaxInputTokensMerge(t *testing.T) {
 	if got := agents["neo"].SummarizerMaxInputTokens; got != 200_000 {
 		t.Errorf("config overlay = %v, want 200000", got)
 	}
+	mergeMarkdownIntoExisting(&existing, &AgentInfo{})
+	if existing.SummarizerMaxInputTokens != 300_000 {
+		t.Errorf("merge of a markdown file without the key = %v, want 300000 kept", existing.SummarizerMaxInputTokens)
+	}
+
+	t.Run("negative frontmatter value is dropped", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "neo.md")
+		md := "---\nmode: agent\nsummarizerMaxInputTokens: -5\n---\n\nBody.\n"
+		if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		a, err := parseAgentMarkdown(path)
+		if err != nil {
+			t.Fatalf("parseAgentMarkdown() error = %v", err)
+		}
+		if a.SummarizerMaxInputTokens != 0 {
+			t.Errorf("SummarizerMaxInputTokens = %v, want 0", a.SummarizerMaxInputTokens)
+		}
+	})
 }

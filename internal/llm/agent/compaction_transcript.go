@@ -23,12 +23,16 @@ type transcriptStats struct {
 // same ID, role and synthetic flag, so the trim and its pairing rules still
 // apply. The summarizer is sent no tools, and a request that replays native
 // tool_use / tool_result blocks, server tool-search blocks or another model's
-// signed thinking blocks without declaring them can be rejected upstream; a
-// proxy in front of the model may answer that with a reset stream instead of a
-// 4xx. Text carries everything a summary needs:
+// signed thinking blocks without declaring them is rejected upstream; a proxy
+// in front of the model may answer that with a reset stream instead of a 4xx
+// (GENAI-414: LiteLLM in front of Bedrock did exactly that for the server
+// tool-search blocks a deferred-tools session carries). Text carries
+// everything a summary needs:
 //   - tool calls render as "[tool_call <name> id=<id>] <input>";
-//   - tool results render as "[tool_result <name> id=<id>] <content>";
-//   - a server tool search renders as one line naming the tools it found;
+//   - tool results render as "[tool_result <name> id=<id>] <content>", with
+//     the name taken from the call when the result does not carry it;
+//   - a server tool search renders as one line with its query and the tools
+//     it found;
 //   - reasoning is dropped;
 //   - tool inputs and results over summarizerToolPayloadMaxTokens keep their
 //     head and tail around an omission marker.
@@ -36,6 +40,7 @@ type transcriptStats struct {
 // A message that renders to nothing (reasoning only) is left out.
 func summarizerTranscript(msgs []message.Message) ([]message.Message, transcriptStats) {
 	var stats transcriptStats
+	callNames := make(map[string]string)
 	out := make([]message.Message, 0, len(msgs))
 	for _, m := range msgs {
 		var lines []string
@@ -46,13 +51,18 @@ func summarizerTranscript(msgs []message.Message) ([]message.Message, transcript
 					lines = append(lines, p.Text)
 				}
 			case message.ToolCall:
+				callNames[p.ID] = p.Name
 				input, cut := capPayload(p.Input, summarizerToolPayloadMaxTokens)
 				if cut {
 					stats.truncatedToolPayloads++
 				}
 				lines = append(lines, fmt.Sprintf("[tool_call %s id=%s] %s", p.Name, p.ID, input))
 			case message.ToolResult:
-				header := fmt.Sprintf("[tool_result %s id=%s]", p.Name, p.ToolCallID)
+				name := p.Name
+				if name == "" {
+					name = callNames[p.ToolCallID]
+				}
+				header := fmt.Sprintf("[tool_result %s id=%s]", name, p.ToolCallID)
 				if p.IsError {
 					header += " (error)"
 				}
@@ -66,14 +76,7 @@ func summarizerTranscript(msgs []message.Message) ([]message.Message, transcript
 				}
 				lines = append(lines, header+" "+content)
 			case message.ToolSearchContent:
-				switch {
-				case p.ErrorCode != "":
-					lines = append(lines, fmt.Sprintf("[tool_search] failed: %s", p.ErrorCode))
-				case len(p.References) > 0:
-					lines = append(lines, "[tool_search] found tools: "+strings.Join(p.References, ", "))
-				default:
-					lines = append(lines, "[tool_search] found no tools")
-				}
+				lines = append(lines, toolSearchTranscriptLine(p))
 			case message.ImageURLContent:
 				lines = append(lines, "[image omitted]")
 			case message.BinaryContent:
@@ -94,6 +97,20 @@ func summarizerTranscript(msgs []message.Message) ([]message.Message, transcript
 		})
 	}
 	return out, stats
+}
+
+// toolSearchTranscriptLine renders a server-side tool search as one line:
+// the search tool, its id, the query and what it found (or the error).
+func toolSearchTranscriptLine(ts message.ToolSearchContent) string {
+	head := fmt.Sprintf("[tool_search %s id=%s] %s", ts.Name, ts.ToolUseID, ts.Input)
+	switch {
+	case ts.ErrorCode != "":
+		return head + " -> error " + ts.ErrorCode
+	case len(ts.References) > 0:
+		return head + " -> found: " + strings.Join(ts.References, ", ")
+	default:
+		return head + " -> found: none"
+	}
 }
 
 // capPayload keeps the head and tail of s when it is over maxTokens estimated
@@ -119,7 +136,9 @@ func capPayload(s string, maxTokens int) (string, bool) {
 // summarizerRequest is what the summarizer is sent: one user message holding
 // the transcript and then the compaction prompt. A single message keeps the
 // request valid on every provider, whatever the roles of the transcript
-// entries (a tool result rendered as text has no role of its own to keep).
+// entries (a tool result rendered as text has no role of its own to keep,
+// and a transcript headed by the previous summary would otherwise start the
+// request with a non-user turn).
 func summarizerRequest(transcript []message.Message, prompt message.Message) []message.Message {
 	var b strings.Builder
 	b.WriteString("The conversation so far, as a transcript. Tool calls and their results appear inline.\n\n<transcript>\n")

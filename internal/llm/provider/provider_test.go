@@ -732,9 +732,16 @@ func TestGenerationMetadataCarriesContextMetadata(t *testing.T) {
 		}
 	}
 	p := newTestProvider()
-	ctx := WithGenerationMetadata(context.Background(), map[string]any{"compaction.trigger": "pre_turn"})
-	if got := p.generationMetadata(ctx)["compaction.trigger"]; got != "pre_turn" {
+	ctx := WithGenerationMetadata(context.Background(), map[string]any{
+		"compaction.trigger": "pre_turn",
+		"opencode_version":   "spoofed",
+	})
+	meta := p.generationMetadata(ctx)
+	if got := meta["compaction.trigger"]; got != "pre_turn" {
 		t.Errorf("compaction.trigger = %v, want pre_turn", got)
+	}
+	if meta["opencode_version"] == "spoofed" {
+		t.Errorf("extra metadata overrode a built-in key: %v", meta)
 	}
 	if _, ok := p.generationMetadata(context.Background())["compaction.trigger"]; ok {
 		t.Error("metadata leaked into a context that did not carry it")

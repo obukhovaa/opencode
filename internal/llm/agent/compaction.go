@@ -66,10 +66,20 @@ func (a *agent) countContextTokens(ctx context.Context, sessionID string, thresh
 		switch {
 		case floor <= final:
 		case (window > 0 && reported > window) || float64(floor) > usageFloorMaxRatio*float64(estimated):
-			logging.Warn("implausible reported usage ignored",
+			// WARN only when the ignored floor would have fired compaction:
+			// that is the report that would have cost a summarizer call.
+			// Below the threshold it is a small session whose reported size
+			// the estimate undercounts for an ordinary reason, and a warn
+			// per model call would be noise.
+			log := logging.Debug
+			if window > 0 && float64(floor) >= float64(window)*threshold {
+				log = logging.Warn
+			}
+			log("implausible reported usage ignored",
 				"session_id", sessionID,
 				"reported", reported,
 				"estimated", estimated,
+				"floor", floor,
 				"context_window", window,
 			)
 		default:
@@ -308,18 +318,22 @@ func (a *agent) summarizerBudget() int64 {
 }
 
 // resolveSummarizerMaxInputTokens reads the agent's summarizerMaxInputTokens:
-// the registry-merged field first, the config for agents built without
-// registry info. Zero when unset.
+// the registry-merged field first, then the config entry for agents built
+// without registry info, then the summarizer agent's own entry, which caps
+// every agent that sets none (one place to bound the summarizer's route for
+// the whole config). Zero when unset.
 func (a *agent) resolveSummarizerMaxInputTokens() int64 {
 	if a.summarizerMaxInputTokens > 0 {
 		return a.summarizerMaxInputTokens
 	}
-	if cfg := config.Get(); cfg != nil {
-		if agentCfg, ok := cfg.Agents[a.agentID]; ok && agentCfg.SummarizerMaxInputTokens > 0 {
-			return agentCfg.SummarizerMaxInputTokens
-		}
+	cfg := config.Get()
+	if cfg == nil {
+		return 0
 	}
-	return 0
+	if v := cfg.Agents[a.agentID].SummarizerMaxInputTokens; v > 0 {
+		return v
+	}
+	return max(cfg.Agents[config.AgentSummarizer].SummarizerMaxInputTokens, 0)
 }
 
 // turnPromptIndex returns the index of the latest user message that is not

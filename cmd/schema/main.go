@@ -466,7 +466,7 @@ func generateSchema() map[string]any {
 				},
 				"summarizerMaxInputTokens": map[string]any{
 					"type":        "integer",
-					"description": "Cap, in estimated tokens, on the history this agent's compaction sends the summarizer (the transcript since the previous summary; the oldest messages are dropped first). Unset means only the summarizer's own context window limits it.",
+					"description": "Cap, in estimated tokens, on the history this agent's compaction sends the summarizer (the transcript since the previous summary; the oldest messages are dropped first). The budget is min(0.9 x summarizer context window, this value). Precedence: the agent's frontmatter value, then agents.<id>, then agents.summarizer, so set on the summarizer agent it applies to every agent without its own value. Unset means only the summarizer's own context window limits it.",
 					"minimum":     1,
 				},
 				"context": map[string]any{

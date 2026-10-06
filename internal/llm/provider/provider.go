@@ -901,7 +901,9 @@ func (p *baseProvider[C]) generationMetadata(ctx context.Context) map[string]any
 	}
 	if extra, ok := ctx.Value(generationMetadataKey{}).(map[string]any); ok {
 		for k, v := range extra {
-			meta[k] = v
+			if _, reserved := meta[k]; !reserved {
+				meta[k] = v
+			}
 		}
 	}
 	// Apply metadata namespace prefix when configured.
@@ -914,7 +916,8 @@ func (p *baseProvider[C]) generationMetadata(ctx context.Context) map[string]any
 type generationMetadataKey struct{}
 
 // WithGenerationMetadata adds metadata to the Langfuse generation of every
-// model call made with ctx. Values are rendered with fmt.Sprint.
+// model call made with ctx. Values are rendered with fmt.Sprint. The built-in
+// keys (opencode_version, agent_id, ...) win over it.
 func WithGenerationMetadata(ctx context.Context, meta map[string]any) context.Context {
 	if len(meta) == 0 {
 		return ctx
