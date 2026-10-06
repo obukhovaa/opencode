@@ -28,6 +28,8 @@ type compactionProvider struct {
 	count   func(msgs []message.Message) int64
 	respond func(msgs []message.Message) *provider.ProviderResponse
 	system  string
+	// fail, when set, makes every request end in a stream error.
+	fail error
 
 	mu       sync.Mutex
 	log      *[]string
@@ -47,6 +49,12 @@ func (p *compactionProvider) StreamResponse(ctx context.Context, msgs []message.
 	p.forced = append(p.forced, provider.ForcedTool(ctx))
 	p.budgets = append(p.budgets, budget)
 	p.mu.Unlock()
+	if p.fail != nil {
+		ch := make(chan provider.ProviderEvent, 1)
+		ch <- provider.ProviderEvent{Type: provider.EventError, Error: p.fail}
+		close(ch)
+		return ch
+	}
 	resp := &provider.ProviderResponse{Content: "done", FinishReason: message.FinishReasonEndTurn}
 	if p.respond != nil {
 		resp = p.respond(msgs)
@@ -580,7 +588,7 @@ func TestCountContextTokens(t *testing.T) {
 		{
 			name:      "undercounting estimate is floored by reported usage plus tail",
 			window:    1000,
-			estimate:  100,
+			estimate:  700,
 			sess:      session.Session{PromptTokens: 600, CompletionTokens: 300},
 			msgs:      withAssistant,
 			wantCount: 900 + tailTokens,
@@ -607,7 +615,7 @@ func TestCountContextTokens(t *testing.T) {
 		{
 			name:      "zero context window never hits",
 			window:    0,
-			estimate:  100,
+			estimate:  700,
 			sess:      session.Session{PromptTokens: 600, CompletionTokens: 300},
 			msgs:      withAssistant,
 			wantCount: 900 + tailTokens,
@@ -619,10 +627,42 @@ func TestCountContextTokens(t *testing.T) {
 			// once, as CacheReadTokens, so the floor does not double it to 100%.
 			name:      "gemini usage with a cached prompt is not double counted",
 			window:    1000,
-			estimate:  100,
+			estimate:  400,
 			usage:     &provider.TokenUsage{InputTokens: 20, CacheReadTokens: 480, OutputTokens: 20},
 			msgs:      withAssistant[:2],
 			wantCount: 520,
+			wantHit:   false,
+		},
+		{
+			// An upstream that sums two attempts of one call reports about
+			// twice the real prompt (a doubled cache read). Taken as the
+			// floor it would fire compaction at half the real size.
+			name:      "report at twice the estimate is ignored",
+			window:    1_000_000,
+			estimate:  690_000,
+			usage:     &provider.TokenUsage{InputTokens: 30_000, CacheReadTokens: 1_383_037, OutputTokens: 1_000},
+			msgs:      withAssistant[:2],
+			wantCount: 690_000,
+			wantHit:   false,
+		},
+		{
+			name:      "report over the window is ignored",
+			window:    1000,
+			estimate:  900,
+			sess:      session.Session{PromptTokens: 900, CompletionTokens: 300},
+			msgs:      withAssistant[:2],
+			wantCount: 900,
+			wantHit:   false,
+		},
+		{
+			// The guard leaves room for the undercount it exists to correct:
+			// a report within 1.5x of the estimate still floors it.
+			name:      "report within the ratio still floors",
+			window:    1_000_000,
+			estimate:  300_000,
+			sess:      session.Session{PromptTokens: 20_000, CompletionTokens: 400_000},
+			msgs:      withAssistant[:2],
+			wantCount: 420_000,
 			wantHit:   false,
 		},
 	}

@@ -132,6 +132,10 @@ type Agent struct {
 	// default (0.95). A flow step's compact.threshold still wins, and the
 	// global autoCompact flag still decides whether compaction runs at all.
 	CompactionThreshold float64 `json:"compactionThreshold,omitempty"`
+	// SummarizerMaxInputTokens caps, in estimated tokens, the history this
+	// agent's compaction sends the summarizer. Zero means only the
+	// summarizer's own window limits it.
+	SummarizerMaxInputTokens int64 `json:"summarizerMaxInputTokens,omitempty"`
 	// Context scopes which context files feed this agent's system prompt
 	// instead of the global contextPaths (paths, replace/append mode, and
 	// the nested-disclosure opt-out). Defined in internal/contextfile so
@@ -1142,6 +1146,14 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 			"compaction_threshold", agent.CompactionThreshold)
 		updatedAgent := cfg.Agents[name]
 		updatedAgent.CompactionThreshold = 0
+		cfg.Agents[name] = updatedAgent
+	}
+	if agent.SummarizerMaxInputTokens < 0 {
+		logging.Warn("invalid summarizerMaxInputTokens, must be positive; ignoring it",
+			"agent", name,
+			"summarizer_max_input_tokens", agent.SummarizerMaxInputTokens)
+		updatedAgent := cfg.Agents[name]
+		updatedAgent.SummarizerMaxInputTokens = 0
 		cfg.Agents[name] = updatedAgent
 	}
 

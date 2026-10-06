@@ -74,3 +74,47 @@ func TestValidateAgentCompactionThreshold(t *testing.T) {
 		})
 	}
 }
+
+func TestConfig_SummarizerMaxInputTokens(t *testing.T) {
+	dir := t.TempDir()
+	body := `{"agents":{"Neo":{"model":"claude-4-sonnet","summarizerMaxInputTokens":300000},"summarizer":{"model":"claude-4-sonnet","summarizerMaxInputTokens":200000},"coder":{"model":"claude-4-sonnet"}}}`
+	if err := os.WriteFile(filepath.Join(dir, ".opencode.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	v := viper.New()
+	v.SetConfigName(".opencode")
+	v.SetConfigType("json")
+	v.AddConfigPath(dir)
+	if err := v.ReadInConfig(); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var cfg Config
+	if err := v.Unmarshal(&cfg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := cfg.Agents["neo"].SummarizerMaxInputTokens; got != 300_000 {
+		t.Errorf("neo summarizerMaxInputTokens = %v, want 300000", got)
+	}
+	if got := cfg.Agents[AgentSummarizer].SummarizerMaxInputTokens; got != 200_000 {
+		t.Errorf("summarizer summarizerMaxInputTokens = %v, want 200000", got)
+	}
+	if got := cfg.Agents[AgentCoder].SummarizerMaxInputTokens; got != 0 {
+		t.Errorf("coder summarizerMaxInputTokens = %v, want 0 (unset: no cap of its own)", got)
+	}
+
+	for _, tc := range []struct {
+		in, want int64
+	}{{0, 0}, {300_000, 300_000}, {-1, 0}} {
+		clearProviderEnv(t)
+		c := &Config{
+			Agents:    map[AgentName]Agent{AgentCoder: {Model: models.KimiK3, SummarizerMaxInputTokens: tc.in}},
+			Providers: map[models.ModelProvider]Provider{models.ProviderKimi: {APIKey: "test-key"}},
+		}
+		if err := validateAgent(c, AgentCoder, c.Agents[AgentCoder]); err != nil {
+			t.Fatalf("validateAgent: %v", err)
+		}
+		if got := c.Agents[AgentCoder].SummarizerMaxInputTokens; got != tc.want {
+			t.Errorf("validate(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}

@@ -152,6 +152,12 @@ func (s *subagentStub) Run(ctx context.Context, _, _ string, _ int, _ ...message
 	return done, nil
 }
 
+// RunWith is what runAsync calls since the task tool started passing
+// RunOptions (GENAI-140); the embedded nil Service would panic on it.
+func (s *subagentStub) RunWith(ctx context.Context, sessionID, content string, maxTurns int, _ RunOptions, attachments ...message.Attachment) (<-chan AgentEvent, error) {
+	return s.Run(ctx, sessionID, content, maxTurns, attachments...)
+}
+
 // resumeRecorder is the task.Deps the async completion goes through; the
 // resume is the waiter goroutine's last step.
 type resumeRecorder struct{ resumed chan string }

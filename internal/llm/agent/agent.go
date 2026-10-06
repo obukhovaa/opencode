@@ -228,6 +228,12 @@ type agent struct {
 	// compactionThreshold is the registry-merged per-agent threshold
 	// (config overlay and markdown frontmatter), zero when unset.
 	compactionThreshold float64
+	// summarizerMaxInputTokens is the registry-merged per-agent cap on the
+	// summarizer's input, zero when unset.
+	summarizerMaxInputTokens int64
+	// compactionBackoff throttles auto-compaction after a failed summarizer
+	// call; see compaction_backoff.go.
+	compactionBackoff compactionBackoffs
 
 	titleProvider     provider.Provider
 	summarizeProvider provider.Provider
@@ -335,7 +341,8 @@ func newAgent(
 		factory:           factory,
 		basePrompt:        agentInfo.Prompt,
 
-		compactionThreshold: agentInfo.CompactionThreshold,
+		compactionThreshold:      agentInfo.CompactionThreshold,
+		summarizerMaxInputTokens: agentInfo.SummarizerMaxInputTokens,
 	}
 
 	// Message-delivery mode moves the output schema out of the tool block (which
@@ -915,6 +922,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// Susped to get lazy tools
 	toolSet := a.resolveTools()
 	compactionThreshold := a.resolveCompactionThreshold(opts)
+	a.compactionBackoff.startTurn(sessionID)
 
 	// Pre-turn gate. The in-loop check below skips cycle 1, so without this a
 	// turn that is a single model call (a chat reply, a cron heartbeat) is
@@ -941,7 +949,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		if hasUserTurn {
 			countInput = append(slices.Clip(msgs), pendingUserMessage(content, attachmentParts))
 		}
-		if preTurnTokens, overThreshold := a.countContextTokens(ctx, sessionID, compactionThreshold, countInput, toolSet); overThreshold {
+		if preTurnTokens, overThreshold := a.countContextTokens(ctx, sessionID, compactionThreshold, countInput, toolSet); overThreshold && a.compactionAllowed(sessionID, preTurnTokens) {
 			logging.Info(
 				"Auto-compaction triggered before turn",
 				"session_id", sessionID,
@@ -955,9 +963,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 			if !hasUserTurn {
 				resumeTail = syntheticTail(msgs)
 			}
-			if errSync := a.performSynchronousCompaction(ctx, sessionID); errSync != nil {
-				logging.Warn("Failed to perform auto-compaction before turn", "session_id", sessionID, "error", errSync)
-			} else {
+			if errSync := a.autoCompact(ctx, sessionID, compactionTriggerPreTurn, preTurnTokens); errSync == nil {
 				reloaded, compacted, errReload := a.historyAfterCompaction(ctx, sessionID)
 				if errReload != nil {
 					return a.err(errReload)
@@ -1056,7 +1062,7 @@ OuterLoop:
 			// The first call of the first outer cycle is skipped: the pre-turn
 			// gate just checked it. A non-interactive re-entry's first call is
 			// not: the drained completions may have pushed the history over.
-			if cfg.AutoCompact && (cycles != 1 || outerCycles > 1) && shouldTriggerAutoCompaction {
+			if cfg.AutoCompact && (cycles != 1 || outerCycles > 1) && shouldTriggerAutoCompaction && a.compactionAllowed(sessionID, etaTokens) {
 				logging.Info(
 					"Auto-compaction triggered during tool use loop",
 					"session_id", sessionID,
@@ -1073,8 +1079,7 @@ OuterLoop:
 				}
 
 				// Perform synchronous compaction to shrink context
-				if errSync := a.performSynchronousCompaction(ctx, sessionID); errSync != nil {
-					logging.Warn("Failed to perform auto-compaction during tool use", "error", errSync)
+				if errSync := a.autoCompact(ctx, sessionID, compactionTriggerInLoop, etaTokens); errSync != nil {
 					// Continue anyway - better to risk context overflow than stop completely
 				} else {
 					// After successful compaction, reload messages and rebuild msgHistory.
@@ -2686,15 +2691,19 @@ func (a *agent) filterMessagesFromSummary(msgs []message.Message, summaryMessage
 }
 
 // performSynchronousCompaction performs summarization synchronously and waits for completion
-// This is used for auto-compaction in non-interactive mode to shrink context before continuing
-func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID string) error {
+// This is used for auto-compaction in non-interactive mode to shrink context before continuing.
+// trigger (compactionTrigger*) is recorded on the summarizer generation. The
+// returned stats describe the input that was (or would have been) sent, so a
+// failure can be logged with its size.
+func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID, trigger string) (compactionInputStats, error) {
+	var stats compactionInputStats
 	if a.summarizeProvider == nil {
-		return fmt.Errorf("summarize provider not available")
+		return stats, fmt.Errorf("summarize provider not available")
 	}
 
 	summarizePrompt, err := AgentPrompts.ReadFile("prompts/compaction.md")
 	if err != nil {
-		return fmt.Errorf("failed to load summary prompt: %w", err)
+		return stats, fmt.Errorf("failed to load summary prompt: %w", err)
 	}
 	promptMsg := message.Message{
 		Role:  message.User,
@@ -2702,12 +2711,19 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 	}
 
 	// NOTE: We don't check IsSessionBusy here because this is called from within
-	msgsWithPrompt, err := a.summarizerInput(ctx, sessionID, promptMsg)
+	msgsWithPrompt, stats, err := a.summarizerInputWithStats(ctx, sessionID, promptMsg)
 	if err != nil {
-		return err
+		return stats, err
 	}
 	messageCount := len(msgsWithPrompt) - 1
-	logging.Info("Starting synchronous compaction", "session_id", sessionID, "message_count", messageCount)
+	logging.Info("Starting synchronous compaction",
+		"session_id", sessionID,
+		"trigger", trigger,
+		"message_count", messageCount,
+		"trimmed_messages", stats.trimmedMessages,
+		"truncated_tool_payloads", stats.truncatedToolPayloads,
+		"estimated_input_tokens", stats.estimatedTokens,
+	)
 
 	summarizeCtx := context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
 	summarizeCtx = context.WithValue(summarizeCtx, tools.AgentIDContextKey, config.AgentName("summarizer"))
@@ -2723,27 +2739,29 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 		}
 	}
 	defer langfuse.EndTrace(summarizeCtx)
+	summarizeCtx = provider.WithGenerationMetadata(summarizeCtx, a.compactionMetadata(sessionID, trigger, stats))
 
 	events := a.summarizeProvider.StreamResponse(
 		summarizeCtx,
-		msgsWithPrompt,
+		summarizerRequest(msgsWithPrompt[:messageCount], promptMsg),
 		make([]tools.BaseTool, 0),
 	)
 	response, err := provider.StreamToResponse(events)
 	if err != nil {
-		return fmt.Errorf("failed to summarize: %w", err)
+		a.warnIfSummarizerOverflow(sessionID, stats, err)
+		return stats, fmt.Errorf("failed to summarize: %w", err)
 	}
 
 	summary := strings.TrimSpace(response.Content)
 	a.setTraceOutput(summarizeCtx, func() any { return summary })
 	if summary == "" {
-		return fmt.Errorf("empty summary returned")
+		return stats, fmt.Errorf("empty summary returned")
 	}
 
 	// Get the session to update
 	oldSession, err := a.sessions.Get(summarizeCtx, sessionID)
 	if err != nil {
-		return fmt.Errorf("failed to get session: %w", err)
+		return stats, fmt.Errorf("failed to get session: %w", err)
 	}
 
 	// Create a new message with the summary
@@ -2753,7 +2771,7 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 		Model: a.summarizeProvider.Model().ID,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create summary message: %w", err)
+		return stats, fmt.Errorf("failed to create summary message: %w", err)
 	}
 
 	oldSession.SummaryMessageID = msg.ID
@@ -2766,12 +2784,12 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID stri
 
 	_, err = a.sessions.Save(summarizeCtx, oldSession)
 	if err != nil {
-		return fmt.Errorf("failed to save session: %w", err)
+		return stats, fmt.Errorf("failed to save session: %w", err)
 	}
 	a.forgetDeferredAnnouncements(sessionID)
 
-	logging.Info("Synchronous compaction completed successfully", "session_id", sessionID)
-	return nil
+	logging.Info("Synchronous compaction completed successfully", "session_id", sessionID, "trigger", trigger)
+	return stats, nil
 }
 
 func (a *agent) Summarize(ctx context.Context, sessionID string) error {
@@ -2818,7 +2836,7 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 		// Guard before the trace starts: an empty session would otherwise emit
 		// a trace with no generation and no output, indistinguishable from a
 		// summarizer that hung.
-		msgsWithPrompt, err := a.summarizerInput(summarizeCtx, sessionID, promptMsg)
+		msgsWithPrompt, stats, err := a.summarizerInputWithStats(summarizeCtx, sessionID, promptMsg)
 		if err != nil {
 			event = AgentEvent{
 				Type:  AgentEventTypeError,
@@ -2855,13 +2873,15 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 
 		// Send the messages to the summarize provider via streaming
 		// to avoid Anthropic's non-streaming timeout restriction
+		summarizeCtx = provider.WithGenerationMetadata(summarizeCtx, a.compactionMetadata(sessionID, compactionTriggerManual, stats))
 		events := a.summarizeProvider.StreamResponse(
 			summarizeCtx,
-			msgsWithPrompt,
+			summarizerRequest(msgsWithPrompt[:len(msgsWithPrompt)-1], promptMsg),
 			make([]tools.BaseTool, 0),
 		)
 		response, err := provider.StreamToResponse(events)
 		if err != nil {
+			a.warnIfSummarizerOverflow(sessionID, stats, err)
 			event = AgentEvent{
 				Type:  AgentEventTypeError,
 				Error: fmt.Errorf("failed to summarize: %w", err),
@@ -2938,6 +2958,7 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 			a.Publish(pubsub.CreatedEvent, event)
 		}
 		a.forgetDeferredAnnouncements(sessionID)
+		a.compactionBackoff.succeeded(sessionID)
 
 		event = AgentEvent{
 			Type:      AgentEventTypeSummarize,
@@ -2967,7 +2988,11 @@ func (a *agent) SummarizeSync(ctx context.Context, sessionID string) error {
 		return ErrSessionBusy
 	}
 	defer a.UnlockSession(sessionID)
-	return a.performSynchronousCompaction(ctx, sessionID)
+	if _, err := a.performSynchronousCompaction(ctx, sessionID, compactionTriggerManual); err != nil {
+		return err
+	}
+	a.compactionBackoff.succeeded(sessionID)
+	return nil
 }
 
 type providerOptions struct {
