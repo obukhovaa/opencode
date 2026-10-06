@@ -899,11 +899,27 @@ func (p *baseProvider[C]) generationMetadata(ctx context.Context) map[string]any
 	if agentID := getAgentIDFromCtx(ctx); agentID != "" {
 		meta["agent_id"] = agentID
 	}
+	if extra, ok := ctx.Value(generationMetadataKey{}).(map[string]any); ok {
+		for k, v := range extra {
+			meta[k] = v
+		}
+	}
 	// Apply metadata namespace prefix when configured.
 	if cfg := config.Get(); cfg.Telemetry != nil && cfg.Telemetry.MetadataNamespace != "" {
 		meta = langfuse.NamespaceMetadata(meta, cfg.Telemetry.MetadataNamespace)
 	}
 	return meta
+}
+
+type generationMetadataKey struct{}
+
+// WithGenerationMetadata adds metadata to the Langfuse generation of every
+// model call made with ctx. Values are rendered with fmt.Sprint.
+func WithGenerationMetadata(ctx context.Context, meta map[string]any) context.Context {
+	if len(meta) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, generationMetadataKey{}, meta)
 }
 
 // getAgentIDFromCtx reads the agent ID from context using the tools package key.

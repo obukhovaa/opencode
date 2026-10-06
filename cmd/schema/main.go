@@ -464,6 +464,11 @@ func generateSchema() map[string]any {
 					"exclusiveMinimum": 0,
 					"maximum":          1,
 				},
+				"summarizerMaxInputTokens": map[string]any{
+					"type":        "integer",
+					"description": "Cap, in estimated tokens, on the history this agent's compaction sends the summarizer (the transcript since the previous summary; the oldest messages are dropped first). Unset means only the summarizer's own context window limits it.",
+					"minimum":     1,
+				},
 				"context": map[string]any{
 					"type":        "object",
 					"description": "Scoped context files for this agent's system prompt. Declared paths replace (default) or append to the global contextPaths. Path entries support the ${agent}, ${flow.id}, ${flow.step}, and ${env.VAR} template tokens and must resolve inside the working directory. See docs/context.md.",

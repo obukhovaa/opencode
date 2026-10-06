@@ -41,6 +41,10 @@ type AgentInfo struct {
 	// context-window fraction in (0, 1] at which this agent's sessions
 	// auto-compact. Zero inherits the default.
 	CompactionThreshold float64 `yaml:"compactionThreshold,omitempty"`
+	// SummarizerMaxInputTokens mirrors config.Agent.SummarizerMaxInputTokens:
+	// the cap on what this agent's compaction sends the summarizer, in
+	// estimated tokens. Zero means no cap beyond the summarizer's window.
+	SummarizerMaxInputTokens int64 `yaml:"summarizerMaxInputTokens,omitempty"`
 	// LangfusePromptPath references this agent's system prompt in Langfuse
 	// Prompt Management instead of carrying its text. For a markdown agent
 	// it is a frontmatter key and the body must be empty — the body IS the
@@ -198,6 +202,9 @@ func newRegistry() Registry {
 		}
 		if a.CompactionThreshold > 0 {
 			args = append(args, "compactionThreshold", a.CompactionThreshold)
+		}
+		if a.SummarizerMaxInputTokens > 0 {
+			args = append(args, "summarizerMaxInputTokens", a.SummarizerMaxInputTokens)
 		}
 		logging.Info("Agent discovered", args...)
 	}
@@ -476,6 +483,7 @@ func registerBuiltins(agents map[string]AgentInfo, cfg *config.Config) {
 			b.ReasoningEffort = agentCfg.ReasoningEffort
 			b.TaskBudget = agentCfg.TaskBudget
 			b.CompactionThreshold = agentCfg.CompactionThreshold
+			b.SummarizerMaxInputTokens = agentCfg.SummarizerMaxInputTokens
 		}
 		agents[b.ID] = b
 	}
@@ -546,6 +554,9 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 		}
 		if agentCfg.CompactionThreshold > 0 {
 			existing.CompactionThreshold = agentCfg.CompactionThreshold
+		}
+		if agentCfg.SummarizerMaxInputTokens > 0 {
+			existing.SummarizerMaxInputTokens = agentCfg.SummarizerMaxInputTokens
 		}
 		if agentCfg.Name != "" {
 			existing.Name = agentCfg.Name
@@ -673,6 +684,9 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 	}
 	if md.CompactionThreshold > 0 {
 		existing.CompactionThreshold = md.CompactionThreshold
+	}
+	if md.SummarizerMaxInputTokens > 0 {
+		existing.SummarizerMaxInputTokens = md.SummarizerMaxInputTokens
 	}
 	// As in applyConfigOverrides: a prompt source replaces the source, so
 	// the two can never both be set on one registry entry.
@@ -1046,6 +1060,11 @@ func parseAgentMarkdown(path string) (*AgentInfo, error) {
 		logging.Warn("invalid compactionThreshold in agent frontmatter, must be in (0, 1]; using the default",
 			"agent", baseName, "path", path, "compaction_threshold", agent.CompactionThreshold)
 		agent.CompactionThreshold = 0
+	}
+	if agent.SummarizerMaxInputTokens < 0 {
+		logging.Warn("invalid summarizerMaxInputTokens in agent frontmatter, must be positive; ignoring it",
+			"agent", baseName, "path", path, "summarizer_max_input_tokens", agent.SummarizerMaxInputTokens)
+		agent.SummarizerMaxInputTokens = 0
 	}
 	agent.Prompt = body
 	agent.Location = path

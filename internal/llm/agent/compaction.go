@@ -35,25 +35,44 @@ func (a *agent) resolveCompactionThreshold(opts RunOptions) float64 {
 	return AutoCompactionThreshold
 }
 
+// usageFloorMaxRatio bounds how far the reported usage may exceed the
+// estimate of the same history and still floor it. The floor exists because
+// the local estimate undercounts; a report at twice the estimate or more is
+// what an upstream that sums two attempts of one call looks like (a doubled
+// cache read), and taken at face value it fires compaction at half the real
+// size.
+const usageFloorMaxRatio = 1.5
+
 // countContextTokens is the context size every auto-compaction decision uses:
 // the provider estimate, floored by what the provider actually reported for
 // the session's last call. PromptTokens+CompletionTokens (see TrackUsage) is
 // that call's full prompt plus output, i.e. the history up to and including
 // the last assistant message; only the messages after it still need a local
-// estimate. The provider's own hit flag is recomputed against the floored
-// value.
+// estimate. A report larger than the window or than usageFloorMaxRatio times
+// the estimate is not used. The provider's own hit flag is recomputed against
+// the floored value.
 func (a *agent) countContextTokens(ctx context.Context, sessionID string, threshold float64, msgs []message.Message, toolSet []tools.BaseTool) (int64, bool) {
 	estimated, providerHit := a.provider.CountTokens(ctx, threshold, msgs, toolSet)
 	sess, err := a.sessions.Get(ctx, sessionID)
 	if err != nil {
 		return estimated, providerHit
 	}
+	window := a.provider.Model().ContextWindow
 	final := estimated
 	if lastAssistant := lastAssistantIndex(msgs); lastAssistant >= 0 {
 		reported := sess.PromptTokens + sess.CompletionTokens
 		tail := message.EstimateTokens(msgs[lastAssistant+1:], nil, message.BytesPerTokenEta)
 		floor := reported + tail
-		if floor > final {
+		switch {
+		case floor <= final:
+		case (window > 0 && reported > window) || float64(floor) > usageFloorMaxRatio*float64(estimated):
+			logging.Warn("implausible reported usage ignored",
+				"session_id", sessionID,
+				"reported", reported,
+				"estimated", estimated,
+				"context_window", window,
+			)
+		default:
 			if float64(floor) > float64(estimated)*1.1 {
 				logging.Info("token estimate corrected by reported usage",
 					"session_id", sessionID,
@@ -65,7 +84,6 @@ func (a *agent) countContextTokens(ctx context.Context, sessionID string, thresh
 			final = floor
 		}
 	}
-	window := a.provider.Model().ContextWindow
 	hit := window > 0 && final >= int64(float64(window)*threshold)
 	return final, hit
 }
@@ -184,64 +202,124 @@ func (a *agent) withTaskBudgetRemaining(ctx context.Context, sess session.Sessio
 	return provider.TaskBudgetRemainingContext(ctx, remaining)
 }
 
-// summarizerInput builds what the summarizer is sent: the history since the
-// previous summary (kept as the head, so its knowledge carries forward), cut
-// from the oldest end until it fits the summarizer's window, then the
-// compaction prompt. The cut keeps the turn's prompt (turnPromptIndex): a
-// flow step's task is the oldest message of its turn, so it would go first,
-// and the in-loop rebuild does not re-append it, so a summary written without
-// it loses the task for the rest of the step. Sending the raw message log
-// instead grows without bound across compactions, and a session that already
-// overflowed could never compact its way out.
+// compactionInputStats describes one summarizer input, for logs and the
+// summarizer generation's metadata.
+type compactionInputStats struct {
+	messages              int
+	trimmedMessages       int
+	truncatedToolPayloads int
+	estimatedTokens       int64
+	budget                int64
+}
+
+// summarizerInput builds the history the summarizer summarizes: the messages
+// since the previous summary (kept as the head, so its knowledge carries
+// forward) rendered as a text transcript (summarizerTranscript), cut from the
+// oldest end until it fits the budget, then the compaction prompt. Callers
+// send it through summarizerRequest. The cut keeps the turn's prompt
+// (turnPromptIndex): a flow step's task is the oldest message of its turn, so
+// it would go first, and the in-loop rebuild does not re-append it, so a
+// summary written without it loses the task for the rest of the step. Sending
+// the raw message log instead grows without bound across compactions, and a
+// session that already overflowed could never compact its way out.
 func (a *agent) summarizerInput(ctx context.Context, sessionID string, prompt message.Message) ([]message.Message, error) {
+	msgs, _, err := a.summarizerInputWithStats(ctx, sessionID, prompt)
+	return msgs, err
+}
+
+func (a *agent) summarizerInputWithStats(ctx context.Context, sessionID string, prompt message.Message) ([]message.Message, compactionInputStats, error) {
+	var stats compactionInputStats
 	msgs, err := a.messages.List(ctx, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list messages: %w", err)
+		return nil, stats, fmt.Errorf("failed to list messages: %w", err)
 	}
 	sess, err := a.sessions.Get(ctx, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get session: %w", err)
+		return nil, stats, fmt.Errorf("failed to get session: %w", err)
 	}
 	msgs = a.filterMessagesFromSummary(msgs, sess.SummaryMessageID)
 	msgs = filterEmptyUserMessages(msgs)
 	if len(msgs) == 0 {
-		return nil, errNoMessagesToSummarize
+		return nil, stats, errNoMessagesToSummarize
 	}
 
-	window := a.summarizeProvider.Model().ContextWindow
-	if window > 0 {
-		fixed := message.EstimateTokens([]message.Message{prompt}, nil, message.BytesPerTokenEta)
-		if sp, ok := a.summarizeProvider.(interface{ SystemMessage() string }); ok {
-			fixed += int64(len(sp.SystemMessage()) / message.BytesPerTokenEta)
+	// The trim works in local-estimate units, and the 4 B/token estimate can
+	// undercount a session badly. When the provider reported more for the
+	// history up to the last assistant message than the estimate gives,
+	// shrink the budget by the same ratio. Measured on the raw history, which
+	// is what the provider counted; the reported value also covers the main
+	// agent's system prompt and tools, so this errs toward trimming more.
+	var calibrate func(int64) int64
+	if la := lastAssistantIndex(msgs); la >= 0 {
+		reported := sess.PromptTokens + sess.CompletionTokens
+		if local := message.EstimateTokens(msgs[:la+1], nil, message.BytesPerTokenEta); local > 0 && reported > local {
+			calibrate = func(b int64) int64 { return b * local / reported }
 		}
-		budget := int64(float64(window) * summarizerWindowFraction)
-		// The trim works in local-estimate units, and the 4 B/token estimate
-		// can undercount a session badly. When the provider reported more for
-		// the history up to the last assistant message than the estimate
-		// gives, shrink the budget by the same ratio. The reported value also
-		// covers the main agent's system prompt and tools, so this errs
-		// toward trimming more.
-		if la := lastAssistantIndex(msgs); la >= 0 {
-			reported := sess.PromptTokens + sess.CompletionTokens
-			if local := message.EstimateTokens(msgs[:la+1], nil, message.BytesPerTokenEta); local > 0 && reported > local {
-				budget = budget * local / reported
-			}
+	}
+
+	keepHead := sess.SummaryMessageID != "" && msgs[0].ID == sess.SummaryMessageID
+	msgs, tstats := summarizerTranscript(msgs)
+	stats.truncatedToolPayloads = tstats.truncatedToolPayloads
+	if len(msgs) == 0 {
+		return nil, stats, errNoMessagesToSummarize
+	}
+	keepHead = keepHead && msgs[0].ID == sess.SummaryMessageID
+
+	fixed := message.EstimateTokens([]message.Message{prompt}, nil, message.BytesPerTokenEta)
+	if sp, ok := a.summarizeProvider.(interface{ SystemMessage() string }); ok {
+		fixed += int64(len(sp.SystemMessage()) / message.BytesPerTokenEta)
+	}
+	if budget := a.summarizerBudget(); budget > 0 {
+		if calibrate != nil {
+			budget = calibrate(budget)
 		}
-		keepHead := sess.SummaryMessageID != "" && msgs[0].ID == sess.SummaryMessageID
+		stats.budget = budget
 		kept, dropped, estimated := trimSummarizerInput(msgs, keepHead, turnPromptIndex(msgs), fixed, budget)
 		if dropped > 0 {
-			logging.Warn("compaction input exceeded summarizer window; dropped oldest messages",
+			logging.Warn("compaction input exceeded the summarizer budget; dropped oldest messages",
 				"session_id", sessionID,
 				"dropped", dropped,
 				"kept", len(kept),
 				"estimated_tokens", estimated,
 				"budget", budget,
-				"window", window,
+				"window", a.summarizeProvider.Model().ContextWindow,
 			)
 			msgs = kept
 		}
+		stats.trimmedMessages = dropped
 	}
-	return append(slices.Clip(msgs), prompt), nil
+	stats.messages = len(msgs)
+	stats.estimatedTokens = message.EstimateTokens(msgs, nil, message.BytesPerTokenEta) + fixed
+	return append(slices.Clip(msgs), prompt), stats, nil
+}
+
+// summarizerBudget is the summarizer input budget in estimated tokens:
+// summarizerWindowFraction of the summarizer's window, lowered to the agent's
+// summarizerMaxInputTokens when that is set. Zero means no limit.
+func (a *agent) summarizerBudget() int64 {
+	var budget int64
+	if window := a.summarizeProvider.Model().ContextWindow; window > 0 {
+		budget = int64(float64(window) * summarizerWindowFraction)
+	}
+	if limit := a.resolveSummarizerMaxInputTokens(); limit > 0 && (budget == 0 || limit < budget) {
+		budget = limit
+	}
+	return budget
+}
+
+// resolveSummarizerMaxInputTokens reads the agent's summarizerMaxInputTokens:
+// the registry-merged field first, the config for agents built without
+// registry info. Zero when unset.
+func (a *agent) resolveSummarizerMaxInputTokens() int64 {
+	if a.summarizerMaxInputTokens > 0 {
+		return a.summarizerMaxInputTokens
+	}
+	if cfg := config.Get(); cfg != nil {
+		if agentCfg, ok := cfg.Agents[a.agentID]; ok && agentCfg.SummarizerMaxInputTokens > 0 {
+			return agentCfg.SummarizerMaxInputTokens
+		}
+	}
+	return 0
 }
 
 // turnPromptIndex returns the index of the latest user message that is not

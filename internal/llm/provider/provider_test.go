@@ -724,3 +724,19 @@ func TestIsRetryableRSTStreamError(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerationMetadataCarriesContextMetadata(t *testing.T) {
+	if config.Get() == nil {
+		if _, err := config.Load(t.TempDir(), false); err != nil {
+			t.Fatalf("config.Load: %v", err)
+		}
+	}
+	p := newTestProvider()
+	ctx := WithGenerationMetadata(context.Background(), map[string]any{"compaction.trigger": "pre_turn"})
+	if got := p.generationMetadata(ctx)["compaction.trigger"]; got != "pre_turn" {
+		t.Errorf("compaction.trigger = %v, want pre_turn", got)
+	}
+	if _, ok := p.generationMetadata(context.Background())["compaction.trigger"]; ok {
+		t.Error("metadata leaked into a context that did not carry it")
+	}
+}
