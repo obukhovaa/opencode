@@ -1253,9 +1253,8 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 		cfg.Agents[name] = updatedAgent
 	}
 
-	// Validate reasoning effort for models that support reasoning. Kimi on
-	// Bedrock takes the OpenAI-style reasoning_effort (low|medium|high).
-	if model.CanReason && (provider == models.ProviderOpenAI || models.IsBedrockKimi(model.ID)) || provider == models.ProviderLocal {
+	// Validate reasoning effort for models that support reasoning
+	if model.CanReason && provider == models.ProviderOpenAI || provider == models.ProviderLocal {
 		if agent.ReasoningEffort == "" {
 			// Set default reasoning effort for models that support it
 			logging.Info("setting default reasoning effort for model that supports reasoning",
@@ -1281,15 +1280,21 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 				cfg.Agents[name] = updatedAgent
 			}
 		}
-	} else if model.CanReason && model.SupportsAdaptiveThinking {
+	} else if model.CanReason && (model.SupportsAdaptiveThinking || models.IsBedrockKimi(model.ID)) {
+		// Adaptive-thinking models, plus Kimi on Bedrock: it sends the
+		// OpenAI-style reasoning_effort field rather than adaptive thinking,
+		// but with K3's levels (low|high|max, max the documented default on
+		// Moonshot and AWS alike; Bedrock also accepts medium), so it follows
+		// these rules — the OpenAI ones above would default it to medium and
+		// silently fold a configured max down to medium.
 		if agent.ReasoningEffort == "" {
-			if model.ID == models.KimiK3 {
-				// Kimi K3 exposes only the "max" effort level at launch
+			if models.IsKimiK3(model.ID) {
+				// Kimi K3 documents low|high|max with max as the default
 				// (Moonshot's own Claude Code guide pins effort to max);
-				// the anthropic client's generic empty-effort default of
-				// "high" is not a documented K3 level, so resolve it here
-				// where the value stays visible in config. K2.7 Code takes
-				// every level, so it keeps the client default.
+				// the clients' generic empty-effort defaults ("high" for
+				// anthropic, "medium" for openai) are not K3's, so resolve
+				// it here where the value stays visible in config. K2.7
+				// Code takes every level, so it keeps the client default.
 				logging.Info("setting default reasoning effort 'max' for kimi model",
 					"agent", name,
 					"model", agent.Model)

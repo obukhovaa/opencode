@@ -22,14 +22,15 @@ import (
 
 // newBedrockKimiTestClient builds the Bedrock provider client for a Kimi model
 // against srv, mounted under a /bedrock prefix like the LiteLLM passthrough.
-func newBedrockKimiTestClient(t *testing.T, srv *httptest.Server, id models.ModelID) BedrockClient {
+func newBedrockKimiTestClient(t *testing.T, srv *httptest.Server, id models.ModelID, openaiOpts ...OpenAIOption) BedrockClient {
 	t.Helper()
 	loadConfigIn(t, t.TempDir())
 	return newBedrockClient(providerClientOptions{
-		apiKey:    "test-key",
-		baseURL:   srv.URL + "/bedrock",
-		model:     models.SupportedModels[id],
-		maxTokens: 1024,
+		apiKey:        "test-key",
+		baseURL:       srv.URL + "/bedrock",
+		model:         models.SupportedModels[id],
+		maxTokens:     1024,
+		openaiOptions: openaiOpts,
 	})
 }
 
@@ -92,6 +93,14 @@ func TestBedrockKimiModels(t *testing.T) {
 			if !m.CanReason || m.SupportsAdaptiveThinking {
 				t.Fatalf("kimi on bedrock takes reasoning_effort, not adaptive thinking: %+v", m)
 			}
+			// K3's reasoning_effort levels are low|high|max: max is admitted
+			// (it is the model's default), xhigh is not a K3 level.
+			if !m.SupportsMaximumThinking || m.SupportsXHighThinking {
+				t.Fatalf("kimi K3 on bedrock must admit max but not xhigh: %+v", m)
+			}
+			if !models.IsKimiK3(tt.id) {
+				t.Fatalf("IsKimiK3(%s) = false", tt.id)
+			}
 			want := []float64{3.0 * tt.premium, 3.75 * tt.premium, 15.0 * tt.premium, 0.30 * tt.premium}
 			got := []float64{m.CostPer1MIn, m.CostPer1MInCached, m.CostPer1MOut, m.CostPer1MOutCached}
 			for i := range want {
@@ -103,6 +112,9 @@ func TestBedrockKimiModels(t *testing.T) {
 	}
 	if models.IsBedrockKimi(models.BedrockOpus48) {
 		t.Fatal("IsBedrockKimi must be false for Claude on Bedrock")
+	}
+	if !models.IsKimiK3(models.KimiK3) || models.IsKimiK3(models.KimiK27Code) || models.IsKimiK3(models.BedrockOpus48) {
+		t.Fatal("IsKimiK3 must cover exactly the K3 deployments")
 	}
 }
 
@@ -143,11 +155,15 @@ func TestBedrockKimiStream(t *testing.T) {
 					"model":                        "global.moonshotai.kimi-k3",
 					"stream":                       "true",
 					"stream_options.include_usage": "true",
-					"reasoning_effort":             "medium",
 				} {
 					if got := gjson.GetBytes(body, path).String(); got != want {
 						t.Errorf("body %s = %q, want %q", path, got, want)
 					}
+				}
+				// No effort configured: the field stays out so K3's own
+				// default (max) applies rather than the OpenAI client's medium.
+				if gjson.GetBytes(body, "reasoning_effort").Exists() {
+					t.Errorf("reasoning_effort sent without a configured effort: %s", body)
 				}
 
 				if tt.contentType == "" {
@@ -378,6 +394,94 @@ func TestReasoningContentDelta(t *testing.T) {
 			}
 			if got := reasoningContentDelta(delta); got != tt.want {
 				t.Errorf("reasoningContentDelta = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+const chatCompletionPong = `{"id":"c3","object":"chat.completion","created":1,"model":"m",` +
+	`"choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}],` +
+	`"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}`
+
+// captureReasoningEffort serves one chat completion and records whether the
+// request body carried reasoning_effort, and with which value.
+func captureReasoningEffort(t *testing.T) (*httptest.Server, func() (bool, string)) {
+	t.Helper()
+	var present bool
+	var value string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		res := gjson.GetBytes(body, "reasoning_effort")
+		present, value = res.Exists(), res.String()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(chatCompletionPong))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() (bool, string) { return present, value }
+}
+
+// TestBedrockKimiReasoningEffortParam pins the reasoning_effort wire value
+// for Kimi on Bedrock: a configured level is sent as-is — including max, K3's
+// documented top level and default, which Bedrock accepts and OpenAI lacks —
+// while no configured effort leaves the field out so the model's own default
+// applies instead of the OpenAI client's medium.
+func TestBedrockKimiReasoningEffortParam(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []OpenAIOption
+		want string // "" = field absent
+	}{
+		{"unset omits the field", nil, ""},
+		{"empty omits the field", []OpenAIOption{WithReasoningEffort("")}, ""},
+		{"max passes through", []OpenAIOption{WithReasoningEffort("max")}, "max"},
+		{"high passes through", []OpenAIOption{WithReasoningEffort("high")}, "high"},
+		{"case-folded", []OpenAIOption{WithReasoningEffort("Low")}, "low"},
+		{"unknown falls back to the model default", []OpenAIOption{WithReasoningEffort("extreme")}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, sent := captureReasoningEffort(t)
+			client := newBedrockKimiTestClient(t, srv, models.BedrockKimiK3, tt.opts...)
+			if _, err := client.send(context.Background(), bedrockKimiPrompt, nil); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			if present, got := sent(); present != (tt.want != "") || got != tt.want {
+				t.Errorf("reasoning_effort present=%v value=%q, want %q", present, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestOpenAIReasoningEffortDefault locks the OpenAI-proper behaviour the
+// Bedrock change must not disturb: with no configured effort the client
+// still sends medium, and a configured level is sent lower-cased.
+func TestOpenAIReasoningEffortDefault(t *testing.T) {
+	tests := []struct {
+		name string
+		opts []OpenAIOption
+		want string
+	}{
+		{"unset sends medium", nil, "medium"},
+		{"empty sends medium", []OpenAIOption{WithReasoningEffort("")}, "medium"},
+		{"unknown sends medium", []OpenAIOption{WithReasoningEffort("extreme")}, "medium"},
+		{"high passes through", []OpenAIOption{WithReasoningEffort("High")}, "high"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			loadConfigIn(t, t.TempDir())
+			srv, sent := captureReasoningEffort(t)
+			client := newOpenAIClient(providerClientOptions{
+				apiKey:        "test-key",
+				baseURL:       srv.URL,
+				model:         models.SupportedModels[models.O3],
+				maxTokens:     256,
+				openaiOptions: tt.opts,
+			})
+			if _, err := client.send(context.Background(), bedrockKimiPrompt, nil); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			if present, got := sent(); !present || got != tt.want {
+				t.Errorf("reasoning_effort present=%v value=%q, want %q", present, got, tt.want)
 			}
 		})
 	}

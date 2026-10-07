@@ -36,6 +36,8 @@ func TestValidateReasoningEffort(t *testing.T) {
 	adaptive := Model{ID: "adaptive", Provider: ProviderBedrock, CanReason: true, SupportsAdaptiveThinking: true}
 	adaptiveMax := Model{ID: "adaptive-max", Provider: ProviderBedrock, CanReason: true, SupportsAdaptiveThinking: true, SupportsMaximumThinking: true}
 	adaptiveAll := Model{ID: "adaptive-all", Provider: ProviderBedrock, CanReason: true, SupportsAdaptiveThinking: true, SupportsMaximumThinking: true, SupportsXHighThinking: true}
+	// reasoning_effort-style model whose top level is max (Kimi K3 on Bedrock).
+	effortMax := Model{ID: "effort-max", Provider: ProviderBedrock, CanReason: true, SupportsMaximumThinking: true}
 
 	tests := []struct {
 		name    string
@@ -64,6 +66,14 @@ func TestValidateReasoningEffort(t *testing.T) {
 		{"catalog bedrock eu opus 4.6 rejects xhigh", SupportedModels[BedrockEUOpus46], "xhigh", true},
 		{"catalog bedrock eu opus 4.6 accepts max", SupportedModels[BedrockEUOpus46], "max", false},
 		{"catalog bedrock eu opus 4.7 accepts xhigh", SupportedModels[BedrockEUOpus47], "xhigh", false},
+		// The flags decide on their own: max does not require adaptive thinking.
+		{"max flag without adaptive accepts max", effortMax, "max", false},
+		{"max flag without adaptive rejects xhigh", effortMax, "xhigh", true},
+		{"max flag without adaptive accepts medium", effortMax, "medium", false},
+		// Kimi K3 on Bedrock: reasoning_effort takes max (its default) but not xhigh.
+		{"catalog bedrock kimi k3 accepts max", SupportedModels[BedrockKimiK3], "max", false},
+		{"catalog bedrock kimi k3 accepts medium", SupportedModels[BedrockKimiK3], "medium", false},
+		{"catalog bedrock us kimi k3 rejects xhigh", SupportedModels[BedrockUSKimiK3], "xhigh", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
