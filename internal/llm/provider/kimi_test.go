@@ -67,6 +67,42 @@ func TestKimiModelCapabilities(t *testing.T) {
 	}
 }
 
+func TestKimiK27CodeModelCapabilities(t *testing.T) {
+	tests := []struct {
+		id       models.ModelID
+		apiModel string
+		in, out  float64
+		cacheHit float64
+	}{
+		{models.KimiK27Code, "kimi-k2.7-code", 0.95, 4.0, 0.19},
+		{models.KimiK27CodeHighspeed, "kimi-k2.7-code-highspeed", 1.90, 8.0, 0.38},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.id), func(t *testing.T) {
+			m, ok := models.SupportedModels[tt.id]
+			if !ok {
+				t.Fatalf("%s not registered in SupportedModels", tt.id)
+			}
+			if m.Provider != models.ProviderKimi || m.APIModel != tt.apiModel {
+				t.Fatalf("identity mismatch: %+v", m)
+			}
+			if m.ContextWindow != 262_144 {
+				t.Fatalf("context window = %d, want 256K", m.ContextWindow)
+			}
+			// Cache writes carry no premium, so they bill at the input price.
+			if m.CostPer1MIn != tt.in || m.CostPer1MInCached != tt.in || m.CostPer1MOut != tt.out || m.CostPer1MOutCached != tt.cacheHit {
+				t.Fatalf("pricing mismatch: %+v", m)
+			}
+			if !m.CanReason || !m.SupportsAdaptiveThinking || !m.SupportsMaximumThinking || !m.SupportsAttachments {
+				t.Fatalf("capabilities wrong: %+v", m)
+			}
+			if m.SupportsTaskBudget || m.SupportsXHighThinking {
+				t.Fatalf("anthropic-only capabilities must stay off: %+v", m)
+			}
+		})
+	}
+}
+
 // TestCountTokensDisablesAfter404 covers the kimi-provider requirement that
 // an Anthropic-dialect endpoint without count_tokens (404/405) is probed at
 // most once: the first failure latches, later calls short-circuit with

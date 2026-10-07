@@ -24,6 +24,8 @@ const (
 	BedrockFable51    ModelID       = "bedrock.claude-fable-5-1"
 	BedrockEUHaiku45  ModelID       = "bedrock.eu-claude-haiku-4-5"
 	BedrockHaiku45    ModelID       = "bedrock.claude-haiku-4-5"
+	BedrockKimiK3     ModelID       = "bedrock.kimi-k3"
+	BedrockUSKimiK3   ModelID       = "bedrock.us-kimi-k3"
 )
 
 // bedrockRegionalPremium is the 10% surcharge Bedrock applies to regional
@@ -437,4 +439,52 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsAttachments: AnthropicModels[Claude45Haiku].SupportsAttachments,
 		SupportsToolSearch:  AnthropicModels[Claude45Haiku].SupportsToolSearch,
 	},
+}
+
+// BedrockKimiModels are Moonshot's Kimi models on Bedrock. Unlike the Claude
+// entries above they do not speak Anthropic Messages: InvokeModel takes an
+// OpenAI chat-completions body and returns chat.completion (streaming as
+// EventStream frames wrapping chat.completion.chunk), so the bedrock provider
+// serves them through the OpenAI client — see provider/bedrock.go. Reasoning
+// is the OpenAI-style reasoning_effort (low|medium|high), not adaptive
+// thinking. There is no EU geo profile yet, only global and US.
+//
+// Bedrock caches the prompt prefix automatically and reports cache writes as
+// prompt_tokens_details.cache_write_tokens, billed at CostPer1MInCached.
+var BedrockKimiModels = map[ModelID]Model{
+	BedrockKimiK3: {
+		ID:                  BedrockKimiK3,
+		Name:                "Bedrock: Kimi K3",
+		Provider:            ProviderBedrock,
+		APIModel:            "global.moonshotai.kimi-k3",
+		CostPer1MIn:         3.0,
+		CostPer1MInCached:   3.75,
+		CostPer1MOut:        15.0,
+		CostPer1MOutCached:  0.30,
+		ContextWindow:       1_000_000,
+		DefaultMaxTokens:    131_072,
+		CanReason:           true,
+		SupportsAttachments: true,
+	},
+	BedrockUSKimiK3: {
+		ID:                  BedrockUSKimiK3,
+		Name:                "Bedrock US: Kimi K3",
+		Provider:            ProviderBedrock,
+		APIModel:            "us.moonshotai.kimi-k3",
+		CostPer1MIn:         3.0 * bedrockRegionalPremium,
+		CostPer1MInCached:   3.75 * bedrockRegionalPremium,
+		CostPer1MOut:        15.0 * bedrockRegionalPremium,
+		CostPer1MOutCached:  0.30 * bedrockRegionalPremium,
+		ContextWindow:       1_000_000,
+		DefaultMaxTokens:    131_072,
+		CanReason:           true,
+		SupportsAttachments: true,
+	},
+}
+
+// IsBedrockKimi reports whether id is a Kimi model on Bedrock, i.e. one the
+// bedrock provider serves over the OpenAI chat-completions wire format.
+func IsBedrockKimi(id ModelID) bool {
+	_, ok := BedrockKimiModels[id]
+	return ok
 }

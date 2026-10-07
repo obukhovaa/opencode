@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -161,3 +162,43 @@ func (d *bedrockEventStreamDecoder) Next() bool {
 	d.evt = ssestream.Event{}
 	return true
 }
+
+// bedrockSSEReader re-encodes a Bedrock EventStream body as text/event-stream,
+// one "data:" event per chunk frame. It serves the OpenAI client, whose
+// ssestream package has its own decoder registry: rather than register an
+// EventStream decoder there too, the bytes are turned into the SSE the SDK
+// already parses. Exception and error frames surface as the Read error, so
+// they reach the stream's Err() like a transport failure; io.EOF ends the
+// stream cleanly (Bedrock sends no [DONE] sentinel).
+type bedrockSSEReader struct {
+	dec *bedrockEventStreamDecoder
+	buf bytes.Buffer
+}
+
+func newBedrockSSEReader(rc io.ReadCloser) io.ReadCloser {
+	return &bedrockSSEReader{dec: &bedrockEventStreamDecoder{rc: rc}}
+}
+
+func (r *bedrockSSEReader) Read(p []byte) (int, error) {
+	for r.buf.Len() == 0 {
+		if !r.dec.Next() {
+			return 0, r.dec.Err()
+		}
+		data := r.dec.Event().Data
+		if len(data) == 0 {
+			// Skipped frame (non-chunk event or unknown message type).
+			continue
+		}
+		r.buf.WriteString("data: ")
+		// SSE data ends at a newline; compacting guarantees the payload is
+		// a single line (JSON strings keep newlines escaped).
+		if err := json.Compact(&r.buf, data); err != nil {
+			r.buf.Reset()
+			return 0, fmt.Errorf("bedrock stream chunk is not JSON: %w", err)
+		}
+		r.buf.WriteString("\n\n")
+	}
+	return r.buf.Read(p)
+}
+
+func (r *bedrockSSEReader) Close() error { return r.dec.Close() }
