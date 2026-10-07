@@ -25,16 +25,13 @@ import (
 // a pure opt-in that is backwards compatible with the existing deployment.
 const AuroraTLSConfigName = "aurora"
 
-// rdsCABundle is the Amazon RDS certificate bundle for eu-central-1 (the region
-// the c2 agent Aurora Serverless cluster lives in — see GENAI-48). It is the
-// verbatim AWS bundle and contains the three self-signed regional root CAs
-// (ECC384, RSA2048, RSA4096 G1). The Aurora endpoint sends its leaf plus the
-// signing intermediate during the handshake, so trusting these roots is all
-// that is required to verify the server certificate. Refresh it from
-// https://truststore.pki.rds.amazonaws.com/eu-central-1/eu-central-1-bundle.pem
-// if AWS rotates the CA.
+// rdsCABundle is Amazon's global RDS certificate bundle: the root CAs of every
+// region, so one `tls=aurora` DSN verifies an Aurora endpoint in eu-central-1
+// and in us-east-1 alike. Refresh it from
+// https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+// if AWS rotates a CA.
 //
-//go:embed assets/rds-eu-central-1-bundle.pem
+//go:embed assets/rds-global-bundle.pem
 var rdsCABundle []byte
 
 var registerAuroraTLSOnce sync.Once
