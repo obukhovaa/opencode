@@ -1,6 +1,9 @@
 package db
 
 import (
+	"crypto/x509"
+	"encoding/pem"
+	"strings"
 	"testing"
 
 	"github.com/go-sql-driver/mysql"
@@ -41,5 +44,33 @@ func TestSelfHostedDSNUnaffected(t *testing.T) {
 	}
 	if cfg.TLS != nil || cfg.TLSConfig != "" {
 		t.Fatalf("self-hosted DSN must stay plaintext, got TLSConfig=%q", cfg.TLSConfig)
+	}
+}
+
+// TestEmbeddedBundleIsGlobal guards against regressing to a regional bundle:
+// agents verify Aurora endpoints in every region Piano runs them in.
+func TestEmbeddedBundleIsGlobal(t *testing.T) {
+	regions := map[string]bool{"eu-central-1": false, "us-east-1": false}
+	rest := rdsCABundle
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			t.Fatalf("embedded bundle holds an unparsable certificate: %v", err)
+		}
+		for region := range regions {
+			if strings.Contains(cert.Subject.CommonName, region) {
+				regions[region] = true
+			}
+		}
+	}
+	for region, seen := range regions {
+		if !seen {
+			t.Fatalf("embedded RDS bundle has no root CA for %s; it must be the global bundle", region)
+		}
 	}
 }
