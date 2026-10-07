@@ -12,6 +12,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go/bedrock"
 	sdkoption "github.com/anthropics/anthropic-sdk-go/option"
+	openaioption "github.com/openai/openai-go/option"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -36,6 +37,21 @@ type BedrockClient ProviderClient
 
 func newBedrockClient(opts providerClientOptions) BedrockClient {
 	bedrockOpts := bedrockOptions{}
+
+	if models.IsBedrockKimi(opts.model.ID) {
+		// Kimi on Bedrock takes OpenAI chat-completions bodies, not
+		// Anthropic Messages, so it rides the OpenAI client with its
+		// requests rewritten onto the InvokeModel routes.
+		openaiOpts := opts
+		openaiOpts.openaiOptions = append(openaiOpts.openaiOptions,
+			WithOpenAIBedrock(true),
+		)
+		return &bedrockClient{
+			providerOptions: opts,
+			options:         bedrockOpts,
+			childProvider:   newOpenAIClient(openaiOpts),
+		}
+	}
 
 	for k := range models.BedrockAnthropicModels {
 		if k == opts.model.ID {
@@ -204,6 +220,78 @@ func bedrockMiddleware() sdkoption.Middleware {
 			}
 		}
 
+		return res, nil
+	}
+}
+
+// bedrockOpenAIMiddleware routes OpenAI chat-completions requests onto
+// Bedrock's InvokeModel routes (/model/{modelId}/invoke and
+// /model/{modelId}/invoke-with-response-stream), for the Bedrock models whose
+// native InvokeModel body is the chat-completions one (Kimi). Bedrock's own
+// /openai/v1 endpoint would take the requests as-is, but the LiteLLM Bedrock
+// passthrough only exposes the /model/{modelId}/{action} routes. Like
+// bedrockMiddleware it suffix-matches, so base URLs with a path prefix work.
+//
+// The body is forwarded unchanged. Bedrock accepts model, stream and
+// stream_options, and it sends the standard trailing usage chunk (empty
+// choices) only when stream_options.include_usage is set; without it usage
+// lands inside choices[0], where the OpenAI SDK never looks.
+//
+// The streamed reply is binary EventStream, not SSE, so it is re-encoded as
+// text/event-stream for the SDK's line decoder — see newBedrockSSEReader.
+func bedrockOpenAIMiddleware() openaioption.Middleware {
+	return func(r *http.Request, next openaioption.MiddlewareNext) (*http.Response, error) {
+		if r.Body == nil || r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			return next(r)
+		}
+
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		r.Body.Close()
+
+		model := gjson.GetBytes(body, "model").String()
+		stream := gjson.GetBytes(body, "stream").Bool()
+
+		method := "invoke"
+		if stream {
+			method = "invoke-with-response-stream"
+		}
+
+		newPath := fmt.Sprintf("/model/%s/%s", model, method)
+		r.URL.Path = strings.TrimSuffix(r.URL.Path, "/chat/completions") + newPath
+		r.URL.RawPath = strings.ReplaceAll(r.URL.Path, model, url.QueryEscape(model))
+
+		logging.Debug("bedrock openai middleware request",
+			"model", model, "stream", stream, "path", r.URL.Path, "method", r.Method,
+		)
+
+		reader := bytes.NewReader(body)
+		r.Body = io.NopCloser(reader)
+		r.GetBody = func() (io.ReadCloser, error) {
+			_, err := reader.Seek(0, 0)
+			return io.NopCloser(reader), err
+		}
+		r.ContentLength = int64(len(body))
+
+		res, err := next(r)
+		if err != nil || res == nil || !stream || res.StatusCode != http.StatusOK {
+			return res, err
+		}
+
+		// Error replies stay JSON for the SDK's error path. A success is
+		// EventStream; LiteLLM forwards it with no Content-Type at all.
+		ct := strings.ToLower(res.Header.Get("Content-Type"))
+		logging.Debug("bedrock openai middleware response",
+			"content_type", ct, "status", res.StatusCode,
+		)
+		if ct == "" || strings.HasPrefix(ct, bedrockEventStreamContentType) {
+			res.Body = newBedrockSSEReader(res.Body)
+			res.Header.Set("Content-Type", "text/event-stream")
+			res.Header.Del("Content-Length")
+			res.ContentLength = -1
+		}
 		return res, nil
 	}
 }

@@ -165,3 +165,79 @@ func TestValidateAgentKimiEffortExplicitPassesThrough(t *testing.T) {
 		t.Fatalf("explicit effort mangled: %q", got)
 	}
 }
+
+// K2.7 Code takes every effort level, so unlike K3 it is not pinned to max:
+// an empty effort is left for the anthropic client's default.
+func TestValidateAgentKimiK27CodeEffort(t *testing.T) {
+	tests := []struct {
+		name   string
+		effort string
+		want   string
+	}{
+		{"empty keeps client default", "", ""},
+		{"low passes through", "low", "low"},
+		{"max passes through", "max", "max"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearProviderEnv(t)
+			c := &Config{
+				Agents: map[AgentName]Agent{
+					AgentCoder: {Model: models.KimiK27Code, ReasoningEffort: tt.effort},
+				},
+				Providers: map[models.ModelProvider]Provider{
+					models.ProviderKimi: {APIKey: "test-key"},
+				},
+			}
+			if err := validateAgent(c, AgentCoder, c.Agents[AgentCoder]); err != nil {
+				t.Fatalf("validateAgent: %v", err)
+			}
+			if got := c.Agents[AgentCoder].ReasoningEffort; got != tt.want {
+				t.Fatalf("effort = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// Kimi K3 on Bedrock sends the OpenAI-style reasoning_effort field, but with
+// K3's levels: low|high|max with max as the documented default (Bedrock also
+// accepts medium). It therefore follows the K3 rules rather than the OpenAI
+// ones: unset resolves to max, max passes through instead of being folded to
+// medium, and xhigh — not a K3 level — folds to high as it does for K3 on
+// the kimi provider.
+func TestValidateAgentBedrockKimiEffort(t *testing.T) {
+	tests := []struct {
+		name   string
+		effort string
+		want   string
+	}{
+		{"empty defaults to max", "", "max"},
+		{"low passes through", "low", "low"},
+		{"medium passes through", "medium", "medium"},
+		{"high passes through", "high", "high"},
+		{"max passes through", "max", "max"},
+		{"xhigh folds to high", "xhigh", "high"},
+		{"unknown folds to high", "extreme", "high"},
+	}
+	for _, id := range []models.ModelID{models.BedrockKimiK3, models.BedrockUSKimiK3} {
+		for _, tt := range tests {
+			t.Run(string(id)+"/"+tt.name, func(t *testing.T) {
+				clearProviderEnv(t)
+				c := &Config{
+					Agents: map[AgentName]Agent{
+						AgentCoder: {Model: id, ReasoningEffort: tt.effort},
+					},
+					Providers: map[models.ModelProvider]Provider{
+						models.ProviderBedrock: {APIKey: "test-key"},
+					},
+				}
+				if err := validateAgent(c, AgentCoder, c.Agents[AgentCoder]); err != nil {
+					t.Fatalf("validateAgent: %v", err)
+				}
+				if got := c.Agents[AgentCoder].ReasoningEffort; got != tt.want {
+					t.Fatalf("effort = %q, want %q", got, tt.want)
+				}
+			})
+		}
+	}
+}

@@ -14,6 +14,8 @@ import (
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/shared"
+	"github.com/tidwall/gjson"
+
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
@@ -25,6 +27,7 @@ type openaiOptions struct {
 	disableCache    bool
 	reasoningEffort string
 	legacyMaxTokens bool
+	useBedrock      bool
 }
 
 type OpenAIOption func(*openaiOptions)
@@ -38,9 +41,7 @@ type openaiClient struct {
 type OpenAIClient ProviderClient
 
 func newOpenAIClient(opts providerClientOptions) OpenAIClient {
-	openaiOpts := openaiOptions{
-		reasoningEffort: "medium",
-	}
+	openaiOpts := openaiOptions{}
 	for _, o := range opts.openaiOptions {
 		o(&openaiOpts)
 	}
@@ -56,6 +57,9 @@ func newOpenAIClient(opts providerClientOptions) OpenAIClient {
 		for key, value := range opts.headers {
 			openaiClientOptions = append(openaiClientOptions, option.WithHeader(key, value))
 		}
+	}
+	if openaiOpts.useBedrock {
+		openaiClientOptions = append(openaiClientOptions, option.WithMiddleware(bedrockOpenAIMiddleware()))
 	}
 
 	client := openai.NewClient(openaiClientOptions...)
@@ -246,6 +250,18 @@ func (o *openaiClient) preparedParams(messages []openai.ChatCompletionMessagePar
 			params.ReasoningEffort = shared.ReasoningEffortMedium
 		case "high":
 			params.ReasoningEffort = shared.ReasoningEffortHigh
+		case "max":
+			// Not an OpenAI level: config admits it only for models flagged
+			// SupportsMaximumThinking (Kimi K3 on Bedrock, where it is the
+			// model's documented default).
+			params.ReasoningEffort = shared.ReasoningEffort("max")
+		case "":
+			// No effort configured. OpenAI keeps the historical client
+			// default; on Bedrock the field is left out so the model's own
+			// default applies (max for Kimi K3) instead of an OpenAI one.
+			if !o.options.useBedrock {
+				params.ReasoningEffort = shared.ReasoningEffortMedium
+			}
 		default:
 			params.ReasoningEffort = shared.ReasoningEffortMedium
 		}
@@ -307,7 +323,7 @@ func (o *openaiClient) send(ctx context.Context, messages []message.Message, too
 		return &ProviderResponse{
 			Content:      content,
 			ToolCalls:    toolCalls,
-			Usage:        o.usage(*openaiResponse),
+			Usage:        o.usage(openaiResponse.Usage),
 			FinishReason: finishReason,
 		}, nil
 	}
@@ -347,6 +363,10 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 			acc := openai.ChatCompletionAccumulator{}
 			currentContent := ""
 			toolCalls := make([]message.ToolCall, 0)
+			// The accumulator sums only the top-level token counts and drops
+			// prompt_tokens_details, so keep the usage chunk itself for its
+			// cache read/write split.
+			var streamUsage *openai.CompletionUsage
 
 			reader := newStreamReader(ctx, func() (openai.ChatCompletionChunk, bool) {
 				if !openaiStream.Next() {
@@ -369,8 +389,19 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 				}
 
 				acc.AddChunk(chunk)
+				if chunk.JSON.Usage.Valid() {
+					usage := chunk.Usage
+					streamUsage = &usage
+				}
 
 				for _, choice := range chunk.Choices {
+					if thinking := reasoningContentDelta(choice.Delta); thinking != "" {
+						emittedOutput = true
+						eventChan <- ProviderEvent{
+							Type:     EventThinkingDelta,
+							Thinking: thinking,
+						}
+					}
 					if choice.Delta.Content != "" {
 						emittedOutput = true
 						eventChan <- ProviderEvent{
@@ -411,13 +442,17 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 				if len(toolCalls) > 0 {
 					finishReason = message.FinishReasonToolUse
 				}
+				usage := acc.ChatCompletion.Usage
+				if streamUsage != nil {
+					usage = *streamUsage
+				}
 
 				eventChan <- ProviderEvent{
 					Type: EventComplete,
 					Response: &ProviderResponse{
 						Content:      currentContent,
 						ToolCalls:    toolCalls,
-						Usage:        o.usage(acc.ChatCompletion),
+						Usage:        o.usage(usage),
 						FinishReason: finishReason,
 					},
 				}
@@ -583,16 +618,28 @@ func (o *openaiClient) toolCalls(completion openai.ChatCompletion) []message.Too
 	return toolCalls
 }
 
-func (o *openaiClient) usage(completion openai.ChatCompletion) TokenUsage {
-	cachedTokens := completion.Usage.PromptTokensDetails.CachedTokens
-	inputTokens := completion.Usage.PromptTokens - cachedTokens
+func (o *openaiClient) usage(usage openai.CompletionUsage) TokenUsage {
+	cachedTokens := usage.PromptTokensDetails.CachedTokens
+	// OpenAI itself reports no cache writes. Bedrock (Kimi) does, outside
+	// the OpenAI schema, and counts them inside prompt_tokens like reads.
+	cacheWriteTokens := gjson.Parse(usage.PromptTokensDetails.JSON.ExtraFields["cache_write_tokens"].Raw()).Int()
+	inputTokens := usage.PromptTokens - cachedTokens - cacheWriteTokens
 
 	return TokenUsage{
 		InputTokens:         inputTokens,
-		OutputTokens:        completion.Usage.CompletionTokens,
-		CacheCreationTokens: 0, // OpenAI doesn't provide this directly
+		OutputTokens:        usage.CompletionTokens,
+		CacheCreationTokens: cacheWriteTokens,
 		CacheReadTokens:     cachedTokens,
 	}
+}
+
+// reasoningContentDelta returns the reasoning text that OpenAI-compatible
+// servers stream outside the OpenAI schema as delta.reasoning_content (Kimi
+// on Bedrock, DeepSeek, vLLM, ...). openai-go keeps unknown fields raw in
+// JSON.ExtraFields, always marked invalid (no typed decoder), so read Raw()
+// rather than gating on Valid(); a missing or null field yields "".
+func reasoningContentDelta(delta openai.ChatCompletionChunkChoiceDelta) string {
+	return gjson.Parse(delta.JSON.ExtraFields["reasoning_content"].Raw()).String()
 }
 
 func (a *openaiClient) countTokens(ctx context.Context, messages []message.Message, tools []tools.BaseTool) (int64, error) {
@@ -613,21 +660,33 @@ func WithOpenAIDisableCache() OpenAIOption {
 	}
 }
 
+// WithOpenAIBedrock routes chat completions to Bedrock's InvokeModel API
+// (see bedrockOpenAIMiddleware).
+func WithOpenAIBedrock(useBedrock bool) OpenAIOption {
+	return func(options *openaiOptions) {
+		options.useBedrock = useBedrock
+	}
+}
+
 func WithLegacyMaxTokens() OpenAIOption {
 	return func(options *openaiOptions) {
 		options.legacyMaxTokens = true
 	}
 }
 
+// WithReasoningEffort sets the reasoning_effort sent for reasoning models.
+// "" means no configured effort: the OpenAI default (medium) applies, or on
+// Bedrock the model's own default (see preparedParams). An unknown value
+// falls back to that. "max" is not an OpenAI level; config lets it through
+// only for models flagged SupportsMaximumThinking (Kimi K3 on Bedrock).
 func WithReasoningEffort(effort string) OpenAIOption {
 	return func(options *openaiOptions) {
-		defaultReasoningEffort := "medium"
-		switch effort {
-		case "low", "medium", "high":
-			defaultReasoningEffort = effort
+		switch lower := strings.ToLower(effort); lower {
+		case "", "low", "medium", "high", "max":
+			options.reasoningEffort = lower
 		default:
-			logging.Warn("Invalid reasoning effort, using default: medium")
+			logging.Warn("Invalid reasoning effort, using the default", "reasoning_effort", effort)
+			options.reasoningEffort = ""
 		}
-		options.reasoningEffort = defaultReasoningEffort
 	}
 }

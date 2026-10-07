@@ -599,6 +599,10 @@ Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it re
 }
 ```
 
+Kimi K2.7 Code (`kimi.kimi-k2.7-code`) and its faster, double-priced Highspeed variant (`kimi.kimi-k2.7-code-highspeed`) ride the same endpoint with a 256K context. They accept every effort level from `low` to `max`, so an unset `reasoningEffort` keeps the client default (`high`) instead of being pinned to `max`.
+
+Kimi K3 is also available on AWS Bedrock as `bedrock.kimi-k3` (global profile) and `bedrock.us-kimi-k3` (US profile; there is no EU profile yet). Bedrock serves it with OpenAI chat-completions bodies rather than Anthropic Messages, so it is sent through the OpenAI client, with the requests rewritten onto Bedrock's InvokeModel routes. That means it works through the same `providers.bedrock` config and the LiteLLM Bedrock passthrough as the Claude models. Reasoning goes through the OpenAI-style `reasoning_effort` field but keeps K3's levels: `reasoningEffort` `low`/`high`/`max`, defaulting to `max` as on the `kimi` provider (Bedrock also accepts `medium`; `xhigh` folds to `high`). Bedrock caches the prompt prefix automatically, so no cache breakpoints are needed.
+
 **LiteLLM proxy:**
 
 ```json
@@ -657,10 +661,10 @@ Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it re
 | **OpenAI** | GPT-5, O3 Mini, O4 Mini |
 | **Anthropic** | Claude 5.5 Opus (1M), Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5.5 Sonnet (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 4.5 Haiku |
 | **Google Gemini** | Gemini 3.0 Pro, Gemini 3.0 Flash |
-| **AWS Bedrock** | Claude 5.5 Opus (1M)(EU/Global), Claude 5 Opus (1M)(EU/Global), Claude Fable 5.1 (1M)(EU/Global), Claude Fable 5 (1M)(EU/Global), Claude 4.8 Opus (1M)(EU/Global), Claude 4.7 Opus (1M)(EU/Global), Claude 5.5 Sonnet (1M)(EU/Global), Claude 5 Sonnet (1M)(EU/Global), Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global), Claude 4.5 Haiku (EU/Global) |
+| **AWS Bedrock** | Claude 5.5 Opus (1M)(EU/Global), Claude 5 Opus (1M)(EU/Global), Claude Fable 5.1 (1M)(EU/Global), Claude Fable 5 (1M)(EU/Global), Claude 4.8 Opus (1M)(EU/Global), Claude 4.7 Opus (1M)(EU/Global), Claude 5.5 Sonnet (1M)(EU/Global), Claude 5 Sonnet (1M)(EU/Global), Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global), Claude 4.5 Haiku (EU/Global), Kimi K3 (1M)(US/Global) |
 | **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude 5.5 Opus (1M), Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5.5 Sonnet (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 4.5 Haiku |
 | **YandexCloud** | Alice AI LLM, YandexGPT Pro 5.1, YandexGPT Pro 5, YandexGPT Lite 5, DeepSeek V3.2, Qwen3 235B, Qwen3.5 35B, gpt-oss-120b |
-| **Kimi (Moonshot)** | Kimi K3 (1M) |
+| **Kimi (Moonshot)** | Kimi K3 (1M), Kimi K2.7 Code, Kimi K2.7 Code Highspeed |
 | **Local** | Any OpenAI-compatible API |
 
 ## Tools

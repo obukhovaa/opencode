@@ -24,6 +24,8 @@ const (
 	BedrockFable51    ModelID       = "bedrock.claude-fable-5-1"
 	BedrockEUHaiku45  ModelID       = "bedrock.eu-claude-haiku-4-5"
 	BedrockHaiku45    ModelID       = "bedrock.claude-haiku-4-5"
+	BedrockKimiK3     ModelID       = "bedrock.kimi-k3"
+	BedrockUSKimiK3   ModelID       = "bedrock.us-kimi-k3"
 )
 
 // bedrockRegionalPremium is the 10% surcharge Bedrock applies to regional
@@ -437,4 +439,69 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsAttachments: AnthropicModels[Claude45Haiku].SupportsAttachments,
 		SupportsToolSearch:  AnthropicModels[Claude45Haiku].SupportsToolSearch,
 	},
+}
+
+// BedrockKimiModels are Moonshot's Kimi models on Bedrock. Unlike the Claude
+// entries above they do not speak Anthropic Messages: InvokeModel takes an
+// OpenAI chat-completions body and returns chat.completion (streaming as
+// EventStream frames wrapping chat.completion.chunk), so the bedrock provider
+// serves them through the OpenAI client — see provider/bedrock.go. Reasoning
+// is requested through the OpenAI-style reasoning_effort field rather than
+// adaptive thinking, but with K3's levels: low|high|max, max being the
+// documented default on Moonshot and AWS alike (Bedrock also accepts medium;
+// xhigh is not a K3 level). SupportsMaximumThinking therefore holds, so the
+// config layer and flow-step validation admit max — the OpenAI rules would
+// default it to medium and fold a configured max down to medium. There is
+// no EU geo profile yet: Bedrock offers global, US and India, and only the
+// first two are registered here.
+//
+// Bedrock caches the prompt prefix automatically and reports cache writes as
+// prompt_tokens_details.cache_write_tokens, billed at CostPer1MInCached.
+var BedrockKimiModels = map[ModelID]Model{
+	BedrockKimiK3: {
+		ID:                      BedrockKimiK3,
+		Name:                    "Bedrock: Kimi K3",
+		Provider:                ProviderBedrock,
+		APIModel:                "global.moonshotai.kimi-k3",
+		CostPer1MIn:             3.0,
+		CostPer1MInCached:       3.75,
+		CostPer1MOut:            15.0,
+		CostPer1MOutCached:      0.30,
+		ContextWindow:           1_000_000,
+		DefaultMaxTokens:        131_072,
+		CanReason:               true,
+		SupportsMaximumThinking: true,
+		SupportsAttachments:     true,
+	},
+	BedrockUSKimiK3: {
+		ID:                      BedrockUSKimiK3,
+		Name:                    "Bedrock US: Kimi K3",
+		Provider:                ProviderBedrock,
+		APIModel:                "us.moonshotai.kimi-k3",
+		CostPer1MIn:             3.0 * bedrockRegionalPremium,
+		CostPer1MInCached:       3.75 * bedrockRegionalPremium,
+		CostPer1MOut:            15.0 * bedrockRegionalPremium,
+		CostPer1MOutCached:      0.30 * bedrockRegionalPremium,
+		ContextWindow:           1_000_000,
+		DefaultMaxTokens:        131_072,
+		CanReason:               true,
+		SupportsMaximumThinking: true,
+		SupportsAttachments:     true,
+	},
+}
+
+// IsBedrockKimi reports whether id is a Kimi model on Bedrock, i.e. one the
+// bedrock provider serves over the OpenAI chat-completions wire format.
+func IsBedrockKimi(id ModelID) bool {
+	_, ok := BedrockKimiModels[id]
+	return ok
+}
+
+// IsKimiK3 reports whether id is a Kimi K3 deployment on any provider. K3
+// documents the effort levels low|high|max with max as the default, so the
+// config layer resolves an unset reasoningEffort to max on every K3 route
+// instead of leaving it to a client default (high for the anthropic client,
+// medium for the openai one) that K3 does not document.
+func IsKimiK3(id ModelID) bool {
+	return id == KimiK3 || id == BedrockKimiK3 || id == BedrockUSKimiK3
 }

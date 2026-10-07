@@ -42,14 +42,16 @@ func IsReasoningEffort(s string) bool {
 //
 //   - "" is always legal — the provider default applies.
 //   - a model that cannot reason accepts no effort at all.
-//   - adaptive-thinking models accept low|medium|high, plus xhigh only when
-//     SupportsXHighThinking and max only when SupportsMaximumThinking.
-//   - every other reasoning model (OpenAI, Yandex, local endpoints, Gemini)
-//     accepts low|medium|high.
+//   - every reasoning model accepts low|medium|high (OpenAI, Yandex, local
+//     endpoints and Gemini stop there).
+//   - xhigh needs SupportsXHighThinking and max needs SupportsMaximumThinking:
+//     the adaptive-thinking Claude and Kimi models, plus Kimi K3 on Bedrock,
+//     whose OpenAI-style reasoning_effort field takes max as well.
 //
 // This is deliberately STRICTER than config.validateAgent, not a mirror of
-// it. Config only coerces the effort for OpenAI/Local-provider models and
-// for adaptive-thinking models; a reasoning model that is neither (e.g.
+// it. Config only coerces the effort for OpenAI/Local-provider models, for
+// adaptive-thinking models and for Kimi on Bedrock; a reasoning model that
+// is none of those (e.g.
 // claude-4.5-opus, gemini-3.0-flash, yandexcloud.*) passes through config
 // with whatever effort string the agent declared, xhigh/max included, and
 // the provider client decides what to do with it. The same value on a flow
@@ -74,11 +76,11 @@ func ValidateReasoningEffort(m Model, effort string) error {
 	}
 	switch lower {
 	case ReasoningEffortXHigh:
-		if !m.SupportsAdaptiveThinking || !m.SupportsXHighThinking {
+		if !m.SupportsXHighThinking {
 			return fmt.Errorf("%w: model %s does not support %q", ErrInvalidReasoningEffort, m.ID, lower)
 		}
 	case ReasoningEffortMax:
-		if !m.SupportsAdaptiveThinking || !m.SupportsMaximumThinking {
+		if !m.SupportsMaximumThinking {
 			return fmt.Errorf("%w: model %s does not support %q", ErrInvalidReasoningEffort, m.ID, lower)
 		}
 	}
