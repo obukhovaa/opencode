@@ -114,9 +114,10 @@ func TestPreparedMessages_ForceStructOutputRejectedByModel(t *testing.T) {
 }
 
 // TestPreparedMessages_ForceStructOutputHaiku55: unlike Opus 5.5 and Sonnet
-// 5.5, Claude Haiku 5.5 accepts a forced tool_choice, so the forcing signal
-// must still reach the API on every provider that serves it. It does 400 on a
-// non-default temperature, so neither turn may send one.
+// 5.5, Claude Haiku 5.5 accepts a forced tool_choice, so every catalog entry
+// for it must keep the forcing in the prepared request (the Bedrock and Vertex
+// middlewares rewrite the URL and beta headers, not tool_choice). It does 400
+// on a non-default temperature, so neither turn may send one.
 func TestPreparedMessages_ForceStructOutputHaiku55(t *testing.T) {
 	for _, id := range []models.ModelID{
 		models.Claude55Haiku,

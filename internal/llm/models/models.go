@@ -47,8 +47,10 @@ type Model struct {
 	// which the whole request — output included — is billed at
 	// LongContextCostMultiplier times the four CostPer1M* rates (Claude Haiku
 	// 5.5: 5x over 100,000). The prompt is uncached input plus cache writes
-	// and cache reads, all of which count toward the context window. Zero
-	// means flat pricing at any length.
+	// and cache reads, all of which count toward the context window. Zero in
+	// either field means flat pricing at any length. One multiplier covers
+	// all four rates; a tier that raises input and output by different
+	// factors needs separate fields.
 	LongContextThreshold      int64   `json:"long_context_threshold,omitempty"`
 	LongContextCostMultiplier float64 `json:"long_context_cost_multiplier,omitempty"`
 }

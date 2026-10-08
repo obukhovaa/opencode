@@ -10,21 +10,21 @@ import (
 func TestCalculateCost(t *testing.T) {
 	tests := []struct {
 		name       string
-		model      models.ModelID
+		model      models.Model
 		usage      TokenUsage
 		wantInput  float64
 		wantOutput float64
 	}{
 		{
 			name:       "flat pricing ignores prompt length",
-			model:      models.Claude45Haiku,
+			model:      models.SupportedModels[models.Claude45Haiku],
 			usage:      TokenUsage{InputTokens: 300_000, OutputTokens: 1_000},
 			wantInput:  0.3,
 			wantOutput: 0.005,
 		},
 		{
 			name:  "haiku 5.5 at the threshold stays on base rates",
-			model: models.Claude55Haiku,
+			model: models.SupportedModels[models.Claude55Haiku],
 			usage: TokenUsage{
 				InputTokens:         40_000,
 				CacheCreationTokens: 10_000,
@@ -36,7 +36,7 @@ func TestCalculateCost(t *testing.T) {
 		},
 		{
 			name:  "haiku 5.5 over the threshold reprices the whole request",
-			model: models.Claude55Haiku,
+			model: models.SupportedModels[models.Claude55Haiku],
 			usage: TokenUsage{
 				InputTokens:         40_001,
 				CacheCreationTokens: 10_000,
@@ -48,7 +48,7 @@ func TestCalculateCost(t *testing.T) {
 		},
 		{
 			name:  "bedrock EU haiku 5.5 stacks the tier on the regional premium",
-			model: models.BedrockEUHaiku55,
+			model: models.SupportedModels[models.BedrockEUHaiku55],
 			usage: TokenUsage{
 				InputTokens:         40_001,
 				CacheCreationTokens: 10_000,
@@ -58,10 +58,17 @@ func TestCalculateCost(t *testing.T) {
 			wantInput:  0.03162555,
 			wantOutput: 0.0055,
 		},
+		{
+			name:       "a threshold without a multiplier keeps flat pricing",
+			model:      models.Model{CostPer1MIn: 1, CostPer1MOut: 5, LongContextThreshold: 100_000},
+			usage:      TokenUsage{InputTokens: 200_000, OutputTokens: 1_000},
+			wantInput:  0.2,
+			wantOutput: 0.005,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotInput, gotOutput := CalculateCost(models.SupportedModels[tt.model], tt.usage)
+			gotInput, gotOutput := CalculateCost(tt.model, tt.usage)
 			if math.Abs(gotInput-tt.wantInput) > 1e-12 {
 				t.Errorf("input cost = %v, want %v", gotInput, tt.wantInput)
 			}

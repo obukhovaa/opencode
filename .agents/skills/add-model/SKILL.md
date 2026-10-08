@@ -38,7 +38,7 @@ Model{
 }
 ```
 
-If the pricing page lists a second price row "for prompts over N tokens", set the two `LongContext*` fields instead of averaging the rates; `provider.CalculateCost` applies them. Mirror both fields on the Bedrock/VertexAI entries.
+If the pricing page lists a second price row "for prompts over N tokens" and every rate in it is the same multiple of the base row, set the two `LongContext*` fields instead of averaging the rates; `provider.CalculateCost` applies them. If input and output rise by different factors, the single multiplier cannot express it: extend `Model` and `CalculateCost` rather than picking one factor. Mirror the fields on the Bedrock/VertexAI entries.
 
 ## Required Information from Model Card
 

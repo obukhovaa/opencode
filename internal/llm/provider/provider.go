@@ -873,9 +873,13 @@ func CalculateCost(model models.Model, u TokenUsage) (inputCost, outputCost floa
 		model.CostPer1MIn/1e6*float64(u.InputTokens)
 	outputCost = model.CostPer1MOut / 1e6 * float64(u.OutputTokens)
 	// A long prompt reprices the whole request, not just the tokens past the
-	// threshold.
+	// threshold. The prompt size comes from the reported usage, so a report
+	// summed over several sampling passes (server tool search) or doubled by
+	// a proxy can cross the threshold when no single request did; the
+	// tracked cost errs high there.
 	prompt := u.InputTokens + u.CacheCreationTokens + u.CacheReadTokens
-	if model.LongContextThreshold > 0 && prompt > model.LongContextThreshold {
+	if model.LongContextThreshold > 0 && model.LongContextCostMultiplier > 0 &&
+		prompt > model.LongContextThreshold {
 		inputCost *= model.LongContextCostMultiplier
 		outputCost *= model.LongContextCostMultiplier
 	}
