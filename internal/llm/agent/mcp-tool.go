@@ -144,6 +144,7 @@ func (r *mcpRegistry) StartClient(ctx context.Context, name string) (c *client.C
 	// value for the duration of the calling context only; the shared
 	// config map is never mutated.
 	headers := resolveMCPHeaders(ctx, name, m.Headers)
+	headers = resolvePeerHeader(ctx, m.PeerHeader, headers)
 
 	startCtx, cancelStart := context.WithTimeout(ctx, 20*time.Second)
 	defer cancelStart()
@@ -212,6 +213,23 @@ func resolveMCPHeaders(ctx context.Context, name string, static map[string]strin
 	return layerAuthorization(static, override)
 }
 
+// resolvePeerHeader layers the bridge peer id of the calling turn
+// (tools.PeerFromContext) under the server's configured peerHeader. No
+// header name, or no peer on ctx, returns headers untouched; otherwise a
+// fresh copy is built, for the same reasons resolveMCPHeaders gives — and
+// any static value under that name is replaced, so a config can never
+// pin a peer the bridge did not resolve.
+func resolvePeerHeader(ctx context.Context, header string, headers map[string]string) map[string]string {
+	if header == "" {
+		return headers
+	}
+	peer, ok := tools.PeerFromContext(ctx)
+	if !ok {
+		return headers
+	}
+	return layerHeader(headers, header, peer.PeerID)
+}
+
 // authorizationHeader is the canonical spelling the override is written
 // under. net/http canonicalises on Set, but the map itself must hold
 // exactly one Authorization-equivalent key — see resolveMCPHeaders.
@@ -220,14 +238,20 @@ const authorizationHeader = "Authorization"
 // layerAuthorization copies static and replaces any Authorization header
 // (in any letter case) with value.
 func layerAuthorization(static map[string]string, value string) map[string]string {
+	return layerHeader(static, authorizationHeader, value)
+}
+
+// layerHeader copies static and replaces any header equal to name in any
+// letter case with value, written under name's own spelling.
+func layerHeader(static map[string]string, name, value string) map[string]string {
 	layered := make(map[string]string, len(static)+1)
 	for k, v := range static {
-		if strings.EqualFold(k, authorizationHeader) {
+		if strings.EqualFold(k, name) {
 			continue
 		}
 		layered[k] = v
 	}
-	layered[authorizationHeader] = value
+	layered[name] = value
 	return layered
 }
 

@@ -33,13 +33,19 @@ const (
 
 // MCPServer defines the configuration for a Model Control Protocol server.
 type MCPServer struct {
-	Command  string            `json:"command"`
-	Env      []string          `json:"env"`
-	Args     []string          `json:"args"`
-	Type     MCPType           `json:"type"`
-	URL      string            `json:"url"`
-	Headers  map[string]string `json:"headers"`
-	Disabled bool              `json:"disabled,omitempty"`
+	Command string            `json:"command"`
+	Env     []string          `json:"env"`
+	Args    []string          `json:"args"`
+	Type    MCPType           `json:"type"`
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers"`
+	// PeerHeader names an HTTP header that carries the chat-bridge peer id
+	// of the turn making the call (sse and http servers only). The value
+	// comes from the bridge's authenticated inbound peer, never from the
+	// model, so a server can scope its answer to the conversation the
+	// peer id names. Omitted on calls not made from a bridge turn.
+	PeerHeader string `json:"peerHeader,omitempty"`
+	Disabled   bool   `json:"disabled,omitempty"`
 	// CallToolTimeoutSeconds overrides the default per-tool-call timeout for this server.
 	// Set to 0 (or omit) to use the built-in default. Useful for slow MCP servers whose
 	// individual tool calls can legitimately exceed the default budget.

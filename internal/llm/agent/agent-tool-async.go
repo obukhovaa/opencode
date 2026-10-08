@@ -79,6 +79,11 @@ func (b *agentTool) runAsync(
 	// The detached base drops the parent turn's values; carry the requester
 	// across so the subagent's traces stay attributed to the same person.
 	runCtx = tools.WithRequester(runCtx, tools.RequesterFromContext(ctx))
+	// Likewise the bridge peer, so the subagent's MCP calls carry the same
+	// peer header as the turn that spawned it.
+	if peer, ok := tools.PeerFromContext(ctx); ok {
+		runCtx = tools.WithPeer(runCtx, peer)
+	}
 	// Inherit the caller's NonInteractive marker from the PARENT turn ctx
 	// (runCtx is detached and carries no values) — see subagentRunOptions.
 	done, err := a.RunWith(runCtx, taskSession.ID, prompt, 0, subagentRunOptions(ctx))
