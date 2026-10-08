@@ -872,6 +872,13 @@ func CalculateCost(model models.Model, u TokenUsage) (inputCost, outputCost floa
 		model.CostPer1MOutCached/1e6*float64(u.CacheReadTokens) +
 		model.CostPer1MIn/1e6*float64(u.InputTokens)
 	outputCost = model.CostPer1MOut / 1e6 * float64(u.OutputTokens)
+	// A long prompt reprices the whole request, not just the tokens past the
+	// threshold.
+	prompt := u.InputTokens + u.CacheCreationTokens + u.CacheReadTokens
+	if model.LongContextThreshold > 0 && prompt > model.LongContextThreshold {
+		inputCost *= model.LongContextCostMultiplier
+		outputCost *= model.LongContextCostMultiplier
+	}
 	return
 }
 

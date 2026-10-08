@@ -112,3 +112,46 @@ func TestPreparedMessages_ForceStructOutputRejectedByModel(t *testing.T) {
 		})
 	}
 }
+
+// TestPreparedMessages_ForceStructOutputHaiku55: unlike Opus 5.5 and Sonnet
+// 5.5, Claude Haiku 5.5 accepts a forced tool_choice, so the forcing signal
+// must still reach the API on every provider that serves it. It does 400 on a
+// non-default temperature, so neither turn may send one.
+func TestPreparedMessages_ForceStructOutputHaiku55(t *testing.T) {
+	for _, id := range []models.ModelID{
+		models.Claude55Haiku,
+		models.BedrockHaiku55,
+		models.BedrockEUHaiku55,
+		models.VertexAIHaiku55,
+	} {
+		t.Run(string(id), func(t *testing.T) {
+			a, ok := newAnthropicClient(providerClientOptions{
+				apiKey: "test-key",
+				model:  models.SupportedModels[id],
+			}).(*anthropicClient)
+			if !ok {
+				t.Fatal("newAnthropicClient did not return *anthropicClient")
+			}
+			msgs := a.convertMessages([]message.Message{{
+				Role:  message.User,
+				Parts: []message.ContentPart{message.TextContent{Text: "do it"}},
+			}})
+
+			forced := a.preparedMessages(WithForcedTool(context.Background(), tools.StructOutputToolName), msgs, nil)
+			if forced.ToolChoice.OfTool == nil || forced.ToolChoice.OfTool.Name != tools.StructOutputToolName {
+				t.Fatalf("expected forced ToolChoice=%q for %s, got %+v", tools.StructOutputToolName, id, forced.ToolChoice)
+			}
+			if forced.Temperature.Valid() {
+				t.Fatalf("forced turn must omit temperature for %s", id)
+			}
+
+			normal := a.preparedMessages(context.Background(), msgs, nil)
+			if normal.Thinking.OfAdaptive == nil {
+				t.Fatalf("normal turn must request adaptive thinking for %s, got %+v", id, normal.Thinking)
+			}
+			if normal.Temperature.Valid() {
+				t.Fatalf("normal turn must omit temperature for %s", id)
+			}
+		})
+	}
+}

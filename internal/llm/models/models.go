@@ -43,6 +43,14 @@ type Model struct {
 	// model, read its breaking changes and set this rather than relying on the
 	// default (see .agents/skills/add-model/SKILL.md).
 	RejectsForcedToolChoice bool `json:"rejects_forced_tool_choice,omitempty"`
+	// LongContextThreshold, when non-zero, is the prompt size in tokens above
+	// which the whole request — output included — is billed at
+	// LongContextCostMultiplier times the four CostPer1M* rates (Claude Haiku
+	// 5.5: 5x over 100,000). The prompt is uncached input plus cache writes
+	// and cache reads, all of which count toward the context window. Zero
+	// means flat pricing at any length.
+	LongContextThreshold      int64   `json:"long_context_threshold,omitempty"`
+	LongContextCostMultiplier float64 `json:"long_context_cost_multiplier,omitempty"`
 }
 
 const (
