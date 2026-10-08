@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -444,7 +445,11 @@ func convertBinaryContent(bc message.BinaryContent, documents bool) anthropic.Co
 	}
 	switch mimeType {
 	case "image/jpeg", "image/png", "image/gif", "image/webp":
-		return anthropic.NewImageBlockBase64(mimeType, bc.String(models.ProviderAnthropic))
+		actual, err := checkImage(bc.Data)
+		if err != nil {
+			return anthropic.NewTextBlock(invalidImageNote(bc, err))
+		}
+		return anthropic.NewImageBlockBase64(actual, bc.String(models.ProviderAnthropic))
 	case "application/pdf":
 		if documents {
 			return anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{
@@ -496,11 +501,22 @@ func inlineTextAttachment(bc message.BinaryContent) string {
 // attachments no provider block type can carry. Shared by the anthropic
 // and openai converters.
 func unsupportedAttachmentNote(bc message.BinaryContent) string {
-	saved := ""
-	if bc.Path != "" {
-		saved = fmt.Sprintf("; the file is saved at %q and can be inspected with file tools", bc.Path)
+	return fmt.Sprintf("[Attachment of unsupported media type %q omitted (%d bytes)%s]", bc.MIMEType, len(bc.Data), savedPathHint(bc))
+}
+
+// invalidImageNote renders the text substituted for an image whose data
+// checkImage rejected. Shared by the anthropic and openai converters and
+// the anthropic tool-result path.
+func invalidImageNote(bc message.BinaryContent, err error) string {
+	return fmt.Sprintf("[Image omitted (%d bytes): %v%s]", len(bc.Data), err, savedPathHint(bc))
+}
+
+// savedPathHint points the model at an omitted attachment's saved copy.
+func savedPathHint(bc message.BinaryContent) string {
+	if bc.Path == "" {
+		return ""
 	}
-	return fmt.Sprintf("[Attachment of unsupported media type %q omitted (%d bytes)%s]", bc.MIMEType, len(bc.Data), saved)
+	return fmt.Sprintf("; the file is saved at %q and can be inspected with file tools", bc.Path)
 }
 
 // toolSearchRefsFromStartEvent parses a raw content_block_start payload for a
@@ -1473,6 +1489,21 @@ func (a *anthropicClient) newToolResultImageBlock(toolResult message.ToolResult)
 
 	if err := json.Unmarshal([]byte(toolResult.Content), &imageData); err != nil {
 		return nil, err
+	}
+	// The image replays from history on every turn, so an undecodable
+	// file read by view_image must not reach the API (see checkImage).
+	raw, err := base64.StdEncoding.DecodeString(imageData.Data)
+	if err != nil {
+		err = fmt.Errorf("invalid base64 image data: %w", err)
+	} else {
+		imageData.MimeType, err = checkImage(raw)
+	}
+	if err != nil {
+		var meta toolsPkg.ViewImageResponseMetadata
+		_ = json.Unmarshal([]byte(toolResult.Metadata), &meta)
+		note := invalidImageNote(message.BinaryContent{Path: meta.FilePath, Data: raw}, err)
+		block := anthropic.NewToolResultBlock(toolResult.ToolCallID, note, toolResult.IsError)
+		return &block, nil
 	}
 	imageBlock := anthropic.NewImageBlockBase64(imageData.MimeType, imageData.Data)
 

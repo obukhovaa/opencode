@@ -159,6 +159,13 @@ func convertBinaryContentOpenAI(bc message.BinaryContent) openai.ChatCompletionC
 	}
 	switch mimeType {
 	case "image/jpeg", "image/png", "image/gif", "image/webp":
+		actual, err := checkImage(bc.Data)
+		if err != nil {
+			return openai.ChatCompletionContentPartUnionParam{
+				OfText: &openai.ChatCompletionContentPartTextParam{Text: invalidImageNote(bc, err)},
+			}
+		}
+		bc.MIMEType = actual // the data URL carries the sniffed type
 		imageURL := openai.ChatCompletionContentPartImageImageURLParam{URL: bc.String(models.ProviderOpenAI)}
 		return openai.ChatCompletionContentPartUnionParam{
 			OfImageURL: &openai.ChatCompletionContentPartImageParam{ImageURL: imageURL},

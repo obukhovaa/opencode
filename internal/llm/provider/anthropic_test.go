@@ -324,12 +324,12 @@ func TestConvertBinaryContentBlockTypes(t *testing.T) {
 	}{
 		{
 			name:     "png stays an image block",
-			bc:       message.BinaryContent{MIMEType: "image/png", Data: []byte{1, 2, 3}},
+			bc:       message.BinaryContent{MIMEType: "image/png", Data: testPNG(t)},
 			wantKind: "image",
 		},
 		{
 			name:     "mime parameters are stripped",
-			bc:       message.BinaryContent{MIMEType: "image/jpeg; charset=binary", Data: []byte{1}},
+			bc:       message.BinaryContent{MIMEType: "image/jpeg; charset=binary", Data: testJPEG(t)},
 			wantKind: "image",
 		},
 		{
@@ -385,7 +385,7 @@ func TestConvertBinaryContentBlockTypes(t *testing.T) {
 		},
 		{
 			name:     "png stays an image block without document blocks",
-			bc:       message.BinaryContent{MIMEType: "image/png", Data: []byte{1, 2, 3}},
+			bc:       message.BinaryContent{MIMEType: "image/png", Data: testPNG(t)},
 			kimi:     true,
 			wantKind: "image",
 		},
