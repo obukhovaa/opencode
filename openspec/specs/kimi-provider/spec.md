@@ -91,6 +91,29 @@ When an Anthropic-dialect endpoint responds 404 or 405 to a token-count request,
 - **WHEN** count_tokens succeeds
 - **THEN** behavior is unchanged from other anthropic-dialect providers (endpoint result floored by the local estimate)
 
+### Requirement: Kimi requests carry no document blocks
+Moonshot's Anthropic-compatible endpoint rejects every `document` content block — base64 PDF and plain-text source alike — with a bare `400 invalid_request_error` ("Invalid request Error") on both `/v1/messages` and `/v1/messages/count_tokens`, while text and image blocks pass. Because attachments persist in session history, one such block fails every later turn of the session. Requests to a `kimi` provider model SHALL therefore never contain a document block: a PDF attachment SHALL be replaced by the unsupported-attachment note naming its saved path, a valid UTF-8 `text/*` attachment SHALL be inlined as a text block headed `[Attached file, saved at "<path>"]` (or `[Attached file]` when unsaved), and image attachments SHALL keep their image blocks. Token counting SHALL use the same conversion. Other anthropic-dialect providers keep document blocks. Kimi K3 on Bedrock is unaffected: its OpenAI chat-completions path sends a PDF as a `file` part, which Bedrock accepts.
+
+#### Scenario: PDF in a Kimi session
+- **WHEN** a session on `kimi.kimi-k3` holds a PDF attachment saved at `.opencode/bridge/media/scan.pdf`
+- **THEN** the request carries a text block noting the omitted attachment and that path, no document block, and the turn succeeds; the model can read the file through file tools
+
+#### Scenario: Text file in a Kimi session
+- **WHEN** a session on a `kimi` model holds a `text/plain` attachment
+- **THEN** its content is sent as a text block under the attachment header, not as a document block
+
+#### Scenario: Token count of a session with attachments
+- **WHEN** count_tokens runs for a `kimi` model session holding PDF or text attachments
+- **THEN** the count_tokens request body carries no document block and the endpoint answers with a count instead of a 400
+
+#### Scenario: Claude on the anthropic client
+- **WHEN** the same history is sent to a Claude model
+- **THEN** the PDF and text attachments are sent as document blocks, unchanged
+
+#### Scenario: Kimi K3 on Bedrock
+- **WHEN** a session on `bedrock.kimi-k3` holds a PDF attachment
+- **THEN** the PDF is sent as a chat-completions `file` part with a data URL and the model reads its content
+
 ### Requirement: Kimi is part of the public config contract
 The generated `.opencode.json` schema SHALL list `kimi` among known provider keys and include kimi model IDs in agent model enums; the README SHALL document the provider and its environment variables.
 

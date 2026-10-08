@@ -3,8 +3,10 @@ package provider
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -178,6 +180,44 @@ func TestCountTokensSuccessPathUnchanged(t *testing.T) {
 	// auth shape Moonshot's Anthropic-compatible endpoint expects.
 	if got, _ := authHeader.Load().(string); got != "Bearer test-key" {
 		t.Fatalf("Authorization = %q, want Bearer test-key", got)
+	}
+}
+
+// TestCountTokensKimiCarriesNoDocumentBlocks covers the session that
+// 400'd count_tokens on every iteration: a bridged PDF in its history was
+// sent as a document block, which Moonshot rejects on count_tokens exactly
+// as on messages. count_tokens shares convertMessages, so the request body
+// must carry the attachments as text blocks only.
+func TestCountTokensKimiCarriesNoDocumentBlocks(t *testing.T) {
+	var body atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body.Store(string(raw))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"input_tokens": 42}`))
+	}))
+	defer srv.Close()
+
+	client := newAnthropicClient(providerClientOptions{
+		apiKey:  "test-key",
+		baseURL: srv.URL,
+		model:   models.KimiModels[models.KimiK3],
+	}).(*anthropicClient)
+
+	history := []message.Message{newMsg(message.User,
+		message.TextContent{Text: "see attached"},
+		message.BinaryContent{MIMEType: "application/pdf", Path: ".opencode/bridge/media/scan.pdf", Data: []byte("%PDF-1.7")},
+		message.BinaryContent{MIMEType: "text/plain", Data: []byte("notes")},
+	)}
+	if _, err := client.countTokens(context.Background(), history, nil); err != nil {
+		t.Fatalf("countTokens: %v", err)
+	}
+	got, _ := body.Load().(string)
+	if strings.Contains(got, `"type":"document"`) {
+		t.Fatalf("count_tokens body carries a document block: %s", got)
+	}
+	if !strings.Contains(got, "scan.pdf") || !strings.Contains(got, "notes") {
+		t.Fatalf("count_tokens body lost the attachments: %s", got)
 	}
 }
 

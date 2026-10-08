@@ -17,6 +17,7 @@ func TestConvertBinaryContentOpenAIPartTypes(t *testing.T) {
 		name     string
 		bc       message.BinaryContent
 		wantKind string
+		wantText string // substring of a text part's content
 	}{
 		{
 			name:     "png stays an image part",
@@ -34,9 +35,10 @@ func TestConvertBinaryContentOpenAIPartTypes(t *testing.T) {
 			wantKind: "file",
 		},
 		{
-			name:     "plain text is inlined as a text part",
-			bc:       message.BinaryContent{MIMEType: "text/plain; charset=utf-8", Data: []byte("hello")},
+			name:     "plain text is inlined as a text part under a header",
+			bc:       message.BinaryContent{MIMEType: "text/plain; charset=utf-8", Path: ".opencode/bridge/media/notes.txt", Data: []byte("hello")},
 			wantKind: "text",
+			wantText: "[Attached file, saved at \".opencode/bridge/media/notes.txt\"]\nhello",
 		},
 		{
 			name:     "audio degrades to a text placeholder",
@@ -84,6 +86,9 @@ func TestConvertBinaryContentOpenAIPartTypes(t *testing.T) {
 				if !strings.Contains(part.OfText.Text, "[Attachment of unsupported media type") {
 					t.Errorf("zero-byte payload not substituted with placeholder: %q", part.OfText.Text)
 				}
+			}
+			if tt.wantText != "" && !strings.Contains(part.OfText.Text, tt.wantText) {
+				t.Errorf("text part %q should contain %q", part.OfText.Text, tt.wantText)
 			}
 		})
 	}

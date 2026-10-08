@@ -221,7 +221,7 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 				contentBlocks = append(contentBlocks, anthropic.NewTextBlock(text))
 			}
 			for _, binaryContent := range msg.BinaryContent() {
-				contentBlocks = append(contentBlocks, convertBinaryContent(binaryContent))
+				contentBlocks = append(contentBlocks, convertBinaryContent(binaryContent, a.supportsDocumentBlocks()))
 			}
 			if len(contentBlocks) == 0 {
 				logging.Warn("Skipping user message with no renderable content",
@@ -432,7 +432,12 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 // bridge poisoned its session permanently: Bedrock resets the response
 // stream (HTTP/2 INTERNAL_ERROR) instead of returning a 400, and since the
 // attachment is persisted in history, every subsequent turn replays it.
-func convertBinaryContent(bc message.BinaryContent) anthropic.ContentBlockParamUnion {
+//
+// documents reports whether the endpoint accepts document blocks (see
+// supportsDocumentBlocks); without them a PDF degrades to the saved-path
+// note and a text file is inlined as a text block under an attachment
+// header.
+func convertBinaryContent(bc message.BinaryContent, documents bool) anthropic.ContentBlockParamUnion {
 	mimeType := strings.ToLower(strings.TrimSpace(bc.MIMEType))
 	if i := strings.Index(mimeType, ";"); i >= 0 { // strip parameters, e.g. "; charset=utf-8"
 		mimeType = strings.TrimSpace(mimeType[:i])
@@ -441,14 +446,20 @@ func convertBinaryContent(bc message.BinaryContent) anthropic.ContentBlockParamU
 	case "image/jpeg", "image/png", "image/gif", "image/webp":
 		return anthropic.NewImageBlockBase64(mimeType, bc.String(models.ProviderAnthropic))
 	case "application/pdf":
-		return anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{
-			Data: bc.String(models.ProviderAnthropic),
-		})
+		if documents {
+			return anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{
+				Data: bc.String(models.ProviderAnthropic),
+			})
+		}
+		return anthropic.NewTextBlock(unsupportedAttachmentNote(bc))
 	}
 	// Zero-byte payloads must not become empty content blocks — the API
 	// rejects empty strings, and a persisted invalid attachment poisons
 	// every subsequent turn of the session.
 	if len(bc.Data) > 0 && strings.HasPrefix(mimeType, "text/") && utf8.Valid(bc.Data) {
+		if !documents {
+			return anthropic.NewTextBlock(inlineTextAttachment(bc))
+		}
 		return anthropic.NewDocumentBlock(anthropic.PlainTextSourceParam{
 			Data: string(bc.Data),
 		})
@@ -458,6 +469,27 @@ func convertBinaryContent(bc message.BinaryContent) anthropic.ContentBlockParamU
 	// to disk before dispatch, so the model can still reach the payload
 	// through file tools via the referenced path.
 	return anthropic.NewTextBlock(unsupportedAttachmentNote(bc))
+}
+
+// supportsDocumentBlocks reports whether this client's endpoint accepts
+// document content blocks. Moonshot's Anthropic-compatible endpoint (Kimi)
+// rejects any document block — base64 PDF and plain-text source alike —
+// with a bare 400 "Invalid request Error", while text and image blocks
+// pass; a PDF sent through the bridge therefore poisoned every later turn
+// of its session, since the attachment replays from history.
+func (a *anthropicClient) supportsDocumentBlocks() bool {
+	return a.providerOptions.model.Provider != models.ProviderKimi
+}
+
+// inlineTextAttachment renders a text attachment carried as a plain text
+// block, headed so the model can tell the file apart from the user's own
+// words — a document block marks that boundary itself. Shared by the
+// anthropic and openai converters.
+func inlineTextAttachment(bc message.BinaryContent) string {
+	if bc.Path == "" {
+		return "[Attached file]\n" + string(bc.Data)
+	}
+	return fmt.Sprintf("[Attached file, saved at %q]\n%s", bc.Path, bc.Data)
 }
 
 // unsupportedAttachmentNote renders the placeholder text substituted for
