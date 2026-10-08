@@ -318,16 +318,18 @@ func TestConvertBinaryContentBlockTypes(t *testing.T) {
 	tests := []struct {
 		name     string
 		bc       message.BinaryContent
+		kimi     bool // endpoint rejects document blocks
 		wantKind string
+		wantText string // substring of a text block's content
 	}{
 		{
 			name:     "png stays an image block",
-			bc:       message.BinaryContent{MIMEType: "image/png", Data: []byte{1, 2, 3}},
+			bc:       message.BinaryContent{MIMEType: "image/png", Data: testPNG(t)},
 			wantKind: "image",
 		},
 		{
 			name:     "mime parameters are stripped",
-			bc:       message.BinaryContent{MIMEType: "image/jpeg; charset=binary", Data: []byte{1}},
+			bc:       message.BinaryContent{MIMEType: "image/jpeg; charset=binary", Data: testJPEG(t)},
 			wantKind: "image",
 		},
 		{
@@ -358,11 +360,40 @@ func TestConvertBinaryContentBlockTypes(t *testing.T) {
 			bc:       message.BinaryContent{MIMEType: "text/plain", Path: "empty.log", Data: nil},
 			wantKind: "text",
 		},
+		// Endpoints without document blocks (Kimi) 400 on any document
+		// block, so PDFs degrade to the saved-path note and text inlines.
+		{
+			name:     "pdf degrades to a text placeholder without document blocks",
+			bc:       message.BinaryContent{MIMEType: "application/pdf", Path: ".opencode/bridge/media/scan.pdf", Data: []byte("%PDF-1.7")},
+			kimi:     true,
+			wantKind: "text",
+			wantText: "omitted",
+		},
+		{
+			name:     "plain text inlines under a header without document blocks",
+			bc:       message.BinaryContent{MIMEType: "text/plain", Path: ".opencode/bridge/media/notes.txt", Data: []byte("hello")},
+			kimi:     true,
+			wantKind: "text",
+			wantText: "[Attached file, saved at \".opencode/bridge/media/notes.txt\"]\nhello",
+		},
+		{
+			name:     "unsaved plain text still gets an attachment header",
+			bc:       message.BinaryContent{MIMEType: "text/plain", Data: []byte("hello")},
+			kimi:     true,
+			wantKind: "text",
+			wantText: "[Attached file]\nhello",
+		},
+		{
+			name:     "png stays an image block without document blocks",
+			bc:       message.BinaryContent{MIMEType: "image/png", Data: testPNG(t)},
+			kimi:     true,
+			wantKind: "image",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			block := convertBinaryContent(tt.bc)
+			block := convertBinaryContent(tt.bc, !tt.kimi)
 			var gotKind string
 			switch {
 			case block.OfImage != nil:
@@ -379,6 +410,64 @@ func TestConvertBinaryContentBlockTypes(t *testing.T) {
 			}
 			if gotKind == "text" && tt.bc.Path != "" && !strings.Contains(block.OfText.Text, tt.bc.Path) {
 				t.Errorf("placeholder text %q should reference saved path %q", block.OfText.Text, tt.bc.Path)
+			}
+			if tt.wantText != "" && !strings.Contains(block.OfText.Text, tt.wantText) {
+				t.Errorf("text block %q should contain %q", block.OfText.Text, tt.wantText)
+			}
+		})
+	}
+}
+
+// TestConvertMessagesKimiOmitsDocumentBlocks covers a session whose history
+// holds bridged PDFs, replayed to Kimi: Moonshot's Anthropic-compatible
+// endpoint 400s ("Invalid request Error") on any document block, so the
+// request must carry none — the PDF becomes the saved-path note and a text
+// attachment its content under an attachment header. Claude clients keep
+// document blocks.
+func TestConvertMessagesKimiOmitsDocumentBlocks(t *testing.T) {
+	history := []message.Message{
+		newMsg(message.User,
+			message.TextContent{Text: "see attached"},
+			message.BinaryContent{MIMEType: "application/pdf", Path: ".opencode/bridge/media/scan.pdf", Data: []byte("%PDF-1.7")},
+			message.BinaryContent{MIMEType: "text/plain", Data: []byte("notes")},
+		),
+	}
+
+	for _, tt := range []struct {
+		model         models.ModelID
+		wantDocuments int
+	}{
+		{model: models.KimiK3, wantDocuments: 0},
+		{model: models.Claude46Opus, wantDocuments: 2},
+	} {
+		t.Run(string(tt.model), func(t *testing.T) {
+			a, ok := newAnthropicClient(providerClientOptions{
+				apiKey: "test-key",
+				model:  models.SupportedModels[tt.model],
+			}).(*anthropicClient)
+			if !ok {
+				t.Fatal("newAnthropicClient did not return *anthropicClient")
+			}
+			converted := a.convertMessages(history)
+			if len(converted) != 1 || len(converted[0].Content) != 3 {
+				t.Fatalf("unexpected conversion shape: %+v", converted)
+			}
+			documents := 0
+			for _, block := range converted[0].Content {
+				if block.OfDocument != nil {
+					documents++
+				}
+			}
+			if documents != tt.wantDocuments {
+				t.Fatalf("got %d document blocks, want %d", documents, tt.wantDocuments)
+			}
+			if tt.wantDocuments == 0 {
+				if note := converted[0].Content[1].OfText; note == nil || !strings.Contains(note.Text, "scan.pdf") {
+					t.Errorf("pdf should degrade to a note referencing its saved path, got %+v", converted[0].Content[1])
+				}
+				if inline := converted[0].Content[2].OfText; inline == nil || inline.Text != "[Attached file]\nnotes" {
+					t.Errorf("text attachment should inline its content under a header, got %+v", converted[0].Content[2])
+				}
 			}
 		})
 	}

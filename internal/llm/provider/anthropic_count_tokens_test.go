@@ -306,7 +306,7 @@ func TestCountTokensLeavesMediaAloneOffBedrock(t *testing.T) {
 	messages := []message.Message{
 		newMsg(message.User, message.BinaryContent{
 			MIMEType: "image/png",
-			Data:     []byte("fakeimage"),
+			Data:     testPNG(t),
 		}),
 	}
 	got, err := client.countTokens(context.Background(), messages, nil)
@@ -490,7 +490,7 @@ func TestCountTokensBedrockSumsBothCompensations(t *testing.T) {
 
 	messages := append(toolSearchTurn(), newMsg(message.User, message.BinaryContent{
 		MIMEType: "image/png",
-		Data:     []byte("fakeimage"),
+		Data:     testPNG(t),
 	}))
 	got, err := client.countTokens(context.Background(), messages, nil)
 	if err != nil {

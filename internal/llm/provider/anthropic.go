@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -221,7 +222,7 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 				contentBlocks = append(contentBlocks, anthropic.NewTextBlock(text))
 			}
 			for _, binaryContent := range msg.BinaryContent() {
-				contentBlocks = append(contentBlocks, convertBinaryContent(binaryContent))
+				contentBlocks = append(contentBlocks, convertBinaryContent(binaryContent, a.supportsDocumentBlocks()))
 			}
 			if len(contentBlocks) == 0 {
 				logging.Warn("Skipping user message with no renderable content",
@@ -432,23 +433,38 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 // bridge poisoned its session permanently: Bedrock resets the response
 // stream (HTTP/2 INTERNAL_ERROR) instead of returning a 400, and since the
 // attachment is persisted in history, every subsequent turn replays it.
-func convertBinaryContent(bc message.BinaryContent) anthropic.ContentBlockParamUnion {
+//
+// documents reports whether the endpoint accepts document blocks (see
+// supportsDocumentBlocks); without them a PDF degrades to the saved-path
+// note and a text file is inlined as a text block under an attachment
+// header.
+func convertBinaryContent(bc message.BinaryContent, documents bool) anthropic.ContentBlockParamUnion {
 	mimeType := strings.ToLower(strings.TrimSpace(bc.MIMEType))
 	if i := strings.Index(mimeType, ";"); i >= 0 { // strip parameters, e.g. "; charset=utf-8"
 		mimeType = strings.TrimSpace(mimeType[:i])
 	}
 	switch mimeType {
 	case "image/jpeg", "image/png", "image/gif", "image/webp":
-		return anthropic.NewImageBlockBase64(mimeType, bc.String(models.ProviderAnthropic))
+		actual, err := checkImage(bc.Data)
+		if err != nil {
+			return anthropic.NewTextBlock(invalidImageNote(bc, err))
+		}
+		return anthropic.NewImageBlockBase64(actual, bc.String(models.ProviderAnthropic))
 	case "application/pdf":
-		return anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{
-			Data: bc.String(models.ProviderAnthropic),
-		})
+		if documents {
+			return anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{
+				Data: bc.String(models.ProviderAnthropic),
+			})
+		}
+		return anthropic.NewTextBlock(unsupportedAttachmentNote(bc))
 	}
 	// Zero-byte payloads must not become empty content blocks — the API
 	// rejects empty strings, and a persisted invalid attachment poisons
 	// every subsequent turn of the session.
 	if len(bc.Data) > 0 && strings.HasPrefix(mimeType, "text/") && utf8.Valid(bc.Data) {
+		if !documents {
+			return anthropic.NewTextBlock(inlineTextAttachment(bc))
+		}
 		return anthropic.NewDocumentBlock(anthropic.PlainTextSourceParam{
 			Data: string(bc.Data),
 		})
@@ -460,15 +476,47 @@ func convertBinaryContent(bc message.BinaryContent) anthropic.ContentBlockParamU
 	return anthropic.NewTextBlock(unsupportedAttachmentNote(bc))
 }
 
+// supportsDocumentBlocks reports whether this client's endpoint accepts
+// document content blocks. Moonshot's Anthropic-compatible endpoint (Kimi)
+// rejects any document block — base64 PDF and plain-text source alike —
+// with a bare 400 "Invalid request Error", while text and image blocks
+// pass; a PDF sent through the bridge therefore poisoned every later turn
+// of its session, since the attachment replays from history.
+func (a *anthropicClient) supportsDocumentBlocks() bool {
+	return a.providerOptions.model.Provider != models.ProviderKimi
+}
+
+// inlineTextAttachment renders a text attachment carried as a plain text
+// block, headed so the model can tell the file apart from the user's own
+// words — a document block marks that boundary itself. Shared by the
+// anthropic and openai converters.
+func inlineTextAttachment(bc message.BinaryContent) string {
+	if bc.Path == "" {
+		return "[Attached file]\n" + string(bc.Data)
+	}
+	return fmt.Sprintf("[Attached file, saved at %q]\n%s", bc.Path, bc.Data)
+}
+
 // unsupportedAttachmentNote renders the placeholder text substituted for
 // attachments no provider block type can carry. Shared by the anthropic
 // and openai converters.
 func unsupportedAttachmentNote(bc message.BinaryContent) string {
-	saved := ""
-	if bc.Path != "" {
-		saved = fmt.Sprintf("; the file is saved at %q and can be inspected with file tools", bc.Path)
+	return fmt.Sprintf("[Attachment of unsupported media type %q omitted (%d bytes)%s]", bc.MIMEType, len(bc.Data), savedPathHint(bc))
+}
+
+// invalidImageNote renders the text substituted for an image whose data
+// checkImage rejected. Shared by the anthropic and openai converters and
+// the anthropic tool-result path.
+func invalidImageNote(bc message.BinaryContent, err error) string {
+	return fmt.Sprintf("[Image omitted (%d bytes): %v%s]", len(bc.Data), err, savedPathHint(bc))
+}
+
+// savedPathHint points the model at an omitted attachment's saved copy.
+func savedPathHint(bc message.BinaryContent) string {
+	if bc.Path == "" {
+		return ""
 	}
-	return fmt.Sprintf("[Attachment of unsupported media type %q omitted (%d bytes)%s]", bc.MIMEType, len(bc.Data), saved)
+	return fmt.Sprintf("; the file is saved at %q and can be inspected with file tools", bc.Path)
 }
 
 // toolSearchRefsFromStartEvent parses a raw content_block_start payload for a
@@ -1441,6 +1489,21 @@ func (a *anthropicClient) newToolResultImageBlock(toolResult message.ToolResult)
 
 	if err := json.Unmarshal([]byte(toolResult.Content), &imageData); err != nil {
 		return nil, err
+	}
+	// The image replays from history on every turn, so an undecodable
+	// file read by view_image must not reach the API (see checkImage).
+	raw, err := base64.StdEncoding.DecodeString(imageData.Data)
+	if err != nil {
+		err = fmt.Errorf("invalid base64 image data: %w", err)
+	} else {
+		imageData.MimeType, err = checkImage(raw)
+	}
+	if err != nil {
+		var meta toolsPkg.ViewImageResponseMetadata
+		_ = json.Unmarshal([]byte(toolResult.Metadata), &meta)
+		note := invalidImageNote(message.BinaryContent{Path: meta.FilePath, Data: raw}, err)
+		block := anthropic.NewToolResultBlock(toolResult.ToolCallID, note, toolResult.IsError)
+		return &block, nil
 	}
 	imageBlock := anthropic.NewImageBlockBase64(imageData.MimeType, imageData.Data)
 

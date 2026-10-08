@@ -159,6 +159,13 @@ func convertBinaryContentOpenAI(bc message.BinaryContent) openai.ChatCompletionC
 	}
 	switch mimeType {
 	case "image/jpeg", "image/png", "image/gif", "image/webp":
+		actual, err := checkImage(bc.Data)
+		if err != nil {
+			return openai.ChatCompletionContentPartUnionParam{
+				OfText: &openai.ChatCompletionContentPartTextParam{Text: invalidImageNote(bc, err)},
+			}
+		}
+		bc.MIMEType = actual // the data URL carries the sniffed type
 		imageURL := openai.ChatCompletionContentPartImageImageURLParam{URL: bc.String(models.ProviderOpenAI)}
 		return openai.ChatCompletionContentPartUnionParam{
 			OfImageURL: &openai.ChatCompletionContentPartImageParam{ImageURL: imageURL},
@@ -183,7 +190,7 @@ func convertBinaryContentOpenAI(bc message.BinaryContent) openai.ChatCompletionC
 	// attachment would replay an invalid part on every subsequent turn.
 	if len(bc.Data) > 0 && strings.HasPrefix(mimeType, "text/") && utf8.Valid(bc.Data) {
 		return openai.ChatCompletionContentPartUnionParam{
-			OfText: &openai.ChatCompletionContentPartTextParam{Text: string(bc.Data)},
+			OfText: &openai.ChatCompletionContentPartTextParam{Text: inlineTextAttachment(bc)},
 		}
 	}
 	// Unsupported by the API (audio outside the audio-preview models,
