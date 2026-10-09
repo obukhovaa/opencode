@@ -55,9 +55,13 @@ func TestMCPStdioHelperProcess(t *testing.T) {
 	_ = server.ServeStdio(srv)
 	if mode == "ignore-eof" {
 		// A server that outlives its stdin and shrugs off SIGTERM: only
-		// SIGKILL ends it.
+		// SIGKILL ends it — or its parent dying, so a crashed test run
+		// cannot orphan it for good.
 		signal.Ignore(syscall.SIGTERM)
-		select {}
+		parent := os.Getppid()
+		for os.Getppid() == parent {
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 	os.Exit(0)
 }
@@ -154,21 +158,38 @@ func TestMCPStdio_ServerIgnoringEOFIsKilledOnClose(t *testing.T) {
 	eventually(t, "the helper to be killed and reaped", func() bool { return processGone(pid) })
 }
 
-func TestMCPStdio_ReuseDisabledDoesNotWaitForClose(t *testing.T) {
+// Each call gets its own process, and each is stopped afterwards. That the
+// result does not wait for the close is pinned by TestMCPPool_ReuseDisabled,
+// without a process spawn's timing in the way.
+func TestMCPStdio_ReuseDisabledStopsEachProcess(t *testing.T) {
+	withCloseGrace(t, 100*time.Millisecond)
 	m := stdioHelperServer("ignore-eof")
 	m.ClientIdleTimeoutSeconds = -1
 	reg := newStdioPoolRegistry(t, m)
 
 	first := callPID(t, reg)
-	start := time.Now()
 	second := callPID(t, reg)
-	if elapsed := time.Since(start); elapsed > mcpCloseGrace {
-		t.Errorf("call took %s; the result waited for the previous client's close", elapsed)
-	}
 	if first == second {
 		t.Error("reuse is disabled, but both calls ran in one process")
 	}
 	eventually(t, "the first helper to be killed", func() bool { return processGone(first) })
+	eventually(t, "the second helper to be killed", func() bool { return processGone(second) })
+}
+
+// ForceShutdown gives the pool 1s, less than the default grace: the
+// escalation must still fit into it rather than leave the server behind.
+func TestMCPStdio_ShortShutdownBudgetStillKills(t *testing.T) {
+	reg := newStdioPoolRegistry(t, stdioHelperServer("ignore-eof"))
+	pid := callPID(t, reg)
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	reg.Shutdown(ctx)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("shutdown took %s against a 1s budget", elapsed)
+	}
+	eventually(t, "the helper to be killed within the budget", func() bool { return processGone(pid) })
 }
 
 func TestMCPStdio_DrainsStderr(t *testing.T) {

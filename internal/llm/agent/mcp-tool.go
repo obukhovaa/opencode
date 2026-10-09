@@ -19,6 +19,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -155,7 +156,13 @@ func (r *mcpRegistry) CallTool(ctx context.Context, name, toolName, input string
 			return mcpConnectErrorResponse(ctx, toolName, err)
 		}
 		resp, callErr := callMCPTool(ctx, conn.client, toolName, input, callTimeout, maxOutputBytes)
-		r.pool.release(conn, mcpConnBroken(ctx, callErr))
+		// A stdio client is also evicted when the caller gave up mid-call:
+		// mcp-go sends no notifications/cancelled, so the server would keep
+		// working on the abandoned request and later calls would queue behind
+		// it. Retiring the client stops the process once its other calls
+		// finish, as closing the per-call client used to.
+		evict := mcpConnBroken(ctx, callErr, conn.remote) || (callErr != nil && ctx.Err() != nil && conn.stdio)
+		r.pool.release(conn, evict)
 		if attempt == 1 && ctx.Err() == nil && mcpRequestNotSent(callErr) {
 			logging.Info("MCP client lost its session or process; retrying on a fresh client",
 				"server", name, "tool", toolName, "cause", callErr)
@@ -516,10 +523,24 @@ func (r *mcpRegistry) getToolsAttempt(name string, m config.MCPServer, retryOnIn
 		}
 		defer close(entry.done)
 
-		entry.data, entry.err = conn.client.ListTools(fetchCtx, mcp.ListToolsRequest{})
-		// Never blocks: a close the release triggers runs in the background,
+		// Classified against baseCtx, not fetchCtx: fetchCtx expiring is our
+		// own budget running out on a wedged client, which must evict it. A
+		// release never blocks — a close it triggers runs in the background —
 		// so it cannot hold entry.done shut for this server's waiters.
-		r.pool.release(conn, mcpConnBroken(fetchCtx, entry.err))
+		entry.data, entry.err = conn.client.ListTools(fetchCtx, mcp.ListToolsRequest{})
+		broken := mcpConnBroken(r.baseCtx, entry.err, conn.remote)
+		r.pool.release(conn, broken)
+		if broken && fetchCtx.Err() == nil {
+			// tools/list has no side effects, so a pooled client that turned
+			// out stale — a stdio server that exited while idle, a session the
+			// server dropped — gets one retry on a fresh client within the same
+			// budget. Without it the fetching agent would freeze an empty
+			// toolset for this server.
+			if conn, entry.err = r.pool.acquire(fetchCtx, name, m); entry.err == nil {
+				entry.data, entry.err = conn.client.ListTools(fetchCtx, mcp.ListToolsRequest{})
+				r.pool.release(conn, mcpConnBroken(r.baseCtx, entry.err, conn.remote))
+			}
+		}
 		if entry.err != nil {
 			logging.Error("Error listing MCP tools", "server", name, "cause", entry.err.Error())
 			r.mcpTools.Delete(name)
@@ -643,10 +664,6 @@ func resolveCallToolMaxOutputBytes(m config.MCPServer) int {
 // renders the result for the model. The error CallTool failed with comes back
 // separately — nil when the server answered, a tool-level isError result
 // included — so the caller can decide whether the client survives.
-// callMCPTool sends one tools/call on a connected, initialized client and
-// renders the result for the model. The error CallTool failed with comes back
-// separately — nil when the server answered, a tool-level isError result
-// included — so the caller can decide whether the client survives.
 func callMCPTool(ctx context.Context, c MCPClient, toolName string, input string, callTimeout time.Duration, maxOutputBytes int) (tools.ToolResponse, error) {
 	toolRequest := mcp.CallToolRequest{}
 	toolRequest.Params.Name = toolName
@@ -658,7 +675,27 @@ func callMCPTool(ctx context.Context, c MCPClient, toolName string, input string
 
 	callCtx, cancelCall := context.WithTimeout(ctx, callTimeout)
 	defer cancelCall()
-	result, err := c.CallTool(callCtx, toolRequest)
+	// Waited on rather than called inline: mcp-go's stdio transport writes the
+	// request with no deadline, so a server that stopped reading its stdin
+	// would hold the call past callTimeout. The abandoned goroutine ends when
+	// the evicted client closes its pipe.
+	type callOutcome struct {
+		result *mcp.CallToolResult
+		err    error
+	}
+	outcome := make(chan callOutcome, 1)
+	go func() {
+		result, err := c.CallTool(callCtx, toolRequest)
+		outcome <- callOutcome{result, err}
+	}()
+	var result *mcp.CallToolResult
+	var err error
+	select {
+	case o := <-outcome:
+		result, err = o.result, o.err
+	case <-callCtx.Done():
+		err = transport.NewError(callCtx.Err())
+	}
 	if err != nil {
 		// Only attribute the timeout to our per-call budget when the parent ctx is
 		// still alive — otherwise the deadline came from upstream and reporting our

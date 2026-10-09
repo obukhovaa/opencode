@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -47,6 +49,14 @@ type fakeMCPClient struct {
 	callToolDelay time.Duration
 	// callErr, when set, is what CallTool fails with instead of returning result.
 	callErr error
+	// wedgeCallTool makes CallTool hang until the channel closes, ignoring
+	// ctx — mcp-go's stdio transport blocked in its unbounded stdin write.
+	wedgeCallTool chan struct{}
+	// tools / listErr are what ListTools returns; blockListTools makes it hang
+	// until ctx is done and then fail the way mcp-go's transports do.
+	tools          []mcp.Tool
+	listErr        error
+	blockListTools bool
 	// blockClose makes Close hang, standing in for transport.Stdio.Close
 	// parking in cmd.Wait() on a child that ignores stdin EOF.
 	blockClose chan struct{}
@@ -72,12 +82,23 @@ func (f *fakeMCPClient) Initialize(ctx context.Context, req mcp.InitializeReques
 	return &mcp.InitializeResult{}, nil
 }
 func (f *fakeMCPClient) ListTools(ctx context.Context, req mcp.ListToolsRequest) (*mcp.ListToolsResult, error) {
-	return &mcp.ListToolsResult{}, nil
+	if f.blockListTools {
+		<-ctx.Done()
+		return nil, transport.NewError(ctx.Err())
+	}
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return &mcp.ListToolsResult{Tools: f.tools}, nil
 }
 func (f *fakeMCPClient) CallTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	f.callCalls.Add(1)
 	if f.callErr != nil {
 		return nil, f.callErr
+	}
+	if f.wedgeCallTool != nil {
+		<-f.wedgeCallTool
+		return nil, transport.NewError(errors.New("write |1: file already closed"))
 	}
 	if f.blockCallTool {
 		<-ctx.Done()
@@ -395,6 +416,19 @@ func TestMCPHandshakeBound(t *testing.T) {
 		}
 	})
 
+	t.Run("call budget applies even when the transport ignores the context", func(t *testing.T) {
+		wedged := make(chan struct{})
+		t.Cleanup(func() { close(wedged) })
+		start := time.Now()
+		resp, err := callMCPTool(context.Background(), &fakeMCPClient{wedgeCallTool: wedged}, "stuck_write", "{}", 50*time.Millisecond, mcpCallToolMaxOutputBytes)
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("call took %s against a 50ms budget", elapsed)
+		}
+		if !strings.Contains(resp.Content, "timed out") || !mcpConnBroken(context.Background(), err, false) {
+			t.Errorf("want a timeout that evicts the client; got %q / %v", resp.Content, err)
+		}
+	})
+
 	t.Run("call budget still applies", func(t *testing.T) {
 		resp, err := callMCPTool(context.Background(), &fakeMCPClient{blockCallTool: true}, "hung_call", "{}", 50*time.Millisecond, mcpCallToolMaxOutputBytes)
 		if err == nil {
@@ -467,7 +501,7 @@ func TestCloseMCPClientBounded(t *testing.T) {
 		done := make(chan time.Duration, 1)
 		go func() {
 			start := time.Now()
-			closeMCPClient(c, nil, "wedged", 50*time.Millisecond)
+			closeMCPClient(c, nil, "wedged", mcpCloseTiming{abandon: 50 * time.Millisecond})
 			done <- time.Since(start)
 		}()
 
@@ -486,7 +520,7 @@ func TestCloseMCPClientBounded(t *testing.T) {
 
 	t.Run("a cooperative Close completes normally", func(t *testing.T) {
 		c := &fakeMCPClient{}
-		closeMCPClient(c, nil, "ok", time.Minute)
+		closeMCPClient(c, nil, "ok", defaultCloseTiming())
 		if !c.closed.Load() {
 			t.Error("Close was not called")
 		}

@@ -23,6 +23,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/agent/mcpauthctx"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 )
 
 // fakeMCPFactory hands the pool a fresh fake client per connect, built by
@@ -68,10 +69,13 @@ func newFakeMCPRegistry(t *testing.T, name string, m config.MCPServer, f *fakeMC
 	reg := NewMCPRegistry(ctx, nil, nil).(*mcpRegistry)
 	reg.pool.newClient = f.newClient
 	t.Cleanup(func() {
-		cancel()
+		// Shutdown first: it aborts connects still in progress and stops the
+		// janitor, so nothing is left reading a budget a later cleanup
+		// restores. Cancelling afterwards unwinds anything else.
 		shutdownCtx, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
 		reg.Shutdown(shutdownCtx)
+		cancel()
 	})
 	return reg
 }
@@ -233,18 +237,137 @@ func TestMCPPool_EvictsWithoutRetryOnOtherTransportErrors(t *testing.T) {
 	}
 }
 
-// An error the server answered with (JSON-RPC) says nothing about the client.
-func TestMCPPool_KeepsClientOnServerError(t *testing.T) {
-	f := &fakeMCPFactory{make: func(int) *fakeMCPClient { return &fakeMCPClient{callErr: errors.New("tool exploded")} }}
+// A JSON-RPC error with a standard code comes from a healthy session; one
+// with an implementation-defined code is how a remote server rejects a session
+// it no longer knows (mcp-go returns the 4xx body as an ordinary error answer).
+func TestMCPPool_ServerErrors(t *testing.T) {
+	stdioServer := config.MCPServer{Type: config.MCPStdio, Command: "fake"}
+	tests := []struct {
+		name      string
+		server    config.MCPServer
+		err       error
+		wantDials int
+	}{
+		{"tool failure keeps a remote client", fakeServer, fmt.Errorf("%w: tool exploded", mcp.ErrInternalError), 1},
+		{"invalid params keep a remote client", fakeServer, mcp.ErrInvalidParams, 1},
+		{"unknown session evicts a remote client", fakeServer, errors.New("Bad Request: No valid session ID provided"), 2},
+		{"a stdio client survives any server error", stdioServer, errors.New("Bad Request: No valid session ID provided"), 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeMCPFactory{make: func(int) *fakeMCPClient { return &fakeMCPClient{callErr: tt.err} }}
+			reg := newFakeMCPRegistry(t, "srv", tt.server, f)
+			for range 2 {
+				if resp := reg.CallTool(context.Background(), "srv", "echo", "{}"); !resp.IsError {
+					t.Fatal("expected the server's error")
+				}
+			}
+			if got := f.dials(); got != tt.wantDials {
+				t.Errorf("connects = %d, want %d", got, tt.wantDials)
+			}
+		})
+	}
+}
+
+// Before the pool, an abandoned call's per-call client was closed, which
+// stopped a stdio server working on it; a stdio client is evicted instead.
+func TestMCPPool_CancelledCallEvictsOnlyStdio(t *testing.T) {
+	tests := []struct {
+		name      string
+		server    config.MCPServer
+		wantDials int
+	}{
+		{"stdio", config.MCPServer{Type: config.MCPStdio, Command: "fake"}, 2},
+		{"http", fakeServer, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeMCPFactory{make: func(n int) *fakeMCPClient {
+				if n == 1 {
+					return &fakeMCPClient{blockCallTool: true}
+				}
+				return &fakeMCPClient{result: textResult("ok")}
+			}}
+			reg := newFakeMCPRegistry(t, "srv", tt.server, f)
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			defer cancel()
+			if resp := reg.CallTool(ctx, "srv", "hang", "{}"); !resp.IsError {
+				t.Fatal("expected the abandoned call to fail")
+			}
+			// Bounded: on HTTP this reuses the same, still-hanging client.
+			next, cancelNext := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancelNext()
+			reg.CallTool(next, "srv", "echo", "{}")
+			if got := f.dials(); got != tt.wantDials {
+				t.Errorf("connects = %d, want %d", got, tt.wantDials)
+			}
+		})
+	}
+}
+
+// A transport whose start ignores the handshake budget (SSE's GET runs under
+// the client's lifetime) is still cut off by it.
+func TestMCPPool_HangingStartIsBounded(t *testing.T) {
+	const budget = 100 * time.Millisecond
+	withInitTimeout(t, budget)
+	seedMCPServers(t, map[string]config.MCPServer{"srv": fakeServer})
+	reg := NewMCPRegistry(context.Background(), nil, nil).(*mcpRegistry)
+	t.Cleanup(func() { reg.Shutdown(context.Background()) })
+	reg.pool.newClient = func(lifetime context.Context, _ string, _ config.MCPServer, _ map[string]string) (MCPClient, *mcpProc, error) {
+		<-lifetime.Done()
+		return nil, nil, lifetime.Err()
+	}
+
+	start := time.Now()
+	resp := reg.CallTool(context.Background(), "srv", "echo", "{}")
+	if elapsed := time.Since(start); elapsed > 20*budget {
+		t.Fatalf("connect took %s against a %s budget", elapsed, budget)
+	}
+	if !resp.IsError || !strings.Contains(resp.Content, "handshake") {
+		t.Errorf("want the handshake error, got %+v", resp)
+	}
+}
+
+func TestMCPRegistry_DiscoveryRecoversFromAStaleClient(t *testing.T) {
+	stale := transport.NewError(fmt.Errorf("failed to send request: %w", transport.ErrSessionTerminated))
+	f := &fakeMCPFactory{make: func(n int) *fakeMCPClient {
+		if n == 1 {
+			return &fakeMCPClient{listErr: stale}
+		}
+		return &fakeMCPClient{tools: []mcp.Tool{mcp.NewTool("echo")}}
+	}}
+	reg := newFakeMCPRegistry(t, "srv", fakeServer, f)
+	// Warm the pool, as a tool call would have, before the server drops it.
+	conn, err := reg.pool.acquire(context.Background(), "srv", fakeServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.pool.release(conn, false)
+
+	if got := len(drainLoadTools(t, reg.LoadTools(nil))); got != 1 {
+		t.Fatalf("discovered %d tools, want 1 after retrying on a fresh client", got)
+	}
+	if got := f.dials(); got != 2 {
+		t.Errorf("connects = %d, want 2", got)
+	}
+}
+
+func TestMCPRegistry_DiscoveryTimeoutEvicts(t *testing.T) {
+	withInitTimeout(t, 100*time.Millisecond)
+	f := &fakeMCPFactory{make: func(n int) *fakeMCPClient {
+		if n == 1 {
+			return &fakeMCPClient{blockListTools: true}
+		}
+		return &fakeMCPClient{tools: []mcp.Tool{mcp.NewTool("echo")}}
+	}}
 	reg := newFakeMCPRegistry(t, "srv", fakeServer, f)
 
-	for range 2 {
-		if resp := reg.CallTool(context.Background(), "srv", "echo", "{}"); !resp.IsError {
-			t.Fatal("expected the server's error")
-		}
+	if got := len(drainLoadTools(t, reg.LoadTools(nil))); got != 0 {
+		t.Fatalf("discovered %d tools from a wedged server, want 0", got)
 	}
-	if got := f.dials(); got != 1 {
-		t.Errorf("connects = %d, want 1", got)
+	eventually(t, "the wedged client to close", f.client(0).closed.Load)
+	if got := len(drainLoadTools(t, reg.LoadTools(nil))); got != 1 {
+		t.Fatalf("discovered %d tools on the next fetch, want 1", got)
 	}
 }
 
@@ -332,7 +455,6 @@ func TestMCPPool_IdleClientsAreClosed(t *testing.T) {
 
 func TestMCPPool_ReuseDisabled(t *testing.T) {
 	blocked := make(chan struct{})
-	t.Cleanup(func() { close(blocked) })
 	f := &fakeMCPFactory{make: func(int) *fakeMCPClient {
 		// A close that never finishes: the result must not wait for it.
 		return &fakeMCPClient{result: textResult("ok"), blockClose: blocked}
@@ -340,6 +462,9 @@ func TestMCPPool_ReuseDisabled(t *testing.T) {
 	m := fakeServer
 	m.ClientIdleTimeoutSeconds = -1
 	reg := newFakeMCPRegistry(t, "srv", m, f)
+	// Registered after the registry, so it runs first: Shutdown would
+	// otherwise wait out its budget on the blocked closes.
+	t.Cleanup(func() { close(blocked) })
 
 	for i := range 2 {
 		start := time.Now()
@@ -434,6 +559,7 @@ type mcpMethodServer struct {
 	mu      sync.Mutex
 	methods []string
 	auth    []string
+	peers   []string
 	drop404 atomic.Bool
 }
 
@@ -460,6 +586,7 @@ func newMCPMethodServer(t *testing.T) *mcpMethodServer {
 		s.methods = append(s.methods, method)
 		if method == "tools/call" {
 			s.auth = append(s.auth, r.Header.Get("Authorization"))
+			s.peers = append(s.peers, r.Header.Get("X-Peer-Id"))
 		}
 		s.mu.Unlock()
 		if method == "tools/call" && s.drop404.CompareAndSwap(true, false) {
@@ -571,5 +698,80 @@ func TestMCPRegistry_IdentitiesDoNotShareASession(t *testing.T) {
 	want := []string{"Bearer T1", "Bearer T2", "Bearer T1"}
 	if strings.Join(srv.auth, ",") != strings.Join(want, ",") {
 		t.Errorf("tools/call Authorization = %v, want %v", srv.auth, want)
+	}
+}
+
+func TestMCPRegistry_PeersDoNotShareASession(t *testing.T) {
+	srv := newMCPMethodServer(t)
+	seedMCPServers(t, map[string]config.MCPServer{"web": {Type: config.MCPHttp, URL: srv.url, PeerHeader: "X-Peer-Id"}})
+	reg := NewMCPRegistry(context.Background(), nil, nil).(*mcpRegistry)
+	t.Cleanup(func() { reg.Shutdown(context.Background()) })
+	peer := func(id string) context.Context {
+		return tools.WithPeer(context.Background(), tools.Peer{Channel: "external", Identity: "default", PeerID: id})
+	}
+
+	for _, ctx := range []context.Context{peer("t1:c1"), peer("t2:c1"), peer("t1:c1")} {
+		if resp := reg.CallTool(ctx, "web", "echo", "{}"); resp.IsError {
+			t.Fatalf("call: %s", resp.Content)
+		}
+	}
+	if got := srv.count("initialize"); got != 2 {
+		t.Errorf("initialize sent %d times, want 2 (one session per peer)", got)
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if got := strings.Join(srv.peers, ","); got != "t1:c1,t2:c1,t1:c1" {
+		t.Errorf("tools/call X-Peer-Id = %s", got)
+	}
+}
+
+// Discovery under a run's published token warms the client for that run's
+// calls, and only for them.
+func TestMCPRegistry_DiscoveryAuthClientServesMatchingCalls(t *testing.T) {
+	srv := newMCPMethodServer(t)
+	reg := newHTTPPoolRegistry(t, "web", srv.url)
+	reg.SetDiscoveryAuth(map[string]string{"web": "Bearer T1"})
+
+	if got := len(drainLoadTools(t, reg.LoadTools(nil))); got != 1 {
+		t.Fatalf("discovered %d tools, want 1", got)
+	}
+	asT1 := mcpauthctx.WithAuthOverride(context.Background(), "web", "Bearer T1")
+	reg.CallTool(asT1, "web", "echo", "{}")
+	if got := srv.count("initialize"); got != 1 {
+		t.Errorf("initialize sent %d times, want 1: the run's call did not reuse its discovery client", got)
+	}
+	asT2 := mcpauthctx.WithAuthOverride(context.Background(), "web", "Bearer T2")
+	reg.CallTool(asT2, "web", "echo", "{}")
+	if got := srv.count("initialize"); got != 2 {
+		t.Errorf("initialize sent %d times, want 2: another run reused T1's client", got)
+	}
+}
+
+// SSE is never pooled, and a call keeps its event stream for as long as it
+// needs it (the stream used to die with a 20s start context).
+func TestMCPRegistry_SSECallsWork(t *testing.T) {
+	mcpSrv := server.NewMCPServer("sse-test", "0.0.1")
+	mcpSrv.AddTool(mcp.NewTool("echo"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return textResult("ok"), nil
+	})
+	ts := server.NewTestServer(mcpSrv)
+	t.Cleanup(ts.Close)
+	seedMCPServers(t, map[string]config.MCPServer{"events": {Type: config.MCPSse, URL: ts.URL + "/sse"}})
+	reg := NewMCPRegistry(context.Background(), nil, nil).(*mcpRegistry)
+	t.Cleanup(func() { reg.Shutdown(context.Background()) })
+
+	for i := range 2 {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		resp := reg.CallTool(ctx, "events", "echo", "{}")
+		cancel()
+		if resp.IsError || resp.Content != "ok" {
+			t.Fatalf("SSE call %d: %+v", i, resp)
+		}
+	}
+	reg.pool.mu.Lock()
+	pooled := len(reg.pool.conns)
+	reg.pool.mu.Unlock()
+	if pooled != 0 {
+		t.Errorf("%d SSE clients pooled, want 0", pooled)
 	}
 }

@@ -45,7 +45,8 @@ var (
 
 // mcpClientFactory builds and starts a transport-level client for one server.
 // lifetime bounds the client itself (SSE keeps its event stream under it), not
-// the call that triggered the connect. Overridable so pool tests can inject a
+// the call that triggered the connect. It may return a non-nil client together
+// with an error; the caller closes it. Overridable so pool tests can inject a
 // fake client.
 type mcpClientFactory func(lifetime context.Context, name string, m config.MCPServer, headers map[string]string) (MCPClient, *mcpProc, error)
 
@@ -55,23 +56,60 @@ type mcpConn struct {
 	server string
 	// key is the connection identity (mcpConnKey); "" for an unpooled conn,
 	// which serves exactly one call.
-	key  string
-	idle time.Duration
+	key string
+	// remote: an HTTP or SSE server. stdio: a server process we spawned.
+	remote bool
+	stdio  bool
 
-	// ready is closed once the connect finished; client, proc, cancel and err
-	// are written before it closes and only read after.
+	// lifetime bounds the client and is cancelled once it is closed, or to
+	// abort a connect still in progress at shutdown. Set before the connect
+	// starts and never reassigned.
+	lifetime context.Context
+	cancel   context.CancelFunc
+
+	// ready is closed once the connect finished; client, proc and err are
+	// written before it closes and only read after.
 	ready  chan struct{}
 	client MCPClient
 	proc   *mcpProc
-	cancel context.CancelFunc
 	err    error
 
 	// Guarded by mcpClientPool.mu.
+	idle     time.Duration
 	refs     int
 	lastUsed time.Time
 	// retired: out of the map, handed to no new caller, closed when refs hits 0.
 	retired bool
 	closing bool
+}
+
+// mcpCloseTiming is how long closeMCPClient waits before each step.
+type mcpCloseTiming struct {
+	// term: after stdin closes, before SIGTERM to a stdio server's process group.
+	term time.Duration
+	// kill: after SIGTERM, before SIGKILL.
+	kill time.Duration
+	// abandon: before giving up on a Close that is still running.
+	abandon time.Duration
+}
+
+// defaultCloseTiming gives a stdio server time to exit on stdin EOF first.
+func defaultCloseTiming() mcpCloseTiming {
+	return mcpCloseTiming{term: mcpCloseGrace, kill: mcpCloseGrace, abandon: mcpInitTimeout}
+}
+
+// shutdownCloseTiming signals at once and fits the escalation into what is
+// left of ctx: the process is exiting, so a server waiting out its own exit
+// would only delay it, and a ForceShutdown budget can be shorter than the
+// default grace.
+func shutdownCloseTiming(ctx context.Context) mcpCloseTiming {
+	t := mcpCloseTiming{term: 0, kill: mcpCloseGrace, abandon: mcpInitTimeout}
+	if deadline, ok := ctx.Deadline(); ok {
+		left := time.Until(deadline)
+		t.kill = min(t.kill, left/2)
+		t.abandon = min(t.abandon, left)
+	}
+	return t
 }
 
 // mcpClientPool keeps one connected client per MCP server and connection
@@ -89,7 +127,9 @@ type mcpClientPool struct {
 	conns   map[string]*mcpConn
 	closed  bool
 	stopped chan struct{}
-	// closing counts background closes still running, so Shutdown can wait.
+	// closing counts closes that have been decided but not finished. It is
+	// raised in the same critical section that decides the close, so
+	// Shutdown never sees zero while a close is about to start.
 	closing        int
 	janitorStarted bool
 }
@@ -121,8 +161,9 @@ func resolveClientIdleTimeout(m config.MCPServer) time.Duration {
 // request header. Headers are part of it — rather than injected per request on
 // one shared session — because a server may bind identity to the session at
 // initialize, so a per-flow Authorization override or a bridge peer must
-// never ride on a session another identity opened. Hashed, so no token sits
-// in the key; length-prefixed, so no two field lists hash alike.
+// never ride on a session another identity opened. A stdio server receives
+// no per-call input, so one process serves every identity. Hashed, so no
+// token sits in the key; length-prefixed, so no two field lists hash alike.
 func mcpConnKey(name string, m config.MCPServer, headers map[string]string) string {
 	h := sha256.New()
 	field := func(s string) { fmt.Fprintf(h, "%d:%s", len(s), s) }
@@ -136,7 +177,7 @@ func mcpConnKey(name string, m config.MCPServer, headers map[string]string) stri
 	for _, e := range m.Env {
 		field(e)
 	}
-	if m.Type == config.MCPHttp || m.Type == config.MCPSse {
+	if isRemoteMCP(m) {
 		keys := make([]string, 0, len(headers))
 		for k := range headers {
 			keys = append(keys, k)
@@ -151,6 +192,10 @@ func mcpConnKey(name string, m config.MCPServer, headers map[string]string) stri
 	return name + "\x00" + hex.EncodeToString(h.Sum(nil))
 }
 
+func isRemoteMCP(m config.MCPServer) bool {
+	return m.Type == config.MCPHttp || m.Type == config.MCPSse
+}
+
 // acquire returns a connected client for server name under the headers ctx
 // resolves to, connecting one if none is pooled. The caller must release it.
 // ctx bounds only the wait: the connect itself runs under the pool's
@@ -158,6 +203,14 @@ func mcpConnKey(name string, m config.MCPServer, headers map[string]string) stri
 func (p *mcpClientPool) acquire(ctx context.Context, name string, m config.MCPServer) (*mcpConn, error) {
 	headers := resolvePeerHeader(ctx, m.PeerHeader, resolveMCPHeaders(ctx, name, m.Headers))
 	idle := resolveClientIdleTimeout(m)
+	if m.Type == config.MCPSse {
+		// Never pooled: mcp-go's SSE transport ends its event stream silently
+		// on EOF (a proxy idle timeout, a server restart), so a pooled client
+		// would be handed out with no way to hear the response — and a POST
+		// the server accepts cannot safely be retried. A client per call keeps
+		// its stream for exactly as long as the call needs it.
+		idle = -1
+	}
 
 	p.mu.Lock()
 	if p.closed || p.baseCtx.Err() != nil {
@@ -169,16 +222,18 @@ func (p *mcpClientPool) acquire(ctx context.Context, name string, m config.MCPSe
 		key := mcpConnKey(name, m, headers)
 		e = p.conns[key]
 		if e == nil {
-			e = &mcpConn{server: name, key: key, idle: idle, ready: make(chan struct{}), lastUsed: time.Now()}
+			e = p.newConnLocked(name, key, m)
 			p.conns[key] = e
 			go p.dial(e, m, headers)
 		}
+		// A changed timeout reaches a live client too.
+		e.idle = idle
 		if !p.janitorStarted {
 			p.janitorStarted = true
 			go p.janitor()
 		}
 	} else {
-		e = &mcpConn{server: name, ready: make(chan struct{})}
+		e = p.newConnLocked(name, "", m)
 		go p.dial(e, m, headers)
 	}
 	e.refs++
@@ -197,6 +252,20 @@ func (p *mcpClientPool) acquire(ctx context.Context, name string, m config.MCPSe
 	return e, nil
 }
 
+func (p *mcpClientPool) newConnLocked(name, key string, m config.MCPServer) *mcpConn {
+	lifetime, cancel := context.WithCancel(p.baseCtx)
+	return &mcpConn{
+		server:   name,
+		key:      key,
+		remote:   isRemoteMCP(m),
+		stdio:    !isRemoteMCP(m),
+		lifetime: lifetime,
+		cancel:   cancel,
+		ready:    make(chan struct{}),
+		lastUsed: time.Now(),
+	}
+}
+
 // release hands e back. evict retires it: new callers get a fresh client,
 // calls still running on e finish, and e closes once the last one releases.
 func (p *mcpClientPool) release(e *mcpConn, evict bool) {
@@ -210,51 +279,55 @@ func (p *mcpClientPool) release(e *mcpConn, evict bool) {
 		}
 	}
 	closeNow := e.refs == 0 && (e.retired || e.key == "") && !e.closing
+	timing := defaultCloseTiming()
 	if closeNow {
-		e.closing = true
+		p.markClosingLocked(e)
+		if p.closed {
+			timing = shutdownCloseTiming(context.Background())
+		}
 	}
 	p.mu.Unlock()
 	if closeNow {
-		p.closeConn(e)
+		p.closeConn(e, timing)
 	}
 }
 
 // dial connects e: build and start the transport, then initialize, with the
 // handshake bounded by mcpInitTimeout.
 func (p *mcpClientPool) dial(e *mcpConn, m config.MCPServer, headers map[string]string) {
-	lifetime, cancel := context.WithCancel(p.baseCtx)
-	initCtx, cancelInit := context.WithTimeout(lifetime, mcpInitTimeout)
+	budget := mcpInitTimeout
+	initCtx, cancelInit := context.WithTimeout(e.lifetime, budget)
 	defer cancelInit()
 
-	// A transport that starts under lifetime rather than initCtx — SSE opens
-	// its event stream there, since the stream must outlive the handshake —
-	// is still bounded: once the budget is gone the lifetime is cancelled too,
-	// which aborts the start. settled guards the window where the budget
-	// expires just as the connect succeeds.
+	// A transport that starts under the lifetime rather than initCtx — SSE
+	// opens its event stream there, since the stream must outlive the
+	// handshake — is still bounded: once the budget is gone the lifetime is
+	// cancelled too, which aborts the start. settled guards the window where
+	// the budget expires just as the connect succeeds.
 	var settleMu sync.Mutex
 	settled := false
 	stopWatch := context.AfterFunc(initCtx, func() {
 		settleMu.Lock()
 		defer settleMu.Unlock()
 		if !settled {
-			cancel()
+			e.cancel()
 		}
 	})
-	c, proc, err := p.newClient(lifetime, e.server, m, headers)
+	c, proc, err := p.newClient(e.lifetime, e.server, m, headers)
 	if err == nil {
 		_, err = c.Initialize(initCtx, mcpInitializeRequest())
 	}
 	stopWatch()
 	settleMu.Lock()
 	settled = true
-	if err == nil && lifetime.Err() != nil {
-		err = lifetime.Err()
+	if err == nil && e.lifetime.Err() != nil {
+		err = e.lifetime.Err()
 	}
 	settleMu.Unlock()
 
 	if err != nil {
 		if errors.Is(initCtx.Err(), context.DeadlineExceeded) && p.baseCtx.Err() == nil {
-			err = fmt.Errorf("%w within %s: %v", errMCPHandshakeTimeout, mcpInitTimeout, err)
+			err = fmt.Errorf("%w within %s: %v", errMCPHandshakeTimeout, budget, err)
 		}
 		logging.Error("Error connecting MCP client", "server", e.server, "cause", err)
 		p.mu.Lock()
@@ -262,41 +335,50 @@ func (p *mcpClientPool) dial(e *mcpConn, m config.MCPServer, headers map[string]
 		if e.key != "" && p.conns[e.key] == e {
 			delete(p.conns, e.key)
 		}
+		if c != nil {
+			p.closing++
+		}
 		p.mu.Unlock()
 		e.err = err
 		close(e.ready)
 		if c != nil {
-			p.runClose(func() {
-				closeMCPClient(c, proc, e.server, mcpInitTimeout)
-				cancel()
+			p.spawnClose(func() {
+				closeMCPClient(c, proc, e.server, defaultCloseTiming())
+				e.cancel()
 			})
 		} else {
-			cancel()
+			e.cancel()
 		}
 		return
 	}
-	e.client, e.proc, e.cancel = c, proc, cancel
+	e.client, e.proc = c, proc
+	p.mu.Lock()
+	e.lastUsed = time.Now()
+	p.mu.Unlock()
 	close(e.ready)
 }
 
-// closeConn closes e in the background once its connect has finished.
-func (p *mcpClientPool) closeConn(e *mcpConn) {
-	p.runClose(func() {
+// markClosingLocked records that e is about to close; see closing.
+func (p *mcpClientPool) markClosingLocked(e *mcpConn) {
+	e.closing = true
+	p.closing++
+}
+
+// closeConn closes e in the background once its connect has finished. The
+// caller has marked it closing.
+func (p *mcpClientPool) closeConn(e *mcpConn, timing mcpCloseTiming) {
+	p.spawnClose(func() {
 		<-e.ready
 		if e.client != nil {
-			closeMCPClient(e.client, e.proc, e.server, mcpInitTimeout)
+			closeMCPClient(e.client, e.proc, e.server, timing)
 		}
-		if e.cancel != nil {
-			e.cancel()
-		}
+		e.cancel()
 	})
 }
 
-// runClose runs a close off the caller's path, counted so Shutdown can wait.
-func (p *mcpClientPool) runClose(fn func()) {
-	p.mu.Lock()
-	p.closing++
-	p.mu.Unlock()
+// spawnClose runs a close off the caller's path and settles the count raised
+// when the close was decided.
+func (p *mcpClientPool) spawnClose(fn func()) {
 	go func() {
 		defer func() {
 			p.mu.Lock()
@@ -317,7 +399,7 @@ func (p *mcpClientPool) janitor() {
 		case <-p.stopped:
 			return
 		case <-p.baseCtx.Done():
-			ctx, cancel := context.WithTimeout(context.Background(), 2*mcpCloseGrace+time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*mcpCloseGrace)
 			p.shutdown(ctx)
 			cancel()
 			return
@@ -336,21 +418,24 @@ func (p *mcpClientPool) sweep(now time.Time) {
 		if e.refs > 0 || !isClosedChan(e.ready) || now.Sub(e.lastUsed) < e.idle {
 			continue
 		}
-		e.retired, e.closing = true, true
+		e.retired = true
+		p.markClosingLocked(e)
 		delete(p.conns, key)
 		idle = append(idle, e)
 	}
 	p.mu.Unlock()
 	for _, e := range idle {
 		logging.Debug("Closing idle MCP client", "server", e.server, "idle", now.Sub(e.lastUsed))
-		p.closeConn(e)
+		p.closeConn(e, defaultCloseTiming())
 	}
 }
 
-// shutdown stops handing out clients, closes every pooled one — a client
-// still in use closes when its call releases it — and waits for the closes
-// until ctx is done.
+// shutdown stops handing out clients, closes every pooled one — signalling
+// stdio servers at once rather than waiting for them to exit on EOF — aborts
+// connects still in progress, and waits for the closes until ctx is done. A
+// client still in use closes when its call releases it.
 func (p *mcpClientPool) shutdown(ctx context.Context) {
+	timing := shutdownCloseTiming(ctx)
 	p.mu.Lock()
 	if !p.closed {
 		p.closed = true
@@ -360,14 +445,17 @@ func (p *mcpClientPool) shutdown(ctx context.Context) {
 	for key, e := range p.conns {
 		e.retired = true
 		delete(p.conns, key)
+		if !isClosedChan(e.ready) {
+			e.cancel()
+		}
 		if e.refs == 0 && !e.closing {
-			e.closing = true
+			p.markClosingLocked(e)
 			idle = append(idle, e)
 		}
 	}
 	p.mu.Unlock()
 	for _, e := range idle {
-		p.closeConn(e)
+		p.closeConn(e, timing)
 	}
 
 	t := time.NewTicker(10 * time.Millisecond)
@@ -436,11 +524,10 @@ func newMCPClient(lifetime context.Context, name string, m config.MCPServer, hea
 		return nil, nil, err
 	}
 	if err := c.Start(lifetime); err != nil {
-		// Close anyway, in the background: SSE's Start can fail after its
-		// reader goroutine runs, and a nil return would leave nothing to close
+		// Hand the client back for closing: SSE's Start can fail after its
+		// reader goroutine runs, and dropping it would leave nothing to close
 		// the transport with.
-		go closeMCPClient(c, proc, name, mcpInitTimeout)
-		return nil, nil, err
+		return c, proc, err
 	}
 	return c, proc, nil
 }
@@ -474,7 +561,7 @@ type mcpProc struct {
 func (p *mcpProc) command(_ context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 	cmd := exec.Command(command, args...)
 	cmd.Env = append(os.Environ(), env...)
-	setMCPProcessGroup(cmd)
+	detachMCPProcess(cmd)
 	p.mu.Lock()
 	p.cmd = cmd
 	p.mu.Unlock()
@@ -496,11 +583,13 @@ func (p *mcpProc) signal(sig syscall.Signal) {
 // transport.Stdio.Close closes stdin and then blocks in cmd.Wait(), honouring
 // no context. A cooperative server exits on stdin EOF, but some take 10–20 s
 // and some never do. For a stdio server (proc != nil) that is still running
-// after mcpCloseGrace, the process group gets SIGTERM, then SIGKILL. Signals
-// go out only while Close is still inside cmd.Wait(), i.e. before the process
-// is reaped, so its PID cannot have been reused. Any other close (an HTTP
-// session DELETE) that outlives budget is abandoned and logged.
-func closeMCPClient(c interface{ Close() error }, proc *mcpProc, name string, budget time.Duration) {
+// timing.term after its stdin closed, the process group gets SIGTERM, then
+// SIGKILL after timing.kill. A signal is only sent while Close is still
+// blocked in cmd.Wait(), which keeps it from reaching a reused PID; the
+// remaining window — the process reaped between that check and the kill(2) —
+// is a few instructions wide. Any other close (an HTTP session DELETE) that
+// outlives timing.abandon is abandoned and logged.
+func closeMCPClient(c interface{ Close() error }, proc *mcpProc, name string, timing mcpCloseTiming) {
 	done := make(chan error, 1)
 	go func() { done <- c.Close() }()
 	logResult := func(err error) {
@@ -509,37 +598,67 @@ func closeMCPClient(c interface{ Close() error }, proc *mcpProc, name string, bu
 		}
 	}
 	if proc != nil {
-		for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL} {
+		for _, step := range []struct {
+			after time.Duration
+			sig   syscall.Signal
+		}{{timing.term, syscall.SIGTERM}, {timing.kill, syscall.SIGKILL}} {
 			select {
 			case err := <-done:
 				logResult(err)
 				return
-			case <-time.After(mcpCloseGrace):
+			case <-time.After(step.after):
+			}
+			select {
+			case err := <-done:
+				logResult(err)
+				return
+			default:
 			}
 			logging.Debug("MCP server still running after close; signalling its process group",
-				"server", name, "signal", sig.String())
-			proc.signal(sig)
+				"server", name, "signal", step.sig.String())
+			proc.signal(step.sig)
 		}
 	}
 	select {
 	case err := <-done:
 		logResult(err)
-	case <-time.After(budget):
+	case <-time.After(timing.abandon):
 		logging.Warn("MCP client close exceeded its budget; abandoning the wait",
-			"server", name, "budget", budget)
+			"server", name, "budget", timing.abandon)
 	}
 }
 
 // mcpConnBroken reports whether err means the client can no longer be
-// trusted: any transport-level failure, the per-call timeout included. A
-// JSON-RPC error the server answered with leaves the client healthy, and so
-// does the caller's own context ending.
-func mcpConnBroken(ctx context.Context, err error) bool {
+// trusted. The caller's own context ending never does; any transport-level
+// failure — the per-call timeout included — always does.
+//
+// For a remote client, so does a JSON-RPC error with an implementation-defined
+// code: mcp-go hands back a non-2xx response with a JSON-RPC body as an
+// ordinary error answer, which is how servers built on the TypeScript SDK
+// reject a session they no longer know (400, code -32000). The standard
+// codes — method not found, invalid params, internal error (how mcp-go
+// servers report a failing tool) — come from a healthy session and keep the
+// client.
+func mcpConnBroken(ctx context.Context, err error, remote bool) bool {
 	if err == nil || ctx.Err() != nil {
 		return false
 	}
 	var te *transport.Error
-	return errors.As(err, &te)
+	if errors.As(err, &te) {
+		return true
+	}
+	if !remote {
+		return false
+	}
+	for _, healthy := range []error{
+		mcp.ErrMethodNotFound, mcp.ErrInvalidParams, mcp.ErrInternalError,
+		mcp.ErrRequestInterrupted, mcp.ErrResourceNotFound,
+	} {
+		if errors.Is(err, healthy) {
+			return false
+		}
+	}
+	return true
 }
 
 // mcpRequestNotSent reports whether err proves the request never reached the
@@ -551,6 +670,6 @@ func mcpRequestNotSent(err error) bool {
 		return false
 	}
 	return errors.Is(err, transport.ErrSessionTerminated) ||
-		errors.Is(err, syscall.EPIPE) ||
+		isBrokenPipe(err) ||
 		errors.Is(err, os.ErrClosed)
 }

@@ -7,8 +7,8 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/agent/mcpauthctx"
 )
 
-// TestResolveMCPHeaders covers the per-call header layering
-// mcpRegistry.StartClient performs for the per-flow MCP auth override
+// TestResolveMCPHeaders covers the header layering the MCP client pool
+// performs for the per-flow MCP auth override
 // (openspec change agent-pod-pool-runtime, design D1).
 func TestResolveMCPHeaders(t *testing.T) {
 	t.Parallel()

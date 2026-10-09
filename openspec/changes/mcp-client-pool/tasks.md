@@ -28,3 +28,15 @@
 - [x] 5.3 Stdio end-to-end against a helper-process MCP server: single spawn, kill of a server ignoring EOF, replacement after a crash
 - [x] 5.4 Adapt the deadline tests to the pool (handshake bound at connect, close off the call path)
 - [x] 5.5 Re-run `tmp/mcpbench` before/after
+
+## 6. Review round (three parallel reviews)
+
+- [x] 6.1 Discovery: classify against baseCtx so a tools/list timeout evicts; retry tools/list once on a fresh client
+- [x] 6.2 HTTP: evict on a JSON-RPC error with a non-standard code (TS-SDK session rejection)
+- [x] 6.3 SSE not pooled
+- [x] 6.4 Evict a stdio client when its caller abandons a call mid-flight
+- [x] 6.5 Enforce callTimeout while mcp-go's stdio write blocks
+- [x] 6.6 Shutdown: SIGTERM at once, SIGKILL within the budget; abort in-flight connects; count every close under the lock
+- [x] 6.7 Setsid instead of Setpgid; non-interactive runs cancel on SIGINT/SIGTERM
+- [x] 6.8 Windows broken-pipe errnos; lastUsed stamped at connect; idle timeout updated on reuse
+- [x] 6.9 Tests for each of the above; flaky timing removed; helper exits when orphaned
