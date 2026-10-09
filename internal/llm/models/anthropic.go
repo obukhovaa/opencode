@@ -14,6 +14,7 @@ const (
 	Claude5Sonnet  ModelID = "claude-5-sonnet"
 	Claude55Sonnet ModelID = "claude-5.5-sonnet"
 	Claude45Haiku  ModelID = "claude-4.5-haiku"
+	Claude55Haiku  ModelID = "claude-5.5-haiku"
 	ClaudeFable5   ModelID = "claude-fable-5"
 	ClaudeFable51  ModelID = "claude-fable-5-1"
 )
@@ -235,5 +236,29 @@ var AnthropicModels = map[ModelID]Model{
 		DefaultMaxTokens:    8192,
 		SupportsToolSearch:  true,
 		SupportsAttachments: true,
+	},
+	// Rates are for prompts up to 100K tokens; over that every rate is 5x.
+	// Unlike Opus 5.5 and Sonnet 5.5, Haiku 5.5 accepts a forced tool_choice
+	// (the turn then skips thinking), so RejectsForcedToolChoice stays unset.
+	Claude55Haiku: {
+		ID:                        Claude55Haiku,
+		Name:                      "Claude 5.5 Haiku",
+		Provider:                  ProviderAnthropic,
+		APIModel:                  "claude-haiku-5-5",
+		CostPer1MIn:               0.10,
+		CostPer1MInCached:         0.125,
+		CostPer1MOutCached:        0.01,
+		CostPer1MOut:              0.50,
+		LongContextThreshold:      100000,
+		LongContextCostMultiplier: 5,
+		ContextWindow:             1000000,
+		DefaultMaxTokens:          128000,
+		CanReason:                 true,
+		SupportsAdaptiveThinking:  true,
+		SupportsMaximumThinking:   true,
+		SupportsXHighThinking:     true,
+		SupportsTaskBudget:        true,
+		SupportsToolSearch:        true,
+		SupportsAttachments:       true,
 	},
 }

@@ -24,6 +24,8 @@ const (
 	BedrockFable51    ModelID       = "bedrock.claude-fable-5-1"
 	BedrockEUHaiku45  ModelID       = "bedrock.eu-claude-haiku-4-5"
 	BedrockHaiku45    ModelID       = "bedrock.claude-haiku-4-5"
+	BedrockEUHaiku55  ModelID       = "bedrock.eu-claude-haiku-5-5"
+	BedrockHaiku55    ModelID       = "bedrock.claude-haiku-5-5"
 	BedrockKimiK3     ModelID       = "bedrock.kimi-k3"
 	BedrockUSKimiK3   ModelID       = "bedrock.us-kimi-k3"
 )
@@ -438,6 +440,50 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		DefaultMaxTokens:    AnthropicModels[Claude45Haiku].DefaultMaxTokens,
 		SupportsAttachments: AnthropicModels[Claude45Haiku].SupportsAttachments,
 		SupportsToolSearch:  AnthropicModels[Claude45Haiku].SupportsToolSearch,
+	},
+	BedrockEUHaiku55: {
+		ID:                        BedrockEUHaiku55,
+		Name:                      "Bedrock EU: Claude 5.5 Haiku",
+		Provider:                  ProviderBedrock,
+		APIModel:                  "eu-claude-haiku-5-5",
+		CostPer1MIn:               AnthropicModels[Claude55Haiku].CostPer1MIn * bedrockRegionalPremium,
+		CostPer1MInCached:         AnthropicModels[Claude55Haiku].CostPer1MInCached * bedrockRegionalPremium,
+		CostPer1MOut:              AnthropicModels[Claude55Haiku].CostPer1MOut * bedrockRegionalPremium,
+		CostPer1MOutCached:        AnthropicModels[Claude55Haiku].CostPer1MOutCached * bedrockRegionalPremium,
+		LongContextThreshold:      AnthropicModels[Claude55Haiku].LongContextThreshold,
+		LongContextCostMultiplier: AnthropicModels[Claude55Haiku].LongContextCostMultiplier,
+		ContextWindow:             AnthropicModels[Claude55Haiku].ContextWindow,
+		DefaultMaxTokens:          AnthropicModels[Claude55Haiku].DefaultMaxTokens,
+		SupportsAttachments:       AnthropicModels[Claude55Haiku].SupportsAttachments,
+		CanReason:                 AnthropicModels[Claude55Haiku].CanReason,
+		SupportsAdaptiveThinking:  AnthropicModels[Claude55Haiku].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:   AnthropicModels[Claude55Haiku].SupportsMaximumThinking,
+		SupportsXHighThinking:     AnthropicModels[Claude55Haiku].SupportsXHighThinking,
+		SupportsTaskBudget:        AnthropicModels[Claude55Haiku].SupportsTaskBudget,
+		SupportsToolSearch:        AnthropicModels[Claude55Haiku].SupportsToolSearch,
+		RejectsForcedToolChoice:   AnthropicModels[Claude55Haiku].RejectsForcedToolChoice,
+	},
+	BedrockHaiku55: {
+		ID:                        BedrockHaiku55,
+		Name:                      "Bedrock: Claude 5.5 Haiku",
+		Provider:                  ProviderBedrock,
+		APIModel:                  "claude-haiku-5-5",
+		CostPer1MIn:               AnthropicModels[Claude55Haiku].CostPer1MIn,
+		CostPer1MInCached:         AnthropicModels[Claude55Haiku].CostPer1MInCached,
+		CostPer1MOut:              AnthropicModels[Claude55Haiku].CostPer1MOut,
+		CostPer1MOutCached:        AnthropicModels[Claude55Haiku].CostPer1MOutCached,
+		LongContextThreshold:      AnthropicModels[Claude55Haiku].LongContextThreshold,
+		LongContextCostMultiplier: AnthropicModels[Claude55Haiku].LongContextCostMultiplier,
+		ContextWindow:             AnthropicModels[Claude55Haiku].ContextWindow,
+		DefaultMaxTokens:          AnthropicModels[Claude55Haiku].DefaultMaxTokens,
+		SupportsAttachments:       AnthropicModels[Claude55Haiku].SupportsAttachments,
+		CanReason:                 AnthropicModels[Claude55Haiku].CanReason,
+		SupportsAdaptiveThinking:  AnthropicModels[Claude55Haiku].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:   AnthropicModels[Claude55Haiku].SupportsMaximumThinking,
+		SupportsXHighThinking:     AnthropicModels[Claude55Haiku].SupportsXHighThinking,
+		SupportsTaskBudget:        AnthropicModels[Claude55Haiku].SupportsTaskBudget,
+		SupportsToolSearch:        AnthropicModels[Claude55Haiku].SupportsToolSearch,
+		RejectsForcedToolChoice:   AnthropicModels[Claude55Haiku].RejectsForcedToolChoice,
 	},
 }
 

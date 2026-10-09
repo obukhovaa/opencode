@@ -16,6 +16,7 @@ const (
 	VertexAISonnet5       ModelID = "vertexai.claude-sonnet-5"
 	VertexAISonnet55      ModelID = "vertexai.claude-sonnet-5-5"
 	VertexAIHaiku45       ModelID = "vertexai.claude-haiku-4-5"
+	VertexAIHaiku55       ModelID = "vertexai.claude-haiku-5-5"
 	VertexAIFable5        ModelID = "vertexai.claude-fable-5"
 	VertexAIFable51       ModelID = "vertexai.claude-fable-5-1"
 )
@@ -268,5 +269,27 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		DefaultMaxTokens:    AnthropicModels[Claude45Haiku].DefaultMaxTokens,
 		SupportsAttachments: AnthropicModels[Claude45Haiku].SupportsAttachments,
 		SupportsToolSearch:  AnthropicModels[Claude45Haiku].SupportsToolSearch,
+	},
+	VertexAIHaiku55: {
+		ID:                        VertexAIHaiku55,
+		Name:                      "VertexAI: Claude Haiku 5.5",
+		Provider:                  ProviderVertexAI,
+		APIModel:                  "claude-haiku-5-5",
+		CostPer1MIn:               AnthropicModels[Claude55Haiku].CostPer1MIn,
+		CostPer1MInCached:         AnthropicModels[Claude55Haiku].CostPer1MInCached,
+		CostPer1MOut:              AnthropicModels[Claude55Haiku].CostPer1MOut,
+		CostPer1MOutCached:        AnthropicModels[Claude55Haiku].CostPer1MOutCached,
+		LongContextThreshold:      AnthropicModels[Claude55Haiku].LongContextThreshold,
+		LongContextCostMultiplier: AnthropicModels[Claude55Haiku].LongContextCostMultiplier,
+		ContextWindow:             AnthropicModels[Claude55Haiku].ContextWindow,
+		DefaultMaxTokens:          AnthropicModels[Claude55Haiku].DefaultMaxTokens,
+		SupportsAttachments:       AnthropicModels[Claude55Haiku].SupportsAttachments,
+		CanReason:                 AnthropicModels[Claude55Haiku].CanReason,
+		SupportsAdaptiveThinking:  AnthropicModels[Claude55Haiku].SupportsAdaptiveThinking,
+		SupportsMaximumThinking:   AnthropicModels[Claude55Haiku].SupportsMaximumThinking,
+		SupportsXHighThinking:     AnthropicModels[Claude55Haiku].SupportsXHighThinking,
+		SupportsTaskBudget:        AnthropicModels[Claude55Haiku].SupportsTaskBudget,
+		SupportsToolSearch:        AnthropicModels[Claude55Haiku].SupportsToolSearch,
+		RejectsForcedToolChoice:   AnthropicModels[Claude55Haiku].RejectsForcedToolChoice,
 	},
 }

@@ -33,8 +33,12 @@ Model{
     SupportsTaskBudget:       bool,          // Whether model supports task_budget (beta, Opus 4.7+)
     SupportsAttachments:      bool,          // Whether model supports file attachments
     RejectsForcedToolChoice:  bool,          // API 400s tool_choice "tool"/"any" (Opus 5.5, Sonnet 5.5, Fable 5.1) — check the model's breaking changes
+    LongContextThreshold:     int64,         // Prompt tokens above which the whole request reprices (Haiku 5.5: 100000); 0 = flat pricing
+    LongContextCostMultiplier: float64,      // Multiplier on all four rates past the threshold (Haiku 5.5: 5)
 }
 ```
+
+If the pricing page lists a second price row "for prompts over N tokens" and every rate in it is the same multiple of the base row, set the two `LongContext*` fields instead of averaging the rates; `provider.CalculateCost` applies them. If input and output rise by different factors, the single multiplier cannot express it: extend `Model` and `CalculateCost` rather than picking one factor. Mirror the fields on the Bedrock/VertexAI entries.
 
 ## Required Information from Model Card
 

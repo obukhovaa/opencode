@@ -659,10 +659,10 @@ Kimi K3 is also available on AWS Bedrock as `bedrock.kimi-k3` (global profile) a
 | Provider | Models |
 |----------|--------|
 | **OpenAI** | GPT-5, O3 Mini, O4 Mini |
-| **Anthropic** | Claude 5.5 Opus (1M), Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5.5 Sonnet (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 4.5 Haiku |
+| **Anthropic** | Claude 5.5 Opus (1M), Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5.5 Sonnet (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 5.5 Haiku (1M), Claude 4.5 Haiku |
 | **Google Gemini** | Gemini 3.0 Pro, Gemini 3.0 Flash |
-| **AWS Bedrock** | Claude 5.5 Opus (1M)(EU/Global), Claude 5 Opus (1M)(EU/Global), Claude Fable 5.1 (1M)(EU/Global), Claude Fable 5 (1M)(EU/Global), Claude 4.8 Opus (1M)(EU/Global), Claude 4.7 Opus (1M)(EU/Global), Claude 5.5 Sonnet (1M)(EU/Global), Claude 5 Sonnet (1M)(EU/Global), Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global), Claude 4.5 Haiku (EU/Global), Kimi K3 (1M)(US/Global) |
-| **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude 5.5 Opus (1M), Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5.5 Sonnet (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 4.5 Haiku |
+| **AWS Bedrock** | Claude 5.5 Opus (1M)(EU/Global), Claude 5 Opus (1M)(EU/Global), Claude Fable 5.1 (1M)(EU/Global), Claude Fable 5 (1M)(EU/Global), Claude 4.8 Opus (1M)(EU/Global), Claude 4.7 Opus (1M)(EU/Global), Claude 5.5 Sonnet (1M)(EU/Global), Claude 5 Sonnet (1M)(EU/Global), Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global), Claude 5.5 Haiku (1M)(EU/Global), Claude 4.5 Haiku (EU/Global), Kimi K3 (1M)(US/Global) |
+| **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude 5.5 Opus (1M), Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5.5 Sonnet (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 5.5 Haiku (1M), Claude 4.5 Haiku |
 | **YandexCloud** | Alice AI LLM, YandexGPT Pro 5.1, YandexGPT Pro 5, YandexGPT Lite 5, DeepSeek V3.2, Qwen3 235B, Qwen3.5 35B, gpt-oss-120b |
 | **Kimi (Moonshot)** | Kimi K3 (1M), Kimi K2.7 Code, Kimi K2.7 Code Highspeed |
 | **Local** | Any OpenAI-compatible API |
