@@ -227,7 +227,28 @@ func resolvePeerHeader(ctx context.Context, header string, headers map[string]st
 	if !ok {
 		return headers
 	}
+	if !validHeaderValue(peer.PeerID) {
+		// The inbound API only requires a non-empty peer id, and net/http
+		// refuses to send a header value holding control characters, which
+		// would fail every call of the turn. Send the server no peer instead,
+		// dropping any static value too: it would stand in for the peer the
+		// bridge did resolve.
+		logging.Warn("MCP peer header omitted: peer id is not a valid header value",
+			"header", header, "channel", peer.Channel, "identity", peer.Identity, "peer_id", peer.PeerID)
+		return withoutHeader(headers, header)
+	}
 	return layerHeader(headers, header, peer.PeerID)
+}
+
+// validHeaderValue reports whether net/http will send v as a header value
+// (httpguts.ValidHeaderFieldValue): no control characters but horizontal tab.
+func validHeaderValue(v string) bool {
+	for i := 0; i < len(v); i++ {
+		if b := v[i]; b == 0x7f || (b < ' ' && b != '\t') {
+			return false
+		}
+	}
+	return true
 }
 
 // authorizationHeader is the canonical spelling the override is written
@@ -244,15 +265,21 @@ func layerAuthorization(static map[string]string, value string) map[string]strin
 // layerHeader copies static and replaces any header equal to name in any
 // letter case with value, written under name's own spelling.
 func layerHeader(static map[string]string, name, value string) map[string]string {
-	layered := make(map[string]string, len(static)+1)
-	for k, v := range static {
-		if strings.EqualFold(k, name) {
-			continue
-		}
-		layered[k] = v
-	}
+	layered := withoutHeader(static, name)
 	layered[name] = value
 	return layered
+}
+
+// withoutHeader copies static without any header equal to name in any
+// letter case.
+func withoutHeader(static map[string]string, name string) map[string]string {
+	kept := make(map[string]string, len(static)+1)
+	for k, v := range static {
+		if !strings.EqualFold(k, name) {
+			kept[k] = v
+		}
+	}
+	return kept
 }
 
 // SetDiscoveryAuth records the Authorization overrides applied to

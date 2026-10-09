@@ -190,6 +190,8 @@ A relay channel with **no chat platform of its own**. Outbound messages and ques
 - Inbound is never received directly. It arrives via the orchestrator's forward to `/router/inbound`, the same as any channel in mediated-inbound mode, so no single-listener lock is taken for this channel.
 - Relay frames are authenticated with HTTP Basic (the credential as password) and `202 Accepted` is the only success status. Attachments relay as **metadata only** (`fileName`, `mimeType`, `size`) — never content.
 - Groups / `@mention` gating don't apply; `POST /router/config/groups` rejects this channel explicitly.
+- **Peer attribution.** Every inbound turn runs with its peer (channel, identity, peer id from the authenticated request) on the run context; async subagents inherit it. For `external` peers the agent writes one synthetic `<system-reminder>` user message ahead of the turn's own message, naming the peer the session serves, so the model knows which tenant/conversation it works for without the integration putting the id into the message text. It is written once per history and again after a peer change or a compaction drops it. The stored user text and `question` answers stay exactly what was sent.
+- **MCP `peerHeader`.** An sse/http MCP server that declares `"peerHeader": "X-Peer-Id"` receives the calling turn's peer id in that header (any channel, not only `external`), replacing a static header of the same name. Calls made outside a bridge turn (cron, a task's auto-resumed turn) send no value beyond the static config, and a peer id that net/http cannot send as a header value (a control character) is omitted rather than failing the call.
 
 ## Outbound prose rendering
 

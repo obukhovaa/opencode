@@ -44,6 +44,19 @@ func TestResolvePeerHeader(t *testing.T) {
 			name: "a static value under any letter case is replaced", ctx: withPeer, header: "X-Peer-Id",
 			static: map[string]string{"x-peer-id": "forged"}, want: map[string]string{"X-Peer-Id": "app1:d1:c1"},
 		},
+		{
+			// net/http would refuse the value and fail the call.
+			name:   "a peer id net/http cannot send is omitted, static value too",
+			ctx:    tools.WithPeer(context.Background(), tools.Peer{Channel: "external", Identity: "default", PeerID: "app1:d1\r\nX-Evil: 1"}),
+			header: "X-Peer-Id",
+			static: map[string]string{"X-Env": "dev", "x-peer-id": "forged"}, want: map[string]string{"X-Env": "dev"},
+		},
+		{
+			name:   "a tab is a valid header value",
+			ctx:    tools.WithPeer(context.Background(), tools.Peer{Channel: "external", Identity: "default", PeerID: "app1\tc1"}),
+			header: "X-Peer-Id",
+			static: nil, want: map[string]string{"X-Peer-Id": "app1\tc1"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

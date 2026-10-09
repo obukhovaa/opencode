@@ -30,7 +30,7 @@ When a turn's peer is on the `external` channel, the agent SHALL tell the model 
 
 ### Requirement: MCP peer header
 
-An MCP server MAY declare `peerHeader`, the name of an HTTP header. A client started for a call made under a context carrying a bridge peer SHALL send that peer's id in that header, replacing any static header of the same name in any letter case, and SHALL NOT mutate the server's configured headers. A call whose context carries no peer SHALL send no value under that name beyond the static configuration. Stdio servers receive no headers.
+An MCP server MAY declare `peerHeader`, the name of an HTTP header. A client started for a call made under a context carrying a bridge peer SHALL send that peer's id in that header, replacing any static header of the same name in any letter case, and SHALL NOT mutate the server's configured headers. A call whose context carries no peer SHALL send no value under that name beyond the static configuration. A peer id that is not a valid HTTP header value SHALL NOT fail the call: the call SHALL send no value under that name, static configuration included. Stdio servers receive no headers.
 
 #### Scenario: Header sent from a bridge turn
 
@@ -41,6 +41,11 @@ An MCP server MAY declare `peerHeader`, the name of an HTTP header. A client sta
 
 - **WHEN** the server's static `headers` also set `x-peer-id`
 - **THEN** only the bridge peer's id is sent under that name
+
+#### Scenario: A peer id that cannot be a header value is omitted
+
+- **WHEN** a tool of a server with `peerHeader: "X-Peer-Id"` is called from a turn whose peer id contains a control character
+- **THEN** the call proceeds and its requests carry no `X-Peer-Id` header
 
 #### Scenario: Servers without the field are unchanged
 
