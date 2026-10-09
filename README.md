@@ -494,6 +494,7 @@ A response body over the 5MB read limit is truncated before conversion, and the 
 Optional per-server tuning:
 
 - `callToolTimeoutSeconds` — override the per-tool-call timeout (default 5 minutes). Raise it for slow servers.
+- `peerHeader` — name of an HTTP header that carries the chat-bridge peer id of the turn making the call (sse and http servers), e.g. `"peerHeader": "X-Peer-Id"`. The value comes from the bridge's authenticated inbound request, never from the model, so a server can scope its answers to the conversation the peer id names. It replaces any static header of that name and is omitted on calls not made from a bridge turn (cron jobs, a task's auto-resumed turn).
 - `callToolMaxOutputBytes` — cap a single tool call's output kept in the model context (default `51200`, i.e. 50KB). Output beyond the cap is spilled to a temp file and replaced with a head+tail preview that points the agent at the file, which it can then `grep`/`read`/`sed`. This protects the context window from tools that return very large payloads (e.g. multi-MB CI build logs). Set a higher value to keep more inline, or a negative value to disable the cap entirely (unbounded — a single result can then overflow the context).
 
 Every wait on an MCP server is bounded, so a server that starts but never answers cannot park an agent turn:

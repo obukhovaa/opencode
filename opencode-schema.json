@@ -996,6 +996,10 @@
             "description": "HTTP headers for SSE type MCP servers",
             "type": "object"
           },
+          "peerHeader": {
+            "description": "Name of an HTTP header carrying the chat-bridge peer id of the calling turn (sse and http servers). Replaces any static header of that name; omitted on calls not made from a bridge turn",
+            "type": "string"
+          },
           "type": {
             "default": "stdio",
             "description": "Type of MCP server",

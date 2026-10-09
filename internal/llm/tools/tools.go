@@ -40,6 +40,7 @@ type (
 	stepScopedContextKey        string
 	requesterContextKey         string
 	parentSessionIDContextKey   string
+	peerContextKey              string
 )
 
 const (
@@ -86,6 +87,14 @@ const (
 	// the parent, never RootSessionID: a flow shares one root across every
 	// step, including parallel siblings (openspec background-tasks).
 	ParentSessionIDContextKey parentSessionIDContextKey = "parent_session_id"
+	// PeerContextKey carries the chat-bridge peer a turn is serving — the
+	// peer the bridge resolved the inbound message's session from, taken
+	// from the authenticated inbound request and never from the model or
+	// the message text. Set per turn by the chat bridge; carried onto async
+	// subagents. Read by the agent (peer attribution for external peers)
+	// and by the MCP client (a server's `peerHeader`). Use WithPeer /
+	// PeerFromContext.
+	PeerContextKey peerContextKey = "bridge_peer"
 
 	// MaxToolResponseTokens is the maximum number of tokens allowed in a tool response
 	// to prevent context overflow. ~1200KB of text content.
@@ -109,6 +118,33 @@ func RequesterFromContext(ctx context.Context) string {
 	}
 	r, _ := ctx.Value(RequesterContextKey).(string)
 	return r
+}
+
+// Peer is the chat-bridge peer a turn serves: the channel it came in on,
+// the bridge identity that received it, and the peer id within that
+// channel. Mirrors bridge.PeerRef without importing the bridge.
+type Peer struct {
+	Channel  string
+	Identity string
+	PeerID   string
+}
+
+// WithPeer returns ctx carrying peer under PeerContextKey. A peer with no
+// id returns ctx unchanged.
+func WithPeer(ctx context.Context, peer Peer) context.Context {
+	if peer.PeerID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, PeerContextKey, peer)
+}
+
+// PeerFromContext returns the peer carried by ctx, if any.
+func PeerFromContext(ctx context.Context) (Peer, bool) {
+	if ctx == nil {
+		return Peer{}, false
+	}
+	p, ok := ctx.Value(PeerContextKey).(Peer)
+	return p, ok
 }
 
 // ParentSessionIDFromContext returns the parent of the current session

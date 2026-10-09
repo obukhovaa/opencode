@@ -450,6 +450,12 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	// Attribute this turn's traces to the message author, so a daemon
 	// shared by several people records who each request came from.
 	runCtx := tools.WithRequester(ctx, d.svc.requesterFor(ctx, in))
+	// The peer this turn serves, from the authenticated inbound request:
+	// the agent attributes external peers' turns with it and MCP servers
+	// declaring a peerHeader receive it.
+	runCtx = tools.WithPeer(runCtx, tools.Peer{
+		Channel: in.Peer.Channel, Identity: in.Peer.Identity, PeerID: in.Peer.PeerID,
+	})
 
 	// Bounded retry for ErrSessionBusy: the session-run ledger is
 	// process-global (session-run-exclusivity spec). Cross-actor holders

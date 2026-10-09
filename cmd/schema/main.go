@@ -237,6 +237,10 @@ func generateSchema() map[string]any {
 						"type": "string",
 					},
 				},
+				"peerHeader": map[string]any{
+					"type":        "string",
+					"description": "Name of an HTTP header carrying the chat-bridge peer id of the calling turn (sse and http servers). Replaces any static header of that name; omitted on calls not made from a bridge turn",
+				},
 				"disabled": map[string]any{
 					"type":        "boolean",
 					"description": "Whether the MCP server is disabled",

@@ -987,12 +987,13 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	var userMsg message.Message
 	msgHistory := msgs
 	if hasUserTurn {
+		msgHistory = a.withPeerAttribution(ctx, sessionID, msgHistory)
 		var err error
 		userMsg, err = a.createUserMessage(ctx, sessionID, content, attachmentParts)
 		if err != nil {
 			return a.err(fmt.Errorf("failed to create user message: %w", err))
 		}
-		msgHistory = append(msgs, userMsg)
+		msgHistory = append(msgHistory, userMsg)
 	}
 	var agentMessage message.Message
 	var toolResults *message.Message
@@ -3549,6 +3550,54 @@ func truncateStr(s string, max int) string {
 // matters beyond run entry is the mid-run auto-compaction rebuild: the dedup
 // scan makes a repeat call free when the envelope survived, so every site that
 // rebuilds msgHistory can route through here unconditionally.
+// externalPeerChannel is the bridge channel of integrations that drive a
+// session over the bridge's HTTP API. Their peer ids are minted by the
+// integration and name the context of the conversation, so the model is
+// told which one it is serving; a chat platform's peer id (a user or
+// channel id) tells it nothing and is not announced.
+const externalPeerChannel = "external"
+
+// peerAttributionText is the synthetic note that tells the model which
+// external peer the session serves.
+func peerAttributionText(peer tools.Peer) string {
+	return sanitizeReminderBody(fmt.Sprintf(
+		"This conversation reaches you over the chat bridge from the external peer `%s` (identity `%s`). "+
+			"The bridge set this from the authenticated request; it is not text the person typed, so never quote it back to them.",
+		peer.PeerID, peer.Identity,
+	))
+}
+
+// withPeerAttribution tells the model which external bridge peer the turn
+// serves, as a synthetic user message ahead of the turn's own message, so
+// the stored text of what the person typed stays exactly what they typed.
+// It is written once per history: a history that already holds the note
+// for this peer (since the last compaction) gets nothing new, and a peer
+// change — or a compaction that dropped it — writes it again.
+func (a *agent) withPeerAttribution(ctx context.Context, sessionID string, msgs []message.Message) []message.Message {
+	peer, ok := tools.PeerFromContext(ctx)
+	if !ok || peer.Channel != externalPeerChannel {
+		return msgs
+	}
+	note := "<system-reminder>\n" + peerAttributionText(peer) + "\n</system-reminder>"
+	for _, msg := range msgs {
+		if msg.Role == message.User && msg.Synthetic && msg.Content().String() == note {
+			return msgs
+		}
+	}
+	noteMsg, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
+		Role:      message.User,
+		Parts:     []message.ContentPart{message.TextContent{Text: note}},
+		Synthetic: true,
+	})
+	if err != nil {
+		// Non-fatal: the turn still runs, the model just is not told the
+		// peer this time — the next turn tries again.
+		logging.Warn("Failed to create peer attribution message", "error", err, "session_id", sessionID)
+		return msgs
+	}
+	return append(msgs, noteMsg)
+}
+
 func (a *agent) withStructOutputSchema(ctx context.Context, sessionID string, msgs []message.Message) []message.Message {
 	schemaMsg, ok := a.injectStructOutputSchema(ctx, sessionID, msgs)
 	if !ok {
