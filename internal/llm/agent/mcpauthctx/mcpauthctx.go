@@ -8,8 +8,9 @@
 // mutating the shared config.MCPServers map would race concurrent tool
 // calls and leak the token into later runs. Instead the flow runner
 // stamps the override onto the run context with WithAuthOverride, and
-// mcpRegistry.StartClient layers it on top of the server's static
-// headers per call via AuthOverrideFromContext.
+// the MCP client pool layers it on top of the server's static headers via
+// AuthOverrideFromContext. The resolved headers are part of the pooled
+// client's identity, so each token gets its own client and session.
 //
 // The package deliberately has no dependencies beyond the standard
 // library so both internal/api (the flow runner) and internal/llm/agent

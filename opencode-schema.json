@@ -973,6 +973,10 @@
             "minimum": 0,
             "type": "integer"
           },
+          "clientIdleTimeoutSeconds": {
+            "description": "Seconds a connected client (for stdio: the running server process) is kept for reuse after its last call before it is closed. Zero or omitted uses the built-in default (600); a negative value disables reuse, so every call starts its own client.",
+            "type": "integer"
+          },
           "command": {
             "description": "Command to execute for the MCP server",
             "type": "string"

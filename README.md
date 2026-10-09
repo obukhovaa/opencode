@@ -496,20 +496,904 @@ Optional per-server tuning:
 - `callToolTimeoutSeconds` — override the per-tool-call timeout (default 5 minutes). Raise it for slow servers.
 - `peerHeader` — name of an HTTP header that carries the chat-bridge peer id of the turn making the call (sse and http servers), e.g. `"peerHeader": "X-Peer-Id"`. The value comes from the bridge's authenticated inbound request, never from the model, so a server can scope its answers to the conversation the peer id names. It replaces any static header of that name and is omitted on calls not made from a bridge turn (cron jobs, a task's auto-resumed turn).
 - `callToolMaxOutputBytes` — cap a single tool call's output kept in the model context (default `51200`, i.e. 50KB). Output beyond the cap is spilled to a temp file and replaced with a head+tail preview that points the agent at the file, which it can then `grep`/`read`/`sed`. This protects the context window from tools that return very large payloads (e.g. multi-MB CI build logs). Set a higher value to keep more inline, or a negative value to disable the cap entirely (unbounded — a single result can then overflow the context).
+- `clientIdleTimeoutSeconds` — how long a connected client is kept for reuse after its last call (default `600`). See below; a negative value disables reuse for that server.
+
+**Client reuse.** opencode keeps one connected, initialized client per MCP server and reuses it for every tool call and for tool discovery. For a stdio server, that means the server process stays up between calls instead of being spawned, initialized and stopped for each call.
+
+- **HTTP servers** get one client per distinct set of request headers. A per-flow Authorization override or a `peerHeader` value therefore gets its own session and never shares one with another identity.
+- **One stdio process serves every session, agent, bridge peer and flow run**, because a stdio server receives nothing per call. A server that keeps state in memory (logins, browser contexts, caches) therefore shares it across all of them. Calls to it are multiplexed on one process, so a server that handles requests one at a time queues them, and the time spent queued counts against each call's timeout. For a server where that matters (multi-tenant `opencode serve`, a strictly serial server), set `clientIdleTimeoutSeconds: -1`.
+- **SSE servers are never pooled.** mcp-go cannot detect a dropped event stream, so each call gets its own client.
+
+A client idle longer than `clientIdleTimeoutSeconds` is closed, and all clients close on shutdown. A client is replaced when it turns out to be stale:
+
+- **Retried once on a fresh client** — the request provably never ran: an HTTP 404 on a session the server dropped, or a write to a stdio server that has exited. Tool discovery (`tools/list`, which has no side effects) is also retried once after any transport failure.
+- **Replaced without retrying** — other transport failures, call timeouts, a remote server rejecting the session with a non-standard JSON-RPC error, and a stdio call the agent abandons mid-call. The abandoned case stops the server's work on it, as closing the per-call client used to.
 
 Every wait on an MCP server is bounded, so a server that starts but never answers cannot park an agent turn:
 
 | Wait | Budget | Tunable |
 |---|---|---|
-| Transport start (`Start`) | 20s (SSE only — a stdio transport is started by its constructor, and streamable-HTTP never fails here) | no |
-| Protocol handshake (`initialize`) | 30s | no |
+| Connect (`Start` + `initialize`), on first use and after a client is replaced | 30s | no |
 | Tool call (`tools/call`) | 5 min | `callToolTimeoutSeconds` |
-| Client close | 30s, then the wait is abandoned | no |
+| Client close | off the call path; a stdio server still running 2s after stdin closes gets SIGTERM, then SIGKILL 2s later (at shutdown: SIGTERM at once, SIGKILL within the shutdown budget); any other close is abandoned after 30s | no |
 | Shared client-cache entry | 30s backstop | no |
 
-The handshake and cache budgets are deliberately not per-server tunable: `initialize` is one request/response with no work behind it, so a server that misses the budget is broken rather than slow. Only tool latency is genuinely server-specific. A blown budget surfaces as a normal tool error, so the agent can try another approach instead of hanging.
+The connect and cache budgets are deliberately not per-server tunable: `initialize` is one request/response with no work behind it, so a server that misses the budget is broken rather than slow. Only tool latency is genuinely server-specific. A blown budget surfaces as a normal tool error, so the agent can try another approach instead of hanging.
 
-The close budget matters because a stdio transport's `Close` blocks in `cmd.Wait()` honouring no context: a child that ignores stdin EOF would otherwise hold the agent turn immediately after its tool call had correctly timed out. On timeout the close is abandoned rather than the caller blocked, which leaks one goroutine and one child process per wedged server for the life of the process — deliberately, since leaking the turn is worse and the transport exposes no handle to signal the child.
+No tool result waits for a client to close. A stdio transport's `Close` blocks in `cmd.Wait()` honouring no context, and some servers take 10–20s to exit after stdin EOF. opencode starts each stdio server in a session of its own (so its process group can be signalled as a whole, wrappers such as `npx` included) and signals the group if it outlives the grace period, so closes are bounded and do not leak processes. Having no controlling terminal, a server that tries to prompt on the terminal (ssh, git credentials) fails at once instead of hanging; Ctrl-C does not reach it directly, and opencode stops it on exit instead. On Windows only the server process itself can be stopped. Stdio servers' stderr goes to the debug log.
+
+### Workspace CLI Tools
+
+Wrap a host CLI as a first-class tool with a manifest instead of giving an agent `bash`:
+
+```yaml
+# .agents/tools/snow.yaml
+name: snow
+description: Snowflake CLI — `sql -c <connection> --format JSON -q "<sql>"`.
+command: snow
+args:
+  allow: ["sql *", "--help"]
+  deny: ["-x", "-f", "--filename*", "--config-file*", "--password*"]
+permission: { "*": ask, "sql *": allow }
+```
+
+The binary runs argv-only (no shell) under the manifest's argument, environment, cwd, timeout and output policy; agents receive the tool by naming it (`tools: {snow: true}`), `permission.snow` globs on the argument string, and `deferredTools` works by name. `opencode tools list --strict` audits a workspace; `opencode tools serve` exposes the same manifests over stdio MCP for Claude Code. Config: `cliTools.paths`, `cliTools.disabled`, and the limits every manifest inherits for fields it leaves unset — `cliTools.timeout`, `cliTools.maxTimeout`, `cliTools.maxOutputBytes`, overridable with `OPENCODE_CLI_TOOLS_TIMEOUT` / `_MAX_TIMEOUT` / `_MAX_OUTPUT_BYTES` — applied identically by the native tools and by `opencode tools serve`. See [docs/cli-tools.md](docs/cli-tools.md).
+
+### LSP
+
+OpenCode auto-detects and starts LSP servers for your project's languages. Over 30 servers are built-in with auto-install support. See the [full LSP guide](docs/lsp.md) for details.
+
+```json
+{
+  "lsp": {
+    "gopls": {
+      "env": { "GOFLAGS": "-mod=vendor" },
+      "initialization": { "codelenses": { "test": true } }
+    },
+    "typescript": { "disabled": true },
+    "my-lsp": {
+      "command": "my-lsp-server",
+      "args": ["--stdio"],
+      "extensions": [".custom"]
+    }
+  },
+  "disableLSPDownload": false
+}
+```
+
+Disable auto-download of LSP binaries via config (`"disableLSPDownload": true`) or env var (`OPENCODE_DISABLE_LSP_DOWNLOAD=true`).
+
+### Self-Hosted Models
+
+**Local endpoint:**
+
+```bash
+export LOCAL_ENDPOINT=http://localhost:1235/v1
+export LOCAL_ENDPOINT_API_KEY=secret
+```
+
+
+```json
+{
+  "agents": {
+    "coder": {
+      "model": "local.granite-3.3-2b-instruct@q8_0"
+    }
+  }
+}
+```
+
+### YandexCloud Configuration
+
+YandexCloud AI Studio provides an OpenAI-compatible API. Set both environment variables:
+
+```bash
+export YANDEXCLOUD_API_KEY="AQVN..."
+export YANDEXCLOUD_FOLDER_ID="b1g..."
+```
+
+The folder ID is required for constructing model URIs (`gpt://<folder_id>/<model_path>`). If not set, the provider will fail with a clear error message.
+
+### Kimi (Moonshot) Configuration
+
+Kimi K3 is served through Moonshot's Anthropic-compatible endpoint (`https://api.moonshot.ai/anthropic`) — the same integration path Moonshot documents for Claude Code — so it gets streaming thinking, tool-call streaming, vision, and reasoning replay out of the box:
+
+```bash
+export MOONSHOT_API_KEY="sk-..."   # KIMI_API_KEY works as an alias
+```
+
+Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it resolves to `max` (the only effort level K3 exposes at launch). Override the endpoint with `providers.kimi.baseURL` if needed:
+
+```json
+{
+  "providers": { "kimi": { "apiKey": "sk-..." } },
+  "agents": { "coder": { "model": "kimi.kimi-k3" } }
+}
+```
+
+Kimi K2.7 Code (`kimi.kimi-k2.7-code`) and its faster, double-priced Highspeed variant (`kimi.kimi-k2.7-code-highspeed`) ride the same endpoint with a 256K context. They accept every effort level from `low` to `max`, so an unset `reasoningEffort` keeps the client default (`high`) instead of being pinned to `max`.
+
+Kimi K3 is also available on AWS Bedrock as `bedrock.kimi-k3` (global profile) and `bedrock.us-kimi-k3` (US profile; there is no EU profile yet). Bedrock serves it with OpenAI chat-completions bodies rather than Anthropic Messages, so it is sent through the OpenAI client, with the requests rewritten onto Bedrock's InvokeModel routes. That means it works through the same `providers.bedrock` config and the LiteLLM Bedrock passthrough as the Claude models. Reasoning goes through the OpenAI-style `reasoning_effort` field but keeps K3's levels: `reasoningEffort` `low`/`high`/`max`, defaulting to `max` as on the `kimi` provider (Bedrock also accepts `medium`; `xhigh` folds to `high`). Bedrock caches the prompt prefix automatically, so no cache breakpoints are needed.
+
+**LiteLLM proxy:**
+
+```json
+{
+  "providers": {
+    "vertexai": {
+      "apiKey": "litellm-api-key",
+      "baseURL": "https://localhost/vertex_ai",
+      "headers": {
+        "x-litellm-api-key": "litellm-api-key"
+      }
+    }
+  }
+}
+```
+
+### Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ANTHROPIC_API_KEY` | | Anthropic Claude models |
+| `OPENAI_API_KEY` | | OpenAI models |
+| `GEMINI_API_KEY` | | Google Gemini models |
+| `VERTEXAI_PROJECT` | | Google Cloud VertexAI |
+| `VERTEXAI_LOCATION` | | Google Cloud VertexAI |
+| `VERTEXAI_LOCATION_COUNT` | | VertexAI token count endpoint (global doesn't support) |
+| `AWS_ACCESS_KEY_ID` | | AWS Bedrock |
+| `AWS_SECRET_ACCESS_KEY` | | AWS Bedrock |
+| `AWS_REGION` | | AWS Bedrock |
+| `YANDEXCLOUD_API_KEY` | | YandexCloud AI Studio API key |
+| `YANDEXCLOUD_FOLDER_ID` | | YandexCloud folder ID (required for model URI) |
+| `MOONSHOT_API_KEY` | | Kimi (Moonshot) models |
+| `KIMI_API_KEY` | | Alias for `MOONSHOT_API_KEY` |
+| `LOCAL_ENDPOINT` | | Self-hosted model endpoint |
+| `LOCAL_ENDPOINT_API_KEY` | | Self-hosted model API key |
+| `LANGFUSE_PUBLIC_KEY` | | Langfuse public key ([guide](docs/telemetry.md)) |
+| `LANGFUSE_SECRET_KEY` | | Langfuse secret key |
+| `LANGFUSE_BASE_URL` | `https://cloud.langfuse.com` | Langfuse host URL |
+| `OPENCODE_USER_ID` | | User ID for telemetry (overrides config) |
+| `SHELL` | | Default shell |
+| `OPENCODE_SESSION_PROVIDER_TYPE` | `sqlite` | Session storage backend (`sqlite` or `mysql`) |
+| `OPENCODE_MYSQL_DSN` | | MySQL connection string |
+| `OPENCODE_FILE_OP_TIMEOUT` | `180` | Timeout in seconds for glob/grep file operations |
+| `OPENCODE_PROVIDER_STREAM_INACTIVITY_TIMEOUT` | `300` | Seconds to wait for next SSE event before treating stream as stalled |
+| `OPENCODE_MAX_REPEAT_CALLS` | `3` | Max identical consecutive tool calls before loop detection triggers |
+| `OPENCODE_SERVER_PASSWORD` | | HTTP Basic Auth password for `opencode serve` ([guide](docs/server.md)) |
+| `OPENCODE_DEV_DEBUG` | `false` | Enable development debug logging |
+| `OPENCODE_DISABLE_LSP_DOWNLOAD` | `false` | Disable automatic LSP binary downloads |
+| `OPENCODE_DISABLE_CLAUDE_SKILLS` | `false` | Disable `.claude/skills/` discovery |
+| `OPENCODE_DISABLE_CRON` | | Disable cron scheduling entirely ([guide](docs/cron-and-heartbeat.md)) |
+
+## Supported Models
+
+| Provider | Models |
+|----------|--------|
+| **OpenAI** | GPT-5, O3 Mini, O4 Mini |
+| **Anthropic** | Claude 5.5 Opus (1M), Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5.5 Sonnet (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 5.5 Haiku (1M), Claude 4.5 Haiku |
+| **Google Gemini** | Gemini 3.0 Pro, Gemini 3.0 Flash |
+| **AWS Bedrock** | Claude 5.5 Opus (1M)(EU/Global), Claude 5 Opus (1M)(EU/Global), Claude Fable 5.1 (1M)(EU/Global), Claude Fable 5 (1M)(EU/Global), Claude 4.8 Opus (1M)(EU/Global), Claude 4.7 Opus (1M)(EU/Global), Claude 5.5 Sonnet (1M)(EU/Global), Claude 5 Sonnet (1M)(EU/Global), Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global), Claude 5.5 Haiku (1M)(EU/Global), Claude 4.5 Haiku (EU/Global), Kimi K3 (1M)(US/Global) |
+| **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude 5.5 Opus (1M), Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5.5 Sonnet (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 5.5 Haiku (1M), Claude 4.5 Haiku |
+| **YandexCloud** | Alice AI LLM, YandexGPT Pro 5.1, YandexGPT Pro 5, YandexGPT Lite 5, DeepSeek V3.2, Qwen3 235B, Qwen3.5 35B, gpt-oss-120b |
+| **Kimi (Moonshot)** | Kimi K3 (1M), Kimi K2.7 Code, Kimi K2.7 Code Highspeed |
+| **Local** | Any OpenAI-compatible API |
+
+## Tools
+
+### File & Code
+
+| Tool | Description |
+|------|-------------|
+| `glob` | Find files by pattern |
+| `grep` | Search file contents |
+| `ls` | List directory contents |
+| `read` | Read file contents |
+| `view_image` | View image files as base64 |
+| `write` | Write to files |
+| `edit` | Edit files |
+| `multiedit` | Multiple edits in one file |
+| `patch` | Apply patches to files |
+| `lsp` | Code intelligence (go-to-definition, references, hover, etc.) |
+| `delete` | Delete file or directory |
+
+### System & Search
+
+| Tool | Description |
+|------|-------------|
+| `bash` | Execute shell commands |
+| `webfetch` | Fetch data from URLs (large pages are capped and saved to a temp file — see [Web fetch output cap](#web-fetch-output-cap)) |
+| `websearch` | Search internet via configured WebSearch providers |
+| `sourcegraph` | Search public repositories |
+| `task` | Run sub-tasks with a subagent (supports `subagent_type` and `task_id` for resumption) |
+| `skill` | Load agent skills on-demand (supports `args` for argument substitution and shell expansion) |
+| `struct_output` | Emit structured JSON conforming to a user-supplied schema |
+| `toolsearch` | Discover and load deferred tools on demand (auto-registered only when an agent declares `deferredTools`, [guide](docs/deferred-tools.md)) |
+| `todowrite` | Create and maintain a structured task list for multi-step sessions (progress tracking for external UIs) |
+| `croncreate` / `crondelete` / `cronlist` | Schedule, cancel, and list cron jobs that fire prompts via subagents ([guide](docs/cron-and-heartbeat.md)) |
+
+## Keyboard Shortcuts
+
+### Global
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+C` | Quit |
+| `Ctrl+H`  | Toggle help |
+| `Ctrl+L` | View logs |
+| `Ctrl+A` | Switch session |
+| `Ctrl+N` | New session |
+| `Ctrl+P` | Prune session |
+| `Ctrl+K` | Command dialog |
+| `Ctrl+O` | Model selection |
+| `Ctrl+X` | Cancel generation |
+| `Tab` | Switch primary agent |
+| `Esc` | Close dialog / exit mode |
+
+### Editor
+
+| Shortcut | Action |
+|----------|--------|
+| `i` | Focus editor |
+| `Ctrl+S` / `Enter` | Send message |
+| `Ctrl+E` | Open external editor |
+| `Esc` | Blur editor |
+
+### Shell mode
+
+| Shortcut | Action |
+|----------|--------|
+| `!` | Enter shell mode (also recognised when a `!command` is pasted or submitted) |
+| `!!command` | Run with the terminal handed over — for passwords, SSH, editors |
+| `Enter` | Run the command |
+| `↑` / `↓` | Shell history |
+| `Esc` / `Ctrl+C` | Cancel a running command, or leave shell mode |
+
+### Vim mode
+
+Enabled with `tui.vimMode`, or toggled from the command dialog. The editor starts
+in `INSERT`; `Esc` switches to `NORMAL`.
+
+| Shortcut | Action |
+|----------|--------|
+| `v` / `V` | Charwise / linewise VISUAL mode |
+| motions | Extend the selection (`h j k l w b e 0 ^ $ G gg f t`, with counts) |
+| `o` | Swap which end of the selection the cursor moves |
+| `iw` / `i"` / `ab` … | Extend the selection over a text object |
+| `d` `x` `c` `s` `y` | Delete / change / yank the selection |
+| `~` `u` `U` | Toggle / lower / upper case over the selection |
+| `>` `<` `J` `p` | Indent / unindent / join / replace with the register |
+| `gv` | Restore the last selection |
+| `Esc` / `Ctrl+C` | Back to `NORMAL` |
+
+### Dialogs
+
+| Shortcut | Action |
+|----------|--------|
+| `↑`/`k`, `↓`/`j` | Navigate items |
+| `←`/`h`, `→`/`l` | Switch tabs/providers |
+| `Enter` | Select |
+| `a` / `A` / `d` | Allow / Allow for session / Deny (permissions) |
+
+## Extended Documentation
+
+| Topic | Link |
+|-------|------|
+| Skills | [docs/skills.md](docs/skills.md) |
+| Tool Permissions (`tools` vs `allowTools`) | [docs/tool-permissions.md](docs/tool-permissions.md) |
+| Context Files (scoped resolution + progressive disclosure) | [docs/context.md](docs/context.md) |
+| Flows | [docs/flows.md](docs/flows.md) |
+| Hooks (Claude-Code-compatible) | [docs/hooks.md](docs/hooks.md) |
+| Cron & heartbeat | [docs/cron-and-heartbeat.md](docs/cron-and-heartbeat.md) |
+| Custom Commands | [docs/custom-commands.md](docs/custom-commands.md) |
+| Telemetry & Langfuse | [docs/telemetry.md](docs/telemetry.md) |
+| Session Providers | [docs/session-providers.md](docs/session-providers.md) |
+| LSP Servers | [docs/lsp.md](docs/lsp.md) |
+| Structured Output | [docs/structured-output.md](docs/structured-output.md) |
+
+## Development
+
+### Prerequisites
+
+- Go 1.24.0 or higher
+
+### Building from Source
+
+```bash
+git clone https://github.com/obukhovaa/opencode.git
+cd opencode
+make build
+```
+
+### Docker
+
+Build and run OpenCode in a container:
+
+```bash
+# Build the Docker image (cross-compiles a Linux binary automatically)
+make docker-build
+```
+
+All CLI arguments are passed through directly:
+
+```bash
+# Non-interactive prompt
+docker run opencode:latest -p "Explain context in Go" -f json -q
+
+# Run a flow
+docker run opencode:latest -F my-flow -A key1=value1 -A key2=value2
+
+# With timeout
+docker run opencode:latest -p "Refactor this module" -t 5m -q
+```
+
+Mount your configuration and workspace as volumes:
+
+```bash
+docker run -ti --rm \
+  -e LOCAL_ENDPOINT_API_KEY="${LOCAL_ENDPOINT_API_KEY}" \
+  -e LOCAL_ENDPOINT="${LOCAL_ENDPOINT}" \
+  -e VERTEXAI_PROJECT="${VERTEXAI_PROJECT}" \
+  -e VERTEXAI_LOCATION="${VERTEXAI_LOCATION:-global}" \
+  -e VERTEXAI_LOCATION_COUNT="${VERTEXAI_LOCATION_COUNT:-us-east5}" \
+  -v ~/.opencode.json:/workspace/.opencode.json \
+  -v $(pwd):/workspace \
+  --network opencode_default \
+  opencode:latest  # you can pass args here, e.g. -p "Analyze this codebase"
+
+```
+
+To run non interactivly (you can pass [[#Command-Line Flags]])
+
+```bash
+docker run --rm \
+  -v ~/.opencode.json:/workspace/.opencode.json \
+  -v $(pwd):/workspace \
+  --network opencode_default \
+  opencode:latest -p "Analyze this codebase" -q
+
+```
+
+The container uses `/workspace` as its working directory. Mount `.opencode.json` there to provide configuration — it is not baked into the image.
+
+### Release
+```bash
+make release SCOPE=patch
+# or
+make release SCOPE=minor
+```
+
+## Acknowledgments
+
+- [@isaacphi](https://github.com/isaacphi) — [mcp-language-server](https://github.com/isaacphi/mcp-language-server), foundation for the LSP client
+- [@adamdottv](https://github.com/adamdottv) — Design direction and UI/UX architecture
+- [@kujtimiihoxha](https://github.com/kujtimiihoxha) – Original OpenCode implementation
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Open a Pull Request
+ [!NOTE]
+> Fork of now archived https://github.com/opencode-ai/opencode
+> The focus is changed towards headless experience oriented towards autonomous agents.
+
+# ⌬ OpenCode
+
+OpenCode is a CLI tool that brings AI assistance to your terminal. It provides a TUI (Terminal User Interface), a headless non-interactive mode for scripting, an HTTP REST API server for external UI integration, and an ACP server for editor integration.
+
+## Features
+
+- **Interactive TUI** built with [Bubble Tea](https://github.com/charmbracelet/bubbletea)
+- **Non-interactive mode** for headless automation and autonomous agents
+- **HTTP REST API server** for external UI integration (e.g., [OpenWork](https://github.com/different-ai/openwork)) with SSE event streaming ([guide](docs/server.md))
+- **ACP server** (Agent Client Protocol) for editor and desktop UI integration ([AionUI](https://github.com/iOfficeAI/AionUi), Zed, JetBrains) via JSON-RPC over stdio ([guide](docs/server.md#acp-mode))
+- **Chat bridge**: in-process Telegram / Slack / Mattermost adapters with multi-reviewer fan-out, router-initiated conversations, interactive question UI (buttons + inline keyboards), `router_send` agent tool, single-writer election, and per-identity health reporting ([guide](docs/bridge.md))
+- **Flows**: deterministic multi-step agent workflows defined in YAML ([guide](docs/flows.md))
+- **Subagents**: highly customizable agents calling another agents to do work [[#Agents]]
+- **Cron jobs**: schedule prompts to run once or recurringly via subagents, with `/loop` and the `croncreate`/`crondelete`/`cronlist` tools ([guide](docs/cron-and-heartbeat.md))
+- **Multiple AI providers**: Anthropic, OpenAI, Google Gemini, AWS Bedrock, VertexAI, YandexCloud, Kimi (Moonshot), and self-hosted
+- **Tool integration**: file operations, shell commands, code search, LSP code intelligence
+- **Structured output**: enforce final agent's output with json schema, perfect for automated pipelines
+- **MCP support**: extend capabilities via Model Context Protocol servers
+- **Deferred tools**: keep large MCP fleets out of context until needed — matching tools are loaded on demand via `toolsearch` (Anthropic server-side tool search on capable models, cache-preserving; a client-side fallback elsewhere) ([guide](docs/deferred-tools.md))
+- **Tool allow-lists**: scope an agent to exactly the tools it needs with `allowTools`, so tools added to the harness later are not granted retroactively ([guide](docs/tool-permissions.md))
+- **Agent skills**: reusable instruction sets with argument substitution and dynamic shell expansion ([guide](docs/skills.md))
+- **Custom commands**: predefined prompts with named arguments ([guide](docs/custom-commands.md))
+- **Langfuse observability**: built-in tracing for LLM calls, tool executions, token usage, and cost ([guide](docs/telemetry.md))
+- **Session management** with SQLite or MySQL storage ([guide](docs/session-providers.md))
+- **LSP integration** with auto-install for 30+ language servers ([guide](docs/lsp.md))
+- **File change tracking** during sessions
+
+## Installation
+
+### Install Script
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/obukhovaa/opencode/refs/heads/main/install | bash
+
+# Specific version
+curl -fsSL https://raw.githubusercontent.com/obukhovaa/opencode/refs/heads/main/install | VERSION=0.3.0 bash
+```
+
+### Homebrew
+
+```bash
+brew install obukhovaa/tap/opencode
+```
+
+### Go
+
+```bash
+go install github.com/obukhovaa/opencode@latest
+```
+
+## Usage
+
+```bash
+opencode                        # Start TUI
+opencode -d                     # Debug mode
+opencode -c /path/to/project    # Set working directory
+opencode -a hivemind            # Start with a specific agent
+opencode -s <session-id>        # Resume or create a session
+opencode -s <session-id> -D     # Delete session and start fresh
+opencode --auto-approve         # Start with auto-approve (skip permission dialogs)
+```
+
+### Non-Interactive Mode
+
+```bash
+opencode -p "Explain context in Go"           # Single prompt
+opencode -p "Explain context in Go" -f json   # JSON output
+opencode -p "Explain context in Go" -q        # Quiet (no spinner)
+opencode -p "Refactor this module" -t 5m      # With 5-minute timeout
+```
+
+### Non-Interactive Flow Mode
+
+```bash
+opencode -p "Explain context in Go" -F review-code -A hash=93706ee  # Run review-uncommited flow with args
+opencode -p "Explain context in Go" -F ralph-does -s wiggum         # Run flow with the pinned session data
+```
+
+All permissions are auto-approved in non-interactive mode.
+
+### Server Mode
+
+Start a headless HTTP REST API server for external UIs like [OpenWork](https://github.com/different-ai/openwork):
+
+```bash
+opencode serve                                    # Default: localhost:4096
+opencode serve --port 8080 --hostname 0.0.0.0     # Custom port and hostname
+opencode serve --cors "http://localhost:3000"          # Restrict CORS
+OPENCODE_SERVER_PASSWORD=secret opencode serve    # With authentication
+```
+
+See the [full server guide](docs/server.md) for endpoints and SSE events.
+
+### ACP Mode
+
+Start an Agent Client Protocol server for editor integration (Zed, JetBrains):
+
+```bash
+opencode acp                    # JSON-RPC over stdio
+opencode acp --cwd /path/to/project  # Specific project directory
+```
+
+### Command-Line Flags
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--help` | `-h` | Display help |
+| `--debug` | `-d` | Enable debug mode |
+| `--cwd` | `-c` | Set working directory |
+| `--prompt` | `-p` | Non-interactive single prompt |
+| `--agent` | `-a` | Agent ID to use (e.g. `coder`, `hivemind`) |
+| `--session` | `-s` | Session ID to resume or create |
+| `--delete` | `-D` | Delete the session specified by `--session` before starting |
+| `--output-format` | `-f` | Output format: `text` (default), `json` |
+| `--quiet` | `-q` | Hide spinner in non-interactive mode |
+| `--timeout` | `-t` | Timeout for non-interactive mode (e.g. `10s`, `30m`, `1h`) |
+| `--auto-approve` | | Start TUI with auto-approve enabled (skip permission dialogs) |
+| `--flow` | `-F` | Flow ID to execute, [more info](docs/flows.md) |
+| `--arg` | `-A` | Flow argument as `key=value` (repeatable) |
+| `--args-file` | | JSON file with flow arguments |
+| `--project-id` | `-P` | Custom project ID to group sessions (overrides detected Git/basename) |
+
+## Configuration
+
+OpenCode looks for `.opencode.json` in:
+
+1. `./.opencode.json` (project directory)
+2. `$XDG_CONFIG_HOME/opencode/.opencode.json`
+3. `$HOME/.opencode.json`
+
+### Full Config Example
+
+```json
+{
+  "data": {
+    "directory": ".opencode"
+  },
+  "providers": {
+    "openai": { "apiKey": "..." },
+    "anthropic": { "apiKey": "..." },
+    "gemini": { "apiKey": "..." },
+    "vertexai": {
+      "project": "your-project-id",
+      "location": "us-central1"
+    },
+    "yandexcloud": {
+      "apiKey": "..."
+    }
+  },
+  "agents": {
+    "coder": {
+      "model": "vertexai.claude-opus-4-6",
+      "maxTokens": 5000,
+      "reasoningEffort": "high"
+    },
+    "explorer": {
+      "model": "claude-4-5-sonnet[1m]",
+      "maxTokens": 5000
+    },
+    "summarizer": {
+      "model": "vertexai.gemini-3.0-flash",
+      "maxTokens": 5000
+    },
+    "descriptor": {
+      "model": "claude-4-5-sonnet[1m]",
+      "maxTokens": 80
+    }
+  },
+  "shell": {
+    "path": "/bin/bash",
+    "args": ["-l"]
+  },
+  "mcpServers": {
+    "example": {
+      "type": "stdio",
+      "command": "path/to/mcp-server",
+      "args": []
+    }
+  },
+  "lsp": {
+    "gopls": {
+      "initialization": { "codelenses": { "test": true } }
+    }
+  },
+  "sessionProvider": { "type": "sqlite" },
+  "skills": { "paths": ["~/my-skills"] },
+  "permission": {
+    "skill": { "*": "ask" },
+    "rules": {
+      "bash": { "*": "ask", "git *": "allow" },
+      "edit": { "*": "allow" },
+      "read": { "/proc/*": "deny" }
+    }
+  },
+  "webSearch": {
+    "providers": {
+      "tavily": {
+        "baseUrl": "https://api.tavily.com/search",
+        "apiKey": "env:TAVILY_API_KEY",
+        "description": "Web search via Tavily"
+      }
+    }
+  },
+  "webFetch": { "maxOutputBytes": 51200 },
+  "autoCompact": true,
+  "debug": false
+}
+```
+
+### Agents
+
+Each built-in agent can be customized:
+
+| Agent | Mode | Purpose |
+|-------|------|---------|
+| `coder` | agent | Main coding agent (all tools) |
+| `hivemind` | agent | Supervisory agent for coordinating subagents |
+| `explorer` | subagent | Fast codebase exploration (read-only tools) |
+| `workhorse` | subagent | Autonomous coding subagent (all tools) |
+| `summarizer` | subagent | Session summarization |
+| `descriptor` | subagent | Session title generation |
+
+**Agent fields:**
+
+| Field | Description |
+|-------|-------------|
+| `model` | Model ID to use |
+| `maxTokens` | Maximum response tokens |
+| `maxTurns` | Maximum tool calls before agent stops |
+| `reasoningEffort` | `low`, `medium`, `high` (default; `medium` on Claude Haiku 5.5), `xhigh`, `max` |
+| `mode` | `agent` (primary, switchable via tab) or `subagent` (invoked via task tool) |
+| `name` | Display name for the agent |
+| `description` | Short description of agent's purpose |
+| `permission` | Agent-specific permission overrides (supports granular glob patterns) |
+| `tools` | Tool deny-list — unmentioned tools stay enabled (e.g., `{"skill": false}`) |
+| `allowTools` | Tool allow-list — the agent gets exactly these, nothing else (e.g., `["read", "gitlab_*"]`, [guide](docs/tool-permissions.md)). Mutually exclusive with `tools` |
+| `deferredTools` | On-demand tool loading — matching tools stay out of context until discovered via `toolsearch` (e.g., `{"jira_*": true}`, [guide](docs/deferred-tools.md)) |
+| `parallelToolUse` | Enable/disable parallel tool invocation if tool allows it |
+| `color` | Badge color for subagent indication in TUI |
+| `prompt` | Custom system prompt (mutually exclusive with `langfusePromptPath`) |
+| `langfusePromptPath` | Path of a prompt in Langfuse Prompt Management to use as the system prompt ([guide](docs/telemetry.md#langfuse-prompt-management)) |
+| `langfusePromptLabel` | Langfuse label to resolve for `langfusePromptPath` (default `production`) |
+
+#### Custom Agents via Markdown
+
+Define custom agents as markdown files with YAML frontmatter. Discovery locations (merge priority, lowest to highest):
+
+1. `agentPaths` in `.opencode.json` — custom directories scanned for `*.md` agents (lowest priority)
+2. `~/.config/opencode/agents/*.md` — Global agents
+3. `~/.agents/types/*.md` — Global agents
+4. `.opencode/agents/*.md` — Project agents
+5. `.agents/types/*.md` — Project agents
+6. `.opencode.json` `agents` config — Highest priority
+
+`agentPaths` accepts absolute paths, `~` (home directory), and relative paths (resolved against the working directory). Each directory is scanned non-recursively for `*.md` files, mirroring the `skills.paths` option:
+
+```json
+{
+  "agentPaths": ["~/.my-agents", ".team/agents"]
+}
+```
+
+Example `.opencode/agents/reviewer.md`:
+
+```markdown
+---
+name: Code Reviewer
+description: Reviews code for quality and best practices
+mode: subagent
+model: vertexai.claude-opus-4-6
+color: info
+tools:
+  bash: false
+  write: false
+---
+
+You are a code review specialist...
+```
+
+The file basename (without `.md`) becomes the agent ID. Custom agents default to `subagent` mode.
+
+#### Deny-list (`tools`) vs allow-list (`allowTools`)
+
+`tools` is a **deny-list**: keys enable or disable named tools (wildcards
+allowed), and anything unmentioned stays *enabled*. Convenient for a
+general-purpose agent, but it means every tool added to the harness later is
+granted to every existing agent retroactively.
+
+`allowTools` is an **allow-list**: the agent gets exactly the tools it names
+and nothing else.
+
+```markdown
+---
+name: Scenario Runner
+mode: subagent
+allowTools:
+  - struct_output
+  - question
+  - scenario-run_*
+---
+```
+
+The two keys are mutually exclusive within one definition source (declaring
+both fails the markdown parse, or the boot for `.opencode.json`); across
+sources the higher-precedence one replaces the other, with a warning naming
+what it dropped. Allow-list mode has no implicit grants — `struct_output`,
+`toolsearch` and the `cron*` tools must be listed by name — and a single `"*"`
+entry is the allow-everything escape hatch. Full semantics, the migration
+checklist and the version footgun (older builds ignore the key silently) are
+in [docs/tool-permissions.md](docs/tool-permissions.md).
+
+#### Langfuse-managed system prompts
+
+An agent's system prompt can live in [Langfuse Prompt Management](docs/telemetry.md#langfuse-prompt-management)
+instead of in the definition, so prompt changes ship from the Langfuse UI
+with no deploy. In a markdown agent it is a frontmatter key, and the body —
+which *is* the inline prompt — must be empty:
+
+```markdown
+---
+name: Code Reviewer
+description: Reviews code for quality and best practices
+mode: subagent
+langfusePromptPath: agents/reviewer/system
+langfusePromptLabel: production   # optional; this is the default
+---
+```
+
+The same two keys work in the `.opencode.json` `agents` block alongside
+`prompt` (note the JSON schema requires `model` on an agent entry, so
+restate it there even when only the prompt is changing):
+
+```json
+{
+  "agents": {
+    "reviewer": {
+      "model": "vertexai.claude-sonnet-4-5-m",
+      "langfusePromptPath": "agents/reviewer/system",
+      "langfusePromptLabel": "staging"
+    }
+  }
+}
+```
+
+Declaring both an inline prompt and a `langfusePromptPath` — a non-empty
+markdown body counts — is a load-time error rather than a precedence rule.
+Each definition layer is a partial override, so a higher-priority layer may
+declare `langfusePromptLabel` alone to re-label a path a lower one supplied;
+a label that ends up with no path anywhere is dropped with a warning rather
+than failing the boot.
+
+Resolution happens when the agent is constructed, not when the registry is
+loaded. For subagents (built per `task` spawn) and flow-step agents that
+means an edit in the Langfuse UI reaches the next run bounded by `cacheTTL`,
+with no restart. **Primary agents (`mode: agent`) are built once at startup
+and held for the process lifetime**, so their prompt is pinned until
+restart — see the freshness table in
+[telemetry.md](docs/telemetry.md#freshness-what-a-ui-edit-reaches-and-when).
+
+A reference that cannot be resolved and has nothing cached fails agent
+construction naming the path; the agent never runs on an empty system prompt
+and never silently falls back to the built-in prompt for its name.
+
+
+### Auto Compact
+
+When enabled (default), automatically summarizes conversations approaching the context window limit (95%) and continues in a new session.
+
+```json
+{ "autoCompact": true }
+```
+
+The check runs before every model call: before a turn's first one, before each later call of its tool-use loop, and before the first call after a non-interactive run re-enters the loop for drained background tasks. A long-lived session (chat bridge, `opencode serve`, cron heartbeats) therefore compacts before the turn that would overflow it. On an auto-resume turn the background-task completion it reacts to is kept after the summary. The context size is the larger of the provider's token estimate and the usage the provider reported for the session's last call, plus the messages added since. A reported usage above the window, or more than 1.5x the estimate, is ignored (a proxy that counted one call's cache reads twice reports about twice the real prompt), with a WARN `implausible reported usage ignored` when it would have triggered compaction and a DEBUG line otherwise.
+
+When a compaction fails, the session does not retry for the rest of that turn, and then waits 1 minute, doubling per consecutive failure up to 30 minutes. Growth of 10% of the window since the failure overrides both the wait and the same-turn rule, so a session heading for overflow still gets another try. A success resets the backoff, and a manual `/compact` ignores it. Each failure logs a WARN with the failure count, the next retry time, the estimated summarizer input and the error. The summarizer's Langfuse generation carries `compaction.trigger` (`pre_turn`, `in_loop`, `manual`), `compaction.estimated_input_tokens`, `compaction.messages`, `compaction.trimmed_messages`, `compaction.truncated_tool_payloads` and `compaction.failures`, so a failure can be read without logging the input.
+
+The summarizer only sees the history since the previous summary, as one text transcript: tool calls become `[tool_call <name> id=<id>] <input>` lines, tool results `[tool_result <name> id=<id>] <content>`, a server-side tool search one `[tool_search ...]` line with its query and the tools it found, reasoning blocks and binary attachments are dropped, and each tool input or result over 2,000 estimated tokens keeps only its head and tail around a `[... N tokens omitted ...]` marker. The request declares no tools, and replaying native tool, server-tool or signed thinking blocks into it makes some proxies (LiteLLM in front of Bedrock) reset the stream instead of returning the 400. If the transcript does not fit 90% of the summarizer's window (or the effective `summarizerMaxInputTokens`, when set and smaller), the oldest messages are dropped (with a warning) rather than failing the compaction, and a tool result never stays without its call. The turn's own prompt, such as a flow step's task, is kept unless it alone takes more than half of the space left, or keeping it would leave no recent history or the input over budget. The fit is judged on the local 4 bytes/token estimate, scaled up by the session's last reported usage when that is larger, so an overflowed session whose size the estimate undercounts is still trimmed. It remains an estimate: a summarizer whose tokenizer counts far more than the main model's can still reject its input; lower `summarizerMaxInputTokens` then.
+
+The threshold can be lowered per agent — useful when a proxy resets streams well before the model's nominal window. For an agent defined in markdown, set it in the frontmatter:
+
+```markdown
+---
+model: bedrock.claude-opus-4-6
+compactionThreshold: 0.4
+---
+```
+
+For a JSON-only agent, set `agents.<id>.compactionThreshold` in `.opencode.json`. Do not add a JSON `agents.<id>` entry just for the threshold when the agent is defined in markdown: an entry without `model` is given the default model and its default `maxTokens`, and those replace the frontmatter values. If you need the JSON entry, repeat the agent's `model` (and `maxTokens`, if set) in it:
+
+```json
+{ "agents": { "neo": { "model": "bedrock.claude-opus-4-6", "compactionThreshold": 0.4 } } }
+```
+
+`compactionThreshold` is a fraction in (0, 1]; out-of-range values are ignored with a warning. A flow step's `compact.threshold` wins over it, and it never enables compaction when `autoCompact` is off.
+
+`summarizerMaxInputTokens` (frontmatter or `agents.<id>`, same caveat) caps what the agent's compactions send the summarizer, in estimated tokens. Set it when the summarizer's route rejects large inputs below its nominal window. Precedence: the agent's frontmatter/registry value, then `agents.<id>`, then `agents.summarizer` — set on the `summarizer` agent it caps every agent without its own value:
+
+```json
+{ "agents": { "summarizer": { "model": "bedrock.claude-sonnet-4-5", "summarizerMaxInputTokens": 300000 } } }
+```
+
+### Auto Approve
+
+Auto-approve mode skips interactive permission dialogs for `ask`-resolved permissions during a session. `deny` rules and disabled tools are still enforced — auto-approve only promotes `ask` decisions to `allow`.
+
+- **Toggle in TUI**: type `/auto-approve` to enable/disable for the current session
+- **CLI flag**: `opencode --auto-approve` starts the TUI with auto-approve on the first session
+- **Scope**: per-session only — new sessions start without auto-approve
+- **Subagents**: child task sessions inherit auto-approve from the parent
+- **Non-interactive mode**: already auto-approves all permissions, flag is ignored
+- **Questions still ask**: auto-approve covers tool permissions, not decisions — the `question` tool keeps prompting you (TUI dialog, chat bridge, API). It answers itself with the first (recommended) option only where nobody could answer: a headless `opencode -p` run, a flow step, or a cron job firing on an unwatched session
+
+### Shell
+
+Override the default shell (falls back to `$SHELL` or `/bin/bash`):
+
+```json
+{
+  "shell": {
+    "path": "/bin/zsh",
+    "args": ["-l"],
+    "interactive": ["my-cli", "aws-vault"]
+  }
+}
+```
+
+On Unix the shell runs in its own session with no controlling terminal, so nothing
+it runs can read from or write to the terminal OpenCode is drawing on. A command
+that needs a terminal — `sudo`, `ssh`, an editor — therefore fails immediately
+rather than prompting invisibly.
+
+In the TUI's shell mode those commands are detected and handed the real terminal
+instead: OpenCode steps aside for the duration of the run, you answer the prompt,
+and the TUI comes back. `interactive` extends the built-in list (`sudo`, `ssh`,
+`vim`, `less`, `psql`, `docker exec -it`, …) with your own programs; prefixing any
+command with `!!` forces the same handoff without configuring it.
+
+> **Behavior change.** Before terminal isolation, such a command prompted on
+> OpenCode's own terminal — corrupting the TUI, racing it for your keystrokes, and
+> hanging until the tool timeout. It now fails immediately with the program's own
+> diagnostic (`sudo: no tty present …`). If you hit that from the agent's `bash`
+> tool, run the command yourself; from the TUI, re-run it with `!!`.
+
+Commands are evaluated *in* the shell, which is what makes `cd` persist between
+them. The same property means a command containing `exit` ends the session: the
+exit status is reported as the command's own, a replacement shell starts in the
+same directory, and exported variables and shell functions are lost.
+
+### Web Fetch Output Cap
+
+```json
+{
+  "webFetch": { "maxOutputBytes": 51200 }
+}
+```
+
+`webfetch` converts a page (HTML → markdown by default) and returns it to the model, and a single documentation page routinely converts to hundreds of KB — enough for two or three fetches to fill a context window, and every one of them is re-sent on each later turn.
+
+`maxOutputBytes` caps what a single fetch keeps in context (default `51200`, i.e. 50KB — the same number as the bash and MCP caps). The cap is measured after conversion, on the text that actually enters the context. Beyond it, the full converted page is written to a temp file and replaced with a head+tail preview whose header names the file, so the agent searches it with `grep` (or `sed` in bash) instead of carrying the page or re-fetching the URL. Note the `read` tool declines files over 250KB outright, so `grep`/`sed` are the recovery path for a large page.
+
+Set a higher value to keep more inline, or a negative value to disable the cap entirely (unbounded — a few fetches can then overflow the context). Responses at or below the cap are returned unchanged and no file is written.
+
+A response body over the 5MB read limit is truncated before conversion, and the reply says so rather than presenting a torn document as a complete one.
+
+### MCP Servers
+
+```json
+{
+  "mcpServers": {
+    "stdio-example": {
+      "type": "stdio",
+      "command": "path/to/server",
+      "env": [],
+      "args": []
+    },
+    "sse-example": {
+      "type": "sse",
+      "url": "https://example.org/mcp",
+      "headers": { "Authorization": "Bearer token" }
+    },
+    "http-example": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer token" }
+    }
+  }
+}
+```
+
+Optional per-server tuning:
+
+- `callToolTimeoutSeconds` — override the per-tool-call timeout (default 5 minutes). Raise it for slow servers.
+- `peerHeader` — name of an HTTP header that carries the chat-bridge peer id of the turn making the call (sse and http servers), e.g. `"peerHeader": "X-Peer-Id"`. The value comes from the bridge's authenticated inbound request, never from the model, so a server can scope its answers to the conversation the peer id names. It replaces any static header of that name and is omitted on calls not made from a bridge turn (cron jobs, a task's auto-resumed turn).
+- `callToolMaxOutputBytes` — cap a single tool call's output kept in the model context (default `51200`, i.e. 50KB). Output beyond the cap is spilled to a temp file and replaced with a head+tail preview that points the agent at the file, which it can then `grep`/`read`/`sed`. This protects the context window from tools that return very large payloads (e.g. multi-MB CI build logs). Set a higher value to keep more inline, or a negative value to disable the cap entirely (unbounded — a single result can then overflow the context).
+
+- `clientIdleTimeoutSeconds` — how long a connected client is kept for reuse after its last call (default `600`). See below; a negative value disables reuse for that server.
+
+**Client reuse.** opencode keeps one connected, initialized client per MCP server and reuses it for every tool call and for tool discovery. For a stdio server, that means the server process stays up between calls instead of being spawned, initialized and stopped for each call. HTTP and SSE servers get one client per distinct set of request headers. A per-flow Authorization override or a `peerHeader` value therefore gets its own session and never shares one with another identity. A client idle longer than `clientIdleTimeoutSeconds` is closed, and all clients close on shutdown. Two kinds of failure replace the client and retry the call once, because the request provably never ran: an HTTP 404 on a session the server dropped, and a write to a stdio server that has exited. Other transport failures and call timeouts replace the client without retrying. A server that keeps state across requests sees that state kept for as long as its process lives; set `clientIdleTimeoutSeconds: -1` to get a fresh process per call instead.
+
+Every wait on an MCP server is bounded, so a server that starts but never answers cannot park an agent turn:
+
+| Wait | Budget | Tunable |
+|---|---|---|
+| Connect (`Start` + `initialize`), on first use and after a client is replaced | 30s | no |
+| Tool call (`tools/call`) | 5 min | `callToolTimeoutSeconds` |
+| Client close | off the call path; a stdio server still running 2s after stdin closes gets SIGTERM, then SIGKILL 2s later | no |
+| Shared client-cache entry | 30s backstop | no |
+
+The connect and cache budgets are deliberately not per-server tunable: `initialize` is one request/response with no work behind it, so a server that misses the budget is broken rather than slow. Only tool latency is genuinely server-specific. A blown budget surfaces as a normal tool error, so the agent can try another approach instead of hanging.
+
+No tool result waits for a client to close. A stdio transport's `Close` blocks in `cmd.Wait()` honouring no context, and some servers take 10–20s to exit after stdin EOF. opencode starts each stdio server in its own process group and signals the group if it outlives the grace period, so closes are bounded and do not leak processes. Stdio servers' stderr goes to the debug log.
 
 ### Workspace CLI Tools
 

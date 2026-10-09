@@ -637,7 +637,7 @@ func identityTags(userID, team string) []string {
 // foldMCPServerName canonicalises an MCP server name the way config
 // loading does. Viper lower-cases map keys read from .opencode.json, so
 // `mcpServers.My-Orchestrator` is stored as `my-orchestrator` and every
-// lookup — StartClient's, resolveMCPHeaders' — uses the folded form. An
+// lookup — the MCP client pool's, resolveMCPHeaders' — uses the folded form. An
 // override keyed on the raw wire value would therefore never be found
 // for any server whose configured name has an uppercase letter, and the
 // failure is silent: discovery falls back to the boot-time header, 401s,

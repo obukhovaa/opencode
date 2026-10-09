@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -229,16 +231,31 @@ to assist developers in writing, debugging, and understanding code directly from
 			spinner.Stop()
 		}
 
+		// Non-interactive runs: Ctrl-C / SIGTERM cancel the run instead of
+		// killing the process, so ForceShutdown below still stops the pooled
+		// stdio MCP servers — they run in sessions of their own and never see
+		// the terminal's signals. A second signal kills as before.
+		nonInteractiveBase := ctx
+		if flowID != "" || prompt != "" {
+			sigCtx, stopSignals := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+			defer stopSignals()
+			go func() {
+				<-sigCtx.Done()
+				stopSignals()
+			}()
+			nonInteractiveBase = sigCtx
+		}
+
 		// Non-interactive flow mode
 		if flowID != "" {
-			nonInteractiveCtx := ctx
+			nonInteractiveCtx := nonInteractiveBase
 			var timeoutCancel context.CancelFunc
 			if timeoutStr != "" {
 				timeoutDuration, parseErr := time.ParseDuration(timeoutStr)
 				if parseErr != nil {
 					return fmt.Errorf("invalid --timeout value %q: %w (use formats like 10s, 30m, 1h)", timeoutStr, parseErr)
 				}
-				nonInteractiveCtx, timeoutCancel = context.WithTimeout(ctx, timeoutDuration)
+				nonInteractiveCtx, timeoutCancel = context.WithTimeout(nonInteractiveBase, timeoutDuration)
 				defer timeoutCancel()
 			}
 			_err := runFlowNonInteractive(nonInteractiveCtx, app, flowID, prompt, sessionID, deleteSession, flowArgs, argsFile, quiet)
@@ -248,14 +265,14 @@ to assist developers in writing, debugging, and understanding code directly from
 
 		// Non-interactive mode
 		if prompt != "" {
-			nonInteractiveCtx := ctx
+			nonInteractiveCtx := nonInteractiveBase
 			var timeoutCancel context.CancelFunc
 			if timeoutStr != "" {
 				timeoutDuration, parseErr := time.ParseDuration(timeoutStr)
 				if parseErr != nil {
 					return fmt.Errorf("invalid --timeout value %q: %w (use formats like 10s, 30m, 1h)", timeoutStr, parseErr)
 				}
-				nonInteractiveCtx, timeoutCancel = context.WithTimeout(ctx, timeoutDuration)
+				nonInteractiveCtx, timeoutCancel = context.WithTimeout(nonInteractiveBase, timeoutDuration)
 				defer timeoutCancel()
 			}
 			_err := runNonInteractive(nonInteractiveCtx, app, prompt, parsedOutputFormat, quiet)

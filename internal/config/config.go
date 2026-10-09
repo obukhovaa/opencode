@@ -57,6 +57,11 @@ type MCPServer struct {
 	// positive value to raise or lower it; set a negative value to disable the cap
 	// entirely (unbounded output — use with care, large results can overflow the context).
 	CallToolMaxOutputBytes int `json:"callToolMaxOutputBytes,omitempty"`
+	// ClientIdleTimeoutSeconds is how long the registry keeps this server's
+	// connected client (for stdio: the running server process) after its last
+	// call before closing it. Set to 0 (or omit) for the built-in default; set a
+	// negative value to disable reuse, so every call starts its own client.
+	ClientIdleTimeoutSeconds int `json:"clientIdleTimeoutSeconds,omitempty"`
 }
 
 // ResolveMCPServers returns only the MCP servers that are not disabled.

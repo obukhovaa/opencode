@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -42,25 +44,62 @@ type fakeMCPClient struct {
 	// answers. Zero value = respond immediately, so existing tests are unaffected.
 	blockInitialize bool
 	blockCallTool   bool
-	// callToolDelay delays CallTool without ignoring ctx.
+	// initDelay / callToolDelay delay the respective method without ignoring ctx.
+	initDelay     time.Duration
 	callToolDelay time.Duration
+	// callErr, when set, is what CallTool fails with instead of returning result.
+	callErr error
+	// wedgeCallTool makes CallTool hang until the channel closes, ignoring
+	// ctx — mcp-go's stdio transport blocked in its unbounded stdin write.
+	wedgeCallTool chan struct{}
+	// tools / listErr are what ListTools returns; blockListTools makes it hang
+	// until ctx is done and then fail the way mcp-go's transports do.
+	tools          []mcp.Tool
+	listErr        error
+	blockListTools bool
 	// blockClose makes Close hang, standing in for transport.Stdio.Close
 	// parking in cmd.Wait() on a child that ignores stdin EOF.
 	blockClose chan struct{}
 	closed     atomic.Bool
+
+	initCalls atomic.Int32
+	callCalls atomic.Int32
 }
 
 func (f *fakeMCPClient) Initialize(ctx context.Context, req mcp.InitializeRequest) (*mcp.InitializeResult, error) {
+	f.initCalls.Add(1)
 	if f.blockInitialize {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
+	if f.initDelay > 0 {
+		select {
+		case <-time.After(f.initDelay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return &mcp.InitializeResult{}, nil
 }
 func (f *fakeMCPClient) ListTools(ctx context.Context, req mcp.ListToolsRequest) (*mcp.ListToolsResult, error) {
-	return &mcp.ListToolsResult{}, nil
+	if f.blockListTools {
+		<-ctx.Done()
+		return nil, transport.NewError(ctx.Err())
+	}
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return &mcp.ListToolsResult{Tools: f.tools}, nil
 }
 func (f *fakeMCPClient) CallTool(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	f.callCalls.Add(1)
+	if f.callErr != nil {
+		return nil, f.callErr
+	}
+	if f.wedgeCallTool != nil {
+		<-f.wedgeCallTool
+		return nil, transport.NewError(errors.New("write |1: file already closed"))
+	}
 	if f.blockCallTool {
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -90,15 +129,15 @@ func textResult(blocks ...string) *mcp.CallToolResult {
 	return r
 }
 
-func TestRunToolOutputCap(t *testing.T) {
+func TestCallMCPToolOutputCap(t *testing.T) {
 	t.Cleanup(tools.CleanupTempDir)
 	ctx := context.Background()
 
 	t.Run("small output is returned unchanged", func(t *testing.T) {
 		c := &fakeMCPClient{result: textResult("hello world")}
-		resp, err := runTool(ctx, c, "some_tool", "{}", mcpCallToolTimeout, mcpCallToolMaxOutputBytes)
+		resp, err := callMCPTool(ctx, c, "some_tool", "{}", mcpCallToolTimeout, mcpCallToolMaxOutputBytes)
 		if err != nil {
-			t.Fatalf("runTool error: %v", err)
+			t.Fatalf("callMCPTool error: %v", err)
 		}
 		if resp.Content != "hello world" {
 			t.Errorf("small output altered: %q", resp.Content)
@@ -108,9 +147,9 @@ func TestRunToolOutputCap(t *testing.T) {
 	t.Run("oversized output is capped and spilled to a file", func(t *testing.T) {
 		big := strings.Repeat("X", 200_000) // ~200KB, over the 50KB default
 		c := &fakeMCPClient{result: textResult(big)}
-		resp, err := runTool(ctx, c, "big_tool", "{}", mcpCallToolTimeout, mcpCallToolMaxOutputBytes)
+		resp, err := callMCPTool(ctx, c, "big_tool", "{}", mcpCallToolTimeout, mcpCallToolMaxOutputBytes)
 		if err != nil {
-			t.Fatalf("runTool error: %v", err)
+			t.Fatalf("callMCPTool error: %v", err)
 		}
 		if len(resp.Content) >= len(big) {
 			t.Errorf("output not capped: %d bytes (input %d)", len(resp.Content), len(big))
@@ -127,9 +166,9 @@ func TestRunToolOutputCap(t *testing.T) {
 		// With the cap disabled, both blocks must survive (regression guard for the
 		// old loop that kept only the last block).
 		c := &fakeMCPClient{result: textResult("AAAA", "BBBB")}
-		resp, err := runTool(ctx, c, "multi_tool", "{}", mcpCallToolTimeout, -1)
+		resp, err := callMCPTool(ctx, c, "multi_tool", "{}", mcpCallToolTimeout, -1)
 		if err != nil {
-			t.Fatalf("runTool error: %v", err)
+			t.Fatalf("callMCPTool error: %v", err)
 		}
 		if resp.Content != "AAAABBBB" {
 			t.Errorf("multi-block not concatenated: got %q, want %q", resp.Content, "AAAABBBB")
@@ -160,6 +199,14 @@ func newTestMCPHTTPServer(t *testing.T) (string, *atomic.Int64) {
 // server and restores the previous value on cleanup.
 func seedMCPServerConfig(t *testing.T, name, url string) {
 	t.Helper()
+	seedMCPServers(t, map[string]config.MCPServer{
+		name: {Type: config.MCPHttp, URL: url},
+	})
+}
+
+// seedMCPServers replaces the global config's MCPServers for one test.
+func seedMCPServers(t *testing.T, servers map[string]config.MCPServer) {
+	t.Helper()
 	if config.Get() == nil {
 		if _, err := config.Load(t.TempDir(), false); err != nil {
 			t.Fatalf("config.Load: %v", err)
@@ -167,9 +214,7 @@ func seedMCPServerConfig(t *testing.T, name, url string) {
 	}
 	cfg := config.Get()
 	old := cfg.MCPServers
-	cfg.MCPServers = map[string]config.MCPServer{
-		name: {Type: config.MCPHttp, URL: url},
-	}
+	cfg.MCPServers = servers
 	t.Cleanup(func() { cfg.MCPServers = old })
 }
 
@@ -284,44 +329,42 @@ func withInitTimeout(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { mcpInitTimeout = prev })
 }
 
-// TestRunToolHandshakeBound covers the deadline on the per-call MCP handshake.
-// Before it existed, a server that started but never answered initialize parked
-// the caller for the life of the process: the tool part stayed at
-// status=running with no start timestamp, and the callTimeout below never
-// applied because CallTool was never reached.
-func TestRunToolHandshakeBound(t *testing.T) {
+// TestMCPHandshakeBound covers the deadline on the MCP handshake, which now
+// runs when the pool connects a client. Before it existed, a server that
+// started but never answered initialize parked the caller for the life of the
+// process: the tool part stayed at status=running with no start timestamp, and
+// the call timeout never applied because CallTool was never reached.
+func TestMCPHandshakeBound(t *testing.T) {
 	t.Cleanup(tools.CleanupTempDir)
+	server := config.MCPServer{Type: config.MCPHttp, URL: "http://fake.invalid"}
 
 	t.Run("handshake that never answers fails within the budget", func(t *testing.T) {
 		const budget = 100 * time.Millisecond
 		withInitTimeout(t, budget)
-		c := &fakeMCPClient{blockInitialize: true}
+		f := &fakeMCPFactory{make: func(int) *fakeMCPClient { return &fakeMCPClient{blockInitialize: true} }}
+		reg := newFakeMCPRegistry(t, "wedged", server, f)
 
-		// Run off-goroutine and bound the wait: without the fix the fake blocks
-		// on ctx.Done() forever, and an in-line call would hang the package to
-		// the binary timeout instead of failing.
+		// Run off-goroutine and bound the wait: without the bound the fake
+		// blocks on ctx.Done() forever, and an in-line call would hang the
+		// package to the binary timeout instead of failing.
 		type result struct {
 			resp    tools.ToolResponse
-			err     error
 			elapsed time.Duration
 		}
 		ch := make(chan result, 1)
 		go func() {
 			start := time.Now()
-			resp, err := runTool(context.Background(), c, "wedged_tool", "{}", mcpCallToolTimeout, mcpCallToolMaxOutputBytes)
-			ch <- result{resp, err, time.Since(start)}
+			resp := reg.CallTool(context.Background(), "wedged", "wedged_tool", "{}")
+			ch <- result{resp, time.Since(start)}
 		}()
 
 		var got result
 		select {
 		case got = <-ch:
 		case <-time.After(50 * budget):
-			t.Fatal("runTool did not return; the handshake is not bounded")
+			t.Fatal("CallTool did not return; the handshake is not bounded")
 		}
 
-		if got.err != nil {
-			t.Fatalf("runTool returned a Go error, want a tool error: %v", got.err)
-		}
 		// Pin the ENFORCED budget, not just the advertised one: a hardcoded
 		// duration in place of mcpInitTimeout would otherwise pass.
 		if got.elapsed > 20*budget {
@@ -338,17 +381,17 @@ func TestRunToolHandshakeBound(t *testing.T) {
 	})
 
 	t.Run("upstream deadline is not blamed on the handshake budget", func(t *testing.T) {
-		// A parent DEADLINE, not a bare cancel: both parent and child then
-		// report DeadlineExceeded, so only the ctx.Err() == nil conjunct can
-		// tell them apart. With a plain WithCancel the error is Canceled and
-		// the comparison alone would pass, making the test tautological.
+		// A parent DEADLINE, not a bare cancel, so the caller sees
+		// DeadlineExceeded just as an expired handshake would.
 		withInitTimeout(t, time.Hour)
+		f := &fakeMCPFactory{make: func(int) *fakeMCPClient { return &fakeMCPClient{blockInitialize: true} }}
+		reg := newFakeMCPRegistry(t, "slow", server, f)
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 		defer cancel()
 
-		resp, err := runTool(ctx, &fakeMCPClient{blockInitialize: true}, "expired_tool", "{}", mcpCallToolTimeout, mcpCallToolMaxOutputBytes)
-		if err != nil {
-			t.Fatalf("runTool returned a Go error: %v", err)
+		resp := reg.CallTool(ctx, "slow", "expired_tool", "{}")
+		if !resp.IsError {
+			t.Fatal("expected an error response")
 		}
 		if strings.Contains(resp.Content, "handshake") {
 			t.Errorf("upstream deadline attributed to the handshake budget: %s", resp.Content)
@@ -357,14 +400,14 @@ func TestRunToolHandshakeBound(t *testing.T) {
 
 	t.Run("handshake budget does not curtail a slow tool call", func(t *testing.T) {
 		// The tool takes longer than the handshake budget but stays inside its
-		// own call budget: a deferred cancelInit would have killed this.
+		// own call budget.
 		withInitTimeout(t, 30*time.Millisecond)
-		c := &fakeMCPClient{result: textResult("done"), callToolDelay: 150 * time.Millisecond}
+		f := &fakeMCPFactory{make: func(int) *fakeMCPClient {
+			return &fakeMCPClient{result: textResult("done"), callToolDelay: 150 * time.Millisecond}
+		}}
+		reg := newFakeMCPRegistry(t, "slowtool", server, f)
 
-		resp, err := runTool(context.Background(), c, "slow_tool", "{}", 10*time.Second, mcpCallToolMaxOutputBytes)
-		if err != nil {
-			t.Fatalf("runTool error: %v", err)
-		}
+		resp := reg.CallTool(context.Background(), "slowtool", "slow_tool", "{}")
 		if resp.IsError {
 			t.Fatalf("slow-but-within-budget call failed: %s", resp.Content)
 		}
@@ -373,13 +416,23 @@ func TestRunToolHandshakeBound(t *testing.T) {
 		}
 	})
 
-	t.Run("call budget still applies after a prompt handshake", func(t *testing.T) {
-		withInitTimeout(t, time.Hour)
-		c := &fakeMCPClient{blockCallTool: true}
+	t.Run("call budget applies even when the transport ignores the context", func(t *testing.T) {
+		wedged := make(chan struct{})
+		t.Cleanup(func() { close(wedged) })
+		start := time.Now()
+		resp, err := callMCPTool(context.Background(), &fakeMCPClient{wedgeCallTool: wedged}, "stuck_write", "{}", 50*time.Millisecond, mcpCallToolMaxOutputBytes)
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("call took %s against a 50ms budget", elapsed)
+		}
+		if !strings.Contains(resp.Content, "timed out") || !mcpConnBroken(context.Background(), err, false) {
+			t.Errorf("want a timeout that evicts the client; got %q / %v", resp.Content, err)
+		}
+	})
 
-		resp, err := runTool(context.Background(), c, "hung_call", "{}", 50*time.Millisecond, mcpCallToolMaxOutputBytes)
-		if err != nil {
-			t.Fatalf("runTool error: %v", err)
+	t.Run("call budget still applies", func(t *testing.T) {
+		resp, err := callMCPTool(context.Background(), &fakeMCPClient{blockCallTool: true}, "hung_call", "{}", 50*time.Millisecond, mcpCallToolMaxOutputBytes)
+		if err == nil {
+			t.Error("a timed-out call must report its transport error to the pool")
 		}
 		if !strings.Contains(resp.Content, "timed out") {
 			t.Errorf("expected the CallTool timeout message, got: %s", resp.Content)
@@ -448,7 +501,7 @@ func TestCloseMCPClientBounded(t *testing.T) {
 		done := make(chan time.Duration, 1)
 		go func() {
 			start := time.Now()
-			closeMCPClient(c, "wedged", 50*time.Millisecond)
+			closeMCPClient(c, nil, "wedged", mcpCloseTiming{abandon: 50 * time.Millisecond})
 			done <- time.Since(start)
 		}()
 
@@ -467,7 +520,7 @@ func TestCloseMCPClientBounded(t *testing.T) {
 
 	t.Run("a cooperative Close completes normally", func(t *testing.T) {
 		c := &fakeMCPClient{}
-		closeMCPClient(c, "ok", time.Minute)
+		closeMCPClient(c, nil, "ok", defaultCloseTiming())
 		if !c.closed.Load() {
 			t.Error("Close was not called")
 		}
