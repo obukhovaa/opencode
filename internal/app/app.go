@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -347,7 +348,19 @@ func (app *App) Shutdown() {
 		app.Messages.Shutdown()
 	}
 	tools.CleanupTempDir()
+	app.shutdownMCP(5 * time.Second)
 	app.LspService.Shutdown(context.Background())
+}
+
+// shutdownMCP closes the pooled MCP clients, giving stdio servers up to
+// budget to exit or be signalled (see mcpClientPool).
+func (app *App) shutdownMCP(budget time.Duration) {
+	if app.MCPRegistry == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	app.MCPRegistry.Shutdown(ctx)
 }
 
 // ForceShutdown performs an aggressive shutdown for non-interactive mode
@@ -360,6 +373,7 @@ func (app *App) ForceShutdown() {
 		app.Messages.Shutdown()
 	}
 	tools.CleanupTempDir()
+	app.shutdownMCP(time.Second)
 	app.LspService.ForceShutdown()
 	app.forceKillAllChildProcesses()
 	logging.Info("Force shutdown completed")

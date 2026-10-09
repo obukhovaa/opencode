@@ -7,7 +7,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
@@ -121,18 +120,14 @@ func TestPeerHeaderReachesTheServer(t *testing.T) {
 	}
 	t.Cleanup(func() { cfg.MCPServers = old })
 
-	reg := NewMCPRegistry(context.Background(), nil, nil)
+	reg := NewMCPRegistry(context.Background(), nil, nil).(*mcpRegistry)
+	t.Cleanup(func() { reg.Shutdown(context.Background()) })
 	ctx := tools.WithPeer(context.Background(), tools.Peer{Channel: "external", Identity: "default", PeerID: "app1:d1:c1"})
-	c, err := reg.StartClient(ctx, "scoped")
+	conn, err := reg.pool.acquire(ctx, "scoped", cfg.MCPServers["scoped"])
 	if err != nil {
-		t.Fatalf("StartClient: %v", err)
+		t.Fatalf("acquire: %v", err)
 	}
-	t.Cleanup(func() { _ = c.Close() })
-	init := mcp.InitializeRequest{}
-	init.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	if _, err := c.Initialize(ctx, init); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	reg.pool.release(conn, false)
 
 	mu.Lock()
 	defer mu.Unlock()

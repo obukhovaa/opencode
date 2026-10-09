@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -17,10 +18,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/pubsub"
-	"github.com/opencode-ai/opencode/internal/version"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -57,8 +55,13 @@ type (
 		// mcpInitTimeout), never by a caller: results land in a cache shared across
 		// every agent, and the returned channel always closes within that bound.
 		LoadTools(filter *MCPRegistryFiler) <-chan tools.BaseTool
-		// StartClient starts a new MCPClient, caller have to properly close when done
-		StartClient(ctx context.Context, name string) (c *client.Client, err error)
+		// CallTool runs tool on MCP server name with JSON-encoded input on a
+		// pooled client (see mcp_pool.go) and renders the result for the
+		// model. Failures come back as tool error responses.
+		CallTool(ctx context.Context, name, tool, input string) tools.ToolResponse
+		// Shutdown closes every pooled MCP client, waiting for the closes until
+		// ctx is done. Later calls fail fast.
+		Shutdown(ctx context.Context)
 		// SetDiscoveryAuth records Authorization overrides that registry-owned
 		// DISCOVERY fetches apply, keyed by MCP server name (value is the full
 		// header, e.g. "Bearer <jwt>"). Passing nil or an empty map clears them.
@@ -101,6 +104,10 @@ type (
 		discoveryAuthMu sync.RWMutex
 		discoveryAuth   map[string]string
 
+		// pool holds the connected clients that tool calls and discovery
+		// fetches share.
+		pool *mcpClientPool
+
 		permissions   permission.Service
 		agentRegistry agentregistry.Registry
 		*pubsub.Broker[MCPServerEvent]
@@ -109,7 +116,6 @@ type (
 	mcpTool struct {
 		mcpName     string
 		tool        mcp.Tool
-		mcpConfig   config.MCPServer
 		permissions permission.Service
 		reg         agentregistry.Registry
 		mcpReg      MCPRegistry
@@ -126,64 +132,56 @@ func NewMCPRegistry(ctx context.Context, permissions permission.Service, agentRe
 	return &mcpRegistry{
 		mcpTools:      sync.Map{},
 		baseCtx:       ctx,
+		pool:          newMCPClientPool(ctx),
 		permissions:   permissions,
 		agentRegistry: agentRegistry,
 		Broker:        pubsub.NewBroker[MCPServerEvent](),
 	}
 }
 
-func (r *mcpRegistry) StartClient(ctx context.Context, name string) (c *client.Client, err error) {
+// CallTool runs one tool call on a pooled client. A call whose request
+// provably never reached the server — the server dropped the session, or a
+// stdio server had already exited — is sent once more on a fresh client.
+func (r *mcpRegistry) CallTool(ctx context.Context, name, toolName, input string) tools.ToolResponse {
 	m, ok := config.ResolveMCPServers()[name]
 	if !ok {
-		return nil, fmt.Errorf("no mcp found with name %s", name)
+		return tools.NewTextErrorResponse(fmt.Sprintf("no mcp found with name %s", name))
 	}
-
-	// Layer a context-scoped Authorization override (per-flow MCP auth,
-	// openspec change agent-pod-pool-runtime D1) on top of the static
-	// config headers. The override shadows any boot-time Authorization
-	// value for the duration of the calling context only; the shared
-	// config map is never mutated.
-	headers := resolveMCPHeaders(ctx, name, m.Headers)
-	headers = resolvePeerHeader(ctx, m.PeerHeader, headers)
-
-	startCtx, cancelStart := context.WithTimeout(ctx, 20*time.Second)
-	defer cancelStart()
-	switch m.Type {
-	case config.MCPStdio:
-		c, err = client.NewStdioMCPClient(
-			m.Command,
-			m.Env,
-			m.Args...,
-		)
-	case config.MCPSse:
-		c, err = client.NewSSEMCPClient(
-			m.URL,
-			client.WithHeaders(headers),
-		)
-	case config.MCPHttp:
-		c, err = client.NewStreamableHttpClient(
-			m.URL,
-			transport.WithHTTPHeaders(headers),
-		)
-	}
-	if err != nil {
-		logging.Error("Error creating MCP client", "server", name, "cause", err)
-		return nil, err
-	}
-	if err = c.Start(startCtx); err != nil {
-		logging.Error("Error starting MCP client", "server", m.Command, "cause", err)
-		// Returning a nil client would leave the transport with no reference
-		// left to close. Reachable for SSE only: its Start does an HTTP GET and
-		// an endpoint wait that can genuinely fail after the reader goroutine
-		// is running. Stdio cannot reach this — NewStdioMCPClient starts the
-		// transport in the constructor, so Stdio.Start returns nil at its
-		// idempotence check — and StreamableHTTP.Start never errors.
-		if cerr := c.Close(); cerr != nil {
-			logging.Warn("Error closing MCP client after failed start", "server", name, "cause", cerr)
+	callTimeout := resolveCallToolTimeout(m)
+	maxOutputBytes := resolveCallToolMaxOutputBytes(m)
+	for attempt := 1; ; attempt++ {
+		conn, err := r.pool.acquire(ctx, name, m)
+		if err != nil {
+			return mcpConnectErrorResponse(ctx, toolName, err)
 		}
-		return nil, err
+		resp, callErr := callMCPTool(ctx, conn.client, toolName, input, callTimeout, maxOutputBytes)
+		r.pool.release(conn, mcpConnBroken(ctx, callErr))
+		if attempt == 1 && ctx.Err() == nil && mcpRequestNotSent(callErr) {
+			logging.Info("MCP client lost its session or process; retrying on a fresh client",
+				"server", name, "tool", toolName, "cause", callErr)
+			continue
+		}
+		return resp
 	}
-	return c, nil
+}
+
+// Shutdown closes every pooled client; see MCPRegistry.
+func (r *mcpRegistry) Shutdown(ctx context.Context) {
+	r.pool.shutdown(ctx)
+}
+
+// mcpConnectErrorResponse renders a failure to get a connected client. A
+// handshake that ran out its budget is named as such, but only while the
+// caller's own context is alive: otherwise the deadline came from upstream
+// and naming mcpInitTimeout would mislead.
+func mcpConnectErrorResponse(ctx context.Context, toolName string, err error) tools.ToolResponse {
+	if ctx.Err() == nil && errors.Is(err, errMCPHandshakeTimeout) {
+		return tools.NewTextErrorResponse(fmt.Sprintf(
+			"MCP handshake for tool %q did not complete within %s — the server started but never answered initialize. The agent should try a different approach or skip this step.",
+			toolName, mcpInitTimeout,
+		))
+	}
+	return tools.NewTextErrorResponse(err.Error())
 }
 
 // resolveMCPHeaders returns the header map to construct an MCP client
@@ -303,7 +301,7 @@ func (r *mcpRegistry) SetDiscoveryAuth(overrides map[string]string) {
 }
 
 // discoveryCtx returns baseCtx carrying the recorded discovery auth
-// overrides, so StartClient's existing mcpauthctx lookup finds them.
+// overrides, so the pool's existing mcpauthctx lookup finds them.
 // Values only — the lifetime stays baseCtx's, which is the invariant
 // TestMCPRegistry_LoadToolsRegistryOwnedLifetime and
 // TestMCPRegistry_ShutdownBoundsFetch pin.
@@ -399,9 +397,9 @@ const (
 )
 
 // mcpInitTimeout bounds every wait on an MCP server becoming usable, or ceasing
-// to be: a single cache fetch (start + initialize + list tools), the getTools
-// waiter path's backstop on entry.done, the per-call initialize handshake in
-// runTool, and the close budget in closeMCPClient.
+// to be: a pooled client's connect (start + initialize, mcpClientPool.dial), a
+// single cache fetch, the getTools waiter path's backstop on entry.done, and the
+// budget after which closeMCPClient abandons a non-stdio close.
 //
 // Deliberately NOT per-server overridable the way callToolTimeoutSeconds is:
 // tool latency is genuinely server-specific, but a handshake is one
@@ -410,33 +408,6 @@ const (
 //
 // A var rather than a const so tests can shorten it; never mutated at runtime.
 var mcpInitTimeout = 30 * time.Second
-
-// closeMCPClient closes an MCP client without letting a wedged server park the
-// caller.
-//
-// transport.Stdio.Close closes stdin and then blocks in cmd.Wait(), honouring
-// no context — and the child was spawned by the constructor under
-// context.Background(), so nothing can cut it short. A cooperative child exits
-// on stdin EOF; one that does not would hold the agent turn exactly the way the
-// unbounded handshake used to, one frame later.
-//
-// On timeout the Close goroutine is abandoned rather than the caller blocked:
-// that leaks one goroutine (and the child) per wedged server for the life of
-// the process, which is strictly better than leaking the turn. mcp-go exposes
-// no handle to signal the process, so there is nothing stronger to do here.
-func closeMCPClient(c interface{ Close() error }, name string, budget time.Duration) {
-	done := make(chan error, 1)
-	go func() { done <- c.Close() }()
-	select {
-	case err := <-done:
-		if err != nil {
-			logging.Debug("Error closing MCP client", "server", name, "cause", err)
-		}
-	case <-time.After(budget):
-		logging.Warn("MCP client close exceeded its budget; abandoning the wait",
-			"server", name, "budget", budget)
-	}
-}
 
 type toolsCacheEntry struct {
 	done chan bool
@@ -532,37 +503,23 @@ func (r *mcpRegistry) getToolsAttempt(name string, m config.MCPServer, retryOnIn
 		fetchCtx, cancelFetch := context.WithTimeout(r.discoveryCtx(), mcpInitTimeout)
 		defer cancelFetch()
 
-		var c *client.Client
-		c, entry.err = r.StartClient(fetchCtx, name)
+		// The client comes from the pool, so the first tool call made under
+		// the same headers reuses it instead of connecting again. The pool
+		// connects under its own lifetime, which is baseCtx's too.
+		var conn *mcpConn
+		conn, entry.err = r.pool.acquire(fetchCtx, name, m)
 		if entry.err != nil {
 			logging.Error("Error starting MCP client", "server", name, "cause", entry.err.Error())
 			close(entry.done)
 			r.mcpTools.Delete(name)
 			return toolsToAdd
 		}
-		// Registration order matters and is LIFO: the close is registered FIRST
-		// so it runs LAST. The reverse — the original order — let a Close
-		// blocked in cmd.Wait() hold entry.done shut, which blocks every
-		// waiter on this server and, because the entry deliberately stays in
-		// the map, degrades the slot for the life of the process.
-		defer closeMCPClient(c, name, mcpInitTimeout)
 		defer close(entry.done)
 
-		initRequest := mcp.InitializeRequest{}
-		initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-		initRequest.Params.ClientInfo = mcp.Implementation{
-			Name:    "opencode",
-			Version: version.Version,
-		}
-
-		_, entry.err = c.Initialize(fetchCtx, initRequest)
-		if entry.err != nil {
-			logging.Error("Error initializing MCP client", "server", name, "cause", entry.err.Error())
-			r.mcpTools.Delete(name)
-			return toolsToAdd
-		}
-		toolsRequest := mcp.ListToolsRequest{}
-		entry.data, entry.err = c.ListTools(fetchCtx, toolsRequest)
+		entry.data, entry.err = conn.client.ListTools(fetchCtx, mcp.ListToolsRequest{})
+		// Never blocks: a close the release triggers runs in the background,
+		// so it cannot hold entry.done shut for this server's waiters.
+		r.pool.release(conn, mcpConnBroken(fetchCtx, entry.err))
 		if entry.err != nil {
 			logging.Error("Error listing MCP tools", "server", name, "cause", entry.err.Error())
 			r.mcpTools.Delete(name)
@@ -591,7 +548,7 @@ func (r *mcpRegistry) getToolsAttempt(name string, m config.MCPServer, retryOnIn
 
 	if entry.data != nil {
 		for _, t := range entry.data.Tools {
-			toolsToAdd = append(toolsToAdd, newMCPTool(name, t, r.permissions, m, r.agentRegistry, r))
+			toolsToAdd = append(toolsToAdd, newMCPTool(name, t, r.permissions, r.agentRegistry, r))
 		}
 	}
 	return toolsToAdd
@@ -601,14 +558,12 @@ func newMCPTool(
 	name string,
 	tool mcp.Tool,
 	permissions permission.Service,
-	mcpConfig config.MCPServer,
 	reg agentregistry.Registry,
 	mcpReg MCPRegistry,
 ) tools.BaseTool {
 	return &mcpTool{
 		mcpName:     name,
 		tool:        tool,
-		mcpConfig:   mcpConfig,
 		permissions: permissions,
 		reg:         reg,
 		mcpReg:      mcpReg,
@@ -656,12 +611,7 @@ func (b *mcpTool) Run(ctx context.Context, params tools.ToolCall) (tools.ToolRes
 		}
 	}
 
-	c, err := b.mcpReg.StartClient(ctx, b.mcpName)
-	if err != nil {
-		return tools.NewTextErrorResponse(err.Error()), nil
-	}
-	defer closeMCPClient(c, b.mcpName, mcpInitTimeout)
-	return runTool(ctx, c, b.tool.Name, params.Input, resolveCallToolTimeout(b.mcpConfig), resolveCallToolMaxOutputBytes(b.mcpConfig))
+	return b.mcpReg.CallTool(ctx, b.mcpName, b.tool.Name, params.Input), nil
 }
 
 // resolveCallToolTimeout returns the per-call timeout for an MCP server. A positive
@@ -689,43 +639,19 @@ func resolveCallToolMaxOutputBytes(m config.MCPServer) int {
 	}
 }
 
-func runTool(ctx context.Context, c MCPClient, toolName string, input string, callTimeout time.Duration, maxOutputBytes int) (tools.ToolResponse, error) {
-	initRequest := mcp.InitializeRequest{}
-	initRequest.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initRequest.Params.ClientInfo = mcp.Implementation{
-		Name:    "OpenCode",
-		Version: version.Version,
-	}
-
-	// The handshake needs its own deadline: it is one request/response with no
-	// work behind it, so a server that has not answered within mcpInitTimeout is
-	// broken rather than slow. Unbounded, a server that starts but never replies
-	// parks the caller for the life of the process, and callTimeout below never
-	// applies because CallTool is never reached.
-	//
-	// cancelInit is called explicitly, not deferred: a defer would hold the timer
-	// across the up-to-callTimeout CallTool that follows.
-	initCtx, cancelInit := context.WithTimeout(ctx, mcpInitTimeout)
-	_, err := c.Initialize(initCtx, initRequest)
-	initErr := initCtx.Err()
-	cancelInit()
-	if err != nil {
-		// Only attribute the timeout to our handshake budget while the parent ctx
-		// is still alive — otherwise the deadline came from upstream and naming
-		// mcpInitTimeout would be misleading.
-		if ctx.Err() == nil && initErr == context.DeadlineExceeded {
-			return tools.NewTextErrorResponse(fmt.Sprintf(
-				"MCP handshake for tool %q did not complete within %s — the server started but never answered initialize. The agent should try a different approach or skip this step.",
-				toolName, mcpInitTimeout,
-			)), nil
-		}
-		return tools.NewTextErrorResponse(err.Error()), nil
-	}
-
+// callMCPTool sends one tools/call on a connected, initialized client and
+// renders the result for the model. The error CallTool failed with comes back
+// separately — nil when the server answered, a tool-level isError result
+// included — so the caller can decide whether the client survives.
+// callMCPTool sends one tools/call on a connected, initialized client and
+// renders the result for the model. The error CallTool failed with comes back
+// separately — nil when the server answered, a tool-level isError result
+// included — so the caller can decide whether the client survives.
+func callMCPTool(ctx context.Context, c MCPClient, toolName string, input string, callTimeout time.Duration, maxOutputBytes int) (tools.ToolResponse, error) {
 	toolRequest := mcp.CallToolRequest{}
 	toolRequest.Params.Name = toolName
 	var args map[string]any
-	if err = json.Unmarshal([]byte(input), &args); err != nil {
+	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return tools.NewTextErrorResponse(fmt.Sprintf("error parsing parameters: %s", err)), nil
 	}
 	toolRequest.Params.Arguments = args
@@ -741,9 +667,9 @@ func runTool(ctx context.Context, c MCPClient, toolName string, input string, ca
 			return tools.NewTextErrorResponse(fmt.Sprintf(
 				"MCP tool %q timed out after %s — upstream MCP server did not respond. The agent should try a different approach or skip this step.",
 				toolName, callTimeout,
-			)), nil
+			)), err
 		}
-		return tools.NewTextErrorResponse(err.Error()), nil
+		return tools.NewTextErrorResponse(err.Error()), err
 	}
 
 	// Concatenate every content block. (Previously only the last block survived,

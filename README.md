@@ -497,19 +497,22 @@ Optional per-server tuning:
 - `peerHeader` — name of an HTTP header that carries the chat-bridge peer id of the turn making the call (sse and http servers), e.g. `"peerHeader": "X-Peer-Id"`. The value comes from the bridge's authenticated inbound request, never from the model, so a server can scope its answers to the conversation the peer id names. It replaces any static header of that name and is omitted on calls not made from a bridge turn (cron jobs, a task's auto-resumed turn).
 - `callToolMaxOutputBytes` — cap a single tool call's output kept in the model context (default `51200`, i.e. 50KB). Output beyond the cap is spilled to a temp file and replaced with a head+tail preview that points the agent at the file, which it can then `grep`/`read`/`sed`. This protects the context window from tools that return very large payloads (e.g. multi-MB CI build logs). Set a higher value to keep more inline, or a negative value to disable the cap entirely (unbounded — a single result can then overflow the context).
 
+- `clientIdleTimeoutSeconds` — how long a connected client is kept for reuse after its last call (default `600`). See below; a negative value disables reuse for that server.
+
+**Client reuse.** opencode keeps one connected, initialized client per MCP server and reuses it for every tool call and for tool discovery. For a stdio server, that means the server process stays up between calls instead of being spawned, initialized and stopped for each call. HTTP and SSE servers get one client per distinct set of request headers. A per-flow Authorization override or a `peerHeader` value therefore gets its own session and never shares one with another identity. A client idle longer than `clientIdleTimeoutSeconds` is closed, and all clients close on shutdown. Two kinds of failure replace the client and retry the call once, because the request provably never ran: an HTTP 404 on a session the server dropped, and a write to a stdio server that has exited. Other transport failures and call timeouts replace the client without retrying. A server that keeps state across requests sees that state kept for as long as its process lives; set `clientIdleTimeoutSeconds: -1` to get a fresh process per call instead.
+
 Every wait on an MCP server is bounded, so a server that starts but never answers cannot park an agent turn:
 
 | Wait | Budget | Tunable |
 |---|---|---|
-| Transport start (`Start`) | 20s (SSE only — a stdio transport is started by its constructor, and streamable-HTTP never fails here) | no |
-| Protocol handshake (`initialize`) | 30s | no |
+| Connect (`Start` + `initialize`), on first use and after a client is replaced | 30s | no |
 | Tool call (`tools/call`) | 5 min | `callToolTimeoutSeconds` |
-| Client close | 30s, then the wait is abandoned | no |
+| Client close | off the call path; a stdio server still running 2s after stdin closes gets SIGTERM, then SIGKILL 2s later | no |
 | Shared client-cache entry | 30s backstop | no |
 
-The handshake and cache budgets are deliberately not per-server tunable: `initialize` is one request/response with no work behind it, so a server that misses the budget is broken rather than slow. Only tool latency is genuinely server-specific. A blown budget surfaces as a normal tool error, so the agent can try another approach instead of hanging.
+The connect and cache budgets are deliberately not per-server tunable: `initialize` is one request/response with no work behind it, so a server that misses the budget is broken rather than slow. Only tool latency is genuinely server-specific. A blown budget surfaces as a normal tool error, so the agent can try another approach instead of hanging.
 
-The close budget matters because a stdio transport's `Close` blocks in `cmd.Wait()` honouring no context: a child that ignores stdin EOF would otherwise hold the agent turn immediately after its tool call had correctly timed out. On timeout the close is abandoned rather than the caller blocked, which leaks one goroutine and one child process per wedged server for the life of the process — deliberately, since leaking the turn is worse and the transport exposes no handle to signal the child.
+No tool result waits for a client to close. A stdio transport's `Close` blocks in `cmd.Wait()` honouring no context, and some servers take 10–20s to exit after stdin EOF. opencode starts each stdio server in its own process group and signals the group if it outlives the grace period, so closes are bounded and do not leak processes. Stdio servers' stderr goes to the debug log.
 
 ### Workspace CLI Tools
 

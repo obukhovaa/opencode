@@ -2,12 +2,10 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -33,9 +31,11 @@ func (seamStubMCPRegistry) LoadTools(*MCPRegistryFiler) <-chan tools.BaseTool {
 	return ch
 }
 
-func (seamStubMCPRegistry) StartClient(context.Context, string) (*client.Client, error) {
-	return nil, errors.New("no MCP in the seam test")
+func (seamStubMCPRegistry) CallTool(context.Context, string, string, string) tools.ToolResponse {
+	return tools.NewTextErrorResponse("no MCP in the seam test")
 }
+
+func (seamStubMCPRegistry) Shutdown(context.Context) {}
 
 func (seamStubMCPRegistry) SetDiscoveryAuth(map[string]string) {}
 func (seamStubMCPRegistry) LoadedServers() map[string]bool     { return nil }
