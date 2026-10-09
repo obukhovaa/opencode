@@ -161,6 +161,42 @@ func TestPreparedMessagesEmptyHistoryDoesNotPanic(t *testing.T) {
 	}
 }
 
+func TestPreparedMessagesDefaultEffort(t *testing.T) {
+	tests := []struct {
+		name   string
+		model  models.ModelID
+		effort string
+		want   anthropic.OutputConfigEffort
+	}{
+		{name: "haiku 5.5 unset uses the model default", model: models.Claude55Haiku, want: "medium"},
+		{name: "bedrock haiku 5.5 unset uses the model default", model: models.BedrockHaiku55, want: "medium"},
+		{name: "bedrock EU haiku 5.5 unset uses the model default", model: models.BedrockEUHaiku55, want: "medium"},
+		{name: "vertex haiku 5.5 unset uses the model default", model: models.VertexAIHaiku55, want: "medium"},
+		{name: "haiku 5.5 configured effort wins", model: models.Claude55Haiku, effort: "xhigh", want: "xhigh"},
+		{name: "sonnet 5.5 unset falls back to high", model: models.Claude55Sonnet, want: "high"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a, ok := newAnthropicClient(providerClientOptions{
+				apiKey:           "test-key",
+				model:            models.SupportedModels[tt.model],
+				anthropicOptions: []AnthropicOption{WithAnthropicReasoningEffort(tt.effort)},
+			}).(*anthropicClient)
+			if !ok {
+				t.Fatal("newAnthropicClient did not return *anthropicClient")
+			}
+			msgs := a.convertMessages([]message.Message{{
+				Role:  message.User,
+				Parts: []message.ContentPart{message.TextContent{Text: "classify this"}},
+			}})
+			p := a.preparedMessages(context.Background(), msgs, nil)
+			if p.OutputConfig.Effort != tt.want {
+				t.Fatalf("effort = %q, want %q", p.OutputConfig.Effort, tt.want)
+			}
+		})
+	}
+}
+
 func TestConvertMessagesCacheLandsAfterReasoning(t *testing.T) {
 	a := newReasoningTestClient(t)
 

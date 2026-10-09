@@ -291,5 +291,6 @@ var VertexAIAnthropicModels = map[ModelID]Model{
 		SupportsTaskBudget:        AnthropicModels[Claude55Haiku].SupportsTaskBudget,
 		SupportsToolSearch:        AnthropicModels[Claude55Haiku].SupportsToolSearch,
 		RejectsForcedToolChoice:   AnthropicModels[Claude55Haiku].RejectsForcedToolChoice,
+		DefaultReasoningEffort:    AnthropicModels[Claude55Haiku].DefaultReasoningEffort,
 	},
 }

@@ -210,7 +210,7 @@ var AnthropicModels = map[ModelID]Model{
 		APIModel:                 "claude-sonnet-5-5",
 		CostPer1MIn:              2.0,
 		CostPer1MInCached:        2.50,
-		CostPer1MOutCached:       0.20,
+		CostPer1MOutCached:       0.10, // 0.05x input, as on Opus 5.5
 		CostPer1MOut:             10.0,
 		ContextWindow:            1000000,
 		DefaultMaxTokens:         128000,
@@ -260,5 +260,6 @@ var AnthropicModels = map[ModelID]Model{
 		SupportsTaskBudget:        true,
 		SupportsToolSearch:        true,
 		SupportsAttachments:       true,
+		DefaultReasoningEffort:    ReasoningEffortMedium,
 	},
 }

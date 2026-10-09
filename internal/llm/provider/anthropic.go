@@ -772,6 +772,9 @@ func (a *anthropicClient) preparedMessages(ctx context.Context, messages []anthr
 			}
 			effort := a.options.reasoningEffort
 			if effort == "" {
+				effort = a.providerOptions.model.DefaultReasoningEffort
+			}
+			if effort == "" {
 				effort = "high"
 			}
 			outputConfig = anthropic.OutputConfigParam{

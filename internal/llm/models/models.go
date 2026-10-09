@@ -53,6 +53,11 @@ type Model struct {
 	// factors needs separate fields.
 	LongContextThreshold      int64   `json:"long_context_threshold,omitempty"`
 	LongContextCostMultiplier float64 `json:"long_context_cost_multiplier,omitempty"`
+	// DefaultReasoningEffort is the effort the Anthropic client sends on an
+	// adaptive-thinking turn when neither the agent nor the flow step sets
+	// one. Empty means "high". Set it where Anthropic's own default is lower
+	// and is the recommended starting point (Claude Haiku 5.5: "medium").
+	DefaultReasoningEffort string `json:"default_reasoning_effort,omitempty"`
 }
 
 const (

@@ -462,6 +462,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsTaskBudget:        AnthropicModels[Claude55Haiku].SupportsTaskBudget,
 		SupportsToolSearch:        AnthropicModels[Claude55Haiku].SupportsToolSearch,
 		RejectsForcedToolChoice:   AnthropicModels[Claude55Haiku].RejectsForcedToolChoice,
+		DefaultReasoningEffort:    AnthropicModels[Claude55Haiku].DefaultReasoningEffort,
 	},
 	BedrockHaiku55: {
 		ID:                        BedrockHaiku55,
@@ -484,6 +485,7 @@ var BedrockAnthropicModels = map[ModelID]Model{
 		SupportsTaskBudget:        AnthropicModels[Claude55Haiku].SupportsTaskBudget,
 		SupportsToolSearch:        AnthropicModels[Claude55Haiku].SupportsToolSearch,
 		RejectsForcedToolChoice:   AnthropicModels[Claude55Haiku].RejectsForcedToolChoice,
+		DefaultReasoningEffort:    AnthropicModels[Claude55Haiku].DefaultReasoningEffort,
 	},
 }
 

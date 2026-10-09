@@ -35,6 +35,7 @@ Model{
     RejectsForcedToolChoice:  bool,          // API 400s tool_choice "tool"/"any" (Opus 5.5, Sonnet 5.5, Fable 5.1) — check the model's breaking changes
     LongContextThreshold:     int64,         // Prompt tokens above which the whole request reprices (Haiku 5.5: 100000); 0 = flat pricing
     LongContextCostMultiplier: float64,      // Multiplier on all four rates past the threshold (Haiku 5.5: 5)
+    DefaultReasoningEffort:   string,        // Effort sent when the agent sets none; "" = "high". Set when Anthropic's default is lower (Haiku 5.5: "medium")
 }
 ```
 

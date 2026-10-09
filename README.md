@@ -231,7 +231,7 @@ Each built-in agent can be customized:
 | `model` | Model ID to use |
 | `maxTokens` | Maximum response tokens |
 | `maxTurns` | Maximum tool calls before agent stops |
-| `reasoningEffort` | `low`, `medium`, `high` (default), `max` |
+| `reasoningEffort` | `low`, `medium`, `high` (default; `medium` on Claude Haiku 5.5), `xhigh`, `max` |
 | `mode` | `agent` (primary, switchable via tab) or `subagent` (invoked via task tool) |
 | `name` | Display name for the agent |
 | `description` | Short description of agent's purpose |

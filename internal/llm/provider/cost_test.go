@@ -59,6 +59,13 @@ func TestCalculateCost(t *testing.T) {
 			wantOutput: 0.0055,
 		},
 		{
+			name:       "sonnet 5.5 cache reads cost 0.05x input",
+			model:      models.SupportedModels[models.Claude55Sonnet],
+			usage:      TokenUsage{CacheReadTokens: 1_000_000},
+			wantInput:  0.10,
+			wantOutput: 0,
+		},
+		{
 			name:       "a threshold without a multiplier keeps flat pricing",
 			model:      models.Model{CostPer1MIn: 1, CostPer1MOut: 5, LongContextThreshold: 100_000},
 			usage:      TokenUsage{InputTokens: 200_000, OutputTokens: 1_000},
