@@ -115,7 +115,8 @@ func shutdownCloseTiming(ctx context.Context) mcpCloseTiming {
 // mcpClientPool keeps one connected client per MCP server and connection
 // identity, so tool calls stop paying a process spawn (stdio) or an
 // initialize + session DELETE round trip (HTTP) each, and a tool result never
-// waits for a client to close. See openspec/changes/mcp-client-pool/design.md.
+// waits for a client to close. See openspec/specs/mcp-client-pool/spec.md and the design in
+// openspec/changes/archive/2026-10-09-mcp-client-pool/design.md.
 type mcpClientPool struct {
 	// baseCtx owns every client's lifetime, for the same reason it owns the
 	// tools/list cache fetches: a client is shared, so it must never live
