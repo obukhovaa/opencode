@@ -317,6 +317,46 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 	return "", nil
 }
 
+// SendProgress implements bridge.ProgressRelayer. Builds a "progress"
+// relay frame carrying one state of the run's progress card, so the
+// relay's consumer can show what the run is doing instead of a bare
+// waiting indicator.
+func (a *Adapter) SendProgress(ctx context.Context, peer bridge.PeerRef, p bridge.RunProgress) error {
+	if a.disabled {
+		return a.errDisabled()
+	}
+
+	sessionID, ok := bridge.SessionIDFromContext(ctx)
+	if !ok {
+		logging.Debug("bridge/external: SendProgress called with no sessionId on context — relaying with empty sessionId",
+			"identity", a.identityID)
+	}
+
+	frame := relayFrame{
+		JobID:     a.currentJobID(),
+		Peer:      peer,
+		SessionID: sessionID,
+		Kind:      relayKindProgress,
+		Progress: &relayProgress{
+			Status:            p.Status,
+			ToolsDone:         p.ToolsDone,
+			Failed:            p.Failed,
+			Running:           p.Running,
+			CurrentTool:       p.CurrentTool,
+			LastFailedTool:    p.LastFailedTool,
+			LastFailureReason: p.LastFailureReason,
+			ElapsedMs:         p.Elapsed.Milliseconds(),
+		},
+		TS: nowUnixMilli(),
+	}
+
+	if err := a.postRelay(ctx, frame); err != nil {
+		a.recordFailure(err)
+		return err
+	}
+	return nil
+}
+
 // recordFailure updates lastFailureAt / lastError without changing the
 // adapter's disabled/running status — per-send delivery failures don't
 // degrade the adapter as a whole (mirrors mattermost.Adapter.recordFailure).

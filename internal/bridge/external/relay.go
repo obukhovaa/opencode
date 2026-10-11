@@ -26,6 +26,7 @@ type relayFrame struct {
 	Text        string                `json:"text,omitempty"`
 	Attachments []relayAttachmentMeta `json:"attachments,omitempty"`
 	Question    *relayQuestion        `json:"question,omitempty"`
+	Progress    *relayProgress        `json:"progress,omitempty"`
 	TS          int64                 `json:"ts"`
 }
 
@@ -56,11 +57,27 @@ type relayQuestion struct {
 	Custom    bool          `json:"custom"`
 }
 
+// relayProgress is the "progress" sub-object of a relayFrame with
+// kind == "progress": one paced state of the run's progress card (see
+// bridge.RunProgress). Every key is always present so a consumer never
+// has to tell "zero" from "absent".
+type relayProgress struct {
+	Status            string `json:"status"`
+	ToolsDone         int    `json:"toolsDone"`
+	Failed            int    `json:"failed"`
+	Running           int    `json:"running"`
+	CurrentTool       string `json:"currentTool"`
+	LastFailedTool    string `json:"lastFailedTool"`
+	LastFailureReason string `json:"lastFailureReason"`
+	ElapsedMs         int64  `json:"elapsedMs"`
+}
+
 // relayKind values.
 const (
 	relayKindMessage  = "message"
 	relayKindAck      = "ack"
 	relayKindQuestion = "question"
+	relayKindProgress = "progress"
 )
 
 // postRelay POSTs frame to the identity's relay endpoint with Basic auth
