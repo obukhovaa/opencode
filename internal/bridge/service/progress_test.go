@@ -857,6 +857,8 @@ type relayerStubAdapter struct {
 	pmu        sync.Mutex
 	states     []bridge.RunProgress
 	sessionIDs []string
+	// progressErr, when set, is returned by every SendProgress call.
+	progressErr error
 }
 
 func (a *relayerStubAdapter) SendProgress(ctx context.Context, _ bridge.PeerRef, p bridge.RunProgress) error {
@@ -865,7 +867,7 @@ func (a *relayerStubAdapter) SendProgress(ctx context.Context, _ bridge.PeerRef,
 	defer a.pmu.Unlock()
 	a.states = append(a.states, p)
 	a.sessionIDs = append(a.sessionIDs, sid)
-	return nil
+	return a.progressErr
 }
 
 func (a *relayerStubAdapter) States() ([]bridge.RunProgress, []string) {
@@ -877,8 +879,8 @@ func (a *relayerStubAdapter) States() ([]bridge.RunProgress, []string) {
 // TestDispatch_ProgressCard_RelayGetsStructuredState: a peer that cannot
 // edit but implements ProgressRelayer receives every paced card state as
 // a RunProgress stamped with the session, from "Thinking..." to one
-// terminal state, while the editing peer's card is unchanged and the
-// failure line still reaches the relay as text.
+// terminal state, while the editing peer's card is unchanged. The
+// failure travels in the state, so no failure line is sent as text.
 func TestDispatch_ProgressCard_RelayGetsStructuredState(t *testing.T) {
 	old := progressMinInterval
 	progressMinInterval = 10 * time.Millisecond
@@ -942,9 +944,29 @@ func TestDispatch_ProgressCard_RelayGetsStructuredState(t *testing.T) {
 	if got := ed.Posts(); len(got) != 1 {
 		t.Errorf("editor posts = %v; want exactly one (the card)", got)
 	}
-	// The failure line still reaches the relay as text, once.
-	rs := relay.Sends()
-	if len(rs) != 1 || rs[0].Text != "✗ bash#bbbbbb · permission denied exit 1" {
-		t.Errorf("relay text sends = %+v; want exactly the failure line", rs)
+	// The failure travels in the state; no text line reaches the relay.
+	if rs := relay.Sends(); len(rs) != 0 {
+		t.Errorf("relay text sends = %+v; want none — the progress state carries the failure", rs)
+	}
+}
+
+// TestDeliverProgress_RelayFailureFallsBackToFailureLines: when the relay
+// rejects a progress state, that flush's failures still reach it as text,
+// so a failed call surfaces even on a relay that cannot take progress.
+func TestDeliverProgress_RelayFailureFallsBackToFailureLines(t *testing.T) {
+	svc, _, _ := newProgressTestSvc(t, &bridge.Config{ToolUpdatesEnabled: true})
+	relay := &relayerStubAdapter{stubAdapter: *newStubAdapter("external", "relay"), progressErr: errors.New("400")}
+	svc.adapters[adapterKey("external", "relay")] = relay
+	d := newBareDispatch(svc, "S1")
+
+	line := "✗ bash#bbbbbb · permission denied"
+	d.deliverProgress(context.Background(), newRunProgress(), progressFlush{
+		text:         "⏳ 1 tool call done · 1 failed · 3s\n" + line,
+		failureTexts: []string{line},
+		state:        bridge.RunProgress{Status: bridge.RunProgressRunning, ToolsDone: 1, Failed: 1},
+	})
+
+	if rs := relay.Sends(); len(rs) != 1 || rs[0].Text != line {
+		t.Errorf("relay text sends = %+v; want exactly [%q]", rs, line)
 	}
 }
