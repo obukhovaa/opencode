@@ -60,6 +60,10 @@ type runProgress struct {
 	toolsDone   int
 	failed      int
 	lastFailure string
+	// lastFailedTool and lastFailureReason are lastFailure's parts,
+	// kept apart for the structured RunProgress a relay receives.
+	lastFailedTool    string
+	lastFailureReason string
 	// pendingFailures holds every failure line not yet handed to a
 	// flush. It is a QUEUE, not a single slot: two calls failing inside
 	// one pacing interval collapse into one card edit (the card shows
@@ -155,6 +159,8 @@ func (p *runProgress) toolDone(callID, name, pairing string, isError bool, reaso
 	p.toolsDone++
 	if isError {
 		p.failed++
+		p.lastFailedTool = name
+		p.lastFailureReason = reason
 		p.lastFailure = "✗ " + name + pairing
 		if reason != "" {
 			p.lastFailure += " · " + reason
@@ -207,6 +213,9 @@ type progressFlush struct {
 	// recent one.
 	failureTexts []string
 	final        bool
+	// state is the same moment as text, structured, for peers whose
+	// adapter implements bridge.ProgressRelayer.
+	state bridge.RunProgress
 }
 
 // snapshot renders the current state and marks it consumed: a carried
@@ -217,7 +226,7 @@ func (p *runProgress) snapshot() progressFlush {
 	if p.final != "" {
 		p.finished = true
 	}
-	f := progressFlush{text: p.headerLocked(), final: p.final != ""}
+	f := progressFlush{text: p.headerLocked(), final: p.final != "", state: p.stateLocked()}
 	if p.lastFailure != "" {
 		f.text += "\n" + p.lastFailure
 	}
@@ -226,6 +235,32 @@ func (p *runProgress) snapshot() progressFlush {
 		p.pendingFailures = nil
 	}
 	return f
+}
+
+// stateLocked is the card's current state as a bridge.RunProgress.
+// Caller holds p.mu.
+func (p *runProgress) stateLocked() bridge.RunProgress {
+	status := bridge.RunProgressRunning
+	switch p.final {
+	case progressStatusOK:
+		status = bridge.RunProgressOK
+	case progressStatusError:
+		status = bridge.RunProgressError
+	}
+	current := ""
+	if n := len(p.inflightOrder); n > 0 {
+		current = p.inflight[p.inflightOrder[n-1]]
+	}
+	return bridge.RunProgress{
+		Status:            status,
+		ToolsDone:         p.toolsDone,
+		Failed:            p.failed,
+		Running:           len(p.inflightOrder),
+		CurrentTool:       current,
+		LastFailedTool:    p.lastFailedTool,
+		LastFailureReason: p.lastFailureReason,
+		Elapsed:           p.now().Sub(p.startedAt),
+	}
 }
 
 // headerLocked builds the card's first line. Caller holds p.mu.
@@ -356,10 +391,11 @@ func (d *sessionDispatch) progressFinish(p *runProgress, status string) {
 // the session. A peer whose adapter edits messages in place gets the
 // card posted once and edited thereafter; if an edit fails (message
 // deleted, token stale) the card is posted fresh and the chain
-// continues from the new message. A peer whose adapter cannot edit
-// (the external relay) is skipped, except for an undelivered failure,
-// which reaches it as one plain-text line. Runs on the worker
-// goroutine; ordering across flushes is the worker's guarantee.
+// continues from the new message. A peer whose adapter cannot edit but
+// implements bridge.ProgressRelayer (the external relay) gets the state
+// as a structured RunProgress instead. Any peer that cannot edit also
+// gets each undelivered failure as one plain-text line. Runs on the
+// worker goroutine; ordering across flushes is the worker's guarantee.
 func (d *sessionDispatch) deliverProgress(ctx context.Context, p *runProgress, f progressFlush) {
 	bindings, err := d.svc.store.ListBindingsBySession(ctx, d.svc.projectID, d.sessionID)
 	if err != nil {
@@ -382,6 +418,17 @@ func (d *sessionDispatch) deliverProgress(ctx context.Context, p *runProgress, f
 		}
 		editor, ok := adapter.(bridge.MessageEditor)
 		if !ok {
+			if relayer, ok := adapter.(bridge.ProgressRelayer); ok {
+				// The relay frame names the session it belongs to;
+				// the worker's context does not carry it.
+				sctx := bridge.ContextWithSessionID(ctx, d.sessionID)
+				if err := relayer.SendProgress(sctx, peer, f.state); err != nil {
+					// Progress is advisory and the next flush supersedes
+					// it, so a lost update is logged and not retried.
+					logging.Warn("bridge: progress relay send failed",
+						"session", d.sessionID, "peer", b.PeerID, "err", err)
+				}
+			}
 			for _, line := range f.failureTexts {
 				if _, err := d.svc.Send(ctx, peer, line, "", nil); err != nil {
 					logging.Warn("bridge: progress card: failure line send failed",

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
 )
@@ -419,5 +420,84 @@ func TestAdapterTrivialContract(t *testing.T) {
 	}
 	if got, err := a.ResolveUserToDM(context.Background(), "some-peer-id"); err != nil || got != "some-peer-id" {
 		t.Errorf("ResolveUserToDM() = (%q, %v), want (\"some-peer-id\", nil)", got, err)
+	}
+}
+
+// relay frame shape for "progress": every progress key is present even
+// at its zero value, and the frame names the session and job.
+func TestSendProgressFrameShape(t *testing.T) {
+	t.Parallel()
+	relay, srv := newCapturingRelay(t, 0)
+	a := newTestAdapter(t, srv)
+	a.SetJobID("job-1")
+
+	ctx := bridge.ContextWithSessionID(context.Background(), "sess-1")
+	if err := a.SendProgress(ctx, testPeer(), bridge.RunProgress{
+		Status:      bridge.RunProgressRunning,
+		ToolsDone:   2,
+		Running:     1,
+		CurrentTool: "grep",
+		Elapsed:     72 * time.Second,
+	}); err != nil {
+		t.Fatalf("SendProgress: %v", err)
+	}
+
+	body := relay.last()
+	if body == nil {
+		t.Fatal("no relay call captured")
+	}
+	if body["kind"] != "progress" || body["sessionId"] != "sess-1" || body["jobId"] != "job-1" {
+		t.Errorf("kind/sessionId/jobId = %v/%v/%v; want progress/sess-1/job-1", body["kind"], body["sessionId"], body["jobId"])
+	}
+	if _, ok := body["text"]; ok {
+		t.Errorf("progress frame carries text: %v", body["text"])
+	}
+	got, ok := body["progress"].(map[string]any)
+	if !ok {
+		t.Fatalf("progress = %#v; want an object", body["progress"])
+	}
+	want := map[string]any{
+		"status":            "running",
+		"toolsDone":         float64(2),
+		"failed":            float64(0),
+		"running":           float64(1),
+		"currentTool":       "grep",
+		"lastFailedTool":    "",
+		"lastFailureReason": "",
+		"elapsedMs":         float64(72000),
+	}
+	if len(got) != len(want) {
+		t.Errorf("progress keys = %v; want exactly %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("progress[%q] = %#v; want %#v", k, got[k], v)
+		}
+	}
+}
+
+// A rejected progress frame is a failed send, recorded like any other.
+func TestSendProgressNon202IsError(t *testing.T) {
+	t.Parallel()
+	_, srv := newCapturingRelay(t, http.StatusBadRequest)
+	a := newTestAdapter(t, srv)
+
+	if err := a.SendProgress(context.Background(), testPeer(), bridge.RunProgress{Status: bridge.RunProgressOK}); err == nil {
+		t.Fatal("SendProgress on 400 returned nil error")
+	}
+	if a.Status().LastFailureAt == 0 {
+		t.Error("LastFailureAt not recorded for a rejected progress frame")
+	}
+}
+
+// A disabled adapter refuses progress without calling the relay.
+func TestSendProgressDisabled(t *testing.T) {
+	t.Parallel()
+	a, err := New(Identity{ID: "c3"}, Options{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := a.SendProgress(context.Background(), testPeer(), bridge.RunProgress{}); err == nil {
+		t.Fatal("disabled adapter accepted SendProgress")
 	}
 }

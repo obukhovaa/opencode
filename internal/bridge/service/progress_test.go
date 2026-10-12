@@ -847,3 +847,104 @@ func TestDispatch_FullToCompactMidRun_ResolvesPendingCards(t *testing.T) {
 		t.Errorf("pendingToolCards still holds %d entries; it must be consumed on every result path", n)
 	}
 }
+
+// relayerStubAdapter is a relay-like stubAdapter that also takes the
+// card as structured state (bridge.ProgressRelayer), as the external
+// relay adapter does.
+type relayerStubAdapter struct {
+	stubAdapter
+
+	pmu        sync.Mutex
+	states     []bridge.RunProgress
+	sessionIDs []string
+}
+
+func (a *relayerStubAdapter) SendProgress(ctx context.Context, _ bridge.PeerRef, p bridge.RunProgress) error {
+	sid, _ := bridge.SessionIDFromContext(ctx)
+	a.pmu.Lock()
+	defer a.pmu.Unlock()
+	a.states = append(a.states, p)
+	a.sessionIDs = append(a.sessionIDs, sid)
+	return nil
+}
+
+func (a *relayerStubAdapter) States() ([]bridge.RunProgress, []string) {
+	a.pmu.Lock()
+	defer a.pmu.Unlock()
+	return append([]bridge.RunProgress(nil), a.states...), append([]string(nil), a.sessionIDs...)
+}
+
+// TestDispatch_ProgressCard_RelayGetsStructuredState: a peer that cannot
+// edit but implements ProgressRelayer receives every paced card state as
+// a RunProgress stamped with the session, from "Thinking..." to one
+// terminal state, while the editing peer's card is unchanged and the
+// failure line still reaches the relay as text.
+func TestDispatch_ProgressCard_RelayGetsStructuredState(t *testing.T) {
+	old := progressMinInterval
+	progressMinInterval = 10 * time.Millisecond
+	t.Cleanup(func() { progressMinInterval = old })
+
+	svc, ed, _ := newProgressTestSvc(t, &bridge.Config{ToolUpdatesEnabled: true})
+	relay := &relayerStubAdapter{stubAdapter: *newStubAdapter("external", "relay")}
+	svc.adapters[adapterKey("external", "relay")] = relay
+	d := newBareDispatch(svc, "S1")
+	ctx := context.Background()
+
+	prog := d.progressStart(ctx)
+	if prog == nil {
+		t.Fatal("progressStart returned nil at compact with tool updates on")
+	}
+	waitFor(t, "first relayed state", func() bool { s, _ := relay.States(); return len(s) >= 1 })
+	if s, _ := relay.States(); s[0].Status != bridge.RunProgressRunning || s[0].ToolsDone != 0 || s[0].Running != 0 {
+		t.Errorf("first state = %+v; want running with nothing done or in flight", s[0])
+	}
+
+	d.handlePartEvent(partEvent("S1", message.ToolCall{ID: "toolu_01aaaaaa", Name: "read", Input: "{}", Finished: true}), nil)
+	waitFor(t, "in-flight state", func() bool {
+		s, _ := relay.States()
+		last := s[len(s)-1]
+		return last.Running == 1 && last.CurrentTool == "read"
+	})
+	d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: "toolu_01aaaaaa", Name: "read", Content: "ok"}), nil)
+	d.handlePartEvent(partEvent("S1", message.ToolCall{ID: "toolu_02bbbbbb", Name: "bash", Input: "{}", Finished: true}), nil)
+	d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: "toolu_02bbbbbb", Name: "bash", Content: "permission denied\nexit 1", IsError: true}), nil)
+	d.progressFinish(prog, progressStatusOK)
+
+	states, sids := relay.States()
+	for i, sid := range sids {
+		if sid != "S1" {
+			t.Errorf("state %d session = %q; want S1", i, sid)
+		}
+	}
+	terminal := 0
+	for _, s := range states {
+		if s.Status != bridge.RunProgressRunning {
+			terminal++
+		}
+	}
+	if terminal != 1 {
+		t.Errorf("terminal states = %d; want exactly 1: %+v", terminal, states)
+	}
+	last := states[len(states)-1]
+	want := bridge.RunProgress{
+		Status:            bridge.RunProgressOK,
+		ToolsDone:         2,
+		Failed:            1,
+		LastFailedTool:    "bash",
+		LastFailureReason: "permission denied exit 1",
+	}
+	last.Elapsed = 0
+	if last != want {
+		t.Errorf("terminal state = %+v; want %+v", last, want)
+	}
+
+	// The editing peer still gets the rendered card, nothing structured.
+	if got := ed.Posts(); len(got) != 1 {
+		t.Errorf("editor posts = %v; want exactly one (the card)", got)
+	}
+	// The failure line still reaches the relay as text, once.
+	rs := relay.Sends()
+	if len(rs) != 1 || rs[0].Text != "✗ bash#bbbbbb · permission denied exit 1" {
+		t.Errorf("relay text sends = %+v; want exactly the failure line", rs)
+	}
+}

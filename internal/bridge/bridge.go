@@ -476,7 +476,8 @@ type EditableMessageToken = string
 //	if ed, ok := adapter.(bridge.MessageEditor); ok { ... }
 //
 // All three production adapters implement it; the external relay does
-// not, since a relay frame has no notion of a message to edit.
+// not, since a relay frame has no notion of a message to edit; it takes
+// the card's state through ProgressRelayer instead.
 type MessageEditor interface {
 	// SendEditable posts text to peer and returns a token for later
 	// in-place edits.
@@ -484,4 +485,51 @@ type MessageEditor interface {
 
 	// EditMessage replaces the text of the message identified by token.
 	EditMessage(ctx context.Context, peer PeerRef, token EditableMessageToken, text string) error
+}
+
+// RunProgress is one state of a run's progress card in structured form.
+// It is what a ProgressRelayer receives in place of the rendered card
+// text, so a consumer that draws its own UI never parses the card.
+type RunProgress struct {
+	// Status is RunProgressRunning while the run is live, then
+	// RunProgressOK or RunProgressError exactly once at its end.
+	Status string
+	// ToolsDone counts completed tool calls, failed ones included.
+	ToolsDone int
+	// Failed counts completed tool calls that ended in an error.
+	Failed int
+	// Running counts tool calls currently in flight.
+	Running int
+	// CurrentTool names the most recently started unfinished tool, or
+	// is empty when none is in flight.
+	CurrentTool string
+	// LastFailedTool and LastFailureReason describe the most recent
+	// failure — the reason flattened to one line and rune-capped, as on
+	// the card. Both are empty until a call fails.
+	LastFailedTool    string
+	LastFailureReason string
+	// Elapsed is the run's wall-clock age at this state.
+	Elapsed time.Duration
+}
+
+// RunProgress.Status values.
+const (
+	RunProgressRunning = "running"
+	RunProgressOK      = "ok"
+	RunProgressError   = "error"
+)
+
+// ProgressRelayer is an optional interface adapters implement to receive
+// the run progress card as structured state rather than as an edited
+// chat message. It suits a relay with no message to edit, whose consumer
+// renders progress itself. Callers check with the ok-pattern:
+//
+//	if pr, ok := adapter.(bridge.ProgressRelayer); ok { ... }
+//
+// An adapter that implements MessageEditor gets the rendered card through
+// that and is not offered RunProgress. SendProgress receives every paced
+// update of the run, starting with the "Thinking..." state and ending
+// with exactly one terminal state.
+type ProgressRelayer interface {
+	SendProgress(ctx context.Context, peer PeerRef, p RunProgress) error
 }
