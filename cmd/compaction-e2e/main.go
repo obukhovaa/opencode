@@ -7,8 +7,10 @@
 //	from POST /v1/messages/count_tokens but silently omit the system prompt
 //	AND the tool schemas from the returned count — reporting a tiny number
 //	(e.g. 8) for a request whose real input is tens of thousands of tokens.
-//	The agent loop trusts this number to decide when to auto-compact, so the
-//	truncation made compaction fire late or never, risking a hard
+//	The agent loop decides auto-compaction on this number for a history no
+//	usage report covers yet (a forked flow step, a provider that reports no
+//	usage; once a call has reported, the reported size decides), so the
+//	truncation made compaction fire late or never there, risking a hard
 //	context-overflow error mid-run.
 //
 // What it exercises

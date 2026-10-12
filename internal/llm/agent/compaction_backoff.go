@@ -150,7 +150,10 @@ const (
 func (a *agent) compactionAllowed(sessionID string, tokens int64) bool {
 	ok, reason, retryAt := a.compactionBackoff.allow(sessionID, tokens, a.provider.Model().ContextWindow)
 	if !ok {
-		logging.Debug("auto-compaction skipped",
+		// INFO: only a count over the threshold gets here, and this line is
+		// what explains a "compaction check" over the threshold with no
+		// compaction after it.
+		logging.Info("auto-compaction skipped",
 			"session_id", sessionID,
 			"reason", reason,
 			"token_count", tokens,

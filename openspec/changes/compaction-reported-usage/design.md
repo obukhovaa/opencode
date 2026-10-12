@@ -14,40 +14,67 @@ Measured on a daemon session (1M window, threshold 0.4): reported 756,968 agains
 
 `count = PromptTokens + CompletionTokens + estimate(msgs[anchor+1:])`. The anchor (`reportAnchor`) is the last message the report covers:
 
-- normally the last non-synthetic assistant message. Synthetic assistant messages are background-task completions written after the reported call, so they belong to the delta;
-- after a compaction (`PromptTokens == 0`, `CompletionTokens > 0`), the summary message. The report is the summary's output and everything after it, including an assistant message re-appended past the summary in the loop, is the delta.
+- normally the last assistant message whose call completed. Synthetic assistant messages are background-task completions written after the reported call, so they belong to the delta. So does the message of a call that failed (finished `error`) or never finished (a crash, a failed max-turns wrap-up): it reports nothing. Anchored on it, the tool results before it would drop out of every later count, and a call that failed *because of* its size never reports, so the session would fail every turn without compacting. A cancelled call stays an anchor: one cancelled during its tools was reported, and one cancelled while streaming was not, but a cancel is no sign of size and the next call reports. Recording the reported message's id would be exact, but it needs either a column or per-process state that a restart and every other agent on the session lose; the finish reason is in the history already.
+- after a compaction (`PromptTokens == 0`, `CompletionTokens > 0`), the summary message. The report is the summary's output, and everything after it is the delta, including an assistant message re-appended past the summary in the loop.
 
-The delta keeps the 4 bytes/token local estimate. It is a new user message or a turn's tool results, small next to the history, and the next response replaces it with a reported number. Its undercount is bounded by the delta, not by the history.
+The delta keeps the 4 bytes/token local estimate for text, tool calls and tool results. It is a new user message or a turn's tool results, small next to the history, and the next response replaces it with a reported number; its undercount is bounded by the delta, not by the history. Media is priced the way a provider bills it, not by `EstimateTokens`, which counts an attachment as 100 bytes of overhead and a `view_image` result's base64 as text: an image is 1,600 tokens (Anthropic bills width×height/750, ~1.6K at its 1,568px cap), any other attachment 100 bytes per token with 1,600 as the floor (the `count_tokens` fallback's rule). A 4 MB PDF attached to a session near the threshold is then visible to the pre-turn gate, and one screenshot no longer counts as 250K tokens.
 
 After a compaction the count misses the system prompt and tools, which the summary report does not include, until the next call reports. That call follows immediately, and a count right after a compaction only decides whether to log "still over the threshold".
 
 Alternatives: keeping the estimate as a fallback floor (the shape that broke) or calibrating the estimate by the report ratio (still an estimate of a size the provider already measured). Neither adds information the report lacks.
 
-### No report: skip the check
+### No report: the provider counts, for that check only
 
-When `reportAnchor` finds nothing (no usage on the session, a report with no assistant message to anchor it, a compaction whose summary reported no output), the check never fires. The other option, the estimate for that one call, has one real case: a forked flow step, whose new session carries the parent's whole message log and no usage. But the estimate is 3.5x low on exactly those histories, so it would not have fired there either, and the first response gives the session a report that the in-loop check before the second call uses. A forked step whose inherited history already overflows the window fails its first call today and still does; copying the parent's usage to a forked session would close that and is left for its own change.
+When `reportAnchor` finds nothing (no usage on the session, a report with no assistant message to anchor it, a compaction whose summary reported no output), the check asks the provider (`CountTokens`: the `count_tokens` endpoint, or its local estimate when the endpoint is unavailable) and decides on that. Skipping the check instead has real failures:
 
-The local estimate of the history is still computed on this path, for `AdjustMaxTokens` and the overflow diagnostic, which need a number. It is the plain 4 bytes/token count of the messages and the serialisable tools, with no `count_tokens` request.
+- a forked flow step copies its parent's whole message log, including everything before the parent's summary, and no usage. Its first call can be over the window; it fails, reports nothing, and every retry reuses the same session, so with no count it never compacts. With a working endpoint the count is exact; with the local estimate it undercounts, so it fires only where the real size is over the threshold too;
+- a provider that never reports usage (an OpenAI-compatible server that ignores `include_usage`) would never compact at all.
 
-### The doubled cache read is judged against the previous report
+The cost is one count request on a check without a report, which for a fresh session is its first model call only. This is the "estimate for that one call" the ticket allows, for a real case; it never overrides a report.
 
-The report that motivated the 1.5x guard had `cache_read = 1,383,037 = 690,908 + 692,129`: two calls' cache reads summed. Where the sum happens is not pinned down. The SDK accumulator overwrites `message_start` usage with `message_delta`'s cumulative counts (a test pins that), and a stream retry starts a fresh accumulator, so it is not summed in-process. LiteLLM has had Bedrock streaming bugs that double-count cache tokens (BerriAI/litellm#25517, and the invocation-metrics mapping in #34542), which makes the proxy the likely source, but neither matches this two-addend shape exactly.
+### A doubled report is the sum of a response's sampling passes, recorded as the last pass
 
-The guard therefore uses the reports themselves. A call can read from cache only a prefix that an earlier call of the session sent, and the session's prompt only grows between compactions, so a real cache read is at most the previous call's prompt; the previous prompt plus output is the bound, with the output as margin. `plausibleCacheRead` caps a read above that bound, and a prompt above the context window, and logs a warning. The bound is used only when `PromptTokens > 0`: after a compaction the stored report is the summary alone, and the next call reads the system prompt and tools from cache, which that report does not contain.
+The report that motivated the 1.5x guard had `cache_read = 1,383,037 = 690,908 + 692,129`. The source is pinned down now: a server-side tool search. The SDK documents the top-level usage as cumulative over "model sampling iterations, such as the turns of a server-side tool use loop" and says to "calculate the context window size from the last `message` entry" of `usage.iterations`. A probe on the LiteLLM Bedrock route Neo uses, one request with a deferred tool the model had to search for over a 9.6K prompt, returned `server_tool_use`, `tool_search_tool_result`, `tool_use` with:
 
-Only the last-call fields are capped. The cost and `TotalPromptTokens` keep the reported values: they are what the upstream billed, and telemetry is unchanged.
+| cache | input | cache_creation | cache_read | output |
+|---|---|---|---|---|
+| cold | 355 | 9,612 | 9,612 | 108 |
+| warm | 355 | 0 | 19,224 | 108 |
+
+Pass one wrote (or read) the prefix and pass two read it again. Both shapes are about twice the prompt, the warm one exactly the GENAI-414 shape, and the cold one doubles through cache creation, which a bound on the cache read alone would miss. The route sends no `usage.iterations`. The SDK accumulator is not involved: it overwrites `message_start` usage with `message_delta`'s cumulative counts, and a test pins that.
+
+So the provider reports the last pass as `TokenUsage.LastPass`, and `TrackUsage` records it as the last-call usage:
+
+- from `usage.iterations` (the last `message` entry) when an upstream sends it;
+- otherwise from the response's content: one pass plus one per run of server tool results the model sampled after (a run ending the content, a `pause_turn`, has no pass after it). Each pass re-reads the whole prompt, so the input-side counts divided by the passes are the last pass's prompt to within the server tool results; the output stays whole, since every pass's output is in the message the next request sends. That gives exactly 9,612 for both rows above.
+
+The cost and `TotalPromptTokens` keep the billed sum, and telemetry is unchanged.
+
+The previous call's report is no bound. The MR first capped a cache read at the previous call's prompt plus output, but a call legitimately reads more than that whenever an unreported request of the same session cached a longer prefix: a stream retried after a stall or a transport error once its prompt was cached, a call cancelled or failed after its prompt was processed, an agent switch onto a prefix another session cached. The capped value then became the next call's bound, so a 40K undercount drained only by one call's output per call, tens of calls during which compaction ran late. A ratio test against the previous report has the same flaw unless it keeps uncapped reports in memory. The summed passes are recognisable in the response itself, so nothing about the previous report is needed.
+
+A prompt above the context window is impossible for one pass whatever produced it, so `TrackUsage` records it at the window (cache read lowered first, then cache creation, then input) with a warning. At the window the session compacts, the safe reading of a size known to be wrong.
+
+### max_tokens is lowered per call
+
+`AdjustMaxTokens` halved the client's current `max_tokens` and set it on the provider, which every session of the agent shares, and nothing restored it. The 3.5x-low estimate kept it from firing; the real count reaches the band below the threshold where the count plus `max_tokens` overflows the window (872K-950K on a 1M window with 128K output at the default 0.95), so one long session would have left every later session of the process at 32K or less. It now halves from the configured value on every call and sets the result only when it changes.
 
 ### Logging
 
-Every check logs one INFO `compaction check` line: `reported_tokens`, `delta_tokens`, `tokens`, `threshold_tokens`, `context_window`, `compact`. With no report it logs `compaction check: no reported usage yet` with the estimate. It is one line per model call, beside the existing INFO `Track usage` line, and makes the next check readable from logs alone.
+Every check logs one `compaction check` line: `reported_tokens`, `delta_tokens`, `tokens`, `threshold_tokens`, `context_window`, `over_threshold`; without a report, the provider's count. `over_threshold` is not the decision: the cycle-one skip, the backoff and a disabled auto-compaction come after it. So with `autoCompact` off the line is DEBUG (the count then only sizes `max_tokens`), and the backoff's "auto-compaction skipped" moves from DEBUG to INFO; it fires only over the threshold. `Track usage` gains the session id and `summed_passes`.
 
 ## Risks / Trade-offs
 
 - A session shared by flow steps of different agents takes the previous step's report, whose system prompt and tools differ from the current agent's. The error is the difference between two system prompts, tens of thousands of tokens at most, and the next call corrects it.
-- A call that failed after an earlier success leaves the earlier report while a later assistant message may already be persisted, so the count misses what lies between. The next successful call reports the full size.
-- The cap can cut a real cache read only if a different session sent a longer prompt with the same prefix than this session's previous call, which a growing history does not produce.
+- A call cancelled while streaming leaves the earlier report while its message is the anchor, so the next check misses the tool results the cancelled call carried. The next call reports the full size, and a cancel is not caused by size.
+- A call that failed in its tool phase after its report is skipped as an anchor, so its content counts twice until the next call reports; that errs toward compacting.
+- Dividing summed passes assumes each pass re-reads the whole prompt; it undercounts the last pass by about the server tool results (a search result is a few hundred tokens).
+- On a check without a report and without a working count endpoint, the local estimate decides; it undercounts, so a forked step can still fail its first call. The flow fork copying the parent's summary boundary and report is its own change.
 
 ## Test plan
 
-- `TestCountContextTokens`: the daemon's numbers (757K reported, 400K threshold) fire; under the threshold does not; no report never fires on the estimate; the post-compaction anchor; a synthetic completion counted in the delta; a zero window; Gemini cache counted once; the doubled read capped at the previous context; a plausible read kept; a prompt above the window capped.
-- The `processGeneration` tests (pre-turn, in-loop, re-entry, deferred-tool re-announcement, backoff) now drive the size through responses' usage, and the test provider's `CountTokens` panics, so no decision can fall back to the estimate.
+- `TestAnthropicUsage_ToolSearchReportsTheLastPass`: the probe's cold and warm usage, per-pass iterations, two searches in one pass, a search the turn paused on, a single pass.
+- `TestCountContextTokens`: the daemon's numbers (757K reported, 400K threshold) fire; under the threshold does not; no report counted by the provider under and over the threshold; the post-compaction anchor; a synthetic completion, a failed call and an unfinished call in the delta; a cancelled call as the anchor; attachments and an image tool result priced as media; a zero window; Gemini cache counted once; a tool search's summed usage recorded as its last pass; a cache read above the previous report kept; the first call after a compaction; a prompt above the window. Each case also asserts the provider is asked for a count exactly when no report covers the history.
+- `TestProcessGeneration_FailedCallDoesNotHideItsHistory`: a reported call, a large tool result, a failed call; the next turn compacts before calling.
+- `TestAdjustMaxTokens_HalvingDoesNotStick`.
+- The `processGeneration` tests (pre-turn, in-loop, re-entry, deferred-tool re-announcement, backoff, waiting for an in-flight summarize) drive the size through reports; the in-flight test now seeds an over-threshold report so a turn that did not wait would compact.
+- Each fix is pinned by a mutant the tests kill: anchoring on any assistant, the plain estimate for the delta, a no-report count that never fires, ignoring `LastPass`, skipping cancelled calls.

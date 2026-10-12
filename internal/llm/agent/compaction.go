@@ -40,33 +40,45 @@ func (a *agent) resolveCompactionThreshold(opts RunOptions) float64 {
 // local estimate of only what was appended since and not sent yet (the new
 // user message, tool results). PromptTokens+CompletionTokens (see TrackUsage)
 // is that call's full prompt plus output, system prompt and tools included,
-// so nothing of the history before reportAnchor is estimated. A history no
-// report covers yet (a fresh or forked session, or one compacted without a
-// usage report for the summary) never triggers: its size is the local
-// estimate, returned only for max_tokens and the overflow diagnostic.
+// so nothing of the history before reportAnchor is estimated.
+//
+// A history no report covers yet is counted by the provider (count_tokens, or
+// its local estimate when the endpoint is unavailable) and decides on that,
+// for that check only: a fresh session's first call, a forked flow step that
+// inherited its parent's whole log, a compaction whose summary reported no
+// usage, a provider that never reports usage. The local estimate undercounts,
+// so it triggers only where the real size is over the threshold too.
 func (a *agent) countContextTokens(ctx context.Context, sessionID string, threshold float64, msgs []message.Message, toolSet []tools.BaseTool) (int64, bool) {
 	window := a.provider.Model().ContextWindow
 	thresholdTokens := int64(float64(window) * threshold)
+	// The in-loop count runs with auto-compaction off too, for max_tokens;
+	// its line is then no decision and stays at DEBUG.
+	log := logging.Info
+	if cfg := config.Get(); cfg != nil && !cfg.AutoCompact {
+		log = logging.Debug
+	}
 	anchor := -1
 	sess, err := a.sessions.Get(ctx, sessionID)
 	if err == nil {
 		anchor = reportAnchor(sess, msgs)
 	}
 	if anchor < 0 {
-		estimated := message.EstimateTokens(msgs, tools.SerializableFor(sessionID, toolSet), message.BytesPerTokenEta)
-		logging.Info("compaction check: no reported usage yet",
+		counted, hit := a.provider.CountTokens(ctx, threshold, msgs, tools.SerializableFor(sessionID, toolSet))
+		log("compaction check: no reported usage, counted by the provider",
 			"session_id", sessionID,
 			"agent", a.agentID,
-			"estimated_tokens", estimated,
+			"tokens", counted,
 			"threshold_tokens", thresholdTokens,
+			"context_window", window,
+			"over_threshold", hit,
 		)
-		return estimated, false
+		return counted, hit
 	}
 	reported := sess.PromptTokens + sess.CompletionTokens
-	delta := message.EstimateTokens(msgs[anchor+1:], nil, message.BytesPerTokenEta)
+	delta := estimateDeltaTokens(msgs[anchor+1:])
 	count := reported + delta
 	hit := window > 0 && count >= thresholdTokens
-	logging.Info("compaction check",
+	log("compaction check",
 		"session_id", sessionID,
 		"agent", a.agentID,
 		"reported_tokens", reported,
@@ -74,17 +86,18 @@ func (a *agent) countContextTokens(ctx context.Context, sessionID string, thresh
 		"tokens", count,
 		"threshold_tokens", thresholdTokens,
 		"context_window", window,
-		"compact", hit,
+		"over_threshold", hit,
 	)
 	return count, hit
 }
 
 // reportAnchor returns the index of the last message in msgs that the
 // session's reported usage covers, or -1 when no report covers msgs. A model
-// call's report covers everything up to the assistant message it produced;
-// synthetic assistant messages (background-task completions) were written
-// after it. A compaction stores the summary's output as the report with
-// PromptTokens 0, so then the summary message is the anchor.
+// call's report covers everything up to the assistant message it produced.
+// Assistant messages that carry no report come after it: synthetic ones
+// (background-task completions), and those of calls that failed (see
+// reportedCall). A compaction stores the summary's output as the report
+// with PromptTokens 0, so then the summary message is the anchor.
 func reportAnchor(sess session.Session, msgs []message.Message) int {
 	if sess.PromptTokens == 0 {
 		if sess.CompletionTokens == 0 || sess.SummaryMessageID == "" {
@@ -98,11 +111,69 @@ func reportAnchor(sess session.Session, msgs []message.Message) int {
 		return -1
 	}
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == message.Assistant && !msgs[i].Synthetic {
+		if msgs[i].Role == message.Assistant && !msgs[i].Synthetic && reportedCall(msgs[i]) {
 			return i
 		}
 	}
 	return -1
+}
+
+// reportedCall reports whether an assistant message can carry the session's
+// last report. A call that failed is finished error with none, and an
+// unfinished message is a call a crash or a failed wrap-up cut off; anchoring
+// on either would drop the tool results before it from the count for good,
+// since a call that failed for its size never reports again. A cancelled call
+// is kept: one cancelled during its tools was reported, and one cancelled
+// while streaming was not but is no sign of size, so the next call reports.
+func reportedCall(m message.Message) bool {
+	switch m.FinishReason() {
+	case "", message.FinishReasonError:
+		return false
+	}
+	return true
+}
+
+// Media in the delta, priced as a provider prices it rather than by
+// EstimateTokens, which counts an attachment as overhead only and a
+// view_image result's base64 as text.
+const (
+	// deltaImageTokens is one image: Anthropic bills width×height/750, about
+	// 1.6K at its 1568px cap.
+	deltaImageTokens = 1600
+	// deltaDocumentBytesPerToken prices a non-image attachment (a PDF) by its
+	// size, as the count_tokens fallback does.
+	deltaDocumentBytesPerToken = 100
+)
+
+// estimateDeltaTokens estimates the messages a report does not cover yet: the
+// 4 bytes/token estimate of their text, tool calls and results, plus their
+// media at deltaImageTokens per image and by size for other attachments.
+func estimateDeltaTokens(msgs []message.Message) int64 {
+	var media int64
+	text := make([]message.Message, 0, len(msgs))
+	for _, m := range msgs {
+		parts := make([]message.ContentPart, 0, len(m.Parts))
+		for _, part := range m.Parts {
+			switch p := part.(type) {
+			case message.BinaryContent:
+				if strings.HasPrefix(p.MIMEType, "image/") {
+					media += deltaImageTokens
+				} else {
+					media += max(int64(len(p.Data)/deltaDocumentBytesPerToken), deltaImageTokens)
+				}
+				continue
+			case message.ToolResult:
+				if p.IsImageToolResponse() {
+					media += deltaImageTokens
+					continue
+				}
+			}
+			parts = append(parts, part)
+		}
+		m.Parts = parts
+		text = append(text, m)
+	}
+	return message.EstimateTokens(text, nil, message.BytesPerTokenEta) + media
 }
 
 func lastAssistantIndex(msgs []message.Message) int {

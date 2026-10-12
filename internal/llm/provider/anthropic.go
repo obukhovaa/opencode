@@ -1375,12 +1375,80 @@ func (a *anthropicClient) toolCalls(msg anthropic.Message) []message.ToolCall {
 }
 
 func (a *anthropicClient) usage(msg anthropic.Message) TokenUsage {
-	return TokenUsage{
+	u := TokenUsage{
 		InputTokens:         msg.Usage.InputTokens,
 		OutputTokens:        msg.Usage.OutputTokens,
 		CacheCreationTokens: msg.Usage.CacheCreationInputTokens,
 		CacheReadTokens:     msg.Usage.CacheReadInputTokens,
 	}
+	u.LastPass = lastPassUsage(msg, u)
+	return u
+}
+
+// lastPassUsage is the usage of msg's last sampling pass when the response
+// sampled more than once, or nil. Each pass re-reads the whole prompt, so the
+// top-level usage of a response that ran a server-side tool is about the
+// prompt times the passes: on the LiteLLM Bedrock route one tool search over
+// a 9.6K prompt reports cache_creation 9,612 plus cache_read 9,612 on a cold
+// cache, and cache_read 19,224 warm. usage.iterations, when the upstream sends
+// it, gives each pass's counts. Otherwise the input-side counts divided by the
+// passes are the last pass's prompt to within the server tool results, and the
+// output stays whole: every pass's output is in the message the next request
+// sends.
+func lastPassUsage(msg anthropic.Message, total TokenUsage) *TokenUsage {
+	if last, ok := lastMessageIteration(msg.RawJSON()); ok {
+		return &last
+	}
+	passes := samplingPasses(msg.Content)
+	if passes < 2 {
+		return nil
+	}
+	return &TokenUsage{
+		InputTokens:         total.InputTokens / passes,
+		OutputTokens:        total.OutputTokens,
+		CacheCreationTokens: total.CacheCreationTokens / passes,
+		CacheReadTokens:     total.CacheReadTokens / passes,
+	}
+}
+
+// lastMessageIteration reads the last model-sampling entry of the raw
+// response's usage.iterations, present only when the upstream reports passes
+// separately and there was more than one.
+func lastMessageIteration(raw string) (TokenUsage, bool) {
+	var last gjson.Result
+	n := 0
+	for _, it := range gjson.Get(raw, "usage.iterations").Array() {
+		if it.Get("type").String() == "message" {
+			last = it
+			n++
+		}
+	}
+	if n < 2 {
+		return TokenUsage{}, false
+	}
+	return TokenUsage{
+		InputTokens:         last.Get("input_tokens").Int(),
+		OutputTokens:        last.Get("output_tokens").Int(),
+		CacheCreationTokens: last.Get("cache_creation_input_tokens").Int(),
+		CacheReadTokens:     last.Get("cache_read_input_tokens").Int(),
+	}, true
+}
+
+// samplingPasses counts the model's sampling passes in a response: one, plus
+// one per run of server tool results the model went on from. The server runs
+// a pass's tool calls, appends their results together and samples again, so a
+// run of results is a pass boundary; a run that ends the content (pause_turn)
+// has no pass after it. Server tool results (tool_search_tool_result,
+// web_search_tool_result, ...) are the only *_tool_result blocks in an
+// assistant message: a client tool's result arrives in the next user message.
+func samplingPasses(content []anthropic.ContentBlockUnion) int64 {
+	passes := int64(1)
+	for i := 0; i+1 < len(content); i++ {
+		if strings.HasSuffix(content[i].Type, "_tool_result") && !strings.HasSuffix(content[i+1].Type, "_tool_result") {
+			passes++
+		}
+	}
+	return passes
 }
 
 func WithAnthropicBedrock(useBedrock bool) AnthropicOption {

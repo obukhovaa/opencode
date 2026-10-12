@@ -4,9 +4,10 @@
 # Reproduces the count_tokens bug where a proxy (LiteLLM in front of
 # Bedrock) answers HTTP 200 from /v1/messages/count_tokens but silently
 # omits the system prompt + tool schemas from the returned count. The
-# agent loop trusts that number to decide when to auto-compact, so the
-# truncation made compaction fire late or never — risking a hard
-# context-overflow error mid-run.
+# agent loop decides auto-compaction on that number for a history no usage
+# report covers yet (once a call has reported, the reported size decides),
+# so the truncation made compaction fire late or never there — risking a
+# hard context-overflow error mid-run.
 #
 # The cmd/compaction-e2e driver stands up a real Anthropic provider
 # (provider.NewProvider) pointed at an in-process httptest server that
@@ -84,9 +85,9 @@ fi
 
 # ── 4. auto-compaction fires despite the truncating endpoint ────────
 if [ "$triggered" = "true" ]; then
-    log_pass "auto-compaction triggered despite truncating count_tokens"
+    log_pass "count says compaction is required despite truncating count_tokens"
 else
-    log_fail "auto-compaction triggered despite truncating count_tokens" "triggered=false — REGRESSION: the original bug"
+    log_fail "count says compaction is required despite truncating count_tokens" "triggered=false — REGRESSION: the original bug"
 fi
 
 # ── 5. healthy endpoint value is used verbatim ──────────────────────
@@ -98,9 +99,9 @@ fi
 
 # ── 6. healthy endpoint above threshold still triggers ──────────────
 if [ "$healthy_triggered" = "true" ]; then
-    log_pass "healthy endpoint above threshold triggers compaction"
+    log_pass "healthy endpoint above threshold says compaction is required"
 else
-    log_fail "healthy endpoint above threshold triggers compaction" "triggered=false"
+    log_fail "healthy endpoint above threshold says compaction is required" "triggered=false"
 fi
 
 echo ""

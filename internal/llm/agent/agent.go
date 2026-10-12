@@ -2528,18 +2528,21 @@ func (a *agent) TrackUsage(ctx context.Context, sessionID string, model models.M
 	cost := inputCost + outputCost
 
 	sess.Cost += cost
-	sess.CompletionTokens = usage.OutputTokens + plausibleCacheRead(sessionID, sess, model, usage)
-	sess.PromptTokens = usage.InputTokens + usage.CacheCreationTokens
+	last := lastCallUsage(sessionID, model, usage)
+	sess.CompletionTokens = last.OutputTokens + last.CacheReadTokens
+	sess.PromptTokens = last.InputTokens + last.CacheCreationTokens
 	sess.TotalCompletionTokens += usage.OutputTokens
 	sess.TotalPromptTokens += usage.InputTokens + usage.CacheCreationTokens + usage.CacheReadTokens
 
 	logging.Info("Track usage",
+		"session_id", sessionID,
 		"token_out_total", sess.CompletionTokens,
 		"token_in_total", sess.PromptTokens,
 		"token_in", usage.InputTokens,
 		"token_out", usage.OutputTokens,
 		"cache_created", usage.CacheCreationTokens,
 		"cache_read", usage.CacheReadTokens,
+		"summed_passes", usage.LastPass != nil,
 		"cost", cost,
 	)
 
@@ -2550,39 +2553,40 @@ func (a *agent) TrackUsage(ctx context.Context, sessionID string, model models.M
 	return nil
 }
 
-// plausibleCacheRead is the cache read that goes into the session's last-call
-// usage, the context size compaction decides on. A call can read from cache
-// only a prefix an earlier call of the session sent, so the read is at most
-// the previous call's prompt plus output, and the prompt at most the window.
-// An upstream now and then reports more (1,383,037 = 690,908 + 692,129: two
-// calls' reads summed); taken at face value, that fires compaction at half the
-// real size. Such a read is capped and logged. The previous call is known only
-// while PromptTokens > 0: after a compaction the report is the summary alone,
-// and the system prompt and tools the next call reads from cache are not in
-// it. The totals and the cost keep the reported value.
-func plausibleCacheRead(sessionID string, prev session.Session, model models.Model, usage provider.TokenUsage) int64 {
-	read := usage.CacheReadTokens
-	if limit := prev.PromptTokens + prev.CompletionTokens; prev.PromptTokens > 0 && read > limit {
-		logging.Warn("reported cache read exceeds the previous call's context; capped",
-			"session_id", sessionID,
-			"cache_read", usage.CacheReadTokens,
-			"previous_context", limit,
-		)
-		read = limit
+// lastCallUsage is the part of a call's usage that measures its context: the
+// prompt the model last saw plus its output, which TrackUsage stores as the
+// session's last-call usage and every compaction decision reads. A response
+// that sampled more than once (a server-side tool search) reports the sum of
+// its passes, about twice the prompt for one search; the provider names the
+// last pass, and that is the context. A prompt above the context window cannot
+// be one pass's, whatever summed it, so it is lowered to the window, cache read
+// first, and logged: at the window it compacts, the safe reading of a size
+// known to be wrong. The cost and the session totals keep the billed counts.
+func lastCallUsage(sessionID string, model models.Model, usage provider.TokenUsage) provider.TokenUsage {
+	last := usage
+	if usage.LastPass != nil {
+		last = *usage.LastPass
 	}
-	if window := model.ContextWindow; window > 0 {
-		if over := usage.InputTokens + usage.CacheCreationTokens + read - window; over > 0 {
-			logging.Warn("reported prompt exceeds the context window; cache read capped",
-				"session_id", sessionID,
-				"cache_read", usage.CacheReadTokens,
-				"input", usage.InputTokens,
-				"cache_created", usage.CacheCreationTokens,
-				"context_window", window,
-			)
-			read = max(read-over, 0)
-		}
+	last.LastPass = nil
+	window := model.ContextWindow
+	over := last.InputTokens + last.CacheCreationTokens + last.CacheReadTokens - window
+	if window <= 0 || over <= 0 {
+		return last
 	}
-	return read
+	logging.Warn("reported prompt exceeds the context window; recorded at the window",
+		"session_id", sessionID,
+		"model", model.ID,
+		"input", last.InputTokens,
+		"cache_created", last.CacheCreationTokens,
+		"cache_read", last.CacheReadTokens,
+		"context_window", window,
+	)
+	for _, n := range []*int64{&last.CacheReadTokens, &last.CacheCreationTokens, &last.InputTokens} {
+		cut := min(over, *n)
+		*n -= cut
+		over -= cut
+	}
+	return last
 }
 
 func (a *agent) Update(agentName config.AgentName, modelID models.ModelID) (models.Model, error) {
