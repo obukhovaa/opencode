@@ -322,7 +322,8 @@ func (a *agent) summarizerInputWithStats(ctx context.Context, sessionID string, 
 
 	// The trim works in local-estimate units, and the 4 B/token estimate can
 	// undercount a session badly. When the provider reported more for the
-	// history up to the last assistant message than the estimate gives,
+	// history up to the message its report covers (reportAnchor) than the
+	// estimate gives,
 	// shrink the budget by the same ratio. Measured on the raw history, which
 	// is what the provider counted; the reported value also covers the main
 	// agent's system prompt and tools, so this errs toward trimming more.

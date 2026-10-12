@@ -2327,9 +2327,14 @@ func (a *agent) processEvent(ctx context.Context, sessionID string, assistantMsg
 			a.activateDiscoveredTools(sessionID, event.Response.ToolSearches)
 		}
 		assistantMsg.AddFinish(event.Response.FinishReason)
-		// TrackUsage below records this call's usage as the session's last
-		// report; the message says so for reportAnchor. A response without
-		// usage records no report.
+		// Record this call's usage as the session's last report first, and
+		// only then mark the message as the one the report covers (for
+		// reportAnchor): a save that fails, or a cancel landing before it,
+		// leaves the message unmarked, so it is counted as delta rather than
+		// anchoring the older report. A response without usage reports none.
+		if err := a.TrackUsage(ctx, sessionID, a.provider.Model(), event.Response.Usage); err != nil {
+			return err
+		}
 		if event.Response.Usage != (provider.TokenUsage{}) {
 			assistantMsg.MarkReported()
 		}
@@ -2350,7 +2355,7 @@ func (a *agent) processEvent(ctx context.Context, sessionID string, assistantMsg
 		for _, tc := range assistantMsg.ToolCalls() {
 			a.messages.PublishPart(sessionID, assistantMsg.ID, tc)
 		}
-		return a.TrackUsage(ctx, sessionID, a.provider.Model(), event.Response.Usage)
+		return nil
 	}
 
 	return nil

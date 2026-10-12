@@ -1346,3 +1346,32 @@ func truncateForTest(s string) string {
 	}
 	return s
 }
+
+// failingSaveSessions is a session store whose writes fail.
+type failingSaveSessions struct{ memSessions }
+
+func (s *failingSaveSessions) Save(context.Context, session.Session) (session.Session, error) {
+	return session.Session{}, errors.New("save failed")
+}
+
+// A call whose report was not saved is not marked as the message a report
+// covers: marked, it would anchor the older report and hide what came since.
+func TestProcessEvent_MarksReportedOnlyOnceTheReportIsSaved(t *testing.T) {
+	var log []string
+	p := &compactionProvider{name: "main", window: 1000, log: &log}
+	sessions := &failingSaveSessions{}
+	_, _ = sessions.memSessions.Save(context.Background(), session.Session{ID: "s", PromptTokens: 100})
+	a := &agent{provider: p, sessions: sessions, messages: &memMessages{}}
+	msg := &message.Message{ID: "m1", Role: message.Assistant}
+
+	err := a.processEvent(context.Background(), "s", msg, provider.ProviderEvent{
+		Type:     provider.EventComplete,
+		Response: &provider.ProviderResponse{FinishReason: message.FinishReasonEndTurn, Usage: provider.TokenUsage{InputTokens: 500}},
+	})
+	if err == nil {
+		t.Fatal("processEvent returned nil with a failing session save")
+	}
+	if f := msg.FinishPart(); f != nil && f.Reported {
+		t.Errorf("finish = %+v, want no report mark when the report was not saved", *f)
+	}
+}

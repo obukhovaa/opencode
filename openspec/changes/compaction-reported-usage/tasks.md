@@ -7,8 +7,8 @@
 
 ## 2. Summed sampling passes
 
-- [x] 2.1 `TokenUsage.LastPass`, set by the Anthropic client from `usage.iterations` or by dividing the input-side counts by the response's sampling passes; on a stream only once `message_delta` reported cumulative input counts. `CalculateCost` tiers on the last pass.
-- [x] 2.2 `TrackUsage` records the last pass as the last-call usage, and a prompt above the window at the window, with a warning; totals and cost keep the billed counts. No bound against the previous report.
+- [x] 2.1 `TokenUsage.LastPass`, set by the Anthropic client from `usage.iterations` or by dividing the input-side counts by the response's sampling passes; on a stream only once `message_delta` reported cumulative input counts.
+- [x] 2.2 `TrackUsage` records the last pass (before the message is marked reported) as the last-call usage, and a prompt above the window at the window, with a warning; totals and cost keep the billed counts. No bound against the previous report.
 - [x] 2.3 Probe of the LiteLLM Bedrock route (one tool search, cold and warm) recorded in design.md.
 
 ## 3. max_tokens
@@ -17,6 +17,6 @@
 
 ## 4. Tests and docs
 
-- [x] 4.1 Provider: the probe's usage shapes, iterations, parallel searches, `pause_turn`, a single pass; streamed usage over SSE and the Bedrock event stream; attachment pricing; image capability; Bedrock `max_tokens`; `AdjustMaxTokens` does not stick; the cost tier. Message: the report mark survives a refinish and storage.
+- [x] 4.1 Provider: the probe's usage shapes, iterations, parallel searches, `pause_turn`, a single pass; streamed usage over SSE and the Bedrock event stream; attachment pricing; image capability; Bedrock `max_tokens`; `AdjustMaxTokens` does not stick. Message: the report mark survives a refinish and storage.
 - [x] 4.2 `TestCountContextTokens` rewritten around reports; `TestProcessGeneration_FailedCallDoesNotHideItsHistory`; the in-flight summarize test seeds an over-threshold report.
 - [x] 4.3 README Auto Compact section (both copies), AGENTS.md `compactionThreshold`, docs/deferred-tools.md token accounting, the compaction e2e driver's description.
