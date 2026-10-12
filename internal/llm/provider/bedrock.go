@@ -108,11 +108,20 @@ func (b *bedrockClient) countTokens(ctx context.Context, messages []message.Mess
 	return b.childProvider.countTokens(ctx, messages, tools)
 }
 
+// setMaxTokens and maxTokens go to the child client, which builds the
+// requests from its own copy of the options; the wrapper's copy alone never
+// reached a request.
 func (a *bedrockClient) setMaxTokens(maxTokens int64) {
 	a.providerOptions.maxTokens = maxTokens
+	if a.childProvider != nil {
+		a.childProvider.setMaxTokens(maxTokens)
+	}
 }
 
 func (a *bedrockClient) maxTokens() int64 {
+	if a.childProvider != nil {
+		return a.childProvider.maxTokens()
+	}
 	return a.providerOptions.maxTokens
 }
 

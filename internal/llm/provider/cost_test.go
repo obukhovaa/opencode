@@ -85,3 +85,22 @@ func TestCalculateCost(t *testing.T) {
 		})
 	}
 }
+
+// A response that ran a server-side tool search sums its passes; the
+// long-context tier is a pass's prompt, so a summed report over the
+// threshold whose last pass is under it stays on base rates.
+func TestCalculateCost_SummedPassesUnderTheThreshold(t *testing.T) {
+	model := models.SupportedModels[models.Claude55Haiku]
+	summed := TokenUsage{InputTokens: 600, CacheReadTokens: 120_000, OutputTokens: 500}
+	lastPass := TokenUsage{InputTokens: 300, CacheReadTokens: 60_000, OutputTokens: 500}
+	base, _ := CalculateCost(model, summed)
+	summed.LastPass = &lastPass
+	got, _ := CalculateCost(model, summed)
+	if got >= base {
+		t.Errorf("input cost with a last pass under the threshold = %v, want below the long-context price %v", got, base)
+	}
+	want := model.CostPer1MOutCached/1e6*120_000 + model.CostPer1MIn/1e6*600
+	if math.Abs(got-want) > 1e-9 {
+		t.Errorf("input cost = %v, want the billed counts at base rates %v", got, want)
+	}
+}

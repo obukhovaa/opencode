@@ -2327,6 +2327,12 @@ func (a *agent) processEvent(ctx context.Context, sessionID string, assistantMsg
 			a.activateDiscoveredTools(sessionID, event.Response.ToolSearches)
 		}
 		assistantMsg.AddFinish(event.Response.FinishReason)
+		// TrackUsage below records this call's usage as the session's last
+		// report; the message says so for reportAnchor. A response without
+		// usage records no report.
+		if event.Response.Usage != (provider.TokenUsage{}) {
+			assistantMsg.MarkReported()
+		}
 		if err := a.messages.Update(ctx, *assistantMsg); err != nil {
 			return fmt.Errorf("failed to update message: %w", err)
 		}

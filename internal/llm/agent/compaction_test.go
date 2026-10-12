@@ -34,6 +34,9 @@ type compactionProvider struct {
 	fail error
 	// counted is CountTokens' result; nil counts 0.
 	counted func(msgs []message.Message) int64
+	// toolResultImages is SendsToolResultImages: whether an image tool
+	// result reaches the model as an image or as its base64 text.
+	toolResultImages bool
 
 	mu       sync.Mutex
 	log      *[]string
@@ -95,6 +98,8 @@ func (p *compactionProvider) CountTokens(_ context.Context, threshold float64, m
 	}
 	return n, p.window > 0 && n >= int64(float64(p.window)*threshold)
 }
+
+func (p *compactionProvider) SendsToolResultImages() bool { return p.toolResultImages }
 
 func (p *compactionProvider) CountCalls() int {
 	p.mu.Lock()
@@ -635,11 +640,25 @@ func TestProcessGeneration_FailedCallDoesNotHideItsHistory(t *testing.T) {
 	if len(summarizer.requests) != 1 || len(*log) < 2 || (*log)[0] != "summarizer" || (*log)[1] != "main" {
 		t.Fatalf("call order = %v, want the summarizer before the first model call", *log)
 	}
+	// The call that completed is marked as the message its report covers.
+	persisted, _ := a.messages.List(context.Background(), sess)
+	last := persisted[len(persisted)-1]
+	if f := last.FinishPart(); last.Role != message.Assistant || f == nil || !f.Reported {
+		t.Errorf("last message = %s %+v, want an assistant message marked reported", last.Role, f)
+	}
 }
 
-// finished is m as a completed call leaves it: finished by the provider.
+// finished is m finished with reason and no report mark, as a message
+// written before the mark existed, or one whose call never reported.
 func finished(m message.Message, reason message.FinishReason) message.Message {
 	m.Parts = append(slices.Clip(m.Parts), message.Finish{Reason: reason})
+	return m
+}
+
+// reportedAs is m as a completed call leaves it: finished with reason and
+// marked as the message the session's report covers.
+func reportedAs(m message.Message, reason message.FinishReason) message.Message {
+	m.Parts = append(slices.Clip(m.Parts), message.Finish{Reason: reason, Reported: true})
 	return m
 }
 
@@ -660,12 +679,21 @@ func TestCountContextTokens(t *testing.T) {
 	// results and the failed message are not covered by the report.
 	afterFailure := append(slices.Clone(withAssistant), finished(textMsg(message.Assistant, ""), message.FinishReasonError))
 	afterUnfinished := append(slices.Clone(withAssistant), textMsg(message.Assistant, "cut off"))
-	afterCancel := append(slices.Clone(withAssistant), finished(textMsg(message.Assistant, "stopped"), message.FinishReasonCanceled))
-	withMedia := append(slices.Clone(withAssistant[:2]), message.Message{Role: message.User, Parts: []message.ContentPart{
-		message.TextContent{Text: "see attached"},
-		message.BinaryContent{MIMEType: "image/png", Data: make([]byte, 2_000_000)},
-		message.BinaryContent{MIMEType: "application/pdf", Data: make([]byte, 400_000)},
-	}})
+	afterToolPhaseCancel := append(slices.Clone(withAssistant), reportedAs(textMsg(message.Assistant, "stopped"), message.FinishReasonCanceled))
+	afterStreamCancel := append(slices.Clone(withAssistant), finished(textMsg(message.Assistant, "stopped"), message.FinishReasonCanceled))
+	attachments := []message.BinaryContent{
+		{MIMEType: "image/png", Data: make([]byte, 2_000_000)},
+		{MIMEType: "application/pdf", Data: make([]byte, 400_000)},
+		{MIMEType: "text/plain; charset=utf-8", Data: []byte(strings.Repeat("log line\n", 40_000))},
+		{MIMEType: "audio/ogg", Data: make([]byte, 19_000_000)},
+	}
+	mediaParts := []message.ContentPart{message.TextContent{Text: "see attached"}}
+	var attachmentTokens int64
+	for _, bc := range attachments {
+		mediaParts = append(mediaParts, bc)
+		attachmentTokens += provider.AttachmentTokens(bc)
+	}
+	withMedia := append(slices.Clone(withAssistant[:2]), message.Message{Role: message.User, Parts: mediaParts})
 	withImageResult := append(slices.Clone(withAssistant[:2]), message.Message{Role: message.Tool, Parts: []message.ContentPart{
 		message.ToolResult{ToolCallID: "c1", Type: message.ToolResultTypeImage, Content: strings.Repeat("A", 1_000_000)},
 	}})
@@ -679,10 +707,11 @@ func TestCountContextTokens(t *testing.T) {
 		msgs      []message.Message
 		// providerCount is what the provider counts the whole history at;
 		// only a check no report covers may ask it.
-		providerCount int64
-		noReport      bool
-		wantCount     int64
-		wantHit       bool
+		providerCount    int64
+		noReport         bool
+		toolResultImages bool
+		wantCount        int64
+		wantHit          bool
 	}{
 		{
 			// A daemon session on v0.24.0: the provider reported 757K against
@@ -796,35 +825,61 @@ func TestCountContextTokens(t *testing.T) {
 			wantHit:   true,
 		},
 		{
-			// Cancelled during its tools, a call was reported.
-			name:      "a cancelled call is the anchor",
+			// Cancelled during its tools, a call was reported, and its finish
+			// keeps the mark.
+			name:      "a call cancelled during its tools is the anchor",
 			window:    1000,
 			threshold: 0.95,
 			sess:      session.Session{PromptTokens: 800, CompletionTokens: 50},
-			msgs:      afterCancel,
+			msgs:      afterToolPhaseCancel,
 			wantCount: 850,
 			wantHit:   false,
 		},
 		{
-			// An attachment counts as overhead in EstimateTokens; a provider
-			// bills an image at about 1.6K and a document by its size.
-			name:      "attachments in the delta are priced as media",
+			// Cancelled while streaming, a call reported nothing: the tool
+			// results before it are not in the report.
+			name:      "a call cancelled while streaming is no anchor",
+			window:    1000,
+			threshold: 0.95,
+			sess:      session.Session{PromptTokens: 800, CompletionTokens: 50},
+			msgs:      afterStreamCancel,
+			wantCount: 850 + message.EstimateTokens(afterStreamCancel[2:], nil, message.BytesPerTokenEta),
+			wantHit:   true,
+		},
+		{
+			// An attachment counts as overhead in EstimateTokens. The
+			// converters send an image as an image, a PDF as a document, text
+			// inline and audio as a one-line note, and it is priced that way.
+			name:      "attachments in the delta are priced as the converters send them",
 			window:    1_000_000,
 			threshold: 0.95,
 			sess:      session.Session{PromptTokens: 1_000, CompletionTokens: 100},
 			msgs:      withMedia,
-			wantCount: 1_100 + int64(len("see attached")+100)/message.BytesPerTokenEta + deltaImageTokens + 400_000/deltaDocumentBytesPerToken,
+			wantCount: 1_100 + int64(len("see attached")+100)/message.BytesPerTokenEta + attachmentTokens,
 			wantHit:   false,
 		},
 		{
-			// view_image stores the image as base64 text; read as text, one
-			// image would be ~250K tokens and fire compaction on its own.
-			name:      "an image tool result is one image, not its base64",
+			// view_image stores the image as base64 text; where the provider
+			// sends it as an image, read as text it would be ~250K tokens and
+			// fire compaction on its own.
+			name:             "an image tool result the provider sends as an image is one image",
+			window:           1_000_000,
+			threshold:        0.4,
+			toolResultImages: true,
+			sess:             session.Session{PromptTokens: 1_000, CompletionTokens: 100},
+			msgs:             withImageResult,
+			wantCount:        1_100 + provider.ImageTokenEstimate,
+			wantHit:          false,
+		},
+		{
+			// A provider that sends the result as its base64 text pays for
+			// every byte of it.
+			name:      "an image tool result the provider sends as text is its text",
 			window:    1_000_000,
 			threshold: 0.4,
 			sess:      session.Session{PromptTokens: 1_000, CompletionTokens: 100},
 			msgs:      withImageResult,
-			wantCount: 1_100 + deltaImageTokens,
+			wantCount: 1_100 + message.EstimateTokens(withImageResult[2:], nil, message.BytesPerTokenEta),
 			wantHit:   false,
 		},
 		{
@@ -902,7 +957,7 @@ func TestCountContextTokens(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			withAutoCompact(t, true)
 			var log []string
-			p := &compactionProvider{name: "main", window: tc.window, log: &log,
+			p := &compactionProvider{name: "main", window: tc.window, log: &log, toolResultImages: tc.toolResultImages,
 				counted: func([]message.Message) int64 { return tc.providerCount }}
 			sessions := &memSessions{}
 			tc.sess.ID = "s"
@@ -1057,7 +1112,8 @@ func TestSummarizerInput(t *testing.T) {
 			textMsg(message.User, big),
 			textMsg(message.Assistant, big),
 			textMsg(message.User, big),
-			textMsg(message.Assistant, "latest"),
+			// The call the report covers: a completed one.
+			reportedAs(textMsg(message.Assistant, "latest"), message.FinishReasonEndTurn),
 		}, -1)
 		_, _ = a.sessions.Save(context.Background(), session.Session{ID: sess, PromptTokens: 9000, CompletionTokens: 500})
 		got, err := a.summarizerInput(context.Background(), sess, prompt)

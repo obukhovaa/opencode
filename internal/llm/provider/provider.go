@@ -827,6 +827,21 @@ func (p *baseProvider[C]) CountTokens(ctx context.Context, threshold float64, me
 	return estimatedTokens, hitThreshold
 }
 
+// SendsToolResultImages reports whether the provider sends an image tool
+// result (view_image) to the model as an image. Only the Anthropic client
+// does; the others send its base64 JSON as text, which costs a prompt its
+// length, not an image's tokens.
+func (p *baseProvider[C]) SendsToolResultImages() bool {
+	switch c := any(p.client).(type) {
+	case *anthropicClient:
+		return true
+	case *bedrockClient:
+		_, ok := c.childProvider.(*anthropicClient)
+		return ok
+	}
+	return false
+}
+
 func (p *baseProvider[C]) AdjustMaxTokens(estimatedTokens int64) int64 {
 	maxTokens := p.client.maxTokens()
 	model := p.options.model
@@ -886,11 +901,13 @@ func CalculateCost(model models.Model, u TokenUsage) (inputCost, outputCost floa
 		model.CostPer1MIn/1e6*float64(u.InputTokens)
 	outputCost = model.CostPer1MOut / 1e6 * float64(u.OutputTokens)
 	// A long prompt reprices the whole request, not just the tokens past the
-	// threshold. The prompt size comes from the reported usage, so a report
-	// summed over several sampling passes (server tool search) or doubled by
-	// a proxy can cross the threshold when no single request did; the
-	// tracked cost errs high there.
+	// threshold. The tier is a pass's prompt: a response summed over several
+	// sampling passes (server tool search) can cross the threshold when no
+	// pass did, so its last, largest pass decides.
 	prompt := u.InputTokens + u.CacheCreationTokens + u.CacheReadTokens
+	if lp := u.LastPass; lp != nil {
+		prompt = lp.InputTokens + lp.CacheCreationTokens + lp.CacheReadTokens
+	}
 	if model.LongContextThreshold > 0 && model.LongContextCostMultiplier > 0 &&
 		prompt > model.LongContextThreshold {
 		inputCost *= model.LongContextCostMultiplier

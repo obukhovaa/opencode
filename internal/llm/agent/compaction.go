@@ -75,7 +75,7 @@ func (a *agent) countContextTokens(ctx context.Context, sessionID string, thresh
 		return counted, hit
 	}
 	reported := sess.PromptTokens + sess.CompletionTokens
-	delta := estimateDeltaTokens(msgs[anchor+1:])
+	delta := estimateDeltaTokens(msgs[anchor+1:], a.sendsToolResultImages())
 	count := reported + delta
 	hit := window > 0 && count >= thresholdTokens
 	log("compaction check",
@@ -119,36 +119,31 @@ func reportAnchor(sess session.Session, msgs []message.Message) int {
 }
 
 // reportedCall reports whether an assistant message can carry the session's
-// last report. A call that failed is finished error with none, and an
-// unfinished message is a call a crash or a failed wrap-up cut off; anchoring
-// on either would drop the tool results before it from the count for good,
-// since a call that failed for its size never reports again. A cancelled call
-// is kept: one cancelled during its tools was reported, and one cancelled
-// while streaming was not but is no sign of size, so the next call reports.
+// last report. A call whose usage TrackUsage recorded is marked so in its
+// finish part, which a later finish keeps (a call cancelled during its
+// tools). A call that failed or was cancelled while streaming, and a message
+// a crash or a failed wrap-up left unfinished, report nothing; anchoring on
+// one would drop the tool results before it from the count, and a call that
+// failed for its size never reports again. A message written before the mark
+// existed is judged by its finish reason, and a cancelled one is not trusted.
 func reportedCall(m message.Message) bool {
-	switch m.FinishReason() {
-	case "", message.FinishReasonError:
+	f := m.FinishPart()
+	switch {
+	case f == nil:
 		return false
+	case f.Reported:
+		return true
 	}
-	return true
+	return f.Reason != message.FinishReasonError && f.Reason != message.FinishReasonCanceled
 }
 
-// Media in the delta, priced as a provider prices it rather than by
-// EstimateTokens, which counts an attachment as overhead only and a
-// view_image result's base64 as text.
-const (
-	// deltaImageTokens is one image: Anthropic bills width×height/750, about
-	// 1.6K at its 1568px cap.
-	deltaImageTokens = 1600
-	// deltaDocumentBytesPerToken prices a non-image attachment (a PDF) by its
-	// size, as the count_tokens fallback does.
-	deltaDocumentBytesPerToken = 100
-)
-
 // estimateDeltaTokens estimates the messages a report does not cover yet: the
-// 4 bytes/token estimate of their text, tool calls and results, plus their
-// media at deltaImageTokens per image and by size for other attachments.
-func estimateDeltaTokens(msgs []message.Message) int64 {
+// 4 bytes/token estimate of their text, tool calls and results, with each
+// attachment priced by the block the provider's converter makes of it, and an
+// image tool result priced as an image where the provider sends one
+// (toolResultImages), since EstimateTokens counts an attachment as overhead
+// only and an image result's base64 as text.
+func estimateDeltaTokens(msgs []message.Message, toolResultImages bool) int64 {
 	var media int64
 	text := make([]message.Message, 0, len(msgs))
 	for _, m := range msgs {
@@ -156,15 +151,11 @@ func estimateDeltaTokens(msgs []message.Message) int64 {
 		for _, part := range m.Parts {
 			switch p := part.(type) {
 			case message.BinaryContent:
-				if strings.HasPrefix(p.MIMEType, "image/") {
-					media += deltaImageTokens
-				} else {
-					media += max(int64(len(p.Data)/deltaDocumentBytesPerToken), deltaImageTokens)
-				}
+				media += provider.AttachmentTokens(p)
 				continue
 			case message.ToolResult:
-				if p.IsImageToolResponse() {
-					media += deltaImageTokens
+				if toolResultImages && p.IsImageToolResponse() {
+					media += provider.ImageTokenEstimate
 					continue
 				}
 			}
@@ -176,13 +167,11 @@ func estimateDeltaTokens(msgs []message.Message) int64 {
 	return message.EstimateTokens(text, nil, message.BytesPerTokenEta) + media
 }
 
-func lastAssistantIndex(msgs []message.Message) int {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == message.Assistant {
-			return i
-		}
-	}
-	return -1
+// sendsToolResultImages reports whether the agent's provider sends an image
+// tool result as an image (see provider's SendsToolResultImages).
+func (a *agent) sendsToolResultImages() bool {
+	p, ok := a.provider.(interface{ SendsToolResultImages() bool })
+	return ok && p.SendsToolResultImages()
 }
 
 // syntheticTail returns a copy of the run of synthetic messages that ends the
@@ -338,7 +327,7 @@ func (a *agent) summarizerInputWithStats(ctx context.Context, sessionID string, 
 	// is what the provider counted; the reported value also covers the main
 	// agent's system prompt and tools, so this errs toward trimming more.
 	var calibrate func(int64) int64
-	if la := lastAssistantIndex(msgs); la >= 0 {
+	if la := reportAnchor(sess, msgs); la >= 0 {
 		reported := sess.PromptTokens + sess.CompletionTokens
 		if local := message.EstimateTokens(msgs[:la+1], nil, message.BytesPerTokenEta); local > 0 && reported > local {
 			calibrate = func(b int64) int64 { return b * local / reported }
