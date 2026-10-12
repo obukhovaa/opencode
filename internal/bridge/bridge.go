@@ -492,20 +492,23 @@ type MessageEditor interface {
 // text, so a consumer that draws its own UI never parses the card.
 type RunProgress struct {
 	// Status is RunProgressRunning while the run is live, then
-	// RunProgressOK or RunProgressError exactly once at its end.
+	// RunProgressOK or RunProgressError at most once at its end.
 	Status string
 	// ToolsDone counts completed tool calls, failed ones included.
 	ToolsDone int
 	// Failed counts completed tool calls that ended in an error.
 	Failed int
-	// Running counts tool calls currently in flight.
+	// Running counts tool calls currently in flight. Zero on a terminal
+	// state.
 	Running int
 	// CurrentTool names the most recently started unfinished tool, or
-	// is empty when none is in flight.
+	// is empty when none is in flight. Empty on a terminal state.
 	CurrentTool string
 	// LastFailedTool and LastFailureReason describe the most recent
 	// failure — the reason flattened to one line and rune-capped, as on
-	// the card. Both are empty until a call fails.
+	// the card. Both are empty until a call fails. When several calls
+	// fail between two states, Failed counts them all and these name
+	// only the last, as the card does.
 	LastFailedTool    string
 	LastFailureReason string
 	// Elapsed is the run's wall-clock age at this state.
@@ -529,7 +532,9 @@ const (
 // An adapter that implements MessageEditor gets the rendered card through
 // that and is not offered RunProgress. SendProgress receives every paced
 // update of the run, starting with the "Thinking..." state and ending
-// with exactly one terminal state.
+// with one terminal state. Delivery is best-effort: a failed send is not
+// retried, and a bridge stopped mid-run sends no terminal state, so a
+// consumer treats the run's final reply as its authoritative end.
 type ProgressRelayer interface {
 	SendProgress(ctx context.Context, peer PeerRef, p RunProgress) error
 }

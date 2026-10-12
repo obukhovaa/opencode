@@ -70,7 +70,9 @@ type runProgress struct {
 	// only the most recent reason, by spec), but a text-only peer must
 	// still receive BOTH lines — that is the "failures always surface"
 	// invariant, and before the card existed each failure was its own
-	// message. Drained by snapshot, one line per failure.
+	// message. A relay that accepts the flush's structured state is
+	// treated like the card instead (see progressFlush.failureTexts).
+	// Drained by snapshot, one line per failure.
 	pendingFailures []string
 	inflight        map[string]string // raw tool-call ID → tool name
 	inflightOrder   []string          // insertion order, for "most recently started"
@@ -210,7 +212,9 @@ type progressFlush struct {
 	// invariant that failures always surface. It is a slice because two
 	// failures can land inside one pacing interval and both must reach
 	// a text-only peer, even though the card itself only names the most
-	// recent one.
+	// recent one. The exception is a bridge.ProgressRelayer that
+	// accepted this flush's state: like the card, the state counts every
+	// failure but names only the most recent one.
 	failureTexts []string
 	final        bool
 	// state is the same moment as text, structured, for peers whose
@@ -247,15 +251,18 @@ func (p *runProgress) stateLocked() bridge.RunProgress {
 	case progressStatusError:
 		status = bridge.RunProgressError
 	}
-	current := ""
-	if n := len(p.inflightOrder); n > 0 {
-		current = p.inflight[p.inflightOrder[n-1]]
+	// A terminal state names nothing in flight, as headerLocked's
+	// terminal line does: a call still open when the run ends (an async
+	// subagent's, or a result not yet drained) is not this run's to show.
+	running, current := 0, ""
+	if n := len(p.inflightOrder); n > 0 && p.final == "" {
+		running, current = n, p.inflight[p.inflightOrder[n-1]]
 	}
 	return bridge.RunProgress{
 		Status:            status,
 		ToolsDone:         p.toolsDone,
 		Failed:            p.failed,
-		Running:           len(p.inflightOrder),
+		Running:           running,
 		CurrentTool:       current,
 		LastFailedTool:    p.lastFailedTool,
 		LastFailureReason: p.lastFailureReason,
@@ -393,10 +400,10 @@ func (d *sessionDispatch) progressFinish(p *runProgress, status string) {
 // deleted, token stale) the card is posted fresh and the chain
 // continues from the new message. A peer whose adapter cannot edit but
 // implements bridge.ProgressRelayer (the external relay) gets the state
-// as a structured RunProgress instead, which carries the failures too.
-// Any other peer that cannot edit — or a relayer whose SendProgress
-// failed for this flush — gets each undelivered failure as one
-// plain-text line. Runs on the
+// as a structured RunProgress instead, which carries the failure count
+// and the most recent failure, as the card does. Any other peer that
+// cannot edit — or a relayer whose SendProgress failed for this flush —
+// gets each undelivered failure as one plain-text line. Runs on the
 // worker goroutine; ordering across flushes is the worker's guarantee.
 func (d *sessionDispatch) deliverProgress(ctx context.Context, p *runProgress, f progressFlush) {
 	bindings, err := d.svc.store.ListBindingsBySession(ctx, d.svc.projectID, d.sessionID)
@@ -426,15 +433,18 @@ func (d *sessionDispatch) deliverProgress(ctx context.Context, p *runProgress, f
 				sctx := bridge.ContextWithSessionID(ctx, d.sessionID)
 				err := relayer.SendProgress(sctx, peer, f.state)
 				if err == nil {
-					// The state carries the failure count and the last
-					// failure, so the consumer already has them; a text
-					// line as well would read as a separate agent reply.
+					// The state carries the failure count and the most
+					// recent failure, as the card does; failures that
+					// coalesced into this flush before it are counted but
+					// not named. A text line as well would read as a
+					// separate agent reply.
 					continue
 				}
 				// Progress is advisory and the next flush supersedes it,
-				// so a lost update is logged and not retried. Its
-				// failures still have to surface: fall through to the
-				// text lines.
+				// so a lost update is logged and not retried; a lost
+				// terminal state has no successor, which is why the
+				// contract promises at most one. Its failures still have
+				// to surface: fall through to the text lines.
 				logging.Warn("bridge: progress relay send failed",
 					"session", d.sessionID, "peer", b.PeerID, "err", err)
 			}

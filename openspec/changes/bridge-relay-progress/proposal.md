@@ -15,10 +15,10 @@ The card's text is the wrong thing to relay: a consumer would have to parse "⏳
 
 ### Modified Capabilities
 
-- `chat-bridge`: the optional-capability requirement gains `ProgressRelayer`, and the relay receives structured progress instead of nothing.
+- `chat-bridge`: the optional-capability requirement gains `ProgressRelayer`, the relay receives structured progress instead of nothing, and a relay that accepts progress gets failures in the state instead of as text lines.
 
 ## Impact
 
 - `internal/bridge` (`RunProgress`, `ProgressRelayer`), `internal/bridge/service/progress.go` (structured state per flush, relayed to `ProgressRelayer` peers), `internal/bridge/external` (`progress` frame kind and `SendProgress`).
-- **Relay contract:** the orchestrator endpoint must accept `kind: "progress"` before a daemon on this version sends it. Until it does, each progress POST is rejected and logged at WARN, and nothing else changes — messages, questions and failure lines are relayed as before.
+- **Relay contract:** the orchestrator endpoint must accept `kind: "progress"` before a daemon on this version sends it (c2-agent 0.4.6, GENAI-448). Until it does, each progress POST is rejected, logged at WARN and recorded as the adapter's last error on `/router/health`; messages, questions and failure lines are relayed as before. Once it accepts, an accepted frame replaces the `✗` text line, so a consumer that wants to show failures reads them from the frame.
 - No change for Slack, Telegram or Mattermost peers, and none when tool updates are off or at `full` verbosity, where no card exists.

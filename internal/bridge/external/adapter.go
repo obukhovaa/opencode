@@ -317,6 +317,11 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 	return "", nil
 }
 
+// Compile-time assertion: Adapter implements bridge.ProgressRelayer.
+// The bridge service finds it by type assertion, so a signature drift
+// would otherwise silently stop progress frames.
+var _ bridge.ProgressRelayer = (*Adapter)(nil)
+
 // SendProgress implements bridge.ProgressRelayer. Builds a "progress"
 // relay frame carrying one state of the run's progress card, so the
 // relay's consumer can show what the run is doing instead of a bare

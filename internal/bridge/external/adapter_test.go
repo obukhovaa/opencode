@@ -490,6 +490,16 @@ func TestSendProgressNon202IsError(t *testing.T) {
 	}
 }
 
+// The bridge offers RunProgress only to an adapter that cannot edit: a
+// MessageEditor gets the rendered card instead, so the relay would stop
+// receiving progress frames the moment it grew an edit method.
+func TestAdapterIsNotMessageEditor(t *testing.T) {
+	t.Parallel()
+	if _, ok := any((*Adapter)(nil)).(bridge.MessageEditor); ok {
+		t.Fatal("external adapter implements bridge.MessageEditor; deliverProgress would send it the card, not RunProgress")
+	}
+}
+
 // A disabled adapter refuses progress without calling the relay.
 func TestSendProgressDisabled(t *testing.T) {
 	t.Parallel()
