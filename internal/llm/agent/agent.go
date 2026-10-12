@@ -2528,7 +2528,7 @@ func (a *agent) TrackUsage(ctx context.Context, sessionID string, model models.M
 	cost := inputCost + outputCost
 
 	sess.Cost += cost
-	sess.CompletionTokens = usage.OutputTokens + usage.CacheReadTokens
+	sess.CompletionTokens = usage.OutputTokens + plausibleCacheRead(sessionID, sess, model, usage)
 	sess.PromptTokens = usage.InputTokens + usage.CacheCreationTokens
 	sess.TotalCompletionTokens += usage.OutputTokens
 	sess.TotalPromptTokens += usage.InputTokens + usage.CacheCreationTokens + usage.CacheReadTokens
@@ -2548,6 +2548,41 @@ func (a *agent) TrackUsage(ctx context.Context, sessionID string, model models.M
 		return fmt.Errorf("failed to save session: %w", err)
 	}
 	return nil
+}
+
+// plausibleCacheRead is the cache read that goes into the session's last-call
+// usage, the context size compaction decides on. A call can read from cache
+// only a prefix an earlier call of the session sent, so the read is at most
+// the previous call's prompt plus output, and the prompt at most the window.
+// An upstream now and then reports more (1,383,037 = 690,908 + 692,129: two
+// calls' reads summed); taken at face value, that fires compaction at half the
+// real size. Such a read is capped and logged. The previous call is known only
+// while PromptTokens > 0: after a compaction the report is the summary alone,
+// and the system prompt and tools the next call reads from cache are not in
+// it. The totals and the cost keep the reported value.
+func plausibleCacheRead(sessionID string, prev session.Session, model models.Model, usage provider.TokenUsage) int64 {
+	read := usage.CacheReadTokens
+	if limit := prev.PromptTokens + prev.CompletionTokens; prev.PromptTokens > 0 && read > limit {
+		logging.Warn("reported cache read exceeds the previous call's context; capped",
+			"session_id", sessionID,
+			"cache_read", usage.CacheReadTokens,
+			"previous_context", limit,
+		)
+		read = limit
+	}
+	if window := model.ContextWindow; window > 0 {
+		if over := usage.InputTokens + usage.CacheCreationTokens + read - window; over > 0 {
+			logging.Warn("reported prompt exceeds the context window; cache read capped",
+				"session_id", sessionID,
+				"cache_read", usage.CacheReadTokens,
+				"input", usage.InputTokens,
+				"cache_created", usage.CacheCreationTokens,
+				"context_window", window,
+			)
+			read = max(read-over, 0)
+		}
+	}
+	return read
 }
 
 func (a *agent) Update(agentName config.AgentName, modelID models.ModelID) (models.Model, error) {

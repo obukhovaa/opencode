@@ -21,7 +21,9 @@ import (
 
 // compactionProvider records every request it is sent into a log shared with
 // the other provider of the test, so the order of summarizer and model calls
-// is observable. count decides what CountTokens reports for a request.
+// is observable. count decides the prompt size a response reports as its
+// usage, unless respond sets a usage of its own: compaction decisions read the
+// size the last call reported, as they do from a real provider.
 type compactionProvider struct {
 	name    string
 	window  int64
@@ -59,6 +61,9 @@ func (p *compactionProvider) StreamResponse(ctx context.Context, msgs []message.
 	if p.respond != nil {
 		resp = p.respond(msgs)
 	}
+	if resp.Usage == (provider.TokenUsage{}) && p.count != nil {
+		resp.Usage.InputTokens = p.count(msgs)
+	}
 	ch := make(chan provider.ProviderEvent, 1)
 	ch <- provider.ProviderEvent{Type: provider.EventComplete, Response: resp}
 	close(ch)
@@ -73,12 +78,10 @@ func (p *compactionProvider) Model() models.Model {
 	return models.Model{ID: models.ModelID(p.name), ContextWindow: p.window}
 }
 
-func (p *compactionProvider) CountTokens(_ context.Context, threshold float64, msgs []message.Message, _ []tools.BaseTool) (int64, bool) {
-	var n int64
-	if p.count != nil {
-		n = p.count(msgs)
-	}
-	return n, p.window > 0 && n >= int64(float64(p.window)*threshold)
+// CountTokens is not part of any compaction decision: they read the reported
+// usage. A call here is a regression to the estimate.
+func (p *compactionProvider) CountTokens(context.Context, float64, []message.Message, []tools.BaseTool) (int64, bool) {
+	panic("compactionProvider: compaction decisions must not call CountTokens")
 }
 
 func (p *compactionProvider) AdjustMaxTokens(estimated int64) int64 { return estimated }
@@ -106,9 +109,9 @@ func withAutoCompact(t *testing.T, on bool) {
 
 const testSummaryText = "SUMMARY OF EARLIER WORK"
 
-// newCompactingAgent wires a main provider with a 1000-token window that
-// reports overTokens for any history not headed by the summary (50 for one
-// that is), and a summarizer that answers with testSummaryText.
+// newCompactingAgent wires a main provider with a 1000-token window whose
+// responses report overTokens for any history not headed by the summary (50
+// for one that is), and a summarizer that answers with testSummaryText.
 func newCompactingAgent(t *testing.T, overTokens int64, ts []tools.BaseTool) (*agent, *compactionProvider, *compactionProvider, *[]string) {
 	t.Helper()
 	log := &[]string{}
@@ -126,6 +129,20 @@ func newCompactingAgent(t *testing.T, overTokens int64, ts []tools.BaseTool) (*a
 	a := newLoopAgentWithTools(t, main, ts)
 	a.summarizeProvider = summarizer
 	return a, main, summarizer, log
+}
+
+// seedReport records tokens as the session's last reported model call, as
+// TrackUsage does after a response, so a seeded history has a report.
+func seedReport(t *testing.T, a *agent, sessionID string, tokens int64) {
+	t.Helper()
+	sess, err := a.sessions.Get(context.Background(), sessionID)
+	if err != nil {
+		sess = session.Session{ID: sessionID}
+	}
+	sess.PromptTokens = tokens
+	if _, err := a.sessions.Save(context.Background(), sess); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func seedHistory(t *testing.T, a *agent, sessionID string, msgs ...message.Message) {
@@ -187,6 +204,7 @@ func TestProcessGeneration_PreTurnCompactionKeepsResumeTail(t *testing.T) {
 	const sess = "sess-resume"
 	seedHistory(t, a, sess, textMsg(message.User, "start the build"), textMsg(message.Assistant, "started in the background"))
 	seedHistory(t, a, sess, completionPair("bg-1", "BUILD OK")...)
+	seedReport(t, a, sess, 960)
 
 	res := a.processGeneration(context.Background(), sess, "", 0, nil, RunOptions{})
 	if res.Error != nil {
@@ -219,13 +237,16 @@ func (r *completingRegistry) WaitForActiveTasks(ctx context.Context, sessionID s
 func TestProcessGeneration_ReentryAfterDrainIsGated(t *testing.T) {
 	withAutoCompact(t, true)
 	const sess = "sess-reentry"
+	// The drained completion is large: the last report (100) plus its
+	// estimate is over the threshold.
+	bigOutput := "BIG OUTPUT " + strings.Repeat("x", 4000)
 	log := &[]string{}
 	main := &compactionProvider{name: "main", window: 1000, log: log}
 	main.count = func(msgs []message.Message) int64 {
 		switch {
 		case len(msgs) > 0 && firstText(msgs[0]) == testSummaryText:
 			return 50
-		case hasToolResult(msgs, "BIG OUTPUT"):
+		case hasToolResult(msgs, bigOutput):
 			return 960
 		default:
 			return 100
@@ -245,7 +266,7 @@ func TestProcessGeneration_ReentryAfterDrainIsGated(t *testing.T) {
 		t.Fatalf("register task: %v", err)
 	}
 	reg := &completingRegistry{Registry: inner, complete: func() {
-		seedHistory(t, a, sess, completionPair("bg-1", "BIG OUTPUT")...)
+		seedHistory(t, a, sess, completionPair("bg-1", bigOutput)...)
 		inner.MarkFinished(taskID, task.StateCompleted, nil)
 	}}
 	task.ResetGlobalRegistry()
@@ -259,7 +280,7 @@ func TestProcessGeneration_ReentryAfterDrainIsGated(t *testing.T) {
 	if want := []string{"main", "summarizer", "main"}; !slices.Equal(*log, want) {
 		t.Fatalf("call order = %v, want %v — the re-entry's first call must be checked", *log, want)
 	}
-	assertSummaryThenPair(t, main.requests[1], "bg-1", "BIG OUTPUT")
+	assertSummaryThenPair(t, main.requests[1], "bg-1", bigOutput)
 }
 
 // The flow runner's struct_output rescue run forces tool_choice on the turn's
@@ -272,6 +293,7 @@ func TestProcessGeneration_CompactionDoesNotForceSummarizerTool(t *testing.T) {
 
 	const sess = "sess-forced"
 	seedHistory(t, a, sess, textMsg(message.User, "q"), textMsg(message.Assistant, "a"))
+	seedReport(t, a, sess, 960)
 
 	ctx := provider.WithForcedTool(context.Background(), tools.StructOutputToolName)
 	res := a.processGeneration(ctx, sess, "next question", 0, nil, RunOptions{})
@@ -357,7 +379,7 @@ func TestProcessGeneration_PreTurnCompactionKeepsFullTaskBudget(t *testing.T) {
 	a, main, _, _ := newCompactingAgent(t, 960, nil)
 
 	const sess = "sess-budget"
-	_, _ = a.sessions.Save(context.Background(), session.Session{ID: sess, TotalCompletionTokens: 30_000})
+	_, _ = a.sessions.Save(context.Background(), session.Session{ID: sess, TotalCompletionTokens: 30_000, PromptTokens: 960})
 	seedHistory(t, a, sess, textMsg(message.User, "q"), textMsg(message.Assistant, "a"))
 
 	res := a.processGeneration(context.Background(), sess, "next question", 0, nil, RunOptions{})
@@ -405,14 +427,10 @@ func TestProcessGeneration_InLoopCompactionReannouncesDeferredTools(t *testing.T
 	log := &[]string{}
 	main := &compactionProvider{name: "main", window: 1000, log: log}
 	main.count = func(msgs []message.Message) int64 {
-		switch {
-		case len(msgs) > 0 && firstText(msgs[0]) == testSummaryText:
+		if len(msgs) > 0 && firstText(msgs[0]) == testSummaryText {
 			return 50
-		case hasToolResult(msgs, "ok"):
-			return 960
-		default:
-			return 100
 		}
+		return 960
 	}
 	calls := 0
 	main.respond = func([]message.Message) *provider.ProviderResponse {
@@ -523,6 +541,8 @@ func TestProcessGeneration_CompactsBeforeFirstCall(t *testing.T) {
 				}
 			}
 
+			seedReport(t, a, sess, tc.historyTokens)
+
 			res := a.processGeneration(ctx, sess, "next question", 0, nil, RunOptions{})
 			if res.Error != nil {
 				t.Fatalf("processGeneration error: %v", res.Error)
@@ -574,11 +594,15 @@ func TestCountContextTokens(t *testing.T) {
 	}
 	// One text part: 400 chars + 100 bytes of per-part overhead, 4 B/token.
 	const tailTokens = int64((400 + 100) / message.BytesPerTokenEta)
+	summary := textMsg(message.User, testSummaryText)
+	summary.ID = "summary"
+	compacted := []message.Message{summary, textMsg(message.Assistant, "a"), textMsg(message.User, strings.Repeat("x", 400))}
+	withCompletion := append(slices.Clone(withAssistant[:2]), completionPair("bg-1", strings.Repeat("y", 400))...)
 
 	cases := []struct {
 		name      string
 		window    int64
-		estimate  int64
+		threshold float64
 		sess      session.Session
 		usage     *provider.TokenUsage // recorded through TrackUsage when set
 		msgs      []message.Message
@@ -586,36 +610,78 @@ func TestCountContextTokens(t *testing.T) {
 		wantHit   bool
 	}{
 		{
-			name:      "undercounting estimate is floored by reported usage plus tail",
-			window:    1000,
-			estimate:  700,
-			sess:      session.Session{PromptTokens: 600, CompletionTokens: 300},
+			// A daemon session on v0.24.0: the provider reported 757K against
+			// a 215K local estimate, and the 1.5x guard threw the report away,
+			// so a 400K threshold never fired. The estimate plays no part now.
+			name:      "reported usage decides: the dev daemon's session compacts",
+			window:    1_000_000,
+			threshold: 0.4,
+			sess:      session.Session{PromptTokens: 50_000, CompletionTokens: 706_968},
 			msgs:      withAssistant,
-			wantCount: 900 + tailTokens,
+			wantCount: 756_968 + tailTokens,
 			wantHit:   true,
 		},
 		{
-			name:      "no assistant message ignores reported usage",
-			window:    1000,
-			estimate:  100,
-			sess:      session.Session{PromptTokens: 600, CompletionTokens: 300},
-			msgs:      []message.Message{textMsg(message.User, "q")},
-			wantCount: 100,
+			name:      "under the threshold does not compact",
+			window:    1_000_000,
+			threshold: 0.4,
+			sess:      session.Session{PromptTokens: 50_000, CompletionTokens: 300_000},
+			msgs:      withAssistant,
+			wantCount: 350_000 + tailTokens,
 			wantHit:   false,
 		},
 		{
-			name:      "zero usage after compaction falls back to the estimate",
-			window:    1000,
-			estimate:  400,
-			sess:      session.Session{PromptTokens: 0, CompletionTokens: 20},
+			name:      "no report yet never compacts on the estimate",
+			window:    100,
+			threshold: 0.4,
 			msgs:      withAssistant,
-			wantCount: 400,
+			wantCount: message.EstimateTokens(withAssistant, nil, message.BytesPerTokenEta),
+			wantHit:   false,
+		},
+		{
+			name:      "a report with no assistant message to anchor it is no report",
+			window:    100,
+			threshold: 0.4,
+			sess:      session.Session{PromptTokens: 600, CompletionTokens: 300},
+			msgs:      withAssistant[2:],
+			wantCount: tailTokens,
+			wantHit:   false,
+		},
+		{
+			// The summary's output is the report; everything after the
+			// summary message is the delta.
+			name:      "after compaction the summary is the report",
+			window:    1000,
+			threshold: 0.95,
+			sess:      session.Session{CompletionTokens: 20, SummaryMessageID: "summary"},
+			msgs:      compacted,
+			wantCount: 20 + message.EstimateTokens(compacted[1:], nil, message.BytesPerTokenEta),
+			wantHit:   false,
+		},
+		{
+			name:      "after compaction without a summary report there is no report",
+			window:    100,
+			threshold: 0.4,
+			sess:      session.Session{SummaryMessageID: "summary"},
+			msgs:      compacted,
+			wantCount: message.EstimateTokens(compacted, nil, message.BytesPerTokenEta),
+			wantHit:   false,
+		},
+		{
+			// A background-task completion is written after the call that
+			// was reported, so it is part of the delta.
+			name:      "a synthetic completion after the report is in the delta",
+			window:    1000,
+			threshold: 0.95,
+			sess:      session.Session{PromptTokens: 100, CompletionTokens: 10},
+			msgs:      withCompletion,
+			wantCount: 110 + message.EstimateTokens(withCompletion[2:], nil, message.BytesPerTokenEta),
 			wantHit:   false,
 		},
 		{
 			name:      "zero context window never hits",
 			window:    0,
-			estimate:  700,
+			threshold: 0.95,
 			sess:      session.Session{PromptTokens: 600, CompletionTokens: 300},
 			msgs:      withAssistant,
 			wantCount: 900 + tailTokens,
@@ -624,54 +690,55 @@ func TestCountContextTokens(t *testing.T) {
 		{
 			// A Gemini call with a 500-token prompt, 480 of it cached, and 20
 			// output tokens: 52% of the window. The cached part is reported
-			// once, as CacheReadTokens, so the floor does not double it to 100%.
+			// once, as CacheReadTokens, so it is not doubled to 100%.
 			name:      "gemini usage with a cached prompt is not double counted",
 			window:    1000,
-			estimate:  400,
+			threshold: 0.95,
 			usage:     &provider.TokenUsage{InputTokens: 20, CacheReadTokens: 480, OutputTokens: 20},
 			msgs:      withAssistant[:2],
 			wantCount: 520,
 			wantHit:   false,
 		},
 		{
-			// An upstream that sums two attempts of one call reports about
-			// twice the real prompt (a doubled cache read). Taken as the
-			// floor it would fire compaction at half the real size.
-			name:      "report at twice the estimate is ignored",
+			// A report seen in production: the cache read was two calls'
+			// reads summed (690,908 + 692,129). A call cannot read more from cache than the
+			// previous call sent, so the read is capped at that.
+			name:      "a doubled cache read is capped at the previous call's context",
 			window:    1_000_000,
-			estimate:  690_000,
-			usage:     &provider.TokenUsage{InputTokens: 30_000, CacheReadTokens: 1_383_037, OutputTokens: 1_000},
+			threshold: 0.95,
+			sess:      session.Session{PromptTokens: 1_000, CompletionTokens: 690_908},
+			usage:     &provider.TokenUsage{InputTokens: 1_000, CacheReadTokens: 1_383_037, OutputTokens: 1_000},
 			msgs:      withAssistant[:2],
-			wantCount: 690_000,
+			wantCount: 1_000 + 1_000 + 691_908,
 			wantHit:   false,
 		},
 		{
-			name:      "report over the window is ignored",
+			name:      "a cache read within the previous call's context is kept",
+			window:    1_000_000,
+			threshold: 0.95,
+			sess:      session.Session{PromptTokens: 1_000, CompletionTokens: 690_908},
+			usage:     &provider.TokenUsage{InputTokens: 5_000, CacheReadTokens: 691_000, OutputTokens: 1_000},
+			msgs:      withAssistant[:2],
+			wantCount: 697_000,
+			wantHit:   false,
+		},
+		{
+			name:      "a prompt over the window is capped at the window",
 			window:    1000,
-			estimate:  900,
-			sess:      session.Session{PromptTokens: 900, CompletionTokens: 300},
+			threshold: 0.95,
+			usage:     &provider.TokenUsage{InputTokens: 100, CacheReadTokens: 1_200, OutputTokens: 50},
 			msgs:      withAssistant[:2],
-			wantCount: 900,
-			wantHit:   false,
-		},
-		{
-			// The guard leaves room for the undercount it exists to correct:
-			// a report within 1.5x of the estimate still floors it.
-			name:      "report within the ratio still floors",
-			window:    1_000_000,
-			estimate:  300_000,
-			sess:      session.Session{PromptTokens: 20_000, CompletionTokens: 400_000},
-			msgs:      withAssistant[:2],
-			wantCount: 420_000,
-			wantHit:   false,
+			wantCount: 1_050,
+			wantHit:   true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var log []string
-			est := tc.estimate
+			// The provider's own count is far off on purpose: no decision
+			// may read it.
 			p := &compactionProvider{name: "main", window: tc.window, log: &log,
-				count: func([]message.Message) int64 { return est }}
+				count: func([]message.Message) int64 { return 1 }}
 			sessions := &memSessions{}
 			tc.sess.ID = "s"
 			_, _ = sessions.Save(context.Background(), tc.sess)
@@ -682,7 +749,7 @@ func TestCountContextTokens(t *testing.T) {
 				}
 			}
 
-			got, hit := a.countContextTokens(context.Background(), "s", 0.95, tc.msgs, nil)
+			got, hit := a.countContextTokens(context.Background(), "s", tc.threshold, tc.msgs, nil)
 			if got != tc.wantCount || hit != tc.wantHit {
 				t.Errorf("countContextTokens = (%d, %v), want (%d, %v)", got, hit, tc.wantCount, tc.wantHit)
 			}

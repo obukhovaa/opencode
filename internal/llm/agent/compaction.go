@@ -35,67 +35,74 @@ func (a *agent) resolveCompactionThreshold(opts RunOptions) float64 {
 	return AutoCompactionThreshold
 }
 
-// usageFloorMaxRatio bounds how far the reported usage may exceed the
-// estimate of the same history and still floor it. The floor exists because
-// the local estimate undercounts; a report at twice the estimate or more is
-// what an upstream that sums two attempts of one call looks like (a doubled
-// cache read), and taken at face value it fires compaction at half the real
-// size.
-const usageFloorMaxRatio = 1.5
-
 // countContextTokens is the context size every auto-compaction decision uses:
-// the provider estimate, floored by what the provider actually reported for
-// the session's last call. PromptTokens+CompletionTokens (see TrackUsage) is
-// that call's full prompt plus output, i.e. the history up to and including
-// the last assistant message; only the messages after it still need a local
-// estimate. A report larger than the window or than usageFloorMaxRatio times
-// the estimate is not used. The provider's own hit flag is recomputed against
-// the floored value.
+// the size the provider reported for the session's last model call, plus a
+// local estimate of only what was appended since and not sent yet (the new
+// user message, tool results). PromptTokens+CompletionTokens (see TrackUsage)
+// is that call's full prompt plus output, system prompt and tools included,
+// so nothing of the history before reportAnchor is estimated. A history no
+// report covers yet (a fresh or forked session, or one compacted without a
+// usage report for the summary) never triggers: its size is the local
+// estimate, returned only for max_tokens and the overflow diagnostic.
 func (a *agent) countContextTokens(ctx context.Context, sessionID string, threshold float64, msgs []message.Message, toolSet []tools.BaseTool) (int64, bool) {
-	estimated, providerHit := a.provider.CountTokens(ctx, threshold, msgs, toolSet)
-	sess, err := a.sessions.Get(ctx, sessionID)
-	if err != nil {
-		return estimated, providerHit
-	}
 	window := a.provider.Model().ContextWindow
-	final := estimated
-	if lastAssistant := lastAssistantIndex(msgs); lastAssistant >= 0 {
-		reported := sess.PromptTokens + sess.CompletionTokens
-		tail := message.EstimateTokens(msgs[lastAssistant+1:], nil, message.BytesPerTokenEta)
-		floor := reported + tail
-		switch {
-		case floor <= final:
-		case (window > 0 && reported > window) || float64(floor) > usageFloorMaxRatio*float64(estimated):
-			// WARN only when the ignored floor would have fired compaction:
-			// that is the report that would have cost a summarizer call.
-			// Below the threshold it is a small session whose reported size
-			// the estimate undercounts for an ordinary reason, and a warn
-			// per model call would be noise.
-			log := logging.Debug
-			if window > 0 && float64(floor) >= float64(window)*threshold {
-				log = logging.Warn
+	thresholdTokens := int64(float64(window) * threshold)
+	anchor := -1
+	sess, err := a.sessions.Get(ctx, sessionID)
+	if err == nil {
+		anchor = reportAnchor(sess, msgs)
+	}
+	if anchor < 0 {
+		estimated := message.EstimateTokens(msgs, tools.SerializableFor(sessionID, toolSet), message.BytesPerTokenEta)
+		logging.Info("compaction check: no reported usage yet",
+			"session_id", sessionID,
+			"agent", a.agentID,
+			"estimated_tokens", estimated,
+			"threshold_tokens", thresholdTokens,
+		)
+		return estimated, false
+	}
+	reported := sess.PromptTokens + sess.CompletionTokens
+	delta := message.EstimateTokens(msgs[anchor+1:], nil, message.BytesPerTokenEta)
+	count := reported + delta
+	hit := window > 0 && count >= thresholdTokens
+	logging.Info("compaction check",
+		"session_id", sessionID,
+		"agent", a.agentID,
+		"reported_tokens", reported,
+		"delta_tokens", delta,
+		"tokens", count,
+		"threshold_tokens", thresholdTokens,
+		"context_window", window,
+		"compact", hit,
+	)
+	return count, hit
+}
+
+// reportAnchor returns the index of the last message in msgs that the
+// session's reported usage covers, or -1 when no report covers msgs. A model
+// call's report covers everything up to the assistant message it produced;
+// synthetic assistant messages (background-task completions) were written
+// after it. A compaction stores the summary's output as the report with
+// PromptTokens 0, so then the summary message is the anchor.
+func reportAnchor(sess session.Session, msgs []message.Message) int {
+	if sess.PromptTokens == 0 {
+		if sess.CompletionTokens == 0 || sess.SummaryMessageID == "" {
+			return -1
+		}
+		for i := range msgs {
+			if msgs[i].ID == sess.SummaryMessageID {
+				return i
 			}
-			log("implausible reported usage ignored",
-				"session_id", sessionID,
-				"reported", reported,
-				"estimated", estimated,
-				"floor", floor,
-				"context_window", window,
-			)
-		default:
-			if float64(floor) > float64(estimated)*1.1 {
-				logging.Info("token estimate corrected by reported usage",
-					"session_id", sessionID,
-					"estimate", estimated,
-					"reported", reported,
-					"tail", tail,
-				)
-			}
-			final = floor
+		}
+		return -1
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == message.Assistant && !msgs[i].Synthetic {
+			return i
 		}
 	}
-	hit := window > 0 && final >= int64(float64(window)*threshold)
-	return final, hit
+	return -1
 }
 
 func lastAssistantIndex(msgs []message.Message) int {
