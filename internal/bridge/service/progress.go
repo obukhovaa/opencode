@@ -393,8 +393,10 @@ func (d *sessionDispatch) progressFinish(p *runProgress, status string) {
 // deleted, token stale) the card is posted fresh and the chain
 // continues from the new message. A peer whose adapter cannot edit but
 // implements bridge.ProgressRelayer (the external relay) gets the state
-// as a structured RunProgress instead. Any peer that cannot edit also
-// gets each undelivered failure as one plain-text line. Runs on the
+// as a structured RunProgress instead, which carries the failures too.
+// Any other peer that cannot edit — or a relayer whose SendProgress
+// failed for this flush — gets each undelivered failure as one
+// plain-text line. Runs on the
 // worker goroutine; ordering across flushes is the worker's guarantee.
 func (d *sessionDispatch) deliverProgress(ctx context.Context, p *runProgress, f progressFlush) {
 	bindings, err := d.svc.store.ListBindingsBySession(ctx, d.svc.projectID, d.sessionID)
@@ -422,12 +424,19 @@ func (d *sessionDispatch) deliverProgress(ctx context.Context, p *runProgress, f
 				// The relay frame names the session it belongs to;
 				// the worker's context does not carry it.
 				sctx := bridge.ContextWithSessionID(ctx, d.sessionID)
-				if err := relayer.SendProgress(sctx, peer, f.state); err != nil {
-					// Progress is advisory and the next flush supersedes
-					// it, so a lost update is logged and not retried.
-					logging.Warn("bridge: progress relay send failed",
-						"session", d.sessionID, "peer", b.PeerID, "err", err)
+				err := relayer.SendProgress(sctx, peer, f.state)
+				if err == nil {
+					// The state carries the failure count and the last
+					// failure, so the consumer already has them; a text
+					// line as well would read as a separate agent reply.
+					continue
 				}
+				// Progress is advisory and the next flush supersedes it,
+				// so a lost update is logged and not retried. Its
+				// failures still have to surface: fall through to the
+				// text lines.
+				logging.Warn("bridge: progress relay send failed",
+					"session", d.sessionID, "peer", b.PeerID, "err", err)
 			}
 			for _, line := range f.failureTexts {
 				if _, err := d.svc.Send(ctx, peer, line, "", nil); err != nil {

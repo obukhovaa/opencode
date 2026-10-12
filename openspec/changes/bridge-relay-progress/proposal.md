@@ -9,7 +9,7 @@ The card's text is the wrong thing to relay: a consumer would have to parse "⏳
 - New optional adapter interface `bridge.ProgressRelayer` with `SendProgress(ctx, peer, bridge.RunProgress)`. `RunProgress` is the card's state, structured: status (`running`, `ok`, `error`), tool calls done, failed, in flight, the most recently started unfinished tool, the most recent failure's tool and one-line reason, and elapsed time.
 - The progress worker hands every paced card state to a peer whose adapter does not implement `MessageEditor` but does implement `ProgressRelayer`, stamped with the session id — from the first `Thinking...` state to exactly one terminal state. Pacing, coalescing and ordering are the card's own.
 - The `external` adapter implements it by POSTing a relay frame with the new kind `progress` and a `progress` object carrying those fields. Every key is always present.
-- Failure lines are unchanged: a peer that cannot edit still receives each undelivered failure as one plain-text line. Whether a relay that takes progress still needs them is a separate change.
+- A relay that accepts a progress update no longer gets that update's failures as plain-text lines too: the state carries the failure count and the last failure, and a separate `✗ <tool>#<id> · <reason>` message read to the consumer as another agent reply. If the relay rejects the update, its failures fall back to text lines, so a failure still surfaces. Other text-only peers are unchanged.
 
 ## Capabilities
 

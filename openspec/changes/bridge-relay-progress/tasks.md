@@ -2,7 +2,8 @@
 
 - [x] 1.1 `bridge.RunProgress` and `bridge.ProgressRelayer`
 - [x] 1.2 `runProgress` builds a `RunProgress` per flush, keeping the last failure's tool and reason apart
-- [x] 1.3 `deliverProgress` relays it to non-editing `ProgressRelayer` peers, stamped with the session id; failure lines unchanged
+- [x] 1.3 `deliverProgress` relays it to non-editing `ProgressRelayer` peers, stamped with the session id
+- [x] 1.4 A relayer that accepted the update gets no failure lines for it; a rejected update falls back to them
 
 ## 2. External relay
 
@@ -11,5 +12,6 @@
 
 ## 3. Tests
 
-- [x] 3.1 Dispatcher: relay receives running → in-flight → one terminal state with the session id; editing peer unchanged; failure line still sent
+- [x] 3.1 Dispatcher: relay receives running → in-flight → one terminal state with the session id; editing peer unchanged; no failure line
+- [x] 3.3 Rejected progress falls back to the failure line
 - [x] 3.2 Adapter: frame shape, non-202 error, disabled adapter
