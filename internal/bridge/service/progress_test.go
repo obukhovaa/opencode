@@ -144,9 +144,9 @@ func TestRunProgress_FailureLineAndFallback(t *testing.T) {
 // TestRunProgress_AllFailuresInOneIntervalSurface: two calls failing between
 // two flushes collapse into ONE card edit (the card names only the most
 // recent reason, by spec) but BOTH lines must be handed to the flush, so a
-// text-only peer — the external relay, which cannot edit a message — still
-// sees every failure. Regression: a single lastFailure slot dropped the
-// first one silently.
+// text-only peer — one that can neither edit a message nor relay the
+// structured state — still sees every failure. Regression: a single
+// lastFailure slot dropped the first one silently.
 func TestRunProgress_AllFailuresInOneIntervalSurface(t *testing.T) {
 	t.Parallel()
 	p := fixedClock(5 * time.Second)
@@ -966,7 +966,72 @@ func TestDeliverProgress_RelayFailureFallsBackToFailureLines(t *testing.T) {
 		state:        bridge.RunProgress{Status: bridge.RunProgressRunning, ToolsDone: 1, Failed: 1},
 	})
 
+	if states, sids := relay.States(); len(states) != 1 || sids[0] != "S1" {
+		t.Errorf("relay states = %+v (sessions %v); want the one rejected state for S1", states, sids)
+	}
 	if rs := relay.Sends(); len(rs) != 1 || rs[0].Text != line {
 		t.Errorf("relay text sends = %+v; want exactly [%q]", rs, line)
+	}
+}
+
+// TestDeliverProgress_RelayAcceptsCoalescedFailures pins the trade-off of
+// an accepted state: two failures coalesced into one flush reach the relay
+// as a count of two naming only the last, as on the card, and no text
+// line; a text-only peer bound to the same session still gets both lines.
+func TestDeliverProgress_RelayAcceptsCoalescedFailures(t *testing.T) {
+	svc, ed, _ := newProgressTestSvc(t, &bridge.Config{ToolUpdatesEnabled: true})
+	relay := &relayerStubAdapter{stubAdapter: *newStubAdapter("external", "relay")}
+	svc.adapters[adapterKey("external", "relay")] = relay
+	plain := newStubAdapter("external", "plain")
+	svc.adapters[adapterKey("external", "plain")] = plain
+	if _, err := svc.store.UpsertBinding(context.Background(), store.Binding{
+		ProjectID: "proj", Channel: "external", IdentityID: "plain", PeerID: "job-2", SessionID: "S1",
+	}); err != nil {
+		t.Fatalf("UpsertBinding: %v", err)
+	}
+	d := newBareDispatch(svc, "S1")
+
+	p := fixedClock(3 * time.Second)
+	p.toolDone("toolu_1", "curl", "#aaa", true, "connection refused")
+	p.toolDone("toolu_2", "bash", "#bbb", true, "exit status 2")
+	d.deliverProgress(context.Background(), p, p.snapshot())
+
+	states, _ := relay.States()
+	if len(states) != 1 || states[0].Failed != 2 || states[0].LastFailedTool != "bash" || states[0].LastFailureReason != "exit status 2" {
+		t.Errorf("relay states = %+v; want one state counting 2 failures and naming bash's", states)
+	}
+	if rs := relay.Sends(); len(rs) != 0 {
+		t.Errorf("relay text sends = %+v; want none", rs)
+	}
+	want := []string{"✗ curl#aaa · connection refused", "✗ bash#bbb · exit status 2"}
+	rs := plain.Sends()
+	if len(rs) != len(want) {
+		t.Fatalf("text-only peer sends = %+v; want %q", rs, want)
+	}
+	for i, w := range want {
+		if rs[i].Text != w {
+			t.Errorf("text-only peer send %d = %q; want %q", i, rs[i].Text, w)
+		}
+	}
+	if got := ed.Posts(); len(got) != 1 {
+		t.Errorf("editor posts = %v; want exactly one (the card)", got)
+	}
+}
+
+// TestRunProgress_TerminalStateNamesNothingInFlight: a call still open
+// when the run ends (an async subagent's, or a result not yet drained)
+// shows in the running state but not in the terminal one, matching the
+// card's "✓ Done" line.
+func TestRunProgress_TerminalStateNamesNothingInFlight(t *testing.T) {
+	t.Parallel()
+	p := fixedClock(3 * time.Second)
+	p.toolStarted("toolu_1", "bash")
+	if s := p.snapshot().state; s.Running != 1 || s.CurrentTool != "bash" {
+		t.Errorf("running state = %+v; want bash in flight", s)
+	}
+	p.finish(progressStatusOK)
+	s := p.snapshot().state
+	if s.Status != bridge.RunProgressOK || s.Running != 0 || s.CurrentTool != "" {
+		t.Errorf("terminal state = %+v; want ok with nothing in flight", s)
 	}
 }

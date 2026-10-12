@@ -13,5 +13,6 @@
 ## 3. Tests
 
 - [x] 3.1 Dispatcher: relay receives running → in-flight → one terminal state with the session id; editing peer unchanged; no failure line
-- [x] 3.3 Rejected progress falls back to the failure line
-- [x] 3.2 Adapter: frame shape, non-202 error, disabled adapter
+- [x] 3.2 Rejected progress falls back to the failure line
+- [x] 3.3 Adapter: frame shape, non-202 error, disabled adapter, implements `ProgressRelayer` and not `MessageEditor`
+- [x] 3.4 Coalesced failures: an accepting relay gets the count and the last failure, a text-only peer both lines; a terminal state names nothing in flight
