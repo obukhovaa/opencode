@@ -260,6 +260,13 @@ type TokenUsage struct {
 	OutputTokens        int64
 	CacheCreationTokens int64
 	CacheReadTokens     int64
+	// LastPass is the usage of the response's last sampling pass, set when
+	// the counts above sum several. A server-side tool (tool search) runs
+	// inside one response: the model samples, the server runs the tool and
+	// appends its result, and the model samples again over the same prompt.
+	// The counts above are every pass's, as billed; the last pass is the
+	// context the next request continues from. Nil for a single pass.
+	LastPass *TokenUsage
 }
 
 type ProviderResponse struct {
@@ -820,6 +827,21 @@ func (p *baseProvider[C]) CountTokens(ctx context.Context, threshold float64, me
 	return estimatedTokens, hitThreshold
 }
 
+// SendsToolResultImages reports whether the provider sends an image tool
+// result (view_image) to the model as an image. Only the Anthropic client
+// does; the others send its base64 JSON as text, which costs a prompt its
+// length, not an image's tokens.
+func (p *baseProvider[C]) SendsToolResultImages() bool {
+	switch c := any(p.client).(type) {
+	case *anthropicClient:
+		return true
+	case *bedrockClient:
+		_, ok := c.childProvider.(*anthropicClient)
+		return ok
+	}
+	return false
+}
+
 func (p *baseProvider[C]) AdjustMaxTokens(estimatedTokens int64) int64 {
 	maxTokens := p.client.maxTokens()
 	model := p.options.model
@@ -839,10 +861,15 @@ func (p *baseProvider[C]) AdjustMaxTokens(estimatedTokens int64) int64 {
 		return 0
 	}
 
+	// Halve from the configured value on every call, not from the current
+	// one: the provider serves every session of the agent, so a near-full
+	// session's halving must not stick to the next, smaller one.
 	newMaxTokens := maxTokens
+	if p.options.maxTokens > 0 {
+		newMaxTokens = p.options.maxTokens
+	}
 	for estimatedTokens+newMaxTokens >= model.ContextWindow {
 		newMaxTokens = newMaxTokens / 2
-		p.client.setMaxTokens(newMaxTokens)
 		if float64(newMaxTokens) < float64(model.ContextWindow)*0.05 {
 			logging.Warn(
 				"New max_tokens is below 5% of total context, can't shrink further, proceeding",
@@ -859,6 +886,7 @@ func (p *baseProvider[C]) AdjustMaxTokens(estimatedTokens int64) int64 {
 		}
 	}
 	if maxTokens != newMaxTokens {
+		p.client.setMaxTokens(newMaxTokens)
 		logging.Info("max_tokens value has changed", "model", model.Name, "old", maxTokens, "new", newMaxTokens)
 	}
 

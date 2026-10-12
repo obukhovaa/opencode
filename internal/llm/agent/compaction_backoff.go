@@ -144,13 +144,14 @@ const (
 )
 
 // compactionAllowed reports whether an auto-compaction may run for the
-// session now. A skip logs at debug: the backoff exists so a failing
-// summarizer stops costing every step, and a warn per skipped step would
-// trade that noise for log noise.
+// session now. A skip logs at INFO, not WARN: only a count over the
+// threshold gets here, and the line is what explains a "compaction check"
+// over the threshold that no compaction follows; a warn per skipped step
+// would bring back the noise the backoff exists to stop.
 func (a *agent) compactionAllowed(sessionID string, tokens int64) bool {
 	ok, reason, retryAt := a.compactionBackoff.allow(sessionID, tokens, a.provider.Model().ContextWindow)
 	if !ok {
-		logging.Debug("auto-compaction skipped",
+		logging.Info("auto-compaction skipped",
 			"session_id", sessionID,
 			"reason", reason,
 			"token_count", tokens,

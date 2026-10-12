@@ -154,3 +154,19 @@ func TestCountTokens_NoContextWindowNeverHits(t *testing.T) {
 		t.Errorf("expected hit=false when ContextWindow<=0")
 	}
 }
+
+// AdjustMaxTokens halves from the configured max_tokens on every call: the
+// provider serves every session of the agent, so a near-full session must not
+// leave the next, smaller one at its halved value.
+func TestAdjustMaxTokens_HalvingDoesNotStick(t *testing.T) {
+	client := &fakeCountClient{max: 64_000}
+	p := newCountProvider(client, 1_000_000, "")
+	p.options.maxTokens = 64_000
+
+	if got := p.AdjustMaxTokens(950_000); got != 32_000 || client.max != 32_000 {
+		t.Fatalf("near the window: AdjustMaxTokens = %d, client max %d; want 32000", got, client.max)
+	}
+	if got := p.AdjustMaxTokens(50_000); got != 64_000 || client.max != 64_000 {
+		t.Errorf("next small session: AdjustMaxTokens = %d, client max %d; want the configured 64000", got, client.max)
+	}
+}

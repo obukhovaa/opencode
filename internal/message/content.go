@@ -162,6 +162,12 @@ func (ToolResult) isPart() {}
 type Finish struct {
 	Reason FinishReason `json:"reason"`
 	Time   int64        `json:"time"`
+	// Reported marks the message of a model call whose usage was recorded
+	// as the session's last report, so auto-compaction can tell the message
+	// a report covers from that of a call that failed or was cancelled
+	// before it completed. It survives a later finish (a call cancelled
+	// during its tools was still reported).
+	Reported bool `json:"reported,omitempty"`
 }
 
 func (Finish) isPart() {}
@@ -507,14 +513,28 @@ func (m *Message) SetToolResults(tr []ToolResult) {
 }
 
 func (m *Message) AddFinish(reason FinishReason) {
-	// remove any existing finish part
+	// remove any existing finish part, keeping whether it was reported
+	reported := false
 	for i, part := range m.Parts {
-		if _, ok := part.(Finish); ok {
+		if f, ok := part.(Finish); ok {
+			reported = f.Reported
 			m.Parts = slices.Delete(m.Parts, i, i+1)
 			break
 		}
 	}
-	m.Parts = append(m.Parts, Finish{Reason: reason, Time: time.Now().Unix()})
+	m.Parts = append(m.Parts, Finish{Reason: reason, Time: time.Now().Unix(), Reported: reported})
+}
+
+// MarkReported marks the finished message as the one the session's last
+// usage report covers (see Finish.Reported).
+func (m *Message) MarkReported() {
+	for i, part := range m.Parts {
+		if f, ok := part.(Finish); ok {
+			f.Reported = true
+			m.Parts[i] = f
+			return
+		}
+	}
 }
 
 func (m *Message) AddImageURL(url, detail string) {

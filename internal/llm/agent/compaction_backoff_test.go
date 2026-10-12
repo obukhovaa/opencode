@@ -107,6 +107,7 @@ func TestProcessGeneration_FailedCompactionBacksOff(t *testing.T) {
 
 	const sess = "sess-backoff"
 	seedHistory(t, a, sess, textMsg(message.User, "q"), textMsg(message.Assistant, "a"))
+	seedReport(t, a, sess, 960)
 	ctx := context.Background()
 	turn := func(prompt string) {
 		t.Helper()

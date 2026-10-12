@@ -166,11 +166,15 @@ deferring. Exact-name and `select:` hits are exempt — the model named those.
 
 ## Token accounting
 
-Auto-compaction is driven by token counting, so counting mirrors serialization:
-only the tools that would actually be sent for the session's current state are
-counted, not the withheld schemas of non-activated deferred tools. Deferring a
-large MCP fleet therefore lowers the per-turn token estimate instead of firing
-compaction early.
+Auto-compaction decides on the prompt size the provider reported for the
+session's last call, which contains only the tools that were actually sent,
+not the withheld schemas of non-activated deferred tools. Where no report
+exists yet, the provider's token count mirrors serialization the same way:
+only the tools that would be sent for the session's current state are
+counted. Deferring a large MCP fleet therefore lowers the counted context
+instead of firing compaction early. A turn whose model ran a server-side tool
+search reports both sampling passes' tokens together; the session records the
+last pass, so a search does not double the counted context either.
 
 ## When to use it
 

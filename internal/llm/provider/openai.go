@@ -153,10 +153,7 @@ func (o *openaiClient) convertMessages(messages []message.Message) (openaiMessag
 // archive, ...) invalid, and since attachments persist in session history,
 // one bad attachment poisons every subsequent turn of the session.
 func convertBinaryContentOpenAI(bc message.BinaryContent) openai.ChatCompletionContentPartUnionParam {
-	mimeType := strings.ToLower(strings.TrimSpace(bc.MIMEType))
-	if i := strings.Index(mimeType, ";"); i >= 0 { // strip parameters, e.g. "; charset=utf-8"
-		mimeType = strings.TrimSpace(mimeType[:i])
-	}
+	mimeType := attachmentMIME(bc.MIMEType)
 	switch mimeType {
 	case "image/jpeg", "image/png", "image/gif", "image/webp":
 		actual, err := checkImage(bc.Data)

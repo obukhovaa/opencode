@@ -35,76 +35,143 @@ func (a *agent) resolveCompactionThreshold(opts RunOptions) float64 {
 	return AutoCompactionThreshold
 }
 
-// usageFloorMaxRatio bounds how far the reported usage may exceed the
-// estimate of the same history and still floor it. The floor exists because
-// the local estimate undercounts; a report at twice the estimate or more is
-// what an upstream that sums two attempts of one call looks like (a doubled
-// cache read), and taken at face value it fires compaction at half the real
-// size.
-const usageFloorMaxRatio = 1.5
-
 // countContextTokens is the context size every auto-compaction decision uses:
-// the provider estimate, floored by what the provider actually reported for
-// the session's last call. PromptTokens+CompletionTokens (see TrackUsage) is
-// that call's full prompt plus output, i.e. the history up to and including
-// the last assistant message; only the messages after it still need a local
-// estimate. A report larger than the window or than usageFloorMaxRatio times
-// the estimate is not used. The provider's own hit flag is recomputed against
-// the floored value.
+// the size the provider reported for the session's last model call, plus a
+// local estimate of only what was appended since and not sent yet (the new
+// user message, tool results). PromptTokens+CompletionTokens (see TrackUsage)
+// is that call's full prompt plus output, system prompt and tools included,
+// so nothing of the history before reportAnchor is estimated.
+//
+// A history no report covers yet is counted by the provider (count_tokens, or
+// its local estimate when the endpoint is unavailable) and decides on that,
+// for that check only: a fresh session's first call, a forked flow step that
+// inherited its parent's whole log, a compaction whose summary reported no
+// usage, a provider that never reports usage. The local estimate undercounts,
+// so it triggers only where the real size is over the threshold too.
 func (a *agent) countContextTokens(ctx context.Context, sessionID string, threshold float64, msgs []message.Message, toolSet []tools.BaseTool) (int64, bool) {
-	estimated, providerHit := a.provider.CountTokens(ctx, threshold, msgs, toolSet)
-	sess, err := a.sessions.Get(ctx, sessionID)
-	if err != nil {
-		return estimated, providerHit
-	}
 	window := a.provider.Model().ContextWindow
-	final := estimated
-	if lastAssistant := lastAssistantIndex(msgs); lastAssistant >= 0 {
-		reported := sess.PromptTokens + sess.CompletionTokens
-		tail := message.EstimateTokens(msgs[lastAssistant+1:], nil, message.BytesPerTokenEta)
-		floor := reported + tail
-		switch {
-		case floor <= final:
-		case (window > 0 && reported > window) || float64(floor) > usageFloorMaxRatio*float64(estimated):
-			// WARN only when the ignored floor would have fired compaction:
-			// that is the report that would have cost a summarizer call.
-			// Below the threshold it is a small session whose reported size
-			// the estimate undercounts for an ordinary reason, and a warn
-			// per model call would be noise.
-			log := logging.Debug
-			if window > 0 && float64(floor) >= float64(window)*threshold {
-				log = logging.Warn
-			}
-			log("implausible reported usage ignored",
-				"session_id", sessionID,
-				"reported", reported,
-				"estimated", estimated,
-				"floor", floor,
-				"context_window", window,
-			)
-		default:
-			if float64(floor) > float64(estimated)*1.1 {
-				logging.Info("token estimate corrected by reported usage",
-					"session_id", sessionID,
-					"estimate", estimated,
-					"reported", reported,
-					"tail", tail,
-				)
-			}
-			final = floor
-		}
+	thresholdTokens := int64(float64(window) * threshold)
+	// The in-loop count runs with auto-compaction off too, for max_tokens;
+	// its line is then no decision and stays at DEBUG.
+	log := logging.Info
+	if cfg := config.Get(); cfg != nil && !cfg.AutoCompact {
+		log = logging.Debug
 	}
-	hit := window > 0 && final >= int64(float64(window)*threshold)
-	return final, hit
+	anchor := -1
+	sess, err := a.sessions.Get(ctx, sessionID)
+	if err == nil {
+		anchor = reportAnchor(sess, msgs)
+	}
+	if anchor < 0 {
+		counted, hit := a.provider.CountTokens(ctx, threshold, msgs, tools.SerializableFor(sessionID, toolSet))
+		log("compaction check: no reported usage, counted by the provider",
+			"session_id", sessionID,
+			"agent", a.agentID,
+			"tokens", counted,
+			"threshold_tokens", thresholdTokens,
+			"context_window", window,
+			"over_threshold", hit,
+		)
+		return counted, hit
+	}
+	reported := sess.PromptTokens + sess.CompletionTokens
+	delta := estimateDeltaTokens(msgs[anchor+1:], a.sendsToolResultImages())
+	count := reported + delta
+	hit := window > 0 && count >= thresholdTokens
+	log("compaction check",
+		"session_id", sessionID,
+		"agent", a.agentID,
+		"reported_tokens", reported,
+		"delta_tokens", delta,
+		"tokens", count,
+		"threshold_tokens", thresholdTokens,
+		"context_window", window,
+		"over_threshold", hit,
+	)
+	return count, hit
 }
 
-func lastAssistantIndex(msgs []message.Message) int {
+// reportAnchor returns the index of the last message in msgs that the
+// session's reported usage covers, or -1 when no report covers msgs. A model
+// call's report covers everything up to the assistant message it produced.
+// Assistant messages that carry no report come after it: synthetic ones
+// (background-task completions), and those of calls that failed (see
+// reportedCall). A compaction stores the summary's output as the report
+// with PromptTokens 0, so then the summary message is the anchor.
+func reportAnchor(sess session.Session, msgs []message.Message) int {
+	if sess.PromptTokens == 0 {
+		if sess.CompletionTokens == 0 || sess.SummaryMessageID == "" {
+			return -1
+		}
+		for i := range msgs {
+			if msgs[i].ID == sess.SummaryMessageID {
+				return i
+			}
+		}
+		return -1
+	}
 	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == message.Assistant {
+		if msgs[i].Role == message.Assistant && !msgs[i].Synthetic && reportedCall(msgs[i]) {
 			return i
 		}
 	}
 	return -1
+}
+
+// reportedCall reports whether an assistant message can carry the session's
+// last report. A call whose usage TrackUsage recorded is marked so in its
+// finish part, which a later finish keeps (a call cancelled during its
+// tools). A call that failed or was cancelled while streaming, and a message
+// a crash or a failed wrap-up left unfinished, report nothing; anchoring on
+// one would drop the tool results before it from the count, and a call that
+// failed for its size never reports again. A message written before the mark
+// existed is judged by its finish reason, and a cancelled one is not trusted.
+func reportedCall(m message.Message) bool {
+	f := m.FinishPart()
+	switch {
+	case f == nil:
+		return false
+	case f.Reported:
+		return true
+	}
+	return f.Reason != message.FinishReasonError && f.Reason != message.FinishReasonCanceled
+}
+
+// estimateDeltaTokens estimates the messages a report does not cover yet: the
+// 4 bytes/token estimate of their text, tool calls and results, with each
+// attachment priced by the block the provider's converter makes of it, and an
+// image tool result priced as an image where the provider sends one
+// (toolResultImages), since EstimateTokens counts an attachment as overhead
+// only and an image result's base64 as text.
+func estimateDeltaTokens(msgs []message.Message, toolResultImages bool) int64 {
+	var media int64
+	text := make([]message.Message, 0, len(msgs))
+	for _, m := range msgs {
+		parts := make([]message.ContentPart, 0, len(m.Parts))
+		for _, part := range m.Parts {
+			switch p := part.(type) {
+			case message.BinaryContent:
+				media += provider.AttachmentTokens(p)
+				continue
+			case message.ToolResult:
+				if toolResultImages && p.IsImageToolResponse() {
+					media += provider.ImageTokenEstimate
+					continue
+				}
+			}
+			parts = append(parts, part)
+		}
+		m.Parts = parts
+		text = append(text, m)
+	}
+	return message.EstimateTokens(text, nil, message.BytesPerTokenEta) + media
+}
+
+// sendsToolResultImages reports whether the agent's provider sends an image
+// tool result as an image (see provider's SendsToolResultImages).
+func (a *agent) sendsToolResultImages() bool {
+	p, ok := a.provider.(interface{ SendsToolResultImages() bool })
+	return ok && p.SendsToolResultImages()
 }
 
 // syntheticTail returns a copy of the run of synthetic messages that ends the
@@ -255,12 +322,13 @@ func (a *agent) summarizerInputWithStats(ctx context.Context, sessionID string, 
 
 	// The trim works in local-estimate units, and the 4 B/token estimate can
 	// undercount a session badly. When the provider reported more for the
-	// history up to the last assistant message than the estimate gives,
+	// history up to the message its report covers (reportAnchor) than the
+	// estimate gives,
 	// shrink the budget by the same ratio. Measured on the raw history, which
 	// is what the provider counted; the reported value also covers the main
 	// agent's system prompt and tools, so this errs toward trimming more.
 	var calibrate func(int64) int64
-	if la := lastAssistantIndex(msgs); la >= 0 {
+	if la := reportAnchor(sess, msgs); la >= 0 {
 		reported := sess.PromptTokens + sess.CompletionTokens
 		if local := message.EstimateTokens(msgs[:la+1], nil, message.BytesPerTokenEta); local > 0 && reported > local {
 			calibrate = func(b int64) int64 { return b * local / reported }

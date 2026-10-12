@@ -439,10 +439,7 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 // note and a text file is inlined as a text block under an attachment
 // header.
 func convertBinaryContent(bc message.BinaryContent, documents bool) anthropic.ContentBlockParamUnion {
-	mimeType := strings.ToLower(strings.TrimSpace(bc.MIMEType))
-	if i := strings.Index(mimeType, ";"); i >= 0 { // strip parameters, e.g. "; charset=utf-8"
-		mimeType = strings.TrimSpace(mimeType[:i])
-	}
+	mimeType := attachmentMIME(bc.MIMEType)
 	switch mimeType {
 	case "image/jpeg", "image/png", "image/gif", "image/webp":
 		actual, err := checkImage(bc.Data)
@@ -495,6 +492,37 @@ func inlineTextAttachment(bc message.BinaryContent) string {
 		return "[Attached file]\n" + string(bc.Data)
 	}
 	return fmt.Sprintf("[Attached file, saved at %q]\n%s", bc.Path, bc.Data)
+}
+
+// attachmentMIME is an attachment's MIME type as the converters match it:
+// lowercased, with parameters such as "; charset=utf-8" stripped.
+func attachmentMIME(raw string) string {
+	mimeType := strings.ToLower(strings.TrimSpace(raw))
+	if i := strings.Index(mimeType, ";"); i >= 0 {
+		mimeType = strings.TrimSpace(mimeType[:i])
+	}
+	return mimeType
+}
+
+// ImageTokenEstimate is what one image adds to a prompt, as the count_tokens
+// fallback prices it.
+const ImageTokenEstimate = countTokensImageTokenEstimate
+
+// AttachmentTokens estimates what an attachment adds to a request's prompt,
+// by the block the converters (convertBinaryContent, convertBinaryContentOpenAI)
+// make of it: an image at ImageTokenEstimate, a PDF by its size, text as the
+// text it is inlined as, and anything else (audio, video, archives) as the
+// short note that replaces it.
+func AttachmentTokens(bc message.BinaryContent) int64 {
+	switch mimeType := attachmentMIME(bc.MIMEType); {
+	case mimeType == "image/jpeg" || mimeType == "image/png" || mimeType == "image/gif" || mimeType == "image/webp":
+		return ImageTokenEstimate
+	case mimeType == "application/pdf":
+		return max(int64(len(bc.Data)/countTokensDocumentBytesPerToken), ImageTokenEstimate)
+	case len(bc.Data) > 0 && strings.HasPrefix(mimeType, "text/") && utf8.Valid(bc.Data):
+		return int64(len(inlineTextAttachment(bc)) / message.BytesPerTokenEta)
+	}
+	return int64(len(unsupportedAttachmentNote(bc)) / message.BytesPerTokenEta)
 }
 
 // unsupportedAttachmentNote renders the placeholder text substituted for
@@ -920,6 +948,10 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 				requestOpts...,
 			)
 			accumulatedMessage := anthropic.Message{}
+			// cumulativeUsage records that a message_delta carried the input-side
+			// counts, which then are the response's totals over every sampling
+			// pass (see streamUsage).
+			cumulativeUsage := false
 
 			// streamedToolSearchRefs recovers the server-side tool-search
 			// references the SDK's stream accumulator drops: it mistypes the
@@ -961,6 +993,10 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 				}
 
 				switch event := event.AsAny().(type) {
+				case anthropic.MessageDeltaEvent:
+					if u := event.Usage.JSON; u.InputTokens.Valid() || u.CacheCreationInputTokens.Valid() || u.CacheReadInputTokens.Valid() {
+						cumulativeUsage = true
+					}
 				case anthropic.ContentBlockStartEvent:
 					emittedOutput = true
 					if event.ContentBlock.Type == "tool_search_tool_result" {
@@ -1039,7 +1075,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 							ToolCalls:    a.toolCalls(accumulatedMessage),
 							Reasoning:    a.reasoningParts(accumulatedMessage),
 							ToolSearches: applyStreamedToolSearchRefs(a.toolSearchParts(accumulatedMessage), streamedToolSearchRefs),
-							Usage:        a.usage(accumulatedMessage),
+							Usage:        a.streamUsage(accumulatedMessage, cumulativeUsage),
 							FinishReason: a.finishReason(string(accumulatedMessage.StopReason)),
 						},
 					}
@@ -1079,7 +1115,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 							ToolCalls:    a.toolCalls(accumulatedMessage),
 							Reasoning:    a.reasoningParts(accumulatedMessage),
 							ToolSearches: applyStreamedToolSearchRefs(a.toolSearchParts(accumulatedMessage), streamedToolSearchRefs),
-							Usage:        a.usage(accumulatedMessage),
+							Usage:        a.streamUsage(accumulatedMessage, cumulativeUsage),
 							FinishReason: message.FinishReasonEndTurn,
 						},
 					}
@@ -1375,12 +1411,93 @@ func (a *anthropicClient) toolCalls(msg anthropic.Message) []message.ToolCall {
 }
 
 func (a *anthropicClient) usage(msg anthropic.Message) TokenUsage {
-	return TokenUsage{
+	u := TokenUsage{
 		InputTokens:         msg.Usage.InputTokens,
 		OutputTokens:        msg.Usage.OutputTokens,
 		CacheCreationTokens: msg.Usage.CacheCreationInputTokens,
 		CacheReadTokens:     msg.Usage.CacheReadInputTokens,
 	}
+	u.LastPass = lastPassUsage(msg, u)
+	return u
+}
+
+// streamUsage is usage for a streamed response. Its input-side counts sum
+// the sampling passes only once a message_delta has reported them; before
+// that (a stream cut off ahead of message_delta, or an upstream whose
+// message_delta carries the output only) they are message_start's, one pass's
+// prompt already, and dividing them by the passes would halve it.
+func (a *anthropicClient) streamUsage(msg anthropic.Message, cumulative bool) TokenUsage {
+	u := a.usage(msg)
+	if !cumulative {
+		u.LastPass = nil
+	}
+	return u
+}
+
+// lastPassUsage is the usage of msg's last sampling pass when the response
+// sampled more than once, or nil. Each pass re-reads the whole prompt, so the
+// top-level usage of a response that ran a server-side tool is about the
+// prompt times the passes: on the LiteLLM Bedrock route one tool search over
+// a 9.6K prompt reports cache_creation 9,612 plus cache_read 9,612 on a cold
+// cache, and cache_read 19,224 warm. usage.iterations, when the upstream sends
+// it, gives each pass's counts. Otherwise the input-side counts divided by the
+// passes are the last pass's prompt to within the server tool results, and the
+// output stays whole: every pass's output is in the message the next request
+// sends.
+func lastPassUsage(msg anthropic.Message, total TokenUsage) *TokenUsage {
+	if last, ok := lastMessageIteration(msg.RawJSON()); ok {
+		return &last
+	}
+	passes := samplingPasses(msg.Content)
+	if passes < 2 {
+		return nil
+	}
+	return &TokenUsage{
+		InputTokens:         total.InputTokens / passes,
+		OutputTokens:        total.OutputTokens,
+		CacheCreationTokens: total.CacheCreationTokens / passes,
+		CacheReadTokens:     total.CacheReadTokens / passes,
+	}
+}
+
+// lastMessageIteration reads the last model-sampling entry of the raw
+// response's usage.iterations, present only when the upstream reports passes
+// separately and there was more than one.
+func lastMessageIteration(raw string) (TokenUsage, bool) {
+	var last gjson.Result
+	n := 0
+	for _, it := range gjson.Get(raw, "usage.iterations").Array() {
+		if it.Get("type").String() == "message" {
+			last = it
+			n++
+		}
+	}
+	if n < 2 {
+		return TokenUsage{}, false
+	}
+	return TokenUsage{
+		InputTokens:         last.Get("input_tokens").Int(),
+		OutputTokens:        last.Get("output_tokens").Int(),
+		CacheCreationTokens: last.Get("cache_creation_input_tokens").Int(),
+		CacheReadTokens:     last.Get("cache_read_input_tokens").Int(),
+	}, true
+}
+
+// samplingPasses counts the model's sampling passes in a response: one, plus
+// one per run of server tool results the model went on from. The server runs
+// a pass's tool calls, appends their results together and samples again, so a
+// run of results is a pass boundary; a run that ends the content (pause_turn)
+// has no pass after it. Server tool results (tool_search_tool_result,
+// web_search_tool_result, ...) are the only *_tool_result blocks in an
+// assistant message: a client tool's result arrives in the next user message.
+func samplingPasses(content []anthropic.ContentBlockUnion) int64 {
+	passes := int64(1)
+	for i := 0; i+1 < len(content); i++ {
+		if strings.HasSuffix(content[i].Type, "_tool_result") && !strings.HasSuffix(content[i+1].Type, "_tool_result") {
+			passes++
+		}
+	}
+	return passes
 }
 
 func WithAnthropicBedrock(useBedrock bool) AnthropicOption {
