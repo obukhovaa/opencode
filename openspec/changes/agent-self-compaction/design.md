@@ -14,15 +14,29 @@ The cost is a scan of the post-summary history for `compact_session` results: on
 
 - after `processGeneration` returned and its event was published and sent: never inside the turn;
 - while the slot is still held: a concurrent `Run` gets `ErrSessionBusy`, `Summarize` and `SummarizeSync` refuse, the cron sentinel cannot take the slot, so nothing interleaves with the summary and nothing compacts the same history twice;
-- before the channel closes: a caller draining it (the bridge dispatcher's per-session loop, the flow runner, the TUI queue) sees the session free only once the compaction is done, instead of racing it into `ErrSessionBusy`.
+- before the channel closes: a caller draining it (the bridge dispatcher's per-session loop, the TUI queue) sees the session free only once the compaction is done, instead of racing it into `ErrSessionBusy`.
 
 Releasing the slot first and re-acquiring it for the compaction was considered and rejected: the turn would be just as over, but another actor (cron, an auto-resume, the next inbound message) could win the slot in between, compact or extend the history first, and leave the request to be served twice or out of order. Keeping the slot with the run that owns the request is what makes "never twice" hold.
 
-Every agent entry point (bridge inbound, heartbeat beats, cron notification turns, background-task auto-resume, TUI, flows) goes through `RunWith`, so all are covered. A turn that ended in an error or was cancelled skips the post-turn path; its request stays pending.
+Every agent entry point (bridge inbound, heartbeat beats, cron notification turns, background-task auto-resume, TUI, flows) goes through `RunWith`. A turn that ended in an error or was cancelled skips the post-turn path; its request stays pending.
+
+### Callers that stop listening
+
+Not every caller drains the channel. The flow runner and the headless prompt command read the terminal event and stop; the flow runner cancels its step ctx right away. A compaction on the run's ctx would then be skipped or cancelled mid-summarize. So the post-turn compaction runs on the run's values but not its cancellation (`context.WithoutCancel`), bounded by `postTurnCompactionTimeout`. Only the agent's own `Cancel` ends it: `RunWith` gives the slot a cancel func that also ends a second, agent-only context, and the compaction stops on that one.
+
+A flow step's run (its ctx carries the step scope) skips the post-turn path altogether. The flow runner reuses the session as soon as it has the terminal event: a retry, a struct_output re-prompt, the next step sharing the session. Those retry `ErrSessionBusy` only for microseconds, which a summarizer call held on the slot would outlast. The request stays pending and the next turn on the session serves it at the pre-turn gate.
+
+A compaction cancelled through its ctx is not recorded as a failure in the backoff (any trigger): it says nothing about the summarizer, and recording it would refuse the pre-turn retry.
+
+### Background completions during the compaction
+
+A background task's completion pair is written without the run slot (`task.EnqueueTaskCompletion`), and its auto-resume is skipped while the session is busy, on the assumption that the in-flight run picks the pair up. A run held for its post-turn compaction is past its loop, so it does not, and the summary is written after the pair, so every later reload would drop it.
+
+Two things cover this. `runSelfCompaction` is given the newest message the turn knew of; after a successful compaction it re-creates every synthetic message written after that and before the summary after the summary (a tool call and its result as one `CreatePair`, so another completion cannot split them) and deletes the originals. And `EnqueueTaskCompletion` records a skipped resume per session, with the task's requester and job args (flow-owned tasks never resume, so never record). `compactAfterTurn` clears that record once it knows it will hold the session, and hands `RunWith` a func that takes it after the slot is released and starts the resume if the session is idle. The pre-turn path moves late messages the same way; its run goes on, so it needs no resume.
 
 ### Delivery before compaction
 
-The bridge posts the terminal reply from its dispatcher goroutine (`handleTerminalEvent`, which waits for the per-peer sends). The events channel is buffered, so without a handshake the summarizer call could start while the reply is still being posted. `WithTurnDelivery(ctx)` returns a context carrying a channel and a func that closes it once; the dispatcher wraps each run's context with it and calls the func after handling the terminal event (and on return, as a safety net). `compactAfterTurn` waits on it, bounded by `turnDeliveryWait` (2 minutes), only when a request is pending. Callers that do not mark the context (TUI, flows, auto-resume) do not wait.
+The bridge posts the terminal reply from its dispatcher goroutine (`handleTerminalEvent`, which waits for the per-peer sends). The events channel is buffered, so without a handshake the summarizer call could start while the reply is still being posted. `WithTurnDelivery(ctx)` returns a context carrying a channel and a func that closes it once; the dispatcher wraps each run's context with it and calls the func after handling the terminal event (and on return, as a safety net). `compactAfterTurn` waits on it, bounded by `turnDeliveryWait` (2 minutes), only when a request is pending. Callers that do not mark the context (TUI, auto-resume) do not wait.
 
 The bridge's progress card closes when `handleInbound` returns, so it stays open during the compaction.
 
@@ -44,7 +58,7 @@ A pending request is retried at every turn end and turn start until a compaction
 
 ## Observability
 
-`compactionTraceInput` names the summarizer trace `self-compaction requested by agent over <n> messages` for the two self triggers (`self_after_turn`, `self_pre_turn`), which also land in `compaction.trigger` on the generation metadata. `runSelfCompaction` logs INFO lines with `tokens_before` and, after success, `tokens_after` (counted on the reloaded history, anchored on the summary).
+For the two self triggers (`self_after_turn`, `self_pre_turn`) the summarizer trace is named `<agent>/self-compaction` (`createLangfuseTraceNamed` appends `/self-compaction` to the usual agent or agent/flow/step name and keeps it whole on truncation), and its input is `self-compaction requested by agent over <n> messages` when generation input is logged for the agent. The triggers also land in `compaction.trigger` on the generation metadata. An automatic compaction's trace keeps the agent's name. On a child session the span sets no trace name, as for every trace there. `runSelfCompaction` logs INFO lines with `tokens_before` and, after success, `tokens_after` (counted on the reloaded history, anchored on the summary).
 
 ## Registration
 

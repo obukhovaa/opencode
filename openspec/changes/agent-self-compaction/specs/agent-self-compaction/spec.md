@@ -51,7 +51,7 @@ The `compact_session` tool SHALL take an optional `keep` string and SHALL count 
 
 ### Requirement: A request is served right after the turn
 
-The system SHALL serve a pending request after the turn that recorded it has ended and its terminal event has been sent, and before the run is reported finished, while the session stays reserved for that run. When the caller marked the run to have its terminal event delivered first, the compaction SHALL wait for that signal, bounded. This SHALL hold for every agent run, whatever its entry point. A turn that ended in an error or was cancelled SHALL leave the request pending.
+The system SHALL serve a pending request after the turn that recorded it has ended and its terminal event has been sent, before the run is reported finished, while the session stays reserved for that run. When the caller marked the run to have its terminal event delivered first, the compaction SHALL wait for that signal, bounded. This SHALL hold for every entry point but a flow step. A turn that ended in an error or was cancelled SHALL leave the request pending.
 
 #### Scenario: Reply first, then compaction
 
@@ -63,6 +63,40 @@ The system SHALL serve a pending request after the turn that recorded it has end
 
 - **WHEN** a turn records a request and then ends in an error
 - **THEN** no compaction runs after it, and the request stays pending
+
+### Requirement: Only the agent ends a post-turn compaction
+
+Once the turn's terminal event is sent, the post-turn compaction SHALL NOT be ended by the caller's context. Only cancelling the agent's session, or a bound on the compaction's duration, SHALL end it.
+
+#### Scenario: Caller stops listening
+
+- **WHEN** a caller cancels its context as soon as it has the turn's terminal event
+- **THEN** the compaction still runs to completion
+
+#### Scenario: Agent cancelled
+
+- **WHEN** the agent's session is cancelled while the post-turn compaction waits or runs
+- **THEN** the compaction stops, the request stays pending, and no failure is recorded in the backoff
+
+### Requirement: A flow step's request waits for the next turn
+
+A flow step's run SHALL NOT hold its session for a post-turn compaction, since the flow runner reuses the session as soon as it has the terminal event. Its request SHALL be left pending for the session's next turn.
+
+#### Scenario: Flow step
+
+- **WHEN** a flow step's turn records a request
+- **THEN** no compaction runs after the turn and the session is released at once
+- **AND** the step's next turn on that session compacts before its first model call
+
+### Requirement: Background completions survive the post-turn compaction
+
+A background task completion written while the session is held for a self-compaction SHALL remain in the history after the summary, its tool call and result kept together, and the session SHALL be auto-resumed for it once it is released, as it would have been had the completion found the session idle.
+
+#### Scenario: Completion during the compaction
+
+- **WHEN** a background task finishes while the session is held for a post-turn compaction
+- **THEN** its completion appears after the summary in the history every later turn loads
+- **AND** the session is auto-resumed once, after it is released, with the task's requester and job args
 
 ### Requirement: A pending request is served before the next turn
 
@@ -105,7 +139,7 @@ A compaction SHALL serve every request recorded before it, and a served request 
 
 ### Requirement: Self-compaction honours the failure backoff
 
-A self-compaction SHALL be subject to the per-session compaction failure backoff, and its outcome SHALL be recorded there, since a pending request is retried without the agent asking again.
+A self-compaction SHALL be subject to the per-session compaction failure backoff, and its outcome SHALL be recorded there, since a pending request is retried without the agent asking again. A compaction cancelled through its context SHALL NOT be recorded as a failure.
 
 #### Scenario: Summarizer failing
 
@@ -114,10 +148,10 @@ A self-compaction SHALL be subject to the per-session compaction failure backoff
 
 ### Requirement: Self-compactions are distinguishable
 
-The summarizer trace of a self-compaction SHALL be named `self-compaction requested by agent over <n> messages`, and its generation's `compaction.trigger` SHALL be `self_after_turn` or `self_pre_turn`. The system SHALL log at INFO when a self-compaction starts and when it completes, with the context size before and, on completion, after.
+The summarizer trace of a self-compaction SHALL be named after the agent (or agent, flow and step) followed by `/self-compaction`, its input SHALL be `self-compaction requested by agent over <n> messages` where generation input is logged, and its generation's `compaction.trigger` SHALL be `self_after_turn` or `self_pre_turn`. The system SHALL log at INFO when a self-compaction starts and when it completes, with the context size before and, on completion, after.
 
 #### Scenario: Trace and log
 
 - **WHEN** a request is served after a turn
-- **THEN** the summarizer trace is named `self-compaction requested by agent over <n> messages` with trigger `self_after_turn`
+- **THEN** the summarizer trace is named `<agent>/self-compaction` with trigger `self_after_turn`
 - **AND** an INFO line names the context size before and after
