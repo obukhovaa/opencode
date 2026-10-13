@@ -406,6 +406,21 @@ For a JSON-only agent, set `agents.<id>.compactionThreshold` in `.opencode.json`
 { "agents": { "summarizer": { "model": "bedrock.claude-sonnet-4-5", "summarizerMaxInputTokens": 300000 } } }
 ```
 
+#### Self-compaction
+
+A long-lived session (a daemon agent behind the chat bridge) moves from task to task, and a finished task's tool calls and output are noise for the next one. With `selfCompact` the agent compacts its own session when it decides a task is done; the threshold above stays in place as the safety net. Set it in the agent's frontmatter (or `agents.<id>.selfCompact`, with the same caveat as `compactionThreshold`):
+
+```markdown
+---
+model: bedrock.claude-opus-4-6
+selfCompact:
+  enabled: true
+  minTokens: 150000
+---
+```
+
+`enabled` registers the `compact_session` tool for the agent (primary agents only; the agent's `tools` / `allowTools` can still exclude it). The tool takes an optional `keep`: notes the agent wants carried into the summary, such as open items, pending decisions and the ids of background work still running. A call only records the request and returns the session's context size, counted as the auto-compaction check counts it; below `minTokens` it returns `skipped: <n> tokens < floor <m>` and records nothing (unset or 0: no floor). The request is the persisted tool result, so it survives a restart. The compaction runs right after the turn ends, while the session is still held, so a message that arrives meanwhile waits for it; through the chat bridge it starts only once the turn's reply has been posted, and the run's progress card closes when it is done. If the turn failed or the process stopped first, it runs before the next turn's first model call. The summarizer's prompt carries every pending request's `keep` text with the instruction to carry it forward verbatim — also when another compaction (the threshold, `/compact`) happens to serve the request. Self-compaction does not depend on `autoCompact`, honours the failure backoff (a failed one is retried by the next turn), logs INFO lines with the tokens before and after, and its summarizer trace is named `self-compaction requested by agent over <n> messages` with `compaction.trigger` `self_after_turn` or `self_pre_turn`.
+
 ### Auto Approve
 
 Auto-approve mode skips interactive permission dialogs for `ask`-resolved permissions during a session. `deny` rules and disabled tools are still enforced — auto-approve only promotes `ask` decisions to `allow`.
@@ -717,6 +732,7 @@ Kimi K3 is also available on AWS Bedrock as `bedrock.kimi-k3` (global profile) a
 | `toolsearch` | Discover and load deferred tools on demand (auto-registered only when an agent declares `deferredTools`, [guide](docs/deferred-tools.md)) |
 | `todowrite` | Create and maintain a structured task list for multi-step sessions (progress tracking for external UIs) |
 | `croncreate` / `crondelete` / `cronlist` | Schedule, cancel, and list cron jobs that fire prompts via subagents ([guide](docs/cron-and-heartbeat.md)) |
+| `compact_session` | Request compaction of the agent's own session after the current turn (registered only with `selfCompact.enabled`, see [Self-compaction](#self-compaction)) |
 
 ## Keyboard Shortcuts
 
@@ -1293,6 +1309,21 @@ For a JSON-only agent, set `agents.<id>.compactionThreshold` in `.opencode.json`
 { "agents": { "summarizer": { "model": "bedrock.claude-sonnet-4-5", "summarizerMaxInputTokens": 300000 } } }
 ```
 
+#### Self-compaction
+
+A long-lived session (a daemon agent behind the chat bridge) moves from task to task, and a finished task's tool calls and output are noise for the next one. With `selfCompact` the agent compacts its own session when it decides a task is done; the threshold above stays in place as the safety net. Set it in the agent's frontmatter (or `agents.<id>.selfCompact`, with the same caveat as `compactionThreshold`):
+
+```markdown
+---
+model: bedrock.claude-opus-4-6
+selfCompact:
+  enabled: true
+  minTokens: 150000
+---
+```
+
+`enabled` registers the `compact_session` tool for the agent (primary agents only; the agent's `tools` / `allowTools` can still exclude it). The tool takes an optional `keep`: notes the agent wants carried into the summary, such as open items, pending decisions and the ids of background work still running. A call only records the request and returns the session's context size, counted as the auto-compaction check counts it; below `minTokens` it returns `skipped: <n> tokens < floor <m>` and records nothing (unset or 0: no floor). The request is the persisted tool result, so it survives a restart. The compaction runs right after the turn ends, while the session is still held, so a message that arrives meanwhile waits for it; through the chat bridge it starts only once the turn's reply has been posted, and the run's progress card closes when it is done. If the turn failed or the process stopped first, it runs before the next turn's first model call. The summarizer's prompt carries every pending request's `keep` text with the instruction to carry it forward verbatim — also when another compaction (the threshold, `/compact`) happens to serve the request. Self-compaction does not depend on `autoCompact`, honours the failure backoff (a failed one is retried by the next turn), logs INFO lines with the tokens before and after, and its summarizer trace is named `self-compaction requested by agent over <n> messages` with `compaction.trigger` `self_after_turn` or `self_pre_turn`.
+
 ### Auto Approve
 
 Auto-approve mode skips interactive permission dialogs for `ask`-resolved permissions during a session. `deny` rules and disabled tools are still enforced — auto-approve only promotes `ask` decisions to `allow`.
@@ -1596,6 +1627,7 @@ Kimi K3 is also available on AWS Bedrock as `bedrock.kimi-k3` (global profile) a
 | `toolsearch` | Discover and load deferred tools on demand (auto-registered only when an agent declares `deferredTools`, [guide](docs/deferred-tools.md)) |
 | `todowrite` | Create and maintain a structured task list for multi-step sessions (progress tracking for external UIs) |
 | `croncreate` / `crondelete` / `cronlist` | Schedule, cancel, and list cron jobs that fire prompts via subagents ([guide](docs/cron-and-heartbeat.md)) |
+| `compact_session` | Request compaction of the agent's own session after the current turn (registered only with `selfCompact.enabled`, see [Self-compaction](#self-compaction)) |
 
 ## Keyboard Shortcuts
 
