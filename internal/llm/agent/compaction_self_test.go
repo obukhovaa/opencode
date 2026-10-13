@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,8 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/provider"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
+	"github.com/opencode-ai/opencode/internal/session"
+	"github.com/opencode-ai/opencode/internal/task"
 )
 
 // compactSessionCall is a model response that calls compact_session.
@@ -364,7 +367,299 @@ func TestPendingSelfCompactionNotes(t *testing.T) {
 	}
 }
 
+// completionDeps is the task.Deps a background completion goes through: it
+// writes the synthetic pair into the agent's store, reads the process-wide
+// session ledger, and records each auto-resume with whether the session was
+// still held when it fired.
+type completionDeps struct {
+	messages message.Service
+	resumed  chan string
+	heldAt   atomic.Int32
+}
+
+func (d *completionDeps) WritePair(ctx context.Context, sessionID string, p task.SyntheticPair) error {
+	_, _, err := d.messages.CreatePair(ctx, sessionID,
+		message.CreateMessageParams{Role: message.Assistant, Synthetic: true, Parts: []message.ContentPart{
+			message.ToolCall{ID: p.AssistantToolCallID, Name: p.AssistantToolName, Input: p.AssistantInput, Type: "tool_use", Finished: true},
+		}},
+		message.CreateMessageParams{Role: message.Tool, Synthetic: true, Parts: []message.ContentPart{
+			message.ToolResult{ToolCallID: p.ToolToolCallID, Name: p.ToolName, Content: p.ToolContent},
+		}},
+	)
+	return err
+}
+func (d *completionDeps) IsSessionBusy(sessionID string) bool { return SessionBusy(sessionID) }
+func (d *completionDeps) ResumeSession(sessionID, requester string, _ map[string]any) {
+	if SessionBusy(sessionID) {
+		d.heldAt.Add(1)
+	}
+	d.resumed <- requester
+}
+
+// A background task finishing while the post-turn compaction holds the
+// session (during the delivery wait, or during the summarizer call) skips
+// its auto-resume and lands before the summary. Its pair is moved after the
+// summary, so later turns still see it, and the session is resumed for it
+// once the run lets the session go.
+func TestSelfCompaction_CompletionDuringCompactionIsKeptAndResumed(t *testing.T) {
+	reg := withFreshTaskRegistry(t)
+	withAutoCompact(t, true)
+	a, _, summarizer, _ := newSelfCompactingAgent(t, 150, compactSessionCall("c1", "NOTE"))
+	const sess = "sess-self-late-completion"
+	deps := &completionDeps{messages: a.messages, resumed: make(chan string, 4)}
+	t.Cleanup(task.SetDeps(deps))
+	t.Cleanup(func() { task.TakeSkippedResume(sess) })
+
+	complete := func(content string) {
+		t.Helper()
+		tk := &task.Task{ID: task.NewTaskID(task.KindBash), SessionID: sess, Kind: task.KindBash, OriginatingToolName: "bash", Requester: "alice@"}
+		if err := reg.Register(tk); err != nil {
+			t.Fatal(err)
+		}
+		if err := task.EnqueueTaskCompletion(context.Background(), task.CompletionInput{
+			SessionID: sess, OriginatingToolName: "bash", TaskID: tk.ID, Kind: task.KindBash,
+			Status: task.StatusCompleted, Content: content, SuppressIfNotified: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	summarizer.respond = func([]message.Message) *provider.ProviderResponse {
+		complete("BG-DURING-SUMMARY")
+		return &provider.ProviderResponse{Content: testSummaryText, FinishReason: message.FinishReasonEndTurn}
+	}
+
+	ctx, delivered := WithTurnDelivery(context.Background())
+	events, err := a.RunWith(ctx, sess, "do the task", 0, RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-events
+	complete("BG-DURING-DELIVERY")
+	delivered()
+	for range events {
+	}
+
+	select {
+	case requester := <-deps.resumed:
+		if requester != "alice@" {
+			t.Errorf("resume requester = %q, want alice@", requester)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the session was never resumed for the completions")
+	}
+	if n := deps.heldAt.Load(); n != 0 {
+		t.Errorf("%d resume(s) fired while the session was still held", n)
+	}
+	select {
+	case <-deps.resumed:
+		t.Error("resumed more than once")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if n := requestCount(summarizer); n != 1 {
+		t.Fatalf("summarizer called %d time(s), want 1", n)
+	}
+
+	history, _, _ := a.historyAfterCompaction(context.Background(), sess)
+	if len(history) == 0 || firstText(history[0]) != testSummaryText {
+		t.Fatalf("history = %v, want it to start at the summary", texts(history))
+	}
+	for _, c := range []string{"BG-DURING-DELIVERY", "BG-DURING-SUMMARY"} {
+		if !hasToolResult(history, c) {
+			t.Errorf("completion %q is hidden behind the summary; history = %v", c, roles(history))
+		}
+	}
+	// Each pair is a tool call followed by its result, and nothing is
+	// duplicated in the full log.
+	if got := roles(history[1:]); len(got) != 4 || got[0] != message.Assistant || got[1] != message.Tool || got[2] != message.Assistant || got[3] != message.Tool {
+		t.Errorf("roles after the summary = %v, want two call/result pairs", got)
+	}
+	all, _ := a.messages.List(context.Background(), sess)
+	if n := len(toolResultContent(all, "bash")); n != 2 {
+		t.Errorf("full log holds %d completion results, want 2 (no duplicates)", n)
+	}
+}
+
+// A caller that cancels its ctx as soon as it has the terminal event does
+// not abort the post-turn compaction.
+func TestSelfCompaction_CallerCancelAfterTheTurnDoesNotAbortIt(t *testing.T) {
+	withFreshTaskRegistry(t)
+	withAutoCompact(t, true)
+	a, _, summarizer, _ := newSelfCompactingAgent(t, 150, compactSessionCall("c1", "NOTE"))
+	const sess = "sess-self-caller-cancel"
+
+	callerCtx, cancelCaller := context.WithCancel(context.Background())
+	ctx, delivered := WithTurnDelivery(callerCtx)
+	events, err := a.RunWith(ctx, sess, "do the task", 0, RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev := <-events; ev.Error != nil {
+		t.Fatal(ev.Error)
+	}
+	cancelCaller()
+	delivered()
+	for range events {
+	}
+	if n := requestCount(summarizer); n != 1 {
+		t.Fatalf("summarizer called %d time(s) after the caller cancelled, want 1", n)
+	}
+	history, _, _ := a.historyAfterCompaction(context.Background(), sess)
+	if pending, _ := pendingSelfCompactionNotes(history); pending {
+		t.Error("the request is still pending")
+	}
+	if n := a.compactionBackoff.failureCount(sess); n != 0 {
+		t.Errorf("backoff failures = %d, want 0", n)
+	}
+}
+
+// The agent's own Cancel stops a post-turn compaction; the request stays
+// pending and nothing is recorded in the backoff.
+func TestSelfCompaction_AgentCancelStopsThePostTurnCompaction(t *testing.T) {
+	withFreshTaskRegistry(t)
+	withAutoCompact(t, true)
+	a, _, summarizer, _ := newSelfCompactingAgent(t, 150, compactSessionCall("c1", "NOTE"))
+	const sess = "sess-self-agent-cancel"
+
+	ctx, delivered := WithTurnDelivery(context.Background())
+	defer delivered()
+	events, err := a.RunWith(ctx, sess, "do the task", 0, RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-events
+	a.Cancel(sess)
+	drained := make(chan struct{})
+	go func() {
+		for range events {
+		}
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Cancel did not end the post-turn compaction")
+	}
+	if n := requestCount(summarizer); n != 0 {
+		t.Errorf("summarizer called %d time(s) after Cancel, want 0", n)
+	}
+	msgs, _ := a.messages.List(context.Background(), sess)
+	if pending, _ := pendingSelfCompactionNotes(msgs); !pending {
+		t.Error("the request did not stay pending")
+	}
+	if n := a.compactionBackoff.failureCount(sess); n != 0 {
+		t.Errorf("backoff failures = %d, want 0", n)
+	}
+}
+
+// A flow step's run does not hold the session past its turn: the flow
+// runner reuses the session as soon as it has the terminal event. The
+// request is served before the session's next turn.
+func TestSelfCompaction_FlowStepDefersToTheNextTurn(t *testing.T) {
+	withFreshTaskRegistry(t)
+	withAutoCompact(t, false)
+	a, _, summarizer, log := newSelfCompactingAgent(t, 150, compactSessionCall("c1", "NOTE"))
+	const sess = "sess-self-flow-step"
+	stepCtx := context.WithValue(context.Background(), tools.StepScopedContextKey, context.Background())
+
+	events, err := a.RunWith(stepCtx, sess, "do the step", 0, RunOptions{NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	if n := requestCount(summarizer); n != 0 {
+		t.Fatalf("summarizer called %d time(s) after a flow step's turn, want 0", n)
+	}
+	msgs, _ := a.messages.List(context.Background(), sess)
+	if pending, _ := pendingSelfCompactionNotes(msgs); !pending {
+		t.Fatal("the request is not pending")
+	}
+
+	waitUntil(t, "the session slot to be released", func() bool { return !a.IsSessionBusy(sess) })
+	*log = nil
+	next, err := a.RunWith(stepCtx, sess, "the next step", 0, RunOptions{NonInteractive: true})
+	if err != nil {
+		t.Fatalf("the next run on the session: %v", err)
+	}
+	for range next {
+	}
+	if got := *log; len(got) < 2 || got[0] != "summarizer" || got[1] != "main" {
+		t.Errorf("call order = %v, want the pending compaction before the first model call", got)
+	}
+}
+
+// An auto-compaction cancelled through its ctx is not a summarizer failure.
+func TestAutoCompact_CancelledAttemptIsNotABackoffFailure(t *testing.T) {
+	withAutoCompact(t, true)
+	a, _, summarizer, _ := newCompactingAgent(t, 500, nil)
+	const sess = "sess-autocompact-cancel"
+	seedHistory(t, a, sess, textMsg(message.User, "hello"), textMsg(message.Assistant, "hi"))
+	summarizer.fail = errors.New("aborted")
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := a.autoCompact(cancelled, sess, compactionTriggerSelfAfterTurn, 500); err == nil {
+		t.Fatal("autoCompact succeeded with a failing summarizer")
+	}
+	if n := a.compactionBackoff.failureCount(sess); n != 0 {
+		t.Errorf("backoff failures after a cancelled attempt = %d, want 0", n)
+	}
+	if err := a.autoCompact(context.Background(), sess, compactionTriggerSelfAfterTurn, 500); err == nil {
+		t.Fatal("autoCompact succeeded with a failing summarizer")
+	}
+	if n := a.compactionBackoff.failureCount(sess); n != 1 {
+		t.Errorf("backoff failures after a failed attempt = %d, want 1", n)
+	}
+}
+
+// A self-compaction's summarizer trace is named `<agent>/self-compaction`,
+// apart from the agent's turn traces.
+func TestSelfCompaction_TraceNamedAsSelfCompaction(t *testing.T) {
+	withFreshTaskRegistry(t)
+	withAutoCompact(t, true)
+	setLangfuseClient(t, true)
+	a, main, summarizer, _ := newSelfCompactingAgent(t, 150, compactSessionCall("c1", "NOTE"))
+	const sess = "sess-self-trace"
+
+	events, err := a.RunWith(context.Background(), sess, "do the task", 0, RunOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range events {
+	}
+	summarizer.mu.Lock()
+	summarizerNames := slices.Clone(summarizer.traceNames)
+	summarizer.mu.Unlock()
+	if len(summarizerNames) != 1 || summarizerNames[0] != "coder/self-compaction" {
+		t.Errorf("summarizer trace names = %q, want [coder/self-compaction]", summarizerNames)
+	}
+	main.mu.Lock()
+	turnName := main.traceNames[0]
+	main.mu.Unlock()
+	if turnName != "coder" {
+		t.Errorf("turn trace name = %q, want coder", turnName)
+	}
+
+	// In a flow the suffix follows agent/flow/step and survives truncation.
+	flowCtx := context.WithValue(context.Background(), tools.FlowIDContextKey, strings.Repeat("f", 300))
+	flowCtx = context.WithValue(flowCtx, tools.FlowStepIDContextKey, "step")
+	name := spanTraceName(a.createLangfuseTraceNamed(flowCtx, session.Session{ID: sess}, selfCompactionTraceSuffix, nil))
+	if !strings.HasPrefix(name, "coder/fff") || !strings.HasSuffix(name, "/self-compaction") || len(name) > maxTraceNameLen {
+		t.Errorf("flow trace name = %q (%d bytes), want coder/<flow>... ending /self-compaction within %d", name, len(name), maxTraceNameLen)
+	}
+}
+
 func TestCompactionTraceInput(t *testing.T) {
+	for trigger, want := range map[string]string{
+		compactionTriggerSelfAfterTurn: selfCompactionTraceSuffix,
+		compactionTriggerSelfPreTurn:   selfCompactionTraceSuffix,
+		compactionTriggerPreTurn:       "",
+		compactionTriggerInLoop:        "",
+	} {
+		if got := compactionTraceNameSuffix(trigger); got != want {
+			t.Errorf("compactionTraceNameSuffix(%q) = %q, want %q", trigger, got, want)
+		}
+	}
 	for trigger, want := range map[string]string{
 		compactionTriggerSelfAfterTurn: "self-compaction requested by agent over 7 messages",
 		compactionTriggerSelfPreTurn:   "self-compaction requested by agent over 7 messages",

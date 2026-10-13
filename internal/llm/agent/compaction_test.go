@@ -43,6 +43,9 @@ type compactionProvider struct {
 	requests [][]message.Message
 	forced   []string // provider.ForcedTool on each request's ctx
 	budgets  []int64  // task budget remaining on each request's ctx, -1 when unset
+	// traceNames is the Langfuse trace name on each request's ctx, "" when
+	// none was set.
+	traceNames []string
 	// countCalls counts CountTokens calls: a check whose history a report
 	// covers must make none.
 	countCalls int
@@ -58,6 +61,7 @@ func (p *compactionProvider) StreamResponse(ctx context.Context, msgs []message.
 	p.requests = append(p.requests, append([]message.Message(nil), msgs...))
 	p.forced = append(p.forced, provider.ForcedTool(ctx))
 	p.budgets = append(p.budgets, budget)
+	p.traceNames = append(p.traceNames, spanTraceName(ctx))
 	p.mu.Unlock()
 	if p.fail != nil {
 		ch := make(chan provider.ProviderEvent, 1)

@@ -794,7 +794,16 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 	// cleanup was added to prevent in the first place.
 	events := make(chan AgentEvent, 1)
 
-	genCtx, cancel := context.WithCancel(ctx)
+	genCtx, cancelGen := context.WithCancel(ctx)
+	// agentStop ends only through cancel (the agent's own Cancel, or the
+	// run's end), never through the caller's ctx. The post-turn compaction
+	// runs on it, so a caller that stops listening once it has the terminal
+	// event does not abort the compaction (compaction_self.go).
+	agentStop, stopAgent := context.WithCancel(context.Background())
+	var cancel context.CancelFunc = func() {
+		stopAgent()
+		cancelGen()
+	}
 	// Translate the flow↔agent ForceStructOutput contract into the provider
 	// ctx signal. It rides genCtx through processGeneration →
 	// streamAndHandleEvents → provider.StreamResponse → preparedMessages,
@@ -826,6 +835,16 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 		// cancel + Delete defers always get to run and the session's
 		// busy lock is released. The global slot is registered FIRST so
 		// it releases LAST — the instance-map entry never outlives it.
+		// Only afterRelease is registered before it, so it runs once the
+		// slot is free: a background-task completion that arrived while the
+		// post-turn compaction held the session skipped its auto-resume,
+		// and afterRelease starts it.
+		var afterRelease func()
+		defer func() {
+			if afterRelease != nil {
+				afterRelease()
+			}
+		}()
 		defer releaseSessionSlot(sessionID)
 		defer a.activeRequests.Delete(sessionID)
 		defer cancel()
@@ -859,7 +878,7 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 		// A compaction the agent requested during the turn runs here: after
 		// the reply is out, before the channel closes, still holding the
 		// session's run slot (compaction_self.go).
-		a.compactAfterTurn(genCtx, sessionID, result)
+		afterRelease = a.compactAfterTurn(genCtx, agentStop, sessionID, result)
 		close(events)
 	}()
 	return events, nil
@@ -995,7 +1014,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 				if !hasUserTurn {
 					resumeTail = syntheticTail(msgs)
 				}
-				if a.runSelfCompaction(ctx, sessionID, compactionTriggerSelfPreTurn, msgs) {
+				if a.runSelfCompaction(ctx, sessionID, compactionTriggerSelfPreTurn, msgs, lastSeq(msgs)) {
 					reloaded, compacted, errReload := a.historyAfterCompaction(ctx, sessionID)
 					if errReload != nil {
 						return a.err(errReload)
@@ -3008,7 +3027,7 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID, tri
 	if lf := langfuse.Get(); lf != nil && lf.Enabled() {
 		sess, sessErr := a.sessions.Get(ctx, sessionID)
 		if sessErr == nil {
-			summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess, compactionTraceInput(trigger, messageCount))
+			summarizeCtx = a.createLangfuseTraceNamed(summarizeCtx, sess, compactionTraceNameSuffix(trigger), compactionTraceInput(trigger, messageCount))
 		}
 	}
 	defer langfuse.EndTrace(summarizeCtx)
@@ -3595,6 +3614,14 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 // with (*agent).setTraceOutput before the trace ends. Both are dropped unless
 // the agent is opted in via telemetry.generations.
 func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session, input any) context.Context {
+	return a.createLangfuseTraceNamed(ctx, sess, "", input)
+}
+
+// createLangfuseTraceNamed is createLangfuseTrace with nameSuffix appended to
+// the trace name (agent, or agent/flow/step), kept whole when the name is
+// truncated. A child session's span sets no trace name, so the suffix does
+// not show there.
+func (a *agent) createLangfuseTraceNamed(ctx context.Context, sess session.Session, nameSuffix string, input any) context.Context {
 	lf := langfuse.Get()
 	if lf == nil || !lf.Enabled() {
 		return ctx
@@ -3654,6 +3681,10 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session, i
 				metadata[k] = truncateStr(v, maxMetadataValueLen)
 			}
 		}
+	}
+
+	if nameSuffix != "" {
+		traceName = truncateStr(traceName, max(maxTraceNameLen-len(nameSuffix), 0)) + nameSuffix
 	}
 
 	stampRequester(ctx, metadata)
