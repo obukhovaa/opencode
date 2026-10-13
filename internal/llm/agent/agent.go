@@ -234,6 +234,9 @@ type agent struct {
 	// toolCallTimeoutSeconds is the registry-merged per-agent tool call
 	// bound (markdown frontmatter and config overlay), nil when unset.
 	toolCallTimeoutSeconds *int
+	// selfCompact is the agent's compact_session setting; see
+	// compaction_self.go.
+	selfCompact config.SelfCompact
 	// compactionBackoff throttles auto-compaction after a failed summarizer
 	// call; see compaction_backoff.go.
 	compactionBackoff compactionBackoffs
@@ -353,6 +356,7 @@ func newAgent(
 		compactionThreshold:      agentInfo.CompactionThreshold,
 		summarizerMaxInputTokens: agentInfo.SummarizerMaxInputTokens,
 		toolCallTimeoutSeconds:   agentInfo.ToolCallTimeoutSeconds,
+		selfCompact:              selfCompactSettings(agentInfo),
 	}
 
 	// Message-delivery mode moves the output schema out of the tool block (which
@@ -852,6 +856,10 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 
 		a.Publish(pubsub.CreatedEvent, result)
 		events <- result
+		// A compaction the agent requested during the turn runs here: after
+		// the reply is out, before the channel closes, still holding the
+		// session's run slot (compaction_self.go).
+		a.compactAfterTurn(genCtx, sessionID, result)
 		close(events)
 	}()
 	return events, nil
@@ -969,6 +977,34 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// An empty history has nothing to compact, so it is not even counted.
 	// No task-budget ctx is applied here: the turn has not started, so its
 	// budget is the full one, as on a turn that does not compact.
+	//
+	// A compaction the agent requested in an earlier turn that did not run
+	// after it (the turn failed, the process restarted) runs here first. It
+	// does not depend on autoCompact: the agent asked for it.
+	if a.selfCompact.Enabled && len(msgs) > 0 {
+		if pending, _ := pendingSelfCompactionNotes(msgs); pending {
+			if a.waitForSummarize(ctx, sessionID) {
+				reloaded, current, errReload := a.historyAfterCompaction(ctx, sessionID)
+				if errReload != nil {
+					return a.err(errReload)
+				}
+				msgs, session = reloaded, current
+			}
+			if pending, _ = pendingSelfCompactionNotes(msgs); pending {
+				var resumeTail []message.Message
+				if !hasUserTurn {
+					resumeTail = syntheticTail(msgs)
+				}
+				if a.runSelfCompaction(ctx, sessionID, compactionTriggerSelfPreTurn, msgs) {
+					reloaded, compacted, errReload := a.historyAfterCompaction(ctx, sessionID)
+					if errReload != nil {
+						return a.err(errReload)
+					}
+					msgs, session = append(reloaded, resumeTail...), compacted
+				}
+			}
+		}
+	}
 	if cfg.AutoCompact && len(msgs) > 0 {
 		// A Summarize still running (the TUI's post-turn compaction) is
 		// about to move the summary boundary; wait for it and count the
@@ -2952,6 +2988,8 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID, tri
 		return stats, err
 	}
 	messageCount := len(msgsWithPrompt) - 1
+	// The prompt as summarizerInputWithStats completed it (keep notes).
+	promptMsg = msgsWithPrompt[messageCount]
 	logging.Info("Starting synchronous compaction",
 		"session_id", sessionID,
 		"trigger", trigger,
@@ -2970,8 +3008,7 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID, tri
 	if lf := langfuse.Get(); lf != nil && lf.Enabled() {
 		sess, sessErr := a.sessions.Get(ctx, sessionID)
 		if sessErr == nil {
-			summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess,
-				fmt.Sprintf("auto-compaction over %d messages", messageCount))
+			summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess, compactionTraceInput(trigger, messageCount))
 		}
 	}
 	defer langfuse.EndTrace(summarizeCtx)
@@ -3112,7 +3149,7 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 		summarizeCtx = provider.WithGenerationMetadata(summarizeCtx, a.compactionMetadata(sessionID, compactionTriggerManual, stats))
 		events := a.summarizeProvider.StreamResponse(
 			summarizeCtx,
-			summarizerRequest(msgsWithPrompt[:len(msgsWithPrompt)-1], promptMsg),
+			summarizerRequest(msgsWithPrompt[:len(msgsWithPrompt)-1], msgsWithPrompt[len(msgsWithPrompt)-1]),
 			make([]tools.BaseTool, 0),
 		)
 		response, err := provider.StreamToResponse(events)
