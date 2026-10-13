@@ -489,6 +489,22 @@ func generateSchema() map[string]any {
 					"description": "Bound, in seconds, on one tool call in this agent's loop. Past it the call is cancelled and abandoned and the model receives an error result. task, question and bash are exempt; an MCP tool gets at least its server's callToolTimeoutSeconds plus 60 s. 0 disables the bound. Unset inherits the top-level toolCallTimeoutSeconds.",
 					"minimum":     0,
 				},
+				"selfCompact": map[string]any{
+					"type":        "object",
+					"description": "Lets this primary agent compact its own session through the compact_session tool: the agent calls it when it has finished a task, and the session is summarized right after that turn ends (or, if that did not happen, before the next turn's first model call). The tool's keep notes are carried into the summary verbatim. Independent of autoCompact; the auto-compaction threshold stays in place as the safety net. Also settable in agent markdown frontmatter.",
+					"properties": map[string]any{
+						"enabled": map[string]any{
+							"type":        "boolean",
+							"description": "Register the compact_session tool for this agent. The agent's tools/allowTools can still exclude it.",
+							"default":     false,
+						},
+						"minTokens": map[string]any{
+							"type":        "integer",
+							"description": "Floor on the session's context size, in tokens, counted as auto-compaction counts it. A call below it returns \"skipped\" and compacts nothing. 0 or unset means no floor; negative values are ignored with a warning.",
+							"minimum":     0,
+						},
+					},
+				},
 				"context": map[string]any{
 					"type":        "object",
 					"description": "Scoped context files for this agent's system prompt. Declared paths replace (default) or append to the global contextPaths. Path entries support the ${agent}, ${flow.id}, ${flow.step}, and ${env.VAR} template tokens and must resolve inside the working directory. See docs/context.md.",

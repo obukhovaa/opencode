@@ -230,6 +230,22 @@
           ],
           "type": "string"
         },
+        "selfCompact": {
+          "description": "Lets this primary agent compact its own session through the compact_session tool: the agent calls it when it has finished a task, and the session is summarized right after that turn ends (or, if that did not happen, before the next turn's first model call). The tool's keep notes are carried into the summary verbatim. Independent of autoCompact; the auto-compaction threshold stays in place as the safety net. Also settable in agent markdown frontmatter.",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "description": "Register the compact_session tool for this agent. The agent's tools/allowTools can still exclude it.",
+              "type": "boolean"
+            },
+            "minTokens": {
+              "description": "Floor on the session's context size, in tokens, counted as auto-compaction counts it. A call below it returns \"skipped\" and compacts nothing. 0 or unset means no floor; negative values are ignored with a warning.",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
         "skills": {
           "description": "List of skill names to preload into the agent's system prompt at startup. Skills are injected as \u003cskill_content\u003e blocks. Only skills not explicitly denied by permissions are injected. Variable substitution and shell markup are not expanded for preloaded skills.",
           "items": {
@@ -513,6 +529,22 @@
               "max"
             ],
             "type": "string"
+          },
+          "selfCompact": {
+            "description": "Lets this primary agent compact its own session through the compact_session tool: the agent calls it when it has finished a task, and the session is summarized right after that turn ends (or, if that did not happen, before the next turn's first model call). The tool's keep notes are carried into the summary verbatim. Independent of autoCompact; the auto-compaction threshold stays in place as the safety net. Also settable in agent markdown frontmatter.",
+            "properties": {
+              "enabled": {
+                "default": false,
+                "description": "Register the compact_session tool for this agent. The agent's tools/allowTools can still exclude it.",
+                "type": "boolean"
+              },
+              "minTokens": {
+                "description": "Floor on the session's context size, in tokens, counted as auto-compaction counts it. A call below it returns \"skipped\" and compacts nothing. 0 or unset means no floor; negative values are ignored with a warning.",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "type": "object"
           },
           "skills": {
             "description": "List of skill names to preload into the agent's system prompt at startup. Skills are injected as \u003cskill_content\u003e blocks. Only skills not explicitly denied by permissions are injected. Variable substitution and shell markup are not expanded for preloaded skills.",

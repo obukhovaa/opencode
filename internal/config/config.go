@@ -203,11 +203,38 @@ type Agent struct {
 	// (task, question and bash are exempt). Nil inherits the top-level
 	// value; 0 disables the bound. See ToolCallTimeout.
 	ToolCallTimeoutSeconds *int `json:"toolCallTimeoutSeconds,omitempty"`
+	// SelfCompact lets the agent request compaction of its own session
+	// through the compact_session tool. Nil or disabled: the tool is not
+	// registered.
+	SelfCompact *SelfCompact `json:"selfCompact,omitempty"`
 	// Context scopes which context files feed this agent's system prompt
 	// instead of the global contextPaths (paths, replace/append mode, and
 	// the nested-disclosure opt-out). Defined in internal/contextfile so
 	// the import edge points at the leaf. See docs/context.md.
 	Context *contextfile.AgentContext `json:"context,omitempty"`
+}
+
+// SelfCompact configures an agent's compact_session tool: with it, the agent
+// asks for its own session to be compacted when it has finished a task, and
+// the compaction runs right after the turn ends. Shared by .opencode.json and
+// agent markdown frontmatter.
+type SelfCompact struct {
+	// Enabled registers the compact_session tool for the agent.
+	Enabled bool `json:"enabled" yaml:"enabled"`
+	// MinTokens is the floor: a request made while the session's context is
+	// below it is answered "skipped" and stores nothing. Zero means no floor.
+	MinTokens int64 `json:"minTokens,omitempty" yaml:"minTokens,omitempty"`
+}
+
+// ValidSelfCompact reports whether sc is usable as is, and returns it with an
+// invalid field reset (a negative minTokens is read as no floor) otherwise.
+func ValidSelfCompact(sc *SelfCompact) (*SelfCompact, bool) {
+	if sc == nil || sc.MinTokens >= 0 {
+		return sc, true
+	}
+	fixed := *sc
+	fixed.MinTokens = 0
+	return &fixed, false
 }
 
 // LangfuseConfig defines configuration for Langfuse observability integration.
@@ -1231,6 +1258,14 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 			"summarizer_max_input_tokens", agent.SummarizerMaxInputTokens)
 		updatedAgent := cfg.Agents[name]
 		updatedAgent.SummarizerMaxInputTokens = 0
+		cfg.Agents[name] = updatedAgent
+	}
+	if sc, ok := ValidSelfCompact(agent.SelfCompact); !ok {
+		logging.Warn("invalid selfCompact.minTokens, must not be negative; using no floor",
+			"agent", name,
+			"min_tokens", agent.SelfCompact.MinTokens)
+		updatedAgent := cfg.Agents[name]
+		updatedAgent.SelfCompact = sc
 		cfg.Agents[name] = updatedAgent
 	}
 
