@@ -3,6 +3,9 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -280,5 +283,73 @@ func TestCountTokensFiltersUndeclaredReferences(t *testing.T) {
 	}
 	if !strings.Contains(body, "datadog_search_logs") {
 		t.Errorf("count_tokens body lost the declared reference: %s", body)
+	}
+}
+
+// count_tokens must describe the request the send will make: on an open tool
+// loop that lost a tool_reference the send drops the thinking blocks and the
+// interleaved-thinking beta, so the count does too.
+func TestCountTokensHonoursDisableThinking(t *testing.T) {
+	const beta = "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+	earlier := newMsg(message.Assistant,
+		message.ReasoningContent{Thinking: "earlier", Signature: "sig-0"},
+		message.TextContent{Text: "hi"},
+	)
+	open := []message.Message{
+		newMsg(message.User, message.TextContent{Text: "hello"}),
+		earlier,
+		newMsg(message.User, message.TextContent{Text: "check the logs"}),
+		searchTurn("datadog_search_logs"),
+		newMsg(message.Tool, message.ToolResult{ToolCallID: "toolu_1", Name: "datadog_search_logs", Content: "ok"}),
+	}
+	closed := append(append([]message.Message{}, open...),
+		newMsg(message.Assistant,
+			message.ReasoningContent{Thinking: "answer", Signature: "sig-3"},
+			message.TextContent{Text: "logs look fine"},
+		),
+		newMsg(message.User, message.TextContent{Text: "thanks"}),
+	)
+	tests := []struct {
+		name         string
+		history      []message.Message
+		wantBeta     string
+		wantThinking bool
+	}{
+		{name: "open tool loop that lost a reference", history: open, wantBeta: "fine-grained-tool-streaming-2025-05-14"},
+		{name: "closed tool loop keeps thinking", history: closed, wantBeta: beta, wantThinking: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotBeta, gotBody string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				gotBeta, gotBody = r.Header.Get("anthropic-beta"), string(raw)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"input_tokens": 10}`))
+			}))
+			defer srv.Close()
+			c, ok := newAnthropicClient(providerClientOptions{
+				apiKey:  "test-key",
+				baseURL: srv.URL,
+				headers: map[string]string{"anthropic-beta": beta},
+				model: models.Model{
+					ID: "test-native", APIModel: "test-native",
+					SupportsToolSearch: true, SupportsAdaptiveThinking: true,
+				},
+			}).(*anthropicClient)
+			if !ok {
+				t.Fatal("not an *anthropicClient")
+			}
+
+			if _, err := c.countTokens(context.Background(), tt.history, []tools.BaseTool{newTestTool("view", false)}); err != nil {
+				t.Fatalf("countTokens: %v", err)
+			}
+			if gotBeta != tt.wantBeta {
+				t.Errorf("anthropic-beta = %q, want %q", gotBeta, tt.wantBeta)
+			}
+			if has := strings.Contains(gotBody, `"thinking"`); has != tt.wantThinking {
+				t.Errorf("thinking blocks in the count body = %v, want %v", has, tt.wantThinking)
+			}
+		})
 	}
 }

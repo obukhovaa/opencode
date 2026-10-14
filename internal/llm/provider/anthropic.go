@@ -1041,6 +1041,17 @@ func (a *anthropicClient) requestFor(ctx context.Context, messages []message.Mes
 // request, the interleaved-thinking beta is dropped from the client-level
 // anthropic-beta header as well.
 func (a *anthropicClient) requestOptions(disableThinking bool) []option.RequestOption {
+	opts := a.betaHeaderOptions(disableThinking)
+	if a.options.taskBudget > 0 {
+		opts = append(opts, option.WithHeaderAdd("anthropic-beta", taskBudgetsBeta))
+	}
+	return opts
+}
+
+// betaHeaderOptions drops the interleaved-thinking beta from the client-level
+// anthropic-beta header when the request's thinking is disabled. The
+// count_tokens call shares it so it sees the same request shape as the send.
+func (a *anthropicClient) betaHeaderOptions(disableThinking bool) []option.RequestOption {
 	var opts []option.RequestOption
 	if disableThinking && a.betaHeader != "" {
 		if kept := withoutInterleavedThinkingBeta(a.betaHeader); kept != a.betaHeader {
@@ -1050,9 +1061,6 @@ func (a *anthropicClient) requestOptions(disableThinking bool) []option.RequestO
 				opts = append(opts, option.WithHeader("anthropic-beta", kept))
 			}
 		}
-	}
-	if a.options.taskBudget > 0 {
-		opts = append(opts, option.WithHeaderAdd("anthropic-beta", taskBudgetsBeta))
 	}
 	return opts
 }
@@ -2101,7 +2109,7 @@ func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Me
 		return 0, fmt.Errorf("count_tokens is in cooldown after repeated shape rejections: %w", errors.ErrUnsupported)
 	}
 	anthropicTools := a.convertTools(ctx, tools)
-	anthropicMessages, _ := a.convertMessages(messages, declaredToolNames(anthropicTools))
+	anthropicMessages, disableThinking := a.convertMessages(messages, declaredToolNames(anthropicTools))
 	// Server-side tool blocks go on every path: any Anthropic-dialect proxy
 	// (LiteLLM in front of Bedrock OR Vertex, and third-party endpoints) 500s
 	// on them, and re-inlining costs only a few tokens of framing.
@@ -2144,7 +2152,7 @@ func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Me
 		}
 	}
 
-	response, err := a.client.Messages.CountTokens(ctx, params)
+	response, err := a.client.Messages.CountTokens(ctx, params, a.betaHeaderOptions(disableThinking)...)
 	if err != nil {
 		var apierr *anthropic.Error
 		if errors.As(err, &apierr) && (apierr.StatusCode == http.StatusNotFound || apierr.StatusCode == http.StatusMethodNotAllowed) {
