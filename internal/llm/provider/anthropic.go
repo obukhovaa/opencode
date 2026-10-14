@@ -66,6 +66,9 @@ type anthropicClient struct {
 	// filterBetaHeaders), kept so a single request can drop the
 	// interleaved-thinking beta when it goes out with thinking disabled.
 	betaHeader string
+	// conns is the provider-owned transport; the RST_STREAM retry rotates it
+	// to force a new connection. Nil on clients built without a constructor.
+	conns *connResetter
 	// countTokensUnsupported latches after the endpoint answers 404/405 —
 	// Anthropic-compatible endpoints (e.g. Moonshot's) may not implement
 	// count_tokens, and probing it once per agent-loop iteration would add
@@ -207,12 +210,16 @@ func newAnthropicClient(opts providerClientOptions) AnthropicClient {
 		anthropicClientOptions = append(anthropicClientOptions, option.WithAPIKey(opts.apiKey))
 	}
 
+	conns := newConnResetter(opts.baseTransport)
+	anthropicClientOptions = append(anthropicClientOptions, option.WithHTTPClient(conns.Client()))
+
 	client := anthropic.NewClient(anthropicClientOptions...)
 	return &anthropicClient{
 		providerOptions: opts,
 		options:         anthropicOpts,
 		client:          client,
 		betaHeader:      betaHeader,
+		conns:           conns,
 	}
 }
 
@@ -1145,8 +1152,10 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 		// peer-initiated HTTP/2 RST_STREAM resets, separate from attempts.
 		emittedOutput := false
 		rstStreamRetries := 0
+		var lastRSTStreamID uint32
 		for {
 			attempts++
+			connGen := a.conns.Generation()
 			requestOpts := a.requestOptions(disableThinking)
 			anthropicStream := a.client.Messages.NewStreaming(
 				ctx,
@@ -1353,8 +1362,10 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 			// Peer-initiated HTTP/2 RST_STREAM (e.g. INTERNAL_ERROR /
 			// REFUSED_STREAM): a stream/connection-level reset from the proxy
 			// (litellm) or its load balancer — typically a stale pooled
-			// connection or a transient upstream blip. Retry on a fresh
-			// connection with a small dedicated budget and short backoff, but
+			// connection or a transient upstream blip. Rotate the provider's
+			// transport so the retry dials a new connection rather than
+			// reusing the one that reset, with a small dedicated budget and
+			// short backoff, but
 			// ONLY while nothing has reached the consumer yet: a pre-first-token
 			// reset is safe to replay, whereas retrying after deltas were
 			// emitted would duplicate the assistant message. A permanent error a
@@ -1364,8 +1375,10 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 				if !emittedOutput && rstStreamRetries < maxRSTStreamRetries {
 					backoffMs := 500 * (1 << rstStreamRetries)
 					rstStreamRetries++
-					logging.Warn("Anthropic stream reset by peer (HTTP/2 RST_STREAM), will retry on a fresh connection",
-						"attempt", rstStreamRetries, "max", maxRSTStreamRetries, "error", err)
+					rstLog := rotateForRSTRetry(a.conns, connGen, lastRSTStreamID, err)
+					lastRSTStreamID = rstLog.streamID
+					logging.Warn("Anthropic stream reset by peer (HTTP/2 RST_STREAM), will retry",
+						append([]any{"attempt", rstStreamRetries, "max", maxRSTStreamRetries, "error", err}, rstLog.kv()...)...)
 					select {
 					case <-ctx.Done():
 						if ctx.Err() != nil {

@@ -33,7 +33,7 @@ const maxRetries = 8
 // maxRetries: a reset that actually wraps a permanent upstream error (a proxy
 // can surface a 400 as RST_STREAM) must not loop through the full ~8.5 min
 // exponential window, while a genuine transient reset only needs a couple of
-// quick attempts to land on a fresh connection.
+// quick attempts, each on a new connection (see connResetter).
 const maxRSTStreamRetries = 3
 
 const defaultStreamInactivityTimeout = 5 * time.Minute
@@ -323,6 +323,11 @@ type providerClientOptions struct {
 	metadata      *config.ProviderMetadata
 
 	langfuseClient *langfuse.Client
+
+	// baseTransport seeds the provider's private HTTP transport (see
+	// connResetter); nil clones http.DefaultTransport. Tests use it to trust
+	// an httptest server's certificate.
+	baseTransport *http.Transport
 
 	anthropicOptions []AnthropicOption
 	openaiOptions    []OpenAIOption
