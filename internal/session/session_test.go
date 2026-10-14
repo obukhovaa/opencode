@@ -180,3 +180,52 @@ func drain(ch <-chan pubsub.Event[Session]) {
 		}
 	}
 }
+
+func TestSetAgentNameRoundTrip(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+
+	created, err := svc.Create(ctx, "New Session")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if created.AgentName != "" {
+		t.Fatalf("new session AgentName = %q, want empty", created.AgentName)
+	}
+
+	events := svc.Subscribe(ctx)
+	if err := svc.SetAgentName(ctx, created.ID, "hivemind"); err != nil {
+		t.Fatalf("SetAgentName: %v", err)
+	}
+	got, err := svc.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.AgentName != "hivemind" {
+		t.Errorf("AgentName = %q, want hivemind", got.AgentName)
+	}
+	select {
+	case ev := <-events:
+		if ev.Type != pubsub.UpdatedEvent || ev.Payload.AgentName != "hivemind" {
+			t.Errorf("event = %v / %q, want an update carrying hivemind", ev.Type, ev.Payload.AgentName)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no update event for SetAgentName")
+	}
+
+	// A token Save must not clobber the stored agent.
+	got.PromptTokens = 7
+	saved, err := svc.Save(ctx, got)
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if saved.AgentName != "hivemind" {
+		t.Errorf("AgentName after Save = %q, want hivemind", saved.AgentName)
+	}
+
+	// List and ListChildren map the column too.
+	list, err := svc.List(ctx)
+	if err != nil || len(list) != 1 || list[0].AgentName != "hivemind" {
+		t.Errorf("List = %+v, %v; want one session with AgentName hivemind", list, err)
+	}
+}
