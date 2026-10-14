@@ -62,6 +62,11 @@ UPDATE sessions
 SET title = ?
 WHERE id = ? AND user_set_title = 0;
 
+-- name: SetSessionAgentName :exec
+UPDATE sessions
+SET agent_name = ?
+WHERE id = ?;
+
 -- name: DeleteSession :exec
 DELETE FROM sessions
 WHERE id = ?;

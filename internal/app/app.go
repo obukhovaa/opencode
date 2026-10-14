@@ -100,6 +100,31 @@ func (app *App) ActiveAgent() agent.Service {
 	return app.PrimaryAgents[name]
 }
 
+// ResolveSessionAgent returns the primary agent a session should run under:
+// the one persisted on the session (see session.Service.SetAgentName) when it
+// is still a registered primary agent, otherwise the process-wide active
+// agent. A persisted name that is no longer registered logs a warning.
+func (app *App) ResolveSessionAgent(ctx context.Context, sessionID string) (config.AgentName, agent.Service) {
+	if sessionID != "" && app.Sessions != nil {
+		if sess, err := app.Sessions.Get(ctx, sessionID); err == nil && sess.AgentName != "" {
+			name := config.AgentName(sess.AgentName)
+			if ag, ok := app.PrimaryAgents[name]; ok && ag != nil {
+				return name, ag
+			}
+			logging.Warn("Session agent is not a registered primary agent, using the active agent",
+				"session_id", sessionID, "agent", sess.AgentName, "active", app.ActiveAgentName())
+		}
+	}
+	return app.ActiveAgentName(), app.ActiveAgent()
+}
+
+// AgentForSession returns the agent a session should run under; see
+// ResolveSessionAgent.
+func (app *App) AgentForSession(ctx context.Context, sessionID string) agent.Service {
+	_, ag := app.ResolveSessionAgent(ctx, sessionID)
+	return ag
+}
+
 func (app *App) ActiveAgentName() config.AgentName {
 	if len(app.PrimaryAgentKeys) == 0 {
 		return config.AgentCoder

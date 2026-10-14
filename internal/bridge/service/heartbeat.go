@@ -215,7 +215,7 @@ func (s *Service) fireHeartbeat(ctx context.Context, row store.Heartbeat, bindin
 	if s.app.Permissions != nil && s.app.Permissions.IsInteractiveSession(binding.SessionID) {
 		return false, "an interactive flow step owns this session"
 	}
-	ag := s.app.ActiveAgent()
+	ag := s.app.AgentForSession(ctx, binding.SessionID)
 	busy := (ag != nil && ag.IsSessionBusy(binding.SessionID)) || disp.hasQueuedInbound()
 	if busy && !manual {
 		return false, "the session is busy; the beat will run when it is idle"
@@ -319,23 +319,23 @@ func (s *Service) heartbeatDeferred(ctx context.Context, peer bridge.PeerRef, hb
 	}
 }
 
-// heartbeatAgent returns the agent a heartbeat turn runs on: the active
-// agent, or a cached per-instance model override of it.
-func (s *Service) heartbeatAgent(ctx context.Context, model string) (agent.Service, error) {
-	active := s.app.ActiveAgent()
+// heartbeatAgent returns the agent a heartbeat turn on the session runs on:
+// the session's agent, or a cached per-instance model override of it.
+func (s *Service) heartbeatAgent(ctx context.Context, sessionID, model string) (agent.Service, error) {
+	name, active := s.app.ResolveSessionAgent(ctx, sessionID)
 	if model == "" || active == nil || string(active.Model().ID) == model {
 		return active, nil
 	}
 	if s.app.AgentFactory == nil {
 		return nil, errors.New("no agent factory for a heartbeat model override")
 	}
-	key := string(s.app.ActiveAgentName()) + "|" + model
+	key := string(name) + "|" + model
 	s.heartbeat.mu.Lock()
 	defer s.heartbeat.mu.Unlock()
 	if ag, ok := s.heartbeat.agents[key]; ok {
 		return ag, nil
 	}
-	ag, err := s.app.AgentFactory.NewAgent(ctx, string(s.app.ActiveAgentName()), nil, "", false, nil, nil,
+	ag, err := s.app.AgentFactory.NewAgent(ctx, string(name), nil, "", false, nil, nil,
 		contextfile.TemplateVars{}, agent.ModelOverride{Model: models.ModelID(model)})
 	if err != nil {
 		return nil, fmt.Errorf("heartbeat agent for model %s: %w", model, err)

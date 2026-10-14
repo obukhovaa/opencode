@@ -123,6 +123,7 @@ type Session struct {
 	TotalPromptTokens     int64          `json:"total_prompt_tokens"`
 	TotalCompletionTokens int64          `json:"total_completion_tokens"`
 	UserSetTitle          bool           `json:"user_set_title"`
+	AgentName             string         `json:"agent_name"`
 }
 
 type SessionRecap struct {

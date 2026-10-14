@@ -400,10 +400,10 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	}
 
 	// Named `ag`, not `agent`: the local must not shadow the agent package.
-	ag := d.svc.app.ActiveAgent()
+	agentName, ag := d.svc.app.ResolveSessionAgent(ctx, d.sessionID)
 	if hb != nil {
 		var err error
-		if ag, err = d.svc.heartbeatAgent(ctx, hb.Model); err != nil {
+		if ag, err = d.svc.heartbeatAgent(ctx, d.sessionID, hb.Model); err != nil {
 			logging.Warn("bridge: heartbeat agent unavailable", "session", d.sessionID, "err", err)
 			d.finishHeartbeat(ctx, in.Peer, hb, "", err)
 			return
@@ -422,6 +422,7 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 			false, d.sessionID)
 		return
 	}
+	d.svc.stampSessionAgent(ctx, d.sessionID, agentName)
 
 	// Subscribe parts BEFORE Run — the broker's zero-subscriber fast path
 	// will otherwise drop the agent's first ToolCall pending events.

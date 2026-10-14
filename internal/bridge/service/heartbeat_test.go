@@ -153,6 +153,9 @@ type stubSessions struct {
 	session.Service
 	messages int64
 	root     string
+	// agentName is every session's persisted agent; SetAgentName updates it.
+	agentName string
+	setCalls  int
 }
 
 func (s *stubSessions) Get(_ context.Context, id string) (session.Session, error) {
@@ -160,7 +163,13 @@ func (s *stubSessions) Get(_ context.Context, id string) (session.Session, error
 	if root == "" {
 		root = id
 	}
-	return session.Session{ID: id, RootSessionID: root, MessageCount: s.messages}, nil
+	return session.Session{ID: id, RootSessionID: root, MessageCount: s.messages, AgentName: s.agentName}, nil
+}
+
+func (s *stubSessions) SetAgentName(_ context.Context, _, name string) error {
+	s.agentName = name
+	s.setCalls++
+	return nil
 }
 
 // directStubAdapter reports D-prefixed peers as direct messages. It does

@@ -12,6 +12,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/cron"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
+	"github.com/opencode-ai/opencode/internal/logging"
 )
 
 // CommandHandler is the contract chat-command implementations satisfy.
@@ -97,9 +98,11 @@ func (s *Service) cmdAbort(ctx context.Context, in bridge.Inbound) *bridge.Comma
 
 // cmdAgent: list available agents or switch the active one.
 // "/agent" (no args) → reply with the available list.
-// "/agent coder" → switch active agent to "coder". Refused while a run is
-// in flight on the bound session: switching mid-run starts the next run
-// under another agent while the first one is still alive.
+// "/agent coder" → switch active agent to "coder": the default for new
+// sessions, and — when a session is bound here — the agent that session keeps
+// across restarts. Refused while a run is in flight on the bound session:
+// switching mid-run starts the next run under another agent while the first
+// one is still alive.
 func (s *Service) cmdAgent(ctx context.Context, in bridge.Inbound) *bridge.CommandReply {
 	args := strings.TrimSpace(in.CommandArgs)
 	if args == "" {
@@ -127,15 +130,24 @@ func (s *Service) cmdAgent(ctx context.Context, in bridge.Inbound) *bridge.Comma
 		}
 	}
 	target := config.AgentName(args)
-	if existing, err := s.store.GetBinding(ctx, s.projectID,
-		in.Peer.Channel, in.Peer.Identity, in.Peer.PeerID); err == nil && existing.SessionID != "" {
-		if ag := s.app.ActiveAgent(); ag != nil && ag.IsSessionBusy(existing.SessionID) {
+	// GetBinding, not resolveBinding: /agent in an unbound chat must not
+	// allocate a session as a side effect.
+	binding, err := s.store.GetBinding(ctx, s.projectID, in.Peer.Channel, in.Peer.Identity, in.Peer.PeerID)
+	bound := err == nil && binding.SessionID != ""
+	if bound {
+		if ag := s.app.ActiveAgent(); ag != nil && ag.IsSessionBusy(binding.SessionID) {
 			return replyText(fmt.Sprintf("A run is in progress on session %s; /stop it first, then switch the agent.",
-				shortSessionID(existing.SessionID)))
+				shortSessionID(binding.SessionID)))
 		}
 	}
 	if err := s.app.SetActiveAgent(target); err != nil {
 		return replyText(fmt.Sprintf("Failed to set agent %q: %v", args, err))
+	}
+	if bound {
+		if err := s.app.Sessions.SetAgentName(ctx, binding.SessionID, string(target)); err != nil {
+			logging.Warn("bridge: /agent could not persist the choice on the session",
+				"session", binding.SessionID, "agent", args, "err", err)
+		}
 	}
 	body := fmt.Sprintf("Active agent: %s", args)
 	return &bridge.CommandReply{
@@ -453,7 +465,7 @@ func (s *Service) cmdCompact(ctx context.Context, in bridge.Inbound) *bridge.Com
 	if binding.SessionID == "" {
 		return replyText("No session bound here yet — send a message first, then `/compact`.")
 	}
-	activeAgent := s.app.ActiveAgent()
+	activeAgent := s.app.AgentForSession(ctx, binding.SessionID)
 	if activeAgent == nil {
 		return replyText("No active agent — cannot compact.")
 	}
@@ -763,5 +775,28 @@ func (s *Service) cmdHelp(_ context.Context, in bridge.Inbound) *bridge.CommandR
 	return &bridge.CommandReply{
 		Text: strings.Join(textLines, "\n"),
 		Hint: bridge.NewListHint("Commands", items, ""),
+	}
+}
+
+// stampSessionAgent records on the session the primary agent a run is about to
+// use, so the session keeps it across restarts. A failure is logged and never
+// fails the run.
+func (s *Service) stampSessionAgent(ctx context.Context, sessionID string, name config.AgentName) {
+	if sessionID == "" || name == "" || s.app.Sessions == nil {
+		return
+	}
+	if _, ok := s.app.PrimaryAgents[name]; !ok {
+		return
+	}
+	sess, err := s.app.Sessions.Get(ctx, sessionID)
+	if err != nil {
+		logging.Warn("bridge: could not read the session to stamp its agent", "session", sessionID, "err", err)
+		return
+	}
+	if sess.AgentName == string(name) {
+		return
+	}
+	if err := s.app.Sessions.SetAgentName(ctx, sessionID, string(name)); err != nil {
+		logging.Warn("bridge: could not stamp the agent on the session", "session", sessionID, "agent", name, "err", err)
 	}
 }

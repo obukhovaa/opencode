@@ -36,6 +36,9 @@ type Session struct {
 	// UserSetTitle is true once a user has explicitly renamed the session.
 	// While set, automatic title generation must not overwrite Title.
 	UserSetTitle bool
+	// AgentName is the primary agent the session last ran under; empty when
+	// none was recorded, in which case the process-wide active agent applies.
+	AgentName string
 }
 
 type Service interface {
@@ -56,6 +59,8 @@ type Service interface {
 	// the session has not been user-renamed. It is a no-op on user-titled
 	// sessions.
 	SetGeneratedTitle(ctx context.Context, id, title string) (Session, error)
+	// SetAgentName persists the primary agent the session runs under.
+	SetAgentName(ctx context.Context, sessionID, name string) error
 	Delete(ctx context.Context, id string) error
 	DeleteTree(ctx context.Context, id string) error
 	ListOldSessions(ctx context.Context, activeSessionID string) ([]Session, error)
@@ -278,6 +283,21 @@ func (s *service) SetGeneratedTitle(ctx context.Context, id, title string) (Sess
 	return session, nil
 }
 
+func (s *service) SetAgentName(ctx context.Context, sessionID, name string) error {
+	if err := s.q.SetSessionAgentName(ctx, db.SetSessionAgentNameParams{
+		ID:        sessionID,
+		AgentName: name,
+	}); err != nil {
+		return err
+	}
+	session, err := s.Get(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	s.Publish(pubsub.UpdatedEvent, session)
+	return nil
+}
+
 func (s *service) List(ctx context.Context) ([]Session, error) {
 	dbSessions, err := s.q.ListSessions(ctx, sql.NullString{String: s.projectID, Valid: true})
 	if err != nil {
@@ -319,6 +339,7 @@ func (s service) fromDBItem(item db.Session) Session {
 		CreatedAt:             item.CreatedAt,
 		UpdatedAt:             item.UpdatedAt,
 		UserSetTitle:          item.UserSetTitle,
+		AgentName:             item.AgentName,
 	}
 }
 
