@@ -10,7 +10,9 @@ import (
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/bridge/store"
 	"github.com/opencode-ai/opencode/internal/config"
+	opencodedb "github.com/opencode-ai/opencode/internal/db"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
+	"github.com/opencode-ai/opencode/internal/session"
 )
 
 // cancelStubAgent records Cancel calls; a cancelled session stops being busy.
@@ -36,8 +38,9 @@ func (a *cancelStubAgent) Cancel(id string) {
 
 func newCancelTestService(t *testing.T, ag *cancelStubAgent) (*Service, *sessionDispatch) {
 	t.Helper()
-	svc, _ := newOrchestratorForTest(t)
+	svc, conn := newOrchestratorForTest(t)
 	a := app.NewForTest(context.Background(), ag)
+	a.Sessions = session.NewService(opencodedb.New(conn), "proj")
 	a.PrimaryAgents = map[config.AgentName]agentpkg.Service{config.AgentCoder: ag, "other": ag}
 	a.PrimaryAgentKeys = []config.AgentName{config.AgentCoder, "other"}
 	svc.app = a
