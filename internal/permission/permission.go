@@ -130,6 +130,22 @@ type hookAllowKeyType struct{}
 // the standard permission gate for this call only.
 var HookAllowKey = hookAllowKeyType{}
 
+type waitObserverKeyType struct{}
+
+// WaitObserver is told when a permission request on a ctx starts and stops
+// waiting for a human's answer.
+type WaitObserver interface {
+	WaitStarted()
+	WaitEnded()
+}
+
+// WithWaitObserver returns a ctx whose permission requests report their wait
+// to obs. The agent loop's tool watchdog uses it so the time a call spends
+// behind a permission prompt does not count against the call's limit.
+func WithWaitObserver(ctx context.Context, obs WaitObserver) context.Context {
+	return context.WithValue(ctx, waitObserverKeyType{}, obs)
+}
+
 func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRequest) bool {
 	if v, ok := ctx.Value(HookAllowKey).(bool); ok && v {
 		return true
@@ -149,6 +165,12 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 		Description: opts.Description,
 		Action:      opts.Action,
 		Params:      opts.Params,
+	}
+
+	// The wait for the serialising lock is a wait on another prompt's human.
+	if obs, ok := ctx.Value(waitObserverKeyType{}).(WaitObserver); ok {
+		obs.WaitStarted()
+		defer obs.WaitEnded()
 	}
 
 	// NOTE: serialise permission dialog, permissions requests are interactive

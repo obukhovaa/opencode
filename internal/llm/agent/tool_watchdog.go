@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/permission"
 )
 
 // toolCallTimeoutMargin is added to an MCP server's own per-call timeout so
@@ -47,16 +49,65 @@ func toolCallLimit(agentID config.AgentName, tool tools.BaseTool) time.Duration 
 	return limit
 }
 
+// permissionWaits tracks how long one tool call has spent waiting on
+// permission prompts, so the watchdog can leave that time out of the call's
+// budget: the call is blocked on a human, not stuck.
+type permissionWaits struct {
+	mu      sync.Mutex
+	waiting int
+	since   time.Time
+	total   time.Duration
+	ended   chan struct{}
+}
+
+func newPermissionWaits() *permissionWaits {
+	return &permissionWaits{ended: make(chan struct{}, 1)}
+}
+
+func (p *permissionWaits) WaitStarted() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.waiting == 0 {
+		p.since = time.Now()
+	}
+	p.waiting++
+}
+
+func (p *permissionWaits) WaitEnded() {
+	p.mu.Lock()
+	p.waiting--
+	if p.waiting == 0 {
+		p.total += time.Since(p.since)
+	}
+	p.mu.Unlock()
+	select {
+	case p.ended <- struct{}{}:
+	default:
+	}
+}
+
+// paused is the total time spent waiting so far, including a wait in progress.
+func (p *permissionWaits) paused() time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.waiting > 0 {
+		return p.total + time.Since(p.since)
+	}
+	return p.total
+}
+
 // runToolBounded runs one tool call. With a positive limit the call gets its
 // own cancellable ctx: past the limit it is cancelled and abandoned, and an
 // error result is returned so the model can carry on, even when the tool
 // ignores its ctx. A cancelled parent ctx also returns at once instead of
-// waiting on such a tool.
+// waiting on such a tool. Time spent waiting on a permission prompt does not
+// count towards the limit.
 func runToolBounded(ctx context.Context, limit time.Duration, tool tools.BaseTool, call tools.ToolCall) (tools.ToolResponse, error) {
 	if limit <= 0 {
 		return tool.Run(ctx, call)
 	}
-	toolCtx, cancel := context.WithCancel(ctx)
+	waits := newPermissionWaits()
+	toolCtx, cancel := context.WithCancel(permission.WithWaitObserver(ctx, waits))
 	defer cancel()
 	type outcome struct {
 		resp tools.ToolResponse
@@ -67,19 +118,37 @@ func runToolBounded(ctx context.Context, limit time.Duration, tool tools.BaseToo
 		resp, err := tool.Run(toolCtx, call)
 		ch <- outcome{resp, err}
 	}()
+	start := time.Now()
 	timer := time.NewTimer(limit)
 	defer timer.Stop()
-	select {
-	case o := <-ch:
-		return o.resp, o.err
-	case <-ctx.Done():
-		return tools.ToolResponse{}, ctx.Err()
-	case <-timer.C:
-		logging.Warn("Tool call exceeded the loop watchdog; abandoning it",
-			"tool", call.Name, "ID", call.ID, "limit", limit)
-		return tools.NewTextErrorResponse(fmt.Sprintf(
-			"tool %s exceeded %s and was abandoned. The agent should try a different approach or skip this step.",
-			call.Name, limit,
-		)), nil
+	rearm := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(max(limit-(time.Since(start)-waits.paused()), time.Millisecond))
+	}
+	for {
+		select {
+		case o := <-ch:
+			return o.resp, o.err
+		case <-ctx.Done():
+			return tools.ToolResponse{}, ctx.Err()
+		case <-waits.ended:
+			rearm()
+		case <-timer.C:
+			if time.Since(start)-waits.paused() < limit {
+				rearm()
+				continue
+			}
+			logging.Warn("Tool call exceeded the loop watchdog; abandoning it",
+				"tool", call.Name, "ID", call.ID, "limit", limit)
+			return tools.NewTextErrorResponse(fmt.Sprintf(
+				"tool %s exceeded %s and was abandoned. The agent should try a different approach or skip this step.",
+				call.Name, limit,
+			)), nil
+		}
 	}
 }
