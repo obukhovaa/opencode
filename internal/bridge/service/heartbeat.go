@@ -215,7 +215,7 @@ func (s *Service) fireHeartbeat(ctx context.Context, row store.Heartbeat, bindin
 	if s.app.Permissions != nil && s.app.Permissions.IsInteractiveSession(binding.SessionID) {
 		return false, "an interactive flow step owns this session"
 	}
-	ag := s.app.ActiveAgent()
+	ag := s.app.AgentForSession(ctx, binding.SessionID)
 	busy := (ag != nil && ag.IsSessionBusy(binding.SessionID)) || disp.hasQueuedInbound()
 	if busy && !manual {
 		return false, "the session is busy; the beat will run when it is idle"
@@ -319,23 +319,23 @@ func (s *Service) heartbeatDeferred(ctx context.Context, peer bridge.PeerRef, hb
 	}
 }
 
-// heartbeatAgent returns the agent a heartbeat turn runs on: the active
-// agent, or a cached per-instance model override of it.
-func (s *Service) heartbeatAgent(ctx context.Context, model string) (agent.Service, error) {
-	active := s.app.ActiveAgent()
+// heartbeatAgent returns the agent a heartbeat turn on the session runs on:
+// the session's agent, or a cached per-instance model override of it.
+func (s *Service) heartbeatAgent(ctx context.Context, sessionID, model string) (agent.Service, error) {
+	name, active := s.app.ResolveSessionAgent(ctx, sessionID)
 	if model == "" || active == nil || string(active.Model().ID) == model {
 		return active, nil
 	}
 	if s.app.AgentFactory == nil {
 		return nil, errors.New("no agent factory for a heartbeat model override")
 	}
-	key := string(s.app.ActiveAgentName()) + "|" + model
+	key := string(name) + "|" + model
 	s.heartbeat.mu.Lock()
 	defer s.heartbeat.mu.Unlock()
 	if ag, ok := s.heartbeat.agents[key]; ok {
 		return ag, nil
 	}
-	ag, err := s.app.AgentFactory.NewAgent(ctx, string(s.app.ActiveAgentName()), nil, "", false, nil, nil,
+	ag, err := s.app.AgentFactory.NewAgent(ctx, string(name), nil, "", false, nil, nil,
 		contextfile.TemplateVars{}, agent.ModelOverride{Model: models.ModelID(model)})
 	if err != nil {
 		return nil, fmt.Errorf("heartbeat agent for model %s: %w", model, err)
@@ -361,9 +361,6 @@ func (s *Service) remindNewIdentities(ctx context.Context, now time.Time) {
 	if !s.cfg.HeartbeatReminderEnabled() {
 		return
 	}
-	if has, known := s.heartbeatToolState(); !known || !has {
-		return
-	}
 	s.mu.Lock()
 	adapters := make([]bridge.Adapter, 0, len(s.adapters))
 	for _, a := range s.adapters {
@@ -386,18 +383,31 @@ func (s *Service) remindNewIdentities(ctx context.Context, now time.Time) {
 			logging.Warn("bridge: heartbeat reminder binding lookup failed", "identity", identity, "err", err)
 			continue
 		}
+		deferred := false
 		for _, b := range bindings {
-			s.remindBinding(ctx, direct, b, now)
+			if s.remindBinding(ctx, direct, b, now) {
+				deferred = true
+			}
+		}
+		if deferred {
+			s.heartbeat.mu.Lock()
+			delete(s.heartbeat.reminded, adapterKey(channel, identity))
+			s.heartbeat.mu.Unlock()
 		}
 	}
 }
 
 // remindBinding posts the setup reminder to one binding if it is due.
 // reminded_at is written before the post so a failed or crashed post can
-// never turn into a burst of repeats.
-func (s *Service) remindBinding(ctx context.Context, direct bridge.DirectPeerChecker, b store.Binding, now time.Time) {
+// never turn into a burst of repeats. It returns true when the session's
+// agent lacks the heartbeat tool or is still loading its tools, so the caller
+// leaves the adapter unmarked and a later tick decides.
+func (s *Service) remindBinding(ctx context.Context, direct bridge.DirectPeerChecker, b store.Binding, now time.Time) (deferred bool) {
 	if b.SessionID == "" || strings.Contains(b.PeerID, "|") || !s.remindableSession(ctx, b.SessionID) {
-		return
+		return false
+	}
+	if has, known := s.heartbeatToolState(ctx, b.SessionID); !known || !has {
+		return true
 	}
 	row, err := s.store.GetHeartbeat(ctx, s.projectID, b.Channel, b.IdentityID, b.PeerID)
 	switch {
@@ -406,25 +416,26 @@ func (s *Service) remindBinding(ctx context.Context, direct bridge.DirectPeerChe
 		row.State = heartbeat.StateUnset
 	case err != nil:
 		logging.Warn("bridge: heartbeat reminder lookup failed", "peer", b.PeerID, "err", err)
-		return
+		return false
 	}
 	if row.State != heartbeat.StateUnset {
-		return
+		return false
 	}
 	if !row.RemindedAt.IsZero() && now.Sub(row.RemindedAt) < heartbeat.ReminderInterval {
-		return
+		return false
 	}
 	// Last, as it may ask the platform.
 	if !direct.IsDirectPeer(ctx, b.PeerID) {
-		return
+		return false
 	}
 	row.RemindedAt = now
 	if err := s.store.PutHeartbeat(ctx, row); err != nil {
 		logging.Warn("bridge: heartbeat reminder write failed; not posting", "peer", b.PeerID, "err", err)
-		return
+		return false
 	}
 	s.replyToPeer(ctx, b.AsPeerRef(), heartbeat.Reminder(), false, b.SessionID)
 	logging.Info("bridge: heartbeat setup reminder posted", "session", b.SessionID, "peer", b.PeerID)
+	return false
 }
 
 // remindableSession reports whether a bound session is a daemon
@@ -462,7 +473,7 @@ func (s *Service) cmdHeartbeat(ctx context.Context, in bridge.Inbound) *bridge.C
 		}
 		return replyText(text)
 	}
-	if !s.agentHasHeartbeatTool() {
+	if !s.agentHasHeartbeatTool(ctx, s.peerSessionID(ctx, in.Peer)) {
 		return replyText(fmt.Sprintf("%v\n%s\nTo describe the heartbeat in your own words, enable the %q tool for the agent.",
 			err, heartbeat.Usage, tools.HeartbeatToolName))
 	}
@@ -480,21 +491,21 @@ func (s *Service) heartbeatAgentRequest(ctx context.Context, in bridge.Inbound) 
 	return heartbeat.AgentRequest(in.CommandArgs, status)
 }
 
-// agentHasHeartbeatTool reports whether the active agent can carry out a
-// natural-language /heartbeat. A tool set still loading counts as yes.
-func (s *Service) agentHasHeartbeatTool() bool {
-	has, known := s.heartbeatToolState()
+// agentHasHeartbeatTool reports whether the agent running sessionID can carry
+// out a natural-language /heartbeat. A tool set still loading counts as yes.
+func (s *Service) agentHasHeartbeatTool(ctx context.Context, sessionID string) bool {
+	has, known := s.heartbeatToolState(ctx, sessionID)
 	return has || !known
 }
 
-// heartbeatToolState reports whether the active agent holds the heartbeat
-// tool. known is false while its tool set is still loading; with no active
+// heartbeatToolState reports whether the agent running sessionID holds the
+// heartbeat tool. known is false while its tool set is still loading; with no
 // agent the answer is a known no.
-func (s *Service) heartbeatToolState() (has, known bool) {
+func (s *Service) heartbeatToolState(ctx context.Context, sessionID string) (has, known bool) {
 	if s.app == nil {
 		return false, true
 	}
-	ag := s.app.ActiveAgent()
+	ag := s.app.AgentForSession(ctx, sessionID)
 	if ag == nil {
 		return false, true
 	}
@@ -569,14 +580,25 @@ func (s *Service) heartbeatStatus(ctx context.Context, peer bridge.PeerRef) (str
 	if err != nil {
 		return "", err
 	}
-	return heartbeat.Describe(row.Record, s.activeModelID()), nil
+	return heartbeat.Describe(row.Record, s.sessionModelID(ctx, s.peerSessionID(ctx, peer))), nil
 }
 
-func (s *Service) activeModelID() string {
-	if ag := s.app.ActiveAgent(); ag != nil {
+// sessionModelID is the model of the agent running sessionID.
+func (s *Service) sessionModelID(ctx context.Context, sessionID string) string {
+	if ag := s.app.AgentForSession(ctx, sessionID); ag != nil {
 		return string(ag.Model().ID)
 	}
 	return ""
+}
+
+// peerSessionID is the session bound to peer, or "" when it has none. Unlike
+// resolveBinding it never allocates a session.
+func (s *Service) peerSessionID(ctx context.Context, peer bridge.PeerRef) string {
+	b, err := s.store.GetBinding(ctx, s.projectID, peer.Channel, peer.Identity, peer.PeerID)
+	if err != nil {
+		return ""
+	}
+	return b.SessionID
 }
 
 // applyHeartbeat applies a parsed /heartbeat command to one binding and
@@ -616,15 +638,20 @@ func (s *Service) applyHeartbeat(ctx context.Context, peer bridge.PeerRef, cmd h
 			}
 		}
 	}
+	sessionID := ""
 	if cmd.Now {
 		note := "this chat has no session yet"
 		if b, err := s.store.GetBinding(ctx, s.projectID, peer.Channel, peer.Identity, peer.PeerID); err == nil && b.SessionID != "" {
+			sessionID = b.SessionID
 			_, note = s.fireHeartbeat(ctx, row, b, now, true)
 		}
 		notes = append(notes, "Beat now: "+note+".")
 	}
 
-	text := heartbeat.Describe(row.Record, s.activeModelID())
+	if sessionID == "" {
+		sessionID = s.peerSessionID(ctx, peer)
+	}
+	text := heartbeat.Describe(row.Record, s.sessionModelID(ctx, sessionID))
 	if len(notes) > 0 {
 		text += "\n" + strings.Join(notes, "\n")
 	}

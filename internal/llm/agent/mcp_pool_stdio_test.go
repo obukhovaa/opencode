@@ -29,6 +29,7 @@ const mcpHelperEnv = "OPENCODE_MCP_STDIO_HELPER"
 //   - pid:  the server's process id
 //   - exit: replies, then exits
 //   - spam: writes 256 KiB to stderr, then replies
+//   - hang: never replies
 func TestMCPStdioHelperProcess(t *testing.T) {
 	mode := os.Getenv(mcpHelperEnv)
 	if mode == "" {
@@ -51,6 +52,10 @@ func TestMCPStdioHelperProcess(t *testing.T) {
 			_, _ = os.Stderr.WriteString(line)
 		}
 		return textResult("ok"), nil
+	})
+	srv.AddTool(mcp.NewTool("hang"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Ignores cancellation, like a server stuck on its upstream.
+		select {}
 	})
 	_ = server.ServeStdio(srv)
 	if mode == "ignore-eof" {
@@ -205,6 +210,28 @@ func TestMCPStdio_DrainsStderr(t *testing.T) {
 			t.Fatalf("spam call %d: %+v", i, resp)
 		}
 	}
+}
+
+// A stdio call that runs out its own per-call timeout retires the client:
+// mcp-go never cancels the request server-side, so the server would keep
+// working on it and later calls on the pooled client would queue behind it.
+func TestMCPStdio_EvictedAfterItsCallTimeout(t *testing.T) {
+	withCloseGrace(t, 100*time.Millisecond)
+	m := stdioHelperServer("exit")
+	m.CallToolTimeoutSeconds = 1
+	reg := newStdioPoolRegistry(t, m)
+	first := callPID(t, reg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp := reg.CallTool(ctx, "helper", "hang", "{}")
+	if !resp.IsError || !strings.Contains(resp.Content, "timed out") {
+		t.Fatalf("hang call: %+v, want a timeout error", resp)
+	}
+	if pid := callPID(t, reg); pid == first {
+		t.Fatalf("call after the timeout ran in the abandoned process %d", pid)
+	}
+	eventually(t, "the abandoned helper to stop", func() bool { return processGone(first) || !processRunning(first) })
 }
 
 // processRunning reports whether pid is alive and not a zombie.

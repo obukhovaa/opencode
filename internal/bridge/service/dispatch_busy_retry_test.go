@@ -83,6 +83,9 @@ func (a *busyRetryStubAgent) Run(
 	return ch, nil
 }
 
+// IsSessionBusy: no run of this stub outlives its Run call.
+func (a *busyRetryStubAgent) IsSessionBusy(string) bool { return false }
+
 func (a *busyRetryStubAgent) runCallCount() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()

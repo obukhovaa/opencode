@@ -12,6 +12,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/cron"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
+	"github.com/opencode-ai/opencode/internal/logging"
 )
 
 // CommandHandler is the contract chat-command implementations satisfy.
@@ -54,6 +55,8 @@ func (s *Service) ChatCommands() map[string]CommandHandler {
 		"reset":     s.cmdReset,
 		"new":       s.cmdReset, // alias of /reset, matching the TUI's /new
 		"abort":     s.cmdAbort,
+		"stop":      s.cmdAbort, // alias of /abort: what users type to stop a run
+		"cancel":    s.cmdAbort, // alias of /abort
 		"pair":      s.cmdPair,
 		"skip":      s.cmdSkip,
 		"verbosity": s.cmdVerbosity,
@@ -72,23 +75,38 @@ func (s *Service) cmdAbort(ctx context.Context, in bridge.Inbound) *bridge.Comma
 	if err != nil {
 		return replyText("Failed to resolve binding: " + err.Error())
 	}
-	activeAgent := s.app.ActiveAgent()
-	if activeAgent == nil {
+	if s.app.ActiveAgent() == nil {
 		return replyText("No active agent — nothing to abort.")
 	}
-	if !activeAgent.IsSessionBusy(binding.SessionID) {
+	out := s.cancelSession(binding.SessionID)
+	if !out.runCancelled && out.dropped == 0 && out.tasksKilled == 0 {
 		return replyText(fmt.Sprintf("Session %s is not running anything to abort.",
 			shortSessionID(binding.SessionID)))
 	}
-	activeAgent.Cancel(binding.SessionID)
-	return replyText(fmt.Sprintf("Aborted in-flight run on session %s. Send another message to continue.",
-		shortSessionID(binding.SessionID)))
+	var b strings.Builder
+	if out.runCancelled {
+		fmt.Fprintf(&b, "Aborted in-flight run on session %s.", shortSessionID(binding.SessionID))
+	} else {
+		fmt.Fprintf(&b, "Nothing was running on session %s.", shortSessionID(binding.SessionID))
+	}
+	if out.dropped > 0 {
+		fmt.Fprintf(&b, " Dropped %d queued message(s).", out.dropped)
+	}
+	if out.tasksKilled > 0 {
+		fmt.Fprintf(&b, " Stopped %d background task(s).", out.tasksKilled)
+	}
+	b.WriteString(" Send another message to continue.")
+	return replyText(b.String())
 }
 
 // cmdAgent: list available agents or switch the active one.
 // "/agent" (no args) → reply with the available list.
-// "/agent coder" → switch active agent to "coder".
-func (s *Service) cmdAgent(_ context.Context, in bridge.Inbound) *bridge.CommandReply {
+// "/agent coder" → switch active agent to "coder": the default for new
+// sessions, and — when a session is bound here — the agent that session keeps
+// across restarts. Refused while a run is in flight on the bound session:
+// switching mid-run starts the next run under another agent while the first
+// one is still alive.
+func (s *Service) cmdAgent(ctx context.Context, in bridge.Inbound) *bridge.CommandReply {
 	args := strings.TrimSpace(in.CommandArgs)
 	if args == "" {
 		names := s.app.PrimaryAgentKeys
@@ -115,10 +133,48 @@ func (s *Service) cmdAgent(_ context.Context, in bridge.Inbound) *bridge.Command
 		}
 	}
 	target := config.AgentName(args)
+	// GetBinding, not resolveBinding: /agent in an unbound chat must not
+	// allocate a session as a side effect.
+	binding, err := s.store.GetBinding(ctx, s.projectID, in.Peer.Channel, in.Peer.Identity, in.Peer.PeerID)
+	bound := err == nil && binding.SessionID != ""
+	if bound {
+		if ag := s.app.ActiveAgent(); ag != nil && ag.IsSessionBusy(binding.SessionID) {
+			return replyText(fmt.Sprintf("A run is in progress on session %s; /stop it first, then switch the agent.",
+				shortSessionID(binding.SessionID)))
+		}
+	}
 	if err := s.app.SetActiveAgent(target); err != nil {
 		return replyText(fmt.Sprintf("Failed to set agent %q: %v", args, err))
 	}
+	stale := false
+	if bound {
+		// Compare-and-set against the value read here: a run starting on
+		// this session stamps its agent too, and neither write may blindly
+		// overwrite the other. One re-read lets the explicit choice win over
+		// a stamp that landed in between.
+		for attempt := 0; attempt < 2; attempt++ {
+			prev := s.storedSessionAgent(ctx, binding.SessionID)
+			// MySQL reports 0 rows affected for a no-op UPDATE, which
+			// SetAgentNameIf cannot tell apart from a lost compare-and-set.
+			if prev == string(target) {
+				break
+			}
+			ok, err := s.app.Sessions.SetAgentNameIf(ctx, binding.SessionID, prev, string(target))
+			if err != nil {
+				logging.Warn("bridge: /agent could not persist the choice on the session",
+					"session", binding.SessionID, "agent", args, "err", err)
+				break
+			}
+			if ok {
+				break
+			}
+			stale = attempt == 1
+		}
+	}
 	body := fmt.Sprintf("Active agent: %s", args)
+	if stale {
+		body += fmt.Sprintf(" (this session's agent changed meanwhile and was kept; send /agent %s again to switch it)", args)
+	}
 	return &bridge.CommandReply{
 		Text: body,
 		Hint: bridge.NewStatusHint(body),
@@ -434,7 +490,7 @@ func (s *Service) cmdCompact(ctx context.Context, in bridge.Inbound) *bridge.Com
 	if binding.SessionID == "" {
 		return replyText("No session bound here yet — send a message first, then `/compact`.")
 	}
-	activeAgent := s.app.ActiveAgent()
+	activeAgent := s.app.AgentForSession(ctx, binding.SessionID)
 	if activeAgent == nil {
 		return replyText("No active agent — cannot compact.")
 	}
@@ -607,11 +663,32 @@ func (s *Service) cmdReset(ctx context.Context, in bridge.Inbound) *bridge.Comma
 	); err != nil {
 		return replyText("Failed to reset binding: " + err.Error())
 	}
+	// Only the last peer's reset stops the session: another peer bound to it
+	// keeps its run, and an interactive flow step owns its session's lifetime.
+	var out cancelOutcome
+	if existing.SessionID != "" && s.resetOwnsSession(ctx, existing.SessionID) {
+		out = s.cancelSession(existing.SessionID)
+	}
 	s.invalidateSessionScopeCaches()
 	if existing.SessionID != "" {
 		s.closeDispatcherIfEmpty(ctx, existing.SessionID)
 	}
+	if out.runCancelled {
+		return replyText(fmt.Sprintf("Cancelled the run on session %s. Session reset; next message starts fresh.",
+			shortSessionID(existing.SessionID)))
+	}
 	return replyText("Session reset; next message starts fresh.")
+}
+
+// resetOwnsSession reports whether a /reset that just unbound its peer may
+// stop sessionID: no other peer is bound to it and it is not an interactive
+// flow step's session. A binding lookup failure keeps the run alive.
+func (s *Service) resetOwnsSession(ctx context.Context, sessionID string) bool {
+	if s.app != nil && s.app.Permissions != nil && s.app.Permissions.IsInteractiveSession(sessionID) {
+		return false
+	}
+	remaining, err := s.store.ListBindingsBySession(ctx, s.projectID, sessionID)
+	return err == nil && len(remaining) == 0
 }
 
 // cmdPair: surface the pairing-code allowlist mechanism for the
@@ -690,7 +767,7 @@ type helpEntry struct {
 // view (introspection / operator debug — not used by the chat surface).
 func (s *Service) helpEntriesForChannel(channel string) []helpEntry {
 	all := []helpEntry{
-		{Cmd: "/agent [name]", Desc: "list or switch the active agent"},
+		{Cmd: "/agent [name]", Desc: "list or switch the active agent (refused while a run is in progress)"},
 		{Cmd: "/model [id]", Desc: "list or switch the model"},
 		{Cmd: "/sessions", Desc: "list recent sessions (★ = current)"},
 		{Cmd: "/session [id-prefix]", Desc: "show details or switch by ID prefix"},
@@ -698,9 +775,11 @@ func (s *Service) helpEntriesForChannel(channel string) []helpEntry {
 		{Cmd: "/compact", Desc: "summarize the current session to shrink its context"},
 		{Cmd: "/crons", Desc: "list active scheduled cron jobs (★ = current session)"},
 		{Cmd: "/heartbeat [on|off|now|…]", Desc: "show or set this chat's heartbeat (scheduled check-ins)"},
-		{Cmd: "/reset", Desc: "forget this binding; next message starts fresh"},
+		{Cmd: "/reset", Desc: "cancel any run, forget this binding; next message starts fresh"},
 		{Cmd: "/new", Desc: "alias of /reset"},
-		{Cmd: "/abort", Desc: "cancel an in-flight run on the current session"},
+		{Cmd: "/abort", Desc: "cancel an in-flight run on the current session and drop queued messages"},
+		{Cmd: "/stop", Desc: "alias of /abort"},
+		{Cmd: "/cancel", Desc: "alias of /abort"},
 		{Cmd: "/pair", Desc: "pairing-code information"},
 		{Cmd: "/skip", Desc: "skip the current pending question"},
 		{Cmd: "/verbosity [mode]", Desc: "show or switch tool-update detail (compact|full)"},
@@ -732,5 +811,39 @@ func (s *Service) cmdHelp(_ context.Context, in bridge.Inbound) *bridge.CommandR
 	return &bridge.CommandReply{
 		Text: strings.Join(textLines, "\n"),
 		Hint: bridge.NewListHint("Commands", items, ""),
+	}
+}
+
+// storedSessionAgent is the agent persisted on the session, "" when none is
+// stamped or it cannot be read.
+func (s *Service) storedSessionAgent(ctx context.Context, sessionID string) string {
+	if sessionID == "" || s.app.Sessions == nil {
+		return ""
+	}
+	sess, err := s.app.Sessions.Get(ctx, sessionID)
+	if err != nil {
+		return ""
+	}
+	return sess.AgentName
+}
+
+// stampSessionAgent records on the session the primary agent a run is about to
+// use, so the session keeps it across restarts. prev is the stored agent the
+// choice was made against: the write is a compare-and-set on it, so an agent
+// stored meanwhile by /agent is not overwritten. A failure is logged and never
+// fails the run.
+func (s *Service) stampSessionAgent(ctx context.Context, sessionID string, name config.AgentName, prev string) {
+	if sessionID == "" || name == "" || s.app.Sessions == nil || prev == string(name) {
+		return
+	}
+	if _, ok := s.app.PrimaryAgents[name]; !ok {
+		return
+	}
+	ok, err := s.app.Sessions.SetAgentNameIf(ctx, sessionID, prev, string(name))
+	switch {
+	case err != nil:
+		logging.Warn("bridge: could not stamp the agent on the session", "session", sessionID, "agent", name, "err", err)
+	case !ok:
+		logging.Debug("bridge: session agent changed during the run start; keeping the stored one", "session", sessionID, "agent", name)
 	}
 }

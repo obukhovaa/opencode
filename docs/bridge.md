@@ -302,12 +302,13 @@ Once a peer is bound (manually or via the first inbound), the following commands
 | `/session` | Show current session details (title, tokens, cost, message count). |
 | `/session <id-prefix>` | Switch this peer's binding to another session by ID prefix. Refuses while a run is in flight on either side; multi-reviewer rows for other peers are unaffected. |
 | `/agent` | List primary agents (active marked). |
-| `/agent <id-prefix>` | Switch active agent (affects every chat session on this process; prompt cache invalidates). |
+| `/agent <id-prefix>` | Switch agent. The choice is stored on this peer's bound session (`sessions.agent_name`) and survives restarts; it also becomes the process default for sessions with no stored agent. Every bridge-dispatched run (chat turns and heartbeats) uses the session's stored agent and stamps the one it used. A stored name that is no longer a registered primary agent logs a warning and falls back to the process default. Prompt cache invalidates. Refused while a run is in flight on the bound session — `/stop` it first. |
 | `/model` | List models grouped by provider (active marked). |
 | `/model <id>` | Switch model on the active agent. |
-| `/reset` | Forget this peer's binding — next message starts a fresh session. |
+| `/reset` | Cancel the session's in-flight run and queued messages (as `/stop`), then forget this peer's binding — next message starts a fresh session. |
 | `/new` | Alias of `/reset`. |
-| `/abort` | Cancel an in-flight run on the current session (releases the busy lock — use when an MCP tool hangs). |
+| `/abort` | Cancel an in-flight run on the current session (releases the busy lock — use when an MCP tool hangs). Also stops the session's queued messages, so none of them starts a new run right after. |
+| `/stop`, `/cancel` | Aliases of `/abort`. |
 | `/pair <code>` | Pair with a private Telegram bot. |
 | `/skip` | Dismiss a pending agent question. |
 | `/verbosity` | Show the live tool-update level: `compact` (one progress card per run) or `full` (one card per tool call). |

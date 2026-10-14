@@ -70,6 +70,8 @@ type Querier interface {
 	RenameSession(ctx context.Context, arg RenameSessionParams) (Session, error)
 	SetCronJobFiring(ctx context.Context, arg SetCronJobFiringParams) error
 	SetGeneratedTitle(ctx context.Context, arg SetGeneratedTitleParams) (int64, error)
+	SetSessionAgentName(ctx context.Context, arg SetSessionAgentNameParams) error
+	SetSessionAgentNameIf(ctx context.Context, arg SetSessionAgentNameIfParams) (int64, error)
 	UpdateBridgeSessionPeerID(ctx context.Context, arg UpdateBridgeSessionPeerIDParams) error
 	UpdateBridgeSessionSessionID(ctx context.Context, arg UpdateBridgeSessionSessionIDParams) error
 	UpdateCronJobAfterRun(ctx context.Context, arg UpdateCronJobAfterRunParams) (CronJob, error)

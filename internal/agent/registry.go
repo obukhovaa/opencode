@@ -45,6 +45,10 @@ type AgentInfo struct {
 	// the cap on what this agent's compaction sends the summarizer, in
 	// estimated tokens. Zero means no cap beyond the summarizer's window.
 	SummarizerMaxInputTokens int64 `yaml:"summarizerMaxInputTokens,omitempty"`
+	// ToolCallTimeoutSeconds mirrors config.Agent.ToolCallTimeoutSeconds:
+	// the bound on one tool call in this agent's loop. Nil inherits the
+	// top-level value; 0 disables the bound.
+	ToolCallTimeoutSeconds *int `yaml:"toolCallTimeoutSeconds,omitempty"`
 	// LangfusePromptPath references this agent's system prompt in Langfuse
 	// Prompt Management instead of carrying its text. For a markdown agent
 	// it is a frontmatter key and the body must be empty — the body IS the
@@ -205,6 +209,9 @@ func newRegistry() Registry {
 		}
 		if a.SummarizerMaxInputTokens > 0 {
 			args = append(args, "summarizerMaxInputTokens", a.SummarizerMaxInputTokens)
+		}
+		if a.ToolCallTimeoutSeconds != nil {
+			args = append(args, "toolCallTimeoutSeconds", *a.ToolCallTimeoutSeconds)
 		}
 		logging.Info("Agent discovered", args...)
 	}
@@ -484,6 +491,7 @@ func registerBuiltins(agents map[string]AgentInfo, cfg *config.Config) {
 			b.TaskBudget = agentCfg.TaskBudget
 			b.CompactionThreshold = agentCfg.CompactionThreshold
 			b.SummarizerMaxInputTokens = agentCfg.SummarizerMaxInputTokens
+			b.ToolCallTimeoutSeconds = agentCfg.ToolCallTimeoutSeconds
 		}
 		agents[b.ID] = b
 	}
@@ -557,6 +565,9 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 		}
 		if agentCfg.SummarizerMaxInputTokens > 0 {
 			existing.SummarizerMaxInputTokens = agentCfg.SummarizerMaxInputTokens
+		}
+		if agentCfg.ToolCallTimeoutSeconds != nil {
+			existing.ToolCallTimeoutSeconds = agentCfg.ToolCallTimeoutSeconds
 		}
 		if agentCfg.Name != "" {
 			existing.Name = agentCfg.Name
@@ -687,6 +698,9 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 	}
 	if md.SummarizerMaxInputTokens > 0 {
 		existing.SummarizerMaxInputTokens = md.SummarizerMaxInputTokens
+	}
+	if md.ToolCallTimeoutSeconds != nil {
+		existing.ToolCallTimeoutSeconds = md.ToolCallTimeoutSeconds
 	}
 	// As in applyConfigOverrides: a prompt source replaces the source, so
 	// the two can never both be set on one registry entry.
@@ -1065,6 +1079,11 @@ func parseAgentMarkdown(path string) (*AgentInfo, error) {
 		logging.Warn("invalid summarizerMaxInputTokens in agent frontmatter, must be positive; ignoring it",
 			"agent", baseName, "path", path, "summarizer_max_input_tokens", agent.SummarizerMaxInputTokens)
 		agent.SummarizerMaxInputTokens = 0
+	}
+	if agent.ToolCallTimeoutSeconds != nil && *agent.ToolCallTimeoutSeconds < 0 {
+		logging.Warn("invalid toolCallTimeoutSeconds in agent frontmatter, must not be negative; ignoring it",
+			"agent", baseName, "path", path, "tool_call_timeout_seconds", *agent.ToolCallTimeoutSeconds)
+		agent.ToolCallTimeoutSeconds = nil
 	}
 	agent.Prompt = body
 	agent.Location = path

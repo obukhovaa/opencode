@@ -123,6 +123,7 @@ type Session struct {
 	SummaryMessageID      sql.NullString `json:"summary_message_id"`
 	ProjectID             sql.NullString `json:"project_id"`
 	UserSetTitle          bool           `json:"user_set_title"`
+	AgentName             string         `json:"agent_name"`
 }
 
 type SessionRecap struct {

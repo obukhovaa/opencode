@@ -36,6 +36,9 @@ type openaiClient struct {
 	providerOptions providerClientOptions
 	options         openaiOptions
 	client          openai.Client
+	// conns is the provider-owned transport; the RST_STREAM retry rotates it
+	// to force a new connection. Nil on clients built without a constructor.
+	conns *connResetter
 }
 
 type OpenAIClient ProviderClient
@@ -62,11 +65,15 @@ func newOpenAIClient(opts providerClientOptions) OpenAIClient {
 		openaiClientOptions = append(openaiClientOptions, option.WithMiddleware(bedrockOpenAIMiddleware()))
 	}
 
+	conns := newConnResetter(opts.baseTransport)
+	openaiClientOptions = append(openaiClientOptions, option.WithHTTPClient(conns.Client()))
+
 	client := openai.NewClient(openaiClientOptions...)
 	return &openaiClient{
 		providerOptions: opts,
 		options:         openaiOpts,
 		client:          client,
+		conns:           conns,
 	}
 }
 
@@ -357,8 +364,10 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 		// RST_STREAM resets, separate from attempts.
 		emittedOutput := false
 		rstStreamRetries := 0
+		var lastRSTStreamID uint32
 		for {
 			attempts++
+			connGen := o.conns.Generation()
 			openaiStream := o.client.Chat.Completions.NewStreaming(
 				ctx,
 				params,
@@ -488,8 +497,10 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 			// Peer-initiated HTTP/2 RST_STREAM (e.g. INTERNAL_ERROR /
 			// REFUSED_STREAM): a stream/connection-level reset from the proxy
 			// (litellm) or its load balancer — typically a stale pooled
-			// connection or a transient upstream blip. Retry on a fresh
-			// connection with a small dedicated budget and short backoff, but
+			// connection or a transient upstream blip. Rotate the provider's
+			// transport so the retry dials a new connection rather than
+			// reusing the one that reset, with a small dedicated budget and
+			// short backoff, but
 			// ONLY while nothing has reached the consumer yet: a pre-first-token
 			// reset is safe to replay, whereas retrying after deltas were
 			// emitted would duplicate the assistant message. A permanent error a
@@ -499,8 +510,10 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 				if !emittedOutput && rstStreamRetries < maxRSTStreamRetries {
 					backoffMs := 500 * (1 << rstStreamRetries)
 					rstStreamRetries++
-					logging.Warn("OpenAI stream reset by peer (HTTP/2 RST_STREAM), will retry on a fresh connection",
-						"attempt", rstStreamRetries, "max", maxRSTStreamRetries, "error", err)
+					rstLog := rotateForRSTRetry(o.conns, connGen, lastRSTStreamID, err)
+					lastRSTStreamID = rstLog.streamID
+					logging.Warn("OpenAI stream reset by peer (HTTP/2 RST_STREAM), will retry",
+						append([]any{"attempt", rstStreamRetries, "max", maxRSTStreamRetries, "error", err}, rstLog.kv()...)...)
 					select {
 					case <-ctx.Done():
 						if ctx.Err() != nil {

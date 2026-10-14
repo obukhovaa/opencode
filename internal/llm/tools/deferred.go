@@ -94,6 +94,9 @@ func SerializableFor(sessionID string, all []BaseTool) []BaseTool {
 
 func (w *DeferredWrapper) Info() ToolInfo { return w.inner.Info() }
 
+// Unwrap returns the wrapped tool.
+func (w *DeferredWrapper) Unwrap() BaseTool { return w.inner }
+
 func (w *DeferredWrapper) Run(ctx context.Context, params ToolCall) (ToolResponse, error) {
 	return w.inner.Run(ctx, params)
 }

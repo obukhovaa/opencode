@@ -92,7 +92,7 @@ func (q *Queries) DeleteSessionTree(ctx context.Context, arg DeleteSessionTreePa
 }
 
 const getSessionByID = `-- name: GetSessionByID :one
-SELECT id, parent_session_id, root_session_id, title, message_count, prompt_tokens, completion_tokens, cost, total_prompt_tokens, total_completion_tokens, updated_at, created_at, summary_message_id, project_id, user_set_title
+SELECT id, parent_session_id, root_session_id, title, message_count, prompt_tokens, completion_tokens, cost, total_prompt_tokens, total_completion_tokens, updated_at, created_at, summary_message_id, project_id, user_set_title, agent_name
 FROM sessions
 WHERE id = ? LIMIT 1
 `
@@ -116,12 +116,13 @@ func (q *Queries) GetSessionByID(ctx context.Context, id string) (Session, error
 		&i.SummaryMessageID,
 		&i.ProjectID,
 		&i.UserSetTitle,
+		&i.AgentName,
 	)
 	return i, err
 }
 
 const listChildSessions = `-- name: ListChildSessions :many
-SELECT id, parent_session_id, root_session_id, title, message_count, prompt_tokens, completion_tokens, cost, total_prompt_tokens, total_completion_tokens, updated_at, created_at, summary_message_id, project_id, user_set_title
+SELECT id, parent_session_id, root_session_id, title, message_count, prompt_tokens, completion_tokens, cost, total_prompt_tokens, total_completion_tokens, updated_at, created_at, summary_message_id, project_id, user_set_title, agent_name
 FROM sessions
 WHERE root_session_id = ?
 ORDER BY created_at ASC
@@ -152,6 +153,7 @@ func (q *Queries) ListChildSessions(ctx context.Context, rootSessionID sql.NullS
 			&i.SummaryMessageID,
 			&i.ProjectID,
 			&i.UserSetTitle,
+			&i.AgentName,
 		); err != nil {
 			return nil, err
 		}
@@ -167,7 +169,7 @@ func (q *Queries) ListChildSessions(ctx context.Context, rootSessionID sql.NullS
 }
 
 const listSessions = `-- name: ListSessions :many
-SELECT id, parent_session_id, root_session_id, title, message_count, prompt_tokens, completion_tokens, cost, total_prompt_tokens, total_completion_tokens, updated_at, created_at, summary_message_id, project_id, user_set_title
+SELECT id, parent_session_id, root_session_id, title, message_count, prompt_tokens, completion_tokens, cost, total_prompt_tokens, total_completion_tokens, updated_at, created_at, summary_message_id, project_id, user_set_title, agent_name
 FROM sessions
 WHERE parent_session_id is NULL AND project_id = ?
 ORDER BY created_at DESC
@@ -198,6 +200,7 @@ func (q *Queries) ListSessions(ctx context.Context, projectID sql.NullString) ([
 			&i.SummaryMessageID,
 			&i.ProjectID,
 			&i.UserSetTitle,
+			&i.AgentName,
 		); err != nil {
 			return nil, err
 		}
@@ -242,6 +245,42 @@ type SetGeneratedTitleParams struct {
 
 func (q *Queries) SetGeneratedTitle(ctx context.Context, arg SetGeneratedTitleParams) (int64, error) {
 	result, err := q.db.ExecContext(ctx, setGeneratedTitle, arg.Title, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const setSessionAgentName = `-- name: SetSessionAgentName :exec
+UPDATE sessions
+SET agent_name = ?
+WHERE id = ?
+`
+
+type SetSessionAgentNameParams struct {
+	AgentName string `json:"agent_name"`
+	ID        string `json:"id"`
+}
+
+func (q *Queries) SetSessionAgentName(ctx context.Context, arg SetSessionAgentNameParams) error {
+	_, err := q.db.ExecContext(ctx, setSessionAgentName, arg.AgentName, arg.ID)
+	return err
+}
+
+const setSessionAgentNameIf = `-- name: SetSessionAgentNameIf :execrows
+UPDATE sessions
+SET agent_name = ?
+WHERE id = ? AND agent_name = ?
+`
+
+type SetSessionAgentNameIfParams struct {
+	AgentName         string `json:"agent_name"`
+	ID                string `json:"id"`
+	ExpectedAgentName string `json:"expected_agent_name"`
+}
+
+func (q *Queries) SetSessionAgentNameIf(ctx context.Context, arg SetSessionAgentNameIfParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionAgentNameIf, arg.AgentName, arg.ID, arg.ExpectedAgentName)
 	if err != nil {
 		return 0, err
 	}

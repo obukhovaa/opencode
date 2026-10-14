@@ -239,7 +239,7 @@ func TestQueue_DequeueOrRelease_AtomicDeregistration(t *testing.T) {
 	a.queueCancels["s1"] = func() {}
 	a.queueMu.Unlock()
 
-	msg, ok := a.dequeueOrRelease("s1")
+	msg, ok := a.dequeueOrRelease(context.Background(), "s1")
 	if !ok || msg.Text != "a" {
 		t.Fatalf("dequeueOrRelease = (%q, %v), want (\"a\", true)", msg.Text, ok)
 	}
@@ -250,7 +250,7 @@ func TestQueue_DequeueOrRelease_AtomicDeregistration(t *testing.T) {
 		t.Error("worker deregistered while it still holds a message")
 	}
 
-	if _, ok := a.dequeueOrRelease("s1"); ok {
+	if _, ok := a.dequeueOrRelease(context.Background(), "s1"); ok {
 		t.Fatal("dequeueOrRelease returned a message from an empty queue")
 	}
 	a.queueMu.Lock()
@@ -281,4 +281,70 @@ func TestQueue_EnqueueDuringWorkerExit_AlwaysDelivered(t *testing.T) {
 	waitFor(t, "all queued messages delivered", func() bool {
 		return int(ag.count.Load()) == total && a.QueueLen("s1") == 0
 	})
+}
+
+// A worker stopped by StopSessionQueue must not touch the queue again: a
+// newer worker may own the session by then, and a message the stopped worker
+// held was discarded by the stop.
+func TestQueue_StoppedWorkerLeavesTheQueueAlone(t *testing.T) {
+	tests := []struct {
+		name string
+		act  func(a *App, stopped context.Context)
+	}{
+		{
+			name: "dequeueOrRelease neither pops nor deregisters",
+			act: func(a *App, stopped context.Context) {
+				if _, ok := a.dequeueOrRelease(stopped, "s1"); ok {
+					t.Error("stopped worker popped a message")
+				}
+			},
+		},
+		{
+			name: "requeue does not resurrect a held message",
+			act: func(a *App, stopped context.Context) {
+				a.requeue(stopped, "s1", QueuedMessage{Text: "held"})
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			appCtx, cancelApp := context.WithCancel(context.Background())
+			defer cancelApp()
+			a := newTestApp(appCtx)
+
+			stopped, stop := context.WithCancel(appCtx)
+			stop()
+			// A newer worker registered after the stop, with a message waiting.
+			newerCancelled := false
+			a.queueMu.Lock()
+			a.queues["s1"] = []QueuedMessage{{Text: "fresh"}}
+			a.queueCancels["s1"] = func() { newerCancelled = true }
+			a.queueMu.Unlock()
+
+			tt.act(a, stopped)
+
+			a.queueMu.Lock()
+			defer a.queueMu.Unlock()
+			if q := a.queues["s1"]; len(q) != 1 || q[0].Text != "fresh" {
+				t.Errorf("queue = %v, want only the newer worker's message", q)
+			}
+			if _, ok := a.queueCancels["s1"]; !ok {
+				t.Error("the newer worker's registration was removed")
+			}
+			if newerCancelled {
+				t.Error("the newer worker was cancelled")
+			}
+		})
+	}
+}
+
+func TestQueue_RequeueKeepsOrderForALiveWorker(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := newTestApp(ctx)
+	a.EnqueueForTest("s1", QueuedMessage{Text: "second"})
+	a.requeue(ctx, "s1", QueuedMessage{Text: "first"})
+	if q := a.QueuedMessages("s1"); len(q) != 2 || q[0].Text != "first" {
+		t.Errorf("queue = %v, want first at the head", q)
+	}
 }

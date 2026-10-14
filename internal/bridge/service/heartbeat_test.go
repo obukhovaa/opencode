@@ -40,6 +40,7 @@ type heartbeatStubAgent struct {
 	delay time.Duration
 	// noHeartbeatTool hides the heartbeat tool from ResolvedTools.
 	noHeartbeatTool bool
+	modelID         models.ModelID
 	// toolsLoading makes ResolvedTools report a tool set still loading.
 	toolsLoading bool
 	// busyRuns makes that many Run calls fail with ErrSessionBusy first,
@@ -139,7 +140,12 @@ func (a *heartbeatStubAgent) Cancel(string) {
 	}
 }
 
-func (a *heartbeatStubAgent) Model() models.Model { return models.Model{ID: "stub-model"} }
+func (a *heartbeatStubAgent) Model() models.Model {
+	if a.modelID != "" {
+		return models.Model{ID: a.modelID}
+	}
+	return models.Model{ID: "stub-model"}
+}
 
 func (a *heartbeatStubAgent) runs() []string {
 	a.mu.Lock()
@@ -153,6 +159,9 @@ type stubSessions struct {
 	session.Service
 	messages int64
 	root     string
+	// agentName is every session's persisted agent; SetAgentName updates it.
+	agentName string
+	setCalls  int
 }
 
 func (s *stubSessions) Get(_ context.Context, id string) (session.Session, error) {
@@ -160,7 +169,22 @@ func (s *stubSessions) Get(_ context.Context, id string) (session.Session, error
 	if root == "" {
 		root = id
 	}
-	return session.Session{ID: id, RootSessionID: root, MessageCount: s.messages}, nil
+	return session.Session{ID: id, RootSessionID: root, MessageCount: s.messages, AgentName: s.agentName}, nil
+}
+
+func (s *stubSessions) SetAgentName(_ context.Context, _, name string) error {
+	s.agentName = name
+	s.setCalls++
+	return nil
+}
+
+func (s *stubSessions) SetAgentNameIf(_ context.Context, _, expected, name string) (bool, error) {
+	if s.agentName != expected {
+		return false, nil
+	}
+	s.agentName = name
+	s.setCalls++
+	return true, nil
 }
 
 // directStubAdapter reports D-prefixed peers as direct messages. It does
@@ -553,6 +577,39 @@ func TestHeartbeatReminderNeedsTheHeartbeatTool(t *testing.T) {
 	h.svc.remindNewIdentities(ctx, h.clock)
 	if sent := h.sentTexts(); len(sent) != 1 {
 		t.Fatalf("no reminder once the heartbeat tool is known: %q", sent)
+	}
+}
+
+// A session stamped with another agent is judged by that agent, not by the
+// process-wide active one.
+func TestHeartbeatUsesTheSessionsAgent(t *testing.T) {
+	tests := []struct {
+		name      string
+		stamped   string
+		sessionID string
+		wantTool  bool
+		wantModel string
+	}{
+		{name: "unstamped session follows the active agent", sessionID: "S1", wantTool: true, wantModel: "stub-model"},
+		{name: "stamped session uses its own agent", stamped: "other", sessionID: "S1", wantTool: false, wantModel: "other-model"},
+		{name: "no session follows the active agent", stamped: "other", sessionID: "", wantTool: true, wantModel: "stub-model"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHeartbeatHarness(t)
+			other := &heartbeatStubAgent{noHeartbeatTool: true, modelID: "other-model"}
+			h.svc.app.PrimaryAgents["other"] = other
+			h.svc.app.Sessions = &stubSessions{messages: 3, agentName: tt.stamped}
+			ctx := context.Background()
+
+			has, known := h.svc.heartbeatToolState(ctx, tt.sessionID)
+			if !known || has != tt.wantTool {
+				t.Errorf("heartbeatToolState = (%v, %v), want (%v, true)", has, known, tt.wantTool)
+			}
+			if got := h.svc.sessionModelID(ctx, tt.sessionID); got != tt.wantModel {
+				t.Errorf("sessionModelID = %q, want %q", got, tt.wantModel)
+			}
+		})
 	}
 }
 

@@ -99,9 +99,16 @@ func (app *App) DequeueMessage(sessionID string) (QueuedMessage, bool) {
 // declines to start a worker, and its message is then stranded in the queue
 // with no worker to drain it (a lost wakeup — the message only moves when the
 // user happens to submit again).
-func (app *App) dequeueOrRelease(sessionID string) (QueuedMessage, bool) {
+//
+// A worker whose ctx is already cancelled does neither: StopSessionQueue has
+// dropped its registration (and possibly a newer worker took the slot), so
+// popping or deregistering here would take that worker's messages or cancel.
+func (app *App) dequeueOrRelease(ctx context.Context, sessionID string) (QueuedMessage, bool) {
 	app.queueMu.Lock()
 	defer app.queueMu.Unlock()
+	if ctx.Err() != nil {
+		return QueuedMessage{}, false
+	}
 	q := app.queues[sessionID]
 	if len(q) == 0 {
 		delete(app.queueCancels, sessionID)
@@ -143,9 +150,33 @@ func (app *App) DiscardQueue(sessionID string) {
 	app.notify(DrainEvent{SessionID: sessionID, QueueLen: 0})
 }
 
-// prepend re-inserts msg at the head of sessionID's queue. Must be called
-// under queueMu.
-func (app *App) prepend(sessionID string, msg QueuedMessage) {
+// StopSessionQueue cancels sessionID's drain worker, if one is running, and
+// empties its queue, returning how many messages were dropped. Used when the
+// session's run is cancelled: a queued message would otherwise start a new
+// run right after the cancel. Goroutine-safe.
+func (app *App) StopSessionQueue(sessionID string) int {
+	app.queueMu.Lock()
+	dropped := len(app.queues[sessionID])
+	delete(app.queues, sessionID)
+	if cancel, ok := app.queueCancels[sessionID]; ok {
+		cancel()
+		delete(app.queueCancels, sessionID)
+	}
+	app.queueMu.Unlock()
+	app.notify(DrainEvent{SessionID: sessionID, QueueLen: 0})
+	return dropped
+}
+
+// requeue puts a message the worker could not deliver back at the head of
+// sessionID's queue, unless the worker was stopped meanwhile: a message a
+// stopped worker held is part of what the stop discards, and re-inserting it
+// would resurrect it with no worker left to drain it.
+func (app *App) requeue(ctx context.Context, sessionID string, msg QueuedMessage) {
+	app.queueMu.Lock()
+	defer app.queueMu.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
 	app.queues[sessionID] = append([]QueuedMessage{msg}, app.queues[sessionID]...)
 }
 
@@ -184,7 +215,7 @@ func (app *App) drainLoop(ctx context.Context, sessionID string) {
 
 		// Dequeue-or-deregister is a single critical section: see
 		// dequeueOrRelease for why splitting it strands enqueued messages.
-		msg, ok := app.dequeueOrRelease(sessionID)
+		msg, ok := app.dequeueOrRelease(ctx, sessionID)
 		if !ok {
 			// Queue is empty and this worker is now deregistered.
 			app.notify(DrainEvent{SessionID: sessionID, QueueLen: 0})
@@ -194,9 +225,7 @@ func (app *App) drainLoop(ctx context.Context, sessionID string) {
 		ag := app.ActiveAgent()
 		if ag == nil {
 			// No agent available yet — re-prepend and wait briefly.
-			app.queueMu.Lock()
-			app.prepend(sessionID, msg)
-			app.queueMu.Unlock()
+			app.requeue(ctx, sessionID, msg)
 			select {
 			case <-ctx.Done():
 				return
@@ -210,9 +239,7 @@ func (app *App) drainLoop(ctx context.Context, sessionID string) {
 		// is the atomic LoadOrStore inside RunWith; ErrSessionBusy from Run is
 		// the correct retry signal — not this check.
 		if ag.IsSessionBusy(sessionID) {
-			app.queueMu.Lock()
-			app.prepend(sessionID, msg)
-			app.queueMu.Unlock()
+			app.requeue(ctx, sessionID, msg)
 			select {
 			case <-ctx.Done():
 				return
@@ -221,13 +248,14 @@ func (app *App) drainLoop(ctx context.Context, sessionID string) {
 			continue
 		}
 
+		if ctx.Err() != nil {
+			return
+		}
 		events, err := ag.Run(ctx, sessionID, msg.Text, 0, msg.Attachments...)
 		if err != nil {
 			if errors.Is(err, agent.ErrSessionBusy) {
 				// Lost the acquire race — re-prepend and back off.
-				app.queueMu.Lock()
-				app.prepend(sessionID, msg)
-				app.queueMu.Unlock()
+				app.requeue(ctx, sessionID, msg)
 				select {
 				case <-ctx.Done():
 					return
@@ -239,9 +267,11 @@ func (app *App) drainLoop(ctx context.Context, sessionID string) {
 			// Non-retryable error: surface with attribution, halt worker,
 			// preserve remaining queue (including the failed message at head).
 			app.queueMu.Lock()
-			app.prepend(sessionID, msg)
+			if ctx.Err() == nil {
+				app.queues[sessionID] = append([]QueuedMessage{msg}, app.queues[sessionID]...)
+				delete(app.queueCancels, sessionID)
+			}
 			remaining := len(app.queues[sessionID])
-			delete(app.queueCancels, sessionID)
 			app.queueMu.Unlock()
 			app.notify(DrainEvent{
 				SessionID: sessionID,

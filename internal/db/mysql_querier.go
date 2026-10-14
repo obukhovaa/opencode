@@ -70,6 +70,7 @@ func (q *MySQLQuerier) CreateSession(ctx context.Context, arg CreateSessionParam
 		SummaryMessageID:      mysqlSession.SummaryMessageID,
 		ProjectID:             mysqlSession.ProjectID,
 		UserSetTitle:          mysqlSession.UserSetTitle,
+		AgentName:             mysqlSession.AgentName,
 	}, nil
 }
 
@@ -96,6 +97,7 @@ func (q *MySQLQuerier) GetSessionByID(ctx context.Context, id string) (Session, 
 		SummaryMessageID:      mysqlSession.SummaryMessageID,
 		ProjectID:             mysqlSession.ProjectID,
 		UserSetTitle:          mysqlSession.UserSetTitle,
+		AgentName:             mysqlSession.AgentName,
 	}, nil
 }
 
@@ -124,6 +126,7 @@ func (q *MySQLQuerier) ListSessions(ctx context.Context, projectID sql.NullStrin
 			SummaryMessageID:      s.SummaryMessageID,
 			ProjectID:             s.ProjectID,
 			UserSetTitle:          s.UserSetTitle,
+			AgentName:             s.AgentName,
 		}
 	}
 	return sessions, nil
@@ -154,6 +157,7 @@ func (q *MySQLQuerier) ListChildSessions(ctx context.Context, rootSessionID sql.
 			SummaryMessageID:      s.SummaryMessageID,
 			ProjectID:             s.ProjectID,
 			UserSetTitle:          s.UserSetTitle,
+			AgentName:             s.AgentName,
 		}
 	}
 	return sessions, nil
@@ -199,6 +203,24 @@ func (q *MySQLQuerier) SetGeneratedTitle(ctx context.Context, arg SetGeneratedTi
 	return q.queries.SetGeneratedTitle(ctx, mysqldb.SetGeneratedTitleParams{
 		Title: arg.Title,
 		ID:    arg.ID,
+	})
+}
+
+// SetSessionAgentName records the primary agent a session runs under.
+func (q *MySQLQuerier) SetSessionAgentName(ctx context.Context, arg SetSessionAgentNameParams) error {
+	return q.queries.SetSessionAgentName(ctx, mysqldb.SetSessionAgentNameParams{
+		AgentName: arg.AgentName,
+		ID:        arg.ID,
+	})
+}
+
+// SetSessionAgentNameIf records the agent only while the stored one still
+// equals ExpectedAgentName; returns the number of rows changed.
+func (q *MySQLQuerier) SetSessionAgentNameIf(ctx context.Context, arg SetSessionAgentNameIfParams) (int64, error) {
+	return q.queries.SetSessionAgentNameIf(ctx, mysqldb.SetSessionAgentNameIfParams{
+		AgentName:         arg.AgentName,
+		ID:                arg.ID,
+		ExpectedAgentName: arg.ExpectedAgentName,
 	})
 }
 

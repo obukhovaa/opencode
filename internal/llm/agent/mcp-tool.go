@@ -156,12 +156,18 @@ func (r *mcpRegistry) CallTool(ctx context.Context, name, toolName, input string
 			return mcpConnectErrorResponse(ctx, toolName, err)
 		}
 		resp, callErr := callMCPTool(ctx, conn.client, toolName, input, callTimeout, maxOutputBytes)
-		// A stdio client is also evicted when the caller gave up mid-call:
-		// mcp-go sends no notifications/cancelled, so the server would keep
-		// working on the abandoned request and later calls would queue behind
-		// it. Retiring the client stops the process once its other calls
-		// finish, as closing the per-call client used to.
-		evict := mcpConnBroken(ctx, callErr, conn.remote) || (callErr != nil && ctx.Err() != nil && conn.stdio)
+		// A stdio client is also evicted when the caller gave up mid-call, or
+		// when the call ran out its own per-call timeout: mcp-go sends no
+		// notifications/cancelled, so the server would keep working on the
+		// abandoned request and every later call on the pooled client would
+		// queue behind it. Retiring the client stops the process once its
+		// other calls finish, as closing the per-call client used to.
+		abandoned := callErr != nil && (ctx.Err() != nil || errors.Is(callErr, errMCPCallTimeout))
+		evict := mcpConnBroken(ctx, callErr, conn.remote) || (abandoned && conn.stdio)
+		if abandoned && conn.stdio && ctx.Err() == nil {
+			logging.Warn("MCP stdio call timed out; retiring the client so later calls get a fresh process",
+				"server", name, "tool", toolName, "timeout", callTimeout)
+		}
 		r.pool.release(conn, evict)
 		if attempt == 1 && ctx.Err() == nil && mcpRequestNotSent(callErr) {
 			logging.Info("MCP client lost its session or process; retrying on a fresh client",
@@ -660,6 +666,10 @@ func resolveCallToolMaxOutputBytes(m config.MCPServer) int {
 	}
 }
 
+// errMCPCallTimeout marks a tools/call that ran out its own per-call timeout
+// while the caller's ctx was still alive.
+var errMCPCallTimeout = errors.New("mcp tool call timed out")
+
 // callMCPTool sends one tools/call on a connected, initialized client and
 // renders the result for the model. The error CallTool failed with comes back
 // separately — nil when the server answered, a tool-level isError result
@@ -704,7 +714,7 @@ func callMCPTool(ctx context.Context, c MCPClient, toolName string, input string
 			return tools.NewTextErrorResponse(fmt.Sprintf(
 				"MCP tool %q timed out after %s — upstream MCP server did not respond. The agent should try a different approach or skip this step.",
 				toolName, callTimeout,
-			)), err
+			)), fmt.Errorf("%w: %w", errMCPCallTimeout, err)
 		}
 		return tools.NewTextErrorResponse(err.Error()), err
 	}

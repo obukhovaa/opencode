@@ -27,7 +27,7 @@ func newForceTestClient(t *testing.T) *anthropicClient {
 
 func TestPreparedMessages_ForceStructOutput(t *testing.T) {
 	a := newForceTestClient(t)
-	msgs := a.convertMessages([]message.Message{{
+	msgs := a.convertMessagesUnfiltered([]message.Message{{
 		Role:  message.User,
 		Parts: []message.ContentPart{message.TextContent{Text: "do it"}},
 	}})
@@ -92,7 +92,7 @@ func TestPreparedMessages_ForceStructOutputRejectedByModel(t *testing.T) {
 			if !ok {
 				t.Fatal("newAnthropicClient did not return *anthropicClient")
 			}
-			msgs := a.convertMessages([]message.Message{{
+			msgs := a.convertMessagesUnfiltered([]message.Message{{
 				Role:  message.User,
 				Parts: []message.ContentPart{message.TextContent{Text: "do it"}},
 			}})
@@ -133,7 +133,7 @@ func TestPreparedMessages_ForceStructOutputHaiku55(t *testing.T) {
 			if !ok {
 				t.Fatal("newAnthropicClient did not return *anthropicClient")
 			}
-			msgs := a.convertMessages([]message.Message{{
+			msgs := a.convertMessagesUnfiltered([]message.Message{{
 				Role:  message.User,
 				Parts: []message.ContentPart{message.TextContent{Text: "do it"}},
 			}})

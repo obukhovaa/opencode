@@ -85,6 +85,10 @@ func (s *stubSessions) SetGeneratedTitle(_ context.Context, id, title string) (s
 	}
 	return sess, nil
 }
+func (s *stubSessions) SetAgentName(context.Context, string, string) error { return nil }
+func (s *stubSessions) SetAgentNameIf(context.Context, string, string, string) (bool, error) {
+	return true, nil
+}
 func (s *stubSessions) Delete(context.Context, string) error     { return nil }
 func (s *stubSessions) DeleteTree(context.Context, string) error { return nil }
 func (s *stubSessions) ListOldSessions(context.Context, string) ([]session.Session, error) {

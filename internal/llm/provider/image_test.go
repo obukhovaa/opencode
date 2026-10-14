@@ -175,7 +175,7 @@ func TestConvertMessagesChecksToolResultImages(t *testing.T) {
 	a := newAnthropicClient(providerClientOptions{apiKey: "test-key", model: models.SupportedModels[models.Claude46Opus]}).(*anthropicClient)
 	convert := func(t *testing.T, result message.ToolResult) []any {
 		t.Helper()
-		converted := a.convertMessages([]message.Message{newMsg(message.Tool, result)})
+		converted := a.convertMessagesUnfiltered([]message.Message{newMsg(message.Tool, result)})
 		if len(converted) != 1 || len(converted[0].Content) != 1 || converted[0].Content[0].OfToolResult == nil {
 			t.Fatalf("unexpected conversion shape: %+v", converted)
 		}
