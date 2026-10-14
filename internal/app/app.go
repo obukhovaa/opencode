@@ -458,7 +458,7 @@ func (d *taskDeps) IsSessionBusy(sessionID string) bool {
 // can complete and release the busy lock. requester (the spawning turn's,
 // carried on the task) keeps the resumed turn's telemetry attributed.
 func (d *taskDeps) ResumeSession(sessionID, requester string) {
-	ag := d.app.ActiveAgent()
+	ag := d.app.AgentForSession(context.Background(), sessionID)
 	if ag == nil {
 		return
 	}
