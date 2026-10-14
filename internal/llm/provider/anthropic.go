@@ -62,6 +62,10 @@ type anthropicClient struct {
 	providerOptions providerClientOptions
 	options         anthropicOptions
 	client          anthropic.Client
+	// betaHeader is the client-level anthropic-beta value (after
+	// filterBetaHeaders), kept so a single request can drop the
+	// interleaved-thinking beta when it goes out with thinking disabled.
+	betaHeader string
 	// countTokensUnsupported latches after the endpoint answers 404/405 —
 	// Anthropic-compatible endpoints (e.g. Moonshot's) may not implement
 	// count_tokens, and probing it once per agent-loop iteration would add
@@ -140,6 +144,7 @@ func newAnthropicClient(opts providerClientOptions) AnthropicClient {
 		o(&anthropicOpts)
 	}
 	resolvedBaseURL := ""
+	betaHeader := ""
 
 	anthropicClientOptions := []option.RequestOption{
 		// Disable the SDK's built-in retry layer (default MaxRetries=2,
@@ -183,6 +188,7 @@ func newAnthropicClient(opts providerClientOptions) AnthropicClient {
 				if v == "" {
 					continue
 				}
+				betaHeader = v
 			}
 			anthropicClientOptions = append(anthropicClientOptions, option.WithHeader(k, v))
 		}
@@ -206,10 +212,36 @@ func newAnthropicClient(opts providerClientOptions) AnthropicClient {
 		providerOptions: opts,
 		options:         anthropicOpts,
 		client:          client,
+		betaHeader:      betaHeader,
 	}
 }
 
-func (a *anthropicClient) convertMessages(messages []message.Message) (anthropicMessages []anthropic.MessageParam) {
+// convertMessages renders the history for one request. declared holds the
+// names of the tools that request ships (declaredToolNames over the same
+// convertTools output); nil disables the tool_reference filter.
+//
+// Bedrock rejects a tool_search_tool_result whose tool_reference names a tool
+// absent from tools[] (400 non-stream, RST_STREAM on the stream), while plain
+// tool_use blocks for undeclared tools pass. A session replayed under an
+// agent that does not declare the tools an earlier search found would fail
+// every turn, so such references are dropped here. The searched block sits
+// between that turn's signed thinking blocks, so a turn that lost a reference
+// also drops its reasoning.
+//
+// disableThinking reports that the last assistant turn lost a reference while
+// its tool loop is still open (it ends in tool_use and only tool results
+// follow). With thinking on, the API requires that turn's thinking, which can
+// no longer be sent, so the caller sends this one request with thinking off;
+// every thinking block has already been removed from the returned history.
+func (a *anthropicClient) convertMessages(messages []message.Message, declared map[string]struct{}) (anthropicMessages []anthropic.MessageParam, disableThinking bool) {
+	var dropped []droppedToolReference
+	lastAssistant := -1
+	for i, msg := range messages {
+		if msg.Role == message.Assistant {
+			lastAssistant = i
+		}
+	}
+	openTurnLostRef := false
 	for i, msg := range messages {
 		cache := !a.options.disableCache && i > len(messages)-3
 		switch msg.Role {
@@ -263,6 +295,15 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 				if a.providerOptions.model.SupportsToolSearch {
 					searches = msg.ToolSearchParts()
 				}
+				var names []string
+				searches, names = filterToolSearchReferences(searches, declared)
+				lostRef := len(names) > 0
+				if lostRef {
+					dropped = append(dropped, droppedToolReference{messageIndex: i, names: names})
+					if i == lastAssistant && len(msg.ToolCalls()) > 0 && onlyToolResultsAfter(messages, i) {
+						openTurnLostRef = true
+					}
+				}
 
 				emitReasoning := func(rc message.ReasoningContent) {
 					// Replay reasoning blocks exactly as produced — the API
@@ -311,7 +352,7 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 					))
 				}
 
-				if len(searches) > 0 && toolSearchesReplayableInOrder(searches) {
+				if len(searches) > 0 && !lostRef && toolSearchesReplayableInOrder(searches) {
 					// Order-preserving replay: re-insert each search at its
 					// captured index within the reasoning sequence (the model
 					// interleaves thinking → search → thinking → tool_use), so
@@ -343,7 +384,9 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 					// (it only forfeits reasoning continuity; the discovered
 					// tools still replay via their references). Off the native
 					// path, or with no search at all, replay reasoning normally.
-					if !(a.providerOptions.model.SupportsToolSearch && len(searches) > 0) {
+					// A turn that lost a reference to the declared-tools filter
+					// lands here too: its search blocks changed.
+					if !lostRef && !(a.providerOptions.model.SupportsToolSearch && len(searches) > 0) {
 						for _, rc := range reasoning {
 							emitReasoning(rc)
 						}
@@ -423,7 +466,130 @@ func (a *anthropicClient) convertMessages(messages []message.Message) (anthropic
 			anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(results...))
 		}
 	}
-	return
+	if openTurnLostRef {
+		anthropicMessages = stripThinkingBlocks(anthropicMessages)
+		disableThinking = true
+	}
+	if len(dropped) > 0 {
+		logDroppedToolReferences(a.providerOptions.model.ID, dropped, disableThinking)
+	}
+	return anthropicMessages, disableThinking
+}
+
+type droppedToolReference struct {
+	messageIndex int
+	names        []string
+}
+
+// declaredToolNames is the set of tool names a request declares: every
+// OfTool entry convertTools emitted, deferred (defer_loading) and activated
+// ones included. Only those may appear in a replayed tool_reference.
+func declaredToolNames(tools []anthropic.ToolUnionParam) map[string]struct{} {
+	declared := make(map[string]struct{}, len(tools))
+	for _, t := range tools {
+		if t.OfTool != nil {
+			declared[t.OfTool.Name] = struct{}{}
+		}
+	}
+	return declared
+}
+
+// filterToolSearchReferences removes the references to undeclared tools from
+// copies of searches and returns the dropped names. A nil declared set keeps
+// everything. A search left with no references and no error code is no longer
+// toolSearchEmittable, so emitSearch skips it together with its
+// server_tool_use block.
+func filterToolSearchReferences(searches []message.ToolSearchContent, declared map[string]struct{}) ([]message.ToolSearchContent, []string) {
+	if declared == nil || len(searches) == 0 {
+		return searches, nil
+	}
+	var dropped []string
+	var out []message.ToolSearchContent
+	for si, ts := range searches {
+		kept := ts.References[:0:0]
+		for _, name := range ts.References {
+			if _, ok := declared[name]; ok {
+				kept = append(kept, name)
+			} else {
+				dropped = append(dropped, name)
+			}
+		}
+		if len(kept) == len(ts.References) {
+			if out != nil {
+				out = append(out, ts)
+			}
+			continue
+		}
+		if out == nil {
+			out = append(make([]message.ToolSearchContent, 0, len(searches)), searches[:si]...)
+		}
+		ts.References = kept
+		out = append(out, ts)
+	}
+	if out == nil {
+		return searches, nil
+	}
+	return out, dropped
+}
+
+// onlyToolResultsAfter reports whether every message after index i is a tool
+// result message, i.e. the tool loop opened by messages[i] is still open.
+func onlyToolResultsAfter(messages []message.Message, i int) bool {
+	for _, m := range messages[i+1:] {
+		if m.Role != message.Tool {
+			return false
+		}
+	}
+	return true
+}
+
+// stripThinkingBlocks removes every thinking and redacted_thinking block, for
+// a request that goes out with thinking disabled.
+func stripThinkingBlocks(msgs []anthropic.MessageParam) []anthropic.MessageParam {
+	out := make([]anthropic.MessageParam, 0, len(msgs))
+	for i, m := range msgs {
+		if m.Role != anthropic.MessageParamRoleAssistant {
+			out = append(out, m)
+			continue
+		}
+		content := make([]anthropic.ContentBlockParamUnion, 0, len(m.Content))
+		for _, b := range m.Content {
+			if b.OfThinking != nil || b.OfRedactedThinking != nil {
+				continue
+			}
+			content = append(content, b)
+		}
+		if len(content) == 0 {
+			logging.Warn("Skipping assistant message left empty after removing its thinking blocks", "message_index", i)
+			continue
+		}
+		out = append(out, anthropic.MessageParam{Role: m.Role, Content: content})
+	}
+	return out
+}
+
+func logDroppedToolReferences(model models.ModelID, dropped []droppedToolReference, thinkingDisabled bool) {
+	var names []string
+	turns := make([]int, 0, len(dropped))
+	seen := map[string]struct{}{}
+	count := 0
+	for _, d := range dropped {
+		turns = append(turns, d.messageIndex)
+		count += len(d.names)
+		for _, n := range d.names {
+			if _, ok := seen[n]; !ok {
+				seen[n] = struct{}{}
+				names = append(names, n)
+			}
+		}
+	}
+	logging.Warn("Dropped tool_search references to tools this request does not declare",
+		"model", model,
+		"dropped_references", count,
+		"tools", strings.Join(names, ","),
+		"message_indexes", turns,
+		"thinking_disabled", thinkingDisabled,
+	)
 }
 
 // convertBinaryContent maps a binary attachment to the content block type
@@ -850,8 +1016,54 @@ func (a *anthropicClient) preparedMessages(ctx context.Context, messages []anthr
 	return params
 }
 
+// requestFor builds one request's params: the tools first, so the history's
+// tool_reference filter sees exactly the names the request declares. The
+// returned flag is convertMessages' disableThinking, already applied to the
+// params; pass it to requestOptions too.
+func (a *anthropicClient) requestFor(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) (anthropic.MessageNewParams, bool) {
+	anthropicTools := a.convertTools(ctx, tools)
+	anthropicMessages, disableThinking := a.convertMessages(messages, declaredToolNames(anthropicTools))
+	params := a.preparedMessages(ctx, anthropicMessages, anthropicTools)
+	if disableThinking {
+		params.Thinking = anthropic.ThinkingConfigParamUnion{}
+	}
+	return params, disableThinking
+}
+
+// requestOptions are the per-request options. With thinking disabled for the
+// request, the interleaved-thinking beta is dropped from the client-level
+// anthropic-beta header as well.
+func (a *anthropicClient) requestOptions(disableThinking bool) []option.RequestOption {
+	var opts []option.RequestOption
+	if disableThinking && a.betaHeader != "" {
+		if kept := withoutInterleavedThinkingBeta(a.betaHeader); kept != a.betaHeader {
+			if kept == "" {
+				opts = append(opts, option.WithHeaderDel("anthropic-beta"))
+			} else {
+				opts = append(opts, option.WithHeader("anthropic-beta", kept))
+			}
+		}
+	}
+	if a.options.taskBudget > 0 {
+		opts = append(opts, option.WithHeaderAdd("anthropic-beta", taskBudgetsBeta))
+	}
+	return opts
+}
+
+func withoutInterleavedThinkingBeta(value string) string {
+	var kept []string
+	for _, p := range strings.Split(value, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" || strings.HasPrefix(p, "interleaved-thinking") {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return strings.Join(kept, ",")
+}
+
 func (a *anthropicClient) send(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) (resposne *ProviderResponse, err error) {
-	preparedMessages := a.preparedMessages(ctx, a.convertMessages(messages), a.convertTools(ctx, tools))
+	preparedMessages, disableThinking := a.requestFor(ctx, messages, tools)
 	a.applyMetadata(ctx, &preparedMessages)
 	cfg := config.Get()
 	if cfg.Debug {
@@ -862,10 +1074,7 @@ func (a *anthropicClient) send(ctx context.Context, messages []message.Message, 
 	attempts := 0
 	for {
 		attempts++
-		var requestOpts []option.RequestOption
-		if a.options.taskBudget > 0 {
-			requestOpts = append(requestOpts, option.WithHeaderAdd("anthropic-beta", taskBudgetsBeta))
-		}
+		requestOpts := a.requestOptions(disableThinking)
 		anthropicResponse, err := a.client.Messages.New(
 			ctx,
 			preparedMessages,
@@ -908,7 +1117,7 @@ func (a *anthropicClient) send(ctx context.Context, messages []message.Message, 
 }
 
 func (a *anthropicClient) stream(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) <-chan ProviderEvent {
-	preparedMessages := a.preparedMessages(ctx, a.convertMessages(messages), a.convertTools(ctx, tools))
+	preparedMessages, disableThinking := a.requestFor(ctx, messages, tools)
 	a.applyMetadata(ctx, &preparedMessages)
 	cfg := config.Get()
 
@@ -938,10 +1147,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 		rstStreamRetries := 0
 		for {
 			attempts++
-			var requestOpts []option.RequestOption
-			if a.options.taskBudget > 0 {
-				requestOpts = append(requestOpts, option.WithHeaderAdd("anthropic-beta", taskBudgetsBeta))
-			}
+			requestOpts := a.requestOptions(disableThinking)
 			anthropicStream := a.client.Messages.NewStreaming(
 				ctx,
 				preparedMessages,
@@ -1881,7 +2087,8 @@ func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Me
 	if until := a.countTokensCooldownUntil.Load(); until > 0 && time.Now().UnixNano() < until {
 		return 0, fmt.Errorf("count_tokens is in cooldown after repeated shape rejections: %w", errors.ErrUnsupported)
 	}
-	anthropicMessages := a.convertMessages(messages)
+	anthropicTools := a.convertTools(ctx, tools)
+	anthropicMessages, _ := a.convertMessages(messages, declaredToolNames(anthropicTools))
 	// Server-side tool blocks go on every path: any Anthropic-dialect proxy
 	// (LiteLLM in front of Bedrock OR Vertex, and third-party endpoints) 500s
 	// on them, and re-inlining costs only a few tokens of framing.
@@ -1895,7 +2102,6 @@ func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Me
 		anthropicMessages = stripped
 		strippedTokenEstimate += mediaTokenEstimate
 	}
-	anthropicTools := a.convertTools(ctx, tools)
 	countTools := make([]anthropic.MessageCountTokensToolUnionParam, 0, len(anthropicTools))
 	for _, t := range anthropicTools {
 		// Map every union member we emit; an unmapped entry would serialize

@@ -232,7 +232,7 @@ func TestKimiRequestShape(t *testing.T) {
 		anthropicOptions: []AnthropicOption{WithAnthropicReasoningEffort("max")},
 	}).(*anthropicClient)
 
-	msgs := client.convertMessages([]message.Message{
+	msgs := client.convertMessagesUnfiltered([]message.Message{
 		{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "hello"}}},
 	})
 	params := client.preparedMessages(context.Background(), msgs, nil)

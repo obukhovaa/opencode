@@ -41,7 +41,7 @@ func TestConvertMessagesReplaysSignedThinkingVerbatim(t *testing.T) {
 		},
 	}
 
-	converted := a.convertMessages(msgs)
+	converted := a.convertMessagesUnfiltered(msgs)
 	if len(converted) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(converted))
 	}
@@ -75,7 +75,7 @@ func TestConvertMessagesSkipsUnsignedReasoning(t *testing.T) {
 		},
 	}
 
-	converted := a.convertMessages(msgs)
+	converted := a.convertMessagesUnfiltered(msgs)
 	if len(converted) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(converted))
 	}
@@ -97,7 +97,7 @@ func TestConvertMessagesReplaysRedactedThinking(t *testing.T) {
 		},
 	}
 
-	converted := a.convertMessages(msgs)
+	converted := a.convertMessagesUnfiltered(msgs)
 	blocks := converted[0].Content
 	if len(blocks) != 2 {
 		t.Fatalf("expected redacted+text blocks, got %d", len(blocks))
@@ -129,7 +129,7 @@ func TestConvertMessagesSkipsForeignProviderReasoning(t *testing.T) {
 			message.TextContent{Text: "answer"},
 		},
 	}
-	converted := a.convertMessages([]message.Message{kimiSigned})
+	converted := a.convertMessagesUnfiltered([]message.Message{kimiSigned})
 	if len(converted[0].Content) != 1 || converted[0].Content[0].OfText == nil {
 		t.Fatalf("foreign-provider reasoning must be skipped, got %+v", converted[0].Content)
 	}
@@ -137,7 +137,7 @@ func TestConvertMessagesSkipsForeignProviderReasoning(t *testing.T) {
 	// Same provider (any Claude model on the anthropic provider) replays.
 	sameProvider := kimiSigned
 	sameProvider.Model = models.Claude5Sonnet
-	converted = a.convertMessages([]message.Message{sameProvider})
+	converted = a.convertMessagesUnfiltered([]message.Message{sameProvider})
 	if len(converted[0].Content) != 2 || converted[0].Content[0].OfThinking == nil {
 		t.Fatalf("same-provider reasoning must replay, got %+v", converted[0].Content)
 	}
@@ -145,7 +145,7 @@ func TestConvertMessagesSkipsForeignProviderReasoning(t *testing.T) {
 	// Unknown/legacy model IDs keep replaying (rows predate model tracking).
 	legacy := kimiSigned
 	legacy.Model = ""
-	converted = a.convertMessages([]message.Message{legacy})
+	converted = a.convertMessagesUnfiltered([]message.Message{legacy})
 	if len(converted[0].Content) != 2 || converted[0].Content[0].OfThinking == nil {
 		t.Fatalf("legacy rows without model must replay, got %+v", converted[0].Content)
 	}
@@ -185,7 +185,7 @@ func TestPreparedMessagesDefaultEffort(t *testing.T) {
 			if !ok {
 				t.Fatal("newAnthropicClient did not return *anthropicClient")
 			}
-			msgs := a.convertMessages([]message.Message{{
+			msgs := a.convertMessagesUnfiltered([]message.Message{{
 				Role:  message.User,
 				Parts: []message.ContentPart{message.TextContent{Text: "classify this"}},
 			}})
@@ -210,7 +210,7 @@ func TestConvertMessagesCacheLandsAfterReasoning(t *testing.T) {
 		},
 	}
 
-	converted := a.convertMessages(msgs)
+	converted := a.convertMessagesUnfiltered(msgs)
 	blocks := converted[0].Content
 	if len(blocks) != 2 {
 		t.Fatalf("expected thinking+tool_use, got %d blocks", len(blocks))
@@ -283,7 +283,7 @@ func TestReasoningPartsEmptyTextStillReplayed(t *testing.T) {
 			},
 		},
 	}
-	converted := a.convertMessages(msgs)
+	converted := a.convertMessagesUnfiltered(msgs)
 	blocks := converted[0].Content
 	if len(blocks) != 2 || blocks[0].OfThinking == nil || blocks[0].OfThinking.Signature != "sig-only" {
 		t.Fatalf("empty-text signed block not replayed: %+v", blocks)

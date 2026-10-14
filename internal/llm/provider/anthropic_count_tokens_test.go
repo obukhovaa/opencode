@@ -14,6 +14,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	toolsPkg "github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
 )
 
@@ -217,6 +218,12 @@ func toolSearchTurn() []message.Message {
 	}
 }
 
+// toolSearchTurnTools declares the tool toolSearchTurn's search found, so the
+// declared-tools filter keeps its reference.
+func toolSearchTurnTools() []toolsPkg.BaseTool {
+	return []toolsPkg.BaseTool{newTestTool("gitlab_get_merge_request", false)}
+}
+
 // toolSearchTurnOverhead is what stripServerToolBlocksForCountTokens adds back
 // for toolSearchTurn: one server_tool_use, one tool_search_tool_result, one
 // tool_reference.
@@ -235,7 +242,7 @@ func TestCountTokensSanitizesServerToolBlocksOnBedrock(t *testing.T) {
 		anthropicOptions: []AnthropicOption{WithAnthropicBedrock(true)},
 	}).(*anthropicClient)
 
-	got, err := client.countTokens(context.Background(), toolSearchTurn(), nil)
+	got, err := client.countTokens(context.Background(), toolSearchTurn(), toolSearchTurnTools())
 	if err != nil {
 		t.Fatalf("countTokens: %v", err)
 	}
@@ -275,7 +282,7 @@ func TestCountTokensStripsServerToolBlocksOffBedrock(t *testing.T) {
 		model:   models.AnthropicModels[models.Claude5Sonnet],
 	}).(*anthropicClient)
 
-	got, err := client.countTokens(context.Background(), toolSearchTurn(), nil)
+	got, err := client.countTokens(context.Background(), toolSearchTurn(), toolSearchTurnTools())
 	if err != nil {
 		t.Fatalf("countTokens: %v", err)
 	}
@@ -492,7 +499,7 @@ func TestCountTokensBedrockSumsBothCompensations(t *testing.T) {
 		MIMEType: "image/png",
 		Data:     testPNG(t),
 	}))
-	got, err := client.countTokens(context.Background(), messages, nil)
+	got, err := client.countTokens(context.Background(), messages, toolSearchTurnTools())
 	if err != nil {
 		t.Fatalf("countTokens: %v", err)
 	}

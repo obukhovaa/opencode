@@ -273,7 +273,7 @@ func TestConvertMessagesCacheBreakpoints(t *testing.T) {
 				options: anthropicOptions{disableCache: tt.disableCache},
 			}
 
-			result := client.convertMessages(tt.messages)
+			result := client.convertMessagesUnfiltered(tt.messages)
 
 			if len(result) > len(tt.messages) {
 				t.Fatalf("got %d converted messages, expected at most %d", len(result), len(tt.messages))
@@ -448,7 +448,7 @@ func TestConvertMessagesKimiOmitsDocumentBlocks(t *testing.T) {
 			if !ok {
 				t.Fatal("newAnthropicClient did not return *anthropicClient")
 			}
-			converted := a.convertMessages(history)
+			converted := a.convertMessagesUnfiltered(history)
 			if len(converted) != 1 || len(converted[0].Content) != 3 {
 				t.Fatalf("unexpected conversion shape: %+v", converted)
 			}
@@ -486,7 +486,7 @@ func TestConvertMessagesSkipsEmptyUserText(t *testing.T) {
 			message.BinaryContent{MIMEType: "application/pdf", Data: []byte("%PDF-1.7")},
 		),
 	}
-	result := client.convertMessages(messages)
+	result := client.convertMessagesUnfiltered(messages)
 	if len(result) != 1 {
 		t.Fatalf("got %d messages, want 1", len(result))
 	}
@@ -499,7 +499,7 @@ func TestConvertMessagesSkipsEmptyUserText(t *testing.T) {
 
 	// A user message that ends up with no renderable blocks is skipped
 	// entirely rather than sent as an (invalid) empty-content message.
-	empty := client.convertMessages([]message.Message{
+	empty := client.convertMessagesUnfiltered([]message.Message{
 		newMsg(message.User, message.TextContent{Text: "   "}),
 	})
 	if len(empty) != 0 {
@@ -513,7 +513,7 @@ func TestConvertMessagesSkipsEmptyUserText(t *testing.T) {
 func TestConvertMessagesCacheOnAttachmentBlock(t *testing.T) {
 	client := &anthropicClient{options: anthropicOptions{}}
 
-	result := client.convertMessages([]message.Message{
+	result := client.convertMessagesUnfiltered([]message.Message{
 		newMsg(message.User,
 			message.TextContent{Text: "see attached"},
 			message.BinaryContent{MIMEType: "application/pdf", Data: []byte("%PDF-1.7")},
@@ -607,7 +607,7 @@ func TestConvertMessagesAcceptsEmptyToolInput(t *testing.T) {
 					ID: "toolu_bdrk_old", Name: "write", Input: tt.input, Finished: true,
 				}),
 			}
-			result := client.convertMessages(messages)
+			result := client.convertMessagesUnfiltered(messages)
 			if len(result) != 2 {
 				t.Fatalf("expected 2 converted messages, got %d", len(result))
 			}
@@ -801,7 +801,7 @@ func TestConvertMessagesMalformedToolInput(t *testing.T) {
 			ID: "tc1", Name: "write", Input: "{not valid json", Finished: true,
 		}),
 	}
-	result := client.convertMessages(messages)
+	result := client.convertMessagesUnfiltered(messages)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 converted messages, got %d", len(result))
 	}
@@ -980,7 +980,7 @@ func TestConvertMessagesDropsThinkingOnToolSearch(t *testing.T) {
 				options:         anthropicOptions{disableCache: true},
 				providerOptions: providerClientOptions{model: tt.model},
 			}
-			result := client.convertMessages([]message.Message{newMsg(message.Assistant, tt.parts...)})
+			result := client.convertMessagesUnfiltered([]message.Message{newMsg(message.Assistant, tt.parts...)})
 			if len(result) != 1 {
 				t.Fatalf("expected 1 converted message, got %d", len(result))
 			}
@@ -1127,7 +1127,7 @@ func TestConvertMessagesReplaysThinkingInOrderWithToolSearch(t *testing.T) {
 				options:         anthropicOptions{disableCache: true},
 				providerOptions: providerClientOptions{model: tt.model},
 			}
-			result := client.convertMessages([]message.Message{newMsg(message.Assistant, tt.parts...)})
+			result := client.convertMessagesUnfiltered([]message.Message{newMsg(message.Assistant, tt.parts...)})
 			if len(result) != 1 {
 				t.Fatalf("expected 1 converted message, got %d", len(result))
 			}
