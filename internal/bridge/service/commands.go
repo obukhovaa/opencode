@@ -79,7 +79,7 @@ func (s *Service) cmdAbort(ctx context.Context, in bridge.Inbound) *bridge.Comma
 		return replyText("No active agent — nothing to abort.")
 	}
 	out := s.cancelSession(binding.SessionID)
-	if !out.runCancelled && out.dropped == 0 {
+	if !out.runCancelled && out.dropped == 0 && out.tasksKilled == 0 {
 		return replyText(fmt.Sprintf("Session %s is not running anything to abort.",
 			shortSessionID(binding.SessionID)))
 	}
@@ -91,6 +91,9 @@ func (s *Service) cmdAbort(ctx context.Context, in bridge.Inbound) *bridge.Comma
 	}
 	if out.dropped > 0 {
 		fmt.Fprintf(&b, " Dropped %d queued message(s).", out.dropped)
+	}
+	if out.tasksKilled > 0 {
+		fmt.Fprintf(&b, " Stopped %d background task(s).", out.tasksKilled)
 	}
 	b.WriteString(" Send another message to continue.")
 	return replyText(b.String())
@@ -633,16 +636,16 @@ func (s *Service) cmdReset(ctx context.Context, in bridge.Inbound) *bridge.Comma
 	// would auto-allocate a fresh session for a missing row).
 	existing, _ := s.store.GetBinding(ctx, s.projectID,
 		in.Peer.Channel, in.Peer.Identity, in.Peer.PeerID)
-	// Cancel first: deleting the binding alone leaves the old run alive,
-	// and the next message would start a second run in the same process.
-	var out cancelOutcome
-	if existing.SessionID != "" {
-		out = s.cancelSession(existing.SessionID)
-	}
 	if err := s.store.DeleteBindingByPeer(
 		ctx, s.projectID, in.Peer.Channel, in.Peer.Identity, in.Peer.PeerID,
 	); err != nil {
 		return replyText("Failed to reset binding: " + err.Error())
+	}
+	// Only the last peer's reset stops the session: another peer bound to it
+	// keeps its run, and an interactive flow step owns its session's lifetime.
+	var out cancelOutcome
+	if existing.SessionID != "" && s.resetOwnsSession(ctx, existing.SessionID) {
+		out = s.cancelSession(existing.SessionID)
 	}
 	s.invalidateSessionScopeCaches()
 	if existing.SessionID != "" {
@@ -653,6 +656,17 @@ func (s *Service) cmdReset(ctx context.Context, in bridge.Inbound) *bridge.Comma
 			shortSessionID(existing.SessionID)))
 	}
 	return replyText("Session reset; next message starts fresh.")
+}
+
+// resetOwnsSession reports whether a /reset that just unbound its peer may
+// stop sessionID: no other peer is bound to it and it is not an interactive
+// flow step's session. A binding lookup failure keeps the run alive.
+func (s *Service) resetOwnsSession(ctx context.Context, sessionID string) bool {
+	if s.app != nil && s.app.Permissions != nil && s.app.Permissions.IsInteractiveSession(sessionID) {
+		return false
+	}
+	remaining, err := s.store.ListBindingsBySession(ctx, s.projectID, sessionID)
+	return err == nil && len(remaining) == 0
 }
 
 // cmdPair: surface the pairing-code allowlist mechanism for the

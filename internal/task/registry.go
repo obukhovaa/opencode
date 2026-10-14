@@ -280,6 +280,22 @@ func (r *registry) Kill(taskID string) error {
 	return nil
 }
 
+// KillSession kills every running background task owned by sessionID or one
+// of its direct child sessions and returns how many it killed. Cron tasks are
+// left alone: they are scheduler markers, not work the user started.
+func KillSession(r Registry, sessionID string) int {
+	if r == nil || sessionID == "" {
+		return 0
+	}
+	killed := 0
+	for _, t := range r.PendingForSessionTree(sessionID, func(t *Task) bool { return t.Kind != KindCron }) {
+		if r.Kill(t.ID) == nil {
+			killed++
+		}
+	}
+	return killed
+}
+
 // PrepareOutputFile creates `<dataDir>/tasks/<task_id>.out` with mode 0o600
 // after MkdirAll on the parent (mode 0o700). The file is opened with
 // O_CREATE|O_EXCL|O_WRONLY so two tasks with the same ID cannot share a

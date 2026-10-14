@@ -181,3 +181,52 @@ func TestSetGlobalRegistry(t *testing.T) {
 	}()
 	SetGlobalRegistry(r)
 }
+
+func TestKillSession(t *testing.T) {
+	tests := []struct {
+		name     string
+		tasks    []*Task
+		wantKill int
+		wantLive []int
+	}{
+		{
+			name: "kills own and child session tasks, spares cron and other sessions",
+			tasks: []*Task{
+				{SessionID: "s1", Kind: KindBash},
+				{SessionID: "s1", Kind: KindMonitor},
+				{SessionID: "child", ParentSessionID: "s1", Kind: KindTask},
+				{SessionID: "s1", Kind: KindCron},
+				{SessionID: "s2", Kind: KindBash},
+			},
+			wantKill: 3,
+			wantLive: []int{3, 4},
+		},
+		{name: "no tasks", wantKill: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewRegistry(func() string { return t.TempDir() })
+			for _, tk := range tt.tasks {
+				tk.ID = NewTaskID(tk.Kind)
+				if err := r.Register(tk); err != nil {
+					t.Fatalf("register: %v", err)
+				}
+			}
+			if got := KillSession(r, "s1"); got != tt.wantKill {
+				t.Errorf("KillSession = %d, want %d", got, tt.wantKill)
+			}
+			live := map[int]bool{}
+			for _, i := range tt.wantLive {
+				live[i] = true
+			}
+			for i, tk := range tt.tasks {
+				if running := tk.State() == StateRunning; running != live[i] {
+					t.Errorf("task %d running = %v, want %v", i, running, live[i])
+				}
+			}
+		})
+	}
+	if got := KillSession(nil, "s1"); got != 0 {
+		t.Errorf("nil registry killed %d", got)
+	}
+}

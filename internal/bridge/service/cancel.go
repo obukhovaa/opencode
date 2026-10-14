@@ -3,6 +3,7 @@ package service
 import (
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/task"
 )
 
 // cancelOutcome is what cancelSession stopped.
@@ -11,21 +12,22 @@ type cancelOutcome struct {
 	runCancelled bool
 	// dropped counts the user messages that were waiting to run.
 	dropped int
+	// tasksKilled counts the background tasks (bash, subagent, monitor)
+	// that were running for the session.
+	tasksKilled int
 }
 
-// cancelSession stops everything that would run on sessionID: the in-flight
-// run (on any agent instance — Cancel reaches the holder through the global
-// session ledger), the app's drain worker and queue for the session, and the
-// messages waiting in the session's dispatcher. Without the last two a
-// message queued behind the cancelled run starts a new run right after it.
+// cancelSession stops everything that would run on sessionID: the messages
+// waiting in the app's queue and the session's dispatcher, the in-flight run
+// (on any agent instance — Cancel reaches the holder through the global
+// session ledger), and the session's background tasks. The queues are
+// drained and the dispatcher's epoch bumped before the cancel: the cancel
+// frees the session, and a message still queued would start a new run in
+// that window.
 func (s *Service) cancelSession(sessionID string) cancelOutcome {
 	var out cancelOutcome
 	if sessionID == "" || s.app == nil {
 		return out
-	}
-	if ag := s.app.ActiveAgent(); ag != nil && ag.IsSessionBusy(sessionID) {
-		ag.Cancel(sessionID)
-		out.runCancelled = true
 	}
 	out.dropped += s.app.StopSessionQueue(sessionID)
 	s.dispatchMu.Lock()
@@ -34,9 +36,15 @@ func (s *Service) cancelSession(sessionID string) cancelOutcome {
 	if d != nil {
 		out.dropped += d.abortQueued()
 	}
-	if out.runCancelled || out.dropped > 0 {
+	if ag := s.app.ActiveAgent(); ag != nil && ag.IsSessionBusy(sessionID) {
+		ag.Cancel(sessionID)
+		out.runCancelled = true
+	}
+	out.tasksKilled = task.KillSession(task.GlobalRegistry(), sessionID)
+	if out.runCancelled || out.dropped > 0 || out.tasksKilled > 0 {
 		logging.Info("bridge: session cancelled",
-			"session", sessionID, "run_cancelled", out.runCancelled, "dropped_messages", out.dropped)
+			"session", sessionID, "run_cancelled", out.runCancelled,
+			"dropped_messages", out.dropped, "tasks_killed", out.tasksKilled)
 	}
 	return out
 }
