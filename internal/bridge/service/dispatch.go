@@ -97,6 +97,11 @@ type sessionDispatch struct {
 
 	stop atomic.Bool
 
+	// abortEpoch is bumped by abortQueued (/stop, /reset). A message that
+	// is waiting out a busy session compares it with the value it started
+	// with and gives up instead of running once the session frees up.
+	abortEpoch atomic.Uint64
+
 	// ownedSessions caches whether a given session ID is "ours" —
 	// either this dispatcher's session or one of its descendants
 	// (subagent sessions spawned via the `task` tool, which share
@@ -384,6 +389,7 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	}()
 
 	hb := in.Heartbeat
+	epoch := d.abortEpoch.Load()
 	if hb != nil {
 		// Heartbeat turns render quietly (the run's guard, below) and
 		// report their outcome. The claim is released by the deferred
@@ -492,6 +498,15 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	// that succeeds marks where this run's parts begin (runTextGuard.sinceMs).
 	var runStartMs int64
 	for {
+		if d.abortEpoch.Load() != epoch {
+			// The session was cancelled while this message waited.
+			logging.Info("bridge: queued inbound dropped by a session cancel", "session", d.sessionID)
+			d.liveAcks.Delete(peerAckKey(in.Peer))
+			if hb != nil {
+				d.svc.recordHeartbeatOutcome(ctx, in.Peer, hb.At, heartbeat.OutcomeSkipped, heartbeatPreemptedReason)
+			}
+			return
+		}
 		if hb != nil && d.heartbeatPreempted() {
 			// A message arrived before the beat's run started.
 			d.svc.recordHeartbeatOutcome(ctx, in.Peer, hb.At, heartbeat.OutcomeSkipped, heartbeatPreemptedReason)

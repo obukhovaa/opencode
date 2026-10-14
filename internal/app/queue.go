@@ -143,6 +143,23 @@ func (app *App) DiscardQueue(sessionID string) {
 	app.notify(DrainEvent{SessionID: sessionID, QueueLen: 0})
 }
 
+// StopSessionQueue cancels sessionID's drain worker, if one is running, and
+// empties its queue, returning how many messages were dropped. Used when the
+// session's run is cancelled: a queued message would otherwise start a new
+// run right after the cancel. Goroutine-safe.
+func (app *App) StopSessionQueue(sessionID string) int {
+	app.queueMu.Lock()
+	dropped := len(app.queues[sessionID])
+	delete(app.queues, sessionID)
+	if cancel, ok := app.queueCancels[sessionID]; ok {
+		cancel()
+		delete(app.queueCancels, sessionID)
+	}
+	app.queueMu.Unlock()
+	app.notify(DrainEvent{SessionID: sessionID, QueueLen: 0})
+	return dropped
+}
+
 // prepend re-inserts msg at the head of sessionID's queue. Must be called
 // under queueMu.
 func (app *App) prepend(sessionID string, msg QueuedMessage) {

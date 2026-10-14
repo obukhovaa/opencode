@@ -54,6 +54,8 @@ func (s *Service) ChatCommands() map[string]CommandHandler {
 		"reset":     s.cmdReset,
 		"new":       s.cmdReset, // alias of /reset, matching the TUI's /new
 		"abort":     s.cmdAbort,
+		"stop":      s.cmdAbort, // alias of /abort: what users type to stop a run
+		"cancel":    s.cmdAbort, // alias of /abort
 		"pair":      s.cmdPair,
 		"skip":      s.cmdSkip,
 		"verbosity": s.cmdVerbosity,
@@ -72,23 +74,33 @@ func (s *Service) cmdAbort(ctx context.Context, in bridge.Inbound) *bridge.Comma
 	if err != nil {
 		return replyText("Failed to resolve binding: " + err.Error())
 	}
-	activeAgent := s.app.ActiveAgent()
-	if activeAgent == nil {
+	if s.app.ActiveAgent() == nil {
 		return replyText("No active agent — nothing to abort.")
 	}
-	if !activeAgent.IsSessionBusy(binding.SessionID) {
+	out := s.cancelSession(binding.SessionID)
+	if !out.runCancelled && out.dropped == 0 {
 		return replyText(fmt.Sprintf("Session %s is not running anything to abort.",
 			shortSessionID(binding.SessionID)))
 	}
-	activeAgent.Cancel(binding.SessionID)
-	return replyText(fmt.Sprintf("Aborted in-flight run on session %s. Send another message to continue.",
-		shortSessionID(binding.SessionID)))
+	var b strings.Builder
+	if out.runCancelled {
+		fmt.Fprintf(&b, "Aborted in-flight run on session %s.", shortSessionID(binding.SessionID))
+	} else {
+		fmt.Fprintf(&b, "Nothing was running on session %s.", shortSessionID(binding.SessionID))
+	}
+	if out.dropped > 0 {
+		fmt.Fprintf(&b, " Dropped %d queued message(s).", out.dropped)
+	}
+	b.WriteString(" Send another message to continue.")
+	return replyText(b.String())
 }
 
 // cmdAgent: list available agents or switch the active one.
 // "/agent" (no args) → reply with the available list.
-// "/agent coder" → switch active agent to "coder".
-func (s *Service) cmdAgent(_ context.Context, in bridge.Inbound) *bridge.CommandReply {
+// "/agent coder" → switch active agent to "coder". Refused while a run is
+// in flight on the bound session: switching mid-run starts the next run
+// under another agent while the first one is still alive.
+func (s *Service) cmdAgent(ctx context.Context, in bridge.Inbound) *bridge.CommandReply {
 	args := strings.TrimSpace(in.CommandArgs)
 	if args == "" {
 		names := s.app.PrimaryAgentKeys
@@ -115,6 +127,13 @@ func (s *Service) cmdAgent(_ context.Context, in bridge.Inbound) *bridge.Command
 		}
 	}
 	target := config.AgentName(args)
+	if existing, err := s.store.GetBinding(ctx, s.projectID,
+		in.Peer.Channel, in.Peer.Identity, in.Peer.PeerID); err == nil && existing.SessionID != "" {
+		if ag := s.app.ActiveAgent(); ag != nil && ag.IsSessionBusy(existing.SessionID) {
+			return replyText(fmt.Sprintf("A run is in progress on session %s; /stop it first, then switch the agent.",
+				shortSessionID(existing.SessionID)))
+		}
+	}
 	if err := s.app.SetActiveAgent(target); err != nil {
 		return replyText(fmt.Sprintf("Failed to set agent %q: %v", args, err))
 	}
@@ -602,6 +621,12 @@ func (s *Service) cmdReset(ctx context.Context, in bridge.Inbound) *bridge.Comma
 	// would auto-allocate a fresh session for a missing row).
 	existing, _ := s.store.GetBinding(ctx, s.projectID,
 		in.Peer.Channel, in.Peer.Identity, in.Peer.PeerID)
+	// Cancel first: deleting the binding alone leaves the old run alive,
+	// and the next message would start a second run in the same process.
+	var out cancelOutcome
+	if existing.SessionID != "" {
+		out = s.cancelSession(existing.SessionID)
+	}
 	if err := s.store.DeleteBindingByPeer(
 		ctx, s.projectID, in.Peer.Channel, in.Peer.Identity, in.Peer.PeerID,
 	); err != nil {
@@ -610,6 +635,10 @@ func (s *Service) cmdReset(ctx context.Context, in bridge.Inbound) *bridge.Comma
 	s.invalidateSessionScopeCaches()
 	if existing.SessionID != "" {
 		s.closeDispatcherIfEmpty(ctx, existing.SessionID)
+	}
+	if out.runCancelled {
+		return replyText(fmt.Sprintf("Cancelled the run on session %s. Session reset; next message starts fresh.",
+			shortSessionID(existing.SessionID)))
 	}
 	return replyText("Session reset; next message starts fresh.")
 }
@@ -690,7 +719,7 @@ type helpEntry struct {
 // view (introspection / operator debug — not used by the chat surface).
 func (s *Service) helpEntriesForChannel(channel string) []helpEntry {
 	all := []helpEntry{
-		{Cmd: "/agent [name]", Desc: "list or switch the active agent"},
+		{Cmd: "/agent [name]", Desc: "list or switch the active agent (refused while a run is in progress)"},
 		{Cmd: "/model [id]", Desc: "list or switch the model"},
 		{Cmd: "/sessions", Desc: "list recent sessions (★ = current)"},
 		{Cmd: "/session [id-prefix]", Desc: "show details or switch by ID prefix"},
@@ -698,9 +727,11 @@ func (s *Service) helpEntriesForChannel(channel string) []helpEntry {
 		{Cmd: "/compact", Desc: "summarize the current session to shrink its context"},
 		{Cmd: "/crons", Desc: "list active scheduled cron jobs (★ = current session)"},
 		{Cmd: "/heartbeat [on|off|now|…]", Desc: "show or set this chat's heartbeat (scheduled check-ins)"},
-		{Cmd: "/reset", Desc: "forget this binding; next message starts fresh"},
+		{Cmd: "/reset", Desc: "cancel any run, forget this binding; next message starts fresh"},
 		{Cmd: "/new", Desc: "alias of /reset"},
-		{Cmd: "/abort", Desc: "cancel an in-flight run on the current session"},
+		{Cmd: "/abort", Desc: "cancel an in-flight run on the current session and drop queued messages"},
+		{Cmd: "/stop", Desc: "alias of /abort"},
+		{Cmd: "/cancel", Desc: "alias of /abort"},
 		{Cmd: "/pair", Desc: "pairing-code information"},
 		{Cmd: "/skip", Desc: "skip the current pending question"},
 		{Cmd: "/verbosity [mode]", Desc: "show or switch tool-update detail (compact|full)"},
