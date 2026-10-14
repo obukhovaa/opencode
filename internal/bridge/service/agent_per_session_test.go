@@ -271,3 +271,55 @@ func TestCmdAgentLosingTheCompareAndSet(t *testing.T) {
 		})
 	}
 }
+
+// mysqlRowsAffectedSessions reports a no-op compare-and-set as lost, the way
+// MySQL without clientFoundRows counts only changed rows.
+type mysqlRowsAffectedSessions struct {
+	session.Service
+	calls int
+}
+
+func (m *mysqlRowsAffectedSessions) SetAgentNameIf(ctx context.Context, id, expected, name string) (bool, error) {
+	m.calls++
+	if cur, err := m.Service.Get(ctx, id); err == nil && cur.AgentName == name {
+		return false, nil
+	}
+	return m.Service.SetAgentNameIf(ctx, id, expected, name)
+}
+
+func TestCmdAgentSameAgentOnMySQLIsNotReportedAsChanged(t *testing.T) {
+	ctx := context.Background()
+	svc, conn := newOrchestratorForTest(t)
+	real := session.NewService(opencodedb.New(conn), "proj")
+	sessions := &mysqlRowsAffectedSessions{Service: real}
+	svc.app = twoAgentApp(sessions, &busyRetryStubAgent{}, &busyRetryStubAgent{})
+	if _, err := svc.store.UpsertBinding(ctx, store.Binding{
+		ProjectID: "proj", Channel: "slack", IdentityID: "default", PeerID: "D1", SessionID: "S1",
+	}); err != nil {
+		t.Fatalf("UpsertBinding: %v", err)
+	}
+	if err := real.SetAgentName(ctx, "S1", "hivemind"); err != nil {
+		t.Fatalf("SetAgentName: %v", err)
+	}
+
+	reply := svc.cmdAgent(ctx, bridge.Inbound{
+		Peer:        bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "D1"},
+		CommandArgs: "hivemind",
+	})
+	if reply == nil {
+		t.Fatal("no reply")
+	}
+	if strings.Contains(reply.Text, "changed meanwhile") {
+		t.Errorf("reply %q reports a change for the agent already stored", reply.Text)
+	}
+	got, err := real.Get(ctx, "S1")
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if got.AgentName != "hivemind" {
+		t.Errorf("stored agent = %q, want hivemind", got.AgentName)
+	}
+	if sessions.calls != 0 {
+		t.Errorf("SetAgentNameIf calls = %d, want 0", sessions.calls)
+	}
+}

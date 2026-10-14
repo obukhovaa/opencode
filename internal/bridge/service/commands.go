@@ -154,6 +154,11 @@ func (s *Service) cmdAgent(ctx context.Context, in bridge.Inbound) *bridge.Comma
 		// a stamp that landed in between.
 		for attempt := 0; attempt < 2; attempt++ {
 			prev := s.storedSessionAgent(ctx, binding.SessionID)
+			// MySQL reports 0 rows affected for a no-op UPDATE, which
+			// SetAgentNameIf cannot tell apart from a lost compare-and-set.
+			if prev == string(target) {
+				break
+			}
 			ok, err := s.app.Sessions.SetAgentNameIf(ctx, binding.SessionID, prev, string(target))
 			if err != nil {
 				logging.Warn("bridge: /agent could not persist the choice on the session",
