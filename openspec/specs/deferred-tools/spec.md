@@ -9,7 +9,6 @@ preserving, single-turn) and fallback (client-side, two-turn) activation
 paths, per-session activation and announcement state, token accounting, and
 cache-stability guarantees. Tuned to keep large MCP tool fleets out of context
 until needed, with no behavior change for agents that don't opt in.
-
 ## Requirements
 ### Requirement: Deferral is opt-in per agent and default-off
 
@@ -312,4 +311,28 @@ deferred tool.
 - **WHEN** the native-path script runs with an Anthropic credential present
 - **THEN** the session's requests include `defer_loading: true` on deferred tools and the server tool-search tool
 - **AND** the model invokes a deferred tool that was discovered via tool search during the session
+
+### Requirement: Replayed tool references are limited to the declared tools
+
+When it replays server-side tool searches, the Anthropic client SHALL drop every `tool_reference` that names a tool the request does not declare in `tools[]` (deferred `defer_loading` entries and activated tools count as declared). A turn that lost any reference SHALL be replayed without its reasoning blocks; a search left with no references and no error code SHALL be removed together with its `server_tool_use`. Plain `tool_use` blocks for undeclared tools SHALL be kept. One WARN per request SHALL name the dropped tools and the turns. The `count_tokens` request SHALL apply the same filter. A history whose references are all declared SHALL be sent unchanged.
+
+#### Scenario: Session replayed under an agent without the found tools
+
+- **WHEN** a session whose earlier turn found `datadog_search_logs` by tool search is replayed under an agent that does not declare it
+- **THEN** the request carries no reference to `datadog_search_logs`, that turn carries no thinking blocks, and the request is accepted
+
+#### Scenario: Partially declared search
+
+- **WHEN** a search found two tools and only one is declared
+- **THEN** the search is replayed with the declared reference only
+
+### Requirement: An open tool loop that lost a reference goes out without thinking
+
+When the turn that lost a reference is the last assistant turn, ends in `tool_use` and is followed only by tool results, that single request SHALL be sent with thinking disabled: no thinking parameter, no interleaved-thinking beta, and no thinking blocks anywhere in its history. The next request after a new assistant turn SHALL enable thinking again.
+
+#### Scenario: Restart in the middle of a tool loop
+
+- **WHEN** the pod restarted while the last turn's tool calls were answered and that turn lost a reference
+- **THEN** the next request has no thinking config and no thinking blocks
+- **AND** the request after the model's answer has thinking again
 
