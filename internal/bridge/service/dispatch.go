@@ -399,6 +399,9 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 		defer d.heartbeatQueued.Store(false)
 	}
 
+	// The stamp below is a compare-and-set against what the session stored
+	// before the agent was resolved, so a concurrent /agent switch wins.
+	prevAgent := d.svc.storedSessionAgent(ctx, d.sessionID)
 	// Named `ag`, not `agent`: the local must not shadow the agent package.
 	agentName, ag := d.svc.app.ResolveSessionAgent(ctx, d.sessionID)
 	if hb != nil {
@@ -422,7 +425,7 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 			false, d.sessionID)
 		return
 	}
-	d.svc.stampSessionAgent(ctx, d.sessionID, agentName)
+	d.svc.stampSessionAgent(ctx, d.sessionID, agentName, prevAgent)
 
 	// Subscribe parts BEFORE Run — the broker's zero-subscriber fast path
 	// will otherwise drop the agent's first ToolCall pending events.

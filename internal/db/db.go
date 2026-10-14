@@ -198,6 +198,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.setSessionAgentNameStmt, err = db.PrepareContext(ctx, setSessionAgentName); err != nil {
 		return nil, fmt.Errorf("error preparing query SetSessionAgentName: %w", err)
 	}
+	if q.setSessionAgentNameIfStmt, err = db.PrepareContext(ctx, setSessionAgentNameIf); err != nil {
+		return nil, fmt.Errorf("error preparing query SetSessionAgentNameIf: %w", err)
+	}
 	if q.updateBridgeSessionPeerIDStmt, err = db.PrepareContext(ctx, updateBridgeSessionPeerID); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateBridgeSessionPeerID: %w", err)
 	}
@@ -532,6 +535,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing setSessionAgentNameStmt: %w", cerr)
 		}
 	}
+	if q.setSessionAgentNameIfStmt != nil {
+		if cerr := q.setSessionAgentNameIfStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing setSessionAgentNameIfStmt: %w", cerr)
+		}
+	}
 	if q.updateBridgeSessionPeerIDStmt != nil {
 		if cerr := q.updateBridgeSessionPeerIDStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing updateBridgeSessionPeerIDStmt: %w", cerr)
@@ -694,6 +702,7 @@ type Queries struct {
 	setCronJobFiringStmt                 *sql.Stmt
 	setGeneratedTitleStmt                *sql.Stmt
 	setSessionAgentNameStmt              *sql.Stmt
+	setSessionAgentNameIfStmt            *sql.Stmt
 	updateBridgeSessionPeerIDStmt        *sql.Stmt
 	updateBridgeSessionSessionIDStmt     *sql.Stmt
 	updateCronJobAfterRunStmt            *sql.Stmt
@@ -771,6 +780,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		setCronJobFiringStmt:                 q.setCronJobFiringStmt,
 		setGeneratedTitleStmt:                q.setGeneratedTitleStmt,
 		setSessionAgentNameStmt:              q.setSessionAgentNameStmt,
+		setSessionAgentNameIfStmt:            q.setSessionAgentNameIfStmt,
 		updateBridgeSessionPeerIDStmt:        q.updateBridgeSessionPeerIDStmt,
 		updateBridgeSessionSessionIDStmt:     q.updateBridgeSessionSessionIDStmt,
 		updateCronJobAfterRunStmt:            q.updateCronJobAfterRunStmt,

@@ -146,13 +146,30 @@ func (s *Service) cmdAgent(ctx context.Context, in bridge.Inbound) *bridge.Comma
 	if err := s.app.SetActiveAgent(target); err != nil {
 		return replyText(fmt.Sprintf("Failed to set agent %q: %v", args, err))
 	}
+	stale := false
 	if bound {
-		if err := s.app.Sessions.SetAgentName(ctx, binding.SessionID, string(target)); err != nil {
-			logging.Warn("bridge: /agent could not persist the choice on the session",
-				"session", binding.SessionID, "agent", args, "err", err)
+		// Compare-and-set against the value read here: a run starting on
+		// this session stamps its agent too, and neither write may blindly
+		// overwrite the other. One re-read lets the explicit choice win over
+		// a stamp that landed in between.
+		for attempt := 0; attempt < 2; attempt++ {
+			prev := s.storedSessionAgent(ctx, binding.SessionID)
+			ok, err := s.app.Sessions.SetAgentNameIf(ctx, binding.SessionID, prev, string(target))
+			if err != nil {
+				logging.Warn("bridge: /agent could not persist the choice on the session",
+					"session", binding.SessionID, "agent", args, "err", err)
+				break
+			}
+			if ok {
+				break
+			}
+			stale = attempt == 1
 		}
 	}
 	body := fmt.Sprintf("Active agent: %s", args)
+	if stale {
+		body += fmt.Sprintf(" (this session's agent changed meanwhile and was kept; send /agent %s again to switch it)", args)
+	}
 	return &bridge.CommandReply{
 		Text: body,
 		Hint: bridge.NewStatusHint(body),
@@ -792,25 +809,36 @@ func (s *Service) cmdHelp(_ context.Context, in bridge.Inbound) *bridge.CommandR
 	}
 }
 
+// storedSessionAgent is the agent persisted on the session, "" when none is
+// stamped or it cannot be read.
+func (s *Service) storedSessionAgent(ctx context.Context, sessionID string) string {
+	if sessionID == "" || s.app.Sessions == nil {
+		return ""
+	}
+	sess, err := s.app.Sessions.Get(ctx, sessionID)
+	if err != nil {
+		return ""
+	}
+	return sess.AgentName
+}
+
 // stampSessionAgent records on the session the primary agent a run is about to
-// use, so the session keeps it across restarts. A failure is logged and never
+// use, so the session keeps it across restarts. prev is the stored agent the
+// choice was made against: the write is a compare-and-set on it, so an agent
+// stored meanwhile by /agent is not overwritten. A failure is logged and never
 // fails the run.
-func (s *Service) stampSessionAgent(ctx context.Context, sessionID string, name config.AgentName) {
-	if sessionID == "" || name == "" || s.app.Sessions == nil {
+func (s *Service) stampSessionAgent(ctx context.Context, sessionID string, name config.AgentName, prev string) {
+	if sessionID == "" || name == "" || s.app.Sessions == nil || prev == string(name) {
 		return
 	}
 	if _, ok := s.app.PrimaryAgents[name]; !ok {
 		return
 	}
-	sess, err := s.app.Sessions.Get(ctx, sessionID)
-	if err != nil {
-		logging.Warn("bridge: could not read the session to stamp its agent", "session", sessionID, "err", err)
-		return
-	}
-	if sess.AgentName == string(name) {
-		return
-	}
-	if err := s.app.Sessions.SetAgentName(ctx, sessionID, string(name)); err != nil {
+	ok, err := s.app.Sessions.SetAgentNameIf(ctx, sessionID, prev, string(name))
+	switch {
+	case err != nil:
 		logging.Warn("bridge: could not stamp the agent on the session", "session", sessionID, "agent", name, "err", err)
+	case !ok:
+		logging.Debug("bridge: session agent changed during the run start; keeping the stored one", "session", sessionID, "agent", name)
 	}
 }

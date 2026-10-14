@@ -267,6 +267,26 @@ func (q *Queries) SetSessionAgentName(ctx context.Context, arg SetSessionAgentNa
 	return err
 }
 
+const setSessionAgentNameIf = `-- name: SetSessionAgentNameIf :execrows
+UPDATE sessions
+SET agent_name = ?
+WHERE id = ? AND agent_name = ?
+`
+
+type SetSessionAgentNameIfParams struct {
+	AgentName         string `json:"agent_name"`
+	ID                string `json:"id"`
+	ExpectedAgentName string `json:"expected_agent_name"`
+}
+
+func (q *Queries) SetSessionAgentNameIf(ctx context.Context, arg SetSessionAgentNameIfParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSessionAgentNameIf, arg.AgentName, arg.ID, arg.ExpectedAgentName)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updateSession = `-- name: UpdateSession :execresult
 UPDATE sessions
 SET

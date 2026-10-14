@@ -61,6 +61,10 @@ type Service interface {
 	SetGeneratedTitle(ctx context.Context, id, title string) (Session, error)
 	// SetAgentName persists the primary agent the session runs under.
 	SetAgentName(ctx context.Context, sessionID, name string) error
+	// SetAgentNameIf is SetAgentName guarded by the stored agent: it writes
+	// only while the session's agent still equals expected ("" for a session
+	// never stamped) and reports whether it did.
+	SetAgentNameIf(ctx context.Context, sessionID, expected, name string) (bool, error)
 	Delete(ctx context.Context, id string) error
 	DeleteTree(ctx context.Context, id string) error
 	ListOldSessions(ctx context.Context, activeSessionID string) ([]Session, error)
@@ -296,6 +300,26 @@ func (s *service) SetAgentName(ctx context.Context, sessionID, name string) erro
 	}
 	s.Publish(pubsub.UpdatedEvent, session)
 	return nil
+}
+
+func (s *service) SetAgentNameIf(ctx context.Context, sessionID, expected, name string) (bool, error) {
+	rows, err := s.q.SetSessionAgentNameIf(ctx, db.SetSessionAgentNameIfParams{
+		ID:                sessionID,
+		AgentName:         name,
+		ExpectedAgentName: expected,
+	})
+	if err != nil {
+		return false, err
+	}
+	if rows == 0 {
+		return false, nil
+	}
+	session, err := s.Get(ctx, sessionID)
+	if err != nil {
+		return true, err
+	}
+	s.Publish(pubsub.UpdatedEvent, session)
+	return true, nil
 }
 
 func (s *service) List(ctx context.Context) ([]Session, error) {

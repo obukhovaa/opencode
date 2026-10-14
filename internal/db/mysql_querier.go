@@ -214,6 +214,16 @@ func (q *MySQLQuerier) SetSessionAgentName(ctx context.Context, arg SetSessionAg
 	})
 }
 
+// SetSessionAgentNameIf records the agent only while the stored one still
+// equals ExpectedAgentName; returns the number of rows changed.
+func (q *MySQLQuerier) SetSessionAgentNameIf(ctx context.Context, arg SetSessionAgentNameIfParams) (int64, error) {
+	return q.queries.SetSessionAgentNameIf(ctx, mysqldb.SetSessionAgentNameIfParams{
+		AgentName:         arg.AgentName,
+		ID:                arg.ID,
+		ExpectedAgentName: arg.ExpectedAgentName,
+	})
+}
+
 // DeleteSession deletes a session
 func (q *MySQLQuerier) DeleteSession(ctx context.Context, id string) error {
 	return q.queries.DeleteSession(ctx, id)

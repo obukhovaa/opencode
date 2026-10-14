@@ -76,8 +76,8 @@ func TestHandleInboundUnknownStoredAgentFallsBackAndRestamps(t *testing.T) {
 
 type failingStampSessions struct{ stubSessions }
 
-func (f *failingStampSessions) SetAgentName(context.Context, string, string) error {
-	return errors.New("db down")
+func (f *failingStampSessions) SetAgentNameIf(context.Context, string, string, string) (bool, error) {
+	return false, errors.New("db down")
 }
 
 func TestHandleInboundRunsWhenStampingFails(t *testing.T) {
@@ -172,5 +172,102 @@ func TestCmdAgentWithoutBoundSessionOnlySwitchesTheDefault(t *testing.T) {
 	}
 	if got, _ := sessSvc.Get(ctx, "S1"); got.AgentName != "" {
 		t.Errorf("unrelated session got agent %q, want none", got.AgentName)
+	}
+}
+
+func TestStampSessionAgentIsCompareAndSet(t *testing.T) {
+	tests := []struct {
+		name   string
+		stored string
+		prev   string
+		stamp  config.AgentName
+		want   string
+	}{
+		{name: "first stamp", stored: "", prev: "", stamp: config.AgentCoder, want: "coder"},
+		{name: "replaces the value it resolved against", stored: "retired", prev: "retired", stamp: config.AgentCoder, want: "coder"},
+		{name: "a concurrent /agent switch is kept", stored: "hivemind", prev: "", stamp: config.AgentCoder, want: "hivemind"},
+		{name: "already stamped is a no-op", stored: "coder", prev: "coder", stamp: config.AgentCoder, want: "coder"},
+		{name: "unregistered agent is never stamped", stored: "", prev: "", stamp: "ghost", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			svc, conn := newOrchestratorForTest(t)
+			sessSvc := session.NewService(opencodedb.New(conn), "proj")
+			svc.app = twoAgentApp(sessSvc, &busyRetryStubAgent{}, &busyRetryStubAgent{})
+			if tt.stored != "" {
+				if err := sessSvc.SetAgentName(ctx, "S1", tt.stored); err != nil {
+					t.Fatalf("SetAgentName: %v", err)
+				}
+			}
+
+			svc.stampSessionAgent(ctx, "S1", tt.stamp, tt.prev)
+
+			got, err := sessSvc.Get(ctx, "S1")
+			if err != nil {
+				t.Fatalf("get session: %v", err)
+			}
+			if got.AgentName != tt.want {
+				t.Errorf("stored agent = %q, want %q", got.AgentName, tt.want)
+			}
+		})
+	}
+}
+
+// casLosingSessions loses the first losses compare-and-sets, as when a run's
+// stamp lands between /agent's read and its write.
+type casLosingSessions struct {
+	session.Service
+	losses int
+}
+
+func (c *casLosingSessions) SetAgentNameIf(ctx context.Context, id, expected, name string) (bool, error) {
+	if c.losses > 0 {
+		c.losses--
+		return false, nil
+	}
+	return c.Service.SetAgentNameIf(ctx, id, expected, name)
+}
+
+func TestCmdAgentLosingTheCompareAndSet(t *testing.T) {
+	tests := []struct {
+		name       string
+		losses     int
+		wantStored string
+		wantNote   bool
+	}{
+		{name: "one lost race is retried", losses: 1, wantStored: "hivemind"},
+		{name: "persistent loss keeps the stored agent and says so", losses: 2, wantStored: "", wantNote: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			svc, conn := newOrchestratorForTest(t)
+			real := session.NewService(opencodedb.New(conn), "proj")
+			svc.app = twoAgentApp(&casLosingSessions{Service: real, losses: tt.losses}, &busyRetryStubAgent{}, &busyRetryStubAgent{})
+			if _, err := svc.store.UpsertBinding(ctx, store.Binding{
+				ProjectID: "proj", Channel: "slack", IdentityID: "default", PeerID: "D1", SessionID: "S1",
+			}); err != nil {
+				t.Fatalf("UpsertBinding: %v", err)
+			}
+
+			reply := svc.cmdAgent(ctx, bridge.Inbound{
+				Peer:        bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "D1"},
+				CommandArgs: "hivemind",
+			})
+			if reply == nil {
+				t.Fatal("no reply")
+			}
+			if got := strings.Contains(reply.Text, "changed meanwhile"); got != tt.wantNote {
+				t.Errorf("reply %q: note = %v, want %v", reply.Text, got, tt.wantNote)
+			}
+			got, err := real.Get(ctx, "S1")
+			if err != nil {
+				t.Fatalf("get session: %v", err)
+			}
+			if got.AgentName != tt.wantStored {
+				t.Errorf("stored agent = %q, want %q", got.AgentName, tt.wantStored)
+			}
+		})
 	}
 }

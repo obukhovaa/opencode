@@ -178,6 +178,15 @@ func (s *stubSessions) SetAgentName(_ context.Context, _, name string) error {
 	return nil
 }
 
+func (s *stubSessions) SetAgentNameIf(_ context.Context, _, expected, name string) (bool, error) {
+	if s.agentName != expected {
+		return false, nil
+	}
+	s.agentName = name
+	s.setCalls++
+	return true, nil
+}
+
 // directStubAdapter reports D-prefixed peers as direct messages. It does
 // not look for a thread itself, so the bridge's own thread check is what
 // keeps a "D…|<ts>" peer out of the reminder.

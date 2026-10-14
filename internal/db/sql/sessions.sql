@@ -69,6 +69,11 @@ UPDATE sessions
 SET agent_name = ?
 WHERE id = ?;
 
+-- name: SetSessionAgentNameIf :execrows
+UPDATE sessions
+SET agent_name = ?
+WHERE id = ? AND agent_name = sqlc.arg(expected_agent_name);
+
 -- name: DeleteSession :exec
 DELETE FROM sessions
 WHERE id = ?;
