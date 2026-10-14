@@ -147,6 +147,10 @@ type Agent struct {
 	// agent's compaction sends the summarizer. Zero means only the
 	// summarizer's own window limits it.
 	SummarizerMaxInputTokens int64 `json:"summarizerMaxInputTokens,omitempty"`
+	// ToolCallTimeoutSeconds bounds one tool call in this agent's loop
+	// (task, question and bash are exempt). Nil inherits the top-level
+	// value; 0 disables the bound. See ToolCallTimeout.
+	ToolCallTimeoutSeconds *int `json:"toolCallTimeoutSeconds,omitempty"`
 	// Context scopes which context files feed this agent's system prompt
 	// instead of the global contextPaths (paths, replace/append mode, and
 	// the nested-disclosure opt-out). Defined in internal/contextfile so
@@ -621,6 +625,9 @@ type Config struct {
 	WebSearch  *WebSearchConfig  `json:"webSearch,omitempty"`
 	WebFetch   *WebFetchConfig   `json:"webFetch,omitempty"`
 	MaxTurns   int               `json:"maxTurns,omitempty"`
+	// ToolCallTimeoutSeconds is the default per-tool-call bound of the agent
+	// loop. Nil means DefaultToolCallTimeoutSeconds; 0 disables it.
+	ToolCallTimeoutSeconds *int `json:"toolCallTimeoutSeconds,omitempty"`
 	// StructOutputSchemaDelivery selects where a flow step's output JSON
 	// Schema is placed in the request: "message" (default) keeps the
 	// struct_output tool definition invariant and ships the schema in the

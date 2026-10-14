@@ -477,6 +477,11 @@ func generateSchema() map[string]any {
 					"description": "Cap, in estimated tokens, on the history this agent's compaction sends the summarizer (the transcript since the previous summary; the oldest messages are dropped first). The budget is min(0.9 x summarizer context window, this value). Precedence: the agent's frontmatter value, then agents.<id>, then agents.summarizer, so set on the summarizer agent it applies to every agent without its own value. Unset means only the summarizer's own context window limits it.",
 					"minimum":     1,
 				},
+				"toolCallTimeoutSeconds": map[string]any{
+					"type":        "integer",
+					"description": "Bound, in seconds, on one tool call in this agent's loop. Past it the call is cancelled and abandoned and the model receives an error result. task, question and bash are exempt; an MCP tool gets at least its server's callToolTimeoutSeconds plus 60 s. 0 disables the bound. Unset inherits the top-level toolCallTimeoutSeconds.",
+					"minimum":     0,
+				},
 				"context": map[string]any{
 					"type":        "object",
 					"description": "Scoped context files for this agent's system prompt. Declared paths replace (default) or append to the global contextPaths. Path entries support the ${agent}, ${flow.id}, ${flow.step}, and ${env.VAR} template tokens and must resolve inside the working directory. See docs/context.md.",
@@ -843,6 +848,13 @@ func generateSchema() map[string]any {
 		"type":        "integer",
 		"description": "Global maximum number of agent tool-use turns per request. When set, overrides per-agent maxTurns. Also settable via --max-turns CLI flag.",
 		"minimum":     1,
+	}
+
+	schema["properties"].(map[string]any)["toolCallTimeoutSeconds"] = map[string]any{
+		"type":        "integer",
+		"description": "Default bound, in seconds, on one tool call in the agent loop (agents.<id>.toolCallTimeoutSeconds overrides it). Past it the call is cancelled and abandoned and the model receives an error result. task, question and bash are exempt; an MCP tool gets at least its server's callToolTimeoutSeconds plus 60 s. 0 disables the bound.",
+		"minimum":     0,
+		"default":     1200,
 	}
 
 	// Add structOutputSchemaDelivery at the top level (per-agent overrides it)

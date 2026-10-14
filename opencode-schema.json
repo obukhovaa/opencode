@@ -255,6 +255,11 @@
           "minimum": 20000,
           "type": "integer"
         },
+        "toolCallTimeoutSeconds": {
+          "description": "Bound, in seconds, on one tool call in this agent's loop. Past it the call is cancelled and abandoned and the model receives an error result. task, question and bash are exempt; an MCP tool gets at least its server's callToolTimeoutSeconds plus 60 s. 0 disables the bound. Unset inherits the top-level toolCallTimeoutSeconds.",
+          "minimum": 0,
+          "type": "integer"
+        },
         "tools": {
           "additionalProperties": {
             "description": "Whether the tool is enabled for this agent",
@@ -532,6 +537,11 @@
           "taskBudget": {
             "description": "Advisory token budget for the full agentic loop (minimum 20000). Only supported by models with SupportsTaskBudget. The budget is carried across compaction via the remaining field.",
             "minimum": 20000,
+            "type": "integer"
+          },
+          "toolCallTimeoutSeconds": {
+            "description": "Bound, in seconds, on one tool call in this agent's loop. Past it the call is cancelled and abandoned and the model receives an error result. task, question and bash are exempt; an MCP tool gets at least its server's callToolTimeoutSeconds plus 60 s. 0 disables the bound. Unset inherits the top-level toolCallTimeoutSeconds.",
+            "minimum": 0,
             "type": "integer"
           },
           "tools": {
@@ -1586,6 +1596,12 @@
         }
       },
       "type": "object"
+    },
+    "toolCallTimeoutSeconds": {
+      "default": 1200,
+      "description": "Default bound, in seconds, on one tool call in the agent loop (agents.\u003cid\u003e.toolCallTimeoutSeconds overrides it). Past it the call is cancelled and abandoned and the model receives an error result. task, question and bash are exempt; an MCP tool gets at least its server's callToolTimeoutSeconds plus 60 s. 0 disables the bound.",
+      "minimum": 0,
+      "type": "integer"
     },
     "tui": {
       "description": "Terminal User Interface configuration",

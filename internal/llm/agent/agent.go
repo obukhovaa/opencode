@@ -1865,7 +1865,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 					toolCtx = context.WithValue(permCtx, permission.HookAllowKey, true)
 				}
 				go func() {
-					r, errTool := e.tool.Run(toolCtx, tools.ToolCall{
+					r, errTool := runToolBounded(toolCtx, toolCallLimit(a.agentID, e.tool), e.tool, tools.ToolCall{
 						ID:    e.toolCall.ID,
 						Name:  e.toolCall.Name,
 						Input: mutatedInput,
@@ -2084,7 +2084,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		if seqHC.decision.ExplicitAllow {
 			seqToolCtx = context.WithValue(ctx, permission.HookAllowKey, true)
 		}
-		toolResult, toolErr := entry.tool.Run(seqToolCtx, tools.ToolCall{
+		toolResult, toolErr := runToolBounded(seqToolCtx, toolCallLimit(a.agentID, entry.tool), entry.tool, tools.ToolCall{
 			ID:    entry.toolCall.ID,
 			Name:  entry.toolCall.Name,
 			Input: seqMutatedInput,
