@@ -27,13 +27,15 @@ var toolCallWatchdogExempt = map[string]struct{}{
 }
 
 // toolCallLimit is the watchdog bound for one call of tool by agentID: the
-// configured toolCallTimeoutSeconds, raised for an MCP tool to its server's
-// per-call timeout plus a margin. Zero means unbounded.
-func toolCallLimit(agentID config.AgentName, tool tools.BaseTool) time.Duration {
+// configured toolCallTimeoutSeconds (registryValue is the one the agent
+// registry merged from frontmatter and config, nil when unset), raised for an
+// MCP tool to its server's per-call timeout plus a margin. Zero means
+// unbounded.
+func toolCallLimit(agentID config.AgentName, registryValue *int, tool tools.BaseTool) time.Duration {
 	if _, ok := toolCallWatchdogExempt[tool.Info().Name]; ok {
 		return 0
 	}
-	limit := config.ToolCallTimeout(agentID)
+	limit := config.ToolCallTimeoutFor(agentID, registryValue)
 	if limit <= 0 {
 		return 0
 	}

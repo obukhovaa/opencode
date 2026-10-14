@@ -12,12 +12,26 @@ const DefaultToolCallTimeoutSeconds = 1200
 // toolCallTimeoutSeconds, else the top-level one, else the default. Zero
 // means no bound; a negative value is ignored.
 func ToolCallTimeout(agentID AgentName) time.Duration {
+	return ToolCallTimeoutFor(agentID, nil)
+}
+
+// ToolCallTimeoutFor is ToolCallTimeout with the value the agent registry
+// merged for the agent (its markdown frontmatter, overlaid by its
+// .opencode.json entry). The agent's own .opencode.json entry still wins over
+// it, then the top-level value, then the default.
+func ToolCallTimeoutFor(agentID AgentName, registryValue *int) time.Duration {
 	seconds := DefaultToolCallTimeoutSeconds
 	if cfg == nil {
+		if registryValue != nil && *registryValue >= 0 {
+			seconds = *registryValue
+		}
 		return time.Duration(seconds) * time.Second
 	}
 	if v := cfg.ToolCallTimeoutSeconds; v != nil && *v >= 0 {
 		seconds = *v
+	}
+	if registryValue != nil && *registryValue >= 0 {
+		seconds = *registryValue
 	}
 	if a, ok := cfg.Agents[agentID]; ok && a.ToolCallTimeoutSeconds != nil && *a.ToolCallTimeoutSeconds >= 0 {
 		seconds = *a.ToolCallTimeoutSeconds

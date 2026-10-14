@@ -72,26 +72,26 @@ func TestToolCallLimit(t *testing.T) {
 	def := time.Duration(config.DefaultToolCallTimeoutSeconds) * time.Second
 
 	for _, name := range []string{tools.BashToolName, tools.QuestionToolName, TaskToolName} {
-		if got := toolCallLimit(config.AgentCoder, &stuckTool{name: name}); got != 0 {
+		if got := toolCallLimit(config.AgentCoder, nil, &stuckTool{name: name}); got != 0 {
 			t.Errorf("%s limit = %s, want exempt (0)", name, got)
 		}
 	}
-	if got := toolCallLimit(config.AgentCoder, &stuckTool{name: "view"}); got != def {
+	if got := toolCallLimit(config.AgentCoder, nil, &stuckTool{name: "view"}); got != def {
 		t.Errorf("view limit = %s, want the default %s", got, def)
 	}
 	slow := &mcpTool{mcpName: "slow", tool: mcp.NewTool("query")}
 	want := 1800*time.Second + toolCallTimeoutMargin
-	if got := toolCallLimit(config.AgentCoder, slow); got != want {
+	if got := toolCallLimit(config.AgentCoder, nil, slow); got != want {
 		t.Errorf("mcp limit = %s, want the server timeout plus margin %s", got, want)
 	}
-	if got := toolCallLimit(config.AgentCoder, tools.WrapDeferred(slow, nil)); got != want {
+	if got := toolCallLimit(config.AgentCoder, nil, tools.WrapDeferred(slow, nil)); got != want {
 		t.Errorf("deferred mcp limit = %s, want %s", got, want)
 	}
 
 	zero := 0
 	config.Get().ToolCallTimeoutSeconds = &zero
 	t.Cleanup(func() { config.Get().ToolCallTimeoutSeconds = nil })
-	if got := toolCallLimit(config.AgentCoder, &stuckTool{name: "view"}); got != 0 {
+	if got := toolCallLimit(config.AgentCoder, nil, &stuckTool{name: "view"}); got != 0 {
 		t.Errorf("limit with toolCallTimeoutSeconds=0 = %s, want disabled", got)
 	}
 }

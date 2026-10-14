@@ -42,3 +42,30 @@ func TestConfig_ToolCallTimeoutViperRoundTrip(t *testing.T) {
 		t.Errorf("coder = %s, want the default", got)
 	}
 }
+
+func TestToolCallTimeoutForRegistryValue(t *testing.T) {
+	intp := func(v int) *int { return &v }
+	tests := []struct {
+		name     string
+		top      *int
+		agentCfg *int
+		registry *int
+		want     time.Duration
+	}{
+		{name: "default", want: DefaultToolCallTimeoutSeconds * time.Second},
+		{name: "frontmatter value beats the top level", top: intp(600), registry: intp(300), want: 300 * time.Second},
+		{name: "frontmatter zero disables", top: intp(600), registry: intp(0), want: 0},
+		{name: "agent config beats frontmatter", registry: intp(300), agentCfg: intp(60), want: 60 * time.Second},
+		{name: "negative frontmatter value is ignored", top: intp(600), registry: intp(-1), want: 600 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prev := cfg
+			cfg = &Config{ToolCallTimeoutSeconds: tt.top, Agents: map[AgentName]Agent{"neo": {ToolCallTimeoutSeconds: tt.agentCfg}}}
+			t.Cleanup(func() { cfg = prev })
+			if got := ToolCallTimeoutFor("neo", tt.registry); got != tt.want {
+				t.Errorf("ToolCallTimeoutFor = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}

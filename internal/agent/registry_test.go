@@ -1334,3 +1334,69 @@ func TestSummarizerMaxInputTokensMerge(t *testing.T) {
 		}
 	})
 }
+
+func TestToolCallTimeoutSecondsMerge(t *testing.T) {
+	intp := func(v int) *int { return &v }
+	parse := func(t *testing.T, value string) *AgentInfo {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "neo.md")
+		md := "---\nmode: agent\ntoolCallTimeoutSeconds: " + value + "\n---\n\nBody.\n"
+		if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		a, err := parseAgentMarkdown(path)
+		if err != nil {
+			t.Fatalf("parseAgentMarkdown() error = %v", err)
+		}
+		return a
+	}
+
+	t.Run("frontmatter parses", func(t *testing.T) {
+		cases := []struct {
+			name  string
+			value string
+			want  *int
+		}{
+			{"positive", "300", intp(300)},
+			{"zero disables the bound", "0", intp(0)},
+			{"negative is dropped", "-5", nil},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				got := parse(t, tc.value).ToolCallTimeoutSeconds
+				if (got == nil) != (tc.want == nil) || (got != nil && *got != *tc.want) {
+					t.Errorf("ToolCallTimeoutSeconds = %v, want %v", got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("markdown merge keeps zero and an unset key keeps the earlier value", func(t *testing.T) {
+		existing := AgentInfo{ID: "neo", Mode: config.AgentModeAgent, ToolCallTimeoutSeconds: intp(300)}
+		mergeMarkdownIntoExisting(&existing, &AgentInfo{})
+		if existing.ToolCallTimeoutSeconds == nil || *existing.ToolCallTimeoutSeconds != 300 {
+			t.Errorf("unset markdown key overwrote the value: %v", existing.ToolCallTimeoutSeconds)
+		}
+		mergeMarkdownIntoExisting(&existing, parse(t, "0"))
+		if existing.ToolCallTimeoutSeconds == nil || *existing.ToolCallTimeoutSeconds != 0 {
+			t.Errorf("markdown 0 = %v, want an explicit 0", existing.ToolCallTimeoutSeconds)
+		}
+	})
+
+	t.Run("config overlay wins over markdown", func(t *testing.T) {
+		agents := map[string]AgentInfo{
+			"neo":   {ID: "neo", Mode: config.AgentModeAgent, ToolCallTimeoutSeconds: intp(300)},
+			"coder": {ID: "coder", Mode: config.AgentModeAgent, ToolCallTimeoutSeconds: intp(300)},
+		}
+		applyConfigOverrides(agents, &config.Config{Agents: map[config.AgentName]config.Agent{
+			"neo":   {ToolCallTimeoutSeconds: intp(60)},
+			"coder": {},
+		}})
+		if got := agents["neo"].ToolCallTimeoutSeconds; got == nil || *got != 60 {
+			t.Errorf("neo = %v, want 60", got)
+		}
+		if got := agents["coder"].ToolCallTimeoutSeconds; got == nil || *got != 300 {
+			t.Errorf("coder = %v, want 300 (unset config keeps the markdown value)", got)
+		}
+	})
+}

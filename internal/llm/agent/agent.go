@@ -231,6 +231,9 @@ type agent struct {
 	// summarizerMaxInputTokens is the registry-merged per-agent cap on the
 	// summarizer's input, zero when unset.
 	summarizerMaxInputTokens int64
+	// toolCallTimeoutSeconds is the registry-merged per-agent tool call
+	// bound (markdown frontmatter and config overlay), nil when unset.
+	toolCallTimeoutSeconds *int
 	// compactionBackoff throttles auto-compaction after a failed summarizer
 	// call; see compaction_backoff.go.
 	compactionBackoff compactionBackoffs
@@ -343,6 +346,7 @@ func newAgent(
 
 		compactionThreshold:      agentInfo.CompactionThreshold,
 		summarizerMaxInputTokens: agentInfo.SummarizerMaxInputTokens,
+		toolCallTimeoutSeconds:   agentInfo.ToolCallTimeoutSeconds,
 	}
 
 	// Message-delivery mode moves the output schema out of the tool block (which
@@ -1865,7 +1869,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 					toolCtx = context.WithValue(permCtx, permission.HookAllowKey, true)
 				}
 				go func() {
-					r, errTool := runToolBounded(toolCtx, toolCallLimit(a.agentID, e.tool), e.tool, tools.ToolCall{
+					r, errTool := runToolBounded(toolCtx, toolCallLimit(a.agentID, a.toolCallTimeoutSeconds, e.tool), e.tool, tools.ToolCall{
 						ID:    e.toolCall.ID,
 						Name:  e.toolCall.Name,
 						Input: mutatedInput,
@@ -2084,7 +2088,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		if seqHC.decision.ExplicitAllow {
 			seqToolCtx = context.WithValue(ctx, permission.HookAllowKey, true)
 		}
-		toolResult, toolErr := runToolBounded(seqToolCtx, toolCallLimit(a.agentID, entry.tool), entry.tool, tools.ToolCall{
+		toolResult, toolErr := runToolBounded(seqToolCtx, toolCallLimit(a.agentID, a.toolCallTimeoutSeconds, entry.tool), entry.tool, tools.ToolCall{
 			ID:    entry.toolCall.ID,
 			Name:  entry.toolCall.Name,
 			Input: seqMutatedInput,
