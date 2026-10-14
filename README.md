@@ -231,6 +231,7 @@ Each built-in agent can be customized:
 | `model` | Model ID to use |
 | `maxTokens` | Maximum response tokens |
 | `maxTurns` | Maximum tool calls before agent stops |
+| `toolCallTimeoutSeconds` | Bound on one tool call in this agent's loop; inherits the top-level value (default 1200; 0 = off). `task`, `question` and `bash` are exempt |
 | `reasoningEffort` | `low`, `medium`, `high` (default; `medium` on Claude Haiku 5.5), `xhigh`, `max` |
 | `mode` | `agent` (primary, switchable via tab) or `subagent` (invoked via task tool) |
 | `name` | Display name for the agent |
@@ -515,6 +516,7 @@ Every wait on an MCP server is bounded, so a server that starts but never answer
 |---|---|---|
 | Connect (`Start` + `initialize`), on first use and after a client is replaced | 30s | no |
 | Tool call (`tools/call`) | 5 min | `callToolTimeoutSeconds` |
+| Any tool call in the agent loop (`task`, `question` and `bash` exempt) | 20 min, and for an MCP tool at least its server's `callToolTimeoutSeconds` + 60s; past it the call is cancelled and abandoned and the model gets an error result | `toolCallTimeoutSeconds` (top level or per agent; 0 = off) |
 | Client close | off the call path; a stdio server still running 2s after stdin closes gets SIGTERM, then SIGKILL 2s later (at shutdown: SIGTERM at once, SIGKILL within the shutdown budget); any other close is abandoned after 30s | no |
 | Shared client-cache entry | 30s backstop | no |
 
@@ -1112,6 +1114,7 @@ Each built-in agent can be customized:
 | `model` | Model ID to use |
 | `maxTokens` | Maximum response tokens |
 | `maxTurns` | Maximum tool calls before agent stops |
+| `toolCallTimeoutSeconds` | Bound on one tool call in this agent's loop; inherits the top-level value (default 1200; 0 = off). `task`, `question` and `bash` are exempt |
 | `reasoningEffort` | `low`, `medium`, `high` (default; `medium` on Claude Haiku 5.5), `xhigh`, `max` |
 | `mode` | `agent` (primary, switchable via tab) or `subagent` (invoked via task tool) |
 | `name` | Display name for the agent |
@@ -1388,6 +1391,7 @@ Every wait on an MCP server is bounded, so a server that starts but never answer
 |---|---|---|
 | Connect (`Start` + `initialize`), on first use and after a client is replaced | 30s | no |
 | Tool call (`tools/call`) | 5 min | `callToolTimeoutSeconds` |
+| Any tool call in the agent loop (`task`, `question` and `bash` exempt) | 20 min, and for an MCP tool at least its server's `callToolTimeoutSeconds` + 60s; past it the call is cancelled and abandoned and the model gets an error result | `toolCallTimeoutSeconds` (top level or per agent; 0 = off) |
 | Client close | off the call path; a stdio server still running 2s after stdin closes gets SIGTERM, then SIGKILL 2s later | no |
 | Shared client-cache entry | 30s backstop | no |
 
