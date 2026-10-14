@@ -311,7 +311,7 @@ func (q *Queries) SetSessionAgentName(ctx context.Context, arg SetSessionAgentNa
 const setSessionAgentNameIf = `-- name: SetSessionAgentNameIf :execrows
 UPDATE sessions
 SET agent_name = ?
-WHERE id = ? AND agent_name = ?
+WHERE id = ? AND agent_name = ?3
 `
 
 type SetSessionAgentNameIfParams struct {
