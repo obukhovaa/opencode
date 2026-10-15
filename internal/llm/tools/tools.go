@@ -186,27 +186,48 @@ func jobArgsOrNil(ctx context.Context) map[string]any {
 	return a
 }
 
-var processJobArgs atomic.Pointer[map[string]any]
+type processJob struct {
+	id   string
+	args map[string]any
+}
+
+var processJobHolder atomic.Pointer[processJob]
 
 // SetProcessJobArgs publishes the args of the job this process is currently
-// running, for turns that do not descend from the flow run's context — chat
-// bridge turns. Nil or empty args clear it. The flow runner is its only writer.
-func SetProcessJobArgs(args map[string]any) {
+// running, together with the bridge job identity they belong to, for turns
+// that do not descend from the flow run's context — chat bridge turns. Nil
+// or empty args clear it. The flow runner is its only writer.
+func SetProcessJobArgs(jobID string, args map[string]any) {
 	if len(args) == 0 {
-		processJobArgs.Store(nil)
+		processJobHolder.Store(nil)
 		return
 	}
 	cp := make(map[string]any, len(args))
 	for k, v := range args {
 		cp[k] = v
 	}
-	processJobArgs.Store(&cp)
+	processJobHolder.Store(&processJob{id: jobID, args: cp})
 }
 
 // ProcessJobArgs returns the args published by SetProcessJobArgs, or nil.
+// Whoever attaches them to a turn must first prove the turn belongs to the
+// job — see ProcessJobArgsFor.
 func ProcessJobArgs() map[string]any {
-	if p := processJobArgs.Load(); p != nil {
-		return *p
+	if p := processJobHolder.Load(); p != nil {
+		return p.args
+	}
+	return nil
+}
+
+// ProcessJobArgsFor returns the published args only when they were
+// published for jobID. An empty jobID, or a holder published without an
+// identity, never matches: a turn that cannot be tied to the job gets none.
+func ProcessJobArgsFor(jobID string) map[string]any {
+	if jobID == "" {
+		return nil
+	}
+	if p := processJobHolder.Load(); p != nil && p.id == jobID {
+		return p.args
 	}
 	return nil
 }

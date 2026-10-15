@@ -595,6 +595,21 @@ type bridgeJobScoper interface {
 	SetRemoteJobID(jobID string)
 }
 
+// processJobID is the bridge job identity the run's published job args belong
+// to: the one this run just published to the bridge (pool mode), else the
+// identity the bridge was booted with (a per-Job pod's
+// OPENCODE_BRIDGE_JOB_ID). Empty when neither exists, in which case no bridge
+// turn can be proven to belong to the job.
+func (fr *flowRunner) processJobID(state *flowRunState, opts flowStartOptions) string {
+	if state.setBridgeJobID {
+		return opts.bridgeJobID
+	}
+	if r, ok := fr.bridgeJobs.(interface{ RemoteJobID() string }); ok {
+		return r.RemoteJobID()
+	}
+	return ""
+}
+
 // mcpDiscoveryAuthSetter is the narrow slice of the MCP registry the
 // flow runner needs: record the Authorization overrides that
 // registry-owned tool DISCOVERY applies. Tool calls take theirs from the
@@ -803,7 +818,7 @@ func (fr *flowRunner) applyRunScopedIdentity(state *flowRunState, opts flowStart
 	// Always published (nil for an argless run): a run must never inherit the
 	// previous run's args, and reverting is suppressed once another run is
 	// current.
-	tools.SetProcessJobArgs(state.jobArgs)
+	tools.SetProcessJobArgs(fr.processJobID(state, opts), state.jobArgs)
 	if state.setRunIdentity {
 		runidentity.Set(&runidentity.Identity{
 			APIKey: opts.llmAPIKey,
@@ -877,7 +892,7 @@ func (fr *flowRunner) clearRunScopedIdentity(state *flowRunState) {
 		runidentity.Set(nil)
 	}
 	if state.setJobArgs {
-		tools.SetProcessJobArgs(nil)
+		tools.SetProcessJobArgs("", nil)
 	}
 }
 

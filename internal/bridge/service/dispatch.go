@@ -466,10 +466,10 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	runCtx = tools.WithPeer(runCtx, tools.Peer{
 		Channel: in.Peer.Channel, Identity: in.Peer.Identity, PeerID: in.Peer.PeerID,
 	})
-	// The args of the job this process is running, if any, so a free-text
-	// turn of the job stamps the same MCP flowArgHeaders as its flow steps.
-	// A daemon with no job carries none.
-	runCtx = tools.WithJobArgs(runCtx, tools.ProcessJobArgs())
+	// A free-text turn of the job this process is running stamps the same
+	// MCP flowArgHeaders as its flow steps. Only a turn provably tied to that
+	// job gets them: a daemon turn, or one of another or unknown job, none.
+	runCtx = tools.WithJobArgs(runCtx, d.svc.jobArgsForTurn(d.sessionID, in.Peer))
 
 	// Bounded retry for ErrSessionBusy: the session-run ledger is
 	// process-global (session-run-exclusivity spec). Cross-actor holders

@@ -65,27 +65,109 @@ func (a *jobArgsCaptureAgent) Run(ctx context.Context, _, _ string, _ int, _ ...
 	return ch, nil
 }
 
-// A free-text turn runs with the args of the job the process is running, so
-// its MCP calls stamp the same flowArgHeaders as the job's steps; a daemon
-// with no job runs it with none.
-func TestHandleInbound_RunCtxCarriesProcessJobArgs(t *testing.T) {
-	ag := &jobArgsCaptureAgent{}
-	svc, _ := newDispatchTestSvc(t, ag)
-	d := newBareDispatch(svc, "S1")
+func runTurnJobArgs(t *testing.T, svc *Service, ag *jobArgsCaptureAgent, in bridge.Inbound) map[string]any {
+	t.Helper()
+	before := len(ag.jobArgs)
+	newBareDispatch(svc, "S1").handleInbound(context.Background(), in)
+	if len(ag.jobArgs) != before+1 {
+		t.Fatalf("Run calls = %d, want %d", len(ag.jobArgs), before+1)
+	}
+	return ag.jobArgs[before]
+}
 
-	t.Cleanup(func() { tools.SetProcessJobArgs(nil) })
-	tools.SetProcessJobArgs(map[string]any{"tenant": "acme"})
-	d.handleInbound(context.Background(), testInbound("with a job"))
-	tools.SetProcessJobArgs(nil)
-	d.handleInbound(context.Background(), testInbound("daemon"))
+// A free-text turn stamps the job args only when it is provably a turn of the
+// job whose args the process holds: its session or peer was bound by that
+// job. A daemon turn, a turn of another or unknown job, and a late turn of a
+// finished job carry none.
+func TestHandleInbound_JobArgsOnlyForTurnsOfTheCurrentJob(t *testing.T) {
+	t.Cleanup(func() { tools.SetProcessJobArgs("", nil) })
+	peer := bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "D1"}
 
-	if len(ag.jobArgs) != 2 {
-		t.Fatalf("Run calls = %d, want 2", len(ag.jobArgs))
-	}
-	if ag.jobArgs[0]["tenant"] != "acme" {
-		t.Errorf("turn of a job: job args = %v, want tenant=acme", ag.jobArgs[0])
-	}
-	if ag.jobArgs[1] != nil {
-		t.Errorf("daemon turn: job args = %v, want none", ag.jobArgs[1])
-	}
+	t.Run("daemon mode attaches none", func(t *testing.T) {
+		ag := &jobArgsCaptureAgent{}
+		svc, _ := newDispatchTestSvc(t, ag)
+		svc.heartbeat = &heartbeatState{}
+		svc.SetRemoteJobID("job-1")
+		svc.markJobTurns("job-1", "S1", peer)
+		tools.SetProcessJobArgs("job-1", map[string]any{"tenant": "acme"})
+		if got := runTurnJobArgs(t, svc, ag, testInbound("hi")); got != nil {
+			t.Errorf("daemon turn: job args = %v, want none", got)
+		}
+	})
+
+	t.Run("turn with no job attaches none", func(t *testing.T) {
+		ag := &jobArgsCaptureAgent{}
+		svc, _ := newDispatchTestSvc(t, ag)
+		svc.SetRemoteJobID("job-1")
+		tools.SetProcessJobArgs("job-1", map[string]any{"tenant": "acme"})
+		if got := runTurnJobArgs(t, svc, ag, testInbound("who are you")); got != nil {
+			t.Errorf("unrelated turn: job args = %v, want none", got)
+		}
+	})
+
+	t.Run("turn of a different job attaches none", func(t *testing.T) {
+		ag := &jobArgsCaptureAgent{}
+		svc, _ := newDispatchTestSvc(t, ag)
+		svc.SetRemoteJobID("job-1")
+		svc.markJobTurns("job-1", "S1", peer)
+		// The pod moved on: job-2 holds the args now. job-1's records are
+		// pruned when the identity changes.
+		svc.SetRemoteJobID("job-2")
+		tools.SetProcessJobArgs("job-2", map[string]any{"tenant": "other"})
+		if got := runTurnJobArgs(t, svc, ag, testInbound("late")); got != nil {
+			t.Errorf("late turn of job-1: job args = %v, want none", got)
+		}
+		// Even if the stale record survived, the ids differ.
+		svc.markJobTurns("job-1", "S1", peer)
+		if got := runTurnJobArgs(t, svc, ag, testInbound("late again")); got != nil {
+			t.Errorf("turn bound by job-1 while job-2 holds the args: job args = %v, want none", got)
+		}
+	})
+
+	t.Run("holder published without a job identity attaches none", func(t *testing.T) {
+		ag := &jobArgsCaptureAgent{}
+		svc, _ := newDispatchTestSvc(t, ag)
+		svc.SetRemoteJobID("job-1")
+		svc.markJobTurns("job-1", "S1", peer)
+		tools.SetProcessJobArgs("", map[string]any{"tenant": "acme"})
+		if got := runTurnJobArgs(t, svc, ag, testInbound("hi")); got != nil {
+			t.Errorf("job args = %v, want none", got)
+		}
+	})
+
+	t.Run("session of the current job attaches the args", func(t *testing.T) {
+		ag := &jobArgsCaptureAgent{}
+		svc, _ := newDispatchTestSvc(t, ag)
+		svc.SetRemoteJobID("job-1")
+		svc.markJobTurns("job-1", "S1")
+		tools.SetProcessJobArgs("job-1", map[string]any{"tenant": "acme"})
+		in := testInbound("hi")
+		in.Peer.PeerID = "someone-else"
+		if got := runTurnJobArgs(t, svc, ag, in); got["tenant"] != "acme" {
+			t.Errorf("job args = %v, want tenant=acme", got)
+		}
+	})
+
+	t.Run("reviewer peer of the current job attaches the args", func(t *testing.T) {
+		ag := &jobArgsCaptureAgent{}
+		svc, _ := newDispatchTestSvc(t, ag)
+		svc.SetRemoteJobID("job-1")
+		svc.markJobTurns("job-1", "S-step", peer)
+		tools.SetProcessJobArgs("job-1", map[string]any{"tenant": "acme"})
+		if got := runTurnJobArgs(t, svc, ag, testInbound("hi")); got["tenant"] != "acme" {
+			t.Errorf("job args = %v, want tenant=acme", got)
+		}
+	})
+
+	t.Run("records are dropped when the job identity is cleared", func(t *testing.T) {
+		ag := &jobArgsCaptureAgent{}
+		svc, _ := newDispatchTestSvc(t, ag)
+		svc.SetRemoteJobID("job-1")
+		svc.markJobTurns("job-1", "S1", peer)
+		svc.SetRemoteJobID("")
+		tools.SetProcessJobArgs("job-1", map[string]any{"tenant": "acme"})
+		if got := runTurnJobArgs(t, svc, ag, testInbound("hi")); got != nil {
+			t.Errorf("job args = %v, want none", got)
+		}
+	})
 }
