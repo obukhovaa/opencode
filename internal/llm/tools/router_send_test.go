@@ -22,6 +22,8 @@ type stubBridgeSender struct {
 	result     bridge.SendResult
 	err        error
 	boundPeers []bridge.BoundPeer
+	// bindings maps a peer id to the session that owns its binding.
+	bindings map[string]string
 }
 
 type sendCall struct {
@@ -40,6 +42,11 @@ func (s *stubBridgeSender) Send(_ context.Context, peer bridge.PeerRef, text, me
 
 func (s *stubBridgeSender) BoundPeersSnapshot(_ context.Context) []bridge.BoundPeer {
 	return s.boundPeers
+}
+
+func (s *stubBridgeSender) BindingSessionID(_ context.Context, peer bridge.PeerRef) (string, bool) {
+	id, ok := s.bindings[peer.PeerID]
+	return id, ok
 }
 
 func (s *stubBridgeSender) Calls() []sendCall {
@@ -66,6 +73,10 @@ func testCfg() *bridge.Config {
 			Mattermost: &bridge.MattermostChannelConfig{
 				Enabled:   true,
 				Instances: []bridge.MattermostIdentity{{ID: "default", Enabled: true}},
+			},
+			External: &bridge.ExternalChannelConfig{
+				Enabled:   true,
+				Consumers: []bridge.ExternalIdentity{{ID: "default", Enabled: true}},
 			},
 		},
 	}
@@ -349,5 +360,105 @@ func TestRouterSendIsBaselineAndParallel(t *testing.T) {
 	}
 	if !tool.AllowParallelism(ToolCall{}, nil) {
 		t.Errorf("AllowParallelism = false; want true (multiple router_send to different peers can fan in parallel)")
+	}
+}
+
+// External conversations are isolated: a turn may write only to its own
+// (externalSendAllowed). Each case names the turn's context and the
+// target, and whether the send must reach the bridge.
+func TestRouterSendKeepsExternalConversationsApart(t *testing.T) {
+	t.Parallel()
+	const (
+		own     = "app1:d1:c1"
+		other   = "app2:d1:c9"
+		session = "sess-own"
+	)
+	externalTurn := func() context.Context {
+		return WithPeer(context.Background(), Peer{Channel: "external", Identity: "default", PeerID: own})
+	}
+	slackTurn := func() context.Context {
+		return WithPeer(context.Background(), Peer{Channel: "slack", Identity: "default", PeerID: "D1"})
+	}
+	noPeerTurn := func(sessionID, parentID string) context.Context {
+		ctx := context.WithValue(context.Background(), SessionIDContextKey, sessionID)
+		if parentID != "" {
+			ctx = context.WithValue(ctx, ParentSessionIDContextKey, parentID)
+		}
+		return ctx
+	}
+	cases := []struct {
+		name    string
+		ctx     context.Context
+		input   string
+		allowed bool
+	}{
+		{"external turn replies to its own conversation", externalTurn(),
+			`{"channel":"external","identity":"default","peerId":"` + own + `","text":"hi"}`, true},
+		{"external turn cannot reach another conversation", externalTurn(),
+			`{"channel":"external","identity":"default","peerId":"` + other + `","text":"hi"}`, false},
+		{"external turn cannot message slack", externalTurn(),
+			`{"channel":"slack","identity":"default","peerId":"U123","text":"hi"}`, false},
+		{"slack turn still messages slack", slackTurn(),
+			`{"channel":"slack","identity":"default","peerId":"C999","text":"hi"}`, true},
+		{"slack turn cannot reach an external conversation", slackTurn(),
+			`{"channel":"external","identity":"default","peerId":"` + own + `","text":"hi"}`, false},
+		{"no-peer turn reaches its session's conversation", noPeerTurn(session, ""),
+			`{"channel":"external","identity":"default","peerId":"` + own + `","text":"hi"}`, true},
+		{"no-peer subagent reaches its parent's conversation", noPeerTurn("sess-child", session),
+			`{"channel":"external","identity":"default","peerId":"` + own + `","text":"hi"}`, true},
+		{"no-peer turn cannot reach another session's conversation", noPeerTurn(session, ""),
+			`{"channel":"external","identity":"default","peerId":"` + other + `","text":"hi"}`, false},
+		{"no-peer turn cannot reach an unbound peer", noPeerTurn(session, ""),
+			`{"channel":"external","identity":"default","peerId":"app3:d1:c3","text":"hi"}`, false},
+		{"no-peer turn still messages slack", noPeerTurn(session, ""),
+			`{"channel":"slack","identity":"default","peerId":"C999","text":"hi"}`, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			sender := &stubBridgeSender{
+				result:   bridge.SendResult{Delivered: true},
+				bindings: map[string]string{own: session, other: "sess-other"},
+			}
+			tool := NewRouterSendTool(RouterSendDeps{Sender: sender, Cfg: testCfg(), MediaRoot: t.TempDir()})
+			resp, err := tool.Run(c.ctx, ToolCall{Input: c.input})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if got := len(sender.Calls()); c.allowed != (got == 1) {
+				t.Fatalf("Send calls = %d, allowed = %v (response %s)", got, c.allowed, resp.Content)
+			}
+			if c.allowed {
+				return
+			}
+			if !resp.IsError || resp.Content != errOtherConversation {
+				t.Errorf("refusal = %q (isError %v), want errOtherConversation", resp.Content, resp.IsError)
+			}
+			for _, id := range []string{own, other, "app3"} {
+				if strings.Contains(resp.Content, id) {
+					t.Errorf("refusal names peer %q: %s", id, resp.Content)
+				}
+			}
+		})
+	}
+}
+
+func TestRouterSendDescriptionOmitsExternalBoundPeers(t *testing.T) {
+	t.Parallel()
+	sender := &stubBridgeSender{
+		boundPeers: []bridge.BoundPeer{
+			{PeerRef: bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "D012345"}, SessionID: "s1"},
+			{PeerRef: bridge.PeerRef{Channel: "external", Identity: "default", PeerID: "app2:d1:c9"}, SessionID: "s2"},
+		},
+	}
+	desc := NewRouterSendTool(RouterSendDeps{Sender: sender, Cfg: testCfg(), MediaRoot: t.TempDir()}).Info().Description
+	if !strings.Contains(desc, "slack:default:D012345") {
+		t.Errorf("description lost the slack peer:\n%s", desc)
+	}
+	if strings.Contains(desc, "app2:d1:c9") {
+		t.Errorf("description lists an external conversation:\n%s", desc)
+	}
+	if !strings.Contains(desc, "only to the one the current turn belongs to") {
+		t.Errorf("description does not state the conversation rule:\n%s", desc)
 	}
 }
