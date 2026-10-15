@@ -312,11 +312,32 @@ func searchWithRipgrepModes(ctx context.Context, pattern, path string, params *G
 	}
 }
 
+// Field separators of ripgrep content output. Both are control bytes that do
+// not occur in paths, so the file of a line is exactly the text before the
+// first one of them. The context separator differs from the match one so the
+// two kinds of line stay distinguishable, and neither is the '-' that a path
+// may contain: splitting "path-line-text" at a dash would attribute a context
+// line of "/w/a-secret" to "/w/a".
+const (
+	grepMatchSep   = '\x1f'
+	grepContextSep = '\x1e'
+)
+
+// grepLinePath returns the path and the byte offset of the first field
+// separator of a content line, or -1 when it has none.
+func grepLinePath(line string) (string, int) {
+	idx := strings.IndexAny(line, string([]byte{grepMatchSep, grepContextSep}))
+	if idx <= 0 {
+		return "", -1
+	}
+	return line[:idx], idx
+}
+
 // filterReadableOutput drops from raw ripgrep output every result whose file
 // readable rejects. files_with_matches lines are paths, count lines are
 // "path:count", and content lines are "path\x1fline\x1ftext" for matches and
-// "path-line-text" for context, the latter attributed to a file that has a match
-// line (a context line of an unknown file is dropped, not guessed at).
+// "path\x1eline\x1etext" for context. A content line without a separator is
+// dropped: it cannot be attributed to a file.
 func filterReadableOutput(raw, mode string, readable func(string) bool) string {
 	verdict := map[string]bool{}
 	check := func(p string) bool {
@@ -328,39 +349,19 @@ func filterReadableOutput(raw, mode string, readable func(string) bool) string {
 		return ok
 	}
 	lines := strings.Split(raw, "\n")
-	if mode == "content" {
-		// A file's context lines can precede its first match line, so settle
-		// every matched file before attributing any context line.
-		for _, line := range lines {
-			if idx := strings.IndexByte(line, '\x1f'); idx > 0 {
-				check(line[:idx])
-			}
-		}
-	}
 	kept := lines[:0]
 	for _, line := range lines {
 		switch mode {
 		case "content":
 			if line == "--" {
-				kept = append(kept, line)
-				continue
-			}
-			if idx := strings.IndexByte(line, '\x1f'); idx > 0 {
-				if check(line[:idx]) {
+				// A group separator only separates kept lines.
+				if len(kept) > 0 && kept[len(kept)-1] != "--" {
 					kept = append(kept, line)
 				}
 				continue
 			}
-			for i := 1; i < len(line); i++ {
-				if line[i] != '-' {
-					continue
-				}
-				if ok, seen := verdict[line[:i]]; seen {
-					if ok {
-						kept = append(kept, line)
-					}
-					break
-				}
+			if p, idx := grepLinePath(line); idx > 0 && check(p) {
+				kept = append(kept, line)
 			}
 		case "count":
 			if idx := strings.LastIndex(line, ":"); idx > 0 && check(line[:idx]) {
@@ -371,6 +372,9 @@ func filterReadableOutput(raw, mode string, readable func(string) bool) string {
 				kept = append(kept, line)
 			}
 		}
+	}
+	if len(kept) > 0 && kept[len(kept)-1] == "--" {
+		kept = kept[:len(kept)-1]
 	}
 	return strings.Join(kept, "\n")
 }
@@ -418,7 +422,9 @@ func buildRipgrepArgs(pattern string, params *GrepParams, glob, mode string, den
 	case "count":
 		args = append(args, "-c")
 	case "content":
-		args = append(args, "-H", "-n", "--field-match-separator=\x1f")
+		args = append(args, "-H", "-n",
+			"--field-match-separator="+string(grepMatchSep),
+			"--field-context-separator="+string(grepContextSep))
 		if params.Context != nil && *params.Context > 0 {
 			args = append(args, "-C", strconv.Itoa(*params.Context))
 		}
@@ -541,20 +547,24 @@ func formatFilesMode(raw, rootPath string, offset, headLimit int) (string, GrepR
 func formatContentMode(raw, rootPath string, offset, headLimit int) (string, GrepResponseMetadata, error) {
 	lines := strings.Split(raw, "\n")
 
-	// Count match lines and unique files using the unit separator (\x1f).
-	// buildRipgrepArgs uses --field-match-separator=\x1f for content mode, so
-	// match lines contain \x1f (e.g. "file\x1fline\x1fcontent") while context
-	// lines use dashes ("file-line-content") and separators are "--".
+	// Count match lines and unique files, and restore the usual separators.
+	// buildRipgrepArgs gives match lines \x1f ("file\x1fline\x1fcontent") and
+	// context lines \x1e ("file\x1eline\x1econtent"); group separators are "--".
 	matchCount := 0
 	fileSet := make(map[string]struct{})
 	for i, line := range lines {
-		if strings.ContainsRune(line, '\x1f') {
-			matchCount++
-			if idx := strings.IndexByte(line, '\x1f'); idx > 0 {
-				fileSet[line[:idx]] = struct{}{}
-			}
-			lines[i] = strings.ReplaceAll(line, "\x1f", ":")
+		path, idx := grepLinePath(line)
+		if idx < 0 {
+			continue
 		}
+		sep, repl := string(grepMatchSep), ":"
+		if line[idx] == grepContextSep {
+			sep, repl = string(grepContextSep), "-"
+		} else {
+			matchCount++
+			fileSet[path] = struct{}{}
+		}
+		lines[i] = path + repl + strings.Replace(line[idx+1:], sep, repl, 1)
 	}
 
 	// Convert absolute paths to relative in each line

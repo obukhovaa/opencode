@@ -275,10 +275,16 @@ func TestFilterReadableOutput(t *testing.T) {
 		{
 			"content with context before the first match",
 			"content",
-			"/bad/b-1-ctx\n/bad/b\x1f2\x1fneedle\n--\n/ok/a-4-ctx\n/ok/a\x1f5\x1fneedle",
-			"--\n/ok/a-4-ctx\n/ok/a\x1f5\x1fneedle",
+			"/bad/b\x1e1\x1ectx\n/bad/b\x1f2\x1fneedle\n--\n/ok/a\x1e4\x1ectx\n/ok/a\x1f5\x1fneedle",
+			"/ok/a\x1e4\x1ectx\n/ok/a\x1f5\x1fneedle",
 		},
-		{"context of an unknown file is dropped", "content", "/zzz/q-1-ctx\n/ok/a\x1f5\x1fneedle", "/ok/a\x1f5\x1fneedle"},
+		{"a line without a separator is dropped", "content", "stray\n/ok/a\x1f5\x1fneedle", "/ok/a\x1f5\x1fneedle"},
+		{
+			"context of a file whose name extends an allowed one is dropped",
+			"content",
+			"/ok/a\x1f1\x1fneedle\n/ok/a\x1e2\x1ectx\n--\n/bad/a-secret\x1e3\x1ectx\n/bad/a-secret\x1f4\x1fneedle",
+			"/ok/a\x1f1\x1fneedle\n/ok/a\x1e2\x1ectx",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -311,5 +317,62 @@ func TestAuthorizeReadHonoursRulesWrittenAgainstTheSymlinkName(t *testing.T) {
 	}
 	if got, err := authorizeRead(context.Background(), reg, f.perms, ReadToolName, f.okFile); err != nil || got != f.okFile {
 		t.Errorf("authorizeRead(target) = %q, %v; want allowed", got, err)
+	}
+}
+
+// A context line of /w/a-secret that follows a match of /w/a must not be taken
+// for a context line of /w/a: the file is read from the separator, never from
+// the first dash of the line.
+func TestFilterReadableOutputContextOfDashedSiblingIsDropped(t *testing.T) {
+	readable := func(p string) bool { return p == "/w/a" }
+	raw := "/w/a\x1f1\x1fneedle\n/w/a-secret\x1e1\x1esecret text\n/w/a-secret\x1f2\x1fneedle"
+	got := filterReadableOutput(raw, "content", readable)
+	if got != "/w/a\x1f1\x1fneedle" {
+		t.Errorf("got %q, want only the allowed file's match line", got)
+	}
+	if strings.Contains(got, "secret") {
+		t.Errorf("the denied file's context line leaked: %q", got)
+	}
+}
+
+// End to end through ripgrep: a denied sibling whose name extends an allowed
+// file's name never shows up in -C output, and the allowed file's context is
+// still rendered with the usual ":" and "-" separators.
+func TestGrepContentContextDoesNotLeakDashedDeniedSibling(t *testing.T) {
+	if !isRipgrepAvailable() {
+		t.Skip("ripgrep not available")
+	}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowedFile := filepath.Join(dir, "a")
+	deniedFile := filepath.Join(dir, "a-secret")
+	if err := os.WriteFile(allowedFile, []byte("before\nneedle\nafter\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(deniedFile, []byte("TOPSECRET-before\nneedle\nTOPSECRET-after\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	readable := func(p string) bool { return p == allowedFile }
+	ctxLines := 1
+	out, meta, err := searchWithRipgrepModes(context.Background(), "needle", dir,
+		&GrepParams{Context: &ctxLines}, "", "content", 250, nil, readable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "TOPSECRET") || strings.Contains(out, "a-secret") {
+		t.Errorf("denied sibling leaked into the output: %q", out)
+	}
+	for _, want := range []string{"a-1-before", "a:2:needle", "a-3-after"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lost %q: %q", want, out)
+		}
+	}
+	if strings.ContainsAny(out, "\x1e\x1f") {
+		t.Errorf("internal separators left in the output: %q", out)
+	}
+	if meta.NumberOfMatches != 1 || meta.NumberOfFiles != 1 {
+		t.Errorf("metadata = %+v, want 1 match in 1 file", meta)
 	}
 }
