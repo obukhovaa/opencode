@@ -591,7 +591,7 @@ These are honored by `opencode serve` only:
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/flow` | List every discovered flow YAML (`{id, name, description, disabled, args}`). |
-| POST | `/flow` | Start a new run. Body: `{flowID, args, fresh, recoverRunning}`. Returns `202 Accepted` with `{runID, flowID, status, currentStep}`, or `409` if another run is in flight, or `404` for an unknown flow ID. |
+| POST | `/flow` | Start a new run. Body: `{flowID, args, fresh, recoverRunning, startAt, doneSteps, presentSteps}` (the last three: [Starting at a step](#starting-at-a-step)). Returns `202 Accepted` with `{runID, flowID, status, currentStep}`, or `409` if another run is in flight, or `404` for an unknown flow ID. |
 | GET | `/flow/status` | Snapshot of the latest run: `{runID, flowID, status, startedAt, completedAt, currentStep, completedSteps, waitingTarget, error}`, or `{"status":"idle"}` if no run has been started in this process. |
 | DELETE | `/flow` | Abort the in-flight run. `409` if no run is active. |
 
@@ -669,6 +669,29 @@ curl http://127.0.0.1:4096/flow/status
 # Abort
 curl -X DELETE http://127.0.0.1:4096/flow
 ```
+
+#### Starting at a step
+
+A caller that already holds the outputs of a flow's early steps can start a run further in, and can have an interactive step show an output it supplies instead of spending a model call on it. Three `POST /flow` fields (and the matching `flow.RunOptions` fields) do this:
+
+| Field | Shape | Effect |
+|---|---|---|
+| `startAt` | step id | The run enters this step first instead of the flow's first step. |
+| `doneSteps` | `{stepID: output}` | Outputs for the steps the flow reaches before `startAt`. Each is recorded as a `completed` step, published as `flow.step.completed`, and merged into args like the step's own output would be. None of them runs. |
+| `presentSteps` | `{stepID: {output, question, accept}}` | On an interactive step's first entry in the run, the engine binds the step as usual, asks `question` (a `question` tool prompt) on the step's session with no model call, and waits. The answer `accept` (one of the question's option labels) completes the step with `output`. Any other answer, or a dismissal, runs the step's agent as usual, with what was shown and what the person answered ahead of its prompt. |
+
+An output is a JSON object for a step that declares `output.schema` (it must carry the schema's `required` fields) and a string otherwise.
+
+The engine checks the options before it writes anything, and refuses the run when:
+
+- `startAt` or a `doneSteps` / `presentSteps` key names no step, or `doneSteps` is given without `startAt`;
+- walking from the first step over the supplied outputs, using each step's own rules, reaches a step that is neither in `doneSteps` nor `startAt`, never reaches `startAt`, or routes a done step back to itself or to a postpone;
+- a `doneSteps` entry is not on that walk, or `startAt` is itself in `doneSteps`;
+- a presented step is not `interactive: true`, is also in `doneSteps`, has no question text, or its `accept` is not one of the question's option labels;
+- the run has work a re-trigger would resume (`running`, `postponed`, `waiting_for_input`, or a pending route) and `fresh` is not set, or `recoverRunning` is set alongside `startAt`;
+- `presentSteps` is given and the question service is not enabled (no `router.questionMode`).
+
+The walk is the one a later re-trigger takes: a run that started at a step and then parks resumes over the recorded `doneSteps` rows like any other run. Done steps get empty sessions, so a later step with `session.fork` copies no transcript from them; pass what such a step needs through args. Combine `startAt` with `fresh` when earlier sessions under the same prefix should not be reused.
 
 #### Interactive steps
 
