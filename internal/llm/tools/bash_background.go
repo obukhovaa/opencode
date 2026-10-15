@@ -57,6 +57,7 @@ func (b *bashTool) runBackground(ctx context.Context, call ToolCall, params Bash
 		Description:           params.Description,
 		FlowOwned:             StepScopedContext(ctx) != nil,
 		Requester:             RequesterFromContext(ctx),
+		JobArgs:               jobArgsOrNil(ctx),
 		Proc:                  cmd.Process,
 	}
 	if err := reg.Register(tk); err != nil {

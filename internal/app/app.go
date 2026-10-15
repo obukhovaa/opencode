@@ -456,8 +456,9 @@ func (d *taskDeps) IsSessionBusy(sessionID string) bool {
 // the just-written synthetic ToolResult. The call is fire-and-forget — we
 // drain the events channel in a goroutine so the agent's panic-recover path
 // can complete and release the busy lock. requester (the spawning turn's,
-// carried on the task) keeps the resumed turn's telemetry attributed.
-func (d *taskDeps) ResumeSession(sessionID, requester string) {
+// carried on the task) keeps the resumed turn's telemetry attributed, and
+// jobArgs keep its MCP flowArgHeaders stamped.
+func (d *taskDeps) ResumeSession(sessionID, requester string, jobArgs map[string]any) {
 	ag := d.app.AgentForSession(context.Background(), sessionID)
 	if ag == nil {
 		return
@@ -465,6 +466,7 @@ func (d *taskDeps) ResumeSession(sessionID, requester string) {
 	go func() {
 		defer logging.RecoverPanic("task.ResumeSession", nil)
 		ctx := tools.WithRequester(context.Background(), requester)
+		ctx = tools.WithJobArgs(ctx, jobArgs)
 		events, err := ag.Run(ctx, sessionID, "", 0)
 		if err != nil {
 			logging.Warn("task: auto-resume run failed", "session", sessionID, "err", err)

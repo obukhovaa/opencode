@@ -45,7 +45,15 @@ type MCPServer struct {
 	// model, so a server can scope its answer to the conversation the
 	// peer id names. Omitted on calls not made from a bridge turn.
 	PeerHeader string `json:"peerHeader,omitempty"`
-	Disabled   bool   `json:"disabled,omitempty"`
+	// FlowArgHeaders maps an HTTP header name to the name of a top-level job
+	// arg (sse and http servers only). The arg's value, taken from the job
+	// args the orchestrator supplied rather than from the model, is sent in
+	// that header on tool calls made under the job; a missing or unusable
+	// value omits the header. Every arg named here is treated as sensitive:
+	// it is kept out of persisted flow state, telemetry, logs and prompts.
+	// Authorization and the server's peerHeader cannot be mapped.
+	FlowArgHeaders map[string]string `json:"flowArgHeaders,omitempty"`
+	Disabled       bool              `json:"disabled,omitempty"`
 	// CallToolTimeoutSeconds overrides the default per-tool-call timeout for this server.
 	// Set to 0 (or omit) to use the built-in default. Useful for slow MCP servers whose
 	// individual tool calls can legitimately exceed the default budget.
@@ -62,6 +70,50 @@ type MCPServer struct {
 	// call before closing it. Set to 0 (or omit) for the built-in default; set a
 	// negative value to disable reuse, so every call starts its own client.
 	ClientIdleTimeoutSeconds int `json:"clientIdleTimeoutSeconds,omitempty"`
+}
+
+// RedactedFlowArgs returns the names of the job args mapped to a header by any
+// MCP server's flowArgHeaders, disabled servers included: an arg is sensitive
+// whenever any config maps it. Nil when none is.
+func RedactedFlowArgs() map[string]struct{} {
+	cfg := Get()
+	if cfg == nil {
+		return nil
+	}
+	var names map[string]struct{}
+	for _, server := range cfg.MCPServers {
+		for _, arg := range server.FlowArgHeaders {
+			if arg == "" {
+				continue
+			}
+			if names == nil {
+				names = map[string]struct{}{}
+			}
+			names[arg] = struct{}{}
+		}
+	}
+	return names
+}
+
+// RedactedFlowArgPlaceholder replaces the value of a redacted job arg
+// wherever a prompt would render it.
+const RedactedFlowArgPlaceholder = "[redacted]"
+
+func validateMCPServers(servers map[string]MCPServer) error {
+	for name, server := range servers {
+		for header, arg := range server.FlowArgHeaders {
+			if strings.TrimSpace(header) == "" || strings.TrimSpace(arg) == "" {
+				return fmt.Errorf("mcpServers.%s.flowArgHeaders: header and arg names must be non-empty", name)
+			}
+			if strings.EqualFold(header, "Authorization") {
+				return fmt.Errorf("mcpServers.%s.flowArgHeaders: header %q is not allowed (Authorization is managed separately)", name, header)
+			}
+			if server.PeerHeader != "" && strings.EqualFold(header, server.PeerHeader) {
+				return fmt.Errorf("mcpServers.%s.flowArgHeaders: header %q collides with the server's peerHeader", name, header)
+			}
+		}
+	}
+	return nil
 }
 
 // ResolveMCPServers returns only the MCP servers that are not disabled.
@@ -1398,6 +1450,10 @@ func Validate() error {
 	// Validate session provider configuration
 	if err := validateSessionProvider(); err != nil {
 		return fmt.Errorf("session provider validation failed: %w", err)
+	}
+
+	if err := validateMCPServers(cfg.MCPServers); err != nil {
+		return err
 	}
 
 	// Validate agent models

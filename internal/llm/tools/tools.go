@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -41,6 +42,7 @@ type (
 	requesterContextKey         string
 	parentSessionIDContextKey   string
 	peerContextKey              string
+	jobArgsContextKey           string
 )
 
 const (
@@ -95,6 +97,15 @@ const (
 	// and by the MCP client (a server's `peerHeader`). Use WithPeer /
 	// PeerFromContext.
 	PeerContextKey peerContextKey = "bridge_peer"
+	// JobArgsContextKey carries the top-level args of the job the turn
+	// belongs to, exactly as the orchestrator supplied them (POST /flow
+	// `args`, or --flow-args). Unlike FlowArgsContextKey it is neither
+	// filtered by telemetry.flowArgs nor stringified, and it never reaches
+	// telemetry: its only reader is the MCP client, which stamps the
+	// `flowArgHeaders` of a server. Set by the flow runner, and carried onto
+	// subagents, bridge turns and auto-resumed turns of the job. Use
+	// WithJobArgs / JobArgsFromContext.
+	JobArgsContextKey jobArgsContextKey = "job_args"
 
 	// MaxToolResponseTokens is the maximum number of tokens allowed in a tool response
 	// to prevent context overflow. ~1200KB of text content.
@@ -145,6 +156,59 @@ func PeerFromContext(ctx context.Context) (Peer, bool) {
 	}
 	p, ok := ctx.Value(PeerContextKey).(Peer)
 	return p, ok
+}
+
+// WithJobArgs returns ctx carrying a copy of args under JobArgsContextKey.
+// No args returns ctx unchanged.
+func WithJobArgs(ctx context.Context, args map[string]any) context.Context {
+	if len(args) == 0 {
+		return ctx
+	}
+	cp := make(map[string]any, len(args))
+	for k, v := range args {
+		cp[k] = v
+	}
+	return context.WithValue(ctx, JobArgsContextKey, cp)
+}
+
+// JobArgsFromContext returns the job args carried by ctx, if any. The map is
+// shared: callers must not modify it.
+func JobArgsFromContext(ctx context.Context) (map[string]any, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	a, ok := ctx.Value(JobArgsContextKey).(map[string]any)
+	return a, ok
+}
+
+func jobArgsOrNil(ctx context.Context) map[string]any {
+	a, _ := JobArgsFromContext(ctx)
+	return a
+}
+
+var processJobArgs atomic.Pointer[map[string]any]
+
+// SetProcessJobArgs publishes the args of the job this process is currently
+// running, for turns that do not descend from the flow run's context — chat
+// bridge turns. Nil or empty args clear it. The flow runner is its only writer.
+func SetProcessJobArgs(args map[string]any) {
+	if len(args) == 0 {
+		processJobArgs.Store(nil)
+		return
+	}
+	cp := make(map[string]any, len(args))
+	for k, v := range args {
+		cp[k] = v
+	}
+	processJobArgs.Store(&cp)
+}
+
+// ProcessJobArgs returns the args published by SetProcessJobArgs, or nil.
+func ProcessJobArgs() map[string]any {
+	if p := processJobArgs.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // ParentSessionIDFromContext returns the parent of the current session

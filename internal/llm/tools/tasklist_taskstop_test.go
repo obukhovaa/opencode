@@ -27,7 +27,7 @@ func (p *passthroughDeps) WritePair(_ context.Context, _ string, _ task.Syntheti
 	return nil
 }
 func (p *passthroughDeps) IsSessionBusy(string) bool { return false }
-func (p *passthroughDeps) ResumeSession(string, string) {
+func (p *passthroughDeps) ResumeSession(string, string, map[string]any) {
 	p.mu.Lock()
 	p.resumed++
 	p.mu.Unlock()

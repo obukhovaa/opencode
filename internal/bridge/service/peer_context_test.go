@@ -50,3 +50,42 @@ func TestHandleInbound_RunCtxCarriesInboundPeer(t *testing.T) {
 		t.Errorf("text = %q, want the inbound text unchanged", ag.texts[0])
 	}
 }
+
+type jobArgsCaptureAgent struct {
+	agentpkg.Service // nil — only Run is called
+	jobArgs          []map[string]any
+}
+
+func (a *jobArgsCaptureAgent) Run(ctx context.Context, _, _ string, _ int, _ ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
+	args, _ := tools.JobArgsFromContext(ctx)
+	a.jobArgs = append(a.jobArgs, args)
+	ch := make(chan agentpkg.AgentEvent, 1)
+	ch <- agentpkg.AgentEvent{Type: agentpkg.AgentEventTypeResponse}
+	close(ch)
+	return ch, nil
+}
+
+// A free-text turn runs with the args of the job the process is running, so
+// its MCP calls stamp the same flowArgHeaders as the job's steps; a daemon
+// with no job runs it with none.
+func TestHandleInbound_RunCtxCarriesProcessJobArgs(t *testing.T) {
+	ag := &jobArgsCaptureAgent{}
+	svc, _ := newDispatchTestSvc(t, ag)
+	d := newBareDispatch(svc, "S1")
+
+	t.Cleanup(func() { tools.SetProcessJobArgs(nil) })
+	tools.SetProcessJobArgs(map[string]any{"tenant": "acme"})
+	d.handleInbound(context.Background(), testInbound("with a job"))
+	tools.SetProcessJobArgs(nil)
+	d.handleInbound(context.Background(), testInbound("daemon"))
+
+	if len(ag.jobArgs) != 2 {
+		t.Fatalf("Run calls = %d, want 2", len(ag.jobArgs))
+	}
+	if ag.jobArgs[0]["tenant"] != "acme" {
+		t.Errorf("turn of a job: job args = %v, want tenant=acme", ag.jobArgs[0])
+	}
+	if ag.jobArgs[1] != nil {
+		t.Errorf("daemon turn: job args = %v, want none", ag.jobArgs[1])
+	}
+}

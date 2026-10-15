@@ -33,7 +33,7 @@ func (c *captureDeps) WritePair(ctx context.Context, sessionID string, p task.Sy
 }
 
 func (c *captureDeps) IsSessionBusy(string) bool { return false }
-func (c *captureDeps) ResumeSession(_, requester string) {
+func (c *captureDeps) ResumeSession(_, requester string, _ map[string]any) {
 	c.mu.Lock()
 	c.resumes++
 	c.requesters = append(c.requesters, requester)
