@@ -202,21 +202,6 @@ func (s *Service) sendToOnePeer(ctx context.Context, b store.Binding, out bridge
 // deployments (many runner pods, one MySQL) it includes bindings owned
 // by other, possibly finished, runs. The annotations exist precisely so
 // the consumer can tell those apart.
-// BindingSessionID returns the session that owns peer's binding, and
-// false when the peer is unbound, its binding is orphaned or the store
-// cannot answer. router_send treats false as "not this session's
-// conversation", so a store error refuses rather than allows.
-func (s *Service) BindingSessionID(ctx context.Context, peer bridge.PeerRef) (string, bool) {
-	if s.store == nil {
-		return "", false
-	}
-	b, err := s.store.GetBinding(ctx, s.projectID, peer.Channel, peer.Identity, peer.PeerID)
-	if err != nil || b.SessionID == "" {
-		return "", false
-	}
-	return b.SessionID, true
-}
-
 func (s *Service) BoundPeersSnapshot(ctx context.Context) []bridge.BoundPeer {
 	// Snapshot the (channel, identity) pairs under the cfg read lock,
 	// then release it before performing store I/O. Holding the cfg
@@ -265,6 +250,21 @@ func (s *Service) BoundPeersSnapshot(ctx context.Context) []bridge.BoundPeer {
 		}
 	}
 	return out
+}
+
+// BindingSessionID returns the session that owns peer's binding, and
+// false when the peer is unbound, its binding is orphaned or the store
+// cannot answer. router_send treats false as "not this session's
+// conversation", so a store error refuses rather than allows.
+func (s *Service) BindingSessionID(ctx context.Context, peer bridge.PeerRef) (string, bool) {
+	if s.store == nil {
+		return "", false
+	}
+	b, err := s.store.GetBinding(ctx, s.projectID, peer.Channel, peer.Identity, peer.PeerID)
+	if err != nil || b.SessionID == "" {
+		return "", false
+	}
+	return b.SessionID, true
 }
 
 // Send is the in-process entry point for the router_send agent tool and
