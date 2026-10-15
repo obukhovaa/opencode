@@ -693,6 +693,8 @@ The engine checks the options before it writes anything, and refuses the run whe
 
 The walk is the one a later re-trigger takes: a run that started at a step and then parks resumes over the recorded `doneSteps` rows like any other run. Done steps get empty sessions, so a later step with `session.fork` copies no transcript from them; pass what such a step needs through args. Combine `startAt` with `fresh` when earlier sessions under the same prefix should not be reused.
 
+A presented question is not bounded by the step's `timeout:` or by the non-interactive wait timeout: it waits, like any question to a person, until it is answered, dismissed or the run is aborted. Those timeouts apply once the step's agent runs.
+
 #### Interactive steps
 
 When the chat bridge is configured (a `router` section in `.opencode.json` — see [`docs/bridge.md`](bridge.md)), flow steps can be marked `interactive: true` with an `interaction.target` PeerRef. The flow engine auto-binds the step session to the resolved peer(s), `agent.Run` fans out to the bound peer(s), reviewer replies route back over the bridge, and the step completes when the agent emits `struct_output`. Server mode emits `flow.waiting_for_input` on `/event` so orchestrators can render a "waiting on reviewer" indicator without polling. See the flow-creator skill's [Interactive Step section](../.agents/skills/flow-creator/SKILL.md#interactive-step-human-in-the-loop-via-chat-bridge) for YAML syntax and supported channels.

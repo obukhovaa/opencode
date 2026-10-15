@@ -60,6 +60,7 @@ All refusals wrap `ErrInvalidStartOptions` and come back from `RunWithOptions` b
 
 ## Risks / Trade-offs
 
-- **Forked steps lose context.** A step with `session.fork` after a done step copies an empty transcript. A flow that relies on a forked history must pass that context through args when started part-way.
-- **Done steps never ran here.** Their sessions have no cost or messages. Consumers that read per-step cost see zero for them.
-- **Presented question bypasses the agent's own wording.** If the caller's question differs from what the agent would ask, the person sees the caller's.
+- **Forked steps lose context.** A step with `session.fork` after a done step copies an empty transcript. → Accepted: the engine does not invent a transcript for a step that never ran here. A caller that starts part-way passes what a forked step needs through args, and `docs/flows.md` ("Starting at a step") says so.
+- **Done steps never ran here.** Their sessions have no cost or messages. Consumers that read per-step cost see zero for them. → Accepted: that is the true cost of this run; the outputs were paid for in the run that produced them.
+- **Presented question bypasses the agent's own wording.** If the caller's question differs from what the agent would ask, the person sees the caller's. → Accepted: the caller owns the presentation and is expected to send the question the step's agent asks; any answer other than `accept` hands the step back to its agent.
+- **The step timeout does not bound a presented question.** The question waits like any question to a person, until it is answered, dismissed or the run is aborted; `timeout:` and the non-interactive wait timeout apply once the step's agent runs. → Accepted: a presentation is a person's decision, and a timeout read as a dismissal would run the agent unasked. `docs/flows.md` states it.
