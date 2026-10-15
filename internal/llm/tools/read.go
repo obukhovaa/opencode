@@ -93,12 +93,14 @@ func (v *viewTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		filePath = filepath.Join(config.WorkingDirectory(), filePath)
 	}
 
-	if err := checkReadPermission(ctx, v.registry, v.permissions, ReadToolName, filePath); err != nil {
+	canonical, err := authorizeRead(ctx, v.registry, v.permissions, ReadToolName, filePath)
+	if err != nil {
 		if err == permission.ErrorPermissionDenied {
 			return NewTextErrorResponse(fmt.Sprintf("Permission denied: reading %s", filePath)), nil
 		}
 		return NewEmptyResponse(), err
 	}
+	filePath = canonical
 
 	// Check if file exists
 	fileInfo, err := os.Stat(filePath)

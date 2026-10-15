@@ -140,7 +140,7 @@ func NewToolSet(
 		case tools.ReadToolName:
 			return tools.NewReadTool(lspService, reg, permissions)
 		case tools.ViewImageToolName:
-			return tools.NewViewImageTool()
+			return tools.NewViewImageTool(reg, permissions)
 		case tools.WebFetchToolName:
 			return tools.NewFetchTool(config.Get(), reg, permissions)
 		case tools.SkillToolName:

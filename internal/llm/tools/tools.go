@@ -579,14 +579,77 @@ func AddTag(ctx context.Context, k, v string) context.Context {
 	return context.WithValue(ctx, MetadataTagsContextKey, []string{tag})
 }
 
-// checkReadPermission evaluates read-category permission for a tool and path.
-// Returns nil if allowed, permission.ErrorPermissionDenied if denied or ask-rejected.
-// If registry is nil, permission check is skipped (always allowed).
-func checkReadPermission(ctx context.Context, reg agentregistry.Registry, perms permission.Service, toolName, path string) error {
+// canonicalReadPath makes path absolute against the working directory,
+// cleans it (collapsing "//", "/./" and "/../") and resolves its symlinks.
+// clean is the lexical result; resolved is the file the path really names, or
+// err when it does not resolve.
+func canonicalReadPath(path string) (clean, resolved string, err error) {
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(config.WorkingDirectory(), path)
+	}
+	clean = filepath.Clean(path)
+	resolved, err = filepath.EvalSymlinks(clean)
+	return clean, resolved, err
+}
+
+// strictestAction returns the more restrictive of two actions: deny, then ask,
+// then allow.
+func strictestAction(a, b permission.Action) permission.Action {
+	rank := func(x permission.Action) int {
+		switch x {
+		case permission.ActionDeny:
+			return 2
+		case permission.ActionAsk:
+			return 1
+		}
+		return 0
+	}
+	if rank(b) > rank(a) {
+		return b
+	}
+	return a
+}
+
+// authorizeRead gates a read-category tool on the canonical form of path and
+// returns the path the tool must then operate on, so what was checked is what
+// is read. The path is cleaned and its symlinks resolved first; a path that
+// does not resolve is denied. The permission patterns are evaluated against
+// both the cleaned and the resolved path and the stricter verdict wins, so
+// neither a "..", a double slash nor a symlink out of an allowed directory
+// reaches a file the patterns do not allow, and a rule written against a
+// symlink's own name still applies.
+//
+// With no registry or permission service nothing is checked and path is
+// returned unchanged.
+func authorizeRead(ctx context.Context, reg agentregistry.Registry, perms permission.Service, toolName, path string) (string, error) {
 	if reg == nil || perms == nil {
+		return path, nil
+	}
+	clean, resolved, err := canonicalReadPath(path)
+	if err != nil {
+		return "", permission.ErrorPermissionDenied
+	}
+	if err := checkReadPermission(ctx, reg, perms, toolName, clean, resolved); err != nil {
+		return "", err
+	}
+	return resolved, nil
+}
+
+// checkReadPermission evaluates read-category permission for a tool and the
+// given paths (the strictest verdict wins; an ask prompts once, for the last
+// path). Returns nil if allowed, permission.ErrorPermissionDenied if denied or
+// ask-rejected. If registry is nil, permission check is skipped (always
+// allowed). Callers holding a user-supplied path should go through
+// authorizeRead, which canonicalizes it first.
+func checkReadPermission(ctx context.Context, reg agentregistry.Registry, perms permission.Service, toolName string, paths ...string) error {
+	if reg == nil || perms == nil || len(paths) == 0 {
 		return nil
 	}
-	action := reg.EvaluateReadPermission(string(GetAgentID(ctx)), toolName, path)
+	path := paths[len(paths)-1]
+	action := permission.ActionAllow
+	for _, p := range paths {
+		action = strictestAction(action, reg.EvaluateReadPermission(string(GetAgentID(ctx)), toolName, p))
+	}
 	switch action {
 	case permission.ActionAllow:
 		return nil
@@ -607,5 +670,41 @@ func checkReadPermission(ctx context.Context, reg agentregistry.Registry, perms 
 			return permission.ErrorPermissionDenied
 		}
 		return nil
+	}
+}
+
+// readableMatch returns a predicate that reports whether a search result under
+// root may be shown: its symlinks must resolve, and the permission patterns
+// must not deny the resolved path (nor the lexical one). An "ask" verdict
+// cannot be put to the user once per match, so it stands for what was already
+// approved for root: the match is kept only while it stays inside the resolved
+// root. Nil when nothing is checked.
+func readableMatch(ctx context.Context, reg agentregistry.Registry, perms permission.Service, toolName, root string) func(path string) bool {
+	if reg == nil || perms == nil {
+		return nil
+	}
+	agentID := string(GetAgentID(ctx))
+	rootResolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		rootResolved = root
+	}
+	prefix := strings.TrimSuffix(rootResolved, string(filepath.Separator)) + string(filepath.Separator)
+	return func(path string) bool {
+		resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
+		if err != nil {
+			return false
+		}
+		action := strictestAction(
+			reg.EvaluateReadPermission(agentID, toolName, filepath.Clean(path)),
+			reg.EvaluateReadPermission(agentID, toolName, resolved),
+		)
+		switch action {
+		case permission.ActionAllow:
+			return true
+		case permission.ActionDeny:
+			return false
+		default:
+			return resolved == rootResolved || strings.HasPrefix(resolved, prefix)
+		}
 	}
 }

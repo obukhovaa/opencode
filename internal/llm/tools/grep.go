@@ -211,12 +211,14 @@ func (g *grepTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		searchPath = config.WorkingDirectory()
 	}
 
-	if err := checkReadPermission(ctx, g.registry, g.permissions, GrepToolName, searchPath); err != nil {
+	canonical, err := authorizeRead(ctx, g.registry, g.permissions, GrepToolName, searchPath)
+	if err != nil {
 		if err == permission.ErrorPermissionDenied {
 			return NewTextErrorResponse(fmt.Sprintf("Permission denied: searching %s", searchPath)), nil
 		}
 		return NewEmptyResponse(), err
 	}
+	searchPath = canonical
 
 	mode := params.resolveOutputMode()
 	headLimit := params.resolveHeadLimit()
@@ -230,7 +232,8 @@ func (g *grepTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		denyPatterns = g.registry.ReadDenyPatterns(agentID, GrepToolName)
 	}
 
-	output, metadata, err := runGrepSearch(ctx, searchPattern, searchPath, &params, glob, mode, headLimit, denyPatterns)
+	readable := readableMatch(ctx, g.registry, g.permissions, GrepToolName, searchPath)
+	output, metadata, err := runGrepSearch(ctx, searchPattern, searchPath, &params, glob, mode, headLimit, denyPatterns, readable)
 	if err != nil {
 		return NewEmptyResponse(), fmt.Errorf("error searching files: %w", err)
 	}
@@ -238,7 +241,7 @@ func (g *grepTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 	return WithResponseMetadata(NewTextResponse(output), metadata), nil
 }
 
-func runGrepSearch(ctx context.Context, pattern, rootPath string, params *GrepParams, glob, mode string, headLimit int, denyPatterns []string) (string, GrepResponseMetadata, error) {
+func runGrepSearch(ctx context.Context, pattern, rootPath string, params *GrepParams, glob, mode string, headLimit int, denyPatterns []string, readable func(string) bool) (string, GrepResponseMetadata, error) {
 	timeout := fileutil.FileOpTimeout()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -247,12 +250,12 @@ func runGrepSearch(ctx context.Context, pattern, rootPath string, params *GrepPa
 	rgAvailable := isRipgrepAvailable()
 
 	if rgAvailable {
-		return searchWithRipgrepModes(ctx, pattern, rootPath, params, glob, mode, headLimit, denyPatterns)
+		return searchWithRipgrepModes(ctx, pattern, rootPath, params, glob, mode, headLimit, denyPatterns, readable)
 	}
 
 	// Fallback: Go regex search only supports basic files_with_matches-like output.
 	// Pass headLimit so the fallback collection cap aligns with the requested limit.
-	return searchWithRegexFallback(ctx, pattern, rootPath, glob, mode, headLimit, params.Offset, denyPatterns)
+	return searchWithRegexFallback(ctx, pattern, rootPath, glob, mode, headLimit, params.Offset, denyPatterns, readable)
 }
 
 var (
@@ -268,7 +271,7 @@ func isRipgrepAvailable() bool {
 	return ripgrepAvailable
 }
 
-func searchWithRipgrepModes(ctx context.Context, pattern, path string, params *GrepParams, glob, mode string, headLimit int, denyPatterns []string) (string, GrepResponseMetadata, error) {
+func searchWithRipgrepModes(ctx context.Context, pattern, path string, params *GrepParams, glob, mode string, headLimit int, denyPatterns []string, readable func(string) bool) (string, GrepResponseMetadata, error) {
 	args := buildRipgrepArgs(pattern, params, glob, mode, denyPatterns)
 	args = append(args, path)
 
@@ -291,6 +294,9 @@ func searchWithRipgrepModes(ctx context.Context, pattern, path string, params *G
 	}
 
 	raw := strings.TrimSuffix(string(output), "\n")
+	if readable != nil {
+		raw = filterReadableOutput(raw, mode, readable)
+	}
 	if raw == "" {
 		return "No matches found", GrepResponseMetadata{Mode: mode, Limit: headLimit}, nil
 	}
@@ -304,6 +310,69 @@ func searchWithRipgrepModes(ctx context.Context, pattern, path string, params *G
 	default:
 		return formatFilesMode(raw, rootPath, params.Offset, headLimit)
 	}
+}
+
+// filterReadableOutput drops from raw ripgrep output every result whose file
+// readable rejects. files_with_matches lines are paths, count lines are
+// "path:count", and content lines are "path\x1fline\x1ftext" for matches and
+// "path-line-text" for context, the latter attributed to a file that has a match
+// line (a context line of an unknown file is dropped, not guessed at).
+func filterReadableOutput(raw, mode string, readable func(string) bool) string {
+	verdict := map[string]bool{}
+	check := func(p string) bool {
+		ok, seen := verdict[p]
+		if !seen {
+			ok = readable(p)
+			verdict[p] = ok
+		}
+		return ok
+	}
+	lines := strings.Split(raw, "\n")
+	if mode == "content" {
+		// A file's context lines can precede its first match line, so settle
+		// every matched file before attributing any context line.
+		for _, line := range lines {
+			if idx := strings.IndexByte(line, '\x1f'); idx > 0 {
+				check(line[:idx])
+			}
+		}
+	}
+	kept := lines[:0]
+	for _, line := range lines {
+		switch mode {
+		case "content":
+			if line == "--" {
+				kept = append(kept, line)
+				continue
+			}
+			if idx := strings.IndexByte(line, '\x1f'); idx > 0 {
+				if check(line[:idx]) {
+					kept = append(kept, line)
+				}
+				continue
+			}
+			for i := 1; i < len(line); i++ {
+				if line[i] != '-' {
+					continue
+				}
+				if ok, seen := verdict[line[:i]]; seen {
+					if ok {
+						kept = append(kept, line)
+					}
+					break
+				}
+			}
+		case "count":
+			if idx := strings.LastIndex(line, ":"); idx > 0 && check(line[:idx]) {
+				kept = append(kept, line)
+			}
+		default:
+			if p := strings.TrimSpace(line); p != "" && check(p) {
+				kept = append(kept, line)
+			}
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 // commonIgnoredDirs lists directories that should be skipped during search.
@@ -591,13 +660,25 @@ func relativizeLine(line, rootPath string) string {
 }
 
 // searchWithRegexFallback is the Go regex fallback for environments without ripgrep.
-func searchWithRegexFallback(ctx context.Context, pattern, rootPath, glob, mode string, headLimit, offset int, denyPatterns []string) (string, GrepResponseMetadata, error) {
+func searchWithRegexFallback(ctx context.Context, pattern, rootPath, glob, mode string, headLimit, offset int, denyPatterns []string, readable func(string) bool) (string, GrepResponseMetadata, error) {
 	// Collect more than headLimit so pagination can report accurate totals,
 	// but still cap to avoid unbounded memory use.
 	collectLimit := max(headLimit+offset, 500)
 	matches, capped, err := searchFilesWithRegex(ctx, pattern, rootPath, glob, collectLimit)
 	if err != nil {
 		return "", GrepResponseMetadata{}, err
+	}
+
+	// Drop matches whose resolved path the read patterns do not allow (the
+	// walk reads through a symlinked file).
+	if readable != nil {
+		kept := matches[:0]
+		for _, m := range matches {
+			if readable(m.path) {
+				kept = append(kept, m)
+			}
+		}
+		matches = kept
 	}
 
 	// Filter out files matching read deny patterns.
