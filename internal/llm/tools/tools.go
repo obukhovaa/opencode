@@ -3,7 +3,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -642,6 +644,15 @@ func strictestAction(a, b permission.Action) permission.Action {
 //
 // With no registry or permission service nothing is checked and path is
 // returned unchanged.
+//
+// The check and the later open are two steps: a path component swapped for a
+// symlink in between would be followed by the open. read and view_image close
+// that window by opening through openForRead, which refuses a file whose real
+// path is no longer the authorized one. ls, glob and grep only ever enumerate
+// a directory (ripgrep and the walk open the files themselves), and
+// grep/glob re-check every match's resolved path afterwards, but that is a
+// second check-then-use of the same kind: a swap racing the enumeration is
+// not detected there.
 func authorizeRead(ctx context.Context, reg agentregistry.Registry, perms permission.Service, toolName, path string) (string, error) {
 	if reg == nil || perms == nil {
 		return path, nil
@@ -728,4 +739,80 @@ func readableMatch(ctx context.Context, reg agentregistry.Registry, perms permis
 			return resolved == rootResolved || strings.HasPrefix(resolved, prefix)
 		}
 	}
+}
+
+var errReadPathChanged = errors.New("path changed between the permission check and the open")
+
+// openForRead opens path, which authorizeRead returned as the canonical form
+// that was permission-checked. With verify set it then makes sure the opened
+// file really is that path, so a symlink swapped in after the check is refused
+// instead of followed. verify is false when authorizeRead checked nothing and
+// path is whatever the caller supplied.
+func openForRead(path string, verify bool) (*os.File, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	if verify {
+		if err := verifyOpenedPath(f, path); err != nil {
+			f.Close()
+			return nil, err
+		}
+	}
+	return f, nil
+}
+
+// readFileForRead is os.ReadFile through openForRead.
+func readFileForRead(path string, verify bool) ([]byte, error) {
+	f, err := openForRead(path, verify)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
+// verifyOpenedPath reports errReadPathChanged unless the open file f is the
+// file at the canonical path want. Where the kernel can name the real path of
+// a descriptor (/proc/self/fd/N) that is compared with want, which also covers
+// a swapped parent directory. Elsewhere want must still resolve to itself and
+// to the very file that was opened.
+func verifyOpenedPath(f *os.File, want string) error {
+	if got, ok := descriptorPath(f); ok {
+		if got != want {
+			return errReadPathChanged
+		}
+		return nil
+	}
+	return verifyOpenedPathByStat(f, want)
+}
+
+func descriptorPath(f *os.File) (string, bool) {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return "", false
+	}
+	var got string
+	var rerr error
+	if err := rc.Control(func(fd uintptr) {
+		got, rerr = os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
+	}); err != nil || rerr != nil {
+		return "", false
+	}
+	return got, true
+}
+
+func verifyOpenedPathByStat(f *os.File, want string) error {
+	if resolved, err := filepath.EvalSymlinks(want); err != nil || resolved != want {
+		return errReadPathChanged
+	}
+	opened, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	current, err := os.Lstat(want)
+	if err != nil || !os.SameFile(opened, current) {
+		return errReadPathChanged
+	}
+	return nil
 }

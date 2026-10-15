@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,8 +122,11 @@ func (v *viewImageTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	}
 
 	// Read file content
-	fileContent, err := os.ReadFile(filePath)
+	fileContent, err := readFileForRead(filePath, v.registry != nil && v.permissions != nil)
 	if err != nil {
+		if errors.Is(err, errReadPathChanged) {
+			return NewTextErrorResponse(fmt.Sprintf("Permission denied: reading %s", filePath)), nil
+		}
 		return NewEmptyResponse(), fmt.Errorf("error reading image file: %w", err)
 	}
 

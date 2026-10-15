@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -375,4 +376,100 @@ func TestGrepContentContextDoesNotLeakDashedDeniedSibling(t *testing.T) {
 	if meta.NumberOfMatches != 1 || meta.NumberOfFiles != 1 {
 		t.Errorf("metadata = %+v, want 1 match in 1 file", meta)
 	}
+}
+
+// The file opened is the file that was authorized: a symlink swapped in for
+// the checked path after the check is refused, not followed.
+func TestOpenForReadRefusesAFileThatIsNoLongerTheAuthorizedPath(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := filepath.Join(dir, "allowed.txt")
+	secret := filepath.Join(dir, "secret.txt")
+	for p, c := range map[string]string{allowed: "ok", secret: "secret"} {
+		if err := os.WriteFile(p, []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	f, err := openForRead(allowed, true)
+	if err != nil {
+		t.Fatalf("openForRead(authorized path): %v", err)
+	}
+	f.Close()
+
+	// The swap: the authorized path now leads to the secret file.
+	if err := os.Remove(allowed); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secret, allowed); err != nil {
+		t.Skip(err)
+	}
+	if f, err := openForRead(allowed, true); !errors.Is(err, errReadPathChanged) {
+		if f != nil {
+			f.Close()
+		}
+		t.Errorf("openForRead after the swap = %v, want errReadPathChanged", err)
+	}
+	if got, err := readFileForRead(allowed, true); !errors.Is(err, errReadPathChanged) || got != nil {
+		t.Errorf("readFileForRead after the swap = %q, %v; want errReadPathChanged", got, err)
+	}
+	// Unverified (nothing was authorized) keeps following the link.
+	if got, err := readFileForRead(allowed, false); err != nil || string(got) != "secret" {
+		t.Errorf("readFileForRead(verify=false) = %q, %v", got, err)
+	}
+}
+
+// A swapped parent directory is caught too, and the portable verification
+// (used where the kernel cannot name a descriptor's path) agrees.
+func TestVerifyOpenedPath(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(root, "real")
+	other := filepath.Join(root, "other")
+	for _, d := range []string{real, other} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "f.txt"), []byte(d), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := filepath.Join(real, "f.txt")
+
+	check := func(name string, f *os.File, wantErr bool) {
+		t.Helper()
+		for label, fn := range map[string]func(*os.File, string) error{
+			"verifyOpenedPath":       verifyOpenedPath,
+			"verifyOpenedPathByStat": verifyOpenedPathByStat,
+		} {
+			if err := fn(f, want); (err != nil) != wantErr {
+				t.Errorf("%s: %s = %v, wantErr %v", name, label, err, wantErr)
+			}
+		}
+	}
+
+	f, err := os.Open(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("untouched", f, false)
+	f.Close()
+
+	// real/ is replaced by a symlink to other/ after the check.
+	if err := os.Rename(real, real+".moved"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, real); err != nil {
+		t.Skip(err)
+	}
+	f, err = os.Open(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	check("swapped parent", f, true)
 }
