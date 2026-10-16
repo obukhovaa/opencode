@@ -1016,6 +1016,89 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		msgHistory = append(msgHistory, deltaMsg)
 	}
 
+	// compactInLoop runs one auto-compaction inside the turn and rebuilds
+	// msgHistory from the new summary: the threshold check before a model
+	// call, and the recovery after a call the provider rejected as too long.
+	// It returns the recounted context size and whether the compaction
+	// succeeded; a failed compaction leaves the history as it was. Only a
+	// failed reload after a successful compaction is an error.
+	compactInLoop := func(trigger string, tokens int64, cycle int) (int64, bool, error) {
+		// With no tail or user turn to re-append (a re-entry's first
+		// call), the drained completion pairs are the model's input.
+		var resumeTail []message.Message
+		if !preserveTail && !hasUserTurn {
+			resumeTail = syntheticTail(msgHistory)
+		}
+		if errSync := a.autoCompact(ctx, sessionID, trigger, tokens); errSync != nil {
+			return tokens, false, nil
+		}
+		// After successful compaction, reload messages and rebuild msgHistory.
+		// Assigns the OUTER msgs/session: the non-interactive re-entry
+		// reload below filters by session.SummaryMessageID, and a stale
+		// one would bring the pre-summary history back.
+		reloaded, compacted, errReload := a.historyAfterCompaction(ctx, sessionID)
+		if errReload != nil {
+			return tokens, false, errReload
+		}
+		msgs, session = reloaded, compacted
+		// The summary boundary sits after the schema envelope, so
+		// filterMessagesFromSummary just dropped it. Under tool
+		// delivery the schema was in the tool block and survived
+		// compaction untouched; re-inject here so it still does,
+		// and so the forced struct_output wrap-up below is not asked
+		// to produce a document whose shape left the conversation.
+		msgs = a.withStructOutputSchema(ctx, sessionID, msgs)
+		// The deferred-tools delta sat before the summary too, and the
+		// compaction forgot it was announced. A flow step or a task
+		// subagent is usually one turn, so waiting for the next turn's
+		// injection would leave the deferred MCP tools out of view for
+		// the rest of the run.
+		if deltaMsg, ok := a.injectDeferredDelta(ctx, sessionID, session.SummaryMessageID, toolSet); ok {
+			msgs = append(msgs, deltaMsg)
+		}
+
+		ctx = a.withTaskBudgetRemaining(ctx, session)
+
+		// Preserve original problem and result from the last tool iteration to ensure no dead-loop
+		if preserveTail {
+			preserveTail = false
+			msgHistory = append(msgs, agentMessage, *toolResults)
+		} else if hasUserTurn {
+			msgHistory = append(msgs, userMsg)
+		} else {
+			// Auto-resume turn or non-interactive re-entry — no
+			// user message to re-append.
+			msgHistory = append(msgs, resumeTail...)
+		}
+
+		// Re-count against the same effective threshold that triggered
+		// this compaction so the log reflects the step's configured
+		// gate, not the global default.
+		counted, stillOver := a.countContextTokens(ctx, sessionID, compactionThreshold, msgHistory, toolSet)
+		if stillOver {
+			logging.Warn(
+				"Context compacted, but still exceed context threshold",
+				"session_id", sessionID,
+				"history_length", len(msgHistory),
+				"token_count", counted,
+				"cycle", cycle,
+			)
+		} else {
+			logging.Info(
+				"Context compacted, continuing with reduced history",
+				"session_id", sessionID,
+				"history_length", len(msgHistory),
+				"token_count", counted,
+				"cycle", cycle,
+			)
+		}
+		return counted, true, nil
+	}
+	// overflowRetried allows one recovery from a provider's "prompt too
+	// long" per run, so a history that a compaction cannot shrink enough
+	// fails instead of looping.
+	overflowRetried := false
+
 	tracker := newCallTracker()
 
 	// finalResult holds the natural-completion event that the inner loop
@@ -1076,77 +1159,15 @@ OuterLoop:
 					"cycle", cycles,
 				)
 
-				// With no tail or user turn to re-append (a re-entry's first
-				// call), the drained completion pairs are the model's input.
-				var resumeTail []message.Message
-				if !preserveTail && !hasUserTurn {
-					resumeTail = syntheticTail(msgHistory)
+				// Perform synchronous compaction to shrink context. On a
+				// failure, continue anyway - better to risk context overflow
+				// than stop completely.
+				recounted, compacted, errCompact := compactInLoop(compactionTriggerInLoop, etaTokens, cycles)
+				if errCompact != nil {
+					return a.err(errCompact)
 				}
-
-				// Perform synchronous compaction to shrink context
-				if errSync := a.autoCompact(ctx, sessionID, compactionTriggerInLoop, etaTokens); errSync != nil {
-					// Continue anyway - better to risk context overflow than stop completely
-				} else {
-					// After successful compaction, reload messages and rebuild msgHistory.
-					// Assigns the OUTER msgs/session: the non-interactive re-entry
-					// reload below filters by session.SummaryMessageID, and a stale
-					// one would bring the pre-summary history back.
-					reloaded, compacted, errReload := a.historyAfterCompaction(ctx, sessionID)
-					if errReload != nil {
-						return a.err(errReload)
-					}
-					msgs, session = reloaded, compacted
-					// The summary boundary sits after the schema envelope, so
-					// filterMessagesFromSummary just dropped it. Under tool
-					// delivery the schema was in the tool block and survived
-					// compaction untouched; re-inject here so it still does,
-					// and so the forced struct_output wrap-up below is not asked
-					// to produce a document whose shape left the conversation.
-					msgs = a.withStructOutputSchema(ctx, sessionID, msgs)
-					// The deferred-tools delta sat before the summary too, and the
-					// compaction forgot it was announced. A flow step or a task
-					// subagent is usually one turn, so waiting for the next turn's
-					// injection would leave the deferred MCP tools out of view for
-					// the rest of the run.
-					if deltaMsg, ok := a.injectDeferredDelta(ctx, sessionID, session.SummaryMessageID, toolSet); ok {
-						msgs = append(msgs, deltaMsg)
-					}
-
-					ctx = a.withTaskBudgetRemaining(ctx, session)
-
-					// Preserve original problem and result from the last tool iteration to ensure no dead-loop
-					if preserveTail {
-						preserveTail = false
-						msgHistory = append(msgs, agentMessage, *toolResults)
-					} else if hasUserTurn {
-						msgHistory = append(msgs, userMsg)
-					} else {
-						// Auto-resume turn or non-interactive re-entry — no
-						// user message to re-append.
-						msgHistory = append(msgs, resumeTail...)
-					}
-
-					// Re-count against the same effective threshold that triggered
-					// this compaction so the log reflects the step's configured
-					// gate, not the global default.
-					etaTokens, shouldTriggerAutoCompaction = a.countContextTokens(ctx, sessionID, compactionThreshold, msgHistory, toolSet)
-					if shouldTriggerAutoCompaction {
-						logging.Warn(
-							"Context compacted, but still exceed context threshold",
-							"session_id", sessionID,
-							"history_length", len(msgHistory),
-							"token_count", etaTokens,
-							"cycle", cycles,
-						)
-					} else {
-						logging.Info(
-							"Context compacted, continuing with reduced history",
-							"session_id", sessionID,
-							"history_length", len(msgHistory),
-							"token_count", etaTokens,
-							"cycle", cycles,
-						)
-					}
+				if compacted {
+					etaTokens = recounted
 				}
 			}
 
@@ -1259,17 +1280,69 @@ OuterLoop:
 				break OuterLoop
 			}
 
-			agentMessage, toolResults, err = a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
-			if err != nil {
-				a.createErrorToolResults(agentMessage)
-				if errors.Is(err, context.Canceled) {
-					a.finishMessage(ctx, &agentMessage, message.FinishReasonCanceled)
+			// The call's result stays out of agentMessage/toolResults until it
+			// succeeds: a recovery compaction below re-appends the previous
+			// cycle's pair (preserveTail) from them.
+			turnMsg, turnResults, turnErr := a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
+			// errorResultsWritten: turnMsg's tool calls already got their
+			// error results, so the error path below must not write them twice.
+			errorResultsWritten := false
+			if turnErr != nil && cfg.AutoCompact && !overflowRetried && !errors.Is(turnErr, context.Canceled) {
+				if cause := a.contextOverflowCause(etaTokens, turnErr); cause != "" && a.compactionAllowed(sessionID, etaTokens) {
+					// Recover from a call the provider rejected as too long: compact
+					// once and send the same turn again, once per run. The failed
+					// call executed no tools, so nothing runs twice.
+					overflowRetried = true
+					logging.Warn("Model call failed on context size; compacting and retrying the turn once",
+						"session_id", sessionID,
+						"agent", a.agentID,
+						"cause", cause,
+						"token_count", etaTokens,
+						"context_window", a.provider.Model().ContextWindow,
+						"cycle", cycles,
+						"error", turnErr,
+					)
+					a.createErrorToolResults(turnMsg)
+					a.finishMessage(ctx, &turnMsg, message.FinishReasonError)
+					errorResultsWritten = true
+					recounted, compacted, errCompact := compactInLoop(compactionTriggerOverflow, etaTokens, cycles)
+					if errCompact != nil {
+						return a.err(errCompact)
+					}
+					if compacted {
+						etaTokens = recounted
+						a.provider.AdjustMaxTokens(etaTokens)
+						retryMsg, retryResults, retryErr := a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
+						turnMsg, errorResultsWritten = retryMsg, false
+						switch {
+						case retryErr == nil:
+							turnResults, turnErr = retryResults, nil
+						case errors.Is(retryErr, context.Canceled):
+							turnErr = retryErr
+						default:
+							// The original error is the one that explains the
+							// run's failure; the retry's is logged.
+							logging.Warn("Model call failed again after the overflow compaction; returning the original error",
+								"session_id", sessionID,
+								"retry_error", retryErr,
+							)
+						}
+					}
+				}
+			}
+			if turnErr != nil {
+				if !errorResultsWritten {
+					a.createErrorToolResults(turnMsg)
+				}
+				if errors.Is(turnErr, context.Canceled) {
+					a.finishMessage(ctx, &turnMsg, message.FinishReasonCanceled)
 					return a.err(ErrRequestCancelled)
 				}
-				a.warnIfLikelyContextOverflow(sessionID, etaTokens, err)
-				a.finishMessage(ctx, &agentMessage, message.FinishReasonError)
-				return a.err(fmt.Errorf("failed to process events: %w", err))
+				a.warnIfLikelyContextOverflow(sessionID, etaTokens, turnErr)
+				a.finishMessage(ctx, &turnMsg, message.FinishReasonError)
+				return a.err(fmt.Errorf("failed to process events: %w", turnErr))
 			}
+			agentMessage, toolResults = turnMsg, turnResults
 			if cfg.Debug {
 				seqID := (len(msgHistory) + 1) / 2
 				toolResultFilepath := logging.WriteToolResultsJson(sessionID, seqID, toolResults)

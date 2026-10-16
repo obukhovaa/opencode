@@ -1,0 +1,218 @@
+package agent
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/opencode-ai/opencode/internal/llm/provider"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
+	"github.com/opencode-ai/opencode/internal/message"
+)
+
+var errInternal = errors.New("500 internal server error")
+
+var errPromptTooLong = errors.New(`POST "https://api.anthropic.com/v1/messages": 400 Bad Request {"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 212000 tokens > 200000 maximum"}}`)
+
+// overflowingProvider is the main model: failWhen picks, per request, the
+// stream error it ends in (nil for a normal response).
+type overflowingProvider struct {
+	*compactionProvider
+	failWhen func(msgs []message.Message) error
+}
+
+func (p *overflowingProvider) StreamResponse(ctx context.Context, msgs []message.Message, ts []tools.BaseTool) <-chan provider.ProviderEvent {
+	p.fail = p.failWhen(msgs)
+	return p.compactionProvider.StreamResponse(ctx, msgs, ts)
+}
+
+func headedBySummary(msgs []message.Message) bool {
+	return len(msgs) > 0 && firstText(msgs[0]) == testSummaryText
+}
+
+// newOverflowAgent: a session with some history and a report well under the
+// threshold, so only the overflow path can compact.
+func newOverflowAgent(t *testing.T, sessionID string, failWhen func([]message.Message) error, ts ...tools.BaseTool) (*agent, *compactionProvider, *[]string) {
+	t.Helper()
+	withFreshTaskRegistry(t)
+	a, main, summarizer, log := newCompactingAgent(t, 100, ts)
+	a.provider = &overflowingProvider{compactionProvider: main, failWhen: failWhen}
+	seedHistory(t, a, sessionID, textMsg(message.User, "earlier task"), textMsg(message.Assistant, "earlier answer"))
+	seedReport(t, a, sessionID, 100)
+	return a, summarizer, log
+}
+
+func countOf(log []string, name string) int {
+	n := 0
+	for _, l := range log {
+		if l == name {
+			n++
+		}
+	}
+	return n
+}
+
+// Overflow -> one compaction -> the same turn succeeds on the compacted history.
+func TestOverflowRetry_CompactsAndRetriesOnce(t *testing.T) {
+	withAutoCompact(t, true)
+	const sess = "s-overflow-ok"
+	a, _, log := newOverflowAgent(t, sess, func(msgs []message.Message) error {
+		if headedBySummary(msgs) {
+			return nil
+		}
+		return errPromptTooLong
+	})
+	main := a.provider.(*overflowingProvider)
+
+	res := a.processGeneration(context.Background(), sess, "next task", 0, nil, RunOptions{})
+
+	if res.Error != nil {
+		t.Fatalf("processGeneration: %v", res.Error)
+	}
+	if got := strings.Join(*log, ","); got != "main,summarizer,main" {
+		t.Fatalf("call order = %s, want main,summarizer,main", got)
+	}
+	retry := main.requests[1]
+	if !headedBySummary(retry) {
+		t.Fatal("the retry was not sent the compacted history")
+	}
+	if last := retry[len(retry)-1]; last.Role != message.User || firstText(last) != "next task" {
+		t.Errorf("the retry must end with the turn's user message, got %+v", last)
+	}
+	sessAfter, _ := a.sessions.Get(context.Background(), sess)
+	if sessAfter.SummaryMessageID == "" {
+		t.Error("no summary recorded")
+	}
+}
+
+// An overflow on the call after a tool turn keeps that turn's call and
+// result past the summary, so the retried call still sees what it reacts to.
+func TestOverflowRetry_AfterToolTurnKeepsThePair(t *testing.T) {
+	withAutoCompact(t, true)
+	const sess = "s-overflow-tool"
+	calls := 0
+	a, _, log := newOverflowAgent(t, sess, func(msgs []message.Message) error {
+		if calls == 1 && !headedBySummary(msgs) {
+			return errPromptTooLong
+		}
+		return nil
+	}, noopTool{})
+	main := a.provider.(*overflowingProvider)
+	main.respond = func([]message.Message) *provider.ProviderResponse {
+		calls++
+		if calls == 1 {
+			return toolTurn(call("noop", 1))
+		}
+		return &provider.ProviderResponse{Content: "done", FinishReason: message.FinishReasonEndTurn}
+	}
+
+	res := a.processGeneration(context.Background(), sess, "next task", 0, nil, RunOptions{})
+
+	if res.Error != nil {
+		t.Fatalf("processGeneration: %v", res.Error)
+	}
+	if got := strings.Join(*log, ","); got != "main,main,summarizer,main" {
+		t.Fatalf("call order = %s", got)
+	}
+	retry := main.requests[2]
+	if !headedBySummary(retry) {
+		t.Fatal("the retry was not sent the compacted history")
+	}
+	tail := retry[len(retry)-2:]
+	if len(tail[0].ToolCalls()) != 1 || tail[0].ToolCalls()[0].ID != "noop-1" || len(tail[1].ToolResults()) != 1 {
+		t.Fatalf("the retry must end with the tool turn's call and result, got %+v", tail)
+	}
+}
+
+func TestOverflowRetry_NoRecovery(t *testing.T) {
+	tests := []struct {
+		name           string
+		autoCompact    bool
+		failWhen       func([]message.Message) error
+		summarizerFail error
+		backoff        bool
+		wantLog        string
+	}{
+		{
+			name:        "overflow again after compaction returns the original error",
+			autoCompact: true,
+			failWhen:    func([]message.Message) error { return errPromptTooLong },
+			wantLog:     "main,summarizer,main",
+		},
+		{
+			name:           "failed compaction returns the original error",
+			autoCompact:    true,
+			failWhen:       func([]message.Message) error { return errPromptTooLong },
+			summarizerFail: errors.New("summarizer down"),
+			wantLog:        "main,summarizer",
+		},
+		{
+			name:        "auto-compaction off",
+			autoCompact: false,
+			failWhen:    func([]message.Message) error { return errPromptTooLong },
+			wantLog:     "main",
+		},
+		{
+			name:        "backoff after a failed compaction",
+			autoCompact: true,
+			failWhen:    func([]message.Message) error { return errPromptTooLong },
+			backoff:     true,
+			wantLog:     "main",
+		},
+		{
+			name:        "an error that is not an overflow",
+			autoCompact: true,
+			failWhen:    func([]message.Message) error { return errInternal },
+			wantLog:     "main",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withAutoCompact(t, tt.autoCompact)
+			const sess = "s-overflow-fail"
+			a, summarizer, log := newOverflowAgent(t, sess, tt.failWhen)
+			summarizer.fail = tt.summarizerFail
+			if tt.backoff {
+				a.compactionBackoff.failed(sess, 1_000_000)
+			}
+
+			res := a.processGeneration(context.Background(), sess, "next task", 0, nil, RunOptions{})
+
+			if got := strings.Join(*log, ","); got != tt.wantLog {
+				t.Fatalf("call order = %s, want %s", got, tt.wantLog)
+			}
+			want := tt.failWhen(nil)
+			if res.Error == nil || !errors.Is(res.Error, want) {
+				t.Fatalf("error = %v, want the original %v", res.Error, want)
+			}
+		})
+	}
+}
+
+func TestContextOverflowCause(t *testing.T) {
+	a := &agent{provider: &compactionProvider{name: "main", window: 1000, log: &[]string{}}}
+	tests := []struct {
+		name      string
+		estimated int64
+		err       error
+		want      string
+	}{
+		{name: "anthropic", estimated: 10, err: errPromptTooLong, want: "provider_error"},
+		{name: "bedrock", estimated: 10, err: errors.New("ValidationException: Input is too long for requested model."), want: "provider_error"},
+		{name: "max_tokens over the limit", estimated: 10, err: errors.New("input length and `max_tokens` exceed context limit: 190000 + 32000 > 200000"), want: "provider_error"},
+		{name: "openai", estimated: 10, err: errors.New(`{"code":"context_length_exceeded"}`), want: "provider_error"},
+		{name: "gemini", estimated: 10, err: errors.New("The input token count (1200000) exceeds the maximum number of tokens allowed (1048576)."), want: "provider_error"},
+		{name: "stream reset near the window", estimated: 950, err: errors.New("stream reset"), want: "near_window"},
+		{name: "rate limit far from the window", estimated: 100, err: errors.New("429 rate limited"), want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := a.contextOverflowCause(tt.estimated, tt.err); got != tt.want {
+				t.Errorf("cause = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+var _ provider.Provider = (*overflowingProvider)(nil)
