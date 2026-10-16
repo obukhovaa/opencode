@@ -222,7 +222,7 @@ Each built-in agent can be customized:
 | `explorer` | subagent | Fast codebase exploration (read-only tools) |
 | `workhorse` | subagent | Autonomous coding subagent (all tools) |
 | `summarizer` | subagent | Session summarization |
-| `descriptor` | subagent | Session title generation |
+| `descriptor` | subagent | Session title generation (interactive sessions only: flow steps, headless `-p` runs, cron jobs and their subagents keep their creation title) |
 
 **Agent fields:**
 
@@ -1107,7 +1107,7 @@ Each built-in agent can be customized:
 | `explorer` | subagent | Fast codebase exploration (read-only tools) |
 | `workhorse` | subagent | Autonomous coding subagent (all tools) |
 | `summarizer` | subagent | Session summarization |
-| `descriptor` | subagent | Session title generation |
+| `descriptor` | subagent | Session title generation (interactive sessions only: flow steps, headless `-p` runs, cron jobs and their subagents keep their creation title) |
 
 **Agent fields:**
 

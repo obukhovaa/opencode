@@ -241,6 +241,11 @@ type agent struct {
 	titleProvider     provider.Provider
 	summarizeProvider provider.Provider
 
+	// permissions is read for the session's attendance marks (titleWanted);
+	// the tools get their own reference at construction. Nil in tests that
+	// build the struct directly.
+	permissions permission.Service
+
 	// factory exposes services that are late-injected on the factory
 	// after agent construction. Today we read HookRegistry off it at
 	// tool-dispatch time (per claude-code-hooks-plugin-system); future
@@ -339,6 +344,7 @@ func newAgent(
 		toolsCh:           agentTools,
 		titleProvider:     titleProvider,
 		summarizeProvider: summarizeProvider,
+		permissions:       permissions,
 		activeRequests:    sync.Map{},
 		allowParallelism:  agentInfo.AllowsParallelToolUse(),
 		factory:           factory,
@@ -613,6 +619,19 @@ func (a *agent) UnlockSession(sessionID string) {
 	}
 }
 
+// titleWanted reports whether a session's first turn generates a title.
+// Unattended sessions skip it: flow steps, headless `-p` runs, cron jobs and
+// the subagents they spawn (which inherit the mark through the permission
+// session link). Nobody reads their titles, and each one costs a descriptor
+// model call. An interactive flow step is bound to a human over chat and
+// keeps its title, as do the TUI, the chat bridge and the API.
+func (a *agent) titleWanted(sessionID string) bool {
+	if a.permissions == nil {
+		return true
+	}
+	return !a.permissions.IsUnattendedSession(sessionID) || a.permissions.IsInteractiveSession(sessionID)
+}
+
 func (a *agent) generateTitle(ctx context.Context, sessionID string, content string) error {
 	if content == "" {
 		return nil
@@ -845,7 +864,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	if err != nil {
 		return a.err(fmt.Errorf("failed to list messages: %w", err))
 	}
-	if len(msgs) == 0 {
+	if len(msgs) == 0 && a.titleWanted(sessionID) {
 		titleContent := content
 		// Detached from the turn so it outlives it, but the title trace is
 		// still attributed to the turn's requester (a flow step's
