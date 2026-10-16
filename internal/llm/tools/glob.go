@@ -78,12 +78,14 @@ func (g *globTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		searchPath = config.WorkingDirectory()
 	}
 
-	if err := checkReadPermission(ctx, g.registry, g.permissions, GlobToolName, searchPath); err != nil {
+	canonical, err := authorizeRead(ctx, g.registry, g.permissions, GlobToolName, searchPath)
+	if err != nil {
 		if err == permission.ErrorPermissionDenied {
 			return NewTextErrorResponse(fmt.Sprintf("Permission denied: globbing %s", searchPath)), nil
 		}
 		return NewEmptyResponse(), err
 	}
+	searchPath = canonical
 
 	info, err := os.Stat(searchPath)
 	if err != nil {
@@ -99,6 +101,18 @@ func (g *globTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 	files, truncated, err := globFiles(ctx, params.Pattern, searchPath, 100)
 	if err != nil {
 		return NewEmptyResponse(), fmt.Errorf("error finding files: %w", err)
+	}
+
+	// rg runs with -L, so a symlink inside the search root can list a file
+	// outside it: keep only matches whose resolved path the read patterns allow.
+	if readable := readableMatch(ctx, g.registry, g.permissions, GlobToolName, searchPath); readable != nil {
+		kept := files[:0]
+		for _, f := range files {
+			if readable(f) {
+				kept = append(kept, f)
+			}
+		}
+		files = kept
 	}
 
 	var output string

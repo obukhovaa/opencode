@@ -33,7 +33,7 @@ func (f *fakeDeps) IsSessionBusy(sessionID string) bool {
 	return f.busyOn[sessionID]
 }
 
-func (f *fakeDeps) ResumeSession(sessionID, requester string) {
+func (f *fakeDeps) ResumeSession(sessionID, requester string, _ map[string]any) {
 	f.resumeCalls.Add(1)
 	f.mu.Lock()
 	f.requesters = append(f.requesters, requester)

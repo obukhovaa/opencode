@@ -17,6 +17,7 @@ import (
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/agent/mcpauthctx"
 	"github.com/opencode-ai/opencode/internal/llm/runidentity"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/session"
@@ -297,6 +298,10 @@ type flowRunState struct {
 	setBridgeJobID   bool
 	setDiscoveryAuth bool
 	setRunIdentity   bool
+	// setJobArgs records that THIS run published its args as the process's
+	// job args (tools.SetProcessJobArgs), so finish() clears exactly them.
+	setJobArgs bool
+	jobArgs    map[string]any
 }
 
 // flowRunnerSingleton is the process-wide tracker installed on
@@ -590,6 +595,21 @@ type bridgeJobScoper interface {
 	SetRemoteJobID(jobID string)
 }
 
+// processJobID is the bridge job identity the run's published job args belong
+// to: the one this run just published to the bridge (pool mode), else the
+// identity the bridge was booted with (a per-Job pod's
+// OPENCODE_BRIDGE_JOB_ID). Empty when neither exists, in which case no bridge
+// turn can be proven to belong to the job.
+func (fr *flowRunner) processJobID(state *flowRunState, opts flowStartOptions) string {
+	if state.setBridgeJobID {
+		return opts.bridgeJobID
+	}
+	if r, ok := fr.bridgeJobs.(interface{ RemoteJobID() string }); ok {
+		return r.RemoteJobID()
+	}
+	return ""
+}
+
 // mcpDiscoveryAuthSetter is the narrow slice of the MCP registry the
 // flow runner needs: record the Authorization overrides that
 // registry-owned tool DISCOVERY applies. Tool calls take theirs from the
@@ -716,6 +736,11 @@ func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, ar
 	if opts.mcpAuth != "" {
 		base = mcpauthctx.WithAuthOverride(base, foldMCPServerName(opts.mcpAuthServer), "Bearer "+opts.mcpAuth)
 	}
+	// The run's top-level args ride on the run context too, so every step —
+	// including one resumed after a restart or a question — stamps the MCP
+	// flowArgHeaders from what the orchestrator supplied, never from
+	// persisted flow state.
+	base = tools.WithJobArgs(base, args)
 	runCtx, cancel := context.WithCancel(base)
 	state := &flowRunState{
 		RunID:     runID,
@@ -743,6 +768,8 @@ func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, ar
 	// never mutates, so the override is purely additive and clearing it
 	// always restores the configured value.
 	state.setRunIdentity = opts.llmAPIKey != "" || opts.telemetryUserID != "" || opts.telemetryTeam != ""
+	state.setJobArgs = len(args) > 0
+	state.jobArgs = args
 	fr.currentRun = state
 	// Publish the run-scoped process identity while STILL holding fr.mu,
 	// and revert under it too (clearRunScopedIdentity takes the lock), so
@@ -788,6 +815,10 @@ func (fr *flowRunner) applyRunScopedIdentity(state *flowRunState, opts flowStart
 			foldMCPServerName(opts.mcpAuthServer): "Bearer " + opts.mcpAuth,
 		})
 	}
+	// Always published (nil for an argless run): a run must never inherit the
+	// previous run's args, and reverting is suppressed once another run is
+	// current.
+	tools.SetProcessJobArgs(fr.processJobID(state, opts), state.jobArgs)
 	if state.setRunIdentity {
 		runidentity.Set(&runidentity.Identity{
 			APIKey: opts.llmAPIKey,
@@ -830,7 +861,7 @@ func (fr *flowRunner) applyRunScopedIdentity(state *flowRunState, opts flowStart
 // defer) so the bridge's and registry's own locks are never taken while
 // holding the runner's.
 func (fr *flowRunner) clearRunScopedIdentity(state *flowRunState) {
-	if state == nil || (!state.setBridgeJobID && !state.setDiscoveryAuth && !state.setRunIdentity) {
+	if state == nil || (!state.setBridgeJobID && !state.setDiscoveryAuth && !state.setRunIdentity && !state.setJobArgs) {
 		return
 	}
 	// Only the run that is STILL current may clear. Both the publish (in
@@ -859,6 +890,9 @@ func (fr *flowRunner) clearRunScopedIdentity(state *flowRunState) {
 	}
 	if state.setRunIdentity {
 		runidentity.Set(nil)
+	}
+	if state.setJobArgs {
+		tools.SetProcessJobArgs("", nil)
 	}
 }
 

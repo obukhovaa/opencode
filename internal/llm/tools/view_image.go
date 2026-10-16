@@ -4,19 +4,25 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/permission"
 )
 
 type ViewImageParams struct {
 	FilePath string `json:"file_path"`
 }
 
-type viewImageTool struct{}
+type viewImageTool struct {
+	registry    agentregistry.Registry
+	permissions permission.Service
+}
 
 type ViewImageResponseMetadata struct {
 	MimeType string `json:"mime_type"`
@@ -44,8 +50,8 @@ var supportedImageTypes = map[string]string{
 	".bmp":  "image/bmp",
 }
 
-func NewViewImageTool() BaseTool {
-	return &viewImageTool{}
+func NewViewImageTool(reg agentregistry.Registry, permissions permission.Service) BaseTool {
+	return &viewImageTool{registry: reg, permissions: permissions}
 }
 
 func (v *viewImageTool) Info() ToolInfo {
@@ -78,6 +84,15 @@ func (v *viewImageTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 		filePath = filepath.Join(config.WorkingDirectory(), filePath)
 	}
 
+	canonical, err := authorizeRead(ctx, v.registry, v.permissions, ViewImageToolName, filePath)
+	if err != nil {
+		if err == permission.ErrorPermissionDenied {
+			return NewTextErrorResponse(fmt.Sprintf("Permission denied: reading %s", filePath)), nil
+		}
+		return NewEmptyResponse(), err
+	}
+	filePath = canonical
+
 	// Check if file exists
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
@@ -107,8 +122,11 @@ func (v *viewImageTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	}
 
 	// Read file content
-	fileContent, err := os.ReadFile(filePath)
+	fileContent, err := readFileForRead(filePath, v.registry != nil && v.permissions != nil)
 	if err != nil {
+		if errors.Is(err, errReadPathChanged) {
+			return NewTextErrorResponse(fmt.Sprintf("Permission denied: reading %s", filePath)), nil
+		}
 		return NewEmptyResponse(), fmt.Errorf("error reading image file: %w", err)
 	}
 

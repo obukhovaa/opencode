@@ -125,10 +125,12 @@ func EnqueueTaskCompletion(ctx context.Context, in CompletionInput) error {
 		// The resumed turn works for whoever spawned the task, so its
 		// telemetry keeps that turn's requester.
 		requester := ""
+		var jobArgs map[string]any
 		if tk != nil {
 			requester = tk.Requester
+			jobArgs = tk.JobArgs
 		}
-		deps.ResumeSession(in.SessionID, requester)
+		deps.ResumeSession(in.SessionID, requester, jobArgs)
 	}
 	return nil
 }
