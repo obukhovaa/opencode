@@ -305,20 +305,27 @@ func runDefaultCap(r *result) {
 		}
 	}
 
-	// A spill this large is past the read tool's MaxReadSize ceiling, which
-	// rejects a file on size before it ever looks at offset/limit. The
-	// header must therefore not send the agent to read here — grep and sed
-	// are the paths that work, and the guidance has to say so. (The read
-	// tool is exercised on a spill within its ceiling by configured_cap.)
+	// A spill this large is past the read tool's MaxReadSize ceiling for a
+	// whole-file read, which the header states; a paged read (offset/limit)
+	// streams it and works, which the header also states. Both halves are
+	// checked so the guidance cannot go stale silently. (A whole read of a
+	// spill within the ceiling is exercised by configured_cap.)
 	if _, readable := run(&result{}, ts[tools.ReadToolName], map[string]any{"file_path": path}); readable {
-		r.fail("read accepted a %d-byte spill; MaxReadSize behaviour changed and the header guidance is now stale", len(saved))
+		r.fail("read accepted a whole-file read of a %d-byte spill; MaxReadSize behaviour changed and the header guidance is now stale", len(saved))
 	} else {
-		r.pass("oversized_spill_is_beyond_read_as_documented")
+		r.pass("oversized_spill_whole_read_declined_as_documented")
+	}
+	if paged, ok := run(r, ts[tools.ReadToolName], map[string]any{"file_path": path, "offset": 0, "limit": 2000}); ok {
+		if strings.Contains(paged, "Use offset=") || strings.Contains(paged, needle) {
+			r.pass("oversized_spill_reads_in_pages")
+		} else {
+			r.fail("paged read of the spill returned neither the needle nor a continuation note: %.300s", paged)
+		}
 	}
 
 	// The header must tell the agent what actually works, or none of the
 	// above helps.
-	for _, want := range []string{"grep tool", "sed in bash", "Do not re-run the tool"} {
+	for _, want := range []string{"grep tool", "offset/limit", "Do not re-run the tool"} {
 		if !strings.Contains(reply, want) {
 			r.fail("overflow header missing guidance %q; got: %.300s", want, reply)
 			return
