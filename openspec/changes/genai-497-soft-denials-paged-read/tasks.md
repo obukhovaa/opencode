@@ -3,8 +3,8 @@
 - [x] 1.1 `internal/permission/denied.go`: `RuleDeniedError` (`Is` matches `ErrorPermissionDenied`), `DeniedByRule`, `AsRuleDenied`.
 - [x] 1.2 Return `DeniedByRule(tool, input)` from every `case permission.ActionDeny:` branch (bash, write, edit ×3, multiedit, patch, delete ×2, webfetch, websearch, monitor, taskstop, CLI tools, MCP tools, `checkReadPermission`); leave every rejected-prompt return as it is.
 - [x] 1.3 Agent loop, parallel and sequential paths: a rule denial records `ruleDeniedMessage`, does not cancel siblings, keeps the turn going; a rejected prompt is unchanged.
-- [x] 1.4 Breaker on `callTracker`: 3 consecutive all-denied turns or 10 denied calls per run finish the message with `permission_denied`.
-- [x] 1.5 Tests: soft deny continues the run, rejected prompt still ends it, parallel sibling survives, both breaker bounds, `observeTurn` table, the CLI tool's agent deny is a rule denial.
+- [x] 1.4 Breaker on `callTracker`: 3 consecutive turns without progress (loop-detected / not-found calls are not progress) or 10 denied calls per run finish the message with `permission_denied`.
+- [x] 1.5 Tests: soft deny continues the run, rejected prompt still ends it, parallel sibling survives, both breaker bounds, identical repeated denied call, `observeTurn` table, the CLI tool's agent deny is a rule denial.
 - [x] 1.6 Docs: `docs/tool-permissions.md` (When a call is denied), `docs/cli-tools.md`.
 
 ## 2. Paged reads
@@ -20,8 +20,8 @@
 
 - [x] 3.1 Extract the in-loop compaction into `compactInLoop`.
 - [x] 3.2 `isContextOverflowError` + `contextOverflowCause` (provider marker, or near the window).
-- [x] 3.3 One compaction + one inline retry per run, gated on `autoCompact`, the backoff and non-cancellation; original error on any failure.
-- [x] 3.4 Tests: success after one compaction, overflow after a tool turn keeps the pair, overflow again, failed compaction, auto-compaction off, backoff, non-overflow error, classifier table.
+- [x] 3.3 One compaction + one inline retry per run, gated on a provider stream error (`modelCallError`), `autoCompact`, the backoff and non-cancellation; original error on any failure.
+- [x] 3.4 Tests: success after one compaction, overflow after a tool turn keeps the pair, overflow again, failed compaction, auto-compaction off, backoff, non-overflow error, an error after the tools ran is not retried, classifier table.
 - [x] 3.5 Docs: `README.md` Auto Compact.
 
 ## 4. Title generation

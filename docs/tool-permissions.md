@@ -184,7 +184,7 @@ The rule-denial message tells the model the action itself is forbidden: retrying
 
 A circuit breaker stops a model that keeps reaching for denied calls instead of adapting. The run ends with `permission_denied`, exactly as a rejected prompt would, once either bound is reached:
 
-- **3 turns in a row** in which every tool call was denied by a rule. The bound counts turns, not calls: one turn of parallel calls that all hit the same rule, sent before the model had seen any denial, counts once. A turn with any call that was not rule-denied resets the streak.
+- **3 turns in a row** in which no tool call ran except rule-denied ones, starting with a turn that had a denial. The bound counts turns, not calls: one turn of parallel calls that all hit the same rule, sent before the model had seen any denial, counts once. A call answered without running (loop detected, tool not found) is no progress, so a model that repeats the identical denied call — loop-detected from its third try — still trips the bound. A turn in which any call ran and was not denied resets the streak.
 - **10 rule-denied calls** in one run (one `agent.Run`: a TUI turn, a flow step attempt, a headless `-p` run), however they interleave with other calls.
 
 Both bounds are constants (`maxConsecutiveRuleDeniedTurns`, `maxRuleDenialsPerRun` in `internal/llm/agent/permission_denial.go`). Read-category tools (`read`, `grep`, `glob`, `ls`) already reported a rejected prompt to the model as a tool error and still do; their rule denials now go through the same path as every other tool, including the breaker.

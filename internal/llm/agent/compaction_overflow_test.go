@@ -190,6 +190,56 @@ func TestOverflowRetry_NoRecovery(t *testing.T) {
 	}
 }
 
+// toolMsgFailingMessages fails saving the turn's tool results, an error that
+// comes after the tools ran.
+type toolMsgFailingMessages struct {
+	*memMessages
+}
+
+func (m *toolMsgFailingMessages) Create(ctx context.Context, sessionID string, params message.CreateMessageParams) (message.Message, error) {
+	if params.Role == message.Tool {
+		return message.Message{}, errPromptTooLong
+	}
+	return m.memMessages.Create(ctx, sessionID, params)
+}
+
+// Only a provider stream error is retried: an error after the turn's tools
+// ran must not send the turn again, or the tools would run twice.
+func TestOverflowRetry_NotAfterToolsRan(t *testing.T) {
+	withAutoCompact(t, true)
+	const sess = "s-overflow-after-tools"
+	ran := 0
+	counting := &countingTool{run: func() { ran++ }}
+	a, _, log := newOverflowAgent(t, sess, func([]message.Message) error { return nil }, counting)
+	main := a.provider.(*overflowingProvider)
+	main.respond = func([]message.Message) *provider.ProviderResponse { return toolTurn(call("count", 1)) }
+	a.messages = &toolMsgFailingMessages{memMessages: a.messages.(*memMessages)}
+
+	res := a.processGeneration(context.Background(), sess, "next task", 0, nil, RunOptions{})
+
+	if res.Error == nil {
+		t.Fatal("want the save error")
+	}
+	if got := strings.Join(*log, ","); got != "main" {
+		t.Fatalf("call order = %s, want main only", got)
+	}
+	if ran != 1 {
+		t.Errorf("tool ran %d times, want 1", ran)
+	}
+}
+
+type countingTool struct{ run func() }
+
+func (*countingTool) Info() tools.ToolInfo {
+	return tools.ToolInfo{Name: "count", Description: "count"}
+}
+func (c *countingTool) Run(context.Context, tools.ToolCall) (tools.ToolResponse, error) {
+	c.run()
+	return tools.NewTextResponse("counted"), nil
+}
+func (*countingTool) AllowParallelism(tools.ToolCall, []tools.ToolCall) bool { return false }
+func (*countingTool) IsBaseline() bool                                       { return true }
+
 func TestContextOverflowCause(t *testing.T) {
 	a := &agent{provider: &compactionProvider{name: "main", window: 1000, log: &[]string{}}}
 	tests := []struct {

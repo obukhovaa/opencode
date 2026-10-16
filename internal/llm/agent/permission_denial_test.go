@@ -221,8 +221,30 @@ func TestRuleDenialBreakerRunTotal(t *testing.T) {
 	}
 }
 
+// A model repeating the identical denied call is loop-detected from its
+// third try on; those turns are no progress and must not reset the streak.
+func TestRuleDenialBreakerIdenticalRetries(t *testing.T) {
+	withFreshTaskRegistry(t)
+	p := &scriptedProvider{respond: func(int, bool) *provider.ProviderResponse {
+		return toolTurn(call("bash", 1))
+	}}
+	a := newLoopAgentWithTools(t, p, []tools.BaseTool{deniedTool{name: "bash", err: ruleDenied()}})
+
+	res := a.processGeneration(context.Background(), "s-same", "clean up", 0, nil, RunOptions{NonInteractive: true})
+
+	if res.Error != nil {
+		t.Fatalf("processGeneration: %v", res.Error)
+	}
+	if got := p.callCount(); got != maxConsecutiveRuleDeniedTurns {
+		t.Fatalf("provider calls = %d, want %d", got, maxConsecutiveRuleDeniedTurns)
+	}
+	if got := res.Message.FinishReason(); got != message.FinishReasonPermissionDenied {
+		t.Errorf("finish reason = %q, want permission_denied", got)
+	}
+}
+
 func TestRuleDenialBreakerObserveTurn(t *testing.T) {
-	type turn struct{ denied, results int }
+	type turn struct{ denied, progressed int }
 	tests := []struct {
 		name      string
 		turns     []turn
@@ -231,11 +253,13 @@ func TestRuleDenialBreakerObserveTurn(t *testing.T) {
 		wantTotal int
 	}{
 		{name: "no denials", turns: []turn{{0, 2}, {0, 1}}, wantTrip: -1},
-		{name: "three denied-only turns", turns: []turn{{1, 1}, {2, 2}, {1, 1}}, wantTrip: 2, wantWhy: "consecutive"},
-		{name: "progress resets the streak", turns: []turn{{1, 1}, {1, 1}, {0, 1}, {1, 1}, {1, 1}}, wantTrip: -1, wantTotal: 4},
-		{name: "mixed turn resets the streak", turns: []turn{{1, 1}, {1, 1}, {1, 2}, {1, 1}}, wantTrip: -1, wantTotal: 4},
-		{name: "run total", turns: []turn{{4, 5}, {4, 5}, {2, 3}}, wantTrip: 2, wantWhy: "denied in this run"},
-		{name: "one parallel turn is not three turns", turns: []turn{{3, 3}}, wantTrip: -1, wantTotal: 3},
+		{name: "three denied-only turns", turns: []turn{{1, 0}, {2, 0}, {1, 0}}, wantTrip: 2, wantWhy: "consecutive"},
+		{name: "progress resets the streak", turns: []turn{{1, 0}, {1, 0}, {0, 1}, {1, 0}, {1, 0}}, wantTrip: -1, wantTotal: 4},
+		{name: "mixed turn resets the streak", turns: []turn{{1, 0}, {1, 0}, {1, 1}, {1, 0}}, wantTrip: -1, wantTotal: 4},
+		{name: "loop-detected turn extends the streak", turns: []turn{{1, 0}, {1, 0}, {0, 0}}, wantTrip: 2, wantWhy: "consecutive"},
+		{name: "unexecuted calls alone start nothing", turns: []turn{{0, 0}, {0, 0}, {0, 0}}, wantTrip: -1},
+		{name: "run total", turns: []turn{{4, 1}, {4, 1}, {2, 1}}, wantTrip: 2, wantWhy: "denied in this run"},
+		{name: "one parallel turn is not three turns", turns: []turn{{3, 0}}, wantTrip: -1, wantTotal: 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -243,7 +267,7 @@ func TestRuleDenialBreakerObserveTurn(t *testing.T) {
 			trippedAt := -1
 			var why string
 			for i, tr := range tt.turns {
-				if tripped, reason := b.observeTurn(tr.denied, tr.results); tripped {
+				if tripped, reason := b.observeTurn(tr.denied, tr.progressed); tripped {
 					trippedAt, why = i, reason
 					break
 				}

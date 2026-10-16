@@ -30,11 +30,16 @@ When a human (or the chat bridge's `permissionMode: deny` on their behalf) rejec
 
 ### Requirement: Repeated rule denials end the run
 
-The system SHALL end the run with finish reason `permission_denied` after 3 consecutive turns in which every tool call was denied by a rule, or once 10 tool calls of one run were denied by rules. A turn with at least one call not denied by a rule SHALL reset the consecutive count. The counts SHALL start fresh with every agent run. PreToolUse hook blocks and `skill` permission denials SHALL NOT count.
+The system SHALL end the run with finish reason `permission_denied` after 3 consecutive turns without progress, the first of them with a rule denial, or once 10 tool calls of one run were denied by rules. A turn makes progress when at least one of its calls ran and was not denied by a rule; such a turn SHALL reset the consecutive count. A call answered without running (loop detected, tool not found) SHALL NOT count as progress. The counts SHALL start fresh with every agent run. PreToolUse hook blocks and `skill` permission denials SHALL NOT count.
 
 #### Scenario: A model that only calls denied tools
 
 - **WHEN** every turn of a run makes one call that a rule denies
+- **THEN** the run ends with `permission_denied` after the third model call
+
+#### Scenario: Identical denied call repeated
+
+- **WHEN** every turn repeats the same call with the same input, a rule denies it, and loop detection answers it from the third turn on
 - **THEN** the run ends with `permission_denied` after the third model call
 
 #### Scenario: Denials mixed with progress

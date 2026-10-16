@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/opencode-ai/opencode/internal/permission"
@@ -13,8 +14,9 @@ import (
 // model that keeps reaching for denied calls instead of adapting.
 const (
 	// maxConsecutiveRuleDeniedTurns ends the run after this many turns in a
-	// row in which every tool call was denied by a rule: the model has seen
-	// the denial and still made no other progress. Counted per turn, not per
+	// row in which no tool call ran except denied ones, starting from a turn
+	// with a denial: the model has seen the denial and made no other
+	// progress. Counted per turn, not per
 	// call, so one turn of parallel calls that all hit the same rule — sent
 	// before the model saw any denial — does not end the run on its own.
 	maxConsecutiveRuleDeniedTurns = 3
@@ -30,23 +32,23 @@ type ruleDenialBreaker struct {
 	total            int
 }
 
-// observeTurn records one turn's tool results: denied of them were denied by
-// a rule, out of results in total. It returns whether the run must end, and
-// why.
-func (b *ruleDenialBreaker) observeTurn(denied, results int) (bool, string) {
-	if denied == 0 {
-		b.consecutiveTurns = 0
-		return false, ""
-	}
+// observeTurn records one turn's tool calls: denied of them were denied by a
+// rule, progressed ran and were not denied. It returns whether the run must
+// end, and why. A turn whose calls all went unexecuted (loop detected, tool
+// not found) is no progress either: a model that keeps repeating a denied
+// call identically gets loop-detected from its third try on, and that must
+// not reset the streak.
+func (b *ruleDenialBreaker) observeTurn(denied, progressed int) (bool, string) {
 	b.total += denied
-	if denied == results {
-		b.consecutiveTurns++
-	} else {
+	switch {
+	case progressed > 0:
 		b.consecutiveTurns = 0
+	case denied > 0 || b.consecutiveTurns > 0:
+		b.consecutiveTurns++
 	}
 	switch {
 	case b.consecutiveTurns >= maxConsecutiveRuleDeniedTurns:
-		return true, fmt.Sprintf("%d consecutive turns with only denied tool calls", b.consecutiveTurns)
+		return true, fmt.Sprintf("%d consecutive turns with no tool call but denied or blocked ones", b.consecutiveTurns)
 	case b.total >= maxRuleDenialsPerRun:
 		return true, fmt.Sprintf("%d tool calls denied in this run", b.total)
 	}
@@ -80,4 +82,17 @@ func countTrue(flags []bool) int {
 		}
 	}
 	return n
+}
+
+// modelCallError marks an error from the provider's response stream, as
+// opposed to one after the turn's tools ran (saving their results). Error and
+// Unwrap pass the provider's error through unchanged.
+type modelCallError struct{ err error }
+
+func (e *modelCallError) Error() string { return e.err.Error() }
+func (e *modelCallError) Unwrap() error { return e.err }
+
+func isModelCallError(err error) bool {
+	var mce *modelCallError
+	return errors.As(err, &mce)
 }

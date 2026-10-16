@@ -1306,11 +1306,12 @@ OuterLoop:
 			// errorResultsWritten: turnMsg's tool calls already got their
 			// error results, so the error path below must not write them twice.
 			errorResultsWritten := false
-			if turnErr != nil && cfg.AutoCompact && !overflowRetried && !errors.Is(turnErr, context.Canceled) {
+			if turnErr != nil && cfg.AutoCompact && !overflowRetried && isModelCallError(turnErr) && !errors.Is(turnErr, context.Canceled) {
 				if cause := a.contextOverflowCause(etaTokens, turnErr); cause != "" && a.compactionAllowed(sessionID, etaTokens) {
 					// Recover from a call the provider rejected as too long: compact
-					// once and send the same turn again, once per run. The failed
-					// call executed no tools, so nothing runs twice.
+					// once and send the same turn again, once per run. A
+					// modelCallError comes from the response stream, before any
+					// tool ran, so nothing runs twice.
 					overflowRetried = true
 					logging.Warn("Model call failed on context size; compacting and retrying the turn once",
 						"session_id", sessionID,
@@ -1806,7 +1807,10 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	// Process provider response first
 	for event := range eventChan {
 		if processErr := a.processEvent(ctx, sessionID, &assistantMsg, event); processErr != nil {
-			return assistantMsg, nil, processErr
+			// Marked as the provider's: only these happen before any tool
+			// ran, so only these may be retried (processGeneration's
+			// overflow recovery).
+			return assistantMsg, nil, &modelCallError{err: processErr}
 		}
 		if ctx.Err() != nil {
 			return assistantMsg, nil, ctx.Err()
@@ -1816,6 +1820,9 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	// Process tool calls
 	toolResults := make([]message.ToolResult, len(assistantMsg.ToolCalls()))
 	toolCalls := assistantMsg.ToolCalls()
+	// unexecuted marks the calls Phase 1 answered without running them (tool
+	// not found, loop detected): no progress, for the rule-denial breaker.
+	unexecuted := make([]bool, len(toolCalls))
 
 	// record writes a tool result into the shared toolResults slice and
 	// emits a per-part SSE event for the same tool. Each call must own a
@@ -1858,6 +1865,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				Content:    fmt.Sprintf("Tool not found: %s", toolCall.Name),
 				IsError:    true,
 			})
+			unexecuted[i] = true
 			continue
 		}
 
@@ -1881,6 +1889,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				Content:    loopDetectedMessage(toolCall.Name, streak),
 				IsError:    true,
 			})
+			unexecuted[i] = true
 			continue
 		}
 
@@ -2305,7 +2314,9 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	// human's rejection does, once the model keeps hitting them. A turn a
 	// rejection already finished is not counted.
 	if assistantMsg.FinishReason() == message.FinishReasonToolUse {
-		if tripped, reason := tracker.denials.observeTurn(countTrue(ruleDenied), len(toolResults)); tripped {
+		denied := countTrue(ruleDenied)
+		progressed := len(toolCalls) - denied - countTrue(unexecuted)
+		if tripped, reason := tracker.denials.observeTurn(denied, progressed); tripped {
 			logging.Warn("Ending run: too many tool calls denied by permission rules",
 				"session_id", sessionID,
 				"reason", reason,

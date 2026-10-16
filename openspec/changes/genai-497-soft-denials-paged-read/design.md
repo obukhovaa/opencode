@@ -16,7 +16,7 @@ PreToolUse hook blocks and `skill` permission denials were already error results
 
 A model that keeps hitting denied calls should not burn the whole turn budget. The breaker lives on the run's `callTracker` (created per `processGeneration`), observed once per turn after all its tool calls have settled:
 
-- **3 consecutive turns in which every call was rule-denied.** Counted per turn, not per call: one turn of parallel calls that all hit the same rule was sent before the model saw any denial, and ending the run there would bring back the original defect. A turn with any call that was not rule-denied resets the streak.
+- **3 consecutive turns with no progress, starting from a rule denial.** Counted per turn, not per call: one turn of parallel calls that all hit the same rule was sent before the model saw any denial, and ending the run there would bring back the original defect. Progress means a call that ran and was not rule-denied; it resets the streak. A call Phase 1 answers without running (loop detected, tool not found) is not progress: loop detection fires on the third identical call, *before* the tool runs, so counting it as progress would let a model repeating the same denied command reset the streak forever and run to `maxTurns` — worse than the old behaviour, which stopped at the first try.
 - **10 rule-denied calls per run**, however they interleave with other calls, so a model alternating denied and allowed calls is still bounded.
 
 When either trips, the assistant message is finished with `FinishReasonPermissionDenied`, which ends the loop the way a rejected prompt does. The bounds are constants (`maxConsecutiveRuleDeniedTurns`, `maxRuleDenialsPerRun`): nothing asks for them to vary per workspace yet, and adding a config field later is cheap.
@@ -37,6 +37,7 @@ The in-loop compaction block (compact, reload from the summary, re-inject the sc
 
 The recovery runs only on the main model call, when all of these hold:
 
+- the error came from the provider's response stream (`modelCallError`, set where `streamAndHandleEvents` processes provider events). An error after the turn's tools ran — saving their results — is excluded, because resending that turn would make the model re-issue calls whose side effects already happened;
 - the error is not a cancellation;
 - `autoCompact` is on;
 - no recovery has run yet in this `processGeneration` (one per run: a history no compaction can shrink fails instead of looping);
@@ -60,3 +61,5 @@ A flow step session keeps the title it was created with; a cron or `-p` session 
 - **A workspace relied on `deny` ending the run.** The step now continues. The denial message tells the model to report the block, the breaker bounds a stubborn model, and a hook or a rejected `ask` still ends the run outright.
 - **More context per paged read than before.** Bounded by `MaxReadSize` per call, which is what a whole-file read of a file at the ceiling already returned.
 - **A lossy compaction after a transient error near the window.** See §4.
+- **An oversized tool result in the preserved tail.** The rebuild re-appends the previous cycle's call and result after the summary. When that result is what overflows the window, the retry overflows again and the run fails with the original error, as before this change. Truncating a preserved result is out of scope.
+- **No "strictly smaller" gate before the retry.** Comparing the recount with the pre-call count was considered and rejected: the pre-call count is the number that proved wrong (the call overflowed although it was under the threshold), so gating on it can block a retry that would succeed. The once-per-run cap bounds the cost of a useless retry to one call.
