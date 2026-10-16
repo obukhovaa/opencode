@@ -211,7 +211,7 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	for filePath, change := range commit.Changes {
 		fileAction := p.registry.EvaluatePermission(string(GetAgentID(ctx)), PatchToolName, filePath)
 		if fileAction == permission.ActionDeny {
-			return NewEmptyResponse(), permission.ErrorPermissionDenied
+			return NewEmptyResponse(), permission.DeniedByRule(PatchToolName, filePath)
 		}
 		if fileAction == permission.ActionAllow {
 			continue

@@ -1810,6 +1810,12 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	// Langfuse client for tool call tracing (declared here to avoid goto-over-decl)
 	lfClient := langfuse.Get()
 
+	// ruleDenied marks the calls a configured permission rule denied. Those
+	// are reported to the model and the run goes on, unlike a human's
+	// rejection; the breaker on tracker bounds them (permission_denial.go).
+	// Each index has one writer, as with toolResults.
+	ruleDenied := make([]bool, len(toolCalls))
+
 	// Phase 2: Execute parallel group concurrently
 	permissionDenied := false
 	if len(parallelGroup) > 0 {
@@ -1892,6 +1898,24 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				if toolErr != nil {
 					if toolSpan != nil {
 						toolSpan.SetError(toolErr)
+					}
+					// Checked before the generic denial: a RuleDeniedError
+					// also matches ErrorPermissionDenied. No permCancel —
+					// the sibling calls keep running.
+					if rd, ok := permission.AsRuleDenied(toolErr); ok {
+						logging.Warn("Tool call denied by permission rule", "tool", e.toolCall.Name,
+							"ID", e.toolCall.ID,
+							"input", rd.Input,
+							"gauge", gauge,
+						)
+						ruleDenied[e.index] = true
+						record(e.index, message.ToolResult{
+							ToolCallID: e.toolCall.ID,
+							Name:       e.toolCall.Name,
+							Content:    ruleDeniedMessage(rd),
+							IsError:    true,
+						})
+						return
 					}
 					if errors.Is(toolErr, permission.ErrorPermissionDenied) {
 						logging.Warn("Tool call denied", "tool", e.toolCall.Name,
@@ -2099,6 +2123,23 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				seqToolSpan.SetError(toolErr)
 				seqToolSpan.End()
 			}
+			// Before the generic denial, which a RuleDeniedError also
+			// matches: report it and go on with the remaining calls.
+			if rd, ok := permission.AsRuleDenied(toolErr); ok {
+				logging.Warn("Tool call denied by permission rule", "tool", entry.toolCall.Name,
+					"ID", entry.toolCall.ID,
+					"input", rd.Input,
+					"gauge", gauge,
+				)
+				ruleDenied[entry.index] = true
+				record(entry.index, message.ToolResult{
+					ToolCallID: entry.toolCall.ID,
+					Name:       entry.toolCall.Name,
+					Content:    ruleDeniedMessage(rd),
+					IsError:    true,
+				})
+				continue
+			}
 			if errors.Is(toolErr, permission.ErrorPermissionDenied) {
 				logging.Warn("Tool call denied", "tool", entry.toolCall.Name,
 					"ID", entry.toolCall.ID,
@@ -2166,6 +2207,19 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 			Metadata:   toolResult.Metadata,
 			IsError:    toolResult.IsError,
 		})
+	}
+
+	// Phase 4: rule denials left the turn going on; end the run here, as a
+	// human's rejection does, once the model keeps hitting them. A turn a
+	// rejection already finished is not counted.
+	if assistantMsg.FinishReason() == message.FinishReasonToolUse {
+		if tripped, reason := tracker.denials.observeTurn(countTrue(ruleDenied), len(toolResults)); tripped {
+			logging.Warn("Ending run: too many tool calls denied by permission rules",
+				"session_id", sessionID,
+				"reason", reason,
+			)
+			a.finishMessage(ctx, &assistantMsg, message.FinishReasonPermissionDenied)
+		}
 	}
 out:
 	if len(toolResults) == 0 {

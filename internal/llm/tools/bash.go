@@ -187,7 +187,7 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		case permission.ActionAllow:
 			// Allowed by config, skip interactive permission
 		case permission.ActionDeny:
-			return NewEmptyResponse(), permission.ErrorPermissionDenied
+			return NewEmptyResponse(), permission.DeniedByRule(BashToolName, params.Command)
 		default:
 			// "ask" or unset: fall through to interactive permission
 			p := b.permissions.Request(ctx,

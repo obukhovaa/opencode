@@ -185,7 +185,7 @@ The process is started directly with `prefixArgs + args` — `exec`, no `sh -c`.
 - `env`: inherited by default (as MCP servers do); `inherit: false` keeps PATH, HOME, TMPDIR plus `pass`; `set` adds literals last.
 - `cwd` is confined to the working directory; `timeout` kills the whole process group on expiry.
 
-A policy rejection is returned **to the model as a tool error** — the run continues and the model fixes the call. This is deliberately different from a permission denial, which ends the run (CD-4933 semantics unchanged for bash).
+A policy rejection is returned **to the model as a tool error** — the run continues and the model fixes the call. A `deny` from the permission layer below is a tool error too, with the run's circuit breaker on top; only a human rejecting an `ask` prompt ends the run (see [tool-permissions.md](tool-permissions.md#when-a-call-is-denied)).
 
 **What the model may ask for** (the permission layer, same vocabulary as every other tool):
 

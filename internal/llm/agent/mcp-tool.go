@@ -620,7 +620,7 @@ func (b *mcpTool) Run(ctx context.Context, params tools.ToolCall) (tools.ToolRes
 	switch action {
 	case permission.ActionAllow:
 	case permission.ActionDeny:
-		return tools.NewEmptyResponse(), permission.ErrorPermissionDenied
+		return tools.NewEmptyResponse(), permission.DeniedByRule(b.Info().Name, params.Input)
 	default:
 		permissionDescription := fmt.Sprintf("execute %s with the following parameters: %s", b.Info().Name, params.Input)
 		p := b.permissions.Request(ctx,

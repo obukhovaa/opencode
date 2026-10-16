@@ -516,7 +516,9 @@ func AddTag(ctx context.Context, k, v string) context.Context {
 }
 
 // checkReadPermission evaluates read-category permission for a tool and path.
-// Returns nil if allowed, permission.ErrorPermissionDenied if denied or ask-rejected.
+// Returns nil if allowed, a permission.RuleDeniedError if a configured rule
+// denied it (the agent loop reports that to the model and keeps the run
+// going), and permission.ErrorPermissionDenied if the prompt was rejected.
 // If registry is nil, permission check is skipped (always allowed).
 func checkReadPermission(ctx context.Context, reg agentregistry.Registry, perms permission.Service, toolName, path string) error {
 	if reg == nil || perms == nil {
@@ -527,7 +529,7 @@ func checkReadPermission(ctx context.Context, reg agentregistry.Registry, perms 
 	case permission.ActionAllow:
 		return nil
 	case permission.ActionDeny:
-		return permission.ErrorPermissionDenied
+		return permission.DeniedByRule(toolName, path)
 	default: // ask
 		sessionID, _ := GetContextValues(ctx)
 		if sessionID == "" {
