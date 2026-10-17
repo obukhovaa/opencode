@@ -78,6 +78,7 @@ When running [flows](flows.md), traces are enriched with flow context:
 
 - **Trace name** becomes `agentID/flowID/stepID` (e.g., `coder/deploy/analyze`)
 - **Metadata** includes `flow_id`, `flow_step_id`, and any matched flow args (as bare keys, no prefix)
+- **Tags**: a run started through `POST /flow` carries a `flow:<flowID>` tag. It replaces any `flow:` tag from `telemetry.tags` (a pool pod boots with `flow:none` and serves many flows), the same way the run's `identity:` and `team:` tags replace the pod's boot-time ones. A flow started with `opencode serve --flow` keeps the configured `flow:` tag.
 
 ```
 Session: deploy-flow-abc123
@@ -284,6 +285,18 @@ When none applies, the field is omitted. Subagents spawned during a turn — syn
 
 With a namespace configured the key is `app.requester`, like every other custom key.
 
+### Run Metadata
+
+Every agent run (one `RunWith` call: a chat turn, a flow step, a subagent) records three facts on its trace, so a run can be measured without fetching its observations:
+
+| Key | Set | Value |
+|---|---|---|
+| `max_turns` | when the trace is created | The run's effective turn budget: the caller's override (a flow step's `maxTurns`), else the global `maxTurns` / `--max-turns`, else the agent's `maxTurns`, else the default (100). |
+| `turns_used` | when the run ends | Model calls the run made, across every non-interactive re-entry after background tasks finish. The forced wrap-up call counts, so a run that exhausted its budget reports `max_turns + 1`. A run that re-enters after background tasks gets a fresh inner budget each time, so `turns_used` can exceed `max_turns + 1`. |
+| `finish_reason` | when the run ends | `end_turn` (any natural finish, including an accepted `struct_output` and a `max_tokens` stop), `turns_exhausted` (a turn-budget gate ended the run, even when the forced wrap-up call itself failed or was cancelled), `permission_denied` (a rejected permission prompt), `canceled` (the user or the caller cancelled), or `error` (the run returned an error, a step timeout included). |
+
+The keys are namespaced like every other custom key (`app.turns_used` with `"metadataNamespace": "app"`). They are counters, not content, so `telemetry.generations` does not gate them. A subagent's trace is an observation inside its parent's, so its values are written as observation metadata and never replace the parent run's.
+
 ### Metadata Namespace
 
 By default, custom metadata keys (`flow_id`, `agent_id`, flow args, etc.) are stored as flat top-level keys in Langfuse metadata. When multiple systems write metadata to the same traces, this can cause collisions or clutter.
@@ -307,6 +320,7 @@ This changes how metadata keys appear in Langfuse:
 | `ticket_id` | `app.ticket_id` |
 | `agent_id` | `app.agent_id` |
 | `session_id` | `app.session_id` |
+| `turns_used` | `app.turns_used` |
 | `opencode_version` | `app.opencode_version` |
 
 Each prefixed key remains a top-level metadata entry in Langfuse and is independently filterable. Standard Langfuse attributes (`langfuse.session.id`, `langfuse.user.id`, `langfuse.trace.tags`, etc.) are not affected — only custom metadata keys are namespaced.
