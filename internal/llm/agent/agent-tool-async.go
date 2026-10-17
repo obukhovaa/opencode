@@ -84,6 +84,9 @@ func (b *agentTool) runAsync(
 	if peer, ok := tools.PeerFromContext(ctx); ok {
 		runCtx = tools.WithPeer(runCtx, peer)
 	}
+	// And the job args, so its MCP calls stamp the same flowArgHeaders.
+	jobArgs, _ := tools.JobArgsFromContext(ctx)
+	runCtx = tools.WithJobArgs(runCtx, jobArgs)
 	// Inherit the caller's NonInteractive marker from the PARENT turn ctx
 	// (runCtx is detached and carries no values) — see subagentRunOptions.
 	done, err := a.RunWith(runCtx, taskSession.ID, prompt, 0, subagentRunOptions(ctx))
@@ -106,6 +109,7 @@ func (b *agentTool) runAsync(
 		Description:           params.TaskTitle,
 		FlowOwned:             tools.StepScopedContext(ctx) != nil,
 		Requester:             tools.RequesterFromContext(ctx),
+		JobArgs:               jobArgs,
 		Cancel:                cancel,
 	}
 	if err := reg.Register(tk); err != nil {

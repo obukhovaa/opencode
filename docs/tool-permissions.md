@@ -187,9 +187,17 @@ A circuit breaker stops a model that keeps reaching for denied calls instead of 
 - **3 turns in a row** in which no tool call ran except rule-denied ones, starting with a turn that had a denial. The bound counts turns, not calls: one turn of parallel calls that all hit the same rule, sent before the model had seen any denial, counts once. A call answered without running (loop detected, tool not found) is no progress, so a model that repeats the identical denied call — loop-detected from its third try — still trips the bound. A turn in which any call ran and was not denied resets the streak.
 - **10 rule-denied calls** in one run (one `agent.Run`: a TUI turn, a flow step attempt, a headless `-p` run), however they interleave with other calls.
 
-Both bounds are constants (`maxConsecutiveRuleDeniedTurns`, `maxRuleDenialsPerRun` in `internal/llm/agent/permission_denial.go`). Read-category tools (`read`, `grep`, `glob`, `ls`) already reported a rejected prompt to the model as a tool error and still do; their rule denials now go through the same path as every other tool, including the breaker.
+Both bounds are constants (`maxConsecutiveRuleDeniedTurns`, `maxRuleDenialsPerRun` in `internal/llm/agent/permission_denial.go`). Read-category tools (`read`, `view_image`, `grep`, `glob`, `ls`) are the exception: they report both a rule denial and a rejected prompt to the model as a `Permission denied` text result themselves, so their denials never reach the agent loop and do not count towards the breaker.
 
 A PreToolUse hook's `deny` and a `skill` permission denial were already tool errors and are unchanged; neither counts towards the breaker.
 
 **Behaviour change.** Before GENAI-497 any rule denial ended the run on the first attempt, which is why workspaces avoided `deny` rules. A flow that relied on a `deny` to stop a step outright now sees the step continue until the model gives up, reports the block, or the breaker trips.
 
+
+## Read permissions are evaluated on the canonical path
+
+`permission.read` (and the per-tool keys `grep`, `glob`, `ls`, `view_image`, which fall back to `read`, then `*`) applies to all five read-category tools: `read`, `view_image`, `grep`, `glob` and `ls`. Before the check, the tool makes the path absolute against the working directory, cleans it (`//`, `/./`, `/../` collapse) and resolves its symlinks. A path that does not resolve is denied. The patterns are evaluated against both the cleaned and the resolved path and the stricter verdict wins, so a `..` or a symlink inside an allowed directory cannot reach a file the patterns do not allow, and the tool then reads the resolved path it checked. Write allow patterns against canonical paths (for example `/private/tmp/...` rather than `/tmp/...` on macOS).
+
+`grep` and `glob` also drop every match whose resolved path the patterns do not allow (`glob` follows symlinks, and the `grep` regex fallback opens them). An `ask` verdict cannot be put to the user per match, so a match is kept only while it resolves inside the directory that was approved. A pattern `dir/**` does not match `dir` itself: list the directory with `dir` and `dir/**` both allowed.
+
+`read` and `view_image` open the checked path and then confirm the opened file is still that path (a symlink swapped in after the check is refused with `Permission denied`). `ls`, `glob` and `grep` only enumerate, and re-check each match's resolved path afterwards; a swap racing that enumeration is not detected. A path that does not exist now answers `Permission denied` rather than "File not found" when permissions are configured, because it cannot be resolved.

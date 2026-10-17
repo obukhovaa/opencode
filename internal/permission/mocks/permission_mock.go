@@ -231,3 +231,51 @@ func (mr *MockServiceMockRecorder) Subscribe(arg0 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Subscribe", reflect.TypeOf((*MockService)(nil).Subscribe), arg0)
 }
+
+// MockWaitObserver is a mock of WaitObserver interface.
+type MockWaitObserver struct {
+	ctrl     *gomock.Controller
+	recorder *MockWaitObserverMockRecorder
+	isgomock struct{}
+}
+
+// MockWaitObserverMockRecorder is the mock recorder for MockWaitObserver.
+type MockWaitObserverMockRecorder struct {
+	mock *MockWaitObserver
+}
+
+// NewMockWaitObserver creates a new mock instance.
+func NewMockWaitObserver(ctrl *gomock.Controller) *MockWaitObserver {
+	mock := &MockWaitObserver{ctrl: ctrl}
+	mock.recorder = &MockWaitObserverMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockWaitObserver) EXPECT() *MockWaitObserverMockRecorder {
+	return m.recorder
+}
+
+// WaitEnded mocks base method.
+func (m *MockWaitObserver) WaitEnded() {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "WaitEnded")
+}
+
+// WaitEnded indicates an expected call of WaitEnded.
+func (mr *MockWaitObserverMockRecorder) WaitEnded() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "WaitEnded", reflect.TypeOf((*MockWaitObserver)(nil).WaitEnded))
+}
+
+// WaitStarted mocks base method.
+func (m *MockWaitObserver) WaitStarted() {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "WaitStarted")
+}
+
+// WaitStarted indicates an expected call of WaitStarted.
+func (mr *MockWaitObserverMockRecorder) WaitStarted() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "WaitStarted", reflect.TypeOf((*MockWaitObserver)(nil).WaitStarted))
+}

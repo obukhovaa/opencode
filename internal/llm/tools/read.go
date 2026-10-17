@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -93,12 +94,16 @@ func (v *viewTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		filePath = filepath.Join(config.WorkingDirectory(), filePath)
 	}
 
-	if err := checkReadPermission(ctx, v.registry, v.permissions, ReadToolName, filePath); err != nil {
-		if err == permission.ErrorPermissionDenied {
+	canonical, err := authorizeRead(ctx, v.registry, v.permissions, ReadToolName, filePath)
+	if err != nil {
+		if errors.Is(err, permission.ErrorPermissionDenied) {
 			return NewTextErrorResponse(fmt.Sprintf("Permission denied: reading %s", filePath)), nil
 		}
 		return NewEmptyResponse(), err
 	}
+	filePath = canonical
+	// Only a path that was actually authorized is held to it at open time.
+	verify := v.registry != nil && v.permissions != nil
 
 	// Check if file exists
 	fileInfo, err := os.Stat(filePath)
@@ -168,13 +173,16 @@ func (v *viewTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 	}
 
 	// Check if it's a binary file by sampling content
-	if isBinary, err := isBinaryFile(filePath); err == nil && isBinary {
+	if isBinary, err := isBinaryFile(filePath, verify); err == nil && isBinary {
 		return NewTextErrorResponse("File appears to be binary. Use the appropriate tool for this file type."), nil
 	}
 
 	// Read the file content
-	content, linesRead, lineCount, capped, err := readTextFile(filePath, params.Offset, params.Limit, MaxReadSize)
+	content, linesRead, lineCount, capped, err := readTextFile(filePath, params.Offset, params.Limit, MaxReadSize, verify)
 	if err != nil {
+		if errors.Is(err, errReadPathChanged) {
+			return NewTextErrorResponse(fmt.Sprintf("Permission denied: reading %s", filePath)), nil
+		}
 		return NewEmptyResponse(), fmt.Errorf("error reading file: %w", err)
 	}
 	if linesRead == 0 && params.Offset > 0 && params.Offset >= lineCount {
@@ -252,8 +260,9 @@ func addLineNumbers(content string, startLine int) string {
 // returned text would pass maxBytes (capped). It streams the file, so memory
 // is bounded by the returned window rather than by the file or its longest
 // line. linesRead is the number of lines returned, lineCount the file's total.
-func readTextFile(filePath string, offset, limit, maxBytes int) (content string, linesRead, lineCount int, capped bool, err error) {
-	file, err := os.Open(filePath)
+// verify is passed to openForRead (see authorizeRead).
+func readTextFile(filePath string, offset, limit, maxBytes int, verify bool) (content string, linesRead, lineCount int, capped bool, err error) {
+	file, err := openForRead(filePath, verify)
 	if err != nil {
 		return "", 0, 0, false, err
 	}
@@ -350,8 +359,8 @@ func isImageFile(filePath string) (bool, string) {
 	}
 }
 
-func isBinaryFile(filePath string) (bool, error) {
-	f, err := os.Open(filePath)
+func isBinaryFile(filePath string, verify bool) (bool, error) {
+	f, err := openForRead(filePath, verify)
 	if err != nil {
 		return false, err
 	}

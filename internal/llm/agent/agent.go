@@ -3585,7 +3585,11 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session, i
 		// Include extracted flow args as dedicated metadata fields.
 		// No prefix — the metadata namespace already ensures uniqueness.
 		if flowArgs, ok := ctx.Value(tools.FlowArgsContextKey).(map[string]string); ok {
+			redacted := config.RedactedFlowArgs()
 			for k, v := range flowArgs {
+				if _, secret := redacted[k]; secret {
+					continue
+				}
 				metadata[k] = truncateStr(v, maxMetadataValueLen)
 			}
 		}

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/spf13/viper"
+
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
@@ -118,17 +120,21 @@ func TestSetTraceOutputGate(t *testing.T) {
 // dirs. config.Load reads $HOME/.opencode.json and $XDG_CONFIG_HOME/opencode as
 // the *base* config and merges workDir on top — and a merge cannot un-set a
 // key, so without this isolation a developer's global telemetry settings make
-// the negative assertions here fail.
+// the negative assertions here fail. viper is reset too: it expands $HOME when
+// a search path is added and keeps every path across Load calls, so an earlier
+// test's Load (with the real HOME) would still find the developer's file first.
 func loadConfigIn(t *testing.T, workDir string) {
 	t.Helper()
 	empty := t.TempDir()
 	t.Setenv("HOME", empty)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(empty, "xdg"))
 	config.Reset()
+	viper.Reset()
 	if _, err := config.Load(workDir, false); err != nil {
 		t.Fatalf("load config: %v", err)
 	}
 	t.Cleanup(config.Reset)
+	t.Cleanup(viper.Reset)
 }
 
 // With no Langfuse client there is no root span to receive the value, so the

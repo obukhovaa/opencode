@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -249,6 +252,81 @@ func resolvePeerHeader(ctx context.Context, header string, headers map[string]st
 		return withoutHeader(headers, header)
 	}
 	return layerHeader(headers, header, peer.PeerID)
+}
+
+// resolveFlowArgHeaders layers the job args of the calling turn
+// (tools.JobArgsFromContext) under the server's flowArgHeaders (header name ->
+// top-level arg name). Every mapped header is first stripped from headers in
+// any letter case, whether or not the arg has a usable value, so a static
+// config value never stands in for a missing arg. An absent, empty, non-scalar
+// or control-character value omits the header; the warning names the header
+// only, never the arg or its value. A fresh copy is always built when
+// something is mapped.
+func resolveFlowArgHeaders(ctx context.Context, mapping, headers map[string]string) map[string]string {
+	if len(mapping) == 0 {
+		return headers
+	}
+	out := headers
+	names := make([]string, 0, len(mapping))
+	for header := range mapping {
+		out = withoutHeader(out, header)
+		names = append(names, header)
+	}
+	args, ok := tools.JobArgsFromContext(ctx)
+	if !ok {
+		return out
+	}
+	sort.Strings(names)
+	for _, header := range names {
+		value, ok := flowArgHeaderValue(args[mapping[header]])
+		if !ok {
+			logging.Warn("MCP flow-arg header omitted: the job arg is absent or not a usable header value", "header", header)
+			continue
+		}
+		out[header] = value
+	}
+	return out
+}
+
+// flowArgHeaderValue renders a job arg as a header value: a non-empty string
+// without control characters, or a JSON number (integers without an exponent).
+func flowArgHeaderValue(v any) (string, bool) {
+	var s string
+	switch n := v.(type) {
+	case string:
+		s = n
+	case json.Number:
+		s = n.String()
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) {
+			return "", false
+		}
+		s = strconv.FormatFloat(n, 'f', -1, 64)
+	case float32:
+		f := float64(n)
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return "", false
+		}
+		s = strconv.FormatFloat(f, 'f', -1, 32)
+	case int:
+		s = strconv.FormatInt(int64(n), 10)
+	case int32:
+		s = strconv.FormatInt(int64(n), 10)
+	case int64:
+		s = strconv.FormatInt(n, 10)
+	case uint:
+		s = strconv.FormatUint(uint64(n), 10)
+	case uint32:
+		s = strconv.FormatUint(uint64(n), 10)
+	case uint64:
+		s = strconv.FormatUint(n, 10)
+	default:
+		return "", false
+	}
+	if s == "" || !validHeaderValue(s) {
+		return "", false
+	}
+	return s, true
 }
 
 // validHeaderValue reports whether net/http will send v as a header value

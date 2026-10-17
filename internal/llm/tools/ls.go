@@ -90,12 +90,14 @@ func (l *lsTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
 		searchPath = filepath.Join(l.cfg.WorkingDirectory(), searchPath)
 	}
 
-	if err := checkReadPermission(ctx, l.registry, l.permissions, LSToolName, searchPath); err != nil {
-		if err == permission.ErrorPermissionDenied {
+	canonical, err := authorizeRead(ctx, l.registry, l.permissions, LSToolName, searchPath)
+	if err != nil {
+		if errors.Is(err, permission.ErrorPermissionDenied) {
 			return NewTextErrorResponse(fmt.Sprintf("Permission denied: listing %s", searchPath)), nil
 		}
 		return NewEmptyResponse(), err
 	}
+	searchPath = canonical
 
 	if _, err := os.Stat(searchPath); os.IsNotExist(err) {
 		return NewTextErrorResponse(fmt.Sprintf("path does not exist: %s", searchPath)), nil

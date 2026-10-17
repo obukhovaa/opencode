@@ -16,8 +16,8 @@ When a configured permission rule (an agent's `permission`, the global `permissi
 
 #### Scenario: Read-category tool
 
-- **WHEN** a `deny` rule matches a `read`, `grep`, `glob` or `ls` call
-- **THEN** the same error result is returned and the denial counts towards the circuit breaker
+- **WHEN** a `deny` rule matches a `read`, `view_image`, `grep`, `glob` or `ls` call
+- **THEN** the tool returns a `Permission denied` text result, the run continues, and the denial does not count towards the circuit breaker
 
 ### Requirement: A rejected permission prompt still ends the run
 

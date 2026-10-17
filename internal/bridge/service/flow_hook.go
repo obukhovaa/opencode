@@ -80,6 +80,16 @@ func (h *interactiveBridge) OnInteractiveStepStart(ctx context.Context, sessionI
 			return r.Err
 		}
 	}
+	var bound []bridge.PeerRef
+	for _, r := range results {
+		bound = append(bound, r.Requested)
+		if r.ResolvedPeerID != "" {
+			resolved := r.Requested
+			resolved.PeerID = r.ResolvedPeerID
+			bound = append(bound, resolved)
+		}
+	}
+	h.svc.markJobTurns(h.svc.RemoteJobID(), sessionID, bound...)
 	h.registerRemoteBindings(sessionID, results)
 	return nil
 }

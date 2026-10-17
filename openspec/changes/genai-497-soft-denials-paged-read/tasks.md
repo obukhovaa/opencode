@@ -1,7 +1,7 @@
 ## 1. Soft rule denials
 
 - [x] 1.1 `internal/permission/denied.go`: `RuleDeniedError` (`Is` matches `ErrorPermissionDenied`), `DeniedByRule`, `AsRuleDenied`.
-- [x] 1.2 Return `DeniedByRule(tool, input)` from every `case permission.ActionDeny:` branch (bash, write, edit ×3, multiedit, patch, delete ×2, webfetch, websearch, monitor, taskstop, CLI tools, MCP tools, `checkReadPermission`); leave every rejected-prompt return as it is.
+- [x] 1.2 Return `DeniedByRule(tool, input)` from every `case permission.ActionDeny:` branch (bash, write, edit ×3, multiedit, patch, delete ×2, webfetch, websearch, monitor, taskstop, CLI tools, MCP tools, `authorizeRead`); leave every rejected-prompt return as it is. Read-category tools match the denial with `errors.Is` and keep returning their text result.
 - [x] 1.3 Agent loop, parallel and sequential paths: a rule denial records `ruleDeniedMessage`, does not cancel siblings, keeps the turn going; a rejected prompt is unchanged.
 - [x] 1.4 Breaker on `callTracker`: 3 consecutive turns without progress (loop-detected / not-found calls are not progress) or 10 denied calls per run finish the message with `permission_denied`.
 - [x] 1.5 Tests: soft deny continues the run, rejected prompt still ends it, parallel sibling survives, both breaker bounds, identical repeated denied call, `observeTurn` table, the CLI tool's agent deny is a rule denial.
