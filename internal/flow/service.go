@@ -30,6 +30,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/pubsub"
+	"github.com/opencode-ai/opencode/internal/question"
 	"github.com/opencode-ai/opencode/internal/session"
 )
 
@@ -88,6 +89,23 @@ type RunOptions struct {
 	// unfinished work is continued rather than lost (GENAI-352; openspec
 	// flow-runtime-resume).
 	RecoverRunning bool
+	// StartAt names the step this invocation enters first, instead of the
+	// flow's first step. Every step the flow reaches before it must have an
+	// entry in DoneSteps; those steps are recorded as completed with the
+	// supplied outputs and never run. Refused when the flow has work to
+	// resume (unless Fresh) and with RecoverRunning. See the
+	// flow-start-at-step spec.
+	StartAt string
+	// DoneSteps supplies, per step id, the output of a step StartAt treats as
+	// done: a JSON object for a step that declares output.schema (merged into
+	// args like its struct_output would be), text otherwise.
+	DoneSteps map[string]any
+	// PresentSteps supplies, per interactive step id, an output and a
+	// question about it that the step asks on its first entry in this
+	// invocation, with no model call; only the question is posted. Accepting
+	// completes the step with that output; any other answer runs the step's
+	// agent as usual, told the output, the question and the answer.
+	PresentSteps map[string]PresentedStep
 }
 
 type Service interface {
@@ -269,6 +287,17 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 		return nil, nil, fmt.Errorf("invalid flow args: %w", errArgs)
 	}
 
+	start, err := planStart(f, args, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if start != nil && len(start.presented) > 0 && s.agents.QuestionService() == nil {
+		return nil, nil, fmt.Errorf("%w: presentSteps needs the question service, which is not enabled", ErrInvalidStartOptions)
+	}
+	if start != nil {
+		ctx = withPresentations(ctx, start.presented)
+	}
+
 	// The run's own args, as the caller supplied them, ride on ctx for every
 	// step: MCP flowArgHeaders are stamped from them, never from step args
 	// (which struct output can grow) or persisted rows.
@@ -308,6 +337,13 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 			logging.Debug("Could not delete session tree during fresh start", "session_id", rootSessionID, "error", err)
 		}
 		existingStates = nil
+	}
+
+	// A start-at run lays down its own done rows, so it must not land on
+	// top of work a resume would continue: the two would disagree about
+	// which steps ran. Fresh clears that work above; otherwise refuse.
+	if start.startsAtStep() && hasResumableWork(existingStates, f, f.Spec.Session.ResumeOnFailure) {
+		return nil, nil, fmt.Errorf("%w: startAt %q: the flow has work to resume; pass fresh to discard it", ErrInvalidStartOptions, start.startAt)
 	}
 
 	hasRunning := false
@@ -360,7 +396,12 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 	// the agent retains cumulative LLM context. See
 	// openspec/specs/flow-runtime-resume for the full contract.
 	var initialWork []stepWork
-	if !fresh && hasResumableWork(existingStates, f, f.Spec.Session.ResumeOnFailure) {
+	if start.startsAtStep() {
+		initialWork, err = s.recordCarriedSteps(ctx, f, start, sessionPrefix, sessionFlowID, rootSessionID, startedSteps, flowStates)
+		if err != nil {
+			return nil, nil, err
+		}
+	} else if !fresh && hasResumableWork(existingStates, f, f.Spec.Session.ResumeOnFailure) {
 		stateMap := make(map[string]*FlowState, len(existingStates))
 		for _, es := range existingStates {
 			state := dbFlowStateToFlowState(es)
@@ -882,6 +923,37 @@ func (s *service) runStep(
 	if step.Fallback != nil {
 		maxAttempts = 1 + step.Fallback.Retry
 		retryDelay = step.Fallback.Delay
+	}
+
+	// A presented step (RunOptions.PresentSteps) asks its question before
+	// any model call, on the session the bind above made interactive, so
+	// the bridge relays it like the agent's own question. Accepting the
+	// supplied output completes the step with it and no attempt runs; any
+	// other answer hands the step to its agent with what was shown and
+	// answered. Taken once per run: a later entry of the step runs as usual.
+	if step.Interactive {
+		if p, ok := takePresentation(ctx, step.ID); ok {
+			answers, askErr := s.agents.QuestionService().Ask(ctx, sess.ID, []question.Prompt{p.question})
+			if askErr != nil && ctx.Err() != nil {
+				// The run is unwinding. Record the failure on a fresh deadline,
+				// as the failure path below does: with the cancelled ctx the
+				// write fails, the row stays `running`, and the next trigger
+				// replays it instead of running the flow.
+				writeCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				s.handleStepError(writeCtx, step, sessionID, rootSessionID, f.ID, args, iteration,
+					fmt.Errorf("presenting step %q: %w", step.ID, ctx.Err()), wg, agentEvents, flowStates, nextSteps, f)
+				cancelWrite()
+				return
+			}
+			if askErr == nil && p.accepted(answers) {
+				logging.Info("Presented output accepted; step completes with no model call", "step", step.ID)
+				result = presentedResult(p)
+				maxAttempts = 0
+			} else {
+				logging.Info("Presented output not accepted; running the step's agent", "step", step.ID)
+				prompt = presentedRevisionPrompt(p, answers, askErr != nil, prompt)
+			}
+		}
 	}
 
 	var lastErr error

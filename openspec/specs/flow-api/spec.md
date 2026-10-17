@@ -19,6 +19,8 @@ The endpoints MUST be mounted on opencode's existing API mux. Auth and localhost
 
 The `POST /flow` body SHALL accept, besides `flowID`, `args` and `fresh`, an optional boolean `recoverRunning`. When true it is forwarded as `flow.RunOptions.RecoverRunning`: the caller asserts that the process which left this flow's `running` `flow_states` rows is dead, so the runtime resumes those steps instead of replaying them as another process's live run (see `flow-runtime-resume`). It defaults to false; a caller that cannot vouch for the owner's death MUST NOT send it.
 
+The `POST /flow` body SHALL also accept the optional `startAt` (a step id), `doneSteps` (step id to output) and `presentSteps` (step id to `{output, question, accept}`), forwarded unchanged to `flow.RunOptions.StartAt`, `DoneSteps` and `PresentSteps` (see `flow-start-at-step`). A refusal of them fails the run before any flow state is written, as invalid `args` do.
+
 The endpoints from the prior `spec/20260518T010000-flow-api-and-orchestrator.md` that are explicitly **not** included in this change:
 
 - `POST /flow/input` — reviewer replies come in via chat platforms through the normal bridge inbound path; no second HTTP input mechanism.
@@ -33,6 +35,11 @@ The endpoints from the prior `spec/20260518T010000-flow-api-and-orchestrator.md`
 
 - **WHEN** `POST /flow` is called with `{flowID: "review", args: {hash: "abc123"}}` and no flow is currently running
 - **THEN** the response is 202 with `{runID, flowID, status: "running", currentStep}`; the flow begins executing
+
+#### Scenario: POST /flow forwards the start options
+
+- **WHEN** `POST /flow` is called with `{flowID: "review", args: {…}, startAt: "review-step", doneSteps: {…}, presentSteps: {…}}`
+- **THEN** the run starts with `RunOptions.StartAt`, `DoneSteps` and `PresentSteps` set to the body's values
 
 #### Scenario: POST /flow with recoverRunning resumes a dead owner's step
 
