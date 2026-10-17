@@ -203,6 +203,9 @@ func isRemoteMCP(m config.MCPServer) bool {
 // lifetime, so a caller giving up cannot fail it for anyone else.
 func (p *mcpClientPool) acquire(ctx context.Context, name string, m config.MCPServer) (*mcpConn, error) {
 	headers := resolvePeerHeader(ctx, m.PeerHeader, resolveMCPHeaders(ctx, name, m.Headers))
+	if isRemoteMCP(m) {
+		headers = resolveFlowArgHeaders(ctx, m.FlowArgHeaders, headers)
+	}
 	idle := resolveClientIdleTimeout(m)
 	if m.Type == config.MCPSse {
 		// Never pooled: mcp-go's SSE transport ends its event stream silently

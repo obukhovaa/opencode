@@ -1003,6 +1003,13 @@
             },
             "type": "array"
           },
+          "flowArgHeaders": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Map of HTTP header name to the name of a top-level job arg (sse and http servers). The arg's value is sent in that header on tool calls made under the job; a missing, empty, non-scalar or control-character value omits the header, and a static header of the same name is always dropped. Every arg named here is redacted from persisted flow state, telemetry, logs and rendered prompts. Authorization and the server's peerHeader are rejected",
+            "type": "object"
+          },
           "headers": {
             "additionalProperties": {
               "type": "string"

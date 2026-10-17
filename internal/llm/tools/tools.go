@@ -3,11 +3,14 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -41,6 +44,7 @@ type (
 	requesterContextKey         string
 	parentSessionIDContextKey   string
 	peerContextKey              string
+	jobArgsContextKey           string
 )
 
 const (
@@ -95,6 +99,15 @@ const (
 	// and by the MCP client (a server's `peerHeader`). Use WithPeer /
 	// PeerFromContext.
 	PeerContextKey peerContextKey = "bridge_peer"
+	// JobArgsContextKey carries the top-level args of the job the turn
+	// belongs to, exactly as the orchestrator supplied them (POST /flow
+	// `args`, or --flow-args). Unlike FlowArgsContextKey it is neither
+	// filtered by telemetry.flowArgs nor stringified, and it never reaches
+	// telemetry: its only reader is the MCP client, which stamps the
+	// `flowArgHeaders` of a server. Set by the flow runner, and carried onto
+	// subagents, bridge turns and auto-resumed turns of the job. Use
+	// WithJobArgs / JobArgsFromContext.
+	JobArgsContextKey jobArgsContextKey = "job_args"
 
 	// MaxToolResponseTokens is the maximum number of tokens allowed in a tool response
 	// to prevent context overflow. ~1200KB of text content.
@@ -145,6 +158,80 @@ func PeerFromContext(ctx context.Context) (Peer, bool) {
 	}
 	p, ok := ctx.Value(PeerContextKey).(Peer)
 	return p, ok
+}
+
+// WithJobArgs returns ctx carrying a copy of args under JobArgsContextKey.
+// No args returns ctx unchanged.
+func WithJobArgs(ctx context.Context, args map[string]any) context.Context {
+	if len(args) == 0 {
+		return ctx
+	}
+	cp := make(map[string]any, len(args))
+	for k, v := range args {
+		cp[k] = v
+	}
+	return context.WithValue(ctx, JobArgsContextKey, cp)
+}
+
+// JobArgsFromContext returns the job args carried by ctx, if any. The map is
+// shared: callers must not modify it.
+func JobArgsFromContext(ctx context.Context) (map[string]any, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	a, ok := ctx.Value(JobArgsContextKey).(map[string]any)
+	return a, ok
+}
+
+func jobArgsOrNil(ctx context.Context) map[string]any {
+	a, _ := JobArgsFromContext(ctx)
+	return a
+}
+
+type processJob struct {
+	id   string
+	args map[string]any
+}
+
+var processJobHolder atomic.Pointer[processJob]
+
+// SetProcessJobArgs publishes the args of the job this process is currently
+// running, together with the bridge job identity they belong to, for turns
+// that do not descend from the flow run's context — chat bridge turns. Nil
+// or empty args clear it. The flow runner is its only writer.
+func SetProcessJobArgs(jobID string, args map[string]any) {
+	if len(args) == 0 {
+		processJobHolder.Store(nil)
+		return
+	}
+	cp := make(map[string]any, len(args))
+	for k, v := range args {
+		cp[k] = v
+	}
+	processJobHolder.Store(&processJob{id: jobID, args: cp})
+}
+
+// ProcessJobArgs returns the args published by SetProcessJobArgs, or nil.
+// Whoever attaches them to a turn must first prove the turn belongs to the
+// job — see ProcessJobArgsFor.
+func ProcessJobArgs() map[string]any {
+	if p := processJobHolder.Load(); p != nil {
+		return p.args
+	}
+	return nil
+}
+
+// ProcessJobArgsFor returns the published args only when they were
+// published for jobID. An empty jobID, or a holder published without an
+// identity, never matches: a turn that cannot be tied to the job gets none.
+func ProcessJobArgsFor(jobID string) map[string]any {
+	if jobID == "" {
+		return nil
+	}
+	if p := processJobHolder.Load(); p != nil && p.id == jobID {
+		return p.args
+	}
+	return nil
 }
 
 // ParentSessionIDFromContext returns the parent of the current session
@@ -515,14 +602,86 @@ func AddTag(ctx context.Context, k, v string) context.Context {
 	return context.WithValue(ctx, MetadataTagsContextKey, []string{tag})
 }
 
-// checkReadPermission evaluates read-category permission for a tool and path.
-// Returns nil if allowed, permission.ErrorPermissionDenied if denied or ask-rejected.
-// If registry is nil, permission check is skipped (always allowed).
-func checkReadPermission(ctx context.Context, reg agentregistry.Registry, perms permission.Service, toolName, path string) error {
+// canonicalReadPath makes path absolute against the working directory,
+// cleans it (collapsing "//", "/./" and "/../") and resolves its symlinks.
+// clean is the lexical result; resolved is the file the path really names, or
+// err when it does not resolve.
+func canonicalReadPath(path string) (clean, resolved string, err error) {
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(config.WorkingDirectory(), path)
+	}
+	clean = filepath.Clean(path)
+	resolved, err = filepath.EvalSymlinks(clean)
+	return clean, resolved, err
+}
+
+// strictestAction returns the more restrictive of two actions: deny, then ask,
+// then allow.
+func strictestAction(a, b permission.Action) permission.Action {
+	rank := func(x permission.Action) int {
+		switch x {
+		case permission.ActionDeny:
+			return 2
+		case permission.ActionAsk:
+			return 1
+		}
+		return 0
+	}
+	if rank(b) > rank(a) {
+		return b
+	}
+	return a
+}
+
+// authorizeRead gates a read-category tool on the canonical form of path and
+// returns the path the tool must then operate on, so what was checked is what
+// is read. The path is cleaned and its symlinks resolved first; a path that
+// does not resolve is denied. The permission patterns are evaluated against
+// both the cleaned and the resolved path and the stricter verdict wins, so
+// neither a "..", a double slash nor a symlink out of an allowed directory
+// reaches a file the patterns do not allow, and a rule written against a
+// symlink's own name still applies.
+//
+// With no registry or permission service nothing is checked and path is
+// returned unchanged.
+//
+// The check and the later open are two steps: a path component swapped for a
+// symlink in between would be followed by the open. read and view_image close
+// that window by opening through openForRead, which refuses a file whose real
+// path is no longer the authorized one. ls, glob and grep only ever enumerate
+// a directory (ripgrep and the walk open the files themselves), and
+// grep/glob re-check every match's resolved path afterwards, but that is a
+// second check-then-use of the same kind: a swap racing the enumeration is
+// not detected there.
+func authorizeRead(ctx context.Context, reg agentregistry.Registry, perms permission.Service, toolName, path string) (string, error) {
 	if reg == nil || perms == nil {
+		return path, nil
+	}
+	clean, resolved, err := canonicalReadPath(path)
+	if err != nil {
+		return "", permission.ErrorPermissionDenied
+	}
+	if err := checkReadPermission(ctx, reg, perms, toolName, clean, resolved); err != nil {
+		return "", err
+	}
+	return resolved, nil
+}
+
+// checkReadPermission evaluates read-category permission for a tool and the
+// given paths (the strictest verdict wins; an ask prompts once, for the last
+// path). Returns nil if allowed, permission.ErrorPermissionDenied if denied or
+// ask-rejected. If registry is nil, permission check is skipped (always
+// allowed). Callers holding a user-supplied path should go through
+// authorizeRead, which canonicalizes it first.
+func checkReadPermission(ctx context.Context, reg agentregistry.Registry, perms permission.Service, toolName string, paths ...string) error {
+	if reg == nil || perms == nil || len(paths) == 0 {
 		return nil
 	}
-	action := reg.EvaluateReadPermission(string(GetAgentID(ctx)), toolName, path)
+	path := paths[len(paths)-1]
+	action := permission.ActionAllow
+	for _, p := range paths {
+		action = strictestAction(action, reg.EvaluateReadPermission(string(GetAgentID(ctx)), toolName, p))
+	}
 	switch action {
 	case permission.ActionAllow:
 		return nil
@@ -544,4 +703,116 @@ func checkReadPermission(ctx context.Context, reg agentregistry.Registry, perms 
 		}
 		return nil
 	}
+}
+
+// readableMatch returns a predicate that reports whether a search result under
+// root may be shown: its symlinks must resolve, and the permission patterns
+// must not deny the resolved path (nor the lexical one). An "ask" verdict
+// cannot be put to the user once per match, so it stands for what was already
+// approved for root: the match is kept only while it stays inside the resolved
+// root. Nil when nothing is checked.
+func readableMatch(ctx context.Context, reg agentregistry.Registry, perms permission.Service, toolName, root string) func(path string) bool {
+	if reg == nil || perms == nil {
+		return nil
+	}
+	agentID := string(GetAgentID(ctx))
+	rootResolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		rootResolved = root
+	}
+	prefix := strings.TrimSuffix(rootResolved, string(filepath.Separator)) + string(filepath.Separator)
+	return func(path string) bool {
+		resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
+		if err != nil {
+			return false
+		}
+		action := strictestAction(
+			reg.EvaluateReadPermission(agentID, toolName, filepath.Clean(path)),
+			reg.EvaluateReadPermission(agentID, toolName, resolved),
+		)
+		switch action {
+		case permission.ActionAllow:
+			return true
+		case permission.ActionDeny:
+			return false
+		default:
+			return resolved == rootResolved || strings.HasPrefix(resolved, prefix)
+		}
+	}
+}
+
+var errReadPathChanged = errors.New("path changed between the permission check and the open")
+
+// openForRead opens path, which authorizeRead returned as the canonical form
+// that was permission-checked. With verify set it then makes sure the opened
+// file really is that path, so a symlink swapped in after the check is refused
+// instead of followed. verify is false when authorizeRead checked nothing and
+// path is whatever the caller supplied.
+func openForRead(path string, verify bool) (*os.File, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	if verify {
+		if err := verifyOpenedPath(f, path); err != nil {
+			f.Close()
+			return nil, err
+		}
+	}
+	return f, nil
+}
+
+// readFileForRead is os.ReadFile through openForRead.
+func readFileForRead(path string, verify bool) ([]byte, error) {
+	f, err := openForRead(path, verify)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
+}
+
+// verifyOpenedPath reports errReadPathChanged unless the open file f is the
+// file at the canonical path want. Where the kernel can name the real path of
+// a descriptor (/proc/self/fd/N) that is compared with want, which also covers
+// a swapped parent directory. Elsewhere want must still resolve to itself and
+// to the very file that was opened.
+func verifyOpenedPath(f *os.File, want string) error {
+	if got, ok := descriptorPath(f); ok {
+		if got != want {
+			return errReadPathChanged
+		}
+		return nil
+	}
+	return verifyOpenedPathByStat(f, want)
+}
+
+func descriptorPath(f *os.File) (string, bool) {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return "", false
+	}
+	var got string
+	var rerr error
+	if err := rc.Control(func(fd uintptr) {
+		got, rerr = os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
+	}); err != nil || rerr != nil {
+		return "", false
+	}
+	return got, true
+}
+
+func verifyOpenedPathByStat(f *os.File, want string) error {
+	if resolved, err := filepath.EvalSymlinks(want); err != nil || resolved != want {
+		return errReadPathChanged
+	}
+	opened, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	current, err := os.Lstat(want)
+	if err != nil || !os.SameFile(opened, current) {
+		return errReadPathChanged
+	}
+	return nil
 }

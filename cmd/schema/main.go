@@ -241,6 +241,13 @@ func generateSchema() map[string]any {
 					"type":        "string",
 					"description": "Name of an HTTP header carrying the chat-bridge peer id of the calling turn (sse and http servers). Replaces any static header of that name; omitted on calls not made from a bridge turn",
 				},
+				"flowArgHeaders": map[string]any{
+					"type":        "object",
+					"description": "Map of HTTP header name to the name of a top-level job arg (sse and http servers). The arg's value is sent in that header on tool calls made under the job; a missing, empty, non-scalar or control-character value omits the header, and a static header of the same name is always dropped. Every arg named here is redacted from persisted flow state, telemetry, logs and rendered prompts. Authorization and the server's peerHeader are rejected",
+					"additionalProperties": map[string]any{
+						"type": "string",
+					},
+				},
 				"disabled": map[string]any{
 					"type":        "boolean",
 					"description": "Whether the MCP server is disabled",

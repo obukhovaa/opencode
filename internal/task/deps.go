@@ -41,9 +41,10 @@ type Deps interface {
 	// the session. The empty content signals the agent that the next turn's
 	// input comes from the just-written synthetic ToolResult. requester is
 	// the completed task's Task.Requester ("" when unknown); the resumed
-	// run carries it on its context. Implementations MUST NOT block — the
-	// resume is fire-and-forget.
-	ResumeSession(sessionID, requester string)
+	// run carries it on its context, together with jobArgs (the spawning
+	// turn's job args, nil when it had none). Implementations MUST NOT
+	// block — the resume is fire-and-forget.
+	ResumeSession(sessionID, requester string, jobArgs map[string]any)
 }
 
 var depsHolder Deps
