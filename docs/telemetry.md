@@ -72,6 +72,8 @@ Session: abc-123
     └── Generation: descriptor/gemini-3.0-flash
 ```
 
+The descriptor trace appears only for attended sessions (TUI, chat bridge, API, interactive flow steps). Unattended ones — flow steps, headless `-p` runs, cron jobs and the subagents they spawn — skip title generation.
+
 ### Flow Tracing
 
 When running [flows](flows.md), traces are enriched with flow context:
@@ -271,7 +273,7 @@ Every trace carries a `requester` metadata field naming the person the run is wo
 3. For a scheduled job (the `cron` tool), the requester of the turn that created the job, resolved as for that turn's trace: a `requester` flow arg when the job is created inside a flow step, else the turn's per-turn requester. It is stored with the job (clamped to 320 bytes) and replayed on every run.
 4. The static `telemetry.requester` from config.
 
-When none applies, the field is omitted. Subagents spawned during a turn — synchronous or async — inherit the turn's requester, as do the turn's session-title generation (a flow step's `requester` arg included) and the turn that a background task's completion (async `task`, `bash` with `run_in_background`, `monitor`) auto-resumes. A chat-bridge `/compact` attributes its summarizer trace to the command's author, resolved as for a chat turn.
+When none applies, the field is omitted. Subagents spawned during a turn — synchronous or async — inherit the turn's requester, as do the turn's session-title generation, where one runs (an interactive flow step's `requester` arg included), and the turn that a background task's completion (async `task`, `bash` with `run_in_background`, `monitor`) auto-resumes. A chat-bridge `/compact` attributes its summarizer trace to the command's author, resolved as for a chat turn.
 
 ```json
 {

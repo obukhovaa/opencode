@@ -151,7 +151,7 @@ func (w *writeTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	case permission.ActionAllow:
 		// Allowed by config
 	case permission.ActionDeny:
-		return NewEmptyResponse(), permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.DeniedByRule(WriteToolName, filePath)
 	default:
 		p := w.permissions.Request(ctx,
 			permission.CreatePermissionRequest{

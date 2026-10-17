@@ -169,7 +169,29 @@ A workspace CLI tool (`.agents/tools/<name>.yaml`, see [cli-tools.md](cli-tools.
 Keep the two boundaries apart when reasoning about such a tool:
 
 - **What the process can do** is the manifest's hard policy (`args.deny` / `args.allow` on the argument vector, `env`, `cwd`, `timeout`, argv-only exec). No agent configuration loosens it; a violation is a tool error the model sees, and the run continues.
-- **What the model may ask for** is the permission chain: `agent.permission.<name>` → `permission.rules.<name>` → the manifest's `permission` default → `agent.permission["*"]` → `rules["*"]` → `ask`, with the space-joined argument string as the pattern input. `deny` here ends the run like every other permission denial.
+- **What the model may ask for** is the permission chain: `agent.permission.<name>` → `permission.rules.<name>` → the manifest's `permission` default → `agent.permission["*"]` → `rules["*"]` → `ask`, with the space-joined argument string as the pattern input. `deny` here is a tool error the model sees, like every other rule denial (see [When a call is denied](#when-a-call-is-denied)).
+
+## When a call is denied
+
+A tool call can be refused in two ways, and they end differently:
+
+| Who refused | Example | What happens |
+|---|---|---|
+| A configured rule evaluated to `deny` | `permission: {bash: {"rm -rf *": "deny"}}`, `permission.rules.edit["*.env"] = "deny"`, a CLI tool manifest's `permission: deny`, a tool outside an `allowTools` list | The model gets an error tool result naming the tool and the input that was denied, and the run **continues**. Sibling calls in the same turn keep running. |
+| A human rejected an `ask` prompt | pressing deny in the TUI permission dialog, the bridge resolving a prompt as deny | The run **ends** with finish reason `permission_denied`, and the turn's other calls are cancelled, as before. |
+
+The rule-denial message tells the model the action itself is forbidden: retrying is pointless, and reaching the same effect through another command, tool or script is not allowed either. It is expected to carry on with the parts of the task that do not need the action, or to report that the rule blocks it.
+
+A circuit breaker stops a model that keeps reaching for denied calls instead of adapting. The run ends with `permission_denied`, exactly as a rejected prompt would, once either bound is reached:
+
+- **3 turns in a row** in which no tool call ran except rule-denied ones, starting with a turn that had a denial. The bound counts turns, not calls: one turn of parallel calls that all hit the same rule, sent before the model had seen any denial, counts once. A call answered without running (loop detected, tool not found) is no progress, so a model that repeats the identical denied call — loop-detected from its third try — still trips the bound. A turn in which any call ran and was not denied resets the streak.
+- **10 rule-denied calls** in one run (one `agent.Run`: a TUI turn, a flow step attempt, a headless `-p` run), however they interleave with other calls.
+
+Both bounds are constants (`maxConsecutiveRuleDeniedTurns`, `maxRuleDenialsPerRun` in `internal/llm/agent/permission_denial.go`). Read-category tools (`read`, `view_image`, `grep`, `glob`, `ls`) are the exception: they report both a rule denial and a rejected prompt to the model as a `Permission denied` text result themselves, so their denials never reach the agent loop and do not count towards the breaker.
+
+A PreToolUse hook's `deny` and a `skill` permission denial were already tool errors and are unchanged; neither counts towards the breaker.
+
+**Behaviour change.** Before GENAI-497 any rule denial ended the run on the first attempt, which is why workspaces avoided `deny` rules. A flow that relied on a `deny` to stop a step outright now sees the step continue until the model gives up, reports the block, or the breaker trips.
 
 
 ## Read permissions are evaluated on the canonical path

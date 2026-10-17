@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -80,7 +81,7 @@ func (g *globTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 
 	canonical, err := authorizeRead(ctx, g.registry, g.permissions, GlobToolName, searchPath)
 	if err != nil {
-		if err == permission.ErrorPermissionDenied {
+		if errors.Is(err, permission.ErrorPermissionDenied) {
 			return NewTextErrorResponse(fmt.Sprintf("Permission denied: globbing %s", searchPath)), nil
 		}
 		return NewEmptyResponse(), err

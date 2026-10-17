@@ -313,7 +313,7 @@ func TestAuthorizeReadHonoursRulesWrittenAgainstTheSymlinkName(t *testing.T) {
 		t.Skip(err)
 	}
 	reg := permRegistry{perms: map[string]any{"read": map[string]any{"*": "deny", f.allowed + "/**": "allow", link: "deny"}}}
-	if _, err := authorizeRead(context.Background(), reg, f.perms, ReadToolName, link); err != permission.ErrorPermissionDenied {
+	if _, err := authorizeRead(context.Background(), reg, f.perms, ReadToolName, link); !errors.Is(err, permission.ErrorPermissionDenied) {
 		t.Errorf("authorizeRead(%s) = %v, want denied by the rule on the link's own name", link, err)
 	}
 	if got, err := authorizeRead(context.Background(), reg, f.perms, ReadToolName, f.okFile); err != nil || got != f.okFile {

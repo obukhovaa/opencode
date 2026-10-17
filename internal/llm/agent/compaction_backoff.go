@@ -141,6 +141,9 @@ const (
 	compactionTriggerPreTurn = "pre_turn"
 	compactionTriggerInLoop  = "in_loop"
 	compactionTriggerManual  = "manual"
+	// compactionTriggerOverflow is the recovery after a model call the
+	// provider rejected as too long (processGeneration).
+	compactionTriggerOverflow = "overflow_retry"
 )
 
 // compactionAllowed reports whether an auto-compaction may run for the
