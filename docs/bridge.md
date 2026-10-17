@@ -342,7 +342,7 @@ The tool's description is **built dynamically at registration time** from the li
 **External conversations are kept apart.** Each `external` peer is a separate conversation, and one daemon may serve conversations of different users and tenants, so the model does not get to pick which one it writes to:
 
 - A turn the bridge dispatched carries its inbound peer. It may send to an `external` peer only if that is the turn's own peer, and a turn that came in on `external` may send nowhere else, chat channels included.
-- A turn with no inbound peer (a flow step, an auto-resumed task, a cron run) may send to an `external` peer only if that peer is bound to the turn's session or its parent session.
+- A turn with no inbound peer (a flow step, an auto-resumed task, a cron run) belongs to the `external` peers bound to its session or its parent session. It may send to an `external` peer only if that peer is one of them, and to a chat channel only if there are none: an auto-resumed turn of an external conversation carries no peer, and may not leave the conversation either. A failed binding lookup refuses the send.
 - Any other send to or from an external conversation is refused before dispatch with a tool error that names no peer. Chat-to-chat sends are unchanged.
 
 For the same reason the description lists only bound peers on chat channels, never `external` ones.

@@ -252,19 +252,22 @@ func (s *Service) BoundPeersSnapshot(ctx context.Context) []bridge.BoundPeer {
 	return out
 }
 
-// BindingSessionID returns the session that owns peer's binding, and
-// false when the peer is unbound, its binding is orphaned or the store
-// cannot answer. router_send treats false as "not this session's
-// conversation", so a store error refuses rather than allows.
-func (s *Service) BindingSessionID(ctx context.Context, peer bridge.PeerRef) (string, bool) {
+// SessionPeers returns the peers bound to sessionID. router_send uses it
+// to keep a turn with no inbound peer inside its session's external
+// conversations, and refuses the send on an error.
+func (s *Service) SessionPeers(ctx context.Context, sessionID string) ([]bridge.PeerRef, error) {
 	if s.store == nil {
-		return "", false
+		return nil, nil
 	}
-	b, err := s.store.GetBinding(ctx, s.projectID, peer.Channel, peer.Identity, peer.PeerID)
-	if err != nil || b.SessionID == "" {
-		return "", false
+	bindings, err := s.store.ListBindingsBySession(ctx, s.projectID, sessionID)
+	if err != nil {
+		return nil, err
 	}
-	return b.SessionID, true
+	peers := make([]bridge.PeerRef, 0, len(bindings))
+	for _, b := range bindings {
+		peers = append(peers, b.AsPeerRef())
+	}
+	return peers, nil
 }
 
 // Send is the in-process entry point for the router_send agent tool and

@@ -8,18 +8,18 @@ The bridge already knows which conversation a turn serves. It sets the turn's in
 
 - `router_send` refuses a send that would cross between external conversations, with an error that names no peer:
   - A turn the bridge dispatched may send to an `external` peer only if it is the turn's own peer. A turn that came in on `external` may send nowhere else, other chat channels included.
-  - A turn with no inbound peer (a flow step, an auto-resumed task, a cron run) may send to an `external` peer only if that peer is bound to the turn's session or to its parent session.
+  - A turn with no inbound peer (a flow step, an auto-resumed task, a cron run) belongs to the `external` peers bound to its session or its parent session. It may send to an `external` peer only if the peer is one of them, and to a chat peer only if there are none, so an auto-resumed turn of an external conversation cannot leave it either.
   - Sends between chat channels from chat turns are unchanged.
 - The tool description no longer lists bound `external` peers, and says that each external peer is a separate conversation the turn may not leave.
-- `BridgeSender` gains `BindingSessionID(ctx, peer)`, the owning session of a peer's binding; `bridge.Service` implements it over the binding store.
+- `BridgeSender` gains `SessionPeers(ctx, sessionID)`, the peers bound to a session; `bridge.Service` implements it over the binding store.
 
 ## Capabilities
 
 ### Modified Capabilities
 
-- `chat-bridge-agent-tool`: the description omits external bound peers; the no-allowlist rule now covers chat channels only; a new requirement keeps external conversations apart.
+- `chat-bridge-agent-tool`: the description omits external bound peers; the no-allowlist rule now covers chat channels only; new requirements keep external conversations apart.
 
 ## Impact
 
-- `internal/llm/tools/router_send.go` (the rule, the description), `internal/bridge/service/send.go` (`BindingSessionID`), tests, `docs/bridge.md`.
+- `internal/llm/tools/router_send.go` (the rule, the description), `internal/bridge/service/send.go` (`SessionPeers`), tests, `docs/bridge.md`.
 - An agent that relied on sending into other external conversations, or out of one into a chat channel, now gets a tool error. Replying to the current conversation, and chat-to-chat sends, work as before.

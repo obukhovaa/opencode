@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/logging"
 )
 
 // RouterSendToolName is the canonical agent-facing tool name.
@@ -45,11 +47,10 @@ type BridgeSender interface {
 	// tool degrades gracefully.
 	BoundPeersSnapshot(ctx context.Context) []bridge.BoundPeer
 
-	// BindingSessionID returns the opencode session that owns peer's
-	// binding, and false when the peer is not bound or its binding is
-	// orphaned. The tool uses it to keep a turn with no inbound peer
-	// inside its own session's external conversations.
-	BindingSessionID(ctx context.Context, peer bridge.PeerRef) (string, bool)
+	// SessionPeers lists the peers bound to sessionID. The tool uses it
+	// to keep a turn with no inbound peer inside its session's external
+	// conversations; an error refuses the send rather than allowing it.
+	SessionPeers(ctx context.Context, sessionID string) ([]bridge.PeerRef, error)
 }
 
 // externalChannel is the relay channel whose peers are separate
@@ -178,18 +179,20 @@ func (t *routerSendTool) Run(ctx context.Context, call ToolCall) (ToolResponse, 
 		return errResp, nil
 	}
 
-	attachments, errResp := t.loadAttachments(p.Files)
-	if errResp != nil {
-		return *errResp, nil
-	}
-
 	peer := bridge.PeerRef{
 		Channel:  p.Channel,
 		Identity: p.Identity,
 		PeerID:   p.PeerID,
 	}
+	// Refuse before reading attachments: a refused send must not load
+	// files into memory first.
 	if !t.externalSendAllowed(ctx, peer) {
 		return NewTextErrorResponse(errOtherConversation), nil
+	}
+
+	attachments, errResp := t.loadAttachments(p.Files)
+	if errResp != nil {
+		return *errResp, nil
 	}
 	result, err := t.deps.Sender.Send(ctx, peer, p.Text, p.Mention, attachments)
 	if err != nil {
@@ -214,9 +217,12 @@ func (t *routerSendTool) Run(ctx context.Context, call ToolCall) (ToolResponse, 
 //     (PeerFromContext). If that peer or the target is external, the
 //     target must be exactly that peer: replies stay in the conversation,
 //     and an external turn cannot message any other channel either.
-//   - A turn with no inbound peer (a flow step, an auto-resumed task, a
-//     cron run) may reach an external peer only when the peer is bound to
-//     the turn's session or to its parent session.
+//   - A turn with no inbound peer (a flow step, an auto-resumed task)
+//     belongs to the external peers bound to its session or its parent
+//     session. It may reach an external peer only when the peer is one of
+//     them, and a chat peer only when there are none: an auto-resumed
+//     turn of an external conversation carries no peer, and must not
+//     leave the conversation either.
 //
 // Sends between chat channels from chat turns are unchanged.
 func (t *routerSendTool) externalSendAllowed(ctx context.Context, target bridge.PeerRef) bool {
@@ -226,15 +232,41 @@ func (t *routerSendTool) externalSendAllowed(ctx context.Context, target bridge.
 		}
 		return turn.Channel == target.Channel && turn.Identity == target.Identity && turn.PeerID == target.PeerID
 	}
-	if target.Channel != externalChannel {
-		return true
-	}
-	owner, bound := t.deps.Sender.BindingSessionID(ctx, target)
-	if !bound {
+	own, err := t.sessionExternalPeers(ctx)
+	if err != nil {
+		logging.Warn("router_send refused: cannot list the session's bound peers", "error", err)
 		return false
 	}
+	if target.Channel != externalChannel {
+		return len(own) == 0
+	}
+	// Exact match: the store may compare peer ids case-insensitively
+	// (MySQL collation), but the consumer may not.
+	return slices.ContainsFunc(own, func(p bridge.PeerRef) bool {
+		return p.Channel == target.Channel && p.Identity == target.Identity && p.PeerID == target.PeerID
+	})
+}
+
+// sessionExternalPeers lists the external peers bound to the turn's
+// session and to its parent session.
+func (t *routerSendTool) sessionExternalPeers(ctx context.Context) ([]bridge.PeerRef, error) {
 	sessionID, _ := GetContextValues(ctx)
-	return owner == sessionID || owner == ParentSessionIDFromContext(ctx)
+	var own []bridge.PeerRef
+	for _, id := range []string{sessionID, ParentSessionIDFromContext(ctx)} {
+		if id == "" {
+			continue
+		}
+		peers, err := t.deps.Sender.SessionPeers(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range peers {
+			if p.Channel == externalChannel {
+				own = append(own, p)
+			}
+		}
+	}
+	return own, nil
 }
 
 func (t *routerSendTool) AllowParallelism(_ ToolCall, _ []ToolCall) bool {
