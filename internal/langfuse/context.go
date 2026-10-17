@@ -2,6 +2,7 @@ package langfuse
 
 import (
 	"context"
+	"fmt"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -50,4 +51,26 @@ func SetTraceOutput(ctx context.Context, output any) {
 	v.span.SetAttributes(
 		attribute.String(key, payload(output, maxGenIOSize)),
 	)
+}
+
+// SetTraceMetadata records metadata on the trace held in context after it
+// started, for run facts known only later (turns used, finish reason). On a
+// root trace it sets trace-level metadata; on a child trace (subagent) it
+// sets the observation's metadata so the parent trace's own keys are not
+// overwritten. Keys are written as given — namespacing is the caller's.
+// No-op when context has no trace.
+func SetTraceMetadata(ctx context.Context, metadata map[string]any) {
+	v, ok := ctx.Value(rootSpanKey).(rootSpan)
+	if !ok || v.span == nil || len(metadata) == 0 {
+		return
+	}
+	prefix := "langfuse.trace.metadata."
+	if v.isChild {
+		prefix = "langfuse.observation.metadata."
+	}
+	attrs := make([]attribute.KeyValue, 0, len(metadata))
+	for k, val := range metadata {
+		attrs = append(attrs, attribute.String(prefix+k, redactString(fmt.Sprint(val))))
+	}
+	v.span.SetAttributes(attrs...)
 }

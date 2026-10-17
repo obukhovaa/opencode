@@ -915,12 +915,16 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		}
 	}
 
-	ctx = a.createLangfuseTrace(ctx, session, traceInputFor(content, hasUserTurn, len(attachmentParts)))
+	ctx = a.startRunTrace(ctx, session, traceInputFor(content, hasUserTurn, len(attachmentParts)), effectiveMaxTurns)
 	defer langfuse.EndTrace(ctx)
+	// Model calls made by this RunWith call, across every outer cycle
+	// (cycles resets per outer cycle); the forced wrap-up counts.
+	turnsUsed := 0
 	// Registered after EndTrace so it runs first (LIFO) — attributes must
 	// land before the span ends.
 	defer func() {
 		a.setTraceOutput(ctx, func() any { return traceOutputFromEvent(result) })
+		stampTraceMetadata(ctx, map[string]any{traceKeyTurnsUsed: turnsUsed, traceKeyFinishReason: traceFinishReason(result)})
 	}()
 
 	// Susped to get lazy tools
@@ -1204,6 +1208,7 @@ OuterLoop:
 				if forceStruct {
 					finalCtx = provider.WithForcedTool(ctx, tools.StructOutputToolName)
 				}
+				turnsUsed++
 				finalMsg, finalToolResults, finalErr := a.streamAndHandleEvents(finalCtx, sessionID, msgHistory, toolSet, tracker)
 				if finalErr != nil {
 					if !errors.Is(finalErr, context.Canceled) {
@@ -1259,6 +1264,7 @@ OuterLoop:
 				break OuterLoop
 			}
 
+			turnsUsed++
 			agentMessage, toolResults, err = a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
 			if err != nil {
 				a.createErrorToolResults(agentMessage)

@@ -68,6 +68,44 @@ func TestTraceInputOutputChildUsesObservationKeys(t *testing.T) {
 	}
 }
 
+// Run facts recorded after the trace started land on the trace itself for a
+// root, and on the observation for a child: a subagent's turn count must not
+// replace its parent's.
+func TestSetTraceMetadata(t *testing.T) {
+	tests := []struct {
+		name    string
+		isChild bool
+		want    string
+		absent  string
+	}{
+		{name: "root writes trace metadata", want: "langfuse.trace.metadata.", absent: "langfuse.observation.metadata."},
+		{name: "child writes observation metadata", isChild: true, want: "langfuse.observation.metadata.", absent: "langfuse.trace.metadata."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, sr := newTestClient()
+			ctx := c.TraceStart(context.Background(), TraceParams{Name: "run", IsChild: tt.isChild})
+			SetTraceMetadata(ctx, map[string]any{"piano.turns_used": 3, "piano.finish_reason": "end_turn"})
+			c.TraceEnd(ctx)
+
+			spans := sr.Ended()
+			if got, ok := attrValue(spans, "run", tt.want+"piano.turns_used"); !ok || got != "3" {
+				t.Errorf("%spiano.turns_used = %q, ok=%v", tt.want, got, ok)
+			}
+			if got, ok := attrValue(spans, "run", tt.want+"piano.finish_reason"); !ok || got != "end_turn" {
+				t.Errorf("%spiano.finish_reason = %q, ok=%v", tt.want, got, ok)
+			}
+			if _, ok := attrValue(spans, "run", tt.absent+"piano.turns_used"); ok {
+				t.Errorf("%spiano.turns_used set; want it absent", tt.absent)
+			}
+		})
+	}
+}
+
+func TestSetTraceMetadataNoTraceIsNoop(t *testing.T) {
+	SetTraceMetadata(context.Background(), map[string]any{"k": "v"}) // must not panic
+}
+
 func TestGenerationInputAndOutput(t *testing.T) {
 	c, sr := newTestClient()
 
