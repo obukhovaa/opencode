@@ -38,7 +38,7 @@ func TestTaskDepsResumeSessionCarriesRequester(t *testing.T) {
 			ag := &requesterAgent{got: make(chan string, 1)}
 			d := &taskDeps{app: &App{activeAgent: ag}}
 
-			d.ResumeSession("s1", tt.requester)
+			d.ResumeSession("s1", tt.requester, nil)
 
 			select {
 			case got := <-ag.got:
@@ -88,7 +88,7 @@ func TestTaskDepsResumeSessionUsesTheSessionsAgent(t *testing.T) {
 				},
 				PrimaryAgentKeys: []config.AgentName{config.AgentCoder, config.AgentHivemind},
 			}
-			(&taskDeps{app: a}).ResumeSession("s1", "")
+			(&taskDeps{app: a}).ResumeSession("s1", "", nil)
 			select {
 			case got := <-ran:
 				if got != tt.want {

@@ -171,3 +171,11 @@ Keep the two boundaries apart when reasoning about such a tool:
 - **What the process can do** is the manifest's hard policy (`args.deny` / `args.allow` on the argument vector, `env`, `cwd`, `timeout`, argv-only exec). No agent configuration loosens it; a violation is a tool error the model sees, and the run continues.
 - **What the model may ask for** is the permission chain: `agent.permission.<name>` → `permission.rules.<name>` → the manifest's `permission` default → `agent.permission["*"]` → `rules["*"]` → `ask`, with the space-joined argument string as the pattern input. `deny` here ends the run like every other permission denial.
 
+
+## Read permissions are evaluated on the canonical path
+
+`permission.read` (and the per-tool keys `grep`, `glob`, `ls`, `view_image`, which fall back to `read`, then `*`) applies to all five read-category tools: `read`, `view_image`, `grep`, `glob` and `ls`. Before the check, the tool makes the path absolute against the working directory, cleans it (`//`, `/./`, `/../` collapse) and resolves its symlinks. A path that does not resolve is denied. The patterns are evaluated against both the cleaned and the resolved path and the stricter verdict wins, so a `..` or a symlink inside an allowed directory cannot reach a file the patterns do not allow, and the tool then reads the resolved path it checked. Write allow patterns against canonical paths (for example `/private/tmp/...` rather than `/tmp/...` on macOS).
+
+`grep` and `glob` also drop every match whose resolved path the patterns do not allow (`glob` follows symlinks, and the `grep` regex fallback opens them). An `ask` verdict cannot be put to the user per match, so a match is kept only while it resolves inside the directory that was approved. A pattern `dir/**` does not match `dir` itself: list the directory with `dir` and `dir/**` both allowed.
+
+`read` and `view_image` open the checked path and then confirm the opened file is still that path (a symlink swapped in after the check is refused with `Permission denied`). `ls`, `glob` and `grep` only enumerate, and re-check each match's resolved path afterwards; a swap racing that enumeration is not detected. A path that does not exist now answers `Permission denied` rather than "File not found" when permissions are configured, because it cannot be resolved.

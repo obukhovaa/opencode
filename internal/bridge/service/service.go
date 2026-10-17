@@ -162,6 +162,10 @@ type Service struct {
 	// heartbeat is non-nil when this process schedules heartbeats (daemon
 	// mode only — see Dependencies.Heartbeat and heartbeat.go).
 	heartbeat *heartbeatState
+
+	// jobTurns ties sessions and peers to the job that bound them; see
+	// jobArgsForTurn.
+	jobTurns jobTurns
 }
 
 // Dependencies bundles the inputs Service needs at construction time.
@@ -600,6 +604,7 @@ func (s *Service) SetRemoteJobID(jobID string) {
 		return
 	}
 	s.remoteJobID.Store(jobID)
+	s.pruneJobTurns(jobID)
 	s.mu.Lock()
 	scoped := make([]bridge.JobScopedAdapter, 0, len(s.adapters))
 	for _, a := range s.adapters {

@@ -560,6 +560,8 @@ type mcpMethodServer struct {
 	methods []string
 	auth    []string
 	peers   []string
+	// hdrs holds the headers of every request, parallel to methods.
+	hdrs    []http.Header
 	drop404 atomic.Bool
 }
 
@@ -584,6 +586,7 @@ func newMCPMethodServer(t *testing.T) *mcpMethodServer {
 		}
 		s.mu.Lock()
 		s.methods = append(s.methods, method)
+		s.hdrs = append(s.hdrs, r.Header.Clone())
 		if method == "tools/call" {
 			s.auth = append(s.auth, r.Header.Get("Authorization"))
 			s.peers = append(s.peers, r.Header.Get("X-Peer-Id"))
@@ -610,6 +613,20 @@ func (s *mcpMethodServer) count(method string) int {
 		}
 	}
 	return n
+}
+
+// headerValues returns header name's value on each request of the given
+// JSON-RPC method, in arrival order ("" where the request lacked it).
+func (s *mcpMethodServer) headerValues(method, name string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for i, m := range s.methods {
+		if m == method {
+			out = append(out, s.hdrs[i].Get(name))
+		}
+	}
+	return out
 }
 
 func (s *mcpMethodServer) total() int {

@@ -164,7 +164,7 @@ type resumeRecorder struct{ resumed chan string }
 
 func (r *resumeRecorder) WritePair(context.Context, string, task.SyntheticPair) error { return nil }
 func (r *resumeRecorder) IsSessionBusy(string) bool                                   { return false }
-func (r *resumeRecorder) ResumeSession(_, requester string)                           { r.resumed <- requester }
+func (r *resumeRecorder) ResumeSession(_, requester string, _ map[string]any)         { r.resumed <- requester }
 
 // An async subagent runs on a ctx detached from the spawning turn, and its
 // completion auto-resumes the parent later; both must keep the turn's

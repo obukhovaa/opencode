@@ -185,6 +185,7 @@ type stubAgent struct {
 	ctxDeadline []bool                // per-call: did the ctx carry a deadline
 	sessionIDs  []string              // per-call session id (to assert retries reuse one session)
 	maxTurns    []int                 // per-call turn budget (to assert each retry gets a full one)
+	jobArgs     []map[string]any      // per-call job args carried on the run ctx (nil when none)
 }
 
 func newStubAgent() *stubAgent {
@@ -207,6 +208,14 @@ func (a *stubAgent) callCount() int {
 
 func (a *stubAgent) Run(ctx context.Context, sessionID string, prompt string, maxTurns int, atts ...message.Attachment) (<-chan agentpkg.AgentEvent, error) {
 	return a.RunWith(ctx, sessionID, prompt, maxTurns, agentpkg.RunOptions{}, atts...)
+}
+
+func (a *stubAgent) snapshotJobArgs() []map[string]any {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]map[string]any, len(a.jobArgs))
+	copy(out, a.jobArgs)
+	return out
 }
 
 func (a *stubAgent) snapshotRunOpts() []agentpkg.RunOptions {
@@ -249,6 +258,8 @@ func (a *stubAgent) RunWith(ctx context.Context, sessionID string, prompt string
 	a.maxTurns = append(a.maxTurns, maxTurns)
 	_, hasDeadline := ctx.Deadline()
 	a.ctxDeadline = append(a.ctxDeadline, hasDeadline)
+	jobArgs, _ := tools.JobArgsFromContext(ctx)
+	a.jobArgs = append(a.jobArgs, jobArgs)
 	ch := make(chan agentpkg.AgentEvent, 1)
 	var event agentpkg.AgentEvent
 	if len(a.responses) > 0 {

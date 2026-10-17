@@ -298,6 +298,11 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 		ctx = withPresentations(ctx, start.presented)
 	}
 
+	// The run's own args, as the caller supplied them, ride on ctx for every
+	// step: MCP flowArgHeaders are stamped from them, never from step args
+	// (which struct output can grow) or persisted rows.
+	ctx = tools.WithJobArgs(ctx, args)
+
 	if sessionPrefix == "" {
 		var prefixErr error
 		sessionPrefix, prefixErr = resolveSessionPrefix(f.Spec.Session.Prefix, args)
@@ -446,7 +451,7 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 
 	for _, w := range initialWork {
 		stepSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, sessionFlowID, w.step.ID)
-		argsJSON, _ := json.Marshal(w.args)
+		argsJSON, _ := marshalPersistedArgs(w.args)
 		if existingFS, getErr := s.querier.GetFlowState(ctx, stepSessionID); getErr == nil {
 			output := sql.NullString{}
 			isStructOutput := false
@@ -707,18 +712,18 @@ func (s *service) runStep(
 	var prompt string
 	if strings.Contains(stepPrompt, "!`") {
 		prompt = shell.ExpandMarkupAround(ctx, stepPrompt, config.WorkingDirectory(), func(text string) string {
-			return substituteScoped(text, args, stepVars)
+			return substitutePrompt(text, args, stepVars)
 		})
 		logging.Debug("Flow step prompt after shell markup expansion", "step", step.ID, "prompt_length", len(prompt))
 	} else {
-		prompt = substituteScoped(stepPrompt, args, stepVars)
+		prompt = substitutePrompt(stepPrompt, args, stepVars)
 	}
 	// NOTE: Structured output referenced via template variables if needed
 	if prevState != nil && prevState.Output != "" && !prevState.IsStructOutput {
 		prompt = fmt.Sprintf("Previous step (%s) output:\n%s\n\n%s", prevState.StepID, prevState.Output, prompt)
 	}
 
-	argsJSON, _ := json.Marshal(args)
+	argsJSON, _ := marshalPersistedArgs(args)
 	existingFS, getErr := s.querier.GetFlowState(ctx, sessionID)
 
 	// existingFS is this attempt's inbound row, captured here BEFORE the
@@ -1591,7 +1596,7 @@ func (s *service) postponeStepForTransientError(
 		"step", step.ID, "resume_after", *step.ResumeAfter,
 		"carried_output_bytes", len(carryOutput.String), "error", cause)
 
-	argsJSON, _ := json.Marshal(args)
+	argsJSON, _ := marshalPersistedArgs(args)
 	var updatedAt int64
 	// Update the entry-time `running` row to `postponed`. handleStepError (the
 	// other caller) can fire from the pre-persist setup paths where that row
@@ -1694,7 +1699,7 @@ func (s *service) handleStepError(
 		iteration = 1
 	}
 
-	argsJSON, _ := json.Marshal(args)
+	argsJSON, _ := marshalPersistedArgs(args)
 	var updatedAt int64
 	if state, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
 		Status:         string(FlowStatusFailed),
@@ -1791,7 +1796,7 @@ func (s *service) refuseFallbackEntry(
 	if iteration < 1 {
 		iteration = 1
 	}
-	argsJSON, _ := json.Marshal(work.args)
+	argsJSON, _ := marshalPersistedArgs(work.args)
 	// Same terminal-write rule as the failure path in runStep: land the row
 	// even while the parent ctx is unwinding, so inspection never finds the
 	// target stuck on its previous status.
@@ -1987,7 +1992,7 @@ func (s *service) collectResumableSteps(
 				iteration = existing.Iteration
 			}
 		}
-		return []stepWork{{step: step, args: copyArgs(stepArgs), prevStep: prevState, iteration: iteration}}
+		return []stepWork{{step: step, args: withRedactedArgs(copyArgs(stepArgs), args), prevStep: prevState, iteration: iteration}}
 	}
 
 	if existing.Status == FlowStatusPostponed {
@@ -1996,7 +2001,7 @@ func (s *service) collectResumableSteps(
 		if iteration < 1 {
 			iteration = 1
 		}
-		return []stepWork{{step: step, args: copyArgs(existing.Args), prevStep: existing, iteration: iteration}}
+		return []stepWork{{step: step, args: withRedactedArgs(copyArgs(existing.Args), args), prevStep: existing, iteration: iteration}}
 	}
 
 	logging.Debug("Skipping completed step during resume", "step", step.ID)
@@ -2069,7 +2074,7 @@ func (s *service) failResumedSelfLoop(
 	f *Flow,
 ) []stepWork {
 	capErr := fmt.Errorf("step %q exceeded maxIterations (%d)", step.ID, step.MaxIterations)
-	argsJSON, _ := json.Marshal(args)
+	argsJSON, _ := marshalPersistedArgs(args)
 	updatedAt := time.Now().Unix()
 	if state, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
 		Status:         string(FlowStatusFailed),
@@ -2574,9 +2579,13 @@ func withFlowArgs(ctx context.Context, args map[string]any) context.Context {
 	if cfg == nil || cfg.Telemetry == nil || len(cfg.Telemetry.FlowArgs) == 0 || len(args) == 0 {
 		return ctx
 	}
+	redacted := config.RedactedFlowArgs()
 	extracted := make(map[string]string)
 	for _, pattern := range cfg.Telemetry.FlowArgs {
 		for k, v := range args {
+			if _, secret := redacted[k]; secret {
+				continue
+			}
 			if permission.MatchWildcard(pattern, k) {
 				extracted[k] = fmt.Sprintf("%v", v)
 			}

@@ -142,6 +142,11 @@ type Task struct {
 	// hands it to Deps.ResumeSession so the auto-resumed turn's telemetry
 	// stays attributed to the same person. Empty when none was known.
 	Requester string
+	// JobArgs are the job args of the turn that spawned the task
+	// (tools.JobArgsFromContext at spawn time), handed to Deps.ResumeSession
+	// so an auto-resumed turn stamps the same MCP flowArgHeaders. Nil when the
+	// spawning turn was not part of a job.
+	JobArgs map[string]any
 	// Notified is the per-task dedupe flag. EnqueueTaskCompletion CAS-flips
 	// this from false → true before writing a TERMINAL synthetic pair; a
 	// losing CAS means another path already notified the parent session and

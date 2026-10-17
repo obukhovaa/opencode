@@ -51,7 +51,7 @@ func TestToolDescriptionBudgets(t *testing.T) {
 		{NewLsTool(config.Get(), nil, nil), defaultDescriptionBudget},
 		{NewDeleteTool(nil, nil, nil), defaultDescriptionBudget},
 		{NewPatchTool(nil, nil, nil, nil), defaultDescriptionBudget},
-		{NewViewImageTool(), defaultDescriptionBudget},
+		{NewViewImageTool(nil, nil), defaultDescriptionBudget},
 		{NewFetchTool(nil, nil, nil), defaultDescriptionBudget},
 		{NewSourcegraphTool(), defaultDescriptionBudget},
 		{NewLspTool(nil), defaultDescriptionBudget},
