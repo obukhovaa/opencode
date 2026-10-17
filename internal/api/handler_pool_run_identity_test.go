@@ -49,7 +49,7 @@ func TestRunIdentityIsPublishedForTheRunAndClearedAtTerminal(t *testing.T) {
 	if got := runidentity.UserID(); got != "acme-dev" {
 		t.Errorf("UserID during the run = %q, want acme-dev", got)
 	}
-	wantTags := []string{"identity:acme-dev", "team:acme"}
+	wantTags := []string{"identity:acme-dev", "team:acme", "flow:A"}
 	if got := runidentity.Tags(); !reflect.DeepEqual(got, wantTags) {
 		t.Errorf("Tags during the run = %v, want %v", got, wantTags)
 	}
@@ -90,14 +90,20 @@ func TestRunWithoutLLMIdentityClearsThePreviousRuns(t *testing.T) {
 	// Run A leaves an identity behind.
 	runidentity.Set(&runidentity.Identity{APIKey: "run-a-key", UserID: "run-a-user"})
 
+	// B still publishes its `flow:` tag, so its own identity is set while it
+	// runs — but carries none of A's values. Start publishes synchronously,
+	// and both B's identity and the cleared one have an empty key and user,
+	// so this holds whether or not B has already finished.
 	startFlow(t, client, srv.URL, `{"flowID":"B"}`)
-	waitFor(t, 2*time.Second, "run to terminate", func() bool {
-		st := flowStatus(t, client, srv.URL)["status"]
-		return st == string(flowRunCompleted) || st == "idle"
-	})
-	if got := runidentity.Get(); got != nil {
-		t.Errorf("run identity after an identity-less run = %+v, want nil", got)
+	if got := runidentity.APIKey(); got != "" {
+		t.Errorf("APIKey after an identity-less run started = %q, want empty (inherited run A's)", got)
 	}
+	if got := runidentity.UserID(); got != "" {
+		t.Errorf("UserID after an identity-less run started = %q, want empty (inherited run A's)", got)
+	}
+	waitFor(t, 2*time.Second, "run identity to be cleared at terminal", func() bool {
+		return runidentity.Get() == nil
+	})
 }
 
 // The three fields are independent on the wire, so a run may send only
@@ -112,20 +118,28 @@ func TestPartialRunIdentityPublishesOnlyWhatWasSent(t *testing.T) {
 		wantTags []string
 	}{
 		{
-			name:    "key only",
-			body:    `{"flowID":"A","llmApiKey":"k"}`,
-			wantKey: "k",
+			name:     "key only",
+			body:     `{"flowID":"A","llmApiKey":"k"}`,
+			wantKey:  "k",
+			wantTags: []string{"flow:A"},
+		},
+		{
+			// Every POST /flow names its flow, so the tag is published
+			// even with no identity field at all.
+			name:     "flow only",
+			body:     `{"flowID":"A"}`,
+			wantTags: []string{"flow:A"},
 		},
 		{
 			name:     "telemetry only",
 			body:     `{"flowID":"A","telemetryUserId":"u","telemetryTeam":"acme"}`,
 			wantUser: "u",
-			wantTags: []string{"identity:u", "team:acme"},
+			wantTags: []string{"identity:u", "team:acme", "flow:A"},
 		},
 		{
 			name:     "team only",
 			body:     `{"flowID":"A","telemetryTeam":"acme"}`,
-			wantTags: []string{"team:acme"},
+			wantTags: []string{"team:acme", "flow:A"},
 		},
 		{
 			// The identity tag must not wait on a team: a run billed to a
@@ -134,7 +148,7 @@ func TestPartialRunIdentityPublishesOnlyWhatWasSent(t *testing.T) {
 			name:     "user only",
 			body:     `{"flowID":"A","telemetryUserId":"u"}`,
 			wantUser: "u",
-			wantTags: []string{"identity:u"},
+			wantTags: []string{"identity:u", "flow:A"},
 		},
 	}
 	for _, tt := range tests {
@@ -190,6 +204,44 @@ func TestBlankIdentityFieldsRenderNoTag(t *testing.T) {
 	}
 	if got := identityTags("  cos-c2-agent ", "  acme "); !reflect.DeepEqual(got, []string{"identity:cos-c2-agent", "team:acme"}) {
 		t.Errorf("identityTags trims: got %v", got)
+	}
+}
+
+// A blank flow ID renders no tag, for the same reason as a blank identity
+// field: it would shadow the configured `flow:` tag with nothing.
+func TestFlowTags(t *testing.T) {
+	for _, blank := range []string{"", "   "} {
+		if got := flowTags(blank); got != nil {
+			t.Errorf("flowTags(%q) = %v, want nil", blank, got)
+		}
+	}
+	if got := flowTags(" pr-review "); !reflect.DeepEqual(got, []string{"flow:pr-review"}) {
+		t.Errorf("flowTags trims: got %v", got)
+	}
+}
+
+// The per-Job pod's --flow auto-start keeps the `flow:` tag its config was
+// rendered with: only POST /flow overrides it.
+func TestAutoStartedFlowPublishesNoFlowTag(t *testing.T) {
+	resetRunIdentity(t)
+	svc := newPoolStubFlowService(true, flow.FlowState{
+		StepID: "s1", Status: flow.FlowStatusRunning,
+	})
+	s, srv := newPoolTestServer(t, poolTestOpts{
+		svc:       svc,
+		bound:     testWorkspace,
+		allowlist: testWorkspace,
+	})
+	client := srv.Client()
+
+	if _, err := s.StartFlow("A", nil, false, false); err != nil {
+		t.Fatalf("StartFlow: %v", err)
+	}
+	waitFor(t, 2*time.Second, "run to be observed running", func() bool {
+		return flowStatus(t, client, srv.URL)["status"] == string(flowRunRunning)
+	})
+	if got := runidentity.Get(); got != nil {
+		t.Errorf("run identity of an auto-started flow = %+v, want nil", got)
 	}
 }
 

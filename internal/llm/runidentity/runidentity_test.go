@@ -133,6 +133,14 @@ func TestMergeTags(t *testing.T) {
 			run:  []string{"identity:cos-c2-agent", "team:cos"},
 			want: []string{"env:dev", "daemon:false", "flow:none", "identity:cos-c2-agent", "team:cos"},
 		},
+		{
+			// GENAI-499: POST /flow publishes the run's flow, which must
+			// replace the pool pod's boot-time `flow:none`, not join it.
+			name: "a pooled run's flow tag shadows the boot-time flow:none",
+			base: []string{"env:dev", "identity:default-c2-agent", "team:unresolved", "flow:none"},
+			run:  []string{"identity:cos-c2-agent", "team:cos", "flow:pr-review"},
+			want: []string{"env:dev", "identity:cos-c2-agent", "team:cos", "flow:pr-review"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
