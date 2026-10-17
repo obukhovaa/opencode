@@ -113,6 +113,11 @@ type startAtRun struct {
 
 func runStartAt(t *testing.T, flowID string, steps []Step, querier *stubQuerier, opts RunOptions, responses []agentpkg.AgentEvent, answers [][][]string) startAtRun {
 	t.Helper()
+	return runStartAtWithArgs(t, flowID, steps, querier, copyArgs(reviewerArgs), opts, responses, answers)
+}
+
+func runStartAtWithArgs(t *testing.T, flowID string, steps []Step, querier *stubQuerier, args map[string]any, opts RunOptions, responses []agentpkg.AgentEvent, answers [][][]string) startAtRun {
+	t.Helper()
 	registerTestFlow(t, Flow{ID: flowID, Name: flowID, Spec: FlowSpec{Steps: steps}})
 
 	base := &stubAgent{Broker: pubsub.NewBroker[agentpkg.AgentEvent](), responses: responses}
@@ -126,7 +131,7 @@ func runStartAt(t *testing.T, flowID string, steps []Step, querier *stubQuerier,
 	svc := NewService(&stubSessions{}, &stubMessages{}, querier, newInteractivePermissions(), factory)
 	svc.(*service).SetInteractiveHook(newRecordingHook())
 
-	agentEvents, flowStates, err := svc.RunWithOptions(context.Background(), "prefix", flowID, copyArgs(reviewerArgs), opts)
+	agentEvents, flowStates, err := svc.RunWithOptions(context.Background(), "prefix", flowID, args, opts)
 	if err != nil {
 		return startAtRun{agent: base, querier: querier, err: err}
 	}
@@ -162,7 +167,7 @@ func TestPlanStart_Refusals(t *testing.T) {
 		{"unknown start step", RunOptions{StartAt: "nope", DoneSteps: done}, `unknown step "nope"`},
 		{"done steps without start", RunOptions{DoneSteps: done}, "doneSteps needs startAt"},
 		{"start with recover running", RunOptions{StartAt: "review", DoneSteps: done, RecoverRunning: true}, "recoverRunning"},
-		{"missing earlier step", RunOptions{StartAt: "review", DoneSteps: map[string]any{"gather": done["gather"]}}, `step "draft" runs before "review"`},
+		{"missing earlier step", RunOptions{StartAt: "review", DoneSteps: map[string]any{"gather": done["gather"]}}, `step "draft" is reached before "review"`},
 		{"start step also done", RunOptions{StartAt: "draft", DoneSteps: done}, `cannot also be in doneSteps`},
 		{"done step off the path", RunOptions{StartAt: "draft", DoneSteps: map[string]any{"gather": done["gather"], "review": map[string]any{"approved": "y"}}}, `"review" is not on the path`},
 		{"missing required field", RunOptions{StartAt: "review", DoneSteps: map[string]any{"gather": map[string]any{"facts": "f"}, "draft": map[string]any{}}}, "missing required field(s): draft"},
@@ -217,6 +222,92 @@ func TestPlanStart_MergesDoneOutputsInFlowOrder(t *testing.T) {
 	}
 	if plan.from == nil || plan.from.step.ID != "draft" {
 		t.Errorf("start step's predecessor = %+v, want draft", plan.from)
+	}
+}
+
+// A supplied output is completed as the step's struct_output would complete
+// it: a declared default fills an absent field, satisfies required, and
+// routes.
+func TestPlanStart_SuppliedOutputsTakeSchemaDefaults(t *testing.T) {
+	plan := Step{ID: "plan", Prompt: "plan", Output: &StepOutput{Schema: map[string]any{
+		"type":     "object",
+		"required": []any{"summary", "blockers"},
+		"properties": map[string]any{
+			"summary":  map[string]any{"type": "string"},
+			"blockers": map[string]any{"type": "array", "default": []any{}},
+			"mode":     map[string]any{"type": "string", "default": "fast"},
+		},
+	}}, Rules: []Rule{{If: "${args.mode} == fast", Then: "implement"}}}
+	f := &Flow{ID: "defaults", Spec: FlowSpec{Steps: []Step{plan, {ID: "implement", Prompt: "go"}}}}
+
+	supplied := map[string]any{"summary": "s"}
+	got, err := planStart(f, map[string]any{}, RunOptions{StartAt: "implement", DoneSteps: map[string]any{"plan": supplied}})
+	if err != nil {
+		t.Fatalf("planStart() error: %v", err)
+	}
+	if want := `{"blockers":[],"mode":"fast","summary":"s"}`; got.carried[0].out.text != want {
+		t.Errorf("recorded output = %s, want %s", got.carried[0].out.text, want)
+	}
+	if got.args["mode"] != "fast" {
+		t.Errorf("start args = %v, want the default merged in", got.args)
+	}
+	if _, filled := supplied["mode"]; filled {
+		t.Error("the caller's output was modified")
+	}
+}
+
+// A done step on a branch parallel to the start step is recorded only when the
+// start step cannot route to it; a join would otherwise never run after it.
+func TestPlanStart_ParallelBranches(t *testing.T) {
+	fanOut := func(join bool) *Flow {
+		s := Step{ID: "s", Prompt: "s"}
+		c := Step{ID: "c", Prompt: "c"}
+		steps := []Step{{ID: "a", Prompt: "a", Rules: []Rule{{Then: "s"}, {Then: "c"}}}, s, c}
+		if join {
+			steps[1].Rules = []Rule{{Then: "join"}}
+			steps[2].Rules = []Rule{{Then: "join"}}
+			steps = append(steps, Step{ID: "join", Prompt: "join"})
+		}
+		return &Flow{ID: "fan", Spec: FlowSpec{Steps: steps}}
+	}
+
+	plan, err := planStart(fanOut(false), map[string]any{}, RunOptions{StartAt: "s", DoneSteps: map[string]any{"a": "x", "c": "y"}})
+	if err != nil {
+		t.Fatalf("planStart() without a join: %v", err)
+	}
+	if len(plan.carried) != 2 {
+		t.Errorf("carried = %+v, want a and c", plan.carried)
+	}
+
+	for name, tt := range map[string]struct {
+		done map[string]any
+		want string
+	}{
+		"sibling branch not supplied": {map[string]any{"a": "x"}, `step "c" is reached before "s"`},
+		"join supplied":               {map[string]any{"a": "x", "c": "y", "join": "z"}, `"join" is on a branch parallel to "s"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := planStart(fanOut(true), map[string]any{}, RunOptions{StartAt: "s", DoneSteps: tt.done})
+			if !errors.Is(err, ErrInvalidStartOptions) || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("planStart() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+// A run with no args (POST /flow without "args") plans like one with empty
+// args instead of panicking on the merge.
+func TestPlanStart_NilArgs(t *testing.T) {
+	f := &Flow{ID: "plan", Spec: FlowSpec{Steps: startAtSteps()}}
+	plan, err := planStart(f, nil, RunOptions{StartAt: "review", DoneSteps: map[string]any{
+		"gather": map[string]any{"facts": "f1"},
+		"draft":  map[string]any{"draft": "d1"},
+	}})
+	if err != nil {
+		t.Fatalf("planStart() error: %v", err)
+	}
+	if plan.args["draft"] != "d1" {
+		t.Errorf("start args = %v, want the done outputs merged", plan.args)
 	}
 }
 
@@ -466,5 +557,66 @@ func TestNormalizeSuppliedOutput_TextForSchemalessStep(t *testing.T) {
 	}
 	if _, err := normalizeSuppliedOutput(Step{ID: "notes"}, 42); err == nil {
 		t.Fatal("a number must be refused")
+	}
+	// The step's agent can only produce text, so an object would be an output
+	// it could never have produced.
+	if _, err := normalizeSuppliedOutput(Step{ID: "notes"}, map[string]any{"k": "v"}); err == nil || !strings.Contains(err.Error(), "must be a string") {
+		t.Fatalf("an object for a schemaless step: error = %v, want a refusal", err)
+	}
+}
+
+// ctxBoundQuerier fails a write on a cancelled ctx, as database/sql does.
+type ctxBoundQuerier struct{ *stubQuerier }
+
+func (q ctxBoundQuerier) UpdateFlowState(ctx context.Context, arg db.UpdateFlowStateParams) (db.FlowState, error) {
+	if err := ctx.Err(); err != nil {
+		return db.FlowState{}, err
+	}
+	return q.stubQuerier.UpdateFlowState(ctx, arg)
+}
+
+// A run aborted while a presented question is open records the step as
+// failed, so the next trigger runs the flow instead of replaying a `running`
+// row.
+func TestStartAt_CancelledPresentationRecordsFailure(t *testing.T) {
+	const flowID = "present-cancelled"
+	registerTestFlow(t, Flow{ID: flowID, Name: flowID, Spec: FlowSpec{Steps: []Step{reviewStep("confirm", "confirmed")}}})
+
+	base := &stubAgent{Broker: pubsub.NewBroker[agentpkg.AgentEvent]()}
+	qs := question.NewService()
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	asked := qs.Subscribe(runCtx)
+	go func() {
+		for ev := range asked {
+			if ev.Type == pubsub.CreatedEvent {
+				cancelRun()
+				return
+			}
+		}
+	}()
+
+	querier := &stubQuerier{}
+	factory := &questionFactory{scriptedAgentFactory: scriptedAgentFactory{agent: &scriptedAgent{stubAgent: base}}, questions: qs}
+	svc := NewService(&stubSessions{}, &stubMessages{}, ctxBoundQuerier{querier}, newInteractivePermissions(), factory)
+	svc.(*service).SetInteractiveHook(newRecordingHook())
+
+	agentEvents, flowStates, err := svc.RunWithOptions(runCtx, "prefix", flowID, copyArgs(reviewerArgs), RunOptions{
+		PresentSteps: map[string]PresentedStep{
+			"confirm": {Output: map[string]any{"confirmed": "yes"}, Question: continuePrompt(), Accept: "Continue"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunWithOptions() error: %v", err)
+	}
+	drainFlow(t, agentEvents, flowStates)
+
+	if got := base.callCount(); got != 0 {
+		t.Errorf("agent calls = %d, want none", got)
+	}
+	for _, r := range querier.snapshotFlowStates() {
+		if r.StepID == "confirm" && r.Status != string(FlowStatusFailed) {
+			t.Errorf("confirm row status = %q, want failed", r.Status)
+		}
 	}
 }

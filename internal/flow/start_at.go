@@ -1,7 +1,6 @@
 package flow
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/db"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/pubsub"
@@ -49,38 +49,27 @@ type suppliedOutput struct {
 }
 
 // normalizeSuppliedOutput checks a supplied output against the step it is for.
-// A JSON object is a struct output: it must carry every field the step's
-// output.schema marks required, and it is stored compacted, as runStep stores a
-// struct_output. Text is accepted only for a step without an output schema,
-// because a schema-bearing step's rules read struct fields text cannot carry.
+// A step that declares output.schema takes a JSON object, completed as its
+// struct_output would complete it (schema defaults filled, every required field
+// present) and stored compacted, as runStep stores a struct_output. A step
+// without a schema takes text, the only output its agent can produce.
 func normalizeSuppliedOutput(step Step, raw any) (suppliedOutput, error) {
 	hasSchema := step.Output != nil && step.Output.Schema != nil
 	switch v := raw.(type) {
 	case map[string]any:
-		if hasSchema {
-			var missing []string
-			if req, ok := step.Output.Schema["required"].([]any); ok {
-				for _, r := range req {
-					name, _ := r.(string)
-					if _, present := v[name]; name != "" && !present {
-						missing = append(missing, name)
-					}
-				}
-			}
-			if len(missing) > 0 {
-				return suppliedOutput{}, fmt.Errorf("step %q: supplied output is missing required field(s): %s",
-					step.ID, strings.Join(missing, ", "))
-			}
+		if !hasSchema {
+			return suppliedOutput{}, fmt.Errorf("step %q declares no output.schema; its supplied output must be a string", step.ID)
 		}
-		encoded, err := json.Marshal(v)
+		data, missing := tools.CompleteStructOutput(step.Output.Schema, v)
+		if len(missing) > 0 {
+			return suppliedOutput{}, fmt.Errorf("step %q: supplied output is missing required field(s): %s",
+				step.ID, strings.Join(missing, ", "))
+		}
+		encoded, err := json.Marshal(data)
 		if err != nil {
 			return suppliedOutput{}, fmt.Errorf("step %q: encoding supplied output: %w", step.ID, err)
 		}
-		var buf bytes.Buffer
-		if err := json.Compact(&buf, encoded); err == nil {
-			encoded = buf.Bytes()
-		}
-		return suppliedOutput{text: string(encoded), isStruct: true, data: v}, nil
+		return suppliedOutput{text: string(encoded), isStruct: true, data: data}, nil
 	case string:
 		if hasSchema {
 			return suppliedOutput{}, fmt.Errorf("step %q declares output.schema; its supplied output must be a JSON object", step.ID)
@@ -209,9 +198,11 @@ func planStart(f *Flow, args map[string]any, opts RunOptions) (*startPlan, error
 	}
 
 	visited := map[string]bool{}
+	// leads marks the carried steps the walk reached the start step through.
+	leads := map[string]bool{}
 	found := false
-	var walk func(step Step, stepArgs map[string]any, from *carriedStep) error
-	walk = func(step Step, stepArgs map[string]any, from *carriedStep) error {
+	var walk func(step Step, stepArgs map[string]any, from *carriedStep) (bool, error)
+	walk = func(step Step, stepArgs map[string]any, from *carriedStep) (bool, error) {
 		if step.ID == opts.StartAt {
 			// First arrival wins, as the diamond-convergence guard decides
 			// for a real run.
@@ -220,15 +211,15 @@ func planStart(f *Flow, args map[string]any, opts RunOptions) (*startPlan, error
 				plan.args = copyArgs(stepArgs)
 				plan.from = from
 			}
-			return nil
+			return true, nil
 		}
 		if visited[step.ID] {
-			return nil
+			return leads[step.ID], nil
 		}
 		visited[step.ID] = true
 		out, ok := done[step.ID]
 		if !ok {
-			return refuse("step %q runs before %q but has no entry in doneSteps", step.ID, opts.StartAt)
+			return false, refuse("step %q is reached before %q, on its path or on a parallel branch, but has no entry in doneSteps", step.ID, opts.StartAt)
 		}
 		c := &carriedStep{step: step, args: copyArgs(stepArgs), out: out}
 		plan.carried = append(plan.carried, *c)
@@ -236,17 +227,29 @@ func planStart(f *Flow, args map[string]any, opts RunOptions) (*startPlan, error
 		if out.isStruct {
 			maps.Copy(after, out.data)
 		}
+		reaches := false
 		for _, next := range resolveNextSteps(step.Rules, f.Spec.Steps, after, map[string]any{"iteration": 1}) {
-			if next.step.ID == step.ID || next.postpone {
-				return refuse("the doneSteps output for %q routes back to %q instead of on to the next step", step.ID, step.ID)
+			if next.postpone {
+				return false, refuse("the doneSteps output for %q routes to a postpone of %q instead of on to the next step", step.ID, next.step.ID)
 			}
-			if err := walk(next.step, after, c); err != nil {
-				return err
+			if next.step.ID == step.ID {
+				return false, refuse("the doneSteps output for %q routes back to %q instead of on to the next step", step.ID, step.ID)
 			}
+			r, err := walk(next.step, after, c)
+			if err != nil {
+				return false, err
+			}
+			reaches = reaches || r
 		}
-		return nil
+		leads[step.ID] = reaches
+		return reaches, nil
 	}
-	if err := walk(f.Spec.Steps[0], copyArgs(args), nil); err != nil {
+	// copyArgs(nil) is nil, and the walk merges outputs into what it copies.
+	root := copyArgs(args)
+	if root == nil {
+		root = map[string]any{}
+	}
+	if _, err := walk(f.Spec.Steps[0], root, nil); err != nil {
 		return nil, err
 	}
 	if !found {
@@ -257,13 +260,51 @@ func planStart(f *Flow, args map[string]any, opts RunOptions) (*startPlan, error
 			return nil, refuse("doneSteps entry %q is not on the path to %q", id, opts.StartAt)
 		}
 	}
+	// A done step on a parallel branch that the start step can also route to
+	// (a join) would be recorded as completed, and the start step's route to it
+	// dropped as a diamond convergence: it would never run after the start.
+	afterStart := routeTargets(f.Spec.Steps, opts.StartAt)
+	for _, c := range plan.carried {
+		if !leads[c.step.ID] && afterStart[c.step.ID] {
+			return nil, refuse("doneSteps entry %q is on a branch parallel to %q, which can route to it: recorded as done, it would never run after %q", c.step.ID, opts.StartAt, opts.StartAt)
+		}
+	}
 	return plan, nil
+}
+
+// routeTargets returns every step the step stepID can route to through any
+// chain of rules or fallbacks, whatever their conditions.
+func routeTargets(steps []Step, stepID string) map[string]bool {
+	seen := map[string]bool{}
+	queue := []string{stepID}
+	for len(queue) > 0 {
+		step := findStep(steps, queue[0])
+		queue = queue[1:]
+		if step == nil {
+			continue
+		}
+		targets := make([]string, 0, len(step.Rules)+1)
+		for _, r := range step.Rules {
+			targets = append(targets, r.Then)
+		}
+		if step.Fallback != nil && step.Fallback.To != "" {
+			targets = append(targets, step.Fallback.To)
+		}
+		for _, id := range targets {
+			if id != "" && !seen[id] {
+				seen[id] = true
+				queue = append(queue, id)
+			}
+		}
+	}
+	return seen
 }
 
 // recordCarriedSteps persists each carried step as a completed flow_states row
 // and publishes its completed state, exactly as the resume planner publishes a
 // completed step it skips. It returns the start step's work. Each carried step
-// gets its own (empty) session, because a flow_states row references one.
+// gets its own session, because a flow_states row references one: a new, empty
+// one, or the one an earlier run under the same prefix left (fresh deletes it).
 func (s *service) recordCarriedSteps(
 	ctx context.Context,
 	f *Flow,
@@ -276,11 +317,11 @@ func (s *service) recordCarriedSteps(
 	for _, c := range plan.carried {
 		sessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, sessionFlowID, c.step.ID)
 		// No predecessor is passed: a carried step has no transcript to
-		// fork from, and its own session stays empty.
+		// fork from, and nothing is added to its session.
 		if _, err := s.resolveSession(ctx, c.step, sessionID, rootSessionID, nil); err != nil {
 			return nil, fmt.Errorf("recording done step %q: %w", c.step.ID, err)
 		}
-		argsJSON, _ := json.Marshal(c.args)
+		argsJSON, _ := marshalPersistedArgs(c.args)
 		output := sql.NullString{String: c.out.text, Valid: c.out.text != ""}
 		var updatedAt int64
 		if _, getErr := s.querier.GetFlowState(ctx, sessionID); getErr == nil {
@@ -377,8 +418,10 @@ func takePresentation(ctx context.Context, stepID string) (presentation, bool) {
 }
 
 // presentedRevisionPrompt is the prompt an agent gets when the person did not
-// accept a presented output: what they were shown, what they answered, then
-// the step's own prompt. The agent takes the step on from there as usual.
+// accept a presented output: the output, the question they were asked about it
+// and their answer, then the step's own prompt. The engine posts only the
+// question, so the prompt does not claim the person saw the output itself. The
+// agent takes the step on from there as usual.
 func presentedRevisionPrompt(p presentation, answers [][]string, dismissed bool, prompt string) string {
 	answer := "(no answer)"
 	switch {
@@ -388,9 +431,9 @@ func presentedRevisionPrompt(p presentation, answers [][]string, dismissed bool,
 		answer = strings.Join(answers[0], ", ")
 	}
 	return fmt.Sprintf(
-		"Before this turn, the output below was shown to the person for review:\n"+
+		"Before this turn, the output below was supplied for this step without running it:\n"+
 			"<presented_output>\n%s\n</presented_output>\n"+
-			"They were asked %q and answered: %s\n"+
+			"The person was asked %q about it and answered: %s\n"+
 			"Take the step on from their answer.\n\n%s",
 		p.output.text, p.question.Question, answer, prompt)
 }

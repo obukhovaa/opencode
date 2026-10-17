@@ -100,11 +100,11 @@ type RunOptions struct {
 	// done: a JSON object for a step that declares output.schema (merged into
 	// args like its struct_output would be), text otherwise.
 	DoneSteps map[string]any
-	// PresentSteps supplies, per interactive step id, an output the step
-	// shows for review on its first entry in this invocation, with no model
-	// call. Accepting it completes the step with that output; any other
-	// answer runs the step's agent as usual, told what was shown and what
-	// the person answered.
+	// PresentSteps supplies, per interactive step id, an output and a
+	// question about it that the step asks on its first entry in this
+	// invocation, with no model call; only the question is posted. Accepting
+	// completes the step with that output; any other answer runs the step's
+	// agent as usual, told the output, the question and the answer.
 	PresentSteps map[string]PresentedStep
 }
 
@@ -935,8 +935,14 @@ func (s *service) runStep(
 		if p, ok := takePresentation(ctx, step.ID); ok {
 			answers, askErr := s.agents.QuestionService().Ask(ctx, sess.ID, []question.Prompt{p.question})
 			if askErr != nil && ctx.Err() != nil {
-				s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration,
+				// The run is unwinding. Record the failure on a fresh deadline,
+				// as the failure path below does: with the cancelled ctx the
+				// write fails, the row stays `running`, and the next trigger
+				// replays it instead of running the flow.
+				writeCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				s.handleStepError(writeCtx, step, sessionID, rootSessionID, f.ID, args, iteration,
 					fmt.Errorf("presenting step %q: %w", step.ID, ctx.Err()), wg, agentEvents, flowStates, nextSteps, f)
+				cancelWrite()
 				return
 			}
 			if askErr == nil && p.accepted(answers) {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
+	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 )
 
@@ -234,5 +235,38 @@ func TestWithRedactedArgsOverlaysTheRunsArgs(t *testing.T) {
 	}
 	if got := withRedactedArgs(nil, map[string]any{"tenant_token": secretToken}); got["tenant_token"] != secretToken {
 		t.Errorf("nil destination: %v", got)
+	}
+}
+
+// A start-at run records its done steps through the same redaction as the
+// steps it runs.
+func TestStartAtDoneRowsKeepMappedArgsOut(t *testing.T) {
+	mapTenantToken(t)
+	args := copyArgs(reviewerArgs)
+	args["tenant_token"] = secretToken
+	querier := &stubQuerier{}
+	run := runStartAtWithArgs(t, "start-at-redacted", startAtSteps(), querier, args, RunOptions{
+		StartAt: "review",
+		DoneSteps: map[string]any{
+			"gather": map[string]any{"facts": "f1"},
+			"draft":  map[string]any{"draft": "d1"},
+		},
+		PresentSteps: map[string]PresentedStep{
+			"confirm": {Output: map[string]any{"confirmed": "yes"}, Question: continuePrompt(), Accept: "Continue"},
+		},
+	}, []agentpkg.AgentEvent{structEvent(`{"approved":"yes"}`)}, [][][]string{{{"Continue"}}})
+	if run.err != nil {
+		t.Fatalf("RunWithOptions() error: %v", run.err)
+	}
+	created := 0
+	for _, c := range querier.createdFlowStates {
+		requireNoSecret(t, "created flow_states.args of "+c.StepID, c.Args.String)
+		created++
+	}
+	if created == 0 {
+		t.Fatal("no flow state created")
+	}
+	for _, r := range querier.snapshotFlowStates() {
+		requireNoSecret(t, "flow_states.args of "+r.StepID, r.Args.String)
 	}
 }

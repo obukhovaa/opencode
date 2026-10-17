@@ -11,21 +11,31 @@
 
 ### Requirement: A supplied output matches its step
 
-A supplied output SHALL be a JSON object for a step that declares `output.schema`, SHALL carry every field the schema marks `required`, and SHALL be stored as the step's struct output. A string SHALL be accepted only for a step without an output schema, and stored as its text output.
+A supplied output for a step that declares `output.schema` SHALL be a JSON object. It SHALL be completed as the step's `struct_output` would complete it, with the schema's declared defaults filling absent properties, SHALL then carry every field the schema marks `required`, and SHALL be stored, completed, as the step's struct output. A step without an output schema SHALL take a string, stored as its text output; an object SHALL be refused for it, because its agent cannot produce one.
 
 #### Scenario: A schema step's output must carry its required fields
 
 - **WHEN** `DoneSteps` gives a step that requires `draft` an object without `draft`
 - **THEN** the run is refused and nothing is written
 
+#### Scenario: Schema defaults complete a supplied output
+
+- **WHEN** a step's schema declares `blockers` with `default: []` and `mode` with `default: "fast"`, and `DoneSteps` gives it `{"summary": "s"}`
+- **THEN** the step is recorded with `{"blockers":[],"mode":"fast","summary":"s"}`, and its rules route on `mode` as they would for its own struct output
+
 #### Scenario: A schema step does not take text
 
 - **WHEN** `DoneSteps` gives a schema-bearing step a string
 - **THEN** the run is refused
 
+#### Scenario: A schemaless step does not take an object
+
+- **WHEN** `DoneSteps` gives a step without `output.schema` a JSON object
+- **THEN** the run is refused
+
 ### Requirement: The supplied outputs route to the start step as a resume would walk them
 
-Before writing anything, the engine SHALL walk from the flow's first step over the supplied outputs, evaluating each step's rules on its output at iteration 1, as the resume planner walks completed rows. Every step the walk reaches SHALL be a done step or `StartAt`; the walk SHALL reach `StartAt`; and every done step SHALL be reached. The first arrival at `StartAt` SHALL decide its args and predecessor.
+Before writing anything, the engine SHALL walk from the flow's first step over the supplied outputs, evaluating each step's rules on its output at iteration 1, as the resume planner walks completed rows. Every step the walk reaches SHALL be a done step or `StartAt`; the walk SHALL reach `StartAt`; and every done step SHALL be reached. The first arrival at `StartAt` SHALL decide its args and predecessor. A done step the walk did not reach `StartAt` through, that `StartAt` can route to through any chain of rules or fallbacks, SHALL be refused: recorded as completed, it would never run after `StartAt`.
 
 #### Scenario: A gap before the start step is refused
 
@@ -36,6 +46,16 @@ Before writing anything, the engine SHALL walk from the flow's first step over t
 
 - **WHEN** `DoneSteps` holds an output for a step the walk to `StartAt` never reaches
 - **THEN** the run is refused
+
+#### Scenario: A join on a parallel branch is refused
+
+- **WHEN** a flow `a → [s, c]`, `s → join`, `c → join` is started at `s` with outputs for `a`, `c` and `join`
+- **THEN** the run is refused, naming `join`, because `s` routes to it and it would never run
+
+#### Scenario: A parallel branch the start step cannot reach is recorded
+
+- **WHEN** a flow `a → [s, c]` with no join is started at `s` with outputs for `a` and `c`
+- **THEN** `a` and `c` are recorded as done and the run enters `s`
 
 #### Scenario: Outputs that route nowhere are refused
 
@@ -89,9 +109,9 @@ A run with `StartAt` SHALL be refused when the flow's existing state has work a 
 - **WHEN** `PresentSteps` is given and no question service is enabled
 - **THEN** the run is refused before anything is written
 
-### Requirement: A presented output is shown with no model call
+### Requirement: A presented output is asked about with no model call
 
-On a presented step's first entry in the run, after the interactive bind and the `waiting_for_input` transition, the engine SHALL ask the supplied question on the step's own session through the question service and wait for the answer, with no model call. An answer that is exactly the accept label SHALL complete the step with the supplied output through the normal completion path, and no agent attempt SHALL run.
+On a presented step's first entry in the run, after the interactive bind and the `waiting_for_input` transition, the engine SHALL ask the supplied question on the step's own session through the question service and wait for the answer, with no model call. The engine SHALL post only the question: what the person reviews is whatever the caller puts in it. An answer that is exactly the accept label SHALL complete the step with the supplied output through the normal completion path, and no agent attempt SHALL run.
 
 #### Scenario: Accepting completes the step with no model call
 
@@ -100,17 +120,22 @@ On a presented step's first entry in the run, after the interactive bind and the
 
 ### Requirement: Any other answer hands the presented step to its agent
 
-Any answer other than exactly the accept label, including a multi-select that adds another option, and a dismissed question SHALL run the step's agent as usual. Its first prompt SHALL carry the output that was shown, the question and the answer, ahead of the step's own prompt. A run cancelled while waiting SHALL fail the step.
+Any answer other than exactly the accept label, including a multi-select that adds another option, and a dismissed question SHALL run the step's agent as usual. Its first prompt SHALL carry the supplied output, the question asked about it and the answer, ahead of the step's own prompt. A run cancelled while waiting SHALL fail the step, and the step's flow state SHALL be persisted as `failed` even though the run's context is cancelled.
 
 #### Scenario: Another answer hands the step to its agent
 
 - **WHEN** the person answers "Rename the second reason"
-- **THEN** the step's agent runs once, its prompt carries the shown output, the question and that answer ahead of the step's prompt, and the step completes with the agent's output
+- **THEN** the step's agent runs once, its prompt carries the supplied output, the question and that answer ahead of the step's prompt, and the step completes with the agent's output
 
 #### Scenario: A dismissal hands the step to its agent
 
 - **WHEN** the presented question is dismissed
 - **THEN** the step's agent runs, told the question was dismissed
+
+#### Scenario: An abort while the question is open fails the step
+
+- **WHEN** the run is aborted while the presented question is unanswered
+- **THEN** no agent runs and the step's flow state is persisted as `failed`, so the next trigger does not replay it as a running step
 
 ### Requirement: A presentation is used once per run
 

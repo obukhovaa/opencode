@@ -386,6 +386,21 @@ func applyDefaults(schema map[string]any, data map[string]any) {
 	}
 }
 
+// CompleteStructOutput returns a copy of data completed the way struct_output
+// completes a document before it is stored: declared defaults fill absent
+// properties, and the schema's required fields still absent are returned. A
+// schema that is not an object with properties is left unchecked, as
+// struct_output leaves it. Flow start options use it so a supplied output
+// routes exactly as the step's own struct_output would have.
+func CompleteStructOutput(schema, data map[string]any) (map[string]any, []string) {
+	completed, _ := cloneJSONValue(data).(map[string]any)
+	if _, ok := objectProperties(schema); !ok {
+		return completed, nil
+	}
+	applyDefaults(schema, completed)
+	return completed, missingRequiredFields(requiredFromSchema(schema), completed)
+}
+
 // missingRequiredFields returns the required keys absent from data, sorted for a
 // stable error message. Defaults are expected to have been applied already, so
 // a key only surfaces here when it has neither a value nor a declared default.
