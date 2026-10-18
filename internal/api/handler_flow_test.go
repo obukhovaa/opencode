@@ -26,6 +26,7 @@ type stubFlowService struct {
 	runErr    error
 	mu        sync.Mutex
 	runs      int
+	lastOpts  flow.RunOptions
 }
 
 func newStubFlowService(steps []flow.FlowState) *stubFlowService {
@@ -36,6 +37,9 @@ func newStubFlowService(steps []flow.FlowState) *stubFlowService {
 }
 
 func (s *stubFlowService) RunWithOptions(ctx context.Context, sessionPrefix string, flowID string, args map[string]any, opts flow.RunOptions) (<-chan agentpkg.AgentEvent, <-chan *flow.FlowState, error) {
+	s.mu.Lock()
+	s.lastOpts = opts
+	s.mu.Unlock()
 	return s.Run(ctx, sessionPrefix, flowID, args, opts.Fresh)
 }
 
@@ -217,6 +221,50 @@ func TestFlowAbortReturns409WhenIdle(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusConflict {
 		t.Errorf("DELETE idle = %d, want 409", resp.StatusCode)
+	}
+}
+
+// TestFlowStartForwardsStartAtOptions: startAt, doneSteps and presentSteps on
+// POST /flow reach flow.RunOptions unchanged; the engine owns their validation.
+func TestFlowStartForwardsStartAtOptions(t *testing.T) {
+	t.Parallel()
+	svc := newStubFlowService([]flow.FlowState{{StepID: "review", Status: flow.FlowStatusRunning}})
+	server := newFlowTestServer(t, svc)
+
+	body := `{"flowID":"test-flow","fresh":true,"startAt":"review",
+		"doneSteps":{"gather":{"facts":"f1"},"notes":"text"},
+		"presentSteps":{"confirm":{"output":{"confirmed":true},
+			"question":{"question":"Does this look right?","options":[{"label":"Continue"},{"label":"Change"}]},
+			"accept":"Continue"}}}`
+	resp, err := server.Client().Post(server.URL+"/flow", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+
+	var opts flow.RunOptions
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		svc.mu.Lock()
+		opts = svc.lastOpts
+		svc.mu.Unlock()
+		if opts.StartAt != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if opts.StartAt != "review" || !opts.Fresh {
+		t.Fatalf("RunOptions = %+v, want startAt review and fresh", opts)
+	}
+	if gather, _ := opts.DoneSteps["gather"].(map[string]any); gather["facts"] != "f1" || opts.DoneSteps["notes"] != "text" {
+		t.Errorf("DoneSteps = %#v", opts.DoneSteps)
+	}
+	ps, ok := opts.PresentSteps["confirm"]
+	if !ok || ps.Accept != "Continue" || ps.Question.Question != "Does this look right?" || len(ps.Question.Options) != 2 {
+		t.Errorf("PresentSteps = %#v", opts.PresentSteps)
 	}
 }
 

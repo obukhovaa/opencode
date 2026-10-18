@@ -402,6 +402,14 @@ func (s *Server) handleFlowStart(w http.ResponseWriter, r *http.Request) {
 		LLMAPIKey       string `json:"llmApiKey"`
 		TelemetryUserID string `json:"telemetryUserId"`
 		TelemetryTeam   string `json:"telemetryTeam"`
+		// StartAt, DoneSteps and PresentSteps are forwarded to
+		// flow.RunOptions unchanged: start the run at a named step with
+		// the earlier steps recorded as done, and show supplied outputs on
+		// interactive steps with no model call. The engine validates them;
+		// a refusal fails the run before any step state is written.
+		StartAt      string                        `json:"startAt"`
+		DoneSteps    map[string]any                `json:"doneSteps"`
+		PresentSteps map[string]flow.PresentedStep `json:"presentSteps"`
 	}
 	if err := readJSON(r, &body); err != nil && !isEmptyBodyError(err) {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -442,6 +450,9 @@ func (s *Server) handleFlowStart(w http.ResponseWriter, r *http.Request) {
 		llmAPIKey:       body.LLMAPIKey,
 		telemetryUserID: body.TelemetryUserID,
 		telemetryTeam:   body.TelemetryTeam,
+		startAt:         body.StartAt,
+		doneSteps:       body.DoneSteps,
+		presentSteps:    body.PresentSteps,
 	})
 	switch {
 	case errors.Is(err, errFlowAlreadyRunning):
@@ -584,6 +595,11 @@ type flowStartOptions struct {
 	// telemetryTeam is the resolved team, rendered as a `team:` trace tag
 	// that shadows the pod's static boot-time one.
 	telemetryTeam string
+	// startAt, doneSteps and presentSteps are forwarded to the matching
+	// flow.RunOptions fields.
+	startAt      string
+	doneSteps    map[string]any
+	presentSteps map[string]flow.PresentedStep
 }
 
 // bridgeJobScoper is the narrow slice of the bridge service the flow
@@ -797,7 +813,13 @@ func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, ar
 
 	// Kick off the run in the background; SSE consumers see progress
 	// via fr.broker.
-	go fr.run(runCtx, state, flowID, args, flow.RunOptions{Fresh: fresh, RecoverRunning: opts.recoverRunning})
+	go fr.run(runCtx, state, flowID, args, flow.RunOptions{
+		Fresh:          fresh,
+		RecoverRunning: opts.recoverRunning,
+		StartAt:        opts.startAt,
+		DoneSteps:      opts.doneSteps,
+		PresentSteps:   opts.presentSteps,
+	})
 	return result, nil
 }
 
