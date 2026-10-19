@@ -59,6 +59,13 @@ func TestTitleWanted(t *testing.T) {
 			p.MarkUnattendedSession("parent")
 			p.LinkSession("s1", "parent")
 		}, want: false},
+		{name: "cron subagent in a watched session", setup: func(p permission.Service) {
+			// The scheduler clears the mark when the TUI or a chat binding
+			// watches the job's session (cron/scheduler.go).
+			p.MarkUnattendedSession("parent")
+			p.RemoveUnattendedSession("parent")
+			p.LinkSession("s1", "parent")
+		}, want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

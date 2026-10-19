@@ -72,7 +72,7 @@ Session: abc-123
     └── Generation: descriptor/gemini-3.0-flash
 ```
 
-The descriptor trace appears only for attended sessions (TUI, chat bridge, API, interactive flow steps). Unattended ones — flow steps, headless `-p` runs, cron jobs and the subagents they spawn — skip title generation.
+The descriptor trace appears only for attended sessions (TUI, chat bridge, API, interactive flow steps). Unattended ones — non-interactive flow steps, headless `-p` runs, cron jobs that fire while no TUI or chat binding watches their session, and the subagents they spawn — skip title generation.
 
 ### Flow Tracing
 
