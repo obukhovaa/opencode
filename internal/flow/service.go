@@ -104,7 +104,10 @@ type RunOptions struct {
 	// question about it that the step asks on its first entry in this
 	// invocation, with no model call; only the question is posted. Accepting
 	// completes the step with that output; any other answer runs the step's
-	// agent as usual, told the output, the question and the answer.
+	// agent as usual, told the output, the question and the answer. A first
+	// entry that resumes the step's unfinished row from an earlier
+	// invocation (running, postponed, waiting_for_input, failed and resumed,
+	// or a self-loop's pending iteration) asks nothing and runs the agent.
 	PresentSteps map[string]PresentedStep
 }
 
@@ -264,7 +267,20 @@ type stepWork struct {
 	// whereas a fallback edge has no predicate — the only thing that stops
 	// `a --fallback--> b --cycle--> a` with an always-failing `a` is the
 	// per-run FlowSpec.MaxFallbackEntries cap enforced in Run.
-	fallback  bool
+	fallback bool
+	// resumed is set by the resume planner (collectResumableSteps) on work
+	// that continues the step's own unfinished row from an earlier run: a
+	// running, waiting_for_input or failed row it re-enters, a postponed
+	// row, or the next iteration of a completed self-loop. A presented step
+	// so marked runs its agent instead of asking again (CD-5359).
+	//
+	// It is decided here, and not from the row runStep reads at its
+	// entry-time write, because the planner walks the rows as they stood
+	// before this run wrote anything. By the time runStep reads, the
+	// initial-state loop in RunWithOptions has already set every initial
+	// step's row to `running`, so that read cannot tell a resumed step from
+	// step 0 of a new run or of a restart.
+	resumed   bool
 	iteration int
 }
 
@@ -577,7 +593,7 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 
 			go func(w stepWork, sessID string) {
 				defer wg.Done()
-				s.runStep(ctx, f, w.step, sessID, rootSessionID, w.args, w.prevStep, &wg, agentEvents, flowStates, nextSteps, w.postpone, w.iteration)
+				s.runStep(ctx, f, w.step, sessID, rootSessionID, w.args, w.prevStep, &wg, agentEvents, flowStates, nextSteps, w.postpone, w.resumed, w.iteration)
 			}(work, stepSessionID)
 		}
 	}()
@@ -605,6 +621,7 @@ func (s *service) runStep(
 	flowStates chan<- *FlowState,
 	nextSteps chan<- stepWork,
 	postpone bool,
+	resumed bool,
 	iteration int,
 ) {
 	if iteration < 1 {
@@ -931,8 +948,21 @@ func (s *service) runStep(
 	// supplied output completes the step with it and no attempt runs; any
 	// other answer hands the step to its agent with what was shown and
 	// answered. Taken once per run: a later entry of the step runs as usual.
+	//
+	// An entry that resumes the step's own unfinished row from an earlier
+	// run (resumed, see stepWork) runs the agent instead of asking. The
+	// person may already have declined the output there and the agent begun
+	// revising it; its session holds the revision prompt and their answer,
+	// and asking the original question again would let an accept complete
+	// the step with the output they asked to change (CD-5359). That entry
+	// still takes the presentation: it is the step's first entry in this
+	// run, so a self-loop or cycle back into the step later in the run must
+	// run the agent too, as it would have had the earlier run not been
+	// interrupted.
 	if step.Interactive {
-		if p, ok := takePresentation(ctx, step.ID); ok {
+		if p, ok := takePresentation(ctx, step.ID); ok && resumed {
+			logging.Info("Presented step resumes unfinished work; running its agent instead of asking again", "step", step.ID)
+		} else if ok {
 			answers, askErr := s.agents.QuestionService().Ask(ctx, sess.ID, []question.Prompt{p.question})
 			if askErr != nil && ctx.Err() != nil {
 				// The run is unwinding. Record the failure on a fresh deadline,
@@ -1998,7 +2028,8 @@ func (s *service) collectResumableSteps(
 				iteration = existing.Iteration
 			}
 		}
-		return []stepWork{{step: step, args: withRedactedArgs(copyArgs(stepArgs), args), prevStep: prevState, iteration: iteration}}
+		// resumed only over a row: a step with none was never entered.
+		return []stepWork{{step: step, args: withRedactedArgs(copyArgs(stepArgs), args), prevStep: prevState, resumed: existing != nil, iteration: iteration}}
 	}
 
 	if existing.Status == FlowStatusPostponed {
@@ -2007,7 +2038,7 @@ func (s *service) collectResumableSteps(
 		if iteration < 1 {
 			iteration = 1
 		}
-		return []stepWork{{step: step, args: withRedactedArgs(copyArgs(existing.Args), args), prevStep: existing, iteration: iteration}}
+		return []stepWork{{step: step, args: withRedactedArgs(copyArgs(existing.Args), args), prevStep: existing, resumed: true, iteration: iteration}}
 	}
 
 	logging.Debug("Skipping completed step during resume", "step", step.ID)
@@ -2054,6 +2085,7 @@ func (s *service) collectResumableSteps(
 				step:      rs.step,
 				args:      copyArgs(args),
 				prevStep:  existing,
+				resumed:   true,
 				iteration: currentIter + 1,
 			})
 			continue
