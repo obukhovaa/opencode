@@ -591,7 +591,7 @@ These are honored by `opencode serve` only:
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/flow` | List every discovered flow YAML (`{id, name, description, disabled, args}`). |
-| POST | `/flow` | Start a new run. Body: `{flowID, args, fresh, recoverRunning}`. Returns `202 Accepted` with `{runID, flowID, status, currentStep}`, or `409` if another run is in flight, or `404` for an unknown flow ID. |
+| POST | `/flow` | Start a new run. Body: `{flowID, args, fresh, recoverRunning, startAt, doneSteps, presentSteps}` (the last three: [Starting at a step](#starting-at-a-step)). Returns `202 Accepted` with `{runID, flowID, status, currentStep}`, or `409` if another run is in flight, or `404` for an unknown flow ID. |
 | GET | `/flow/status` | Snapshot of the latest run: `{runID, flowID, status, startedAt, completedAt, currentStep, completedSteps, waitingTarget, error}`, or `{"status":"idle"}` if no run has been started in this process. |
 | DELETE | `/flow` | Abort the in-flight run. `409` if no run is active. |
 
@@ -669,6 +669,33 @@ curl http://127.0.0.1:4096/flow/status
 # Abort
 curl -X DELETE http://127.0.0.1:4096/flow
 ```
+
+#### Starting at a step
+
+A caller that already holds the outputs of a flow's early steps can start a run further in, and can have an interactive step ask a person to accept an output it supplies instead of spending a model call on it. Three `POST /flow` fields (and the matching `flow.RunOptions` fields) do this:
+
+| Field | Shape | Effect |
+|---|---|---|
+| `startAt` | step id | The run enters this step first instead of the flow's first step. |
+| `doneSteps` | `{stepID: output}` | Outputs for the steps the flow reaches before `startAt`. Each is recorded as a `completed` step, published as `flow.step.completed`, and merged into args like the step's own output would be. None of them runs. |
+| `presentSteps` | `{stepID: {output, question, accept}}` | On an interactive step's first entry in the run, the engine binds the step as usual, asks `question` (a `question` tool prompt) on the step's session with no model call, and waits. The engine posts only the question, so put what the person should review into its text. The answer `accept` (one of the question's option labels) completes the step with `output`. Any other answer, or a dismissal, runs the step's agent as usual, with the output, the question and the person's answer ahead of its prompt. |
+
+An output is a JSON object for a step that declares `output.schema` and a string otherwise. An object is completed as the step's `struct_output` would complete it: the schema's `default`s fill absent fields, then its `required` fields must be present, and the completed object is what is recorded and routed on.
+
+The engine checks the options before it writes anything, and refuses the run when:
+
+- `startAt` or a `doneSteps` / `presentSteps` key names no step, or `doneSteps` is given without `startAt`;
+- an output does not fit its step: an object for a step without `output.schema`, text for one with it, or an object missing a required field that has no default;
+- walking from the first step over the supplied outputs, using each step's own rules, reaches a step that is neither in `doneSteps` nor `startAt` (on the way to `startAt` or on a parallel branch), never reaches `startAt`, or routes a done step back to itself or to a postpone;
+- a `doneSteps` entry is not on that walk, or `startAt` is itself in `doneSteps`;
+- a `doneSteps` entry sits on a branch parallel to `startAt` and `startAt` can route to it (a join): recorded as done, it would never run after `startAt`;
+- a presented step is not `interactive: true`, is also in `doneSteps`, has no question text, or its `accept` is not one of the question's option labels;
+- the run has work a re-trigger would resume (`running`, `postponed`, `waiting_for_input`, or a pending route) and `fresh` is not set, or `recoverRunning` is set alongside `startAt`;
+- `presentSteps` is given and the question service is not enabled (no `router.questionMode`).
+
+The walk is the one a later re-trigger takes: a run that started at a step and then parks resumes over the recorded `doneSteps` rows like any other run. A done step's session gets no messages from this run: it is new and empty, or, without `fresh`, the session an earlier run under the same prefix left. A later step with `session.fork` copies that, so pass what such a step needs through args, and combine `startAt` with `fresh` when earlier sessions under the same prefix should not be reused.
+
+A presented question is not bounded by the step's `timeout:` or by the non-interactive wait timeout: it waits, like any question to a person, until it is answered, dismissed or the run is aborted. Those timeouts apply once the step's agent runs. An abort while it waits records the step as `failed`.
 
 #### Interactive steps
 
