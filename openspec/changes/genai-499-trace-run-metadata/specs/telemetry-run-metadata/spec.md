@@ -7,18 +7,19 @@ When an agent run (one `RunWith` call) creates its Langfuse trace, the system SH
 #### Scenario: Flow step with a budget
 
 - **WHEN** a flow step with `maxTurns: 40` starts its run and `metadataNamespace` is `piano`
-- **THEN** its trace carries `piano.max_turns = 40` from the moment it is created
+- **THEN** its trace carries `piano.max_turns = 40`, set when the trace is created
 
 ### Requirement: A run's trace records how it ended
 
 When a run ends, the system SHALL record `turns_used` and `finish_reason` on its trace, namespaced like `max_turns`.
 
-`turns_used` SHALL count the model calls the run made, summed across non-interactive re-entries after background tasks, the forced max-turns wrap-up included.
+`turns_used` SHALL count the model calls the run's agent made, summed across non-interactive re-entries after background tasks, the forced max-turns wrap-up included. A compaction's summarizer call SHALL NOT be counted.
 
 `finish_reason` SHALL be:
 - `canceled` when the run returned a cancellation error;
-- `error` when it returned any other error;
+- `error` when it returned any other error, or panicked;
 - otherwise `turns_exhausted` when a turn-budget gate ended the run;
+- otherwise `canceled` when the run's context was cancelled, or `error` when its deadline passed, by the time the run returned a result;
 - otherwise `permission_denied` or `canceled` when the final message finished that way;
 - and `end_turn` for every other finish, an accepted `struct_output` and a `max_tokens` stop included.
 
@@ -41,6 +42,16 @@ When a run ends, the system SHALL record `turns_used` and `finish_reason` on its
 
 - **WHEN** the model call fails and the run returns the error
 - **THEN** the trace carries `finish_reason = error`
+
+#### Scenario: Interrupted background-task wait
+
+- **WHEN** a non-interactive run ends its turn, waits on a background task, and is cancelled (or hits its step deadline) before the task finishes
+- **THEN** the run returns its last result with no error, and the trace carries `finish_reason = canceled` (or `error` for the deadline)
+
+#### Scenario: Panic
+
+- **WHEN** the run panics
+- **THEN** the trace carries `finish_reason = error` and the panic still reaches `RunWith`'s recovery
 
 ### Requirement: A subagent's run metadata stays on its own observation
 

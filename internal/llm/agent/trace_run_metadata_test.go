@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -28,9 +29,10 @@ func finishedWith(reason message.FinishReason) message.Message {
 
 func TestTraceFinishReason(t *testing.T) {
 	tests := []struct {
-		name string
-		ev   AgentEvent
-		want string
+		name   string
+		ev     AgentEvent
+		runErr error
+		want   string
 	}{
 		{name: "natural end of turn", ev: AgentEvent{Message: finishedWith(message.FinishReasonEndTurn)}, want: "end_turn"},
 		{name: "accepted struct_output ends on a tool call", ev: AgentEvent{Message: finishedWith(message.FinishReasonToolUse)}, want: "end_turn"},
@@ -38,16 +40,24 @@ func TestTraceFinishReason(t *testing.T) {
 		{name: "unfinished message", ev: AgentEvent{Message: finishedWith("")}, want: "end_turn"},
 		{name: "turn budget exhausted", ev: AgentEvent{Message: finishedWith(message.FinishReasonEndTurn), TurnsExhausted: true}, want: "turns_exhausted"},
 		{name: "rejected permission prompt", ev: AgentEvent{Message: finishedWith(message.FinishReasonPermissionDenied)}, want: "permission_denied"},
-		{name: "canceled during tool execution", ev: AgentEvent{Message: finishedWith(message.FinishReasonCanceled)}, want: "canceled"},
+		{name: "canceled during tool execution", ev: AgentEvent{Message: finishedWith(message.FinishReasonCanceled)}, runErr: context.Canceled, want: "canceled"},
 		{name: "user cancellation error", ev: AgentEvent{Error: ErrRequestCancelled}, want: "canceled"},
 		{name: "wrapped context cancellation", ev: AgentEvent{Error: fmt.Errorf("stream: %w", context.Canceled)}, want: "canceled"},
 		{name: "deadline is an error, not a cancellation", ev: AgentEvent{Error: context.DeadlineExceeded}, want: "error"},
 		{name: "provider error", ev: AgentEvent{Error: errors.New("failed to process events: boom")}, want: "error"},
 		{name: "error outranks the exhausted flag", ev: AgentEvent{Error: errors.New("boom"), TurnsExhausted: true}, want: "error"},
+		// A run cut short with no error event: a non-interactive run whose
+		// background-task wait is interrupted returns its last result, and
+		// an interrupted tool call finishes its message as canceled
+		// whatever stopped it.
+		{name: "cancelled while waiting on background tasks", ev: AgentEvent{Message: finishedWith(message.FinishReasonEndTurn)}, runErr: context.Canceled, want: "canceled"},
+		{name: "step deadline while waiting on background tasks", ev: AgentEvent{Message: finishedWith(message.FinishReasonEndTurn)}, runErr: context.DeadlineExceeded, want: "error"},
+		{name: "step deadline during tool execution", ev: AgentEvent{Message: finishedWith(message.FinishReasonCanceled)}, runErr: context.DeadlineExceeded, want: "error"},
+		{name: "exhausted flag outranks a cancelled wrap-up", ev: AgentEvent{Message: finishedWith(message.FinishReasonEndTurn), TurnsExhausted: true}, runErr: context.Canceled, want: "turns_exhausted"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := traceFinishReason(tt.ev); got != tt.want {
+			if got := traceFinishReason(tt.ev, tt.runErr); got != tt.want {
 				t.Errorf("traceFinishReason = %q, want %q", got, tt.want)
 			}
 		})
@@ -163,5 +173,115 @@ func TestProcessGenerationStampsRunMetadata(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A non-interactive run whose wait on background tasks is cut short returns
+// its last natural result with no error, so the event alone reads end_turn.
+// The run context says why it stopped: a cancellation (DELETE /flow, an
+// aborted parent) is canceled, a step deadline is error.
+func TestProcessGenerationStampsAnInterruptedBackgroundWait(t *testing.T) {
+	loadConfigIn(t, ".")
+	setLangfuseClient(t, true)
+	config.Get().Telemetry = &config.TelemetryConfig{MetadataNamespace: "piano"}
+
+	tests := []struct {
+		name string
+		// interrupt returns the run ctx and arms what cuts its wait short
+		// once the model's first call has been made.
+		interrupt func(t *testing.T) (context.Context, func())
+		want      string
+	}{
+		{
+			name: "cancelled",
+			interrupt: func(t *testing.T) (context.Context, func()) {
+				ctx, cancel := context.WithCancel(context.Background())
+				t.Cleanup(cancel)
+				return ctx, func() { time.AfterFunc(50*time.Millisecond, cancel) }
+			},
+			want: "canceled",
+		},
+		{
+			name: "step deadline",
+			interrupt: func(t *testing.T) (context.Context, func()) {
+				ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+				t.Cleanup(cancel)
+				return ctx, func() {}
+			},
+			want: "error",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := withFreshTaskRegistry(t)
+			sess := "sess-wait-" + strings.ReplaceAll(tt.name, " ", "-")
+			// Never finishes, so the run blocks in its background-task wait.
+			registerDrainTask(t, reg, sess)
+
+			ctx, arm := tt.interrupt(t)
+			p := &spanRecordingProvider{scriptedProvider: &scriptedProvider{
+				respond: func(int, bool) *provider.ProviderResponse { return endTurn() },
+				onCall:  func(int) { arm() },
+			}}
+			a := newLoopAgentWithTools(t, p, nil)
+
+			res := a.processGeneration(ctx, sess, "do work", 10, nil, RunOptions{NonInteractive: true})
+			if res.Error != nil {
+				t.Fatalf("processGeneration error = %v; this path returns the pre-wait result", res.Error)
+			}
+			md := spanMetadata(t, p.span, "langfuse.trace.metadata.")
+			if got := md["piano.finish_reason"]; got != tt.want {
+				t.Errorf("piano.finish_reason = %q, want %q", got, tt.want)
+			}
+			if got := md["piano.turns_used"]; got != "1" {
+				t.Errorf("piano.turns_used = %q, want 1", got)
+			}
+		})
+	}
+}
+
+// panickingProvider remembers the run's trace span, then panics inside the
+// model call.
+type panickingProvider struct {
+	*scriptedProvider
+	span trace.Span
+}
+
+func (p *panickingProvider) StreamResponse(ctx context.Context, _ []message.Message, _ []tools.BaseTool) <-chan provider.ProviderEvent {
+	p.span = trace.SpanFromContext(ctx)
+	panic("provider blew up")
+}
+
+// A panic leaves the run's result zero-valued, which would read as a natural
+// end_turn. The trace must record an error, and the panic must still reach
+// RunWith's recovery.
+func TestProcessGenerationStampsAPanicAsError(t *testing.T) {
+	loadConfigIn(t, ".")
+	setLangfuseClient(t, true)
+	config.Get().Telemetry = &config.TelemetryConfig{MetadataNamespace: "piano"}
+	withFreshTaskRegistry(t)
+
+	p := &panickingProvider{scriptedProvider: &scriptedProvider{}}
+	a := newLoopAgentWithTools(t, p, nil)
+
+	func() {
+		defer func() {
+			if r := recover(); r != "provider blew up" {
+				t.Errorf("recovered %v, want the provider's panic to propagate", r)
+			}
+		}()
+		a.processGeneration(context.Background(), "sess-panic", "do work", 10, nil, RunOptions{})
+		t.Error("processGeneration returned; want the panic to propagate")
+	}()
+
+	if p.span == nil {
+		t.Fatal("provider never saw a trace span")
+	}
+	md := spanMetadata(t, p.span, "langfuse.trace.metadata.")
+	if got := md["piano.finish_reason"]; got != "error" {
+		t.Errorf("piano.finish_reason = %q, want error", got)
+	}
+	if got := md["piano.turns_used"]; got != "1" {
+		t.Errorf("piano.turns_used = %q, want 1", got)
 	}
 }

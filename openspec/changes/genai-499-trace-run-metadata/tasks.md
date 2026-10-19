@@ -3,8 +3,8 @@
 - [x] 1.1 `langfuse.SetTraceMetadata`: trace metadata on a root, observation metadata on a child.
 - [x] 1.2 `startRunTrace` stamps `max_turns` after `createLangfuseTrace`; `stampTraceMetadata` namespaces and gates on the Langfuse client only.
 - [x] 1.3 `processGeneration`: `turnsUsed` counted at both `streamAndHandleEvents` call sites; `turns_used` and `finish_reason` stamped in the deferred trace closure.
-- [x] 1.4 `traceFinishReason` derives the reason from the returned `AgentEvent`.
-- [x] 1.5 Tests: `SetTraceMetadata` root/child/no trace, `traceFinishReason` table, `max_turns` on root and child traces, an end-to-end run ending naturally and one exhausting its budget.
+- [x] 1.4 `traceFinishReason` derives the reason from the returned `AgentEvent` and the run context's error; a panic is stamped `error` before it propagates.
+- [x] 1.5 Tests: `SetTraceMetadata` root/child/no trace, `traceFinishReason` table, `max_turns` on root and child traces, an end-to-end run ending naturally, one exhausting its budget, one whose background-task wait is cancelled or hits its deadline, and one that panics.
 
 ## 2. Flow tag on POST /flow
 

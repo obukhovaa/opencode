@@ -923,8 +923,16 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// Registered after EndTrace so it runs first (LIFO) — attributes must
 	// land before the span ends.
 	defer func() {
+		finishReason := traceFinishReason(result, ctx.Err())
+		if p := recover(); p != nil {
+			// A panic leaves result zero, which reads as a natural finish.
+			// Record the error RunWith turns it into, then let it propagate
+			// to RunWith's recovery.
+			finishReason = string(message.FinishReasonError)
+			defer panic(p)
+		}
 		a.setTraceOutput(ctx, func() any { return traceOutputFromEvent(result) })
-		stampTraceMetadata(ctx, map[string]any{traceKeyTurnsUsed: turnsUsed, traceKeyFinishReason: traceFinishReason(result)})
+		stampTraceMetadata(ctx, map[string]any{traceKeyTurnsUsed: turnsUsed, traceKeyFinishReason: finishReason})
 	}()
 
 	// Susped to get lazy tools
