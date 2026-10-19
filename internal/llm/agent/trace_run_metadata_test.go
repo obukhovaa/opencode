@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/opencode-ai/opencode/internal/config"
+	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/provider"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -100,7 +101,9 @@ func TestStartRunTraceStampsMaxTurns(t *testing.T) {
 		}
 	})
 	t.Run("child trace", func(t *testing.T) {
-		span := trace.SpanFromContext(a.startRunTrace(context.Background(), session.Session{ID: "s2", ParentSessionID: "s1"}, nil, 7))
+		// A subagent run nests in its caller's trace, so its ctx carries it.
+		parentCtx := a.startRunTrace(context.Background(), session.Session{ID: "s1"}, nil, 42)
+		span := trace.SpanFromContext(a.startRunTrace(parentCtx, session.Session{ID: "s2", ParentSessionID: "s1"}, nil, 7))
 		if got, ok := spanMetadata(t, span, "langfuse.trace.metadata.")["piano.max_turns"]; ok {
 			t.Errorf("child wrote trace-level piano.max_turns = %q; it would overwrite the parent's", got)
 		}
@@ -362,4 +365,62 @@ func TestProcessGenerationStampsMaxTokens(t *testing.T) {
 			t.Errorf("piano.turns_used = %q, want 2", got)
 		}
 	})
+}
+
+// modelProvider is a scriptedProvider serving a named model, so two agents'
+// traces carry different model_id values.
+type modelProvider struct {
+	*scriptedProvider
+	id models.ModelID
+}
+
+func (p modelProvider) Model() models.Model { return models.Model{ID: p.id} }
+
+// A subagent's trace lives inside its parent's, so its agent_id, session_id,
+// model_id, parent_session_id and requester must stay on its observation: the
+// parent trace keeps its own values after a child run with different ones.
+func TestChildTraceKeepsTheParentTracesMetadata(t *testing.T) {
+	loadConfigIn(t, ".")
+	setLangfuseClient(t, true)
+	config.Get().Telemetry = &config.TelemetryConfig{MetadataNamespace: "piano"}
+
+	parent := &agent{agentID: "coder", provider: modelProvider{&scriptedProvider{}, "model-a"}}
+	child := &agent{agentID: "explorer", provider: modelProvider{&scriptedProvider{}, "model-b"}}
+
+	parentCtx := parent.createLangfuseTrace(tools.WithRequester(context.Background(), "alice@example.com"),
+		session.Session{ID: "parent-session"}, nil)
+	childCtx := child.createLangfuseTrace(tools.WithRequester(parentCtx, "bob@example.com"),
+		session.Session{ID: "child-session", ParentSessionID: "parent-session", RootSessionID: "parent-session"}, nil)
+	parentSpan, childSpan := trace.SpanFromContext(parentCtx), trace.SpanFromContext(childCtx)
+	if parentSpan.SpanContext().TraceID() != childSpan.SpanContext().TraceID() {
+		t.Fatal("child trace is not nested in the parent's trace")
+	}
+
+	wantParent := map[string]string{
+		"piano.agent_id":   "coder",
+		"piano.session_id": "parent-session",
+		"piano.model_id":   "model-a",
+		"piano.requester":  "alice@example.com",
+	}
+	if got := spanMetadata(t, childSpan, "langfuse.trace.metadata."); len(got) != 0 {
+		t.Errorf("child wrote trace-level metadata %v; it would overwrite the parent's", got)
+	}
+	parentMD := spanMetadata(t, parentSpan, "langfuse.trace.metadata.")
+	for k, want := range wantParent {
+		if got := parentMD[k]; got != want {
+			t.Errorf("parent trace %s = %q, want %q", k, got, want)
+		}
+	}
+	childMD := spanMetadata(t, childSpan, "langfuse.observation.metadata.")
+	for k, want := range map[string]string{
+		"piano.agent_id":          "explorer",
+		"piano.session_id":        "child-session",
+		"piano.model_id":          "model-b",
+		"piano.parent_session_id": "parent-session",
+		"piano.requester":         "bob@example.com",
+	} {
+		if got := childMD[k]; got != want {
+			t.Errorf("child observation %s = %q, want %q", k, got, want)
+		}
+	}
 }

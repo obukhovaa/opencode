@@ -25,6 +25,7 @@ Pooled runs have a second gap. A pool pod boots with the static tag `flow:none` 
 - **New:** `internal/llm/agent/trace_run_metadata.go`.
 - **Modified:**
   - `internal/langfuse/context.go` (`SetTraceMetadata`);
+  - `internal/langfuse/client.go` (`TraceStart`: a nested subagent's metadata goes on its observation, a detached one is its own trace's root);
   - `internal/llm/agent/agent.go`: the trace start, a turn counter at the two model-call sites, and the deferred stamp;
   - `internal/api/handler_flow.go` (`flowStartOptions.telemetryFlow`, `flowTags`, the publish gate);
   - `docs/telemetry.md`.
@@ -32,5 +33,6 @@ Pooled runs have a second gap. A pool pod boots with the static tag `flow:none` 
 - **Behaviour change:**
   - every POST /flow run now publishes a run identity, even one that sends no identity fields;
   - the `flow:` tag also reaches provider request metadata (LiteLLM tags) through `provider.ResolveTags`;
-  - spend dashboards that bucket on `flow:none` will see that bucket shrink.
+  - spend dashboards that bucket on `flow:none` will see that bucket shrink;
+  - a foreground subagent's `agent_id`, `session_id`, `model_id`, `parent_session_id`, `requester` and flow-arg metadata move from trace level (where they overwrote the caller's) to its observation. A subagent on a detached ctx now gets a trace name and trace-level input and output on its own trace.
 - **Follow-up:** an overflow-retry resend (GENAI-497) that must not count as a turn has to skip the `turnsUsed++` that sits beside each `streamAndHandleEvents` call.

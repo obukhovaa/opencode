@@ -6,6 +6,8 @@
 - [x] 1.4 `traceFinishReason` derives the reason from the returned `AgentEvent` and the run context's error; a panic is stamped `error` before it propagates; a terminal output-token stop is `max_tokens`.
 - [x] 1.5 Tests: `SetTraceMetadata` root/child/no trace, `traceFinishReason` table, `max_turns` on root and child traces, an end-to-end run ending naturally, one exhausting its budget, one whose background-task wait is cancelled or hits its deadline, one that panics, and one ending on (or re-entering past) a `max_tokens` stop.
 
+- [x] 1.6 `langfuse.Client.TraceStart`: a child nested in its caller's trace (ctx carries the caller's root span) writes its metadata as observation metadata; a child on a detached ctx is the root of its own trace. Tests: parent trace survives a child with different values (langfuse and agent level), detached child keeps trace-level attributes.
+
 ## 2. Flow tag on POST /flow
 
 - [x] 2.1 `flowStartOptions.telemetryFlow` set by the POST /flow handler; `flowTags` renders `flow:<id>`; a flow tag alone publishes the run identity.

@@ -66,12 +66,26 @@ When a run ends, the system SHALL record `turns_used` and `finish_reason` on its
 
 ### Requirement: A subagent's run metadata stays on its own observation
 
-A subagent's trace is an observation inside its parent's trace. Its `max_turns`, `turns_used` and `finish_reason` SHALL be written as observation metadata and SHALL NOT be written as trace-level metadata, so the parent run's values are never overwritten.
+A subagent run nested in its caller's trace is an observation of that trace. Its `max_turns`, `turns_used` and `finish_reason` SHALL be written as observation metadata and SHALL NOT be written as trace-level metadata, so the parent run's values are never overwritten.
 
 #### Scenario: Subagent ends before its parent
 
 - **WHEN** a task subagent finishes after 3 model calls while its parent run continues
 - **THEN** the subagent's observation carries `turns_used = 3` and the parent trace's `turns_used` is the parent's own count
+
+### Requirement: A nested subagent's trace metadata stays on its own observation
+
+A subagent run whose context carries its caller's trace SHALL write its custom metadata (`agent_id`, `session_id`, `model_id`, `parent_session_id`, `requester`, flow args), its input and its output as observation attributes, and SHALL NOT write them as trace-level attributes, so the caller's trace keeps its own values. A child session run whose context carries no caller trace (an async subagent, an auto-resumed subagent session) SHALL be the root of its own trace and SHALL record them at trace level, as a root run does. A root run's trace attributes SHALL be unchanged.
+
+#### Scenario: Parent trace survives a subagent
+
+- **WHEN** a `coder` run on model A for requester alice runs a foreground `explorer` subagent on model B for requester bob
+- **THEN** the trace's `agent_id`, `session_id`, `model_id` and `requester` are coder's, and explorer's values, `parent_session_id` included, are on its observation
+
+#### Scenario: Detached async subagent
+
+- **WHEN** an async subagent runs on a context detached from its caller's turn
+- **THEN** its trace is its own, and carries its `agent_id` and `requester` as trace metadata
 
 ### Requirement: Runs started through POST /flow carry their flow tag
 

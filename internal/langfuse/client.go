@@ -111,8 +111,15 @@ func (c *Client) TraceStart(ctx context.Context, params TraceParams) context.Con
 		return ctx
 	}
 
+	// A child trace is a subagent run nested in a trace this process started,
+	// so ctx carries that trace's root span. A child session run on a
+	// detached ctx (an async subagent, an auto-resumed subagent session, its
+	// title generation) has no parent trace to nest in or write over: OTel
+	// starts a new trace for it, and it is that trace's root.
+	isChild := params.IsChild && getRootSpan(ctx) != nil
+
 	var attrs []attribute.KeyValue
-	if params.IsChild {
+	if isChild {
 		// Child spans (subagents) are observations within the parent trace.
 		// Do NOT set langfuse.trace.name — it would overwrite the parent trace's name.
 		attrs = []attribute.KeyValue{
@@ -136,25 +143,29 @@ func (c *Client) TraceStart(ctx context.Context, params TraceParams) context.Con
 	if params.Release != "" {
 		attrs = append(attrs, attribute.String("langfuse.release", params.Release))
 	}
+	// A child's metadata (its agent_id, session_id, model_id,
+	// parent_session_id, requester, ...) describes the subagent run, not the
+	// trace: written at trace level it would overwrite the parent's keys.
+	metaPrefix := metadataPrefix(isChild)
 	for k, v := range params.Metadata {
-		attrs = append(attrs, attribute.String("langfuse.trace.metadata."+k, redactString(fmt.Sprint(v))))
+		attrs = append(attrs, attribute.String(metaPrefix+k, redactString(fmt.Sprint(v))))
 	}
 	if params.Input != nil {
 		// On a child trace the trace-level input belongs to the parent;
 		// record the input as this observation's input instead.
 		inputKey := "langfuse.trace.input"
-		if params.IsChild {
+		if isChild {
 			inputKey = "langfuse.observation.input"
 		}
 		attrs = append(attrs, attribute.String(inputKey, payload(params.Input, maxGenIOSize)))
 	}
 
 	opts := []trace.SpanStartOption{trace.WithAttributes(attrs...)}
-	if !params.IsChild {
+	if !isChild {
 		opts = append(opts, trace.WithNewRoot())
 	}
 	ctx, span := c.tracer.Start(ctx, params.Name, opts...)
-	return withRootSpan(ctx, span, params.IsChild)
+	return withRootSpan(ctx, span, isChild)
 }
 
 // TraceEnd ends the root trace span stored in context.

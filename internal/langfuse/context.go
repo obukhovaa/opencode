@@ -13,9 +13,9 @@ type contextKey string
 const rootSpanKey contextKey = "langfuse_root_span"
 
 // rootSpan holds the root trace span plus whether it is a child trace
-// (a subagent observation inside a parent trace). Trace-level attributes
-// (langfuse.trace.*) must only be set on true roots — on a child they
-// would overwrite the parent trace's values.
+// (a subagent observation nested inside a parent trace; see TraceStart).
+// Trace-level attributes (langfuse.trace.*) must only be set on true roots —
+// on a child they would overwrite the parent trace's values.
 type rootSpan struct {
 	span    trace.Span
 	isChild bool
@@ -33,6 +33,16 @@ func getRootSpan(ctx context.Context) trace.Span {
 		return v.span
 	}
 	return nil
+}
+
+// metadataPrefix is the attribute prefix for a trace's own metadata: trace
+// metadata on a root, observation metadata on a child trace (a subagent),
+// whose trace-level keys would overwrite the parent trace's.
+func metadataPrefix(isChild bool) string {
+	if isChild {
+		return "langfuse.observation.metadata."
+	}
+	return "langfuse.trace.metadata."
 }
 
 // SetTraceOutput records the final output of the trace held in context.
@@ -64,10 +74,7 @@ func SetTraceMetadata(ctx context.Context, metadata map[string]any) {
 	if !ok || v.span == nil || len(metadata) == 0 {
 		return
 	}
-	prefix := "langfuse.trace.metadata."
-	if v.isChild {
-		prefix = "langfuse.observation.metadata."
-	}
+	prefix := metadataPrefix(v.isChild)
 	attrs := make([]attribute.KeyValue, 0, len(metadata))
 	for k, val := range metadata {
 		attrs = append(attrs, attribute.String(prefix+k, redactString(fmt.Sprint(val))))
