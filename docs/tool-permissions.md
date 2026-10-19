@@ -177,21 +177,25 @@ A tool call can be refused in two ways, and they end differently:
 
 | Who refused | Example | What happens |
 |---|---|---|
-| A configured rule evaluated to `deny` | `permission: {bash: {"rm -rf *": "deny"}}`, `permission.rules.edit["*.env"] = "deny"`, a CLI tool manifest's `permission: deny`, a tool outside an `allowTools` list | The model gets an error tool result naming the tool and the input that was denied, and the run **continues**. Sibling calls in the same turn keep running. |
+| A configured rule evaluated to `deny` | `permission: {bash: {"rm -rf *": "deny"}}`, `permission.rules.edit["*.env"] = "deny"`, a CLI tool manifest's `permission: deny` | The model gets an error tool result naming the tool and the input that was denied (an input over 512 bytes is cut), and the run **continues**. Sibling calls in the same turn keep running. |
 | A human rejected an `ask` prompt | pressing deny in the TUI permission dialog, the bridge resolving a prompt as deny | The run **ends** with finish reason `permission_denied`, and the turn's other calls are cancelled, as before. |
+
+A tool that `tools: {…: false}` or an `allowTools` list leaves out is not offered to the model at all, so a call to it gets `Tool not found` rather than a denial.
 
 The rule-denial message tells the model the action itself is forbidden: retrying is pointless, and reaching the same effect through another command, tool or script is not allowed either. It is expected to carry on with the parts of the task that do not need the action, or to report that the rule blocks it.
 
 A circuit breaker stops a model that keeps reaching for denied calls instead of adapting. The run ends with `permission_denied`, exactly as a rejected prompt would, once either bound is reached:
 
-- **3 turns in a row** in which no tool call ran except rule-denied ones, starting with a turn that had a denial. The bound counts turns, not calls: one turn of parallel calls that all hit the same rule, sent before the model had seen any denial, counts once. A call answered without running (loop detected, tool not found) is no progress, so a model that repeats the identical denied call — loop-detected from its third try — still trips the bound. A turn in which any call ran and was not denied resets the streak.
+- **3 turns in a row** in which no tool call ran except rule-denied ones, starting with a turn that had a denial. The bound counts turns, not calls: one turn of parallel calls that all hit the same rule, sent before the model had seen any denial, counts once. A call answered without running (loop detected, tool not found, blocked by a PreToolUse hook) is no progress, so a model that repeats the identical denied call — loop-detected from its third try — still trips the bound. A turn in which any call ran and was not denied resets the streak.
 - **10 rule-denied calls** in one run (one `agent.Run`: a TUI turn, a flow step attempt, a headless `-p` run), however they interleave with other calls.
+
+A turn that delivers an accepted `struct_output` is never ended by the breaker: the run finishes on it anyway, and ending it would drop the output.
 
 Both bounds are constants (`maxConsecutiveRuleDeniedTurns`, `maxRuleDenialsPerRun` in `internal/llm/agent/permission_denial.go`). Read-category tools (`read`, `view_image`, `grep`, `glob`, `ls`) are the exception: they report both a rule denial and a rejected prompt to the model as a `Permission denied` text result themselves, so their denials never reach the agent loop and do not count towards the breaker.
 
-A PreToolUse hook's `deny` and a `skill` permission denial were already tool errors and are unchanged; neither counts towards the breaker.
+A PreToolUse hook's `deny` and a `skill` permission denial were already tool errors and are unchanged; neither counts as a denial towards the breaker (a hook-blocked call is no progress either, see above).
 
-**Behaviour change.** Before GENAI-497 any rule denial ended the run on the first attempt, which is why workspaces avoided `deny` rules. A flow that relied on a `deny` to stop a step outright now sees the step continue until the model gives up, reports the block, or the breaker trips.
+**Behaviour change.** Before GENAI-497 any rule denial outside the read-category tools ended the run on the first attempt, which is why workspaces avoided `deny` rules. A flow that relied on a `deny` to stop a step outright now sees the step continue until the model gives up, reports the block, or the breaker trips.
 
 
 ## Read permissions are evaluated on the canonical path

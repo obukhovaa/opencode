@@ -1820,8 +1820,9 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	// Process tool calls
 	toolResults := make([]message.ToolResult, len(assistantMsg.ToolCalls()))
 	toolCalls := assistantMsg.ToolCalls()
-	// unexecuted marks the calls Phase 1 answered without running them (tool
-	// not found, loop detected): no progress, for the rule-denial breaker.
+	// unexecuted marks the calls answered without running them (tool not
+	// found, loop detected, blocked by a PreToolUse hook): no progress, for
+	// the rule-denial breaker. Each index has one writer, as with toolResults.
 	unexecuted := make([]bool, len(toolCalls))
 
 	// record writes a tool result into the shared toolResults slice and
@@ -1961,6 +1962,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 						Content:    appendHookContext(reason, hc.decision.AdditionalContext),
 						IsError:    true,
 					})
+					unexecuted[e.index] = true
 					return
 				}
 
@@ -2205,6 +2207,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				Content:    appendHookContext(reason, seqHC.decision.AdditionalContext),
 				IsError:    true,
 			})
+			unexecuted[entry.index] = true
 			continue
 		}
 
@@ -2312,11 +2315,14 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 
 	// Phase 4: rule denials left the turn going on; end the run here, as a
 	// human's rejection does, once the model keeps hitting them. A turn a
-	// rejection already finished is not counted.
+	// rejection already finished is not counted. A turn that delivered an
+	// accepted struct_output is not ended either: the run finishes on it
+	// anyway, and processGeneration only captures struct_output from a turn
+	// still finished with tool_use, so ending it here would drop the output.
 	if assistantMsg.FinishReason() == message.FinishReasonToolUse {
 		denied := countTrue(ruleDenied)
 		progressed := len(toolCalls) - denied - countTrue(unexecuted)
-		if tripped, reason := tracker.denials.observeTurn(denied, progressed); tripped {
+		if tripped, reason := tracker.denials.observeTurn(denied, progressed); tripped && !acceptsStructOutput(toolResults) {
 			logging.Warn("Ending run: too many tool calls denied by permission rules",
 				"session_id", sessionID,
 				"reason", reason,

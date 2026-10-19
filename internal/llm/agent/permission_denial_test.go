@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/opencode-ai/opencode/internal/hooks"
 	"github.com/opencode-ai/opencode/internal/llm/provider"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -282,5 +285,101 @@ func TestRuleDenialBreakerObserveTurn(t *testing.T) {
 				t.Errorf("total = %d, want %d", b.total, tt.wantTotal)
 			}
 		})
+	}
+}
+
+// The run-total bound reached on the turn that also delivers an accepted
+// struct_output must not end the run there: processGeneration captures
+// struct_output only from a turn still finished with tool_use, so tripping
+// would drop the step's output.
+func TestRuleDenialBreakerKeepsAcceptedStructOutput(t *testing.T) {
+	withFreshTaskRegistry(t)
+	p := &scriptedProvider{respond: func(n int, _ bool) *provider.ProviderResponse {
+		if n == 1 {
+			calls := make([]message.ToolCall, maxRuleDenialsPerRun-1)
+			for i := range calls {
+				calls[i] = call("bash", i)
+			}
+			return toolTurn(calls...)
+		}
+		so := structOutputCall("so-1", `{"status":"done"}`)
+		return toolTurn(call("bash", 100), so.ToolCalls[0])
+	}}
+	a := newLoopAgentWithTools(t, p, []tools.BaseTool{testStructOutputTool(), deniedTool{name: "bash", err: ruleDenied()}})
+
+	res := a.processGeneration(context.Background(), "s-struct", "produce the output", 0, nil, RunOptions{NonInteractive: true})
+
+	if res.Error != nil {
+		t.Fatalf("processGeneration: %v", res.Error)
+	}
+	if res.StructOutput == nil || res.StructOutput.IsError {
+		t.Fatalf("StructOutput = %+v, want the accepted struct_output of the last turn", res.StructOutput)
+	}
+	if got := p.callCount(); got != 2 {
+		t.Errorf("provider calls = %d, want 2", got)
+	}
+}
+
+// A call a PreToolUse hook blocked did not run, so it is no progress: a model
+// alternating a rule-denied call and a hook-blocked one trips the consecutive
+// bound instead of resetting it every other turn.
+func TestRuleDenialBreakerHookBlockIsNoProgress(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("hooks runner is POSIX-only")
+	}
+	withFreshTaskRegistry(t)
+	dir := t.TempDir()
+	script := writeScript(t, dir, "block.sh", `#!/bin/sh
+cat > /dev/null
+echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"blocked by policy hook"}}'
+`)
+	reg := hooks.NewRegistry(hooksFromMap(map[string][]hooks.MatcherGroup{
+		"PreToolUse": {{Matcher: "noop", Hooks: []hooks.HookEntry{{Type: "command", Command: script}}}},
+	}), dir)
+	p := &scriptedProvider{respond: func(n int, _ bool) *provider.ProviderResponse {
+		if n%2 == 1 {
+			return toolTurn(call("bash", n))
+		}
+		return toolTurn(call("noop", n))
+	}}
+	a := newLoopAgentWithTools(t, p, []tools.BaseTool{deniedTool{name: "bash", err: ruleDenied()}, noopTool{}})
+	a.factory = &fakeFactoryWithHooks{reg: reg}
+
+	res := a.processGeneration(context.Background(), "s-hook", "clean up", 0, nil, RunOptions{NonInteractive: true})
+
+	if res.Error != nil {
+		t.Fatalf("processGeneration: %v", res.Error)
+	}
+	if got := p.callCount(); got != maxConsecutiveRuleDeniedTurns {
+		t.Fatalf("provider calls = %d, want %d", got, maxConsecutiveRuleDeniedTurns)
+	}
+	if got := res.Message.FinishReason(); got != message.FinishReasonPermissionDenied {
+		t.Errorf("finish reason = %q, want permission_denied", got)
+	}
+	var blocked bool
+	for _, r := range toolResultsOf(t, a, "s-hook") {
+		blocked = blocked || strings.Contains(r.Content, "blocked by policy hook")
+	}
+	if !blocked {
+		t.Error("the hook never blocked a call; the test exercises nothing")
+	}
+}
+
+// A long denied input is echoed cut, not whole: the model already holds it.
+func TestRuleDeniedMessageBoundsTheEchoedInput(t *testing.T) {
+	long := "cat > big.txt <<'EOF'\n" + strings.Repeat("é", 4000) + "\nEOF"
+	msg := ruleDeniedMessage(&permission.RuleDeniedError{ToolName: "bash", Input: long})
+	if len(msg) > maxDeniedInputEcho+1024 {
+		t.Errorf("message is %d bytes; the input must be cut to about %d", len(msg), maxDeniedInputEcho)
+	}
+	if !strings.Contains(msg, "cat > big.txt") || !strings.Contains(msg, "…") {
+		t.Errorf("message must start the input and mark the cut: %.200s", msg)
+	}
+	if !utf8.ValidString(msg) {
+		t.Error("the cut split a multi-byte character")
+	}
+	short := ruleDeniedMessage(&permission.RuleDeniedError{ToolName: "bash", Input: "rm -rf build"})
+	if !strings.Contains(short, `"rm -rf build"`) || strings.Contains(short, "…") {
+		t.Errorf("a short input is echoed whole: %s", short)
 	}
 }

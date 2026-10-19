@@ -3,7 +3,10 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/opencode-ai/opencode/internal/llm/tools"
+	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
 )
 
@@ -55,6 +58,11 @@ func (b *ruleDenialBreaker) observeTurn(denied, progressed int) (bool, string) {
 	return false, ""
 }
 
+// maxDeniedInputEcho bounds how much of the denied input the denial message
+// repeats. The model already holds the full input in its own call; a bash
+// heredoc or an MCP payload echoed whole would only spend context.
+const maxDeniedInputEcho = 512
+
 // ruleDeniedMessage is the tool result the model gets for a rule denial. It
 // names what was denied and says the action itself is forbidden: "try
 // something else" alone invites reaching the same effect through another
@@ -62,7 +70,11 @@ func (b *ruleDenialBreaker) observeTurn(denied, progressed int) (bool, string) {
 func ruleDeniedMessage(rd *permission.RuleDeniedError) string {
 	target := ""
 	if rd.Input != "" {
-		target = fmt.Sprintf(" on %q", rd.Input)
+		input := rd.Input
+		if len(input) > maxDeniedInputEcho {
+			input = strings.ToValidUTF8(input[:maxDeniedInputEcho], "") + "…"
+		}
+		target = fmt.Sprintf(" on %q", input)
 	}
 	return fmt.Sprintf(
 		"Permission denied by a configured permission rule: the %s tool may not run%s. "+
@@ -82,6 +94,17 @@ func countTrue(flags []bool) int {
 		}
 	}
 	return n
+}
+
+// acceptsStructOutput reports whether a turn's tool results hold an accepted
+// struct_output, the same test as message.Message.StructOutput.
+func acceptsStructOutput(results []message.ToolResult) bool {
+	for _, r := range results {
+		if r.Name == tools.StructOutputToolName && !r.IsError {
+			return true
+		}
+	}
+	return false
 }
 
 // modelCallError marks an error from the provider's response stream, as
