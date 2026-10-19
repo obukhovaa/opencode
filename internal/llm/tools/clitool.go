@@ -85,7 +85,7 @@ func (t *cliTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) 
 	switch t.evaluatePermission(ctx, joined) {
 	case permission.ActionAllow:
 	case permission.ActionDeny:
-		return NewEmptyResponse(), permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.DeniedByRule(t.m.Name, joined)
 	default:
 		workdir := t.m.ResolvedCwd
 		granted := t.permissions.Request(ctx, permission.CreatePermissionRequest{

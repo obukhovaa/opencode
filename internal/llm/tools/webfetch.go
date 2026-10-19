@@ -144,7 +144,7 @@ func (t *fetchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	case permission.ActionAllow:
 		// Allowed by config, skip interactive permission
 	case permission.ActionDeny:
-		return NewEmptyResponse(), permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.DeniedByRule(WebFetchToolName, params.URL)
 	default:
 		if !t.permissions.Request(ctx,
 			permission.CreatePermissionRequest{
