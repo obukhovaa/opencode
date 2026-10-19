@@ -12,7 +12,7 @@ Pooled runs have a second gap. A pool pod boots with the static tag `flow:none` 
 - **Outcome on the trace.** When the run ends, it records `turns_used` (model calls made, the forced wrap-up included, summed over non-interactive re-entries) and `finish_reason`, one of `end_turn`, `max_tokens`, `turns_exhausted`, `permission_denied`, `canceled`, `error`.
 - The keys go through the existing `telemetry.metadataNamespace` (`piano.max_turns` and so on). `telemetry.generations` does not gate them.
 - A subagent's values land on its own observation through a new `langfuse.SetTraceMetadata`, which follows the child guard that `SetTraceOutput` uses. A child never overwrites its parent's trace metadata.
-- **`flow:<flowID>` on POST /flow runs.** The run identity a POST /flow run publishes now carries a `flow:<flowID>` tag. A flow tag alone is enough to publish an identity. The tag shadows a configured `flow:` tag such as `flow:none` instead of sitting beside it. `opencode serve --flow` (the per-Job auto-start) is unchanged and keeps its configured tag.
+- **`flow:<flowID>` on POST /flow runs.** On a pool pod, the run identity a POST /flow run publishes now carries a `flow:<flowID>` tag. A server outside pool mode publishes none: the run identity is process-wide, and such a server may serve chat turns alongside the run. A flow tag alone is enough to publish an identity. The tag shadows a configured `flow:` tag such as `flow:none` instead of sitting beside it. `opencode serve --flow` (the per-Job auto-start) is unchanged and keeps its configured tag.
 
 ## Capabilities
 
@@ -31,7 +31,7 @@ Pooled runs have a second gap. A pool pod boots with the static tag `flow:none` 
   - `docs/telemetry.md`.
 - **`.opencode.json` public contract:** unchanged.
 - **Behaviour change:**
-  - every POST /flow run now publishes a run identity, even one that sends no identity fields;
+  - every POST /flow run on a pool pod now publishes a run identity, even one that sends no identity fields;
   - the `flow:` tag also reaches provider request metadata (LiteLLM tags) through `provider.ResolveTags`;
   - spend dashboards that bucket on `flow:none` will see that bucket shrink;
   - a foreground subagent's `agent_id`, `session_id`, `model_id`, `parent_session_id`, `requester` and flow-arg metadata move from trace level (where they overwrote the caller's) to its observation. A subagent on a detached ctx now gets a trace name and trace-level input and output on its own trace.

@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"testing"
 	"time"
@@ -270,6 +271,71 @@ func TestFlowOnlyRunCarriesNoneOfThePreviousRunsIdentity(t *testing.T) {
 	waitFor(t, 2*time.Second, "run B's identity to be cleared", func() bool {
 		return runidentity.Get() == nil
 	})
+}
+
+// The run identity is process-wide, so outside pool mode a POST /flow must
+// not publish its `flow:` tag: it would also tag the chat turns a non-pool
+// server serves alongside the run. The key, user and team still behave as
+// before in both modes, and a flow-only run positively clears what the
+// previous run left.
+func TestFlowTagIsPublishedInPoolModeOnly(t *testing.T) {
+	tests := []struct {
+		name string
+		pool bool
+		body string
+		want *runidentity.Identity
+	}{
+		{name: "pool, flow only", pool: true, body: `{"flowID":"A"}`,
+			want: &runidentity.Identity{Tags: []string{"flow:A"}}},
+		{name: "pool, identity fields", pool: true, body: `{"flowID":"A","llmApiKey":"k","telemetryUserId":"u","telemetryTeam":"acme"}`,
+			want: &runidentity.Identity{APIKey: "k", UserID: "u", Tags: []string{"identity:u", "team:acme", "flow:A"}}},
+		{name: "non-pool, flow only", body: `{"flowID":"A"}`,
+			want: nil},
+		{name: "non-pool, identity fields", body: `{"flowID":"A","llmApiKey":"k","telemetryUserId":"u","telemetryTeam":"acme"}`,
+			want: &runidentity.Identity{APIKey: "k", UserID: "u", Tags: []string{"identity:u", "team:acme"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetRunIdentity(t)
+			// A previous run's identity, which this run must not inherit.
+			runidentity.Set(&runidentity.Identity{APIKey: "old-key", UserID: "old-user", Tags: []string{"flow:old"}})
+			svc := newPoolStubFlowService(true, flow.FlowState{
+				StepID: "s1", Status: flow.FlowStatusRunning,
+			})
+			var srv *httptest.Server
+			if tt.pool {
+				_, srv = newPoolTestServer(t, poolTestOpts{
+					svc:       svc,
+					bound:     testWorkspace,
+					allowlist: testWorkspace,
+				})
+			} else {
+				srv = newFlowTestServer(t, svc)
+			}
+			client := srv.Client()
+
+			startFlow(t, client, srv.URL, tt.body)
+			waitFor(t, 2*time.Second, "run to be observed running", func() bool {
+				return flowStatus(t, client, srv.URL)["status"] == string(flowRunRunning)
+			})
+			if got := runidentity.Get(); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("run identity while running = %+v, want %+v", got, tt.want)
+			}
+
+			req, err := http.NewRequest(http.MethodDelete, srv.URL+"/flow", nil)
+			if err != nil {
+				t.Fatalf("build DELETE: %v", err)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("DELETE /flow: %v", err)
+			}
+			resp.Body.Close()
+			waitFor(t, 2*time.Second, "run identity to be cleared", func() bool {
+				return runidentity.Get() == nil
+			})
+		})
+	}
 }
 
 // The per-Job pod's --flow auto-start keeps the `flow:` tag its config was

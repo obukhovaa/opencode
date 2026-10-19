@@ -80,7 +80,7 @@ When running [flows](flows.md), traces are enriched with flow context:
 
 - **Trace name** becomes `agentID/flowID/stepID` (e.g., `coder/deploy/analyze`)
 - **Metadata** includes `flow_id`, `flow_step_id`, and any matched flow args (as bare keys, no prefix)
-- **Tags**: a run started through `POST /flow` carries a `flow:<flowID>` tag. It replaces any `flow:` tag from `telemetry.tags` (a pool pod boots with `flow:none` and serves many flows), the same way the run's `identity:` and `team:` tags replace the pod's boot-time ones. A flow started with `opencode serve --flow` keeps the configured `flow:` tag.
+- **Tags**: on a pool pod, a run started through `POST /flow` carries a `flow:<flowID>` tag. It replaces any `flow:` tag from `telemetry.tags` (a pool pod boots with `flow:none` and serves many flows), the same way the run's `identity:` and `team:` tags replace the pod's boot-time ones. The run's tags apply to the whole process while it runs, so a server outside pool mode, which may serve chat turns alongside the run, does not publish the `flow:` tag. A flow started with `opencode serve --flow` keeps the configured `flow:` tag.
 
 ```
 Session: deploy-flow-abc123

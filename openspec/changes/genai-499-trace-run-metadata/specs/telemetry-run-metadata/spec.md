@@ -89,7 +89,7 @@ A subagent run whose context carries its caller's trace SHALL write its custom m
 
 ### Requirement: Runs started through POST /flow carry their flow tag
 
-A run started through `POST /flow` SHALL publish a `flow:<flowID>` tag in its run identity, even when the request carries no other identity field. The tag SHALL shadow every `flow:` tag from `telemetry.tags`, so the run's traces and provider metadata carry exactly one `flow:` tag. A blank flow ID SHALL render no tag. A flow started by `opencode serve --flow` SHALL NOT publish a flow tag, and its configured `flow:` tag SHALL stay in effect. The tag SHALL be cleared with the rest of the run identity when the run ends.
+On a pool pod, a run started through `POST /flow` SHALL publish a `flow:<flowID>` tag in its run identity, even when the request carries no other identity field. Outside pool mode the run SHALL NOT publish a flow tag, because the run identity is process-wide and the server may serve chat turns alongside the run; its `llmApiKey`, `telemetryUserId` and `telemetryTeam` SHALL behave as in pool mode. The tag SHALL shadow every `flow:` tag from `telemetry.tags`, so the run's traces and provider metadata carry exactly one `flow:` tag. A blank flow ID SHALL render no tag. A flow started by `opencode serve --flow` SHALL NOT publish a flow tag, and its configured `flow:` tag SHALL stay in effect. The tag SHALL be cleared with the rest of the run identity when the run ends.
 
 #### Scenario: Pooled run on a pod booted with flow:none
 
@@ -98,8 +98,13 @@ A run started through `POST /flow` SHALL publish a `flow:<flowID>` tag in its ru
 
 #### Scenario: Run with no identity fields
 
-- **WHEN** `POST /flow` carries only `flowID: A`
+- **WHEN** a pool pod receives `POST /flow` carrying only `flowID: A`
 - **THEN** the run identity holds the tag `flow:A` while the run is in flight, and none of the previous run's key, user or tags
+
+#### Scenario: Non-pool server
+
+- **WHEN** a server not in pool mode receives `POST /flow` with `flowID: A` while it also serves chat turns
+- **THEN** no `flow:A` tag is published, so the chat turns' traces keep the configured tags
 
 #### Scenario: Per-Job auto-start
 
