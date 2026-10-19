@@ -669,9 +669,10 @@ func authorizeRead(ctx context.Context, reg agentregistry.Registry, perms permis
 
 // checkReadPermission evaluates read-category permission for a tool and the
 // given paths (the strictest verdict wins; an ask prompts once, for the last
-// path). Returns nil if allowed, permission.ErrorPermissionDenied if denied or
-// ask-rejected. If registry is nil, permission check is skipped (always
-// allowed). Callers holding a user-supplied path should go through
+// path). Returns nil if allowed, a permission.RuleDeniedError if a configured
+// rule denied it (the agent loop reports that to the model and keeps the run
+// going), and permission.ErrorPermissionDenied if the prompt was rejected. If
+// registry is nil, permission check is skipped (always allowed). Callers holding a user-supplied path should go through
 // authorizeRead, which canonicalizes it first.
 func checkReadPermission(ctx context.Context, reg agentregistry.Registry, perms permission.Service, toolName string, paths ...string) error {
 	if reg == nil || perms == nil || len(paths) == 0 {
@@ -686,7 +687,8 @@ func checkReadPermission(ctx context.Context, reg agentregistry.Registry, perms 
 	case permission.ActionAllow:
 		return nil
 	case permission.ActionDeny:
-		return permission.ErrorPermissionDenied
+		// Name the path as the caller gave it, not its resolved target.
+		return permission.DeniedByRule(toolName, paths[0])
 	default: // ask
 		sessionID, _ := GetContextValues(ctx)
 		if sessionID == "" {

@@ -208,3 +208,32 @@ func TestMySQLMentionConsumedReResetsOnReBind(t *testing.T) {
 		t.Errorf("MentionConsumedAt = %d after re-bind, want 0", got.MentionConsumedAt)
 	}
 }
+
+func TestMySQLListSessionIDsByChannel(t *testing.T) {
+	s, _ := newMySQLTestStore(t)
+	ctx := context.Background()
+
+	for _, b := range []Binding{
+		{ProjectID: "proj", Channel: "external", IdentityID: "c3", PeerID: "a:f:r1", SessionID: "S1"},
+		{ProjectID: "proj", Channel: "external", IdentityID: "c3", PeerID: "a:f:r2", SessionID: "S1"},
+		{ProjectID: "proj", Channel: "slack", IdentityID: "default", PeerID: "D1", SessionID: "S1"},
+	} {
+		if _, err := s.UpsertBinding(ctx, b); err != nil {
+			t.Fatalf("Upsert %s: %v", b.PeerID, err)
+		}
+	}
+	got, err := s.ListSessionIDsByChannel(ctx, "proj", "external")
+	if err != nil {
+		t.Fatalf("ListSessionIDsByChannel: %v", err)
+	}
+	if len(got) != 1 || got[0] != "S1" {
+		t.Errorf("sessions = %v, want [S1] (distinct)", got)
+	}
+	none, err := s.ListSessionIDsByChannel(ctx, "proj", "telegram")
+	if err != nil {
+		t.Fatalf("ListSessionIDsByChannel telegram: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("telegram sessions = %v, want none", none)
+	}
+}

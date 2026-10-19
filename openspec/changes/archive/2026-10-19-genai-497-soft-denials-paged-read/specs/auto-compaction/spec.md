@@ -1,0 +1,46 @@
+## ADDED Requirements
+
+### Requirement: A call rejected as too long recovers once
+
+When the main model call of a turn fails in the provider's response stream (not after the turn's tools ran), the error is not a cancellation, the run is neither cancelled nor past its deadline, `autoCompact` is on, and the failure is classified as a context overflow — the error carries a known provider overflow message (`prompt is too long`, `input is too long`, `exceed context limit`, `context_length_exceeded`, `maximum context length`, `exceeds the context window`, `exceeds the maximum number of tokens`, `exceeded model token limit`, LiteLLM's `ContextWindowExceededError`), or the last context count was at least 90% of the window and the error is neither one the provider already retried as transient (a rate limit or an overload after retries, a 503/529, Bedrock's throttling or unavailable exceptions) nor a timeout (the HTTP client's, a deadline on the request, a stalled stream) — the system SHALL, if the compaction backoff allows it, run one auto-compaction with trigger `overflow_retry` and send the same call again on the compacted history. The failed call's message SHALL be finished as an error, with error results for any tool calls it streamed, before compacting. The retry SHALL NOT count as a turn. At most one such recovery SHALL run per agent run. When the compaction fails, or the retry fails for a reason other than cancellation, the run SHALL fail with the original error and the retry's error SHALL be logged. The recovery SHALL log its cause.
+
+#### Scenario: Recovered turn
+
+- **WHEN** a call fails with `prompt is too long` and the compaction succeeds
+- **THEN** the summarizer is called once and the same call is retried on a history headed by the summary, ending with the turn's user message (or the previous tool call and result)
+
+#### Scenario: Overflow again
+
+- **WHEN** the retry also fails with `prompt is too long`
+- **THEN** the run fails with the original error after exactly two model calls and one summarizer call
+
+#### Scenario: Transient failure near the window
+
+- **WHEN** a call fails with `maximum retry attempts reached for HTTP 429`, or with an HTTP client timeout, and the last context count was 92% of the window
+- **THEN** no compaction runs and the run fails with that error
+
+#### Scenario: Overflow message at any size
+
+- **WHEN** a call fails with `prompt is too long` and the last context count was 10% of the window
+- **THEN** the turn compacts once and the call is retried
+
+#### Scenario: Stream reset near the window
+
+- **WHEN** a call fails with a peer HTTP/2 stream reset and the last context count was 92% of the window
+- **THEN** the turn compacts once and the call is retried
+
+#### Scenario: No recovery
+
+- **WHEN** `autoCompact` is off, the backoff forbids a compaction, the compaction fails, the error is not an overflow far from the window, the error came after the turn's tools ran, or the run is past its deadline
+- **THEN** no retry is made and the run fails with the original error
+
+## MODIFIED Requirements
+
+### Requirement: Summarizer calls carry diagnostics
+
+The system SHALL attach to the summarizer's telemetry generation the compaction trigger (`pre_turn`, `in_loop`, `overflow_retry` or `manual`), the estimated input tokens, the input message count, the trimmed message count, the truncated tool payload count and the consecutive failure count, without recording the input itself.
+
+#### Scenario: Failed summarizer call
+
+- **WHEN** a summarizer call fails with a stream reset
+- **THEN** its generation shows the trigger, the input size and the failure count, and the input is not logged

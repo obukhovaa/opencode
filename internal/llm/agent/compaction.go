@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -497,6 +498,80 @@ func trimSummarizerInput(msgs []message.Message, keepHead bool, prompt int, fixe
 // context close enough to the window that the failure is probably an overflow.
 func likelyContextOverflow(estimated, window int64) bool {
 	return window > 0 && float64(estimated) >= contextOverflowWarnRatio*float64(window)
+}
+
+// contextOverflowMarkers are lower-cased fragments of the errors providers
+// return for a request over the model's context window: Anthropic and Vertex
+// ("prompt is too long", "input length and `max_tokens` exceed context
+// limit"), Bedrock ("Input is too long for requested model"), OpenAI and
+// compatible gateways ("context_length_exceeded", "maximum context length",
+// the Responses API's "exceeds the context window"), Gemini ("exceeds the
+// maximum number of tokens"), Moonshot/Kimi ("exceeded model token limit"),
+// and LiteLLM, which maps every provider's overflow to a
+// ContextWindowExceededError whose wrapped text need not carry any of the
+// others.
+var contextOverflowMarkers = []string{
+	"prompt is too long",
+	"input is too long",
+	"exceed context limit",
+	"context_length_exceeded",
+	"maximum context length",
+	"exceeds the context window",
+	"exceeds the maximum number of tokens",
+	"exceeded model token limit",
+	"contextwindowexceedederror",
+}
+
+// modelCallError marks an error from the provider's response stream, as
+// opposed to one after the turn's tools ran (saving their results): only the
+// former may be retried by the overflow recovery (processGeneration). Error
+// and Unwrap pass the provider's error through unchanged.
+type modelCallError struct{ err error }
+
+func (e *modelCallError) Error() string { return e.err.Error() }
+func (e *modelCallError) Unwrap() error { return e.err }
+
+func isModelCallError(err error) bool {
+	var mce *modelCallError
+	return errors.As(err, &mce)
+}
+
+// isContextOverflowError reports whether a model call's error says the
+// request was over the model's context window.
+func isContextOverflowError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, marker := range contextOverflowMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// contextOverflowCause classifies a failed model call as a context overflow:
+// "provider_error" when the error says so, at any context size; "near_window"
+// when the error is unspecific but the context was close to the window (the
+// same test as warnIfLikelyContextOverflow, which some proxies need because
+// they reset the stream instead of returning the 400); "" otherwise. An error
+// the provider already retried as transient (a rate limit or an overload
+// after retries, Bedrock's throttling) or a timeout (the HTTP client's, a
+// stalled stream) names its own cause, so it is never "near_window": a lossy
+// compaction of the session would not fix it. A peer stream reset stays
+// eligible, as that is how those proxies report an overflow.
+func (a *agent) contextOverflowCause(estimated int64, err error) string {
+	if isContextOverflowError(err) {
+		return "provider_error"
+	}
+	if provider.IsRetriedTransientError(err) || provider.IsTimeoutError(err) {
+		return ""
+	}
+	if likelyContextOverflow(estimated, a.provider.Model().ContextWindow) {
+		return "near_window"
+	}
+	return ""
 }
 
 func (a *agent) warnIfLikelyContextOverflow(sessionID string, estimated int64, err error) {

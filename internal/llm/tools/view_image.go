@@ -86,7 +86,7 @@ func (v *viewImageTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 
 	canonical, err := authorizeRead(ctx, v.registry, v.permissions, ViewImageToolName, filePath)
 	if err != nil {
-		if err == permission.ErrorPermissionDenied {
+		if errors.Is(err, permission.ErrorPermissionDenied) {
 			return NewTextErrorResponse(fmt.Sprintf("Permission denied: reading %s", filePath)), nil
 		}
 		return NewEmptyResponse(), err

@@ -87,6 +87,13 @@ type Store interface {
 	// identity DELETE for cascade cleanup.
 	ListBindingsByIdentity(ctx context.Context, projectID, channel, identityID string) ([]Binding, error)
 
+	// ListSessionIDsByChannel returns the distinct session ids that hold
+	// at least one binding on the given channel, across every identity
+	// (orphaned rows with a NULL session_id are skipped). One query, so a
+	// caller can classify a whole session listing without a lookup per
+	// session.
+	ListSessionIDsByChannel(ctx context.Context, projectID, channel string) ([]string, error)
+
 	// UpdateBindingPeerID rewrites a binding's peer_id (e.g. Slack
 	// channel→thread mutation after the first outbound captures the ts).
 	// Caller passes the current key in oldPeerID and the new value in

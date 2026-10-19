@@ -24,6 +24,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/langfuse"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	"github.com/opencode-ai/opencode/internal/llm/provider"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/llm/tools/shell"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -1463,32 +1464,14 @@ doneRetry:
 	}
 }
 
-// transientProviderErrorSignatures are lowercased substrings of surfaced
-// error messages that indicate a transient LLM-provider / gateway failure the
-// provider already exhausted its in-call retry budget on — a rate limit or an
-// upstream blip that is expected to clear on its own. The HTTP/2 RST_STREAM
-// case (peer-initiated reset) is matched separately in isTransientProviderError
-// because it needs two co-occurring markers.
-var transientProviderErrorSignatures = []string{
-	"http 429",                       // provider retry budget exhausted on a 429
-	"maximum retry attempts reached", // retry-exhaustion wrapper
-	"rate limit",
-	"rate_limit",
-	"too many requests",
-	"overloaded",                  // Anthropic 529
-	"service unavailable",         // 503
-	"serviceunavailableexception", // Bedrock 503
-	"throttlingexception",         // Bedrock 429
-	"modeltimeoutexception",       // Bedrock 408
-	"internalserverexception",     // Bedrock 500
-}
-
 // isTransientProviderError reports whether err is a transient LLM-provider /
 // gateway failure worth parking the whole step for (postpone-and-auto-resume)
-// rather than failing the flow. Matching is on the surfaced message: the typed
+// rather than failing the flow: one the provider already retried as transient
+// (provider.IsRetriedTransientError, whose signature list this used to keep
+// as a copy), or a peer-initiated HTTP/2 RST_STREAM whose per-call retry
+// budget was exhausted. Matching is on the surfaced message: the typed
 // provider error is wrapped by the agent runtime before it reaches the flow
-// layer, so string signatures are the reliable surface. Mirrors the provider's
-// own transient/RST classifiers (internal/llm/provider) without importing them.
+// layer, so string signatures are the reliable surface.
 func isTransientProviderError(err error) bool {
 	if err == nil {
 		return false
@@ -1501,12 +1484,7 @@ func isTransientProviderError(err error) bool {
 	if strings.Contains(msg, "stream error") && strings.Contains(msg, "received from peer") {
 		return true
 	}
-	for _, sig := range transientProviderErrorSignatures {
-		if strings.Contains(msg, sig) {
-			return true
-		}
-	}
-	return false
+	return provider.IsRetriedTransientError(err)
 }
 
 // stepPostponesOnProviderError reports whether the step opted into

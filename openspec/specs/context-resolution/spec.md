@@ -1,7 +1,9 @@
-# context-resolution Specification
+# Context Resolution
 
 ## Purpose
-TBD - created by archiving change scoped-context-files. Update Purpose after archive.
+
+Defines how the effective list of context files (`AGENTS.md`, `CLAUDE.md` and similar) is resolved for an agent turn. Precedence runs step, then agent, then global, and each layer's `mode` decides whether the layers below contribute. It covers the agent `context` object, shell-free path templating confined to the working directory, per-session memoization for byte-stable prompts, and the legacy formats that stay unchanged.
+
 ## Requirements
 ### Requirement: Resolution precedence is step > agent > global
 

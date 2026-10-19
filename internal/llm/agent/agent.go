@@ -241,6 +241,11 @@ type agent struct {
 	titleProvider     provider.Provider
 	summarizeProvider provider.Provider
 
+	// permissions is read for the session's attendance marks (titleWanted);
+	// the tools get their own reference at construction. Nil in tests that
+	// build the struct directly.
+	permissions permission.Service
+
 	// factory exposes services that are late-injected on the factory
 	// after agent construction. Today we read HookRegistry off it at
 	// tool-dispatch time (per claude-code-hooks-plugin-system); future
@@ -339,6 +344,7 @@ func newAgent(
 		toolsCh:           agentTools,
 		titleProvider:     titleProvider,
 		summarizeProvider: summarizeProvider,
+		permissions:       permissions,
 		activeRequests:    sync.Map{},
 		allowParallelism:  agentInfo.AllowsParallelToolUse(),
 		factory:           factory,
@@ -613,6 +619,19 @@ func (a *agent) UnlockSession(sessionID string) {
 	}
 }
 
+// titleWanted reports whether a session's first turn generates a title.
+// Unattended sessions skip it: flow steps, headless `-p` runs, cron jobs and
+// the subagents they spawn (which inherit the mark through the permission
+// session link). Nobody reads their titles, and each one costs a descriptor
+// model call. An interactive flow step is bound to a human over chat and
+// keeps its title, as do the TUI, the chat bridge and the API.
+func (a *agent) titleWanted(sessionID string) bool {
+	if a.permissions == nil {
+		return true
+	}
+	return !a.permissions.IsUnattendedSession(sessionID) || a.permissions.IsInteractiveSession(sessionID)
+}
+
 func (a *agent) generateTitle(ctx context.Context, sessionID string, content string) error {
 	if content == "" {
 		return nil
@@ -845,7 +864,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	if err != nil {
 		return a.err(fmt.Errorf("failed to list messages: %w", err))
 	}
-	if len(msgs) == 0 {
+	if len(msgs) == 0 && a.titleWanted(sessionID) {
 		titleContent := content
 		// Detached from the turn so it outlives it, but the title trace is
 		// still attributed to the turn's requester (a flow step's
@@ -1028,6 +1047,89 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		msgHistory = append(msgHistory, deltaMsg)
 	}
 
+	// compactInLoop runs one auto-compaction inside the turn and rebuilds
+	// msgHistory from the new summary: the threshold check before a model
+	// call, and the recovery after a call the provider rejected as too long.
+	// It returns the recounted context size and whether the compaction
+	// succeeded; a failed compaction leaves the history as it was. Only a
+	// failed reload after a successful compaction is an error.
+	compactInLoop := func(trigger string, tokens int64, cycle int) (int64, bool, error) {
+		// With no tail or user turn to re-append (a re-entry's first
+		// call), the drained completion pairs are the model's input.
+		var resumeTail []message.Message
+		if !preserveTail && !hasUserTurn {
+			resumeTail = syntheticTail(msgHistory)
+		}
+		if errSync := a.autoCompact(ctx, sessionID, trigger, tokens); errSync != nil {
+			return tokens, false, nil
+		}
+		// After successful compaction, reload messages and rebuild msgHistory.
+		// Assigns the OUTER msgs/session: the non-interactive re-entry
+		// reload below filters by session.SummaryMessageID, and a stale
+		// one would bring the pre-summary history back.
+		reloaded, compacted, errReload := a.historyAfterCompaction(ctx, sessionID)
+		if errReload != nil {
+			return tokens, false, errReload
+		}
+		msgs, session = reloaded, compacted
+		// The summary boundary sits after the schema envelope, so
+		// filterMessagesFromSummary just dropped it. Under tool
+		// delivery the schema was in the tool block and survived
+		// compaction untouched; re-inject here so it still does,
+		// and so the forced struct_output wrap-up below is not asked
+		// to produce a document whose shape left the conversation.
+		msgs = a.withStructOutputSchema(ctx, sessionID, msgs)
+		// The deferred-tools delta sat before the summary too, and the
+		// compaction forgot it was announced. A flow step or a task
+		// subagent is usually one turn, so waiting for the next turn's
+		// injection would leave the deferred MCP tools out of view for
+		// the rest of the run.
+		if deltaMsg, ok := a.injectDeferredDelta(ctx, sessionID, session.SummaryMessageID, toolSet); ok {
+			msgs = append(msgs, deltaMsg)
+		}
+
+		ctx = a.withTaskBudgetRemaining(ctx, session)
+
+		// Preserve original problem and result from the last tool iteration to ensure no dead-loop
+		if preserveTail {
+			preserveTail = false
+			msgHistory = append(msgs, agentMessage, *toolResults)
+		} else if hasUserTurn {
+			msgHistory = append(msgs, userMsg)
+		} else {
+			// Auto-resume turn or non-interactive re-entry — no
+			// user message to re-append.
+			msgHistory = append(msgs, resumeTail...)
+		}
+
+		// Re-count against the same effective threshold that triggered
+		// this compaction so the log reflects the step's configured
+		// gate, not the global default.
+		counted, stillOver := a.countContextTokens(ctx, sessionID, compactionThreshold, msgHistory, toolSet)
+		if stillOver {
+			logging.Warn(
+				"Context compacted, but still exceed context threshold",
+				"session_id", sessionID,
+				"history_length", len(msgHistory),
+				"token_count", counted,
+				"cycle", cycle,
+			)
+		} else {
+			logging.Info(
+				"Context compacted, continuing with reduced history",
+				"session_id", sessionID,
+				"history_length", len(msgHistory),
+				"token_count", counted,
+				"cycle", cycle,
+			)
+		}
+		return counted, true, nil
+	}
+	// overflowRetried allows one recovery from a provider's "prompt too
+	// long" per run, so a history that a compaction cannot shrink enough
+	// fails instead of looping.
+	overflowRetried := false
+
 	tracker := newCallTracker()
 
 	// finalResult holds the natural-completion event that the inner loop
@@ -1088,77 +1190,15 @@ OuterLoop:
 					"cycle", cycles,
 				)
 
-				// With no tail or user turn to re-append (a re-entry's first
-				// call), the drained completion pairs are the model's input.
-				var resumeTail []message.Message
-				if !preserveTail && !hasUserTurn {
-					resumeTail = syntheticTail(msgHistory)
+				// Perform synchronous compaction to shrink context. On a
+				// failure, continue anyway - better to risk context overflow
+				// than stop completely.
+				recounted, compacted, errCompact := compactInLoop(compactionTriggerInLoop, etaTokens, cycles)
+				if errCompact != nil {
+					return a.err(errCompact)
 				}
-
-				// Perform synchronous compaction to shrink context
-				if errSync := a.autoCompact(ctx, sessionID, compactionTriggerInLoop, etaTokens); errSync != nil {
-					// Continue anyway - better to risk context overflow than stop completely
-				} else {
-					// After successful compaction, reload messages and rebuild msgHistory.
-					// Assigns the OUTER msgs/session: the non-interactive re-entry
-					// reload below filters by session.SummaryMessageID, and a stale
-					// one would bring the pre-summary history back.
-					reloaded, compacted, errReload := a.historyAfterCompaction(ctx, sessionID)
-					if errReload != nil {
-						return a.err(errReload)
-					}
-					msgs, session = reloaded, compacted
-					// The summary boundary sits after the schema envelope, so
-					// filterMessagesFromSummary just dropped it. Under tool
-					// delivery the schema was in the tool block and survived
-					// compaction untouched; re-inject here so it still does,
-					// and so the forced struct_output wrap-up below is not asked
-					// to produce a document whose shape left the conversation.
-					msgs = a.withStructOutputSchema(ctx, sessionID, msgs)
-					// The deferred-tools delta sat before the summary too, and the
-					// compaction forgot it was announced. A flow step or a task
-					// subagent is usually one turn, so waiting for the next turn's
-					// injection would leave the deferred MCP tools out of view for
-					// the rest of the run.
-					if deltaMsg, ok := a.injectDeferredDelta(ctx, sessionID, session.SummaryMessageID, toolSet); ok {
-						msgs = append(msgs, deltaMsg)
-					}
-
-					ctx = a.withTaskBudgetRemaining(ctx, session)
-
-					// Preserve original problem and result from the last tool iteration to ensure no dead-loop
-					if preserveTail {
-						preserveTail = false
-						msgHistory = append(msgs, agentMessage, *toolResults)
-					} else if hasUserTurn {
-						msgHistory = append(msgs, userMsg)
-					} else {
-						// Auto-resume turn or non-interactive re-entry — no
-						// user message to re-append.
-						msgHistory = append(msgs, resumeTail...)
-					}
-
-					// Re-count against the same effective threshold that triggered
-					// this compaction so the log reflects the step's configured
-					// gate, not the global default.
-					etaTokens, shouldTriggerAutoCompaction = a.countContextTokens(ctx, sessionID, compactionThreshold, msgHistory, toolSet)
-					if shouldTriggerAutoCompaction {
-						logging.Warn(
-							"Context compacted, but still exceed context threshold",
-							"session_id", sessionID,
-							"history_length", len(msgHistory),
-							"token_count", etaTokens,
-							"cycle", cycles,
-						)
-					} else {
-						logging.Info(
-							"Context compacted, continuing with reduced history",
-							"session_id", sessionID,
-							"history_length", len(msgHistory),
-							"token_count", etaTokens,
-							"cycle", cycles,
-						)
-					}
+				if compacted {
+					etaTokens = recounted
 				}
 			}
 
@@ -1272,18 +1312,75 @@ OuterLoop:
 				break OuterLoop
 			}
 
+			// The call's result stays out of agentMessage/toolResults until it
+			// succeeds: a recovery compaction below re-appends the previous
+			// cycle's pair (preserveTail) from them.
 			turnsUsed++
-			agentMessage, toolResults, err = a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
-			if err != nil {
-				a.createErrorToolResults(agentMessage)
-				if errors.Is(err, context.Canceled) {
-					a.finishMessage(ctx, &agentMessage, message.FinishReasonCanceled)
+			turnMsg, turnResults, turnErr := a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
+			// errorResultsWritten: turnMsg's tool calls already got their
+			// error results, so the error path below must not write them twice.
+			errorResultsWritten := false
+			// ctx.Err() covers what errors.Is(turnErr, context.Canceled) does
+			// not: a run past its deadline (a flow step's timeout) fails its
+			// call with DeadlineExceeded, which near the window would classify
+			// as an overflow and run a compaction on a dead context.
+			if turnErr != nil && cfg.AutoCompact && !overflowRetried && ctx.Err() == nil && isModelCallError(turnErr) && !errors.Is(turnErr, context.Canceled) {
+				if cause := a.contextOverflowCause(etaTokens, turnErr); cause != "" && a.compactionAllowed(sessionID, etaTokens) {
+					// Recover from a call the provider rejected as too long: compact
+					// once and send the same turn again, once per run. A
+					// modelCallError comes from the response stream, before any
+					// tool ran, so nothing runs twice.
+					overflowRetried = true
+					logging.Warn("Model call failed on context size; compacting and retrying the turn once",
+						"session_id", sessionID,
+						"agent", a.agentID,
+						"cause", cause,
+						"token_count", etaTokens,
+						"context_window", a.provider.Model().ContextWindow,
+						"cycle", cycles,
+						"error", turnErr,
+					)
+					a.createErrorToolResults(turnMsg)
+					a.finishMessage(ctx, &turnMsg, message.FinishReasonError)
+					errorResultsWritten = true
+					recounted, compacted, errCompact := compactInLoop(compactionTriggerOverflow, etaTokens, cycles)
+					if errCompact != nil {
+						return a.err(errCompact)
+					}
+					if compacted {
+						etaTokens = recounted
+						a.provider.AdjustMaxTokens(etaTokens)
+						retryMsg, retryResults, retryErr := a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
+						turnMsg, errorResultsWritten = retryMsg, false
+						switch {
+						case retryErr == nil:
+							turnResults, turnErr = retryResults, nil
+						case errors.Is(retryErr, context.Canceled):
+							turnErr = retryErr
+						default:
+							// The original error is the one that explains the
+							// run's failure; the retry's is logged.
+							logging.Warn("Model call failed again after the overflow compaction; returning the original error",
+								"session_id", sessionID,
+								"retry_error", retryErr,
+							)
+						}
+					}
+				}
+			}
+			if turnErr != nil {
+				if !errorResultsWritten {
+					a.createErrorToolResults(turnMsg)
+				}
+				if errors.Is(turnErr, context.Canceled) {
+					a.finishMessage(ctx, &turnMsg, message.FinishReasonCanceled)
 					return a.err(ErrRequestCancelled)
 				}
-				a.warnIfLikelyContextOverflow(sessionID, etaTokens, err)
-				a.finishMessage(ctx, &agentMessage, message.FinishReasonError)
-				return a.err(fmt.Errorf("failed to process events: %w", err))
+				a.warnIfLikelyContextOverflow(sessionID, etaTokens, turnErr)
+				a.finishMessage(ctx, &turnMsg, message.FinishReasonError)
+				return a.err(fmt.Errorf("failed to process events: %w", turnErr))
 			}
+			agentMessage, toolResults = turnMsg, turnResults
 			if cfg.Debug {
 				seqID := (len(msgHistory) + 1) / 2
 				toolResultFilepath := logging.WriteToolResultsJson(sessionID, seqID, toolResults)
@@ -1728,7 +1825,10 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	// Process provider response first
 	for event := range eventChan {
 		if processErr := a.processEvent(ctx, sessionID, &assistantMsg, event); processErr != nil {
-			return assistantMsg, nil, processErr
+			// Marked as the provider's: only these happen before any tool
+			// ran, so only these may be retried (processGeneration's
+			// overflow recovery).
+			return assistantMsg, nil, &modelCallError{err: processErr}
 		}
 		if ctx.Err() != nil {
 			return assistantMsg, nil, ctx.Err()
@@ -1738,6 +1838,10 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	// Process tool calls
 	toolResults := make([]message.ToolResult, len(assistantMsg.ToolCalls()))
 	toolCalls := assistantMsg.ToolCalls()
+	// unexecuted marks the calls answered without running them (tool not
+	// found, loop detected, blocked by a PreToolUse hook): no progress, for
+	// the rule-denial breaker. Each index has one writer, as with toolResults.
+	unexecuted := make([]bool, len(toolCalls))
 
 	// record writes a tool result into the shared toolResults slice and
 	// emits a per-part SSE event for the same tool. Each call must own a
@@ -1780,6 +1884,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				Content:    fmt.Sprintf("Tool not found: %s", toolCall.Name),
 				IsError:    true,
 			})
+			unexecuted[i] = true
 			continue
 		}
 
@@ -1803,6 +1908,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				Content:    loopDetectedMessage(toolCall.Name, streak),
 				IsError:    true,
 			})
+			unexecuted[i] = true
 			continue
 		}
 
@@ -1823,6 +1929,12 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 
 	// Langfuse client for tool call tracing (declared here to avoid goto-over-decl)
 	lfClient := langfuse.Get()
+
+	// ruleDenied marks the calls a configured permission rule denied. Those
+	// are reported to the model and the run goes on, unlike a human's
+	// rejection; the breaker on tracker bounds them (permission_denial.go).
+	// Each index has one writer, as with toolResults.
+	ruleDenied := make([]bool, len(toolCalls))
 
 	// Phase 2: Execute parallel group concurrently
 	permissionDenied := false
@@ -1868,6 +1980,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 						Content:    appendHookContext(reason, hc.decision.AdditionalContext),
 						IsError:    true,
 					})
+					unexecuted[e.index] = true
 					return
 				}
 
@@ -1906,6 +2019,24 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				if toolErr != nil {
 					if toolSpan != nil {
 						toolSpan.SetError(toolErr)
+					}
+					// Checked before the generic denial: a RuleDeniedError
+					// also matches ErrorPermissionDenied. No permCancel —
+					// the sibling calls keep running.
+					if rd, ok := permission.AsRuleDenied(toolErr); ok {
+						logging.Warn("Tool call denied by permission rule", "tool", e.toolCall.Name,
+							"ID", e.toolCall.ID,
+							"input", rd.Input,
+							"gauge", gauge,
+						)
+						ruleDenied[e.index] = true
+						record(e.index, message.ToolResult{
+							ToolCallID: e.toolCall.ID,
+							Name:       e.toolCall.Name,
+							Content:    ruleDeniedMessage(rd),
+							IsError:    true,
+						})
+						return
 					}
 					if errors.Is(toolErr, permission.ErrorPermissionDenied) {
 						logging.Warn("Tool call denied", "tool", e.toolCall.Name,
@@ -2094,6 +2225,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				Content:    appendHookContext(reason, seqHC.decision.AdditionalContext),
 				IsError:    true,
 			})
+			unexecuted[entry.index] = true
 			continue
 		}
 
@@ -2112,6 +2244,23 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 			if seqToolSpan != nil {
 				seqToolSpan.SetError(toolErr)
 				seqToolSpan.End()
+			}
+			// Before the generic denial, which a RuleDeniedError also
+			// matches: report it and go on with the remaining calls.
+			if rd, ok := permission.AsRuleDenied(toolErr); ok {
+				logging.Warn("Tool call denied by permission rule", "tool", entry.toolCall.Name,
+					"ID", entry.toolCall.ID,
+					"input", rd.Input,
+					"gauge", gauge,
+				)
+				ruleDenied[entry.index] = true
+				record(entry.index, message.ToolResult{
+					ToolCallID: entry.toolCall.ID,
+					Name:       entry.toolCall.Name,
+					Content:    ruleDeniedMessage(rd),
+					IsError:    true,
+				})
+				continue
 			}
 			if errors.Is(toolErr, permission.ErrorPermissionDenied) {
 				logging.Warn("Tool call denied", "tool", entry.toolCall.Name,
@@ -2180,6 +2329,24 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 			Metadata:   toolResult.Metadata,
 			IsError:    toolResult.IsError,
 		})
+	}
+
+	// Phase 4: rule denials left the turn going on; end the run here, as a
+	// human's rejection does, once the model keeps hitting them. A turn a
+	// rejection already finished is not counted. A turn that delivered an
+	// accepted struct_output is not ended either: the run finishes on it
+	// anyway, and processGeneration only captures struct_output from a turn
+	// still finished with tool_use, so ending it here would drop the output.
+	if assistantMsg.FinishReason() == message.FinishReasonToolUse {
+		denied := countTrue(ruleDenied)
+		progressed := len(toolCalls) - denied - countTrue(unexecuted)
+		if tripped, reason := tracker.denials.observeTurn(denied, progressed); tripped && !acceptsStructOutput(toolResults) {
+			logging.Warn("Ending run: too many tool calls denied by permission rules",
+				"session_id", sessionID,
+				"reason", reason,
+			)
+			a.finishMessage(ctx, &assistantMsg, message.FinishReasonPermissionDenied)
+		}
 	}
 out:
 	if len(toolResults) == 0 {

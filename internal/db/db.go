@@ -132,6 +132,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listBridgeHeartbeatsStmt, err = db.PrepareContext(ctx, listBridgeHeartbeats); err != nil {
 		return nil, fmt.Errorf("error preparing query ListBridgeHeartbeats: %w", err)
 	}
+	if q.listBridgeSessionIDsByChannelStmt, err = db.PrepareContext(ctx, listBridgeSessionIDsByChannel); err != nil {
+		return nil, fmt.Errorf("error preparing query ListBridgeSessionIDsByChannel: %w", err)
+	}
 	if q.listBridgeSessionsByIdentityStmt, err = db.PrepareContext(ctx, listBridgeSessionsByIdentity); err != nil {
 		return nil, fmt.Errorf("error preparing query ListBridgeSessionsByIdentity: %w", err)
 	}
@@ -425,6 +428,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listBridgeHeartbeatsStmt: %w", cerr)
 		}
 	}
+	if q.listBridgeSessionIDsByChannelStmt != nil {
+		if cerr := q.listBridgeSessionIDsByChannelStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listBridgeSessionIDsByChannelStmt: %w", cerr)
+		}
+	}
 	if q.listBridgeSessionsByIdentityStmt != nil {
 		if cerr := q.listBridgeSessionsByIdentityStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listBridgeSessionsByIdentityStmt: %w", cerr)
@@ -680,6 +688,7 @@ type Queries struct {
 	listActiveCronJobsStmt               *sql.Stmt
 	listBridgeAllowlistStmt              *sql.Stmt
 	listBridgeHeartbeatsStmt             *sql.Stmt
+	listBridgeSessionIDsByChannelStmt    *sql.Stmt
 	listBridgeSessionsByIdentityStmt     *sql.Stmt
 	listBridgeSessionsBySessionStmt      *sql.Stmt
 	listChildSessionsStmt                *sql.Stmt
@@ -758,6 +767,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listActiveCronJobsStmt:               q.listActiveCronJobsStmt,
 		listBridgeAllowlistStmt:              q.listBridgeAllowlistStmt,
 		listBridgeHeartbeatsStmt:             q.listBridgeHeartbeatsStmt,
+		listBridgeSessionIDsByChannelStmt:    q.listBridgeSessionIDsByChannelStmt,
 		listBridgeSessionsByIdentityStmt:     q.listBridgeSessionsByIdentityStmt,
 		listBridgeSessionsBySessionStmt:      q.listBridgeSessionsBySessionStmt,
 		listChildSessionsStmt:                q.listChildSessionsStmt,

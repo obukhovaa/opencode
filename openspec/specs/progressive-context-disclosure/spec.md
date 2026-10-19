@@ -1,7 +1,9 @@
-# progressive-context-disclosure Specification
+# Progressive Context Disclosure
 
 ## Purpose
-TBD - created by archiving change scoped-context-files. Update Purpose after archive.
+
+Defines how context files in subdirectories are surfaced to an agent without bloating its system prompt. Discovery of nested files is bounded and can be opted out of, and a cache-stable manifest lists what exists. File bodies are delivered through tool-result `<system-reminder>` blocks when a tool touches a directory strictly inside one, under per-session activation state and a byte budget, and a failed read never fails the tool call.
+
 ## Requirements
 ### Requirement: Nested context file discovery is bounded and opt-outable
 

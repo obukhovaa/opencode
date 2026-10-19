@@ -26,6 +26,8 @@ type callTracker struct {
 	lastCall    map[string]string
 	streakCount map[string]int
 	threshold   int
+	// denials counts the run's permission-rule denials (permission_denial.go).
+	denials ruleDenialBreaker
 }
 
 func newCallTracker() *callTracker {

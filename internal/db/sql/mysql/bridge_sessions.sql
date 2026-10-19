@@ -47,6 +47,13 @@ WHERE project_id  = ?
   AND channel     = ?
   AND identity_id = ?;
 
+-- name: ListBridgeSessionIDsByChannel :many
+SELECT DISTINCT session_id
+FROM bridge_sessions
+WHERE project_id = ?
+  AND channel    = ?
+  AND session_id IS NOT NULL;
+
 -- name: UpdateBridgeSessionPeerID :exec
 UPDATE bridge_sessions
 SET peer_id = ?

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -213,7 +214,7 @@ func (g *grepTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 
 	canonical, err := authorizeRead(ctx, g.registry, g.permissions, GrepToolName, searchPath)
 	if err != nil {
-		if err == permission.ErrorPermissionDenied {
+		if errors.Is(err, permission.ErrorPermissionDenied) {
 			return NewTextErrorResponse(fmt.Sprintf("Permission denied: searching %s", searchPath)), nil
 		}
 		return NewEmptyResponse(), err

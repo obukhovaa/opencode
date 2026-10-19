@@ -153,7 +153,7 @@ func (m *monitorTool) Run(ctx context.Context, call ToolCall) (ToolResponse, err
 	switch action {
 	case permission.ActionAllow:
 	case permission.ActionDeny:
-		return NewEmptyResponse(), permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.DeniedByRule(MonitorToolName, params.Cmd)
 	default:
 		ok := m.permissions.Request(ctx, permission.CreatePermissionRequest{
 			SessionID:   sessionID,

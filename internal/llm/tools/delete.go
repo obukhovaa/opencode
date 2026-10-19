@@ -112,7 +112,7 @@ func (d *deleteTool) Run(ctx context.Context, call ToolCall) (ToolResponse, erro
 		switch action {
 		case permission.ActionAllow:
 		case permission.ActionDeny:
-			return NewEmptyResponse(), permission.ErrorPermissionDenied
+			return NewEmptyResponse(), permission.DeniedByRule(DeleteToolName, absPath)
 		default:
 			p := d.permissions.Request(ctx,
 				permission.CreatePermissionRequest{
@@ -213,7 +213,7 @@ func (d *deleteTool) Run(ctx context.Context, call ToolCall) (ToolResponse, erro
 	switch action {
 	case permission.ActionAllow:
 	case permission.ActionDeny:
-		return NewEmptyResponse(), permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.DeniedByRule(DeleteToolName, absPath)
 	default:
 		p := d.permissions.Request(ctx,
 			permission.CreatePermissionRequest{
