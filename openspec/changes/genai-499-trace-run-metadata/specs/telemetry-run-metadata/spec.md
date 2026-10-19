@@ -21,7 +21,8 @@ When a run ends, the system SHALL record `turns_used` and `finish_reason` on its
 - otherwise `turns_exhausted` when a turn-budget gate ended the run;
 - otherwise `canceled` when the run's context was cancelled, or `error` when its deadline passed, by the time the run returned a result;
 - otherwise `permission_denied` or `canceled` when the final message finished that way;
-- and `end_turn` for every other finish, an accepted `struct_output` and a `max_tokens` stop included.
+- otherwise `max_tokens` when the final message stopped on the output-token limit;
+- and `end_turn` for every other finish, an accepted `struct_output` included.
 
 #### Scenario: Natural finish
 
@@ -32,6 +33,16 @@ When a run ends, the system SHALL record `turns_used` and `finish_reason` on its
 
 - **WHEN** a run with `max_turns = 1` keeps calling tools and gets the forced wrap-up call
 - **THEN** the trace carries `turns_used = 2` and `finish_reason = turns_exhausted`
+
+#### Scenario: Truncated final reply
+
+- **WHEN** the run's last model call stops on the output-token limit
+- **THEN** the trace carries `finish_reason = max_tokens`
+
+#### Scenario: Truncated reply the run re-entered past
+
+- **WHEN** a non-interactive run's model call stops on the output-token limit, the run waits on a background task, and its next call ends the turn
+- **THEN** the trace carries `finish_reason = end_turn`
 
 #### Scenario: Rejected permission prompt
 

@@ -17,6 +17,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/session"
+	"github.com/opencode-ai/opencode/internal/task"
 )
 
 func finishedWith(reason message.FinishReason) message.Message {
@@ -36,7 +37,9 @@ func TestTraceFinishReason(t *testing.T) {
 	}{
 		{name: "natural end of turn", ev: AgentEvent{Message: finishedWith(message.FinishReasonEndTurn)}, want: "end_turn"},
 		{name: "accepted struct_output ends on a tool call", ev: AgentEvent{Message: finishedWith(message.FinishReasonToolUse)}, want: "end_turn"},
-		{name: "max_tokens stop is a natural finish", ev: AgentEvent{Message: finishedWith(message.FinishReasonMaxTokens)}, want: "end_turn"},
+		{name: "max_tokens stop", ev: AgentEvent{Message: finishedWith(message.FinishReasonMaxTokens)}, want: "max_tokens"},
+		{name: "exhausted flag outranks a truncated wrap-up", ev: AgentEvent{Message: finishedWith(message.FinishReasonMaxTokens), TurnsExhausted: true}, want: "turns_exhausted"},
+		{name: "cancellation outranks a truncated reply", ev: AgentEvent{Message: finishedWith(message.FinishReasonMaxTokens)}, runErr: context.Canceled, want: "canceled"},
 		{name: "unfinished message", ev: AgentEvent{Message: finishedWith("")}, want: "end_turn"},
 		{name: "turn budget exhausted", ev: AgentEvent{Message: finishedWith(message.FinishReasonEndTurn), TurnsExhausted: true}, want: "turns_exhausted"},
 		{name: "rejected permission prompt", ev: AgentEvent{Message: finishedWith(message.FinishReasonPermissionDenied)}, want: "permission_denied"},
@@ -284,4 +287,79 @@ func TestProcessGenerationStampsAPanicAsError(t *testing.T) {
 	if got := md["piano.turns_used"]; got != "1" {
 		t.Errorf("piano.turns_used = %q, want 1", got)
 	}
+}
+
+func maxTokensStop() *provider.ProviderResponse {
+	return &provider.ProviderResponse{
+		Content:      "a reply cut off mid-",
+		FinishReason: message.FinishReasonMaxTokens,
+	}
+}
+
+// A run whose last model call stopped on the output-token limit ends there:
+// the loop does not continue a truncated reply, so the run reports
+// max_tokens. A truncated reply the run re-entered past is not its finish.
+func TestProcessGenerationStampsMaxTokens(t *testing.T) {
+	loadConfigIn(t, ".")
+	setLangfuseClient(t, true)
+	config.Get().Telemetry = &config.TelemetryConfig{MetadataNamespace: "piano"}
+
+	t.Run("terminal truncation", func(t *testing.T) {
+		withFreshTaskRegistry(t)
+		p := &spanRecordingProvider{scriptedProvider: &scriptedProvider{
+			respond: func(int, bool) *provider.ProviderResponse { return maxTokensStop() },
+		}}
+		a := newLoopAgentWithTools(t, p, nil)
+
+		res := a.processGeneration(context.Background(), "sess-max-tokens", "do work", 10, nil, RunOptions{NonInteractive: true})
+		if res.Error != nil {
+			t.Fatalf("processGeneration error: %v", res.Error)
+		}
+		md := spanMetadata(t, p.span, "langfuse.trace.metadata.")
+		if got := md["piano.finish_reason"]; got != "max_tokens" {
+			t.Errorf("piano.finish_reason = %q, want max_tokens", got)
+		}
+		if got := md["piano.turns_used"]; got != "1" {
+			t.Errorf("piano.turns_used = %q, want 1", got)
+		}
+	})
+
+	t.Run("truncation the run re-entered past", func(t *testing.T) {
+		reg := withFreshTaskRegistry(t)
+		const sess = "sess-max-tokens-reentry"
+		taskID := registerDrainTask(t, reg, sess)
+		p := &spanRecordingProvider{scriptedProvider: &scriptedProvider{
+			respond: func(call int, _ bool) *provider.ProviderResponse {
+				if call == 1 {
+					return maxTokensStop()
+				}
+				return endTurn()
+			},
+			// The background task completes while the run waits on it after
+			// the first call, so the run re-enters for a second call.
+			onCall: func(call int) {
+				if call == 1 {
+					time.AfterFunc(50*time.Millisecond, func() {
+						reg.MarkFinished(taskID, task.StateCompleted, nil)
+					})
+				}
+			},
+		}}
+		a := newLoopAgentWithTools(t, p, nil)
+
+		res := a.processGeneration(context.Background(), sess, "do work", 10, nil, RunOptions{NonInteractive: true})
+		if res.Error != nil {
+			t.Fatalf("processGeneration error: %v", res.Error)
+		}
+		if got := p.callCount(); got != 2 {
+			t.Fatalf("provider calls = %d, want 2 (the re-entry after the wait)", got)
+		}
+		md := spanMetadata(t, p.span, "langfuse.trace.metadata.")
+		if got := md["piano.finish_reason"]; got != "end_turn" {
+			t.Errorf("piano.finish_reason = %q, want end_turn", got)
+		}
+		if got := md["piano.turns_used"]; got != "2" {
+			t.Errorf("piano.turns_used = %q, want 2", got)
+		}
+	})
 }

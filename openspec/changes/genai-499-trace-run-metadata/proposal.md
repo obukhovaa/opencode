@@ -9,7 +9,7 @@ Pooled runs have a second gap. A pool pod boots with the static tag `flow:none` 
 ## What Changes
 
 - **Turn budget on the trace.** When a run's trace is created, it records `max_turns`: the effective budget of that `RunWith` call.
-- **Outcome on the trace.** When the run ends, it records `turns_used` (model calls made, the forced wrap-up included, summed over non-interactive re-entries) and `finish_reason`, one of `end_turn`, `turns_exhausted`, `permission_denied`, `canceled`, `error`.
+- **Outcome on the trace.** When the run ends, it records `turns_used` (model calls made, the forced wrap-up included, summed over non-interactive re-entries) and `finish_reason`, one of `end_turn`, `max_tokens`, `turns_exhausted`, `permission_denied`, `canceled`, `error`.
 - The keys go through the existing `telemetry.metadataNamespace` (`piano.max_turns` and so on). `telemetry.generations` does not gate them.
 - A subagent's values land on its own observation through a new `langfuse.SetTraceMetadata`, which follows the child guard that `SetTraceOutput` uses. A child never overwrites its parent's trace metadata.
 - **`flow:<flowID>` on POST /flow runs.** The run identity a POST /flow run publishes now carries a `flow:<flowID>` tag. A flow tag alone is enough to publish an identity. The tag shadows a configured `flow:` tag such as `flow:none` instead of sitting beside it. `opencode serve --flow` (the per-Job auto-start) is unchanged and keeps its configured tag.

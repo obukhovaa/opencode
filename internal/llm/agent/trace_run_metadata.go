@@ -62,8 +62,12 @@ func stampTraceMetadata(ctx context.Context, metadata map[string]any) {
 //     returns its last natural result, and a tool call interrupted mid-run
 //     finishes its message as canceled whatever stopped it;
 //   - the final message's permission_denied, canceled or error;
+//   - max_tokens when the final model call stopped on the output-token
+//     limit. The loop does not continue a truncated reply, so this is the
+//     run's last word; a truncated reply the run re-entered past (a
+//     non-interactive wait on background tasks) does not count;
 //   - end_turn for every other finish (a text reply, an accepted
-//     struct_output, a max_tokens stop).
+//     struct_output).
 func traceFinishReason(ev AgentEvent, runErr error) string {
 	if ev.Error != nil {
 		return errorFinishReason(ev.Error)
@@ -75,7 +79,8 @@ func traceFinishReason(ev AgentEvent, runErr error) string {
 		return errorFinishReason(runErr)
 	}
 	switch reason := ev.Message.FinishReason(); reason {
-	case message.FinishReasonPermissionDenied, message.FinishReasonCanceled, message.FinishReasonError:
+	case message.FinishReasonPermissionDenied, message.FinishReasonCanceled, message.FinishReasonError,
+		message.FinishReasonMaxTokens:
 		return string(reason)
 	}
 	return string(message.FinishReasonEndTurn)
