@@ -35,3 +35,10 @@
 - [x] 5.1 `go test ./internal/llm/agent/... ./internal/llm/tools/... ./internal/permission/... ./internal/config/...`, `go vet`, `gofmt -l`.
 - [x] 5.2 `scripts/test/webfetch_output_limit.sh` (the e2e touched by 2.5).
 - [ ] 5.3 `make test` and the full `make test-e2e` before merge.
+
+## 6. Review fixes
+
+- [x] 6.1 Breaker: a turn that delivers an accepted `struct_output` is not ended (its output was dropped); a PreToolUse-hook-blocked call is no progress; the denial message cuts an input over 512 bytes.
+- [x] 6.2 Overflow recovery: not once the run's context is done (a flow step past its deadline); overflow markers for LiteLLM's `ContextWindowExceededError`, Moonshot/Kimi and the OpenAI Responses API; `overflow_retry` in the trigger list (README, auto-compaction delta).
+- [x] 6.3 Paged reads stop when the call's context is done; a test pages through files outside the allowed paths with the production permission chain.
+- [x] 6.4 Docs and specs: the title skip covers cron jobs fired in an unwatched session only; an `allowTools` omission is "Tool not found", not a rule denial.
