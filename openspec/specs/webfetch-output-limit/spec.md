@@ -48,12 +48,12 @@ When a `webfetch` call's content exceeds the resolved cap, the system SHALL writ
 
 - **WHEN** a `webfetch` call spills its content to a temp file
 - **THEN** the named path is absolute and the `grep` tool finds content in it that the preview omitted, with no further configuration
-- **AND** a spill within the `read` tool's own size ceiling opens with the `read` tool
+- **AND** a spill within the `read` tool's whole-file ceiling opens with the `read` tool, and a larger one opens with a paged `read` (offset/limit)
 
 #### Scenario: Recovery guidance matches what the tools can do
 
 - **WHEN** the overflow header names a spill file
-- **THEN** it directs the agent to tools that work at that file's size (the `grep` tool and `sed`, neither of which has a size ceiling) and states the size limit above which the `read` tool declines a file
+- **THEN** it directs the agent to tools that work at any size (the `grep` tool, the `read` tool's paged reads with offset/limit, and `sed`) and states the size limit above which the `read` tool declines a whole-file read
 
 ### Requirement: The cap is measured and spilled after format conversion
 
