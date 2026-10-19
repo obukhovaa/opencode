@@ -93,6 +93,23 @@ func (s *mysqlStore) ListBindingsByIdentity(ctx context.Context, projectID, chan
 	return out, nil
 }
 
+func (s *mysqlStore) ListSessionIDsByChannel(ctx context.Context, projectID, channel string) ([]string, error) {
+	rows, err := s.queries.ListBridgeSessionIDsByChannel(ctx, mysqldb.ListBridgeSessionIDsByChannelParams{
+		ProjectID: projectID,
+		Channel:   channel,
+	})
+	if err != nil {
+		return nil, errWithContext("ListSessionIDsByChannel", projectID+"|"+channel, err)
+	}
+	out := make([]string, 0, len(rows))
+	for _, id := range rows {
+		if v := strFromNullString(id); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out, nil
+}
+
 func (s *mysqlStore) UpdateBindingPeerID(ctx context.Context, projectID, channel, identityID, oldPeerID, newPeerID string) error {
 	err := s.queries.UpdateBridgeSessionPeerID(ctx, mysqldb.UpdateBridgeSessionPeerIDParams{
 		PeerID:     newPeerID,

@@ -1180,6 +1180,11 @@
           "description": "Daemon mode: post the weekly heartbeat setup reminder to direct-message chats whose heartbeat was never turned on or off. Only top-level DMs of a bot this process owns (inbound not mediated) are reminded. Set false to stop the reminder for every chat; /heartbeat and scheduled beats are unaffected.",
           "type": "boolean"
         },
+        "isolateExternalSessions": {
+          "default": false,
+          "description": "Keep chat peers out of external conversations: /sessions, /session \u003cid-prefix\u003e and /crons neither show nor switch into a session that holds a binding on the 'external' channel (each external peer is a separate conversation, often of another tenant). The caller's own current session always stays visible. A failed binding lookup hides every other session. Off by default.",
+          "type": "boolean"
+        },
         "permissionMode": {
           "description": "How permission requests are resolved on bridge-owned sessions: 'allow' auto-approves, 'deny' auto-denies, 'ask' or empty defers to the opencode UI (hangs headless). Unrecognised values fail-safe to deny.",
           "enum": [

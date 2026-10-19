@@ -87,12 +87,28 @@ type Config struct {
 	// unset means on; false turns the reminder off for every chat of this
 	// process. /heartbeat and scheduled beats are unaffected.
 	HeartbeatReminder *bool `json:"heartbeatReminder,omitempty"`
+
+	// IsolateExternalSessions keeps chat peers out of external
+	// conversations. Each peer on the "external" channel is a separate
+	// conversation, often of another tenant, while the chat session
+	// commands (/sessions, /session <id-prefix>, /crons) work over every
+	// session of the project. When true, those commands neither show nor
+	// switch into a session that holds a binding on the external channel,
+	// except the caller's own current session. Off by default: the
+	// commands then behave exactly as before.
+	IsolateExternalSessions bool `json:"isolateExternalSessions,omitempty"`
 }
 
 // HeartbeatReminderEnabled reports whether the heartbeat setup reminder
 // is posted. A nil config or an unset field both mean on.
 func (c *Config) HeartbeatReminderEnabled() bool {
 	return c == nil || c.HeartbeatReminder == nil || *c.HeartbeatReminder
+}
+
+// ExternalSessionsIsolated reports whether chat session commands hide
+// external-bound sessions. A nil config means off.
+func (c *Config) ExternalSessionsIsolated() bool {
+	return c != nil && c.IsolateExternalSessions
 }
 
 // ChannelsConfig holds per-platform channel sections.

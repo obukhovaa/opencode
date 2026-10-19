@@ -49,6 +49,7 @@ type Querier interface {
 	ListActiveCronJobs(ctx context.Context) ([]CronJob, error)
 	ListBridgeAllowlist(ctx context.Context, arg ListBridgeAllowlistParams) ([]BridgeAllowlist, error)
 	ListBridgeHeartbeats(ctx context.Context, projectID string) ([]BridgeHeartbeat, error)
+	ListBridgeSessionIDsByChannel(ctx context.Context, arg ListBridgeSessionIDsByChannelParams) ([]sql.NullString, error)
 	ListBridgeSessionsByIdentity(ctx context.Context, arg ListBridgeSessionsByIdentityParams) ([]BridgeSession, error)
 	ListBridgeSessionsBySession(ctx context.Context, arg ListBridgeSessionsBySessionParams) ([]BridgeSession, error)
 	ListChildSessions(ctx context.Context, rootSessionID sql.NullString) ([]Session, error)

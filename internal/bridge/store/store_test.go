@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -414,5 +416,61 @@ func TestCountBindingsByIdentity(t *testing.T) {
 	}
 	if n != 3 {
 		t.Errorf("Count = %d, want 3", n)
+	}
+}
+
+// TestListSessionIDsByChannel: the distinct sessions holding a binding on
+// one channel, across every identity of it, scoped to the project, and
+// without the NULL session of an orphaned row.
+func TestListSessionIDsByChannel(t *testing.T) {
+	t.Parallel()
+	s, db := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := db.Exec(`
+		INSERT INTO sessions (id, project_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at)
+		VALUES ('S2', 'proj', 't2', 0, 0, 0, 0, strftime('%s','now'), strftime('%s','now')),
+		       ('S3', 'proj', 't3', 0, 0, 0, 0, strftime('%s','now'), strftime('%s','now')),
+		       ('S4', 'proj', 't4', 0, 0, 0, 0, strftime('%s','now'), strftime('%s','now')),
+		       ('Sother', 'projOther', 't', 0, 0, 0, 0, strftime('%s','now'), strftime('%s','now'))
+	`); err != nil {
+		t.Fatalf("seed sessions: %v", err)
+	}
+	for _, b := range []Binding{
+		{ProjectID: "proj", Channel: "external", IdentityID: "c3", PeerID: "a:f:r1", SessionID: "S1"},
+		{ProjectID: "proj", Channel: "external", IdentityID: "c3", PeerID: "a:f:r2", SessionID: "S1"},
+		{ProjectID: "proj", Channel: "external", IdentityID: "other", PeerID: "b:f:r1", SessionID: "S2"},
+		{ProjectID: "proj", Channel: "external", IdentityID: "c3", PeerID: "a:f:r3", SessionID: "S4"},
+		{ProjectID: "proj", Channel: "slack", IdentityID: "default", PeerID: "D1", SessionID: "S3"},
+		{ProjectID: "projOther", Channel: "external", IdentityID: "c3", PeerID: "a:f:r9", SessionID: "Sother"},
+	} {
+		if _, err := s.UpsertBinding(ctx, b); err != nil {
+			t.Fatalf("Upsert %s: %v", b.PeerID, err)
+		}
+	}
+	// Orphan S4's row: the FK nulls its session_id.
+	if _, err := db.Exec(`DELETE FROM sessions WHERE id = 'S4'`); err != nil {
+		t.Fatalf("delete S4: %v", err)
+	}
+
+	tests := []struct {
+		channel string
+		want    []string
+	}{
+		{"external", []string{"S1", "S2"}},
+		{"slack", []string{"S3"}},
+		{"telegram", []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.channel, func(t *testing.T) {
+			got, err := s.ListSessionIDsByChannel(ctx, "proj", tt.channel)
+			if err != nil {
+				t.Fatalf("ListSessionIDsByChannel: %v", err)
+			}
+			sort.Strings(got)
+			if strings.Join(got, ",") != strings.Join(tt.want, ",") {
+				t.Errorf("sessions = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

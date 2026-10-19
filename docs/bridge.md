@@ -85,6 +85,7 @@ Health snapshot: `curl http://127.0.0.1:3456/router/health` (per-adapter `status
 | `toolUpdateVerbosity` | `"compact"` (default) \| `"full"` | `compact` posts **one progress message per run and edits it in place**: `⏳ Thinking...` when the run starts, then `⏳ 5 tool calls done · running bash · 1m12s` as calls complete (real counts, the tool in flight, elapsed time), and a final `✓ Done · 12 tool calls · 3m40s` (or `✗ Run failed · …`) when the run ends. A failed call adds `· 1 failed` and a second line `✗ <tool>#<id> · <reason>`. No per-tool-call messages; arguments and result bodies stay out of chat (they're in the session store and Langfuse). Edits are paced to one every 2s and coalesced. `full` posts one card per tool call — `🔧 <tool>#<id> · <args>` updated in place to `✓ <tool>#<id> · <duration> · <body>` — with the argument summary and a truncated result body; `verbose` and `debug` are accepted as aliases. Unrecognised values fall back to `compact` with a one-shot WARN. Flip it live with `/verbosity`; switching a run from `full` to `compact` mid-run silences calls started after the switch but still closes any tool card already posted. Peers on the `external` relay channel receive no rendered card; they get each card state as a structured `progress` frame instead, which carries failures too (see the external channel below). |
 | `queueAcknowledgementsEnabled` | `bool` | When `true`, sends an in-place-editable `⏳ queued` acknowledgement to a sender whose message is enqueued behind an in-flight agent run. The ack is edited as the queue drains and resolved to `▶ Processing your message now…` the moment the run starts. Requires 2 seconds of queuing before sending, to avoid a pointless flash for sub-second waits. Default: `false`. All three production adapters (Telegram, Slack, Mattermost) support in-place edit; the external adapter silently skips acks. |
 | `heartbeatReminder` | `bool` | Daemon mode only. When `true` (the default), the bridge posts the weekly [heartbeat](./cron-and-heartbeat.md#setup-reminder) setup reminder to direct-message chats whose heartbeat was never turned on or off. `false` stops the reminder for every chat of this process; `/heartbeat` and scheduled beats are unaffected. |
+| `isolateExternalSessions` | `bool` | When `true`, chat peers cannot see or enter external conversations: `/sessions`, `/session <id-prefix>` and `/crons` leave out every session that holds a binding on the `external` channel, except the caller's own current session. See [Chat commands](#chat-commands). Default: `false` (the commands work over every session of the project). |
 | `channels.{telegram,slack,mattermost,external}` | object | Per-platform configuration; see below. |
 
 ## Per-channel configuration
@@ -317,6 +318,8 @@ Once a peer is bound (manually or via the first inbound), the following commands
 | `/help` | List commands. |
 | `/dir` | Unsupported — one opencode process is pinned to one workspace (returns an explanatory message). |
 
+**Isolating external conversations.** `/sessions`, `/session <id-prefix>` and `/crons` work over every session of the project, including those serving `external` peers, which are often other tenants. Set `router.isolateExternalSessions: true` to keep chat peers out of them: a session that holds at least one binding on the `external` channel is left out of the `/sessions` listing, of `/session` prefix matching (a prefix that only matches such a session gets the ordinary "No session matches" reply, and an ambiguous-prefix listing does not name it), and its jobs are left out of `/crons`. The caller's own current session always stays visible. The external-bound set is one store query per command; if it fails, the commands show only the current session and log a WARN. The other commands take no session id (they act on the caller's own binding, or on process-wide settings such as `/agent` and `/model`) and are unaffected.
+
 Any non-command message is forwarded as a prompt.
 
 ## Heartbeat
@@ -346,6 +349,8 @@ The tool's description is **built dynamically at registration time** from the li
 - Any other send to or from an external conversation is refused before dispatch with a tool error that names no peer. Chat-to-chat sends are unchanged.
 
 For the same reason the description lists only bound peers on chat channels, never `external` ones.
+
+Chat users can reach these conversations through the session commands too (`/sessions`, `/session <id-prefix>`, `/crons`): set `router.isolateExternalSessions: true` so the commands neither list nor switch into a session bound to an `external` peer (see [Chat commands](#chat-commands)).
 
 Response shape: `{"delivered": bool, "error"?: string, "resolvedPeerId"?: string}`. Multi-peer fan-out isn't exposed — the agent makes parallel `router_send` calls if it needs to reach multiple peers (allowed via `AllowParallelism: true`).
 
