@@ -22,4 +22,4 @@
 
 - [x] 5.1 `docs/telemetry.md`: usage keys and the summarized display.
 - [x] 5.2 Live e2e on the LiteLLM Bedrock route (Sonnet 5.5, deferred tools, thinking replay across the tool loop); replay input-cost A/B; streamed delta counts.
-- [ ] 5.3 `make test` before merge.
+- [x] 5.3 `make test` before merge.
