@@ -1,7 +1,9 @@
-# background-task-stall-detection Specification
+# Background Task Stall Detection
 
 ## Purpose
-TBD - created by archiving change background-task-stall-detection. Update Purpose after archive.
+
+Defines how the non-interactive end-of-turn drain detects and kills a stalled async subagent task. Progress is read from the subagent's own session message log, and a configurable threshold, defaulting above the largest tool-call budget, decides when a task counts as stalled. A stalled task is terminated through the existing task-kill path, and the drain itself gains no timeout.
+
 ## Requirements
 ### Requirement: Stall detection applies only to subagent-backed tasks
 

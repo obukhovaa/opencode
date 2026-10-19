@@ -1,7 +1,9 @@
-# session-rename Specification
+# Session Rename
 
 ## Purpose
-TBD - created by archiving change rename-session. Update Purpose after archive.
+
+Defines how a user renames a session and how that title is protected. Every explicit title update (the TUI `/rename` command, the chat bridge `/rename` command and the session update API) goes through one rename path that trims the value and marks the session user-titled. Automatic title generation never overwrites a user-set title, and a rename is broadcast so every consumer sees the new title.
+
 ## Requirements
 ### Requirement: Users can rename a session's title
 The system SHALL provide an operation that sets a session's user-facing title to a caller-supplied value. The operation SHALL trim leading and trailing whitespace, SHALL reject an empty or whitespace-only title without modifying the session, and on success SHALL persist the new title and durably mark the session as user-titled. The mark SHALL survive process restarts and SHALL NOT be cleared by unrelated session updates (token counts, cost, summary).
