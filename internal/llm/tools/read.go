@@ -178,7 +178,7 @@ func (v *viewTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 	}
 
 	// Read the file content
-	content, linesRead, lineCount, capped, err := readTextFile(filePath, params.Offset, params.Limit, MaxReadSize, verify)
+	content, linesRead, lineCount, capped, err := readTextFile(ctx, filePath, params.Offset, params.Limit, MaxReadSize, verify)
 	if err != nil {
 		if errors.Is(err, errReadPathChanged) {
 			return NewTextErrorResponse(fmt.Sprintf("Permission denied: reading %s", filePath)), nil
@@ -260,15 +260,18 @@ func addLineNumbers(content string, startLine int) string {
 // returned text would pass maxBytes (capped). It streams the file, so memory
 // is bounded by the returned window rather than by the file or its longest
 // line. linesRead is the number of lines returned, lineCount the file's total.
-// verify is passed to openForRead (see authorizeRead).
-func readTextFile(filePath string, offset, limit, maxBytes int, verify bool) (content string, linesRead, lineCount int, capped bool, err error) {
+// verify is passed to openForRead (see authorizeRead). It stops with ctx's
+// error once ctx is done: counting the lines reads a file of any size to the
+// end, which a cancelled turn, or a call the tool watchdog abandoned, must
+// not keep doing.
+func readTextFile(ctx context.Context, filePath string, offset, limit, maxBytes int, verify bool) (content string, linesRead, lineCount int, capped bool, err error) {
 	file, err := openForRead(filePath, verify)
 	if err != nil {
 		return "", 0, 0, false, err
 	}
 	defer file.Close()
 
-	r := bufio.NewReaderSize(file, 64*1024)
+	r := bufio.NewReaderSize(ctxReader{ctx: ctx, r: file}, 64*1024)
 	var sb strings.Builder
 	for {
 		keep := lineCount >= offset && linesRead < limit && !capped
@@ -299,6 +302,19 @@ func readTextFile(filePath string, offset, limit, maxBytes int, verify bool) (co
 		linesRead++
 	}
 	return sb.String(), linesRead, lineCount, capped, nil
+}
+
+// ctxReader fails every read once ctx is done.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
 }
 
 // readLine reads one line without its line ending. With keep it returns the

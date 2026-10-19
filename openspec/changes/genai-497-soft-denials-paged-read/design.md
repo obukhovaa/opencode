@@ -30,6 +30,8 @@ The ceiling exists to bound what one call puts in the context. For a whole-file 
 - The returned text is capped at `MaxReadSize` bytes as well as at 2000 lines: the worst case is otherwise 2000 × 2000 bytes ≈ 4MB, which is the context-budget concern the `webfetch-output-limit` design deferred this over. A capped page says so and gives the offset to continue from.
 - A file over the ceiling skips `NotifyOpenFile` and `FormatDiagnostics`: the LSP client's `didOpen` reads and sends the whole file.
 - `recordFileRead` runs for paged reads as before, so read-before-edit tracking is unchanged.
+- The stream reads through the call's context: counting lines reads a file of any size to its end, which a cancelled turn, or a call the tool watchdog abandoned, must not keep doing.
+- Paging changes nothing before the size check: `authorizeRead` (CD-5247's canonical-path check) and `openForRead`'s verified open apply to every read, paged or whole.
 
 ## 4. Overflow recovery
 

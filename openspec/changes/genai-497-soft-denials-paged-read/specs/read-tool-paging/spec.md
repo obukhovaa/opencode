@@ -16,7 +16,7 @@ The `read` tool SHALL decline a call with neither `offset` nor `limit` for a fil
 
 ### Requirement: A paged read is bounded per call and streams the file
 
-A read SHALL return at most `DefaultReadLimit` (2000) lines and at most `MaxReadSize` bytes of file text. When the byte bound stops it early, the note SHALL say the call's output limit was reached and give the offset to continue from. The tool SHALL read the file as a stream, holding only the returned window; a line longer than any read buffer SHALL be cut to `MaxLineLength` with a `...` marker rather than fail the call. An offset at or past the end of the file SHALL return an error naming the file's line count. A paged read SHALL record the file as read for the edit tools' read-before-edit check. A file over `MaxReadSize` SHALL NOT be opened in the LSP.
+A read SHALL return at most `DefaultReadLimit` (2000) lines and at most `MaxReadSize` bytes of file text. When the byte bound stops it early, the note SHALL say the call's output limit was reached and give the offset to continue from. The tool SHALL read the file as a stream, holding only the returned window; a line longer than any read buffer SHALL be cut to `MaxLineLength` with a `...` marker rather than fail the call. An offset at or past the end of the file SHALL return an error naming the file's line count. A paged read SHALL record the file as read for the edit tools' read-before-edit check. A file over `MaxReadSize` SHALL NOT be opened in the LSP. The read SHALL stop once the call's context is done, so a cancelled or abandoned call does not keep scanning a large file for its line count. A paged read SHALL be authorized exactly as a whole-file read: the read permission patterns are evaluated on the canonical path and the file is opened through the same verified open.
 
 #### Scenario: Long lines
 
@@ -27,3 +27,8 @@ A read SHALL return at most `DefaultReadLimit` (2000) lines and at most `MaxRead
 
 - **WHEN** a file holds a 1MB line
 - **THEN** the line is returned cut to 2000 characters plus `...`, and the following lines keep their numbers
+
+#### Scenario: Paged read outside the allowed paths
+
+- **WHEN** `permission.read` allows only one directory and a paged read names a large file outside it, directly, through `..` or through a symlink inside it
+- **THEN** the call returns `Permission denied` and no file content

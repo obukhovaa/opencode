@@ -1,7 +1,9 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -165,5 +167,19 @@ func TestRead_SmallFileUnchanged(t *testing.T) {
 	want := "<file>\n     1|line-1xxxx\n     2|line-2xxxx\n     3|line-3xxxx\n</file>\n"
 	if resp.IsError || resp.Content != want {
 		t.Errorf("content = %q, want %q", resp.Content, want)
+	}
+}
+
+// A paged read scans the rest of the file for its line count; a cancelled
+// turn must stop it instead of reading a large file to the end.
+func TestReadTextFileStopsOnceCancelled(t *testing.T) {
+	path := writeLines(t, 4000, 100)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, _, _, err := readTextFile(ctx, path, 10, 5, MaxReadSize, false); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if _, linesRead, lineCount, _, err := readTextFile(context.Background(), path, 10, 5, MaxReadSize, false); err != nil || linesRead != 5 || lineCount != 4000 {
+		t.Fatalf("live ctx: linesRead=%d lineCount=%d err=%v", linesRead, lineCount, err)
 	}
 }
