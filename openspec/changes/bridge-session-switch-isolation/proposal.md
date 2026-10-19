@@ -5,11 +5,12 @@
 ## What Changes
 
 - New opt-in `router.isolateExternalSessions` (bool, default off). Unset, every command behaves exactly as before and the store is not queried.
-- When on, a session holding at least one binding on the `external` channel is:
+- When on, a session of an external conversation's run — one holding at least one binding on the `external` channel, or sharing its root session with one (a flow run's unbound sibling steps) — is:
   - left out of the `/sessions` listing;
   - left out of `/session <id-prefix>` matching, so a prefix that matches only such a session gets the ordinary "No session matches" reply, and an ambiguous-prefix listing does not name it;
   - left out of `/crons`, with its jobs.
 - The caller's own current session always stays visible.
+- Roots come from the session rows the commands already list; `/crons` reads the session of a job that is not among them (a subagent's) once.
 - The external-bound set comes from one store query per command (`Store.ListSessionIDsByChannel`, new sqlc query `ListBridgeSessionIDsByChannel` for SQLite and MySQL). A failed lookup fails closed: only the current session stays visible, with a WARN log.
 
 ## Capabilities

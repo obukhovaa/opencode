@@ -93,9 +93,11 @@ type Config struct {
 	// conversation, often of another tenant, while the chat session
 	// commands (/sessions, /session <id-prefix>, /crons) work over every
 	// session of the project. When true, those commands neither show nor
-	// switch into a session that holds a binding on the external channel,
-	// except the caller's own current session. Off by default: the
-	// commands then behave exactly as before.
+	// switch into a session of an external conversation's run — one that
+	// holds a binding on the external channel, or shares its root session
+	// with one that does (the step sessions of one flow run) — except the
+	// caller's own current session. Off by default: the commands then
+	// behave exactly as before.
 	IsolateExternalSessions bool `json:"isolateExternalSessions,omitempty"`
 }
 

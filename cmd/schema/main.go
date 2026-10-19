@@ -1252,7 +1252,7 @@ func generateSchema() map[string]any {
 			},
 			"isolateExternalSessions": map[string]any{
 				"type":        "boolean",
-				"description": "Keep chat peers out of external conversations: /sessions, /session <id-prefix> and /crons neither show nor switch into a session that holds a binding on the 'external' channel (each external peer is a separate conversation, often of another tenant). The caller's own current session always stays visible. A failed binding lookup hides every other session. Off by default.",
+				"description": "Keep chat peers out of external conversations: /sessions, /session <id-prefix> and /crons neither show nor switch into a session that holds a binding on the 'external' channel (each external peer is a separate conversation, often of another tenant), nor into any session sharing its root session (the other step sessions of the same flow run). The caller's own current session always stays visible. A failed lookup hides every other session. Off by default.",
 				"default":     false,
 			},
 			"channels": map[string]any{

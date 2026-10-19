@@ -228,8 +228,9 @@ func (s *Service) cmdModel(_ context.Context, in bridge.Inbound) *bridge.Command
 // binding's session is ALWAYS shown even if empty (you should be able
 // to see what `/session` reports for the row you're on).
 //
-// With router.isolateExternalSessions on, sessions bound to an external
-// conversation are hidden too (see chatSessionVisible); the current
+// With router.isolateExternalSessions on, sessions of an external
+// conversation's run — bound to an external peer, or sharing a root with
+// one that is — are hidden too (see chatSessionVisible); the current
 // binding's session still always shows.
 func (s *Service) cmdSessions(ctx context.Context, in bridge.Inbound) *bridge.CommandReply {
 	sessions, err := s.app.Sessions.List(ctx)
@@ -243,7 +244,7 @@ func (s *Service) cmdSessions(ctx context.Context, in bridge.Inbound) *bridge.Co
 	if b, err := s.resolveBinding(ctx, in.Peer); err == nil {
 		currentID = b.SessionID
 	}
-	visible := s.chatSessionVisible(ctx, currentID)
+	visible := s.chatSessionVisible(ctx, currentID, sessions)
 	// Filter empty placeholder sessions (Title=="chat-bridge" + zero
 	// messages) — these are pre-created stubs from Bind() that never
 	// got a conversation. Always keep the current binding's session
@@ -319,8 +320,8 @@ func (s *Service) cmdSessions(ctx context.Context, in bridge.Inbound) *bridge.Co
 //   - refuses if EITHER the current or target session has a run in
 //     flight, since switching mid-run would split agent output across
 //     two dispatchers.
-//   - with router.isolateExternalSessions on, leaves sessions bound to
-//     an external conversation out of the prefix match (see
+//   - with router.isolateExternalSessions on, leaves sessions of an
+//     external conversation's run out of the prefix match (see
 //     chatSessionVisible): such a prefix gets the ordinary "no session
 //     matches" reply and no ambiguous listing names them, so neither
 //     their title nor their id leaks.
@@ -365,7 +366,7 @@ func (s *Service) cmdSession(ctx context.Context, in bridge.Inbound) *bridge.Com
 	if err != nil {
 		return replyText("Failed to list sessions: " + err.Error())
 	}
-	visible := s.chatSessionVisible(ctx, binding.SessionID)
+	visible := s.chatSessionVisible(ctx, binding.SessionID, sessions)
 	var matches []sessionMatch
 	for _, sess := range sessions {
 		if strings.HasPrefix(sess.ID, args) && visible(sess.ID) {
@@ -594,9 +595,9 @@ func (s *Service) retainedSummary(ctx context.Context, summaryMessageID string) 
 // stuck. Empty list short-circuits with a friendlier message than an
 // empty table.
 //
-// With router.isolateExternalSessions on, jobs of sessions bound to an
-// external conversation are left out (see chatSessionVisible): a job's
-// task title and prompt belong to that conversation. Jobs of the current
+// With router.isolateExternalSessions on, jobs of sessions of an external
+// conversation's run are left out (see cronSessionVisible): a job's task
+// title and prompt belong to that conversation. Jobs of the current
 // binding's session always show.
 func (s *Service) cmdCrons(ctx context.Context, in bridge.Inbound) *bridge.CommandReply {
 	if s.app.Crons == nil {
@@ -614,7 +615,7 @@ func (s *Service) cmdCrons(ctx context.Context, in bridge.Inbound) *bridge.Comma
 		currentSessionID = b.SessionID
 	}
 	if s.cfg.ExternalSessionsIsolated() {
-		visible := s.chatSessionVisible(ctx, currentSessionID)
+		visible := s.cronSessionVisible(ctx, currentSessionID, jobs)
 		kept := make([]cron.CronJob, 0, len(jobs))
 		for _, job := range jobs {
 			if visible(job.SessionID) {
