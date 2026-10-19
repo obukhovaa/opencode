@@ -552,13 +552,21 @@ func isContextOverflowError(err error) bool {
 }
 
 // contextOverflowCause classifies a failed model call as a context overflow:
-// "provider_error" when the error says so, "near_window" when the error is
-// unspecific but the context was close to the window (the same test as
-// warnIfLikelyContextOverflow, which some proxies need because they reset the
-// stream instead of returning the 400), "" otherwise.
+// "provider_error" when the error says so, at any context size; "near_window"
+// when the error is unspecific but the context was close to the window (the
+// same test as warnIfLikelyContextOverflow, which some proxies need because
+// they reset the stream instead of returning the 400); "" otherwise. An error
+// the provider already retried as transient (a rate limit or an overload
+// after retries, Bedrock's throttling) or a timeout (the HTTP client's, a
+// stalled stream) names its own cause, so it is never "near_window": a lossy
+// compaction of the session would not fix it. A peer stream reset stays
+// eligible, as that is how those proxies report an overflow.
 func (a *agent) contextOverflowCause(estimated int64, err error) string {
 	if isContextOverflowError(err) {
 		return "provider_error"
+	}
+	if provider.IsRetriedTransientError(err) || provider.IsTimeoutError(err) {
+		return ""
 	}
 	if likelyContextOverflow(estimated, a.provider.Model().ContextWindow) {
 		return "near_window"

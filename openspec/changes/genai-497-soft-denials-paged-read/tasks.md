@@ -42,3 +42,4 @@
 - [x] 6.2 Overflow recovery: not once the run's context is done (a flow step past its deadline); overflow markers for LiteLLM's `ContextWindowExceededError`, Moonshot/Kimi and the OpenAI Responses API; `overflow_retry` in the trigger list (README, auto-compaction delta).
 - [x] 6.3 Paged reads stop when the call's context is done; a test pages through files outside the allowed paths with the production permission chain.
 - [x] 6.4 Docs and specs: the title skip covers cron jobs fired in an unwatched session only; an `allowTools` omission is "Tool not found", not a rule denial.
+- [x] 6.5 Near-window recovery skips errors the provider already retried as transient (`provider.IsRetriedTransientError`, now shared with the flow runner's postpone check) and timeouts (`provider.IsTimeoutError`); a peer stream reset stays eligible. Tests: 429 after retries, client timeout and stalled stream at 92% (no compaction), overflow marker at 10% and 92% (recovers).

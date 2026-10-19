@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,23 @@ import (
 )
 
 var errInternal = errors.New("500 internal server error")
+
+// err429Retried is what the Anthropic client returns once its retry budget on
+// a 429 ran out.
+var err429Retried = errors.New("maximum retry attempts reached for HTTP 429: 8 retries")
+
+var errRSTStream = errors.New("stream error: stream ID 147; INTERNAL_ERROR; received from peer")
+
+// clientTimeout is net/http's Client.Timeout error underneath a *url.Error.
+type clientTimeout struct{}
+
+func (clientTimeout) Error() string {
+	return "net/http: request canceled (Client.Timeout exceeded while awaiting headers)"
+}
+func (clientTimeout) Timeout() bool   { return true }
+func (clientTimeout) Temporary() bool { return true }
+
+var errClientTimeout error = &url.Error{Op: "Post", URL: "https://api.anthropic.com/v1/messages", Err: clientTimeout{}}
 
 var errPromptTooLong = errors.New(`POST "https://api.anthropic.com/v1/messages": 400 Bad Request {"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 212000 tokens > 200000 maximum"}}`)
 
@@ -191,6 +209,52 @@ func TestOverflowRetry_NoRecovery(t *testing.T) {
 	}
 }
 
+// Near the window, only an unspecific failure is read as an overflow: an
+// error the provider already retried as transient, or a timeout, names its own
+// cause and leaves the session uncompacted. A provider's overflow message
+// recovers at any context size.
+func TestOverflowRetry_NearWindowSkipsRetriedTransientErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		report  int64
+		err     error
+		wantLog string
+	}{
+		{name: "429 after retries at 92%", report: 920, err: err429Retried, wantLog: "main"},
+		{name: "http client timeout at 92%", report: 920, err: errClientTimeout, wantLog: "main"},
+		{name: "stalled stream at 92%", report: 920, err: provider.ErrStreamStalled, wantLog: "main"},
+		{name: "peer stream reset at 92% still recovers", report: 920, err: errRSTStream, wantLog: "main,summarizer,main"},
+		{name: "overflow marker at 10% recovers", report: 100, err: errPromptTooLong, wantLog: "main,summarizer,main"},
+		{name: "overflow marker at 92% recovers", report: 920, err: errPromptTooLong, wantLog: "main,summarizer,main"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withAutoCompact(t, true)
+			const sess = "s-overflow-transient"
+			a, _, log := newOverflowAgent(t, sess, func(msgs []message.Message) error {
+				if headedBySummary(msgs) {
+					return nil
+				}
+				return tt.err
+			})
+			seedReport(t, a, sess, tt.report)
+
+			res := a.processGeneration(context.Background(), sess, "next task", 0, nil, RunOptions{})
+
+			if got := strings.Join(*log, ","); got != tt.wantLog {
+				t.Fatalf("call order = %s, want %s", got, tt.wantLog)
+			}
+			recovered := tt.wantLog != "main"
+			if recovered && res.Error != nil {
+				t.Fatalf("processGeneration: %v", res.Error)
+			}
+			if !recovered && (res.Error == nil || !errors.Is(res.Error, tt.err)) {
+				t.Fatalf("error = %v, want the original %v", res.Error, tt.err)
+			}
+		})
+	}
+}
+
 // toolMsgFailingMessages fails saving the turn's tool results, an error that
 // comes after the tools ran.
 type toolMsgFailingMessages struct {
@@ -308,7 +372,15 @@ func TestContextOverflowCause(t *testing.T) {
 		{name: "kimi", estimated: 10, err: errors.New(`{"error":{"message":"Invalid request: Your request exceeded model token limit: 262144","type":"invalid_request_error"}}`), want: "provider_error"},
 		{name: "openai responses", estimated: 10, err: errors.New("Your input exceeds the context window of this model. Please adjust your input and try again."), want: "provider_error"},
 		{name: "stream reset near the window", estimated: 950, err: errors.New("stream reset"), want: "near_window"},
+		{name: "peer RST_STREAM near the window", estimated: 950, err: errRSTStream, want: "near_window"},
 		{name: "rate limit far from the window", estimated: 100, err: errors.New("429 rate limited"), want: ""},
+		{name: "429 after retries near the window", estimated: 950, err: err429Retried, want: ""},
+		{name: "529 after retries near the window", estimated: 950, err: errors.New("maximum retry attempts reached for HTTP 529: 8 retries"), want: ""},
+		{name: "overloaded near the window", estimated: 950, err: errors.New(`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`), want: ""},
+		{name: "bedrock throttling near the window", estimated: 950, err: errors.New("received exception ThrottlingException: Too many tokens, please wait"), want: ""},
+		{name: "http client timeout near the window", estimated: 950, err: errClientTimeout, want: ""},
+		{name: "stalled stream near the window", estimated: 950, err: provider.ErrStreamStalled, want: ""},
+		{name: "overflow marker wins over a transient signature", estimated: 10, err: errors.New("maximum retry attempts reached: prompt is too long"), want: "provider_error"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
