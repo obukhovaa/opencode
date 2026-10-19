@@ -220,6 +220,58 @@ func TestFlowTags(t *testing.T) {
 	}
 }
 
+// Pool pod reuse: run B, which names only its flow, must carry exactly its
+// own `flow:` tag while in flight, and none of run A's key, user, `identity:`,
+// `team:` or `flow:` values.
+func TestFlowOnlyRunCarriesNoneOfThePreviousRunsIdentity(t *testing.T) {
+	resetRunIdentity(t)
+	svc := newPoolStubFlowService(true, flow.FlowState{
+		StepID: "s1", Status: flow.FlowStatusRunning,
+	})
+	_, srv := newPoolTestServer(t, poolTestOpts{
+		svc:       svc,
+		bound:     testWorkspace,
+		allowlist: testWorkspace,
+	})
+	client := srv.Client()
+	abort := func() {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodDelete, srv.URL+"/flow", nil)
+		if err != nil {
+			t.Fatalf("build DELETE: %v", err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE /flow: %v", err)
+		}
+		resp.Body.Close()
+	}
+
+	startFlow(t, client, srv.URL,
+		`{"flowID":"A","llmApiKey":"run-a-key","telemetryUserId":"run-a-user","telemetryTeam":"acme"}`)
+	waitFor(t, 2*time.Second, "run A running", func() bool {
+		return flowStatus(t, client, srv.URL)["status"] == string(flowRunRunning)
+	})
+	abort()
+	waitFor(t, 2*time.Second, "run A to settle", func() bool {
+		return flowStatus(t, client, srv.URL)["status"] != string(flowRunRunning)
+	})
+
+	startFlow(t, client, srv.URL, `{"flowID":"B"}`)
+	waitFor(t, 2*time.Second, "run B running", func() bool {
+		return flowStatus(t, client, srv.URL)["status"] == string(flowRunRunning)
+	})
+	want := &runidentity.Identity{Tags: []string{"flow:B"}}
+	if got := runidentity.Get(); !reflect.DeepEqual(got, want) {
+		t.Errorf("run identity while B runs = %+v, want %+v", got, want)
+	}
+
+	abort()
+	waitFor(t, 2*time.Second, "run B's identity to be cleared", func() bool {
+		return runidentity.Get() == nil
+	})
+}
+
 // The per-Job pod's --flow auto-start keeps the `flow:` tag its config was
 // rendered with: only POST /flow overrides it.
 func TestAutoStartedFlowPublishesNoFlowTag(t *testing.T) {

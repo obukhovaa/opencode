@@ -9,7 +9,7 @@
 ## 2. Flow tag on POST /flow
 
 - [x] 2.1 `flowStartOptions.telemetryFlow` set by the POST /flow handler; `flowTags` renders `flow:<id>`; a flow tag alone publishes the run identity.
-- [x] 2.2 Tests: identity tags per POST /flow body, flow-only run publishes and clears its identity, `--flow` auto-start publishes none, `flowTags` blank/trim, `MergeTags` and `ResolveTags` shadow `flow:none`.
+- [x] 2.2 Tests: identity tags per POST /flow body, flow-only run publishes and clears its identity and carries none of the previous pooled run's key, user or tags, `--flow` auto-start publishes none, `flowTags` blank/trim, `MergeTags` and `ResolveTags` shadow `flow:none`.
 
 ## 3. Docs and verification
 
