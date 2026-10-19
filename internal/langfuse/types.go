@@ -44,7 +44,10 @@ type Usage struct {
 	Total         int64
 	CacheRead     int64
 	CacheCreation int64
-	InputCost     float64
-	OutputCost    float64
-	TotalCost     float64
+	// Thinking is the part of Output spent on reasoning; already inside
+	// Output and Total, so it is reported as a breakdown, never summed.
+	Thinking   int64
+	InputCost  float64
+	OutputCost float64
+	TotalCost  float64
 }

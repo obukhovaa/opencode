@@ -361,6 +361,11 @@ func TestOpenAIUsageCacheTokens(t *testing.T) {
 			usage: `{"prompt_tokens":1200,"completion_tokens":40,"total_tokens":1240,"prompt_tokens_details":{"cached_tokens":800,"cache_write_tokens":300}}`,
 			want:  TokenUsage{InputTokens: 100, OutputTokens: 40, CacheCreationTokens: 300, CacheReadTokens: 800},
 		},
+		{
+			name:  "reasoning share of the completion",
+			usage: `{"prompt_tokens":50,"completion_tokens":90,"total_tokens":140,"completion_tokens_details":{"reasoning_tokens":70}}`,
+			want:  TokenUsage{InputTokens: 50, OutputTokens: 90, ThinkingTokens: 70},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

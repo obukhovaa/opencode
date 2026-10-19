@@ -125,6 +125,31 @@ func TestAnthropicStreamUsage_LastPass(t *testing.T) {
 	}
 }
 
+// The thinking share of the output arrives as output_tokens_details on
+// message_delta; the accumulator keeps it on both the SSE and the Bedrock
+// event-stream routes, and an upstream without the breakdown reports zero.
+func TestAnthropicStreamUsage_ThinkingTokens(t *testing.T) {
+	const start = `{"input_tokens":170,"output_tokens":1}`
+	cases := []struct {
+		name  string
+		delta string
+		want  int64
+	}{
+		{"breakdown on message_delta", `{"output_tokens":108,"output_tokens_details":{"thinking_tokens":61}}`, 61},
+		{"no breakdown", `{"output_tokens":108}`, 0},
+	}
+	for _, bedrock := range []bool{false, true} {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("bedrock=%v/%s", bedrock, tc.name), func(t *testing.T) {
+				got := streamComplete(t, bedrock, searchStream(start, tc.delta)).Usage
+				if got.ThinkingTokens != tc.want || got.OutputTokens != 108 {
+					t.Errorf("usage = %+v, want ThinkingTokens %d of OutputTokens 108", got, tc.want)
+				}
+			})
+		}
+	}
+}
+
 func TestSamplingPasses(t *testing.T) {
 	cases := []struct {
 		name  string

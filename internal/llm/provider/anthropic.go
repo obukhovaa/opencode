@@ -27,6 +27,10 @@ import (
 
 const taskBudgetsBeta = "task-budgets-2026-03-13"
 
+// thinkingFlushBytes is the batch size coalesced thinking deltas are emitted
+// at (see the stream loop): about twenty summarized-thinking deltas.
+const thinkingFlushBytes = 256
+
 // filterBetaHeaders removes beta header values that are incompatible with the
 // given model. For example, "context-1m-*" betas are stripped for models whose
 // context window is below 1M tokens.
@@ -967,6 +971,13 @@ func (a *anthropicClient) preparedMessages(ctx context.Context, messages []anthr
 		}
 		if a.providerOptions.model.SupportsAdaptiveThinking {
 			adaptiveParam := anthropic.ThinkingConfigAdaptiveParam{}
+			// Claude Opus 4.7 and later default display to "omitted": each
+			// thinking block arrives signed but empty, so no reasoning text
+			// ever reaches the message store or telemetry. Moonshot's
+			// Anthropic-compatible endpoint does not document the field.
+			if a.providerOptions.model.Provider != models.ProviderKimi {
+				adaptiveParam.Display = anthropic.ThinkingConfigAdaptiveDisplaySummarized
+			}
 			thinkingParam = anthropic.ThinkingConfigParamUnion{OfAdaptive: &adaptiveParam}
 			if !a.providerOptions.model.SupportsXHighThinking {
 				temperature = anthropic.Float(1)
@@ -1188,6 +1199,22 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 			// messageHasUnreplayableToolSearch).
 			streamedToolSearchRefs := map[string][]string{}
 
+			// Summarized thinking streams in deltas of about a dozen
+			// characters, and the agent writes the message store on every
+			// EventThinkingDelta. Coalesce them: a block's first delta goes
+			// out at once (it marks time-to-first-token), the rest in
+			// thinkingFlushBytes batches and at every block boundary.
+			var pendingThinking strings.Builder
+			thinkingEmitted := false
+			flushThinking := func() {
+				if pendingThinking.Len() == 0 {
+					return
+				}
+				eventChan <- ProviderEvent{Type: EventThinkingDelta, Thinking: pendingThinking.String()}
+				pendingThinking.Reset()
+				thinkingEmitted = true
+			}
+
 			currentToolCallID := ""
 
 			reader := newStreamReader(ctx, func() (anthropic.MessageStreamEventUnion, bool) {
@@ -1249,9 +1276,9 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 				case anthropic.ContentBlockDeltaEvent:
 					emittedOutput = true
 					if event.Delta.Type == "thinking_delta" && event.Delta.Thinking != "" {
-						eventChan <- ProviderEvent{
-							Type:     EventThinkingDelta,
-							Thinking: event.Delta.Thinking,
+						pendingThinking.WriteString(event.Delta.Thinking)
+						if !thinkingEmitted || pendingThinking.Len() >= thinkingFlushBytes {
+							flushThinking()
 						}
 					} else if event.Delta.Type == "text_delta" && event.Delta.Text != "" {
 						eventChan <- ProviderEvent{
@@ -1271,6 +1298,8 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 						}
 					}
 				case anthropic.ContentBlockStopEvent:
+					flushThinking()
+					thinkingEmitted = false
 					if currentToolCallID != "" {
 						eventChan <- ProviderEvent{
 							Type: EventToolUseStop,
@@ -1284,6 +1313,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 					}
 
 				case anthropic.MessageStopEvent:
+					flushThinking()
 					var sb strings.Builder
 					for _, block := range accumulatedMessage.Content {
 						if text, ok := block.AsAny().(anthropic.TextBlock); ok {
@@ -1325,6 +1355,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 				// we still need to emit EventComplete so the agent loop doesn't hang.
 				if accumulatedMessage.StopReason == "" {
 					logging.Warn("Anthropic stream closed without MessageStopEvent (truncated response)")
+					flushThinking()
 					var sb strings.Builder
 					for _, block := range accumulatedMessage.Content {
 						if text, ok := block.AsAny().(anthropic.TextBlock); ok {
@@ -1643,6 +1674,7 @@ func (a *anthropicClient) usage(msg anthropic.Message) TokenUsage {
 		OutputTokens:        msg.Usage.OutputTokens,
 		CacheCreationTokens: msg.Usage.CacheCreationInputTokens,
 		CacheReadTokens:     msg.Usage.CacheReadInputTokens,
+		ThinkingTokens:      msg.Usage.OutputTokensDetails.ThinkingTokens,
 	}
 	u.LastPass = lastPassUsage(msg, u)
 	return u

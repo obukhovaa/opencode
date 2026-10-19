@@ -647,6 +647,7 @@ func (o *openaiClient) usage(usage openai.CompletionUsage) TokenUsage {
 		OutputTokens:        usage.CompletionTokens,
 		CacheCreationTokens: cacheWriteTokens,
 		CacheReadTokens:     cachedTokens,
+		ThinkingTokens:      usage.CompletionTokensDetails.ReasoningTokens,
 	}
 }
 

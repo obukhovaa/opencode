@@ -260,6 +260,11 @@ type TokenUsage struct {
 	OutputTokens        int64
 	CacheCreationTokens int64
 	CacheReadTokens     int64
+	// ThinkingTokens is the part of OutputTokens spent on reasoning, when the
+	// upstream breaks it out (Anthropic output_tokens_details.thinking_tokens,
+	// OpenAI completion_tokens_details.reasoning_tokens). With summarized or
+	// omitted thinking it is the only measure of how much the model thought.
+	ThinkingTokens int64
 	// LastPass is the usage of the response's last sampling pass, set when
 	// the counts above sum several. A server-side tool (tool search) runs
 	// inside one response: the model samples, the server runs the tool and
@@ -929,6 +934,7 @@ func (p *baseProvider[C]) buildUsage(u TokenUsage) *langfuse.Usage {
 		Total:         totalInput + u.OutputTokens,
 		CacheRead:     u.CacheReadTokens,
 		CacheCreation: u.CacheCreationTokens,
+		Thinking:      u.ThinkingTokens,
 		InputCost:     inputCost,
 		OutputCost:    outputCost,
 		TotalCost:     inputCost + outputCost,
