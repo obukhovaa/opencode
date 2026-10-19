@@ -1,7 +1,9 @@
-# mcp-call-deadline-bounds Specification
+# MCP Call Deadline Bounds
 
 ## Purpose
-TBD - created by archiving change mcp-call-deadline-bounds. Update Purpose after archive.
+
+Defines the time limits that keep a slow or wedged MCP server from stalling an agent. The shared client-cache wait, client close and protocol handshake each have a bound, and the agent loop bounds every tool call by `toolCallTimeoutSeconds`. Expiry returns a tool error or contributes no tools, so the turn continues.
+
 ## Requirements
 ### Requirement: The shared MCP client-cache wait is bounded
 

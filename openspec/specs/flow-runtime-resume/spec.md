@@ -1,7 +1,9 @@
-# flow-runtime-resume Specification
+# Flow Runtime Resume
 
 ## Purpose
-TBD - created by archiving change flow-resume-semantics. Update Purpose after archive.
+
+Defines how the flow runtime behaves when a flow is re-triggered or a step ends badly. It covers choosing between resuming and restarting from prior step state (including `resume_on_failure`), keeping conversation context across restarts, and running steps non-interactively with a per-step `timeout` and a step-scoped context for detached subagents. It also covers recovery of a missing `struct_output` through a forcing turn and one bounded re-prompt.
+
 ## Requirements
 ### Requirement: Flow runtime selects resume vs restart based on prior step state
 

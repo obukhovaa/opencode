@@ -128,6 +128,42 @@ func (q *Queries) GetBridgeSession(ctx context.Context, arg GetBridgeSessionPara
 	return i, err
 }
 
+const listBridgeSessionIDsByChannel = `-- name: ListBridgeSessionIDsByChannel :many
+SELECT DISTINCT session_id
+FROM bridge_sessions
+WHERE project_id = ?
+  AND channel    = ?
+  AND session_id IS NOT NULL
+`
+
+type ListBridgeSessionIDsByChannelParams struct {
+	ProjectID string `json:"project_id"`
+	Channel   string `json:"channel"`
+}
+
+func (q *Queries) ListBridgeSessionIDsByChannel(ctx context.Context, arg ListBridgeSessionIDsByChannelParams) ([]sql.NullString, error) {
+	rows, err := q.db.QueryContext(ctx, listBridgeSessionIDsByChannel, arg.ProjectID, arg.Channel)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []sql.NullString{}
+	for rows.Next() {
+		var session_id sql.NullString
+		if err := rows.Scan(&session_id); err != nil {
+			return nil, err
+		}
+		items = append(items, session_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listBridgeSessionsByIdentity = `-- name: ListBridgeSessionsByIdentity :many
 SELECT project_id, channel, identity_id, peer_id, session_id, mention_handle, mention_consumed_at, created_at, updated_at
 FROM bridge_sessions
