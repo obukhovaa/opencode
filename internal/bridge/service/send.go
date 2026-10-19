@@ -252,6 +252,24 @@ func (s *Service) BoundPeersSnapshot(ctx context.Context) []bridge.BoundPeer {
 	return out
 }
 
+// SessionPeers returns the peers bound to sessionID. router_send uses it
+// to keep a turn with no inbound peer inside its session's external
+// conversations, and refuses the send on an error.
+func (s *Service) SessionPeers(ctx context.Context, sessionID string) ([]bridge.PeerRef, error) {
+	if s.store == nil {
+		return nil, nil
+	}
+	bindings, err := s.store.ListBindingsBySession(ctx, s.projectID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	peers := make([]bridge.PeerRef, 0, len(bindings))
+	for _, b := range bindings {
+		peers = append(peers, b.AsPeerRef())
+	}
+	return peers, nil
+}
+
 // Send is the in-process entry point for the router_send agent tool and
 // the POST /router/send HTTP handler. Unlike SendBySessionID it targets a
 // single peer directly; no fan-out, no session lookup.
