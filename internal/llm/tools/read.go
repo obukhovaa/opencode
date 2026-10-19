@@ -42,7 +42,7 @@ const (
 	viewDescription  = `Reads a file from the local filesystem and returns its contents with line numbers.
 
 - Reads up to 2000 lines from the start by default; use offset/limit for other sections. Avoid tiny repeated slices (e.g. 30-line chunks) — read a larger window in a single call.
-- Maximum file size is 250KB; lines longer than 2000 characters are truncated.
+- A whole-file read (no offset or limit) is limited to files up to 250KB; larger files can be read in pages with offset/limit. One call returns at most 250KB; lines longer than 2000 characters are truncated.
 - Cannot display binary files or images (use the view_image tool for images).
 - Suggests similar file names when the requested file is not found.`
 )
@@ -96,7 +96,7 @@ func (v *viewTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 
 	canonical, err := authorizeRead(ctx, v.registry, v.permissions, ReadToolName, filePath)
 	if err != nil {
-		if err == permission.ErrorPermissionDenied {
+		if errors.Is(err, permission.ErrorPermissionDenied) {
 			return NewTextErrorResponse(fmt.Sprintf("Permission denied: reading %s", filePath)), nil
 		}
 		return NewEmptyResponse(), err
@@ -142,9 +142,17 @@ func (v *viewTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		return NewTextErrorResponse(fmt.Sprintf("Path is a directory, not a file: %s", filePath)), nil
 	}
 
-	// Check file size
-	if fileInfo.Size() > MaxReadSize {
-		return NewTextErrorResponse(fmt.Sprintf("File is too large (%d bytes). Maximum size is %d bytes",
+	if params.Offset < 0 {
+		params.Offset = 0
+	}
+	// The size ceiling guards a whole-file read only. A paged read (offset or
+	// limit given) streams the file and is bounded per call by the line limit
+	// and MaxReadSize on the returned text instead, so a large log or a tool
+	// output spill stays readable in pages.
+	largeFile := fileInfo.Size() > MaxReadSize
+	if largeFile && params.Offset == 0 && params.Limit <= 0 {
+		return NewTextErrorResponse(fmt.Sprintf("File is too large to read whole (%d bytes; the limit for a whole-file read is %d bytes). "+
+			"Read it in pages with offset and limit (for example offset=0, limit=500), or search it with the grep tool.",
 			fileInfo.Size(), MaxReadSize)), nil
 	}
 
@@ -170,29 +178,42 @@ func (v *viewTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 	}
 
 	// Read the file content
-	content, lineCount, err := readTextFile(filePath, params.Offset, params.Limit, verify)
+	content, linesRead, lineCount, capped, err := readTextFile(ctx, filePath, params.Offset, params.Limit, MaxReadSize, verify)
 	if err != nil {
 		if errors.Is(err, errReadPathChanged) {
 			return NewTextErrorResponse(fmt.Sprintf("Permission denied: reading %s", filePath)), nil
 		}
 		return NewEmptyResponse(), fmt.Errorf("error reading file: %w", err)
 	}
+	if linesRead == 0 && params.Offset > 0 && params.Offset >= lineCount {
+		return NewTextErrorResponse(fmt.Sprintf("Offset %d is past the end of the file, which has %d lines.", params.Offset, lineCount)), nil
+	}
 
-	v.lsp.NotifyOpenFile(ctx, filePath)
+	// The LSP client sends the whole file in didOpen; past the whole-read
+	// ceiling that would load all of it, so a paged read of a large file
+	// skips the LSP.
+	if !largeFile {
+		v.lsp.NotifyOpenFile(ctx, filePath)
+	}
 	output := "<file>\n"
 	// Format the output with line numbers
 	output += addLineNumbers(content, params.Offset+1)
 
 	// Add a note if the content was truncated
-	linesRead := len(strings.Split(content, "\n"))
 	startLine := params.Offset + 1
 	endLine := params.Offset + linesRead
 	if lineCount > endLine {
-		output += fmt.Sprintf("\n\n(Showing lines %d-%d of %d total. Use offset=%d to continue reading.)",
-			startLine, endLine, lineCount, endLine)
+		reason := ""
+		if capped {
+			reason = fmt.Sprintf(" This call's output limit (%d bytes) was reached.", MaxReadSize)
+		}
+		output += fmt.Sprintf("\n\n(Showing lines %d-%d of %d total.%s Use offset=%d to continue reading.)",
+			startLine, endLine, lineCount, reason, endLine)
 	}
 	output += "\n</file>\n"
-	output += v.lsp.FormatDiagnostics(filePath)
+	if !largeFile {
+		output += v.lsp.FormatDiagnostics(filePath)
+	}
 	recordFileRead(filePath)
 	return WithResponseMetadata(
 		NewTextResponse(output),
@@ -234,54 +255,104 @@ func addLineNumbers(content string, startLine int) string {
 	return strings.Join(result, "\n")
 }
 
-func readTextFile(filePath string, offset, limit int, verify bool) (string, int, error) {
+// readTextFile returns up to limit lines of the file starting after the first
+// offset lines, each cut to MaxLineLength, and stops adding lines once the
+// returned text would pass maxBytes (capped). It streams the file, so memory
+// is bounded by the returned window rather than by the file or its longest
+// line. linesRead is the number of lines returned, lineCount the file's total.
+// verify is passed to openForRead (see authorizeRead). It stops with ctx's
+// error once ctx is done: counting the lines reads a file of any size to the
+// end, which a cancelled turn, or a call the tool watchdog abandoned, must
+// not keep doing.
+func readTextFile(ctx context.Context, filePath string, offset, limit, maxBytes int, verify bool) (content string, linesRead, lineCount int, capped bool, err error) {
 	file, err := openForRead(filePath, verify)
 	if err != nil {
-		return "", 0, err
+		return "", 0, 0, false, err
 	}
 	defer file.Close()
 
-	lineCount := 0
-
-	scanner := NewLineScanner(file)
-	if offset > 0 {
-		for lineCount < offset && scanner.Scan() {
-			lineCount++
-		}
-		if err = scanner.Err(); err != nil {
-			return "", 0, err
-		}
-	}
-
-	if offset == 0 {
-		_, err = file.Seek(0, io.SeekStart)
+	r := bufio.NewReaderSize(ctxReader{ctx: ctx, r: file}, 64*1024)
+	var sb strings.Builder
+	for {
+		keep := lineCount >= offset && linesRead < limit && !capped
+		line, ok, err := readLine(r, keep)
 		if err != nil {
-			return "", 0, err
+			return "", 0, 0, false, err
+		}
+		if !ok {
+			break
+		}
+		lineCount++
+		if !keep {
+			continue
+		}
+		size := len(line)
+		if linesRead > 0 {
+			size++ // the joining newline
+		}
+		// The first line always fits: it is at most MaxLineLength bytes.
+		if linesRead > 0 && sb.Len()+size > maxBytes {
+			capped = true
+			continue
+		}
+		if linesRead > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(line)
+		linesRead++
+	}
+	return sb.String(), linesRead, lineCount, capped, nil
+}
+
+// ctxReader fails every read once ctx is done.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
+}
+
+// readLine reads one line without its line ending. With keep it returns the
+// line cut to MaxLineLength ("..." marks a cut); without, it only consumes
+// it. ok is false at end of file. A line longer than the reader's buffer is
+// consumed in chunks and never held whole.
+func readLine(r *bufio.Reader, keep bool) (line string, ok bool, err error) {
+	var buf []byte
+	cut := false
+	for {
+		chunk, isPrefix, err := r.ReadLine()
+		if err == io.EOF {
+			if ok {
+				break
+			}
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		ok = true
+		if keep {
+			room := MaxLineLength - len(buf)
+			if len(chunk) > room {
+				buf = append(buf, chunk[:room]...)
+				cut = true
+			} else {
+				buf = append(buf, chunk...)
+			}
+		}
+		if !isPrefix {
+			break
 		}
 	}
-
-	var lines []string
-	lineCount = offset
-
-	for scanner.Scan() && len(lines) < limit {
-		lineCount++
-		lineText := scanner.Text()
-		if len(lineText) > MaxLineLength {
-			lineText = lineText[:MaxLineLength] + "..."
-		}
-		lines = append(lines, lineText)
+	if cut {
+		return string(buf) + "...", true, nil
 	}
-
-	// Continue scanning to get total line count
-	for scanner.Scan() {
-		lineCount++
-	}
-
-	if err := scanner.Err(); err != nil {
-		return "", 0, err
-	}
-
-	return strings.Join(lines, "\n"), lineCount, nil
+	return string(buf), true, nil
 }
 
 func isImageFile(filePath string) (bool, string) {
@@ -302,28 +373,6 @@ func isImageFile(filePath string) (bool, string) {
 	default:
 		return false, ""
 	}
-}
-
-type LineScanner struct {
-	scanner *bufio.Scanner
-}
-
-func NewLineScanner(r io.Reader) *LineScanner {
-	return &LineScanner{
-		scanner: bufio.NewScanner(r),
-	}
-}
-
-func (s *LineScanner) Scan() bool {
-	return s.scanner.Scan()
-}
-
-func (s *LineScanner) Text() string {
-	return s.scanner.Text()
-}
-
-func (s *LineScanner) Err() error {
-	return s.scanner.Err()
 }
 
 func isBinaryFile(filePath string, verify bool) (bool, error) {

@@ -84,7 +84,7 @@ const bashDescriptionTemplate = `Executes a bash command in a persistent shell s
 
 Commands run in ${directory} by default; use the ` + "`workdir`" + ` parameter to run elsewhere instead of ` + "`cd <dir> && <command>`" + `. Quote file paths that contain spaces. The default timeout is 120000ms (2 minutes); set ` + "`timeout`" + ` for commands that need longer.
 
-Output: if it exceeds ${maxLines} lines or ${maxBytes} bytes, the full output is saved to a temp file and a truncated preview (first/last ${previewLines} lines) is shown. Search the saved file with the grep tool; the read tool works on it only under ${maxReadKB}KB — for bigger files extract line ranges with sed in bash. Never pipe the original command through ` + "`head`/`tail`" + ` to pre-truncate; just run it.
+Output: if it exceeds ${maxLines} lines or ${maxBytes} bytes, the full output is saved to a temp file and a truncated preview (first/last ${previewLines} lines) is shown. Search the saved file with the grep tool or read it in pages with the read tool's offset/limit; a whole-file read without them only works under ${maxReadKB}KB. Never pipe the original command through ` + "`head`/`tail`" + ` to pre-truncate; just run it.
 
 For long-running work (test suites, builds, deploys, log tails) pass ` + "`run_in_background: true`" + ` instead of waiting in the foreground or sleeping.
 
@@ -187,7 +187,7 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		case permission.ActionAllow:
 			// Allowed by config, skip interactive permission
 		case permission.ActionDeny:
-			return NewEmptyResponse(), permission.ErrorPermissionDenied
+			return NewEmptyResponse(), permission.DeniedByRule(BashToolName, params.Command)
 		default:
 			// "ask" or unset: fall through to interactive permission
 			p := b.permissions.Request(ctx,

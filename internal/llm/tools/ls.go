@@ -92,7 +92,7 @@ func (l *lsTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
 
 	canonical, err := authorizeRead(ctx, l.registry, l.permissions, LSToolName, searchPath)
 	if err != nil {
-		if err == permission.ErrorPermissionDenied {
+		if errors.Is(err, permission.ErrorPermissionDenied) {
 			return NewTextErrorResponse(fmt.Sprintf("Permission denied: listing %s", searchPath)), nil
 		}
 		return NewEmptyResponse(), err

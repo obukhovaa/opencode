@@ -254,7 +254,7 @@ func (t *websearchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	case permission.ActionAllow:
 		// Allowed by config, skip interactive permission
 	case permission.ActionDeny:
-		return NewEmptyResponse(), permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.DeniedByRule(WebSearchToolName, params.Query)
 	default:
 		if !t.permissions.Request(ctx,
 			permission.CreatePermissionRequest{

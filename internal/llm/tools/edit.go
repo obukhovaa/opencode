@@ -191,7 +191,7 @@ func (e *editTool) createNewFile(ctx context.Context, filePath, content string) 
 	case permission.ActionAllow:
 		// Allowed by config
 	case permission.ActionDeny:
-		return NewEmptyResponse(), permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.DeniedByRule(EditToolName, filePath)
 	default:
 		p := e.permissions.Request(ctx,
 			permission.CreatePermissionRequest{
@@ -316,7 +316,7 @@ func (e *editTool) deleteContent(ctx context.Context, filePath, oldString string
 	case permission.ActionAllow:
 		// Allowed by config
 	case permission.ActionDeny:
-		return NewEmptyResponse(), permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.DeniedByRule(EditToolName, filePath)
 	default:
 		p := e.permissions.Request(ctx,
 			permission.CreatePermissionRequest{
@@ -451,7 +451,7 @@ func (e *editTool) replaceContent(ctx context.Context, filePath, oldString, newS
 	case permission.ActionAllow:
 		// Allowed by config
 	case permission.ActionDeny:
-		return NewEmptyResponse(), permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.DeniedByRule(EditToolName, filePath)
 	default:
 		p := e.permissions.Request(ctx,
 			permission.CreatePermissionRequest{

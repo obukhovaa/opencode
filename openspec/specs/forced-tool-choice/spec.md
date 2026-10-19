@@ -1,7 +1,9 @@
-# forced-tool-choice Specification
+# Forced Tool Choice
 
 ## Purpose
-TBD - created by archiving change force-struct-output-final-turn. Update Purpose after archive.
+
+Defines how a request can force the model to call one named tool, used to make a schema-bearing run emit `struct_output` on its final turn. The Anthropic-family request builder sets `tool_choice` and drops extended thinking for that request, other providers ignore the signal, and models that reject forcing run an unforced turn. It also defines the agent loop's max-turns wrap-up and the `TurnsExhausted` event flag.
+
 ## Requirements
 ### Requirement: Anthropic request builder can force a single named tool
 

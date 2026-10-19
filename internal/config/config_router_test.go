@@ -111,3 +111,43 @@ func TestConfig_RouterHeartbeatReminderViperRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// TestConfig_RouterIsolateExternalSessionsViperRoundTrip locks in that
+// `router.isolateExternalSessions` survives the real loader path (viper
+// case-folds keys) and stays off when omitted.
+func TestConfig_RouterIsolateExternalSessionsViperRoundTrip(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"omitted", `{"router": {"toolUpdatesEnabled": true}}`, false},
+		{"true", `{"router": {"isolateExternalSessions": true}}`, true},
+		{"false", `{"router": {"isolateExternalSessions": false}}`, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, ".opencode.json"), []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			v := viper.New()
+			v.SetConfigName(".opencode")
+			v.SetConfigType("json")
+			v.AddConfigPath(dir)
+			if err := v.ReadInConfig(); err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			var cfg Config
+			if err := v.Unmarshal(&cfg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if cfg.Router == nil {
+				t.Fatal("router config was dropped by the loader")
+			}
+			if got := cfg.Router.ExternalSessionsIsolated(); got != tc.want {
+				t.Errorf("ExternalSessionsIsolated() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

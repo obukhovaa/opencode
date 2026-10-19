@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -209,8 +208,8 @@ func TestCLIToolRun_PermissionLayers(t *testing.T) {
 	// Agent rule for the tool beats the manifest default.
 	tool := tools.NewCLITool(m, nil, permRegistry{perm: map[string]any{"say": "deny"}})
 	_, err := tool.Run(runCtx(), tools.ToolCall{Input: `{"args":["sql","1"]}`})
-	if !errors.Is(err, permission.ErrorPermissionDenied) {
-		t.Errorf("agent deny should win, got %v", err)
+	if rd, ok := permission.AsRuleDenied(err); !ok || rd.ToolName != "say" || rd.Input != "sql 1" {
+		t.Errorf("agent deny should win as a rule denial, got %v", err)
 	}
 	// Manifest default beats the agent's blanket "*".
 	tool = tools.NewCLITool(m, nil, permRegistry{perm: map[string]any{"*": "deny"}})

@@ -94,7 +94,7 @@ func (t *taskstopTool) Run(ctx context.Context, call ToolCall) (ToolResponse, er
 	switch action {
 	case permission.ActionAllow:
 	case permission.ActionDeny:
-		return NewEmptyResponse(), permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.DeniedByRule(TaskStopToolName, params.TaskID)
 	default:
 		ok := t.permissions.Request(ctx, permission.CreatePermissionRequest{
 			SessionID:   sessionID,

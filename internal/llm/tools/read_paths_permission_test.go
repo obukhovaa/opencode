@@ -313,7 +313,7 @@ func TestAuthorizeReadHonoursRulesWrittenAgainstTheSymlinkName(t *testing.T) {
 		t.Skip(err)
 	}
 	reg := permRegistry{perms: map[string]any{"read": map[string]any{"*": "deny", f.allowed + "/**": "allow", link: "deny"}}}
-	if _, err := authorizeRead(context.Background(), reg, f.perms, ReadToolName, link); err != permission.ErrorPermissionDenied {
+	if _, err := authorizeRead(context.Background(), reg, f.perms, ReadToolName, link); !errors.Is(err, permission.ErrorPermissionDenied) {
 		t.Errorf("authorizeRead(%s) = %v, want denied by the rule on the link's own name", link, err)
 	}
 	if got, err := authorizeRead(context.Background(), reg, f.perms, ReadToolName, f.okFile); err != nil || got != f.okFile {
@@ -472,4 +472,50 @@ func TestVerifyOpenedPath(t *testing.T) {
 	}
 	defer f.Close()
 	check("swapped parent", f, true)
+}
+
+// A paged read (offset/limit) of a file of any size goes through the same
+// canonical-path check and verified open as a whole-file read: lifting the
+// size ceiling for pages must not open a way around the read patterns.
+func TestReadPagedReadsHonorReadPermissions(t *testing.T) {
+	f := newReadFixture(t)
+	tool := NewReadTool(noLSP{}, f.reg, f.perms)
+	bigText := strings.Repeat("needle "+strings.Repeat("x", 90)+"\n", 4000) // ~400KB
+	write := func(p string) string {
+		t.Helper()
+		if err := os.WriteFile(p, []byte(bigText), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	inside := write(filepath.Join(f.sub, "big.log"))
+	outside := write(filepath.Join(f.base, "outside", "big.log"))
+	link := filepath.Join(f.sub, "biglink.log")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	read := func(path string, page map[string]any) ToolResponse {
+		t.Helper()
+		params := map[string]any{"file_path": path}
+		for k, v := range page {
+			params[k] = v
+		}
+		raw, _ := json.Marshal(params)
+		resp, err := tool.Run(context.Background(), ToolCall{ID: "c", Name: ReadToolName, Input: string(raw)})
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return resp
+	}
+	pages := []map[string]any{{"offset": 0, "limit": 5}, {"offset": 2000}, {"limit": 2000}}
+	for _, p := range []string{outside, link, f.allowed + "/../outside/big.log", f.fileLink} {
+		for _, page := range pages {
+			if resp := read(p, page); !resp.IsError || !strings.Contains(resp.Content, "Permission denied") || strings.Contains(resp.Content, "needle") {
+				t.Errorf("paged read %v of %s not denied: IsError=%v content=%.200q", page, p, resp.IsError, resp.Content)
+			}
+		}
+	}
+	if resp := read(inside, map[string]any{"offset": 10, "limit": 3}); resp.IsError || !strings.Contains(resp.Content, "    11|needle") {
+		t.Errorf("paged read inside allowed/ failed: %.300q", resp.Content)
+	}
 }

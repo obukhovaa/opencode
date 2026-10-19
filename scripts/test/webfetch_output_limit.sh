@@ -78,7 +78,8 @@ run_check default_cap "$(make_sandbox default_cap '')" \
   mid_page_content_absent_from_reply \
   full_page_preserved_on_disk \
   grep_tool_finds_needle_in_spill_file \
-  oversized_spill_is_beyond_read_as_documented \
+  oversized_spill_whole_read_declined_as_documented \
+  oversized_spill_reads_in_pages \
   header_points_at_the_recovery_tools
 
 # 2. Configured cap: the public .opencode.json contract.

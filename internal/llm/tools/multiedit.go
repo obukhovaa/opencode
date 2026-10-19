@@ -222,7 +222,7 @@ func (m *multiEditTool) Run(ctx context.Context, call ToolCall) (ToolResponse, e
 	case permission.ActionAllow:
 		// Allowed by config
 	case permission.ActionDeny:
-		return NewEmptyResponse(), permission.ErrorPermissionDenied
+		return NewEmptyResponse(), permission.DeniedByRule(MultiEditToolName, params.FilePath)
 	default:
 		p := m.permissions.Request(ctx,
 			permission.CreatePermissionRequest{
