@@ -49,9 +49,11 @@ func TestTraceInputOutputRoot(t *testing.T) {
 func TestTraceInputOutputChildUsesObservationKeys(t *testing.T) {
 	c, sr := newTestClient()
 
-	ctx := c.TraceStart(context.Background(), TraceParams{Name: "subagent", Input: "task prompt", IsChild: true})
+	parent := c.TraceStart(context.Background(), TraceParams{Name: "parent"})
+	ctx := c.TraceStart(parent, TraceParams{Name: "subagent", Input: "task prompt", IsChild: true})
 	SetTraceOutput(ctx, "subagent result")
 	c.TraceEnd(ctx)
+	c.TraceEnd(parent)
 
 	spans := sr.Ended()
 	if _, ok := attrValue(spans, "subagent", "langfuse.trace.input"); ok {
@@ -66,6 +68,133 @@ func TestTraceInputOutputChildUsesObservationKeys(t *testing.T) {
 	if got, ok := attrValue(spans, "subagent", "langfuse.observation.output"); !ok || got != "subagent result" {
 		t.Fatalf("child observation output = %q, ok=%v", got, ok)
 	}
+}
+
+// Run facts recorded after the trace started land on the trace itself for a
+// root, and on the observation for a child: a subagent's turn count must not
+// replace its parent's.
+func TestSetTraceMetadata(t *testing.T) {
+	tests := []struct {
+		name    string
+		isChild bool
+		want    string
+		absent  string
+	}{
+		{name: "root writes trace metadata", want: "langfuse.trace.metadata.", absent: "langfuse.observation.metadata."},
+		{name: "child writes observation metadata", isChild: true, want: "langfuse.observation.metadata.", absent: "langfuse.trace.metadata."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, sr := newTestClient()
+			// A child nests in the calling run's trace, so start one.
+			parent := c.TraceStart(context.Background(), TraceParams{Name: "parent"})
+			ctx := c.TraceStart(parent, TraceParams{Name: "run", IsChild: tt.isChild})
+			SetTraceMetadata(ctx, map[string]any{"piano.turns_used": 3, "piano.finish_reason": "end_turn"})
+			c.TraceEnd(ctx)
+			c.TraceEnd(parent)
+
+			spans := sr.Ended()
+			if got, ok := attrValue(spans, "run", tt.want+"piano.turns_used"); !ok || got != "3" {
+				t.Errorf("%spiano.turns_used = %q, ok=%v", tt.want, got, ok)
+			}
+			if got, ok := attrValue(spans, "run", tt.want+"piano.finish_reason"); !ok || got != "end_turn" {
+				t.Errorf("%spiano.finish_reason = %q, ok=%v", tt.want, got, ok)
+			}
+			if _, ok := attrValue(spans, "run", tt.absent+"piano.turns_used"); ok {
+				t.Errorf("%spiano.turns_used set; want it absent", tt.absent)
+			}
+		})
+	}
+}
+
+// A subagent's trace is an observation inside its parent's trace, so its
+// metadata must not be written at trace level: the parent trace keeps its own
+// agent_id, session_id, model_id and requester after a child run with
+// different values, and the child's values land on its observation.
+func TestChildTraceMetadataDoesNotOverwriteTheParents(t *testing.T) {
+	c, sr := newTestClient()
+
+	parentMeta := map[string]any{
+		"piano.agent_id":   "coder",
+		"piano.session_id": "parent-session",
+		"piano.model_id":   "model-a",
+		"piano.requester":  "alice@example.com",
+	}
+	childMeta := map[string]any{
+		"piano.agent_id":          "explorer",
+		"piano.session_id":        "child-session",
+		"piano.model_id":          "model-b",
+		"piano.parent_session_id": "parent-session",
+		"piano.requester":         "bob@example.com",
+	}
+	parentCtx := c.TraceStart(context.Background(), TraceParams{Name: "parent", Metadata: parentMeta})
+	childCtx := c.TraceStart(parentCtx, TraceParams{Name: "child", Metadata: childMeta, IsChild: true})
+	c.TraceEnd(childCtx)
+	c.TraceEnd(parentCtx)
+
+	spans := sr.Ended()
+	if len(spans) != 2 || spans[0].SpanContext().TraceID() != spans[1].SpanContext().TraceID() {
+		t.Fatalf("want the child nested in the parent's trace, got %d span(s)", len(spans))
+	}
+	// Every trace-level metadata key written by any span of the trace is
+	// the parent's: Langfuse applies trace attributes from any span.
+	for _, s := range spans {
+		for _, kv := range s.Attributes() {
+			k, ok := strings.CutPrefix(string(kv.Key), "langfuse.trace.metadata.")
+			if !ok {
+				continue
+			}
+			if want, isParents := parentMeta[k]; !isParents || kv.Value.AsString() != want {
+				t.Errorf("span %q writes trace metadata %s = %q; only the parent's values may reach the trace", s.Name(), k, kv.Value.AsString())
+			}
+		}
+	}
+	for k, want := range parentMeta {
+		if got, ok := attrValue(spans, "parent", "langfuse.trace.metadata."+k); !ok || got != want {
+			t.Errorf("parent trace metadata %s = %q (ok=%v), want %q", k, got, ok, want)
+		}
+	}
+	for k, want := range childMeta {
+		if got, ok := attrValue(spans, "child", "langfuse.observation.metadata."+k); !ok || got != want {
+			t.Errorf("child observation metadata %s = %q (ok=%v), want %q", k, got, ok, want)
+		}
+	}
+}
+
+// A child session run on a detached ctx (an async subagent, an auto-resumed
+// subagent session) has no parent trace in ctx: OTel starts a new trace for
+// it, so it is that trace's root and keeps trace-level name, input and
+// metadata, exactly like a root run.
+func TestDetachedChildTraceIsItsOwnRoot(t *testing.T) {
+	c, sr := newTestClient()
+
+	parent := c.TraceStart(context.Background(), TraceParams{Name: "parent"})
+	c.TraceEnd(parent)
+	ctx := c.TraceStart(context.Background(), TraceParams{
+		Name: "async-subagent", Input: "task prompt", IsChild: true,
+		Metadata: map[string]any{"piano.agent_id": "explorer"},
+	})
+	SetTraceMetadata(ctx, map[string]any{"piano.turns_used": 2})
+	c.TraceEnd(ctx)
+
+	spans := sr.Ended()
+	if spans[0].SpanContext().TraceID() == spans[1].SpanContext().TraceID() {
+		t.Fatal("a detached child must start a trace of its own")
+	}
+	for key, want := range map[string]string{
+		"langfuse.trace.name":                      "async-subagent",
+		"langfuse.trace.input":                     "task prompt",
+		"langfuse.trace.metadata.piano.agent_id":   "explorer",
+		"langfuse.trace.metadata.piano.turns_used": "2",
+	} {
+		if got, ok := attrValue(spans, "async-subagent", key); !ok || got != want {
+			t.Errorf("%s = %q (ok=%v), want %q", key, got, ok, want)
+		}
+	}
+}
+
+func TestSetTraceMetadataNoTraceIsNoop(t *testing.T) {
+	SetTraceMetadata(context.Background(), map[string]any{"k": "v"}) // must not panic
 }
 
 func TestGenerationInputAndOutput(t *testing.T) {

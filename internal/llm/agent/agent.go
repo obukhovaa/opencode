@@ -934,12 +934,24 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		}
 	}
 
-	ctx = a.createLangfuseTrace(ctx, session, traceInputFor(content, hasUserTurn, len(attachmentParts)))
+	ctx = a.startRunTrace(ctx, session, traceInputFor(content, hasUserTurn, len(attachmentParts)), effectiveMaxTurns)
 	defer langfuse.EndTrace(ctx)
+	// Model calls made by this RunWith call, across every outer cycle
+	// (cycles resets per outer cycle); the forced wrap-up counts.
+	turnsUsed := 0
 	// Registered after EndTrace so it runs first (LIFO) — attributes must
 	// land before the span ends.
 	defer func() {
+		finishReason := traceFinishReason(result, ctx.Err())
+		if p := recover(); p != nil {
+			// A panic leaves result zero, which reads as a natural finish.
+			// Record the error RunWith turns it into, then let it propagate
+			// to RunWith's recovery.
+			finishReason = string(message.FinishReasonError)
+			defer panic(p)
+		}
 		a.setTraceOutput(ctx, func() any { return traceOutputFromEvent(result) })
+		stampTraceMetadata(ctx, map[string]any{traceKeyTurnsUsed: turnsUsed, traceKeyFinishReason: finishReason})
 	}()
 
 	// Susped to get lazy tools
@@ -1244,6 +1256,7 @@ OuterLoop:
 				if forceStruct {
 					finalCtx = provider.WithForcedTool(ctx, tools.StructOutputToolName)
 				}
+				turnsUsed++
 				finalMsg, finalToolResults, finalErr := a.streamAndHandleEvents(finalCtx, sessionID, msgHistory, toolSet, tracker)
 				if finalErr != nil {
 					if !errors.Is(finalErr, context.Canceled) {
@@ -1302,6 +1315,7 @@ OuterLoop:
 			// The call's result stays out of agentMessage/toolResults until it
 			// succeeds: a recovery compaction below re-appends the previous
 			// cycle's pair (preserveTail) from them.
+			turnsUsed++
 			turnMsg, turnResults, turnErr := a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
 			// errorResultsWritten: turnMsg's tool calls already got their
 			// error results, so the error path below must not write them twice.

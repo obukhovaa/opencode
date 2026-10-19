@@ -63,7 +63,7 @@ func TestResolveTagsAppliesTheRunIdentity(t *testing.T) {
 		t.Fatalf("config.Load: %v", err)
 	}
 	config.Get().Telemetry = &config.TelemetryConfig{
-		Tags: []string{"env:dev", "team:pool-owner"},
+		Tags: []string{"env:dev", "team:pool-owner", "flow:none"},
 	}
 	t.Cleanup(func() {
 		config.Reset()
@@ -72,7 +72,7 @@ func TestResolveTagsAppliesTheRunIdentity(t *testing.T) {
 
 	t.Run("no override keeps the config tags", func(t *testing.T) {
 		runidentity.Set(nil)
-		want := []string{"env:dev", "team:pool-owner"}
+		want := []string{"env:dev", "team:pool-owner", "flow:none"}
 		if got := ResolveTags(context.Background()); !reflect.DeepEqual(got, want) {
 			t.Errorf("ResolveTags = %v, want %v", got, want)
 		}
@@ -83,7 +83,27 @@ func TestResolveTagsAppliesTheRunIdentity(t *testing.T) {
 	// aggregation is right.
 	t.Run("the run team shadows the pod's static team tag", func(t *testing.T) {
 		runidentity.Set(&runidentity.Identity{Tags: []string{"team:acme"}})
-		want := []string{"env:dev", "team:acme"}
+		want := []string{"env:dev", "flow:none", "team:acme"}
+		if got := ResolveTags(context.Background()); !reflect.DeepEqual(got, want) {
+			t.Errorf("ResolveTags = %v, want %v", got, want)
+		}
+	})
+
+	// GENAI-499: a pool pod boots with `flow:none` and serves many flows;
+	// the run's flow must replace it, not sit beside it.
+	t.Run("the run flow shadows the pod's static flow tag", func(t *testing.T) {
+		runidentity.Set(&runidentity.Identity{Tags: []string{"team:acme", "flow:pr-review"}})
+		want := []string{"env:dev", "team:acme", "flow:pr-review"}
+		if got := ResolveTags(context.Background()); !reflect.DeepEqual(got, want) {
+			t.Errorf("ResolveTags = %v, want %v", got, want)
+		}
+	})
+
+	// A context tag (tools.AddTag) appends rather than shadows, which is why
+	// the flow tag rides the run identity instead.
+	t.Run("a flow-only identity keeps every other config tag", func(t *testing.T) {
+		runidentity.Set(&runidentity.Identity{Tags: []string{"flow:pr-review"}})
+		want := []string{"env:dev", "team:pool-owner", "flow:pr-review"}
 		if got := ResolveTags(context.Background()); !reflect.DeepEqual(got, want) {
 			t.Errorf("ResolveTags = %v, want %v", got, want)
 		}

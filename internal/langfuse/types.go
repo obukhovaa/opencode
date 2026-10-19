@@ -13,8 +13,11 @@ type TraceParams struct {
 	Input any
 	// IsChild indicates this trace is a subagent invoked via the task tool.
 	// When false, the span is forced to be a new root (independent trace ID).
-	// When true, the span inherits the parent's trace ID so it nests under
-	// the calling agent's task-tool span in Langfuse.
+	// When true and ctx carries the calling run's trace, the span inherits
+	// its trace ID and nests under it as an observation: its name, input,
+	// output and metadata are written as observation attributes, never over
+	// the parent trace's. When true but ctx carries no trace (a subagent run
+	// on a detached ctx), the span is the root of a trace of its own.
 	IsChild bool
 }
 

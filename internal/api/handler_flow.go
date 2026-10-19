@@ -450,6 +450,7 @@ func (s *Server) handleFlowStart(w http.ResponseWriter, r *http.Request) {
 		llmAPIKey:       body.LLMAPIKey,
 		telemetryUserID: body.TelemetryUserID,
 		telemetryTeam:   body.TelemetryTeam,
+		telemetryFlow:   body.FlowID,
 		startAt:         body.StartAt,
 		doneSteps:       body.DoneSteps,
 		presentSteps:    body.PresentSteps,
@@ -595,6 +596,12 @@ type flowStartOptions struct {
 	// telemetryTeam is the resolved team, rendered as a `team:` trace tag
 	// that shadows the pod's static boot-time one.
 	telemetryTeam string
+	// telemetryFlow is the flow this run executes, rendered as a `flow:`
+	// trace tag that shadows the boot-time one (`flow:none` on a pool pod,
+	// which serves many flows). Set by POST /flow only, and honoured in pool
+	// mode only (see StartWithOptions): the per-Job --flow auto-start keeps
+	// the tag its config was rendered with.
+	telemetryFlow string
 	// startAt, doneSteps and presentSteps are forwarded to the matching
 	// flow.RunOptions fields.
 	startAt      string
@@ -668,6 +675,16 @@ func identityTags(userID, team string) []string {
 		tags = append(tags, "team:"+team)
 	}
 	return tags
+}
+
+// flowTags renders the run's flow as the `flow:` trace tag it contributes,
+// or nil for a blank flow ID — an empty tag would shadow the configured one
+// with no value at all.
+func flowTags(flowID string) []string {
+	if flowID = strings.TrimSpace(flowID); flowID == "" {
+		return nil
+	}
+	return []string{"flow:" + flowID}
 }
 
 // foldMCPServerName canonicalises an MCP server name the way config
@@ -783,7 +800,18 @@ func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, ar
 	// config (telemetry.userId, providers[].apiKey), which this change
 	// never mutates, so the override is purely additive and clearing it
 	// always restores the configured value.
-	state.setRunIdentity = opts.llmAPIKey != "" || opts.telemetryUserID != "" || opts.telemetryTeam != ""
+	// The flow tag is pool-only. The run identity is process-wide, so on a
+	// non-pool server that also serves chat turns a published `flow:` tag
+	// would land on those turns' traces and provider metadata too. A pool
+	// pod runs nothing but its one flow, and is the deployment that boots
+	// with the placeholder `flow:none`.
+	if !fr.poolMode {
+		opts.telemetryFlow = ""
+	}
+	// In pool mode a flow tag alone is enough to publish: every POST /flow
+	// run names its flow, so a pooled run never reports the pod's boot-time
+	// `flow:none`.
+	state.setRunIdentity = opts.llmAPIKey != "" || opts.telemetryUserID != "" || opts.telemetryTeam != "" || len(flowTags(opts.telemetryFlow)) > 0
 	state.setJobArgs = len(args) > 0
 	state.jobArgs = args
 	fr.currentRun = state
@@ -845,7 +873,7 @@ func (fr *flowRunner) applyRunScopedIdentity(state *flowRunState, opts flowStart
 		runidentity.Set(&runidentity.Identity{
 			APIKey: opts.llmAPIKey,
 			UserID: opts.telemetryUserID,
-			Tags:   identityTags(opts.telemetryUserID, opts.telemetryTeam),
+			Tags:   append(identityTags(opts.telemetryUserID, opts.telemetryTeam), flowTags(opts.telemetryFlow)...),
 		})
 	}
 	// A run that carries NO identity must positively clear whatever the
