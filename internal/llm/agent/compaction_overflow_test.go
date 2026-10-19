@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/opencode-ai/opencode/internal/llm/provider"
@@ -228,6 +229,56 @@ func TestOverflowRetry_NotAfterToolsRan(t *testing.T) {
 	}
 }
 
+// expiringCtx reports DeadlineExceeded once expire is called, as a flow
+// step's timeout does while its model call is in flight.
+type expiringCtx struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func newExpiringCtx() *expiringCtx {
+	return &expiringCtx{Context: context.Background(), done: make(chan struct{})}
+}
+
+func (c *expiringCtx) expire()               { c.once.Do(func() { close(c.done) }) }
+func (c *expiringCtx) Done() <-chan struct{} { return c.done }
+func (c *expiringCtx) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+// A call that failed because the run ran out of time is no overflow, even
+// near the window: the compaction would run on a dead context (and record a
+// backoff failure for the session) and the retry could not be sent.
+func TestOverflowRetry_NotOnceTheRunIsOutOfTime(t *testing.T) {
+	withAutoCompact(t, true)
+	const sess = "s-overflow-deadline"
+	ctx := newExpiringCtx()
+	a, _, log := newOverflowAgent(t, sess, func([]message.Message) error {
+		ctx.expire()
+		return errInternal
+	})
+	// 92% of the window: a near_window cause, under the 95% threshold.
+	seedReport(t, a, sess, 920)
+
+	res := a.processGeneration(ctx, sess, "next task", 0, nil, RunOptions{})
+
+	if got := strings.Join(*log, ","); got != "main" {
+		t.Fatalf("call order = %s, want main only", got)
+	}
+	if res.Error == nil || !errors.Is(res.Error, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want the deadline", res.Error)
+	}
+	if n := a.compactionBackoff.failureCount(sess); n != 0 {
+		t.Errorf("backoff failures = %d, want 0", n)
+	}
+}
+
 type countingTool struct{ run func() }
 
 func (*countingTool) Info() tools.ToolInfo {
@@ -253,6 +304,9 @@ func TestContextOverflowCause(t *testing.T) {
 		{name: "max_tokens over the limit", estimated: 10, err: errors.New("input length and `max_tokens` exceed context limit: 190000 + 32000 > 200000"), want: "provider_error"},
 		{name: "openai", estimated: 10, err: errors.New(`{"code":"context_length_exceeded"}`), want: "provider_error"},
 		{name: "gemini", estimated: 10, err: errors.New("The input token count (1200000) exceeds the maximum number of tokens allowed (1048576)."), want: "provider_error"},
+		{name: "litellm", estimated: 10, err: errors.New(`POST "http://litellm/chat/completions": 400 Bad Request {"error":{"message":"litellm.ContextWindowExceededError: litellm.BadRequestError: MoonshotException - Invalid request","code":"400"}}`), want: "provider_error"},
+		{name: "kimi", estimated: 10, err: errors.New(`{"error":{"message":"Invalid request: Your request exceeded model token limit: 262144","type":"invalid_request_error"}}`), want: "provider_error"},
+		{name: "openai responses", estimated: 10, err: errors.New("Your input exceeds the context window of this model. Please adjust your input and try again."), want: "provider_error"},
 		{name: "stream reset near the window", estimated: 950, err: errors.New("stream reset"), want: "near_window"},
 		{name: "rate limit far from the window", estimated: 100, err: errors.New("429 rate limited"), want: ""},
 	}

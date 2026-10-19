@@ -2,7 +2,7 @@
 
 ### Requirement: A call rejected as too long recovers once
 
-When the main model call of a turn fails in the provider's response stream (not after the turn's tools ran), the error is not a cancellation, `autoCompact` is on, and the failure is classified as a context overflow — the error carries a known provider overflow message (`prompt is too long`, `input is too long`, `exceed context limit`, `context_length_exceeded`, `maximum context length`, `exceeds the maximum number of tokens`), or the last context count was at least 90% of the window — the system SHALL, if the compaction backoff allows it, run one auto-compaction with trigger `overflow_retry` and send the same call again on the compacted history. The failed call's message SHALL be finished as an error, with error results for any tool calls it streamed, before compacting. The retry SHALL NOT count as a turn. At most one such recovery SHALL run per agent run. When the compaction fails, or the retry fails for a reason other than cancellation, the run SHALL fail with the original error and the retry's error SHALL be logged. The recovery SHALL log its cause.
+When the main model call of a turn fails in the provider's response stream (not after the turn's tools ran), the error is not a cancellation, the run is neither cancelled nor past its deadline, `autoCompact` is on, and the failure is classified as a context overflow — the error carries a known provider overflow message (`prompt is too long`, `input is too long`, `exceed context limit`, `context_length_exceeded`, `maximum context length`, `exceeds the context window`, `exceeds the maximum number of tokens`, `exceeded model token limit`, LiteLLM's `ContextWindowExceededError`), or the last context count was at least 90% of the window — the system SHALL, if the compaction backoff allows it, run one auto-compaction with trigger `overflow_retry` and send the same call again on the compacted history. The failed call's message SHALL be finished as an error, with error results for any tool calls it streamed, before compacting. The retry SHALL NOT count as a turn. At most one such recovery SHALL run per agent run. When the compaction fails, or the retry fails for a reason other than cancellation, the run SHALL fail with the original error and the retry's error SHALL be logged. The recovery SHALL log its cause.
 
 #### Scenario: Recovered turn
 
@@ -16,5 +16,16 @@ When the main model call of a turn fails in the provider's response stream (not 
 
 #### Scenario: No recovery
 
-- **WHEN** `autoCompact` is off, the backoff forbids a compaction, the compaction fails, the error is not an overflow far from the window, or the error came after the turn's tools ran
+- **WHEN** `autoCompact` is off, the backoff forbids a compaction, the compaction fails, the error is not an overflow far from the window, the error came after the turn's tools ran, or the run is past its deadline
 - **THEN** no retry is made and the run fails with the original error
+
+## MODIFIED Requirements
+
+### Requirement: Summarizer calls carry diagnostics
+
+The system SHALL attach to the summarizer's telemetry generation the compaction trigger (`pre_turn`, `in_loop`, `overflow_retry` or `manual`), the estimated input tokens, the input message count, the trimmed message count, the truncated tool payload count and the consecutive failure count, without recording the input itself.
+
+#### Scenario: Failed summarizer call
+
+- **WHEN** a summarizer call fails with a stream reset
+- **THEN** its generation shows the trigger, the input size and the failure count, and the input is not logged

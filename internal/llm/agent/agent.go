@@ -1306,7 +1306,11 @@ OuterLoop:
 			// errorResultsWritten: turnMsg's tool calls already got their
 			// error results, so the error path below must not write them twice.
 			errorResultsWritten := false
-			if turnErr != nil && cfg.AutoCompact && !overflowRetried && isModelCallError(turnErr) && !errors.Is(turnErr, context.Canceled) {
+			// ctx.Err() covers what errors.Is(turnErr, context.Canceled) does
+			// not: a run past its deadline (a flow step's timeout) fails its
+			// call with DeadlineExceeded, which near the window would classify
+			// as an overflow and run a compaction on a dead context.
+			if turnErr != nil && cfg.AutoCompact && !overflowRetried && ctx.Err() == nil && isModelCallError(turnErr) && !errors.Is(turnErr, context.Canceled) {
 				if cause := a.contextOverflowCause(etaTokens, turnErr); cause != "" && a.compactionAllowed(sessionID, etaTokens) {
 					// Recover from a call the provider rejected as too long: compact
 					// once and send the same turn again, once per run. A

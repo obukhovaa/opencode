@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -503,15 +504,36 @@ func likelyContextOverflow(estimated, window int64) bool {
 // return for a request over the model's context window: Anthropic and Vertex
 // ("prompt is too long", "input length and `max_tokens` exceed context
 // limit"), Bedrock ("Input is too long for requested model"), OpenAI and
-// compatible gateways ("context_length_exceeded", "maximum context length"),
-// Gemini ("exceeds the maximum number of tokens").
+// compatible gateways ("context_length_exceeded", "maximum context length",
+// the Responses API's "exceeds the context window"), Gemini ("exceeds the
+// maximum number of tokens"), Moonshot/Kimi ("exceeded model token limit"),
+// and LiteLLM, which maps every provider's overflow to a
+// ContextWindowExceededError whose wrapped text need not carry any of the
+// others.
 var contextOverflowMarkers = []string{
 	"prompt is too long",
 	"input is too long",
 	"exceed context limit",
 	"context_length_exceeded",
 	"maximum context length",
+	"exceeds the context window",
 	"exceeds the maximum number of tokens",
+	"exceeded model token limit",
+	"contextwindowexceedederror",
+}
+
+// modelCallError marks an error from the provider's response stream, as
+// opposed to one after the turn's tools ran (saving their results): only the
+// former may be retried by the overflow recovery (processGeneration). Error
+// and Unwrap pass the provider's error through unchanged.
+type modelCallError struct{ err error }
+
+func (e *modelCallError) Error() string { return e.err.Error() }
+func (e *modelCallError) Unwrap() error { return e.err }
+
+func isModelCallError(err error) bool {
+	var mce *modelCallError
+	return errors.As(err, &mce)
 }
 
 // isContextOverflowError reports whether a model call's error says the

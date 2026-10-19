@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -105,17 +104,4 @@ func acceptsStructOutput(results []message.ToolResult) bool {
 		}
 	}
 	return false
-}
-
-// modelCallError marks an error from the provider's response stream, as
-// opposed to one after the turn's tools ran (saving their results). Error and
-// Unwrap pass the provider's error through unchanged.
-type modelCallError struct{ err error }
-
-func (e *modelCallError) Error() string { return e.err.Error() }
-func (e *modelCallError) Unwrap() error { return e.err }
-
-func isModelCallError(err error) bool {
-	var mce *modelCallError
-	return errors.As(err, &mce)
 }
