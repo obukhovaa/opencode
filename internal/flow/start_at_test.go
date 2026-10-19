@@ -2,6 +2,8 @@ package flow
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -118,7 +120,15 @@ func runStartAt(t *testing.T, flowID string, steps []Step, querier *stubQuerier,
 
 func runStartAtWithArgs(t *testing.T, flowID string, steps []Step, querier *stubQuerier, args map[string]any, opts RunOptions, responses []agentpkg.AgentEvent, answers [][][]string) startAtRun {
 	t.Helper()
-	registerTestFlow(t, Flow{ID: flowID, Name: flowID, Spec: FlowSpec{Steps: steps}})
+	return runFlowWithAnswers(t, Flow{ID: flowID, Name: flowID, Spec: FlowSpec{Steps: steps}}, querier, args, opts, responses, answers)
+}
+
+// runFlowWithAnswers is runStartAtWithArgs for a whole flow definition, for
+// tests that need more of the spec than its steps.
+func runFlowWithAnswers(t *testing.T, fl Flow, querier *stubQuerier, args map[string]any, opts RunOptions, responses []agentpkg.AgentEvent, answers [][][]string) startAtRun {
+	t.Helper()
+	flowID := fl.ID
+	registerTestFlow(t, fl)
 
 	base := &stubAgent{Broker: pubsub.NewBroker[agentpkg.AgentEvent](), responses: responses}
 	qs := question.NewService()
@@ -618,5 +628,200 @@ func TestStartAt_CancelledPresentationRecordsFailure(t *testing.T) {
 		if r.StepID == "confirm" && r.Status != string(FlowStatusFailed) {
 			t.Errorf("confirm row status = %q, want failed", r.Status)
 		}
+	}
+}
+
+// ---- presentations across runs ----------------------------------------------
+
+// earlierRow is the flow_states row an earlier run of flowID, rooted at
+// rootStep, left for stepID. output, when set, is a struct output.
+func earlierRow(t *testing.T, flowID, rootStep, stepID string, status FlowStatus, iteration int, args map[string]any, output string) db.FlowState {
+	t.Helper()
+	argsJSON, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	return db.FlowState{
+		SessionID:      "prefix-" + flowID + "-" + stepID,
+		RootSessionID:  "prefix-" + flowID + "-" + rootStep,
+		FlowID:         flowID,
+		StepID:         stepID,
+		Status:         string(status),
+		Args:           sql.NullString{String: string(argsJSON), Valid: true},
+		Output:         sql.NullString{String: output, Valid: output != ""},
+		IsStructOutput: output != "",
+		Iteration:      int64(iteration),
+	}
+}
+
+// presentConfirm presents base for the confirm step, accepted with Continue.
+func presentConfirm() map[string]PresentedStep {
+	return map[string]PresentedStep{
+		"confirm": {Output: map[string]any{"confirmed": "base"}, Question: continuePrompt(), Accept: "Continue"},
+	}
+}
+
+// TestPresentation_ResumedStepRunsItsAgent: a continuation that resumes a
+// presented step's unfinished row from an earlier run runs the step's agent
+// and asks nothing (CD-5359). The earlier run may have presented the output,
+// been told to change it and started the revision; asking the original
+// question again would let an accept complete the step with the output the
+// person asked to change. Every case scripts Continue, so a wrongly asked
+// question would complete confirm with "base" and fail the output check too.
+func TestPresentation_ResumedStepRunsItsAgent(t *testing.T) {
+	confirmArgs := copyArgs(reviewerArgs)
+	confirmArgs["draft"] = "d1"
+
+	tests := []struct {
+		name            string
+		status          FlowStatus
+		output          string
+		selfLoop        bool
+		recoverRunning  bool
+		resumeOnFailure bool
+	}{
+		{name: "running row of a killed pod", status: FlowStatusRunning, recoverRunning: true},
+		{name: "postponed row", status: FlowStatusPostponed},
+		{name: "failed row under resume_on_failure", status: FlowStatusFailed, resumeOnFailure: true},
+		{name: "completed self-loop with its next iteration pending", status: FlowStatusCompleted, output: `{"confirmed":"draft-2"}`, selfLoop: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flowID := "present-resume-" + strings.ReplaceAll(tt.name, " ", "-")
+			draft := schemaStep("draft", "draft")
+			draft.Rules = []Rule{{Then: "confirm"}}
+			confirm := reviewStep("confirm", "confirmed")
+			if tt.selfLoop {
+				confirm.Rules = []Rule{{If: "${step.iteration} == 1", Then: "confirm"}}
+			}
+			querier := &stubQuerier{flowStates: []db.FlowState{
+				earlierRow(t, flowID, "draft", "draft", FlowStatusCompleted, 1, reviewerArgs, `{"draft":"d1"}`),
+				earlierRow(t, flowID, "draft", "confirm", tt.status, 1, confirmArgs, tt.output),
+			}}
+			fl := Flow{ID: flowID, Name: flowID, Spec: FlowSpec{
+				Steps:   []Step{draft, confirm},
+				Session: FlowSession{ResumeOnFailure: tt.resumeOnFailure},
+			}}
+
+			run := runFlowWithAnswers(t, fl, querier, copyArgs(reviewerArgs),
+				RunOptions{PresentSteps: presentConfirm(), RecoverRunning: tt.recoverRunning},
+				[]agentpkg.AgentEvent{structEvent(`{"confirmed":"revised"}`)}, [][][]string{{{"Continue"}}})
+			if run.err != nil {
+				t.Fatalf("RunWithOptions() error: %v", run.err)
+			}
+
+			if len(run.asked) != 0 {
+				t.Fatalf("questions asked = %+v, want none: the step resumes its own work", run.asked)
+			}
+			prompts := run.agent.snapshotPrompts()
+			if len(prompts) != 1 {
+				t.Fatalf("agent calls = %d (%q), want 1 (confirm)", len(prompts), prompts)
+			}
+			if strings.Contains(prompts[0], "<presented_output>") {
+				t.Errorf("resumed prompt re-sends the presentation; the session already holds it:\n%s", prompts[0])
+			}
+			if latest := findLatestByStepID(run.states, "confirm"); latest == nil ||
+				latest.Status != FlowStatusCompleted || latest.Output != `{"confirmed":"revised"}` {
+				t.Fatalf("confirm latest = %+v, want completed with the agent's output", latest)
+			}
+		})
+	}
+}
+
+// TestPresentation_ResumedEntrySpendsThePresentation: the resumed entry is the
+// step's first entry in the run, so it takes the presentation even though it
+// does not ask. A self-loop back into the step later in the same run runs the
+// agent, as it would have had the earlier run not been interrupted.
+func TestPresentation_ResumedEntrySpendsThePresentation(t *testing.T) {
+	const flowID = "present-resume-spent"
+	confirm := reviewStep("confirm", "confirmed")
+	confirm.Rules = []Rule{{If: "${step.iteration} == 1", Then: "confirm"}}
+	querier := &stubQuerier{flowStates: []db.FlowState{
+		earlierRow(t, flowID, "confirm", "confirm", FlowStatusRunning, 1, reviewerArgs, ""),
+	}}
+
+	run := runStartAt(t, flowID, []Step{confirm}, querier,
+		RunOptions{PresentSteps: presentConfirm(), RecoverRunning: true},
+		[]agentpkg.AgentEvent{structEvent(`{"confirmed":"revised"}`), structEvent(`{"confirmed":"again"}`)},
+		[][][]string{{{"Continue"}}})
+	if run.err != nil {
+		t.Fatalf("RunWithOptions() error: %v", run.err)
+	}
+	if len(run.asked) != 0 {
+		t.Fatalf("questions asked = %+v, want none on either iteration", run.asked)
+	}
+	if got := run.agent.callCount(); got != 2 {
+		t.Fatalf("agent calls = %d, want 2 (both iterations)", got)
+	}
+	if latest := findLatestByStepID(run.states, "confirm"); latest == nil || latest.Output != `{"confirmed":"again"}` {
+		t.Fatalf("confirm latest = %+v, want the second iteration's agent output", latest)
+	}
+}
+
+// TestPresentation_RestartOverAFinishedRunPresents: completed rows from a run
+// that finished are not unfinished work. A re-trigger restarts the flow from
+// step 0 and the presented step asks again, whether it is the first step (an
+// initial entry, whose row this run marks running before the step starts) or
+// one the run routes to.
+func TestPresentation_RestartOverAFinishedRunPresents(t *testing.T) {
+	tests := []struct {
+		name    string
+		steps   func() []Step
+		earlier map[string]string // the finished run's struct output per step
+		other   string            // the step other than confirm, whose agent runs
+		reply   string            // that agent's output
+	}{
+		{
+			name: "presented step is the first step",
+			steps: func() []Step {
+				confirm := reviewStep("confirm", "confirmed")
+				confirm.Rules = []Rule{{Then: "publish"}}
+				return []Step{confirm, schemaStep("publish", "url")}
+			},
+			earlier: map[string]string{"confirm": `{"confirmed":"old"}`, "publish": `{"url":"old"}`},
+			other:   "publish",
+			reply:   `{"url":"new"}`,
+		},
+		{
+			name: "presented step is routed to",
+			steps: func() []Step {
+				draft := schemaStep("draft", "draft")
+				draft.Rules = []Rule{{Then: "confirm"}}
+				return []Step{draft, reviewStep("confirm", "confirmed")}
+			},
+			earlier: map[string]string{"draft": `{"draft":"old"}`, "confirm": `{"confirmed":"old"}`},
+			other:   "draft",
+			reply:   `{"draft":"new"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			flowID := "present-restart-" + strings.ReplaceAll(tt.name, " ", "-")
+			steps := tt.steps()
+			querier := &stubQuerier{}
+			for _, st := range steps {
+				querier.flowStates = append(querier.flowStates,
+					earlierRow(t, flowID, steps[0].ID, st.ID, FlowStatusCompleted, 1, reviewerArgs, tt.earlier[st.ID]))
+			}
+
+			run := runStartAt(t, flowID, steps, querier, RunOptions{PresentSteps: presentConfirm()},
+				[]agentpkg.AgentEvent{structEvent(tt.reply)}, [][][]string{{{"Continue"}}})
+			if run.err != nil {
+				t.Fatalf("RunWithOptions() error: %v", run.err)
+			}
+			if len(run.asked) != 1 || run.asked[0].Questions[0].Question != "Does this look right?" {
+				t.Fatalf("questions asked = %+v, want the presented question once", run.asked)
+			}
+			if got := run.agent.callCount(); got != 1 {
+				t.Errorf("agent calls = %d, want 1 (%s only, none for confirm)", got, tt.other)
+			}
+			if latest := findLatestByStepID(run.states, "confirm"); latest == nil ||
+				latest.Status != FlowStatusCompleted || latest.Output != `{"confirmed":"base"}` {
+				t.Fatalf("confirm latest = %+v, want completed with the presented output", latest)
+			}
+			if latest := findLatestByStepID(run.states, tt.other); latest == nil || latest.Output != tt.reply {
+				t.Errorf("%s latest = %+v, want re-run with output %s", tt.other, latest, tt.reply)
+			}
+		})
 	}
 }

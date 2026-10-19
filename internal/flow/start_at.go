@@ -388,7 +388,9 @@ type presentationsKey struct{}
 
 // presentationSet holds a run's presentations. Each one is taken at most
 // once: the step's first entry in the run presents it, and any later entry (a
-// self-loop, a cycle) runs the agent as usual.
+// self-loop, a cycle) runs the agent as usual. A first entry that resumes the
+// step's unfinished row from an earlier run takes it without presenting it
+// (see the presentation call site in runStep).
 type presentationSet struct {
 	mu sync.Mutex
 	m  map[string]presentation
