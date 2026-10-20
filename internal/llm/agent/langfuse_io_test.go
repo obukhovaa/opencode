@@ -167,12 +167,12 @@ func setLangfuseClient(t *testing.T, enabled bool) {
 	t.Setenv("LANGFUSE_PUBLIC_KEY", "")
 	t.Setenv("LANGFUSE_SECRET_KEY", "")
 	t.Setenv("LANGFUSE_BASE_URL", "")
-	t.Cleanup(func() { langfuse.Init("", "", "") })
+	t.Cleanup(func() { langfuse.Init("", "", "", "") })
 	if enabled {
-		langfuse.Init("pk", "sk", "http://127.0.0.1:1")
+		langfuse.Init("pk", "sk", "http://127.0.0.1:1", "")
 		return
 	}
-	langfuse.Init("", "", "")
+	langfuse.Init("", "", "", "")
 }
 
 func TestTraceInputFor(t *testing.T) {

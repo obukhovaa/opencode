@@ -916,6 +916,14 @@ func generateSchema() map[string]any {
 						"type":        "string",
 						"description": "Langfuse host URL. Supports 'env:VAR_NAME' syntax. Falls back to LANGFUSE_BASE_URL env var, then https://cloud.langfuse.com.",
 					},
+					// No "pattern" or "maxLength" on environment: a config may
+					// legitimately hold a "$VAR" placeholder that the deployment
+					// substitutes before opencode reads the file, and IDEs would
+					// flag it. internal/langfuse enforces the rule at runtime.
+					"environment": map[string]any{
+						"type":        "string",
+						"description": "Langfuse trace environment every exported span is filed under (e.g. 'dev', 'prod'). Supports 'env:VAR_NAME' syntax. Falls back to LANGFUSE_TRACING_ENVIRONMENT env var; with neither set, opencode adds no environment and Langfuse uses its 'default' environment unless OTEL_RESOURCE_ATTRIBUTES sets one. Langfuse's rule: lowercase letters, digits, '-' and '_' only, at most 40 characters, must not start with 'langfuse'. An invalid value is dropped with a warning and tracing stays enabled.",
+					},
 					"prompts": map[string]any{
 						"type":        "object",
 						"description": "Langfuse Prompt Management. When enabled, flow steps and agent types may reference a prompt stored in Langfuse (langfusePromptPath) instead of inlining its text, so wording changes ship from the Langfuse UI with no deploy. Independent of tracing: this may be enabled while telemetry.langfuse.enabled is false. Uses the same credentials and baseURL.",
