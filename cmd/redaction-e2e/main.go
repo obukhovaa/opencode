@@ -102,7 +102,7 @@ func run(dir string) verdict {
 	}))
 	defer srv.Close()
 
-	if !langfuse.Init("pk-test", "sk-test", srv.URL) {
+	if !langfuse.Init("pk-test", "sk-test", srv.URL, "") {
 		return verdict{Error: "langfuse client did not enable"}
 	}
 	c := langfuse.Get()

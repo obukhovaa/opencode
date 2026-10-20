@@ -217,6 +217,13 @@ type LangfuseConfig struct {
 	PublicKey string `json:"publicKey,omitempty"` // Supports "env:VAR_NAME"; falls back to LANGFUSE_PUBLIC_KEY
 	BaseURL   string `json:"baseURL,omitempty"`   // Supports "env:VAR_NAME"; falls back to LANGFUSE_BASE_URL
 
+	// Environment is the Langfuse trace environment every exported span is
+	// filed under (e.g. "dev", "prod"). Supports "env:VAR_NAME"; falls back
+	// to LANGFUSE_TRACING_ENVIRONMENT. Empty after the fallback adds no
+	// environment attribute. The langfuse package validates it where it is
+	// used: an invalid value is dropped with a warning and tracing stays on.
+	Environment string `json:"environment,omitempty"`
+
 	// Prompts enables Langfuse Prompt Management: flow steps and agent
 	// types may reference a prompt stored in Langfuse instead of inlining
 	// its text, so wording changes ship from the Langfuse UI with no

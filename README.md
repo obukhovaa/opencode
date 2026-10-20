@@ -658,6 +658,7 @@ Kimi K3 is also available on AWS Bedrock as `bedrock.kimi-k3` (global profile) a
 | `LANGFUSE_PUBLIC_KEY` | | Langfuse public key ([guide](docs/telemetry.md)) |
 | `LANGFUSE_SECRET_KEY` | | Langfuse secret key |
 | `LANGFUSE_BASE_URL` | `https://cloud.langfuse.com` | Langfuse host URL |
+| `LANGFUSE_TRACING_ENVIRONMENT` | | Langfuse trace environment when `telemetry.langfuse.environment` is unset ([guide](docs/telemetry.md#trace-environment)) |
 | `OPENCODE_USER_ID` | | User ID for telemetry (overrides config) |
 | `SHELL` | | Default shell |
 | `OPENCODE_SESSION_PROVIDER_TYPE` | `sqlite` | Session storage backend (`sqlite` or `mysql`) |
@@ -1536,6 +1537,7 @@ Kimi K3 is also available on AWS Bedrock as `bedrock.kimi-k3` (global profile) a
 | `LANGFUSE_PUBLIC_KEY` | | Langfuse public key ([guide](docs/telemetry.md)) |
 | `LANGFUSE_SECRET_KEY` | | Langfuse secret key |
 | `LANGFUSE_BASE_URL` | `https://cloud.langfuse.com` | Langfuse host URL |
+| `LANGFUSE_TRACING_ENVIRONMENT` | | Langfuse trace environment when `telemetry.langfuse.environment` is unset ([guide](docs/telemetry.md#trace-environment)) |
 | `OPENCODE_USER_ID` | | User ID for telemetry (overrides config) |
 | `SHELL` | | Default shell |
 | `OPENCODE_SESSION_PROVIDER_TYPE` | `sqlite` | Session storage backend (`sqlite` or `mysql`) |

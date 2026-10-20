@@ -140,7 +140,7 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 		// Initialize Langfuse tracing if enabled
 		if cfg.Telemetry != nil && cfg.Telemetry.Langfuse != nil && cfg.Telemetry.Langfuse.Enabled {
 			lf := cfg.Telemetry.Langfuse
-			if langfuse.Init(lf.PublicKey, lf.SecretKey, lf.BaseURL) {
+			if langfuse.Init(lf.PublicKey, lf.SecretKey, lf.BaseURL, lf.Environment) {
 				defer langfuse.ShutdownGlobal()
 				logging.Info("Langfuse tracing enabled", "url", lf.BaseURL)
 			} else {

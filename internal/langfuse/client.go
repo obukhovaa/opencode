@@ -3,6 +3,7 @@ package langfuse
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -22,6 +23,13 @@ import (
 const (
 	defaultBaseURL = "https://cloud.langfuse.com"
 	tracerName     = "opencode"
+
+	// environmentEnvVar is the variable Langfuse's own SDKs read for the
+	// trace environment. It is the fallback when the configured
+	// environment is empty, the way LANGFUSE_BASE_URL is for baseURL.
+	environmentEnvVar = "LANGFUSE_TRACING_ENVIRONMENT"
+	// maxEnvironmentLen is Langfuse's length limit for an environment name.
+	maxEnvironmentLen = 40
 )
 
 // Client wraps an OpenTelemetry TracerProvider configured to export
@@ -33,9 +41,11 @@ type Client struct {
 }
 
 // New creates a new Langfuse client backed by the OTEL OTLP HTTP exporter.
-// Keys and baseURL are resolved from the provided values, falling back
-// to environment variables.
-func New(publicKey, secretKey, baseURL string) *Client {
+// Keys, baseURL and environment are resolved from the provided values,
+// falling back to environment variables. environment is the trace
+// environment every exported span is filed under (see newResource); an
+// invalid value is dropped with a warning and never disables the client.
+func New(publicKey, secretKey, baseURL, environment string) *Client {
 	pk := resolveKey(publicKey, "LANGFUSE_PUBLIC_KEY")
 	sk := resolveKey(secretKey, "LANGFUSE_SECRET_KEY")
 	if pk == "" || sk == "" {
@@ -66,16 +76,9 @@ func New(publicKey, secretKey, baseURL string) *Client {
 		return &Client{enabled: false}
 	}
 
-	res, _ := resource.New(context.Background(),
-		resource.WithAttributes(
-			semconv.ServiceName(tracerName),
-			semconv.ServiceVersion(version.Version),
-		),
-	)
-
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter, sdktrace.WithBatchTimeout(time.Second)),
-		sdktrace.WithResource(res),
+		sdktrace.WithResource(newResource(environment)),
 	)
 
 	return &Client{
@@ -83,6 +86,76 @@ func New(publicKey, secretKey, baseURL string) *Client {
 		provider: tp,
 		enabled:  true,
 	}
+}
+
+// newResource builds the OTel resource every exported span carries:
+// service.name, service.version and, when set and valid, the trace
+// environment.
+//
+// environment is the configured value, resolved like the credentials: it
+// supports "env:VAR_NAME" and falls back to LANGFUSE_TRACING_ENVIRONMENT.
+// Empty after resolution adds no environment attribute. An invalid value is
+// logged and dropped the same way; tracing stays on.
+//
+// This is not the whole exported resource: sdktrace.WithResource merges
+// OTEL_RESOURCE_ATTRIBUTES (and OTEL_SERVICE_NAME) underneath it, with the
+// keys built here winning. So when the environment is unset or dropped, an
+// environment set in OTEL_RESOURCE_ATTRIBUTES is still exported, and it is
+// not validated here. With neither, Langfuse uses its "default" environment.
+//
+// A valid value is written under two keys. Langfuse reads either one
+// (https://langfuse.com/docs/observability/features/environments):
+// langfuse.environment is its own key, deployment.environment.name is the
+// current OTel semantic-convention key that other OTLP consumers read. The
+// deprecated deployment.environment key (the name in the semconv version
+// imported here) is not set.
+func newResource(environment string) *resource.Resource {
+	attrs := []attribute.KeyValue{
+		semconv.ServiceName(tracerName),
+		semconv.ServiceVersion(version.Version),
+	}
+	if env := resolveKey(environment, environmentEnvVar); env != "" {
+		if err := validateEnvironment(env); err != nil {
+			logging.Warn("langfuse: dropping invalid trace environment; tracing stays enabled",
+				"environment", env, "reason", err)
+		} else {
+			attrs = append(attrs,
+				attribute.String("langfuse.environment", env),
+				attribute.String("deployment.environment.name", env),
+			)
+		}
+	}
+	res, _ := resource.New(context.Background(), resource.WithAttributes(attrs...))
+	return res
+}
+
+// validateEnvironment applies Langfuse's rule for an environment name, as
+// stated at https://langfuse.com/docs/observability/features/environments:
+// the name "follows this regex pattern: ^(?!langfuse)[a-z0-9-_]+$" and is
+// "at most 40 characters". That is lowercase letters, digits, '-' and '_'
+// only, and no "langfuse" prefix. Go's regexp has no lookahead, so the
+// prefix is checked on its own. This is the one place the rule lives;
+// config only carries the string.
+func validateEnvironment(env string) error {
+	if strings.Contains(env, "$") {
+		// Deployments may fill "$VAR" placeholders in the config file from
+		// their own environment before opencode reads it. A "$" that is
+		// still here means that substitution did not happen.
+		return errors.New("contains '$' and looks like an unexpanded placeholder; only lowercase letters, digits, '-' and '_' are allowed")
+	}
+	for _, r := range env {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return fmt.Errorf("contains %q; only lowercase letters, digits, '-' and '_' are allowed", r)
+		}
+	}
+	// Every allowed character is one byte, so len counts characters here.
+	if len(env) > maxEnvironmentLen {
+		return fmt.Errorf("is %d characters long; at most %d are allowed", len(env), maxEnvironmentLen)
+	}
+	if strings.HasPrefix(env, "langfuse") {
+		return errors.New(`starts with "langfuse", a prefix Langfuse reserves`)
+	}
+	return nil
 }
 
 // Enabled returns true if the client has valid credentials and a working exporter.
@@ -241,8 +314,8 @@ var globalClient *Client
 
 // Init creates the global Langfuse client. Should be called once at startup.
 // Returns true if the client is enabled.
-func Init(publicKey, secretKey, baseURL string) bool {
-	globalClient = New(publicKey, secretKey, baseURL)
+func Init(publicKey, secretKey, baseURL, environment string) bool {
+	globalClient = New(publicKey, secretKey, baseURL, environment)
 	return globalClient.Enabled()
 }
 

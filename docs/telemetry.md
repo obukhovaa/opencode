@@ -41,6 +41,7 @@ Or set environment variables directly:
 export LANGFUSE_PUBLIC_KEY=pk-lf-...
 export LANGFUSE_SECRET_KEY=sk-lf-...
 export LANGFUSE_BASE_URL=https://cloud.langfuse.com  # optional, this is the default
+export LANGFUSE_TRACING_ENVIRONMENT=dev              # optional, see Trace Environment
 ```
 
 ### Langfuse Config Fields
@@ -51,7 +52,29 @@ export LANGFUSE_BASE_URL=https://cloud.langfuse.com  # optional, this is the def
 | `secretKey` | string | yes | Langfuse secret key. Supports `env:VAR_NAME` syntax |
 | `publicKey` | string | yes | Langfuse public key. Supports `env:VAR_NAME` syntax |
 | `baseURL` | string | no | Langfuse host URL. Falls back to `LANGFUSE_BASE_URL` env var, then `https://cloud.langfuse.com` |
+| `environment` | string | no | Langfuse trace environment (e.g. `dev`, `prod`). Supports `env:VAR_NAME` syntax. Falls back to `LANGFUSE_TRACING_ENVIRONMENT` env var. See [Trace Environment](#trace-environment) |
 | `prompts` | object | no | Langfuse Prompt Management (see [below](#langfuse-prompt-management)). Independent of `enabled` — prompts may be used without tracing. |
+
+### Trace Environment
+
+Langfuse files every trace under an [environment](https://langfuse.com/docs/observability/features/environments), `default` unless one is set. Set `telemetry.langfuse.environment` to keep the traces of separate deployments apart, for example `dev` and `prod` sending to one Langfuse project:
+
+```json
+{
+  "telemetry": {
+    "langfuse": {
+      "enabled": true,
+      "environment": "env:AGENT_ENV"
+    }
+  }
+}
+```
+
+The value is resolved like the keys: a literal, an `env:VAR_NAME` reference, or, when the field is empty, the `LANGFUSE_TRACING_ENVIRONMENT` variable that Langfuse's own SDKs read. A resolved value is set on the OpenTelemetry resource of every exported span as both `langfuse.environment` and `deployment.environment.name`. With nothing set, opencode adds no environment attribute and the resource it builds is the same as before.
+
+The OpenTelemetry SDK also merges `OTEL_RESOURCE_ATTRIBUTES` into the resource of every exported span, with opencode's own keys winning. So when no environment resolves from the field or `LANGFUSE_TRACING_ENVIRONMENT`, or the resolved one is dropped as invalid, an environment set there (for example `OTEL_RESOURCE_ATTRIBUTES=langfuse.environment=staging`) is still exported, and opencode does not validate it. Traces land in `default` only when none of these sets one.
+
+Langfuse accepts lowercase letters, digits, `-` and `_` only, at most 40 characters, and no name starting with `langfuse`. A value that breaks the rule is dropped with a warning in the log that names the value and the reason, and tracing carries on without it; it never fails startup. A value containing `$` gets a warning that it looks like an unexpanded placeholder: a deployment that fills `$VAR` placeholders in `.opencode.json` before opencode reads it did not fill this one.
 
 ### Trace Hierarchy
 
