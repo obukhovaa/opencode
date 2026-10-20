@@ -15,6 +15,8 @@ Langfuse provides LLM observability with traces, generations, tool calls, token 
 | **Generation** | LLM API call | Each `StreamResponse`/`SendMessages` call with model, tokens, cost, timing. With `telemetry.generations` enabled for the agent, input is the exact request payload (system prompt + message history, chat format) and output is the exact response (content, reasoning, tool calls, finish reason) |
 | **Tool** | Tool execution | Each tool call with name, timing, optional input/output |
 
+A generation's `usage_details` carry `input` (uncached input, cache writes and cache reads together), `output` and `total`, plus `cache_read` and `cache_creation` when non-zero and `thinking` when the provider breaks it out: the part of `output` the model spent reasoning (Anthropic `output_tokens_details.thinking_tokens`, OpenAI-compatible `completion_tokens_details.reasoning_tokens`). `thinking` is already inside `output` and `total`, and the cost is sent explicitly, so it changes neither. It is the measure of how much a model thought, since the reasoning text a Claude model returns is a summary.
+
 ### Setup
 
 1. Get your API keys from [Langfuse](https://langfuse.com) (Settings > API Keys)
@@ -251,6 +253,7 @@ Notes:
 - Payloads are truncated to 400KB per attribute. Binary attachments are summarized (`[binary attachment: <mime>, N bytes]`), never embedded.
 - **This is the full conversation.** An opted-in agent sends the entire message history — including tool results embedded in it — to Langfuse, independently of the per-tool `logInput`/`logOutput` patterns above, which only govern the dedicated tool observations. Opt in per agent rather than using `"*"` when any agent handles sensitive content.
 - Reasoning (thinking) blocks and replayed Anthropic server-side tool-search blocks are included, since both are part of the outgoing request. Redacted thinking blocks are noted but their opaque payload is never embedded.
+- On Claude models with adaptive thinking the request asks for `thinking.display: "summarized"`, so reasoning is the model's summarized thinking. Without it, Claude Opus 4.7 and later and the Claude 5 family return each thinking block empty, with only its signature. Billing is the same either way: output is billed on the full thinking tokens, and a replayed block costs its thinking tokens as input whatever its displayed text.
 - Enabling this materially increases export volume (up to ~800KB per LLM call versus a few hundred bytes). Spans are exported gzipped and in batches; a batch that still exceeds the ingestion endpoint's body limit is rejected whole — losing traces that carried no payload alongside the large ones. Scope `logInput`/`logOutput` to the agents you are actually debugging, and if you run `"*"` across a busy multi-agent fleet, consider lowering the OTel batch size (`sdktrace.WithMaxExportBatchSize`, currently the SDK default of 512, in `internal/langfuse/client.go`).
 
 ### Flow Args

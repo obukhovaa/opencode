@@ -167,10 +167,22 @@ func bedrockMiddleware() sdkoption.Middleware {
 			body, _ = sjson.SetBytes(body, "anthropic_version", bedrock.DefaultVersion)
 		}
 
-		betas := r.Header.Values("anthropic-beta")
-		if len(betas) > 0 {
+		// One header value may carry several comma-joined betas (the
+		// client-level header is joined that way); Bedrock wants each as
+		// its own array element, as the SDK's own bedrock middleware does.
+		if values := r.Header.Values("anthropic-beta"); len(values) > 0 {
 			r.Header.Del("anthropic-beta")
-			body, _ = sjson.SetBytes(body, "anthropic_beta", betas)
+			var betas []string
+			for _, value := range values {
+				for _, beta := range strings.Split(value, ",") {
+					if beta = strings.TrimSpace(beta); beta != "" {
+						betas = append(betas, beta)
+					}
+				}
+			}
+			if len(betas) > 0 {
+				body, _ = sjson.SetBytes(body, "anthropic_beta", betas)
+			}
 		}
 
 		// Strip metadata entirely for Bedrock. The native Bedrock API only

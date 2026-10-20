@@ -49,6 +49,9 @@ func (s *Span) SetUsage(u *Usage) {
 	if u.CacheCreation > 0 {
 		usageMap["cache_creation"] = u.CacheCreation
 	}
+	if u.Thinking > 0 {
+		usageMap["thinking"] = u.Thinking
+	}
 	usage, _ := json.Marshal(usageMap)
 	cost, _ := json.Marshal(map[string]float64{
 		"input": u.InputCost, "output": u.OutputCost, "total": u.TotalCost,
