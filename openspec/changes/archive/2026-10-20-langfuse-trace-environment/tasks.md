@@ -20,4 +20,4 @@
 
 - [x] 4.1 `docs/telemetry.md` (field table, Trace Environment section) and the README environment variable table
 - [x] 4.2 `gofmt -l`, `go vet`, `go test ./internal/langfuse/... ./internal/config/... ./cmd/...`, `make schema-check`, `scripts/test/redaction.sh`
-- [ ] 4.3 `make test`
+- [x] 4.3 `make test`'s test step by hand (`go test -race -short ./...`; `make test` itself stops at `go generate` without `mockgen` on PATH): every failure also fails on a clean `main`
