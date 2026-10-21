@@ -19,7 +19,7 @@
 ## 4. Integration
 
 - [x] 4.1 Add `scripts/test/tool_env.sh` that drives the bash tool against a built binary with denied variables set and asserts they are absent from `env`; verify `make test-e2e` runs it green
-- [ ] 4.2 Run `make test`; verify no failures beyond those already present on `main`
+- [x] 4.2 Run `make test`; verify no failures beyond those already present on `main`
 
 ## Workflow follow-up
 
