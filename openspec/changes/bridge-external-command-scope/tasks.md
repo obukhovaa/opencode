@@ -16,7 +16,7 @@
 
 ## 4. Integration
 
-- [ ] 4.1 `make test` passes (all tests and formatters).
+- [x] 4.1 `make test` adds no failure over `origin/main` (all tests and formatters). On the dev machine `origin/main` already fails 12 `internal/bridge/service` HTTP tests (`config.Load` "no valid provider", order-dependent) and `TestGenerationInputGateFromLoadedConfig`; the change fails exactly those and nothing else.
 
 ## Workflow follow-up
 
