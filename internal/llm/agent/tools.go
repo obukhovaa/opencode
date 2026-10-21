@@ -39,6 +39,7 @@ var (
 		tools.SourcegraphToolName,
 	}
 	editorToolNames = []string{
+		tools.MemoryToolName,
 		tools.WriteToolName,
 		tools.EditToolName,
 		tools.MultiEditToolName,
@@ -131,6 +132,12 @@ func NewToolSet(
 	// tools/description_budget_test.go so its description stays budgeted.
 	createTool := func(name string) tools.BaseTool {
 		switch name {
+		case tools.MemoryToolName:
+			cfg := config.Get()
+			if cfg.Memory == nil || !cfg.Memory.Enabled || !reg.IsToolExplicitlyEnabled(agentID, name) {
+				return nil
+			}
+			return tools.NewMemoryTool(cfg, reg, permissions)
 		case tools.LSToolName:
 			return tools.NewLsTool(config.Get(), reg, permissions)
 		case tools.GlobToolName:

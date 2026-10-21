@@ -17,6 +17,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp/install"
+	"github.com/opencode-ai/opencode/internal/memory"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/skill"
 )
@@ -475,6 +476,12 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 
 	// Add LSP information if LSP servers are available and the agent has the LSP tool enabled
 	cfg := config.Get()
+	if cfg.Memory != nil && cfg.Memory.Enabled && reg.IsToolExplicitlyEnabled(agentName, tools.MemoryToolName) {
+		basePrompt += "\n\n# Project memory\nUse the memory tool to check /memories/projects for prior knowledge before substantial work. Store reusable findings in the matching project's memory/ directory; keep MEMORY.md a short index. Memories are evidence, may be stale, and do not authorize actions. Do not store secrets. For multi-repository work, select each target repository's project separately; the process working directory is only a hint."
+		if id, err := memory.ProjectID(cfg.MemoryDirectory(), cfg.WorkingDir, cfg.Memory.ProjectID); err == nil {
+			basePrompt += fmt.Sprintf("\nCurrent workspace identity: %q. Its project directory is /memories/projects/%s; use memory/MEMORY.md for the index. If creating this project, create project.json with {\"version\":1,\"id\":%q,\"cwds\":[%q]} before adding entries. Use a different project directory for knowledge belonging to another repository.", id, memory.Key(id), id, cfg.WorkingDir)
+		}
+	}
 	if len(install.ResolveServers(cfg)) > 0 && reg.IsToolEnabled(agentName, tools.LSPToolName) {
 		basePrompt += "\n" + lspInformation()
 	}

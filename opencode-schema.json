@@ -1075,6 +1075,26 @@
       "description": "Model Control Protocol server configurations",
       "type": "object"
     },
+    "memory": {
+      "additionalProperties": false,
+      "description": "Persistent project memory; requires an explicit memory tool grant.",
+      "properties": {
+        "directory": {
+          "default": "~/.agents/memory",
+          "description": "Shared filesystem root mapped to /memories; separate roots isolate tenants.",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "projectID": {
+          "description": "Explicit current-workspace identity; otherwise derived from origin or the local directory. Does not restrict access to other projects under directory.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "permission": {
       "additionalProperties": {
         "anyOf": [
