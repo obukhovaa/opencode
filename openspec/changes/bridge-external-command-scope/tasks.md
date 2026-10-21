@@ -1,7 +1,7 @@
 ## 1. External callers address only their own session
 
-- [ ] 1.1 `chatSessionVisible` and `cronSessionVisible` take the caller's channel and, for `external`, return "only the current session" without a store or session read; `/sessions`, `/session` and `/crons` pass it, and `/crons` filters for external callers whatever `isolateExternalSessions` says. Verify with bridge tests: an external peer's `/sessions` lists only its session, `/session <prefix>` of another session (unique and ambiguous) neither binds nor names it, `/crons` shows only its jobs, with the setting on and off.
-- [ ] 1.2 `docs/bridge.md` chat-commands section states the external rule; verify by reading the rendered section.
+- [x] 1.1 `chatSessionVisible` and `cronSessionVisible` take the caller's channel and, for `external`, return "only the current session" without a store or session read; `/sessions`, `/session` and `/crons` pass it, and `/crons` filters for external callers whatever `isolateExternalSessions` says. Verify with bridge tests: an external peer's `/sessions` lists only its session, `/session <prefix>` of another session (unique and ambiguous) neither binds nor names it, `/crons` shows only its jobs, with the setting on and off.
+- [x] 1.2 `docs/bridge.md` chat-commands section states the external rule; verify by reading the rendered section.
 
 ## 2. External channel command allowlist
 
