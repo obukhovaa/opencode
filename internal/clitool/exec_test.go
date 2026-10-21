@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 // writeScript creates an executable shell script and returns its path. The
@@ -97,6 +99,44 @@ func TestExec_InheritPassesParentEnv(t *testing.T) {
 	if !containsPrefix(env, "CLITOOL_INHERITED=yes") {
 		t.Error("default inherit should pass the parent environment")
 	}
+}
+
+// A denied name must reach a CLI tool through none of the manifest's env
+// routes, while a literal env.set value is the operator's explicit grant.
+func TestBuildEnv_DropsDeniedVariables(t *testing.T) {
+	wd := t.TempDir()
+	t.Setenv("OPENCODE_SERVER_PASSWORD", "api-s3cret")
+	t.Setenv("CLITOOL_DENIED", "op-s3cret")
+	t.Setenv(toolenv.EnvVar, "CLITOOL_DENIED")
+	t.Setenv("CLITOOL_KEPT", "kept")
+
+	t.Run("inherit", func(t *testing.T) {
+		m := mustParse(t, wd, "say.yaml", echoManifest)
+		env := m.BuildEnv(os.Environ())
+		if containsPrefix(env, "OPENCODE_SERVER_PASSWORD=") || containsPrefix(env, "CLITOOL_DENIED=") {
+			t.Errorf("inherit passed a denied variable: %q", env)
+		}
+		if !containsPrefix(env, "CLITOOL_KEPT=kept") {
+			t.Error("inherit dropped an undenied variable")
+		}
+	})
+
+	t.Run("pass and set", func(t *testing.T) {
+		m := mustParse(t, wd, "restricted.yaml", "name: restricted\ndescription: d\ncommand: echo\nenv:\n  inherit: false\n  pass: [CLITOOL_DENIED, CLITOOL_KEPT]\n  set:\n    REF: \"${env.CLITOOL_DENIED}\"\n    OPENCODE_SERVER_PASSWORD: granted-literal\n")
+		env := m.BuildEnv(os.Environ())
+		if containsPrefix(env, "CLITOOL_DENIED=") {
+			t.Errorf("env.pass passed a denied variable: %q", env)
+		}
+		if !containsPrefix(env, "REF=") || containsPrefix(env, "REF=op-s3cret") {
+			t.Errorf("${env.NAME} expanded a denied variable: %q", env)
+		}
+		if !containsPrefix(env, "OPENCODE_SERVER_PASSWORD=granted-literal") {
+			t.Errorf("a literal env.set value must still be passed: %q", env)
+		}
+		if !containsPrefix(env, "CLITOOL_KEPT=kept") {
+			t.Error("env.pass dropped an undenied variable")
+		}
+	})
 }
 
 func TestExec_TimeoutKillsProcessGroup(t *testing.T) {
