@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -370,5 +371,43 @@ func TestEnqueue_BusyRecordsSkippedResume(t *testing.T) {
 	enqueue(flowTask.ID)
 	if _, ok := TakeSkippedResume("s1"); ok {
 		t.Error("a flow-owned completion recorded a skipped resume")
+	}
+}
+
+type handoffDeps struct {
+	*fakeDeps
+	busy func(string) bool
+}
+
+func (d *handoffDeps) IsSessionBusy(sessionID string) bool { return d.busy(sessionID) }
+
+func TestEnqueue_ReleaseDuringBusyCheckResumesOnce(t *testing.T) {
+	for _, busySnapshot := range []bool{true, false} {
+		t.Run(fmt.Sprintf("busy=%v", busySnapshot), func(t *testing.T) {
+			deps, _, tk, cleanup := setupTaskFixture(t, true)
+			defer cleanup()
+			t.Cleanup(func() { TakeSkippedResume("s1") })
+			restore := SetDeps(&handoffDeps{fakeDeps: deps, busy: func(sessionID string) bool {
+				// The run releases its slot and takes its pending resume while
+				// Enqueue is checking the slot. Exercise either observed value.
+				if pending, ok := TakeSkippedResume(sessionID); ok {
+					deps.ResumeSession(sessionID, pending.Requester, pending.JobArgs)
+				}
+				return busySnapshot
+			}})
+			defer restore()
+			if err := EnqueueTaskCompletion(context.Background(), CompletionInput{
+				SessionID: "s1", OriginatingToolName: "bash", TaskID: tk.ID,
+				Kind: KindBash, Status: StatusCompleted, Content: "done", SuppressIfNotified: true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if got := deps.resumeCalls.Load(); got != 1 {
+				t.Fatalf("resume calls = %d, want exactly one", got)
+			}
+			if _, ok := TakeSkippedResume("s1"); ok {
+				t.Error("completion record stranded after the slot was released")
+			}
+		})
 	}
 }

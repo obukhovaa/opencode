@@ -20,6 +20,8 @@
 - [x] 3.7 Post-turn compaction detached from the caller's cancellation, ended by the agent's `Cancel` and a bound; flow-step runs skip it; a cancelled compaction is not a backoff failure.
 - [x] 3.8 Completions written during a self-compaction are moved after the summary; a skipped auto-resume is recorded by the task package and started once the slot is released.
 
+- [x] 3.9 Track synthetic completions actually observed by model calls; preserve unseen pairs across the final-call/post-turn handoff, and publish resume markers before the busy check.
+
 ## 4. Tests and docs
 
 - [x] 4.1 Tool: below the floor stores nothing; above it stores the request; errors store nothing.
@@ -27,3 +29,5 @@
 - [x] 4.3 Bridge: the reply is posted before the compaction starts.
 - [x] 4.4 Config viper round trip and validation; registry frontmatter and overlay merges.
 - [x] 4.5 README (Auto Compact, Tools), AGENTS.md agent keys.
+
+- [x] 4.6 Deterministic regressions for completions during the final model call, after the terminal response, already observed before compaction, and concurrent slot release during the busy check.

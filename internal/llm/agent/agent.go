@@ -101,6 +101,10 @@ type AgentEvent struct {
 	Message message.Message
 	Error   error
 
+	// Internal handoff to post-turn compaction: which synthetic messages
+	// and completion calls the model actually observed during this run.
+	compactionSeen compactionObservation
+
 	// When has structured output
 	StructOutput *message.ToolResult
 
@@ -1014,7 +1018,8 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 				if !hasUserTurn {
 					resumeTail = syntheticTail(msgs)
 				}
-				if a.runSelfCompaction(ctx, sessionID, compactionTriggerSelfPreTurn, msgs, lastSeq(msgs)) {
+				afterSeq := lastSeq(msgs)
+				if a.runSelfCompaction(ctx, sessionID, compactionTriggerSelfPreTurn, msgs, func(m message.Message) bool { return m.Seq > afterSeq }) {
 					reloaded, compacted, errReload := a.historyAfterCompaction(ctx, sessionID)
 					if errReload != nil {
 						return a.err(errReload)
@@ -1076,6 +1081,13 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 
 	var userMsg message.Message
 	msgHistory := msgs
+	var compactionSeen compactionObservation
+	defer func() { result.compactionSeen = compactionSeen }()
+	observeCompactionInput := func() {
+		if a.selfCompact.Enabled {
+			compactionSeen.observe(msgHistory)
+		}
+	}
 	if hasUserTurn {
 		msgHistory = a.withPeerAttribution(ctx, sessionID, msgHistory)
 		var err error
@@ -1312,6 +1324,7 @@ OuterLoop:
 					finalCtx = provider.WithForcedTool(ctx, tools.StructOutputToolName)
 				}
 				turnsUsed++
+				observeCompactionInput()
 				finalMsg, finalToolResults, finalErr := a.streamAndHandleEvents(finalCtx, sessionID, msgHistory, toolSet, tracker)
 				if finalErr != nil {
 					if !errors.Is(finalErr, context.Canceled) {
@@ -1371,6 +1384,7 @@ OuterLoop:
 			// succeeds: a recovery compaction below re-appends the previous
 			// cycle's pair (preserveTail) from them.
 			turnsUsed++
+			observeCompactionInput()
 			turnMsg, turnResults, turnErr := a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
 			// errorResultsWritten: turnMsg's tool calls already got their
 			// error results, so the error path below must not write them twice.
@@ -1405,6 +1419,7 @@ OuterLoop:
 					if compacted {
 						etaTokens = recounted
 						a.provider.AdjustMaxTokens(etaTokens)
+						observeCompactionInput()
 						retryMsg, retryResults, retryErr := a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
 						turnMsg, errorResultsWritten = retryMsg, false
 						switch {

@@ -479,6 +479,80 @@ func TestSelfCompaction_CompletionDuringCompactionIsKeptAndResumed(t *testing.T)
 	}
 }
 
+// Cover both sides of the handoff without scheduling-dependent sleeps. The
+// completion during StreamResponse is written before the assistant response
+// row, so a last-response sequence watermark would also lose it.
+func TestSelfCompaction_CompletionHandoff(t *testing.T) {
+	for _, when := range []string{"already observed", "during final call", "after terminal response"} {
+		t.Run(when, func(t *testing.T) {
+			reg := withFreshTaskRegistry(t)
+			withAutoCompact(t, true)
+			a, main, _, _ := newSelfCompactingAgent(t, 150)
+			const sess = "sess-self-handoff-completion"
+			deps := &completionDeps{messages: a.messages, resumed: make(chan string, 4)}
+			t.Cleanup(task.SetDeps(deps))
+			t.Cleanup(func() { task.TakeSkippedResume(sess) })
+			if !acquireSessionSlot(sess, context.CancelFunc(func() {})) {
+				t.Fatal("session unexpectedly busy")
+			}
+			t.Cleanup(func() { releaseSessionSlot(sess) })
+			complete := func() {
+				tk := &task.Task{ID: task.NewTaskID(task.KindBash), SessionID: sess, Kind: task.KindBash, OriginatingToolName: "bash", Requester: "alice@"}
+				if err := reg.Register(tk); err != nil {
+					t.Fatal(err)
+				}
+				if err := task.EnqueueTaskCompletion(context.Background(), task.CompletionInput{
+					SessionID: sess, OriginatingToolName: "bash", TaskID: tk.ID, Kind: task.KindBash,
+					Status: task.StatusCompleted, Content: "BG-HANDOFF", SuppressIfNotified: true,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			calls := 0
+			main.respond = func([]message.Message) *provider.ProviderResponse {
+				calls++
+				if calls == 1 {
+					return compactSessionCall("c1", "NOTE")
+				}
+				if when == "during final call" {
+					complete()
+				}
+				return &provider.ProviderResponse{Content: "task done", FinishReason: message.FinishReasonEndTurn}
+			}
+			if when == "already observed" {
+				complete()
+			}
+			result := a.processGeneration(context.Background(), sess, "do the task", 0, nil, RunOptions{})
+			if result.Error != nil {
+				t.Fatal(result.Error)
+			}
+			if when == "after terminal response" {
+				complete()
+			}
+			after := a.compactAfterTurn(context.Background(), context.Background(), sess, result)
+			releaseSessionSlot(sess)
+			if after != nil {
+				after()
+			}
+			history, _, err := a.historyAfterCompaction(context.Background(), sess)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantUnobserved := when != "already observed"
+			if got := hasToolResult(history, "BG-HANDOFF"); got != wantUnobserved {
+				t.Errorf("completion retained after summary = %v, want %v", got, wantUnobserved)
+			}
+			wantResumes := 0
+			if wantUnobserved {
+				wantResumes = 1
+			}
+			if got := len(deps.resumed); got != wantResumes {
+				t.Errorf("resume count = %d, want %d", got, wantResumes)
+			}
+		})
+	}
+}
+
 // A caller that cancels its ctx as soon as it has the terminal event does
 // not abort the post-turn compaction.
 func TestSelfCompaction_CallerCancelAfterTheTurnDoesNotAbortIt(t *testing.T) {

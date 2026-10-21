@@ -102,6 +102,29 @@ func pendingSelfCompactionNotes(msgs []message.Message) (bool, []string) {
 	return pending, notes
 }
 
+// A fresh post-turn snapshot is not evidence that the model saw a completion:
+// it can arrive during the final model call or after the terminal event.
+type compactionObservation struct {
+	messages map[string]bool
+	calls    map[string]bool
+}
+
+func (o *compactionObservation) observe(msgs []message.Message) {
+	if o.messages == nil {
+		o.messages = make(map[string]bool)
+		o.calls = make(map[string]bool)
+	}
+	for _, m := range msgs {
+		if !m.Synthetic {
+			continue
+		}
+		o.messages[m.ID] = true
+		for _, result := range m.ToolResults() {
+			o.calls[result.ToolCallID] = true
+		}
+	}
+}
+
 // withCarryForward appends the agent's keep notes to the compaction prompt.
 func withCarryForward(prompt message.Message, notes []string) message.Message {
 	if len(notes) == 0 {
@@ -126,11 +149,10 @@ func (a *agent) sessionContextTokens(ctx context.Context, sessionID string) (int
 // runSelfCompaction compacts the session for a pending request. msgs is the
 // history from the current summary on. It honours the auto-compaction
 // backoff, since a pending request is retried without the agent asking
-// again, and records its outcome there. afterSeq is the last message the
-// turn knew of: synthetic messages written after it (a background task's
-// completion) that the new summary would hide are moved after it. Returns
-// true when it compacted.
-func (a *agent) runSelfCompaction(ctx context.Context, sessionID, trigger string, msgs []message.Message, afterSeq int64) bool {
+// again, and records its outcome there. keepSynthetic selects unobserved
+// synthetic messages that the new summary would hide, to move after it.
+// Returns true when it compacted.
+func (a *agent) runSelfCompaction(ctx context.Context, sessionID, trigger string, msgs []message.Message, keepSynthetic func(message.Message) bool) bool {
 	toolSet := a.resolveTools()
 	threshold := a.resolveCompactionThreshold(RunOptions{})
 	before, _ := a.countContextTokens(ctx, sessionID, threshold, msgs, toolSet)
@@ -146,7 +168,7 @@ func (a *agent) runSelfCompaction(ctx context.Context, sessionID, trigger string
 	if err := a.autoCompact(ctx, sessionID, trigger, before); err != nil {
 		return false
 	}
-	if err := a.moveLateMessagesAfterSummary(ctx, sessionID, afterSeq); err != nil {
+	if err := a.moveLateMessagesAfterSummary(ctx, sessionID, keepSynthetic); err != nil {
 		logging.Warn("self-compaction: moving messages written during the compaction after the summary failed", "session_id", sessionID, "error", err)
 	}
 	after := int64(-1)
@@ -174,13 +196,13 @@ func lastSeq(msgs []message.Message) int64 {
 }
 
 // moveLateMessagesAfterSummary re-creates, after the session's summary, the
-// synthetic messages written after afterSeq and before the summary, and
+// selected synthetic messages written before the summary, and
 // deletes the originals. A background task's completion pair is written
 // without the session's run slot, so it can land while a compaction holds
 // the slot; the summary is then written after it and every later reload
 // would drop it. A tool call and its result are re-created as one pair, so a
 // completion arriving meanwhile cannot split them.
-func (a *agent) moveLateMessagesAfterSummary(ctx context.Context, sessionID string, afterSeq int64) error {
+func (a *agent) moveLateMessagesAfterSummary(ctx context.Context, sessionID string, keepSynthetic func(message.Message) bool) error {
 	all, err := a.messages.List(ctx, sessionID)
 	if err != nil {
 		return err
@@ -195,7 +217,7 @@ func (a *agent) moveLateMessagesAfterSummary(ctx context.Context, sessionID stri
 	}
 	var late []message.Message
 	for _, m := range all[:summaryAt] {
-		if m.Synthetic && m.Seq > afterSeq {
+		if m.Synthetic && keepSynthetic(m) {
 			late = append(late, m)
 		}
 	}
@@ -285,11 +307,14 @@ func (a *agent) compactAfterTurn(runCtx, stop context.Context, sessionID string,
 	if pending, _ := pendingSelfCompactionNotes(msgs); !pending {
 		return nil
 	}
-	// From here on the session stays held well past its turn. A skipped
-	// resume recorded before now was the turn's own to react to.
-	task.TakeSkippedResume(sessionID)
+	// Keep the completion marker through the handoff. A completion arriving
+	// before this snapshot can still be unseen by the finished model loop.
+	// Resume only when the recorded completion was not in a model input.
 	afterRelease = func() {
 		if r, ok := task.TakeSkippedResume(sessionID); ok {
+			if result.compactionSeen.calls[r.ToolCallID] {
+				return
+			}
 			logging.Info("self-compaction: resuming for a background completion that arrived during the compaction", "session_id", sessionID)
 			task.ResumeIfIdle(sessionID, r)
 		}
@@ -297,7 +322,10 @@ func (a *agent) compactAfterTurn(runCtx, stop context.Context, sessionID string,
 	if !waitTurnDelivered(ctx, sessionID) {
 		return afterRelease
 	}
-	a.runSelfCompaction(ctx, sessionID, compactionTriggerSelfAfterTurn, msgs, lastSeq(msgs))
+	firstSeq := msgs[0].Seq
+	a.runSelfCompaction(ctx, sessionID, compactionTriggerSelfAfterTurn, msgs, func(m message.Message) bool {
+		return m.Seq >= firstSeq && !result.compactionSeen.messages[m.ID]
+	})
 	return afterRelease
 }
 

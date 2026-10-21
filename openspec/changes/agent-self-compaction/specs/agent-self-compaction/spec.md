@@ -98,6 +98,18 @@ A background task completion written while the session is held for a self-compac
 - **THEN** its completion appears after the summary in the history every later turn loads
 - **AND** the session is auto-resumed once, after it is released, with the task's requester and job args
 
+#### Scenario: Completion at the turn-to-compaction handoff
+
+- **WHEN** a background completion arrives during the final model call, or after its terminal response but before the post-turn history snapshot
+- **THEN** its call/result pair remains after the new summary and the session is auto-resumed once
+- **AND** completions already observed by the model do not cause an extra auto-resume
+
+#### Scenario: Completion races with slot release
+
+- **WHEN** the session is released while a completion checks whether it is busy
+- **THEN** either the releasing run or the idle completion path starts the resume, exactly once
+- **AND** no pending resume is left stranded by the handoff
+
 ### Requirement: A pending request is served before the next turn
 
 When a turn starts with a pending request, the system SHALL compact the session before the turn's first model call and before the turn's user message is persisted, keeping an auto-resume turn's trailing synthetic completion messages after the summary. This SHALL not depend on `autoCompact`. A pending request SHALL survive a process restart.
