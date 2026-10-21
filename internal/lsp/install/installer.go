@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 // BinDir returns the directory where auto-installed LSP binaries are stored.
@@ -133,7 +134,7 @@ func installNpm(ctx context.Context, server ResolvedServer) error {
 
 	cmd := exec.CommandContext(ctx, npmPath, args...)
 	cmd.Dir = binDir
-	cmd.Env = os.Environ()
+	cmd.Env = toolenv.Environ()
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -156,7 +157,7 @@ func installGo(ctx context.Context, server ResolvedServer) error {
 	}
 
 	cmd := exec.CommandContext(ctx, goPath, "install", server.InstallPackage)
-	cmd.Env = append(os.Environ(), "GOBIN="+binDir)
+	cmd.Env = append(toolenv.Environ(), "GOBIN="+binDir)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {

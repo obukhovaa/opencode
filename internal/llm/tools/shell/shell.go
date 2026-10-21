@@ -17,6 +17,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 type PersistentShell struct {
@@ -186,7 +187,11 @@ func newPersistentShell(cwd string) *PersistentShell {
 	// terminal" failure into a confusing "authentication failed", and one
 	// returning anything real would put opencode in the business of handling
 	// plaintext credentials.
-	cmd.Env = append(os.Environ(),
+	//
+	// The base is opencode's environment minus the tool environment deny list
+	// (internal/toolenv): the model drives this shell, and `env` here must not
+	// print the engine's own credentials.
+	cmd.Env = append(toolenv.Environ(),
 		"GIT_EDITOR=true",
 		"GIT_TERMINAL_PROMPT=0",
 	)

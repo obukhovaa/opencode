@@ -18,6 +18,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/redact"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 	"github.com/spf13/viper"
 )
 
@@ -417,6 +418,14 @@ type TUIConfig struct {
 }
 
 // ShellConfig defines the configuration for the shell used by the bash tool.
+// ToolEnvConfig is the `toolEnv` block of .opencode.json.
+type ToolEnvConfig struct {
+	// Deny lists variable names, or shell-style globs such as "AWS_SECRET_*",
+	// removed from every child process's inherited environment. It extends
+	// toolenv.Builtin and OPENCODE_TOOL_ENV_DENY; it cannot shrink them.
+	Deny []string `json:"deny,omitempty"`
+}
+
 type ShellConfig struct {
 	Path string   `json:"path,omitempty"`
 	Args []string `json:"args,omitempty"`
@@ -671,9 +680,13 @@ type Config struct {
 	// /workspace/id/flows/fix-failing-tests.yaml → `id/fix-failing-tests`
 	// — so they can never collide with or shadow a built-in (slash-free)
 	// flow ID. See internal/flow/registry.go.
-	FlowPaths          []string              `json:"flowPaths,omitempty"`
-	TUI                TUIConfig             `json:"tui"`
-	Shell              ShellConfig           `json:"shell,omitempty"`
+	FlowPaths []string    `json:"flowPaths,omitempty"`
+	TUI       TUIConfig   `json:"tui"`
+	Shell     ShellConfig `json:"shell,omitempty"`
+	// ToolEnv names environment variables that the processes opencode starts
+	// must not inherit, on top of the built-in engine secrets. See
+	// internal/toolenv and openspec/specs/tool-process-environment/spec.md.
+	ToolEnv            ToolEnvConfig         `json:"toolEnv,omitempty"`
 	AutoCompact        bool                  `json:"autoCompact,omitempty"`
 	DisableLSPDownload bool                  `json:"disableLSPDownload,omitempty"`
 	SessionProvider    SessionProviderConfig `json:"sessionProvider,omitempty"`
@@ -762,6 +775,7 @@ var cfg *Config
 // This is intended for use in tests only.
 func Reset() {
 	cfg = nil
+	toolenv.SetConfigured(nil)
 }
 
 // Load initializes the configuration from environment variables and config files.
@@ -796,6 +810,9 @@ func Load(workingDir string, debug bool) (*Config, error) {
 	if err := viper.Unmarshal(cfg); err != nil {
 		return cfg, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
+	// Before anything can start a child process, and before validation so a
+	// config that fails validation still filters.
+	toolenv.SetConfigured(cfg.ToolEnv.Deny)
 
 	// Viper uses "." as a key delimiter, which mangles map keys containing
 	// dots (e.g., "~/.openai/*" becomes nested {"~/": {"openai/*": ...}}).

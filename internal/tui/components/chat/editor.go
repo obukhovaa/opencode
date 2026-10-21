@@ -23,6 +23,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/session"
 	"github.com/opencode-ai/opencode/internal/slashcmd"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 	"github.com/opencode-ai/opencode/internal/tui/components/dialog"
 	"github.com/opencode-ai/opencode/internal/tui/layout"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
@@ -594,6 +595,7 @@ func (m *editorCmp) executeShellInteractive(command string) tea.Cmd {
 
 		c := exec.Command(shell.GetShellPath(), shell.CommandArgs(wrapper)...) //nolint:gosec
 		c.Dir = workdir
+		c.Env = toolenv.Environ()
 		c.Stdin = os.Stdin
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr

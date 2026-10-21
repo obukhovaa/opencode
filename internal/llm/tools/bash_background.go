@@ -10,6 +10,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/task"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 // runBackground is the bash tool's `run_in_background: true` branch.
@@ -32,6 +33,7 @@ func (b *bashTool) runBackground(ctx context.Context, call ToolCall, params Bash
 
 	cmd := exec.Command("bash", "-c", params.Command)
 	cmd.Dir = workdir
+	cmd.Env = toolenv.Environ()
 	cmd.Stdout = outputFile
 	cmd.Stderr = outputFile
 	// The leaf bash becomes its own process-group leader so a later

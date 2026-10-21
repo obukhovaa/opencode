@@ -453,6 +453,40 @@ them. The same property means a command containing `exit` ends the session: the
 exit status is reported as the command's own, a replacement shell starts in the
 same directory, and exported variables and shell functions are lost.
 
+### Tool Environment
+
+Every process OpenCode starts (the `bash` tool and its background mode, `monitor`,
+workspace CLI tools, hooks, stdio MCP servers, LSP servers, the TUI's shell mode)
+inherits OpenCode's environment **minus a deny list**, so `env` run by the agent
+cannot print OpenCode's own credentials. OpenCode itself still reads them.
+
+`OPENCODE_SERVER_PASSWORD`, `OPENCODE_BRIDGE_REGISTRAR_PASSWORD` and
+`OPENCODE_MYSQL_DSN` are always denied. Add your own names, or shell-style globs
+over the whole name, in config or in the comma-separated `OPENCODE_TOOL_ENV_DENY`
+(the two are combined; neither can remove a built-in):
+
+```json
+{
+  "toolEnv": {
+    "deny": ["MYSQL_DSN", "AWS_SECRET_*"]
+  }
+}
+```
+
+Names are case-sensitive. A value written into one child's own config (an MCP or
+LSP server's `env`, a literal in a CLI tool's `env.set`) is still passed to that
+child; `env.pass` and `${env.NAME}` cannot reach a denied name.
+
+On Linux, when OpenCode starts with any denied variable set, it also marks its
+process non-dumpable, so a child running as the same user cannot read the values
+back from `/proc/<pid>/environ`. That also disables core dumps and same-user
+debugger attach for the OpenCode process; with no denied variable set, nothing
+changes.
+
+> **Behavior change.** A hook or MCP server that read `OPENCODE_SERVER_PASSWORD` or
+> `OPENCODE_MYSQL_DSN` from its inherited environment no longer sees it. Give an MCP
+> server the value in its own `env` instead.
+
 ### Web Fetch Output Cap
 
 ```json
@@ -667,6 +701,7 @@ Kimi K3 is also available on AWS Bedrock as `bedrock.kimi-k3` (global profile) a
 | `OPENCODE_PROVIDER_STREAM_INACTIVITY_TIMEOUT` | `300` | Seconds to wait for next SSE event before treating stream as stalled |
 | `OPENCODE_MAX_REPEAT_CALLS` | `3` | Max identical consecutive tool calls before loop detection triggers |
 | `OPENCODE_SERVER_PASSWORD` | | HTTP Basic Auth password for `opencode serve` ([guide](docs/server.md)) |
+| `OPENCODE_TOOL_ENV_DENY` | | Comma-separated extra variable names (or globs) hidden from every process OpenCode starts ([details](#tool-environment)) |
 | `OPENCODE_DEV_DEBUG` | `false` | Enable development debug logging |
 | `OPENCODE_DISABLE_LSP_DOWNLOAD` | `false` | Disable automatic LSP binary downloads |
 | `OPENCODE_DISABLE_CLAUDE_SKILLS` | `false` | Disable `.claude/skills/` discovery |
@@ -1546,6 +1581,7 @@ Kimi K3 is also available on AWS Bedrock as `bedrock.kimi-k3` (global profile) a
 | `OPENCODE_PROVIDER_STREAM_INACTIVITY_TIMEOUT` | `300` | Seconds to wait for next SSE event before treating stream as stalled |
 | `OPENCODE_MAX_REPEAT_CALLS` | `3` | Max identical consecutive tool calls before loop detection triggers |
 | `OPENCODE_SERVER_PASSWORD` | | HTTP Basic Auth password for `opencode serve` ([guide](docs/server.md)) |
+| `OPENCODE_TOOL_ENV_DENY` | | Comma-separated extra variable names (or globs) hidden from every process OpenCode starts ([details](#tool-environment)) |
 | `OPENCODE_DEV_DEBUG` | `false` | Enable development debug logging |
 | `OPENCODE_DISABLE_LSP_DOWNLOAD` | `false` | Disable automatic LSP binary downloads |
 | `OPENCODE_DISABLE_CLAUDE_SKILLS` | `false` | Disable `.claude/skills/` discovery |

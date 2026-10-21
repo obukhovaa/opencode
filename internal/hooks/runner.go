@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"syscall"
 	"time"
+
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 // DefaultTimeout is the per-hook timeout used when settings.json omits one.
@@ -82,9 +84,11 @@ func runHook(ctx context.Context, entry HookEntry, payload []byte, projectRoot s
 
 	// Env: inherit + OPENCODE_PROJECT_DIR + CLAUDE_PROJECT_DIR. The Claude
 	// alias is the key piece of drop-in compat — RTK reads it without any
-	// plugin-side change. We don't strip the parent env; hooks see the
-	// same shell they'd see from a terminal.
-	cmd.Env = append(cmd.Environ(),
+	// plugin-side change. Hooks see the same shell they'd see from a
+	// terminal, minus the tool environment deny list (internal/toolenv):
+	// a hook's stdin carries model-chosen tool input, and the engine's own
+	// credentials are no business of the scripts it feeds.
+	cmd.Env = append(toolenv.Environ(),
 		"OPENCODE_PROJECT_DIR="+projectRoot,
 		"CLAUDE_PROJECT_DIR="+projectRoot,
 	)

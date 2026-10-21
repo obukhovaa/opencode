@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 func TestRunner_SuccessWithJSONOutput(t *testing.T) {
@@ -146,6 +148,37 @@ exit 0
 	}
 	if !strings.Contains(string(res.Stdout), "CLAUDE="+projectRoot) {
 		t.Errorf("CLAUDE_PROJECT_DIR alias not set; stdout=%q", res.Stdout)
+	}
+}
+
+// A hook inherits opencode's environment minus the tool environment deny
+// list; the project-dir variables are still added.
+func TestRunner_DeniedEnvVarsNotInherited(t *testing.T) {
+	skipNonPosix(t)
+	t.Setenv("OPENCODE_SERVER_PASSWORD", "api-s3cret")
+	t.Setenv("HOOKS_TEST_DENIED", "op-s3cret")
+	t.Setenv(toolenv.EnvVar, "HOOKS_TEST_DENIED")
+	t.Setenv("HOOKS_TEST_KEPT", "kept")
+	dir := t.TempDir()
+	script := writeScript(t, dir, "env.sh", `#!/bin/sh
+cat > /dev/null
+env
+exit 0
+`)
+	res := runHook(context.Background(), HookEntry{Type: "command", Command: script}, []byte(`{}`), dir)
+	if res.Err != nil {
+		t.Fatalf("unexpected error: %v (stderr=%q)", res.Err, res.Stderr)
+	}
+	out := string(res.Stdout)
+	for _, leaked := range []string{"api-s3cret", "op-s3cret"} {
+		if strings.Contains(out, leaked) {
+			t.Errorf("hook env contains %q", leaked)
+		}
+	}
+	for _, want := range []string{"HOOKS_TEST_KEPT=kept", "OPENCODE_PROJECT_DIR=" + dir} {
+		if !strings.Contains(out, want) {
+			t.Errorf("hook env missing %q", want)
+		}
 	}
 }
 

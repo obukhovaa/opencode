@@ -1,0 +1,90 @@
+package tools
+
+import (
+	"context"
+	"os"
+	"regexp"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/opencode-ai/opencode/internal/task"
+	"github.com/opencode-ai/opencode/internal/toolenv"
+)
+
+// setDeniedEnv puts a built-in secret, an operator-denied name and an
+// undenied probe into the environment, and returns the strings that must not
+// appear in a child's `env` output.
+func setDeniedEnv(t *testing.T) []string {
+	t.Helper()
+	t.Setenv("OPENCODE_SERVER_PASSWORD", "api-s3cret")
+	t.Setenv("TOOLS_TEST_DENIED", "op-s3cret")
+	t.Setenv(toolenv.EnvVar, "TOOLS_TEST_DENIED")
+	t.Setenv("TOOLS_TEST_KEPT", "kept-value")
+	return []string{"api-s3cret", "op-s3cret"}
+}
+
+func assertEnvOutput(t *testing.T, out string, leaks []string) {
+	t.Helper()
+	for _, leaked := range leaks {
+		if strings.Contains(out, leaked) {
+			t.Errorf("child env output contains %q", leaked)
+		}
+	}
+	if !strings.Contains(out, "TOOLS_TEST_KEPT=kept-value") {
+		t.Errorf("an undenied variable was dropped; output:\n%s", out)
+	}
+}
+
+func TestBashBackground_DeniedEnvironment(t *testing.T) {
+	leaks := setDeniedEnv(t)
+	deps, cleanup := setupBashBgFixture(t)
+	defer cleanup()
+
+	tool := &bashTool{}
+	params := BashParams{Command: "env", Description: "env probe", RunInBackground: true}
+	if _, err := tool.runBackground(context.Background(), ToolCall{ID: "call-env"}, params, t.TempDir(), "s-env"); err != nil {
+		t.Fatalf("runBackground: %v", err)
+	}
+	waitForPair(t, deps, 5*time.Second)
+	pairs := deps.collect()
+	if len(pairs) != 1 {
+		t.Fatalf("pairs: want 1, got %d", len(pairs))
+	}
+	assertEnvOutput(t, pairs[0].ToolContent, leaks)
+}
+
+func TestMonitor_DeniedEnvironment(t *testing.T) {
+	leaks := setDeniedEnv(t)
+	_, cleanup := setupBashBgFixture(t)
+	defer cleanup()
+	reg := task.GlobalRegistry()
+
+	tool := NewMonitorTool(&allowAllPerms{}, allowAllAgentRegistry{})
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "SESS")
+	ctx = context.WithValue(ctx, MessageIDContextKey, "MSG")
+	resp, err := tool.Run(ctx, ToolCall{ID: "mon-env", Input: `{"cmd":"env","pattern":"zzz-never","description":"env probe"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`task_id: (monitor_[A-Z2-7]+)`).FindStringSubmatch(resp.Content)
+	if m == nil {
+		t.Fatalf("no task_id in ack: %s", resp.Content)
+	}
+	tk, ok := reg.Get(m[1])
+	if !ok {
+		t.Fatal("monitor not registered")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for tk.State() == task.StateRunning && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if tk.State() == task.StateRunning {
+		t.Fatal("monitor did not finish")
+	}
+	out, err := os.ReadFile(tk.OutputPath)
+	if err != nil {
+		t.Fatalf("read monitor output: %v", err)
+	}
+	assertEnvOutput(t, string(out), leaks)
+}
