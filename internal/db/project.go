@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 var projectIDCache sync.Map // map[string]string
@@ -45,6 +46,7 @@ func getProjectIDFromGit(workingDir string) (string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "git", "config", "--get", "remote.origin.url")
+	cmd.Env = toolenv.Environ()
 	cmd.Dir = workingDir
 
 	output, err := cmd.Output()

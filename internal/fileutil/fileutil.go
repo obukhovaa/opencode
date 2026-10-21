@@ -14,6 +14,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 const defaultFileOpTimeout = 3 * time.Minute
@@ -70,6 +71,7 @@ func GetRgCmd(ctx context.Context, globPattern string) *exec.Cmd {
 		rgArgs = append(rgArgs, "--glob", globPattern)
 	}
 	cmd := exec.CommandContext(ctx, rgPath, rgArgs...)
+	cmd.Env = toolenv.Environ()
 	cmd.Dir = "."
 	return cmd
 }
@@ -85,6 +87,7 @@ func GetFzfCmd(query string) *exec.Cmd {
 		"--print0",
 	}
 	cmd := exec.Command(fzfPath, fzfArgs...)
+	cmd.Env = toolenv.Environ()
 	cmd.Dir = "."
 	return cmd
 }

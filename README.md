@@ -471,7 +471,8 @@ same directory, and exported variables and shell functions are lost.
 ### Tool Environment
 
 Every process OpenCode starts (the `bash` tool and its background mode, `monitor`,
-workspace CLI tools, hooks, stdio MCP servers, LSP servers, the TUI's shell mode)
+workspace CLI tools, hooks, stdio MCP servers, LSP servers and their helpers,
+search and Git helpers, the TUI's shell mode and external editor)
 inherits OpenCode's environment **minus a deny list**, so `env` run by the agent
 cannot print OpenCode's own credentials. OpenCode itself still reads them.
 
@@ -497,6 +498,10 @@ process non-dumpable, so a child running as the same user cannot read the values
 back from `/proc/<pid>/environ`. That also disables core dumps and same-user
 debugger attach for the OpenCode process; with no denied variable set, nothing
 changes.
+
+Launch OpenCode with `exec` when a wrapper shell holds the same secrets: this
+protects OpenCode's process, not a launcher left running as its parent. Secrets
+rendered into readable configuration files also remain readable by that user.
 
 > **Behavior change.** A hook or MCP server that read `OPENCODE_SERVER_PASSWORD` or
 > `OPENCODE_MYSQL_DSN` from its inherited environment no longer sees it. Give an MCP

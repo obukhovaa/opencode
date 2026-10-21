@@ -29,6 +29,12 @@ environment SHALL be unchanged, so opencode itself still reads those variables.
 - **WHEN** a client calls the HTTP API with that password
 - **THEN** the request is authenticated as before
 
+#### Scenario: Search helpers and LSP probes cannot inherit secrets
+- **GIVEN** `OPENCODE_SERVER_PASSWORD` and an operator-denied variable are set
+- **WHEN** OpenCode starts a ripgrep or fzf search helper, a Git origin probe, an LSP version or archive helper, an external editor, or a process-discovery helper
+- **THEN** the subprocess receives neither denied variable
+- **AND** a ripgrep preprocessor configured through `RIPGREP_CONFIG_PATH` cannot return either value to the agent
+
 #### Scenario: Other variables pass through
 - **GIVEN** `PATH`, `HOME` and `GIT_AUTHOR_NAME` are set and not denied
 - **WHEN** any tool process starts

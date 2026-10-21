@@ -238,6 +238,7 @@ func (m *editorCmp) openEditor() tea.Cmd {
 		seededAt = st.ModTime()
 	}
 	c := exec.Command(editor, tmpfile.Name()) //nolint:gosec
+	c.Env = toolenv.Environ()
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr

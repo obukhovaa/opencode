@@ -509,7 +509,9 @@ func (s *PersistentShell) forceRestart() {
 // childPIDs returns the direct children of pid according to pgrep. A pgrep that
 // is missing or reports nothing yields an empty slice, which ends the walk.
 func childPIDs(pid int) []int {
-	output, err := exec.Command("pgrep", "-P", strconv.Itoa(pid)).Output()
+	cmd := exec.Command("pgrep", "-P", strconv.Itoa(pid))
+	cmd.Env = toolenv.Environ()
+	output, err := cmd.Output()
 	if err != nil {
 		return nil
 	}

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 // This file holds the pool-mode boot helpers for `opencode serve
@@ -153,7 +154,7 @@ func gitOriginURL(dir string) string {
 // HOME, credential helpers) passes through.
 func sanitizedGitEnv() []string {
 	drop := []string{"GIT_DIR=", "GIT_WORK_TREE=", "GIT_INDEX_FILE=", "GIT_OBJECT_DIRECTORY=", "GIT_COMMON_DIR="}
-	env := os.Environ()
+	env := toolenv.Environ()
 	out := make([]string, 0, len(env))
 	for _, kv := range env {
 		dropped := false
