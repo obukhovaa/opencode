@@ -115,7 +115,7 @@ func NewToolSet(
 	// installed at all — zero allocation, zero behavior change.
 	disclosure := newContextDisclosureState(info, config.Get())
 	// WRAP ORDER INVARIANT: disclosure is applied INSIDE deferral —
-	// maybeDefer(maybeWrapDisclosure(t)) — so *tools.DeferredWrapper stays
+	// maybeDefer(maybeWrapMemory(maybeWrapDisclosure(t))) — so *tools.DeferredWrapper stays
 	// the outermost type and the existing type assertions on it (provider
 	// serialization, deferred-delta announcements, toolsearch activation
 	// backfill, resolveTools logging) keep working for a tool that is both
@@ -125,6 +125,14 @@ func NewToolSet(
 			return t
 		}
 		return &contextDisclosureWrapper{inner: t, state: disclosure}
+	}
+
+	maybeWrapMemory := func(t tools.BaseTool) tools.BaseTool {
+		cfg := config.Get()
+		if cfg != nil && cfg.Memory != nil && cfg.Memory.Enabled {
+			return tools.WithMemoryFeedback(t, cfg.MemoryDirectory(), cfg.WorkingDir)
+		}
+		return t
 	}
 
 	// When adding a case here, also add the tool to
@@ -220,7 +228,7 @@ func NewToolSet(
 	for _, name := range viewerToolNames {
 		if reg.IsToolEnabled(agentID, name) {
 			if t := createTool(name); t != nil {
-				result <- maybeDefer(maybeWrapDisclosure(t))
+				result <- maybeDefer(maybeWrapMemory(maybeWrapDisclosure(t)))
 			}
 		}
 	}
@@ -238,7 +246,7 @@ func NewToolSet(
 	for _, name := range editorToolNames {
 		if reg.IsToolEnabled(agentID, name) {
 			if t := createTool(name); t != nil {
-				result <- maybeDefer(maybeWrapDisclosure(t))
+				result <- maybeDefer(maybeWrapMemory(maybeWrapDisclosure(t)))
 			}
 		}
 	}

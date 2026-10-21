@@ -1075,6 +1075,26 @@
       "description": "Model Control Protocol server configurations",
       "type": "object"
     },
+    "memory": {
+      "additionalProperties": false,
+      "description": "Project memory reminders and a bounded index, using existing file tools.",
+      "properties": {
+        "directory": {
+          "default": "~/.agents/memory",
+          "description": "Shared project-memory filesystem root; existing file permissions apply.",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "projectID": {
+          "description": "Explicit current-workspace identity; otherwise derived from origin or the local directory. Does not restrict access to other projects under directory.",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "permission": {
       "additionalProperties": {
         "anyOf": [

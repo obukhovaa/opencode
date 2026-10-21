@@ -475,6 +475,7 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 
 	// Add LSP information if LSP servers are available and the agent has the LSP tool enabled
 	cfg := config.Get()
+	basePrompt += MemoryReminder(cfg, reg, agentName)
 	if len(install.ResolveServers(cfg)) > 0 && reg.IsToolEnabled(agentName, tools.LSPToolName) {
 		basePrompt += "\n" + lspInformation()
 	}

@@ -777,6 +777,17 @@ func generateSchema() map[string]any {
 		"additionalProperties": false,
 	}
 
+	schema["properties"].(map[string]any)["memory"] = map[string]any{
+		"type":        "object",
+		"description": "Project memory reminders and a bounded index, using existing file tools.",
+		"properties": map[string]any{
+			"enabled":   map[string]any{"type": "boolean", "default": false},
+			"directory": map[string]any{"type": "string", "default": "~/.agents/memory", "description": "Shared project-memory filesystem root; existing file permissions apply."},
+			"projectID": map[string]any{"type": "string", "description": "Explicit current-workspace identity; otherwise derived from origin or the local directory. Does not restrict access to other projects under directory."},
+		},
+		"additionalProperties": false,
+	}
+
 	// Add skills configuration
 	schema["properties"].(map[string]any)["skills"] = map[string]any{
 		"type":        "object",
