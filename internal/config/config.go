@@ -647,7 +647,30 @@ type PermissionConfig struct {
 }
 
 // Config is the main configuration structure for the application.
+type MemoryConfig struct {
+	Enabled   bool   `json:"enabled,omitempty"`
+	Directory string `json:"directory,omitempty"`
+	ProjectID string `json:"projectID,omitempty"`
+}
+
+func (c *Config) MemoryDirectory() string {
+	directory := "~/.agents/memory"
+	if c.Memory != nil && c.Memory.Directory != "" {
+		directory = c.Memory.Directory
+	}
+	if directory == "~" || strings.HasPrefix(directory, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			directory = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(directory, "~"), "/"))
+		}
+	}
+	if !filepath.IsAbs(directory) {
+		directory = filepath.Join(c.WorkingDir, directory)
+	}
+	return directory
+}
+
 type Config struct {
+	Memory       *MemoryConfig                     `json:"memory,omitempty"`
 	Data         Data                              `json:"data"`
 	WorkingDir   string                            `json:"wd,omitempty"`
 	MCPServers   map[string]MCPServer              `json:"mcpServers,omitempty"`

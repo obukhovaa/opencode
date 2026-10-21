@@ -501,6 +501,9 @@ func declaredToolNames(tools []anthropic.ToolUnionParam) map[string]struct{} {
 		if t.OfTool != nil {
 			declared[t.OfTool.Name] = struct{}{}
 		}
+		if t.OfMemoryTool20250818 != nil {
+			declared[toolsPkg.MemoryToolName] = struct{}{}
+		}
 	}
 	return declared
 }
@@ -839,18 +842,25 @@ func (a *anthropicClient) convertTools(ctx context.Context, tools []toolsPkg.Bas
 			},
 		}
 		w, isDeferred := tool.(*toolsPkg.DeferredWrapper)
+		entry := anthropic.ToolUnionParam{OfTool: &toolParam}
+		if info.Name == toolsPkg.MemoryToolName && strings.Contains(strings.ToLower(a.providerOptions.model.APIModel), "claude") {
+			entry = anthropic.ToolUnionParam{OfMemoryTool20250818: &anthropic.MemoryTool20250818Param{}}
+		}
 		switch {
 		case isDeferred && native:
 			hasDeferred = true
 			toolParam.DeferLoading = anthropic.Bool(true)
-			out = append(out, anthropic.ToolUnionParam{OfTool: &toolParam})
+			if entry.OfMemoryTool20250818 != nil {
+				entry.OfMemoryTool20250818.DeferLoading = anthropic.Bool(true)
+			}
+			out = append(out, entry)
 		case isDeferred:
 			hasDeferred = true
 			if seq, ok := w.ActivatedAt(sessionID); ok {
-				activatedTail = append(activatedTail, activatedEntry{anthropic.ToolUnionParam{OfTool: &toolParam}, seq})
+				activatedTail = append(activatedTail, activatedEntry{entry, seq})
 			}
 		default:
-			out = append(out, anthropic.ToolUnionParam{OfTool: &toolParam})
+			out = append(out, entry)
 		}
 	}
 
@@ -875,6 +885,13 @@ func (a *anthropicClient) convertTools(ctx context.Context, tools []toolsPkg.Bas
 	// (the pre-feature behavior).
 	if !a.options.disableCache {
 		for i := len(out) - 1; i >= 0; i-- {
+			if m := out[i].OfMemoryTool20250818; m != nil {
+				if m.DeferLoading.Valid() && m.DeferLoading.Value {
+					continue
+				}
+				m.CacheControl = anthropic.NewCacheControlEphemeralParam()
+				break
+			}
 			if st := out[i].OfToolSearchToolRegex20251119; st != nil {
 				st.CacheControl = anthropic.NewCacheControlEphemeralParam()
 				break
@@ -2164,6 +2181,8 @@ func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Me
 			countTools = append(countTools, anthropic.MessageCountTokensToolUnionParam{OfTool: t.OfTool})
 		case t.OfToolSearchToolRegex20251119 != nil:
 			countTools = append(countTools, anthropic.MessageCountTokensToolUnionParam{OfToolSearchToolRegex20251119: t.OfToolSearchToolRegex20251119})
+		case t.OfMemoryTool20250818 != nil:
+			countTools = append(countTools, anthropic.MessageCountTokensToolUnionParam{OfMemoryTool20250818: t.OfMemoryTool20250818})
 		}
 	}
 
