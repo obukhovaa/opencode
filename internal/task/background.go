@@ -126,27 +126,34 @@ func EnqueueTaskCompletion(ctx context.Context, in CompletionInput) error {
 	}
 	// The resumed turn works for whoever spawned the task, so its
 	// telemetry keeps that turn's requester and job args.
-	var r SkippedResume
+	r := SkippedResume{ToolCallID: callID}
 	if tk != nil {
-		r = SkippedResume{Requester: tk.Requester, JobArgs: tk.JobArgs}
+		r.Requester, r.JobArgs = tk.Requester, tk.JobArgs
 	}
+	// Publish before checking the slot. If its owner releases and takes the
+	// record concurrently, only the consumer that takes it starts a resume.
+	// Recording after a busy check could strand it after the owner's handoff.
+	skippedResumes.Store(in.SessionID, r)
 	if !deps.IsSessionBusy(in.SessionID) {
-		skippedResumes.Delete(in.SessionID)
-		deps.ResumeSession(in.SessionID, r.Requester, r.JobArgs)
+		if pending, ok := TakeSkippedResume(in.SessionID); ok {
+			deps.ResumeSession(in.SessionID, pending.Requester, pending.JobArgs)
+		}
 		return nil
 	}
 	// Busy: remember the skipped resume. A run that keeps its session past
 	// the end of its turn (the agent's post-turn compaction) takes it once
 	// it lets the session go, so the completion is not left unanswered.
-	skippedResumes.Store(in.SessionID, r)
 	return nil
 }
 
 // SkippedResume is the auto-resume a completion skipped because its session
 // was busy: the requester and job args the resumed turn would have carried.
 type SkippedResume struct {
-	Requester string
-	JobArgs   map[string]any
+	// ToolCallID identifies the synthetic completion so the releasing run
+	// can distinguish one it already observed from one that still needs work.
+	ToolCallID string
+	Requester  string
+	JobArgs    map[string]any
 }
 
 // skippedResumes holds, per session, the SkippedResume of the latest
