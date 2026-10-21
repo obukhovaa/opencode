@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -35,7 +36,9 @@ func CanonicalRemote(remote string) (string, error) {
 	host := strings.ToLower(u.Hostname())
 	defaultPort := map[string]string{"ssh": "22", "https": "443", "http": "80", "git": "9418"}[u.Scheme]
 	if port := u.Port(); port != "" && port != defaultPort {
-		host += ":" + port
+		host = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		host = "[" + host + "]"
 	}
 	repo := strings.TrimSuffix(strings.Trim(u.Path, "/"), ".git")
 	if repo == "" || strings.Contains(repo, "..") {
