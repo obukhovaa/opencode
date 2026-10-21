@@ -114,3 +114,19 @@ func TestMemoryCanonicalIdentityRetainsNonDefaultSchemePorts(t *testing.T) {
 		})
 	}
 }
+
+func TestMemoryCanonicalIdentityKeepsIPv6HostAndPortDistinct(t *testing.T) {
+	for _, tc := range []struct{ remote, want string }{
+		{"ssh://[2001:db8::1]:2222/repo", "git:[2001:db8::1]:2222/repo"},
+		{"ssh://[2001:db8::1:2222]/repo", "git:[2001:db8::1:2222]/repo"},
+		{"ssh://[2001:DB8::1]:22/repo", "git:[2001:db8::1]/repo"},
+		{"https://[2001:db8::1]:443/repo", "git:[2001:db8::1]/repo"},
+	} {
+		t.Run(tc.remote, func(t *testing.T) {
+			got, err := CanonicalRemote(tc.remote)
+			if err != nil || got != tc.want {
+				t.Errorf("CanonicalRemote(%q) = %q, %v; want %q", tc.remote, got, err, tc.want)
+			}
+		})
+	}
+}
