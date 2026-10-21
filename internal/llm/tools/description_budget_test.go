@@ -45,7 +45,6 @@ func TestToolDescriptionBudgets(t *testing.T) {
 		{NewEditTool(nil, nil, nil, nil), defaultDescriptionBudget},
 		{NewMultiEditTool(nil, nil, nil, nil), defaultDescriptionBudget},
 		{NewReadTool(nil, nil, nil), defaultDescriptionBudget},
-		{NewMemoryTool(config.Get(), nil, nil), defaultDescriptionBudget},
 		{NewWriteTool(nil, nil, nil, nil), defaultDescriptionBudget},
 		{NewGlobTool(nil, nil), defaultDescriptionBudget},
 		{NewGrepTool(nil, nil), defaultDescriptionBudget},

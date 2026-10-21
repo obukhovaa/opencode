@@ -1,19 +1,19 @@
-## 1. Persistent memory tool
+## 1. Replace the model surface
 
-- [x] 1.1 Add memory configuration, shared identity/store helpers and the six filesystem operations.
-- [x] 1.2 Enforce permissions, root confinement, atomic writes, shared locks and bounded views.
+- [x] 1.1 Remove the dedicated memory tool, provider branches, grants and obsolete tests.
+- [x] 1.2 Implement capability/permission-aware system guidance and bounded project index loading.
+- [x] 1.3 Inject one index snapshot per active session history, including new-session and compaction behavior.
 
-## 2. Runtime integration
+## 2. Authoring and interoperability
 
-- [x] 2.1 Add explicit registration and project-aware memory prompt guidance.
-- [x] 2.2 Implement native Claude serialization, function fallback, cache/deferral behavior and token counting.
-- [x] 2.3 Update and regenerate config schema and document the tool/store contract.
+- [x] 2.1 Add size/metadata feedback to ordinary file-write results without changing their schemas.
+- [x] 2.2 Document concise notes, updatedAt semantics, index limits and external-writer concurrency.
+- [x] 2.3 Update config schema and keep the shared project identity/store contract compatible with mem-sync.
 
-## 3. Validation and delivery
+## 3. Verify and deliver
 
-- [x] 3.1 Add behavior, permission, cross-session/concurrency and provider/schema tests.
-- [x] 3.2 Run focused tests, schema checks, required final checks and OpenSpec validation.
-- [x] 3.3 Publish the canonical GitHub branch and prepare GitLab review MR !18 assigned to piano-dev-agent.
-- [ ] 3.4 Open the canonical GitHub PR when GitHub API access is available (branch feat/project-memory is published).
+- [x] 3.1 Test capability combinations, denied reads, index bounds, no topic preload, deduplication and file feedback.
+- [x] 3.2 Run relevant race/schema/OpenSpec checks and review the final diff.
+- [x] 3.3 Update the canonical branch and existing GitLab review MR !18, preserving piano-dev-agent as reviewer.
 
-Validation: focused memory/config/tool/provider/registration tests pass with the race detector; schema-check and strict OpenSpec validation pass. make test ran formatting/vet and the full suite, which encountered local-port sandbox restrictions and locale-sensitive hook assertions. The latter pass with LC_ALL=C. The hidden-character check flags unchanged generated tsprotocol.go; verified identical to base. GitHub API access is unavailable in this session; the GitLab MR is the review mirror, not the canonical merge target.
+GENAI-518 revision: removed the dedicated memory tool and grants; implemented bounded index snapshots, capability-aware guidance, ordinary-tool authoring feedback, and freshness-preserving metadata/lint. Validation evidence is recorded in the linked MR descriptions.

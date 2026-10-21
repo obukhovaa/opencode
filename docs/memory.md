@@ -1,56 +1,70 @@
-# Project memory
+# Project memory through ordinary file tools
 
-The opt-in `memory` tool persists knowledge across sessions that share a filesystem. It uses Anthropic's `memory_20250818` declaration for Claude and an equivalent function schema for other models. The handler runs locally; there is no memory service or session-database dependency.
+Enable project memory to carry useful knowledge across sessions sharing a filesystem. OpenCode adds a small system reminder and a bounded project index. It adds no memory tool or provider-specific tool schema.
 
 ```json
 {
   "memory": {"enabled": true, "directory": "~/.agents/memory"},
-  "agents": {"coder": {"allowTools": ["memory", "read", "bash"]}},
-  "permission": {"rules": {"memory": {"view *": "allow", "*": "ask"}}}
+  "agents": {"coder": {"allowTools": ["read", "write", "edit", "bash"]}}
 }
 ```
 
-Add `memory` to the agent's existing tool grants rather than replacing its list. The feature flag and an explicit grant are both required. Configure `memory.projectID` to override the current-workspace identity; otherwise the origin remote is canonicalized, falling back to `local:<absolute-cwd>` for non-Git work. `aliases.json` in the store can map mirror identities to one canonical ID. It is a plain string-to-string JSON object; cycles are rejected.
+Keep each agent's existing grants; do not replace its list with this example. The reminder adapts to those grants and permissions. A reader gets retrieval guidance, a writer gets authoring guidance, and an agent with both capabilities or permitted Bash gets both. An agent without relevant capabilities gets no reminder. Write-only agents do not receive existing memory contents or instructions to overwrite an unread index. Denied or approval-required reads are never performed automatically; the agent can use its ordinary tools and approval flow where allowed.
 
-The configured directory maps to `/memories`. It is the isolation boundary: an agent with memory permission can access all its project directories. Use different roots and OS permissions for different tenants. Mount persistent storage there when sessions run in different containers; two sessions in the same container already share its filesystem. This feature does not provision or upload a volume.
+## Context budget
 
-## Store format
+Only `MEMORY.md` for the current project is loaded automatically: at most **200 lines or 25 KiB**, whichever is reached first. A synthetic context message carries one escaped snapshot per active session history. Later turns reuse it; a new session reads the current index, and compaction reloads it if the old snapshot was removed. The system reminder remains stable rather than embedding changing note bodies into the provider prefix. The snapshot participates in ordinary message token accounting.
 
-Format v1 is shared with Piano Developer's `scripts/mem-sync` CLI:
+Topic files are never preloaded. The model chooses relevant links and reads those files or sections through ordinary tools. Treat the index as a snapshot and re-read the current file before editing or when freshness matters. Large indexes carry an explicit truncation notice; files are never destructively truncated by the loader.
+
+Existing write/edit/multiedit/patch tools append feedback when an index exceeds its budget or a topic exceeds **8 KiB**, lacks a description, or has an invalid updatedAt. The underlying write succeeds and the tool schema stays unchanged. This is an authoring budget, not a filesystem quota: arbitrary Bash commands retain their existing permissions and cannot be constrained by a new memory-specific tool limit. The reminder instructs Bash-capable agents to follow the same budgets.
+
+## Notes and freshness
+
+Use a short retrieval index:
+
+```markdown
+- [Deployment](deployment.md) — Release checks and rollback links; updatedAt: 2026-10-21T12:00:00Z
+```
+
+Each topic has minimal frontmatter:
+
+```markdown
+---
+description: Release checks and rollback links
+updatedAt: 2026-10-21T12:00:00Z
+---
+- Run the release checks in [the runbook](https://example.com/runbook).
+- Roll back to the last verified image if the health check fails.
+```
+
+Record facts, short sentences, user corrections, and evidence links. Omit preambles, transcripts, raw dumps, duplication, secrets and facts readily recovered from source code. Split large topics; keep one index line per topic. Preserve useful legacy metadata.
+
+`updatedAt` means the last factual update, not the last read, copy or import. Review old volatile claims and reconcile contradictions against current evidence. Age alone does not make stable knowledge false. Update or retire superseded claims and their index entries; do not make a note look fresh merely by touching its timestamp. Writers without read access can create new focused notes, then report their paths for a reader/writer to index without overwriting unread content.
+
+## Project scope and interchange
 
 ```text
 ~/.agents/memory/
-  store.json                         # {"version":1,"store_id":"persistent-random-id"}
-  aliases.json                       # optional canonical-ID aliases
+  store.json                         # mem-sync's format/source identity
+  aliases.json                       # optional identity aliases
   projects/<sha256-hex-of-id>/
     project.json                     # {"version":1,"id":"git:host/org/repo","cwds":[...]}
-    memory/
-      MEMORY.md                      # short index
-      topic.md                       # Claude-style Markdown/frontmatter
-  .sync/                             # internal lock, baselines and backups
+    memory/MEMORY.md
+    memory/topic.md
+  .sync/                             # mem-sync bookkeeping; not prompt context
 ```
 
-Canonical Git IDs are `git:<lowercase-host>/<case-preserved-path>`, without credentials, `.git`, a trailing slash or default transport ports. Worktrees and checkouts of that repository share a key. Explicit IDs cover repositories without a reachable checkout. The prompt gives the current workspace's key and metadata shape; a multi-repository job must use each target project's directory rather than placing all learnings under the harness's identity. Use mem-sync registration to prepare additional projects and mappings.
+Current identity comes from the Git origin, or explicit `memory.projectID`. Canonical Git IDs remove credentials, transport, `.git`, trailing slash and default ports while preserving repository-path case. Worktrees share that identity. `aliases.json` maps mirror IDs to a canonical ID; cycles are rejected. Non-Git work falls back to `local:<absolute-cwd>`; use an explicit ID for portability.
 
-Keep the index concise and link detailed entries. Existing Claude frontmatter is preserved; new entries can use `name`, `description` and `type` (`user`, `feedback`, `project`, or `reference`). Memory is potentially stale evidence and cannot authorize an action. Do not store secrets.
+Multi-repository harness jobs must select each target project's directory, not treat the harness index as global knowledge. Ordinary file permissions and OS access remain authoritative. Separate tenants with separate roots/permissions. A shared persistent mount is required across pod replacement; no network service or volume is provisioned.
 
-## Commands
+Piano Developer's `scripts/mem-sync` imports/exports custom Claude and Codex profiles, retains conflicts, lints authoring budgets and transfers archives. Existing notes are preserved, including legacy metadata. Ordinary OpenCode file/Bash writers do not take mem-sync's internal lock: re-read before changing files and avoid simultaneous writes to the same note. Existing file-tool conflict checks and sync baselines remain in use.
 
-| Command | Parameters | Behavior |
-| --- | --- | --- |
-| `view` | `path`, optional `view_range` | Two directory levels or numbered UTF-8 text; `[start,end]` is 1-indexed and `-1` means EOF. PNG/JPEG return images. |
-| `create` | `path`, `file_text` | Creates a file and parents; existing files are refused. |
-| `str_replace` | `path`, `old_str`, optional `new_str` | Replaces exactly one match; omitted new text removes the match. |
-| `insert` | `path`, `insert_line`, `insert_text` | Inserts after the line; zero prepends. |
-| `delete` | `path` | Deletes a file or directory recursively. |
-| `rename` | `old_path`, `new_path` | Moves a file/directory; existing destination is refused. |
+Disable `memory.enabled` to stop future reminders/index loads. Existing session history and Markdown are retained.
 
-Permissions match `command /memories/path`; rename checks both paths. Denial happens before creating the store. Root deletion/rename, hidden paths, symlinks, special files and traversal are refused. `store.json` and `aliases.json` can be viewed but not changed by the tool. Files are limited to 5 MiB, text views to 16,000 characters, and directory views to 200 entries. Use a narrower path or range after truncation.
+## Practices adopted
 
-Cooperating writers use the OS lock at `.sync/lock`; contention returns a retryable tool error. Writes use same-directory temporary files and atomic replacement. Arbitrary editors and native clients do not participate in this lock; mem-sync additionally checks observed bytes before applying its plan.
-
-## Interchange
-
-Piano Developer's mem-sync imports and exports custom Claude/Codex profiles, preserves conflicts, and transfers project archives. OpenCode reads the aggregate directly, so it needs no conversion adapter. Native Codex import resources and generated global handbooks are different formats; the CLI performs that conversion. There is no automatic background sync.
-
-The public tool contract is documented at https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool .
+- [Claude Code memory](https://code.claude.com/docs/en/memory): bounded index at startup, detailed notes read on demand, and feedback after oversized writes.
+- [Karpathy's LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f): concise linked retrieval cues, synthesis kept current, and checks for contradictions/orphans. This implementation deliberately keeps only an index and topic notes in the model-facing layer.
+- [Anthropic context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents): use compact references and existing tools to load information only when needed.

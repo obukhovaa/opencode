@@ -1,19 +1,19 @@
 ## Why
 
-OpenCode sessions sharing a filesystem currently cannot capture and retrieve durable project memory through the model's established memory-tool interface. A native tool backed by the same portable aggregate as local Claude and Codex enables knowledge reuse across sessions and runtimes.
+Sessions need durable project knowledge without adding a memory-specific tool schema or preloading detailed notes. A compact index and tool-aware system reminder let agents use the ordinary file tools they already have.
 
 ## What Changes
 
-- Add the `memory` tool with Anthropic's `memory_20250818` command names and parameters, mapped onto a configurable filesystem store.
-- Implement view, create, string replacement, insertion, deletion, and rename with path confinement, bounded output, atomic updates, and cross-process coordination.
-- Describe the current project and Claude-style index convention to enabled agents while retaining explicit tool grants and permissions.
-- Emit Anthropic's native memory tool on compatible Claude requests and an equivalent function schema on other providers, including token-count and cache handling.
-- Publish configuration/schema documentation and compatibility fixtures for the paired Piano Developer `unified-project-memory` change.
+- Replace the dedicated memory tool and provider-specific serialization with file-based project memory guidance.
+- Load one bounded project MEMORY.md index into session context; retrieve topic files only on demand.
+- Tailor instructions to effective read/write/Bash capabilities and honor permissions before preloading data.
+- Standardize concise topic notes with description and updatedAt metadata; give size/metadata feedback through existing write tools.
+- Preserve the shared aggregate, Git identities/aliases and mem-sync interoperability.
 
 ## Capabilities
 
 ### New Capabilities
-- `project-memory`: Memory tool API, filesystem persistence, project discovery, configuration, permission enforcement, and provider integration.
+- `project-memory`: Bounded index context, capability-aware reminders, freshness metadata and ordinary file-tool feedback.
 
 ### Modified Capabilities
 
@@ -21,4 +21,6 @@ None.
 
 ## Impact
 
-Touches configuration/schema, tool registration, provider serialization, prompt guidance, documentation and tests. Memory remains opt-in. This change does not create an external memory service or alter session SQLite/MySQL persistence.
+Changes prompt/session context assembly, existing file-tool result feedback, configuration/schema, docs and tests. Removes the memory tool, its grants, reserved name and native-provider branches. No session database migration or new external service.
+
+Tracking: [GENAI-518](https://tinypass.atlassian.net/browse/GENAI-518).

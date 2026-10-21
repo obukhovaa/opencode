@@ -1045,11 +1045,11 @@
     },
     "memory": {
       "additionalProperties": false,
-      "description": "Persistent project memory; requires an explicit memory tool grant.",
+      "description": "Project memory reminders and a bounded index, using existing file tools.",
       "properties": {
         "directory": {
           "default": "~/.agents/memory",
-          "description": "Shared filesystem root mapped to /memories; separate roots isolate tenants.",
+          "description": "Shared project-memory filesystem root; existing file permissions apply.",
           "type": "string"
         },
         "enabled": {

@@ -1,56 +1,56 @@
 ## Purpose
 
-Give OpenCode agents a compatible filesystem memory tool for durable project knowledge across sessions and cooperating processes.
+Carry concise project knowledge across sessions using bounded index context and existing filesystem tools, without introducing another model-facing tool.
 
 ## ADDED Requirements
 
-### Requirement: Compatible memory command interface
-The tool SHALL be named `memory` and accept Anthropic memory command names and parameter names for view, create, str_replace, insert, delete and rename. It SHALL support directory views, numbered/ranged text views, PNG/JPEG views, unique exact replacement, insertion after a line, and confined directory rename/deletion. Create SHALL refuse existing files.
+### Requirement: No dedicated memory tool
+The runtime SHALL use existing file tools for memory and SHALL NOT register a memory tool or add memory-specific provider schemas.
 
-#### Scenario: Reuse in another session
-- **WHEN** one session creates a project memory entry and another views the same virtual path
-- **THEN** the second receives the persisted content
+#### Scenario: Tool inventory
+- **WHEN** project memory is enabled
+- **THEN** the agent's tool inventory and provider tool definitions remain unchanged
 
-#### Scenario: Edit ambiguity
-- **WHEN** old_str occurs more than once or not at all
-- **THEN** replacement returns a tool error without changing the file
+### Requirement: Capability-aware reminder
+The system reminder SHALL describe only reading and/or writing operations supported by the agent's available tools and permissions. Agents without usable file capabilities SHALL receive no memory reminder. Automatic index loading MUST NOT bypass denied or approval-required reads.
 
-#### Scenario: Range and insertion
-- **WHEN** view_range uses an end of -1 or insert_line is zero
-- **THEN** the view extends to EOF or the insertion precedes the first line respectively
+#### Scenario: Reader only
+- **WHEN** the agent can read but cannot write memory
+- **THEN** it receives index/retrieval guidance and no instruction to create, edit or prune memory
 
-### Requirement: Configurable aggregate and project routing
-Memory SHALL be opt-in with a configurable filesystem root, Claude-style project indexes and routing guidance. The root SHALL serve as the deployment's memory isolation boundary.
+#### Scenario: Writer only
+- **WHEN** the agent can write but cannot read memory
+- **THEN** it receives concise note-authoring guidance without loading existing memory contents or instructing it to overwrite an unread index
 
-#### Scenario: Multi-repository harness
-- **WHEN** a job works across repositories from one harness working directory
-- **THEN** the agent can address distinct project directories through the path parameter without changing the tool schema
+#### Scenario: Bash or read and write
+- **WHEN** the agent can use ordinary tools or permitted Bash to read and write memory
+- **THEN** it receives the full read/maintain instructions without another tool definition
 
-### Requirement: Permission and filesystem confinement
-Only agents explicitly granted memory SHALL receive the tool. All operations SHALL enforce memory permissions and remain under the configured root. Traversal, symlinks, special files, hidden internal metadata, root deletion and root rename SHALL be rejected.
+### Requirement: Bounded project index
+Only the matching project's MEMORY.md index SHALL be automatically loaded, with at most 200 lines and 25 KiB. Detailed topic bodies SHALL remain on disk until explicitly retrieved. The snapshot SHALL be inserted at most once per active session history and refreshed for a new session or after compaction removes it.
 
-#### Scenario: Denied write
-- **WHEN** an agent's memory permission denies create
-- **THEN** the request changes no memory content
+#### Scenario: Large index
+- **WHEN** the index exceeds either context limit
+- **THEN** only the bounded prefix is loaded with an explicit truncation notice and the file is not changed
 
-#### Scenario: Escape attempt
-- **WHEN** a path attempts traversal or passes through a symlink outside the root
-- **THEN** the request fails without reading or modifying the outside target
+#### Scenario: Shared filesystem
+- **WHEN** one session writes notes and another session starts with the same project identity
+- **THEN** the new session receives the current project index
 
-### Requirement: Cooperative concurrency
-The tool SHALL coordinate with other processes and mem-sync using the aggregate lock, publish updates atomically, and bound reads and output.
+### Requirement: Concise notes and freshness
+Authoring instructions SHALL require short factual sentences, source links, a maintained one-line-per-topic index, and minimal description/updatedAt frontmatter. updatedAt SHALL represent the last factual update. Notes SHALL have an 8 KiB authoring budget and index files the same budgets as startup context. Existing file-tool results SHALL flag oversized or malformed notes without silently deleting written content.
 
-#### Scenario: Concurrent writers
-- **WHEN** separate processes edit one memory concurrently
-- **THEN** each operation is serialized or reports contention; partial writes are never exposed
+#### Scenario: Stale evidence
+- **WHEN** a note is old or contradicted by current evidence
+- **THEN** the reminder directs the agent to verify, correct or retire the claim according to evidence rather than age alone
 
-### Requirement: Provider compatibility
-Compatible Claude requests SHALL use the native memory tool definition and other providers SHALL receive the equivalent function schema. Token counting, caching and deferred tool references SHALL retain the memory declaration.
+#### Scenario: Oversized write
+- **WHEN** an ordinary write/edit/patch saves an over-budget memory file
+- **THEN** its result reports that the write succeeded and instructs an eligible writer to shorten or split the file
 
-#### Scenario: Native Claude request
-- **WHEN** memory is enabled for a Claude model
-- **THEN** the request declares type memory_20250818 with name memory and no custom input schema
+### Requirement: Portable scope
+The feature SHALL retain configurable roots, Git identities shared by worktrees, explicit aliases and the mem-sync aggregate format.
 
-#### Scenario: Other provider
-- **WHEN** memory is enabled for a non-Claude model
-- **THEN** the model receives the same commands as a normal function tool
+#### Scenario: Harness working on another repository
+- **WHEN** work concerns a repository other than the process workspace
+- **THEN** the reminder directs the agent to that repository's project memory instead of treating the harness index as global knowledge
