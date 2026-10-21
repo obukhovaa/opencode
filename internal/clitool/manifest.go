@@ -84,7 +84,7 @@ var ReservedNames = map[string]bool{
 	"lsp": true, "skill": true, "struct_output": true, "toolsearch": true,
 	"question": true, "todowrite": true, "monitor": true, "tasklist": true,
 	"taskstop": true, "croncreate": true, "crondelete": true, "cronlist": true,
-	"router_send": true, "heartbeat": true, "task": true,
+	"router_send": true, "heartbeat": true, "task": true, "memory": true,
 }
 
 // ArgsPolicy is the hard argument policy. Deny patterns are evaluated first,
