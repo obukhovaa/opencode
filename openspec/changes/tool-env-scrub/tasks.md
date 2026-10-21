@@ -7,7 +7,7 @@
 
 ## 2. Spawn sites
 
-- [ ] 2.1 Persistent shell, background bash, `monitor` and the TUI `!` shell use `toolenv.Environ()`; verify a shell test that runs `env` with `OPENCODE_SERVER_PASSWORD` and a config-denied name set sees neither, and that an undenied variable still passes
+- [x] 2.1 Persistent shell, background bash, `monitor` and the TUI `!` shell use `toolenv.Environ()`; verify a shell test that runs `env` with `OPENCODE_SERVER_PASSWORD` and a config-denied name set sees neither, and that an undenied variable still passes
 - [ ] 2.2 CLI tools build from the filtered parent (`exec.go`, `help.go`); verify `BuildEnv` tests: `inherit`, `env.pass` and `${env.NAME}` expansion drop a denied name while an `env.set` literal is kept
 - [ ] 2.3 Hooks, stdio MCP servers, LSP client and installers use the filtered environment with their explicit `env` appended; verify a hooks runner test that a hook's `env` output lacks the denied name and still has `OPENCODE_PROJECT_DIR`
 - [ ] 2.4 Document the deny list in `README.md` (config key and `OPENCODE_TOOL_ENV_DENY`), `docs/hooks.md` and `docs/cli-tools.md`; verify the documented names match `internal/toolenv`

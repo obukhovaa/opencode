@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 // newTestShell builds a shell instance directly rather than through
@@ -121,6 +123,40 @@ func TestShellEnvironment(t *testing.T) {
 	stdout, _, _ = exec1(t, sh, "echo $OPENCODE_SHELL_ENV_PROBE")
 	if got := strings.TrimSpace(stdout); got != "carried-through" {
 		t.Errorf("caller env var = %q, want it preserved", got)
+	}
+}
+
+// TestShellEnvironmentDropsDeniedVariables: the shell the model drives must not
+// see the engine's own credentials (built-in deny list), nor names an operator
+// added through config or OPENCODE_TOOL_ENV_DENY, while everything else still
+// passes through.
+func TestShellEnvironmentDropsDeniedVariables(t *testing.T) {
+	t.Setenv("OPENCODE_SERVER_PASSWORD", "api-s3cret")
+	t.Setenv("OPENCODE_MYSQL_DSN", "user:pw@tcp(db)/opencode")
+	t.Setenv("SHELL_TEST_CONFIG_DENIED", "cfg-s3cret")
+	t.Setenv("SHELL_TEST_ENV_DENIED", "env-s3cret")
+	t.Setenv(toolenv.EnvVar, "SHELL_TEST_ENV_DENIED")
+	t.Setenv("OPENCODE_SHELL_ENV_PROBE", "carried-through")
+	toolenv.SetConfigured([]string{"SHELL_TEST_CONFIG_*"})
+	t.Cleanup(func() { toolenv.SetConfigured(nil) })
+
+	sh := newTestShell(t)
+	stdout, _, code := exec1(t, sh, "env")
+	if code != 0 {
+		t.Fatalf("env exited %d", code)
+	}
+	for _, leaked := range []string{"api-s3cret", "OPENCODE_MYSQL_DSN", "cfg-s3cret", "env-s3cret"} {
+		if strings.Contains(stdout, leaked) {
+			t.Errorf("env output contains %q", leaked)
+		}
+	}
+	if !strings.Contains(stdout, "OPENCODE_SHELL_ENV_PROBE=carried-through") {
+		t.Error("an undenied variable was dropped")
+	}
+
+	// opencode's own environment is untouched: it still reads the value.
+	if got := os.Getenv("OPENCODE_SERVER_PASSWORD"); got != "api-s3cret" {
+		t.Errorf("opencode's own OPENCODE_SERVER_PASSWORD = %q, want it unchanged", got)
 	}
 }
 
