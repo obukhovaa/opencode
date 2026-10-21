@@ -293,8 +293,9 @@ type compactionInputStats struct {
 // summarizerInput builds the history the summarizer summarizes: the messages
 // since the previous summary (kept as the head, so its knowledge carries
 // forward) rendered as a text transcript (summarizerTranscript), cut from the
-// oldest end until it fits the budget, then the compaction prompt. Callers
-// send it through summarizerRequest. The cut keeps the turn's prompt
+// oldest end until it fits the budget, then the compaction prompt, with the
+// keep notes of pending compact_session requests appended. Callers send it
+// through summarizerRequest, taking the prompt from the last element. The cut keeps the turn's prompt
 // (turnPromptIndex): a flow step's task is the oldest message of its turn, so
 // it would go first, and the in-loop rebuild does not re-append it, so a
 // summary written without it loses the task for the rest of the step. Sending
@@ -319,6 +320,11 @@ func (a *agent) summarizerInputWithStats(ctx context.Context, sessionID string, 
 	msgs = filterEmptyUserMessages(msgs)
 	if len(msgs) == 0 {
 		return nil, stats, errNoMessagesToSummarize
+	}
+	// This compaction serves every compact_session request before it, so
+	// their keep notes go into its prompt, whatever started it.
+	if _, notes := pendingSelfCompactionNotes(msgs); len(notes) > 0 {
+		prompt = withCarryForward(prompt, notes)
 	}
 
 	// The trim works in local-estimate units, and the 4 B/token estimate can

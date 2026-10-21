@@ -73,6 +73,43 @@ func (m *memMessages) List(_ context.Context, sessionID string) ([]message.Messa
 
 func (m *memMessages) PublishPart(string, string, message.ContentPart) {}
 
+// CreatePair creates both messages under one lock, with consecutive
+// sequence numbers, as the store's transaction does.
+func (m *memMessages) CreatePair(ctx context.Context, sessionID string, first, second message.CreateMessageParams) (message.Message, message.Message, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	create := func(params message.CreateMessageParams) message.Message {
+		m.seq++
+		msg := message.Message{
+			ID: fmt.Sprintf("m-%d", m.seq), SessionID: sessionID, Role: params.Role,
+			Parts: params.Parts, Model: params.Model, Seq: int64(m.seq), Synthetic: params.Synthetic,
+		}
+		m.byID[msg.ID] = msg
+		m.bySession[sessionID] = append(m.bySession[sessionID], msg.ID)
+		return msg
+	}
+	a := create(first)
+	return a, create(second), nil
+}
+
+func (m *memMessages) Delete(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	msg, ok := m.byID[id]
+	if !ok {
+		return fmt.Errorf("message %s not found", id)
+	}
+	delete(m.byID, id)
+	ids := m.bySession[msg.SessionID]
+	for i, v := range ids {
+		if v == id {
+			m.bySession[msg.SessionID] = append(ids[:i:i], ids[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
 type memSessions struct {
 	session.Service
 	mu       sync.Mutex

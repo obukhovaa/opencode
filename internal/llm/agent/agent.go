@@ -234,6 +234,9 @@ type agent struct {
 	// toolCallTimeoutSeconds is the registry-merged per-agent tool call
 	// bound (markdown frontmatter and config overlay), nil when unset.
 	toolCallTimeoutSeconds *int
+	// selfCompact is the agent's compact_session setting; see
+	// compaction_self.go.
+	selfCompact config.SelfCompact
 	// compactionBackoff throttles auto-compaction after a failed summarizer
 	// call; see compaction_backoff.go.
 	compactionBackoff compactionBackoffs
@@ -353,6 +356,7 @@ func newAgent(
 		compactionThreshold:      agentInfo.CompactionThreshold,
 		summarizerMaxInputTokens: agentInfo.SummarizerMaxInputTokens,
 		toolCallTimeoutSeconds:   agentInfo.ToolCallTimeoutSeconds,
+		selfCompact:              selfCompactSettings(agentInfo),
 	}
 
 	// Message-delivery mode moves the output schema out of the tool block (which
@@ -790,7 +794,16 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 	// cleanup was added to prevent in the first place.
 	events := make(chan AgentEvent, 1)
 
-	genCtx, cancel := context.WithCancel(ctx)
+	genCtx, cancelGen := context.WithCancel(ctx)
+	// agentStop ends only through cancel (the agent's own Cancel, or the
+	// run's end), never through the caller's ctx. The post-turn compaction
+	// runs on it, so a caller that stops listening once it has the terminal
+	// event does not abort the compaction (compaction_self.go).
+	agentStop, stopAgent := context.WithCancel(context.Background())
+	var cancel context.CancelFunc = func() {
+		stopAgent()
+		cancelGen()
+	}
 	// Translate the flow↔agent ForceStructOutput contract into the provider
 	// ctx signal. It rides genCtx through processGeneration →
 	// streamAndHandleEvents → provider.StreamResponse → preparedMessages,
@@ -822,6 +835,16 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 		// cancel + Delete defers always get to run and the session's
 		// busy lock is released. The global slot is registered FIRST so
 		// it releases LAST — the instance-map entry never outlives it.
+		// Only afterRelease is registered before it, so it runs once the
+		// slot is free: a background-task completion that arrived while the
+		// post-turn compaction held the session skipped its auto-resume,
+		// and afterRelease starts it.
+		var afterRelease func()
+		defer func() {
+			if afterRelease != nil {
+				afterRelease()
+			}
+		}()
 		defer releaseSessionSlot(sessionID)
 		defer a.activeRequests.Delete(sessionID)
 		defer cancel()
@@ -852,6 +875,10 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 
 		a.Publish(pubsub.CreatedEvent, result)
 		events <- result
+		// A compaction the agent requested during the turn runs here: after
+		// the reply is out, before the channel closes, still holding the
+		// session's run slot (compaction_self.go).
+		afterRelease = a.compactAfterTurn(genCtx, agentStop, sessionID, result)
 		close(events)
 	}()
 	return events, nil
@@ -969,6 +996,34 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// An empty history has nothing to compact, so it is not even counted.
 	// No task-budget ctx is applied here: the turn has not started, so its
 	// budget is the full one, as on a turn that does not compact.
+	//
+	// A compaction the agent requested in an earlier turn that did not run
+	// after it (the turn failed, the process restarted) runs here first. It
+	// does not depend on autoCompact: the agent asked for it.
+	if a.selfCompact.Enabled && len(msgs) > 0 {
+		if pending, _ := pendingSelfCompactionNotes(msgs); pending {
+			if a.waitForSummarize(ctx, sessionID) {
+				reloaded, current, errReload := a.historyAfterCompaction(ctx, sessionID)
+				if errReload != nil {
+					return a.err(errReload)
+				}
+				msgs, session = reloaded, current
+			}
+			if pending, _ = pendingSelfCompactionNotes(msgs); pending {
+				var resumeTail []message.Message
+				if !hasUserTurn {
+					resumeTail = syntheticTail(msgs)
+				}
+				if a.runSelfCompaction(ctx, sessionID, compactionTriggerSelfPreTurn, msgs, lastSeq(msgs)) {
+					reloaded, compacted, errReload := a.historyAfterCompaction(ctx, sessionID)
+					if errReload != nil {
+						return a.err(errReload)
+					}
+					msgs, session = append(reloaded, resumeTail...), compacted
+				}
+			}
+		}
+	}
 	if cfg.AutoCompact && len(msgs) > 0 {
 		// A Summarize still running (the TUI's post-turn compaction) is
 		// about to move the summary boundary; wait for it and count the
@@ -2952,6 +3007,8 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID, tri
 		return stats, err
 	}
 	messageCount := len(msgsWithPrompt) - 1
+	// The prompt as summarizerInputWithStats completed it (keep notes).
+	promptMsg = msgsWithPrompt[messageCount]
 	logging.Info("Starting synchronous compaction",
 		"session_id", sessionID,
 		"trigger", trigger,
@@ -2970,8 +3027,7 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID, tri
 	if lf := langfuse.Get(); lf != nil && lf.Enabled() {
 		sess, sessErr := a.sessions.Get(ctx, sessionID)
 		if sessErr == nil {
-			summarizeCtx = a.createLangfuseTrace(summarizeCtx, sess,
-				fmt.Sprintf("auto-compaction over %d messages", messageCount))
+			summarizeCtx = a.createLangfuseTraceNamed(summarizeCtx, sess, compactionTraceNameSuffix(trigger), compactionTraceInput(trigger, messageCount))
 		}
 	}
 	defer langfuse.EndTrace(summarizeCtx)
@@ -3112,7 +3168,7 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 		summarizeCtx = provider.WithGenerationMetadata(summarizeCtx, a.compactionMetadata(sessionID, compactionTriggerManual, stats))
 		events := a.summarizeProvider.StreamResponse(
 			summarizeCtx,
-			summarizerRequest(msgsWithPrompt[:len(msgsWithPrompt)-1], promptMsg),
+			summarizerRequest(msgsWithPrompt[:len(msgsWithPrompt)-1], msgsWithPrompt[len(msgsWithPrompt)-1]),
 			make([]tools.BaseTool, 0),
 		)
 		response, err := provider.StreamToResponse(events)
@@ -3558,6 +3614,14 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 // with (*agent).setTraceOutput before the trace ends. Both are dropped unless
 // the agent is opted in via telemetry.generations.
 func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session, input any) context.Context {
+	return a.createLangfuseTraceNamed(ctx, sess, "", input)
+}
+
+// createLangfuseTraceNamed is createLangfuseTrace with nameSuffix appended to
+// the trace name (agent, or agent/flow/step), kept whole when the name is
+// truncated. A child session's span sets no trace name, so the suffix does
+// not show there.
+func (a *agent) createLangfuseTraceNamed(ctx context.Context, sess session.Session, nameSuffix string, input any) context.Context {
 	lf := langfuse.Get()
 	if lf == nil || !lf.Enabled() {
 		return ctx
@@ -3617,6 +3681,10 @@ func (a *agent) createLangfuseTrace(ctx context.Context, sess session.Session, i
 				metadata[k] = truncateStr(v, maxMetadataValueLen)
 			}
 		}
+	}
+
+	if nameSuffix != "" {
+		traceName = truncateStr(traceName, max(maxTraceNameLen-len(nameSuffix), 0)) + nameSuffix
 	}
 
 	stampRequester(ctx, metadata)

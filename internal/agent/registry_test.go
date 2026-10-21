@@ -1400,3 +1400,62 @@ func TestToolCallTimeoutSecondsMerge(t *testing.T) {
 		}
 	})
 }
+
+func TestSelfCompactMerge(t *testing.T) {
+	t.Run("frontmatter parses and a negative floor is dropped", func(t *testing.T) {
+		cases := []struct {
+			name, yaml string
+			want       *config.SelfCompact
+		}{
+			{"unset", "", nil},
+			{"enabled with a floor", "selfCompact:\n  enabled: true\n  minTokens: 150000\n", &config.SelfCompact{Enabled: true, MinTokens: 150000}},
+			{"negative floor", "selfCompact:\n  enabled: true\n  minTokens: -1\n", &config.SelfCompact{Enabled: true}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "daemon.md")
+				md := "---\nmode: agent\n" + tc.yaml + "---\n\nBody.\n"
+				if err := os.WriteFile(path, []byte(md), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				a, err := parseAgentMarkdown(path)
+				if err != nil {
+					t.Fatalf("parseAgentMarkdown() error = %v", err)
+				}
+				if (a.SelfCompact == nil) != (tc.want == nil) || (a.SelfCompact != nil && *a.SelfCompact != *tc.want) {
+					t.Errorf("SelfCompact = %+v, want %+v", a.SelfCompact, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("markdown overrides builtin, unset keeps it", func(t *testing.T) {
+		existing := AgentInfo{ID: "coder", Native: true}
+		mergeMarkdownIntoExisting(&existing, &AgentInfo{SelfCompact: &config.SelfCompact{Enabled: true, MinTokens: 10}})
+		if sc := existing.SelfCompact; sc == nil || !sc.Enabled || sc.MinTokens != 10 {
+			t.Fatalf("SelfCompact = %+v, want the markdown value", sc)
+		}
+		mergeMarkdownIntoExisting(&existing, &AgentInfo{})
+		if existing.SelfCompact == nil {
+			t.Error("unset markdown value cleared selfCompact")
+		}
+	})
+
+	t.Run("config overlay wins over markdown, unset keeps it", func(t *testing.T) {
+		agents := map[string]AgentInfo{
+			"daemon": {ID: "daemon", Mode: config.AgentModeAgent, SelfCompact: &config.SelfCompact{Enabled: true, MinTokens: 10}},
+			"coder":  {ID: "coder", Mode: config.AgentModeAgent, SelfCompact: &config.SelfCompact{Enabled: true}},
+		}
+		cfg := &config.Config{Agents: map[config.AgentName]config.Agent{
+			"daemon": {SelfCompact: &config.SelfCompact{Enabled: false}},
+			"coder":  {},
+		}}
+		applyConfigOverrides(agents, cfg)
+		if sc := agents["daemon"].SelfCompact; sc == nil || sc.Enabled {
+			t.Errorf("daemon = %+v, want the config's disabled value", sc)
+		}
+		if sc := agents["coder"].SelfCompact; sc == nil || !sc.Enabled {
+			t.Errorf("coder = %+v, want the markdown value kept", sc)
+		}
+	})
+}

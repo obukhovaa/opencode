@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -166,9 +167,20 @@ func (a *agent) compactionAllowed(sessionID string, tokens int64) bool {
 }
 
 // autoCompact runs one auto-compaction and records its outcome in the
-// session's backoff. Callers check compactionAllowed first.
+// session's backoff. Callers check compactionAllowed first. An attempt
+// cancelled through ctx is not a summarizer failure and is not recorded, so
+// it does not hold back the next attempt.
 func (a *agent) autoCompact(ctx context.Context, sessionID, trigger string, tokens int64) error {
 	stats, err := a.performSynchronousCompaction(ctx, sessionID, trigger)
+	if err != nil && errors.Is(ctx.Err(), context.Canceled) {
+		logging.Info("auto-compaction cancelled; not counted as a failure",
+			"session_id", sessionID,
+			"agent", a.agentID,
+			"trigger", trigger,
+			"error", err,
+		)
+		return err
+	}
 	if err != nil {
 		failures, retryAt := a.compactionBackoff.failed(sessionID, tokens)
 		var summarizerWindow int64
