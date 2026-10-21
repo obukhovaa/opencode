@@ -15,6 +15,7 @@ import (
 
 type MemoryContext struct {
 	Root, ID, Directory, IndexPath, ReadTool string
+	ResolvedIndexPath                        string
 	CanRead, CanWrite, Preload               bool
 	WriteTools                               []string
 }
@@ -39,12 +40,16 @@ func ResolveMemoryContext(cfg *config.Config, reg agentregistry.Registry, agent 
 	dir := filepath.Join(root, "projects", memory.Key(id), "memory")
 	index := filepath.Join(dir, "MEMORY.md")
 	result := MemoryContext{Root: root, ID: id, Directory: dir, IndexPath: index}
+	real, resolveErr := filepath.EvalSymlinks(index)
+	if resolveErr == nil {
+		result.ResolvedIndexPath = real
+	}
 	for _, tool := range []string{"read", "grep"} {
 		if !reg.IsToolEnabled(agent, tool) {
 			continue
 		}
 		action := reg.EvaluateReadPermission(agent, tool, index)
-		if real, err := filepath.EvalSymlinks(index); err == nil {
+		if resolveErr == nil {
 			other := reg.EvaluateReadPermission(agent, tool, real)
 			if other == permission.ActionDeny || action == permission.ActionDeny {
 				action = permission.ActionDeny
@@ -79,7 +84,7 @@ func ResolveMemoryContext(cfg *config.Config, reg agentregistry.Registry, agent 
 			if info, ok := reg.Get(agent); ok {
 				readAction = permission.EvaluateReadToolPermission("read", index, info.Permission, reg.GlobalPermissions())
 			}
-			if real, err := filepath.EvalSymlinks(index); err == nil {
+			if resolveErr == nil {
 				var agentPerms map[string]any
 				if info, ok := reg.Get(agent); ok {
 					agentPerms = info.Permission
@@ -98,6 +103,9 @@ func ResolveMemoryContext(cfg *config.Config, reg agentregistry.Registry, agent 
 			result.WriteTools = append(result.WriteTools, "bash")
 		}
 	}
+	// An absent/unresolvable index may be created later, but that new path has
+	// not been authorized yet. Keep the guidance and retry on the next turn.
+	result.Preload = result.Preload && resolveErr == nil
 	return result
 }
 
@@ -136,14 +144,14 @@ func (m MemoryContext) Marker() string {
 }
 
 func (m MemoryContext) Snapshot() string {
-	if !m.CanRead || !m.Preload {
+	if !m.CanRead || !m.Preload || m.ResolvedIndexPath == "" {
 		return ""
 	}
 	rel, err := filepath.Rel(m.Root, m.IndexPath)
 	if err != nil {
 		return ""
 	}
-	index, err := memory.ReadIndex(m.Root, rel)
+	index, err := memory.ReadIndex(m.Root, rel, m.ResolvedIndexPath)
 	if err != nil || strings.TrimSpace(index.Text) == "" {
 		return ""
 	}

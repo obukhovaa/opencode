@@ -33,7 +33,8 @@ func CanonicalRemote(remote string) (string, error) {
 		return "", fmt.Errorf("origin is not a network Git URL; configure memory.projectID")
 	}
 	host := strings.ToLower(u.Hostname())
-	if port := u.Port(); port != "" && port != "22" && port != "443" && port != "80" && port != "9418" {
+	defaultPort := map[string]string{"ssh": "22", "https": "443", "http": "80", "git": "9418"}[u.Scheme]
+	if port := u.Port(); port != "" && port != defaultPort {
 		host += ":" + port
 	}
 	repo := strings.TrimSuffix(strings.Trim(u.Path, "/"), ".git")

@@ -108,3 +108,65 @@ func TestMemoryRestrictedBashDoesNotBypassReadRules(t *testing.T) {
 		t.Fatal("git-only shell was treated as a file tool")
 	}
 }
+
+func TestMemorySnapshotCannotFollowReplacedStoreRoot(t *testing.T) {
+	base := t.TempDir()
+	base, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed, denied := filepath.Join(base, "allowed"), filepath.Join(base, "denied")
+	for _, root := range []string{allowed, denied} {
+		dir := filepath.Join(root, "projects", memory.Key("project"), "memory")
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte(root), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(base, "store")
+	if err := os.Symlink(allowed, link); err != nil {
+		t.Skip(err)
+	}
+	cfg := &config.Config{WorkingDir: base, Memory: &config.MemoryConfig{Enabled: true, Directory: link, ProjectID: "project"}}
+	reg := memoryRegistry{tools: map[string]bool{"read": true}, perms: map[string]any{"read": map[string]any{denied + "/**": "deny", "*": "allow"}}}
+	m := ResolveMemoryContext(cfg, reg, "a")
+	if !m.Preload {
+		t.Fatal("allowed index was not approved")
+	}
+	if got := m.Snapshot(); !strings.Contains(got, allowed) {
+		t.Fatal("unchanged store root did not load the authorized index")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(denied, link); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Snapshot(); strings.Contains(got, denied) {
+		t.Fatalf("snapshot loaded denied content after root changed: %s", got)
+	}
+}
+
+func TestMemoryAbsentIndexMustBeAuthorizedAfterCreation(t *testing.T) {
+	root := t.TempDir()
+	cfg := &config.Config{WorkingDir: root, Memory: &config.MemoryConfig{Enabled: true, Directory: root, ProjectID: "project"}}
+	reg := memoryRegistry{tools: map[string]bool{"read": true}}
+	m := ResolveMemoryContext(cfg, reg, "a")
+	if !m.CanRead || m.Preload {
+		t.Fatal("absent index should retain retrieval guidance without authorizing a later file")
+	}
+	if err := os.MkdirAll(m.Directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(m.IndexPath, []byte("new index"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if m.Snapshot() != "" {
+		t.Fatal("index created after the permission check was loaded")
+	}
+	if got := ResolveMemoryContext(cfg, reg, "a").Snapshot(); !strings.Contains(got, "new index") {
+		t.Fatal("next turn did not authorize and load the new index")
+	}
+}
