@@ -1078,6 +1078,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// Creating it first also keeps the persisted seq order equal to the
 	// in-memory order, so a later reload sees the same sequence.
 	msgs = a.withStructOutputSchema(ctx, sessionID, msgs)
+	msgs = a.withMemoryIndex(ctx, sessionID, msgs)
 
 	var userMsg message.Message
 	msgHistory := msgs
@@ -1146,6 +1147,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		// and so the forced struct_output wrap-up below is not asked
 		// to produce a document whose shape left the conversation.
 		msgs = a.withStructOutputSchema(ctx, sessionID, msgs)
+		msgs = a.withMemoryIndex(ctx, sessionID, msgs)
 		// The deferred-tools delta sat before the summary too, and the
 		// compaction forgot it was announced. A flow step or a task
 		// subagent is usually one turn, so waiting for the next turn's

@@ -1,28 +1,35 @@
 ## Context
 
-The paired Piano Developer `unified-project-memory` change defines the aggregate and import/export CLI. OpenCode uses explicit tool grants, per-tool permissions, multiple providers and multiple sessions/processes. The Anthropic SDK already supports `MemoryTool20250818Param`.
+The user corrected the initial tool-based design: Claude Code uses ordinary file tools for auto memory. The shared store and stable project identity remain useful. Long-lived OpenCode agent instances serve multiple sessions, so an index captured only when constructing the provider would become stale across sessions.
 
 ## Goals / Non-Goals
 
-Goals: match the existing memory tool's names and parameters, keep data durable across sessions sharing a filesystem, and expose project-scoped Markdown with a configurable storage boundary.
+Goals: keep context small, use existing tools, expose project scope and freshness, retain accumulated knowledge across sessions.
 
-Non-goals: session-store migrations, remote synchronization inside the model tool, inferred tenant authorization, or mandatory memory for existing agents.
+Non-goals: a new memory tool, automatic loading of topic bodies, raw transcript ingestion, automatic deletion based only on age, or a filesystem quota that can constrain arbitrary Bash commands.
 
 ## Decisions
 
-1. `memory.enabled` defaults false and `memory.directory` defaults `~/.agents/memory`. The tool additionally requires an explicit `memory` grant. `/memories` maps to that configured root; project directories follow the paired format. A deployment can narrow the root or separate roots by tenant. Current-project routing is derived from canonical origin/explicit `memory.projectID`; aliases use the aggregate map. Working-directory hints do not collapse all target repositories into the harness project.
-2. Preserve Anthropic's API exactly: command plus conditional path/view_range/file_text/old_str/new_str/insert_line/insert_text/old_path/new_path. Reject malformed arguments, root deletion/rename, traversal and symlinks. Root listing of an empty store succeeds. `create` refuses an existing file; exact replacement requires one occurrence; insertion uses zero to prepend and otherwise inserts after the specified line. Directory rename/delete are supported within the root.
-3. Use bounded file reads, image responses for PNG/JPEG, line-numbered text and 16,000-character text views. Directory views stop at two levels and omit hidden entries and node_modules. Changes are written atomically under the same aggregate lock as mem-sync. Use OS-root-relative operations for confinement and reject non-regular files. Internal metadata/lock files remain inaccessible to model operations.
-4. Evaluate the `memory` permission against command plus virtual path, checking both paths on rename. Permission denial occurs before store mutation. Expose the tool only with memory enabled and an explicit grant. Granting read tools alone never grants memory writes.
-5. Compatible Claude requests use the native `memory_20250818` union. Other models keep the equivalent function schema. Preserve deferral ordering, cache breakpoints, declared tool names and token-count conversion for the native union. Add short prompt guidance only when the tool is enabled, describing indexes, project boundaries, stale evidence and durable learning capture.
+1. Retain opt-in memory.enabled/directory/projectID and the shared projects/<sha256-id>/memory layout. Remove every memory tool/provider/grant change. Instructions name real filesystem paths and only tools available to the agent.
+2. A short system reminder explains relevance-based reading, durable concise facts, links, correction/deduplication and index upkeep. Read-only agents receive reading guidance; write-only agents receive writing guidance without preloaded contents; agents with both capabilities or permitted Bash receive both. Disabled/no-file-tool agents receive nothing. Denied or approval-required index reads are not performed automatically.
+3. Inject one synthetic, clearly delimited project-index snapshot per active session history after the compaction gate, alongside existing context envelopes. Do not duplicate it on subsequent turns; reload for another session or after compaction removes the snapshot. This preserves the static system prefix and counts the snapshot in normal message token accounting. No topic body is read by the startup loader.
+4. Index context has hard limits of 200 lines and 25 KiB, whichever is reached first, including an explicit truncation notice. Topic authoring budget is 8 KiB. Successful ordinary write/edit/multiedit/patch results report oversize indexes/notes and missing/invalid frontmatter; they do not destroy or silently truncate saved content. Bash receives the same authoring instructions, but cannot be given a new tool-specific filesystem quota. Existing read/write permissions and concurrency behavior remain authoritative.
+5. New topic frontmatter requires only description (one-line retrieval cue) and updatedAt (RFC3339 UTC last factual update). Index entries carry a link, retrieval cue and updatedAt. Preserve other legacy fields. Old timestamps prompt re-verification for volatile facts; age alone does not invalidate stable knowledge. Reading, copying or importing must not rejuvenate a note.
+6. Ordinary file writers do not acquire mem-sync's internal lock. Keep narrow edits, read-before-write checks and conservative sync conflict handling; document concurrent external-writer limits rather than claiming all writes are serialized.
+
+## Research basis
+
+- Claude Code memory: https://code.claude.com/docs/en/memory — bounded startup index; topic files on demand; write feedback rather than destructive truncation.
+- Karpathy LLM Wiki: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f — linked retrieval cues, maintained synthesis and contradiction/staleness checks. Adopt the small index/notes pattern, without raw-source archives or a separate chronological log in model context.
+- Anthropic context engineering: https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents — keep compact references and use existing tools for just-in-time retrieval.
 
 ## Risks / Trade-offs
 
-- Cross-process contention → bounded/context-aware locking and atomic writes; a busy store produces a retryable tool error.
-- External editors ignore locks → operations are serialized among cooperating writers; updates use narrow exact replacements and create refuses overwrite.
-- Models can access every project within their root → treat root selection and filesystem permissions as the isolation boundary and document per-tenant roots.
-- Provider compatibility differs → native encoding only for Claude; function fallback elsewhere, with serialization tests.
+- Index snapshot can age during a session → label it as a snapshot and re-read before edits or when freshness matters.
+- Imported legacy notes can exceed the budget → preserve data, report warnings and ask the agent to split/summarize; hard-cap only automatic context.
+- Index files are untrusted evidence → delimit/escape snapshot text and never treat it as policy or authorization.
+- Ordinary Bash/file tools can bypass suggested budgets → hard bound startup context and provide authoring feedback without claiming storage enforcement.
 
 ## Migration Plan
 
-Deploy the runtime, configure a persistent directory, enable memory and grant it to intended agents. No import is automatic. Use the paired CLI to populate the store. Rollback disables memory while retaining Markdown data.
+Update the existing unmerged MRs, remove memory grants, deploy the revised runtime and keep the same aggregate path. Existing Markdown remains readable. Disable memory.enabled to remove reminders and automatic index loading.
