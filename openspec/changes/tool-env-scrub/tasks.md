@@ -2,8 +2,8 @@
 
 ## 1. Deny list and filter
 
-- [ ] 1.1 Add `ToolEnvConfig{Deny []string}` as `Config.ToolEnv` (`toolEnv`), declare it in `cmd/schema/main.go`, regenerate `opencode-schema.json`; verify `make schema-check` and `go test ./cmd/schema/...` pass and a viper round-trip test under `internal/config` reads `toolEnv.deny`
-- [ ] 1.2 Add `internal/toolenv` with the built-in names, `DenyList()` (built-ins ∪ config ∪ `OPENCODE_TOOL_ENV_DENY`), `Filter(env, patterns)` and `Environ()`; verify table tests cover exact, glob, malformed glob, case sensitivity, trimming/empty entries, nil config and duplicate `KEY=` entries
+- [x] 1.1 Add `ToolEnvConfig{Deny []string}` as `Config.ToolEnv` (`toolEnv`), declare it in `cmd/schema/main.go`, regenerate `opencode-schema.json`; verify `make schema-check` and `go test ./cmd/schema/...` pass and a viper round-trip test under `internal/config` reads `toolEnv.deny`
+- [x] 1.2 Add `internal/toolenv` with the built-in names, `DenyList()` (built-ins ∪ config ∪ `OPENCODE_TOOL_ENV_DENY`), `Filter(env, patterns)` and `Environ()`; verify table tests cover exact, glob, malformed glob, case sensitivity, trimming/empty entries, nil config and duplicate `KEY=` entries
 
 ## 2. Spawn sites
 
