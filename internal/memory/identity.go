@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 func Key(id string) string {
@@ -46,7 +48,9 @@ func ProjectID(directory, cwd, explicit string) (string, error) {
 	if id == "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		remote, err := exec.CommandContext(ctx, "git", "-C", cwd, "config", "--get", "remote.origin.url").Output()
+		cmd := exec.CommandContext(ctx, "git", "-C", cwd, "config", "--get", "remote.origin.url")
+		cmd.Env = toolenv.Environ()
+		remote, err := cmd.Output()
 		if err == nil {
 			id, err = CanonicalRemote(string(remote))
 		}
