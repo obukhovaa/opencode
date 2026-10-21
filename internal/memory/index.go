@@ -25,9 +25,10 @@ type Index struct {
 	Truncated bool
 }
 
-// ReadIndex reads only MEMORY.md. Opening beneath the store prevents a swapped
-// symlink from turning automatic context loading into an unrelated file read.
-func ReadIndex(root, relative string) (Index, error) {
+// ReadIndex reads only MEMORY.md. canonical is the resolved index path whose
+// permissions were checked. Check the opened file against that path as well as
+// confining it beneath root, since root itself may have been replaced meanwhile.
+func ReadIndex(root, relative, canonical string) (Index, error) {
 	r, err := os.OpenRoot(root)
 	if err != nil {
 		return Index{}, err
@@ -47,6 +48,14 @@ func ReadIndex(root, relative string) (Index, error) {
 	}
 	if !info.Mode().IsRegular() {
 		return Index{}, fmt.Errorf("memory index is not a regular file")
+	}
+	resolved, err := filepath.EvalSymlinks(canonical)
+	if err != nil || resolved != canonical {
+		return Index{}, fmt.Errorf("memory index path changed after permission check")
+	}
+	authorized, err := os.Lstat(canonical)
+	if err != nil || !os.SameFile(info, authorized) {
+		return Index{}, fmt.Errorf("memory index file changed after permission check")
 	}
 	data, err := io.ReadAll(io.LimitReader(f, IndexMaxBytes+1))
 	if err != nil {

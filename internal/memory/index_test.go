@@ -33,7 +33,11 @@ func TestMemoryIndexRejectsSymlinkAndDoesNotReadTopics(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "topic.md"), []byte("TOPIC_SECRET_BODY"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	index, err := ReadIndex(root, "projects/key/memory/MEMORY.md")
+	canonical, err := filepath.EvalSymlinks(filepath.Join(dir, "MEMORY.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	index, err := ReadIndex(root, "projects/key/memory/MEMORY.md", canonical)
 	if err != nil || strings.Contains(index.Text, "TOPIC_SECRET_BODY") {
 		t.Fatalf("%+v %v", index, err)
 	}
@@ -43,7 +47,7 @@ func TestMemoryIndexRejectsSymlinkAndDoesNotReadTopics(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "topic.md"), filepath.Join(dir, "MEMORY.md")); err != nil {
 		t.Skip(err)
 	}
-	if _, err := ReadIndex(root, "projects/key/memory/MEMORY.md"); err == nil {
+	if _, err := ReadIndex(root, "projects/key/memory/MEMORY.md", canonical); err == nil {
 		t.Fatal("symlink loaded")
 	}
 }
@@ -89,5 +93,24 @@ func TestMemoryCanonicalIdentityAndAliases(t *testing.T) {
 	id, err := ProjectID(root, root, "mirror")
 	if err != nil || id != "canonical" {
 		t.Fatalf("%s %v", id, err)
+	}
+}
+
+func TestMemoryCanonicalIdentityRetainsNonDefaultSchemePorts(t *testing.T) {
+	for _, tc := range []struct{ remote, want string }{
+		{"https://host:22/repo", "git:host:22/repo"},
+		{"ssh://host:443/repo", "git:host:443/repo"},
+		{"http://host:9418/repo", "git:host:9418/repo"},
+		{"https://host:443/repo", "git:host/repo"},
+		{"ssh://host:22/repo", "git:host/repo"},
+		{"http://host:80/repo", "git:host/repo"},
+		{"git://host:9418/repo", "git:host/repo"},
+	} {
+		t.Run(tc.remote, func(t *testing.T) {
+			got, err := CanonicalRemote(tc.remote)
+			if err != nil || got != tc.want {
+				t.Errorf("CanonicalRemote(%q) = %q, %v; want %q", tc.remote, got, err, tc.want)
+			}
+		})
 	}
 }

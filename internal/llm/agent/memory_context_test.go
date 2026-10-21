@@ -15,7 +15,11 @@ func TestMemoryIndexOncePerHistoryAndFreshAcrossSessions(t *testing.T) {
 	root := t.TempDir()
 	index := filepath.Join(root, "MEMORY.md")
 	os.WriteFile(index, []byte("old entry"), 0600)
-	m := prompt.MemoryContext{Root: root, IndexPath: index, CanRead: true, Preload: true}
+	canonical, err := filepath.EvalSymlinks(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := prompt.MemoryContext{Root: root, IndexPath: index, ResolvedIndexPath: canonical, CanRead: true, Preload: true}
 	service := &recordingMsgService{}
 	a := &agent{messages: service}
 	first := a.withResolvedMemoryIndex(context.Background(), "s1", nil, m)
