@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -57,6 +59,9 @@ func (c *stubCrons) ListActive(context.Context) ([]cron.CronJob, error) { return
 
 type isolationSetup struct {
 	isolate bool
+	// unset leaves router.isolateExternalSessions out of the config, so
+	// the default applies; isolate is then ignored.
+	unset bool
 	// currentExternal also binds the caller's own session S1 to an
 	// external peer.
 	currentExternal bool
@@ -105,7 +110,9 @@ func newIsolationTestService(t *testing.T, tc isolationSetup) (*Service, *channe
 			t.Fatalf("UpsertBinding %s: %v", b.PeerID, err)
 		}
 	}
-	svc.cfg.IsolateExternalSessions = tc.isolate
+	if !tc.unset {
+		svc.cfg.IsolateExternalSessions = &tc.isolate
+	}
 	lookups := &channelLookupStore{Store: svc.store, err: tc.lookupErr}
 	svc.store = lookups
 	return svc, lookups
@@ -158,6 +165,13 @@ func TestCmdSessionsIsolatesExternalSessions(t *testing.T) {
 			wantLookups: 1,
 		},
 		{
+			name:        "unset is on by default",
+			setup:       isolationSetup{unset: true},
+			want:        []string{"★ S1", "Chat B", "Chat C"},
+			wantNot:     []string{"Tenant A plan", "Tenant D plan", "Tenant E review", "Tenant E draft", "ab01-ext", "cd01-ext"},
+			wantLookups: 1,
+		},
+		{
 			name:        "on keeps the current session though external-bound",
 			setup:       isolationSetup{isolate: true, currentExternal: true},
 			want:        []string{"★ S1", "Chat B"},
@@ -202,6 +216,14 @@ func TestCmdSessionSwitchIsolatesExternalSessions(t *testing.T) {
 		{
 			name:      "on refuses with the ordinary no-match reply",
 			setup:     isolationSetup{isolate: true},
+			args:      "cd",
+			want:      []string{`No session matches prefix "cd"`},
+			wantNot:   []string{"Tenant D plan", "cd01-ext"},
+			wantBound: "S1",
+		},
+		{
+			name:      "unset refuses by default",
+			setup:     isolationSetup{unset: true},
 			args:      "cd",
 			want:      []string{`No session matches prefix "cd"`},
 			wantNot:   []string{"Tenant D plan", "cd01-ext"},
@@ -352,21 +374,110 @@ func TestCmdCronsIsolatesExternalSessions(t *testing.T) {
 	}
 }
 
-func TestExternalSessionsIsolatedDefaultsOff(t *testing.T) {
+func TestExternalSessionsIsolatedDefaultsOn(t *testing.T) {
+	on, off := true, false
 	tests := []struct {
 		name string
 		cfg  *bridge.Config
 		want bool
 	}{
-		{"nil config", nil, false},
-		{"unset", &bridge.Config{}, false},
-		{"on", &bridge.Config{IsolateExternalSessions: true}, true},
+		{"nil config", nil, true},
+		{"unset", &bridge.Config{}, true},
+		{"on", &bridge.Config{IsolateExternalSessions: &on}, true},
+		{"off", &bridge.Config{IsolateExternalSessions: &off}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.cfg.ExternalSessionsIsolated(); got != tt.want {
 				t.Errorf("ExternalSessionsIsolated() = %v, want %v", got, tt.want)
 			}
+		})
+	}
+}
+
+// peerExtA is the external conversation bound to ab01-ext ("Tenant A plan")
+// in newIsolationTestService.
+func peerExtA() bridge.PeerRef {
+	return bridge.PeerRef{Channel: "external", Identity: "c3", PeerID: "aidA:flow:run1"}
+}
+
+// runCommand calls the named handler directly, past the channel's command
+// allowlist: an external caller's session commands must stay confined to
+// its own session even when an operator allows them on external.
+func runCommand(t *testing.T, svc *Service, peer bridge.PeerRef, cmd, args string) *bridge.CommandReply {
+	t.Helper()
+	h, ok := svc.ChatCommands()[cmd]
+	if !ok {
+		t.Fatalf("no handler for /%s", cmd)
+	}
+	return h(context.Background(), bridge.Inbound{Peer: peer, Command: cmd, CommandArgs: args})
+}
+
+// An external caller addresses only the session bound to it (CD-5331): it
+// can neither list nor bind another, whatever isolateExternalSessions says,
+// and no store lookup is needed to decide that.
+func TestExternalCallerSeesOnlyItsOwnSession(t *testing.T) {
+	others := []string{
+		"S1", "Chat B", "ab02-cha", "Chat C", "ab03-cha",
+		"Tenant D plan", "cd01-ext", "Tenant E review", "ef01-ste", "Tenant E draft", "ef02-ste",
+	}
+	for _, isolate := range []bool{false, true} {
+		t.Run(fmt.Sprintf("isolate=%v", isolate), func(t *testing.T) {
+			t.Run("/sessions lists only its session", func(t *testing.T) {
+				svc, lookups := newIsolationTestService(t, isolationSetup{isolate: isolate})
+				reply := runCommand(t, svc, peerExtA(), "sessions", "")
+				assertReply(t, reply, []string{"★ ab01-ext", "Tenant A plan"}, others)
+				if got := lookups.calls.Load(); got != 0 {
+					t.Errorf("external-session lookups = %d, want 0", got)
+				}
+			})
+
+			switches := []struct {
+				name string
+				args string
+				want string
+			}{
+				{"another external conversation", "cd", `No session matches prefix "cd"`},
+				{"a chat session", "ab02", `No session matches prefix "ab02"`},
+				{"a chat peer's session by full id", "S1", `No session matches prefix "S1"`},
+				{"an external run's unbound step", "ef02", `No session matches prefix "ef02"`},
+				{"an ambiguous prefix", "ab", "Already on session ab01-ext"},
+			}
+			for _, sw := range switches {
+				t.Run("/session cannot bind "+sw.name, func(t *testing.T) {
+					svc, _ := newIsolationTestService(t, isolationSetup{isolate: isolate})
+					reply := runCommand(t, svc, peerExtA(), "session", sw.args)
+					// The no-match reply echoes the typed prefix; that is
+					// the caller's own input, not a leak.
+					leaks := slices.DeleteFunc(slices.Clone(others), func(s string) bool { return s == sw.args })
+					assertReply(t, reply, []string{sw.want}, leaks)
+					peer := peerExtA()
+					b, err := svc.store.GetBinding(context.Background(), "proj", peer.Channel, peer.Identity, peer.PeerID)
+					if err != nil {
+						t.Fatalf("GetBinding: %v", err)
+					}
+					if b.SessionID != "ab01-ext" {
+						t.Errorf("external peer bound to %q, want ab01-ext", b.SessionID)
+					}
+				})
+			}
+
+			t.Run("/crons shows only its session's jobs", func(t *testing.T) {
+				svc, _ := newIsolationTestService(t, isolationSetup{isolate: isolate})
+				svc.app.Crons = &stubCrons{jobs: []cron.CronJob{
+					{ID: "job-own1", SessionID: "S1", TaskTitle: "own check", Schedule: "*/5 * * * *", Source: "agent"},
+					{ID: "job-ext1", SessionID: "ab01-ext", TaskTitle: "tenant A digest", Schedule: "*/5 * * * *", Source: "agent"},
+					{ID: "job-ext2", SessionID: "cd01-ext", TaskTitle: "tenant D digest", Schedule: "*/5 * * * *", Source: "agent"},
+					{ID: "job-cht1", SessionID: "ab02-chat", TaskTitle: "chat B digest", Schedule: "*/5 * * * *", Source: "agent"},
+				}}
+				sessions := &countingSessions{Service: svc.app.Sessions}
+				svc.app.Sessions = sessions
+				reply := runCommand(t, svc, peerExtA(), "crons", "")
+				assertReply(t, reply, []string{"tenant A digest"}, []string{"own check", "tenant D digest", "chat B digest", "cd01-ext", "ab02-cha"})
+				if got := sessions.calls.Load(); got != 0 {
+					t.Errorf("session reads = %d, want 0", got)
+				}
+			})
 		})
 	}
 }

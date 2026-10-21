@@ -1260,8 +1260,8 @@ func generateSchema() map[string]any {
 			},
 			"isolateExternalSessions": map[string]any{
 				"type":        "boolean",
-				"description": "Keep chat peers out of external conversations: /sessions, /session <id-prefix> and /crons neither show nor switch into a session that holds a binding on the 'external' channel (each external peer is a separate conversation, often of another tenant), nor into any session sharing its root session (the other step sessions of the same flow run). The caller's own current session always stays visible. A failed lookup hides every other session. Off by default.",
-				"default":     false,
+				"description": "Keep chat peers out of external conversations: /sessions, /session <id-prefix> and /crons neither show nor switch into a session that holds a binding on the 'external' channel (each external peer is a separate conversation, often of another tenant), nor into any session sharing its root session (the other step sessions of the same flow run). The caller's own current session always stays visible. A failed lookup hides every other session. On unless set to false; false lets chat peers list and enter external conversations.",
+				"default":     true,
 			},
 			"channels": map[string]any{
 				"type":        "object",
@@ -1270,7 +1270,18 @@ func generateSchema() map[string]any {
 					"telegram":   map[string]any{"type": "object", "description": "Telegram channel configuration."},
 					"slack":      map[string]any{"type": "object", "description": "Slack channel configuration."},
 					"mattermost": map[string]any{"type": "object", "description": "Mattermost channel configuration."},
-					"external":   map[string]any{"type": "object", "description": "External relay channel configuration."},
+					"external": map[string]any{
+						"type":        "object",
+						"description": "External relay channel configuration.",
+						"properties": map[string]any{
+							"commands": map[string]any{
+								"type":        "array",
+								"items":       map[string]any{"type": "string"},
+								"description": "Chat commands a peer on the external channel may run (each external peer is one end user's conversation). A known command off the list gets a refusal reply; text that is not a command still reaches the agent. An alias counts as the command it stands for (stop and cancel are abort, new is reset). Session commands from an external peer only ever address its own session, whatever this list says. Unset or empty means [\"abort\", \"reset\"].",
+								"default":     []string{"abort", "reset"},
+							},
+						},
+					},
 				},
 			},
 		},

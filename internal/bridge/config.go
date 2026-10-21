@@ -92,13 +92,14 @@ type Config struct {
 	// conversations. Each peer on the "external" channel is a separate
 	// conversation, often of another tenant, while the chat session
 	// commands (/sessions, /session <id-prefix>, /crons) work over every
-	// session of the project. When true, those commands neither show nor
-	// switch into a session of an external conversation's run — one that
-	// holds a binding on the external channel, or shares its root session
-	// with one that does (the step sessions of one flow run) — except the
-	// caller's own current session. Off by default: the commands then
-	// behave exactly as before.
-	IsolateExternalSessions bool `json:"isolateExternalSessions,omitempty"`
+	// session of the project. Unless false, those commands neither show
+	// nor switch into a session of an external conversation's run — one
+	// that holds a binding on the external channel, or shares its root
+	// session with one that does (the step sessions of one flow run) —
+	// except the caller's own current session. A *bool so unset means on,
+	// as router_send keeps chat turns out of external conversations
+	// unconditionally; false restores the unscoped commands.
+	IsolateExternalSessions *bool `json:"isolateExternalSessions,omitempty"`
 }
 
 // HeartbeatReminderEnabled reports whether the heartbeat setup reminder
@@ -108,9 +109,9 @@ func (c *Config) HeartbeatReminderEnabled() bool {
 }
 
 // ExternalSessionsIsolated reports whether chat session commands hide
-// external-bound sessions. A nil config means off.
+// external-bound sessions. A nil config or an unset field both mean on.
 func (c *Config) ExternalSessionsIsolated() bool {
-	return c != nil && c.IsolateExternalSessions
+	return c == nil || c.IsolateExternalSessions == nil || *c.IsolateExternalSessions
 }
 
 // ChannelsConfig holds per-platform channel sections.
@@ -214,6 +215,52 @@ type MattermostIdentity struct {
 type ExternalChannelConfig struct {
 	Enabled   bool               `json:"enabled"`
 	Consumers []ExternalIdentity `json:"consumers,omitempty"`
+	// Commands lists the chat commands an external peer may run. Each
+	// external peer is one end user's conversation, so the default is only
+	// what that user needs to control its own run: stop and reset. A known
+	// command off the list is refused with a reply. An alias counts as the
+	// command it stands for. Unset or empty means the default.
+	Commands []string `json:"commands,omitempty"`
+}
+
+// DefaultExternalCommands is the external channel's command allowlist when
+// router.channels.external.commands is unset or empty.
+var DefaultExternalCommands = []string{"abort", "reset"}
+
+// commandAliases maps each chat-command alias to the command it runs.
+var commandAliases = map[string]string{
+	"stop":   "abort",
+	"cancel": "abort",
+	"new":    "reset",
+}
+
+// CanonicalCommand returns the command name that cmd stands for: trimmed,
+// lower-cased, without a leading "/", and with an alias resolved to its
+// command ("stop" → "abort").
+func CanonicalCommand(cmd string) string {
+	cmd = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(cmd), "/"))
+	if c, ok := commandAliases[cmd]; ok {
+		return c
+	}
+	return cmd
+}
+
+// ExternalCommandAllowed reports whether a peer on the external channel
+// may run cmd: whether CanonicalCommand(cmd) is on
+// router.channels.external.commands, or on DefaultExternalCommands when
+// that is unset or empty. Nil-safe.
+func (c *Config) ExternalCommandAllowed(cmd string) bool {
+	list := DefaultExternalCommands
+	if c != nil && c.Channels.External != nil && len(c.Channels.External.Commands) > 0 {
+		list = c.Channels.External.Commands
+	}
+	want := CanonicalCommand(cmd)
+	for _, entry := range list {
+		if CanonicalCommand(entry) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // ExternalIdentity is a single external relay consumer (e.g. "c3").

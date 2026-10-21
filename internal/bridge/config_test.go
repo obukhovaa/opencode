@@ -273,3 +273,30 @@ func TestConfig_ToolVerbosityDefaultsCompact(t *testing.T) {
 		t.Errorf("bad cfg ToolVerbosity() = %q; want compact fallback", got)
 	}
 }
+
+func TestExternalCommandAllowed(t *testing.T) {
+	configured := &Config{Channels: ChannelsConfig{External: &ExternalChannelConfig{Commands: []string{" /NEW ", "crons"}}}}
+	tests := []struct {
+		name string
+		cfg  *Config
+		cmd  string
+		want bool
+	}{
+		{"nil config runs stop", nil, "stop", true},
+		{"nil config refuses sessions", nil, "sessions", false},
+		{"no external section runs reset", &Config{}, "reset", true},
+		{"default folds the cancel alias", &Config{}, "cancel", true},
+		{"default refuses model", &Config{}, "model", false},
+		{"configured entry is normalised and alias-folded", configured, "reset", true},
+		{"configured list runs crons", configured, "crons", true},
+		{"configured list replaces the default", configured, "abort", false},
+		{"unknown command is never allowed", &Config{}, "dir", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.ExternalCommandAllowed(tt.cmd); got != tt.want {
+				t.Errorf("ExternalCommandAllowed(%q) = %v, want %v", tt.cmd, got, tt.want)
+			}
+		})
+	}
+}
