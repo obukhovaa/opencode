@@ -22,6 +22,7 @@ import (
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 	"github.com/opencode-ai/opencode/internal/version"
 )
 
@@ -564,7 +565,10 @@ type mcpProc struct {
 
 func (p *mcpProc) command(_ context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
 	cmd := exec.Command(command, args...)
-	cmd.Env = append(os.Environ(), env...)
+	// Inherited variables are filtered by the tool environment deny list;
+	// the server's own configured `env` is appended unfiltered, because an
+	// operator who writes a value there has granted it to this server.
+	cmd.Env = append(toolenv.Environ(), env...)
 	detachMCPProcess(cmd)
 	p.mu.Lock()
 	p.cmd = cmd
