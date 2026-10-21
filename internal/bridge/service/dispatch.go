@@ -470,6 +470,10 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	// MCP flowArgHeaders as its flow steps. Only a turn provably tied to that
 	// job gets them: a daemon turn, or one of another or unknown job, none.
 	runCtx = tools.WithJobArgs(runCtx, d.svc.jobArgsForTurn(d.sessionID, in.Peer))
+	// A compaction the agent requested during the turn runs after it ends;
+	// the agent holds it until the turn's reply has been posted here.
+	runCtx, delivered := agent.WithTurnDelivery(runCtx)
+	defer delivered()
 
 	// Bounded retry for ErrSessionBusy: the session-run ledger is
 	// process-global (session-run-exclusivity spec). Cross-actor holders
@@ -608,9 +612,10 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 		if hb != nil {
 			d.heartbeatRunEnded()
 			d.handleHeartbeatTerminal(ctx, in.Peer, hb, ev)
-			continue
+		} else {
+			d.handleTerminalEvent(ctx, ev)
 		}
-		d.handleTerminalEvent(ctx, ev)
+		delivered()
 	}
 }
 

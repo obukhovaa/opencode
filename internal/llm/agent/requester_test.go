@@ -82,6 +82,21 @@ func traceMetadata(t *testing.T, ctx context.Context) map[string]string {
 	return out
 }
 
+// spanTraceName is the Langfuse trace name the recording span on ctx
+// carries, "" when there is no such span or name.
+func spanTraceName(ctx context.Context) string {
+	span, ok := trace.SpanFromContext(ctx).(sdktrace.ReadOnlySpan)
+	if !ok {
+		return ""
+	}
+	for _, kv := range span.Attributes() {
+		if kv.Key == "langfuse.trace.name" {
+			return kv.Value.AsString()
+		}
+	}
+	return ""
+}
+
 // The requester must reach the exported trace under the configured
 // namespace, with flow arg > per-turn requester > telemetry.requester.
 func TestCreateLangfuseTraceStampsNamespacedRequester(t *testing.T) {

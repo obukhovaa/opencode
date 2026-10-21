@@ -49,6 +49,9 @@ type AgentInfo struct {
 	// the bound on one tool call in this agent's loop. Nil inherits the
 	// top-level value; 0 disables the bound.
 	ToolCallTimeoutSeconds *int `yaml:"toolCallTimeoutSeconds,omitempty"`
+	// SelfCompact mirrors config.Agent.SelfCompact: whether the agent gets
+	// the compact_session tool, and its token floor. Nil when unset.
+	SelfCompact *config.SelfCompact `yaml:"selfCompact,omitempty"`
 	// LangfusePromptPath references this agent's system prompt in Langfuse
 	// Prompt Management instead of carrying its text. For a markdown agent
 	// it is a frontmatter key and the body must be empty — the body IS the
@@ -212,6 +215,9 @@ func newRegistry() Registry {
 		}
 		if a.ToolCallTimeoutSeconds != nil {
 			args = append(args, "toolCallTimeoutSeconds", *a.ToolCallTimeoutSeconds)
+		}
+		if a.SelfCompact != nil && a.SelfCompact.Enabled {
+			args = append(args, "selfCompactMinTokens", a.SelfCompact.MinTokens)
 		}
 		logging.Info("Agent discovered", args...)
 	}
@@ -492,6 +498,7 @@ func registerBuiltins(agents map[string]AgentInfo, cfg *config.Config) {
 			b.CompactionThreshold = agentCfg.CompactionThreshold
 			b.SummarizerMaxInputTokens = agentCfg.SummarizerMaxInputTokens
 			b.ToolCallTimeoutSeconds = agentCfg.ToolCallTimeoutSeconds
+			b.SelfCompact = agentCfg.SelfCompact
 		}
 		agents[b.ID] = b
 	}
@@ -568,6 +575,9 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 		}
 		if agentCfg.ToolCallTimeoutSeconds != nil {
 			existing.ToolCallTimeoutSeconds = agentCfg.ToolCallTimeoutSeconds
+		}
+		if agentCfg.SelfCompact != nil {
+			existing.SelfCompact = agentCfg.SelfCompact
 		}
 		if agentCfg.Name != "" {
 			existing.Name = agentCfg.Name
@@ -701,6 +711,9 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 	}
 	if md.ToolCallTimeoutSeconds != nil {
 		existing.ToolCallTimeoutSeconds = md.ToolCallTimeoutSeconds
+	}
+	if md.SelfCompact != nil {
+		existing.SelfCompact = md.SelfCompact
 	}
 	// As in applyConfigOverrides: a prompt source replaces the source, so
 	// the two can never both be set on one registry entry.
@@ -1084,6 +1097,11 @@ func parseAgentMarkdown(path string) (*AgentInfo, error) {
 		logging.Warn("invalid toolCallTimeoutSeconds in agent frontmatter, must not be negative; ignoring it",
 			"agent", baseName, "path", path, "tool_call_timeout_seconds", *agent.ToolCallTimeoutSeconds)
 		agent.ToolCallTimeoutSeconds = nil
+	}
+	if sc, ok := config.ValidSelfCompact(agent.SelfCompact); !ok {
+		logging.Warn("invalid selfCompact.minTokens in agent frontmatter, must not be negative; using no floor",
+			"agent", baseName, "path", path, "min_tokens", agent.SelfCompact.MinTokens)
+		agent.SelfCompact = sc
 	}
 	agent.Prompt = body
 	agent.Location = path

@@ -281,6 +281,20 @@ func NewToolSet(
 		}
 	}
 
+	// compact_session is opt-in through selfCompact.enabled, not through the
+	// tools map, which can still switch it off. Never deferred: its whole
+	// point is to be at hand when a task ends.
+	if sc := selfCompactSettings(info); sc.Enabled {
+		switch {
+		case info.Mode != config.AgentModeAgent:
+			logging.Warn("selfCompact is only available to primary agents; ignoring it", "agent", agentID)
+		case !reg.IsToolEnabled(agentID, tools.CompactSessionToolName):
+			logging.Warn("selfCompact is enabled but the agent's tools exclude compact_session; the tool is not registered", "agent", agentID)
+		default:
+			result <- tools.NewCompactSessionTool(sc.MinTokens)
+		}
+	}
+
 	// Workspace-defined CLI tools (docs/cli-tools.md): one native tool per
 	// valid manifest. `grant: explicit` (the default) needs the agent to
 	// name the tool — a bare "*" does not count, exactly like the cron
@@ -394,6 +408,9 @@ func (a *agent) resolveTools() []tools.BaseTool {
 		for _, t := range toolSet {
 			if ts, ok := t.(*tools.ToolSearchTool); ok {
 				ts.BindToolset(toolSet)
+			}
+			if cs, ok := t.(*tools.CompactSessionTool); ok {
+				cs.BindCounter(a.sessionContextTokens)
 			}
 		}
 		if len(deferredNames) > 0 {

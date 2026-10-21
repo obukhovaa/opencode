@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sync"
 )
 
 // CompletionInput is the contract for invoking EnqueueTaskCompletion.
@@ -60,6 +61,8 @@ type CompletionInput struct {
 //     IsSessionBusy. Busy sessions do NOT get a fresh Run kicked off;
 //     the in-flight Run will pick up the new messages on its next
 //     iteration of message list refresh.
+//     The skipped resume is recorded (TakeSkippedResume) for a run that
+//     holds the session past its turn, which starts it on release.
 func EnqueueTaskCompletion(ctx context.Context, in CompletionInput) error {
 	if in.SessionID == "" {
 		return errors.New("task: EnqueueTaskCompletion missing session id")
@@ -121,18 +124,66 @@ func EnqueueTaskCompletion(ctx context.Context, in CompletionInput) error {
 	if tk != nil && tk.FlowOwned {
 		return nil
 	}
-	if !deps.IsSessionBusy(in.SessionID) {
-		// The resumed turn works for whoever spawned the task, so its
-		// telemetry keeps that turn's requester.
-		requester := ""
-		var jobArgs map[string]any
-		if tk != nil {
-			requester = tk.Requester
-			jobArgs = tk.JobArgs
-		}
-		deps.ResumeSession(in.SessionID, requester, jobArgs)
+	// The resumed turn works for whoever spawned the task, so its
+	// telemetry keeps that turn's requester and job args.
+	r := SkippedResume{ToolCallID: callID}
+	if tk != nil {
+		r.Requester, r.JobArgs = tk.Requester, tk.JobArgs
 	}
+	// Publish before checking the slot. If its owner releases and takes the
+	// record concurrently, only the consumer that takes it starts a resume.
+	// Recording after a busy check could strand it after the owner's handoff.
+	skippedResumes.Store(in.SessionID, r)
+	if !deps.IsSessionBusy(in.SessionID) {
+		if pending, ok := TakeSkippedResume(in.SessionID); ok {
+			deps.ResumeSession(in.SessionID, pending.Requester, pending.JobArgs)
+		}
+		return nil
+	}
+	// Busy: remember the skipped resume. A run that keeps its session past
+	// the end of its turn (the agent's post-turn compaction) takes it once
+	// it lets the session go, so the completion is not left unanswered.
 	return nil
+}
+
+// SkippedResume is the auto-resume a completion skipped because its session
+// was busy: the requester and job args the resumed turn would have carried.
+type SkippedResume struct {
+	// ToolCallID identifies the synthetic completion so the releasing run
+	// can distinguish one it already observed from one that still needs work.
+	ToolCallID string
+	Requester  string
+	JobArgs    map[string]any
+}
+
+// skippedResumes holds, per session, the SkippedResume of the latest
+// completion whose auto-resume was skipped because the session was busy: at
+// most one entry per session, cleared by the next resume or
+// TakeSkippedResume.
+var skippedResumes sync.Map
+
+// TakeSkippedResume returns and clears the auto-resume a completion skipped
+// on sessionID because the session was busy. ok is false when none was
+// skipped since the last call.
+func TakeSkippedResume(sessionID string) (SkippedResume, bool) {
+	v, ok := skippedResumes.LoadAndDelete(sessionID)
+	if !ok {
+		return SkippedResume{}, false
+	}
+	r, _ := v.(SkippedResume)
+	return r, true
+}
+
+// ResumeIfIdle starts the auto-resume a completion would have started had it
+// found the session idle. False when the session is busy or no deps are
+// wired.
+func ResumeIfIdle(sessionID string, r SkippedResume) bool {
+	deps := getDeps()
+	if deps == nil || deps.IsSessionBusy(sessionID) {
+		return false
+	}
+	deps.ResumeSession(sessionID, r.Requester, r.JobArgs)
+	return true
 }
 
 // registeredTask returns the registry entry for taskID, or nil for an
