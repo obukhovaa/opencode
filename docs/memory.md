@@ -20,7 +20,7 @@ Format v1 is shared with Piano Developer's `scripts/mem-sync` CLI:
 
 ```text
 ~/.agents/memory/
-  store.json                         # {"version":1}
+  store.json                         # {"version":1,"store_id":"persistent-random-id"}
   aliases.json                       # optional canonical-ID aliases
   projects/<sha256-hex-of-id>/
     project.json                     # {"version":1,"id":"git:host/org/repo","cwds":[...]}

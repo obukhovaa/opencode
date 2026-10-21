@@ -194,7 +194,12 @@ func Run(ctx context.Context, directory string, p Params) (Result, error) {
 	}
 	defer lock.Release()
 	if data, err := readFile(root, "store.json"); os.IsNotExist(err) {
-		if err := writeFile(root, "store.json", []byte("{\"version\":1}\n")); err != nil {
+		var id [16]byte
+		if _, err := rand.Read(id[:]); err != nil {
+			return Result{}, err
+		}
+		manifest := fmt.Sprintf("{\"version\":1,\"store_id\":%q}\n", hex.EncodeToString(id[:]))
+		if err := writeFile(root, "store.json", []byte(manifest)); err != nil {
 			return Result{}, err
 		}
 	} else if err != nil {
