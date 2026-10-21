@@ -59,6 +59,9 @@ func (c *stubCrons) ListActive(context.Context) ([]cron.CronJob, error) { return
 
 type isolationSetup struct {
 	isolate bool
+	// unset leaves router.isolateExternalSessions out of the config, so
+	// the default applies; isolate is then ignored.
+	unset bool
 	// currentExternal also binds the caller's own session S1 to an
 	// external peer.
 	currentExternal bool
@@ -107,7 +110,9 @@ func newIsolationTestService(t *testing.T, tc isolationSetup) (*Service, *channe
 			t.Fatalf("UpsertBinding %s: %v", b.PeerID, err)
 		}
 	}
-	svc.cfg.IsolateExternalSessions = tc.isolate
+	if !tc.unset {
+		svc.cfg.IsolateExternalSessions = &tc.isolate
+	}
 	lookups := &channelLookupStore{Store: svc.store, err: tc.lookupErr}
 	svc.store = lookups
 	return svc, lookups
@@ -160,6 +165,13 @@ func TestCmdSessionsIsolatesExternalSessions(t *testing.T) {
 			wantLookups: 1,
 		},
 		{
+			name:        "unset is on by default",
+			setup:       isolationSetup{unset: true},
+			want:        []string{"★ S1", "Chat B", "Chat C"},
+			wantNot:     []string{"Tenant A plan", "Tenant D plan", "Tenant E review", "Tenant E draft", "ab01-ext", "cd01-ext"},
+			wantLookups: 1,
+		},
+		{
 			name:        "on keeps the current session though external-bound",
 			setup:       isolationSetup{isolate: true, currentExternal: true},
 			want:        []string{"★ S1", "Chat B"},
@@ -204,6 +216,14 @@ func TestCmdSessionSwitchIsolatesExternalSessions(t *testing.T) {
 		{
 			name:      "on refuses with the ordinary no-match reply",
 			setup:     isolationSetup{isolate: true},
+			args:      "cd",
+			want:      []string{`No session matches prefix "cd"`},
+			wantNot:   []string{"Tenant D plan", "cd01-ext"},
+			wantBound: "S1",
+		},
+		{
+			name:      "unset refuses by default",
+			setup:     isolationSetup{unset: true},
 			args:      "cd",
 			want:      []string{`No session matches prefix "cd"`},
 			wantNot:   []string{"Tenant D plan", "cd01-ext"},
@@ -354,15 +374,17 @@ func TestCmdCronsIsolatesExternalSessions(t *testing.T) {
 	}
 }
 
-func TestExternalSessionsIsolatedDefaultsOff(t *testing.T) {
+func TestExternalSessionsIsolatedDefaultsOn(t *testing.T) {
+	on, off := true, false
 	tests := []struct {
 		name string
 		cfg  *bridge.Config
 		want bool
 	}{
-		{"nil config", nil, false},
-		{"unset", &bridge.Config{}, false},
-		{"on", &bridge.Config{IsolateExternalSessions: true}, true},
+		{"nil config", nil, true},
+		{"unset", &bridge.Config{}, true},
+		{"on", &bridge.Config{IsolateExternalSessions: &on}, true},
+		{"off", &bridge.Config{IsolateExternalSessions: &off}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

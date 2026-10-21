@@ -92,13 +92,14 @@ type Config struct {
 	// conversations. Each peer on the "external" channel is a separate
 	// conversation, often of another tenant, while the chat session
 	// commands (/sessions, /session <id-prefix>, /crons) work over every
-	// session of the project. When true, those commands neither show nor
-	// switch into a session of an external conversation's run — one that
-	// holds a binding on the external channel, or shares its root session
-	// with one that does (the step sessions of one flow run) — except the
-	// caller's own current session. Off by default: the commands then
-	// behave exactly as before.
-	IsolateExternalSessions bool `json:"isolateExternalSessions,omitempty"`
+	// session of the project. Unless false, those commands neither show
+	// nor switch into a session of an external conversation's run — one
+	// that holds a binding on the external channel, or shares its root
+	// session with one that does (the step sessions of one flow run) —
+	// except the caller's own current session. A *bool so unset means on,
+	// as router_send keeps chat turns out of external conversations
+	// unconditionally; false restores the unscoped commands.
+	IsolateExternalSessions *bool `json:"isolateExternalSessions,omitempty"`
 }
 
 // HeartbeatReminderEnabled reports whether the heartbeat setup reminder
@@ -108,9 +109,9 @@ func (c *Config) HeartbeatReminderEnabled() bool {
 }
 
 // ExternalSessionsIsolated reports whether chat session commands hide
-// external-bound sessions. A nil config means off.
+// external-bound sessions. A nil config or an unset field both mean on.
 func (c *Config) ExternalSessionsIsolated() bool {
-	return c != nil && c.IsolateExternalSessions
+	return c == nil || c.IsolateExternalSessions == nil || *c.IsolateExternalSessions
 }
 
 // ChannelsConfig holds per-platform channel sections.

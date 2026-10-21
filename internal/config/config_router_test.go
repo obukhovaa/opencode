@@ -114,14 +114,14 @@ func TestConfig_RouterHeartbeatReminderViperRoundTrip(t *testing.T) {
 
 // TestConfig_RouterIsolateExternalSessionsViperRoundTrip locks in that
 // `router.isolateExternalSessions` survives the real loader path (viper
-// case-folds keys) and stays off when omitted.
+// case-folds keys) and is on when omitted.
 func TestConfig_RouterIsolateExternalSessionsViperRoundTrip(t *testing.T) {
 	tests := []struct {
 		name string
 		body string
 		want bool
 	}{
-		{"omitted", `{"router": {"toolUpdatesEnabled": true}}`, false},
+		{"omitted", `{"router": {"toolUpdatesEnabled": true}}`, true},
 		{"true", `{"router": {"isolateExternalSessions": true}}`, true},
 		{"false", `{"router": {"isolateExternalSessions": false}}`, false},
 	}

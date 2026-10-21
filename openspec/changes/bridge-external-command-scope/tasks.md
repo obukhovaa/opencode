@@ -11,8 +11,8 @@
 
 ## 3. Chat-side isolation on by default
 
-- [ ] 3.1 `IsolateExternalSessions` becomes `*bool`; `ExternalSessionsIsolated()` is true for a nil config, an unset field or `true`; schema default `true` and regenerated schema; viper round-trip covers unset/true/false. Verify with `go test ./internal/config/... ./internal/bridge/...` and `make schema-check`.
-- [ ] 3.2 Update the isolation tests and `docs/bridge.md` for the new default; verify the "unset hides `E1`" and "`false` lists `E1`" cases pass.
+- [x] 3.1 `IsolateExternalSessions` becomes `*bool`; `ExternalSessionsIsolated()` is true for a nil config, an unset field or `true`; schema default `true` and regenerated schema; viper round-trip covers unset/true/false. Verify with `go test ./internal/config/... ./internal/bridge/...` and `make schema-check`.
+- [x] 3.2 Update the isolation tests and `docs/bridge.md` for the new default; verify the "unset hides `E1`" and "`false` lists `E1`" cases pass.
 
 ## 4. Integration
 
