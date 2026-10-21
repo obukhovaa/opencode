@@ -30,6 +30,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/session"
 	"github.com/opencode-ai/opencode/internal/task"
 	"github.com/opencode-ai/opencode/internal/todo"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 	"github.com/opencode-ai/opencode/internal/tui/theme"
 )
 
@@ -485,6 +486,7 @@ func (app *App) forceKillAllChildProcesses() {
 	currentPID := os.Getpid()
 
 	cmd := exec.Command("pgrep", "-P", strconv.Itoa(currentPID))
+	cmd.Env = toolenv.Environ()
 	output, err := cmd.Output()
 	if err != nil {
 		return

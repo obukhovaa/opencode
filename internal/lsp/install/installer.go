@@ -106,6 +106,7 @@ func ResolveCommand(ctx context.Context, server ResolvedServer, disableDownload 
 func logServerVersion(binaryPath, serverID string) {
 	for _, flag := range []string{"--version", "version", "-v"} {
 		cmd := exec.Command(binaryPath, flag)
+		cmd.Env = toolenv.Environ()
 		output, err := cmd.Output()
 		if err == nil {
 			version := strings.TrimSpace(strings.Split(string(output), "\n")[0])
@@ -314,6 +315,7 @@ func findMatchingAsset(assets []struct {
 
 func extractTarGz(src, destDir, binaryName string) error {
 	cmd := exec.Command("tar", "xzf", src, "-C", destDir)
+	cmd.Env = toolenv.Environ()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tar extraction failed: %w\noutput: %s", err, string(output))
@@ -340,6 +342,7 @@ func extractTarGz(src, destDir, binaryName string) error {
 
 func extractZip(src, destDir, binaryName string) error {
 	cmd := exec.Command("unzip", "-o", src, "-d", destDir)
+	cmd.Env = toolenv.Environ()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("unzip failed: %w\noutput: %s", err, string(output))

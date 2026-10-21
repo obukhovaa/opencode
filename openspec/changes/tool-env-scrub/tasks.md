@@ -23,4 +23,6 @@
 
 ## Workflow follow-up
 
+- [x] Review follow-up: filter implicit environment inheritance in search helpers, Git probes, LSP version/archive helpers, the external editor and process discovery. Runtime regression tests cover ripgrep's configured preprocessor, rg/fzf helpers and LSP helper processes; the preprocessor test fails against the original unfiltered launch.
+
 - Archive the change into `openspec/specs/` after review and merge.

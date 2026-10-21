@@ -15,6 +15,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/tools/shell"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/skill"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 const (
@@ -195,6 +196,7 @@ func sampleSkillFilesWithRipgrep(dir string, limit int) ([]string, error) {
 	}
 
 	cmd := exec.Command(rgPath, "--files", "--hidden", dir)
+	cmd.Env = toolenv.Environ()
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err

@@ -15,6 +15,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/permission"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 type LSParams struct {
@@ -177,6 +178,7 @@ func listDirectoryWithRipgrep(ctx context.Context, initialPath string, ignorePat
 	args = append(args, initialPath)
 
 	cmd := exec.CommandContext(ctx, rgPath, args...)
+	cmd.Env = toolenv.Environ()
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

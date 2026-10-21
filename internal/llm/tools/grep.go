@@ -21,6 +21,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/fileutil"
 	"github.com/opencode-ai/opencode/internal/permission"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 type GrepParams struct {
@@ -277,6 +278,7 @@ func searchWithRipgrepModes(ctx context.Context, pattern, path string, params *G
 	args = append(args, path)
 
 	cmd := exec.CommandContext(ctx, "rg", args...)
+	cmd.Env = toolenv.Environ()
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
