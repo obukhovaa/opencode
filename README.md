@@ -477,6 +477,12 @@ Names are case-sensitive. A value written into one child's own config (an MCP or
 LSP server's `env`, a literal in a CLI tool's `env.set`) is still passed to that
 child; `env.pass` and `${env.NAME}` cannot reach a denied name.
 
+On Linux, when OpenCode starts with any denied variable set, it also marks its
+process non-dumpable, so a child running as the same user cannot read the values
+back from `/proc/<pid>/environ`. That also disables core dumps and same-user
+debugger attach for the OpenCode process; with no denied variable set, nothing
+changes.
+
 > **Behavior change.** A hook or MCP server that read `OPENCODE_SERVER_PASSWORD` or
 > `OPENCODE_MYSQL_DSN` from its inherited environment no longer sees it. Give an MCP
 > server the value in its own `env` instead.

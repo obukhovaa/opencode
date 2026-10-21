@@ -55,6 +55,7 @@ protocol stream.`,
 		if err != nil {
 			return err
 		}
+		hardenToolEnv()
 
 		// ACP is headless: log to stderr so the user sees output and
 		// stdout stays clean for the JSON-RPC protocol stream.

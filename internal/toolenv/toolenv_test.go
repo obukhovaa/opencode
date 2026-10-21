@@ -1,6 +1,7 @@
 package toolenv
 
 import (
+	"os"
 	"reflect"
 	"testing"
 )
@@ -119,5 +120,19 @@ func TestPresent(t *testing.T) {
 	}
 	if got := Present([]string{"PATH=/usr/bin"}, Builtin); got != nil {
 		t.Fatalf("Present = %q, want nil", got)
+	}
+}
+
+func TestHardenProcess_NothingToHide(t *testing.T) {
+	SetConfigured(nil)
+	t.Setenv(EnvVar, "")
+	for _, b := range Builtin {
+		if _, ok := os.LookupEnv(b); ok {
+			t.Skipf("%s is set in the test environment", b)
+		}
+	}
+	names, hardened, err := HardenProcess()
+	if err != nil || hardened || names != nil {
+		t.Fatalf("HardenProcess() = %q, %v, %v; want nil, false, nil", names, hardened, err)
 	}
 }

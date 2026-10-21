@@ -115,6 +115,7 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 		if err != nil {
 			return err
 		}
+		hardenToolEnv()
 
 		// Headless mode: log to stderr so the user sees output.
 		level := slog.LevelInfo

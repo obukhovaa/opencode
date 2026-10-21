@@ -131,6 +131,7 @@ to assist developers in writing, debugging, and understanding code directly from
 			}
 			return err
 		}
+		hardenToolEnv()
 
 		// Initialize Langfuse tracing if enabled
 		if cfg.Telemetry != nil && cfg.Telemetry.Langfuse != nil && cfg.Telemetry.Langfuse.Enabled {

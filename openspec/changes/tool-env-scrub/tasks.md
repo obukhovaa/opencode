@@ -14,7 +14,7 @@
 
 ## 3. Own-process hardening
 
-- [ ] 3.1 On Linux, at startup, set `PR_SET_DUMPABLE=0` when any variable in opencode's environment matches the deny list, with a no-op on other platforms; verify a Linux-tagged test that a child cannot read the parent's `/proc/<pid>/environ` after hardening, and that the decision function returns false with no denied variable present
+- [x] 3.1 On Linux, at startup, set `PR_SET_DUMPABLE=0` when any variable in opencode's environment matches the deny list, with a no-op on other platforms; verify a Linux-tagged test that a child cannot read the parent's `/proc/<pid>/environ` after hardening, and that the decision function returns false with no denied variable present
 
 ## 4. Integration
 
