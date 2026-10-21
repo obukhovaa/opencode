@@ -1158,6 +1158,19 @@
           "properties": {
             "external": {
               "description": "External relay channel configuration.",
+              "properties": {
+                "commands": {
+                  "default": [
+                    "abort",
+                    "reset"
+                  ],
+                  "description": "Chat commands a peer on the external channel may run (each external peer is one end user's conversation). A known command off the list gets a refusal reply; text that is not a command still reaches the agent. An alias counts as the command it stands for (stop and cancel are abort, new is reset). Session commands from an external peer only ever address its own session, whatever this list says. Unset or empty means [\"abort\", \"reset\"].",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
               "type": "object"
             },
             "mattermost": {

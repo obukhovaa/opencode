@@ -182,7 +182,8 @@ A relay channel with **no chat platform of its own**. Outbound messages and ques
       "relayUrl": "https://orchestrator.example.com",
       "relayCredential": "<SHARED_SECRET>"
     }
-  ]
+  ],
+  "commands": ["abort", "reset"]
 }
 ```
 
@@ -191,6 +192,7 @@ A relay channel with **no chat platform of its own**. Outbound messages and ques
 - Inbound is never received directly. It arrives via the orchestrator's forward to `/router/inbound`, the same as any channel in mediated-inbound mode, so no single-listener lock is taken for this channel.
 - Relay frames are authenticated with HTTP Basic (the credential as password) and `202 Accepted` is the only success status. Attachments relay as **metadata only** (`fileName`, `mimeType`, `size`) — never content.
 - Groups / `@mention` gating don't apply; `POST /router/config/groups` rejects this channel explicitly.
+- **Chat commands.** Each external peer is one end user's conversation, so it runs only the commands in `commands` (default `["abort", "reset"]`, which also covers `/stop`, `/cancel` and `/new`). Any other known command gets the reply `` `/<cmd>` is not available on this channel. `` and runs nothing; text that is not a known command still goes to the agent. An alias counts as the command it stands for, and entries are matched case-insensitively with or without a leading `/`. Unset or empty means the default. Whatever the list says, session commands from an external peer only ever address its own session (see [Chat commands](#chat-commands)).
 - **Run progress.** At `compact` tool-update verbosity the relay gets each state of the run's progress card as a frame with `kind: "progress"` and a `progress` object — `status` (`running`, then `ok` or `error` once), `toolsDone`, `failed`, `running`, `currentTool`, `lastFailedTool`, `lastFailureReason`, `elapsedMs`, every key always present (`running` is `0` and `currentTool` empty on a terminal frame). Running updates are paced like the card (at most one every 2s, coalesced); the terminal state goes out as soon as the run ends. The consumer renders it in its own words. Failures travel in the frame, so no `✗` text line is sent for them: like the card, a frame counts every failure in `failed` but names only the most recent one, so when several calls fail between two frames only the last one's tool and reason are named. If the relay rejects a frame (it must accept the `progress` kind before a daemon sends it — c2-agent 0.4.6 or later), that frame's failures fall back to text lines and the rejection is logged at WARN and recorded as the adapter's last error. Delivery is best-effort: a failed frame is not retried, so a run can end without a terminal frame (the bridge stopped, or that send failed); treat the run's final reply as its authoritative end.
 - **Peer attribution.** Every inbound turn runs with its peer (channel, identity, peer id from the authenticated request) on the run context; async subagents inherit it. For `external` peers the agent writes one synthetic `<system-reminder>` user message ahead of the turn's own message, naming the peer the session serves, so the model knows which tenant/conversation it works for without the integration putting the id into the message text. It is written once per history and again after a peer change or a compaction drops it. The stored user text and `question` answers stay exactly what was sent.
 - **MCP `peerHeader`.** An sse/http MCP server that declares `"peerHeader": "X-Peer-Id"` receives the calling turn's peer id in that header (any channel, not only `external`), replacing a static header of the same name. Calls made outside a bridge turn (cron, a task's auto-resumed turn) send no value beyond the static config, and a peer id that net/http cannot send as a header value (a control character) is omitted rather than failing the call.
@@ -295,7 +297,7 @@ Returns `{status, adapters[<channel:identity>]}` with per-adapter `status`/`last
 
 ## Chat commands
 
-Once a peer is bound (manually or via the first inbound), the following commands work in any of the chat surfaces:
+Once a peer is bound (manually or via the first inbound), the following commands work in any of the chat surfaces. On the `external` channel only `/stop` and `/reset` (and their aliases) run by default; see `router.channels.external.commands` under [External](#external).
 
 | Command | Description |
 |---|---|

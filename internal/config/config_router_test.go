@@ -151,3 +151,54 @@ func TestConfig_RouterIsolateExternalSessionsViperRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// TestConfig_RouterExternalCommandsViperRoundTrip locks in that
+// `router.channels.external.commands` survives the real loader path and
+// that an omitted or empty list keeps the default allowlist.
+func TestConfig_RouterExternalCommandsViperRoundTrip(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		allowed []string
+		refused []string
+	}{
+		{"omitted", `{"router": {"channels": {"external": {"enabled": true}}}}`,
+			[]string{"stop", "abort", "cancel", "reset", "new"}, []string{"sessions", "session", "agent", "model", "help"}},
+		{"empty", `{"router": {"channels": {"external": {"enabled": true, "commands": []}}}}`,
+			[]string{"stop", "reset"}, []string{"sessions", "help"}},
+		{"configured", `{"router": {"channels": {"external": {"enabled": true, "commands": ["/Stop", "help"]}}}}`,
+			[]string{"stop", "abort", "cancel", "help"}, []string{"reset", "new", "sessions"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, ".opencode.json"), []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			v := viper.New()
+			v.SetConfigName(".opencode")
+			v.SetConfigType("json")
+			v.AddConfigPath(dir)
+			if err := v.ReadInConfig(); err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			var cfg Config
+			if err := v.Unmarshal(&cfg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if cfg.Router == nil || cfg.Router.Channels.External == nil {
+				t.Fatal("external channel config was dropped by the loader")
+			}
+			for _, cmd := range tc.allowed {
+				if !cfg.Router.ExternalCommandAllowed(cmd) {
+					t.Errorf("/%s refused, want allowed", cmd)
+				}
+			}
+			for _, cmd := range tc.refused {
+				if cfg.Router.ExternalCommandAllowed(cmd) {
+					t.Errorf("/%s allowed, want refused", cmd)
+				}
+			}
+		})
+	}
+}

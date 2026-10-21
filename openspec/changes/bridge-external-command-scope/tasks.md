@@ -5,9 +5,9 @@
 
 ## 2. External channel command allowlist
 
-- [ ] 2.1 `ExternalChannelConfig.Commands` (`router.channels.external.commands`), a nil-safe accessor returning the canonical allowed set (default `abort`, `reset`; aliases folded; entries trimmed, lower-cased, leading `/` dropped); schema entry in `cmd/schema/main.go` and regenerated `opencode-schema.json`. Verify with `make schema-check`, `go test ./cmd/schema/...`, and a viper round-trip test under `internal/config/`.
-- [ ] 2.2 `handleChatCommand` refuses a known command not on the external allowlist with a reply naming the command, runs allowed ones, and leaves unknown commands to fall through; `/help` on `external` lists only allowed commands. Verify with a bridge test driving `dispatchInbound`/`handleChatCommand`: `/sessions`, `/session`, `/agent`, `/model`, `/help` refused by default with no binding change and no agent/model change; `/stop`, `/cancel`, `/reset`, `/new` run; a configured list is honoured; Slack is unaffected; `/etc/hosts …` falls through.
-- [ ] 2.3 `docs/bridge.md`: the new field in the router/external config table and the chat-commands section.
+- [x] 2.1 `ExternalChannelConfig.Commands` (`router.channels.external.commands`), a nil-safe accessor returning the canonical allowed set (default `abort`, `reset`; aliases folded; entries trimmed, lower-cased, leading `/` dropped); schema entry in `cmd/schema/main.go` and regenerated `opencode-schema.json`. Verify with `make schema-check`, `go test ./cmd/schema/...`, and a viper round-trip test under `internal/config/`.
+- [x] 2.2 `handleChatCommand` refuses a known command not on the external allowlist with a reply naming the command, runs allowed ones, and leaves unknown commands to fall through; `/help` on `external` lists only allowed commands. Verify with a bridge test driving `dispatchInbound`/`handleChatCommand`: `/sessions`, `/session`, `/agent`, `/model`, `/help` refused by default with no binding change and no agent/model change; `/stop`, `/cancel`, `/reset`, `/new` run; a configured list is honoured; Slack is unaffected; `/etc/hosts …` falls through.
+- [x] 2.3 `docs/bridge.md`: the new field in the router/external config table and the chat-commands section.
 
 ## 3. Chat-side isolation on by default
 

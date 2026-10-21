@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
@@ -305,6 +306,12 @@ func (s *Service) closeDispatcherIfEmpty(ctx context.Context, sessionID string) 
 // per bridge-adapter-scoped-commands. Unknown commands on a channel are
 // treated identically to unknown commands globally — the inbound falls
 // through to the agent as a regular prompt.
+//
+// On the external channel a known command runs only when it is on the
+// channel's allowlist (externalCommandAllowed); any other is refused with
+// a reply and runs nothing. Each external peer is one end user's
+// conversation, which must not list or bind other sessions or change
+// process-wide state such as the active agent or model (CD-5331).
 func (s *Service) handleChatCommand(ctx context.Context, in bridge.Inbound) *bridge.CommandReply {
 	if !s.commandAvailableForChannel(in.Command, in.Peer.Channel) {
 		return nil
@@ -314,7 +321,22 @@ func (s *Service) handleChatCommand(ctx context.Context, in bridge.Inbound) *bri
 	if !ok {
 		return nil
 	}
+	if in.Peer.Channel == externalChannel && !s.externalCommandAllowed(in.Command) {
+		logging.Info("bridge: refused a chat command on the external channel",
+			"command", in.Command, "identity", in.Peer.Identity)
+		return replyText(fmt.Sprintf("`/%s` is not available on this channel.", in.Command))
+	}
 	return h(ctx, in)
+}
+
+// externalCommandAllowed reports whether a peer on the external channel
+// may run cmd under router.channels.external.commands (or its default),
+// reading the live config under cfgMu: the identity handlers replace
+// cfg.Channels.External at runtime.
+func (s *Service) externalCommandAllowed(cmd string) bool {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg.ExternalCommandAllowed(cmd)
 }
 
 // commandAvailableForChannel implements adapter-scoped command filtering

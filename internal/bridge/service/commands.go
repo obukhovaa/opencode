@@ -823,15 +823,26 @@ func (s *Service) helpEntriesForChannel(channel string) []helpEntry {
 	if channel == "" || channel == "telegram" {
 		return all
 	}
-	// Non-Telegram channels: drop /pair.
+	// Non-Telegram channels: drop /pair. The external channel lists only
+	// the commands on its allowlist.
 	out := make([]helpEntry, 0, len(all)-1)
 	for _, e := range all {
 		if e.Cmd == "/pair" {
 			continue
 		}
+		if channel == externalChannel && !s.externalCommandAllowed(helpEntryCommand(e)) {
+			continue
+		}
 		out = append(out, e)
 	}
 	return out
+}
+
+// helpEntryCommand is the command name of a help entry: "/agent [name]"
+// and "/stop, /cancel" give "agent" and "stop".
+func helpEntryCommand(e helpEntry) string {
+	name, _, _ := strings.Cut(strings.TrimPrefix(e.Cmd, "/"), " ")
+	return strings.TrimSuffix(name, ",")
 }
 
 // cmdHelp: list every command available on the current channel.
