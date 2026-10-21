@@ -12,7 +12,7 @@ The runtime SHALL use existing file tools for memory and SHALL NOT register a me
 - **THEN** the agent's tool inventory and provider tool definitions remain unchanged
 
 ### Requirement: Capability-aware reminder
-The system reminder SHALL describe only reading and/or writing operations supported by the agent's available tools and permissions. Agents without usable file capabilities SHALL receive no memory reminder. Automatic index loading MUST NOT bypass denied or approval-required reads.
+The system reminder SHALL describe only reading and/or writing operations supported by the agent's available tools and permissions. Agents without usable file capabilities SHALL receive no memory reminder. Automatic index loading MUST NOT bypass denied or approval-required reads and MUST verify that the opened index matches the canonical path whose permissions were checked.
 
 #### Scenario: Reader only
 - **WHEN** the agent can read but cannot write memory
@@ -25,6 +25,14 @@ The system reminder SHALL describe only reading and/or writing operations suppor
 #### Scenario: Bash or read and write
 - **WHEN** the agent can use ordinary tools or permitted Bash to read and write memory
 - **THEN** it receives the full read/maintain instructions without another tool definition
+
+#### Scenario: Store root changes after authorization
+- **WHEN** an authorized store root is replaced or its symlink is retargeted before the index is opened
+- **THEN** an index from a different canonical path is not preloaded, while an unchanged authorized symlink root remains supported
+
+#### Scenario: Index is created after capability resolution
+- **WHEN** the index did not exist when capabilities and permissions were resolved
+- **THEN** retrieval guidance remains available, but automatic loading waits for a later resolution that authorizes the new index
 
 ### Requirement: Bounded project index
 Only the matching project's MEMORY.md index SHALL be automatically loaded, with at most 200 lines and 25 KiB. Detailed topic bodies SHALL remain on disk until explicitly retrieved. The snapshot SHALL be inserted at most once per active session history and refreshed for a new session or after compaction removes it.
@@ -54,3 +62,7 @@ The feature SHALL retain configurable roots, Git identities shared by worktrees,
 #### Scenario: Harness working on another repository
 - **WHEN** work concerns a repository other than the process workspace
 - **THEN** the reminder directs the agent to that repository's project memory instead of treating the harness index as global knowledge
+
+#### Scenario: Git remotes use distinct nondefault ports
+- **WHEN** Git remotes have the same host and repository path but differ by a nondefault port for their URL scheme
+- **THEN** their project identities remain distinct; only the default port of each remote's own scheme is omitted

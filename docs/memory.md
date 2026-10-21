@@ -9,7 +9,7 @@ Enable project memory to carry useful knowledge across sessions sharing a filesy
 }
 ```
 
-Keep each agent's existing grants; do not replace its list with this example. The reminder adapts to those grants and permissions. A reader gets retrieval guidance, a writer gets authoring guidance, and an agent with both capabilities or permitted Bash gets both. An agent without relevant capabilities gets no reminder. Write-only agents do not receive existing memory contents or instructions to overwrite an unread index. Denied or approval-required reads are never performed automatically; the agent can use its ordinary tools and approval flow where allowed.
+Keep each agent's existing grants; do not replace its list with this example. The reminder adapts to those grants and permissions. A reader gets retrieval guidance, a writer gets authoring guidance, and an agent with both capabilities or permitted Bash gets both. An agent without relevant capabilities gets no reminder. Write-only agents do not receive existing memory contents or instructions to overwrite an unread index. Denied or approval-required reads are never performed automatically; the agent can use its ordinary tools and approval flow where allowed. Automatic loading verifies the opened index against its permission-checked canonical path, so replacing the store root cannot redirect a snapshot to another file.
 
 ## Context budget
 
