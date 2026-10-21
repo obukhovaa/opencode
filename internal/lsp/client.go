@@ -18,6 +18,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/lsp/protocol"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 	"github.com/opencode-ai/opencode/internal/version"
 )
 
@@ -59,8 +60,9 @@ type Client struct {
 
 func NewClient(ctx context.Context, command string, env map[string]string, args ...string) (*Client, error) {
 	cmd := exec.CommandContext(ctx, command, args...)
-	// Copy env and add server-specific env vars
-	cmd.Env = os.Environ()
+	// Copy the filtered env (internal/toolenv) and add the server's own
+	// configured env vars, which are passed as written.
+	cmd.Env = toolenv.Environ()
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}

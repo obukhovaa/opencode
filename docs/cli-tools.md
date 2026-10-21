@@ -182,7 +182,7 @@ The process is started directly with `prefixArgs + args` — `exec`, no `sh -c`.
 - `args.allow`, when non-empty, must match the joined vector.
 - Both lists are matched **case-insensitively** (`*!source*` also catches `!SOURCE`); permission globs keep the permission system's case-sensitive matching.
 - Arguments containing NUL are rejected.
-- `env`: inherited by default (as MCP servers do); `inherit: false` keeps PATH, HOME, TMPDIR plus `pass`; `set` adds literals last.
+- `env`: inherited by default (as MCP servers do); `inherit: false` keeps PATH, HOME, TMPDIR plus `pass`; `set` adds literals last. The parent environment is first stripped of the [tool environment deny list](../README.md#tool-environment), so a denied name reaches the tool through neither `inherit`, `pass` nor `${env.NAME}`; only a literal value in `set` is passed as written.
 - `cwd` is confined to the working directory; `timeout` kills the whole process group on expiry.
 
 A policy rejection is returned **to the model as a tool error** — the run continues and the model fixes the call. A `deny` from the permission layer below is a tool error too, with the run's circuit breaker on top; only a human rejecting an `ask` prompt ends the run (see [tool-permissions.md](tool-permissions.md#when-a-call-is-denied)).

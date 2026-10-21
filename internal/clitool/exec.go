@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/task"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 // maxCaptureBytes bounds what the executor keeps in memory per stream. It
@@ -120,7 +121,14 @@ func (m *Manifest) Exec(ctx context.Context, inv *Invocation) ExecResult {
 
 // BuildEnv shapes the child environment from the parent one according to
 // the manifest's env policy.
+//
+// The parent is first stripped of the tool environment deny list
+// (internal/toolenv), so a denied name reaches the child through neither
+// `inherit`, `env.pass` nor a `${env.NAME}` token in `env.set`. Only a
+// literal value the manifest itself writes in `env.set` is passed as written:
+// that is the operator granting it to this one tool.
 func (m *Manifest) BuildEnv(parent []string) []string {
+	parent = toolenv.Filter(parent, toolenv.DenyList())
 	parentMap := make(map[string]string, len(parent))
 	var order []string
 	for _, kv := range parent {

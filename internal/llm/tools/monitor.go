@@ -19,6 +19,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/task"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 const MonitorToolName = "monitor"
@@ -184,6 +185,7 @@ func (m *monitorTool) Run(ctx context.Context, call ToolCall) (ToolResponse, err
 	pr, pw := io.Pipe()
 	cmd := exec.Command(params.Cmd, params.Args...)
 	cmd.Dir = cwd
+	cmd.Env = toolenv.Environ()
 	cmd.Stdout = pw
 	cmd.Stderr = pw
 	// The monitored leaf becomes its own process-group leader so taskstop

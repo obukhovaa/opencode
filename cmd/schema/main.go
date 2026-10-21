@@ -624,6 +624,21 @@ func generateSchema() map[string]any {
 		"default":     false,
 	}
 
+	// Add tool environment deny list
+	schema["properties"].(map[string]any)["toolEnv"] = map[string]any{
+		"type":        "object",
+		"description": "Environment variables that the processes opencode starts (bash, background bash, monitor, CLI tools, hooks, stdio MCP and LSP servers) must not inherit. OPENCODE_SERVER_PASSWORD, OPENCODE_BRIDGE_REGISTRAR_PASSWORD and OPENCODE_MYSQL_DSN are always denied. opencode itself still reads denied variables.",
+		"properties": map[string]any{
+			"deny": map[string]any{
+				"type":        "array",
+				"description": "Extra variable names to remove, matched case-sensitively; an entry with *, ? or [ is a shell-style glob over the whole name (e.g. \"AWS_SECRET_*\"). Unioned with the built-ins and the comma-separated OPENCODE_TOOL_ENV_DENY environment variable; nothing can remove a built-in. A value written into one child's own config (an MCP or LSP server's env, a literal in a CLI tool's env.set) is still passed to that child.",
+				"items": map[string]any{
+					"type": "string",
+				},
+			},
+		},
+	}
+
 	// Add shell configuration
 	schema["properties"].(map[string]any)["shell"] = map[string]any{
 		"type":        "object",

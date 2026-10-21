@@ -192,6 +192,7 @@ func loadToolsConfig(cmd *cobra.Command) (*config.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	hardenToolEnv()
 	level := slog.LevelWarn
 	if debug {
 		level = slog.LevelDebug

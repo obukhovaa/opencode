@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/toolenv"
 )
 
 // BinDir returns the directory where auto-installed LSP binaries are stored.
@@ -105,6 +106,7 @@ func ResolveCommand(ctx context.Context, server ResolvedServer, disableDownload 
 func logServerVersion(binaryPath, serverID string) {
 	for _, flag := range []string{"--version", "version", "-v"} {
 		cmd := exec.Command(binaryPath, flag)
+		cmd.Env = toolenv.Environ()
 		output, err := cmd.Output()
 		if err == nil {
 			version := strings.TrimSpace(strings.Split(string(output), "\n")[0])
@@ -133,7 +135,7 @@ func installNpm(ctx context.Context, server ResolvedServer) error {
 
 	cmd := exec.CommandContext(ctx, npmPath, args...)
 	cmd.Dir = binDir
-	cmd.Env = os.Environ()
+	cmd.Env = toolenv.Environ()
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -156,7 +158,7 @@ func installGo(ctx context.Context, server ResolvedServer) error {
 	}
 
 	cmd := exec.CommandContext(ctx, goPath, "install", server.InstallPackage)
-	cmd.Env = append(os.Environ(), "GOBIN="+binDir)
+	cmd.Env = append(toolenv.Environ(), "GOBIN="+binDir)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -313,6 +315,7 @@ func findMatchingAsset(assets []struct {
 
 func extractTarGz(src, destDir, binaryName string) error {
 	cmd := exec.Command("tar", "xzf", src, "-C", destDir)
+	cmd.Env = toolenv.Environ()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("tar extraction failed: %w\noutput: %s", err, string(output))
@@ -339,6 +342,7 @@ func extractTarGz(src, destDir, binaryName string) error {
 
 func extractZip(src, destDir, binaryName string) error {
 	cmd := exec.Command("unzip", "-o", src, "-d", destDir)
+	cmd.Env = toolenv.Environ()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("unzip failed: %w\noutput: %s", err, string(output))
