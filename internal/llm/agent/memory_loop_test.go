@@ -23,6 +23,7 @@ const memoryLoopEntry = "MEMORY_LOOP_ENTRY"
 // tests run resolves it.
 func withProjectMemory(t *testing.T) {
 	t.Helper()
+	t.Setenv(config.MemoryHomeEnv, "")
 	root := t.TempDir()
 	dir := filepath.Join(root, "projects", memory.Key("project"), "memory")
 	if err := os.MkdirAll(dir, 0o700); err != nil {

@@ -33,6 +33,7 @@ func (r memoryRegistry) Get(string) (agentregistry.AgentInfo, bool) {
 }
 
 func TestMemoryReminderCapabilities(t *testing.T) {
+	t.Setenv(config.MemoryHomeEnv, "")
 	for _, tc := range []struct {
 		name        string
 		tools       []string
@@ -86,6 +87,7 @@ func TestMemoryReminderCapabilities(t *testing.T) {
 }
 
 func TestMemoryReminderDateAndOtherRepositories(t *testing.T) {
+	t.Setenv(config.MemoryHomeEnv, "")
 	old := memoryNow
 	memoryNow = func() time.Time { return time.Date(2026, 10, 22, 23, 30, 0, 0, time.FixedZone("x", -5*3600)) }
 	t.Cleanup(func() { memoryNow = old })
@@ -108,6 +110,7 @@ func TestMemoryReminderDateAndOtherRepositories(t *testing.T) {
 }
 
 func TestMemoryUnavailableWhenIdentityFails(t *testing.T) {
+	t.Setenv(config.MemoryHomeEnv, "")
 	root := t.TempDir()
 	os.WriteFile(filepath.Join(root, "aliases.json"), []byte("{not json"), 0600)
 	cfg := &config.Config{WorkingDir: t.TempDir(), Memory: &config.MemoryConfig{Enabled: true, Directory: root, ProjectID: "project"}}
@@ -121,6 +124,7 @@ func TestMemoryUnavailableWhenIdentityFails(t *testing.T) {
 }
 
 func TestMemoryIndexPermissionAndSnapshot(t *testing.T) {
+	t.Setenv(config.MemoryHomeEnv, "")
 	root := t.TempDir()
 	dir := filepath.Join(root, "projects", memory.Key("project"), "memory")
 	os.MkdirAll(dir, 0700)
@@ -147,6 +151,7 @@ func TestMemoryIndexPermissionAndSnapshot(t *testing.T) {
 }
 
 func TestMemoryRestrictedBashDoesNotBypassReadRules(t *testing.T) {
+	t.Setenv(config.MemoryHomeEnv, "")
 	cfg := &config.Config{WorkingDir: t.TempDir(), Memory: &config.MemoryConfig{Enabled: true, Directory: t.TempDir(), ProjectID: "project"}}
 	reg := memoryRegistry{tools: map[string]bool{"bash": true}, perms: map[string]any{"bash": "allow", "read": "deny"}}
 	if ResolveMemoryContext(cfg, reg, "a").Preload {
