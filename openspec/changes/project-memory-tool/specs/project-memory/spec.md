@@ -59,6 +59,14 @@ Authoring instructions SHALL require short factual sentences, source links, a ma
 ### Requirement: Portable scope
 The feature SHALL retain configurable roots, Git identities shared by worktrees, explicit aliases and the mem-sync aggregate format.
 
+#### Scenario: Store root selected per launch
+- **WHEN** the process environment sets a non-empty `AGENTS_MEMORY_HOME`
+- **THEN** it is the memory root, overriding `memory.directory`; otherwise `memory.directory`, then `~/.agents/memory`, applies, so OpenCode and mem-sync address the same store from the same variable
+
+#### Scenario: Workspace without a network origin
+- **WHEN** the workspace has no network Git origin and no explicit project ID
+- **THEN** its identity is `local:` plus the absolute path with symlinks resolved, the same path mem-sync derives, so both address one project directory
+
 #### Scenario: Harness working on another repository
 - **WHEN** work concerns a repository other than the process workspace
 - **THEN** the reminder directs the agent to that repository's project memory, found by its id in `projects/*/project.json`, instead of treating the harness index as global knowledge
