@@ -48,6 +48,7 @@ Load the doc for the area you are changing; each is the reference for its featur
 | [`docs/structured-output.md`](docs/structured-output.md) | Touching `struct_output` or `structOutputSchemaDelivery` |
 | [`docs/telemetry.md`](docs/telemetry.md) | Touching `internal/langfuse`, `internal/redact` or the `telemetry` config: traces, metadata, redaction, requester |
 | [`docs/session-providers.md`](docs/session-providers.md) | Configuring SQLite/MySQL session storage (writing migrations: sqlc in `internal/db/sql`, goose files in `internal/db/migrations`) |
+| [`docs/memory.md`](docs/memory.md) | Touching `internal/memory`, the `memory` config / `AGENTS_MEMORY_HOME`, the memory system reminder or `MEMORY.md` index snapshot |
 | [`docs/lsp.md`](docs/lsp.md) | Touching `internal/lsp` or the `lsp` tool |
 | [`README.md`](README.md) | Needing the user-facing overview, full config reference or environment variables |
 | `openspec/specs/<capability>/spec.md` | Before changing a feature's behaviour: its requirements and scenarios. In-flight changes live in `openspec/changes/` |

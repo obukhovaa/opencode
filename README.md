@@ -22,6 +22,7 @@ OpenCode is a CLI tool that brings AI assistance to your terminal. It provides a
 - **MCP support**: extend capabilities via Model Context Protocol servers
 - **Deferred tools**: keep large MCP fleets out of context until needed — matching tools are loaded on demand via `toolsearch` (Anthropic server-side tool search on capable models, cache-preserving; a client-side fallback elsewhere) ([guide](docs/deferred-tools.md))
 - **Tool allow-lists**: scope an agent to exactly the tools it needs with `allowTools`, so tools added to the harness later are not granted retroactively ([guide](docs/tool-permissions.md))
+- **Project memory**: opt-in `memory` config gives agents a bounded per-project `MEMORY.md` index and note-taking guidance through their existing file tools, with no extra tool schema ([guide](docs/memory.md))
 - **Agent skills**: reusable instruction sets with argument substitution and dynamic shell expansion ([guide](docs/skills.md))
 - **Custom commands**: predefined prompts with named arguments ([guide](docs/custom-commands.md))
 - **Langfuse observability**: built-in tracing for LLM calls, tool executions, token usage, and cost ([guide](docs/telemetry.md))
@@ -721,6 +722,7 @@ Kimi K3 is also available on AWS Bedrock as `bedrock.kimi-k3` (global profile) a
 | `OPENCODE_PROVIDER_STREAM_INACTIVITY_TIMEOUT` | `300` | Seconds to wait for next SSE event before treating stream as stalled |
 | `OPENCODE_MAX_REPEAT_CALLS` | `3` | Max identical consecutive tool calls before loop detection triggers |
 | `OPENCODE_SERVER_PASSWORD` | | HTTP Basic Auth password for `opencode serve` ([guide](docs/server.md)) |
+| `AGENTS_MEMORY_HOME` | `~/.agents/memory` | Project-memory store root for this launch; overrides `memory.directory` ([guide](docs/memory.md)) |
 | `OPENCODE_TOOL_ENV_DENY` | | Comma-separated extra variable names (or globs) hidden from every process OpenCode starts ([details](#tool-environment)) |
 | `OPENCODE_DEV_DEBUG` | `false` | Enable development debug logging |
 | `OPENCODE_DISABLE_LSP_DOWNLOAD` | `false` | Disable automatic LSP binary downloads |
@@ -852,6 +854,7 @@ in `INSERT`; `Esc` switches to `NORMAL`.
 | Session Providers | [docs/session-providers.md](docs/session-providers.md) |
 | LSP Servers | [docs/lsp.md](docs/lsp.md) |
 | Structured Output | [docs/structured-output.md](docs/structured-output.md) |
+| Project Memory | [docs/memory.md](docs/memory.md) |
 
 ## Development
 
