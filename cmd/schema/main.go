@@ -782,7 +782,7 @@ func generateSchema() map[string]any {
 		"description": "Project memory reminders and a bounded index, using existing file tools.",
 		"properties": map[string]any{
 			"enabled":   map[string]any{"type": "boolean", "default": false},
-			"directory": map[string]any{"type": "string", "default": "~/.agents/memory", "description": "Shared project-memory filesystem root; existing file permissions apply."},
+			"directory": map[string]any{"type": "string", "default": "~/.agents/memory", "description": "Shared project-memory filesystem root; existing file permissions apply. A non-empty AGENTS_MEMORY_HOME environment variable overrides it."},
 			"projectID": map[string]any{"type": "string", "description": "Explicit current-workspace identity; otherwise derived from origin or the local directory. Does not restrict access to other projects under directory."},
 		},
 		"additionalProperties": false,

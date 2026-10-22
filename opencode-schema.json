@@ -1081,7 +1081,7 @@
       "properties": {
         "directory": {
           "default": "~/.agents/memory",
-          "description": "Shared project-memory filesystem root; existing file permissions apply.",
+          "description": "Shared project-memory filesystem root; existing file permissions apply. A non-empty AGENTS_MEMORY_HOME environment variable overrides it.",
           "type": "string"
         },
         "enabled": {

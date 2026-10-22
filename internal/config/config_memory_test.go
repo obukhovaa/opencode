@@ -31,6 +31,7 @@ func TestMemoryConfigViperRoundTrip(t *testing.T) {
 func TestMemoryDirectoryHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv(MemoryHomeEnv, "")
 	for _, tc := range []struct{ directory, want string }{
 		{"", filepath.Join(home, ".agents", "memory")},
 		{"~", home},
@@ -43,8 +44,27 @@ func TestMemoryDirectoryHome(t *testing.T) {
 	}
 }
 
+func TestMemoryDirectoryEnvSelectsStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(MemoryHomeEnv, "~/.agents/memory-work")
+	for _, directory := range []string{"", "~/.agents/memory", "/shared/memory"} {
+		cfg := Config{WorkingDir: t.TempDir(), Memory: &MemoryConfig{Directory: directory}}
+		want := filepath.Join(home, ".agents", "memory-work")
+		if got, err := cfg.MemoryDirectory(); err != nil || got != want {
+			t.Errorf("%q: got %q, %v; want %q", directory, got, err, want)
+		}
+	}
+	t.Setenv(MemoryHomeEnv, "")
+	cfg := Config{WorkingDir: t.TempDir(), Memory: &MemoryConfig{Directory: "/shared/memory"}}
+	if got, err := cfg.MemoryDirectory(); err != nil || got != "/shared/memory" {
+		t.Errorf("empty %s: got %q, %v", MemoryHomeEnv, got, err)
+	}
+}
+
 func TestMemoryDirectoryFailsClosedWithoutHome(t *testing.T) {
 	t.Setenv("HOME", "")
+	t.Setenv(MemoryHomeEnv, "")
 	for _, directory := range []string{"", "~/shared"} {
 		cfg := Config{WorkingDir: t.TempDir(), Memory: &MemoryConfig{Directory: directory}}
 		if got, err := cfg.MemoryDirectory(); err == nil {

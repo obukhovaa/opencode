@@ -9,7 +9,11 @@ Enable project memory to carry useful knowledge across sessions sharing a filesy
 }
 ```
 
-Keep each agent's existing grants; do not replace its list with this example. There are two capability levels, and the reminder adapts to the agent's grants and permissions:
+Keep each agent's existing grants; do not replace its list with this example.
+
+To keep separate stores per profile, select the root per launch with `AGENTS_MEMORY_HOME`, the way `CLAUDE_CONFIG_DIR` selects a Claude Code profile: `AGENTS_MEMORY_HOME=~/.agents/memory-work opencode`. A non-empty value overrides `memory.directory`; otherwise `memory.directory`, then `~/.agents/memory`, applies. mem-sync reads the same variable for its default `--store`, so both address the same store.
+
+There are two capability levels, and the reminder adapts to the agent's grants and permissions:
 
 - **Read-only** — `read`, `grep` or permitted Bash can read the index: retrieval guidance only.
 - **Read+write** — writing always comes with reading, so a writer gets both the retrieval and the maintenance guidance. `write`, `edit`, `multiedit` and `patch` count as memory writers only alongside the `read` tool, because they refuse to change an existing file the `read` tool has not recorded a read of; permitted Bash reads and writes on its own.

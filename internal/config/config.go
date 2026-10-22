@@ -688,13 +688,22 @@ type MemoryConfig struct {
 	ProjectID string `json:"projectID,omitempty"`
 }
 
-// MemoryDirectory resolves the memory root. A "~" path whose home directory
+// MemoryHomeEnv selects the memory root per launch, like CLAUDE_CONFIG_DIR
+// selects a Claude Code profile. mem-sync reads the same variable, so both
+// tools address the same store.
+const MemoryHomeEnv = "AGENTS_MEMORY_HOME"
+
+// MemoryDirectory resolves the memory root: AGENTS_MEMORY_HOME, then
+// memory.directory, then ~/.agents/memory. A "~" path whose home directory
 // cannot be resolved is an error rather than a path under WorkingDir, so the
 // store never lands inside the checkout.
 func (c *Config) MemoryDirectory() (string, error) {
 	directory := "~/.agents/memory"
 	if c.Memory != nil && c.Memory.Directory != "" {
 		directory = c.Memory.Directory
+	}
+	if env := os.Getenv(MemoryHomeEnv); env != "" {
+		directory = env
 	}
 	if directory == "~" || strings.HasPrefix(directory, "~/") {
 		home, err := os.UserHomeDir()
