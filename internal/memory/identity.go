@@ -63,6 +63,11 @@ func ProjectID(directory, cwd, explicit string) (string, error) {
 			if err != nil {
 				return "", err
 			}
+			// mem-sync resolves symlinks (Path.resolve()), so a checkout
+			// reached through /tmp or another link maps to the same key.
+			if real, err := filepath.EvalSymlinks(absolute); err == nil {
+				absolute = real
+			}
 			id = "local:" + filepath.ToSlash(absolute)
 		}
 	}

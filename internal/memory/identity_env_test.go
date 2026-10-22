@@ -34,3 +34,22 @@ printf '%s\n' 'https://example.com/team/project.git'
 		t.Fatal("project lookup changed the parent environment")
 	}
 }
+
+func TestProjectIDLocalFallbackResolvesSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink fixture")
+	}
+	t.Setenv("PATH", t.TempDir()) // no git: identity falls back to the directory
+	real, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "checkout")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	id, err := ProjectID(t.TempDir(), link, "")
+	if want := "local:" + filepath.ToSlash(real); err != nil || id != want {
+		t.Fatalf("ProjectID through a symlink = %q, %v; want %q, matching mem-sync's resolved path", id, err, want)
+	}
+}
