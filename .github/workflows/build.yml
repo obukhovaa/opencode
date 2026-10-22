@@ -1,37 +1,67 @@
-name: build
+name: Runtime 0.27 Linux validation
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-
-concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
+
+concurrency:
+  group: runtime-027-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  LC_ALL: C
+  GOFLAGS: -p=2
 
 jobs:
-  build:
+  linux-runtime:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-
-      - run: git fetch --force --tags
+      - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: ">=1.23.2"
+          go-version-file: go.mod
           cache: true
-          cache-dependency-path: go.sum
 
-      - run: go mod download
+      - name: Check runner and tools
+        shell: bash
+        run: |
+          test "$(id -u)" -ne 0
+          if ! command -v rg >/dev/null || ! command -v jq >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y ripgrep jq
+          fi
+          go version
+          git rev-parse HEAD
 
-      - uses: goreleaser/goreleaser-action@v6
+      - name: Linux non-dumpable process hardening
+        run: go test -race -count=1 -v ./internal/toolenv
+
+      - name: Credential isolation through the real shell driver
+        shell: bash
+        run: |
+          bash scripts/test/tool_env.sh | tee tool-env-e2e.log
+          grep -qx 'passed=8 failed=0 skipped=0' tool-env-e2e.log
+
+      - name: Hooks, CLI manifests, memory, prompts, tasks and schema
+        run: go test -race -count=1 ./internal/hooks ./internal/clitool ./internal/memory ./internal/llm/prompt ./internal/task ./cmd/schema
+
+      - name: Configuration and agent registry compatibility
+        run: go test -race -count=1 ./internal/config ./internal/agent -run 'ToolEnv|SelfCompact|Memory'
+
+      - name: Subprocess filtering and memory tool compatibility
+        run: go test -race -count=1 ./internal/llm/tools ./internal/fileutil ./internal/lsp/install -run 'DeniedEnvironment|MemoryFeedback|CompactSession'
+
+      - name: Compaction, memory and bridge integration
+        run: go test -race -count=3 ./internal/llm/agent ./internal/bridge/service ./internal/bridge -run 'SelfCompact|CompactSession|PendingSelf|CarryForward|ReplyDelivered|CancelledAttempt|CompactionTrace|Memory|External|Isolat|DeniedEnvironment'
+
+      - name: Preserve credential-isolation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          distribution: goreleaser
-          version: latest
-          args: build --snapshot --clean
+          name: linux-tool-env-e2e
+          path: tool-env-e2e.log
+          if-no-files-found: ignore
