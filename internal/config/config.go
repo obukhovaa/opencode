@@ -682,29 +682,34 @@ type PermissionConfig struct {
 	Rules map[string]any    `json:"rules,omitempty"` // tool name -> "allow" | {"pattern": "action"}
 }
 
-// Config is the main configuration structure for the application.
 type MemoryConfig struct {
 	Enabled   bool   `json:"enabled,omitempty"`
 	Directory string `json:"directory,omitempty"`
 	ProjectID string `json:"projectID,omitempty"`
 }
 
-func (c *Config) MemoryDirectory() string {
+// MemoryDirectory resolves the memory root. A "~" path whose home directory
+// cannot be resolved is an error rather than a path under WorkingDir, so the
+// store never lands inside the checkout.
+func (c *Config) MemoryDirectory() (string, error) {
 	directory := "~/.agents/memory"
 	if c.Memory != nil && c.Memory.Directory != "" {
 		directory = c.Memory.Directory
 	}
 	if directory == "~" || strings.HasPrefix(directory, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			directory = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(directory, "~"), "/"))
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return "", fmt.Errorf("memory directory %q: cannot resolve home directory: %v", directory, err)
 		}
+		directory = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(directory, "~"), "/"))
 	}
 	if !filepath.IsAbs(directory) {
 		directory = filepath.Join(c.WorkingDir, directory)
 	}
-	return directory
+	return directory, nil
 }
 
+// Config is the main configuration structure for the application.
 type Config struct {
 	Memory       *MemoryConfig                     `json:"memory,omitempty"`
 	Data         Data                              `json:"data"`

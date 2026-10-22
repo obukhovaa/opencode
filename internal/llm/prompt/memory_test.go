@@ -3,8 +3,10 @@ package prompt
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -34,40 +36,87 @@ func TestMemoryReminderCapabilities(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		tools       []string
+		perms       map[string]any
 		read, write bool
+		readTool    string
 	}{
-		{"reader", []string{"read"}, true, false}, {"writer", []string{"write"}, false, true},
-		{"editor", []string{"edit"}, false, true},
-		{"both", []string{"read", "edit"}, true, true}, {"bash", []string{"bash"}, true, true},
-		{"none", nil, false, false},
+		{name: "reader", tools: []string{"read"}, read: true, readTool: "read"},
+		{name: "grep reader", tools: []string{"grep"}, read: true, readTool: "grep"},
+		{name: "read and write", tools: []string{"read", "write"}, read: true, write: true, readTool: "read"},
+		{name: "read and edit", tools: []string{"read", "edit"}, read: true, write: true, readTool: "read"},
+		{name: "bash", tools: []string{"bash"}, perms: map[string]any{"bash": "allow"}, read: true, write: true, readTool: "bash"},
+		{name: "bash writer reads through bash", tools: []string{"bash"}, perms: map[string]any{"bash": map[string]any{"*": "deny", "printf *": "allow"}}, read: true, write: true, readTool: "bash"},
+		// write/edit need a read recorded by the read tool, so without it they are not writers.
+		{name: "write without read", tools: []string{"write", "edit"}},
+		{name: "grep and edit", tools: []string{"grep", "edit"}, read: true, readTool: "grep"},
+		{name: "bash and edit without read", tools: []string{"bash", "edit"}, perms: map[string]any{"bash": "allow"}, read: true, write: true, readTool: "bash"},
+		{name: "none"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{WorkingDir: t.TempDir(), Memory: &config.MemoryConfig{Enabled: true, Directory: t.TempDir(), ProjectID: "project"}}
-			reg := memoryRegistry{tools: map[string]bool{}, perms: map[string]any{"bash": "allow"}}
+			reg := memoryRegistry{tools: map[string]bool{}, perms: tc.perms}
 			for _, tool := range tc.tools {
 				reg.tools[tool] = true
 			}
 			m := ResolveMemoryContext(cfg, reg, "a")
 			text := MemoryReminder(cfg, reg, "a")
-			if m.CanRead != tc.read || m.CanWrite != tc.write {
+			if m.CanRead != tc.read || m.CanWrite != tc.write || m.ReadTool != tc.readTool {
 				t.Fatalf("%+v", m)
+			}
+			if m.CanWrite && !m.CanRead {
+				t.Fatal("writer without read capability")
+			}
+			if slices.Contains(m.WriteTools, "edit") && !reg.tools["read"] {
+				t.Fatal("edit offered without the read tool it depends on")
 			}
 			if strings.Contains(text, "consult the index") != tc.read || strings.Contains(text, "Memory capture is enabled") != tc.write {
 				t.Fatalf("%s", text)
 			}
-			if !tc.read && !tc.write && text != "" {
-				t.Fatal("tool-less prompt polluted")
+			if !tc.read && text != "" {
+				t.Fatal("prompt polluted without memory capability")
 			}
-			if !tc.read && strings.Contains(text, "Before editing, re-read") {
-				t.Fatal("writer instructed to read")
+			if tc.write && !strings.Contains(text, "Before editing, re-read the current file with "+tc.readTool) {
+				t.Fatalf("writer not told to re-read with %s: %s", tc.readTool, text)
 			}
-			if !tc.read && strings.Contains(text, "For a new project, create") {
-				t.Fatal("writer instructed to overwrite unread project metadata")
-			}
-			if tc.read && !tc.write && strings.Contains(text, "Maintain MEMORY.md") {
+			if !tc.write && (strings.Contains(text, "Maintain MEMORY.md") || strings.Contains(text, "For a new project, create")) {
 				t.Fatal("reader instructed to write")
 			}
 		})
+	}
+}
+
+func TestMemoryReminderDateAndOtherRepositories(t *testing.T) {
+	old := memoryNow
+	memoryNow = func() time.Time { return time.Date(2026, 10, 22, 23, 30, 0, 0, time.FixedZone("x", -5*3600)) }
+	t.Cleanup(func() { memoryNow = old })
+	root := t.TempDir()
+	cfg := &config.Config{WorkingDir: t.TempDir(), Memory: &config.MemoryConfig{Enabled: true, Directory: root, ProjectID: "project"}}
+	lookup := filepath.Join(root, "projects", "*", "project.json")
+
+	reader := MemoryReminder(cfg, memoryRegistry{tools: map[string]bool{"read": true}}, "a")
+	if !strings.Contains(reader, lookup) || strings.Contains(reader, "Today (UTC)") {
+		t.Fatalf("reader: %s", reader)
+	}
+	writer := MemoryReminder(cfg, memoryRegistry{tools: map[string]bool{"read": true, "write": true}}, "a")
+	if !strings.Contains(writer, "Today (UTC): 2026-10-23.") || strings.Contains(writer, "date -u") || strings.Contains(writer, "sha256sum") || !strings.Contains(writer, "Report facts about another repository") {
+		t.Fatalf("file writer: %s", writer)
+	}
+	shell := MemoryReminder(cfg, memoryRegistry{tools: map[string]bool{"bash": true}, perms: map[string]any{"bash": "allow"}}, "a")
+	if !strings.Contains(shell, "date -u +%Y-%m-%dT%H:%M:%SZ") || !strings.Contains(shell, "printf %s 'git:host/org/repo' | sha256sum") || strings.Contains(shell, "%!") {
+		t.Fatalf("bash writer: %s", shell)
+	}
+}
+
+func TestMemoryUnavailableWhenIdentityFails(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "aliases.json"), []byte("{not json"), 0600)
+	cfg := &config.Config{WorkingDir: t.TempDir(), Memory: &config.MemoryConfig{Enabled: true, Directory: root, ProjectID: "project"}}
+	reg := memoryRegistry{tools: map[string]bool{"read": true}}
+	if m := ResolveMemoryContext(cfg, reg, "a"); m.CanRead {
+		t.Fatalf("%+v", m)
+	}
+	if _, warned := memoryWarned.Load("resolve project identity: memory aliases: invalid character 'n' looking for beginning of object key string"); !warned {
+		t.Fatal("identity failure not recorded for a one-time warning")
 	}
 }
 

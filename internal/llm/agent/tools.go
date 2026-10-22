@@ -130,7 +130,9 @@ func NewToolSet(
 	maybeWrapMemory := func(t tools.BaseTool) tools.BaseTool {
 		cfg := config.Get()
 		if cfg != nil && cfg.Memory != nil && cfg.Memory.Enabled {
-			return tools.WithMemoryFeedback(t, cfg.MemoryDirectory(), cfg.WorkingDir)
+			if root, err := cfg.MemoryDirectory(); err == nil {
+				return tools.WithMemoryFeedback(t, root, cfg.WorkingDir)
+			}
 		}
 		return t
 	}

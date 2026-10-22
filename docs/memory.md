@@ -9,7 +9,14 @@ Enable project memory to carry useful knowledge across sessions sharing a filesy
 }
 ```
 
-Keep each agent's existing grants; do not replace its list with this example. The reminder adapts to those grants and permissions. A reader gets retrieval guidance, a writer gets authoring guidance, and an agent with both capabilities or permitted Bash gets both. An agent without relevant capabilities gets no reminder. Write-only agents do not receive existing memory contents or instructions to overwrite an unread index. Denied or approval-required reads are never performed automatically; the agent can use its ordinary tools and approval flow where allowed. Automatic loading verifies the opened index against its permission-checked canonical path, so replacing the store root cannot redirect a snapshot to another file.
+Keep each agent's existing grants; do not replace its list with this example. There are two capability levels, and the reminder adapts to the agent's grants and permissions:
+
+- **Read-only** — `read`, `grep` or permitted Bash can read the index: retrieval guidance only.
+- **Read+write** — writing always comes with reading, so a writer gets both the retrieval and the maintenance guidance. `write`, `edit`, `multiedit` and `patch` count as memory writers only alongside the `read` tool, because they refuse to change an existing file the `read` tool has not recorded a read of; permitted Bash reads and writes on its own.
+
+Writing without reading is not supported: file write tools without the `read` tool leave an agent read-only when `grep` or Bash can read memory, and without any reminder when nothing can; an agent without relevant capabilities gets none either. Denied or approval-required reads are never performed automatically; the agent can use its ordinary tools and approval flow where allowed. Automatic loading verifies the opened index against its permission-checked canonical path, so replacing the store root cannot redirect a snapshot to another file.
+
+Writers are told today's UTC date so `updatedAt` has a clock source in every agent mode; Bash writers are also given `date -u +%Y-%m-%dT%H:%M:%SZ` for the time of day.
 
 ## Context budget
 
@@ -40,7 +47,7 @@ updatedAt: 2026-10-21T12:00:00Z
 
 Record facts, short sentences, user corrections, and evidence links. Omit preambles, transcripts, raw dumps, duplication, secrets and facts readily recovered from source code. Split large topics; keep one index line per topic. Preserve useful legacy metadata.
 
-`updatedAt` means the last factual update, not the last read, copy or import. Review old volatile claims and reconcile contradictions against current evidence. Age alone does not make stable knowledge false. Update or retire superseded claims and their index entries; do not make a note look fresh merely by touching its timestamp. Writers without read access can create new focused notes, then report their paths for a reader/writer to index without overwriting unread content.
+`updatedAt` means the last factual update, not the last read, copy or import. Review old volatile claims and reconcile contradictions against current evidence. Age alone does not make stable knowledge false. Update or retire superseded claims and their index entries; do not make a note look fresh merely by touching its timestamp.
 
 ## Project scope and interchange
 
@@ -57,9 +64,11 @@ Record facts, short sentences, user corrections, and evidence links. Omit preamb
 
 Current identity comes from the Git origin, or explicit `memory.projectID`. Canonical Git IDs remove credentials, transport, `.git`, trailing slash and default ports while preserving repository-path case. Worktrees share that identity. `aliases.json` maps mirror IDs to a canonical ID; cycles are rejected. Non-Git work falls back to `local:<absolute-cwd>`; use an explicit ID for portability.
 
-Multi-repository harness jobs must select each target project's directory, not treat the harness index as global knowledge. Ordinary file permissions and OS access remain authoritative. Separate tenants with separate roots/permissions. A shared persistent mount is required across pod replacement; no network service or volume is provisioned.
+Multi-repository harness jobs must select each target project's directory, not treat the harness index as global knowledge. The reminder tells agents to find another repository's directory by its `id` in `projects/*/project.json`; for a repository with no directory yet, Bash writers compute the key (`printf %s '<id>' | sha256sum`) and other agents report the facts instead of saving them into the current project. Ordinary file permissions and OS access remain authoritative. Separate tenants with separate roots/permissions. A shared persistent mount is required across pod replacement; no network service or volume is provisioned.
 
 Piano Developer's `scripts/mem-sync` imports/exports custom Claude and Codex profiles, retains conflicts, lints authoring budgets and transfers archives. Existing notes are preserved, including legacy metadata. Ordinary OpenCode file/Bash writers do not take mem-sync's internal lock: re-read before changing files and avoid simultaneous writes to the same note. Existing file-tool conflict checks and sync baselines remain in use.
+
+If the home directory of a `~` root cannot be resolved, or the project identity cannot be (a malformed `aliases.json`, an alias cycle), memory is unavailable and a warning is logged once per process; the store is never relocated into the working directory.
 
 Disable `memory.enabled` to stop future reminders/index loads. Existing session history and Markdown are retained.
 

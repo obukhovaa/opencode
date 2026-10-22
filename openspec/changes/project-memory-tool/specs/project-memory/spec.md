@@ -12,19 +12,19 @@ The runtime SHALL use existing file tools for memory and SHALL NOT register a me
 - **THEN** the agent's tool inventory and provider tool definitions remain unchanged
 
 ### Requirement: Capability-aware reminder
-The system reminder SHALL describe only reading and/or writing operations supported by the agent's available tools and permissions. Agents without usable file capabilities SHALL receive no memory reminder. Automatic index loading MUST NOT bypass denied or approval-required reads and MUST verify that the opened index matches the canonical path whose permissions were checked.
+The system reminder SHALL describe only operations supported by the agent's available tools and permissions, at one of two capability levels: read-only, or read+write. Write capability SHALL imply read capability; writing without reading is not supported. File editing tools SHALL count as memory writers only alongside the read tool they depend on. Agents without a usable read capability SHALL receive no memory reminder. Automatic index loading MUST NOT bypass denied or approval-required reads and MUST verify that the opened index matches the canonical path whose permissions were checked.
 
 #### Scenario: Reader only
 - **WHEN** the agent can read but cannot write memory
 - **THEN** it receives index/retrieval guidance and no instruction to create, edit or prune memory
 
-#### Scenario: Writer only
-- **WHEN** the agent can write but cannot read memory
-- **THEN** it receives concise note-authoring guidance without loading existing memory contents or instructing it to overwrite an unread index
+#### Scenario: Writer
+- **WHEN** the agent can write memory with permitted Bash, or with file write tools alongside the read tool
+- **THEN** it receives the full read/maintain instructions, including today's UTC date for updatedAt, without another tool definition
 
-#### Scenario: Bash or read and write
-- **WHEN** the agent can use ordinary tools or permitted Bash to read and write memory
-- **THEN** it receives the full read/maintain instructions without another tool definition
+#### Scenario: Write tools without the read tool
+- **WHEN** the agent has file write tools but not the read tool
+- **THEN** those tools do not make it a memory writer
 
 #### Scenario: Store root changes after authorization
 - **WHEN** an authorized store root is replaced or its symlink is retargeted before the index is opened
@@ -61,7 +61,12 @@ The feature SHALL retain configurable roots, Git identities shared by worktrees,
 
 #### Scenario: Harness working on another repository
 - **WHEN** work concerns a repository other than the process workspace
-- **THEN** the reminder directs the agent to that repository's project memory instead of treating the harness index as global knowledge
+- **THEN** the reminder directs the agent to that repository's project memory, found by its id in `projects/*/project.json`, instead of treating the harness index as global knowledge
+- **AND** for a repository with no project directory, Bash writers are given the key derivation and other agents report the facts instead of saving them
+
+#### Scenario: Unresolvable memory root or identity
+- **WHEN** the home directory of a `~` root or the project identity cannot be resolved
+- **THEN** memory is unavailable, a warning is logged once per process, and nothing is written under the working directory
 
 #### Scenario: Git remotes use distinct nondefault ports
 - **WHEN** Git remotes have the same host and repository path but differ by a nondefault port for their URL scheme
