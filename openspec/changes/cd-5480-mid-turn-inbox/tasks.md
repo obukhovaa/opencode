@@ -7,7 +7,7 @@
 
 ## 2. Wire shape
 
-- [ ] 2.1 Add `Messages []InboundMessage{ID, Text}` to `bridge.Inbound`; `/router/inbound` validates `messages` XOR `text`/attachments and non-empty ids/texts (400 otherwise); verify with `http_inbound_test.go` cases for valid batch, mixed body, empty id.
+- [x] 2.1 Add `Messages []InboundMessage{ID, Text}` to `bridge.Inbound`; `/router/inbound` validates `messages` XOR `text`/attachments and non-empty ids/texts (400 otherwise); verify with `http_inbound_test.go` cases for valid batch, mixed body, empty id.
 - [ ] 2.2 `dispatchInbound` pushes a batch as one unit for interactive sessions; verify a test that a batch is never interleaved with a concurrent single.
 
 ## 3. Questions and repeats

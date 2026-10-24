@@ -61,6 +61,7 @@ func (s *Service) logInboundAudit(in bridge.Inbound) {
 		"authorId", in.AuthorID,
 		"command", cmd,
 		"attachments", len(in.Attachments),
+		"messages", len(in.Messages),
 		"truncated", truncated,
 		"text", text,
 	)
