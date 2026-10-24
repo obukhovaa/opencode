@@ -115,6 +115,13 @@ func (s *Service) dispatchInbound(ctx context.Context, in bridge.Inbound) {
 		return
 	}
 
+	// A messages batch is queued input, never a question's answer or a
+	// command: it takes its own route (cd-5480).
+	if len(in.Messages) > 0 {
+		s.dispatchBatch(ctx, binding.SessionID, in)
+		return
+	}
+
 	// If there's a pending agent question for this session, intercept the
 	// inbound as the answer rather than feeding it to the agent as a new
 	// prompt. The question router replies via question.Service.Reply,
@@ -132,8 +139,9 @@ func (s *Service) dispatchInbound(ctx context.Context, in bridge.Inbound) {
 	// SEPARATE app.ActiveAgent() run (the workspace default agent) on the
 	// same session, which lacks the flow agent's manager tools and can
 	// never emit the step's struct_output, orphaning the step. Buffer the
-	// message instead; QuestionRouter drains it into the next question the
-	// flow agent asks. The interactive marker is set exclusively by the
+	// message instead: the agent loop drains it at its next tool or turn
+	// boundary, or the next question the flow agent asks takes it as its
+	// answer. The interactive marker is set exclusively by the
 	// flow engine (flow.Service.runStep), so this branch is inert for
 	// daemon agents and non-flow bridge chat.
 	if s.questionRouter != nil && s.app != nil && s.app.Permissions != nil &&

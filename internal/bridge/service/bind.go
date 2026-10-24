@@ -208,7 +208,7 @@ func (s *Service) Unbind(ctx context.Context, sessionID string, peers ...bridge.
 		// unbinds with no peers), so nothing should drain into a future
 		// step that re-uses this session id.
 		if s.questionRouter != nil {
-			s.questionRouter.ClearSession(sessionID)
+			_ = s.questionRouter.ClearSession(sessionID)
 		}
 		return nil
 	}

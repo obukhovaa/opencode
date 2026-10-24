@@ -553,3 +553,17 @@ const (
 type ProgressRelayer interface {
 	SendProgress(ctx context.Context, peer PeerRef, p RunProgress) error
 }
+
+// DeliveryAcker is an optional interface adapters implement to tell their
+// peer which of its messages (Inbound.Messages ids) reached the agent.
+// Callers check with the ok-pattern:
+//
+//	if da, ok := adapter.(bridge.DeliveryAcker); ok { ... }
+//
+// Chat adapters do not implement it: a chat message carries no id, so
+// there is nothing to acknowledge. Delivery is best-effort; a sender that
+// gets no acknowledgement re-sends, and the bridge skips the repeat and
+// acknowledges it again.
+type DeliveryAcker interface {
+	SendDelivered(ctx context.Context, peer PeerRef, messageIDs []string) error
+}
