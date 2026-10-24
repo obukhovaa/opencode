@@ -25,7 +25,7 @@
 
 ## 5. Acknowledgement
 
-- [ ] 5.1 Fire `OnDelivered` after a successful question Reply (item 1) and after each drain (stored items with an id); bridge fans out to bindings through a new optional `DeliveryAcker` adapter capability; verify unit tests that cleared items are never acknowledged.
+- [ ] 5.1 Fire `OnDelivered` after each drain (stored items with an id) and for repeats skipped by the per-run set; bridge fans out to bindings through a new optional `DeliveryAcker` adapter capability; verify unit tests that cleared items are never acknowledged.
 - [ ] 5.2 `external` adapter: relay frame `kind: "delivered"`, `delivered.messageIds`, no text; non-202 recorded as a failed send; verify with a relay test asserting the exact frame.
 
 ## 6. Docs and checks
