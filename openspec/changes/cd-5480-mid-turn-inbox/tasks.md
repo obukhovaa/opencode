@@ -31,7 +31,7 @@
 ## 6. Docs and checks
 
 - [x] 6.1 Update `docs/bridge.md` (interactive inbox, batched inbound, delivered frame) and `docs/flows.md` (mid-turn reviewer input on interactive steps); verify the docs describe the drain points and the budget rule.
-- [ ] 6.2 Add an e2e script under `scripts/test/` driving an interactive step: two inbound messages during a tool call reach the next request as consecutive user messages and produce one `delivered` frame; verify `make test-e2e`.
+- [x] 6.2 Add an e2e script under `scripts/test/` driving an interactive step: two inbound messages during a tool call reach the next request as consecutive user messages and produce one `delivered` frame; verify `make test-e2e`.
 - [ ] 6.3 `make test` green (schema unchanged: no `Config` field added).
 
 ## Workflow follow-up
