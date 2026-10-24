@@ -511,3 +511,63 @@ func TestSendProgressDisabled(t *testing.T) {
 		t.Fatal("disabled adapter accepted SendProgress")
 	}
 }
+
+// TestSendDeliveredFrameShape pins the acknowledgement frame: kind
+// "delivered", the session and job ids, the ids in order, and no text.
+func TestSendDeliveredFrameShape(t *testing.T) {
+	t.Parallel()
+	relay, srv := newCapturingRelay(t, 0)
+	a := newTestAdapter(t, srv)
+	a.SetJobID("job-1")
+
+	ctx := bridge.ContextWithSessionID(context.Background(), "sess-1")
+	if err := a.SendDelivered(ctx, testPeer(), []string{"a", "b"}); err != nil {
+		t.Fatalf("SendDelivered: %v", err)
+	}
+
+	body := relay.last()
+	if body == nil {
+		t.Fatal("no relay call captured")
+	}
+	if body["kind"] != "delivered" || body["sessionId"] != "sess-1" || body["jobId"] != "job-1" {
+		t.Errorf("kind/sessionId/jobId = %v/%v/%v; want delivered/sess-1/job-1", body["kind"], body["sessionId"], body["jobId"])
+	}
+	if _, ok := body["text"]; ok {
+		t.Errorf("delivered frame carries text: %v", body["text"])
+	}
+	got, ok := body["delivered"].(map[string]any)
+	if !ok {
+		t.Fatalf("delivered = %#v; want an object", body["delivered"])
+	}
+	ids, ok := got["messageIds"].([]any)
+	if !ok || len(got) != 1 || len(ids) != 2 || ids[0] != "a" || ids[1] != "b" {
+		t.Fatalf("delivered = %#v; want {messageIds: [a b]}", got)
+	}
+}
+
+// A rejected acknowledgement is a failed send, recorded like any other.
+func TestSendDeliveredNon202IsError(t *testing.T) {
+	t.Parallel()
+	_, srv := newCapturingRelay(t, http.StatusBadRequest)
+	a := newTestAdapter(t, srv)
+
+	if err := a.SendDelivered(context.Background(), testPeer(), []string{"a"}); err == nil {
+		t.Fatal("SendDelivered on 400 returned nil error")
+	}
+	if a.Status().LastFailureAt == 0 {
+		t.Error("LastFailureAt not recorded for a rejected delivered frame")
+	}
+}
+
+// An empty acknowledgement is refused without calling the relay.
+func TestSendDeliveredRequiresIDs(t *testing.T) {
+	t.Parallel()
+	relay, srv := newCapturingRelay(t, 0)
+	a := newTestAdapter(t, srv)
+	if err := a.SendDelivered(context.Background(), testPeer(), nil); err == nil {
+		t.Fatal("SendDelivered with no ids returned nil error")
+	}
+	if relay.last() != nil {
+		t.Fatal("empty acknowledgement reached the relay")
+	}
+}

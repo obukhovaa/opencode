@@ -194,6 +194,7 @@ A relay channel with **no chat platform of its own**. Outbound messages and ques
 - Groups / `@mention` gating don't apply; `POST /router/config/groups` rejects this channel explicitly.
 - **Chat commands.** Each external peer is one end user's conversation, so it runs only the commands in `commands` (default `["abort", "reset"]`, which also covers `/stop`, `/cancel` and `/new`). Any other known command gets the reply `` `/<cmd>` is not available on this channel. `` and runs nothing; text that is not a known command still goes to the agent. An alias counts as the command it stands for, and entries are matched case-insensitively with or without a leading `/`. Unset or empty means the default. Whatever the list says, session commands from an external peer only ever address its own session (see [Chat commands](#chat-commands)).
 - **Run progress.** At `compact` tool-update verbosity the relay gets each state of the run's progress card as a frame with `kind: "progress"` and a `progress` object — `status` (`running`, then `ok` or `error` once), `toolsDone`, `failed`, `running`, `currentTool`, `lastFailedTool`, `lastFailureReason`, `elapsedMs`, every key always present (`running` is `0` and `currentTool` empty on a terminal frame). Running updates are paced like the card (at most one every 2s, coalesced); the terminal state goes out as soon as the run ends. The consumer renders it in its own words. Failures travel in the frame, so no `✗` text line is sent for them: like the card, a frame counts every failure in `failed` but names only the most recent one, so when several calls fail between two frames only the last one's tool and reason are named. If the relay rejects a frame (it must accept the `progress` kind before a daemon sends it — c2-agent 0.4.6 or later), that frame's failures fall back to text lines and the rejection is logged at WARN and recorded as the adapter's last error. Delivery is best-effort: a failed frame is not retried, so a run can end without a terminal frame (the bridge stopped, or that send failed); treat the run's final reply as its authoritative end.
+- **Delivery acknowledgements.** When messages sent as a `messages` batch on `POST /router/inbound` reach the agent (see [Mid-turn reviewer input](#mid-turn-reviewer-input-on-interactive-steps)), the relay gets a frame with `kind: "delivered"`, no `text`, and a `delivered` object whose `messageIds` lists the delivered ids in order. A non-202 response is a failed send, logged at WARN and recorded as the adapter's last error. The relay must accept the `delivered` kind before a sender uses `messages`. An id that is never acknowledged was not delivered and can be re-sent: a repeat of an id already delivered in the run is skipped and acknowledged again.
 - **Peer attribution.** Every inbound turn runs with its peer (channel, identity, peer id from the authenticated request) on the run context; async subagents inherit it. For `external` peers the agent writes one synthetic `<system-reminder>` user message ahead of the turn's own message, naming the peer the session serves, so the model knows which tenant/conversation it works for without the integration putting the id into the message text. It is written once per history and again after a peer change or a compaction drops it. The stored user text and `question` answers stay exactly what was sent.
 - **MCP `peerHeader`.** An sse/http MCP server that declares `"peerHeader": "X-Peer-Id"` receives the calling turn's peer id in that header (any channel, not only `external`), replacing a static header of the same name. Calls made outside a bridge turn (cron, a task's auto-resumed turn) send no value beyond the static config, and a peer id that net/http cannot send as a header value (a control character) is omitted rather than failing the call.
 
@@ -263,6 +264,16 @@ curl -X POST http://127.0.0.1:3456/router/bind \
 ### `POST /router/inbound`
 
 The orchestrator forwards chat replies here in mediated-inbound mode. `202 Accepted` means the inbound was enqueued. `429` with `Retry-After` means the queue is full, so retry.
+
+Instead of `text` (and `attachments`), a body may carry a batch of messages with sender-assigned ids:
+
+```json
+{"peer": {"channel": "external", "identity": "c3", "peerId": "aid:flow:run"},
+ "messages": [{"id": "m-1", "text": "Make my discounts steeper"},
+              {"id": "m-2", "text": "except for Premium"}]}
+```
+
+Every `id` and `text` must be non-empty, and a body that carries both `messages` and `text`/`attachments`, or neither, is rejected with `400`. A batch enters the session in one step, so no other input lands between its messages. On an interactive step it is queued input: it never answers a pending question and each id is acknowledged once delivered (see [Mid-turn reviewer input](#mid-turn-reviewer-input-on-interactive-steps)). On any other session its messages are joined into one prompt and acknowledged as they are queued.
 
 Under `opencode serve --pool-mode`, the endpoint accepts an inbound only when a live interactive flow step in this process owns the peer's session. Otherwise it returns `409 {"sessionNotOwned": true}` and drops the message. This covers a container that restarted mid-step while its binding survived. Retrying cannot succeed, so orchestrators should not retry a `409`. Pool pods never pass an inbound to the workspace default agent. Without `--pool-mode`, behavior is unchanged.
 
@@ -368,6 +379,25 @@ When `questionMode: "interactive"` is set and the agent calls the `question` too
 - **External** — a `question` relay frame carrying `requestId`, the choices, and the `multiple` / `custom` flags; the consumer renders it however it likes and answers against `requestId`.
 
 Button click callbacks are normalized into the same `bridge.Inbound` shape as text replies, so the agent's question-reply parsing works identically across platforms. Fallback to numbered text is per-peer — if Slack's `chat.postMessage` errors, only that peer falls back; other peers in a multi-reviewer session still get buttons.
+
+## Mid-turn reviewer input on interactive steps
+
+On an `interactive: true` flow step, a reviewer message that is not an answer to a pending question waits in the session's inbox (per session, FIFO, at most 16 items, dropping the oldest with a notice to its sender). This holds for every channel — Slack, Mattermost, Telegram and `external` — with no config flag. The agent loop drains the inbox:
+
+- **After tool results.** Once a turn's tool results are stored and before the next model call, every waiting item is stored as its own user message, in order, so the next request ends with the tool results followed by the reviewer's messages. Nothing that is streaming or running is interrupted; a message that arrives during a model call waits for the next boundary. This adds no model call.
+- **At run end.** A run does not end while input waits: when the model ends its turn, or after an accepted `struct_output`, the loop drains and calls the model again. After such a reopen the earlier `struct_output` stays the step's output unless the model emits a new one. Each such cycle counts against the step's `maxTurns`, and the forced max-turns wrap-up turn never drains, so a reviewer cannot keep a step alive past its budget.
+
+Questions and queued input:
+
+- A plain message (typed text, a button click, a suggestion chip) answers a pending question as before. When a question is asked while only plain messages wait, the oldest answers it and the rest follow the question's result.
+- Input with a message id (a `messages` batch) never answers a question. If it arrives while a question is pending, or a question is asked while it waits, the question is closed as unanswered (it is not shown to the peers when asked while input waits): the `question` result tells the agent the user has not answered and sent the messages that follow, the messages follow it as user messages, and the agent asks again if it still needs the answer. A UI that keeps its answer controls disabled until its queue has drained therefore never deadlocks against a waiting question. A batch of ids that were all delivered already leaves the question pending.
+
+Delivery reports:
+
+- Ids that reach the agent are acknowledged to the session's peers whose adapter supports it (`external`: a `delivered` frame). The bridge remembers delivered ids per bound peer for the run, in memory, so a re-sent id is skipped and acknowledged again; an id still waiting is not queued twice. The memory is lost on a pod restart, after which a re-send can repeat.
+- Input still waiting when the step ends is cleared, never acknowledged. A chat message without an id gets a short reply in its thread saying it did not reach the agent and should be resent; input with an id gets none, since its sender re-sends anything unacknowledged.
+
+> **Behavior change for Slack and Mattermost reviewers.** Before, a message sent while the agent worked waited for the agent's next `question` and only the first one was used; the rest were dropped silently when the step ended. Now every such message reaches the agent at its next tool or turn boundary, and one left over at step end gets a "not delivered" reply.
 
 ## Subagent visibility (the `task` tool)
 

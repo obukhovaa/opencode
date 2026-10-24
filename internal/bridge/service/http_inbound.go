@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -43,8 +44,8 @@ func (s *Service) handleInbound(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "peer.channel, peer.identity, peer.peerId are required")
 		return
 	}
-	if in.Text == "" && len(in.Attachments) == 0 {
-		writeAPIError(w, http.StatusBadRequest, "inbound must carry text or attachments")
+	if msg := validateInboundBody(in); msg != "" {
+		writeAPIError(w, http.StatusBadRequest, msg)
 		return
 	}
 	if in.ReceivedAt == 0 {
@@ -83,4 +84,25 @@ func (s *Service) handleInbound(w http.ResponseWriter, r *http.Request) {
 			"dispatcherSaturated": true,
 		})
 	}
+}
+
+// validateInboundBody checks that an inbound carries either a messages
+// batch or text/attachments, never both and never neither, and that every
+// batch entry has a non-empty id and text. It returns "" for a valid body.
+func validateInboundBody(in bridge.Inbound) string {
+	if len(in.Messages) > 0 {
+		if in.Text != "" || len(in.Attachments) > 0 {
+			return "inbound must carry either messages or text/attachments, not both"
+		}
+		for i, m := range in.Messages {
+			if m.ID == "" || m.Text == "" {
+				return fmt.Sprintf("messages[%d] must carry a non-empty id and text", i)
+			}
+		}
+		return ""
+	}
+	if in.Text == "" && len(in.Attachments) == 0 {
+		return "inbound must carry text, attachments or messages"
+	}
+	return ""
 }

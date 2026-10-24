@@ -2,6 +2,7 @@ package question
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -267,5 +268,36 @@ func TestList(t *testing.T) {
 	time.Sleep(10 * time.Millisecond) // let Ask() return and defer cleanup
 	if pending := svc.List(); len(pending) != 0 {
 		t.Fatalf("expected 0 pending after reply, got %d", len(pending))
+	}
+}
+
+// TestUnanswered_ClosesWithoutAnswer checks that Unanswered unblocks Ask
+// with an *UnansweredError carrying the note and records no answer.
+func TestUnanswered_ClosesWithoutAnswer(t *testing.T) {
+	svc := NewService()
+	sub := svc.Subscribe(context.Background())
+	type result struct {
+		answers [][]string
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		a, err := svc.Ask(context.Background(), "s", []Prompt{{Question: "q"}})
+		done <- result{a, err}
+	}()
+	ev := <-sub
+	if err := svc.Unanswered(ev.Payload.ID, "note"); err != nil {
+		t.Fatalf("Unanswered: %v", err)
+	}
+	r := <-done
+	var ue *UnansweredError
+	if !errors.As(r.err, &ue) || ue.Note != "note" {
+		t.Fatalf("Ask err = %v, want UnansweredError{note}", r.err)
+	}
+	if r.answers != nil {
+		t.Fatalf("answers = %v, want none", r.answers)
+	}
+	if err := svc.Reply(ev.Payload.ID, [][]string{{"late"}}); err == nil {
+		t.Fatal("Reply after Unanswered should find no pending request")
 	}
 }

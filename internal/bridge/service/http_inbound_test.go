@@ -218,3 +218,77 @@ func TestRouterInbound_AuthIsHandledByAPIMiddleware(t *testing.T) {
 	default:
 	}
 }
+
+// TestRouterInbound_MessagesBatch covers the messages-batch body: a valid
+// batch is accepted and lands whole, a body mixing messages with text or
+// attachments is rejected, and so is an entry with an empty id or text.
+func TestRouterInbound_MessagesBatch(t *testing.T) {
+	peer := bridge.PeerRef{Channel: "external", Identity: "c3", PeerID: "run-1"}
+	tests := []struct {
+		name string
+		in   bridge.Inbound
+		want int
+	}{
+		{
+			name: "valid batch",
+			in: bridge.Inbound{Peer: peer, Messages: []bridge.InboundMessage{
+				{ID: "a", Text: "Make my discounts steeper"},
+				{ID: "b", Text: "except for Premium"},
+			}},
+			want: http.StatusAccepted,
+		},
+		{
+			name: "mixed with text",
+			in:   bridge.Inbound{Peer: peer, Text: "hi", Messages: []bridge.InboundMessage{{ID: "a", Text: "x"}}},
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "mixed with attachments",
+			in: bridge.Inbound{Peer: peer, Attachments: []bridge.Attachment{{FileName: "f.txt"}},
+				Messages: []bridge.InboundMessage{{ID: "a", Text: "x"}}},
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "empty id",
+			in:   bridge.Inbound{Peer: peer, Messages: []bridge.InboundMessage{{ID: "a", Text: "x"}, {ID: "", Text: "y"}}},
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "empty text",
+			in:   bridge.Inbound{Peer: peer, Messages: []bridge.InboundMessage{{ID: "a", Text: ""}}},
+			want: http.StatusBadRequest,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _ := newOrchestratorForTest(t)
+			mux := http.NewServeMux()
+			svc.RegisterRoutes(mux)
+			server := httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+
+			body, _ := json.Marshal(tc.in)
+			resp, err := http.Post(server.URL+"/router/inbound", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatalf("POST: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tc.want {
+				t.Fatalf("status %d, want %d", resp.StatusCode, tc.want)
+			}
+			select {
+			case got := <-svc.inboundCh:
+				if tc.want != http.StatusAccepted {
+					t.Fatalf("rejected body was enqueued: %+v", got)
+				}
+				if len(got.Messages) != 2 || got.Messages[0].ID != "a" || got.Messages[1].ID != "b" {
+					t.Fatalf("batch did not land whole and in order: %+v", got.Messages)
+				}
+			default:
+				if tc.want == http.StatusAccepted {
+					t.Fatal("accepted batch did not land on inboundCh")
+				}
+			}
+		})
+	}
+}

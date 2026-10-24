@@ -27,6 +27,7 @@ type relayFrame struct {
 	Attachments []relayAttachmentMeta `json:"attachments,omitempty"`
 	Question    *relayQuestion        `json:"question,omitempty"`
 	Progress    *relayProgress        `json:"progress,omitempty"`
+	Delivered   *relayDelivered       `json:"delivered,omitempty"`
 	TS          int64                 `json:"ts"`
 }
 
@@ -72,12 +73,20 @@ type relayProgress struct {
 	ElapsedMs         int64  `json:"elapsedMs"`
 }
 
+// relayDelivered is the "delivered" sub-object of a relayFrame with
+// kind == "delivered": the ids of inbound messages (Inbound.Messages) that
+// reached the agent, in delivery order. Never empty.
+type relayDelivered struct {
+	MessageIDs []string `json:"messageIds"`
+}
+
 // relayKind values.
 const (
-	relayKindMessage  = "message"
-	relayKindAck      = "ack"
-	relayKindQuestion = "question"
-	relayKindProgress = "progress"
+	relayKindMessage   = "message"
+	relayKindAck       = "ack"
+	relayKindQuestion  = "question"
+	relayKindProgress  = "progress"
+	relayKindDelivered = "delivered"
 )
 
 // postRelay POSTs frame to the identity's relay endpoint with Basic auth

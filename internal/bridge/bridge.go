@@ -107,6 +107,12 @@ type Inbound struct {
 	Peer        PeerRef      `json:"peer"`
 	Text        string       `json:"text,omitempty"`
 	Attachments []Attachment `json:"attachments,omitempty"`
+	// Messages is a batch of messages, each with a sender-assigned id, sent
+	// in place of Text and Attachments (POST /router/inbound rejects a body
+	// that carries both). On an interactive session the batch enters the
+	// session's inbox as one unit, never answers a question, and every id is
+	// acknowledged once it reaches the agent (DeliveryAcker).
+	Messages []InboundMessage `json:"messages,omitempty"`
 	// AuthorID is the platform-reported author of the message (used in
 	// channel/thread contexts where a single binding row can receive
 	// messages from multiple users; the attribution prefix uses AuthorID
@@ -137,6 +143,15 @@ type Inbound struct {
 	// (openspec capability bridge-heartbeat). It is set only in-process by
 	// the heartbeat scheduler and is never decoded from /router/inbound.
 	Heartbeat *HeartbeatTurn `json:"-"`
+}
+
+// InboundMessage is one entry of Inbound.Messages.
+type InboundMessage struct {
+	// ID is the sender's id for the message, echoed back in the delivery
+	// acknowledgement. Required.
+	ID string `json:"id"`
+	// Text is the message body. Required.
+	Text string `json:"text"`
 }
 
 // HeartbeatTurn carries what the dispatcher needs to run a heartbeat turn
@@ -537,4 +552,18 @@ const (
 // consumer treats the run's final reply as its authoritative end.
 type ProgressRelayer interface {
 	SendProgress(ctx context.Context, peer PeerRef, p RunProgress) error
+}
+
+// DeliveryAcker is an optional interface adapters implement to tell their
+// peer which of its messages (Inbound.Messages ids) reached the agent.
+// Callers check with the ok-pattern:
+//
+//	if da, ok := adapter.(bridge.DeliveryAcker); ok { ... }
+//
+// Chat adapters do not implement it: a chat message carries no id, so
+// there is nothing to acknowledge. Delivery is best-effort; a sender that
+// gets no acknowledgement re-sends, and the bridge skips the repeat and
+// acknowledges it again.
+type DeliveryAcker interface {
+	SendDelivered(ctx context.Context, peer PeerRef, messageIDs []string) error
 }
