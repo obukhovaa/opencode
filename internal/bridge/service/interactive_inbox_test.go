@@ -323,6 +323,40 @@ func TestEnqueueBatch_QueuedIDNotDuplicated(t *testing.T) {
 	}
 }
 
+// Input cleared at step end is never acknowledged; a leftover chat message
+// gets a "not delivered" reply in its thread, a leftover with an id none.
+func TestUnbind_LeftoversNotAckedAndChatToldNotDelivered(t *testing.T) {
+	svc, r, ext, slack := newInboxTestService(t, true)
+	ctx := context.Background()
+	svc.dispatchInbound(ctx, batch("a"))
+	svc.dispatchInbound(ctx, bridge.Inbound{Peer: slackPeer, Text: "also lower the annual price"})
+	if n := r.box().Len("S1"); n != 2 {
+		t.Fatalf("setup: inbox len %d, want 2", n)
+	}
+
+	if err := svc.Unbind(ctx, "S1"); err != nil {
+		t.Fatalf("Unbind: %v", err)
+	}
+	waitFor(t, "not-delivered reply", func() bool { return len(slack.Sends()) == 1 })
+	got := slack.Sends()[0]
+	if got.Peer != slackPeer {
+		t.Fatalf("reply went to %+v, want the message's thread %+v", got.Peer, slackPeer)
+	}
+	if !strings.Contains(got.Text, "didn't reach the agent") || !strings.Contains(got.Text, "also lower the annual price") {
+		t.Fatalf("reply text = %q", got.Text)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if n := len(ext.Sends()); n != 0 {
+		t.Fatalf("id-carrying leftover got a notice (%d sends)", n)
+	}
+	if acks := ext.Acks(); len(acks) != 0 {
+		t.Fatalf("cleared input acknowledged: %v", acks)
+	}
+	if n := r.box().Len("S1"); n != 0 {
+		t.Fatalf("inbox not cleared: %d", n)
+	}
+}
+
 // Drained plain chat messages produce no acknowledgement.
 func TestOnInboxDelivered_PlainItemsNotAcked(t *testing.T) {
 	svc, r, ext, _ := newInboxTestService(t, true)

@@ -198,18 +198,21 @@ func (s *Service) Unbind(ctx context.Context, sessionID string, peers ...bridge.
 		return errors.New("bridge.Unbind: sessionID required")
 	}
 	if len(peers) == 0 {
+		// Drop any pending question / buffered reviewer messages for the
+		// session — the interactive step is over (OnInteractiveStepComplete
+		// unbinds with no peers), so nothing should drain into a future
+		// step that re-uses this session id. A chat message that never
+		// reached the agent gets a "not delivered" reply in its thread
+		// first; input with a message id is left to its sender, which
+		// re-sends anything never acknowledged. Cleared again after the
+		// bindings are gone, for input that raced in meanwhile.
+		s.clearInteractiveInbox(ctx, sessionID)
 		if err := s.store.DeleteBindingsBySession(ctx, s.projectID, sessionID); err != nil {
 			return err
 		}
 		s.invalidateSessionScopeCaches()
 		s.closeDispatcher(sessionID)
-		// Drop any pending question / buffered reviewer messages for the
-		// session — the interactive step is over (OnInteractiveStepComplete
-		// unbinds with no peers), so nothing should drain into a future
-		// step that re-uses this session id.
-		if s.questionRouter != nil {
-			_ = s.questionRouter.ClearSession(sessionID)
-		}
+		s.clearInteractiveInbox(ctx, sessionID)
 		return nil
 	}
 	for _, p := range peers {
@@ -223,4 +226,13 @@ func (s *Service) Unbind(ctx context.Context, sessionID string, peers ...bridge.
 	// so a concurrent Bind cannot race the teardown (see method docs).
 	s.closeDispatcherIfEmpty(ctx, sessionID)
 	return nil
+}
+
+// clearInteractiveInbox clears the session's pending question and inbox
+// and tells the senders of leftover chat messages they were not delivered.
+func (s *Service) clearInteractiveInbox(ctx context.Context, sessionID string) {
+	if s.questionRouter == nil {
+		return
+	}
+	s.questionRouter.notifyNotDelivered(ctx, sessionID, s.questionRouter.ClearSession(sessionID))
 }

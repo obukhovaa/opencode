@@ -286,6 +286,32 @@ func (r *QuestionRouter) notifyEvicted(ctx context.Context, sessionID string, ev
 	}
 }
 
+// notifyNotDelivered tells the sender of each leftover item without an id
+// that it never reached the agent (cd-5480 D9). Replies go to the
+// inbound's own peer, which on Slack and Mattermost is its thread.
+func (r *QuestionRouter) notifyNotDelivered(ctx context.Context, sessionID string, leftovers []inbox.Item) {
+	for _, it := range leftovers {
+		if it.ID != "" {
+			continue
+		}
+		in := itemInbound(it)
+		r.sendNoticeAsync(ctx, sessionID, in.Peer,
+			"Your message didn't reach the agent before this step ended — please resend it.\n> "+
+				noticeExcerpt(in.Text))
+	}
+}
+
+// noticeExcerptMax bounds the quoted excerpt in a not-delivered notice.
+const noticeExcerptMax = 200
+
+func noticeExcerpt(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if runeCount(text) > noticeExcerptMax {
+		return truncateRunes(text, noticeExcerptMax)
+	}
+	return text
+}
+
 // sendNoticeAsync sends a bridge notice to peer on a detached goroutine.
 // WithoutCancel keeps the caller's values (session scope, trace ids) while
 // detaching the lifetime, so the send is not cancelled the moment the
