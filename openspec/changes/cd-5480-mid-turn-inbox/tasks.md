@@ -19,13 +19,13 @@
 
 ## 4. Agent loop
 
-- [ ] 4.1 Drain after tool results, before the next model call: one `message.User` per item, appended to `msgHistory`; verify with an agent test using a scripted provider that the second request's tail is `[tool_result, user M1, user M2]`.
-- [ ] 4.2 Hold at the natural end turn and at accepted `struct_output` when the inbox is non-empty; verify tests for both (earlier `struct_output` survives when the model ends with text).
-- [ ] 4.3 No drain on the max-turns wrap-up turn; a hold cycle counts against `max_turns`; verify with a test that a reviewer cannot extend a run beyond `max_turns`.
+- [x] 4.1 Drain after tool results, before the next model call: one `message.User` per item, appended to `msgHistory`; verify with an agent test using a scripted provider that the second request's tail is `[tool_result, user M1, user M2]`.
+- [x] 4.2 Hold at the natural end turn and at accepted `struct_output` when the inbox is non-empty; verify tests for both (earlier `struct_output` survives when the model ends with text).
+- [x] 4.3 No drain on the max-turns wrap-up turn; a hold cycle counts against `max_turns`; verify with a test that a reviewer cannot extend a run beyond `max_turns`.
 
 ## 5. Acknowledgement
 
-- [ ] 5.1 Fire `OnDelivered` after each drain (stored items with an id) and for repeats skipped by the per-run set; bridge fans out to bindings through a new optional `DeliveryAcker` adapter capability; verify unit tests that cleared items are never acknowledged.
+- [x] 5.1 Fire `OnDelivered` after each drain (stored items with an id) and for repeats skipped by the per-run set; bridge fans out to bindings through a new optional `DeliveryAcker` adapter capability; verify unit tests that cleared items are never acknowledged.
 - [ ] 5.2 `external` adapter: relay frame `kind: "delivered"`, `delivered.messageIds`, no text; non-202 recorded as a failed send; verify with a relay test asserting the exact frame.
 
 ## 6. Docs and checks
