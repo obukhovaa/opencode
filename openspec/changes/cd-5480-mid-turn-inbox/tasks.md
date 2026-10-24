@@ -10,10 +10,12 @@
 - [ ] 2.1 Add `Messages []InboundMessage{ID, Text}` to `bridge.Inbound`; `/router/inbound` validates `messages` XOR `text`/attachments and non-empty ids/texts (400 otherwise); verify with `http_inbound_test.go` cases for valid batch, mixed body, empty id.
 - [ ] 2.2 `dispatchInbound` pushes a batch as one unit for interactive sessions; verify a test that a batch is never interleaved with a concurrent single.
 
-## 3. Question split
+## 3. Questions and repeats
 
-- [ ] 3.1 `TryHandleQuestionReply`: with a batch, push items 2..n before `Questions.Reply(item 1)` under `r.mu`; verify with a test that the remainder is in the inbox before Ask returns.
-- [ ] 3.2 `handleNewRequest` auto-answer leaves the remainder in the inbox (no longer cleared at step end unless undrained); verify the head-only regression test now expects M2 to be drained, not dropped.
+- [ ] 3.1 Add `Questions.Unanswered(requestID, note)` (tool result per design D3); verify a question-tool test that the result text is returned and no answer is recorded.
+- [ ] 3.2 `TryHandleQuestionReply` / `handleNewRequest`: id-carrying input closes the question as unanswered and is drained after it; plain text answers as today; id-less buffered input keeps the auto-answer with the remainder left in the inbox; verify tests for each path, including the head-only regression now draining M2.
+- [ ] 3.3 Per-run delivered-id set (design D8): repeats are skipped and re-acknowledged, a repeat-only batch never closes a question; verify unit tests across two steps of one run.
+- [ ] 3.4 Step end replies "not delivered" to each id-less leftover's peer before unbinding (design D9); verify a Slack-adapter test with a fake sender.
 
 ## 4. Agent loop
 
@@ -35,5 +37,5 @@
 ## Workflow follow-up
 
 - Push to the `fork` remote; the GitHub PR to the upstream repo waits for the product owner's OK on this proposal.
-- The PR description names the behaviour change for Slack and Mattermost reviewers on interactive steps (mid-turn delivery, no flag) and that no prompt change is included.
+- The PR description names the behaviour change for Slack and Mattermost reviewers on interactive steps (mid-turn delivery, "not delivered" reply at step end, no flag), the unanswered-close of questions for id-carrying input, and that no prompt change is included.
 - After merge and release, c2-agent bumps its opencode pin (CD-5481).

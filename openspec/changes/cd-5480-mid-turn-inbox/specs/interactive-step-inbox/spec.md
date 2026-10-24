@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines how reviewer input that arrives while an interactive flow step's agent is working reaches that agent mid-turn, in order and without loss inside the step, and how the bridge reports which input was delivered.
+Defines how reviewer input that arrives while an interactive flow step's agent is working reaches that agent mid-turn, in order, without loss and without repeats, and how the bridge reports which input was delivered and which was not.
 
 ## ADDED Requirements
 
@@ -20,7 +20,7 @@ An inbound for a session marked interactive that does not answer a pending quest
 
 ### Requirement: The agent loop SHALL drain the inbox after tool results and before the next model call
 
-After a turn's tool results are stored and before the next model call, the agent loop SHALL remove every item from the session's inbox and store each item as its own user message, in order. The loop SHALL NOT interrupt a model call or a tool call that is in progress.
+After a turn's tool results are stored and before the next model call, the agent loop SHALL remove every item from the session's inbox and store each item as its own user message, in order. This applies to every channel. The loop SHALL NOT interrupt a model call or a tool call that is in progress.
 
 #### Scenario: Two messages arrive during a tool call
 - **WHEN** M1 and M2 arrive while the agent's tool call T runs
@@ -36,7 +36,7 @@ After a turn's tool results are stored and before the next model call, the agent
 
 ### Requirement: A run SHALL NOT end while its inbox holds input
 
-When the model ends a turn without a tool call, or a `struct_output` is accepted, and the session's inbox is not empty, the run SHALL drain the inbox as above and run another cycle instead of finishing. An accepted `struct_output` stays captured unless the model emits a new one.
+When the model ends a turn without a tool call, or a `struct_output` is accepted, and the session's inbox is not empty, the run SHALL drain the inbox as above and run another cycle instead of finishing. An accepted `struct_output` stays captured unless the model emits a new one. `max_turns` is the only bound.
 
 #### Scenario: Input waits at a natural end turn
 - **WHEN** the model ends its turn with text and the inbox holds M1
@@ -46,17 +46,39 @@ When the model ends a turn without a tool call, or a `struct_output` is accepted
 - **WHEN** `struct_output` is accepted and the inbox holds M1
 - **THEN** M1 is stored as a user message, the model is called again, and if it ends without a new `struct_output` the earlier one is the run's output
 
-### Requirement: A pending question SHALL take only the first inbox item as its answer
+### Requirement: Queued input SHALL never answer a question
 
-When a question is pending, or is asked while the inbox holds input, the first item SHALL answer it and every other item SHALL stay in the inbox. Those items are drained right after the question's tool result.
+Input that carries a message id SHALL never become a question's answer. When such input arrives while a question is pending, or a question is asked while such input waits, the bridge SHALL close the question as unanswered. The result tells the agent the user has not answered and has sent messages, and the input follows that result as user messages. Input with only already delivered ids SHALL NOT close a question.
 
-#### Scenario: Batch arrives while a question is pending
-- **WHEN** a batch of M1, M2 and M3 arrives while question Q is pending
-- **THEN** M1 is Q's answer and the next model request ends with Q's result followed by user messages M2 and M3
+#### Scenario: Queued batch arrives while a question is pending
+- **WHEN** a batch of M1 and M2 (with ids) arrives while question Q is pending
+- **THEN** Q's tool result states that the user has not answered and sent messages, followed by user messages M1 and M2
+- **AND** neither M1 nor M2 is recorded as Q's answer
 
-#### Scenario: Question asked with buffered input
-- **WHEN** the agent asks question Q while the inbox holds M1 and M2
-- **THEN** Q is answered with M1 without being shown to the peers, and M2 follows Q's result as a user message
+#### Scenario: Question asked while queued input waits
+- **WHEN** the agent asks question Q while the inbox holds M1 (with an id)
+- **THEN** Q is closed as unanswered without being shown to the peers, and M1 follows Q's result as a user message
+
+#### Scenario: Only repeats arrive while a question is pending
+- **WHEN** a batch whose ids were all delivered earlier in the run arrives while Q is pending
+- **THEN** Q stays pending and the ids are acknowledged again
+
+### Requirement: Plain-text input SHALL answer a pending question as before
+
+An inbound without message ids (a typed message, a button click or a suggestion chip sent as plain text) that arrives while a question is pending SHALL answer it exactly as today.
+
+#### Scenario: Typed answer
+- **WHEN** a plain-text inbound "Approve" arrives while question Q is pending
+- **THEN** "Approve" is Q's answer
+
+### Requirement: Each message id SHALL reach the agent at most once per run
+
+The bridge SHALL remember, per bound run peer, the message ids it has delivered to the agent, across the run's steps. An id delivered before SHALL be skipped and still acknowledged as delivered. The memory MAY be lost on a pod restart.
+
+#### Scenario: Re-sent batch after a lost acknowledgement
+- **GIVEN** M1 (id a) was delivered in step S1 and its acknowledgement was lost
+- **WHEN** the sender re-sends M1 during step S2 of the same run
+- **THEN** M1 is not stored again and id a is acknowledged as delivered
 
 ### Requirement: Inbox drains SHALL count against the turn budget only when they add a model call
 
@@ -68,7 +90,7 @@ A drain at a tool boundary SHALL NOT consume turn budget of its own. A cycle tha
 
 ### Requirement: The bridge SHALL acknowledge delivered input that carries an id
 
-When inbox items that carry an id become part of the session, either as a question answer or as drained user messages, the bridge SHALL report their ids, in order, to the session's bound peers through any adapter that supports delivery acknowledgements. Input cleared without delivery SHALL NOT be acknowledged.
+When inbox items that carry an id become part of the session, the bridge SHALL report their ids, in order, to the session's bound peers through any adapter that supports delivery acknowledgements. Input cleared without delivery SHALL NOT be acknowledged.
 
 #### Scenario: Drained batch acknowledged
 - **WHEN** M1 (id a) and M2 (id b) are drained into the session
@@ -77,6 +99,15 @@ When inbox items that carry an id become part of the session, either as a questi
 #### Scenario: Cleared input not acknowledged
 - **WHEN** the step ends while the inbox still holds M1 (id a)
 - **THEN** no acknowledgement names a
+
+### Requirement: Chat-platform input left at step end SHALL be reported as not delivered
+
+When an interactive step ends while its inbox still holds input without a message id (a Slack or Mattermost message), the bridge SHALL reply to that message's peer, in its thread, that it was not delivered and should be resent, before the step's bindings are removed. Input with a message id gets no such reply.
+
+#### Scenario: Slack message left at step end
+- **GIVEN** a Slack reviewer's message M1 still in the inbox
+- **WHEN** the interactive step ends
+- **THEN** the reviewer gets a short reply in the thread saying M1 was not delivered
 
 ### Requirement: The external adapter SHALL relay delivery acknowledgements as a `delivered` frame
 
