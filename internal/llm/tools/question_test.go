@@ -21,6 +21,7 @@ func (m *mockQuestionService) Ask(ctx context.Context, sessionID string, questio
 
 func (m *mockQuestionService) Reply(_ string, _ [][]string) error { return nil }
 func (m *mockQuestionService) Reject(_ string) error              { return nil }
+func (m *mockQuestionService) Unanswered(_, _ string) error       { return nil }
 func (m *mockQuestionService) List() []question.Request           { return nil }
 func (m *mockQuestionService) Subscribe(_ context.Context) <-chan pubsub.Event[question.Request] {
 	return nil
@@ -337,4 +338,29 @@ func TestQuestionToolUnattendedInteractiveStillAsks(t *testing.T) {
 		unattended:   map[string]bool{"test-session": true},
 		interactive:  map[string]bool{"test-session": true},
 	})
+}
+
+// TestQuestionToolRun_Unanswered checks that a question closed as
+// unanswered returns the note as a plain (non-error) result.
+func TestQuestionToolRun_Unanswered(t *testing.T) {
+	const note = "The user has not answered this question yet; they sent the messages that follow."
+	svc := &mockQuestionService{askFn: func(_ context.Context, _ string, _ []question.Prompt) ([][]string, error) {
+		return nil, &question.UnansweredError{Note: note}
+	}}
+	tool := NewQuestionTool(svc, nil)
+	input, _ := json.Marshal(questionParams{Questions: []question.Prompt{{
+		Question: "Pick one",
+		Options:  []question.Option{{Label: "A"}, {Label: "B"}},
+	}}})
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	resp, err := tool.Run(ctx, ToolCall{ID: "1", Name: QuestionToolName, Input: string(input)})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.IsError {
+		t.Fatalf("unanswered close reported as an error: %s", resp.Content)
+	}
+	if resp.Content != note {
+		t.Fatalf("content = %q, want the note", resp.Content)
+	}
 }

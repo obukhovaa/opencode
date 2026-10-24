@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -140,6 +141,12 @@ func (q *questionTool) Run(ctx context.Context, call ToolCall) (ToolResponse, er
 
 	answers, err := q.service.Ask(ctx, sessionID, params.Questions)
 	if err != nil {
+		// A question closed as unanswered is not a failure: the user spoke
+		// about something else, and the note says so.
+		var unanswered *question.UnansweredError
+		if errors.As(err, &unanswered) {
+			return NewTextResponse(unanswered.Note), nil
+		}
 		return NewTextErrorResponse("The user dismissed the question"), nil
 	}
 

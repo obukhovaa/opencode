@@ -12,7 +12,7 @@
 
 ## 3. Questions and repeats
 
-- [ ] 3.1 Add `Questions.Unanswered(requestID, note)` (tool result per design D3); verify a question-tool test that the result text is returned and no answer is recorded.
+- [x] 3.1 Add `Questions.Unanswered(requestID, note)` (tool result per design D3); verify a question-tool test that the result text is returned and no answer is recorded.
 - [ ] 3.2 `TryHandleQuestionReply` / `handleNewRequest`: id-carrying input closes the question as unanswered and is drained after it; plain text answers as today; id-less buffered input keeps the auto-answer with the remainder left in the inbox; verify tests for each path, including the head-only regression now draining M2.
 - [ ] 3.3 Per-run delivered-id set (design D8): repeats are skipped and re-acknowledged, a repeat-only batch never closes a question; verify unit tests across two steps of one run.
 - [ ] 3.4 Step end replies "not delivered" to each id-less leftover's peer before unbinding (design D9); verify a Slack-adapter test with a fake sender.
