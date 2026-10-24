@@ -35,4 +35,5 @@
 ## Workflow follow-up
 
 - Push to the `fork` remote; the GitHub PR to the upstream repo waits for the product owner's OK on this proposal.
+- The PR description names the behaviour change for Slack and Mattermost reviewers on interactive steps (mid-turn delivery, no flag) and that no prompt change is included.
 - After merge and release, c2-agent bumps its opencode pin (CD-5481).

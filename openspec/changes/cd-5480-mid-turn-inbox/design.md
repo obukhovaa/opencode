@@ -15,7 +15,7 @@
 - Interrupting a model stream or a tool call.
 - Surviving step end. Input still waiting when the step ends is cleared, as today. The sender keeps it, because it was never acknowledged, and re-sends it to the next interactive step.
 - Persisting the inbox, or delivering into non-interactive sessions, daemons or the TUI. The TUI already has its own `chat-message-queue`.
-- Agent prompt changes.
+- Agent prompt changes. Guidance on how to treat a mid-turn user message is added only once a real run shows an agent mishandling one, and not before.
 
 ## Decisions
 
@@ -42,8 +42,8 @@ The `QuestionRouter.buffered` map, its cap and its overflow notice move into a s
 ### D6. Turn budget
 Tool-boundary drains add no model call. A run-end hold adds exactly one cycle, counted by the existing `cycles` / `outerCycles` budget, so a reviewer cannot keep a run alive past `max_turns`.
 
-### D7. All channels, no flag
-The drain applies to every interactive session, Slack and Mattermost reviewers included. Their mid-turn messages now reach the agent at the next boundary instead of waiting for the next question, and they are no longer dropped after the first. No config toggle is added. Reviewers flag it in the PR if a flow depends on the old wait-for-question behaviour.
+### D7. All channels, no flag (decided)
+The drain applies to every interactive session, Slack and Mattermost reviewers included. Their mid-turn messages now reach the agent at the next boundary instead of waiting for the next question, and they are no longer dropped after the first. No config toggle is added. This is a product decision, not an open point. The PR description states it plainly, so a flow owner who depends on the old wait-for-question behaviour can see it.
 
 ## Risks / Trade-offs
 

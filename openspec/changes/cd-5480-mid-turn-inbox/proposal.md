@@ -11,6 +11,7 @@ On an interactive flow step, a reviewer's message that arrives while the agent w
 - **Question answers keep the rest.** When a question is pending, or is asked while input is buffered, the first item answers it and every other item stays in the inbox. The loop drains them right after the question's tool result. The buffer is no longer consumed one head at a time.
 - **Batched inbound with ids.** `POST /router/inbound` accepts an optional `messages: [{id, text}]` array as an alternative to `text`. The batch enters the inbox atomically, so a pending question cannot split it.
 - **Delivery acknowledgement.** When items with an id become part of the session, either as a question answer or as drained user messages, the bridge reports them to the bound peers. The `external` adapter sends a new relay frame, `kind: "delivered"` with `delivered.messageIds`. Chat adapters ignore it.
+- **Every chat channel, no flag.** The same mid-turn delivery applies to interactive steps bound to Slack and Mattermost reviewers, not only to the `external` channel. Their mid-turn messages reach the agent at the next boundary instead of waiting for the next question, and they are no longer dropped after the first. Nothing gates it in config. This is a deliberate behaviour change for every interactive flow.
 - **Turn budget.** A drain at a tool boundary rides the next model call and costs nothing extra. A cycle that only exists because the inbox held input counts against `max_turns` like any other cycle. The forced max-turns wrap-up turn never drains, so input still waiting at that point stays unacknowledged.
 
 ## Capabilities
@@ -27,4 +28,5 @@ On an interactive flow step, a reviewer's message that arrives while the agent w
 - `internal/llm/agent/agent.go` inner and outer loop: one drain seam after tool results, plus a hold at the two run-end points.
 - New leaf package for the per-session inbox, shared by the bridge and the agent loop without either importing the other.
 - No config field, so the `.opencode.json` schema is unchanged. Non-interactive sessions, daemons and TUI sessions are unaffected because their inbox is always empty.
-- Wire: additive. An orchestrator that never sends `messages` keeps today's behaviour, apart from mid-turn delivery of buffered input (see design).
+- Wire: additive. An orchestrator that never sends `messages` keeps today's behaviour, apart from mid-turn delivery of buffered input on every channel (see design D7).
+- No agent prompt change: guidance on mid-turn user messages is deferred until a real run shows a need.

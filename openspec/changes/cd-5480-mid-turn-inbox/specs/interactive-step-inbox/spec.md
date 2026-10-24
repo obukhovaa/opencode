@@ -26,6 +26,10 @@ After a turn's tool results are stored and before the next model call, the agent
 - **WHEN** M1 and M2 arrive while the agent's tool call T runs
 - **THEN** the next model request ends with T's result followed by user message M1 and user message M2, with no assistant message or tool call between M1 and M2
 
+#### Scenario: Slack reviewer on an interactive step
+- **WHEN** a Slack-bound reviewer of interactive session S sends M1 while the agent's tool call T runs
+- **THEN** the next model request ends with T's result followed by user message M1, exactly as for any other channel
+
 #### Scenario: Message arrives during streaming
 - **WHEN** M1 arrives while the model is streaming a response
 - **THEN** the stream completes undisturbed and M1 is drained at the next tool boundary or turn end
