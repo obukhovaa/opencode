@@ -20,16 +20,13 @@ import (
 // goroutine).
 func newBufferRouter(svc *Service) *QuestionRouter {
 	return &QuestionRouter{
-		svc:      svc,
-		pending:  map[string]*pendingQuestion{},
-		buffered: map[string][]bridge.Inbound{},
+		svc:     svc,
+		pending: map[string]*pendingQuestion{},
 	}
 }
 
 func (r *QuestionRouter) bufferedLen(sessionID string) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.buffered[sessionID])
+	return r.box().Len(sessionID)
 }
 
 // TestBufferInbound_FIFOAndDropOldest verifies the queue is FIFO and drops
@@ -65,8 +62,8 @@ func TestClearSession_DropsPendingAndBuffered(t *testing.T) {
 
 	r.mu.Lock()
 	_, hasPending := r.pending["S1"]
-	nBuf := len(r.buffered["S1"])
 	r.mu.Unlock()
+	nBuf := r.box().Len("S1")
 	if hasPending {
 		t.Error("pending not cleared")
 	}

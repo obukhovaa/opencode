@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/inbox"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/question"
@@ -67,14 +68,14 @@ type QuestionRouter struct {
 	mu      sync.Mutex
 	pending map[string]*pendingQuestion // sessionID → pending
 
-	// buffered holds reviewer messages that arrived for an interactive
-	// flow session while no question was pending. dispatchInbound queues
-	// them here (instead of dispatching to app.ActiveAgent(), which would
-	// hijack the interactive step with the workspace default agent);
-	// handleNewRequest drains the head into the next question the flow
-	// agent asks. FIFO, guarded by mu, capped at
-	// interactiveInboundBufferCap.
-	buffered map[string][]bridge.Inbound // sessionID → queued inbounds
+	// inbox holds reviewer messages that arrived for an interactive flow
+	// session while no question was pending. dispatchInbound queues them
+	// there (instead of dispatching to app.ActiveAgent(), which would
+	// hijack the interactive step with the workspace default agent).
+	// Each item's Meta is the original bridge.Inbound. In production it is
+	// inbox.Default(), the box the agent loop drains; nil means a private
+	// box created on first use (see box).
+	inbox *inbox.Box
 
 	// recentlyAnswered caches answered (projectID, sessionID, label) → time
 	// for the stale-click suppression window. Populated on Reply, swept on
@@ -103,9 +104,9 @@ type pendingQuestion struct {
 // goroutine. The router stays alive for the lifetime of Service.
 func (s *Service) newQuestionRouter() *QuestionRouter {
 	r := &QuestionRouter{
-		svc:      s,
-		pending:  make(map[string]*pendingQuestion),
-		buffered: make(map[string][]bridge.Inbound),
+		svc:     s,
+		pending: make(map[string]*pendingQuestion),
+		inbox:   routerInbox(),
 	}
 	if s.app != nil && s.app.Questions != nil {
 		s.launchSupervised("question-router", r.run)
@@ -113,6 +114,27 @@ func (s *Service) newQuestionRouter() *QuestionRouter {
 		s.launchSupervised("question-nudger", r.runNudger)
 	}
 	return r
+}
+
+// routerInbox picks the inbox a new QuestionRouter queues into. It is a
+// variable so the package's tests can give every router its own box
+// instead of sharing the process-wide one across tests.
+var routerInbox = inbox.Default
+
+// box returns the router's inbox, creating a private one for a router
+// built without one (tests construct QuestionRouter literals).
+func (r *QuestionRouter) box() *inbox.Box {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.boxLocked()
+}
+
+// boxLocked is box for a caller that holds r.mu.
+func (r *QuestionRouter) boxLocked() *inbox.Box {
+	if r.inbox == nil {
+		r.inbox = inbox.New(interactiveInboundBufferCap)
+	}
+	return r.inbox
 }
 
 // runSweeper evicts recentlyAnswered entries older than the TTL. Stops
@@ -477,17 +499,16 @@ func formatAnswerAck(answers [][]string) string {
 // lost.
 func (r *QuestionRouter) BufferInbound(ctx context.Context, sessionID string, in bridge.Inbound) {
 	r.mu.Lock()
-	q := r.buffered[sessionID]
+	evictedItems := r.boxLocked().Push(sessionID, nil, inbox.Item{Text: in.Text, Meta: in})
+	r.mu.Unlock()
 	var evicted *bridge.Inbound
-	if len(q) >= interactiveInboundBufferCap {
+	if len(evictedItems) > 0 {
 		logging.Warn("bridge: interactive inbound buffer full — dropping oldest",
 			"session", sessionID, "cap", interactiveInboundBufferCap)
-		e := q[0]
-		evicted = &e
-		q = q[1:]
+		if e, ok := evictedItems[0].Meta.(bridge.Inbound); ok {
+			evicted = &e
+		}
 	}
-	r.buffered[sessionID] = append(q, in)
-	r.mu.Unlock()
 
 	if evicted != nil && r.svc != nil {
 		// Fire-and-forget: BufferInbound runs on the SHARED
@@ -522,16 +543,11 @@ func (r *QuestionRouter) BufferInbound(ctx context.Context, sessionID string, in
 // popBufferedLocked removes and returns the oldest buffered inbound for
 // the session. Caller MUST hold r.mu.
 func (r *QuestionRouter) popBufferedLocked(sessionID string) (bridge.Inbound, bool) {
-	q := r.buffered[sessionID]
-	if len(q) == 0 {
+	it, ok := r.boxLocked().PopFirst(sessionID)
+	if !ok {
 		return bridge.Inbound{}, false
 	}
-	in := q[0]
-	if len(q) == 1 {
-		delete(r.buffered, sessionID)
-	} else {
-		r.buffered[sessionID] = q[1:]
-	}
+	in, _ := it.Meta.(bridge.Inbound)
 	return in, true
 }
 
@@ -542,7 +558,7 @@ func (r *QuestionRouter) ClearSession(sessionID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.pending, sessionID)
-	delete(r.buffered, sessionID)
+	r.boxLocked().Clear(sessionID)
 }
 
 // runNudger periodically re-surfaces questions that have gone unanswered
