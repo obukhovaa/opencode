@@ -362,6 +362,44 @@ func (a *Adapter) SendProgress(ctx context.Context, peer bridge.PeerRef, p bridg
 	return nil
 }
 
+// Compile-time assertion: Adapter implements bridge.DeliveryAcker. The
+// bridge service finds it by type assertion, so a signature drift would
+// otherwise silently stop delivery acknowledgements.
+var _ bridge.DeliveryAcker = (*Adapter)(nil)
+
+// SendDelivered implements bridge.DeliveryAcker. Builds a "delivered"
+// relay frame naming the inbound message ids that reached the agent, so
+// the sender can stop holding them for a re-send. It carries no text.
+func (a *Adapter) SendDelivered(ctx context.Context, peer bridge.PeerRef, messageIDs []string) error {
+	if a.disabled {
+		return a.errDisabled()
+	}
+	if len(messageIDs) == 0 {
+		return errors.New("bridge/external: SendDelivered requires at least one message id")
+	}
+
+	sessionID, ok := bridge.SessionIDFromContext(ctx)
+	if !ok {
+		logging.Debug("bridge/external: SendDelivered called with no sessionId on context — relaying with empty sessionId",
+			"identity", a.identityID)
+	}
+
+	frame := relayFrame{
+		JobID:     a.currentJobID(),
+		Peer:      peer,
+		SessionID: sessionID,
+		Kind:      relayKindDelivered,
+		Delivered: &relayDelivered{MessageIDs: append([]string(nil), messageIDs...)},
+		TS:        nowUnixMilli(),
+	}
+
+	if err := a.postRelay(ctx, frame); err != nil {
+		a.recordFailure(err)
+		return err
+	}
+	return nil
+}
+
 // recordFailure updates lastFailureAt / lastError without changing the
 // adapter's disabled/running status — per-send delivery failures don't
 // degrade the adapter as a whole (mirrors mattermost.Adapter.recordFailure).
