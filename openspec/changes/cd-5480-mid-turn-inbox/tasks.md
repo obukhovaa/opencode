@@ -2,7 +2,7 @@
 
 ## 1. Inbox package
 
-- [ ] 1.1 Add `internal/inbox` with per-session FIFO `Push` (atomic for a batch), `PopFirst`, `DrainAll`, `Clear`, the cap-16 drop-oldest overflow callback and an `OnDelivered` hook; verify with table-driven unit tests for ordering, atomic batches, overflow and concurrent push/drain under `-race`.
+- [x] 1.1 Add `internal/inbox` with per-session FIFO `Push` (atomic for a batch), `PopFirst`, `DrainAll`, `Clear`, the cap-16 drop-oldest overflow callback and an `OnDelivered` hook; verify with table-driven unit tests for ordering, atomic batches, overflow and concurrent push/drain under `-race`.
 - [ ] 1.2 Move `QuestionRouter.buffered` onto the inbox (BufferInbound → Push, popBufferedLocked → PopFirst, ClearSession → Clear) with no behaviour change yet; verify `go test ./internal/bridge/...` stays green, including `interactive_buffer_test.go`.
 
 ## 2. Wire shape
