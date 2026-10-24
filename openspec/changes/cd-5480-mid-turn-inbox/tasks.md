@@ -32,10 +32,19 @@
 
 - [x] 6.1 Update `docs/bridge.md` (interactive inbox, batched inbound, delivered frame) and `docs/flows.md` (mid-turn reviewer input on interactive steps); verify the docs describe the drain points and the budget rule.
 - [x] 6.2 Add an e2e script under `scripts/test/` driving an interactive step: two inbound messages during a tool call reach the next request as consecutive user messages and produce one `delivered` frame; verify `make test-e2e`.
-- [ ] 6.3 `make test` green (schema unchanged: no `Config` field added).
+- [x] 6.3 `make test` green (schema unchanged: no `Config` field added).
 
 ## Workflow follow-up
 
-- Push to the `fork` remote; the GitHub PR to the upstream repo waits for the product owner's OK on this proposal.
+- Push to the `fork` remote; the GitHub PR to the upstream repo waits for the product owner's OK on this proposal. (OK given 2026-10-24.)
 - The PR description names the behaviour change for Slack and Mattermost reviewers on interactive steps (mid-turn delivery, "not delivered" reply at step end, no flag), the unanswered-close of questions for id-carrying input, and that no prompt change is included.
 - After merge and release, c2-agent bumps its opencode pin (CD-5481).
+
+## Implementation notes
+
+- 1.1: overflow is reported by `Push` returning the evicted items rather than through a callback; the delivery hook is registered per session on `Push` and dropped by `Clear`.
+- 3.4: the overflow notice is now sent only for evicted items without an id, like the step-end notice; an evicted id is never acknowledged, so its sender re-sends it.
+- 4.2: after a reopen, only a `struct_output` emitted in the current turn ends the run early; a plain tool call no longer finishes it on the earlier output.
+- 2.2: a `messages` batch for a session that no interactive step owns (outside pool mode) is joined into one prompt for the dispatcher and acknowledged when queued.
+- 6.2: like `struct_output.sh`, the e2e gate wraps `go test` on the real subsystems, since the agent loop has no exported seam for a fake provider.
+- 6.3: `make test` is green apart from two failures unrelated to this change and seen on the base commit or under load: `TestGenerationInputGateFromLoadedConfig` needs `LANGFUSE_PUBLIC_KEY` in the environment, and `TestExec_TimeoutKillsProcessGroup` is timing-sensitive and passes on rerun.
