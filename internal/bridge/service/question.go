@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/inbox"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/question"
@@ -67,14 +68,14 @@ type QuestionRouter struct {
 	mu      sync.Mutex
 	pending map[string]*pendingQuestion // sessionID → pending
 
-	// buffered holds reviewer messages that arrived for an interactive
-	// flow session while no question was pending. dispatchInbound queues
-	// them here (instead of dispatching to app.ActiveAgent(), which would
-	// hijack the interactive step with the workspace default agent);
-	// handleNewRequest drains the head into the next question the flow
-	// agent asks. FIFO, guarded by mu, capped at
-	// interactiveInboundBufferCap.
-	buffered map[string][]bridge.Inbound // sessionID → queued inbounds
+	// inbox holds reviewer messages that arrived for an interactive flow
+	// session while no question was pending. dispatchInbound queues them
+	// there (instead of dispatching to app.ActiveAgent(), which would
+	// hijack the interactive step with the workspace default agent).
+	// Each item's Meta is the original bridge.Inbound. In production it is
+	// inbox.Default(), the box the agent loop drains; nil means a private
+	// box created on first use (see box).
+	inbox *inbox.Box
 
 	// recentlyAnswered caches answered (projectID, sessionID, label) → time
 	// for the stale-click suppression window. Populated on Reply, swept on
@@ -103,9 +104,9 @@ type pendingQuestion struct {
 // goroutine. The router stays alive for the lifetime of Service.
 func (s *Service) newQuestionRouter() *QuestionRouter {
 	r := &QuestionRouter{
-		svc:      s,
-		pending:  make(map[string]*pendingQuestion),
-		buffered: make(map[string][]bridge.Inbound),
+		svc:     s,
+		pending: make(map[string]*pendingQuestion),
+		inbox:   routerInbox(),
 	}
 	if s.app != nil && s.app.Questions != nil {
 		s.launchSupervised("question-router", r.run)
@@ -113,6 +114,27 @@ func (s *Service) newQuestionRouter() *QuestionRouter {
 		s.launchSupervised("question-nudger", r.runNudger)
 	}
 	return r
+}
+
+// routerInbox picks the inbox a new QuestionRouter queues into. It is a
+// variable so the package's tests can give every router its own box
+// instead of sharing the process-wide one across tests.
+var routerInbox = inbox.Default
+
+// box returns the router's inbox, creating a private one for a router
+// built without one (tests construct QuestionRouter literals).
+func (r *QuestionRouter) box() *inbox.Box {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.boxLocked()
+}
+
+// boxLocked is box for a caller that holds r.mu.
+func (r *QuestionRouter) boxLocked() *inbox.Box {
+	if r.inbox == nil {
+		r.inbox = inbox.New(interactiveInboundBufferCap)
+	}
+	return r.inbox
 }
 
 // runSweeper evicts recentlyAnswered entries older than the TTL. Stops
@@ -234,10 +256,30 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 	}
 	r.mu.Lock()
 	r.pending[req.SessionID] = pend
-	// Drain any reviewer message buffered while no question was pending
-	// (dispatchInbound → BufferInbound for interactive sessions). Claim
-	// the just-registered pending entry in the SAME critical section so a
-	// racing live reply cannot double-consume the question.
+	// Queued input (messages with an id) never answers a question: the
+	// question closes as unanswered without reaching the peers, and the
+	// agent reads the queue right after its result (cd-5480 D3). Holding
+	// the question open instead would deadlock a UI that keeps its answer
+	// controls disabled until its queue has drained.
+	if r.boxLocked().Any(req.SessionID, func(it inbox.Item) bool { return it.ID != "" }) &&
+		r.svc.app != nil && r.svc.app.Questions != nil {
+		delete(r.pending, req.SessionID)
+		err := r.svc.app.Questions.Unanswered(pend.requestID, unansweredQuestionNote)
+		if err == nil {
+			r.mu.Unlock()
+			logging.Info("bridge: question closed as unanswered — queued input is waiting",
+				"session", req.SessionID, "reqID", pend.requestID)
+			return
+		}
+		logging.Warn("bridge: closing question as unanswered failed — falling back to fan-out",
+			"session", req.SessionID, "reqID", pend.requestID, "err", err)
+		r.pending[req.SessionID] = pend
+	}
+	// Answer from the head of the plain reviewer messages buffered while no
+	// question was pending (dispatchInbound → BufferInbound for interactive
+	// sessions); the rest stay queued for the agent loop to drain after the
+	// answer. Claim the just-registered pending entry in the SAME critical
+	// section so a racing live reply cannot double-consume the question.
 	buffered, hasBuffered := r.popBufferedLocked(req.SessionID)
 	if hasBuffered {
 		delete(r.pending, req.SessionID)
@@ -459,9 +501,10 @@ func formatAnswerAck(answers [][]string) string {
 }
 
 // BufferInbound queues a reviewer message that arrived for an
-// interactive flow session while no question was pending. The next
-// question the flow agent asks (handleNewRequest) is auto-answered from
-// the head of this queue.
+// interactive flow session while no question was pending. The agent loop
+// drains the queue into the session as user messages at its next tool or
+// turn boundary; a question asked first is auto-answered from the head of
+// the queue (handleNewRequest).
 //
 // Without this, dispatchInbound would fall through to the per-session
 // dispatcher and start a SEPARATE app.ActiveAgent() run — the workspace
@@ -476,73 +519,37 @@ func formatAnswerAck(answers [][]string) string {
 // occurs, the evicted peer is notified so their message is not silently
 // lost.
 func (r *QuestionRouter) BufferInbound(ctx context.Context, sessionID string, in bridge.Inbound) {
+	item := inboxItem("", in, r.svc.sessionPeerCount(ctx, sessionID))
+	var hook inbox.DeliveredFunc
+	if r.svc != nil {
+		hook = r.svc.onInboxDelivered
+	}
 	r.mu.Lock()
-	q := r.buffered[sessionID]
-	var evicted *bridge.Inbound
-	if len(q) >= interactiveInboundBufferCap {
-		logging.Warn("bridge: interactive inbound buffer full — dropping oldest",
-			"session", sessionID, "cap", interactiveInboundBufferCap)
-		e := q[0]
-		evicted = &e
-		q = q[1:]
-	}
-	r.buffered[sessionID] = append(q, in)
+	evicted := r.boxLocked().Push(sessionID, hook, item)
 	r.mu.Unlock()
-
-	if evicted != nil && r.svc != nil {
-		// Fire-and-forget: BufferInbound runs on the SHARED
-		// orchestrator-inbound-dispatch goroutine (Service.runInboundLoop →
-		// dispatchInbound), so a synchronous platform send here stalls inbound
-		// dispatch for every session and identity for the duration of the call.
-		// That is worst for the orchestrator-mediated external channel, whose
-		// Send is an HTTP round-trip back to the orchestrator (10 s timeout).
-		// Mirrors emitToolUpdate's fire-and-forget posture in dispatch.go.
-		peer := evicted.Peer
-		// WithoutCancel keeps the caller's values (session scope, trace ids)
-		// while detaching the lifetime, so the send is not cancelled the moment
-		// dispatchInbound returns. Deliberately not r.svc.ctx: that is only set
-		// in Service.Start, and a nil ctx here would panic inside replyToPeer.
-		sendCtx := context.WithoutCancel(ctx)
-		go func() {
-			defer func() {
-				if rec := recover(); rec != nil {
-					logging.Warn("bridge: buffer-eviction notice panic",
-						"session", sessionID, "panic", rec)
-				}
-			}()
-			r.svc.replyToPeer(sendCtx, peer,
-				"bridge: your earlier message was lost because too many messages were buffered "+
-					"while the interactive step had no pending question. "+
-					"Please resend it once the current step completes.",
-				false, sessionID)
-		}()
-	}
+	r.notifyEvicted(ctx, sessionID, evicted)
 }
 
 // popBufferedLocked removes and returns the oldest buffered inbound for
 // the session. Caller MUST hold r.mu.
 func (r *QuestionRouter) popBufferedLocked(sessionID string) (bridge.Inbound, bool) {
-	q := r.buffered[sessionID]
-	if len(q) == 0 {
+	it, ok := r.boxLocked().PopFirst(sessionID)
+	if !ok {
 		return bridge.Inbound{}, false
 	}
-	in := q[0]
-	if len(q) == 1 {
-		delete(r.buffered, sessionID)
-	} else {
-		r.buffered[sessionID] = q[1:]
-	}
+	in, _ := it.Meta.(bridge.Inbound)
 	return in, true
 }
 
 // ClearSession drops the pending question and any buffered inbounds for
-// the session. Called from Unbind at interactive-step completion so a
-// later step (or a re-used session id) never inherits stale state.
-func (r *QuestionRouter) ClearSession(sessionID string) {
+// the session and returns the inbounds that never reached the agent.
+// Called from Unbind at interactive-step completion so a later step (or a
+// re-used session id) never inherits stale state.
+func (r *QuestionRouter) ClearSession(sessionID string) []inbox.Item {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.pending, sessionID)
-	delete(r.buffered, sessionID)
+	return r.boxLocked().Clear(sessionID)
 }
 
 // runNudger periodically re-surfaces questions that have gone unanswered

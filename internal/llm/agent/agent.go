@@ -20,6 +20,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/contextfile"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/hooks"
+	"github.com/opencode-ai/opencode/internal/inbox"
 	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/prompt"
@@ -1104,6 +1105,16 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	structOutputIsErr := true
 	cycles := 0
 	preserveTail := false
+	// preservedTail is what a compaction re-appends after the summary when
+	// preserveTail is set: the last cycle's assistant message, its tool
+	// results, and any reviewer input drained after them.
+	var preservedTail []message.Message
+	// structOutputReopened is set when reviewer input arrived after an
+	// accepted struct_output and the run took another cycle for it. From
+	// then on only a struct_output emitted in the current turn finishes the
+	// run early; otherwise the model works until it ends its turn, and the
+	// earlier struct_output stays the run's output.
+	structOutputReopened := false
 
 	// Deferred tools: backfill session activation from replayed tool-search
 	// parts (native-path sessions resumed after a process restart), then
@@ -1162,7 +1173,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		// Preserve original problem and result from the last tool iteration to ensure no dead-loop
 		if preserveTail {
 			preserveTail = false
-			msgHistory = append(msgs, agentMessage, *toolResults)
+			msgHistory = append(msgs, preservedTail...)
 		} else if hasUserTurn {
 			msgHistory = append(msgs, userMsg)
 		} else {
@@ -1484,6 +1495,16 @@ OuterLoop:
 				}
 
 				msgHistory = append(msgHistory, agentMessage, *toolResults)
+				preservedTail = []message.Message{agentMessage, *toolResults}
+
+				// Reviewer input that reached an interactive step's inbox
+				// while this turn ran follows the tool results as user
+				// messages, so the next model call reads it. Nothing is
+				// streaming or executing here, and the tool_use → tool_result
+				// pairing stays intact.
+				drained := a.drainInbox(ctx, sessionID)
+				msgHistory = append(msgHistory, drained...)
+				preservedTail = append(preservedTail, drained...)
 
 				// struct_output is contractually the model's terminal tool call:
 				// the accepted result IS the run's output and nothing downstream
@@ -1502,7 +1523,14 @@ OuterLoop:
 				// struct_output re-emitted on that later pass finishes the run
 				// through this same branch. Bounded by effectiveMaxTurns like
 				// any other cycle.
-				if structOutput != nil && !structOutputIsErr {
+				_, structThisTurn := toolResults.StructOutput()
+				if structOutput != nil && !structOutputIsErr && len(drained) > 0 {
+					// The reviewer spoke after (or while) the output was
+					// produced: give the model another cycle to read it.
+					// max_turns bounds how often this can happen.
+					logging.Info("struct_output accepted but reviewer input arrived — reopening the run", "session_id", sessionID, "cycle", cycles, "messages", len(drained))
+					structOutputReopened = true
+				} else if structOutput != nil && !structOutputIsErr && (!structOutputReopened || structThisTurn) {
 					pendingTasks := 0
 					if opts.NonInteractive {
 						if reg := task.GlobalRegistry(); reg != nil {
@@ -1523,6 +1551,20 @@ OuterLoop:
 				}
 
 				preserveTail = true
+				continue
+			}
+			// A run does not end while reviewer input waits in its inbox:
+			// store it after this turn and call the model again. The extra
+			// cycle counts against max_turns like any other.
+			if drained := a.drainInbox(ctx, sessionID); len(drained) > 0 {
+				logging.Info("Reviewer input waiting at turn end — running another cycle", "session_id", sessionID, "cycle", cycles, "messages", len(drained))
+				msgHistory = append(msgHistory, agentMessage)
+				msgHistory = append(msgHistory, drained...)
+				preservedTail = append([]message.Message{agentMessage}, drained...)
+				preserveTail = true
+				if structOutput != nil && !structOutputIsErr {
+					structOutputReopened = true
+				}
 				continue
 			}
 			finalResult = AgentEvent{
@@ -1869,6 +1911,37 @@ func (a *agent) injectWaitTimeoutNote(ctx context.Context, sessionID string, pen
 	}); err != nil {
 		logging.Warn("Failed to inject wait-timeout note", "session_id", sessionID, "err", err)
 	}
+}
+
+// drainInbox stores every reviewer input waiting in the session's inbox
+// as its own user message, oldest first, and reports the stored items to
+// the inbox's delivery hook (the bridge acknowledges their ids). Only
+// interactive flow steps ever have input queued, so for every other
+// session this is one map lookup. An item the store refuses is logged and
+// left unacknowledged, so its sender can re-send it.
+func (a *agent) drainInbox(ctx context.Context, sessionID string) []message.Message {
+	box := inbox.Default()
+	items, finish := box.DrainForDelivery(sessionID)
+	defer finish()
+	if len(items) == 0 {
+		return nil
+	}
+	stored := make([]message.Message, 0, len(items))
+	delivered := make([]inbox.Item, 0, len(items))
+	for _, it := range items {
+		msg, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
+			Role:  message.User,
+			Parts: []message.ContentPart{message.TextContent{Text: it.Text}},
+		})
+		if err != nil {
+			logging.Warn("Failed to store reviewer input from the inbox", "session_id", sessionID, "error", err)
+			continue
+		}
+		stored = append(stored, msg)
+		delivered = append(delivered, it)
+	}
+	box.Delivered(sessionID, delivered)
+	return stored
 }
 
 func (a *agent) createUserMessage(ctx context.Context, sessionID, content string, attachmentParts []message.ContentPart) (message.Message, error) {

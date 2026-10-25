@@ -480,10 +480,8 @@ func TestBufferInbound_DropNotifiesEvictedPeer(t *testing.T) {
 	}
 
 	// Newest message must be at the tail.
-	r.mu.Lock()
-	q := r.buffered["S1"]
+	q := r.box().DrainAll("S1")
 	tail := q[len(q)-1]
-	r.mu.Unlock()
 	if tail.Text != newest.Text {
 		t.Errorf("tail.Text = %q, want %q (newest should be at tail)", tail.Text, newest.Text)
 	}

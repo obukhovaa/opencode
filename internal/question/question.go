@@ -11,6 +11,15 @@ import (
 
 var ErrQuestionRejected = errors.New("the user dismissed the question")
 
+// UnansweredError is what Ask returns for a question closed through
+// Unanswered: the user did not answer it, and Note tells the agent why
+// (for example, that they sent messages instead).
+type UnansweredError struct {
+	Note string
+}
+
+func (e *UnansweredError) Error() string { return e.Note }
+
 // Option represents a selectable choice for a question.
 type Option struct {
 	Label       string `json:"label"`       // Display text (1-5 words, concise)
@@ -47,14 +56,18 @@ type Service interface {
 	Reply(requestID string, answers [][]string) error
 	// Reject dismisses a pending question request.
 	Reject(requestID string) error
+	// Unanswered closes a pending question request without an answer.
+	// Its Ask returns an *UnansweredError carrying note.
+	Unanswered(requestID string, note string) error
 	// List returns all currently pending question requests.
 	List() []Request
 }
 
 type pendingEntry struct {
-	request  Request
-	replyCh  chan [][]string
-	rejectCh chan struct{}
+	request      Request
+	replyCh      chan [][]string
+	rejectCh     chan struct{}
+	unansweredCh chan string
 }
 
 type questionService struct {
@@ -70,9 +83,10 @@ func (s *questionService) Ask(ctx context.Context, sessionID string, questions [
 		Questions: questions,
 	}
 	entry := &pendingEntry{
-		request:  request,
-		replyCh:  make(chan [][]string, 1),
-		rejectCh: make(chan struct{}, 1),
+		request:      request,
+		replyCh:      make(chan [][]string, 1),
+		rejectCh:     make(chan struct{}, 1),
+		unansweredCh: make(chan string, 1),
 	}
 	s.pending.Store(requestID, entry)
 	defer s.pending.Delete(requestID)
@@ -84,6 +98,8 @@ func (s *questionService) Ask(ctx context.Context, sessionID string, questions [
 		return answers, nil
 	case <-entry.rejectCh:
 		return nil, ErrQuestionRejected
+	case note := <-entry.unansweredCh:
+		return nil, &UnansweredError{Note: note}
 	case <-ctx.Done():
 		return nil, ErrQuestionRejected
 	}
@@ -110,6 +126,19 @@ func (s *questionService) Reject(requestID string) error {
 	entry := val.(*pendingEntry)
 	select {
 	case entry.rejectCh <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (s *questionService) Unanswered(requestID string, note string) error {
+	val, ok := s.pending.LoadAndDelete(requestID)
+	if !ok {
+		return errors.New("question request not found")
+	}
+	entry := val.(*pendingEntry)
+	select {
+	case entry.unansweredCh <- note:
 	default:
 	}
 	return nil

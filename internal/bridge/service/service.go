@@ -166,6 +166,11 @@ type Service struct {
 	// jobTurns ties sessions and peers to the job that bound them; see
 	// jobArgsForTurn.
 	jobTurns jobTurns
+
+	// delivered remembers, per bound peer and job, the message ids that
+	// already reached the agent, so a re-sent batch is skipped and
+	// acknowledged again instead of delivered twice (cd-5480 D8).
+	delivered deliveredIDs
 }
 
 // Dependencies bundles the inputs Service needs at construction time.
@@ -605,6 +610,7 @@ func (s *Service) SetRemoteJobID(jobID string) {
 	}
 	s.remoteJobID.Store(jobID)
 	s.pruneJobTurns(jobID)
+	s.delivered.prune(jobID)
 	s.mu.Lock()
 	scoped := make([]bridge.JobScopedAdapter, 0, len(s.adapters))
 	for _, a := range s.adapters {
