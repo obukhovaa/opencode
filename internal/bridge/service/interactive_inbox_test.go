@@ -323,6 +323,55 @@ func TestEnqueueBatch_QueuedIDNotDuplicated(t *testing.T) {
 	}
 }
 
+func TestEnqueueBatch_RetryDuringPersistence(t *testing.T) {
+	svc, r, ext, _ := newInboxTestService(t, false)
+	ctx := context.Background()
+	svc.dispatchInbound(ctx, batch("a"))
+	box := r.box()
+	items, finish := box.DrainForDelivery("S1")
+	defer finish()
+	// Persistence has started, but the delivery hook has not run yet.
+	svc.dispatchInbound(ctx, batch("a", "b"))
+	if got := itemIDs(box.DrainAll("S1")); !reflect.DeepEqual(got, []string{"b"}) {
+		t.Fatalf("queued during persistence = %v, want [b]", got)
+	}
+	if got := ext.Acks(); len(got) != 0 {
+		t.Fatalf("acknowledged before persistence: %v", got)
+	}
+	box.Delivered("S1", items)
+	finish()
+	svc.dispatchInbound(ctx, batch("a"))
+	if box.Len("S1") != 0 {
+		t.Fatal("retry queued after the reservation moved into delivered-id memory")
+	}
+}
+
+func TestEnqueueBatch_SameIDFromDifferentPeers(t *testing.T) {
+	svc, r, _, _ := newInboxTestService(t, false)
+	ctx := context.Background()
+	second := batch("a")
+	second.Peer.PeerID = "run-2"
+	second.Messages[0].Text = "another reviewer's instruction"
+	if _, err := svc.store.UpsertBinding(ctx, store.Binding{
+		ProjectID: "proj", Channel: second.Peer.Channel, IdentityID: second.Peer.Identity,
+		PeerID: second.Peer.PeerID, SessionID: "S1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc.dispatchInbound(ctx, batch("a"))
+	svc.dispatchInbound(ctx, second)
+	// Retries from either peer still deduplicate within that peer.
+	svc.dispatchInbound(ctx, batch("a"))
+	svc.dispatchInbound(ctx, second)
+	items := r.box().DrainAll("S1")
+	if len(items) != 2 {
+		t.Fatalf("queued %d messages, want both reviewers' instructions", len(items))
+	}
+	if got := itemInbound(items[1]); got.Peer != second.Peer || got.Text != second.Messages[0].Text {
+		t.Fatalf("second input = %+v, want %+v", got, second)
+	}
+}
+
 // Input cleared at step end is never acknowledged; a leftover chat message
 // gets a "not delivered" reply in its thread, a leftover with an id none.
 func TestUnbind_LeftoversNotAckedAndChatToldNotDelivered(t *testing.T) {

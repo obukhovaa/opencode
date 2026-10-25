@@ -80,6 +80,15 @@ The bridge SHALL remember, per bound run peer, the message ids it has delivered 
 - **WHEN** the sender re-sends M1 during step S2 of the same run
 - **THEN** M1 is not stored again and id a is acknowledged as delivered
 
+#### Scenario: Retry while persistence is in progress
+- **WHEN** a sender re-sends M1 after it is drained but before persistence and delivery bookkeeping finish
+- **THEN** the retry is not queued again and no acknowledgement is sent before persistence succeeds
+- **AND** if persistence fails, M1 remains unacknowledged and a later retry can be queued
+
+#### Scenario: Independent peers use the same id
+- **WHEN** two bound peers each send a distinct message with id a to the same session
+- **THEN** both messages are queued and delivered in order, with deduplication scoped to each originating peer
+
 ### Requirement: Inbox drains SHALL count against the turn budget only when they add a model call
 
 A drain at a tool boundary SHALL NOT consume turn budget of its own. A cycle that runs only because the inbox held input at a run-end point SHALL count against `max_turns` like any other cycle. The forced max-turns wrap-up turn SHALL NOT drain the inbox.

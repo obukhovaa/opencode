@@ -38,6 +38,11 @@ type Box struct {
 	cap    int
 	queues map[string][]Item
 	hooks  map[string]DeliveredFunc
+	drains map[string]map[*drainBatch]struct{}
+}
+
+type drainBatch struct {
+	items []Item
 }
 
 // New returns an empty Box whose queues hold at most capacity items each
@@ -50,6 +55,7 @@ func New(capacity int) *Box {
 		cap:    capacity,
 		queues: make(map[string][]Item),
 		hooks:  make(map[string]DeliveredFunc),
+		drains: make(map[string]map[*drainBatch]struct{}),
 	}
 }
 
@@ -110,6 +116,32 @@ func (b *Box) DrainAll(sessionID string) []Item {
 	return q
 }
 
+// DrainForDelivery removes the queue while keeping its items visible to
+// AnyPending. The caller must call finish after persistence and Delivered
+// bookkeeping, including when persistence fails, so failed items can be retried.
+func (b *Box) DrainForDelivery(sessionID string) (items []Item, finish func()) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	items = b.queues[sessionID]
+	delete(b.queues, sessionID)
+	if len(items) == 0 {
+		return nil, func() {}
+	}
+	batch := &drainBatch{items: items}
+	if b.drains[sessionID] == nil {
+		b.drains[sessionID] = make(map[*drainBatch]struct{})
+	}
+	b.drains[sessionID][batch] = struct{}{}
+	return items, func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		delete(b.drains[sessionID], batch)
+		if len(b.drains[sessionID]) == 0 {
+			delete(b.drains, sessionID)
+		}
+	}
+}
+
 // Clear drops the session's queue and its delivery hook and returns the
 // items that were still waiting. Nothing it returns is ever acknowledged.
 func (b *Box) Clear(sessionID string) []Item {
@@ -118,6 +150,7 @@ func (b *Box) Clear(sessionID string) []Item {
 	q := b.queues[sessionID]
 	delete(b.queues, sessionID)
 	delete(b.hooks, sessionID)
+	delete(b.drains, sessionID)
 	return q
 }
 
@@ -135,6 +168,26 @@ func (b *Box) Any(sessionID string, pred func(Item) bool) bool {
 	for _, it := range b.queues[sessionID] {
 		if pred(it) {
 			return true
+		}
+	}
+	return false
+}
+
+// AnyPending checks queued items and items being persisted by a delivery
+// drain. In-flight items do not count towards Len or answer new questions.
+func (b *Box) AnyPending(sessionID string, pred func(Item) bool) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, it := range b.queues[sessionID] {
+		if pred(it) {
+			return true
+		}
+	}
+	for batch := range b.drains[sessionID] {
+		for _, it := range batch.items {
+			if pred(it) {
+				return true
+			}
 		}
 	}
 	return false

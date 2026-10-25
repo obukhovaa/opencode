@@ -118,6 +118,39 @@ func TestBox_Any(t *testing.T) {
 	}
 }
 
+func TestBox_DrainForDelivery(t *testing.T) {
+	b := New(0)
+	b.Push("s", nil, Item{ID: "a"})
+	items, finish := b.DrainForDelivery("s")
+	defer finish()
+	if len(items) != 1 || items[0].ID != "a" || b.Len("s") != 0 {
+		t.Fatalf("drained %v, queued %d", items, b.Len("s"))
+	}
+	matchA := func(it Item) bool { return it.ID == "a" }
+	if b.Any("s", matchA) || !b.AnyPending("s", matchA) || b.AnyPending("other", matchA) {
+		t.Fatal("reservation must be pending only for its own session")
+	}
+	b.Push("s", nil, Item{ID: "b"})
+	_, finishB := b.DrainForDelivery("s")
+	defer finishB()
+	finish()
+	if b.AnyPending("s", matchA) || !b.AnyPending("s", func(it Item) bool { return it.ID == "b" }) {
+		t.Fatal("finishing one drain affected another drain's reservation")
+	}
+	b.Clear("s")
+	b.Push("s", nil, Item{ID: "a"})
+	_, finishNew := b.DrainForDelivery("s")
+	defer finishNew()
+	finishB()
+	if !b.AnyPending("s", matchA) {
+		t.Fatal("finishing a cleared drain removed the new reservation")
+	}
+	finishNew()
+	if b.AnyPending("s", func(Item) bool { return true }) {
+		t.Fatal("reservation leaked")
+	}
+}
+
 // TestBox_ConcurrentBatchesNeverInterleave pushes two-item batches from
 // many goroutines while another drains, and checks that every batch comes
 // out contiguous. Run under -race.

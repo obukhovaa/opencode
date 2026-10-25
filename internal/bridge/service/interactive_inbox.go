@@ -175,12 +175,16 @@ func (r *QuestionRouter) EnqueueBatch(ctx context.Context, sessionID string, in 
 			continue
 		}
 		seen[m.ID] = true
-		if r.svc.delivered.has(in.Peer, m.ID) {
-			repeats = append(repeats, m.ID)
+		id := m.ID
+		// Check pending before delivered: a drain can move the id into the
+		// delivered cache and release its reservation between these checks.
+		if box.AnyPending(sessionID, func(it inbox.Item) bool {
+			return it.ID == id && jobPeerKey(itemInbound(it).Peer) == jobPeerKey(in.Peer)
+		}) {
 			continue
 		}
-		id := m.ID
-		if box.Any(sessionID, func(it inbox.Item) bool { return it.ID == id }) {
+		if r.svc.delivered.has(in.Peer, m.ID) {
+			repeats = append(repeats, m.ID)
 			continue
 		}
 		single := in

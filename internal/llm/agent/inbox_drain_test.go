@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"strings"
 	"sync"
@@ -14,6 +15,69 @@ import (
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/pubsub"
 )
+
+type inboxCreateHook struct {
+	message.Service
+	beforeCreate func() error
+}
+
+func (m *inboxCreateHook) Create(ctx context.Context, sessionID string, params message.CreateMessageParams) (message.Message, error) {
+	if err := m.beforeCreate(); err != nil {
+		return message.Message{}, err
+	}
+	return m.Service.Create(ctx, sessionID, params)
+}
+
+func TestInbox_ReservesItemsUntilDeliveryBookkeeping(t *testing.T) {
+	for _, failWrite := range []bool{false, true} {
+		name := "stored"
+		if failWrite {
+			name = "failed write can retry"
+		}
+		t.Run(name, func(t *testing.T) {
+			sessionID := "reserve-" + t.Name()
+			box := inbox.Default()
+			t.Cleanup(func() { box.Clear(sessionID) })
+			pending := func() bool {
+				return box.AnyPending(sessionID, func(it inbox.Item) bool { return it.ID == "a" })
+			}
+			var acked []string
+			box.Push(sessionID, func(_ string, items []inbox.Item) {
+				if !pending() {
+					t.Error("reservation released before delivery bookkeeping finished")
+				}
+				for _, it := range items {
+					acked = append(acked, it.ID)
+				}
+			}, inbox.Item{ID: "a", Text: "reviewer instruction"})
+			store := &inboxCreateHook{Service: newMemMessages(), beforeCreate: func() error {
+				if box.Len(sessionID) != 0 || !pending() {
+					t.Error("drained input was not reserved during persistence")
+				}
+				if failWrite {
+					return errors.New("store unavailable")
+				}
+				return nil
+			}}
+			a := &agent{messages: store}
+			stored := a.drainInbox(context.Background(), sessionID)
+			if pending() {
+				t.Fatal("reservation leaked after drain")
+			}
+			if failWrite {
+				if len(stored) != 0 || len(acked) != 0 {
+					t.Fatalf("failed write stored or acknowledged: %v, %v", stored, acked)
+				}
+				failWrite = false
+				box.Push(sessionID, nil, inbox.Item{ID: "a", Text: "reviewer instruction"})
+				stored = a.drainInbox(context.Background(), sessionID)
+			}
+			if len(stored) != 1 || !reflect.DeepEqual(acked, []string{"a"}) {
+				t.Fatalf("stored %d, acked %v, want one delivery of a", len(stored), acked)
+			}
+		})
+	}
+}
 
 // recordingProvider is a scriptedProvider that also keeps the history
 // each request was sent with.

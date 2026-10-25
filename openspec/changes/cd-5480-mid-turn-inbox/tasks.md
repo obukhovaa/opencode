@@ -34,6 +34,10 @@
 - [x] 6.2 Add an e2e script under `scripts/test/` driving an interactive step: two inbound messages during a tool call reach the next request as consecutive user messages and produce one `delivered` frame; verify `make test-e2e`.
 - [x] 6.3 `make test` green (schema unchanged: no `Config` field added).
 
+## 7. Review regressions
+
+- [x] 7.1 Resolve review regressions: reserve drained input through persistence and delivery bookkeeping, scope pending-id deduplication per peer, and verify retries and failed writes under the race detector.
+
 ## Workflow follow-up
 
 - Push to the `fork` remote; the GitHub PR to the upstream repo waits for the product owner's OK on this proposal. (OK given 2026-10-24.)
@@ -48,3 +52,4 @@
 - 2.2: a `messages` batch for a session that no interactive step owns (outside pool mode) is joined into one prompt for the dispatcher and acknowledged when queued.
 - 6.2: like `struct_output.sh`, the e2e gate wraps `go test` on the real subsystems, since the agent loop has no exported seam for a fake provider.
 - 6.3: `make test` is green apart from two failures unrelated to this change and seen on the base commit or under load: `TestGenerationInputGateFromLoadedConfig` needs `LANGFUSE_PUBLIC_KEY` in the environment, and `TestExec_TimeoutKillsProcessGroup` is timing-sensitive and passes on rerun.
+- 7.1: reproduced both review failures before the fixes. The inbox, bridge and agent regression tests pass under `-race`, including reservation cleanup and retries after failed writes. The full `LC_ALL=C GOFLAGS=-p=2 make test` run and `make schema-check` pass on 2026-10-25.

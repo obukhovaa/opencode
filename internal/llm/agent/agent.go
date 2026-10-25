@@ -1921,7 +1921,8 @@ func (a *agent) injectWaitTimeoutNote(ctx context.Context, sessionID string, pen
 // left unacknowledged, so its sender can re-send it.
 func (a *agent) drainInbox(ctx context.Context, sessionID string) []message.Message {
 	box := inbox.Default()
-	items := box.DrainAll(sessionID)
+	items, finish := box.DrainForDelivery(sessionID)
+	defer finish()
 	if len(items) == 0 {
 		return nil
 	}

@@ -394,7 +394,7 @@ Questions and queued input:
 
 Delivery reports:
 
-- Ids that reach the agent are acknowledged to the session's peers whose adapter supports it (`external`: a `delivered` frame). The bridge remembers delivered ids per bound peer for the run, in memory, so a re-sent id is skipped and acknowledged again; an id still waiting is not queued twice. The memory is lost on a pod restart, after which a re-send can repeat.
+- Ids that reach the agent are acknowledged to the session's peers whose adapter supports it (`external`: a `delivered` frame). The bridge remembers delivered ids per bound peer for the run, in memory, so a re-sent id is skipped and acknowledged again. An id still queued or being persisted is not queued twice; a failed write releases it for retry without an acknowledgement. Different bound peers may use the same id for distinct messages. The memory is lost on a pod restart, after which a re-send can repeat.
 - Input still waiting when the step ends is cleared, never acknowledged. A chat message without an id gets a short reply in its thread saying it did not reach the agent and should be resent; input with an id gets none, since its sender re-sends anything unacknowledged.
 
 > **Behavior change for Slack and Mattermost reviewers.** Before, a message sent while the agent worked waited for the agent's next `question` and only the first one was used; the rest were dropped silently when the step ended. Now every such message reaches the agent at its next tool or turn boundary, and one left over at step end gets a "not delivered" reply.
