@@ -545,11 +545,11 @@ func IsBedrockKimi(id ModelID) bool {
 	return ok
 }
 
-// IsKimiK3 reports whether id is a Kimi K3 deployment on any provider. K3
+// IsKimiK3 reports whether id is a Kimi K3-family deployment on any provider. K3
 // documents the effort levels low|high|max with max as the default, so the
 // config layer resolves an unset reasoningEffort to max on every K3 route
 // instead of leaving it to a client default (high for the anthropic client,
 // medium for the openai one) that K3 does not document.
 func IsKimiK3(id ModelID) bool {
-	return id == KimiK3 || id == BedrockKimiK3 || id == BedrockUSKimiK3
+	return id == KimiK3 || id == KimiK31Pro || id == KimiK31ProHighspeed || id == BedrockKimiK3 || id == BedrockUSKimiK3
 }

@@ -285,3 +285,35 @@ func TestCountTokensTransientErrorDoesNotLatch(t *testing.T) {
 		t.Fatalf("500s must keep probing below the threshold, probes = %d, want %d", got, calls)
 	}
 }
+
+func TestKimiK31ProModels(t *testing.T) {
+	tests := []struct {
+		id            models.ModelID
+		api           string
+		input, output float64
+	}{
+		{models.KimiK31Pro, "kimi-k3.1-pro", 2, 10},
+		{models.KimiK31ProHighspeed, "kimi-k3.1-pro-highspeed", 4, 20},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.id), func(t *testing.T) {
+			m, ok := models.SupportedModels[tt.id]
+			if !ok || m.Provider != models.ProviderKimi || m.APIModel != tt.api {
+				t.Fatal("missing or invalid model registration")
+			}
+			if m.ContextWindow != 1_048_576 || m.DefaultMaxTokens != 131_072 || !m.CanReason || !m.SupportsAdaptiveThinking || !m.SupportsMaximumThinking || !m.SupportsAttachments || m.SupportsTaskBudget || m.SupportsXHighThinking {
+				t.Fatalf("invalid capabilities: %+v", m)
+			}
+			in, out := CalculateCost(m, TokenUsage{InputTokens: 1_000_000, CacheCreationTokens: 1_000_000, CacheReadTokens: 1_000_000, OutputTokens: 1_000_000})
+			if in != tt.input*2+0.2 || out != tt.output {
+				t.Fatalf("incorrect official pricing: input %v output %v", in, out)
+			}
+			client := newAnthropicClient(providerClientOptions{apiKey: "test", model: m, maxTokens: 131072}).(*anthropicClient)
+			msgs := client.convertMessagesUnfiltered([]message.Message{{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "hello"}}}})
+			params := client.preparedMessages(context.Background(), msgs, nil)
+			if params.Thinking.OfAdaptive == nil || string(params.OutputConfig.Effort) != "max" || params.Model != m.APIModel || params.MaxTokens != 131072 {
+				t.Fatalf("incorrect request: %+v", params)
+			}
+		})
+	}
+}

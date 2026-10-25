@@ -241,3 +241,19 @@ func TestValidateAgentBedrockKimiEffort(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateAgentKimiK31ProEffort(t *testing.T) {
+	for _, id := range []models.ModelID{models.KimiK31Pro, models.KimiK31ProHighspeed} {
+		for _, tt := range []struct{ effort, want string }{{"", "max"}, {"low", "low"}, {"high", "high"}, {"max", "max"}, {"xhigh", "high"}} {
+			t.Run(string(id)+"/"+tt.effort, func(t *testing.T) {
+				c := &Config{Agents: map[AgentName]Agent{AgentCoder: {Model: id, ReasoningEffort: tt.effort}}, Providers: map[models.ModelProvider]Provider{models.ProviderKimi: {APIKey: "test"}}}
+				if err := validateAgent(c, AgentCoder, c.Agents[AgentCoder]); err != nil {
+					t.Fatal(err)
+				}
+				if c.Agents[AgentCoder].ReasoningEffort != tt.want || c.Agents[AgentCoder].MaxTokens != 131072 {
+					t.Fatalf("unexpected resolved settings: %+v", c.Agents[AgentCoder])
+				}
+			})
+		}
+	}
+}

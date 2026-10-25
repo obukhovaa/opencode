@@ -53,7 +53,7 @@ func generateSchema() map[string]any {
 	schema := map[string]any{
 		"$schema":     "http://json-schema.org/draft-07/schema#",
 		"title":       "OpenCode Configuration",
-		"description": "Configuration schema for the OpenCode application",
+		"description": "Configuration schema for the OpenCode application. String values support ${VAR} and ${VAR:-default} environment expansion; use $${VAR} for a literal reference.",
 		"type":        "object",
 		"properties":  map[string]any{},
 	}
@@ -1330,5 +1330,46 @@ func generateSchema() map[string]any {
 		"additionalProperties": false,
 	}
 
+	allowEnvironmentReferences(schema)
 	return schema
+}
+
+// Keep literal constraints (especially enum) and add a reference alternative
+// for scalars whose resolved values Viper checks at runtime.
+func allowEnvironmentReferences(node map[string]any) {
+	if properties, ok := node["properties"].(map[string]any); ok {
+		for _, property := range properties {
+			if child, ok := property.(map[string]any); ok {
+				allowEnvironmentReferences(child)
+			}
+		}
+	}
+	for _, key := range []string{"items", "additionalProperties"} {
+		if child, ok := node[key].(map[string]any); ok {
+			allowEnvironmentReferences(child)
+		}
+	}
+	for _, key := range []string{"anyOf", "oneOf"} {
+		if branches, ok := node[key].([]map[string]any); ok {
+			for _, child := range branches {
+				allowEnvironmentReferences(child)
+			}
+		}
+	}
+	kind, _ := node["type"].(string)
+	_, hasEnum := node["enum"]
+	if kind != "integer" && kind != "number" && kind != "boolean" && !(kind == "string" && hasEnum) {
+		return
+	}
+	literal := make(map[string]any)
+	for key, value := range node {
+		if key != "description" && key != "default" {
+			literal[key] = value
+			delete(node, key)
+		}
+	}
+	node["anyOf"] = []map[string]any{
+		literal,
+		{"type": "string", "pattern": `\$\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\}`, "description": "Environment reference; the resolved value is validated at runtime."},
+	}
 }

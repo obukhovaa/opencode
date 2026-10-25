@@ -133,6 +133,47 @@ OpenCode looks for `.opencode.json` in:
 2. `$XDG_CONFIG_HOME/opencode/.opencode.json`
 3. `$HOME/.opencode.json`
 
+### Environment references in config values
+
+See [environment reference guide](docs/config-env.md) for the full contract.
+
+Every JSON string value in global and project `.opencode.json` files supports
+`${VAR}` and `${VAR:-default}`, including nested URLs, credentials, headers,
+array elements, and model IDs. The fallback applies when a variable is unset or
+empty. An unset variable without a fallback stops loading with an error naming
+only the variable; a deliberately empty variable expands to an empty string.
+
+```json
+{
+  "providers": {
+    "kimi": {
+      "apiKey": "${MY_KIMI_KEY}",
+      "baseURL": "${KIMI_URL:-https://api.moonshot.ai/anthropic}"
+    }
+  },
+  "agents": {
+    "coder": { "model": "${CODER_MODEL:-kimi.kimi-k3.1-pro}" }
+  },
+  "maxTurns": "${TURN_LIMIT:-100}",
+  "autoCompact": "${COMPACT_ENABLED:-true}"
+}
+```
+
+References expand once, after parsing JSON and before Viper merges and validates
+configuration. Quotes, backslashes and newlines in variables remain string data;
+values are never executed or parsed as JSON objects. Numbers and booleans can use
+quoted references, as above, through Viper's scalar conversion. Both files must
+have all required variables even when a project value overrides a global value.
+Map keys stay literal. Existing config precedence and environment overrides apply.
+
+Use `$${VAR}` to keep a literal `${VAR}` (for example in a hook's shell command).
+Bare `$VAR` is unchanged. Dotted context tokens such as `${env.NAME}` and
+`${flow.step}`, and the reserved `${agent}` token, stay available for context
+resolution. Unsupported expressions and malformed references remain literal;
+fallbacks are literal text, without nested expansion. Existing field-specific
+`env:NAME` syntax keeps its current behavior. Settings edits preserve unchanged
+references and unknown JSON fields on disk, without writing resolved secrets.
+
 ### Full Config Example
 
 ```json
@@ -671,6 +712,8 @@ Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it re
 }
 ```
 
+Kimi K3.1 Pro (`kimi.kimi-k3.1-pro`) and K3.1 Pro Highspeed (`kimi.kimi-k3.1-pro-highspeed`) use the same native endpoint. Both have a 1,048,576-token context, 131,072 default output tokens, vision, and reasoning effort `low`/`high`/`max` (default `max`). Official USD prices per million tokens are **$2 input / $10 output / $0.20 cache reads** for Pro and **$4 / $20 / $0.20** for Highspeed. Default 5-minute cache writes cost $2 and $4 respectively; no long-context surcharge applies. These require a pay-as-you-go Moonshot API key; Kimi Code subscription endpoints may accept only the `k3` alias. These variants are not listed on Bedrock as of 2026-10-25. Sources: [Kimi pricing](https://platform.kimi.ai/), [model guide](https://platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart), [AWS model list](https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-moonshot-ai.html).
+
 Kimi K2.7 Code (`kimi.kimi-k2.7-code`) and its faster, double-priced Highspeed variant (`kimi.kimi-k2.7-code-highspeed`) ride the same endpoint with a 256K context. They accept every effort level from `low` to `max`, so an unset `reasoningEffort` keeps the client default (`high`) instead of being pinned to `max`.
 
 Kimi K3 is also available on AWS Bedrock as `bedrock.kimi-k3` (global profile) and `bedrock.us-kimi-k3` (US profile; there is no EU profile yet). Bedrock serves it with OpenAI chat-completions bodies rather than Anthropic Messages, so it is sent through the OpenAI client, with the requests rewritten onto Bedrock's InvokeModel routes. That means it works through the same `providers.bedrock` config and the LiteLLM Bedrock passthrough as the Claude models. Reasoning goes through the OpenAI-style `reasoning_effort` field but keeps K3's levels: `reasoningEffort` `low`/`high`/`max`, defaulting to `max` as on the `kimi` provider (Bedrock also accepts `medium`; `xhigh` folds to `high`). Bedrock caches the prompt prefix automatically, so no cache breakpoints are needed.
@@ -739,7 +782,7 @@ Kimi K3 is also available on AWS Bedrock as `bedrock.kimi-k3` (global profile) a
 | **AWS Bedrock** | Claude 5.5 Opus (1M)(EU/Global), Claude 5 Opus (1M)(EU/Global), Claude Fable 5.1 (1M)(EU/Global), Claude Fable 5 (1M)(EU/Global), Claude 4.8 Opus (1M)(EU/Global), Claude 4.7 Opus (1M)(EU/Global), Claude 5.5 Sonnet (1M)(EU/Global), Claude 5 Sonnet (1M)(EU/Global), Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global), Claude 5.5 Haiku (1M)(EU/Global), Claude 4.5 Haiku (EU/Global), Kimi K3 (1M)(US/Global) |
 | **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude 5.5 Opus (1M), Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5.5 Sonnet (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 5.5 Haiku (1M), Claude 4.5 Haiku |
 | **YandexCloud** | Alice AI LLM, YandexGPT Pro 5.1, YandexGPT Pro 5, YandexGPT Lite 5, DeepSeek V3.2, Qwen3 235B, Qwen3.5 35B, gpt-oss-120b |
-| **Kimi (Moonshot)** | Kimi K3 (1M), Kimi K2.7 Code, Kimi K2.7 Code Highspeed |
+| **Kimi (Moonshot)** | Kimi K3.1 Pro (1M), Kimi K3.1 Pro Highspeed (1M), Kimi K3 (1M), Kimi K2.7 Code, Kimi K2.7 Code Highspeed |
 | **Local** | Any OpenAI-compatible API |
 
 ## Tools
@@ -1077,6 +1120,47 @@ OpenCode looks for `.opencode.json` in:
 1. `./.opencode.json` (project directory)
 2. `$XDG_CONFIG_HOME/opencode/.opencode.json`
 3. `$HOME/.opencode.json`
+
+### Environment references in config values
+
+See [environment reference guide](docs/config-env.md) for the full contract.
+
+Every JSON string value in global and project `.opencode.json` files supports
+`${VAR}` and `${VAR:-default}`, including nested URLs, credentials, headers,
+array elements, and model IDs. The fallback applies when a variable is unset or
+empty. An unset variable without a fallback stops loading with an error naming
+only the variable; a deliberately empty variable expands to an empty string.
+
+```json
+{
+  "providers": {
+    "kimi": {
+      "apiKey": "${MY_KIMI_KEY}",
+      "baseURL": "${KIMI_URL:-https://api.moonshot.ai/anthropic}"
+    }
+  },
+  "agents": {
+    "coder": { "model": "${CODER_MODEL:-kimi.kimi-k3.1-pro}" }
+  },
+  "maxTurns": "${TURN_LIMIT:-100}",
+  "autoCompact": "${COMPACT_ENABLED:-true}"
+}
+```
+
+References expand once, after parsing JSON and before Viper merges and validates
+configuration. Quotes, backslashes and newlines in variables remain string data;
+values are never executed or parsed as JSON objects. Numbers and booleans can use
+quoted references, as above, through Viper's scalar conversion. Both files must
+have all required variables even when a project value overrides a global value.
+Map keys stay literal. Existing config precedence and environment overrides apply.
+
+Use `$${VAR}` to keep a literal `${VAR}` (for example in a hook's shell command).
+Bare `$VAR` is unchanged. Dotted context tokens such as `${env.NAME}` and
+`${flow.step}`, and the reserved `${agent}` token, stay available for context
+resolution. Unsupported expressions and malformed references remain literal;
+fallbacks are literal text, without nested expansion. Existing field-specific
+`env:NAME` syntax keeps its current behavior. Settings edits preserve unchanged
+references and unknown JSON fields on disk, without writing resolved secrets.
 
 ### Full Config Example
 
@@ -1569,6 +1653,8 @@ Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it re
 }
 ```
 
+Kimi K3.1 Pro (`kimi.kimi-k3.1-pro`) and K3.1 Pro Highspeed (`kimi.kimi-k3.1-pro-highspeed`) use the same native endpoint. Both have a 1,048,576-token context, 131,072 default output tokens, vision, and reasoning effort `low`/`high`/`max` (default `max`). Official USD prices per million tokens are **$2 input / $10 output / $0.20 cache reads** for Pro and **$4 / $20 / $0.20** for Highspeed. Default 5-minute cache writes cost $2 and $4 respectively; no long-context surcharge applies. These require a pay-as-you-go Moonshot API key; Kimi Code subscription endpoints may accept only the `k3` alias. These variants are not listed on Bedrock as of 2026-10-25. Sources: [Kimi pricing](https://platform.kimi.ai/), [model guide](https://platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart), [AWS model list](https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-moonshot-ai.html).
+
 Kimi K2.7 Code (`kimi.kimi-k2.7-code`) and its faster, double-priced Highspeed variant (`kimi.kimi-k2.7-code-highspeed`) ride the same endpoint with a 256K context. They accept every effort level from `low` to `max`, so an unset `reasoningEffort` keeps the client default (`high`) instead of being pinned to `max`.
 
 Kimi K3 is also available on AWS Bedrock as `bedrock.kimi-k3` (global profile) and `bedrock.us-kimi-k3` (US profile; there is no EU profile yet). Bedrock serves it with OpenAI chat-completions bodies rather than Anthropic Messages, so it is sent through the OpenAI client, with the requests rewritten onto Bedrock's InvokeModel routes. That means it works through the same `providers.bedrock` config and the LiteLLM Bedrock passthrough as the Claude models. Reasoning goes through the OpenAI-style `reasoning_effort` field but keeps K3's levels: `reasoningEffort` `low`/`high`/`max`, defaulting to `max` as on the `kimi` provider (Bedrock also accepts `medium`; `xhigh` folds to `high`). Bedrock caches the prompt prefix automatically, so no cache breakpoints are needed.
@@ -1636,7 +1722,7 @@ Kimi K3 is also available on AWS Bedrock as `bedrock.kimi-k3` (global profile) a
 | **AWS Bedrock** | Claude 5.5 Opus (1M)(EU/Global), Claude 5 Opus (1M)(EU/Global), Claude Fable 5.1 (1M)(EU/Global), Claude Fable 5 (1M)(EU/Global), Claude 4.8 Opus (1M)(EU/Global), Claude 4.7 Opus (1M)(EU/Global), Claude 5.5 Sonnet (1M)(EU/Global), Claude 5 Sonnet (1M)(EU/Global), Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global), Claude 5.5 Haiku (1M)(EU/Global), Claude 4.5 Haiku (EU/Global), Kimi K3 (1M)(US/Global) |
 | **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude 5.5 Opus (1M), Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5.5 Sonnet (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 5.5 Haiku (1M), Claude 4.5 Haiku |
 | **YandexCloud** | Alice AI LLM, YandexGPT Pro 5.1, YandexGPT Pro 5, YandexGPT Lite 5, DeepSeek V3.2, Qwen3 235B, Qwen3.5 35B, gpt-oss-120b |
-| **Kimi (Moonshot)** | Kimi K3 (1M), Kimi K2.7 Code, Kimi K2.7 Code Highspeed |
+| **Kimi (Moonshot)** | Kimi K3.1 Pro (1M), Kimi K3.1 Pro Highspeed (1M), Kimi K3 (1M), Kimi K2.7 Code, Kimi K2.7 Code Highspeed |
 | **Local** | Any OpenAI-compatible API |
 
 ## Tools
