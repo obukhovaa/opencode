@@ -158,7 +158,7 @@ OPENCODE_CLI_TOOLS_TIMEOUT=soon "$BIN" tools list --cwd "$WS" --strict >/dev/nul
 check "invalid env: --strict exits 1" "[ $? -ne 0 ]"
 
 # --- the published schema carries the three keys --------------------------
-check "schema: cliTools limit keys published" "jq -e '.properties.cliTools.properties | (.timeout and .maxTimeout and (.maxOutputBytes.type == \"integer\"))' \"$ROOT/opencode-schema.json\" >/dev/null"
+check "schema: cliTools limit keys published" "jq -e '.properties.cliTools.properties | (.timeout and .maxTimeout and (.maxOutputBytes.anyOf[0].type == \"integer\") and (.maxOutputBytes.anyOf[1].type == \"string\") and (.maxOutputBytes.anyOf[1].pattern != null))' \"$ROOT/opencode-schema.json\" >/dev/null"
 
 printf "Results: %d passed, %d failed\n" "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

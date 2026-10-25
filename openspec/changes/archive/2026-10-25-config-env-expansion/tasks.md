@@ -11,5 +11,5 @@
 
 ## 3. Verification and completion
 
-- [ ] 3.1 Run make test, make test-e2e, schema/security/build checks and review changes.
-- [ ] 3.2 Sync specifications and archive this change plus any proven-complete leftovers on the branch.
+- [x] 3.1 Run make test, make test-e2e, schema/security/build checks and review changes.
+- [x] 3.2 Sync specifications and archive this change plus any proven-complete leftovers on the branch.

@@ -27,3 +27,9 @@ Users can replace values with references after upgrade. No files are migrated au
 ## Verification notes
 
 `LC_ALL=C make test` passed with race detection, formatting and vet. The first run under the inherited unsupported `C.UTF-8` locale failed three unrelated hook stderr assertions because Bash prepended locale warnings. The full e2e target passed ACP and image/PDF attachment cases, then hung in the attachment script's existing server-shutdown wait; it was stopped without modifying that unrelated script. The new process e2e passed for both Kimi models. The repository-wide hidden-character script reports six existing zero-width spaces in generated `internal/lsp/protocol/tsprotocol.go`, byte-identical to main; changed Go files contain none.
+
+After rebasing onto main's merged CD-5480 changes, `LC_ALL=C make test` passed again (race detector, formatters, vet and all short tests). Strict validation of all 60 main specifications passed. The CLI-tools and web-fetch schema e2e assertions now check both integer literals and the environment-reference alternative. The CLI-tools suite passed all 25 cases and web-fetch passed all 16 cases on rerun.
+
+The broader local e2e pass reproduced a server shutdown timeout in `pool_mode.sh` after its reported assertions passed; the attachment/server shutdown limitation also affects the full target. These unrelated scripts were left unchanged. The merged inbox change's own five hermetic e2e groups passed before it was archived. No remaining active OpenSpec changes were found.
+
+The bounded local script sweep completed with 16 script passes, two server lifecycle timeouts (`pool_mode.sh`, `serve.sh`), and two stale scalar-schema assertions. Both assertions were updated for the new literal/reference alternatives and their individual suites were rerun. Live-provider scripts were excluded from that local sweep; the original full target had already stopped at attachment server shutdown.
