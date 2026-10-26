@@ -1455,14 +1455,14 @@ OuterLoop:
 					}
 				}
 			}
-			// A peer HTTP/2 RST_STREAM after the first streamed event. The
-			// provider replays a reset only before any output reached the
-			// consumer (a replay would duplicate the deltas already appended),
-			// so it surfaces here. A model call error comes from the response
-			// stream before any tool ran, so the turn is safe to send again:
-			// drop the partial message and resend the same history once.
+			// A peer HTTP/2 RST_STREAM the provider did not replay: one after
+			// the first streamed event (a replay would duplicate the deltas
+			// already appended), or one whose pre-output replays ran out. A
+			// model call error comes from the response stream before any tool
+			// ran, so the turn is safe to send again: drop the partial message
+			// and resend the same history once.
 			if turnErr != nil && !overflowAttempted && ctx.Err() == nil && isModelCallError(turnErr) && provider.IsPeerStreamReset(turnErr) {
-				logging.Warn("Model stream reset by peer after partial output; discarding the partial message and resending the turn once",
+				logging.Warn("Model stream reset by peer; discarding the partial message and resending the turn once",
 					"session_id", sessionID,
 					"agent", a.agentID,
 					"cycle", cycles,
@@ -2562,7 +2562,7 @@ func (a *agent) finishMessage(ctx context.Context, msg *message.Message, finishR
 }
 
 // streamResetResendDelay is the pause before processGeneration resends a
-// turn whose model stream a peer reset after partial output.
+// turn whose model stream a peer reset.
 var streamResetResendDelay = time.Second
 
 // discardPartialMessage removes the assistant message a reset stream left

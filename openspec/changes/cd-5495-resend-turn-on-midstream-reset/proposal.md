@@ -23,6 +23,10 @@ in the "after partial output" branch.
   when the run is cancelled or past its deadline, or for any other error. A cancel
   during the wait ends the run as cancelled. If the resend fails, the run fails with the
   resend's error.
+- A reset the provider stopped replaying before any output (its replay budget ran out)
+  reaches the agent loop as the same error and is resent the same way.
+- The TUI's message list drops a deleted message, so the discarded partial message does
+  not stay on screen half-written.
 - The provider stream loops are unchanged.
 
 ## Capabilities

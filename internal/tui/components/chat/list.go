@@ -240,6 +240,45 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+		} else if msg.Type == pubsub.DeletedEvent {
+			// The agent deletes the partial assistant message of a turn whose
+			// stream the peer reset before it resends the turn; left in the
+			// list it would stay half-written and unfinished.
+			if msg.Payload.SessionID == m.session.ID {
+				for i, v := range m.messages {
+					if v.ID == msg.Payload.ID {
+						m.messages = append(m.messages[:i], m.messages[i+1:]...)
+						m.invalidateCache(v.ID)
+						if m.currentMsgID == v.ID {
+							m.currentMsgID = ""
+							if len(m.messages) > 0 {
+								m.currentMsgID = m.messages[len(m.messages)-1].ID
+							}
+						}
+						needsRerender = true
+						break
+					}
+				}
+			}
+			for _, v := range m.messages {
+				for _, c := range v.ToolCalls() {
+					if c.ID == msg.Payload.SessionID {
+						for i, tm := range m.taskMessages[c.ID] {
+							if tm.ID == msg.Payload.ID {
+								m.taskMessages[c.ID] = append(m.taskMessages[c.ID][:i], m.taskMessages[c.ID][i+1:]...)
+								m.invalidateCache(v.ID)
+								needsRerender = true
+								break
+							}
+						}
+					}
+				}
+			}
+			// An async render in flight still holds the deleted message;
+			// drop its result so the sync render below replaces it.
+			if needsRerender {
+				m.rendering = false
+			}
 		}
 		if needsRerender {
 			m.recomputeToolState()

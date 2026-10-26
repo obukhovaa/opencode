@@ -1,6 +1,6 @@
 ## ADDED Requirements
 
-### Requirement: A turn reset by the peer after partial output is resent once
+### Requirement: A turn whose model stream the peer reset is resent once
 When a turn's model call fails because the peer reset the HTTP/2 stream with a code the
 provider stream loops treat as retryable (`INTERNAL_ERROR`, `REFUSED_STREAM`,
 `ENHANCE_YOUR_CALM`, `NO_ERROR`, received from the peer), the agent loop SHALL delete
@@ -12,6 +12,10 @@ no tool of the failed call has run.
 #### Scenario: A reset after partial output is resent
 - **WHEN** a model call streams a delta and then ends in a peer `RST_STREAM INTERNAL_ERROR`
 - **THEN** the partial assistant message is deleted, the same history is sent once more, and the run continues on that response
+
+#### Scenario: A reset the provider stopped replaying is resent too
+- **WHEN** the peer resets every pre-output attempt until the provider stream loop's replay budget runs out
+- **THEN** the turn is resent once in the same way, and the resend gets its own replay budget
 
 #### Scenario: The resend is bounded
 - **WHEN** the resent call is reset again
