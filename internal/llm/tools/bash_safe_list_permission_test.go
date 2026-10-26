@@ -58,6 +58,7 @@ func TestBashSafeListExplicitAllowStillExecutes(t *testing.T) {
 		t.Fatalf("explicitly allowed wrapper should run: calls=%d error=%v", p.calls, err)
 	}
 	waitForPair(t, deps, 5*time.Second)
+	waitForResume(t, deps, 5*time.Second)
 	pairs := deps.collect()
 	if len(pairs) != 1 || !strings.Contains(pairs[0].ToolContent, "permitted") {
 		t.Fatal("allowed wrapper did not produce its harmless output")
