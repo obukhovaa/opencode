@@ -406,7 +406,7 @@ prompts in Langfuse but ships its traces elsewhere is a supported setup.
 - Flow steps — `langfusePromptPath` / `langfusePromptLabel` in place of
   `prompt`. See [flows.md](flows.md#langfuse-managed-prompts).
 - Agent types — the same two keys in place of the markdown body or the
-  `prompt` field. See [the README](../README.md#langfuse-managed-system-prompts).
+  `prompt` field. See [agents.md](agents.md#langfuse-managed-system-prompts).
 
 Either way, exactly one prompt source per definition; declaring both is a
 load-time error, not a precedence rule.
