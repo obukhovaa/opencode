@@ -56,3 +56,51 @@ func TestBashRunRejectsDisallowedCompoundBeforeExecution(t *testing.T) {
 		})
 	}
 }
+
+// CD-5487: no safe-listed command may start another command, so a wrapper
+// or a program-running option goes through the permission gate.
+func TestIsSafeReadOnlyCommandRunsNoOtherCommand(t *testing.T) {
+	for _, command := range []string{
+		"env bash -c 'printf ok'", "env -i sh -c x", "env X=1 sh", "nice sh", "time sh",
+		"timeout 5 sh", "go run ./x", "go test ./...", "go test -exec sh ./...",
+		"go build -toolexec 'sh -c x' ./...", "go vet -vettool=/tmp/x ./...", "go list -toolexec=x",
+		"go env -w GOFLAGS=-toolexec=x", "git grep -O'sh -c x' foo", "git grep --open-files-in-pager=x foo",
+		"git ls-remote --upload-pack='sh -c x' .", "git ls-remote -u x .",
+		`echo ${x:=\$\(touch MK\)} ${x@P}`, "echo $((x))", "echo $(id)", "echo <(id)",
+	} {
+		if IsSafeReadOnlyCommand(command) {
+			t.Errorf("%q must go through the permission gate", command)
+		}
+	}
+	for _, command := range []string{
+		"env", "printenv HOME", "go build ./...", "go env GOPATH", "go vet ./...", "git grep -n foo",
+		"git ls-remote origin", "echo $HOME ${x:-y}", `echo "a b" 'c'`, "go list -m all",
+	} {
+		if !IsSafeReadOnlyCommand(command) {
+			t.Errorf("%q should stay exempt", command)
+		}
+	}
+}
+
+// CD-5487 done-when: `env bash -c '…'` is denied under "*": deny.
+func TestBashRunDeniesSafeListWrapper(t *testing.T) {
+	_, cleanup := setupBashBgFixture(t)
+	defer cleanup()
+	t.Setenv("SHELL", "/bin/bash")
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "should-not-exist")
+	input, err := json.Marshal(BashParams{Command: fmt.Sprintf("env bash -c 'touch %s'", marker), Workdir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := NewBashTool(nil, bashPermissionRegistry{rules: map[string]any{"bash": map[string]any{"*": "deny"}}})
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "safe-list-wrapper")
+	ctx = context.WithValue(ctx, MessageIDContextKey, "msg")
+	_, err = b.Run(ctx, ToolCall{ID: "wrapper", Input: string(input)})
+	if _, denied := permission.AsRuleDenied(err); !denied {
+		t.Fatalf("want configured-rule denial, got %v", err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("wrapped command ran: stat error %v", err)
+	}
+}

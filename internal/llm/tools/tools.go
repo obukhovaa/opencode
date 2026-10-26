@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"mvdan.cc/sh/v3/syntax"
+
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/diff"
@@ -492,20 +494,87 @@ func hasFileConflict(call ToolCall, myPaths []string, allCalls []ToolCall) bool 
 // because the prefix match alone would exempt `echo go; ./gradlew build &`
 // or `ls && rm -rf build` on the strength of their first word (openspec
 // bash-background-mode: "The permission-exempt safe list covers only
-// simple commands").
+// simple commands"). Nor may it run another command (CD-5487): no listed
+// entry is a wrapper, and an expansion bash executes (`${x@P}`, arithmetic
+// over a variable, see permission.BashHidesExecution) or an option that
+// runs a program (safeCommandRunsProgram) sends the call through the gate.
 func IsSafeReadOnlyCommand(command string) bool {
 	if hasTopLevelCompound(command) {
+		return false
+	}
+	args, ok := simpleCommandWords(command)
+	if !ok {
 		return false
 	}
 	cmdLower := strings.ToLower(command)
 	for _, safe := range safeReadOnlyCommands {
 		if strings.HasPrefix(cmdLower, strings.ToLower(safe)) {
 			if len(cmdLower) == len(safe) || cmdLower[len(safe)] == ' ' || cmdLower[len(safe)] == '-' {
-				return true
+				return !safeCommandRunsProgram(safe, args)
 			}
 		}
 	}
 	return false
+}
+
+// simpleCommandWords parses command as one simple Bash command without
+// substitutions or hidden execution and returns its words with quotes
+// removed. A word that is not plain literal text (a parameter expansion)
+// is returned as "$", which no refused option matches but which keeps the
+// argument count honest.
+func simpleCommandWords(command string) ([]string, bool) {
+	file, err := syntax.NewParser(syntax.Variant(syntax.LangBash)).Parse(strings.NewReader(command), "")
+	if err != nil || len(file.Stmts) != 1 {
+		return nil, false
+	}
+	stmt := file.Stmts[0]
+	call, ok := stmt.Cmd.(*syntax.CallExpr)
+	if !ok || len(call.Assigns) > 0 || len(stmt.Redirs) > 0 || stmt.Background || stmt.Coprocess || stmt.Negated {
+		return nil, false
+	}
+	substitutes := false
+	syntax.Walk(stmt, func(node syntax.Node) bool {
+		switch node.(type) {
+		case *syntax.CmdSubst, *syntax.ProcSubst:
+			substitutes = true
+		}
+		return !substitutes
+	})
+	if substitutes || permission.BashHidesExecution(stmt) {
+		return nil, false
+	}
+	words := make([]string, 0, len(call.Args))
+	for _, word := range call.Args {
+		lit := word.Lit()
+		if lit == "" {
+			lit = unquotedWord(word)
+		}
+		words = append(words, lit)
+	}
+	return words, true
+}
+
+func unquotedWord(word *syntax.Word) string {
+	var b strings.Builder
+	for _, part := range word.Parts {
+		switch p := part.(type) {
+		case *syntax.Lit:
+			b.WriteString(p.Value)
+		case *syntax.SglQuoted:
+			b.WriteString(p.Value)
+		case *syntax.DblQuoted:
+			for _, inner := range p.Parts {
+				lit, ok := inner.(*syntax.Lit)
+				if !ok {
+					return "$"
+				}
+				b.WriteString(lit.Value)
+			}
+		default:
+			return "$"
+		}
+	}
+	return b.String()
 }
 
 func GetContextValues(ctx context.Context) (string, string) {

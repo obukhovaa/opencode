@@ -12,7 +12,8 @@ any part starts; preserve deny/ask semantics and quoted literal data.
 
 Non-goals: an OS sandbox; resolving variable values, aliases, functions carried
 from earlier persistent-shell calls, or the behavior of an allowed script or
-interpreter; changing the existing simple-command safe list; deployment.
+interpreter; deployment. (The safe list was first out of scope; review moved
+CD-5487 in, see Review follow-up.)
 
 ## Decisions
 
@@ -55,6 +56,31 @@ Keep prefix allow rules narrow; when a compound invocation needs an additional
 command, that part needs its own allow rule as well. Rollback restores the
 known permission exposure, so prefer correcting a legitimate rule or dialect
 restriction over reverting the gate.
+
+## Review follow-up
+
+Review of 55eca7e found that bash runs code that is no node of the tree: it
+evaluates a variable's value arithmetically (arithmetic, subscripts, slices,
+`${!x}`) or as a prompt (`${x@P}`), and `${x:=…}` stores the code inside the same
+allowed statement. `BashHidesExecution` detects those constructs over the whole
+call. A detected call does not take `allow` from a text match; it takes the
+stricter of its verdict and the catch-all verdict, probed with a command no
+realistic rule but `*` matches. That keeps `"*": allow` agents unchanged and
+denies under `"*": deny`. C-style loops are refused because telling a literal
+initialiser apart would need symbolic evaluation.
+
+CD-5487 (found in the same review): safe-listed commands skipped the gate
+entirely, and `env`, `nice`, `time`, `timeout`, `go run` and `go test` start other
+commands. The wrappers left the list, `env` qualifies only bare, and a listed
+command qualifies only as one simple command without substitution or hidden
+execution and without an option that runs a program. `go test` therefore
+prompts (or is denied under `"*": deny`) unless allowed explicitly; it also no
+longer runs in parallel with other tool calls, since the safe list doubles as
+the parallelism check.
+
+Not changed: the gate parses Bash while the foreground shell may be zsh. Falling
+back to ask under other shells would turn every prefix rule into a prompt for
+zsh users, so the limitation is documented instead.
 
 ## Open Questions
 

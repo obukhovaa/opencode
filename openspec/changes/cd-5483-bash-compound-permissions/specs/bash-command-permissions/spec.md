@@ -31,8 +31,8 @@ The tool SHALL retain the whole invocation's existing permission verdict and
 combine statement verdicts with deny taking precedence over ask and ask over
 allow. A rule denial SHALL keep the existing rule-denial result behavior. An
 ask SHALL use the existing single prompt for the original complete invocation.
-The simple-command safe-list exemption SHALL NOT exempt individual parts of
-a compound call.
+The simple-command safe list SHALL NOT exempt individual parts of a compound
+call.
 
 #### Scenario: Every check allows
 - **WHEN** both the complete invocation and every executable statement allow
@@ -53,3 +53,38 @@ allow glob as a fallback. Parsing SHALL execute no commands or expansions.
 #### Scenario: Prefix allow on malformed syntax
 - **WHEN** a prefix allow glob matches an invocation whose syntax cannot be parsed
 - **THEN** the tool returns a rule denial without executing any command
+
+### Requirement: Hidden execution is not granted by a prefix rule
+When the invocation contains an expansion through which bash runs code that
+appears in no statement — arithmetic or a subscript, slice or indirection over
+a variable, a C-style loop header, `${x@P}`, or an assigning expansion
+`${x=…}` / `${x:=…}` — an allow verdict SHALL be replaced by the stricter of
+itself and the agent's catch-all verdict (the verdict for a command no
+specific rule matches). Arithmetic over numeric literals and expansions that
+run nothing SHALL keep their verdict.
+
+#### Scenario: Stored command run by arithmetic or prompt expansion
+- **WHEN** `"*": deny` and `"printf allowed*": allow`, and the call is
+  `printf allowed ${x:=\$\(touch MK\)} ${x@P}` or uses `$((x))`, `${!x}` or `${y[x]}`
+- **THEN** the call is denied before execution
+
+#### Scenario: Allow-all agents are unaffected
+- **WHEN** `"*": allow` and the call contains hidden execution
+- **THEN** the call is allowed as before
+
+#### Scenario: No catch-all
+- **WHEN** no catch-all rule is configured and a prefix rule allows a call with hidden execution
+- **THEN** the tool asks
+
+### Requirement: Safe-listed commands run no other command
+A command SHALL skip the gate as safe-listed only when it is one simple command
+with no redirect, substitution or hidden-execution expansion. No safe-list
+entry SHALL start another command: wrappers (`nice`, `time`, `timeout`,
+`go run`, `go test`) SHALL NOT be listed, `env` SHALL qualify only without
+arguments, and options that run a program (`-toolexec`, `-exec`, `-vettool`,
+`go env -w/-u`, `git grep -O` / `--open-files-in-pager`,
+`git ls-remote -u` / `--upload-pack`) SHALL send the call through the gate.
+
+#### Scenario: Wrapper under deny-all
+- **WHEN** an agent has `"*": deny` and runs `env bash -c '…'`
+- **THEN** the call is denied and the wrapped command does not run

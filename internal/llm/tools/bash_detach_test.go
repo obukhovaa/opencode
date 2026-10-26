@@ -57,7 +57,7 @@ func TestDetectSelfDetach(t *testing.T) {
 func TestIsSafeReadOnlyCommand_SimpleCommandsOnly(t *testing.T) {
 	safe := []string{
 		"ls -la", "git status", "git log --oneline -5", "echo 'a; b'", `echo "a | b"`,
-		"echo $HOME", "go test ./...", "git diff HEAD~1", "pwd", "date",
+		"echo $HOME", "go build ./...", "git diff HEAD~1", "pwd", "date",
 	}
 	for _, c := range safe {
 		if !IsSafeReadOnlyCommand(c) {
