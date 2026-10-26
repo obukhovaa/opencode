@@ -81,9 +81,9 @@ func LoadCustomCommands() ([]Command, error) {
 	// User commands (global), lowest priority first
 	userDirs := []string{}
 	if xdgConfigHome != "" {
-		userDirs = append(userDirs, filepath.Join(xdgConfigHome, "opencode", "commands"))
+		userDirs = append(userDirs, filepath.Join(xdgConfigHome, config.ProfileAppName(), "commands"))
 	}
-	if homeErr == nil {
+	if homeErr == nil && config.SharedGlobalDirsInScope() {
 		userDirs = append(userDirs,
 			filepath.Join(home, ".opencode", "commands"),
 			filepath.Join(home, ".agents", "commands"),

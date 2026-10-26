@@ -223,8 +223,10 @@ func discoverGlobalFlows() []Flow {
 
 	var result []Flow
 	globalDirs := []string{
-		filepath.Join(home, ".config", "opencode", "flows"),
-		filepath.Join(home, ".agents", "flows"),
+		filepath.Join(home, ".config", config.ProfileAppName(), "flows"),
+	}
+	if config.SharedGlobalDirsInScope() {
+		globalDirs = append(globalDirs, filepath.Join(home, ".agents", "flows"))
 	}
 
 	for _, dir := range globalDirs {

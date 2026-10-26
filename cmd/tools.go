@@ -188,6 +188,7 @@ func loadToolsConfig(cmd *cobra.Command) (*config.Config, error) {
 		return nil, fmt.Errorf("failed to get current working directory: %w", err)
 	}
 	cwd = c
+	applyProfileFlag(cmd)
 	cfg, err := config.Load(cwd, debug)
 	if err != nil {
 		return nil, err

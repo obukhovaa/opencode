@@ -344,15 +344,17 @@ func discoverGlobalSkills() ([]Info, []Dropped) {
 		dropped = append(dropped, bad...)
 	}
 
-	// Scan ~/.config/opencode/{skill,skills}/**/SKILL.md
-	scan(filepath.Join(homeDir, ".config", "opencode"), "{skill,skills}/**/SKILL.md")
+	// Scan ~/.config/opencode[-<profile>]/{skill,skills}/**/SKILL.md
+	scan(filepath.Join(homeDir, ".config", config.ProfileAppName()), "{skill,skills}/**/SKILL.md")
 
-	// Scan ~/.agents/skills/**/SKILL.md
-	scan(filepath.Join(homeDir, ".agents"), "skills/**/SKILL.md")
+	if config.SharedGlobalDirsInScope() {
+		// Scan ~/.agents/skills/**/SKILL.md
+		scan(filepath.Join(homeDir, ".agents"), "skills/**/SKILL.md")
 
-	// Scan ~/.claude/skills/**/SKILL.md (unless disabled)
-	if !isClaudeSkillsDisabled() {
-		scan(filepath.Join(homeDir, ".claude"), "skills/**/SKILL.md")
+		// Scan ~/.claude/skills/**/SKILL.md (unless disabled)
+		if !isClaudeSkillsDisabled() {
+			scan(filepath.Join(homeDir, ".claude"), "skills/**/SKILL.md")
+		}
 	}
 
 	return skills, dropped

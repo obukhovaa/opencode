@@ -1013,6 +1013,11 @@ func configureViper() {
 	viper.SetOptions(configDecoderOption())
 	viper.SetConfigName(fmt.Sprintf(".%s", appName))
 	viper.SetConfigType("json")
+	// With an active profile, profile-scoped dirs win; the default locations
+	// stay as fallback (a profile without its own file reads the base config).
+	for _, dir := range ProfileConfigDirs() {
+		viper.AddConfigPath(dir)
+	}
 	viper.AddConfigPath("$HOME")
 	viper.AddConfigPath(fmt.Sprintf("$XDG_CONFIG_HOME/%s", appName))
 	viper.AddConfigPath(fmt.Sprintf("$HOME/.config/%s", appName))
@@ -1961,7 +1966,8 @@ func UpdateCfgFile(updateCfg func(config *Config)) error {
 	}
 
 	// Resolve the config file path. When viper hasn't observed a file
-	// (first ever write on a clean install), default to ~/.opencode.json.
+	// (first ever write on a clean install), default to ~/.opencode.json —
+	// or the profile-scoped path when a profile is active.
 	configFile := viper.ConfigFileUsed()
 	createdFresh := false
 	var configData []byte
@@ -1970,7 +1976,15 @@ func UpdateCfgFile(updateCfg func(config *Config)) error {
 		if err != nil {
 			return fmt.Errorf("failed to get home directory: %w", err)
 		}
-		configFile = filepath.Join(homeDir, fmt.Sprintf(".%s.json", appName))
+		if ActiveProfile() != "" {
+			dir := filepath.Join(homeDir, ".config", ProfileAppName())
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				return fmt.Errorf("failed to create profile config dir: %w", err)
+			}
+			configFile = filepath.Join(dir, fmt.Sprintf(".%s.json", appName))
+		} else {
+			configFile = filepath.Join(homeDir, fmt.Sprintf(".%s.json", appName))
+		}
 		logging.Info("config file not found, creating new one", "path", configFile)
 		configData = []byte(`{}`)
 		createdFresh = true

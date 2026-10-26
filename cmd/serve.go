@@ -62,6 +62,7 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
   # exclusive with --flow; see the pool-* flags)
   opencode serve --pool-mode --port 8080 --hostname 0.0.0.0 --auto-approve --agent coder`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		applyProfileFlag(cmd)
 		port, _ := cmd.Flags().GetInt("port")
 		hostname, _ := cmd.Flags().GetString("hostname")
 		corsOrigin, _ := cmd.Flags().GetString("cors")

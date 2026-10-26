@@ -78,6 +78,7 @@ to assist developers in writing, debugging, and understanding code directly from
 		}
 
 		// Load the config
+		applyProfileFlag(cmd)
 		debug, _ := cmd.Flags().GetBool("debug")
 		cwd, _ := cmd.Flags().GetString("cwd")
 		prompt, _ := cmd.Flags().GetString("prompt")
@@ -535,6 +536,7 @@ func Execute() {
 func init() {
 	rootCmd.Flags().BoolP("help", "h", false, "Help")
 	rootCmd.Flags().BoolP("version", "v", false, "Version")
+	rootCmd.PersistentFlags().String("profile", "", "Runtime profile (global config, skills, agents, flows, commands from ~/.config/opencode-<profile>); or OPENCODE_PROFILE")
 	rootCmd.Flags().BoolP("debug", "d", false, "Debug")
 	rootCmd.Flags().StringP("cwd", "c", "", "Current working directory")
 	rootCmd.Flags().StringP("prompt", "p", "", "Prompt to run in non-interactive mode")
