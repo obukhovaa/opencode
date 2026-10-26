@@ -24,7 +24,12 @@ uses its literal fallback when the variable is unset or empty. Missing required
 variables fail configuration loading; diagnostics identify the variable without
 printing its surrounding value. Export variables before starting OpenCode.
 
-Use `$${NAME}` to retain `${NAME}` for a later shell or template. Bare `$NAME`
+The top-level `hooks` block is never expanded: a hook `command` is a shell
+string run with `OPENCODE_PROJECT_DIR` / `CLAUDE_PROJECT_DIR` in its own
+environment, so `"${OPENCODE_PROJECT_DIR}/.opencode/hooks/check.sh"` keeps
+working and the hook's shell resolves it.
+
+Elsewhere, use `$${NAME}` to retain `${NAME}` for a later shell or template. Bare `$NAME`
 is unchanged. Existing context expressions `${agent}`, `${flow.step}`,
 `${flow.id}` and `${env.NAME}` remain available to context resolution. The name
 `agent` is reserved for that existing expression; use another environment name

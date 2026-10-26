@@ -22,7 +22,7 @@ The loader SHALL expand `${NAME}` and `${NAME:-fallback}` in JSON string values 
 - **THEN** a plain reference resolves to empty and a reference with a fallback resolves to the fallback
 
 ### Requirement: Preserve configuration precedence and literal syntax
-Project values SHALL override global values through the existing merge behavior. Explicit environment overrides and defaults SHALL retain their established priority. Expansion SHALL apply only to file values, never map keys. `$${NAME}` SHALL yield literal `${NAME}`; bare `$NAME`, unsupported expressions, and dotted `${agent}`, `${flow.step}`, `${env.NAME}` context expressions SHALL remain unchanged including the reserved `${agent}` context expression.
+Project values SHALL override global values through the existing merge behavior. Explicit environment overrides and defaults SHALL retain their established priority. Expansion SHALL apply only to file values, never map keys, and never to the top-level `hooks` subtree, whose commands are shell strings evaluated in the hook's own environment. `$${NAME}` SHALL yield literal `${NAME}`; bare `$NAME`, unsupported expressions, and dotted `${agent}`, `${flow.step}`, `${env.NAME}` context expressions SHALL remain unchanged including the reserved `${agent}` context expression.
 
 #### Scenario: Global and local values
 - **WHEN** both files define a provider URL using references
@@ -31,6 +31,10 @@ Project values SHALL override global values through the existing merge behavior.
 #### Scenario: Literal and nonrecursive values
 - **WHEN** file values use escaped references, bare shell variables, dotted context expressions, or environment values containing another reference
 - **THEN** only the supported unescaped file references expand once and keys remain unchanged
+
+#### Scenario: Hook commands keep their shell variables
+- **WHEN** a value under the top-level `hooks` key, such as a hook `command` of `${OPENCODE_PROJECT_DIR}/.opencode/hooks/check.sh`, contains a reference
+- **THEN** the loader leaves the whole `hooks` subtree unexpanded, loading succeeds even when the variable is unset, and the hook's shell resolves the reference at run time
 
 ### Requirement: IDE schema accepts environment references
 The published JSON schema SHALL accept supported references in scalar configuration positions while retaining validation of ordinary literal values.

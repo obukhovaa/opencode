@@ -79,6 +79,31 @@ func TestConfigEnvViperRoundTrip(t *testing.T) {
 	}
 }
 
+func TestConfigEnvLeavesHookCommandsToTheHookShell(t *testing.T) {
+	os.Unsetenv("OPENCODE_PROJECT_DIR")
+	t.Setenv("CONFIG_KEY", "secret-marker")
+	v := viper.NewWithOptions(configDecoderOption())
+	v.SetConfigType("json")
+	body := `{"hooks":{"PreToolUse":[{"matcher":"bash","hooks":[{"type":"command","command":"${OPENCODE_PROJECT_DIR}/.opencode/hooks/check.sh ${CONFIG_KEY}"}]}]},"providers":{"kimi":{"apiKey":"${CONFIG_KEY}"}}}`
+	if err := v.ReadConfig(strings.NewReader(body)); err != nil {
+		t.Fatalf("a hook-only variable must not fail the load: %v", err)
+	}
+	var c Config
+	if err := v.Unmarshal(&c); err != nil {
+		t.Fatal(err)
+	}
+	var command string
+	for _, groups := range c.Hooks {
+		command = groups[0].Hooks[0].Command
+	}
+	if command != "${OPENCODE_PROJECT_DIR}/.opencode/hooks/check.sh ${CONFIG_KEY}" {
+		t.Fatalf("hook command was expanded at load: %q", command)
+	}
+	if c.Providers[models.ProviderKimi].APIKey != "secret-marker" {
+		t.Fatal("expansion outside hooks stopped")
+	}
+}
+
 func TestConfigEnvLoad(t *testing.T) {
 	clearProviderEnv(t)
 	t.Setenv("CONFIG_KEY", "private-config-key")
@@ -140,7 +165,7 @@ func TestUpdateCfgFilePreservesReferences(t *testing.T) {
 	t.Setenv("CONFIG_KEY", "secret-marker")
 	t.Setenv("CONFIG_LIMIT", "9")
 	t.Setenv("CONFIG_BOOL", "true")
-	body := `{"providers":{"kimi":{"apiKey":"${CONFIG_KEY}","baseURL":"${CONFIG_URL:-https://example.test}"}},"maxTurns":"${CONFIG_LIMIT}","autoCompact":"${CONFIG_BOOL}","future":{"big":9007199254740993,"secret":"${CONFIG_KEY}"},"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"echo $${CONFIG_KEY}"}]}]},"router":{"channels":{"telegram":{"bots":[{"id":"one","token":"${CONFIG_KEY}","future":true},{"id":"two","token":"${CONFIG_KEY}"}]}}}}`
+	body := `{"providers":{"kimi":{"apiKey":"${CONFIG_KEY}","baseURL":"${CONFIG_URL:-https://example.test}"}},"maxTurns":"${CONFIG_LIMIT}","autoCompact":"${CONFIG_BOOL}","future":{"big":9007199254740993,"secret":"${CONFIG_KEY}"},"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"echo ${CONFIG_KEY}"}]}]},"router":{"channels":{"telegram":{"bots":[{"id":"one","token":"${CONFIG_KEY}","future":true},{"id":"two","token":"${CONFIG_KEY}"}]}}}}`
 	file, _ := withTestConfigFile(t, body)
 	if err := UpdateCfgFile(func(c *Config) {
 		c.Router.Channels.Telegram.Bots[0].GroupsEnabled = true

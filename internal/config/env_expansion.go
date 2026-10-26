@@ -36,10 +36,18 @@ func (envJSONDecoder) Decode(data []byte, out map[string]any) error {
 	if values == nil {
 		return fmt.Errorf("configuration must be a JSON object")
 	}
-	if _, err := expandConfigValues(values); err != nil {
-		return err
-	}
 	for key, value := range values {
+		// Hook commands are shell strings run with OPENCODE_PROJECT_DIR /
+		// CLAUDE_PROJECT_DIR in their own environment, so their ${VAR}
+		// belongs to that shell, not to config loading: expanding here would
+		// fail the load on a variable only the hook process has.
+		if !strings.EqualFold(key, "hooks") {
+			expanded, err := expandConfigValues(value)
+			if err != nil {
+				return err
+			}
+			value = expanded
+		}
 		out[key] = value
 	}
 	return nil
