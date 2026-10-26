@@ -28,12 +28,23 @@ CD-5487 in, see Review follow-up.)
 3. Evaluate executable source slices, excluding structural containers,
    negation and separator tokens. Traverse structural statements, including
    unreachable branches and function bodies; do not predict runtime routing.
-4. Unsupported/malformed Bash is a rule denial. An allow glob must not become a
-   fallback for syntax the policy layer could not inspect. Other configured
-   shells retain execution, but require input compatible with this parser.
+4. Unsupported/malformed Bash is a rule denial, even for allow-all agents. An
+   allow glob must not become a fallback for unvalidated syntax. Other shell
+   dialects are documented, not gated: zsh can execute glob qualifiers that
+   parse as literal Bash extglobs, but downgrading every foreground allow to ask
+   under zsh (macOS's default `$SHELL`) would prompt allow-all TUI users on every
+   call. Background dispatch always uses bash -c.
 5. Keep the check at the existing common gate. Rejections happen before the
    first foreground command or creation of a detached task. Keep one full-call
    prompt for ask. Do not apply the safe-list exemption separately to parts.
+6. Source AST traversal alone cannot inspect Bash's second evaluation of
+   variable contents. A call with an assigning expansion, indirection, @P (or
+   any unknown @ transform), a variable-address test or non-literal
+   arithmetic/index/slice context does not take allow from a text match: it
+   takes the stricter of its verdict and the agent's catch-all verdict. Numeric
+   constants and operators over them are supported; mutable variable state is
+   not evaluated to prove safety. This closes the four same-statement Bash 5.x
+   review bypasses without executing them during parsing.
 
 ## Risks / Trade-offs
 
@@ -47,6 +58,14 @@ CD-5487 in, see Review follow-up.)
   its existing privileges.
 - Structural-wrapper rejection hiding a missing recursive check → include an
   allow-by-default regression corpus with a narrowly denied nested command.
+- Legitimate variable arithmetic under a prefix rule now asks or is denied →
+  Accepted: the gate cannot distinguish data from executable variable contents
+  there. Allow-all agents keep allow, since their catch-all already grants any
+  command the hidden code could be.
+- Prefix allow rules also grant redirect writes → Accepted unchanged behavior,
+  explicitly documented as outside filesystem containment.
+- Pre-existing safe-list wrappers bypassed the common gate → fixed here as
+  CD-5487 (see Review follow-up); `go test` now needs an explicit allow rule.
 
 ## Migration Plan
 
@@ -59,7 +78,8 @@ restriction over reverting the gate.
 
 ## Review follow-up
 
-Review of 55eca7e found that bash runs code that is no node of the tree: it
+Two follow-ups to the review of 55eca7e were written in parallel (330740d and
+fcbf53a) and merged; this section describes the merged result. The review found that bash runs code that is no node of the tree: it
 evaluates a variable's value arithmetically (arithmetic, subscripts, slices,
 `${!x}`) or as a prompt (`${x@P}`), and `${x:=…}` stores the code inside the same
 allowed statement. `BashHidesExecution` detects those constructs over the whole

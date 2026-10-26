@@ -57,6 +57,41 @@ func TestBashRunRejectsDisallowedCompoundBeforeExecution(t *testing.T) {
 	}
 }
 
+// The four reviewed bash 5.x lines must be refused before either dispatch
+// mode starts; policy alone decides, so this holds on macOS's bash 3.2 too.
+func TestBashRunRejectsReevaluatedExpansionsBeforeExecution(t *testing.T) {
+	commands := []string{
+		`printf allowed ${x:=a[\$\(touch MK\)]} $((x))`,
+		`printf allowed ${x:=a[\$\(touch MK\)]} ${!x}`,
+		`printf allowed ${x:=a[\$\(touch MK\)]} ${y[x]}`,
+		`printf allowed ${x:=\$\(touch MK\)} ${x@P}`,
+	}
+	for _, background := range []bool{false, true} {
+		for _, command := range commands {
+			t.Run(fmt.Sprintf("background=%t/%s", background, command), func(t *testing.T) {
+				_, cleanup := setupBashBgFixture(t)
+				defer cleanup()
+				t.Setenv("SHELL", "/bin/bash")
+				dir := t.TempDir()
+				input, err := json.Marshal(BashParams{Command: command, Workdir: dir, RunInBackground: background})
+				if err != nil {
+					t.Fatal(err)
+				}
+				reg := bashPermissionRegistry{rules: map[string]any{"bash": map[string]any{"*": "deny", "printf allowed*": "allow"}}}
+				ctx := context.WithValue(context.Background(), SessionIDContextKey, "expansion-permission")
+				ctx = context.WithValue(ctx, MessageIDContextKey, "msg")
+				_, err = NewBashTool(nil, reg).Run(ctx, ToolCall{ID: "expansion", Input: string(input)})
+				if _, denied := permission.AsRuleDenied(err); !denied {
+					t.Fatalf("want rule denial before execution, got %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(dir, "MK")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("hidden command ran: stat error %v", err)
+				}
+			})
+		}
+	}
+}
+
 // CD-5487: no safe-listed command may start another command, so a wrapper
 // or a program-running option goes through the permission gate.
 func TestIsSafeReadOnlyCommandRunsNoOtherCommand(t *testing.T) {

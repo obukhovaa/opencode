@@ -34,6 +34,10 @@ func TestBashPermissionChecksEveryExecutablePart(t *testing.T) {
 		{"input process substitution", allowed + " <(forbidden)", ActionDeny},
 		{"output process substitution", allowed + " >(forbidden)", ActionDeny},
 		{"redirect substitution", allowed + " >$(forbidden)", ActionDeny},
+		{"here-string substitution", allowed + ` <<< "$(forbidden)"`, ActionDeny},
+		{"env-prefix substitution", "X=$(forbidden) " + allowed, ActionDeny},
+		{"eval suffix", allowed + "; eval forbidden", ActionDeny},
+		{"shell suffix", allowed + "; bash -c 'forbidden'", ActionDeny},
 		{"heredoc substitution", allowed + " <<EOF\n$(forbidden)\nEOF\n", ActionDeny},
 		{"unreached branch", allowed + "; if false; then forbidden; fi", ActionDeny},
 		{"function body", allowed + "; f() { forbidden; }; f", ActionDeny},
@@ -131,6 +135,11 @@ func TestBashPermissionRefusesHiddenExecution(t *testing.T) {
 		`printf allowed; [[ x -eq 1 ]]`,
 		`printf allowed; for ((i = x; i < 1; i++)); do printf allowed; done`,
 		`printf allowed; a[x]=1`,
+		`printf allowed $[x]`,
+		`printf allowed ${x:offset:len}`,
+		`printf allowed; [[ -v 'a[x]' ]]`,
+		`printf allowed; [[ -R ref ]]`,
+		`printf allowed; a=([x]=value)`,
 	}
 	for _, command := range hidden {
 		t.Run(command, func(t *testing.T) {
@@ -153,7 +162,7 @@ func TestBashPermissionRefusesHiddenExecution(t *testing.T) {
 		})
 	}
 	// Expansions that run nothing keep the allow rule's grant.
-	safe := `printf allowed $((1 + 2)) ${a[0]} ${a[@]} ${#x} ${x:-d} ${x/a/b} ${x@Q} ${v:1:-1} "$x" ${!prefix*}`
+	safe := `printf allowed $((1 + 2 * (3 - 1))) $[1+2] ${a[0]} ${a[@]} ${a[*]} ${#x} ${x:-d} ${x/a/b} ${x@Q} ${x@U} ${v:1:-1} "$x" ${!prefix*} '${x:=literal} ${x@P} $((x))'`
 	if got := EvaluateBashPermission(safe, func(part string) Action {
 		return EvaluateToolPermission("bash", part, denyAll, nil)
 	}); got != ActionAllow {
@@ -173,24 +182,6 @@ func TestBashPermissionRefusesHiddenExecution(t *testing.T) {
 		}
 		if got := BashHidesExecution(file); got != want {
 			t.Errorf("BashHidesExecution(%q) = %t, want %t", command, got, want)
-		}
-	}
-}
-
-// Forms the CD-5483 review exercised by hand; pinned as regression guards.
-func TestBashPermissionReviewedForms(t *testing.T) {
-	rules := map[string]any{"bash": map[string]any{"*": "deny", "allowed*": "allow"}}
-	for _, command := range []string{
-		`allowed <<< "$(forbidden)"`,
-		`X=$(forbidden) allowed`,
-		`allowed; eval forbidden`,
-		`allowed; bash -c 'forbidden'`,
-	} {
-		got := EvaluateBashPermission(command, func(part string) Action {
-			return EvaluateToolPermission("bash", part, rules, nil)
-		})
-		if got != ActionDeny {
-			t.Errorf("%q: got %s, want deny", command, got)
 		}
 	}
 }

@@ -97,7 +97,7 @@ func stricter(a, b Action) Action {
 // tree. A command string stored in a variable runs when bash evaluates it
 // arithmetically (`$((x))`, `((x))`, `let`, `[[ x -eq y ]]`, an array
 // subscript `${a[x]}` or `a[x]=`, a slice `${v:x:y}`, an indirection
-// `${!x}`) or as a prompt (`${x@P}`); an assigning expansion (`${x:=…}`)
+// `${!x}`, a `[[ -v x ]]` address) or as a prompt (`${x@P}`); an assigning expansion (`${x:=…}`)
 // stores one within the same statement. Arithmetic over numeric literals,
 // plain `$x` expansions and the other `${x@…}` transforms run nothing.
 func BashHidesExecution(node syntax.Node) bool {
@@ -130,6 +130,10 @@ func BashHidesExecution(node syntax.Node) bool {
 			if n.Op >= syntax.TsEql && n.Op <= syntax.TsGtr {
 				hides = !numericTestOperand(n.X) || !numericTestOperand(n.Y)
 			}
+		case *syntax.UnaryTest:
+			// -v / -R take a variable address, whose subscript or nameref
+			// target bash evaluates in turn.
+			hides = n.Op == syntax.TsVarSet || n.Op == syntax.TsRefVar
 		}
 		return !hides
 	})
@@ -141,9 +145,14 @@ func hidingParamOp(exp *syntax.Expansion) bool {
 	case syntax.AssignUnset, syntax.AssignUnsetOrNull:
 		return true
 	case syntax.OtherParamOps:
-		// ${x@P} expands x as a prompt string, which runs $(…) in it.
-		lit, ok := literalWord(exp.Word)
-		return !ok || lit == "P"
+		// ${x@P} expands x as a prompt string, which runs $(…) in it. Only
+		// the known data-only transforms are trusted.
+		lit, _ := literalWord(exp.Word)
+		switch lit {
+		case "Q", "E", "A", "K", "a", "k", "U", "u", "L":
+			return false
+		}
+		return true
 	}
 	return false
 }

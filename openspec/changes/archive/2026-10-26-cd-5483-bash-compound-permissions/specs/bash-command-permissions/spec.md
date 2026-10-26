@@ -57,8 +57,9 @@ allow glob as a fallback. Parsing SHALL execute no commands or expansions.
 ### Requirement: Hidden execution is not granted by a prefix rule
 When the invocation contains an expansion through which bash runs code that
 appears in no statement — arithmetic or a subscript, slice or indirection over
-a variable, a C-style loop header, `${x@P}`, or an assigning expansion
-`${x=…}` / `${x:=…}` — an allow verdict SHALL be replaced by the stricter of
+a variable, a C-style loop header, a variable-address test (`[[ -v … ]]`,
+`[[ -R … ]]`), `${x@P}` or any `@` transform not known to be data-only, or an
+assigning expansion `${x=…}` / `${x:=…}` — an allow verdict SHALL be replaced by the stricter of
 itself and the agent's catch-all verdict (the verdict for a command no
 specific rule matches). Arithmetic over numeric literals and expansions that
 run nothing SHALL keep their verdict.

@@ -195,7 +195,9 @@ compound call.
 Some expansions make bash run code that appears in no statement: it evaluates
 a variable's value arithmetically (`$((x))`, `((x))`, `let`, `[[ x -eq y ]]`,
 a subscript `${a[x]}` or `a[x]=`, a slice `${v:x:y}`, an indirection `${!x}`,
-a C-style `for ((…))` header) or as a prompt (`${x@P}`), and `${x:=…}` stores
+a C-style `for ((…))` header, the address in `[[ -v … ]]` / `[[ -R … ]]`)
+or as a prompt (`${x@P}`, and any `@` transform other than the data-only
+`Q E A K a k U u L`), and `${x:=…}` stores
 such a value in the same call. A call that contains any of these does not get
 `allow` from a prefix rule; it gets the decision of the agent's catch-all
 instead. Under `"*": deny` it is denied, under `"*": allow` nothing changes,
