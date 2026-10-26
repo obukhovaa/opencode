@@ -221,11 +221,12 @@
           "type": "string"
         },
         "reasoningEffort": {
-          "description": "Reasoning effort for models that support it (OpenAI, Anthropic). 'max' is only available for models with maximum thinking support.",
+          "description": "Reasoning effort for models that support it (OpenAI, Anthropic). 'xhigh' and 'max' are only available for models with extra-high / maximum thinking support; elsewhere they fall back to 'high'.",
           "enum": [
             "low",
             "medium",
             "high",
+            "xhigh",
             "max"
           ],
           "type": "string"
@@ -521,11 +522,12 @@
             "type": "string"
           },
           "reasoningEffort": {
-            "description": "Reasoning effort for models that support it (OpenAI, Anthropic). 'max' is only available for models with maximum thinking support.",
+            "description": "Reasoning effort for models that support it (OpenAI, Anthropic). 'xhigh' and 'max' are only available for models with extra-high / maximum thinking support; elsewhere they fall back to 'high'.",
             "enum": [
               "low",
               "medium",
               "high",
+              "xhigh",
               "max"
             ],
             "type": "string"
