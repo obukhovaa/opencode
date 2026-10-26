@@ -7,5 +7,5 @@
 ## 2. Validation and delivery
 - [x] 2.1 Full make test and focused race checks pass; no provider-backed e2e required.
 - [x] 2.2 Strict OpenSpec validation and final diff inspection.
-- [ ] 2.3 Open the separate stacked review PR and post in the original board thread.
+- [x] 2.3 Open stacked PR #111 and post the review request in the original board thread.
 - [ ] 2.4 Human review, merge after #110, engine release and downstream rollout.
