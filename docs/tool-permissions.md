@@ -173,6 +173,34 @@ Keep the two boundaries apart when reasoning about such a tool:
 
 ## When a call is denied
 
+### Bash compound commands (CD-5483)
+
+Bash permission globs apply to the complete invocation **and** each executable
+statement in its parsed Bash syntax. An allow rule such as
+`python3 /workspace/scripts/*` cannot authorize an appended `; curl ...`.
+The same check covers `&&`, `||`, pipelines (including `|&`), newlines,
+background lists, subshells, blocks, conditionals, loops, function bodies,
+command substitutions (`$(...)` and backticks), and process substitutions.
+Literal operators inside quotes and comments are not executable statements.
+
+Every check finishes before the foreground shell or background task starts.
+Any `deny` rejects the whole call, even when the denied branch would not run;
+otherwise any `ask` prompts once for the complete original command. All
+checks must allow for automatic execution. Existing whole-command denies and
+prompts remain authoritative, so exact rules that allowed two commands
+separately do not automatically grant a previously denied compound invocation.
+The simple-command safe-list exemption is unchanged and is never applied to
+individual parts of a compound call.
+
+Malformed or unsupported Bash syntax is refused rather than falling back to
+the glob match. The parser does not execute or expand shell code. This is a
+command-policy gate, not an operating-system sandbox: an allowed script or
+interpreter retains its existing capabilities, variables and persistent-shell
+state are not symbolically evaluated, and other configured shell dialects must
+use syntax the Bash parser can validate.
+
+### Denial results
+
 A tool call can be refused in two ways, and they end differently:
 
 | Who refused | Example | What happens |

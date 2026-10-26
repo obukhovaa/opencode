@@ -182,7 +182,9 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		return NewEmptyResponse(), fmt.Errorf("session ID and message ID are required for creating a new file")
 	}
 	if !isSafeReadOnly {
-		action := b.registry.EvaluatePermission(string(GetAgentID(ctx)), BashToolName, params.Command)
+		action := permission.EvaluateBashPermission(params.Command, func(part string) permission.Action {
+			return b.registry.EvaluatePermission(string(GetAgentID(ctx)), BashToolName, part)
+		})
 		switch action {
 		case permission.ActionAllow:
 			// Allowed by config, skip interactive permission
@@ -216,7 +218,7 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 	// command that BEGINS with a wall-clock wait is redirected to the
 	// deterministic background-task wait instead of executing the sleep;
 	// any trailer runs after the wait (see bash_wait.go). The permission
-	// gate above already evaluated the full command string.
+	// gate above already evaluated the whole invocation and its executable parts.
 	if resp, intercepted := interceptForegroundWait(ctx, params, workdir, sessionID); intercepted {
 		return resp, nil
 	}
