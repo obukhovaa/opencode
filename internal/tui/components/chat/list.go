@@ -37,6 +37,7 @@ type messagesCmp struct {
 	spinner             spinner.Model
 	spinnerActive       bool
 	rendering           bool
+	renderGeneration    uint64 // bumped by renderViewAsync and deletes; older render results are stale
 	dirtyWhileRendering map[string]struct{}
 	attachments         viewport.Model
 	cachedPending       pendingToolCounts
@@ -47,6 +48,7 @@ type messagesCmp struct {
 	recapContent        string
 }
 type renderFinishedMsg struct {
+	generation      uint64
 	uiMessages      []uiMessage
 	cacheUpdates    map[string]cacheItem
 	viewportContent string
@@ -132,8 +134,9 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.updateScrollState())
 
 	case renderFinishedMsg:
-		if !m.rendering {
-			// Async render was superseded by a sync render; discard stale results
+		if !m.rendering || msg.generation != m.renderGeneration {
+			// Superseded by a sync render, a delete or a newer async render;
+			// its snapshot is stale, so discard it.
 			break
 		}
 		m.rendering = false
@@ -239,6 +242,47 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+			}
+		} else if msg.Type == pubsub.DeletedEvent {
+			// The agent deletes the partial assistant message of a turn whose
+			// stream the peer reset before it resends the turn; left in the
+			// list it would stay half-written and unfinished.
+			if msg.Payload.SessionID == m.session.ID {
+				for i, v := range m.messages {
+					if v.ID == msg.Payload.ID {
+						m.messages = append(m.messages[:i], m.messages[i+1:]...)
+						m.invalidateCache(v.ID)
+						if m.currentMsgID == v.ID {
+							m.currentMsgID = ""
+							if len(m.messages) > 0 {
+								m.currentMsgID = m.messages[len(m.messages)-1].ID
+							}
+						}
+						needsRerender = true
+						break
+					}
+				}
+			}
+			for _, v := range m.messages {
+				for _, c := range v.ToolCalls() {
+					if c.ID == msg.Payload.SessionID {
+						for i, tm := range m.taskMessages[c.ID] {
+							if tm.ID == msg.Payload.ID {
+								m.taskMessages[c.ID] = append(m.taskMessages[c.ID][:i], m.taskMessages[c.ID][i+1:]...)
+								m.invalidateCache(v.ID)
+								needsRerender = true
+								break
+							}
+						}
+					}
+				}
+			}
+			// An async render in flight still holds the deleted message;
+			// retire its generation so its result is dropped even after the
+			// render below starts a replacement.
+			if needsRerender {
+				m.rendering = false
+				m.renderGeneration++
 			}
 		}
 		if needsRerender {
@@ -449,6 +493,8 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 		return nil
 	}
 	m.rendering = true
+	m.renderGeneration++
+	generation := m.renderGeneration
 	m.dirtyWhileRendering = nil
 
 	msgsCopy := make([]message.Message, len(m.messages))
@@ -548,6 +594,7 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 			)
 
 		return renderFinishedMsg{
+			generation:      generation,
 			uiMessages:      uiMsgs,
 			cacheUpdates:    cacheUpdates,
 			viewportContent: viewportContent,

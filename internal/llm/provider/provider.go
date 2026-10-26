@@ -136,6 +136,15 @@ func isRetryableRSTStreamError(err error) bool {
 	return contains(msg, retryableRSTStreamCodes...)
 }
 
+// IsPeerStreamReset reports whether err is a peer-initiated HTTP/2
+// RST_STREAM with a retryable code (isRetryableRSTStreamError). The stream
+// loops replay one only before any output reached the consumer, within
+// maxRSTStreamRetries; the agent loop uses this to resend, once, a turn whose
+// reset the stream loop passed on (after output began, or out of replays).
+func IsPeerStreamReset(err error) bool {
+	return isRetryableRSTStreamError(err)
+}
+
 func contains(s string, substrs ...string) bool {
 	lower := strings.ToLower(s)
 	for _, sub := range substrs {

@@ -1402,6 +1402,9 @@ OuterLoop:
 			// errorResultsWritten: turnMsg's tool calls already got their
 			// error results, so the error path below must not write them twice.
 			errorResultsWritten := false
+			// overflowAttempted: this turn already went through the overflow
+			// recovery below, so the stream-reset resend after it stays out.
+			overflowAttempted := false
 			// ctx.Err() covers what errors.Is(turnErr, context.Canceled) does
 			// not: a run past its deadline (a flow step's timeout) fails its
 			// call with DeadlineExceeded, which near the window would classify
@@ -1413,6 +1416,7 @@ OuterLoop:
 					// modelCallError comes from the response stream, before any
 					// tool ran, so nothing runs twice.
 					overflowRetried = true
+					overflowAttempted = true
 					logging.Warn("Model call failed on context size; compacting and retrying the turn once",
 						"session_id", sessionID,
 						"agent", a.agentID,
@@ -1449,6 +1453,33 @@ OuterLoop:
 							)
 						}
 					}
+				}
+			}
+			// A peer HTTP/2 RST_STREAM the provider did not replay: one after
+			// the first streamed event (a replay would duplicate the deltas
+			// already appended), or one whose pre-output replays ran out. A
+			// model call error comes from the response stream before any tool
+			// ran, so the turn is safe to send again: drop the partial message
+			// and resend the same history once.
+			if turnErr != nil && !overflowAttempted && ctx.Err() == nil && isModelCallError(turnErr) && provider.IsPeerStreamReset(turnErr) {
+				logging.Warn("Model stream reset by peer; discarding the partial message and resending the turn once",
+					"session_id", sessionID,
+					"agent", a.agentID,
+					"cycle", cycles,
+					"error", turnErr,
+				)
+				select {
+				case <-ctx.Done():
+					// Cancelled while waiting: the run ends as cancelled.
+					turnErr = ctx.Err()
+				case <-time.After(streamResetResendDelay):
+				}
+				if ctx.Err() == nil {
+					a.discardPartialMessage(ctx, &turnMsg)
+					observeCompactionInput()
+					retryMsg, retryResults, retryErr := a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
+					turnMsg, errorResultsWritten = retryMsg, false
+					turnResults, turnErr = retryResults, retryErr
 				}
 			}
 			if turnErr != nil {
@@ -2528,6 +2559,25 @@ func (a *agent) finishMessage(ctx context.Context, msg *message.Message, finishR
 		defer cancel()
 	}
 	_ = a.messages.Update(writeCtx, *msg)
+}
+
+// streamResetResendDelay is the pause before processGeneration resends a
+// turn whose model stream a peer reset.
+var streamResetResendDelay = time.Second
+
+// discardPartialMessage removes the assistant message a reset stream left
+// half-written, before its turn is resent: no tool of it ran, and keeping it
+// would put two assistant messages for one turn in the history. If the delete
+// fails, the message is closed the way a failed turn's is.
+func (a *agent) discardPartialMessage(ctx context.Context, msg *message.Message) {
+	if err := a.messages.Delete(ctx, msg.ID); err != nil {
+		logging.Warn("Failed to delete the partial assistant message; closing it as an error",
+			"message_id", msg.ID,
+			"error", err,
+		)
+		a.createErrorToolResults(*msg)
+		a.finishMessage(ctx, msg, message.FinishReasonError)
+	}
 }
 
 // createErrorToolResults creates a tool results message with error results for all tool calls
