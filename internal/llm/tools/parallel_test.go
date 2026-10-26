@@ -106,7 +106,7 @@ func TestIsSafeReadOnlyCommand(t *testing.T) {
 		{"git status", true},
 		{"git diff", true},
 		{"git log --oneline", true},
-		{"go test ./...", true},
+		{"go test ./...", false}, // runs test binaries (CD-5487)
 		{"go build ./...", true},
 		{"go vet ./...", true},
 		{"ls -la", true},
@@ -173,7 +173,7 @@ func TestBashAllowParallelism(t *testing.T) {
 		want    bool
 	}{
 		{"git status", true},
-		{"go test ./...", true},
+		{"go test ./...", false},
 		{"go build ./cmd/...", true},
 		{"ls", true},
 		{"rm -rf /tmp/foo", false},

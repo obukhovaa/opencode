@@ -59,14 +59,46 @@ const (
 	MaxOutputLines = 2000
 )
 
+// safeReadOnlyCommands skip the bash permission gate (IsSafeReadOnlyCommand).
+// No entry may start another command (CD-5487): wrappers such as `nice`,
+// `time`, `timeout` and `go run` / `go test` are not listed, `env` is
+// exempt only with no arguments, and safeCommandRunsProgram refuses the
+// options through which a listed command runs a program.
 var safeReadOnlyCommands = []string{
 	"ls", "echo", "pwd", "date", "cal", "uptime", "whoami", "id", "groups", "env", "printenv", "set", "unset", "which", "type", "whereis",
-	"whatis", "uname", "hostname", "df", "du", "free", "top", "ps", "kill", "killall", "nice", "time", "timeout",
+	"whatis", "uname", "hostname", "df", "du", "free", "top", "ps", "kill", "killall",
 
 	"git status", "git log", "git diff", "git show", "git branch", "git tag", "git remote", "git ls-files", "git ls-remote",
 	"git rev-parse", "git config --get", "git config --list", "git describe", "git blame", "git grep", "git shortlog",
 
-	"go version", "go help", "go list", "go env", "go doc", "go vet", "go fmt", "go mod", "go test", "go build", "go run", "go install", "go clean",
+	"go version", "go help", "go list", "go env", "go doc", "go vet", "go fmt", "go mod", "go build", "go install", "go clean",
+}
+
+// safeCommandRunsProgram reports whether args (the words of a command that
+// matched safe-list entry safe) ask a listed command to run a program.
+func safeCommandRunsProgram(safe string, args []string) bool {
+	if safe == "env" {
+		return len(args) > 1 // `env cmd`, `env -i cmd`, `env X=1 cmd`
+	}
+	var refused []string
+	switch {
+	case safe == "git grep":
+		refused = []string{"-O", "--open-files-in-pager"}
+	case safe == "git ls-remote":
+		refused = []string{"-u", "--upload-pack"}
+	case safe == "go env":
+		refused = []string{"-w", "-u"} // persists GOFLAGS such as -toolexec
+	case strings.HasPrefix(safe, "go "):
+		refused = []string{"-toolexec", "--toolexec", "-exec", "--exec", "-vettool", "--vettool"}
+	}
+	for _, arg := range args[1:] {
+		for _, flag := range refused {
+			if strings.HasPrefix(arg, flag) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func bashDescription() string {
@@ -182,7 +214,9 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		return NewEmptyResponse(), fmt.Errorf("session ID and message ID are required for creating a new file")
 	}
 	if !isSafeReadOnly {
-		action := b.registry.EvaluatePermission(string(GetAgentID(ctx)), BashToolName, params.Command)
+		action := permission.EvaluateBashPermission(params.Command, func(part string) permission.Action {
+			return b.registry.EvaluatePermission(string(GetAgentID(ctx)), BashToolName, part)
+		})
 		switch action {
 		case permission.ActionAllow:
 			// Allowed by config, skip interactive permission
@@ -216,7 +250,7 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 	// command that BEGINS with a wall-clock wait is redirected to the
 	// deterministic background-task wait instead of executing the sleep;
 	// any trailer runs after the wait (see bash_wait.go). The permission
-	// gate above already evaluated the full command string.
+	// gate above already evaluated the whole invocation and its executable parts.
 	if resp, intercepted := interceptForegroundWait(ctx, params, workdir, sessionID); intercepted {
 		return resp, nil
 	}

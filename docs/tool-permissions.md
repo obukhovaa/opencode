@@ -173,6 +173,68 @@ Keep the two boundaries apart when reasoning about such a tool:
 
 ## When a call is denied
 
+### Bash compound commands (CD-5483)
+
+Bash permission globs apply to the complete invocation **and** each executable
+statement in its parsed Bash syntax. An allow rule such as
+`python3 /workspace/scripts/*` cannot authorize an appended `; curl ...`.
+The same check covers `&&`, `||`, pipelines (including `|&`), newlines,
+background lists, subshells, blocks, conditionals, loops, function bodies,
+command substitutions (`$(...)` and backticks), and process substitutions.
+Literal operators inside quotes and comments are not executable statements.
+
+Every check finishes before the foreground shell or background task starts.
+Any `deny` rejects the whole call, even when the denied branch would not run;
+otherwise any `ask` prompts once for the complete original command. All
+checks must allow for automatic execution. Existing whole-command denies and
+prompts remain authoritative, so exact rules that allowed two commands
+separately do not automatically grant a previously denied compound invocation.
+The simple-command safe list is never applied to individual parts of a
+compound call.
+
+Some expansions make bash run code that appears in no statement: it evaluates
+a variable's value arithmetically (`$((x))`, `((x))`, `let`, `[[ x -eq y ]]`,
+a subscript `${a[x]}` or `a[x]=`, a slice `${v:x:y}`, an indirection `${!x}`,
+a C-style `for ((…))` header, the address in `[[ -v … ]]` / `[[ -R … ]]`)
+or as a prompt (`${x@P}`, and any `@` transform other than the data-only
+`Q E A K a k U u L`), and `${x:=…}` stores
+such a value in the same call. A call that contains any of these does not get
+`allow` from a prefix rule; it gets the decision of the agent's catch-all
+instead. Under `"*": deny` it is denied, under `"*": allow` nothing changes,
+and with no catch-all it asks. Arithmetic over numeric literals (`$((1 + 2))`,
+`${a[0]}`), plain `$x` expansions and the other `${x@…}` transforms are
+unaffected. Builtins that take a variable name (`printf -v`, `read`,
+`declare`, `test -v`) evaluate subscripts in that name too; a rule that allows
+such a builtin with arbitrary arguments grants that.
+
+Malformed or unsupported Bash syntax is denied rather than falling back to the
+glob match, also under `"*": allow`: `echo $((echo a) )` is valid bash that
+the parser rejects, and it is now refused. The parser does not execute or
+expand shell code. This is a command-policy gate, not an operating-system
+sandbox:
+
+- an allowed script or interpreter keeps its capabilities;
+- redirects belong to the statement they follow, so an allow rule also allows
+  that command's `> any/file` writes;
+- allow rules are only sound when the shell is bash or sh. The foreground
+  shell is `shell.path` / `$SHELL`, and the gate always parses Bash. Under zsh,
+  `printf allowed *(e:'cmd':)` is a literal to Bash but runs `cmd` as a glob
+  qualifier. Background tasks always run under `bash -c`.
+
+### The safe list (CD-5487)
+
+A short list of read-only commands (`ls`, `git status`, `go build`, …) skips
+the gate. A command qualifies only as one simple command with no redirect,
+substitution or hidden-execution expansion, and no qualifying command may start
+another one: `env` is exempt only with no arguments; `nice`, `time`,
+`timeout`, `go run` and `go test` are not listed; options through which a
+listed command runs a program (`go … -toolexec/-exec/-vettool`,
+`go env -w/-u`, `git grep -O`, `git ls-remote --upload-pack`) send the call
+through the gate. Under `"*": deny`, `env bash -c '…'` is denied. An agent that
+needs `go test` without a prompt allows it explicitly (`"go test *": "allow"`).
+
+### Denial results
+
 A tool call can be refused in two ways, and they end differently:
 
 | Who refused | Example | What happens |
