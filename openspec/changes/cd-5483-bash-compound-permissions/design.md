@@ -27,12 +27,20 @@ interpreter; changing the existing simple-command safe list; deployment.
 3. Evaluate executable source slices, excluding structural containers,
    negation and separator tokens. Traverse structural statements, including
    unreachable branches and function bodies; do not predict runtime routing.
-4. Unsupported/malformed Bash is a rule denial. An allow glob must not become a
-   fallback for syntax the policy layer could not inspect. Other configured
-   shells retain execution, but require input compatible with this parser.
+4. Unsupported/malformed Bash is a rule denial, even for allow-all agents. An
+   allow glob must not become a fallback for unvalidated syntax. A non-exempt
+   foreground call resolved to another shell dialect changes allow to ask for
+   the whole call; zsh can execute glob qualifiers that parse as literal Bash
+   extglobs. Deny/ask remain intact. Background dispatch always uses bash -c.
 5. Keep the check at the existing common gate. Rejections happen before the
    first foreground command or creation of a detached task. Keep one full-call
    prompt for ask. Do not apply the safe-list exemption separately to parts.
+6. Source AST traversal alone cannot inspect Bash's second evaluation of
+   variable contents. Refuse assigning expansions, indirect expansions, @P,
+   variable-address tests and non-literal arithmetic/index/slice contexts.
+   Decimal constants and operators over constants are supported; mutable
+   variable state is not evaluated to prove safety. This closes the four
+   same-statement Bash 5.x review bypasses without executing them during parsing.
 
 ## Risks / Trade-offs
 
@@ -46,6 +54,13 @@ interpreter; changing the existing simple-command safe list; deployment.
   its existing privileges.
 - Structural-wrapper rejection hiding a missing recursive check → include an
   allow-by-default regression corpus with a narrowly denied nested command.
+- Legitimate assigning expansions or variable arithmetic now denied, even on
+  allow-all agents → Accepted: the gate cannot distinguish data from executable
+  variable contents there; document the conservative behavior and pin examples.
+- Prefix allow rules also grant redirect writes → Accepted unchanged behavior,
+  explicitly documented as outside filesystem containment.
+- Pre-existing safe-list wrappers bypass the common gate → Separate CD-5487,
+  not a claim that a deny-all agent has no shell capabilities after this PR.
 
 ## Migration Plan
 

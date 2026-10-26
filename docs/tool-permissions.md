@@ -192,12 +192,32 @@ separately do not automatically grant a previously denied compound invocation.
 The simple-command safe-list exemption is unchanged and is never applied to
 individual parts of a compound call.
 
+Some Bash expansions can evaluate variable contents as code without creating
+another command node in the source tree. The gate therefore denies assigning
+parameter expansions (`${v=...}`, `${v:=...}`), indirect expansions (`${!v}`),
+prompt expansion (`${v@P}`), and arithmetic/index/slice contexts that are not
+decimal constants or operators over constants. This includes `let`, arithmetic
+`[[ ... -eq ... ]]` operands, C-style loop clauses and dynamic array addresses.
+Variable-address tests (`[[ -v ... ]]` / `[[ -R ... ]]`) are also refused.
+Ordinary data expansions, constant arithmetic and literal numeric indices/slices
+remain supported. Denial is conservative even under an allow-all rule.
+
 Malformed or unsupported Bash syntax is refused rather than falling back to
-the glob match. The parser does not execute or expand shell code. This is a
+the glob match, including on allow-all agents; some valid but parser-ambiguous
+Bash syntax can therefore be refused too. The parser does not execute or expand
+shell code. For a non-exempt foreground call whose resolved shell is neither
+`bash` nor `sh`, an allow verdict becomes a prompt for the whole call: another
+dialect may execute syntax that looks like literal Bash data (zsh glob qualifiers,
+for example). Existing deny/ask verdicts stay intact. Background execution uses
+`bash -c` and needs no dialect fallback.
+
+Redirects belong to an allowed statement, so a prefix allow rule still grants
+its redirect targets; this does not confine filesystem writes. This is a
 command-policy gate, not an operating-system sandbox: an allowed script or
 interpreter retains its existing capabilities, variables and persistent-shell
-state are not symbolically evaluated, and other configured shell dialects must
-use syntax the Bash parser can validate.
+state are not symbolically evaluated. The pre-existing simple-command safe-list
+bypass remains a separate issue (CD-5487), including command-running wrappers;
+it is not evidence that a deny-all agent has no shell capabilities today.
 
 ### Denial results
 

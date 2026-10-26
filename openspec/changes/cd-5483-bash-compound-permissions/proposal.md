@@ -12,6 +12,9 @@ allow rule must not authorize another executable statement.
   executable statement, including nested command and process substitutions.
 - Deny the whole call before execution if any check denies or syntax cannot be
   validated; otherwise preserve ask precedence and the existing single prompt.
+- Refuse expansion/arithmetic contexts that can re-evaluate variable contents
+  as commands outside the parsed statement tree. Prompt on a non-Bash/sh
+  foreground shell rather than infer its execution from Bash syntax.
 - Cover synchronous and background dispatch with the same gate and tests.
 - Document compatibility and the boundary between command rules and a sandbox.
 

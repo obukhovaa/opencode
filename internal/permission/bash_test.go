@@ -29,6 +29,10 @@ func TestBashPermissionChecksEveryExecutablePart(t *testing.T) {
 		{"input process substitution", allowed + " <(forbidden)", ActionDeny},
 		{"output process substitution", allowed + " >(forbidden)", ActionDeny},
 		{"redirect substitution", allowed + " >$(forbidden)", ActionDeny},
+		{"here-string substitution", allowed + ` <<< "$(forbidden)"`, ActionDeny},
+		{"env-prefix substitution", "X=$(forbidden) " + allowed, ActionDeny},
+		{"eval suffix", allowed + "; eval forbidden", ActionDeny},
+		{"shell suffix", allowed + "; bash -c 'forbidden'", ActionDeny},
 		{"heredoc substitution", allowed + " <<EOF\n$(forbidden)\nEOF\n", ActionDeny},
 		{"unreached branch", allowed + "; if false; then forbidden; fi", ActionDeny},
 		{"function body", allowed + "; f() { forbidden; }; f", ActionDeny},
@@ -99,6 +103,67 @@ func TestBashPermissionFindsDeniedCommandsInContainers(t *testing.T) {
 			})
 			if got != ActionDeny {
 				t.Fatalf("nested forbidden command was %s", got)
+			}
+		})
+	}
+}
+
+func TestBashPermissionRejectsReevaluatedExpansions(t *testing.T) {
+	rules := map[string]any{"bash": map[string]any{"*": "deny", "printf allowed*": "allow"}}
+	for _, command := range []string{
+		`printf allowed ${x:=a[\$\(touch MK\)]} $((x))`,
+		`printf allowed ${x:=a[\$\(touch MK\)]} ${!x}`,
+		`printf allowed ${x:=a[\$\(touch MK\)]} ${y[x]}`,
+		`printf allowed ${x:=\$\(touch MK\)} ${x@P}`,
+		`printf allowed ${x=1}`,
+		`printf allowed $((x))`,
+		`printf allowed $[x]`,
+		`printf allowed ${!x}`,
+		`printf allowed ${y[x]}`,
+		`printf allowed ${x@P}`,
+		`printf allowed ${x:offset:len}`,
+		`printf allowed; ((x))`,
+		`printf allowed; let x`,
+		`printf allowed; [[ x -eq 1 ]]`,
+		`printf allowed; [[ -v 'a[x]' ]]`,
+		`printf allowed; a[x]=value`,
+		`printf allowed; a=([x]=value)`,
+		`printf allowed; for ((i=0; i<1; i++)); do printf allowed; done`,
+	} {
+		t.Run(command, func(t *testing.T) {
+			// Policy-only fixture: no shell or touch command runs, so this
+			// detects the Bash 5.x bypass even on macOS's Bash 3.2.
+			for name, policy := range map[string]map[string]any{
+				"prefix allow": rules,
+				"allow all":    {"bash": "allow"},
+			} {
+				got := EvaluateBashPermission(command, func(part string) Action {
+					return EvaluateToolPermission("bash", part, policy, nil)
+				})
+				if got != ActionDeny {
+					t.Fatalf("%s: uninspectable expansion was %s", name, got)
+				}
+			}
+		})
+	}
+}
+
+func TestBashPermissionAllowsInspectablyLiteralExpansions(t *testing.T) {
+	for _, command := range []string{
+		`printf allowed $((1 + 2 * (3 - 1)))`,
+		`printf allowed $[1+2]`,
+		`printf allowed ${x[0]}`,
+		`printf allowed ${x[@]}`,
+		`printf allowed ${x[*]}`,
+		`printf allowed ${x:1:2}`,
+		`printf allowed ${x:-fallback}`,
+		`printf allowed ${x@Q}`,
+		`printf allowed '${x:=literal} ${x@P} $((x))'`,
+	} {
+		t.Run(command, func(t *testing.T) {
+			got := EvaluateBashPermission(command, func(string) Action { return ActionAllow })
+			if got != ActionAllow {
+				t.Fatalf("literal/data-only expansion was %s", got)
 			}
 		})
 	}

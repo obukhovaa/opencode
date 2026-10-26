@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -185,6 +186,7 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		action := permission.EvaluateBashPermission(params.Command, func(part string) permission.Action {
 			return b.registry.EvaluatePermission(string(GetAgentID(ctx)), BashToolName, part)
 		})
+		action = permissionForBashExecution(action, params.RunInBackground, shell.GetShellPath())
 		switch action {
 		case permission.ActionAllow:
 			// Allowed by config, skip interactive permission
@@ -238,6 +240,19 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		return WithResponseMetadata(NewTextResponse("no output"), metadata), nil
 	}
 	return WithResponseMetadata(NewTextResponse(output), metadata), nil
+}
+
+// A Bash parse cannot justify automatic execution by another dialect. For
+// example, zsh can execute glob qualifiers that parse as literal Bash extglobs.
+// Background dispatch always uses bash -c, independent of the configured shell.
+func permissionForBashExecution(action permission.Action, background bool, shellPath string) permission.Action {
+	if action == permission.ActionAllow && !background {
+		name := filepath.Base(shellPath)
+		if name != "bash" && name != "sh" {
+			return permission.ActionAsk
+		}
+	}
+	return action
 }
 
 // runForeground runs command through the persistent shell and composes the
