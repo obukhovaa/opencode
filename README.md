@@ -99,6 +99,7 @@ See [docs/configuration.md](docs/configuration.md) for a full example, permissio
 |-------|-------|
 | **Getting set up** | |
 | Configuration, permissions, environment variables | [docs/configuration.md](docs/configuration.md) |
+| `${VAR}` environment references in config values | [docs/config-env.md](docs/config-env.md) |
 | Providers and supported models | [docs/providers.md](docs/providers.md) |
 | TUI keyboard shortcuts and auto-approve | [docs/tui.md](docs/tui.md) |
 | **Agents** | |

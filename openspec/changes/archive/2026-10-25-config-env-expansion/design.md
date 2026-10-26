@@ -1,0 +1,39 @@
+## Context
+
+Viper 1.20 supports pluggable decoders. Global config is read by the singleton and project config by another Viper instance. Defaults inspect provider keys before final Unmarshal. UpdateCfgFile currently unmarshals raw JSON into Config, which cannot read numeric references and discards unknown fields. See proposal.md for motivation.
+
+## Goals / Non-Goals
+
+Goals: safe interpolation before Viper merges/defaults, preserving typed config, precedence, placeholders and atomic writeback. No shell execution, JSON object injection, key expansion, or recursive expansion.
+
+## Decisions
+
+- Install a JSON decoder on both Viper instances. Parse JSON first, then recursively expand string values, so quotes/newlines/backslashes in secrets cannot alter JSON structure. Avoid raw-text replacement, post-Unmarshal reflection and Set overrides, which break escaping, provider detection or precedence.
+- Use braced ASCII names, literal fallbacks, and doubled-dollar escaping. Missing required references fail early. Keep bare shell variables and dotted context tokens intact. Preserve reserved `${agent}` context token to avoid breaking scoped-context configurations.
+- Decode a typed file snapshot for writeback, compare its JSON representation before/after the callback, and apply only changed fields to the original JSON tree. Recurse through maps and equal-length arrays so edits to one identity preserve sibling references. Use mapstructure with JSON tags and weak scalar coercion to match Viper while preserving raw map key case. Existing atomic writer and permissions stay in place.
+- Wrap constrained scalar schemas with an interpolation alternative while retaining literal constraints. Keep enum consistency tests inspecting the literal branch.
+- Return diagnostics without expanded values; do not dump configs, environment values, or upstream request headers in tests.
+
+## Risks / Trade-offs
+
+- Existing braced shell expressions could be interpreted → document escaping and test bare shell/dotted context syntax.
+- Typed writeback could serialize secrets → patch raw JSON using the typed diff and test nested arrays/maps, unknown fields and zero values.
+- Invalid project JSON was previously ignored → return project read errors so unresolved references cannot silently fall back to a global secret.
+
+## Migration Plan
+
+Users can replace values with references after upgrade. No files are migrated automatically; placeholders remain portable. Rollback requires substituting literal values for references first.
+
+## Verification notes
+
+`LC_ALL=C make test` passed with race detection, formatting and vet. The first run under the inherited unsupported `C.UTF-8` locale failed three unrelated hook stderr assertions because Bash prepended locale warnings. The full e2e target passed ACP and image/PDF attachment cases, then hung in the attachment script's existing server-shutdown wait; it was stopped without modifying that unrelated script. The new process e2e passed for both Kimi models. The repository-wide hidden-character script reports six existing zero-width spaces in generated `internal/lsp/protocol/tsprotocol.go`, byte-identical to main; changed Go files contain none.
+
+After rebasing onto main's merged CD-5480 changes, `LC_ALL=C make test` passed again (race detector, formatters, vet and all short tests). Strict validation of all 60 main specifications passed. The CLI-tools and web-fetch schema e2e assertions now check both integer literals and the environment-reference alternative. The CLI-tools suite passed all 25 cases and web-fetch passed all 16 cases on rerun.
+
+The broader local e2e pass reproduced a server shutdown timeout in `pool_mode.sh` after its reported assertions passed; the attachment/server shutdown limitation also affects the full target. These unrelated scripts were left unchanged. The merged inbox change's own five hermetic e2e groups passed before it was archived. No remaining active OpenSpec changes were found.
+
+The bounded local script sweep completed with 16 script passes, two server lifecycle timeouts (`pool_mode.sh`, `serve.sh`), and two stale scalar-schema assertions. Both assertions were updated for the new literal/reference alternatives and their individual suites were rerun. Live-provider scripts were excluded from that local sweep; the original full target had already stopped at attachment server shutdown.
+
+## Review follow-up
+
+Before merge, expansion was narrowed to skip the top-level `hooks` subtree. Hook commands are shell strings run with `OPENCODE_PROJECT_DIR` / `CLAUDE_PROJECT_DIR` set only in the hook process, and the documented example (`docs/examples/opencode-json-hooks.json`) uses `${OPENCODE_PROJECT_DIR}`. Expanding them at load failed every such existing config with "configuration environment variable OPENCODE_PROJECT_DIR is not set". `TestConfigEnvLeavesHookCommandsToTheHookShell` covers it.

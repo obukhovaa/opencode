@@ -51,6 +51,7 @@ Load the doc for the area you are changing; each is the reference for its featur
 | [`docs/memory.md`](docs/memory.md) | Touching `internal/memory`, the `memory` config / `AGENTS_MEMORY_HOME`, the memory system reminder or `MEMORY.md` index snapshot |
 | [`docs/lsp.md`](docs/lsp.md) | Touching `internal/lsp` or the `lsp` tool |
 | [`docs/configuration.md`](docs/configuration.md) | Adding a top-level config key or environment variable, or changing permission resolution |
+| [`docs/config-env.md`](docs/config-env.md) | Touching `${VAR}` expansion in `.opencode.json` (`internal/config/env_expansion.go`) or settings writeback (`writeback.go`) |
 | [`docs/agents.md`](docs/agents.md) | Adding an agent field, changing built-in agents, markdown agent discovery or Langfuse-managed agent prompts |
 | [`docs/compaction.md`](docs/compaction.md) | Touching auto-compaction, `compactionThreshold`, `summarizerMaxInputTokens` or `selfCompact` / `compact_session` |
 | [`docs/mcp.md`](docs/mcp.md) | Touching `internal/llm/agent/mcp*.go` or an `mcpServers` field (client pool, timeouts, `peerHeader`, `flowArgHeaders`) |

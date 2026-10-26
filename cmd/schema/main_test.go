@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -69,6 +71,9 @@ func enumAt(t *testing.T, doc map[string]any, path ...string) []string {
 			t.Fatalf("no property %q at %v", seg, path[:i])
 		}
 		node = child
+	}
+	if branches, ok := node["anyOf"].([]any); ok {
+		node = branches[0].(map[string]any) // original literal constraints
 	}
 	rawEnum, ok := node["enum"].([]any)
 	if !ok {
@@ -274,5 +279,48 @@ func TestSchemaIsUpToDate(t *testing.T) {
 		t.Errorf("opencode-schema.json is out of date with cmd/schema/main.go. "+
 			"Run 'make schema' and commit the result. (committed %d bytes, generated %d)",
 			len(committed), len(generated))
+	}
+}
+
+// References must work in enum leaves, nested array enums, and weakly typed
+// scalar fields; the literal branch must continue to publish its constraints.
+func TestSchemaEnvironmentReferences(t *testing.T) {
+	doc := loadSchema(t)
+	props := doc["properties"].(map[string]any)
+	nodes := []map[string]any{
+		props["maxTurns"].(map[string]any),
+		props["autoCompact"].(map[string]any),
+		props["agents"].(map[string]any)["additionalProperties"].(map[string]any)["properties"].(map[string]any)["model"].(map[string]any),
+	}
+	for _, node := range nodes {
+		branches, ok := node["anyOf"].([]any)
+		if !ok || len(branches) != 2 {
+			t.Fatal("missing interpolation alternative")
+		}
+		literal := branches[0].(map[string]any)
+		if literal["type"] == nil {
+			t.Fatal("literal validation was removed")
+		}
+		reference := branches[1].(map[string]any)
+		pattern, err := regexp.Compile(reference["pattern"].(string))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, value := range []string{"${CONFIG_VALUE}", "prefix/${CONFIG_VALUE:-fallback}"} {
+			if !pattern.MatchString(value) {
+				t.Fatalf("reference rejected: %q", value)
+			}
+		}
+		for _, value := range []string{"bad", "${1BAD}", "$VALUE", "${VALUE"} {
+			if pattern.MatchString(value) {
+				t.Fatalf("literal accepted as a reference: %q", value)
+			}
+		}
+	}
+	ids := enumAt(t, doc, "agents", "*", "model")
+	for _, id := range []string{"kimi.kimi-k3.1-pro", "kimi.kimi-k3.1-pro-highspeed"} {
+		if !slices.Contains(ids, id) {
+			t.Fatalf("new model absent from schema: %s", id)
+		}
 	}
 }

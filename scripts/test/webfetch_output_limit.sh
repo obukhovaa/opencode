@@ -100,7 +100,7 @@ run_check under_cap "$(make_sandbox under_cap '')" \
   no_file_written_under_the_cap
 
 # The published schema is part of the contract this feature adds a field to.
-if jq -e '.properties.webFetch.properties.maxOutputBytes.type == "integer"' \
+if jq -e '.properties.webFetch.properties.maxOutputBytes | .anyOf[0].type == "integer" and .anyOf[1].type == "string" and .anyOf[1].pattern != null' \
      "$REPO/opencode-schema.json" >/dev/null; then
   log_pass "schema/webFetch.maxOutputBytes published"
 else

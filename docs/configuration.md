@@ -8,6 +8,8 @@ OpenCode reads `.opencode.json` from the first of these that exists:
 
 The JSON Schema for the file is [`opencode-schema.json`](../opencode-schema.json); point your editor at it for completion and validation.
 
+Any string value can reference the environment with `${VAR}` or `${VAR:-default}`, so secrets stay out of the file (`"apiKey": "${MY_KIMI_KEY}"`). An unset `${VAR}` without a default fails loading; `$${VAR}` keeps the text literal. Full rules: [config-env.md](config-env.md).
+
 ## Example
 
 ```json

@@ -12,7 +12,7 @@ An agent's `model` is a model ID such as `vertexai.claude-opus-4-6` or `kimi.kim
 | **AWS Bedrock** | Claude 5.5 Opus (1M)(EU/Global), Claude 5 Opus (1M)(EU/Global), Claude Fable 5.1 (1M)(EU/Global), Claude Fable 5 (1M)(EU/Global), Claude 4.8 Opus (1M)(EU/Global), Claude 4.7 Opus (1M)(EU/Global), Claude 5.5 Sonnet (1M)(EU/Global), Claude 5 Sonnet (1M)(EU/Global), Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global), Claude 5.5 Haiku (1M)(EU/Global), Claude 4.5 Haiku (EU/Global), Kimi K3 (1M)(US/Global) |
 | **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude 5.5 Opus (1M), Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5.5 Sonnet (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 5.5 Haiku (1M), Claude 4.5 Haiku |
 | **YandexCloud** | Alice AI LLM, YandexGPT Pro 5.1, YandexGPT Pro 5, YandexGPT Lite 5, DeepSeek V3.2, Qwen3 235B, Qwen3.5 35B, gpt-oss-120b |
-| **Kimi (Moonshot)** | Kimi K3 (1M), Kimi K2.7 Code, Kimi K2.7 Code Highspeed |
+| **Kimi (Moonshot)** | Kimi K3.1 Pro (1M), Kimi K3.1 Pro Highspeed (1M), Kimi K3 (1M), Kimi K2.7 Code, Kimi K2.7 Code Highspeed |
 | **Local** | Any OpenAI-compatible API |
 
 ## Credentials
@@ -112,6 +112,8 @@ Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it re
   "agents": { "coder": { "model": "kimi.kimi-k3" } }
 }
 ```
+
+Kimi K3.1 Pro (`kimi.kimi-k3.1-pro`) and K3.1 Pro Highspeed (`kimi.kimi-k3.1-pro-highspeed`) use the same native endpoint. Both have a 1,048,576-token context, 131,072 default output tokens, vision, and reasoning effort `low`/`high`/`max` (default `max`). Official USD prices per million tokens are **$2 input / $10 output / $0.20 cache reads** for Pro and **$4 / $20 / $0.20** for Highspeed. Default 5-minute cache writes cost $2 and $4 respectively; no long-context surcharge applies. These require a pay-as-you-go Moonshot API key; Kimi Code subscription endpoints may accept only the `k3` alias. These variants are not listed on Bedrock as of 2026-10-25. Sources: [Kimi pricing](https://platform.kimi.ai/), [model guide](https://platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart), [AWS model list](https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-moonshot-ai.html).
 
 Kimi K2.7 Code (`kimi.kimi-k2.7-code`) and its faster, double-priced Highspeed variant (`kimi.kimi-k2.7-code-highspeed`) ride the same endpoint with a 256K context. They accept every effort level from `low` to `max`, so an unset `reasoningEffort` keeps the client default (`high`) instead of being pinned to `max`.
 

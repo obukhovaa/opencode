@@ -22,27 +22,54 @@
           "type": "string"
         },
         "compactionThreshold": {
-          "description": "Fraction of the model's context window, in (0, 1], at which this agent's sessions auto-compact (default 0.95). A flow step's compact.threshold overrides it; the top-level autoCompact flag still decides whether compaction runs at all. Out-of-range values are ignored with a warning.",
-          "exclusiveMinimum": 0,
-          "maximum": 1,
-          "type": "number"
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "maximum": 1,
+              "type": "number"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
+          "description": "Fraction of the model's context window, in (0, 1], at which this agent's sessions auto-compact (default 0.95). A flow step's compact.threshold overrides it; the top-level autoCompact flag still decides whether compaction runs at all. Out-of-range values are ignored with a warning."
         },
         "context": {
           "description": "Scoped context files for this agent's system prompt. Declared paths replace (default) or append to the global contextPaths. Path entries support the ${agent}, ${flow.id}, ${flow.step}, and ${env.VAR} template tokens and must resolve inside the working directory. See docs/context.md.",
           "properties": {
             "mode": {
-              "default": "replace",
-              "description": "How the declared paths combine with lower-precedence layers: 'replace' discards them, 'append' concatenates after them. An unrecognized value falls back to append with a warning.",
-              "enum": [
-                "replace",
-                "append"
+              "anyOf": [
+                {
+                  "enum": [
+                    "replace",
+                    "append"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
               ],
-              "type": "string"
+              "default": "replace",
+              "description": "How the declared paths combine with lower-precedence layers: 'replace' discards them, 'append' concatenates after them. An unrecognized value falls back to append with a warning."
             },
             "nested": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
               "default": true,
-              "description": "Opt out of nested-context manifest and body injection for this agent when false.",
-              "type": "boolean"
+              "description": "Opt out of nested-context manifest and body injection for this agent when false."
             },
             "paths": {
               "description": "Context file paths relative to the working directory. A trailing slash recurses into the directory.",
@@ -56,8 +83,17 @@
         },
         "deferredTools": {
           "additionalProperties": {
-            "description": "Whether tools matching this pattern are deferred",
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Whether tools matching this pattern are deferred"
           },
           "description": "Tool name patterns (exact or wildcard, case-insensitive) whose schemas are deferred: excluded from the request payload until discovered via the toolsearch tool (or Anthropic server-side tool search on models that support it). Only enabled tools can be deferred; 'toolsearch' and 'struct_output' are never deferrable. Keys use the same wildcard matching as 'tools' (e.g. {\"jira_*\": true}).",
           "type": "object"
@@ -67,14 +103,32 @@
           "type": "string"
         },
         "disabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": false,
-          "description": "Whether the agent is disabled and excluded from the registry entirely",
-          "type": "boolean"
+          "description": "Whether the agent is disabled and excluded from the registry entirely"
         },
         "hidden": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": false,
-          "description": "Whether the agent is hidden from TUI agent switching",
-          "type": "boolean"
+          "description": "Whether the agent is hidden from TUI agent switching"
         },
         "langfusePromptLabel": {
           "description": "Langfuse label to resolve for langfusePromptPath (e.g. 'staging'). Defaults to telemetry.langfuse.prompts.label, itself defaulting to 'production'. Only valid alongside langfusePromptPath.",
@@ -85,128 +139,193 @@
           "type": "string"
         },
         "maxTokens": {
-          "description": "Maximum tokens for the agent",
-          "minimum": 1,
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
+          "description": "Maximum tokens for the agent"
         },
         "maxTurns": {
-          "description": "Maximum number of tool-use turns per request for this agent. Default is 100.",
-          "minimum": 1,
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
+          "description": "Maximum number of tool-use turns per request for this agent. Default is 100."
         },
         "mode": {
-          "description": "Agent mode: 'agent' for primary agents, 'subagent' for agents invoked by task tool",
-          "enum": [
-            "agent",
-            "subagent"
+          "anyOf": [
+            {
+              "enum": [
+                "agent",
+                "subagent"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
           ],
-          "type": "string"
+          "description": "Agent mode: 'agent' for primary agents, 'subagent' for agents invoked by task tool"
         },
         "model": {
-          "description": "Model ID for the agent",
-          "enum": [
-            "claude-4.5-haiku",
-            "claude-4.5-opus",
-            "claude-4.6-opus",
-            "claude-4.6-sonnet",
-            "claude-4.7-opus",
-            "claude-4.8-opus",
-            "claude-5-opus",
-            "claude-5-sonnet",
-            "claude-5.5-haiku",
-            "claude-5.5-opus",
-            "claude-5.5-sonnet",
-            "claude-fable-5",
-            "claude-fable-5-1",
-            "bedrock.eu-claude-haiku-4-5",
-            "bedrock.eu-claude-opus-4-6",
-            "bedrock.eu-claude-sonnet-4-6",
-            "bedrock.eu-claude-opus-4-7",
-            "bedrock.eu-claude-opus-4-8",
-            "bedrock.eu-claude-opus-5",
-            "bedrock.eu-claude-sonnet-5",
-            "bedrock.eu-claude-haiku-5-5",
-            "bedrock.eu-claude-opus-5-5",
-            "bedrock.eu-claude-sonnet-5-5",
-            "bedrock.eu-claude-fable-5",
-            "bedrock.eu-claude-fable-5-1",
-            "bedrock.us-kimi-k3",
-            "bedrock.claude-haiku-4-5",
-            "bedrock.claude-opus-4-6",
-            "bedrock.claude-sonnet-4-6",
-            "bedrock.claude-opus-4-7",
-            "bedrock.claude-opus-4-8",
-            "bedrock.claude-opus-5",
-            "bedrock.claude-sonnet-5",
-            "bedrock.claude-haiku-5-5",
-            "bedrock.claude-opus-5-5",
-            "bedrock.claude-sonnet-5-5",
-            "bedrock.claude-fable-5",
-            "bedrock.claude-fable-5-1",
-            "bedrock.kimi-k3",
-            "gemini-3.0-flash",
-            "gemini-3.0-pro",
-            "kimi.kimi-k2.7-code",
-            "kimi.kimi-k2.7-code-highspeed",
-            "kimi.kimi-k3",
-            "gpt-5",
-            "o3",
-            "o4-mini",
-            "vertexai.claude-fable-5",
-            "vertexai.claude-fable-5-1",
-            "vertexai.claude-haiku-4-5",
-            "vertexai.claude-haiku-5-5",
-            "vertexai.claude-opus-4-5",
-            "vertexai.claude-opus-4-6",
-            "vertexai.claude-opus-4-7",
-            "vertexai.claude-opus-4-8",
-            "vertexai.claude-opus-5",
-            "vertexai.claude-opus-5-5",
-            "vertexai.claude-sonnet-4-6",
-            "vertexai.claude-sonnet-5",
-            "vertexai.claude-sonnet-5-5",
-            "vertexai.gemini-3.0-flash",
-            "vertexai.gemini-3.0-pro",
-            "yandexcloud.aliceai-llm",
-            "yandexcloud.deepseek-v3.2",
-            "yandexcloud.gpt-oss-120b",
-            "yandexcloud.qwen3-235b",
-            "yandexcloud.qwen3.5-35b",
-            "yandexcloud.yandexgpt-lite-5",
-            "yandexcloud.yandexgpt-pro-5",
-            "yandexcloud.yandexgpt-pro-5.1"
+          "anyOf": [
+            {
+              "enum": [
+                "claude-4.5-haiku",
+                "claude-4.5-opus",
+                "claude-4.6-opus",
+                "claude-4.6-sonnet",
+                "claude-4.7-opus",
+                "claude-4.8-opus",
+                "claude-5-opus",
+                "claude-5-sonnet",
+                "claude-5.5-haiku",
+                "claude-5.5-opus",
+                "claude-5.5-sonnet",
+                "claude-fable-5",
+                "claude-fable-5-1",
+                "bedrock.eu-claude-haiku-4-5",
+                "bedrock.eu-claude-opus-4-6",
+                "bedrock.eu-claude-sonnet-4-6",
+                "bedrock.eu-claude-opus-4-7",
+                "bedrock.eu-claude-opus-4-8",
+                "bedrock.eu-claude-opus-5",
+                "bedrock.eu-claude-sonnet-5",
+                "bedrock.eu-claude-haiku-5-5",
+                "bedrock.eu-claude-opus-5-5",
+                "bedrock.eu-claude-sonnet-5-5",
+                "bedrock.eu-claude-fable-5",
+                "bedrock.eu-claude-fable-5-1",
+                "bedrock.us-kimi-k3",
+                "bedrock.claude-haiku-4-5",
+                "bedrock.claude-opus-4-6",
+                "bedrock.claude-sonnet-4-6",
+                "bedrock.claude-opus-4-7",
+                "bedrock.claude-opus-4-8",
+                "bedrock.claude-opus-5",
+                "bedrock.claude-sonnet-5",
+                "bedrock.claude-haiku-5-5",
+                "bedrock.claude-opus-5-5",
+                "bedrock.claude-sonnet-5-5",
+                "bedrock.claude-fable-5",
+                "bedrock.claude-fable-5-1",
+                "bedrock.kimi-k3",
+                "gemini-3.0-flash",
+                "gemini-3.0-pro",
+                "kimi.kimi-k2.7-code",
+                "kimi.kimi-k2.7-code-highspeed",
+                "kimi.kimi-k3",
+                "kimi.kimi-k3.1-pro",
+                "kimi.kimi-k3.1-pro-highspeed",
+                "gpt-5",
+                "o3",
+                "o4-mini",
+                "vertexai.claude-fable-5",
+                "vertexai.claude-fable-5-1",
+                "vertexai.claude-haiku-4-5",
+                "vertexai.claude-haiku-5-5",
+                "vertexai.claude-opus-4-5",
+                "vertexai.claude-opus-4-6",
+                "vertexai.claude-opus-4-7",
+                "vertexai.claude-opus-4-8",
+                "vertexai.claude-opus-5",
+                "vertexai.claude-opus-5-5",
+                "vertexai.claude-sonnet-4-6",
+                "vertexai.claude-sonnet-5",
+                "vertexai.claude-sonnet-5-5",
+                "vertexai.gemini-3.0-flash",
+                "vertexai.gemini-3.0-pro",
+                "yandexcloud.aliceai-llm",
+                "yandexcloud.deepseek-v3.2",
+                "yandexcloud.gpt-oss-120b",
+                "yandexcloud.qwen3-235b",
+                "yandexcloud.qwen3.5-35b",
+                "yandexcloud.yandexgpt-lite-5",
+                "yandexcloud.yandexgpt-pro-5",
+                "yandexcloud.yandexgpt-pro-5.1"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
           ],
-          "type": "string"
+          "description": "Model ID for the agent"
         },
         "name": {
           "description": "Display name for the agent",
           "type": "string"
         },
         "parallelToolUse": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": true,
-          "description": "Whether to enable parallel tool execution for this agent. When true (default), independent tool calls run concurrently. Set to false to force sequential execution.",
-          "type": "boolean"
+          "description": "Whether to enable parallel tool execution for this agent. When true (default), independent tool calls run concurrently. Set to false to force sequential execution."
         },
         "permission": {
           "additionalProperties": {
             "anyOf": [
               {
-                "description": "Simple permission action",
-                "enum": [
-                  "allow",
-                  "deny",
-                  "ask"
+                "anyOf": [
+                  {
+                    "enum": [
+                      "allow",
+                      "deny",
+                      "ask"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "description": "Environment reference; the resolved value is validated at runtime.",
+                    "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                    "type": "string"
+                  }
                 ],
-                "type": "string"
+                "description": "Simple permission action"
               },
               {
                 "additionalProperties": {
-                  "enum": [
-                    "allow",
-                    "deny",
-                    "ask"
-                  ],
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "allow",
+                        "deny",
+                        "ask"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "description": "Environment reference; the resolved value is validated at runtime.",
+                      "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                      "type": "string"
+                    }
+                  ]
                 },
                 "description": "Granular permission patterns (glob-pattern keys to action values)",
                 "type": "object"
@@ -221,28 +340,55 @@
           "type": "string"
         },
         "reasoningEffort": {
-          "description": "Reasoning effort for models that support it (OpenAI, Anthropic). 'xhigh' and 'max' are only available for models with extra-high / maximum thinking support; elsewhere they fall back to 'high'.",
-          "enum": [
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max"
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
           ],
-          "type": "string"
+          "description": "Reasoning effort for models that support it (OpenAI, Anthropic). 'xhigh' and 'max' are only available for models with extra-high / maximum thinking support; elsewhere they fall back to 'high'."
         },
         "selfCompact": {
           "description": "Lets this primary agent compact its own session through the compact_session tool: the agent calls it when it has finished a task, and the session is summarized right after that turn ends (or, if that did not happen, before the next turn's first model call). The tool's keep notes are carried into the summary verbatim. Independent of autoCompact; the auto-compaction threshold stays in place as the safety net. Also settable in agent markdown frontmatter.",
           "properties": {
             "enabled": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
               "default": false,
-              "description": "Register the compact_session tool for this agent. The agent's tools/allowTools can still exclude it.",
-              "type": "boolean"
+              "description": "Register the compact_session tool for this agent. The agent's tools/allowTools can still exclude it."
             },
             "minTokens": {
-              "description": "Floor on the session's context size, in tokens, counted as auto-compaction counts it. A call below it returns \"skipped\" and compacts nothing. 0 or unset means no floor; negative values are ignored with a warning.",
-              "minimum": 0,
-              "type": "integer"
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
+              "description": "Floor on the session's context size, in tokens, counted as auto-compaction counts it. A call below it returns \"skipped\" and compacts nothing. 0 or unset means no floor; negative values are ignored with a warning."
             }
           },
           "type": "object"
@@ -255,32 +401,77 @@
           "type": "array"
         },
         "structOutputSchemaDelivery": {
-          "description": "Where this agent's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overrides the top-level setting.",
-          "enum": [
-            "message",
-            "tool"
+          "anyOf": [
+            {
+              "enum": [
+                "message",
+                "tool"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
           ],
-          "type": "string"
+          "description": "Where this agent's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overrides the top-level setting."
         },
         "summarizerMaxInputTokens": {
-          "description": "Cap, in estimated tokens, on the history this agent's compaction sends the summarizer (the transcript since the previous summary; the oldest messages are dropped first). The budget is min(0.9 x summarizer context window, this value). Precedence: the agent's frontmatter value, then agents.\u003cid\u003e, then agents.summarizer, so set on the summarizer agent it applies to every agent without its own value. Unset means only the summarizer's own context window limits it.",
-          "minimum": 1,
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
+          "description": "Cap, in estimated tokens, on the history this agent's compaction sends the summarizer (the transcript since the previous summary; the oldest messages are dropped first). The budget is min(0.9 x summarizer context window, this value). Precedence: the agent's frontmatter value, then agents.\u003cid\u003e, then agents.summarizer, so set on the summarizer agent it applies to every agent without its own value. Unset means only the summarizer's own context window limits it."
         },
         "taskBudget": {
-          "description": "Advisory token budget for the full agentic loop (minimum 20000). Only supported by models with SupportsTaskBudget. The budget is carried across compaction via the remaining field.",
-          "minimum": 20000,
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 20000,
+              "type": "integer"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
+          "description": "Advisory token budget for the full agentic loop (minimum 20000). Only supported by models with SupportsTaskBudget. The budget is carried across compaction via the remaining field."
         },
         "toolCallTimeoutSeconds": {
-          "description": "Bound, in seconds, on one tool call in this agent's loop. Past it the call is cancelled and abandoned and the model receives an error result. task, question and bash are exempt; an MCP tool gets at least its server's callToolTimeoutSeconds plus 60 s. 0 disables the bound. Unset inherits the top-level toolCallTimeoutSeconds.",
-          "minimum": 0,
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
+          "description": "Bound, in seconds, on one tool call in this agent's loop. Past it the call is cancelled and abandoned and the model receives an error result. task, question and bash are exempt; an MCP tool gets at least its server's callToolTimeoutSeconds plus 60 s. 0 disables the bound. Unset inherits the top-level toolCallTimeoutSeconds."
         },
         "tools": {
           "additionalProperties": {
-            "description": "Whether the tool is enabled for this agent",
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Whether the tool is enabled for this agent"
           },
           "description": "Tool deny-list: keys are tool names or wildcard patterns, values enable/disable them. Unmentioned tools stay ENABLED, so a tool added later is granted automatically. Mutually exclusive with 'allowTools'.",
           "type": "object"
@@ -292,7 +483,7 @@
       "type": "object"
     }
   },
-  "description": "Configuration schema for the OpenCode application",
+  "description": "Configuration schema for the OpenCode application. String values support ${VAR} and ${VAR:-default} environment expansion; use $${VAR} for a literal reference.",
   "properties": {
     "agentPaths": {
       "description": "Custom directories to scan for markdown agent definitions (*.md) at startup. Supports ~ for the home directory and relative paths (resolved against the working directory). Custom-path agents have the lowest precedence among discovery sources.",
@@ -323,27 +514,54 @@
             "type": "string"
           },
           "compactionThreshold": {
-            "description": "Fraction of the model's context window, in (0, 1], at which this agent's sessions auto-compact (default 0.95). A flow step's compact.threshold overrides it; the top-level autoCompact flag still decides whether compaction runs at all. Out-of-range values are ignored with a warning.",
-            "exclusiveMinimum": 0,
-            "maximum": 1,
-            "type": "number"
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "maximum": 1,
+                "type": "number"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Fraction of the model's context window, in (0, 1], at which this agent's sessions auto-compact (default 0.95). A flow step's compact.threshold overrides it; the top-level autoCompact flag still decides whether compaction runs at all. Out-of-range values are ignored with a warning."
           },
           "context": {
             "description": "Scoped context files for this agent's system prompt. Declared paths replace (default) or append to the global contextPaths. Path entries support the ${agent}, ${flow.id}, ${flow.step}, and ${env.VAR} template tokens and must resolve inside the working directory. See docs/context.md.",
             "properties": {
               "mode": {
-                "default": "replace",
-                "description": "How the declared paths combine with lower-precedence layers: 'replace' discards them, 'append' concatenates after them. An unrecognized value falls back to append with a warning.",
-                "enum": [
-                  "replace",
-                  "append"
+                "anyOf": [
+                  {
+                    "enum": [
+                      "replace",
+                      "append"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "description": "Environment reference; the resolved value is validated at runtime.",
+                    "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                    "type": "string"
+                  }
                 ],
-                "type": "string"
+                "default": "replace",
+                "description": "How the declared paths combine with lower-precedence layers: 'replace' discards them, 'append' concatenates after them. An unrecognized value falls back to append with a warning."
               },
               "nested": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "description": "Environment reference; the resolved value is validated at runtime.",
+                    "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                    "type": "string"
+                  }
+                ],
                 "default": true,
-                "description": "Opt out of nested-context manifest and body injection for this agent when false.",
-                "type": "boolean"
+                "description": "Opt out of nested-context manifest and body injection for this agent when false."
               },
               "paths": {
                 "description": "Context file paths relative to the working directory. A trailing slash recurses into the directory.",
@@ -357,8 +575,17 @@
           },
           "deferredTools": {
             "additionalProperties": {
-              "description": "Whether tools matching this pattern are deferred",
-              "type": "boolean"
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
+              "description": "Whether tools matching this pattern are deferred"
             },
             "description": "Tool name patterns (exact or wildcard, case-insensitive) whose schemas are deferred: excluded from the request payload until discovered via the toolsearch tool (or Anthropic server-side tool search on models that support it). Only enabled tools can be deferred; 'toolsearch' and 'struct_output' are never deferrable. Keys use the same wildcard matching as 'tools' (e.g. {\"jira_*\": true}).",
             "type": "object"
@@ -368,14 +595,32 @@
             "type": "string"
           },
           "disabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
             "default": false,
-            "description": "Whether the agent is disabled and excluded from the registry entirely",
-            "type": "boolean"
+            "description": "Whether the agent is disabled and excluded from the registry entirely"
           },
           "hidden": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
             "default": false,
-            "description": "Whether the agent is hidden from TUI agent switching",
-            "type": "boolean"
+            "description": "Whether the agent is hidden from TUI agent switching"
           },
           "langfusePromptLabel": {
             "description": "Langfuse label to resolve for langfusePromptPath (e.g. 'staging'). Defaults to telemetry.langfuse.prompts.label, itself defaulting to 'production'. Only valid alongside langfusePromptPath.",
@@ -386,128 +631,193 @@
             "type": "string"
           },
           "maxTokens": {
-            "description": "Maximum tokens for the agent",
-            "minimum": 1,
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Maximum tokens for the agent"
           },
           "maxTurns": {
-            "description": "Maximum number of tool-use turns per request for this agent. Default is 100.",
-            "minimum": 1,
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Maximum number of tool-use turns per request for this agent. Default is 100."
           },
           "mode": {
-            "description": "Agent mode: 'agent' for primary agents, 'subagent' for agents invoked by task tool",
-            "enum": [
-              "agent",
-              "subagent"
+            "anyOf": [
+              {
+                "enum": [
+                  "agent",
+                  "subagent"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
             ],
-            "type": "string"
+            "description": "Agent mode: 'agent' for primary agents, 'subagent' for agents invoked by task tool"
           },
           "model": {
-            "description": "Model ID for the agent",
-            "enum": [
-              "claude-4.5-haiku",
-              "claude-4.5-opus",
-              "claude-4.6-opus",
-              "claude-4.6-sonnet",
-              "claude-4.7-opus",
-              "claude-4.8-opus",
-              "claude-5-opus",
-              "claude-5-sonnet",
-              "claude-5.5-haiku",
-              "claude-5.5-opus",
-              "claude-5.5-sonnet",
-              "claude-fable-5",
-              "claude-fable-5-1",
-              "bedrock.eu-claude-haiku-4-5",
-              "bedrock.eu-claude-opus-4-6",
-              "bedrock.eu-claude-sonnet-4-6",
-              "bedrock.eu-claude-opus-4-7",
-              "bedrock.eu-claude-opus-4-8",
-              "bedrock.eu-claude-opus-5",
-              "bedrock.eu-claude-sonnet-5",
-              "bedrock.eu-claude-haiku-5-5",
-              "bedrock.eu-claude-opus-5-5",
-              "bedrock.eu-claude-sonnet-5-5",
-              "bedrock.eu-claude-fable-5",
-              "bedrock.eu-claude-fable-5-1",
-              "bedrock.us-kimi-k3",
-              "bedrock.claude-haiku-4-5",
-              "bedrock.claude-opus-4-6",
-              "bedrock.claude-sonnet-4-6",
-              "bedrock.claude-opus-4-7",
-              "bedrock.claude-opus-4-8",
-              "bedrock.claude-opus-5",
-              "bedrock.claude-sonnet-5",
-              "bedrock.claude-haiku-5-5",
-              "bedrock.claude-opus-5-5",
-              "bedrock.claude-sonnet-5-5",
-              "bedrock.claude-fable-5",
-              "bedrock.claude-fable-5-1",
-              "bedrock.kimi-k3",
-              "gemini-3.0-flash",
-              "gemini-3.0-pro",
-              "kimi.kimi-k2.7-code",
-              "kimi.kimi-k2.7-code-highspeed",
-              "kimi.kimi-k3",
-              "gpt-5",
-              "o3",
-              "o4-mini",
-              "vertexai.claude-fable-5",
-              "vertexai.claude-fable-5-1",
-              "vertexai.claude-haiku-4-5",
-              "vertexai.claude-haiku-5-5",
-              "vertexai.claude-opus-4-5",
-              "vertexai.claude-opus-4-6",
-              "vertexai.claude-opus-4-7",
-              "vertexai.claude-opus-4-8",
-              "vertexai.claude-opus-5",
-              "vertexai.claude-opus-5-5",
-              "vertexai.claude-sonnet-4-6",
-              "vertexai.claude-sonnet-5",
-              "vertexai.claude-sonnet-5-5",
-              "vertexai.gemini-3.0-flash",
-              "vertexai.gemini-3.0-pro",
-              "yandexcloud.aliceai-llm",
-              "yandexcloud.deepseek-v3.2",
-              "yandexcloud.gpt-oss-120b",
-              "yandexcloud.qwen3-235b",
-              "yandexcloud.qwen3.5-35b",
-              "yandexcloud.yandexgpt-lite-5",
-              "yandexcloud.yandexgpt-pro-5",
-              "yandexcloud.yandexgpt-pro-5.1"
+            "anyOf": [
+              {
+                "enum": [
+                  "claude-4.5-haiku",
+                  "claude-4.5-opus",
+                  "claude-4.6-opus",
+                  "claude-4.6-sonnet",
+                  "claude-4.7-opus",
+                  "claude-4.8-opus",
+                  "claude-5-opus",
+                  "claude-5-sonnet",
+                  "claude-5.5-haiku",
+                  "claude-5.5-opus",
+                  "claude-5.5-sonnet",
+                  "claude-fable-5",
+                  "claude-fable-5-1",
+                  "bedrock.eu-claude-haiku-4-5",
+                  "bedrock.eu-claude-opus-4-6",
+                  "bedrock.eu-claude-sonnet-4-6",
+                  "bedrock.eu-claude-opus-4-7",
+                  "bedrock.eu-claude-opus-4-8",
+                  "bedrock.eu-claude-opus-5",
+                  "bedrock.eu-claude-sonnet-5",
+                  "bedrock.eu-claude-haiku-5-5",
+                  "bedrock.eu-claude-opus-5-5",
+                  "bedrock.eu-claude-sonnet-5-5",
+                  "bedrock.eu-claude-fable-5",
+                  "bedrock.eu-claude-fable-5-1",
+                  "bedrock.us-kimi-k3",
+                  "bedrock.claude-haiku-4-5",
+                  "bedrock.claude-opus-4-6",
+                  "bedrock.claude-sonnet-4-6",
+                  "bedrock.claude-opus-4-7",
+                  "bedrock.claude-opus-4-8",
+                  "bedrock.claude-opus-5",
+                  "bedrock.claude-sonnet-5",
+                  "bedrock.claude-haiku-5-5",
+                  "bedrock.claude-opus-5-5",
+                  "bedrock.claude-sonnet-5-5",
+                  "bedrock.claude-fable-5",
+                  "bedrock.claude-fable-5-1",
+                  "bedrock.kimi-k3",
+                  "gemini-3.0-flash",
+                  "gemini-3.0-pro",
+                  "kimi.kimi-k2.7-code",
+                  "kimi.kimi-k2.7-code-highspeed",
+                  "kimi.kimi-k3",
+                  "kimi.kimi-k3.1-pro",
+                  "kimi.kimi-k3.1-pro-highspeed",
+                  "gpt-5",
+                  "o3",
+                  "o4-mini",
+                  "vertexai.claude-fable-5",
+                  "vertexai.claude-fable-5-1",
+                  "vertexai.claude-haiku-4-5",
+                  "vertexai.claude-haiku-5-5",
+                  "vertexai.claude-opus-4-5",
+                  "vertexai.claude-opus-4-6",
+                  "vertexai.claude-opus-4-7",
+                  "vertexai.claude-opus-4-8",
+                  "vertexai.claude-opus-5",
+                  "vertexai.claude-opus-5-5",
+                  "vertexai.claude-sonnet-4-6",
+                  "vertexai.claude-sonnet-5",
+                  "vertexai.claude-sonnet-5-5",
+                  "vertexai.gemini-3.0-flash",
+                  "vertexai.gemini-3.0-pro",
+                  "yandexcloud.aliceai-llm",
+                  "yandexcloud.deepseek-v3.2",
+                  "yandexcloud.gpt-oss-120b",
+                  "yandexcloud.qwen3-235b",
+                  "yandexcloud.qwen3.5-35b",
+                  "yandexcloud.yandexgpt-lite-5",
+                  "yandexcloud.yandexgpt-pro-5",
+                  "yandexcloud.yandexgpt-pro-5.1"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
             ],
-            "type": "string"
+            "description": "Model ID for the agent"
           },
           "name": {
             "description": "Display name for the agent",
             "type": "string"
           },
           "parallelToolUse": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
             "default": true,
-            "description": "Whether to enable parallel tool execution for this agent. When true (default), independent tool calls run concurrently. Set to false to force sequential execution.",
-            "type": "boolean"
+            "description": "Whether to enable parallel tool execution for this agent. When true (default), independent tool calls run concurrently. Set to false to force sequential execution."
           },
           "permission": {
             "additionalProperties": {
               "anyOf": [
                 {
-                  "description": "Simple permission action",
-                  "enum": [
-                    "allow",
-                    "deny",
-                    "ask"
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "allow",
+                        "deny",
+                        "ask"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "description": "Environment reference; the resolved value is validated at runtime.",
+                      "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                      "type": "string"
+                    }
                   ],
-                  "type": "string"
+                  "description": "Simple permission action"
                 },
                 {
                   "additionalProperties": {
-                    "enum": [
-                      "allow",
-                      "deny",
-                      "ask"
-                    ],
-                    "type": "string"
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "allow",
+                          "deny",
+                          "ask"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "description": "Environment reference; the resolved value is validated at runtime.",
+                        "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                        "type": "string"
+                      }
+                    ]
                   },
                   "description": "Granular permission patterns (glob-pattern keys to action values)",
                   "type": "object"
@@ -522,28 +832,55 @@
             "type": "string"
           },
           "reasoningEffort": {
-            "description": "Reasoning effort for models that support it (OpenAI, Anthropic). 'xhigh' and 'max' are only available for models with extra-high / maximum thinking support; elsewhere they fall back to 'high'.",
-            "enum": [
-              "low",
-              "medium",
-              "high",
-              "xhigh",
-              "max"
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
             ],
-            "type": "string"
+            "description": "Reasoning effort for models that support it (OpenAI, Anthropic). 'xhigh' and 'max' are only available for models with extra-high / maximum thinking support; elsewhere they fall back to 'high'."
           },
           "selfCompact": {
             "description": "Lets this primary agent compact its own session through the compact_session tool: the agent calls it when it has finished a task, and the session is summarized right after that turn ends (or, if that did not happen, before the next turn's first model call). The tool's keep notes are carried into the summary verbatim. Independent of autoCompact; the auto-compaction threshold stays in place as the safety net. Also settable in agent markdown frontmatter.",
             "properties": {
               "enabled": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "description": "Environment reference; the resolved value is validated at runtime.",
+                    "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                    "type": "string"
+                  }
+                ],
                 "default": false,
-                "description": "Register the compact_session tool for this agent. The agent's tools/allowTools can still exclude it.",
-                "type": "boolean"
+                "description": "Register the compact_session tool for this agent. The agent's tools/allowTools can still exclude it."
               },
               "minTokens": {
-                "description": "Floor on the session's context size, in tokens, counted as auto-compaction counts it. A call below it returns \"skipped\" and compacts nothing. 0 or unset means no floor; negative values are ignored with a warning.",
-                "minimum": 0,
-                "type": "integer"
+                "anyOf": [
+                  {
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  {
+                    "description": "Environment reference; the resolved value is validated at runtime.",
+                    "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                    "type": "string"
+                  }
+                ],
+                "description": "Floor on the session's context size, in tokens, counted as auto-compaction counts it. A call below it returns \"skipped\" and compacts nothing. 0 or unset means no floor; negative values are ignored with a warning."
               }
             },
             "type": "object"
@@ -556,32 +893,77 @@
             "type": "array"
           },
           "structOutputSchemaDelivery": {
-            "description": "Where this agent's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overrides the top-level setting.",
-            "enum": [
-              "message",
-              "tool"
+            "anyOf": [
+              {
+                "enum": [
+                  "message",
+                  "tool"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
             ],
-            "type": "string"
+            "description": "Where this agent's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overrides the top-level setting."
           },
           "summarizerMaxInputTokens": {
-            "description": "Cap, in estimated tokens, on the history this agent's compaction sends the summarizer (the transcript since the previous summary; the oldest messages are dropped first). The budget is min(0.9 x summarizer context window, this value). Precedence: the agent's frontmatter value, then agents.\u003cid\u003e, then agents.summarizer, so set on the summarizer agent it applies to every agent without its own value. Unset means only the summarizer's own context window limits it.",
-            "minimum": 1,
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Cap, in estimated tokens, on the history this agent's compaction sends the summarizer (the transcript since the previous summary; the oldest messages are dropped first). The budget is min(0.9 x summarizer context window, this value). Precedence: the agent's frontmatter value, then agents.\u003cid\u003e, then agents.summarizer, so set on the summarizer agent it applies to every agent without its own value. Unset means only the summarizer's own context window limits it."
           },
           "taskBudget": {
-            "description": "Advisory token budget for the full agentic loop (minimum 20000). Only supported by models with SupportsTaskBudget. The budget is carried across compaction via the remaining field.",
-            "minimum": 20000,
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 20000,
+                "type": "integer"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Advisory token budget for the full agentic loop (minimum 20000). Only supported by models with SupportsTaskBudget. The budget is carried across compaction via the remaining field."
           },
           "toolCallTimeoutSeconds": {
-            "description": "Bound, in seconds, on one tool call in this agent's loop. Past it the call is cancelled and abandoned and the model receives an error result. task, question and bash are exempt; an MCP tool gets at least its server's callToolTimeoutSeconds plus 60 s. 0 disables the bound. Unset inherits the top-level toolCallTimeoutSeconds.",
-            "minimum": 0,
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Bound, in seconds, on one tool call in this agent's loop. Past it the call is cancelled and abandoned and the model receives an error result. task, question and bash are exempt; an MCP tool gets at least its server's callToolTimeoutSeconds plus 60 s. 0 disables the bound. Unset inherits the top-level toolCallTimeoutSeconds."
           },
           "tools": {
             "additionalProperties": {
-              "description": "Whether the tool is enabled for this agent",
-              "type": "boolean"
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
+              "description": "Whether the tool is enabled for this agent"
             },
             "description": "Tool deny-list: keys are tool names or wildcard patterns, values enable/disable them. Unmentioned tools stay ENABLED, so a tool added later is granted automatically. Mutually exclusive with 'allowTools'.",
             "type": "object"
@@ -616,9 +998,18 @@
       "type": "object"
     },
     "autoCompact": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "description": "Environment reference; the resolved value is validated at runtime.",
+          "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+          "type": "string"
+        }
+      ],
       "default": true,
-      "description": "Enable automatic compaction of session history",
-      "type": "boolean"
+      "description": "Enable automatic compaction of session history"
     },
     "backgroundTasks": {
       "additionalProperties": false,
@@ -637,13 +1028,31 @@
       "description": "Workspace-defined CLI tools: declarative manifests (.agents/tools/\u003cname\u003e.yaml, .opencode/tools/, ~/.config/opencode/tools, ~/.agents/tools) that wrap a host binary as a first-class tool executed argv-only (no shell). Agents receive a tool only when they name it in `tools`/`allowTools` (manifest `grant: explicit`, the default). See docs/cli-tools.md.",
       "properties": {
         "disabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": false,
-          "description": "Turn the feature off: no manifest is read and no CLI tool is built. OPENCODE_DISABLE_CLI_TOOLS=true is the environment equivalent.",
-          "type": "boolean"
+          "description": "Turn the feature off: no manifest is read and no CLI tool is built. OPENCODE_DISABLE_CLI_TOOLS=true is the environment equivalent."
         },
         "maxOutputBytes": {
-          "description": "Output cap a manifest inherits when it sets no `maxOutputBytes`: a positive value caps the bytes kept in the model context (the rest is spilled to a file and replaced by a head+tail preview, as for webFetch.maxOutputBytes and an MCP server's callToolMaxOutputBytes); a negative value disables the cap; zero or omitted keeps the built-in 51200. OPENCODE_CLI_TOOLS_MAX_OUTPUT_BYTES overrides it.",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
+          "description": "Output cap a manifest inherits when it sets no `maxOutputBytes`: a positive value caps the bytes kept in the model context (the rest is spilled to a file and replaced by a head+tail preview, as for webFetch.maxOutputBytes and an MCP server's callToolMaxOutputBytes); a negative value disables the cap; zero or omitted keeps the built-in 51200. OPENCODE_CLI_TOOLS_MAX_OUTPUT_BYTES overrides it."
         },
         "maxTimeout": {
           "description": "Cap on the per-call `timeout` parameter for manifests that set no `maxTimeout`; same format. Built-in default 10m, never below `timeout`. OPENCODE_CLI_TOOLS_MAX_TIMEOUT overrides it.",
@@ -673,33 +1082,78 @@
       "description": "Nested context file discovery (progressive context disclosure): a bounded walk below the working directory finds context files in subdirectories, lists them in a compact system-prompt manifest, and injects each file's body into the first tool result that touches its directory. See docs/context.md.",
       "properties": {
         "enabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": true,
-          "description": "Enable the discovery walk and manifest injection. Individual agents/steps can opt out with context.nested: false.",
-          "type": "boolean"
+          "description": "Enable the discovery walk and manifest injection. Individual agents/steps can opt out with context.nested: false."
         },
         "maxDepth": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": 8,
-          "description": "Maximum directory depth below the working directory the discovery walk descends into.",
-          "minimum": 1,
-          "type": "integer"
+          "description": "Maximum directory depth below the working directory the discovery walk descends into."
         },
         "maxFileBytes": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": 32768,
-          "description": "Maximum size of a single nested context file eligible for body injection; larger files are skipped.",
-          "minimum": 1,
-          "type": "integer"
+          "description": "Maximum size of a single nested context file eligible for body injection; larger files are skipped."
         },
         "maxFiles": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": 100,
-          "description": "Maximum number of nested context files collected by the discovery walk (walk order decides which files make the cut).",
-          "minimum": 1,
-          "type": "integer"
+          "description": "Maximum number of nested context files collected by the discovery walk (walk order decides which files make the cut)."
         },
         "maxSessionBytes": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": 131072,
-          "description": "Total byte budget of nested context bodies injected into a single session; further injections are skipped once exhausted.",
-          "minimum": 1,
-          "type": "integer"
+          "description": "Total byte budget of nested context bodies injected into a single session; further injections are skipped once exhausted."
         }
       },
       "type": "object"
@@ -741,19 +1195,46 @@
       "type": "object"
     },
     "debug": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "description": "Environment reference; the resolved value is validated at runtime.",
+          "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+          "type": "string"
+        }
+      ],
       "default": false,
-      "description": "Enable debug mode",
-      "type": "boolean"
+      "description": "Enable debug mode"
     },
     "debugLSP": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "description": "Environment reference; the resolved value is validated at runtime.",
+          "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+          "type": "string"
+        }
+      ],
       "default": false,
-      "description": "Enable LSP debug mode",
-      "type": "boolean"
+      "description": "Enable LSP debug mode"
     },
     "disableLSPDownload": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "description": "Environment reference; the resolved value is validated at runtime.",
+          "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+          "type": "string"
+        }
+      ],
       "default": false,
-      "description": "Disable automatic downloading and installation of LSP servers. Can also be set via OPENCODE_DISABLE_LSP_DOWNLOAD environment variable.",
-      "type": "boolean"
+      "description": "Disable automatic downloading and installation of LSP servers. Can also be set via OPENCODE_DISABLE_LSP_DOWNLOAD environment variable."
     },
     "flowPaths": {
       "description": "Custom directories to scan for flow YAML definitions (*.yaml / *.yml) at startup. Supports ~ for the home directory and relative paths (resolved against the working directory). Flows discovered here get a namespaced ID \u003cparent-dir-basename\u003e/\u003cfile-basename\u003e and can never shadow a built-in (slash-free) flow ID.",
@@ -791,17 +1272,71 @@
                     "type": "string"
                   },
                   "timeout": {
-                    "description": "Per-hook timeout in seconds. Default 600. The runner SIGTERMs the process group on overrun, then SIGKILLs after a 2-second grace.",
-                    "minimum": 1,
-                    "type": "integer"
+                    "anyOf": [
+                      {
+                        "anyOf": [
+                          {
+                            "anyOf": [
+                              {
+                                "minimum": 1,
+                                "type": "integer"
+                              },
+                              {
+                                "description": "Environment reference; the resolved value is validated at runtime.",
+                                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          {
+                            "description": "Environment reference; the resolved value is validated at runtime.",
+                            "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      {
+                        "description": "Environment reference; the resolved value is validated at runtime.",
+                        "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                        "type": "string"
+                      }
+                    ],
+                    "description": "Per-hook timeout in seconds. Default 600. The runner SIGTERMs the process group on overrun, then SIGKILLs after a 2-second grace."
                   },
                   "type": {
-                    "default": "command",
-                    "description": "Hook implementation type. v1 supports `command` only; settings entries with any other type are loaded and silently skipped with a WARN log so a settings.json that targets Claude Code's other hook types still loads cleanly.",
-                    "enum": [
-                      "command"
+                    "anyOf": [
+                      {
+                        "anyOf": [
+                          {
+                            "anyOf": [
+                              {
+                                "enum": [
+                                  "command"
+                                ],
+                                "type": "string"
+                              },
+                              {
+                                "description": "Environment reference; the resolved value is validated at runtime.",
+                                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          {
+                            "description": "Environment reference; the resolved value is validated at runtime.",
+                            "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      {
+                        "description": "Environment reference; the resolved value is validated at runtime.",
+                        "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                        "type": "string"
+                      }
                     ],
-                    "type": "string"
+                    "default": "command",
+                    "description": "Hook implementation type. v1 supports `command` only; settings entries with any other type are loaded and silently skipped with a WARN log so a settings.json that targets Claude Code's other hook types still loads cleanly."
                   }
                 },
                 "required": [
@@ -853,17 +1388,71 @@
                       "type": "string"
                     },
                     "timeout": {
-                      "description": "Per-hook timeout in seconds. Default 600. The runner SIGTERMs the process group on overrun, then SIGKILLs after a 2-second grace.",
-                      "minimum": 1,
-                      "type": "integer"
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                {
+                                  "description": "Environment reference; the resolved value is validated at runtime.",
+                                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            {
+                              "description": "Environment reference; the resolved value is validated at runtime.",
+                              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        {
+                          "description": "Environment reference; the resolved value is validated at runtime.",
+                          "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                          "type": "string"
+                        }
+                      ],
+                      "description": "Per-hook timeout in seconds. Default 600. The runner SIGTERMs the process group on overrun, then SIGKILLs after a 2-second grace."
                     },
                     "type": {
-                      "default": "command",
-                      "description": "Hook implementation type. v1 supports `command` only; settings entries with any other type are loaded and silently skipped with a WARN log so a settings.json that targets Claude Code's other hook types still loads cleanly.",
-                      "enum": [
-                        "command"
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "enum": [
+                                    "command"
+                                  ],
+                                  "type": "string"
+                                },
+                                {
+                                  "description": "Environment reference; the resolved value is validated at runtime.",
+                                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            {
+                              "description": "Environment reference; the resolved value is validated at runtime.",
+                              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        {
+                          "description": "Environment reference; the resolved value is validated at runtime.",
+                          "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                          "type": "string"
+                        }
                       ],
-                      "type": "string"
+                      "default": "command",
+                      "description": "Hook implementation type. v1 supports `command` only; settings entries with any other type are loaded and silently skipped with a WARN log so a settings.json that targets Claude Code's other hook types still loads cleanly."
                     }
                   },
                   "required": [
@@ -913,17 +1502,71 @@
                       "type": "string"
                     },
                     "timeout": {
-                      "description": "Per-hook timeout in seconds. Default 600. The runner SIGTERMs the process group on overrun, then SIGKILLs after a 2-second grace.",
-                      "minimum": 1,
-                      "type": "integer"
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                {
+                                  "description": "Environment reference; the resolved value is validated at runtime.",
+                                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            {
+                              "description": "Environment reference; the resolved value is validated at runtime.",
+                              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        {
+                          "description": "Environment reference; the resolved value is validated at runtime.",
+                          "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                          "type": "string"
+                        }
+                      ],
+                      "description": "Per-hook timeout in seconds. Default 600. The runner SIGTERMs the process group on overrun, then SIGKILLs after a 2-second grace."
                     },
                     "type": {
-                      "default": "command",
-                      "description": "Hook implementation type. v1 supports `command` only; settings entries with any other type are loaded and silently skipped with a WARN log so a settings.json that targets Claude Code's other hook types still loads cleanly.",
-                      "enum": [
-                        "command"
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "enum": [
+                                    "command"
+                                  ],
+                                  "type": "string"
+                                },
+                                {
+                                  "description": "Environment reference; the resolved value is validated at runtime.",
+                                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                                  "type": "string"
+                                }
+                              ]
+                            },
+                            {
+                              "description": "Environment reference; the resolved value is validated at runtime.",
+                              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        {
+                          "description": "Environment reference; the resolved value is validated at runtime.",
+                          "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                          "type": "string"
+                        }
                       ],
-                      "type": "string"
+                      "default": "command",
+                      "description": "Hook implementation type. v1 supports `command` only; settings entries with any other type are loaded and silently skipped with a WARN log so a settings.json that targets Claude Code's other hook types still loads cleanly."
                     }
                   },
                   "required": [
@@ -964,9 +1607,18 @@
             "type": "string"
           },
           "disabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
             "default": false,
-            "description": "Whether the LSP server is disabled",
-            "type": "boolean"
+            "description": "Whether the LSP server is disabled"
           },
           "env": {
             "additionalProperties": {
@@ -993,9 +1645,18 @@
       "type": "object"
     },
     "maxTurns": {
-      "description": "Global maximum number of agent tool-use turns per request. When set, overrides per-agent maxTurns. Also settable via --max-turns CLI flag.",
-      "minimum": 1,
-      "type": "integer"
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "description": "Environment reference; the resolved value is validated at runtime.",
+          "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+          "type": "string"
+        }
+      ],
+      "description": "Global maximum number of agent tool-use turns per request. When set, overrides per-agent maxTurns. Also settable via --max-turns CLI flag."
     },
     "mcpServers": {
       "additionalProperties": {
@@ -1009,26 +1670,62 @@
             "type": "array"
           },
           "callToolMaxOutputBytes": {
-            "description": "Cap on a single tool call's output kept in the model context, in bytes. Output beyond the cap is spilled to a temp file and replaced with a head+tail preview pointing at it. Zero or omitted uses the built-in default (50KB); a positive value raises or lowers it; a negative value disables the cap (unbounded).",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Cap on a single tool call's output kept in the model context, in bytes. Output beyond the cap is spilled to a temp file and replaced with a head+tail preview pointing at it. Zero or omitted uses the built-in default (50KB); a positive value raises or lowers it; a negative value disables the cap (unbounded)."
           },
           "callToolTimeoutSeconds": {
-            "description": "Per-tool-call timeout override in seconds. Zero or omitted falls back to the built-in default (5 minutes).",
-            "minimum": 0,
-            "type": "integer"
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Per-tool-call timeout override in seconds. Zero or omitted falls back to the built-in default (5 minutes)."
           },
           "clientIdleTimeoutSeconds": {
-            "description": "Seconds a connected client (for stdio: the running server process) is kept for reuse after its last call before it is closed. Zero or omitted uses the built-in default (600); a negative value disables reuse, so every call starts its own client.",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Seconds a connected client (for stdio: the running server process) is kept for reuse after its last call before it is closed. Zero or omitted uses the built-in default (600); a negative value disables reuse, so every call starts its own client."
           },
           "command": {
             "description": "Command to execute for the MCP server",
             "type": "string"
           },
           "disabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
             "default": false,
-            "description": "Whether the MCP server is disabled",
-            "type": "boolean"
+            "description": "Whether the MCP server is disabled"
           },
           "env": {
             "description": "Environment variables for the MCP server",
@@ -1056,13 +1753,22 @@
             "type": "string"
           },
           "type": {
-            "default": "stdio",
-            "description": "Type of MCP server",
-            "enum": [
-              "stdio",
-              "sse"
+            "anyOf": [
+              {
+                "enum": [
+                  "stdio",
+                  "sse"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
             ],
-            "type": "string"
+            "default": "stdio",
+            "description": "Type of MCP server"
           },
           "url": {
             "description": "URL for SSE type MCP servers",
@@ -1087,8 +1793,17 @@
           "type": "string"
         },
         "enabled": {
-          "default": false,
-          "type": "boolean"
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
+          "default": false
         },
         "projectID": {
           "description": "Explicit current-workspace identity; otherwise derived from origin or the local directory. Does not restrict access to other projects under directory.",
@@ -1101,22 +1816,40 @@
       "additionalProperties": {
         "anyOf": [
           {
-            "description": "Simple permission action for all uses of this tool",
-            "enum": [
-              "allow",
-              "deny",
-              "ask"
+            "anyOf": [
+              {
+                "enum": [
+                  "allow",
+                  "deny",
+                  "ask"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
             ],
-            "type": "string"
+            "description": "Simple permission action for all uses of this tool"
           },
           {
             "additionalProperties": {
-              "enum": [
-                "allow",
-                "deny",
-                "ask"
-              ],
-              "type": "string"
+              "anyOf": [
+                {
+                  "enum": [
+                    "allow",
+                    "deny",
+                    "ask"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ]
             },
             "description": "Granular permission patterns (glob-pattern keys to action values)",
             "type": "object"
@@ -1127,13 +1860,22 @@
       "properties": {
         "skill": {
           "additionalProperties": {
-            "description": "Permission action",
-            "enum": [
-              "allow",
-              "deny",
-              "ask"
+            "anyOf": [
+              {
+                "enum": [
+                  "allow",
+                  "deny",
+                  "ask"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
             ],
-            "type": "string"
+            "description": "Permission action"
           },
           "description": "Skill permission patterns (supports wildcards like 'internal-*')",
           "type": "object"
@@ -1154,9 +1896,18 @@
             "type": "string"
           },
           "disabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
             "default": false,
-            "description": "Whether the provider is disabled",
-            "type": "boolean"
+            "description": "Whether the provider is disabled"
           },
           "headers": {
             "additionalProperties": {
@@ -1185,17 +1936,26 @@
             "type": "object"
           },
           "provider": {
-            "description": "Provider type",
-            "enum": [
-              "anthropic",
-              "openai",
-              "gemini",
-              "bedrock",
-              "vertexai",
-              "yandexcloud",
-              "kimi"
+            "anyOf": [
+              {
+                "enum": [
+                  "anthropic",
+                  "openai",
+                  "gemini",
+                  "bedrock",
+                  "vertexai",
+                  "yandexcloud",
+                  "kimi"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
             ],
-            "type": "string"
+            "description": "Provider type"
           }
         },
         "type": "object"
@@ -1243,61 +2003,142 @@
           "type": "object"
         },
         "heartbeatReminder": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": true,
-          "description": "Daemon mode: post the weekly heartbeat setup reminder to direct-message chats whose heartbeat was never turned on or off. Only top-level DMs of a bot this process owns (inbound not mediated) are reminded. Set false to stop the reminder for every chat; /heartbeat and scheduled beats are unaffected.",
-          "type": "boolean"
+          "description": "Daemon mode: post the weekly heartbeat setup reminder to direct-message chats whose heartbeat was never turned on or off. Only top-level DMs of a bot this process owns (inbound not mediated) are reminded. Set false to stop the reminder for every chat; /heartbeat and scheduled beats are unaffected."
         },
         "isolateExternalSessions": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": true,
-          "description": "Keep chat peers out of external conversations: /sessions, /session \u003cid-prefix\u003e and /crons neither show nor switch into a session that holds a binding on the 'external' channel (each external peer is a separate conversation, often of another tenant), nor into any session sharing its root session (the other step sessions of the same flow run). The caller's own current session always stays visible. A failed lookup hides every other session. On unless set to false; false lets chat peers list and enter external conversations.",
-          "type": "boolean"
+          "description": "Keep chat peers out of external conversations: /sessions, /session \u003cid-prefix\u003e and /crons neither show nor switch into a session that holds a binding on the 'external' channel (each external peer is a separate conversation, often of another tenant), nor into any session sharing its root session (the other step sessions of the same flow run). The caller's own current session always stays visible. A failed lookup hides every other session. On unless set to false; false lets chat peers list and enter external conversations."
         },
         "permissionMode": {
-          "description": "How permission requests are resolved on bridge-owned sessions: 'allow' auto-approves, 'deny' auto-denies, 'ask' or empty defers to the opencode UI (hangs headless). Unrecognised values fail-safe to deny.",
-          "enum": [
-            "allow",
-            "deny",
-            "ask"
+          "anyOf": [
+            {
+              "enum": [
+                "allow",
+                "deny",
+                "ask"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
           ],
-          "type": "string"
+          "description": "How permission requests are resolved on bridge-owned sessions: 'allow' auto-approves, 'deny' auto-denies, 'ask' or empty defers to the opencode UI (hangs headless). Unrecognised values fail-safe to deny."
         },
         "questionMode": {
-          "description": "How agent questions are surfaced: 'interactive' renders platform-native UI (buttons/blocks); 'auto-reject' returns the default without prompting; 'disabled' suppresses the question flow.",
-          "enum": [
-            "interactive",
-            "auto-reject",
-            "disabled"
+          "anyOf": [
+            {
+              "enum": [
+                "interactive",
+                "auto-reject",
+                "disabled"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
           ],
-          "type": "string"
+          "description": "How agent questions are surfaced: 'interactive' renders platform-native UI (buttons/blocks); 'auto-reject' returns the default without prompting; 'disabled' suppresses the question flow."
         },
         "questionNudgeIntervalSeconds": {
-          "description": "Idle gap (seconds) after which the bridge re-posts a 'still waiting' nudge to a session with an outstanding question. 0 = built-in default (300 s); \u003c0 = disable nudging.",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
+          "description": "Idle gap (seconds) after which the bridge re-posts a 'still waiting' nudge to a session with an outstanding question. 0 = built-in default (300 s); \u003c0 = disable nudging."
         },
         "questionNudgeMax": {
-          "description": "Maximum nudges per pending question. 0 = built-in default (3); \u003c0 = unlimited.",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
+          "description": "Maximum nudges per pending question. 0 = built-in default (3); \u003c0 = unlimited."
         },
         "queueAcknowledgementsEnabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": false,
-          "description": "When true, the bridge sends an in-place-editable '⏳ queued' acknowledgement to a sender whose message is enqueued behind an in-flight agent run. The ack is updated as the queue drains and resolved to '▶ Processing…' when the run starts. Disabled by default; enable for reviewers who need visibility into queue depth.",
-          "type": "boolean"
+          "description": "When true, the bridge sends an in-place-editable '⏳ queued' acknowledgement to a sender whose message is enqueued behind an in-flight agent run. The ack is updated as the queue drains and resolved to '▶ Processing…' when the run starts. Disabled by default; enable for reviewers who need visibility into queue depth."
         },
         "toolUpdateVerbosity": {
-          "default": "compact",
-          "description": "How tool activity reaches chat when toolUpdatesEnabled is true: 'compact' (default) posts one progress card per agent run and edits it in place (tool calls completed, tool in flight, elapsed time, failure reason); 'full' posts one card per tool call with the argument summary and a truncated result body. 'verbose' and 'debug' are accepted as aliases of 'full'. Unrecognised values fall back to 'compact'.",
-          "enum": [
-            "compact",
-            "full",
-            "verbose",
-            "debug"
+          "anyOf": [
+            {
+              "enum": [
+                "compact",
+                "full",
+                "verbose",
+                "debug"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
           ],
-          "type": "string"
+          "default": "compact",
+          "description": "How tool activity reaches chat when toolUpdatesEnabled is true: 'compact' (default) posts one progress card per agent run and edits it in place (tool calls completed, tool in flight, elapsed time, failure reason); 'full' posts one card per tool call with the argument summary and a truncated result body. 'verbose' and 'debug' are accepted as aliases of 'full'. Unrecognised values fall back to 'compact'."
         },
         "toolUpdatesEnabled": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": false,
-          "description": "Stream tool-call lifecycle events (pending/running/completed) to the chat surface. Failures always surface regardless of this flag.",
-          "type": "boolean"
+          "description": "Stream tool-call lifecycle events (pending/running/completed) to the chat surface. Failures always surface regardless of this flag."
         }
       },
       "type": "object"
@@ -1321,9 +2162,18 @@
           "description": "MySQL-specific configuration",
           "properties": {
             "connectionTimeout": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
               "default": 30,
-              "description": "Connection timeout in seconds",
-              "type": "integer"
+              "description": "Connection timeout in seconds"
             },
             "database": {
               "description": "MySQL database name",
@@ -1338,23 +2188,50 @@
               "type": "string"
             },
             "maxConnections": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
               "default": 10,
-              "description": "Maximum number of open connections",
-              "type": "integer"
+              "description": "Maximum number of open connections"
             },
             "maxIdleConnections": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
               "default": 5,
-              "description": "Maximum number of idle connections",
-              "type": "integer"
+              "description": "Maximum number of idle connections"
             },
             "password": {
               "description": "MySQL password",
               "type": "string"
             },
             "port": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
               "default": 3306,
-              "description": "MySQL server port",
-              "type": "integer"
+              "description": "MySQL server port"
             },
             "username": {
               "description": "MySQL username",
@@ -1364,13 +2241,22 @@
           "type": "object"
         },
         "type": {
-          "default": "sqlite",
-          "description": "Type of session storage provider",
-          "enum": [
-            "sqlite",
-            "mysql"
+          "anyOf": [
+            {
+              "enum": [
+                "sqlite",
+                "mysql"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
           ],
-          "type": "string"
+          "default": "sqlite",
+          "description": "Type of session storage provider"
         }
       },
       "type": "object"
@@ -1406,16 +2292,34 @@
       "description": "Skills configuration",
       "properties": {
         "maxDescriptionChars": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": 500,
-          "description": "Truncate each skill's description to this many characters in the skill tool's \u003cavailable_skills\u003e listing. Skill metadata is preloaded into every request, so a large inventory with unabridged descriptions costs tens of thousands of tokens of tool schema. Truncation keeps the head of the description, so front-load trigger terms. 0 disables truncation.",
-          "minimum": 0,
-          "type": "integer"
+          "description": "Truncate each skill's description to this many characters in the skill tool's \u003cavailable_skills\u003e listing. Skill metadata is preloaded into every request, so a large inventory with unabridged descriptions costs tens of thousands of tokens of tool schema. Truncation keeps the head of the description, so front-load trigger terms. 0 disables truncation."
         },
         "maxListingChars": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": 0,
-          "description": "Cap the whole \u003cavailable_skills\u003e listing at this many characters. Skills past the cap are omitted (alphabetically last first, so the result is reproducible) and the listing reports how many. Omitted skills remain loadable by name. 0 (default) means unbounded — prefer per-agent permission.skill rules, which shrink the listing without hiding anything.",
-          "minimum": 0,
-          "type": "integer"
+          "description": "Cap the whole \u003cavailable_skills\u003e listing at this many characters. Skills past the cap are omitted (alphabetically last first, so the result is reproducible) and the listing reports how many. Omitted skills remain loadable by name. 0 (default) means unbounded — prefer per-agent permission.skill rules, which shrink the listing without hiding anything."
         },
         "paths": {
           "description": "Custom paths to search for skills (supports ~ for home directory and relative paths)",
@@ -1428,12 +2332,21 @@
       "type": "object"
     },
     "structOutputSchemaDelivery": {
-      "description": "Where a flow step's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overridable per agent.",
-      "enum": [
-        "message",
-        "tool"
+      "anyOf": [
+        {
+          "enum": [
+            "message",
+            "tool"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Environment reference; the resolved value is validated at runtime.",
+          "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+          "type": "string"
+        }
       ],
-      "type": "string"
+      "description": "Where a flow step's struct_output JSON Schema is placed in the request. 'message' (default) keeps the struct_output tool definition invariant and ships the schema in the message tail, so consecutive flow steps of one agent share a cached prompt prefix. 'tool' splays the schema into the tool's parameters (pre-GENAI-325 behavior). Overridable per agent."
     },
     "telemetry": {
       "additionalProperties": false,
@@ -1442,10 +2355,19 @@
         "defaultTags": {
           "description": "List of predefined tag keys that OpenCode will automatically add to metadata. Supported keys: 'agent'. When set, only listed tag keys are included in dynamic metadata tags.",
           "items": {
-            "enum": [
-              "agent"
-            ],
-            "type": "string"
+            "anyOf": [
+              {
+                "enum": [
+                  "agent"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ]
           },
           "type": "array"
         },
@@ -1461,9 +2383,18 @@
           "description": "Controls whether LLM request/response payloads are logged to the telemetry backend — the prompt sent to the model (system prompt + message history), the completion it returned, and the trace-level input/output of an agent turn. Disabled by default; when enabled is false nothing is captured regardless of logInput/logOutput.",
           "properties": {
             "enabled": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
               "default": false,
-              "description": "Enable LLM request/response logging. When false (default), no prompt or completion content is sent to the telemetry backend regardless of logInput/logOutput patterns.",
-              "type": "boolean"
+              "description": "Enable LLM request/response logging. When false (default), no prompt or completion content is sent to the telemetry backend regardless of logInput/logOutput patterns."
             },
             "logInput": {
               "description": "Agent ID patterns controlling which agents have their LLM request payload (system prompt + message history) and trace input logged. Supports wildcards (e.g., 'workhorse', 'sub*', '*'). If empty, no request payloads are logged.",
@@ -1491,9 +2422,18 @@
               "type": "string"
             },
             "enabled": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
               "default": false,
-              "description": "Enable Langfuse tracing",
-              "type": "boolean"
+              "description": "Enable Langfuse tracing"
             },
             "environment": {
               "description": "Langfuse trace environment every exported span is filed under (e.g. 'dev', 'prod'). Supports 'env:VAR_NAME' syntax. Falls back to LANGFUSE_TRACING_ENVIRONMENT env var; with neither set, opencode adds no environment and Langfuse uses its 'default' environment unless OTEL_RESOURCE_ATTRIBUTES sets one. Langfuse's rule: lowercase letters, digits, '-' and '_' only, at most 40 characters, must not start with 'langfuse'. An invalid value is dropped with a warning and tracing stays enabled.",
@@ -1509,9 +2449,18 @@
                   "type": "string"
                 },
                 "enabled": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "description": "Environment reference; the resolved value is validated at runtime.",
+                      "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                      "type": "string"
+                    }
+                  ],
                   "default": false,
-                  "description": "Enable Langfuse prompt management. When false (default), a langfusePromptPath reference fails to resolve.",
-                  "type": "boolean"
+                  "description": "Enable Langfuse prompt management. When false (default), a langfusePromptPath reference fails to resolve."
                 },
                 "label": {
                   "default": "production",
@@ -1524,9 +2473,18 @@
                   "type": "string"
                 },
                 "warmup": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "description": "Environment reference; the resolved value is validated at runtime.",
+                      "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                      "type": "string"
+                    }
+                  ],
                   "default": true,
-                  "description": "Pre-fetch every prompt referenced by the flow and agent registries at startup, in the background, so the first run does not pay a cold fetch. Defaults to true. Failures are logged and never fail or delay startup.",
-                  "type": "boolean"
+                  "description": "Pre-fetch every prompt referenced by the flow and agent registries at startup, in the background, so the first run does not pay a cold fetch. Defaults to true. Failures are logged and never fail or delay startup."
                 }
               },
               "type": "object"
@@ -1560,47 +2518,83 @@
             "disableBuiltins": {
               "description": "Names of built-in detectors to switch off (e.g. 'generic-sk'). An unknown name fails config loading.",
               "items": {
-                "enum": [
-                  "gitlab-pat",
-                  "slack-token",
-                  "aws-access-key-id",
-                  "langfuse-key",
-                  "anthropic-key",
-                  "github-token",
-                  "jwt",
-                  "private-key",
-                  "url-userinfo",
-                  "auth-header",
-                  "secret-assignment",
-                  "generic-sk",
-                  "email",
-                  "ipv4",
-                  "ipv6",
-                  "phone"
-                ],
-                "type": "string"
+                "anyOf": [
+                  {
+                    "enum": [
+                      "gitlab-pat",
+                      "slack-token",
+                      "aws-access-key-id",
+                      "langfuse-key",
+                      "anthropic-key",
+                      "github-token",
+                      "jwt",
+                      "private-key",
+                      "url-userinfo",
+                      "auth-header",
+                      "secret-assignment",
+                      "generic-sk",
+                      "email",
+                      "ipv4",
+                      "ipv6",
+                      "phone"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "description": "Environment reference; the resolved value is validated at runtime.",
+                    "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                    "type": "string"
+                  }
+                ]
               },
               "type": "array"
             },
             "enabled": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
               "default": true,
-              "description": "Enable secret redaction. Defaults to true. Set false to export payloads unredacted (pre-1.0 behavior).",
-              "type": "boolean"
+              "description": "Enable secret redaction. Defaults to true. Set false to export payloads unredacted (pre-1.0 behavior)."
             },
             "mode": {
-              "default": "fingerprint",
-              "description": "Replacement marker form. 'fingerprint' (default) emits [REDACTED:\u003cdetector\u003e:\u003c6 hex of SHA-256\u003e], which lets you tell one recurring secret from many distinct ones without exposing either; 'strict' omits the fingerprint; 'remove' deletes the value entirely.",
-              "enum": [
-                "fingerprint",
-                "strict",
-                "remove"
+              "anyOf": [
+                {
+                  "enum": [
+                    "fingerprint",
+                    "strict",
+                    "remove"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
               ],
-              "type": "string"
+              "default": "fingerprint",
+              "description": "Replacement marker form. 'fingerprint' (default) emits [REDACTED:\u003cdetector\u003e:\u003c6 hex of SHA-256\u003e], which lets you tell one recurring secret from many distinct ones without exposing either; 'strict' omits the fingerprint; 'remove' deletes the value entirely."
             },
             "pii": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
               "default": false,
-              "description": "Enable the personal-data detector group (email, IPv4, IPv6, phone). Off by default: agent telemetry legitimately carries emails (Jira assignees, git authors) and IPs (pod addresses), so redacting them by default would mangle ordinary output.",
-              "type": "boolean"
+              "description": "Enable the personal-data detector group (email, IPv4, IPv6, phone). Off by default: agent telemetry legitimately carries emails (Jira assignees, git authors) and IPs (pod addresses), so redacting them by default would mangle ordinary output."
             },
             "rules": {
               "description": "Operator-supplied detectors, applied after all built-ins. An array (not an object) so rule names and patterns keep their case through config loading.",
@@ -1608,9 +2602,18 @@
                 "additionalProperties": false,
                 "properties": {
                   "group": {
+                    "anyOf": [
+                      {
+                        "type": "integer"
+                      },
+                      {
+                        "description": "Environment reference; the resolved value is validated at runtime.",
+                        "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                        "type": "string"
+                      }
+                    ],
                     "default": 0,
-                    "description": "Capture group to replace. 0 (default) replaces the whole match.",
-                    "type": "integer"
+                    "description": "Capture group to replace. 0 (default) replaces the whole match."
                   },
                   "name": {
                     "description": "Detector name; appears in the replacement marker. Must be unique.",
@@ -1652,9 +2655,18 @@
           "description": "Controls what tool call data is logged to the telemetry backend. When enabled is false, no tool input/output is logged.",
           "properties": {
             "enabled": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
               "default": false,
-              "description": "Enable tool input/output logging. When false, no tool data is logged regardless of logInput/logOutput patterns.",
-              "type": "boolean"
+              "description": "Enable tool input/output logging. When false, no tool data is logged regardless of logInput/logOutput patterns."
             },
             "logInput": {
               "description": "Tool name patterns controlling which tools have their input logged. Supports wildcards (e.g., 'datadog*', 'read', '*'). If empty, no tool inputs are logged.",
@@ -1681,10 +2693,19 @@
       "type": "object"
     },
     "toolCallTimeoutSeconds": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "description": "Environment reference; the resolved value is validated at runtime.",
+          "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+          "type": "string"
+        }
+      ],
       "default": 1200,
-      "description": "Default bound, in seconds, on one tool call in the agent loop (agents.\u003cid\u003e.toolCallTimeoutSeconds overrides it). Past it the call is cancelled and abandoned and the model receives an error result. task, question and bash are exempt; an MCP tool gets at least its server's callToolTimeoutSeconds plus 60 s. 0 disables the bound.",
-      "minimum": 0,
-      "type": "integer"
+      "description": "Default bound, in seconds, on one tool call in the agent loop (agents.\u003cid\u003e.toolCallTimeoutSeconds overrides it). Past it the call is cancelled and abandoned and the model receives an error result. task, question and bash are exempt; an MCP tool gets at least its server's callToolTimeoutSeconds plus 60 s. 0 disables the bound."
     },
     "toolEnv": {
       "description": "Environment variables that the processes opencode starts (bash, background bash, monitor, CLI tools, hooks, stdio MCP and LSP servers) must not inherit. OPENCODE_SERVER_PASSWORD, OPENCODE_BRIDGE_REGISTRAR_PASSWORD and OPENCODE_MYSQL_DSN are always denied. opencode itself still reads denied variables.",
@@ -1703,25 +2724,43 @@
       "description": "Terminal User Interface configuration",
       "properties": {
         "theme": {
-          "default": "opencode",
-          "description": "TUI theme name",
-          "enum": [
-            "opencode",
-            "catppuccin",
-            "dracula",
-            "flexoki",
-            "gruvbox",
-            "monokai",
-            "onedark",
-            "tokyonight",
-            "tron"
+          "anyOf": [
+            {
+              "enum": [
+                "opencode",
+                "catppuccin",
+                "dracula",
+                "flexoki",
+                "gruvbox",
+                "monokai",
+                "onedark",
+                "tokyonight",
+                "tron"
+              ],
+              "type": "string"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
           ],
-          "type": "string"
+          "default": "opencode",
+          "description": "TUI theme name"
         },
         "vimMode": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": false,
-          "description": "Enable vim-style keybindings for the chat text input",
-          "type": "boolean"
+          "description": "Enable vim-style keybindings for the chat text input"
         }
       },
       "type": "object"
@@ -1734,9 +2773,18 @@
       "description": "Web fetch tool configuration",
       "properties": {
         "maxOutputBytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "description": "Environment reference; the resolved value is validated at runtime.",
+              "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            }
+          ],
           "default": 51200,
-          "description": "Cap, in bytes, on the content a single webfetch call keeps in the model context. Content over the cap is saved in full to a temp file and replaced by a head+tail preview naming that file, which the agent explores with grep/read. A positive value sets the cap; a negative value disables it (unbounded); 0 or omitted uses the built-in default of 51200 (50KB).",
-          "type": "integer"
+          "description": "Cap, in bytes, on the content a single webfetch call keeps in the model context. Content over the cap is saved in full to a temp file and replaced by a head+tail preview naming that file, which the agent explores with grep/read. A positive value sets the cap; a negative value disables it (unbounded); 0 or omitted uses the built-in default of 51200 (50KB)."
         }
       },
       "type": "object"
