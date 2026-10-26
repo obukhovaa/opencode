@@ -113,7 +113,7 @@ start_pod() {
     PORT=$(free_port)
     BASE="http://127.0.0.1:$PORT"
     LOG="$WORKDIR/pod-$PORT.log"
-    (cd "$POD_CWD" && "$BIN" serve \
+    (cd "$POD_CWD" && exec "$BIN" serve \
         --pool-mode \
         --port "$PORT" \
         --hostname 127.0.0.1 \
@@ -471,7 +471,7 @@ fi
 unset AGENT_WORKSPACE_GIT_URL || true
 PORT=$(free_port)
 BASE="http://127.0.0.1:$PORT"
-(cd "$POD_CWD" && "$BIN" serve --port "$PORT" --hostname 127.0.0.1) >"$WORKDIR/plain.log" 2>&1 &
+(cd "$POD_CWD" && exec "$BIN" serve --port "$PORT" --hostname 127.0.0.1) >"$WORKDIR/plain.log" 2>&1 &
 SERVER_PID=$!
 READY=false
 for _ in $(seq 1 40); do
@@ -543,7 +543,7 @@ EOF
 name="pool mode boots with inbound:disabled"
 PORT=$(free_port)
 BASE="http://127.0.0.1:$PORT"
-(cd "$GUARD_DIR" && "$BIN" serve --pool-mode --port "$PORT" --hostname 127.0.0.1 \
+(cd "$GUARD_DIR" && exec "$BIN" serve --pool-mode --port "$PORT" --hostname 127.0.0.1 \
     --pool-bind-sentinel-path "$WORKDIR/guard-sentinel") >"$WORKDIR/guard-ok.log" 2>&1 &
 SERVER_PID=$!
 READY=false
