@@ -191,7 +191,7 @@ Each hook fires as a **fresh subprocess** — no daemon, no socket. Per-call cos
 | Stderr cap | 64 KiB |
 | Timeout | 600s default; override per-hook with `"timeout": <seconds>` |
 | Kill chain | SIGTERM, then SIGKILL after 2s grace; whole process group signalled |
-| Env | Inherits opencode's env minus the [tool environment deny list](../README.md#tool-environment) (so never `OPENCODE_SERVER_PASSWORD`, `OPENCODE_BRIDGE_REGISTRAR_PASSWORD` or `OPENCODE_MYSQL_DSN`), plus `OPENCODE_PROJECT_DIR` and `CLAUDE_PROJECT_DIR` (alias) |
+| Env | Inherits opencode's env minus the [tool environment deny list](tools.md#tool-environment) (so never `OPENCODE_SERVER_PASSWORD`, `OPENCODE_BRIDGE_REGISTRAR_PASSWORD` or `OPENCODE_MYSQL_DSN`), plus `OPENCODE_PROJECT_DIR` and `CLAUDE_PROJECT_DIR` (alias) |
 | Working dir | Project root |
 | TTY | None (subprocess can't interact with the user's terminal) |
 
@@ -217,7 +217,7 @@ Two ways to invoke a hook command:
 - There is **no sandbox**: no seccomp, no namespaces, no chroot. A future change may add capability scoping; v1 trusts the operator.
 - The 600s default timeout + 2s SIGKILL grace bounds runaway processes. Size caps on stdout/stderr bound memory.
 - Hook stderr on exit 2 is surfaced to the agent — design accordingly if you write sensitive data there.
-- Hooks do not inherit the variables on the [tool environment deny list](../README.md#tool-environment). A hook that needs one of those values must get it some other way (a file it can read, a secret manager); hooks have no per-hook `env`.
+- Hooks do not inherit the variables on the [tool environment deny list](tools.md#tool-environment). A hook that needs one of those values must get it some other way (a file it can read, a secret manager); hooks have no per-hook `env`.
 
 ## Troubleshooting
 

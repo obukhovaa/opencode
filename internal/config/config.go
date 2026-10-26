@@ -849,6 +849,12 @@ func Load(workingDir string, debug bool) (*Config, error) {
 	if cfg != nil {
 		return cfg, nil
 	}
+	loaded := false
+	defer func() {
+		if !loaded {
+			cfg = nil
+		}
+	}()
 
 	cfg = &Config{
 		WorkingDir: workingDir,
@@ -862,17 +868,21 @@ func Load(workingDir string, debug bool) (*Config, error) {
 
 	// Read global config
 	if err := readConfig(viper.ReadInConfig()); err != nil {
-		return cfg, err
+		return nil, err
 	}
 
 	// Load and merge local config
-	mergeLocalConfig(workingDir)
+	if err := mergeLocalConfig(workingDir); err != nil {
+		return nil, err
+	}
 
 	setProviderDefaults()
 
 	// Apply configuration to the struct
 	if err := viper.Unmarshal(cfg); err != nil {
-		return cfg, fmt.Errorf("failed to unmarshal config: %w", err)
+		// Decoder errors may quote resolved environment values. Keep them
+		// out of diagnostics, since any field can now contain a secret.
+		return nil, fmt.Errorf("failed to unmarshal config: check configuration field types")
 	}
 	// Before anything can start a child process, and before validation so a
 	// config that fails validation still filters.
@@ -943,6 +953,7 @@ func Load(workingDir string, debug bool) (*Config, error) {
 		desc.MaxTokens = 80
 		cfg.Agents[AgentDescriptor] = desc
 	}
+	loaded = true
 	return cfg, nil
 }
 
@@ -999,6 +1010,7 @@ func flattenPatternMap(patterns map[string]any) map[string]any {
 
 // configureViper sets up viper's configuration paths and environment variables.
 func configureViper() {
+	viper.SetOptions(configDecoderOption())
 	viper.SetConfigName(fmt.Sprintf(".%s", appName))
 	viper.SetConfigType("json")
 	viper.AddConfigPath("$HOME")
@@ -1259,16 +1271,17 @@ func readConfig(err error) error {
 }
 
 // mergeLocalConfig loads and merges configuration from the local directory.
-func mergeLocalConfig(workingDir string) {
-	local := viper.New()
+func mergeLocalConfig(workingDir string) error {
+	local := viper.NewWithOptions(configDecoderOption())
 	local.SetConfigName(fmt.Sprintf(".%s", appName))
 	local.SetConfigType("json")
 	local.AddConfigPath(workingDir)
 
 	// Merge local config if it exists
-	if err := local.ReadInConfig(); err == nil {
-		viper.MergeConfigMap(local.AllSettings())
+	if err := readConfig(local.ReadInConfig()); err != nil {
+		return fmt.Errorf("failed to read project config: %w", err)
 	}
+	return viper.MergeConfigMap(local.AllSettings())
 }
 
 // applyDefaultValues sets default values for configuration fields that need processing.
@@ -1969,12 +1982,10 @@ func UpdateCfgFile(updateCfg func(config *Config)) error {
 		configData = data
 	}
 
-	var userCfg *Config
-	if err := json.Unmarshal(configData, &userCfg); err != nil {
-		return fmt.Errorf("failed to parse config file: %w", err)
+	userCfg, document, err := editConfigFile(configData, updateCfg)
+	if err != nil {
+		return err
 	}
-
-	updateCfg(userCfg)
 
 	// SetEscapeHTML(false) preserves characters like <, >, & in MCP server
 	// args (e.g. "--with 'fakeredis<2.26'") that JSON-default escaping would
@@ -1983,7 +1994,7 @@ func UpdateCfgFile(updateCfg func(config *Config)) error {
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(userCfg); err != nil {
+	if err := enc.Encode(document); err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 

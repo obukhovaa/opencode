@@ -7,12 +7,52 @@ package models
 const (
 	ProviderKimi ModelProvider = "kimi"
 
+	KimiK31Pro          ModelID = "kimi.kimi-k3.1-pro"
+	KimiK31ProHighspeed ModelID = "kimi.kimi-k3.1-pro-highspeed"
+
 	KimiK3               ModelID = "kimi.kimi-k3"
 	KimiK27Code          ModelID = "kimi.kimi-k2.7-code"
 	KimiK27CodeHighspeed ModelID = "kimi.kimi-k2.7-code-highspeed"
 )
 
 var KimiModels = map[ModelID]Model{
+	// Official USD rates: https://platform.kimi.ai/ (2026-10-25).
+	// Cache creation uses the default 5-minute TTL; cached reads are $0.20
+	// for BOTH variants. Pricing is flat across the full context window.
+	KimiK31Pro: {
+		ID:                       KimiK31Pro,
+		Name:                     "Kimi K3.1 Pro",
+		Provider:                 ProviderKimi,
+		APIModel:                 "kimi-k3.1-pro",
+		CostPer1MIn:              2.0,
+		CostPer1MOut:             10.0,
+		CostPer1MInCached:        2.0,
+		CostPer1MOutCached:       0.20,
+		ContextWindow:            1_048_576,
+		DefaultMaxTokens:         131_072,
+		CanReason:                true,
+		SupportsAdaptiveThinking: true,
+		SupportsMaximumThinking:  true,
+		SupportsAttachments:      true,
+		DefaultReasoningEffort:   "max",
+	},
+	KimiK31ProHighspeed: {
+		ID:                       KimiK31ProHighspeed,
+		Name:                     "Kimi K3.1 Pro Highspeed",
+		Provider:                 ProviderKimi,
+		APIModel:                 "kimi-k3.1-pro-highspeed",
+		CostPer1MIn:              4.0,
+		CostPer1MOut:             20.0,
+		CostPer1MInCached:        4.0,
+		CostPer1MOutCached:       0.20,
+		ContextWindow:            1_048_576,
+		DefaultMaxTokens:         131_072,
+		CanReason:                true,
+		SupportsAdaptiveThinking: true,
+		SupportsMaximumThinking:  true,
+		SupportsAttachments:      true,
+		DefaultReasoningEffort:   "max",
+	},
 	KimiK3: {
 		ID:       KimiK3,
 		Name:     "Kimi K3",
