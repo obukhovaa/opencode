@@ -255,6 +255,21 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 		askedAt:   time.Now(),
 	}
 	r.mu.Lock()
+	// A request-bound HTTP reply can settle the service before this Created
+	// event is processed. Do not resurrect a settled question during fan-out.
+	if r.svc.app != nil && r.svc.app.Questions != nil {
+		live := false
+		for _, current := range r.svc.app.Questions.List() {
+			if current.ID == req.ID && current.SessionID == req.SessionID {
+				live = true
+				break
+			}
+		}
+		if !live {
+			r.mu.Unlock()
+			return
+		}
+	}
 	r.pending[req.SessionID] = pend
 	// Queued input (messages with an id) never answers a question: the
 	// question closes as unanswered without reaching the peers, and the

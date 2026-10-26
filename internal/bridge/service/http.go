@@ -18,6 +18,7 @@ func (s *Service) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /router/bind", s.handleBind)
 	mux.HandleFunc("POST /router/unbind", s.handleUnbind)
 	mux.HandleFunc("POST /router/inbound", s.handleInbound)
+	mux.HandleFunc("POST /router/questions/{requestID}/reply", s.handleQuestionReply)
 	mux.HandleFunc("GET /router/health", s.handleHealth)
 	mux.HandleFunc("GET /router/config/groups", s.handleGroupsGet)
 	mux.HandleFunc("POST /router/config/groups", s.handleGroupsSet)

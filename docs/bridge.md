@@ -277,6 +277,18 @@ Every `id` and `text` must be non-empty, and a body that carries both `messages`
 
 Under `opencode serve --pool-mode`, the endpoint accepts an inbound only when a live interactive flow step in this process owns the peer's session. Otherwise it returns `409 {"sessionNotOwned": true}` and drops the message. This covers a container that restarted mid-step while its binding survived. Retrying cannot succeed, so orchestrators should not retry a `409`. Pool pods never pass an inbound to the workspace default agent. Without `--pool-mode`, behavior is unchanged.
 
+### `POST /router/questions/{requestID}/reply`
+
+External widgets retaining a question ID across reconnect can answer that exact request:
+
+```json
+{"sessionId": "the-bound-session", "answers": [["Approve"]]}
+```
+
+The route uses the server's existing HTTP Basic authentication. A successful `200` settles the question through the router, clears pending/nudge state and remembers answered labels for stale-click suppression. A missing, stale or wrong-session request gets `409` without generic inbound or a new agent turn. An unavailable router gets `503`; an invalid body gets `400`.
+
+Use this route for request-bound external replies rather than raw `/question/{id}/reply`, which does not update bridge state. Older runners return `404`: upgrade runners first and never fall back to label-only inbound or the raw service route.
+
 ### Identity CRUD — `/router/identities/{channel}[/{id}]`
 
 ```bash
