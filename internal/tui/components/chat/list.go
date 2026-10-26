@@ -37,6 +37,7 @@ type messagesCmp struct {
 	spinner             spinner.Model
 	spinnerActive       bool
 	rendering           bool
+	renderGeneration    uint64 // bumped by renderViewAsync and deletes; older render results are stale
 	dirtyWhileRendering map[string]struct{}
 	attachments         viewport.Model
 	cachedPending       pendingToolCounts
@@ -47,6 +48,7 @@ type messagesCmp struct {
 	recapContent        string
 }
 type renderFinishedMsg struct {
+	generation      uint64
 	uiMessages      []uiMessage
 	cacheUpdates    map[string]cacheItem
 	viewportContent string
@@ -132,8 +134,9 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.updateScrollState())
 
 	case renderFinishedMsg:
-		if !m.rendering {
-			// Async render was superseded by a sync render; discard stale results
+		if !m.rendering || msg.generation != m.renderGeneration {
+			// Superseded by a sync render, a delete or a newer async render;
+			// its snapshot is stale, so discard it.
 			break
 		}
 		m.rendering = false
@@ -275,9 +278,11 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			// An async render in flight still holds the deleted message;
-			// drop its result so the sync render below replaces it.
+			// retire its generation so its result is dropped even after the
+			// render below starts a replacement.
 			if needsRerender {
 				m.rendering = false
+				m.renderGeneration++
 			}
 		}
 		if needsRerender {
@@ -488,6 +493,8 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 		return nil
 	}
 	m.rendering = true
+	m.renderGeneration++
+	generation := m.renderGeneration
 	m.dirtyWhileRendering = nil
 
 	msgsCopy := make([]message.Message, len(m.messages))
@@ -587,6 +594,7 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 			)
 
 		return renderFinishedMsg{
+			generation:      generation,
 			uiMessages:      uiMsgs,
 			cacheUpdates:    cacheUpdates,
 			viewportContent: viewportContent,
