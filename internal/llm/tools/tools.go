@@ -485,14 +485,10 @@ func hasFileConflict(call ToolCall, myPaths []string, allCalls []ToolCall) bool 
 	return false
 }
 
-// IsSafeReadOnlyCommand reports whether command may skip the bash
-// permission gate. The exemption covers only a SIMPLE command led by a
-// listed word: anything with a top-level control operator, redirect,
-// command substitution or subshell is evaluated like every other command,
-// because the prefix match alone would exempt `echo go; ./gradlew build &`
-// or `ls && rm -rf build` on the strength of their first word (openspec
-// bash-background-mode: "The permission-exempt safe list covers only
-// simple commands").
+// IsSafeReadOnlyCommand is the legacy simple-command scheduling hint used by
+// AllowParallelism. It grants no execution permission (CD-5487): every bash
+// invocation goes through the configured policy and syntax gate. Compound
+// commands remain excluded from this hint, as before.
 func IsSafeReadOnlyCommand(command string) bool {
 	if hasTopLevelCompound(command) {
 		return false

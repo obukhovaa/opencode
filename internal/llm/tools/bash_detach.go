@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-// Shell-shape scanning for two gates in the bash tool (openspec
-// bash-background-mode: "Self-detaching commands are rejected in background
-// mode" and "The permission-exempt safe list covers only simple commands").
+// Shell-shape scanning for the background detach gate and the legacy
+// simple-command parallel-scheduling hint. Neither grants execution authority
+// (CD-5487); all bash calls go through the configured permission gate.
 //
 // This is a conservative, quote- and subshell-aware scan — not a shell
 // parser. It answers two questions about a command's TOP LEVEL (outside
@@ -18,8 +18,8 @@ import (
 // at command position. Anything the scan cannot classify (unbalanced quotes
 // or parentheses) is reported as ambiguous, and each gate resolves ambiguity
 // in its own direction: the detach gate lets an ambiguous command through
-// (a false rejection blocks legitimate work), the safe-list gate treats it
-// as not simple (a false exemption skips a permission check).
+// (a false rejection blocks legitimate work), the scheduling hint treats it
+// as not simple.
 
 type shellShape struct {
 	// operators lists top-level control operators, redirects and
@@ -232,8 +232,8 @@ func detectSelfDetach(cmd string) (construct string, detaches bool) {
 
 // hasTopLevelCompound reports whether cmd is more than one simple command:
 // any top-level control operator, redirect, command substitution or
-// subshell. Ambiguity resolves to true — the caller (the permission-exempt
-// safe list) must then evaluate the command like any other.
+// subshell. Ambiguity resolves to true — the scheduling hint must then treat
+// the command as not simple.
 func hasTopLevelCompound(cmd string) bool {
 	sh := scanShellShape(cmd)
 	return sh.ambiguous || len(sh.operators) > 0

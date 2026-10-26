@@ -61,7 +61,7 @@ func TestIsSafeReadOnlyCommand_SimpleCommandsOnly(t *testing.T) {
 	}
 	for _, c := range safe {
 		if !IsSafeReadOnlyCommand(c) {
-			t.Errorf("%q should still be exempt", c)
+			t.Errorf("%q should retain its simple-command scheduling hint", c)
 		}
 	}
 	unsafe := []string{
@@ -72,7 +72,7 @@ func TestIsSafeReadOnlyCommand_SimpleCommandsOnly(t *testing.T) {
 	}
 	for _, c := range unsafe {
 		if IsSafeReadOnlyCommand(c) {
-			t.Errorf("%q must not be exempt", c)
+			t.Errorf("%q must not have the simple-command scheduling hint", c)
 		}
 	}
 }

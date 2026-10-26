@@ -189,8 +189,8 @@ otherwise any `ask` prompts once for the complete original command. All
 checks must allow for automatic execution. Existing whole-command denies and
 prompts remain authoritative, so exact rules that allowed two commands
 separately do not automatically grant a previously denied compound invocation.
-The simple-command safe-list exemption is unchanged and is never applied to
-individual parts of a compound call.
+The historical simple-command safe list is a parallel-scheduling hint only
+(CD-5487). It grants no permission, on its own or inside a compound call.
 
 Some Bash expansions can evaluate variable contents as code without creating
 another command node in the source tree. The gate therefore denies assigning
@@ -205,7 +205,7 @@ remain supported. Denial is conservative even under an allow-all rule.
 Malformed or unsupported Bash syntax is refused rather than falling back to
 the glob match, including on allow-all agents; some valid but parser-ambiguous
 Bash syntax can therefore be refused too. The parser does not execute or expand
-shell code. For a non-exempt foreground call whose resolved shell is neither
+shell code. For a foreground call whose resolved shell is neither
 `bash` nor `sh`, an allow verdict becomes a prompt for the whole call: another
 dialect may execute syntax that looks like literal Bash data (zsh glob qualifiers,
 for example). Existing deny/ask verdicts stay intact. Background execution uses
@@ -215,9 +215,21 @@ Redirects belong to an allowed statement, so a prefix allow rule still grants
 its redirect targets; this does not confine filesystem writes. This is a
 command-policy gate, not an operating-system sandbox: an allowed script or
 interpreter retains its existing capabilities, variables and persistent-shell
-state are not symbolically evaluated. The pre-existing simple-command safe-list
-bypass remains a separate issue (CD-5487), including command-running wrappers;
-it is not evidence that a deny-all agent has no shell capabilities today.
+state are not symbolically evaluated.
+
+### Every bash invocation uses configured permissions (CD-5487)
+
+Commands such as `env`, `nice`, `time`, `timeout`, `go run` and `go test` used to
+skip the gate through the legacy safe list. Every bash invocation now uses the
+configured policy, including `pwd`, `ls` and `echo`: deny returns a rule error,
+ask prompts once before execution, and allow retains the syntax/dialect checks.
+This applies before foreground execution and detached-task creation alike.
+The legacy list still informs parallel scheduling but provides no authority.
+
+Compatibility: unconfigured commands that previously ran without asking now
+use the normal default-ask behavior. Operators can grant intended commands
+through their existing bash rules; no new config field is added. An allowed
+wrapper/interpreter still has the capabilities deliberately granted to it.
 
 ### Denial results
 

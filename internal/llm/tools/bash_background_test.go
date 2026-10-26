@@ -113,10 +113,8 @@ func TestBashBackground_AckThenCompletion(t *testing.T) {
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "s-bg")
 	ctx = context.WithValue(ctx, MessageIDContextKey, "msg-1")
 
-	// Skip permission check by using a safe read-only command path? echo is
-	// safe-read-only, but our combined command isn't. Inject the bash rule
-	// path manually: bashTool.Run consults registry.EvaluatePermission only
-	// when !isSafeReadOnly. We bypass by calling runBackground directly.
+	// Exercise background completion directly. The mandatory Run permission
+	// gate is covered separately in bash_safe_list_permission_test.go.
 	resp, err := tool.runBackground(ctx, ToolCall{ID: "call-1"}, params, t.TempDir(), "s-bg")
 	if err != nil {
 		t.Fatalf("runBackground: %v", err)

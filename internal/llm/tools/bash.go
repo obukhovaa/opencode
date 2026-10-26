@@ -176,40 +176,37 @@ func (b *bashTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error)
 		}
 	}
 
-	isSafeReadOnly := IsSafeReadOnlyCommand(params.Command)
-
 	sessionID, messageID := GetContextValues(ctx)
 	if sessionID == "" || messageID == "" {
 		return NewEmptyResponse(), fmt.Errorf("session ID and message ID are required for creating a new file")
 	}
-	if !isSafeReadOnly {
-		action := permission.EvaluateBashPermission(params.Command, func(part string) permission.Action {
-			return b.registry.EvaluatePermission(string(GetAgentID(ctx)), BashToolName, part)
-		})
-		action = permissionForBashExecution(action, params.RunInBackground, shell.GetShellPath())
-		switch action {
-		case permission.ActionAllow:
-			// Allowed by config, skip interactive permission
-		case permission.ActionDeny:
-			return NewEmptyResponse(), permission.DeniedByRule(BashToolName, params.Command)
-		default:
-			// "ask" or unset: fall through to interactive permission
-			p := b.permissions.Request(ctx,
-				permission.CreatePermissionRequest{
-					SessionID:   sessionID,
-					Path:        workdir,
-					ToolName:    BashToolName,
-					Action:      "execute",
-					Description: fmt.Sprintf("Execute command: %s", params.Command),
-					Params: BashPermissionsParams{
-						Command: params.Command,
-						Workdir: workdir,
-					},
+	// CD-5487: the legacy safe list is a scheduling hint, never execution
+	// authority. Wrappers such as env/go run can execute arbitrary commands.
+	action := permission.EvaluateBashPermission(params.Command, func(part string) permission.Action {
+		return b.registry.EvaluatePermission(string(GetAgentID(ctx)), BashToolName, part)
+	})
+	action = permissionForBashExecution(action, params.RunInBackground, shell.GetShellPath())
+	switch action {
+	case permission.ActionAllow:
+		// Allowed by config, skip interactive permission
+	case permission.ActionDeny:
+		return NewEmptyResponse(), permission.DeniedByRule(BashToolName, params.Command)
+	default:
+		p := b.permissions.Request(ctx,
+			permission.CreatePermissionRequest{
+				SessionID:   sessionID,
+				Path:        workdir,
+				ToolName:    BashToolName,
+				Action:      "execute",
+				Description: fmt.Sprintf("Execute command: %s", params.Command),
+				Params: BashPermissionsParams{
+					Command: params.Command,
+					Workdir: workdir,
 				},
-			)
-			if !p {
-				return NewEmptyResponse(), permission.ErrorPermissionDenied
-			}
+			},
+		)
+		if !p {
+			return NewEmptyResponse(), permission.ErrorPermissionDenied
 		}
 	}
 	if params.RunInBackground {
