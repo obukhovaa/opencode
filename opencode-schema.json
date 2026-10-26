@@ -346,6 +346,7 @@
                 "low",
                 "medium",
                 "high",
+                "xhigh",
                 "max"
               ],
               "type": "string"
@@ -356,7 +357,7 @@
               "type": "string"
             }
           ],
-          "description": "Reasoning effort for models that support it (OpenAI, Anthropic). 'max' is only available for models with maximum thinking support."
+          "description": "Reasoning effort for models that support it (OpenAI, Anthropic). 'xhigh' and 'max' are only available for models with extra-high / maximum thinking support; elsewhere they fall back to 'high'."
         },
         "selfCompact": {
           "description": "Lets this primary agent compact its own session through the compact_session tool: the agent calls it when it has finished a task, and the session is summarized right after that turn ends (or, if that did not happen, before the next turn's first model call). The tool's keep notes are carried into the summary verbatim. Independent of autoCompact; the auto-compaction threshold stays in place as the safety net. Also settable in agent markdown frontmatter.",
@@ -837,6 +838,7 @@
                   "low",
                   "medium",
                   "high",
+                  "xhigh",
                   "max"
                 ],
                 "type": "string"
@@ -847,7 +849,7 @@
                 "type": "string"
               }
             ],
-            "description": "Reasoning effort for models that support it (OpenAI, Anthropic). 'max' is only available for models with maximum thinking support."
+            "description": "Reasoning effort for models that support it (OpenAI, Anthropic). 'xhigh' and 'max' are only available for models with extra-high / maximum thinking support; elsewhere they fall back to 'high'."
           },
           "selfCompact": {
             "description": "Lets this primary agent compact its own session through the compact_session tool: the agent calls it when it has finished a task, and the session is summarized right after that turn ends (or, if that did not happen, before the next turn's first model call). The tool's keep notes are carried into the summary verbatim. Independent of autoCompact; the auto-compaction threshold stays in place as the safety net. Also settable in agent markdown frontmatter.",

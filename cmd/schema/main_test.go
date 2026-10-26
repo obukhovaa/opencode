@@ -7,9 +7,11 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/redact"
 )
@@ -172,6 +174,22 @@ func TestSchemaEnumsMatchRuntimeValidators(t *testing.T) {
 				// Whitespace variants: the parser must not trim, or the
 				// runtime would accept a value the published enum rejects.
 				" message", "message ", " message ", "\tmessage", "tool ",
+			},
+		},
+		{
+			name: "agents.*.reasoningEffort",
+			path: []string{"agents", "*", "reasoningEffort"},
+			accepts: func(v string) bool {
+				// The loader compares case-insensitively; the schema publishes
+				// the canonical lowercase spellings, so case variants are out
+				// of scope here.
+				return v == strings.ToLower(v) && models.IsReasoningEffort(v)
+			},
+			probe: []string{
+				"low", "medium", "high", "xhigh", "max",
+				"x-high", "extra-high", "extrahigh", "maximum", "minimal",
+				"none", "off", "auto", "default", "adaptive", "ultra",
+				" high", "high ",
 			},
 		},
 		{

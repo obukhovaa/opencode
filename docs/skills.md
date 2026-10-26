@@ -345,7 +345,7 @@ When multiple patterns match, the most specific wins:
 - `docker-build` → ask (global wildcard)
 
 
-> **Note:** The permission system is generic and supports granular patterns for all tools, not just skills. See the [Configuration guide](../README.md#agents) for details on `bash`, `edit`, `read`, and `task` permissions.
+> **Note:** The permission system is generic and supports granular patterns for all tools, not just skills. See the [permissions section](configuration.md#permissions) for details on `bash`, `edit`, `read`, and `task` permissions.
 ### Agent-Specific Permissions
 
 Override global permissions for specific agents:
@@ -1084,7 +1084,7 @@ Failed to parse skill file path=/path/to/SKILL.md error=...
 
 ## See Also
 
-- [Configuration](../README.md#configuration)
+- [Configuration](configuration.md)
 - [Custom Commands](custom-commands.md)
 - [Session Providers](session-providers.md)
-- [MCP Servers](../README.md#mcp-servers)
+- [MCP Servers](mcp.md)

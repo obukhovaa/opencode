@@ -9,6 +9,9 @@
 
 set -euo pipefail
 
+# Keep stderr assertions stable on hosts without the inherited locale.
+export LC_ALL=C
+
 ROOT="$(git rev-parse --show-toplevel)"
 SEMVER_RE='^refs/tags/v?[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'
 

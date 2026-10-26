@@ -172,7 +172,7 @@ echo ""
 
 # ── start server ─────────────────────────────────────────────────────
 PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
-(cd "$WORKDIR" && "$BIN" serve --port "$PORT" --hostname 127.0.0.1) 2>"$WORKDIR/server.log" &
+(cd "$WORKDIR" && exec "$BIN" serve --port "$PORT" --hostname 127.0.0.1) 2>"$WORKDIR/server.log" &
 SERVER_PID=$!
 
 BASE="http://127.0.0.1:$PORT"

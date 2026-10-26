@@ -1,6 +1,6 @@
 ---
 name: add-model
-description: Add or remove LLM model definitions for providers (Anthropic, OpenAI, Gemini, VertexAI, Bedrock). Use when the user provides a model card URL, documentation link, or plain text description of a new model to register. Also use when asked to remove/deprecate an existing model. Handles model struct definition, provider registration, README update, and schema regeneration.
+description: Add or remove LLM model definitions for providers (Anthropic, OpenAI, Gemini, VertexAI, Bedrock). Use when the user provides a model card URL, documentation link, or plain text description of a new model to register. Also use when asked to remove/deprecate an existing model. Handles model struct definition, provider registration, docs/providers.md update, and schema regeneration.
 user-invocable: true
 ---
 
@@ -96,9 +96,9 @@ VertexAINewModel: {
 
 Check `bootstrap.go` — the `init()` function must copy the model's map into `SupportedModels`. Existing maps are already registered. Only add a new `maps.Copy()` line if you created a new map variable.
 
-### 5. Update README.md
+### 5. Update docs/providers.md
 
-Update the "Supported Models" table at line ~287 in `README.md`. Add the new model name to the appropriate provider row.
+Update the "Supported models" table in `docs/providers.md`. Add the new model name to the appropriate provider row.
 
 ### 6. Regenerate schema
 
@@ -116,7 +116,7 @@ Reverse the add steps:
 1. Remove the `ModelID` constant from the provider file
 2. Remove the model entry from the map
 3. Remove any VertexAI/Bedrock mirrors that reference the removed model
-4. Update README.md to remove the model name
+4. Update `docs/providers.md` to remove the model name
 5. Regenerate schema: `go run cmd/schema/main.go > opencode-schema.json`
 6. Build check: `go build ./...`
 

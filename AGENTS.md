@@ -50,7 +50,16 @@ Load the doc for the area you are changing; each is the reference for its featur
 | [`docs/session-providers.md`](docs/session-providers.md) | Configuring SQLite/MySQL session storage (writing migrations: sqlc in `internal/db/sql`, goose files in `internal/db/migrations`) |
 | [`docs/memory.md`](docs/memory.md) | Touching `internal/memory`, the `memory` config / `AGENTS_MEMORY_HOME`, the memory system reminder or `MEMORY.md` index snapshot |
 | [`docs/lsp.md`](docs/lsp.md) | Touching `internal/lsp` or the `lsp` tool |
-| [`README.md`](README.md) | Needing the user-facing overview, full config reference or environment variables |
+| [`docs/configuration.md`](docs/configuration.md) | Adding a top-level config key or environment variable, or changing permission resolution |
+| [`docs/config-env.md`](docs/config-env.md) | Touching `${VAR}` expansion in `.opencode.json` (`internal/config/env_expansion.go`) or settings writeback (`writeback.go`) |
+| [`docs/agents.md`](docs/agents.md) | Adding an agent field, changing built-in agents, markdown agent discovery or Langfuse-managed agent prompts |
+| [`docs/compaction.md`](docs/compaction.md) | Touching auto-compaction, `compactionThreshold`, `summarizerMaxInputTokens` or `selfCompact` / `compact_session` |
+| [`docs/mcp.md`](docs/mcp.md) | Touching `internal/llm/agent/mcp*.go` or an `mcpServers` field (client pool, timeouts, `peerHeader`, `flowArgHeaders`) |
+| [`docs/tools.md`](docs/tools.md) | Adding a built-in tool, or touching `shell`, `toolEnv` (`internal/toolenv`) or `webFetch` |
+| [`docs/providers.md`](docs/providers.md) | Adding a provider or model (also use the `add-model` skill) |
+| [`docs/tui.md`](docs/tui.md) | Changing TUI keybindings or auto-approve |
+| [`docs/development.md`](docs/development.md) | Changing the build, Docker image or release process |
+| [`README.md`](README.md) | Needing the user-facing overview; keep it short — details belong in a `docs/` page linked from its Documentation table |
 | `openspec/specs/<capability>/spec.md` | Before changing a feature's behaviour: its requirements and scenarios. In-flight changes live in `openspec/changes/` |
 
 ## Code Style Guidelines

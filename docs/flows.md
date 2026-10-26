@@ -516,7 +516,7 @@ first run does not pay a cold fetch. The pre-fetch runs in the background:
 failures are logged, never fail the boot, and never delay it.
 
 **Agent types can do this too** — an agent's *system* prompt takes the same
-two keys. See [the README](../README.md#langfuse-managed-system-prompts).
+two keys. See [agents.md](agents.md#langfuse-managed-system-prompts).
 
 ## Execution Modes
 
