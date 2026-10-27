@@ -52,6 +52,33 @@ func TestBox_Ordering(t *testing.T) {
 	}
 }
 
+func TestBox_PushFrontRestoresHead(t *testing.T) {
+	tests := []struct {
+		name    string
+		cap     int
+		want    []string
+		evicted []string
+	}{
+		{name: "requeued head goes before later pushes", cap: 16, want: []string{"a", "b", "c"}},
+		{name: "overflow drops the oldest, the requeued head", cap: 2, want: []string{"b", "c"}, evicted: []string{"a"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			b := New(tc.cap)
+			b.Push("s", nil, Item{Text: "a"}, Item{Text: "b"})
+			head, _ := b.PopFirst("s")
+			b.Push("s", nil, Item{Text: "c"})
+			evicted := b.PushFront("s", head)
+			if got := texts(b.DrainAll("s")); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("drained %v, want %v", got, tc.want)
+			}
+			if got := texts(evicted); fmt.Sprint(got) != fmt.Sprint(tc.evicted) {
+				t.Fatalf("evicted %v, want %v", got, tc.evicted)
+			}
+		})
+	}
+}
+
 func TestBox_PopFirstLeavesRemainder(t *testing.T) {
 	b := New(0)
 	b.Push("s", nil, Item{Text: "m1"}, Item{Text: "m2"})

@@ -277,6 +277,22 @@ Every `id` and `text` must be non-empty, and a body that carries both `messages`
 
 Under `opencode serve --pool-mode`, the endpoint accepts an inbound only when a live interactive flow step in this process owns the peer's session. Otherwise it returns `409 {"sessionNotOwned": true}` and drops the message. This covers a container that restarted mid-step while its binding survived. Retrying cannot succeed, so orchestrators should not retry a `409`. Pool pods never pass an inbound to the workspace default agent. Without `--pool-mode`, behavior is unchanged.
 
+### `POST /router/questions/{requestID}/reply`
+
+External widgets retaining a question ID across reconnect can answer that exact request:
+
+```json
+{"sessionId": "the-bound-session", "answers": [["Approve"]]}
+```
+
+The route uses the server's existing HTTP Basic authentication. An alternative body is `{"sessionId":"the-bound-session","text":"Approve"}`: the runner parses the existing single-prompt bridge answer codec, where text that equals an option's label selects that option before it is read as an index or a comma-separated list. A label such as `3` selects itself, not the third option. Supply exactly one of text and answers. Answer counts, multiplicity, canonical labels and custom permission are validated before any answer.
+
+A first success returns `200 {"ok":true,"alreadyAnswered":false}`. An identical retry returns alreadyAnswered true from a receipt retained for five minutes (at most 256 receipts, digest-only, no answer text). It does not answer a replacement question. Changed payloads or sessions conflict. Expiry, eviction, process loss or a removed outer binding can leave delivery uncertain; inspect run state, never use a generic fallback. A caller must not preflight GET /question before retries: the settled request is intentionally gone.
+
+Only canonical choice labels enter stale-click suppression; custom text does not swallow a later deliberate message. Id-bearing queued input keeps its normal priority even before fan-out: the question closes unanswered and the selected reply returns 409 queued_input_pending. The queued messages remain.
+
+Refusals carry a code: answer_shape/invalid_answer return 400, question_not_pending/session_mismatch/superseded/reply_conflict/queued_input_pending return 409; an unavailable router returns 503. Older runners return 404. Upgrade runners first and never fall back to raw `/question/{id}/reply` or label-only inbound.
+
 ### Identity CRUD — `/router/identities/{channel}[/{id}]`
 
 ```bash

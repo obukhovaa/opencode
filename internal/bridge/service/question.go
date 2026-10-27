@@ -65,8 +65,10 @@ type answeredKey struct {
 type QuestionRouter struct {
 	svc *Service
 
-	mu      sync.Mutex
-	pending map[string]*pendingQuestion // sessionID → pending
+	mu             sync.Mutex
+	pending        map[string]*pendingQuestion // sessionID → pending
+	settledReplies map[string]settledQuestionReply
+	sessionGuards  map[string]*questionSessionGuard
 
 	// inbox holds reviewer messages that arrived for an interactive flow
 	// session while no question was pending. dispatchInbound queues them
@@ -148,6 +150,9 @@ func (r *QuestionRouter) runSweeper(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			r.sweepRecentlyAnswered(now, recentlyAnsweredTTL)
+			r.mu.Lock()
+			r.sweepReplyReceiptsLocked(now)
+			r.mu.Unlock()
 		}
 	}
 }
@@ -255,7 +260,30 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 		askedAt:   time.Now(),
 	}
 	r.mu.Lock()
+	// A request-bound HTTP reply can settle the service before this Created
+	// event is processed. Do not resurrect a settled question during fan-out.
+	if r.svc.app != nil && r.svc.app.Questions != nil {
+		live := false
+		for _, current := range r.svc.app.Questions.List() {
+			if current.ID == req.ID && current.SessionID == req.SessionID {
+				live = true
+				break
+			}
+		}
+		if !live {
+			r.mu.Unlock()
+			return
+		}
+	}
 	r.pending[req.SessionID] = pend
+	if r.sessionGuards == nil {
+		r.sessionGuards = make(map[string]*questionSessionGuard)
+	}
+	guard := r.sessionGuards[req.SessionID]
+	if guard == nil {
+		guard = &questionSessionGuard{active: true}
+		r.sessionGuards[req.SessionID] = guard
+	}
 	// Queued input (messages with an id) never answers a question: the
 	// question closes as unanswered without reaching the peers, and the
 	// agent reads the queue right after its result (cd-5480 D3). Holding
@@ -280,7 +308,8 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 	// sessions); the rest stay queued for the agent loop to drain after the
 	// answer. Claim the just-registered pending entry in the SAME critical
 	// section so a racing live reply cannot double-consume the question.
-	buffered, hasBuffered := r.popBufferedLocked(req.SessionID)
+	bufferedItem, hasBuffered := r.boxLocked().PopFirst(req.SessionID)
+	buffered, _ := bufferedItem.Meta.(bridge.Inbound)
 	if hasBuffered {
 		delete(r.pending, req.SessionID)
 	}
@@ -288,16 +317,36 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 
 	// Auto-answer THIS question from the buffered message, keeping the
 	// reply inside the flow agent's turn instead of the workspace default
-	// agent. On Reply failure, restore the pending entry and fall through
-	// to the normal fan-out so the reviewer can still respond live.
+	// agent. On failure, preserve the input and restore pending only if that
+	// exact request is still live; a competing bound reply must not resurrect it.
 	if hasBuffered {
 		answers := parseQuestionAnswers(buffered.Text, pend.prompts)
 		if err := r.svc.app.Questions.Reply(pend.requestID, answers); err != nil {
-			logging.Warn("bridge: auto-answer from buffered inbound failed — falling back to fan-out",
+			logging.Warn("bridge: auto-answer from buffered inbound failed — preserving input if the step still owns it",
 				"session", req.SessionID, "reqID", pend.requestID, "err", err)
 			r.mu.Lock()
-			r.pending[req.SessionID] = pend
+			if !guard.active {
+				r.mu.Unlock()
+				return // ClearSession ended this step's ownership
+			}
+			live := false
+			for _, current := range r.svc.app.Questions.List() {
+				if current.ID == req.ID && current.SessionID == req.SessionID {
+					live = true
+					break
+				}
+			}
+			evicted := r.boxLocked().PushFront(req.SessionID, bufferedItem)
+			current := r.pending[req.SessionID]
+			canRestore := live && (current == nil || current.requestID == req.ID)
+			if canRestore {
+				r.pending[req.SessionID] = pend
+			}
 			r.mu.Unlock()
+			r.notifyEvicted(ctx, req.SessionID, evicted)
+			if !canRestore {
+				return // another reply settled it: no stale widget or nudge
+			}
 		} else {
 			r.rememberAnswers(req.SessionID, answers)
 			logging.Info("bridge: interactive question auto-answered from buffered reviewer message",
@@ -549,6 +598,10 @@ func (r *QuestionRouter) ClearSession(sessionID string) []inbox.Item {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.pending, sessionID)
+	if guard := r.sessionGuards[sessionID]; guard != nil {
+		guard.active = false
+		delete(r.sessionGuards, sessionID)
+	}
 	return r.boxLocked().Clear(sessionID)
 }
 
@@ -696,44 +749,30 @@ func renderQuestionPrompt(prompts []question.Prompt) string {
 // parseQuestionAnswers converts a reviewer's reply text into the
 // `[][]string` shape question.Service.Reply expects. One row per Prompt;
 // the row's strings are the selected option labels (or the raw text if
-// no numeric match and Custom is enabled).
+// it matches no label or index and Custom is enabled).
 //
 // Multi-question replies in a single message are not supported — the
 // reply applies to the first Prompt. Multi-answer prompts (Multiple=true)
-// accept comma-separated numeric indexes.
+// accept comma-separated labels or numeric indexes.
+//
+// A label match wins over an index: buttons send their option's label,
+// so a label such as "3" must select itself, not the third option.
 func parseQuestionAnswers(text string, prompts []question.Prompt) [][]string {
 	out := make([][]string, len(prompts))
 	if len(prompts) == 0 {
 		return out
 	}
 	p := prompts[0]
-	answer := strings.TrimSpace(text)
-
-	tokens := []string{answer}
-	if p.Multiple {
-		tokens = splitCSV(answer)
-	}
+	tokens := questionAnswerTokens(text, p)
 
 	picks := make([]string, 0, len(tokens))
 	for _, tok := range tokens {
-		tok = strings.TrimSpace(tok)
-		if tok == "" {
+		if label, ok := matchOptionLabel(p, tok); ok {
+			picks = append(picks, label)
 			continue
 		}
 		if idx, err := strconv.Atoi(tok); err == nil && idx >= 1 && idx <= len(p.Options) {
 			picks = append(picks, p.Options[idx-1].Label)
-			continue
-		}
-		// Try exact label match.
-		matched := false
-		for _, opt := range p.Options {
-			if strings.EqualFold(opt.Label, tok) {
-				picks = append(picks, opt.Label)
-				matched = true
-				break
-			}
-		}
-		if matched {
 			continue
 		}
 		if p.IsCustomEnabled() {
@@ -747,6 +786,31 @@ func parseQuestionAnswers(text string, prompts []question.Prompt) [][]string {
 		out[i] = nil
 	}
 	return out
+}
+
+// questionAnswerTokens splits a reply into the tokens parseQuestionAnswers
+// reads. A Multiple prompt's reply is comma-separated, unless the whole
+// reply is one option's label: a selected label containing a comma stays whole.
+func questionAnswerTokens(text string, p question.Prompt) []string {
+	answer := strings.TrimSpace(text)
+	if _, ok := matchOptionLabel(p, answer); ok || !p.Multiple {
+		if answer == "" {
+			return nil
+		}
+		return []string{answer}
+	}
+	return splitCSV(answer)
+}
+
+// matchOptionLabel returns the canonical label of the option whose label
+// equals tok, ignoring case.
+func matchOptionLabel(p question.Prompt, tok string) (string, bool) {
+	for _, opt := range p.Options {
+		if strings.EqualFold(opt.Label, tok) {
+			return opt.Label, true
+		}
+	}
+	return "", false
 }
 
 func splitCSV(s string) []string {
