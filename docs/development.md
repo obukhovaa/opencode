@@ -25,6 +25,15 @@ make test-e2e              # scripts/test/*.sh against a freshly built binary
 
 Changing a field in `.opencode.json` means regenerating the schema: `make schema` (CI runs `make schema-check`).
 
+### E2E and providers
+
+Live-model E2E scripts resolve providers from the global configuration the same
+way the binary does, so before `make test-e2e` make sure a provider is
+configured and reachable: either set the credentials your selected profile's
+`${...}` references expect, or point `OPENCODE_PROFILE` at a profile that has a
+working provider (see `docs/profiles.md`). Unresolvable required references
+abort the run naming the missing variable.
+
 ## Docker
 
 Build and run OpenCode in a container:

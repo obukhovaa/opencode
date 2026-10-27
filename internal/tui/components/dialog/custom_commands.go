@@ -83,12 +83,13 @@ func LoadCustomCommands() ([]Command, error) {
 	if xdgConfigHome != "" {
 		userDirs = append(userDirs, filepath.Join(xdgConfigHome, config.ProfileAppName(), "commands"))
 	}
-	if homeErr == nil && config.SharedGlobalDirsInScope() {
-		userDirs = append(userDirs,
-			filepath.Join(home, ".opencode", "commands"),
-			filepath.Join(home, ".agents", "commands"),
-		)
-		if !isClaudeCommandsDisabled() {
+	if homeErr == nil {
+		if config.SharedGlobalDirsInScope() {
+			userDirs = append(userDirs, filepath.Join(home, ".opencode", "commands"))
+		}
+		// Agents ecosystem commands: ~/.agents[-<profile>]/commands
+		userDirs = append(userDirs, filepath.Join(home, config.ProfileAgentsDirName(), "commands"))
+		if config.SharedGlobalDirsInScope() && !isClaudeCommandsDisabled() {
 			userDirs = append(userDirs, filepath.Join(home, ".claude", "commands"))
 		}
 	}

@@ -20,10 +20,13 @@ With `OPENCODE_PROFILE=<name>` active:
 | thing | default (no profile) | with profile `<name>` |
 |---|---|---|
 | global config file | `~/.opencode.json` (then XDG variants) | `~/.config/opencode-<name>/.opencode.json` first, base files as fallback |
-| global skills | `~/.config/opencode/{skill,skills}`, `~/.agents/skills`, `~/.claude/skills` | `~/.config/opencode-<name>/{skill,skills}` only |
-| global agents | `~/.config/opencode/agents`, `~/.agents/types` | `~/.config/opencode-<name>/agents` only |
-| global flows | `~/.config/opencode/flows`, `~/.agents/flows` | `~/.config/opencode-<name>/flows` only |
-| custom commands | XDG `opencode/commands`, `~/.opencode/commands`, `~/.agents/commands`, `~/.claude/commands` | XDG `opencode-<name>/commands` only |
+| global skills | `~/.config/opencode/{skill,skills}`, `~/.agents/skills`, `~/.claude/skills` | `~/.config/opencode-<name>/{skill,skills}`, `~/.agents-<name>/skills` |
+| global agents | `~/.config/opencode/agents`, `~/.agents/types` | `~/.config/opencode-<name>/agents`, `~/.agents-<name>/types` |
+| global flows | `~/.config/opencode/flows`, `~/.agents/flows` | `~/.config/opencode-<name>/flows`, `~/.agents-<name>/flows` |
+| custom commands | XDG `opencode/commands`, `~/.opencode/commands`, `~/.agents/commands`, `~/.claude/commands` | XDG `opencode-<name>/commands`, `~/.agents-<name>/commands` |
+
+In short: each profile owns `~/.config/opencode-<name>/` and `~/.agents-<name>/`;
+the shared `~/.agents` and `~/.claude` trees belong to the default profile.
 
 Config writes (`UpdateCfgFile`) go to the profile file: when no config file
 exists yet, a profile run creates `~/.config/opencode-<name>/.opencode.json`

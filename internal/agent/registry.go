@@ -926,9 +926,7 @@ func discoverGlobalMarkdownAgents() []AgentInfo {
 
 	globalDirs := []string{
 		filepath.Join(homeDir, ".config", config.ProfileAppName(), "agents"),
-	}
-	if config.SharedGlobalDirsInScope() {
-		globalDirs = append(globalDirs, filepath.Join(homeDir, ".agents", "types"))
+		filepath.Join(homeDir, config.ProfileAgentsDirName(), "types"),
 	}
 
 	for _, dir := range globalDirs {

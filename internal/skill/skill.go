@@ -347,14 +347,12 @@ func discoverGlobalSkills() ([]Info, []Dropped) {
 	// Scan ~/.config/opencode[-<profile>]/{skill,skills}/**/SKILL.md
 	scan(filepath.Join(homeDir, ".config", config.ProfileAppName()), "{skill,skills}/**/SKILL.md")
 
-	if config.SharedGlobalDirsInScope() {
-		// Scan ~/.agents/skills/**/SKILL.md
-		scan(filepath.Join(homeDir, ".agents"), "skills/**/SKILL.md")
+	// Scan the agents ecosystem dir: ~/.agents[-<profile>]/skills/**/SKILL.md
+	scan(filepath.Join(homeDir, config.ProfileAgentsDirName()), "skills/**/SKILL.md")
 
-		// Scan ~/.claude/skills/**/SKILL.md (unless disabled)
-		if !isClaudeSkillsDisabled() {
-			scan(filepath.Join(homeDir, ".claude"), "skills/**/SKILL.md")
-		}
+	// Scan ~/.claude/skills/**/SKILL.md (default profile only, unless disabled)
+	if config.SharedGlobalDirsInScope() && !isClaudeSkillsDisabled() {
+		scan(filepath.Join(homeDir, ".claude"), "skills/**/SKILL.md")
 	}
 
 	return skills, dropped

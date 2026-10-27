@@ -61,3 +61,14 @@ func ProfileConfigDirs() []string {
 func SharedGlobalDirsInScope() bool {
 	return ActiveProfile() == ""
 }
+
+// ProfileAgentsDirName is the per-profile name of the "~/.agents" ecosystem
+// dir: ".agents-<profile>" with a profile active, plain ".agents" without.
+// Skills, commands, agent types and flows are discovered under it, so each
+// profile controls its own set.
+func ProfileAgentsDirName() string {
+	if p := ActiveProfile(); p != "" {
+		return ".agents-" + p
+	}
+	return ".agents"
+}

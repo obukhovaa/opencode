@@ -26,6 +26,17 @@ func TestActiveProfile(t *testing.T) {
 	}
 }
 
+func TestProfileAgentsDirName(t *testing.T) {
+	t.Setenv(ProfileEnv, "")
+	if got := ProfileAgentsDirName(); got != ".agents" {
+		t.Errorf("no profile: got %q, want .agents", got)
+	}
+	t.Setenv(ProfileEnv, "piano")
+	if got := ProfileAgentsDirName(); got != ".agents-piano" {
+		t.Errorf("piano profile: got %q, want .agents-piano", got)
+	}
+}
+
 func TestProfileConfigDirs(t *testing.T) {
 	t.Setenv(ProfileEnv, "")
 	if got := ProfileConfigDirs(); got != nil {
