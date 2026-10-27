@@ -27,6 +27,7 @@ func TestBoundReplyWinsBufferedRaceWithoutResurrectionOrLostInput(t *testing.T) 
 	svc, router, adapter, _ := newInboxTestService(t, false)
 	req, result := pendingReplyRequest(t, svc)
 	router.BufferInbound(context.Background(), "S1", bridge.Inbound{Peer: extPeer, Text: "follow up"})
+	router.BufferInbound(context.Background(), "S1", bridge.Inbound{Peer: extPeer, Text: "second thought"})
 	original := svc.app.Questions
 	svc.app.Questions = &interleavedQuestionReply{Service: original, before: func() {
 		if status := replyThroughRouter(t, svc, req.ID, map[string]any{"sessionId": "S1", "text": "Approve"}); status != 200 {
@@ -47,8 +48,8 @@ func TestBoundReplyWinsBufferedRaceWithoutResurrectionOrLostInput(t *testing.T) 
 		t.Fatal("settled request resurrected or sent stale widget/nudge")
 	}
 	items := router.box().DrainAll("S1")
-	if len(items) != 1 || items[0].Meta.(bridge.Inbound).Text != "follow up" {
-		t.Fatalf("buffered input lost: %+v", items)
+	if len(items) != 2 || items[0].Meta.(bridge.Inbound).Text != "follow up" || items[1].Meta.(bridge.Inbound).Text != "second thought" {
+		t.Fatalf("buffered input lost or reordered: %+v", items)
 	}
 }
 

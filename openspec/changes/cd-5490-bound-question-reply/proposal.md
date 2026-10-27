@@ -12,6 +12,7 @@ CD-5490 recovers C3 approval questions after missed delivery. The orchestrator m
 None.
 ### Modified Capabilities
 - bridge-http-api: request-bound replies update the question router's state.
+- chat-bridge: reply text prefers an exact option label over an index.
 
 ## Impact
 Bridge service HTTP registration, router state transition, local tests and bridge documentation. No model/provider call, runtime configuration, migration, automatic answer, or deployment. c2-agent !232 will use this route; runners must carry it before C3 !781 rolls out.

@@ -78,8 +78,8 @@ func (r *QuestionRouter) replyRequest(requestID string, in questionReplyInput) (
 	var live *question.Request
 	for _, req := range r.svc.app.Questions.List() {
 		if req.ID == requestID {
-			copy := req
-			live = &copy
+			found := req
+			live = &found
 			break
 		}
 	}
@@ -98,7 +98,7 @@ func (r *QuestionRouter) replyRequest(requestID string, in questionReplyInput) (
 		if !live.Questions[0].IsCustomEnabled() {
 			count := 1
 			if live.Questions[0].Multiple {
-				count = len(splitCSV(*in.Text))
+				count = len(questionAnswerTokens(*in.Text, live.Questions[0]))
 			}
 			if len(answers[0]) != count {
 				return false, "invalid_answer"

@@ -106,6 +106,25 @@ func (b *Box) PopFirst(sessionID string) (Item, bool) {
 	return it, true
 }
 
+// PushFront puts items back at the head of the session's queue, ahead of
+// anything pushed since they were popped, so a producer that pops an item
+// and cannot use it keeps the queue's order. When the queue would exceed
+// its cap the oldest items are dropped and returned, as Push does.
+func (b *Box) PushFront(sessionID string, items ...Item) (evicted []Item) {
+	if len(items) == 0 {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	q := append(append([]Item(nil), items...), b.queues[sessionID]...)
+	if over := len(q) - b.cap; over > 0 {
+		evicted = append([]Item(nil), q[:over]...)
+		q = q[over:]
+	}
+	b.queues[sessionID] = q
+	return evicted
+}
+
 // DrainAll removes and returns every item of the session's queue, oldest
 // first. The session's delivery hook stays registered.
 func (b *Box) DrainAll(sessionID string) []Item {

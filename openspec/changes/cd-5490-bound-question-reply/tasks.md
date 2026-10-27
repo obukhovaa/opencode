@@ -11,3 +11,8 @@
 - [x] 3.2 Add bounded digest-only acknowledgement receipts and single-call text parsing for lost-response retries.
 - [x] 3.3 Validate prompt constraints, classify refusals, exclude custom text from click suppression, and preserve queued-input priority.
 - [x] 3.4 Run focused/full checks and refresh the existing review request.
+
+## 4. Final review follow-ups
+- [x] 4.1 Requeue a buffered item lost to a bound reply at the head of the inbox, keeping later buffered messages in order.
+- [x] 4.2 Match an exact option label before an index in the reply codec, and keep a whole-label Multiple reply unsplit.
+- [x] 4.3 Restore the reply-before-fan-out scenario and fix spacing in the docs and spec.

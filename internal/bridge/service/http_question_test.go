@@ -112,19 +112,31 @@ func TestBoundQuestionReplyValidatesAndCanonicalizesAtRunner(t *testing.T) {
 		body             map[string]any
 		want             int
 		answers          [][]string
+		labels           []string
 	}{
-		{"numeric", false, false, map[string]any{"text": "1"}, 200, [][]string{{"Approve"}}},
-		{"case", false, false, map[string]any{"answers": [][]string{{"approve"}}}, 200, [][]string{{"Approve"}}},
-		{"multiple", true, false, map[string]any{"text": "1, reject"}, 200, [][]string{{"Approve", "Reject"}}},
-		{"custom allowed", false, true, map[string]any{"text": "my own answer"}, 200, [][]string{{"my own answer"}}},
-		{"custom refused", false, false, map[string]any{"text": "my own answer"}, 400, nil},
-		{"partial invalid refused", true, false, map[string]any{"text": "1, unknown"}, 400, nil},
-		{"too many", false, false, map[string]any{"answers": [][]string{{"Approve", "Reject"}}}, 400, nil},
-		{"two representations", false, false, map[string]any{"text": "Approve", "answers": [][]string{{"Approve"}}}, 400, nil},
+		{"numeric", false, false, map[string]any{"text": "1"}, 200, [][]string{{"Approve"}}, nil},
+		{"case", false, false, map[string]any{"answers": [][]string{{"approve"}}}, 200, [][]string{{"Approve"}}, nil},
+		{"multiple", true, false, map[string]any{"text": "1, reject"}, 200, [][]string{{"Approve", "Reject"}}, nil},
+		{"custom allowed", false, true, map[string]any{"text": "my own answer"}, 200, [][]string{{"my own answer"}}, nil},
+		{"custom refused", false, false, map[string]any{"text": "my own answer"}, 400, nil, nil},
+		{"partial invalid refused", true, false, map[string]any{"text": "1, unknown"}, 400, nil, nil},
+		{"too many", false, false, map[string]any{"answers": [][]string{{"Approve", "Reject"}}}, 400, nil, nil},
+		{"two representations", false, false, map[string]any{"text": "Approve", "answers": [][]string{{"Approve"}}}, 400, nil, nil},
+		{"numeric label beats index", false, false, map[string]any{"text": "3"}, 200, [][]string{{"3"}}, []string{"3", "6", "12"}},
+		{"index without a matching label", false, false, map[string]any{"text": "2"}, 200, [][]string{{"6"}}, []string{"3", "6", "12"}},
+		{"numeric labels on multiple", true, false, map[string]any{"text": "12, 3"}, 200, [][]string{{"12", "3"}}, []string{"3", "6", "12"}},
+		{"comma label stays whole", true, false, map[string]any{"text": "Yes, ship it"}, 200, [][]string{{"Yes, ship it"}}, []string{"Yes, ship it", "No"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, _, _, _ := newInboxTestService(t, false)
-			prompt := question.Prompt{Question: "Approve?", Options: []question.Option{{Label: "Approve"}, {Label: "Reject"}}, Multiple: tc.multiple}
+			options := []question.Option{{Label: "Approve"}, {Label: "Reject"}}
+			if tc.labels != nil {
+				options = options[:0]
+				for _, label := range tc.labels {
+					options = append(options, question.Option{Label: label})
+				}
+			}
+			prompt := question.Prompt{Question: "Approve?", Options: options, Multiple: tc.multiple}
 			if !tc.custom {
 				prompt.Custom = &customOff
 			}

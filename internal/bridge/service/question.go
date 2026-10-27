@@ -336,7 +336,7 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 					break
 				}
 			}
-			evicted := r.boxLocked().Push(req.SessionID, nil, bufferedItem)
+			evicted := r.boxLocked().PushFront(req.SessionID, bufferedItem)
 			current := r.pending[req.SessionID]
 			canRestore := live && (current == nil || current.requestID == req.ID)
 			if canRestore {
@@ -749,44 +749,30 @@ func renderQuestionPrompt(prompts []question.Prompt) string {
 // parseQuestionAnswers converts a reviewer's reply text into the
 // `[][]string` shape question.Service.Reply expects. One row per Prompt;
 // the row's strings are the selected option labels (or the raw text if
-// no numeric match and Custom is enabled).
+// it matches no label or index and Custom is enabled).
 //
 // Multi-question replies in a single message are not supported — the
 // reply applies to the first Prompt. Multi-answer prompts (Multiple=true)
-// accept comma-separated numeric indexes.
+// accept comma-separated labels or numeric indexes.
+//
+// A label match wins over an index: buttons send their option's label,
+// so a label such as "3" must select itself, not the third option.
 func parseQuestionAnswers(text string, prompts []question.Prompt) [][]string {
 	out := make([][]string, len(prompts))
 	if len(prompts) == 0 {
 		return out
 	}
 	p := prompts[0]
-	answer := strings.TrimSpace(text)
-
-	tokens := []string{answer}
-	if p.Multiple {
-		tokens = splitCSV(answer)
-	}
+	tokens := questionAnswerTokens(text, p)
 
 	picks := make([]string, 0, len(tokens))
 	for _, tok := range tokens {
-		tok = strings.TrimSpace(tok)
-		if tok == "" {
+		if label, ok := matchOptionLabel(p, tok); ok {
+			picks = append(picks, label)
 			continue
 		}
 		if idx, err := strconv.Atoi(tok); err == nil && idx >= 1 && idx <= len(p.Options) {
 			picks = append(picks, p.Options[idx-1].Label)
-			continue
-		}
-		// Try exact label match.
-		matched := false
-		for _, opt := range p.Options {
-			if strings.EqualFold(opt.Label, tok) {
-				picks = append(picks, opt.Label)
-				matched = true
-				break
-			}
-		}
-		if matched {
 			continue
 		}
 		if p.IsCustomEnabled() {
@@ -800,6 +786,31 @@ func parseQuestionAnswers(text string, prompts []question.Prompt) [][]string {
 		out[i] = nil
 	}
 	return out
+}
+
+// questionAnswerTokens splits a reply into the tokens parseQuestionAnswers
+// reads. A Multiple prompt's reply is comma-separated, unless the whole
+// reply is one option's label: a selected label containing a comma stays whole.
+func questionAnswerTokens(text string, p question.Prompt) []string {
+	answer := strings.TrimSpace(text)
+	if _, ok := matchOptionLabel(p, answer); ok || !p.Multiple {
+		if answer == "" {
+			return nil
+		}
+		return []string{answer}
+	}
+	return splitCSV(answer)
+}
+
+// matchOptionLabel returns the canonical label of the option whose label
+// equals tok, ignoring case.
+func matchOptionLabel(p question.Prompt, tok string) (string, bool) {
+	for _, opt := range p.Options {
+		if strings.EqualFold(opt.Label, tok) {
+			return opt.Label, true
+		}
+	}
+	return "", false
 }
 
 func splitCSV(s string) []string {
