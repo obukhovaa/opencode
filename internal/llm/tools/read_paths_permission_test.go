@@ -162,7 +162,6 @@ func TestReadToolsDenyPathsThatLeaveTheAllowedDirectory(t *testing.T) {
 		{"image symlink to outside", f.imageLink},
 		{"directory symlink to outside", f.dirLink},
 		{"file under a directory symlink", filepath.Join(f.dirLink, "home.json")},
-		{"missing path inside allowed", filepath.Join(f.sub, "missing.txt")},
 	}
 	for _, tc := range f.tools() {
 		for _, p := range paths {
@@ -179,6 +178,31 @@ func TestReadToolsDenyPathsThatLeaveTheAllowedDirectory(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A path that does not exist but stays inside the allowed directory is not a
+// permission matter: the tools answer "file not found" (with suggestions where
+// they have them), never a misleading "Permission denied".
+func TestReadToolsReportMissingPathInsideAllowed(t *testing.T) {
+	f := newReadFixture(t)
+	missing := filepath.Join(f.sub, "missing.txt")
+	for _, tc := range f.tools() {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := tc.tool.Run(context.Background(), ToolCall{ID: "c", Name: tc.name, Input: tc.input(missing)})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			// Error shape varies per tool (read/ls "not found"; grep answers
+			// "no matches") — the contract here is only that a missing path is
+			// never misreported as a permission denial and leaks nothing.
+			if strings.Contains(resp.Content, "Permission denied") {
+				t.Errorf("missing file reported as permission denial: %q", resp.Content)
+			}
+			if strings.Contains(resp.Content, "needle") {
+				t.Errorf("response carries file content: %q", resp.Content)
+			}
+		})
 	}
 }
 

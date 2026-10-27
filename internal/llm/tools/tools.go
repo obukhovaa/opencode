@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -728,6 +729,19 @@ func authorizeRead(ctx context.Context, reg agentregistry.Registry, perms permis
 	}
 	clean, resolved, err := canonicalReadPath(path)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// A missing file is not a permission matter: canonicalization
+			// only fails because there is nothing to resolve. Authorize the
+			// lexical path and let the caller's existence check answer with
+			// "file not found" (+ suggestions) instead of a misleading
+			// permission denial. Read-only tools cannot leak through a
+			// nonexistent target, so skipping the resolved-path check here
+			// weakens nothing.
+			if err := checkReadPermission(ctx, reg, perms, toolName, clean); err != nil {
+				return "", err
+			}
+			return clean, nil
+		}
 		return "", permission.ErrorPermissionDenied
 	}
 	if err := checkReadPermission(ctx, reg, perms, toolName, clean, resolved); err != nil {
