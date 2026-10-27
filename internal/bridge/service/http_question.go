@@ -2,7 +2,6 @@ package service
 
 import (
 	"net/http"
-	"strings"
 )
 
 // handleQuestionReply is a request-bound alternative to generic inbound for
@@ -10,37 +9,23 @@ import (
 // every /router route. Older runners expose no such route: callers must never
 // fall back to a label-only inbound or the raw question-service HTTP endpoint.
 func (s *Service) handleQuestionReply(w http.ResponseWriter, req *http.Request) {
-	var body struct {
-		SessionID string     `json:"sessionId"`
-		Answers   [][]string `json:"answers"`
-	}
+	var body questionReplyInput
 	if err := readJSON(req, &body); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid question reply")
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Bad Request", "code": "invalid_json"})
 		return
-	}
-	if strings.TrimSpace(body.SessionID) == "" || len(body.Answers) == 0 {
-		writeAPIError(w, http.StatusBadRequest, "sessionId and answers are required")
-		return
-	}
-	for _, row := range body.Answers {
-		if len(row) == 0 {
-			writeAPIError(w, http.StatusBadRequest, "answers must not contain empty selections")
-			return
-		}
-		for _, value := range row {
-			if strings.TrimSpace(value) == "" {
-				writeAPIError(w, http.StatusBadRequest, "answers must not contain empty values")
-				return
-			}
-		}
 	}
 	if s.questionRouter == nil || s.app == nil || s.app.Questions == nil {
-		writeAPIError(w, http.StatusServiceUnavailable, "question router unavailable")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Service Unavailable", "code": "question_router_unavailable"})
 		return
 	}
-	if !s.questionRouter.replyRequest(body.SessionID, req.PathValue("requestID"), body.Answers) {
-		writeAPIError(w, http.StatusConflict, "question request is no longer pending in this session")
+	replayed, refusal := s.questionRouter.replyRequest(req.PathValue("requestID"), body)
+	if refusal != "" {
+		status := http.StatusConflict
+		if refusal == "answer_shape" || refusal == "invalid_answer" {
+			status = http.StatusBadRequest
+		}
+		writeJSON(w, status, map[string]string{"error": http.StatusText(status), "code": refusal})
 		return
 	}
-	writeJSON(w, http.StatusOK, true)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true, "alreadyAnswered": replayed})
 }

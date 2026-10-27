@@ -65,8 +65,10 @@ type answeredKey struct {
 type QuestionRouter struct {
 	svc *Service
 
-	mu      sync.Mutex
-	pending map[string]*pendingQuestion // sessionID → pending
+	mu             sync.Mutex
+	pending        map[string]*pendingQuestion // sessionID → pending
+	settledReplies map[string]settledQuestionReply
+	sessionGuards  map[string]*questionSessionGuard
 
 	// inbox holds reviewer messages that arrived for an interactive flow
 	// session while no question was pending. dispatchInbound queues them
@@ -148,6 +150,9 @@ func (r *QuestionRouter) runSweeper(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			r.sweepRecentlyAnswered(now, recentlyAnsweredTTL)
+			r.mu.Lock()
+			r.sweepReplyReceiptsLocked(now)
+			r.mu.Unlock()
 		}
 	}
 }
@@ -271,6 +276,14 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 		}
 	}
 	r.pending[req.SessionID] = pend
+	if r.sessionGuards == nil {
+		r.sessionGuards = make(map[string]*questionSessionGuard)
+	}
+	guard := r.sessionGuards[req.SessionID]
+	if guard == nil {
+		guard = &questionSessionGuard{active: true}
+		r.sessionGuards[req.SessionID] = guard
+	}
 	// Queued input (messages with an id) never answers a question: the
 	// question closes as unanswered without reaching the peers, and the
 	// agent reads the queue right after its result (cd-5480 D3). Holding
@@ -295,7 +308,8 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 	// sessions); the rest stay queued for the agent loop to drain after the
 	// answer. Claim the just-registered pending entry in the SAME critical
 	// section so a racing live reply cannot double-consume the question.
-	buffered, hasBuffered := r.popBufferedLocked(req.SessionID)
+	bufferedItem, hasBuffered := r.boxLocked().PopFirst(req.SessionID)
+	buffered, _ := bufferedItem.Meta.(bridge.Inbound)
 	if hasBuffered {
 		delete(r.pending, req.SessionID)
 	}
@@ -303,16 +317,36 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 
 	// Auto-answer THIS question from the buffered message, keeping the
 	// reply inside the flow agent's turn instead of the workspace default
-	// agent. On Reply failure, restore the pending entry and fall through
-	// to the normal fan-out so the reviewer can still respond live.
+	// agent. On failure, preserve the input and restore pending only if that
+	// exact request is still live; a competing bound reply must not resurrect it.
 	if hasBuffered {
 		answers := parseQuestionAnswers(buffered.Text, pend.prompts)
 		if err := r.svc.app.Questions.Reply(pend.requestID, answers); err != nil {
-			logging.Warn("bridge: auto-answer from buffered inbound failed — falling back to fan-out",
+			logging.Warn("bridge: auto-answer from buffered inbound failed — preserving input if the step still owns it",
 				"session", req.SessionID, "reqID", pend.requestID, "err", err)
 			r.mu.Lock()
-			r.pending[req.SessionID] = pend
+			if !guard.active {
+				r.mu.Unlock()
+				return // ClearSession ended this step's ownership
+			}
+			live := false
+			for _, current := range r.svc.app.Questions.List() {
+				if current.ID == req.ID && current.SessionID == req.SessionID {
+					live = true
+					break
+				}
+			}
+			evicted := r.boxLocked().Push(req.SessionID, nil, bufferedItem)
+			current := r.pending[req.SessionID]
+			canRestore := live && (current == nil || current.requestID == req.ID)
+			if canRestore {
+				r.pending[req.SessionID] = pend
+			}
 			r.mu.Unlock()
+			r.notifyEvicted(ctx, req.SessionID, evicted)
+			if !canRestore {
+				return // another reply settled it: no stale widget or nudge
+			}
 		} else {
 			r.rememberAnswers(req.SessionID, answers)
 			logging.Info("bridge: interactive question auto-answered from buffered reviewer message",
@@ -564,6 +598,10 @@ func (r *QuestionRouter) ClearSession(sessionID string) []inbox.Item {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.pending, sessionID)
+	if guard := r.sessionGuards[sessionID]; guard != nil {
+		guard.active = false
+		delete(r.sessionGuards, sessionID)
+	}
 	return r.boxLocked().Clear(sessionID)
 }
 

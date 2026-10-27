@@ -15,13 +15,17 @@ import (
 )
 
 func pendingReplyRequest(t *testing.T, svc *Service) (question.Request, <-chan [][]string) {
+	return pendingReplyPrompts(t, svc, []question.Prompt{{Question: "Approve?", Options: []question.Option{{Label: "Approve"}, {Label: "Reject"}}}})
+}
+
+func pendingReplyPrompts(t *testing.T, svc *Service, prompts []question.Prompt) (question.Request, <-chan [][]string) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	created := svc.app.Questions.Subscribe(ctx)
 	result := make(chan [][]string, 1)
 	go func() {
-		answers, _ := svc.app.Questions.Ask(ctx, "S1", []question.Prompt{{Question: "Approve?", Options: []question.Option{{Label: "Approve"}, {Label: "Reject"}}}})
+		answers, _ := svc.app.Questions.Ask(ctx, "S1", prompts)
 		result <- answers
 	}()
 	select {
@@ -78,24 +82,132 @@ func TestBoundQuestionReplyRejectsWrongIdentityAndCannotAnswerNextQuestion(t *te
 	svc, router, _, _ := newInboxTestService(t, false)
 	req, _ := pendingReplyRequest(t, svc)
 	router.handleNewRequest(context.Background(), req)
-	for _, body := range []any{
-		map[string]any{"sessionId": "other", "answers": [][]string{{"Approve"}}},
-		map[string]any{"sessionId": "S1", "answers": [][]string{{"Approve"}, {"Reject"}}},
-	} {
-		if replyThroughRouter(t, svc, req.ID, body) != http.StatusConflict {
-			t.Fatal("out-of-scope reply accepted")
-		}
+	if replyThroughRouter(t, svc, req.ID, map[string]any{"sessionId": "other", "answers": [][]string{{"Approve"}}}) != http.StatusConflict {
+		t.Fatal("out-of-scope reply accepted")
+	}
+	if replyThroughRouter(t, svc, req.ID, map[string]any{"sessionId": "S1", "answers": [][]string{{"Approve"}, {"Reject"}}}) != http.StatusBadRequest {
+		t.Fatal("bad answer count accepted")
 	}
 	if replyThroughRouter(t, svc, req.ID, map[string]any{"sessionId": "S1", "answers": [][]string{{"Approve"}}}) != http.StatusOK {
 		t.Fatal("valid reply refused")
 	}
 	next, _ := pendingReplyRequest(t, svc)
 	router.handleNewRequest(context.Background(), next)
-	if replyThroughRouter(t, svc, req.ID, map[string]any{"sessionId": "S1", "answers": [][]string{{"Approve"}}}) != http.StatusConflict {
-		t.Fatal("stale reply accepted")
+	if replyThroughRouter(t, svc, req.ID, map[string]any{"sessionId": "S1", "answers": [][]string{{"Approve"}}}) != http.StatusOK {
+		t.Fatal("identical replay was not acknowledged")
+	}
+	if replyThroughRouter(t, svc, req.ID, map[string]any{"sessionId": "S1", "answers": [][]string{{"Reject"}}}) != http.StatusConflict {
+		t.Fatal("conflicting replay was accepted")
 	}
 	if len(svc.app.Questions.List()) != 1 || svc.app.Questions.List()[0].ID != next.ID {
 		t.Fatal("stale reply answered the next question")
+	}
+}
+
+func TestBoundQuestionReplyValidatesAndCanonicalizesAtRunner(t *testing.T) {
+	customOff := false
+	for _, tc := range []struct {
+		name             string
+		multiple, custom bool
+		body             map[string]any
+		want             int
+		answers          [][]string
+	}{
+		{"numeric", false, false, map[string]any{"text": "1"}, 200, [][]string{{"Approve"}}},
+		{"case", false, false, map[string]any{"answers": [][]string{{"approve"}}}, 200, [][]string{{"Approve"}}},
+		{"multiple", true, false, map[string]any{"text": "1, reject"}, 200, [][]string{{"Approve", "Reject"}}},
+		{"custom allowed", false, true, map[string]any{"text": "my own answer"}, 200, [][]string{{"my own answer"}}},
+		{"custom refused", false, false, map[string]any{"text": "my own answer"}, 400, nil},
+		{"partial invalid refused", true, false, map[string]any{"text": "1, unknown"}, 400, nil},
+		{"too many", false, false, map[string]any{"answers": [][]string{{"Approve", "Reject"}}}, 400, nil},
+		{"two representations", false, false, map[string]any{"text": "Approve", "answers": [][]string{{"Approve"}}}, 400, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _, _ := newInboxTestService(t, false)
+			prompt := question.Prompt{Question: "Approve?", Options: []question.Option{{Label: "Approve"}, {Label: "Reject"}}, Multiple: tc.multiple}
+			if !tc.custom {
+				prompt.Custom = &customOff
+			}
+			req, result := pendingReplyPrompts(t, svc, []question.Prompt{prompt})
+			tc.body["sessionId"] = "S1"
+			if got := replyThroughRouter(t, svc, req.ID, tc.body); got != tc.want {
+				t.Fatalf("status=%d want=%d", got, tc.want)
+			}
+			if tc.want == 200 {
+				select {
+				case got := <-result:
+					if !reflect.DeepEqual(got, tc.answers) {
+						t.Fatalf("answers=%v", got)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("no answer")
+				}
+			} else if len(svc.app.Questions.List()) != 1 {
+				t.Fatal("invalid answer settled the request")
+			}
+		})
+	}
+}
+
+func TestBoundCustomReplyDoesNotSuppressTypedFollowup(t *testing.T) {
+	svc, router, _, _ := newInboxTestService(t, false)
+	req, _ := pendingReplyRequest(t, svc)
+	body := map[string]any{"sessionId": "S1", "text": "looks good"}
+	if replyThroughRouter(t, svc, req.ID, body) != 200 {
+		t.Fatal("custom reply refused")
+	}
+	if router.TryHandleQuestionReply(context.Background(), "S1", bridge.Inbound{Text: "looks good"}) {
+		t.Fatal("typed custom followup swallowed as stale click")
+	}
+	if replyThroughRouter(t, svc, req.ID, body) != 200 {
+		t.Fatal("custom retry not acknowledged")
+	}
+}
+
+func TestBoundQuestionReplyPreservesQueuedInputBeforeFanout(t *testing.T) {
+	svc, router, adapter, _ := newInboxTestService(t, false)
+	req, result := pendingReplyRequest(t, svc)
+	router.EnqueueBatch(context.Background(), "S1", batch("queued"))
+	if replyThroughRouter(t, svc, req.ID, map[string]any{"sessionId": "S1", "text": "Approve"}) != 409 {
+		t.Fatal("queued input did not retain priority")
+	}
+	select {
+	case got := <-result:
+		if len(got) != 0 {
+			t.Fatal("question was answered by queued input")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("question not closed as unanswered")
+	}
+	router.handleNewRequest(context.Background(), req)
+	if router.bufferedLen("S1") != 1 || len(adapter.Sends()) != 0 {
+		t.Fatal("queued item lost or stale question sent")
+	}
+}
+
+func TestBoundQuestionReplyReceiptsAreBoundedAndExpire(t *testing.T) {
+	svc, router, _, _ := newInboxTestService(t, false)
+	req, _ := pendingReplyRequest(t, svc)
+	body := map[string]any{"sessionId": "S1", "text": "Approve"}
+	if replyThroughRouter(t, svc, req.ID, body) != 200 {
+		t.Fatal("reply refused")
+	}
+	router.mu.Lock()
+	receipt := router.settledReplies[req.ID]
+	receipt.settledAt = time.Now().Add(-boundReplyReceiptTTL)
+	router.settledReplies[req.ID] = receipt
+	router.mu.Unlock()
+	if replyThroughRouter(t, svc, req.ID, body) != 409 {
+		t.Fatal("expired receipt reused")
+	}
+	for i := 0; i <= boundReplyReceiptCap; i++ {
+		req, _ := pendingReplyRequest(t, svc)
+		if replyThroughRouter(t, svc, req.ID, body) != 200 {
+			t.Fatal("reply refused at capacity")
+		}
+	}
+	if len(router.settledReplies) > boundReplyReceiptCap {
+		t.Fatal("receipt cache grew without bound")
 	}
 }
 

@@ -285,9 +285,13 @@ External widgets retaining a question ID across reconnect can answer that exact 
 {"sessionId": "the-bound-session", "answers": [["Approve"]]}
 ```
 
-The route uses the server's existing HTTP Basic authentication. A successful `200` settles the question through the router, clears pending/nudge state and remembers answered labels for stale-click suppression. A missing, stale or wrong-session request gets `409` without generic inbound or a new agent turn. An unavailable router gets `503`; an invalid body gets `400`.
+The route uses the server's existing HTTP Basic authentication. An alternative body is `{"sessionId":"the-bound-session","text":"1"}`: the runner parses the existing single-prompt bridge answer codec. Supply exactly one of text and answers. Answer counts, multiplicity, canonical labels and custom permission are validated before any answer.
 
-Use this route for request-bound external replies rather than raw `/question/{id}/reply`, which does not update bridge state. Older runners return `404`: upgrade runners first and never fall back to label-only inbound or the raw service route.
+A first success returns `200 {"ok":true,"alreadyAnswered":false}`. An identical retry returns alreadyAnswered true from a receipt retained for five minutes (at most256 receipts, digest-only, no answer text). It does not answer a replacement question. Changed payloads or sessions conflict. Expiry, eviction, process loss or a removed outer binding can leave delivery uncertain; inspect run state, never use a generic fallback. A caller must not preflight GET /question before retries: the settled request is intentionally gone.
+
+Only canonical choice labels enter stale-click suppression; custom text does not swallow a later deliberate message. Id-bearing queued input keeps its normal priority even before fan-out: the question closes unanswered and the selected reply returns409 queued_input_pending. The queued messages remain.
+
+Refusals carry a code: answer_shape/invalid_answer return400, question_not_pending/session_mismatch/superseded/reply_conflict/queued_input_pending return409; an unavailable router returns503. Older runners return404. Upgrade runners first and never fall back to raw `/question/{id}/reply` or label-only inbound.
 
 ### Identity CRUD — `/router/identities/{channel}[/{id}]`
 
