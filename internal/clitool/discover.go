@@ -167,8 +167,9 @@ func Discover(ctx context.Context, workingDir string, cfg *config.CLIToolsConfig
 
 // Dirs lists the manifest directories for workingDir in precedence order:
 // project (.opencode/tools, .agents/tools from the working dir up to the git
-// worktree root), global (~/.config/opencode/tools, ~/.agents/tools), then
-// cliTools.paths. Only existing directories are returned.
+// worktree root), global (~/.config/opencode[-<profile>]/tools,
+// ~/.agents[-<profile>]/tools — profile-scoped like the other discovery
+// paths), then cliTools.paths. Only existing directories are returned.
 func Dirs(workingDir string, cfg *config.CLIToolsConfig) []string {
 	var dirs []string
 	seen := map[string]bool{}
@@ -196,8 +197,8 @@ func Dirs(workingDir string, cfg *config.CLIToolsConfig) []string {
 	}
 	home, _ := os.UserHomeDir()
 	if home != "" {
-		push(filepath.Join(home, ".config", "opencode", "tools"))
-		push(filepath.Join(home, ".agents", "tools"))
+		push(filepath.Join(home, ".config", config.ProfileAppName(), "tools"))
+		push(filepath.Join(home, config.ProfileAgentsDirName(), "tools"))
 	}
 	if cfg != nil {
 		for _, p := range cfg.Paths {
