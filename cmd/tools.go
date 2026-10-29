@@ -189,7 +189,14 @@ func loadToolsConfig(cmd *cobra.Command) (*config.Config, error) {
 	}
 	cwd = c
 	applyProfileFlag(cmd)
-	cfg, err := config.Load(cwd, debug)
+	var cfg *config.Config
+	// Only the agent audit needs the full runtime and agent registry. Plain
+	// listing and MCP serving must not require model or service credentials.
+	if agentID, _ := cmd.Flags().GetString("agent"); agentID != "" {
+		cfg, err = config.Load(cwd, debug)
+	} else {
+		cfg, err = config.LoadTools(cwd)
+	}
 	if err != nil {
 		return nil, err
 	}

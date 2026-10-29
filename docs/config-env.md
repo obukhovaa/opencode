@@ -24,6 +24,10 @@ uses its literal fallback when the variable is unset or empty. Missing required
 variables fail configuration loading; diagnostics identify the variable without
 printing its surrounding value. Export variables before starting OpenCode.
 
+`opencode tools serve` and plain `tools list` expand only the `cliTools` and
+`toolEnv` sections. They ignore unrelated sections before expansion and do not
+require their credentials. `tools list --agent` uses the full runtime loader.
+
 The top-level `hooks` block is never expanded: a hook `command` is a shell
 string run with `OPENCODE_PROJECT_DIR` / `CLAUDE_PROJECT_DIR` in its own
 environment, so `"${OPENCODE_PROJECT_DIR}/.opencode/hooks/check.sh"` keeps

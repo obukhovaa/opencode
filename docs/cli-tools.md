@@ -234,6 +234,13 @@ opencode tools serve [--cwd DIR] [--only a,b]
 
 `list` prints the resolved default limits with the layer each came from, any ignored limit setting, every resolved manifest (file, binary or `NOT FOUND`, mode, grant, policy counts, env mode, effective limits, default permission, structured parameters) and the diagnostics (invalid and shadowed files). `--agent` adds whether that agent holds each tool and whether it is deferred. `--strict` exits 1 on any invalid manifest or ignored limit setting — put it in the workspace CI next to the skill-frontmatter lint.
 
+Plain `list` and `serve` load only `cliTools` and `toolEnv` from the same
+profile/global/project config files as the full application. Other sections are
+excluded before environment expansion and runtime validation: model providers,
+agents, telemetry, session storage and other MCP servers need no credentials in
+this mode. Missing variables in the two loaded sections still fail startup.
+`list --agent` loads the full configuration to audit the agent registry.
+
 `serve` runs a stdio MCP server whose tools are the manifests, with identical names, descriptions and schemas. Each call goes through the same `Prepare → policy → exec` path under the same limits (the manifest's fields, then `OPENCODE_CLI_TOOLS_*`, then the `cliTools` block of the `--cwd` workspace's `.opencode.json`). There is no agent and no human loop in this mode: the hard policy is enforced; a manifest `permission` that resolves to `deny` returns an error result; `ask` and `allow` execute, because the MCP client owns the prompt. `grant` does not apply. Logs go to stderr.
 
 Claude Code, `.mcp.json`:
@@ -247,6 +254,25 @@ Claude Code, `.mcp.json`:
 ```
 
 The tools appear as `mcp__cli__snow` etc., so Claude Code's own `permissions.allow` / `deny` rules and tool search apply to them. Since the server is opencode itself, laptops need the binary (`brew install obukhovaa/tap/opencode`).
+
+Codex, `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.cli-tools]
+command = "opencode"
+args = ["tools", "serve", "--cwd", "/path/to/workspace"]
+# Optional: forward only variables needed by the hosted CLIs.
+# env_vars = ["MY_CLI_TOKEN"]
+
+# Optional: select profile-scoped tool directories and settings.
+# [mcp_servers.cli-tools.env]
+# OPENCODE_PROFILE = "piano"
+```
+
+No OpenCode model, database or telemetry credentials are needed. A hosted CLI
+still needs its own authentication when called, through its local configuration
+or environment. Forward those CLI variables explicitly when the MCP client
+filters its child environment.
 
 ## Writing a good manifest
 

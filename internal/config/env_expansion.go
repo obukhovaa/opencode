@@ -13,22 +13,33 @@ import (
 // defaults. Replacing raw JSON would let quotes/newlines in a secret alter
 // the document. Installing a decoder also preserves Viper's precedence and
 // ConfigFileUsed (needed by writeback), unlike Set-based overrides.
-type configDecoderRegistry struct{ viper.DecoderRegistry }
+type configDecoderRegistry struct {
+	viper.DecoderRegistry
+	fields map[string]bool
+}
 
 func configDecoderOption() viper.Option {
-	return viper.WithDecoderRegistry(configDecoderRegistry{viper.NewCodecRegistry()})
+	return scopedConfigDecoderOption(nil)
+}
+
+func scopedConfigDecoderOption(fields map[string]bool) viper.Option {
+	return viper.WithDecoderRegistry(configDecoderRegistry{viper.NewCodecRegistry(), fields})
 }
 
 func (r configDecoderRegistry) Decoder(format string) (viper.Decoder, error) {
 	if strings.EqualFold(format, "json") {
-		return envJSONDecoder{}, nil
+		return envJSONDecoder{fields: r.fields}, nil
 	}
 	return r.DecoderRegistry.Decoder(format)
 }
 
-type envJSONDecoder struct{}
+type envJSONDecoder struct {
+	// nil loads the full config. A scope discards unrelated sections before
+	// expansion, so their credentials never become startup dependencies.
+	fields map[string]bool
+}
 
-func (envJSONDecoder) Decode(data []byte, out map[string]any) error {
+func (d envJSONDecoder) Decode(data []byte, out map[string]any) error {
 	var values map[string]any
 	if err := json.Unmarshal(data, &values); err != nil {
 		return err
@@ -37,6 +48,9 @@ func (envJSONDecoder) Decode(data []byte, out map[string]any) error {
 		return fmt.Errorf("configuration must be a JSON object")
 	}
 	for key, value := range values {
+		if d.fields != nil && !d.fields[strings.ToLower(key)] {
+			continue
+		}
 		// Hook commands are shell strings run with OPENCODE_PROJECT_DIR /
 		// CLAUDE_PROJECT_DIR in their own environment, so their ${VAR}
 		// belongs to that shell, not to config loading: expanding here would

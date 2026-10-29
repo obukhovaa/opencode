@@ -1011,18 +1011,22 @@ func flattenPatternMap(patterns map[string]any) map[string]any {
 // configureViper sets up viper's configuration paths and environment variables.
 func configureViper() {
 	viper.SetOptions(configDecoderOption())
-	viper.SetConfigName(fmt.Sprintf(".%s", appName))
-	viper.SetConfigType("json")
+	configureViperInstance(viper.GetViper())
+}
+
+func configureViperInstance(v *viper.Viper) {
+	v.SetConfigName(fmt.Sprintf(".%s", appName))
+	v.SetConfigType("json")
 	// With an active profile, profile-scoped dirs win; the default locations
 	// stay as fallback (a profile without its own file reads the base config).
 	for _, dir := range ProfileConfigDirs() {
-		viper.AddConfigPath(dir)
+		v.AddConfigPath(dir)
 	}
-	viper.AddConfigPath("$HOME")
-	viper.AddConfigPath(fmt.Sprintf("$XDG_CONFIG_HOME/%s", appName))
-	viper.AddConfigPath(fmt.Sprintf("$HOME/.config/%s", appName))
-	viper.SetEnvPrefix(strings.ToUpper(appName))
-	viper.AutomaticEnv()
+	v.AddConfigPath("$HOME")
+	v.AddConfigPath(fmt.Sprintf("$XDG_CONFIG_HOME/%s", appName))
+	v.AddConfigPath(fmt.Sprintf("$HOME/.config/%s", appName))
+	v.SetEnvPrefix(strings.ToUpper(appName))
+	v.AutomaticEnv()
 }
 
 // setDefaults configures default values for configuration options.
@@ -1277,7 +1281,11 @@ func readConfig(err error) error {
 
 // mergeLocalConfig loads and merges configuration from the local directory.
 func mergeLocalConfig(workingDir string) error {
-	local := viper.NewWithOptions(configDecoderOption())
+	return mergeLocalConfigInto(viper.GetViper(), workingDir, configDecoderOption())
+}
+
+func mergeLocalConfigInto(v *viper.Viper, workingDir string, decoder viper.Option) error {
+	local := viper.NewWithOptions(decoder)
 	local.SetConfigName(fmt.Sprintf(".%s", appName))
 	local.SetConfigType("json")
 	local.AddConfigPath(workingDir)
@@ -1286,7 +1294,7 @@ func mergeLocalConfig(workingDir string) error {
 	if err := readConfig(local.ReadInConfig()); err != nil {
 		return fmt.Errorf("failed to read project config: %w", err)
 	}
-	return viper.MergeConfigMap(local.AllSettings())
+	return v.MergeConfigMap(local.AllSettings())
 }
 
 // applyDefaultValues sets default values for configuration fields that need processing.

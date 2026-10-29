@@ -240,3 +240,30 @@ The command `opencode tools serve` SHALL run a Model Context Protocol server ove
 
 - **WHEN** an MCP client calls the served `snow` tool with `args: ["sql", "-x"]` and `-x` is denied
 - **THEN** the result is an error naming the denied argument and no process is started
+
+### Requirement: Standalone CLI commands load only their configuration scope
+
+Plain `opencode tools list` and `opencode tools serve` SHALL load only `cliTools`
+and `toolEnv`, with the same profile/global/project precedence as the runtime.
+They SHALL exclude other sections before environment expansion and SHALL NOT
+validate agents, providers, telemetry or session storage. They SHALL retain
+manifest policies, configured environment filtering and shared CLI limits.
+`tools list --agent` SHALL use the full runtime configuration for its audit.
+
+#### Scenario: Unrelated missing credentials do not prevent MCP startup
+
+- **GIVEN** global or project config references missing environment variables in providers, telemetry, router or other MCP servers
+- **WHEN** `opencode tools serve` starts without those variables
+- **THEN** initialize, tools/list and tools/call work with the configured CLI limits and environment filtering
+
+#### Scenario: Invalid unused runtime settings do not prevent listing
+
+- **GIVEN** the config contains invalid agent models or incomplete MySQL session settings
+- **WHEN** plain `opencode tools list` runs
+- **THEN** it lists the manifests without requiring a valid agent runtime
+
+#### Scenario: Used configuration remains strict
+
+- **GIVEN** `cliTools` or `toolEnv` references a missing required variable
+- **WHEN** plain `tools list` or `tools serve` starts
+- **THEN** startup fails and identifies the variable without exposing its surrounding value
