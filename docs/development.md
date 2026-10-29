@@ -90,3 +90,7 @@ make release SCOPE=patch
 # or
 make release SCOPE=minor
 ```
+
+The pre-push hook runs the E2E suite for release tags. It clears repository-local
+Git environment variables before testing so temporary Git repositories remain
+isolated, including when releasing from a linked worktree.

@@ -13,6 +13,12 @@ set -euo pipefail
 export LC_ALL=C
 
 ROOT="$(git rev-parse --show-toplevel)"
+# Hooks inherit repository-local Git variables. Tests create their own Git
+# sandboxes, where even `git -C <sandbox>` would otherwise keep targeting this
+# checkout (notably GIT_DIR/GIT_COMMON_DIR in a linked worktree).
+while IFS= read -r git_local_var; do
+    unset "$git_local_var"
+done < <(git rev-parse --local-env-vars)
 SEMVER_RE='^refs/tags/v?[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'
 
 pushing_release=false
