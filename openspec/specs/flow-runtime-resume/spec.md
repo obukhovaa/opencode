@@ -165,6 +165,33 @@ When `Run` takes the restart-from-step-0 path under `fresh = false`:
 - **WHEN** `Run(…, fresh=true)` is invoked
 - **THEN** `s.sessions.DeleteTree(rootSessionID)` MUST be called, which cascades to delete the messages; after `s0`'s agent runs, the message count for `prefix-F-s0` reflects only the new run's turns (the prior 10 are gone)
 
+### Requirement: A step's session and flow state exist before its setup can fail
+
+`flow_states.session_id` is a foreign key to `sessions(id)` (`fk_flow_states_session`); MySQL always enforces it. A step's setup — agent id and model templating, `NewAgent` (which may resolve a Langfuse-managed agent prompt) and the step's own `langfusePromptPath` — can fail before any model call, and the failure is recorded on the step's `flow_states` row. The runtime MUST therefore create the step's session and a `running` row before that setup runs:
+
+- `Run` MUST create each initial step's session (via `resolveSession`, so a `session.fork` copy still happens exactly once) before inserting that step's initial `running` row. It MUST NOT insert a `flow_states` row whose session does not exist.
+- `runStep` MUST, before any setup that can fail, create the session and a `running` row for a step that has no row yet (a fallback target, a routed next step). An existing row MUST be left untouched there: its output may be the parked output a resumed postpone still needs, which only the entry-time write may replace.
+- A step failure MUST be recorded as a `failed` row. When the row is missing anyway, the failure MUST be inserted rather than lost, without re-creating a missing session (a missing session means a concurrent run's fresh start deleted it).
+- A failure MUST be published on the `flowStates` channel, with its error event, whether or not it could be persisted, so the API still emits `flow.step.failed` and `flow.failed` when the database refuses writes.
+
+#### Scenario: Fresh run on MySQL writes the initial row
+
+- **GIVEN** a fresh run (`fresh = true`) of a flow on MySQL
+- **WHEN** step 0's agent is built
+- **THEN** step 0's session exists and its `flow_states` row is `running`, and no `fk_flow_states_session` error was logged
+
+#### Scenario: Startup failure of a step and of its fallback
+
+- **GIVEN** step `start` with `fallback.to: run-failed`, and setup of both steps fails before any model call (agent construction or prompt resolution)
+- **WHEN** the run ends
+- **THEN** `flow_states` holds a `failed` row for `start` and for `run-failed`, each with the setup error as output
+
+#### Scenario: Persistence unavailable
+
+- **GIVEN** a database that refuses every session and `flow_states` write
+- **WHEN** step `start` and its fallback `run-failed` both fail
+- **THEN** a `failed` FlowState and an error event are published for each step
+
 ### Requirement: Flow steps invoke `agent.RunWith` with `NonInteractive: true`
 
 Every flow step that delegates to the agent SHALL invoke the new `agent.Service.RunWith` entry point with `RunOptions{NonInteractive: true}`. This ensures the agent's end-of-turn wait engages for background tasks the step's agent spawns, so the step's `AgentEvent` (and any `struct_output` it produces) reflects the post-completion state rather than the immediate pre-completion ack.

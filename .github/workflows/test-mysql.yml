@@ -14,6 +14,7 @@ on:
     paths:
       - 'internal/db/**'
       - 'internal/bridge/**'
+      - 'internal/flow/**'
       - 'docker-compose.test-mysql.yml'
       - 'Makefile'
       - '.github/workflows/test-mysql.yml'
@@ -72,13 +73,14 @@ jobs:
         env:
           TEST_MYSQL_DSN: "opencode_test:opencode_test@tcp(127.0.0.1:3307)/opencode_test?parseTime=true&multiStatements=true"
         # Scope to the packages that actually host mysql_integration-tagged
-        # files. `./...` with the tag still builds + runs everything else
+        # files (internal/flow hosts the flow_states FK suite, CD-5457).
+        # `./...` with the tag still builds + runs everything else
         # (the tag is additive, not exclusive), which has bitten us:
         # internal/llm/tools grep tests assert ripgrep-shaped output and
         # fail on minimal runner images that lack rg in $PATH. Those
         # failures aren't this workflow's concern — the default test job
         # in build.yml is responsible for grep, and develops can install
-        # ripgrep there separately. Listing the two packages here keeps
+        # ripgrep there separately. Listing the packages here keeps
         # the signal tight: one of these failing means a real MySQL
         # regression, not unrelated CI environment drift.
         #
@@ -91,4 +93,4 @@ jobs:
         # is the one-line fix that matches the comment in
         # newMySQLTestStore ("we drop all tables before each migration
         # to keep tests independent" implicitly assumes sequential).
-        run: go test -tags=mysql_integration -count=1 -p 1 ./internal/db/... ./internal/bridge/store/...
+        run: go test -tags=mysql_integration -count=1 -p 1 ./internal/db/... ./internal/bridge/store/... ./internal/flow/...

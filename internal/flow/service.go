@@ -487,7 +487,7 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 				logging.Warn("Failed to update initial flow state", "session_id", stepSessionID, "error", err)
 			}
 		} else {
-			if _, err := s.querier.CreateFlowState(ctx, db.CreateFlowStateParams{
+			if _, err := s.createStepRow(ctx, w.step, w.prevStep, db.CreateFlowStateParams{
 				SessionID:      stepSessionID,
 				RootSessionID:  rootSessionID,
 				FlowID:         f.ID,
@@ -629,6 +629,13 @@ func (s *service) runStep(
 		iteration = 1
 	}
 	stepVars := map[string]any{"iteration": iteration}
+
+	// Everything below up to the entry-time write can fail without a model
+	// call (agent id/model templating, NewAgent with its Langfuse-managed
+	// agent prompt, the step's own Langfuse prompt). handleStepError records
+	// such a failure by UPDATE-ing the step's row, so the row — and the
+	// session it references — must exist before the first of them runs.
+	s.ensureStepEntryRow(ctx, f, step, sessionID, rootSessionID, args, iteration, prevState)
 
 	// Agent id and model override both come from the step spec with
 	// ${args.*}/${step.*} substitution, but they fail differently — see
@@ -806,10 +813,10 @@ func (s *service) runStep(
 	}
 	if err != nil {
 		if db.IsForeignKeyViolation(err, "fk_flow_states_session") {
-			// The step session was created moments ago in resolveSession, so a
-			// missing parent row means something deleted it in between — in
-			// practice a concurrent run sharing this session ID whose fresh
-			// start wiped the tree. Name that instead of surfacing a raw FK
+			// The step session was created moments ago (ensureStepEntryRow or
+			// resolveSession), so a missing parent row means something deleted
+			// it in between — in practice a concurrent run sharing this session
+			// ID whose fresh start wiped the tree. Name that instead of surfacing a raw FK
 			// error; do not re-create and retry, which would hide a collision
 			// that is still corrupting the other run's state.
 			err = fmt.Errorf("session %s no longer exists (deleted by a concurrent run sharing this session id?): %w", sessionID, err)
@@ -1631,7 +1638,7 @@ func (s *service) postponeStepForTransientError(
 			updatedAt = state.UpdatedAt
 		}
 	} else {
-		if state, createErr := s.querier.CreateFlowState(writeCtx, db.CreateFlowStateParams{
+		if state, createErr := s.createStepRow(writeCtx, step, nil, db.CreateFlowStateParams{
 			SessionID:      sessionID,
 			RootSessionID:  rootSessionID,
 			FlowID:         flowID,
@@ -1713,17 +1720,48 @@ func (s *service) handleStepError(
 		iteration = 1
 	}
 
+	// Land the failed row even while the parent ctx is unwinding, so
+	// inspection never finds the step stuck on `running`.
+	writeCtx := ctx
+	if ctx.Err() != nil {
+		var cancelWrite context.CancelFunc
+		writeCtx, cancelWrite = context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelWrite()
+	}
 	argsJSON, _ := marshalPersistedArgs(args)
+	failedOutput := sql.NullString{String: err.Error(), Valid: true}
 	var updatedAt int64
-	if state, updateErr := s.querier.UpdateFlowState(ctx, db.UpdateFlowStateParams{
+	state, persistErr := s.querier.UpdateFlowState(writeCtx, db.UpdateFlowStateParams{
 		Status:         string(FlowStatusFailed),
 		Args:           sql.NullString{String: string(argsJSON), Valid: true},
-		Output:         sql.NullString{String: err.Error(), Valid: true},
+		Output:         failedOutput,
 		IsStructOutput: false,
 		Iteration:      int64(iteration),
 		SessionID:      sessionID,
-	}); updateErr != nil {
-		logging.Warn("Failed to persist step error state", "session_id", sessionID, "error", updateErr)
+	})
+	if errors.Is(persistErr, sql.ErrNoRows) {
+		// No row to update: the entry row could not be written (see
+		// ensureStepEntryRow). Insert the failed row directly. The session is
+		// deliberately not re-created here — if it is missing, a concurrent
+		// run's fresh start deleted it, and writing into that run's tree would
+		// corrupt its state; the FK refusal is the right outcome then.
+		state, persistErr = s.querier.CreateFlowState(writeCtx, db.CreateFlowStateParams{
+			SessionID:      sessionID,
+			RootSessionID:  rootSessionID,
+			FlowID:         flowID,
+			StepID:         step.ID,
+			Status:         string(FlowStatusFailed),
+			Args:           sql.NullString{String: string(argsJSON), Valid: true},
+			Output:         failedOutput,
+			IsStructOutput: false,
+			Iteration:      int64(iteration),
+		})
+	}
+	if persistErr != nil {
+		// Publishing below does not depend on this write: the failed state
+		// reaches the flowStates channel (and so the API's flow.failed) even
+		// when persistence is unavailable.
+		logging.Warn("Failed to persist step error state", "session_id", sessionID, "error", persistErr)
 		updatedAt = time.Now().Unix()
 	} else {
 		updatedAt = state.UpdatedAt
@@ -1833,7 +1871,8 @@ func (s *service) refuseFallbackEntry(
 			SessionID:      sessionID,
 		})
 	} else {
-		state, writeErr = s.querier.CreateFlowState(writeCtx, db.CreateFlowStateParams{
+		// The refused step never ran, so its session may not exist yet.
+		state, writeErr = s.createStepRow(writeCtx, work.step, nil, db.CreateFlowStateParams{
 			SessionID:      sessionID,
 			RootSessionID:  rootSessionID,
 			FlowID:         f.ID,
@@ -2152,6 +2191,42 @@ func (s *service) resolveSession(ctx context.Context, step Step, sessionID strin
 	}
 
 	return sess, nil
+}
+
+// createStepRow inserts a step's first flow_states row. flow_states.session_id
+// references sessions(id) (fk_flow_states_session, enforced on MySQL), so the
+// step session is created first when it does not exist yet — through
+// resolveSession, so a `session.fork` step still gets prevState's messages
+// copied exactly once, whichever caller creates the session.
+func (s *service) createStepRow(ctx context.Context, step Step, prevState *FlowState, params db.CreateFlowStateParams) (db.FlowState, error) {
+	if _, err := s.resolveSession(ctx, step, params.SessionID, params.RootSessionID, prevState); err != nil {
+		return db.FlowState{}, fmt.Errorf("creating step session: %w", err)
+	}
+	return s.querier.CreateFlowState(ctx, params)
+}
+
+// ensureStepEntryRow writes the step's `running` row when it has none yet,
+// creating its session first. An existing row is left untouched: its output
+// may be the parked struct output a resumed postpone still needs (GENAI-230),
+// which only the entry-time write in runStep may replace. A failure is logged
+// and otherwise ignored — the entry-time write reports a persistent one.
+func (s *service) ensureStepEntryRow(ctx context.Context, f *Flow, step Step, sessionID, rootSessionID string, args map[string]any, iteration int, prevState *FlowState) {
+	if _, err := s.querier.GetFlowState(ctx, sessionID); err == nil {
+		return
+	}
+	argsJSON, _ := marshalPersistedArgs(args)
+	if _, err := s.createStepRow(ctx, step, prevState, db.CreateFlowStateParams{
+		SessionID:      sessionID,
+		RootSessionID:  rootSessionID,
+		FlowID:         f.ID,
+		StepID:         step.ID,
+		Status:         string(FlowStatusRunning),
+		Args:           sql.NullString{String: string(argsJSON), Valid: true},
+		IsStructOutput: false,
+		Iteration:      int64(iteration),
+	}); err != nil {
+		logging.Warn("Failed to create step entry flow state", "step", step.ID, "session_id", sessionID, "error", err)
+	}
 }
 
 func (s *service) copySessionMessages(ctx context.Context, fromSessionID, toSessionID string) error {

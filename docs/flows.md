@@ -816,6 +816,8 @@ If neither check fires, the prior run terminated cleanly and the runtime **resta
 
 `{recoverRunning: true}` on `POST /flow/run` is the **crash-recovery switch**. A `running` `flow_states` row normally means another process is executing the flow right now, so a new run only replays the rows and lets that process finish. An orchestrator that has just watched the pod executing a step get OOM-killed, evicted or deadline-killed knows that owner is dead; sending `recoverRunning: true` with the same session prefix makes the runtime treat the running rows as crash-recovery work instead — each running step is re-entered in its own session with its persisted args and iteration, completed steps keep their cached outputs, and nothing is deleted — so pushed-but-unfinished work is continued rather than lost (GENAI-352). Never send it for a flow whose process may still be alive: two processes would then execute the same step.
 
+A step's `flow_states` row exists from the moment the step starts. The runtime creates the step's session and a `running` row before building the agent or resolving a Langfuse prompt, so a step that fails before any model call is still recorded as `failed` (CD-5457). On MySQL `flow_states.session_id` is a foreign key to `sessions`, so the session is always created first. If the database refuses the write, the failure is still published, and the API still emits `flow.failed`.
+
 > Full contract in [`openspec/specs/flow-runtime-resume/spec.md`](../openspec/specs/flow-runtime-resume/spec.md).
 
 #### `resume_on_failure`
