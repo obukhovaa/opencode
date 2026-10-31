@@ -164,6 +164,7 @@ func TestMemoryRestrictedBashDoesNotBypassReadRules(t *testing.T) {
 }
 
 func TestMemorySnapshotCannotFollowReplacedStoreRoot(t *testing.T) {
+	t.Setenv(config.MemoryHomeEnv, "")
 	base := t.TempDir()
 	base, err := filepath.EvalSymlinks(base)
 	if err != nil {
@@ -204,6 +205,7 @@ func TestMemorySnapshotCannotFollowReplacedStoreRoot(t *testing.T) {
 }
 
 func TestMemoryAbsentIndexMustBeAuthorizedAfterCreation(t *testing.T) {
+	t.Setenv(config.MemoryHomeEnv, "")
 	root := t.TempDir()
 	cfg := &config.Config{WorkingDir: root, Memory: &config.MemoryConfig{Enabled: true, Directory: root, ProjectID: "project"}}
 	reg := memoryRegistry{tools: map[string]bool{"read": true}}

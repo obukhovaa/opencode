@@ -9,6 +9,7 @@ import (
 )
 
 func TestMemoryConfigViperRoundTrip(t *testing.T) {
+	t.Setenv(MemoryHomeEnv, "")
 	v := viper.New()
 	v.SetConfigType("json")
 	if err := v.ReadConfig(bytes.NewBufferString(`{"memory":{"enabled":true,"directory":"shared-memory","projectID":"git:example.com/Team/Repo"}}`)); err != nil {

@@ -17,6 +17,7 @@ import (
 // provider request must get a fresh disk snapshot after the old one is hidden
 // by the summary boundary, then reuse it on subsequent turns.
 func TestSelfCompaction_RefreshesMemoryIndexBeforeNextModelCall(t *testing.T) {
+	t.Setenv(config.MemoryHomeEnv, "")
 	withFreshTaskRegistry(t)
 	withAutoCompact(t, false)
 	root := t.TempDir()
