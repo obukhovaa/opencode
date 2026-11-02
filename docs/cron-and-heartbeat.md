@@ -7,7 +7,7 @@ Two ways to make an agent act on a schedule:
 | What runs | A fixed prompt, in a **child subagent session** | The agent itself, in the **bound chat session**, following an agenda file |
 | Created by | The agent (`croncreate`), or `/loop` in the TUI | The chat (`/heartbeat …`), or the agent (`heartbeat` tool) |
 | Schedule | 5-field cron expression, one-shot or recurring, process-local time | Interval within active hours/days, UTC |
-| Output | Committed into the parent session as a synthetic `task` call; posted to bound chats | Posted under `💓 Heartbeat HH:MMZ` only when there is something to report |
+| Output | Committed into the parent session as a synthetic `task` call; posted to bound chats | Posted under a plain-text `Heartbeat started at HH:MMZ and ran` header (no emoji) only when there is something to report |
 | Parent session busy | Waits until it is idle, then runs in its own child session | Waits until it is idle; a human message cancels a running beat |
 | Where | Every mode (TUI, `serve`, ACP) unless `OPENCODE_DISABLE_CRON=1` | Daemon mode only (`opencode serve` without `--flow` / `--pool-mode`) |
 | Storage | `cron_jobs` | `bridge_heartbeats` |
@@ -118,7 +118,7 @@ Anything else after `/heartbeat` goes to the agent ("every half hour on weekdays
 - **On a UTC grid** starting at the active hours, or at 00:00 UTC without them: `every 7h` beats at 00, 07, 14, 21; `every 2h hours 07:30-21` at 07:30, 09:30, …; `every 24h hours 07-08` is a daily 07:00 beat. The scheduler ticks every 30 s, so a beat can be up to ~30 s late.
 - **Busy sessions defer** (agent working, message queued, or an interactive flow step owns the session). Beats missed while down collapse into one; a late beat fires only inside the active hours and days.
 - **Messages come first.** A human message cancels a running beat; it posts nothing and is recorded as skipped (`preempted by a message`). A beat cancelled by `/abort` or shutdown is skipped (`cancelled`), not failed.
-- **Quiet.** No queued-ack, progress card, tool cards or intermediate text. A reply of `HEARTBEAT_OK` (or up to 300 runes whose first or last line is `HEARTBEAT_OK`) posts nothing; any other reply goes out under `💓 Heartbeat HH:MMZ`; a failed beat posts one line. When beats start being skipped for a reason (e.g. the agenda vanished), the chat gets one `skipped: <why>` notice.
+- **Quiet.** No queued-ack, progress card, tool cards or intermediate text. A reply of `HEARTBEAT_OK` (or up to 300 runes whose first or last line is `HEARTBEAT_OK`) posts nothing; any other reply goes out under a plain-text `Heartbeat started at HH:MMZ and ran` header (no emoji); a failed beat posts one line, `Heartbeat started at HH:MMZ and failed: <reason>`. When beats start being skipped for a reason (e.g. the agenda vanished), the chat gets one `Heartbeat due at HH:MMZ skipped: <why>` notice.
 - **One beat per session per slot**, even when several chats are bound; the report reaches every bound chat.
 - **Cost.** A beat is a full turn in the main session (prompt cache applies on the session's own model); auto-compaction applies as to any turn.
 - **No DST.** Windows are UTC all year; shift the hours when the clocks change.
