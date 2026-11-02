@@ -135,7 +135,7 @@ When scheduled beats start being skipped for a reason (the binding's last outcom
 #### Scenario: No agenda file
 
 - **WHEN** a beat comes due and `HEARTBEAT.md` does not exist
-- **THEN** no agent run starts, `/heartbeat status` shows the last beat as skipped, and the chat gets one `💓 Heartbeat HH:MMZ skipped: HEARTBEAT.md does not exist. …` notice
+- **THEN** no agent run starts, `/heartbeat status` shows the last beat as skipped, and the chat gets one `Heartbeat HH:MMZ skipped: HEARTBEAT.md does not exist. …` notice
 
 #### Scenario: Still no agenda file
 
@@ -144,7 +144,7 @@ When scheduled beats start being skipped for a reason (the binding's last outcom
 
 ### Requirement: Heartbeat turns are quiet unless there is something to say
 
-While a heartbeat turn runs, the bridge SHALL NOT post a queued acknowledgement, a progress card, tool-call cards or intermediate assistant text for it. Quietness SHALL belong to the heartbeat run itself: a part event of the heartbeat run SHALL stay quiet when it is handled after the run ended, and a part event of the run before the beat SHALL be rendered as usual when it is handled while the beat runs. If the final reply is `HEARTBEAT_OK`, or a reply of at most 300 characters whose first or last line is `HEARTBEAT_OK`, nothing SHALL be posted and the beat SHALL be recorded as `silent`. Any other reply SHALL be posted with a header line `💓 Heartbeat HH:MMZ`. A terminal error other than a cancellation SHALL post one line naming the failure and record it as `error` with the reason.
+While a heartbeat turn runs, the bridge SHALL NOT post a queued acknowledgement, a progress card, tool-call cards or intermediate assistant text for it. Quietness SHALL belong to the heartbeat run itself: a part event of the heartbeat run SHALL stay quiet when it is handled after the run ended, and a part event of the run before the beat SHALL be rendered as usual when it is handled while the beat runs. If the final reply is `HEARTBEAT_OK`, or a reply of at most 300 characters whose first or last line is `HEARTBEAT_OK`, nothing SHALL be posted and the beat SHALL be recorded as `silent`. Any other reply SHALL be posted with a plain-text header line `Heartbeat HH:MMZ` that carries no emoji, so the first line of the agent's own reply sets the tone of the report. A terminal error other than a cancellation SHALL post one line naming the failure and record it as `error` with the reason.
 
 #### Scenario: Nothing new
 
@@ -154,7 +154,7 @@ While a heartbeat turn runs, the bridge SHALL NOT post a queued acknowledgement,
 #### Scenario: Something to report
 
 - **WHEN** the agent ends a beat with a two-line report
-- **THEN** the chat shows the header `💓 Heartbeat 14:00Z` followed by the report, and no progress card or tool cards were posted during the beat
+- **THEN** the chat shows the header `Heartbeat 14:00Z` followed by the report, and no progress card or tool cards were posted during the beat
 
 #### Scenario: Late tool event of the previous turn
 
