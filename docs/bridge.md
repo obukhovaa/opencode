@@ -355,7 +355,7 @@ Any non-command message is forwarded as a prompt.
 
 ## Heartbeat
 
-In daemon mode a chat can give its agent a heartbeat: on a schedule the bridge wakes the bound session, the agent works through its agenda file (`HEARTBEAT.md`), and only what is new is posted, under `💓 Heartbeat HH:MMZ`. Off per chat until `/heartbeat on`; beats run only for bots this process serves inbound (not `"inbound": "disabled"`). Commands, scheduling rules, the setup reminder and `router.heartbeatReminder`: [Cron and heartbeat](./cron-and-heartbeat.md#heartbeat).
+In daemon mode a chat can give its agent a heartbeat: on a schedule the bridge wakes the bound session, the agent works through its agenda file (`HEARTBEAT.md`), and only what is new is posted, under `Heartbeat HH:MMZ` (plain text, no emoji). Off per chat until `/heartbeat on`; beats run only for bots this process serves inbound (not `"inbound": "disabled"`). Commands, scheduling rules, the setup reminder and `router.heartbeatReminder`: [Cron and heartbeat](./cron-and-heartbeat.md#heartbeat).
 
 ## In-process agent tool: `router_send`
 

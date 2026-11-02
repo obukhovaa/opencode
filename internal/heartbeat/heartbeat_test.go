@@ -218,3 +218,17 @@ func TestDescribe(t *testing.T) {
 		t.Errorf("shortDuration(2h) = %q", s)
 	}
 }
+
+func TestHeaderIsPlainText(t *testing.T) {
+	got := Header(utc("2026-11-02 10:40"))
+	if got != "Heartbeat 10:40Z" {
+		t.Fatalf("Header = %q, want %q", got, "Heartbeat 10:40Z")
+	}
+	for _, s := range []string{got, SkipNotice(utc("2026-11-02 10:40"), "x"), Describe(Record{Settings: Settings{State: StateOn}}, ""), Reminder()} {
+		for _, r := range s {
+			if r > 0x2000 && r != '•' && r != '—' && r != '’' {
+				t.Fatalf("unexpected symbol %q in %q", r, s)
+			}
+		}
+	}
+}
