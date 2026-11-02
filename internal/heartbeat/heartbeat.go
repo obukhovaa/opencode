@@ -431,18 +431,25 @@ If nothing needs your human's attention, reply with exactly %s and nothing else.
 		now.UTC().Format("2006-01-02 15:04Z"), agendaFile, SilentToken)
 }
 
-// Header is the line prefixed to a posted beat report. It carries no
-// emoji, so the agent's own first line can set the tone of each report.
+// Header is the line prefixed to a posted beat report: a short plain-text
+// note that the beat started and ran. It carries no emoji, so the agent's
+// own first line can set the tone of each report.
 func Header(now time.Time) string {
-	return "Heartbeat " + now.UTC().Format("15:04Z")
+	return "Heartbeat started at " + now.UTC().Format("15:04Z") + " and ran"
+}
+
+// FailureLine is posted when a beat's run ends with an error.
+func FailureLine(now time.Time, reason string) string {
+	return "Heartbeat started at " + now.UTC().Format("15:04Z") + " and failed: " + reason
 }
 
 // SkipNotice is posted once when scheduled beats start being skipped for
 // an empty or missing agenda, so a heartbeat that is on but has nothing
 // to do does not go quiet unnoticed (e.g. after a redeploy wiped the
-// working directory).
+// working directory). A skipped beat never started, so it is named by
+// the time it was due.
 func SkipNotice(now time.Time, why string) string {
-	return Header(now) + " skipped: " + why + ". Tell me what to check (/heartbeat <request>) or run /heartbeat off."
+	return "Heartbeat due at " + now.UTC().Format("15:04Z") + " skipped: " + why + ". Tell me what to check (/heartbeat <request>) or run /heartbeat off."
 }
 
 // Outcome of one beat, as recorded on the binding's row.

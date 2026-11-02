@@ -221,10 +221,13 @@ func TestDescribe(t *testing.T) {
 
 func TestHeaderIsPlainText(t *testing.T) {
 	got := Header(utc("2026-11-02 10:40"))
-	if got != "Heartbeat 10:40Z" {
-		t.Fatalf("Header = %q, want %q", got, "Heartbeat 10:40Z")
+	if want := "Heartbeat started at 10:40Z and ran"; got != want {
+		t.Fatalf("Header = %q, want %q", got, want)
 	}
-	for _, s := range []string{got, SkipNotice(utc("2026-11-02 10:40"), "x"), Describe(Record{Settings: Settings{State: StateOn}}, ""), Reminder()} {
+	if got, want := FailureLine(utc("2026-11-02 10:40"), "boom"), "Heartbeat started at 10:40Z and failed: boom"; got != want {
+		t.Fatalf("FailureLine = %q, want %q", got, want)
+	}
+	for _, s := range []string{got, FailureLine(utc("2026-11-02 10:40"), "x"), SkipNotice(utc("2026-11-02 10:40"), "x"), Describe(Record{Settings: Settings{State: StateOn}}, ""), Reminder()} {
 		for _, r := range s {
 			if r > 0x2000 && r != '•' && r != '—' && r != '’' {
 				t.Fatalf("unexpected symbol %q in %q", r, s)

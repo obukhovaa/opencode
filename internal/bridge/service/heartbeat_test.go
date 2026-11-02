@@ -423,7 +423,7 @@ func TestHeartbeatTickReportGetsHeader(t *testing.T) {
 	h.svc.heartbeatTick(context.Background())
 	h.drain()
 	sent := h.sentTexts()
-	if len(sent) != 1 || !strings.HasPrefix(sent[0], "Heartbeat 10:00Z") || !strings.Contains(sent[0], "CI on main is red") {
+	if len(sent) != 1 || !strings.HasPrefix(sent[0], "Heartbeat started at 10:00Z and ran\n\n") || !strings.Contains(sent[0], "CI on main is red") {
 		t.Fatalf("report: %q", sent)
 	}
 	if h.row(t).LastStatus != heartbeat.OutcomeOK {
@@ -440,7 +440,7 @@ func TestHeartbeatTickErrorPostsOneLine(t *testing.T) {
 	h.svc.heartbeatTick(context.Background())
 	h.drain()
 	sent := h.sentTexts()
-	if len(sent) != 1 || !strings.Contains(sent[0], "failed: context deadline exceeded") {
+	if len(sent) != 1 || !strings.Contains(sent[0], "Heartbeat started at 10:00Z and failed: context deadline exceeded") {
 		t.Fatalf("failure line: %q", sent)
 	}
 	if r := h.row(t); r.LastStatus != heartbeat.OutcomeError || r.LastError == "" {
@@ -1018,7 +1018,7 @@ func TestHeartbeatAgendaSkipNoticeOnce(t *testing.T) {
 
 	h.svc.heartbeatTick(ctx)
 	sent := h.sentTexts()
-	want := "Heartbeat 10:00Z skipped: HEARTBEAT.md does not exist. Tell me what to check (/heartbeat <request>) or run /heartbeat off."
+	want := "Heartbeat due at 10:00Z skipped: HEARTBEAT.md does not exist. Tell me what to check (/heartbeat <request>) or run /heartbeat off."
 	if len(sent) != 1 || sent[0] != want {
 		t.Fatalf("notice %q, want %q", sent, want)
 	}

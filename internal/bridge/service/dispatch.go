@@ -650,7 +650,6 @@ func (d *sessionDispatch) handleHeartbeatTerminal(ctx context.Context, peer brid
 // beat that completed before a preemption could stop it is reported as
 // usual.
 func (d *sessionDispatch) finishHeartbeat(ctx context.Context, peer bridge.PeerRef, hb *bridge.HeartbeatTurn, reply string, runErr error) {
-	header := heartbeat.Header(hb.At)
 	preempted := d.heartbeatPreempted()
 	switch {
 	case runErr != nil && (preempted || errors.Is(runErr, agent.ErrRequestCancelled) || errors.Is(runErr, context.Canceled)):
@@ -661,14 +660,14 @@ func (d *sessionDispatch) finishHeartbeat(ctx context.Context, peer bridge.PeerR
 		d.svc.recordHeartbeatOutcome(ctx, peer, hb.At, heartbeat.OutcomeSkipped, reason)
 	case runErr != nil:
 		reason := truncateOneLine(runErr.Error(), toolErrorPreviewRunes)
-		d.svc.replyToPeer(ctx, peer, header+" failed: "+reason, false, d.sessionID)
+		d.svc.replyToPeer(ctx, peer, heartbeat.FailureLine(hb.At, reason), false, d.sessionID)
 		d.svc.recordHeartbeatOutcome(ctx, peer, hb.At, heartbeat.OutcomeError, reason)
 	case strings.TrimSpace(reply) == "" || heartbeat.IsSilentAck(reply):
 		d.svc.recordHeartbeatOutcome(ctx, peer, hb.At, heartbeat.OutcomeSilent, "")
 	default:
 		d.handleTerminalEvent(ctx, agent.AgentEvent{
 			Type:    agent.AgentEventTypeResponse,
-			Message: message.Message{Parts: []message.ContentPart{message.TextContent{Text: header + "\n\n" + reply}}},
+			Message: message.Message{Parts: []message.ContentPart{message.TextContent{Text: heartbeat.Header(hb.At) + "\n\n" + reply}}},
 		})
 		d.svc.recordHeartbeatOutcome(ctx, peer, hb.At, heartbeat.OutcomeOK, "")
 	}
