@@ -103,6 +103,7 @@ func TestCommandInfoIsAction(t *testing.T) {
 		"compact":          true,
 		"agents":           true,
 		"auto-approve":     true,
+		"model":            true,
 		"vim":              true,
 		"sessions-cleanup": true,
 		"rename":           true,

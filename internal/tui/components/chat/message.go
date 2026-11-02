@@ -31,9 +31,20 @@ const (
 	userMessageType uiMessageType = iota
 	assistantMessageType
 	toolMessageType
-
-	maxResultHeight = 10
 )
+
+const (
+	maxResultHeight          = 10
+	collapsedResultLines     = 3
+	expandedResultLines      = 500 // Bound rendering work for large outputs.
+	collapsedNestedToolCalls = 3
+
+	// ToggleToolDetailsKey toggles tool details throughout the transcript.
+	ToggleToolDetailsKey = "ctrl+o"
+)
+
+// ToggleToolDetailsMsg toggles tool details throughout the transcript.
+type ToggleToolDetailsMsg struct{}
 
 type uiMessage struct {
 	ID          string
@@ -85,7 +96,7 @@ func renderMessage(msg string, isUser bool, isFocused bool, width int, info ...s
 	return rendered
 }
 
-func renderUserMessage(msg message.Message, isFocused bool, width int, position int) uiMessage {
+func renderUserMessage(msg message.Message, isFocused bool, width int, position int, expanded bool) uiMessage {
 	textContent := collapseSkillBlocks(msg.Content().String())
 
 	// Detect shell mode messages by content prefix
@@ -93,7 +104,7 @@ func renderUserMessage(msg message.Message, isFocused bool, width int, position 
 		return renderShellCommandMessage(msg, textContent, width, position)
 	}
 	if isShellOutputMessage(textContent) {
-		return renderShellOutputMessage(msg, textContent, width, position)
+		return renderShellOutputMessage(msg, textContent, width, position, expanded)
 	}
 
 	var styledAttachments []string
@@ -222,7 +233,7 @@ func renderShellCommandMessage(msg message.Message, text string, width int, posi
 	}
 }
 
-func renderShellOutputMessage(msg message.Message, text string, width int, position int) uiMessage {
+func renderShellOutputMessage(msg message.Message, text string, width int, position int, expanded bool) uiMessage {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
 
@@ -255,13 +266,7 @@ func renderShellOutputMessage(msg message.Message, text string, width int, posit
 		inner = strings.TrimRight(inner, "\n")
 	}
 
-	resultContent := truncateHeight(inner, maxResultHeight)
-	resultContent = fmt.Sprintf("```bash\n%s\n```", resultContent)
-	rendered := styles.ForceReplaceBackgroundWithLipgloss(
-		toMarkdown(resultContent, true, width-2),
-		t.Background(),
-	)
-	rendered = strings.TrimSuffix(rendered, "\n")
+	rendered := renderCodeBlock("bash", inner, resultLineLimit(expanded), expanded, width-2)
 
 	parts := []string{rendered}
 	if exitBadge != "" {
@@ -288,6 +293,7 @@ func renderAssistantMessage(
 	isSummary bool,
 	width int,
 	position int,
+	expanded bool,
 ) []uiMessage {
 	messages := []uiMessage{}
 	content := msg.Content().String()
@@ -367,6 +373,7 @@ func renderAssistantMessage(
 			false,
 			width,
 			i+1,
+			expanded,
 		)
 		messages = append(messages, toolCallContent)
 		position += toolCallContent.height
@@ -534,12 +541,24 @@ func removeWorkingDirPrefix(path string) string {
 	return path
 }
 
-func renderToolParams(paramWidth int, toolCall message.ToolCall) string {
+func expandedParams(value string, limit int) string {
+	value = strings.TrimRight(value, "\n")
+	body, hidden := truncateLines(value, limit)
+	if hidden > 0 {
+		body += fmt.Sprintf("\n… +%s not shown", pluralLines(hidden))
+	}
+	return body
+}
+
+func renderToolParams(paramWidth int, toolCall message.ToolCall, expanded bool) string {
 	params := ""
 	switch toolCall.Name {
 	case agent.TaskToolName:
 		var params agent.TaskParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
+		if expanded {
+			return expandedParams(params.Prompt, expandedResultLines)
+		}
 		prompt := strings.ReplaceAll(params.Prompt, "\n", " ")
 		toolParams := []string{prompt}
 		if params.SubagentType != "" {
@@ -553,9 +572,12 @@ func renderToolParams(paramWidth int, toolCall message.ToolCall) string {
 		var params tools.BashParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
 		command := strings.ReplaceAll(params.Command, "\n", " ")
+		if expanded {
+			command = expandedParams(params.Command, expandedResultLines)
+		}
 		if params.Description != "" {
 			desc := params.Description
-			if len(desc) > 80 {
+			if len(desc) > 80 && !expanded {
 				desc = desc[:77] + "..."
 			}
 			t := theme.CurrentTheme()
@@ -563,8 +585,14 @@ func renderToolParams(paramWidth int, toolCall message.ToolCall) string {
 				Foreground(t.TextMuted()).
 				Italic(true).
 				Render(desc)
-			cmdLine := renderParams(paramWidth, command)
+			cmdLine := command
+			if !expanded {
+				cmdLine = renderParams(paramWidth, command)
+			}
 			return descLine + "\n" + cmdLine
+		}
+		if expanded {
+			return command
 		}
 		return renderParams(paramWidth, command)
 	case tools.EditToolName:
@@ -682,20 +710,116 @@ func renderToolParams(paramWidth int, toolCall message.ToolCall) string {
 	return params
 }
 
-func truncateHeight(content string, height int) string {
-	lines := strings.Split(content, "\n")
-	if len(lines) > height {
-		lines = append(lines, "...\n")
-		return strings.Join(lines[:height], "\n")
+func truncateLines(content string, limit int) (string, int) {
+	if limit <= 0 {
+		return content, 0
 	}
-	return content
+	lines := strings.Split(content, "\n")
+	if len(lines) <= limit {
+		return content, 0
+	}
+	return strings.Join(lines[:limit], "\n"), len(lines) - limit
 }
 
-func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, width int) string {
+// Truncate after rendering to keep markdown constructs intact, excluding
+// renderer padding from the line budget.
+func truncateRendered(rendered string, limit int) (string, int) {
+	lines := strings.Split(rendered, "\n")
+	isBlank := func(l string) bool { return strings.TrimSpace(ansi.Strip(l)) == "" }
+	for len(lines) > 0 && isBlank(lines[len(lines)-1]) {
+		lines = lines[:len(lines)-1]
+	}
+	if limit <= 0 || len(lines) <= limit {
+		return strings.Join(lines, "\n"), 0
+	}
+	for len(lines) > limit && isBlank(lines[0]) {
+		lines = lines[1:]
+	}
+	if len(lines) <= limit {
+		return strings.Join(lines, "\n"), 0
+	}
+	return strings.Join(lines[:limit], "\n"), len(lines) - limit
+}
+
+func resultLineLimit(expanded bool) int {
+	if expanded {
+		return expandedResultLines
+	}
+	return collapsedResultLines
+}
+
+func hiddenLinesHint(hidden int, expanded bool, width int) string {
+	if hidden <= 0 {
+		return ""
+	}
+	t := theme.CurrentTheme()
+	text := fmt.Sprintf("… +%s (%s to expand)", pluralLines(hidden), ToggleToolDetailsKey)
+	if expanded {
+		text = fmt.Sprintf("… +%s not shown", pluralLines(hidden))
+	}
+	return styles.BaseStyle().
+		Width(width).
+		Foreground(t.TextMuted()).
+		Italic(true).
+		Render(text)
+}
+
+func appendHint(rendered string, hidden int, expanded bool, width int) string {
+	hint := hiddenLinesHint(hidden, expanded, width)
+	rendered = strings.TrimRight(rendered, "\n")
+	if hint == "" {
+		return rendered
+	}
+	if rendered == "" {
+		return hint
+	}
+	return rendered + "\n" + hint
+}
+
+func renderCodeBlock(lang, content string, limit int, expanded bool, width int) string {
+	body, hidden := truncateLines(content, limit)
+	rendered := styles.ForceReplaceBackgroundWithLipgloss(
+		toMarkdown(fmt.Sprintf("```%s\n%s\n```", lang, body), true, width),
+		theme.CurrentTheme().Background(),
+	)
+	return appendHint(rendered, hidden, expanded, width)
+}
+
+func renderMutedText(content string, limit int, expanded bool, width int) string {
+	body, hidden := truncateLines(content, limit)
+	t := theme.CurrentTheme()
+	rendered := styles.BaseStyle().Width(width).Foreground(t.TextMuted()).Render(body)
+	return appendHint(rendered, hidden, expanded, width)
+}
+
+func renderCollapsedMarkdown(content string, limit int, expanded bool, width int) string {
+	rendered := styles.ForceReplaceBackgroundWithLipgloss(
+		toMarkdown(content, false, width),
+		theme.CurrentTheme().Background(),
+	)
+	rendered, hidden := truncateRendered(rendered, limit)
+	return appendHint(rendered, hidden, expanded, width)
+}
+
+// Render the full diff before truncating so file and hunk headers do not
+// consume the visible line budget.
+func renderCollapsedDiff(unified string, limit int, expanded bool, width int) string {
+	formatted, _ := diff.FormatDiff(unified, diff.WithTotalWidth(width))
+	formatted, hidden := truncateRendered(formatted, limit)
+	return appendHint(formatted, hidden, expanded, width)
+}
+
+func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, width int, expanded bool) string {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
+	limit := resultLineLimit(expanded)
 
 	if response.IsError {
+		if expanded {
+			errContent, hidden := truncateLines(fmt.Sprintf("Error: %s", response.Content), limit)
+			rendered := baseStyle.Width(width).Foreground(t.Error()).Render(errContent)
+			return appendHint(rendered, hidden, expanded, width)
+		}
 		errContent := fmt.Sprintf("Error: %s", strings.ReplaceAll(response.Content, "\n", " "))
 		errContent = ansi.Truncate(errContent, width-1, "...")
 		return baseStyle.
@@ -704,7 +828,6 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 			Render(errContent)
 	}
 
-	resultContent := truncateHeight(response.Content, maxResultHeight)
 	switch toolCall.Name {
 	case agent.TaskToolName:
 		metadata := agent.TaskResponseMetadata{}
@@ -721,12 +844,9 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 		// to the user — the tags are an LLM-facing hint, not something the
 		// user needs to see inline. We re-surface the task_id via a dedicated
 		// muted footer line.
-		displayContent := taskTrailerRegex.ReplaceAllString(resultContent, "")
+		displayContent := taskTrailerRegex.ReplaceAllString(response.Content, "")
 		displayContent = strings.TrimRight(displayContent, "\n")
-		rendered := styles.ForceReplaceBackgroundWithLipgloss(
-			toMarkdown(displayContent, false, width),
-			t.Background(),
-		)
+		rendered := renderCollapsedMarkdown(displayContent, limit, expanded, width)
 		if metadata.TaskID != "" {
 			footer := baseStyle.Width(width).Foreground(t.TextMuted()).
 				Render(fmt.Sprintf("task_id: %s (pass back to task tool to resume)", metadata.TaskID))
@@ -734,23 +854,15 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 		}
 		return rendered
 	case tools.BashToolName:
-		resultContent = fmt.Sprintf("```bash\n%s\n```", resultContent)
-		return styles.ForceReplaceBackgroundWithLipgloss(
-			toMarkdown(resultContent, true, width),
-			t.Background(),
-		)
+		return renderCodeBlock("bash", response.Content, limit, expanded, width)
 	case tools.EditToolName:
 		metadata := tools.EditResponseMetadata{}
 		json.Unmarshal([]byte(response.Metadata), &metadata)
-		truncDiff := truncateHeight(metadata.Diff, maxResultHeight)
-		formattedDiff, _ := diff.FormatDiff(truncDiff, diff.WithTotalWidth(width))
-		return formattedDiff
+		return renderCollapsedDiff(metadata.Diff, limit, expanded, width)
 	case tools.MultiEditToolName:
 		metadata := tools.MultiEditResponseMetadata{}
 		json.Unmarshal([]byte(response.Metadata), &metadata)
-		truncDiff := truncateHeight(metadata.Diff, maxResultHeight)
-		formattedDiff, _ := diff.FormatDiff(truncDiff, diff.WithTotalWidth(width))
-		return formattedDiff
+		return renderCollapsedDiff(metadata.Diff, limit, expanded, width)
 	case tools.WebFetchToolName:
 		var params tools.FetchParams
 		json.Unmarshal([]byte(toolCall.Input), &params)
@@ -761,24 +873,11 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 		case "html":
 			mdFormat = "html"
 		}
-		resultContent = fmt.Sprintf("```%s\n%s\n```", mdFormat, resultContent)
-		return styles.ForceReplaceBackgroundWithLipgloss(
-			toMarkdown(resultContent, true, width),
-			t.Background(),
-		)
-	case tools.GlobToolName:
-		return baseStyle.Width(width).Foreground(t.TextMuted()).Render(resultContent)
-	case tools.GrepToolName:
-		return baseStyle.Width(width).Foreground(t.TextMuted()).Render(resultContent)
-	case tools.LSToolName:
-		return baseStyle.Width(width).Foreground(t.TextMuted()).Render(resultContent)
-	case tools.SourcegraphToolName:
-		return baseStyle.Width(width).Foreground(t.TextMuted()).Render(resultContent)
+		return renderCodeBlock(mdFormat, response.Content, limit, expanded, width)
+	case tools.GlobToolName, tools.GrepToolName, tools.LSToolName, tools.SourcegraphToolName:
+		return renderMutedText(response.Content, limit, expanded, width)
 	case tools.WebSearchToolName:
-		return styles.ForceReplaceBackgroundWithLipgloss(
-			toMarkdown(resultContent, false, width),
-			t.Background(),
-		)
+		return renderCollapsedMarkdown(response.Content, limit, expanded, width)
 	case tools.LSPToolName:
 		metadata := tools.LSPToolMetadata{}
 		json.Unmarshal([]byte(response.Metadata), &metadata)
@@ -787,16 +886,10 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 		metadata := tools.ViewResponseMetadata{}
 		json.Unmarshal([]byte(response.Metadata), &metadata)
 		ext := filepath.Ext(metadata.FilePath)
-		if ext == "" {
-			ext = ""
-		} else {
+		if ext != "" {
 			ext = strings.ToLower(ext[1:])
 		}
-		resultContent = fmt.Sprintf("```%s\n%s\n```", ext, truncateHeight(metadata.Content, maxResultHeight))
-		return styles.ForceReplaceBackgroundWithLipgloss(
-			toMarkdown(resultContent, true, width),
-			t.Background(),
-		)
+		return renderCodeBlock(ext, metadata.Content, limit, expanded, width)
 	case tools.ViewImageToolName:
 		metadata := tools.ViewImageResponseMetadata{}
 		json.Unmarshal([]byte(response.Metadata), &metadata)
@@ -809,39 +902,22 @@ func renderToolResponse(toolCall message.ToolCall, response message.ToolResult, 
 	case tools.WriteToolName:
 		params := tools.WriteParams{}
 		json.Unmarshal([]byte(toolCall.Input), &params)
-		metadata := tools.WriteResponseMetadata{}
-		json.Unmarshal([]byte(response.Metadata), &metadata)
 		ext := filepath.Ext(params.FilePath)
-		if ext == "" {
-			ext = ""
-		} else {
+		if ext != "" {
 			ext = strings.ToLower(ext[1:])
 		}
-		resultContent = fmt.Sprintf("```%s\n%s\n```", ext, truncateHeight(params.Content, maxResultHeight))
-		return styles.ForceReplaceBackgroundWithLipgloss(
-			toMarkdown(resultContent, true, width),
-			t.Background(),
-		)
+		return renderCodeBlock(ext, params.Content, limit, expanded, width)
 	case tools.DeleteToolName:
 		metadata := tools.DeleteResponseMetadata{}
 		json.Unmarshal([]byte(response.Metadata), &metadata)
-		truncDiff := truncateHeight(metadata.Diff, maxResultHeight)
-		formattedDiff, _ := diff.FormatDiff(truncDiff, diff.WithTotalWidth(width))
-		return formattedDiff
+		return renderCollapsedDiff(metadata.Diff, limit, expanded, width)
 	case tools.StructOutputToolName:
-		resultContent = fmt.Sprintf("```json\n%s\n```", resultContent)
-		return styles.ForceReplaceBackgroundWithLipgloss(
-			toMarkdown(resultContent, true, width),
-			t.Background(),
-		)
+		return renderCodeBlock("json", response.Content, limit, expanded, width)
 	case tools.TodoWriteToolName:
-		return renderTodoChecklist(response.Metadata, resultContent, width)
+		content, _ := truncateLines(response.Content, maxResultHeight)
+		return renderTodoChecklist(response.Metadata, content, width)
 	default:
-		resultContent = fmt.Sprintf("```text\n%s\n```", resultContent)
-		return styles.ForceReplaceBackgroundWithLipgloss(
-			toMarkdown(resultContent, true, width),
-			t.Background(),
-		)
+		return renderCodeBlock("text", response.Content, limit, expanded, width)
 	}
 }
 
@@ -853,6 +929,7 @@ func renderToolMessage(
 	nested bool,
 	width int,
 	position int,
+	expanded bool,
 ) uiMessage {
 	if nested {
 		width = width - 3
@@ -908,10 +985,10 @@ func renderToolMessage(
 	if paramWidth < 0 {
 		paramWidth = 0
 	}
-	params := renderToolParams(paramWidth, toolCall)
+	params := renderToolParams(paramWidth, toolCall, expanded)
 	responseContent := ""
 	if response != nil {
-		responseContent = renderToolResponse(toolCall, *response, width-2)
+		responseContent = renderToolResponse(toolCall, *response, width-2, expanded)
 		responseContent = strings.TrimSuffix(responseContent, "\n")
 
 		// Extract and render diagnostics summary from response content
@@ -952,8 +1029,16 @@ func renderToolMessage(
 			for _, v := range msgs {
 				toolCalls = append(toolCalls, v.ToolCalls()...)
 			}
+			toolCalls, skipped := visibleNestedCalls(toolCalls, expanded)
+			if skipped > 0 {
+				parts = append(parts, baseStyle.
+					Width(width-2).
+					Foreground(t.TextMuted()).
+					Italic(true).
+					Render(nestedCallsHint(skipped)))
+			}
 			for _, call := range toolCalls {
-				rendered := renderToolMessage(call, []message.Message{}, taskMessages, focusedUIMessageId, true, width, 0)
+				rendered := renderToolMessage(call, []message.Message{}, taskMessages, focusedUIMessageId, true, width, 0, expanded)
 				parts = append(parts, rendered.content)
 			}
 		}
@@ -981,6 +1066,22 @@ func renderToolMessage(
 		content:     content,
 	}
 	return toolMsg
+}
+
+func visibleNestedCalls(calls []message.ToolCall, expanded bool) ([]message.ToolCall, int) {
+	if expanded || len(calls) <= collapsedNestedToolCalls {
+		return calls, 0
+	}
+	skipped := len(calls) - collapsedNestedToolCalls
+	return calls[skipped:], skipped
+}
+
+func nestedCallsHint(skipped int) string {
+	noun := "tool uses"
+	if skipped == 1 {
+		noun = "tool use"
+	}
+	return fmt.Sprintf(" … +%d earlier %s (%s to expand)", skipped, noun, ToggleToolDetailsKey)
 }
 
 func subagentBadge(agentType string, title string, isResumed bool) string {

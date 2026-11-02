@@ -457,9 +457,9 @@ func (m *editorCmp) executeShell() tea.Cmd {
 
 	// A leading `!` inside shell mode forces the terminal handoff — `!!command`
 	// as typed from the normal editor. It is a text prefix rather than a key
-	// chord because every convenient ctrl+ chord is already bound (ctrl+o is
-	// model selection), and because a prefix is visible in the draft before the
-	// user commits to it.
+	// chord because every convenient ctrl+ chord is already bound (ctrl+o
+	// toggles tool details), and because a prefix is visible in the draft
+	// before the user commits to it.
 	//
 	// Resolved before anything is consumed: a draft that turns out to be no
 	// command at all (a lone `!`) must leave the history and the draft exactly

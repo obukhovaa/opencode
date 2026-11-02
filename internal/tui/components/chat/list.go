@@ -22,9 +22,15 @@ import (
 )
 
 type cacheItem struct {
-	width   int
-	content []uiMessage
+	width    int
+	expanded bool
+	content  []uiMessage
 }
+
+func (c cacheItem) fresh(width int, expanded bool) bool {
+	return c.width == width && c.expanded == expanded
+}
+
 type messagesCmp struct {
 	app                 *app.App
 	width, height       int
@@ -46,6 +52,7 @@ type messagesCmp struct {
 	userScrolledUp      bool
 	newMessageCount     int
 	recapContent        string
+	toolDetailsExpanded bool
 }
 type renderFinishedMsg struct {
 	generation      uint64
@@ -93,6 +100,19 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rendering = false
 		}
 		m.rerender()
+	case ToggleToolDetailsMsg:
+		m.toolDetailsExpanded = !m.toolDetailsExpanded
+		m.rendering = false
+		m.renderGeneration++
+		if m.userScrolledUp {
+			yOff := m.viewport.YOffset()
+			m.renderViewSync()
+			m.viewport.SetYOffset(yOff)
+		} else {
+			m.renderViewSync()
+			m.viewport.GotoBottom()
+		}
+		cmds = append(cmds, m.updateScrollState())
 	case SessionSelectedMsg:
 		if msg.ID != m.session.ID {
 			cmd := m.SetSession(msg)
@@ -357,7 +377,7 @@ func (m *messagesCmp) invalidateCache(id string) {
 func (m *messagesCmp) hasCacheMisses() bool {
 	for _, msg := range m.messages {
 		if msg.Role == message.User || msg.Role == message.Assistant {
-			if cache, ok := m.cachedContent[msg.ID]; !ok || cache.width != m.width {
+			if cache, ok := m.cachedContent[msg.ID]; !ok || !cache.fresh(m.width, m.toolDetailsExpanded) {
 				return true
 			}
 		}
@@ -398,7 +418,7 @@ func (m *messagesCmp) computeRender() renderResult {
 	for inx, msg := range m.messages {
 		switch msg.Role {
 		case message.User:
-			if cache, ok := m.cachedContent[msg.ID]; ok && cache.width == m.width {
+			if cache, ok := m.cachedContent[msg.ID]; ok && cache.fresh(m.width, m.toolDetailsExpanded) {
 				uiMsgs = append(uiMsgs, cache.content...)
 				continue
 			}
@@ -407,15 +427,17 @@ func (m *messagesCmp) computeRender() renderResult {
 				msg.ID == m.currentMsgID,
 				m.width,
 				pos,
+				m.toolDetailsExpanded,
 			)
 			uiMsgs = append(uiMsgs, userMsg)
 			cacheUpdates[msg.ID] = cacheItem{
-				width:   m.width,
-				content: []uiMessage{userMsg},
+				width:    m.width,
+				expanded: m.toolDetailsExpanded,
+				content:  []uiMessage{userMsg},
 			}
 			pos += userMsg.height + 1
 		case message.Assistant:
-			if cache, ok := m.cachedContent[msg.ID]; ok && cache.width == m.width {
+			if cache, ok := m.cachedContent[msg.ID]; ok && cache.fresh(m.width, m.toolDetailsExpanded) {
 				uiMsgs = append(uiMsgs, cache.content...)
 				continue
 			}
@@ -430,14 +452,16 @@ func (m *messagesCmp) computeRender() renderResult {
 				isSummary,
 				m.width,
 				pos,
+				m.toolDetailsExpanded,
 			)
 			for _, am := range assistantMessages {
 				uiMsgs = append(uiMsgs, am)
 				pos += am.height + 1
 			}
 			cacheUpdates[msg.ID] = cacheItem{
-				width:   m.width,
-				content: assistantMessages,
+				width:    m.width,
+				expanded: m.toolDetailsExpanded,
+				content:  assistantMessages,
 			}
 		}
 	}
@@ -511,6 +535,7 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 	}
 
 	width := m.width
+	expanded := m.toolDetailsExpanded
 	currentMsgID := m.currentMsgID
 	summaryMsgID := m.session.SummaryMessageID
 	recapContent := m.recapContent
@@ -523,7 +548,7 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 		for inx, msg := range msgsCopy {
 			switch msg.Role {
 			case message.User:
-				if cache, ok := cacheCopy[msg.ID]; ok && cache.width == width {
+				if cache, ok := cacheCopy[msg.ID]; ok && cache.fresh(width, expanded) {
 					uiMsgs = append(uiMsgs, cache.content...)
 					continue
 				}
@@ -532,15 +557,17 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 					msg.ID == currentMsgID,
 					width,
 					pos,
+					expanded,
 				)
 				uiMsgs = append(uiMsgs, userMsg)
 				cacheUpdates[msg.ID] = cacheItem{
-					width:   width,
-					content: []uiMessage{userMsg},
+					width:    width,
+					expanded: expanded,
+					content:  []uiMessage{userMsg},
 				}
 				pos += userMsg.height + 1
 			case message.Assistant:
-				if cache, ok := cacheCopy[msg.ID]; ok && cache.width == width {
+				if cache, ok := cacheCopy[msg.ID]; ok && cache.fresh(width, expanded) {
 					uiMsgs = append(uiMsgs, cache.content...)
 					continue
 				}
@@ -555,14 +582,16 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 					isSummary,
 					width,
 					pos,
+					expanded,
 				)
 				for _, am := range assistantMessages {
 					uiMsgs = append(uiMsgs, am)
 					pos += am.height + 1
 				}
 				cacheUpdates[msg.ID] = cacheItem{
-					width:   width,
-					content: assistantMessages,
+					width:    width,
+					expanded: expanded,
+					content:  assistantMessages,
 				}
 			}
 		}

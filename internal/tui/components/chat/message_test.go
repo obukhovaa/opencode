@@ -75,7 +75,7 @@ func TestRenderAssistantMessage_EmptyContentNoTextBlock(t *testing.T) {
 				Parts: tt.parts,
 			}
 
-			results := renderAssistantMessage(msg, 0, nil, nil, "", false, 80, 0)
+			results := renderAssistantMessage(msg, 0, nil, nil, "", false, 80, 0, false)
 
 			var textMessages, toolMessages int
 			for _, r := range results {
@@ -171,7 +171,7 @@ func TestRenderUserMessageLeavesStoredContentIntact(t *testing.T) {
 		},
 	}
 
-	rendered := renderUserMessage(msg, false, 80, 0)
+	rendered := renderUserMessage(msg, false, 80, 0, false)
 	if !strings.Contains(rendered.content, "skill:reviewer") {
 		t.Errorf("rendered message does not show the collapsed summary:\n%s", rendered.content)
 	}

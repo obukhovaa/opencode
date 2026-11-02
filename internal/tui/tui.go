@@ -38,7 +38,7 @@ type keyMap struct {
 	SwitchSession   key.Binding
 	Commands        key.Binding
 	Filepicker      key.Binding
-	Models          key.Binding
+	ToolDetails     key.Binding
 	SwitchTheme     key.Binding
 	PruneSession    key.Binding
 	SwitchAgent     key.Binding
@@ -49,6 +49,7 @@ type (
 	startCompactSessionMsg       struct{}
 	toggleAutoApproveMsg         struct{}
 	toggleVimModeMsg             struct{}
+	showModelDialogMsg           struct{}
 	sessionDeletedMsg            struct{ id string }
 	startSessionsCleanupMsg      struct{}
 	showSessionsCleanupDialogMsg struct{ count int }
@@ -90,9 +91,9 @@ var keys = keyMap{
 		key.WithKeys("ctrl+f"),
 		key.WithHelp("ctrl+f", "select files to upload"),
 	),
-	Models: key.NewBinding(
-		key.WithKeys("ctrl+o"),
-		key.WithHelp("ctrl+o", "model selection"),
+	ToolDetails: key.NewBinding(
+		key.WithKeys(chat.ToggleToolDetailsKey),
+		key.WithHelp(chat.ToggleToolDetailsKey, "expand/collapse tool output"),
 	),
 
 	SwitchTheme: key.NewBinding(
@@ -413,6 +414,13 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s, _ := a.status.Update(core.AutoApproveChangedMsg{Active: true})
 		a.status = s.(core.StatusCmp)
 		return a, util.ReportInfo("Auto-approve enabled")
+
+	case showModelDialogMsg:
+		if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showQuestionDialog &&
+			!a.showSessionDialog && !a.showCommandDialog {
+			a.showModelDialog = true
+		}
+		return a, nil
 
 	case toggleVimModeMsg:
 		newVal := !config.Get().TUI.VimMode
@@ -845,14 +853,10 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			return a, nil
-		case key.Matches(msg, keys.Models):
-			if a.showModelDialog {
-				a.showModelDialog = false
-				return a, nil
-			}
-			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showQuestionDialog && !a.showSessionDialog && !a.showCommandDialog {
-				a.showModelDialog = true
-				return a, nil
+		case key.Matches(msg, keys.ToolDetails):
+			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showQuestionDialog &&
+				!a.anyDismissibleDialogOpen() && !a.pageHasActiveOverlay() {
+				return a, util.CmdHandler(chat.ToggleToolDetailsMsg{})
 			}
 			return a, nil
 		case key.Matches(msg, keys.SwitchTheme):
@@ -1488,6 +1492,9 @@ func buildCommands() []dialog.Command {
 		},
 		"auto-approve": func(_ dialog.Command) tea.Cmd {
 			return func() tea.Msg { return toggleAutoApproveMsg{} }
+		},
+		"model": func(_ dialog.Command) tea.Cmd {
+			return util.CmdHandler(showModelDialogMsg{})
 		},
 		"vim": func(_ dialog.Command) tea.Cmd {
 			return func() tea.Msg { return toggleVimModeMsg{} }

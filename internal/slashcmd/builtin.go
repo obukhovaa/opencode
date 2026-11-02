@@ -99,6 +99,12 @@ func BuiltinCommands() []CommandInfo {
 			TUIOnly:     true,
 		},
 		{
+			ID:          "model",
+			Title:       "Select Model",
+			Description: "Choose the model for the active agent",
+			TUIOnly:     true,
+		},
+		{
 			ID:          "vim",
 			Title:       "Toggle Vim Mode",
 			Description: "Toggle vim-style keybindings for the chat input",
