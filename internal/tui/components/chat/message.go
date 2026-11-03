@@ -364,7 +364,7 @@ func renderAssistantMessage(
 		position++ // for the space
 	}
 
-	for i, toolCall := range msg.ToolCalls() {
+	for _, toolCall := range msg.ToolCalls() {
 		toolCallContent := renderToolMessage(
 			toolCall,
 			allMessages,
@@ -372,7 +372,7 @@ func renderAssistantMessage(
 			focusedUIMessageId,
 			false,
 			width,
-			i+1,
+			position,
 			expanded,
 		)
 		messages = append(messages, toolCallContent)
@@ -973,6 +973,7 @@ func renderToolMessage(
 
 		content := style.Render(lipgloss.JoinHorizontal(lipgloss.Left, toolNameText, progressText))
 		toolMsg := uiMessage{
+			ID:          toolCall.ID,
 			messageType: toolMessageType,
 			position:    position,
 			height:      lipgloss.Height(content),
@@ -1060,6 +1061,7 @@ func renderToolMessage(
 		)
 	}
 	toolMsg := uiMessage{
+		ID:          toolCall.ID,
 		messageType: toolMessageType,
 		position:    position,
 		height:      lipgloss.Height(content),

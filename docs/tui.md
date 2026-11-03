@@ -69,7 +69,7 @@ in `INSERT`; `Esc` switches to `NORMAL`.
 
 Tool calls are shown collapsed: the tool name and its main parameters (for `bash`, the description when the model gave one and the command on one line), then the first 3 lines of the result with a `… +N lines (ctrl+o to expand)` note under it. Diffs and markdown results (`task`, `web_search`) are cut after rendering, so the 3 lines are rendered rows. A subagent lists only its last 3 tool calls under the task, after a `… +N earlier tool uses` note. Errors show as a single truncated line.
 
-`Ctrl+O` expands every tool call in the transcript in place — the full bash command and task prompt, full results and errors, every subagent call — and pressing it again collapses them. An expanded result still stops at 500 lines (`… +N lines not shown`) so a large file read does not stall the UI. The toggle lasts for the TUI process and applies to `!` shell-mode output too; todo checklists are never collapsed.
+`Ctrl+O` expands tool calls in place — the full bash command and task prompt, full results and errors, every subagent call — and pressing it again collapses them. Expansion is asynchronous and starts with messages in and near the viewport; scrolling expands newly visible calls while already expanded calls stay stable, so long sessions stay responsive. An expanded result still stops at 500 lines (`… +N lines not shown`). The toggle lasts for the TUI process and applies to `!` shell-mode output too; todo checklists are never collapsed.
 
 Model selection, which used to be on `Ctrl+O`, is the `/model` command (also in the `Ctrl+K` command dialog). It has no shortcut: `Ctrl+M` sends the same byte as Enter in most terminals, so binding it would submit messages.
 

@@ -1,12 +1,16 @@
 package chat
 
 import (
+	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
 )
@@ -151,5 +155,194 @@ func TestCacheItemFreshTracksExpandedMode(t *testing.T) {
 	}
 	if item.fresh(100, false) {
 		t.Error("a width change must invalidate the cached render")
+	}
+}
+
+func toolTranscript(count int) []message.Message {
+	var messages []message.Message
+	for i := 0; i < count; i++ {
+		id := fmt.Sprintf("a%02d", i)
+		callID := fmt.Sprintf("call%02d", i)
+		messages = append(messages,
+			message.Message{
+				ID:        id,
+				SessionID: "test-session",
+				Role:      message.Assistant,
+				Parts: []message.ContentPart{message.ToolCall{
+					ID: callID, Name: tools.BashToolName, Input: `{"command":"seq 20"}`, Finished: true,
+				}},
+			},
+			message.Message{
+				ID:        "result" + id,
+				SessionID: "test-session",
+				Role:      message.Tool,
+				Parts: []message.ContentPart{message.ToolResult{
+					ToolCallID: callID, Content: numberedLines(20),
+				}},
+			},
+		)
+	}
+	return messages
+}
+
+func applyRenders(t *testing.T, m *messagesCmp, cmd tea.Cmd) {
+	t.Helper()
+	for range 10 {
+		results := renderResults(t, cmd)
+		if len(results) == 0 {
+			return
+		}
+		if len(results) != 1 {
+			t.Fatalf("got %d concurrent render results, want 1", len(results))
+		}
+		_, cmd = m.Update(results[0])
+	}
+	t.Fatal("rendering did not settle after 10 results")
+}
+
+func TestToolDetailsExpandOnlyNearViewportAsynchronously(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := newMessagesForTest(t, app.NewForTest(ctx, &editorFakeAgent{}), 80)
+	m.messages = toolTranscript(30)
+	m.currentMsgID = "a29"
+	m.renderViewSync()
+	m.viewport.GotoBottom()
+	before := m.uiMessages
+
+	_, cmd := m.Update(ToggleToolDetailsMsg{})
+	if !m.rendering {
+		t.Fatal("toggle did not start an asynchronous render")
+	}
+	if !reflect.DeepEqual(m.uiMessages, before) {
+		t.Fatal("toggle synchronously replaced the transcript")
+	}
+	results := renderResults(t, cmd)
+	if len(results) != 1 {
+		t.Fatalf("toggle produced %d render results, want 1", len(results))
+	}
+	_, cmd = m.Update(results[0])
+	applyRenders(t, m, cmd)
+
+	expanded := 0
+	for _, item := range m.cachedContent {
+		if item.expanded {
+			expanded++
+		}
+	}
+	if expanded == 0 || expanded >= 30 {
+		t.Fatalf("expanded %d of 30 messages, want a bounded non-zero subset", expanded)
+	}
+	if m.cachedContent["a00"].expanded {
+		t.Error("far above-viewport message was expanded")
+	}
+	if !m.cachedContent["a29"].expanded {
+		t.Error("message at the bottom of the viewport was not expanded")
+	}
+
+	m.viewport.SetYOffset(0)
+	m.userScrolledUp = true
+	applyRenders(t, m, m.renderVisibleToolDetails())
+	if !m.cachedContent["a00"].expanded {
+		t.Error("scrolling did not expand the newly visible message")
+	}
+	if !m.cachedContent["a29"].expanded {
+		t.Error("previously expanded message collapsed while scrolling")
+	}
+
+	m.viewport.GotoBottom()
+	m.userScrolledUp = false
+	applyRenders(t, m, m.renderVisibleToolDetails())
+	if !m.cachedContent["a00"].expanded {
+		t.Error("message collapsed after leaving the viewport")
+	}
+	for i := 1; i < len(m.uiMessages); i++ {
+		want := m.uiMessages[i-1].position + m.uiMessages[i-1].height + 1
+		if m.uiMessages[i].position != want {
+			t.Fatalf("message %d position = %d, want %d after cached expansion", i, m.uiMessages[i].position, want)
+		}
+	}
+	m.viewport.SetYOffset(0)
+	m.userScrolledUp = true
+	if cmd := m.renderVisibleToolDetails(); cmd != nil {
+		t.Error("revisiting an already expanded viewport triggered another render")
+	}
+}
+
+func TestToolDetailsDoubleToggleDropsStaleRender(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := newMessagesForTest(t, app.NewForTest(ctx, &editorFakeAgent{}), 80)
+	m.messages = toolTranscript(5)
+	m.renderViewSync()
+	before := m.uiMessages
+
+	_, first := m.Update(ToggleToolDetailsMsg{})
+	firstResults := renderResults(t, first)
+	if len(firstResults) != 1 {
+		t.Fatalf("first toggle produced %d render results, want 1", len(firstResults))
+	}
+	_, second := m.Update(ToggleToolDetailsMsg{})
+	m.Update(firstResults[0])
+	if !reflect.DeepEqual(m.uiMessages, before) {
+		t.Fatal("stale expanded render replaced the transcript")
+	}
+	if !m.rendering {
+		t.Fatal("stale result cleared the second render's in-flight state")
+	}
+	applyRenders(t, m, second)
+	for id, item := range m.cachedContent {
+		if item.expanded {
+			t.Errorf("%s stayed expanded after the second toggle", id)
+		}
+	}
+}
+
+func TestRenderAnchorPreservesMessageAndType(t *testing.T) {
+	m := newMessagesForTest(t, app.NewForTest(context.Background(), &editorFakeAgent{}), 80)
+	m.uiMessages = []uiMessage{
+		{ID: "a", messageType: assistantMessageType, position: 0, height: 10},
+		{ID: "a", messageType: toolMessageType, position: 11, height: 20},
+		{ID: "b", messageType: toolMessageType, position: 32, height: 20},
+	}
+	m.viewport.SetContent(strings.Repeat("line\n", 200))
+	m.viewport.SetYOffset(15)
+
+	anchor := m.captureRenderAnchor()
+	if anchor.id != "a" || anchor.messageType != toolMessageType || anchor.offset != 4 {
+		t.Fatalf("anchor = %+v, want tool message a with offset 4", anchor)
+	}
+	m.uiMessages[1].position = 101
+	m.restoreRenderAnchor(anchor)
+	if got := m.viewport.YOffset(); got != 105 {
+		t.Fatalf("restored YOffset = %d, want 105", got)
+	}
+}
+
+func TestRenderFinishedRestoresPreviousAnchor(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := newMessagesForTest(t, app.NewForTest(ctx, &editorFakeAgent{}), 80)
+	m.uiMessages = []uiMessage{
+		{ID: "a", messageType: toolMessageType, position: 0, height: 10},
+		{ID: "b", messageType: toolMessageType, position: 11, height: 20},
+	}
+	m.viewport.SetContent(strings.Repeat("line\n", 200))
+	m.viewport.SetYOffset(12)
+	m.userScrolledUp = true
+	m.rendering = true
+	m.renderGeneration = 1
+
+	m.Update(renderFinishedMsg{
+		generation: 1,
+		uiMessages: []uiMessage{
+			{ID: "a", messageType: toolMessageType, position: 0, height: 50},
+			{ID: "b", messageType: toolMessageType, position: 51, height: 20},
+		},
+		cacheUpdates:    map[string]cacheItem{},
+		viewportContent: strings.Repeat("line\n", 200),
+	})
+	if got := m.viewport.YOffset(); got != 52 {
+		t.Fatalf("restored YOffset = %d, want 52", got)
 	}
 }
