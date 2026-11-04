@@ -126,3 +126,12 @@ rendered into readable configuration files also remain readable by that user.
 Set a higher value to keep more inline, or a negative value to disable the cap entirely (unbounded — a few fetches can then overflow the context). Responses at or below the cap are returned unchanged and no file is written.
 
 A response body over the 5MB read limit is truncated before conversion, and the reply says so rather than presenting a torn document as a complete one.
+
+### flow
+
+Opt-in primary-agent tool enabled by `dynamicFlow.enabled`. `operation: create`
+submits self-contained YAML and a `complexity` size; configured complexity takes
+precedence. A successful call persists the definition and execution begins after
+the current turn releases its session. During a dynamic step the pinned primary
+can use `operation: update` to amend only unentered downstream steps. Recursive
+flow creation and changes to entered steps are refused. See [flows](flows.md#dynamic-flows-in-the-tui).

@@ -291,6 +291,14 @@ func NewToolSet(
 		}
 	}
 
+	if info.DynamicFlow != nil && info.DynamicFlow.Enabled && info.Mode == config.AgentModeAgent && reg.IsToolEnabled(agentID, tools.FlowToolName) {
+		var submit tools.FlowSubmitter
+		if source, ok := factory.(interface{ FlowSubmitter() tools.FlowSubmitter }); ok {
+			submit = source.FlowSubmitter()
+		}
+		result <- tools.NewFlowTool(submit)
+	}
+
 	// compact_session is opt-in through selfCompact.enabled, not through the
 	// tools map, which can still switch it off. Never deferred: its whole
 	// point is to be at hand when a task ends.
@@ -371,6 +379,8 @@ func (a *agent) Tools() []tools.BaseTool {
 // ResolvedTools returns the current tool set without blocking.
 // The bool is true once tools have finished loading.
 func (a *agent) ResolvedTools() ([]tools.BaseTool, bool) {
+	a.toolsMu.RLock()
+	defer a.toolsMu.RUnlock()
 	if a.toolsResolved.Load() {
 		return a.tools, true
 	}
@@ -378,6 +388,8 @@ func (a *agent) ResolvedTools() ([]tools.BaseTool, bool) {
 }
 
 func (a *agent) resolveTools() []tools.BaseTool {
+	a.toolsMu.Lock()
+	defer a.toolsMu.Unlock()
 	a.toolsOnce.Do(func() {
 		toolSet := make([]tools.BaseTool, 0, 20)
 		toolNames := make([]string, 0, 20)

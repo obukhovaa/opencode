@@ -32,28 +32,30 @@ func (c cacheItem) fresh(width int, expanded bool) bool {
 }
 
 type messagesCmp struct {
-	app                 *app.App
-	width, height       int
-	viewport            viewport.Model
-	session             session.Session
-	messages            []message.Message
-	uiMessages          []uiMessage
-	currentMsgID        string
-	cachedContent       map[string]cacheItem
-	spinner             spinner.Model
-	spinnerActive       bool
-	rendering           bool
-	renderGeneration    uint64 // bumped by renderViewAsync and deletes; older render results are stale
-	dirtyWhileRendering map[string]struct{}
-	attachments         viewport.Model
-	cachedPending       pendingToolCounts
-	cachedUnfinished    bool
-	taskMessages        map[string][]message.Message
-	userScrolledUp      bool
-	newMessageCount     int
-	recapContent        string
-	toolDetailsExpanded bool
-	expandedToolDetails map[string]bool
+	app                                                                                *app.App
+	width, height                                                                      int
+	viewport                                                                           viewport.Model
+	viewportCache                                                                      string
+	viewportCacheOffset, viewportCacheXOffset, viewportCacheWidth, viewportCacheHeight int
+	session                                                                            session.Session
+	messages                                                                           []message.Message
+	uiMessages                                                                         []uiMessage
+	currentMsgID                                                                       string
+	cachedContent                                                                      map[string]cacheItem
+	spinner                                                                            spinner.Model
+	spinnerActive                                                                      bool
+	rendering                                                                          bool
+	renderGeneration                                                                   uint64 // bumped by renderViewAsync and deletes; older render results are stale
+	dirtyWhileRendering                                                                map[string]struct{}
+	attachments                                                                        viewport.Model
+	cachedPending                                                                      pendingToolCounts
+	cachedUnfinished                                                                   bool
+	taskMessages                                                                       map[string][]message.Message
+	userScrolledUp                                                                     bool
+	newMessageCount                                                                    int
+	recapContent                                                                       string
+	toolDetailsExpanded                                                                bool
+	expandedToolDetails                                                                map[string]bool
 }
 type renderFinishedMsg struct {
 	generation      uint64
@@ -175,9 +177,11 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.dirtyWhileRendering = nil
 		if m.userScrolledUp {
+			m.viewportCache = ""
 			m.viewport.SetContent(msg.viewportContent)
 			m.restoreRenderAnchor(anchor)
 		} else {
+			m.viewportCache = ""
 			m.viewport.SetContent(msg.viewportContent)
 			m.viewport.GotoBottom()
 		}
@@ -601,6 +605,7 @@ func (m *messagesCmp) applyRender(result renderResult) {
 		sections = append(sections, recap)
 	}
 
+	m.viewportCache = ""
 	m.viewport.SetContent(
 		baseStyle.
 			Width(m.width).
@@ -770,11 +775,22 @@ func (m *messagesCmp) View() tea.View {
 		Render(
 			lipgloss.JoinVertical(
 				lipgloss.Top,
-				m.viewport.View(),
+				m.cachedViewport(),
 				m.working(),
 				m.footer(),
 			),
 		))
+}
+
+// cachedViewport avoids ANSI layout work on each editor keystroke. Content
+// changes explicitly invalidate it; scrolling and geometry form the key.
+func (m *messagesCmp) cachedViewport() string {
+	if m.viewportCache == "" || m.viewportCacheOffset != m.viewport.YOffset() || m.viewportCacheXOffset != m.viewport.XOffset() || m.viewportCacheWidth != m.width || m.viewportCacheHeight != m.height {
+		m.viewportCache = m.viewport.View()
+		m.viewportCacheXOffset = m.viewport.XOffset()
+		m.viewportCacheOffset, m.viewportCacheWidth, m.viewportCacheHeight = m.viewport.YOffset(), m.width, m.height
+	}
+	return m.viewportCache
 }
 
 type pendingToolCounts struct {
@@ -787,24 +803,19 @@ func (p pendingToolCounts) total() int {
 }
 
 func countToolsWithoutResponse(messages []message.Message) pendingToolCounts {
-	toolCalls := make([]message.ToolCall, 0)
-	toolResults := make([]message.ToolResult, 0)
-	for _, m := range messages {
-		toolCalls = append(toolCalls, m.ToolCalls()...)
-		toolResults = append(toolResults, m.ToolResults()...)
-	}
-
-	var counts pendingToolCounts
-	for _, v := range toolCalls {
-		found := false
-		for _, r := range toolResults {
-			if v.ID == r.ToolCallID {
-				found = true
-				break
-			}
+	results := make(map[string]struct{})
+	for _, msg := range messages {
+		for _, result := range msg.ToolResults() {
+			results[result.ToolCallID] = struct{}{}
 		}
-		if !found && v.Finished {
-			if v.Name == agent.TaskToolName {
+	}
+	var counts pendingToolCounts
+	for _, msg := range messages {
+		for _, call := range msg.ToolCalls() {
+			if _, found := results[call.ID]; found || !call.Finished {
+				continue
+			}
+			if call.Name == agent.TaskToolName {
 				counts.subagents++
 			} else {
 				counts.tools++

@@ -47,6 +47,7 @@ func (o ModelOverride) IsZero() bool {
 // args changed between arrivals): reusing the cached instance would run
 // the wrong model. ResetStepCache semantics are unchanged.
 type stepCacheKey struct {
+	scope   string
 	stepID  string
 	agentID string
 	model   models.ModelID
@@ -127,6 +128,8 @@ type AgentFactory interface {
 }
 
 type agentFactory struct {
+	flowSubmitter tools.FlowSubmitter
+
 	sessions    session.Service
 	messages    message.Service
 	permissions permission.Service
@@ -273,7 +276,7 @@ func (f *agentFactory) QuestionService() question.Service {
 // cannot cancel it (see NewToolSet / mcpRegistry.getTools).
 func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool, boundPeers []bridge.PeerRef, stepCtx *contextfile.StepContext, flowVars contextfile.TemplateVars, override ModelOverride) (Service, error) {
 	_ = ctx
-	cacheKey := stepCacheKey{stepID: stepID, agentID: agentID, model: override.Model, effort: override.ReasoningEffort}
+	cacheKey := stepCacheKey{scope: tools.FlowAgentScope(ctx), stepID: stepID, agentID: agentID, model: override.Model, effort: override.ReasoningEffort}
 	if stepID != "" {
 		f.mu.Lock()
 		if svc, ok := f.stepCache[cacheKey]; ok {
@@ -424,3 +427,7 @@ func resolveRegisteredPrompt(reg agentregistry.Registry, name config.AgentName) 
 	}
 	return resolveManagedPrompt(string(name), info)
 }
+
+// SetFlowSubmitter is wired before primary agents are constructed.
+func (f *agentFactory) SetFlowSubmitter(submit tools.FlowSubmitter) { f.flowSubmitter = submit }
+func (f *agentFactory) FlowSubmitter() tools.FlowSubmitter          { return f.flowSubmitter }

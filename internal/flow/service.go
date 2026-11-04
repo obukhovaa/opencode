@@ -76,6 +76,14 @@ type FlowState struct {
 
 // RunOptions configures one Service.RunWithOptions call.
 type RunOptions struct {
+	// Definition and RootSessionID attach a durable dynamic plan to a chat root.
+	Definition         *Flow
+	DefinitionSnapshot func() *Flow
+	RootSessionID      string
+	BeforeStep         func(context.Context, *Step, map[string]any) (context.Context, error)
+	MaxParallel        int
+	Attended           bool
+
 	// Fresh is the hard reset: every flow_states row and the whole session
 	// tree are deleted before the flow starts from step 0 (`fresh` on
 	// POST /flow/run, `-D` on the CLI).
@@ -292,7 +300,13 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 // RunWithOptions executes flowID for sessionPrefix. See RunOptions.
 func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flowID string, args map[string]any, opts RunOptions) (<-chan agentpkg.AgentEvent, <-chan *FlowState, error) {
 	fresh := opts.Fresh
-	f, err := Get(flowID)
+	f := opts.Definition
+	var err error
+	if f == nil {
+		f, err = Get(flowID)
+	} else {
+		err = validateFlow(f)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -319,6 +333,10 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 	// step: MCP flowArgHeaders are stamped from them, never from step args
 	// (which struct output can grow) or persisted rows.
 	ctx = tools.WithJobArgs(ctx, args)
+	ctx = context.WithValue(ctx, dynamicAttendedKey{}, opts.Attended)
+	if opts.DefinitionSnapshot != nil {
+		ctx = context.WithValue(ctx, dynamicDefinitionKey{}, opts.DefinitionSnapshot)
+	}
 
 	if sessionPrefix == "" {
 		var prefixErr error
@@ -334,7 +352,11 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 	// form; shared (slash-free) flow IDs pass through unchanged.
 	sessionFlowID := sessionSafeFlowID(flowID)
 	rootSessionID := fmt.Sprintf("%s-%s-%s", sessionPrefix, sessionFlowID, f.Spec.Steps[0].ID)
+	if opts.RootSessionID != "" {
+		rootSessionID = opts.RootSessionID
+	}
 
+	ctx = tools.WithFlowAgentScope(ctx, rootSessionID)
 	existingStates, err := s.querier.ListFlowStatesByRootSession(ctx, rootSessionID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, nil, fmt.Errorf("checking existing flow states: %w", err)
@@ -342,6 +364,26 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 
 	agentEvents := make(chan agentpkg.AgentEvent, 100)
 	flowStates := make(chan *FlowState, 100)
+
+	runLock, err := acquireRunOwnership(rootSessionID)
+	if err != nil {
+		replayOnly := !opts.Fresh && !opts.RecoverRunning
+		hasLiveRow := false
+		for _, row := range existingStates {
+			if row.Status == string(FlowStatusRunning) {
+				hasLiveRow = true
+			}
+		}
+		if !replayOnly || !hasLiveRow {
+			return nil, nil, fmt.Errorf("flow has a live owner: %w", err)
+		}
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			_ = runLock.Release()
+		}
+	}()
 
 	if fresh {
 		if err := s.querier.DeleteFlowStatesByRootSession(ctx, rootSessionID); err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -511,6 +553,10 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 	// and written only by the scheduler goroutine below (the single
 	// consumer of nextSteps), so no locking is needed — unlike
 	// startedSteps, nothing touches it before that goroutine starts.
+	var stepSlots chan struct{}
+	if opts.MaxParallel > 0 {
+		stepSlots = make(chan struct{}, opts.MaxParallel)
+	}
 	fallbackEntries := make(map[string]int, len(f.Spec.Steps))
 	maxFallbackEntries := f.Spec.EffectiveMaxFallbackEntries()
 
@@ -594,13 +640,37 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 
 			go func(w stepWork, sessID string) {
 				defer wg.Done()
-				s.runStep(ctx, f, w.step, sessID, rootSessionID, w.args, w.prevStep, &wg, agentEvents, flowStates, nextSteps, w.postpone, w.resumed, w.iteration)
+				if stepSlots != nil {
+					select {
+					case stepSlots <- struct{}{}:
+						defer func() { <-stepSlots }()
+					case <-ctx.Done():
+						return
+					}
+				}
+				stepCtx := ctx
+				if opts.BeforeStep != nil {
+					var hookErr error
+					stepCtx, hookErr = opts.BeforeStep(ctx, &w.step, w.args)
+					if hookErr != nil {
+						s.ensureStepEntryRow(ctx, f, w.step, sessID, rootSessionID, w.args, w.iteration, w.prevStep)
+						s.handleStepError(ctx, w.step, sessID, rootSessionID, f.ID, w.args, w.iteration, hookErr, &wg, agentEvents, flowStates, nextSteps, f)
+						return
+					}
+				}
+				runDefinition := f
+				if opts.DefinitionSnapshot != nil {
+					runDefinition = opts.DefinitionSnapshot()
+				}
+				s.runStep(stepCtx, runDefinition, w.step, sessID, rootSessionID, w.args, w.prevStep, &wg, agentEvents, flowStates, nextSteps, w.postpone, w.resumed, w.iteration)
 			}(work, stepSessionID)
 		}
 	}()
 
+	handedOff = true
 	go func() {
 		wg.Wait()
+		_ = runLock.Release()
 		close(nextSteps)
 		close(agentEvents)
 		close(flowStates)
@@ -696,17 +766,20 @@ func (s *service) runStep(
 		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, fmt.Errorf("resolving session: %w", err), wg, agentEvents, flowStates, nextSteps, f)
 		return
 	}
-
-	s.permissions.AutoApproveSession(sess.ID)
-	// A flow step runs unattended: no TUI dialog and — unless it's an
-	// `interactive: true` step — no chat binding either, so the question
-	// tool answers itself rather than blocking on a prompt nobody sees.
-	// Marked for interactive steps too: their own session additionally
-	// carries the interactive marker (below), which the question tool
-	// checks first, while subagents they spawn are NOT bridge-bound and
-	// must keep auto-answering (they inherit this mark through the
-	// permission session-link chain).
-	s.permissions.MarkUnattendedSession(sess.ID)
+	if attended, _ := ctx.Value(dynamicAttendedKey{}).(bool); attended {
+		s.permissions.RemoveUnattendedSession(sess.ID)
+		// Revoke the standalone runner's per-step auto-approval before linking
+		// the TUI root. The root's own user-selected approval policy is preserved.
+		if sess.ID != rootSessionID {
+			s.permissions.RemoveAutoApproveSession(sess.ID)
+			s.permissions.LinkSession(sess.ID, rootSessionID)
+		}
+		s.permissions.MarkInteractiveSession(sess.ID)
+		defer s.permissions.RemoveInteractiveSession(sess.ID)
+	} else {
+		s.permissions.AutoApproveSession(sess.ID)
+		s.permissions.MarkUnattendedSession(sess.ID)
+	}
 
 	status := FlowStatusRunning
 	if prevState != nil && postpone {
@@ -831,7 +904,7 @@ func (s *service) runStep(
 		FlowID:        f.ID,
 		StepID:        step.ID,
 		Status:        status,
-		Args:          args,
+		Args:          copyArgs(args),
 		Iteration:     iteration,
 		UpdatedAt:     updatedAt,
 	}
@@ -1439,6 +1512,9 @@ doneRetry:
 	// Resolve next steps and pre-check maxIterations BEFORE publishing the
 	// completed state. This way a max-iter exhaustion produces a single
 	// terminal `failed` event (no `completed → failed` flip on the wire).
+	if snapshot, ok := ctx.Value(dynamicDefinitionKey{}).(func() *Flow); ok {
+		f = snapshot()
+	}
 	nextResolved := resolveNextSteps(step.Rules, f.Spec.Steps, args, stepVars)
 	for _, rs := range nextResolved {
 		isSelfRoute := rs.step.ID == step.ID && !rs.postpone

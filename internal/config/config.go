@@ -208,6 +208,7 @@ type Agent struct {
 	// through the compact_session tool. Nil or disabled: the tool is not
 	// registered.
 	SelfCompact *SelfCompact `json:"selfCompact,omitempty"`
+	DynamicFlow *DynamicFlow `json:"dynamicFlow,omitempty"`
 	// Context scopes which context files feed this agent's system prompt
 	// instead of the global contextPaths (paths, replace/append mode, and
 	// the nested-disclosure opt-out). Defined in internal/contextfile so
@@ -1347,6 +1348,10 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 		updatedAgent := cfg.Agents[name]
 		updatedAgent.SelfCompact = sc
 		cfg.Agents[name] = updatedAgent
+	}
+
+	if !ValidDynamicFlow(agent.DynamicFlow) {
+		return fmt.Errorf("agent %s: invalid dynamicFlow.flowComplexity %q", name, agent.DynamicFlow.FlowComplexity)
 	}
 
 	// Check if model exists

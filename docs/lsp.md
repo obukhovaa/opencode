@@ -170,3 +170,12 @@ export OPENCODE_DISABLE_LSP_DOWNLOAD=true
 ```
 
 When disabled, only servers already on your system PATH or in `~/.opencode/bin/` are used. Missing servers are silently skipped.
+
+## TUI activation
+
+Open `/lsp` to inspect configured and built-in language servers. Select a server
+and press Enter to install it (when a supported installer exists) and activate
+it in the running process. The operation runs asynchronously and reports errors
+in the page. Servers without an installer must already be on PATH. Successful
+activation saves the server configuration. Press `d` to deactivate the selected
+server and persist it as disabled. Escape returns to chat.

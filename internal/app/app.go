@@ -35,6 +35,10 @@ import (
 )
 
 type App struct {
+	flowQuery   db.QuerierWithTx
+	dynamicMu   sync.Mutex
+	dynamicRuns map[string]*dynamicRun
+
 	Sessions      session.Service
 	Messages      message.Service
 	History       history.Service
@@ -236,6 +240,7 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 		MCPRegistry:   mcpRegistry,
 		AgentFactory:  factory,
 		Flows:         flows,
+		flowQuery:     q,
 		Crons:         cronSvc,
 		Todos:         todoStore,
 		Questions:     questionSvc,
@@ -266,6 +271,9 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 	// start lsp in background
 	go lspSvc.Init(ctx)
 
+	if setter, ok := factory.(interface{ SetFlowSubmitter(tools.FlowSubmitter) }); ok {
+		setter.SetFlowSubmitter(app.submitOrdinaryFlow)
+	}
 	primaryAgents, err := factory.InitPrimaryAgents(ctx, cliSchema)
 	if err != nil {
 		return nil, err
@@ -362,6 +370,7 @@ func (app *App) initTheme() {
 
 // Shutdown performs a clean shutdown of the application
 func (app *App) Shutdown() {
+	app.ShutdownFlows(5 * time.Second)
 	app.ShutdownQueues()
 	if app.CronScheduler != nil {
 		app.CronScheduler.Stop()
@@ -391,6 +400,7 @@ func (app *App) shutdownMCP(budget time.Duration) {
 
 // ForceShutdown performs an aggressive shutdown for non-interactive mode
 func (app *App) ForceShutdown() {
+	app.ShutdownFlows(time.Second)
 	logging.Info("Starting force shutdown")
 	if app.CronScheduler != nil {
 		app.CronScheduler.Stop()

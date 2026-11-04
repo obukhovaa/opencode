@@ -215,6 +215,7 @@ type agent struct {
 	agentID          config.AgentName
 	toolsCh          <-chan tools.BaseTool
 	toolsOnce        sync.Once
+	toolsMu          sync.RWMutex
 	tools            []tools.BaseTool
 	toolsResolved    atomic.Bool
 	provider         provider.Provider

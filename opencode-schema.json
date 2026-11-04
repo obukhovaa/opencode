@@ -116,6 +116,48 @@
           "default": false,
           "description": "Whether the agent is disabled and excluded from the registry entirely"
         },
+        "dynamicFlow": {
+          "additionalProperties": false,
+          "description": "Opt-in persistent dynamic flows for primary agents.",
+          "properties": {
+            "enabled": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
+              "default": false,
+              "description": "Enable dynamic planning and the flow tool."
+            },
+            "flowComplexity": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "XS",
+                    "S",
+                    "M",
+                    "L",
+                    "XL",
+                    "XXL"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "description": "Environment reference; the resolved value is validated at runtime.",
+                  "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                  "type": "string"
+                }
+              ],
+              "description": "Fixed resource ceiling. Omit to let the builder choose."
+            }
+          },
+          "type": "object"
+        },
         "hidden": {
           "anyOf": [
             {
@@ -607,6 +649,48 @@
             ],
             "default": false,
             "description": "Whether the agent is disabled and excluded from the registry entirely"
+          },
+          "dynamicFlow": {
+            "additionalProperties": false,
+            "description": "Opt-in persistent dynamic flows for primary agents.",
+            "properties": {
+              "enabled": {
+                "anyOf": [
+                  {
+                    "type": "boolean"
+                  },
+                  {
+                    "description": "Environment reference; the resolved value is validated at runtime.",
+                    "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                    "type": "string"
+                  }
+                ],
+                "default": false,
+                "description": "Enable dynamic planning and the flow tool."
+              },
+              "flowComplexity": {
+                "anyOf": [
+                  {
+                    "enum": [
+                      "XS",
+                      "S",
+                      "M",
+                      "L",
+                      "XL",
+                      "XXL"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "description": "Environment reference; the resolved value is validated at runtime.",
+                    "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                    "type": "string"
+                  }
+                ],
+                "description": "Fixed resource ceiling. Omit to let the builder choose."
+              }
+            },
+            "type": "object"
           },
           "hidden": {
             "anyOf": [
