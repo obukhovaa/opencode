@@ -38,8 +38,15 @@ test "$(git -C "$sandbox" remote get-url origin)" = https://example.invalid/sand
 SH
 chmod +x "$WORK/bin/go" "$WORK/repo/scripts/test/probe.sh"
 
+# Put the release tag first and exceed the pipe buffer: the hook must drain all
+# refs so git-push's stdin writer does not die with SIGPIPE (exit 141).
 (cd "$WORK/repo" &&
-    printf 'refs/tags/v9.9.9 %040d refs/tags/v9.9.9 %040d\n' 1 0 |
+    {
+        printf 'refs/tags/v9.9.9 %040d refs/tags/v9.9.9 %040d\n' 1 0
+        for _ in $(seq 1 2000); do
+            printf 'refs/heads/main %040d refs/heads/main %040d\n' 1 0
+        done
+    } |
     env PATH="$WORK/bin:$PATH" GIT_DIR="$WORK/repo/.git" \
         GIT_WORK_TREE="$WORK/repo" GIT_COMMON_DIR="$WORK/repo/.git" \
         GIT_INDEX_FILE="$WORK/repo/.git/index" \
