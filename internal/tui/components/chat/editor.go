@@ -63,7 +63,17 @@ type recognizedInvocation struct {
 	rejects bool
 }
 
+// FocusActivitiesMsg moves focus to the activity strip without changing the draft.
+type FocusActivitiesMsg struct{}
+
+type flowSteeringResult struct {
+	sessionID string
+	text      string
+	err       error
+}
+
 type editorCmp struct {
+	failedSteering  map[string]string
 	width           int
 	height          int
 	app             *app.App
@@ -349,6 +359,16 @@ func (m *editorCmp) send() tea.Cmd {
 	value = expansion.Prompt
 
 	attachments := m.attachments
+	if m.app.FlowBusy(m.session.ID) {
+		if len(attachments) > 0 {
+			return util.ReportWarn("Flow steering accepts text; keep attachments for the next chat turn")
+		}
+		a, id, text := m.app, m.session.ID, value
+		m.textarea.Reset()
+		return func() tea.Msg {
+			return flowSteeringResult{sessionID: id, text: text, err: a.QueueFlowSteering(id, text)}
+		}
+	}
 
 	// FIFO routing (Decision 8, task 3.1): enqueue whenever the queue is
 	// non-empty OR the session is busy. Direct dispatch is only permitted
@@ -739,6 +759,24 @@ func (m *editorCmp) refreshSelection() {
 func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
+	case flowSteeringResult:
+		if msg.err != nil {
+			if msg.sessionID != m.session.ID {
+				if m.failedSteering == nil {
+					m.failedSteering = make(map[string]string)
+				}
+				m.failedSteering[msg.sessionID] += msg.text + "\n"
+				return m, util.ReportError(msg.err)
+			}
+			draft := m.textarea.Value()
+			if draft != "" {
+				draft = "\n" + draft
+			}
+			m.textarea.SetValue(msg.text + draft)
+			return m, util.ReportError(msg.err)
+		}
+		return m, nil
+
 	case ToggleVimModeMsg:
 		if m.vimHandler != nil {
 			// Disable vim mode
@@ -794,6 +832,10 @@ func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case SessionSelectedMsg:
 		if msg.ID != m.session.ID {
 			m.session = msg
+			if failed := m.failedSteering[msg.ID]; failed != "" {
+				m.textarea.SetValue(failed + m.textarea.Value())
+				delete(m.failedSteering, msg.ID)
+			}
 			if m.mode == modeShell {
 				m.exitShellMode()
 				return m, util.CmdHandler(ShellModeChangedMsg{ShellMode: false})
@@ -824,6 +866,9 @@ func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea, cmd = m.textarea.Update(msg)
 		return m, cmd
 	case tea.KeyPressMsg:
+		if m.mode == modeNormal && !m.shellExecuting && ((msg.String() == "up" && m.textarea.Value() == "") || (msg.String() == "k" && m.vimHandler != nil && m.vimHandler.Mode() == vim.ModeNormal && m.textarea.Line() == 0)) {
+			return m, util.CmdHandler(FocusActivitiesMsg{})
+		}
 		if m.shellExecuting {
 			// Everything else is swallowed while a command runs, but the cancel
 			// keys must not be: without them a slow command locks the editor

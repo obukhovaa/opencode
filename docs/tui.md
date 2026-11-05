@@ -83,3 +83,23 @@ Auto-approve mode skips interactive permission dialogs for `ask`-resolved permis
 - **Subagents**: child task sessions inherit auto-approve from the parent
 - **Non-interactive mode**: already auto-approves all permissions, flag is ignored
 - **Questions still ask**: auto-approve covers tool permissions, not decisions — the `question` tool keeps prompting you (TUI dialog, chat bridge, API). It answers itself with the first (recommended) option only where nobody could answer: a headless `opencode -p` run, a flow step, or a cron job firing on an unwatched session
+
+## Service views
+
+The transcript uses the full available width. `/mcp` opens live MCP controls,
+`/lsp` opens language-server activation, and `/modified-files` shows files
+changed in the current session and its child sessions. Use arrows or j/k to
+select an entry, PgUp/PgDn to scroll its details, and Escape to return to chat.
+
+## Running activities
+
+`/tasks` lists background shell commands and monitors for the current session;
+`/subagents` lists running and completed child agents. `/agents` continues to
+show configured agent types. Use Up/Down or `j`/`k` to select an activity, Enter
+to inspect its command or prompt and current output, and `x` to cancel it.
+Escape returns from details to the list, then to chat. Output previews are bounded.
+
+An activity strip above the editor shows running task and subagent counts. Press
+Up with an empty editor, or `k` in vim NORMAL mode, to focus it. Left/Right chooses
+a category, Enter opens it, and Down/Escape returns to editing. Draft text stays
+intact. Activities remain inspectable while the main agent is working.

@@ -288,7 +288,17 @@ func NewToolSet(
 			delivery := ResolveSchemaDelivery(info, overrideModel)
 			logging.Info("Using structured output", "agent", agentID, "delivery", string(delivery), "schema", resolved)
 			result <- tools.NewStructOutputToolWithDelivery(resolved, delivery)
+		} else if info.DynamicFlow != nil && info.DynamicFlow.Enabled && info.Mode == config.AgentModeAgent && ResolveSchemaDelivery(info, overrideModel) == tools.SchemaDeliveryMessage {
+			result <- tools.NewDormantStructOutputTool()
 		}
+	}
+
+	if info.DynamicFlow != nil && info.DynamicFlow.Enabled && info.Mode == config.AgentModeAgent && reg.IsToolEnabled(agentID, tools.FlowToolName) {
+		var submit tools.FlowSubmitter
+		if source, ok := factory.(interface{ FlowSubmitter() tools.FlowSubmitter }); ok {
+			submit = source.FlowSubmitter()
+		}
+		result <- tools.NewFlowTool(submit)
 	}
 
 	// compact_session is opt-in through selfCompact.enabled, not through the
@@ -371,6 +381,13 @@ func (a *agent) Tools() []tools.BaseTool {
 // ResolvedTools returns the current tool set without blocking.
 // The bool is true once tools have finished loading.
 func (a *agent) ResolvedTools() ([]tools.BaseTool, bool) {
+	// The resolver holds the writer lock while it drains asynchronous MCP
+	// discovery. A blocking read here would freeze the TUI's first View (or
+	// a later live-tool refresh) until every server finishes connecting.
+	if !a.toolsMu.TryRLock() {
+		return nil, false
+	}
+	defer a.toolsMu.RUnlock()
 	if a.toolsResolved.Load() {
 		return a.tools, true
 	}
@@ -378,6 +395,8 @@ func (a *agent) ResolvedTools() ([]tools.BaseTool, bool) {
 }
 
 func (a *agent) resolveTools() []tools.BaseTool {
+	a.toolsMu.Lock()
+	defer a.toolsMu.Unlock()
 	a.toolsOnce.Do(func() {
 		toolSet := make([]tools.BaseTool, 0, 20)
 		toolNames := make([]string, 0, 20)

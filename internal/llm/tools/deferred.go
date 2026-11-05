@@ -106,3 +106,28 @@ func (w *DeferredWrapper) AllowParallelism(call ToolCall, allCalls []ToolCall) b
 }
 
 func (w *DeferredWrapper) IsBaseline() bool { return w.inner.IsBaseline() }
+
+// RebindDeferredActivationSequence preserves existing per-session discovery
+// order when a toolset refresh mixes retained and newly discovered wrappers.
+// Call only while agent turns are idle. Otherwise a new wrapper's fresh counter
+// could place its first activation before tools already in the cached prefix.
+func RebindDeferredActivationSequence(all []BaseTool) {
+	sequence := &atomic.Int64{}
+	for _, t := range all {
+		if w, ok := t.(*DeferredWrapper); ok {
+			w.mu.RLock()
+			value := w.seq.Load()
+			w.mu.RUnlock()
+			if value > sequence.Load() {
+				sequence.Store(value)
+			}
+		}
+	}
+	for _, t := range all {
+		if w, ok := t.(*DeferredWrapper); ok {
+			w.mu.Lock()
+			w.seq = sequence
+			w.mu.Unlock()
+		}
+	}
+}

@@ -160,3 +160,13 @@ restart — see the freshness table in
 A reference that cannot be resolved and has nothing cached fails agent
 construction naming the path; the agent never runs on an empty system prompt
 and never silently falls back to the built-in prompt for its name.
+
+### Dynamic workflows
+
+`dynamicFlow` is an optional object on a primary agent in `.opencode.json` or
+markdown frontmatter. `enabled` defaults to `false`; enabling it registers the
+`flow` tool, subject to the agent's `tools`/`allowTools` restrictions. Subagents
+never receive this tool. `flowComplexity`, when present, must be exactly one of
+`XS`, `S`, `M`, `L`, `XL`, `XXL`; when absent the builder selects a size. An explicit
+JSON object overrides the frontmatter object, including `enabled: false`.
+See [dynamic flows](flows.md#dynamic-flows-in-the-tui) for limits and recovery.

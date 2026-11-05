@@ -48,7 +48,12 @@ func formatTokenCount(n int64) string {
 // title. Sections are joined with " • " and are skipped entirely when empty,
 // so a freshly created session renders as just "updated just now".
 func formatSessionMetadata(s session.Session, now time.Time) string {
-	sections := make([]string, 0, 2)
+	sections := make([]string, 0, 3)
+	if s.DynamicFlow {
+		sections = append(sections, "dynamic flow")
+	} else if s.FlowID != "" {
+		sections = append(sections, "flow")
+	}
 
 	sections = append(sections, "updated "+formatRelativeTime(s.UpdatedAt, now))
 

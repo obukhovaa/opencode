@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/opencode-ai/opencode/internal/bridge"
+	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/redact"
@@ -122,6 +123,12 @@ func TestSchemaEnumsMatchRuntimeValidators(t *testing.T) {
 		// direction. Words someone might reasonably write.
 		probe []string
 	}{
+		{
+			name:    "agents.dynamicFlow.flowComplexity",
+			path:    []string{"agents", "*", "dynamicFlow", "flowComplexity"},
+			accepts: func(v string) bool { _, ok := config.DynamicFlowLimits(v); return ok },
+			probe:   []string{"xs", "s", "medium", "XXXL", "auto", " M", "M ", ""},
+		},
 		{
 			name: "router.toolUpdateVerbosity",
 			path: []string{"router", "toolUpdateVerbosity"},

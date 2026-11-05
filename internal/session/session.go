@@ -19,6 +19,10 @@ import (
 var ErrEmptyTitle = errors.New("session title cannot be empty")
 
 type Session struct {
+	// FlowID and DynamicFlow are display annotations populated from flow state.
+	// They are not persisted on the session row.
+	FlowID                string
+	DynamicFlow           bool
 	ID                    string
 	ProjectID             string
 	ParentSessionID       string
