@@ -18,10 +18,38 @@ import (
 // SetMCPPolicy changes only the selected agent. Shared transports stay alive for
 // other agents. Allowlists become equivalent deny-by-default tool maps.
 func (a *App) SetMCPPolicy(id config.AgentName, server, action string) error {
+	// Reserve policy admission without holding the UI's flow-status mutex
+	// across potentially slow MCP network discovery.
+	a.dynamicMu.Lock()
+	if len(a.dynamicRuns) != 0 {
+		a.dynamicMu.Unlock()
+		return fmt.Errorf("a flow is active; retry MCP controls after it pauses or finishes")
+	}
+	if a.mcpPolicyChanging {
+		a.dynamicMu.Unlock()
+		return fmt.Errorf("MCP controls are already updating; retry when they finish")
+	}
+	a.mcpPolicyChanging = true
+	a.dynamicMu.Unlock()
+	defer func() {
+		a.dynamicMu.Lock()
+		a.mcpPolicyChanging = false
+		a.dynamicMu.Unlock()
+	}()
 	return agent.WithIdleToolPolicy(func() error {
 		info, ok := a.Registry.Get(string(id))
 		if !ok {
 			return fmt.Errorf("unknown agent %q", id)
+		}
+		svc := a.PrimaryAgents[id]
+		if svc == nil {
+			svc = a.ActiveAgent()
+		}
+		if svc == nil {
+			return fmt.Errorf("agent %q is unavailable", id)
+		}
+		if _, ready := svc.ResolvedTools(); !ready {
+			return fmt.Errorf("agent tools are still loading; retry MCP controls when discovery finishes")
 		}
 		if _, ok := config.ResolveMCPServers()[server]; !ok {
 			return fmt.Errorf("unknown server %q", server)
@@ -76,12 +104,8 @@ func (a *App) SetMCPPolicy(id config.AgentName, server, action string) error {
 			agentregistry.SetRuntimeTools(a.Registry, string(id), enabled, deferred)
 		}
 		info, _ = a.Registry.Get(string(id))
-		svc := a.PrimaryAgents[id]
-		if svc == nil {
-			svc = a.ActiveAgent()
-		}
 		stream := agent.NewToolSet(&info, a.Registry, a.Permissions, a.History, a.LspService, a.Sessions, a.Messages, a.MCPRegistry, a.AgentFactory, "")
-		return agent.ReplaceToolset(svc, stream)
+		return agent.ReplaceMCPToolset(svc, stream, server)
 	})
 }
 

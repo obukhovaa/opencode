@@ -17,8 +17,6 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/task"
 	"github.com/opencode-ai/opencode/internal/tui/components/chat"
-	"github.com/opencode-ai/opencode/internal/tui/styles"
-	"github.com/opencode-ai/opencode/internal/tui/theme"
 	"github.com/opencode-ai/opencode/internal/tui/util"
 )
 
@@ -175,7 +173,7 @@ func (p *activitiesPage) refresh() tea.Cmd {
 		detailID = p.items[p.selected].id
 	}
 	p.generation++
-	return loadActivities(p.app, p.sessionID, detailID, p.width, p.generation)
+	return loadActivities(p.app, p.sessionID, detailID, max(1, pageDimensions(p.width, p.height).width-4), p.generation)
 }
 func (p *activitiesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
@@ -277,36 +275,43 @@ func (p *activitiesPage) updateDetail() {
 	}
 }
 func (p *activitiesPage) View() tea.View {
-	title := "Background tasks"
+	g := pageDimensions(p.width, p.height)
+	title, subtitle := "Background tasks", "Shell commands and monitors in this conversation."
+	empty, help := "No background tasks", "Running shell commands and monitors will appear here."
 	if p.subagents {
-		title = "Subagents"
+		title, subtitle = "Subagents", "Delegated work in this conversation."
+		empty, help = "No subagent activity", "Delegated agents appear here with their prompt and current output."
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s — Enter details · x cancel · Esc back\n\n", title)
-	if p.detail {
-		b.WriteString(p.viewport.View())
+	summary := pageCount(p.selected, len(p.items))
+	footer := "↑↓ select · Enter inspect · x cancel · Esc back"
+	var body string
+	if len(p.items) == 0 {
+		body = pagePanel("Overview", pageEmpty(empty, help), g.width, g.bodyHeight, false)
+	} else if p.detail {
+		item := p.items[p.selected]
+		subtitle = item.title
+		summary = pageStatus(item.state)
+		body = pagePanel("Prompt & output", p.viewport.View(), g.width, g.bodyHeight, true)
+		footer = "↑↓ / PgUp/PgDn scroll · x cancel · Esc list"
 	} else {
-		if len(p.items) == 0 {
-			b.WriteString("No activities in this session.")
-		}
-		start := max(0, p.selected-max(1, p.height-5)+1)
-		for i := start; i < len(p.items) && i < start+max(1, p.height-4); i++ {
+		count := max(1, (g.bodyHeight-2)/2)
+		start := max(0, p.selected-count+1)
+		rows := make([]string, 0, count)
+		for i := start; i < min(len(p.items), start+count); i++ {
 			item := p.items[i]
-			mark := " "
-			if i == p.selected {
-				mark = ">"
-			}
-			fmt.Fprintf(&b, "%s %s  %s\n", mark, item.state, ansi.Truncate(ansi.Strip(item.title), max(1, p.width-16), "…"))
+			rows = append(rows, pageRow(item.title, item.state, i == p.selected, g.width-4))
 		}
+		body = pagePanel("Activities", strings.Join(rows, "\n"), g.width, g.bodyHeight, true)
 	}
-	rendered := styles.BaseStyle().Width(p.width).Height(p.height).MaxHeight(p.height).Render(b.String())
-	return tea.NewView(styles.ForceReplaceBackgroundWithLipgloss(rendered, theme.CurrentTheme().Background()))
+	return tea.NewView(pageFrame(p.width, p.height, title, subtitle, summary, body, footer))
 }
 func (p *activitiesPage) SetSize(w, h int) tea.Cmd {
 	p.width = w
 	p.height = h
-	p.viewport.SetWidth(w)
-	p.viewport.SetHeight(max(1, h-3))
+	g := pageDimensions(w, h)
+	p.viewport.SoftWrap = true
+	p.viewport.SetWidth(max(1, g.width-4))
+	p.viewport.SetHeight(max(1, g.bodyHeight-2))
 	return nil
 }
 func (p *activitiesPage) GetSize() (int, int)        { return p.width, p.height }

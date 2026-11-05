@@ -79,3 +79,25 @@ connections remain available to other agents.
 An agent using `allowTools` is converted to an equivalent `tools` map with a
 `"*": false` default when its server policy is edited. Other allowed patterns
 remain enabled. This keeps the configuration's tools/allowTools exclusivity.
+
+Tool controls report “still loading” while initial discovery is pending, rather
+than waiting behind startup. They also require active flows to pause or finish,
+including the gaps between their individual steps.
+
+### Prompt-cache behavior of live controls
+
+An unchanged reconnect keeps the same tool contracts, descriptions and existing
+per-session deferred discoveries. Refreshing one server does not rebuild other
+servers' tools or unrelated dynamic descriptions such as `router_send`'s peer
+snapshot. Newly discovered deferred tools append after the session's already
+activated tools on providers using client-side tool search.
+
+Enable/disable, switching eager/deferred delivery, or a server changing its tool
+catalog can change the serialized tools prefix. Those are real configuration
+changes and may invalidate cached tools and subsequent system/message prefixes;
+the application does not advertise disabled schemas to conceal the change.
+Disabled MCP calls are also denied at execution time, including stale cached
+flow-step tool instances. Once the configuration settles, subsequent requests
+again share a stable prefix. Native server-side discovery of an already-deferred
+tool is different: it keeps `defer_loading` stable and does not require changing
+the tool declarations. See [deferred tools](deferred-tools.md).

@@ -70,6 +70,9 @@ func flowKey(root string) string {
 func (app *App) beginFlow(root, status string) (context.Context, *dynamicRun, func(), error) {
 	app.dynamicMu.Lock()
 	defer app.dynamicMu.Unlock()
+	if app.mcpPolicyChanging {
+		return nil, nil, nil, fmt.Errorf("MCP tools are updating; retry the flow when they finish")
+	}
 	if app.dynamicRuns == nil {
 		app.dynamicRuns = make(map[string]*dynamicRun)
 	}
@@ -244,6 +247,7 @@ func (app *App) QueueFlowSteering(root, text string) error {
 func (app *App) executeFlow(ctx context.Context, root string, run *dynamicRun, m flow.DynamicManifest, recover bool) error {
 	limits, _ := config.DynamicFlowLimits(m.Complexity)
 	if !m.Standalone {
+		ctx = agentpkg.WithPrimaryFlowPrefix(ctx, app.PrimaryAgents[config.AgentName(m.Agent)], root)
 		ctx = tools.WithFlowTaskLimit(ctx, limits.MaxParallel)
 		ctx = tools.WithFlowTaskTurns(ctx, limits.MaxTurns)
 	}

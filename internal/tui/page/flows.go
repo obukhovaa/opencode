@@ -12,7 +12,6 @@ import (
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/tui/components/chat"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
-	"github.com/opencode-ai/opencode/internal/tui/theme"
 )
 
 const FlowsPage PageID = "flows"
@@ -57,8 +56,11 @@ func (p *flowsPage) Init() tea.Cmd       { return nil }
 func (p *flowsPage) GetSize() (int, int) { return p.width, p.height }
 func (p *flowsPage) SetSize(w, h int) tea.Cmd {
 	p.width, p.height = w, h
-	p.viewport.SetWidth(max(1, w-4))
-	p.viewport.SetHeight(max(1, h-5))
+	g := pageDimensions(w, h)
+	_, _, dw, dh, _ := pageSplit(g.width, g.bodyHeight)
+	p.viewport.SoftWrap = true
+	p.viewport.SetWidth(max(1, dw-4))
+	p.viewport.SetHeight(max(1, dh-2))
 	p.renderContent()
 	return nil
 }
@@ -146,10 +148,12 @@ func (p *flowsPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "up", "k":
 			p.selected = max(0, p.selected-1)
+			p.viewport.GotoTop()
 			p.renderContent()
 			return p, nil
 		case "down", "j":
 			p.selected = min(max(0, len(p.snapshot.Steps)-1), p.selected+1)
+			p.viewport.GotoTop()
 			p.renderContent()
 			return p, nil
 		case "c":
@@ -169,35 +173,63 @@ func (p *flowsPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, cmd
 }
 func (p *flowsPage) renderContent() {
-	var b strings.Builder
-	if p.err != nil {
-		fmt.Fprintf(&b, "Error: %v\n\n", p.err)
+	if p.selected >= len(p.snapshot.Steps) {
+		p.viewport.SetContent("")
+		return
 	}
-	if p.snapshot.FlowID == "" && p.snapshot.Running {
-		fmt.Fprintf(&b, "Flow %s. The agent is preparing and validating the workflow.\n", p.snapshot.Status)
-	} else if p.snapshot.FlowID == "" {
-		b.WriteString("No flow in this session. Start one with /flow <goal>.")
-	} else {
-		fmt.Fprintf(&b, "%s  [%s]\n\n", p.snapshot.FlowID, p.snapshot.Status)
-		for i, step := range p.snapshot.Steps {
-			marker := "  "
-			if i == p.selected {
-				marker = "> "
-			}
-			fmt.Fprintf(&b, "%s%s  %s  agent: %s  iteration: %d  running agents: %d\n", marker, step.ID, step.Status, step.Agent, step.Iteration, step.RunningAgents)
-		}
-		if p.selected < len(p.snapshot.Steps) {
-			step := p.snapshot.Steps[p.selected]
-			fmt.Fprintf(&b, "\nPrompt\n%s\n\nCurrent output\n%s", step.Prompt, step.Output)
-		}
+	step := p.snapshot.Steps[p.selected]
+	output := step.Output
+	if strings.TrimSpace(output) == "" {
+		output = "Output will appear when this step runs."
 	}
-	p.viewport.SetContent(b.String())
+	content := styles.BaseStyle().Bold(true).Render("Prompt") + "\n" + pagePlain(step.Prompt) + "\n\n" + styles.BaseStyle().Bold(true).Render("Current output") + "\n" + pagePlain(output)
+	offset := p.viewport.YOffset()
+	p.viewport.SetContent(content)
+	p.viewport.SetYOffset(offset)
 }
 func (p *flowsPage) View() tea.View {
-	footer := "↑/↓ select step · c cancel step · Enter actions · r resume · PgUp/PgDown scroll · Esc back"
+	g := pageDimensions(p.width, p.height)
+	subtitle := "Follow each step, inspect its work and control execution."
+	footer := "↑↓ step · Enter actions · c cancel · r resume · PgUp/PgDn output · Esc back"
 	if p.choosing {
-		footer = "Choose next action: r resume · n skip step · t terminate · any other key dismiss"
+		footer = "r resume · n skip step · t terminate · any other key dismiss"
+		subtitle = "Choose how to continue the selected step."
 	}
-	content := "Flow progress\n\n" + p.viewport.View() + "\n" + footer
-	return tea.NewView(styles.ForceReplaceBackgroundWithLipgloss(styles.BaseStyle().Width(p.width).Height(p.height).Render(content), theme.CurrentTheme().Background()))
+	if p.err != nil {
+		subtitle = "Error: " + p.err.Error()
+	}
+	summary := ""
+	var body string
+	if p.snapshot.FlowID == "" {
+		title, help := "No flow in this session", "Use /flow <goal> to plan and run a workflow."
+		if p.snapshot.Running {
+			title, help = "Preparing your workflow", "The agent is building and validating the plan."
+			summary = pageStatus(p.snapshot.Status)
+		}
+		body = pagePanel("Overview", pageEmpty(title, help), g.width, g.bodyHeight, false)
+	} else {
+		summary = pageStatus(p.snapshot.Status)
+		subtitle = p.snapshot.FlowID
+		if p.err != nil {
+			subtitle = "Error: " + p.err.Error()
+		}
+		if p.choosing {
+			subtitle = "Choose how to continue the selected step."
+		}
+		lw, lh, dw, dh, wide := pageSplit(g.width, g.bodyHeight)
+		count := max(1, (lh-2)/2)
+		start := max(0, p.selected-count+1)
+		rows := []string{}
+		for i := start; i < min(len(p.snapshot.Steps), start+count); i++ {
+			step := p.snapshot.Steps[i]
+			rows = append(rows, pageRow(fmt.Sprintf("%02d  %s", i+1, step.ID), step.Status, i == p.selected, lw-4))
+		}
+		detailTitle := "Step details"
+		if p.selected < len(p.snapshot.Steps) {
+			step := p.snapshot.Steps[p.selected]
+			detailTitle = fmt.Sprintf("%s · iteration %d · %d agents", step.Agent, step.Iteration, step.RunningAgents)
+		}
+		body = pageJoin(pagePanel("Steps · "+pageCount(p.selected, len(p.snapshot.Steps)), strings.Join(rows, "\n"), lw, lh, true), pagePanel(detailTitle, p.viewport.View(), dw, dh, false), wide)
+	}
+	return tea.NewView(pageFrame(p.width, p.height, "Flow progress", subtitle, summary, body, footer))
 }

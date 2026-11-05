@@ -288,6 +288,8 @@ func NewToolSet(
 			delivery := ResolveSchemaDelivery(info, overrideModel)
 			logging.Info("Using structured output", "agent", agentID, "delivery", string(delivery), "schema", resolved)
 			result <- tools.NewStructOutputToolWithDelivery(resolved, delivery)
+		} else if info.DynamicFlow != nil && info.DynamicFlow.Enabled && info.Mode == config.AgentModeAgent && ResolveSchemaDelivery(info, overrideModel) == tools.SchemaDeliveryMessage {
+			result <- tools.NewDormantStructOutputTool()
 		}
 	}
 

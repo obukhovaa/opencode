@@ -2,14 +2,13 @@ package page
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync/atomic"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -17,7 +16,6 @@ import (
 	"github.com/opencode-ai/opencode/internal/lsp/install"
 	"github.com/opencode-ai/opencode/internal/tui/components/chat"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
-	"github.com/opencode-ai/opencode/internal/tui/theme"
 )
 
 const (
@@ -231,39 +229,57 @@ func (p *servicesPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, nil
 }
 func (p *servicesPage) View() tea.View {
-	t := theme.CurrentTheme()
-	bg := t.Background()
-	lines := []string{strings.ToUpper(string(p.kind)), ""}
-	count := max(1, p.height/2-3)
-	start := max(0, p.selected-count+1)
-	for i := start; i < min(len(p.rows), start+count); i++ {
-		prefix := "  "
-		if i == p.selected {
-			prefix = "> "
-		}
-		lines = append(lines, ansi.Truncate(ansi.Strip(prefix+p.rows[i].name+"  "+p.rows[i].status), max(1, p.width-4), "…"))
+	g := pageDimensions(p.width, p.height)
+	lw, lh, dw, dh, wide := pageSplit(g.width, g.bodyHeight)
+	title, subtitle, detailTitle := "MCP servers", "Manage tools available to the selected agent.", "Available tools"
+	empty, help := "No MCP servers configured", "Add an MCP server to your configuration to see it here."
+	footer := "↑↓ select · r reconnect · e enable · d disable · f defer · PgUp/PgDn tools · Esc back"
+	if p.kind == LSPPage {
+		title, subtitle, detailTitle = "Language servers", "Install, activate or deactivate a language server.", "Server details"
+		empty, help = "No language servers available", "Configured and supported language servers appear here."
+		footer = "↑↓ select · Enter activate · d deactivate · PgUp/PgDn details · Esc back"
+	}
+	if p.kind == ModifiedFilesPage {
+		title, subtitle, detailTitle = "Modified files", "Files changed in this conversation and its child sessions.", "File preview"
+		empty, help = "No modified files", "Files appear here after the agent makes changes."
+		footer = "↑↓ select · PgUp/PgDn preview · r refresh · Esc back"
+	}
+	if p.agentID != "" && p.kind == MCPPage {
+		subtitle = "Agent: " + string(p.agentID) + " · Changes apply to this agent."
+	}
+	summary := pageCount(p.selected, len(p.rows))
+	if p.busy.Load() {
+		summary = "⟳ Working…"
+	}
+	if p.status != "" {
+		subtitle = p.status
 	}
 	if len(p.rows) == 0 {
-		lines = append(lines, "No entries.")
+		return tea.NewView(pageFrame(p.width, p.height, title, subtitle, summary, pagePanel("Overview", pageEmpty(empty, help), g.width, g.bodyHeight, false), footer))
 	}
-	if p.selected < len(p.rows) {
-		lines = append(lines, "")
-		details := strings.Split(p.rows[p.selected].detail, "\n")
-		offset := min(p.detailOffset, max(0, len(details)-1))
-		for _, line := range details[offset:min(len(details), offset+max(1, p.height-len(lines)-4))] {
-			lines = append(lines, ansi.Truncate(ansi.Strip(line), max(1, p.width-4), "…"))
+	count := max(1, (lh-2)/2)
+	start := max(0, p.selected-count+1)
+	rows := make([]string, 0, count)
+	for i := start; i < min(len(p.rows), start+count); i++ {
+		rows = append(rows, pageRow(p.rows[i].name, p.rows[i].status, i == p.selected, lw-4))
+	}
+	row := p.rows[min(p.selected, len(p.rows)-1)]
+	details := strings.Split(pagePlain(row.detail), "\n")
+	offset := min(p.detailOffset, max(0, len(details)-1))
+	detail := styles.BaseStyle().Bold(true).Render(pageText(pagePlain(row.name), dw-4)) + "\n" + pageStatus(row.status) + "\n\n"
+	if strings.TrimSpace(row.detail) == "" {
+		detail += pageMuted("No tools or output available yet.")
+	} else {
+		detail += strings.Join(details[offset:], "\n")
+	}
+	if p.kind == MCPPage {
+		detailTitle = fmt.Sprintf("Tools · %d", len(details))
+		if row.detail == "" {
+			detailTitle = "Tools · 0"
 		}
 	}
-	hint := "↑/↓ j/k select · PgUp/PgDn details · Esc chat"
-	if p.kind == MCPPage {
-		hint += " · r reconnect · e enable · d disable · f defer"
-	}
-	if p.kind == LSPPage {
-		hint += " · Enter install/activate · d deactivate"
-	}
-	lines = append(lines, "", ansi.Truncate(ansi.Strip(p.status), max(1, p.width), "…"), ansi.Truncate(hint, max(1, p.width), "…"))
-	rendered := lipgloss.NewStyle().Width(max(1, p.width)).Height(max(1, p.height)).MaxHeight(max(1, p.height)).MaxWidth(max(1, p.width)).Foreground(t.Text()).Background(bg).Render(strings.Join(lines, "\n"))
-	return tea.NewView(styles.ForceReplaceBackgroundWithLipgloss(rendered, bg))
+	body := pageJoin(pagePanel("Select · "+pageCount(p.selected, len(p.rows)), strings.Join(rows, "\n"), lw, lh, true), pagePanel(detailTitle, detail, dw, dh, false), wide)
+	return tea.NewView(pageFrame(p.width, p.height, title, subtitle, summary, body, footer))
 }
 func (p *servicesPage) SetSize(w, h int) tea.Cmd   { p.width, p.height = w, h; return nil }
 func (p *servicesPage) GetSize() (int, int)        { return p.width, p.height }

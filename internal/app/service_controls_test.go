@@ -11,11 +11,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/viper"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
+	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/lsp/install"
 	"github.com/opencode-ai/opencode/internal/permission"
@@ -135,5 +137,83 @@ func TestLSPActivationAfterStartupChannelClosed(t *testing.T) {
 	}
 	if !persisted.LSP["fixture"].Disabled || persisted.LSP["fixture"].Command != "fixture" {
 		t.Fatal("deactivation did not preserve and disable server config")
+	}
+}
+
+func TestMCPPolicyLoadingAgentRejectsBeforePersistenceOrDiscovery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".opencode.json")
+	original := []byte(`{"agents":{"coder":{"model":"anthropic.claude-haiku-4-5"}}}`)
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	previous := viper.ConfigFileUsed()
+	viper.SetConfigFile(path)
+	defer viper.SetConfigFile(previous)
+	a := &App{Registry: reviewFlowRegistry{}, PrimaryAgents: map[config.AgentName]agentpkg.Service{config.AgentCoder: &fakeAgent{}}}
+	// Nil MCP dependencies prove no loading goroutine/reconnect is started.
+	err := a.SetMCPPolicy(config.AgentCoder, "server", "disable")
+	if err == nil || !strings.Contains(err.Error(), "still loading") {
+		t.Fatalf("error=%v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatal("failed action persisted configuration")
+	}
+}
+
+func TestMCPPolicyRejectsBetweenFlowSteps(t *testing.T) {
+	a := &App{dynamicRuns: map[string]*dynamicRun{"root": {status: "running"}}}
+	// No individual agent turn is active. The run itself still owns the frozen
+	// tool contract and must exclude a policy change before its next step.
+	err := a.SetMCPPolicy(config.AgentCoder, "server", "disable")
+	if err == nil || !strings.Contains(err.Error(), "flow is active") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+type loadingPolicyRegistry struct {
+	reviewFlowRegistry
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (r loadingPolicyRegistry) Get(id string) (agentregistry.AgentInfo, bool) {
+	close(r.entered)
+	<-r.release
+	return r.reviewFlowRegistry.Get(id)
+}
+func TestMCPPolicyDoesNotBlockFlowStatusDuringSlowRefresh(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	a := &App{Registry: loadingPolicyRegistry{entered: entered, release: release}, PrimaryAgents: map[config.AgentName]agentpkg.Service{config.AgentCoder: &fakeAgent{}}}
+	done := make(chan error, 1)
+	go func() { done <- a.SetMCPPolicy(config.AgentCoder, "server", "reconnect") }()
+	<-entered
+	queried := make(chan bool, 1)
+	go func() { queried <- a.FlowBusy("root") }()
+	select {
+	case busy := <-queried:
+		if busy {
+			t.Error("nonexistent flow marked busy")
+		}
+	case <-time.After(time.Second):
+		close(release)
+		<-done
+		t.Fatal("MCP refresh holds flow-status lock and freezes UI")
+	}
+	if _, _, _, err := a.beginFlow("root", "planning"); err == nil {
+		t.Error("flow admitted during policy refresh")
+	}
+	close(release)
+	if err := <-done; err == nil {
+		t.Fatal("unfinished initial discovery unexpectedly accepted")
+	}
+	a.dynamicMu.Lock()
+	changing := a.mcpPolicyChanging
+	a.dynamicMu.Unlock()
+	if changing {
+		t.Fatal("policy reservation leaked after failure")
 	}
 }

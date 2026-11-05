@@ -35,9 +35,10 @@ import (
 )
 
 type App struct {
-	flowQuery   db.QuerierWithTx
-	dynamicMu   sync.Mutex
-	dynamicRuns map[string]*dynamicRun
+	flowQuery         db.QuerierWithTx
+	dynamicMu         sync.Mutex
+	dynamicRuns       map[string]*dynamicRun
+	mcpPolicyChanging bool
 
 	Sessions      session.Service
 	Messages      message.Service
