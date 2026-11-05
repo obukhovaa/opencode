@@ -684,6 +684,12 @@ func (app *App) submitOrdinaryFlow(ctx context.Context, root string, req tools.F
 	if req.Operation != "create" {
 		return fmt.Errorf("updates are only available within the owning flow")
 	}
+	// A standalone flow's first step is also its session-tree root, so
+	// ancestry alone cannot distinguish it from an ordinary chat turn.
+	// Reject the execution scope before touching storage or taking ownership.
+	if tools.FlowAgentScope(ctx) != "" {
+		return fmt.Errorf("recursive dynamic flows are forbidden")
+	}
 	if _, err := exec.LookPath("openspec"); err != nil {
 		return fmt.Errorf("install OpenSpec first: npm install -g @fission-ai/openspec")
 	}

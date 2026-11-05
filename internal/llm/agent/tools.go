@@ -379,7 +379,12 @@ func (a *agent) Tools() []tools.BaseTool {
 // ResolvedTools returns the current tool set without blocking.
 // The bool is true once tools have finished loading.
 func (a *agent) ResolvedTools() ([]tools.BaseTool, bool) {
-	a.toolsMu.RLock()
+	// The resolver holds the writer lock while it drains asynchronous MCP
+	// discovery. A blocking read here would freeze the TUI's first View (or
+	// a later live-tool refresh) until every server finishes connecting.
+	if !a.toolsMu.TryRLock() {
+		return nil, false
+	}
 	defer a.toolsMu.RUnlock()
 	if a.toolsResolved.Load() {
 		return a.tools, true
