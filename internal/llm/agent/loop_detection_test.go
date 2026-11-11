@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/opencode-ai/opencode/internal/message"
 )
 
 func TestCallTracker_BasicStreak(t *testing.T) {
@@ -15,15 +17,15 @@ func TestCallTracker_BasicStreak(t *testing.T) {
 	}
 
 	// First call — no loop
-	if tracker.Track("bash", "ls -la") {
+	if tracker.Track("bash", "ls -la", message.ToolResult{Content: "same result"}) {
 		t.Error("first call should not trigger loop")
 	}
 	// Second identical call — still no loop
-	if tracker.Track("bash", "ls -la") {
+	if tracker.Track("bash", "ls -la", message.ToolResult{Content: "same result"}) {
 		t.Error("second call should not trigger loop")
 	}
 	// Third identical call — loop detected
-	if !tracker.Track("bash", "ls -la") {
+	if !tracker.Track("bash", "ls -la", message.ToolResult{Content: "same result"}) {
 		t.Error("third identical call should trigger loop")
 	}
 }
@@ -35,10 +37,10 @@ func TestCallTracker_ResetOnDifferentInput(t *testing.T) {
 		threshold:   3,
 	}
 
-	tracker.Track("bash", "ls -la")
-	tracker.Track("bash", "ls -la")
+	tracker.Track("bash", "ls -la", message.ToolResult{Content: "same result"})
+	tracker.Track("bash", "ls -la", message.ToolResult{Content: "same result"})
 	// Different input resets
-	if tracker.Track("bash", "cat foo.txt") {
+	if tracker.Track("bash", "cat foo.txt", message.ToolResult{Content: "same result"}) {
 		t.Error("different input should reset streak")
 	}
 	if tracker.streakCount["bash"] != 1 {
@@ -53,10 +55,10 @@ func TestCallTracker_IndependentToolNames(t *testing.T) {
 		threshold:   3,
 	}
 
-	tracker.Track("bash", "ls")
-	tracker.Track("bash", "ls")
+	tracker.Track("bash", "ls", message.ToolResult{Content: "same result"})
+	tracker.Track("bash", "ls", message.ToolResult{Content: "same result"})
 	// Different tool name — independent
-	if tracker.Track("read", "ls") {
+	if tracker.Track("read", "ls", message.ToolResult{Content: "same result"}) {
 		t.Error("different tool name should track independently")
 	}
 	if tracker.streakCount["bash"] != 2 {
@@ -75,7 +77,7 @@ func TestCallTracker_ThresholdOne(t *testing.T) {
 	}
 
 	// With threshold=1, even the first call triggers (streak starts at 1)
-	if !tracker.Track("bash", "echo hi") {
+	if !tracker.Track("bash", "echo hi", message.ToolResult{Content: "same result"}) {
 		t.Error("threshold=1 should trigger on first call")
 	}
 }
@@ -215,7 +217,7 @@ func TestCallTracker_SimulatedAgentLoop(t *testing.T) {
 
 	for cycleIdx, calls := range cycles {
 		for _, tc := range calls {
-			if tracker.Track(tc.name, tc.input) {
+			if tracker.Track(tc.name, tc.input, message.ToolResult{Content: "same result"}) {
 				loopDetected[tc.name] = append(loopDetected[tc.name], cycleIdx)
 			}
 		}
@@ -257,10 +259,57 @@ func TestCallTracker_MaxTurnsIntegration(t *testing.T) {
 			break
 		}
 		// Each cycle uses a unique input, so no loop detection
-		tracker.Track("bash", fmt.Sprintf("command-%d", cycle))
+		tracker.Track("bash", fmt.Sprintf("command-%d", cycle), message.ToolResult{Content: "same result"})
 	}
 
 	if terminatedAt != maxTurns+1 {
 		t.Errorf("loop should terminate at cycle %d, got %d", maxTurns+1, terminatedAt)
+	}
+}
+
+func TestCallTracker_ResultIdentity(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		result message.ToolResult
+	}{
+		{"content", message.ToolResult{Content: "new"}},
+		{"error status", message.ToolResult{Content: "old", IsError: true}},
+		{"type", message.ToolResult{Content: "old", Type: message.ToolResultTypeImage}},
+		{"metadata", message.ToolResult{Content: "old", Metadata: "new image"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker := newCallTracker()
+			tracker.threshold = 3
+			tracker.Track("read", "{}", message.ToolResult{Content: "old"})
+			tracker.Track("read", "{}", message.ToolResult{Content: "old", ToolCallID: "different-id"})
+			if tracker.Track("read", "{}", tt.result) {
+				t.Fatal("changed result counted as repetition")
+			}
+			if tracker.streakCount["read"] != 1 {
+				t.Fatal("result change did not reset streak")
+			}
+		})
+	}
+}
+
+func TestCallTracker_ResetPreservesPermissionBudget(t *testing.T) {
+	tracker := newCallTracker()
+	tracker.threshold = 3
+	tracker.denials.observeTurn(2, 0)
+	for i := 0; i < 3; i++ {
+		tracker.Track("question", "{}", message.ToolResult{Content: "dismissed", IsError: true})
+	}
+	if !tracker.Blocked("question", "{}") {
+		t.Fatal("completed loop must block the next identical call")
+	}
+	if tracker.Blocked("question", `{"new":true}`) {
+		t.Fatal("changed call must be allowed")
+	}
+	tracker.Reset()
+	if tracker.Blocked("question", "{}") || tracker.Track("question", "{}", message.ToolResult{Content: "dismissed", IsError: true}) {
+		t.Fatal("delivery reset did not clear loop")
+	}
+	if tracker.denials.total != 2 || tracker.denials.consecutiveTurns != 1 {
+		t.Fatal("delivery reset permission-denial budget")
 	}
 }

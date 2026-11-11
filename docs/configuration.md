@@ -161,7 +161,7 @@ Provider credentials (`ANTHROPIC_API_KEY`, `VERTEXAI_PROJECT`, `AWS_REGION`, …
 | `OPENCODE_MYSQL_DSN` | | MySQL connection string |
 | `OPENCODE_FILE_OP_TIMEOUT` | `180` | Timeout in seconds for glob/grep file operations |
 | `OPENCODE_PROVIDER_STREAM_INACTIVITY_TIMEOUT` | `300` | Seconds to wait for next SSE event before treating stream as stalled |
-| `OPENCODE_MAX_REPEAT_CALLS` | `3` | Max identical consecutive tool calls before loop detection triggers |
+| `OPENCODE_MAX_REPEAT_CALLS` | `3` | Completed calls with identical arguments and results before loop detection triggers; delivered inbox messages reset the streak |
 | `OPENCODE_SERVER_PASSWORD` | | HTTP Basic Auth password for `opencode serve` ([guide](server.md)) |
 | `AGENTS_MEMORY_HOME` | `~/.agents/memory` | Project-memory store root for this launch; overrides `memory.directory` ([guide](memory.md)) |
 | `OPENCODE_TOOL_ENV_DENY` | | Comma-separated extra variable names (or globs) hidden from every process OpenCode starts ([details](tools.md#tool-environment)) |

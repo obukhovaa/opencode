@@ -1534,6 +1534,9 @@ OuterLoop:
 				// streaming or executing here, and the tool_use → tool_result
 				// pairing stays intact.
 				drained := a.drainInbox(ctx, sessionID)
+				if len(drained) > 0 {
+					tracker.Reset()
+				}
 				msgHistory = append(msgHistory, drained...)
 				preservedTail = append(preservedTail, drained...)
 
@@ -1588,6 +1591,7 @@ OuterLoop:
 			// store it after this turn and call the model again. The extra
 			// cycle counts against max_turns like any other.
 			if drained := a.drainInbox(ctx, sessionID); len(drained) > 0 {
+				tracker.Reset()
 				logging.Info("Reviewer input waiting at turn end — running another cycle", "session_id", sessionID, "cycle", cycles, "messages", len(drained))
 				msgHistory = append(msgHistory, agentMessage)
 				msgHistory = append(msgHistory, drained...)
@@ -2018,14 +2022,25 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	// found, loop detected, blocked by a PreToolUse hook): no progress, for
 	// the rule-denial breaker. Each index has one writer, as with toolResults.
 	unexecuted := make([]bool, len(toolCalls))
+	executed := make([]bool, len(toolCalls))
+	var recordMu sync.Mutex
 
 	// record writes a tool result into the shared toolResults slice and
 	// emits a per-part SSE event for the same tool. Each call must own a
 	// unique index — the parallel-group goroutines below preserve this
 	// invariant by passing entry.index, which is assigned during phase 1.
 	// Concurrent invocation from those goroutines is safe: the broker's
-	// Publish takes RLock, and per-index ownership prevents slice races.
+	// Publish takes RLock. Serialize tracker observations across parallel results.
 	record := func(index int, tr message.ToolResult) {
+		recordMu.Lock()
+		defer recordMu.Unlock()
+		tc := toolCalls[index]
+		if executed[index] && provider.ForcedTool(ctx) != tc.Name && tracker.Track(tc.Name, tc.Input, tr) {
+			tr = message.ToolResult{
+				ToolCallID: tc.ID, Name: tc.Name,
+				Content: loopDetectedMessage(tc.Name, tracker.streakCount[tc.Name]), IsError: true,
+			}
+		}
 		toolResults[index] = tr
 		a.messages.PublishPart(sessionID, assistantMsg.ID, tr)
 	}
@@ -2071,7 +2086,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		// wrap-up turn breaks the loop right after, so skipping streak
 		// bookkeeping for the forced tool is harmless. Also covers the whole-run
 		// ForceStructOutput path (RunWith).
-		if provider.ForcedTool(ctx) != toolCall.Name && tracker.Track(toolCall.Name, toolCall.Input) {
+		if provider.ForcedTool(ctx) != toolCall.Name && tracker.Blocked(toolCall.Name, toolCall.Input) {
 			streak := tracker.streakCount[toolCall.Name]
 			logging.Warn("Tool call loop detected",
 				"tool", toolCall.Name,
@@ -2189,6 +2204,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 					return
 				case res := <-ch:
 					toolResult, toolErr = res.resp, res.err
+					executed[e.index] = true
 				}
 
 				gauge := time.Since(now).Milliseconds()
@@ -2215,6 +2231,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 						return
 					}
 					if errors.Is(toolErr, permission.ErrorPermissionDenied) {
+						executed[e.index] = false
 						logging.Warn("Tool call denied", "tool", e.toolCall.Name,
 							"ID", e.toolCall.ID,
 							"input", e.toolCall.Input,
@@ -2410,6 +2427,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		if seqHC.decision.ExplicitAllow {
 			seqToolCtx = context.WithValue(ctx, permission.HookAllowKey, true)
 		}
+		executed[entry.index] = true
 		toolResult, toolErr := runToolBounded(seqToolCtx, toolCallLimit(a.agentID, a.toolCallTimeoutSeconds, entry.tool), entry.tool, tools.ToolCall{
 			ID:    entry.toolCall.ID,
 			Name:  entry.toolCall.Name,
@@ -2439,6 +2457,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				continue
 			}
 			if errors.Is(toolErr, permission.ErrorPermissionDenied) {
+				executed[entry.index] = false
 				logging.Warn("Tool call denied", "tool", entry.toolCall.Name,
 					"ID", entry.toolCall.ID,
 					"input", entry.toolCall.Input,
