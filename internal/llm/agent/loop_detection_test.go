@@ -275,7 +275,6 @@ func TestCallTracker_ResultIdentity(t *testing.T) {
 		{"content", message.ToolResult{Content: "new"}},
 		{"error status", message.ToolResult{Content: "old", IsError: true}},
 		{"type", message.ToolResult{Content: "old", Type: message.ToolResultTypeImage}},
-		{"metadata", message.ToolResult{Content: "old", Metadata: "new image"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			tracker := newCallTracker()
@@ -311,5 +310,16 @@ func TestCallTracker_ResetPreservesPermissionBudget(t *testing.T) {
 	}
 	if tracker.denials.total != 2 || tracker.denials.consecutiveTurns != 1 {
 		t.Fatal("delivery reset permission-denial budget")
+	}
+}
+
+func TestCallTracker_IgnoresTimingMetadata(t *testing.T) {
+	tracker := newCallTracker()
+	tracker.threshold = 3
+	for n := 1; n <= 3; n++ {
+		result := message.ToolResult{Content: "unchanged output", Metadata: fmt.Sprintf(`{"start_time":%d,"end_time":%d,"duration_ms":%d}`, n, n+1, n)}
+		if got := tracker.Track("bash", `{"command":"pwd"}`, result); got != (n == 3) {
+			t.Fatalf("call %d: loop=%v, want %v despite changing metadata", n, got, n == 3)
+		}
 	}
 }

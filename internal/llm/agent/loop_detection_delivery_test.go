@@ -212,3 +212,33 @@ func TestLoopDetection_ForcedToolAndParallelBatch(t *testing.T) {
 		}
 	})
 }
+
+func TestLoopDetection_IdenticalQuestionAnswersAreInput(t *testing.T) {
+	t.Setenv("OPENCODE_MAX_REPEAT_CALLS", "3")
+	withFreshTaskRegistry(t)
+	question := &repeatResultTool{name: tools.QuestionToolName, result: func(int) (tools.ToolResponse, error) {
+		return tools.NewTextResponse("Approve"), nil
+	}}
+	send := &repeatResultTool{name: "router_send", result: func(int) (tools.ToolResponse, error) {
+		return tools.NewTextResponse("sent"), nil
+	}}
+	p := &scriptedProvider{respond: func(n int, _ bool) *provider.ProviderResponse {
+		if n <= 5 {
+			return toolTurn(repeatCall("router_send", n), repeatCall(tools.QuestionToolName, n))
+		}
+		return endTurn()
+	}}
+	a := newLoopAgentWithTools(t, p, []tools.BaseTool{question, send})
+	res := a.processGeneration(context.Background(), t.Name(), "start", 10, nil, RunOptions{NonInteractive: true})
+	if res.Error != nil {
+		t.Fatal(res.Error)
+	}
+	for _, result := range toolResultsOf(t, a, t.Name()) {
+		if result.IsError || strings.Contains(result.Content, "Loop detected") {
+			t.Fatalf("user answer did not reset repetition: %+v", result)
+		}
+	}
+	if question.calls.Load() != 5 || send.calls.Load() != 5 {
+		t.Fatalf("executions question=%d, send=%d", question.calls.Load(), send.calls.Load())
+	}
+}

@@ -8,5 +8,9 @@
 ## 2. Integration checks
 - [x] 2.1 Run agent package tests, make test, hidden-character check and strict OpenSpec validation; record outcomes in the PR.
 
+## 3. Review fixes
+- [x] 3.1 Exclude execution metadata from result identity; verify changing-timestamp regression.
+- [x] 3.2 Treat successful question answers as delivered input; verify identical-answer regression and retained dismissal protection.
+
 ## Workflow follow-up
 - CoS arranges review and release; archive after merge.

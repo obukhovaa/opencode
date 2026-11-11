@@ -43,9 +43,9 @@ func newCallTracker() *callTracker {
 }
 
 // Track observes a completed call, before any loop warning replaces its result.
-// Call IDs are intentionally excluded; result metadata may carry image content.
+// Only model-visible result fields count; IDs and execution timing metadata do not.
 func (t *callTracker) Track(name, input string, result message.ToolResult) bool {
-	encoded, _ := json.Marshal([]any{result.Type, result.Content, result.Metadata, result.IsError})
+	encoded, _ := json.Marshal([]any{result.Type, result.Content, result.IsError})
 	digest := sha256.Sum256(encoded)
 	if t.lastResult == nil {
 		t.lastResult = make(map[string][32]byte)

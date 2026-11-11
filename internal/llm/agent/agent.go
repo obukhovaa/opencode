@@ -2035,6 +2035,10 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		recordMu.Lock()
 		defer recordMu.Unlock()
 		tc := toolCalls[index]
+		// A successful question result delivers user input, even when the answer repeats.
+		if tc.Name == tools.QuestionToolName && !tr.IsError {
+			tracker.Reset()
+		}
 		if executed[index] && provider.ForcedTool(ctx) != tc.Name && tracker.Track(tc.Name, tc.Input, tr) {
 			tr = message.ToolResult{
 				ToolCallID: tc.ID, Name: tc.Name,

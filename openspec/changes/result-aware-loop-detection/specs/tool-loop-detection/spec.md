@@ -7,7 +7,7 @@ Detect stalled tool repetition while allowing useful tool calls and interactive 
 ## ADDED Requirements
 
 ### Requirement: Repetition SHALL require identical completed calls and results
-The agent SHALL count a per-tool streak only when consecutive completed calls have identical arguments and results (including error status). Changed arguments or results SHALL restart that tool's streak. At the configured threshold, the agent SHALL report a loop and block subsequent identical requests until the streak resets. Forced terminal tools SHALL remain exempt.
+The agent SHALL count a per-tool streak only when completed calls have identical requested arguments and model-visible results (type, content and error status), ignoring execution metadata. Changed arguments or results SHALL restart that streak. At the configured threshold, it SHALL report a loop and block later identical requests until reset. Forced terminal tools SHALL remain exempt.
 
 #### Scenario: Repeated dismissed question
 - **WHEN** three identical question calls return the same dismissal error with the default threshold
@@ -21,8 +21,12 @@ The agent SHALL count a per-tool streak only when consecutive completed calls ha
 - **WHEN** calls to different tools interleave
 - **THEN** each tool's own consecutive completed calls determine its repetition streak
 
+#### Scenario: Timing metadata varies
+- **WHEN** three identical calls return the same content and error status but different execution timestamps or durations
+- **THEN** the third result still reports a loop
+
 ### Requirement: Delivered input SHALL reset repetition history
-The agent SHALL reset all tool repetition streaks when queued user or customer input is successfully stored in the session at a tool boundary or natural turn end. Empty drains and failed persistence SHALL NOT reset history. Delivery SHALL NOT reset the permission-denial breaker or turn budget.
+The agent SHALL reset all tool repetition streaks when queued user or customer input is successfully stored in the session at a tool boundary or natural turn end, or when a question returns a successful answer. Empty drains and failed persistence SHALL NOT reset history. Delivery SHALL NOT reset the permission-denial breaker or turn budget.
 
 #### Scenario: Empty question with new messages
 - **WHEN** more than three identical question calls are separated by successfully delivered messages
@@ -39,3 +43,8 @@ The agent SHALL reset all tool repetition streaks when queued user or customer i
 #### Scenario: Failed delivery
 - **WHEN** an inbox drain cannot persist any input
 - **THEN** the existing repetition streak remains in force
+
+#### Scenario: Identical successful answers
+- **WHEN** the same question is answered successfully with "Approve" three or more times
+- **THEN** each answer reaches the model and resets all repetition streaks
+- **AND** a dismissed question returning an error still counts toward repetition
