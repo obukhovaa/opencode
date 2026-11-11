@@ -2,12 +2,12 @@
 
 ### Requirement: In dry-run, external writes SHALL be recorded and not executed
 
-When the job args carry `dry_run: true`, a call to a tool on its MCP server's `dryRun.write` list SHALL NOT reach the server. It SHALL be recorded and answered with a success response whose metadata carries `dryRun: true`.
+In a run started with `--dry-run-root`, a call to a tool on its MCP server's `dryRun.write` list SHALL NOT reach the server. It SHALL be recorded and answered with a success response whose metadata carries `dryRun: true`.
 
 #### Scenario: Create MR
 
 - **WHEN** a dry-run run calls `gitlab_create_merge_request`, listed under the GitLab server's `dryRun.write`
-- **THEN** the GitLab MCP server receives no call, the model gets an object with a fake `iid` and `web_url`, and `writes.jsonl` has one line for the call
+- **THEN** the GitLab MCP server receives no call, the model gets an object with a fake `iid` and `web_url`, and the call's trace span carries `dryRun: true` in its response metadata
 
 #### Scenario: Read
 
@@ -16,12 +16,17 @@ When the job args carry `dry_run: true`, a call to a tool on its MCP server's `d
 
 ### Requirement: In dry-run, an unclassified tool SHALL be refused
 
-A tool that is neither a local built-in nor on its server's `dryRun.read` or `dryRun.write` list SHALL NOT run in dry-run. The model SHALL get an error naming the tool as not classified for dry-run.
+A tool that is neither a local built-in nor on its server's `dryRun.read`, `dryRun.write` or `dryRun.passthrough` list SHALL NOT run in dry-run, and the model SHALL get an error naming the tool as not classified for dry-run. A tool on `dryRun.passthrough` SHALL run.
 
 #### Scenario: New server tool
 
-- **WHEN** the TeamCity server gains `teamcity_pin_build`, nobody adds it to either list, and a dry-run run calls it
+- **WHEN** the TeamCity server gains `teamcity_pin_build`, nobody adds it to any list, and a dry-run run calls it
 - **THEN** the server receives no call and the model gets the not-classified error
+
+#### Scenario: Child job
+
+- **WHEN** a dry-run run calls the orchestrator's `createJob`, listed under its `dryRun.passthrough`
+- **THEN** the call reaches the orchestrator, which creates the child as a dry-run job
 
 ### Requirement: In dry-run, bash SHALL NOT run a script that contains a write command
 
@@ -55,20 +60,25 @@ A read whose input names a fake id issued in this run SHALL return the object th
 - **WHEN** a dry-run run creates an MR (fake `iid` 9000000001), posts a note on it, then calls `gitlab_get_merge_request` with `iid` 9000000001
 - **THEN** the note is faked, and the read returns the faked MR without calling GitLab
 
-### Requirement: The runtime SHALL confirm dry-run to its caller
+### Requirement: Dry-run SHALL be set for the whole process by `--dry-run-root`
 
-`opencode --dry-run` SHALL start a run in dry-run. A `POST /flow` request whose args carry `dry_run: true` SHALL be answered with `dryRun: true` once the run is accepted in dry-run.
+`opencode --dry-run-root <root>` SHALL run the process in dry-run, for every step, subagent, background shell and resumed session in it. A root that does not match `[A-Za-z0-9-]+` SHALL end the process with an error before any tool call. An unknown CLI flag SHALL end the process with a non-zero exit before any tool call.
 
-#### Scenario: Pool start
+#### Scenario: Subagent
 
-- **WHEN** the orchestrator posts a flow with `"args": {"dry_run": true}`
-- **THEN** the response carries `dryRun: true`
+- **WHEN** a run started with `--dry-run-root` spawns an async subagent that calls `gitlab_create_merge_request`
+- **THEN** the call is recorded and faked
 
-### Requirement: Dry-run state SHALL NOT outlive its run
+#### Scenario: Bad root
 
-A pool pod that serves a dry-run run and then a live run SHALL run the live run's tools for real. A dry-run run after a live one SHALL intercept from its first call.
+- **WHEN** opencode is started with `--dry-run-root "a/b"`
+- **THEN** it exits non-zero and no tool runs
 
-#### Scenario: Dry, live, dry
+### Requirement: Dry-run flow state SHALL use its own session prefix
 
-- **WHEN** one pool pod serves a dry-run run, a live run and a dry-run run in that order
-- **THEN** only the live run's `gitlab_create_merge_request` reaches GitLab
+In dry-run, the session prefix of a flow run SHALL start with `dry-run-<root>-`, whether it was resolved from the flow's `session.prefix` or given by the caller.
+
+#### Scenario: Live rows on the same issue
+
+- **WHEN** a live `implement` run on `TPWEBAPP-12345` left `flow_states` rows, and a dry-run `implement` run on the same issue starts with `--dry-run-root 3f2a`
+- **THEN** the dry-run run writes and reads rows under `dry-run-3f2a-TPWEBAPP-12345`, and the live rows are unchanged

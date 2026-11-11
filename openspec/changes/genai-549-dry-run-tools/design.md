@@ -2,9 +2,17 @@
 
 ## Where the mode comes from
 
-The mode is the job arg `dry_run: true`, set by the orchestrator. The fork already propagates job args to every place a tool can run under the job: steps, sync and async subagents (`agent-tool-async.go:88`), background bash, resumed sessions (`app.go:470`) and bridge turns (`SetProcessJobArgs`). A new context key would have to be copied at each of those sites by hand. `dryrun.Enabled(ctx)` reads `tools.JobArgsFromContext(ctx)` and falls back to `tools.ProcessJobArgs()`. It is true only for the boolean `true`.
+The mode comes from the CLI flag `--dry-run-root <root job id>`, and it holds for the whole process. The orchestrator runs dry-run jobs only on per-Job pods, which run one job in one process and are deleted after it, and never on the agent pool. So the mode is set once at startup and never cleared: `dryrun.Enabled()` reads a process-wide value, and every step, subagent (`agent-tool-async.go:88`), background shell and resumed session in the process sees it with no copying per call site.
 
-`--dry-run` on the CLI sets the same arg for a CLI run. It is also the per-Job handshake: an image without the flag must fail on it.
+The flag is also the handshake: an image without it exits on the unknown flag, before any tool call. The root must match `[A-Za-z0-9-]+` (c2-agent job ids are UUIDs), because it becomes part of a session id that travels as a URL path segment; anything else exits with an error.
+
+**Rejected: the job arg `dry_run: true`, read per call.** The first draft did this so a long-lived pool server could serve dry-run and live runs one after the other. Review showed the pool pod is not scratch: it keeps the clone, local commits and edited files between runs, so c2-agent now keeps dry-run jobs off the pool, and a per-process mode is enough.
+
+**Rejected: `flowArgHeaders` for the mode.** Mapped args are treated as sensitive and kept out of persisted flow state (`internal/config/config.go:49-56`), so a resumed run would lose them. They only reach sse and http servers, and our GitLab, Jira and TeamCity servers are stdio.
+
+## Flow state
+
+opencode keys `flow_states` by session prefix, which flows build from the issue id (`session.prefix`, resolved in `resolveSessionPrefix`, `internal/flow/service.go:323`), and all runners share one store. A dry-run run on a real issue would otherwise leave rows, canned outputs included, that the next live run on that issue resumes. In dry-run, `RunWithOptions` puts `dry-run-<root>-` in front of the session prefix, whether it was resolved from the spec or given by the caller. The orchestrator does not recover a killed dry-run job, because the run's fake objects live in this process's memory, so a root's rows are never resumed on another pod. Each eval repetition is a new root, so it starts clean.
 
 **Rejected: `flowArgHeaders` for the mode.** Mapped args are treated as sensitive and kept out of persisted flow state (`internal/config/config.go:49-56`), so a resumed run would lose them. They only reach sse and http servers, and our GitLab, Jira and TeamCity servers are stdio.
 
@@ -27,8 +35,9 @@ if dryrun.Enabled(ctx) {
 | local built-in | edit, write, read, glob, grep, ls, todo | not handled, runs |
 | MCP read | the server's `dryRun.read` | not handled, runs, unless it names a reserved id (see fakes) |
 | MCP write | the server's `dryRun.write` | handled: recorded, canned success |
+| MCP pass-through | the server's `dryRun.passthrough` | not handled, runs. Only for tools whose server applies the mode itself: the orchestrator's `createJob`, which creates the child with the parent's dry-run mode |
 | bash | parser walk | runs, or handled per command (below) |
-| task / subagent | the call itself | runs; the subagent's own calls are intercepted, because they inherit the job args |
+| task / subagent | the call itself | runs; the subagent's own calls are intercepted, because they run in the same process |
 | anything else | none | handled: `IsError`, "tool <name> is not classified for dry-run" |
 
 The canned success is `WithResponseMetadata(NewTextResponse(<json>), {"dryRun": true, "intercepted": "<tool>", "fakeId": …})`. The JSON is a per-tool-family template (`create_*` returns an object with `id`, `iid`, `web_url` built from the fake id; `*note*`, `*comment*`, `transition*` return `{"ok": true}`). A write tool with no template gets `{"ok": true, "dryRun": true}`.
@@ -70,8 +79,4 @@ This makes create, then comment, then read-back work without a real object. It d
 
 ## Recording
 
-Every handled call is appended to `$AGENT_HOME/dry-run/writes.jsonl` as `{ts, session, tool, input, fakeId}`, and carries `dryRun: true` in its tool response metadata, which reaches the trace and the PIT-478 relay. The eval runner reads whichever of the two it needs; that choice belongs to the runner task.
-
-## Pool reuse
-
-A pool pod serves dry-run and live runs one after the other. Nothing dry-run is held per process. The mode is read per call from the run's job args. The store and the JSONL are keyed by job id. The persistent shell is respawned at run start (as today), so no shim `PATH` leaks from one run to the next.
+A handled call is recorded in the trace. Its span keeps the tool input, as for any call, and its response metadata carries `dryRun: true`, `intercepted` and `fakeId`, which also reach the PIT-478 relay. Nothing is written to the pod's disk: dry-run runs only on per-Job pods, which are deleted after the run, so a file there would be gone before the eval runner could read it.
