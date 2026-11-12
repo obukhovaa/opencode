@@ -30,6 +30,7 @@ func TestDynamicDefinitionPolicy(t *testing.T) {
 		{"model override", strings.Replace(dynamicTestYAML, "prompt: plan", "model: other\n      prompt: plan", 1), "S", true},
 		{"unknown field", strings.Replace(dynamicTestYAML, "prompt: plan", "maxTurn: 1\n      prompt: plan", 1), "S", true},
 		{"unreachable", strings.Replace(dynamicTestYAML, "      rules:\n        - then: implement\n", "", 1), "S", true},
+		{"shell macro", strings.Replace(dynamicTestYAML, "prompt: plan", "prompt: '!`touch unauthorized`'", 1), "S", true},
 		{"invalid size", dynamicTestYAML, "s", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
