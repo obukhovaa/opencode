@@ -45,6 +45,8 @@ func replyText(text string) *bridge.CommandReply {
 func (s *Service) ChatCommands() map[string]CommandHandler {
 	return map[string]CommandHandler{
 		"agent":     s.cmdAgent,
+		"flow":      s.cmdFlow,
+		"answer":    s.cmdFlowAnswer,
 		"model":     s.cmdModel,
 		"sessions":  s.cmdSessions,
 		"session":   s.cmdSession,
@@ -74,6 +76,10 @@ func (s *Service) cmdAbort(ctx context.Context, in bridge.Inbound) *bridge.Comma
 	binding, err := s.resolveBinding(ctx, in.Peer)
 	if err != nil {
 		return replyText("Failed to resolve binding: " + err.Error())
+	}
+	if _, active := s.conversationFlow(ctx, binding.SessionID); active {
+		in.CommandArgs = "cancel"
+		return s.cmdFlow(ctx, in)
 	}
 	if s.app.ActiveAgent() == nil {
 		return replyText("No active agent — nothing to abort.")
@@ -138,6 +144,9 @@ func (s *Service) cmdAgent(ctx context.Context, in bridge.Inbound) *bridge.Comma
 	binding, err := s.store.GetBinding(ctx, s.projectID, in.Peer.Channel, in.Peer.Identity, in.Peer.PeerID)
 	bound := err == nil && binding.SessionID != ""
 	if bound {
+		if _, active := s.conversationFlow(ctx, binding.SessionID); active {
+			return replyText("A flow owns this conversation; finish or terminate it before switching agents.")
+		}
 		if ag := s.app.ActiveAgent(); ag != nil && ag.IsSessionBusy(binding.SessionID) {
 			return replyText(fmt.Sprintf("A run is in progress on session %s; /stop it first, then switch the agent.",
 				shortSessionID(binding.SessionID)))
@@ -406,6 +415,12 @@ func (s *Service) cmdSession(ctx context.Context, in bridge.Inbound) *bridge.Com
 		return replyText(fmt.Sprintf("Already on session %s · %s.", shortSessionID(target.ID), target.Title))
 	}
 
+	if _, active := s.conversationFlow(ctx, binding.SessionID); active {
+		return replyText("A flow owns this conversation; finish or terminate it before switching sessions.")
+	}
+	if _, active := s.conversationFlow(ctx, target.ID); active {
+		return replyText("The target conversation is owned by a flow.")
+	}
 	// Refuse mid-run on either side. Tells the user explicitly rather
 	// than silently splitting traffic.
 	activeAgent := s.app.ActiveAgent()
@@ -701,12 +716,31 @@ func (s *Service) cmdReset(ctx context.Context, in bridge.Inbound) *bridge.Comma
 	// Only the last peer's reset stops the session: another peer bound to it
 	// keeps its run, and an interactive flow step owns its session's lifetime.
 	var out cancelOutcome
+	flowStopRequested := false
 	if existing.SessionID != "" && s.resetOwnsSession(ctx, existing.SessionID) {
+		if _, active := s.conversationFlow(ctx, existing.SessionID); active {
+			flowStopRequested = true
+			controller := s.flowController()
+			lifetime := s.ctx
+			if lifetime == nil {
+				lifetime = context.Background()
+			}
+			go func() {
+				stopCtx, cancel := context.WithTimeout(lifetime, 30*time.Second)
+				defer cancel()
+				if err := controller.ControlFlow(stopCtx, existing.SessionID, "", "terminate"); err != nil {
+					s.replyToPeer(stopCtx, in.Peer, "Workflow termination failed: "+err.Error(), false, existing.SessionID)
+				}
+			}()
+		}
 		out = s.cancelSession(existing.SessionID)
 	}
 	s.invalidateSessionScopeCaches()
 	if existing.SessionID != "" {
 		s.closeDispatcherIfEmpty(ctx, existing.SessionID)
+	}
+	if flowStopRequested {
+		return replyText("Workflow termination requested. Session reset; next message starts fresh.")
 	}
 	if out.runCancelled {
 		return replyText(fmt.Sprintf("Cancelled the run on session %s. Session reset; next message starts fresh.",
@@ -808,6 +842,8 @@ func (s *Service) helpEntriesForChannel(channel string) []helpEntry {
 		{Cmd: "/session [id-prefix]", Desc: "show details or switch by ID prefix"},
 		{Cmd: "/rename <new title>", Desc: "rename the current session"},
 		{Cmd: "/compact", Desc: "summarize the current session to shrink its context"},
+		{Cmd: "/answer <text>", Desc: "answer the visible flow question explicitly"},
+		{Cmd: "/flow [resume|terminate]", Desc: "inspect or control the conversation workflow"},
 		{Cmd: "/crons", Desc: "list active scheduled cron jobs (★ = current session)"},
 		{Cmd: "/heartbeat [on|off|now|…]", Desc: "show or set this chat's heartbeat (scheduled check-ins)"},
 		{Cmd: "/reset", Desc: "cancel any run, forget this binding; next message starts fresh"},

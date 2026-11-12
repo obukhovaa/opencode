@@ -12,12 +12,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/fileutil"
 	"github.com/opencode-ai/opencode/internal/flow"
+	"github.com/opencode-ai/opencode/internal/flowrun"
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -26,21 +28,40 @@ import (
 )
 
 type FlowStepSnapshot struct {
-	ID, Agent, SessionID, Status, Prompt, Output string
-	Iteration, RunningAgents                     int
+	ID            string `json:"id"`
+	Agent         string `json:"agent"`
+	SessionID     string `json:"sessionId,omitempty"`
+	Status        string `json:"status"`
+	Prompt        string `json:"prompt,omitempty"`
+	Output        string `json:"output,omitempty"`
+	Iteration     int    `json:"iteration"`
+	RunningAgents int    `json:"runningAgents"`
 }
 type FlowSnapshot struct {
-	RootSessionID, FlowID, Status string
-	Dynamic, Running              bool
-	Steps                         []FlowStepSnapshot
+	RunID         string             `json:"runId,omitempty"`
+	RootSessionID string             `json:"rootSessionId"`
+	FlowID        string             `json:"flowId"`
+	Status        string             `json:"status"`
+	Dynamic       bool               `json:"dynamic"`
+	Running       bool               `json:"running"`
+	Steps         []FlowStepSnapshot `json:"steps"`
 }
 type dynamicRun struct {
-	cancel   context.CancelFunc
-	done     chan struct{}
-	status   string
-	manifest *flow.DynamicManifest
-	steps    map[string]context.CancelFunc
-	steering []string
+	taskBaseline        map[string]bool
+	sessionBaseline     map[string]bool
+	lastCompletedOutput string
+	mu                  sync.Mutex
+	record              *flowrun.Run
+	lease               flowrun.Lease
+	inbox               []flowrun.Inbox
+	stopStatus          string
+	runtimeArgs         map[string]any
+	cancel              context.CancelFunc
+	done                chan struct{}
+	status              string
+	manifest            *flow.DynamicManifest
+	steps               map[string]context.CancelFunc
+	steering            []string
 }
 
 func (app *App) FlowBusy(root string) bool {
@@ -105,6 +126,10 @@ func (app *App) beginFlow(root, status string) (context.Context, *dynamicRun, fu
 }
 
 func (app *App) StartDynamicFlow(ctx context.Context, root, prompt string) error {
+	if app.FlowRuns != nil {
+		_, err := app.SubmitFlow(ctx, root, tools.FlowRequest{Operation: "plan", Goal: prompt})
+		return err
+	}
 	if strings.TrimSpace(prompt) == "" {
 		return fmt.Errorf("usage: /flow <goal>")
 	}
@@ -214,6 +239,9 @@ func (app *App) StartDynamicFlow(ctx context.Context, root, prompt string) error
 }
 
 func (app *App) QueueFlowSteering(root, text string) error {
+	if app.FlowRuns != nil {
+		return app.QueueFlowMessages(context.Background(), root, []FlowSteeringMessage{{Text: text}})
+	}
 	app.dynamicMu.Lock()
 	defer app.dynamicMu.Unlock()
 	run := app.dynamicRuns[root]
@@ -245,6 +273,9 @@ func (app *App) QueueFlowSteering(root, text string) error {
 }
 
 func (app *App) executeFlow(ctx context.Context, root string, run *dynamicRun, m flow.DynamicManifest, recover bool) error {
+	if run.record != nil {
+		return app.executeStoredFlow(ctx, root, run, m, recover)
+	}
 	limits, _ := config.DynamicFlowLimits(m.Complexity)
 	if !m.Standalone {
 		ctx = agentpkg.WithPrimaryFlowPrefix(ctx, app.PrimaryAgents[config.AgentName(m.Agent)], root)
@@ -278,10 +309,10 @@ func (app *App) executeFlow(ctx context.Context, root string, run *dynamicRun, m
 			args["user_steering"] = steering
 			batch, _ := json.Marshal(run.manifest.Steering)
 			args["_dynamic_steering_batch"] = string(batch)
-			step.Prompt += "\n\nLatest user steering (adjust remaining work accordingly):\n" + steering
+			step.Prompt += "\n\nLatest user steering (adjust remaining work accordingly):\n${args.user_steering}"
 
-		} else if text, ok := args["user_steering"].(string); ok {
-			step.Prompt += "\n\nUser steering:\n" + text
+		} else if _, ok := args["user_steering"].(string); ok {
+			step.Prompt += "\n\nUser steering:\n${args.user_steering}"
 		}
 		stepCtx, cancel := context.WithCancel(ctx)
 		run.steps[step.ID] = cancel
@@ -361,6 +392,9 @@ func (app *App) executeFlow(ctx context.Context, root string, run *dynamicRun, m
 }
 
 func (app *App) ResumeFlow(ctx context.Context, root string) error {
+	if app.FlowRuns != nil {
+		return app.resumeStoredFlow(ctx, root)
+	}
 	dir, err := flow.DynamicDirectory()
 	if err != nil {
 		return err
@@ -405,6 +439,9 @@ func (app *App) flowRows(ctx context.Context, root string) ([]db.FlowState, erro
 	return app.flowQuery.ListFlowStatesByRootSession(ctx, root)
 }
 func (app *App) DynamicFlowSnapshot(ctx context.Context, root string) (FlowSnapshot, error) {
+	if app.FlowRuns != nil {
+		return app.storedFlowSnapshot(ctx, root)
+	}
 	snap := FlowSnapshot{RootSessionID: root}
 	rows, err := app.flowRows(ctx, root)
 	if err != nil {
@@ -523,6 +560,9 @@ func (app *App) DynamicFlowSnapshot(ctx context.Context, root string) (FlowSnaps
 }
 
 func (app *App) ControlFlow(ctx context.Context, root, step, action string) error {
+	if app.FlowRuns != nil {
+		return app.controlStoredFlow(ctx, root, step, action)
+	}
 	if action == "resume" {
 		return app.ResumeFlow(ctx, root)
 	}
@@ -685,6 +725,13 @@ func (app *App) AnnotateFlowSessions(ctx context.Context, sessions []session.Ses
 // submitOrdinaryFlow lets an enabled primary initiate planning without /flow.
 // Registration is tied to this App, never to whichever agent is selected later.
 func (app *App) submitOrdinaryFlow(ctx context.Context, root string, req tools.FlowRequest) error {
+	if app.FlowRuns != nil {
+		result, err := app.SubmitFlow(ctx, root, req)
+		if err == nil {
+			tools.SetFlowResult(ctx, result)
+		}
+		return err
+	}
 	if req.Operation != "create" {
 		return fmt.Errorf("updates are only available within the owning flow")
 	}

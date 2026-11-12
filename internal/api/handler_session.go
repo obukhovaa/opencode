@@ -194,6 +194,12 @@ func (s *Server) handleSessionChildren(w http.ResponseWriter, r *http.Request) {
 // handleSessionAbort cancels the active agent run for a session.
 func (s *Server) handleSessionAbort(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("sessionID")
+	if s.app.FlowBusy(sessionID) {
+		if err := s.app.ControlFlow(r.Context(), sessionID, "", "cancel"); err != nil {
+			writeSessionFlowError(w, err)
+			return
+		}
+	}
 	agent := s.app.ActiveAgent()
 	if agent != nil {
 		agent.Cancel(sessionID)

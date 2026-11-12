@@ -236,3 +236,73 @@ Any ACP-compatible client can connect:
 ### Logging
 
 All logging goes to stderr to avoid corrupting the JSON-RPC protocol stream on stdout.
+
+## Conversation-owned flows (fork extension)
+
+These endpoints are additive to the SDK-compatible session API and the existing
+standalone `/flow` runner. They execute top-level work in an ordinary primary-agent
+conversation. A flow step or subagent cannot start another flow.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/session-flow/capabilities` | Protocol version, supported operations, durable-storage and distributed-recovery support |
+| POST | `/session-flow/admit` | Admit an authenticated bridge conversation and its job/peer origin |
+| POST | `/session-flow/release` | Release an idle or suspended admitted conversation |
+| GET | `/session/{sessionID}/flow` | Current or latest run snapshot, including steps and current output |
+| POST | `/session/{sessionID}/flow` | `plan`, `create`, `run`, `update`, `list`, `status`, or `control` |
+| GET | `/session/{sessionID}/flow/events?after=<cursor>&limit=100` | Durable, ordered lifecycle replay; maximum limit 500 |
+
+All routes use the server's existing HTTP Basic authentication. The session must
+be an ordinary root belonging to the server's project. In pool mode, read and
+write operations require that exact conversation's local admission; a shared
+MySQL database does not widen access to other conversations.
+
+A generated plan request looks like:
+
+```http
+POST /session/<conversation>/flow
+Idempotency-Key: <stable-request-id>
+Content-Type: application/json
+
+{"operation":"plan","goal":"Implement and verify the requested change"}
+```
+
+To execute an existing definition without generating or editing YAML:
+
+```json
+{"operation":"run","flowId":"review-and-fix","args":{"ticket":"EXAMPLE-1"}}
+```
+
+`plan` uses the bundled flow-creator guidance and configured complexity policy.
+`create` submits generated YAML directly; `update` is restricted to unentered
+steps of the owning generated run. Named runs retain an immutable parsed snapshot
+and reject amendments. `control` takes `action` (`cancel`, `resume`, `skip`, or
+`terminate`) and, where needed, `stepId`. Starting returns 202; inspection and
+control return 200. The response includes `runId`, `conversationId`, kind and
+status. A stable `Idempotency-Key` is essential for safe retries; the server echoes
+it (and generates one when absent). Caller JSON cannot set the host invocation ID.
+
+Bridge admission takes `jobId`, a complete `peer`, optional `sessionId` and
+`agent`, plus optional `requester`, `deadline` (Unix milliseconds), and `jobArgs`.
+If the peer is already bound, that conversation and its selected agent are
+preserved. A conflicting requested session/agent is refused. Pool admission also
+requires the worker's exact `workspace` and `workspaceRef`, and is mutually
+exclusive with standalone flow starts, recycling and workspace rebinding.
+An existing recoverable run is reserved before its peer can be rebound, so a live
+foreign owner prevents takeover. Requests from the admitted bridge include
+`origin: {"peer": {...}, "jobId": "..."}`; trusted metadata is restored from the
+admission, not accepted from an arbitrary replacement origin body.
+
+Release takes `sessionId` and `jobId`. It refuses active turns and flow work;
+explicit suspension preserves the durable run for a later owner. Server shutdown
+cancels local execution before closing stores. `/session/{sessionID}/abort` also
+cancels a locally executing conversation flow.
+
+The shared `/event` stream emits **`session.flow.*`**, with run and conversation
+identity, sequence, revision and ownership fence. These events never masquerade
+as the standalone runner's `flow.completed` or `flow.failed`. Replay returns
+`{"events": [...], "cursor": "<runId>:<sequence>"}`. Cursors belong to one run;
+when a conversation starts another run, begin replay with an empty cursor.
+Capability negotiation uses `protocolVersion: 1`. Distributed recovery is
+advertised only when the configured backend supports it; durable local storage
+and remote-worker coordination are separate capabilities.

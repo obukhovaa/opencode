@@ -105,6 +105,9 @@ func (p *permissionWaits) paused() time.Duration {
 // waiting on such a tool. Time spent waiting on a permission prompt does not
 // count towards the limit.
 func runToolBounded(ctx context.Context, limit time.Duration, tool tools.BaseTool, call tools.ToolCall) (tools.ToolResponse, error) {
+	if err := tools.CheckFlowOwnership(ctx); err != nil {
+		return tools.NewTextErrorResponse("Flow ownership lost: " + err.Error()), err
+	}
 	if limit <= 0 {
 		return tool.Run(ctx, call)
 	}

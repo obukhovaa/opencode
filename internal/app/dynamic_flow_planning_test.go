@@ -67,7 +67,13 @@ func (f planningQueueFlow) RunWithOptions(ctx context.Context, _, _ string, args
 	if err != nil {
 		return nil, nil, err
 	}
-	f.received <- step.Prompt
+	// The real engine substitutes args only after parsing template shell
+	// markup. Observe that contract instead of treating the raw template as
+	// the final model prompt (which would encourage unsafe text interpolation).
+	if !strings.Contains(step.Prompt, "${args.user_steering}") {
+		return nil, nil, fmt.Errorf("step template does not consume steering")
+	}
+	f.received <- fmt.Sprint(args["user_steering"])
 	events := make(chan agentpkg.AgentEvent)
 	states := make(chan *flow.FlowState)
 	close(events)

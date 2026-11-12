@@ -90,6 +90,9 @@ func (s *Service) handleInbound(w http.ResponseWriter, r *http.Request) {
 // batch or text/attachments, never both and never neither, and that every
 // batch entry has a non-empty id and text. It returns "" for a valid body.
 func validateInboundBody(in bridge.Inbound) string {
+	if in.QuestionRequestID != "" && (in.Text == "" || len(in.Messages) > 0 || len(in.Attachments) > 0) {
+		return "request-bound question reply must carry text only"
+	}
 	if len(in.Messages) > 0 {
 		if in.Text != "" || len(in.Attachments) > 0 {
 			return "inbound must carry either messages or text/attachments, not both"

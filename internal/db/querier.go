@@ -23,6 +23,7 @@ type Querier interface {
 	CreateFlowState(ctx context.Context, arg CreateFlowStateParams) (FlowState, error)
 	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
+	CurrentConversationFlowRun(ctx context.Context, arg CurrentConversationFlowRunParams) (ConversationFlowRun, error)
 	DeleteBridgeSessionByPeer(ctx context.Context, arg DeleteBridgeSessionByPeerParams) error
 	DeleteBridgeSessionsByIdentity(ctx context.Context, arg DeleteBridgeSessionsByIdentityParams) error
 	DeleteBridgeSessionsBySession(ctx context.Context, arg DeleteBridgeSessionsBySessionParams) error
@@ -37,6 +38,7 @@ type Querier interface {
 	DeleteSessionTree(ctx context.Context, arg DeleteSessionTreeParams) error
 	GetBridgeHeartbeat(ctx context.Context, arg GetBridgeHeartbeatParams) (BridgeHeartbeat, error)
 	GetBridgeSession(ctx context.Context, arg GetBridgeSessionParams) (BridgeSession, error)
+	GetConversationFlowRun(ctx context.Context, arg GetConversationFlowRunParams) (ConversationFlowRun, error)
 	GetCronJob(ctx context.Context, id string) (CronJob, error)
 	GetFile(ctx context.Context, id string) (File, error)
 	GetFileByPathAndSession(ctx context.Context, arg GetFileByPathAndSessionParams) (File, error)
@@ -53,6 +55,7 @@ type Querier interface {
 	ListBridgeSessionsByIdentity(ctx context.Context, arg ListBridgeSessionsByIdentityParams) ([]BridgeSession, error)
 	ListBridgeSessionsBySession(ctx context.Context, arg ListBridgeSessionsBySessionParams) ([]BridgeSession, error)
 	ListChildSessions(ctx context.Context, rootSessionID sql.NullString) ([]Session, error)
+	ListConversationFlowRuns(ctx context.Context, arg ListConversationFlowRunsParams) ([]ConversationFlowRun, error)
 	ListCronJobsBySession(ctx context.Context, sessionID string) ([]CronJob, error)
 	ListDueCronJobs(ctx context.Context, nextRunAt sql.NullInt64) ([]CronJob, error)
 	ListFilesByPath(ctx context.Context, path string) ([]File, error)

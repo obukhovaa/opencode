@@ -32,6 +32,8 @@ const defaultPoolSentinelPath = "/tmp/.pool-bind"
 // JSON null (not omitted) — the orchestrator's pool controller matches
 // on them.
 type poolHealth struct {
+	ConversationSessionID *string `json:"conversationSessionId,omitempty"`
+	ConversationJobID     *string `json:"conversationJobId,omitempty"`
 	// Mode is "available" (idle, claimable), "busy" (a run is in
 	// flight), or "draining" (recycle accepted; pod exits shortly).
 	Mode           string  `json:"mode"`
@@ -69,6 +71,12 @@ func (s *Server) buildPoolHealth() poolHealth {
 		Draining:   s.poolDraining.Load(),
 		RefBinding: true,
 	}
+	if a := s.sessionFlowAdmission.Load(); a != nil {
+		ph.Mode = "busy"
+		conversation, job := a.SessionID, a.JobID
+		ph.ConversationSessionID = &conversation
+		ph.ConversationJobID = &job
+	}
 	if s.poolBoundWorkspace != "" {
 		bound := s.poolBoundWorkspace
 		ph.BoundWorkspace = &bound
@@ -82,7 +90,7 @@ func (s *Server) buildPoolHealth() poolHealth {
 		if t := s.flowRunner.LastTerminalAt(); t != 0 {
 			ph.LastTerminalAt = &t
 		}
-		if id := s.flowRunner.CurrentRunID(); id != "" {
+		if id := s.flowRunner.CurrentRunID(); id != "" && s.sessionFlowAdmission.Load() == nil {
 			ph.CurrentRunID = &id
 			ph.Mode = "busy"
 		}

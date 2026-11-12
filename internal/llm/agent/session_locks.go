@@ -82,3 +82,15 @@ func WithIdleToolPolicy(update func() error) error {
 	}
 	return update()
 }
+
+// WithIdleSession excludes new turns on sessionID while a lifecycle mutation is
+// applied. Other conversations may continue running; unlike a tool-policy
+// replacement, releasing one bridge binding does not need process-wide idleness.
+func WithIdleSession(sessionID string, update func() error) error {
+	toolPolicyMu.Lock()
+	defer toolPolicyMu.Unlock()
+	if _, busy := globalSessionSlots.Load(sessionID); busy {
+		return ErrSessionBusy
+	}
+	return update()
+}

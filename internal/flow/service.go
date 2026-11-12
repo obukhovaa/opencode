@@ -76,6 +76,15 @@ type FlowState struct {
 
 // RunOptions configures one Service.RunWithOptions call.
 type RunOptions struct {
+	PromptShell func(context.Context, string) (string, error)
+	// Scoped storage and conversation ancestry for session-owned flow runs.
+	Querier                 db.QuerierWithTx
+	SessionRootID           string
+	RuntimeJobArgs          map[string]any
+	ConversationInteraction bool
+	BeforeResolvedStep      func(context.Context, Step, string, map[string]any) error
+	ResolveStepPrompt       func(context.Context, Step) (string, error)
+
 	// Definition and RootSessionID attach a durable dynamic plan to a chat root.
 	Definition         *Flow
 	DefinitionSnapshot func() *Flow
@@ -198,6 +207,9 @@ func (s *service) promptResolverOrDefault() PromptResolver {
 // that routes the flow somewhere arbitrary. Resilience lives one level down
 // instead, in the prompt client's serve-stale-on-error cache.
 func (s *service) resolveStepPrompt(ctx context.Context, step Step) (string, error) {
+	if opts, ok := ctx.Value(sessionRunOptionsKey{}).(RunOptions); ok && opts.ResolveStepPrompt != nil {
+		return opts.ResolveStepPrompt(ctx, step)
+	}
 	// Trimmed, to agree with validateStepPromptSource: it treats a
 	// whitespace-only path as absent, so an untrimmed check here would send
 	// "  " to the client and fail the step at run time over a key
@@ -299,6 +311,13 @@ func (s *service) Run(ctx context.Context, sessionPrefix string, flowID string, 
 
 // RunWithOptions executes flowID for sessionPrefix. See RunOptions.
 func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flowID string, args map[string]any, opts RunOptions) (<-chan agentpkg.AgentEvent, <-chan *FlowState, error) {
+	if opts.Querier != nil {
+		local := *s
+		local.querier = opts.Querier
+		opts.Querier = nil
+		return local.RunWithOptions(ctx, sessionPrefix, flowID, args, opts)
+	}
+	ctx = context.WithValue(ctx, sessionRunOptionsKey{}, opts)
 	fresh := opts.Fresh
 	f := opts.Definition
 	var err error
@@ -332,7 +351,11 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 	// The run's own args, as the caller supplied them, ride on ctx for every
 	// step: MCP flowArgHeaders are stamped from them, never from step args
 	// (which struct output can grow) or persisted rows.
-	ctx = tools.WithJobArgs(ctx, args)
+	if opts.RuntimeJobArgs != nil {
+		ctx = tools.WithJobArgs(ctx, opts.RuntimeJobArgs)
+	} else {
+		ctx = tools.WithJobArgs(ctx, args)
+	}
 	ctx = context.WithValue(ctx, dynamicAttendedKey{}, opts.Attended)
 	if opts.DefinitionSnapshot != nil {
 		ctx = context.WithValue(ctx, dynamicDefinitionKey{}, opts.DefinitionSnapshot)
@@ -705,7 +728,13 @@ func (s *service) runStep(
 	// agent prompt, the step's own Langfuse prompt). handleStepError records
 	// such a failure by UPDATE-ing the step's row, so the row — and the
 	// session it references — must exist before the first of them runs.
-	s.ensureStepEntryRow(ctx, f, step, sessionID, rootSessionID, args, iteration, prevState)
+	if entryErr := s.ensureStepEntryRow(ctx, f, step, sessionID, rootSessionID, args, iteration, prevState); entryErr != nil {
+		if db.IsForeignKeyViolation(entryErr, "fk_flow_states_session") {
+			entryErr = fmt.Errorf("session %s no longer exists (deleted by a concurrent run sharing this session id?): %w", sessionID, entryErr)
+		}
+		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, fmt.Errorf("persisting flow state: %w", entryErr), wg, agentEvents, flowStates, nextSteps, f)
+		return
+	}
 
 	// Agent id and model override both come from the step spec with
 	// ${args.*}/${step.*} substitution, but they fail differently — see
@@ -723,6 +752,12 @@ func (s *service) runStep(
 		return
 	}
 
+	if options, ok := ctx.Value(sessionRunOptionsKey{}).(RunOptions); ok && options.BeforeResolvedStep != nil {
+		if err := options.BeforeResolvedStep(ctx, step, agentID, args); err != nil {
+			s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
+			return
+		}
+	}
 	var outputSchema map[string]any
 	if step.Output != nil {
 		outputSchema = step.Output.Schema
@@ -772,7 +807,7 @@ func (s *service) runStep(
 		// the TUI root. The root's own user-selected approval policy is preserved.
 		if sess.ID != rootSessionID {
 			s.permissions.RemoveAutoApproveSession(sess.ID)
-			s.permissions.LinkSession(sess.ID, rootSessionID)
+			s.permissions.LinkSession(sess.ID, conversationRoot(ctx, rootSessionID))
 		}
 		s.permissions.MarkInteractiveSession(sess.ID)
 		defer s.permissions.RemoveInteractiveSession(sess.ID)
@@ -809,9 +844,17 @@ func (s *service) runStep(
 	// output are never rescanned, so args can neither form nor alter a command.
 	var prompt string
 	if strings.Contains(stepPrompt, "!`") {
-		prompt = shell.ExpandMarkupAround(ctx, stepPrompt, config.WorkingDirectory(), func(text string) string {
-			return substitutePrompt(text, args, stepVars)
-		})
+		render := func(text string) string { return substitutePrompt(text, args, stepVars) }
+		if options, ok := ctx.Value(sessionRunOptionsKey{}).(RunOptions); ok && options.PromptShell != nil {
+			var expansionErr error
+			prompt, expansionErr = shell.ExpandMarkupAroundWithRunner(stepPrompt, render, func(command string) (string, error) { return options.PromptShell(ctx, command) })
+			if expansionErr != nil {
+				s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, expansionErr, wg, agentEvents, flowStates, nextSteps, f)
+				return
+			}
+		} else {
+			prompt = shell.ExpandMarkupAround(ctx, stepPrompt, config.WorkingDirectory(), render)
+		}
 		logging.Debug("Flow step prompt after shell markup expansion", "step", step.ID, "prompt_length", len(prompt))
 	} else {
 		prompt = substitutePrompt(stepPrompt, args, stepVars)
@@ -942,8 +985,10 @@ func (s *service) runStep(
 	// Interactive bind: per the flow-api spec, on entering an interactive
 	// step we resolve interaction.target from args and call the bridge's
 	// InteractiveHook BEFORE agent.Run. Failure here fails the step fast.
-	// The bind is automatically reversed in deferred Unbind below.
-	if step.Interactive {
+	// The bind is automatically reversed in deferred Unbind below. Session-owned
+	// bridge runs already have a durable conversation binding; rebinding each
+	// step would steal that binding and lose subsequent replies.
+	if step.Interactive && !conversationOwnsInteraction(ctx) {
 		// Mark the session as interactively bound so the question tool
 		// won't auto-approve away the human's chance to answer (see
 		// permission.Service.MarkInteractiveSession + question tool's
@@ -2249,6 +2294,7 @@ func (s *service) failResumedSelfLoop(
 }
 
 func (s *service) resolveSession(ctx context.Context, step Step, sessionID string, rootSessionID string, prevState *FlowState) (session.Session, error) {
+	rootSessionID = conversationRoot(ctx, rootSessionID)
 	existing, err := s.sessions.Get(ctx, sessionID)
 	if err == nil {
 		return existing, nil
@@ -2286,9 +2332,14 @@ func (s *service) createStepRow(ctx context.Context, step Step, prevState *FlowS
 // may be the parked struct output a resumed postpone still needs (GENAI-230),
 // which only the entry-time write in runStep may replace. A failure is logged
 // and otherwise ignored — the entry-time write reports a persistent one.
-func (s *service) ensureStepEntryRow(ctx context.Context, f *Flow, step Step, sessionID, rootSessionID string, args map[string]any, iteration int, prevState *FlowState) {
+func (s *service) ensureStepEntryRow(ctx context.Context, f *Flow, step Step, sessionID, rootSessionID string, args map[string]any, iteration int, prevState *FlowState) error {
+	if err := tools.CheckFlowOwnership(ctx); err != nil {
+		return err
+	}
 	if _, err := s.querier.GetFlowState(ctx, sessionID); err == nil {
-		return
+		return nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
 	}
 	argsJSON, _ := marshalPersistedArgs(args)
 	if _, err := s.createStepRow(ctx, step, prevState, db.CreateFlowStateParams{
@@ -2302,7 +2353,9 @@ func (s *service) ensureStepEntryRow(ctx context.Context, f *Flow, step Step, se
 		Iteration:      int64(iteration),
 	}); err != nil {
 		logging.Warn("Failed to create step entry flow state", "step", step.ID, "session_id", sessionID, "error", err)
+		return err
 	}
+	return nil
 }
 
 func (s *service) copySessionMessages(ctx context.Context, fromSessionID, toSessionID string) error {
@@ -2935,4 +2988,26 @@ func stepCtx(parent context.Context, step Step) (context.Context, context.Cancel
 		return context.WithTimeout(parent, d)
 	}
 	return context.WithCancel(parent)
+}
+
+type sessionRunOptionsKey struct{}
+
+func conversationRoot(ctx context.Context, runID string) string {
+	if opts, ok := ctx.Value(sessionRunOptionsKey{}).(RunOptions); ok && opts.SessionRootID != "" {
+		return opts.SessionRootID
+	}
+	return runID
+}
+
+// ValidateDefinitionArgs is the same admission check used by the standalone runner.
+func ValidateDefinitionArgs(f *Flow, args map[string]any) error {
+	if err := validateFlow(f); err != nil {
+		return err
+	}
+	return validateArgs(args, f.Spec.Args)
+}
+
+func conversationOwnsInteraction(ctx context.Context) bool {
+	opts, _ := ctx.Value(sessionRunOptionsKey{}).(RunOptions)
+	return opts.ConversationInteraction
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/go-sql-driver/mysql"
+	sqlite3 "github.com/ncruces/go-sqlite3"
 )
 
 func TestIsRetryableTxError(t *testing.T) {
@@ -16,6 +17,11 @@ func TestIsRetryableTxError(t *testing.T) {
 		want bool
 	}{
 		{"nil", nil, false},
+		{"sqlite busy", sqlite3.BUSY, true},
+		{"sqlite locked", sqlite3.LOCKED, true},
+		{"sqlite busy snapshot", sqlite3.BUSY_SNAPSHOT, true},
+		{"wrapped sqlite snapshot", fmt.Errorf("message insert: %w", sqlite3.BUSY_SNAPSHOT), true},
+		{"sqlite constraint", sqlite3.CONSTRAINT, false},
 		{"deadlock 1213", &mysql.MySQLError{Number: mysqlErrLockDeadlock, Message: "Deadlock found"}, true},
 		{"lock wait timeout 1205", &mysql.MySQLError{Number: mysqlErrLockWaitTimeout, Message: "Lock wait timeout"}, true},
 		{"wrapped deadlock", fmt.Errorf("create message: %w", &mysql.MySQLError{Number: mysqlErrLockDeadlock}), true},

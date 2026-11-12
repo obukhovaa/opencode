@@ -19,16 +19,17 @@ import (
 // exactly, do not renegotiate on the Go side alone; the orchestrator's
 // ingestion handler must match field-for-field.
 type relayFrame struct {
-	JobID       string                `json:"jobId"`
-	Peer        bridge.PeerRef        `json:"peer"`
-	SessionID   string                `json:"sessionId"`
-	Kind        string                `json:"kind"`
-	Text        string                `json:"text,omitempty"`
-	Attachments []relayAttachmentMeta `json:"attachments,omitempty"`
-	Question    *relayQuestion        `json:"question,omitempty"`
-	Progress    *relayProgress        `json:"progress,omitempty"`
-	Delivered   *relayDelivered       `json:"delivered,omitempty"`
-	TS          int64                 `json:"ts"`
+	SessionFlow *bridge.SessionFlowEventContext `json:"sessionFlow,omitempty"`
+	JobID       string                          `json:"jobId"`
+	Peer        bridge.PeerRef                  `json:"peer"`
+	SessionID   string                          `json:"sessionId"`
+	Kind        string                          `json:"kind"`
+	Text        string                          `json:"text,omitempty"`
+	Attachments []relayAttachmentMeta           `json:"attachments,omitempty"`
+	Question    *relayQuestion                  `json:"question,omitempty"`
+	Progress    *relayProgress                  `json:"progress,omitempty"`
+	Delivered   *relayDelivered                 `json:"delivered,omitempty"`
+	TS          int64                           `json:"ts"`
 }
 
 // relayAttachmentMeta is METADATA ONLY — it has no field for file
@@ -51,11 +52,12 @@ type relayChoice struct {
 // relayQuestion is the "question" sub-object of a relayFrame with
 // kind == "question".
 type relayQuestion struct {
-	RequestID string        `json:"requestId"`
-	Prompt    string        `json:"prompt"`
-	Choices   []relayChoice `json:"choices"`
-	Multiple  bool          `json:"multiple"`
-	Custom    bool          `json:"custom"`
+	ConversationID string        `json:"conversationId,omitempty"`
+	RequestID      string        `json:"requestId"`
+	Prompt         string        `json:"prompt"`
+	Choices        []relayChoice `json:"choices"`
+	Multiple       bool          `json:"multiple"`
+	Custom         bool          `json:"custom"`
 }
 
 // relayProgress is the "progress" sub-object of a relayFrame with
@@ -95,6 +97,9 @@ const (
 // only success status; anything else — including a 2xx that isn't 202 —
 // is treated as a failed send per the pinned contract.
 func (a *Adapter) postRelay(ctx context.Context, frame relayFrame) error {
+	if event, ok := bridge.SessionFlowEventFromContext(ctx); ok {
+		frame.SessionFlow = &event
+	}
 	body, err := json.Marshal(frame)
 	if err != nil {
 		return fmt.Errorf("bridge/external: encode relay frame: %w", err)

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/opencode-ai/opencode/internal/db"
+
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -109,6 +111,7 @@ func (b *agentTool) runAsync(
 	}
 
 	tk := &task.Task{
+		WriteGuard:            db.WriteGuardFromContext(ctx),
 		ID:                    taskID,
 		SessionID:             sessionID,
 		ParentSessionID:       tools.ParentSessionIDFromContext(ctx),

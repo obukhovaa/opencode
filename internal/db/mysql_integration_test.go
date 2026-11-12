@@ -59,6 +59,13 @@ func openTestMySQL(t *testing.T) *sql.DB {
 	// List every table we know the schema produces. Anything not on the
 	// list will fail to drop and surface as a bug.
 	tables := []string{
+		"conversation_flow_prompts",
+		"conversation_flow_question_requests",
+		"conversation_flow_questions",
+		"conversation_flow_receipts",
+		"conversation_flow_events",
+		"conversation_flow_inbox",
+		"conversation_flow_runs",
 		"bridge_allowlist",
 		"bridge_sessions",
 		"cron_jobs",

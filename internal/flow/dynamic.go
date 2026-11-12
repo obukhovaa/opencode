@@ -117,6 +117,9 @@ func ParseDynamic(data, id, primary, size string, subagents map[string]bool) (*F
 	}
 	for i := range ff.Flow.Steps {
 		step := &ff.Flow.Steps[i]
+		if strings.Contains(step.Prompt, "!`") {
+			return nil, fmt.Errorf("step %s: generated prompts cannot execute shell markup; use the permission-checked bash tool inside the step", step.ID)
+		}
 		if step.Agent == "" {
 			step.Agent = primary
 		}
