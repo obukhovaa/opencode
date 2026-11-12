@@ -278,10 +278,10 @@ func (app *App) executeFlow(ctx context.Context, root string, run *dynamicRun, m
 			args["user_steering"] = steering
 			batch, _ := json.Marshal(run.manifest.Steering)
 			args["_dynamic_steering_batch"] = string(batch)
-			step.Prompt += "\n\nLatest user steering (adjust remaining work accordingly):\n" + steering
+			step.Prompt += "\n\nLatest user steering (adjust remaining work accordingly):\n${args.user_steering}"
 
-		} else if text, ok := args["user_steering"].(string); ok {
-			step.Prompt += "\n\nUser steering:\n" + text
+		} else if _, ok := args["user_steering"].(string); ok {
+			step.Prompt += "\n\nUser steering:\n${args.user_steering}"
 		}
 		stepCtx, cancel := context.WithCancel(ctx)
 		run.steps[step.ID] = cancel
