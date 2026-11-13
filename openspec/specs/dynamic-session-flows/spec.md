@@ -61,3 +61,23 @@ The TUI SHALL recognize /flow, display progress and step agent/status/output, al
 - **WHEN** a step completes, fails or postpones
 - **THEN** chat shows its status, a bounded excerpt of available output and the elapsed time observed for that execution attempt
 - **AND** longer output remains available on the flow page without an additional model call
+
+### Requirement: Compact schema-correct builder guidance
+Dynamic planning SHALL receive a compact guide for the supported dynamic subset
+instead of the full standalone-authoring guide. It SHALL prioritize the smallest
+sufficient plan, concise prompts and consumed output fields while preserving
+user constraints, required reviews and verification. Complexity ceilings SHALL
+NOT be presented as target step counts. Guidance SHALL stay in the planning
+message; tool definitions SHALL NOT vary when entering flow mode.
+
+#### Scenario: Minimal example remains executable
+- **WHEN** the bundled example is parsed for a custom primary agent
+- **THEN** it validates, inherits that primary and routes every declared step
+
+#### Scenario: Misplaced description
+- **WHEN** a generated definition puts description under flow
+- **THEN** strict validation rejects it with a hint to omit it or move it to the document root
+
+#### Scenario: Standalone flow authoring
+- **WHEN** the user authors a standalone YAML flow
+- **THEN** the full flow-creator guide remains available with its advanced features

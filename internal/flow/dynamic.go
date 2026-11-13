@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -107,6 +108,14 @@ func ParseDynamic(data, id, primary, size string, subagents map[string]bool) (*F
 	dec := yaml.NewDecoder(bytes.NewBufferString(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&ff); err != nil {
+		var fields *yaml.TypeError
+		if errors.As(err, &fields) {
+			for _, detail := range fields.Errors {
+				if strings.Contains(detail, "field description not found in type flow.FlowSpec") {
+					return nil, fmt.Errorf("%w; hint: description belongs at the document root, alongside flow, not under flow. For generated flows, omit description", err)
+				}
+			}
+		}
 		return nil, err
 	}
 	if len(ff.Include) > 0 {

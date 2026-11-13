@@ -1185,7 +1185,13 @@ Caveats to design around:
 
 Enable `dynamicFlow: {"enabled": true}` on a primary agent (JSON configuration or
 markdown frontmatter), then submit `/flow <goal>`. The primary agent receives the
-bundled flow-creator guidance and builds a self-contained workflow. OpenSpec must
+compact dynamic-flow guidance from the flow-creator skill and builds a
+self-contained workflow. The full standalone-authoring guide is not injected.
+The builder treats complexity limits as ceilings, targets short step prompts,
+uses small output schemas only for consumed fields, and retains required review
+and verification boundaries. These are planning guidelines, not new hard output
+limits. YAML metadata such as `description` belongs alongside `flow`, not inside
+it; generated flows normally omit it. OpenSpec must
 be installed (`npm install -g @fission-ai/openspec`). When OpenSpec is missing, the TUI offers to install it with npm before planning starts; installation runs only after the user chooses it. The opt-in `flow` tool can also
 submit a plan during an ordinary turn; execution waits until that turn releases
 its session.

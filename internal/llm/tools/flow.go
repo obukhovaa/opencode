@@ -71,7 +71,7 @@ func (*flowTool) Info() ToolInfo {
 		"goal":       map[string]any{"type": "string", "description": "User goal for plan."},
 		"flowId":     map[string]any{"type": "string", "description": "Discovered flow ID for run; use list to inspect available argument schemas."},
 		"argsJson":   map[string]any{"type": "string", "description": "JSON object of arguments validated against the existing flow schema; e.g. {\"goal\":\"review\"}."},
-		"definition": map[string]any{"type": "string", "description": "Complete self-contained YAML for create/update."},
+		"definition": map[string]any{"type": "string", "description": "Minimal self-contained YAML for create/update: flow contains steps; optional name/description belong at the document root, not inside flow. Omit unnecessary descriptions and comments."},
 		"complexity": map[string]any{"type": "string", "enum": []string{"XS", "S", "M", "L", "XL", "XXL"}},
 		"action":     map[string]any{"type": "string", "enum": []string{"cancel", "resume", "skip", "terminate"}},
 		"stepId":     map[string]any{"type": "string", "description": "Selected step for cancel/skip."},

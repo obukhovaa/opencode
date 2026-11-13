@@ -12,6 +12,13 @@ description: >
 
 # Flow Creator
 
+## Dynamic flows
+
+For an in-session dynamic flow (`/flow` or `flow` plan/create/update), use
+[`references/dynamic-flow.md`](references/dynamic-flow.md). It is the compact
+runtime-bundled guide for this restricted mode; the standalone workflow and
+advanced patterns below do not apply to dynamic planning.
+
 ## Workflow
 
 1. Clarify the user's desired workflow: what steps, what agents, what decisions, what inputs.

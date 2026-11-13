@@ -76,3 +76,21 @@ func TestDynamicManifestRestartAndAmendment(t *testing.T) {
 		t.Fatal("entered step rewrite accepted")
 	}
 }
+
+func TestDynamicDescriptionPlacementHint(t *testing.T) {
+	bad := strings.Replace(dynamicTestYAML, "flow:\n", "flow:\n  description: misplaced\n", 1)
+	_, err := ParseDynamic(bad, "dynamic-test", "coder", "S", nil)
+	if err == nil || !strings.Contains(err.Error(), "field description not found") || !strings.Contains(err.Error(), "description belongs at the document root") {
+		t.Fatalf("expected strict rejection with placement hint, got %v", err)
+	}
+	good := "description: A short summary\n" + dynamicTestYAML
+	f, err := ParseDynamic(good, "dynamic-test", "coder", "S", nil)
+	if err != nil || f.Description != "A short summary" {
+		t.Fatalf("valid root description rejected: %v", err)
+	}
+	unknown := strings.Replace(dynamicTestYAML, "prompt: plan", "unexpected: true\n      prompt: plan", 1)
+	_, err = ParseDynamic(unknown, "dynamic-test", "coder", "S", nil)
+	if err == nil || strings.Contains(err.Error(), "description belongs") {
+		t.Fatalf("unrelated unknown field should remain a normal strict error: %v", err)
+	}
+}
