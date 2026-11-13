@@ -146,6 +146,8 @@ func (p *flowsPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return p, nil
 		}
 		switch msg.String() {
+		case "esc":
+			return p, func() tea.Msg { return PageChangeMsg{ID: ChatPage} }
 		case "up", "k":
 			p.selected = max(0, p.selected-1)
 			p.viewport.GotoTop()

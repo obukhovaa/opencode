@@ -47,3 +47,51 @@ func TestFlowPageCancellationOffersExplicitNextAction(t *testing.T) {
 		t.Fatalf("controls: %v", controller.controls)
 	}
 }
+
+func TestFlowPageEscapeReturnsToChatWithoutStoppingFlow(t *testing.T) {
+	for _, running := range []bool{false, true} {
+		name := "empty"
+		if running {
+			name = "running"
+		}
+		t.Run(name, func(t *testing.T) {
+			controller := &fakeFlowController{}
+			p := NewFlowsPage(controller).(*flowsPage)
+			p.root = "root"
+			if running {
+				p.snapshot = app.FlowSnapshot{FlowID: "flow", Running: true, Status: "running"}
+			}
+			_, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+			if cmd == nil {
+				t.Fatal("Escape did not request navigation")
+			}
+			navigation, ok := cmd().(PageChangeMsg)
+			if !ok || navigation.ID != ChatPage {
+				t.Fatalf("navigation=%+v want chat", navigation)
+			}
+			if len(controller.controls) != 0 {
+				t.Fatalf("Escape changed flow execution: %v", controller.controls)
+			}
+		})
+	}
+}
+
+func TestFlowPageEscapeDismissesActionsBeforeLeaving(t *testing.T) {
+	controller := &fakeFlowController{}
+	p := NewFlowsPage(controller).(*flowsPage)
+	p.choosing = true
+	_, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if p.choosing || cmd != nil {
+		t.Fatal("first Escape must only dismiss actions")
+	}
+	_, cmd = p.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if cmd == nil {
+		t.Fatal("second Escape must return to chat")
+	}
+	if navigation, ok := cmd().(PageChangeMsg); !ok || navigation.ID != ChatPage {
+		t.Fatalf("navigation=%+v", navigation)
+	}
+	if len(controller.controls) != 0 {
+		t.Fatalf("Escape changed flow execution: %v", controller.controls)
+	}
+}
