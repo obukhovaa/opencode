@@ -30,6 +30,8 @@ The TUI SHALL recognize /flow, display progress and step agent/status/output, al
 #### Scenario: User steers a running flow
 - **WHEN** the user sends a message during a step
 - **THEN** the next step receives the message before starting
+- **AND** the TUI confirms durable acceptance, shows a pending flow count, and exposes the queued text in Ctrl+G until delivery
+- **AND** viewing the queue does not acknowledge messages or insert them into an active model turn
 
 #### Scenario: Session picker
 - **WHEN** a flow has multiple step sessions

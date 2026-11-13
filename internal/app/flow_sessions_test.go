@@ -146,6 +146,9 @@ func TestStoredNamedFlowRunsWithoutOpenSpecAndAllowsSequentialRuns(t *testing.T)
 }
 func TestStoredNamedResumeUsesSnapshotAndDurableSteering(t *testing.T) {
 	a, actor, root, home, ctx := newStoredWorkflow(t)
+	pending, err := a.PendingFlowMessages(ctx, root)
+	require.NoError(t, err)
+	require.Empty(t, pending)
 	source := writeNamedWorkflow(t, home)
 	actor.pause = true
 	requests := a.Questions.Subscribe(ctx)
@@ -163,6 +166,15 @@ func TestStoredNamedResumeUsesSnapshotAndDurableSteering(t *testing.T) {
 		t.Fatal("step absent")
 	}
 	require.NoError(t, a.QueueFlowMessages(ctx, root, []FlowSteeringMessage{{ID: "message-1", Text: "retain this steering", Origin: json.RawMessage(`{"channel":"external","peerId":"one"}`)}}))
+	// Inspection must expose durable inputs without acknowledging them, even
+	// when a new UI instance reads the queue after reconnecting.
+	for range 2 {
+		pending, err = a.PendingFlowMessages(ctx, root)
+		require.NoError(t, err)
+		require.Len(t, pending, 1)
+		require.Equal(t, "retain this steering", pending[0].Text)
+	}
+
 	require.NoError(t, a.ControlFlow(ctx, root, "first", "cancel"))
 	require.NoError(t, os.Remove(source))
 	flow.Invalidate()
@@ -181,6 +193,9 @@ func TestStoredNamedResumeUsesSnapshotAndDurableSteering(t *testing.T) {
 	actor.mu.Unlock()
 	require.Contains(t, calls, "Authored snapshot")
 	require.Contains(t, calls, "retain this steering")
+	pending, err = recovered.PendingFlowMessages(ctx, root)
+	require.NoError(t, err)
+	require.Empty(t, pending, "delivered messages must disappear from the queue viewer")
 	inbox, err := a.FlowRuns.PeekInbox(ctx, state.ID)
 	require.NoError(t, err)
 	require.Empty(t, inbox)

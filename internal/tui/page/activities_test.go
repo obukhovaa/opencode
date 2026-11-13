@@ -121,3 +121,19 @@ func TestActivityStripIgnoresOldGeneration(t *testing.T) {
 		t.Fatal("stale strip response changed counts or restarted polling")
 	}
 }
+
+func TestActivityStripFlowQueueTracksDeliveryAndIgnoresOtherSessions(t *testing.T) {
+	p := &chatPage{app: &app.App{}, session: session.Session{ID: "root"}, stripGeneration: 3}
+	p.activityUpdate(stripCounts{sessionID: "root", generation: 3, flowQueued: 2})
+	if p.activityFlowQueued != 2 {
+		t.Fatal("pending flow messages not counted")
+	}
+	p.activityUpdate(stripCounts{sessionID: "other", generation: 3, flowQueued: 99})
+	if p.activityFlowQueued != 2 {
+		t.Fatal("other session changed the count")
+	}
+	p.activityUpdate(stripCounts{sessionID: "root", generation: 3})
+	if p.activityFlowQueued != 0 {
+		t.Fatal("delivered messages still counted")
+	}
+}

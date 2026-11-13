@@ -103,3 +103,18 @@ An activity strip above the editor shows running task and subagent counts. Press
 Up with an empty editor, or `k` in vim NORMAL mode, to focus it. Left/Right chooses
 a category, Enter opens it, and Down/Escape returns to editing. Draft text stays
 intact. Activities remain inspectable while the main agent is working.
+
+## Messages during flows
+
+Messages sent while a flow runs are saved in its durable inbox. The TUI confirms
+acceptance, shows the pending flow count above the editor, and lists the messages
+with a `[flow]` label in **Ctrl+G**. The count and viewer refresh as inputs are
+delivered, including after reopening the session. Storage errors restore the
+unsaved text to the editor.
+
+Steering reaches the agent at the next step or iteration boundary, before that
+step starts; it does not interrupt a running model turn. If the flow is waiting
+on a question, new directions can instead be delivered to that waiting step.
+The queue viewer's **Ctrl+X** discards ordinary chat messages only; accepted flow
+steering remains durable until delivery. Use the flow page to pause or terminate
+the workflow.

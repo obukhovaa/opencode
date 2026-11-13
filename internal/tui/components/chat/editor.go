@@ -790,7 +790,7 @@ func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(next, util.ReportError(msg.err))
 		}
-		return m, next
+		return m, tea.Batch(next, util.ReportInfo("Flow message queued — delivered at the next boundary · ctrl+g to view"))
 
 	case ToggleVimModeMsg:
 		if m.vimHandler != nil {

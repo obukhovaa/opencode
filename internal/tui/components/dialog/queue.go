@@ -1,8 +1,10 @@
 package dialog
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -25,9 +27,9 @@ type ToggleQueueDialogMsg struct {
 // CloseQueueDialogMsg closes the queued-messages viewer.
 type CloseQueueDialogMsg struct{}
 
-// QueueDialog previews the messages waiting in a session's in-memory queue.
-// It is a viewer: the only mutation it offers is discarding the whole queue
-// (ctrl+x), mirroring the chat page's binding.
+// QueueDialog previews ordinary chat messages and durable flow steering.
+// Ctrl+X discards ordinary chat messages, mirroring the chat page binding.
+// Flow steering is read-only here; its lifecycle belongs to the flow runner.
 type QueueDialog interface {
 	tea.Model
 	layout.Bindings
@@ -39,6 +41,28 @@ type queueDialogCmp struct {
 	app           *app.App
 	sessionID     string
 	width, height int
+	generation    uint64
+	flowMessages  []app.FlowSteeringMessage
+	flowErr       error
+	flowLoading   bool
+}
+
+type queueFlowLoaded struct {
+	sessionID  string
+	generation uint64
+	messages   []app.FlowSteeringMessage
+	err        error
+}
+type queueFlowTick struct{ generation uint64 }
+
+func (d *queueDialogCmp) loadFlowMessages() tea.Cmd {
+	id, generation, application := d.sessionID, d.generation, d.app
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		messages, err := application.PendingFlowMessages(ctx, id)
+		return queueFlowLoaded{id, generation, messages, err}
+	}
 }
 
 var queueDialogKeys = struct {
@@ -51,7 +75,7 @@ var queueDialogKeys = struct {
 	),
 	Discard: key.NewBinding(
 		key.WithKeys("ctrl+x"),
-		key.WithHelp("ctrl+x", "discard queued messages"),
+		key.WithHelp("ctrl+x", "discard queued chat messages"),
 	),
 }
 
@@ -65,6 +89,10 @@ const (
 
 func (d *queueDialogCmp) SetSession(sessionID string) {
 	d.sessionID = sessionID
+	d.generation++
+	d.flowMessages = nil
+	d.flowErr = nil
+	d.flowLoading = true
 }
 
 func (d *queueDialogCmp) SetSize(width, height int) {
@@ -72,11 +100,30 @@ func (d *queueDialogCmp) SetSize(width, height int) {
 }
 
 func (d *queueDialogCmp) Init() tea.Cmd {
-	return nil
+	if d.sessionID == "" {
+		return nil
+	}
+	return d.loadFlowMessages()
 }
 
 func (d *queueDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case queueFlowLoaded:
+		if msg.sessionID != d.sessionID || msg.generation != d.generation {
+			return d, nil
+		}
+		d.flowLoading = false
+		d.flowErr = msg.err
+		if msg.err == nil {
+			d.flowMessages = msg.messages
+		}
+		generation := d.generation
+		return d, tea.Tick(time.Second, func(time.Time) tea.Msg { return queueFlowTick{generation} })
+	case queueFlowTick:
+		if msg.generation != d.generation {
+			return d, nil
+		}
+		return d, d.loadFlowMessages()
 	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, queueDialogKeys.Close):
@@ -105,6 +152,10 @@ func (d *queueDialogCmp) View() tea.View {
 	var queued []app.QueuedMessage
 	if d.sessionID != "" {
 		queued = d.app.QueuedMessages(d.sessionID)
+	}
+
+	for _, msg := range d.flowMessages {
+		queued = append(queued, app.QueuedMessage{Text: "[flow] " + msg.Text})
 	}
 
 	innerWidth := queueDialogMaxWidth
@@ -136,10 +187,18 @@ func (d *queueDialogCmp) View() tea.View {
 		}
 	}
 
-	lines = append(lines,
-		"",
-		baseStyle.Foreground(t.TextMuted()).Render("esc close · ctrl+x discard all"),
-	)
+	footer := "esc close · ctrl+x discard all"
+	if len(d.flowMessages) > 0 {
+		lines = append(lines, "", baseStyle.Foreground(t.TextMuted()).Render("Flow messages wait for the next step/iteration boundary."))
+		footer = "esc close · ctrl+x discard chat only"
+	}
+	if d.flowLoading {
+		lines = append(lines, baseStyle.Foreground(t.TextMuted()).Render("Loading flow queue…"))
+	}
+	if d.flowErr != nil {
+		lines = append(lines, baseStyle.Foreground(t.Error()).Render("Flow queue unavailable; retrying…"))
+	}
+	lines = append(lines, "", baseStyle.Foreground(t.TextMuted()).Render(footer))
 
 	content := baseStyle.Width(innerWidth).Render(
 		lipgloss.JoinVertical(lipgloss.Left, lines...),
@@ -157,11 +216,11 @@ func (d *queueDialogCmp) View() tea.View {
 
 // maxEntries is how many previews fit: the hard cap, reduced further on short
 // terminals so the dialog cannot outgrow the window it is centred in. The
-// subtracted rows are the border (2), padding (2), header (2) and footer (2).
+// subtracted rows allow for borders, padding, header, footer and flow status.
 func (d *queueDialogCmp) maxEntries() int {
 	n := queueDialogMaxEntries
 	if d.height > 0 {
-		if avail := d.height - 8; avail < n {
+		if avail := d.height - 12; avail < n {
 			n = max(1, avail)
 		}
 	}

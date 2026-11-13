@@ -21,6 +21,8 @@ type stripCounts struct {
 	sessionID     string
 	generation    uint64
 	tasks, agents int
+	flowQueued    int
+	flowErr       error
 }
 
 func activityCounts(a *app.App, id string, generation uint64) tea.Cmd {
@@ -29,6 +31,10 @@ func activityCounts(a *app.App, id string, generation uint64) tea.Cmd {
 		if id == "" {
 			return result
 		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		pending, err := a.PendingFlowMessages(ctx, id)
+		result.flowQueued, result.flowErr = len(pending), err
 		children, err := a.Sessions.ListChildren(context.Background(), id)
 		scope := []string{id}
 		if err == nil {
@@ -67,7 +73,7 @@ func activityCounts(a *app.App, id string, generation uint64) tea.Cmd {
 	}
 }
 func (p *chatPage) activityStrip(view string) string {
-	if p.activityTasks+p.activityAgents == 0 && !p.app.FlowBusy(p.session.ID) {
+	if p.activityTasks+p.activityAgents == 0 && p.activityFlowQueued == 0 && !p.app.FlowBusy(p.session.ID) {
 		return view
 	}
 	labels := []string{fmt.Sprintf("Tasks %d", p.activityTasks), fmt.Sprintf("Subagents %d", p.activityAgents)}
@@ -84,6 +90,9 @@ func (p *chatPage) activityStrip(view string) string {
 	}
 	if n := p.app.QueueLen(p.session.ID); n > 0 {
 		text += fmt.Sprintf("  ·  %d queued", n)
+	}
+	if p.activityFlowQueued > 0 {
+		text += fmt.Sprintf("  ·  %d flow queued (ctrl+g)", p.activityFlowQueued)
 	}
 	if p.activityFocused {
 		text = "> " + text + "  ←/→ select · Enter open · ↓ back"
@@ -143,6 +152,9 @@ func (p *chatPage) activityUpdate(msg tea.Msg) (tea.Cmd, bool) {
 		if m.sessionID == p.session.ID {
 			p.activityTasks = m.tasks
 			p.activityAgents = m.agents
+			if m.flowErr == nil {
+				p.activityFlowQueued = m.flowQueued
+			}
 			if m.tasks+m.agents == 0 && !p.app.FlowBusy(p.session.ID) {
 				p.activityFocused = false
 			}

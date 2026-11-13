@@ -52,6 +52,7 @@ type chatPage struct {
 	vimMode                                         string // "" when disabled, "INSERT" or "NORMAL" when active
 	lastBlurAt                                      time.Time
 	activityTasks, activityAgents, activitySelected int
+	activityFlowQueued                              int
 	stripGeneration                                 uint64
 	activityFocused                                 bool
 }
@@ -221,6 +222,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case chat.SessionClearedMsg:
 		p.session = session.Session{}
+		p.activityFlowQueued = 0
 		cmds = append(cmds, p.clearSidebar())
 	case chat.SessionSelectedMsg:
 		if p.session.ID == "" {
@@ -230,6 +232,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		p.session = msg
+		p.activityFlowQueued = 0
 		if cmd := p.loadRecap(session.Session(msg)); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -299,6 +302,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, keyMap.NewSession):
 			p.session = session.Session{}
+			p.activityFlowQueued = 0
 			return p, tea.Batch(
 				p.clearSidebar(),
 				util.CmdHandler(chat.SessionClearedMsg{}),
@@ -375,6 +379,7 @@ func (p *chatPage) ensureSession() (tea.Cmd, error) {
 		return nil, err
 	}
 	p.session = sess
+	p.activityFlowQueued = 0
 	var cmds []tea.Cmd
 	cmd := p.setSidebar()
 	if cmd != nil {

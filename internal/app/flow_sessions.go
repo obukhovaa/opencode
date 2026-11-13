@@ -1229,6 +1229,34 @@ func (app *App) validateFlowInteraction(ctx context.Context, record flowrun.Run,
 	return nil
 }
 
+// PendingFlowMessages reads accepted, undelivered steering in delivery order.
+// Callers must run this outside the TUI update/render loop: it reads storage.
+func (app *App) PendingFlowMessages(ctx context.Context, conversation string) ([]FlowSteeringMessage, error) {
+	if conversation == "" || app.FlowRuns == nil {
+		return nil, nil
+	}
+	record, err := app.CurrentFlow(ctx, conversation)
+	if errors.Is(err, flowrun.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	items, err := app.FlowRuns.PeekInbox(ctx, record.ID)
+	if err != nil {
+		return nil, err
+	}
+	messages := make([]FlowSteeringMessage, 0, len(items))
+	for _, item := range items {
+		var msg FlowSteeringMessage
+		if err := json.Unmarshal(item.Payload, &msg); err != nil {
+			return nil, err
+		}
+		messages = append(messages, msg)
+	}
+	return messages, nil
+}
+
 func (app *App) QueueFlowMessages(ctx context.Context, conversation string, messages []FlowSteeringMessage) error {
 	record, err := app.CurrentFlow(ctx, conversation)
 	if err != nil {

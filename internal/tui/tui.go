@@ -511,6 +511,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.showQueueDialog = !a.showQueueDialog
 		if a.showQueueDialog {
 			a.queueDialog.SetSession(msg.SessionID)
+			return a, a.queueDialog.Init()
 		}
 		return a, nil
 

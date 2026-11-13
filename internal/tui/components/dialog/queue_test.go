@@ -2,6 +2,7 @@ package dialog
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -131,4 +132,43 @@ func keyPress(k string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl}
 	}
 	panic("unhandled key " + k)
+}
+
+func TestQueueDialog_DurableFlowQueueRefreshAndSessionIsolation(t *testing.T) {
+	a := app.NewForTest(context.Background(), nil)
+	d := newQueueDialogForTest(t, a)
+	if d.Init() == nil {
+		t.Fatal("opening the viewer must load the durable queue")
+	}
+	loaded := queueFlowLoaded{sessionID: "s1", generation: d.generation, messages: []app.FlowSteeringMessage{{Text: "first instruction"}, {Text: "second instruction"}}}
+	_, next := d.Update(loaded)
+	view := ansi.Strip(d.View().Content)
+	if next == nil || !strings.Contains(view, "Queued messages (2)") || !strings.Contains(view, "[flow] first instruction") || !strings.Contains(view, "boundary") || !strings.Contains(view, "discard chat only") {
+		t.Fatalf("flow queue not visible: %s", view)
+	}
+	if strings.Index(view, "first instruction") > strings.Index(view, "second instruction") {
+		t.Fatal("queue order changed")
+	}
+	loaded.err = errors.New("storage unavailable")
+	d.Update(loaded)
+	view = ansi.Strip(d.View().Content)
+	if !strings.Contains(view, "first instruction") || !strings.Contains(view, "retrying") {
+		t.Fatal("failed refresh must retain the snapshot and show an error")
+	}
+	loaded.err, loaded.messages = nil, nil
+	d.Update(loaded)
+	if strings.Contains(ansi.Strip(d.View().Content), "first instruction") {
+		t.Fatal("delivered message still visible")
+	}
+	oldGeneration := d.generation
+	d.SetSession("s2")
+	loaded.messages = []app.FlowSteeringMessage{{Text: "stale"}}
+	_, next = d.Update(loaded)
+	if next != nil || len(d.flowMessages) != 0 {
+		t.Fatal("old session result applied")
+	}
+	_, next = d.Update(queueFlowTick{oldGeneration})
+	if next != nil {
+		t.Fatal("stale timer restarted polling")
+	}
 }
