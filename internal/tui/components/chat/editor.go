@@ -73,22 +73,23 @@ type flowSteeringResult struct {
 }
 
 type editorCmp struct {
-	failedSteering  map[string]string
-	width           int
-	height          int
-	app             *app.App
-	session         session.Session
-	expand          SubmissionExpander
-	scan            InvocationScanner
-	recognized      []recognizedInvocation
-	scannedDraft    string
-	textarea        textarea.Model
-	attachments     []message.Attachment
-	deleteMode      bool
-	mode            editorMode
-	shellHistory    []string
-	shellHistoryIdx int
-	shellExecuting  bool
+	flowSteeringQueue []flowSteeringResult
+	failedSteering    map[string]string
+	width             int
+	height            int
+	app               *app.App
+	session           session.Session
+	expand            SubmissionExpander
+	scan              InvocationScanner
+	recognized        []recognizedInvocation
+	scannedDraft      string
+	textarea          textarea.Model
+	attachments       []message.Attachment
+	deleteMode        bool
+	mode              editorMode
+	shellHistory      []string
+	shellHistoryIdx   int
+	shellExecuting    bool
 	// shellCancel stops the captured command currently running. Non-nil only
 	// while a captured command is in flight; an interactive run owns the
 	// terminal, so ctrl+c reaches the command itself and there is nothing here
@@ -359,15 +360,12 @@ func (m *editorCmp) send() tea.Cmd {
 	value = expansion.Prompt
 
 	attachments := m.attachments
-	if m.app.FlowBusy(m.session.ID) {
+	if m.app.FlowBusy(m.session.ID) || m.hasPendingFlowSteering(m.session.ID) {
 		if len(attachments) > 0 {
 			return util.ReportWarn("Flow steering accepts text; keep attachments for the next chat turn")
 		}
-		a, id, text := m.app, m.session.ID, value
 		m.textarea.Reset()
-		return func() tea.Msg {
-			return flowSteeringResult{sessionID: id, text: text, err: a.QueueFlowSteering(id, text)}
-		}
+		return m.enqueueFlowSteering(m.session.ID, value)
 	}
 
 	// FIFO routing (Decision 8, task 3.1): enqueue whenever the queue is
@@ -760,22 +758,39 @@ func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case flowSteeringResult:
+		if len(m.flowSteeringQueue) > 0 {
+			m.flowSteeringQueue = m.flowSteeringQueue[1:]
+		}
+		if msg.err != nil {
+			// Keep a failed burst in submission order. Do not let later saves
+			// in this conversation leapfrog the failed one.
+			remaining := m.flowSteeringQueue[:0]
+			for _, pending := range m.flowSteeringQueue {
+				if pending.sessionID == msg.sessionID {
+					msg.text += "\n" + pending.text
+				} else {
+					remaining = append(remaining, pending)
+				}
+			}
+			m.flowSteeringQueue = remaining
+		}
+		next := m.saveNextFlowSteering()
 		if msg.err != nil {
 			if msg.sessionID != m.session.ID {
 				if m.failedSteering == nil {
 					m.failedSteering = make(map[string]string)
 				}
 				m.failedSteering[msg.sessionID] += msg.text + "\n"
-				return m, util.ReportError(msg.err)
+			} else {
+				draft := m.textarea.Value()
+				if draft != "" {
+					draft = "\n" + draft
+				}
+				m.textarea.SetValue(msg.text + draft)
 			}
-			draft := m.textarea.Value()
-			if draft != "" {
-				draft = "\n" + draft
-			}
-			m.textarea.SetValue(msg.text + draft)
-			return m, util.ReportError(msg.err)
+			return m, tea.Batch(next, util.ReportError(msg.err))
 		}
-		return m, nil
+		return m, next
 
 	case ToggleVimModeMsg:
 		if m.vimHandler != nil {
@@ -1272,4 +1287,34 @@ func NewEditorCmp(app *app.App, expand SubmissionExpander, scan InvocationScanne
 		vimHandler:      vimH,
 		selectionLayout: newSelectionLayout(),
 	}
+}
+
+// Tea commands run concurrently. Start the next durable save only after the
+// previous result returns so rapid Enter submissions retain editor order.
+func (m *editorCmp) saveNextFlowSteering() tea.Cmd {
+	if len(m.flowSteeringQueue) == 0 {
+		return nil
+	}
+	pending := m.flowSteeringQueue[0]
+	application := m.app
+	return func() tea.Msg {
+		pending.err = application.QueueFlowSteering(pending.sessionID, pending.text)
+		return pending
+	}
+}
+
+func (m *editorCmp) enqueueFlowSteering(sessionID, text string) tea.Cmd {
+	m.flowSteeringQueue = append(m.flowSteeringQueue, flowSteeringResult{sessionID: sessionID, text: text})
+	if len(m.flowSteeringQueue) == 1 {
+		return m.saveNextFlowSteering()
+	}
+	return nil
+}
+func (m *editorCmp) hasPendingFlowSteering(sessionID string) bool {
+	for _, pending := range m.flowSteeringQueue {
+		if pending.sessionID == sessionID {
+			return true
+		}
+	}
+	return false
 }

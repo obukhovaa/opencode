@@ -111,3 +111,28 @@ func truncateMarkupOutput(content string) string {
 
 	return content
 }
+
+// ExpandMarkupAroundWithRunner preserves template boundaries while letting a
+// managed caller enforce permission and ownership for each command. Neither
+// substituted args nor command output are scanned as executable markup.
+func ExpandMarkupAroundWithRunner(template string, render func(string) string, run func(string) (string, error)) (string, error) {
+	var result strings.Builder
+	last := 0
+	for _, loc := range shellMarkupRegex.FindAllStringSubmatchIndex(template, -1) {
+		result.WriteString(render(template[last:loc[0]]))
+		output, err := run(template[loc[2]:loc[3]])
+		if err != nil {
+			return "", err
+		}
+		result.WriteString(output)
+		last = loc[1]
+	}
+	result.WriteString(render(template[last:]))
+	return result.String(), nil
+}
+
+// ExecuteMarkup retains the bounded, toolenv-filtered persistent-shell behavior
+// used by standalone markup. Managed callers must authorize before calling it.
+func ExecuteMarkup(ctx context.Context, command, cwd string) string {
+	return runMarkupCommand(ctx, command, cwd)
+}

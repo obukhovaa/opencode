@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
@@ -104,7 +105,7 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		flowCh = s.flowRunner.subscribeFlowEvents(ctx)
 	}
 
-	streamLoop(ctx, w, flusher, msgCh, partCh, sesCh, permCh, questionCh, flowCh)
+	streamLoop(ctx, w, flusher, msgCh, partCh, sesCh, permCh, questionCh, flowCh, s.app.SubscribeFlowEvents(ctx))
 }
 
 // streamLoop runs the fan-in select loop that reads from the broker channels
@@ -119,7 +120,12 @@ func streamLoop(
 	permCh <-chan pubsub.Event[permission.PermissionRequest],
 	questionCh <-chan pubsub.Event[question.Request],
 	flowCh <-chan pubsub.Event[FlowEvent],
+	sessionFlowChannels ...<-chan pubsub.Event[app.FlowRunEvent],
 ) {
+	var sessionFlows <-chan pubsub.Event[app.FlowRunEvent]
+	if len(sessionFlowChannels) > 0 {
+		sessionFlows = sessionFlowChannels[0]
+	}
 	heartbeat := time.NewTicker(30 * time.Second)
 	defer heartbeat.Stop()
 
@@ -185,6 +191,14 @@ func streamLoop(
 				return
 			}
 
+		case event, ok := <-sessionFlows:
+			if !ok {
+				sessionFlows = nil
+				continue
+			}
+			if err := writeSSEEvent(w, flusher, event.Payload.Type, event.Payload); err != nil {
+				return
+			}
 		case <-heartbeat.C:
 			if _, err := fmt.Fprintf(w, ": heartbeat\n\n"); err != nil {
 				return

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/opencode-ai/opencode/internal/bridge"
 	slackgo "github.com/slack-go/slack"
 )
 
@@ -197,3 +198,23 @@ func TestCustomAnswerMetadata_JSONShape(t *testing.T) {
 
 // Suppress unused-import warnings if any helper falls out of use.
 var _ = slackgo.VTModal
+
+func TestDirectCustomModalPreservesQuestionIdentity(t *testing.T) {
+	a, err := New(Identity{ID: "default", BotToken: "test", AppToken: "test"}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inbound := make(chan bridge.Inbound, 1)
+	a.SetInbound(inbound)
+	metadata, _ := json.Marshal(CustomAnswerMetadata{PeerID: "D1", RequestID: "logical-question"})
+	callback := slackgo.InteractionCallback{Type: slackgo.InteractionTypeViewSubmission, User: slackgo.User{ID: "U1"}, View: slackgo.View{PrivateMetadata: string(metadata), State: &slackgo.ViewState{Values: map[string]map[string]slackgo.BlockAction{"answer": {"custom_answer": {Value: "custom answer"}}}}}}
+	a.handleInteractiveCallback(context.Background(), callback)
+	select {
+	case got := <-inbound:
+		if got.QuestionRequestID != "logical-question" || got.Text != "custom answer" || got.Source != bridge.InboundSourceModal {
+			t.Fatalf("inbound=%+v", got)
+		}
+	default:
+		t.Fatal("modal reply missing")
+	}
+}

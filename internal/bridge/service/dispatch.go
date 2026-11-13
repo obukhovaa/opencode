@@ -470,6 +470,9 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	// MCP flowArgHeaders as its flow steps. Only a turn provably tied to that
 	// job gets them: a daemon turn, or one of another or unknown job, none.
 	runCtx = tools.WithJobArgs(runCtx, d.svc.jobArgsForTurn(d.sessionID, in.Peer))
+	runCtx = d.svc.flowAuthorizedPeerContext(runCtx, d.sessionID)
+	runCtx, releaseAdmission := d.svc.flowAdmissionTurn(runCtx, d.sessionID)
+	defer releaseAdmission()
 	// A compaction the agent requested during the turn runs after it ends;
 	// the agent holds it until the turn's reply has been posted here.
 	runCtx, delivered := agent.WithTurnDelivery(runCtx)

@@ -129,6 +129,7 @@ type AgentFactory interface {
 }
 
 type agentFactory struct {
+	turnAdmission func(context.Context, string) error
 	flowSubmitter tools.FlowSubmitter
 
 	sessions    session.Service
@@ -439,3 +440,20 @@ func resolveRegisteredPrompt(reg agentregistry.Registry, name config.AgentName) 
 // SetFlowSubmitter is wired before primary agents are constructed.
 func (f *agentFactory) SetFlowSubmitter(submit tools.FlowSubmitter) { f.flowSubmitter = submit }
 func (f *agentFactory) FlowSubmitter() tools.FlowSubmitter          { return f.flowSubmitter }
+
+// SetTurnAdmission is installed before primary agents start. It gates ordinary
+// root turns against durable conversation ownership without wrapping Services.
+func (f *agentFactory) SetTurnAdmission(check func(context.Context, string) error) {
+	f.mu.Lock()
+	f.turnAdmission = check
+	f.mu.Unlock()
+}
+func (f *agentFactory) CheckTurnAdmission(ctx context.Context, sessionID string) error {
+	f.mu.Lock()
+	check := f.turnAdmission
+	f.mu.Unlock()
+	if check != nil {
+		return check(ctx, sessionID)
+	}
+	return nil
+}

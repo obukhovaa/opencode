@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	sqlite3 "github.com/ncruces/go-sqlite3"
 )
 
 // MySQL server error numbers that InnoDB expects the caller to recover from by
@@ -29,10 +30,13 @@ const (
 )
 
 // IsRetryableTxError reports whether err is a transient transaction conflict
-// worth retrying: a MySQL deadlock (1213) or lock-wait timeout (1205). It
-// unwraps err, so wrapped errors are detected. Any non-MySQL error — including
-// every SQLite error — returns false.
+// worth retrying: a MySQL deadlock (1213) or lock-wait timeout (1205), or a
+// SQLite busy/locked transaction (including an invalidated WAL snapshot). It
+// unwraps errors; replaying the complete transaction is required for both.
 func IsRetryableTxError(err error) bool {
+	if errors.Is(err, sqlite3.BUSY) || errors.Is(err, sqlite3.LOCKED) {
+		return true
+	}
 	var myErr *mysql.MySQLError
 	if errors.As(err, &myErr) {
 		return myErr.Number == mysqlErrLockDeadlock || myErr.Number == mysqlErrLockWaitTimeout

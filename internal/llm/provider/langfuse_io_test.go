@@ -5,11 +5,13 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/spf13/viper"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/message"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestBuildGenerationInput(t *testing.T) {
@@ -191,7 +193,7 @@ func TestGenerationInputGateFromLoadedConfig(t *testing.T) {
 	}{
 		{
 			name:      "langfuse on, generations absent: capture stays off",
-			body:      `{"telemetry":{"langfuse":{"enabled":true}}}`,
+			body:      `{"telemetry":{"langfuse":{"enabled":true,"publicKey":"test-public-key","secretKey":"test-secret-key","baseURL":"http://127.0.0.1:1"}}}`,
 			agentID:   "coder",
 			wantInput: false,
 		},
@@ -244,11 +246,14 @@ func loadConfigIn(t *testing.T, workDir string) {
 	empty := t.TempDir()
 	t.Setenv("HOME", empty)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(empty, "xdg"))
+	// Viper retains merged settings independently of config.Reset. Clear it
+	// so an enabled telemetry fixture cannot leak into the next test case.
 	config.Reset()
+	viper.Reset()
 	if _, err := config.Load(workDir, false); err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	t.Cleanup(config.Reset)
+	t.Cleanup(func() { config.Reset(); viper.Reset() })
 }
 
 // Reasoning and tool-search blocks ARE part of the outgoing Anthropic-dialect

@@ -19,8 +19,9 @@ import "context"
 // stamping them unconditionally at the call sites (service/send.go,
 // service/question.go) is a no-op everywhere except this package.
 type ExternalQuestionContext struct {
-	RequestID string
-	Multiple  bool
+	ConversationID string
+	RequestID      string
+	Multiple       bool
 }
 
 type ctxKeySessionID struct{}
@@ -53,4 +54,23 @@ func ContextWithExternalQuestion(ctx context.Context, q ExternalQuestionContext)
 func ExternalQuestionFromContext(ctx context.Context) (ExternalQuestionContext, bool) {
 	v, ok := ctx.Value(ctxKeyExternalQuestion{}).(ExternalQuestionContext)
 	return v, ok
+}
+
+// SessionFlowEventContext carries durable event identity to external relays.
+// It never changes the underlying user-visible peer or question session.
+type SessionFlowEventContext struct {
+	ID       string `json:"id"`
+	RunID    string `json:"runId"`
+	Type     string `json:"type"`
+	Sequence int64  `json:"sequence"`
+	Fence    int64  `json:"fence"`
+}
+type sessionFlowEventKey struct{}
+
+func ContextWithSessionFlowEvent(ctx context.Context, event SessionFlowEventContext) context.Context {
+	return context.WithValue(ctx, sessionFlowEventKey{}, event)
+}
+func SessionFlowEventFromContext(ctx context.Context) (SessionFlowEventContext, bool) {
+	event, ok := ctx.Value(sessionFlowEventKey{}).(SessionFlowEventContext)
+	return event, ok
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
@@ -101,7 +102,7 @@ func (s *service) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	err = s.q.DeleteMessage(ctx, message.ID)
+	err = s.guardedWrite(ctx, func(q db.QuerierWithTx) error { return q.DeleteMessage(ctx, message.ID) })
 	if err != nil {
 		return err
 	}
@@ -120,7 +121,7 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 		return Message{}, err
 	}
 	seq := params.Seq
-	if seq != 0 {
+	if seq != 0 && db.WriteGuardFromContext(ctx) == nil {
 		dbMessage, err := s.q.CreateMessage(ctx, db.CreateMessageParams{
 			ID:        uuid.New().String(),
 			SessionID: sessionID,
@@ -154,11 +155,17 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 		}
 		defer tx.Rollback()
 
+		if err = db.CheckWriteGuard(ctx, tx); err != nil {
+			return err
+		}
 		qtx := s.q.WithTx(tx)
 
-		seq, err := s.nextSeqTx(ctx, qtx, sessionID)
-		if err != nil {
-			return err
+		seq := params.Seq
+		if seq == 0 {
+			seq, err = s.nextSeqTx(ctx, qtx, sessionID)
+			if err != nil {
+				return err
+			}
 		}
 
 		dbMessage, err = qtx.CreateMessage(ctx, db.CreateMessageParams{
@@ -227,6 +234,9 @@ func (s *service) CreatePair(ctx context.Context, sessionID string, first, secon
 		}
 		defer tx.Rollback()
 
+		if err = db.CheckWriteGuard(ctx, tx); err != nil {
+			return err
+		}
 		qtx := s.q.WithTx(tx)
 
 		seq1 := first.Seq
@@ -355,10 +365,12 @@ func (s *service) Update(ctx context.Context, message Message) error {
 		finishedAt.Int64 = f.Time
 		finishedAt.Valid = true
 	}
-	err = s.q.UpdateMessage(ctx, db.UpdateMessageParams{
-		ID:         message.ID,
-		Parts:      string(parts),
-		FinishedAt: finishedAt,
+	err = s.guardedWrite(ctx, func(q db.QuerierWithTx) error {
+		return q.UpdateMessage(ctx, db.UpdateMessageParams{
+			ID:         message.ID,
+			Parts:      string(parts),
+			FinishedAt: finishedAt,
+		})
 	})
 	if err != nil {
 		return err

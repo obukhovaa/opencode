@@ -54,6 +54,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.createSessionStmt, err = db.PrepareContext(ctx, createSession); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateSession: %w", err)
 	}
+	if q.currentConversationFlowRunStmt, err = db.PrepareContext(ctx, currentConversationFlowRun); err != nil {
+		return nil, fmt.Errorf("error preparing query CurrentConversationFlowRun: %w", err)
+	}
 	if q.deleteBridgeSessionByPeerStmt, err = db.PrepareContext(ctx, deleteBridgeSessionByPeer); err != nil {
 		return nil, fmt.Errorf("error preparing query DeleteBridgeSessionByPeer: %w", err)
 	}
@@ -95,6 +98,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.getBridgeSessionStmt, err = db.PrepareContext(ctx, getBridgeSession); err != nil {
 		return nil, fmt.Errorf("error preparing query GetBridgeSession: %w", err)
+	}
+	if q.getConversationFlowRunStmt, err = db.PrepareContext(ctx, getConversationFlowRun); err != nil {
+		return nil, fmt.Errorf("error preparing query GetConversationFlowRun: %w", err)
 	}
 	if q.getCronJobStmt, err = db.PrepareContext(ctx, getCronJob); err != nil {
 		return nil, fmt.Errorf("error preparing query GetCronJob: %w", err)
@@ -143,6 +149,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.listChildSessionsStmt, err = db.PrepareContext(ctx, listChildSessions); err != nil {
 		return nil, fmt.Errorf("error preparing query ListChildSessions: %w", err)
+	}
+	if q.listConversationFlowRunsStmt, err = db.PrepareContext(ctx, listConversationFlowRuns); err != nil {
+		return nil, fmt.Errorf("error preparing query ListConversationFlowRuns: %w", err)
 	}
 	if q.listCronJobsBySessionStmt, err = db.PrepareContext(ctx, listCronJobsBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListCronJobsBySession: %w", err)
@@ -298,6 +307,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing createSessionStmt: %w", cerr)
 		}
 	}
+	if q.currentConversationFlowRunStmt != nil {
+		if cerr := q.currentConversationFlowRunStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing currentConversationFlowRunStmt: %w", cerr)
+		}
+	}
 	if q.deleteBridgeSessionByPeerStmt != nil {
 		if cerr := q.deleteBridgeSessionByPeerStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing deleteBridgeSessionByPeerStmt: %w", cerr)
@@ -366,6 +380,11 @@ func (q *Queries) Close() error {
 	if q.getBridgeSessionStmt != nil {
 		if cerr := q.getBridgeSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getBridgeSessionStmt: %w", cerr)
+		}
+	}
+	if q.getConversationFlowRunStmt != nil {
+		if cerr := q.getConversationFlowRunStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getConversationFlowRunStmt: %w", cerr)
 		}
 	}
 	if q.getCronJobStmt != nil {
@@ -446,6 +465,11 @@ func (q *Queries) Close() error {
 	if q.listChildSessionsStmt != nil {
 		if cerr := q.listChildSessionsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listChildSessionsStmt: %w", cerr)
+		}
+	}
+	if q.listConversationFlowRunsStmt != nil {
+		if cerr := q.listConversationFlowRunsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listConversationFlowRunsStmt: %w", cerr)
 		}
 	}
 	if q.listCronJobsBySessionStmt != nil {
@@ -662,6 +686,7 @@ type Queries struct {
 	createFlowStateStmt                  *sql.Stmt
 	createMessageStmt                    *sql.Stmt
 	createSessionStmt                    *sql.Stmt
+	currentConversationFlowRunStmt       *sql.Stmt
 	deleteBridgeSessionByPeerStmt        *sql.Stmt
 	deleteBridgeSessionsByIdentityStmt   *sql.Stmt
 	deleteBridgeSessionsBySessionStmt    *sql.Stmt
@@ -676,6 +701,7 @@ type Queries struct {
 	deleteSessionTreeStmt                *sql.Stmt
 	getBridgeHeartbeatStmt               *sql.Stmt
 	getBridgeSessionStmt                 *sql.Stmt
+	getConversationFlowRunStmt           *sql.Stmt
 	getCronJobStmt                       *sql.Stmt
 	getFileStmt                          *sql.Stmt
 	getFileByPathAndSessionStmt          *sql.Stmt
@@ -692,6 +718,7 @@ type Queries struct {
 	listBridgeSessionsByIdentityStmt     *sql.Stmt
 	listBridgeSessionsBySessionStmt      *sql.Stmt
 	listChildSessionsStmt                *sql.Stmt
+	listConversationFlowRunsStmt         *sql.Stmt
 	listCronJobsBySessionStmt            *sql.Stmt
 	listDueCronJobsStmt                  *sql.Stmt
 	listFilesByPathStmt                  *sql.Stmt
@@ -741,6 +768,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		createFlowStateStmt:                  q.createFlowStateStmt,
 		createMessageStmt:                    q.createMessageStmt,
 		createSessionStmt:                    q.createSessionStmt,
+		currentConversationFlowRunStmt:       q.currentConversationFlowRunStmt,
 		deleteBridgeSessionByPeerStmt:        q.deleteBridgeSessionByPeerStmt,
 		deleteBridgeSessionsByIdentityStmt:   q.deleteBridgeSessionsByIdentityStmt,
 		deleteBridgeSessionsBySessionStmt:    q.deleteBridgeSessionsBySessionStmt,
@@ -755,6 +783,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		deleteSessionTreeStmt:                q.deleteSessionTreeStmt,
 		getBridgeHeartbeatStmt:               q.getBridgeHeartbeatStmt,
 		getBridgeSessionStmt:                 q.getBridgeSessionStmt,
+		getConversationFlowRunStmt:           q.getConversationFlowRunStmt,
 		getCronJobStmt:                       q.getCronJobStmt,
 		getFileStmt:                          q.getFileStmt,
 		getFileByPathAndSessionStmt:          q.getFileByPathAndSessionStmt,
@@ -771,6 +800,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listBridgeSessionsByIdentityStmt:     q.listBridgeSessionsByIdentityStmt,
 		listBridgeSessionsBySessionStmt:      q.listBridgeSessionsBySessionStmt,
 		listChildSessionsStmt:                q.listChildSessionsStmt,
+		listConversationFlowRunsStmt:         q.listConversationFlowRunsStmt,
 		listCronJobsBySessionStmt:            q.listCronJobsBySessionStmt,
 		listDueCronJobsStmt:                  q.listDueCronJobsStmt,
 		listFilesByPathStmt:                  q.listFilesByPathStmt,

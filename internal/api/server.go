@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -90,14 +91,17 @@ type RouteRegistrar interface {
 
 // Server holds the HTTP server and application reference.
 type Server struct {
-	app            *app.App
-	httpSrv        *http.Server
-	port           int
-	hostname       string
-	password       string
-	corsOrigin     string
-	healthReporter HealthReporter
-	flowRunner     *flowRunner
+	app                  *app.App
+	httpSrv              *http.Server
+	port                 int
+	hostname             string
+	password             string
+	corsOrigin           string
+	healthReporter       HealthReporter
+	flowRunner           *flowRunner
+	sessionFlowBridge    SessionFlowBridge
+	sessionFlowAdmission atomic.Pointer[sessionFlowAdmission]
+	sessionFlowOps       sync.Map // conversation ID -> *sync.Mutex; shared by admission/control/release
 
 	// Pool-mode state (agent-pod-pool-runtime). All fields except
 	// poolDraining are set once in NewServer and read-only afterwards.
@@ -152,8 +156,10 @@ func NewServer(application *app.App, opts ServerOptions) *Server {
 	// Flow runner: a single-flow-at-a-time tracker driven by /flow/*
 	// HTTP routes. Created up-front so /flow handlers always have a
 	// valid runner to delegate to; idle until a POST /flow.
+	s.sessionFlowBridge, _ = opts.Bridge.(SessionFlowBridge)
 	if application != nil && application.Flows != nil {
 		s.flowRunner = newFlowRunnerWithSessions(application.Flows, application.Sessions)
+		s.flowRunner.sessionConversation = &s.sessionFlowAdmission
 		if opts.PoolMode {
 			s.flowRunner.poolMode = true
 			s.flowRunner.idleResetGrace = opts.PoolIdleResetGrace
@@ -218,6 +224,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /global/event", s.handleGlobalEvent)
 
 	// Sessions
+	mux.HandleFunc("GET /session-flow/capabilities", s.handleSessionFlowCapabilities)
+	mux.HandleFunc("POST /session-flow/admit", s.handleSessionFlowAdmit)
+	mux.HandleFunc("POST /session-flow/release", s.handleSessionFlowRelease)
+	mux.HandleFunc("GET /session/{sessionID}/flow", s.handleSessionFlowGet)
+	mux.HandleFunc("POST /session/{sessionID}/flow", s.handleSessionFlowPost)
+	mux.HandleFunc("GET /session/{sessionID}/flow/events", s.handleSessionFlowEvents)
 	mux.HandleFunc("GET /session", s.handleSessionList)
 	mux.HandleFunc("POST /session", s.handleSessionCreate)
 	mux.HandleFunc("GET /session/status", s.handleSessionStatus)

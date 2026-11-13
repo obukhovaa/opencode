@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/pubsub"
@@ -75,10 +76,33 @@ type Service interface {
 	CleanupOldSessions(ctx context.Context, activeSessionID string) (int, error)
 }
 
+// DeleteRequest describes the existing deletion semantics. Tree requests target
+// RootSessionID; a single child deletion targets SessionID only.
+type DeleteRequest struct {
+	SessionID     string
+	RootSessionID string
+	Tree          bool
+}
+
+// DeleteHandler coordinates additional durable state with session removal. It
+// must invoke mutate exactly once using the supplied transactional querier (or
+// refuse without mutation). Install during App initialization, before any runs.
+type DeleteHandler func(context.Context, DeleteRequest, func(db.Querier) error) error
+
+func SetDeleteHandler(svc Service, handler DeleteHandler) bool {
+	s, ok := svc.(*service)
+	if !ok {
+		return false
+	}
+	s.deleteHandler = handler
+	return true
+}
+
 type service struct {
 	*pubsub.Broker[Session]
-	q         db.Querier
-	projectID string
+	q             db.Querier
+	projectID     string
+	deleteHandler DeleteHandler
 }
 
 func (s *service) Create(ctx context.Context, title string) (Session, error) {
@@ -183,7 +207,13 @@ func (s *service) Delete(ctx context.Context, id string) error {
 	if session.RootSessionID == "" || session.RootSessionID == session.ID {
 		return s.deleteTree(ctx, session)
 	}
-	if err := s.q.DeleteSession(ctx, session.ID); err != nil {
+	mutate := func(q db.Querier) error { return q.DeleteSession(ctx, session.ID) }
+	if s.deleteHandler != nil {
+		err = s.deleteHandler(ctx, DeleteRequest{SessionID: session.ID, RootSessionID: session.RootSessionID}, mutate)
+	} else {
+		err = mutate(s.q)
+	}
+	if err != nil {
 		return err
 	}
 	s.Publish(pubsub.DeletedEvent, session)
@@ -208,10 +238,16 @@ func (s *service) deleteTree(ctx context.Context, session Session) error {
 	}
 	// Match both the root row itself (for legacy sessions where
 	// root_session_id is NULL) and any descendants pointing at it.
-	if err := s.q.DeleteSessionTree(ctx, db.DeleteSessionTreeParams{
-		ID:            rootID,
-		RootSessionID: sql.NullString{String: rootID, Valid: true},
-	}); err != nil {
+	mutate := func(q db.Querier) error {
+		return q.DeleteSessionTree(ctx, db.DeleteSessionTreeParams{ID: rootID, RootSessionID: sql.NullString{String: rootID, Valid: true}})
+	}
+	var err error
+	if s.deleteHandler != nil {
+		err = s.deleteHandler(ctx, DeleteRequest{SessionID: session.ID, RootSessionID: rootID, Tree: true}, mutate)
+	} else {
+		err = mutate(s.q)
+	}
+	if err != nil {
 		return fmt.Errorf("failed to delete session tree: %w", err)
 	}
 	s.Publish(pubsub.DeletedEvent, session)
@@ -457,9 +493,5 @@ func NewService(q db.Querier, explicitProjectID string) Service {
 		projectID = db.GetProjectID(cfg.WorkingDir)
 	}
 	broker := pubsub.NewBroker[Session]()
-	return &service{
-		broker,
-		q,
-		projectID,
-	}
+	return &service{Broker: broker, q: q, projectID: projectID}
 }

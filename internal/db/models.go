@@ -48,6 +48,73 @@ type BridgeSession struct {
 	UpdatedAt         int64          `json:"updated_at"`
 }
 
+type ConversationFlowEvent struct {
+	RunID    string `json:"run_id"`
+	ID       string `json:"id"`
+	Sequence int64  `json:"sequence"`
+	Kind     string `json:"kind"`
+	Payload  string `json:"payload"`
+}
+
+type ConversationFlowInbox struct {
+	RunID     string `json:"run_id"`
+	ID        string `json:"id"`
+	Sequence  int64  `json:"sequence"`
+	Payload   string `json:"payload"`
+	Delivered int64  `json:"delivered"`
+}
+
+type ConversationFlowPrompt struct {
+	RunID   string `json:"run_id"`
+	StepID  string `json:"step_id"`
+	Payload string `json:"payload"`
+}
+
+type ConversationFlowQuestion struct {
+	RunID      string `json:"run_id"`
+	ID         string `json:"id"`
+	SessionID  string `json:"session_id"`
+	StepID     string `json:"step_id"`
+	RequestID  string `json:"request_id"`
+	Descriptor string `json:"descriptor"`
+	Answer     string `json:"answer"`
+	AnswerID   string `json:"answer_id"`
+	Status     string `json:"status"`
+}
+
+type ConversationFlowQuestionRequest struct {
+	RunID      string `json:"run_id"`
+	QuestionID string `json:"question_id"`
+	RequestID  string `json:"request_id"`
+}
+
+type ConversationFlowReceipt struct {
+	RunID     string `json:"run_id"`
+	EventID   string `json:"event_id"`
+	Recipient string `json:"recipient"`
+}
+
+type ConversationFlowRun struct {
+	ID                 string         `json:"id"`
+	ProjectID          string         `json:"project_id"`
+	ConversationID     string         `json:"conversation_id"`
+	InvocationID       string         `json:"invocation_id"`
+	InvocationHash     string         `json:"invocation_hash"`
+	ActiveConversation sql.NullString `json:"active_conversation"`
+	Kind               string         `json:"kind"`
+	Status             string         `json:"status"`
+	Snapshot           string         `json:"snapshot"`
+	Origin             string         `json:"origin"`
+	Version            int64          `json:"version"`
+	Deadline           int64          `json:"deadline"`
+	LeaseOwner         string         `json:"lease_owner"`
+	LeaseToken         int64          `json:"lease_token"`
+	LeaseExpiresAt     int64          `json:"lease_expires_at"`
+	GuardSerial        int64          `json:"guard_serial"`
+	CreatedAt          int64          `json:"created_at"`
+	UpdatedAt          int64          `json:"updated_at"`
+}
+
 type CronJob struct {
 	ID           string         `json:"id"`
 	SessionID    string         `json:"session_id"`

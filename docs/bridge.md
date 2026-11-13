@@ -508,3 +508,38 @@ The legacy CLI subcommands (`opencode-router telegram add`, `slack add`, etc.) a
 | `~/.openwork/opencode-router/opencode-router.json` | `router` section of `.opencode.json` |
 | `OPENCODE_ROUTER_HEALTH_PORT` | Bridge runs on the opencode API port |
 | `OPENCODE_ENABLE_QUESTION_TOOL=1` env var | `router.questionMode = "interactive"` in `.opencode.json` |
+
+### Conversation-owned flows
+
+When the selected primary enables the `flow` tool, ordinary direct and external
+bridge conversations can plan generated workflows or run existing immutable YAML
+flows. The root binding remains stable while step sessions run. Progress and
+completion are delivered by a run-lifetime subscription; input received after the
+submitting turn finishes becomes durable boundary steering. `/stop` pauses the
+flow; `/flow` reports state and `/flow resume` or `/flow terminate` controls it.
+External command allowlists still apply; API/agent tool controls remain available.
+
+Questions from child sessions route through their verified run-to-conversation
+association. External widgets carry the actual requesting step session and a
+stable logical question ID, so late replies can survive worker replacement. A
+reply to another conversation is refused. Id-bearing steering is acknowledged
+only after delivery has been committed, not merely accepted into the inbox.
+
+External relays attach stable `sessionFlow` event identity/fencing metadata and
+use `session.flow.*` events; standalone `flow.*` events retain their existing
+meaning. Capability version 1 and explicit conversation admission prevent an old
+or pooled worker from mistaking a completed parent turn for a completed run.
+Existing standalone job steps cannot start new flows.
+
+While a flow question is waiting, a button, an exact option/number, or `/answer`
+answers it. Other prose and id-bearing batches are steering: the question closes
+unanswered and the input is delivered at the same step's next safe interaction
+boundary. This avoids a blocked question waiting on delivery that otherwise
+would happen only at the next step. The delivery receipt follows committed input.
+
+Flow-owned native buttons carry a bounded opaque question/option token, while
+visible labels remain unchanged. A delayed button from an older question cannot
+answer a newer question with the same label. Slack custom-modal replies preserve
+their request identity as `questionRequestId`; ordinary non-flow questions retain
+their legacy callback values. Native confirmation text uses labels or option
+numbers, never the opaque identity.

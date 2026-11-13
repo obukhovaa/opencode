@@ -115,13 +115,28 @@ func (s *Service) dispatchInbound(ctx context.Context, in bridge.Inbound) {
 		return
 	}
 
+	if s.routeRequestQuestionReply(ctx, binding.SessionID, in) {
+		return
+	}
+
 	// A messages batch is queued input, never a question's answer or a
 	// command: it takes its own route (cd-5480).
 	if len(in.Messages) > 0 {
+		if s.routeSessionFlowInput(ctx, binding.SessionID, in) {
+			return
+		}
 		s.dispatchBatch(ctx, binding.SessionID, in)
 		return
 	}
 
+	if _, active := s.conversationFlow(ctx, binding.SessionID); active {
+		if s.tryFlowQuestionReply(ctx, binding.SessionID, in) {
+			return
+		}
+		if s.routeSessionFlowInput(ctx, binding.SessionID, in) {
+			return
+		}
+	}
 	// If there's a pending agent question for this session, intercept the
 	// inbound as the answer rather than feeding it to the agent as a new
 	// prompt. The question router replies via question.Service.Reply,
@@ -156,7 +171,7 @@ func (s *Service) dispatchInbound(ctx context.Context, in bridge.Inbound) {
 	// buffered above. Reaching the dispatcher here means no live step owns
 	// the session (e.g. the container restarted mid-step), and the default
 	// agent would run on it and orphan the reply.
-	if s.poolMode {
+	if s.poolMode && !s.admittedSession(binding.SessionID) {
 		logging.Warn("bridge: dropping inbound for a session no live interactive step owns",
 			"session", binding.SessionID, "peer", in.Peer.PeerID)
 		return
@@ -447,6 +462,20 @@ func (s *Service) ownsInboundSession(ctx context.Context, peer bridge.PeerRef) (
 	}
 	if err != nil {
 		return false, err
+	}
+	s.mu.Lock()
+	owner, admitted := s.sessionFlowOwners[b.SessionID]
+	s.mu.Unlock()
+	if admitted && owner.jobID == s.RemoteJobID() {
+		return true, nil
+	}
+	if c := s.flowController(); c != nil && b.SessionID != "" {
+		if run, active := s.conversationFlow(ctx, b.SessionID); active {
+			_, owned := c.FlowLease(run.ID)
+			if owned {
+				return true, nil
+			}
+		}
 	}
 	return b.SessionID != "" && s.app != nil && s.app.Permissions != nil &&
 		s.app.Permissions.IsInteractiveSession(b.SessionID), nil

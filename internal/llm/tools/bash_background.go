@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/opencode-ai/opencode/internal/db"
+
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/task"
 	"github.com/opencode-ai/opencode/internal/toolenv"
@@ -49,6 +51,7 @@ func (b *bashTool) runBackground(ctx context.Context, call ToolCall, params Bash
 	}
 
 	tk := &task.Task{
+		WriteGuard:            db.WriteGuardFromContext(ctx),
 		ID:                    taskID,
 		SessionID:             sessionID,
 		ParentSessionID:       ParentSessionIDFromContext(ctx),

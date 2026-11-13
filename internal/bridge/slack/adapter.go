@@ -3,6 +3,7 @@ package slack
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -549,6 +550,23 @@ func (a *Adapter) dispatchSocketModeEvent(ctx context.Context, env socketmode.Ev
 // emit one inbound — the bridge's parseQuestionAnswers honours the same
 // format as a comma-separated typed reply.
 func (a *Adapter) handleInteractiveCallback(ctx context.Context, callback slackgo.InteractionCallback) {
+	if callback.Type == slackgo.InteractionTypeViewSubmission {
+		var meta CustomAnswerMetadata
+		if json.Unmarshal([]byte(callback.View.PrivateMetadata), &meta) != nil || meta.PeerID == "" || callback.View.State == nil {
+			return
+		}
+		answer := ""
+		for _, actions := range callback.View.State.Values {
+			if action, ok := actions["custom_answer"]; ok {
+				answer = strings.TrimSpace(action.Value)
+			}
+		}
+		if answer == "" || !a.isInboundAllowed(ctx, meta.PeerID, callback.User.ID, ParsePeerID(meta.PeerID).ChannelID) {
+			return
+		}
+		a.pushInbound(ctx, bridge.Inbound{Peer: bridge.PeerRef{Channel: "slack", Identity: a.id.ID, PeerID: meta.PeerID}, QuestionRequestID: meta.RequestID, Text: answer, AuthorID: callback.User.ID, ReceivedAt: time.Now().UnixMilli(), Source: bridge.InboundSourceModal})
+		return
+	}
 	if len(callback.ActionCallback.BlockActions) == 0 {
 		return
 	}
@@ -613,7 +631,7 @@ func (a *Adapter) handleInteractiveCallback(ctx context.Context, callback slackg
 	// Replace the actionable widget with a confirmation. Inbound has
 	// already been pushed; update failure is non-fatal — log warn and
 	// move on. See spec: bridge-question-answered-widget-update.
-	a.updateAnsweredWidget(ctx, callback, value)
+	a.updateAnsweredWidget(ctx, callback, nativeChoiceDisplay(callback, value))
 }
 
 // updateAnsweredWidget rewrites the question message to drop its
@@ -1247,4 +1265,27 @@ func (a *Adapter) UpdateQueuedAck(ctx context.Context, peer bridge.PeerRef, toke
 		return fmt.Errorf("slack: UpdateQueuedAck: %w", err)
 	}
 	return nil
+}
+
+func nativeChoiceDisplay(callback slackgo.InteractionCallback, value string) string {
+	if !bridge.IsFlowQuestionValue(strings.TrimSpace(strings.Split(value, ",")[0])) {
+		return value
+	}
+	if callback.BlockActionState != nil {
+		for _, state := range callback.BlockActionState.Values {
+			if selected, ok := state["router_multi_select"]; ok {
+				labels := []string{}
+				for _, option := range selected.SelectedOptions {
+					labels = append(labels, option.Text.Text)
+				}
+				if len(labels) > 0 {
+					return strings.Join(labels, ", ")
+				}
+			}
+		}
+	}
+	if len(callback.ActionCallback.BlockActions) > 0 && callback.ActionCallback.BlockActions[0].Text.Text != "" {
+		return callback.ActionCallback.BlockActions[0].Text.Text
+	}
+	return "selection recorded"
 }

@@ -1197,7 +1197,10 @@ structured outputs or conditional/looping routes: downstream required values
 must never be invented. Terminate prevents subsequent resume. Cancellation does
 not undo external effects already performed by a step.
 
-The builder chooses a complexity unless `dynamicFlow.flowComplexity` fixes it:
+The builder chooses a complexity unless `dynamicFlow.flowComplexity` fixes it.
+Planning itself is also bounded: a fixed size applies its turn/task limits during
+planning; automatic selection uses an M-sized planning ceiling (80 turns and
+three parallel tasks), then the chosen size governs execution:
 
 | Size | Steps | Parallel task agents | Turns per step/task | Iterations |
 |---|---:|---:|---:|---:|
@@ -1212,7 +1215,8 @@ Dynamic scheduling runs one flow step at a time; use task fanout inside review
 steps for parallelism. Every sequential transition needs an explicit `rules`
 edge. A terminal step omits rules. Plans are rejected when unreachable steps,
 unknown agents, external references, model/context overrides or excessive limits
-would make execution unsafe or misleading. The initiating primary agent stays
+would make execution unsafe or misleading. Generated prompt shell markup is
+rejected: steps must use the permission-checked bash tool for commands. The initiating primary agent stays
 fixed; configured subagent types can handle specialized steps.
 
 Messages sent during execution are persisted and delivered at the next step
@@ -1221,14 +1225,93 @@ unentered downstream work. Entered steps retain their definition and position.
 The pending batch is acknowledged only after the step's input args have been
 written, so a crash can replay steering but cannot silently lose it.
 
-Definitions and metadata are atomically stored with private permissions under
-`~/.agents/flows/dynamic/` (or `~/.agents-<profile>/flows/dynamic/`). Step histories
-stay in the session database. The session picker shows the flow root, including
-standalone flow roots, rather than every internal step. Opening a standalone flow
-supports inspecting and resuming its existing definition in the TUI; its authored
-graph and concurrency are preserved.
+Definitions and run metadata now live in the configured SQLite/MySQL session
+backend. Private, versioned best-effort exports are written under
+`~/.agents/flows/dynamic/exports/` (or the active profile's equivalent); recovery
+does not depend on those files. Existing profile manifests are imported lazily
+only after their project and session ancestry are verified. The session picker
+shows the conversation root rather than every internal step.
 
-A per-root local OS lock, scoped by working directory and data directory, prevents
-two local processes from executing/recovering the same run. OS locks release on
-process exit. This does not provide a distributed lease across remote MySQL hosts;
-server/orchestrator deployments retain responsibility for distributed ownership.
+Each invocation has its own run ID, while all of its step sessions retain the
+conversation as their session-tree root. One nonterminal run may own a
+conversation; after completion or termination a new invocation gets a new ID.
+Resuming addresses the recorded invocation and never regenerates its definition.
+
+## Flows from ordinary bridge conversations
+
+The same opt-in `flow` tool works in an ordinary primary-agent conversation in
+Slack, Telegram, Mattermost or an external mediated bridge. `plan` accepts a goal
+and uses the bundled builder guidance and configured complexity policy. `create`
+remains available for directly submitted generated YAML. The submitting turn
+finishes before the controller starts planning/execution; the conversation stays
+owned by the flow until terminal or explicitly suspended state.
+
+Progress and final results are delivered to the original conversation. Questions
+from step sessions keep their exact request identity and route to authorized root
+peers. Explicit answers answer a question. Ordinary text is steering: normally it
+is delivered at the next step/iteration boundary. When a question is blocking
+progress, steering closes it as unanswered and is injected into that same
+session at the next tool boundary. Root conversation history receives each steering message once at a safe delivery
+boundary; it is never inserted between a pending root tool call and its result.
+Target metadata and receipts are durable, so
+an interruption between acceptance and injection does not retarget or lose it.
+With concurrent questions, steering targets the adapter's visible request; a
+stale visible-request hint never selects a hidden question instead. Input that
+arrives before a question is published is claimed at question start, and the
+obsolete question closes unanswered before displaying a widget.
+
+A crash with a pending question reissues the same logical question. If an answer
+was committed but its tool result was not, recovery writes that result once. A
+persisted cancellation result closes the old invocation; the resumed agent may
+ask a new question. If a valid durable answer won concurrently with cancellation,
+recovery preserves the old result and supplies that answer once as supplemental
+user input. Delayed widgets cannot answer a different replacement question.
+
+### Running existing YAML
+
+Use `flow` with `operation: run`, a discovered `flowId`, and `argsJson` containing
+a JSON object; the HTTP API accepts the equivalent `args` object. `list` returns
+authorized definitions and their argument schemas. Running authored YAML does
+not require OpenSpec or call the flow builder.
+
+Named runs snapshot the validated definition, resolved includes/schema references
+and original arguments. The flow tool cannot update them or change their source.
+Authored agents, model settings, routing, limits and within-run session forking
+remain in effect, subject to the caller's delegation permissions. A
+Langfuse-backed prompt is pinned with its selected content/version at first use
+and reused after interruption. Steering is supplemental input, not a graph edit.
+Authored shell markup runs only through the invoking primary's bash policy and
+current ownership check, using the bounded, environment-filtered shell. Neither
+substituted arguments nor command output are rescanned as shell markup.
+
+**Invocation isolation:** a named run gets its own session namespace even if the
+YAML declares `flow.session.prefix`. That authored prefix remains in the saved
+source, but it does not make independent chat invocations or conversations share
+step sessions. Use resume to continue a particular invocation. Standalone CLI/API
+flow execution retains its original prefix behavior.
+
+Flow starts (`plan`, `create`, `run`) are forbidden from a flow step or subagent,
+including the first standalone step whose session is also its root. Use task
+fanout inside a step or start a later top-level invocation from ordinary chat.
+
+### Ownership and recovery
+
+Session-owned runs use backend leases and fencing. State, transcript, inbox and
+outbox writes require the current owner; a replacement MySQL worker can recover
+without the previous profile filesystem. Origin peer, requester and trusted job
+deadline are retained; credentials mapped through MCP flow-argument headers are
+not persisted and must be supplied again by trusted admission. Named-flow
+recovery cannot replace the original noncredential arguments.
+
+Local SQLite recovery retains local process locking. Remote takeover requires a
+compatible external orchestrator and shared MySQL backend. Existing legacy MySQL
+runs that still report `running` or `waiting_for_input` have no lease to prove
+ownership: adoption refuses them until the original orchestrator reconciles the
+old owner. Local SQLite and failed/completed legacy adoption remain supported.
+
+Stop/terminate cancels run-owned work, including its background tasks, while
+leaving unrelated historical conversation tasks alone. A hard-deadline-expired
+run can be terminalized without granting a new execution lease. Cancellation
+cannot undo an external effect that already happened. Deleting the conversation
+removes its durable flow metadata and session tree atomically; deleting an
+individual durable flow-step session is refused.

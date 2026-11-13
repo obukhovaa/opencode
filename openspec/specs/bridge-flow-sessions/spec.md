@@ -1,8 +1,10 @@
+# bridge-flow-sessions Specification
+
 ## Purpose
 
 Keep flow execution part of its originating bridge conversation across turns, user interaction and worker lifecycle changes.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Flow-owned conversation lifetime
 An authorized primary agent in a free-form direct or external bridge session SHALL be able to start a top-level flow using the flow tool. The conversation SHALL remain associated with that run until terminal or explicit suspended state; completion of the submitting turn MUST NOT imply completion of the flow. At most one nonterminal run SHALL own a conversation.
@@ -31,7 +33,7 @@ The primary-agent flow tool SHALL accept a goal through its plan operation and p
 - **THEN** the configured value governs planning and runtime validation
 
 ### Requirement: Bound questions and steering
-Child-step questions SHALL reach only authorized peers of the owning conversation while preserving the requesting session and question identity. Explicit question replies SHALL answer that question; other messages SHALL queue as ordered steering for the next step or iteration boundary. External message IDs SHALL be acknowledged as delivered only after their delivery is committed.
+Child-step questions SHALL reach only authorized peers of the owning conversation while preserving the requesting session and question identity. Explicit question replies SHALL answer that question; other messages SHALL queue as ordered steering for the next step or iteration boundary. When a question is pending, queued steering SHALL instead close it as unanswered and be delivered to that same step at the interaction boundary, without inventing an answer. External message IDs SHALL be acknowledged as delivered only after their delivery is committed.
 
 #### Scenario: Real-time question from a child step
 - **WHEN** an unbound child step asks a question
@@ -44,6 +46,11 @@ Child-step questions SHALL reach only authorized peers of the owning conversatio
 #### Scenario: Duplicate external delivery
 - **WHEN** the orchestrator retries an accepted message batch or question reply
 - **THEN** identifiers prevent duplicate delivery and a reply cannot settle a different replacement question
+
+#### Scenario: Steering interrupts a pending question
+- **WHEN** ordinary prose or an id-bearing batch arrives while a flow question is waiting
+- **THEN** the question is closed as unanswered, the same step receives the committed input, and delivery is acknowledged only after persistence
+- **AND** explicit buttons, selected option labels/numbers, request-addressed replies and explicit custom-answer submissions remain answers rather than steering
 
 ### Requirement: Surface controls and mediated ownership
 Stop, resume and terminate controls SHALL operate on the owning run and its work. An external worker SHALL remain assigned until the run is terminal or explicitly suspended. Lifecycle events SHALL identify the root conversation, run and step, and preserve requester attribution without exposing credentials.

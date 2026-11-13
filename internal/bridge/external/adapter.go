@@ -299,11 +299,12 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 		SessionID: sessionID,
 		Kind:      relayKindQuestion,
 		Question: &relayQuestion{
-			RequestID: eq.RequestID,
-			Prompt:    prompt,
-			Choices:   relayChoices,
-			Multiple:  eq.Multiple,
-			Custom:    custom,
+			RequestID:      eq.RequestID,
+			ConversationID: eq.ConversationID,
+			Prompt:         prompt,
+			Choices:        relayChoices,
+			Multiple:       eq.Multiple,
+			Custom:         custom,
 		},
 		TS: nowUnixMilli(),
 	}

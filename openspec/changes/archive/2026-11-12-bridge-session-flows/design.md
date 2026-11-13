@@ -43,7 +43,7 @@ Maintain a root-scoped delivery subscription for the run lifetime. It translates
 
 Reuse platform adapters and external message rendering. Root-aware question routing must enforce exact run ancestry and peer ownership, never simply choose any binding with a similar root. Existing explicit `interactive` step targets remain supported when authorized; reject a named flow whose target would broaden the initiating external conversation's authority. For external conversations, the existing exact-conversation isolation rule remains in force.
 
-Handle explicit question replies before steering. Ordinary messages become ordered durable steering, delivered at step/iteration boundaries. Id-bearing external batches retain IDs until actual delivery is committed; accepting input is not a delivery acknowledgement. Requests to stop or terminate cancel controller work and descendants, not just the completed parent turn. Suspended runs retain their inbox and block conflicting new starts.
+Handle explicit question replies before steering. Ordinary messages become ordered durable steering, delivered at step/iteration boundaries. A pending question creates an interaction boundary: ordinary text or id-bearing batches close it as unanswered and are delivered to that same step, with acknowledgement after persistence. Buttons, exact option labels/numbers, request-bound replies and explicit custom-answer submissions remain answers. The durable target identifies the exact interrupted question/session across recovery. Id-bearing external batches retain IDs until actual delivery is committed; accepting input is not a delivery acknowledgement. Requests to stop or terminate cancel controller work and descendants, not just the completed parent turn. Suspended runs retain their inbox and block conflicting new starts.
 
 ### 4. Session backend is authoritative; profile files remain an export
 
@@ -63,7 +63,17 @@ Publish controller events through the API's existing event adapter with run ID, 
 
 Use durable event IDs/outbox receipts for retryable external delivery. A reconnect requests state plus an event cursor; duplicate final frames are recognized rather than re-posted. A worker replacing one that was waiting for a question restores or reissues the pending interaction with a stable logical question identity and maps a late answer to that exact step. Already committed answers must not be asked again or consumed twice, and unrelated new questions cannot reuse the old widget's identity. Direct adapters can reuse their current best-effort editing behavior, while terminal result delivery has a durable retry record. No adapter-specific flow engine is needed.
 
-### 7. Two approval and delivery waves
+### 7. Existing orchestrator daemon scope
+
+Free-form external conversations use c2-agent's existing external daemon routing
+(`aid:daemon:conversation`). The coordinated implementation extends daemon
+admission, run replay, receipt deduplication and replacement recovery. Existing
+pooled jobs remain standalone YAML flows; they cannot call another flow. OpenCode
+pool admission guards are implemented and tested, but creating a new pooled
+free-form job type in c2-agent is outside this change. This preserves the user's
+explicit decision to discard flows created from within orchestrated flow steps.
+
+### 8. Two approval and delivery waves
 
 Wave A: shared controller/store contract, direct bridge routing, named immutable YAML execution, surface tests and backward-compatible local import. This is the recommended first implementation scope.
 

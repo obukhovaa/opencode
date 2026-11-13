@@ -41,6 +41,7 @@ type workflowAgent struct {
 	question   question.Service
 	started    chan string
 	definition string
+	output     string
 	pause      bool
 }
 
@@ -65,6 +66,10 @@ func (a *workflowAgent) RunWith(ctx context.Context, id, prompt string, _ int, o
 	a.mu.Lock()
 	a.calls = append(a.calls, prompt)
 	pause := a.pause
+	output := a.output
+	if output == "" {
+		output = "done"
+	}
 	a.pause = false
 	a.mu.Unlock()
 	ch := make(chan agentpkg.AgentEvent, 1)
@@ -80,7 +85,7 @@ func (a *workflowAgent) RunWith(ctx context.Context, id, prompt string, _ int, o
 			ch <- agentpkg.AgentEvent{Error: ctx.Err()}
 			return
 		}
-		ch <- agentpkg.AgentEvent{Type: agentpkg.AgentEventTypeResponse, Message: message.Message{Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: "done"}}}}
+		ch <- agentpkg.AgentEvent{Type: agentpkg.AgentEventTypeResponse, Message: message.Message{Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: output}}}}
 	}()
 	return ch, nil
 }

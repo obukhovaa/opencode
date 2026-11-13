@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/opencode-ai/opencode/internal/db"
 )
 
 // CompletionInput is the contract for invoking EnqueueTaskCompletion.
@@ -73,6 +75,14 @@ func EnqueueTaskCompletion(ctx context.Context, in CompletionInput) error {
 	deps := getDeps()
 	if deps == nil {
 		return errors.New("task: EnqueueTaskCompletion called before SetDeps")
+	}
+
+	// Completion goroutines intentionally detach cancellation, but they must
+	// retain the spawning run's transactional write fence after lease takeover.
+	if reg := GlobalRegistry(); reg != nil {
+		if pending, ok := reg.Get(in.TaskID); ok && pending.WriteGuard != nil {
+			ctx = db.WithWriteGuard(ctx, pending.WriteGuard)
+		}
 	}
 
 	// Honor the notified dedupe gate for terminal statuses only.
