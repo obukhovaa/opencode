@@ -15,6 +15,7 @@ on:
       - 'internal/db/**'
       - 'internal/bridge/**'
       - 'internal/flow/**'
+      - 'internal/flowrun/**'
       - 'docker-compose.test-mysql.yml'
       - 'Makefile'
       - '.github/workflows/test-mysql.yml'
@@ -73,7 +74,8 @@ jobs:
         env:
           TEST_MYSQL_DSN: "opencode_test:opencode_test@tcp(127.0.0.1:3307)/opencode_test?parseTime=true&multiStatements=true"
         # Scope to the packages that actually host mysql_integration-tagged
-        # files (internal/flow hosts the flow_states FK suite, CD-5457).
+        # files (internal/flow hosts the flow_states FK suite, CD-5457;
+        # internal/flowrun covers durable session-flow ownership and receipts).
         # `./...` with the tag still builds + runs everything else
         # (the tag is additive, not exclusive), which has bitten us:
         # internal/llm/tools grep tests assert ripgrep-shaped output and
@@ -93,4 +95,4 @@ jobs:
         # is the one-line fix that matches the comment in
         # newMySQLTestStore ("we drop all tables before each migration
         # to keep tests independent" implicitly assumes sequential).
-        run: go test -tags=mysql_integration -count=1 -p 1 ./internal/db/... ./internal/bridge/store/... ./internal/flow/...
+        run: go test -tags=mysql_integration -count=1 -p 1 ./internal/db/... ./internal/bridge/store/... ./internal/flow/... ./internal/flowrun/...
