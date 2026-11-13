@@ -215,6 +215,7 @@ type agent struct {
 	agentID          config.AgentName
 	toolsCh          <-chan tools.BaseTool
 	toolsOnce        sync.Once
+	toolsMu          sync.RWMutex
 	tools            []tools.BaseTool
 	toolsResolved    atomic.Bool
 	provider         provider.Provider
@@ -284,6 +285,7 @@ type agent struct {
 	// for the agent's lifetime (a flow step gets its own agent instance), and
 	// re-rendering per turn would burn a JSON marshal and a sha256 on the hot
 	// path for a value that cannot change.
+	flowPrefix              *primaryFlowPrefix
 	structOutputEnvelope    string
 	structOutputFingerprint string
 }
@@ -299,8 +301,18 @@ func newAgent(
 	mcpReg MCPRegistry,
 	factory AgentFactory,
 	override ModelOverride,
+	prefix ...*primaryFlowPrefix,
 ) (Service, error) {
-	agentTools := NewToolSet(agentInfo, reg, permissions, historyService, lspService, sessions, messages, mcpReg, factory, override.Model)
+	var agentTools <-chan tools.BaseTool
+	var pinned *primaryFlowPrefix
+	if len(prefix) > 0 {
+		pinned = prefix[0]
+	}
+	if pinned != nil {
+		agentTools = pinned.toolsFor(agentInfo, override.Model, reg.IsToolEnabled(agentInfo.ID, tools.StructOutputToolName))
+	} else {
+		agentTools = NewToolSet(agentInfo, reg, permissions, historyService, lspService, sessions, messages, mcpReg, factory, override.Model)
+	}
 
 	agentProvider, err := createAgentProvider(
 		agentInfo.ID,
@@ -311,6 +323,7 @@ func newAgent(
 		withStepContext(agentInfo.StepContext),
 		withContextVars(agentInfo.ContextVars),
 		withModelOverride(override),
+		withPrimaryFlowPrefix(pinned),
 	)
 	if err != nil {
 		return nil, err
@@ -357,6 +370,7 @@ func newAgent(
 		allowParallelism:  agentInfo.AllowsParallelToolUse(),
 		factory:           factory,
 		basePrompt:        agentInfo.Prompt,
+		flowPrefix:        pinned,
 
 		compactionThreshold:      agentInfo.CompactionThreshold,
 		summarizerMaxInputTokens: agentInfo.SummarizerMaxInputTokens,
@@ -988,6 +1002,8 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 
 	// Susped to get lazy tools
 	toolSet := a.resolveTools()
+	a.flowPrefix.activate(sessionID)
+	defer a.flowPrefix.captureActivations(toolSet, sessionID)
 	compactionThreshold := a.resolveCompactionThreshold(opts)
 	a.compactionBackoff.startTurn(sessionID)
 
@@ -3034,6 +3050,9 @@ func captureStructOutput(toolResults *message.Message, structOutput *message.Too
 func hasStructOutputTool(toolSet []tools.BaseTool) bool {
 	for _, t := range toolSet {
 		if t.Info().Name == tools.StructOutputToolName {
+			if state, ok := t.(interface{ ActiveOutputSchema() bool }); ok {
+				return state.ActiveOutputSchema()
+			}
 			return true
 		}
 	}
@@ -3428,7 +3447,8 @@ func (a *agent) SummarizeSync(ctx context.Context, sessionID string) error {
 }
 
 type providerOptions struct {
-	disableCache bool
+	primaryFlowPrefix *primaryFlowPrefix
+	disableCache      bool
 	// interactive is propagated to prompt.GetAgentPromptWithOptions
 	// so the interactive-step variant of the structured-output prompt
 	// is selected when this agent is running an `interactive: true`
@@ -3671,17 +3691,19 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 		maxTokens = agentConfig.MaxTokens
 	}
 
+	var systemMessage string
+	if popts.primaryFlowPrefix != nil {
+		systemMessage = popts.primaryFlowPrefix.system
+	} else {
+		systemMessage = prompt.GetAgentPromptWithOptions(agentName, model.Provider, prompt.AgentPromptOptions{
+			Interactive: popts.interactive, BoundPeers: popts.boundPeers, HasOutputSchema: popts.hasOutputSchema,
+			BasePrompt: popts.basePrompt, StepContext: popts.stepContext, ContextVars: popts.contextVars,
+		})
+	}
 	opts := []provider.ProviderClientOption{
 		provider.WithAPIKey(resolveProviderAPIKey(providerCfg.APIKey)),
 		provider.WithModel(model),
-		provider.WithSystemMessage(prompt.GetAgentPromptWithOptions(agentName, model.Provider, prompt.AgentPromptOptions{
-			Interactive:     popts.interactive,
-			BoundPeers:      popts.boundPeers,
-			HasOutputSchema: popts.hasOutputSchema,
-			BasePrompt:      popts.basePrompt,
-			StepContext:     popts.stepContext,
-			ContextVars:     popts.contextVars,
-		})),
+		provider.WithSystemMessage(systemMessage),
 		provider.WithMaxTokens(maxTokens),
 	}
 	if providerCfg.BaseURL != "" {

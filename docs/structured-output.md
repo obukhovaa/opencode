@@ -204,3 +204,28 @@ The `--output-format` flag supports three formats:
 | `json_schema='{"$ref":"/path/to/file.json"}'` | Load schema via `$ref` |
 
 In non-interactive mode with `json_schema`, the output is the raw structured JSON from the `struct_output` tool call — no wrapper object is added.
+
+### Ordinary chat and dynamic-flow prefix reuse
+
+A primary agent with `dynamicFlow.enabled` reserves the invariant
+`struct_output` definition even during ordinary turns, when message-based schema
+delivery is supported. The reserved tool rejects execution without an active
+schema, and it does not force structured completion at the turn limit. The
+system instruction is conditional and stays identical before and during a flow.
+
+Generated runs snapshot the initiating primary's resolved system prompt and tool
+set. Its own steps reuse that prefix; changing output schemas travel in message
+tails, not the tool definition. A specialist subagent uses its own prefix.
+Already-discovered client-side deferred tools in the initiating session carry
+into step sessions in the same order. Further discoveries carry into later steps
+and back to that ordinary conversation; unrelated sessions' activations do not.
+MCP peer and flow-argument headers still resolve from each tool call's context.
+
+This preserves reusable **tools and system** bytes, not identical conversation
+histories or a guaranteed provider cache hit. Different step messages, newly
+activated client-side deferred tools, provider cache expiry, a different model or
+specialist agent can reduce reuse. Explicit `tool` delivery, Gemini, and schemas
+that require the documented tool-delivery fallback cannot share the same
+structured-output tool prefix. Gemini receives no dormant empty-object tool.
+Changing the enabled/deferred tool policy also changes the request's tool shape;
+a cold prefix after such a deliberate change is expected.

@@ -1180,3 +1180,55 @@ Caveats to design around:
 - [Skills](skills.md)
 - [Session Providers](session-providers.md)
 - [Structured Output](structured-output.md)
+
+## Dynamic flows in the TUI
+
+Enable `dynamicFlow: {"enabled": true}` on a primary agent (JSON configuration or
+markdown frontmatter), then submit `/flow <goal>`. The primary agent receives the
+bundled flow-creator guidance and builds a self-contained workflow. OpenSpec must
+be installed (`npm install -g @fission-ai/openspec`). When OpenSpec is missing, the TUI offers to install it with npm before planning starts; installation runs only after the user chooses it. The opt-in `flow` tool can also
+submit a plan during an ordinary turn; execution waits until that turn releases
+its session.
+
+Use `/flow` without a goal to inspect the current flow. The progress page shows
+steps, agents, iterations, current output and controls. Cancel pauses the run;
+resume recovers its persisted step sessions. Skip is restricted to steps without
+structured outputs or conditional/looping routes: downstream required values
+must never be invented. Terminate prevents subsequent resume. Cancellation does
+not undo external effects already performed by a step.
+
+The builder chooses a complexity unless `dynamicFlow.flowComplexity` fixes it:
+
+| Size | Steps | Parallel task agents | Turns per step/task | Iterations |
+|---|---:|---:|---:|---:|
+| XS | 3 | 1 | 20 | 1 |
+| S | 5 | 2 | 40 | 1 |
+| M | 8 | 3 | 80 | 2 |
+| L | 12 | 4 | 120 | 3 |
+| XL | 18 | 6 | 180 | 4 |
+| XXL | 24 | 8 | 240 | 6 |
+
+Dynamic scheduling runs one flow step at a time; use task fanout inside review
+steps for parallelism. Every sequential transition needs an explicit `rules`
+edge. A terminal step omits rules. Plans are rejected when unreachable steps,
+unknown agents, external references, model/context overrides or excessive limits
+would make execution unsafe or misleading. The initiating primary agent stays
+fixed; configured subagent types can handle specialized steps.
+
+Messages sent during execution are persisted and delivered at the next step
+boundary. The pinned primary may call `flow` with `operation: update` to amend
+unentered downstream work. Entered steps retain their definition and position.
+The pending batch is acknowledged only after the step's input args have been
+written, so a crash can replay steering but cannot silently lose it.
+
+Definitions and metadata are atomically stored with private permissions under
+`~/.agents/flows/dynamic/` (or `~/.agents-<profile>/flows/dynamic/`). Step histories
+stay in the session database. The session picker shows the flow root, including
+standalone flow roots, rather than every internal step. Opening a standalone flow
+supports inspecting and resuming its existing definition in the TUI; its authored
+graph and concurrency are preserved.
+
+A per-root local OS lock, scoped by working directory and data directory, prevents
+two local processes from executing/recovering the same run. OS locks release on
+process exit. This does not provide a distributed lease across remote MySQL hosts;
+server/orchestrator deployments retain responsibility for distributed ownership.

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/opencode-ai/opencode/internal/config"
@@ -69,11 +70,28 @@ func TestTraceFinishReason(t *testing.T) {
 }
 
 // spanMetadata returns the attributes of span under prefix, keyed without it.
-func spanMetadata(t *testing.T, span trace.Span, prefix string) map[string]string {
+func spanMetadata(t *testing.T, recorder *tracetest.SpanRecorder, span trace.Span, prefix string) map[string]string {
 	t.Helper()
 	ro, ok := span.(sdktrace.ReadOnlySpan)
 	if !ok {
 		t.Fatal("no recording span to read")
+	}
+	// recordingSpan.Attributes deduplicates in-place even after End; its backing
+	// slice is shared with the export snapshot. Reading the recording span after
+	// End can therefore mutate the exporter input concurrently. Use the immutable
+	// OnEnd snapshot for completed spans, never the live recording object.
+	if !span.IsRecording() {
+		var ended sdktrace.ReadOnlySpan
+		for _, candidate := range recorder.Ended() {
+			if candidate.SpanContext().Equal(span.SpanContext()) {
+				ended = candidate
+				break
+			}
+		}
+		if ended == nil {
+			t.Fatal("ended span was not recorded")
+		}
+		ro = ended
 	}
 	out := map[string]string{}
 	for _, kv := range ro.Attributes() {
@@ -89,14 +107,14 @@ func spanMetadata(t *testing.T, span trace.Span, prefix string) map[string]strin
 // as trace metadata it would replace the parent's.
 func TestStartRunTraceStampsMaxTurns(t *testing.T) {
 	loadConfigIn(t, ".")
-	setLangfuseClient(t, true)
+	recorder := setLangfuseClient(t, true)
 	config.Get().Telemetry = &config.TelemetryConfig{MetadataNamespace: "piano"}
 
 	a := &agent{agentID: "coder", provider: &stubProvider{}}
 
 	t.Run("root trace", func(t *testing.T) {
 		span := trace.SpanFromContext(a.startRunTrace(context.Background(), session.Session{ID: "s1"}, nil, 42))
-		if got := spanMetadata(t, span, "langfuse.trace.metadata.")["piano.max_turns"]; got != "42" {
+		if got := spanMetadata(t, recorder, span, "langfuse.trace.metadata.")["piano.max_turns"]; got != "42" {
 			t.Errorf("piano.max_turns = %q, want 42", got)
 		}
 	})
@@ -104,10 +122,10 @@ func TestStartRunTraceStampsMaxTurns(t *testing.T) {
 		// A subagent run nests in its caller's trace, so its ctx carries it.
 		parentCtx := a.startRunTrace(context.Background(), session.Session{ID: "s1"}, nil, 42)
 		span := trace.SpanFromContext(a.startRunTrace(parentCtx, session.Session{ID: "s2", ParentSessionID: "s1"}, nil, 7))
-		if got, ok := spanMetadata(t, span, "langfuse.trace.metadata.")["piano.max_turns"]; ok {
+		if got, ok := spanMetadata(t, recorder, span, "langfuse.trace.metadata.")["piano.max_turns"]; ok {
 			t.Errorf("child wrote trace-level piano.max_turns = %q; it would overwrite the parent's", got)
 		}
-		if got := spanMetadata(t, span, "langfuse.observation.metadata.")["piano.max_turns"]; got != "7" {
+		if got := spanMetadata(t, recorder, span, "langfuse.observation.metadata.")["piano.max_turns"]; got != "7" {
 			t.Errorf("child observation piano.max_turns = %q, want 7", got)
 		}
 	})
@@ -130,7 +148,7 @@ func (p *spanRecordingProvider) StreamResponse(ctx context.Context, msgs []messa
 // The run's end stamps how many model calls it made and why it stopped.
 func TestProcessGenerationStampsRunMetadata(t *testing.T) {
 	loadConfigIn(t, ".")
-	setLangfuseClient(t, true)
+	recorder := setLangfuseClient(t, true)
 	config.Get().Telemetry = &config.TelemetryConfig{MetadataNamespace: "piano"}
 
 	tests := []struct {
@@ -172,7 +190,7 @@ func TestProcessGenerationStampsRunMetadata(t *testing.T) {
 			if p.span == nil {
 				t.Fatal("provider never saw a trace span")
 			}
-			md := spanMetadata(t, p.span, "langfuse.trace.metadata.")
+			md := spanMetadata(t, recorder, p.span, "langfuse.trace.metadata.")
 			for k, want := range tt.want {
 				if got := md[k]; got != want {
 					t.Errorf("%s = %q, want %q", k, got, want)
@@ -188,7 +206,7 @@ func TestProcessGenerationStampsRunMetadata(t *testing.T) {
 // aborted parent) is canceled, a step deadline is error.
 func TestProcessGenerationStampsAnInterruptedBackgroundWait(t *testing.T) {
 	loadConfigIn(t, ".")
-	setLangfuseClient(t, true)
+	recorder := setLangfuseClient(t, true)
 	config.Get().Telemetry = &config.TelemetryConfig{MetadataNamespace: "piano"}
 
 	tests := []struct {
@@ -235,7 +253,7 @@ func TestProcessGenerationStampsAnInterruptedBackgroundWait(t *testing.T) {
 			if res.Error != nil {
 				t.Fatalf("processGeneration error = %v; this path returns the pre-wait result", res.Error)
 			}
-			md := spanMetadata(t, p.span, "langfuse.trace.metadata.")
+			md := spanMetadata(t, recorder, p.span, "langfuse.trace.metadata.")
 			if got := md["piano.finish_reason"]; got != tt.want {
 				t.Errorf("piano.finish_reason = %q, want %q", got, tt.want)
 			}
@@ -263,7 +281,7 @@ func (p *panickingProvider) StreamResponse(ctx context.Context, _ []message.Mess
 // RunWith's recovery.
 func TestProcessGenerationStampsAPanicAsError(t *testing.T) {
 	loadConfigIn(t, ".")
-	setLangfuseClient(t, true)
+	recorder := setLangfuseClient(t, true)
 	config.Get().Telemetry = &config.TelemetryConfig{MetadataNamespace: "piano"}
 	withFreshTaskRegistry(t)
 
@@ -283,7 +301,7 @@ func TestProcessGenerationStampsAPanicAsError(t *testing.T) {
 	if p.span == nil {
 		t.Fatal("provider never saw a trace span")
 	}
-	md := spanMetadata(t, p.span, "langfuse.trace.metadata.")
+	md := spanMetadata(t, recorder, p.span, "langfuse.trace.metadata.")
 	if got := md["piano.finish_reason"]; got != "error" {
 		t.Errorf("piano.finish_reason = %q, want error", got)
 	}
@@ -304,7 +322,7 @@ func maxTokensStop() *provider.ProviderResponse {
 // max_tokens. A truncated reply the run re-entered past is not its finish.
 func TestProcessGenerationStampsMaxTokens(t *testing.T) {
 	loadConfigIn(t, ".")
-	setLangfuseClient(t, true)
+	recorder := setLangfuseClient(t, true)
 	config.Get().Telemetry = &config.TelemetryConfig{MetadataNamespace: "piano"}
 
 	t.Run("terminal truncation", func(t *testing.T) {
@@ -318,7 +336,7 @@ func TestProcessGenerationStampsMaxTokens(t *testing.T) {
 		if res.Error != nil {
 			t.Fatalf("processGeneration error: %v", res.Error)
 		}
-		md := spanMetadata(t, p.span, "langfuse.trace.metadata.")
+		md := spanMetadata(t, recorder, p.span, "langfuse.trace.metadata.")
 		if got := md["piano.finish_reason"]; got != "max_tokens" {
 			t.Errorf("piano.finish_reason = %q, want max_tokens", got)
 		}
@@ -357,7 +375,7 @@ func TestProcessGenerationStampsMaxTokens(t *testing.T) {
 		if got := p.callCount(); got != 2 {
 			t.Fatalf("provider calls = %d, want 2 (the re-entry after the wait)", got)
 		}
-		md := spanMetadata(t, p.span, "langfuse.trace.metadata.")
+		md := spanMetadata(t, recorder, p.span, "langfuse.trace.metadata.")
 		if got := md["piano.finish_reason"]; got != "end_turn" {
 			t.Errorf("piano.finish_reason = %q, want end_turn", got)
 		}
@@ -381,7 +399,7 @@ func (p modelProvider) Model() models.Model { return models.Model{ID: p.id} }
 // parent trace keeps its own values after a child run with different ones.
 func TestChildTraceKeepsTheParentTracesMetadata(t *testing.T) {
 	loadConfigIn(t, ".")
-	setLangfuseClient(t, true)
+	recorder := setLangfuseClient(t, true)
 	config.Get().Telemetry = &config.TelemetryConfig{MetadataNamespace: "piano"}
 
 	parent := &agent{agentID: "coder", provider: modelProvider{&scriptedProvider{}, "model-a"}}
@@ -402,16 +420,16 @@ func TestChildTraceKeepsTheParentTracesMetadata(t *testing.T) {
 		"piano.model_id":   "model-a",
 		"piano.requester":  "alice@example.com",
 	}
-	if got := spanMetadata(t, childSpan, "langfuse.trace.metadata."); len(got) != 0 {
+	if got := spanMetadata(t, recorder, childSpan, "langfuse.trace.metadata."); len(got) != 0 {
 		t.Errorf("child wrote trace-level metadata %v; it would overwrite the parent's", got)
 	}
-	parentMD := spanMetadata(t, parentSpan, "langfuse.trace.metadata.")
+	parentMD := spanMetadata(t, recorder, parentSpan, "langfuse.trace.metadata.")
 	for k, want := range wantParent {
 		if got := parentMD[k]; got != want {
 			t.Errorf("parent trace %s = %q, want %q", k, got, want)
 		}
 	}
-	childMD := spanMetadata(t, childSpan, "langfuse.observation.metadata.")
+	childMD := spanMetadata(t, recorder, childSpan, "langfuse.observation.metadata.")
 	for k, want := range map[string]string{
 		"piano.agent_id":          "explorer",
 		"piano.session_id":        "child-session",

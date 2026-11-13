@@ -340,3 +340,12 @@ func TestRenderSchemaEnvelopeDoesNotHTMLEscape(t *testing.T) {
 		assert.NotContains(t, env, escaped, "schema text must not be HTML-escaped")
 	}
 }
+
+func TestDormantStructOutputPreservesDefinitionAndRejectsExecution(t *testing.T) {
+	dormant := NewDormantStructOutputTool()
+	active := NewStructOutputToolWithDelivery(map[string]any{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "string"}}}, SchemaDeliveryMessage)
+	require.Equal(t, active.Info(), dormant.Info())
+	result, err := dormant.Run(context.Background(), ToolCall{Input: `{"output":{"answer":"not authorized"}}`})
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+}

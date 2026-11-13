@@ -37,20 +37,23 @@ type ShowQuitDialogMsg struct{}
 const focusRecapThreshold = 5 * time.Minute
 
 type chatPage struct {
-	app                         *app.App
-	editor                      layout.Container
-	messages                    layout.Container
-	layout                      layout.SplitPaneLayout
-	session                     session.Session
-	completionDialog            dialog.CompletionDialog
-	showCompletionDialog        bool
-	commandCompletionDialog     dialog.CompletionDialog
-	showCommandCompletionDialog bool
-	commands                    []dialog.Command
-	shellMode                   bool
-	shellRunning                bool
-	vimMode                     string // "" when disabled, "INSERT" or "NORMAL" when active
-	lastBlurAt                  time.Time
+	app                                             *app.App
+	editor                                          layout.Container
+	messages                                        layout.Container
+	layout                                          layout.SplitPaneLayout
+	session                                         session.Session
+	completionDialog                                dialog.CompletionDialog
+	showCompletionDialog                            bool
+	commandCompletionDialog                         dialog.CompletionDialog
+	showCommandCompletionDialog                     bool
+	commands                                        []dialog.Command
+	shellMode                                       bool
+	shellRunning                                    bool
+	vimMode                                         string // "" when disabled, "INSERT" or "NORMAL" when active
+	lastBlurAt                                      time.Time
+	activityTasks, activityAgents, activitySelected int
+	stripGeneration                                 uint64
+	activityFocused                                 bool
 }
 
 type ChatKeyMap struct {
@@ -100,6 +103,7 @@ var keyMap = ChatKeyMap{
 func (p *chatPage) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		p.layout.Init(),
+		p.refreshActivityCounts(),
 		p.completionDialog.Init(),
 		p.commandCompletionDialog.Init(),
 	}
@@ -121,6 +125,13 @@ func (p *chatPage) findCommand(id string) (dialog.Command, bool) {
 
 func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	if cmd, handled := p.activityUpdate(msg); handled {
+		return p, cmd
+	}
+	if key, ok := msg.(tea.KeyPressMsg); ok && p.activityFocused {
+		cmd, _ := p.activityKey(key.String())
+		return p, cmd
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		cmd := p.layout.SetSize(msg.Width, msg.Height)
@@ -341,11 +352,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (p *chatPage) setSidebar() tea.Cmd {
-	sidebarContainer := layout.NewContainer(
-		chat.NewSidebarCmp(p.session, p.app.Sessions, p.app.History, p.app),
-		layout.WithPadding(1, 1, 1, 1),
-	)
-	return tea.Batch(p.layout.SetRightPanel(sidebarContainer), sidebarContainer.Init())
+	return nil
 }
 
 func (p *chatPage) clearSidebar() tea.Cmd {
@@ -508,7 +515,7 @@ func (p *chatPage) GetSize() (int, int) {
 }
 
 func (p *chatPage) View() tea.View {
-	layoutView := p.layout.View().Content
+	layoutView := p.activityStrip(p.layout.View().Content)
 
 	activeDialog := p.activeCompletionDialog()
 	if activeDialog != nil {
@@ -714,6 +721,12 @@ func NewChatPage(app *app.App, commands []dialog.Command) tea.Model {
 // queue carries the real prompt rather than the literal `/command` text, and no
 // text is ever expanded twice.
 func (p *chatPage) expandSubmission(text string) (slashcmd.Expansion, error) {
+	if text == "/flow" || strings.HasPrefix(text, "/flow ") || strings.HasPrefix(text, "/flow\n") || strings.HasPrefix(text, "/flow\t") {
+		if cmd, ok := p.findCommand("flow"); ok {
+			info := cmd.CommandInfo
+			return slashcmd.Expansion{Action: &info, ActionArgs: strings.TrimSpace(text[len("/flow"):])}, nil
+		}
+	}
 	return slashcmd.Expand(text, p.slashRegistry(), slashcmd.ExpandOptions{
 		SessionID:   p.session.ID,
 		Interactive: true,

@@ -170,3 +170,14 @@ Provider credentials (`ANTHROPIC_API_KEY`, `VERTEXAI_PROJECT`, `AWS_REGION`, …
 | `OPENCODE_DISABLE_LSP_DOWNLOAD` | `false` | Disable automatic LSP binary downloads |
 | `OPENCODE_DISABLE_CLAUDE_SKILLS` | `false` | Disable `.claude/skills/` discovery |
 | `OPENCODE_DISABLE_CRON` | | Disable cron scheduling entirely ([guide](cron-and-heartbeat.md)) |
+
+### Agent dynamicFlow
+
+An agent may opt into persistent TUI workflows with
+`"dynamicFlow": {"enabled": true, "flowComplexity": "M"}`. Both fields belong to
+`agents.<id>`; the same object works in custom-agent YAML frontmatter. The feature
+is disabled by default and restricted to primary agents. Omit `flowComplexity`
+for automatic sizing, or choose exactly `XS`, `S`, `M`, `L`, `XL`, `XXL` to set a
+fixed ceiling. Invalid sizes fail configuration validation. See
+[dynamic workflows](flows.md#dynamic-flows-in-the-tui) for runtime limits,
+OpenSpec requirements and profile-scoped persistence.

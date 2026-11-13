@@ -3,10 +3,16 @@ package agent
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
 	"github.com/spf13/viper"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/langfuse"
@@ -54,8 +60,8 @@ func TestTelemetryAgentID(t *testing.T) {
 // it walks the final message.
 func TestSetTraceOutputGate(t *testing.T) {
 	// An enabled client is one of the two guards; the other is the config
-	// policy under test. Bogus keys/URL are fine — no root span is ever created
-	// here, so nothing is queued for export.
+	// policy under test. The fixture records any spans in memory and uses a
+	// local collector, so no telemetry leaves the test process.
 	setLangfuseClient(t, true)
 
 	tests := []struct {
@@ -162,17 +168,35 @@ func TestSetTraceOutputSkippedWhenLangfuseDisabled(t *testing.T) {
 // falls back to those env vars, so on a developer machine with real credentials
 // exported, Init("", "", "") yields an *enabled* client and the disabled-path
 // assertions silently invert.
-func setLangfuseClient(t *testing.T, enabled bool) {
+func setLangfuseClient(t *testing.T, enabled bool) *tracetest.SpanRecorder {
 	t.Helper()
 	t.Setenv("LANGFUSE_PUBLIC_KEY", "")
 	t.Setenv("LANGFUSE_SECRET_KEY", "")
 	t.Setenv("LANGFUSE_BASE_URL", "")
-	t.Cleanup(func() { langfuse.Init("", "", "", "") })
-	if enabled {
-		langfuse.Init("pk", "sk", "http://127.0.0.1:1", "")
-		return
+	if !enabled {
+		langfuse.Init("", "", "", "")
+		t.Cleanup(func() { langfuse.Init("", "", "", "") })
+		return nil
 	}
-	langfuse.Init("", "", "", "")
+	// Use a local successful collector and shut down each provider: leaving
+	// background exporters alive makes later tests race with earlier spans.
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+	}))
+	langfuse.Init("pk", "sk", collector.URL, "")
+	client := langfuse.Get()
+	t.Cleanup(func() { client.Shutdown(); collector.Close(); langfuse.Init("", "", "", "") })
+	probe := client.TraceStart(context.Background(), langfuse.TraceParams{Name: "test-recorder-setup"})
+	tp, ok := trace.SpanFromContext(probe).TracerProvider().(*sdktrace.TracerProvider)
+	if !ok {
+		t.Fatal("Langfuse did not install an SDK tracer provider")
+	}
+	recorder := tracetest.NewSpanRecorder()
+	tp.RegisterSpanProcessor(recorder)
+	client.TraceEnd(probe)
+	return recorder
 }
 
 func TestTraceInputFor(t *testing.T) {

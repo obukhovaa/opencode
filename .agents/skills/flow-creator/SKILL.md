@@ -91,6 +91,8 @@ Step IDs and flow filenames must be kebab-case, max 64 characters.
 
 Default agent is `coder` when `agent` is omitted from a step.
 
+Every `then` target must name a declared step. `end` is not a reserved terminal target: examples using `then: end` require an actual `id: end` step with a prompt and no rules. A step with no matching rule terminates its branch.
+
 **Per-step model / effort override.** A step may set `model:` (a catalog model ID such as `bedrock.eu-claude-sonnet-5`) and `reasoningEffort:` (`low` | `medium` | `high` | `xhigh` | `max`) to run its agent on a different model than the agent type declares. All three of `agent`, `model` and `reasoningEffort` accept `${args.*}` / `${step.*}` placeholders, so a gate step can emit `impl_model` / `impl_effort` in its output and a later step can run `model: ${args.impl_model}`. The fields fail differently when a placeholder does not resolve — an unresolved `agent` **fails the step** (its `fallback` fires), while an unresolved or empty `model` / `reasoningEffort` means **no override** (the agent's own model runs, warn-logged). A value that resolves to an unknown model id, or to an effort the chosen model cannot do, fails the step. Literal values are validated at flow load. Both keys are inheritable through `extends`; keep them on the flow step (not in a shared template) while any consumer of the flow file runs a harness that predates them — a template key the harness does not know fails the whole flow at load, whereas an unknown inline step key is merely ignored. See `references/flow-spec.md` → "Step Fields" and "Template Substitution".
 
 ## Available Agents
@@ -139,7 +141,7 @@ Reserve structured `output` for steps whose results are consumed by rules or sub
 ## Patterns
 
 ### Sequential Pipeline
-Omit rules from all steps. Steps execute in array order, each receiving the previous step's output.
+Declare an unconditional `rules: [{then: next-step-id}]` edge on every nonterminal step. A step without rules is terminal; array order alone does not schedule the next step. Each routed step receives the previous step's output.
 
 ### Conditional Branching
 Use a classifier step with structured output and rules routing to different branches:
@@ -372,6 +374,8 @@ Both edges of the cycle must be marked (verify → implement AND implement → v
       cycle: true                # back-edge of the loop
     - if: ${args.verified} != true && ${step.iteration} >= 3
       then: end                  # degrade after N bounces
+- id: end
+  prompt: "Summarize the result and any remaining verification issues."
 ```
 
 **When NOT to use `cycle: true`**:

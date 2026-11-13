@@ -21,6 +21,9 @@ import (
 	"github.com/opencode-ai/opencode/internal/skill"
 )
 
+const dynamicStructuredOutputPrompt = `
+When the current task requests structured output, follow the active schema in its <struct_output_schema> block (or the tool parameters in schema-in-tool mode), complete the requested work and any necessary user questions, then use struct_output as your final action. Without an active schema, respond normally and do not call struct_output.`
+
 const structuredOutputPrompt = `
 IMPORTANT: The user has requested structured output. You MUST use the struct_output tool to provide your final response. Do NOT respond with plain text - you MUST call the struct_output tool with your answer formatted according to the schema.`
 
@@ -417,6 +420,8 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 		// interactive: true.
 		if opts.Interactive || info.Interactive {
 			basePrompt += interactiveStructuredOutputPromptFor(opts.BoundPeers)
+		} else if info.DynamicFlow != nil && info.DynamicFlow.Enabled && info.Mode == config.AgentModeAgent && reg.IsToolEnabled(agentName, tools.StructOutputToolName) {
+			basePrompt += dynamicStructuredOutputPrompt
 		} else if hasOutputSchema && reg.IsToolEnabled(agentName, tools.StructOutputToolName) {
 			basePrompt += structuredOutputPrompt
 		}

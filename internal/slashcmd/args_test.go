@@ -95,13 +95,16 @@ func TestCommandInfoIsAction(t *testing.T) {
 	// carries prompt content nor is listed as an action fails this test, which is
 	// the point — the classification must be a conscious choice.
 	wantAction := map[string]bool{
-		"init":             false,
-		"review":           false,
-		"commit":           false,
-		"new":              true,
-		"reset":            true,
-		"compact":          true,
-		"agents":           true,
+		"init":    false,
+		"review":  false,
+		"commit":  false,
+		"new":     true,
+		"reset":   true,
+		"compact": true,
+		"agents":  true,
+		"flow":    true, "mcp": true, "lsp": true, "modified-files": true,
+		"tasks":            true,
+		"subagents":        true,
 		"auto-approve":     true,
 		"model":            true,
 		"vim":              true,

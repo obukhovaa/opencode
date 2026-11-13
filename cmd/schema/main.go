@@ -489,6 +489,14 @@ func generateSchema() map[string]any {
 					"description": "Bound, in seconds, on one tool call in this agent's loop. Past it the call is cancelled and abandoned and the model receives an error result. task, question and bash are exempt; an MCP tool gets at least its server's callToolTimeoutSeconds plus 60 s. 0 disables the bound. Unset inherits the top-level toolCallTimeoutSeconds.",
 					"minimum":     0,
 				},
+				"dynamicFlow": map[string]any{
+					"type": "object", "description": "Opt-in persistent dynamic flows for primary agents.",
+					"additionalProperties": false,
+					"properties": map[string]any{
+						"enabled":        map[string]any{"type": "boolean", "default": false, "description": "Enable dynamic planning and the flow tool."},
+						"flowComplexity": map[string]any{"type": "string", "enum": []string{"XS", "S", "M", "L", "XL", "XXL"}, "description": "Fixed resource ceiling. Omit to let the builder choose."},
+					},
+				},
 				"selfCompact": map[string]any{
 					"type":        "object",
 					"description": "Lets this primary agent compact its own session through the compact_session tool: the agent calls it when it has finished a task, and the session is summarized right after that turn ends (or, if that did not happen, before the next turn's first model call). The tool's keep notes are carried into the summary verbatim. Independent of autoCompact; the auto-compaction threshold stays in place as the safety net. Also settable in agent markdown frontmatter.",
