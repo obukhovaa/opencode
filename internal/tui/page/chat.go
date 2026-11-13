@@ -245,11 +245,6 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		p.lastBlurAt = time.Time{}
-	case tea.PasteMsg:
-		// Paste events go directly to the editor, skip dialog triggers
-		u, cmd := p.layout.Update(msg)
-		p.layout = u.(layout.SplitPaneLayout)
-		return p, cmd
 	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, keyMap.ShowQueue):
@@ -314,6 +309,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if p.showCommandCompletionDialog {
 		context, contextCmd := p.commandCompletionDialog.Update(msg)
 		p.commandCompletionDialog = context.(dialog.CompletionDialog)
+		p.showCommandCompletionDialog = p.commandCompletionDialog.Active()
 		cmds = append(cmds, contextCmd)
 
 		if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
@@ -334,6 +330,7 @@ func (p *chatPage) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if p.showCompletionDialog {
 		context, contextCmd := p.completionDialog.Update(msg)
 		p.completionDialog = context.(dialog.CompletionDialog)
+		p.showCompletionDialog = p.completionDialog.Active()
 		cmds = append(cmds, contextCmd)
 
 		if keyMsg, ok := msg.(tea.KeyPressMsg); ok {

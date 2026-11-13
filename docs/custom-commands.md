@@ -47,6 +47,8 @@ Type `/` in the chat input to open an autocomplete popup with all available comm
 - **Fuzzy search**: keep typing after `/` to filter commands
 - **Tab / Shift+Tab**: cycle through matches
 - **Enter**: select the command
+- **Space**: finish the command name and continue typing its arguments without the popup
+- **Paste**: dismiss the popup and insert the pasted text into the editor
 - **Esc / Backspace**: dismiss the popup
 
 ### Selecting a command stages it — it is not sent

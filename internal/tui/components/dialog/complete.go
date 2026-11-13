@@ -89,6 +89,7 @@ type CompletionDialog interface {
 	tea.Model
 	layout.Bindings
 	SetWidth(width int)
+	Active() bool
 }
 
 type completionDialogCmp struct {
@@ -118,7 +119,7 @@ var completionDialogKeys = completionDialogKeyMap{
 		key.WithKeys("shift+tab"),
 	),
 	Cancel: key.NewBinding(
-		key.WithKeys(" ", "esc", "backspace"),
+		key.WithKeys("space", " ", "esc", "backspace"),
 	),
 }
 
@@ -145,6 +146,7 @@ func (c *completionDialogCmp) complete(item CompletionItemI) tea.Cmd {
 
 func (c *completionDialogCmp) close() tea.Cmd {
 	c.listView.SetItems([]CompletionItemI{})
+	c.query = ""
 	c.pseudoSearchTextArea.Reset()
 	c.pseudoSearchTextArea.Blur()
 
@@ -154,7 +156,13 @@ func (c *completionDialogCmp) close() tea.Cmd {
 func (c *completionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	switch msg := msg.(type) {
+	case tea.PasteMsg:
+		// A pasted goal belongs to the editor, not the popup's search query.
+		return c, c.close()
 	case tea.KeyPressMsg:
+		if key.Matches(msg, completionDialogKeys.Cancel) && msg.String() != "backspace" {
+			return c, c.close()
+		}
 		if c.pseudoSearchTextArea.Focused() {
 
 			if !key.Matches(msg, completionDialogKeys.Complete) && !key.Matches(msg, completionDialogKeys.Cycle) && !key.Matches(msg, completionDialogKeys.CycleBack) {
@@ -259,6 +267,10 @@ func (c *completionDialogCmp) View() tea.View {
 		Render(c.listView.View().Content))
 }
 
+func (c *completionDialogCmp) Active() bool {
+	return c.pseudoSearchTextArea.Focused()
+}
+
 func (c *completionDialogCmp) SetWidth(width int) {
 	c.width = width
 }
@@ -278,7 +290,7 @@ func NewCompletionDialogCmp(completionProvider CompletionProvider) CompletionDia
 	li := utilComponents.NewSimpleList(
 		items,
 		7,
-		"No file matches found",
+		"No matches found",
 		false,
 	)
 
