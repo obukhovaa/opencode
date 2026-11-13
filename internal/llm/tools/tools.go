@@ -264,10 +264,13 @@ func TurnRequester(ctx context.Context) string {
 }
 
 type toolResponse struct {
-	Type     toolResponseType `json:"type"`
-	Content  string           `json:"content"`
-	Metadata string           `json:"metadata,omitempty"`
-	IsError  bool             `json:"is_error"`
+	// UserInputDelivered is runtime-only evidence of an actual question answer.
+	// Automatic defaults and unanswered notifications must not reset loop history.
+	UserInputDelivered bool             `json:"-"`
+	Type               toolResponseType `json:"type"`
+	Content            string           `json:"content"`
+	Metadata           string           `json:"metadata,omitempty"`
+	IsError            bool             `json:"is_error"`
 }
 
 // ToolResponse is the public interface for tool responses

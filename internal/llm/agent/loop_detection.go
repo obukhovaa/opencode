@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -8,6 +10,7 @@ import (
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/message"
 )
 
 const (
@@ -25,6 +28,7 @@ const (
 type callTracker struct {
 	lastCall    map[string]string
 	streakCount map[string]int
+	lastResult  map[string][32]byte
 	threshold   int
 	// denials counts the run's permission-rule denials (permission_denial.go).
 	denials ruleDenialBreaker
@@ -38,14 +42,36 @@ func newCallTracker() *callTracker {
 	}
 }
 
-func (t *callTracker) Track(name, input string) bool {
-	if t.lastCall[name] == input {
+// Track observes a completed call, before any loop warning replaces its result.
+// Only model-visible result fields count; IDs and execution timing metadata do not.
+func (t *callTracker) Track(name, input string, result message.ToolResult) bool {
+	encoded, _ := json.Marshal([]any{result.Type, result.Content, result.IsError})
+	digest := sha256.Sum256(encoded)
+	if t.lastResult == nil {
+		t.lastResult = make(map[string][32]byte)
+	}
+	previous, seen := t.lastResult[name]
+	if seen && t.lastCall[name] == input && previous == digest {
 		t.streakCount[name]++
 	} else {
 		t.streakCount[name] = 1
-		t.lastCall[name] = input
 	}
+	t.lastCall[name] = input
+	t.lastResult[name] = digest
 	return t.streakCount[name] >= t.threshold
+}
+
+// Blocked prevents further executions after a completed-result streak proved
+// the call is stuck. A changed request or delivered input allows it to run again.
+func (t *callTracker) Blocked(name, input string) bool {
+	return t.lastCall[name] == input && t.streakCount[name] >= t.threshold
+}
+
+// Reset clears repetition evidence, not the independent permission-denial budget.
+func (t *callTracker) Reset() {
+	clear(t.lastCall)
+	clear(t.lastResult)
+	clear(t.streakCount)
 }
 
 func resolveRepeatThreshold() int {
@@ -111,8 +137,8 @@ func proactiveMaxTurnsHint(effectiveMaxTurns int) string {
 
 func loopDetectedMessage(toolName string, streak int) string {
 	return fmt.Sprintf(
-		"Loop detected: you have called tool %q with identical arguments %d times consecutively. "+
-			"The output will not change. Please try a different approach, use different arguments, "+
+		"Loop detected: you have called tool %q with identical arguments and results %d times consecutively. "+
+			"No new result was observed. Please try a different approach, use different arguments, "+
 			"or provide your final response.",
 		toolName, streak,
 	)

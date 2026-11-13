@@ -477,7 +477,6 @@ func TestBuildExecutionGroups_Partitioning(t *testing.T) {
 		parallel bool
 	}
 	var parallelGroup, sequentialGroup []toolEntry
-	tracker := newCallTracker()
 
 	for i, tc := range toolCalls {
 		var tool tools.BaseTool
@@ -496,7 +495,6 @@ func TestBuildExecutionGroups_Partitioning(t *testing.T) {
 			}
 			continue
 		}
-		tracker.Track(tc.Name, tc.Input)
 
 		entry := toolEntry{index: i, tool: tool, toolCall: tc}
 		if tool.AllowParallelism(allToolCalls[i], allToolCalls) {
