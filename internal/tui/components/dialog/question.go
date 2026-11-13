@@ -257,27 +257,14 @@ func (q *questionDialogCmp) recomputeLayout() {
 		return
 	}
 
-	// Compute content width based on option text lengths
-	width := questionDialogMinWidth
-	for _, opt := range prompt.Options {
-		if w := len(opt.Label) + 8; w > width { // 8 = indicator + padding
-			width = w
-		}
-		if w := len(opt.Description) + 10; w > width {
-			width = w
-		}
-	}
-	if w := len(prompt.Question) + 6; w > width {
-		width = w
-	}
-
+	// Width includes the outer border (2) and horizontal padding (4).
+	// Do not enforce a minimum wider than a small terminal.
+	outerWidth := questionDialogMinWidth + 6
 	if q.windowSize.Width > 0 {
-		maxW := int(float64(q.windowSize.Width) * 0.6)
-		if width > maxW {
-			width = maxW
-		}
+		outerWidth = max(7, q.windowSize.Width*4/5)
 	}
-	q.contentWidth = max(questionDialogMinWidth, width)
+	q.contentWidth = max(1, outerWidth-6)
+	q.customInput.SetWidth(max(1, q.contentWidth-4))
 
 	// Compute visible slots
 	slots := questionDialogMaxVisible
@@ -329,7 +316,7 @@ func (q *questionDialogCmp) View() tea.View {
 	// Question text (may wrap)
 	questionText := baseStyle.
 		Foreground(t.Text()).
-		Width(w-2).
+		Width(w).
 		Padding(0, 1).
 		Render(prompt.Question)
 
@@ -404,7 +391,6 @@ func (q *questionDialogCmp) View() tea.View {
 
 	// Custom input
 	if prompt.IsCustomEnabled() {
-		q.customInput.SetWidth(w - 4)
 		inputStyle := baseStyle.Width(w).Padding(0, 1)
 		if q.customFocused {
 			inputStyle = inputStyle.
@@ -440,7 +426,7 @@ func (q *questionDialogCmp) View() tea.View {
 		Border(lipgloss.RoundedBorder()).
 		BorderBackground(t.Background()).
 		BorderForeground(t.TextMuted()).
-		Width(lipgloss.Width(content) + 6).
+		Width(w + 6).
 		Render(content)
 
 	rendered = styles.ForceReplaceBackgroundWithLipgloss(rendered, t.Background())

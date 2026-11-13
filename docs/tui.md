@@ -58,6 +58,11 @@ in `INSERT`; `Esc` switches to `NORMAL`.
 
 ### Dialogs
 
+Question dialogs occupy 80% of the terminal width, centered with roughly 10%
+space on each side. Long questions and options wrap inside the border. When
+several dialogs are pending, only the one receiving keyboard input is shown;
+permission prompts take priority over questions, which remain pending.
+
 | Shortcut | Action |
 |----------|--------|
 | `↑`/`k`, `↓`/`j` | Navigate items |

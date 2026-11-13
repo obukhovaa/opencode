@@ -1197,6 +1197,12 @@ structured outputs or conditional/looping routes: downstream required values
 must never be invented. Terminate prevents subsequent resume. Cancellation does
 not undo external effects already performed by a step.
 
+Chat shows each step's status and, when it completes, fails or postpones, a bounded
+excerpt of its output and elapsed wall time for that execution attempt (including
+waiting for input). Resuming starts a new timing interval; stopped time is excluded.
+Long output links back to `/flow` for inspection. These previews reuse existing
+output and do not make additional model calls.
+
 The builder chooses a complexity unless `dynamicFlow.flowComplexity` fixes it.
 Planning itself is also bounded: a fixed size applies its turn/task limits during
 planning; automatic selection uses an M-sized planning ceiling (80 turns and

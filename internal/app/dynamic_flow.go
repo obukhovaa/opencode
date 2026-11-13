@@ -343,6 +343,7 @@ func (app *App) executeFlow(ctx context.Context, root string, run *dynamicRun, m
 		return err
 	}
 	lastStatus := map[string]flow.FlowStatus{}
+	progress := flowStepProgress{}
 	for events != nil || states != nil {
 		select {
 		case _, ok := <-events:
@@ -372,17 +373,7 @@ func (app *App) executeFlow(ctx context.Context, root string, run *dynamicRun, m
 							break
 						}
 					}
-					text := fmt.Sprintf("Flow · %s · %s · %s", state.StepID, stepAgent, state.Status)
-					if state.Status == flow.FlowStatusFailed {
-						detail := strings.TrimSpace(state.Output)
-						if detail == "" {
-							detail = "Step failed; inspect its session or resume the flow."
-						}
-						if len(detail) > 1000 {
-							detail = detail[:1000]
-						}
-						text += "\n" + detail
-					}
+					text := app.flowStepProgressNote(ctx, progress, *state, stepAgent)
 					app.flowNote(root, text)
 				}
 			}

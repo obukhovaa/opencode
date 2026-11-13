@@ -289,6 +289,10 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.filepicker = filepicker.(dialog.FilepickerCmp)
 		cmds = append(cmds, filepickerCmd)
 
+		question, questionCmd := a.questionDialog.Update(msg)
+		a.questionDialog = question.(dialog.QuestionDialogCmp)
+		cmds = append(cmds, questionCmd)
+
 		a.initDialog.SetSize(msg.Width, msg.Height)
 		a.queueDialog.SetSize(msg.Width, msg.Height)
 
@@ -793,6 +797,13 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			args, cmd := a.multiArgumentsDialog.Update(msg)
 			a.multiArgumentsDialog = args.(dialog.MultiArgumentsDialogCmp)
 			return a, cmd
+		}
+
+		// A visible prompt owns its keys. In particular Escape must not
+		// dismiss an obscured init/help dialog or navigate the page behind it.
+		focused := a.focusedDialog()
+		if ((a.showPermissions && focused == a.permissions) || (a.showQuestionDialog && focused == a.questionDialog)) && !key.Matches(msg, keys.Quit) {
+			break
 		}
 
 		switch {
@@ -1318,6 +1329,44 @@ func (a *appModel) moveToPage(pageID page.PageID) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// focusedDialog follows Update's input dispatch order, including the argument
+// dialog's early key/paste handler. Painting every open dialog independently
+// lets a later overlay hide the dialog that actually receives the user's keys.
+func (a appModel) focusedDialog() tea.Model {
+	switch {
+	case a.showMultiArgumentsDialog:
+		return a.multiArgumentsDialog
+	case a.showFilepicker:
+		return a.filepicker
+	case a.showQuit:
+		return a.quit
+	case a.showPermissions:
+		return a.permissions
+	case a.showQuestionDialog:
+		return a.questionDialog
+	case a.showSessionDialog:
+		return a.sessionDialog
+	case a.showDeleteSessionDialog:
+		return a.deleteSessionDialog
+	case a.showCommandDialog:
+		return a.commandDialog
+	case a.showModelDialog:
+		return a.modelDialog
+	case a.showInitDialog:
+		return a.initDialog
+	case a.showThemeDialog:
+		return a.themeDialog
+	case a.showSessionsCleanupDialog:
+		return a.sessionsCleanupDialog
+	case a.showMissedCronDialog:
+		return a.missedCronDialog
+	case a.showQueueDialog:
+		return a.queueDialog
+	default:
+		return nil
+	}
+}
+
 func (a appModel) View() tea.View {
 	pageContent := lipgloss.NewStyle().
 		MaxHeight(a.height).
@@ -1341,18 +1390,6 @@ func (a appModel) View() tea.View {
 		appView = layout.PlaceOverlay(col, row, overlay, appView, true)
 	}
 
-	if a.showPermissions {
-		centerOverlay(a.permissions.View().Content)
-	}
-
-	if a.showQuestionDialog {
-		centerOverlay(a.questionDialog.View().Content)
-	}
-
-	if a.showFilepicker {
-		centerOverlay(a.filepicker.View().Content)
-	}
-
 	// Show compacting status overlay
 	if a.isCompacting {
 		t := theme.CurrentTheme()
@@ -1367,11 +1404,7 @@ func (a appModel) View() tea.View {
 		centerOverlay(style.Render("Summarizing\n" + a.compactingMessage))
 	}
 
-	if a.showQuit {
-		centerOverlay(a.quit.View().Content)
-	}
-
-	if a.showHelp {
+	if a.showHelp && a.focusedDialog() == nil {
 		bindings := layout.KeyMapToSlice(keys)
 		if p, ok := a.pages[a.currentPage].(layout.Bindings); ok {
 			bindings = append(bindings, p.BindingKeys()...)
@@ -1390,51 +1423,10 @@ func (a appModel) View() tea.View {
 		centerOverlay(a.help.View().Content)
 	}
 
-	if a.showSessionDialog {
-		centerOverlay(a.sessionDialog.View().Content)
-	}
-
-	if a.showDeleteSessionDialog {
-		centerOverlay(a.deleteSessionDialog.View().Content)
-	}
-
-	if a.showModelDialog {
-		centerOverlay(a.modelDialog.View().Content)
-	}
-
-	if a.showCommandDialog {
-		centerOverlay(a.commandDialog.View().Content)
-	}
-
-	if a.showInitDialog {
-		overlay := a.initDialog.View().Content
-		appView = layout.PlaceOverlay(
-			appViewWidth/2-lipgloss.Width(overlay)/2,
-			appViewHeight/2-lipgloss.Height(overlay)/2,
-			overlay,
-			appView,
-			true,
-		)
-	}
-
-	if a.showThemeDialog {
-		centerOverlay(a.themeDialog.View().Content)
-	}
-
-	if a.showMultiArgumentsDialog {
-		centerOverlay(a.multiArgumentsDialog.View().Content)
-	}
-
-	if a.showSessionsCleanupDialog {
-		centerOverlay(a.sessionsCleanupDialog.View().Content)
-	}
-
-	if a.showMissedCronDialog {
-		centerOverlay(a.missedCronDialog.View().Content)
-	}
-
-	if a.showQueueDialog {
-		centerOverlay(a.queueDialog.View().Content)
+	// Render only the dialog that receives input. Pending dialogs retain
+	// their state and become visible when the focused one closes.
+	if focused := a.focusedDialog(); focused != nil {
+		centerOverlay(focused.View().Content)
 	}
 
 	v := tea.NewView(appView)

@@ -118,6 +118,16 @@ func TestStoredNamedFlowRunsWithoutOpenSpecAndAllowsSequentialRuns(t *testing.T)
 	history, e := a.Messages.List(ctx, root)
 	require.NoError(t, e)
 	require.Contains(t, history[len(history)-1].Content().String(), "FINAL-RESULT-731")
+	completedSteps := 0
+	for _, msg := range history {
+		text := msg.Content().String()
+		if strings.HasPrefix(text, "Flow · ") && strings.Contains(text, " · completed · ") {
+			completedSteps++
+			require.Contains(t, text, "FINAL-RESULT-731", "step completion should expose output in root chat")
+			require.Regexp(t, `completed · (?:<1s|[0-9hms.]+)`, text)
+		}
+	}
+	require.Equal(t, 2, completedSteps, "both steps should report output and duration")
 	repeated, err := a.SubmitFlow(ctx, root, req)
 	require.NoError(t, err)
 	require.Equal(t, first.RunID, repeated.RunID)

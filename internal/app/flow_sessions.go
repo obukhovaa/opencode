@@ -811,9 +811,6 @@ func (app *App) emitStoredEvent(ctx context.Context, run *dynamicRun, event Flow
 	event.ID = stored.ID
 	event.Sequence = stored.Sequence
 	app.publishFlowEvent(event)
-	if event.Type == "session.flow.step" && app.Messages != nil {
-		_, _ = app.Messages.Create(ctx, record.ConversationID, message.CreateMessageParams{Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: fmt.Sprintf("Flow · %s · %s", event.StepID, event.Status)}}})
-	}
 	return nil
 }
 func (app *App) finishStoredFlow(run *dynamicRun, status, output string) {
@@ -1143,6 +1140,7 @@ func (app *App) executeStoredFlow(ctx context.Context, conversation string, run 
 	if err != nil {
 		return err
 	}
+	progress := flowStepProgress{}
 	for events != nil || states != nil {
 		select {
 		case event, ok := <-events:
@@ -1178,6 +1176,9 @@ func (app *App) executeStoredFlow(ctx context.Context, conversation string, run 
 			if emitErr := app.emitStoredEvent(ctx, run, FlowRunEvent{Type: "session.flow.step", Status: string(state.Status), StepID: state.StepID, SessionID: state.SessionID, Output: state.Output}); emitErr != nil {
 				run.cancel()
 				err = emitErr
+			} else if app.Messages != nil {
+				note := app.flowStepProgressNote(ctx, progress, *state, "")
+				_, _ = app.Messages.Create(ctx, record.ConversationID, message.CreateMessageParams{Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: note}}})
 			}
 		}
 	}

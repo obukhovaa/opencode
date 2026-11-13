@@ -56,3 +56,8 @@ The TUI SHALL recognize /flow, display progress and step agent/status/output, al
 #### Scenario: Parallel task limit
 - **WHEN** synchronous or asynchronous task starts would exceed the complexity's parallel limit
 - **THEN** the additional task is refused without starting another agent
+
+#### Scenario: Step finishes with useful output
+- **WHEN** a step completes, fails or postpones
+- **THEN** chat shows its status, a bounded excerpt of available output and the elapsed time observed for that execution attempt
+- **AND** longer output remains available on the flow page without an additional model call
