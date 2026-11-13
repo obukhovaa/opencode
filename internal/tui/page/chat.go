@@ -53,6 +53,9 @@ type chatPage struct {
 	lastBlurAt                                      time.Time
 	activityTasks, activityAgents, activitySelected int
 	activityFlowQueued                              int
+	activityFrame                                   int
+	activityAnimating                               bool
+	activityAnimationGeneration                     uint64
 	stripGeneration                                 uint64
 	activityFocused                                 bool
 }
@@ -104,7 +107,7 @@ var keyMap = ChatKeyMap{
 func (p *chatPage) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		p.layout.Init(),
-		p.refreshActivityCounts(),
+		p.activateActivityStrip(),
 		p.completionDialog.Init(),
 		p.commandCompletionDialog.Init(),
 	}

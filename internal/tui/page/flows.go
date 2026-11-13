@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/opencode-ai/opencode/internal/app"
+	"github.com/opencode-ai/opencode/internal/flow"
 	"github.com/opencode-ai/opencode/internal/tui/components/chat"
 	"github.com/opencode-ai/opencode/internal/tui/styles"
 )
@@ -184,7 +185,11 @@ func (p *flowsPage) renderContent() {
 	if strings.TrimSpace(output) == "" {
 		output = "Output will appear when this step runs."
 	}
-	content := styles.BaseStyle().Bold(true).Render("Prompt") + "\n" + pagePlain(step.Prompt) + "\n\n" + styles.BaseStyle().Bold(true).Render("Current output") + "\n" + pagePlain(output)
+	output = flow.OutputMarkdown(pagePlain(output), step.IsStructOutput, 0, 0)
+	if rendered, err := styles.GetMarkdownRenderer(max(1, p.viewport.Width()-2)).Render(output); err == nil {
+		output = strings.TrimSpace(rendered)
+	}
+	content := styles.BaseStyle().Bold(true).Render("Prompt") + "\n" + pagePlain(step.Prompt) + "\n\n" + styles.BaseStyle().Bold(true).Render("Current output") + "\n" + output
 	offset := p.viewport.YOffset()
 	p.viewport.SetContent(content)
 	p.viewport.SetYOffset(offset)

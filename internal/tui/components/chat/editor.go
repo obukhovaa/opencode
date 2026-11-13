@@ -73,6 +73,7 @@ type flowSteeringResult struct {
 }
 
 type editorCmp struct {
+	history           inputHistory
 	flowSteeringQueue []flowSteeringResult
 	failedSteering    map[string]string
 	width             int
@@ -313,7 +314,7 @@ func (m *editorCmp) stageInvocation(text string) {
 }
 
 func (m *editorCmp) Init() tea.Cmd {
-	cmds := []tea.Cmd{textarea.Blink}
+	cmds := []tea.Cmd{textarea.Blink, m.loadInputHistory()}
 	if m.vimHandler != nil {
 		cmds = append(cmds, util.CmdHandler(VimModeChangedMsg{
 			Mode: string(m.vimHandler.Mode()),
@@ -322,7 +323,14 @@ func (m *editorCmp) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func (m *editorCmp) send() tea.Cmd {
+func (m *editorCmp) send() (cmd tea.Cmd) {
+	raw := m.textarea.Value()
+	accepted := false
+	defer func() {
+		if accepted {
+			cmd = tea.Batch(cmd, m.rememberInput(raw))
+		}
+	}()
 	// Always check for empty input first — an empty submit is a no-op
 	// regardless of queue or busy state (task 3.3).
 	value := m.textarea.Value()
@@ -354,6 +362,7 @@ func (m *editorCmp) send() tea.Cmd {
 		// instead of being sent, so the input is consumed but no message is
 		// created. Attachments are deliberately left in place — there is no
 		// message to carry them, so they stay staged for the next one.
+		accepted = true
 		m.textarea.Reset()
 		return util.CmdHandler(RunActionMsg{Command: expansion.Action, Args: expansion.ActionArgs})
 	}
@@ -364,6 +373,7 @@ func (m *editorCmp) send() tea.Cmd {
 		if len(attachments) > 0 {
 			return util.ReportWarn("Flow steering accepts text; keep attachments for the next chat turn")
 		}
+		accepted = true
 		m.textarea.Reset()
 		return m.enqueueFlowSteering(m.session.ID, value)
 	}
@@ -374,6 +384,7 @@ func (m *editorCmp) send() tea.Cmd {
 	// the queue-non-empty branch, a submission arriving in the idle window
 	// between two drain deliveries would bypass already-queued messages.
 	if m.app.QueueLen(m.session.ID) > 0 || m.app.ActiveAgent().IsSessionBusy(m.session.ID) {
+		accepted = true
 		m.app.EnqueueMessage(m.session.ID, app.QueuedMessage{
 			Text:        value,
 			Attachments: attachments,
@@ -388,6 +399,7 @@ func (m *editorCmp) send() tea.Cmd {
 
 	// Queue empty AND session idle: fall through to the direct dispatch path
 	// (today's behavior, unchanged).
+	accepted = true
 	m.textarea.Reset()
 	m.attachments = nil
 	m.syncTextareaHeight()
@@ -755,6 +767,9 @@ func (m *editorCmp) refreshSelection() {
 }
 
 func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if cmd, handled := m.inputHistoryUpdate(msg); handled {
+		return m, cmd
+	}
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
 	case flowSteeringResult:
@@ -838,6 +853,7 @@ func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea.SetValue(msg.Text)
 		return m, m.send()
 	case SessionClearedMsg:
+		m.restoreHistoryDraft()
 		m.session = session.Session{}
 		if m.mode == modeShell {
 			m.exitShellMode()
@@ -846,6 +862,7 @@ func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case SessionSelectedMsg:
 		if msg.ID != m.session.ID {
+			m.restoreHistoryDraft()
 			m.session = msg
 			if failed := m.failedSteering[msg.ID]; failed != "" {
 				m.textarea.SetValue(failed + m.textarea.Value())
@@ -881,8 +898,17 @@ func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea, cmd = m.textarea.Update(msg)
 		return m, cmd
 	case tea.KeyPressMsg:
-		if m.mode == modeNormal && !m.shellExecuting && ((msg.String() == "up" && m.textarea.Value() == "") || (msg.String() == "k" && m.vimHandler != nil && m.vimHandler.Mode() == vim.ModeNormal && m.textarea.Line() == 0)) {
-			return m, util.CmdHandler(FocusActivitiesMsg{})
+		if m.mode == modeNormal && !m.shellExecuting && m.textarea.Focused() && (m.vimHandler == nil || !m.vimHandler.Mode().IsVisual()) {
+			line := m.textarea.LineInfo()
+			if msg.String() == "up" && m.textarea.Line() == 0 && line.RowOffset == 0 && m.recallInput(true) {
+				return m, nil
+			}
+			if msg.String() == "down" && m.textarea.Line() == m.textarea.LineCount()-1 && line.RowOffset == line.Height-1 && m.recallInput(false) {
+				return m, nil
+			}
+			if msg.String() == "alt+up" || (msg.String() == "up" && m.textarea.Value() == "" && len(m.history.entries) == 0) || (msg.String() == "k" && m.vimHandler != nil && m.vimHandler.Mode() == vim.ModeNormal && m.textarea.Line() == 0) {
+				return m, util.CmdHandler(FocusActivitiesMsg{})
+			}
 		}
 		if m.shellExecuting {
 			// Everything else is swallowed while a command runs, but the cancel
@@ -1280,6 +1306,7 @@ func NewEditorCmp(app *app.App, expand SubmissionExpander, scan InvocationScanne
 	}
 	return &editorCmp{
 		app:             app,
+		history:         newInputHistory(),
 		expand:          expand,
 		scan:            scan,
 		textarea:        ta,

@@ -137,3 +137,25 @@ func TestActivityStripFlowQueueTracksDeliveryAndIgnoresOtherSessions(t *testing.
 		t.Fatal("delivered messages still counted")
 	}
 }
+
+func TestActivityAnimationDoesNotPollStorageAndStopsWhenIdle(t *testing.T) {
+	p := &chatPage{app: &app.App{}, activityTasks: 1, stripGeneration: 7, activityAnimationGeneration: 2, activityAnimating: true}
+	cmd, handled := p.activityUpdate(activityPulse{generation: 2})
+	if !handled || cmd == nil || p.activityFrame != 1 || p.stripGeneration != 7 {
+		t.Fatal("animation failed or triggered a storage refresh")
+	}
+	cmd, _ = p.activityUpdate(activityPulse{generation: 1})
+	if cmd != nil || p.activityFrame != 1 {
+		t.Fatal("stale pulse advanced animation")
+	}
+	p.activityTasks = 0
+	cmd, _ = p.activityUpdate(activityPulse{generation: 2})
+	if cmd != nil || p.activityAnimating || p.activityFrame != 0 {
+		t.Fatal("idle animation kept running")
+	}
+	p.activityAgents = 1
+	p.activityUpdate(stripCounts{generation: 7, agents: 1})
+	if !p.activityAnimating || p.activityAnimationGeneration != 3 {
+		t.Fatal("subagent activity did not restart animation")
+	}
+}

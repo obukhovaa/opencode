@@ -46,7 +46,7 @@ func (p flowStepProgress) note(state flow.FlowState, agent string, now time.Time
 		output = "Step failed; inspect its session or resume the flow."
 	}
 	if output != "" {
-		text += "\n\n" + flowOutputPreview(output)
+		text += "\n\n" + flow.OutputMarkdown(output, state.IsStructOutput, 14, 2000)
 	}
 	return text
 }
@@ -56,21 +56,7 @@ func finishedFlowStep(status flow.FlowStatus) bool {
 }
 
 func flowOutputPreview(output string) string {
-	truncated := false
-	lines := strings.Split(output, "\n")
-	if len(lines) > 14 {
-		output = strings.Join(lines[:14], "\n")
-		truncated = true
-	}
-	runes := []rune(output)
-	if len(runes) > 2000 {
-		output = string(runes[:2000])
-		truncated = true
-	}
-	if truncated {
-		output = strings.TrimSpace(output) + "\n\n… Full output: /flow"
-	}
-	return output
+	return flow.OutputMarkdown(output, false, 14, 2000)
 }
 
 func (app *App) flowStepProgressNote(ctx context.Context, progress flowStepProgress, state flow.FlowState, agent string) string {
@@ -82,6 +68,7 @@ func (app *App) flowStepProgressNote(ctx context.Context, progress flowStepProgr
 				if messages[i].Role == message.Assistant {
 					if text := strings.TrimSpace(messages[i].Content().String()); text != "" {
 						state.Output = text
+						state.IsStructOutput = false
 						break
 					}
 				}

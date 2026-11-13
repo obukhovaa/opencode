@@ -28,14 +28,15 @@ import (
 )
 
 type FlowStepSnapshot struct {
-	ID            string `json:"id"`
-	Agent         string `json:"agent"`
-	SessionID     string `json:"sessionId,omitempty"`
-	Status        string `json:"status"`
-	Prompt        string `json:"prompt,omitempty"`
-	Output        string `json:"output,omitempty"`
-	Iteration     int    `json:"iteration"`
-	RunningAgents int    `json:"runningAgents"`
+	IsStructOutput bool   `json:"isStructOutput,omitempty"`
+	ID             string `json:"id"`
+	Agent          string `json:"agent"`
+	SessionID      string `json:"sessionId,omitempty"`
+	Status         string `json:"status"`
+	Prompt         string `json:"prompt,omitempty"`
+	Output         string `json:"output,omitempty"`
+	Iteration      int    `json:"iteration"`
+	RunningAgents  int    `json:"runningAgents"`
 }
 type FlowSnapshot struct {
 	RunID         string             `json:"runId,omitempty"`
@@ -481,6 +482,7 @@ func (app *App) DynamicFlowSnapshot(ctx context.Context, root string) (FlowSnaps
 				item.Status = r.Status
 				item.Iteration = int(r.Iteration)
 				item.Output = r.Output.String
+				item.IsStructOutput = r.IsStructOutput
 			}
 			if item.Status == "running" && snap.Running {
 				item.RunningAgents = 1
@@ -501,6 +503,7 @@ func (app *App) DynamicFlowSnapshot(ctx context.Context, root string) (FlowSnaps
 					}
 					if text != "" {
 						item.Output = text
+						item.IsStructOutput = false
 					}
 				}
 				seen := map[string]bool{}
@@ -523,7 +526,7 @@ func (app *App) DynamicFlowSnapshot(ctx context.Context, root string) (FlowSnaps
 		}
 	} else {
 		for _, r := range rows {
-			snap.Steps = append(snap.Steps, FlowStepSnapshot{ID: r.StepID, SessionID: r.SessionID, Status: r.Status, Output: r.Output.String, Iteration: int(r.Iteration)})
+			snap.Steps = append(snap.Steps, FlowStepSnapshot{ID: r.StepID, SessionID: r.SessionID, Status: r.Status, Output: r.Output.String, IsStructOutput: r.IsStructOutput, Iteration: int(r.Iteration)})
 		}
 	}
 	if snap.FlowID == "" && !snap.Running {

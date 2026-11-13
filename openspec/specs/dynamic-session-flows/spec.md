@@ -81,3 +81,10 @@ message; tool definitions SHALL NOT vary when entering flow mode.
 #### Scenario: Standalone flow authoring
 - **WHEN** the user authors a standalone YAML flow
 - **THEN** the full flow-creator guide remains available with its advanced features
+
+#### Scenario: Readable step results
+- **WHEN** a step returns a structured result
+- **THEN** chat and the flow page render indented JSON in a code block
+- **AND** a truncated preview closes the code block and points to the full output
+- **WHEN** a step returns ordinary text
+- **THEN** that text retains Markdown formatting

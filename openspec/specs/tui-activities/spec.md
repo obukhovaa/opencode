@@ -22,5 +22,10 @@ The TUI SHALL provide /tasks for shell and monitor activities and /subagents for
 ### Requirement: Activity navigation
 The TUI SHALL show running activity counts above the editor and allow keyboard navigation into the activity views without losing draft text.
 #### Scenario: Open activities
-- **WHEN** the user focuses the activity strip with Up from an empty editor or k in vim NORMAL and presses Enter
+- **WHEN** the user focuses the activity strip with Alt+Up, Up from an empty editor without input history, or k in vim NORMAL and presses Enter
 - **THEN** the selected activity view SHALL open
+
+#### Scenario: Work remains visibly active
+- **WHEN** a task, subagent or flow is running
+- **THEN** its activity indicator animates independently of storage polling
+- **AND** animation stops when idle and stale timers cannot start duplicate loops

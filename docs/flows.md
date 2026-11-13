@@ -1206,7 +1206,9 @@ not undo external effects already performed by a step.
 Chat shows each step's status and, when it completes, fails or postpones, a bounded
 excerpt of its output and elapsed wall time for that execution attempt (including
 waiting for input). Resuming starts a new timing interval; stopped time is excluded.
-Long output links back to `/flow` for inspection. These previews reuse existing
+Structured step results are rendered as indented JSON code blocks; ordinary
+results retain Markdown formatting, both in chat and on the flow page.
+Long output points to `/flow` for inspection. These previews reuse existing
 output and do not make additional model calls.
 
 The builder chooses a complexity unless `dynamicFlow.flowComplexity` fixes it.

@@ -52,3 +52,11 @@ func TestFlowStepProgressUsesLatestAssistantOutputWhenResultIsEmpty(t *testing.T
 	note := a.flowStepProgressNote(ctx, flowStepProgress{}, state, "coder")
 	require.Contains(t, note, "Review done: three fixes, all tests pass.")
 }
+
+func TestFlowStepProgressRendersStructuredOutputAsJSON(t *testing.T) {
+	state := flow.FlowState{StepID: "audit", Status: flow.FlowStatusCompleted, IsStructOutput: true, Output: `{"findings":"Done","issues":[]}`}
+	note := (flowStepProgress{}).note(state, "coder", time.Now())
+	require.Contains(t, note, "```json\n{\n")
+	require.Contains(t, note, "  \"findings\": \"Done\"")
+	require.True(t, strings.HasSuffix(note, "\n```"))
+}

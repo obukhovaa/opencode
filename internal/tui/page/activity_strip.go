@@ -17,6 +17,24 @@ import (
 
 type ActivateActivitiesMsg struct{}
 type stripTick struct{ generation uint64 }
+type activityPulse struct{ generation uint64 }
+
+var activityFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+func activityPulseCmd(generation uint64) tea.Cmd {
+	return tea.Tick(250*time.Millisecond, func(time.Time) tea.Msg { return activityPulse{generation} })
+}
+
+func (p *chatPage) activityRunning() bool {
+	return p.activityTasks+p.activityAgents > 0 || p.app.FlowBusy(p.session.ID)
+}
+
+func (p *chatPage) activateActivityStrip() tea.Cmd {
+	p.activityAnimationGeneration++
+	p.activityAnimating = false
+	return p.refreshActivityCounts()
+}
+
 type stripCounts struct {
 	sessionID     string
 	generation    uint64
@@ -77,15 +95,22 @@ func (p *chatPage) activityStrip(view string) string {
 		return view
 	}
 	labels := []string{fmt.Sprintf("Tasks %d", p.activityTasks), fmt.Sprintf("Subagents %d", p.activityAgents)}
+	spinner := activityFrames[p.activityFrame%len(activityFrames)]
+	if p.activityTasks > 0 {
+		labels[0] = spinner + " " + labels[0]
+	}
+	if p.activityAgents > 0 {
+		labels[1] = spinner + " " + labels[1]
+	}
 	if p.activityFocused && p.activitySelected < 2 {
 		labels[p.activitySelected] = "[" + labels[p.activitySelected] + "]"
 	}
 	text := labels[0] + "  ·  " + labels[1]
 	if p.app.FlowBusy(p.session.ID) {
 		if p.activityFocused && p.activitySelected == 2 {
-			text += "  ·  [Flow running]"
+			text += "  ·  [" + spinner + " Flow running]"
 		} else {
-			text += "  ·  Flow running"
+			text += "  ·  " + spinner + " Flow running"
 		}
 	}
 	if n := p.app.QueueLen(p.session.ID); n > 0 {
@@ -97,7 +122,7 @@ func (p *chatPage) activityStrip(view string) string {
 	if p.activityFocused {
 		text = "> " + text + "  ←/→ select · Enter open · ↓ back"
 	} else {
-		text += "  ↑ inspect"
+		text += "  Alt+↑ inspect"
 	}
 	w, h := p.layout.GetSize()
 	_, eh := p.editor.GetSize()
@@ -139,7 +164,18 @@ func (p *chatPage) activityUpdate(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		return nil, true
 	case ActivateActivitiesMsg:
-		return p.refreshActivityCounts(), true
+		return p.activateActivityStrip(), true
+	case activityPulse:
+		if m.generation != p.activityAnimationGeneration {
+			return nil, true
+		}
+		if !p.activityRunning() {
+			p.activityAnimating = false
+			p.activityFrame = 0
+			return nil, true
+		}
+		p.activityFrame = (p.activityFrame + 1) % len(activityFrames)
+		return activityPulseCmd(m.generation), true
 	case stripTick:
 		if m.generation != p.stripGeneration {
 			return nil, true
@@ -159,7 +195,13 @@ func (p *chatPage) activityUpdate(msg tea.Msg) (tea.Cmd, bool) {
 				p.activityFocused = false
 			}
 		}
-		return tea.Tick(time.Second, func(time.Time) tea.Msg { return stripTick{generation: m.generation} }), true
+		var pulse tea.Cmd
+		if p.activityRunning() && !p.activityAnimating {
+			p.activityAnimating = true
+			p.activityAnimationGeneration++
+			pulse = activityPulseCmd(p.activityAnimationGeneration)
+		}
+		return tea.Batch(pulse, tea.Tick(time.Second, func(time.Time) tea.Msg { return stripTick{generation: m.generation} })), true
 	}
 	return nil, false
 }

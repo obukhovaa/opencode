@@ -204,3 +204,24 @@ position as a side effect of the query.
 - **GIVEN** an editor with an active selection and a draft long enough to scroll
 - **WHEN** `View()` is called repeatedly
 - **THEN** the textarea's scroll offset and cursor position are unchanged by rendering
+
+### Requirement: Recall submitted input without losing drafts
+The editor SHALL recall the last 200 submitted texts per working directory and
+profile using Up at the first visual input row and Down at the last. Down past
+the newest entry SHALL restore the draft, cursor and attachments. History SHALL
+preserve unexpanded slash invocations and persist privately across restarts.
+Persistence SHALL run asynchronously and serialize concurrent writers. Shell
+history and Vim visual-selection navigation SHALL retain their behavior.
+
+#### Scenario: Edit and resend
+- **WHEN** the user recalls a submitted message, edits it and submits
+- **THEN** the edited text is submitted through normal expansion/queue handling
+- **AND** history retains the submitted text without altering the earlier entry
+
+#### Scenario: Multiline editing
+- **WHEN** an arrow can move within the draft's visual rows
+- **THEN** it moves the cursor rather than recalling history
+
+#### Scenario: Rejected or oversized input
+- **WHEN** submission fails expansion or is blank, or a submitted input exceeds 64 KiB
+- **THEN** it is not added to persistent input history

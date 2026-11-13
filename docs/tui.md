@@ -28,6 +28,8 @@ Running `opencode` with no `-p` starts the terminal UI. This page lists its keyb
 | `Ctrl+S` / `Enter` | Send message |
 | `Ctrl+E` | Open external editor |
 | `Esc` | Blur editor |
+| `↑` / `↓` | Recall submitted text at the first / last input row |
+| `Alt+↑` | Focus background tasks, subagents and flow activity |
 
 ### Shell mode
 
@@ -123,3 +125,20 @@ on a question, new directions can instead be delivered to that waiting step.
 The queue viewer's **Ctrl+X** discards ordinary chat messages only; accepted flow
 steering remains durable until delivery. Use the flow page to pause or terminate
 the workflow.
+
+## Input history
+
+Up/Down recall the last 200 submitted texts for the current working directory
+and profile, including slash commands in their original form. Edit a recalled
+message and press Enter to resend. Down past the newest entry restores the draft
+and staged attachments you had before browsing. Attachments from old submissions
+are not replayed. Arrows inside multiline or wrapped text still move the cursor;
+shell mode keeps its separate command history, and Vim visual selection is unchanged.
+
+History survives restarts in private files under `~/.agents/tui/history/`
+(or `~/.agents-<profile>/tui/history/`). Blank submissions, consecutive duplicates,
+shell commands and individual inputs larger than 64 KiB are not retained.
+
+The activity strip animates a spinner beside running tasks, subagents and flows.
+Animation is local to the TUI; it does not increase database polling frequency,
+and stops when no work is running.

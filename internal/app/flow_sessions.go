@@ -1546,7 +1546,7 @@ func (app *App) storedFlowSnapshot(ctx context.Context, conversation string) (Fl
 	snapshot := FlowSnapshot{RunID: record.ID, RootSessionID: conversation, FlowID: saved.Manifest.Definition.ID, Status: record.Status, Dynamic: record.Kind == "generated", Running: app.FlowBusy(conversation)}
 	byID := map[string]flow.FlowState{}
 	for _, row := range rows {
-		byID[row.StepID] = flow.FlowState{StepID: row.StepID, SessionID: row.SessionID, Status: flow.FlowStatus(row.Status), Output: row.Output.String, Iteration: int(row.Iteration)}
+		byID[row.StepID] = flow.FlowState{StepID: row.StepID, SessionID: row.SessionID, Status: flow.FlowStatus(row.Status), Output: row.Output.String, IsStructOutput: row.IsStructOutput, Iteration: int(row.Iteration)}
 	}
 	for _, step := range saved.Manifest.Definition.Spec.Steps {
 		item := FlowStepSnapshot{ID: step.ID, Agent: step.Agent, Prompt: step.Prompt, Status: "pending"}
@@ -1554,6 +1554,7 @@ func (app *App) storedFlowSnapshot(ctx context.Context, conversation string) (Fl
 			item.SessionID = state.SessionID
 			item.Status = string(state.Status)
 			item.Output = state.Output
+			item.IsStructOutput = state.IsStructOutput
 			item.Iteration = state.Iteration
 		}
 		if item.Status == "running" && snapshot.Running {
@@ -1576,6 +1577,7 @@ func (app *App) storedFlowSnapshot(ctx context.Context, conversation string) (Fl
 					}
 					if text != "" {
 						item.Output = text
+						item.IsStructOutput = false
 					}
 				}
 			}
