@@ -403,7 +403,7 @@ func TestResolveMetadata(t *testing.T) {
 		name     string
 		meta     *config.ProviderMetadata
 		ctx      context.Context
-		setup    func()
+		setup    func(*testing.T)
 		cleanup  func()
 		wantNil  bool
 		wantKeys []string
@@ -458,9 +458,8 @@ func TestResolveMetadata(t *testing.T) {
 			meta: &config.ProviderMetadata{
 				Tags: "labels",
 			},
-			setup: func() {
-				config.Reset()
-				config.Load(".", false)
+			setup: func(t *testing.T) {
+				loadConfigIn(t, t.TempDir())
 				cfg := config.Get()
 				cfg.Telemetry = &config.TelemetryConfig{Tags: []string{"prod", "team-a"}}
 			},
@@ -491,7 +490,7 @@ func TestResolveMetadata(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.setup != nil {
-				tt.setup()
+				tt.setup(t)
 			}
 			if tt.cleanup != nil {
 				defer tt.cleanup()

@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -54,4 +55,25 @@ func TestTruncateMarkupOutput(t *testing.T) {
 			t.Errorf("expected truncation marker, got length %d", len(result))
 		}
 	})
+}
+
+func TestManagedMarkupNeverRescansOutputOrInterpolatedInput(t *testing.T) {
+	var commands []string
+	got, err := ExpandMarkupAroundWithRunner("before ${arg} !`printf fixture` after", func(text string) string { return strings.ReplaceAll(text, "${arg}", "!`untrusted-arg`") }, func(command string) (string, error) {
+		commands = append(commands, command)
+		return "!`untrusted-output` ${arg}", nil
+	})
+	if err != nil || len(commands) != 1 || commands[0] != "printf fixture" {
+		t.Fatalf("commands=%v err=%v", commands, err)
+	}
+	if got != "before !`untrusted-arg` !`untrusted-output` ${arg} after" {
+		t.Fatalf("got=%q", got)
+	}
+}
+func TestManagedMarkupStopsAtDeniedCommand(t *testing.T) {
+	called := 0
+	_, err := ExpandMarkupAroundWithRunner("!`denied` !`must-not-run`", func(s string) string { return s }, func(string) (string, error) { called++; return "", fmt.Errorf("denied") })
+	if err == nil || called != 1 {
+		t.Fatalf("called=%d err=%v", called, err)
+	}
 }

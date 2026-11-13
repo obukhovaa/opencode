@@ -215,6 +215,7 @@ type agent struct {
 	agentID          config.AgentName
 	toolsCh          <-chan tools.BaseTool
 	toolsOnce        sync.Once
+	toolsMu          sync.RWMutex
 	tools            []tools.BaseTool
 	toolsResolved    atomic.Bool
 	provider         provider.Provider
@@ -284,6 +285,7 @@ type agent struct {
 	// for the agent's lifetime (a flow step gets its own agent instance), and
 	// re-rendering per turn would burn a JSON marshal and a sha256 on the hot
 	// path for a value that cannot change.
+	flowPrefix              *primaryFlowPrefix
 	structOutputEnvelope    string
 	structOutputFingerprint string
 }
@@ -299,8 +301,18 @@ func newAgent(
 	mcpReg MCPRegistry,
 	factory AgentFactory,
 	override ModelOverride,
+	prefix ...*primaryFlowPrefix,
 ) (Service, error) {
-	agentTools := NewToolSet(agentInfo, reg, permissions, historyService, lspService, sessions, messages, mcpReg, factory, override.Model)
+	var agentTools <-chan tools.BaseTool
+	var pinned *primaryFlowPrefix
+	if len(prefix) > 0 {
+		pinned = prefix[0]
+	}
+	if pinned != nil {
+		agentTools = pinned.toolsFor(agentInfo, override.Model, reg.IsToolEnabled(agentInfo.ID, tools.StructOutputToolName))
+	} else {
+		agentTools = NewToolSet(agentInfo, reg, permissions, historyService, lspService, sessions, messages, mcpReg, factory, override.Model)
+	}
 
 	agentProvider, err := createAgentProvider(
 		agentInfo.ID,
@@ -311,6 +323,7 @@ func newAgent(
 		withStepContext(agentInfo.StepContext),
 		withContextVars(agentInfo.ContextVars),
 		withModelOverride(override),
+		withPrimaryFlowPrefix(pinned),
 	)
 	if err != nil {
 		return nil, err
@@ -357,6 +370,7 @@ func newAgent(
 		allowParallelism:  agentInfo.AllowsParallelToolUse(),
 		factory:           factory,
 		basePrompt:        agentInfo.Prompt,
+		flowPrefix:        pinned,
 
 		compactionThreshold:      agentInfo.CompactionThreshold,
 		summarizerMaxInputTokens: agentInfo.SummarizerMaxInputTokens,
@@ -411,6 +425,9 @@ type hookCall struct {
 // original input, logging a debug message. We never crash the agent loop
 // over a malformed hook input.
 func (a *agent) firePreTool(ctx context.Context, sessionID, toolCallName, toolCallInput string) (string, hookCall) {
+	if err := tools.CheckFlowOwnership(ctx); err != nil {
+		return toolCallInput, hookCall{decision: hooks.PreToolDecision{Block: true, BlockReason: "Flow ownership lost: " + err.Error()}}
+	}
 	if a.factory == nil {
 		return toolCallInput, hookCall{}
 	}
@@ -786,6 +803,13 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 	if sessionID == "" {
 		return nil, fmt.Errorf("agent.Run: empty session id")
 	}
+	if gate, ok := a.factory.(interface {
+		CheckTurnAdmission(context.Context, string) error
+	}); ok {
+		if err := gate.CheckTurnAdmission(ctx, sessionID); err != nil {
+			return nil, err
+		}
+	}
 	if !a.provider.Model().SupportsAttachments && attachments != nil {
 		attachments = nil
 	}
@@ -890,6 +914,9 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 }
 
 func (a *agent) processGeneration(ctx context.Context, sessionID, content string, maxTurnsOverride int, attachmentParts []message.ContentPart, opts RunOptions) (result AgentEvent) {
+	if err := tools.CheckFlowOwnership(ctx); err != nil {
+		return a.err(fmt.Errorf("flow ownership lost before turn: %w", err))
+	}
 	cfg := config.Get()
 	// List existing messages; if none, start title generation asynchronously.
 	msgs, err := a.messages.List(ctx, sessionID)
@@ -988,6 +1015,8 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 
 	// Susped to get lazy tools
 	toolSet := a.resolveTools()
+	a.flowPrefix.activate(sessionID)
+	defer a.flowPrefix.captureActivations(toolSet, sessionID)
 	compactionThreshold := a.resolveCompactionThreshold(opts)
 	a.compactionBackoff.startTurn(sessionID)
 
@@ -1133,6 +1162,9 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// succeeded; a failed compaction leaves the history as it was. Only a
 	// failed reload after a successful compaction is an error.
 	compactInLoop := func(trigger string, tokens int64, cycle int) (int64, bool, error) {
+		if err := tools.CheckFlowOwnership(ctx); err != nil {
+			return tokens, false, fmt.Errorf("flow ownership lost before compaction: %w", err)
+		}
 		// With no tail or user turn to re-append (a re-entry's first
 		// call), the drained completion pairs are the model's input.
 		var resumeTail []message.Message
@@ -1955,13 +1987,22 @@ func (a *agent) injectWaitTimeoutNote(ctx context.Context, sessionID string, pen
 // session this is one map lookup. An item the store refuses is logged and
 // left unacknowledged, so its sender can re-send it.
 func (a *agent) drainInbox(ctx context.Context, sessionID string) []message.Message {
+	var durable []message.Message
+	if drain, ok := tools.FlowInboxHandler(ctx).(func(context.Context, string) ([]message.Message, error)); ok {
+		var err error
+		durable, err = drain(ctx, sessionID)
+		if err != nil {
+			logging.Warn("Could not deliver durable flow input", "session_id", sessionID, "err", err)
+			return nil
+		}
+	}
 	box := inbox.Default()
 	items, finish := box.DrainForDelivery(sessionID)
 	defer finish()
 	if len(items) == 0 {
-		return nil
+		return durable
 	}
-	stored := make([]message.Message, 0, len(items))
+	stored := append(make([]message.Message, 0, len(durable)+len(items)), durable...)
 	delivered := make([]inbox.Item, 0, len(items))
 	for _, it := range items {
 		msg, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
@@ -1989,6 +2030,9 @@ func (a *agent) createUserMessage(ctx context.Context, sessionID, content string
 }
 
 func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msgHistory []message.Message, toolSet []tools.BaseTool, tracker *callTracker) (message.Message, *message.Message, error) {
+	if err := tools.CheckFlowOwnership(ctx); err != nil {
+		return message.Message{}, nil, fmt.Errorf("flow ownership lost before generation: %w", err)
+	}
 	eventChan := a.provider.StreamResponse(ctx, msgHistory, toolSet)
 
 	assistantMsg, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
@@ -3057,6 +3101,9 @@ func captureStructOutput(toolResults *message.Message, structOutput *message.Too
 func hasStructOutputTool(toolSet []tools.BaseTool) bool {
 	for _, t := range toolSet {
 		if t.Info().Name == tools.StructOutputToolName {
+			if state, ok := t.(interface{ ActiveOutputSchema() bool }); ok {
+				return state.ActiveOutputSchema()
+			}
 			return true
 		}
 	}
@@ -3451,7 +3498,8 @@ func (a *agent) SummarizeSync(ctx context.Context, sessionID string) error {
 }
 
 type providerOptions struct {
-	disableCache bool
+	primaryFlowPrefix *primaryFlowPrefix
+	disableCache      bool
 	// interactive is propagated to prompt.GetAgentPromptWithOptions
 	// so the interactive-step variant of the structured-output prompt
 	// is selected when this agent is running an `interactive: true`
@@ -3694,17 +3742,19 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 		maxTokens = agentConfig.MaxTokens
 	}
 
+	var systemMessage string
+	if popts.primaryFlowPrefix != nil {
+		systemMessage = popts.primaryFlowPrefix.system
+	} else {
+		systemMessage = prompt.GetAgentPromptWithOptions(agentName, model.Provider, prompt.AgentPromptOptions{
+			Interactive: popts.interactive, BoundPeers: popts.boundPeers, HasOutputSchema: popts.hasOutputSchema,
+			BasePrompt: popts.basePrompt, StepContext: popts.stepContext, ContextVars: popts.contextVars,
+		})
+	}
 	opts := []provider.ProviderClientOption{
 		provider.WithAPIKey(resolveProviderAPIKey(providerCfg.APIKey)),
 		provider.WithModel(model),
-		provider.WithSystemMessage(prompt.GetAgentPromptWithOptions(agentName, model.Provider, prompt.AgentPromptOptions{
-			Interactive:     popts.interactive,
-			BoundPeers:      popts.boundPeers,
-			HasOutputSchema: popts.hasOutputSchema,
-			BasePrompt:      popts.basePrompt,
-			StepContext:     popts.stepContext,
-			ContextVars:     popts.contextVars,
-		})),
+		provider.WithSystemMessage(systemMessage),
 		provider.WithMaxTokens(maxTokens),
 	}
 	if providerCfg.BaseURL != "" {

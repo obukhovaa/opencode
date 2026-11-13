@@ -63,7 +63,9 @@ type answeredKey struct {
 // /question/{id}/reply for these flows — direct service-method calls
 // only. This is the bridge's home for that contract.
 type QuestionRouter struct {
-	svc *Service
+	flowVisible map[string]string
+	flowQueued  map[string][]question.Request
+	svc         *Service
 
 	mu             sync.Mutex
 	pending        map[string]*pendingQuestion // sessionID → pending
@@ -250,6 +252,19 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 			"session", req.SessionID, "err", err)
 		return
 	}
+	wireRequestID := req.ID
+	flowBindings, logicalID, handled, flowErr := r.flowQuestionBindings(ctx, req)
+	if flowErr != nil {
+		logging.Warn("bridge: session flow question routing", "err", flowErr)
+		return
+	}
+	if handled {
+		return
+	}
+	if logicalID != "" {
+		bindings = flowBindings
+		wireRequestID = logicalID
+	}
 	if len(bindings) == 0 {
 		return
 	}
@@ -321,7 +336,7 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 	// exact request is still live; a competing bound reply must not resurrect it.
 	if hasBuffered {
 		answers := parseQuestionAnswers(buffered.Text, pend.prompts)
-		if err := r.svc.app.Questions.Reply(pend.requestID, answers); err != nil {
+		if err := r.replyFlowQuestion(ctx, pend.requestID, answers); err != nil {
 			logging.Warn("bridge: auto-answer from buffered inbound failed — preserving input if the step still owns it",
 				"session", req.SessionID, "reqID", pend.requestID, "err", err)
 			r.mu.Lock()
@@ -361,6 +376,9 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 
 	interactiveOK := r.shouldUseInteractive(req.Questions)
 	text := renderQuestionPrompt(req.Questions)
+	if wireRequestID != req.ID {
+		text += "\n\nChoose an option or use /answer <text>. Other messages update the workflow."
+	}
 
 	// Stamp sessionId (every send) and, when an interactive question is
 	// about to be attempted, the requestId + multiple-choice flag. Both
@@ -372,8 +390,14 @@ func (r *QuestionRouter) handleNewRequest(ctx context.Context, req question.Requ
 	questionCtx := sendCtx
 	if interactiveOK {
 		questionCtx = bridge.ContextWithExternalQuestion(sendCtx, bridge.ExternalQuestionContext{
-			RequestID: req.ID,
-			Multiple:  req.Questions[0].Multiple,
+			RequestID: wireRequestID,
+			ConversationID: func() string {
+				if wireRequestID != req.ID && len(bindings) > 0 {
+					return bindings[0].SessionID
+				}
+				return ""
+			}(),
+			Multiple: req.Questions[0].Multiple,
 		})
 	}
 
@@ -445,13 +469,22 @@ func (r *QuestionRouter) tryInteractiveSend(ctx context.Context, peer bridge.Pee
 	}
 	custom := prompt.IsCustomEnabled()
 	choices := make([]bridge.QuestionChoice, 0, len(prompt.Options))
-	for _, opt := range prompt.Options {
+	for index, opt := range prompt.Options {
+		value := opt.Label
+		if peer.Channel != "external" {
+			if meta, ok := bridge.ExternalQuestionFromContext(ctx); ok && meta.ConversationID != "" {
+				var err error
+				value, err = bridge.FlowQuestionValue(meta.RequestID, index)
+				if err != nil {
+					return "", err
+				}
+			}
+		}
 		choices = append(choices, bridge.QuestionChoice{
 			Label: opt.Label,
-			// Value MUST be the canonical answer label so the
-			// inbound-reply parser (parseQuestionAnswers) maps it
-			// back to a choice without any extra decoding.
-			Value:  opt.Label,
+			// Legacy/external choices retain canonical labels. Managed native
+			// choices carry exact request identity for central decoding.
+			Value:  value,
 			Custom: custom,
 		})
 	}
@@ -502,7 +535,7 @@ func (r *QuestionRouter) TryHandleQuestionReply(ctx context.Context, sessionID s
 		return false
 	}
 	answers := parseQuestionAnswers(in.Text, pending.prompts)
-	if err := r.svc.app.Questions.Reply(pending.requestID, answers); err != nil {
+	if err := r.replyFlowQuestion(ctx, pending.requestID, answers); err != nil {
 		logging.Warn("bridge: question reply",
 			"session", sessionID, "reqID", pending.requestID, "err", err)
 		return false

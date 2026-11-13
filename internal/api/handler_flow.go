@@ -144,7 +144,8 @@ type flowRunSnapshot struct {
 // http-api spec mandates "one flow at a time" — POST /flow returns 409
 // if another run is in flight. This struct is the locked state.
 type flowRunner struct {
-	mu sync.Mutex
+	mu                  sync.Mutex
+	sessionConversation *atomic.Pointer[sessionFlowAdmission]
 
 	// currentRun is non-nil while a run is in flight or its status is
 	// being retained for the next GET /flow/status query. Reset on the
@@ -735,6 +736,10 @@ func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, ar
 		}
 	}
 	fr.mu.Lock()
+	if fr.poolMode && fr.sessionConversation != nil && fr.sessionConversation.Load() != nil {
+		fr.mu.Unlock()
+		return StartResult{}, errFlowAlreadyRunning
+	}
 	if fr.poolMode && fr.draining != nil && fr.draining.Load() {
 		fr.mu.Unlock()
 		return StartResult{}, errPodDraining
@@ -1391,6 +1396,9 @@ func (fr *flowRunner) latchExclusive(gate *atomic.Bool) latchResult {
 	if gate.Load() {
 		return latchAlreadySet
 	}
+	if fr.sessionConversation != nil && fr.sessionConversation.Load() != nil {
+		return latchInFlight
+	}
 	if fr.currentRun != nil && !isTerminalStatus(fr.currentRun.Status) {
 		return latchInFlight
 	}
@@ -1491,7 +1499,7 @@ func (fr *flowRunner) Abort() (string, bool) {
 func (fr *flowRunner) InFlight() bool {
 	fr.mu.Lock()
 	defer fr.mu.Unlock()
-	return fr.currentRun != nil && !isTerminalStatus(fr.currentRun.Status)
+	return (fr.sessionConversation != nil && fr.sessionConversation.Load() != nil) || (fr.currentRun != nil && !isTerminalStatus(fr.currentRun.Status))
 }
 
 // RunCount returns the number of runs started via Start since process

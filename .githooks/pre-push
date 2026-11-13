@@ -25,7 +25,6 @@ pushing_release=false
 while read -r local_ref local_sha remote_ref remote_sha; do
     if [[ "$local_ref" =~ $SEMVER_RE ]]; then
         pushing_release=true
-        break
     fi
 done
 

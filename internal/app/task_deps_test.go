@@ -100,3 +100,13 @@ func TestTaskDepsResumeSessionUsesTheSessionsAgent(t *testing.T) {
 		})
 	}
 }
+
+func TestTaskDepsDoesNotResumeConversationOwnedByFlow(t *testing.T) {
+	a := &App{dynamicRuns: map[string]*dynamicRun{"conversation": {}}}
+	d := &taskDeps{app: a}
+	if !d.IsSessionBusy("conversation") {
+		t.Fatal("flow busy state ignored")
+	}
+	// No primary agent is installed; reaching Run would panic.
+	d.ResumeSession("conversation", "requester", nil)
+}

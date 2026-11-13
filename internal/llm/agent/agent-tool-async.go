@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/opencode-ai/opencode/internal/db"
+
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -58,6 +60,16 @@ func (b *agentTool) runAsync(
 		return tools.NewTextErrorResponse("async tasks not available: task registry not initialized"), nil
 	}
 
+	release, acquired := tools.AcquireFlowTask(ctx)
+	if !acquired {
+		return tools.NewTextErrorResponse("Dynamic flow parallel subagent limit reached; wait for existing tasks to finish."), nil
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			release()
+		}
+	}()
 	taskID := task.NewTaskID(task.KindTask)
 	outputPath, outputFile, err := reg.PrepareOutputFile(taskID)
 	if err != nil {
@@ -78,6 +90,7 @@ func (b *agentTool) runAsync(
 	}
 	// The detached base drops the parent turn's values; carry the requester
 	// across so the subagent's traces stay attributed to the same person.
+	runCtx = tools.InheritFlowLimits(runCtx, ctx)
 	runCtx = tools.WithRequester(runCtx, tools.RequesterFromContext(ctx))
 	// Likewise the bridge peer, so the subagent's MCP calls carry the same
 	// peer header as the turn that spawned it.
@@ -89,7 +102,7 @@ func (b *agentTool) runAsync(
 	runCtx = tools.WithJobArgs(runCtx, jobArgs)
 	// Inherit the caller's NonInteractive marker from the PARENT turn ctx
 	// (runCtx is detached and carries no values) — see subagentRunOptions.
-	done, err := a.RunWith(runCtx, taskSession.ID, prompt, 0, subagentRunOptions(ctx))
+	done, err := a.RunWith(runCtx, taskSession.ID, prompt, tools.FlowTaskTurns(ctx), subagentRunOptions(ctx))
 	if err != nil {
 		cancel()
 		_ = outputFile.Close()
@@ -98,6 +111,7 @@ func (b *agentTool) runAsync(
 	}
 
 	tk := &task.Task{
+		WriteGuard:            db.WriteGuardFromContext(ctx),
 		ID:                    taskID,
 		SessionID:             sessionID,
 		ParentSessionID:       tools.ParentSessionIDFromContext(ctx),
@@ -120,7 +134,11 @@ func (b *agentTool) runAsync(
 	}
 
 	syntheticInput := call.Input
-	go b.waitAsyncAndNotify(done, outputFile, outputPath, sessionID, call.ID, taskID, taskSession.ID, syntheticInput)
+	handedOff = true
+	go func() {
+		defer release()
+		b.waitAsyncAndNotify(done, outputFile, outputPath, sessionID, call.ID, taskID, taskSession.ID, syntheticInput)
+	}()
 
 	agentName := subagentType
 	if subagentInfo.Name != "" {

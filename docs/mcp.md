@@ -65,3 +65,39 @@ Every wait on an MCP server is bounded, so a server that starts but never answer
 The connect and cache budgets are deliberately not per-server tunable: `initialize` is one request/response with no work behind it, so a server that misses the budget is broken rather than slow. Only tool latency is genuinely server-specific. A blown budget surfaces as a normal tool error, so the agent can try another approach instead of hanging.
 
 No tool result waits for a client to close. A stdio transport's `Close` blocks in `cmd.Wait()` honouring no context, and some servers take 10–20s to exit after stdin EOF. opencode starts each stdio server in a session of its own (so its process group can be signalled as a whole, wrappers such as `npx` included) and signals the group if it outlives the grace period, so closes are bounded and do not leak processes. Having no controlling terminal, a server that tries to prompt on the terminal (ssh, git credentials) fails at once instead of hanging; Ctrl-C does not reach it directly, and opencode stops it on exit instead. On Windows only the server process itself can be stopped. Stdio servers' stderr goes to the debug log.
+
+## TUI controls
+
+Open `/mcp` to inspect servers and their tools. Use `r` or Enter to reconnect,
+`e` to enable, `d` to disable, and `f` to toggle deferred discovery for the
+selected session's agent. Settings are persisted to the active configuration
+file and its toolset is refreshed without restarting. Changes require all agent
+runs to be idle. Reconnecting retires pooled connections without cancelling
+calls already using them. Disabling affects that agent's tool access; shared
+connections remain available to other agents.
+
+An agent using `allowTools` is converted to an equivalent `tools` map with a
+`"*": false` default when its server policy is edited. Other allowed patterns
+remain enabled. This keeps the configuration's tools/allowTools exclusivity.
+
+Tool controls report “still loading” while initial discovery is pending, rather
+than waiting behind startup. They also require active flows to pause or finish,
+including the gaps between their individual steps.
+
+### Prompt-cache behavior of live controls
+
+An unchanged reconnect keeps the same tool contracts, descriptions and existing
+per-session deferred discoveries. Refreshing one server does not rebuild other
+servers' tools or unrelated dynamic descriptions such as `router_send`'s peer
+snapshot. Newly discovered deferred tools append after the session's already
+activated tools on providers using client-side tool search.
+
+Enable/disable, switching eager/deferred delivery, or a server changing its tool
+catalog can change the serialized tools prefix. Those are real configuration
+changes and may invalidate cached tools and subsequent system/message prefixes;
+the application does not advertise disabled schemas to conceal the change.
+Disabled MCP calls are also denied at execution time, including stale cached
+flow-step tool instances. Once the configuration settles, subsequent requests
+again share a stable prefix. Native server-side discovery of an already-deferred
+tool is different: it keeps `defer_loading` stable and does not require changing
+the tool declarations. See [deferred tools](deferred-tools.md).

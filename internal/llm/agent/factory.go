@@ -47,6 +47,8 @@ func (o ModelOverride) IsZero() bool {
 // args changed between arrivals): reusing the cached instance would run
 // the wrong model. ResetStepCache semantics are unchanged.
 type stepCacheKey struct {
+	prefix  *primaryFlowPrefix
+	scope   string
 	stepID  string
 	agentID string
 	model   models.ModelID
@@ -127,6 +129,9 @@ type AgentFactory interface {
 }
 
 type agentFactory struct {
+	turnAdmission func(context.Context, string) error
+	flowSubmitter tools.FlowSubmitter
+
 	sessions    session.Service
 	messages    message.Service
 	permissions permission.Service
@@ -273,7 +278,8 @@ func (f *agentFactory) QuestionService() question.Service {
 // cannot cancel it (see NewToolSet / mcpRegistry.getTools).
 func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool, boundPeers []bridge.PeerRef, stepCtx *contextfile.StepContext, flowVars contextfile.TemplateVars, override ModelOverride) (Service, error) {
 	_ = ctx
-	cacheKey := stepCacheKey{stepID: stepID, agentID: agentID, model: override.Model, effort: override.ReasoningEffort}
+	pinned := primaryFlowPrefixFrom(ctx, agentID)
+	cacheKey := stepCacheKey{prefix: pinned, scope: tools.FlowAgentScope(ctx), stepID: stepID, agentID: agentID, model: override.Model, effort: override.ReasoningEffort}
 	if stepID != "" {
 		f.mu.Lock()
 		if svc, ok := f.stepCache[cacheKey]; ok {
@@ -299,7 +305,13 @@ func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchem
 	// task spawn) and flow-step agents; a PRIMARY agent is built once by
 	// InitPrimaryAgents and held for the process lifetime, so for those the
 	// resolved text is pinned until restart. See docs/telemetry.md.
-	resolvedPrompt, promptErr := resolveManagedPrompt(agentID, infoCopy)
+	var resolvedPrompt string
+	var promptErr error
+	if pinned != nil {
+		resolvedPrompt = pinned.base
+	} else {
+		resolvedPrompt, promptErr = resolveManagedPrompt(agentID, infoCopy)
+	}
 	if promptErr != nil {
 		return nil, promptErr
 	}
@@ -322,7 +334,7 @@ func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchem
 	flowVars.Agent = agentID
 	infoCopy.ContextVars = flowVars
 
-	svc, err := newAgent(&infoCopy, f.sessions, f.messages, f.permissions, f.history, f.lspService, f.registry, f.mcpRegistry, f, override)
+	svc, err := newAgent(&infoCopy, f.sessions, f.messages, f.permissions, f.history, f.lspService, f.registry, f.mcpRegistry, f, override, pinned)
 	if err != nil {
 		return nil, fmt.Errorf("creating agent %q: %w", agentID, err)
 	}
@@ -423,4 +435,25 @@ func resolveRegisteredPrompt(reg agentregistry.Registry, name config.AgentName) 
 		return "", nil
 	}
 	return resolveManagedPrompt(string(name), info)
+}
+
+// SetFlowSubmitter is wired before primary agents are constructed.
+func (f *agentFactory) SetFlowSubmitter(submit tools.FlowSubmitter) { f.flowSubmitter = submit }
+func (f *agentFactory) FlowSubmitter() tools.FlowSubmitter          { return f.flowSubmitter }
+
+// SetTurnAdmission is installed before primary agents start. It gates ordinary
+// root turns against durable conversation ownership without wrapping Services.
+func (f *agentFactory) SetTurnAdmission(check func(context.Context, string) error) {
+	f.mu.Lock()
+	f.turnAdmission = check
+	f.mu.Unlock()
+}
+func (f *agentFactory) CheckTurnAdmission(ctx context.Context, sessionID string) error {
+	f.mu.Lock()
+	check := f.turnAdmission
+	f.mu.Unlock()
+	if check != nil {
+		return check(ctx, sessionID)
+	}
+	return nil
 }

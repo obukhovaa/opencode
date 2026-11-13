@@ -378,6 +378,15 @@ func (s *sessionDialogCmp) BindingKeys() []key.Binding {
 }
 
 func (s *sessionDialogCmp) SetSessions(sessions []session.Session) {
+	// Step and task sessions belong to their root's activity views.
+	roots := make([]session.Session, 0, len(sessions))
+	for _, sess := range sessions {
+		if sess.ParentSessionID != "" || (sess.RootSessionID != "" && sess.RootSessionID != sess.ID) {
+			continue
+		}
+		roots = append(roots, sess)
+	}
+	sessions = roots
 	s.sessions = sessions
 	s.filtered = nil
 	s.query.SetValue("")

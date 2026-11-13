@@ -25,6 +25,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/opencode-ai/opencode/internal/db"
 )
 
 // Kind identifies the lifecycle source of a background task.
@@ -137,6 +139,9 @@ type Task struct {
 	// already routed — under the active/primary agent rather than the
 	// step's own agent (GENAI-239).
 	FlowOwned bool
+	// WriteGuard keeps detached completion notifications fenced by the run that
+	// spawned them. It is runtime-only and never serializes credentials/state.
+	WriteGuard db.WriteGuard `json:"-"`
 	// Requester is the requester of the turn that spawned the task
 	// (tools.RequesterFromContext at spawn time). EnqueueTaskCompletion
 	// hands it to Deps.ResumeSession so the auto-resumed turn's telemetry

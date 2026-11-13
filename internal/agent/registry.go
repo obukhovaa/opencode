@@ -52,6 +52,7 @@ type AgentInfo struct {
 	// SelfCompact mirrors config.Agent.SelfCompact: whether the agent gets
 	// the compact_session tool, and its token floor. Nil when unset.
 	SelfCompact *config.SelfCompact `yaml:"selfCompact,omitempty"`
+	DynamicFlow *config.DynamicFlow `yaml:"dynamicFlow,omitempty"`
 	// LangfusePromptPath references this agent's system prompt in Langfuse
 	// Prompt Management instead of carrying its text. For a markdown agent
 	// it is a frontmatter key and the body must be empty — the body IS the
@@ -143,8 +144,9 @@ type Registry interface {
 }
 
 type registry struct {
-	agents      map[string]AgentInfo
-	globalPerms map[string]any
+	runtimeTools sync.Map
+	agents       map[string]AgentInfo
+	globalPerms  map[string]any
 }
 
 var (
@@ -228,13 +230,17 @@ func newRegistry() Registry {
 }
 
 func (r *registry) Get(id string) (AgentInfo, bool) {
+	if v, ok := r.runtimeTools.Load(id); ok {
+		return v.(AgentInfo), true
+	}
 	a, ok := r.agents[id]
 	return a, ok
 }
 
 func (r *registry) List() []AgentInfo {
 	result := make([]AgentInfo, 0, len(r.agents))
-	for _, a := range r.agents {
+	for id := range r.agents {
+		a, _ := r.Get(id)
 		result = append(result, a)
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -248,7 +254,8 @@ func (r *registry) List() []AgentInfo {
 
 func (r *registry) ListByMode(mode config.AgentMode) []AgentInfo {
 	var result []AgentInfo
-	for _, a := range r.agents {
+	for id := range r.agents {
+		a, _ := r.Get(id)
 		if a.Mode == mode && !a.Hidden {
 			result = append(result, a)
 		}
@@ -260,7 +267,7 @@ func (r *registry) ListByMode(mode config.AgentMode) []AgentInfo {
 }
 
 func (r *registry) EvaluatePermission(agentID, toolName, input string) permission.Action {
-	a, ok := r.agents[agentID]
+	a, ok := r.Get(agentID)
 	if !ok {
 		return permission.EvaluateToolPermission(toolName, input, nil, r.globalPerms)
 	}
@@ -273,7 +280,7 @@ func (r *registry) EvaluatePermission(agentID, toolName, input string) permissio
 }
 
 func (r *registry) EvaluateReadPermission(agentID, toolName, input string) permission.Action {
-	a, ok := r.agents[agentID]
+	a, ok := r.Get(agentID)
 	if !ok {
 		return permission.EvaluateReadToolPermission(toolName, input, nil, r.globalPerms)
 	}
@@ -286,7 +293,7 @@ func (r *registry) EvaluateReadPermission(agentID, toolName, input string) permi
 }
 
 func (r *registry) ReadDenyPatterns(agentID, toolName string) []string {
-	a, ok := r.agents[agentID]
+	a, ok := r.Get(agentID)
 	if !ok {
 		return permission.ReadDenyPatterns(toolName, nil, r.globalPerms)
 	}
@@ -294,7 +301,7 @@ func (r *registry) ReadDenyPatterns(agentID, toolName string) []string {
 }
 
 func (r *registry) IsToolEnabled(agentID, toolName string) bool {
-	a, ok := r.agents[agentID]
+	a, ok := r.Get(agentID)
 	if !ok {
 		return true
 	}
@@ -307,7 +314,7 @@ func (r *registry) IsToolEnabled(agentID, toolName string) bool {
 // false for tools the agent never mentions — used for default-deny tools
 // (e.g. cron) that must require opt-in.
 func (r *registry) IsToolExplicitlyEnabled(agentID, toolName string) bool {
-	a, ok := r.agents[agentID]
+	a, ok := r.Get(agentID)
 	if !ok {
 		return false
 	}
@@ -315,7 +322,7 @@ func (r *registry) IsToolExplicitlyEnabled(agentID, toolName string) bool {
 }
 
 func (r *registry) HasTools(agentID string) bool {
-	a, ok := r.agents[agentID]
+	a, ok := r.Get(agentID)
 	if !ok {
 		return true
 	}
@@ -499,6 +506,7 @@ func registerBuiltins(agents map[string]AgentInfo, cfg *config.Config) {
 			b.SummarizerMaxInputTokens = agentCfg.SummarizerMaxInputTokens
 			b.ToolCallTimeoutSeconds = agentCfg.ToolCallTimeoutSeconds
 			b.SelfCompact = agentCfg.SelfCompact
+			b.DynamicFlow = agentCfg.DynamicFlow
 		}
 		agents[b.ID] = b
 	}
@@ -575,6 +583,9 @@ func applyConfigOverrides(agents map[string]AgentInfo, cfg *config.Config) {
 		}
 		if agentCfg.ToolCallTimeoutSeconds != nil {
 			existing.ToolCallTimeoutSeconds = agentCfg.ToolCallTimeoutSeconds
+		}
+		if agentCfg.DynamicFlow != nil {
+			existing.DynamicFlow = agentCfg.DynamicFlow
 		}
 		if agentCfg.SelfCompact != nil {
 			existing.SelfCompact = agentCfg.SelfCompact
@@ -711,6 +722,9 @@ func mergeMarkdownIntoExisting(existing, md *AgentInfo) {
 	}
 	if md.ToolCallTimeoutSeconds != nil {
 		existing.ToolCallTimeoutSeconds = md.ToolCallTimeoutSeconds
+	}
+	if md.DynamicFlow != nil {
+		existing.DynamicFlow = md.DynamicFlow
 	}
 	if md.SelfCompact != nil {
 		existing.SelfCompact = md.SelfCompact
@@ -1102,6 +1116,9 @@ func parseAgentMarkdown(path string) (*AgentInfo, error) {
 		logging.Warn("invalid selfCompact.minTokens in agent frontmatter, must not be negative; using no floor",
 			"agent", baseName, "path", path, "min_tokens", agent.SelfCompact.MinTokens)
 		agent.SelfCompact = sc
+	}
+	if !config.ValidDynamicFlow(agent.DynamicFlow) {
+		return nil, fmt.Errorf("invalid dynamicFlow.flowComplexity in %s", path)
 	}
 	agent.Prompt = body
 	agent.Location = path

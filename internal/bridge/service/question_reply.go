@@ -1,11 +1,13 @@
 package service
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"strings"
 	"time"
 
+	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/inbox"
 	"github.com/opencode-ai/opencode/internal/question"
 )
@@ -18,9 +20,12 @@ const (
 // Text uses the existing bridge codec inside the runner, so a caller can retry
 // even after the authoritative pending request is gone. Exactly one form is allowed.
 type questionReplyInput struct {
-	SessionID string     `json:"sessionId"`
-	Answers   [][]string `json:"answers,omitempty"`
-	Text      *string    `json:"text,omitempty"`
+	SessionID      string          `json:"sessionId"`
+	ConversationID string          `json:"conversationId,omitempty"`
+	Peer           *bridge.PeerRef `json:"peer,omitempty"`
+	JobID          string          `json:"jobId,omitempty"`
+	Answers        [][]string      `json:"answers,omitempty"`
+	Text           *string         `json:"text,omitempty"`
 }
 
 type settledQuestionReply struct {
@@ -117,7 +122,7 @@ func (r *QuestionRouter) replyRequest(requestID string, in questionReplyInput) (
 		delete(r.pending, in.SessionID)
 		return false, "queued_input_pending"
 	}
-	if err := r.svc.app.Questions.Reply(requestID, answers); err != nil {
+	if err := r.replyFlowQuestion(context.Background(), requestID, answers); err != nil {
 		return false, "question_not_pending"
 	}
 	delete(r.pending, in.SessionID)

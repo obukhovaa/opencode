@@ -2,10 +2,14 @@ package task
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/opencode-ai/opencode/internal/db"
 )
 
 type fakeDeps struct {
@@ -409,5 +413,30 @@ func TestEnqueue_ReleaseDuringBusyCheckResumesOnce(t *testing.T) {
 				t.Error("completion record stranded after the slot was released")
 			}
 		})
+	}
+}
+
+type fencedCompletionDeps struct{ *fakeDeps }
+
+func (d fencedCompletionDeps) WritePair(ctx context.Context, sessionID string, pair SyntheticPair) error {
+	if err := db.CheckWriteGuard(ctx, nil); err != nil {
+		return err
+	}
+	return d.fakeDeps.WritePair(ctx, sessionID, pair)
+}
+func TestDetachedCompletionRetainsTransactionalWriteGuard(t *testing.T) {
+	deps, _, task, cleanup := setupTaskFixture(t, false)
+	defer cleanup()
+	denied := errors.New("ownership lost")
+	called := false
+	task.WriteGuard = func(context.Context, *sql.Tx) error { called = true; return denied }
+	restore := SetDeps(fencedCompletionDeps{deps})
+	defer restore()
+	err := EnqueueTaskCompletion(context.Background(), CompletionInput{TaskID: task.ID, SessionID: task.SessionID, OriginatingToolName: "bash", Status: StatusCompleted})
+	if !errors.Is(err, denied) || !called {
+		t.Fatalf("detached guard err=%v called=%v", err, called)
+	}
+	if len(deps.snapshot()) != 0 || deps.resumeCalls.Load() != 0 {
+		t.Fatal("stale completion persisted or resumed")
 	}
 }

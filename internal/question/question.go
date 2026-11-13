@@ -41,9 +41,11 @@ func (p Prompt) IsCustomEnabled() bool {
 
 // Request represents a pending question request from an agent.
 type Request struct {
-	ID        string   `json:"id"`
-	SessionID string   `json:"session_id"`
-	Questions []Prompt `json:"questions"`
+	FlowRunID  string   `json:"flow_run_id,omitempty"`
+	ToolCallID string   `json:"tool_call_id,omitempty"`
+	ID         string   `json:"id"`
+	SessionID  string   `json:"session_id"`
+	Questions  []Prompt `json:"questions"`
 }
 
 // Service coordinates question requests between agents and the UI.
@@ -78,9 +80,11 @@ type questionService struct {
 func (s *questionService) Ask(ctx context.Context, sessionID string, questions []Prompt) ([][]string, error) {
 	requestID := uuid.New().String()
 	request := Request{
-		ID:        requestID,
-		SessionID: sessionID,
-		Questions: questions,
+		FlowRunID:  FlowRunIDFromContext(ctx),
+		ToolCallID: ToolCallIDFromContext(ctx),
+		ID:         requestID,
+		SessionID:  sessionID,
+		Questions:  questions,
 	}
 	entry := &pendingEntry{
 		request:      request,
@@ -91,7 +95,16 @@ func (s *questionService) Ask(ctx context.Context, sessionID string, questions [
 	s.pending.Store(requestID, entry)
 	defer s.pending.Delete(requestID)
 
-	s.Publish(pubsub.CreatedEvent, request)
+	if hook, _ := ctx.Value(startHookKey{}).(StartHook); hook != nil {
+		if err := hook(ctx, request); err != nil {
+			return nil, err
+		}
+	}
+	// A durable owner may settle a replayed question or consume queued input
+	// before any widget is published. Never resurrect that closed request.
+	if _, live := s.pending.Load(requestID); live {
+		s.Publish(pubsub.CreatedEvent, request)
+	}
 
 	select {
 	case answers := <-entry.replyCh:
@@ -158,4 +171,67 @@ func NewService() Service {
 	return &questionService{
 		Broker: pubsub.NewBroker[Request](),
 	}
+}
+
+type toolCallIDKey struct{}
+
+func WithToolCallID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, toolCallIDKey{}, id)
+}
+func ToolCallIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(toolCallIDKey{}).(string)
+	return id
+}
+
+// DurableDescriptor and DurableAnswer retain a question's logical tool identity
+// across worker replacement; credentials and transport widgets are not stored.
+type DurableDescriptor struct {
+	Questions  []Prompt `json:"questions"`
+	ToolCallID string   `json:"toolCallId"`
+}
+type DurableAnswer struct {
+	Unanswered string     `json:"unanswered,omitempty"`
+	Answers    [][]string `json:"answers"`
+	Rejected   bool       `json:"rejected"`
+}
+
+type flowRunIDKey struct{}
+
+func WithFlowRunID(ctx context.Context, runID string) context.Context {
+	return context.WithValue(ctx, flowRunIDKey{}, runID)
+}
+func FlowRunIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(flowRunIDKey{}).(string)
+	return id
+}
+func InheritFlowRunID(dst, src context.Context) context.Context {
+	if id := FlowRunIDFromContext(src); id != "" {
+		dst = WithFlowRunID(dst, id)
+	}
+	if hook, _ := src.Value(startHookKey{}).(StartHook); hook != nil {
+		dst = WithStartHook(dst, hook)
+	}
+	return dst
+}
+
+type steeringQuestionKey struct{}
+
+// WithSteeringQuestion carries an adapter-selected visible request, never a
+// caller-provided question ID. Presence with an empty ID explicitly means that
+// no question was visible; a stale hint must not select another pending request.
+func WithSteeringQuestion(ctx context.Context, requestID string) context.Context {
+	return context.WithValue(ctx, steeringQuestionKey{}, requestID)
+}
+func SteeringQuestion(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(steeringQuestionKey{}).(string)
+	return id, ok
+}
+
+// StartHook persists or settles a controller-owned question before fan-out.
+// Ordinary questions have no hook and preserve their existing behavior.
+type StartHook func(context.Context, Request) error
+type startHookKey struct{}
+
+func WithStartHook(ctx context.Context, hook StartHook) context.Context {
+	return context.WithValue(ctx, startHookKey{}, hook)
 }

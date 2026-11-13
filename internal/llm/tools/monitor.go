@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/opencode-ai/opencode/internal/db"
+
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/logging"
@@ -202,6 +204,7 @@ func (m *monitorTool) Run(ctx context.Context, call ToolCall) (ToolResponse, err
 	}
 
 	tk := &task.Task{
+		WriteGuard:            db.WriteGuardFromContext(ctx),
 		ID:                    taskID,
 		SessionID:             sessionID,
 		ParentSessionID:       ParentSessionIDFromContext(ctx),

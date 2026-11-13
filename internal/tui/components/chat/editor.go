@@ -63,22 +63,33 @@ type recognizedInvocation struct {
 	rejects bool
 }
 
+// FocusActivitiesMsg moves focus to the activity strip without changing the draft.
+type FocusActivitiesMsg struct{}
+
+type flowSteeringResult struct {
+	sessionID string
+	text      string
+	err       error
+}
+
 type editorCmp struct {
-	width           int
-	height          int
-	app             *app.App
-	session         session.Session
-	expand          SubmissionExpander
-	scan            InvocationScanner
-	recognized      []recognizedInvocation
-	scannedDraft    string
-	textarea        textarea.Model
-	attachments     []message.Attachment
-	deleteMode      bool
-	mode            editorMode
-	shellHistory    []string
-	shellHistoryIdx int
-	shellExecuting  bool
+	flowSteeringQueue []flowSteeringResult
+	failedSteering    map[string]string
+	width             int
+	height            int
+	app               *app.App
+	session           session.Session
+	expand            SubmissionExpander
+	scan              InvocationScanner
+	recognized        []recognizedInvocation
+	scannedDraft      string
+	textarea          textarea.Model
+	attachments       []message.Attachment
+	deleteMode        bool
+	mode              editorMode
+	shellHistory      []string
+	shellHistoryIdx   int
+	shellExecuting    bool
 	// shellCancel stops the captured command currently running. Non-nil only
 	// while a captured command is in flight; an interactive run owns the
 	// terminal, so ctrl+c reaches the command itself and there is nothing here
@@ -349,6 +360,13 @@ func (m *editorCmp) send() tea.Cmd {
 	value = expansion.Prompt
 
 	attachments := m.attachments
+	if m.app.FlowBusy(m.session.ID) || m.hasPendingFlowSteering(m.session.ID) {
+		if len(attachments) > 0 {
+			return util.ReportWarn("Flow steering accepts text; keep attachments for the next chat turn")
+		}
+		m.textarea.Reset()
+		return m.enqueueFlowSteering(m.session.ID, value)
+	}
 
 	// FIFO routing (Decision 8, task 3.1): enqueue whenever the queue is
 	// non-empty OR the session is busy. Direct dispatch is only permitted
@@ -457,9 +475,9 @@ func (m *editorCmp) executeShell() tea.Cmd {
 
 	// A leading `!` inside shell mode forces the terminal handoff — `!!command`
 	// as typed from the normal editor. It is a text prefix rather than a key
-	// chord because every convenient ctrl+ chord is already bound (ctrl+o is
-	// model selection), and because a prefix is visible in the draft before the
-	// user commits to it.
+	// chord because every convenient ctrl+ chord is already bound (ctrl+o
+	// toggles tool details), and because a prefix is visible in the draft
+	// before the user commits to it.
 	//
 	// Resolved before anything is consumed: a draft that turns out to be no
 	// command at all (a lone `!`) must leave the history and the draft exactly
@@ -739,6 +757,41 @@ func (m *editorCmp) refreshSelection() {
 func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
+	case flowSteeringResult:
+		if len(m.flowSteeringQueue) > 0 {
+			m.flowSteeringQueue = m.flowSteeringQueue[1:]
+		}
+		if msg.err != nil {
+			// Keep a failed burst in submission order. Do not let later saves
+			// in this conversation leapfrog the failed one.
+			remaining := m.flowSteeringQueue[:0]
+			for _, pending := range m.flowSteeringQueue {
+				if pending.sessionID == msg.sessionID {
+					msg.text += "\n" + pending.text
+				} else {
+					remaining = append(remaining, pending)
+				}
+			}
+			m.flowSteeringQueue = remaining
+		}
+		next := m.saveNextFlowSteering()
+		if msg.err != nil {
+			if msg.sessionID != m.session.ID {
+				if m.failedSteering == nil {
+					m.failedSteering = make(map[string]string)
+				}
+				m.failedSteering[msg.sessionID] += msg.text + "\n"
+			} else {
+				draft := m.textarea.Value()
+				if draft != "" {
+					draft = "\n" + draft
+				}
+				m.textarea.SetValue(msg.text + draft)
+			}
+			return m, tea.Batch(next, util.ReportError(msg.err))
+		}
+		return m, next
+
 	case ToggleVimModeMsg:
 		if m.vimHandler != nil {
 			// Disable vim mode
@@ -794,6 +847,10 @@ func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case SessionSelectedMsg:
 		if msg.ID != m.session.ID {
 			m.session = msg
+			if failed := m.failedSteering[msg.ID]; failed != "" {
+				m.textarea.SetValue(failed + m.textarea.Value())
+				delete(m.failedSteering, msg.ID)
+			}
 			if m.mode == modeShell {
 				m.exitShellMode()
 				return m, util.CmdHandler(ShellModeChangedMsg{ShellMode: false})
@@ -824,6 +881,9 @@ func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea, cmd = m.textarea.Update(msg)
 		return m, cmd
 	case tea.KeyPressMsg:
+		if m.mode == modeNormal && !m.shellExecuting && ((msg.String() == "up" && m.textarea.Value() == "") || (msg.String() == "k" && m.vimHandler != nil && m.vimHandler.Mode() == vim.ModeNormal && m.textarea.Line() == 0)) {
+			return m, util.CmdHandler(FocusActivitiesMsg{})
+		}
 		if m.shellExecuting {
 			// Everything else is swallowed while a command runs, but the cancel
 			// keys must not be: without them a slow command locks the editor
@@ -1227,4 +1287,34 @@ func NewEditorCmp(app *app.App, expand SubmissionExpander, scan InvocationScanne
 		vimHandler:      vimH,
 		selectionLayout: newSelectionLayout(),
 	}
+}
+
+// Tea commands run concurrently. Start the next durable save only after the
+// previous result returns so rapid Enter submissions retain editor order.
+func (m *editorCmp) saveNextFlowSteering() tea.Cmd {
+	if len(m.flowSteeringQueue) == 0 {
+		return nil
+	}
+	pending := m.flowSteeringQueue[0]
+	application := m.app
+	return func() tea.Msg {
+		pending.err = application.QueueFlowSteering(pending.sessionID, pending.text)
+		return pending
+	}
+}
+
+func (m *editorCmp) enqueueFlowSteering(sessionID, text string) tea.Cmd {
+	m.flowSteeringQueue = append(m.flowSteeringQueue, flowSteeringResult{sessionID: sessionID, text: text})
+	if len(m.flowSteeringQueue) == 1 {
+		return m.saveNextFlowSteering()
+	}
+	return nil
+}
+func (m *editorCmp) hasPendingFlowSteering(sessionID string) bool {
+	for _, pending := range m.flowSteeringQueue {
+		if pending.sessionID == sessionID {
+			return true
+		}
+	}
+	return false
 }

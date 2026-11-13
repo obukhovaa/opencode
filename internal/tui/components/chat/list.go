@@ -22,36 +22,54 @@ import (
 )
 
 type cacheItem struct {
-	width   int
-	content []uiMessage
+	width    int
+	expanded bool
+	content  []uiMessage
 }
+
+func (c cacheItem) fresh(width int, expanded bool) bool {
+	return c.width == width && c.expanded == expanded
+}
+
 type messagesCmp struct {
-	app                 *app.App
-	width, height       int
-	viewport            viewport.Model
-	session             session.Session
-	messages            []message.Message
-	uiMessages          []uiMessage
-	currentMsgID        string
-	cachedContent       map[string]cacheItem
-	spinner             spinner.Model
-	spinnerActive       bool
-	rendering           bool
-	renderGeneration    uint64 // bumped by renderViewAsync and deletes; older render results are stale
-	dirtyWhileRendering map[string]struct{}
-	attachments         viewport.Model
-	cachedPending       pendingToolCounts
-	cachedUnfinished    bool
-	taskMessages        map[string][]message.Message
-	userScrolledUp      bool
-	newMessageCount     int
-	recapContent        string
+	app                                                                                *app.App
+	width, height                                                                      int
+	viewport                                                                           viewport.Model
+	viewportCache                                                                      string
+	viewportCacheOffset, viewportCacheXOffset, viewportCacheWidth, viewportCacheHeight int
+	session                                                                            session.Session
+	messages                                                                           []message.Message
+	uiMessages                                                                         []uiMessage
+	currentMsgID                                                                       string
+	cachedContent                                                                      map[string]cacheItem
+	spinner                                                                            spinner.Model
+	spinnerActive                                                                      bool
+	rendering                                                                          bool
+	renderGeneration                                                                   uint64 // bumped by renderViewAsync and deletes; older render results are stale
+	dirtyWhileRendering                                                                map[string]struct{}
+	attachments                                                                        viewport.Model
+	cachedPending                                                                      pendingToolCounts
+	cachedUnfinished                                                                   bool
+	taskMessages                                                                       map[string][]message.Message
+	userScrolledUp                                                                     bool
+	newMessageCount                                                                    int
+	recapContent                                                                       string
+	toolDetailsExpanded                                                                bool
+	expandedToolDetails                                                                map[string]bool
 }
 type renderFinishedMsg struct {
 	generation      uint64
 	uiMessages      []uiMessage
 	cacheUpdates    map[string]cacheItem
 	viewportContent string
+}
+
+type renderAnchor struct {
+	id          string
+	messageType uiMessageType
+	occurrence  int
+	offset      int
+	yOffset     int
 }
 
 type MessageKeys struct {
@@ -93,6 +111,12 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rendering = false
 		}
 		m.rerender()
+	case ToggleToolDetailsMsg:
+		m.toolDetailsExpanded = !m.toolDetailsExpanded
+		if !m.toolDetailsExpanded {
+			m.expandedToolDetails = nil
+		}
+		cmds = append(cmds, m.renderViewAsync(), m.updateScrollState())
 	case SessionSelectedMsg:
 		if msg.ID != m.session.ID {
 			cmd := m.SetSession(msg)
@@ -106,6 +130,7 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.renderViewSync()
 			m.viewport.GotoBottom()
+			cmds = append(cmds, m.renderVisibleToolDetails())
 		}
 	case SessionClearedMsg:
 		m.session = session.Session{}
@@ -114,6 +139,7 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cachedContent = make(map[string]cacheItem)
 		m.currentMsgID = ""
 		m.recapContent = ""
+		m.expandedToolDetails = nil
 		m.rendering = false
 		m.userScrolledUp = false
 		m.newMessageCount = 0
@@ -126,12 +152,14 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport = u
 			cmds = append(cmds, cmd)
 			cmds = append(cmds, m.updateScrollState())
+			cmds = append(cmds, m.renderVisibleToolDetails())
 		}
 	case tea.MouseWheelMsg:
 		u, cmd := m.viewport.Update(msg)
 		m.viewport = u
 		cmds = append(cmds, cmd)
 		cmds = append(cmds, m.updateScrollState())
+		cmds = append(cmds, m.renderVisibleToolDetails())
 
 	case renderFinishedMsg:
 		if !m.rendering || msg.generation != m.renderGeneration {
@@ -140,6 +168,7 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.rendering = false
+		anchor := m.captureRenderAnchor()
 		m.uiMessages = msg.uiMessages
 		for id, item := range msg.cacheUpdates {
 			if _, dirty := m.dirtyWhileRendering[id]; !dirty {
@@ -148,10 +177,11 @@ func (m *messagesCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.dirtyWhileRendering = nil
 		if m.userScrolledUp {
-			yOff := m.viewport.YOffset()
+			m.viewportCache = ""
 			m.viewport.SetContent(msg.viewportContent)
-			m.viewport.SetYOffset(yOff)
+			m.restoreRenderAnchor(anchor)
 		} else {
+			m.viewportCache = ""
 			m.viewport.SetContent(msg.viewportContent)
 			m.viewport.GotoBottom()
 		}
@@ -354,10 +384,102 @@ func (m *messagesCmp) invalidateCache(id string) {
 	}
 }
 
+func (m *messagesCmp) expandedMessageIDs() map[string]bool {
+	if !m.toolDetailsExpanded {
+		return nil
+	}
+	height := m.viewport.Height()
+	if height <= 0 {
+		height = 1
+	}
+	start := m.viewport.YOffset() - height
+	end := m.viewport.YOffset() + 2*height
+	ids := make(map[string]bool)
+	if m.expandedToolDetails == nil {
+		m.expandedToolDetails = make(map[string]bool)
+	}
+	for _, msg := range m.uiMessages {
+		if msg.position < end && msg.position+msg.height > start {
+			m.expandedToolDetails[msg.ID] = true
+		}
+	}
+	for id := range m.expandedToolDetails {
+		ids[id] = true
+	}
+	return ids
+}
+
+func messageDetailsExpanded(msg message.Message, expanded bool, expandedIDs map[string]bool) bool {
+	if !expanded {
+		return false
+	}
+	if expandedIDs[msg.ID] {
+		return true
+	}
+	for _, call := range msg.ToolCalls() {
+		if expandedIDs[call.ID] {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *messagesCmp) renderVisibleToolDetails() tea.Cmd {
+	if m.rendering || !m.hasCacheMisses() {
+		return nil
+	}
+	return m.renderViewAsync()
+}
+
+func (m *messagesCmp) captureRenderAnchor() renderAnchor {
+	type anchorKey struct {
+		id          string
+		messageType uiMessageType
+	}
+	seen := make(map[anchorKey]int)
+	yOffset := m.viewport.YOffset()
+	for _, msg := range m.uiMessages {
+		key := anchorKey{id: msg.ID, messageType: msg.messageType}
+		occurrence := seen[key]
+		seen[key]++
+		if msg.position+msg.height > yOffset {
+			offset := max(0, yOffset-msg.position)
+			return renderAnchor{
+				id:          msg.ID,
+				messageType: msg.messageType,
+				occurrence:  occurrence,
+				offset:      offset,
+				yOffset:     yOffset,
+			}
+		}
+	}
+	return renderAnchor{yOffset: yOffset}
+}
+
+func (m *messagesCmp) restoreRenderAnchor(anchor renderAnchor) {
+	type anchorKey struct {
+		id          string
+		messageType uiMessageType
+	}
+	seen := make(map[anchorKey]int)
+	for _, msg := range m.uiMessages {
+		key := anchorKey{id: msg.ID, messageType: msg.messageType}
+		occurrence := seen[key]
+		seen[key]++
+		if key.id == anchor.id && key.messageType == anchor.messageType && occurrence == anchor.occurrence {
+			m.viewport.SetYOffset(msg.position + anchor.offset)
+			return
+		}
+	}
+	m.viewport.SetYOffset(anchor.yOffset)
+}
+
 func (m *messagesCmp) hasCacheMisses() bool {
+	expandedIDs := m.expandedMessageIDs()
 	for _, msg := range m.messages {
 		if msg.Role == message.User || msg.Role == message.Assistant {
-			if cache, ok := m.cachedContent[msg.ID]; !ok || cache.width != m.width {
+			expanded := messageDetailsExpanded(msg, m.toolDetailsExpanded, expandedIDs)
+			if cache, ok := m.cachedContent[msg.ID]; !ok || !cache.fresh(m.width, expanded) {
 				return true
 			}
 		}
@@ -390,16 +512,27 @@ type renderResult struct {
 	cacheUpdates map[string]cacheItem
 }
 
+func appendCachedMessages(dst []uiMessage, cached []uiMessage, pos *int) []uiMessage {
+	for _, msg := range cached {
+		msg.position = *pos
+		dst = append(dst, msg)
+		*pos += msg.height + 1
+	}
+	return dst
+}
+
 func (m *messagesCmp) computeRender() renderResult {
 	var uiMsgs []uiMessage
 	cacheUpdates := make(map[string]cacheItem)
+	expandedIDs := m.expandedMessageIDs()
 	pos := 0
 
 	for inx, msg := range m.messages {
+		expanded := messageDetailsExpanded(msg, m.toolDetailsExpanded, expandedIDs)
 		switch msg.Role {
 		case message.User:
-			if cache, ok := m.cachedContent[msg.ID]; ok && cache.width == m.width {
-				uiMsgs = append(uiMsgs, cache.content...)
+			if cache, ok := m.cachedContent[msg.ID]; ok && cache.fresh(m.width, expanded) {
+				uiMsgs = appendCachedMessages(uiMsgs, cache.content, &pos)
 				continue
 			}
 			userMsg := renderUserMessage(
@@ -407,16 +540,18 @@ func (m *messagesCmp) computeRender() renderResult {
 				msg.ID == m.currentMsgID,
 				m.width,
 				pos,
+				expanded,
 			)
 			uiMsgs = append(uiMsgs, userMsg)
 			cacheUpdates[msg.ID] = cacheItem{
-				width:   m.width,
-				content: []uiMessage{userMsg},
+				width:    m.width,
+				expanded: expanded,
+				content:  []uiMessage{userMsg},
 			}
 			pos += userMsg.height + 1
 		case message.Assistant:
-			if cache, ok := m.cachedContent[msg.ID]; ok && cache.width == m.width {
-				uiMsgs = append(uiMsgs, cache.content...)
+			if cache, ok := m.cachedContent[msg.ID]; ok && cache.fresh(m.width, expanded) {
+				uiMsgs = appendCachedMessages(uiMsgs, cache.content, &pos)
 				continue
 			}
 			isSummary := m.session.SummaryMessageID == msg.ID
@@ -430,14 +565,16 @@ func (m *messagesCmp) computeRender() renderResult {
 				isSummary,
 				m.width,
 				pos,
+				expanded,
 			)
 			for _, am := range assistantMessages {
 				uiMsgs = append(uiMsgs, am)
 				pos += am.height + 1
 			}
 			cacheUpdates[msg.ID] = cacheItem{
-				width:   m.width,
-				content: assistantMessages,
+				width:    m.width,
+				expanded: expanded,
+				content:  assistantMessages,
 			}
 		}
 	}
@@ -468,6 +605,7 @@ func (m *messagesCmp) applyRender(result renderResult) {
 		sections = append(sections, recap)
 	}
 
+	m.viewportCache = ""
 	m.viewport.SetContent(
 		baseStyle.
 			Width(m.width).
@@ -511,6 +649,8 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 	}
 
 	width := m.width
+	expanded := m.toolDetailsExpanded
+	expandedIDs := m.expandedMessageIDs()
 	currentMsgID := m.currentMsgID
 	summaryMsgID := m.session.SummaryMessageID
 	recapContent := m.recapContent
@@ -521,10 +661,11 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 		pos := 0
 
 		for inx, msg := range msgsCopy {
+			messageExpanded := messageDetailsExpanded(msg, expanded, expandedIDs)
 			switch msg.Role {
 			case message.User:
-				if cache, ok := cacheCopy[msg.ID]; ok && cache.width == width {
-					uiMsgs = append(uiMsgs, cache.content...)
+				if cache, ok := cacheCopy[msg.ID]; ok && cache.fresh(width, messageExpanded) {
+					uiMsgs = appendCachedMessages(uiMsgs, cache.content, &pos)
 					continue
 				}
 				userMsg := renderUserMessage(
@@ -532,16 +673,18 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 					msg.ID == currentMsgID,
 					width,
 					pos,
+					messageExpanded,
 				)
 				uiMsgs = append(uiMsgs, userMsg)
 				cacheUpdates[msg.ID] = cacheItem{
-					width:   width,
-					content: []uiMessage{userMsg},
+					width:    width,
+					expanded: messageExpanded,
+					content:  []uiMessage{userMsg},
 				}
 				pos += userMsg.height + 1
 			case message.Assistant:
-				if cache, ok := cacheCopy[msg.ID]; ok && cache.width == width {
-					uiMsgs = append(uiMsgs, cache.content...)
+				if cache, ok := cacheCopy[msg.ID]; ok && cache.fresh(width, messageExpanded) {
+					uiMsgs = appendCachedMessages(uiMsgs, cache.content, &pos)
 					continue
 				}
 				isSummary := summaryMsgID == msg.ID
@@ -555,14 +698,16 @@ func (m *messagesCmp) renderViewAsync() tea.Cmd {
 					isSummary,
 					width,
 					pos,
+					messageExpanded,
 				)
 				for _, am := range assistantMessages {
 					uiMsgs = append(uiMsgs, am)
 					pos += am.height + 1
 				}
 				cacheUpdates[msg.ID] = cacheItem{
-					width:   width,
-					content: assistantMessages,
+					width:    width,
+					expanded: messageExpanded,
+					content:  assistantMessages,
 				}
 			}
 		}
@@ -630,11 +775,22 @@ func (m *messagesCmp) View() tea.View {
 		Render(
 			lipgloss.JoinVertical(
 				lipgloss.Top,
-				m.viewport.View(),
+				m.cachedViewport(),
 				m.working(),
 				m.footer(),
 			),
 		))
+}
+
+// cachedViewport avoids ANSI layout work on each editor keystroke. Content
+// changes explicitly invalidate it; scrolling and geometry form the key.
+func (m *messagesCmp) cachedViewport() string {
+	if m.viewportCache == "" || m.viewportCacheOffset != m.viewport.YOffset() || m.viewportCacheXOffset != m.viewport.XOffset() || m.viewportCacheWidth != m.width || m.viewportCacheHeight != m.height {
+		m.viewportCache = m.viewport.View()
+		m.viewportCacheXOffset = m.viewport.XOffset()
+		m.viewportCacheOffset, m.viewportCacheWidth, m.viewportCacheHeight = m.viewport.YOffset(), m.width, m.height
+	}
+	return m.viewportCache
 }
 
 type pendingToolCounts struct {
@@ -647,24 +803,19 @@ func (p pendingToolCounts) total() int {
 }
 
 func countToolsWithoutResponse(messages []message.Message) pendingToolCounts {
-	toolCalls := make([]message.ToolCall, 0)
-	toolResults := make([]message.ToolResult, 0)
-	for _, m := range messages {
-		toolCalls = append(toolCalls, m.ToolCalls()...)
-		toolResults = append(toolResults, m.ToolResults()...)
-	}
-
-	var counts pendingToolCounts
-	for _, v := range toolCalls {
-		found := false
-		for _, r := range toolResults {
-			if v.ID == r.ToolCallID {
-				found = true
-				break
-			}
+	results := make(map[string]struct{})
+	for _, msg := range messages {
+		for _, result := range msg.ToolResults() {
+			results[result.ToolCallID] = struct{}{}
 		}
-		if !found && v.Finished {
-			if v.Name == agent.TaskToolName {
+	}
+	var counts pendingToolCounts
+	for _, msg := range messages {
+		for _, call := range msg.ToolCalls() {
+			if _, found := results[call.ID]; found || !call.Finished {
+				continue
+			}
+			if call.Name == agent.TaskToolName {
 				counts.subagents++
 			} else {
 				counts.tools++
@@ -883,7 +1034,7 @@ func (m *messagesCmp) SetSize(width, height int) tea.Cmd {
 	m.attachments.SetWidth(width + 40)
 	m.attachments.SetHeight(3)
 	m.rerender()
-	return nil
+	return m.renderVisibleToolDetails()
 }
 
 func (m *messagesCmp) GetSize() (int, int) {
@@ -902,6 +1053,7 @@ func (m *messagesCmp) SetSession(session session.Session) tea.Cmd {
 	}
 	m.messages = messages
 	m.cachedContent = make(map[string]cacheItem)
+	m.expandedToolDetails = nil
 	m.taskMessages = make(map[string][]message.Message)
 	for _, msg := range m.messages {
 		for _, tc := range msg.ToolCalls() {
@@ -920,7 +1072,7 @@ func (m *messagesCmp) SetSession(session session.Session) tea.Cmd {
 	m.viewport.GotoBottom()
 	m.userScrolledUp = false
 	m.newMessageCount = 0
-	return m.emitScrollState()
+	return tea.Batch(m.emitScrollState(), m.renderVisibleToolDetails())
 }
 
 func (m *messagesCmp) BindingKeys() []key.Binding {

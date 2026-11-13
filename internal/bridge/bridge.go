@@ -104,9 +104,11 @@ type BoundPeer struct {
 // extraction, file download, from_bot filtering) then push Inbound values
 // onto the orchestrator's inbound channel.
 type Inbound struct {
-	Peer        PeerRef      `json:"peer"`
-	Text        string       `json:"text,omitempty"`
-	Attachments []Attachment `json:"attachments,omitempty"`
+	// QuestionRequestID identifies a native custom-modal reply; opaque buttons carry their identity in Text.
+	QuestionRequestID string       `json:"questionRequestId,omitempty"`
+	Peer              PeerRef      `json:"peer"`
+	Text              string       `json:"text,omitempty"`
+	Attachments       []Attachment `json:"attachments,omitempty"`
 	// Messages is a batch of messages, each with a sender-assigned id, sent
 	// in place of Text and Attachments (POST /router/inbound rejects a body
 	// that carries both). On an interactive session the batch enters the
@@ -283,8 +285,8 @@ type AdapterStatus struct {
 // question UI. Label is what the reviewer sees on the button; Value is
 // the opaque callback payload the adapter forwards back when the
 // reviewer clicks. The bridge's question router encodes the question's
-// canonical answer label in Value so reply parsing is the same code
-// path as the numbered-text fallback.
+// canonical answer label in Value for legacy questions; managed flow
+// questions use a bounded opaque request/choice token decoded centrally.
 type QuestionChoice struct {
 	Label string
 	Value string

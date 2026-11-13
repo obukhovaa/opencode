@@ -17,6 +17,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/cron"
 	"github.com/opencode-ai/opencode/internal/db"
 	"github.com/opencode-ai/opencode/internal/flow"
+	"github.com/opencode-ai/opencode/internal/flowrun"
 	"github.com/opencode-ai/opencode/internal/history"
 	"github.com/opencode-ai/opencode/internal/hooks"
 	"github.com/opencode-ai/opencode/internal/llm/agent"
@@ -25,6 +26,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/lsp"
 	"github.com/opencode-ai/opencode/internal/message"
 	"github.com/opencode-ai/opencode/internal/permission"
+	"github.com/opencode-ai/opencode/internal/pubsub"
 	"github.com/opencode-ai/opencode/internal/question"
 	"github.com/opencode-ai/opencode/internal/recap"
 	"github.com/opencode-ai/opencode/internal/session"
@@ -35,6 +37,15 @@ import (
 )
 
 type App struct {
+	FlowRuns          *flowrun.Store
+	flowEvents        *pubsub.Broker[FlowRunEvent]
+	flowProjectID     string
+	flowReservations  map[string]flowrun.Lease
+	flowQuery         db.QuerierWithTx
+	dynamicMu         sync.Mutex
+	dynamicRuns       map[string]*dynamicRun
+	mcpPolicyChanging bool
+
 	Sessions      session.Service
 	Messages      message.Service
 	History       history.Service
@@ -165,6 +176,11 @@ func (app *App) SetActiveAgent(agentID config.AgentName) error {
 }
 
 func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID string) (*App, error) {
+	// Resolve once: session.NewService otherwise derives this internally, while
+	// the durable flow store would incorrectly retain an empty project scope.
+	if projectID == "" {
+		projectID = db.GetProjectID(config.Get().WorkingDir)
+	}
 	q := db.NewQuerier(conn)
 	sessions := session.NewService(q, projectID)
 	messages := message.NewService(q, conn)
@@ -225,6 +241,8 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 	}
 
 	app := &App{
+		FlowRuns:      flowrun.New(conn, q, projectID, string(config.Get().SessionProvider.Type)),
+		flowProjectID: projectID,
 		Sessions:      sessions,
 		Messages:      messages,
 		History:       files,
@@ -236,6 +254,7 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 		MCPRegistry:   mcpRegistry,
 		AgentFactory:  factory,
 		Flows:         flows,
+		flowQuery:     q,
 		Crons:         cronSvc,
 		Todos:         todoStore,
 		Questions:     questionSvc,
@@ -243,6 +262,8 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 		queues:        make(map[string][]QueuedMessage),
 		queueCancels:  make(map[string]context.CancelFunc),
 	}
+
+	session.SetDeleteHandler(sessions, app.handleFlowSessionDelete)
 
 	// Install the global background-task registry. EnqueueTaskCompletion
 	// (used by bash run_in_background, task async, monitor, and the cron
@@ -266,6 +287,14 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 	// start lsp in background
 	go lspSvc.Init(ctx)
 
+	if setter, ok := factory.(interface {
+		SetTurnAdmission(func(context.Context, string) error)
+	}); ok {
+		setter.SetTurnAdmission(app.admitSessionTurn)
+	}
+	if setter, ok := factory.(interface{ SetFlowSubmitter(tools.FlowSubmitter) }); ok {
+		setter.SetFlowSubmitter(app.submitOrdinaryFlow)
+	}
 	primaryAgents, err := factory.InitPrimaryAgents(ctx, cliSchema)
 	if err != nil {
 		return nil, err
@@ -362,6 +391,7 @@ func (app *App) initTheme() {
 
 // Shutdown performs a clean shutdown of the application
 func (app *App) Shutdown() {
+	app.ShutdownFlows(5 * time.Second)
 	app.ShutdownQueues()
 	if app.CronScheduler != nil {
 		app.CronScheduler.Stop()
@@ -391,6 +421,7 @@ func (app *App) shutdownMCP(budget time.Duration) {
 
 // ForceShutdown performs an aggressive shutdown for non-interactive mode
 func (app *App) ForceShutdown() {
+	app.ShutdownFlows(time.Second)
 	logging.Info("Starting force shutdown")
 	if app.CronScheduler != nil {
 		app.CronScheduler.Stop()
@@ -447,6 +478,17 @@ func (d *taskDeps) WritePair(ctx context.Context, sessionID string, p task.Synth
 }
 
 func (d *taskDeps) IsSessionBusy(sessionID string) bool {
+	if d.app.FlowBusy(sessionID) {
+		return true
+	}
+	if d.app.FlowRuns != nil && d.app.Sessions != nil && d.app.flowQuery != nil {
+		// Flow-step completion belongs to its runner, even between turns. Never
+		// restart a finished step as an unrelated ordinary agent turn.
+		_, owned, err := d.app.SessionFlowConversation(context.Background(), sessionID)
+		if owned || err != nil {
+			return true
+		}
+	}
 	// Process-wide truth: the session may be run by a per-step flow agent
 	// instance the active/primary agent knows nothing about (GENAI-239).
 	return agent.SessionBusy(sessionID)
@@ -460,6 +502,9 @@ func (d *taskDeps) IsSessionBusy(sessionID string) bool {
 // carried on the task) keeps the resumed turn's telemetry attributed, and
 // jobArgs keep its MCP flowArgHeaders stamped.
 func (d *taskDeps) ResumeSession(sessionID, requester string, jobArgs map[string]any) {
+	if d.IsSessionBusy(sessionID) {
+		return
+	}
 	ag := d.app.AgentForSession(context.Background(), sessionID)
 	if ag == nil {
 		return

@@ -128,7 +128,7 @@ func (s *Service) dispatchBatch(ctx context.Context, sessionID string, in bridge
 		s.questionRouter.EnqueueBatch(ctx, sessionID, in)
 		return
 	}
-	if s.poolMode {
+	if s.poolMode && !s.admittedSession(sessionID) {
 		logging.Warn("bridge: dropping inbound batch for a session no live interactive step owns",
 			"session", sessionID, "peer", in.Peer.PeerID)
 		return

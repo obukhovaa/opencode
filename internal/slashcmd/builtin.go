@@ -86,6 +86,13 @@ func BuiltinCommands() []CommandInfo {
 			Description: "Summarize the current session and create a new one with the summary",
 			TUIOnly:     true,
 		},
+		{ID: "flow", Title: "Dynamic Flow", Description: "Plan and run a workflow, or inspect current progress", TUIOnly: true},
+		{ID: "mcp", Title: "MCP Servers", Description: "Inspect and manage MCP tools", TUIOnly: true},
+		{ID: "lsp", Title: "Language Servers", Description: "Inspect and manage language servers", TUIOnly: true},
+		{ID: "modified-files", Title: "Modified Files", Description: "Inspect session file changes", TUIOnly: true},
+		{ID: "tasks", Title: "Background Tasks", Description: "Inspect and cancel background tasks", TUIOnly: true},
+		{ID: "subagents", Title: "Running Subagents", Description: "Inspect subagent prompts and output", TUIOnly: true},
+
 		{
 			ID:          "agents",
 			Title:       "List Agents",
@@ -96,6 +103,12 @@ func BuiltinCommands() []CommandInfo {
 			ID:          "auto-approve",
 			Title:       "Toggle Auto-Approve",
 			Description: "Toggle auto-approve mode for the current session (skip permission dialogs)",
+			TUIOnly:     true,
+		},
+		{
+			ID:          "model",
+			Title:       "Select Model",
+			Description: "Choose the model for the active agent",
 			TUIOnly:     true,
 		},
 		{

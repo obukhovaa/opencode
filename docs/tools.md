@@ -126,3 +126,26 @@ rendered into readable configuration files also remain readable by that user.
 Set a higher value to keep more inline, or a negative value to disable the cap entirely (unbounded — a few fetches can then overflow the context). Responses at or below the cap are returned unchanged and no file is written.
 
 A response body over the 5MB read limit is truncated before conversion, and the reply says so rather than presenting a torn document as a complete one.
+
+### flow
+
+Opt-in primary-agent tool enabled by `dynamicFlow.enabled`. It keeps one stable
+operation schema across ordinary turns and generated-flow steps.
+
+| Operation | Input | Behavior |
+|---|---|---|
+| `plan` | `goal`, optional `complexity` | Build and run a generated workflow with bundled guidance; configured complexity wins. Requires OpenSpec. |
+| `create` | `definition`, `complexity` | Submit validated generated YAML directly. |
+| `run` | `flowId`, optional `argsJson` | Run an existing immutable YAML snapshot with validated JSON arguments; no OpenSpec/build step. |
+| `list` | none | List authorized discovered flows and argument schemas. |
+| `status` | none | Inspect the conversation's current/latest run. |
+| `control` | `action`, optional `stepId` | Cancel, resume, safely skip or terminate the current run. |
+| `update` | `definition` | The owning generated-flow primary can amend only unentered steps. Named runs reject updates. |
+
+The model-facing `argsJson` parameter is a JSON string to remain compatible with
+providers that cannot express an arbitrary object parameter. HTTP clients can
+send an `args` object instead. The host supplies invocation identity; repeated
+submission of the same invocation does not start another run.
+
+Finish the ordinary turn after `plan`, `create` or `run` succeeds. Flow steps and
+subagents cannot start another flow. See [flows](flows.md#flows-from-ordinary-bridge-conversations).

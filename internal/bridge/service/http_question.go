@@ -18,7 +18,10 @@ func (s *Service) handleQuestionReply(w http.ResponseWriter, req *http.Request) 
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "Service Unavailable", "code": "question_router_unavailable"})
 		return
 	}
-	replayed, refusal := s.questionRouter.replyRequest(req.PathValue("requestID"), body)
+	handled, replayed, refusal := s.durableFlowReply(req.Context(), req.PathValue("requestID"), body)
+	if !handled {
+		replayed, refusal = s.questionRouter.replyRequest(req.PathValue("requestID"), body)
+	}
 	if refusal != "" {
 		status := http.StatusConflict
 		if refusal == "answer_shape" || refusal == "invalid_answer" {

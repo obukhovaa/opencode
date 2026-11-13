@@ -21,6 +21,7 @@ import (
 // instance-scoped concerns (Cancel bookkeeping, IsBusy, summarize slots);
 // mutual exclusion lives here.
 var globalSessionSlots sync.Map
+var toolPolicyMu sync.Mutex
 
 // SessionBusy reports whether any agent instance currently holds the
 // session's run slot (an in-flight Run or the cron scheduler's lock).
@@ -36,6 +37,8 @@ func SessionBusy(sessionID string) bool {
 // LoadOrStore also closes the check-then-store race the old per-instance
 // gate had between IsSessionBusy and activeRequests.Store.
 func acquireSessionSlot(sessionID string, holder any) bool {
+	toolPolicyMu.Lock()
+	defer toolPolicyMu.Unlock()
 	_, loaded := globalSessionSlots.LoadOrStore(sessionID, holder)
 	return !loaded
 }
@@ -66,4 +69,28 @@ func cronLockHeld() bool {
 		return true
 	})
 	return held
+}
+
+// WithIdleToolPolicy excludes new runs while a live tool policy is replaced.
+func WithIdleToolPolicy(update func() error) error {
+	toolPolicyMu.Lock()
+	defer toolPolicyMu.Unlock()
+	busy := false
+	globalSessionSlots.Range(func(_, _ any) bool { busy = true; return false })
+	if busy {
+		return ErrAgentBusy
+	}
+	return update()
+}
+
+// WithIdleSession excludes new turns on sessionID while a lifecycle mutation is
+// applied. Other conversations may continue running; unlike a tool-policy
+// replacement, releasing one bridge binding does not need process-wide idleness.
+func WithIdleSession(sessionID string, update func() error) error {
+	toolPolicyMu.Lock()
+	defer toolPolicyMu.Unlock()
+	if _, busy := globalSessionSlots.Load(sessionID); busy {
+		return ErrSessionBusy
+	}
+	return update()
 }

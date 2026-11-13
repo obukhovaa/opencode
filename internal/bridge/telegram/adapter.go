@@ -350,8 +350,8 @@ func (a *Adapter) SendInteractiveQuestion(ctx context.Context, peer bridge.PeerR
 	rows := make([][]models.InlineKeyboardButton, 0, len(choices))
 	for _, c := range choices {
 		// Telegram limits callback_data to 64 bytes. We only carry the
-		// canonical answer label; the bridge maps it back to a choice
-		// via the same numeric-or-label parser used for text replies.
+		// canonical label for legacy prompts or a bounded opaque request/choice
+		// token for flows; the bridge decodes it before answering.
 		data := c.Value
 		if len(data) > 60 {
 			data = data[:60]
@@ -503,7 +503,20 @@ func (a *Adapter) handleCallbackQuery(ctx context.Context, cb *models.CallbackQu
 	// Replace the inline keyboard + prefix the prompt with a confirmation
 	// so the reviewer cannot re-click. Inbound was already pushed; update
 	// failures are non-fatal. See bridge-question-answered-widget-update.
-	a.updateAnsweredWidget(ctx, msg, []string{cb.Data})
+	label := cb.Data
+	if bridge.IsFlowQuestionValue(cb.Data) {
+		label = "selection recorded"
+		if msg.ReplyMarkup != nil {
+			for _, row := range msg.ReplyMarkup.InlineKeyboard {
+				for _, button := range row {
+					if button.CallbackData == cb.Data {
+						label = button.Text
+					}
+				}
+			}
+		}
+	}
+	a.updateAnsweredWidget(ctx, msg, []string{label})
 }
 
 // appendCustomAnswerHint adds the "type your own answer" discoverability

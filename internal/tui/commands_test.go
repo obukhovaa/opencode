@@ -36,3 +36,19 @@ func TestBuildCommandsNewAndResetClearSession(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildCommandsModelOpensModelDialog(t *testing.T) {
+	for _, cmd := range buildCommands() {
+		if cmd.ID != "model" {
+			continue
+		}
+		if cmd.Handler == nil {
+			t.Fatal("/model has no handler")
+		}
+		if _, ok := cmd.Handler(cmd)().(showModelDialogMsg); !ok {
+			t.Fatalf("/model emitted %T, want showModelDialogMsg", cmd.Handler(cmd)())
+		}
+		return
+	}
+	t.Fatal("/model is not registered")
+}

@@ -26,13 +26,16 @@ type serverNameContextKey string
 const ServerNameContextKey serverNameContextKey = "server_name"
 
 type lspService struct {
-	clients   map[string]*lsp.Client
-	clientsCh chan *lsp.Client
-	mu        sync.RWMutex
+	activationMu sync.Mutex
+	startupMu    sync.Mutex
+	startupDone  bool
+	clients      map[string]*lsp.Client
+	clientsCh    chan *lsp.Client
+	mu           sync.RWMutex
 
-	watcherCancelFuncs []context.CancelFunc
-	cancelMu           sync.Mutex
-	watcherWG          sync.WaitGroup
+	watcherCancelByName map[string]context.CancelFunc
+	cancelMu            sync.Mutex
+	watcherWG           sync.WaitGroup
 
 	*pubsub.Broker[lsp.LSPServerEvent]
 }
@@ -62,14 +65,19 @@ func (s *lspService) Init(ctx context.Context) {
 	go func() {
 		wg.Wait()
 		logging.Info("LSP clients initialization completed")
+		s.startupMu.Lock()
+		s.startupDone = true
 		close(s.clientsCh)
+		s.startupMu.Unlock()
 	}()
 	logging.Info("LSP clients initialization started in background")
 }
 
 func (s *lspService) Shutdown(ctx context.Context) {
+	s.activationMu.Lock()
+	defer s.activationMu.Unlock()
 	s.cancelMu.Lock()
-	for _, cancel := range s.watcherCancelFuncs {
+	for _, cancel := range s.watcherCancelByName {
 		cancel()
 	}
 	s.cancelMu.Unlock()
@@ -98,8 +106,10 @@ func (s *lspService) Shutdown(ctx context.Context) {
 }
 
 func (s *lspService) ForceShutdown() {
+	s.activationMu.Lock()
+	defer s.activationMu.Unlock()
 	s.cancelMu.Lock()
-	for _, cancel := range s.watcherCancelFuncs {
+	for _, cancel := range s.watcherCancelByName {
 		cancel()
 	}
 	s.cancelMu.Unlock()
@@ -241,6 +251,11 @@ func hasMatchingFiles(rootDir string, extensions []string) bool {
 }
 
 func (s *lspService) startLSPServer(ctx context.Context, name string, server install.ResolvedServer) {
+	s.activationMu.Lock()
+	defer s.activationMu.Unlock()
+	if s.Clients()[name] != nil {
+		return
+	}
 	cfg := config.Get()
 
 	if !hasMatchingFiles(config.WorkingDirectory(), server.Extensions) {
@@ -305,14 +320,21 @@ func (s *lspService) createAndStartLSPClient(ctx context.Context, name string, s
 	workspaceWatcher := watcher.NewWorkspaceWatcher(lspClient)
 
 	s.cancelMu.Lock()
-	s.watcherCancelFuncs = append(s.watcherCancelFuncs, cancelFunc)
+	if s.watcherCancelByName == nil {
+		s.watcherCancelByName = map[string]context.CancelFunc{}
+	}
+	s.watcherCancelByName[name] = cancelFunc
 	s.cancelMu.Unlock()
 
 	s.watcherWG.Add(1)
 
 	s.mu.Lock()
 	s.clients[name] = lspClient
-	s.clientsCh <- lspClient
+	s.startupMu.Lock()
+	if !s.startupDone {
+		s.clientsCh <- lspClient
+	}
+	s.startupMu.Unlock()
 	s.mu.Unlock()
 
 	go s.runWorkspaceWatcher(watchCtx, name, workspaceWatcher)

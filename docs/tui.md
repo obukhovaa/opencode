@@ -15,7 +15,7 @@ Running `opencode` with no `-p` starts the terminal UI. This page lists its keyb
 | `Ctrl+N` | New session |
 | `Ctrl+P` | Prune session |
 | `Ctrl+K` | Command dialog |
-| `Ctrl+O` | Model selection |
+| `Ctrl+O` | Expand / collapse tool output ([details](#tool-output)) |
 | `Ctrl+X` | Cancel generation |
 | `Tab` | Switch primary agent |
 | `Esc` | Close dialog / exit mode |
@@ -65,6 +65,14 @@ in `INSERT`; `Esc` switches to `NORMAL`.
 | `Enter` | Select |
 | `a` / `A` / `d` | Allow / Allow for session / Deny (permissions) |
 
+## Tool output
+
+Tool calls are shown collapsed: the tool name and its main parameters (for `bash`, the description when the model gave one and the command on one line), then the first 3 lines of the result with a `… +N lines (ctrl+o to expand)` note under it. Diffs and markdown results (`task`, `web_search`) are cut after rendering, so the 3 lines are rendered rows. A subagent lists only its last 3 tool calls under the task, after a `… +N earlier tool uses` note. Errors show as a single truncated line.
+
+`Ctrl+O` expands tool calls in place — the full bash command and task prompt, full results and errors, every subagent call — and pressing it again collapses them. Expansion is asynchronous and starts with messages in and near the viewport; scrolling expands newly visible calls while already expanded calls stay stable, so long sessions stay responsive. An expanded result still stops at 500 lines (`… +N lines not shown`). The toggle lasts for the TUI process and applies to `!` shell-mode output too; todo checklists are never collapsed.
+
+Model selection, which used to be on `Ctrl+O`, is the `/model` command (also in the `Ctrl+K` command dialog). It has no shortcut: `Ctrl+M` sends the same byte as Enter in most terminals, so binding it would submit messages.
+
 ## Auto-approve
 
 Auto-approve mode skips interactive permission dialogs for `ask`-resolved permissions during a session. `deny` rules and disabled tools are still enforced — auto-approve only promotes `ask` decisions to `allow`.
@@ -75,3 +83,23 @@ Auto-approve mode skips interactive permission dialogs for `ask`-resolved permis
 - **Subagents**: child task sessions inherit auto-approve from the parent
 - **Non-interactive mode**: already auto-approves all permissions, flag is ignored
 - **Questions still ask**: auto-approve covers tool permissions, not decisions — the `question` tool keeps prompting you (TUI dialog, chat bridge, API). It answers itself with the first (recommended) option only where nobody could answer: a headless `opencode -p` run, a flow step, or a cron job firing on an unwatched session
+
+## Service views
+
+The transcript uses the full available width. `/mcp` opens live MCP controls,
+`/lsp` opens language-server activation, and `/modified-files` shows files
+changed in the current session and its child sessions. Use arrows or j/k to
+select an entry, PgUp/PgDn to scroll its details, and Escape to return to chat.
+
+## Running activities
+
+`/tasks` lists background shell commands and monitors for the current session;
+`/subagents` lists running and completed child agents. `/agents` continues to
+show configured agent types. Use Up/Down or `j`/`k` to select an activity, Enter
+to inspect its command or prompt and current output, and `x` to cancel it.
+Escape returns from details to the list, then to chat. Output previews are bounded.
+
+An activity strip above the editor shows running task and subagent counts. Press
+Up with an empty editor, or `k` in vim NORMAL mode, to focus it. Left/Right chooses
+a category, Enter opens it, and Down/Escape returns to editing. Draft text stays
+intact. Activities remain inspectable while the main agent is working.

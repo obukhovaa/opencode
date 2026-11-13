@@ -38,7 +38,7 @@ type keyMap struct {
 	SwitchSession   key.Binding
 	Commands        key.Binding
 	Filepicker      key.Binding
-	Models          key.Binding
+	ToolDetails     key.Binding
 	SwitchTheme     key.Binding
 	PruneSession    key.Binding
 	SwitchAgent     key.Binding
@@ -49,6 +49,7 @@ type (
 	startCompactSessionMsg       struct{}
 	toggleAutoApproveMsg         struct{}
 	toggleVimModeMsg             struct{}
+	showModelDialogMsg           struct{}
 	sessionDeletedMsg            struct{ id string }
 	startSessionsCleanupMsg      struct{}
 	showSessionsCleanupDialogMsg struct{ count int }
@@ -90,9 +91,9 @@ var keys = keyMap{
 		key.WithKeys("ctrl+f"),
 		key.WithHelp("ctrl+f", "select files to upload"),
 	),
-	Models: key.NewBinding(
-		key.WithKeys("ctrl+o"),
-		key.WithHelp("ctrl+o", "model selection"),
+	ToolDetails: key.NewBinding(
+		key.WithKeys(chat.ToggleToolDetailsKey),
+		key.WithHelp(chat.ToggleToolDetailsKey, "expand/collapse tool output"),
 	),
 
 	SwitchTheme: key.NewBinding(
@@ -140,8 +141,9 @@ type appModel struct {
 	app             *app.App
 	selectedSession session.Session
 
-	showPermissions bool
-	permissions     dialog.PermissionDialogCmp
+	pendingPermissions []permission.PermissionRequest
+	showPermissions    bool
+	permissions        dialog.PermissionDialogCmp
 
 	showHelp bool
 	help     dialog.HelpCmp
@@ -246,6 +248,9 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
+	case page.StartDynamicFlowMsg:
+		cmd := a.startDynamicFlow(msg.Prompt)
+		return a, cmd
 	case tea.BackgroundColorMsg:
 		theme.SetIsDark(msg.IsDark())
 		return a, nil
@@ -346,6 +351,10 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Permission
 	case pubsub.Event[permission.PermissionRequest]:
+		if a.showPermissions {
+			a.pendingPermissions = append(a.pendingPermissions, msg.Payload)
+			return a, nil
+		}
 		a.showPermissions = true
 		return a, a.permissions.SetPermissions(msg.Payload)
 	case dialog.PermissionResponseMsg:
@@ -359,10 +368,21 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.app.Permissions.Deny(msg.Permission)
 		}
 		a.showPermissions = false
+		if len(a.pendingPermissions) > 0 {
+			next := a.pendingPermissions[0]
+			a.pendingPermissions = a.pendingPermissions[1:]
+			a.showPermissions = true
+			cmd = a.permissions.SetPermissions(next)
+		}
 		return a, cmd
 
 	// Question dialog
 	case pubsub.Event[question.Request]:
+		// Pending requests remain in the question service until answered; showing
+		// one must never overwrite the dialog another concurrent subagent owns.
+		if a.showQuestionDialog {
+			return a, nil
+		}
 		a.showQuestionDialog = true
 		return a, a.questionDialog.SetQuestion(msg.Payload)
 	case dialog.QuestionResponseMsg:
@@ -372,6 +392,12 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_ = a.app.Questions.Reject(msg.RequestID)
 			} else {
 				_ = a.app.Questions.Reply(msg.RequestID, msg.Answers)
+			}
+			for _, next := range a.app.Questions.List() {
+				if next.ID != msg.RequestID {
+					a.showQuestionDialog = true
+					return a, a.questionDialog.SetQuestion(next)
+				}
 			}
 		}
 		return a, nil
@@ -413,6 +439,13 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s, _ := a.status.Update(core.AutoApproveChangedMsg{Active: true})
 		a.status = s.(core.StatusCmp)
 		return a, util.ReportInfo("Auto-approve enabled")
+
+	case showModelDialogMsg:
+		if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showQuestionDialog &&
+			!a.showSessionDialog && !a.showCommandDialog {
+			a.showModelDialog = true
+		}
+		return a, nil
 
 	case toggleVimModeMsg:
 		newVal := !config.Get().TUI.VimMode
@@ -773,7 +806,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// On non-chat pages (logs, agents), ctrl+c returns to the chat
 			// page, same as esc. Only show the quit dialog from the chat page.
-			if a.currentPage == page.LogsPage || a.currentPage == page.AgentsPage || a.currentPage == page.CronsPage {
+			if a.currentPage == page.LogsPage || a.currentPage == page.AgentsPage || a.currentPage == page.CronsPage || a.currentPage == page.TasksPage || a.currentPage == page.SubagentsPage || a.currentPage == page.FlowsPage || a.currentPage == page.MCPPage || a.currentPage == page.LSPPage || a.currentPage == page.ModifiedFilesPage {
 				return a, a.moveToPage(page.ChatPage)
 			}
 			// In shell mode, ctrl+c exits shell mode instead of showing quit dialog
@@ -826,6 +859,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					return a, util.ReportError(err)
 				}
+				sessions = a.app.AnnotateFlowSessions(context.Background(), sessions)
 				if len(sessions) == 0 {
 					return a, util.ReportWarn("No sessions available")
 				}
@@ -845,14 +879,10 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 			return a, nil
-		case key.Matches(msg, keys.Models):
-			if a.showModelDialog {
-				a.showModelDialog = false
-				return a, nil
-			}
-			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showQuestionDialog && !a.showSessionDialog && !a.showCommandDialog {
-				a.showModelDialog = true
-				return a, nil
+		case key.Matches(msg, keys.ToolDetails):
+			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showQuestionDialog &&
+				!a.anyDismissibleDialogOpen() && !a.pageHasActiveOverlay() {
+				return a, util.CmdHandler(chat.ToggleToolDetailsMsg{})
 			}
 			return a, nil
 		case key.Matches(msg, keys.SwitchTheme):
@@ -870,6 +900,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					return a, util.ReportError(err)
 				}
+				sessions = a.app.AnnotateFlowSessions(context.Background(), sessions)
 				if len(sessions) == 0 {
 					return a, util.ReportWarn("No sessions available")
 				}
@@ -908,7 +939,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, returnKey) || key.Matches(msg):
 			if msg.String() == quitKey {
-				if a.currentPage == page.LogsPage || a.currentPage == page.AgentsPage || a.currentPage == page.CronsPage {
+				if a.currentPage == page.LogsPage || a.currentPage == page.AgentsPage || a.currentPage == page.CronsPage || a.currentPage == page.TasksPage || a.currentPage == page.SubagentsPage || a.currentPage == page.FlowsPage || a.currentPage == page.MCPPage || a.currentPage == page.LSPPage || a.currentPage == page.ModifiedFilesPage {
 					return a, a.moveToPage(page.ChatPage)
 				}
 			} else if !a.filepicker.IsCWDFocused() {
@@ -1253,10 +1284,6 @@ func (a *appModel) findCommand(id string) (dialog.Command, bool) {
 }
 
 func (a *appModel) moveToPage(pageID page.PageID) tea.Cmd {
-	if a.app.ActiveAgent().IsBusy() {
-		return util.ReportWarn("Agent is busy, please wait...")
-	}
-
 	var cmds []tea.Cmd
 	if _, ok := a.loadedPages[pageID]; !ok {
 		cmd := a.pages[pageID].Init()
@@ -1269,10 +1296,13 @@ func (a *appModel) moveToPage(pageID page.PageID) tea.Cmd {
 		cmd := sizable.SetSize(a.width, a.height)
 		cmds = append(cmds, cmd)
 	}
+	if pageID == page.ChatPage {
+		cmds = append(cmds, util.CmdHandler(page.ActivateActivitiesMsg{}))
+	}
 	if pageID == page.LogsPage {
 		cmds = append(cmds, util.CmdHandler(logs.LogsPageActivatedMsg{}))
 	}
-	if pageID == page.CronsPage {
+	if pageID == page.CronsPage || pageID == page.TasksPage || pageID == page.SubagentsPage || pageID == page.FlowsPage || pageID == page.MCPPage || pageID == page.LSPPage || pageID == page.ModifiedFilesPage {
 		// The crons page only sees messages while it is the active page, so
 		// hand it the current session whenever the user opens it.
 		var pageCmd tea.Cmd
@@ -1436,10 +1466,16 @@ func New(app *app.App) tea.Model {
 		app:                 app,
 		commands:            commands,
 		pages: map[page.PageID]tea.Model{
-			page.ChatPage:   page.NewChatPage(app, commands),
-			page.LogsPage:   page.NewLogsPage(),
-			page.AgentsPage: page.NewAgentsPage(app.Registry),
-			page.CronsPage:  page.NewCronsPage(app.Crons),
+			page.ChatPage:          page.NewChatPage(app, commands),
+			page.LogsPage:          page.NewLogsPage(),
+			page.AgentsPage:        page.NewAgentsPage(app.Registry),
+			page.CronsPage:         page.NewCronsPage(app.Crons),
+			page.TasksPage:         page.NewActivitiesPage(app, false),
+			page.SubagentsPage:     page.NewActivitiesPage(app, true),
+			page.FlowsPage:         page.NewFlowsPage(app),
+			page.MCPPage:           page.NewServicesPage(app, page.MCPPage),
+			page.LSPPage:           page.NewServicesPage(app, page.LSPPage),
+			page.ModifiedFilesPage: page.NewServicesPage(app, page.ModifiedFilesPage),
 		},
 		filepicker:            dialog.NewFilepickerCmp(app),
 		sessionsCleanupDialog: dialog.NewSessionsCleanupDialogCmp(),
@@ -1483,11 +1519,22 @@ func buildCommands() []dialog.Command {
 		"compact": func(_ dialog.Command) tea.Cmd {
 			return func() tea.Msg { return startCompactSessionMsg{} }
 		},
+		"tasks":     func(_ dialog.Command) tea.Cmd { return util.CmdHandler(page.PageChangeMsg{ID: page.TasksPage}) },
+		"subagents": func(_ dialog.Command) tea.Cmd { return util.CmdHandler(page.PageChangeMsg{ID: page.SubagentsPage}) },
+		"flow": func(cmd dialog.Command) tea.Cmd {
+			return util.CmdHandler(page.StartDynamicFlowMsg{Prompt: cmd.InlineArgs})
+		},
+		"mcp":            func(_ dialog.Command) tea.Cmd { return util.CmdHandler(page.PageChangeMsg{ID: page.MCPPage}) },
+		"lsp":            func(_ dialog.Command) tea.Cmd { return util.CmdHandler(page.PageChangeMsg{ID: page.LSPPage}) },
+		"modified-files": func(_ dialog.Command) tea.Cmd { return util.CmdHandler(page.PageChangeMsg{ID: page.ModifiedFilesPage}) },
 		"agents": func(_ dialog.Command) tea.Cmd {
 			return util.CmdHandler(page.PageChangeMsg{ID: page.AgentsPage})
 		},
 		"auto-approve": func(_ dialog.Command) tea.Cmd {
 			return func() tea.Msg { return toggleAutoApproveMsg{} }
+		},
+		"model": func(_ dialog.Command) tea.Cmd {
+			return util.CmdHandler(showModelDialogMsg{})
 		},
 		"vim": func(_ dialog.Command) tea.Cmd {
 			return func() tea.Msg { return toggleVimModeMsg{} }

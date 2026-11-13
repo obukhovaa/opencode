@@ -86,6 +86,7 @@ Call it exactly once, as your final action, populating every required field; the
 )
 
 type structOutputTool struct {
+	dormant      bool
 	schema       map[string]any
 	structParams map[string]any
 	required     []string
@@ -128,6 +129,17 @@ func NewStructOutputToolWithDelivery(schema map[string]any, delivery SchemaDeliv
 	}
 }
 
+// NewDormantStructOutputTool reserves the invariant schema-delivery definition
+// for an opt-in primary agent before a flow supplies an active output schema.
+// No schema means no execution authorization: the reserved tool rejects calls.
+func NewDormantStructOutputTool() BaseTool {
+	t := NewStructOutputToolWithDelivery(map[string]any{"type": "object", "properties": map[string]any{}}, SchemaDeliveryMessage).(*structOutputTool)
+	t.dormant = true
+	return t
+}
+
+func (s *structOutputTool) ActiveOutputSchema() bool { return !s.dormant }
+
 func (s *structOutputTool) Info() ToolInfo {
 	return ToolInfo{
 		Name:        StructOutputToolName,
@@ -138,6 +150,10 @@ func (s *structOutputTool) Info() ToolInfo {
 }
 
 func (s *structOutputTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
+	if s.dormant {
+		return NewTextErrorResponse("No structured output schema is active in this turn. Respond normally instead."), nil
+	}
+
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(call.Input), &payload); err != nil {
 		return NewTextErrorResponse(fmt.Sprintf("Invalid JSON: %s", err.Error())), nil

@@ -139,7 +139,7 @@ func (q *questionTool) Run(ctx context.Context, call ToolCall) (ToolResponse, er
 		return q.formatResponse(params.Questions, answers), nil
 	}
 
-	answers, err := q.service.Ask(ctx, sessionID, params.Questions)
+	answers, err := q.service.Ask(question.WithToolCallID(ctx, call.ID), sessionID, params.Questions)
 	if err != nil {
 		// A question closed as unanswered is not a failure: the user spoke
 		// about something else, and the note says so.

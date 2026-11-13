@@ -36,12 +36,16 @@ import (
 // per-identity GET_LOCK or file lock, and Wait blocks until all
 // background work has drained.
 type Service struct {
-	cfg       *bridge.Config
-	app       *app.App
-	store     store.Store
-	lockMgr   store.IdentityLockManager
-	projectID string
-	dataDir   string
+	sessionFlows       sessionFlowController
+	sessionFlowOwners  map[string]sessionFlowAdmission
+	sessionFlowRetired map[string]bool
+	sessionFlowBridge  *interactiveBridge
+	cfg                *bridge.Config
+	app                *app.App
+	store              store.Store
+	lockMgr            store.IdentityLockManager
+	projectID          string
+	dataDir            string
 
 	mu      sync.Mutex
 	started bool
@@ -358,6 +362,7 @@ func (s *Service) Start(ctx context.Context) error {
 	// to the cron's session. Without it the synthetic messages the
 	// scheduler writes are only visible in the TUI / cron-jobs page.
 	s.cronOutputRouter = s.newCronOutputRouter()
+	s.launchSupervised("session-flow-output", s.runSessionFlowOutput)
 
 	if s.heartbeat != nil {
 		s.launchSupervised("heartbeat-scheduler", s.runHeartbeats)
