@@ -150,7 +150,9 @@ func (q *questionTool) Run(ctx context.Context, call ToolCall) (ToolResponse, er
 		return NewTextErrorResponse("The user dismissed the question"), nil
 	}
 
-	return q.formatResponse(params.Questions, answers), nil
+	response := q.formatResponse(params.Questions, answers)
+	response.UserInputDelivered = true
+	return response, nil
 }
 
 func (q *questionTool) formatResponse(questions []question.Prompt, answers [][]string) ToolResponse {

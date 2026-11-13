@@ -10,7 +10,10 @@
 
 ## 3. Review fixes
 - [x] 3.1 Exclude execution metadata from result identity; verify changing-timestamp regression.
-- [x] 3.2 Treat successful question answers as delivered input; verify identical-answer regression and retained dismissal protection.
+- [x] 3.2 Treat actual user question answers as delivered input; verify identical-answer regression and retained dismissal protection.
+
+- [x] 3.3 Distinguish actual answers from automatic defaults/unanswered notifications, including threshold-one and failed-persistence regressions.
+- [x] 3.4 Recheck queued sequential calls at execution and allow an earlier answer to unblock a later call in the same response.
 
 ## Workflow follow-up
-- CoS arranges review and release; archive after merge.
+- Review and local validation completed; specs synced and archived with the reviewed PR for merge.

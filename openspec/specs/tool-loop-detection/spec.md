@@ -1,10 +1,10 @@
-# Tool Loop Detection
+# Tool Loop Detection Specification
 
 ## Purpose
 
 Detect stalled tool repetition while allowing useful tool calls and interactive conversations to continue.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Repetition SHALL require identical completed calls and results
 The agent SHALL count a per-tool streak only when completed calls have identical requested arguments and model-visible results (type, content and error status), ignoring execution metadata. Changed arguments or results SHALL restart that streak. At the configured threshold, it SHALL report a loop and block later identical requests until reset. Forced terminal tools SHALL remain exempt.
@@ -26,7 +26,7 @@ The agent SHALL count a per-tool streak only when completed calls have identical
 - **THEN** the third result still reports a loop
 
 ### Requirement: Delivered input SHALL reset repetition history
-The agent SHALL reset all tool repetition streaks when queued user or customer input is successfully stored in the session at a tool boundary or natural turn end, or when a question returns a successful answer. Empty drains and failed persistence SHALL NOT reset history. Delivery SHALL NOT reset the permission-denial breaker or turn budget.
+The agent SHALL reset all tool repetition streaks when queued user or customer input is successfully stored in the session at a tool boundary or natural turn end, or when a question returns an actual user answer. Automatic unattended defaults and unanswered notifications SHALL NOT reset history; actual answers SHALL remain deliverable even at a threshold of one. Empty drains and failed persistence SHALL NOT reset history. Delivery SHALL NOT reset the permission-denial breaker or turn budget.
 
 #### Scenario: Empty question with new messages
 - **WHEN** more than three identical question calls are separated by successfully delivered messages
@@ -48,3 +48,26 @@ The agent SHALL reset all tool repetition streaks when queued user or customer i
 - **WHEN** the same question is answered successfully with "Approve" three or more times
 - **THEN** each answer reaches the model and resets all repetition streaks
 - **AND** a dismissed question returning an error still counts toward repetition
+
+#### Scenario: Automatic defaults are not user input
+- **WHEN** an unattended question repeatedly selects the same default without asking a human
+- **THEN** its identical completed results count toward loop protection
+
+#### Scenario: Unanswered notification with failed persistence
+- **WHEN** a question reports that the user sent messages but those messages fail to persist
+- **THEN** the notification alone does not reset repetition history
+
+#### Scenario: User answer at threshold one
+- **WHEN** a real question is answered while the configured repeat threshold is one
+- **THEN** the answer is delivered without being replaced by a loop warning
+
+### Requirement: Sequential admission SHALL use current repetition state
+Each queued sequential call SHALL be checked immediately before execution, after earlier calls in the response have completed. Already-running parallel calls MAY finish; forced terminal tools SHALL remain exempt.
+
+#### Scenario: One response contains many identical sequential calls
+- **WHEN** six identical sequential calls are requested at the default threshold and their results are identical
+- **THEN** only the first three execute and the remaining calls receive loop warnings
+
+#### Scenario: An earlier answer clears a blocked call
+- **WHEN** an actual question answer precedes a previously blocked sequential call in the same response
+- **THEN** the later call executes using the cleared repetition state

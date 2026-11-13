@@ -217,7 +217,9 @@ func TestLoopDetection_IdenticalQuestionAnswersAreInput(t *testing.T) {
 	t.Setenv("OPENCODE_MAX_REPEAT_CALLS", "3")
 	withFreshTaskRegistry(t)
 	question := &repeatResultTool{name: tools.QuestionToolName, result: func(int) (tools.ToolResponse, error) {
-		return tools.NewTextResponse("Approve"), nil
+		response := tools.NewTextResponse("Approve")
+		response.UserInputDelivered = true
+		return response, nil
 	}}
 	send := &repeatResultTool{name: "router_send", result: func(int) (tools.ToolResponse, error) {
 		return tools.NewTextResponse("sent"), nil

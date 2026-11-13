@@ -2066,6 +2066,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	// found, loop detected, blocked by a PreToolUse hook): no progress, for
 	// the rule-denial breaker. Each index has one writer, as with toolResults.
 	unexecuted := make([]bool, len(toolCalls))
+	deliveredInput := make([]bool, len(toolCalls))
 	executed := make([]bool, len(toolCalls))
 	var recordMu sync.Mutex
 
@@ -2079,11 +2080,13 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		recordMu.Lock()
 		defer recordMu.Unlock()
 		tc := toolCalls[index]
-		// A successful question result delivers user input, even when the answer repeats.
-		if tc.Name == tools.QuestionToolName && !tr.IsError {
+		// Only an actual delivered answer is new input. Automatic defaults and
+		// unanswered notifications still need repetition protection.
+		answered := tc.Name == tools.QuestionToolName && deliveredInput[index] && !tr.IsError
+		if answered {
 			tracker.Reset()
 		}
-		if executed[index] && provider.ForcedTool(ctx) != tc.Name && tracker.Track(tc.Name, tc.Input, tr) {
+		if !answered && executed[index] && provider.ForcedTool(ctx) != tc.Name && tracker.Track(tc.Name, tc.Input, tr) {
 			tr = message.ToolResult{
 				ToolCallID: tc.ID, Name: tc.Name,
 				Content: loopDetectedMessage(tc.Name, tracker.streakCount[tc.Name]), IsError: true,
@@ -2134,7 +2137,11 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		// wrap-up turn breaks the loop right after, so skipping streak
 		// bookkeeping for the forced tool is harmless. Also covers the whole-run
 		// ForceStructOutput path (RunWith).
-		if provider.ForcedTool(ctx) != toolCall.Name && tracker.Blocked(toolCall.Name, toolCall.Input) {
+		// Parallel calls are admitted together before dispatch. Sequential calls
+		// must be checked immediately before execution: earlier results in this
+		// batch can establish a loop or deliver input that clears one.
+		parallel := a.allowParallelism && tool.AllowParallelism(allToolCalls[i], allToolCalls)
+		if parallel && provider.ForcedTool(ctx) != toolCall.Name && tracker.Blocked(toolCall.Name, toolCall.Input) {
 			streak := tracker.streakCount[toolCall.Name]
 			logging.Warn("Tool call loop detected",
 				"tool", toolCall.Name,
@@ -2152,7 +2159,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		}
 
 		entry := toolEntry{index: i, tool: tool, toolCall: toolCall}
-		if a.allowParallelism && tool.AllowParallelism(allToolCalls[i], allToolCalls) {
+		if parallel {
 			entry.parallel = true
 			parallelGroup = append(parallelGroup, entry)
 		} else {
@@ -2253,6 +2260,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 				case res := <-ch:
 					toolResult, toolErr = res.resp, res.err
 					executed[e.index] = true
+					deliveredInput[e.index] = toolResult.UserInputDelivered
 				}
 
 				gauge := time.Since(now).Milliseconds()
@@ -2435,6 +2443,17 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		default:
 		}
 
+		if provider.ForcedTool(ctx) != entry.toolCall.Name && tracker.Blocked(entry.toolCall.Name, entry.toolCall.Input) {
+			streak := tracker.streakCount[entry.toolCall.Name]
+			logging.Warn("Tool call loop detected", "tool", entry.toolCall.Name, "streak", streak, "session_id", sessionID)
+			record(entry.index, message.ToolResult{
+				ToolCallID: entry.toolCall.ID, Name: entry.toolCall.Name,
+				Content: loopDetectedMessage(entry.toolCall.Name, streak), IsError: true,
+			})
+			unexecuted[entry.index] = true
+			continue
+		}
+
 		// Start Langfuse tool span
 		if lfClient != nil && lfClient.Enabled() {
 			var seqToolInput any
@@ -2481,6 +2500,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 			Name:  entry.toolCall.Name,
 			Input: seqMutatedInput,
 		})
+		deliveredInput[entry.index] = toolResult.UserInputDelivered
 		gauge := time.Since(now).Milliseconds()
 		if toolErr != nil {
 			if seqToolSpan != nil {
