@@ -1,0 +1,12 @@
+- [ ] 1.1 `internal/dryrun`: a process-wide mode and root set once from `--dry-run-root`, with a test that an async subagent's write is intercepted
+- [ ] 1.2 `MCPServer.DryRun{Read, Write []string}` in config, with a load test
+- [ ] 1.3 `Intercept` at the top of `runToolBounded`: local built-ins run, MCP reads and pass-through tools run, MCP writes recorded and faked, unclassified refused; the orchestrator server lists `createJob` under `dryRun.passthrough`. The tests use a fake MCP server that fails the test if a write reaches it
+- [ ] 1.4 Bash classifier on the `EvaluateBashPermission` parser: basename match for `git`, `glab`, `curl`, `wget`, in pipes, chains, subshells and `$(…)`; the whole script is skipped when one command is faked
+- [ ] 1.5 PATH shims for `git`, `glab`, `curl` through `toolenv.Environ()` as the second layer, with the shell respawned at run start
+- [ ] 1.6 Bridge and flow chat posts dropped; `` !`cmd` `` markup and hook commands through the classifier; webfetch GET-only
+- [ ] 1.7 Fake ids from the reserved range, per-run store, read-after-write from the store, dry-run error for an unknown fake id
+- [ ] 1.8 `dryRun`, `intercepted` and `fakeId` in the tool response metadata of every handled call, with a test that the trace span of a faked call carries them
+- [ ] 1.9 `--dry-run-root` CLI flag, root validated as `[A-Za-z0-9-]+`; an unknown CLI flag exits non-zero before any tool call, with a test for each
+- [ ] 1.10 `RunWithOptions` puts `dry-run-<root>-` in front of the session prefix in dry-run, resolved or caller-given, with a test that live rows on the same issue are untouched
+- [ ] 2.1 piano-developer `.agents.opencode.json`: `dryRun.read` / `dryRun.write` for the GitLab, Jira and TeamCity servers, reviewed tool by tool
+- [ ] 2.2 After deploy to dev: the c2-agent task 2.1 run
