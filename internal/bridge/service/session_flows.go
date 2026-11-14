@@ -196,7 +196,7 @@ func (s *Service) deliverSessionFlowEvent(ctx context.Context, event app.FlowRun
 	default:
 		return
 	}
-	if event.Type != "session.flow.step" && event.Output != "" {
+	if event.Type != "session.flow.step" && event.Type != "session.flow.completed" && event.Output != "" {
 		body += "\n\n" + event.Output
 	}
 	for _, binding := range bindings {

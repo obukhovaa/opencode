@@ -154,6 +154,37 @@ func TestStoredNamedFlowRunsWithoutOpenSpecAndAllowsSequentialRuns(t *testing.T)
 		require.Equal(t, root, conv)
 	}
 }
+func TestStoredSkipEmitsCompletedStepEvent(t *testing.T) {
+	a, actor, root, home, ctx := newStoredWorkflow(t)
+	writeNamedWorkflow(t, home)
+	actor.pause = true
+	requests := a.Questions.Subscribe(ctx)
+	_, err := a.SubmitFlow(ctx, root, tools.FlowRequest{Operation: "run", FlowID: "existing", Args: map[string]any{"goal": "skip"}, InvocationID: "skip"})
+	require.NoError(t, err)
+	select {
+	case q := <-requests:
+		require.NoError(t, a.Questions.Reply(q.Payload.ID, [][]string{{"Yes"}}))
+	case <-ctx.Done():
+		t.Fatal("question absent")
+	}
+	select {
+	case <-actor.started:
+	case <-ctx.Done():
+		t.Fatal("step absent")
+	}
+	require.NoError(t, a.ControlFlow(ctx, root, "first", "skip"))
+	waitWorkflowIdle(t, ctx, a, root)
+	events, err := a.ReplayFlowEvents(ctx, root, "", 100)
+	require.NoError(t, err)
+	skipped := false
+	for _, event := range events {
+		if event.Type == "session.flow.step" && event.StepID == "first" && event.Status == "completed" {
+			skipped = true
+			require.Equal(t, "Skipped by user", event.Output)
+		}
+	}
+	require.True(t, skipped, "skipped step output must reach bridge subscribers")
+}
 func TestStoredNamedResumeUsesSnapshotAndDurableSteering(t *testing.T) {
 	a, actor, root, home, ctx := newStoredWorkflow(t)
 	pending, err := a.PendingFlowMessages(ctx, root)
@@ -368,7 +399,8 @@ func TestNewAppSharesDerivedProjectWithDurableFlows(t *testing.T) {
 	cfg.WorkingDir = home
 	cfg.MCPServers = map[string]config.MCPServer{}
 	cfg.Providers[models.ProviderAnthropic] = config.Provider{APIKey: "test-key"}
-	for id, entry := range cfg.Agents {
+	for _, id := range []config.AgentName{config.AgentCoder, config.AgentHivemind, config.AgentSummarizer, config.AgentDescriptor} {
+		entry := cfg.Agents[id]
 		entry.Model = models.Claude45Haiku
 		cfg.Agents[id] = entry
 	}

@@ -87,8 +87,51 @@ func TestSessionFlowOutputOutlivesSubmittingTurn(t *testing.T) {
 	c := &testSessionFlows{run: flowrun.Run{ID: "run", ConversationID: "S1", Status: "running"}}
 	svc.sessionFlows = c
 	svc.deliverSessionFlowEvent(context.Background(), app.FlowRunEvent{ID: "event", RunID: "run", ConversationID: "S1", Type: "session.flow.completed", Output: "result"})
-	if len(adapter.Sends()) != 1 || len(c.receipts) != 1 {
-		t.Fatalf("sends=%v receipts=%v", adapter.Sends(), c.receipts)
+	sends := adapter.Sends()
+	if len(sends) != 1 || len(c.receipts) != 1 {
+		t.Fatalf("sends=%v receipts=%v", sends, c.receipts)
+	}
+	if sends[0].Text != "Workflow completed." {
+		t.Fatalf("completion output=%q", sends[0].Text)
+	}
+}
+func TestSessionFlowCompletionDoesNotRepeatTerminalStepOutput(t *testing.T) {
+	svc, _ := newOrchestratorForTest(t)
+	adapter := newStubAdapter("slack", "default")
+	svc.adapters[adapterKey("slack", "default")] = adapter
+	_, err := svc.store.UpsertBinding(context.Background(), store.Binding{ProjectID: "proj", Channel: "slack", IdentityID: "default", PeerID: "D1", SessionID: "S1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &testSessionFlows{run: flowrun.Run{ID: "run", ConversationID: "S1", Status: "running"}}
+	svc.sessionFlows = c
+	svc.deliverSessionFlowEvent(context.Background(), app.FlowRunEvent{ID: "step-event", RunID: "run", ConversationID: "S1", Type: "session.flow.step", StepID: "finish", Status: "completed", Output: "result"})
+	svc.deliverSessionFlowEvent(context.Background(), app.FlowRunEvent{ID: "completion-event", RunID: "run", ConversationID: "S1", Type: "session.flow.completed", Output: "Step finish:\nresult"})
+	sends := adapter.Sends()
+	if len(sends) != 2 || len(c.receipts) != 2 {
+		t.Fatalf("sends=%v receipts=%v", sends, c.receipts)
+	}
+	if sends[0].Text != "finish · completed\n\nresult" {
+		t.Fatalf("step output=%q", sends[0].Text)
+	}
+	if sends[1].Text != "Workflow completed." {
+		t.Fatalf("completion output=%q", sends[1].Text)
+	}
+}
+func TestSessionFlowFailureIncludesOutput(t *testing.T) {
+	svc, _ := newOrchestratorForTest(t)
+	adapter := newStubAdapter("slack", "default")
+	svc.adapters[adapterKey("slack", "default")] = adapter
+	_, err := svc.store.UpsertBinding(context.Background(), store.Binding{ProjectID: "proj", Channel: "slack", IdentityID: "default", PeerID: "D1", SessionID: "S1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &testSessionFlows{run: flowrun.Run{ID: "run", ConversationID: "S1", Status: "running"}}
+	svc.sessionFlows = c
+	svc.deliverSessionFlowEvent(context.Background(), app.FlowRunEvent{ID: "event", RunID: "run", ConversationID: "S1", Type: "session.flow.failed", Output: "failure"})
+	sends := adapter.Sends()
+	if len(sends) != 1 || sends[0].Text != "Workflow failed.\n\nfailure" {
+		t.Fatalf("sends=%v", sends)
 	}
 }
 func TestSessionFlowQuestionSurvivesWaiterReplacement(t *testing.T) {

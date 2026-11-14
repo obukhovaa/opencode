@@ -794,6 +794,9 @@ func (app *App) emitStoredEvent(ctx context.Context, run *dynamicRun, event Flow
 	record := *run.record
 	lease := run.lease
 	run.mu.Unlock()
+	return app.emitStoredFlowEvent(ctx, record, lease, event)
+}
+func (app *App) emitStoredFlowEvent(ctx context.Context, record flowrun.Run, lease flowrun.Lease, event FlowRunEvent) error {
 	event.RunID = record.ID
 	event.ConversationID = record.ConversationID
 	event.Kind = record.Kind
@@ -1693,6 +1696,9 @@ func (app *App) controlStoredFlow(ctx context.Context, conversation, step, actio
 			}
 			_, err = app.FlowRuns.FencedQuerier(lease).UpdateFlowState(ctx, db.UpdateFlowStateParams{SessionID: row.SessionID, Status: "completed", Args: row.Args, Output: sql.NullString{String: "Skipped by user", Valid: true}, Iteration: row.Iteration})
 			if err != nil {
+				return err
+			}
+			if err = app.emitStoredFlowEvent(ctx, record, lease, FlowRunEvent{Type: "session.flow.step", Status: "completed", StepID: row.StepID, SessionID: row.SessionID, Output: "Skipped by user"}); err != nil {
 				return err
 			}
 			if err = app.FlowRuns.Release(ctx, lease, "suspended"); err != nil {
