@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -145,23 +146,45 @@ func TestCountTokensDisablesAfter404(t *testing.T) {
 	}
 }
 
-// TestCountTokensSuccessPathUnchanged confirms a working endpoint is used
-// normally and never latches the unsupported flag.
-func TestCountTokensSuccessPathUnchanged(t *testing.T) {
+// TestKimiCountTokensUsesEstimateEndpoint confirms Kimi bypasses the
+// Anthropic count_tokens route and uses Moonshot's estimate API instead.
+func TestKimiCountTokensUsesEstimateEndpoint(t *testing.T) {
 	var hits atomic.Int32
 	var authHeader atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		authHeader.Store(r.Header.Get("Authorization"))
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/tokenizers/estimate-token-count" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if body["model"] != "kimi-k3" {
+			t.Errorf("model = %v, want kimi-k3", body["model"])
+		}
+		if _, ok := body["tools"]; ok {
+			t.Error("estimate endpoint does not accept tool schemas")
+		}
+		messages, _ := body["messages"].([]any)
+		if len(messages) != 1 {
+			t.Fatalf("messages = %v, want the system prompt", body["messages"])
+		}
+		system, _ := messages[0].(map[string]any)
+		if system["role"] != "system" || system["content"] != "count this prompt" {
+			t.Errorf("system message = %v", system)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"input_tokens": 42}`))
+		_, _ = w.Write([]byte(`{"data":{"total_tokens":42}}`))
 	}))
 	defer srv.Close()
 
 	client := newAnthropicClient(providerClientOptions{
-		apiKey:  "test-key",
-		baseURL: srv.URL,
-		model:   models.KimiModels[models.KimiK3],
+		apiKey:        "test-key",
+		baseURL:       srv.URL + "/anthropic",
+		model:         models.KimiModels[models.KimiK3],
+		systemMessage: "count this prompt",
 	}).(*anthropicClient)
 
 	for i := range 2 {
@@ -176,8 +199,6 @@ func TestCountTokensSuccessPathUnchanged(t *testing.T) {
 	if got := hits.Load(); got != 2 {
 		t.Fatalf("expected 2 endpoint hits, got %d", got)
 	}
-	// Base-URL-configured clients authenticate with a Bearer token — the
-	// auth shape Moonshot's Anthropic-compatible endpoint expects.
 	if got, _ := authHeader.Load().(string); got != "Bearer test-key" {
 		t.Fatalf("Authorization = %q, want Bearer test-key", got)
 	}
@@ -194,7 +215,7 @@ func TestCountTokensKimiCarriesNoDocumentBlocks(t *testing.T) {
 		raw, _ := io.ReadAll(r.Body)
 		body.Store(string(raw))
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"input_tokens": 42}`))
+		_, _ = w.Write([]byte(`{"data":{"total_tokens":42}}`))
 	}))
 	defer srv.Close()
 
@@ -283,6 +304,76 @@ func TestCountTokensTransientErrorDoesNotLatch(t *testing.T) {
 	}
 	if got := int(hits.Load()); got != calls {
 		t.Fatalf("500s must keep probing below the threshold, probes = %d, want %d", got, calls)
+	}
+}
+
+func TestKimiTokenCountEndpoint(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{"default", "", "https://api.moonshot.ai/v1/tokenizers/estimate-token-count"},
+		{"native base", "https://api.moonshot.ai/anthropic", "https://api.moonshot.ai/v1/tokenizers/estimate-token-count"},
+		{"trailing slash", "https://api.moonshot.ai/anthropic/", "https://api.moonshot.ai/v1/tokenizers/estimate-token-count"},
+		{"coding override", "https://api.kimi.ai/coding", "https://api.kimi.ai/coding/v1/tokenizers/estimate-token-count"},
+		{"proxy base path", "https://proxy.example/kimi/anthropic", "https://proxy.example/kimi/v1/tokenizers/estimate-token-count"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := kimiTokenCountEndpoint(tt.baseURL)
+			if err != nil {
+				t.Fatalf("kimiTokenCountEndpoint: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("endpoint = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	if _, err := kimiTokenCountEndpoint("://bad-url"); err == nil {
+		t.Fatal("expected an invalid base URL to fail")
+	}
+}
+
+func TestKimiTokenMessagesIncludeAgenticHistoryAndImages(t *testing.T) {
+	client := newAnthropicClient(providerClientOptions{
+		model:         models.KimiModels[models.KimiK31Pro],
+		systemMessage: "system prompt",
+	}).(*anthropicClient)
+	messages := []message.Message{
+		newMsg(message.User,
+			message.TextContent{Text: "look at this"},
+			message.BinaryContent{MIMEType: "image/png", Data: testPNG(t)},
+		),
+		newMsg(message.Assistant,
+			message.TextContent{Text: "checking"},
+			message.ToolCall{ID: "call-1", Name: "bash", Input: `{"command":"pwd"}`, Type: "function"},
+		),
+		newMsg(message.Tool, message.ToolResult{ToolCallID: "call-1", Name: "bash", Content: "/workdir"}),
+	}
+	payload, err := json.Marshal(kimiTokenCountRequest{
+		Model:    "kimi-k3.1-pro",
+		Messages: client.kimiTokenMessages(messages),
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	body := string(payload)
+	for _, want := range []string{
+		`"model":"kimi-k3.1-pro"`,
+		`"role":"system","content":"system prompt"`,
+		`"type":"image_url"`,
+		`"image_url":{"url":"data:image/png;base64,`,
+		`bash`,
+		`pwd`,
+		`"role":"tool","content":"/workdir"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("request does not contain %s: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `"tools"`) || strings.Contains(body, `"tool_calls"`) {
+		t.Fatalf("request uses fields absent from the estimate API: %s", body)
 	}
 }
 

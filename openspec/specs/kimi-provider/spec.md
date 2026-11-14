@@ -80,19 +80,23 @@ The system SHALL register `bedrock.kimi-k3` (API model `global.moonshotai.kimi-k
 - **WHEN** a flow step overrides `reasoningEffort` for an agent on `bedrock.kimi-k3`
 - **THEN** `max` passes `models.ValidateReasoningEffort` and `xhigh` is rejected
 
-### Requirement: Missing count_tokens endpoint degrades quietly
-When an Anthropic-dialect endpoint responds 404 or 405 to a token-count request, the client SHALL mark the endpoint unsupported for the remainder of the session and resolve subsequent token counts via the local estimation strategy without further count_tokens HTTP calls.
+### Requirement: Kimi uses native token estimation with local fallback
+Native `kimi` provider token counting SHALL use Moonshot's `POST /v1/tokenizers/estimate-token-count` endpoint instead of Anthropic's `/v1/messages/count_tokens`. The estimator URL SHALL be derived from the configured Kimi base URL by removing a trailing `/anthropic` and appending the estimator path. Requests SHALL authenticate with the configured Bearer key and carry the API model and messages, including the system prompt and supported image content. Because the estimator does not accept tool schemas, the endpoint result SHALL be floored by the local estimate that includes system and tools. Errors SHALL fall back to local estimation; a 404 or 405 SHALL mark the estimator unsupported for that provider client and skip further HTTP calls.
 
-#### Scenario: Endpoint without count_tokens
-- **WHEN** a count_tokens call returns HTTP 404
+#### Scenario: Native estimate succeeds
+- **WHEN** token counting runs for a `kimi` model with the default base URL
+- **THEN** the client posts the model and messages to `https://api.moonshot.ai/v1/tokenizers/estimate-token-count` and uses `data.total_tokens`, floored by the local estimate
+
+#### Scenario: Base URL override
+- **WHEN** `providers.kimi.baseURL` names an Anthropic-compatible override
+- **THEN** the estimator remains on the same origin and base path with the trailing `/anthropic` segment replaced by `/v1/tokenizers/estimate-token-count`
+
+#### Scenario: Endpoint without token estimation
+- **WHEN** the estimator returns HTTP 404 or 405
 - **THEN** the call falls back to the local estimate, and subsequent iterations skip the HTTP call entirely while auto-compaction continues to function against the model's context window
 
-#### Scenario: Endpoint with count_tokens
-- **WHEN** count_tokens succeeds
-- **THEN** behavior is unchanged from other anthropic-dialect providers (endpoint result floored by the local estimate)
-
 ### Requirement: Kimi requests carry no document blocks
-Moonshot's Anthropic-compatible endpoint rejects every `document` content block — base64 PDF and plain-text source alike — with a bare `400 invalid_request_error` ("Invalid request Error") on both `/v1/messages` and `/v1/messages/count_tokens`, while text and image blocks pass. Because attachments persist in session history, one such block fails every later turn of the session. Requests to a `kimi` provider model SHALL therefore never contain a document block: a PDF attachment SHALL be replaced by the unsupported-attachment note naming its saved path, a valid UTF-8 `text/*` attachment SHALL be inlined as a text block headed `[Attached file, saved at "<path>"]` (or `[Attached file]` when unsaved), and image attachments SHALL keep their image blocks. Token counting SHALL use the same conversion. Other anthropic-dialect providers keep document blocks. Kimi K3 on Bedrock is unaffected: its OpenAI chat-completions path sends a PDF as a `file` part, which Bedrock accepts.
+Moonshot's Anthropic-compatible endpoint rejects every `document` content block — base64 PDF and plain-text source alike — with a bare `400 invalid_request_error` ("Invalid request Error") on `/v1/messages`, while text and image blocks pass. Because attachments persist in session history, one such block fails every later turn of the session. Requests to a `kimi` provider model SHALL therefore never contain a document block: a PDF attachment SHALL be replaced by the unsupported-attachment note naming its saved path, a valid UTF-8 `text/*` attachment SHALL be inlined as a text block headed `[Attached file, saved at "<path>"]` (or `[Attached file]` when unsaved), and image attachments SHALL keep their image blocks. Token counting SHALL use the same attachment conversion, rendered in the estimate endpoint's content dialect. Other anthropic-dialect providers keep document blocks. Kimi K3 on Bedrock is unaffected: its OpenAI chat-completions path sends a PDF as a `file` part, which Bedrock accepts.
 
 #### Scenario: PDF in a Kimi session
 - **WHEN** a session on `kimi.kimi-k3` holds a PDF attachment saved at `.opencode/bridge/media/scan.pdf`

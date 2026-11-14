@@ -2134,6 +2134,9 @@ func stripMediaForCountTokens(messages []anthropic.MessageParam) ([]anthropic.Me
 }
 
 func (a *anthropicClient) countTokens(ctx context.Context, messages []message.Message, tools []toolsPkg.BaseTool) (int64, error) {
+	if a.providerOptions.model.Provider == models.ProviderKimi {
+		return a.countKimiTokens(ctx, messages)
+	}
 	if a.countTokensUnsupported.Load() {
 		return 0, fmt.Errorf("count_tokens previously answered 404/405 on this endpoint: %w", errors.ErrUnsupported)
 	}

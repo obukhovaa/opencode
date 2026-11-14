@@ -412,7 +412,7 @@ func NewProvider(providerName models.ModelProvider, opts ...ProviderClientOption
 		// anthropic client: adaptive thinking + effort, thinking/tool
 		// streaming, and Bearer auth via the baseURL→WithAuthToken path.
 		if clientOptions.baseURL == "" {
-			clientOptions.baseURL = "https://api.moonshot.ai/anthropic"
+			clientOptions.baseURL = defaultKimiBaseURL
 		}
 		return &baseProvider[AnthropicClient]{
 			options: clientOptions,
