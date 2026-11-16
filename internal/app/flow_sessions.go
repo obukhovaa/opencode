@@ -1679,11 +1679,26 @@ func (app *App) controlStoredFlow(ctx context.Context, conversation, step, actio
 		return err
 	}
 	defer app.FlowRuns.Release(context.Background(), lease, "")
-	if action == "terminate" {
-		return app.FlowRuns.Transition(ctx, lease, "terminated")
-	}
-	if action == "cancel" {
-		return app.FlowRuns.Transition(ctx, lease, "suspended")
+	if action == "terminate" || action == "cancel" {
+		status := "suspended"
+		if action == "terminate" {
+			status = "terminated"
+		}
+		// There is no runner left to publish this control outcome. Commit it
+		// with the state transition so reconnecting bridges can replay it.
+		event := FlowRunEvent{Type: "session.flow." + status, Status: status, RunID: record.ID, ConversationID: record.ConversationID, Kind: record.Kind, Origin: record.Origin, Revision: record.Version, Fence: lease.Token}
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		stored, err := app.FlowRuns.TransitionEvent(ctx, lease, status, uuid.NewString(), event.Type, payload)
+		if err != nil {
+			return err
+		}
+		event.ID = stored.ID
+		event.Sequence = stored.Sequence
+		app.publishFlowEvent(event)
+		return nil
 	}
 	rows, err := app.flowQuery.ListFlowStatesByRootSession(ctx, record.ID)
 	if err != nil {

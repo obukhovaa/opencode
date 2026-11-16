@@ -1014,3 +1014,31 @@ func TestStoredQuestionStartConsumesInputAcceptedBeforeAsk(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, pending)
 }
+
+func TestStoredIdleControlPublishesDurableOutcome(t *testing.T) {
+	for _, tc := range []struct{ action, status string }{{"cancel", "suspended"}, {"terminate", "terminated"}} {
+		t.Run(tc.action, func(t *testing.T) {
+			a, _, root, _, ctx := newStoredWorkflow(t)
+			record, _, err := a.FlowRuns.Create(ctx, flowrun.Run{ID: "idle-control", ConversationID: root, Kind: "named", Status: "failed", InvocationID: "idle-control", Snapshot: json.RawMessage(`{}`), Origin: json.RawMessage(`{}`)})
+			require.NoError(t, err)
+			live := a.SubscribeFlowEvents(ctx)
+			require.NoError(t, a.ControlFlow(ctx, root, "", tc.action))
+			stored, err := a.FlowRuns.Get(ctx, record.ID)
+			require.NoError(t, err)
+			require.Equal(t, tc.status, stored.Status)
+			events, err := a.ReplayFlowEvents(ctx, root, "", 100)
+			require.NoError(t, err)
+			require.Len(t, events, 1, "paused flow controls must remain observable after reconnect")
+			require.Equal(t, "session.flow."+tc.status, events[0].Type)
+			require.Equal(t, tc.status, events[0].Status)
+			require.Equal(t, record.ID, events[0].RunID)
+			require.Greater(t, events[0].Fence, int64(0))
+			select {
+			case event := <-live:
+				require.Equal(t, events[0].ID, event.Payload.ID)
+			case <-time.After(time.Second):
+				t.Fatal("control outcome was not published to connected subscribers")
+			}
+		})
+	}
+}
