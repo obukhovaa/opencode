@@ -31,6 +31,7 @@ var (
 	ErrInvalidReasoningEffort    = errors.New("invalid step reasoningEffort")
 	ErrInvalidMaxFallbackEntries = errors.New("invalid maxFallbackEntries")
 	ErrFallbackCycle             = errors.New("fallback cycle")
+	ErrInvalidDenyTools          = errors.New("invalid step denyTools")
 )
 
 // Flow represents a discovered flow definition.
@@ -135,9 +136,13 @@ type Step struct {
 	// runs on (the Model override when set, else the agent's model), so
 	// e.g. `xhigh` on a model without SupportsXHighThinking fails the
 	// step. Inheritable through `extends`.
-	ReasoningEffort string      `yaml:"reasoningEffort,omitempty"`
-	Session         StepSession `yaml:"session,omitempty"`
-	Prompt          string      `yaml:"prompt"`
+	ReasoningEffort string `yaml:"reasoningEffort,omitempty"`
+	// DenyTools lists tool-name globs this step's agent and the subagents
+	// it spawns run without (tools.WithDeniedTools carries them). Literal
+	// only; inheritable through `extends`; rejected in dynamic flows.
+	DenyTools []string    `yaml:"denyTools,omitempty"`
+	Session   StepSession `yaml:"session,omitempty"`
+	Prompt    string      `yaml:"prompt"`
 	// LangfusePromptPath names a prompt in Langfuse Prompt Management to
 	// use instead of the inline Prompt, so wording changes ship from the
 	// Langfuse UI with no flow or image deploy. Slashes are part of the
