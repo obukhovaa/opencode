@@ -89,6 +89,7 @@ Any string value can reference the environment with `${VAR}` or `${VAR:-default}
 | Key | Guide |
 |-----|-------|
 | `providers` | [Providers & models](providers.md) |
+| `customModels` | [Config-defined models](providers.md#config-defined-models) |
 | `agents`, `agentPaths` | [Agents](agents.md) |
 | `permission` | [Permissions](#permissions) below, [tool permissions](tool-permissions.md) |
 | `autoCompact` | [Compaction](compaction.md) |

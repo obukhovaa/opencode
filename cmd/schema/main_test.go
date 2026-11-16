@@ -200,6 +200,27 @@ func TestSchemaEnumsMatchRuntimeValidators(t *testing.T) {
 			},
 		},
 		{
+			name:    "customModels.wire",
+			path:    []string{"customModels", "items", "wire"},
+			accepts: config.IsCustomModelWire,
+			probe: []string{
+				"anthropic-messages", "openai-chat", "anthropic", "openai",
+				"messages", "chat", "chat-completions", "openai-chat-completions",
+				"converse", "responses", "Anthropic-Messages", "OPENAI-CHAT",
+				" openai-chat", "openai-chat ", "",
+			},
+		},
+		{
+			name: "customModels.defaultReasoningEffort",
+			path: []string{"customModels", "items", "defaultReasoningEffort"},
+			accepts: func(v string) bool {
+				// Same rule as agents.*.reasoningEffort: compared
+				// case-insensitively, published lowercase.
+				return v == strings.ToLower(v) && models.IsReasoningEffort(v)
+			},
+			probe: []string{"low", "medium", "high", "xhigh", "max", "none", "minimal", "maximum", " high"},
+		},
+		{
 			name: "telemetry.redaction.mode",
 			path: []string{"telemetry", "redaction", "mode"},
 			accepts: func(v string) bool {
@@ -294,14 +315,16 @@ func TestSchemaIsUpToDate(t *testing.T) {
 func TestSchemaEnvironmentReferences(t *testing.T) {
 	doc := loadSchema(t)
 	props := doc["properties"].(map[string]any)
+	agentModel := props["agents"].(map[string]any)["additionalProperties"].(map[string]any)["properties"].(map[string]any)["model"].(map[string]any)
 	nodes := []map[string]any{
 		props["maxTurns"].(map[string]any),
 		props["autoCompact"].(map[string]any),
-		props["agents"].(map[string]any)["additionalProperties"].(map[string]any)["properties"].(map[string]any)["model"].(map[string]any),
+		agentModel,
 	}
 	for _, node := range nodes {
 		branches, ok := node["anyOf"].([]any)
-		if !ok || len(branches) != 2 {
+		// The agent model has a third branch: config-defined model ids.
+		if !ok || len(branches) < 2 {
 			t.Fatal("missing interpolation alternative")
 		}
 		literal := branches[0].(map[string]any)
@@ -322,6 +345,23 @@ func TestSchemaEnvironmentReferences(t *testing.T) {
 			if pattern.MatchString(value) {
 				t.Fatalf("literal accepted as a reference: %q", value)
 			}
+		}
+	}
+	// Agent model ids that match the custom pattern validate through the
+	// third branch, which must agree with the runtime id check.
+	branches := agentModel["anyOf"].([]any)
+	if len(branches) != 3 {
+		t.Fatalf("agent model has %d anyOf branches, want 3 (enum, reference, custom id)", len(branches))
+	}
+	custom := regexp.MustCompile(branches[2].(map[string]any)["pattern"].(string))
+	for _, id := range []string{"bedrock.acme-large", "bedrock.us-acme.v1_2", "bedrock.kimi-k3.1"} {
+		if !custom.MatchString(id) || !models.CustomModelIDRegexp.MatchString(id) {
+			t.Fatalf("custom model id rejected: %s", id)
+		}
+	}
+	for _, id := range []string{"bedrock.", "Bedrock.acme", "vertexai.acme", "bedrock.Acme", "bedrock.-acme", "acme"} {
+		if custom.MatchString(id) || models.CustomModelIDRegexp.MatchString(id) {
+			t.Fatalf("custom model id accepted: %s", id)
 		}
 	}
 	ids := enumAt(t, doc, "agents", "*", "model")

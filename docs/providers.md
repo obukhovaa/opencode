@@ -15,6 +15,48 @@ An agent's `model` is a model ID such as `vertexai.claude-opus-4-6` or `kimi.kim
 | **Kimi (Moonshot)** | Kimi K3.1 Pro (1M), Kimi K3.1 Pro Highspeed (1M), Kimi K3 (1M), Kimi K2.7 Code, Kimi K2.7 Code Highspeed |
 | **Local** | Any OpenAI-compatible API |
 
+## Config-defined models
+
+`customModels` adds Bedrock models without a release, for example a newcomer for a model pool. Config load registers every entry into the catalog before it validates agents, so agents, flow step `model` values and pools accept the id like a built-in's, and the Bedrock client routes it by `wire`.
+
+```json
+{
+  "customModels": [
+    {
+      "id": "bedrock.acme-large",
+      "name": "Bedrock US: Acme Large",
+      "provider": "bedrock",
+      "wire": "openai-chat",
+      "apiModel": "us.acme.large-v1",
+      "costPer1MIn": 1.5,
+      "costPer1MOut": 6,
+      "costPer1MInCached": 1.875,
+      "costPer1MOutCached": 0.15,
+      "contextWindow": 400000,
+      "defaultMaxTokens": 64000,
+      "canReason": true,
+      "supportsXHighThinking": true,
+      "defaultReasoningEffort": "medium"
+    }
+  ]
+}
+```
+
+| Field | Notes |
+|---|---|
+| `id` | Required, `^bedrock\.[a-z0-9][a-z0-9._-]*$`. An id that is already a built-in model is ignored with a warning; the built-in wins. |
+| `provider` | Required, `bedrock`. |
+| `wire` | Required. `anthropic-messages` for Claude, `openai-chat` for models InvokeModel serves with chat-completions bodies (Kimi, GPT). |
+| `apiModel` | Required. The model or inference-profile id Bedrock gets. |
+| `costPer1MIn`, `costPer1MOut` | Required, positive, USD per million tokens. `costPer1MInCached` (cache writes) and `costPer1MOutCached` (cache reads) default to 0. |
+| `contextWindow`, `defaultMaxTokens` | Required, positive; output at most the window. |
+| `canReason`, `supportsMaximumThinking`, `supportsXHighThinking`, `supportsAttachments` | Capabilities. The thinking flags need `canReason`. |
+| `supportsAdaptiveThinking`, `supportsTaskBudget`, `supportsToolSearch`, `rejectsForcedToolChoice` | Anthropic request features; `anthropic-messages` only. |
+| `longContextThreshold`, `longContextCostMultiplier`, `longContextOutputCostMultiplier` | Long-prompt pricing; threshold and multiplier go together, the output multiplier is optional. |
+| `defaultReasoningEffort` | A level the model accepts; used when an agent sets none. |
+
+Any other violation of these rules fails the config load. Entries are registered once per load; restart to change them.
+
 ## Credentials
 
 ```json

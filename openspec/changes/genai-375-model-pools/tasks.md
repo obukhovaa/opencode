@@ -7,8 +7,8 @@
 
 ## 2. Config-defined models
 
-- [ ] 2.1 `customModels` config, strict validation, registration in `Load` before `Validate`, removal on `Reset` and failed loads.
-- [ ] 2.2 Schema property, third `anyOf` branch for agent `model`, `wire` enum probe, viper round-trip test, `docs/configuration.md` and `docs/providers.md`.
+- [x] 2.1 `customModels` config, strict validation, registration in `Load` before `Validate`, removal on `Reset` and failed loads.
+- [x] 2.2 Schema property, third `anyOf` branch for agent `model`, `wire` enum probe, viper round-trip test, `docs/configuration.md` and `docs/providers.md`.
 
 ## 3. Flow runtime
 
