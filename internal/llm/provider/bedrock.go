@@ -38,42 +38,31 @@ type BedrockClient ProviderClient
 func newBedrockClient(opts providerClientOptions) BedrockClient {
 	bedrockOpts := bedrockOptions{}
 
-	if models.IsBedrockKimi(opts.model.ID) {
-		// Kimi on Bedrock takes OpenAI chat-completions bodies, not
-		// Anthropic Messages, so it rides the OpenAI client with its
-		// requests rewritten onto the InvokeModel routes.
+	// Routed by wire format rather than catalog membership, so a Bedrock
+	// model defined in config (customModels) is served like a built-in.
+	var child ProviderClient
+	switch opts.model.Wire {
+	case models.WireOpenAIChat:
+		// OpenAI chat-completions bodies (Kimi, GPT): the OpenAI client,
+		// with its requests rewritten onto the InvokeModel routes.
 		openaiOpts := opts
 		openaiOpts.openaiOptions = append(openaiOpts.openaiOptions,
 			WithOpenAIBedrock(true),
 		)
-		return &bedrockClient{
-			providerOptions: opts,
-			options:         bedrockOpts,
-			childProvider:   newOpenAIClient(openaiOpts),
-		}
+		child = newOpenAIClient(openaiOpts)
+	case "", models.WireAnthropicMessages:
+		anthropicOpts := opts
+		anthropicOpts.anthropicOptions = append(anthropicOpts.anthropicOptions,
+			WithAnthropicBedrock(true),
+		)
+		child = newAnthropicClient(anthropicOpts)
 	}
 
-	for k := range models.BedrockAnthropicModels {
-		if k == opts.model.ID {
-			// Create Anthropic client with Bedrock configuration
-			anthropicOpts := opts
-			anthropicOpts.anthropicOptions = append(anthropicOpts.anthropicOptions,
-				WithAnthropicBedrock(true),
-			)
-			return &bedrockClient{
-				providerOptions: opts,
-				options:         bedrockOpts,
-				childProvider:   newAnthropicClient(anthropicOpts),
-			}
-		}
-	}
-
-	// Return client with nil childProvider if model is not supported
-	// This will cause an error when used
+	// A nil child (an unknown wire) errors on first use.
 	return &bedrockClient{
 		providerOptions: opts,
 		options:         bedrockOpts,
-		childProvider:   nil,
+		childProvider:   child,
 	}
 }
 

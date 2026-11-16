@@ -492,8 +492,9 @@ var BedrockAnthropicModels = map[ModelID]Model{
 // BedrockKimiModels are Moonshot's Kimi models on Bedrock. Unlike the Claude
 // entries above they do not speak Anthropic Messages: InvokeModel takes an
 // OpenAI chat-completions body and returns chat.completion (streaming as
-// EventStream frames wrapping chat.completion.chunk), so the bedrock provider
-// serves them through the OpenAI client — see provider/bedrock.go. Reasoning
+// EventStream frames wrapping chat.completion.chunk), so they carry
+// WireOpenAIChat and the bedrock provider serves them through the OpenAI
+// client — see provider/bedrock.go. Reasoning
 // is requested through the OpenAI-style reasoning_effort field rather than
 // adaptive thinking, but with K3's levels: low|high|max, max being the
 // documented default on Moonshot and AWS alike (Bedrock also accepts medium;
@@ -511,6 +512,7 @@ var BedrockKimiModels = map[ModelID]Model{
 		Name:                    "Bedrock: Kimi K3",
 		Provider:                ProviderBedrock,
 		APIModel:                "global.moonshotai.kimi-k3",
+		Wire:                    WireOpenAIChat,
 		CostPer1MIn:             3.0,
 		CostPer1MInCached:       3.75,
 		CostPer1MOut:            15.0,
@@ -526,6 +528,7 @@ var BedrockKimiModels = map[ModelID]Model{
 		Name:                    "Bedrock US: Kimi K3",
 		Provider:                ProviderBedrock,
 		APIModel:                "us.moonshotai.kimi-k3",
+		Wire:                    WireOpenAIChat,
 		CostPer1MIn:             3.0 * bedrockRegionalPremium,
 		CostPer1MInCached:       3.75 * bedrockRegionalPremium,
 		CostPer1MOut:            15.0 * bedrockRegionalPremium,
@@ -536,13 +539,6 @@ var BedrockKimiModels = map[ModelID]Model{
 		SupportsMaximumThinking: true,
 		SupportsAttachments:     true,
 	},
-}
-
-// IsBedrockKimi reports whether id is a Kimi model on Bedrock, i.e. one the
-// bedrock provider serves over the OpenAI chat-completions wire format.
-func IsBedrockKimi(id ModelID) bool {
-	_, ok := BedrockKimiModels[id]
-	return ok
 }
 
 // IsKimiK3 reports whether id is a Kimi K3-family deployment on any provider. K3

@@ -38,29 +38,50 @@ var bedrockKimiPrompt = []message.Message{
 	{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "weather in Oslo?"}}},
 }
 
-func TestNewBedrockClientRoutesKimiToOpenAI(t *testing.T) {
+// TestNewBedrockClientRoutesByWire pins the Bedrock routing on Model.Wire:
+// openai-chat to the OpenAI client with the InvokeModel middleware, an
+// empty or anthropic-messages wire to the Anthropic client — whether or not
+// the model is in the built-in catalog — and an unknown wire to no client.
+func TestNewBedrockClientRoutesByWire(t *testing.T) {
+	configClaude := models.SupportedModels[models.BedrockOpus48]
+	configClaude.ID = "bedrock.config-defined-claude"
+	configClaude.Wire = models.WireAnthropicMessages
+	unknownWire := configClaude
+	unknownWire.Wire = "grpc"
+
 	tests := []struct {
-		name       string
-		model      models.ModelID
-		wantOpenAI bool
+		name  string
+		model models.Model
+		want  string // "openai", "anthropic" or "none"
 	}{
-		{"global kimi", models.BedrockKimiK3, true},
-		{"us kimi", models.BedrockUSKimiK3, true},
-		{"claude", models.BedrockOpus48, false},
+		{"global kimi", models.SupportedModels[models.BedrockKimiK3], "openai"},
+		{"us kimi", models.SupportedModels[models.BedrockUSKimiK3], "openai"},
+		{"built-in claude", models.SupportedModels[models.BedrockOpus48], "anthropic"},
+		{"claude outside the catalog", configClaude, "anthropic"},
+		{"unknown wire", unknownWire, "none"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			b := newBedrockClient(providerClientOptions{
 				apiKey:    "test-key",
-				model:     models.SupportedModels[tt.model],
+				model:     tt.model,
 				maxTokens: 1024,
 			}).(*bedrockClient)
-			child, isOpenAI := b.childProvider.(*openaiClient)
-			if isOpenAI != tt.wantOpenAI {
-				t.Fatalf("child provider = %T, want openai = %v", b.childProvider, tt.wantOpenAI)
+			got := "none"
+			switch child := b.childProvider.(type) {
+			case *openaiClient:
+				got = "openai"
+				if !child.options.useBedrock {
+					t.Fatal("openai child is missing the bedrock middleware option")
+				}
+			case *anthropicClient:
+				got = "anthropic"
+			case nil:
+			default:
+				t.Fatalf("unexpected child provider %T", child)
 			}
-			if isOpenAI && !child.options.useBedrock {
-				t.Fatal("kimi openai child is missing the bedrock middleware option")
+			if got != tt.want {
+				t.Fatalf("child provider = %s, want %s", got, tt.want)
 			}
 		})
 	}
@@ -81,8 +102,8 @@ func TestBedrockKimiModels(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s not registered in SupportedModels", tt.id)
 			}
-			if !models.IsBedrockKimi(tt.id) {
-				t.Fatalf("IsBedrockKimi(%s) = false", tt.id)
+			if !m.BedrockOpenAIChat() {
+				t.Fatalf("%s is not an openai-chat Bedrock model", tt.id)
 			}
 			if _, ok := models.BedrockAnthropicModels[tt.id]; ok {
 				t.Fatalf("%s must not be an Anthropic Bedrock model", tt.id)
@@ -110,8 +131,8 @@ func TestBedrockKimiModels(t *testing.T) {
 			}
 		})
 	}
-	if models.IsBedrockKimi(models.BedrockOpus48) {
-		t.Fatal("IsBedrockKimi must be false for Claude on Bedrock")
+	if models.SupportedModels[models.BedrockOpus48].BedrockOpenAIChat() {
+		t.Fatal("Claude on Bedrock must not be an openai-chat model")
 	}
 	if !models.IsKimiK3(models.KimiK3) || models.IsKimiK3(models.KimiK27Code) || models.IsKimiK3(models.BedrockOpus48) {
 		t.Fatal("IsKimiK3 must cover exactly the K3 deployments")

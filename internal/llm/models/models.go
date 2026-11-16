@@ -3,27 +3,41 @@ package models
 type (
 	ModelID       string
 	ModelProvider string
+	// Wire is the request/response body format a provider serves a model
+	// with. Only Bedrock serves two (see Model.BedrockOpenAIChat).
+	Wire string
+)
+
+const (
+	// WireAnthropicMessages is Anthropic Messages bodies, the default for
+	// Bedrock models.
+	WireAnthropicMessages Wire = "anthropic-messages"
+	// WireOpenAIChat is OpenAI chat-completions bodies.
+	WireOpenAIChat Wire = "openai-chat"
 )
 
 type Model struct {
-	ID                       ModelID       `json:"id"`
-	Name                     string        `json:"name"`
-	Provider                 ModelProvider `json:"provider"`
-	APIModel                 string        `json:"api_model"`
-	CostPer1MIn              float64       `json:"cost_per_1m_in"`
-	CostPer1MOut             float64       `json:"cost_per_1m_out"`
-	CostPer1MInCached        float64       `json:"cost_per_1m_in_cached"`
-	CostPer1MOutCached       float64       `json:"cost_per_1m_out_cached"`
-	ContextWindow            int64         `json:"context_window"`
-	DefaultMaxTokens         int64         `json:"default_max_tokens"`
-	CanReason                bool          `json:"can_reason"`
-	SupportsAdaptiveThinking bool          `json:"supports_adaptive_thinking"`
-	SupportsMaximumThinking  bool          `json:"supports_maximum_thinking"`
-	SupportsXHighThinking    bool          `json:"supports_xhigh_thinking"`
-	SupportsTaskBudget       bool          `json:"supports_task_budget"`
-	SupportsToolSearch       bool          `json:"supports_tool_search"`
-	SupportsAttachments      bool          `json:"supports_attachments"`
-	UseLegacyMaxTokens       bool          `json:"use_legacy_max_tokens,omitempty"`
+	ID       ModelID       `json:"id"`
+	Name     string        `json:"name"`
+	Provider ModelProvider `json:"provider"`
+	APIModel string        `json:"api_model"`
+	// Wire is the body format the provider serves this model with; empty
+	// means the provider's only (or, on Bedrock, default) format.
+	Wire                     Wire    `json:"wire,omitempty"`
+	CostPer1MIn              float64 `json:"cost_per_1m_in"`
+	CostPer1MOut             float64 `json:"cost_per_1m_out"`
+	CostPer1MInCached        float64 `json:"cost_per_1m_in_cached"`
+	CostPer1MOutCached       float64 `json:"cost_per_1m_out_cached"`
+	ContextWindow            int64   `json:"context_window"`
+	DefaultMaxTokens         int64   `json:"default_max_tokens"`
+	CanReason                bool    `json:"can_reason"`
+	SupportsAdaptiveThinking bool    `json:"supports_adaptive_thinking"`
+	SupportsMaximumThinking  bool    `json:"supports_maximum_thinking"`
+	SupportsXHighThinking    bool    `json:"supports_xhigh_thinking"`
+	SupportsTaskBudget       bool    `json:"supports_task_budget"`
+	SupportsToolSearch       bool    `json:"supports_tool_search"`
+	SupportsAttachments      bool    `json:"supports_attachments"`
+	UseLegacyMaxTokens       bool    `json:"use_legacy_max_tokens,omitempty"`
 	// RejectsForcedToolChoice marks models whose API answers a forced
 	// tool_choice ("tool"/"any") with a 400 (Claude Opus 5.5, Claude Sonnet
 	// 5.5, Claude Fable 5.1). The Anthropic request builder runs a forced-tool
@@ -58,6 +72,14 @@ type Model struct {
 	// one. Empty means "high". Set it where Anthropic's own default is lower
 	// and is the recommended starting point (Claude Haiku 5.5: "medium").
 	DefaultReasoningEffort string `json:"default_reasoning_effort,omitempty"`
+}
+
+// BedrockOpenAIChat reports whether m is a Bedrock model served with OpenAI
+// chat-completions bodies, which the bedrock provider sends through the
+// OpenAI client rewritten onto the InvokeModel routes (provider/bedrock.go).
+// Every other Bedrock model speaks Anthropic Messages.
+func (m Model) BedrockOpenAIChat() bool {
+	return m.Provider == ProviderBedrock && m.Wire == WireOpenAIChat
 }
 
 const (
