@@ -138,6 +138,9 @@ func ParseDynamic(data, id, primary, size string, subagents map[string]bool) (*F
 		if step.Model != "" || step.ReasoningEffort != "" || step.Context != nil || step.Compact != nil {
 			return nil, fmt.Errorf("step %s cannot override model, context or compaction", step.ID)
 		}
+		if len(step.DenyTools) > 0 {
+			return nil, fmt.Errorf("step %s cannot set denyTools", step.ID)
+		}
 		if len(step.Extends) > 0 || step.LangfusePromptPath != "" || step.LangfusePromptLabel != "" {
 			return nil, fmt.Errorf("step %s must carry its own prompt", step.ID)
 		}

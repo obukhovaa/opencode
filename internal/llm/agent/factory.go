@@ -53,6 +53,10 @@ type stepCacheKey struct {
 	agentID string
 	model   models.ModelID
 	effort  string
+	// denied is the step's denyTools list (tools.DeniedTools), joined: the
+	// same step id with another list must not reuse a narrower or wider
+	// tool set.
+	denied string
 }
 
 // AgentFactory creates agent instances with optional output schema overrides.
@@ -279,7 +283,8 @@ func (f *agentFactory) QuestionService() question.Service {
 func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchema map[string]any, stepID string, interactive bool, boundPeers []bridge.PeerRef, stepCtx *contextfile.StepContext, flowVars contextfile.TemplateVars, override ModelOverride) (Service, error) {
 	_ = ctx
 	pinned := primaryFlowPrefixFrom(ctx, agentID)
-	cacheKey := stepCacheKey{prefix: pinned, scope: tools.FlowAgentScope(ctx), stepID: stepID, agentID: agentID, model: override.Model, effort: override.ReasoningEffort}
+	denied := tools.DeniedTools(ctx)
+	cacheKey := stepCacheKey{prefix: pinned, scope: tools.FlowAgentScope(ctx), stepID: stepID, agentID: agentID, model: override.Model, effort: override.ReasoningEffort, denied: strings.Join(denied, "\x00")}
 	if stepID != "" {
 		f.mu.Lock()
 		if svc, ok := f.stepCache[cacheKey]; ok {
@@ -334,7 +339,11 @@ func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchem
 	flowVars.Agent = agentID
 	infoCopy.ContextVars = flowVars
 
-	svc, err := newAgent(&infoCopy, f.sessions, f.messages, f.permissions, f.history, f.lspService, f.registry, f.mcpRegistry, f, override, pinned)
+	reg := f.registry
+	if len(denied) > 0 {
+		reg = deniedToolsRegistry{Registry: f.registry, deny: denied}
+	}
+	svc, err := newAgent(&infoCopy, f.sessions, f.messages, f.permissions, f.history, f.lspService, reg, f.mcpRegistry, f, override, pinned)
 	if err != nil {
 		return nil, fmt.Errorf("creating agent %q: %w", agentID, err)
 	}

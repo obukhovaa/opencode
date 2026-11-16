@@ -552,6 +552,11 @@ func TestTemplateKeyRule_TwoPart(t *testing.T) {
 					t.Errorf("LangfusePromptLabel = %q", s.LangfusePromptLabel)
 				}
 			}},
+			"denyTools": {"  denyTools: [\"gitlab_create_*\"]\n", func(t *testing.T, s Step) {
+				if len(s.DenyTools) != 1 || s.DenyTools[0] != "gitlab_create_*" {
+					t.Errorf("DenyTools = %q", s.DenyTools)
+				}
+			}},
 			"context": {"  context:\n    paths: [\"AGENTS.runtime.md\"]\n    mode: replace\n", func(t *testing.T, s Step) {
 				if s.Context == nil || len(s.Context.Paths) != 1 || s.Context.Paths[0] != "AGENTS.runtime.md" || s.Context.Mode != "replace" {
 					t.Errorf("Context = %#v", s.Context)

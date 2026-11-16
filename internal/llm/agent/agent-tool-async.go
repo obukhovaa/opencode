@@ -100,6 +100,9 @@ func (b *agentTool) runAsync(
 	// And the job args, so its MCP calls stamp the same flowArgHeaders.
 	jobArgs, _ := tools.JobArgsFromContext(ctx)
 	runCtx = tools.WithJobArgs(runCtx, jobArgs)
+	// And the step's denyTools, so the dispatch guard holds for the subagent
+	// and anything it spawns (its own tool set was built from ctx already).
+	runCtx = tools.WithDeniedTools(runCtx, tools.DeniedTools(ctx))
 	// Inherit the caller's NonInteractive marker from the PARENT turn ctx
 	// (runCtx is detached and carries no values) — see subagentRunOptions.
 	done, err := a.RunWith(runCtx, taskSession.ID, prompt, tools.FlowTaskTurns(ctx), subagentRunOptions(ctx))

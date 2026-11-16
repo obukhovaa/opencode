@@ -13,7 +13,7 @@
 ## 3. Flow runtime
 
 - [x] 3.1 Resolved `model` on every step state, `flow.step.*` event, `/flow/status` record and CLI result.
-- [ ] 3.2 `denyTools`: context carrier, registry wrapper in `NewAgent` with the list in the step cache key, dispatch guard, async subagent carry, load validation, rejected in dynamic flows.
+- [x] 3.2 `denyTools`: context carrier, registry wrapper in `NewAgent` with the list in the step cache key, dispatch guard, async subagent carry, load validation, rejected in dynamic flows.
 - [ ] 3.3 `bestEffort`: state and event flag; no run error and no error agent event for a failed best-effort step.
 - [ ] 3.4 `modelPool` / `modelSeed` / `modelShadowRate`: parsing, rendezvous pick, shadow sampling, effort clamp, `args.pool.<step id>`, reserved `pool`, literal validation, rejected in dynamic flows, include coverage samples.
 - [ ] 3.5 `docs/flows.md` (step fields, "Model pools and shadow runs", events) and the flow-creator skill references.

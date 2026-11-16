@@ -809,6 +809,10 @@ func (s *service) runStep(
 	// from f.ID and step.ID because NewAgent is context-free and the
 	// FlowIDContextKey/FlowStepIDContextKey ctx values are set later, on
 	// the Run context, for telemetry only.
+	// denyTools rides the ctx from here on: NewAgent builds the step's tool
+	// set without the denied tools, subagents inherit the list through the
+	// tool-call ctx, and the agent loop refuses a denied call at dispatch.
+	ctx = tools.WithDeniedTools(ctx, step.DenyTools)
 	agentSvc, err := s.agents.NewAgent(ctx, agentID, outputSchema, step.ID, step.Interactive, boundPeers,
 		step.Context, contextfile.TemplateVars{FlowID: f.ID, FlowStep: step.ID}, modelOverride)
 	if err != nil {

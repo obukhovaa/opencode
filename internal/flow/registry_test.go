@@ -178,6 +178,22 @@ func TestValidateFlow(t *testing.T) {
 			wantErr: ErrInvalidMaxTurns,
 		},
 		{
+			name: "denyTools globs are valid",
+			flow: Flow{
+				ID:   "deny-ok",
+				Spec: FlowSpec{Steps: []Step{{ID: "step-a", Prompt: "x", DenyTools: []string{"gitlab_create_*", "struct_output"}}}},
+			},
+			wantErr: nil,
+		},
+		{
+			name: "blank denyTools entry rejected",
+			flow: Flow{
+				ID:   "deny-blank",
+				Spec: FlowSpec{Steps: []Step{{ID: "step-a", Prompt: "x", DenyTools: []string{"bash", "  "}}}},
+			},
+			wantErr: ErrInvalidDenyTools,
+		},
+		{
 			name: "literal model in catalog is valid",
 			flow: Flow{
 				ID: "model-ok",
