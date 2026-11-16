@@ -55,7 +55,7 @@ The list is put on the step's context (`tools.WithDeniedTools`) before NewAgent.
 
 ### D9. Resolved model on every state
 
-After NewAgent the agent's model id is put on the step context, and every `FlowState` built from then on carries it, including failures, retries and postpones. Failures before NewAgent (agent templating, pool JSON) carry none. The API adds `model` to `flow.step.*` events and `/flow/status` step records, and `cmd/flow.go` to its step results; a later state without a model does not erase one recorded earlier for the same step.
+After NewAgent the agent's model id is put on the step context, and every `FlowState` built from then on carries it, including failures, retries and postpones. Failures before NewAgent (agent templating, pool JSON) carry none. The API adds `model` to `flow.step.*` events and `/flow/status` step records, and `cmd/flow.go` to its step results, where a later iteration without a model keeps the one an earlier iteration reported. The model is not persisted with the row, so states replayed from the database carry none.
 
 ### D10. `Model.Wire` replaces `IsBedrockKimi`
 

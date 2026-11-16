@@ -633,8 +633,9 @@ Per-step fields (present on `flow.step.*` and `flow.waiting_for_input`):
 - `iteration` — 1-based self-loop iteration number, mirrored from `flow.FlowState.Iteration`. `1` for non-looping steps; bumps on every in-process self-route.
 - `cost` — cumulative session cost (USD) at emit time, looked up via `session.Service.Get(state.SessionID).Cost`. Zero on session-lookup failure.
 - `contextSize` — cumulative prompt tokens for the session at emit time. Zero on lookup failure.
+- `model` — the model the step's agent runs on: the step's `model` override or pool pick, else the agent's own model. Present on every event once the agent is built; absent for a step that failed before that (an unresolved `agent`, an unknown `model`). `GET /flow/status` step records carry it too.
 
-All four use `omitempty` — older consumers that don't read them ignore the keys.
+All five use `omitempty` — older consumers that don't read them ignore the keys.
 
 #### Example: k8s Job entrypoint
 
@@ -857,7 +858,8 @@ Unknown keys inside `session:` (e.g. a typo `resume_on_fail` missing the trailin
       "is_struct_output": true,
       "finished_at": 1780000000,
       "context_size": 12345,
-      "cost": 0.0021
+      "cost": 0.0021,
+      "model": "bedrock.eu-claude-sonnet-5-5"
     }
   ],
   "metrics": {
@@ -875,6 +877,7 @@ The envelope contains exactly **one entry per step ID**, even when the step iter
 - `status` is the terminal status — `completed` if the loop exited cleanly, `failed` if a `maxIterations` cap (or any other error) tripped, `postponed` if the loop suspended itself.
 - `output` is the structured output (or text) from the **last** iteration.
 - `cost` and `context_size` are session-level totals — because all iterations share one session, these aggregate automatically across the whole loop.
+- `model` is the model the step ran on (see the `model` event field); an iteration that failed before its agent was built keeps the model an earlier iteration reported.
 
 The intermediate iterations are not surfaced in the JSON envelope. To inspect them, query the session (its messages span all iterations) or Langfuse (one trace per iteration, distinguishable by the `#N` suffix in the trace name).
 
