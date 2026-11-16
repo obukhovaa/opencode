@@ -169,4 +169,11 @@ markdown frontmatter. `enabled` defaults to `false`; enabling it registers the
 never receive this tool. `flowComplexity`, when present, must be exactly one of
 `XS`, `S`, `M`, `L`, `XL`, `XXL`; when absent the builder selects a size. An explicit
 JSON object overrides the frontmatter object, including `enabled: false`.
+`namedFlows` optionally lists exact, case-sensitive discovered flow IDs that this
+agent may list, run or resume. Omit it to preserve unrestricted named-flow access;
+set `namedFlows: []` to deny all named flows while keeping generated flows enabled.
+The current initiating agent's policy is rechecked on recovery; a stored snapshot
+cannot preserve revoked access. Named steps use their declared agents' own grants,
+not an intersection with the initiating agent's tools. Review those agents before
+allowlisting a workflow. Standalone CLI/API flows are unaffected.
 See [dynamic flows](flows.md#dynamic-flows-in-the-tui) for limits and recovery.

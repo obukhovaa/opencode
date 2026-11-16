@@ -154,6 +154,15 @@
                 }
               ],
               "description": "Fixed resource ceiling. Omit to let the builder choose."
+            },
+            "namedFlows": {
+              "description": "Exact IDs of named flows this primary agent may list, run or resume. Omit for unrestricted named flows; an empty list denies all named flows. Generated flows and standalone CLI/API execution are unchanged.",
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array",
+              "uniqueItems": true
             }
           },
           "type": "object"
@@ -688,6 +697,15 @@
                   }
                 ],
                 "description": "Fixed resource ceiling. Omit to let the builder choose."
+              },
+              "namedFlows": {
+                "description": "Exact IDs of named flows this primary agent may list, run or resume. Omit for unrestricted named flows; an empty list denies all named flows. Generated flows and standalone CLI/API execution are unchanged.",
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "type": "array",
+                "uniqueItems": true
               }
             },
             "type": "object"

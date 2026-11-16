@@ -495,6 +495,7 @@ func generateSchema() map[string]any {
 					"properties": map[string]any{
 						"enabled":        map[string]any{"type": "boolean", "default": false, "description": "Enable dynamic planning and the flow tool."},
 						"flowComplexity": map[string]any{"type": "string", "enum": []string{"XS", "S", "M", "L", "XL", "XXL"}, "description": "Fixed resource ceiling. Omit to let the builder choose."},
+						"namedFlows":     map[string]any{"type": "array", "items": map[string]any{"type": "string", "minLength": 1}, "uniqueItems": true, "description": "Exact IDs of named flows this primary agent may list, run or resume. Omit for unrestricted named flows; an empty list denies all named flows. Generated flows and standalone CLI/API execution are unchanged."},
 					},
 				},
 				"selfCompact": map[string]any{
