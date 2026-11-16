@@ -3,7 +3,7 @@
 - [x] 1.1 OpenAI client: accept `xhigh`, send it when the model supports it, else `high` with a warning.
 - [x] 1.2 `Model.Wire` and `BedrockOpenAIChat()`; route the Bedrock client, provider construction and config effort rules by wire; drop `IsBedrockKimi`.
 - [x] 1.3 Register `bedrock.kimi-k3.1` / `bedrock.us-kimi-k3.1` and the four GPT-6.1 entries; `LongContextOutputCostMultiplier` in `CalculateCost`; `DefaultReasoningEffort` at config load and in the Bedrock OpenAI client; schema, `docs/providers.md`, add-model skill.
-- [ ] 1.4 `scripts/probe_bedrock_tools.sh` and the opt-in `bedrock_live` test for all six ids.
+- [x] 1.4 `scripts/probe_bedrock_tools.sh` and the opt-in `bedrock_live` test for all six ids.
 
 ## 2. Config-defined models
 

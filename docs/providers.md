@@ -134,7 +134,13 @@ OpenAI's GPT-6.1 Sol and Terra are registered as `bedrock.gpt-6.1-sol` / `bedroc
 
 Prices are per million tokens on the global profile; the US profile adds 10%. A prompt over 272,000 tokens bills the whole request at 2x input and 1.5x output (`LongContextOutputCostMultiplier`). Both default to effort `medium` when an agent sets none, allow 128,000 output tokens and run without attachments. The 1,050,000-token context and Terra's effort levels are not on the Bedrock cards yet; Terra's `xhigh` / `max` fold to `high`.
 
-**Pending tool-call verification.** OpenAI documents GPT-6.1 tool calling for the Responses API, while these entries send Chat Completions. Do not give either model traffic before a tool-call round trip through the deployment's Bedrock route has succeeded.
+**Pending tool-call verification.** OpenAI documents GPT-6.1 tool calling for the Responses API, while these entries send Chat Completions. Do not give either model traffic before a tool-call round trip through the deployment's Bedrock route has succeeded. `scripts/probe_bedrock_tools.sh` runs one (tool call, then tool result and answer) for the Kimi K3.1 and GPT-6.1 profiles, or for the profiles given as arguments; `PROBE_REASONING_EFFORT` adds a `reasoning_effort`. The same round trip through the harness's own Bedrock client, on both the send and stream paths, is an opt-in test:
+
+```bash
+export LOCAL_ENDPOINT=https://litellm.example LOCAL_ENDPOINT_API_KEY=...
+scripts/probe_bedrock_tools.sh
+go test -tags bedrock_live -run TestBedrockLiveToolRoundTrip ./internal/llm/provider/
+```
 
 ## OpenAI-compatible reasoning continuity
 

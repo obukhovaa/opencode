@@ -55,7 +55,7 @@ Extract these from the model card/documentation. If any are missing, ask the use
 6. **Task budget support**: does it support the task_budget beta feature? (requires `task-budgets-2026-03-13` beta header)
 7. **Attachments**: does it support file/image attachments?
 
-For Bedrock models: check which body format InvokeModel takes. Claude takes Anthropic Messages; Kimi and GPT take OpenAI chat-completions and need `Wire: WireOpenAIChat`, which routes them through the OpenAI client (`provider/bedrock.go`), applies the OpenAI-wire effort rules in `config.validateAgent` and sends `DefaultReasoningEffort` when no effort is set. A model whose tool calls have not been verified on that route should say so in its catalog comment and in `docs/providers.md`.
+For Bedrock models: check which body format InvokeModel takes. Claude takes Anthropic Messages; Kimi and GPT take OpenAI chat-completions and need `Wire: WireOpenAIChat`, which routes them through the OpenAI client (`provider/bedrock.go`), applies the OpenAI-wire effort rules in `config.validateAgent` and sends `DefaultReasoningEffort` when no effort is set. Probe a new OpenAI-wire model with `scripts/probe_bedrock_tools.sh <profile>` (and add its id to `TestBedrockLiveToolRoundTrip`); until a tool-call round trip has passed on that route, say so in its catalog comment and in `docs/providers.md`.
 
 For VertexAI models: the API model name format differs (e.g. `claude-sonnet-4-5@20250929` instead of `claude-sonnet-4-5`). The model card usually provides this.
 
