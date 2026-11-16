@@ -49,6 +49,11 @@ func newOpenAIClient(opts providerClientOptions) OpenAIClient {
 	for _, o := range opts.openaiOptions {
 		o(&openaiOpts)
 	}
+	if openaiOpts.reasoningEffort == models.ReasoningEffortXHigh && !opts.model.SupportsXHighThinking {
+		logging.Warn("Model does not support 'xhigh' reasoning effort, sending 'high'",
+			"model", opts.model.ID)
+		openaiOpts.reasoningEffort = models.ReasoningEffortHigh
+	}
 
 	// Freeze the SDK's effective endpoint for both transport and replay identity.
 	if opts.baseURL == "" {
@@ -271,6 +276,10 @@ func (o *openaiClient) preparedParams(messages []openai.ChatCompletionMessagePar
 			params.ReasoningEffort = shared.ReasoningEffortMedium
 		case "high":
 			params.ReasoningEffort = shared.ReasoningEffortHigh
+		case "xhigh":
+			// Not an OpenAI level either; newOpenAIClient lets it through
+			// only for models flagged SupportsXHighThinking.
+			params.ReasoningEffort = shared.ReasoningEffort("xhigh")
 		case "max":
 			// Not an OpenAI level: config admits it only for models flagged
 			// SupportsMaximumThinking (Kimi K3 on Bedrock, where it is the
@@ -704,12 +713,14 @@ func WithLegacyMaxTokens() OpenAIOption {
 // WithReasoningEffort sets the reasoning_effort sent for reasoning models.
 // "" means no configured effort: the OpenAI default (medium) applies, or on
 // Bedrock the model's own default (see preparedParams). An unknown value
-// falls back to that. "max" is not an OpenAI level; config lets it through
-// only for models flagged SupportsMaximumThinking (Kimi K3 on Bedrock).
+// falls back to that. "xhigh" and "max" are not OpenAI levels; config lets
+// them through only for models flagged SupportsXHighThinking /
+// SupportsMaximumThinking, and newOpenAIClient sends "high" for an "xhigh"
+// the model lacks.
 func WithReasoningEffort(effort string) OpenAIOption {
 	return func(options *openaiOptions) {
 		switch lower := strings.ToLower(effort); lower {
-		case "", "low", "medium", "high", "max":
+		case "", "low", "medium", "high", "xhigh", "max":
 			options.reasoningEffort = lower
 		default:
 			logging.Warn("Invalid reasoning effort, using the default", "reasoning_effort", effort)
