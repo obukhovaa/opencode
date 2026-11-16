@@ -609,8 +609,8 @@ const (
 //
 // PENDING TOOL-CALL VERIFICATION: OpenAI documents GPT-6.1 tool calling for
 // the Responses API, while these entries send Chat Completions through the
-// InvokeModel passthrough. Verify a tool-call round trip on that route
-// before giving either model weight in a model pool. Attachments stay off until the probe
+// InvokeModel passthrough. Run scripts/probe_bedrock_tools.sh before giving
+// either model weight in a model pool. Attachments stay off until the probe
 // covers them. Sol's effort levels (low..max, default medium) are from
 // OpenAI's model page; Terra's are unconfirmed, so it stops at high and the
 // pool clamp folds xhigh/max down. The 1,050,000-token context is not on the
