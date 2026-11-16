@@ -1478,13 +1478,14 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 				cfg.Agents[name] = updatedAgent
 			}
 		}
-	} else if model.CanReason && (model.SupportsAdaptiveThinking || models.IsBedrockKimi(model.ID)) {
-		// Adaptive-thinking models, plus Kimi on Bedrock: it sends the
-		// OpenAI-style reasoning_effort field rather than adaptive thinking,
-		// but with K3's levels (low|high|max, max the documented default on
-		// Moonshot and AWS alike; Bedrock also accepts medium), so it follows
-		// these rules — the OpenAI ones above would default it to medium and
-		// silently fold a configured max down to medium.
+	} else if model.CanReason && (model.SupportsAdaptiveThinking || model.BedrockOpenAIChat()) {
+		// Adaptive-thinking models, plus OpenAI-wire models on Bedrock: they
+		// send the OpenAI-style reasoning_effort field rather than adaptive
+		// thinking, but with their own levels (Kimi K3: low|high|max, max the
+		// documented default on Moonshot and AWS alike; Bedrock also accepts
+		// medium), so they follow these rules — the OpenAI ones above would
+		// default them to medium and silently fold a configured max down to
+		// medium.
 		if agent.ReasoningEffort == "" {
 			if models.IsKimiK3(model.ID) {
 				// Kimi K3 documents low|high|max with max as the default

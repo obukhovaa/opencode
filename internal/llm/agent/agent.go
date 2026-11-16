@@ -3681,9 +3681,10 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 		opts = append(opts, provider.WithLangfuse(lf))
 	}
 
-	// Kimi on Bedrock rides the OpenAI client (see provider/bedrock.go), so
-	// it takes OpenAI options even though its provider is bedrock.
-	if model.Provider == models.ProviderOpenAI || model.Provider == models.ProviderYandexCloud || models.IsBedrockKimi(model.ID) || model.Provider == models.ProviderLocal && model.CanReason {
+	// OpenAI-wire Bedrock models ride the OpenAI client (see
+	// provider/bedrock.go), so they take OpenAI options even though their
+	// provider is bedrock.
+	if model.Provider == models.ProviderOpenAI || model.Provider == models.ProviderYandexCloud || model.BedrockOpenAIChat() || model.Provider == models.ProviderLocal && model.CanReason {
 		openaiOpts := []provider.OpenAIOption{
 			provider.WithReasoningEffort(agentConfig.ReasoningEffort),
 		}
