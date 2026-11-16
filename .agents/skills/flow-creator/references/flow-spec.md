@@ -34,6 +34,7 @@ flow:               # flow specification (required)
   model: string          # per-step model override, catalog model ID; ${args.*} allowed — empty/unresolved = no override (optional)
   reasoningEffort: string # per-step effort override: low|medium|high|xhigh|max, validated against the model the step runs on (optional)
   denyTools: array       # tool-name globs removed from this step's agent and its subagents; struct_output is never denied; literal only, not in dynamic flows (optional)
+  bestEffort: bool       # a failure ends this branch without failing the run; events carry bestEffort: true (optional)
   session:
     fork: bool           # copy message history from previous step, same agent only (optional)
   prompt: string         # prompt template with ${args.*} and ${step.*} placeholders (required)

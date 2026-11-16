@@ -74,6 +74,8 @@ type FlowState struct {
 	// state published after NewAgent (see withStepModel); empty on states
 	// published before it and on rows read back from the database.
 	Model string
+	// BestEffort mirrors Step.BestEffort on every state the step publishes.
+	BestEffort bool
 }
 
 // stepModelKey carries the step's resolved model id on runStep's ctx from
@@ -976,6 +978,7 @@ func (s *service) runStep(
 		Iteration:     iteration,
 		UpdatedAt:     updatedAt,
 		Model:         stepModelFrom(ctx),
+		BestEffort:    step.BestEffort,
 	}
 	if status == FlowStatusPostponed && getErr == nil {
 		runningState.Output = existingFS.Output.String
@@ -1082,6 +1085,7 @@ func (s *service) runStep(
 			UpdatedAt:     time.Now().Unix(),
 			WaitingTarget: boundPeers,
 			Model:         stepModelFrom(ctx),
+			BestEffort:    step.BestEffort,
 		}
 		flowStates <- waitingState
 		s.Publish(pubsub.UpdatedEvent, *waitingState)
@@ -1499,6 +1503,7 @@ doneRetry:
 			Iteration:     iteration,
 			UpdatedAt:     updatedAt,
 			Model:         stepModelFrom(ctx),
+			BestEffort:    step.BestEffort,
 		}
 		flowStates <- failedState
 		s.Publish(pubsub.UpdatedEvent, *failedState)
@@ -1624,6 +1629,7 @@ doneRetry:
 		Iteration:      iteration,
 		UpdatedAt:      updatedAt,
 		Model:          stepModelFrom(ctx),
+		BestEffort:     step.BestEffort,
 	}
 	flowStates <- completedState
 	s.Publish(pubsub.UpdatedEvent, *completedState)
@@ -1824,6 +1830,7 @@ func (s *service) postponeStepForTransientError(
 		Iteration:      iteration,
 		UpdatedAt:      updatedAt,
 		Model:          stepModelFrom(ctx),
+		BestEffort:     step.BestEffort,
 	}
 	flowStates <- postponedState
 	s.Publish(pubsub.UpdatedEvent, *postponedState)
@@ -1929,6 +1936,7 @@ func (s *service) handleStepError(
 		Iteration:     iteration,
 		UpdatedAt:     updatedAt,
 		Model:         stepModelFrom(ctx),
+		BestEffort:    step.BestEffort,
 	}, err, agentEvents, flowStates)
 
 	if step.Fallback != nil && step.Fallback.To != "" {
@@ -1963,6 +1971,12 @@ func (s *service) handleStepError(
 func (s *service) publishStepFailure(failed *FlowState, err error, agentEvents chan<- agentpkg.AgentEvent, flowStates chan<- *FlowState) *FlowState {
 	flowStates <- failed
 	s.Publish(pubsub.UpdatedEvent, *failed)
+	// A best-effort step's failure must not fail the run, and consumers that
+	// fail a run on any error agent event (session-owned runs) cannot tell
+	// it apart, so it gets none; its failed state still says what happened.
+	if failed.BestEffort {
+		return failed
+	}
 	agentEvents <- agentpkg.AgentEvent{
 		Type:       agentpkg.AgentEventTypeError,
 		Error:      err,
@@ -2053,6 +2067,7 @@ func (s *service) refuseFallbackEntry(
 		Output:        err.Error(),
 		Iteration:     iteration,
 		UpdatedAt:     updatedAt,
+		BestEffort:    work.step.BestEffort,
 	}, err, agentEvents, flowStates)
 }
 
@@ -2306,6 +2321,7 @@ func (s *service) failResumedSelfLoop(
 		Output:        capErr.Error(),
 		Iteration:     currentIter,
 		UpdatedAt:     updatedAt,
+		BestEffort:    step.BestEffort,
 	}
 	flowStates <- failedState
 	s.Publish(pubsub.UpdatedEvent, *failedState)

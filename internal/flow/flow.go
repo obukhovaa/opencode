@@ -140,9 +140,15 @@ type Step struct {
 	// DenyTools lists tool-name globs this step's agent and the subagents
 	// it spawns run without (tools.WithDeniedTools carries them). Literal
 	// only; inheritable through `extends`; rejected in dynamic flows.
-	DenyTools []string    `yaml:"denyTools,omitempty"`
-	Session   StepSession `yaml:"session,omitempty"`
-	Prompt    string      `yaml:"prompt"`
+	DenyTools []string `yaml:"denyTools,omitempty"`
+	// BestEffort marks a step whose failure ends its branch without failing
+	// the run: its failed state carries BestEffort, the API runner keeps the
+	// run's error unset and publishStepFailure emits no error agent event.
+	// Retries and fallback.to apply as on any step. Inheritable through
+	// `extends`.
+	BestEffort bool        `yaml:"bestEffort,omitempty"`
+	Session    StepSession `yaml:"session,omitempty"`
+	Prompt     string      `yaml:"prompt"`
 	// LangfusePromptPath names a prompt in Langfuse Prompt Management to
 	// use instead of the inline Prompt, so wording changes ship from the
 	// Langfuse UI with no flow or image deploy. Slashes are part of the

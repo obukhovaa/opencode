@@ -379,6 +379,7 @@ func (s *service) publishStructOutputRetry(
 		Iteration:     iteration,
 		UpdatedAt:     time.Now().Unix(),
 		Model:         stepModelFrom(ctx),
+		BestEffort:    step.BestEffort,
 	}
 	flowStates <- st
 	s.Publish(pubsub.UpdatedEvent, *st)
