@@ -17,7 +17,7 @@ An agent's `model` is a model ID such as `vertexai.claude-opus-4-6` or `kimi.kim
 
 ## Config-defined models
 
-`customModels` adds Bedrock models without a release, for example a newcomer for a model pool. Config load registers every entry into the catalog before it validates agents, so agents, flow step `model` values and pools accept the id like a built-in's, and the Bedrock client routes it by `wire`.
+`customModels` adds Bedrock models without a release, for example a newcomer for a [model pool](flows.md#model-pools-and-shadow-runs). Config load registers every entry into the catalog before it validates agents, so agents, flow step `model` values and pools accept the id like a built-in's, and the Bedrock client routes it by `wire`.
 
 ```json
 {

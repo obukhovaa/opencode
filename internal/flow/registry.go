@@ -496,6 +496,15 @@ func validateFlow(f *Flow) error {
 		if err := validateStepDenyTools(step); err != nil {
 			return err
 		}
+		if err := validateStepModelPool(step); err != nil {
+			return err
+		}
+		if step.Output != nil && schemaDeclaresPool(step.Output.Schema) {
+			return fmt.Errorf("%w: step %q output schema declares %q", ErrReservedArg, step.ID, ReservedPoolArg)
+		}
+	}
+	if schemaDeclaresPool(f.Spec.Args) {
+		return fmt.Errorf("%w: the flow's args schema declares %q", ErrReservedArg, ReservedPoolArg)
 	}
 
 	// Validate rule and fallback references

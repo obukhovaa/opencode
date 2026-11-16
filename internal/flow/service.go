@@ -768,8 +768,20 @@ func (s *service) runStep(
 		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
 		return
 	}
-	modelOverride, err := resolveStepModelOverride(step, args, stepVars)
+	// An active model pool replaces the step's model override and records
+	// its pick in args.pool.<step id> before anything renders the prompt.
+	pick, err := resolveStepModelPool(step, args, stepVars, rootSessionID)
 	if err != nil {
+		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
+		return
+	}
+	recordPoolPick(args, step.ID, pick)
+	var modelOverride agentpkg.ModelOverride
+	if pick != nil {
+		logging.Info("Model pool pick", "step", step.ID, "model", pick.Model, "effort", pick.Effort,
+			"bucket", pick.Bucket, "shadow", pick.Shadow, "shadow_model", pick.ShadowModel)
+		modelOverride = agentpkg.ModelOverride{Model: pick.Model, ReasoningEffort: pick.Effort}
+	} else if modelOverride, err = resolveStepModelOverride(step, args, stepVars); err != nil {
 		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
 		return
 	}
@@ -1581,7 +1593,7 @@ doneRetry:
 		}
 		var structData map[string]any
 		if err := json.Unmarshal([]byte(output), &structData); err == nil {
-			maps.Copy(args, structData)
+			mergeOutputArgs(args, structData)
 		}
 	} else {
 		output = result.Message.Content().Text
@@ -2169,7 +2181,7 @@ func evaluateRowNextSteps(row db.FlowState, stepDef *Step, allSteps []Step) []re
 	if row.IsStructOutput && row.Output.Valid && row.Output.String != "" {
 		var structData map[string]any
 		if err := json.Unmarshal([]byte(row.Output.String), &structData); err == nil {
-			maps.Copy(rowArgs, structData)
+			mergeOutputArgs(rowArgs, structData)
 		}
 	}
 	iter := int(row.Iteration)
@@ -2233,7 +2245,7 @@ func (s *service) collectResumableSteps(
 	if existing.IsStructOutput && existing.Output != "" {
 		var structData map[string]any
 		if err := json.Unmarshal([]byte(existing.Output), &structData); err == nil {
-			maps.Copy(args, structData)
+			mergeOutputArgs(args, structData)
 		}
 	}
 
@@ -2739,6 +2751,9 @@ func copyArgs(args map[string]any) map[string]any {
 // validateArgs validates the provided args against the flow's args JSON Schema.
 // The "prompt" key is always allowed regardless of the schema definition.
 func validateArgs(args map[string]any, schema map[string]any) error {
+	if _, ok := args[ReservedPoolArg]; ok {
+		return fmt.Errorf("%w: %q holds the runtime's model-pool picks", ErrReservedArg, ReservedPoolArg)
+	}
 	if len(schema) == 0 {
 		return nil
 	}

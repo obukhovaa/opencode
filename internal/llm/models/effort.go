@@ -86,3 +86,23 @@ func ValidateReasoningEffort(m Model, effort string) error {
 	}
 	return nil
 }
+
+// ClampReasoningEffort returns the closest level at or below effort that m
+// accepts: max falls to xhigh, then high, and xhigh to high; low, medium and
+// high are kept. It returns "" (the provider default) for "", for a value
+// that is not a level, and for a model that cannot reason. Unlike
+// ValidateReasoningEffort it never fails: a flow step's model pool clamps
+// the effort it pins rather than failing on a model that stops lower.
+func ClampReasoningEffort(m Model, effort string) string {
+	lower := strings.ToLower(strings.TrimSpace(effort))
+	if lower == "" || !IsReasoningEffort(lower) || !m.CanReason {
+		return ""
+	}
+	if lower == ReasoningEffortMax && !m.SupportsMaximumThinking {
+		lower = ReasoningEffortXHigh
+	}
+	if lower == ReasoningEffortXHigh && !m.SupportsXHighThinking {
+		lower = ReasoningEffortHigh
+	}
+	return lower
+}

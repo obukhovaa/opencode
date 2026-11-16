@@ -95,3 +95,45 @@ func TestValidateReasoningEffort(t *testing.T) {
 		})
 	}
 }
+
+func TestClampReasoningEffort(t *testing.T) {
+	noReasoning := Model{ID: "plain"}
+	upToHigh := Model{ID: "high", CanReason: true}
+	withMax := Model{ID: "max", CanReason: true, SupportsMaximumThinking: true}
+	withXHigh := Model{ID: "xhigh", CanReason: true, SupportsXHighThinking: true}
+	all := Model{ID: "all", CanReason: true, SupportsXHighThinking: true, SupportsMaximumThinking: true}
+
+	tests := []struct {
+		model  Model
+		effort string
+		want   string
+	}{
+		{all, "", ""},
+		{all, "extreme", ""},
+		{noReasoning, "high", ""},
+		{upToHigh, "low", "low"},
+		{upToHigh, "Medium", "medium"},
+		{upToHigh, "xhigh", "high"},
+		{upToHigh, "max", "high"},
+		{withMax, "max", "max"},
+		{withMax, "xhigh", "high"},
+		{withXHigh, "max", "xhigh"},
+		{withXHigh, "XHIGH", "xhigh"},
+		{all, "max", "max"},
+		{all, " xhigh ", "xhigh"},
+		{SupportedModels[BedrockGPT61Terra], "xhigh", "high"},
+		{SupportedModels[BedrockUSKimiK31], "max", "max"},
+		{SupportedModels[BedrockSonnet55], "max", "max"},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.model.ID)+"/"+tt.effort, func(t *testing.T) {
+			got := ClampReasoningEffort(tt.model, tt.effort)
+			if got != tt.want {
+				t.Fatalf("ClampReasoningEffort = %q, want %q", got, tt.want)
+			}
+			if err := ValidateReasoningEffort(tt.model, got); err != nil {
+				t.Fatalf("clamped effort %q is still invalid: %v", got, err)
+			}
+		})
+	}
+}

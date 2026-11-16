@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"strings"
 
 	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
@@ -142,7 +141,7 @@ func mergeStructOutputIntoArgs(args map[string]any, structOutput string) {
 	if err := json.Unmarshal([]byte(structOutput), &data); err != nil {
 		return
 	}
-	maps.Copy(args, data)
+	mergeOutputArgs(args, data)
 }
 
 // turnsExhaustedOutcome builds the step failure for a run the agent runtime cut
