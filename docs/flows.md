@@ -109,6 +109,7 @@ Because built-in discovery derives IDs from file basenames (which can never cont
 | `model` | string | No | Per-step override of the agent's model, as a catalog model ID (e.g. `bedrock.eu-claude-sonnet-5`). Accepts `${args.*}` / `${step.*}`. Empty or unresolved means **no override** — the agent's own model runs and the miss is warn-logged. A resolved value the catalog does not know fails the step. Literal values are validated at flow load. Applied to that step's agent instance only — the agent's configuration is never changed. Inheritable via `extends`. |
 | `reasoningEffort` | string | No | Per-step override of the agent's reasoning effort: `low`, `medium`, `high`, `xhigh`, `max`. Same substitution and fallback rules as `model`; validated against the model the step actually runs on (`xhigh` / `max` only on models that support them), so an unsupported level fails the step. This check is stricter than the one applied to an agent's `reasoningEffort` in `.opencode.json`: config only coerces the level for OpenAI/local and adaptive-thinking models and passes it through untouched for other reasoning models (Gemini, Yandex, non-adaptive Claude), whereas a step override of `xhigh` / `max` on such a model fails the step. Inheritable via `extends`. |
 | `denyTools` | array | No | Tool-name globs (`*` wildcards, case-insensitive) removed from this step's agent and from every subagent it spawns, on top of the agent's own `tools` / `allowTools`. A denied call that still reaches the agent loop gets an error result instead of running. `struct_output` is never denied. Blank entries fail the load; literal values only; inheritable via `extends`; not allowed in dynamic flows. Use it to run a copy of a step read-only, e.g. a shadow review that must not post: `denyTools: ["gitlab_create_*", "router_send"]`. |
+| `bestEffort` | bool | No | The step's failure ends its branch without failing the run: the run's terminal status comes from the other steps. Retries and `fallback.to` apply as usual. The failure is still recorded and published as `flow.step.failed`, and every event of the step carries `bestEffort: true`; no error agent event is emitted for it. Inheritable via `extends`. |
 | `session.fork` | bool | No | Fork previous step's session (same agent only) |
 | `prompt` | string | Yes* | Prompt template with `${args.*}` and `${step.*}` placeholders. *Exactly one of `prompt` / `langfusePromptPath` is required — see [Langfuse-managed prompts](#langfuse-managed-prompts). |
 | `langfusePromptPath` | string | Yes* | Path of a prompt in [Langfuse Prompt Management](#langfuse-managed-prompts) to use instead of an inline `prompt`. Mutually exclusive with `prompt`. |
@@ -626,7 +627,7 @@ Server mode multiplexes flow lifecycle events onto the existing `/event` SSE str
 | `flow.step.retrying` | A step declaring `output.schema` ended a turn with no `struct_output` call, and the engine is spending its one bounded re-prompt. The step is still `running`. | `stepID`, `sessionID`, `output` (the reason), per-step fields. |
 | `flow.waiting_for_input` | An `interactive: true` step bound to its peer(s) and is awaiting reviewer reply. | `stepID`, `sessionID`, `target` (resolved PeerRef or array). |
 | `flow.completed` | The run terminated successfully. | `runID`, `completedAt`. |
-| `flow.failed` | The run failed. | `runID`, `error`, `failedAt`. |
+| `flow.failed` | The run failed: a step other than a `bestEffort` one failed. | `runID`, `error`, `failedAt`. |
 
 Per-step fields (present on `flow.step.*` and `flow.waiting_for_input`):
 
@@ -635,8 +636,9 @@ Per-step fields (present on `flow.step.*` and `flow.waiting_for_input`):
 - `cost` — cumulative session cost (USD) at emit time, looked up via `session.Service.Get(state.SessionID).Cost`. Zero on session-lookup failure.
 - `contextSize` — cumulative prompt tokens for the session at emit time. Zero on lookup failure.
 - `model` — the model the step's agent runs on: the step's `model` override or pool pick, else the agent's own model. Present on every event once the agent is built; absent for a step that failed before that (an unresolved `agent`, an unknown `model`). `GET /flow/status` step records carry it too.
+- `bestEffort` — `true` on every event of a [`bestEffort`](#step-fields) step, whose `flow.step.failed` does not fail the run. `GET /flow/status` step records carry it too.
 
-All five use `omitempty` — older consumers that don't read them ignore the keys.
+All six use `omitempty` — older consumers that don't read them ignore the keys.
 
 #### Example: k8s Job entrypoint
 

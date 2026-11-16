@@ -552,6 +552,11 @@ func TestTemplateKeyRule_TwoPart(t *testing.T) {
 					t.Errorf("LangfusePromptLabel = %q", s.LangfusePromptLabel)
 				}
 			}},
+			"bestEffort": {"  bestEffort: true\n", func(t *testing.T, s Step) {
+				if !s.BestEffort {
+					t.Errorf("BestEffort = false")
+				}
+			}},
 			"denyTools": {"  denyTools: [\"gitlab_create_*\"]\n", func(t *testing.T, s Step) {
 				if len(s.DenyTools) != 1 || s.DenyTools[0] != "gitlab_create_*" {
 					t.Errorf("DenyTools = %q", s.DenyTools)

@@ -368,6 +368,7 @@ func (s *service) recordCarriedSteps(
 			IsStructOutput: c.out.isStruct,
 			Iteration:      1,
 			UpdatedAt:      updatedAt,
+			BestEffort:     c.step.BestEffort,
 		}
 		startedSteps.Store(c.step.ID, true)
 		flowStates <- state
