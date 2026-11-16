@@ -74,6 +74,14 @@ func TestValidateReasoningEffort(t *testing.T) {
 		{"catalog bedrock kimi k3 accepts max", SupportedModels[BedrockKimiK3], "max", false},
 		{"catalog bedrock kimi k3 accepts medium", SupportedModels[BedrockKimiK3], "medium", false},
 		{"catalog bedrock us kimi k3 rejects xhigh", SupportedModels[BedrockUSKimiK3], "xhigh", true},
+		// Kimi K3.1 on Bedrock takes every level up to max.
+		{"catalog bedrock kimi k3.1 accepts xhigh", SupportedModels[BedrockKimiK31], "xhigh", false},
+		{"catalog bedrock us kimi k3.1 accepts max", SupportedModels[BedrockUSKimiK31], "max", false},
+		// GPT-6.1: Sol documents xhigh and max, Terra stops at high.
+		{"catalog bedrock gpt-6.1 sol accepts xhigh", SupportedModels[BedrockGPT61Sol], "xhigh", false},
+		{"catalog bedrock us gpt-6.1 sol accepts max", SupportedModels[BedrockUSGPT61Sol], "max", false},
+		{"catalog bedrock gpt-6.1 terra accepts high", SupportedModels[BedrockGPT61Terra], "high", false},
+		{"catalog bedrock us gpt-6.1 terra rejects xhigh", SupportedModels[BedrockUSGPT61Terra], "xhigh", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

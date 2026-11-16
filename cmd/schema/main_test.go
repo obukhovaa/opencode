@@ -325,7 +325,12 @@ func TestSchemaEnvironmentReferences(t *testing.T) {
 		}
 	}
 	ids := enumAt(t, doc, "agents", "*", "model")
-	for _, id := range []string{"kimi.kimi-k3.1-pro", "kimi.kimi-k3.1-pro-highspeed"} {
+	for _, id := range []string{
+		"kimi.kimi-k3.1-pro", "kimi.kimi-k3.1-pro-highspeed",
+		"bedrock.kimi-k3.1", "bedrock.us-kimi-k3.1",
+		"bedrock.gpt-6.1-sol", "bedrock.us-gpt-6.1-sol",
+		"bedrock.gpt-6.1-terra", "bedrock.us-gpt-6.1-terra",
+	} {
 		if !slices.Contains(ids, id) {
 			t.Fatalf("new model absent from schema: %s", id)
 		}

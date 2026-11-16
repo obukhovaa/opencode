@@ -269,7 +269,14 @@ func (o *openaiClient) preparedParams(messages []openai.ChatCompletionMessagePar
 
 	if o.providerOptions.model.CanReason == true {
 		params.MaxCompletionTokens = openai.Int(o.providerOptions.maxTokens)
-		switch o.options.reasoningEffort {
+		effort := o.options.reasoningEffort
+		if effort == "" && o.options.useBedrock {
+			// Config resolves an unset agent effort to this already; it
+			// reaches here empty when a flow step's model override reset an
+			// inherited effort the new model rejects.
+			effort = o.providerOptions.model.DefaultReasoningEffort
+		}
+		switch effort {
 		case "low":
 			params.ReasoningEffort = shared.ReasoningEffortLow
 		case "medium":
@@ -287,8 +294,9 @@ func (o *openaiClient) preparedParams(messages []openai.ChatCompletionMessagePar
 			params.ReasoningEffort = shared.ReasoningEffort("max")
 		case "":
 			// No effort configured. OpenAI keeps the historical client
-			// default; on Bedrock the field is left out so the model's own
-			// default applies (max for Kimi K3) instead of an OpenAI one.
+			// default; on Bedrock, for a model without a
+			// DefaultReasoningEffort, the field is left out so the model's
+			// own default applies (max for Kimi K3) instead of an OpenAI one.
 			if !o.options.useBedrock {
 				params.ReasoningEffort = shared.ReasoningEffortMedium
 			}

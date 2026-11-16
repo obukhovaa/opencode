@@ -20,6 +20,7 @@ Model{
     Name:                     string,        // Human-readable, e.g. "Claude 4.5 Sonnet [1M]"
     Provider:                 ModelProvider, // e.g. ProviderAnthropic
     APIModel:                 string,        // API model identifier sent to provider
+    Wire:                     Wire,          // Bedrock only: WireOpenAIChat for models InvokeModel serves with chat-completions bodies (Kimi, GPT); empty = Anthropic Messages
     CostPer1MIn:              float64,       // Cost per 1M input tokens (USD)
     CostPer1MOut:             float64,       // Cost per 1M output tokens (USD)
     CostPer1MInCached:        float64,       // Cost per 1M cached input tokens
@@ -35,11 +36,12 @@ Model{
     RejectsForcedToolChoice:  bool,          // API 400s tool_choice "tool"/"any" (Opus 5.5, Sonnet 5.5, Fable 5.1) — check the model's breaking changes
     LongContextThreshold:     int64,         // Prompt tokens above which the whole request reprices (Haiku 5.5: 100000); 0 = flat pricing
     LongContextCostMultiplier: float64,      // Multiplier on all four rates past the threshold (Haiku 5.5: 5)
-    DefaultReasoningEffort:   string,        // Effort sent when the agent sets none; "" = "high". Set when Anthropic's default is lower (Haiku 5.5: "medium")
+    LongContextOutputCostMultiplier: float64, // Output multiplier past the threshold when it differs from the input one (GPT-6.1: 1.5 vs 2); 0 = same as LongContextCostMultiplier
+    DefaultReasoningEffort:   string,        // Effort used when the agent sets none. Anthropic: "" = "high", set when Anthropic's default is lower (Haiku 5.5: "medium"). OpenAI-wire Bedrock: resolved at config load and sent by the client; "" = field omitted
 }
 ```
 
-If the pricing page lists a second price row "for prompts over N tokens" and every rate in it is the same multiple of the base row, set the two `LongContext*` fields instead of averaging the rates; `provider.CalculateCost` applies them. If input and output rise by different factors, the single multiplier cannot express it: extend `Model` and `CalculateCost` rather than picking one factor. Mirror the fields on the Bedrock/VertexAI entries.
+If the pricing page lists a second price row "for prompts over N tokens", set the `LongContext*` fields instead of averaging the rates; `provider.CalculateCost` applies them. One multiplier covers input and output; add `LongContextOutputCostMultiplier` when output rises by a different factor. Mirror the fields on the Bedrock/VertexAI entries.
 
 ## Required Information from Model Card
 
@@ -52,6 +54,8 @@ Extract these from the model card/documentation. If any are missing, ask the use
 5. **Reasoning support**: does it support thinking/reasoning? Adaptive thinking? Maximum thinking? XHigh thinking?
 6. **Task budget support**: does it support the task_budget beta feature? (requires `task-budgets-2026-03-13` beta header)
 7. **Attachments**: does it support file/image attachments?
+
+For Bedrock models: check which body format InvokeModel takes. Claude takes Anthropic Messages; Kimi and GPT take OpenAI chat-completions and need `Wire: WireOpenAIChat`, which routes them through the OpenAI client (`provider/bedrock.go`), applies the OpenAI-wire effort rules in `config.validateAgent` and sends `DefaultReasoningEffort` when no effort is set. A model whose tool calls have not been verified on that route should say so in its catalog comment and in `docs/providers.md`.
 
 For VertexAI models: the API model name format differs (e.g. `claude-sonnet-4-5@20250929` instead of `claude-sonnet-4-5`). The model card usually provides this.
 
@@ -66,7 +70,9 @@ For VertexAI models: the API model name format differs (e.g. `claude-sonnet-4-5@
 | Gemini | `gemini.go` | `GeminiModels` | `ProviderGemini` |
 | VertexAI (Gemini) | `vertexai.go` | `VertexAIGeminiModels` | `ProviderVertexAI` |
 | VertexAI (Anthropic) | `vertexai.go` | `VertexAIAnthropicModels` | `ProviderVertexAI` |
-| Bedrock | `bedrock.go` | `BedrockAnthropicModels` | `ProviderBedrock` |
+| Bedrock (Claude) | `bedrock.go` | `BedrockAnthropicModels` | `ProviderBedrock` |
+| Bedrock (Kimi) | `bedrock.go` | `BedrockKimiModels` | `ProviderBedrock`, `Wire: WireOpenAIChat` |
+| Bedrock (OpenAI) | `bedrock.go` | `BedrockOpenAIModels` | `ProviderBedrock`, `Wire: WireOpenAIChat` |
 
 ### 2. Add the ModelID constant
 
