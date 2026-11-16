@@ -116,8 +116,10 @@ type FlowEvent struct {
 	ContextSize int64 `json:"contextSize,omitempty"`
 }
 
-// flowStepRecord captures one completed step's outcome for /flow/status.
+// flowStepRecord captures a current or completed step for /flow/status.
 type flowStepRecord struct {
+	// Iteration is the persisted 1-based execution counter; zero is unknown.
+	Iteration   int    `json:"iteration,omitempty"`
 	ID          string `json:"id"`
 	SessionID   string `json:"sessionID"`
 	Status      string `json:"status"`
@@ -1014,6 +1016,7 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 	defer fr.mu.Unlock()
 	now := time.Now().UnixMilli()
 	rec := flowStepRecord{
+		Iteration: st.Iteration,
 		ID:        st.StepID,
 		SessionID: st.SessionID,
 		Status:    string(st.Status),

@@ -30,6 +30,20 @@ OPENCODE_SERVER_PASSWORD=mysecret opencode serve
 
 Clients authenticate with any username and the password as the password field. When the variable is unset, authentication is disabled.
 
+### Flow status execution identity
+
+Flow status snapshots (`GET /flow/status`) carry optional `iteration` on both
+`currentStep` and `completedSteps` records. It is copied from the engine's
+persisted 1-based step execution counter, matching the step events. Repeated
+reads and in-flight retries keep the same iteration; a later execution carries
+its own counter even when the step session or timestamps are reused. Missing or
+zero iteration means unknown, for compatibility with older producers.
+
+Use the counter together with the correct run/job and step session, never as a
+globally unique identifier. A snapshot still exposes only one current step; this
+field does not make parallel-step recovery complete or provide an exactly-once
+delivery mechanism.
+
 ### Endpoints
 
 #### Global
