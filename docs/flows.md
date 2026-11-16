@@ -108,6 +108,9 @@ Because built-in discovery derives IDs from file basenames (which can never cont
 | `agent` | string | No | Agent ID to use (defaults to `coder`). Accepts `${args.*}` / `${step.*}` placeholders; a placeholder that does not resolve **fails the step** (its `fallback` fires) — see [Placeholders in `agent`, `model` and `reasoningEffort`](#placeholders-in-agent-model-and-reasoningeffort). |
 | `model` | string | No | Per-step override of the agent's model, as a catalog model ID (e.g. `bedrock.eu-claude-sonnet-5`). Accepts `${args.*}` / `${step.*}`. Empty or unresolved means **no override** — the agent's own model runs and the miss is warn-logged. A resolved value the catalog does not know fails the step. Literal values are validated at flow load. Applied to that step's agent instance only — the agent's configuration is never changed. Inheritable via `extends`. |
 | `reasoningEffort` | string | No | Per-step override of the agent's reasoning effort: `low`, `medium`, `high`, `xhigh`, `max`. Same substitution and fallback rules as `model`; validated against the model the step actually runs on (`xhigh` / `max` only on models that support them), so an unsupported level fails the step. This check is stricter than the one applied to an agent's `reasoningEffort` in `.opencode.json`: config only coerces the level for OpenAI/local and adaptive-thinking models and passes it through untouched for other reasoning models (Gemini, Yandex, non-adaptive Claude), whereas a step override of `xhigh` / `max` on such a model fails the step. Inheritable via `extends`. |
+| `modelPool` | string | No | JSON array of `{model, weight, effort?, shadowWeight?}` the step's model and effort are picked from, deterministically per `modelSeed`; overrides `model` while active. Accepts `${args.*}` / `${step.*}`. See [Model pools and shadow runs](#model-pools-and-shadow-runs). |
+| `modelSeed` | string | No | What the pool pick is keyed on (e.g. `${args.mr_links}`); empty or unresolved falls back to the root session id. Needs `modelPool`. |
+| `modelShadowRate` | string/number | No | Percentage (0–100) of seeds that also get a shadow model in `args.pool.<step id>`. Needs `modelPool`. |
 | `denyTools` | array | No | Tool-name globs (`*` wildcards, case-insensitive) removed from this step's agent and from every subagent it spawns, on top of the agent's own `tools` / `allowTools`. A denied call that still reaches the agent loop gets an error result instead of running. `struct_output` is never denied. Blank entries fail the load; literal values only; inheritable via `extends`; not allowed in dynamic flows. Use it to run a copy of a step read-only, e.g. a shadow review that must not post: `denyTools: ["gitlab_create_*", "router_send"]`. |
 | `bestEffort` | bool | No | The step's failure ends its branch without failing the run: the run's terminal status comes from the other steps. Retries and `fallback.to` apply as usual. The failure is still recorded and published as `flow.step.failed`, and every event of the step carries `bestEffort: true`; no error agent event is emitted for it. Inheritable via `extends`. |
 | `session.fork` | bool | No | Fork previous step's session (same agent only) |
@@ -759,6 +762,56 @@ The three fields deliberately fail differently when a placeholder does not resol
 Literal (non-templated) `model` / `reasoningEffort` values are validated when the flow loads, like any other step field. The override applies to that step's agent instance only — two steps on the same agent id can run different models in the same run, and the agent's configuration is never rewritten.
 
 A step reached through `fallback.to` bypasses the diamond-convergence guard, so an escalation target that already ran earlier in the same invocation is admitted again rather than dropped; see [Fallback re-entry](#fallback-re-entry) for the load-time cycle check and the per-run `flow.maxFallbackEntries` cap that bound it.
+
+## Model pools and shadow runs
+
+A model pool spreads a step over several models: each seed (an MR, say) runs on one model picked from a weighted list, the same seed always picks the same model, and a share of seeds additionally name a second, shadow model that a later, read-only copy of the step can run on for comparison. The weights are set by people from measurements; the harness only picks.
+
+```yaml
+- id: review-code
+  agent: piano-code-reviewer
+  model: ${args.review_model}                 # used when the pool is inactive
+  reasoningEffort: ${args.review_effort}      # default effort for pool entries
+  modelPool: ${args.review_pool}              # [{"model": "...", "weight": 70}, ...]
+  modelSeed: ${args.mr_links}
+  modelShadowRate: ${args.review_shadow_rate} # 0..100
+  prompt: "Review on ${args.pool.review-code.model} ..."
+  rules:
+    - then: approve-merge-requests
+    - if: ${args.pool.review-code.shadow} == true
+      then: review-code-shadow
+- id: review-code-shadow
+  model: ${args.pool.review-code.shadow_model}
+  reasoningEffort: ${args.pool.review-code.shadow_effort}
+  bestEffort: true
+  denyTools: ["gitlab_create_*", "router_send"]
+  prompt: "Review again, return the findings, post nothing."
+```
+
+**The pool.** `modelPool` resolves to a JSON array of entries `{"model": "<catalog id>", "weight": <number>, "effort": "<level>", "shadowWeight": <number>}`; `effort` and `shadowWeight` are optional and unknown keys are ignored. A literal pool must be written as a JSON string (`modelPool: '[{"model": "...", "weight": 1}]'`), not as a YAML list.
+
+- The pool is **inactive** — the step's own `model` / `reasoningEffort` apply and nothing is written to args — when the value is empty, unresolved, `[]`, has no usable entry, or every usable entry has weight 0.
+- An entry is **skipped with a warning** when its model is not in this build's catalog (built-in or [`customModels`](providers.md#config-defined-models)), its model is empty or repeats an earlier entry's, a weight is negative, or its effort is not a level. A pool can name a model before the image that knows it is deployed; the step then runs on the others.
+- A value that is not a JSON array of entry objects **fails the step**, like an unknown `model`.
+
+**The pick.** `hashUnit(s)` takes the first 8 bytes of `sha256(s)` as a big-endian integer `x` and returns `((x >> 11) + 0.5) / 2^53`, a number in (0, 1). Each usable entry with weight `w > 0` scores `w / -ln(hashUnit(seed + ":" + model))`; the highest score wins (ties: the smaller model id). This is weighted rendezvous hashing: adding or removing an entry only moves seeds onto or off that entry, raising a weight only moves seeds onto it, and reordering the list changes nothing. `modelSeed` is substituted and used verbatim (an array arg renders as compact JSON); empty or unresolved, it falls back to the flow's root session id with a warning.
+
+**The effort** is the entry's `effort`, else the step's resolved `reasoningEffort`, clamped to what the picked model accepts: `max` falls to `xhigh` and then `high`, `xhigh` to `high`, and a model that cannot reason gets none.
+
+**Shadow sampling.** With `u = hashUnit(seed + ":shadow")`, the seed is sampled when `u × 100 < modelShadowRate`. The shadow model is a second rendezvous pick among the other usable entries, keyed `seed + ":shadow:" + model` and weighted by `shadowWeight`, else by `weight`, a weight of 0 counting as 1. So an entry with weight 0 and no `shadowWeight` is a shadow-only newcomer (no primary traffic, shadow samples only), and `shadowWeight: 0` keeps an entry out of shadows. Without another eligible entry nothing is sampled. An unset rate is 0; a rate that is not a number from 0 to 100 counts as 0 with a warning. The harness does not run the shadow itself; the flow does, by routing on the flag below.
+
+**What the step and later steps see.** Before the agent is built and the prompt is rendered, the pick is written to `args.pool.<step id>`:
+
+| Key | Value |
+|---|---|
+| `model`, `effort` | The model and effort the step runs on |
+| `bucket` | `floor(u × 100)`, the seed's 0–99 sampling bucket; with an integer rate, `shadow` is `bucket < rate` |
+| `shadow` | `true` when the seed was sampled |
+| `shadow_model`, `shadow_effort` | The shadow pick, empty when `shadow` is false |
+
+Route on `${args.pool.<step id>.shadow} == true` only: a missing path makes the predicate false, so the shadow branch stays closed on images without pools, when the gate failed, and for teams without a pool. `pool` is reserved for the runtime: a flow whose args schema or a step's output schema declares it fails to load, a run whose caller args contain it is refused, and a `pool` field in a structured output is not merged into args. The step's events report the picked model as `model`.
+
+Literal values are checked at load (a literal pool must decode and its entries be well formed, an unknown model only warns; a literal rate must be a number from 0 to 100), `modelSeed` or `modelShadowRate` without `modelPool` is a load error, the keys are inheritable via `extends`, and dynamic flows reject them.
 
 ## Session Management
 

@@ -225,7 +225,7 @@ func planStart(f *Flow, args map[string]any, opts RunOptions) (*startPlan, error
 		plan.carried = append(plan.carried, *c)
 		after := copyArgs(stepArgs)
 		if out.isStruct {
-			maps.Copy(after, out.data)
+			mergeOutputArgs(after, out.data)
 		}
 		reaches := false
 		for _, next := range resolveNextSteps(step.Rules, f.Spec.Steps, after, map[string]any{"iteration": 1}) {

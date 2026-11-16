@@ -32,6 +32,9 @@ var (
 	ErrInvalidMaxFallbackEntries = errors.New("invalid maxFallbackEntries")
 	ErrFallbackCycle             = errors.New("fallback cycle")
 	ErrInvalidDenyTools          = errors.New("invalid step denyTools")
+	ErrInvalidModelPool          = errors.New("invalid step modelPool")
+	// ErrReservedArg rejects a flow arg the runtime owns (ReservedPoolArg).
+	ErrReservedArg = errors.New("reserved flow arg")
 )
 
 // Flow represents a discovered flow definition.
@@ -137,6 +140,16 @@ type Step struct {
 	// e.g. `xhigh` on a model without SupportsXHighThinking fails the
 	// step. Inheritable through `extends`.
 	ReasoningEffort string `yaml:"reasoningEffort,omitempty"`
+	// ModelPool, when it resolves to a non-empty JSON array of
+	// {model, weight, effort?, shadowWeight?}, replaces Model / the effort
+	// with a deterministic weighted pick per ModelSeed, and ModelShadowRate
+	// (0..100) samples a shadow model; the pick lands in
+	// args.pool.<step id> before the prompt is rendered (model_pool.go).
+	// All three take ${args.*} / ${step.*}; inheritable through `extends`;
+	// rejected in dynamic flows.
+	ModelPool       string `yaml:"modelPool,omitempty"`
+	ModelSeed       string `yaml:"modelSeed,omitempty"`
+	ModelShadowRate string `yaml:"modelShadowRate,omitempty"`
 	// DenyTools lists tool-name globs this step's agent and the subagents
 	// it spawns run without (tools.WithDeniedTools carries them). Literal
 	// only; inheritable through `extends`; rejected in dynamic flows.
