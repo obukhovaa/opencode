@@ -70,6 +70,26 @@ type FlowState struct {
 	// before agent.Run begins. Consumers (API runner) translate this into
 	// the flow.waiting_for_input SSE event.
 	WaitingTarget []bridge.PeerRef
+	// Model is the id of the model the step's agent runs on, set on every
+	// state published after NewAgent (see withStepModel); empty on states
+	// published before it and on rows read back from the database.
+	Model string
+}
+
+// stepModelKey carries the step's resolved model id on runStep's ctx from
+// NewAgent on, so every state built from that ctx — including those built by
+// handleStepError, the transient-postpone park and the struct_output retry
+// signal — reports it without each call site threading it through.
+type stepModelKey struct{}
+
+func withStepModel(ctx context.Context, model models.ModelID) context.Context {
+	return context.WithValue(ctx, stepModelKey{}, string(model))
+}
+
+// stepModelFrom returns the model withStepModel recorded on ctx, or "".
+func stepModelFrom(ctx context.Context) string {
+	model, _ := ctx.Value(stepModelKey{}).(string)
+	return model
 }
 
 // AgentProvider interface removed — use agentpkg.AgentFactory directly.
@@ -795,6 +815,7 @@ func (s *service) runStep(
 		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
 		return
 	}
+	ctx = withStepModel(ctx, agentSvc.Model().ID)
 
 	sess, err := s.resolveSession(ctx, step, sessionID, rootSessionID, prevState)
 	if err != nil {
@@ -950,6 +971,7 @@ func (s *service) runStep(
 		Args:          copyArgs(args),
 		Iteration:     iteration,
 		UpdatedAt:     updatedAt,
+		Model:         stepModelFrom(ctx),
 	}
 	if status == FlowStatusPostponed && getErr == nil {
 		runningState.Output = existingFS.Output.String
@@ -1055,6 +1077,7 @@ func (s *service) runStep(
 			Iteration:     iteration,
 			UpdatedAt:     time.Now().Unix(),
 			WaitingTarget: boundPeers,
+			Model:         stepModelFrom(ctx),
 		}
 		flowStates <- waitingState
 		s.Publish(pubsub.UpdatedEvent, *waitingState)
@@ -1240,7 +1263,7 @@ func (s *service) runStep(
 				// turn nobody paid for.
 				retried, ok := s.retryStructOutputTurn(ctx, agentSvc, sess.ID, step, func() {
 					structOutputRetried = true
-					s.publishStructOutputRetry(sess.ID, rootSessionID, f.ID, step, args, iteration,
+					s.publishStructOutputRetry(ctx, sess.ID, rootSessionID, f.ID, step, args, iteration,
 						retryReasonNoStructOutput, flowStates)
 				})
 				if ok {
@@ -1322,7 +1345,7 @@ func (s *service) runStep(
 				// in-flight, non-persisted transition the re-prompt paths
 				// publish; only the reason string is new.
 				if attempt+1 < maxAttempts {
-					s.publishStructOutputRetry(sess.ID, rootSessionID, f.ID, step, args, iteration,
+					s.publishStructOutputRetry(ctx, sess.ID, rootSessionID, f.ID, step, args, iteration,
 						retryReasonTurnsExhausted, flowStates)
 				}
 				continue
@@ -1397,7 +1420,7 @@ doneRetry:
 			// never managed to issue.
 			forced := s.forceStructOutputTurn(boundedCtx, agentSvc, sess.ID, step, func() {
 				structOutputRetried = true
-				s.publishStructOutputRetry(sess.ID, rootSessionID, f.ID, step, args, iteration,
+				s.publishStructOutputRetry(ctx, sess.ID, rootSessionID, f.ID, step, args, iteration,
 					retryReasonRunFailed, flowStates)
 			})
 			cancelBounded()
@@ -1471,6 +1494,7 @@ doneRetry:
 			Output:        lastErr.Error(),
 			Iteration:     iteration,
 			UpdatedAt:     updatedAt,
+			Model:         stepModelFrom(ctx),
 		}
 		flowStates <- failedState
 		s.Publish(pubsub.UpdatedEvent, *failedState)
@@ -1595,6 +1619,7 @@ doneRetry:
 		IsStructOutput: isStructOutput,
 		Iteration:      iteration,
 		UpdatedAt:      updatedAt,
+		Model:          stepModelFrom(ctx),
 	}
 	flowStates <- completedState
 	s.Publish(pubsub.UpdatedEvent, *completedState)
@@ -1794,6 +1819,7 @@ func (s *service) postponeStepForTransientError(
 		IsStructOutput: carryIsStruct,
 		Iteration:      iteration,
 		UpdatedAt:      updatedAt,
+		Model:          stepModelFrom(ctx),
 	}
 	flowStates <- postponedState
 	s.Publish(pubsub.UpdatedEvent, *postponedState)
@@ -1898,6 +1924,7 @@ func (s *service) handleStepError(
 		Output:        err.Error(),
 		Iteration:     iteration,
 		UpdatedAt:     updatedAt,
+		Model:         stepModelFrom(ctx),
 	}, err, agentEvents, flowStates)
 
 	if step.Fallback != nil && step.Fallback.To != "" {

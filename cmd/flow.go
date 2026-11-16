@@ -168,6 +168,7 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 		FinishedAt     int64   `json:"finished_at,omitempty"`
 		ContextSize    int64   `json:"context_size,omitempty"`
 		Cost           float64 `json:"cost,omitempty"`
+		Model          string  `json:"model,omitempty"`
 	}
 
 	var orderedSteps []stepResult
@@ -205,6 +206,7 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 			Output:         output,
 			IsStructOutput: state.IsStructOutput,
 			FinishedAt:     state.UpdatedAt,
+			Model:          state.Model,
 		}
 		// One row per step ID in the envelope. A step that iterates via a
 		// self-loop publishes a state event per iteration (running, completed,
@@ -213,7 +215,12 @@ func runFlowNonInteractive(ctx context.Context, a *app.App, flowID, prompt, sess
 		// before reaching its terminal state, and `Cost`/`ContextSize` are
 		// session-level totals that aggregate naturally across iterations
 		// (same session ID).
+		// A state from before the step's agent was built (a later iteration
+		// that failed early) carries no model; keep the one already seen.
 		if idx, exists := stepIndex[state.StepID]; exists {
+			if sr.Model == "" {
+				sr.Model = orderedSteps[idx].Model
+			}
 			orderedSteps[idx] = sr
 		} else {
 			stepIndex[state.StepID] = len(orderedSteps)
