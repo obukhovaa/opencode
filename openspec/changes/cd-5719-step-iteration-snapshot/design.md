@@ -16,7 +16,7 @@ The engine already persists a 1-based FlowState.Iteration and sends it in step e
 - Decode it in the driver. Snapshot recovery fills unknown iteration; when positive iterations disagree for the same step, the newer execution wins over timestamps. Do not carry a previous execution's streamed totals or waiting state into a newer snapshot execution.
 - A legacy snapshot with absent/zero iteration follows existing recovery behavior and cannot erase a known positive iteration. A snapshot of another run remains refused.
 - Use tests for cold reconstruction, repeated reads, retrying state, later executions within the same timestamp, stale snapshots and backward compatibility. No timestamp-derived identifier.
-- Draft only. CoS/Artem must confirm the identity binding, resume/re-entry semantics and rollout scope before these commits are pushed or used by evolution.
+- Arne approved the step-iteration contract via CoS on 2026-11-16. The producer goes to the arnesund fork and an upstream PR for Artem; the consumer goes to a paired c2-agent MR. Consumers bind the counter to their run/job and step session. Deployment remains separate.
 
 ## Risks / Trade-offs
 

@@ -9,7 +9,7 @@ CD-5719 needs to distinguish a new Preview step execution from reload/reconnect 
 - Expose the persisted step iteration in current and completed /flow/status records.
 - Preserve unknown identity as zero for older producers; never invent an iteration from a timestamp.
 - Add regression tests and document the additive contract.
-- Local draft only, authorized by CoS mailbox 20261116T063043Z; no push, publication or rollout until the scope decision.
+- Publish the paired contract changes for review, authorized by Arne via CoS mailbox 20261116T090430Z on 2026-11-16. Deployment remains a separate gate.
 
 ## Capabilities
 

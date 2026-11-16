@@ -1,4 +1,4 @@
-# Local draft validation
+# Validation
 
 - Focused iteration serialization/lifecycle tests passed.
 - Full `internal/api` package passed with race and coverage in the `make test` run.
@@ -27,5 +27,5 @@ retained under `~/.c3-cos/codex-loop/cd5719-opencode-*.log` for the CoS handoff.
 The repository hidden-character check also flags the unchanged generated
 `internal/lsp/protocol/tsprotocol.go`; the changed Go files contain none.
 
-This is an unpushed local contract draft for IMPL-CD-5719-1. Publication remains
-on hold for the CoS/Artem scope decision. It does not implement Preview delivery.
+Publication of this prerequisite is authorized by Arne via CoS message
+`20261116T090430Z` on 2026-11-16. It does not implement Preview delivery.
