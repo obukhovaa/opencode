@@ -19,8 +19,8 @@ import (
 // step's model and effort deterministically per seed and may sample a shadow
 // model. docs/flows.md ("Model pools and shadow runs") is the user-facing
 // contract, including the exact hashing, so a pick can be reproduced outside
-// the harness; the design rationale is in the genai-375-model-pools OpenSpec
-// change.
+// the harness; requirements are in openspec/specs/flow-api/spec.md and the
+// rationale in openspec/changes/archive/2026-11-16-genai-375-model-pools.
 
 // ReservedPoolArg is the arg the runtime writes pool picks under, as
 // args.pool.<step id>. Callers, args schemas and step outputs may not use it.

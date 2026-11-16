@@ -20,5 +20,5 @@
 
 ## 4. Verification and completion
 
-- [ ] 4.1 `make test`, `make schema-check`; run the probe only where `LOCAL_ENDPOINT` credentials are already present, otherwise record GPT as pending.
-- [ ] 4.2 Sync the delta specs and archive the change.
+- [x] 4.1 `make test`, `make schema-check`; run the probe only where `LOCAL_ENDPOINT` credentials are already present, otherwise record GPT as pending.
+- [x] 4.2 Sync the delta specs and archive the change.
