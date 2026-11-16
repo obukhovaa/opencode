@@ -492,3 +492,38 @@ func TestOpenAIReasoningEffortDefault(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenAIReasoningEffortXHigh pins the xhigh wire value: sent as-is to a
+// model that supports it, folded to high (with a warning) for one that does
+// not. Before, xhigh fell into the default branch and went out as medium.
+func TestOpenAIReasoningEffortXHigh(t *testing.T) {
+	withXHigh := models.SupportedModels[models.BedrockKimiK3]
+	withXHigh.SupportsXHighThinking = true
+	tests := []struct {
+		name  string
+		model models.Model
+		want  string
+	}{
+		{"supported", withXHigh, "xhigh"},
+		{"unsupported folds to high", models.SupportedModels[models.BedrockKimiK3], "high"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			loadConfigIn(t, t.TempDir())
+			srv, sent := captureReasoningEffort(t)
+			client := newBedrockClient(providerClientOptions{
+				apiKey:        "test-key",
+				baseURL:       srv.URL + "/bedrock",
+				model:         tt.model,
+				maxTokens:     256,
+				openaiOptions: []OpenAIOption{WithReasoningEffort("XHigh")},
+			})
+			if _, err := client.send(context.Background(), bedrockKimiPrompt, nil); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			if present, got := sent(); !present || got != tt.want {
+				t.Errorf("reasoning_effort present=%v value=%q, want %q", present, got, tt.want)
+			}
+		})
+	}
+}
