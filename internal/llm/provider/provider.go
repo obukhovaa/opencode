@@ -1013,7 +1013,11 @@ func CalculateCost(model models.Model, u TokenUsage) (inputCost, outputCost floa
 	if model.LongContextThreshold > 0 && model.LongContextCostMultiplier > 0 &&
 		prompt > model.LongContextThreshold {
 		inputCost *= model.LongContextCostMultiplier
-		outputCost *= model.LongContextCostMultiplier
+		if model.LongContextOutputCostMultiplier > 0 {
+			outputCost *= model.LongContextOutputCostMultiplier
+		} else {
+			outputCost *= model.LongContextCostMultiplier
+		}
 	}
 	return
 }

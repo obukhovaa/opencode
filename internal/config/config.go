@@ -1487,19 +1487,14 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 		// default them to medium and silently fold a configured max down to
 		// medium.
 		if agent.ReasoningEffort == "" {
-			if models.IsKimiK3(model.ID) {
-				// Kimi K3 documents low|high|max with max as the default
-				// (Moonshot's own Claude Code guide pins effort to max);
-				// the clients' generic empty-effort defaults ("high" for
-				// anthropic, "medium" for openai) are not K3's, so resolve
-				// it here where the value stays visible in config. K2.7
-				// Code takes every level, so it keeps the client default.
-				logging.Info("setting default reasoning effort 'max' for kimi model",
+			if effort := unsetReasoningEffortDefault(model); effort != "" {
+				logging.Info("setting the model's default reasoning effort",
 					"agent", name,
-					"model", agent.Model)
+					"model", agent.Model,
+					"reasoning_effort", effort)
 
 				updatedAgent := cfg.Agents[name]
-				updatedAgent.ReasoningEffort = "max"
+				updatedAgent.ReasoningEffort = effort
 				cfg.Agents[name] = updatedAgent
 			}
 		} else {
@@ -1571,6 +1566,28 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 }
 
 // Validate checks if the configuration is valid and applies defaults where needed.
+// unsetReasoningEffortDefault is the effort validateAgent resolves an
+// adaptive-thinking or OpenAI-wire Bedrock agent without one to, or "" to
+// leave it to the client default.
+//
+// Kimi K3 documents low|high|max with max as the default (Moonshot's own
+// Claude Code guide pins effort to max); the clients' generic empty-effort
+// defaults ("high" for anthropic, "medium" for openai) are not K3's, so it
+// is resolved here where the value stays visible in config. K2.7 Code takes
+// every level, so it keeps the client default. An OpenAI-wire Bedrock model
+// resolves to its DefaultReasoningEffort; an Anthropic-wire one keeps it out
+// of config, since the Anthropic client applies it per turn and a resolved
+// value would follow the agent onto another model under a step override.
+func unsetReasoningEffortDefault(model models.Model) string {
+	if models.IsKimiK3(model.ID) {
+		return models.ReasoningEffortMax
+	}
+	if model.BedrockOpenAIChat() {
+		return model.DefaultReasoningEffort
+	}
+	return ""
+}
+
 func Validate() error {
 	if cfg == nil {
 		return fmt.Errorf("config not loaded")

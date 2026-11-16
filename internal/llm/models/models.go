@@ -62,15 +62,20 @@ type Model struct {
 	// LongContextCostMultiplier times the four CostPer1M* rates (Claude Haiku
 	// 5.5: 5x over 100,000). The prompt is uncached input plus cache writes
 	// and cache reads, all of which count toward the context window. Zero in
-	// either field means flat pricing at any length. One multiplier covers
-	// all four rates; a tier that raises input and output by different
-	// factors needs separate fields.
-	LongContextThreshold      int64   `json:"long_context_threshold,omitempty"`
-	LongContextCostMultiplier float64 `json:"long_context_cost_multiplier,omitempty"`
-	// DefaultReasoningEffort is the effort the Anthropic client sends on an
-	// adaptive-thinking turn when neither the agent nor the flow step sets
-	// one. Empty means "high". Set it where Anthropic's own default is lower
-	// and is the recommended starting point (Claude Haiku 5.5: "medium").
+	// either field means flat pricing at any length. The multiplier covers
+	// all four rates unless LongContextOutputCostMultiplier is set, which
+	// then applies to output instead (GPT-6.1: input 2x, output 1.5x).
+	LongContextThreshold            int64   `json:"long_context_threshold,omitempty"`
+	LongContextCostMultiplier       float64 `json:"long_context_cost_multiplier,omitempty"`
+	LongContextOutputCostMultiplier float64 `json:"long_context_output_cost_multiplier,omitempty"`
+	// DefaultReasoningEffort is the effort a turn runs at when neither the
+	// agent nor the flow step sets one. The Anthropic client sends it on an
+	// adaptive-thinking turn (empty: "high"); set it where Anthropic's own
+	// default is lower and is the recommended starting point (Claude Haiku
+	// 5.5: "medium"). On an OpenAI-wire Bedrock model, config load resolves
+	// an unset agent effort to it and the OpenAI client sends it when no
+	// effort reaches it (empty: the field is left out and the model's own
+	// default applies).
 	DefaultReasoningEffort string `json:"default_reasoning_effort,omitempty"`
 }
 
