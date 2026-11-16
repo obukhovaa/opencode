@@ -793,6 +793,9 @@ type Config struct {
 	// and flow-step `context` objects have entirely different fields.
 	// Always non-nil after viper.Unmarshal (setDefaults seeds every key).
 	ContextDiscovery *contextfile.DiscoveryConfig `json:"contextDiscovery,omitempty"`
+	// CustomModels defines Bedrock models outside the compiled catalog;
+	// Load registers them before validating agents (custom_models.go).
+	CustomModels []CustomModel `json:"customModels,omitempty"`
 }
 
 // Application constants
@@ -842,6 +845,7 @@ var cfg *Config
 func Reset() {
 	cfg = nil
 	toolenv.SetConfigured(nil)
+	models.UnregisterCustomModels()
 }
 
 // Load initializes the configuration from environment variables and config files.
@@ -855,6 +859,7 @@ func Load(workingDir string, debug bool) (*Config, error) {
 	defer func() {
 		if !loaded {
 			cfg = nil
+			models.UnregisterCustomModels()
 		}
 	}()
 
@@ -936,6 +941,12 @@ func Load(workingDir string, debug bool) (*Config, error) {
 			Level: defaultLevel,
 		}))
 		slog.SetDefault(logger)
+	}
+
+	// Config-defined models join the catalog before anything resolves a
+	// model id against it, agent validation first.
+	if err := registerCustomModels(cfg); err != nil {
+		return cfg, fmt.Errorf("config validation failed: %w", err)
 	}
 
 	// Validate configuration
