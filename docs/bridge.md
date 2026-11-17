@@ -543,3 +543,39 @@ answer a newer question with the same label. Slack custom-modal replies preserve
 their request identity as `questionRequestId`; ordinary non-flow questions retain
 their legacy callback values. Native confirmation text uses labels or option
 numbers, never the opaque identity.
+
+### Conversation flow progress cards
+
+Slack, Mattermost and Telegram keep one progress message per flow and recipient,
+editing it as steps advance. The card shows the plan, active/waiting/failed steps,
+agent names, iterations and elapsed time when available. Ordinary tool-progress
+cards and interactive questions remain separate.
+
+`/verbosity compact` shows status and a concise final result; routine step output
+stays out of the card. `/verbosity full` adds folded step output to the same card:
+
+- Slack uses native plan/task cards, with structured output in a JSON code block.
+  Apps that reject these blocks receive an editable text summary instead.
+- Mattermost uses native collapsible blocks and always includes a text summary,
+  so servers with `MmBlocksEnabled` disabled still show progress.
+- Telegram uses expandable quotations with escaped, indented JSON and supported
+  inline prose formatting. Link previews are disabled. Code blocks are not nested
+  inside spoilers or quotations because Telegram's entity rules forbid that shape.
+
+The live verbosity setting applies on the next progress update. With
+`toolUpdatesEnabled: false`, routine intermediate updates are suppressed; failures,
+waiting states and terminal outcomes remain visible. Long plans and outputs are
+bounded with explicit omission/truncation notices; full output remains in the
+persisted step sessions. Running edits are coalesced over two seconds, while
+failure, waiting and terminal states flush promptly.
+
+Card message identities and presentation state persist in SQLite or MySQL. A normal
+restart edits the existing card; stale replay cannot regress its progress. A
+transient platform error retries the same message, and a definite deleted-message
+response permits a replacement. As with other bridge delivery, a crash after a
+remote send succeeds but before its local receipt commits can duplicate that
+first send: the platforms and local store do not share a transaction.
+
+External relays retain their existing `session.flow.*` event delivery contract and
+rendering responsibility. These changes do not alter flow execution, tool schemas,
+LLM prompts, or standalone orchestrator progress.

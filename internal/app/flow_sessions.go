@@ -49,6 +49,11 @@ type FlowSteeringMessage struct {
 	TargetQuestionID   string          `json:"targetQuestionId,omitempty"`
 }
 type FlowRunEvent struct {
+	FlowID         string                `json:"flowId,omitempty"`
+	Agent          string                `json:"agent,omitempty"`
+	IsStructOutput bool                  `json:"isStructOutput,omitempty"`
+	Iteration      int                   `json:"iteration,omitempty"`
+	OccurredAt     int64                 `json:"occurredAt,omitempty"`
 	ID             string                `json:"id"`
 	Type           string                `json:"type"`
 	RunID          string                `json:"runId"`
@@ -824,6 +829,7 @@ func (app *App) emitStoredFlowEvent(ctx context.Context, record flowrun.Run, lea
 	event.Origin = record.Origin
 	event.Revision = record.Version
 	event.Fence = lease.Token
+	event.OccurredAt = time.Now().UnixMilli()
 	data, err := json.Marshal(event)
 	if err != nil {
 		return err
@@ -1197,11 +1203,19 @@ func (app *App) executeStoredFlow(ctx context.Context, conversation string, run 
 				delete(run.steps, state.StepID)
 			}
 			run.mu.Unlock()
-			if emitErr := app.emitStoredEvent(ctx, run, FlowRunEvent{Type: "session.flow.step", Status: string(state.Status), StepID: state.StepID, SessionID: state.SessionID, Output: state.Output}); emitErr != nil {
+			presented := app.flowStepOutput(ctx, *state)
+			stepAgent := ""
+			for _, step := range definition.Spec.Steps {
+				if step.ID == state.StepID {
+					stepAgent = step.Agent
+					break
+				}
+			}
+			if emitErr := app.emitStoredEvent(ctx, run, FlowRunEvent{Type: "session.flow.step", Status: string(state.Status), StepID: state.StepID, SessionID: state.SessionID, Output: presented.Output, FlowID: definition.ID, Agent: stepAgent, IsStructOutput: presented.IsStructOutput, Iteration: state.Iteration}); emitErr != nil {
 				run.cancel()
 				err = emitErr
 			} else if app.Messages != nil {
-				note := app.flowStepProgressNote(ctx, progress, *state, "")
+				note := progress.note(presented, "", time.Now())
 				_, _ = app.Messages.Create(ctx, record.ConversationID, message.CreateMessageParams{Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: note}}})
 			}
 		}

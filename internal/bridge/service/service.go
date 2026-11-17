@@ -36,6 +36,8 @@ import (
 // per-identity GET_LOCK or file lock, and Wait blocks until all
 // background work has drained.
 type Service struct {
+	flowCardMu         sync.Mutex
+	flowCardPending    map[string]app.FlowRunEvent
 	sessionFlows       sessionFlowController
 	sessionFlowOwners  map[string]sessionFlowAdmission
 	sessionFlowRetired map[string]bool
