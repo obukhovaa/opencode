@@ -103,18 +103,29 @@ func CleanupTempDir() {
 	}
 }
 
-// buildPreview returns a line-aligned head+tail preview of content.
-// If the content has fewer lines than headN+tailN, it is returned unchanged.
-func buildPreview(content string, headN, tailN int) (string, int) {
+// buildPreview bounds head+tail excerpts by both lines and bytes. Section
+// headings and the elision marker are separate, bounded overhead.
+func buildPreview(content string, headN, tailN, maxBytes int) (string, int) {
 	lines := strings.Split(content, "\n")
 	totalLines := len(lines)
 
-	if totalLines <= headN+tailN {
+	if totalLines <= headN+tailN && len(content) <= maxBytes {
 		return content, totalLines
 	}
 
-	head := strings.Join(lines[:headN], "\n")
-	tail := strings.Join(lines[totalLines-tailN:], "\n")
+	head := strings.Join(lines[:min(headN, totalLines)], "\n")
+	tail := strings.Join(lines[max(0, totalLines-tailN):], "\n")
+	if totalLines <= headN+tailN || len(head)+len(tail) > maxBytes {
+		headBytes, tailBytes := maxBytes/2, maxBytes-maxBytes/2
+		if len(head) > headBytes {
+			head = head[:toRuneBoundaryBackward(head, headBytes)]
+		}
+		if len(tail) > tailBytes {
+			tail = tail[toRuneBoundaryForward(tail, len(tail)-tailBytes):]
+		}
+		return fmt.Sprintf("%s\n\n... [%d bytes truncated] ...\n\n%s",
+			head, len(content)-len(head)-len(tail), tail), totalLines
+	}
 	truncatedCount := totalLines - headN - tailN
 
 	return fmt.Sprintf("--- First %d lines ---\n%s\n\n... [%d lines truncated] ...\n\n--- Last %d lines ---\n%s",
@@ -126,11 +137,13 @@ func buildTruncationHeader(label string, totalLines int, filePath string, origin
 	fmt.Fprintf(&sb, "<%s truncated: %d lines total>\n", label, totalLines)
 	if filePath != "" {
 		if originalSize > MaxPersistBytes {
-			fmt.Fprintf(&sb, "Full output saved to: %s (truncated at 100MB)\n", filePath)
+			fmt.Fprintf(&sb, "Output saved to: %s (only the first %d bytes; saved copy truncated at 100MiB)\n", filePath, MaxPersistBytes)
 		} else {
 			fmt.Fprintf(&sb, "Full output saved to: %s\n", filePath)
 		}
 		sb.WriteString("Use the read tool with offset/limit to read specific sections.\n")
+	} else {
+		sb.WriteString("Could not save the full output; only this preview is available.\n")
 	}
 	sb.WriteString("\n")
 	return sb.String()
