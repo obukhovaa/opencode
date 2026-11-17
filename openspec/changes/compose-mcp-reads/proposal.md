@@ -5,8 +5,8 @@ GENAI-671 found that the Go fork already implements deferred schemas and paralle
 ## What Changes
 
 - Add an opt-in, bounded sequential MCP read-plan tool with literal arguments, earlier-result bindings and JSON-pointer projections.
-- Preserve existing per-tool grants, permissions, hooks, ownership checks and cancellation through a shared dispatch path.
-- Preserve MCP error flags and explicitly reject outputs that cannot be safely projected after existing hooks.
+- Preserve existing per-tool grants, explicit policy denies, hooks, ownership checks and cancellation through a shared dispatch path, with separate control outcomes and filtered data.
+- Preserve MCP error flags and post-hook block provenance; reject outputs that cannot be safely projected after existing hooks, without echoing raw child errors or bound values.
 - Add deterministic parity and context-volume fixtures before any single-agent pilot. Default toolsets and provider payloads remain unchanged.
 - Exclude a general scripting runtime, write tools, background compaction and cache warming.
 

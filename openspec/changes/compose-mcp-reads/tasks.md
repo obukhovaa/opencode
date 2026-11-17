@@ -5,19 +5,19 @@
 
 ## 2. Establish one authorized dispatch boundary
 
-- [ ] 2.1 Extract single-call execution from ordinary parallel/sequential dispatch, separating post-hook content, hook context and status from conversation publication; run existing hook, permission, watchdog and loop tests.
-- [ ] 2.2 Add parity tests for mutated inputs, hook blocks/redaction/context, rule denial, human rejection, inherited outer hook approval, identity context and repeated-call tracking; include exact numeric argument IDs through hook/MCP decoders and assert the actual request value `9007199254740993`.
-- [ ] 2.3 Verify parent cancellation, ownership loss, child timeout, chained/shared nested permission-wait accounting (including a wait longer than the active budget), pool eviction and existing retry semantics through the extracted boundary.
+- [ ] 2.1 Extract single-call execution from ordinary parallel/sequential dispatch, separating post-hook content, post-block provenance, hook context, control error and status from conversation publication; run existing hook, permission, watchdog and loop tests.
+- [ ] 2.2 Add parity tests for mutated inputs, hook blocks/redaction/context (including JSON exit-2 reasons), explicit policy deny over child hook approval, human rejection with partial envelope/context, inherited outer hook approval, identity context and hashed child repeated-call tracking without wrapper progress or double-counted denials; include exact numeric argument IDs through hook/MCP decoders and assert the actual request value `9007199254740993`.
+- [ ] 2.3 Verify parent cancellation, ownership loss, child timeout, chained/shared nested permission-wait accounting (including a wait longer than the active budget and coverage of child pre/post hooks), pool eviction and existing retry semantics through the extracted boundary.
 
 ## 3. Implement explicit eligibility and bounded plans
 
-- [ ] 3.1 Add `mcpComposition.readTools` configuration, exact-name validation and Viper round-trip tests; update schema generation and add default-off registration gated by an exact `mcp_compose` agent grant.
+- [ ] 3.1 Add `mcpComposition.readTools` configuration, exact-name validation and Viper round-trip tests; update schema generation and add default-off registration gated by literal `mcp_compose` membership/entry, rejecting every wildcard grant.
 - [ ] 3.2 Bind composition to the filtered resolved snapshot; reject non-MCP/duplicate names, missing endpoint grants, explicit non-read-only hints and inactive deferred tools without changing discovery state.
-- [ ] 3.3 Implement the strict static plan parser, duplicate-key/depth checks and preflight validation for IDs, bindings, return IDs and selection shapes; test every input bound before any child executes.
+- [ ] 3.3 Implement the strict static plan parser, duplicate-key/depth checks and preflight validation for bounded IDs/names/pointers, canonical array indices, bindings, distinct return IDs and selection shapes; validate original outer input before hooks and rewritten input afterwards; test every input bound before any child executes.
 - [ ] 3.4 Implement RFC6901 projection and earlier-result bindings with exact numeric preservation, missing/null distinction, field/row limits and nonoverlapping existing targets.
-- [ ] 3.5 Execute sequential children through the shared boundary, clearing inherited composition approval and enforcing active-time/call/byte limits; stop on failure and release unprojected data after selection.
-- [ ] 3.6 Accept only complete post-hook JSON text; test that raw structured data, spill files, metadata and pre-hook values cannot bypass filters or supply fallback output.
-- [ ] 3.7 Return bounded provenance/status/error envelopes and explicit row incompleteness, preserve hook context and control outcomes, and exclude raw child results/bound values from history, SSE and telemetry payloads; test concurrent-session isolation.
+- [ ] 3.5 Execute sequential children through the shared boundary, clearing inherited composition approval and enforcing active-time/call/byte limits; check cancellation/ownership at child admission and cancellation after results, stop on failure and release unprojected data after selection.
+- [ ] 3.6 Accept only complete, unblocked post-hook JSON text with duplicate-key/depth/UTF-8/trailing-value checks; test that raw structured data, spill files, metadata and pre-hook values cannot bypass filters or supply fallback output.
+- [ ] 3.7 Return bounded provenance/status/error envelopes and explicit row incompleteness, preserve hook context and control outcomes, use static bounded errors, and exclude raw child results/bound values from history, SSE, dispatch logs and telemetry on success and failure; document the existing trusted-hook context/stderr exception; test concurrent-session isolation.
 
 ## 4. Demonstrate correctness and context reduction
 

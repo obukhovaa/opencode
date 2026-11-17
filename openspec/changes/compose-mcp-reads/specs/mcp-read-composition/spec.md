@@ -6,7 +6,7 @@ Compose a small set of authorized MCP reads within one invocation while exposing
 
 ### Requirement: Explicit pilot eligibility
 
-The system SHALL expose `mcp_compose` only when the agent grants that exact tool name and `mcpComposition.readTools` contains operator-reviewed, exact MCP tool names. Implicit or wildcard grants SHALL NOT enable composition. Each child SHALL also belong to the current agent's resolved MCP tools, remain eligible under current permissions and have no conflicting effective-name registration. Server annotations alone SHALL NOT authorize an endpoint; an explicitly false read-only hint SHALL make it ineligible. A deferred child SHALL already be activated in the current session. Composition SHALL NOT modify discovery state, the tool catalog, or tool serialization order.
+The system SHALL expose `mcp_compose` only when the agent grants that exact tool name and `mcpComposition.readTools` contains operator-reviewed, exact MCP tool names. Implicit or wildcard grants SHALL NOT enable composition; eligibility SHALL check literal membership in the resolved `allowTools` or an exact true `tools` entry, rather than a helper that accepts wildcard grants. Each child SHALL also belong to the current agent's resolved MCP tools, remain eligible under current permissions and have no conflicting effective-name registration. Server annotations alone SHALL NOT authorize an endpoint; an explicitly false read-only hint SHALL make it ineligible. A deferred child SHALL already be activated in the current session. Composition SHALL NOT modify discovery state, the tool catalog, or tool serialization order.
 
 #### Scenario: Default configuration
 - **WHEN** composition is not explicitly enabled
@@ -20,7 +20,9 @@ The system SHALL expose `mcp_compose` only when the agent grants that exact tool
 
 The tool SHALL accept `steps` and `return` only. Each step SHALL contain a unique `id`, exact `tool`, literal object `arguments`, required `select` and optional `bindings`. A binding SHALL contain `target`, an earlier `step` and `pointer`; it SHALL replace an existing argument location with that earlier projected value. Targets SHALL be distinct, nonoverlapping RFC6901 pointers below the argument root. Selection SHALL contain `fields`, or `rows`, `fields` and `limit`: 1–32 named RFC6901 field pointers and, for rows, an array pointer and limit of 1–100. Row pointers SHALL be relative to each row. Missing values SHALL fail; null SHALL remain valid. Numeric JSON IDs SHALL retain their exact value.
 
-The tool SHALL reject unknown keys, duplicate JSON keys, invalid references, invalid pointers and invalid selection shapes before the first call. The tool SHALL NOT execute expressions, dynamic tool names, loops, fanout or automatic pagination.
+IDs SHALL match `[A-Za-z][A-Za-z0-9_-]{0,63}`; tool names SHALL be nonempty and at most 256 UTF-8 bytes, projection field names 1–64 UTF-8 bytes, and pointers at most 1024 UTF-8 bytes. `return` SHALL contain 1–8 distinct existing IDs. Pointer overlap SHALL be checked after escape decoding; array indices SHALL be canonical nonnegative decimal indices without leading zeros, and `-` SHALL NOT be an array target. Literal target existence SHALL be checked before execution; earlier-result pointer existence SHALL be checked when that result is available.
+
+The tool SHALL reject unknown keys, duplicate JSON keys, invalid references, invalid pointers and invalid selection shapes before the first child call. The original outer input SHALL be validated before pre-hook normalization and rewritten input SHALL be validated again. JSON parsing SHALL preserve numeric lexemes, reject invalid UTF-8 and trailing JSON values, and enforce the nesting bound. The tool SHALL NOT execute expressions, dynamic tool names, loops, fanout or automatic pagination.
 
 #### Scenario: Dependent read
 - **WHEN** a later step binds its existing `/id` argument to an earlier projected `/id`
@@ -37,7 +39,7 @@ The tool SHALL reject unknown keys, duplicate JSON keys, invalid references, inv
 
 ### Requirement: Ordinary execution controls remain effective
 
-Every child SHALL retain ordinary per-tool grants, permission evaluation on hook-mutated arguments, pre/post hooks, ownership checks, identity context, timeout and cancellation behavior. Approval of the composition tool SHALL NOT approve its children. Human rejection SHALL retain the ordinary stop outcome. Repeated-call and denial protections SHALL apply across composition invocations. Composition SHALL add no transport retries.
+Every child SHALL retain ordinary per-tool grants, permission evaluation on hook-mutated arguments, pre/post hooks, ownership checks, identity context, timeout and cancellation behavior. Approval of the composition tool SHALL NOT approve its children. Explicit MCP permission-rule denies SHALL win over child hook approval; a child approval SHALL bypass only an otherwise required permission prompt. Human rejection SHALL retain the ordinary stop outcome. Repeated-call and denial protections SHALL apply across composition invocations using child input hashes and result digests rather than retaining bound argument strings. Child accounting SHALL share synchronization with ordinary dispatch, count actual child outcomes once per model turn, and SHALL NOT count wrapper execution as additional progress that resets denial-only streaks. Composition SHALL add no transport retries.
 
 #### Scenario: Child denied after argument rewrite
 - **WHEN** a child pre-hook changes arguments and the resulting call is denied by policy
@@ -51,9 +53,13 @@ Every child SHALL retain ordinary per-tool grants, permission evaluation on hook
 - **WHEN** the parent is cancelled, loses flow ownership, or a child exceeds its applicable deadline
 - **THEN** existing cancellation and transport cleanup behavior applies and no later child starts
 
+#### Scenario: Repeated child policy denials
+- **WHEN** composition repeatedly attempts policy-denied children across model turns
+- **THEN** the ordinary denial breaker counts those children and wrapper execution does not reset its no-progress streak
+
 ### Requirement: Only authoritative filtered JSON is projectable
 
-MCP error flags SHALL remain errors even when their text is valid JSON. Composition SHALL accept only complete text-only results whose post-hook text is one valid JSON value. Hook blocks, structured-only results, nontext content, capped output and invalid JSON SHALL stop the plan. Raw structured content, raw pre-hook output, metadata and spill files SHALL NOT be fallback data sources. Hook context SHALL remain visible separately from projected data on success and failure.
+MCP error flags SHALL remain errors even when their text is valid JSON. Composition SHALL accept only complete text-only results whose post-hook text is one valid JSON value with preserved numeric lexemes, valid UTF-8, no duplicate keys and nesting within the bound. Post-hook exit-2 block provenance SHALL remain separately available even when its replacement text is valid JSON. Hook blocks, structured-only results, nontext content, capped output and invalid JSON SHALL stop the plan. Raw structured content, raw pre-hook output, metadata and spill files SHALL NOT be fallback data sources. Hook context SHALL remain visible separately from projected data on success and failure.
 
 #### Scenario: Post-hook redaction
 - **WHEN** a hook removes a secret field from otherwise valid JSON
@@ -67,9 +73,13 @@ MCP error flags SHALL remain errors even when their text is valid JSON. Composit
 - **WHEN** a result is structured-only, contains media/resources, is capped, or a hook rewrites its text into non-JSON
 - **THEN** the response identifies unsupported output and does not return an unprojected substitute
 
+#### Scenario: Post-hook block contains JSON
+- **WHEN** a child post-hook exits 2 with a valid JSON block reason
+- **THEN** composition fails that step without projecting the replacement text or starting the next child
+
 ### Requirement: Resource bounds and invocation isolation
 
-The tool SHALL enforce at most 8 steps/calls, 32 KiB UTF-8 input, nesting depth 64, 256 KiB post-hook text per child, 1 MiB cumulative accepted text, 16 KiB serialized projected values across all steps and 120 seconds active execution excluding permission waits. The parent deadline and applicable child deadlines SHALL remain effective. Input-bound violations SHALL fail before execution; execution-bound violations SHALL stop subsequent calls. These bounds SHALL NOT be model-overridable. Intermediate state SHALL be invocation-local and SHALL NOT be exposed through conversation history, raw child result events or telemetry payloads.
+The tool SHALL enforce at most 8 steps/calls, 32 KiB UTF-8 input, nesting depth 64, 256 KiB post-hook text per child, 1 MiB cumulative accepted text, 16 KiB serialized projected values across all steps and 120 seconds active execution excluding permission waits. The active execution budget SHALL cover child pre-hooks, tool execution, post-hooks and projection. Nested permission-wait observers SHALL be chained or shared so every enclosing active budget excludes the same wait. The parent deadline and applicable child deadlines SHALL remain effective. Cancellation SHALL be checked before child admission and after a child completes; ownership SHALL be checked before each child, without claiming immediate interruption of an in-flight call when ownership changes. Input-bound violations SHALL fail before execution; execution-bound violations SHALL stop subsequent calls. These bounds SHALL NOT be model-overridable. Intermediate state SHALL be invocation-local and SHALL NOT be exposed through conversation history, raw child result events or telemetry payloads; run-wide repetition protection SHALL retain only input/result fingerprints. Child dispatch diagnostics SHALL omit bound arguments, raw output and raw server/transport errors on success and failure, including rule-denial echoes and error spans. Existing trusted-hook context, block reasons and stderr diagnostics SHALL remain an explicit exception under the existing hook contract; this exception SHALL NOT permit raw server payloads in ordinary child dispatch diagnostics.
 
 #### Scenario: Large projection
 - **WHEN** projected values exceed the byte budget
@@ -79,9 +89,17 @@ The tool SHALL enforce at most 8 steps/calls, 32 KiB UTF-8 input, nesting depth 
 - **WHEN** two sessions execute composition concurrently
 - **THEN** neither can reference or receive the other's intermediate data
 
+#### Scenario: Nested permission waiting
+- **WHEN** a child waits for permission longer than the active execution budget
+- **THEN** both child and enclosing active-time observers exclude that wait while the parent deadline remains effective
+
+#### Scenario: Child failure contains sensitive data
+- **WHEN** a server error or denied bound argument contains unprojected data
+- **THEN** the envelope and child dispatch logs, events and telemetry contain only static diagnostics and permitted metadata, without copying that data
+
 ### Requirement: Results expose provenance and incompleteness
 
-The result SHALL include `complete`, requested completed `results`, and ordered `steps` with each step's `id`, `tool` and `status` (`ok`, `failed`, `skipped`). Row selections SHALL include `totalRows`, `returnedRows` and `limited`. Selection beyond the row limit SHALL return the first N rows in server order, set `limited:true` and `complete:false`, without constituting a tool failure. Other failures SHALL stop the plan, mark remaining steps skipped, include an error `code`, `step` and bounded message, and set the outer error flag. Human rejection and cancellation SHALL retain their ordinary control outcomes. Hook context SHALL remain visible under existing output bounds, separately from the projected-value budget.
+The result SHALL include `complete`, requested completed `results`, and ordered `steps` with each step's `id`, `tool` and `status` (`ok`, `failed`, `skipped`). Row selections SHALL include `totalRows`, `returnedRows` and `limited`. Selection beyond the row limit SHALL return the first N rows in server order, set `limited:true` and `complete:false`, without constituting a tool failure. Other failures SHALL stop the plan, mark remaining steps skipped, include an error `code`, `step` and static message of at most 256 UTF-8 bytes that does not echo server payloads or bound values, and set the outer error flag. Human rejection and cancellation SHALL retain their ordinary control outcomes alongside the partial response and accumulated hook context; error propagation SHALL NOT discard that response/context or convert human rejection into a continuing model turn. Hook context SHALL remain visible under existing output bounds, separately from the projected-value budget.
 
 #### Scenario: Partial rows
 - **WHEN** a selection requests 10 rows from an array of 12
