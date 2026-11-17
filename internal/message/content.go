@@ -37,14 +37,26 @@ type ContentPart interface {
 	isPart()
 }
 
+// ScalarReasoningOrigin identifies the response dialect and destination that
+// produced an OpenAI-compatible scalar reasoning field. Route is a digest so
+// endpoint credentials never enter persisted history.
+type ScalarReasoningOrigin struct {
+	Field    string               `json:"field"`
+	Provider models.ModelProvider `json:"provider"`
+	Model    models.ModelID       `json:"model"`
+	APIModel string               `json:"api_model"`
+	Route    string               `json:"route"`
+}
+
 type ReasoningContent struct {
 	Thinking string `json:"thinking"`
 	// Signature is the provider-issued cryptographic signature over this
 	// reasoning block. Replay (thinking-block echo on Anthropic-dialect
 	// requests) requires the block byte-exact with this signature; parts
-	// without one (legacy rows, streamed previews, non-Anthropic sources)
-	// are display-only and never replayed.
-	Signature string `json:"signature,omitempty"`
+	// without one are never replayed on Anthropic requests. Scalar
+	// reasoning uses its own origin-checked replay on compatible requests.
+	Signature string                 `json:"signature,omitempty"`
+	Scalar    *ScalarReasoningOrigin `json:"scalar,omitempty"`
 	// Redacted marks a provider redacted_thinking block: Thinking is empty
 	// and Data carries the opaque payload that must be replayed verbatim.
 	Redacted bool   `json:"redacted,omitempty"`
