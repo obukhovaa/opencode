@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -26,6 +27,7 @@ const (
 )
 
 type callTracker struct {
+	mu          sync.Mutex
 	lastCall    map[string]string
 	streakCount map[string]int
 	lastResult  map[string][32]byte
@@ -45,18 +47,20 @@ func newCallTracker() *callTracker {
 // Track observes a completed call, before any loop warning replaces its result.
 // Only model-visible result fields count; IDs and execution timing metadata do not.
 func (t *callTracker) Track(name, input string, result message.ToolResult) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	encoded, _ := json.Marshal([]any{result.Type, result.Content, result.IsError})
 	digest := sha256.Sum256(encoded)
 	if t.lastResult == nil {
 		t.lastResult = make(map[string][32]byte)
 	}
 	previous, seen := t.lastResult[name]
-	if seen && t.lastCall[name] == input && previous == digest {
+	if seen && t.lastCall[name] == callInputDigest(input) && previous == digest {
 		t.streakCount[name]++
 	} else {
 		t.streakCount[name] = 1
 	}
-	t.lastCall[name] = input
+	t.lastCall[name] = callInputDigest(input)
 	t.lastResult[name] = digest
 	return t.streakCount[name] >= t.threshold
 }
@@ -64,11 +68,25 @@ func (t *callTracker) Track(name, input string, result message.ToolResult) bool 
 // Blocked prevents further executions after a completed-result streak proved
 // the call is stuck. A changed request or delivered input allows it to run again.
 func (t *callTracker) Blocked(name, input string) bool {
-	return t.lastCall[name] == input && t.streakCount[name] >= t.threshold
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.lastCall[name] == callInputDigest(input) && t.streakCount[name] >= t.threshold
+}
+
+func (t *callTracker) Streak(name string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.streakCount[name]
+}
+
+func callInputDigest(input string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(input)))
 }
 
 // Reset clears repetition evidence, not the independent permission-denial budget.
 func (t *callTracker) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	clear(t.lastCall)
 	clear(t.lastResult)
 	clear(t.streakCount)

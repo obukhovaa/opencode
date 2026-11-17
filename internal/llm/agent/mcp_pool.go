@@ -54,7 +54,8 @@ type mcpClientFactory func(lifetime context.Context, name string, m config.MCPSe
 // mcpConn is one connected, initialized MCP client plus the pool's
 // bookkeeping around it.
 type mcpConn struct {
-	server string
+	server      string
+	diagnostics *mcpDiagnostics
 	// key is the connection identity (mcpConnKey); "" for an unpooled conn,
 	// which serves exactly one call.
 	key string
@@ -203,6 +204,8 @@ func isRemoteMCP(m config.MCPServer) bool {
 // ctx bounds only the wait: the connect itself runs under the pool's
 // lifetime, so a caller giving up cannot fail it for anyone else.
 func (p *mcpClientPool) acquire(ctx context.Context, name string, m config.MCPServer) (*mcpConn, error) {
+	restricted, _ := ctx.Value(compositionChildKey{}).(bool)
+	restricted = restricted || compositionServerDiagnostics(name)
 	headers := resolvePeerHeader(ctx, m.PeerHeader, resolveMCPHeaders(ctx, name, m.Headers))
 	if isRemoteMCP(m) {
 		headers = resolveFlowArgHeaders(ctx, m.FlowArgHeaders, headers)
@@ -227,7 +230,7 @@ func (p *mcpClientPool) acquire(ctx context.Context, name string, m config.MCPSe
 		key := mcpConnKey(name, m, headers)
 		e = p.conns[key]
 		if e == nil {
-			e = p.newConnLocked(name, key, m)
+			e = p.newConnLocked(name, key, m, restricted)
 			p.conns[key] = e
 			go p.dial(e, m, headers)
 		}
@@ -238,8 +241,11 @@ func (p *mcpClientPool) acquire(ctx context.Context, name string, m config.MCPSe
 			go p.janitor()
 		}
 	} else {
-		e = p.newConnLocked(name, "", m)
+		e = p.newConnLocked(name, "", m, restricted)
 		go p.dial(e, m, headers)
+	}
+	if restricted {
+		e.diagnostics.restricted.Store(true)
 	}
 	e.refs++
 	p.mu.Unlock()
@@ -257,17 +263,20 @@ func (p *mcpClientPool) acquire(ctx context.Context, name string, m config.MCPSe
 	return e, nil
 }
 
-func (p *mcpClientPool) newConnLocked(name, key string, m config.MCPServer) *mcpConn {
-	lifetime, cancel := context.WithCancel(p.baseCtx)
+func (p *mcpClientPool) newConnLocked(name, key string, m config.MCPServer, restricted bool) *mcpConn {
+	policy := &mcpDiagnostics{}
+	policy.restricted.Store(restricted)
+	lifetime, cancel := context.WithCancel(context.WithValue(p.baseCtx, mcpDiagnosticsKey{}, policy))
 	return &mcpConn{
-		server:   name,
-		key:      key,
-		remote:   isRemoteMCP(m),
-		stdio:    !isRemoteMCP(m),
-		lifetime: lifetime,
-		cancel:   cancel,
-		ready:    make(chan struct{}),
-		lastUsed: time.Now(),
+		server:      name,
+		diagnostics: policy,
+		key:         key,
+		remote:      isRemoteMCP(m),
+		stdio:       !isRemoteMCP(m),
+		lifetime:    lifetime,
+		cancel:      cancel,
+		ready:       make(chan struct{}),
+		lastUsed:    time.Now(),
 	}
 }
 
@@ -334,7 +343,11 @@ func (p *mcpClientPool) dial(e *mcpConn, m config.MCPServer, headers map[string]
 		if errors.Is(initCtx.Err(), context.DeadlineExceeded) && p.baseCtx.Err() == nil {
 			err = fmt.Errorf("%w within %s: %v", errMCPHandshakeTimeout, budget, err)
 		}
-		logging.Error("Error connecting MCP client", "server", e.server, "cause", err)
+		if e.diagnostics.restricted.Load() {
+			logging.Error("Error connecting MCP client", "server", e.server)
+		} else {
+			logging.Error("Error connecting MCP client", "server", e.server, "cause", err)
+		}
 		p.mu.Lock()
 		e.retired = true
 		if e.key != "" && p.conns[e.key] == e {
@@ -348,7 +361,7 @@ func (p *mcpClientPool) dial(e *mcpConn, m config.MCPServer, headers map[string]
 		close(e.ready)
 		if c != nil {
 			p.spawnClose(func() {
-				closeMCPClient(c, proc, e.server, defaultCloseTiming())
+				closeMCPClient(c, proc, e.server, defaultCloseTiming(), e.diagnostics)
 				e.cancel()
 			})
 		} else {
@@ -375,7 +388,7 @@ func (p *mcpClientPool) closeConn(e *mcpConn, timing mcpCloseTiming) {
 	p.spawnClose(func() {
 		<-e.ready
 		if e.client != nil {
-			closeMCPClient(e.client, e.proc, e.server, timing)
+			closeMCPClient(e.client, e.proc, e.server, timing, e.diagnostics)
 		}
 		e.cancel()
 	})
@@ -522,7 +535,7 @@ func newMCPClient(lifetime context.Context, name string, m config.MCPServer, hea
 		proc = &mcpProc{}
 		c, err = client.NewStdioMCPClientWithOptions(m.Command, m.Env, m.Args, transport.WithCommandFunc(proc.command))
 		if err == nil {
-			drainMCPStderr(c, name)
+			drainMCPStderr(c, name, mcpDiagnosticsFromContext(lifetime, name))
 		}
 	}
 	if err != nil {
@@ -540,20 +553,24 @@ func newMCPClient(lifetime context.Context, name string, m config.MCPServer, hea
 // drainMCPStderr reads a stdio server's stderr into the debug log. mcp-go
 // connects stderr to a pipe and never reads it; a long-lived server that logs
 // would block once the pipe buffer filled.
-func drainMCPStderr(c *client.Client, name string) {
+func drainMCPStderr(c *client.Client, name string, policy *mcpDiagnostics) {
 	r, ok := client.GetStderr(c)
 	if !ok || r == nil {
 		return
 	}
-	go func() {
-		sc := bufio.NewScanner(r)
-		sc.Buffer(make([]byte, 0, 4096), 1<<20)
-		for sc.Scan() {
+	go drainMCPStderrReader(r, name, policy)
+}
+
+func drainMCPStderrReader(r io.Reader, name string, policy *mcpDiagnostics) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 4096), 1<<20)
+	for sc.Scan() {
+		if !policy.restricted.Load() {
 			logging.Debug("MCP server stderr", "server", name, "line", truncateStr(sc.Text(), 500))
 		}
-		// A line past the scanner's limit ends the scan; keep draining.
-		_, _ = io.Copy(io.Discard, r)
-	}()
+	}
+	// A line past the scanner's limit ends the scan; keep draining.
+	_, _ = io.Copy(io.Discard, r)
 }
 
 // mcpProc holds a stdio server's process, captured when mcp-go asks for the
@@ -597,12 +614,20 @@ func (p *mcpProc) signal(sig syscall.Signal) {
 // remaining window — the process reaped between that check and the kill(2) —
 // is a few instructions wide. Any other close (an HTTP session DELETE) that
 // outlives timing.abandon is abandoned and logged.
-func closeMCPClient(c interface{ Close() error }, proc *mcpProc, name string, timing mcpCloseTiming) {
+func closeMCPClient(c interface{ Close() error }, proc *mcpProc, name string, timing mcpCloseTiming, policies ...*mcpDiagnostics) {
+	policy := &mcpDiagnostics{}
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
 	done := make(chan error, 1)
 	go func() { done <- c.Close() }()
 	logResult := func(err error) {
 		if err != nil {
-			logging.Debug("Error closing MCP client", "server", name, "cause", err)
+			if policy.restricted.Load() {
+				logging.Debug("Error closing MCP client", "server", name)
+			} else {
+				logging.Debug("Error closing MCP client", "server", name, "cause", err)
+			}
 		}
 	}
 	if proc != nil {

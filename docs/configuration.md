@@ -181,3 +181,7 @@ for automatic sizing, or choose exactly `XS`, `S`, `M`, `L`, `XL`, `XXL` to set 
 fixed ceiling. Invalid sizes fail configuration validation. See
 [dynamic workflows](flows.md#dynamic-flows-in-the-tui) for runtime limits,
 OpenSpec requirements and profile-scoped persistence.
+
+## MCP composition
+
+`mcpComposition.readTools` is an optional list of exact, case-sensitive, operator-reviewed read-only MCP tool names. Omitted or empty disables the feature. Names must be nonempty, at most 256 bytes, and contain no whitespace, control characters or wildcard syntax; duplicates are rejected. This list never grants an agent access by itself: the agent must explicitly name `mcp_compose` and already have access to each child. See [MCP read composition](mcp.md#bounded-read-composition-opt-in) for the plan format, limits, unsupported results and diagnostic policy.

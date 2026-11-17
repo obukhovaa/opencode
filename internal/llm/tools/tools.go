@@ -264,6 +264,8 @@ func TurnRequester(ctx context.Context) string {
 }
 
 type toolResponse struct {
+	MCPOutput   *MCPOutputMetadata  `json:"-"`
+	Composition *CompositionOutcome `json:"-"`
 	// UserInputDelivered is runtime-only evidence of an actual question answer.
 	// Automatic defaults and unanswered notifications must not reset loop history.
 	UserInputDelivered bool             `json:"-"`

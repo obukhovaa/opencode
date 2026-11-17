@@ -340,6 +340,9 @@ func NewToolSet(
 		// decide per request whether to serialize it.
 		result <- tools.NewToolSearchTool()
 	}
+	if mcpCompositionEnabled(*info, config.Get()) && reg.IsToolEnabled(agentID, tools.MCPComposeToolName) {
+		result <- tools.NewMCPComposeTool()
+	}
 
 	wg := sync.WaitGroup{}
 
@@ -403,7 +406,7 @@ func (a *agent) resolveTools() []tools.BaseTool {
 		for t := range a.toolsCh {
 			toolSet = append(toolSet, t)
 		}
-		toolSet = OrderTools(toolSet)
+		toolSet = OrderTools(filterCompositionNameCollision(toolSet))
 		// Split the log by deferral state so it's clear which tools are
 		// loaded into the model's context vs. which are enabled-but-deferred
 		// (schema withheld until discovered via toolsearch). Deferred tools

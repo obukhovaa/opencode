@@ -721,16 +721,17 @@ func (c *Config) MemoryDirectory() (string, error) {
 
 // Config is the main configuration structure for the application.
 type Config struct {
-	Memory       *MemoryConfig                     `json:"memory,omitempty"`
-	Data         Data                              `json:"data"`
-	WorkingDir   string                            `json:"wd,omitempty"`
-	MCPServers   map[string]MCPServer              `json:"mcpServers,omitempty"`
-	Providers    map[models.ModelProvider]Provider `json:"providers,omitempty"`
-	LSP          map[string]LSPConfig              `json:"lsp,omitempty"`
-	Agents       map[AgentName]Agent               `json:"agents,omitempty"`
-	Debug        bool                              `json:"debug,omitempty"`
-	DebugLSP     bool                              `json:"debugLSP,omitempty"`
-	ContextPaths []string                          `json:"contextPaths,omitempty"`
+	MCPComposition *MCPCompositionConfig             `json:"mcpComposition,omitempty"`
+	Memory         *MemoryConfig                     `json:"memory,omitempty"`
+	Data           Data                              `json:"data"`
+	WorkingDir     string                            `json:"wd,omitempty"`
+	MCPServers     map[string]MCPServer              `json:"mcpServers,omitempty"`
+	Providers      map[models.ModelProvider]Provider `json:"providers,omitempty"`
+	LSP            map[string]LSPConfig              `json:"lsp,omitempty"`
+	Agents         map[AgentName]Agent               `json:"agents,omitempty"`
+	Debug          bool                              `json:"debug,omitempty"`
+	DebugLSP       bool                              `json:"debugLSP,omitempty"`
+	ContextPaths   []string                          `json:"contextPaths,omitempty"`
 	// AgentPaths lists custom directories to scan for markdown agent
 	// definitions (*.md) at startup, mirroring Skills.Paths. Supports "~"
 	// for the home directory and relative paths (resolved against the
@@ -1580,6 +1581,9 @@ func Validate() error {
 	}
 
 	if err := validateMCPServers(cfg.MCPServers); err != nil {
+		return err
+	}
+	if err := validateMCPComposition(cfg.MCPComposition); err != nil {
 		return err
 	}
 

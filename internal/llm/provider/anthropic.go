@@ -227,6 +227,22 @@ func newAnthropicClient(opts providerClientOptions) AnthropicClient {
 	}
 }
 
+func decodeAnthropicToolInput(raw string) (json.RawMessage, error) {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	var input map[string]any
+	if err := decoder.Decode(&input); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, errors.New("tool input must contain one JSON value")
+	}
+	// The SDK treats json.Number inside interface maps as a string. A raw
+	// canonical object retains numeric types as well as their exact digits.
+	return json.Marshal(input)
+}
+
 // convertMessages renders the history for one request. declared holds the
 // names of the tools that request ships (declaredToolNames over the same
 // convertTools output); nil disables the tool_reference filter.
@@ -341,9 +357,9 @@ func (a *anthropicClient) convertMessages(messages []message.Message, declared m
 					if !toolSearchEmittable(ts) {
 						return
 					}
-					var inputMap map[string]any
-					if err := json.Unmarshal([]byte(ts.Input), &inputMap); err != nil {
-						inputMap = map[string]any{}
+					inputMap, err := decodeAnthropicToolInput(ts.Input)
+					if err != nil {
+						inputMap = json.RawMessage(`{}`)
 					}
 					blocks = append(blocks, anthropic.NewServerToolUseBlock(ts.ToolUseID, inputMap, anthropic.ServerToolUseBlockParamName(ts.Name)))
 					if ts.ErrorCode != "" {
@@ -413,21 +429,25 @@ func (a *anthropicClient) convertMessages(messages []message.Message, declared m
 			}
 
 			for _, toolCall := range msg.ToolCalls() {
-				var inputMap map[string]any
+				var inputMap json.RawMessage
 				// Empty Input is valid on rows persisted before the
 				// toolCalls() empty-input normalization (Bedrock zero-delta
 				// tool_use blocks). Treat as no-args silently; reserve the
 				// WARN for genuinely malformed JSON.
 				if strings.TrimSpace(toolCall.Input) == "" {
-					inputMap = map[string]any{}
-				} else if err := json.Unmarshal([]byte(toolCall.Input), &inputMap); err != nil {
-					logging.Warn("Failed to unmarshal tool call input, using empty input",
-						"tool_call_id", toolCall.ID,
-						"tool_name", toolCall.Name,
-						"tool_input", toolCall.Input,
-						"error", err,
-					)
-					inputMap = map[string]any{}
+					inputMap = json.RawMessage(`{}`)
+				} else {
+					var err error
+					inputMap, err = decodeAnthropicToolInput(toolCall.Input)
+					if err != nil {
+						logging.Warn("Failed to unmarshal tool call input, using empty input",
+							"tool_call_id", toolCall.ID,
+							"tool_name", toolCall.Name,
+							"tool_input", toolCall.Input,
+							"error", err,
+						)
+						inputMap = json.RawMessage(`{}`)
+					}
 				}
 				blocks = append(blocks, anthropic.NewToolUseBlock(toolCall.ID, inputMap, toolCall.Name))
 			}

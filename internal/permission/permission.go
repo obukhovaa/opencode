@@ -143,8 +143,19 @@ type WaitObserver interface {
 // to obs. The agent loop's tool watchdog uses it so the time a call spends
 // behind a permission prompt does not count against the call's limit.
 func WithWaitObserver(ctx context.Context, obs WaitObserver) context.Context {
+	if obs == nil {
+		return ctx
+	}
+	if parent, ok := ctx.Value(waitObserverKeyType{}).(WaitObserver); ok {
+		obs = chainedWaitObserver{parent, obs}
+	}
 	return context.WithValue(ctx, waitObserverKeyType{}, obs)
 }
+
+type chainedWaitObserver struct{ parent, child WaitObserver }
+
+func (o chainedWaitObserver) WaitStarted() { o.parent.WaitStarted(); o.child.WaitStarted() }
+func (o chainedWaitObserver) WaitEnded()   { o.child.WaitEnded(); o.parent.WaitEnded() }
 
 func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRequest) bool {
 	if v, ok := ctx.Value(HookAllowKey).(bool); ok && v {

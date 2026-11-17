@@ -1,8 +1,10 @@
+# mcp-read-composition Specification
+
 ## Purpose
 
 Compose a small set of authorized MCP reads within one invocation while exposing only selected facts, provenance and explicit incompleteness to the model.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Explicit pilot eligibility
 
@@ -12,13 +14,18 @@ The system SHALL expose `mcp_compose` only when the agent grants that exact tool
 - **WHEN** composition is not explicitly enabled
 - **THEN** provider tools, their order, system prompt and cache markers are unchanged
 
+#### Scenario: Builtin name collision
+- **WHEN** the enabled builtin conflicts with an existing tool named `mcp_compose`
+- **THEN** both conflicting declarations are omitted rather than choosing an ambiguous implementation
+- **AND** with the builtin disabled, the existing MCP tool retains ordinary dispatch behavior
+
 #### Scenario: Named endpoint is unavailable
 - **WHEN** a plan names an endpoint absent from either eligibility list or agent tools, or a deferred endpoint not activated in this session
 - **THEN** the plan is rejected before its first child call
 
 ### Requirement: Bounded declarative input
 
-The tool SHALL accept `steps` and `return` only. Each step SHALL contain a unique `id`, exact `tool`, literal object `arguments`, required `select` and optional `bindings`. A binding SHALL contain `target`, an earlier `step` and `pointer`; it SHALL replace an existing argument location with that earlier projected value. Targets SHALL be distinct, nonoverlapping RFC6901 pointers below the argument root. Selection SHALL contain `fields`, or `rows`, `fields` and `limit`: 1–32 named RFC6901 field pointers and, for rows, an array pointer and limit of 1–100. Row pointers SHALL be relative to each row. Missing values SHALL fail; null SHALL remain valid. Numeric JSON IDs SHALL retain their exact value.
+The tool SHALL accept `steps` and `return` only. Each step SHALL contain a unique `id`, exact `tool`, literal object `arguments`, required `select` and optional `bindings`. A binding SHALL contain `target`, an earlier `step` and `pointer`; it SHALL replace an existing argument location with that earlier projected value. Targets SHALL be distinct, nonoverlapping RFC6901 pointers below the argument root. Selection SHALL contain `fields`, or `rows`, `fields` and `limit`: 1–32 named RFC6901 field pointers and, for rows, an array pointer and limit of 1–100. Row pointers SHALL be relative to each row. Missing values SHALL fail; null SHALL remain valid. Numeric JSON IDs SHALL retain their exact value and numeric type through child requests and model-visible tool-call history.
 
 IDs SHALL match `[A-Za-z][A-Za-z0-9_-]{0,63}`; tool names SHALL be nonempty and at most 256 UTF-8 bytes, projection field names 1–64 UTF-8 bytes, and pointers at most 1024 UTF-8 bytes. `return` SHALL contain 1–8 distinct existing IDs. Pointer overlap SHALL be checked after escape decoding; array indices SHALL be canonical nonnegative decimal indices without leading zeros, and `-` SHALL NOT be an array target. Literal target existence SHALL be checked before execution; earlier-result pointer existence SHALL be checked when that result is available.
 

@@ -162,3 +162,30 @@ func TestRunToolBoundedDoesNotCountPermissionWait(t *testing.T) {
 		})
 	}
 }
+
+func TestNestedToolWatchdogsPausePermissionWait(t *testing.T) {
+	const limit = 100 * time.Millisecond
+	perms := permission.NewPermissionService()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := perms.Subscribe(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case event := <-events:
+			time.Sleep(300 * time.Millisecond)
+			perms.Grant(event.Payload)
+		case <-ctx.Done():
+		}
+	}()
+	inner := &permissionTool{perms: perms, workFor: 10 * time.Millisecond}
+	outer := dispatchProbe{name: "outer", run: func(ctx context.Context, _ tools.ToolCall) (tools.ToolResponse, error) {
+		return runToolBounded(ctx, limit, inner, tools.ToolCall{Name: "inner"})
+	}}
+	response, err := runToolBounded(ctx, limit, outer, tools.ToolCall{Name: "outer"})
+	if err != nil || response.IsError || response.Content != "done" {
+		t.Fatalf("nested watchdog charged human wait: %+v %v", response, err)
+	}
+	<-done
+}
