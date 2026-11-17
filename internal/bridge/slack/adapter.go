@@ -121,6 +121,7 @@ type Adapter struct {
 	// a workspace/app-level capability, not per-message state, so unlike
 	// lastError/lastFailureAt it is never reset.
 	markdownBlocksUnsupported atomic.Bool
+	flowBlocksUnsupported     atomic.Bool
 
 	// fileBaseURL overrides the URL prefix for file_private downloads.
 	// Tests set this so the adapter fetches from their mock server.

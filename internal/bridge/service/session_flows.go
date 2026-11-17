@@ -111,11 +111,15 @@ func (s *Service) runSessionFlowOutput(ctx context.Context) {
 	events := controller.SubscribeFlowEvents(ctx)
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+	cardTicker := time.NewTicker(2 * time.Second)
+	defer cardTicker.Stop()
 	s.replaySessionFlowEvents(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-cardTicker.C:
+			s.flushFlowCards(ctx)
 		case <-ticker.C:
 			if s.questionRouter != nil {
 				s.questionRouter.advanceFlowQuestions(ctx)
@@ -238,10 +242,22 @@ func (s *Service) deliverSessionFlowEvent(ctx context.Context, event app.FlowRun
 			} else {
 				err = nil
 			}
+		} else if s.canEditFlowProgress(peer) {
+			err = s.deliverFlowCard(sendCtx, peer, event, deliveryLease)
 		} else {
-			_, err = s.Send(sendCtx, peer, body, "", nil)
+			var sent bridge.SendResult
+			sent, err = s.Send(sendCtx, peer, body, "", nil)
+			if err == nil {
+				err = sent.Err
+			}
+			if err == nil && !sent.Delivered {
+				err = errors.New("flow message was not delivered")
+			}
 		}
 		cancelDelivery()
+		if errors.Is(err, errFlowCardDeferred) {
+			continue
+		}
 		if err != nil {
 			logging.Warn("bridge: session flow delivery failed", "run", event.RunID, "event", event.ID, "err", err)
 			continue
