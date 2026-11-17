@@ -400,9 +400,13 @@ func (app *App) SubmitFlow(ctx context.Context, conversation string, req tools.F
 		if f.Disabled {
 			return tools.FlowResult{}, flow.ErrFlowDisabled
 		}
+		peer, _ := tools.PeerFromContext(ctx)
+		req.Args = mapsCopy(req.Args)
+		inheritFlowInteractionTargets(f.Spec.Steps, req.Args, nil, peer)
 		if err = flow.ValidateDefinitionArgs(f, req.Args); err != nil {
 			return tools.FlowResult{}, fmt.Errorf("%w: %v", ErrFlowInput, err)
 		}
+		definition.Args = flowArgsForStorage(req.Args)
 		for _, step := range f.Spec.Steps {
 			if strings.Contains(step.Agent, "${") {
 				continue
@@ -992,6 +996,10 @@ func (app *App) executeStoredFlow(ctx context.Context, conversation string, run 
 	if err := json.Unmarshal(record.Snapshot, &saved); err != nil {
 		return err
 	}
+	var runOrigin flowOrigin
+	if err := json.Unmarshal(record.Origin, &runOrigin); err != nil {
+		return err
+	}
 	args := mapsCopy(saved.Args)
 	if supplied, ok := tools.JobArgsFromContext(ctx); ok {
 		for key := range config.RedactedFlowArgs() {
@@ -1005,6 +1013,9 @@ func (app *App) executeStoredFlow(ctx context.Context, conversation string, run 
 	}
 	if m.Prompt != "" {
 		args["prompt"] = m.Prompt
+	}
+	if record.Kind == "named" {
+		inheritFlowInteractionTargets(m.Definition.Spec.Steps, args, nil, runOrigin.Peer)
 	}
 	if record.Kind == "generated" {
 		limits, _ := config.DynamicFlowLimits(m.Complexity)
@@ -1040,6 +1051,10 @@ func (app *App) executeStoredFlow(ctx context.Context, conversation string, run 
 		defer run.mu.Unlock()
 		if err := ctx.Err(); err != nil {
 			return ctx, err
+		}
+		// Recovery may restore step args written before conversation defaults existed.
+		if record.Kind == "named" {
+			inheritFlowInteractionTargets([]flow.Step{*step}, stepArgs, args, runOrigin.Peer)
 		}
 		batch, err := app.FlowRuns.PeekInbox(ctx, record.ID)
 		if err != nil {
@@ -1107,8 +1122,6 @@ func (app *App) executeStoredFlow(ctx context.Context, conversation string, run 
 	for k, v := range args {
 		jobArgs[k] = v
 	}
-	var runOrigin flowOrigin
-	_ = json.Unmarshal(record.Origin, &runOrigin)
 	opts := flow.RunOptions{PromptShell: func(shellCtx context.Context, command string) (string, error) {
 		return app.runManagedPromptShell(shellCtx, conversation, m.Agent, record.Kind, command)
 	}, ConversationInteraction: runOrigin.Peer.PeerID != "", RuntimeJobArgs: jobArgs, Definition: &definition, RootSessionID: record.ID, SessionRootID: conversation, RecoverRunning: recover, Attended: true, BeforeStep: before, Querier: app.FlowRuns.FencedQuerier(lease),
@@ -1222,6 +1235,33 @@ func (app *App) executeStoredFlow(ctx context.Context, conversation string, run 
 	}
 	return err
 }
+func inheritFlowInteractionTargets(steps []flow.Step, args, original map[string]any, peer tools.Peer) {
+	if peer.Channel == "" || peer.Identity == "" || peer.PeerID == "" {
+		return
+	}
+	for _, step := range steps {
+		if !step.Interactive || step.Interaction == nil {
+			continue
+		}
+		name, ok := strings.CutPrefix(step.Interaction.Target, "${args.")
+		if !ok {
+			continue
+		}
+		name, ok = strings.CutSuffix(name, "}")
+		if !ok || name == "" || strings.ContainsAny(name, "${} \t\r\n") {
+			continue
+		}
+		if _, present := args[name]; present {
+			continue
+		}
+		if target, provided := original[name]; provided {
+			args[name] = target
+		} else {
+			args[name] = map[string]any{"channel": peer.Channel, "identity": peer.Identity, "peerId": peer.PeerID}
+		}
+	}
+}
+
 func (app *App) validateFlowInteraction(ctx context.Context, record flowrun.Run, step flow.Step, args map[string]any) error {
 	var origin flowOrigin
 	if err := json.Unmarshal(record.Origin, &origin); err != nil {
