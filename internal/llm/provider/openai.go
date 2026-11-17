@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -49,6 +50,13 @@ func newOpenAIClient(opts providerClientOptions) OpenAIClient {
 		o(&openaiOpts)
 	}
 
+	// Freeze the SDK's effective endpoint for both transport and replay identity.
+	if opts.baseURL == "" {
+		opts.baseURL = os.Getenv("OPENAI_BASE_URL")
+		if opts.baseURL == "" {
+			opts.baseURL = "https://api.openai.com/v1"
+		}
+	}
 	openaiClientOptions := []option.RequestOption{}
 	if opts.apiKey != "" {
 		openaiClientOptions = append(openaiClientOptions, option.WithAPIKey(opts.apiKey))
@@ -136,6 +144,8 @@ func (o *openaiClient) convertMessages(messages []message.Message) (openaiMessag
 					}
 				}
 			}
+
+			assistantMsg.SetExtraFields(o.reasoningReplay(msg))
 
 			openaiMessages = append(openaiMessages, openai.ChatCompletionMessageParamUnion{
 				OfAssistant: &assistantMsg,
@@ -333,6 +343,7 @@ func (o *openaiClient) send(ctx context.Context, messages []message.Message, too
 
 		return &ProviderResponse{
 			Content:      content,
+			Reasoning:    o.scalarReasoning(openaiResponse.Choices[0].Message.RawJSON()),
 			ToolCalls:    toolCalls,
 			Usage:        o.usage(openaiResponse.Usage),
 			FinishReason: finishReason,
@@ -375,6 +386,7 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 
 			acc := openai.ChatCompletionAccumulator{}
 			currentContent := ""
+			var reasoning scalarReasoningCapture
 			toolCalls := make([]message.ToolCall, 0)
 			// The accumulator sums only the top-level token counts and drops
 			// prompt_tokens_details, so keep the usage chunk itself for its
@@ -408,7 +420,10 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 				}
 
 				for _, choice := range chunk.Choices {
-					if thinking := reasoningContentDelta(choice.Delta); thinking != "" {
+					if choice.Index != 0 {
+						continue
+					}
+					if thinking := reasoning.add(choice.Delta.RawJSON()); thinking != "" {
 						emittedOutput = true
 						eventChan <- ProviderEvent{
 							Type:     EventThinkingDelta,
@@ -428,8 +443,8 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 			reader.Close()
 
 			if errors.Is(streamErr, ErrStreamStalled) {
-				logging.Warn("OpenAI stream stalled, will retry", "attempt", attempts)
-				if attempts < maxRetries {
+				logging.Warn("OpenAI stream stalled", "attempt", attempts, "emitted_output", emittedOutput)
+				if !emittedOutput && attempts < maxRetries {
 					continue
 				}
 				eventChan <- ProviderEvent{Type: EventError, Error: streamErr}
@@ -437,9 +452,11 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 				return
 			}
 
-			err := openaiStream.Err()
-			if streamErr != nil && err == nil {
-				err = streamErr
+			err := streamErr
+			if err == nil {
+				// Recv reached the closed channel, so the SDK reader has
+				// stopped. After cancellation it may still be writing Err.
+				err = openaiStream.Err()
 			}
 			if err == nil || errors.Is(err, io.EOF) {
 				// Guard against truncated streams where Choices may be empty
@@ -464,6 +481,7 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 					Type: EventComplete,
 					Response: &ProviderResponse{
 						Content:      currentContent,
+						Reasoning:    o.completedScalarReasoning(reasoning, acc.ChatCompletion),
 						ToolCalls:    toolCalls,
 						Usage:        o.usage(usage),
 						FinishReason: finishReason,
@@ -475,8 +493,8 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 
 			// Retry transient transport errors (e.g. unexpected EOF, connection reset)
 			if isTransientStreamError(err) {
-				logging.Warn("OpenAI stream transport error, will retry", "attempt", attempts, "error", err)
-				if attempts < maxRetries {
+				logging.Warn("OpenAI stream transport error", "attempt", attempts, "error", err, "emitted_output", emittedOutput)
+				if !emittedOutput && attempts < maxRetries {
 					backoffMs := 2000 * (1 << (attempts - 1))
 					select {
 					case <-ctx.Done():
@@ -542,7 +560,7 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 				close(eventChan)
 				return
 			}
-			if retry {
+			if retry && !emittedOutput {
 				logging.WarnPersist(fmt.Sprintf("Retrying due to rate limit... attempt %d of %d", attempts, maxRetries), logging.PersistTimeArg, time.Millisecond*time.Duration(after+100))
 				select {
 				case <-ctx.Done():
@@ -649,15 +667,6 @@ func (o *openaiClient) usage(usage openai.CompletionUsage) TokenUsage {
 		CacheReadTokens:     cachedTokens,
 		ThinkingTokens:      usage.CompletionTokensDetails.ReasoningTokens,
 	}
-}
-
-// reasoningContentDelta returns the reasoning text that OpenAI-compatible
-// servers stream outside the OpenAI schema as delta.reasoning_content (Kimi
-// on Bedrock, DeepSeek, vLLM, ...). openai-go keeps unknown fields raw in
-// JSON.ExtraFields, always marked invalid (no typed decoder), so read Raw()
-// rather than gating on Valid(); a missing or null field yields "".
-func reasoningContentDelta(delta openai.ChatCompletionChunkChoiceDelta) string {
-	return gjson.Parse(delta.JSON.ExtraFields["reasoning_content"].Raw()).String()
 }
 
 func (a *openaiClient) countTokens(ctx context.Context, messages []message.Message, tools []tools.BaseTool) (int64, error) {

@@ -20,10 +20,8 @@ type PartEvent struct {
 }
 
 // clonePart snapshots a ContentPart so a subscriber reading later from a
-// buffered channel cannot observe in-flight mutation. Our part types are
-// pure value structs (ToolCall has string/bool fields; ToolResult has
-// string/bool fields and Metadata is a string), so a struct copy via the
-// type switch is sufficient — no map/slice/pointer fields need deep copy.
+// buffered channel cannot observe in-flight mutation. Most parts contain
+// value fields; pointer metadata is copied separately.
 func clonePart(p ContentPart) ContentPart {
 	switch v := p.(type) {
 	case ToolCall:
@@ -33,6 +31,10 @@ func clonePart(p ContentPart) ContentPart {
 	case TextContent:
 		return v
 	case ReasoningContent:
+		if v.Scalar != nil {
+			origin := *v.Scalar
+			v.Scalar = &origin
+		}
 		return v
 	case BinaryContent:
 		// Data is a []byte — share the underlying array. Producers never mutate

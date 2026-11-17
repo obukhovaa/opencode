@@ -397,8 +397,9 @@ func TestReasoningContentDelta(t *testing.T) {
 			if err := json.Unmarshal([]byte(tt.delta), &delta); err != nil {
 				t.Fatalf("unmarshal delta: %v", err)
 			}
-			if got := reasoningContentDelta(delta); got != tt.want {
-				t.Errorf("reasoningContentDelta = %q, want %q", got, tt.want)
+			var reasoning scalarReasoningCapture
+			if got := reasoning.add(delta.RawJSON()); got != tt.want {
+				t.Errorf("reasoning delta = %q, want %q", got, tt.want)
 			}
 		})
 	}

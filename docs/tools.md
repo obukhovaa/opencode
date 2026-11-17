@@ -72,6 +72,12 @@ them. The same property means a command containing `exit` ends the session: the
 exit status is reported as the command's own, a replacement shell starts in the
 same directory, and exported variables and shell functions are lost.
 
+### Bash output limits
+
+Bash bounds stdout and stderr separately. Output within 2,000 lines and 50 KiB is returned unchanged. When either limit is exceeded, the tool saves the original output and shows up to the first and last 500 lines, with their combined excerpt limited to 50 KiB. Long lines, including minified JSON, are clipped at UTF-8 boundaries. Truncation notices and the saved-file path add a small amount of overhead outside that excerpt budget.
+
+Each saved stream contains the original bytes up to the 100 MiB persistence cap. The response identifies a capped copy or a failed save explicitly. Use the advertised path with `grep`, or page through it with `read` using `offset`/`limit`. Exit codes and stderr remain in the response when output is truncated.
+
 ## Tool environment
 
 Every process OpenCode starts (the `bash` tool and its background mode, `monitor`,

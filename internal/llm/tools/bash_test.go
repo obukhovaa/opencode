@@ -10,7 +10,7 @@ import (
 func TestBuildPreview(t *testing.T) {
 	t.Run("small content returned as-is", func(t *testing.T) {
 		content := "line1\nline2\nline3"
-		preview, totalLines := buildPreview(content, 500, 500)
+		preview, totalLines := buildPreview(content, 500, 500, MaxOutputBytes)
 		if preview != content {
 			t.Errorf("expected content unchanged, got %q", preview)
 		}
@@ -26,7 +26,7 @@ func TestBuildPreview(t *testing.T) {
 		}
 		content := strings.Join(lines, "\n")
 
-		preview, totalLines := buildPreview(content, 500, 500)
+		preview, totalLines := buildPreview(content, 500, 500, MaxOutputBytes)
 		if totalLines != 3000 {
 			t.Errorf("expected 3000 lines, got %d", totalLines)
 		}
@@ -60,7 +60,7 @@ func TestBuildPreview(t *testing.T) {
 		}
 		content := strings.Join(lines, "\n")
 
-		preview, totalLines := buildPreview(content, 500, 500)
+		preview, totalLines := buildPreview(content, 500, 500, MaxOutputBytes)
 		if totalLines != 1000 {
 			t.Errorf("expected 1000 lines, got %d", totalLines)
 		}
