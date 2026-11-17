@@ -66,7 +66,7 @@ type recognizedInvocation struct {
 // FocusActivitiesMsg moves focus to the activity strip without changing the draft.
 type FocusActivitiesMsg struct{}
 
-type flowSteeringResult struct {
+type FlowSteeringResultMsg struct {
 	sessionID string
 	text      string
 	err       error
@@ -74,7 +74,7 @@ type flowSteeringResult struct {
 
 type editorCmp struct {
 	history           inputHistory
-	flowSteeringQueue []flowSteeringResult
+	flowSteeringQueue []FlowSteeringResultMsg
 	failedSteering    map[string]string
 	width             int
 	height            int
@@ -772,7 +772,7 @@ func (m *editorCmp) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
-	case flowSteeringResult:
+	case FlowSteeringResultMsg:
 		if len(m.flowSteeringQueue) > 0 {
 			m.flowSteeringQueue = m.flowSteeringQueue[1:]
 		}
@@ -1331,7 +1331,7 @@ func (m *editorCmp) saveNextFlowSteering() tea.Cmd {
 }
 
 func (m *editorCmp) enqueueFlowSteering(sessionID, text string) tea.Cmd {
-	m.flowSteeringQueue = append(m.flowSteeringQueue, flowSteeringResult{sessionID: sessionID, text: text})
+	m.flowSteeringQueue = append(m.flowSteeringQueue, FlowSteeringResultMsg{sessionID: sessionID, text: text})
 	if len(m.flowSteeringQueue) == 1 {
 		return m.saveNextFlowSteering()
 	}

@@ -49,6 +49,11 @@ type FlowSteeringMessage struct {
 	TargetQuestionID   string          `json:"targetQuestionId,omitempty"`
 }
 type FlowRunEvent struct {
+	FlowID         string                `json:"flowId,omitempty"`
+	Agent          string                `json:"agent,omitempty"`
+	IsStructOutput bool                  `json:"isStructOutput,omitempty"`
+	Iteration      int                   `json:"iteration,omitempty"`
+	OccurredAt     int64                 `json:"occurredAt,omitempty"`
 	ID             string                `json:"id"`
 	Type           string                `json:"type"`
 	RunID          string                `json:"runId"`
@@ -287,7 +292,7 @@ func (app *App) SubmitFlow(ctx context.Context, conversation string, req tools.F
 	case "list":
 		result := tools.FlowResult{Operation: "list", ConversationID: conversation}
 		for _, f := range flow.All() {
-			if f.Disabled {
+			if f.Disabled || !info.DynamicFlow.AllowsNamedFlow(f.ID) {
 				continue
 			}
 			allowed := true
@@ -330,6 +335,9 @@ func (app *App) SubmitFlow(ctx context.Context, conversation string, req tools.F
 	default:
 		return tools.FlowResult{}, fmt.Errorf("%w: unknown operation", ErrFlowInput)
 	}
+	if req.Operation == "run" && !info.DynamicFlow.AllowsNamedFlow(req.FlowID) {
+		return tools.FlowResult{}, fmt.Errorf("%w: named flow %q", ErrFlowPermission, req.FlowID)
+	}
 	if req.InvocationID == "" {
 		req.InvocationID = uuid.NewString()
 	}
@@ -346,6 +354,9 @@ func (app *App) SubmitFlow(ctx context.Context, conversation string, req tools.F
 		}
 		if original.RequestHash != requestHash {
 			return tools.FlowResult{}, flowrun.ErrConflict
+		}
+		if err = app.authorizeStoredNamedFlow(old, original); err != nil {
+			return tools.FlowResult{}, err
 		}
 		if (old.Status == "ready" || old.Status == "planning") && !app.FlowBusy(conversation) {
 			if err = app.startStoredFlow(ctx, old, true, req.Args); err != nil && !errors.Is(err, flowrun.ErrBusy) {
@@ -500,9 +511,24 @@ func (app *App) authorizeFlowAgent(ctx context.Context, conversation, primary, t
 	return nil
 }
 
+// Recovery uses the recorded owner, never the caller's currently selected agent.
+func (app *App) authorizeStoredNamedFlow(record flowrun.Run, saved storedFlowDefinition) error {
+	if record.Kind != "named" {
+		return nil
+	}
+	owner, ok := app.Registry.Get(saved.Manifest.Agent)
+	if !ok || owner.Disabled || owner.Mode != config.AgentModeAgent || owner.DynamicFlow == nil || !owner.DynamicFlow.Enabled || !app.Registry.IsToolEnabled(owner.ID, tools.FlowToolName) || !owner.DynamicFlow.AllowsNamedFlow(saved.Manifest.Definition.ID) {
+		return fmt.Errorf("%w: named flow %q for agent %q", ErrFlowPermission, saved.Manifest.Definition.ID, saved.Manifest.Agent)
+	}
+	return nil
+}
+
 func (app *App) startStoredFlow(source context.Context, record flowrun.Run, recover bool, args map[string]any) error {
 	var saved storedFlowDefinition
 	if err := json.Unmarshal(record.Snapshot, &saved); err != nil {
+		return err
+	}
+	if err := app.authorizeStoredNamedFlow(record, saved); err != nil {
 		return err
 	}
 	if record.Deadline > 0 && time.Now().UnixMilli() >= record.Deadline {
@@ -803,6 +829,7 @@ func (app *App) emitStoredFlowEvent(ctx context.Context, record flowrun.Run, lea
 	event.Origin = record.Origin
 	event.Revision = record.Version
 	event.Fence = lease.Token
+	event.OccurredAt = time.Now().UnixMilli()
 	data, err := json.Marshal(event)
 	if err != nil {
 		return err
@@ -1176,11 +1203,19 @@ func (app *App) executeStoredFlow(ctx context.Context, conversation string, run 
 				delete(run.steps, state.StepID)
 			}
 			run.mu.Unlock()
-			if emitErr := app.emitStoredEvent(ctx, run, FlowRunEvent{Type: "session.flow.step", Status: string(state.Status), StepID: state.StepID, SessionID: state.SessionID, Output: state.Output}); emitErr != nil {
+			presented := app.flowStepOutput(ctx, *state)
+			stepAgent := ""
+			for _, step := range definition.Spec.Steps {
+				if step.ID == state.StepID {
+					stepAgent = step.Agent
+					break
+				}
+			}
+			if emitErr := app.emitStoredEvent(ctx, run, FlowRunEvent{Type: "session.flow.step", Status: string(state.Status), StepID: state.StepID, SessionID: state.SessionID, Output: presented.Output, FlowID: definition.ID, Agent: stepAgent, IsStructOutput: presented.IsStructOutput, Iteration: state.Iteration}); emitErr != nil {
 				run.cancel()
 				err = emitErr
 			} else if app.Messages != nil {
-				note := app.flowStepProgressNote(ctx, progress, *state, "")
+				note := progress.note(presented, "", time.Now())
 				_, _ = app.Messages.Create(ctx, record.ConversationID, message.CreateMessageParams{Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: note}}})
 			}
 		}
@@ -1679,11 +1714,26 @@ func (app *App) controlStoredFlow(ctx context.Context, conversation, step, actio
 		return err
 	}
 	defer app.FlowRuns.Release(context.Background(), lease, "")
-	if action == "terminate" {
-		return app.FlowRuns.Transition(ctx, lease, "terminated")
-	}
-	if action == "cancel" {
-		return app.FlowRuns.Transition(ctx, lease, "suspended")
+	if action == "terminate" || action == "cancel" {
+		status := "suspended"
+		if action == "terminate" {
+			status = "terminated"
+		}
+		// There is no runner left to publish this control outcome. Commit it
+		// with the state transition so reconnecting bridges can replay it.
+		event := FlowRunEvent{Type: "session.flow." + status, Status: status, RunID: record.ID, ConversationID: record.ConversationID, Kind: record.Kind, Origin: record.Origin, Revision: record.Version, Fence: lease.Token}
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return err
+		}
+		stored, err := app.FlowRuns.TransitionEvent(ctx, lease, status, uuid.NewString(), event.Type, payload)
+		if err != nil {
+			return err
+		}
+		event.ID = stored.ID
+		event.Sequence = stored.Sequence
+		app.publishFlowEvent(event)
+		return nil
 	}
 	rows, err := app.flowQuery.ListFlowStatesByRootSession(ctx, record.ID)
 	if err != nil {

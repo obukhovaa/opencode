@@ -248,9 +248,9 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
 	switch msg := msg.(type) {
-	case chat.InputHistoryLoadedMsg, chat.InputHistorySavedMsg:
-		// History persistence belongs to the chat editor even while another
-		// page is visible. Dropping acknowledgements would stall its save FIFO.
+	case chat.InputHistoryLoadedMsg, chat.InputHistorySavedMsg, chat.FlowSteeringResultMsg:
+		// Editor persistence acknowledgements must survive page navigation,
+		// otherwise history or durable flow steering stops draining its FIFO.
 		var historyCmd tea.Cmd
 		a.pages[page.ChatPage], historyCmd = a.pages[page.ChatPage].Update(msg)
 		return a, historyCmd

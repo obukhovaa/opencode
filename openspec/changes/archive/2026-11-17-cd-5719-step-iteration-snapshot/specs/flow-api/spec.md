@@ -18,3 +18,7 @@ The flow status response SHALL carry the FlowState iteration as `iteration` on e
 #### Scenario: A new execution uses the engine iteration
 - **WHEN** the same step session begins iteration 4
 - **THEN** status carries iteration 4 even when its timestamps equal those of iteration 3
+
+#### Scenario: Terminal recovery remains scoped to the requested run
+- **WHEN** a completed, failed or postponed run is read by run ID after its live snapshot has been reset and a newer run reuses the same step session
+- **THEN** the retained completed-step record carries the older run's iteration and the newer run's current-step record carries its own iteration

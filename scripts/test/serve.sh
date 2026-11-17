@@ -78,7 +78,7 @@ echo "Workdir:  $WORKDIR"
 echo ""
 
 # ── start server ────────────────────────────────────────────────────
-(cd "$WORKDIR" && exec "$BIN" serve --port "$PORT" --hostname 127.0.0.1) 2>"$WORKDIR/server.log" &
+(cd "$WORKDIR" && OPENCODE_ENABLE_QUESTION_TOOL=1 exec "$BIN" serve --port "$PORT" --hostname 127.0.0.1) 2>"$WORKDIR/server.log" &
 SERVER_PID=$!
 
 # Wait for server to be ready (up to 15s).

@@ -32,3 +32,33 @@ func TestDynamicFlowMarkdownMerge(t *testing.T) {
 		t.Fatal("explicit JSON disable did not override frontmatter")
 	}
 }
+
+func TestDynamicFlowNamedListMarkdown(t *testing.T) {
+	for _, tc := range []struct {
+		name, value      string
+		present, allowed bool
+	}{
+		{"omitted", "", false, true}, {"empty", "  namedFlows: []\n", true, false},
+		{"one", "  namedFlows: [Composer/Inspect]\n", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "planner.md")
+			data := "---\nmode: agent\ndynamicFlow:\n  enabled: true\n" + tc.value + "---\nPlan."
+			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			a, err := parseAgentMarkdown(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (a.DynamicFlow.NamedFlows != nil) != tc.present || a.DynamicFlow.AllowsNamedFlow("Composer/Inspect") != tc.allowed {
+				t.Fatalf("bad parsed policy: %+v", a.DynamicFlow)
+			}
+			target := AgentInfo{}
+			mergeMarkdownIntoExisting(&target, a)
+			if target.DynamicFlow.AllowsNamedFlow("Composer/Inspect") != tc.allowed {
+				t.Fatal("merge changed policy")
+			}
+		})
+	}
+}

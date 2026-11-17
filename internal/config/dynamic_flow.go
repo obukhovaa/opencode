@@ -2,8 +2,9 @@ package config
 
 // DynamicFlow is opt-in and is shared by JSON settings and agent frontmatter.
 type DynamicFlow struct {
-	Enabled        bool   `json:"enabled" yaml:"enabled"`
-	FlowComplexity string `json:"flowComplexity,omitempty" yaml:"flowComplexity,omitempty"`
+	Enabled        bool      `json:"enabled" yaml:"enabled"`
+	FlowComplexity string    `json:"flowComplexity,omitempty" yaml:"flowComplexity,omitempty"`
+	NamedFlows     *[]string `json:"namedFlows,omitempty" yaml:"namedFlows,omitempty"`
 }
 
 type FlowLimits struct{ MaxSteps, MaxParallel, MaxTurns, MaxIterations int }
@@ -28,9 +29,35 @@ func DynamicFlowLimits(size string) (FlowLimits, bool) {
 }
 
 func ValidDynamicFlow(df *DynamicFlow) bool {
-	if df == nil || df.FlowComplexity == "" {
+	if df == nil {
 		return true
 	}
-	_, ok := DynamicFlowLimits(df.FlowComplexity)
-	return ok
+	if df.FlowComplexity != "" {
+		if _, ok := DynamicFlowLimits(df.FlowComplexity); !ok {
+			return false
+		}
+	}
+	if df.NamedFlows != nil {
+		seen := map[string]bool{}
+		for _, id := range *df.NamedFlows {
+			if id == "" || seen[id] {
+				return false
+			}
+			seen[id] = true
+		}
+	}
+	return true
+}
+
+// AllowsNamedFlow preserves the legacy unrestricted policy when no list is set.
+func (df *DynamicFlow) AllowsNamedFlow(id string) bool {
+	if df == nil || df.NamedFlows == nil {
+		return true
+	}
+	for _, allowed := range *df.NamedFlows {
+		if allowed == id {
+			return true
+		}
+	}
+	return false
 }

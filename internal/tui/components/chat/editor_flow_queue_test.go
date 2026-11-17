@@ -34,9 +34,9 @@ func TestFlowSteeringSavesAreSerializedAndFailedBurstKeepsOrder(t *testing.T) {
 }
 
 func TestFlowSteeringAcceptedShowsAcknowledgement(t *testing.T) {
-	m := &editorCmp{session: session.Session{ID: "root"}, textarea: textarea.New(), flowSteeringQueue: []flowSteeringResult{{sessionID: "root", text: "new direction"}}}
+	m := &editorCmp{session: session.Session{ID: "root"}, textarea: textarea.New(), flowSteeringQueue: []FlowSteeringResultMsg{{sessionID: "root", text: "new direction"}}}
 	m.textarea.SetValue("next draft")
-	_, cmd := m.update(flowSteeringResult{sessionID: "root", text: "new direction"})
+	_, cmd := m.update(FlowSteeringResultMsg{sessionID: "root", text: "new direction"})
 	if cmd == nil {
 		t.Fatal("no acceptance acknowledgement")
 	}

@@ -60,6 +60,10 @@ func flowOutputPreview(output string) string {
 }
 
 func (app *App) flowStepProgressNote(ctx context.Context, progress flowStepProgress, state flow.FlowState, agent string) string {
+	return progress.note(app.flowStepOutput(ctx, state), agent, time.Now())
+}
+
+func (app *App) flowStepOutput(ctx context.Context, state flow.FlowState) flow.FlowState {
 	// Prose-only steps may not have a structured result. Use their latest
 	// assistant text, also available in the flow page's Current output panel.
 	if finishedFlowStep(state.Status) && strings.TrimSpace(state.Output) == "" && app.Messages != nil && state.SessionID != "" {
@@ -75,5 +79,5 @@ func (app *App) flowStepProgressNote(ctx context.Context, progress flowStepProgr
 			}
 		}
 	}
-	return progress.note(state, agent, time.Now())
+	return state
 }

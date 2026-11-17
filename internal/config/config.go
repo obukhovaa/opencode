@@ -1351,7 +1351,7 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 	}
 
 	if !ValidDynamicFlow(agent.DynamicFlow) {
-		return fmt.Errorf("agent %s: invalid dynamicFlow.flowComplexity %q", name, agent.DynamicFlow.FlowComplexity)
+		return fmt.Errorf("agent %s: invalid dynamicFlow settings: check flowComplexity and namedFlows (unique, nonempty exact IDs)", name)
 	}
 
 	// Check if model exists

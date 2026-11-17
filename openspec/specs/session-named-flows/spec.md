@@ -38,3 +38,21 @@ Flow planning, creation and named execution SHALL be restricted to ordinary prim
 #### Scenario: Sequential top-level runs
 - **WHEN** a flow has completed and the ordinary conversation starts another authorized flow
 - **THEN** a distinct run is created without modifying the completed run's history
+
+### Requirement: Per-agent named-flow admission policy
+A primary agent MAY configure dynamicFlow.namedFlows as exact, case-sensitive flow IDs. An omitted list SHALL preserve existing named-flow delegation checks. An explicit empty list SHALL deny named runs and hide them from listing without disabling generated flows. Named steps SHALL retain their authored agents' grants; admission SHALL NOT claim that those grants are intersected with the initiating agent's tools.
+
+#### Scenario: Explicit empty named-flow list
+- **WHEN** an enabled primary agent has namedFlows set to an empty list
+- **THEN** list returns no named definitions and run is refused before a run or step session is created
+- **AND** generated plan and create operations remain available
+
+#### Scenario: Named access revoked before recovery
+- **WHEN** a stored named run's ID is removed from its initiating agent's current allowlist
+- **THEN** retrying admission, resuming or recovering that run is refused without advancing its state
+- **AND** selecting a different current agent does not bypass the recorded owner's policy
+- **AND** the saved definition remains intact for a later authorized resume
+
+#### Scenario: Standalone compatibility
+- **WHEN** a standalone CLI or standalone API flow executes
+- **THEN** the session-owned named-flow allowlist does not change its existing behavior

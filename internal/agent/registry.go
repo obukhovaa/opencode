@@ -1118,7 +1118,7 @@ func parseAgentMarkdown(path string) (*AgentInfo, error) {
 		agent.SelfCompact = sc
 	}
 	if !config.ValidDynamicFlow(agent.DynamicFlow) {
-		return nil, fmt.Errorf("invalid dynamicFlow.flowComplexity in %s", path)
+		return nil, fmt.Errorf("invalid dynamicFlow settings (flowComplexity or namedFlows) in %s", path)
 	}
 	agent.Prompt = body
 	agent.Location = path

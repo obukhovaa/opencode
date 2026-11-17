@@ -1288,10 +1288,23 @@ a JSON object; the HTTP API accepts the equivalent `args` object. `list` returns
 authorized definitions and their argument schemas. Running authored YAML does
 not require OpenSpec or call the flow builder.
 
+An agent can restrict this surface with `dynamicFlow.namedFlows`, an exact,
+case-sensitive list of discovered flow IDs. Omitted means the existing delegation
+checks apply without an additional flow-ID restriction; `[]` hides and denies all
+named flows. For example, `dynamicFlow: {enabled: true, namedFlows: []}` still permits
+generated planning and execution. The restriction is checked before admission,
+on repeated invocations, and when a stored named run resumes or recovers, using
+the current configuration of its recorded initiating agent. Removing an ID does
+not rewrite the stored definition; cancel/terminate/status remain available.
+Standalone CLI/API execution is unchanged.
+
 Named runs snapshot the validated definition, resolved includes/schema references
 and original arguments. The flow tool cannot update them or change their source.
 Authored agents, model settings, routing, limits and within-run session forking
-remain in effect, subject to the caller's delegation permissions. A
+remain in effect, subject to the caller's delegation permissions. Step agents
+keep their own tool grants; named execution does not intersect those grants with
+the caller's tools. Allowlist only workflows whose declared agents and actions
+fit the caller's intended authority. A
 Langfuse-backed prompt is pinned with its selected content/version at first use
 and reused after interruption. Steering is supplemental input, not a graph edit.
 Authored shell markup runs only through the invoking primary's bash policy and
