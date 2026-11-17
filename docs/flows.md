@@ -1298,8 +1298,19 @@ the current configuration of its recorded initiating agent. Removing an ID does
 not rewrite the stored definition; cancel/terminate/status remain available.
 Standalone CLI/API execution is unchanged.
 
+When an authored interactive step references an absent target argument such as
+`${args.reviewer}`, a chat invocation supplies the originating conversation's
+`channel`, `identity` and `peerId` as that argument. Thread IDs retain their exact
+scope. The effective arguments must still satisfy the authored schema; an
+explicit target, including an invalid one, is never replaced. Explicit targets
+must already belong to the authorized conversation. No orchestrator argument
+injection is needed. Recovery retains explicit targets from the saved invocation;
+older runs without a target use the saved origin, not the current caller.
+Without a bridge origin there is no default;
+standalone flows continue to require their explicit routing arguments.
+
 Named runs snapshot the validated definition, resolved includes/schema references
-and original arguments. The flow tool cannot update them or change their source.
+and effective arguments. The flow tool cannot update them or change their source.
 Authored agents, model settings, routing, limits and within-run session forking
 remain in effect, subject to the caller's delegation permissions. Step agents
 keep their own tool grants; named execution does not intersect those grants with
