@@ -267,3 +267,9 @@ A PreToolUse hook's `deny` and a `skill` permission denial were already tool err
 `grep` and `glob` also drop every match whose resolved path the patterns do not allow (`glob` follows symlinks, and the `grep` regex fallback opens them). An `ask` verdict cannot be put to the user per match, so a match is kept only while it resolves inside the directory that was approved. A pattern `dir/**` does not match `dir` itself: list the directory with `dir` and `dir/**` both allowed.
 
 `read` and `view_image` open the checked path and then confirm the opened file is still that path (a symlink swapped in after the check is refused with `Permission denied`). `ls`, `glob` and `grep` only enumerate, and re-check each match's resolved path afterwards; a swap racing that enumeration is not detected. A path that does not exist now answers `Permission denied` rather than "File not found" when permissions are configured, because it cannot be resolved.
+
+## MCP composition grants
+
+The optional `mcp_compose` builtin requires its literal name in `allowTools` (or explicit legacy `tools.mcp_compose: true`) and a nonempty `mcpComposition.readTools` endpoint list. Neither `*` nor `mcp_*` enables it. Each child must be an unambiguous MCP tool in the current resolved toolset and exact endpoint list; deferred children must already be activated for this session.
+
+The composition call's own policy and every child's policy are evaluated on their final hook-mutated inputs. An outer approval cannot authorize children; child hook approval bypasses only an ask prompt, not explicit MCP deny. Human rejection stops the run while retaining the completed projections and hook context. Rule denials and repeated calls are accounted for without treating the wrapper as successful progress. See [the MCP guide](mcp.md#bounded-read-composition-opt-in).

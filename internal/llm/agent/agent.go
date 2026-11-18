@@ -208,6 +208,7 @@ type Service interface {
 }
 
 type agent struct {
+	reg agentregistry.Registry
 	*pubsub.Broker[AgentEvent]
 	sessions session.Service
 	messages message.Service
@@ -357,6 +358,7 @@ func newAgent(
 	}
 
 	agent := &agent{
+		reg:               reg,
 		Broker:            pubsub.NewBroker[AgentEvent](),
 		agentID:           agentInfo.ID,
 		provider:          agentProvider,
@@ -445,7 +447,7 @@ func (a *agent) firePreTool(ctx context.Context, sessionID, toolCallName, toolCa
 	}
 	var inputMap map[string]any
 	if toolCallInput != "" {
-		if err := json.Unmarshal([]byte(toolCallInput), &inputMap); err != nil {
+		if err := decodeToolJSON(toolCallInput, &inputMap); err != nil {
 			logging.Debug("hook PreToolUse: tool input was not a JSON object; skipping hook",
 				"tool", toolCallName, "error", err)
 			return toolCallInput, hookCall{}
@@ -514,22 +516,27 @@ func hookCWD(reg *hooks.Registry) string {
 // A nil registry / no matching hooks / no decision degrades to the
 // original output and empty context.
 func (a *agent) firePostTool(ctx context.Context, sessionID, toolCallName, toolCallInput, toolOutput string) (string, string) {
+	out, hc, _ := a.firePostToolDetailed(ctx, sessionID, toolCallName, toolCallInput, toolOutput)
+	return out, hc
+}
+
+func (a *agent) firePostToolDetailed(ctx context.Context, sessionID, toolCallName, toolCallInput, toolOutput string) (string, string, bool) {
 	if a.factory == nil {
-		return toolOutput, ""
+		return toolOutput, "", false
 	}
 	reg := a.factory.HookRegistry()
 	if reg == nil {
-		return toolOutput, ""
+		return toolOutput, "", false
 	}
 	// Fast-path: same rationale as firePreTool — most tool calls don't
 	// have PostToolUse hooks configured. Avoid the JSON unmarshal and
 	// the os.Getwd syscall when there's no event to dispatch.
 	if !reg.HasEvent(hooks.EventPostToolUse) {
-		return toolOutput, ""
+		return toolOutput, "", false
 	}
 	var inputMap map[string]any
 	if toolCallInput != "" {
-		_ = json.Unmarshal([]byte(toolCallInput), &inputMap) // best-effort; nil map is fine
+		_ = decodeToolJSON(toolCallInput, &inputMap) // best-effort; nil map is fine
 	}
 	cwd := hookCWD(reg)
 	dec := reg.RunPostTool(ctx, sessionID, cwd, toolCallName, inputMap, toolOutput)
@@ -540,7 +547,7 @@ func (a *agent) firePostTool(ctx context.Context, sessionID, toolCallName, toolC
 	case dec.UpdatedOutput != nil:
 		out = *dec.UpdatedOutput
 	}
-	return out, dec.AdditionalContext
+	return out, dec.AdditionalContext, dec.BlockReason != ""
 }
 
 func (a *agent) AgentID() config.AgentName {
@@ -2068,6 +2075,9 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	unexecuted := make([]bool, len(toolCalls))
 	deliveredInput := make([]bool, len(toolCalls))
 	executed := make([]bool, len(toolCalls))
+	compositions := make([]*tools.CompositionOutcome, len(toolCalls))
+	isComposition := make([]bool, len(toolCalls))
+	controlErrors := make([]error, len(toolCalls))
 	var recordMu sync.Mutex
 
 	// record writes a tool result into the shared toolResults slice and
@@ -2086,14 +2096,29 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		if answered {
 			tracker.Reset()
 		}
-		if !answered && executed[index] && provider.ForcedTool(ctx) != tc.Name && tracker.Track(tc.Name, tc.Input, tr) {
+		if !answered && executed[index] && !isComposition[index] && provider.ForcedTool(ctx) != tc.Name && tracker.Track(tc.Name, tc.Input, tr) {
 			tr = message.ToolResult{
 				ToolCallID: tc.ID, Name: tc.Name,
-				Content: loopDetectedMessage(tc.Name, tracker.streakCount[tc.Name]), IsError: true,
+				Content: loopDetectedMessage(tc.Name, tracker.Streak(tc.Name)), IsError: true,
 			}
 		}
 		toolResults[index] = tr
 		a.messages.PublishPart(sessionID, assistantMsg.ID, tr)
+	}
+
+	ctx = tools.WithCompositionRuntime(ctx, tools.CompositionRuntime{
+		Check: func(childCtx context.Context, name string) error {
+			_, err := a.compositionChildTool(childCtx, name)
+			return err
+		},
+		Dispatch: func(childCtx context.Context, call tools.ToolCall) tools.CompositionChildOutcome {
+			return a.dispatchCompositionChild(childCtx, sessionID, call, tracker, &recordMu)
+		},
+	})
+	blocked := func(name, input string) (bool, int) {
+		recordMu.Lock()
+		defer recordMu.Unlock()
+		return tracker.Blocked(name, input), tracker.Streak(name)
 	}
 
 	// Phase 1: Pre-processing (synchronous) — resolve tools, loop detection, classify parallelism
@@ -2140,9 +2165,9 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		// Parallel calls are admitted together before dispatch. Sequential calls
 		// must be checked immediately before execution: earlier results in this
 		// batch can establish a loop or deliver input that clears one.
+		isComposition[i] = tools.IsMCPCompositionTool(tool)
 		parallel := a.allowParallelism && tool.AllowParallelism(allToolCalls[i], allToolCalls)
-		if parallel && provider.ForcedTool(ctx) != toolCall.Name && tracker.Blocked(toolCall.Name, toolCall.Input) {
-			streak := tracker.streakCount[toolCall.Name]
+		if isBlocked, streak := blocked(toolCall.Name, toolCall.Input); parallel && !isComposition[i] && provider.ForcedTool(ctx) != toolCall.Name && isBlocked {
 			logging.Warn("Tool call loop detected",
 				"tool", toolCall.Name,
 				"streak", streak,
@@ -2173,9 +2198,6 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		"session_id", sessionID,
 	)
 
-	// Langfuse client for tool call tracing (declared here to avoid goto-over-decl)
-	lfClient := langfuse.Get()
-
 	// ruleDenied marks the calls a configured permission rule denied. Those
 	// are reported to the model and the run goes on, unlike a human's
 	// rejection; the breaker on tracker bounds them (permission_denial.go).
@@ -2191,164 +2213,25 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 			wg.Add(1)
 			go func(e toolEntry) {
 				defer wg.Done()
-				now := time.Now()
-
-				// Start Langfuse tool span
-				var toolSpan *langfuse.Span
-				if lfClient != nil && lfClient.Enabled() {
-					var toolInput any
-					if shouldLogToolInput(e.toolCall.Name) {
-						toolInput = e.toolCall.Input
-					}
-					toolSpan = lfClient.ToolStart(ctx, langfuse.ToolParams{
-						Name:  e.toolCall.Name,
-						Input: toolInput,
-					})
-					defer toolSpan.End()
-				}
-
-				// PreToolUse: hooks may mutate Input or block this call.
-				// Mutation chain runs synchronously before the tool dispatch
-				// goroutine starts so the tool sees the final input.
-				mutatedInput, hc := a.firePreTool(ctx, sessionID, e.toolCall.Name, e.toolCall.Input)
-				if hc.decision.Block {
-					reason := hc.decision.BlockReason
-					if reason == "" {
-						reason = "Tool call blocked by PreToolUse hook"
-					}
-					logging.Info("Tool call blocked by hook", "tool", e.toolCall.Name, "ID", e.toolCall.ID, "reason", reason)
-					if toolSpan != nil {
-						toolSpan.SetError(fmt.Errorf("blocked by hook: %s", reason))
-					}
-					record(e.index, message.ToolResult{
-						ToolCallID: e.toolCall.ID,
-						Name:       e.toolCall.Name,
-						Content:    appendHookContext(reason, hc.decision.AdditionalContext),
-						IsError:    true,
-					})
-					unexecuted[e.index] = true
-					return
-				}
-
-				type runResult struct {
-					resp tools.ToolResponse
-					err  error
-				}
-				ch := make(chan runResult, 1)
-				// ExplicitAllow from a PreToolUse hook bypasses the
-				// in-tool permission check for this call only (D8).
-				toolCtx := permCtx
-				if hc.decision.ExplicitAllow {
-					toolCtx = context.WithValue(permCtx, permission.HookAllowKey, true)
-				}
-				go func() {
-					r, errTool := runToolBounded(toolCtx, toolCallLimit(a.agentID, a.toolCallTimeoutSeconds, e.tool), e.tool, tools.ToolCall{
-						ID:    e.toolCall.ID,
-						Name:  e.toolCall.Name,
-						Input: mutatedInput,
-					})
-					ch <- runResult{r, errTool}
-				}()
-				var toolResult tools.ToolResponse
-				var toolErr error
+				result := make(chan tools.CompositionChildOutcome, 1)
+				go func() { result <- a.dispatchTool(permCtx, ctx, sessionID, e.tool, allToolCalls[e.index], false) }()
+				var out tools.CompositionChildOutcome
 				select {
+				case out = <-result:
 				case <-permCtx.Done():
-					if toolSpan != nil {
-						toolSpan.SetError(permCtx.Err())
-					}
 					return
-				case res := <-ch:
-					toolResult, toolErr = res.resp, res.err
-					executed[e.index] = true
-					deliveredInput[e.index] = toolResult.UserInputDelivered
+				}
+				executed[e.index] = out.Executed
+				unexecuted[e.index] = !out.Executed
+				deliveredInput[e.index] = out.Response.UserInputDelivered
+				ruleDenied[e.index] = out.RuleDenied
+				compositions[e.index] = out.Response.Composition
+				controlErrors[e.index] = out.ControlErr
+				record(e.index, dispatchResult(e.toolCall, out))
+				if errors.Is(out.ControlErr, permission.ErrorPermissionDenied) {
+					permCancel()
 				}
 
-				gauge := time.Since(now).Milliseconds()
-				if toolErr != nil {
-					if toolSpan != nil {
-						toolSpan.SetError(toolErr)
-					}
-					// Checked before the generic denial: a RuleDeniedError
-					// also matches ErrorPermissionDenied. No permCancel —
-					// the sibling calls keep running.
-					if rd, ok := permission.AsRuleDenied(toolErr); ok {
-						logging.Warn("Tool call denied by permission rule", "tool", e.toolCall.Name,
-							"ID", e.toolCall.ID,
-							"input", rd.Input,
-							"gauge", gauge,
-						)
-						ruleDenied[e.index] = true
-						record(e.index, message.ToolResult{
-							ToolCallID: e.toolCall.ID,
-							Name:       e.toolCall.Name,
-							Content:    ruleDeniedMessage(rd),
-							IsError:    true,
-						})
-						return
-					}
-					if errors.Is(toolErr, permission.ErrorPermissionDenied) {
-						executed[e.index] = false
-						logging.Warn("Tool call denied", "tool", e.toolCall.Name,
-							"ID", e.toolCall.ID,
-							"input", e.toolCall.Input,
-							"gauge", gauge,
-						)
-						record(e.index, message.ToolResult{
-							ToolCallID: e.toolCall.ID,
-							Name:       e.toolCall.Name,
-							Content:    "Permission denied",
-							IsError:    true,
-						})
-						permCancel()
-						return
-					}
-					logging.Error("Tool call failed", "tool", e.toolCall.Name,
-						"ID", e.toolCall.ID,
-						"input", e.toolCall.Input,
-						"error", toolErr.Error(),
-						"gauge", gauge,
-					)
-					record(e.index, message.ToolResult{
-						ToolCallID: e.toolCall.ID,
-						Name:       e.toolCall.Name,
-						Content:    fmt.Sprintf("Tool returned error: %s", toolErr.Error()),
-						IsError:    true,
-					})
-					return
-				}
-				if toolSpan != nil {
-					if toolResult.IsError {
-						toolSpan.SetError(fmt.Errorf("%s", toolResult.Content))
-					} else if shouldLogToolOutput(e.toolCall.Name) {
-						toolSpan.SetOutput(toolResult.Content)
-					}
-				}
-				logging.Debug("Tool call completed", "tool", e.toolCall.Name,
-					"ID", e.toolCall.ID,
-					"input", e.toolCall.Input,
-					"successful", !toolResult.IsError,
-					"gauge", gauge,
-				)
-				// PostToolUse: hooks may mutate the result content before
-				// it reaches the conversation history. Only fires when
-				// the tool succeeded (IsError=false) per spec contract.
-				resultContent := toolResult.Content
-				var postCtx string
-				if !toolResult.IsError {
-					resultContent, postCtx = a.firePostTool(ctx, sessionID, e.toolCall.Name, mutatedInput, toolResult.Content)
-				}
-				// additionalContext from BOTH PreToolUse and PostToolUse
-				// must reach the agent; spec requires it to be visible
-				// on the next turn whether or not the hook blocked.
-				resultContent = appendHookContext(resultContent, joinHookContext(hc.decision.AdditionalContext, postCtx))
-				record(e.index, message.ToolResult{
-					Type:       message.ToolResultType(toolResult.Type),
-					Name:       e.toolCall.Name,
-					ToolCallID: e.toolCall.ID,
-					Content:    resultContent,
-					Metadata:   toolResult.Metadata,
-					IsError:    toolResult.IsError,
-				})
 			}(entry)
 		}
 		waitDone := make(chan struct{})
@@ -2367,7 +2250,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		// Check if any parallel tool returned permission denied
 		for _, entry := range parallelGroup {
 			r := &toolResults[entry.index]
-			if r.IsError && r.Content == "Permission denied" {
+			if (r.IsError && r.Content == "Permission denied") || errors.Is(controlErrors[entry.index], permission.ErrorPermissionDenied) {
 				permissionDenied = true
 				break
 			}
@@ -2417,8 +2300,6 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 
 	// Phase 3: Execute sequential group
 	for _, entry := range sequentialGroup {
-		var seqToolSpan *langfuse.Span
-
 		select {
 		case <-ctx.Done():
 			a.finishMessage(context.Background(), &assistantMsg, message.FinishReasonCanceled)
@@ -2443,8 +2324,7 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 		default:
 		}
 
-		if provider.ForcedTool(ctx) != entry.toolCall.Name && tracker.Blocked(entry.toolCall.Name, entry.toolCall.Input) {
-			streak := tracker.streakCount[entry.toolCall.Name]
+		if isBlocked, streak := blocked(entry.toolCall.Name, entry.toolCall.Input); !isComposition[entry.index] && provider.ForcedTool(ctx) != entry.toolCall.Name && isBlocked {
 			logging.Warn("Tool call loop detected", "tool", entry.toolCall.Name, "streak", streak, "session_id", sessionID)
 			record(entry.index, message.ToolResult{
 				ToolCallID: entry.toolCall.ID, Name: entry.toolCall.Name,
@@ -2454,144 +2334,29 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 			continue
 		}
 
-		// Start Langfuse tool span
-		if lfClient != nil && lfClient.Enabled() {
-			var seqToolInput any
-			if shouldLogToolInput(entry.toolCall.Name) {
-				seqToolInput = entry.toolCall.Input
+		out := a.dispatchTool(ctx, ctx, sessionID, entry.tool, allToolCalls[entry.index], false)
+		executed[entry.index] = out.Executed
+		unexecuted[entry.index] = !out.Executed
+		deliveredInput[entry.index] = out.Response.UserInputDelivered
+		ruleDenied[entry.index] = out.RuleDenied
+		compositions[entry.index] = out.Response.Composition
+		controlErrors[entry.index] = out.ControlErr
+		record(entry.index, dispatchResult(entry.toolCall, out))
+		if out.ControlErr != nil {
+			reason := message.FinishReasonCanceled
+			if errors.Is(out.ControlErr, permission.ErrorPermissionDenied) {
+				reason = message.FinishReasonPermissionDenied
 			}
-			seqToolSpan = lfClient.ToolStart(ctx, langfuse.ToolParams{
-				Name:  entry.toolCall.Name,
-				Input: seqToolInput,
-			})
-		}
-
-		// PreToolUse: same contract as the parallel path. Mutated input
-		// feeds the tool; block short-circuits with the hook's reason.
-		seqMutatedInput, seqHC := a.firePreTool(ctx, sessionID, entry.toolCall.Name, entry.toolCall.Input)
-		if seqHC.decision.Block {
-			reason := seqHC.decision.BlockReason
-			if reason == "" {
-				reason = "Tool call blocked by PreToolUse hook"
-			}
-			logging.Info("Tool call blocked by hook", "tool", entry.toolCall.Name, "ID", entry.toolCall.ID, "reason", reason)
-			if seqToolSpan != nil {
-				seqToolSpan.SetError(fmt.Errorf("blocked by hook: %s", reason))
-				seqToolSpan.End()
-			}
-			record(entry.index, message.ToolResult{
-				ToolCallID: entry.toolCall.ID,
-				Name:       entry.toolCall.Name,
-				Content:    appendHookContext(reason, seqHC.decision.AdditionalContext),
-				IsError:    true,
-			})
-			unexecuted[entry.index] = true
-			continue
-		}
-
-		now := time.Now()
-		seqToolCtx := ctx
-		if seqHC.decision.ExplicitAllow {
-			seqToolCtx = context.WithValue(ctx, permission.HookAllowKey, true)
-		}
-		executed[entry.index] = true
-		toolResult, toolErr := runToolBounded(seqToolCtx, toolCallLimit(a.agentID, a.toolCallTimeoutSeconds, entry.tool), entry.tool, tools.ToolCall{
-			ID:    entry.toolCall.ID,
-			Name:  entry.toolCall.Name,
-			Input: seqMutatedInput,
-		})
-		deliveredInput[entry.index] = toolResult.UserInputDelivered
-		gauge := time.Since(now).Milliseconds()
-		if toolErr != nil {
-			if seqToolSpan != nil {
-				seqToolSpan.SetError(toolErr)
-				seqToolSpan.End()
-			}
-			// Before the generic denial, which a RuleDeniedError also
-			// matches: report it and go on with the remaining calls.
-			if rd, ok := permission.AsRuleDenied(toolErr); ok {
-				logging.Warn("Tool call denied by permission rule", "tool", entry.toolCall.Name,
-					"ID", entry.toolCall.ID,
-					"input", rd.Input,
-					"gauge", gauge,
-				)
-				ruleDenied[entry.index] = true
-				record(entry.index, message.ToolResult{
-					ToolCallID: entry.toolCall.ID,
-					Name:       entry.toolCall.Name,
-					Content:    ruleDeniedMessage(rd),
-					IsError:    true,
-				})
-				continue
-			}
-			if errors.Is(toolErr, permission.ErrorPermissionDenied) {
-				executed[entry.index] = false
-				logging.Warn("Tool call denied", "tool", entry.toolCall.Name,
-					"ID", entry.toolCall.ID,
-					"input", entry.toolCall.Input,
-					"gauge", gauge,
-				)
-				record(entry.index, message.ToolResult{
-					ToolCallID: entry.toolCall.ID,
-					Name:       entry.toolCall.Name,
-					Content:    "Permission denied",
-					IsError:    true,
-				})
-				for _, remaining := range sequentialGroup {
-					if toolResults[remaining.index].ToolCallID == "" {
-						record(remaining.index, message.ToolResult{
-							ToolCallID: remaining.toolCall.ID,
-							Name:       remaining.toolCall.Name,
-							Content:    "Tool execution canceled by user",
-							IsError:    true,
-						})
-					}
+			for _, remaining := range sequentialGroup {
+				if toolResults[remaining.index].ToolCallID == "" {
+					record(remaining.index, message.ToolResult{ToolCallID: remaining.toolCall.ID, Name: remaining.toolCall.Name,
+						Content: "Tool execution canceled by user", IsError: true})
 				}
-				a.finishMessage(ctx, &assistantMsg, message.FinishReasonPermissionDenied)
-				break
 			}
-			logging.Error("Tool call failed", "tool", entry.toolCall.Name,
-				"ID", entry.toolCall.ID,
-				"input", entry.toolCall.Input,
-				"error", toolErr.Error(),
-				"gauge", gauge,
-			)
-			record(entry.index, message.ToolResult{
-				ToolCallID: entry.toolCall.ID,
-				Name:       entry.toolCall.Name,
-				Content:    fmt.Sprintf("Tool returned error: %s", toolErr.Error()),
-				IsError:    true,
-			})
-			continue
+			a.finishMessage(context.Background(), &assistantMsg, reason)
+			break
 		}
-		if seqToolSpan != nil {
-			if toolResult.IsError {
-				seqToolSpan.SetError(fmt.Errorf("%s", toolResult.Content))
-			} else if shouldLogToolOutput(entry.toolCall.Name) {
-				seqToolSpan.SetOutput(toolResult.Content)
-			}
-			seqToolSpan.End()
-		}
-		logging.Debug("Tool call completed", "tool", entry.toolCall.Name,
-			"ID", entry.toolCall.ID,
-			"input", entry.toolCall.Input,
-			"successful", !toolResult.IsError,
-			"gauge", gauge,
-		)
-		seqResultContent := toolResult.Content
-		var seqPostCtx string
-		if !toolResult.IsError {
-			seqResultContent, seqPostCtx = a.firePostTool(ctx, sessionID, entry.toolCall.Name, seqMutatedInput, toolResult.Content)
-		}
-		seqResultContent = appendHookContext(seqResultContent, joinHookContext(seqHC.decision.AdditionalContext, seqPostCtx))
-		record(entry.index, message.ToolResult{
-			Type:       message.ToolResultType(toolResult.Type),
-			Name:       entry.toolCall.Name,
-			ToolCallID: entry.toolCall.ID,
-			Content:    seqResultContent,
-			Metadata:   toolResult.Metadata,
-			IsError:    toolResult.IsError,
-		})
+
 	}
 
 	// Phase 4: rule denials left the turn going on; end the run here, as a
@@ -2603,6 +2368,18 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	if assistantMsg.FinishReason() == message.FinishReasonToolUse {
 		denied := countTrue(ruleDenied)
 		progressed := len(toolCalls) - denied - countTrue(unexecuted)
+		for i := range toolCalls {
+			if !isComposition[i] {
+				continue
+			}
+			if !unexecuted[i] && !ruleDenied[i] {
+				progressed--
+			}
+			if composition := compositions[i]; composition != nil {
+				denied += composition.RuleDenials
+				progressed += composition.Progressed
+			}
+		}
 		if tripped, reason := tracker.denials.observeTurn(denied, progressed); tripped && !acceptsStructOutput(toolResults) {
 			logging.Warn("Ending run: too many tool calls denied by permission rules",
 				"session_id", sessionID,

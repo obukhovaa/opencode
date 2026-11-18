@@ -786,6 +786,19 @@ func generateSchema() map[string]any {
 		"additionalProperties": false,
 	}
 
+	schema["properties"].(map[string]any)["mcpComposition"] = map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"description":          "Disabled-by-default bounded MCP read composition. Also requires an agent to grant the exact mcp_compose tool name.",
+		"properties": map[string]any{
+			"readTools": map[string]any{
+				"type": "array", "uniqueItems": true, "default": []string{},
+				"description": "Exact operator-reviewed read-only MCP tool names. No wildcard grants or inferred read-only classification. Empty disables composition.",
+				"items":       map[string]any{"type": "string", "minLength": 1, "maxLength": 256, "pattern": `^[^\s\x00-\x1F\x7F*?\[\]{}]+$`},
+			},
+		},
+	}
+
 	schema["properties"].(map[string]any)["memory"] = map[string]any{
 		"type":        "object",
 		"description": "Project memory reminders and a bounded index, using existing file tools.",

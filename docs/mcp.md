@@ -101,3 +101,44 @@ flow-step tool instances. Once the configuration settles, subsequent requests
 again share a stable prefix. Native server-side discovery of an already-deferred
 tool is different: it keeps `defer_loading` stable and does not require changing
 the tool declarations. See [deferred tools](deferred-tools.md).
+
+## Bounded read composition (opt-in)
+
+`mcp_compose` executes a fixed sequence of MCP reads and returns selected JSON facts. It is disabled unless both conditions hold: the agent grants the literal `mcp_compose` name, and the root configuration supplies a nonempty exact endpoint list:
+
+```json
+{
+  "mcpComposition": {
+    "readTools": ["catalog_find", "catalog_get"]
+  }
+}
+```
+
+Add the composition tool and its permitted child tools to the agent's existing `allowTools`; retain its existing model settings. A wildcard alone does not enable composition. An explicit legacy `tools.mcp_compose: true` also qualifies. The endpoint list is an operator-reviewed read-only allowlist, not an automatic classifier: do not put write operations or general-purpose SQL, HTTP or code runners in it. An explicit `readOnlyHint: false` refuses a child; missing annotations still require operator review. Each child must also be enabled for the agent and, if deferred, already discovered in that session. The outer tool and each child retain their own permission checks. Hook approval can bypass an ask prompt, never an explicit MCP policy deny.
+
+Example plan:
+
+```json
+{
+  "steps": [
+    {"id":"lookup","tool":"catalog_find","arguments":{"key":"example"},
+     "select":{"fields":{"id":"/id"}}},
+    {"id":"detail","tool":"catalog_get","arguments":{"id":null},
+     "bindings":[{"target":"/id","step":"lookup","pointer":"/id"}],
+     "select":{"fields":{"id":"/id","state":"/state"}}}
+  ],
+  "return": ["detail"]
+}
+```
+
+Bindings copy values from earlier **projected** results into existing argument locations. `select.fields` maps output names to RFC6901 pointers. For arrays, use `{"rows":"/items","fields":{"id":"/id"},"limit":20}`; field pointers are relative to each row. Missing pointers fail; JSON null is a value. IDs retain exact numeric digits. Plans reject duplicate keys, extra fields, forward references, overlapping binding targets and noncanonical array indices. There is no script execution, automatic pagination, dynamic fanout, recursion or persistent intermediate state.
+
+Limits are 8 calls, 32 KiB plan input, depth 64, 256 KiB accepted child JSON text, 1 MiB cumulative accepted text, 16 KiB projected values, and 120 seconds of active execution, excluding human permission waits. Parent deadlines and smaller applicable tool limits still win. IDs are at most 64 characters, tool names 256 bytes, field names 64 bytes and pointers 1024 bytes. Row limits are 1–100. A deliberately limited row selection reports `limited:true` and `complete:false`; other failures stop later calls and mark them skipped. The result retains requested completed projections and explicit per-step source/status, never a raw-output fallback.
+
+Only complete, text-only, post-hook JSON is supported. MCP error results, media/resources, structured-only responses, capped results, post-hook blocks and invalid JSON fail explicitly. Composition never reopens spill files or substitutes raw structured content after redaction. Trusted hook context remains visible separately, including on failure. The 16 KiB projection limit does not cap hook context: the existing hook runner allows up to 1 MiB stdout per hook and can concatenate several contexts.
+
+Child values stay outside conversation history, raw child SSE results and agent-authored telemetry payloads; normal permission prompts may show the actual proposed child arguments. Shared MCP connections cannot attribute stderr or connection diagnostics to an individual call. Clients for servers reachable by the configured composition endpoint names suppress raw connection/close causes and drain stderr without logging its payload for **all sharing calls**, until that client is replaced. Ambiguous configured server-name prefixes are conservatively restricted for diagnostics only; authorization still uses exact tool identities. Operator-written hooks retain their own trusted logging behavior.
+
+If the builtin name conflicts with another tool, the conflicting declarations are omitted when composition is enabled. With composition disabled, an existing MCP tool named `mcp_compose` keeps ordinary tool behavior. Remove the literal grant or empty `readTools` to disable composition. No workspace or daemon is opted in by default.
+
+These are retained-data limits, not a hard transport-memory guarantee: the MCP client decodes server responses before the composition layer checks them. The acceptance fixtures measure result and serialized request bytes, not live model cost or production answer quality.

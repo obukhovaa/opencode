@@ -53,6 +53,12 @@ func TestMCPStdioHelperProcess(t *testing.T) {
 		}
 		return textResult("ok"), nil
 	})
+	srv.AddTool(mcp.NewTool("secret-stderr"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		for range 16384 {
+			_, _ = os.Stderr.WriteString("RAW_STDIO_SENTINEL\n")
+		}
+		return textResult("ok"), nil
+	})
 	srv.AddTool(mcp.NewTool("hang"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// Ignores cancellation, like a server stuck on its upstream.
 		select {}
@@ -250,4 +256,23 @@ func processRunning(pid int) bool {
 	}
 	state := strings.TrimSpace(string(out))
 	return state != "" && !strings.HasPrefix(state, "Z")
+}
+
+func TestMCPStdioCompositionDiagnosticsAreSuppressed(t *testing.T) {
+	logs := captureMCPDiagnostics(t)
+	reg := newStdioPoolRegistry(t, stdioHelperServer("exit"))
+	cfg := config.Get()
+	old := cfg.MCPComposition
+	cfg.MCPComposition = &config.MCPCompositionConfig{ReadTools: []string{"helper_secret-stderr"}}
+	t.Cleanup(func() { cfg.MCPComposition = old })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	response := reg.CallTool(ctx, "helper", "secret-stderr", "{}")
+	reg.Shutdown(ctx)
+	if response.IsError || response.Content != "ok" {
+		t.Fatalf("stdio did not drain: %+v", response)
+	}
+	if strings.Contains(logs.String(), "RAW_STDIO_SENTINEL") {
+		t.Fatal("composition server stderr leaked into logs")
+	}
 }

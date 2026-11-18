@@ -128,3 +128,5 @@ The Chat Completions adapter retains JSON string `reasoning_content` and `reason
 Absent, empty, null, array and object values are not converted into reasoning text. Opaque formats such as `reasoning_details` are unsupported. Legacy unsigned previews without origin metadata remain display-only. Interrupted streams never acquire replay metadata; streams retry only before visible output, preventing duplicated previews. Native Claude signed/redacted thinking and cache breakpoints are unchanged, and first-party OpenAI requests receive no scalar reasoning fields.
 
 This repairs transport continuity; it is not evidence of a particular cost reduction. Replay can increase input tokens, so measure net usage and retries for the affected routes before claiming savings.
+
+Anthropic tool-call history preserves numeric JSON argument types and exact digits, including IDs above `2^53`. Canonical raw JSON is used at the SDK serialization boundary so these values are neither rounded nor converted to strings; this applies to ordinary calls as well as composed MCP reads.

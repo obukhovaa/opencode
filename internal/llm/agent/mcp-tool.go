@@ -173,8 +173,11 @@ func (r *mcpRegistry) CallTool(ctx context.Context, name, toolName, input string
 		}
 		r.pool.release(conn, evict)
 		if attempt == 1 && ctx.Err() == nil && mcpRequestNotSent(callErr) {
-			logging.Info("MCP client lost its session or process; retrying on a fresh client",
-				"server", name, "tool", toolName, "cause", callErr)
+			if hidden, _ := ctx.Value(compositionChildKey{}).(bool); hidden || conn.diagnostics.restricted.Load() {
+				logging.Info("MCP client lost its session or process; retrying on a fresh client", "server", name, "tool", toolName)
+			} else {
+				logging.Info("MCP client lost its session or process; retrying on a fresh client", "server", name, "tool", toolName, "cause", callErr)
+			}
 			continue
 		}
 		return resp
@@ -600,7 +603,11 @@ func (r *mcpRegistry) getToolsAttempt(name string, m config.MCPServer, retryOnIn
 		var conn *mcpConn
 		conn, entry.err = r.pool.acquire(fetchCtx, name, m)
 		if entry.err != nil {
-			logging.Error("Error starting MCP client", "server", name, "cause", entry.err.Error())
+			if compositionServerDiagnostics(name) {
+				logging.Error("Error starting MCP client", "server", name)
+			} else {
+				logging.Error("Error starting MCP client", "server", name, "cause", entry.err.Error())
+			}
 			close(entry.done)
 			r.mcpTools.Delete(name)
 			return toolsToAdd
@@ -626,7 +633,11 @@ func (r *mcpRegistry) getToolsAttempt(name string, m config.MCPServer, retryOnIn
 			}
 		}
 		if entry.err != nil {
-			logging.Error("Error listing MCP tools", "server", name, "cause", entry.err.Error())
+			if compositionServerDiagnostics(name) || (conn != nil && conn.diagnostics.restricted.Load()) {
+				logging.Error("Error listing MCP tools", "server", name)
+			} else {
+				logging.Error("Error listing MCP tools", "server", name, "cause", entry.err.Error())
+			}
 			r.mcpTools.Delete(name)
 			return toolsToAdd
 		}
@@ -756,7 +767,7 @@ func callMCPTool(ctx context.Context, c MCPClient, toolName string, input string
 	toolRequest := mcp.CallToolRequest{}
 	toolRequest.Params.Name = toolName
 	var args map[string]any
-	if err := json.Unmarshal([]byte(input), &args); err != nil {
+	if err := decodeToolJSON(input, &args); err != nil {
 		return tools.NewTextErrorResponse(fmt.Sprintf("error parsing parameters: %s", err)), nil
 	}
 	toolRequest.Params.Arguments = args
@@ -801,10 +812,12 @@ func callMCPTool(ctx context.Context, c MCPClient, toolName string, input string
 	// which silently dropped data for multi-block results — and would undercount
 	// the output when applying the size cap below.)
 	var sb strings.Builder
+	textOnly := len(result.Content) > 0
 	for _, v := range result.Content {
 		if tc, ok := v.(mcp.TextContent); ok {
 			sb.WriteString(tc.Text)
 		} else {
+			textOnly = false
 			fmt.Fprintf(&sb, "%v", v)
 		}
 	}
@@ -820,7 +833,10 @@ func callMCPTool(ctx context.Context, c MCPClient, toolName string, input string
 		logging.Info("MCP tool output capped",
 			"tool", toolName, "totalBytes", len(output), "maxOutputBytes", maxOutputBytes, "file", filePath)
 	}
-	return tools.NewTextResponse(preview), nil
+	resp := tools.NewTextResponse(preview)
+	resp.IsError = result.IsError
+	resp.MCPOutput = &tools.MCPOutputMetadata{TextOnly: textOnly, Complete: filePath == "" && resp.Content == output}
+	return resp, nil
 }
 
 func (b *mcpTool) AllowParallelism(call tools.ToolCall, allCalls []tools.ToolCall) bool {

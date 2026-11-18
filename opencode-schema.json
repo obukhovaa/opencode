@@ -1760,6 +1760,25 @@
       ],
       "description": "Global maximum number of agent tool-use turns per request. When set, overrides per-agent maxTurns. Also settable via --max-turns CLI flag."
     },
+    "mcpComposition": {
+      "additionalProperties": false,
+      "description": "Disabled-by-default bounded MCP read composition. Also requires an agent to grant the exact mcp_compose tool name.",
+      "properties": {
+        "readTools": {
+          "default": [],
+          "description": "Exact operator-reviewed read-only MCP tool names. No wildcard grants or inferred read-only classification. Empty disables composition.",
+          "items": {
+            "maxLength": 256,
+            "minLength": 1,
+            "pattern": "^[^\\s\\x00-\\x1F\\x7F*?\\[\\]{}]+$",
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "type": "object"
+    },
     "mcpServers": {
       "additionalProperties": {
         "description": "MCP server configuration",

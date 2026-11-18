@@ -65,6 +65,7 @@ func TestToolDescriptionBudgets(t *testing.T) {
 		{NewCronDeleteTool(nil), defaultDescriptionBudget},
 		{NewCronListTool(nil, nil), defaultDescriptionBudget},
 		{NewCompactSessionTool(0), defaultDescriptionBudget},
+		{NewMCPComposeTool(), defaultDescriptionBudget},
 	}
 
 	for _, tc := range tools {

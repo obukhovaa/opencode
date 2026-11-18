@@ -155,3 +155,7 @@ submission of the same invocation does not start another run.
 
 Finish the ordinary turn after `plan`, `create` or `run` succeeds. Flow steps and
 subagents cannot start another flow. See [flows](flows.md#flows-from-ordinary-bridge-conversations).
+
+## MCP read composition
+
+The opt-in `mcp_compose` builtin combines up to eight pre-authorized MCP reads into a fixed plan, binding earlier projected facts into later arguments. It returns selected facts and explicit source/status information instead of every intermediate response. It is not a scripting runtime and does not change existing tools by default. See [configuration and plan examples](mcp.md#bounded-read-composition-opt-in) and [permission semantics](tool-permissions.md#mcp-composition-grants).
