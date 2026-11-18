@@ -726,3 +726,126 @@ func TestFlowEventRetryingLeavesRunStateUntouched(t *testing.T) {
 		t.Errorf("retrying must not clear the waiting_for_input target, got %+v", state.waitingTarget)
 	}
 }
+
+// TestFlowEventCarriesModel: every flow.step.* event and every /flow/status
+// step record carries the model the step ran on (flow.FlowState.Model), and
+// a state without one (a step that failed before its agent was built) leaves
+// the key out of the JSON.
+func TestFlowEventCarriesModel(t *testing.T) {
+	t.Parallel()
+	_, fr := newFlowTestServerWithSessions(t, newStubFlowService(nil), &stubSessions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := fr.subscribeFlowEvents(ctx)
+
+	const model = "bedrock.us-kimi-k3.1"
+	state := &flowRunState{RunID: "run-1", FlowID: "x", Status: flowRunRunning}
+	steps := []*flow.FlowState{
+		{StepID: "review", SessionID: "s1", Status: flow.FlowStatusRunning, Iteration: 1, Model: model},
+		{StepID: "review", SessionID: "s1", Status: flow.FlowStatusRetrying, Iteration: 1, Model: model},
+		{StepID: "review", SessionID: "s1", Status: flow.FlowStatusWaitingForInput, Iteration: 1, Model: model},
+		{StepID: "review", SessionID: "s1", Status: flow.FlowStatusCompleted, Iteration: 1, Model: model},
+		{StepID: "park", SessionID: "s2", Status: flow.FlowStatusPostponed, Iteration: 1, Model: model},
+		{StepID: "boom", SessionID: "s3", Status: flow.FlowStatusFailed, Output: "agent exploded", Iteration: 1, Model: model},
+		{StepID: "early", SessionID: "s4", Status: flow.FlowStatusFailed, Output: "unknown model", Iteration: 1},
+	}
+	for _, st := range steps {
+		fr.observeStep(state, st)
+	}
+
+	for i, st := range steps {
+		select {
+		case ev := <-ch:
+			if ev.Payload.StepID != st.StepID || ev.Payload.Model != st.Model {
+				t.Errorf("event %d (%s %s) model = %q, want %q", i, ev.Payload.Type, ev.Payload.StepID, ev.Payload.Model, st.Model)
+			}
+			raw, err := json.Marshal(ev.Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if has := strings.Contains(string(raw), `"model":`); has != (st.Model != "") {
+				t.Errorf("event %d JSON %s: model key present = %v", i, raw, has)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("event %d never arrived", i)
+		}
+	}
+
+	snap := snapshotOf(state)
+	if len(snap.CompletedSteps) != 4 {
+		t.Fatalf("completed steps = %+v", snap.CompletedSteps)
+	}
+	for _, rec := range snap.CompletedSteps {
+		want := model
+		if rec.ID == "early" {
+			want = ""
+		}
+		if rec.Model != want {
+			t.Errorf("status record %s model = %q, want %q", rec.ID, rec.Model, want)
+		}
+	}
+}
+
+// TestFlowEventBestEffortFailureKeepsRunCompleted: a failed best-effort step
+// is published as flow.step.failed with bestEffort, recorded with it in
+// /flow/status, and does not fail the run.
+func TestFlowEventBestEffortFailureKeepsRunCompleted(t *testing.T) {
+	t.Parallel()
+	svc := newStubFlowService([]flow.FlowState{
+		{StepID: "review", SessionID: "s1", Status: flow.FlowStatusRunning, Iteration: 1},
+		{StepID: "review", SessionID: "s1", Status: flow.FlowStatusCompleted, Iteration: 1},
+		{StepID: "shadow", SessionID: "s2", Status: flow.FlowStatusRunning, Iteration: 1, BestEffort: true},
+		{StepID: "shadow", SessionID: "s2", Status: flow.FlowStatusFailed, Output: "shadow exploded", Iteration: 1, BestEffort: true},
+	})
+	_, fr := newFlowTestServerWithSessions(t, svc, &stubSessions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := fr.subscribeFlowEvents(ctx)
+
+	res, err := fr.Start(context.Background(), "x", nil, false)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var failed *FlowEvent
+	deadline := time.After(2 * time.Second)
+	for terminal := false; !terminal; {
+		select {
+		case ev := <-ch:
+			switch ev.Payload.Type {
+			case evFlowStepFailed:
+				payload := ev.Payload
+				failed = &payload
+			case evFlowStepStarted, evFlowStepCompleted:
+				if ev.Payload.BestEffort != (ev.Payload.StepID == "shadow") {
+					t.Errorf("%s %s bestEffort = %v", ev.Payload.Type, ev.Payload.StepID, ev.Payload.BestEffort)
+				}
+			case evFlowFailed:
+				t.Fatalf("a best-effort failure failed the run: %+v", ev.Payload)
+			case evFlowCompleted:
+				terminal = true
+			}
+		case <-deadline:
+			t.Fatal("run never terminated")
+		}
+	}
+	if failed == nil || !failed.BestEffort || failed.StepID != "shadow" {
+		t.Fatalf("flow.step.failed = %+v, want the shadow step with bestEffort", failed)
+	}
+	raw, _ := json.Marshal(failed)
+	if !strings.Contains(string(raw), `"bestEffort":true`) {
+		t.Errorf("failed event JSON %s lacks bestEffort", raw)
+	}
+	snap := fr.SnapshotByRunID(res.RunID)
+	if snap == nil || snap.Status != flowRunCompleted || snap.Error != "" {
+		t.Fatalf("snapshot = %+v, want completed without an error", snap)
+	}
+	var rec *flowStepRecord
+	for i := range snap.CompletedSteps {
+		if snap.CompletedSteps[i].ID == "shadow" {
+			rec = &snap.CompletedSteps[i]
+		}
+	}
+	if rec == nil || !rec.BestEffort || rec.Error != "shadow exploded" {
+		t.Fatalf("shadow status record = %+v", rec)
+	}
+}

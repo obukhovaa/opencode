@@ -33,6 +33,11 @@ flow:               # flow specification (required)
   agent: string          # agent ID, defaults to "coder"; ${args.*}/${step.*} allowed — unresolved FAILS the step (optional)
   model: string          # per-step model override, catalog model ID; ${args.*} allowed — empty/unresolved = no override (optional)
   reasoningEffort: string # per-step effort override: low|medium|high|xhigh|max, validated against the model the step runs on (optional)
+  modelPool: string      # JSON array [{model, weight, effort?, shadowWeight?}]; deterministic weighted pick per modelSeed, overrides model while active; ${args.*} allowed (optional)
+  modelSeed: string      # what the pool pick is keyed on, e.g. ${args.mr_links}; empty = root session id (needs modelPool)
+  modelShadowRate: string # 0..100 share of seeds that also get a shadow pick (needs modelPool)
+  denyTools: array       # tool-name globs removed from this step's agent and its subagents; struct_output is never denied; literal only, not in dynamic flows (optional)
+  bestEffort: bool       # a failure ends this branch without failing the run; events carry bestEffort: true (optional)
   session:
     fork: bool           # copy message history from previous step, same agent only (optional)
   prompt: string         # prompt template with ${args.*} and ${step.*} placeholders (required)
@@ -250,6 +255,10 @@ The rule is top-level only: a *nested* field a second reader consumes (e.g. a fu
 - The per-file size cap (`OPENCODE_MAX_FLOW_FILE_SIZE`) applies to **each** included file — `include` is not a way around it.
 
 Every error above is raised at flow load; the registry logs it at `WARN` and **skips the flow**, so the symptom is a *missing* flow (`flow not found` when triggered), not a stopped one. The WARN line names the file, template, and offending key.
+
+## Model Pools
+
+`modelPool` (a JSON array of `{model, weight, effort?, shadowWeight?}`), `modelSeed` and `modelShadowRate` pick the step's model and effort per seed by weighted rendezvous hashing and may sample a shadow model. The pick is written to `args.pool.<step id>` = `{model, effort, bucket, shadow, shadow_model, shadow_effort}` before the prompt renders; route a shadow copy only on `${args.pool.<step id>.shadow} == true` (false when the path is missing), and give that copy `bestEffort: true` and a `denyTools` list so it can neither post nor fail the run. Unknown models in the pool are skipped, an inactive pool falls back to `model`, malformed JSON fails the step, and `pool` is a reserved arg. Full rules and the exact hashing: `docs/flows.md` → "Model pools and shadow runs".
 
 ## Template Substitution
 

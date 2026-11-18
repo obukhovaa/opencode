@@ -3,27 +3,41 @@ package models
 type (
 	ModelID       string
 	ModelProvider string
+	// Wire is the request/response body format a provider serves a model
+	// with. Only Bedrock serves two (see Model.BedrockOpenAIChat).
+	Wire string
+)
+
+const (
+	// WireAnthropicMessages is Anthropic Messages bodies, the default for
+	// Bedrock models.
+	WireAnthropicMessages Wire = "anthropic-messages"
+	// WireOpenAIChat is OpenAI chat-completions bodies.
+	WireOpenAIChat Wire = "openai-chat"
 )
 
 type Model struct {
-	ID                       ModelID       `json:"id"`
-	Name                     string        `json:"name"`
-	Provider                 ModelProvider `json:"provider"`
-	APIModel                 string        `json:"api_model"`
-	CostPer1MIn              float64       `json:"cost_per_1m_in"`
-	CostPer1MOut             float64       `json:"cost_per_1m_out"`
-	CostPer1MInCached        float64       `json:"cost_per_1m_in_cached"`
-	CostPer1MOutCached       float64       `json:"cost_per_1m_out_cached"`
-	ContextWindow            int64         `json:"context_window"`
-	DefaultMaxTokens         int64         `json:"default_max_tokens"`
-	CanReason                bool          `json:"can_reason"`
-	SupportsAdaptiveThinking bool          `json:"supports_adaptive_thinking"`
-	SupportsMaximumThinking  bool          `json:"supports_maximum_thinking"`
-	SupportsXHighThinking    bool          `json:"supports_xhigh_thinking"`
-	SupportsTaskBudget       bool          `json:"supports_task_budget"`
-	SupportsToolSearch       bool          `json:"supports_tool_search"`
-	SupportsAttachments      bool          `json:"supports_attachments"`
-	UseLegacyMaxTokens       bool          `json:"use_legacy_max_tokens,omitempty"`
+	ID       ModelID       `json:"id"`
+	Name     string        `json:"name"`
+	Provider ModelProvider `json:"provider"`
+	APIModel string        `json:"api_model"`
+	// Wire is the body format the provider serves this model with; empty
+	// means the provider's only (or, on Bedrock, default) format.
+	Wire                     Wire    `json:"wire,omitempty"`
+	CostPer1MIn              float64 `json:"cost_per_1m_in"`
+	CostPer1MOut             float64 `json:"cost_per_1m_out"`
+	CostPer1MInCached        float64 `json:"cost_per_1m_in_cached"`
+	CostPer1MOutCached       float64 `json:"cost_per_1m_out_cached"`
+	ContextWindow            int64   `json:"context_window"`
+	DefaultMaxTokens         int64   `json:"default_max_tokens"`
+	CanReason                bool    `json:"can_reason"`
+	SupportsAdaptiveThinking bool    `json:"supports_adaptive_thinking"`
+	SupportsMaximumThinking  bool    `json:"supports_maximum_thinking"`
+	SupportsXHighThinking    bool    `json:"supports_xhigh_thinking"`
+	SupportsTaskBudget       bool    `json:"supports_task_budget"`
+	SupportsToolSearch       bool    `json:"supports_tool_search"`
+	SupportsAttachments      bool    `json:"supports_attachments"`
+	UseLegacyMaxTokens       bool    `json:"use_legacy_max_tokens,omitempty"`
 	// RejectsForcedToolChoice marks models whose API answers a forced
 	// tool_choice ("tool"/"any") with a 400 (Claude Opus 5.5, Claude Sonnet
 	// 5.5, Claude Fable 5.1). The Anthropic request builder runs a forced-tool
@@ -48,16 +62,29 @@ type Model struct {
 	// LongContextCostMultiplier times the four CostPer1M* rates (Claude Haiku
 	// 5.5: 5x over 100,000). The prompt is uncached input plus cache writes
 	// and cache reads, all of which count toward the context window. Zero in
-	// either field means flat pricing at any length. One multiplier covers
-	// all four rates; a tier that raises input and output by different
-	// factors needs separate fields.
-	LongContextThreshold      int64   `json:"long_context_threshold,omitempty"`
-	LongContextCostMultiplier float64 `json:"long_context_cost_multiplier,omitempty"`
-	// DefaultReasoningEffort is the effort the Anthropic client sends on an
-	// adaptive-thinking turn when neither the agent nor the flow step sets
-	// one. Empty means "high". Set it where Anthropic's own default is lower
-	// and is the recommended starting point (Claude Haiku 5.5: "medium").
+	// either field means flat pricing at any length. The multiplier covers
+	// all four rates unless LongContextOutputCostMultiplier is set, which
+	// then applies to output instead (GPT-6.1: input 2x, output 1.5x).
+	LongContextThreshold            int64   `json:"long_context_threshold,omitempty"`
+	LongContextCostMultiplier       float64 `json:"long_context_cost_multiplier,omitempty"`
+	LongContextOutputCostMultiplier float64 `json:"long_context_output_cost_multiplier,omitempty"`
+	// DefaultReasoningEffort is the effort a turn runs at when neither the
+	// agent nor the flow step sets one. The Anthropic client sends it on an
+	// adaptive-thinking turn (empty: "high"); set it where Anthropic's own
+	// default is lower and is the recommended starting point (Claude Haiku
+	// 5.5: "medium"). On an OpenAI-wire Bedrock model, config load resolves
+	// an unset agent effort to it and the OpenAI client sends it when no
+	// effort reaches it (empty: the field is left out and the model's own
+	// default applies).
 	DefaultReasoningEffort string `json:"default_reasoning_effort,omitempty"`
+}
+
+// BedrockOpenAIChat reports whether m is a Bedrock model served with OpenAI
+// chat-completions bodies, which the bedrock provider sends through the
+// OpenAI client rewritten onto the InvokeModel routes (provider/bedrock.go).
+// Every other Bedrock model speaks Anthropic Messages.
+func (m Model) BedrockOpenAIChat() bool {
+	return m.Provider == ProviderBedrock && m.Wire == WireOpenAIChat
 }
 
 const (

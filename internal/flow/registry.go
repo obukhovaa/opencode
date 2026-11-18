@@ -14,6 +14,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/format"
 	"github.com/opencode-ai/opencode/internal/llm/models"
+	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 )
 
@@ -492,6 +493,18 @@ func validateFlow(f *Flow) error {
 		if err := validateStepModelLiterals(step); err != nil {
 			return err
 		}
+		if err := validateStepDenyTools(step); err != nil {
+			return err
+		}
+		if err := validateStepModelPool(step); err != nil {
+			return err
+		}
+		if step.Output != nil && schemaDeclaresPool(step.Output.Schema) {
+			return fmt.Errorf("%w: step %q output schema declares %q", ErrReservedArg, step.ID, ReservedPoolArg)
+		}
+	}
+	if schemaDeclaresPool(f.Spec.Args) {
+		return fmt.Errorf("%w: the flow's args schema declares %q", ErrReservedArg, ReservedPoolArg)
 	}
 
 	// Validate rule and fallback references
@@ -586,6 +599,21 @@ func validateFallbackGraph(steps []Step) error {
 		}
 		for _, id := range path {
 			state[id] = done
+		}
+	}
+	return nil
+}
+
+// validateStepDenyTools rejects blank denyTools entries, which would read as
+// "deny nothing" and hide a templating or YAML mistake, and warns about an
+// entry naming struct_output, which is never denied.
+func validateStepDenyTools(step Step) error {
+	for i, glob := range step.DenyTools {
+		if strings.TrimSpace(glob) == "" {
+			return fmt.Errorf("%w: step %q denyTools[%d] is blank", ErrInvalidDenyTools, step.ID, i)
+		}
+		if strings.EqualFold(strings.TrimSpace(glob), tools.StructOutputToolName) {
+			logging.Warn("denyTools names struct_output, which is never denied", "step", step.ID)
 		}
 	}
 	return nil

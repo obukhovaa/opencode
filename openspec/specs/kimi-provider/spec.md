@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines Kimi (Moonshot AI) as a first-class model provider served through Moonshot's Anthropic-compatible endpoint (`https://api.moonshot.ai/anthropic`) — the integration path Moonshot documents and maintains for Claude Code. The provider rides the shared anthropic client, inheriting streaming thinking/tool deltas, adaptive-thinking request shaping, attachment handling, auto-compaction, and thinking-block replay (see `thinking-block-replay`). Covers model registration (`kimi.kimi-k3`), credential resolution from environment variables, request-shaping defaults (adaptive thinking, effort `max`), and graceful degradation for auxiliary endpoints the compat surface may not implement (count_tokens). Also covers the K2.7 Code models on the same endpoint, and Kimi K3 as served by AWS Bedrock (`bedrock.kimi-k3`, `bedrock.us-kimi-k3`), which rides the bedrock provider's OpenAI chat-completions path while keeping K3's effort semantics.
+Defines Kimi (Moonshot AI) as a first-class model provider served through Moonshot's Anthropic-compatible endpoint (`https://api.moonshot.ai/anthropic`) — the integration path Moonshot documents and maintains for Claude Code. The provider rides the shared anthropic client, inheriting streaming thinking/tool deltas, adaptive-thinking request shaping, attachment handling, auto-compaction, and thinking-block replay (see `thinking-block-replay`). Covers model registration (`kimi.kimi-k3`), credential resolution from environment variables, request-shaping defaults (adaptive thinking, effort `max`), and graceful degradation for auxiliary endpoints the compat surface may not implement (count_tokens). Also covers the K2.7 Code models on the same endpoint, and Kimi K3 and K3.1 as served by AWS Bedrock (`bedrock.kimi-k3`, `bedrock.us-kimi-k3`, `bedrock.kimi-k3.1`, `bedrock.us-kimi-k3.1`), which ride the bedrock provider's OpenAI chat-completions path while keeping their own effort semantics.
 
 ## Requirements
 
@@ -142,3 +142,14 @@ Native K3.1 Pro requests SHALL use the existing Anthropic-compatible endpoint wi
 #### Scenario: Explicit effort
 - **WHEN** an agent configures low or high effort for either variant
 - **THEN** its request uses the configured effort
+
+### Requirement: Kimi K3.1 is registered on Bedrock
+The system SHALL register `bedrock.kimi-k3.1` (API model `global.moonshotai.kimi-k3.1`) and `bedrock.us-kimi-k3.1` (API model `us.moonshotai.kimi-k3.1`) on the `bedrock` provider with the `openai-chat` wire, a 1,048,576-token context, 131,072 default output tokens, vision, and reasoning efforts `low`, `medium`, `high`, `xhigh` and `max` with default `max`. Global pricing per million tokens SHALL be $4 input, $20 output, $5 cache writes and $0.20 cache reads; the US profile SHALL carry the 10% regional premium. Neither model SHALL advertise adaptive thinking, task budgets or tool search.
+
+#### Scenario: Effort unset
+- **WHEN** an agent uses `bedrock.us-kimi-k3.1` without `reasoningEffort`
+- **THEN** its resolved config and request carry `max`
+
+#### Scenario: xhigh is sent as xhigh
+- **WHEN** an agent or flow step sets `xhigh` on `bedrock.kimi-k3.1`
+- **THEN** the request body carries `reasoning_effort: "xhigh"`
