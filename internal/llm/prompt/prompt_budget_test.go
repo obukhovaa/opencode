@@ -45,8 +45,9 @@ func TestBasePromptBudgets(t *testing.T) {
 // requirement that slimming the background-tasks appendix never drops the
 // no-poll contract's moving parts: the header and sleep ban (also pinned by
 // prompt_background_tasks_test.go) plus all five background-primitive tool
-// references.
+// references when those tools are enabled.
 func TestBackgroundTasksPromptKeepsPrimitives(t *testing.T) {
+	got := backgroundTasksPromptFor(func(string) bool { return true })
 	required := []string{
 		"# Background tasks (event-driven, no polling)",
 		"DO NOT use `sleep N`",
@@ -55,9 +56,10 @@ func TestBackgroundTasksPromptKeepsPrimitives(t *testing.T) {
 		"`monitor`",
 		"`tasklist`",
 		"`taskstop`",
+		"call `yield` alone",
 	}
 	for _, phrase := range required {
-		assert.Contains(t, backgroundTasksPrompt, phrase,
+		assert.Contains(t, got, phrase,
 			"background-tasks appendix lost required phrase %q", phrase)
 	}
 }

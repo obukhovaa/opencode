@@ -101,125 +101,151 @@ The subprocess writing to the task output file SHALL append in a single goroutin
 - **WHEN** a background subprocess exits and `EnqueueTaskCompletion` is about to be called
 - **THEN** the spawn goroutine SHALL `Sync()` the output file before invoking `EnqueueTaskCompletion`, so a subsequent agent `Read` triggered by the completion notification sees the full output
 
-### Requirement: Non-interactive `agent.Run` MUST hold the turn until pending background tasks complete
+### Requirement: Reports are consumed between complete tool batches
 
-When `agent.Service.RunWith` is invoked with `RunOptions{NonInteractive: true}`, the runtime SHALL NOT return until every running background task associated with the session (regardless of `Kind` — bash, task, AND monitor) has reached a terminal state (`StateCompleted`, `StateFailed`, or `StateKilled`), or until the surrounding `ctx` is cancelled.
+An active run SHALL continue independent tool calls without waiting for unrelated
+background tasks. After persisting the current Assistant tool-call message and all
+its Tool results, the runtime SHALL append newly committed synthetic reports and
+queued user input to the next model request. Each report SHALL be consumed once by
+that run. Reports MUST NOT split an outstanding tool-call/result batch.
 
-This guarantee MUST NOT be bypassable by model behavior. It is enforced through two complementary mechanisms:
+#### Scenario: Report arrives during independent work
 
-1. **End-of-turn drain.** After the model emits a terminal turn (`end_turn` or `struct_output`) for the current agentic cycle, and BEFORE the `AgentEvent` is delivered to the caller, the runtime calls `WaitForActiveTasks`. On a `nil` return the runtime re-reads the session's pending tasks and, if any remain (e.g. tasks spawned in a later cycle after an earlier wait's snapshot), waits again — looping until the session has zero pending tasks or `ctx` is cancelled. After each successful wait the runtime reloads the session's message history and re-enters the agentic loop for at least one additional cycle so the model can react to the just-arrived synthetic completion(s). The `WaitForActiveTasks` primitive keeps its snapshot-at-start semantics; the drain loop lives in the agent.
+- **GIVEN** a monitor is running while the model executes an unrelated tool batch
+- **WHEN** a monitor-event pair commits during that batch
+- **THEN** the independent batch completes normally
+- **AND** the next model request includes the complete batch followed by the new synthetic pair
+- **AND** later requests MUST NOT append a duplicate of the same report
 
-2. **Anti-spin.** While the session OR ITS DIRECT CHILD SESSIONS have pending non-monitor background tasks (bash or task), the runtime SHALL NOT allow the model to consume wall-clock time in a foreground self-wait. The canonical case — a foreground `bash` command whose sole effect is to sleep — MUST be redirected to `WaitForActiveTasks` — called with `Scope: ScopeSessionAndChildren` — rather than executed as a sleep (see `bash-background-mode`). The redirect's scope is deliberately wider than the end-of-turn drain's, which stays exact-session: a parent must not block at end of turn on a child's tasks, but a parent that explicitly asks to wait does mean its own children. Because the redirect can now block on a child-owned task, `tasklist` and `taskstop` move to the same scope (see `tasklist-taskstop-tools`) so the model can observe and cancel whatever it is blocked on. This ensures the guarantee holds even when the model never voluntarily emits a terminal turn but instead attempts to poll. (Long-lived monitors are excluded from the redirect; they are bounded by the end-of-turn drain above, not by a mid-turn sleep.)
+### Requirement: Non-interactive waits wake on the first report or user input
 
-The wait MUST NOT impose its own timeout: it never returns early on a task that is still pending, and the surrounding `ctx` is the only deadline it applies. See `flow-runtime-resume` for how callers derive the ctx deadline from `Step.Timeout` and the `OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT` env var.
+When `agent.Service.RunWith` uses `RunOptions{NonInteractive: true}`, a natural
+terminal turn with pending background work SHALL suspend generation until the first
+unconsumed background report or queued user message. An explicit `yield` SHALL enter
+the same event wait without a success claim or `struct_output` (see `yield-tool`).
+All flow steps, including interactive flow steps, use this non-interactive runtime
+mode. Interactive flow input is delivered through the step session's inbox.
 
-That bounds the *wait*. The hold on a `task`-kind entry may also end earlier because the task itself reached a terminal state, which `background-task-stall-detection` can bring about — so the deadline sources for the hold are `Step.Timeout`, `OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT`, and `backgroundTasks.stallThreshold`. No task that is making progress is ever terminated, regardless of total runtime, and `bash`, `monitor` and `cron` tasks are never terminated on progress grounds at all.
+Waking MUST NOT require all tasks to terminate. A monitor-event SHALL resume the
+model while its subprocess is still running; completion of one task SHALL resume
+the model while other tasks remain active. The runtime SHALL subscribe to session
+report and inbox notifications before checking durable history and pending tasks,
+so a report or user message racing with the wait cannot be lost. Already available
+reports/input and an empty pending set SHALL avoid blocking. Background report waits
+are scoped to the exact session and retain its process-global run slot.
 
-While the non-interactive drain is waiting for pending background tasks, the runtime
-SHALL emit a periodic progress log at a fixed interval naming the tasks it is still
-waiting on — each task's `task_id`, `Kind`, and age — so that a drain holding a step
-open is distinguishable in the process log from a hung or dead process. The log SHALL
-NOT be emitted when the drain returns without waiting (zero pending tasks).
+A successful final return from a non-interactive run MUST still require zero pending
+tasks for that session and consumption of newly committed reports/input. An early
+`struct_output` MUST NOT bypass this guarantee. After processing a report, the model
+may perform independent work, stop a watch it no longer needs, or yield again. The
+pending set SHALL be checked again on subsequent terminal turns, including tasks
+spawned in later cycles. Cancellation, turn-budget exhaustion and other run failures
+can stop observation with tasks still pending; they MUST NOT be described as success.
 
-The progress log is observability only. It MUST NOT terminate, shorten, or otherwise
-influence the wait, and a future reader MUST NOT mistake the interval timer for a
-deadline.
+Foreground sleep interception remains a separate compatibility guard. When the
+session or its direct children have pending non-monitor tasks, a foreground bash
+command beginning with a wall-clock wait SHALL be redirected to `WaitForActiveTasks`
+with `ScopeSessionAndChildren`, as defined in `bash-background-mode`. That primitive
+waits for all tasks in its snapshot to terminate. It MUST NOT be confused with the
+first-report wait used by `yield` and natural non-interactive terminal turns.
+
+Report waits MUST use the surrounding `ctx` as their deadline, with no additional
+internal timeout. Flow callers derive that context from `Step.Timeout` or
+`OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT` (see `flow-runtime-resume`). Stall
+detection SHALL continue alongside the wait and MAY terminate stalled task-kind
+subagents as defined in `background-task-stall-detection`; it MUST NOT treat a silent
+monitor as stalled. Periodic progress logs SHALL name still-pending tasks by ID, kind
+and age without imposing a deadline. No progress log is needed for an immediate return.
 
 #### Scenario: Flow step waits for background bash before returning struct_output
 
-- **WHEN** a flow step invokes `agent.RunWith(..., RunOptions{NonInteractive: true})`
-- **AND** the model calls `bash` with `run_in_background: true` mid-turn
-- **AND** the model then emits `struct_output` for the step
-- **THEN** `agent.RunWith` MUST NOT return immediately
-- **AND** the runtime MUST wait for the background bash subprocess to exit and write its synthetic completion pair into the session
-- **AND** the runtime MUST re-enter the agentic loop so the model can observe the synthetic Tool result
-- **AND** the `AgentEvent.StructOutput` returned to the flow runner MUST reflect the model's response generated AFTER the synthetic completion arrived
+- **WHEN** a non-interactive flow step starts background bash and emits an early `struct_output`
+- **THEN** the run MUST NOT return successfully while that bash remains pending
+- **AND** its completion report MUST resume generation so the model can incorporate the result
+- **AND** the final output delivered to the flow runner MUST reflect the response after the completion report
+
+#### Scenario: One task reports while another remains active
+
+- **GIVEN** two background tasks are pending when the model emits a natural `end_turn`
+- **WHEN** one task commits a completion report
+- **THEN** the run MUST resume the model with that report while the other task remains running
+- **AND** a later successful final return MUST still require the other task to finish or be stopped
+
+#### Scenario: Monitor event wakes before subprocess exit
+
+- **GIVEN** a flow run is waiting on a streaming monitor
+- **WHEN** a non-terminal monitor-event pair commits
+- **THEN** the run MUST resume with the report while the monitor remains `running`
+- **AND** it MUST NOT kill the monitor merely to wake the model
+
+#### Scenario: Queued user input wakes a flow wait
+
+- **GIVEN** an interactive flow step is running with `NonInteractive: true` and a pending task
+- **WHEN** reviewer input enters its session inbox while generation is suspended
+- **THEN** the existing run MUST resume with that input without waiting for task completion
+- **AND** it MUST retain the step's agent, tools and output schema
+
+#### Scenario: Report races with entry into the wait
+
+- **WHEN** a report commits before or during the wait's history/pending checks
+- **THEN** the runtime MUST observe it from durable history or the subscribed session channel
+- **AND** it MUST NOT require a second report to wake
 
 #### Scenario: Model attempts to self-poll with sleep while tasks pending
 
-- **GIVEN** a non-interactive flow step has spawned one or more `task async` subagents that are still running
-- **WHEN** the model, instead of emitting a terminal turn, issues a foreground `bash` command whose sole effect is `sleep N` (optionally followed by an `echo`)
-- **THEN** the runtime MUST NOT execute the sleep
-- **AND** the runtime MUST instead wait for the pending background tasks to reach terminal state (bounded by the surrounding `ctx`)
-- **AND** the tool result returned to the model MUST summarize the tasks that completed during the wait
-- **AND** no foreground process SHALL consume the requested sleep duration
+- **GIVEN** a non-interactive flow step has pending non-monitor tasks
+- **WHEN** the model issues foreground `bash sleep N` with an optional trailer
+- **THEN** the runtime MUST redirect the sleep to the snapshot terminal-task wait
+- **AND** the result MUST describe the completed tasks and run any permitted trailer after waiting
 
-#### Scenario: Drain covers tasks spawned across multiple turns
+#### Scenario: Tasks spawned across multiple cycles remain pending
 
-- **GIVEN** a non-interactive step's agent spawns a first wave of async subagents, then in a later cycle spawns a second wave
-- **WHEN** the runtime enters the end-of-turn wait after the first wave and that wave completes
-- **THEN** the runtime MUST re-check pending tasks and observe the second wave
-- **AND** the runtime MUST wait again until the session has zero pending tasks or `ctx` is cancelled
-- **AND** `agent.RunWith` MUST NOT return while any spawned task for the session is still running
+- **GIVEN** a run processes a first report and then spawns additional background work
+- **WHEN** the model next ends its turn
+- **THEN** the runtime MUST re-check the current pending set
+- **AND** it MUST NOT return successfully while any exact-session task remains pending
 
-#### Scenario: Flow step waits for monitor with max_events to terminate
+#### Scenario: Event cap does not bypass final completion
 
-- **WHEN** a flow step's agent spawns `monitor` with `max_events: 1` pattern matching an expected event
-- **AND** the agent emits `struct_output`
-- **THEN** the runtime MUST wait until the monitor reaches a terminal state (event matched + max_events triggers SIGTERM, OR subprocess exits naturally, OR taskstop)
-- **AND** the final struct_output delivered to the flow runner MUST reflect the post-monitor-completion response
+- **WHEN** a flow step starts a monitor with `max_events: 1` and yields
+- **THEN** its monitor-event MAY wake the model before the terminal report
+- **AND** final success MUST still wait for no pending tasks and consumption of the terminal report
 
-#### Scenario: Interactive agent.Run is unaffected
+#### Scenario: Interactive run releases instead of holding
 
-- **WHEN** `agent.Run` is invoked (the original 4-arg form, or `RunWith` with `NonInteractive: false`)
-- **AND** the model spawns a background bash task
-- **AND** the model then emits `end_turn`
-- **THEN** `agent.Run` MUST return as today (synchronously after the inner agentic loop exits)
-- **AND** a foreground `bash sleep` MUST execute normally (no anti-spin redirection)
-- **AND** the background task's eventual synthetic completion MUST trigger a fresh `agent.Run` via `task.deps.ResumeSession` as today
+- **GIVEN** a TUI or bridge run uses `NonInteractive: false` and has pending background work
+- **WHEN** the model emits `end_turn` or calls `yield`
+- **THEN** the run SHALL release its session slot
+- **AND** user input can start a new turn
+- **AND** a later background report SHALL use the existing idle auto-resume path
+- **AND** foreground sleep SHALL retain its existing interactive behavior
 
-#### Scenario: Wait respects the surrounding context deadline
+#### Scenario: Context deadline bounds a natural end-of-turn wait
 
-- **GIVEN** the caller passes a context with a 30-second deadline (e.g. `flow.Service` wrapped step.Timeout)
-- **WHEN** the background task is still running at the 30-second mark
-- **THEN** the wait MUST unblock with `ctx.Err()`
-- **AND** the runtime MUST inject a synthetic Assistant timeout note into the session log
-- **AND** the outer agentic loop MUST break
-- **AND** `agent.RunWith` MUST return the latest `AgentEvent` (the pre-wait terminal turn)
+- **GIVEN** the run has a context deadline and pending tasks
+- **WHEN** that context expires during a natural end-of-turn wait
+- **THEN** the runtime MUST record the synthetic wait-timeout note for the pending tasks
+- **AND** stop waiting with the latest `AgentEvent`, without claiming those tasks succeeded
 
-#### Scenario: Long drain is observable in the log
+#### Scenario: Progress logs do not bound the wait
 
-- **GIVEN** a non-interactive step's agent has emitted its terminal turn with one
-  background task still running
-- **WHEN** the task remains running for several multiples of the progress interval
-- **THEN** the process log contains repeated progress entries naming that task's
-  `task_id`, `Kind`, and age
-- **AND** the drain does not return until the task reaches a terminal state or `ctx` is
-  cancelled
+- **GIVEN** a pending task has produced no report or inbox input for several progress intervals
+- **AND** the surrounding context has no deadline
+- **THEN** the wait SHALL keep logging the pending task's ID, kind and age
+- **AND** logging SHALL NOT end the wait
 
-#### Scenario: Progress log does not bound the wait
+#### Scenario: Stalled subagent reports while other tasks remain active
 
-- **GIVEN** a non-interactive drain is waiting on a task that never terminates
-- **AND** the surrounding `ctx` has no deadline
-- **WHEN** many progress intervals elapse
-- **THEN** the drain is still waiting
-- **AND** no timeout has been imposed by the drain itself
+- **GIVEN** one task-kind subagent has exceeded `backgroundTasks.stallThreshold`
+- **WHEN** stall handling terminates it and writes its completion report
+- **THEN** the report SHALL wake the model without requiring other active tasks to terminate
 
-#### Scenario: No progress log when nothing is pending
+#### Scenario: Healthy silent monitor keeps waiting
 
-- **WHEN** the drain is entered for a session with zero pending background tasks
-- **THEN** it returns immediately
-- **AND** no progress entry is logged
-
-#### Scenario: A stalled subagent task ends the hold without ctx cancellation
-
-- **GIVEN** a non-interactive step whose agent has emitted an accepted
-  `struct_output`
-- **AND** one pending `task`-kind entry that has made no progress for longer
-  than `backgroundTasks.stallThreshold`
-- **WHEN** the task is terminated as stalled
-- **THEN** the drain returns because every pending task is terminal, not because
-  `ctx` was cancelled
-- **AND** the outer loop re-enters the agentic loop as it does for any other
-  terminal task
-
-#### Scenario: An exempt pending task still holds the turn indefinitely
-
-- **GIVEN** stall detection is enabled
-- **AND** the only pending task is a `monitor` whose pattern has not matched
-- **AND** the surrounding `ctx` has no deadline
-- **THEN** the wait does not return until that monitor reaches a terminal state
-- **AND** the drain imposes no deadline of its own upon it
+- **GIVEN** the only pending task is a monitor whose pattern has not matched
+- **AND** there is no inbox input or context deadline
+- **THEN** the runtime SHALL keep waiting for a report or user input
+- **AND** silence SHALL NOT trigger stall termination
 
 ### Requirement: Task registry exposes a wait primitive
 
@@ -281,6 +307,23 @@ The wait MUST use snapshot-at-start semantics: tasks registered AFTER the wait b
 - **WHEN** `WaitForActiveTasks(ctx, "A", WaitOptions{Scope: ScopeSessionAndChildren})` is called
 - **THEN** `B`'s task MUST NOT be included in the wait set
 
+### Requirement: Registry exposes exact-session report notifications
+
+The registry SHALL expose `WatchSession(sessionID) <-chan struct{}` and
+`NotifySession(sessionID)`. Notification SHALL wake all current subscribers for
+exactly that session; a new subscription SHALL wait for the next notification.
+Consumers MUST subscribe before inspecting durable history and pending work.
+These channels are wake signals; committed messages remain the source of report
+content. They SHALL wake on non-terminal monitor events as well as completions.
+`WaitForActiveTasks` SHALL retain its separate snapshot terminal-state semantics.
+
+#### Scenario: Watcher wakes on an intermediate report
+
+- **GIVEN** a session watcher was installed before a monitor spawned
+- **WHEN** the monitor commits an event without exiting
+- **THEN** the watcher SHALL wake while the task remains pending
+- **AND** watchers of another session SHALL remain blocked
+
 ### Requirement: Synthetic Assistant timeout note on wait cancellation
 
 When the non-interactive wait returns `ctx.Err()` (the surrounding ctx was cancelled or its deadline elapsed) AND there are still tasks pending, the runtime SHALL inject a synthetic Assistant message into the session message log BEFORE breaking the outer agentic loop. The message has Role=`Assistant`, Parts=`[TextContent]`, and `Synthetic: true`.
@@ -316,7 +359,7 @@ This is defense-in-depth: the anti-spin enforcement (see the hold-the-turn requi
 - **WHEN** the `task async` ack is returned to the parent agent
 - **THEN** the ack MAY include the `output_file` path for resume/inspection semantics
 - **AND** the ack MUST NOT instruct or imply that the agent should read the output file to poll for progress
-- **AND** the ack MUST state that in a non-interactive step the runtime holds the turn until the subagent completes
+- **AND** the ack MUST direct the idle agent to `yield` alone and explain that reports arrive automatically
 
 ### Requirement: Registry exposes a session-and-children scoped pending lookup
 
@@ -348,7 +391,7 @@ subagent the two differ, and stamping the root would reintroduce the flow-wide s
 requirement rejects. An implementation that omits this plumbing degrades the lookup to
 exact scope silently; a test MUST cover the plumbing, not only the registry method.
 
-Introducing this lookup MUST NOT change the drain's scope or behavior.
+Introducing this lookup MUST NOT widen the exact-session report wait or final pending check.
 
 #### Scenario: Lookup spans parent and its direct child sessions
 

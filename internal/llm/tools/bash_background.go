@@ -84,7 +84,7 @@ func (b *bashTool) runBackground(ctx context.Context, call ToolCall, params Bash
 		notice = "\n(timeout parameter is ignored in background mode)"
 	}
 	body := fmt.Sprintf(
-		"Background task started.\ntask_id: %s\noutput_file: %s\ncommand: %s%s\n\nThe task is running. A synthetic tool result with the final output will arrive automatically when it completes — do NOT poll and do NOT sleep while waiting. In a non-interactive (flow) step the runtime holds the turn open until the task reaches a terminal state, so sleeping cannot observe progress sooner. The output_file holds the full output once the task finishes. Use `tasklist` for a one-shot inventory query and `taskstop` to kill.",
+		"Background task started.\ntask_id: %s\noutput_file: %s\ncommand: %s%s\n\nThe task is running. A synthetic tool result with the final output will arrive automatically when it completes — do NOT poll and do NOT sleep while waiting. Continue independent work; when idle, call `yield` alone if available, otherwise end your turn without claiming success. A flow waits for reports inside the run; interactive sessions resume automatically on completion. The output_file holds the full output once the task finishes. Use `tasklist` for a one-shot inventory query and `taskstop` to kill.",
 		taskID,
 		outputPath,
 		truncateCommand(params.Command),

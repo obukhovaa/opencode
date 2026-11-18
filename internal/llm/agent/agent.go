@@ -872,9 +872,9 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 		// busy lock is released. The global slot is registered FIRST so
 		// it releases LAST — the instance-map entry never outlives it.
 		// Only afterRelease is registered before it, so it runs once the
-		// slot is free: a background-task completion that arrived while the
-		// post-turn compaction held the session skipped its auto-resume,
-		// and afterRelease starts it.
+		// slot is free: an unobserved completion arriving as an interactive
+		// turn yields or compacts skipped auto-resume while busy, and
+		// afterRelease starts it.
 		var afterRelease func()
 		defer func() {
 			if afterRelease != nil {
@@ -896,6 +896,7 @@ func (a *agent) RunWith(ctx context.Context, sessionID string, content string, m
 			attachmentParts = append(attachmentParts, message.BinaryContent{Path: attachment.FilePath, MIMEType: attachment.MimeType, Data: attachment.Content})
 		}
 
+		genCtx = context.WithValue(genCtx, tools.NonInteractiveContextKey, opts.NonInteractive)
 		result := a.processGeneration(genCtx, sessionID, content, maxTurnsOverride, attachmentParts, opts)
 		gauge := time.Since(now).Milliseconds()
 		if result.Error != nil {
@@ -930,6 +931,8 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	if err != nil {
 		return a.err(fmt.Errorf("failed to list messages: %w", err))
 	}
+	seenBackground := make(map[string]bool, len(msgs))
+	rememberMessages(seenBackground, msgs)
 	if len(msgs) == 0 && a.titleWanted(sessionID) {
 		titleContent := content
 		// Detached from the turn so it outlives it, but the title trace is
@@ -1122,9 +1125,9 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	var compactionSeen compactionObservation
 	defer func() { result.compactionSeen = compactionSeen }()
 	observeCompactionInput := func() {
-		if a.selfCompact.Enabled {
-			compactionSeen.observe(msgHistory)
-		}
+		// Also needed for interactive completion handoff without selfCompact:
+		// an already observed report must not trigger a duplicate resume.
+		compactionSeen.observe(msgHistory)
 	}
 	if hasUserTurn {
 		msgHistory = a.withPeerAttribution(ctx, sessionID, msgHistory)
@@ -1145,7 +1148,7 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	// preserveTail is set: the last cycle's assistant message, its tool
 	// results, and any reviewer input drained after them.
 	var preservedTail []message.Message
-	// structOutputReopened is set when reviewer input arrived after an
+	// structOutputReopened is set when reviewer input or a report arrived after an
 	// accepted struct_output and the run took another cycle for it. From
 	// then on only a struct_output emitted in the current turn finishes the
 	// run early; otherwise the model works until it ends its turn, and the
@@ -1221,6 +1224,8 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 			msgHistory = append(msgs, resumeTail...)
 		}
 
+		rememberMessages(seenBackground, msgHistory)
+
 		// Re-count against the same effective threshold that triggered
 		// this compaction so the log reflects the step's configured
 		// gate, not the global default.
@@ -1263,6 +1268,8 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 	outerCycles := 0
 OuterLoop:
 	for {
+		explicitYield := false
+		yieldReady := false
 		outerCycles++
 		if outerCycles > effectiveMaxTurns {
 			// Outer-cycle budget exhausted. Bare drain re-waits do not
@@ -1567,6 +1574,13 @@ OuterLoop:
 				msgHistory = append(msgHistory, agentMessage, *toolResults)
 				preservedTail = []message.Message{agentMessage, *toolResults}
 
+				var reports []message.Message
+				msgHistory, reports = a.appendBackgroundReports(ctx, sessionID, msgHistory, seenBackground)
+				preservedTail = append(preservedTail, reports...)
+				if len(reports) > 0 {
+					tracker.Reset()
+				}
+
 				// Reviewer input that reached an interactive step's inbox
 				// while this turn ran follows the tool results as user
 				// messages, so the next model call reads it. Nothing is
@@ -1578,6 +1592,18 @@ OuterLoop:
 				}
 				msgHistory = append(msgHistory, drained...)
 				preservedTail = append(preservedTail, drained...)
+
+				if yielded(toolResults) {
+					explicitYield = true
+					yieldReady = len(reports) > 0 || len(drained) > 0
+					reg := task.GlobalRegistry()
+					if !opts.NonInteractive && (yieldReady || reg == nil || len(reg.PendingForSession(sessionID, nil)) == 0) {
+						preserveTail = true
+						continue
+					}
+					finalResult = AgentEvent{Type: AgentEventTypeResponse, Message: agentMessage, StructOutput: structOutput, Done: true}
+					break
+				}
 
 				// struct_output is contractually the model's terminal tool call:
 				// the accepted result IS the run's output and nothing downstream
@@ -1597,17 +1623,35 @@ OuterLoop:
 				// through this same branch. Bounded by effectiveMaxTurns like
 				// any other cycle.
 				_, structThisTurn := toolResults.StructOutput()
-				if structOutput != nil && !structOutputIsErr && len(drained) > 0 {
-					// The reviewer spoke after (or while) the output was
+				if structOutput != nil && !structOutputIsErr && (len(drained) > 0 || len(reports) > 0) {
+					// Reviewer input or a report arrived after (or while) the output was
 					// produced: give the model another cycle to read it.
 					// max_turns bounds how often this can happen.
-					logging.Info("struct_output accepted but reviewer input arrived — reopening the run", "session_id", sessionID, "cycle", cycles, "messages", len(drained))
+					logging.Info("struct_output accepted but new input arrived — reopening the run", "session_id", sessionID, "cycle", cycles, "messages", len(drained)+len(reports))
 					structOutputReopened = true
 				} else if structOutput != nil && !structOutputIsErr && (!structOutputReopened || structThisTurn) {
 					pendingTasks := 0
 					if opts.NonInteractive {
 						if reg := task.GlobalRegistry(); reg != nil {
 							pendingTasks = len(reg.PendingForSession(sessionID, nil))
+						}
+					}
+					if pendingTasks == 0 && opts.NonInteractive {
+						// The last task may have completed between the report
+						// scan above and this pending check. Its pair is durable
+						// before MarkFinished: read again before accepting output.
+						late, err := a.backgroundMessages(ctx, sessionID, seenBackground)
+						if err != nil {
+							return a.err(fmt.Errorf("read final background reports: %w", err))
+						}
+						if len(late) > 0 {
+							rememberMessages(seenBackground, late)
+							msgHistory = append(msgHistory, late...)
+							preservedTail = append(preservedTail, late...)
+							structOutputReopened = true
+							preserveTail = true
+							tracker.Reset()
+							continue
 						}
 					}
 					if pendingTasks == 0 {
@@ -1649,77 +1693,57 @@ OuterLoop:
 			}
 			break
 		}
-		// Inner agentic loop has produced a natural terminal turn.
-		// In interactive mode we return directly. In non-interactive mode,
-		// check for pending background tasks the model spawned this turn
-		// and wait for them (bounded by ctx) before re-entering the inner
-		// loop so the model can react to the synthetic completion(s)
-		// within this same RunWith invocation.
+		// Interactive sessions release the slot on yield, allowing chat/TUI
+		// user queues to run; reports use the existing idle auto-resume path.
+		// Flow runs keep the slot and wait in place under the step's agent.
 		if !opts.NonInteractive {
 			break OuterLoop
 		}
+		if !explicitYield {
+			msgHistory = append(msgHistory, agentMessage)
+		}
 		reg := task.GlobalRegistry()
-		if reg == nil {
+		hadPending := reg != nil && len(reg.PendingForSession(sessionID, nil)) > 0
+		var fresh []message.Message
+		var waitErr error
+		if !yieldReady {
+			fresh, waitErr = a.waitForBackgroundReport(ctx, reg, sessionID, seenBackground)
+		}
+		if waitErr != nil {
+			if reg != nil {
+				a.injectWaitTimeoutNote(ctx, sessionID, reg.PendingForSession(sessionID, nil), waitErr)
+			}
+			if explicitYield {
+				return a.err(waitErr)
+			}
 			break OuterLoop
 		}
-		pending := reg.PendingForSession(sessionID, nil)
-		if len(pending) == 0 {
+		drained := a.drainInbox(ctx, sessionID)
+		if !explicitYield && !hadPending && len(fresh) == 0 && len(drained) == 0 {
 			break OuterLoop
 		}
-		logging.Info(
-			"Non-interactive turn complete with pending background tasks; waiting before re-cycling",
-			"session_id", sessionID,
-			"pending_count", len(pending),
-			"outer_cycle", outerCycles,
-		)
-		if err := drainSessionTasks(ctx, reg, sessionID, a.stallPolicy()); err != nil {
-			// ctx cancelled (timeout or upstream cancel). Inject the
-			// synthetic Assistant timeout note enumerating still-
-			// pending tasks so any subsequent agent.Run on this
-			// session sees the reason and avoids re-spawning the
-			// same dead-end work.
-			stillPending := reg.PendingForSession(sessionID, nil)
-			a.injectWaitTimeoutNote(ctx, sessionID, stillPending, err)
-			logging.Warn(
-				"Non-interactive wait did not complete cleanly",
-				"session_id", sessionID,
-				"err", err,
-				"still_pending", len(stillPending),
-			)
-			break OuterLoop
+		rememberMessages(seenBackground, fresh)
+		msgHistory = append(msgHistory, fresh...)
+		msgHistory = append(msgHistory, drained...)
+		// The next call may compact immediately. Preserve every newly
+		// delivered report and reviewer message verbatim after its summary.
+		if len(fresh)+len(drained) > 0 {
+			if !yieldReady {
+				preservedTail = nil
+			}
+			preservedTail = append(append(preservedTail, fresh...), drained...)
+			preserveTail = true
+		} else {
+			// A report delivered alongside yield is already in preservedTail.
+			preserveTail = yieldReady
 		}
-		// Wait completed. Synthetic completions are in the log on the normal
-		// path (EnqueueTaskCompletion writes the pair before MarkFinished), but
-		// NOT necessarily after a kill: Registry.Kill signals done before it
-		// cancels, so the pair may still be in flight. The reload below can
-		// therefore see nothing new and cost one extra cycle; struct_output
-		// survives regardless (declared outside OuterLoop).
-		// Reload, filter the empty-user-turn corruption, and let the
-		// inner loop run another cycle so the model can react.
-		freshMsgs, listErr := a.messages.List(ctx, sessionID)
-		if listErr != nil {
-			logging.Warn(
-				"Failed to reload messages after non-interactive wait; returning pre-wait result",
-				"session_id", sessionID,
-				"err", listErr,
-			)
-			break OuterLoop
+		if structOutput != nil && !structOutputIsErr && (preserveTail || yieldReady) {
+			structOutputReopened = true
 		}
-		if session.SummaryMessageID != "" {
-			freshMsgs = a.filterMessagesFromSummary(freshMsgs, session.SummaryMessageID)
-		}
-		freshMsgs = filterEmptyUserMessages(freshMsgs)
-		msgs = freshMsgs
-		msgHistory = msgs
-		// Reset inner-loop bookkeeping for the next cycle. hasUserTurn
-		// MUST flip to false: the original userMsg is already part of
-		// the reloaded `msgs` (persisted before the first outer cycle).
-		// Leaving hasUserTurn=true would make the auto-compaction reload
-		// path inside the inner loop re-append userMsg to msgs, creating
-		// a duplicate user turn on the second-and-later outer iterations
-		// whenever compaction triggers.
+		msgs = msgHistory
+		rememberMessages(seenBackground, msgHistory)
+		tracker.Reset()
 		cycles = 0
-		preserveTail = false
 		hasUserTurn = false
 	}
 	return finalResult

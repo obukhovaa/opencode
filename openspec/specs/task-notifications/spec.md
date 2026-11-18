@@ -46,7 +46,7 @@ The system SHALL persist a `synthetic` boolean column on the `messages` table, d
 
 #### Scenario: Background completion is flagged
 - **WHEN** `EnqueueTaskCompletion` writes its synthetic pair
-- **THEN** the Assistant message has `synthetic = true`; the Tool message MAY also carry the flag for symmetry
+- **THEN** the Assistant message has `synthetic = true`; the Tool message MUST also carry the flag
 
 #### Scenario: Flag is queryable
 - **WHEN** a consumer (transcript exporter, bridge filter, debug query) reads messages from the DB
@@ -61,7 +61,7 @@ If the target session is idle (no in-flight `agent.Run` on ANY agent instance �
 
 #### Scenario: Busy session is NOT re-triggered
 - **WHEN** a background monitor fires a `monitor-event` while an `agent.Run` is in-flight on the bound session — on ANY agent instance, including a per-step flow agent the primary instance never sees
-- **THEN** `EnqueueTaskCompletion` writes the synthetic pair but DOES NOT start a new `agent.Run`; the in-flight run's next message-list refresh observes the new pair naturally on its next iteration
+- **THEN** `EnqueueTaskCompletion` writes the synthetic pair but DOES NOT start a new `agent.Run`; the in-flight run consumes the pair after its current tool batch, or wakes from its non-interactive report wait
 
 #### Scenario: Cron preserves its own busy-skip logic
 - **WHEN** cron's scheduler invokes `EnqueueTaskCompletion` after the cron's existing session-busy check passed
@@ -90,40 +90,60 @@ If two terminal calls to `EnqueueTaskCompletion` race for the same task ID (e.g.
 - **WHEN** `taskstop` calls Kill while the subprocess is in the act of exiting; both code paths reach `EnqueueTaskCompletion` near-simultaneously
 - **THEN** exactly one synthetic pair appears in the message log; the second call observes `notified == true` and returns silently
 
-### Requirement: `task.deps.ResumeSession` is naturally suppressed during a non-interactive wait
+### Requirement: Commit reports before waking the session
 
-`task.EnqueueTaskCompletion` SHALL continue to call `deps.ResumeSession(sessionID)` after writing the synthetic Assistant + Tool pair, IF AND ONLY IF the completed task is not flow-owned AND `deps.IsSessionBusy(sessionID)` returns false. The non-interactive end-of-turn wait MUST NOT introduce any new suppression logic — the existing `IsSessionBusy` check naturally returns true because:
+After successfully committing a synthetic pair, `EnqueueTaskCompletion` SHALL signal
+`Registry.NotifySession(sessionID)`. A terminal report SHALL also make its terminal
+registry state visible before signaling. A monitor-event SHALL signal while leaving
+the task `running` and its terminal `notified` flag unchanged. A failed pair write
+MUST NOT publish a report wakeup. Watchers SHALL be scoped to the exact session.
 
-1. The non-interactive `agent.RunWith` invocation that called the model is still in progress. Its goroutine holds the session's slot in the PROCESS-GLOBAL session-run ledger (`session-run-exclusivity`) from the moment `Run` was called until the goroutine returns — so the answer is true regardless of which agent instance `deps` consults.
-2. The end-of-turn wait happens INSIDE that same goroutine, between the inner agentic loop's exit and the goroutine's eventual return.
-3. While the wait is in progress, any background task that completes invokes `EnqueueTaskCompletion`, which observes `IsSessionBusy=true` and skips `ResumeSession`.
-4. The synthetic Assistant + Tool pair is still committed to the message log atomically.
-5. The in-flight `agent.RunWith` reloads the message history on its next outer-loop cycle and consumes the synthetic pair as input for the model's next call.
+#### Scenario: SQLite event is readable immediately on wake
 
-This means there is exactly ONE `agent.Run`-like invocation observing the synthetic completion in non-interactive mode — the original one. No parallel goroutine, no race — and unlike the per-instance ledger this guarantee holds when the busy observer and the run owner are different agent instances.
+- **GIVEN** a caller subscribes to `Registry.WatchSession` before spawning a monitor
+- **AND** the monitor emits a matched line then blocks on a sandbox release file
+- **WHEN** the session notification wakes the caller
+- **THEN** an immediate SQLite read MUST observe both synthetic messages, linked by tool-call ID
+- **AND** the monitor MUST still be running with no terminal notification
+- **AND** releasing the file SHALL allow the normal terminal completion to follow
 
-#### Scenario: Background task completing during a non-interactive wait does NOT spawn a parallel Run
+### Requirement: Active non-interactive waits consume reports in the owning run
 
-- **GIVEN** a non-interactive `agent.RunWith` is waiting for a background bash task at the end of its first inner agentic cycle
-- **WHEN** the bash subprocess exits and `bashWaitAndNotify` calls `EnqueueTaskCompletion`
-- **THEN** `EnqueueTaskCompletion` MUST call `deps.IsSessionBusy(sessionID)` and observe `true` — even when `deps` resolves through an agent instance other than the one running the step
-- **AND** `deps.ResumeSession` MUST NOT be called
-- **AND** the synthetic pair MUST be written to the session
-- **AND** the original `agent.RunWith` goroutine's wait MUST unblock and re-enter the agentic loop, picking up the synthetic pair from the reloaded message history
+A non-interactive report wait SHALL retain the session's process-global run slot.
+`EnqueueTaskCompletion` MUST NOT start a parallel run while any instance owns that
+slot. The owning run SHALL wake on the first report or queued user input and consume
+reports at complete tool-batch boundaries, rather than waiting for every task to end.
+This includes interactive flow steps, which use `NonInteractive: true`.
 
-#### Scenario: Background task completing in interactive mode still auto-resumes (unchanged)
+TUI and bridge `yield` instead release their run slot like a normal `end_turn`.
+Subsequent reports SHALL use the existing idle auto-resume path to continue the same
+session. A report racing with release MUST remain eligible for consumption or resume;
+yielding MUST NOT strand it.
 
-- **GIVEN** a TUI agent.Run has returned and the session is idle (no slot held in the global ledger)
-- **WHEN** a background task spawned earlier in that session (outside any flow step) completes
-- **THEN** `EnqueueTaskCompletion` MUST observe `IsSessionBusy=false`
-- **AND** `deps.ResumeSession` MUST start a fresh `agent.Run` on the session
-- **AND** the new assistant message MUST publish to the message broker as today
+#### Scenario: Flow wait does not spawn a parallel Run
+
+- **GIVEN** a flow run is waiting after `yield` or a natural terminal turn
+- **WHEN** a monitor-event commits while its process remains active
+- **THEN** the owning run MUST wake with the report
+- **AND** no separate `ResumeSession` run SHALL start
+
+#### Scenario: Interactive yield releases and later resumes
+
+- **GIVEN** a TUI or bridge run calls `yield` with background work still active
+- **WHEN** the run releases its session slot
+- **THEN** user input can start a turn immediately
+- **AND** a later report for a non-flow-owned task SHALL auto-resume the idle session
 
 ### Requirement: Flow-owned tasks never auto-resume
 
 A background task spawned under a flow step's step-scoped context (`tools.StepScopedContextKey` present at spawn time — async task subagents, background bash, monitor) SHALL be marked flow-owned (`task.Task.FlowOwned`). `EnqueueTaskCompletion` SHALL NOT call `deps.ResumeSession` for a flow-owned task's completion — regardless of the session's busy state. Everything else about the completion is unchanged: the synthetic pair is written, terminal statuses transition the registry state and honor the `notified` CAS, and monitor-events remain non-terminal.
 
-Rationale: while the owning step's Run is in flight, the step's own outer loop is the sanctioned reaction mechanism — it blocks in `WaitForActiveTasks` until the pending set is empty, then reloads the message history and re-enters the inner agentic loop for a further model cycle with the synthetic pairs in context. That cycle runs under the step's agent with the step's tools and `output.schema`; `ResumeSession` resolves through the active/primary agent and cannot. After the step has ended, the flow has already routed on the step's result — an auto-resume would start a zombie turn on a completed step's session, and (sessions record no owning agent) it would run under the active/primary agent rather than the step's agent (GENAI-239).
+While the owning step's run is active, it consumes reports at tool-batch boundaries
+and waits for the first report or inbox message when idle. A monitor event can wake
+it while its process runs. This preserves the step's agent, tools and output schema.
+`ResumeSession` resolves through the active/primary agent and cannot substitute for
+that run. After the step has routed, an auto-resume would start an unrelated turn on
+the completed step's session (GENAI-239).
 
 A flow-owned task that outlives its step (a detached `bash`/`monitor` subprocess when the step's Run exits on a timeout or turn-budget exhaustion) therefore has NO consumer for its completion. This is accepted: the pair is still written and remains visible to the transcript, `tasklist`, and any later iteration of the step, and the runtime's wait-timeout note already enumerates the abandoned tasks. The alternative is the zombie turn above.
 
@@ -136,7 +156,7 @@ A flow-owned task that outlives its step (a detached `bash`/`monitor` subprocess
 #### Scenario: Flow-owned monitor event
 
 - **WHEN** a monitor spawned under a step-scoped context fires a `monitor-event` completion
-- **THEN** the pair is written and `deps.ResumeSession` is NOT called; an in-flight step run observes the pair via its normal history reload
+- **THEN** the pair is written and `deps.ResumeSession` is NOT called; an in-flight step run consumes the pair after its current tool batch or wakes from its report wait
 
 #### Scenario: Non-flow spawns keep today's behavior
 

@@ -10,9 +10,8 @@ import (
 	"github.com/opencode-ai/opencode/internal/task"
 )
 
-// The monitor ack states the yield contract (do NOT sleep; a flow step
-// holds the turn open) and a silent monitor's scanned-line count is
-// visible through tasklist (openspec monitor-tool).
+// The ack directs idle agents to yield alone. Scanned lines remain
+// available for explicit diagnostics without encouraging polling.
 func TestMonitor_AckYieldContractAndScannedLines(t *testing.T) {
 	_, cleanup := setupBashBgFixture(t)
 	defer cleanup()
@@ -25,9 +24,14 @@ func TestMonitor_AckYieldContractAndScannedLines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"do NOT sleep", "holds the turn open", "ending your turn", "tasklist"} {
+	for _, want := range []string{"task_id:", "output_file:", "cmd:", "pattern:", "min_interval_ms:", "max_events:", "call `yield` alone to wait", "do NOT sleep", "independent work", "Silence is healthy"} {
 		if !strings.Contains(resp.Content, want) {
 			t.Errorf("ack lacks %q:\n%s", want, resp.Content)
+		}
+	}
+	for _, unwanted := range []string{"taskstop", "tasklist", "ending your turn", "holds the turn open"} {
+		if strings.Contains(resp.Content, unwanted) {
+			t.Errorf("ack contains outdated guidance %q:\n%s", unwanted, resp.Content)
 		}
 	}
 	m := regexp.MustCompile(`task_id: (monitor_[A-Z2-7]+)`).FindStringSubmatch(resp.Content)

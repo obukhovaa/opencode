@@ -372,6 +372,11 @@ func ExtractPathsFromCall(call ToolCall) []string {
 		}
 		paths := diff.IdentifyFilesNeeded(params.PatchText)
 		paths = append(paths, diff.IdentifyFilesAdded(params.PatchText)...)
+		for _, line := range strings.Split(params.PatchText, "\n") {
+			if destination, ok := strings.CutPrefix(line, "*** Move to: "); ok && destination != "" {
+				paths = append(paths, destination)
+			}
+		}
 		return paths
 	case GlobToolName:
 		// The search path AND the pattern's literal directory prefix: a
@@ -485,12 +490,27 @@ func hasFileConflict(call ToolCall, myPaths []string, allCalls []ToolCall) bool 
 		}
 		otherPaths := ExtractPathsFromCall(other)
 		for _, mp := range myPaths {
+			if call.Name == PatchToolName || other.Name == PatchToolName {
+				for _, op := range otherPaths {
+					if patchConflictPath(mp) == patchConflictPath(op) {
+						return true
+					}
+				}
+				continue
+			}
 			if slices.Contains(otherPaths, mp) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func patchConflictPath(path string) string {
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(config.WorkingDirectory(), path)
+	}
+	return filepath.Clean(path)
 }
 
 // IsSafeReadOnlyCommand reports whether command may skip the bash

@@ -83,7 +83,7 @@ var ReservedNames = map[string]bool{
 	"view_image": true, "webfetch": true, "websearch": true, "sourcegraph": true,
 	"lsp": true, "skill": true, "struct_output": true, "toolsearch": true,
 	"question": true, "todowrite": true, "monitor": true, "tasklist": true,
-	"taskstop": true, "croncreate": true, "crondelete": true, "cronlist": true,
+	"taskstop": true, "yield": true, "croncreate": true, "crondelete": true, "cronlist": true,
 	"router_send": true, "heartbeat": true, "task": true,
 }
 

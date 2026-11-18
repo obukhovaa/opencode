@@ -1,6 +1,6 @@
 // Command background-e2e is a black-box driver that exercises the
 // background-tasks subsystem end-to-end against a sandboxed data
-// directory and an in-memory SQLite session. It mirrors the pattern of
+// directory and an in-process SQLite session. It mirrors the pattern of
 // cmd/hooks-e2e: a small Go entry point invoked from a shell test that
 // produces deterministic JSON output for the script to inspect.
 //
@@ -12,8 +12,9 @@
 //  3. bash run_in_background: spawns `sleep 0.2 && echo hello-bg`,
 //     waits for the synthetic completion pair to land in the messages
 //     table, and verifies the output file lives under the sandbox.
-//  4. monitor: spawns a tiny "echo … sleep … echo" command, asserts the
-//     coalesced monitor-event AND the terminal completion fire.
+//  4. monitor: waits for a session event while the shell is blocked on a
+//     release file, verifies the pair is committed before wake, then
+//     releases the shell and checks its terminal completion.
 //  5. taskstop: spawns a long-running sleep, kills it, asserts the
 //     killed notification arrives.
 //  6. SweepOrphans at boot: registers a stale file then re-sweeps with
@@ -115,6 +116,8 @@ type result struct {
 	MonitorAck               string `json:"monitor_ack"`
 	MonitorEventReceived     bool   `json:"monitor_event_received"`
 	MonitorTerminalStatus    string `json:"monitor_terminal_status"`
+	MonitorWakeBeforeExit    bool   `json:"monitor_wake_before_exit"`
+	MonitorWakePairCommitted bool   `json:"monitor_wake_pair_committed"`
 	TaskListContainsBash     bool   `json:"tasklist_contains_bash"`
 	TaskListCrossSessionLeak bool   `json:"tasklist_cross_session_leak"`
 	TaskStopKilledReceived   bool   `json:"taskstop_killed_received"`
@@ -148,6 +151,7 @@ type result struct {
 	DetachNoTaskCreated bool `json:"detach_no_task_created"`
 	// The monitor ack carries the no-sleep yield contract.
 	MonitorAckNoSleep bool `json:"monitor_ack_no_sleep"`
+	MonitorAckYield   bool `json:"monitor_ack_yield"`
 	// Flow-owned auto-resume suppression (session-run-exclusivity spec):
 	// a task spawned under a step-scoped ctx must NOT auto-resume its idle
 	// session on completion, while a plain spawn still must.
@@ -327,22 +331,77 @@ func main() {
 	}
 
 	// ── 4. monitor ───────────────────────────────────────────────────
-	mTool := tools.NewMonitorToolForTest(perm, agentReg)
-	mResp, mErr := mTool.Run(ctx, tools.ToolCall{
-		ID:    "monitor-call",
-		Input: `{"cmd":"bash","args":["-c","echo INFO; echo ERROR-LINE; sleep 0.05; echo ERROR-LINE-2"],"pattern":"ERROR","min_interval_ms":100,"max_events":20}`,
+	// Isolate this session so an earlier bash/taskstop report cannot wake
+	// this watch. Subscribe before spawn: even a fast first event must not
+	// be lost. The shell cannot exit until we explicitly release it.
+	const monitorSession = "MONITOR"
+	if _, err := conn.Exec(`
+		INSERT INTO sessions (id, project_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at)
+		VALUES ('MONITOR', 'proj', 'monitor wake', 0, 0, 0, 0, strftime('%s','now'), strftime('%s','now'))
+	`); err != nil {
+		die(err)
+	}
+	perm.AutoApproveSession(monitorSession)
+	monitorCtx := context.WithValue(ctx, tools.SessionIDContextKey, monitorSession)
+	releasePath := filepath.Join(abs, ".monitor-release")
+	monitorInput, err := json.Marshal(tools.MonitorParams{
+		Command:       "echo INFO; echo ERROR-LINE; while [ ! -f .monitor-release ]; do sleep 0.02; done; echo ERROR-LINE-2",
+		Cwd:           abs,
+		Pattern:       "ERROR",
+		MinIntervalMs: 100,
+		MaxEvents:     20,
 	})
-	if mErr != nil {
-		res.Errors = append(res.Errors, fmt.Sprintf("monitor: %v", mErr))
+	if err != nil {
+		die(err)
+	}
+	wake := reg.WatchSession(monitorSession)
+	mTool := tools.NewMonitorToolForTest(perm, agentReg)
+	mResp, mErr := mTool.Run(monitorCtx, tools.ToolCall{
+		ID:    "monitor-call",
+		Input: string(monitorInput),
+	})
+	if mErr != nil || mResp.IsError {
+		res.Errors = append(res.Errors, fmt.Sprintf("monitor: %v %s", mErr, mResp.Content))
 	}
 	res.MonitorAckNoSleep = strings.Contains(mResp.Content, "do NOT sleep")
+	res.MonitorAckYield = strings.Contains(mResp.Content, "call `yield` alone to wait")
 	res.MonitorAck = strings.TrimSpace(mResp.Content)
 	monitorTaskID := extractTaskID(mResp.Content)
+
+	if mErr == nil && !mResp.IsError {
+		select {
+		case <-wake:
+			if tk, ok := reg.Get(monitorTaskID); ok {
+				res.MonitorWakeBeforeExit = tk.State() == task.StateRunning && !tk.Notified.Load()
+			}
+			// Read once, immediately after wake. Retrying would hide a
+			// notification sent before the SQLite transaction commits.
+			msgs, err := messages.List(monitorCtx, monitorSession)
+			if err != nil {
+				res.Errors = append(res.Errors, fmt.Sprintf("monitor wake read: %v", err))
+			} else if len(msgs) == 2 && msgs[0].Synthetic && msgs[1].Synthetic &&
+				msgs[0].Role == message.Assistant && msgs[1].Role == message.Tool && msgs[1].Seq == msgs[0].Seq+1 {
+				calls := msgs[0].ToolCalls()
+				results := msgs[1].ToolResults()
+				res.MonitorWakePairCommitted = len(calls) == 1 && len(results) == 1 &&
+					calls[0].Name == "monitor" && results[0].Name == "monitor" && calls[0].ID == results[0].ToolCallID &&
+					strings.Contains(results[0].Content, "1 match(es) in window:\nERROR-LINE")
+			}
+		case <-time.After(5 * time.Second):
+			res.Errors = append(res.Errors, "monitor session watch did not wake before release")
+		}
+	}
+	// Release even after a failed assertion so the sandbox never retains a
+	// running fixture. Only now can the monitor emit its second line and exit.
+	if err := os.WriteFile(releasePath, []byte("release\n"), 0o600); err != nil {
+		res.Errors = append(res.Errors, fmt.Sprintf("monitor release: %v", err))
+		_ = reg.Kill(monitorTaskID)
+	}
 
 	// Wait for monitor-event + terminal completion.
 	deadline = time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		msgs, _ := messages.List(ctx, "SESS")
+		msgs, _ := messages.List(monitorCtx, monitorSession)
 		for _, m := range msgs {
 			if !m.Synthetic {
 				continue

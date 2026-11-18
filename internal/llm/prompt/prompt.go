@@ -25,7 +25,7 @@ const dynamicStructuredOutputPrompt = `
 When the current task requests structured output, follow the active schema in its <struct_output_schema> block (or the tool parameters in schema-in-tool mode), complete the requested work and any necessary user questions, then use struct_output as your final action. Without an active schema, respond normally and do not call struct_output.`
 
 const structuredOutputPrompt = `
-IMPORTANT: The user has requested structured output. You MUST use the struct_output tool to provide your final response. Do NOT respond with plain text - you MUST call the struct_output tool with your answer formatted according to the schema.`
+IMPORTANT: The user has requested structured output. You MUST use the struct_output tool to provide your final response with your answer formatted according to the schema. Waiting for asynchronous work is not a final response: follow the background-task waiting instructions without calling struct_output or inventing a result.`
 
 // interactiveStructuredOutputPromptBase replaces structuredOutputPrompt
 // when the agent is running an `interactive: true` flow step. The
@@ -200,23 +200,45 @@ func peerMentionOrFallback(peer bridge.PeerRef, fallback string) string {
 }
 
 const parallelToolUsePrompt = `
-You can call multiple tools in a single response. When several independent pieces of information are needed and the calls are likely to succeed, batch the tool calls in one response instead of issuing them sequentially.`
+You can call multiple tools in a single response. When several independent pieces of information are needed and the calls are likely to succeed, batch the tool calls in one response instead of issuing them sequentially. Run dependent calls in separate responses after inspecting the earlier result; never guess IDs, paths, or arguments from an unfinished call. Do not batch operations that edit the same files or otherwise conflict. An idle-wait tool call must be made alone.`
 
 // backgroundTasksPrompt is the no-poll contract for background work. It is
 // appended for EVERY agent with tool access — independent of the agent's
 // (possibly custom) base prompt — because the guidance previously lived only
 // in CoderPrompt, which is skipped when info.Prompt is set; custom-prompt
 // flow agents never saw it and busy-waited with foreground sleeps (incident
-// CD-4761). The runtime additionally enforces this contract in
-// non-interactive runs (see openspec background-tasks / bash-background-mode
-// specs); the prompt is defense-in-depth that saves wasted cycles.
+// CD-4761). Tool-specific instructions follow the agent's enabled tools.
 const backgroundTasksPrompt = `
 # Background tasks (event-driven, no polling)
-- For long-running shell work (test suites, builds, deploys, log tails) use ` + "`bash`" + ` with ` + "`run_in_background: true`" + `. It returns immediately with a ` + "`task_id`" + ` and ` + "`output_file`" + `; a synthetic completion notification arrives when the subprocess exits.
-- To fan out parallel sub-work, use the ` + "`task`" + ` tool with ` + "`async: true`" + ` — same ack + completion-notification pattern.
-- To watch a streaming command for specific markers, use ` + "`monitor`" + ` (cmd + pattern); matched lines arrive as coalesced notifications.
-- ` + "`tasklist`" + ` is for one-shot inventory queries — do NOT poll it. ` + "`taskstop`" + ` kills a background task that is no longer useful.
-- DO NOT use ` + "`sleep N`" + ` followed by status checks: polling wastes tokens and invalidates the prompt cache; completions arrive on their own. In non-interactive (flow) runs the runtime holds your turn open until pending background tasks complete and converts a foreground ` + "`sleep`" + ` into that same wait — sleeping can never observe progress sooner.`
+- Continue useful independent work while asynchronous tasks run. Waiting for an event is part of completing the task, not abandoning it or declaring success. Resume from notifications and verify the result before reporting completion.
+- DO NOT use ` + "`sleep N`" + ` followed by status checks, repeated output-file reads, or other polling loops to wait for background work; notifications arrive automatically.`
+
+func backgroundTasksPromptFor(enabled func(string) bool) string {
+	var b strings.Builder
+	b.WriteString(backgroundTasksPrompt)
+	if enabled("bash") {
+		b.WriteString("\n- For long-running, run-to-completion shell work (test suites, builds, deploys), use `bash` with `run_in_background: true`. It returns a `task_id` and `output_file`; a completion notification arrives when the subprocess exits.")
+	}
+	if enabled(taskToolName) {
+		b.WriteString("\n- To fan out independent sub-work with non-conflicting writes, use `task` with `async: true`; it returns an acknowledgment followed by a completion notification. Do not duplicate work already delegated.")
+	}
+	if enabled("monitor") {
+		b.WriteString("\n- For follow-mode streams (log tails, live logs), use `monitor` with a shell `command`. Legacy `cmd`/`args` are also supported. The optional `pattern` filters lines; omitting it matches all nonempty lines. Matching lines arrive as coalesced notifications. Silence alone does not imply failure; do not restart a monitor merely because no matching event has arrived.")
+	}
+	if enabled("tasklist") {
+		b.WriteString("\n- `tasklist` is for one-shot inventory queries, never a polling loop.")
+	}
+	if enabled("taskstop") {
+		b.WriteString("\n- Use `taskstop` for a background task that is no longer useful.")
+	}
+	if enabled("yield") {
+		b.WriteString("\n- When only asynchronous work or monitor events remain, call `yield` alone, with no other tool calls. It suspends generation until a report arrives in all modes. No success claim or `struct_output` is required to wait. Normal end_turn (ending your turn without a tool call) remains a fallback.")
+	} else {
+		b.WriteString("\n- When only asynchronous work or monitor events remain, end your turn without another tool call (normal end_turn) to await notifications. No success claim or `struct_output` is required to wait.")
+	}
+	b.WriteString("\n- In non-interactive runs, normal end_turn waits for the next report, not for all background tasks to finish. Reports are also refreshed after tool batches; inspect new reports before deciding what to do next.")
+	return b.String()
+}
 
 // taskToolReportingPrompt instructs primary (mode=agent) agents that have the
 // task tool enabled to surface each subagent's task_id to the user so it can
@@ -440,7 +462,7 @@ func getAgentPromptInternal(agentName config.AgentName, provider models.ModelPro
 	// (summarizer, descriptor) are exempt: they cannot spawn or poll
 	// background work.
 	if reg.HasTools(agentName) {
-		basePrompt += backgroundTasksPrompt
+		basePrompt += backgroundTasksPromptFor(func(name string) bool { return reg.IsToolEnabled(agentName, name) })
 	}
 
 	// Append task_id reporting guidance for primary agents that can spawn

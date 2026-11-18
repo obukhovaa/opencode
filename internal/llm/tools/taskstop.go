@@ -35,7 +35,7 @@ func (t *taskstopTool) Info() ToolInfo {
 
 The kill is SYNCHRONOUS: this tool returns only after the SIGTERM (or context cancel for subagent tasks) has been sent, the underlying process has exited (with a 5s SIGTERM→SIGKILL escalation for stubborn subprocesses), AND the synthetic killed completion notification has been written into the session.
 
-Use sparingly — most background tasks finish on their own. Common reasons to use taskstop:
+Use sparingly — most background tasks finish on their own. Silence from a monitor is not a reason to stop it: its filter may simply have no match yet. Use yield when only background work remains. Common reasons to use taskstop:
 - A monitor whose output is no longer useful
 - An async task that's gone off-track and should be abandoned
 - A bash subprocess that's taking longer than expected and isn't worth waiting for

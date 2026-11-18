@@ -59,12 +59,12 @@ OUTPUT=$(env HOME="$SANDBOX" XDG_CONFIG_HOME="$SANDBOX/xdg" "$DRIVER" --sandbox=
 # point at the right line.
 ERR_COUNT=$(echo "$OUTPUT" | jq -r '.errors | length // 0')
 if [ "$ERR_COUNT" -gt 0 ]; then
-    echo "${YELLOW}Driver reported errors:${NC}"
+    log_fail "background driver completed without errors" "$ERR_COUNT driver error(s)"
     echo "$OUTPUT" | jq -r '.errors[]' | sed 's/^/  /'
 fi
 WRITE_ERR=$(echo "$OUTPUT" | jq -r '.write_err // ""')
 if [ -n "$WRITE_ERR" ]; then
-    echo "${YELLOW}WritePair returned error:${NC} $WRITE_ERR"
+    log_fail "synthetic notification pair committed" "$WRITE_ERR"
 fi
 
 bash_ack=$(echo "$OUTPUT" | jq -r '.bash_ack // ""')
@@ -125,7 +125,18 @@ else
     log_fail "bash synthetic ToolCall.Input strips run_in_background flag" "flag leaked"
 fi
 
-# ── 5. monitor coalesce + terminal completion ───────────────────────
+# ── 5. monitor wakes before process exit, then completes ────────────
+for pair in \
+  "monitor_wake_before_exit|monitor session watch wakes while its process is still running" \
+  "monitor_wake_pair_committed|monitor wake observes an already committed synthetic pair" \
+  "monitor_ack_yield|monitor ack directs idle agents to call yield alone"; do
+    key="${pair%%|*}"; label="${pair#*|}"
+    if [ "$(echo "$OUTPUT" | jq -r ".${key}")" = "true" ]; then
+        log_pass "$label"
+    else
+        log_fail "$label" "$key=false"
+    fi
+done
 if [ "$monitor_event" = "true" ]; then
     log_pass "monitor emits coalesced monitor-event with matched lines"
 else

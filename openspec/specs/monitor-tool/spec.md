@@ -5,18 +5,43 @@
 Defines the `monitor` tool — a process-spawning subprocess watcher that streams regex-matched lines back to the caller's session as synthetic notifications. The tool returns an immediate ack with `task_id` and `output_file`; matched lines are coalesced into per-window notifications (controlled by `min_interval_ms`) so a burst doesn't flood the session. Output of the underlying command (stdout + stderr merged) is teed to the output file in full so the agent can `Read` the complete log at any time. The monitor stops when (a) the subprocess exits naturally, (b) `max_events` notifications have been fired (subprocess SIGTERMed), or (c) `taskstop` is called. A terminal notification (`completed` / `failed` / `killed`) always fires.
 ## Requirements
 ### Requirement: Monitor tool registration and input schema
-The system SHALL register a new top-level tool named `monitor`. Its input schema MUST be:
-- `cmd` (string, required): the command to spawn
-- `args` ([]string, optional): arguments to the command
+The system SHALL register a top-level tool named `monitor`. Its input schema MUST be:
+
+- `command` (string, optional): a shell command executed with `bash -c`, like background bash
+- `cmd` (string, optional): a direct executable, resolved by path or `PATH`
+- `args` ([]string, optional): argv for `cmd` only
 - `cwd` (string, optional): working directory; defaults to the workspace root
-- `pattern` (string, required): an RE2-compatible regex applied line-by-line to merged stdout+stderr
+- `pattern` (string, optional, default `.`): an RE2-compatible regex applied line-by-line to merged stdout+stderr; the default matches every nonempty line
 - `min_interval_ms` (int, optional, default 5000, min 100, max 600000): coalesce window in milliseconds
 - `max_events` (int, optional, default 200, min 1, max 10000): hard cap on the number of `monitor-event` notifications this monitor may fire
 - `description` (string, optional): short description shown in the ack message
 
-#### Scenario: Required fields present
+The schema SHALL leave `Required` empty because `ToolInfo` cannot express `oneOf`.
+Parameter descriptions SHALL explain the alternatives. Runtime validation MUST require
+exactly one nonempty execution mode and reject combining `command` with `cmd` or `args`.
+The legacy `cmd`/`args` mode, including `cmd: "bash", args: ["-c", "..."]`, MUST remain
+accepted without interpreting argv as shell syntax.
+
+#### Scenario: Legacy argv mode
 - **WHEN** the agent invokes `monitor` with `{cmd: "kubectl", args: ["logs", "-f", "my-pod"], pattern: "ERROR|FATAL"}`
-- **THEN** the tool validates input and proceeds; missing `cmd` or `pattern` returns a tool-validation error
+- **THEN** the tool spawns the executable directly with the supplied argv
+
+#### Scenario: Shell mode
+- **WHEN** the agent invokes `monitor` with `{command: "tail -F app.log | grep --line-buffered ERROR"}`
+- **THEN** the tool executes the full string with `bash -c`, supporting shell pipelines, redirects and quoting
+- **AND** it uses the configured working directory, filtered tool environment and task process-group handling, as background bash does
+
+#### Scenario: Missing or mixed execution modes
+- **WHEN** neither a nonempty `cmd` nor a nonempty `command` is provided, or `command` is combined with `cmd` or `args` (even an empty array)
+- **THEN** validation returns an error before permission checks or subprocess creation
+
+#### Scenario: String or nonstring-element args
+- **WHEN** `args` is a string or an array containing a number
+- **THEN** validation explains that `args` must be an array of strings and includes an example such as `["logs", "-f", "pod"]`
+
+#### Scenario: Omitted pattern
+- **WHEN** a valid monitor call omits `pattern` or supplies an empty string
+- **THEN** the monitor uses `.` and reports nonempty lines from both stdout and stderr
 
 #### Scenario: Default coalesce window
 - **WHEN** the agent invokes `monitor` without `min_interval_ms`
@@ -35,12 +60,14 @@ On invocation, the monitor tool SHALL:
 5. Start the coalesce ticker.
 6. Return an ack ToolResult containing the `task_id`, `output_file` path, `pattern`, `min_interval_ms`, `max_events`, and the yield contract below.
 
-The ack SHALL state the same yield contract the background-bash ack carries. The existing "Do NOT poll — the events arrive automatically" instruction is necessary but not sufficient: it tells the model what not to do without telling it what happens if it does nothing, leaving `sleep` as the only apparent way to wait. The ack guidance text SHALL therefore state:
-
-- that matched lines arrive as synthetic monitor-event notifications;
-- that a terminal notification fires on subprocess exit, `max_events`, or `taskstop`;
-- that the agent MUST NOT poll **and MUST NOT `sleep`** while waiting;
-- that in a non-interactive (flow) step the runtime holds the turn open, so ending the turn without a tool call is the correct way to wait, and sleeping cannot observe an event sooner.
+The ack SHALL remain succinct, retain its identifying fields and explain that reports
+arrive automatically. It SHALL instruct the agent to continue independent work and call
+`yield` alone when idle. It MUST retain the literal phrase `do NOT sleep`, applying it
+to model tool calls. It MUST NOT recommend `tasklist` polling or stopping a silent watch.
+Silence before a pattern match SHALL be described as healthy. Yield's run-release and
+wait behavior is mode-dependent as specified in `yield-tool`.
+If `yield` is unavailable under a legacy tool allowlist, the ack SHALL retain
+ending the turn as a supported fallback with the same mode-specific behavior.
 
 #### Scenario: Successful spawn
 - **WHEN** a valid monitor call is made
@@ -57,7 +84,7 @@ The ack SHALL state the same yield contract the background-bash ack carries. The
 #### Scenario: Ack states the no-sleep yield contract
 - **WHEN** the agent invokes `monitor` with a valid `cmd` and `pattern`
 - **THEN** the ack contains a "do NOT sleep" instruction
-- **AND** it states that a non-interactive step holds the turn open until an event or terminal notification
+- **AND** it directs the idle agent to call `yield` alone to wait, without claiming that ending a turn always holds an interactive run open
 
 #### Scenario: Ack retains its existing identifying lines
 - **WHEN** a monitor is spawned
@@ -86,6 +113,24 @@ While a monitor task is running, the system SHALL collect matched lines into a p
 #### Scenario: Lines arriving mid-window are batched into the next tick
 - **WHEN** a matched line arrives 0.1s before a tick and another arrives 0.1s after the tick
 - **THEN** the first line is in the tick's batch; the second line is in the following tick's batch
+
+### Requirement: Tool description explains stream and single-outcome usage
+
+The tool description MUST fit within 2048 bytes. It SHALL explain RE2 line matching on
+merged stdout and stderr, including the difference from filtering only stdout, and
+warn that pipeline programs may buffer output. It SHALL recommend independent work
+while reports arrive and `yield` alone when idle.
+
+For one outcome it SHALL prefer background bash with a finite waiter that exits on
+success or failure. `monitor` with `max_events: 1` SHALL remain an allowed alternative.
+Patterns or scripts SHALL cover failure as well as success. Sleeping within a shell
+polling script is acceptable; repeatedly calling model tools to poll or sleep is not.
+
+#### Scenario: Model receives actionable waiting guidance
+
+- **WHEN** the runtime exposes the monitor tool
+- **THEN** its description SHALL distinguish a finite single-outcome waiter from a streaming watch
+- **AND** it SHALL explain success/failure coverage, pipeline buffering, and how an idle agent yields
 
 ### Requirement: Event-cap enforcement
 The monitor task SHALL count the number of `monitor-event` notifications it has fired. When the count reaches `max_events`, the monitor MUST:
@@ -134,6 +179,9 @@ The output file under `<data.dir>/tasks/<task_id>.out` SHALL contain the COMPLET
 ### Requirement: Permission gate at spawn time only
 The `monitor` tool's spawn-time permission MUST be checked against the `monitor` permission rule key (default `ask`). Once the spawn is approved, all subsequent events (per-event notifications, terminal notification) MUST NOT trigger further permission checks. The terminal kill-on-cap or kill-on-stop similarly does not require a fresh permission check.
 
+Shell mode MUST use the entire `command` string for permission evaluation and display.
+Legacy argv mode MUST retain its existing `cmd` permission input.
+
 #### Scenario: Permission denied at spawn
 - **WHEN** the agent invokes `monitor` and the user/policy denies
 - **THEN** no subprocess is spawned; no task is registered; no output file is created; an error tool result returns
@@ -151,20 +199,30 @@ The rationale: monitor's primary use case in flow-driven execution is "wait for 
 To bound a monitor's lifetime in non-interactive contexts the agent SHALL use one of:
 
 1. **`max_events: N`** — the monitor self-terminates after N coalesce-windows containing matching events. For a flow step waiting on a build, `max_events: 1` with a pattern like `BUILD_PASSED|BUILD_FAILED` is canonical.
-2. **A finite-running `cmd`** — e.g. `kubectl logs <pod>` without `-f`, or `tail -n 100 ...`.
-3. **Explicit `taskstop`** within the same agent turn before emitting the terminal turn.
+2. **A finite-running `command` or `cmd`**: e.g. `kubectl logs <pod>` without `-f`, or `tail -n 100 ...`.
+3. **Explicit `taskstop`** once the watch is no longer useful, including after reacting to an intermediate event.
 
 If none of the above applies AND the flow step has no `timeout`, the wait blocks until the orchestrator's surrounding context cancels. The synthetic Assistant timeout note (see `background-tasks` spec delta) will be injected and visible to the model on any subsequent invocation.
+
+#### Scenario: First event resumes a flow step before the monitor exits
+
+- **GIVEN** a monitor shell emits `ERROR-LINE` and then waits for a sandbox release file
+- **AND** the caller subscribes to `Registry.WatchSession` before starting the monitor
+- **WHEN** the matched line is coalesced and its synthetic pair commits to SQLite
+- **THEN** the session watcher MUST wake while the monitor remains `running` and its terminal `notified` flag remains false
+- **AND** an immediate message-list read MUST see the complete synthetic Assistant/Tool pair
+- **AND** a waiting flow run MUST be able to react to the event without waiting for process exit
+- **AND** after the release file is created, the monitor MUST emit its remaining output and a terminal completion
 
 #### Scenario: Monitor with max_events terminates within a flow step's wait
 
 - **GIVEN** a flow step's agent invokes `monitor` with `cmd: "tail", args: ["-F", "/tmp/build.log"], pattern: "BUILD_COMPLETED|BUILD_FAILED", max_events: 1`
-- **AND** the agent then emits `struct_output`
+- **AND** the agent then calls `yield` alone or emits a natural `end_turn`
 - **WHEN** the tail subprocess emits a line matching the pattern
 - **THEN** the monitor's coalesce loop MUST fire one `monitor-event` notification AND terminate the subprocess (max_events reached → SIGTERM)
 - **AND** the terminal `StatusKilled` ("max_events reached") synthetic notification MUST land in the session
-- **AND** the non-interactive wait MUST observe the monitor's terminal state
-- **AND** the outer agentic loop MUST re-cycle so the model can emit a final struct_output referencing the matched event(s)
+- **AND** the first report MUST wake the model even if the terminal notification has not yet arrived
+- **AND** a successful final return MUST still wait for no pending tasks and let the model observe the remaining completion report
 
 #### Scenario: Monitor without bound + no step timeout blocks until orchestrator cancels
 
@@ -177,13 +235,13 @@ If none of the above applies AND the flow step has no `timeout`, the wait blocks
 - **AND** the outer loop MUST break
 - **AND** `agent.RunWith` MUST return the pre-wait `AgentEvent` so the flow runner can surface the result it has
 
-#### Scenario: Monitor in interactive mode is unaffected
+#### Scenario: Monitor in interactive mode releases and resumes the session
 
 - **WHEN** a TUI session invokes the agent and the agent spawns a monitor
-- **AND** the agent emits `end_turn`
+- **AND** the agent emits `end_turn` or calls `yield` alone
 - **THEN** `agent.Run` MUST return immediately (no wait, no auto-kill)
 - **AND** the monitor MUST continue running until its natural termination condition
-- **AND** the eventual terminal synthetic notification MUST auto-resume a new `agent.Run` via `task.deps.ResumeSession` as today
+- **AND** a later event or terminal report MUST auto-resume the idle session via `task.deps.ResumeSession`
 
 ### Requirement: A healthy silent monitor is distinguishable from a dead one
 

@@ -1,8 +1,8 @@
 # Background tasks in opencode
 
-This document covers the runtime contract for the agent-facing background-task tools (`bash run_in_background`, `task async`, `monitor`, `tasklist`, `taskstop`) and how their lifecycle interacts with the three execution modes: interactive (TUI / chat bridge), non-interactive (flow steps, headless CLI, ACP), and cron-driven.
+This document covers the runtime contract for the agent-facing background-task tools (`bash run_in_background`, `task async`, `monitor`, `yield`, `tasklist`, `taskstop`) and how their lifecycle interacts with the three execution modes: interactive (TUI / chat bridge), non-interactive (flow steps, headless CLI, ACP), and cron-driven.
 
-Spec context: `openspec/specs/background-tasks/`, `openspec/specs/bash-background-mode/`, `openspec/specs/task-async-mode/`, `openspec/specs/monitor-tool/`, `openspec/specs/tasklist-taskstop-tools/`, `openspec/specs/task-notifications/`, `openspec/specs/flow-runtime-resume/`.
+Spec context: `openspec/specs/background-tasks/`, `openspec/specs/bash-background-mode/`, `openspec/specs/task-async-mode/`, `openspec/specs/monitor-tool/`, `openspec/specs/yield-tool/`, `openspec/specs/tasklist-taskstop-tools/`, `openspec/specs/task-notifications/`, `openspec/specs/flow-runtime-resume/`.
 
 ## Quick model
 
@@ -14,28 +14,80 @@ When the model calls one of the spawn tools with the background flag:
 // task
 { "tool": "task", "input": { "subagent_type": "workhorse", "task_title": "...", "async": true, "prompt": "..." } }
 // monitor
-{ "tool": "monitor", "input": { "cmd": "tail", "args": ["-F", "/var/log/app.log"], "pattern": "ERROR", "max_events": 1 } }
+{ "tool": "monitor", "input": { "command": "tail -F /var/log/app.log", "pattern": "ERROR|FATAL", "max_events": 1 } }
+// When there is no independent work left:
+{ "tool": "yield", "input": {} }
 ```
 
-The tool returns immediately with an ack containing a `task_id` and an `output_file` path. The actual work runs in the background. When it terminates, the runtime injects a synthetic `Assistant(ToolCall) + Tool(ToolResult)` pair into the session message log — the same shape a synchronous call would produce, marked with `synthetic: true` so the chat bridge doesn't emit a duplicate 🔧 indicator.
+Each spawn tool returns immediately with an ack containing a `task_id` and an `output_file` path. The actual work runs in the background. A monitor reports matching lines while it runs; every task reports its terminal outcome. The runtime injects each report as a synthetic `Assistant(ToolCall) + Tool(ToolResult)` pair into the session message log, marked with `synthetic: true` so the chat bridge doesn't emit a duplicate 🔧 indicator.
+
+## Working and waiting
+
+Continue independent work after the acknowledgment. Reports are added to the model's
+history at tool boundaries, after the current tool-call/result batch completes.
+When nothing independent remains, call `yield` alone with `{}`. The runtime resumes
+the same session when a report or queued user message is available. No success claim
+or `struct_output` is required to wait, and yielding does not cancel tasks.
+If the agent's tool allowlist excludes `yield`, end the turn instead; the same
+mode-specific release or wait behavior applies.
+
+In TUI and bridge sessions, yielding releases the run just like a normal `end_turn`.
+User input can start the next turn, and background reports use the existing idle
+auto-resume path. In non-interactive runs, yielding keeps the run open and suspends
+model generation until the first report or inbox message. It continues immediately
+if a report is already available or there are no active tasks. All flow steps use
+`NonInteractive: true`, including interactive steps that accept reviewer input.
+Yielding does not finish the flow step; the surrounding run/step deadline bounds
+the wait.
+
+A streaming monitor can wake the session on an intermediate event while its process
+continues running. Handle the event, continue work, then yield again if needed.
+Use `taskstop` when the watch is no longer useful, never merely because it is silent.
+Normal end-of-turn waiting remains supported for non-interactive runs.
+
+For one outcome, use background bash with a finite command that exits on success or
+failure. A polling loop **inside** that background script may sleep between checks;
+it uses no model calls while waiting. Use monitor for multiple events or filtered
+streams; `max_events: 1` also supports a single marker. Cover failure as well as
+success so a failed job cannot leave a success-only watch silent forever.
+
+`monitor` accepts either a shell `command` (executed by `bash -c`, like background
+bash) or the legacy direct executable `cmd` with an `args` array. Mixing the modes
+is rejected. `pattern` defaults to `.` (every nonempty line), uses RE2, and matches
+merged stdout **and stderr**. All output is retained in `output_file`. Keep filters
+selective and enable line buffering in pipeline programs. Existing `cmd`/`args`
+callers and monitor permission rules remain supported; shell mode checks the full
+command string under the `monitor` permission key.
 
 ## Two lifecycles, one notification shape
 
 ### Interactive mode (TUI, chat bridge)
 
-The agent's `Run` returns as soon as the model emits its terminal turn — the ack tool result was sent, the model wrote "I'll let you know when it finishes", and the turn closes. Later, when the background work completes:
+The agent's `Run` returns when the model emits a terminal turn or calls `yield`.
+It releases the session's run slot so user input stays responsive. When background
+work reports an event or completes:
 
 1. `EnqueueTaskCompletion` writes the synthetic pair.
 2. `IsSessionBusy(sessionID)` returns false (no `Run` in flight on this session — the check reads the process-global session-run ledger, so a run held by ANY agent instance counts).
 3. `task.deps.ResumeSession` kicks off a fresh `agent.Run` on the same session.
 4. The new turn's assistant message is published via the message broker and fans out to the TUI / bridge / SSE consumers as a regular assistant reply.
 
-The user (or chat thread) sees a new agent message appear when the work is done. No new wiring; the existing message broker carries it.
+The user (or chat thread) sees the resumed agent's reply through the existing message
+broker. A monitor can trigger this reply before its subprocess exits. A report that
+races with run release remains available for the session's resume handling.
 
 **Flow-owned tasks are exempt from auto-resume.** A task spawned under a flow step's step-scoped context is marked `FlowOwned` at spawn time, and its completions never trigger `ResumeSession`.
 
-What reacts instead is the step's own run. A flow step is one `agent.RunWith` call, not one model turn: its outer loop blocks in the end-of-turn drain until every pending task is terminal, then reloads the message history and **re-enters the inner agentic loop for another model cycle** with the synthetic completion pairs in context (steps 3–5 of [Non-interactive mode](#non-interactive-mode-flow-steps-headless-cli-acp-one-shot); `internal/llm/agent/agent.go`, the `OuterLoop` reload). That cycle runs under the step's own agent, with the step's tools and its `output.schema` — which `ResumeSession` cannot do: it calls `agent.Run` on `app.ActiveAgent()`, and sessions record no owning agent, so the resume would run the workspace default agent on a session that belongs to a different one (GENAI-239). Auto-resume was never the reaction mechanism here — while the step's run is in flight the busy check already suppressed it; the process-global ledger is what makes that suppression reliable across agent instances.
-
+What reacts instead is the step's own run. A flow step is one `agent.RunWith`
+call, containing multiple model cycles. Reports are consumed between tool batches;
+an explicit `yield`, or a normal terminal turn with pending work, waits for the first
+report or queued user input and re-enters the model loop under the step's own agent, tools and output
+schema. A streaming event wakes it without terminating the monitor. `ResumeSession`
+cannot substitute for this: it uses the workspace's active agent, which may differ
+from the step's agent (GENAI-239). The process-global run ledger prevents parallel
+runs on the session.
+This also applies to interactive flow steps: accepting reviewer input does not change
+their `NonInteractive: true` runtime mode.
 The one case with no reader is a flow-owned task that **outlives** its step. Background `bash` and `monitor` deliberately detach their subprocess from the turn context, so if the step's run exits first (step timeout, turn-budget exhaustion, shutdown) the subprocess keeps running and its completion pair lands in a session nothing will generate on again. The abandoned tasks are named in the synthetic wait-timeout note the runtime injects on that path, and the pair itself stays in the message log for the transcript, `tasklist`, and any later iteration of the step — but no model turn consumes it. This is deliberate: the alternative is the zombie turn above. Async `task` subagents are not exposed to it — their context derives from the step-scoped one, so the step's completion cancels them and their terminal pair is written before the step unwinds.
 
 See `openspec/specs/session-run-exclusivity` and the `task-notifications` spec.
@@ -44,18 +96,26 @@ See `openspec/specs/session-run-exclusivity` and the `task-notifications` spec.
 
 The caller invokes `agent.RunWith(ctx, sessionID, content, maxTurns, RunOptions{NonInteractive: true})`. The runtime then:
 
-1. Runs the inner agentic loop as usual — including the model emitting a tool_use for `bash run_in_background` (or `task async`, or `monitor`) and receiving the ack as a tool result.
-2. When the model emits its terminal turn, the OUTER loop checks `task.GlobalRegistry().PendingForSession(sessionID, nil)`.
-3. If there are pending tasks, the outer loop drains them: it calls `WaitForActiveTasks(ctx, sessionID, WaitOptions{IncludeMonitor: true})`, and on a clean return re-reads the pending set — if tasks appeared after the wait's snapshot (e.g. a later fan-out wave), it waits again, looping until the session has zero pending tasks or the ctx deadline trips (see [Timeouts](#timeouts)).
-4. While the wait runs, `IsSessionBusy` continues to return true (the original `RunWith` goroutine holds the session's slot in the process-global run ledger — visible from every agent instance, not just the one running the step), so `ResumeSession` is naturally a no-op — synthetic completions land in the DB without spawning a parallel agent run.
-5. Once the drain returns, the runtime reloads the session's message history (which now contains the synthetic completion pair(s)) and re-enters the inner agentic loop for one more cycle. The model observes the synthetic Tool results and produces a final response that reflects the post-completion state. If THAT cycle spawns more background work, the outer loop catches it again — `RunWith` never returns while the session has running tasks.
-6. Only then does `RunWith` return — and the caller (flow runner / CLI / ACP handler) gets the post-completion `AgentEvent`, not the premature ack.
+1. Runs the inner agentic loop, delivering background acknowledgments immediately.
+2. At tool boundaries, appends newly persisted synthetic reports to the next model
+   request, keeping every tool-call/result pair intact.
+3. When the model calls `yield`, or ends its turn while background work remains,
+   waits for the first report or queued user input. It subscribes before checking
+   durable history and pending tasks, avoiding missed wakeups.
+4. On an event, resumes the model loop with that report. A monitor may remain active;
+   the model can react, do more work, stop an obsolete watch, or yield again.
+5. Keeps the session's run slot throughout waiting, suppressing separate auto-resumes.
+6. Returns only when the model finishes with no pending work, or the run is bounded
+   by cancellation/turn limits. A final `struct_output` cannot bypass pending work.
 
 The wait is naturally bounded by the surrounding `ctx`. No internal timeout knob.
 
 ### Anti-spin: foreground `sleep` is redirected to the wait
 
-The hold-the-turn guarantee above is only reachable when the model eventually emits a terminal turn. A model that instead busy-waits — issuing foreground `bash` calls like `sleep 300; echo done` between `tasklist`/`read` probes (incident CD-4761) — would burn its entire step budget without ever hitting the end-of-turn wait.
+The normal end-of-turn wait is reached when the model emits a terminal turn;
+`yield` provides an explicit wait earlier. A model that instead issues foreground
+`bash sleep` calls between `tasklist`/`read` probes can consume its step budget
+without reaching either wait.
 
 The runtime therefore intercepts the poll primitive itself. In a non-interactive run, when the session **or a subagent it spawned** has pending non-monitor background tasks and the model issues a foreground `bash` command that *begins* with a wall-clock wait (`sleep <n>`, alone or followed by `;`/`&&` and anything else), the tool does NOT execute the sleep. It blocks on `WaitForActiveTasks(ctx, sessionID, WaitOptions{IncludeMonitor: false, Scope: ScopeSessionAndChildren})` — bounded by the step deadline — then runs the **trailer** (the part after the separator) verbatim through the ordinary synchronous path, and returns a synthetic result: the interception note, the tasks that reached terminal state during the wait, and the trailer's output with its real exit code. The traced shape `sleep 120; grep -nE 'BUILD SUCCESSFUL' /tmp/log | head -20` therefore waits for the build and then runs the probe, instead of burning 120 s. The requested sleep duration is irrelevant.
 
@@ -63,7 +123,7 @@ Scope guards:
 
 - Interactive runs (`NonInteractive: false`) never intercept — a TUI `sleep 5` runs verbatim.
 - No pending non-monitor tasks in the session or its direct children → the command runs verbatim (an idle sleep is pointless but harmless).
-- Only-monitors-pending → the command runs verbatim; a stray sleep must not become a block on a monitor's whole lifetime (the end-of-turn drain is what bounds monitors; the monitor ack tells the model that ending its turn is how it waits).
+- Only-monitors-pending → the command runs verbatim; a stray sleep must not become a block on a monitor's whole lifetime. Call `yield` alone to wait for its next event.
 - The scope is the calling session plus sessions whose parent is the caller — one level of descent, never the flow `root_session_id`, which every parallel step of a flow shares. `tasklist` and `taskstop` use the same scope (child-owned rows carry `owner=<session>`), so the model can observe and cancel whatever it is blocked on. The end-of-turn drain stays exact-session: a parent never blocks at end of turn on a child's tasks.
 - `sleep 5 & echo bg` runs verbatim: `&` is not a separator, that command backgrounds the sleep.
 - A trailer that is itself a sleep is dropped (`sleep 0; sleep 300` cannot bypass the guard); when the wait ends on a cancelled context the trailer is not run at all; the trailer is never re-checked for permission (the gate already evaluated the whole command string).
@@ -85,8 +145,8 @@ Subagents launched by the `task` tool — synchronous or `async` — inherit the
 `monitor` is the one tool with indefinite lifetime by design. In non-interactive contexts, the agent must bound it explicitly so the step doesn't block forever:
 
 1. **`max_events: N`** — terminates the monitor after N coalesce windows containing matching events. The canonical "wait for ONE marker line then exit" pattern is `max_events: 1` with a specific pattern (`BUILD_PASSED|BUILD_FAILED`, `READY`, etc.).
-2. **Finite-running `cmd`** — `kubectl logs <pod>` without `-f`, `tail -n 200 ...`, etc. The monitor exits when the subprocess exits.
-3. **Explicit `taskstop`** within the same agent turn before emitting the terminal turn.
+2. **Finite-running `command` or `cmd`** — `kubectl logs <pod>` without `-f`, `tail -n 200 ...`, etc. The monitor exits when the subprocess exits.
+3. **Explicit `taskstop`** after processing the events you need. A yielded monitor can wake the model before its subprocess ends.
 4. **The step's `timeout`** (see [Timeouts](#timeouts)) is the safety net — if none of the above applies AND no upstream event ever fires, the step's deadline cancels the wait and a synthetic timeout note is injected.
 
 The runtime does NOT auto-kill monitors at turn end. Auto-killing would defeat monitor's primary use case (wait for an external pipeline / log event), forcing agents back to `bash sleep` polling loops.
@@ -99,7 +159,7 @@ Three sources, in precedence order:
 |---|---|---|
 | `Step.Timeout` | Flow YAML `timeout: 15m` on the step. | Highest priority. Cascades into `agent.RunWith`'s ctx via `context.WithTimeout`. Parsed via Go's `time.ParseDuration` — any valid duration string works. |
 | `OPENCODE_NON_INTERACTIVE_TASK_WAIT_TIMEOUT` env var | Deploy environment. | Fallback default when the step has no explicit `timeout`. Parsed once at process start; SIGHUP-style reloads require a process restart. Malformed / non-positive values are logged and ignored. |
-| Unbounded | When neither of the above is set. | The wait is bounded only by the orchestrator's surrounding ctx (e.g. an overall flow deadline). If there is no surrounding deadline, the wait blocks until the work completes or the process exits. |
+| Unbounded | When neither of the above is set. | The wait is bounded only by the surrounding ctx. Without a deadline it waits for a report or inbox input; a successful final return still requires no pending work. |
 
 Deploying with neither source set is the configuration to avoid: a task that can never
 finish then holds its step until the process exits, and a step whose `struct_output` was
@@ -117,9 +177,9 @@ open by a long task is distinguishable in the log from a hung or dead process.
 A task that can never reach a terminal state would otherwise hold its step until the
 flow deadline, discarding an already-accepted `struct_output`. So on each drain progress
 tick the runtime also checks whether any pending **subagent** task has stopped making
-progress, and kills the ones that have — through the same path `taskstop` uses, so the
-drain then returns for its ordinary reason (every task terminal), the synthetic
-completion pair lands, and the parent re-cycles and finishes the step.
+progress, and kills the ones that have through the same path `taskstop` uses.
+Its completion report wakes the parent, which can react while other tasks remain
+active. Successful final return still requires no pending work.
 
 Scope follows the task's lifecycle handle, and the exemptions are deliberate:
 
@@ -165,7 +225,7 @@ Provider retry backoff is worth noting because it is completely silent: a subage
 rate-limited persists no message while it backs off. The default threshold clears the
 default backoff, but a proxy that returns a long `Retry-After` can exceed it.
 
-Stall detection covers the end-of-turn drain. It does **not** cover the anti-spin
+Stall detection runs alongside explicit non-interactive yield and end-of-turn waits. It does **not** cover the anti-spin
 redirect (`internal/llm/tools/bash_wait.go`), which waits on the registry directly: a
 wedged subagent reached by a model self-poll is still bounded only by the surrounding
 ctx.
@@ -206,8 +266,8 @@ flow:
       prompt: |
         Run `make integration-tests` against the dev cluster. The suite takes
         ~10 minutes. Use bash with run_in_background:true so this step
-        progresses correctly under the non-interactive wait. When the run
-        finishes, produce a struct_output with status=passed|failed and the
+        can continue independent work. When idle, call yield alone with {}.
+        After its completion report, produce a struct_output with status=passed|failed and the
         last 50 lines of output.
       timeout: 20m
       output:
@@ -223,15 +283,15 @@ The orchestrator launches the flow. Under the hood:
 
 1. Step kick-off invokes `agent.RunWith(stepCtx, sess.ID, prompt, 0, RunOptions{NonInteractive: true})`. `stepCtx` is `context.WithTimeout(parent, 20m)`.
 2. Coder calls `bash run_in_background: true` with `make integration-tests`. The tool returns an ack with a `task_id` like `shell_5KFKDU…` and an `output_file` path.
-3. Coder emits `struct_output` with `status: pending, tail: ""` (or it could just emit a brief acknowledgment turn).
-4. The inner agentic loop exits with the terminal turn. The outer loop checks pending tasks → finds the bash → calls `WaitForActiveTasks(ctx, sess.ID, …)`.
+3. Coder continues any independent work, then calls `yield` alone with `{}`.
+4. The runtime waits for the first background report or queued user message while retaining the flow step's run slot. A normal `end_turn` with pending work uses the same wait.
 5. The bash subprocess runs for ~10 minutes. When it exits, `bashWaitAndNotify` writes the synthetic pair (`Assistant(ToolCall bash) + Tool(ToolResult: "<output>\nExit code 0")`).
-6. The wait unblocks. The outer loop reloads messages, re-enters the inner loop. Coder sees the synthetic tool result, emits `struct_output { status: passed, tail: "<last 50 lines>" }`.
-7. `RunWith` returns the post-completion `AgentEvent`. The flow runner advances to the next step (if any) with the real result.
+6. The completion wakes the run. Coder sees the synthetic tool result and emits `struct_output { status: passed, tail: "<last 50 lines>" }`. An earlier report or reviewer input could have resumed it while the suite was still running.
+7. With no pending tasks, `RunWith` returns the post-completion `AgentEvent`. The flow runner advances to the next step (if any) with the real result.
 
 If the 20m timeout trips before the bash finishes:
 
 1. Wait returns `ctx.Err()`.
 2. Synthetic Assistant text message lands: `[wait-timeout] 1 background task(s) did not complete before the non-interactive wait ended (context deadline exceeded). - task_id=shell_5KFKDU… kind=bash started=… output_file=… desc="..."  ...`.
-3. Outer loop breaks. The step returns its pre-wait `AgentEvent` (likely with `status: pending` or text-only).
+3. An explicit yield returns the wait error. A normal end-of-turn wait breaks the outer loop with its latest `AgentEvent`. Neither path establishes that the pending work succeeded.
 4. A re-triggered flow on the same session reads the timeout note in the message history and can decide to wait longer, taskstop the orphan, or abort with a recorded reason.

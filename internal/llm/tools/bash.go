@@ -118,7 +118,7 @@ Commands run in ${directory} by default; use the ` + "`workdir`" + ` parameter t
 
 Output: if it exceeds ${maxLines} lines or ${maxBytes} bytes, the full output is saved to a temp file and a truncated preview (up to the first/last ${previewLines} lines, at most ${maxBytes} excerpt bytes per stream) is shown. Search the saved file with the grep tool or read it in pages with the read tool's offset/limit; a whole-file read without them only works under ${maxReadKB}KB. Never pipe the original command through ` + "`head`/`tail`" + ` to pre-truncate; just run it.
 
-For long-running work (test suites, builds, deploys, log tails) pass ` + "`run_in_background: true`" + ` instead of waiting in the foreground or sleeping.
+For run-to-completion work (test suites, builds, deploys) pass ` + "`run_in_background: true`" + ` instead of waiting in the foreground or sleeping.
 
 Prefer dedicated tools over shell equivalents:
 - File search: glob (not find); content search: grep tool (not grep/rg)
