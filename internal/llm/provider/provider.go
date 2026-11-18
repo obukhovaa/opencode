@@ -475,14 +475,99 @@ func (p *baseProvider[C]) cleanMessages(messages []message.Message) (cleaned []m
 	return
 }
 
+// normalizeToolBatches moves complete synthetic notifications after the regular
+// tool batch they interrupted. Sequence order reflects persistence, so a background
+// pair can land between a real assistant's calls and their results. Only exact-ID
+// results and complete synthetic pairs may be crossed; user/assistant messages,
+// malformed notifications and unrelated results remain interruption boundaries.
+func normalizeToolBatches(messages []message.Message) []message.Message {
+	var normalized []message.Message
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		normalized = append(normalized, msg)
+		calls := msg.ToolCalls()
+		if msg.Role != message.Assistant || msg.Synthetic || len(calls) == 0 {
+			continue
+		}
+
+		pending := make(map[string]bool, len(calls))
+		for _, call := range calls {
+			pending[call.ID] = true
+		}
+		var results, notifications []message.Message
+		next := i + 1
+		for next < len(messages) {
+			candidate := messages[next]
+			if next+1 < len(messages) && candidate.SessionID == msg.SessionID &&
+				isSyntheticToolPair(candidate, messages[next+1]) {
+				notifications = append(notifications, candidate, messages[next+1])
+				next += 2
+				continue
+			}
+			if candidate.Role != message.Tool || candidate.Synthetic || candidate.SessionID != msg.SessionID {
+				break
+			}
+			toolResults := candidate.ToolResults()
+			seen := make(map[string]bool, len(toolResults))
+			matches := len(toolResults) > 0
+			for _, result := range toolResults {
+				if !pending[result.ToolCallID] || seen[result.ToolCallID] {
+					matches = false
+					break
+				}
+				seen[result.ToolCallID] = true
+			}
+			if !matches {
+				break
+			}
+			for id := range seen {
+				delete(pending, id)
+			}
+			results = append(results, candidate)
+			next++
+			if len(pending) == 0 {
+				break
+			}
+		}
+
+		if len(notifications) == 0 || len(results) == 0 {
+			normalized = append(normalized, messages[i+1:next]...)
+		} else {
+			toolMsg := results[0]
+			if len(results) > 1 {
+				// Copy before merging: replay must not mutate persisted history.
+				toolMsg.Parts = append([]message.ContentPart(nil), toolMsg.Parts...)
+				for _, extra := range results[1:] {
+					toolMsg.Parts = append(toolMsg.Parts, extra.Parts...)
+				}
+			}
+			normalized = append(normalized, toolMsg)
+			normalized = append(normalized, notifications...)
+		}
+		i = next - 1
+	}
+	return normalized
+}
+
+// Notifications are atomically persisted as a single-call, single-result pair.
+// Check both flags and the ID rather than inferring one from the tool's name.
+func isSyntheticToolPair(assistant, tool message.Message) bool {
+	if !assistant.Synthetic || !tool.Synthetic || assistant.Role != message.Assistant ||
+		tool.Role != message.Tool || assistant.SessionID != tool.SessionID {
+		return false
+	}
+	calls, results := assistant.ToolCalls(), tool.ToolResults()
+	return len(calls) == 1 && len(results) == 1 && calls[0].ID != "" && calls[0].ID == results[0].ToolCallID
+}
+
 // sanitizeToolPairs ensures that tool_use/tool_result message pairs are consistent.
-// With seq-based ordering, messages are guaranteed to be in correct order.
 // This function handles crash recovery and proxy ID rewrite:
 // 1. An Assistant message with tool calls not followed by a Tool message → synthesize error tool results
 // 2. Incomplete tool results (some tool_use IDs missing) → synthesize missing ones
 // 3. Mismatched tool_result IDs (proxy rewrite) → fix by positional match
 // 4. Orphaned tool result messages → skip
 func (p *baseProvider[C]) sanitizeToolPairs(messages []message.Message) []message.Message {
+	messages = normalizeToolBatches(messages)
 	var result []message.Message
 	for i := 0; i < len(messages); i++ {
 		msg := messages[i]

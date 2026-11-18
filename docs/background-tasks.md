@@ -45,6 +45,12 @@ continues running. Handle the event, continue work, then yield again if needed.
 Use `taskstop` when the watch is no longer useful, never merely because it is silent.
 Normal end-of-turn waiting remains supported for non-interactive runs.
 
+Permission rejection, cancellation and error finish reasons end the run immediately,
+even when reports or reviewer input are waiting. They do not enter the background
+wait or start an auto-resume when the stopped turn releases its slot. Unseen reports
+remain in history and queued reviewer input stays available for a later run.
+Output-token truncation (`max_tokens`) retains the existing background re-entry behavior.
+
 For one outcome, use background bash with a finite command that exits on success or
 failure. A polling loop **inside** that background script may sleep between checks;
 it uses no model calls while waiting. Use monitor for multiple events or filtered
