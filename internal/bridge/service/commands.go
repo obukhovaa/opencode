@@ -10,9 +10,11 @@ import (
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/cron"
+	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/llm/models"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
+	"github.com/opencode-ai/opencode/internal/session"
 )
 
 // CommandHandler is the contract chat-command implementations satisfy.
@@ -285,16 +287,8 @@ func (s *Service) cmdSessions(ctx context.Context, in bridge.Inbound) *bridge.Co
 		if sess.ID == currentID {
 			marker = "★ "
 		}
-		// Use prompt_tokens + completion_tokens (the conversation's
-		// net usage as shown in the TUI), NOT the total_* fields —
-		// total_* aggregate every model API call including cached
-		// context replay, which inflates the number ~10x and
-		// disagrees with what the user sees locally. Same goes for
-		// the relative-age field: TUI says "updated Nm", which maps
-		// to UpdatedAt, not CreatedAt. Cost matches the TUI's
-		// status-bar formula and includes successful subagent costs
-		// via agent-tool.go:205's parent.Cost += subagent.Cost
-		// roll-up — see cmdSession below for full notes.
+		// The list shows the last reported context snapshot. /session adds
+		// unsent-message estimates and separate cumulative usage counters.
 		lines = append(lines, fmt.Sprintf("%s%s · %s · %s tokens · %s · updated %s",
 			marker, shortSessionID(sess.ID), sess.Title,
 			formatTokens(sess.PromptTokens+sess.CompletionTokens),
@@ -313,7 +307,7 @@ func (s *Service) cmdSessions(ctx context.Context, in bridge.Inbound) *bridge.Co
 		"\n\nSwitch with `/session <id-prefix>`."
 	return &bridge.CommandReply{
 		Text: text,
-		Hint: bridge.NewTableHint([]string{"ID", "Title", "Tokens", "Cost", "Updated"}, tableRows),
+		Hint: bridge.NewTableHint([]string{"ID", "Title", "Context", "Cost", "Updated"}, tableRows),
 	}
 }
 
@@ -348,27 +342,15 @@ func (s *Service) cmdSession(ctx context.Context, in bridge.Inbound) *bridge.Com
 		if err != nil {
 			return replyText("Failed to get session: " + err.Error())
 		}
-		// Tokens: PromptTokens+CompletionTokens is the conversation's
-		// net usage matching the local TUI; TotalPromptTokens et al
-		// aggregate every API call including cached context replay
-		// and inflate the number by ~10x.
-		//
-		// Cost is the running USD total accumulated by TrackUsage
-		// across every model call in this session — same value the
-		// TUI status bar displays. Subagent (`task` tool) costs are
-		// rolled INTO the parent via agent-tool.go:205
-		// (parentSession.Cost += updatedSession.Cost) once the task
-		// completes successfully, so the number here already covers
-		// the whole conversation tree. Note: subagents that fail or
-		// are canceled mid-run (e.g. a hung MCP call) do NOT credit
-		// back to the parent — that's an opencode-wide accounting
-		// blind spot, not bridge-specific.
-		return replyText(fmt.Sprintf("★ Session %s\nTitle: %s\nTokens: %s in / %s out\nCost: %s\nMessages: %d\n\nUse `/sessions` to list, `/session <id-prefix>` to switch.",
-			shortSessionID(sess.ID), sess.Title,
-			formatTokens(sess.PromptTokens),
-			formatTokens(sess.CompletionTokens),
-			formatCost(sess.Cost),
-			sess.MessageCount,
+		// Context is the latest pass (plus unsent messages where available).
+		// Usage totals sum all calls, including cached input and hidden passes.
+		usage := fmt.Sprintf("%s in / %s out", formatTokens(sess.TotalPromptTokens), formatTokens(sess.TotalCompletionTokens))
+		if sess.TotalPromptTokens == 0 && sess.TotalCompletionTokens == 0 && sess.PromptTokens+sess.CompletionTokens > 0 {
+			usage = "not recorded"
+		}
+		return replyText(fmt.Sprintf("★ Session %s\nTitle: %s\nContext: %s\nUsage (session total): %s\nCost: %s\nMessages: %d\n\nUse `/sessions` to list, `/session <id-prefix>` to switch.",
+			shortSessionID(sess.ID), sess.Title, s.sessionContextLabel(ctx, sess), usage,
+			formatCost(sess.Cost), sess.MessageCount,
 		))
 	}
 
@@ -459,6 +441,37 @@ func (s *Service) cmdSession(ctx context.Context, in bridge.Inbound) *bridge.Com
 
 	return replyText(fmt.Sprintf("Switched to session %s · %s. Next message routes there.",
 		shortSessionID(target.ID), target.Title))
+}
+
+// sessionContextLabel uses the bound session's own agent/model. Native agents
+// can account for unsent tool results/flow notes without an inference request.
+func (s *Service) sessionContextLabel(ctx context.Context, sess session.Session) string {
+	tokens := sess.PromptTokens + sess.CompletionTokens
+	reported, estimated := tokens > 0, false
+	suffix := " (last reported)"
+	ag := s.app.AgentForSession(ctx, sess.ID)
+	if reader, ok := ag.(interface {
+		ContextUsage(context.Context, string) (agentpkg.SessionContextUsage, error)
+	}); ok {
+		usage, err := reader.ContextUsage(ctx, sess.ID)
+		if err == nil && usage.Reported {
+			tokens, reported, estimated = usage.Tokens, usage.Reported, usage.Estimated
+			suffix = ""
+		}
+	}
+	if !reported {
+		return "not reported yet"
+	}
+	label := formatTokens(tokens) + " tokens"
+	if ag != nil {
+		if window := ag.Model().ContextWindow; window > 0 {
+			label = fmt.Sprintf("%s / %s tokens (%.1f%%)", formatTokens(tokens), formatTokens(window), 100*float64(tokens)/float64(window))
+		}
+	}
+	if estimated {
+		label = "~" + label + " (estimated)"
+	}
+	return label + suffix
 }
 
 // cmdRename sets the user-facing title of the peer's currently bound session.

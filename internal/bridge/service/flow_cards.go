@@ -171,15 +171,17 @@ func (s *Service) deliverFlowCard(ctx context.Context, peer bridge.PeerRef, even
 	sum := sha256.Sum256(payload)
 	hash := hex.EncodeToString(sum[:])
 	if card.MessageToken != "" && hash == card.RenderHash {
-		if sequence == card.Sequence {
-			return nil
+		if sequence != card.Sequence {
+			card.Sequence = sequence
+			card.State, err = json.Marshal(progress)
+			if err != nil {
+				return err
+			}
+			if err = s.app.FlowRuns.SaveCard(ctx, lease, card); err != nil {
+				return err
+			}
 		}
-		card.Sequence = sequence
-		card.State, err = json.Marshal(progress)
-		if err != nil {
-			return err
-		}
-		return s.app.FlowRuns.SaveCard(ctx, lease, card)
+		return s.deliverFlowOutcome(ctx, peer, event, lease, progress)
 	}
 	if card.MessageToken != "" && !urgent && time.Now().UnixMilli()-card.UpdatedAt < 2000 {
 		if s.flowCardPending == nil {
@@ -233,8 +235,59 @@ func (s *Service) deliverFlowCard(ctx context.Context, peer bridge.PeerRef, even
 	if err = s.app.FlowRuns.SaveCard(ctx, lease, card); err != nil {
 		return err
 	}
-	_, _, err = s.finalizeFlowCardBinding(ctx, peer, lease, card)
-	return err
+	peer, _, err = s.finalizeFlowCardBinding(ctx, peer, lease, card)
+	if err != nil {
+		return err
+	}
+	return s.deliverFlowOutcome(ctx, peer, event, lease, progress)
+}
+
+// The editable plan stays where it started. A separate, receipted outcome lands
+// after the flow's questions and step narration instead of rewriting old chat.
+func (s *Service) deliverFlowOutcome(ctx context.Context, peer bridge.PeerRef, event app.FlowRunEvent, lease flowrun.Lease, progress bridge.FlowProgress) error {
+	switch event.Type {
+	case "session.flow.completed", "session.flow.failed", "session.flow.terminated", "session.flow.suspended":
+	default:
+		return nil
+	}
+	// A failed or paused attempt may have resumed before delivery recovered.
+	// Its old result must not be appended beneath a newer attempt's questions.
+	if progress.Status != strings.TrimPrefix(event.Type, "session.flow.") || progress.OutcomeSequence > event.Sequence {
+		return nil
+	}
+	recipient := flowCardRecipient(peer) + ":outcome"
+	done, err := s.app.FlowRuns.Delivered(ctx, event.RunID, event.ID, recipient)
+	if err != nil || done {
+		return err
+	}
+	if err = s.app.FlowRuns.CheckDeliveryLease(ctx, lease); err != nil {
+		return err
+	}
+	output := strings.TrimSpace(event.Output)
+	if output == "" {
+		output = progress.Error
+		if output == "" {
+			output = progress.Summary
+		}
+	}
+	body := bridge.FlowProgressTitle(progress)
+	if output != "" {
+		body += "\n\n" + bridge.LimitFlowText(bridge.FlowSafeText(output), 6000)
+	}
+	if event.Type == "session.flow.suspended" {
+		body += "\n\n/flow resume · /flow terminate"
+	}
+	sent, err := s.Send(ctx, peer, body, "", nil)
+	if err != nil {
+		return err
+	}
+	if sent.Err != nil {
+		return sent.Err
+	}
+	if !sent.Delivered {
+		return errors.New("flow outcome was not delivered")
+	}
+	return s.app.FlowRuns.AckEvent(ctx, lease, event.ID, recipient)
 }
 
 func (s *Service) finalizeFlowCardBinding(ctx context.Context, peer bridge.PeerRef, lease flowrun.Lease, card flowrun.Card) (bridge.PeerRef, flowrun.Card, error) {
@@ -353,8 +406,10 @@ func foldFlowProgress(p *bridge.FlowProgress, e app.FlowRunEvent) bool {
 		}
 	case "session.flow.completed":
 		p.Status = "completed"
+		p.OutcomeSequence = e.Sequence
 	case "session.flow.failed":
 		p.Status = "failed"
+		p.OutcomeSequence = e.Sequence
 		if e.Output != "" {
 			p.Error = flowCardLimit(e.Output, 800)
 		} else if p.Error == "" {
@@ -362,9 +417,11 @@ func foldFlowProgress(p *bridge.FlowProgress, e app.FlowRunEvent) bool {
 		}
 	case "session.flow.suspended":
 		p.Status = "suspended"
+		p.OutcomeSequence = e.Sequence
 		p.Error = flowCardLimit(e.Output, 800)
 	case "session.flow.terminated":
 		p.Status = "terminated"
+		p.OutcomeSequence = e.Sequence
 	default:
 		return false
 	}

@@ -2902,8 +2902,8 @@ func (a *agent) TrackUsage(ctx context.Context, sessionID string, model models.M
 
 	sess.Cost += cost
 	last := lastCallUsage(sessionID, model, usage)
-	sess.CompletionTokens = last.OutputTokens + last.CacheReadTokens
-	sess.PromptTokens = last.InputTokens + last.CacheCreationTokens
+	sess.CompletionTokens = last.OutputTokens
+	sess.PromptTokens = last.InputTokens + last.CacheCreationTokens + last.CacheReadTokens
 	sess.TotalCompletionTokens += usage.OutputTokens
 	sess.TotalPromptTokens += usage.InputTokens + usage.CacheCreationTokens + usage.CacheReadTokens
 

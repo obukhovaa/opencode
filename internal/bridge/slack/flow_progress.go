@@ -91,9 +91,9 @@ func flowBlocks(p bridge.FlowProgress) []slackgo.Block {
 		switch step.Status {
 		case "running":
 			status = slackgo.TaskCardStatusInProgress
-		case "completed":
+		case "completed", "skipped":
 			status = slackgo.TaskCardStatusComplete
-		case "failed":
+		case "failed", "interrupted":
 			status = slackgo.TaskCardStatusError
 		}
 		card := slackgo.NewTaskCardBlock(fmt.Sprintf("step-%d-%s", i, bridge.LimitFlowText(step.ID, 64)), bridge.FlowStepLabel(step)).WithStatus(status)
@@ -110,6 +110,17 @@ func flowBlocks(p bridge.FlowProgress) []slackgo.Block {
 		}
 		tasks = append(tasks, card)
 	}
+	// Slack derives the collapsed plan's icon from its task statuses; changing
+	// only the title cannot settle its spinner or show a run-level failure.
+	if p.Status == "failed" || p.Status == "terminated" {
+		hasError := false
+		for _, task := range tasks {
+			hasError = hasError || task.Status == slackgo.TaskCardStatusError
+		}
+		if !hasError {
+			tasks = append(tasks, slackgo.NewTaskCardBlock("flow-outcome", "Workflow "+p.Status).WithStatus(slackgo.TaskCardStatusError))
+		}
+	}
 	title := bridge.FlowProgressTitle(p)
 	if omitted > 0 {
 		title += fmt.Sprintf(" · %d steps omitted", omitted)
@@ -119,13 +130,13 @@ func flowBlocks(p bridge.FlowProgress) []slackgo.Block {
 	if summary == "" {
 		summary = p.Summary
 	}
-	if summary != "" {
-		blocks = append(blocks, slackgo.NewSectionBlock(slackgo.NewTextBlockObject(slackgo.PlainTextType, bridge.LimitFlowText(bridge.FlowSafeText(summary), 650), false, false), nil, nil))
-	}
 	if len(tasks) > 0 {
 		blocks = append(blocks, slackgo.NewPlanBlock(title).WithTasks(tasks...))
 	} else {
 		blocks = append(blocks, slackgo.NewSectionBlock(slackgo.NewTextBlockObject(slackgo.PlainTextType, title, false, false), nil, nil))
+	}
+	if summary != "" {
+		blocks = append(blocks, slackgo.NewSectionBlock(slackgo.NewTextBlockObject(slackgo.PlainTextType, bridge.LimitFlowText(bridge.FlowSafeText(summary), 650), false, false), nil, nil))
 	}
 	return blocks
 }

@@ -264,6 +264,28 @@ The bridge SHALL recognize the following chat commands in inbound messages and h
 - **WHEN** a peer sends `/dir /some/path`
 - **THEN** the bridge replies that workspace switching is not supported in this deployment
 
+### Requirement: Session context and cumulative usage are distinct
+
+`/session` SHALL show the bound session's context occupancy separately from its
+cumulative input/output token usage. Where a provider report anchors the history,
+context SHALL use that report plus the same local unsent-message estimate as
+compaction, without a provider request; estimated deltas SHALL be labelled. The
+context window and percentage SHALL use the bound session's agent/model rather
+than another session's process default. Unknown context and missing legacy
+cumulative counters SHALL be identified rather than invented. Cached reads and
+writes SHALL count as input, never generated output. Cumulative usage SHALL
+include repeated calls and server-side passes, while context SHALL use only the
+last pass and its subsequent delta.
+
+#### Scenario: Cached prompt dominates generation
+- **WHEN** a last pass has 100 uncached input, 200 cache-write, 700 cache-read and 50 generated tokens
+- **THEN** its input/output split is 1,000/50 and its context is 1,050 tokens
+- **AND** repeating the call raises cumulative usage to 2,000/100 without doubling context occupancy
+
+#### Scenario: Another agent is the process default
+- **WHEN** the bound session uses a different agent/model from the process default
+- **THEN** context percentage uses the bound session's model window
+
 ### Requirement: Outbound FILE: protocol
 
 The bridge SHALL recognize the FILE: outbound convention in agent messages and route detected file references through the media store at `<config.Data.Directory>/bridge/media/`. The parser behavior matches the TS bridge's outbound parser.

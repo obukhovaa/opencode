@@ -14,16 +14,17 @@ import (
 var ErrFlowMessageNotFound = errors.New("flow progress message no longer exists")
 
 type FlowProgress struct {
-	RunID      string             `json:"runId"`
-	FlowID     string             `json:"flowId"`
-	Status     string             `json:"status"`
-	Error      string             `json:"error,omitempty"`
-	Summary    string             `json:"summary,omitempty"`
-	StartedAt  int64              `json:"startedAt,omitempty"`
-	UpdatedAt  int64              `json:"updatedAt,omitempty"`
-	Full       bool               `json:"full"`
-	TotalSteps int                `json:"totalSteps,omitempty"`
-	Steps      []FlowProgressStep `json:"steps,omitempty"`
+	RunID           string             `json:"runId"`
+	FlowID          string             `json:"flowId"`
+	Status          string             `json:"status"`
+	Error           string             `json:"error,omitempty"`
+	Summary         string             `json:"summary,omitempty"`
+	OutcomeSequence int64              `json:"outcomeSequence,omitempty"`
+	StartedAt       int64              `json:"startedAt,omitempty"`
+	UpdatedAt       int64              `json:"updatedAt,omitempty"`
+	Full            bool               `json:"full"`
+	TotalSteps      int                `json:"totalSteps,omitempty"`
+	Steps           []FlowProgressStep `json:"steps,omitempty"`
 }
 
 type FlowProgressStep struct {
@@ -191,6 +192,20 @@ func FlowStepOutput(s FlowProgressStep, limit int) (string, bool) {
 
 // Select active/error steps first, then recent completed steps, while retaining plan order.
 func FlowVisibleSteps(p FlowProgress, limit int) ([]FlowProgressStep, int) {
+	// Ended executions have no pending work on the screen. Keep this a display
+	// projection so failed runs can resume with their original pending branches.
+	switch p.Status {
+	case "completed", "failed", "terminated":
+		p.Steps = append([]FlowProgressStep(nil), p.Steps...)
+		for i := range p.Steps {
+			switch p.Steps[i].Status {
+			case "", "pending":
+				p.Steps[i].Status = "skipped"
+			case "running", "waiting_for_input", "postponed", "suspended":
+				p.Steps[i].Status = "interrupted"
+			}
+		}
+	}
 	if len(p.Steps) <= limit {
 		return p.Steps, max(0, p.TotalSteps-len(p.Steps))
 	}
