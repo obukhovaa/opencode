@@ -553,6 +553,122 @@ func TestSelfCompaction_CompletionHandoff(t *testing.T) {
 	}
 }
 
+// An ordinary interactive turn must hand off reports that missed its last
+// model input, even with self-compaction disabled or no compaction requested.
+func TestCompletionHandoff_OrdinaryInteractive(t *testing.T) {
+	for _, selfCompact := range []bool{false, true} {
+		mode := "disabled"
+		if selfCompact {
+			mode = "enabled without request"
+		}
+		for _, when := range []string{"already observed", "during final call", "after final scan", "after handoff setup"} {
+			t.Run(mode+"/"+when, func(t *testing.T) {
+				reg := withFreshTaskRegistry(t)
+				withAutoCompact(t, false)
+				a, main, summarizer, _ := newSelfCompactingAgent(t, 150)
+				a.selfCompact.Enabled = selfCompact
+				sess := t.Name()
+				deps := &completionDeps{messages: a.messages, resumed: make(chan string, 4)}
+				t.Cleanup(task.SetDeps(deps))
+				t.Cleanup(func() { task.TakeSkippedResume(sess) })
+				if !acquireSessionSlot(sess, context.CancelFunc(func() {})) {
+					t.Fatal("session unexpectedly busy")
+				}
+				t.Cleanup(func() { releaseSessionSlot(sess) })
+				complete := func() {
+					tk := &task.Task{ID: task.NewTaskID(task.KindBash), SessionID: sess, Kind: task.KindBash, Requester: "alice@"}
+					if err := reg.Register(tk); err != nil {
+						t.Fatal(err)
+					}
+					if err := task.EnqueueTaskCompletion(context.Background(), task.CompletionInput{
+						SessionID: sess, OriginatingToolName: "bash", TaskID: tk.ID,
+						Kind: task.KindBash, Status: task.StatusCompleted, Content: "BG-ORDINARY", SuppressIfNotified: true,
+					}); err != nil {
+						t.Fatal(err)
+					}
+					if len(deps.resumed) != 0 {
+						t.Fatal("completion resumed before the session was released")
+					}
+				}
+				main.respond = func([]message.Message) *provider.ProviderResponse {
+					if when == "during final call" {
+						complete()
+					}
+					return endTurn()
+				}
+				if when == "already observed" {
+					complete()
+				}
+				ctx := context.WithValue(context.Background(), tools.NonInteractiveContextKey, false)
+				result := a.processGeneration(ctx, sess, "do the task", 0, nil, RunOptions{})
+				if result.Error != nil {
+					t.Fatal(result.Error)
+				}
+				if when == "after final scan" {
+					complete()
+				}
+				after := a.compactAfterTurn(ctx, context.Background(), sess, result)
+				if after == nil {
+					t.Fatal("ordinary interactive turn has no release handoff")
+				}
+				if when == "after handoff setup" {
+					complete()
+				}
+				releaseSessionSlot(sess)
+				after()
+				wantResumes := 1
+				if when == "already observed" {
+					wantResumes = 0
+				}
+				if got := len(deps.resumed); got != wantResumes {
+					t.Fatalf("resume count = %d, want %d", got, wantResumes)
+				}
+				if wantResumes > 0 && <-deps.resumed != "alice@" {
+					t.Error("resume lost the task requester")
+				}
+				if deps.heldAt.Load() != 0 {
+					t.Error("resume fired while the session was still held")
+				}
+				if _, ok := task.TakeSkippedResume(sess); ok {
+					t.Error("release did not clear the consumed completion marker")
+				}
+				after()
+				if len(deps.resumed) != 0 {
+					t.Error("release handoff resumed the same completion twice")
+				}
+				if requestCount(summarizer) != 0 {
+					t.Error("ordinary release ran an unrequested compaction")
+				}
+			})
+		}
+	}
+}
+
+func TestCompletionHandoff_SuppressedRuns(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, tc := range []struct {
+		name   string
+		ctx    context.Context
+		stop   context.Context
+		result AgentEvent
+	}{
+		{name: "failed", ctx: context.Background(), stop: context.Background(), result: AgentEvent{Error: errors.New("turn failed")}},
+		{name: "cancelled result", ctx: context.Background(), stop: context.Background(), result: AgentEvent{Error: ErrRequestCancelled}},
+		{name: "cancelled context", ctx: cancelled, stop: context.Background()},
+		{name: "stopped", ctx: context.Background(), stop: cancelled},
+		{name: "noninteractive", ctx: context.WithValue(context.Background(), tools.NonInteractiveContextKey, true), stop: context.Background()},
+		{name: "flow", ctx: context.WithValue(context.Background(), tools.StepScopedContextKey, context.Background()), stop: context.Background()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &agent{}
+			if after := a.compactAfterTurn(tc.ctx, tc.stop, t.Name(), tc.result); after != nil {
+				t.Fatal("cancelled, failed, or noninteractive run installed an auto-resume")
+			}
+		})
+	}
+}
+
 // A caller that cancels its ctx as soon as it has the terminal event does
 // not abort the post-turn compaction.
 func TestSelfCompaction_CallerCancelAfterTheTurnDoesNotAbortIt(t *testing.T) {

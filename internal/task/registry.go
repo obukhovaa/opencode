@@ -54,6 +54,14 @@ type Registry interface {
 	WaitForActiveTasks(ctx context.Context, sessionID string, opts WaitOptions) error
 	Kill(taskID string) error
 	MarkFinished(taskID string, s State, exitCode *int)
+	// WatchSession returns the current broadcast channel for exactly sessionID.
+	// Subscribe BEFORE checking durable history or pending tasks, then wait on
+	// this channel if needed. After a wake, subscribe again before rechecking:
+	// notifications are hints to reload state, not a queue of individual events.
+	WatchSession(sessionID string) <-chan struct{}
+	// NotifySession closes the current broadcast channel and replaces it with
+	// an open one. Every current listener wakes; other sessions are unaffected.
+	NotifySession(sessionID string)
 	PrepareOutputFile(taskID string) (path string, f *os.File, err error)
 	SweepOrphans(dataDir string)
 }
@@ -102,7 +110,32 @@ func inScope(t *Task, sessionID string, scope WaitScope) bool {
 type registry struct {
 	mu      sync.RWMutex
 	tasks   map[string]*Task
+	watches map[string]chan struct{}
 	dataDir func() string
+}
+
+func (r *registry) WatchSession(sessionID string) <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.watches == nil {
+		r.watches = make(map[string]chan struct{})
+	}
+	if r.watches[sessionID] == nil {
+		r.watches[sessionID] = make(chan struct{})
+	}
+	return r.watches[sessionID]
+}
+
+func (r *registry) NotifySession(sessionID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.watches == nil {
+		r.watches = make(map[string]chan struct{})
+	}
+	if ch := r.watches[sessionID]; ch != nil {
+		close(ch)
+	}
+	r.watches[sessionID] = make(chan struct{})
 }
 
 // NewRegistry returns a Registry whose output files live under

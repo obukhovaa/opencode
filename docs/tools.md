@@ -16,15 +16,39 @@ Beyond the built-ins, agents can call [MCP servers](mcp.md) and [workspace CLI t
 | `write` | Write to files |
 | `edit` | Edit files |
 | `multiedit` | Multiple edits in one file |
-| `patch` | Apply patches to files |
+| `patch` | Apply patches to files (explicit named opt-in) |
 | `lsp` | Code intelligence (go-to-definition, references, hover, etc.; [guide](lsp.md)) |
 | `delete` | Delete file or directory |
+
+### Patch compatibility tool
+
+`patch` is no longer enabled by default. Prefer `edit` for a replacement,
+`multiedit` for several replacements within a file, and parallel calls for
+independent files. Existing patch consumers can opt in with an exact grant:
+
+```json
+{"agents": {"coder": {"tools": {"patch": true}}}}
+```
+
+For an agent using `allowTools`, include `"patch"` in that list instead.
+Neither `"*"` nor a pattern such as `"p*"` enables patch. Permission rules and
+`deferredTools` alone do not grant it. Its name and `patch_text` input remain
+available for explicit consumers.
+
+Patch validates its changes before applying them, but multi-file writes are
+not transactional: an I/O failure can leave earlier changes applied. A move
+checks patch permission for both the source and destination and conflicts
+with concurrent mutations of either path. Hunk fuzz measures normalization,
+not distance in lines: exact matches score 0, trailing whitespace matches 1,
+and aggregate scores above 3 are rejected.
 
 ## System & search
 
 | Tool | Description |
 |------|-------------|
 | `bash` | Execute shell commands ([background mode](background-tasks.md)) |
+| `monitor` | Watch a command and receive matching output events ([guide](background-tasks.md)) |
+| `yield` | Wait for a background report or queued user message without model polling ([guide](background-tasks.md)) |
 | `webfetch` | Fetch data from URLs (large pages are capped and saved to a temp file — see [Web fetch output cap](#web-fetch-output-cap)) |
 | `websearch` | Search internet via configured WebSearch providers |
 | `sourcegraph` | Search public repositories |

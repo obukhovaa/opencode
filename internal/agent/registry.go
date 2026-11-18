@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -137,7 +138,8 @@ type Registry interface {
 	// names this tool with an explicit `true` value (or a matching wildcard
 	// set to true). Used by tools that are default-deny — the registry's
 	// regular IsToolEnabled returns true for unmentioned tools, which is
-	// wrong for tools like cron that should require opt-in.
+	// wrong for tools like cron that should require opt-in. Patch additionally
+	// requires an exact name; matching wildcard patterns never opt it in.
 	IsToolExplicitlyEnabled(agentID, toolName string) bool
 	HasTools(agentID string) bool
 	GlobalPermissions() map[string]any
@@ -269,6 +271,9 @@ func (r *registry) ListByMode(mode config.AgentMode) []AgentInfo {
 func (r *registry) EvaluatePermission(agentID, toolName, input string) permission.Action {
 	a, ok := r.Get(agentID)
 	if !ok {
+		if toolName == "patch" {
+			return permission.ActionDeny
+		}
 		return permission.EvaluateToolPermission(toolName, input, nil, r.globalPerms)
 	}
 
@@ -282,6 +287,9 @@ func (r *registry) EvaluatePermission(agentID, toolName, input string) permissio
 func (r *registry) EvaluateReadPermission(agentID, toolName, input string) permission.Action {
 	a, ok := r.Get(agentID)
 	if !ok {
+		if toolName == "patch" {
+			return permission.ActionDeny
+		}
 		return permission.EvaluateReadToolPermission(toolName, input, nil, r.globalPerms)
 	}
 
@@ -303,7 +311,7 @@ func (r *registry) ReadDenyPatterns(agentID, toolName string) []string {
 func (r *registry) IsToolEnabled(agentID, toolName string) bool {
 	a, ok := r.Get(agentID)
 	if !ok {
-		return true
+		return toolName != "patch"
 	}
 	return a.ToolEnabled(toolName)
 }
@@ -312,7 +320,7 @@ func (r *registry) IsToolEnabled(agentID, toolName string) bool {
 // contains an explicit entry for this tool that is set to true (either by
 // exact match or by a matching wildcard). Unlike IsToolEnabled it returns
 // false for tools the agent never mentions — used for default-deny tools
-// (e.g. cron) that must require opt-in.
+// (e.g. cron) that must require opt-in. Patch only accepts an exact name.
 func (r *registry) IsToolExplicitlyEnabled(agentID, toolName string) bool {
 	a, ok := r.Get(agentID)
 	if !ok {
@@ -344,8 +352,14 @@ func (info AgentInfo) UsesToolAllowlist() bool {
 // It is the single place the two gating models are chosen between, so that
 // every caller — the construction gate in NewToolSet, the permission gates,
 // and the prompt builder — agrees. Allowlist mode grants only what it lists;
-// deny-list mode keeps its allow-by-default behaviour unchanged.
+// deny-list mode keeps its allow-by-default behaviour except for patch,
+// which requires an exact named grant in either mode.
 func (info AgentInfo) ToolEnabled(toolName string) bool {
+	// Patch is retained for compatibility, but only an exact named grant
+	// opts in. Wildcards must not restore the retired default tool.
+	if toolName == "patch" {
+		return info.ToolExplicitlyEnabled(toolName)
+	}
 	if info.UsesToolAllowlist() {
 		return permission.IsToolAllowlisted(toolName, info.AllowTools)
 	}
@@ -356,8 +370,15 @@ func (info AgentInfo) ToolEnabled(toolName string) bool {
 // as default-deny tools (cron*) require. In allowlist mode listing a tool IS
 // the opt-in — with one exception: a bare "*" entry is the "everything the
 // deny-list default would have given me" escape hatch, and that default never
-// included the cron tools, so "*" alone must not grant them either.
+// included the cron tools, so "*" alone must not grant them either. Patch
+// accepts only an exact name in either mode, never a wildcard pattern.
 func (info AgentInfo) ToolExplicitlyEnabled(toolName string) bool {
+	if toolName == "patch" {
+		if info.UsesToolAllowlist() {
+			return slices.Contains(info.AllowTools, toolName)
+		}
+		return info.Tools[toolName]
+	}
 	if info.UsesToolAllowlist() {
 		for _, entry := range info.AllowTools {
 			if entry == "*" {

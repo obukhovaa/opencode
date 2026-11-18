@@ -61,6 +61,7 @@ func TestToolDescriptionBudgets(t *testing.T) {
 		{NewTaskListTool(), defaultDescriptionBudget},
 		{NewTaskStopTool(nil, nil), defaultDescriptionBudget},
 		{NewMonitorTool(nil, nil), defaultDescriptionBudget},
+		{NewYieldTool(), defaultDescriptionBudget},
 		{NewCronCreateTool(nil, nil), defaultDescriptionBudget},
 		{NewCronDeleteTool(nil), defaultDescriptionBudget},
 		{NewCronListTool(nil, nil), defaultDescriptionBudget},

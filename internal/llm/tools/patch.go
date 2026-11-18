@@ -53,7 +53,7 @@ Each section starts with one of three headers:
 *** Delete File: <path> - remove an existing file. Nothing follows.
 *** Update File: <path> - patch an existing file in place, optionally followed by *** Move to: <new_path> to rename/move the file.
 
-Context lines (@@) are matched with a fuzz tolerance of up to 3 lines — if the context drifts by more than 3 lines from the expected position, the patch is rejected.
+Hunk context is searched forward from the current position. Exact matches score 0; matches ignoring trailing spaces/tabs score 1. Scores accumulate across the patch and totals above 3 are rejected. Hunk matches requiring indentation or Unicode normalization exceed that limit; fuzz is not positional drift.
 
 Example patch:
 
@@ -209,11 +209,24 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	var combinedDiff string
 	needsPermission := false
 	for filePath, change := range commit.Changes {
-		fileAction := p.registry.EvaluatePermission(string(GetAgentID(ctx)), PatchToolName, filePath)
-		if fileAction == permission.ActionDeny {
-			return NewEmptyResponse(), permission.DeniedByRule(PatchToolName, filePath)
+		paths := []string{filePath}
+		if change.MovePath != nil {
+			paths = append(paths, *change.MovePath)
 		}
-		if fileAction == permission.ActionAllow {
+		changeNeedsPermission := false
+		for _, path := range paths {
+			absPath := path
+			if !filepath.IsAbs(absPath) {
+				absPath = filepath.Join(config.WorkingDirectory(), absPath)
+			}
+			absPath = filepath.Clean(absPath)
+			fileAction := p.registry.EvaluatePermission(string(GetAgentID(ctx)), PatchToolName, absPath)
+			if fileAction == permission.ActionDeny {
+				return NewEmptyResponse(), permission.DeniedByRule(PatchToolName, absPath)
+			}
+			changeNeedsPermission = changeNeedsPermission || fileAction != permission.ActionAllow
+		}
+		if !changeNeedsPermission {
 			continue
 		}
 		needsPermission = true
@@ -226,14 +239,21 @@ func (p *patchTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 		if change.NewContent != nil {
 			newContent = *change.NewContent
 		}
-		fileDiff, _, _ := diff.GenerateDiff(oldContent, newContent, filePath)
+		diffPath := filePath
+		if change.MovePath != nil {
+			diffPath = *change.MovePath
+		}
+		fileDiff, _, _ := diff.GenerateDiff(oldContent, newContent, diffPath)
 		combinedDiff += fileDiff + "\n"
 	}
 
 	if needsPermission {
 		filePaths := make([]string, 0, len(commit.Changes))
-		for filePath := range commit.Changes {
+		for filePath, change := range commit.Changes {
 			filePaths = append(filePaths, filePath)
+			if change.MovePath != nil {
+				filePaths = append(filePaths, *change.MovePath)
+			}
 		}
 		rootDir := config.WorkingDirectory()
 		permissionPath := rootDir
@@ -375,8 +395,7 @@ func (p *patchTool) AllowParallelism(call ToolCall, allCalls []ToolCall) bool {
 	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
 		return false
 	}
-	affectedPaths := diff.IdentifyFilesNeeded(params.PatchText)
-	affectedPaths = append(affectedPaths, diff.IdentifyFilesAdded(params.PatchText)...)
+	affectedPaths := ExtractPathsFromCall(call)
 	return !hasFileConflict(call, affectedPaths, allCalls)
 }
 

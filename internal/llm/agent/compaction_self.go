@@ -286,14 +286,32 @@ var postTurnCompactionTimeout = 10 * time.Minute
 //
 // The returned func, when not nil, is for RunWith to call once the slot is
 // released: it starts the auto-resume of a background-task completion that
-// arrived while the session was held for the compaction.
+// arrived while the session was held, even when no compaction is requested.
 func (a *agent) compactAfterTurn(runCtx, stop context.Context, sessionID string, result AgentEvent) (afterRelease func()) {
 	defer logging.RecoverPanic("agent.compactAfterTurn", nil)
-	if !a.selfCompact.Enabled || result.Error != nil || stop.Err() != nil {
+	if result.Error != nil || stop.Err() != nil {
 		return nil
 	}
 	if tools.StepScopedContext(runCtx) != nil {
 		return nil
+	}
+	// Install the handoff before checking compaction settings or reading the
+	// session. A completion can skip auto-resume while an ordinary interactive
+	// turn is finishing too. Take its marker only after the slot is released,
+	// and resume only if it was absent from the model's actual input.
+	if !tools.IsNonInteractive(runCtx) && runCtx.Err() == nil {
+		afterRelease = func() {
+			if r, ok := task.TakeSkippedResume(sessionID); ok {
+				if result.compactionSeen.calls[r.ToolCallID] {
+					return
+				}
+				logging.Info("Resuming for a background completion after the turn released its session", "session_id", sessionID)
+				task.ResumeIfIdle(sessionID, r)
+			}
+		}
+	}
+	if !a.selfCompact.Enabled {
+		return afterRelease
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(runCtx), postTurnCompactionTimeout)
 	defer cancel()
@@ -302,22 +320,10 @@ func (a *agent) compactAfterTurn(runCtx, stop context.Context, sessionID string,
 	msgs, _, err := a.historyAfterCompaction(ctx, sessionID)
 	if err != nil {
 		logging.Warn("self-compaction: reading the session failed; the request stays pending", "session_id", sessionID, "error", err)
-		return nil
+		return afterRelease
 	}
 	if pending, _ := pendingSelfCompactionNotes(msgs); !pending {
-		return nil
-	}
-	// Keep the completion marker through the handoff. A completion arriving
-	// before this snapshot can still be unseen by the finished model loop.
-	// Resume only when the recorded completion was not in a model input.
-	afterRelease = func() {
-		if r, ok := task.TakeSkippedResume(sessionID); ok {
-			if result.compactionSeen.calls[r.ToolCallID] {
-				return
-			}
-			logging.Info("self-compaction: resuming for a background completion that arrived during the compaction", "session_id", sessionID)
-			task.ResumeIfIdle(sessionID, r)
-		}
+		return afterRelease
 	}
 	if !waitTurnDelivered(ctx, sessionID) {
 		return afterRelease

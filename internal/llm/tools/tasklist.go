@@ -30,7 +30,7 @@ func (t *tasklistTool) Info() ToolInfo {
 
 Each row shows task_id, kind, state, started_at, finished_at, exit_code, and a short description; a monitor row also shows scanned_lines, the input lines it has consumed so far — a silent monitor with a growing count is healthy, its pattern just has not matched yet. Filter by state with the state parameter ("running" / "completed" / "failed" / "killed" / "all", default "all"). Limit results with limit (max 200, default 50).
 
-This tool is for ONE-SHOT inventory queries — confirming a task is still running, listing your spawn fan-out, etc. Do NOT use it as a polling loop: completion notifications arrive automatically when a background task finishes. Each tool call costs tokens and invalidates the prompt cache; one-shot uses are cheap, polling is expensive.
+This tool is for ONE-SHOT inventory queries — confirming a task is still running, listing your spawn fan-out, etc. Do NOT use it as a polling loop: completion notifications arrive automatically when a background task finishes. Repeated checks require additional model calls and tokens; wait for notifications instead.
 
 Read the per-task output_file with the Read tool if you want to inspect a task's full log.`,
 		Parameters: map[string]any{

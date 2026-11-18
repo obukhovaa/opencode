@@ -49,6 +49,7 @@ var (
 		// available to both agents and subagents (subagents may want to
 		// monitor or kill their own background work too).
 		tools.MonitorToolName,
+		tools.YieldToolName,
 		tools.TaskListToolName,
 		tools.TaskStopToolName,
 	}
@@ -198,6 +199,8 @@ func NewToolSet(
 				return tools.NewTodoWriteTool(store)
 			}
 			return nil
+		case tools.YieldToolName:
+			return tools.NewYieldTool()
 		case tools.MonitorToolName:
 			return tools.NewMonitorTool(permissions, reg)
 		case tools.TaskListToolName:

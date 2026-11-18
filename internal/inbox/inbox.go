@@ -34,11 +34,12 @@ type DeliveredFunc func(sessionID string, items []Item)
 // Box is a set of per-session FIFO queues. The zero value is not usable;
 // call New.
 type Box struct {
-	mu     sync.Mutex
-	cap    int
-	queues map[string][]Item
-	hooks  map[string]DeliveredFunc
-	drains map[string]map[*drainBatch]struct{}
+	mu      sync.Mutex
+	cap     int
+	queues  map[string][]Item
+	hooks   map[string]DeliveredFunc
+	drains  map[string]map[*drainBatch]struct{}
+	watches map[string]chan struct{}
 }
 
 type drainBatch struct {
@@ -64,6 +65,32 @@ var defaultBox = New(DefaultCap)
 // Default is the process-wide Box shared by the bridge and the agent loop.
 func Default() *Box { return defaultBox }
 
+// Watch returns a broadcast channel for the session. A nonempty Push or
+// PushFront closes it and replaces it with a fresh channel; Clear closes it
+// and removes the watch. Callers must Watch before checking the queue, then
+// wait only if no input is queued, so input arriving between the check and
+// the wait cannot be missed. After waking, repeat Watch and the queue check.
+// Existing queued input does not close the channel returned by Watch.
+func (b *Box) Watch(sessionID string) <-chan struct{} {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.watches == nil {
+		b.watches = make(map[string]chan struct{})
+	}
+	if b.watches[sessionID] == nil {
+		b.watches[sessionID] = make(chan struct{})
+	}
+	return b.watches[sessionID]
+}
+
+// wakeLocked broadcasts to existing listeners. The caller must hold b.mu.
+func (b *Box) wakeLocked(sessionID string) {
+	if ch := b.watches[sessionID]; ch != nil {
+		close(ch)
+		b.watches[sessionID] = make(chan struct{})
+	}
+}
+
 // Push appends items to the session's queue as one unit, so no concurrent
 // push can interleave with them. When the queue would exceed its cap the
 // oldest items are dropped and returned. onDelivered, when non-nil,
@@ -86,6 +113,7 @@ func (b *Box) Push(sessionID string, onDelivered DeliveredFunc, items ...Item) (
 		q = q[over:]
 	}
 	b.queues[sessionID] = append([]Item(nil), q...)
+	b.wakeLocked(sessionID)
 	return evicted
 }
 
@@ -122,6 +150,7 @@ func (b *Box) PushFront(sessionID string, items ...Item) (evicted []Item) {
 		q = q[over:]
 	}
 	b.queues[sessionID] = q
+	b.wakeLocked(sessionID)
 	return evicted
 }
 
@@ -163,6 +192,7 @@ func (b *Box) DrainForDelivery(sessionID string) (items []Item, finish func()) {
 
 // Clear drops the session's queue and its delivery hook and returns the
 // items that were still waiting. Nothing it returns is ever acknowledged.
+// An existing watch is closed before removal so its waiters are not stranded.
 func (b *Box) Clear(sessionID string) []Item {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -170,6 +200,10 @@ func (b *Box) Clear(sessionID string) []Item {
 	delete(b.queues, sessionID)
 	delete(b.hooks, sessionID)
 	delete(b.drains, sessionID)
+	if ch := b.watches[sessionID]; ch != nil {
+		close(ch)
+		delete(b.watches, sessionID)
+	}
 	return q
 }
 

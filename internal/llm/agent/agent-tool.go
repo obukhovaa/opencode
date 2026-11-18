@@ -76,10 +76,10 @@ func (b *agentTool) Info() tools.ToolInfo {
 		"- If you want to read a specific file path, use the read or glob tool instead of the Task tool, to find the match more quickly\n" +
 		"- If you are searching for a specific class definition like \"class Foo\", use the glob tool instead, to find the match more quickly\n\n" +
 		"Usage notes:\n" +
-		"1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses\n" +
+		"1. Launch independent agents with non-conflicting writes concurrently using a single message with multiple tool uses. Run dependent tasks sequentially after inspecting earlier results; never guess values from unfinished tasks.\n" +
 		"2. When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result.\n" +
 		"3. Each agent invocation starts with a fresh context unless you provide task_id to resume the same subagent session (which continues with its previous messages and tool outputs). When starting fresh, your prompt should contain a highly detailed task description for the agent to perform autonomously and you should specify exactly what information the agent should return back to you in its final and only message to you.\n" +
-		"4. The agent's outputs should generally be trusted\n" +
+		"4. Use subagent results as evidence. Check completion claims against reported failures and relevant verification; avoid duplicating research already delegated.\n" +
 		"5. Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent."
 
 	return tools.ToolInfo{
@@ -104,7 +104,7 @@ func (b *agentTool) Info() tools.ToolInfo {
 			},
 			"async": map[string]any{
 				"type":        "boolean",
-				"description": "If true, spawn the subagent in the background. The tool returns IMMEDIATELY with an ack containing a `task_id`. When the subagent finishes, a synthetic completion notification is automatically injected into THIS session (no polling). Use this when you want to fan out work in parallel — keep working on other things while the subagent runs. The synchronous default (false) blocks until the subagent finishes. Use `tasklist`/`taskstop` to inspect/kill async tasks.",
+				"description": "If true, spawn the subagent in the background. The tool returns IMMEDIATELY with an ack containing a `task_id`. When the subagent finishes, a synthetic completion notification is automatically injected into THIS session (no polling). Use this to fan out independent work with non-conflicting writes. Continue useful independent work while the subagent runs; when only asynchronous work remains, follow the background-task waiting instructions without claiming success or emitting struct_output. The synchronous default (false) blocks until the subagent finishes. Use `tasklist`/`taskstop` to inspect/kill async tasks.",
 			},
 		},
 		Required: []string{"prompt", "subagent_type", "task_title"},

@@ -10,6 +10,10 @@ An agent definition gates which tools it may call with exactly one of two keys:
 They are mutually exclusive. Declaring both in one definition source is an
 error (see [Mutual exclusivity](#mutual-exclusivity)).
 
+`patch` is a compatibility exception to the defaults and wildcard grants:
+only an exact `tools: {"patch": true}` or an `allowTools` entry of `"patch"`
+enables it. `"*"` and `"p*"` alone do not. See [Patch compatibility tool](tools.md#patch-compatibility-tool).
+
 ## Why an allow-list exists
 
 `tools` is allow-by-default: a tool the agent never mentions is granted. That

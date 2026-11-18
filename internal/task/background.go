@@ -120,6 +120,12 @@ func EnqueueTaskCompletion(ctx context.Context, in CompletionInput) error {
 		}
 	}
 
+	// Wake exact-session event waiters only after the pair is durable and any
+	// terminal transition is visible. Monitor events wake without ending tasks.
+	if reg := GlobalRegistry(); reg != nil {
+		reg.NotifySession(in.SessionID)
+	}
+
 	// Auto-resume if the session is idle. Cron retains its own busy lock
 	// (acquired externally), so when cron calls this primitive the session
 	// is already locked-busy and ResumeSession is a no-op.

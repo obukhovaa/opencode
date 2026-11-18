@@ -28,7 +28,8 @@ const MonitorToolName = "monitor"
 
 // MonitorParams is the input schema for the monitor tool.
 type MonitorParams struct {
-	Cmd           string   `json:"cmd"`
+	Cmd           string   `json:"cmd,omitempty"`
+	Command       string   `json:"command,omitempty"`
 	Args          []string `json:"args,omitempty"`
 	Cwd           string   `json:"cwd,omitempty"`
 	Pattern       string   `json:"pattern"`
@@ -67,21 +68,28 @@ func NewMonitorTool(perm permission.Service, reg agentregistry.Registry) BaseToo
 func (m *monitorTool) Info() ToolInfo {
 	return ToolInfo{
 		Name: MonitorToolName,
-		Description: `Spawn a long-running subprocess and stream regex-matched lines back as notifications. Returns immediately; a terminal notification fires when the subprocess exits, hits max_events, or is stopped via ` + "`taskstop`" + `.
+		Description: `Start a subprocess and stream matching output as events while you do independent work. Returns immediately. When idle, call yield alone (or end your turn if yield is unavailable) to wait for notifications; do not poll or sleep in model tool calls. Silence is healthy when no lines match.
 
-Use for follow-mode streams (` + "`tail -F`" + `, ` + "`kubectl logs -f`" + `, ` + "`journalctl -f`" + `). For run-to-completion work (build/test/deploy) use ` + "`bash`" + ` with ` + "`run_in_background: true`" + ` instead.
+Use for streams such as tail -F, kubectl logs -f, or journalctl -f. For one outcome (build/test/deploy), prefer bash with run_in_background: true and a finite waiter that exits on success or failure. A shell polling script may sleep between checks; that is fine and needs no model polling. monitor with max_events: 1 is also allowed; cover both success and failure in the pattern or script so failures cannot leave you waiting forever.
 
-No shell: for pipes/redirects use ` + "`cmd: \"bash\", args: [\"-c\", \"...\"]`" + `. Don't poll ` + "`tasklist`" + ` — events arrive automatically.
-`,
+Choose exactly one input mode: command is a shell string executed with bash -c (pipes, redirects, quoting supported), like background bash; cmd plus optional args is direct argv with no shell. Legacy cmd: "bash", args: ["-c", "..."] remains valid. args must be an array, e.g. ["logs", "-f", "pod"].
+
+pattern is an RE2 regex, default "." (every nonempty line), applied line by line to merged stdout and stderr. Unlike separate stream filters, matching includes stderr too. All output is saved even when unmatched. Pipeline programs may buffer output; enable line buffering or unbuffered mode if events are delayed.
+
+Matches are coalesced into monitor-event notifications. A terminal notification reports exit, failure, or the event cap.`,
 		Parameters: map[string]any{
 			"cmd": map[string]any{
 				"type":        "string",
-				"description": "The command to spawn (absolute path or PATH-resolved)",
+				"description": "Direct executable (absolute path or PATH-resolved), with optional args. Exactly one of cmd or command is required; do not mix modes.",
+			},
+			"command": map[string]any{
+				"type":        "string",
+				"description": "Shell command executed with bash -c, like background bash. Exactly one of command or cmd is required; cannot be combined with cmd or args.",
 			},
 			"args": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
-				"description": "Optional arguments to pass to cmd",
+				"description": "Optional argv array for cmd only, e.g. [\"logs\", \"-f\", \"pod\"]. A string is invalid; cannot be combined with command.",
 			},
 			"cwd": map[string]any{
 				"type":        "string",
@@ -89,7 +97,8 @@ No shell: for pipes/redirects use ` + "`cmd: \"bash\", args: [\"-c\", \"...\"]`"
 			},
 			"pattern": map[string]any{
 				"type":        "string",
-				"description": "RE2 regex applied line-by-line to merged stdout+stderr. Matched lines are coalesced and surfaced as monitor-event notifications.",
+				"default":     ".",
+				"description": "Optional RE2 regex (default \".\", every nonempty line) applied line-by-line to merged stdout+stderr, including stderr unlike separate stream filters. Matches are coalesced into monitor-event notifications.",
 			},
 			"min_interval_ms": map[string]any{
 				"type":        "integer",
@@ -104,7 +113,7 @@ No shell: for pipes/redirects use ` + "`cmd: \"bash\", args: [\"-c\", \"...\"]`"
 				"description": "Short description of what's being monitored; shown in the ack and in tasklist",
 			},
 		},
-		Required: []string{"cmd", "pattern"},
+		Required: []string{},
 	}
 }
 
@@ -114,13 +123,20 @@ func (m *monitorTool) IsBaseline() bool                           { return false
 func (m *monitorTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error) {
 	var params MonitorParams
 	if err := json.Unmarshal([]byte(call.Input), &params); err != nil {
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) && (typeErr.Field == "args" || strings.HasPrefix(typeErr.Field, "args.")) {
+			return NewTextErrorResponse(`args must be an array of strings, e.g. ["logs", "-f", "pod"]; for a shell string use command without cmd or args`), nil
+		}
 		return NewTextErrorResponse(fmt.Sprintf("invalid parameters: %s", err)), nil
 	}
-	if strings.TrimSpace(params.Cmd) == "" {
-		return NewTextErrorResponse("cmd is required"), nil
+	if params.Command != "" && (params.Cmd != "" || params.Args != nil) {
+		return NewTextErrorResponse("choose exactly one mode: command (shell string) or cmd with optional args (argv); command cannot be combined with cmd or args"), nil
 	}
-	if strings.TrimSpace(params.Pattern) == "" {
-		return NewTextErrorResponse("pattern is required"), nil
+	if strings.TrimSpace(params.Cmd) == "" && strings.TrimSpace(params.Command) == "" {
+		return NewTextErrorResponse("exactly one of cmd (executable) or command (shell string) is required"), nil
+	}
+	if params.Pattern == "" {
+		params.Pattern = "."
 	}
 	if params.MinIntervalMs == 0 {
 		params.MinIntervalMs = monitorDefaultIntervalMs
@@ -152,18 +168,24 @@ func (m *monitorTool) Run(ctx context.Context, call ToolCall) (ToolResponse, err
 
 	// Permission gate at spawn time. The synthetic events and terminal
 	// notifications that follow do NOT trigger fresh permission checks.
-	action := m.registry.EvaluatePermission(string(GetAgentID(ctx)), MonitorToolName, params.Cmd)
+	permissionInput := params.Cmd
+	commandDisplay := joinCommand(params.Cmd, params.Args)
+	if params.Command != "" {
+		permissionInput = params.Command
+		commandDisplay = params.Command
+	}
+	action := m.registry.EvaluatePermission(string(GetAgentID(ctx)), MonitorToolName, permissionInput)
 	switch action {
 	case permission.ActionAllow:
 	case permission.ActionDeny:
-		return NewEmptyResponse(), permission.DeniedByRule(MonitorToolName, params.Cmd)
+		return NewEmptyResponse(), permission.DeniedByRule(MonitorToolName, permissionInput)
 	default:
 		ok := m.permissions.Request(ctx, permission.CreatePermissionRequest{
 			SessionID:   sessionID,
 			Path:        cwd,
 			ToolName:    MonitorToolName,
 			Action:      "spawn",
-			Description: fmt.Sprintf("Monitor: %s (pattern: %s)", joinCommand(params.Cmd, params.Args), params.Pattern),
+			Description: fmt.Sprintf("Monitor: %s (pattern: %s)", commandDisplay, params.Pattern),
 			Params:      params,
 		})
 		if !ok {
@@ -186,6 +208,9 @@ func (m *monitorTool) Run(ctx context.Context, call ToolCall) (ToolResponse, err
 	// can scan the merged stream while every byte is also written to disk.
 	pr, pw := io.Pipe()
 	cmd := exec.Command(params.Cmd, params.Args...)
+	if params.Command != "" {
+		cmd = exec.Command("bash", "-c", params.Command)
+	}
 	cmd.Dir = cwd
 	cmd.Env = toolenv.Environ()
 	cmd.Stdout = pw
@@ -245,8 +270,8 @@ func (m *monitorTool) Run(ctx context.Context, call ToolCall) (ToolResponse, err
 	go state.waitAndFinalize(cmd, pw, syntheticInput)
 
 	ack := fmt.Sprintf(
-		"Monitor started.\ntask_id: %s\noutput_file: %s\ncmd: %s\npattern: %s\nmin_interval_ms: %d\nmax_events: %d\n\nMatching lines will arrive as synthetic monitor-event notifications. A terminal notification (completed / failed / killed) fires when the subprocess exits, max_events is reached, or you call taskstop. Do NOT poll and do NOT sleep while waiting — the events arrive automatically, and sleeping cannot observe one sooner. In a non-interactive (flow) step the runtime holds the turn open until an event or the terminal notification arrives, so ending your turn without a tool call is how you wait. A silent monitor is usually a healthy one whose pattern has not matched yet; `tasklist` shows how many lines it has scanned.",
-		taskID, outputPath, joinCommand(params.Cmd, params.Args), params.Pattern, params.MinIntervalMs, params.MaxEvents,
+		"Monitor started.\ntask_id: %s\noutput_file: %s\ncmd: %s\npattern: %s\nmin_interval_ms: %d\nmax_events: %d\n\nMatching lines and terminal outcomes arrive automatically. Continue independent work; when idle, call `yield` alone to wait. If yield is unavailable, end your turn without claiming success; flow runs resume on reports. Do not poll and do NOT sleep in model tool calls. Silence is healthy until the pattern matches.",
+		taskID, outputPath, commandDisplay, params.Pattern, params.MinIntervalMs, params.MaxEvents,
 	)
 	return WithResponseMetadata(NewTextResponse(ack), MonitorResponseMetadata{
 		TaskID:        taskID,
