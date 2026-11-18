@@ -107,6 +107,12 @@ func (m *Manifest) Exec(ctx context.Context, inv *Invocation) ExecResult {
 	switch {
 	case waitErr == nil:
 		res.ExitCode = 0
+	case res.TimedOut && errors.Is(waitErr, context.DeadlineExceeded):
+		// A wrapper can exit successfully while a descendant keeps the
+		// output pipes open. Wait then reports the context deadline, rather
+		// than an ExitError, after Cancel kills the process group. Keep that
+		// outcome as a timeout so its output and diagnostic are retained.
+		res.ExitCode = 137
 	case errors.As(waitErr, &exitErr):
 		res.ExitCode = exitErr.ExitCode()
 		if res.ExitCode == -1 && res.TimedOut {

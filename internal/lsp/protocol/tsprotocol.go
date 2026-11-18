@@ -2312,7 +2312,7 @@ type FileOperationPattern struct {
 	//  - `*` to match one or more characters in a path segment
 	//  - `?` to match on one character in a path segment
 	//  - `**` to match any number of path segments, including none
-	//  - `{}` to group sub patterns into an OR expression. (e.g. `**​/*.{ts,js}` matches all TypeScript and JavaScript files)
+	//  - `{}` to group sub patterns into an OR expression. (e.g. `**/*.{ts,js}` matches all TypeScript and JavaScript files)
 	//  - `[]` to declare a range of characters to match in a path segment (e.g., `example.[0-9]` to match on `example.0`, `example.1`, …)
 	//  - `[!...]` to negate a range of characters to match in a path segment (e.g., `example.[!0-9]` to match on `example.a`, `example.b`, but not `example.0`)
 	Glob string `json:"glob"`
@@ -4094,7 +4094,7 @@ type PartialResultParams struct {
 //   - `*` to match one or more characters in a path segment
 //   - `?` to match on one character in a path segment
 //   - `**` to match any number of path segments, including none
-//   - `{}` to group conditions (e.g. `**​/*.{ts,js}` matches all TypeScript and JavaScript files)
+//   - `{}` to group conditions (e.g. `**/*.{ts,js}` matches all TypeScript and JavaScript files)
 //   - `[]` to declare a range of characters to match in a path segment (e.g., `example.[0-9]` to match on `example.0`, `example.1`, …)
 //   - `[!...]` to negate a range of characters to match in a path segment (e.g., `example.[!0-9]` to match on `example.a`, `example.b`, but not `example.0`)
 //
@@ -5443,7 +5443,7 @@ type TextDocumentEdit struct {
 //   - `*` to match one or more characters in a path segment
 //   - `?` to match on one character in a path segment
 //   - `**` to match any number of path segments, including none
-//   - `{}` to group sub patterns into an OR expression. (e.g. `**​/*.{ts,js}` matches all TypeScript and JavaScript files)
+//   - `{}` to group sub patterns into an OR expression. (e.g. `**/*.{ts,js}` matches all TypeScript and JavaScript files)
 //   - `[]` to declare a range of characters to match in a path segment (e.g., `example.[0-9]` to match on `example.0`, `example.1`, …)
 //   - `[!...]` to negate a range of characters to match in a path segment (e.g., `example.[!0-9]` to match on `example.a`, `example.b`, but not `example.0`)
 //
@@ -5464,7 +5464,7 @@ type TextDocumentFilterLanguage struct {
 	Language string `json:"language"`
 	// A Uri {@link Uri.scheme scheme}, like `file` or `untitled`.
 	Scheme string `json:"scheme,omitempty"`
-	// A glob pattern, like **​/*.{ts,js}. See TextDocumentFilter for examples.
+	// A glob pattern, like **/*.{ts,js}. See TextDocumentFilter for examples.
 	//
 	// @since 3.18.0 - support for relative patterns.
 	Pattern *GlobPattern `json:"pattern,omitempty"`
@@ -5480,7 +5480,7 @@ type TextDocumentFilterPattern struct {
 	Language string `json:"language,omitempty"`
 	// A Uri {@link Uri.scheme scheme}, like `file` or `untitled`.
 	Scheme string `json:"scheme,omitempty"`
-	// A glob pattern, like **​/*.{ts,js}. See TextDocumentFilter for examples.
+	// A glob pattern, like **/*.{ts,js}. See TextDocumentFilter for examples.
 	//
 	// @since 3.18.0 - support for relative patterns.
 	Pattern GlobPattern `json:"pattern"`
@@ -5496,7 +5496,7 @@ type TextDocumentFilterScheme struct {
 	Language string `json:"language,omitempty"`
 	// A Uri {@link Uri.scheme scheme}, like `file` or `untitled`.
 	Scheme string `json:"scheme"`
-	// A glob pattern, like **​/*.{ts,js}. See TextDocumentFilter for examples.
+	// A glob pattern, like **/*.{ts,js}. See TextDocumentFilter for examples.
 	//
 	// @since 3.18.0 - support for relative patterns.
 	Pattern *GlobPattern `json:"pattern,omitempty"`
