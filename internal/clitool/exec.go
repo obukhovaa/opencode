@@ -95,6 +95,14 @@ func (m *Manifest) Exec(ctx context.Context, inv *Invocation) ExecResult {
 		return res
 	}
 	waitErr := cmd.Wait()
+	if runCtx.Err() != nil || errors.Is(waitErr, exec.ErrWaitDelay) {
+		// Wait can stop watching the context after the leader exits even
+		// though descendants still hold its pipes. Its I/O drain bound closes
+		// those pipes but does not kill the descendants. A leader's nonzero
+		// exit can also mask ErrWaitDelay, so clean up expired runs regardless
+		// of the error Wait returned.
+		task.SignalProcessGroup(cmd.Process, task.KillSignal())
+	}
 	res.Duration = time.Since(start)
 	res.Stdout = stdout.String()
 	res.Stderr = stderr.String()
@@ -107,6 +115,12 @@ func (m *Manifest) Exec(ctx context.Context, inv *Invocation) ExecResult {
 	switch {
 	case waitErr == nil:
 		res.ExitCode = 0
+	case res.TimedOut && (errors.Is(waitErr, context.DeadlineExceeded) || errors.Is(waitErr, exec.ErrWaitDelay)):
+		// A wrapper can exit successfully while a descendant keeps the
+		// output pipes open. Wait then reports the context deadline, rather
+		// than an ExitError, after Cancel kills the process group. Keep that
+		// outcome as a timeout so its output and diagnostic are retained.
+		res.ExitCode = 137
 	case errors.As(waitErr, &exitErr):
 		res.ExitCode = exitErr.ExitCode()
 		if res.ExitCode == -1 && res.TimedOut {

@@ -488,10 +488,7 @@ func (g *geminiClient) stream(ctx context.Context, messages []message.Message, t
 			reader.Close()
 
 			if errors.Is(streamErr, ErrStreamStalled) {
-				logging.Warn("Gemini stream stalled, will retry", "attempt", attempts)
-				if attempts < maxRetries {
-					continue
-				}
+				logging.Warn("Gemini stream stalled", "attempt", attempts)
 				eventChan <- ProviderEvent{Type: EventError, Error: ErrStreamStalled}
 				return
 			}

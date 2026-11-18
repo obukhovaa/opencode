@@ -444,9 +444,6 @@ func (o *openaiClient) stream(ctx context.Context, messages []message.Message, t
 
 			if errors.Is(streamErr, ErrStreamStalled) {
 				logging.Warn("OpenAI stream stalled", "attempt", attempts, "emitted_output", emittedOutput)
-				if !emittedOutput && attempts < maxRetries {
-					continue
-				}
 				eventChan <- ProviderEvent{Type: EventError, Error: streamErr}
 				close(eventChan)
 				return

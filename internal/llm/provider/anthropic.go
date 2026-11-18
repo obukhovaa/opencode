@@ -1357,10 +1357,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 			reader.Close()
 
 			if errors.Is(streamErr, ErrStreamStalled) {
-				logging.Warn("Anthropic stream stalled, will retry", "attempt", attempts)
-				if attempts < maxRetries {
-					continue
-				}
+				logging.Warn("Anthropic stream stalled", "attempt", attempts)
 				eventChan <- ProviderEvent{Type: EventError, Error: streamErr}
 				close(eventChan)
 				return

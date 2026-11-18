@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/viper"
+
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
 )
@@ -24,17 +26,29 @@ func newOrchestratorForHTTPTest(t *testing.T) (*Service, *httptest.Server) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Seed a config singleton for the identity-CRUD writeback path.
+	// Seed a config singleton for the identity-CRUD writeback path. Reset
+	// Viper too: config.Reset only clears the decoded singleton, leaving
+	// global search paths, merged keys and the writeback filename behind.
 	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "xdg"))
+	t.Setenv(config.ProfileEnv, "")
 	cfgPath := filepath.Join(dir, ".opencode.json")
-	if err := writeFile(cfgPath, []byte(`{"router":{}}`)); err != nil {
+	if err := writeFile(cfgPath, []byte(`{"providers":{"anthropic":{"apiKey":"http-test-key"}},"router":{}}`)); err != nil {
 		t.Fatalf("write cfg: %v", err)
 	}
 	config.Reset()
+	viper.Reset()
+	// HOME contains the fixture, so both the base config and ConfigFileUsed
+	// (the CRUD writeback destination) resolve to it. A local merge alone
+	// would leave writeback pointed at the developer's global config.
+	t.Cleanup(func() {
+		config.Reset()
+		viper.Reset()
+	})
 	if _, err := config.Load(dir, false); err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	t.Cleanup(config.Reset)
 
 	mux := http.NewServeMux()
 	svc.RegisterRoutes(mux)
@@ -45,6 +59,49 @@ func newOrchestratorForHTTPTest(t *testing.T) (*Service, *httptest.Server) {
 
 func writeFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o600)
+}
+
+func TestHTTPFixtureIsolatesConfigAndWriteback(t *testing.T) {
+	// A valid fixture must survive a stale Viper override and an unrelated
+	// global config whose agent cannot pass provider validation.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))
+	globalPath := filepath.Join(home, ".opencode.json")
+	global := []byte(`{"agents":{"inherited":{"model":"missing-provider.invalid-model"}}}`)
+	if err := writeFile(globalPath, global); err != nil {
+		t.Fatal(err)
+	}
+	viper.SetConfigFile(globalPath)
+	viper.Set("agents.stale.model", "missing-provider.invalid-model")
+
+	_, server := newOrchestratorForHTTPTest(t)
+	resp, err := server.Client().Post(server.URL+"/router/identities/slack", "application/json", strings.NewReader(`{"id":"fixture","botToken":"xoxb-test","appToken":"xapp-test","enabled":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST identity = %d", resp.StatusCode)
+	}
+	data, err := os.ReadFile(filepath.Join(config.Get().WorkingDir, ".opencode.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted config.Config
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Router.Channels.Slack == nil || len(persisted.Router.Channels.Slack.Apps) != 1 || persisted.Router.Channels.Slack.Apps[0].ID != "fixture" {
+		t.Fatalf("identity not persisted in fixture: %s", data)
+	}
+	data, err = os.ReadFile(globalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, global) {
+		t.Fatalf("global config was mutated: %s", data)
+	}
 }
 
 // --- 404 bare paths --------------------------------------------------------
