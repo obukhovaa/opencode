@@ -1165,6 +1165,12 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		msgHistory = append(msgHistory, deltaMsg)
 	}
 
+	// Pending input from an earlier failed run is delivered before this run
+	// calls the model. Keep it past any recovery compaction, like userMsg.
+	initialResumeTail := syntheticTail(msgHistory)
+	initialInbox := a.drainInbox(ctx, sessionID)
+	msgHistory = append(msgHistory, initialInbox...)
+
 	// compactInLoop runs one auto-compaction inside the turn and rebuilds
 	// msgHistory from the new summary: the threshold check before a model
 	// call, and the recovery after a call the provider rejected as too long.
@@ -1180,6 +1186,11 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 		var resumeTail []message.Message
 		if !preserveTail && !hasUserTurn {
 			resumeTail = syntheticTail(msgHistory)
+			if len(initialInbox) > 0 {
+				// Inbox user messages hide the synthetic suffix; retain the
+				// completion pair that was this empty-content run's input.
+				resumeTail = initialResumeTail
+			}
 		}
 		if errSync := a.autoCompact(ctx, sessionID, trigger, tokens); errSync != nil {
 			return tokens, false, nil
@@ -1218,10 +1229,12 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 			msgHistory = append(msgs, preservedTail...)
 		} else if hasUserTurn {
 			msgHistory = append(msgs, userMsg)
+			msgHistory = append(msgHistory, initialInbox...)
 		} else {
 			// Auto-resume turn or non-interactive re-entry — no
 			// user message to re-append.
 			msgHistory = append(msgs, resumeTail...)
+			msgHistory = append(msgHistory, initialInbox...)
 		}
 
 		rememberMessages(seenBackground, msgHistory)
@@ -1256,6 +1269,38 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 
 	tracker := newCallTracker()
 
+	// Share the stall budget with overflow/reset recovery within one model
+	// turn. A successful loop iteration starts a fresh budget; other errors
+	// must not reset it and multiply the number of stalled sends.
+	stallResends := 0
+	callModel := func(callCtx context.Context) (message.Message, *message.Message, error) {
+		for {
+			turnsUsed++
+			observeCompactionInput()
+			msg, results, err := a.streamAndHandleEvents(callCtx, sessionID, msgHistory, toolSet, tracker)
+			if !isModelCallError(err) || !errors.Is(err, provider.ErrStreamStalled) || callCtx.Err() != nil {
+				return msg, results, err
+			}
+			if stallResends >= maxStallResends {
+				return msg, results, fmt.Errorf("model stream stalled after %d resends: %w", maxStallResends, err)
+			}
+			stallResends++
+			a.discardPartialMessage(callCtx, &msg)
+			// The failed stream has ended and no tool ran. Only now may
+			// queued input join the next request; never cancel for inbox input.
+			drained := a.drainInbox(callCtx, sessionID)
+			if len(drained) > 0 {
+				tracker.Reset()
+				msgHistory = append(msgHistory, drained...)
+				if preserveTail {
+					preservedTail = append(preservedTail, drained...)
+				} else {
+					initialInbox = append(initialInbox, drained...)
+				}
+			}
+		}
+	}
+
 	// finalResult holds the natural-completion event that the inner loop
 	// produced. Errors return directly from processGeneration; only the
 	// success paths flow through finalResult so the outer non-interactive
@@ -1289,6 +1334,7 @@ OuterLoop:
 			break OuterLoop
 		}
 		for {
+			stallResends = 0
 			cycles += 1
 			// Check for cancellation before each iteration
 			select {
@@ -1382,10 +1428,13 @@ OuterLoop:
 				if forceStruct {
 					finalCtx = provider.WithForcedTool(ctx, tools.StructOutputToolName)
 				}
-				turnsUsed++
-				observeCompactionInput()
-				finalMsg, finalToolResults, finalErr := a.streamAndHandleEvents(finalCtx, sessionID, msgHistory, toolSet, tracker)
+				finalMsg, finalToolResults, finalErr := callModel(finalCtx)
 				if finalErr != nil {
+					if errors.Is(finalErr, provider.ErrStreamStalled) {
+						a.createErrorToolResults(finalMsg)
+						a.finishMessage(ctx, &finalMsg, message.FinishReasonError)
+						return a.err(fmt.Errorf("failed to process events: %w", finalErr))
+					}
 					if !errors.Is(finalErr, context.Canceled) {
 						a.warnIfLikelyContextOverflow(sessionID, etaTokens, finalErr)
 					}
@@ -1442,9 +1491,7 @@ OuterLoop:
 			// The call's result stays out of agentMessage/toolResults until it
 			// succeeds: a recovery compaction below re-appends the previous
 			// cycle's pair (preserveTail) from them.
-			turnsUsed++
-			observeCompactionInput()
-			turnMsg, turnResults, turnErr := a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
+			turnMsg, turnResults, turnErr := callModel(ctx)
 			// errorResultsWritten: turnMsg's tool calls already got their
 			// error results, so the error path below must not write them twice.
 			errorResultsWritten := false
@@ -1455,7 +1502,7 @@ OuterLoop:
 			// not: a run past its deadline (a flow step's timeout) fails its
 			// call with DeadlineExceeded, which near the window would classify
 			// as an overflow and run a compaction on a dead context.
-			if turnErr != nil && cfg.AutoCompact && !overflowRetried && ctx.Err() == nil && isModelCallError(turnErr) && !errors.Is(turnErr, context.Canceled) {
+			if turnErr != nil && !errors.Is(turnErr, provider.ErrStreamStalled) && cfg.AutoCompact && !overflowRetried && ctx.Err() == nil && isModelCallError(turnErr) && !errors.Is(turnErr, context.Canceled) {
 				if cause := a.contextOverflowCause(etaTokens, turnErr); cause != "" && a.compactionAllowed(sessionID, etaTokens) {
 					// Recover from a call the provider rejected as too long: compact
 					// once and send the same turn again, once per run. A
@@ -1483,12 +1530,12 @@ OuterLoop:
 						etaTokens = recounted
 						a.provider.AdjustMaxTokens(etaTokens)
 						observeCompactionInput()
-						retryMsg, retryResults, retryErr := a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
+						retryMsg, retryResults, retryErr := callModel(ctx)
 						turnMsg, errorResultsWritten = retryMsg, false
 						switch {
 						case retryErr == nil:
 							turnResults, turnErr = retryResults, nil
-						case errors.Is(retryErr, context.Canceled):
+						case errors.Is(retryErr, context.Canceled), errors.Is(retryErr, provider.ErrStreamStalled):
 							turnErr = retryErr
 						default:
 							// The original error is the one that explains the
@@ -1523,7 +1570,7 @@ OuterLoop:
 				if ctx.Err() == nil {
 					a.discardPartialMessage(ctx, &turnMsg)
 					observeCompactionInput()
-					retryMsg, retryResults, retryErr := a.streamAndHandleEvents(ctx, sessionID, msgHistory, toolSet, tracker)
+					retryMsg, retryResults, retryErr := callModel(ctx)
 					turnMsg, errorResultsWritten = retryMsg, false
 					turnResults, turnErr = retryResults, retryErr
 				}
@@ -2472,6 +2519,9 @@ func (a *agent) finishMessage(ctx context.Context, msg *message.Message, finishR
 // streamResetResendDelay is the pause before processGeneration resends a
 // turn whose model stream a peer reset.
 var streamResetResendDelay = time.Second
+
+// Independent of provider HTTP/transient retries and the flow step retry.
+const maxStallResends = 2
 
 // discardPartialMessage removes the assistant message a reset stream left
 // half-written, before its turn is resent: no tool of it ran, and keeping it

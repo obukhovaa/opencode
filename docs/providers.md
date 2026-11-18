@@ -130,3 +130,9 @@ Absent, empty, null, array and object values are not converted into reasoning te
 This repairs transport continuity; it is not evidence of a particular cost reduction. Replay can increase input tokens, so measure net usage and retries for the affected routes before claiming savings.
 
 Anthropic tool-call history preserves numeric JSON argument types and exact digits, including IDs above `2^53`. Canonical raw JSON is used at the SDK serialization boundary so these values are neither rounded nor converted to strings; this applies to ordinary calls as well as composed MCP reads.
+
+## Stalled streams
+
+Anthropic, OpenAI and Gemini streams time out after five minutes without an event. `OPENCODE_PROVIDER_STREAM_INACTIVITY_TIMEOUT` retains its existing override. The agent resends a stalled model turn at most twice, then fails it with a stall error. HTTP rate-limit and transient-error retry policies are separate and unchanged.
+
+Before each stall resend, the agent discards the unfinished assistant response and adds pending inbox messages to the request. It also delivers pending input before the first model call when a session runs again. Input arriving during a model or tool call waits for that call to end; it never interrupts it. Input left after the final failed call remains unacknowledged for the next run.

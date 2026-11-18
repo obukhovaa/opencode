@@ -222,7 +222,7 @@ func TestOverflowRetry_NearWindowSkipsRetriedTransientErrors(t *testing.T) {
 	}{
 		{name: "429 after retries at 92%", report: 920, err: err429Retried, wantLog: "main"},
 		{name: "http client timeout at 92%", report: 920, err: errClientTimeout, wantLog: "main"},
-		{name: "stalled stream at 92%", report: 920, err: provider.ErrStreamStalled, wantLog: "main"},
+		{name: "stalled stream at 92%", report: 920, err: provider.ErrStreamStalled, wantLog: "main,main,main"},
 		{name: "peer stream reset at 92% still recovers", report: 920, err: errRSTStream, wantLog: "main,summarizer,main"},
 		{name: "overflow marker at 10% recovers", report: 100, err: errPromptTooLong, wantLog: "main,summarizer,main"},
 		{name: "overflow marker at 92% recovers", report: 920, err: errPromptTooLong, wantLog: "main,summarizer,main"},
@@ -244,7 +244,7 @@ func TestOverflowRetry_NearWindowSkipsRetriedTransientErrors(t *testing.T) {
 			if got := strings.Join(*log, ","); got != tt.wantLog {
 				t.Fatalf("call order = %s, want %s", got, tt.wantLog)
 			}
-			recovered := tt.wantLog != "main"
+			recovered := strings.Contains(tt.wantLog, "summarizer")
 			if recovered && res.Error != nil {
 				t.Fatalf("processGeneration: %v", res.Error)
 			}
