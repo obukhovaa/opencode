@@ -344,7 +344,7 @@ func NewToolSet(
 		result <- tools.NewToolSearchTool()
 	}
 	if mcpCompositionEnabled(*info, config.Get()) && reg.IsToolEnabled(agentID, tools.MCPComposeToolName) {
-		result <- tools.NewMCPComposeTool()
+		result <- tools.NewMCPComposeTool(config.Get().MCPComposition.ReadTools...)
 	}
 
 	wg := sync.WaitGroup{}

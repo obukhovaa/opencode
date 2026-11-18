@@ -8,7 +8,7 @@ Compose a small set of authorized MCP reads within one invocation while exposing
 
 ### Requirement: Explicit pilot eligibility
 
-The system SHALL expose `mcp_compose` only when the agent grants that exact tool name and `mcpComposition.readTools` contains operator-reviewed, exact MCP tool names. Implicit or wildcard grants SHALL NOT enable composition; eligibility SHALL check literal membership in the resolved `allowTools` or an exact true `tools` entry, rather than a helper that accepts wildcard grants. Each child SHALL also belong to the current agent's resolved MCP tools, remain eligible under current permissions and have no conflicting effective-name registration. Server annotations alone SHALL NOT authorize an endpoint; an explicitly false read-only hint SHALL make it ineligible. A deferred child SHALL already be activated in the current session. Composition SHALL NOT modify discovery state, the tool catalog, or tool serialization order.
+The system SHALL expose `mcp_compose` only when the agent grants that exact tool name and `mcpComposition.readTools` contains operator-reviewed, exact MCP tool names. Implicit or wildcard grants SHALL NOT enable composition; eligibility SHALL check literal membership in the resolved `allowTools` or an exact true `tools` entry, rather than a helper that accepts wildcard grants. Each child SHALL also belong to the current agent's resolved MCP tools, remain eligible under current permissions and have no conflicting effective-name registration. Server annotations alone SHALL NOT authorize an endpoint; an explicitly false read-only hint SHALL make it ineligible. A deferred child SHALL already be activated in the current session. Composition SHALL NOT modify discovery state, the tool catalog, or tool serialization order. The enabled tool schema SHALL advertise the configured candidate endpoint names in a sorted, duplicate-free `steps[].tool` enum. This declaration SHALL NOT grant access or imply that a candidate is currently available or activated; runtime eligibility checks SHALL remain authoritative.
 
 #### Scenario: Default configuration
 - **WHEN** composition is not explicitly enabled
@@ -43,6 +43,13 @@ The tool SHALL reject unknown keys, duplicate JSON keys, invalid references, inv
 - **WHEN** a selected field is absent
 - **THEN** projection fails explicitly rather than substituting null
 - **AND** an explicitly present null value remains selectable
+
+
+#### Scenario: Normalized MCP object differs from REST
+- **WHEN** a caller selects `/sha` from an MCP object containing only `/diff_refs/head_sha`
+- **THEN** projection fails with a diagnostic identifying the caller's `/sha` selector
+- **AND** the diagnostic does not disclose any unselected response keys or values
+- **AND** a corrected selection of `/diff_refs/head_sha` succeeds
 
 ### Requirement: Ordinary execution controls remain effective
 
@@ -106,7 +113,7 @@ The tool SHALL enforce at most 8 steps/calls, 32 KiB UTF-8 input, nesting depth 
 
 ### Requirement: Results expose provenance and incompleteness
 
-The result SHALL include `complete`, requested completed `results`, and ordered `steps` with each step's `id`, `tool` and `status` (`ok`, `failed`, `skipped`). Row selections SHALL include `totalRows`, `returnedRows` and `limited`. Selection beyond the row limit SHALL return the first N rows in server order, set `limited:true` and `complete:false`, without constituting a tool failure. Other failures SHALL stop the plan, mark remaining steps skipped, include an error `code`, `step` and static message of at most 256 UTF-8 bytes that does not echo server payloads or bound values, and set the outer error flag. Human rejection and cancellation SHALL retain their ordinary control outcomes alongside the partial response and accumulated hook context; error propagation SHALL NOT discard that response/context or convert human rejection into a continuing model turn. Hook context SHALL remain visible under existing output bounds, separately from the projected-value budget.
+The result SHALL include `complete`, requested completed `results`, and ordered `steps` with each step's `id`, `tool` and `status` (`ok`, `failed`, `skipped`). Row selections SHALL include `totalRows`, `returnedRows` and `limited`. Selection beyond the row limit SHALL return the first N rows in server order, set `limited:true` and `complete:false`, without constituting a tool failure. Projection failures SHALL additionally include `error.selection` diagnostics containing only caller-supplied selection source, field names and pointers, static reasons (`path_not_found` or `expected_array`), and zero-based row indices where applicable. Diagnostics SHALL NOT disclose response keys or values. Field failures SHALL be sorted by field name; object selection SHALL report all failed fields and row selection SHALL report all failed fields in the first failing selected row. Tool guidance SHALL direct callers to observed MCP response paths and ordinary tool inspection for unknown shapes rather than repeated selector guesses. Other failures SHALL stop the plan, mark remaining steps skipped, include an error `code`, `step` and static message of at most 256 UTF-8 bytes that does not echo server payloads or bound values, and set the outer error flag. Human rejection and cancellation SHALL retain their ordinary control outcomes alongside the partial response and accumulated hook context; error propagation SHALL NOT discard that response/context or convert human rejection into a continuing model turn. Hook context SHALL remain visible under existing output bounds, separately from the projected-value budget.
 
 #### Scenario: Partial rows
 - **WHEN** a selection requests 10 rows from an array of 12

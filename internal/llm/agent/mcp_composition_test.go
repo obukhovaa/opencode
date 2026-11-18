@@ -70,8 +70,16 @@ func TestMCPCompositionRegistrationRequiresLiteralGrant(t *testing.T) {
 			var found bool
 			infos := []tools.ToolInfo{}
 			for tool := range NewToolSet(&tc.info, reg, nil, nil, nil, nil, nil, noMCP{}, nil, "") {
-				infos = append(infos, tool.Info())
-				found = found || tool.Info().Name == tools.MCPComposeToolName
+				info := tool.Info()
+				infos = append(infos, info)
+				if info.Name == tools.MCPComposeToolName {
+					found = true
+					properties := info.Parameters["steps"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+					candidate := properties["tool"].(map[string]any)
+					if names, ok := candidate["enum"].([]string); !ok || len(names) != 1 || names[0] != "srv_read" {
+						t.Fatalf("configured candidates missing from model schema: %v", candidate)
+					}
+				}
 			}
 			if found != tc.want {
 				t.Fatalf("registered=%v want=%v", found, tc.want)

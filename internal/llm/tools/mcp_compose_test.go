@@ -597,3 +597,79 @@ func TestMCPComposeBindingsCannotReadUnprojectedData(t *testing.T) {
 		t.Fatalf("raw result became binding input: %s", response.Content)
 	}
 }
+
+// The deployed GitLab MCP normalized MR response omitted REST's root sha.
+// Every projection failure in the 2026-11-18 pilot requested that missing key.
+func TestMCPComposeNormalizedMergeRequest(t *testing.T) {
+	responseJSON := `{"state":"opened","merged_at":null,"diff_refs":{"head_sha":"abc123"},"unselected_secret":"RAW_SENTINEL"}`
+	for _, tc := range []struct {
+		name, fields string
+		wantError    bool
+	}{
+		{"REST path", `{"sha":"/sha","state":"/state","merged":"/merged_at"}`, true},
+		{"MCP path", `{"sha":"/diff_refs/head_sha","state":"/state","merged":"/merged_at"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := strings.Replace(composeTestPlan, `{"id":"/id"}`, tc.fields, 1)
+			response, envelope, err := composeRun(t, input, func(context.Context, ToolCall) CompositionChildOutcome { return composeGood(responseJSON) })
+			if err != nil || response.IsError != tc.wantError || strings.Contains(response.Content, "RAW_SENTINEL") || strings.Contains(response.Content, "unselected_secret") {
+				t.Fatalf("unexpected result: %s, %v", response.Content, err)
+			}
+			if tc.wantError {
+				want := []composeSelectionFailure{{Source: "fields", Field: "sha", Pointer: "/sha", Reason: "path_not_found"}}
+				if envelope.Error.Code != "projection_failed" || !reflect.DeepEqual(envelope.Error.Selection, want) || len(envelope.Results) != 0 {
+					t.Fatalf("missing selector diagnostic: %s", response.Content)
+				}
+			} else {
+				facts := envelope.Results["a"].(map[string]any)
+				if facts["sha"] != "abc123" || facts["merged"] != nil || !envelope.Complete {
+					t.Fatalf("wrong projection: %s", response.Content)
+				}
+			}
+		})
+	}
+}
+
+func TestMCPComposeSelectionDiagnostics(t *testing.T) {
+	row0, row1 := 0, 1
+	for _, tc := range []struct {
+		name, selection, output string
+		want                    []composeSelectionFailure
+	}{
+		{"all missing fields sorted", `{"fields":{"z":"/z","a":"/a","present":"/present"}}`, `{"present":null,"secret":"RAW_SENTINEL"}`,
+			[]composeSelectionFailure{{Source: "fields", Field: "a", Pointer: "/a", Reason: "path_not_found"}, {Source: "fields", Field: "z", Pointer: "/z", Reason: "path_not_found"}}},
+		{"missing rows", `{"rows":"/items","fields":{"id":"/id"},"limit":2}`, `{"secret":"RAW_SENTINEL"}`,
+			[]composeSelectionFailure{{Source: "rows", Pointer: "/items", Reason: "path_not_found"}}},
+		{"non-array rows", `{"rows":"","fields":{"id":"/id"},"limit":2}`, `{"secret":"RAW_SENTINEL"}`,
+			[]composeSelectionFailure{{Source: "rows", Pointer: "", Reason: "expected_array"}}},
+		{"row zero", `{"rows":"","fields":{"id":"/id"},"limit":2}`, `[{"secret":"RAW_SENTINEL"}]`,
+			[]composeSelectionFailure{{Source: "fields", Field: "id", Pointer: "/id", Row: &row0, Reason: "path_not_found"}}},
+		{"later row", `{"rows":"","fields":{"id":"/id"},"limit":2}`, `[{"id":null},{"secret":"RAW_SENTINEL"}]`,
+			[]composeSelectionFailure{{Source: "fields", Field: "id", Pointer: "/id", Row: &row1, Reason: "path_not_found"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := strings.Replace(composeTestPlan, `{"fields":{"id":"/id"}}`, tc.selection, 1)
+			response, envelope, err := composeRun(t, input, func(context.Context, ToolCall) CompositionChildOutcome { return composeGood(tc.output) })
+			if err != nil || !response.IsError || envelope.Error.Code != "projection_failed" || !reflect.DeepEqual(envelope.Error.Selection, tc.want) || strings.Contains(response.Content, "RAW_SENTINEL") || strings.Contains(response.Content, "secret") {
+				t.Fatalf("unexpected diagnostic: %s, %v", response.Content, err)
+			}
+		})
+	}
+}
+
+func TestMCPComposeCandidateSchema(t *testing.T) {
+	names := []string{"gitlab_read", "catalog_get", "gitlab_read"}
+	tool := NewMCPComposeTool(names...)
+	names[0] = "changed"
+	info := tool.Info()
+	properties := info.Parameters["steps"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)
+	candidate := properties["tool"].(map[string]any)
+	if !reflect.DeepEqual(candidate["enum"], []string{"catalog_get", "gitlab_read"}) {
+		t.Fatalf("wrong candidates: %v", candidate)
+	}
+	candidate["enum"].([]string)[0] = "mutated"
+	next := tool.Info().Parameters["steps"].(map[string]any)["items"].(map[string]any)["properties"].(map[string]any)["tool"].(map[string]any)
+	if !reflect.DeepEqual(next["enum"], []string{"catalog_get", "gitlab_read"}) {
+		t.Fatalf("schema mutation affected tool: %v", next)
+	}
+}
