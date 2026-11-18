@@ -774,12 +774,10 @@ func (a *agent) GenerateRecap(ctx context.Context, sessionID string) (string, er
 	}
 
 	msgsWithPrompt := append(recent, promptMsg)
-	events := a.summarizeProvider.StreamResponse(
+	response, err := a.streamSummary(
 		ctx,
 		msgsWithPrompt,
-		make([]tools.BaseTool, 0),
 	)
-	response, err := provider.StreamToResponse(events)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate recap: %w", err)
 	}
@@ -787,6 +785,21 @@ func (a *agent) GenerateRecap(ctx context.Context, sessionID string) (string, er
 	recap := strings.TrimSpace(response.Content)
 	a.setTraceOutput(ctx, func() any { return recap })
 	return recap, nil
+}
+
+// streamSummary gives each auxiliary request its own bounded stall budget.
+// These calls have no tools or inbox delivery and must not spend or reset the
+// main agent iteration's stall budget. Provider HTTP retries remain unchanged.
+func (a *agent) streamSummary(ctx context.Context, msgs []message.Message) (*provider.ProviderResponse, error) {
+	for resends := 0; ; resends++ {
+		response, err := provider.StreamToResponse(a.summarizeProvider.StreamResponse(ctx, msgs, nil))
+		if !errors.Is(err, provider.ErrStreamStalled) || ctx.Err() != nil {
+			return response, err
+		}
+		if resends >= maxStallResends {
+			return nil, fmt.Errorf("summary stream stalled after %d resends: %w", maxStallResends, err)
+		}
+	}
 }
 
 func (a *agent) err(err error) AgentEvent {
@@ -1433,7 +1446,6 @@ OuterLoop:
 					if errors.Is(finalErr, provider.ErrStreamStalled) {
 						a.createErrorToolResults(finalMsg)
 						a.finishMessage(ctx, &finalMsg, message.FinishReasonError)
-						return a.err(fmt.Errorf("failed to process events: %w", finalErr))
 					}
 					if !errors.Is(finalErr, context.Canceled) {
 						a.warnIfLikelyContextOverflow(sessionID, etaTokens, finalErr)
@@ -1803,6 +1815,8 @@ OuterLoop:
 		tracker.Reset()
 		cycles = 0
 		hasUserTurn = false
+		initialInbox = nil
+		initialResumeTail = nil
 	}
 	return finalResult
 }
@@ -3134,12 +3148,10 @@ func (a *agent) performSynchronousCompaction(ctx context.Context, sessionID, tri
 	defer langfuse.EndTrace(summarizeCtx)
 	summarizeCtx = provider.WithGenerationMetadata(summarizeCtx, a.compactionMetadata(sessionID, trigger, stats))
 
-	events := a.summarizeProvider.StreamResponse(
+	response, err := a.streamSummary(
 		summarizeCtx,
 		summarizerRequest(msgsWithPrompt[:messageCount], promptMsg),
-		make([]tools.BaseTool, 0),
 	)
-	response, err := provider.StreamToResponse(events)
 	if err != nil {
 		a.warnIfSummarizerOverflow(sessionID, stats, err)
 		return stats, fmt.Errorf("failed to summarize: %w", err)
@@ -3267,12 +3279,10 @@ func (a *agent) Summarize(ctx context.Context, sessionID string) error {
 		// Send the messages to the summarize provider via streaming
 		// to avoid Anthropic's non-streaming timeout restriction
 		summarizeCtx = provider.WithGenerationMetadata(summarizeCtx, a.compactionMetadata(sessionID, compactionTriggerManual, stats))
-		events := a.summarizeProvider.StreamResponse(
+		response, err := a.streamSummary(
 			summarizeCtx,
 			summarizerRequest(msgsWithPrompt[:len(msgsWithPrompt)-1], msgsWithPrompt[len(msgsWithPrompt)-1]),
-			make([]tools.BaseTool, 0),
 		)
-		response, err := provider.StreamToResponse(events)
 		if err != nil {
 			a.warnIfSummarizerOverflow(sessionID, stats, err)
 			event = AgentEvent{

@@ -16,6 +16,11 @@ The agent SHALL deliver pending session input before each stalled-call resend an
 - **WHEN** input arrives during the final failed call and the run ends
 - **THEN** it remains unacknowledged until a subsequent run delivers it in its first model request
 
+#### Scenario: Later outer cycle compacts
+- **WHEN** a non-interactive run consumes its initial inbox and resume input, advances to another outer cycle, and compacts
+- **THEN** the consumed initial input is not re-appended after the summary
+- **AND** new input and reports delivered for that cycle retain their existing preservation behavior
+
 ## MODIFIED Requirements
 
 ### Requirement: Inbox drains SHALL count against the turn budget only when they add a model call

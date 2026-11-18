@@ -12,6 +12,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/llm/provider"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/message"
+	"github.com/opencode-ai/opencode/internal/task"
 )
 
 func TestStreamStallResend_BoundedAcrossRecoveries(t *testing.T) {
@@ -272,7 +273,7 @@ func TestStreamStallResend_SuccessfulToolRoundGetsNewBudget(t *testing.T) {
 	}
 }
 
-func TestStreamStallResend_WrapUpExhaustionFails(t *testing.T) {
+func TestStreamStallResend_WrapUpPreservesExhaustion(t *testing.T) {
 	withAutoCompact(t, false)
 	const sess = "stall-wrap-up"
 	acked := useSessionInbox(t, sess)
@@ -287,7 +288,7 @@ func TestStreamStallResend_WrapUpExhaustionFails(t *testing.T) {
 		}
 	}
 	res := a.processGeneration(context.Background(), sess, "start", 1, nil, RunOptions{})
-	if !errors.Is(res.Error, provider.ErrStreamStalled) || p.requests != 4 {
+	if res.Error != nil || !res.Done || !res.TurnsExhausted || p.requests != 4 {
 		t.Fatalf("error=%v requests=%d", res.Error, p.requests)
 	}
 	if got := tail(p.compactionProvider.requests[2], 1); !reflect.DeepEqual(got, []string{"user:change course"}) {
@@ -295,5 +296,72 @@ func TestStreamStallResend_WrapUpExhaustionFails(t *testing.T) {
 	}
 	if !reflect.DeepEqual(acked(), []string{"continue", "steer"}) {
 		t.Fatalf("acks %v", acked())
+	}
+}
+
+func TestStreamStallResend_ForcedWrapUpKeepsAcceptedStructure(t *testing.T) {
+	withAutoCompact(t, false)
+	withFreshTaskRegistry(t)
+	const sess = "stall-forced-structure"
+	useSessionInbox(t, sess)
+	log := &[]string{}
+	main := &compactionProvider{name: "main", window: 1000, log: log}
+	p := &midStreamResetProvider{compactionProvider: main, resets: map[int]error{2: provider.ErrStreamStalled, 3: provider.ErrStreamStalled, 4: provider.ErrStreamStalled}}
+	main.respond = func([]message.Message) *provider.ProviderResponse {
+		inbox.Default().Push(sess, nil, inbox.Item{ID: "followup", Text: "check again"})
+		return structOutputCall("accepted", `{"status":"done"}`)
+	}
+	a := newLoopAgentWithTools(t, p, []tools.BaseTool{testStructOutputTool()})
+	res := a.processGeneration(context.Background(), sess, "start", 1, nil, RunOptions{})
+	if res.Error != nil || !res.Done || !res.TurnsExhausted {
+		t.Fatalf("result=%+v", res)
+	}
+	if res.StructOutput == nil || res.StructOutput.IsError || res.StructOutput.ToolCallID != "accepted" {
+		t.Fatalf("lost accepted structure: %+v", res.StructOutput)
+	}
+	if p.requests != 4 {
+		t.Fatalf("requests=%d", p.requests)
+	}
+	for i, forced := range main.forced {
+		if i > 0 && forced != tools.StructOutputToolName {
+			t.Fatalf("resend %d lost forced tool: %q", i, forced)
+		}
+	}
+	if got := traceFinishReason(res, nil); got != "turns_exhausted" {
+		t.Fatalf("finish reason=%s", got)
+	}
+}
+
+func TestInbox_OuterReentryDoesNotReplayInitialInputAfterCompaction(t *testing.T) {
+	withAutoCompact(t, true)
+	ctx, reg, mon := backgroundWaitSetup(t)
+	useSessionInbox(t, mon.SessionID)
+	a, main, _, _ := newCompactingAgent(t, 980, nil)
+	seedHistory(t, a, mon.SessionID, completionPair("initial-report", "already processed report")...)
+	seedReport(t, a, mon.SessionID, 100)
+	inbox.Default().Push(mon.SessionID, nil, inbox.Item{ID: "initial", Text: "already processed input"})
+	task.ResetGlobalRegistry()
+	task.SetGlobalRegistry(&backgroundWatchHookRegistry{Registry: reg, onWatch: func() { reg.MarkFinished(mon.ID, task.StateCompleted, nil) }})
+	res := awaitBackgroundLoop(t, ctx, runBackgroundLoop(a, ctx, mon.SessionID, true))
+	if res.Error != nil {
+		t.Fatal(res.Error)
+	}
+	if len(main.requests) != 2 {
+		t.Fatalf("requests=%d", len(main.requests))
+	}
+	if !hasToolResult(main.requests[0], "already processed report") {
+		t.Fatal("initial report missing")
+	}
+	second := main.requests[1]
+	if !headedBySummary(second) {
+		t.Fatal("second cycle did not compact")
+	}
+	if hasToolResult(second, "already processed report") {
+		t.Fatal("consumed initial report replayed after compaction")
+	}
+	for _, m := range second {
+		if m.Content().String() == "already processed input" {
+			t.Fatal("consumed initial inbox replayed after compaction")
+		}
 	}
 }
