@@ -1238,7 +1238,8 @@ func (a *agent) processGeneration(ctx context.Context, sessionID, content string
 
 		// Preserve original problem and result from the last tool iteration to ensure no dead-loop
 		if preserveTail {
-			preserveTail = false
+			// A threshold compaction may be followed by overflow recovery
+			// before any iteration succeeds. Both must keep the same tail.
 			msgHistory = append(msgs, preservedTail...)
 		} else if hasUserTurn {
 			msgHistory = append(msgs, userMsg)
@@ -1443,9 +1444,13 @@ OuterLoop:
 				}
 				finalMsg, finalToolResults, finalErr := callModel(finalCtx)
 				if finalErr != nil {
-					if errors.Is(finalErr, provider.ErrStreamStalled) {
+					if finalMsg.ID != "" {
 						a.createErrorToolResults(finalMsg)
-						a.finishMessage(ctx, &finalMsg, message.FinishReasonError)
+						finishReason := message.FinishReasonError
+						if errors.Is(finalErr, context.Canceled) {
+							finishReason = message.FinishReasonCanceled
+						}
+						a.finishMessage(ctx, &finalMsg, finishReason)
 					}
 					if !errors.Is(finalErr, context.Canceled) {
 						a.warnIfLikelyContextOverflow(sessionID, etaTokens, finalErr)
@@ -1618,6 +1623,11 @@ OuterLoop:
 				}
 				break OuterLoop
 			}
+			// Only an accepted iteration consumes run-entry and resend input.
+			// Until then every recovery must keep it; subsequent iterations
+			// preserve their current tool/results and newly delivered input.
+			initialInbox = nil
+			initialResumeTail = nil
 			if agentMessage.FinishReason() == message.FinishReasonToolUse {
 				if toolResults == nil {
 					// Tool results are nil (tool execution failed or returned empty)
