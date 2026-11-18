@@ -23,10 +23,33 @@ var htmlBodyStart = regexp.MustCompile(`(?i)<(!doctype|html|head|body|\?xml)\b`)
 // endpoint failed.
 var urlQuery = regexp.MustCompile(`(https?://[^\s"'?#<>]+)[?#][^\s"'<>]*`)
 
+// credentialPatterns redact credentials a provider or proxy can echo in
+// its error body — LiteLLM's "Invalid proxy server token passed … sk-…",
+// an echoed Authorization header, a key=value pair — before the reason
+// reaches chat. Each keeps its label and replaces only the value. A
+// "token" match needs an assignment right after the word, so token counts
+// ("212000 tokens", "max_tokens: 128") stay readable.
+var credentialPatterns = []struct {
+	re   *regexp.Regexp
+	repl string
+}{
+	{regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}`), "$1 [redacted]"},
+	{regexp.MustCompile(`\bsk-[A-Za-z0-9._-]{6,}`), "sk-[redacted]"},
+	{regexp.MustCompile(`(?i)\b(x-api-key|api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password)(\\?["']?\s*[:=]\s*\\?["']?)[^\s"'\\,;&}]+`), "$1$2[redacted]"},
+}
+
+func redactCredentials(s string) string {
+	for _, p := range credentialPatterns {
+		s = p.re.ReplaceAllString(s, p.repl)
+	}
+	return s
+}
+
 // sanitizeRunError renders a failed run's error as the one-line reason
 // shown in chat: on the progress card's terminal line and in the failure
 // reply. It drops an HTML error page and anything after it, strips URL
-// query strings, flattens the rest to one line and caps it at
+// query strings, redacts echoed credentials (credentialPatterns),
+// flattens the rest to one line and caps it at
 // toolErrorPreviewRunes, like a failed tool call's reason. Empty for a
 // nil error.
 func sanitizeRunError(err error) string {
@@ -39,6 +62,7 @@ func sanitizeRunError(err error) string {
 		s, htmlPage = s[:loc[0]], true
 	}
 	s = urlQuery.ReplaceAllString(s, "$1")
+	s = redactCredentials(s)
 	s = strings.TrimRight(strings.TrimSpace(s), ":")
 	s = truncateOneLine(s, toolErrorPreviewRunes)
 	if s == "" && htmlPage {

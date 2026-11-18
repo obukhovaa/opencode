@@ -1470,8 +1470,8 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 				return
 			}
 
-			// A proxy's 502/504 before any output: the request never reached
-			// the model, so replaying it is safe. See isGatewayBlip.
+			// A proxy's 502 before any output: the proxy could not reach its
+			// upstream, so replaying the request is safe. See isGatewayBlip.
 			if !emittedOutput {
 				if delay, ok := gatewayRetryDelay(gatewayRetries, err); ok {
 					gatewayRetries++
@@ -1572,12 +1572,17 @@ var retryableHTTPStatuses = map[int]struct{}{
 // rolling, a single dropped request. Retried apart from
 // retryableHTTPStatuses, and only for a gateway blip (isGatewayBlip):
 // adding them to that set would also retry the model provider's own
-// 502/504, which that set's comment excludes on purpose, and would
-// change countTokensShapeRejection, which reads the set to classify
-// count_tokens rejections.
+// 502, which that set's comment excludes on purpose, and would change
+// countTokensShapeRejection, which reads the set to classify count_tokens
+// rejections.
+//
+// 504 is deliberately not here. A proxy answers 504 when it gave up
+// waiting on an upstream that did receive the request and may still be
+// generating: a replay can bill a second generation, and since a 504
+// arrives only after the proxy's read timeout (often a minute or more),
+// two retries would hold the turn for minutes before failing anyway.
 var gatewayRetryStatuses = map[int]struct{}{
 	502: {},
-	504: {},
 }
 
 // maxGatewayRetries bounds the retries of a gateway blip. Small on
@@ -1595,7 +1600,7 @@ var gatewayRetryBaseDelay = 2 * time.Second
 // flow step parks and auto-resumes rather than failing.
 const gatewayRetriesExhausted = "llm gateway error persisted"
 
-// isGatewayBlip reports whether err is a 502/504 that a proxy in front of
+// isGatewayBlip reports whether err is a 502 that a proxy in front of
 // the model produced, rather than the model provider. The provider
 // answers with a JSON error body (Anthropic's {"type":"error",...}
 // envelope, Bedrock's {"message":...}, LiteLLM's {"error":...}); a proxy

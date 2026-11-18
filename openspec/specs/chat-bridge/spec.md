@@ -365,7 +365,7 @@ A run that starts at `full` has no card, so a mid-run switch to `compact` leaves
 #### Scenario: Agent error ends the card as failed
 
 - **WHEN** the agent run terminates with an error event after four tool calls
-- **THEN** the card's final state reads `✗ Run failed · 4 tool calls · <elapsed> · <reason>`, where `<reason>` is the error flattened to one line, capped at the failure-reason cap, with any HTML error page and URL query string removed; a cancelled run (`/abort`, a session cancel, shutdown) shows no reason
+- **THEN** the card's final state reads `✗ Run failed · 4 tool calls · <elapsed> · <reason>`, where `<reason>` is the error flattened to one line, capped at the failure-reason cap, with any HTML error page and URL query string removed and echoed credentials redacted; a cancelled run (`/abort`, a session cancel, shutdown) shows no reason
 
 #### Scenario: A failed run without text still gets a reply
 

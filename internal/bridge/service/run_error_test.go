@@ -58,6 +58,21 @@ func TestSanitizeRunError(t *testing.T) {
 			want: `POST "https://api.anthropic.com/v1/messages": 500 Internal Server Error {"type":"error","error":{"type":"api_error","message":"Internal server error"}}`,
 		},
 		{
+			name: "LiteLLM key echo redacted",
+			err:  errors.New(`POST "https://gw/v1/messages": 401 Unauthorized {"error":{"message":"Authentication Error, Invalid proxy server token passed. Received API Key = sk-abc123DEF456ghi, Key Hash = 9f2e"}}`),
+			want: `POST "https://gw/v1/messages": 401 Unauthorized {"error":{"message":"Authentication Error, Invalid proxy server token passed. Received API Key = sk-[redacted], Key Hash = 9f2e"}}`,
+		},
+		{
+			name: "bearer header and key=value redacted",
+			err:  errors.New(`upstream rejected Authorization: Bearer eyJhbGciOi.payload.sig api_key=abc123 "x-api-key": "k-999"`),
+			want: `upstream rejected Authorization: Bearer [redacted] api_key=[redacted] "x-api-key": "[redacted]"`,
+		},
+		{
+			name: "token counts are not credentials",
+			err:  errors.New("prompt is too long: 212000 tokens > 200000 maximum; max_tokens: 128"),
+			want: "prompt is too long: 212000 tokens > 200000 maximum; max_tokens: 128",
+		},
+		{
 			name: "long reason capped",
 			err:  errors.New(strings.Repeat("x", toolErrorPreviewRunes+50)),
 			want: strings.Repeat("x", toolErrorPreviewRunes) + "…",

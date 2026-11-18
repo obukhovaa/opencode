@@ -48,7 +48,7 @@ func TestIsGatewayBlip(t *testing.T) {
 		want bool
 	}{
 		{"nginx 502 page", newGatewayErr(502, nginx502), true},
-		{"504 page", newGatewayErr(504, "<html><body>504 Gateway Time-out</body></html>"), true},
+		{"504 page is not retried: the upstream may still be generating", newGatewayErr(504, "<html><body>504 Gateway Time-out</body></html>"), false},
 		{"502 with no body", newGatewayErr(502, ""), true},
 		{"502 plain text", newGatewayErr(502, "upstream connect error or disconnect/reset before headers"), true},
 		{"wrapped by the agent loop", fmt.Errorf("failed to process events: %w", newGatewayErr(502, nginx502)), true},
@@ -191,7 +191,7 @@ func TestAnthropicStream_GatewayBlipRetry(t *testing.T) {
 	}{
 		{name: "one HTML 502 is retried", failures: 1, status: 502, body: nginx502, wantRequests: 2, wantOK: true},
 		{name: "two HTML 502s are retried", failures: 2, status: 502, body: nginx502, wantRequests: 3, wantOK: true},
-		{name: "HTML 504 is retried", failures: 1, status: 504, body: "<html>504</html>", wantRequests: 2, wantOK: true},
+		{name: "an HTML 504 is not retried", failures: 100, status: 504, body: "<html>504</html>", wantRequests: 1},
 		{name: "a persisting blip surfaces after two retries", failures: 100, status: 502, body: nginx502, wantRequests: 3, wantExhaust: true},
 		{name: "a JSON 502 is not retried", failures: 100, status: 502, body: anthropicAPIError, wantRequests: 1},
 		{name: "a JSON 500 is not retried", failures: 100, status: 500, body: anthropicAPIError, wantRequests: 1},
@@ -208,9 +208,15 @@ func TestAnthropicStream_GatewayBlipRetry(t *testing.T) {
 
 			var complete *ProviderResponse
 			var streamErr error
+			var starts, deltas, completes int
 			for ev := range client.stream(ctx, prompt, nil) {
 				switch ev.Type {
+				case EventContentStart:
+					starts++
+				case EventContentDelta:
+					deltas++
 				case EventComplete:
+					completes++
 					complete = ev.Response
 				case EventError:
 					streamErr = ev.Error
@@ -223,7 +229,16 @@ func TestAnthropicStream_GatewayBlipRetry(t *testing.T) {
 				if streamErr != nil || complete == nil || complete.Content != "ok" {
 					t.Fatalf("want a completed response after the retry; got complete=%v err=%v", complete, streamErr)
 				}
+				// The failed attempts emitted nothing, so the consumer sees
+				// the answer exactly once: no replayed block, no second
+				// completion appended to the assistant message.
+				if starts != 1 || deltas != 1 || completes != 1 {
+					t.Errorf("events: %d content starts, %d deltas, %d completes; want 1 each", starts, deltas, completes)
+				}
 				return
+			}
+			if starts+deltas+completes != 0 {
+				t.Errorf("a failed call emitted output: %d starts, %d deltas, %d completes", starts, deltas, completes)
 			}
 			if streamErr == nil {
 				t.Fatal("want the error surfaced; got none")
@@ -261,5 +276,58 @@ func TestAnthropicSend_GatewayBlipRetry(t *testing.T) {
 	}
 	if got := requests.Load(); got != 2 {
 		t.Errorf("requests = %d; want 2", got)
+	}
+}
+
+// TestGatewayRetry_CancelDuringBackoff: an /abort (or shutdown) that lands
+// while the client waits to retry a gateway blip ends the call at once with
+// the cancellation, instead of sleeping out the backoff and replaying the
+// request. Not parallel: it changes gatewayRetryBaseDelay.
+func TestGatewayRetry_CancelDuringBackoff(t *testing.T) {
+	prev := gatewayRetryBaseDelay
+	gatewayRetryBaseDelay = time.Minute
+	t.Cleanup(func() { gatewayRetryBaseDelay = prev })
+
+	prompt := []message.Message{{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "hi"}}}}
+	for _, mode := range []string{"stream", "send"} {
+		t.Run(mode, func(t *testing.T) {
+			loadConfigIn(t, t.TempDir())
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var requests atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusBadGateway)
+				fmt.Fprint(w, nginx502)
+				// Cancel once the blip is answered: the client is then in,
+				// or about to enter, its one-minute backoff.
+				go func() { time.Sleep(20 * time.Millisecond); cancel() }()
+			}))
+			t.Cleanup(srv.Close)
+			client := newAnthropicClient(providerClientOptions{apiKey: "test-key", baseURL: srv.URL,
+				model: models.AnthropicModels[models.Claude55Sonnet], maxTokens: 128})
+
+			start := time.Now()
+			var err error
+			if mode == "stream" {
+				for ev := range client.stream(ctx, prompt, nil) {
+					if ev.Type == EventError {
+						err = ev.Error
+					}
+				}
+			} else {
+				_, err = client.send(ctx, prompt, nil)
+			}
+			if elapsed := time.Since(start); elapsed > 5*time.Second {
+				t.Errorf("call returned after %v; want it to stop on cancel, not wait out the backoff", elapsed)
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("err = %v; want context.Canceled", err)
+			}
+			if got := requests.Load(); got != 1 {
+				t.Errorf("requests = %d; want 1 (no replay after cancel)", got)
+			}
+		})
 	}
 }
