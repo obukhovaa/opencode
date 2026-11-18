@@ -8,7 +8,7 @@
 
 - [x] 2.1 Run all Go tests, final make test, schema and hidden-character checks, and validate the spec.
 
-Validation note: targeted agent/provider regression tests pass with the race detector. Full-suite and final-check runs retain the same 13 inherited failures (12 bridge provider fixtures and the composition cancellation budget). The unchanged generated LSP file retains six U+200B characters. Publication is permitted with these baseline limitations documented; the previously reproduced CLI timeout flake did not recur in the review-fix final check. No assertions or timeouts were relaxed.
+Validation note: release preparation replaces leaking bridge fixtures and timing-dependent composition cancellation with isolated, coordinated tests, removes invisible generated-comment characters, and fixes CLI child cleanup. The final release gate must pass in full; no baseline failures are waived. Assertions and timeout budgets are not weakened.
 
 ## 3. Review corrections
 
@@ -16,3 +16,8 @@ Validation note: targeted agent/provider regression tests pass with the race det
 - [x] 3.2 Preserve accepted structured output and exhausted bookkeeping when the wrap-up stalls.
 - [x] 3.3 Clear consumed initial input at outer-cycle re-entry and correct telemetry/compaction documentation.
 - [x] 3.4 Run review regression tests and required gates, recording inherited failures explicitly.
+
+## 4. Final release review corrections
+
+- [x] 4.1 Preserve current tool results across repeated compactions and prevent replay of consumed entry input.
+- [x] 4.2 Pair partial wrap-up tool calls for cancellation and non-stall errors, preserving accepted output and exhaustion state.

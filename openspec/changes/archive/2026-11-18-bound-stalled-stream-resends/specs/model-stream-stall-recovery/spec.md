@@ -22,7 +22,7 @@ For Anthropic, OpenAI and Gemini, a stalled model turn SHALL have at most two st
 
 ### Requirement: A stall resend SHALL exclude unfinished assistant output
 
-A stall resend SHALL discard partial output before constructing the next request. Unexecuted tool calls SHALL NOT run during recovery, and persisted calls SHALL have matching results if partial-message deletion fails.
+A stall resend SHALL discard partial output before constructing the next request. Unexecuted tool calls SHALL NOT run during recovery, and persisted calls SHALL have matching results if partial-message deletion fails. Every failed forced wrap-up SHALL close unfinished tool calls with matching error results, including cancellation and non-stall failures, while retaining earlier accepted structured output and turn-exhaustion bookkeeping.
 
 #### Scenario: Partial response stalls
 - **WHEN** a model streams part of a response and then stalls
@@ -31,6 +31,11 @@ A stall resend SHALL discard partial output before constructing the next request
 #### Scenario: Forced wrap-up stalls
 - **WHEN** the max-turns wrap-up exhausts its stall resends
 - **THEN** the response preserves earlier accepted structured output and reports turn exhaustion without a hard error
+
+#### Scenario: Forced wrap-up fails after a partial tool call
+- **WHEN** a forced wrap-up emits a tool call and fails with cancellation or another non-stall error, including after a stall resend
+- **THEN** the stored tool call has a matching error result and its assistant message is finished
+- **AND** earlier accepted structured output and turn-exhaustion bookkeeping remain available
 
 ### Requirement: Auxiliary summary calls SHALL have bounded stall recovery
 

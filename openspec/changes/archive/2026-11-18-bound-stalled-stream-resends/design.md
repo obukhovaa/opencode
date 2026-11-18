@@ -22,3 +22,5 @@ Drain pending input before the first model call of a run, including a run on an 
 - Inbox storage is process-local; process replacement still relies on the sender's unacknowledged-message delivery mechanism.
 
 Each recap, synchronous compaction and manual summarization request has an independent two-resend stall budget. It neither spends nor resets the main iteration budget and discards partial response data. Clear run-entry inbox and synthetic-tail preservation state alongside `hasUserTurn` when advancing the outer cycle, so consumed input cannot be replayed after later compaction.
+
+Successful inner iterations retire consumed run-entry input. The latest tool/result tail remains preserved through successive threshold and overflow compactions until another iteration succeeds. Every failed wrap-up closes partial tool calls, including cancellation and mixed stall/reset failures, without changing graceful structured-output fallback.

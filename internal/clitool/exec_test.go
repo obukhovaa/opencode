@@ -143,17 +143,20 @@ func TestBuildEnv_DropsDeniedVariables(t *testing.T) {
 }
 
 func TestExec_TimeoutKillsProcessGroup(t *testing.T) {
-	testExecTimeoutKillsProcessGroup(t, true)
+	testExecTimeoutKillsProcessGroup(t, true, 0)
 }
 
 func TestExec_TimeoutAfterLeaderExitKillsProcessGroup(t *testing.T) {
-	// The leader exits successfully, but its descendant still owns the
-	// output pipes. A bounded pipe wait must kill that descendant and report
-	// a timeout, even though exec.Cmd.Wait does not return an ExitError.
-	testExecTimeoutKillsProcessGroup(t, false)
+	// A nonzero leader exit masks the pipe-drain error from Wait; both
+	// outcomes must still kill the descendant and retain the timeout.
+	for _, exitCode := range []int{0, 7} {
+		t.Run(strconv.Itoa(exitCode), func(t *testing.T) {
+			testExecTimeoutKillsProcessGroup(t, false, exitCode)
+		})
+	}
 }
 
-func testExecTimeoutKillsProcessGroup(t *testing.T, waitForChild bool) {
+func testExecTimeoutKillsProcessGroup(t *testing.T, waitForChild bool, leaderExit int) {
 	t.Helper()
 	wd := t.TempDir()
 	// Record the descendant before the leader waits or exits. Checking its
@@ -162,6 +165,8 @@ func testExecTimeoutKillsProcessGroup(t *testing.T, waitForChild bool) {
 	body := "sleep 30 &\nprintf '%s\\n' \"$!\" > child.pid\n"
 	if waitForChild {
 		body += "wait\n"
+	} else {
+		body += "exit " + strconv.Itoa(leaderExit) + "\n"
 	}
 	pidPath := filepath.Join(wd, "child.pid")
 	t.Cleanup(func() {
@@ -189,6 +194,9 @@ func testExecTimeoutKillsProcessGroup(t *testing.T, waitForChild bool) {
 	res := m.Exec(context.Background(), inv)
 	if !res.TimedOut || res.Timeout != 2*time.Second {
 		t.Errorf("expected a 2s timeout, got timedOut=%v timeout=%v exit=%d", res.TimedOut, res.Timeout, res.ExitCode)
+	}
+	if !waitForChild && leaderExit != 0 && res.ExitCode != leaderExit {
+		t.Errorf("lost leader exit status: got %d, want %d", res.ExitCode, leaderExit)
 	}
 	if elapsed := time.Since(start); elapsed > 8*time.Second {
 		t.Errorf("process group was not killed promptly: %v", elapsed)
