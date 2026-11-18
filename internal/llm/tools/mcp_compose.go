@@ -6,13 +6,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/opencode-ai/opencode/internal/permission"
 )
 
-type mcpComposeTool struct{ activeBudget time.Duration }
+type mcpComposeTool struct {
+	activeBudget time.Duration
+	readTools    []string
+}
 
 type composeLimitKey struct{}
 
@@ -35,14 +39,18 @@ func WithCompositionLimit(ctx context.Context, limit time.Duration) context.Cont
 	return context.WithValue(ctx, composeLimitKey{}, limit)
 }
 
-func NewMCPComposeTool() BaseTool                                  { return &mcpComposeTool{activeBudget: 120 * time.Second} }
+func NewMCPComposeTool(readTools ...string) BaseTool {
+	names := slices.Clone(readTools)
+	slices.Sort(names)
+	return &mcpComposeTool{activeBudget: 120 * time.Second, readTools: slices.Compact(names)}
+}
 func (*mcpComposeTool) IsBaseline() bool                           { return true }
 func (*mcpComposeTool) AllowParallelism(ToolCall, []ToolCall) bool { return false }
 func (*mcpComposeTool) ValidateInput(input string) error {
 	_, err := parseComposePlan(input)
 	return err
 }
-func (*mcpComposeTool) Info() ToolInfo {
+func (t *mcpComposeTool) Info() ToolInfo {
 	pointer := map[string]any{"type": "string", "maxLength": 1024, "description": "RFC6901 JSON pointer; empty selects the root."}
 	fields := map[string]any{"type": "object", "minProperties": 1, "maxProperties": 32, "additionalProperties": pointer, "propertyNames": map[string]any{"minLength": 1, "maxLength": 64}}
 	id := map[string]any{"type": "string", "pattern": `^[A-Za-z][A-Za-z0-9_-]{0,63}$`}
@@ -50,9 +58,13 @@ func (*mcpComposeTool) Info() ToolInfo {
 		map[string]any{"type": "object", "properties": map[string]any{"fields": fields}, "required": []string{"fields"}, "additionalProperties": false},
 		map[string]any{"type": "object", "properties": map[string]any{"rows": pointer, "fields": fields, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}, "required": []string{"rows", "fields", "limit"}, "additionalProperties": false},
 	}}
-	return ToolInfo{Name: MCPComposeToolName, Description: "Run 1–8 authorized MCP reads sequentially, returning only selected JSON facts. Bindings read earlier projected results and replace existing argument locations. Only complete text-only JSON outputs are supported. Limits: 32 KiB plan, depth 64, 256 KiB per response, 1 MiB total response text, 16 KiB projected values and 120 seconds active execution. Row limits explicitly mark results incomplete. Tools must already be available and activated; no discovery or pagination occurs.", Required: []string{"steps", "return"}, Parameters: map[string]any{
+	childTool := map[string]any{"type": "string", "minLength": 1, "maxLength": 256, "description": "Only configured candidate tools are composable; ordinary tool access alone is insufficient. Each child must also be granted, available and activated. Use other tools directly."}
+	if len(t.readTools) > 0 {
+		childTool["enum"] = slices.Clone(t.readTools)
+	}
+	return ToolInfo{Name: MCPComposeToolName, Description: "Run 1–8 authorized MCP reads sequentially, returning only selected JSON facts. Use only configured candidate tools listed in steps.tool. Select paths observed in this MCP tool's actual JSON response, not assumed upstream REST fields. Every field is required: one missing path fails the step. If the response shape is unknown or projection fails, inspect the ordinary tool response before composing again; do not repeatedly retry the same child arguments with guessed selectors. Bindings read earlier projected results and replace existing argument locations. Only complete text-only JSON outputs are supported. Limits: 32 KiB plan, depth 64, 256 KiB per response, 1 MiB total response text, 16 KiB projected values and 120 seconds active execution. Row limits explicitly mark results incomplete. Tools must already be available and activated; no discovery or pagination occurs.", Required: []string{"steps", "return"}, Parameters: map[string]any{
 		"steps": map[string]any{"type": "array", "minItems": 1, "maxItems": 8, "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"id", "tool", "arguments", "select"}, "properties": map[string]any{
-			"id": id, "tool": map[string]any{"type": "string", "minLength": 1, "maxLength": 256}, "arguments": map[string]any{"type": "object"}, "select": selection,
+			"id": id, "tool": childTool, "arguments": map[string]any{"type": "object"}, "select": selection,
 			"bindings": map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"target", "step", "pointer"}, "properties": map[string]any{"target": pointer, "step": id, "pointer": pointer}}},
 		}}},
 		"return": map[string]any{"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": id},
@@ -68,10 +80,26 @@ type composeStatus struct {
 	Limited      *bool  `json:"limited,omitempty"`
 }
 type composeError struct {
-	Code    string `json:"code"`
-	Step    string `json:"step"`
-	Message string `json:"message"`
+	Code      string                    `json:"code"`
+	Step      string                    `json:"step"`
+	Message   string                    `json:"message"`
+	Selection []composeSelectionFailure `json:"selection,omitempty"`
 }
+
+// Diagnostics contain only selectors supplied by the caller and static reasons.
+// Never include response keys or values, including after hook redaction.
+type composeSelectionFailure struct {
+	Source  string `json:"source"`
+	Field   string `json:"field,omitempty"`
+	Pointer string `json:"pointer"`
+	Row     *int   `json:"row,omitempty"`
+	Reason  string `json:"reason"`
+}
+
+type composeProjectionError struct{ failures []composeSelectionFailure }
+
+func (*composeProjectionError) Error() string { return "composition selection failed" }
+
 type composeEnvelope struct {
 	Complete bool            `json:"complete"`
 	Results  map[string]any  `json:"results"`
@@ -82,13 +110,13 @@ type composeEnvelope struct {
 var composeMessages = map[string]string{
 	"invalid_input":      "The composition plan is invalid or exceeds an input limit.",
 	"unavailable":        "The composition runtime is unavailable.",
-	"ineligible_tool":    "A requested tool is not eligible for composition.",
+	"ineligible_tool":    "Use only configured candidate tools in steps.tool; each must also be granted, available and activated. Call other tools directly.",
 	"binding_failed":     "An earlier projected value could not be bound.",
 	"child_failed":       "A child call failed.",
 	"rule_denied":        "A child call was denied by a permission rule.",
 	"hook_blocked":       "A child call was blocked by a hook.",
 	"unsupported_output": "A child response is not complete text-only JSON.",
-	"projection_failed":  "A requested JSON projection could not be selected.",
+	"projection_failed":  "Requested selectors could not be resolved. Inspect error.selection and the ordinary tool response; use observed MCP paths, not assumed REST fields. Missing is not null.",
 	"output_limit":       "A response or projected-value limit was exceeded.",
 	"cancelled":          "Composition was cancelled.",
 	"active_timeout":     "The active execution budget was exceeded.",
@@ -100,6 +128,7 @@ var composeMessages = map[string]string{
 func (t *mcpComposeTool) Run(parent context.Context, call ToolCall) (ToolResponse, error) {
 	envelope := composeEnvelope{Complete: true, Results: map[string]any{}, Steps: []composeStatus{}}
 	accounting := &CompositionOutcome{}
+	var selectionFailures []composeSelectionFailure
 	appendHookContext := func(value string) {
 		if value == "" {
 			return
@@ -122,7 +151,7 @@ func (t *mcpComposeTool) Run(parent context.Context, call ToolCall) (ToolRespons
 				step = envelope.Steps[index].ID
 			}
 			envelope.Complete = false
-			envelope.Error = &composeError{Code: code, Step: step, Message: message}
+			envelope.Error = &composeError{Code: code, Step: step, Message: message, Selection: selectionFailures}
 		}
 		data, _ := json.Marshal(envelope)
 		return ToolResponse{Type: ToolResponseTypeText, Content: string(data), IsError: envelope.Error != nil, Composition: accounting}, control
@@ -262,6 +291,10 @@ func (t *mcpComposeTool) Run(parent context.Context, call ToolCall) (ToolRespons
 		}
 		projected, err := composeProject(value, step.Select, &envelope.Steps[i])
 		if err != nil {
+			var projection *composeProjectionError
+			if errors.As(err, &projection) {
+				selectionFailures = projection.failures
+			}
 			return finish(i, "projection_failed", nil)
 		}
 		// Only the projection remains reachable after this iteration.
@@ -289,29 +322,40 @@ func (t *mcpComposeTool) Run(parent context.Context, call ToolCall) (ToolRespons
 }
 
 func composeProject(value any, selection composeSelect, status *composeStatus) (any, error) {
-	fields := func(value any) (map[string]any, error) {
+	names := make([]string, 0, len(selection.Fields))
+	for name := range selection.Fields {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	fields := func(value any, row *int) (map[string]any, error) {
 		projected := map[string]any{}
-		for name, pointer := range selection.Fields {
+		var failures []composeSelectionFailure
+		for _, name := range names {
+			pointer := selection.Fields[name]
 			path, _ := composePointer(pointer)
 			selected, err := composeLookup(value, path)
 			if err != nil {
-				return nil, err
+				failures = append(failures, composeSelectionFailure{Source: "fields", Field: name, Pointer: pointer, Row: row, Reason: "path_not_found"})
+				continue
 			}
 			projected[name] = selected
+		}
+		if len(failures) > 0 {
+			return nil, &composeProjectionError{failures: failures}
 		}
 		return projected, nil
 	}
 	if selection.Rows == nil {
-		return fields(value)
+		return fields(value, nil)
 	}
 	path, _ := composePointer(*selection.Rows)
 	raw, err := composeLookup(value, path)
 	if err != nil {
-		return nil, err
+		return nil, &composeProjectionError{failures: []composeSelectionFailure{{Source: "rows", Pointer: *selection.Rows, Reason: "path_not_found"}}}
 	}
 	rows, ok := raw.([]any)
 	if !ok {
-		return nil, errComposeInput
+		return nil, &composeProjectionError{failures: []composeSelectionFailure{{Source: "rows", Pointer: *selection.Rows, Reason: "expected_array"}}}
 	}
 	total := len(rows)
 	count := min(total, *selection.Limit)
@@ -320,8 +364,8 @@ func composeProject(value any, selection composeSelect, status *composeStatus) (
 	status.ReturnedRows = &count
 	status.Limited = &limited
 	projected := make([]any, 0, count)
-	for _, row := range rows[:count] {
-		selected, err := fields(row)
+	for i, row := range rows[:count] {
+		selected, err := fields(row, &i)
 		if err != nil {
 			return nil, err
 		}
