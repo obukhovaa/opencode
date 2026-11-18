@@ -365,7 +365,14 @@ A run that starts at `full` has no card, so a mid-run switch to `compact` leaves
 #### Scenario: Agent error ends the card as failed
 
 - **WHEN** the agent run terminates with an error event after four tool calls
-- **THEN** the card's final state reads `✗ Run failed · 4 tool calls · <elapsed>`
+- **THEN** the card's final state reads `✗ Run failed · 4 tool calls · <elapsed> · <reason>`, where `<reason>` is the error flattened to one line, capped at the failure-reason cap, with any HTML error page and URL query string removed; a cancelled run (`/abort`, a session cancel, shutdown) shows no reason
+
+#### Scenario: A failed run without text still gets a reply
+
+- **WHEN** the agent run terminates with a non-cancel error event that carries no text, for example a model call answered by a gateway's HTML `502 Bad Gateway` page
+- **THEN** every bound peer receives exactly one reply `⚠️ The run failed: <reason> — resend your message to retry.`, with or without a progress card, and no HTML reaches chat
+- **AND WHEN** the error event carries partial text, that text is delivered and no failure reply is posted
+- **AND WHEN** the run was cancelled, no failure reply is posted
 
 #### Scenario: Unset verbosity resolves to compact
 

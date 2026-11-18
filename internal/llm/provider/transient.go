@@ -28,6 +28,7 @@ var retriedTransientSignatures = []string{
 	"throttlingexception",         // Bedrock 429
 	"modeltimeoutexception",       // Bedrock 408
 	"internalserverexception",     // Bedrock 500
+	gatewayRetriesExhausted,       // proxy 502/504 outlived maxGatewayRetries (gatewayRetryExhaustedError)
 }
 
 // IsRetriedTransientError reports whether err is a transient provider or

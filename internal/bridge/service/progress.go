@@ -78,6 +78,11 @@ type runProgress struct {
 	inflightOrder   []string          // insertion order, for "most recently started"
 	final           string            // "" while running, else progressStatusOK / progressStatusError
 	finished        bool              // final snapshot taken; later updates are ignored
+	// runErrorReason is why the run itself failed (the agent's terminal
+	// error, sanitised by sanitizeRunError), shown on the terminal
+	// "✗ Run failed" line. Empty for a run that ended OK, a cancelled
+	// run, or an error that carried no message.
+	runErrorReason string
 
 	// tokens maps a bound peer (progressPeerKey) to the message the card
 	// lives in on that platform, plus the text last written to it.
@@ -175,10 +180,21 @@ func (p *runProgress) toolDone(callID, name, pairing string, isError bool, reaso
 // finish marks the run over with progressStatusOK or
 // progressStatusError. The worker's next flush is the terminal one.
 func (p *runProgress) finish(status string) {
+	p.finishWithReason(status, "")
+}
+
+// finishWithReason is finish with the run's failure reason, a one-line
+// sanitised string appended to the "✗ Run failed" line. The reason is
+// ignored unless status is progressStatusError. Only the first call
+// sets the terminal state.
+func (p *runProgress) finishWithReason(status, reason string) {
 	p.mu.Lock()
 	first := p.final == ""
 	if first {
 		p.final = status
+		if status == progressStatusError {
+			p.runErrorReason = reason
+		}
 	}
 	p.mu.Unlock()
 	if first {
@@ -282,7 +298,11 @@ func (p *runProgress) headerLocked() string {
 	case progressStatusOK:
 		return "✓ Done · " + calls + failed + " · " + elapsed
 	case progressStatusError:
-		return "✗ Run failed · " + calls + failed + " · " + elapsed
+		line := "✗ Run failed · " + calls + failed + " · " + elapsed
+		if p.runErrorReason != "" {
+			line += " · " + p.runErrorReason
+		}
+		return line
 	}
 	if p.toolsDone == 0 && len(p.inflightOrder) == 0 {
 		return "⏳ Thinking..."
@@ -379,13 +399,14 @@ func (d *sessionDispatch) progressStart(ctx context.Context) *runProgress {
 
 // progressFinish closes the card with the run's outcome and waits,
 // bounded, for the terminal edit to flush so the next run's card does
-// not overtake it.
-func (d *sessionDispatch) progressFinish(p *runProgress, status string) {
+// not overtake it. reason is the run's sanitised failure reason, shown
+// on a "✗ Run failed" card; empty when there is none to show.
+func (d *sessionDispatch) progressFinish(p *runProgress, status, reason string) {
 	if p == nil {
 		return
 	}
 	d.progress.CompareAndSwap(p, nil)
-	p.finish(status)
+	p.finishWithReason(status, reason)
 	select {
 	case <-p.done:
 	case <-time.After(progressFinishWait):

@@ -27,6 +27,9 @@ func TestIsRetriedTransientError(t *testing.T) {
 		{"bedrock throttling", errors.New("received exception ThrottlingException: rate exceeded"), true},
 		{"wrapped", fmt.Errorf("failed to process events: %w", errors.New("ServiceUnavailableException")), true},
 		{"peer RST_STREAM is not in this class", errors.New("stream error: stream ID 147; INTERNAL_ERROR; received from peer"), false},
+		{"gateway blip after its retries", fmt.Errorf("failed to process events: %w", gatewayRetryExhaustedError(2, newGatewayErr(502, "<html><body>502 Bad Gateway</body></html>"))), true},
+		{"provider's own 502 is not in this class", newGatewayErr(502, `{"type":"error","error":{"type":"api_error","message":"upstream"}}`), false},
+		{"unretried gateway blip is not in this class", newGatewayErr(502, "<html></html>"), false},
 		{"overflow", errors.New("prompt is too long: 212000 tokens > 200000 maximum"), false},
 	}
 	for _, tt := range tests {
