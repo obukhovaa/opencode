@@ -1548,6 +1548,17 @@ OuterLoop:
 			} else {
 				logging.Info("Provider stream completed", "reason", agentMessage.FinishReason(), "cycle", cycles)
 			}
+			// Explicit stops must survive pending reports and reviewer input.
+			// Only a continuing turn may reach inbox delivery or the background wait.
+			if isStopFinishReason(agentMessage.FinishReason()) {
+				finalResult = AgentEvent{
+					Type:         AgentEventTypeResponse,
+					Message:      agentMessage,
+					StructOutput: structOutput,
+					Done:         true,
+				}
+				break OuterLoop
+			}
 			if agentMessage.FinishReason() == message.FinishReasonToolUse {
 				if toolResults == nil {
 					// Tool results are nil (tool execution failed or returned empty)
@@ -1747,6 +1758,15 @@ OuterLoop:
 		hasUserTurn = false
 	}
 	return finalResult
+}
+
+func isStopFinishReason(reason message.FinishReason) bool {
+	switch reason {
+	case message.FinishReasonPermissionDenied, message.FinishReasonCanceled, message.FinishReasonError:
+		return true
+	default:
+		return false
+	}
 }
 
 // drainSessionTasks blocks until the session has NO pending background

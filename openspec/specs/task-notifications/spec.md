@@ -120,6 +120,19 @@ Subsequent reports SHALL use the existing idle auto-resume path to continue the 
 session. A report racing with release MUST remain eligible for consumption or resume;
 yielding MUST NOT strand it.
 
+The release-time handoff SHALL NOT resume a turn whose finish reason is
+`permission_denied`, `canceled` or `error`, even when its run-level error is empty
+and an unseen report skipped auto-resume while the session was busy. The report
+SHALL remain available for a later run. This does not change idle auto-resume for
+new reports arriving after release or existing turn-budget exhaustion behavior.
+
+#### Scenario: Explicit stop suppresses the release handoff
+
+- **GIVEN** a report commits while an interactive turn owns the session slot
+- **WHEN** the turn finishes with `permission_denied`, `canceled` or `error`
+- **THEN** releasing the slot SHALL NOT start a run for that skipped report
+- **AND** the unseen report SHALL remain in the session history
+
 #### Scenario: Flow wait does not spawn a parallel Run
 
 - **GIVEN** a flow run is waiting after `yield` or a natural terminal turn

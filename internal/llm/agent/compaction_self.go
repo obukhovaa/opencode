@@ -289,7 +289,7 @@ var postTurnCompactionTimeout = 10 * time.Minute
 // arrived while the session was held, even when no compaction is requested.
 func (a *agent) compactAfterTurn(runCtx, stop context.Context, sessionID string, result AgentEvent) (afterRelease func()) {
 	defer logging.RecoverPanic("agent.compactAfterTurn", nil)
-	if result.Error != nil || stop.Err() != nil {
+	if result.Error != nil || stop.Err() != nil || isStopFinishReason(result.Message.FinishReason()) {
 		return nil
 	}
 	if tools.StepScopedContext(runCtx) != nil {

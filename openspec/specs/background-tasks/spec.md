@@ -126,6 +126,12 @@ the same event wait without a success claim or `struct_output` (see `yield-tool`
 All flow steps, including interactive flow steps, use this non-interactive runtime
 mode. Interactive flow input is delivered through the step session's inbox.
 
+Explicit `permission_denied`, `canceled` and `error` finish reasons SHALL end the run
+before consuming queued reviewer input or entering a background report wait. Pending
+reports MUST NOT turn these stop outcomes into another model call or a natural
+completion. This does not change the existing report-driven re-entry after
+`max_tokens` or the turn-budget exhaustion behavior.
+
 Waking MUST NOT require all tasks to terminate. A monitor-event SHALL resume the
 model while its subprocess is still running; completion of one task SHALL resume
 the model while other tasks remain active. The runtime SHALL subscribe to session
@@ -156,6 +162,13 @@ detection SHALL continue alongside the wait and MAY terminate stalled task-kind
 subagents as defined in `background-task-stall-detection`; it MUST NOT treat a silent
 monitor as stalled. Periodic progress logs SHALL name still-pending tasks by ID, kind
 and age without imposing a deadline. No progress log is needed for an immediate return.
+
+#### Scenario: Composition rejection with a pending monitor report
+
+- **GIVEN** a monitor report commits while a composition child awaits permission
+- **WHEN** the permission request is rejected
+- **THEN** the run SHALL finish with `permission_denied` without another model call
+- **AND** the rejected child SHALL NOT execute, the monitor SHALL remain active, and queued reviewer input SHALL remain queued
 
 #### Scenario: Flow step waits for background bash before returning struct_output
 
