@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/opencode-ai/opencode/internal/app"
 	"github.com/opencode-ai/opencode/internal/bridge"
@@ -320,4 +322,84 @@ func TestFlowCardLargePlanWindowPreservesOrder(t *testing.T) {
 	require.Contains(t, bridge.FlowProgressTitle(p), "tracked steps")
 	foldFlowProgress(&p, app.FlowRunEvent{Type: "session.flow.suspended"})
 	require.Equal(t, "suspended", p.Steps[255].Status)
+}
+
+func TestFlowCardOutcomeFollowsQuestionsAndSurvivesReplay(t *testing.T) {
+	ctx := context.Background()
+	s, a, c := newFlowCardService(t)
+	start := appendCardEvent(t, s, c, app.FlowRunEvent{Type: "session.flow.started"})
+	s.deliverSessionFlowEvent(ctx, start)
+	question, err := s.Send(ctx, bridge.PeerRef{Channel: "slack", Identity: "default", PeerID: "D1"}, "Question and answer", "", nil)
+	require.NoError(t, err)
+	require.True(t, question.Delivered)
+	final := appendCardEvent(t, s, c, app.FlowRunEvent{Type: "session.flow.completed", Output: "The complete final result"})
+	s.deliverSessionFlowEvent(ctx, final)
+	sends := a.Sends()
+	require.Len(t, sends, 2)
+	require.Equal(t, "Question and answer", sends[0].Text)
+	require.Contains(t, sends[1].Text, "The complete final result")
+	require.True(t, flowCardWasDelivered(t, s, final))
+	// Replay the final event through a different binding mention. Its durable
+	// outcome receipt belongs to the same card recipient, not the mention.
+	_, err = s.store.UpsertBinding(ctx, store.Binding{ProjectID: "proj", Channel: "slack", IdentityID: "default", PeerID: "D1", SessionID: "S1", MentionHandle: "<@user>"})
+	require.NoError(t, err)
+	fresh := &Service{app: s.app, store: s.store, sessionFlows: c, cfg: s.cfg, projectID: s.projectID, adapters: s.adapters}
+	fresh.deliverSessionFlowEvent(ctx, final)
+	require.Len(t, a.Sends(), 2)
+}
+
+func TestFlowCardOutcomeFailureRemainsRetryableAfterCardWasSaved(t *testing.T) {
+	ctx := context.Background()
+	s, a, c := newFlowCardService(t)
+	start := appendCardEvent(t, s, c, app.FlowRunEvent{Type: "session.flow.started"})
+	s.deliverSessionFlowEvent(ctx, start)
+	final := appendCardEvent(t, s, c, app.FlowRunEvent{Type: "session.flow.failed", Output: "Failure reason"})
+	a.sendErr = errors.New("message post failed")
+	s.deliverSessionFlowEvent(ctx, final)
+	require.False(t, flowCardWasDelivered(t, s, final))
+	require.Len(t, a.edited, 1)
+	a.sendErr = nil
+	s.deliverSessionFlowEvent(ctx, final)
+	require.True(t, flowCardWasDelivered(t, s, final))
+	require.Len(t, a.edited, 1)
+	require.Len(t, a.Sends(), 2)
+	require.Contains(t, a.Sends()[1].Text, "Failure reason")
+}
+
+func TestFlowCardOutcomeDoesNotReplayAnOlderAttempt(t *testing.T) {
+	for _, status := range []string{"running", "failed", "completed"} {
+		t.Run(status, func(t *testing.T) {
+			ctx := context.Background()
+			s, a, c := newFlowCardService(t)
+			start := appendCardEvent(t, s, c, app.FlowRunEvent{Type: "session.flow.started"})
+			s.deliverSessionFlowEvent(ctx, start)
+			old := appendCardEvent(t, s, c, app.FlowRunEvent{Type: "session.flow.failed", Output: "old attempt"})
+			appendCardEvent(t, s, c, app.FlowRunEvent{Type: "session.flow.started"})
+			var latest app.FlowRunEvent
+			if status != "running" {
+				latest = appendCardEvent(t, s, c, app.FlowRunEvent{Type: "session.flow." + status, Output: "latest attempt"})
+			}
+			s.deliverSessionFlowEvent(ctx, old)
+			require.Empty(t, a.Sends())
+			require.True(t, flowCardWasDelivered(t, s, old))
+			if status != "running" {
+				s.deliverSessionFlowEvent(ctx, latest)
+				require.Len(t, a.Sends(), 1)
+				require.Contains(t, a.Sends()[0].Text, "latest attempt")
+				require.NotContains(t, a.Sends()[0].Text, "old attempt")
+			}
+		})
+	}
+}
+
+func TestFlowCardOutcomeBoundsAndMentionSafety(t *testing.T) {
+	s, a, c := newFlowCardService(t)
+	final := appendCardEvent(t, s, c, app.FlowRunEvent{Type: "session.flow.completed", Output: strings.Repeat("😺@everyone ", 2000)})
+	s.deliverSessionFlowEvent(context.Background(), final)
+	require.Len(t, a.Sends(), 1)
+	text := a.Sends()[0].Text
+	require.NotContains(t, text, "@everyone")
+	require.Contains(t, text, "truncated")
+	require.Less(t, bridge.FlowTextLen(text), 6500)
+	require.True(t, utf8.ValidString(text))
 }

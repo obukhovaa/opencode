@@ -118,3 +118,35 @@ func TestFlowProgressSlackLinksAndPeerResolution(t *testing.T) {
 		t.Fatal("empty output block", string(raw))
 	}
 }
+
+func TestFlowProgressSlackEndedPlanHasNoPendingOrRunningTasks(t *testing.T) {
+	for _, status := range []string{"completed", "failed", "terminated"} {
+		t.Run(status, func(t *testing.T) {
+			p := flowFixture()
+			p.Status, p.Summary = status, "Final result"
+			p.Steps = append(p.Steps, bridge.FlowProgressStep{ID: "unvisited", Status: "pending"})
+			blocks := flowBlocks(p)
+			plan, ok := blocks[0].(*slackgo.PlanBlock)
+			if !ok {
+				t.Fatalf("plan must precede the outcome: %T", blocks[0])
+			}
+			for _, task := range plan.Tasks {
+				if task.Status == slackgo.TaskCardStatusPending || task.Status == slackgo.TaskCardStatusInProgress {
+					t.Fatalf("ended plan still spins: %+v", task)
+				}
+			}
+			if !strings.Contains(plan.Tasks[1].Title, "skipped") {
+				t.Fatalf("unvisited branch not labelled skipped: %+v", plan.Tasks[1])
+			}
+			if status != "completed" {
+				failed := false
+				for _, task := range plan.Tasks {
+					failed = failed || task.Status == slackgo.TaskCardStatusError
+				}
+				if !failed {
+					t.Fatal("unsuccessful run renders a successful plan")
+				}
+			}
+		})
+	}
+}

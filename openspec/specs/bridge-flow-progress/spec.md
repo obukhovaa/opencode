@@ -23,6 +23,46 @@ Native Slack, Mattermost and Telegram bridges SHALL maintain one editable progre
 - **WHEN** a platform rejects delivery transiently
 - **THEN** delivery remains pending and retries preserve the existing card identity
 
+### Requirement: Ended runs settle their plan presentation
+For completed, failed and terminated executions, unvisited steps SHALL display as
+skipped and unfinished attempts SHALL display as interrupted. This projection
+SHALL NOT mutate execution state or count skipped steps as completed. Slack task
+statuses SHALL contain no pending or in-progress tasks for an ended execution;
+failed or terminated runs SHALL retain an unsuccessful native indicator even
+when no individual step carries a failure.
+
+#### Scenario: Branched run completes early
+- **WHEN** five of eight steps ran and the completed route bypassed three branches
+- **THEN** the plan shows five executed steps and three skipped steps
+- **AND** its native progress indicator no longer spins
+
+#### Scenario: Failure can resume
+- **WHEN** a failed execution's plan displays unvisited steps as skipped
+- **THEN** its stored pending steps remain available to the resumed execution
+
+### Requirement: Outcomes follow conversation interaction
+Slack's native editable flow card SHALL place its concise outcome below the plan.
+Completion, failure, termination and suspension SHALL additionally post a bounded
+result as a new message to the run's original peer or thread after its question
+and step messages. Result posting SHALL be separately receipted so a result-post
+failure remains retryable after a successful card edit and ordinary replay does
+not duplicate a posted result. A stale outcome from an older resumed attempt
+SHALL NOT be appended after a newer attempt. The existing crash window between
+remote send and local receipt persistence SHALL remain documented.
+
+#### Scenario: Long interactive flow
+- **WHEN** a flow finishes after several questions and step messages
+- **THEN** its earlier plan settles in place
+- **AND** its result is posted as a new message at the end of that conversation
+
+#### Scenario: Result send fails after card update
+- **WHEN** the final plan edit succeeds but the result post fails
+- **THEN** the event remains pending and retry posts the result without duplicating the card
+
+#### Scenario: Resume overtakes outcome replay
+- **WHEN** an undelivered failure or suspension is replayed after the same run resumes
+- **THEN** it does not append the obsolete attempt's outcome beneath newer interaction
+
 ### Requirement: Verbosity controls flow detail
 Conversation flow presentation SHALL honor the existing live verbosity setting. Compact mode SHALL omit routine step output and show concise status and outcome. Full mode SHALL include bounded step details behind platform-native folding. Disabled progress SHALL suppress routine intermediate updates while preserving terminal outcomes, failures and waiting states. Question and steering acknowledgements SHALL keep their existing behavior.
 

@@ -30,10 +30,10 @@ type Session struct {
 	RootSessionID         string
 	Title                 string
 	MessageCount          int64
-	PromptTokens          int64
-	CompletionTokens      int64
-	TotalPromptTokens     int64
-	TotalCompletionTokens int64
+	PromptTokens          int64 // Last model pass's full input, including cache reads/writes.
+	CompletionTokens      int64 // Last model pass's generated output, excluding cached input.
+	TotalPromptTokens     int64 // Cumulative input across calls and server-side passes, including cache.
+	TotalCompletionTokens int64 // Cumulative generated output across calls and server-side passes.
 	SummaryMessageID      string
 	Cost                  float64
 	CreatedAt             int64

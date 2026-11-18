@@ -47,3 +47,20 @@ func TestFlowProgressWindowKeepsActiveStepAfterManyFailures(t *testing.T) {
 		t.Fatal(steps)
 	}
 }
+
+func TestFlowProgressEndedPlansShowUnvisitedStepsAsSkipped(t *testing.T) {
+	for _, status := range []string{"completed", "failed", "terminated"} {
+		t.Run(status, func(t *testing.T) {
+			p := FlowProgress{FlowID: "branching", Status: status, Steps: []FlowProgressStep{
+				{ID: "done", Status: "completed"}, {ID: "unused", Status: "pending"}, {ID: "active", Status: "running"},
+			}}
+			steps, _ := FlowVisibleSteps(p, 12)
+			if steps[1].Status != "skipped" || steps[2].Status != "interrupted" || p.Steps[1].Status != "pending" || p.Steps[2].Status != "running" {
+				t.Fatalf("display=%+v, stored=%+v", steps, p.Steps)
+			}
+			if !strings.Contains(FlowProgressTitle(p), "1/3 steps") {
+				t.Fatal("skipped steps counted as executed", FlowProgressTitle(p))
+			}
+		})
+	}
+}

@@ -16,6 +16,33 @@ import (
 	"github.com/opencode-ai/opencode/internal/session"
 )
 
+// SessionContextUsage is a provider-reported context plus any locally estimated
+// messages added since that report. It never sums cumulative billed usage.
+type SessionContextUsage struct {
+	Tokens    int64
+	Reported  bool
+	Estimated bool
+}
+
+// ContextUsage reads the same report anchor and unsent-message estimate used by
+// compaction, without making a provider request or waiting for tool discovery.
+func (a *agent) ContextUsage(ctx context.Context, sessionID string) (SessionContextUsage, error) {
+	sess, err := a.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return SessionContextUsage{}, err
+	}
+	msgs, err := a.messages.List(ctx, sessionID)
+	if err != nil {
+		return SessionContextUsage{}, err
+	}
+	anchor := reportAnchor(sess, msgs)
+	if anchor < 0 {
+		return SessionContextUsage{}, nil
+	}
+	delta := estimateDeltaTokens(msgs[anchor+1:], a.sendsToolResultImages())
+	return SessionContextUsage{Tokens: sess.PromptTokens + sess.CompletionTokens + delta, Reported: true, Estimated: delta > 0}, nil
+}
+
 // resolveCompactionThreshold picks the threshold for one Run. Precedence:
 // the flow step's compact.threshold (RunOptions) > the agent's own
 // compactionThreshold > AutoCompactionThreshold. The agent value is read from

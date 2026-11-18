@@ -328,8 +328,8 @@ Once a peer is bound (manually or via the first inbound), the following commands
 
 | Command | Description |
 |---|---|
-| `/sessions` | List recent sessions (★ marks current binding); shows tokens + cost + relative age. |
-| `/session` | Show current session details (title, tokens, cost, message count). |
+| `/sessions` | List recent sessions (★ marks current binding); shows last-reported context + cost + relative age. |
+| `/session` | Show current session details: context occupancy/window, cumulative input/output usage, cost and message count. |
 | `/session <id-prefix>` | Switch this peer's binding to another session by ID prefix. Refuses while a run is in flight on either side; multi-reviewer rows for other peers are unaffected. |
 | `/agent` | List primary agents (active marked). |
 | `/agent <id-prefix>` | Switch agent. The choice is stored on this peer's bound session (`sessions.agent_name`) and survives restarts; it also becomes the process default for sessions with no stored agent. Every bridge-dispatched run (chat turns and heartbeats) uses the session's stored agent and stamps the one it used. A stored name that is no longer a registered primary agent logs a warning and falls back to the process default. Prompt cache invalidates. Refused while a run is in flight on the bound session — `/stop` it first. |
@@ -346,6 +346,23 @@ Once a peer is bound (manually or via the first inbound), the following commands
 | `/heartbeat …` | Show or configure this chat's heartbeat (daemon mode only). See [Cron and heartbeat](./cron-and-heartbeat.md#heartbeat). |
 | `/help` | List commands. |
 | `/dir` | Unsupported — one opencode process is pinned to one workspace (returns an explanatory message). |
+
+`/session` separates current context from cumulative usage. Context uses the last
+provider-reported pass (cached input included), plus a local estimate of messages
+added since it, using the same anchor and attachment rules as compaction. An
+estimated delta is marked `~`/`estimated`; no token-count or inference request is
+made. The window and percentage belong to the bound session's agent/model, even
+when the process default differs. A session with no usable report says so; a
+fallback snapshot is explicitly labelled `last reported`.
+
+`Usage (session total)` sums every model call and server-side pass in that session:
+cache reads/writes count as input, and only generated tokens count as output.
+These are cumulative billed-token counts, so repeated cached prompts legitimately
+make them much larger than current context. Child sessions have their own usage
+counters; cost can already include child-agent rollups. Legacy rows without
+cumulative counters say `not recorded` rather than treating a last-call snapshot
+as a lifetime total. Future model calls correct the cached-input/output split in
+last-call fields; their sum remains the same for existing rows.
 
 **Isolating external conversations.** `/sessions`, `/session <id-prefix>` and `/crons` work over the sessions of the project, which include those serving `external` peers, often other tenants. Chat peers are kept out of those unless `router.isolateExternalSessions` is `false` (it is on by default, as `router_send` keeps chat turns out of external conversations unconditionally): a session of an external conversation's run is left out of the `/sessions` listing, of `/session` prefix matching (a prefix that only matches such a session gets the ordinary "No session matches" reply, and an ambiguous-prefix listing does not name it), and its jobs are left out of `/crons`. That is a session holding at least one binding on the `external` channel, or one sharing its root session with such a session: a flow run's step sessions all carry the run's root, so once one step serves an external peer, its unbound sibling steps are hidden too (a session without a recorded root is its own root, so an ordinary chat session is unaffected). The caller's own current session always stays visible. The external-bound set is one store query per command, and roots come from the session rows the command already lists (`/crons` reads the session of a job that is not among them, such as a subagent's, once). If a lookup fails, the commands show only the current session (and `/crons` hides the jobs of a session it could not read), with a WARN log. The other commands take no session id (they act on the caller's own binding, or on process-wide settings such as `/agent` and `/model`) and are unaffected.
 
@@ -550,6 +567,20 @@ Slack, Mattermost and Telegram keep one progress message per flow and recipient,
 editing it as steps advance. The card shows the plan, active/waiting/failed steps,
 agent names, iterations and elapsed time when available. Ordinary tool-progress
 cards and interactive questions remain separate.
+
+When an execution completes, fails or terminates, unvisited branches display as
+skipped and unfinished attempts display as interrupted. These are presentation
+states: skipped branches do not count as executed, and a failed run can still
+resume its original pending work. Slack's native task statuses settle along with
+the plan title, so an ended run does not keep a pending/running spinner.
+
+Slack's native plan precedes its concise outcome within the card. Completion, failure,
+termination and suspension also post a separate result message at the end of the
+conversation, after the flow's questions and step narration, in the same peer or
+thread. The result uses the run's recorded output, bounded with explicit
+truncation, and is independently receipted: a failed post remains retryable even
+after the plan update succeeded. Recovery does not repost a receipted result or
+append the stale outcome of an older resumed attempt.
 
 `/verbosity compact` shows status and a concise final result; routine step output
 stays out of the card. `/verbosity full` adds folded step output to the same card:
