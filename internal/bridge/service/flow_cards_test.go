@@ -403,3 +403,34 @@ func TestFlowCardOutcomeBoundsAndMentionSafety(t *testing.T) {
 	require.Less(t, bridge.FlowTextLen(text), 6500)
 	require.True(t, utf8.ValidString(text))
 }
+
+func TestFlowCardOutcomeHonorsCompactStructuredOutput(t *testing.T) {
+	for _, full := range []bool{false, true} {
+		t.Run(fmt.Sprint(full), func(t *testing.T) {
+			ctx := context.Background()
+			s, a, c := newFlowCardService(t)
+			if full {
+				_, err := s.SetToolVerbosity("full")
+				require.NoError(t, err)
+			}
+			output := `{"summary":"Human-readable result","details":"VERBOSE_STRUCTURED_DETAIL"}`
+			appendCardEvent(t, s, c, app.FlowRunEvent{Type: "session.flow.step", StepID: "finish", Status: "completed", Output: output, IsStructOutput: true})
+			end := appendCardEvent(t, s, c, app.FlowRunEvent{Type: "session.flow.completed", Output: "Step finish:\n" + output})
+			s.deliverSessionFlowEvent(ctx, end)
+			require.Len(t, a.Sends(), 1)
+			require.Contains(t, a.Sends()[0].Text, "Human-readable result")
+			require.Equal(t, full, strings.Contains(a.Sends()[0].Text, "VERBOSE_STRUCTURED_DETAIL"))
+		})
+	}
+}
+
+func TestFlowCardCompactOutcomeWithoutHumanSummary(t *testing.T) {
+	s, a, c := newFlowCardService(t)
+	output := `{"details":"VERBOSE_STRUCTURED_DETAIL"}`
+	appendCardEvent(t, s, c, app.FlowRunEvent{Type: "session.flow.step", StepID: "finish", Status: "completed", Output: output, IsStructOutput: true})
+	end := appendCardEvent(t, s, c, app.FlowRunEvent{Type: "session.flow.completed", Output: "Step finish:\n" + output})
+	s.deliverSessionFlowEvent(context.Background(), end)
+	require.Len(t, a.Sends(), 1)
+	require.NotContains(t, a.Sends()[0].Text, "VERBOSE_STRUCTURED_DETAIL")
+	require.Contains(t, a.Sends()[0].Text, "Full result available in the session.")
+}

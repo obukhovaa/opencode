@@ -577,9 +577,9 @@ the plan title, so an ended run does not keep a pending/running spinner.
 Slack's native plan precedes its concise outcome within the card. Completion, failure,
 termination and suspension also post a separate result message at the end of the
 conversation, after the flow's questions and step narration, in the same peer or
-thread. The result uses the run's recorded output, bounded with explicit
-truncation, and is independently receipted: a failed post remains retryable even
-after the plan update succeeded. Recovery does not repost a receipted result or
+thread. Compact results retain the concise human summary; full results use the run's
+recorded output, bounded with explicit truncation. Result posting is independently
+receipted: a failed post remains retryable even after the plan update succeeded. Recovery does not repost a receipted result or
 append the stale outcome of an older resumed attempt.
 
 `/verbosity compact` shows status and a concise final result; routine step output
