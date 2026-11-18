@@ -2,8 +2,11 @@ package clitool
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -140,8 +143,43 @@ func TestBuildEnv_DropsDeniedVariables(t *testing.T) {
 }
 
 func TestExec_TimeoutKillsProcessGroup(t *testing.T) {
+	testExecTimeoutKillsProcessGroup(t, true)
+}
+
+func TestExec_TimeoutAfterLeaderExitKillsProcessGroup(t *testing.T) {
+	// The leader exits successfully, but its descendant still owns the
+	// output pipes. A bounded pipe wait must kill that descendant and report
+	// a timeout, even though exec.Cmd.Wait does not return an ExitError.
+	testExecTimeoutKillsProcessGroup(t, false)
+}
+
+func testExecTimeoutKillsProcessGroup(t *testing.T, waitForChild bool) {
+	t.Helper()
 	wd := t.TempDir()
-	script := writeScript(t, wd, "slow.sh", `sleep 30 & wait`)
+	// Record the descendant before the leader waits or exits. Checking its
+	// liveness distinguishes a process-group kill from merely closing pipes
+	// at exec.Cmd.WaitDelay, which can also make Exec return promptly.
+	body := "sleep 30 &\nprintf '%s\\n' \"$!\" > child.pid\n"
+	if waitForChild {
+		body += "wait\n"
+	}
+	pidPath := filepath.Join(wd, "child.pid")
+	t.Cleanup(func() {
+		data, err := os.ReadFile(pidPath)
+		if err != nil {
+			return // The assertions below report a missing child.
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil || pid <= 0 {
+			return
+		}
+		process, err := os.FindProcess(pid)
+		if err == nil {
+			_ = process.Kill()
+			_ = process.Release()
+		}
+	})
+	script := writeScript(t, wd, "slow.sh", body)
 	m := mustParse(t, wd, "slow.yaml", "name: slow\ndescription: d\ncommand: "+script+"\ntimeout: 1s\nmaxTimeout: 2s\n")
 	inv, err := m.Prepare(map[string]any{"args": []any{}, "timeout": float64(60)}) // clamped to maxTimeout
 	if err != nil {
@@ -157,7 +195,33 @@ func TestExec_TimeoutKillsProcessGroup(t *testing.T) {
 	}
 	text, isErr := FormatResult(res)
 	if !isErr || !strings.Contains(text, "timed out after 2s") {
-		t.Errorf("formatted = %q", text)
+		t.Errorf("formatted = %q; result = %+v", text, res)
+	}
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("child did not record its PID: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid child PID: %q", data)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		status, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			break // Reaped.
+		}
+		if err != nil {
+			t.Fatalf("inspect child: %v", err)
+		}
+		if strings.HasPrefix(strings.TrimSpace(string(status)), "Z") {
+			break // Killed, awaiting reaping by the host's init process.
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("descendant %d survived timeout (status %q)", pid, strings.TrimSpace(string(status)))
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

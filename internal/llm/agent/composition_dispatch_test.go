@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -248,19 +249,42 @@ func TestCompositionCancellationRetainsCompletedPreHookContext(t *testing.T) {
 	pre := writeScript(t, dir, "pre.sh", "#!/bin/sh\ncat >/dev/null\necho '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"completed pre-hook context\"}}'\n")
 	reg := hooks.NewRegistry(hooksFromMap(map[string][]hooks.MatcherGroup{"PreToolUse": {{Matcher: "srv_read", Hooks: []hooks.HookEntry{{Type: "command", Command: pre}}}}}), dir)
 	a := &agent{factory: &fakeFactoryWithHooks{reg: reg}}
+	// The deadline is only a deadlock guard; the child below triggers the
+	// cancellation under test and the assertion requires context.Canceled.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	child := dispatchProbe{name: "srv_read", run: func(ctx context.Context, _ tools.ToolCall) (tools.ToolResponse, error) {
+		// Entry into the child proves the pre-hook has completed and its
+		// context has been published. Cancel only at this boundary, without
+		// racing shell startup against an unrelated 100ms active budget.
+		cancel()
 		<-ctx.Done()
 		return tools.NewEmptyResponse(), ctx.Err()
 	}}
-	ctx := tools.WithCompositionRuntime(context.Background(), tools.CompositionRuntime{
+	releaseDispatch := make(chan struct{})
+	dispatchDone := make(chan struct{})
+	t.Cleanup(func() {
+		close(releaseDispatch)
+		select {
+		case <-dispatchDone:
+		case <-time.After(5 * time.Second):
+			t.Error("composition dispatch did not finish")
+		}
+	})
+	ctx = tools.WithCompositionRuntime(ctx, tools.CompositionRuntime{
 		Check: func(context.Context, string) error { return nil },
 		Dispatch: func(ctx context.Context, call tools.ToolCall) tools.CompositionChildOutcome {
-			return a.dispatchTool(ctx, ctx, "s", child, call, true)
+			defer close(dispatchDone)
+			out := a.dispatchTool(ctx, ctx, "s", child, call, true)
+			// Keep the outcome unavailable until Run returns, so the test
+			// must retain the published hook context on its cancellation
+			// path rather than getting it from a completed child outcome.
+			<-releaseDispatch
+			return out
 		},
 	})
-	ctx = tools.WithCompositionLimit(ctx, 100*time.Millisecond)
 	result, err := tools.NewMCPComposeTool().Run(ctx, tools.ToolCall{Name: tools.MCPComposeToolName, Input: compositionPlan(1)})
-	if err != nil || result.Composition == nil || !strings.Contains(result.Composition.HookContext, "completed pre-hook context") || !strings.Contains(result.Content, "active_timeout") {
+	if !errors.Is(err, context.Canceled) || result.Composition == nil || result.Composition.HookContext != "completed pre-hook context" || !result.IsError || !strings.Contains(result.Content, `"code":"cancelled"`) {
 		t.Fatalf("completed context lost: %+v %v", result, err)
 	}
 }
