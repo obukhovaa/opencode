@@ -270,6 +270,13 @@ func (s *Service) deliverFlowOutcome(ctx context.Context, peer bridge.PeerRef, e
 			output = progress.Summary
 		}
 	}
+	if event.Type == "session.flow.completed" && !progress.Full {
+		if progress.Summary != "" {
+			output = progress.Summary
+		} else if json.Valid([]byte(output)) || strings.HasPrefix(output, "Step ") {
+			output = "Full result available in the session."
+		}
+	}
 	body := bridge.FlowProgressTitle(progress)
 	if output != "" {
 		body += "\n\n" + bridge.LimitFlowText(bridge.FlowSafeText(output), 6000)
