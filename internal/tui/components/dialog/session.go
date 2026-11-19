@@ -23,12 +23,16 @@ type SessionSelectedMsg struct {
 // CloseSessionDialogMsg is sent when the session dialog is closed
 type CloseSessionDialogMsg struct{}
 type SessionSearchMsg struct {
-	Query  string
-	Delete bool
+	Query      string
+	Delete     bool
+	Generation uint64
+	Revision   uint64
 }
 type SessionPageMoveMsg struct {
-	Direction int
-	Delete    bool
+	Direction  int
+	Delete     bool
+	Generation uint64
+	Revision   uint64
 }
 
 // SessionDialog interface for the session switching dialog
@@ -38,9 +42,10 @@ type SessionDialog interface {
 	SetSessions(sessions []session.Session)
 	SetSelectedSession(sessionID string)
 	SetTitle(title string)
-	SetPagination(delete bool)
+	SetPagination(delete bool, generation uint64)
 	SetLoading(loading bool)
 	SetPage(sessions []session.Session, next string, previous bool)
+	QueryRevision() uint64
 }
 
 type sessionDialogCmp struct {
@@ -53,6 +58,7 @@ type sessionDialogCmp struct {
 	title                               string
 	remote, deleting, loading, previous bool
 	next                                string
+	generation, revision                uint64
 	query                               textinput.Model
 	// Cached layout dimensions. Recomputed only when SetSessions or
 	// WindowSizeMsg fires, so filter changes never resize the dialog.
@@ -220,12 +226,12 @@ func (s *sessionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			s.moveSelection(-1)
 			return s, nil
 		case msg.String() == "pgdown" && s.remote && s.next != "" && !s.loading:
-			return s, util.CmdHandler(SessionPageMoveMsg{Direction: 1, Delete: s.deleting})
+			return s, util.CmdHandler(s.pageMove(1))
 		case msg.String() == "pgup" && s.remote && s.previous && !s.loading:
-			return s, util.CmdHandler(SessionPageMoveMsg{Direction: -1, Delete: s.deleting})
+			return s, util.CmdHandler(s.pageMove(-1))
 		case key.Matches(msg, sessionKeys.Down):
 			if s.remote && !s.loading && s.next != "" && s.selectedIdx == len(s.sessions)-1 {
-				return s, util.CmdHandler(SessionPageMoveMsg{Direction: 1, Delete: s.deleting})
+				return s, util.CmdHandler(s.pageMove(1))
 			}
 			s.moveSelection(1)
 			return s, nil
@@ -234,7 +240,7 @@ func (s *sessionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				s.query.SetValue("")
 				if s.remote {
 					s.loading = true
-					return s, util.CmdHandler(SessionSearchMsg{Query: "", Delete: s.deleting})
+					return s, util.CmdHandler(s.searchChanged())
 				}
 				s.filter()
 			}
@@ -261,7 +267,7 @@ func (s *sessionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if s.query.Value() != prev {
 			if s.remote {
 				s.loading = true
-				return s, tea.Batch(cmd, util.CmdHandler(SessionSearchMsg{Query: s.query.Value(), Delete: s.deleting}))
+				return s, tea.Batch(cmd, util.CmdHandler(s.searchChanged()))
 			}
 			s.filter()
 		}
@@ -500,8 +506,9 @@ func NewSessionDialogCmp() SessionDialog {
 	}
 }
 
-func (s *sessionDialogCmp) SetPagination(deleting bool) {
+func (s *sessionDialogCmp) SetPagination(deleting bool, generation uint64) {
 	s.remote, s.deleting, s.loading, s.previous = true, deleting, true, false
+	s.generation, s.revision = generation, 0
 	s.next = ""
 	s.contentWidth = 0
 	s.sessions = nil
@@ -509,7 +516,15 @@ func (s *sessionDialogCmp) SetPagination(deleting bool) {
 	s.query.SetValue("")
 	s.recomputeLayout()
 }
+func (s *sessionDialogCmp) searchChanged() SessionSearchMsg {
+	s.revision++
+	return SessionSearchMsg{Query: s.query.Value(), Delete: s.deleting, Generation: s.generation, Revision: s.revision}
+}
+func (s *sessionDialogCmp) pageMove(direction int) SessionPageMoveMsg {
+	return SessionPageMoveMsg{Direction: direction, Delete: s.deleting, Generation: s.generation, Revision: s.revision}
+}
 func (s *sessionDialogCmp) SetLoading(loading bool) { s.loading = loading }
+func (s *sessionDialogCmp) QueryRevision() uint64   { return s.revision }
 func (s *sessionDialogCmp) SetPage(rows []session.Session, next string, previous bool) {
 	s.sessions = rows
 	s.filtered = nil

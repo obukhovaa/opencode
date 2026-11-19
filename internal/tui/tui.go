@@ -427,15 +427,16 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionPageLoadedMsg:
 		return a.acceptSessionPage(msg)
 	case dialog.SessionSearchMsg:
-		if !a.sessionPageOpen(msg.Delete) {
+		if !a.sessionPageOpen(msg.Delete) || msg.Generation != a.sessionList.generation || msg.Revision <= a.sessionList.revision {
 			return a, nil
 		}
+		a.sessionList.revision = msg.Revision
 		a.sessionList.query = msg.Query
 		a.sessionList.cursor = ""
 		a.sessionList.previous = nil
 		return a.loadSessionPage(true)
 	case dialog.SessionPageMoveMsg:
-		if !a.sessionPageOpen(msg.Delete) {
+		if !a.sessionPageOpen(msg.Delete) || a.sessionList.loading || msg.Generation != a.sessionList.generation || msg.Revision != a.sessionList.revision {
 			return a, nil
 		}
 		if msg.Direction > 0 && a.sessionList.next != "" {

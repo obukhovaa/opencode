@@ -138,7 +138,7 @@ func runPagingSuite(t *testing.T, conn *sql.DB, q db.Querier) {
 		t.Fatalf("batch visibility=%v %v", ids, err)
 	}
 	// A badge fetch reads only headers, and never creates/imports a run.
-	snapshot := `{"manifest":{"definition":{"id":"review"}}}`
+	snapshot := `{"manifest":{"Definition":{"ID":"review"}}}`
 	_, err = conn.Exec(`INSERT INTO conversation_flow_runs(id,project_id,conversation_id,invocation_id,invocation_hash,kind,status,snapshot,origin,created_at,updated_at) VALUES(?,?,?,'badge','hash','generated','completed',?,'{}',3,3)`, id("badge-run"), project, id("root-00"), snapshot)
 	if err != nil {
 		t.Fatal(err)

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Keep shared session stores responsive without materializing their entire history.
+Keep shared session stores responsive without materializing their entire history, while preserving connector privacy and reliable traversal of older conversations.
 
 ## Requirements
 
@@ -25,7 +25,9 @@ authorization. Invalid or differently scoped cursors SHALL be rejected.
 
 The TUI SHALL show its dialog before database work, load 50 roots asynchronously,
 debounce search and cancel obsolete reads. Late replies SHALL not replace newer
-results or reopen a closed dialog. Page changes SHALL replace displayed rows.
+results or reopen a closed dialog. Queued controls from a closed picker or an
+older search revision SHALL be ignored. Navigation during an in-flight page load
+SHALL NOT duplicate cursor history. Page changes SHALL replace displayed rows.
 Flow badges SHALL use lightweight metadata without restoring full flow snapshots.
 
 #### Scenario: Search during a slow request
@@ -58,6 +60,18 @@ HTTP list and children endpoints SHALL preserve their array body and provide
 cursor and nextCursor fields. Session status SHALL retain its map shape and read
 only the process-wide active ledger, scoped to the current project; absence means
 idle.
+
+#### Scenario: Clients follow session continuation
+
+- **WHEN** an HTTP client follows the next-page Link or an ACP client resends nextCursor
+- **THEN** older sessions are returned with the existing response body shape
+- **AND** invalid or differently scoped cursors are rejected
+
+#### Scenario: Status lookup with a large idle history
+
+- **GIVEN** many historical sessions and one active session in the current project
+- **WHEN** the caller reads session status
+- **THEN** only the active session is reported as busy and absent IDs mean idle
 
 ### Requirement: Bounded cleanup and full-history walkers
 

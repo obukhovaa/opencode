@@ -277,7 +277,7 @@ func (q *Queries) ListOldSessionTreePage(ctx context.Context, arg ListOldSession
 const listSessionPage = `-- name: ListSessionPage :many
 SELECT s.id, s.parent_session_id, s.title, s.message_count, s.prompt_tokens, s.completion_tokens, s.cost, s.updated_at, s.created_at, s.summary_message_id, s.project_id, s.root_session_id, s.total_prompt_tokens, s.total_completion_tokens, s.user_set_title, s.agent_name,
     CAST(CASE WHEN ?1 = 1 THEN COALESCE(
-        (SELECT json_extract(r.snapshot, '$.manifest.definition.id') FROM conversation_flow_runs r
+        (SELECT json_extract(r.snapshot, '$.manifest.Definition.ID') FROM conversation_flow_runs r
          WHERE r.project_id = s.project_id AND r.conversation_id = s.id
          ORDER BY (r.active_conversation IS NOT NULL) DESC, r.created_at DESC, r.id DESC LIMIT 1),
         (SELECT f.flow_id FROM flow_states f WHERE f.root_session_id = s.id LIMIT 1), '') ELSE '' END AS TEXT) AS flow_id,

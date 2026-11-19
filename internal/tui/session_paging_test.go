@@ -79,9 +79,9 @@ func TestSessionPickerDebouncesAndIgnoresStaleSearch(t *testing.T) {
 	model, initial := pagingModel(pager).openSessionPage(false)
 	a := model.(appModel)
 	old := initial().(sessionPageLoadedMsg)
-	model, obsolete := a.Update(dialog.SessionSearchMsg{Query: "n"})
+	model, obsolete := a.Update(typedSessionSearch(t, a, "n"))
 	a = model.(appModel)
-	model, current := a.Update(dialog.SessionSearchMsg{Query: "new"})
+	model, current := a.Update(typedSessionSearch(t, a, "ew"))
 	a = model.(appModel)
 	if msg := obsolete().(sessionPageLoadedMsg); msg.err != context.Canceled {
 		t.Fatalf("obsolete debounced query ran: %+v", msg)
@@ -108,7 +108,7 @@ func TestSessionPickerReplacesPagesAndClearsRowsOnFailure(t *testing.T) {
 	a := model.(appModel)
 	model, _ = a.acceptSessionPage(cmd().(sessionPageLoadedMsg))
 	a = model.(appModel)
-	model, cmd = a.Update(dialog.SessionPageMoveMsg{Direction: 1})
+	model, cmd = a.Update(dialog.SessionPageMoveMsg{Direction: 1, Generation: a.sessionList.generation, Revision: a.sessionList.revision})
 	a = model.(appModel)
 	model, _ = a.acceptSessionPage(cmd().(sessionPageLoadedMsg))
 	a = model.(appModel)
@@ -136,5 +136,140 @@ func TestPruneAndSwitchPagingNeverOverlap(t *testing.T) {
 	cmd()
 	if !a.showSessionDialog || a.showDeleteSessionDialog {
 		t.Fatal("switch picker retained prune mode")
+	}
+}
+
+func TestSessionPickerRejectsQueuedControlsFromPreviousPicker(t *testing.T) {
+	pager := &tuiSessionPager{fetch: func(context.Context, session.PageOptions) (session.Page, error) { return session.Page{}, nil }}
+	model, _ := pagingModel(pager).openSessionPage(false)
+	a := model.(appModel)
+	old := dialog.SessionSearchMsg{Query: "obsolete", Generation: a.sessionList.generation, Revision: 1}
+	model, _ = a.Update(dialog.CloseSessionDialogMsg{})
+	a = model.(appModel)
+	model, load := a.openSessionPage(false)
+	a = model.(appModel)
+	defer a.sessionList.cancel()
+	model, cmd := a.Update(old)
+	a = model.(appModel)
+	if a.sessionList.query != "" || cmd != nil {
+		t.Fatal("previous picker's queued search changed the new picker")
+	}
+	model, _ = a.acceptSessionPage(load().(sessionPageLoadedMsg))
+	a = model.(appModel)
+	_, cmd = a.Update(dialog.SessionPageMoveMsg{Direction: 1, Generation: old.Generation})
+	if cmd != nil {
+		t.Fatal("previous picker's queued navigation accepted")
+	}
+}
+
+func TestSessionPickerRejectsOutOfOrderSearchControls(t *testing.T) {
+	pager := &tuiSessionPager{fetch: func(context.Context, session.PageOptions) (session.Page, error) { return session.Page{}, nil }}
+	model, _ := pagingModel(pager).openSessionPage(false)
+	a := model.(appModel)
+	older := typedSessionSearch(t, a, "new")
+	newest := typedSessionSearch(t, a, "est")
+	model, latest := a.Update(newest)
+	a = model.(appModel)
+	defer a.sessionList.cancel()
+	model, obsolete := a.Update(older)
+	a = model.(appModel)
+	if a.sessionList.query != "newest" || obsolete != nil {
+		t.Fatal("queued keystroke overwrote newer query")
+	}
+	latest()
+}
+
+func TestSessionPickerDuplicateNextDoesNotCorruptHistory(t *testing.T) {
+	var cursors []string
+	pager := &tuiSessionPager{fetch: func(_ context.Context, o session.PageOptions) (session.Page, error) {
+		cursors = append(cursors, o.Cursor)
+		return session.Page{Sessions: []session.Session{{ID: "row"}}, NextCursor: "cursor1"}, nil
+	}}
+	model, load := pagingModel(pager).openSessionPage(false)
+	a := model.(appModel)
+	model, _ = a.acceptSessionPage(load().(sessionPageLoadedMsg))
+	a = model.(appModel)
+	next := dialog.SessionPageMoveMsg{Direction: 1, Generation: a.sessionList.generation}
+	model, load = a.Update(next)
+	a = model.(appModel)
+	model, duplicate := a.Update(next)
+	a = model.(appModel)
+	if duplicate != nil || len(a.sessionList.previous) != 1 {
+		t.Fatalf("duplicate navigation corrupted history: %v", a.sessionList.previous)
+	}
+	model, _ = a.acceptSessionPage(load().(sessionPageLoadedMsg))
+	a = model.(appModel)
+	_, load = a.Update(dialog.SessionPageMoveMsg{Direction: -1, Generation: a.sessionList.generation})
+	load()
+	if len(cursors) != 3 || cursors[2] != "" {
+		t.Fatalf("previous did not return to first page: %v", cursors)
+	}
+}
+
+func TestSessionPickerPinnedCurrentPreservesFlowBadge(t *testing.T) {
+	pager := &tuiSessionPager{fetch: func(_ context.Context, o session.PageOptions) (session.Page, error) {
+		if o.OnlyID == "current" {
+			if !o.WithFlow || o.Limit != 1 {
+				t.Errorf("pin metadata missing: %+v", o)
+			}
+			return session.Page{Sessions: []session.Session{{ID: "current", Title: "Current", FlowID: "review-flow", DynamicFlow: true}}}, nil
+		}
+		return session.Page{Sessions: []session.Session{{ID: "other", Title: "Other"}}}, nil
+	}}
+	a := pagingModel(pager)
+	a.selectedSession = session.Session{ID: "current"}
+	model, load := a.openSessionPage(false)
+	a = model.(appModel)
+	model, _ = a.acceptSessionPage(load().(sessionPageLoadedMsg))
+	a = model.(appModel)
+	if !strings.Contains(a.sessionDialog.View().Content, "dynamic flow") {
+		t.Fatal("pinned current root lost flow metadata")
+	}
+}
+
+// Capture the real queued widget control rather than fabricating its revision.
+func typedSessionSearch(t *testing.T, a appModel, text string) dialog.SessionSearchMsg {
+	t.Helper()
+	_, cmd := a.sessionDialog.Update(tea.KeyPressMsg{Code: rune(text[0]), Text: text})
+	var find func(tea.Cmd) (dialog.SessionSearchMsg, bool)
+	find = func(cmd tea.Cmd) (dialog.SessionSearchMsg, bool) {
+		if cmd == nil {
+			return dialog.SessionSearchMsg{}, false
+		}
+		switch msg := cmd().(type) {
+		case dialog.SessionSearchMsg:
+			return msg, true
+		case tea.BatchMsg:
+			for i := len(msg) - 1; i >= 0; i-- {
+				if search, ok := find(msg[i]); ok {
+					return search, true
+				}
+			}
+		}
+		return dialog.SessionSearchMsg{}, false
+	}
+	if msg, ok := find(cmd); ok {
+		return msg
+	}
+	t.Fatal("keypress did not emit a search control")
+	return dialog.SessionSearchMsg{}
+}
+
+func TestSessionPickerOldReplyBeforeQueuedSearchCannotSelectOldRow(t *testing.T) {
+	pager := &tuiSessionPager{fetch: func(context.Context, session.PageOptions) (session.Page, error) {
+		return session.Page{Sessions: []session.Session{{ID: "old", Title: "Old result"}}}, nil
+	}}
+	model, load := pagingModel(pager).openSessionPage(false)
+	a := model.(appModel)
+	old := load().(sessionPageLoadedMsg)
+	_ = typedSessionSearch(t, a, "x") // Keep the control queued while the old read completes.
+	model, _ = a.acceptSessionPage(old)
+	a = model.(appModel)
+	_, selected := a.sessionDialog.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if selected != nil {
+		t.Fatal("old reply made a stale row selectable while search control was queued")
+	}
+	if strings.Contains(a.sessionDialog.View().Content, "Old result") {
+		t.Fatal("old reply painted obsolete query results")
 	}
 }

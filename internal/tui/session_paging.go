@@ -12,11 +12,13 @@ import (
 )
 
 type sessionListState struct {
-	query, cursor, next string
-	previous            []string
-	deleting            bool
-	request             uint64
-	cancel              context.CancelFunc
+	query, cursor, next  string
+	previous             []string
+	deleting             bool
+	request              uint64
+	generation, revision uint64
+	loading              bool
+	cancel               context.CancelFunc
 }
 type sessionPageLoadedMsg struct {
 	request uint64
@@ -38,13 +40,13 @@ func (a appModel) openSessionPage(deleting bool) (tea.Model, tea.Cmd) {
 		a.sessionList.cancel()
 	}
 	request := a.sessionList.request + 1
-	a.sessionList = sessionListState{deleting: deleting, request: request}
+	a.sessionList = sessionListState{deleting: deleting, request: request, generation: request}
 	a.showSessionDialog = !deleting
 	a.showDeleteSessionDialog = deleting
 	if deleting {
 		a.deleteSessionDialog.SetTitle("Prune Session")
 	}
-	a.sessionPageDialog().SetPagination(deleting)
+	a.sessionPageDialog().SetPagination(deleting, request)
 	return a.loadSessionPage(false)
 }
 func (a appModel) loadSessionPage(debounce bool) (tea.Model, tea.Cmd) {
@@ -54,6 +56,7 @@ func (a appModel) loadSessionPage(debounce bool) (tea.Model, tea.Cmd) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	a.sessionList.cancel = cancel
 	a.sessionList.request++
+	a.sessionList.loading = true
 	a.sessionPageDialog().SetLoading(true)
 	request, application := a.sessionList.request, a.app
 	options := session.PageOptions{Limit: session.DefaultPageSize, Cursor: a.sessionList.cursor, Search: a.sessionList.query, RootsOnly: true, WithFlow: true}
@@ -80,9 +83,9 @@ func (a appModel) loadSessionPage(debounce bool) (tea.Model, tea.Cmd) {
 				found = found || row.ID == selected
 			}
 			if !found {
-				current, getErr := application.Sessions.Get(ctx, selected)
-				if getErr == nil && current.ParentSessionID == "" && (current.RootSessionID == "" || current.RootSessionID == current.ID) {
-					page.Sessions = append([]session.Session{current}, page.Sessions...)
+				pinned, getErr := application.Sessions.Page(ctx, session.PageOptions{OnlyID: selected, Limit: 1, RootsOnly: true, WithFlow: true})
+				if getErr == nil && len(pinned.Sessions) == 1 && pinned.Sessions[0].ParentSessionID == "" {
+					page.Sessions = append(pinned.Sessions, page.Sessions...)
 				}
 			}
 		}
@@ -90,10 +93,11 @@ func (a appModel) loadSessionPage(debounce bool) (tea.Model, tea.Cmd) {
 	}
 }
 func (a appModel) acceptSessionPage(msg sessionPageLoadedMsg) (tea.Model, tea.Cmd) {
-	if msg.request != a.sessionList.request || (!a.showSessionDialog && !a.showDeleteSessionDialog) {
+	if msg.request != a.sessionList.request || (!a.showSessionDialog && !a.showDeleteSessionDialog) || a.sessionPageDialog().QueryRevision() != a.sessionList.revision {
 		return a, nil
 	}
 	a.sessionList.cancel = nil
+	a.sessionList.loading = false
 	a.sessionPageDialog().SetLoading(false)
 	if msg.err != nil {
 		a.sessionList.next = ""

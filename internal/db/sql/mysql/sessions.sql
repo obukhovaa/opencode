@@ -89,7 +89,7 @@ ORDER BY created_at ASC;
 -- name: ListSessionPage :many
 SELECT s.*,
     CAST(CASE WHEN sqlc.arg(with_flow) = 1 THEN COALESCE(
-        (SELECT JSON_UNQUOTE(JSON_EXTRACT(r.snapshot, '$.manifest.definition.id')) FROM conversation_flow_runs r
+        (SELECT JSON_UNQUOTE(JSON_EXTRACT(r.snapshot, '$.manifest.Definition.ID')) FROM conversation_flow_runs r
          WHERE r.project_id = s.project_id AND r.conversation_id = s.id
          ORDER BY (r.active_conversation IS NOT NULL) DESC, r.created_at DESC, r.id DESC LIMIT 1),
         (SELECT f.flow_id FROM flow_states f WHERE f.root_session_id = s.id LIMIT 1), '') ELSE '' END AS CHAR) AS flow_id,
