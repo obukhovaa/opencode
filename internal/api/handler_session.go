@@ -1,10 +1,13 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
+	"time"
 
+	agentpkg "github.com/opencode-ai/opencode/internal/llm/agent"
 	"github.com/opencode-ai/opencode/internal/session"
 )
 
@@ -23,14 +26,20 @@ func shouldAutoApprove(rules []APIPermissionRule) bool {
 	return false
 }
 
-// handleSessionList returns all sessions.
+// handleSessionList preserves the SDK's array body and exposes continuation headers.
 func (s *Server) handleSessionList(w http.ResponseWriter, r *http.Request) {
-	sessions, err := s.app.Sessions.List(r.Context())
+	options, err := sessionPageOptions(r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list sessions")
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, ConvertSessionsWithDir(sessions, resolveDirectory(r)))
+	page, err := s.app.Sessions.Page(r.Context(), options)
+	if err != nil {
+		writeSessionPageError(w, err)
+		return
+	}
+	sessionPageHeaders(w, r, page.NextCursor)
+	writeJSON(w, http.StatusOK, ConvertSessionsWithDir(page.Sessions, resolveDirectory(r)))
 }
 
 // handleSessionCreate creates a new session.
@@ -138,22 +147,21 @@ func (s *Server) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ConvertSessionWithDir(sess, resolveDirectory(r)))
 }
 
-// handleSessionStatus returns the busy/idle status of all sessions.
+// handleSessionStatus reports active work only; absent entries are idle. The
+// SDK map shape stays intact without materializing every historical idle row.
 func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
-	sessions, err := s.app.Sessions.List(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list sessions")
-		return
-	}
-
-	statuses := make(map[string]APISessionStatus, len(sessions))
-	agent := s.app.ActiveAgent()
-	for _, sess := range sessions {
-		status := "idle"
-		if agent != nil && agent.IsSessionBusy(sess.ID) {
-			status = "busy"
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	statuses := map[string]APISessionStatus{}
+	for _, id := range agentpkg.BusySessionIDs() {
+		page, err := s.app.Sessions.Page(ctx, session.PageOptions{OnlyID: id, Limit: 1})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read session status")
+			return
 		}
-		statuses[sess.ID] = APISessionStatus{Type: status}
+		if len(page.Sessions) > 0 {
+			statuses[id] = APISessionStatus{Type: "busy"}
+		}
 	}
 	writeJSON(w, http.StatusOK, statuses)
 }
@@ -176,19 +184,20 @@ func (s *Server) handleSessionTodo(w http.ResponseWriter, r *http.Request) {
 // the parent itself — the SDK endpoint is "children", not "tree".
 func (s *Server) handleSessionChildren(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("sessionID")
-	subtree, err := s.app.Sessions.ListChildren(r.Context(), sessionID)
+	options, err := sessionPageOptions(r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list session children")
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	children := make([]session.Session, 0, len(subtree))
-	for _, sess := range subtree {
-		if sess.ID == sessionID {
-			continue
-		}
-		children = append(children, sess)
+	options.TreeRoot = sessionID
+	options.ExcludeID = sessionID
+	page, err := s.app.Sessions.Page(r.Context(), options)
+	if err != nil {
+		writeSessionPageError(w, err)
+		return
 	}
-	writeJSON(w, http.StatusOK, ConvertSessionsWithDir(children, resolveDirectory(r)))
+	sessionPageHeaders(w, r, page.NextCursor)
+	writeJSON(w, http.StatusOK, ConvertSessionsWithDir(page.Sessions, resolveDirectory(r)))
 }
 
 // handleSessionAbort cancels the active agent run for a session.

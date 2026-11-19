@@ -28,6 +28,7 @@ import (
 	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/pubsub"
+	"github.com/opencode-ai/opencode/internal/session"
 )
 
 var serveCmd = &cobra.Command{
@@ -415,15 +416,16 @@ func enableAutoApprove(ctx context.Context, application *app.App) {
 
 	// Mark existing sessions. sync.Map.Store is idempotent, so racing with
 	// a CreatedEvent for the same ID is harmless.
-	sessions, err := application.Sessions.List(ctx)
+	count := 0
+	err := application.Sessions.Walk(ctx, session.PageOptions{Limit: session.MaxPageSize}, func(sess session.Session) error {
+		application.Permissions.AutoApproveSession(sess.ID)
+		count++
+		return nil
+	})
 	if err != nil {
-		logging.Warn("Failed to list sessions for auto-approve", "error", err)
-	} else {
-		for _, sess := range sessions {
-			application.Permissions.AutoApproveSession(sess.ID)
-		}
-		logging.Debug("Auto-approved existing sessions", "count", len(sessions))
+		logging.Warn("Failed to scan sessions for auto-approve", "error", err)
 	}
+	logging.Debug("Auto-approved existing sessions", "count", count)
 
 	go func() {
 		defer logging.RecoverPanic("autoApproveSessions", nil)

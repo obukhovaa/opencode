@@ -22,6 +22,18 @@ type SessionSelectedMsg struct {
 
 // CloseSessionDialogMsg is sent when the session dialog is closed
 type CloseSessionDialogMsg struct{}
+type SessionSearchMsg struct {
+	Query      string
+	Delete     bool
+	Generation uint64
+	Revision   uint64
+}
+type SessionPageMoveMsg struct {
+	Direction  int
+	Delete     bool
+	Generation uint64
+	Revision   uint64
+}
 
 // SessionDialog interface for the session switching dialog
 type SessionDialog interface {
@@ -30,17 +42,24 @@ type SessionDialog interface {
 	SetSessions(sessions []session.Session)
 	SetSelectedSession(sessionID string)
 	SetTitle(title string)
+	SetPagination(delete bool, generation uint64)
+	SetLoading(loading bool)
+	SetPage(sessions []session.Session, next string, previous bool)
+	QueryRevision() uint64
 }
 
 type sessionDialogCmp struct {
-	sessions          []session.Session
-	filtered          []session.Session // nil sentinel → use sessions
-	selectedIdx       int
-	width             int
-	height            int
-	selectedSessionID string
-	title             string
-	query             textinput.Model
+	sessions                            []session.Session
+	filtered                            []session.Session // nil sentinel → use sessions
+	selectedIdx                         int
+	width                               int
+	height                              int
+	selectedSessionID                   string
+	title                               string
+	remote, deleting, loading, previous bool
+	next                                string
+	generation, revision                uint64
+	query                               textinput.Model
 	// Cached layout dimensions. Recomputed only when SetSessions or
 	// WindowSizeMsg fires, so filter changes never resize the dialog.
 	contentWidth int
@@ -124,6 +143,9 @@ func (s *sessionDialogCmp) recomputeLayout() {
 			width = w
 		}
 	}
+	if s.remote && width < s.contentWidth {
+		width = s.contentWidth
+	}
 	if s.width > 0 {
 		width = min(width, s.width-15)
 	}
@@ -134,7 +156,7 @@ func (s *sessionDialogCmp) recomputeLayout() {
 		fromHeight := max(1, (s.height-sessionDialogChromeRows)/sessionDialogItemRows)
 		slots = min(slots, fromHeight)
 	}
-	if len(s.sessions) > 0 {
+	if len(s.sessions) > 0 && !s.remote {
 		slots = min(slots, len(s.sessions))
 	}
 	s.maxVisible = max(1, slots)
@@ -190,6 +212,9 @@ func (s *sessionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, sessionKeys.Escape):
 			return s, util.CmdHandler(CloseSessionDialogMsg{})
 		case key.Matches(msg, sessionKeys.Enter):
+			if s.loading {
+				return s, nil
+			}
 			vis := s.visibleSessions()
 			if len(vis) > 0 && s.selectedIdx < len(vis) {
 				return s, util.CmdHandler(SessionSelectedMsg{
@@ -200,12 +225,23 @@ func (s *sessionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, sessionKeys.Up):
 			s.moveSelection(-1)
 			return s, nil
+		case msg.String() == "pgdown" && s.remote && s.next != "" && !s.loading:
+			return s, util.CmdHandler(s.pageMove(1))
+		case msg.String() == "pgup" && s.remote && s.previous && !s.loading:
+			return s, util.CmdHandler(s.pageMove(-1))
 		case key.Matches(msg, sessionKeys.Down):
+			if s.remote && !s.loading && s.next != "" && s.selectedIdx == len(s.sessions)-1 {
+				return s, util.CmdHandler(s.pageMove(1))
+			}
 			s.moveSelection(1)
 			return s, nil
 		case key.Matches(msg, sessionKeys.ClearQuery):
 			if s.query.Value() != "" {
 				s.query.SetValue("")
+				if s.remote {
+					s.loading = true
+					return s, util.CmdHandler(s.searchChanged())
+				}
 				s.filter()
 			}
 			return s, nil
@@ -229,6 +265,10 @@ func (s *sessionDialogCmp) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		s.query, cmd = s.query.Update(msg)
 		if s.query.Value() != prev {
+			if s.remote {
+				s.loading = true
+				return s, tea.Batch(cmd, util.CmdHandler(s.searchChanged()))
+			}
 			s.filter()
 		}
 		return s, cmd
@@ -254,13 +294,9 @@ func (s *sessionDialogCmp) View() tea.View {
 	t := theme.CurrentTheme()
 	baseStyle := styles.BaseStyle()
 
-	if len(s.sessions) == 0 {
-		return tea.NewView(baseStyle.Padding(1, 2).
-			Border(lipgloss.RoundedBorder()).
-			BorderBackground(t.Background()).
-			BorderForeground(t.TextMuted()).
-			Width(sessionDialogMinWidth).
-			Render("No sessions available"))
+	if len(s.sessions) == 0 && !s.remote {
+		rendered := baseStyle.Padding(1, 2).Border(lipgloss.RoundedBorder()).BorderBackground(t.Background()).BorderForeground(t.TextMuted()).Width(sessionDialogMinWidth).Render("No sessions available")
+		return tea.NewView(styles.ForceReplaceBackgroundWithLipgloss(rendered, t.Background()))
 	}
 
 	// Width and slot count are cached — they do NOT depend on the filtered list
@@ -336,7 +372,7 @@ func (s *sessionDialogCmp) View() tea.View {
 			Width(w).
 			Padding(0, 1).
 			Foreground(t.TextMuted()).
-			Render("no sessions match")
+			Render(s.emptyLabel())
 		emptySlot := lipgloss.JoinVertical(lipgloss.Left, emptyLine, blankRow)
 		padded := make([]string, 0, slots)
 		padded = append(padded, emptySlot)
@@ -348,11 +384,25 @@ func (s *sessionDialogCmp) View() tea.View {
 		body = baseStyle.Width(w).Render(lipgloss.JoinVertical(lipgloss.Left, sessionItems...))
 	}
 
+	helpText := "↑↓ navigate  ⏎ select  ^U clear  esc close"
+	if s.remote {
+		helpText = "↑↓ navigate · esc cancel"
+		if s.previous {
+			helpText += " · pgup previous"
+		}
+		if s.next != "" {
+			helpText += " · pgdown next"
+		}
+	}
+	if s.loading {
+		dialogTitle += " · loading"
+		title = baseStyle.Foreground(t.Primary()).Bold(true).Width(w).Padding(0, 1).Render(dialogTitle)
+	}
 	help := baseStyle.
 		Width(w).
 		Padding(0, 1).
 		Foreground(t.TextMuted()).
-		Render("↑↓ navigate  ⏎ select  ^U clear  esc close")
+		Render(helpText)
 
 	content := lipgloss.JoinVertical(
 		lipgloss.Left,
@@ -365,12 +415,13 @@ func (s *sessionDialogCmp) View() tea.View {
 		help,
 	)
 
-	return tea.NewView(baseStyle.Padding(1, 2).
+	rendered := baseStyle.Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderBackground(t.Background()).
 		BorderForeground(t.TextMuted()).
 		Width(lipgloss.Width(content) + 6).
-		Render(content))
+		Render(content)
+	return tea.NewView(styles.ForceReplaceBackgroundWithLipgloss(rendered, t.Background()))
 }
 
 func (s *sessionDialogCmp) BindingKeys() []key.Binding {
@@ -453,4 +504,42 @@ func NewSessionDialogCmp() SessionDialog {
 		selectedSessionID: "",
 		query:             ti,
 	}
+}
+
+func (s *sessionDialogCmp) SetPagination(deleting bool, generation uint64) {
+	s.remote, s.deleting, s.loading, s.previous = true, deleting, true, false
+	s.generation, s.revision = generation, 0
+	s.next = ""
+	s.contentWidth = 0
+	s.sessions = nil
+	s.filtered = nil
+	s.query.SetValue("")
+	s.recomputeLayout()
+}
+func (s *sessionDialogCmp) searchChanged() SessionSearchMsg {
+	s.revision++
+	return SessionSearchMsg{Query: s.query.Value(), Delete: s.deleting, Generation: s.generation, Revision: s.revision}
+}
+func (s *sessionDialogCmp) pageMove(direction int) SessionPageMoveMsg {
+	return SessionPageMoveMsg{Direction: direction, Delete: s.deleting, Generation: s.generation, Revision: s.revision}
+}
+func (s *sessionDialogCmp) SetLoading(loading bool) { s.loading = loading }
+func (s *sessionDialogCmp) QueryRevision() uint64   { return s.revision }
+func (s *sessionDialogCmp) SetPage(rows []session.Session, next string, previous bool) {
+	s.sessions = rows
+	s.filtered = nil
+	s.next = next
+	s.previous = previous
+	s.loading = false
+	s.recomputeLayout()
+	s.restoreSelection()
+}
+func (s *sessionDialogCmp) emptyLabel() string {
+	if s.loading {
+		return "loading sessions…"
+	}
+	if s.remote {
+		return "no sessions on this page"
+	}
+	return "no sessions match"
 }

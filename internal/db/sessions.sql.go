@@ -8,7 +8,35 @@ package db
 import (
 	"context"
 	"database/sql"
+	"strings"
 )
+
+const countOldSessionTrees = `-- name: CountOldSessionTrees :one
+SELECT COUNT(*) FROM (
+SELECT CAST(COALESCE(MAX(CASE WHEN s.id = COALESCE(NULLIF(s.root_session_id, ''), s.id) THEN s.id END), MIN(s.id)) AS TEXT) AS session_id,
+       CAST(COALESCE(NULLIF(s.root_session_id, ''), s.id) AS TEXT) AS tree_id,
+       COALESCE(MAX(CASE WHEN s.id = COALESCE(NULLIF(s.root_session_id, ''), s.id) THEN s.updated_at END), MAX(s.updated_at)) AS idle_at
+FROM sessions s
+WHERE s.project_id = ?1 AND s.parent_session_id IS NULL
+ AND COALESCE(NULLIF(s.root_session_id, ''), s.id) <> ?2
+ AND COALESCE(NULLIF(s.root_session_id, ''), s.id) NOT IN (SELECT r.id FROM conversation_flow_runs r WHERE r.project_id = ?1 AND r.conversation_id = ?2)
+GROUP BY CAST(COALESCE(NULLIF(s.root_session_id, ''), s.id) AS TEXT)
+HAVING idle_at < CAST(?3 AS INTEGER)
+) old_trees
+`
+
+type CountOldSessionTreesParams struct {
+	ProjectID  sql.NullString `json:"project_id"`
+	ActiveRoot sql.NullString `json:"active_root"`
+	Cutoff     int64          `json:"cutoff"`
+}
+
+func (q *Queries) CountOldSessionTrees(ctx context.Context, arg CountOldSessionTreesParams) (int64, error) {
+	row := q.queryRow(ctx, q.countOldSessionTreesStmt, countOldSessionTrees, arg.ProjectID, arg.ActiveRoot, arg.Cutoff)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
 
 const createSession = `-- name: CreateSession :one
 INSERT INTO sessions (
@@ -188,6 +216,192 @@ func (q *Queries) ListChildSessions(ctx context.Context, rootSessionID sql.NullS
 	return items, nil
 }
 
+const listOldSessionTreePage = `-- name: ListOldSessionTreePage :many
+SELECT CAST(COALESCE(MAX(CASE WHEN s.id = COALESCE(NULLIF(s.root_session_id, ''), s.id) THEN s.id END), MIN(s.id)) AS TEXT) AS session_id,
+       CAST(COALESCE(NULLIF(s.root_session_id, ''), s.id) AS TEXT) AS tree_id,
+       COALESCE(MAX(CASE WHEN s.id = COALESCE(NULLIF(s.root_session_id, ''), s.id) THEN s.updated_at END), MAX(s.updated_at)) AS idle_at
+FROM sessions s
+WHERE s.project_id = ?1 AND s.parent_session_id IS NULL
+ AND COALESCE(NULLIF(s.root_session_id, ''), s.id) <> ?2
+ AND COALESCE(NULLIF(s.root_session_id, ''), s.id) NOT IN (SELECT r.id FROM conversation_flow_runs r WHERE r.project_id = ?1 AND r.conversation_id = ?2)
+ AND COALESCE(NULLIF(s.root_session_id, ''), s.id) > ?3
+GROUP BY CAST(COALESCE(NULLIF(s.root_session_id, ''), s.id) AS TEXT)
+HAVING idle_at < CAST(?4 AS INTEGER)
+ORDER BY tree_id ASC
+LIMIT ?5
+`
+
+type ListOldSessionTreePageParams struct {
+	ProjectID  sql.NullString `json:"project_id"`
+	ActiveRoot sql.NullString `json:"active_root"`
+	AfterRoot  sql.NullString `json:"after_root"`
+	Cutoff     int64          `json:"cutoff"`
+	PageLimit  int64          `json:"page_limit"`
+}
+
+type ListOldSessionTreePageRow struct {
+	SessionID string      `json:"session_id"`
+	TreeID    string      `json:"tree_id"`
+	IdleAt    interface{} `json:"idle_at"`
+}
+
+func (q *Queries) ListOldSessionTreePage(ctx context.Context, arg ListOldSessionTreePageParams) ([]ListOldSessionTreePageRow, error) {
+	rows, err := q.query(ctx, q.listOldSessionTreePageStmt, listOldSessionTreePage,
+		arg.ProjectID,
+		arg.ActiveRoot,
+		arg.AfterRoot,
+		arg.Cutoff,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOldSessionTreePageRow{}
+	for rows.Next() {
+		var i ListOldSessionTreePageRow
+		if err := rows.Scan(&i.SessionID, &i.TreeID, &i.IdleAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSessionPage = `-- name: ListSessionPage :many
+SELECT s.id, s.parent_session_id, s.title, s.message_count, s.prompt_tokens, s.completion_tokens, s.cost, s.updated_at, s.created_at, s.summary_message_id, s.project_id, s.root_session_id, s.total_prompt_tokens, s.total_completion_tokens, s.user_set_title, s.agent_name,
+    CAST(CASE WHEN ?1 = 1 THEN COALESCE(
+        (SELECT json_extract(r.snapshot, '$.manifest.Definition.ID') FROM conversation_flow_runs r
+         WHERE r.project_id = s.project_id AND r.conversation_id = s.id
+         ORDER BY (r.active_conversation IS NOT NULL) DESC, r.created_at DESC, r.id DESC LIMIT 1),
+        (SELECT f.flow_id FROM flow_states f WHERE f.root_session_id = s.id LIMIT 1), '') ELSE '' END AS TEXT) AS flow_id,
+    CAST(CASE WHEN ?1 = 1 THEN COALESCE(
+        (SELECT CASE WHEN r.kind = 'generated' THEN 1 ELSE 0 END FROM conversation_flow_runs r
+         WHERE r.project_id = s.project_id AND r.conversation_id = s.id
+         ORDER BY (r.active_conversation IS NOT NULL) DESC, r.created_at DESC, r.id DESC LIMIT 1), 0) ELSE 0 END AS INTEGER) AS dynamic_flow
+FROM sessions s
+WHERE s.project_id = ?2
+  AND (s.parent_session_id IS NULL OR ?3 <> '' OR ?4 <> '')
+  AND (?5 = 0 OR s.root_session_id IS NULL OR s.root_session_id = '' OR s.root_session_id = s.id OR s.id = ?6)
+  AND (?3 = '' OR s.id = ?3)
+  AND (?7 = '' OR s.id <> ?7)
+  AND (?4 = '' OR s.id = ?4 OR COALESCE(s.root_session_id, '') = ?4)
+  AND (?8 = '' OR INSTR(LOWER(s.title), LOWER(?8)) > 0 OR INSTR(LOWER(s.id), LOWER(?8)) > 0)
+  AND (?9 = '' OR INSTR(s.id, ?9) = 1)
+  AND (?10 = 0 OR s.title <> 'chat-bridge' OR s.message_count > 0 OR s.id = ?6)
+  AND (?11 = 0 OR s.id = ?6 OR NOT EXISTS (
+      SELECT 1 FROM bridge_sessions b JOIN sessions e ON e.id = b.session_id
+      WHERE b.project_id = s.project_id AND b.channel = 'external'
+        AND (e.id = s.id OR COALESCE(NULLIF(e.root_session_id, ''), e.id) = COALESCE(NULLIF(s.root_session_id, ''), s.id))))
+  AND (?12 = 0 OR s.created_at < ?13
+       OR (s.created_at = ?13 AND s.id < ?14))
+ORDER BY s.created_at DESC, s.id DESC
+LIMIT ?15
+`
+
+type ListSessionPageParams struct {
+	WithFlow        interface{}    `json:"with_flow"`
+	ProjectID       sql.NullString `json:"project_id"`
+	OnlyID          interface{}    `json:"only_id"`
+	TreeRoot        interface{}    `json:"tree_root"`
+	RootsOnly       interface{}    `json:"roots_only"`
+	CurrentID       string         `json:"current_id"`
+	ExcludeID       interface{}    `json:"exclude_id"`
+	Search          interface{}    `json:"search"`
+	IDPrefix        interface{}    `json:"id_prefix"`
+	HideEmpty       interface{}    `json:"hide_empty"`
+	ExcludeExternal interface{}    `json:"exclude_external"`
+	HasCursor       interface{}    `json:"has_cursor"`
+	BeforeCreated   int64          `json:"before_created"`
+	BeforeID        string         `json:"before_id"`
+	PageLimit       int64          `json:"page_limit"`
+}
+
+type ListSessionPageRow struct {
+	ID                    string         `json:"id"`
+	ParentSessionID       sql.NullString `json:"parent_session_id"`
+	Title                 string         `json:"title"`
+	MessageCount          int64          `json:"message_count"`
+	PromptTokens          int64          `json:"prompt_tokens"`
+	CompletionTokens      int64          `json:"completion_tokens"`
+	Cost                  float64        `json:"cost"`
+	UpdatedAt             int64          `json:"updated_at"`
+	CreatedAt             int64          `json:"created_at"`
+	SummaryMessageID      sql.NullString `json:"summary_message_id"`
+	ProjectID             sql.NullString `json:"project_id"`
+	RootSessionID         sql.NullString `json:"root_session_id"`
+	TotalPromptTokens     int64          `json:"total_prompt_tokens"`
+	TotalCompletionTokens int64          `json:"total_completion_tokens"`
+	UserSetTitle          bool           `json:"user_set_title"`
+	AgentName             string         `json:"agent_name"`
+	FlowID                string         `json:"flow_id"`
+	DynamicFlow           int64          `json:"dynamic_flow"`
+}
+
+func (q *Queries) ListSessionPage(ctx context.Context, arg ListSessionPageParams) ([]ListSessionPageRow, error) {
+	rows, err := q.query(ctx, q.listSessionPageStmt, listSessionPage,
+		arg.WithFlow,
+		arg.ProjectID,
+		arg.OnlyID,
+		arg.TreeRoot,
+		arg.RootsOnly,
+		arg.CurrentID,
+		arg.ExcludeID,
+		arg.Search,
+		arg.IDPrefix,
+		arg.HideEmpty,
+		arg.ExcludeExternal,
+		arg.HasCursor,
+		arg.BeforeCreated,
+		arg.BeforeID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSessionPageRow{}
+	for rows.Next() {
+		var i ListSessionPageRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ParentSessionID,
+			&i.Title,
+			&i.MessageCount,
+			&i.PromptTokens,
+			&i.CompletionTokens,
+			&i.Cost,
+			&i.UpdatedAt,
+			&i.CreatedAt,
+			&i.SummaryMessageID,
+			&i.ProjectID,
+			&i.RootSessionID,
+			&i.TotalPromptTokens,
+			&i.TotalCompletionTokens,
+			&i.UserSetTitle,
+			&i.AgentName,
+			&i.FlowID,
+			&i.DynamicFlow,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSessions = `-- name: ListSessions :many
 SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, project_id, root_session_id, total_prompt_tokens, total_completion_tokens, user_set_title, agent_name
 FROM sessions
@@ -225,6 +439,57 @@ func (q *Queries) ListSessions(ctx context.Context, projectID sql.NullString) ([
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listVisibleSessionIDs = `-- name: ListVisibleSessionIDs :many
+SELECT s.id FROM sessions s
+WHERE s.project_id = ?1
+AND (s.id = ?2 OR NOT EXISTS (
+ SELECT 1 FROM bridge_sessions b JOIN sessions e ON e.id = b.session_id
+ WHERE b.project_id = s.project_id AND b.channel = 'external'
+ AND (e.id = s.id OR COALESCE(NULLIF(e.root_session_id, ''), e.id) = COALESCE(NULLIF(s.root_session_id, ''), s.id))))
+AND s.id IN (/*SLICE:ids*/?)
+`
+
+type ListVisibleSessionIDsParams struct {
+	ProjectID sql.NullString `json:"project_id"`
+	CurrentID string         `json:"current_id"`
+	Ids       []string       `json:"ids"`
+}
+
+func (q *Queries) ListVisibleSessionIDs(ctx context.Context, arg ListVisibleSessionIDsParams) ([]string, error) {
+	query := listVisibleSessionIDs
+	var queryParams []interface{}
+	queryParams = append(queryParams, arg.ProjectID)
+	queryParams = append(queryParams, arg.CurrentID)
+	if len(arg.Ids) > 0 {
+		for _, v := range arg.Ids {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:ids*/?", strings.Repeat(",?", len(arg.Ids))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:ids*/?", "NULL", 1)
+	}
+	rows, err := q.query(ctx, nil, query, queryParams...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

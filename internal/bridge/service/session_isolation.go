@@ -87,41 +87,29 @@ func onlySession(sessionID string) func(string) bool {
 	return func(id string) bool { return id != "" && id == sessionID }
 }
 
-// cronSessionVisible is chatSessionVisible for /crons, whose jobs may sit on
-// any session. Call it only with the setting on or for an external caller,
-// which sees only currentID's jobs without any read. Roots come from the listed
-// top-level sessions plus one Sessions.Get per distinct job session that is
-// not among them (a subagent's session, whose RootSessionID is its run's
-// root). A failed read fails closed: a failed listing leaves only currentID
-// visible, and a job session that cannot be read is hidden.
+// cronSessionVisible checks only the distinct session IDs referenced by jobs.
+// External callers see only their own jobs. A failed visibility query also
+// fails closed to the current session.
 func (s *Service) cronSessionVisible(ctx context.Context, callerChannel, currentID string, jobs []cron.CronJob) func(sessionID string) bool {
 	if callerChannel == externalChannel {
 		return onlySession(currentID)
 	}
-	rows, err := s.app.Sessions.List(ctx)
+	ids := make([]string, 0, len(jobs))
+	seen := map[string]bool{}
+	for _, job := range jobs {
+		if job.SessionID != "" && !seen[job.SessionID] {
+			ids = append(ids, job.SessionID)
+			seen[job.SessionID] = true
+		}
+	}
+	visible, err := s.app.Sessions.VisibleSessionIDs(ctx, ids, currentID)
 	if err != nil {
-		logging.Warn("bridge: session listing failed; /crons shows only the current session's jobs", "err", err)
+		logging.Warn("bridge: cron session visibility failed; showing only the current session", "err", err)
 		return onlySession(currentID)
 	}
-	known := make(map[string]bool, len(rows))
-	for _, r := range rows {
-		known[r.ID] = true
+	allowed := make(map[string]bool, len(visible))
+	for _, id := range visible {
+		allowed[id] = true
 	}
-	unreadable := map[string]bool{}
-	for _, job := range jobs {
-		id := job.SessionID
-		if id == "" || id == currentID || known[id] || unreadable[id] {
-			continue
-		}
-		sess, err := s.app.Sessions.Get(ctx, id)
-		if err != nil {
-			logging.Warn("bridge: cron job session lookup failed; hiding its jobs from /crons", "session", id, "err", err)
-			unreadable[id] = true
-			continue
-		}
-		known[id] = true
-		rows = append(rows, sess)
-	}
-	visible := s.chatSessionVisible(ctx, callerChannel, currentID, rows)
-	return func(id string) bool { return !unreadable[id] && visible(id) }
+	return func(id string) bool { return allowed[id] }
 }

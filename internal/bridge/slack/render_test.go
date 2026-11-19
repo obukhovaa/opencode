@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -369,4 +370,17 @@ func resetCapturedBlocks() {
 	capturedBlocksMu.Lock()
 	defer capturedBlocksMu.Unlock()
 	capturedBlocksJ = nil
+}
+
+func TestSessionTableRendersContinuationFooter(t *testing.T) {
+	footer := "More: `/sessions --more cursor123`."
+	hint := bridge.NewTableHint([]string{"ID"}, [][]string{{"session123"}}, footer)
+	encoded, err := json.Marshal(buildTableBlocks(hint))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := string(encoded)
+	if !strings.Contains(rendered, footer) {
+		t.Fatalf("pagination command missing from rendered table: %s", rendered)
+	}
 }

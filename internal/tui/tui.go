@@ -153,6 +153,7 @@ type appModel struct {
 
 	showSessionDialog bool
 	sessionDialog     dialog.SessionDialog
+	sessionList       sessionListState
 
 	showDeleteSessionDialog bool
 	deleteSessionDialog     dialog.SessionDialog
@@ -423,7 +424,38 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.showQuit = false
 		return a, nil
 
+	case sessionPageLoadedMsg:
+		return a.acceptSessionPage(msg)
+	case dialog.SessionSearchMsg:
+		if !a.sessionPageOpen(msg.Delete) || msg.Generation != a.sessionList.generation || msg.Revision <= a.sessionList.revision {
+			return a, nil
+		}
+		a.sessionList.revision = msg.Revision
+		a.sessionList.query = msg.Query
+		a.sessionList.cursor = ""
+		a.sessionList.previous = nil
+		return a.loadSessionPage(true)
+	case dialog.SessionPageMoveMsg:
+		if !a.sessionPageOpen(msg.Delete) || a.sessionList.loading || msg.Generation != a.sessionList.generation || msg.Revision != a.sessionList.revision {
+			return a, nil
+		}
+		if msg.Direction > 0 && a.sessionList.next != "" {
+			a.sessionList.previous = append(a.sessionList.previous, a.sessionList.cursor)
+			a.sessionList.cursor = a.sessionList.next
+		} else if msg.Direction < 0 && len(a.sessionList.previous) > 0 {
+			last := len(a.sessionList.previous) - 1
+			a.sessionList.cursor = a.sessionList.previous[last]
+			a.sessionList.previous = a.sessionList.previous[:last]
+		} else {
+			return a, nil
+		}
+		return a.loadSessionPage(false)
 	case dialog.CloseSessionDialogMsg:
+		if a.sessionList.cancel != nil {
+			a.sessionList.cancel()
+			a.sessionList.cancel = nil
+		}
+		a.sessionList.request++
 		if a.showDeleteSessionDialog {
 			a.showDeleteSessionDialog = false
 			return a, nil
@@ -475,15 +507,15 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		activeID := a.selectedSession.ID
 		return a, func() tea.Msg {
 			ctx := context.Background()
-			old, err := a.app.Sessions.ListOldSessions(ctx, activeID)
+			count, err := a.app.Sessions.CountOldSessions(ctx, activeID)
 			if err != nil {
 				return util.InfoMsg{Type: util.InfoTypeError, Msg: "Failed to list old sessions: " + err.Error()}
 			}
-			if len(old) == 0 {
+			if count == 0 {
 				maxAge := config.Get().SessionCleanupMaxAge()
 				return util.InfoMsg{Type: util.InfoTypeInfo, Msg: fmt.Sprintf("No sessions older than %s found", formatDuration(maxAge))}
 			}
-			return showSessionsCleanupDialogMsg{count: len(old)}
+			return showSessionsCleanupDialogMsg{count: int(count)}
 		}
 
 	case showSessionsCleanupDialogMsg:
@@ -724,6 +756,11 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		tb, _ := a.topbar.Update(msg)
 		a.topbar = tb.(core.TopBarCmp)
 	case dialog.SessionSelectedMsg:
+		if a.sessionList.cancel != nil {
+			a.sessionList.cancel()
+			a.sessionList.cancel = nil
+		}
+		a.sessionList.request++
 		// if we're in "delete" mode, delete instead of switch
 		if a.showDeleteSessionDialog {
 			a.showDeleteSessionDialog = false
@@ -872,18 +909,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		case key.Matches(msg, keys.SwitchSession):
 			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showQuestionDialog && !a.showCommandDialog {
-				// Load sessions and show the dialog
-				sessions, err := a.app.Sessions.List(context.Background())
-				if err != nil {
-					return a, util.ReportError(err)
-				}
-				sessions = a.app.AnnotateFlowSessions(context.Background(), sessions)
-				if len(sessions) == 0 {
-					return a, util.ReportWarn("No sessions available")
-				}
-				a.sessionDialog.SetSessions(sessions)
-				a.showSessionDialog = true
-				return a, nil
+				return a.openSessionPage(false)
 			}
 			return a, nil
 		case key.Matches(msg, keys.Commands):
@@ -914,17 +940,7 @@ func (a appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, keys.PruneSession):
 			if a.currentPage == page.ChatPage && !a.showQuit && !a.showPermissions && !a.showQuestionDialog &&
 				!a.showSessionDialog && !a.showCommandDialog {
-				sessions, err := a.app.Sessions.List(context.Background())
-				if err != nil {
-					return a, util.ReportError(err)
-				}
-				sessions = a.app.AnnotateFlowSessions(context.Background(), sessions)
-				if len(sessions) == 0 {
-					return a, util.ReportWarn("No sessions available")
-				}
-				a.deleteSessionDialog.SetTitle("Prune Session")
-				a.deleteSessionDialog.SetSessions(sessions)
-				a.showDeleteSessionDialog = true
+				return a.openSessionPage(true)
 			}
 			return a, nil
 		case key.Matches(msg, keys.SwitchAgent):

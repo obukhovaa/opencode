@@ -191,3 +191,12 @@ func TestMultiSelectStateToggleAndExpire(t *testing.T) {
 		t.Error("expected TTL eviction after 15ms with 10ms ttl")
 	}
 }
+
+func TestSessionTableRendersContinuationFooter(t *testing.T) {
+	footer := "More: `/sessions --more cursor123`."
+	hint := bridge.NewTableHint([]string{"ID"}, [][]string{{"session123"}}, footer)
+	rendered := buildTelegramTableText(hint)
+	if !strings.Contains(rendered, footer) {
+		t.Fatalf("pagination command missing from rendered table: %s", rendered)
+	}
+}

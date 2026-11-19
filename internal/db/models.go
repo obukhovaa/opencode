@@ -48,6 +48,16 @@ type BridgeSession struct {
 	UpdatedAt         int64          `json:"updated_at"`
 }
 
+type ConversationFlowCard struct {
+	RunID        string `json:"run_id"`
+	Recipient    string `json:"recipient"`
+	MessageToken string `json:"message_token"`
+	RenderHash   string `json:"render_hash"`
+	Sequence     int64  `json:"sequence"`
+	State        string `json:"state"`
+	UpdatedAt    int64  `json:"updated_at"`
+}
+
 type ConversationFlowEvent struct {
 	RunID    string `json:"run_id"`
 	ID       string `json:"id"`

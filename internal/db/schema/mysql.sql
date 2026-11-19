@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   agent_name VARCHAR(128) NOT NULL DEFAULT '',
   KEY idx_sessions_project_id (project_id(255)),
   KEY idx_sessions_project_created (project_id(255), created_at DESC),
-  KEY idx_sessions_root_session_id (root_session_id)
+  KEY idx_sessions_root_session_id (root_session_id),
+  KEY idx_sessions_project_parent_page (project_id(191), parent_session_id, created_at DESC, id DESC)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COLLATE = utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS files (

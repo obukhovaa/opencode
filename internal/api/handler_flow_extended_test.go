@@ -726,3 +726,32 @@ func TestFlowEventRetryingLeavesRunStateUntouched(t *testing.T) {
 		t.Errorf("retrying must not clear the waiting_for_input target, got %+v", state.waitingTarget)
 	}
 }
+
+func (s *stubSessions) Page(ctx context.Context, o session.PageOptions) (session.Page, error) {
+	if s.err != nil {
+		return session.Page{}, s.err
+	}
+	rows := []session.Session{}
+	for _, row := range s.byID {
+		if o.OnlyID == "" || o.OnlyID == row.ID {
+			rows = append(rows, row)
+		}
+	}
+	return session.Page{Sessions: rows}, nil
+}
+func (s *stubSessions) Walk(ctx context.Context, o session.PageOptions, visit func(session.Session) error) error {
+	page, err := s.Page(ctx, o)
+	if err != nil {
+		return err
+	}
+	for _, row := range page.Sessions {
+		if err = visit(row); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func (s *stubSessions) CountOldSessions(context.Context, string) (int64, error) { return 0, nil }
+func (s *stubSessions) VisibleSessionIDs(ctx context.Context, ids []string, current string) ([]string, error) {
+	return ids, nil
+}

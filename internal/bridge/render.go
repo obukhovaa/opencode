@@ -78,6 +78,7 @@ type RenderHint struct {
 	// Table fields (RenderKindTable).
 	Headers []string
 	Rows    [][]string
+	Footer  string // optional table instructions, rendered after the rows
 
 	// List fields (RenderKindList).
 	Title       string
@@ -119,12 +120,16 @@ func NewToolResultHint(tool, callID, status, preview string, durationMs int64) *
 // NewTableHint constructs a RenderHint for tabular data. Headers may be
 // nil for unheaded tables; rows MUST have len == len(headers) per row
 // when headers is non-nil (caller responsibility).
-func NewTableHint(headers []string, rows [][]string) *RenderHint {
-	return &RenderHint{
+func NewTableHint(headers []string, rows [][]string, footer ...string) *RenderHint {
+	hint := &RenderHint{
 		Kind:    RenderKindTable,
 		Headers: headers,
 		Rows:    rows,
 	}
+	if len(footer) > 0 {
+		hint.Footer = footer[0]
+	}
+	return hint
 }
 
 // NewListHint constructs a RenderHint for an item list. title may be

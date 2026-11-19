@@ -140,3 +140,19 @@ Sessions are automatically scoped by project to ensure isolation:
 - **Non-git directories** fall back to the base directory name (e.g., `my-app`)
 
 This ensures teams working on the same repository share sessions when using MySQL, while different projects remain isolated.
+
+## Bounded session reads
+
+Interactive lists use project-scoped cursor queries on both SQLite and MySQL.
+Pages default to 50 rows and are capped at 200; each read has a five-second
+deadline. A composite `(project_id, parent_session_id, created_at, id)` index
+supports newest-first traversal. MySQL uses a project-ID index prefix to stay
+within InnoDB's key-length limit; the WHERE clause still compares the full ID.
+The index is installed by the normal migration process.
+
+The session service exposes `Page` for interactive consumers and `Walk` for
+operations that must visit every session, such as `serve --auto-approve` startup.
+Legacy `List` is a bounded 200-row snapshot. `ListChildren` remains a tree-scoped
+internal operation for lifecycle coordination; it does not enumerate the project's
+history. Age cleanup groups and counts trees in SQL, then deletes in bounded
+candidate batches through normal lifecycle coordination.

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"sort"
 	"sync"
 )
 
@@ -93,4 +94,18 @@ func WithIdleSession(sessionID string, update func() error) error {
 		return ErrSessionBusy
 	}
 	return update()
+}
+
+// BusySessionIDs is a bounded-by-active-work snapshot, independent of the
+// historical session table. Missing entries in status maps mean idle.
+func BusySessionIDs() []string {
+	ids := []string{}
+	globalSessionSlots.Range(func(key, value any) bool {
+		if id, ok := key.(string); ok && id != "" {
+			ids = append(ids, id)
+		}
+		return true
+	})
+	sort.Strings(ids)
+	return ids
 }

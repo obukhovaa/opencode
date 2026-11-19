@@ -1042,3 +1042,17 @@ func TestStoredIdleControlPublishesDurableOutcome(t *testing.T) {
 		})
 	}
 }
+
+// The list query must use the actual on-disk JSON casing of the flow structs.
+func TestStoredFlowSessionPageMetadata(t *testing.T) {
+	a, _, root, _, ctx, database := newStoredWorkflowDB(t)
+	snapshot, err := json.Marshal(storedFlowDefinition{Manifest: flow.DynamicManifest{Definition: flow.Flow{ID: "metadata-review"}}})
+	require.NoError(t, err)
+	_, err = database.ExecContext(ctx, `INSERT INTO conversation_flow_runs(id,project_id,conversation_id,invocation_id,invocation_hash,kind,status,snapshot,origin,created_at,updated_at) VALUES('metadata-run','stored-flow-test',?,'metadata','hash','generated','completed',?,'{}',1,1)`, root, string(snapshot))
+	require.NoError(t, err)
+	page, err := a.Sessions.Page(ctx, session.PageOptions{OnlyID: root, WithFlow: true})
+	require.NoError(t, err)
+	require.Len(t, page.Sessions, 1)
+	require.Equal(t, "metadata-review", page.Sessions[0].FlowID)
+	require.True(t, page.Sessions[0].DynamicFlow)
+}
