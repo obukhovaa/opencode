@@ -55,6 +55,10 @@ type Service interface {
 	CreateTaskSession(ctx context.Context, toolCallID, parentSessionID, title string) (Session, error)
 	Get(ctx context.Context, id string) (Session, error)
 	List(ctx context.Context) ([]Session, error)
+	Page(ctx context.Context, options PageOptions) (Page, error)
+	Walk(ctx context.Context, options PageOptions, visit func(Session) error) error
+	CountOldSessions(ctx context.Context, activeSessionID string) (int64, error)
+	VisibleSessionIDs(ctx context.Context, ids []string, currentID string) ([]string, error)
 	ListChildren(ctx context.Context, rootSessionID string) ([]Session, error)
 	Save(ctx context.Context, session Session) (Session, error)
 	// Rename sets the user-facing title and durably marks the session as
@@ -362,16 +366,10 @@ func (s *service) SetAgentNameIf(ctx context.Context, sessionID, expected, name 
 	return true, nil
 }
 
+// List is a bounded legacy snapshot. Interactive callers use Page; full scans use Walk.
 func (s *service) List(ctx context.Context) ([]Session, error) {
-	dbSessions, err := s.q.ListSessions(ctx, sql.NullString{String: s.projectID, Valid: true})
-	if err != nil {
-		return nil, err
-	}
-	sessions := make([]Session, len(dbSessions))
-	for i, dbSession := range dbSessions {
-		sessions[i] = s.fromDBItem(dbSession)
-	}
-	return sessions, nil
+	page, err := s.Page(ctx, PageOptions{Limit: MaxPageSize})
+	return page.Sessions, err
 }
 
 func (s *service) ListChildren(ctx context.Context, rootSessionID string) ([]Session, error) {
@@ -407,81 +405,100 @@ func (s service) fromDBItem(item db.Session) Session {
 	}
 }
 
-// ListOldSessions returns one entry per old session tree (deduped by effective
-// root id) whose root session has not been updated within the configured max
-// age. The active session and any session sharing its tree are excluded.
-func (s *service) ListOldSessions(ctx context.Context, activeSessionID string) ([]Session, error) {
-	sessions, err := s.List(ctx)
-	if err != nil {
-		return nil, err
+// oldSessionScope resolves just the active tree rather than loading every session.
+func (s *service) oldSessionScope(ctx context.Context, activeID string) (string, int64, error) {
+	root := activeID
+	if activeID != "" {
+		active, err := s.Get(ctx, activeID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", 0, err
+		}
+		if err == nil && active.RootSessionID != "" {
+			root = active.RootSessionID
+		}
 	}
-	maxAge := config.Get().SessionCleanupMaxAge()
-	cutoff := time.Now().Add(-maxAge).Unix()
-
-	// Index every returned row by id so we can resolve a flow step to its root
-	// even though sql sessions list filters out parent_session_id IS NULL.
-	byID := make(map[string]Session, len(sessions))
-	for _, sess := range sessions {
-		byID[sess.ID] = sess
+	if root != "" {
+		run, err := s.q.GetConversationFlowRun(ctx, db.GetConversationFlowRunParams{ProjectID: s.projectID, ID: root})
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", 0, err
+		}
+		if err == nil {
+			root = run.ConversationID
+		}
 	}
-
-	// Resolve the active session's effective root so we exclude the
-	// entire tree even when the user is viewing a non-root flow step.
-	activeRootID := activeSessionID
-	if activeSess, ok := byID[activeSessionID]; ok && activeSess.RootSessionID != "" {
-		activeRootID = activeSess.RootSessionID
+	maxAge := config.DefaultSessionCleanupMaxAge
+	if cfg := config.Get(); cfg != nil {
+		maxAge = cfg.SessionCleanupMaxAge()
 	}
-
-	seenRoot := make(map[string]struct{})
-	old := make([]Session, 0)
-	for _, sess := range sessions {
-		rootID := sess.RootSessionID
-		if rootID == "" {
-			rootID = sess.ID
-		}
-		if rootID == activeRootID {
-			continue
-		}
-		if _, ok := seenRoot[rootID]; ok {
-			continue
-		}
-
-		// Use the root row's updated_at when we can find it so non-root
-		// flow rows do not keep the tree alive past its actual idle time.
-		bench := sess
-		if root, ok := byID[rootID]; ok {
-			bench = root
-		}
-		if bench.UpdatedAt >= cutoff {
-			continue
-		}
-
-		seenRoot[rootID] = struct{}{}
-		old = append(old, bench)
-	}
-	return old, nil
+	return root, time.Now().Add(-maxAge).Unix(), nil
 }
-
-func (s *service) CleanupOldSessions(ctx context.Context, activeSessionID string) (int, error) {
-	old, err := s.ListOldSessions(ctx, activeSessionID)
+func (s *service) CountOldSessions(ctx context.Context, activeID string) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, pageTimeout)
+	defer cancel()
+	root, cutoff, err := s.oldSessionScope(ctx, activeID)
 	if err != nil {
 		return 0, err
 	}
-	deleted := 0
-	for _, sess := range old {
-		if err := s.DeleteTree(ctx, sess.ID); err != nil {
-			// Tolerate rows that have already disappeared (e.g. removed by
-			// a concurrent session.Delete or via FK cascade earlier in
-			// this same loop) - they still count toward "trees gone".
-			if errors.Is(err, sql.ErrNoRows) {
-				deleted++
-				continue
-			}
-			return deleted, fmt.Errorf("failed to delete session %s: %w", sess.ID, err)
-		}
-		deleted++
+	return s.q.CountOldSessionTrees(ctx, db.CountOldSessionTreesParams{ProjectID: sql.NullString{String: s.projectID, Valid: true}, Cutoff: cutoff, ActiveRoot: sql.NullString{String: root, Valid: true}})
+}
+
+// ListOldSessions returns a bounded preview; cleanup walks candidate pages.
+func (s *service) ListOldSessions(ctx context.Context, activeID string) ([]Session, error) {
+	ctx, cancel := context.WithTimeout(ctx, pageTimeout)
+	defer cancel()
+	root, cutoff, err := s.oldSessionScope(ctx, activeID)
+	if err != nil {
+		return nil, err
 	}
-	return deleted, nil
+	rows, err := s.oldSessionPage(ctx, root, cutoff, "")
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Session, 0, len(rows))
+	for _, r := range rows {
+		row, err := s.Get(ctx, r.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, nil
+}
+func (s *service) oldSessionPage(ctx context.Context, root string, cutoff int64, after string) ([]db.ListOldSessionTreePageRow, error) {
+	ctx, cancel := context.WithTimeout(ctx, pageTimeout)
+	defer cancel()
+	return s.q.ListOldSessionTreePage(ctx, db.ListOldSessionTreePageParams{ProjectID: sql.NullString{String: s.projectID, Valid: true}, Cutoff: cutoff, ActiveRoot: sql.NullString{String: root, Valid: true}, AfterRoot: sql.NullString{String: after, Valid: true}, PageLimit: MaxPageSize})
+}
+func (s *service) CleanupOldSessions(ctx context.Context, activeID string) (int, error) {
+	scopeCtx, scopeCancel := context.WithTimeout(ctx, pageTimeout)
+	root, cutoff, err := s.oldSessionScope(scopeCtx, activeID)
+	scopeCancel()
+	if err != nil {
+		return 0, err
+	}
+	deleted, after := 0, ""
+	for {
+		if err = ctx.Err(); err != nil {
+			return deleted, err
+		}
+		rows, err := s.oldSessionPage(ctx, root, cutoff, after)
+		if err != nil {
+			return deleted, err
+		}
+		if len(rows) == 0 {
+			return deleted, nil
+		}
+		for _, row := range rows {
+			if err = ctx.Err(); err != nil {
+				return deleted, err
+			}
+			if err = s.DeleteTree(ctx, row.SessionID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return deleted, fmt.Errorf("failed to delete session %s: %w", row.SessionID, err)
+			}
+			deleted++
+			after = row.TreeID
+		}
+	}
 }
 
 func NewService(q db.Querier, explicitProjectID string) Service {

@@ -18,6 +18,7 @@ type Querier interface {
 	ClearStaleFiring(ctx context.Context) error
 	CountActiveCronJobsBySession(ctx context.Context, sessionID string) (int64, error)
 	CountBridgeSessionsByIdentity(ctx context.Context, arg CountBridgeSessionsByIdentityParams) (int64, error)
+	CountOldSessionTrees(ctx context.Context, arg CountOldSessionTreesParams) (int64, error)
 	CreateCronJob(ctx context.Context, arg CreateCronJobParams) (sql.Result, error)
 	CreateFile(ctx context.Context, arg CreateFileParams) (sql.Result, error)
 	CreateFlowState(ctx context.Context, arg CreateFlowStateParams) (sql.Result, error)
@@ -68,7 +69,10 @@ type Querier interface {
 	ListLatestSessionTreeFiles(ctx context.Context, rootSessionID sql.NullString) ([]File, error)
 	ListMessagesBySession(ctx context.Context, sessionID string) ([]Message, error)
 	ListMissedOneShots(ctx context.Context, nextRunAt sql.NullInt64) ([]CronJob, error)
+	ListOldSessionTreePage(ctx context.Context, arg ListOldSessionTreePageParams) ([]ListOldSessionTreePageRow, error)
+	ListSessionPage(ctx context.Context, arg ListSessionPageParams) ([]ListSessionPageRow, error)
 	ListSessions(ctx context.Context, projectID sql.NullString) ([]Session, error)
+	ListVisibleSessionIDs(ctx context.Context, arg ListVisibleSessionIDsParams) ([]string, error)
 	MarkBridgeSessionMentionConsumed(ctx context.Context, arg MarkBridgeSessionMentionConsumedParams) error
 	RemoveBridgeAllowlistEntry(ctx context.Context, arg RemoveBridgeAllowlistEntryParams) error
 	RenameSession(ctx context.Context, arg RenameSessionParams) (sql.Result, error)

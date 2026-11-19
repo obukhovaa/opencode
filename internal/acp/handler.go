@@ -136,10 +136,15 @@ func (h *Handler) HandleLoadSession(id any, params LoadSessionParams) error {
 func (h *Handler) HandleListSessions(id any, params ListSessionsParams) error {
 	ctx := context.Background()
 
-	sessions, err := h.app.Sessions.List(ctx)
+	page, err := h.app.Sessions.Page(ctx, session.PageOptions{Cursor: params.Cursor})
 	if err != nil {
+		if errors.Is(err, session.ErrInvalidCursor) {
+			return h.transport.SendError(id, ErrCodeInvalidParams, err.Error())
+		}
 		return h.transport.SendError(id, ErrCodeInternal, fmt.Sprintf("failed to list sessions: %v", err))
 	}
+
+	sessions := page.Sessions
 
 	// Use the CWD from the request if provided, otherwise fall back to
 	// the stored ACP session CWD or the process working directory.
@@ -159,13 +164,14 @@ func (h *Handler) HandleListSessions(id any, params ListSessionsParams) error {
 			SessionID: sess.ID,
 			CWD:       cwd,
 			Title:     sess.Title,
-			UpdatedAt: time.UnixMilli(sess.UpdatedAt).UTC().Format(time.RFC3339),
+			UpdatedAt: time.Unix(sess.UpdatedAt, 0).UTC().Format(time.RFC3339),
 		})
 	}
 	h.mu.RUnlock()
 
 	return h.transport.SendResponse(id, ListSessionsResult{
-		Sessions: entries,
+		Sessions:   entries,
+		NextCursor: page.NextCursor,
 	})
 }
 

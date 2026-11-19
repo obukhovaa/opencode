@@ -415,9 +415,13 @@ func buildTableBlocks(hint *bridge.RenderHint) []slackgo.Block {
 		writeTableRow(&b, row, widths)
 	}
 	b.WriteString("```")
-	return []slackgo.Block{
+	blocks := []slackgo.Block{
 		slackgo.NewSectionBlock(slackgo.NewTextBlockObject(slackgo.MarkdownType, b.String(), false, false), nil, nil),
 	}
+	if hint.Footer != "" {
+		blocks = append(blocks, slackgo.NewSectionBlock(slackgo.NewTextBlockObject(slackgo.MarkdownType, hint.Footer, false, false), nil, nil))
+	}
+	return blocks
 }
 
 func writeTableRow(b *strings.Builder, row []string, widths []int) {

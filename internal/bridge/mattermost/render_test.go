@@ -120,3 +120,12 @@ func TestFormatDuration(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionTableRendersContinuationFooter(t *testing.T) {
+	footer := "More: `/sessions --more cursor123`."
+	hint := bridge.NewTableHint([]string{"ID"}, [][]string{{"session123"}}, footer)
+	rendered := buildMarkdownTable(hint)
+	if !strings.Contains(rendered, footer) {
+		t.Fatalf("pagination command missing from rendered table: %s", rendered)
+	}
+}

@@ -142,3 +142,22 @@ shell commands and individual inputs larger than 64 KiB are not retained.
 The activity strip animates a spinner beside running tasks, subagents and flows.
 Animation is local to the TUI; it does not increase database polling frequency,
 and stops when no work is running.
+
+## Session lists on shared databases
+
+`Ctrl+A` (switch) and `Ctrl+P` (prune) open immediately and fetch 50 conversation
+roots at a time. Type a title or ID substring to search the database, including
+older roots beyond the loaded page. Search is debounced; changing the search or
+closing the dialog cancels the previous request. Each database request has a
+five-second deadline, and a late response cannot replace newer search results.
+
+Use `PgDown` / `PgUp` for next / previous pages. Down on the last row also loads
+the next page. A page replaces the previous rows rather than retaining the whole
+history. The current root is pinned on the first unfiltered switch page. Flow
+badges come from stored metadata; opening the list does not import or restore
+flow snapshots. Step and task sessions remain in their root's activity views.
+
+Age-based cleanup counts eligible trees in SQL and deletes candidates in batches
+of 200 through the existing tree-deletion handler. The active conversation,
+including its associated flow runs, is excluded. Opening the prune dialog does
+not run cleanup.

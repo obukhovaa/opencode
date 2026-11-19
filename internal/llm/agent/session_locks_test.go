@@ -173,3 +173,24 @@ func TestRunWith_RejectsEmptySessionID(t *testing.T) {
 		releaseSessionSlot("")
 	}
 }
+
+func TestBusySessionIDsUsesActiveLedger(t *testing.T) {
+	const id = "session-status-active-ledger-test"
+	if !acquireSessionSlot(id, t) {
+		t.Fatal("failed to acquire test slot")
+	}
+	t.Cleanup(func() { releaseSessionSlot(id) })
+	found := false
+	for _, busy := range BusySessionIDs() {
+		found = found || busy == id
+	}
+	if !found {
+		t.Fatal("busy session missing from snapshot")
+	}
+	releaseSessionSlot(id)
+	for _, busy := range BusySessionIDs() {
+		if busy == id {
+			t.Fatal("released session reported busy")
+		}
+	}
+}

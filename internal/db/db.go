@@ -39,6 +39,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.countBridgeSessionsByIdentityStmt, err = db.PrepareContext(ctx, countBridgeSessionsByIdentity); err != nil {
 		return nil, fmt.Errorf("error preparing query CountBridgeSessionsByIdentity: %w", err)
 	}
+	if q.countOldSessionTreesStmt, err = db.PrepareContext(ctx, countOldSessionTrees); err != nil {
+		return nil, fmt.Errorf("error preparing query CountOldSessionTrees: %w", err)
+	}
 	if q.createCronJobStmt, err = db.PrepareContext(ctx, createCronJob); err != nil {
 		return nil, fmt.Errorf("error preparing query CreateCronJob: %w", err)
 	}
@@ -189,8 +192,17 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listMissedOneShotsStmt, err = db.PrepareContext(ctx, listMissedOneShots); err != nil {
 		return nil, fmt.Errorf("error preparing query ListMissedOneShots: %w", err)
 	}
+	if q.listOldSessionTreePageStmt, err = db.PrepareContext(ctx, listOldSessionTreePage); err != nil {
+		return nil, fmt.Errorf("error preparing query ListOldSessionTreePage: %w", err)
+	}
+	if q.listSessionPageStmt, err = db.PrepareContext(ctx, listSessionPage); err != nil {
+		return nil, fmt.Errorf("error preparing query ListSessionPage: %w", err)
+	}
 	if q.listSessionsStmt, err = db.PrepareContext(ctx, listSessions); err != nil {
 		return nil, fmt.Errorf("error preparing query ListSessions: %w", err)
+	}
+	if q.listVisibleSessionIDsStmt, err = db.PrepareContext(ctx, listVisibleSessionIDs); err != nil {
+		return nil, fmt.Errorf("error preparing query ListVisibleSessionIDs: %w", err)
 	}
 	if q.markBridgeSessionMentionConsumedStmt, err = db.PrepareContext(ctx, markBridgeSessionMentionConsumed); err != nil {
 		return nil, fmt.Errorf("error preparing query MarkBridgeSessionMentionConsumed: %w", err)
@@ -280,6 +292,11 @@ func (q *Queries) Close() error {
 	if q.countBridgeSessionsByIdentityStmt != nil {
 		if cerr := q.countBridgeSessionsByIdentityStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing countBridgeSessionsByIdentityStmt: %w", cerr)
+		}
+	}
+	if q.countOldSessionTreesStmt != nil {
+		if cerr := q.countOldSessionTreesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing countOldSessionTreesStmt: %w", cerr)
 		}
 	}
 	if q.createCronJobStmt != nil {
@@ -532,9 +549,24 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listMissedOneShotsStmt: %w", cerr)
 		}
 	}
+	if q.listOldSessionTreePageStmt != nil {
+		if cerr := q.listOldSessionTreePageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listOldSessionTreePageStmt: %w", cerr)
+		}
+	}
+	if q.listSessionPageStmt != nil {
+		if cerr := q.listSessionPageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listSessionPageStmt: %w", cerr)
+		}
+	}
 	if q.listSessionsStmt != nil {
 		if cerr := q.listSessionsStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listSessionsStmt: %w", cerr)
+		}
+	}
+	if q.listVisibleSessionIDsStmt != nil {
+		if cerr := q.listVisibleSessionIDsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listVisibleSessionIDsStmt: %w", cerr)
 		}
 	}
 	if q.markBridgeSessionMentionConsumedStmt != nil {
@@ -681,6 +713,7 @@ type Queries struct {
 	clearStaleFiringStmt                 *sql.Stmt
 	countActiveCronJobsBySessionStmt     *sql.Stmt
 	countBridgeSessionsByIdentityStmt    *sql.Stmt
+	countOldSessionTreesStmt             *sql.Stmt
 	createCronJobStmt                    *sql.Stmt
 	createFileStmt                       *sql.Stmt
 	createFlowStateStmt                  *sql.Stmt
@@ -731,7 +764,10 @@ type Queries struct {
 	listLatestSessionTreeFilesStmt       *sql.Stmt
 	listMessagesBySessionStmt            *sql.Stmt
 	listMissedOneShotsStmt               *sql.Stmt
+	listOldSessionTreePageStmt           *sql.Stmt
+	listSessionPageStmt                  *sql.Stmt
 	listSessionsStmt                     *sql.Stmt
+	listVisibleSessionIDsStmt            *sql.Stmt
 	markBridgeSessionMentionConsumedStmt *sql.Stmt
 	removeBridgeAllowlistEntryStmt       *sql.Stmt
 	renameSessionStmt                    *sql.Stmt
@@ -763,6 +799,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		clearStaleFiringStmt:                 q.clearStaleFiringStmt,
 		countActiveCronJobsBySessionStmt:     q.countActiveCronJobsBySessionStmt,
 		countBridgeSessionsByIdentityStmt:    q.countBridgeSessionsByIdentityStmt,
+		countOldSessionTreesStmt:             q.countOldSessionTreesStmt,
 		createCronJobStmt:                    q.createCronJobStmt,
 		createFileStmt:                       q.createFileStmt,
 		createFlowStateStmt:                  q.createFlowStateStmt,
@@ -813,7 +850,10 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listLatestSessionTreeFilesStmt:       q.listLatestSessionTreeFilesStmt,
 		listMessagesBySessionStmt:            q.listMessagesBySessionStmt,
 		listMissedOneShotsStmt:               q.listMissedOneShotsStmt,
+		listOldSessionTreePageStmt:           q.listOldSessionTreePageStmt,
+		listSessionPageStmt:                  q.listSessionPageStmt,
 		listSessionsStmt:                     q.listSessionsStmt,
+		listVisibleSessionIDsStmt:            q.listVisibleSessionIDsStmt,
 		markBridgeSessionMentionConsumedStmt: q.markBridgeSessionMentionConsumedStmt,
 		removeBridgeAllowlistEntryStmt:       q.removeBridgeAllowlistEntryStmt,
 		renameSessionStmt:                    q.renameSessionStmt,

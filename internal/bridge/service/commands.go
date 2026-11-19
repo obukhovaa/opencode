@@ -245,41 +245,41 @@ func (s *Service) cmdModel(_ context.Context, in bridge.Inbound) *bridge.Command
 // binding's session still always shows. A caller on the external channel
 // sees only its current session.
 func (s *Service) cmdSessions(ctx context.Context, in bridge.Inbound) *bridge.CommandReply {
-	sessions, err := s.app.Sessions.List(ctx)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	args, err := parseSessionListArgs(in.CommandArgs)
+	if err != nil {
+		return replyText(err.Error())
+	}
+	currentID := ""
+	if binding, resolveErr := s.resolveBinding(ctx, in.Peer); resolveErr == nil {
+		currentID = binding.SessionID
+	}
+	options := session.PageOptions{Limit: 10, Cursor: args.cursor, Search: args.search, RootsOnly: !args.all && args.search == "", HideEmpty: true}
+	if args.search == "" && in.Peer.Channel != externalChannel {
+		// Pin the binding on page one without repeating it on a later page.
+		options.ExcludeID = currentID
+	}
+	page, err := s.bridgeSessionPage(ctx, in, currentID, options)
 	if err != nil {
 		return replyText("Failed to list sessions: " + err.Error())
 	}
-	if len(sessions) == 0 {
-		return replyText("No sessions yet.")
-	}
-	currentID := ""
-	if b, err := s.resolveBinding(ctx, in.Peer); err == nil {
-		currentID = b.SessionID
-	}
-	visible := s.chatSessionVisible(ctx, in.Peer.Channel, currentID, sessions)
-	// Filter empty placeholder sessions (Title=="chat-bridge" + zero
-	// messages) — these are pre-created stubs from Bind() that never
-	// got a conversation. Always keep the current binding's session
-	// visible so /session has a row to mark with ★.
-	filtered := sessions[:0]
-	for _, sess := range sessions {
-		isEmptyPlaceholder := sess.Title == BridgePlaceholderTitle && sess.MessageCount == 0
-		if isEmptyPlaceholder && sess.ID != currentID {
-			continue
+	sessions := page.Sessions
+	if args.cursor == "" && args.search == "" && currentID != "" {
+		found := false
+		for _, row := range sessions {
+			found = found || row.ID == currentID
 		}
-		if !visible(sess.ID) {
-			continue
+		if !found {
+			if current, getErr := s.app.Sessions.Get(ctx, currentID); getErr == nil {
+				sessions = append([]session.Session{current}, sessions...)
+			}
 		}
-		filtered = append(filtered, sess)
 	}
-	sessions = filtered
 	if len(sessions) == 0 {
-		return replyText("No sessions yet.")
+		return replyText("No sessions match. Use `/sessions --all` to include flow steps.")
 	}
 	now := time.Now().UnixMilli()
-	if len(sessions) > 10 {
-		sessions = sessions[:10]
-	}
 	lines := make([]string, 0, len(sessions))
 	tableRows := make([][]string, 0, len(sessions))
 	for _, sess := range sessions {
@@ -303,11 +303,20 @@ func (s *Service) cmdSessions(ctx context.Context, in bridge.Inbound) *bridge.Co
 			formatRelativeAge(sess.UpdatedAt*1000, now),
 		})
 	}
-	text := "Recent sessions (★ = current):\n" + strings.Join(lines, "\n") +
-		"\n\nSwitch with `/session <id-prefix>`."
+	footer := "★ = current. Switch with `/session <id-prefix>`."
+	if page.NextCursor != "" {
+		command := "/sessions"
+		if args.all {
+			command += " --all"
+		}
+		if args.search != "" {
+			command += " " + args.search
+		}
+		footer += "\nMore: `" + command + " --more " + page.NextCursor + "`."
+	}
 	return &bridge.CommandReply{
-		Text: text,
-		Hint: bridge.NewTableHint([]string{"ID", "Title", "Context", "Cost", "Updated"}, tableRows),
+		Text: "Recent sessions:\n" + strings.Join(lines, "\n") + "\n\n" + footer,
+		Hint: bridge.NewTableHint([]string{"ID", "Title", "Context", "Cost", "Updated"}, tableRows, footer),
 	}
 }
 
@@ -355,16 +364,13 @@ func (s *Service) cmdSession(ctx context.Context, in bridge.Inbound) *bridge.Com
 	}
 
 	// Switch path. Resolve the prefix.
-	sessions, err := s.app.Sessions.List(ctx)
+	page, err := s.bridgeSessionPage(ctx, in, binding.SessionID, session.PageOptions{Limit: 21, IDPrefix: args})
 	if err != nil {
-		return replyText("Failed to list sessions: " + err.Error())
+		return replyText("Failed to find sessions: " + err.Error())
 	}
-	visible := s.chatSessionVisible(ctx, in.Peer.Channel, binding.SessionID, sessions)
 	var matches []sessionMatch
-	for _, sess := range sessions {
-		if strings.HasPrefix(sess.ID, args) && visible(sess.ID) {
-			matches = append(matches, sessionMatch{ID: sess.ID, Title: sess.Title})
-		}
+	for _, row := range page.Sessions {
+		matches = append(matches, sessionMatch{ID: row.ID, Title: row.Title})
 	}
 	switch len(matches) {
 	case 0:
@@ -389,8 +395,12 @@ func (s *Service) cmdSession(ctx context.Context, in bridge.Inbound) *bridge.Com
 		if more > 0 {
 			footer = fmt.Sprintf("\n…and %d more. Use a longer prefix to disambiguate.", more)
 		}
-		return replyText(fmt.Sprintf("Prefix %q is ambiguous — %d matches:\n%s%s",
-			args, len(matches), strings.Join(lines, "\n"), footer))
+		count := fmt.Sprint(len(matches))
+		if page.NextCursor != "" {
+			count = "at least " + count
+			footer = "\nMore matches exist. Use a longer prefix to disambiguate."
+		}
+		return replyText(fmt.Sprintf("Prefix %q is ambiguous — %s matches:\n%s%s", args, count, strings.Join(lines, "\n"), footer))
 	}
 	target := matches[0]
 	if target.ID == binding.SessionID {

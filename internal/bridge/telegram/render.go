@@ -361,6 +361,9 @@ func buildTelegramTableText(hint *bridge.RenderHint) string {
 		writeTGRow(&b, row, widths)
 	}
 	b.WriteString("```")
+	if hint.Footer != "" {
+		b.WriteString("\n\n" + hint.Footer)
+	}
 	return b.String()
 }
 

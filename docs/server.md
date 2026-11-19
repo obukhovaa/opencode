@@ -57,9 +57,9 @@ delivery mechanism.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/session` | List all sessions |
+| GET | `/session` | List a page of sessions |
 | POST | `/session` | Create a new session |
-| GET | `/session/status` | Get busy/idle status of all sessions |
+| GET | `/session/status` | Map of active sessions; absent entries are idle |
 | GET | `/session/{sessionID}` | Get a session by ID |
 | DELETE | `/session/{sessionID}` | Delete a session |
 | PATCH | `/session/{sessionID}` | Update session title |
@@ -205,7 +205,7 @@ Messages MUST NOT contain embedded newlines. Each message is terminated by `\n`.
 | `initialize` | Handshake — returns agent capabilities and info |
 | `session/new` | Create a new session |
 | `session/load` | Load an existing session (replays messages) |
-| `session/list` | List available sessions |
+| `session/list` | List available sessions, honoring `cursor` and returning `nextCursor` |
 | `session/close` | Close a session and cancel any active run |
 | `session/resume` | Resume a previous session |
 | `session/prompt` | Send a user prompt (blocks until agent completes) |
@@ -320,3 +320,26 @@ when a conversation starts another run, begin replay with an empty cursor.
 Capability negotiation uses `protocolVersion: 1`. Distributed recovery is
 advertised only when the configured backend supports it; durable local storage
 and remote-worker coordination are separate capabilities.
+
+### Session pagination
+
+`GET /session` and `GET /session/{sessionID}/children` preserve their JSON array
+response. They return at most 50 rows by default; `limit` accepts a positive
+integer and is capped at 200. `search` matches a title or ID substring, and
+`roots=true` restricts results to conversation roots. Children exclude the parent
+before the page limit is applied.
+
+When more rows exist, `X-Next-Cursor` contains an opaque continuation token and
+`Link` contains the next URL with `rel="next"`. Both headers are exposed to browser
+clients. Follow that URL or resend the same filters with `cursor=<token>`.
+Malformed cursors and cursors reused with a different project or filters return
+HTTP 400. Changing the page size is allowed. Rows sort by descending creation time
+and ID, so equal timestamps and a deleted cursor row do not repeat a page.
+
+ACP `session/list` uses the same 50-row pages through its existing `cursor` and
+`nextCursor` fields. `updatedAt` is an RFC3339 UTC timestamp converted from the
+stored Unix seconds. Clients must follow continuation tokens to see older sessions.
+
+`GET /session/status` reads the process-wide run ledger instead of scanning
+historical sessions. It returns the existing map shape with busy entries for the
+current project; a missing ID is idle, including when the map is empty.

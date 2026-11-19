@@ -487,6 +487,9 @@ func buildMarkdownTable(hint *bridge.RenderHint) string {
 		}
 		b.WriteString(" |\n")
 	}
+	if hint.Footer != "" {
+		b.WriteString("\n\n" + hint.Footer)
+	}
 	return strings.TrimRight(b.String(), "\n")
 }
 

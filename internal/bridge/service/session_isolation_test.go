@@ -49,6 +49,18 @@ func (c *countingSessions) Get(ctx context.Context, id string) (session.Session,
 	return c.Service.Get(ctx, id)
 }
 
+type isolationReadFailure struct {
+	session.Service
+	err error
+}
+
+func (s *isolationReadFailure) Page(context.Context, session.PageOptions) (session.Page, error) {
+	return session.Page{}, s.err
+}
+func (s *isolationReadFailure) VisibleSessionIDs(context.Context, []string, string) ([]string, error) {
+	return nil, s.err
+}
+
 // stubCrons serves a fixed active-job list to /crons.
 type stubCrons struct {
 	cron.Service
@@ -94,6 +106,9 @@ func newIsolationTestService(t *testing.T, tc isolationSetup) (*Service, *channe
 		t.Fatalf("seed sessions: %v", err)
 	}
 	svc.app = &app.App{Sessions: session.NewService(opencodedb.New(conn), "proj")}
+	if tc.lookupErr != nil {
+		svc.app.Sessions = &isolationReadFailure{Service: svc.app.Sessions, err: tc.lookupErr}
+	}
 	bindings := []store.Binding{
 		{Channel: "slack", IdentityID: "default", PeerID: "D1", SessionID: "S1"},
 		{Channel: "slack", IdentityID: "default", PeerID: "D9", SessionID: "ab02-chat"},
@@ -162,34 +177,34 @@ func TestCmdSessionsIsolatesExternalSessions(t *testing.T) {
 			setup:       isolationSetup{isolate: true},
 			want:        []string{"★ S1", "Chat B", "Chat C"},
 			wantNot:     []string{"Tenant A plan", "Tenant D plan", "Tenant E review", "Tenant E draft", "ab01-ext", "cd01-ext", "ef01-ste", "ef02-ste"},
-			wantLookups: 1,
+			wantLookups: 0,
 		},
 		{
 			name:        "unset is on by default",
 			setup:       isolationSetup{unset: true},
 			want:        []string{"★ S1", "Chat B", "Chat C"},
 			wantNot:     []string{"Tenant A plan", "Tenant D plan", "Tenant E review", "Tenant E draft", "ab01-ext", "cd01-ext"},
-			wantLookups: 1,
+			wantLookups: 0,
 		},
 		{
 			name:        "on keeps the current session though external-bound",
 			setup:       isolationSetup{isolate: true, currentExternal: true},
 			want:        []string{"★ S1", "Chat B"},
 			wantNot:     []string{"Tenant A plan", "Tenant D plan"},
-			wantLookups: 1,
+			wantLookups: 0,
 		},
 		{
 			name:        "lookup error fails closed to the current session",
 			setup:       isolationSetup{isolate: true, lookupErr: errors.New("db down")},
 			want:        []string{"★ S1"},
 			wantNot:     []string{"Tenant A plan", "Tenant D plan", "Chat B", "Chat C"},
-			wantLookups: 1,
+			wantLookups: 0,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			svc, lookups := newIsolationTestService(t, tt.setup)
-			reply := svc.handleChatCommand(context.Background(), bridge.Inbound{Peer: peerD1(), Command: "sessions"})
+			reply := svc.handleChatCommand(context.Background(), bridge.Inbound{Peer: peerD1(), Command: "sessions", CommandArgs: "--all"})
 			assertReply(t, reply, tt.want, tt.wantNot)
 			if got := lookups.calls.Load(); got != tt.wantLookups {
 				t.Errorf("external-session lookups = %d, want %d", got, tt.wantLookups)
