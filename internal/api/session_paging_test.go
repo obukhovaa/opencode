@@ -40,6 +40,7 @@ func TestSessionHTTPPaginationPreservesArrayAndChildScopes(t *testing.T) {
 	s := &Server{app: &app.App{Sessions: sessions}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /session", s.handleSessionList)
+	mux.HandleFunc("GET /session/status", s.handleSessionStatus)
 	mux.HandleFunc("GET /session/{sessionID}/children", s.handleSessionChildren)
 	read := func(url string) ([]APISession, http.Header, int) {
 		request := httptest.NewRequest("GET", url, nil)
@@ -81,6 +82,11 @@ func TestSessionHTTPPaginationPreservesArrayAndChildScopes(t *testing.T) {
 	}
 	if len(seen) != 125 {
 		t.Fatalf("only got %d sessions", len(seen))
+	}
+	idleStatus := httptest.NewRecorder()
+	mux.ServeHTTP(idleStatus, httptest.NewRequest("GET", "/session/status", nil))
+	if idleStatus.Code != http.StatusOK || strings.TrimSpace(idleStatus.Body.String()) != "{}" {
+		t.Fatalf("idle history must not populate active status: %d %s", idleStatus.Code, idleStatus.Body.String())
 	}
 	_, _, status := read("/session?cursor=bad")
 	if status != 400 {
