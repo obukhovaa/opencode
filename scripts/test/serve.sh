@@ -189,11 +189,11 @@ fi
 # ── 7. Session status ───────────────────────────────────────────────
 name="GET /session/status"
 resp=$(api GET /session/status)
-status=$(echo "$resp" | jq -r ".[\"$session_id\"].type")
-if [ "$status" = "idle" ]; then
-    log_pass "$name (status=idle)"
+# Idle sessions are absent: status is bounded by active work, not history.
+if echo "$resp" | jq -e 'type == "object" and length == 0' >/dev/null; then
+    log_pass "$name (idle sessions absent)"
 else
-    log_fail "$name" "expected idle, got: $resp"
+    log_fail "$name" "expected an empty active-session map, got: $resp"
 fi
 
 # ── 8. List messages (empty) ────────────────────────────────────────
