@@ -60,12 +60,62 @@ func TestSanitizeRunError(t *testing.T) {
 		{
 			name: "LiteLLM key echo redacted",
 			err:  errors.New(`POST "https://gw/v1/messages": 401 Unauthorized {"error":{"message":"Authentication Error, Invalid proxy server token passed. Received API Key = sk-abc123DEF456ghi, Key Hash = 9f2e"}}`),
-			want: `POST "https://gw/v1/messages": 401 Unauthorized {"error":{"message":"Authentication Error, Invalid proxy server token passed. Received API Key = sk-[redacted], Key Hash = 9f2e"}}`,
+			want: `POST "https://gw/v1/messages": 401 Unauthorized {"error":{"message":"Authentication Error, Invalid proxy server token passed. Received API Key = [redacted]`,
 		},
 		{
 			name: "bearer header and key=value redacted",
 			err:  errors.New(`upstream rejected Authorization: Bearer eyJhbGciOi.payload.sig api_key=abc123 "x-api-key": "k-999"`),
-			want: `upstream rejected Authorization: Bearer [redacted] api_key=[redacted] "x-api-key": "[redacted]"`,
+			want: `upstream rejected Authorization: [redacted]`,
+		},
+		{
+			name: "URL userinfo removed",
+			err:  errors.New(`POST "https://operator:EXAMPLE-password@gw/v1/messages": 401 Unauthorized`),
+			want: `POST "https://[redacted]@gw/v1/messages": 401 Unauthorized`,
+		},
+		{
+			name: "URL username-only credential removed",
+			err:  errors.New(`POST "https://EXAMPLE-token@gw/v1/messages": 401 Unauthorized`),
+			want: `POST "https://[redacted]@gw/v1/messages": 401 Unauthorized`,
+		},
+		{
+			name: "spaced API Key without sk prefix",
+			err:  errors.New(`Authentication Error, Received API Key = EXAMPLE-opaque-master-key`),
+			want: `Authentication Error, Received API Key = [redacted]`,
+		},
+		{
+			name: "quoted secret with whitespace",
+			err:  errors.New(`upstream rejected {"password": "EXAMPLE phrase with spaces"}`),
+			want: `upstream rejected {"password": [redacted]`,
+		},
+		{
+			name: "nested escaped secret with whitespace",
+			err:  errors.New(`upstream rejected {"body":"{\"password\":\"EXAMPLE phrase with spaces\"}"}`),
+			want: `upstream rejected {"body":"{\"password\": [redacted]`,
+		},
+		{
+			name: "prefixed environment credential with whitespace",
+			err:  errors.New(`upstream rejected {"ANTHROPIC_API_KEY":"EXAMPLE phrase with spaces"}`),
+			want: `upstream rejected {"ANTHROPIC_API_KEY": [redacted]`,
+		},
+		{
+			name: "multiply escaped credential with whitespace",
+			err:  errors.New(`upstream rejected {\\\"password\\\":\\\"EXAMPLE phrase with spaces\\\"}`),
+			want: `upstream rejected {\\\"password\\\": [redacted]`,
+		},
+		{
+			name: "prefixed access key with whitespace",
+			err:  errors.New(`upstream rejected {"AWS_SECRET_ACCESS_KEY":"EXAMPLE phrase with spaces"}`),
+			want: `upstream rejected {"AWS_SECRET_ACCESS_KEY": [redacted]`,
+		},
+		{
+			name: "bare GitLab token uses shared detectors",
+			err:  errors.New(`upstream rejected glpat-EXAMPLEn8KpLdR4T`),
+			want: `upstream rejected [REDACTED:gitlab-pat]`,
+		},
+		{
+			name: "wrapped GitLab token uses shared detectors before truncation",
+			err:  errors.New("upstream rejected glpat-EXAMPLExTbVm2LpR8sJdHy4Fc\nZaXeW6uNi0"),
+			want: `upstream rejected [REDACTED:gitlab-pat]`,
 		},
 		{
 			name: "token counts are not credentials",

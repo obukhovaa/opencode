@@ -191,6 +191,10 @@ func TestAnthropicStream_GatewayBlipRetry(t *testing.T) {
 	}{
 		{name: "one HTML 502 is retried", failures: 1, status: 502, body: nginx502, wantRequests: 2, wantOK: true},
 		{name: "two HTML 502s are retried", failures: 2, status: 502, body: nginx502, wantRequests: 3, wantOK: true},
+		{name: "plain 502 reset uses the gateway budget", failures: 100, status: 502, body: "upstream connection reset by peer", wantRequests: 3, wantExhaust: true},
+		{name: "502 RST_STREAM uses the gateway budget", failures: 100, status: 502, body: "stream error: stream ID 1; INTERNAL_ERROR; received from peer", wantRequests: 3, wantExhaust: true},
+		{name: "JSON 502 reset is not a transport retry", failures: 100, status: 502, body: `{"error":{"message":"connection reset by peer"}}`, wantRequests: 1},
+		{name: "504 reset is not a transport retry", failures: 100, status: 504, body: "upstream connection reset by peer", wantRequests: 1},
 		{name: "an HTML 504 is not retried", failures: 100, status: 504, body: "<html>504</html>", wantRequests: 1},
 		{name: "a persisting blip surfaces after two retries", failures: 100, status: 502, body: nginx502, wantRequests: 3, wantExhaust: true},
 		{name: "a JSON 502 is not retried", failures: 100, status: 502, body: anthropicAPIError, wantRequests: 1},
@@ -255,6 +259,39 @@ func TestAnthropicStream_GatewayBlipRetry(t *testing.T) {
 				t.Errorf("IsRetriedTransientError = %v; want %v", !tt.wantExhaust, tt.wantExhaust)
 			}
 		})
+	}
+}
+
+func TestAnthropicStream_GatewayPolicyPreservesSSETransportRetry(t *testing.T) {
+	loadConfigIn(t, t.TempDir())
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if requests.Add(1) == 1 {
+			fmt.Fprint(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"connection reset by peer\"}}\n\n")
+			return
+		}
+		for _, e := range okStreamEvents {
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", gjson.Get(e, "type").String(), e)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client := newAnthropicClient(providerClientOptions{apiKey: "test-key", baseURL: srv.URL,
+		model: models.AnthropicModels[models.Claude55Sonnet], maxTokens: 128})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prompt := []message.Message{{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "hi"}}}}
+	var complete *ProviderResponse
+	for ev := range client.stream(ctx, prompt, nil) {
+		if ev.Type == EventError {
+			t.Fatalf("HTTP 200 SSE transport error was not retried: %v", ev.Error)
+		}
+		if ev.Type == EventComplete {
+			complete = ev.Response
+		}
+	}
+	if requests.Load() != 2 || complete == nil || complete.Content != "ok" {
+		t.Fatalf("requests=%d response=%v; want two requests and recovered text", requests.Load(), complete)
 	}
 }
 

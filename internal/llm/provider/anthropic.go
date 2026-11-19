@@ -1408,8 +1408,14 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 				close(eventChan)
 				return
 			}
+			// HTTP gateway bodies can themselves mention "connection reset" or
+			// RST_STREAM. They must follow the bounded gateway policy below,
+			// rather than the longer transport retry ladder. Keep the existing
+			// handling of HTTP 200 SSE errors and other provider exceptions.
+			var apierr *anthropic.Error
+			gatewayHTTPError := errors.As(err, &apierr) && (apierr.StatusCode == http.StatusBadGateway || apierr.StatusCode == http.StatusGatewayTimeout)
 			// Retry transient transport errors (e.g. unexpected EOF, connection reset)
-			if isTransientStreamError(err) {
+			if !gatewayHTTPError && isTransientStreamError(err) {
 				logging.Warn("Anthropic stream transport error, will retry", "attempt", attempts, "error", err)
 				if attempts < maxRetries {
 					backoffMs := 2000 * (1 << (attempts - 1))
@@ -1441,7 +1447,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 			// emitted would duplicate the assistant message. A permanent error a
 			// proxy wrapped as RST_STREAM also lands here, but the small budget
 			// caps the wasted work at a few quick attempts.
-			if isRetryableRSTStreamError(err) {
+			if !gatewayHTTPError && isRetryableRSTStreamError(err) {
 				if !emittedOutput && rstStreamRetries < maxRSTStreamRetries {
 					backoffMs := 500 * (1 << rstStreamRetries)
 					rstStreamRetries++

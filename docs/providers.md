@@ -136,3 +136,13 @@ Anthropic tool-call history preserves numeric JSON argument types and exact digi
 Anthropic, OpenAI and Gemini streams time out after five minutes without an event. `OPENCODE_PROVIDER_STREAM_INACTIVITY_TIMEOUT` retains its existing override. The agent resends a stalled model turn at most twice, then fails it with a stall error. The max-turns wrap-up keeps its existing fallback: return any previously accepted structured output and mark the run as turn-exhausted. Recap and compaction calls each have their own two-resend stall budget, independent of the main iteration. HTTP rate-limit and transient-error retry policies are separate and unchanged.
 
 Before each stall resend, the agent discards the unfinished assistant response and adds pending inbox messages to the request. It also delivers pending input before the first model call when a session runs again. Input arriving during a model or tool call waits for that call to end; it never interrupts it. Input left after the final failed call remains unacknowledged for the next run.
+
+## Gateway failures
+
+Anthropic-compatible clients retry an HTTP 502 with an HTML, plain-text or empty
+body at most twice, after 2 and 4 seconds. Streaming calls retry only before any
+output reaches the consumer. A JSON 502 or any HTTP 504 stays outside this retry
+policy. Gateway responses follow these limits even when their bodies mention a
+transport reset. Once retries run out, the error is classified as transient for
+the flow runner's existing postpone-and-resume handling. Ordinary bridge turns
+receive a failure reason and a prompt to resend their message.
