@@ -441,6 +441,9 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	var prog *runProgress
 	var guard *runTextGuard
 	runStatus := progressStatusOK
+	// runErrReason is the failed run's sanitised reason for the card's
+	// terminal line; empty unless the run ended in a non-cancel error.
+	runErrReason := ""
 	partsCtx, partsCancel := context.WithCancel(ctx)
 	defer func() {
 		select {
@@ -448,7 +451,7 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 		case <-ctx.Done():
 		}
 		partsCancel()
-		d.progressFinish(prog, runStatus)
+		d.progressFinish(prog, runStatus, runErrReason)
 		if guard != nil {
 			d.textGuard.CompareAndSwap(guard, nil)
 		}
@@ -611,6 +614,9 @@ func (d *sessionDispatch) handleInbound(ctx context.Context, in bridge.Inbound) 
 	for ev := range runCh {
 		if ev.Type == agent.AgentEventTypeError {
 			runStatus = progressStatusError
+			if !isCancelledRun(ev.Error) {
+				runErrReason = sanitizeRunError(ev.Error)
+			}
 		}
 		if hb != nil {
 			d.heartbeatRunEnded()
@@ -662,7 +668,7 @@ func (d *sessionDispatch) finishHeartbeat(ctx context.Context, peer bridge.PeerR
 		}
 		d.svc.recordHeartbeatOutcome(ctx, peer, hb.At, heartbeat.OutcomeSkipped, reason)
 	case runErr != nil:
-		reason := truncateOneLine(runErr.Error(), toolErrorPreviewRunes)
+		reason := sanitizeRunError(runErr)
 		d.svc.replyToPeer(ctx, peer, heartbeat.FailureLine(hb.At, reason), false, d.sessionID)
 		d.svc.recordHeartbeatOutcome(ctx, peer, hb.At, heartbeat.OutcomeError, reason)
 	case strings.TrimSpace(reply) == "" || heartbeat.IsSilentAck(reply):
@@ -886,8 +892,11 @@ func (d *sessionDispatch) logOverflow() {
 // handleTerminalEvent is invoked once per agent.Run with the terminal
 // AgentEvent. For text turns it fans agent output across all bound peers
 // via Service.SendBySessionID; for error events it logs but still emits
-// any text the agent had produced; struct-output events skip fan-out
-// (the flow engine drains the structured result separately).
+// any text the agent had produced, and when there is none (and the run
+// was not cancelled) it posts one failure line naming the reason, so a
+// failed run never ends on a bare "✗ Run failed" card with no reply;
+// struct-output events skip fan-out (the flow engine drains the
+// structured result separately).
 //
 // The terminal message is posted without a header. Earlier assistant
 // messages of the run that ended in tool_use are relayed by
@@ -930,6 +939,9 @@ func (d *sessionDispatch) handleTerminalEvent(ctx context.Context, ev agent.Agen
 			"session", d.sessionID, "paths", unsafe)
 	}
 	if clean == "" && len(atts) == 0 {
+		if ev.Type == agent.AgentEventTypeError && !isCancelledRun(ev.Error) {
+			d.sendRunFailureLine(ctx, ev.Error)
+		}
 		return
 	}
 
@@ -943,6 +955,27 @@ func (d *sessionDispatch) handleTerminalEvent(ctx context.Context, ev agent.Agen
 	for _, r := range results {
 		if !r.Delivered && r.Err != nil {
 			logging.Info("bridge: per-peer delivery failed",
+				"session", d.sessionID, "peer", r.Binding.PeerID, "err", r.Err)
+		}
+	}
+}
+
+// sendRunFailureLine tells every bound peer that the run failed and why.
+// Before it existed an agent error with no partial text reached chat only
+// as the progress card's "✗ Run failed" status — with no reason, and
+// nothing at all for a peer without a card (tool updates off, or an
+// adapter that cannot edit messages).
+func (d *sessionDispatch) sendRunFailureLine(ctx context.Context, runErr error) {
+	line := runFailureLine(sanitizeRunError(runErr))
+	results, err := d.svc.SendBySessionID(ctx, d.sessionID, bridge.Outbound{Text: line})
+	if err != nil {
+		logging.Warn("bridge: run failure line fan-out failed",
+			"session", d.sessionID, "err", err)
+		return
+	}
+	for _, r := range results {
+		if !r.Delivered && r.Err != nil {
+			logging.Info("bridge: per-peer run failure line delivery failed",
 				"session", d.sessionID, "peer", r.Binding.PeerID, "err", r.Err)
 		}
 	}

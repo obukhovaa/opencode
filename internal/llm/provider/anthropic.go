@@ -1118,6 +1118,7 @@ func (a *anthropicClient) send(ctx context.Context, messages []message.Message, 
 	}
 
 	attempts := 0
+	gatewayRetries := 0
 	for {
 		attempts++
 		requestOpts := a.requestOptions(disableThinking)
@@ -1129,6 +1130,18 @@ func (a *anthropicClient) send(ctx context.Context, messages []message.Message, 
 		// If there is an error we are going to see if we can retry the call
 		if err != nil {
 			logging.Error("Error in Anthropic API call", "error", err)
+			if delay, ok := gatewayRetryDelay(gatewayRetries, err); ok {
+				gatewayRetries++
+				logging.Warn("Anthropic call failed at the gateway, will retry",
+					"attempt", gatewayRetries, "max", maxGatewayRetries)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(delay):
+					continue
+				}
+			}
+			err = gatewayRetryExhaustedError(gatewayRetries, err)
 			retry, after, retryErr := a.shouldRetry(attempts, err)
 			if retryErr != nil {
 				return nil, retryErr
@@ -1191,6 +1204,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 		// peer-initiated HTTP/2 RST_STREAM resets, separate from attempts.
 		emittedOutput := false
 		rstStreamRetries := 0
+		gatewayRetries := 0
 		var lastRSTStreamID uint32
 		for {
 			attempts++
@@ -1394,8 +1408,14 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 				close(eventChan)
 				return
 			}
+			// HTTP gateway bodies can themselves mention "connection reset" or
+			// RST_STREAM. They must follow the bounded gateway policy below,
+			// rather than the longer transport retry ladder. Keep the existing
+			// handling of HTTP 200 SSE errors and other provider exceptions.
+			var apierr *anthropic.Error
+			gatewayHTTPError := errors.As(err, &apierr) && (apierr.StatusCode == http.StatusBadGateway || apierr.StatusCode == http.StatusGatewayTimeout)
 			// Retry transient transport errors (e.g. unexpected EOF, connection reset)
-			if isTransientStreamError(err) {
+			if !gatewayHTTPError && isTransientStreamError(err) {
 				logging.Warn("Anthropic stream transport error, will retry", "attempt", attempts, "error", err)
 				if attempts < maxRetries {
 					backoffMs := 2000 * (1 << (attempts - 1))
@@ -1427,7 +1447,7 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 			// emitted would duplicate the assistant message. A permanent error a
 			// proxy wrapped as RST_STREAM also lands here, but the small budget
 			// caps the wasted work at a few quick attempts.
-			if isRetryableRSTStreamError(err) {
+			if !gatewayHTTPError && isRetryableRSTStreamError(err) {
 				if !emittedOutput && rstStreamRetries < maxRSTStreamRetries {
 					backoffMs := 500 * (1 << rstStreamRetries)
 					rstStreamRetries++
@@ -1456,6 +1476,24 @@ func (a *anthropicClient) stream(ctx context.Context, messages []message.Message
 				return
 			}
 
+			// A proxy's 502 before any output: the proxy could not reach its
+			// upstream, so replaying the request is safe. See isGatewayBlip.
+			if !emittedOutput {
+				if delay, ok := gatewayRetryDelay(gatewayRetries, err); ok {
+					gatewayRetries++
+					logging.Warn("Anthropic call failed at the gateway before any output, will retry",
+						"attempt", gatewayRetries, "max", maxGatewayRetries, "error", err)
+					select {
+					case <-ctx.Done():
+						eventChan <- ProviderEvent{Type: EventError, Error: ctx.Err()}
+						close(eventChan)
+						return
+					case <-time.After(delay):
+						continue
+					}
+				}
+			}
+			err = gatewayRetryExhaustedError(gatewayRetries, err)
 			// If there is an error we are going to see if we can retry the call
 			retry, after, retryErr := a.shouldRetry(attempts, err)
 			if retryErr != nil {
@@ -1532,6 +1570,78 @@ var retryableHTTPStatuses = map[int]struct{}{
 	429: {},
 	503: {},
 	529: {},
+}
+
+// gatewayRetryStatuses are the statuses a proxy in front of the model
+// (nginx, an ingress, a load balancer, LiteLLM's own ingress) answers
+// when it could not reach its upstream: a stale pooled connection, a pod
+// rolling, a single dropped request. Retried apart from
+// retryableHTTPStatuses, and only for a gateway blip (isGatewayBlip):
+// adding them to that set would also retry the model provider's own
+// 502, which that set's comment excludes on purpose, and would change
+// countTokensShapeRejection, which reads the set to classify count_tokens
+// rejections.
+//
+// 504 is deliberately not here. A proxy answers 504 when it gave up
+// waiting on an upstream that did receive the request and may still be
+// generating: a replay can bill a second generation, and since a 504
+// arrives only after the proxy's read timeout (often a minute or more),
+// two retries would hold the turn for minutes before failing anyway.
+var gatewayRetryStatuses = map[int]struct{}{
+	502: {},
+}
+
+// maxGatewayRetries bounds the retries of a gateway blip. Small on
+// purpose: a blip clears in a second or two, and an outage should reach
+// the caller in seconds, not after the full maxRetries ladder.
+const maxGatewayRetries = 2
+
+// gatewayRetryBaseDelay is the first gateway retry's backoff, doubled for
+// each further one (2s, 4s). A variable so tests can shrink it; a test
+// that does so must not run in parallel.
+var gatewayRetryBaseDelay = 2 * time.Second
+
+// gatewayRetriesExhausted prefixes the error of a gateway blip that
+// outlived maxGatewayRetries. IsRetriedTransientError matches it, so a
+// flow step parks and auto-resumes rather than failing.
+const gatewayRetriesExhausted = "llm gateway error persisted"
+
+// isGatewayBlip reports whether err is a 502 that a proxy in front of
+// the model produced, rather than the model provider. The provider
+// answers with a JSON error body (Anthropic's {"type":"error",...}
+// envelope, Bedrock's {"message":...}, LiteLLM's {"error":...}); a proxy
+// answers with its own HTML page, plain text or nothing. Only the latter
+// is retried, so a real upstream 5xx incident is not amplified.
+func isGatewayBlip(err error) bool {
+	var apierr *anthropic.Error
+	if !errors.As(err, &apierr) {
+		return false
+	}
+	if _, ok := gatewayRetryStatuses[apierr.StatusCode]; !ok {
+		return false
+	}
+	return !json.Valid([]byte(strings.TrimSpace(apierr.RawJSON())))
+}
+
+// gatewayRetryDelay reports whether a call that failed with err after
+// `retries` gateway retries may be retried again, and after how long.
+// The caller must only ask while nothing has been streamed to the
+// consumer: a retry after that would duplicate the output.
+func gatewayRetryDelay(retries int, err error) (time.Duration, bool) {
+	if retries >= maxGatewayRetries || !isGatewayBlip(err) {
+		return 0, false
+	}
+	return gatewayRetryBaseDelay << retries, true
+}
+
+// gatewayRetryExhaustedError wraps a gateway blip that persisted through
+// every retry, keeping the original *anthropic.Error reachable through
+// errors.As. Any other error is returned unchanged.
+func gatewayRetryExhaustedError(retries int, err error) error {
+	if retries == 0 || !isGatewayBlip(err) {
+		return err
+	}
+	return fmt.Errorf("%s after %d retries: %w", gatewayRetriesExhausted, retries, err)
 }
 
 func (a *anthropicClient) shouldRetry(attempts int, err error) (bool, int64, error) {

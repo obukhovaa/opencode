@@ -513,7 +513,7 @@ func TestDispatch_ProgressCard_Compact(t *testing.T) {
 		}
 		d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: c.id, Name: c.name, Content: content, IsError: c.fail}), nil)
 	}
-	d.progressFinish(prog, progressStatusOK)
+	d.progressFinish(prog, progressStatusOK, "")
 
 	// One post, then edits only.
 	if got := ed.Posts(); len(got) != 1 {
@@ -910,7 +910,7 @@ func TestDispatch_ProgressCard_RelayGetsStructuredState(t *testing.T) {
 	d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: "toolu_01aaaaaa", Name: "read", Content: "ok"}), nil)
 	d.handlePartEvent(partEvent("S1", message.ToolCall{ID: "toolu_02bbbbbb", Name: "bash", Input: "{}", Finished: true}), nil)
 	d.handlePartEvent(partEvent("S1", message.ToolResult{ToolCallID: "toolu_02bbbbbb", Name: "bash", Content: "permission denied\nexit 1", IsError: true}), nil)
-	d.progressFinish(prog, progressStatusOK)
+	d.progressFinish(prog, progressStatusOK, "")
 
 	states, sids := relay.States()
 	for i, sid := range sids {
