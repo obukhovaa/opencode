@@ -1088,7 +1088,7 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 	case flow.FlowStatusCompleted:
 		rec.CompletedAt = now
 		state.completedSteps = append(state.completedSteps, rec)
-		state.currentStep = nil
+		clearCurrentStepIfHeldBy(state, rec)
 		state.lastStepPostponed = false
 		fr.publishEvent(state, FlowEvent{
 			Type:           evFlowStepCompleted,
@@ -1113,7 +1113,7 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 		// channel drains.
 		rec.CompletedAt = now
 		state.completedSteps = append(state.completedSteps, rec)
-		state.currentStep = nil
+		clearCurrentStepIfHeldBy(state, rec)
 		state.lastStepPostponed = true
 		fr.publishEvent(state, FlowEvent{
 			Type:           evFlowStepPostponed,
@@ -1145,6 +1145,15 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 			Cost:           cost,
 			ContextSize:    contextSize,
 		})
+	}
+}
+
+// clearCurrentStepIfHeldBy empties the currentStep slot only when the finishing
+// step is the one holding it: a parallel sibling finishing must not hide a step
+// that is still running (CD-5849). Callers hold fr.mu.
+func clearCurrentStepIfHeldBy(state *flowRunState, rec flowStepRecord) {
+	if state.currentStep != nil && state.currentStep.ID == rec.ID && state.currentStep.SessionID == rec.SessionID {
+		state.currentStep = nil
 	}
 }
 
