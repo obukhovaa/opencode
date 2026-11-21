@@ -727,6 +727,37 @@ func TestFlowEventRetryingLeavesRunStateUntouched(t *testing.T) {
 	}
 }
 
+// A sibling step finishing must not empty the currentStep slot held by another
+// step that is still running (CD-5849): /flow/status consumers bind the running
+// step's session from it.
+func TestObserveStepSiblingFinishKeepsCurrentStep(t *testing.T) {
+	t.Parallel()
+	for _, status := range []flow.FlowStatus{flow.FlowStatusCompleted, flow.FlowStatusPostponed} {
+		t.Run(string(status), func(t *testing.T) {
+			t.Parallel()
+			_, fr := newFlowTestServerWithSessions(t, newStubFlowService(nil), &stubSessions{})
+
+			current := &flowStepRecord{ID: "preview-and-approve", SessionID: "sess-preview", Status: string(flow.FlowStatusRunning)}
+			state := &flowRunState{RunID: "run-1", FlowID: "x", Status: flowRunRunning, currentStep: current}
+
+			fr.observeStep(state, &flow.FlowState{StepID: "prepare-experience", SessionID: "sess-prepare", Status: status})
+
+			if state.currentStep != current {
+				t.Errorf("currentStep = %+v, want the still-running preview-and-approve step", state.currentStep)
+			}
+			if len(state.completedSteps) != 1 || state.completedSteps[0].ID != "prepare-experience" {
+				t.Errorf("completedSteps = %+v, want exactly prepare-experience", state.completedSteps)
+			}
+
+			fr.observeStep(state, &flow.FlowState{StepID: "preview-and-approve", SessionID: "sess-preview", Status: status})
+
+			if state.currentStep != nil {
+				t.Errorf("currentStep = %+v, want nil once its own step finished", state.currentStep)
+			}
+		})
+	}
+}
+
 func (s *stubSessions) Page(ctx context.Context, o session.PageOptions) (session.Page, error) {
 	if s.err != nil {
 		return session.Page{}, s.err
