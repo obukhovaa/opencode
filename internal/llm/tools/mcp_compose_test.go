@@ -304,16 +304,22 @@ func TestMCPComposeRows(t *testing.T) {
 func TestMCPComposeBounds(t *testing.T) {
 	for _, size := range []int{composeMaxChild, composeMaxChild + 1} {
 		text := `{"id":1,"padding":"` + strings.Repeat("x", size-len(`{"id":1,"padding":""}`)) + `"}`
-		response, _, _ := composeRun(t, composeTestPlan, func(context.Context, ToolCall) CompositionChildOutcome { return composeGood(text) })
+		response, envelope, _ := composeRun(t, composeTestPlan, func(context.Context, ToolCall) CompositionChildOutcome { return composeGood(text) })
 		if response.IsError != (size > composeMaxChild) {
 			t.Fatalf("child bytes=%d: %s", size, response.Content)
+		}
+		if response.IsError && (envelope.Error.Limit == nil || envelope.Error.Limit.Scope != "child_response" || envelope.Error.Limit.ActualBytes != size || envelope.Error.Limit.MaxBytes != composeMaxChild) {
+			t.Fatalf("missing child limit diagnostics: %s", response.Content)
 		}
 	}
 	for _, size := range []int{composeMaxProjected, composeMaxProjected + 1} {
 		text := `{"id":"` + strings.Repeat("x", size-len(`{"id":""}`)) + `"}`
-		response, _, _ := composeRun(t, composeTestPlan, func(context.Context, ToolCall) CompositionChildOutcome { return composeGood(text) })
+		response, envelope, _ := composeRun(t, composeTestPlan, func(context.Context, ToolCall) CompositionChildOutcome { return composeGood(text) })
 		if response.IsError != (size > composeMaxProjected) {
 			t.Fatalf("projected bytes=%d error=%v", size, response.IsError)
+		}
+		if response.IsError && (envelope.Error.Limit == nil || envelope.Error.Limit.Scope != "projected_values" || envelope.Error.Limit.ActualBytes != size || envelope.Error.Limit.MaxBytes != composeMaxProjected) {
+			t.Fatalf("missing projected limit diagnostics: %s", response.Content)
 		}
 	}
 	input := composeTestInput(t, func(p map[string]any) {
@@ -329,6 +335,9 @@ func TestMCPComposeBounds(t *testing.T) {
 	response, envelope, _ := composeRun(t, input, func(context.Context, ToolCall) CompositionChildOutcome { calls++; return composeGood(text) })
 	if !response.IsError || envelope.Error.Code != "output_limit" || envelope.Error.Step != "s4" || calls != 5 || len(envelope.Results) != 1 {
 		t.Fatalf("bad cumulative bound: %s calls=%d", response.Content, calls)
+	}
+	if envelope.Error.Limit == nil || envelope.Error.Limit.Scope != "total_response" || envelope.Error.Limit.ActualBytes != 5*composeMaxChild || envelope.Error.Limit.MaxBytes != composeMaxTotal {
+		t.Fatalf("missing total limit diagnostics: %s", response.Content)
 	}
 }
 

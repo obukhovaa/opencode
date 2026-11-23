@@ -8,7 +8,7 @@ Compose a small set of authorized MCP reads within one invocation while exposing
 
 ### Requirement: Explicit pilot eligibility
 
-The system SHALL expose `mcp_compose` only when the agent grants that exact tool name and `mcpComposition.readTools` contains operator-reviewed, exact MCP tool names. Implicit or wildcard grants SHALL NOT enable composition; eligibility SHALL check literal membership in the resolved `allowTools` or an exact true `tools` entry, rather than a helper that accepts wildcard grants. Each child SHALL also belong to the current agent's resolved MCP tools, remain eligible under current permissions and have no conflicting effective-name registration. Server annotations alone SHALL NOT authorize an endpoint; an explicitly false read-only hint SHALL make it ineligible. A deferred child SHALL already be activated in the current session. Composition SHALL NOT modify discovery state, the tool catalog, or tool serialization order. The enabled tool schema SHALL advertise the configured candidate endpoint names in a sorted, duplicate-free `steps[].tool` enum. This declaration SHALL NOT grant access or imply that a candidate is currently available or activated; runtime eligibility checks SHALL remain authoritative.
+The system SHALL expose `mcp_compose` only when the agent grants that exact tool name and `mcpComposition.readTools` contains operator-reviewed, exact MCP tool names. Implicit or wildcard grants SHALL NOT enable composition; eligibility SHALL check literal membership in the resolved `allowTools` or an exact true `tools` entry, rather than a helper that accepts wildcard grants. Each child SHALL also belong to the current agent's resolved MCP tools, remain eligible under current permissions and have no conflicting effective-name registration. Server annotations alone SHALL NOT authorize an endpoint; an explicitly false read-only hint SHALL make it ineligible. A configured, granted deferred child SHALL be resolvable internally without prior schema activation; composition SHALL preserve its existing activation state. Flow-step denyTools restrictions SHALL apply to the wrapper and every child. Composition SHALL NOT modify discovery state, the tool catalog, or tool serialization order. The enabled tool schema SHALL advertise the configured candidate endpoint names in a sorted, duplicate-free `steps[].tool` enum. This declaration SHALL NOT grant access or imply that a candidate is currently available; runtime eligibility checks SHALL remain authoritative.
 
 #### Scenario: Default configuration
 - **WHEN** composition is not explicitly enabled
@@ -20,8 +20,14 @@ The system SHALL expose `mcp_compose` only when the agent grants that exact tool
 - **AND** with the builtin disabled, the existing MCP tool retains ordinary dispatch behavior
 
 #### Scenario: Named endpoint is unavailable
-- **WHEN** a plan names an endpoint absent from either eligibility list or agent tools, or a deferred endpoint not activated in this session
+- **WHEN** a plan names an endpoint absent from either eligibility list or agent tools, or denied by the flow step
 - **THEN** the plan is rejected before its first child call
+
+#### Scenario: Deferred read without a prior search
+- **GIVEN** a deferred MCP read is configured, granted, available and read-only
+- **WHEN** composition names it before any schema discovery in the session
+- **THEN** the read SHALL execute through ordinary child controls
+- **AND** neither its activation state nor the model-visible serialized tool set SHALL change
 
 ### Requirement: Bounded declarative input
 
@@ -118,6 +124,18 @@ The result SHALL include `complete`, requested completed `results`, and ordered 
 #### Scenario: Partial rows
 - **WHEN** a selection requests 10 rows from an array of 12
 - **THEN** it returns the first 10, reports both counts and marks the result incomplete
+
+#### Scenario: Projected values exceed the cumulative bound
+
+- **WHEN** projected values across completed and current steps exceed 16 KiB
+- **THEN** the plan SHALL fail with `output_limit`
+- **AND** `error.limit` SHALL identify `projected_values`, the byte bound and attempted total bytes
+- **AND** guidance SHALL recommend fewer fields, bounded row-relative projections or splitting the plan without exposing unprojected values
+
+#### Scenario: Raw response exceeds a bound
+
+- **WHEN** an individual or cumulative raw response exceeds its byte bound
+- **THEN** `error.limit` SHALL distinguish `child_response` from `total_response` and report the bound and attempted bytes without response content
 
 #### Scenario: Second step fails
 - **WHEN** the second of three steps fails

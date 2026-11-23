@@ -1676,6 +1676,9 @@ OuterLoop:
 				if yielded(toolResults) {
 					explicitYield = true
 					yieldReady = len(reports) > 0 || len(drained) > 0
+					if yieldReady && opts.NonInteractive {
+						recordReadyBackgroundWait(ctx, sessionID, len(reports)/2)
+					}
 					reg := task.GlobalRegistry()
 					if !opts.NonInteractive && (yieldReady || reg == nil || len(reg.PendingForSession(sessionID, nil)) == 0) {
 						preserveTail = true
@@ -1787,7 +1790,11 @@ OuterLoop:
 		var fresh []message.Message
 		var waitErr error
 		if !yieldReady {
-			fresh, waitErr = a.waitForBackgroundReport(ctx, reg, sessionID, seenBackground)
+			trigger := "end_turn"
+			if explicitYield {
+				trigger = "yield"
+			}
+			fresh, waitErr = a.waitForBackgroundReport(ctx, reg, sessionID, seenBackground, trigger)
 		}
 		if waitErr != nil {
 			if reg != nil {

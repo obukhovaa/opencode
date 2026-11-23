@@ -37,6 +37,14 @@ type ToolParams struct {
 	Input any
 }
 
+// BackgroundWaitParams identifies a runtime wait independently of tool execution.
+type BackgroundWaitParams struct {
+	SessionID    string
+	Trigger      string
+	PendingTasks int
+	PendingKinds map[string]int
+}
+
 // Usage tracks token counts and costs for a generation.
 type Usage struct {
 	Input         int64

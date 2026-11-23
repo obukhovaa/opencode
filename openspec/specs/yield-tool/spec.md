@@ -84,3 +84,42 @@ wait for the first report or inbox message. Neither route requires model polling
 - **WHEN** no independent work remains
 - **THEN** its prompt SHALL explain ending the turn as the supported waiting action
 - **AND** it SHALL NOT instruct the agent to call an unavailable `yield` tool
+
+### Requirement: Completed work does not invite another wait
+
+Yield guidance SHALL direct the agent to consume completion reports already in
+context and yield only while registered exact-session background work remains.
+When the registry shows no active exact-session tasks, a valid yield SHALL explain
+that there is nothing to wait for and direct the agent to process results rather
+than yield or poll inventory again. A remote job SHALL require a registered
+background waiter; reviewer feedback SHALL use an available question tool.
+
+#### Scenario: Completed task before yield
+
+- **GIVEN** the session's background task has completed before yield executes
+- **WHEN** the model calls yield
+- **THEN** its acknowledgement SHALL identify that no active background work remains
+- **AND** the existing immediate continuation and report delivery SHALL be preserved
+
+### Requirement: Background suspension is observable independently of generation
+
+For flow/headless runs with Langfuse tracing enabled, explicit yields and end
+turns with pending work SHALL record a `background_wait` observation. Its numeric
+`suspended_ms` SHALL count only event suspension, excluding generation, compaction,
+question-tool time and report reads. Metadata SHALL identify the trigger, wake
+reason, report count and pending task counts by kind. Reports or inbox input
+already ready at the yield boundary SHALL record zero suspension. Ordinary end
+turns without pending work SHALL NOT create wait observations. Telemetry SHALL NOT
+alter waiting, cancellation, interactive release or first-report resume behavior.
+
+#### Scenario: Subagent completes during suspension
+
+- **GIVEN** a flow agent yields with a pending async subagent
+- **WHEN** the completion report arrives
+- **THEN** the wait observation SHALL identify a background-report wake
+- **AND** its suspension time SHALL exclude model work before and after the wait
+
+#### Scenario: Stale yield
+
+- **WHEN** yield finds neither pending work nor unconsumed reports
+- **THEN** the wait observation SHALL record zero suspension and `no_pending_tasks`

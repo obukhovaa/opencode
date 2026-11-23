@@ -165,14 +165,17 @@ func TestMCPCompositionEligibilityRefreshAndScope(t *testing.T) {
 	leaf.tool.Annotations.ReadOnlyHint = nil
 	w := tools.WrapDeferred(leaf, &atomic.Int64{})
 	a.tools = []tools.BaseTool{w}
-	if _, err := a.compositionChildTool(ctx, "srv_read"); err == nil {
-		t.Fatal("undiscovered child admitted")
+	if got, err := a.compositionChildTool(ctx, "srv_read"); err != nil || got != w {
+		t.Fatalf("configured deferred read requires unnecessary discovery: %v", err)
+	}
+	if _, active := w.ActivatedAt("session"); active || len(tools.SerializableFor("session", a.tools)) != 0 {
+		t.Fatal("internal composition changed discovery state or fallback schemas")
 	}
 	w.Activate("session")
 	if got, err := a.compositionChildTool(ctx, "srv_read"); err != nil || got != w {
 		t.Fatalf("discovered wrapper not preserved: %v", err)
 	}
-	for _, other := range []context.Context{context.Background(), context.WithValue(ctx, tools.SessionIDContextKey, "other"), context.WithValue(ctx, tools.AgentIDContextKey, config.AgentName("other"))} {
+	for _, other := range []context.Context{context.Background(), context.WithValue(ctx, tools.SessionIDContextKey, ""), context.WithValue(ctx, tools.AgentIDContextKey, config.AgentName("other")), tools.WithDeniedTools(ctx, []string{"srv_*"}), tools.WithDeniedTools(ctx, []string{tools.MCPComposeToolName})} {
 		if _, err := a.compositionChildTool(other, "srv_read"); err == nil {
 			t.Fatal("foreign or missing context admitted")
 		}

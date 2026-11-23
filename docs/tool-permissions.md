@@ -278,6 +278,6 @@ A PreToolUse hook's `deny` and a `skill` permission denial were already tool err
 
 ## MCP composition grants
 
-The optional `mcp_compose` builtin requires its literal name in `allowTools` (or explicit legacy `tools.mcp_compose: true`) and a nonempty `mcpComposition.readTools` endpoint list. Neither `*` nor `mcp_*` enables it. Each child must be an unambiguous MCP tool in the current resolved toolset and exact endpoint list; deferred children must already be activated for this session.
+The optional `mcp_compose` builtin requires its literal name in `allowTools` (or explicit legacy `tools.mcp_compose: true`) and a nonempty `mcpComposition.readTools` endpoint list. Neither `*` nor `mcp_*` enables it. Each child must be an unambiguous MCP tool in the current resolved toolset and exact endpoint list; deferred children are resolved internally without activating their schemas. Flow-step denyTools restrictions still apply to every child.
 
 The composition call's own policy and every child's policy are evaluated on their final hook-mutated inputs. An outer approval cannot authorize children; child hook approval bypasses only an ask prompt, not explicit MCP deny. Human rejection stops the run while retaining the completed projections and hook context. Rule denials and repeated calls are accounted for without treating the wrapper as successful progress. See [the MCP guide](mcp.md#bounded-read-composition-opt-in).

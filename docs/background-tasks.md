@@ -40,6 +40,31 @@ if a report is already available or there are no active tasks. All flow steps us
 Yielding does not finish the flow step; the surrounding run/step deadline bounds
 the wait.
 
+Read completion reports already in context before yielding. Once the session has
+no active background tasks, `yield` says so and generation continues immediately;
+process the results instead of yielding again or checking `tasklist` merely to
+confirm completion. Yield observes registered work in the current session. To
+wait for a remote CI job, start a finite background waiter that exits on either
+success or failure. Use `question` when a reviewer answer is needed.
+
+With Langfuse tracing enabled, flow/headless waits emit a `background_wait` span
+separately from the short `yield` tool span. Its numeric `suspended_ms` metadata
+counts only time blocked waiting for events, excluding model generation,
+compaction, report reads and question-tool time. `wake_reason` separates
+`background_report`, `inbox`, `no_pending_tasks`, `cancelled`, `deadline`, `error`
+and `unavailable`; `reports` counts delivered report pairs. `trigger` is `yield`
+or `end_turn`. `pending_tasks` and `pending_task` / `pending_bash` /
+`pending_monitor` describe the active work at entry. A report ready at the yield
+boundary records zero suspension. Ordinary end turns with no pending work do not
+emit wait spans. Interactive turn release is not an in-run suspension.
+
+For agent-job efficiency, group `background_wait` observations by `trigger` and
+`wake_reason`, filter `pending_task > 0` for subagent waits, and aggregate
+`suspended_ms`. Zero-suspension `no_pending_tasks` yields identify stale wait
+requests; a zero-suspension `background_report` means a result was already ready.
+Neither question-tool latency nor the entire following generation belongs in
+background waiting time.
+
 A streaming monitor can wake the session on an intermediate event while its process
 continues running. Handle the event, continue work, then yield again if needed.
 Use `taskstop` when the watch is no longer useful, never merely because it is silent.

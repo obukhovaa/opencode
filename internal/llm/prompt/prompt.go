@@ -233,6 +233,10 @@ func backgroundTasksPromptFor(enabled func(string) bool) string {
 	}
 	if enabled("yield") {
 		b.WriteString("\n- When only asynchronous work or monitor events remain, call `yield` alone, with no other tool calls. It suspends generation until a report arrives in all modes. No success claim or `struct_output` is required to wait. Normal end_turn (ending your turn without a tool call) remains a fallback.")
+		b.WriteString("\n- Yield only while this session has pending background work. Read completion reports already in context and act on them; do not yield or recheck inventory merely to reconfirm completed work. A remote job requires a registered background waiter; `yield` does not watch remote jobs by itself.")
+		if enabled("question") {
+			b.WriteString(" Use `question` to request reviewer feedback.")
+		}
 	} else {
 		b.WriteString("\n- When only asynchronous work or monitor events remain, end your turn without another tool call (normal end_turn) to await notifications. No success claim or `struct_output` is required to wait.")
 	}
