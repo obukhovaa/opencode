@@ -1134,6 +1134,10 @@ func (s *service) runStep(
 		} else if ok {
 			answers, askErr := s.agents.QuestionService().Ask(ctx, sess.ID, []question.Prompt{p.question})
 			if askErr != nil && ctx.Err() != nil {
+				if interruptedByShutdown(ctx) {
+					logging.Info("Flow step interrupted by process shutdown; leaving it running for recovery", "step", step.ID)
+					return
+				}
 				// The run is unwinding. Record the failure on a fresh deadline,
 				// as the failure path below does: with the cancelled ctx the
 				// write fails, the row stays `running`, and the next trigger
@@ -1477,6 +1481,10 @@ doneRetry:
 	}
 
 	if lastErr != nil {
+		if interruptedByShutdown(ctx) {
+			logging.Info("Flow step interrupted by process shutdown; leaving it running for recovery", "step", step.ID, "error", lastErr)
+			return
+		}
 		// When the parent ctx is cancelled (graceful shutdown, ctx-cancelled
 		// retry-delay path above) the failure-state UPDATE would also fail
 		// the SQL call immediately, leaving the flow_state row stuck on
@@ -1864,6 +1872,12 @@ func (s *service) handleStepError(
 	nextSteps chan<- stepWork,
 	f *Flow,
 ) {
+	// The process is going down under this step: a failed row would be
+	// terminal, and recovery (RecoverRunning) resumes only `running` rows.
+	if interruptedByShutdown(ctx) {
+		logging.Info("Flow step interrupted by process shutdown; leaving it running for recovery", "step", step.ID, "error", err)
+		return
+	}
 	// A transient provider error (rate limit / stream reset) on an opted-in
 	// step parks it for timed auto-resume rather than failing the flow — unless
 	// it has been retrying past the age cap, in which case fail terminally.

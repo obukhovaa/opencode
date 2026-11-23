@@ -275,6 +275,10 @@ type flowRunState struct {
 	// invokes this.
 	cancel context.CancelFunc
 
+	// cancelCause cancels the same context with a cause. Interrupt uses it
+	// with flow.ErrProcessShutdown so the engine leaves the step running.
+	cancelCause context.CancelCauseFunc
+
 	// done is closed by finish() when this run reaches terminal. DELETE
 	// /flow waits on it (bounded) in pool mode so the 200 means "the
 	// runner is ready for the next POST /flow", which is what the pool
@@ -789,14 +793,15 @@ func (fr *flowRunner) StartWithOptions(parent context.Context, flowID string, ar
 	// flowArgHeaders from what the orchestrator supplied, never from
 	// persisted flow state.
 	base = tools.WithJobArgs(base, args)
-	runCtx, cancel := context.WithCancel(base)
+	runCtx, cancelCause := context.WithCancelCause(base)
 	state := &flowRunState{
-		RunID:     runID,
-		FlowID:    flowID,
-		StartedAt: time.Now().UnixMilli(),
-		Status:    flowRunRunning,
-		cancel:    cancel,
-		done:      make(chan struct{}),
+		RunID:       runID,
+		FlowID:      flowID,
+		StartedAt:   time.Now().UnixMilli(),
+		Status:      flowRunRunning,
+		cancel:      func() { cancelCause(context.Canceled) },
+		cancelCause: cancelCause,
+		done:        make(chan struct{}),
 	}
 	// Track each singleton SEPARATELY. A single OR'd flag would have a run
 	// that carried only mcpAuth clear the bridge identity it never set —
@@ -986,10 +991,18 @@ func (fr *flowRunner) run(ctx context.Context, state *flowRunState, flowID strin
 		fr.observeStep(state, st)
 		select {
 		case <-ctx.Done():
+			if errors.Is(context.Cause(ctx), flow.ErrProcessShutdown) {
+				fr.settleInterrupted(state)
+				return
+			}
 			fr.finish(state, flowRunFailed, "aborted")
 			return
 		default:
 		}
+	}
+	if errors.Is(context.Cause(ctx), flow.ErrProcessShutdown) {
+		fr.settleInterrupted(state)
+		return
 	}
 	// Terminal status selector — mutually exclusive:
 	//   err set            → flow.failed
@@ -1325,6 +1338,29 @@ func (fr *flowRunner) finish(state *flowRunState, status flowRunStatus, errMsg s
 	}
 }
 
+// settleInterrupted is run()'s exit for a run cancelled with
+// flow.ErrProcessShutdown. It releases what finish releases but leaves the
+// status non-terminal and publishes nothing: a flow.failed would clear the
+// orchestrator's in-flight step, and that step is what killed-step recovery
+// resumes. Only reached while the process is exiting, so the run never
+// needs to become startable-over again.
+func (fr *flowRunner) settleInterrupted(state *flowRunState) {
+	defer fr.clearRunScopedIdentity(state)
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	logging.Info("flow run interrupted by process shutdown; in-flight step left running", "run", state.RunID, "flow", state.FlowID)
+	if state.cancel != nil {
+		state.cancel()
+	}
+	if state.done != nil {
+		select {
+		case <-state.done:
+		default:
+			close(state.done)
+		}
+	}
+}
+
 // terminalRingSize bounds how many terminal snapshots stay addressable
 // by runID after the idle reset clears the live one.
 //
@@ -1529,6 +1565,24 @@ func (fr *flowRunner) Abort() (string, bool) {
 	return fr.currentRun.RunID, true
 }
 
+// Interrupt cancels the non-terminal run (running or waiting_for_input)
+// with cause and reports whether there was one. Unlike Abort it ends no
+// run: with flow.ErrProcessShutdown the engine leaves the interrupted step's
+// row `running` and settleInterrupted publishes no terminal event, so the
+// step stays resumable after the process exits.
+// The returned channel closes once the run's engine has unwound.
+func (fr *flowRunner) Interrupt(cause error) (<-chan struct{}, bool) {
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	if fr.currentRun == nil || isTerminalStatus(fr.currentRun.Status) {
+		return nil, false
+	}
+	if fr.currentRun.cancelCause != nil {
+		fr.currentRun.cancelCause(cause)
+	}
+	return fr.currentRun.done, true
+}
+
 // InFlight reports whether a non-terminal run (running or
 // waiting_for_input) exists. Used by the pool endpoints' guards (POST
 // /pool/bind → 400, POST /flow/recycle → 409); both treat
@@ -1688,6 +1742,30 @@ func (s *Server) StartFlow(flowID string, args map[string]any, fresh, recoverRun
 		return "", err
 	}
 	return result.RunID, nil
+}
+
+// InterruptFlow cancels the in-flight run with cause and waits up to wait
+// for its engine to unwind. It reports whether a run was in flight (running
+// or waiting_for_input) when called; false when idle or terminal. Used by
+// cmd/serve.go's signal handler with flow.ErrProcessShutdown.
+func (s *Server) InterruptFlow(cause error, wait time.Duration) bool {
+	if s.flowRunner == nil {
+		return false
+	}
+	done, ok := s.flowRunner.Interrupt(cause)
+	if !ok {
+		return false
+	}
+	if done != nil && wait > 0 {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+			logging.Warn("flow run did not unwind before shutdown", "wait", wait)
+		}
+	}
+	return true
 }
 
 // WaitFlowTerminal blocks until the flow run identified by runID
