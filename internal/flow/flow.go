@@ -31,6 +31,10 @@ var (
 	ErrInvalidReasoningEffort    = errors.New("invalid step reasoningEffort")
 	ErrInvalidMaxFallbackEntries = errors.New("invalid maxFallbackEntries")
 	ErrFallbackCycle             = errors.New("fallback cycle")
+	ErrInvalidDenyTools          = errors.New("invalid step denyTools")
+	ErrInvalidModelPool          = errors.New("invalid step modelPool")
+	// ErrReservedArg rejects a flow arg the runtime owns (ReservedPoolArg).
+	ErrReservedArg = errors.New("reserved flow arg")
 )
 
 // Flow represents a discovered flow definition.
@@ -135,9 +139,29 @@ type Step struct {
 	// runs on (the Model override when set, else the agent's model), so
 	// e.g. `xhigh` on a model without SupportsXHighThinking fails the
 	// step. Inheritable through `extends`.
-	ReasoningEffort string      `yaml:"reasoningEffort,omitempty"`
-	Session         StepSession `yaml:"session,omitempty"`
-	Prompt          string      `yaml:"prompt"`
+	ReasoningEffort string `yaml:"reasoningEffort,omitempty"`
+	// ModelPool, when it resolves to a non-empty JSON array of
+	// {model, weight, effort?, shadowWeight?}, replaces Model / the effort
+	// with a deterministic weighted pick per ModelSeed, and ModelShadowRate
+	// (0..100) samples a shadow model; the pick lands in
+	// args.pool.<step id> before the prompt is rendered (model_pool.go).
+	// All three take ${args.*} / ${step.*}; inheritable through `extends`;
+	// rejected in dynamic flows.
+	ModelPool       string `yaml:"modelPool,omitempty"`
+	ModelSeed       string `yaml:"modelSeed,omitempty"`
+	ModelShadowRate string `yaml:"modelShadowRate,omitempty"`
+	// DenyTools lists tool-name globs this step's agent and the subagents
+	// it spawns run without (tools.WithDeniedTools carries them). Literal
+	// only; inheritable through `extends`; rejected in dynamic flows.
+	DenyTools []string `yaml:"denyTools,omitempty"`
+	// BestEffort marks a step whose failure ends its branch without failing
+	// the run: its failed state carries BestEffort, the API runner keeps the
+	// run's error unset and publishStepFailure emits no error agent event.
+	// Retries and fallback.to apply as on any step. Inheritable through
+	// `extends`.
+	BestEffort bool        `yaml:"bestEffort,omitempty"`
+	Session    StepSession `yaml:"session,omitempty"`
+	Prompt     string      `yaml:"prompt"`
 	// LangfusePromptPath names a prompt in Langfuse Prompt Management to
 	// use instead of the inline Prompt, so wording changes ship from the
 	// Langfuse UI with no flow or image deploy. Slashes are part of the

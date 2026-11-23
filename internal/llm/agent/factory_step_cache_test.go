@@ -53,6 +53,7 @@ func TestStepCacheKey_IsolatesOverrides(t *testing.T) {
 		{"different agent misses", stepCacheKey{stepID: "implement", agentID: "coder", model: "bedrock.eu-claude-sonnet-5", effort: "high"}, false},
 		{"no override misses", stepCacheKey{stepID: "implement", agentID: "piano-developer"}, false},
 		{"different step misses", stepCacheKey{stepID: "salvage", agentID: "piano-developer", model: "bedrock.eu-claude-sonnet-5", effort: "high"}, false},
+		{"denyTools misses", stepCacheKey{stepID: "implement", agentID: "piano-developer", model: "bedrock.eu-claude-sonnet-5", effort: "high", denied: "gitlab_*"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

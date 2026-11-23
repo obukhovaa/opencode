@@ -158,6 +158,8 @@ func generateSchema() map[string]any {
 		},
 	}
 
+	schema["properties"].(map[string]any)["customModels"] = customModelsSchema()
+
 	schema["properties"].(map[string]any)["flowPaths"] = map[string]any{
 		"type":        "array",
 		"description": "Custom directories to scan for flow YAML definitions (*.yaml / *.yml) at startup. Supports ~ for the home directory and relative paths (resolved against the working directory). Flows discovered here get a namespaced ID <parent-dir-basename>/<file-basename> and can never shadow a built-in (slash-free) flow ID.",
@@ -1353,7 +1355,60 @@ func generateSchema() map[string]any {
 	}
 
 	allowEnvironmentReferences(schema)
+	// After the environment-reference rewrite, which turned the agent model
+	// enum into anyOf[enum, reference]: a config-defined model id is a third
+	// way to name a model.
+	agentModel := agentSchema["additionalProperties"].(map[string]any)["properties"].(map[string]any)["model"].(map[string]any)
+	agentModel["anyOf"] = append(agentModel["anyOf"].([]map[string]any), map[string]any{
+		"type":        "string",
+		"pattern":     models.CustomModelIDPattern,
+		"description": "A model defined in customModels.",
+	})
 	return schema
+}
+
+// customModelsSchema describes the customModels array (config.CustomModel).
+func customModelsSchema() map[string]any {
+	number := func(description string) map[string]any {
+		return map[string]any{"type": "number", "minimum": 0, "description": description}
+	}
+	flag := func(description string) map[string]any {
+		return map[string]any{"type": "boolean", "description": description}
+	}
+	return map[string]any{
+		"type":        "array",
+		"description": "Bedrock models defined in config rather than compiled in, registered at load so agents, flow steps and model pools can name them. An entry with a built-in model's id is ignored with a warning. See docs/providers.md.",
+		"items": map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"required":             []string{"id", "provider", "wire", "apiModel", "costPer1MIn", "costPer1MOut", "contextWindow", "defaultMaxTokens"},
+			"properties": map[string]any{
+				"id":                              map[string]any{"type": "string", "pattern": models.CustomModelIDPattern, "description": "Model id agents and flows use, e.g. bedrock.acme-large."},
+				"name":                            map[string]any{"type": "string", "description": "Display name; defaults to the id."},
+				"provider":                        map[string]any{"type": "string", "enum": []string{string(models.ProviderBedrock)}, "description": "Provider serving the model; only bedrock."},
+				"wire":                            map[string]any{"type": "string", "enum": config.CustomModelWires, "description": "Body format Bedrock's InvokeModel takes for the model: anthropic-messages (Claude) or openai-chat (chat completions: Kimi, GPT)."},
+				"apiModel":                        map[string]any{"type": "string", "minLength": 1, "description": "Bedrock model or inference-profile id sent to the provider, e.g. us.vendor.model-v1."},
+				"costPer1MIn":                     number("USD per million uncached input tokens; must be positive."),
+				"costPer1MOut":                    number("USD per million output tokens; must be positive."),
+				"costPer1MInCached":               number("USD per million cache-write tokens."),
+				"costPer1MOutCached":              number("USD per million cache-read tokens."),
+				"contextWindow":                   map[string]any{"type": "integer", "minimum": 1, "description": "Context window in tokens."},
+				"defaultMaxTokens":                map[string]any{"type": "integer", "minimum": 1, "description": "Default maximum output tokens; at most contextWindow."},
+				"canReason":                       flag("The model reasons; needed by every thinking flag."),
+				"supportsAdaptiveThinking":        flag("Adaptive thinking with output_config.effort (anthropic-messages only)."),
+				"supportsMaximumThinking":         flag("Accepts reasoning effort max."),
+				"supportsXHighThinking":           flag("Accepts reasoning effort xhigh."),
+				"supportsTaskBudget":              flag("Accepts task budgets (anthropic-messages only)."),
+				"supportsToolSearch":              flag("Server-side tool search (anthropic-messages only)."),
+				"supportsAttachments":             flag("Accepts image and file attachments."),
+				"rejectsForcedToolChoice":         flag("The API rejects a forced tool_choice (anthropic-messages only)."),
+				"longContextThreshold":            map[string]any{"type": "integer", "minimum": 0, "description": "Prompt tokens above which the whole request is billed at the long-context multipliers; set together with longContextCostMultiplier."},
+				"longContextCostMultiplier":       number("Multiplier on all rates past longContextThreshold."),
+				"longContextOutputCostMultiplier": number("Output multiplier past longContextThreshold when it differs from the input one."),
+				"defaultReasoningEffort":          map[string]any{"type": "string", "enum": []string{"low", "medium", "high", "xhigh", "max"}, "description": "Effort used when an agent sets none; must be a level the model accepts."},
+			},
+		},
+	}
 }
 
 // Keep literal constraints (especially enum) and add a reference alternative

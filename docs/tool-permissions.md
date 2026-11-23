@@ -175,6 +175,10 @@ Keep the two boundaries apart when reasoning about such a tool:
 - **What the process can do** is the manifest's hard policy (`args.deny` / `args.allow` on the argument vector, `env`, `cwd`, `timeout`, argv-only exec). No agent configuration loosens it; a violation is a tool error the model sees, and the run continues.
 - **What the model may ask for** is the permission chain: `agent.permission.<name>` → `permission.rules.<name>` → the manifest's `permission` default → `agent.permission["*"]` → `rules["*"]` → `ask`, with the space-joined argument string as the pattern input. `deny` here is a tool error the model sees, like every other rule denial (see [When a call is denied](#when-a-call-is-denied)).
 
+## Flow steps: `denyTools`
+
+A flow step can take tools away from its agent for that step only: `denyTools` globs remove matching tools after `tools` / `allowTools` have been applied, for the step's agent and every subagent it spawns, and the agent loop refuses a denied call that reaches it anyway. It never grants anything, and it never removes `struct_output`. See [flows.md](flows.md#step-fields).
+
 ## When a call is denied
 
 ### Bash compound commands (CD-5483)

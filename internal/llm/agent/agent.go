@@ -2252,6 +2252,21 @@ func (a *agent) streamAndHandleEvents(ctx context.Context, sessionID string, msg
 	}
 
 	for i, toolCall := range toolCalls {
+		// A flow step's denyTools already kept these out of the tool set
+		// (deniedToolsRegistry); this refuses one that reaches dispatch
+		// anyway, such as a name the model invented or a set built before
+		// the list applied.
+		if tools.IsToolDenied(ctx, toolCall.Name) {
+			logging.Warn("Refusing a tool call the flow step denies", "tool", toolCall.Name, "session_id", sessionID)
+			record(i, message.ToolResult{
+				ToolCallID: toolCall.ID,
+				Name:       toolCall.Name,
+				Content:    fmt.Sprintf("Tool %s is not available in this flow step (denyTools).", toolCall.Name),
+				IsError:    true,
+			})
+			unexecuted[i] = true
+			continue
+		}
 		var tool tools.BaseTool
 		for _, availableTool := range toolSet {
 			if availableTool.Info().Name == toolCall.Name {
@@ -3681,9 +3696,10 @@ func createAgentProvider(agentName config.AgentName, providerOpts ...providerOpt
 		opts = append(opts, provider.WithLangfuse(lf))
 	}
 
-	// Kimi on Bedrock rides the OpenAI client (see provider/bedrock.go), so
-	// it takes OpenAI options even though its provider is bedrock.
-	if model.Provider == models.ProviderOpenAI || model.Provider == models.ProviderYandexCloud || models.IsBedrockKimi(model.ID) || model.Provider == models.ProviderLocal && model.CanReason {
+	// OpenAI-wire Bedrock models ride the OpenAI client (see
+	// provider/bedrock.go), so they take OpenAI options even though their
+	// provider is bedrock.
+	if model.Provider == models.ProviderOpenAI || model.Provider == models.ProviderYandexCloud || model.BedrockOpenAIChat() || model.Provider == models.ProviderLocal && model.CanReason {
 		openaiOpts := []provider.OpenAIOption{
 			provider.WithReasoningEffort(agentConfig.ReasoningEffort),
 		}

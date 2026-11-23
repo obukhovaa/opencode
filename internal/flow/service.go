@@ -70,6 +70,28 @@ type FlowState struct {
 	// before agent.Run begins. Consumers (API runner) translate this into
 	// the flow.waiting_for_input SSE event.
 	WaitingTarget []bridge.PeerRef
+	// Model is the id of the model the step's agent runs on, set on every
+	// state published after NewAgent (see withStepModel); empty on states
+	// published before it and on rows read back from the database.
+	Model string
+	// BestEffort mirrors Step.BestEffort on every state the step publishes.
+	BestEffort bool
+}
+
+// stepModelKey carries the step's resolved model id on runStep's ctx from
+// NewAgent on, so every state built from that ctx — including those built by
+// handleStepError, the transient-postpone park and the struct_output retry
+// signal — reports it without each call site threading it through.
+type stepModelKey struct{}
+
+func withStepModel(ctx context.Context, model models.ModelID) context.Context {
+	return context.WithValue(ctx, stepModelKey{}, string(model))
+}
+
+// stepModelFrom returns the model withStepModel recorded on ctx, or "".
+func stepModelFrom(ctx context.Context) string {
+	model, _ := ctx.Value(stepModelKey{}).(string)
+	return model
 }
 
 // AgentProvider interface removed — use agentpkg.AgentFactory directly.
@@ -450,7 +472,7 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 			defer close(agentEvents)
 			defer close(flowStates)
 			for _, es := range existingStates {
-				state := dbFlowStateToFlowState(es)
+				state := dbFlowStateToFlowState(es, f.Spec.Steps)
 				flowStates <- state
 				s.Publish(pubsub.UpdatedEvent, *state)
 			}
@@ -486,7 +508,7 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 	} else if !fresh && hasResumableWork(existingStates, f, f.Spec.Session.ResumeOnFailure) {
 		stateMap := make(map[string]*FlowState, len(existingStates))
 		for _, es := range existingStates {
-			state := dbFlowStateToFlowState(es)
+			state := dbFlowStateToFlowState(es, f.Spec.Steps)
 			stateMap[state.StepID] = state
 		}
 		visited := make(map[string]bool)
@@ -746,8 +768,20 @@ func (s *service) runStep(
 		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
 		return
 	}
-	modelOverride, err := resolveStepModelOverride(step, args, stepVars)
+	// An active model pool replaces the step's model override and records
+	// its pick in args.pool.<step id> before anything renders the prompt.
+	pick, err := resolveStepModelPool(step, args, stepVars, rootSessionID)
 	if err != nil {
+		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
+		return
+	}
+	recordPoolPick(args, step.ID, pick)
+	var modelOverride agentpkg.ModelOverride
+	if pick != nil {
+		logging.Info("Model pool pick", "step", step.ID, "model", pick.Model, "effort", pick.Effort,
+			"bucket", pick.Bucket, "shadow", pick.Shadow, "shadow_model", pick.ShadowModel)
+		modelOverride = agentpkg.ModelOverride{Model: pick.Model, ReasoningEffort: pick.Effort}
+	} else if modelOverride, err = resolveStepModelOverride(step, args, stepVars); err != nil {
 		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
 		return
 	}
@@ -789,12 +823,17 @@ func (s *service) runStep(
 	// from f.ID and step.ID because NewAgent is context-free and the
 	// FlowIDContextKey/FlowStepIDContextKey ctx values are set later, on
 	// the Run context, for telemetry only.
+	// denyTools rides the ctx from here on: NewAgent builds the step's tool
+	// set without the denied tools, subagents inherit the list through the
+	// tool-call ctx, and the agent loop refuses a denied call at dispatch.
+	ctx = tools.WithDeniedTools(ctx, step.DenyTools)
 	agentSvc, err := s.agents.NewAgent(ctx, agentID, outputSchema, step.ID, step.Interactive, boundPeers,
 		step.Context, contextfile.TemplateVars{FlowID: f.ID, FlowStep: step.ID}, modelOverride)
 	if err != nil {
 		s.handleStepError(ctx, step, sessionID, rootSessionID, f.ID, args, iteration, err, wg, agentEvents, flowStates, nextSteps, f)
 		return
 	}
+	ctx = withStepModel(ctx, agentSvc.Model().ID)
 
 	sess, err := s.resolveSession(ctx, step, sessionID, rootSessionID, prevState)
 	if err != nil {
@@ -950,6 +989,8 @@ func (s *service) runStep(
 		Args:          copyArgs(args),
 		Iteration:     iteration,
 		UpdatedAt:     updatedAt,
+		Model:         stepModelFrom(ctx),
+		BestEffort:    step.BestEffort,
 	}
 	if status == FlowStatusPostponed && getErr == nil {
 		runningState.Output = existingFS.Output.String
@@ -1055,6 +1096,8 @@ func (s *service) runStep(
 			Iteration:     iteration,
 			UpdatedAt:     time.Now().Unix(),
 			WaitingTarget: boundPeers,
+			Model:         stepModelFrom(ctx),
+			BestEffort:    step.BestEffort,
 		}
 		flowStates <- waitingState
 		s.Publish(pubsub.UpdatedEvent, *waitingState)
@@ -1240,7 +1283,7 @@ func (s *service) runStep(
 				// turn nobody paid for.
 				retried, ok := s.retryStructOutputTurn(ctx, agentSvc, sess.ID, step, func() {
 					structOutputRetried = true
-					s.publishStructOutputRetry(sess.ID, rootSessionID, f.ID, step, args, iteration,
+					s.publishStructOutputRetry(ctx, sess.ID, rootSessionID, f.ID, step, args, iteration,
 						retryReasonNoStructOutput, flowStates)
 				})
 				if ok {
@@ -1322,7 +1365,7 @@ func (s *service) runStep(
 				// in-flight, non-persisted transition the re-prompt paths
 				// publish; only the reason string is new.
 				if attempt+1 < maxAttempts {
-					s.publishStructOutputRetry(sess.ID, rootSessionID, f.ID, step, args, iteration,
+					s.publishStructOutputRetry(ctx, sess.ID, rootSessionID, f.ID, step, args, iteration,
 						retryReasonTurnsExhausted, flowStates)
 				}
 				continue
@@ -1397,7 +1440,7 @@ doneRetry:
 			// never managed to issue.
 			forced := s.forceStructOutputTurn(boundedCtx, agentSvc, sess.ID, step, func() {
 				structOutputRetried = true
-				s.publishStructOutputRetry(sess.ID, rootSessionID, f.ID, step, args, iteration,
+				s.publishStructOutputRetry(ctx, sess.ID, rootSessionID, f.ID, step, args, iteration,
 					retryReasonRunFailed, flowStates)
 			})
 			cancelBounded()
@@ -1471,6 +1514,8 @@ doneRetry:
 			Output:        lastErr.Error(),
 			Iteration:     iteration,
 			UpdatedAt:     updatedAt,
+			Model:         stepModelFrom(ctx),
+			BestEffort:    step.BestEffort,
 		}
 		flowStates <- failedState
 		s.Publish(pubsub.UpdatedEvent, *failedState)
@@ -1548,7 +1593,7 @@ doneRetry:
 		}
 		var structData map[string]any
 		if err := json.Unmarshal([]byte(output), &structData); err == nil {
-			maps.Copy(args, structData)
+			mergeOutputArgs(args, structData)
 		}
 	} else {
 		output = result.Message.Content().Text
@@ -1595,6 +1640,8 @@ doneRetry:
 		IsStructOutput: isStructOutput,
 		Iteration:      iteration,
 		UpdatedAt:      updatedAt,
+		Model:          stepModelFrom(ctx),
+		BestEffort:     step.BestEffort,
 	}
 	flowStates <- completedState
 	s.Publish(pubsub.UpdatedEvent, *completedState)
@@ -1794,6 +1841,8 @@ func (s *service) postponeStepForTransientError(
 		IsStructOutput: carryIsStruct,
 		Iteration:      iteration,
 		UpdatedAt:      updatedAt,
+		Model:          stepModelFrom(ctx),
+		BestEffort:     step.BestEffort,
 	}
 	flowStates <- postponedState
 	s.Publish(pubsub.UpdatedEvent, *postponedState)
@@ -1898,6 +1947,8 @@ func (s *service) handleStepError(
 		Output:        err.Error(),
 		Iteration:     iteration,
 		UpdatedAt:     updatedAt,
+		Model:         stepModelFrom(ctx),
+		BestEffort:    step.BestEffort,
 	}, err, agentEvents, flowStates)
 
 	if step.Fallback != nil && step.Fallback.To != "" {
@@ -1932,6 +1983,12 @@ func (s *service) handleStepError(
 func (s *service) publishStepFailure(failed *FlowState, err error, agentEvents chan<- agentpkg.AgentEvent, flowStates chan<- *FlowState) *FlowState {
 	flowStates <- failed
 	s.Publish(pubsub.UpdatedEvent, *failed)
+	// A best-effort step's failure must not fail the run, and consumers that
+	// fail a run on any error agent event (session-owned runs) cannot tell
+	// it apart, so it gets none; its failed state still says what happened.
+	if failed.BestEffort {
+		return failed
+	}
 	agentEvents <- agentpkg.AgentEvent{
 		Type:       agentpkg.AgentEventTypeError,
 		Error:      err,
@@ -2022,6 +2079,7 @@ func (s *service) refuseFallbackEntry(
 		Output:        err.Error(),
 		Iteration:     iteration,
 		UpdatedAt:     updatedAt,
+		BestEffort:    work.step.BestEffort,
 	}, err, agentEvents, flowStates)
 }
 
@@ -2123,7 +2181,7 @@ func evaluateRowNextSteps(row db.FlowState, stepDef *Step, allSteps []Step) []re
 	if row.IsStructOutput && row.Output.Valid && row.Output.String != "" {
 		var structData map[string]any
 		if err := json.Unmarshal([]byte(row.Output.String), &structData); err == nil {
-			maps.Copy(rowArgs, structData)
+			mergeOutputArgs(rowArgs, structData)
 		}
 	}
 	iter := int(row.Iteration)
@@ -2184,10 +2242,11 @@ func (s *service) collectResumableSteps(
 	flowStates <- existing
 	s.Publish(pubsub.UpdatedEvent, *existing)
 
+	restorePoolPick(args, existing.Args, step.ID)
 	if existing.IsStructOutput && existing.Output != "" {
 		var structData map[string]any
 		if err := json.Unmarshal([]byte(existing.Output), &structData); err == nil {
-			maps.Copy(args, structData)
+			mergeOutputArgs(args, structData)
 		}
 	}
 
@@ -2275,6 +2334,7 @@ func (s *service) failResumedSelfLoop(
 		Output:        capErr.Error(),
 		Iteration:     currentIter,
 		UpdatedAt:     updatedAt,
+		BestEffort:    step.BestEffort,
 	}
 	flowStates <- failedState
 	s.Publish(pubsub.UpdatedEvent, *failedState)
@@ -2692,6 +2752,9 @@ func copyArgs(args map[string]any) map[string]any {
 // validateArgs validates the provided args against the flow's args JSON Schema.
 // The "prompt" key is always allowed regardless of the schema definition.
 func validateArgs(args map[string]any, schema map[string]any) error {
+	if _, ok := args[ReservedPoolArg]; ok {
+		return fmt.Errorf("%w: %q holds the runtime's model-pool picks", ErrReservedArg, ReservedPoolArg)
+	}
 	if len(schema) == 0 {
 		return nil
 	}
@@ -2817,7 +2880,7 @@ func withFlowArgs(ctx context.Context, args map[string]any) context.Context {
 	return context.WithValue(ctx, tools.FlowArgsContextKey, extracted)
 }
 
-func dbFlowStateToFlowState(fs db.FlowState) *FlowState {
+func dbFlowStateToFlowState(fs db.FlowState, steps []Step) *FlowState {
 	var args map[string]any
 	if fs.Args.Valid {
 		json.Unmarshal([]byte(fs.Args.String), &args)
@@ -2831,7 +2894,7 @@ func dbFlowStateToFlowState(fs db.FlowState) *FlowState {
 		// Backfill defensively: pre-migration rows or zero-value reads.
 		iteration = 1
 	}
-	return &FlowState{
+	state := &FlowState{
 		SessionID:      fs.SessionID,
 		RootSessionID:  fs.RootSessionID,
 		FlowID:         fs.FlowID,
@@ -2844,6 +2907,10 @@ func dbFlowStateToFlowState(fs db.FlowState) *FlowState {
 		CreatedAt:      fs.CreatedAt,
 		UpdatedAt:      fs.UpdatedAt,
 	}
+	if step := findStep(steps, fs.StepID); step != nil {
+		state.BestEffort = step.BestEffort
+	}
+	return state
 }
 
 // envNonInteractiveTaskWaitTimeout is the parsed-once value of the

@@ -793,6 +793,9 @@ type Config struct {
 	// and flow-step `context` objects have entirely different fields.
 	// Always non-nil after viper.Unmarshal (setDefaults seeds every key).
 	ContextDiscovery *contextfile.DiscoveryConfig `json:"contextDiscovery,omitempty"`
+	// CustomModels defines Bedrock models outside the compiled catalog;
+	// Load registers them before validating agents (custom_models.go).
+	CustomModels []CustomModel `json:"customModels,omitempty"`
 }
 
 // Application constants
@@ -842,6 +845,7 @@ var cfg *Config
 func Reset() {
 	cfg = nil
 	toolenv.SetConfigured(nil)
+	models.UnregisterCustomModels()
 }
 
 // Load initializes the configuration from environment variables and config files.
@@ -855,6 +859,7 @@ func Load(workingDir string, debug bool) (*Config, error) {
 	defer func() {
 		if !loaded {
 			cfg = nil
+			models.UnregisterCustomModels()
 		}
 	}()
 
@@ -936,6 +941,12 @@ func Load(workingDir string, debug bool) (*Config, error) {
 			Level: defaultLevel,
 		}))
 		slog.SetDefault(logger)
+	}
+
+	// Config-defined models join the catalog before anything resolves a
+	// model id against it, agent validation first.
+	if err := registerCustomModels(cfg); err != nil {
+		return cfg, fmt.Errorf("config validation failed: %w", err)
 	}
 
 	// Validate configuration
@@ -1478,27 +1489,23 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 				cfg.Agents[name] = updatedAgent
 			}
 		}
-	} else if model.CanReason && (model.SupportsAdaptiveThinking || models.IsBedrockKimi(model.ID)) {
-		// Adaptive-thinking models, plus Kimi on Bedrock: it sends the
-		// OpenAI-style reasoning_effort field rather than adaptive thinking,
-		// but with K3's levels (low|high|max, max the documented default on
-		// Moonshot and AWS alike; Bedrock also accepts medium), so it follows
-		// these rules — the OpenAI ones above would default it to medium and
-		// silently fold a configured max down to medium.
+	} else if model.CanReason && (model.SupportsAdaptiveThinking || model.BedrockOpenAIChat()) {
+		// Adaptive-thinking models, plus OpenAI-wire models on Bedrock: they
+		// send the OpenAI-style reasoning_effort field rather than adaptive
+		// thinking, but with their own levels (Kimi K3: low|high|max, max the
+		// documented default on Moonshot and AWS alike; Bedrock also accepts
+		// medium), so they follow these rules — the OpenAI ones above would
+		// default them to medium and silently fold a configured max down to
+		// medium.
 		if agent.ReasoningEffort == "" {
-			if models.IsKimiK3(model.ID) {
-				// Kimi K3 documents low|high|max with max as the default
-				// (Moonshot's own Claude Code guide pins effort to max);
-				// the clients' generic empty-effort defaults ("high" for
-				// anthropic, "medium" for openai) are not K3's, so resolve
-				// it here where the value stays visible in config. K2.7
-				// Code takes every level, so it keeps the client default.
-				logging.Info("setting default reasoning effort 'max' for kimi model",
+			if effort := unsetReasoningEffortDefault(model); effort != "" {
+				logging.Info("setting the model's default reasoning effort",
 					"agent", name,
-					"model", agent.Model)
+					"model", agent.Model,
+					"reasoning_effort", effort)
 
 				updatedAgent := cfg.Agents[name]
-				updatedAgent.ReasoningEffort = "max"
+				updatedAgent.ReasoningEffort = effort
 				cfg.Agents[name] = updatedAgent
 			}
 		} else {
@@ -1570,6 +1577,28 @@ func validateAgent(cfg *Config, name AgentName, agent Agent) error {
 }
 
 // Validate checks if the configuration is valid and applies defaults where needed.
+// unsetReasoningEffortDefault is the effort validateAgent resolves an
+// adaptive-thinking or OpenAI-wire Bedrock agent without one to, or "" to
+// leave it to the client default.
+//
+// Kimi K3 documents low|high|max with max as the default (Moonshot's own
+// Claude Code guide pins effort to max); the clients' generic empty-effort
+// defaults ("high" for anthropic, "medium" for openai) are not K3's, so it
+// is resolved here where the value stays visible in config. K2.7 Code takes
+// every level, so it keeps the client default. An OpenAI-wire Bedrock model
+// resolves to its DefaultReasoningEffort; an Anthropic-wire one keeps it out
+// of config, since the Anthropic client applies it per turn and a resolved
+// value would follow the agent onto another model under a step override.
+func unsetReasoningEffortDefault(model models.Model) string {
+	if models.IsKimiK3(model.ID) {
+		return models.ReasoningEffortMax
+	}
+	if model.BedrockOpenAIChat() {
+		return model.DefaultReasoningEffort
+	}
+	return ""
+}
+
 func Validate() error {
 	if cfg == nil {
 		return fmt.Errorf("config not loaded")

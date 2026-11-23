@@ -114,6 +114,12 @@ type FlowEvent struct {
 	// Slack updates match the post-completion values. Zero on lookup
 	// failure.
 	ContextSize int64 `json:"contextSize,omitempty"`
+	// Model is the model the step's agent runs on (flow.FlowState.Model);
+	// absent on events of a step that failed before its agent was built.
+	Model string `json:"model,omitempty"`
+	// BestEffort marks every event of a best-effort step (Step.BestEffort),
+	// whose failure does not fail the run.
+	BestEffort bool `json:"bestEffort,omitempty"`
 }
 
 // flowStepRecord captures a current or completed step for /flow/status.
@@ -127,6 +133,8 @@ type flowStepRecord struct {
 	StartedAt   int64  `json:"startedAt"`
 	CompletedAt int64  `json:"completedAt,omitempty"`
 	Error       string `json:"error,omitempty"`
+	Model       string `json:"model,omitempty"`
+	BestEffort  bool   `json:"bestEffort,omitempty"`
 }
 
 // flowRunSnapshot is the body shape /flow/status returns.
@@ -1016,12 +1024,14 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 	defer fr.mu.Unlock()
 	now := time.Now().UnixMilli()
 	rec := flowStepRecord{
-		Iteration: st.Iteration,
-		ID:        st.StepID,
-		SessionID: st.SessionID,
-		Status:    string(st.Status),
-		Output:    st.Output,
-		StartedAt: st.UpdatedAt * 1000,
+		Iteration:  st.Iteration,
+		ID:         st.StepID,
+		SessionID:  st.SessionID,
+		Status:     string(st.Status),
+		Output:     st.Output,
+		StartedAt:  st.UpdatedAt * 1000,
+		Model:      st.Model,
+		BestEffort: st.BestEffort,
 	}
 	switch st.Status {
 	case flow.FlowStatusRunning:
@@ -1048,6 +1058,8 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 			Iteration:      st.Iteration,
 			Cost:           cost,
 			ContextSize:    contextSize,
+			Model:          rec.Model,
+			BestEffort:     rec.BestEffort,
 		})
 	case flow.FlowStatusRetrying:
 		// In-flight only: the step stays `running` from the consumer's point
@@ -1065,6 +1077,8 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 			Iteration:   st.Iteration,
 			Cost:        cost,
 			ContextSize: contextSize,
+			Model:       rec.Model,
+			BestEffort:  rec.BestEffort,
 		})
 	case flow.FlowStatusWaitingForInput:
 		// Interactive step transitioned to bound-and-waiting. Per the
@@ -1084,6 +1098,8 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 			Iteration:      st.Iteration,
 			Cost:           cost,
 			ContextSize:    contextSize,
+			Model:          rec.Model,
+			BestEffort:     rec.BestEffort,
 		})
 	case flow.FlowStatusCompleted:
 		rec.CompletedAt = now
@@ -1102,6 +1118,8 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 			Iteration:      st.Iteration,
 			Cost:           cost,
 			ContextSize:    contextSize,
+			Model:          rec.Model,
+			BestEffort:     rec.BestEffort,
 		})
 	case flow.FlowStatusPostponed:
 		// A step matched a `postpone: true` rule — the row in flow_states
@@ -1127,11 +1145,16 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 			Iteration:      st.Iteration,
 			Cost:           cost,
 			ContextSize:    contextSize,
+			Model:          rec.Model,
+			BestEffort:     rec.BestEffort,
 		})
 	case flow.FlowStatusFailed:
 		rec.Error = st.Output
 		state.completedSteps = append(state.completedSteps, rec)
-		state.err = st.Output
+		// A best-effort step's failure ends its branch, not the run.
+		if !st.BestEffort {
+			state.err = st.Output
+		}
 		state.lastStepPostponed = false
 		fr.publishEvent(state, FlowEvent{
 			Type:           evFlowStepFailed,
@@ -1144,6 +1167,8 @@ func (fr *flowRunner) observeStep(state *flowRunState, st *flow.FlowState) {
 			Iteration:      st.Iteration,
 			Cost:           cost,
 			ContextSize:    contextSize,
+			Model:          rec.Model,
+			BestEffort:     rec.BestEffort,
 		})
 	}
 }

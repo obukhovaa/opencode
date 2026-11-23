@@ -552,6 +552,33 @@ func TestTemplateKeyRule_TwoPart(t *testing.T) {
 					t.Errorf("LangfusePromptLabel = %q", s.LangfusePromptLabel)
 				}
 			}},
+			"bestEffort": {"  bestEffort: true\n", func(t *testing.T, s Step) {
+				if !s.BestEffort {
+					t.Errorf("BestEffort = false")
+				}
+			}},
+			"modelPool": {"  modelPool: ${args.review_pool}\n", func(t *testing.T, s Step) {
+				if s.ModelPool != "${args.review_pool}" {
+					t.Errorf("ModelPool = %q", s.ModelPool)
+				}
+			}},
+			"modelSeed": {"  modelPool: ${args.review_pool}\n  modelSeed: ${args.mr_links}\n", func(t *testing.T, s Step) {
+				if s.ModelSeed != "${args.mr_links}" {
+					t.Errorf("ModelSeed = %q", s.ModelSeed)
+				}
+			}},
+			// A rate needs a pool, so this sample declares both; YAML's
+			// integer 25 lands in the string field as "25".
+			"modelShadowRate": {"  modelPool: ${args.review_pool}\n  modelShadowRate: 25\n", func(t *testing.T, s Step) {
+				if s.ModelShadowRate != "25" {
+					t.Errorf("ModelShadowRate = %q", s.ModelShadowRate)
+				}
+			}},
+			"denyTools": {"  denyTools: [\"gitlab_create_*\"]\n", func(t *testing.T, s Step) {
+				if len(s.DenyTools) != 1 || s.DenyTools[0] != "gitlab_create_*" {
+					t.Errorf("DenyTools = %q", s.DenyTools)
+				}
+			}},
 			"context": {"  context:\n    paths: [\"AGENTS.runtime.md\"]\n    mode: replace\n", func(t *testing.T, s Step) {
 				if s.Context == nil || len(s.Context.Paths) != 1 || s.Context.Paths[0] != "AGENTS.runtime.md" || s.Context.Mode != "replace" {
 					t.Errorf("Context = %#v", s.Context)

@@ -263,7 +263,10 @@
                 "bedrock.eu-claude-sonnet-5-5",
                 "bedrock.eu-claude-fable-5",
                 "bedrock.eu-claude-fable-5-1",
+                "bedrock.us-gpt-6.1-sol",
+                "bedrock.us-gpt-6.1-terra",
                 "bedrock.us-kimi-k3",
+                "bedrock.us-kimi-k3.1",
                 "bedrock.claude-haiku-4-5",
                 "bedrock.claude-opus-4-6",
                 "bedrock.claude-sonnet-4-6",
@@ -276,7 +279,10 @@
                 "bedrock.claude-sonnet-5-5",
                 "bedrock.claude-fable-5",
                 "bedrock.claude-fable-5-1",
+                "bedrock.gpt-6.1-sol",
+                "bedrock.gpt-6.1-terra",
                 "bedrock.kimi-k3",
+                "bedrock.kimi-k3.1",
                 "gemini-3.0-flash",
                 "gemini-3.0-pro",
                 "kimi.kimi-k2.7-code",
@@ -316,6 +322,11 @@
             {
               "description": "Environment reference; the resolved value is validated at runtime.",
               "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+              "type": "string"
+            },
+            {
+              "description": "A model defined in customModels.",
+              "pattern": "^bedrock\\.[a-z0-9][a-z0-9._-]*$",
               "type": "string"
             }
           ],
@@ -806,7 +817,10 @@
                   "bedrock.eu-claude-sonnet-5-5",
                   "bedrock.eu-claude-fable-5",
                   "bedrock.eu-claude-fable-5-1",
+                  "bedrock.us-gpt-6.1-sol",
+                  "bedrock.us-gpt-6.1-terra",
                   "bedrock.us-kimi-k3",
+                  "bedrock.us-kimi-k3.1",
                   "bedrock.claude-haiku-4-5",
                   "bedrock.claude-opus-4-6",
                   "bedrock.claude-sonnet-4-6",
@@ -819,7 +833,10 @@
                   "bedrock.claude-sonnet-5-5",
                   "bedrock.claude-fable-5",
                   "bedrock.claude-fable-5-1",
+                  "bedrock.gpt-6.1-sol",
+                  "bedrock.gpt-6.1-terra",
                   "bedrock.kimi-k3",
+                  "bedrock.kimi-k3.1",
                   "gemini-3.0-flash",
                   "gemini-3.0-pro",
                   "kimi.kimi-k2.7-code",
@@ -859,6 +876,11 @@
               {
                 "description": "Environment reference; the resolved value is validated at runtime.",
                 "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              },
+              {
+                "description": "A model defined in customModels.",
+                "pattern": "^bedrock\\.[a-z0-9][a-z0-9._-]*$",
                 "type": "string"
               }
             ],
@@ -1279,6 +1301,323 @@
       "description": "Context paths for the application",
       "items": {
         "type": "string"
+      },
+      "type": "array"
+    },
+    "customModels": {
+      "description": "Bedrock models defined in config rather than compiled in, registered at load so agents, flow steps and model pools can name them. An entry with a built-in model's id is ignored with a warning. See docs/providers.md.",
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "apiModel": {
+            "description": "Bedrock model or inference-profile id sent to the provider, e.g. us.vendor.model-v1.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "canReason": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "The model reasons; needed by every thinking flag."
+          },
+          "contextWindow": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Context window in tokens."
+          },
+          "costPer1MIn": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "USD per million uncached input tokens; must be positive."
+          },
+          "costPer1MInCached": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "USD per million cache-write tokens."
+          },
+          "costPer1MOut": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "USD per million output tokens; must be positive."
+          },
+          "costPer1MOutCached": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "USD per million cache-read tokens."
+          },
+          "defaultMaxTokens": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Default maximum output tokens; at most contextWindow."
+          },
+          "defaultReasoningEffort": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Effort used when an agent sets none; must be a level the model accepts."
+          },
+          "id": {
+            "description": "Model id agents and flows use, e.g. bedrock.acme-large.",
+            "pattern": "^bedrock\\.[a-z0-9][a-z0-9._-]*$",
+            "type": "string"
+          },
+          "longContextCostMultiplier": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Multiplier on all rates past longContextThreshold."
+          },
+          "longContextOutputCostMultiplier": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "number"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Output multiplier past longContextThreshold when it differs from the input one."
+          },
+          "longContextThreshold": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Prompt tokens above which the whole request is billed at the long-context multipliers; set together with longContextCostMultiplier."
+          },
+          "name": {
+            "description": "Display name; defaults to the id.",
+            "type": "string"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "enum": [
+                  "bedrock"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Provider serving the model; only bedrock."
+          },
+          "rejectsForcedToolChoice": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "The API rejects a forced tool_choice (anthropic-messages only)."
+          },
+          "supportsAdaptiveThinking": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Adaptive thinking with output_config.effort (anthropic-messages only)."
+          },
+          "supportsAttachments": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Accepts image and file attachments."
+          },
+          "supportsMaximumThinking": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Accepts reasoning effort max."
+          },
+          "supportsTaskBudget": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Accepts task budgets (anthropic-messages only)."
+          },
+          "supportsToolSearch": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Server-side tool search (anthropic-messages only)."
+          },
+          "supportsXHighThinking": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Accepts reasoning effort xhigh."
+          },
+          "wire": {
+            "anyOf": [
+              {
+                "enum": [
+                  "anthropic-messages",
+                  "openai-chat"
+                ],
+                "type": "string"
+              },
+              {
+                "description": "Environment reference; the resolved value is validated at runtime.",
+                "pattern": "\\$\\{[A-Za-z_][A-Za-z0-9_]*(:-[^{}]*)?\\}",
+                "type": "string"
+              }
+            ],
+            "description": "Body format Bedrock's InvokeModel takes for the model: anthropic-messages (Claude) or openai-chat (chat completions: Kimi, GPT)."
+          }
+        },
+        "required": [
+          "id",
+          "provider",
+          "wire",
+          "apiModel",
+          "costPer1MIn",
+          "costPer1MOut",
+          "contextWindow",
+          "defaultMaxTokens"
+        ],
+        "type": "object"
       },
       "type": "array"
     },

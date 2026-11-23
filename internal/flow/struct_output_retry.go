@@ -358,6 +358,7 @@ func structOutputTurnsExhausted(err error) bool {
 // reached a terminal status and a `retrying` row in flow_states would confuse
 // resume (see hasResumableWork, which only knows persisted statuses).
 func (s *service) publishStructOutputRetry(
+	ctx context.Context,
 	sessionID string,
 	rootSessionID string,
 	flowID string,
@@ -377,6 +378,8 @@ func (s *service) publishStructOutputRetry(
 		Output:        reason,
 		Iteration:     iteration,
 		UpdatedAt:     time.Now().Unix(),
+		Model:         stepModelFrom(ctx),
+		BestEffort:    step.BestEffort,
 	}
 	flowStates <- st
 	s.Publish(pubsub.UpdatedEvent, *st)

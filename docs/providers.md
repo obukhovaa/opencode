@@ -9,11 +9,53 @@ An agent's `model` is a model ID such as `vertexai.claude-opus-4-6` or `kimi.kim
 | **OpenAI** | GPT-5, O3 Mini, O4 Mini |
 | **Anthropic** | Claude 5.5 Opus (1M), Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5.5 Sonnet (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 5.5 Haiku (1M), Claude 4.5 Haiku |
 | **Google Gemini** | Gemini 3.0 Pro, Gemini 3.0 Flash |
-| **AWS Bedrock** | Claude 5.5 Opus (1M)(EU/Global), Claude 5 Opus (1M)(EU/Global), Claude Fable 5.1 (1M)(EU/Global), Claude Fable 5 (1M)(EU/Global), Claude 4.8 Opus (1M)(EU/Global), Claude 4.7 Opus (1M)(EU/Global), Claude 5.5 Sonnet (1M)(EU/Global), Claude 5 Sonnet (1M)(EU/Global), Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global), Claude 5.5 Haiku (1M)(EU/Global), Claude 4.5 Haiku (EU/Global), Kimi K3 (1M)(US/Global) |
+| **AWS Bedrock** | Claude 5.5 Opus (1M)(EU/Global), Claude 5 Opus (1M)(EU/Global), Claude Fable 5.1 (1M)(EU/Global), Claude Fable 5 (1M)(EU/Global), Claude 4.8 Opus (1M)(EU/Global), Claude 4.7 Opus (1M)(EU/Global), Claude 5.5 Sonnet (1M)(EU/Global), Claude 5 Sonnet (1M)(EU/Global), Claude 4.6 Sonnet (1M)(EU/Global), Claude 4.6 Opus (1M)(EU/Global), Claude 5.5 Haiku (1M)(EU/Global), Claude 4.5 Haiku (EU/Global), Kimi K3.1 (1M)(US/Global), Kimi K3 (1M)(US/Global), GPT-6.1 Sol (US/Global), GPT-6.1 Terra (US/Global) |
 | **VertexAI** | Gemini 3.0 Pro, Gemini 3.0 Flash, Claude 5.5 Opus (1M), Claude 5 Opus (1M), Claude Fable 5.1 (1M), Claude Fable 5 (1M), Claude 4.8 Opus (1M), Claude 4.7 Opus (1M), Claude 5.5 Sonnet (1M), Claude 5 Sonnet (1M), Claude 4.6 Sonnet (1M), Claude 4.6 Opus (1M), Claude 5.5 Haiku (1M), Claude 4.5 Haiku |
 | **YandexCloud** | Alice AI LLM, YandexGPT Pro 5.1, YandexGPT Pro 5, YandexGPT Lite 5, DeepSeek V3.2, Qwen3 235B, Qwen3.5 35B, gpt-oss-120b |
 | **Kimi (Moonshot)** | Kimi K3.1 Pro (1M), Kimi K3.1 Pro Highspeed (1M), Kimi K3 (1M), Kimi K2.7 Code, Kimi K2.7 Code Highspeed |
 | **Local** | Any OpenAI-compatible API |
+
+## Config-defined models
+
+`customModels` adds Bedrock models without a release, for example a newcomer for a [model pool](flows.md#model-pools-and-shadow-runs). Config load registers every entry into the catalog before it validates agents, so agents, flow step `model` values and pools accept the id like a built-in's, and the Bedrock client routes it by `wire`.
+
+```json
+{
+  "customModels": [
+    {
+      "id": "bedrock.acme-large",
+      "name": "Bedrock US: Acme Large",
+      "provider": "bedrock",
+      "wire": "openai-chat",
+      "apiModel": "us.acme.large-v1",
+      "costPer1MIn": 1.5,
+      "costPer1MOut": 6,
+      "costPer1MInCached": 1.875,
+      "costPer1MOutCached": 0.15,
+      "contextWindow": 400000,
+      "defaultMaxTokens": 64000,
+      "canReason": true,
+      "supportsXHighThinking": true,
+      "defaultReasoningEffort": "medium"
+    }
+  ]
+}
+```
+
+| Field | Notes |
+|---|---|
+| `id` | Required, `^bedrock\.[a-z0-9][a-z0-9._-]*$`. An id that is already a built-in model is ignored with a warning; the built-in wins. |
+| `provider` | Required, `bedrock`. |
+| `wire` | Required. `anthropic-messages` for Claude, `openai-chat` for models InvokeModel serves with chat-completions bodies (Kimi, GPT). |
+| `apiModel` | Required. The model or inference-profile id Bedrock gets. |
+| `costPer1MIn`, `costPer1MOut` | Required, positive, USD per million tokens. `costPer1MInCached` (cache writes) and `costPer1MOutCached` (cache reads) default to 0. |
+| `contextWindow`, `defaultMaxTokens` | Required, positive; output at most the window. |
+| `canReason`, `supportsMaximumThinking`, `supportsXHighThinking`, `supportsAttachments` | Capabilities. The thinking flags need `canReason`. |
+| `supportsAdaptiveThinking`, `supportsTaskBudget`, `supportsToolSearch`, `rejectsForcedToolChoice` | Anthropic request features; `anthropic-messages` only. |
+| `longContextThreshold`, `longContextCostMultiplier`, `longContextOutputCostMultiplier` | Long-prompt pricing; threshold and multiplier go together, the output multiplier is optional. |
+| `defaultReasoningEffort` | A level the model accepts; used when an agent sets none. |
+
+Any other violation of these rules fails the config load. Entries are registered once per load; restart to change them.
 
 ## Credentials
 
@@ -115,11 +157,32 @@ Kimi K3 reasons by default; when `reasoningEffort` is not set for an agent it re
 
 Token counting uses Moonshot's [estimate-token-count endpoint](https://platform.kimi.ai/docs/api/estimate) rather than the Anthropic `count_tokens` route. Its URL is derived from `providers.kimi.baseURL` by removing a trailing `/anthropic` and appending `/v1/tokenizers/estimate-token-count`. The estimator accepts the model and messages (including the system prompt and images), but not tool schemas; OpenCode therefore takes the larger of its result and the local estimate that includes tools. Endpoint errors fall back to local estimation, and a 404/405 disables further estimator calls for that provider client.
 
-Kimi K3.1 Pro (`kimi.kimi-k3.1-pro`) and K3.1 Pro Highspeed (`kimi.kimi-k3.1-pro-highspeed`) use the same native endpoint. Both have a 1,048,576-token context, 131,072 default output tokens, vision, and reasoning effort `low`/`high`/`max` (default `max`). Official USD prices per million tokens are **$2 input / $10 output / $0.20 cache reads** for Pro and **$4 / $20 / $0.20** for Highspeed. Default 5-minute cache writes cost $2 and $4 respectively; no long-context surcharge applies. These require a pay-as-you-go Moonshot API key; Kimi Code subscription endpoints may accept only the `k3` alias. These variants are not listed on Bedrock as of 2026-10-25. Sources: [Kimi pricing](https://platform.kimi.ai/), [model guide](https://platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart), [AWS model list](https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-moonshot-ai.html).
+Kimi K3.1 Pro (`kimi.kimi-k3.1-pro`) and K3.1 Pro Highspeed (`kimi.kimi-k3.1-pro-highspeed`) use the same native endpoint. Both have a 1,048,576-token context, 131,072 default output tokens, vision, and reasoning effort `low`/`high`/`max` (default `max`). Official USD prices per million tokens are **$2 input / $10 output / $0.20 cache reads** for Pro and **$4 / $20 / $0.20** for Highspeed. Default 5-minute cache writes cost $2 and $4 respectively; no long-context surcharge applies. These require a pay-as-you-go Moonshot API key; Kimi Code subscription endpoints may accept only the `k3` alias. Bedrock serves the Highspeed variant as Kimi K3.1 (see below). Sources: [Kimi pricing](https://platform.kimi.ai/), [model guide](https://platform.kimi.ai/docs/guide/kimi-k3-1-pro-quickstart), [AWS model list](https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-moonshot-ai.html).
 
 Kimi K2.7 Code (`kimi.kimi-k2.7-code`) and its faster, double-priced Highspeed variant (`kimi.kimi-k2.7-code-highspeed`) ride the same endpoint with a 256K context. They accept every effort level from `low` to `max`, so an unset `reasoningEffort` keeps the client default (`high`) instead of being pinned to `max`.
 
 Kimi K3 is also available on AWS Bedrock as `bedrock.kimi-k3` (global profile) and `bedrock.us-kimi-k3` (US profile; there is no EU profile yet). Bedrock serves it with OpenAI chat-completions bodies rather than Anthropic Messages, so it is sent through the OpenAI client, with the requests rewritten onto Bedrock's InvokeModel routes. That means it works through the same `providers.bedrock` config and the LiteLLM Bedrock passthrough as the Claude models. Reasoning goes through the OpenAI-style `reasoning_effort` field but keeps K3's levels: `reasoningEffort` `low`/`high`/`max`, defaulting to `max` as on the `kimi` provider (Bedrock also accepts `medium`; `xhigh` folds to `high`). Bedrock caches the prompt prefix automatically, so no cache breakpoints are needed.
+
+Kimi K3.1 is on Bedrock as `bedrock.kimi-k3.1` (global) and `bedrock.us-kimi-k3.1` (US), the model AWS lists as "Kimi K3.1 Pro - Highspeed" (launched 2026-11-04; no EU profile). It rides the same OpenAI chat-completions path as K3, but takes every effort level from `low` to `max`, `xhigh` included, and still defaults to `max`. Prices per million tokens are **$4 input / $20 output / $5 cache writes / $0.20 cache reads** on the global profile, 10% more on the US one; 1,048,576-token context, 131,072 default output tokens, vision. Source: [AWS model list](https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-moonshot-ai.html).
+
+## GPT-6.1 on Bedrock
+
+OpenAI's GPT-6.1 Sol and Terra are registered as `bedrock.gpt-6.1-sol` / `bedrock.us-gpt-6.1-sol` and `bedrock.gpt-6.1-terra` / `bedrock.us-gpt-6.1-terra`. Like Kimi they take OpenAI chat-completions bodies on Bedrock's InvokeModel routes, so they use `providers.bedrock` and the LiteLLM Bedrock passthrough. There is no EU profile: keep them away from client data.
+
+| Model | Input | Output | Cache write | Cache read | Efforts |
+|---|---|---|---|---|---|
+| GPT-6.1 Sol | $2 | $10 | $2.50 | $0.10 | `low`–`max` |
+| GPT-6.1 Terra | $1 | $5 | $1.25 | $0.05 | `low`–`high` |
+
+Prices are per million tokens on the global profile; the US profile adds 10%. A prompt over 272,000 tokens bills the whole request at 2x input and 1.5x output (`LongContextOutputCostMultiplier`). Both default to effort `medium` when an agent sets none, allow 128,000 output tokens and run without attachments. The 1,050,000-token context and Terra's effort levels are not on the Bedrock cards yet; Terra's `xhigh` / `max` fold to `high`.
+
+**Pending tool-call verification.** OpenAI documents GPT-6.1 tool calling for the Responses API, while these entries send Chat Completions. Do not give either model traffic before a tool-call round trip through the deployment's Bedrock route has succeeded. `scripts/probe_bedrock_tools.sh` runs one (tool call, then tool result and answer) for the Kimi K3.1 and GPT-6.1 profiles, or for the profiles given as arguments; `PROBE_REASONING_EFFORT` adds a `reasoning_effort`. The same round trip through the harness's own Bedrock client, on both the send and stream paths, is an opt-in test:
+
+```bash
+export LOCAL_ENDPOINT=https://litellm.example LOCAL_ENDPOINT_API_KEY=...
+scripts/probe_bedrock_tools.sh
+go test -tags bedrock_live -run TestBedrockLiveToolRoundTrip ./internal/llm/provider/
+```
 
 ## OpenAI-compatible reasoning continuity
 

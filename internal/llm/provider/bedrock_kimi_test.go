@@ -38,29 +38,50 @@ var bedrockKimiPrompt = []message.Message{
 	{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "weather in Oslo?"}}},
 }
 
-func TestNewBedrockClientRoutesKimiToOpenAI(t *testing.T) {
+// TestNewBedrockClientRoutesByWire pins the Bedrock routing on Model.Wire:
+// openai-chat to the OpenAI client with the InvokeModel middleware, an
+// empty or anthropic-messages wire to the Anthropic client — whether or not
+// the model is in the built-in catalog — and an unknown wire to no client.
+func TestNewBedrockClientRoutesByWire(t *testing.T) {
+	configClaude := models.SupportedModels[models.BedrockOpus48]
+	configClaude.ID = "bedrock.config-defined-claude"
+	configClaude.Wire = models.WireAnthropicMessages
+	unknownWire := configClaude
+	unknownWire.Wire = "grpc"
+
 	tests := []struct {
-		name       string
-		model      models.ModelID
-		wantOpenAI bool
+		name  string
+		model models.Model
+		want  string // "openai", "anthropic" or "none"
 	}{
-		{"global kimi", models.BedrockKimiK3, true},
-		{"us kimi", models.BedrockUSKimiK3, true},
-		{"claude", models.BedrockOpus48, false},
+		{"global kimi", models.SupportedModels[models.BedrockKimiK3], "openai"},
+		{"us kimi", models.SupportedModels[models.BedrockUSKimiK3], "openai"},
+		{"built-in claude", models.SupportedModels[models.BedrockOpus48], "anthropic"},
+		{"claude outside the catalog", configClaude, "anthropic"},
+		{"unknown wire", unknownWire, "none"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			b := newBedrockClient(providerClientOptions{
 				apiKey:    "test-key",
-				model:     models.SupportedModels[tt.model],
+				model:     tt.model,
 				maxTokens: 1024,
 			}).(*bedrockClient)
-			child, isOpenAI := b.childProvider.(*openaiClient)
-			if isOpenAI != tt.wantOpenAI {
-				t.Fatalf("child provider = %T, want openai = %v", b.childProvider, tt.wantOpenAI)
+			got := "none"
+			switch child := b.childProvider.(type) {
+			case *openaiClient:
+				got = "openai"
+				if !child.options.useBedrock {
+					t.Fatal("openai child is missing the bedrock middleware option")
+				}
+			case *anthropicClient:
+				got = "anthropic"
+			case nil:
+			default:
+				t.Fatalf("unexpected child provider %T", child)
 			}
-			if isOpenAI && !child.options.useBedrock {
-				t.Fatal("kimi openai child is missing the bedrock middleware option")
+			if got != tt.want {
+				t.Fatalf("child provider = %s, want %s", got, tt.want)
 			}
 		})
 	}
@@ -81,8 +102,8 @@ func TestBedrockKimiModels(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s not registered in SupportedModels", tt.id)
 			}
-			if !models.IsBedrockKimi(tt.id) {
-				t.Fatalf("IsBedrockKimi(%s) = false", tt.id)
+			if !m.BedrockOpenAIChat() {
+				t.Fatalf("%s is not an openai-chat Bedrock model", tt.id)
 			}
 			if _, ok := models.BedrockAnthropicModels[tt.id]; ok {
 				t.Fatalf("%s must not be an Anthropic Bedrock model", tt.id)
@@ -110,8 +131,8 @@ func TestBedrockKimiModels(t *testing.T) {
 			}
 		})
 	}
-	if models.IsBedrockKimi(models.BedrockOpus48) {
-		t.Fatal("IsBedrockKimi must be false for Claude on Bedrock")
+	if models.SupportedModels[models.BedrockOpus48].BedrockOpenAIChat() {
+		t.Fatal("Claude on Bedrock must not be an openai-chat model")
 	}
 	if !models.IsKimiK3(models.KimiK3) || models.IsKimiK3(models.KimiK27Code) || models.IsKimiK3(models.BedrockOpus48) {
 		t.Fatal("IsKimiK3 must cover exactly the K3 deployments")
@@ -482,6 +503,41 @@ func TestOpenAIReasoningEffortDefault(t *testing.T) {
 				model:         models.SupportedModels[models.O3],
 				maxTokens:     256,
 				openaiOptions: tt.opts,
+			})
+			if _, err := client.send(context.Background(), bedrockKimiPrompt, nil); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			if present, got := sent(); !present || got != tt.want {
+				t.Errorf("reasoning_effort present=%v value=%q, want %q", present, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestOpenAIReasoningEffortXHigh pins the xhigh wire value: sent as-is to a
+// model that supports it, folded to high (with a warning) for one that does
+// not. Before, xhigh fell into the default branch and went out as medium.
+func TestOpenAIReasoningEffortXHigh(t *testing.T) {
+	withXHigh := models.SupportedModels[models.BedrockKimiK3]
+	withXHigh.SupportsXHighThinking = true
+	tests := []struct {
+		name  string
+		model models.Model
+		want  string
+	}{
+		{"supported", withXHigh, "xhigh"},
+		{"unsupported folds to high", models.SupportedModels[models.BedrockKimiK3], "high"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			loadConfigIn(t, t.TempDir())
+			srv, sent := captureReasoningEffort(t)
+			client := newBedrockClient(providerClientOptions{
+				apiKey:        "test-key",
+				baseURL:       srv.URL + "/bedrock",
+				model:         tt.model,
+				maxTokens:     256,
+				openaiOptions: []OpenAIOption{WithReasoningEffort("XHigh")},
 			})
 			if _, err := client.send(context.Background(), bedrockKimiPrompt, nil); err != nil {
 				t.Fatalf("send: %v", err)

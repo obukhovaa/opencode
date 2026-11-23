@@ -30,6 +30,15 @@ const (
 	BedrockUSKimiK3   ModelID       = "bedrock.us-kimi-k3"
 )
 
+const (
+	BedrockKimiK31      ModelID = "bedrock.kimi-k3.1"
+	BedrockUSKimiK31    ModelID = "bedrock.us-kimi-k3.1"
+	BedrockGPT61Sol     ModelID = "bedrock.gpt-6.1-sol"
+	BedrockUSGPT61Sol   ModelID = "bedrock.us-gpt-6.1-sol"
+	BedrockGPT61Terra   ModelID = "bedrock.gpt-6.1-terra"
+	BedrockUSGPT61Terra ModelID = "bedrock.us-gpt-6.1-terra"
+)
+
 // bedrockRegionalPremium is the 10% surcharge Bedrock applies to regional
 // (geo-pinned, e.g. EU) endpoints over the global endpoint, for Claude 4.5
 // and later models. Global entries carry the base Anthropic rates, and so
@@ -492,8 +501,9 @@ var BedrockAnthropicModels = map[ModelID]Model{
 // BedrockKimiModels are Moonshot's Kimi models on Bedrock. Unlike the Claude
 // entries above they do not speak Anthropic Messages: InvokeModel takes an
 // OpenAI chat-completions body and returns chat.completion (streaming as
-// EventStream frames wrapping chat.completion.chunk), so the bedrock provider
-// serves them through the OpenAI client — see provider/bedrock.go. Reasoning
+// EventStream frames wrapping chat.completion.chunk), so they carry
+// WireOpenAIChat and the bedrock provider serves them through the OpenAI
+// client — see provider/bedrock.go. Reasoning
 // is requested through the OpenAI-style reasoning_effort field rather than
 // adaptive thinking, but with K3's levels: low|high|max, max being the
 // documented default on Moonshot and AWS alike (Bedrock also accepts medium;
@@ -505,12 +515,54 @@ var BedrockAnthropicModels = map[ModelID]Model{
 //
 // Bedrock caches the prompt prefix automatically and reports cache writes as
 // prompt_tokens_details.cache_write_tokens, billed at CostPer1MInCached.
+//
+// K3.1 (Bedrock's "Kimi K3.1 Pro - Highspeed", launched 2026-11-04) takes
+// none|low|medium|high|xhigh|max with max the default, so it carries both
+// top-level flags and DefaultReasoningEffort; it has the same global/US/India
+// profiles and no EU one. Its global rate equals Moonshot's Highspeed rate.
 var BedrockKimiModels = map[ModelID]Model{
+	BedrockKimiK31: {
+		ID:                      BedrockKimiK31,
+		Name:                    "Bedrock: Kimi K3.1",
+		Provider:                ProviderBedrock,
+		APIModel:                "global.moonshotai.kimi-k3.1",
+		Wire:                    WireOpenAIChat,
+		CostPer1MIn:             4.0,
+		CostPer1MInCached:       5.0,
+		CostPer1MOut:            20.0,
+		CostPer1MOutCached:      0.20,
+		ContextWindow:           1_048_576,
+		DefaultMaxTokens:        131_072,
+		CanReason:               true,
+		SupportsMaximumThinking: true,
+		SupportsXHighThinking:   true,
+		SupportsAttachments:     true,
+		DefaultReasoningEffort:  ReasoningEffortMax,
+	},
+	BedrockUSKimiK31: {
+		ID:                      BedrockUSKimiK31,
+		Name:                    "Bedrock US: Kimi K3.1",
+		Provider:                ProviderBedrock,
+		APIModel:                "us.moonshotai.kimi-k3.1",
+		Wire:                    WireOpenAIChat,
+		CostPer1MIn:             4.0 * bedrockRegionalPremium,
+		CostPer1MInCached:       5.0 * bedrockRegionalPremium,
+		CostPer1MOut:            20.0 * bedrockRegionalPremium,
+		CostPer1MOutCached:      0.20 * bedrockRegionalPremium,
+		ContextWindow:           1_048_576,
+		DefaultMaxTokens:        131_072,
+		CanReason:               true,
+		SupportsMaximumThinking: true,
+		SupportsXHighThinking:   true,
+		SupportsAttachments:     true,
+		DefaultReasoningEffort:  ReasoningEffortMax,
+	},
 	BedrockKimiK3: {
 		ID:                      BedrockKimiK3,
 		Name:                    "Bedrock: Kimi K3",
 		Provider:                ProviderBedrock,
 		APIModel:                "global.moonshotai.kimi-k3",
+		Wire:                    WireOpenAIChat,
 		CostPer1MIn:             3.0,
 		CostPer1MInCached:       3.75,
 		CostPer1MOut:            15.0,
@@ -526,6 +578,7 @@ var BedrockKimiModels = map[ModelID]Model{
 		Name:                    "Bedrock US: Kimi K3",
 		Provider:                ProviderBedrock,
 		APIModel:                "us.moonshotai.kimi-k3",
+		Wire:                    WireOpenAIChat,
 		CostPer1MIn:             3.0 * bedrockRegionalPremium,
 		CostPer1MInCached:       3.75 * bedrockRegionalPremium,
 		CostPer1MOut:            15.0 * bedrockRegionalPremium,
@@ -538,11 +591,61 @@ var BedrockKimiModels = map[ModelID]Model{
 	},
 }
 
-// IsBedrockKimi reports whether id is a Kimi model on Bedrock, i.e. one the
-// bedrock provider serves over the OpenAI chat-completions wire format.
-func IsBedrockKimi(id ModelID) bool {
-	_, ok := BedrockKimiModels[id]
-	return ok
+// gpt61LongContextThreshold is the prompt size above which GPT-6.1 bills the
+// request at gpt61LongContextInputMultiplier on input (cache reads and
+// writes included) and gpt61LongContextOutputMultiplier on output.
+const (
+	gpt61LongContextThreshold        = 272_000
+	gpt61LongContextInputMultiplier  = 2.0
+	gpt61LongContextOutputMultiplier = 1.5
+)
+
+// BedrockOpenAIModels are OpenAI's GPT-6.1 models on Bedrock. Like Kimi they
+// take OpenAI chat-completions bodies on InvokeModel (WireOpenAIChat) and
+// have global and US profiles but no EU one, so they must not see client
+// data. Rates are OpenAI's first-party prices (Bedrock global), the US
+// profile adds the regional premium, cache reads are 0.05x and writes 1.25x
+// input.
+//
+// PENDING TOOL-CALL VERIFICATION: OpenAI documents GPT-6.1 tool calling for
+// the Responses API, while these entries send Chat Completions through the
+// InvokeModel passthrough. Run scripts/probe_bedrock_tools.sh before giving
+// either model weight in a model pool. Attachments stay off until the probe
+// covers them. Sol's effort levels (low..max, default medium) are from
+// OpenAI's model page; Terra's are unconfirmed, so it stops at high and the
+// pool clamp folds xhigh/max down. The 1,050,000-token context is not on the
+// Bedrock cards; it is the window the 272,000-token long-context tier
+// implies — revisit after the probe.
+var BedrockOpenAIModels = map[ModelID]Model{
+	BedrockGPT61Sol:     gpt61Model(BedrockGPT61Sol, "Bedrock: GPT-6.1 Sol", "global.openai.gpt-6.1-sol", 2.0, true, 1),
+	BedrockUSGPT61Sol:   gpt61Model(BedrockUSGPT61Sol, "Bedrock US: GPT-6.1 Sol", "us.openai.gpt-6.1-sol", 2.0, true, bedrockRegionalPremium),
+	BedrockGPT61Terra:   gpt61Model(BedrockGPT61Terra, "Bedrock: GPT-6.1 Terra", "global.openai.gpt-6.1-terra", 1.0, false, 1),
+	BedrockUSGPT61Terra: gpt61Model(BedrockUSGPT61Terra, "Bedrock US: GPT-6.1 Terra", "us.openai.gpt-6.1-terra", 1.0, false, bedrockRegionalPremium),
+}
+
+// gpt61Model builds a GPT-6.1 entry from its input rate (output is 5x,
+// cache writes 1.25x, cache reads 0.05x) and the regional premium.
+func gpt61Model(id ModelID, name, apiModel string, input float64, topEfforts bool, premium float64) Model {
+	return Model{
+		ID:                              id,
+		Name:                            name,
+		Provider:                        ProviderBedrock,
+		APIModel:                        apiModel,
+		Wire:                            WireOpenAIChat,
+		CostPer1MIn:                     input * premium,
+		CostPer1MInCached:               input * 1.25 * premium,
+		CostPer1MOut:                    input * 5 * premium,
+		CostPer1MOutCached:              input * 0.05 * premium,
+		ContextWindow:                   1_050_000,
+		DefaultMaxTokens:                128_000,
+		CanReason:                       true,
+		SupportsXHighThinking:           topEfforts,
+		SupportsMaximumThinking:         topEfforts,
+		LongContextThreshold:            gpt61LongContextThreshold,
+		LongContextCostMultiplier:       gpt61LongContextInputMultiplier,
+		LongContextOutputCostMultiplier: gpt61LongContextOutputMultiplier,
+		DefaultReasoningEffort:          ReasoningEffortMedium,
+	}
 }
 
 // IsKimiK3 reports whether id is a Kimi K3-family deployment on any provider. K3
@@ -551,5 +654,9 @@ func IsBedrockKimi(id ModelID) bool {
 // instead of leaving it to a client default (high for the anthropic client,
 // medium for the openai one) that K3 does not document.
 func IsKimiK3(id ModelID) bool {
-	return id == KimiK3 || id == KimiK31Pro || id == KimiK31ProHighspeed || id == BedrockKimiK3 || id == BedrockUSKimiK3
+	switch id {
+	case KimiK3, KimiK31Pro, KimiK31ProHighspeed, BedrockKimiK3, BedrockUSKimiK3, BedrockKimiK31, BedrockUSKimiK31:
+		return true
+	}
+	return false
 }
