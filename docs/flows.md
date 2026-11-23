@@ -589,6 +589,8 @@ These are honored by `opencode serve` only:
 
 `--flow-exit-grace` exists for the k8s pattern where an external controller polls `GET /flow/status` after seeing the pod transition to `Succeeded` — without the grace the server may shut down before the reconciliation read lands. A SIGTERM during the grace short-circuits the wait.
 
+**SIGTERM / SIGINT while a run is in flight** (running or `waiting_for_input`): `opencode serve` cancels the run with `flow.ErrProcessShutdown`, waits up to 5 s for it to unwind, then shuts down and exits with status **143**. The interrupted step is not failed: its `flow_states` row stays `running`, and no `flow.step.failed` / `flow.failed` event is published, so a later run with `--flow-recover-running` resumes it. A signal with no run in flight (idle, completed, failed, postponed) still exits 0. `DELETE /flow` is unchanged: it fails the step and publishes `flow.failed`.
+
 > **Behaviour change.** Prior to the grace flag, `--flow-exit` exited immediately. Existing deployments that relied on immediate exit must now pass `--flow-exit-grace=0s`.
 
 #### HTTP endpoints
