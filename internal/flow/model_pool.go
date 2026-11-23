@@ -284,6 +284,23 @@ func recordPoolPick(args map[string]any, stepID string, pick *poolPick) {
 	args[ReservedPoolArg] = next
 }
 
+// restorePoolPick carries a completed step's persisted runtime pick through
+// resume without replacing newer picks or mutating another branch's map.
+func restorePoolPick(args, persisted map[string]any, stepID string) {
+	saved, _ := persisted[ReservedPoolArg].(map[string]any)
+	pick, ok := saved[stepID]
+	if !ok {
+		return
+	}
+	current, _ := args[ReservedPoolArg].(map[string]any)
+	next := make(map[string]any, len(current)+1)
+	for k, v := range current {
+		next[k] = v
+	}
+	next[stepID] = pick
+	args[ReservedPoolArg] = next
+}
+
 // mergeOutputArgs merges a step's structured output into args, except the
 // reserved pool key: a model must not be able to forge a pool pick.
 func mergeOutputArgs(args, output map[string]any) {

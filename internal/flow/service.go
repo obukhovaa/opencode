@@ -472,7 +472,7 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 			defer close(agentEvents)
 			defer close(flowStates)
 			for _, es := range existingStates {
-				state := dbFlowStateToFlowState(es)
+				state := dbFlowStateToFlowState(es, f.Spec.Steps)
 				flowStates <- state
 				s.Publish(pubsub.UpdatedEvent, *state)
 			}
@@ -508,7 +508,7 @@ func (s *service) RunWithOptions(ctx context.Context, sessionPrefix string, flow
 	} else if !fresh && hasResumableWork(existingStates, f, f.Spec.Session.ResumeOnFailure) {
 		stateMap := make(map[string]*FlowState, len(existingStates))
 		for _, es := range existingStates {
-			state := dbFlowStateToFlowState(es)
+			state := dbFlowStateToFlowState(es, f.Spec.Steps)
 			stateMap[state.StepID] = state
 		}
 		visited := make(map[string]bool)
@@ -2242,6 +2242,7 @@ func (s *service) collectResumableSteps(
 	flowStates <- existing
 	s.Publish(pubsub.UpdatedEvent, *existing)
 
+	restorePoolPick(args, existing.Args, step.ID)
 	if existing.IsStructOutput && existing.Output != "" {
 		var structData map[string]any
 		if err := json.Unmarshal([]byte(existing.Output), &structData); err == nil {
@@ -2879,7 +2880,7 @@ func withFlowArgs(ctx context.Context, args map[string]any) context.Context {
 	return context.WithValue(ctx, tools.FlowArgsContextKey, extracted)
 }
 
-func dbFlowStateToFlowState(fs db.FlowState) *FlowState {
+func dbFlowStateToFlowState(fs db.FlowState, steps []Step) *FlowState {
 	var args map[string]any
 	if fs.Args.Valid {
 		json.Unmarshal([]byte(fs.Args.String), &args)
@@ -2893,7 +2894,7 @@ func dbFlowStateToFlowState(fs db.FlowState) *FlowState {
 		// Backfill defensively: pre-migration rows or zero-value reads.
 		iteration = 1
 	}
-	return &FlowState{
+	state := &FlowState{
 		SessionID:      fs.SessionID,
 		RootSessionID:  fs.RootSessionID,
 		FlowID:         fs.FlowID,
@@ -2906,6 +2907,10 @@ func dbFlowStateToFlowState(fs db.FlowState) *FlowState {
 		CreatedAt:      fs.CreatedAt,
 		UpdatedAt:      fs.UpdatedAt,
 	}
+	if step := findStep(steps, fs.StepID); step != nil {
+		state.BestEffort = step.BestEffort
+	}
+	return state
 }
 
 // envNonInteractiveTaskWaitTimeout is the parsed-once value of the
