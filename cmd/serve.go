@@ -382,12 +382,20 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 			}
 		}
 
-		// Handle OS signals for graceful shutdown
+		// Handle OS signals for graceful shutdown. A run still in flight is
+		// interrupted first, with flow.ErrProcessShutdown: its step stays
+		// `running` and the process exits 143, which is what the
+		// orchestrator's killed-step recovery keys on (GENAI-709).
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		var interrupted atomic.Bool
 		go func() {
 			sig := <-sigCh
 			logging.Info("Received signal, shutting down", "signal", sig.String())
+			if server.InterruptFlow(flow.ErrProcessShutdown, flowInterruptWait) {
+				interrupted.Store(true)
+				logging.Info("Flow run interrupted by signal; exiting with status 143 so the step can be recovered")
+			}
 			cancel()
 		}()
 
@@ -400,8 +408,27 @@ Authentication can be enabled by setting the OPENCODE_SERVER_PASSWORD environmen
 		if p := autoFlowStartErr.Load(); p != nil && *p != nil {
 			return *p
 		}
+		if interrupted.Load() {
+			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
+			return errFlowInterrupted
+		}
 		return nil
 	},
+}
+
+// flowInterruptWait bounds how long the signal handler waits for an
+// interrupted run to unwind before shutting the server down. Kept well under
+// the Kubernetes default 30s termination grace.
+const flowInterruptWait = 5 * time.Second
+
+// errFlowInterrupted is RunE's result when a signal arrived while a flow run
+// was in flight. RunE returns it only after its deferred
+// application.Shutdown() has run; Execute turns it into exit status 143
+// (128 + SIGTERM), the kill verdict recovery recognises.
+var errFlowInterrupted = &exitCodeError{
+	code: 143,
+	err:  fmt.Errorf("flow run interrupted by shutdown signal: %w", flow.ErrProcessShutdown),
 }
 
 // enableAutoApprove marks all current and future sessions as auto-approved.

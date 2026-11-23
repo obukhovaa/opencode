@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -527,10 +528,32 @@ func setupSubscriptions(app *appPkg.App, parentCtx context.Context) (chan tea.Ms
 }
 
 func Execute() {
-	err := rootCmd.Execute()
-	if err != nil {
-		os.Exit(1)
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(exitStatus(err))
 	}
+}
+
+// exitCodeError carries a specific process exit status out of a command's
+// RunE, which cobra only lets return an error. Execute exits with code
+// instead of the generic 1.
+type exitCodeError struct {
+	code int
+	err  error
+}
+
+func (e *exitCodeError) Error() string { return e.err.Error() }
+func (e *exitCodeError) Unwrap() error { return e.err }
+
+// exitStatus maps a command result to the process exit status.
+func exitStatus(err error) int {
+	if err == nil {
+		return 0
+	}
+	var ec *exitCodeError
+	if errors.As(err, &ec) {
+		return ec.code
+	}
+	return 1
 }
 
 func init() {
