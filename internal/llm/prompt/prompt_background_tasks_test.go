@@ -113,6 +113,14 @@ func TestGetAgentPrompt_BackgroundGuidanceFollowsAvailableTools(t *testing.T) {
 			present: []string{"`async: true`", "non-conflicting writes", "Do not duplicate work", "call `yield` alone"},
 			absent:  []string{"`monitor`", "`bash`"},
 		},
+		{
+			// The registry grant does not mean this flow step has a person
+			// who can answer. Keep shared background guidance mode-neutral.
+			name:    "unattended with question granted",
+			tools:   []string{"task", "yield", "question"},
+			present: []string{"call `yield` alone", "pending background work"},
+			absent:  []string{"`question`", "reviewer feedback"},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			loadAgents(t, map[config.AgentName]config.Agent{

@@ -92,7 +92,9 @@ context and yield only while registered exact-session background work remains.
 When the registry shows no active exact-session tasks, a valid yield SHALL explain
 that there is nothing to wait for and direct the agent to process results rather
 than yield or poll inventory again. A remote job SHALL require a registered
-background waiter; reviewer feedback SHALL use an available question tool.
+background waiter. Shared background-wait guidance SHALL NOT direct agents to
+request reviewer feedback; interactive sessions and flow steps retain their own
+interaction instructions.
 
 #### Scenario: Completed task before yield
 

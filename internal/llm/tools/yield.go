@@ -22,7 +22,7 @@ In flow/headless runs, the runtime waits inside this run. In interactive chat/TU
 
 Yielding keeps the task open: it does not claim success, emit structured output, cancel tasks, or require the user to continue. After a report, act on it; yield again only while work is still pending. Read completion reports already in context before choosing to yield; completed work needs action, not another wait or tasklist check. Continue useful independent work before yielding. Use taskstop only when a watch is no longer needed, never merely because it is silent.
 
-Yield waits only for this session's registered background bash, async task, or monitor. A remote CI job needs a background waiter that exits on success or failure; starting a remote job alone gives yield nothing to wait for. Use question to request an answer from a reviewer.`,
+Yield waits only for this session's registered background bash, async task, or monitor. A remote CI job needs a background waiter that exits on success or failure; starting a remote job alone gives yield nothing to wait for.`,
 		Parameters: map[string]any{},
 	}
 }
@@ -37,7 +37,7 @@ func (t *yieldTool) Run(ctx context.Context, call ToolCall) (ToolResponse, error
 	if reg := task.GlobalRegistry(); reg != nil {
 		sessionID, _ := GetContextValues(ctx)
 		if sessionID != "" && len(reg.PendingForSession(sessionID, nil)) == 0 {
-			return NewTextResponse("No active background tasks remain for this session. Process completion reports delivered with this result and continue the task. Do not yield again or call tasklist merely to confirm completed work. Use question if you need a reviewer answer."), nil
+			return NewTextResponse("No active background tasks remain for this session. Process completion reports delivered with this result and continue the task. Do not yield again or call tasklist merely to confirm completed work."), nil
 		}
 	}
 	// The agent loop handles the wait after persisting this result, outside

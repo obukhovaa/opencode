@@ -45,7 +45,9 @@ no active background tasks, `yield` says so and generation continues immediately
 process the results instead of yielding again or checking `tasklist` merely to
 confirm completion. Yield observes registered work in the current session. To
 wait for a remote CI job, start a finite background waiter that exits on either
-success or failure. Use `question` when a reviewer answer is needed.
+success or failure. Reviewer interaction follows the active session or interactive
+flow step's own instructions; the background-wait guidance does not initiate it.
+The presence of a question tool alone does not establish a reviewer binding.
 
 With Langfuse tracing enabled, flow/headless waits emit a `background_wait` span
 separately from the short `yield` tool span. Its numeric `suspended_ms` metadata
