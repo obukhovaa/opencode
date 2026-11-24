@@ -90,7 +90,8 @@ func TestInListingScope(t *testing.T) {
 		{at("composer/skills/group/nested/SKILL.md"), true},
 		{at("bdata/skills/dcs-events/SKILL.md"), false},
 		{"composer/skills/relative/SKILL.md", true},
-		{filepath.Join(filepath.Dir(wd), "elsewhere", "SKILL.md"), false},
+		{filepath.Join(filepath.Dir(wd), "elsewhere", "SKILL.md"), true},
+		{filepath.Join(string(filepath.Separator), "home", "agent", ".agents", "skills", "agent-browser", "SKILL.md"), true},
 		{"", true},
 	}
 	for _, c := range cases {

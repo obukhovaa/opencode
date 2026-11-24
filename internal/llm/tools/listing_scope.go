@@ -145,7 +145,9 @@ func escapeGlob(s string) string {
 }
 
 // InListingScope reports whether an item at location is listed in full under
-// patterns. An item with no file location is always listed in full.
+// patterns. An item with no file location, or one outside the working
+// directory, is installation-level rather than per-team and is always listed
+// in full: patterns are workspace-relative and could never reach it.
 func InListingScope(patterns []string, location string) bool {
 	return inListingScope(config.WorkingDirectory(), patterns, location)
 }
@@ -156,7 +158,7 @@ func inListingScope(workingDir string, patterns []string, location string) bool 
 	}
 	rel, ok := workspaceRelativePath(workingDir, location)
 	if !ok {
-		return false
+		return true
 	}
 	for _, p := range patterns {
 		p = strings.TrimPrefix(filepath.ToSlash(p), "./")
