@@ -89,7 +89,7 @@ func TestSkillTool_ShellMarkup(t *testing.T) {
 		skill.Invalidate()
 	})
 
-	tool := NewSkillTool(nil, &stubRegistry{}, "coder")
+	tool := NewSkillTool(nil, &stubRegistry{}, "coder", nil)
 
 	t.Run("substituted arguments stay literal", func(t *testing.T) {
 		args := "!`printf MARKER-RAN > " + sentinel("s1b") + "` y!"

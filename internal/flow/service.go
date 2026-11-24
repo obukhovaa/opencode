@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/bridge"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/contextfile"
@@ -827,6 +828,11 @@ func (s *service) runStep(
 	// set without the denied tools, subagents inherit the list through the
 	// tool-call ctx, and the agent loop refuses a denied call at dispatch.
 	ctx = tools.WithDeniedTools(ctx, step.DenyTools)
+	// The listing scope follows the same path, resolved from the args as they
+	// stand now so a team set by an earlier step applies from here on. It is
+	// set even when unscoped, so a flow started from a scoped agent's tool
+	// does not inherit that agent's scope.
+	ctx = tools.WithListingScope(ctx, resolveStepListingScope(args))
 	agentSvc, err := s.agents.NewAgent(ctx, agentID, outputSchema, step.ID, step.Interactive, boundPeers,
 		step.Context, contextfile.TemplateVars{FlowID: f.ID, FlowStep: step.ID}, modelOverride)
 	if err != nil {
@@ -3091,4 +3097,16 @@ func ValidateDefinitionArgs(f *Flow, args map[string]any) error {
 func conversationOwnsInteraction(ctx context.Context) bool {
 	opts, _ := ctx.Value(sessionRunOptionsKey{}).(RunOptions)
 	return opts.ConversationInteraction
+}
+
+// resolveStepListingScope resolves the workspace's listingScope against the
+// run's live args for one step agent.
+func resolveStepListingScope(args map[string]any) agentregistry.ListingScope {
+	cfg := config.Get()
+	if cfg == nil || cfg.ListingScope == nil {
+		return agentregistry.ListingScope{}
+	}
+	return tools.ResolveListingScope(cfg.ListingScope, func(path string) (any, bool) {
+		return resolveArgsPath(args, path)
+	})
 }

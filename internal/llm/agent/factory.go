@@ -57,6 +57,9 @@ type stepCacheKey struct {
 	// same step id with another list must not reuse a narrower or wider
 	// tool set.
 	denied string
+	// listing is the resolved listing scope (tools.ListingScopeKey): a step
+	// re-entered after its scope changed must not reuse the old listings.
+	listing string
 }
 
 // AgentFactory creates agent instances with optional output schema overrides.
@@ -285,7 +288,8 @@ func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchem
 	_ = ctx
 	pinned := primaryFlowPrefixFrom(ctx, agentID)
 	denied := tools.DeniedTools(ctx)
-	cacheKey := stepCacheKey{prefix: pinned, scope: tools.FlowAgentScope(ctx), stepID: stepID, agentID: agentID, model: override.Model, effort: override.ReasoningEffort, denied: strings.Join(denied, "\x00")}
+	listing := tools.ListingScopeFrom(ctx)
+	cacheKey := stepCacheKey{prefix: pinned, scope: tools.FlowAgentScope(ctx), stepID: stepID, agentID: agentID, model: override.Model, effort: override.ReasoningEffort, denied: strings.Join(denied, "\x00"), listing: tools.ListingScopeKey(listing)}
 	if stepID != "" {
 		f.mu.Lock()
 		if svc, ok := f.stepCache[cacheKey]; ok {
@@ -339,6 +343,7 @@ func (f *agentFactory) NewAgent(ctx context.Context, agentID string, outputSchem
 	infoCopy.StepContext = stepCtx
 	flowVars.Agent = agentID
 	infoCopy.ContextVars = flowVars
+	infoCopy.ListingScope = listing
 
 	reg := f.registry
 	if len(denied) > 0 {

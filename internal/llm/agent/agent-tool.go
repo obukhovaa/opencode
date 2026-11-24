@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
@@ -21,6 +23,11 @@ type agentTool struct {
 	permissions permission.Service
 	registry    agentregistry.Registry
 	factory     AgentFactory
+	// listingScope is the run's resolved subagent scope: subagent types
+	// outside it are listed by name only. Nil means unscoped.
+	listingScope []string
+	logScopeOnce sync.Once
+	agentID      string
 }
 
 const (
@@ -56,8 +63,13 @@ type AgentParams = TaskParams
 
 func (b *agentTool) Info() tools.ToolInfo {
 	var agentDescs []string
+	var namesOnly []string
 
 	for _, a := range b.registry.ListByMode(config.AgentModeSubagent) {
+		if b.listingScope != nil && !tools.InListingScope(b.listingScope, a.Location) {
+			namesOnly = append(namesOnly, a.ID)
+			continue
+		}
 		desc := a.Description
 		if desc == "" {
 			desc = "No description available"
@@ -66,6 +78,16 @@ func (b *agentTool) Info() tools.ToolInfo {
 	}
 
 	availableAgents := strings.Join(agentDescs, "\n")
+	if len(namesOnly) > 0 {
+		sort.Strings(namesOnly)
+		availableAgents += "\n\nOther subagent types (listed by name only, outside this run's focus; any of them can still be used as subagent_type when the task needs it): " +
+			strings.Join(namesOnly, ", ")
+	}
+	if b.listingScope != nil {
+		b.logScopeOnce.Do(func() {
+			logging.Info("Scoped subagent listing", "agent", b.agentID, "listing", "subagents", "full", len(agentDescs), "names_only", len(namesOnly))
+		})
+	}
 	description := "Launch a new agent to handle complex, multistep tasks autonomously.\n\n" +
 		"Available subagent types:\n" + availableAgents + "\n\n" +
 		"When to use the Task tool:\n" +
@@ -294,11 +316,15 @@ func NewAgentTool(
 	permissions permission.Service,
 	reg agentregistry.Registry,
 	factory AgentFactory,
+	agentID string,
+	listingScope []string,
 ) tools.BaseTool {
 	return &agentTool{
-		sessions:    sessions,
-		permissions: permissions,
-		registry:    reg,
-		factory:     factory,
+		sessions:     sessions,
+		permissions:  permissions,
+		registry:     reg,
+		factory:      factory,
+		listingScope: listingScope,
+		agentID:      agentID,
 	}
 }

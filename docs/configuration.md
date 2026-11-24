@@ -99,6 +99,7 @@ Any string value can reference the environment with `${VAR}` or `${VAR:-default}
 | `cliTools` | [Workspace CLI tools](cli-tools.md) |
 | `lsp`, `disableLSPDownload` | [LSP](lsp.md) |
 | `skills` | [Skills](skills.md) |
+| `listingScope` | [Per-run listing scope](skills.md#2-scope-the-listing-per-flow-run) |
 | `contextPaths`, `contextDiscovery` | [Context files](context.md) |
 | `flowPaths` | [Flows](flows.md) |
 | `hooks` | [Hooks](hooks.md) |

@@ -2032,6 +2032,27 @@
       },
       "type": "object"
     },
+    "listingScope": {
+      "additionalProperties": false,
+      "description": "Scope the skill tool's skill listing and the task tool's subagent listing to what a flow run is about. Applies only to flow-step agents and the subagents they spawn; other sessions keep full listings. See docs/skills.md.",
+      "properties": {
+        "skills": {
+          "description": "Path globs, relative to the working directory, of the skills (matched against each SKILL.md location) listed in full during a flow run; every other permitted one is listed by name only and stays usable by name. `*` matches within a path segment, `**` across segments. Patterns may use ${args.\u003cpath\u003e} tokens resolved from the run's args; a list with an unresolved token does not apply.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "subagents": {
+          "description": "Path globs, relative to the working directory, of the subagent types (matched against each agent definition file; agents defined in .opencode.json are always listed in full) listed in full during a flow run; every other permitted one is listed by name only and stays usable by name. `*` matches within a path segment, `**` across segments. Patterns may use ${args.\u003cpath\u003e} tokens resolved from the run's args; a list with an unresolved token does not apply.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "lsp": {
       "additionalProperties": {
         "description": "LSP configuration for a language server",
