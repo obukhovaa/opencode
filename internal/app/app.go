@@ -318,7 +318,7 @@ func New(ctx context.Context, conn *sql.DB, cliSchema map[string]any, projectID 
 
 	// Create and start the cron scheduler after primary agents are ready
 	if cronSvc != nil {
-		taskTool := agent.NewAgentTool(sessions, perm, reg, factory)
+		taskTool := agent.NewAgentTool(sessions, perm, reg, factory, "", nil)
 		taskRunner := cron.NewTaskToolRunner(taskTool)
 		busyChecker := cron.NewAppBusyChecker(
 			func(sessionID string) bool {

@@ -119,6 +119,18 @@ type AgentInfo struct {
 	// template token values for context path expansion. Populated
 	// in-memory by AgentFactory.NewAgent. NOT persisted via YAML.
 	ContextVars contextfile.TemplateVars `yaml:"-"`
+	// ListingScope is the flow run's resolved listing scope for this
+	// construction. Populated in-memory by AgentFactory.NewAgent. NOT
+	// persisted via YAML.
+	ListingScope ListingScope `yaml:"-"`
+}
+
+// ListingScope holds the resolved path patterns that decide which skills and
+// subagent types an agent's listings show in full. A nil list means that
+// listing is not scoped; an item outside a non-nil list is listed by name.
+type ListingScope struct {
+	Skills    []string
+	Subagents []string
 }
 
 type Registry interface {

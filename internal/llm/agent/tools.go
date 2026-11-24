@@ -155,7 +155,7 @@ func NewToolSet(
 		case tools.WebFetchToolName:
 			return tools.NewFetchTool(config.Get(), reg, permissions)
 		case tools.SkillToolName:
-			return tools.NewSkillTool(permissions, reg, agentID)
+			return tools.NewSkillTool(permissions, reg, agentID, info.ListingScope.Skills)
 		case tools.SourcegraphToolName:
 			return tools.NewSourcegraphTool()
 		case tools.WebSearchToolName:
@@ -173,7 +173,7 @@ func NewToolSet(
 		case tools.BashToolName:
 			return tools.NewBashTool(permissions, reg)
 		case TaskToolName:
-			return NewAgentTool(sessions, permissions, reg, factory)
+			return NewAgentTool(sessions, permissions, reg, factory, agentID, info.ListingScope.Subagents)
 		case tools.CronCreateToolName:
 			if svc, helper := factory.CronServices(); svc != nil {
 				return tools.NewCronCreateTool(svc, helper)

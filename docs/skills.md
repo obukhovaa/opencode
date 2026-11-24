@@ -170,7 +170,7 @@ A configured path that is not an existing directory is skipped — and reported,
 
 There is no limit on how many skills OpenCode discovers. Skill *bodies* load on demand, but every discovered skill's `name` and `description` are preloaded into the `skill` tool's `<available_skills>` listing, which is part of the tool schema on **every** request. At ~120 skills with unabridged descriptions that block runs to roughly 80 KB (~22k tokens). It sits in the prompt-cache prefix, so the marginal cost is a cache read — but it still occupies the context window, dilutes skill selection across many similar descriptions, and any skill edit invalidates the whole prefix.
 
-Three controls keep it in hand, in the order you should reach for them:
+Four controls keep it in hand, in the order you should reach for them:
 
 ### 1. Scope the listing per agent (preferred)
 
@@ -190,7 +190,30 @@ An agent's own `permission.skill` rules filter its listing, not just its loads. 
 
 Nothing is hidden that the agent could have used, and the listing shrinks to what the agent is actually allowed to load. `tools: {"skill": false}` removes the listing entirely.
 
-### 2. Cap each description
+### 2. Scope the listing per flow run
+
+Per-agent rules cannot trim an agent type that serves many contexts: a shared developer agent loads every team's skills. A flow run, though, knows what it is about. `listingScope` names the skills that matter for a run and lists the rest **by name only**:
+
+```json
+{
+  "listingScope": {
+    "skills": [".agents/skills/**", "${args.team}/skills/**"],
+    "subagents": [".agents/types/**", "${args.team}/types/**"]
+  }
+}
+```
+
+- **Patterns** are path globs matched against each item's file location relative to the working directory (`SKILL.md` for skills, the definition file for subagent types). `*` matches within a path segment and `**` across segments. `${args.<path>}` tokens are resolved from the flow run's args when each step's agent is built, so a team set by an earlier step applies from then on. A resolved value matches literally, never as glob syntax.
+- **Two tiers.** Matching skills are listed in full, exactly as without the scope. Every other permitted skill is named in an `<other_skills count="N">` element after them, with a note that any of them can still be loaded by name. The `task` tool lists subagent types the same way. A subagent type defined in `.opencode.json` has no file and is always listed in full.
+- **Nothing becomes unreachable.** `skill` loads, and `task` runs, any permitted name, whichever tier lists it. `permission.skill` rules apply first, so a denied skill appears in neither tier.
+- **Fails open.** A list with a token that does not resolve (no `team` yet, an empty or non-scalar value, or a token other than `${args.…}`) does not apply, and that listing stays unscoped. The two lists resolve independently.
+- **Flow runs only.** Step agents and the subagents they spawn (sync, `async`, nested) are scoped. Chat, daemon, cron and bridge sessions, and steps that reuse a pinned primary prefix, keep full listings.
+- **Budget.** `maxListingChars` applies to the full entries after reserving room for the names-only element, which is never cut.
+- **Observability.** Each scoped tool logs one INFO line (`Scoped skill listing` / `Scoped subagent listing`) with the agent and the full and names-only counts. A full count of 0 usually means a pattern matches nothing.
+
+`listingScope` adds no discovery location and removes no skill: `skills.paths` and `agentPaths` still decide what exists, and the scope only decides how it is shown.
+
+### 3. Cap each description
 
 ```json
 {
@@ -202,7 +225,7 @@ Nothing is hidden that the agent could have used, and the listing shrinks to wha
 
 Defaults to 500. Descriptions over the cap are truncated with an ellipsis and the listing tells the model that descriptions may be partial, so nothing disappears — but **truncation keeps the head**, so front-load the terms that should trigger the skill. `0` disables truncation.
 
-### 3. Cap the whole listing
+### 4. Cap the whole listing
 
 ```json
 {

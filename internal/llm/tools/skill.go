@@ -8,11 +8,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	agentregistry "github.com/opencode-ai/opencode/internal/agent"
 	"github.com/opencode-ai/opencode/internal/config"
 	"github.com/opencode-ai/opencode/internal/llm/tools/shell"
+	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/permission"
 	"github.com/opencode-ai/opencode/internal/skill"
 	"github.com/opencode-ai/opencode/internal/toolenv"
@@ -38,14 +40,20 @@ type skillTool struct {
 	// a whole family of skills still paid for their descriptions on every
 	// request.
 	agentID string
+	// listingScope is the flow run's resolved skill scope: permitted skills
+	// outside it are listed by name only. Nil means unscoped.
+	listingScope []string
+	logScopeOnce sync.Once
 }
 
-// NewSkillTool creates a new skill tool instance scoped to agentID.
-func NewSkillTool(permissions permission.Service, reg agentregistry.Registry, agentID string) BaseTool {
+// NewSkillTool creates a new skill tool instance scoped to agentID, with the
+// run's listing scope (nil when the listing is not scoped).
+func NewSkillTool(permissions permission.Service, reg agentregistry.Registry, agentID string, listingScope []string) BaseTool {
 	return &skillTool{
-		permissions: permissions,
-		registry:    reg,
-		agentID:     agentID,
+		permissions:  permissions,
+		registry:     reg,
+		agentID:      agentID,
+		listingScope: listingScope,
 	}
 }
 
@@ -370,6 +378,27 @@ func partialWrapperChars(total int) int {
 		utf8.RuneCountInString(skillsCloseTag)
 }
 
+// Out-of-scope skills are named, not described, after the full entries. The
+// element is never cut: it is what keeps those skills reachable.
+const (
+	skillsOtherOpen  = "  <other_skills count=\"%d\">"
+	skillsOtherClose = "</other_skills>\n"
+	skillsOtherNote  = "  <note>The %d skills in other_skills are outside this run's focus and are " +
+		"listed by name only. Any of them can still be loaded by name when the task needs it.</note>\n"
+)
+
+func renderOtherSkills(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, skillsOtherOpen, len(names))
+	sb.WriteString(strings.Join(names, ", "))
+	sb.WriteString(skillsOtherClose)
+	fmt.Fprintf(&sb, skillsOtherNote, len(names))
+	return sb.String()
+}
+
 // renderAvailableSkills renders the <available_skills> block, dropping whole
 // entries from the end once the block would exceed lim.maxTotalChars.
 //
@@ -379,6 +408,15 @@ func partialWrapperChars(total int) int {
 // Dropping is disclosed in-band: omitted skills remain loadable by name, so
 // the model needs to know the list it can see is partial.
 func renderAvailableSkills(skills []skill.Info, lim skillListingLimits) string {
+	return renderSkillListing(skills, lim, nil)
+}
+
+// renderSkillListing is renderAvailableSkills with the names-only tier of a
+// scoped listing. The tier's length is reserved from the budget before full
+// entries are fitted, so the cap stays a real cap for the entries around it.
+func renderSkillListing(skills []skill.Info, lim skillListingLimits, otherNames []string) string {
+	other := renderOtherSkills(otherNames)
+	reserved := utf8.RuneCountInString(other)
 	entries := make([]string, 0, len(skills))
 	entriesChars := 0
 	for _, sk := range skills {
@@ -392,9 +430,9 @@ func renderAvailableSkills(skills []skill.Info, lim skillListingLimits) string {
 	// that only the reservation caused — a budget that comfortably holds the
 	// whole inventory must never come back truncated.
 	shown := len(entries)
-	completeChars := utf8.RuneCountInString(skillsOpenTag) + entriesChars + utf8.RuneCountInString(skillsCloseTag)
+	completeChars := utf8.RuneCountInString(skillsOpenTag) + entriesChars + reserved + utf8.RuneCountInString(skillsCloseTag)
 	if lim.maxTotalChars > 0 && completeChars > lim.maxTotalChars {
-		used := partialWrapperChars(len(skills))
+		used := partialWrapperChars(len(skills)) + reserved
 		shown = 0
 		for _, entry := range entries {
 			n := utf8.RuneCountInString(entry)
@@ -424,6 +462,7 @@ func renderAvailableSkills(skills []skill.Info, lim skillListingLimits) string {
 	if shown < len(skills) {
 		fmt.Fprintf(&sb, skillsOmittedNote, len(skills)-shown, len(skills))
 	}
+	sb.WriteString(other)
 	sb.WriteString(skillsCloseTag)
 	return sb.String()
 }
@@ -451,9 +490,31 @@ func (s *skillTool) buildSkillDescription() string {
 		sb.WriteString("- A description may be truncated with an ellipsis; load the skill to see the whole thing\n")
 	}
 	sb.WriteString("\n")
-	sb.WriteString(renderAvailableSkills(accessibleSkills, lim))
+	full, other := s.splitByListingScope(accessibleSkills)
+	sb.WriteString(renderSkillListing(full, lim, other))
 
 	return sb.String()
+}
+
+// splitByListingScope splits permitted skills into those listed in full and
+// the names of those listed by name only. Unscoped, every skill is full.
+func (s *skillTool) splitByListingScope(skills []skill.Info) ([]skill.Info, []string) {
+	if s.listingScope == nil {
+		return skills, nil
+	}
+	full := make([]skill.Info, 0, len(skills))
+	var other []string
+	for _, sk := range skills {
+		if InListingScope(s.listingScope, sk.Location) {
+			full = append(full, sk)
+		} else {
+			other = append(other, sk.Name)
+		}
+	}
+	s.logScopeOnce.Do(func() {
+		logging.Info("Scoped skill listing", "agent", s.agentID, "listing", "skills", "full", len(full), "names_only", len(other))
+	})
+	return full, other
 }
 
 func (s *skillTool) buildSkillParameterDescription() string {
@@ -464,6 +525,9 @@ func (s *skillTool) buildSkillParameterDescription() string {
 		return "The name of the skill from available_skills"
 	}
 
+	if full, _ := s.splitByListingScope(accessibleSkills); len(full) > 0 {
+		accessibleSkills = full
+	}
 	examples := make([]string, 0, 3)
 	for i := 0; i < len(accessibleSkills) && i < 3; i++ {
 		examples = append(examples, fmt.Sprintf("'%s'", accessibleSkills[i].Name))

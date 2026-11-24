@@ -100,9 +100,7 @@ func (b *agentTool) runAsync(
 	// And the job args, so its MCP calls stamp the same flowArgHeaders.
 	jobArgs, _ := tools.JobArgsFromContext(ctx)
 	runCtx = tools.WithJobArgs(runCtx, jobArgs)
-	// And the step's denyTools, so the dispatch guard holds for the subagent
-	// and anything it spawns (its own tool set was built from ctx already).
-	runCtx = tools.WithDeniedTools(runCtx, tools.DeniedTools(ctx))
+	runCtx = inheritStepToolShaping(runCtx, ctx)
 	// Inherit the caller's NonInteractive marker from the PARENT turn ctx
 	// (runCtx is detached and carries no values) — see subagentRunOptions.
 	done, err := a.RunWith(runCtx, taskSession.ID, prompt, tools.FlowTaskTurns(ctx), subagentRunOptions(ctx))
@@ -221,4 +219,13 @@ func (b *agentTool) waitAsyncAndNotify(
 	}); err != nil {
 		logging.Warn("async task: enqueue completion failed", "task_id", taskID, "err", err)
 	}
+}
+
+// inheritStepToolShaping copies the step's denyTools and listing scope from
+// the spawning turn's ctx onto the detached async run ctx, so the dispatch
+// guard holds for the subagent and anything it spawns is built with the same
+// tool set and listings (the subagent's own tool set was built from ctx).
+func inheritStepToolShaping(runCtx, ctx context.Context) context.Context {
+	runCtx = tools.WithDeniedTools(runCtx, tools.DeniedTools(ctx))
+	return tools.WithListingScope(runCtx, tools.ListingScopeFrom(ctx))
 }

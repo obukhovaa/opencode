@@ -839,6 +839,26 @@ func generateSchema() map[string]any {
 		},
 	}
 
+	// Add per-run listing scope (docs/skills.md)
+	listingScopePatterns := func(what string) map[string]any {
+		return map[string]any{
+			"type":        "array",
+			"description": "Path globs, relative to the working directory, of the " + what + " listed in full during a flow run; every other permitted one is listed by name only and stays usable by name. `*` matches within a path segment, `**` across segments. Patterns may use ${args.<path>} tokens resolved from the run's args; a list with an unresolved token does not apply.",
+			"items": map[string]any{
+				"type": "string",
+			},
+		}
+	}
+	schema["properties"].(map[string]any)["listingScope"] = map[string]any{
+		"type":        "object",
+		"description": "Scope the skill tool's skill listing and the task tool's subagent listing to what a flow run is about. Applies only to flow-step agents and the subagents they spawn; other sessions keep full listings. See docs/skills.md.",
+		"properties": map[string]any{
+			"skills":    listingScopePatterns("skills (matched against each SKILL.md location)"),
+			"subagents": listingScopePatterns("subagent types (matched against each agent definition file; agents defined in .opencode.json are always listed in full)"),
+		},
+		"additionalProperties": false,
+	}
+
 	// Add workspace CLI tools configuration (docs/cli-tools.md)
 	schema["properties"].(map[string]any)["cliTools"] = map[string]any{
 		"type":        "object",

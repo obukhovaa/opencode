@@ -618,6 +618,18 @@ type SkillsConfig struct {
 	MaxListingChars int `json:"maxListingChars,omitempty"`
 }
 
+// ListingScopeConfig scopes the `skill` tool's skill listing and the `task`
+// tool's subagent listing per flow run. Each list holds path globs matched
+// against an item's file location relative to the working directory, and may
+// contain `${args.<path>}` tokens resolved from the run's args when a step
+// agent is built. Matching items are listed in full, every other permitted
+// item by name only. A list with an unresolved token does not apply, and
+// agents outside a flow run are never scoped. See docs/skills.md.
+type ListingScopeConfig struct {
+	Skills    []string `json:"skills,omitempty"`
+	Subagents []string `json:"subagents,omitempty"`
+}
+
 // CLIToolsConfig governs workspace-defined CLI tools: declarative manifests
 // (`.agents/tools/<name>.yaml`) that wrap a host binary as a first-class tool
 // with argv-only execution. Manifests are discovered from the project, the
@@ -757,6 +769,8 @@ type Config struct {
 	DisableLSPDownload bool                  `json:"disableLSPDownload,omitempty"`
 	SessionProvider    SessionProviderConfig `json:"sessionProvider,omitempty"`
 	Skills             *SkillsConfig         `json:"skills,omitempty"`
+	// ListingScope scopes skill and subagent listings per flow run.
+	ListingScope *ListingScopeConfig `json:"listingScope,omitempty"`
 	// CLITools configures workspace-defined CLI tools (docs/cli-tools.md).
 	CLITools   *CLIToolsConfig   `json:"cliTools,omitempty"`
 	Permission *PermissionConfig `json:"permission,omitempty"`
