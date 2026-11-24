@@ -261,15 +261,16 @@ func (f *agentFactory) TodoStore() tools.TodoStore {
 	return f.todoStore
 }
 
-// SetQuestionService injects the question service after factory creation
-// (only in interactive mode).
+// SetQuestionService injects the process-wide question service after factory
+// creation. Step interactivity affects question handling, not tool registration.
 func (f *agentFactory) SetQuestionService(svc question.Service) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.questionService = svc
 }
 
-// QuestionService returns the injected question service (nil in non-interactive mode).
+// QuestionService returns the injected service, or nil when questions are disabled
+// for the process. Registration also requires the agent's role and tool grant.
 func (f *agentFactory) QuestionService() question.Service {
 	f.mu.Lock()
 	defer f.mu.Unlock()

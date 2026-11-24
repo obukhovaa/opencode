@@ -41,6 +41,9 @@ func (a *agent) compositionChildTool(ctx context.Context, name string) (tools.Ba
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if tools.IsToolDenied(ctx, name) || tools.IsToolDenied(ctx, tools.MCPComposeToolName) {
+		return nil, errors.New("MCP tool is denied by the flow step")
+	}
 	sessionID, messageID := tools.GetContextValues(ctx)
 	if a.reg == nil || sessionID == "" || messageID == "" || tools.GetAgentID(ctx) != a.agentID {
 		return nil, errors.New("composition context is unavailable")
@@ -63,9 +66,10 @@ func (a *agent) compositionChildTool(ctx context.Context, name string) (tools.Ba
 	}
 	inner := found
 	if wrapped, ok := inner.(*tools.DeferredWrapper); ok {
-		if _, active := wrapped.ActivatedAt(sessionID); !active {
-			return nil, errors.New("MCP tool must be discovered before composition")
-		}
+		// Discovery controls schema delivery, not authorization. The plan
+		// already names an exact operator-reviewed, agent-granted read.
+		// Resolve it internally without activating the wrapper or expanding
+		// the model's tool catalog/cache prefix.
 		inner = wrapped.Unwrap()
 	}
 	leaf, ok := inner.(*mcpTool)

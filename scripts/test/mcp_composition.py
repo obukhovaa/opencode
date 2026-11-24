@@ -222,7 +222,7 @@ def run(binary, work, provider, fixture, mode, label):
     scenario["callLog"] = str(artifacts / "calls.jsonl")
     scenario_path = artifacts / "scenario.json"
     scenario_path.write_text(dump(scenario))
-    composed = mode == "composed"
+    composed = mode in ("composed", "deferred-composed")
     provider.state = {"requests": [], "batches": ([ [{"name": "mcp_compose", "input": fixture["plan"]}] ]
                                                     if composed else batches(fixture))}
     allow = TOOLS + (["mcp_compose"] if composed else [])
@@ -250,6 +250,9 @@ def run(binary, work, provider, fixture, mode, label):
     }
     if fixture.get("outerDeny"):
         config["agents"]["coder"]["permission"] = {"mcp_compose": "deny"}
+    if mode == "deferred-composed":
+        config["agents"]["coder"]["allowTools"].append("toolsearch")
+        config["agents"]["coder"]["deferredTools"] = {"fixture_*": True}
     if mode != "absent":
         config["mcpComposition"] = {"readTools": TOOLS}
     (work / ".opencode.json").write_text(dump(config))
@@ -455,6 +458,11 @@ def main(binary, sandbox):
             row = check_positive(fixture, ordinary, composed)
             report.append(row)
             print("PASS " + dump(row), flush=True)
+            if fixture is fixtures[0]:
+                deferred = run(binary, work, provider, fixture, "deferred-composed", "undiscovered-reads")
+                check_positive(fixture, ordinary, deferred)
+                assert len(deferred["requests"]) == 2, "composition required a schema-discovery round trip"
+                print("PASS configured deferred reads compose before any search or ordinary child call", flush=True)
         assert sum(r["composedRequestBytes"] for r in report) < sum(r["ordinaryRequestBytes"] for r in report)
         absent = run(binary, work, provider, fixtures[0], "absent", "default-off-absent")
         configured = run(binary, work, provider, fixtures[0], "ordinary", "default-off-configured")

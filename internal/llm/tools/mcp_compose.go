@@ -58,11 +58,11 @@ func (t *mcpComposeTool) Info() ToolInfo {
 		map[string]any{"type": "object", "properties": map[string]any{"fields": fields}, "required": []string{"fields"}, "additionalProperties": false},
 		map[string]any{"type": "object", "properties": map[string]any{"rows": pointer, "fields": fields, "limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}}, "required": []string{"rows", "fields", "limit"}, "additionalProperties": false},
 	}}
-	childTool := map[string]any{"type": "string", "minLength": 1, "maxLength": 256, "description": "Only configured candidate tools are composable; ordinary tool access alone is insufficient. Each child must also be granted, available and activated. Use other tools directly."}
+	childTool := map[string]any{"type": "string", "minLength": 1, "maxLength": 256, "description": "Only configured candidate tools are composable; ordinary tool access alone is insufficient. Each child must also be granted and available. Deferred reads are resolved internally. Use other tools directly."}
 	if len(t.readTools) > 0 {
 		childTool["enum"] = slices.Clone(t.readTools)
 	}
-	return ToolInfo{Name: MCPComposeToolName, Description: "Run 1–8 authorized MCP reads sequentially, returning only selected JSON facts. Use only configured candidate tools listed in steps.tool. Select paths observed in this MCP tool's actual JSON response, not assumed upstream REST fields. Every field is required: one missing path fails the step. If the response shape is unknown or projection fails, inspect the ordinary tool response before composing again; do not repeatedly retry the same child arguments with guessed selectors. Bindings read earlier projected results and replace existing argument locations. Only complete text-only JSON outputs are supported. Limits: 32 KiB plan, depth 64, 256 KiB per response, 1 MiB total response text, 16 KiB projected values and 120 seconds active execution. Row limits explicitly mark results incomplete. Tools must already be available and activated; no discovery or pagination occurs.", Required: []string{"steps", "return"}, Parameters: map[string]any{
+	return ToolInfo{Name: MCPComposeToolName, Description: "Run 1–8 authorized MCP reads sequentially, returning only selected JSON facts. Use only configured candidate tools listed in steps.tool. Select paths observed in this MCP tool's actual JSON response, not assumed upstream REST fields. Every field is required: one missing path fails the step. If the response shape is unknown or projection fails, inspect the ordinary tool response before composing again; do not repeatedly retry the same child arguments with guessed selectors. For arrays, use rows with a small limit and row-relative fields (e.g. rows: empty string, fields: {path: /new_path}); do not select a whole file array, diff or large description with a root pointer. The 16 KiB projected-value budget is cumulative across ALL steps, including intermediate results. Bindings read earlier projected results and replace existing argument locations. Only complete text-only JSON outputs are supported. Limits: 32 KiB plan, depth 64, 256 KiB per response, 1 MiB total response text, 16 KiB projected values and 120 seconds active execution. Row limits explicitly mark results incomplete. Configured reads are resolved internally without loading their schemas or changing discovery state. No pagination occurs.", Required: []string{"steps", "return"}, Parameters: map[string]any{
 		"steps": map[string]any{"type": "array", "minItems": 1, "maxItems": 8, "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"id", "tool", "arguments", "select"}, "properties": map[string]any{
 			"id": id, "tool": childTool, "arguments": map[string]any{"type": "object"}, "select": selection,
 			"bindings": map[string]any{"type": "array", "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"target", "step", "pointer"}, "properties": map[string]any{"target": pointer, "step": id, "pointer": pointer}}},
@@ -84,6 +84,14 @@ type composeError struct {
 	Step      string                    `json:"step"`
 	Message   string                    `json:"message"`
 	Selection []composeSelectionFailure `json:"selection,omitempty"`
+	Limit     *composeLimitFailure      `json:"limit,omitempty"`
+}
+
+// Limit diagnostics expose byte counts only, never unprojected response data.
+type composeLimitFailure struct {
+	Scope       string `json:"scope"`
+	MaxBytes    int    `json:"maxBytes"`
+	ActualBytes int    `json:"actualBytes"`
 }
 
 // Diagnostics contain only selectors supplied by the caller and static reasons.
@@ -110,14 +118,14 @@ type composeEnvelope struct {
 var composeMessages = map[string]string{
 	"invalid_input":      "The composition plan is invalid or exceeds an input limit.",
 	"unavailable":        "The composition runtime is unavailable.",
-	"ineligible_tool":    "Use only configured candidate tools in steps.tool; each must also be granted, available and activated. Call other tools directly.",
+	"ineligible_tool":    "Use only configured candidate tools in steps.tool; each must also be granted and available. Call other tools directly.",
 	"binding_failed":     "An earlier projected value could not be bound.",
 	"child_failed":       "A child call failed.",
 	"rule_denied":        "A child call was denied by a permission rule.",
 	"hook_blocked":       "A child call was blocked by a hook.",
 	"unsupported_output": "A child response is not complete text-only JSON.",
 	"projection_failed":  "Requested selectors could not be resolved. Inspect error.selection and the ordinary tool response; use observed MCP paths, not assumed REST fields. Missing is not null.",
-	"output_limit":       "A response or projected-value limit was exceeded.",
+	"output_limit":       "A byte limit was exceeded; see error.limit. Project fewer fields and bounded rows instead of whole responses or large descriptions. Split the plan if needed; do not retry it unchanged.",
 	"cancelled":          "Composition was cancelled.",
 	"active_timeout":     "The active execution budget was exceeded.",
 	"permission_denied":  "A child permission request was rejected.",
@@ -129,6 +137,7 @@ func (t *mcpComposeTool) Run(parent context.Context, call ToolCall) (ToolRespons
 	envelope := composeEnvelope{Complete: true, Results: map[string]any{}, Steps: []composeStatus{}}
 	accounting := &CompositionOutcome{}
 	var selectionFailures []composeSelectionFailure
+	var limitFailure *composeLimitFailure
 	appendHookContext := func(value string) {
 		if value == "" {
 			return
@@ -151,7 +160,7 @@ func (t *mcpComposeTool) Run(parent context.Context, call ToolCall) (ToolRespons
 				step = envelope.Steps[index].ID
 			}
 			envelope.Complete = false
-			envelope.Error = &composeError{Code: code, Step: step, Message: message, Selection: selectionFailures}
+			envelope.Error = &composeError{Code: code, Step: step, Message: message, Selection: selectionFailures, Limit: limitFailure}
 		}
 		data, _ := json.Marshal(envelope)
 		return ToolResponse{Type: ToolResponseTypeText, Content: string(data), IsError: envelope.Error != nil, Composition: accounting}, control
@@ -281,7 +290,12 @@ func (t *mcpComposeTool) Run(parent context.Context, call ToolCall) (ToolRespons
 		if response.MCPOutput == nil || !response.MCPOutput.TextOnly || !response.MCPOutput.Complete || response.Type != ToolResponseTypeText {
 			return finish(i, "unsupported_output", nil)
 		}
-		if len(response.Content) > composeMaxChild || totalText+len(response.Content) > composeMaxTotal {
+		if len(response.Content) > composeMaxChild {
+			limitFailure = &composeLimitFailure{Scope: "child_response", MaxBytes: composeMaxChild, ActualBytes: len(response.Content)}
+			return finish(i, "output_limit", nil)
+		}
+		if totalText+len(response.Content) > composeMaxTotal {
+			limitFailure = &composeLimitFailure{Scope: "total_response", MaxBytes: composeMaxTotal, ActualBytes: totalText + len(response.Content)}
 			return finish(i, "output_limit", nil)
 		}
 		totalText += len(response.Content)
@@ -302,7 +316,11 @@ func (t *mcpComposeTool) Run(parent context.Context, call ToolCall) (ToolRespons
 		response = ToolResponse{}
 		outcome.Response = ToolResponse{}
 		data, err := json.Marshal(projected)
-		if err != nil || totalProjected+len(data) > composeMaxProjected {
+		if err != nil {
+			return finish(i, "projection_failed", nil)
+		}
+		if totalProjected+len(data) > composeMaxProjected {
+			limitFailure = &composeLimitFailure{Scope: "projected_values", MaxBytes: composeMaxProjected, ActualBytes: totalProjected + len(data)}
 			return finish(i, "output_limit", nil)
 		}
 		if ctx.Err() != nil {

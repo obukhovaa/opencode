@@ -81,6 +81,47 @@ func compositionText(text string) tools.ToolResponse {
 	return r
 }
 
+func TestCompositionDispatchesUndiscoveredReadWithoutLoadingSchema(t *testing.T) {
+	withFreshTaskRegistry(t)
+	for _, denied := range []bool{false, true} {
+		t.Run(fmt.Sprintf("denied=%v", denied), func(t *testing.T) {
+			calls := 0
+			action := permission.ActionAllow
+			if denied {
+				action = permission.ActionDeny
+			}
+			registry, leaf := compositionTestSetup(t, action, func(context.Context, string) tools.ToolResponse {
+				calls++
+				return compositionText(`{"id":9007199254740993}`)
+			})
+			wrapped := tools.WrapDeferred(leaf, &atomic.Int64{})
+			p := &scriptedProvider{respond: func(n int, _ bool) *provider.ProviderResponse {
+				if n == 1 {
+					return toolTurn(message.ToolCall{ID: "compose", Name: tools.MCPComposeToolName, Input: compositionPlan(1), Finished: true})
+				}
+				return endTurn()
+			}}
+			a := newLoopAgentWithTools(t, p, []tools.BaseTool{tools.NewMCPComposeTool("srv_read"), wrapped})
+			a.reg = registry
+			ctx := compositionTestContext("undiscovered")
+			result := a.processGeneration(ctx, "undiscovered", "read", 0, nil, RunOptions{NonInteractive: true})
+			if result.Error != nil {
+				t.Fatal(result.Error)
+			}
+			results := toolResultsOf(t, a, "undiscovered")
+			if len(results) != 1 || results[0].IsError != denied {
+				t.Fatalf("unexpected composition result: %+v", results)
+			}
+			if denied && calls != 0 || !denied && (calls != 1 || !strings.Contains(results[0].Content, "9007199254740993")) {
+				t.Fatalf("child policy/result lost: calls=%d results=%+v", calls, results)
+			}
+			if _, active := wrapped.ActivatedAt("undiscovered"); active || len(tools.SerializableFor("undiscovered", []tools.BaseTool{wrapped})) != 0 {
+				t.Fatal("composition loaded a deferred schema")
+			}
+		})
+	}
+}
+
 func TestCompositionChildPolicyDenyWinsHookApproval(t *testing.T) {
 	registry, leaf := compositionTestSetup(t, permission.ActionDeny, func(context.Context, string) tools.ToolResponse {
 		t.Fatal("policy deny bypassed")

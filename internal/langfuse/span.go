@@ -35,6 +35,22 @@ func (s *Span) End() {
 	s.span.End()
 }
 
+// EndBackgroundWait exposes numeric suspension time for aggregation separately
+// from span latency, which also includes report reads and wait bookkeeping.
+func (s *Span) EndBackgroundWait(suspended time.Duration, reason string, reports int) {
+	if s == nil {
+		return
+	}
+	ms := float64(suspended) / float64(time.Millisecond)
+	s.span.SetAttributes(
+		attribute.Float64("langfuse.observation.metadata.suspended_ms", ms),
+		attribute.String("langfuse.observation.metadata.wake_reason", reason),
+		attribute.Int("langfuse.observation.metadata.reports", reports),
+	)
+	s.SetOutput(map[string]any{"suspended_ms": ms, "wake_reason": reason, "reports": reports})
+	s.End()
+}
+
 // SetUsage records token usage and cost on a generation span.
 func (s *Span) SetUsage(u *Usage) {
 	if s == nil || u == nil {

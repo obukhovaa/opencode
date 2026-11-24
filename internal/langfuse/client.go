@@ -303,6 +303,28 @@ func (c *Client) ToolStart(ctx context.Context, params ToolParams) *Span {
 	return &Span{span: span}
 }
 
+// BackgroundWaitStart records time spent waiting between model calls. It is a
+// span, not a tool invocation: no tool watchdog or generation is kept running.
+func (c *Client) BackgroundWaitStart(ctx context.Context, params BackgroundWaitParams) *Span {
+	if !c.Enabled() {
+		return nil
+	}
+	if root := getRootSpan(ctx); root != nil {
+		ctx = trace.ContextWithSpan(ctx, root)
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("langfuse.observation.type", "span"),
+		attribute.String("langfuse.observation.metadata.session_id", redactString(params.SessionID)),
+		attribute.String("langfuse.observation.metadata.trigger", params.Trigger),
+		attribute.Int("langfuse.observation.metadata.pending_tasks", params.PendingTasks),
+	}
+	for _, kind := range []string{"task", "bash", "monitor"} {
+		attrs = append(attrs, attribute.Int("langfuse.observation.metadata.pending_"+kind, params.PendingKinds[kind]))
+	}
+	_, span := c.tracer.Start(ctx, "background_wait", trace.WithAttributes(attrs...))
+	return &Span{span: span}
+}
+
 // Nop returns a disabled client that discards all events.
 func Nop() *Client {
 	return &Client{enabled: false}

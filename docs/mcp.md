@@ -114,7 +114,7 @@ the tool declarations. See [deferred tools](deferred-tools.md).
 }
 ```
 
-Add the composition tool and its permitted child tools to the agent's existing `allowTools`; retain its existing model settings. A wildcard alone does not enable composition. An explicit legacy `tools.mcp_compose: true` also qualifies. The endpoint list is an operator-reviewed read-only allowlist, not an automatic classifier: do not put write operations or general-purpose SQL, HTTP or code runners in it. An explicit `readOnlyHint: false` refuses a child; missing annotations still require operator review. The `steps[].tool` schema lists the configured candidate names as an enum, in stable sorted order. This list does not attest current availability or activation and does not grant access. Tools outside it must be called directly. Each child must also be enabled for the agent and, if deferred, already discovered in that session. The outer tool and each child retain their own permission checks. Hook approval can bypass an ask prompt, never an explicit MCP policy deny.
+Add the composition tool and its permitted child tools to the agent's existing `allowTools`; retain its existing model settings. A wildcard alone does not enable composition. An explicit legacy `tools.mcp_compose: true` also qualifies. The endpoint list is an operator-reviewed read-only allowlist, not an automatic classifier: do not put write operations or general-purpose SQL, HTTP or code runners in it. An explicit `readOnlyHint: false` refuses a child; missing annotations still require operator review. The `steps[].tool` schema lists the configured candidate names as an enum, in stable sorted order. This list does not attest current availability and does not grant access. Tools outside it must be called directly. Each child must also be enabled for the agent. A configured deferred read is resolved internally without requiring prior schema discovery or changing its activation state or serialization order. Composition therefore does not load child schemas into the model context. The outer tool and each child retain their own permission checks. Hook approval can bypass an ask prompt, never an explicit MCP policy deny.
 
 Example plan:
 
@@ -136,6 +136,16 @@ Bindings copy values from earlier **projected** results into existing argument l
 Limits are 8 calls, 32 KiB plan input, depth 64, 256 KiB accepted child JSON text, 1 MiB cumulative accepted text, 16 KiB projected values, and 120 seconds of active execution, excluding human permission waits. Parent deadlines and smaller applicable tool limits still win. IDs are at most 64 characters, tool names 256 bytes, field names 64 bytes and pointers 1024 bytes. Row limits are 1–100. A deliberately limited row selection reports `limited:true` and `complete:false`; other failures stop later calls and mark them skipped. The result retains requested completed projections and explicit per-step source/status, never a raw-output fallback.
 
 A `projection_failed` error includes `error.selection`, identifying the failed selection source (`fields` or `rows`), caller-supplied field name and JSON pointer, a zero-based row index for a failing row, and a static reason (`path_not_found` or `expected_array`). Object projection reports all failed fields in field-name order; row projection reports all failed fields of the first failing row within the selected limit. Diagnostics contain no response keys or values. Correct the selectors using the ordinary response; do not keep retrying the same child arguments with guessed paths, since repeated-call protection still applies.
+
+An `output_limit` error includes `error.limit` with `scope` (`child_response`,
+`total_response` or `projected_values`), `maxBytes` and `actualBytes`. The 16 KiB
+projected-value bound is cumulative across all steps, including intermediate
+steps omitted from `return`. Select small fields and bounded rows instead of
+entire changed-file arrays, diffs or long descriptions. For a root array use
+`"rows":""` and row-relative fields such as `"path":"/new_path"`; `/0/new_path`
+would incorrectly index inside each row. Split the plan when needed. Diagnostics
+include byte counts, never unprojected content; exceeding a bound still fails the
+plan.
 
 Only complete, text-only, post-hook JSON is supported. MCP error results, media/resources, structured-only responses, capped results, post-hook blocks and invalid JSON fail explicitly. Composition never reopens spill files or substitutes raw structured content after redaction. Trusted hook context remains visible separately, including on failure. The 16 KiB projection limit does not cap hook context: the existing hook runner allows up to 1 MiB stdout per hook and can concatenate several contexts.
 

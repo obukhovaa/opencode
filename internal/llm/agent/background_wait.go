@@ -2,8 +2,11 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"github.com/opencode-ai/opencode/internal/inbox"
+	"github.com/opencode-ai/opencode/internal/langfuse"
 	"github.com/opencode-ai/opencode/internal/llm/tools"
 	"github.com/opencode-ai/opencode/internal/logging"
 	"github.com/opencode-ai/opencode/internal/message"
@@ -67,7 +70,31 @@ func yielded(results *message.Message) bool {
 // termination. In particular a streaming monitor must remain running while
 // the model reacts to an event. Subscribe before reading durable history and
 // the pending set, so an event at either boundary cannot be lost.
-func (a *agent) waitForBackgroundReport(ctx context.Context, reg task.Registry, sessionID string, seen map[string]bool) ([]message.Message, error) {
+func (a *agent) waitForBackgroundReport(ctx context.Context, reg task.Registry, sessionID string, seen map[string]bool, trigger string) (fresh []message.Message, err error) {
+	params := backgroundWaitParams(reg, sessionID, trigger)
+	var span *langfuse.Span
+	if trigger == "yield" || params.PendingTasks > 0 {
+		span = langfuse.Get().BackgroundWaitStart(ctx, params)
+	}
+	var suspended time.Duration
+	defer func() {
+		reason := "no_pending_tasks"
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			reason = "deadline"
+		case errors.Is(err, context.Canceled):
+			reason = "cancelled"
+		case err != nil:
+			reason = "error"
+		case len(fresh) > 0:
+			reason = "background_report"
+		case inbox.Default().Len(sessionID) > 0:
+			reason = "inbox"
+		case reg == nil:
+			reason = "unavailable"
+		}
+		span.EndBackgroundWait(suspended, reason, len(fresh)/2)
+	}()
 	if reg == nil {
 		return nil, nil
 	}
@@ -84,7 +111,7 @@ func (a *agent) waitForBackgroundReport(ctx context.Context, reg task.Registry, 
 	for {
 		report := reg.WatchSession(sessionID)
 		input := inbox.Default().Watch(sessionID)
-		fresh, err := a.backgroundMessages(ctx, sessionID, seen)
+		fresh, err = a.backgroundMessages(ctx, sessionID, seen)
 		if err != nil || len(fresh) > 0 || inbox.Default().Len(sessionID) > 0 {
 			return fresh, err
 		}
@@ -93,18 +120,45 @@ func (a *agent) waitForBackgroundReport(ctx context.Context, reg task.Registry, 
 			// empty pending set to include a completion racing the first read.
 			return a.backgroundMessages(ctx, sessionID, seen)
 		}
+		// Count only suspension on events, excluding DB reads, compaction,
+		// model generation and unrelated user-question latency.
+		started := time.Now()
 		select {
 		case <-report:
 		case <-input:
 		case <-done:
+			suspended += time.Since(started)
 			if waitErr != nil {
 				return nil, waitErr
 			}
 			return a.backgroundMessages(ctx, sessionID, seen)
 		case <-ctx.Done():
+			suspended += time.Since(started)
 			return nil, ctx.Err()
 		}
+		suspended += time.Since(started)
 	}
+}
+
+func recordReadyBackgroundWait(ctx context.Context, sessionID string, reports int) {
+	reason := "inbox"
+	if reports > 0 {
+		reason = "background_report"
+	}
+	span := langfuse.Get().BackgroundWaitStart(ctx, backgroundWaitParams(task.GlobalRegistry(), sessionID, "yield"))
+	span.EndBackgroundWait(0, reason, reports)
+}
+
+func backgroundWaitParams(reg task.Registry, sessionID, trigger string) langfuse.BackgroundWaitParams {
+	params := langfuse.BackgroundWaitParams{SessionID: sessionID, Trigger: trigger, PendingKinds: map[string]int{}}
+	if reg != nil {
+		pending := reg.PendingForSession(sessionID, nil)
+		params.PendingTasks = len(pending)
+		for _, tk := range pending {
+			params.PendingKinds[string(tk.Kind)]++
+		}
+	}
+	return params
 }
 
 // appendBackgroundReports runs only between model calls, after the real
